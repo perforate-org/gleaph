@@ -1,0 +1,36 @@
+.vscode/
+.idea/
+.zed
+**/*~
+
+# Mac OSX temporary files
+.DS_Store
+**/.DS_Store
+
+# environment variables
+.env
+
+# icp-cli
+.icp/cache/
+
+# canbench
+**/.canbench/
+
+# cargo
+target/
+.cargo-docker/
+
+# pnpm
+node_modules/
+.pnpm-store/
+dist/
+
+# mermaid
+**/.mermaid/
+
+# prerelease
+reference/
+research/
+TODO-phase1.md
+TODO-phase2.md
+TODO-phase3.md

@@ -1,0 +1,133 @@
+benches:
+  bench_timeline_fanout_50:
+    total:
+      calls: 1
+      instructions: 667875
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_timeline_fanout_500:
+    total:
+      calls: 1
+      instructions: 6343051
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_timeline_fanout_max:
+    total:
+      calls: 1
+      instructions: 57164527
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_timeline_hybrid_0celeb:
+    total:
+      calls: 1
+      instructions: 905929457
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      execute:
+        calls: 1
+        instructions: 532464
+        heap_increase: 0
+        stable_memory_increase: 0
+      parse:
+        calls: 1
+        instructions: 221393
+        heap_increase: 0
+        stable_memory_increase: 0
+      plan:
+        calls: 1
+        instructions: 42445
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_timeline_hybrid_10celeb:
+    total:
+      calls: 1
+      instructions: 1809857652
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      execute:
+        calls: 2
+        instructions: 623757
+        heap_increase: 0
+        stable_memory_increase: 0
+      parse:
+        calls: 2
+        instructions: 530420
+        heap_increase: 0
+        stable_memory_increase: 0
+      plan:
+        calls: 2
+        instructions: 104804
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_timeline_promotion:
+    total:
+      calls: 1
+      instructions: 1809965789
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      execute:
+        calls: 2
+        instructions: 615698
+        heap_increase: 0
+        stable_memory_increase: 0
+      parse:
+        calls: 2
+        instructions: 530416
+        heap_increase: 0
+        stable_memory_increase: 0
+      plan:
+        calls: 2
+        instructions: 104804
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_timeline_read_heavy:
+    total:
+      calls: 1
+      instructions: 905929406
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      execute:
+        calls: 1
+        instructions: 532464
+        heap_increase: 0
+        stable_memory_increase: 0
+      parse:
+        calls: 1
+        instructions: 221342
+        heap_increase: 0
+        stable_memory_increase: 0
+      plan:
+        calls: 1
+        instructions: 42445
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_timeline_read_light:
+    total:
+      calls: 1
+      instructions: 905929406
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      execute:
+        calls: 1
+        instructions: 532464
+        heap_increase: 0
+        stable_memory_increase: 0
+      parse:
+        calls: 1
+        instructions: 221342
+        heap_increase: 0
+        stable_memory_increase: 0
+      plan:
+        calls: 1
+        instructions: 42445
+        heap_increase: 0
+        stable_memory_increase: 0
+version: 0.4.0

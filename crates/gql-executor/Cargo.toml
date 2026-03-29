@@ -1,0 +1,16 @@
+[package]
+name = "gleaph-gql-executor"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+gleaph-gql = { path = "../gql" }
+gleaph-gql-planner = { path = "../gql-planner" }
+gleaph-graph-kernel = { path = "../graph-kernel" }
+thiserror.workspace = true
+
+[dev-dependencies]
+gleaph-graph-mem = { path = "../graph-mem" }
+gleaph-graph-pma = { path = "../graph-pma" }
+ic-stable-structures = "0.7.2"

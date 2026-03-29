@@ -1,0 +1,13 @@
+[package]
+name = "gleaph-graph-pma"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]
+gleaph-gql = { path = "../gql" }
+gleaph-graph-kernel = { path = "../graph-kernel" }
+gleaph-graph-pma-legacy = { path = "../graph-pma-legacy" }

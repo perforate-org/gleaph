@@ -1,0 +1,11 @@
+/target/
+**/*.rs.bk
+.DS_Store
+.claude/
+.zed/
+# Restored nested crate repos: rename ._git_bak back to .git
+crates/gql/._git_bak/
+crates/gql-planner/._git_bak/
+gleaph-old/._git_bak/
+# Nested repo backups under gleaph-old/reference (see find .git)
+gleaph-old/reference/**/._git_bak/

@@ -1,0 +1,575 @@
+//! Physical plan types for the GQL planner.
+//!
+//! A [`PhysicalPlan`] represents a sequence of [`PlanOp`] operators that an
+//! executor can walk to evaluate a GQL query. The planner produces these from
+//! the parsed AST; the executor (in a separate crate) consumes them.
+
+use std::rc::Rc;
+
+pub use gleaph_gql::ast::CmpOp;
+use gleaph_gql::ast::{Expr, LetBinding, OrderByClause};
+pub use gleaph_gql::type_check::DmlDiagnostic as PlannerDiagnostic;
+pub use gleaph_gql::type_check::TypeDiagnostic;
+use gleaph_gql::types::EdgeDirection;
+
+/// Cheaply-cloneable string type for identifiers (variable names, labels, properties, etc.).
+pub type Str = Rc<str>;
+
+// ════════════════════════════════════════════════════════════════════════════════
+// PhysicalPlan
+// ════════════════════════════════════════════════════════════════════════════════
+
+/// A physical query plan: an ordered sequence of operators plus annotations.
+#[derive(Clone, Debug, Default)]
+pub struct PhysicalPlan {
+    /// Operators in execution order.
+    pub ops: Vec<PlanOp>,
+    /// Language/type diagnostics associated with this plan.
+    pub diagnostics: PlanDiagnostics,
+    /// Metadata produced during planning (cost estimates, anchor info, etc.).
+    pub annotations: PlanAnnotations,
+}
+
+impl PhysicalPlan {
+    pub fn has_dml(&self) -> bool {
+        self.ops.iter().any(PlanOp::is_dml)
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct PlanDiagnostics {
+    /// Fatal DML issues that make execution invalid.
+    pub dml_errors: Vec<PlannerDiagnostic>,
+    /// Non-fatal DML issues.
+    pub dml_warnings: Vec<PlannerDiagnostic>,
+    /// Non-DML language diagnostics from type checking.
+    pub type_warnings: Vec<TypeDiagnostic>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct PlanSummary {
+    pub estimated_rows: Option<f64>,
+    pub estimated_cost: Option<f64>,
+    pub has_dml: bool,
+    pub dml_error_count: usize,
+    pub dml_warning_count: usize,
+    pub type_warning_count: usize,
+}
+
+impl PlanSummary {
+    pub fn from_plan(plan: &PhysicalPlan) -> Self {
+        Self {
+            estimated_rows: plan.annotations.optimizer.estimated_rows,
+            estimated_cost: plan.annotations.optimizer.estimated_cost,
+            has_dml: plan.has_dml(),
+            dml_error_count: plan.diagnostics.dml_errors.len(),
+            dml_warning_count: plan.diagnostics.dml_warnings.len(),
+            type_warning_count: plan.diagnostics.type_warnings.len(),
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// PlanOp
+// ════════════════════════════════════════════════════════════════════════════════
+
+/// A single operator in the physical plan.
+#[derive(Clone, Debug)]
+pub enum PlanOp {
+    // ──── Scan ────
+
+    /// Full or label-filtered vertex scan.
+    NodeScan {
+        /// Variable bound to each scanned vertex.
+        variable: Str,
+        /// Optional label constraint (only vertices with this label).
+        label: Option<Str>,
+    },
+
+    /// Equality or range scan on an indexed vertex property.
+    IndexScan {
+        variable: Str,
+        property: Str,
+        value: ScanValue,
+        cmp: CmpOp,
+    },
+
+    /// Equality scan on an indexed edge property.
+    EdgeIndexScan {
+        variable: Str,
+        property: Str,
+        value: ScanValue,
+    },
+
+    /// Parameter-based conditional scan: tries index scan if parameter is
+    /// non-null, falls back to label/full scan otherwise.
+    ConditionalIndexScan {
+        candidates: Vec<ConditionalScanCandidate>,
+        /// Fallback label for full scan when all parameters are null.
+        fallback_label: Option<Str>,
+        fallback_variable: Str,
+    },
+
+    // ──── Filter ────
+
+    /// Apply one or more predicates (from WHERE or inline pattern constraints).
+    PropertyFilter {
+        /// The conjunctive predicates to evaluate.
+        predicates: Vec<Expr>,
+        /// Pipeline stage at which this filter is applied (0 = after initial scan).
+        stage: usize,
+    },
+
+    // ──── Traversal ────
+
+    /// Expand along edges from a source vertex.
+    Expand {
+        src: Str,
+        edge: Str,
+        dst: Str,
+        direction: EdgeDirection,
+        label: Option<Str>,
+        /// Variable-length expansion bounds (e.g. `*2..5`).
+        var_len: Option<VarLenSpec>,
+    },
+
+    /// Fused Expand + property filter on the destination node (EVFusion).
+    /// Avoids materializing intermediate rows that would be discarded.
+    ExpandFilter {
+        src: Str,
+        edge: Str,
+        dst: Str,
+        direction: EdgeDirection,
+        label: Option<Str>,
+        var_len: Option<VarLenSpec>,
+        /// Predicates evaluated on the destination node during expansion.
+        dst_filter: Vec<Expr>,
+    },
+
+    /// Shortest-path search.
+    ShortestPath {
+        src: Str,
+        dst: Str,
+        edge: Str,
+        path_var: Option<Str>,
+        mode: ShortestMode,
+    },
+
+    // ──── GQL-specific (not in gleaph-old) ────
+
+    /// LET bindings: compute and bind intermediate values.
+    Let {
+        bindings: Vec<LetBinding>,
+    },
+
+    /// FOR loop: unnest a list into individual rows.
+    For {
+        variable: Str,
+        list: Expr,
+        ordinality: Option<Str>,
+    },
+
+    /// Standalone FILTER statement (GQL §14.2).
+    Filter {
+        condition: Expr,
+    },
+
+    // ──── Procedure calls ────
+
+    /// External procedure call: CALL proc_name(args) [YIELD columns].
+    CallProcedure {
+        name: Vec<Str>,
+        args: Vec<Expr>,
+        yield_columns: Option<Vec<YieldColumn>>,
+        optional: bool,
+    },
+
+    /// Inline procedure call: CALL { <sub-query> }.
+    InlineProcedureCall {
+        sub_plan: Box<PhysicalPlan>,
+        scope_vars: Vec<Str>,
+        optional: bool,
+    },
+
+    /// USE GRAPH: switch graph context for a sub-plan or scope the result.
+    UseGraph {
+        graph_name: Vec<Str>,
+        sub_plan: Option<Vec<PlanOp>>,
+    },
+
+    // ──── Join operators ────
+
+    /// Hash join between two independently computed sub-plans.
+    HashJoin {
+        left: Vec<PlanOp>,
+        right: Vec<PlanOp>,
+        join_keys: Vec<Str>,
+    },
+
+    /// Cartesian product of two independent sub-plans (no shared variables).
+    CartesianProduct {
+        left: Vec<PlanOp>,
+        right: Vec<PlanOp>,
+    },
+
+    // ──── Aggregation / Output ────
+
+    /// GROUP BY + aggregate functions.
+    Aggregate {
+        group_by: Vec<Expr>,
+        /// Aggregate expressions evaluated per group.
+        aggregates: Vec<AggregateSpec>,
+    },
+
+    /// RETURN / SELECT projection.
+    Project {
+        columns: Vec<ProjectColumn>,
+        distinct: bool,
+    },
+
+    /// ORDER BY sorting.
+    Sort {
+        order_by: OrderByClause,
+    },
+
+    /// LIMIT / OFFSET row truncation.
+    Limit {
+        count: Option<Expr>,
+        offset: Option<Expr>,
+    },
+
+    /// Set operation combining two sub-plans (UNION, EXCEPT, INTERSECT, OTHERWISE).
+    SetOperation {
+        op: gleaph_gql::ast::SetOp,
+        right: Box<PhysicalPlan>,
+    },
+
+    /// Optional match: left-outer-join semantics. If the sub-plan produces no
+    /// rows for a given input row, emit the input row with NULLs for the
+    /// optional bindings.
+    OptionalMatch {
+        /// The operators that form the optional sub-plan.
+        sub_plan: Vec<PlanOp>,
+    },
+
+    /// Intersect multiple index scans on the same variable.
+    IndexIntersection {
+        variable: Str,
+        scans: Vec<IndexScanSpec>,
+    },
+
+    /// Worst-Case Optimal Join for cyclic patterns (e.g., triangles).
+    /// Replaces multiple Expand ops when a cycle is detected.
+    WorstCaseOptimalJoin {
+        /// Variables forming the cycle (in traversal order).
+        variables: Vec<Str>,
+        /// Edge specs for each hop in the cycle.
+        edges: Vec<WcojEdge>,
+    },
+
+    /// TopK: fused Sort + Limit. Uses a heap instead of full sort
+    /// when ORDER BY ... LIMIT N and k << input_rows.
+    TopK {
+        order_by: OrderByClause,
+        k: Expr,
+        offset: Option<Expr>,
+    },
+
+    // ──── Pipeline boundaries ────
+
+    /// Materialize: pipeline boundary between NEXT-chained statement blocks.
+    /// Collects the current result set and re-exposes specified columns.
+    /// Analogous to Cypher's WITH or GQL's YIELD between NEXT statements.
+    Materialize {
+        /// Columns to project/rename at the boundary. Empty = pass all.
+        columns: Vec<ProjectColumn>,
+        distinct: bool,
+    },
+
+    // ──── DML (Data Modification) ────
+
+    /// Insert a new vertex with labels and properties.
+    InsertVertex {
+        variable: Option<Str>,
+        labels: Vec<Str>,
+        properties: Vec<PropertyAssignment>,
+    },
+
+    /// Insert a new edge between two vertices.
+    InsertEdge {
+        variable: Option<Str>,
+        src: Str,
+        dst: Str,
+        direction: EdgeDirection,
+        labels: Vec<Str>,
+        properties: Vec<PropertyAssignment>,
+    },
+
+    /// Set properties or labels on bound variables.
+    SetProperties {
+        items: Vec<SetPlanItem>,
+    },
+
+    /// Remove properties or labels from bound variables.
+    RemoveProperties {
+        items: Vec<RemovePlanItem>,
+    },
+
+    /// Delete a vertex (NODETACH — must have no edges).
+    DeleteVertex {
+        variable: Str,
+    },
+
+    /// Delete a vertex and all its connected edges (DETACH DELETE).
+    DetachDeleteVertex {
+        variable: Str,
+    },
+
+    /// Delete an edge.
+    DeleteEdge {
+        variable: Str,
+    },
+}
+
+impl PlanOp {
+    pub fn is_dml(&self) -> bool {
+        matches!(
+            self,
+            Self::InsertVertex { .. }
+                | Self::InsertEdge { .. }
+                | Self::SetProperties { .. }
+                | Self::RemoveProperties { .. }
+                | Self::DeleteVertex { .. }
+                | Self::DetachDeleteVertex { .. }
+                | Self::DeleteEdge { .. }
+        )
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// Supporting types
+// ════════════════════════════════════════════════════════════════════════════════
+
+/// A property assignment for INSERT/SET operations.
+#[derive(Clone, Debug)]
+pub struct PropertyAssignment {
+    pub name: Str,
+    pub value: Expr,
+}
+
+/// A single SET plan item.
+#[derive(Clone, Debug)]
+pub enum SetPlanItem {
+    /// SET v.property = value
+    Property {
+        variable: Str,
+        property: Str,
+        value: Expr,
+    },
+    /// SET v = expr (replace all properties)
+    AllProperties {
+        variable: Str,
+        value: Expr,
+    },
+    /// SET v IS Label
+    Label {
+        variable: Str,
+        label: Str,
+    },
+}
+
+/// A single REMOVE plan item.
+#[derive(Clone, Debug)]
+pub enum RemovePlanItem {
+    /// REMOVE v.property
+    Property {
+        variable: Str,
+        property: Str,
+    },
+    /// REMOVE v IS Label
+    Label {
+        variable: Str,
+        label: Str,
+    },
+}
+
+/// A value used in index scan predicates.
+#[derive(Clone, Debug)]
+pub enum ScanValue {
+    /// A literal constant.
+    Literal(gleaph_gql::Value),
+    /// A query parameter reference.
+    Parameter(Str),
+}
+
+// CmpOp is re-exported from gleaph_gql::ast::CmpOp.
+
+/// Variable-length expansion bounds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VarLenSpec {
+    pub min: u64,
+    pub max: Option<u64>,
+}
+
+/// Shortest-path mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShortestMode {
+    /// Any single shortest path.
+    AnyShortest,
+    /// All shortest paths.
+    AllShortest,
+    /// Up to k shortest paths.
+    ShortestK(u64),
+}
+
+/// A candidate for conditional index scan.
+#[derive(Clone, Debug)]
+pub struct ConditionalScanCandidate {
+    /// Parameter name to check for null.
+    pub param_name: Str,
+    /// Property to scan on.
+    pub property: Str,
+    /// Variable to bind.
+    pub variable: Str,
+    /// Comparison operator.
+    pub cmp: CmpOp,
+}
+
+/// An aggregate specification within an Aggregate op.
+#[derive(Clone, Debug)]
+pub struct AggregateSpec {
+    /// The aggregate function name (COUNT, SUM, AVG, MIN, MAX, COLLECT, etc.).
+    pub func: Str,
+    /// The expression being aggregated (None for COUNT(*)).
+    pub expr: Option<Expr>,
+    /// Whether DISTINCT is applied.
+    pub distinct: bool,
+    /// Output alias.
+    pub alias: Option<Str>,
+}
+
+/// A column in a Project op.
+#[derive(Clone, Debug)]
+pub struct ProjectColumn {
+    pub expr: Expr,
+    pub alias: Option<Str>,
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// PlanAnnotations
+// ════════════════════════════════════════════════════════════════════════════════
+
+/// Metadata and annotations produced during planning.
+#[derive(Clone, Debug, Default)]
+pub struct PlanAnnotations {
+    /// Semantic analysis metadata surfaced for explain/debugging.
+    pub semantic: SemanticPlanAnnotations,
+    /// Optimizer and planning metadata used for costing and execution hints.
+    pub optimizer: OptimizerPlanAnnotations,
+}
+
+/// Semantic analysis metadata produced during planning.
+#[derive(Clone, Debug, Default)]
+pub struct SemanticPlanAnnotations {
+    /// All property accesses detected in the query (e.g. "n.name", "e.weight").
+    pub property_accesses: Option<Vec<Str>>,
+    /// Property accesses in WHERE clauses only.
+    pub where_property_accesses: Option<Vec<Str>>,
+    /// WHERE properties that have indexes available.
+    pub indexable_properties: Option<Vec<Str>>,
+    /// Whether the query uses aggregate functions.
+    pub has_aggregate: bool,
+    /// Flow-sensitive narrowing facts.
+    pub narrowing_facts: Option<Vec<crate::semantic::NarrowingFact>>,
+}
+
+/// Optimizer and planning metadata produced during planning.
+#[derive(Clone, Debug, Default)]
+pub struct OptimizerPlanAnnotations {
+    /// The variable chosen as the scan anchor (starting point).
+    pub anchor: Option<AnchorInfo>,
+    /// Estimated result row count.
+    pub estimated_rows: Option<f64>,
+    /// Estimated total cost (arbitrary unit).
+    pub estimated_cost: Option<f64>,
+    /// Whether limit pushdown was applied.
+    pub limit_pushdown_applied: bool,
+    /// Filter pushdown stages (which predicates were pushed to which stage).
+    pub filter_pushdown_stages: Vec<usize>,
+    /// Whether the plan is statically contradictory (unsatisfiable pattern).
+    pub statically_contradictory: bool,
+    /// Recommended hop execution order (indices into the hops array).
+    pub join_order: Option<Vec<usize>>,
+    /// Whether EVFusion (Expand-Vertex filter fusion) was applied.
+    pub ev_fusion_applied: bool,
+    /// Whether TopK fusion (Sort+Limit → TopK) was applied.
+    pub topk_applied: bool,
+    /// Whether predicate reordering by selectivity was applied.
+    pub predicate_reordering_applied: bool,
+    /// Common subexpressions detected across the plan (annotation-only).
+    pub common_subexpressions: Option<Vec<Str>>,
+    /// Suggested row count after which executor should re-evaluate the plan.
+    pub reoptimize_after_rows: Option<u64>,
+    /// Op indices where executor should verify cardinality matches estimates.
+    pub cardinality_check_points: Vec<usize>,
+    /// Whether late projection optimization was applied.
+    pub late_project_applied: bool,
+    /// Detected cyclic patterns (e.g., triangles) for potential WCOJ.
+    pub cyclic_patterns: Option<Vec<CyclicPattern>>,
+}
+
+/// A detected cyclic pattern in a graph query (e.g., triangle).
+#[derive(Clone, Debug)]
+pub struct CyclicPattern {
+    /// Variables forming the cycle.
+    pub variables: Vec<Str>,
+}
+
+/// A column yielded from a procedure call.
+#[derive(Clone, Debug)]
+pub struct YieldColumn {
+    pub name: Str,
+    pub alias: Option<Str>,
+}
+
+/// A single index scan specification for index intersection.
+#[derive(Clone, Debug)]
+pub struct IndexScanSpec {
+    pub property: Str,
+    pub value: ScanValue,
+    pub cmp: CmpOp,
+}
+
+/// An edge in a WCOJ plan.
+#[derive(Clone, Debug)]
+pub struct WcojEdge {
+    pub variable: Str,
+    pub label: Option<Str>,
+    pub direction: EdgeDirection,
+}
+
+/// Information about the chosen scan anchor.
+#[derive(Clone, Debug)]
+pub struct AnchorInfo {
+    /// The variable name chosen as anchor.
+    pub variable: Str,
+    /// Why this anchor was chosen.
+    pub source: AnchorSource,
+}
+
+/// The reason an anchor was chosen.
+#[derive(Clone, Debug)]
+pub enum AnchorSource {
+    /// Equality predicate on an indexed property (best selectivity).
+    PropertyEquality { property: Str },
+    /// Inline property from pattern: `(n:Label {prop: value})` or `(n WHERE n.prop = value)`.
+    InlinePropertyEquality { property: Str },
+    /// Range predicate on an indexed property.
+    PropertyRange { property: Str },
+    /// Lowest-cardinality label.
+    LabelCardinality { label: Str },
+    /// Schema-inferred endpoint.
+    SchemaEndpoint,
+    /// Full scan fallback.
+    FullScan,
+}

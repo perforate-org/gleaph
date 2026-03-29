@@ -1,0 +1,9 @@
+[package]
+name = "gleaph-graph-kernel"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+gleaph-gql = { path = "../gql" }
+thiserror.workspace = true

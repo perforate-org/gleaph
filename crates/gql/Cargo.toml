@@ -1,0 +1,30 @@
+[package]
+name = "gleaph-gql"
+edition = "2024"
+version = "0.0.1"
+authors = ["Inomoto Yota <yota@perforate.org>"]
+license = "MIT OR Apache-2.0"
+rust-version = "1.88"
+
+include = [
+    "/src",
+    "/Cargo.toml",
+    "/README.md",
+    "/LICENSE-APACHE",
+    "/LICENSE-MIT",
+]
+
+[dependencies]
+ethnum = "1"
+f256 = { version = "0.11", optional = true }
+half = "2"
+rapidhash = "4"
+rust_decimal = "1"
+thiserror = "2"
+
+[features]
+default = []
+cypher = []
+sql-compat = []
+f128 = []
+f256 = ["dep:f256"]

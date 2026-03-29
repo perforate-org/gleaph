@@ -1,0 +1,11 @@
+[package]
+name = "gleaph-algo"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+candid.workspace = true
+serde.workspace = true
+gleaph-types = { path = "../types" }
+roaring.workspace = true
+rapidhash.workspace = true

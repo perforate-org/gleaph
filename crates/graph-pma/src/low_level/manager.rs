@@ -1,0 +1,1138 @@
+//! Region-manager metadata and allocator-side state transitions.
+
+use super::extent::{
+    BucketChain, BucketHeader, BucketId, BucketTable, ExtentChain, ExtentGrowthDecision,
+    ExtentGrowthKind, ExtentGrowthPolicy, ExtentGrowthRequest, ExtentHeader, ExtentId, ExtentRef,
+    ExtentTable, FreeBucketList, FreeExtentList,
+};
+use super::ids::StableAddr;
+use super::region::{
+    BucketSizeInPages, RegionKind, RegionManagerLayout, RegionRef, RegionStorageKind, WasmPages,
+};
+
+/// Metadata-only region manager used during the rewrite.
+///
+/// This owns region directory state, extent/bucket allocator metadata, and the
+/// first pure growth / relocation rules. It does not yet perform stable-memory
+/// IO.
+///
+/// Invariant:
+/// - region directory metadata is authoritative for which tenants exist
+/// - extent/bucket allocator metadata may change without changing adjacency
+///   semantics
+/// - physical address reuse must not change surface-local indexes
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RegionManager {
+    pub layout: RegionManagerLayout,
+    pub extent_table: ExtentTable,
+    pub free_extents: FreeExtentList,
+    pub bucket_table: BucketTable,
+    pub free_buckets: FreeBucketList,
+    pub next_extent_addr: StableAddr,
+    free_extent_addrs: Vec<ExtentRef>,
+    extent_chains: Vec<ExtentChain>,
+    bucket_chains: Vec<BucketChain>,
+}
+
+impl RegionManager {
+    /// Creates an empty region manager with the chosen bucket granularity.
+    pub fn with_bucket_size(bucket_size_in_pages: BucketSizeInPages) -> Self {
+        Self {
+            layout: RegionManagerLayout::with_bucket_size(bucket_size_in_pages),
+            extent_table: ExtentTable::default(),
+            free_extents: FreeExtentList::default(),
+            bucket_table: BucketTable::default(),
+            free_buckets: FreeBucketList::default(),
+            next_extent_addr: StableAddr(0),
+            free_extent_addrs: Vec::new(),
+            extent_chains: Vec::new(),
+            bucket_chains: Vec::new(),
+        }
+    }
+
+    /// Defines one extent-backed region and allocates its initial physical extent.
+    pub fn define_extent_region(&mut self, kind: RegionKind, chain: ExtentChain) -> RegionRef {
+        let extent_id = self.allocate_extent_id();
+        let extent = ExtentRef::new(
+            self.allocate_extent_addr(chain.allocated_pages.bytes()),
+            chain.allocated_pages.bytes(),
+        );
+        self.extent_table
+            .insert(ExtentHeader::new(extent_id, extent, ExtentId::NULL));
+
+        let root = (self.extent_chains.len() + 1) as u32;
+        let stored_chain = ExtentChain::new(
+            extent_id,
+            extent_id,
+            chain.logical_len_bytes,
+            chain.allocated_pages,
+            chain.slack_pages,
+        );
+        self.extent_chains.push(stored_chain);
+        let region = RegionRef::new(
+            RegionStorageKind::Extent,
+            kind,
+            root,
+            stored_chain.logical_len_bytes,
+        );
+        self.layout.define_region(region);
+        region
+    }
+
+    /// Defines one bucket-chain-backed region and allocates its initial root bucket.
+    pub fn define_bucket_region(&mut self, kind: RegionKind, chain: BucketChain) -> RegionRef {
+        let bucket_id = self.allocate_bucket_id();
+        let bucket_addr = self.allocate_bucket_addr();
+        self.bucket_table
+            .insert(BucketHeader::new(bucket_id, bucket_addr, BucketId::NULL));
+
+        let root = (self.bucket_chains.len() + 1) as u32;
+        let stored_chain = BucketChain::new(bucket_id, bucket_id, chain.logical_len_bytes);
+        self.bucket_chains.push(stored_chain);
+        let region = RegionRef::new(
+            RegionStorageKind::BucketChain,
+            kind,
+            root,
+            stored_chain.logical_len_bytes,
+        );
+        self.layout.define_region(region);
+        region
+    }
+
+    /// Returns the current extent-chain metadata for the requested region kind.
+    pub fn extent_chain(&self, kind: RegionKind) -> Option<ExtentChain> {
+        let region = self.layout.region(kind)?;
+        if region.storage_kind() != RegionStorageKind::Extent || region.root == 0 {
+            return None;
+        }
+        self.extent_chains.get((region.root - 1) as usize).copied()
+    }
+
+    /// Returns the current bucket-chain metadata for the requested region kind.
+    pub fn bucket_chain(&self, kind: RegionKind) -> Option<BucketChain> {
+        let region = self.layout.region(kind)?;
+        if region.storage_kind() != RegionStorageKind::BucketChain || region.root == 0 {
+            return None;
+        }
+        self.bucket_chains.get((region.root - 1) as usize).copied()
+    }
+
+    /// Resolves one bucket header for a bucket-backed region.
+    pub fn bucket_header(&self, bucket_id: BucketId) -> Option<&BucketHeader> {
+        self.bucket_table.get(bucket_id)
+    }
+
+    /// Returns the physical bucket size in bytes configured for this manager.
+    pub fn bucket_size_bytes(&self) -> u64 {
+        self.layout.bucket_size_in_pages.bytes()
+    }
+
+    /// Ensures one bucket-backed region has enough buckets for `logical_len_bytes`.
+    pub fn ensure_bucket_region_capacity(
+        &mut self,
+        kind: RegionKind,
+        logical_len_bytes: u64,
+    ) -> Option<BucketChain> {
+        let region = self.layout.region(kind)?;
+        if region.storage_kind() != RegionStorageKind::BucketChain || region.root == 0 {
+            return None;
+        }
+        let idx = (region.root - 1) as usize;
+        let bucket_size_bytes = self.bucket_size_bytes();
+        let required_buckets = logical_len_bytes.max(1).div_ceil(bucket_size_bytes) as usize;
+        let mut chain = *self.bucket_chains.get(idx)?;
+        let mut current_buckets = self.count_bucket_chain(chain);
+        while current_buckets < required_buckets {
+            let new_bucket_id = self.allocate_bucket_id();
+            let new_header =
+                BucketHeader::new(new_bucket_id, self.allocate_bucket_addr(), BucketId::NULL);
+            self.bucket_table.insert(new_header);
+            if chain.tail.is_null() {
+                chain.head = new_bucket_id;
+                chain.tail = new_bucket_id;
+            } else if let Some(tail) = self.bucket_table.get_mut(chain.tail) {
+                tail.next = new_bucket_id;
+                chain.tail = new_bucket_id;
+            } else {
+                return None;
+            }
+            current_buckets += 1;
+        }
+        chain.logical_len_bytes = logical_len_bytes;
+        self.bucket_chains[idx] = chain;
+        self.layout.define_region(RegionRef::new(
+            RegionStorageKind::BucketChain,
+            kind,
+            region.root,
+            logical_len_bytes,
+        ));
+        Some(chain)
+    }
+
+    /// Resolves the head physical extent for one extent-backed region.
+    pub fn region_extent(&self, kind: RegionKind) -> Option<ExtentRef> {
+        let chain = self.extent_chain(kind)?;
+        self.extent_table
+            .get(chain.head)
+            .map(|header| header.extent)
+    }
+
+    /// Updates only the logical payload length recorded for a region.
+    pub fn set_region_logical_len(
+        &mut self,
+        kind: RegionKind,
+        logical_len_bytes: u64,
+    ) -> Option<()> {
+        let region = self.layout.region(kind)?;
+        self.layout.define_region(RegionRef::new(
+            region.storage_kind(),
+            kind,
+            region.root,
+            logical_len_bytes,
+        ));
+
+        match region.storage_kind() {
+            RegionStorageKind::Extent => {
+                let idx = (region.root.checked_sub(1)?) as usize;
+                let chain = self.extent_chains.get_mut(idx)?;
+                chain.logical_len_bytes = logical_len_bytes;
+            }
+            RegionStorageKind::BucketChain => {
+                let idx = (region.root.checked_sub(1)?) as usize;
+                let chain = self.bucket_chains.get_mut(idx)?;
+                chain.logical_len_bytes = logical_len_bytes;
+            }
+        }
+
+        Some(())
+    }
+
+    /// Computes a pure growth decision for one extent-backed region.
+    pub fn plan_extent_growth(
+        &self,
+        kind: RegionKind,
+        request: ExtentGrowthRequest,
+        policy: ExtentGrowthPolicy,
+    ) -> Option<ExtentGrowthDecision> {
+        let chain = self.extent_chain(kind)?;
+        let requested = request
+            .additional_pages
+            .raw
+            .max(policy.min_append_pages.raw);
+        let shortage = requested.saturating_sub(chain.slack_pages.raw);
+        let trailing_region_pages = if shortage == 0 {
+            None
+        } else {
+            let colliding_pages =
+                self.colliding_trailing_extent_region_pages(kind, WasmPages::new(shortage));
+            if colliding_pages.raw == 0 {
+                None
+            } else {
+                Some(colliding_pages)
+            }
+        };
+        Some(chain.plan_growth(request, policy, trailing_region_pages))
+    }
+
+    /// Applies one growth decision to region-manager metadata.
+    pub fn apply_extent_growth(
+        &mut self,
+        kind: RegionKind,
+        request: ExtentGrowthRequest,
+        policy: ExtentGrowthPolicy,
+        decision: ExtentGrowthDecision,
+    ) -> Option<ExtentChain> {
+        let trailing_kinds = if matches!(
+            decision.growth_kind(),
+            ExtentGrowthKind::RelocateTrailingSmallRegions
+        ) {
+            self.colliding_trailing_extent_regions(kind, decision.pages)
+        } else {
+            Vec::new()
+        };
+        self.apply_extent_growth_with_trailing(kind, request, policy, decision, &trailing_kinds)
+    }
+
+    /// Applies one growth decision while forcing a specific set of trailing regions to relocate.
+    pub fn apply_extent_growth_with_trailing(
+        &mut self,
+        kind: RegionKind,
+        request: ExtentGrowthRequest,
+        policy: ExtentGrowthPolicy,
+        decision: ExtentGrowthDecision,
+        trailing_kinds: &[RegionKind],
+    ) -> Option<ExtentChain> {
+        let region = self.layout.region(kind)?;
+        if region.storage_kind() != RegionStorageKind::Extent || region.root == 0 {
+            return None;
+        }
+        let idx = (region.root - 1) as usize;
+        let current = *self.extent_chains.get(idx)?;
+        let updated = current.apply_growth_decision(request, policy, decision);
+        self.apply_extent_header_growth(updated.head, current, updated, decision, trailing_kinds);
+        self.extent_chains[idx] = updated;
+        self.layout.define_region(RegionRef::new(
+            RegionStorageKind::Extent,
+            kind,
+            region.root,
+            updated.logical_len_bytes,
+        ));
+        Some(updated)
+    }
+
+    fn apply_extent_header_growth(
+        &mut self,
+        head: ExtentId,
+        previous: ExtentChain,
+        updated: ExtentChain,
+        decision: ExtentGrowthDecision,
+        trailing_kinds: &[RegionKind],
+    ) {
+        let relocated_addr = match decision.growth_kind() {
+            ExtentGrowthKind::RelocateSelf => {
+                Some(self.allocate_extent_addr(updated.allocated_pages.bytes()))
+            }
+            _ => None,
+        };
+        let should_relocate_trailing = matches!(
+            decision.growth_kind(),
+            ExtentGrowthKind::RelocateTrailingSmallRegions
+        );
+        let mut freed_extent = None;
+
+        {
+            let Some(header) = self.extent_table.get_mut(head) else {
+                return;
+            };
+
+            match decision.growth_kind() {
+                ExtentGrowthKind::InPlace => {
+                    header.extent.len_bytes = updated.allocated_pages.bytes();
+                }
+                ExtentGrowthKind::RelocateTrailingSmallRegions => {
+                    header.extent.len_bytes = updated.allocated_pages.bytes();
+                }
+                ExtentGrowthKind::RelocateSelf => {
+                    let new_addr =
+                        relocated_addr.expect("relocate-self should allocate an address");
+                    let old_extent = header.extent;
+                    header.extent.addr = new_addr;
+                    header.extent.len_bytes = updated.allocated_pages.bytes();
+                    freed_extent = Some(old_extent);
+                    debug_assert_ne!(new_addr, old_extent.addr);
+                    debug_assert!(updated.allocated_pages.raw >= previous.allocated_pages.raw);
+                }
+            }
+        }
+
+        if let Some(old_extent) = freed_extent {
+            self.free_extent_addr(old_extent);
+        }
+
+        if should_relocate_trailing {
+            for &kind in trailing_kinds {
+                self.relocate_extent_region(kind);
+            }
+        }
+    }
+
+    fn relocate_extent_region(&mut self, kind: RegionKind) {
+        let Some(region) = self.layout.region(kind) else {
+            return;
+        };
+        if region.storage_kind() != RegionStorageKind::Extent || region.root == 0 {
+            return;
+        }
+        let Some(chain) = self.extent_chain(kind) else {
+            return;
+        };
+        let new_addr = {
+            let len_bytes = self
+                .extent_table
+                .get(chain.head)
+                .map(|header| header.extent.len_bytes)
+                .unwrap_or(0);
+            self.allocate_extent_addr(len_bytes)
+        };
+        let Some(header) = self.extent_table.get_mut(chain.head) else {
+            return;
+        };
+        let old_extent = header.extent;
+        header.extent.addr = new_addr;
+        self.free_extent_addr(old_extent);
+    }
+
+    #[cfg(test)]
+    fn next_extent_region_after(&self, kind: RegionKind) -> Option<RegionKind> {
+        let current_region = self.layout.region(kind)?;
+        if current_region.storage_kind() != RegionStorageKind::Extent || current_region.root == 0 {
+            return None;
+        }
+        let current_chain = self.extent_chain(kind)?;
+        let current_end_addr = self
+            .extent_table
+            .get(current_chain.head)
+            .map(|header| header.extent.addr.0 + header.extent.len_bytes)?;
+
+        self.layout
+            .directory
+            .iter()
+            .filter_map(|entry| {
+                let region = entry.region;
+                if region.storage_kind() != RegionStorageKind::Extent {
+                    return None;
+                }
+                let candidate_kind = region.region_kind();
+                if candidate_kind == kind || region.root == 0 {
+                    return None;
+                }
+                let chain = self.extent_chain(candidate_kind)?;
+                let header = self.extent_table.get(chain.head)?;
+                Some((candidate_kind, header.extent.addr.0))
+            })
+            .filter(|(_, addr)| *addr >= current_end_addr)
+            .min_by_key(|(_, addr)| *addr)
+            .map(|(candidate_kind, _)| candidate_kind)
+    }
+
+    fn colliding_trailing_extent_regions(
+        &self,
+        kind: RegionKind,
+        additional_pages: super::region::WasmPages,
+    ) -> Vec<RegionKind> {
+        let Some(current_region) = self.layout.region(kind) else {
+            return Vec::new();
+        };
+        if current_region.storage_kind() != RegionStorageKind::Extent || current_region.root == 0 {
+            return Vec::new();
+        }
+        let Some(current_chain) = self.extent_chain(kind) else {
+            return Vec::new();
+        };
+        let Some(current_header) = self.extent_table.get(current_chain.head) else {
+            return Vec::new();
+        };
+
+        let current_end = current_header.extent.addr.0 + current_header.extent.len_bytes;
+        let expanded_end = current_end + additional_pages.bytes();
+
+        let mut candidates = self
+            .layout
+            .directory
+            .iter()
+            .filter_map(|entry| {
+                let region = entry.region;
+                if region.storage_kind() != RegionStorageKind::Extent {
+                    return None;
+                }
+                let candidate_kind = region.region_kind();
+                if candidate_kind == kind || region.root == 0 {
+                    return None;
+                }
+                let chain = self.extent_chain(candidate_kind)?;
+                let header = self.extent_table.get(chain.head)?;
+                let start = header.extent.addr.0;
+                Some((candidate_kind, start))
+            })
+            .filter(|(_, start)| *start >= current_end && *start < expanded_end)
+            .collect::<Vec<_>>();
+        candidates.sort_by_key(|(_, start)| *start);
+        candidates.into_iter().map(|(kind, _)| kind).collect()
+    }
+
+    fn colliding_trailing_extent_region_pages(
+        &self,
+        kind: RegionKind,
+        additional_pages: super::region::WasmPages,
+    ) -> super::region::WasmPages {
+        let mut total = 0_u64;
+        for trailing_kind in self.colliding_trailing_extent_regions(kind, additional_pages) {
+            if let Some(chain) = self.extent_chain(trailing_kind) {
+                total = total.saturating_add(chain.allocated_pages.raw);
+            }
+        }
+        super::region::WasmPages::new(total)
+    }
+
+    fn allocate_extent_id(&mut self) -> ExtentId {
+        let head = self.free_extents.head;
+        if head.is_null() {
+            return self.extent_table.next_id();
+        }
+
+        let next = self
+            .extent_table
+            .get(head)
+            .map(|header| header.next)
+            .unwrap_or(ExtentId::NULL);
+        self.free_extents.head = next;
+        if let Some(header) = self.extent_table.get_mut(head) {
+            header.next = ExtentId::NULL;
+        }
+        head
+    }
+
+    fn allocate_extent_addr(&mut self, len_bytes: u64) -> StableAddr {
+        if let Some((idx, free)) = self
+            .free_extent_addrs
+            .iter()
+            .copied()
+            .enumerate()
+            .find(|(_, free)| free.len_bytes >= len_bytes)
+        {
+            let addr = free.addr;
+            if free.len_bytes == len_bytes {
+                self.free_extent_addrs.remove(idx);
+            } else {
+                self.free_extent_addrs[idx] = ExtentRef::new(
+                    StableAddr(free.addr.0 + len_bytes),
+                    free.len_bytes - len_bytes,
+                );
+            }
+            return addr;
+        }
+
+        let addr = self.next_extent_addr;
+        self.next_extent_addr = StableAddr(self.next_extent_addr.0 + len_bytes);
+        addr
+    }
+
+    fn free_extent_addr(&mut self, extent: ExtentRef) {
+        if extent.len_bytes == 0 {
+            return;
+        }
+        self.free_extent_addrs.push(extent);
+        self.free_extent_addrs.sort_by_key(|free| free.addr.0);
+
+        let mut merged: Vec<ExtentRef> = Vec::with_capacity(self.free_extent_addrs.len());
+        for free in self.free_extent_addrs.drain(..) {
+            if let Some(last) = merged.last_mut() {
+                let last_end = last.addr.0 + last.len_bytes;
+                if last_end == free.addr.0 {
+                    last.len_bytes += free.len_bytes;
+                    continue;
+                }
+            }
+            merged.push(free);
+        }
+        self.free_extent_addrs = merged;
+    }
+
+    fn allocate_bucket_id(&mut self) -> BucketId {
+        let head = self.free_buckets.head;
+        if head.is_null() {
+            return self.bucket_table.next_id();
+        }
+
+        let next = self
+            .bucket_table
+            .get(head)
+            .map(|header| header.next)
+            .unwrap_or(BucketId::NULL);
+        self.free_buckets.head = next;
+        if let Some(header) = self.bucket_table.get_mut(head) {
+            header.next = BucketId::NULL;
+        }
+        head
+    }
+
+    fn allocate_bucket_addr(&mut self) -> StableAddr {
+        let addr = self.next_extent_addr;
+        self.next_extent_addr = StableAddr(addr.0 + self.bucket_size_bytes());
+        addr
+    }
+
+    fn count_bucket_chain(&self, chain: BucketChain) -> usize {
+        if chain.head.is_null() {
+            return 0;
+        }
+        let mut count = 0usize;
+        let mut cursor = chain.head;
+        while !cursor.is_null() {
+            count += 1;
+            cursor = self
+                .bucket_table
+                .get(cursor)
+                .map(|header| header.next)
+                .unwrap_or(BucketId::NULL);
+        }
+        count
+    }
+
+    #[cfg(test)]
+    fn release_extent_id(&mut self, id: ExtentId) {
+        if let Some(header) = self.extent_table.get_mut(id) {
+            header.next = self.free_extents.head;
+            self.free_extents.head = id;
+        }
+    }
+
+    #[cfg(test)]
+    fn release_bucket_id(&mut self, id: BucketId) {
+        if let Some(header) = self.bucket_table.get_mut(id) {
+            header.next = self.free_buckets.head;
+            self.free_buckets.head = id;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RegionManager;
+    use crate::low_level::{
+        BucketChain, BucketId, BucketSizeInPages, ExtentChain, ExtentGrowthKind,
+        ExtentGrowthPolicy, ExtentGrowthRequest, ExtentId, ExtentRef, RegionKind, StableAddr,
+        WasmPages,
+    };
+
+    #[test]
+    fn region_manager_tracks_extent_and_bucket_roots() {
+        let mut manager = RegionManager::with_bucket_size(BucketSizeInPages::DEFAULT);
+        let extent_region = manager.define_extent_region(
+            RegionKind::ForwardEdgeEntries,
+            ExtentChain::new(
+                ExtentId::new(1),
+                ExtentId::new(1),
+                4096,
+                WasmPages::new(8),
+                WasmPages::new(2),
+            ),
+        );
+        let bucket_region = manager.define_bucket_region(
+            RegionKind::NodePropertyStore,
+            BucketChain::new(BucketId::new(1), BucketId::new(1), 2048),
+        );
+
+        assert_eq!(extent_region.root, 1);
+        assert_eq!(bucket_region.root, 1);
+        assert!(manager
+            .extent_chain(RegionKind::ForwardEdgeEntries)
+            .is_some());
+        assert!(manager
+            .bucket_chain(RegionKind::NodePropertyStore)
+            .is_some());
+        assert_eq!(manager.extent_table.len(), 1);
+        assert_eq!(manager.bucket_table.len(), 1);
+        assert_eq!(
+            manager
+                .extent_table
+                .get(ExtentId::new(1))
+                .map(|header| header.extent.len_bytes),
+            Some(8 * WasmPages::new(1).bytes())
+        );
+    }
+
+    #[test]
+    fn region_manager_reuses_free_allocator_ids() {
+        let mut manager = RegionManager::with_bucket_size(BucketSizeInPages::DEFAULT);
+        manager
+            .extent_table
+            .insert(crate::low_level::ExtentHeader::new(
+                ExtentId::new(9),
+                crate::low_level::ExtentRef::new(crate::low_level::StableAddr(0), 0),
+                ExtentId::NULL,
+            ));
+        manager
+            .bucket_table
+            .insert(crate::low_level::BucketHeader::new(
+                BucketId::new(7),
+                crate::low_level::StableAddr(0),
+                BucketId::NULL,
+            ));
+        manager.release_extent_id(ExtentId::new(9));
+        manager.release_bucket_id(BucketId::new(7));
+
+        let extent_region = manager.define_extent_region(
+            RegionKind::ForwardEdgeEntries,
+            ExtentChain::new(
+                ExtentId::NULL,
+                ExtentId::NULL,
+                4096,
+                WasmPages::new(8),
+                WasmPages::new(2),
+            ),
+        );
+        let bucket_region = manager.define_bucket_region(
+            RegionKind::NodePropertyStore,
+            BucketChain::new(BucketId::NULL, BucketId::NULL, 2048),
+        );
+
+        assert_eq!(extent_region.root, 1);
+        assert_eq!(bucket_region.root, 1);
+        assert!(manager.extent_table.get(ExtentId::new(9)).is_some());
+        assert!(manager.bucket_table.get(BucketId::new(7)).is_some());
+    }
+
+    #[test]
+    fn region_manager_uses_chained_free_ids_in_lifo_order() {
+        let mut manager = RegionManager::with_bucket_size(BucketSizeInPages::DEFAULT);
+        manager
+            .extent_table
+            .insert(crate::low_level::ExtentHeader::new(
+                ExtentId::new(9),
+                crate::low_level::ExtentRef::new(crate::low_level::StableAddr(0), 0),
+                ExtentId::NULL,
+            ));
+        manager
+            .extent_table
+            .insert(crate::low_level::ExtentHeader::new(
+                ExtentId::new(10),
+                crate::low_level::ExtentRef::new(crate::low_level::StableAddr(0), 0),
+                ExtentId::NULL,
+            ));
+        manager.release_extent_id(ExtentId::new(9));
+        manager.release_extent_id(ExtentId::new(10));
+
+        let first = manager.allocate_extent_id();
+        let second = manager.allocate_extent_id();
+
+        assert_eq!(first, ExtentId::new(10));
+        assert_eq!(second, ExtentId::new(9));
+        assert!(manager.free_extents.is_empty());
+    }
+
+    #[test]
+    fn region_manager_plans_and_applies_extent_growth() {
+        let mut manager = RegionManager::with_bucket_size(BucketSizeInPages::DEFAULT);
+        manager.define_extent_region(
+            RegionKind::ForwardEdgeEntries,
+            ExtentChain::new(
+                ExtentId::new(1),
+                ExtentId::new(1),
+                4096,
+                WasmPages::new(8),
+                WasmPages::new(1),
+            ),
+        );
+        manager.define_extent_region(
+            RegionKind::ReverseEdgeEntries,
+            ExtentChain::new(
+                ExtentId::new(2),
+                ExtentId::new(2),
+                4096,
+                WasmPages::new(3),
+                WasmPages::new(1),
+            ),
+        );
+
+        let request = ExtentGrowthRequest::new(WasmPages::new(4));
+        let policy = ExtentGrowthPolicy::new(WasmPages::new(2), WasmPages::new(8));
+        let decision = manager
+            .plan_extent_growth(RegionKind::ForwardEdgeEntries, request, policy)
+            .expect("extent region should exist");
+        let updated = manager
+            .apply_extent_growth(RegionKind::ForwardEdgeEntries, request, policy, decision)
+            .expect("extent region should update");
+
+        assert_eq!(
+            decision.growth_kind(),
+            ExtentGrowthKind::RelocateTrailingSmallRegions
+        );
+        assert_eq!(updated.allocated_pages.raw, 11);
+        assert_eq!(updated.slack_pages.raw, 0);
+        assert_eq!(
+            manager
+                .extent_table
+                .get(ExtentId::new(1))
+                .map(|header| header.extent.len_bytes),
+            Some(WasmPages::new(11).bytes())
+        );
+    }
+
+    #[test]
+    fn region_manager_allocates_extent_addresses_monotonically() {
+        let mut manager = RegionManager::with_bucket_size(BucketSizeInPages::DEFAULT);
+        manager.define_extent_region(
+            RegionKind::ForwardEdgeEntries,
+            ExtentChain::new(
+                ExtentId::new(1),
+                ExtentId::new(1),
+                4096,
+                WasmPages::new(2),
+                WasmPages::new(1),
+            ),
+        );
+        manager.define_extent_region(
+            RegionKind::ReverseEdgeEntries,
+            ExtentChain::new(
+                ExtentId::new(2),
+                ExtentId::new(2),
+                4096,
+                WasmPages::new(3),
+                WasmPages::new(1),
+            ),
+        );
+
+        let first = manager
+            .extent_table
+            .get(ExtentId::new(1))
+            .expect("first extent");
+        let second = manager
+            .extent_table
+            .get(ExtentId::new(2))
+            .expect("second extent");
+
+        assert_eq!(first.extent.addr.0, 0);
+        assert_eq!(first.extent.len_bytes, WasmPages::new(2).bytes());
+        assert_eq!(second.extent.addr.0, WasmPages::new(2).bytes());
+        assert_eq!(second.extent.len_bytes, WasmPages::new(3).bytes());
+        assert_eq!(manager.next_extent_addr.0, WasmPages::new(5).bytes());
+    }
+
+    #[test]
+    fn relocate_self_reassigns_extent_address() {
+        let mut manager = RegionManager::with_bucket_size(BucketSizeInPages::DEFAULT);
+        manager.define_extent_region(
+            RegionKind::ForwardEdgeEntries,
+            ExtentChain::new(
+                ExtentId::new(1),
+                ExtentId::new(1),
+                4096,
+                WasmPages::new(2),
+                WasmPages::new(0),
+            ),
+        );
+        let before = manager
+            .extent_table
+            .get(ExtentId::new(1))
+            .expect("extent should exist")
+            .extent
+            .addr;
+
+        let request = ExtentGrowthRequest::new(WasmPages::new(4));
+        let policy = ExtentGrowthPolicy::new(WasmPages::new(2), WasmPages::new(1));
+        let decision = manager
+            .plan_extent_growth(RegionKind::ForwardEdgeEntries, request, policy)
+            .expect("extent region should exist");
+        let updated = manager
+            .apply_extent_growth(RegionKind::ForwardEdgeEntries, request, policy, decision)
+            .expect("extent region should update");
+        let after = manager
+            .extent_table
+            .get(ExtentId::new(1))
+            .expect("extent should exist")
+            .extent
+            .addr;
+
+        assert_eq!(decision.growth_kind(), ExtentGrowthKind::RelocateSelf);
+        assert_ne!(before, after);
+        assert_eq!(updated.allocated_pages.raw, 6);
+    }
+
+    #[test]
+    fn relocating_trailing_small_region_reassigns_trailing_address() {
+        let mut manager = RegionManager::with_bucket_size(BucketSizeInPages::DEFAULT);
+        manager.define_extent_region(
+            RegionKind::ForwardEdgeEntries,
+            ExtentChain::new(
+                ExtentId::new(1),
+                ExtentId::new(1),
+                4096,
+                WasmPages::new(8),
+                WasmPages::new(1),
+            ),
+        );
+        manager.define_extent_region(
+            RegionKind::ReverseEdgeEntries,
+            ExtentChain::new(
+                ExtentId::new(2),
+                ExtentId::new(2),
+                4096,
+                WasmPages::new(3),
+                WasmPages::new(1),
+            ),
+        );
+
+        let trailing_before = manager
+            .extent_table
+            .get(ExtentId::new(2))
+            .expect("trailing extent should exist")
+            .extent
+            .addr;
+
+        let request = ExtentGrowthRequest::new(WasmPages::new(4));
+        let policy = ExtentGrowthPolicy::new(WasmPages::new(2), WasmPages::new(8));
+        let decision = manager
+            .plan_extent_growth(RegionKind::ForwardEdgeEntries, request, policy)
+            .expect("extent region should exist");
+
+        manager
+            .apply_extent_growth(RegionKind::ForwardEdgeEntries, request, policy, decision)
+            .expect("extent region should update");
+
+        let trailing_after = manager
+            .extent_table
+            .get(ExtentId::new(2))
+            .expect("trailing extent should exist")
+            .extent
+            .addr;
+
+        assert_eq!(
+            decision.growth_kind(),
+            ExtentGrowthKind::RelocateTrailingSmallRegions
+        );
+        assert_ne!(trailing_before, trailing_after);
+    }
+
+    #[test]
+    fn region_manager_finds_immediate_trailing_extent_region_by_address() {
+        let mut manager = RegionManager::with_bucket_size(BucketSizeInPages::DEFAULT);
+        manager.define_extent_region(
+            RegionKind::ForwardEdgeEntries,
+            ExtentChain::new(
+                ExtentId::new(1),
+                ExtentId::new(1),
+                4096,
+                WasmPages::new(2),
+                WasmPages::new(0),
+            ),
+        );
+        manager.define_bucket_region(
+            RegionKind::NodePropertyStore,
+            BucketChain::new(BucketId::new(1), BucketId::new(1), 2048),
+        );
+        manager.define_extent_region(
+            RegionKind::ReverseEdgeEntries,
+            ExtentChain::new(
+                ExtentId::new(2),
+                ExtentId::new(2),
+                4096,
+                WasmPages::new(3),
+                WasmPages::new(0),
+            ),
+        );
+        manager.define_extent_region(
+            RegionKind::ForwardSegmentLog,
+            ExtentChain::new(
+                ExtentId::new(3),
+                ExtentId::new(3),
+                4096,
+                WasmPages::new(1),
+                WasmPages::new(0),
+            ),
+        );
+
+        assert_eq!(
+            manager.next_extent_region_after(RegionKind::ForwardEdgeEntries),
+            Some(RegionKind::ReverseEdgeEntries)
+        );
+        assert_eq!(
+            manager.next_extent_region_after(RegionKind::ReverseEdgeEntries),
+            Some(RegionKind::ForwardSegmentLog)
+        );
+    }
+
+    #[test]
+    fn region_manager_collects_all_colliding_trailing_extent_regions() {
+        let mut manager = RegionManager::with_bucket_size(BucketSizeInPages::DEFAULT);
+        manager.define_extent_region(
+            RegionKind::ForwardEdgeEntries,
+            ExtentChain::new(
+                ExtentId::new(1),
+                ExtentId::new(1),
+                4096,
+                WasmPages::new(4),
+                WasmPages::new(0),
+            ),
+        );
+        manager.define_extent_region(
+            RegionKind::ReverseEdgeEntries,
+            ExtentChain::new(
+                ExtentId::new(2),
+                ExtentId::new(2),
+                4096,
+                WasmPages::new(2),
+                WasmPages::new(0),
+            ),
+        );
+        manager.define_extent_region(
+            RegionKind::ForwardSegmentLog,
+            ExtentChain::new(
+                ExtentId::new(3),
+                ExtentId::new(3),
+                4096,
+                WasmPages::new(1),
+                WasmPages::new(0),
+            ),
+        );
+        manager.define_extent_region(
+            RegionKind::ReverseSegmentLog,
+            ExtentChain::new(
+                ExtentId::new(4),
+                ExtentId::new(4),
+                4096,
+                WasmPages::new(5),
+                WasmPages::new(0),
+            ),
+        );
+
+        let colliding = manager
+            .colliding_trailing_extent_regions(RegionKind::ForwardEdgeEntries, WasmPages::new(3));
+        assert_eq!(
+            colliding,
+            vec![
+                RegionKind::ReverseEdgeEntries,
+                RegionKind::ForwardSegmentLog
+            ]
+        );
+        assert_eq!(
+            manager.colliding_trailing_extent_region_pages(
+                RegionKind::ForwardEdgeEntries,
+                WasmPages::new(3)
+            ),
+            WasmPages::new(3)
+        );
+    }
+
+    #[test]
+    fn relocating_small_trailing_regions_reassigns_all_colliding_addresses() {
+        let mut manager = RegionManager::with_bucket_size(BucketSizeInPages::DEFAULT);
+        manager.define_extent_region(
+            RegionKind::ForwardEdgeEntries,
+            ExtentChain::new(
+                ExtentId::new(1),
+                ExtentId::new(1),
+                4096,
+                WasmPages::new(4),
+                WasmPages::new(0),
+            ),
+        );
+        manager.define_extent_region(
+            RegionKind::ReverseEdgeEntries,
+            ExtentChain::new(
+                ExtentId::new(2),
+                ExtentId::new(2),
+                4096,
+                WasmPages::new(2),
+                WasmPages::new(0),
+            ),
+        );
+        manager.define_extent_region(
+            RegionKind::ForwardSegmentLog,
+            ExtentChain::new(
+                ExtentId::new(3),
+                ExtentId::new(3),
+                4096,
+                WasmPages::new(1),
+                WasmPages::new(0),
+            ),
+        );
+
+        let reverse_before = manager
+            .extent_table
+            .get(ExtentId::new(2))
+            .expect("reverse extent should exist")
+            .extent
+            .addr;
+        let log_before = manager
+            .extent_table
+            .get(ExtentId::new(3))
+            .expect("log extent should exist")
+            .extent
+            .addr;
+
+        let request = ExtentGrowthRequest::new(WasmPages::new(3));
+        let policy = ExtentGrowthPolicy::new(WasmPages::new(1), WasmPages::new(4));
+        let decision = manager
+            .plan_extent_growth(RegionKind::ForwardEdgeEntries, request, policy)
+            .expect("extent region should exist");
+
+        manager
+            .apply_extent_growth(RegionKind::ForwardEdgeEntries, request, policy, decision)
+            .expect("extent region should update");
+
+        let reverse_after = manager
+            .extent_table
+            .get(ExtentId::new(2))
+            .expect("reverse extent should exist")
+            .extent
+            .addr;
+        let log_after = manager
+            .extent_table
+            .get(ExtentId::new(3))
+            .expect("log extent should exist")
+            .extent
+            .addr;
+
+        assert_eq!(
+            decision.growth_kind(),
+            ExtentGrowthKind::RelocateTrailingSmallRegions
+        );
+        assert_ne!(reverse_before, reverse_after);
+        assert_ne!(log_before, log_after);
+    }
+
+    #[test]
+    fn relocate_self_reuses_freed_extent_addresses_before_bumping() {
+        let mut manager = RegionManager::with_bucket_size(BucketSizeInPages::DEFAULT);
+        manager.define_extent_region(
+            RegionKind::ForwardEdgeEntries,
+            ExtentChain::new(
+                ExtentId::new(1),
+                ExtentId::new(1),
+                4096,
+                WasmPages::new(2),
+                WasmPages::new(0),
+            ),
+        );
+        manager.define_extent_region(
+            RegionKind::ReverseEdgeEntries,
+            ExtentChain::new(
+                ExtentId::new(2),
+                ExtentId::new(2),
+                4096,
+                WasmPages::new(2),
+                WasmPages::new(0),
+            ),
+        );
+
+        let forward_before = manager
+            .extent_table
+            .get(ExtentId::new(1))
+            .expect("forward extent should exist")
+            .extent;
+
+        let request = ExtentGrowthRequest::new(WasmPages::new(3));
+        let policy = ExtentGrowthPolicy::new(WasmPages::new(1), WasmPages::new(1));
+        let decision = manager
+            .plan_extent_growth(RegionKind::ForwardEdgeEntries, request, policy)
+            .expect("extent region should exist");
+        manager
+            .apply_extent_growth(RegionKind::ForwardEdgeEntries, request, policy, decision)
+            .expect("extent region should update");
+
+        let new_region = manager.define_extent_region(
+            RegionKind::ForwardSegmentLog,
+            ExtentChain::new(
+                ExtentId::new(3),
+                ExtentId::new(3),
+                4096,
+                WasmPages::new(1),
+                WasmPages::new(0),
+            ),
+        );
+
+        let new_extent = manager
+            .extent_chain(new_region.region_kind())
+            .and_then(|chain| manager.extent_table.get(chain.head).copied())
+            .expect("new extent should exist")
+            .extent;
+
+        assert_eq!(decision.growth_kind(), ExtentGrowthKind::RelocateSelf);
+        assert_eq!(new_extent.addr, forward_before.addr);
+    }
+
+    #[test]
+    fn freed_extent_spans_are_merged_for_reuse() {
+        let mut manager = RegionManager::with_bucket_size(BucketSizeInPages::DEFAULT);
+        manager.free_extent_addr(ExtentRef::new(StableAddr(0), WasmPages::new(2).bytes()));
+        manager.free_extent_addr(ExtentRef::new(
+            StableAddr(WasmPages::new(2).bytes()),
+            WasmPages::new(3).bytes(),
+        ));
+
+        let addr = manager.allocate_extent_addr(WasmPages::new(5).bytes());
+        assert_eq!(addr, StableAddr(0));
+        assert!(manager.free_extent_addrs.is_empty());
+    }
+}

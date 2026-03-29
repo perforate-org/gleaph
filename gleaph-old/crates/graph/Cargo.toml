@@ -1,0 +1,30 @@
+[package]
+name = "gleaph-graph"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+candid.workspace = true
+ic-cdk.workspace = true
+ic-cdk-macros.workspace = true
+serde.workspace = true
+gleaph-pma = { path = "../pma" }
+gleaph-algo = { path = "../algo" }
+gleaph-gql = { path = "../gql" }
+gleaph-types = { path = "../types" }
+thiserror.workspace = true
+canbench-rs = { version = "0.4", optional = true }
+rkyv = { version = "0.8", features = ["std", "bytecheck"] }
+serde_cbor = "0.11"
+
+[features]
+canbench-rs = ["dep:canbench-rs"]
+bench-ecom = ["canbench-rs"]
+bench-social = ["canbench-rs"]
+bench-timeline = ["canbench-rs"]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+ic-certified-map = "0.4"

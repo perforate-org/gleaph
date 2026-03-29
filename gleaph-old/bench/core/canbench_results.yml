@@ -1,0 +1,450 @@
+benches:
+  bench_add_edge_empty:
+    total:
+      calls: 1
+      instructions: 3249
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_add_edge_populated_1k:
+    total:
+      calls: 1
+      instructions: 2643
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_bulk_insert_100:
+    total:
+      calls: 1
+      instructions: 170533
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_bulk_insert_10k:
+    total:
+      calls: 1
+      instructions: 29173132
+      heap_increase: 6
+      stable_memory_increase: 5
+    scopes: {}
+  bench_bulk_insert_1k:
+    total:
+      calls: 1
+      instructions: 1747684
+      heap_increase: 1
+      stable_memory_increase: 0
+    scopes: {}
+  bench_edge_index_sources_for_dst_10000:
+    total:
+      calls: 1
+      instructions: 371454
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_edge_index_sources_for_dst_500:
+    total:
+      calls: 1
+      instructions: 23521
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_edge_index_sources_for_dst_5000:
+    total:
+      calls: 1
+      instructions: 188551
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_edge_index_targets_for_src_500:
+    total:
+      calls: 1
+      instructions: 57175
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_get_neighbors_degree_10:
+    total:
+      calls: 1
+      instructions: 8771
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_get_neighbors_degree_100:
+    total:
+      calls: 1
+      instructions: 60981
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_get_neighbors_with_log:
+    total:
+      calls: 1
+      instructions: 20878
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_get_stats:
+    total:
+      calls: 1
+      instructions: 345
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_gql_aggregate_50:
+    total:
+      calls: 1
+      instructions: 721855
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_gql_candidate_order_optimal_300:
+    total:
+      calls: 1
+      instructions: 2912536
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_gql_candidate_order_suboptimal_300:
+    total:
+      calls: 1
+      instructions: 3375338
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_gql_compound_range_both_bounds_300:
+    total:
+      calls: 1
+      instructions: 489707
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_gql_compound_range_narrow_300:
+    total:
+      calls: 1
+      instructions: 489707
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_gql_compound_range_single_bound_300:
+    total:
+      calls: 1
+      instructions: 5030956
+      heap_increase: 1
+      stable_memory_increase: 0
+    scopes: {}
+  bench_gql_create_edge_batch_100:
+    total:
+      calls: 1
+      instructions: 194716
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_gql_create_edge_batch_500_on_populated:
+    total:
+      calls: 1
+      instructions: 506814
+      heap_increase: 2
+      stable_memory_increase: 0
+    scopes: {}
+  bench_gql_create_edge_sequential_100:
+    total:
+      calls: 1
+      instructions: 12218441
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_gql_create_vertex_edge_batch_100:
+    total:
+      calls: 1
+      instructions: 15773443
+      heap_increase: 5
+      stable_memory_increase: 4
+    scopes: {}
+  bench_gql_create_vertex_edge_sequential_100:
+    total:
+      calls: 1
+      instructions: 322519695
+      heap_increase: 2
+      stable_memory_increase: 4
+    scopes: {}
+  bench_gql_edge_prop_filter_supernode_500:
+    total:
+      calls: 1
+      instructions: 223906
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_gql_expand_degree_10:
+    total:
+      calls: 1
+      instructions: 174321
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_gql_full_scan_100:
+    total:
+      calls: 1
+      instructions: 621940
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_gql_index_seek_1_of_100:
+    total:
+      calls: 1
+      instructions: 254377
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_gql_join_order_label_anchor_300:
+    total:
+      calls: 1
+      instructions: 355733
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_gql_join_order_manual_rare_start_300:
+    total:
+      calls: 1
+      instructions: 139773
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_gql_label_scan_50_of_200:
+    total:
+      calls: 1
+      instructions: 382893
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_gql_limit_100:
+    total:
+      calls: 1
+      instructions: 631927
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_gql_multi_pred_high_sel_first_300:
+    total:
+      calls: 1
+      instructions: 498115
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_gql_multi_pred_low_sel_first_300:
+    total:
+      calls: 1
+      instructions: 2704425
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_gql_param_eq_index_scan_300:
+    total:
+      calls: 1
+      instructions: 1401030
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_gql_param_eq_no_index_300:
+    total:
+      calls: 1
+      instructions: 1387435
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_gql_param_range_index_300:
+    total:
+      calls: 1
+      instructions: 3255303
+      heap_increase: 1
+      stable_memory_increase: 0
+    scopes: {}
+  bench_gql_project_constant_100:
+    total:
+      calls: 1
+      instructions: 536474
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_gql_property_filter_100:
+    total:
+      calls: 1
+      instructions: 935135
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_gql_range_filter_lt_no_index_300:
+    total:
+      calls: 1
+      instructions: 1345360
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_gql_range_filter_no_index_300:
+    total:
+      calls: 1
+      instructions: 1509355
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_gql_range_index_scan_300:
+    total:
+      calls: 1
+      instructions: 1447394
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_gql_range_index_scan_lt_300:
+    total:
+      calls: 1
+      instructions: 854309
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_gql_shortest_path_chain:
+    total:
+      calls: 1
+      instructions: 192774
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_gql_sort_50:
+    total:
+      calls: 1
+      instructions: 540103
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_realistic_bfs_api:
+    total:
+      calls: 1
+      instructions: 300327
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_realistic_catalog_filter_sort:
+    total:
+      calls: 1
+      instructions: 1964208
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_realistic_catalog_rating_histogram:
+    total:
+      calls: 1
+      instructions: 1536239
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_realistic_fof_recommendation:
+    total:
+      calls: 1
+      instructions: 844919
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_realistic_fof_with_aggregate:
+    total:
+      calls: 1
+      instructions: 438655
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_realistic_gql_bulk_create_100:
+    total:
+      calls: 1
+      instructions: 99257574
+      heap_increase: 2
+      stable_memory_increase: 2
+    scopes: {}
+  bench_realistic_pagerank_api:
+    total:
+      calls: 1
+      instructions: 12963314
+      heap_increase: 2
+      stable_memory_increase: 0
+    scopes: {}
+  bench_realistic_recommend_api:
+    total:
+      calls: 1
+      instructions: 8096635
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_realistic_social_follower_lookup:
+    total:
+      calls: 1
+      instructions: 313755
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_realistic_social_top_influencers:
+    total:
+      calls: 1
+      instructions: 443095
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_realistic_social_top_influencers_by_score:
+    total:
+      calls: 1
+      instructions: 443308
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_realistic_social_top_influencers_by_weight:
+    total:
+      calls: 1
+      instructions: 208245223
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_realistic_social_top_influencers_labeled:
+    total:
+      calls: 1
+      instructions: 450237
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_realistic_social_top_outbound_by_start_score:
+    total:
+      calls: 1
+      instructions: 1080246
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_realistic_social_verified_followers:
+    total:
+      calls: 1
+      instructions: 1299755
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_realistic_sssp_api:
+    total:
+      calls: 1
+      instructions: 312657
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  bench_rebalance:
+    total:
+      calls: 1
+      instructions: 836653
+      heap_increase: 2
+      stable_memory_increase: 0
+    scopes: {}
+  bench_resize:
+    total:
+      calls: 1
+      instructions: 1551822
+      heap_increase: 3
+      stable_memory_increase: 0
+    scopes: {}
+  bench_upgrade_roundtrip:
+    total:
+      calls: 1
+      instructions: 8804528
+      heap_increase: 1
+      stable_memory_increase: 1
+    scopes: {}
+version: 0.4.0

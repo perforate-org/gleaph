@@ -1,0 +1,28 @@
+[workspace]
+members = [
+    "crates/types",
+    "crates/algo",
+    "crates/pma",
+    "crates/gql",
+    "crates/graph",
+    "crates/registry",
+    "tests",
+    "crates/cli",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "MIT"
+
+[workspace.dependencies]
+candid = "0.10"
+ic-cdk = "0.20"
+ic-cdk-macros = "0.20"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+rust_decimal = "1"
+ethnum = "1"
+roaring = "0.11"
+rapidhash = "4"

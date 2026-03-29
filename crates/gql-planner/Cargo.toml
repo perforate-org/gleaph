@@ -1,0 +1,18 @@
+[package]
+name = "gleaph-gql-planner"
+edition = "2024"
+version = "0.0.1"
+authors = ["Inomoto Yota <yota@perforate.org>"]
+license = "MIT OR Apache-2.0"
+rust-version = "1.88"
+
+[dependencies]
+gleaph-gql = { path = "../gql" }
+rapidhash = "4"
+
+[dev-dependencies]
+criterion = { version = "0.8", features = ["html_reports"] }
+
+[[bench]]
+name = "planner_bench"
+harness = false

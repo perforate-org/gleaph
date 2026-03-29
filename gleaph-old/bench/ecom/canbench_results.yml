@@ -1,0 +1,283 @@
+benches:
+  bench_ecom_buyer_segment:
+    total:
+      calls: 1
+      instructions: 4758521
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      execute:
+        calls: 1
+        instructions: 4493089
+        heap_increase: 0
+        stable_memory_increase: 0
+      parse:
+        calls: 1
+        instructions: 194907
+        heap_increase: 0
+        stable_memory_increase: 0
+      plan:
+        calls: 1
+        instructions: 39962
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_ecom_cart_abandonment:
+    total:
+      calls: 1
+      instructions: 3557102
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      execute:
+        calls: 1
+        instructions: 3238734
+        heap_increase: 0
+        stable_memory_increase: 0
+      parse:
+        calls: 1
+        instructions: 230350
+        heap_increase: 0
+        stable_memory_increase: 0
+      plan:
+        calls: 1
+        instructions: 50530
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_ecom_category_revenue:
+    total:
+      calls: 1
+      instructions: 225475874
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      execute:
+        calls: 1
+        instructions: 225133566
+        heap_increase: 0
+        stable_memory_increase: 0
+      parse:
+        calls: 1
+        instructions: 265003
+        heap_increase: 0
+        stable_memory_increase: 0
+      plan:
+        calls: 1
+        instructions: 42533
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_ecom_co_purchase:
+    total:
+      calls: 1
+      instructions: 25151590
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      execute:
+        calls: 1
+        instructions: 24726704
+        heap_increase: 0
+        stable_memory_increase: 0
+      parse:
+        calls: 1
+        instructions: 335629
+        heap_increase: 0
+        stable_memory_increase: 0
+      plan:
+        calls: 1
+        instructions: 47112
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_ecom_collab_filter:
+    total:
+      calls: 1
+      instructions: 19729624
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      execute:
+        calls: 1
+        instructions: 19301017
+        heap_increase: 0
+        stable_memory_increase: 0
+      parse:
+        calls: 1
+        instructions: 337607
+        heap_increase: 0
+        stable_memory_increase: 0
+      plan:
+        calls: 1
+        instructions: 48639
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_ecom_cross_sell:
+    total:
+      calls: 1
+      instructions: 34520085
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      execute:
+        calls: 1
+        instructions: 34152377
+        heap_increase: 0
+        stable_memory_increase: 0
+      parse:
+        calls: 1
+        instructions: 273469
+        heap_increase: 0
+        stable_memory_increase: 0
+      plan:
+        calls: 1
+        instructions: 54794
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_ecom_high_value_buyers:
+    total:
+      calls: 1
+      instructions: 3809062279
+      heap_increase: 597
+      stable_memory_increase: 0
+    scopes:
+      execute:
+        calls: 1
+        instructions: 3808667558
+        heap_increase: 597
+        stable_memory_increase: 0
+      parse:
+        calls: 1
+        instructions: 312347
+        heap_increase: 0
+        stable_memory_increase: 0
+      plan:
+        calls: 1
+        instructions: 42392
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_ecom_multi_touch:
+    total:
+      calls: 1
+      instructions: 10901881
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      execute:
+        calls: 1
+        instructions: 10633436
+        heap_increase: 0
+        stable_memory_increase: 0
+      parse:
+        calls: 1
+        instructions: 192355
+        heap_increase: 0
+        stable_memory_increase: 0
+      plan:
+        calls: 1
+        instructions: 38251
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_ecom_shortest_path:
+    total:
+      calls: 1
+      instructions: 416970
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      execute:
+        calls: 1
+        instructions: 212696
+        heap_increase: 0
+        stable_memory_increase: 0
+      parse:
+        calls: 1
+        instructions: 141185
+        heap_increase: 0
+        stable_memory_increase: 0
+      plan:
+        calls: 1
+        instructions: 35652
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_ecom_trending_products:
+    total:
+      calls: 1
+      instructions: 260584703
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      execute:
+        calls: 1
+        instructions: 260303367
+        heap_increase: 0
+        stable_memory_increase: 0
+      parse:
+        calls: 1
+        instructions: 206244
+        heap_increase: 0
+        stable_memory_increase: 0
+      plan:
+        calls: 1
+        instructions: 40201
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_ecom_user_activity:
+    total:
+      calls: 1
+      instructions: 842011
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      parse:
+        calls: 1
+        instructions: 574662
+        heap_increase: 0
+        stable_memory_increase: 0
+      plan:
+        calls: 1
+        instructions: 227874
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_ecom_vip_popular_products:
+    total:
+      calls: 1
+      instructions: 103942085
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      execute:
+        calls: 1
+        instructions: 103604517
+        heap_increase: 0
+        stable_memory_increase: 0
+      parse:
+        calls: 1
+        instructions: 247196
+        heap_increase: 0
+        stable_memory_increase: 0
+      plan:
+        calls: 1
+        instructions: 53476
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_ecom_wishlist_hot:
+    total:
+      calls: 1
+      instructions: 168703979
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      execute:
+        calls: 1
+        instructions: 168415032
+        heap_increase: 0
+        stable_memory_increase: 0
+      parse:
+        calls: 1
+        instructions: 213722
+        heap_increase: 0
+        stable_memory_increase: 0
+      plan:
+        calls: 1
+        instructions: 38550
+        heap_increase: 0
+        stable_memory_increase: 0
+version: 0.4.0

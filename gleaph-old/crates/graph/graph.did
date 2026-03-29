@@ -1,0 +1,165 @@
+type PathElement = variant { Node: nat32; Edge: record { src: nat32; dst: nat32; label: opt text } };
+type Value = variant { Null; Bool: bool; Int: int64; Float: float64; Text: text; Timestamp: nat64; List: vec Value; Path: vec PathElement; Bytes: blob; Date: int32; Time: nat64; DateTime: record { int64; nat32 }; Duration: record { int32; int64 }; Principal: principal };
+type EntityType = variant { Vertex; Edge };
+type IndexType = variant { Equality };
+type AccessLevel = variant { Execute; Read; Write; Admin };
+type GleaphError = variant {
+  VertexNotFound: nat32;
+  OutOfCapacity;
+  InvalidHeader;
+  Memory: text;
+  Unsupported: text;
+  ParseError: text;
+  ValidationError: text;
+  UnsupportedFeature: text;
+  ExecutionError: text;
+  BudgetExhausted;
+  AlgorithmError: text;
+};
+type TimestampRange = record { start: opt nat64; end: opt nat64 };
+type GraphStats = record { num_vertices: nat64; num_edges: nat64; elem_capacity: nat64; segment_size: nat32; segment_count: nat32; avg_degree: float64 };
+type CertifiedGraphStats = record { data: GraphStats; certificate: vec nat8; witness: vec nat8 };
+type CanisterInfo = record { layout_version: nat16; wasm_hash: text; uptime_ns: nat64; last_upgrade_ns: nat64 };
+type OperationalMetrics = record { query_count: nat64; mutation_count: nat64; rejected_count: nat64; algorithm_calls: nat64; stable_memory_bytes: nat64 };
+type UsageQuota = record { max_vertices: nat64; max_edges: nat64 };
+type AclEntry = record { principal: principal; level: AccessLevel };
+type GraphAlias = record { name: text; canister_id: principal };
+type AlgorithmKind = variant { Bfs; Sssp; PageRank; GqlQuery; Mutation };
+type GraphFingerprint = record { num_vertices: nat64; num_edges: nat64; next_edge_id: nat32 };
+type ContinuationToken = record { kind: AlgorithmKind; data: vec nat8; graph_fingerprint: GraphFingerprint };
+type QueryExecutionBreakdown = record {
+  index_fast_path_attempted: bool;
+  index_fast_path_used: bool;
+  aggregate_fast_path_attempted: bool;
+  aggregate_fast_path_used: bool;
+  shortest_fast_path_attempted: bool;
+  shortest_fast_path_used: bool;
+  rows_after_match: nat64;
+  rows_after_with: nat64;
+  rows_before_projection: nat64;
+  groups_formed: nat64;
+  top_k_calls: nat64;
+  full_sort_calls: nat64;
+  limit_truncate_calls: nat64;
+  selectivity_refresh_ran: bool;
+};
+type QueryResult = record {
+  columns: vec text;
+  rows: vec vec Value;
+  stats: record {
+    scanned_vertices: nat64;
+    scanned_edges: nat64;
+    rows_emitted: nat64;
+    execution_steps: nat64;
+    breakdown: QueryExecutionBreakdown;
+  };
+};
+type QueryResultWithContinuation = record { result: QueryResult; continuation: opt ContinuationToken };
+type MutationResult = record { affected_vertices: nat64; affected_edges: nat64; warnings: vec text };
+type MutationResultWithContinuation = record { result: MutationResult; continuation: opt ContinuationToken };
+type BfsConfig = record { max_depth: opt nat32; max_visited: opt nat64; target: opt nat32; edge_label: opt text; ts_range: opt TimestampRange };
+type BfsResult = record { visited: vec nat32; distances: vec record { nat32; nat32 }; path: opt vec nat32 };
+type BfsResultWithContinuation = record { result: BfsResult; continuation: opt ContinuationToken };
+type RecommendConfig = record { edge_label: text; max_hops: nat8; limit: nat32; ts_range: opt TimestampRange; exclude_known: bool };
+type Recommendation = record { vertex_id: nat32; score: float64; path: vec nat32 };
+type PageRankConfig = record { damping: float64; max_iterations: nat32; convergence_threshold: float64; ts_range: opt TimestampRange };
+type PageRankResult = record { scores: vec record { nat32; float64 }; iterations: nat32; converged: bool };
+type PageRankResultWithContinuation = record { result: PageRankResult; continuation: opt ContinuationToken };
+type CertifiedPageRank = record { data: PageRankResult; certificate: vec nat8; witness: vec nat8 };
+type SsspConfig = record { max_distance: opt float64; max_visited: opt nat64; target: opt nat32; edge_label: opt text; ts_range: opt TimestampRange };
+type SsspResult = record { distances: vec record { nat32; float64 }; predecessors: vec record { nat32; opt nat32 } };
+type SsspResultWithContinuation = record { result: SsspResult; continuation: opt ContinuationToken };
+type PlannerStats = record {
+  label_cardinality: vec record { text; nat64 };
+  avg_degree: float64;
+  property_selectivity: vec record { text; float64 };
+  indexed_vertex_properties: vec text;
+  vertex_count: nat64;
+  edge_count: nat64;
+};
+type GraphInfo = record { id: nat64; name: text; canister_id: opt principal; owner: principal; max_vertices: nat32 };
+type PreparedKind = variant { Query; Mutation };
+type PreparedSortKey = record { key: text; expr: text };
+type PreparedSortSpec = record { key: text; descending: bool; nulls_first: opt bool };
+type PreparedValueType = variant { Int; Float; Text; Bool; Timestamp; List; Null; Bytes; Date; Time; DateTime; Duration; Principal };
+type PreparedParameterInfo = record { name: text; required: bool; types: vec PreparedValueType; inferred: bool };
+type PreparedOptions = record { description: opt text; allowed_sorts: vec PreparedSortKey; default_sort: opt vec PreparedSortSpec };
+type PreparedStatementInfo = record {
+  name: text;
+  kind: PreparedKind;
+  parameters: vec PreparedParameterInfo;
+  columns: vec text;
+  requires_caller: bool;
+  source: text;
+  description: opt text;
+  allowed_sorts: vec PreparedSortKey;
+  default_sort: opt vec PreparedSortSpec;
+};
+type ExecuteGqlResult = variant { Query: QueryResultWithContinuation; Mutation: MutationResult; GraphCreated: GraphInfo; GraphDropped: bool };
+type ContinuationResult = variant {
+  Bfs: BfsResultWithContinuation;
+  Sssp: SsspResultWithContinuation;
+  PageRank: PageRankResultWithContinuation;
+  Query: QueryResultWithContinuation;
+  Mutation: MutationResultWithContinuation;
+};
+
+service : (opt nat32, opt nat64) -> {
+  // ── Stats & Monitoring ──
+  get_neighbors: (nat32) -> (vec record { target: nat32; weight: float32; timestamp: nat64 }) query;
+  get_stats: () -> (GraphStats) query;
+  get_stats_certified: () -> (CertifiedGraphStats) query;
+  get_canister_info: () -> (CanisterInfo) query;
+  get_metrics: () -> (OperationalMetrics) query;
+  get_quota: () -> (UsageQuota) query;
+  set_quota: (UsageQuota) -> ();
+  get_planner_stats: () -> (PlannerStats) query;
+  compute_graph_stats: () -> (PlannerStats);
+
+  // ── GQL Query & Mutation ──
+  query: (text, opt vec record { text; Value }) -> (variant { Ok: QueryResultWithContinuation; Err: GleaphError }) query;
+  mutate: (text, opt vec record { text; Value }) -> (variant { Ok: MutationResultWithContinuation; Err: GleaphError });
+  batch_mutate: (vec record { text; opt vec record { text; Value } }) -> (vec variant { Ok: MutationResult; Err: GleaphError });
+  query_continue: (ContinuationToken) -> (variant { Ok: ContinuationResult; Err: GleaphError }) query;
+  mutate_continue: (ContinuationToken) -> (variant { Ok: MutationResultWithContinuation; Err: GleaphError });
+
+  // ── Prepared Statements ──
+  prepare: (text, text, opt PreparedOptions) -> (variant { Ok: PreparedStatementInfo; Err: GleaphError });
+  execute_prepared: (text, vec record { text; Value }, opt vec PreparedSortSpec) -> (variant { Ok: QueryResultWithContinuation; Err: GleaphError }) query;
+  execute_prepared_mutation: (text, vec record { text; Value }) -> (variant { Ok: MutationResult; Err: GleaphError });
+  drop_prepared: (text) -> (variant { Ok: bool; Err: GleaphError });
+  list_prepared: () -> (variant { Ok: vec PreparedStatementInfo; Err: GleaphError }) query;
+
+  // ── Algorithms ──
+  bfs: (nat32, BfsConfig) -> (variant { Ok: BfsResultWithContinuation; Err: GleaphError }) query;
+  recommend: (nat32, RecommendConfig) -> (variant { Ok: vec Recommendation; Err: GleaphError }) query;
+  compute_pagerank: (PageRankConfig) -> (variant { Ok: PageRankResultWithContinuation; Err: GleaphError });
+  compute_sssp: (nat32, SsspConfig) -> (variant { Ok: SsspResultWithContinuation; Err: GleaphError });
+  get_pagerank_certified: (vec nat8) -> (variant { Ok: CertifiedPageRank; Err: GleaphError }) query;
+
+  // ── Index ──
+  create_index: (EntityType, text, IndexType) -> (variant { Ok; Err: GleaphError });
+
+  // ── Legacy Data Operations ──
+  add_vertex: (record { id: nat32 }) -> (variant { Ok: nat64; Err: GleaphError });
+  add_edge: (record { src: nat32; dst: nat32; weight: float32; timestamp: nat64 }) -> (variant { Ok: nat64; Err: GleaphError });
+  bulk_insert_vertices: (vec record { id: nat32 }) -> (variant { Ok: nat64; Err: GleaphError });
+  bulk_insert_edges: (vec record { src: nat32; dst: nat32; weight: float32; timestamp: nat64 }) -> (variant { Ok: nat64; Err: GleaphError });
+
+  // ── ACL ──
+  set_acl_entry: (principal, AccessLevel) -> (variant { Ok; Err: GleaphError });
+  remove_acl_entry: (principal) -> (variant { Ok; Err: GleaphError });
+  list_acl_entries: () -> (variant { Ok: vec AclEntry; Err: GleaphError }) query;
+
+  // ── Registry Delegation ──
+  set_registry_principal: (principal) -> (variant { Ok; Err: GleaphError });
+  get_registry_principal: () -> (variant { Ok: opt principal; Err: GleaphError }) query;
+
+  // ── Cross-canister ──
+  execute_gql: (text) -> (variant { Ok: ExecuteGqlResult; Err: GleaphError });
+  set_graph_alias: (text, principal) -> (variant { Ok; Err: GleaphError });
+  remove_graph_alias: (text) -> (variant { Ok: bool; Err: GleaphError });
+  list_graph_aliases: () -> (variant { Ok: vec GraphAlias; Err: GleaphError }) query;
+  query_via: (text, text) -> (variant { Ok: QueryResultWithContinuation; Err: GleaphError }) composite_query;
+  mutate_via: (text, text) -> (variant { Ok: MutationResult; Err: GleaphError });
+}
