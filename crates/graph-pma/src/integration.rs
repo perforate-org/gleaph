@@ -14,19 +14,25 @@ mod label_index;
 mod overlay_api;
 mod overlay_types;
 
-use std::collections::BTreeMap;
+use std::cell::{Ref, RefCell};
+use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
+use gleaph_gql::Value;
 use gleaph_gql::ast::CmpOp;
+use gleaph_gql::types::EdgeDirection;
 use gleaph_gql_planner::stats::GraphStats;
 use gleaph_graph_kernel::{
-    EdgeId, EdgeRecord, GraphError, GraphResult, LabelId, NodeId, NodeRecord,
+    EdgeId, EdgeLabelFilter, EdgeRecord, Expansion, GraphError, GraphRead, GraphResult, GraphWrite,
+    LabelId, NodeId, NodeRecord, PropertyMap,
 };
 
 use crate::facade::{
     RewriteBootstrapGraphWriteSummary, RewriteEdgeLogicalLocatorMapping, RewriteGraphPma,
-    RewriteGraphPmaResult, RewriteGraphService, RewriteGraphStore,
+    RewriteGraphPmaResult, RewriteGraphService, RewriteGraphStore, RewriteGraphStoreAdapter,
     RewritePropertyMutationWriteSummary, RewriteVertexOrdinalMapping,
 };
+use crate::low_level::BucketSizeInPages;
 use crate::property_store::PropertyStoreError;
 use crate::stable::Memory;
 pub use bootstrap_types::{
@@ -58,8 +64,8 @@ pub fn bootstrap_graph(
 }
 
 /// Applies one kernel-facing bootstrap specification through the overlay graph.
-pub fn bootstrap_kernel_overlay_graph<S: RewriteGraphStore, M: Memory>(
-    graph: &mut RewriteKernelOverlayGraph<'_, S, M>,
+pub fn bootstrap_kernel_overlay_graph<S: RewriteGraphStore>(
+    graph: &mut RewriteKernelOverlayGraph<'_, S>,
     spec: &KernelBootstrapGraphSpec,
 ) -> GraphResult<KernelBootstrapGraphSummary> {
     let vertex_ordinal_start = graph.bridge().vertex_ordinals.len();
@@ -133,9 +139,9 @@ pub fn bootstrap_kernel_overlay_graph<S: RewriteGraphStore, M: Memory>(
 /// creation and keeps enough local metadata to let upper layers reason in
 /// terms of `NodeRecord` / `EdgeRecord` while the rewrite storage kernel is
 /// still growing into the full `GraphRead` / `GraphWrite` surface.
-pub struct RewriteKernelBootstrapBridge<'a, S: RewriteGraphStore, M: Memory> {
+pub struct RewriteKernelBootstrapBridge<'a, S: RewriteGraphStore> {
     store: S,
-    memory: &'a M,
+    memory: &'a S::Mem,
     next_node_id: u64,
     next_edge_id: u64,
     next_label_id: u16,
@@ -180,13 +186,255 @@ const OVERLAY_SUMMARY_HISTORY_LIMIT: usize = 8;
 /// `GraphRead` / `GraphWrite`. That keeps the boundary usable while the
 /// rewrite storage kernel grows towards a full record-authoritative graph
 /// implementation.
-pub struct RewriteKernelOverlayGraph<'a, S: RewriteGraphStore, M: Memory> {
-    bridge: RewriteKernelBootstrapBridge<'a, S, M>,
+pub struct RewriteKernelOverlayGraph<'a, S: RewriteGraphStore> {
+    bridge: RewriteKernelBootstrapBridge<'a, S>,
 }
 
 /// Concrete kernel overlay shape used when binding the main rewrite facade directly.
 pub type RewriteGraphPmaKernelOverlay<'a, M> =
-    RewriteKernelOverlayGraph<'a, &'a mut RewriteGraphPma, M>;
+    RewriteKernelOverlayGraph<'a, &'a mut RewriteGraphPma<M>>;
+
+/// Harness overlay: keeps a [`Ref`] on the shared stable-memory cell while the bridge holds `&M`.
+pub struct RewriteGraphPmaKernelHarnessOverlay<'a, M: Memory> {
+    _mem: Ref<'a, M>,
+    inner: RewriteGraphPmaKernelOverlay<'a, M>,
+}
+
+impl<'a, M: Memory> RewriteGraphPmaKernelHarnessOverlay<'a, M> {
+    /// # Safety contract
+    /// `'a` must end before the backing [`RefCell`] storage for `M` is dropped; here it matches the
+    /// borrow of the enclosing harness, and `_mem` keeps the guard alive until `Self` drops.
+    fn new(facade: &'a mut RewriteGraphPma<M>, mem: Ref<'a, M>) -> Self {
+        let mref: &'a M = unsafe { std::mem::transmute::<&M, &'a M>(&*mem) };
+        let adapter = RewriteGraphStoreAdapter::new(facade, mref);
+        let inner = adapter.into_kernel_overlay();
+        Self { _mem: mem, inner }
+    }
+}
+
+impl<'a, M: Memory> std::ops::Deref for RewriteGraphPmaKernelHarnessOverlay<'a, M> {
+    type Target = RewriteGraphPmaKernelOverlay<'a, M>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl<'a, M: Memory> std::ops::DerefMut for RewriteGraphPmaKernelHarnessOverlay<'a, M> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
+
+impl<'a, M: Memory> GraphRead for RewriteGraphPmaKernelHarnessOverlay<'a, M> {
+    fn scan_nodes(&self, label: Option<&str>) -> GraphResult<Vec<NodeRecord>> {
+        self.inner.scan_nodes(label)
+    }
+
+    fn scan_nodes_projected(
+        &self,
+        label: Option<&str>,
+        property_names: &[String],
+    ) -> GraphResult<Vec<NodeRecord>> {
+        self.inner.scan_nodes_projected(label, property_names)
+    }
+
+    fn scan_nodes_by_property(
+        &self,
+        property: &str,
+        value: &Value,
+        cmp: CmpOp,
+    ) -> GraphResult<Vec<NodeRecord>> {
+        self.inner.scan_nodes_by_property(property, value, cmp)
+    }
+
+    fn scan_nodes_by_property_projected(
+        &self,
+        property: &str,
+        value: &Value,
+        cmp: CmpOp,
+        property_names: &[String],
+    ) -> GraphResult<Vec<NodeRecord>> {
+        self.inner
+            .scan_nodes_by_property_projected(property, value, cmp, property_names)
+    }
+
+    fn scan_edges_by_property(
+        &self,
+        property: &str,
+        value: &Value,
+    ) -> GraphResult<Vec<EdgeRecord>> {
+        self.inner.scan_edges_by_property(property, value)
+    }
+
+    fn scan_edges_by_property_projected(
+        &self,
+        property: &str,
+        value: &Value,
+        property_names: &[String],
+    ) -> GraphResult<Vec<EdgeRecord>> {
+        self.inner
+            .scan_edges_by_property_projected(property, value, property_names)
+    }
+
+    fn expand(
+        &self,
+        from: NodeId,
+        direction: EdgeDirection,
+        filter: EdgeLabelFilter<'_, '_>,
+    ) -> GraphResult<Vec<Expansion>> {
+        self.inner.expand(from, direction, filter)
+    }
+
+    fn expand_projected(
+        &self,
+        from: NodeId,
+        direction: EdgeDirection,
+        filter: EdgeLabelFilter<'_, '_>,
+        edge_property_names: Option<&[String]>,
+        dst_property_names: Option<&[String]>,
+    ) -> GraphResult<Vec<Expansion>> {
+        self.inner.expand_projected(
+            from,
+            direction,
+            filter,
+            edge_property_names,
+            dst_property_names,
+        )
+    }
+
+    fn scan_all_edges(&self) -> GraphResult<Vec<EdgeRecord>> {
+        self.inner.scan_all_edges()
+    }
+
+    fn get_node(&self, id: NodeId) -> GraphResult<Option<NodeRecord>> {
+        self.inner.get_node(id)
+    }
+
+    fn get_node_projected(
+        &self,
+        id: NodeId,
+        property_names: &[String],
+    ) -> GraphResult<Option<NodeRecord>> {
+        self.inner.get_node_projected(id, property_names)
+    }
+
+    fn get_edge_projected(
+        &self,
+        edge_id: EdgeId,
+        property_names: &[String],
+    ) -> GraphResult<Option<EdgeRecord>> {
+        self.inner.get_edge_projected(edge_id, property_names)
+    }
+
+    fn all_property_key_names(&self) -> GraphResult<BTreeSet<String>> {
+        self.inner.all_property_key_names()
+    }
+
+    fn get_node_property_value(
+        &self,
+        node_id: NodeId,
+        property: &str,
+    ) -> GraphResult<Option<Value>> {
+        self.inner.get_node_property_value(node_id, property)
+    }
+
+    fn get_edge_property_value(
+        &self,
+        edge_id: EdgeId,
+        property: &str,
+    ) -> GraphResult<Option<Value>> {
+        self.inner.get_edge_property_value(edge_id, property)
+    }
+}
+
+impl<'a, M: Memory> GraphWrite for RewriteGraphPmaKernelHarnessOverlay<'a, M> {
+    fn insert_node(
+        &mut self,
+        labels: &[String],
+        properties: &PropertyMap,
+    ) -> GraphResult<NodeRecord> {
+        self.inner.insert_node(labels, properties)
+    }
+
+    fn insert_edge(
+        &mut self,
+        src: NodeId,
+        dst: NodeId,
+        label: Option<&str>,
+        properties: &PropertyMap,
+    ) -> GraphResult<EdgeRecord> {
+        self.inner.insert_edge(src, dst, label, properties)
+    }
+
+    fn set_node_property(
+        &mut self,
+        node_id: NodeId,
+        property: &str,
+        value: &Value,
+    ) -> GraphResult<NodeRecord> {
+        self.inner.set_node_property(node_id, property, value)
+    }
+
+    fn remove_node_property(&mut self, node_id: NodeId, property: &str) -> GraphResult<NodeRecord> {
+        self.inner.remove_node_property(node_id, property)
+    }
+
+    fn add_node_label(&mut self, node_id: NodeId, label: &str) -> GraphResult<NodeRecord> {
+        self.inner.add_node_label(node_id, label)
+    }
+
+    fn remove_node_label(&mut self, node_id: NodeId, label: &str) -> GraphResult<NodeRecord> {
+        self.inner.remove_node_label(node_id, label)
+    }
+
+    fn set_edge_property(
+        &mut self,
+        edge_id: EdgeId,
+        property: &str,
+        value: &Value,
+    ) -> GraphResult<EdgeRecord> {
+        self.inner.set_edge_property(edge_id, property, value)
+    }
+
+    fn remove_edge_property(&mut self, edge_id: EdgeId, property: &str) -> GraphResult<EdgeRecord> {
+        self.inner.remove_edge_property(edge_id, property)
+    }
+
+    fn set_edge_label(&mut self, edge_id: EdgeId, label: Option<&str>) -> GraphResult<EdgeRecord> {
+        self.inner.set_edge_label(edge_id, label)
+    }
+
+    fn delete_edge(&mut self, edge_id: EdgeId) -> GraphResult<()> {
+        self.inner.delete_edge(edge_id)
+    }
+
+    fn delete_node(&mut self, node_id: NodeId, detach: bool) -> GraphResult<()> {
+        self.inner.delete_node(node_id, detach)
+    }
+
+    fn flush(&mut self) -> GraphResult<()> {
+        self.inner.flush()
+    }
+}
+
+impl<'a, M: Memory> crate::observability::RewriteDiagnosticsView
+    for RewriteGraphPmaKernelHarnessOverlay<'a, M>
+{
+    fn shared_write_history(&self) -> Vec<crate::facade::RewriteWriteEventProjection> {
+        self.inner.shared_write_history()
+    }
+}
+
+impl<'a, M: Memory> GraphStats for RewriteGraphPmaKernelHarnessOverlay<'a, M> {
+    fn label_cardinality(&self, label: &str) -> Option<u64> {
+        self.inner.label_cardinality(label)
+    }
+
+    fn label_cardinality_id(&self, label_id: u16) -> Option<u64> {
+        self.inner.label_cardinality_id(label_id)
+    }
+}
 
 /// Small owned harness that keeps the rewrite facade and its stable memory together.
 ///
@@ -195,35 +443,42 @@ pub type RewriteGraphPmaKernelOverlay<'a, M> =
 /// memory, without repeating the same bootstrap-and-bind setup in every call
 /// site.
 pub struct RewriteGraphPmaKernelHarness<M: Memory> {
-    facade: RewriteGraphPma,
-    memory: M,
+    facade: RewriteGraphPma<M>,
+    memory: Rc<RefCell<M>>,
 }
 
 impl<M: Memory> RewriteGraphPmaKernelHarness<M> {
     /// Bootstraps one empty rewrite graph together with owned stable memory.
     pub fn bootstrap_empty(memory: M) -> RewriteGraphPmaResult<Self> {
-        let facade = RewriteGraphPma::bootstrap_empty(&memory)?;
-        Ok(Self { facade, memory })
+        let mem = Rc::new(RefCell::new(memory));
+        let facade = RewriteGraphPma::bootstrap_empty_with_bucket_size_using_memory_rc(
+            BucketSizeInPages::DEFAULT,
+            Rc::clone(&mem),
+        )?;
+        Ok(Self {
+            facade,
+            memory: mem,
+        })
     }
 
-    /// Returns the owned stable-memory handle.
-    pub fn memory(&self) -> &M {
-        &self.memory
+    /// Borrow the shared stable-memory backing (same cell as the facade).
+    pub fn memory(&self) -> Ref<'_, M> {
+        self.memory.borrow()
     }
 
     /// Returns the rewrite facade stored inside this harness.
-    pub fn facade(&self) -> &RewriteGraphPma {
+    pub fn facade(&self) -> &RewriteGraphPma<M> {
         &self.facade
     }
 
     /// Returns mutable access to the rewrite facade stored inside this harness.
-    pub fn facade_mut(&mut self) -> &mut RewriteGraphPma {
+    pub fn facade_mut(&mut self) -> &mut RewriteGraphPma<M> {
         &mut self.facade
     }
 
     /// Binds the owned facade and memory as one kernel-facing overlay graph.
-    pub fn bind_overlay(&mut self) -> RewriteGraphPmaKernelOverlay<'_, M> {
-        self.facade.bind_kernel_overlay(&self.memory)
+    pub fn bind_overlay(&mut self) -> RewriteGraphPmaKernelHarnessOverlay<'_, M> {
+        RewriteGraphPmaKernelHarnessOverlay::new(&mut self.facade, self.memory.borrow())
     }
 
     /// Binds one overlay and seeds it on that same bound instance.
@@ -231,7 +486,7 @@ impl<M: Memory> RewriteGraphPmaKernelHarness<M> {
         &mut self,
         spec: &KernelBootstrapGraphSpec,
     ) -> GraphResult<(
-        RewriteGraphPmaKernelOverlay<'_, M>,
+        RewriteGraphPmaKernelHarnessOverlay<'_, M>,
         KernelBootstrapGraphSummary,
     )> {
         let mut overlay = self.bind_overlay();
@@ -244,7 +499,8 @@ impl<M: Memory> RewriteGraphPmaKernelHarness<M> {
         &mut self,
         spec: &BootstrapGraphSpec,
     ) -> RewriteGraphPmaResult<RewriteBootstrapGraphWriteSummary> {
-        let mut adapter = self.facade.bind(&self.memory);
+        let mem = self.memory.borrow();
+        let mut adapter = self.facade.bind(&*mem);
         bootstrap_graph(&mut adapter, spec)
     }
 
@@ -254,7 +510,8 @@ impl<M: Memory> RewriteGraphPmaKernelHarness<M> {
         vertex_refs: &[crate::low_level::VertexRef],
         initial_edges: &[(EdgeId, usize, usize, LabelId)],
     ) -> RewriteGraphPmaResult<RewriteBootstrapGraphWriteSummary> {
-        let mut adapter = self.facade.bind(&self.memory);
+        let mem = self.memory.borrow();
+        let mut adapter = self.facade.bind(&*mem);
         adapter.bootstrap_vertex_refs_and_edges(vertex_refs, initial_edges)
     }
 
@@ -288,7 +545,7 @@ impl<M: Memory> RewriteGraphPmaKernelHarness<M> {
     }
 }
 
-impl<'a, S: RewriteGraphStore, M: Memory> GraphStats for RewriteKernelOverlayGraph<'a, S, M> {
+impl<'a, S: RewriteGraphStore> GraphStats for RewriteKernelOverlayGraph<'a, S> {
     fn label_cardinality(&self, label: &str) -> Option<u64> {
         let label_id = self.bridge.lookup_label_id(label)?;
         Some(self.bridge.vertex_label_index.cardinality(label_id) as u64)
@@ -299,9 +556,9 @@ impl<'a, S: RewriteGraphStore, M: Memory> GraphStats for RewriteKernelOverlayGra
     }
 }
 
-impl<'a, S: RewriteGraphStore, M: Memory> RewriteKernelOverlayGraph<'a, S, M> {
+impl<'a, S: RewriteGraphStore> RewriteKernelOverlayGraph<'a, S> {
     fn edge_base_logical_index(slots: &[Option<EdgeId>], edge_id: EdgeId) -> Option<usize> {
-        RewriteKernelBootstrapBridge::<S, M>::find_base_logical_index(slots, edge_id)
+        RewriteKernelBootstrapBridge::<S>::find_base_logical_index(slots, edge_id)
     }
 
     /// Runs a bounded GC step for tombstoned vertices.
@@ -406,7 +663,7 @@ mod tests {
     #[test]
     fn bootstrap_graph_uses_service_boundary() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(&memory).expect("bootstrap");
+        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let mut adapter = facade.bind(&memory);
 
         let spec = BootstrapGraphSpec::empty()
@@ -601,7 +858,7 @@ mod tests {
     #[test]
     fn kernel_overlay_bootstrap_function_can_seed_graph_records() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(&memory).expect("bootstrap");
+        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let mut overlay = facade.bind_kernel_overlay(&memory);
         let empty_properties = PropertyMap::new();
         let spec = KernelBootstrapGraphSpec::empty()
@@ -655,7 +912,7 @@ mod tests {
     #[test]
     fn kernel_bootstrap_bridge_can_create_node_and_edge_records() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(&memory).expect("bootstrap");
+        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let mut bridge = RewriteKernelBootstrapBridge::new(&mut facade, &memory);
         let person_labels = vec!["Person".to_owned()];
         let empty_properties = PropertyMap::new();
@@ -680,9 +937,9 @@ mod tests {
 
     #[test]
     fn kernel_overlay_graph_implements_basic_graph_kernel_reads_and_writes() {
-        let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(&memory).expect("bootstrap");
-        let mut graph = facade.bind_kernel_overlay(&memory);
+        let mut harness = RewriteGraphPmaKernelHarness::bootstrap_empty(VecMemory::default())
+            .expect("bootstrap harness");
+        let mut graph = harness.bind_overlay();
         let person_labels = vec!["Person".to_owned()];
         let alice_properties: PropertyMap = [("name".to_owned(), Value::Text("Alice".into()))]
             .into_iter()
@@ -732,7 +989,7 @@ mod tests {
     #[test]
     fn expand_single_label_uses_label_id_path_when_edge_label_string_missing() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(&memory).expect("bootstrap");
+        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let mut graph = facade.bind_kernel_overlay(&memory);
         let person_labels = vec!["Person".to_owned()];
         let empty_properties = PropertyMap::new();
@@ -767,7 +1024,7 @@ mod tests {
     #[test]
     fn expand_anyof_uses_label_id_path_when_edge_label_strings_missing() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(&memory).expect("bootstrap");
+        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let mut graph = facade.bind_kernel_overlay(&memory);
         let person_labels = vec!["Person".to_owned()];
         let empty_properties = PropertyMap::new();
@@ -816,7 +1073,7 @@ mod tests {
     #[test]
     fn kernel_overlay_graph_exposes_property_write_summary() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(&memory).expect("bootstrap");
+        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let mut graph = facade.bind_kernel_overlay(&memory);
         let person_labels = vec!["Person".to_owned()];
         let empty_properties = PropertyMap::new();
@@ -835,7 +1092,7 @@ mod tests {
         assert!(summary.flushed_sections.logical_index);
         assert_eq!(
             summary.mutation.node_store_operations,
-            vec![PropertyIndexNodeStoreMutationKind::Rebuild]
+            vec![PropertyIndexNodeStoreMutationKind::LocalUpdate]
         );
         assert!(!summary.mutation.touched_node_ids.is_empty());
         let node_property_projection = summary.projection();
@@ -868,7 +1125,9 @@ mod tests {
         graph
             .set_edge_property(edge.id, "weight", &Value::Int64(1))
             .expect("set edge property");
-        graph.flush().expect("flush after deferred edge property set");
+        graph
+            .flush()
+            .expect("flush after deferred edge property set");
         let edge_summary = graph
             .last_property_write_summary()
             .expect("edge property summary");
@@ -876,7 +1135,7 @@ mod tests {
         assert!(edge_summary.flushed_sections.logical_index);
         assert_eq!(
             edge_summary.mutation.node_store_operations,
-            vec![PropertyIndexNodeStoreMutationKind::Rebuild]
+            vec![PropertyIndexNodeStoreMutationKind::LocalUpdate]
         );
         assert!(!edge_summary.mutation.touched_node_ids.is_empty());
         let edge_property_projection = edge_summary.projection();
@@ -932,7 +1191,7 @@ mod tests {
     #[test]
     fn vertex_label_index_tracks_label_mutations() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(&memory).expect("bootstrap");
+        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let mut graph = facade.bind_kernel_overlay(&memory);
         let person_labels = vec!["Person".to_owned()];
         let empty_properties = PropertyMap::new();
@@ -959,7 +1218,7 @@ mod tests {
     #[test]
     fn vertex_label_index_promotes_to_bitmap_when_hot_label_grows() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(&memory).expect("bootstrap");
+        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let mut graph = facade.bind_kernel_overlay(&memory);
         let labels = vec!["Hot".to_owned()];
         let empty_properties = PropertyMap::new();
@@ -986,7 +1245,7 @@ mod tests {
     #[test]
     fn scan_nodes_label_path_has_no_duplicates_or_missing() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(&memory).expect("bootstrap");
+        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let mut graph = facade.bind_kernel_overlay(&memory);
         let labels = vec!["Person".to_owned()];
         let empty = PropertyMap::new();
@@ -1005,7 +1264,7 @@ mod tests {
     #[test]
     fn planner_uses_runtime_label_cardinality_id_from_overlay_graph() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(&memory).expect("bootstrap");
+        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let mut graph = facade.bind_kernel_overlay(&memory);
         let empty = PropertyMap::new();
         for _ in 0..200 {
@@ -1048,7 +1307,7 @@ mod tests {
     #[test]
     fn delete_detach_enqueues_reclaim_and_vacuum_moves_to_free_list() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(&memory).expect("bootstrap");
+        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let mut graph = facade.bind_kernel_overlay(&memory);
         let node = graph
             .insert_node(&["Person".to_owned()], &PropertyMap::new())
@@ -1069,7 +1328,7 @@ mod tests {
     #[test]
     fn kernel_overlay_graph_insert_summary_exposes_rebalance_projection() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(&memory).expect("bootstrap");
+        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let mut manager = crate::low_level::RegionManager::with_bucket_size(
             crate::low_level::BucketSizeInPages::DEFAULT,
         );
@@ -1105,7 +1364,7 @@ mod tests {
             manager
                 .define_bucket_region(kind, crate::property_store::default_property_region_chain());
         }
-        facade.manager = manager;
+        *facade.manager.borrow_mut() = manager;
         facade.graph.forward.0.vertices = vec![VertexEntry::new(EdgeIndex::new(0), 2, 0)];
         facade.graph.forward.0.base_entries = SurfaceBaseStorage::from_contiguous(vec![
             EdgeEntry::new(NodeId::from(2u8), EdgeMeta::new(7, false)),
@@ -1287,7 +1546,7 @@ mod tests {
     #[test]
     fn rewrite_graph_store_adapter_can_convert_into_kernel_overlay() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(&memory).expect("bootstrap");
+        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let adapter = facade.bind(&memory);
         let mut graph = adapter.into_kernel_overlay();
         let person_labels = vec!["Person".to_owned()];
@@ -1303,7 +1562,7 @@ mod tests {
     #[test]
     fn kernel_overlay_graph_can_update_and_delete_edges() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(&memory).expect("bootstrap");
+        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let mut graph = facade.bind_kernel_overlay(&memory);
         let person_labels = vec!["Person".to_owned()];
         let properties = PropertyMap::new();
@@ -1398,7 +1657,7 @@ mod tests {
     #[test]
     fn deleting_edge_removes_property_keys_and_values() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(&memory).expect("bootstrap");
+        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let mut graph = facade.bind_kernel_overlay(&memory);
         let person_labels = vec!["Person".to_owned()];
         let edge_properties: PropertyMap = [("weight".to_owned(), Value::Int64(5))]
@@ -1447,7 +1706,7 @@ mod tests {
     #[test]
     fn kernel_overlay_graph_can_delete_node_with_detach() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(&memory).expect("bootstrap");
+        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let mut graph = facade.bind_kernel_overlay(&memory);
         let person_labels = vec!["Person".to_owned()];
         let properties = PropertyMap::new();
@@ -1560,7 +1819,7 @@ mod tests {
     #[test]
     fn deleting_node_removes_property_keys_and_values() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(&memory).expect("bootstrap");
+        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let mut graph = facade.bind_kernel_overlay(&memory);
         let node_properties: PropertyMap = [("name".to_owned(), Value::Text("Alice".to_owned()))]
             .into_iter()
@@ -1612,14 +1871,16 @@ mod tests {
             2
         };
 
-        let mut harness = RewriteGraphPmaKernelHarness::bootstrap_empty(VecMemory::default())
-            .expect("harness");
+        let mut harness =
+            RewriteGraphPmaKernelHarness::bootstrap_empty(VecMemory::default()).expect("harness");
         let mut graph = harness.bind_overlay();
         let labels = vec!["Person".to_owned()];
         let mut props = PropertyMap::new();
         props.insert("name".into(), Value::Text("canbench".into()));
         for _ in 0..iterations {
-            graph.bootstrap_node(&labels, &props).expect("bootstrap_node");
+            graph
+                .bootstrap_node(&labels, &props)
+                .expect("bootstrap_node");
         }
         if std::env::var_os("GLEAPH_BENCH_PROFILE").is_some() {
             bench_profile::dump_report("repeated_bootstrap_node");
@@ -1647,11 +1908,9 @@ mod tests {
             ));
         }
 
-        let mut harness = RewriteGraphPmaKernelHarness::bootstrap_empty(VecMemory::default())
-            .expect("harness");
-        let (graph, summary) = harness
-            .bind_overlay_with_graph(&spec)
-            .expect("seed ring");
+        let mut harness =
+            RewriteGraphPmaKernelHarness::bootstrap_empty(VecMemory::default()).expect("harness");
+        let (graph, summary) = harness.bind_overlay_with_graph(&spec).expect("seed ring");
         let first = summary.nodes[0].id;
 
         let iterations = if std::env::var_os("GLEAPH_BENCH_PROFILE").is_some() {

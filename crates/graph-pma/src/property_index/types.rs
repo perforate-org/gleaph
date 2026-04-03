@@ -1,7 +1,11 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
+use gleaph_gql::name_limits;
 use gleaph_graph_kernel::{EdgeId, NodeId};
+
+use ic_stable_structures::Storable as IcStorable;
+use ic_stable_structures::storable::Bound as IcBound;
 
 use crate::stable::{Bound, Storable};
 
@@ -324,7 +328,7 @@ impl PropertyIndexNodeRecord {
                 );
                 for (key, entry) in entries {
                     let key_bytes = key.encode()?;
-                    let value_bytes = entry.to_bytes();
+                    let value_bytes = crate::stable::Storable::to_bytes(entry);
                     out.extend_from_slice(
                         &u32::try_from(key_bytes.len())
                             .map_err(|_| PropertyIndexError::LengthOverflow)?
@@ -442,7 +446,7 @@ impl PropertyIndexNodeRecord {
                         });
                     }
                     let key = PropertyIndexKey::decode(&bytes[offset..key_end])?;
-                    let entry = PropertyIndexEntry::from_bytes(Cow::Owned(
+                    let entry = crate::stable::Storable::from_bytes(Cow::Owned(
                         bytes[key_end..value_end].to_vec(),
                     ));
                     entries.push((key, entry));
@@ -592,6 +596,36 @@ impl PropertyIndexKey {
         self.matches_property_prefix(entity_kind, property_name)
             && self.encoded_value == encoded_value
     }
+
+    /// Inclusive start bound for [`StableBTreeMap::range`] when scanning all index entries
+    /// for one `(entity_kind, property_name)` (any `encoded_value` / `entity_id`).
+    ///
+    /// Ordering is [`PropertyIndexKey`]'s derived [`Ord`]: `(entity_kind, property_name,
+    /// encoded_value, entity_id)`.
+    pub fn btree_property_range_start(
+        entity_kind: PropertyIndexEntityKind,
+        property_name: impl AsRef<str>,
+    ) -> Self {
+        Self::property_lower_bound(entity_kind, property_name)
+    }
+
+    /// Exclusive end bound for that scan when some UTF-8 `property_name` string is strictly
+    /// greater than `property_name` under Gleaph's [`name_limits::MAX_PROPERTY_NAME_BYTES`]
+    /// cap (see [`name_limits::lexicographic_successor_within_max_bytes`]).
+    ///
+    /// Use `map.range(start..end)` when `Some(end)`; when `None` (e.g. `property_name` is
+    /// already maximal under the successor construction), use `map.range(start..)` and stop at
+    /// the first key where [`Self::matches_property_prefix`] fails.
+    pub fn btree_property_range_end_exclusive(
+        entity_kind: PropertyIndexEntityKind,
+        property_name: &str,
+    ) -> Option<Self> {
+        let next = name_limits::lexicographic_successor_within_max_bytes(
+            property_name,
+            name_limits::MAX_PROPERTY_NAME_BYTES,
+        )?;
+        Some(Self::property_lower_bound(entity_kind, next))
+    }
 }
 
 impl Storable for PropertyIndexKey {
@@ -608,6 +642,22 @@ impl Storable for PropertyIndexKey {
     }
 
     const BOUND: Bound = Bound::Unbounded;
+}
+
+impl IcStorable for PropertyIndexKey {
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(self.encode().expect("PropertyIndexKey must encode"))
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        self.encode().expect("PropertyIndexKey must encode")
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Self::decode(bytes.as_ref()).expect("PropertyIndexKey bytes must decode")
+    }
+
+    const BOUND: IcBound = IcBound::Unbounded;
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -639,6 +689,24 @@ impl Storable for PropertyIndexEntry {
     }
 
     const BOUND: Bound = Bound::Unbounded;
+}
+
+impl IcStorable for PropertyIndexEntry {
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Borrowed(&self.payload)
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        self.payload
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Self {
+            payload: bytes.into_owned(),
+        }
+    }
+
+    const BOUND: IcBound = IcBound::Unbounded;
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -707,7 +775,7 @@ impl PropertyIndex {
         );
         for (key, entry) in &self.entries {
             let key_bytes = key.encode()?;
-            let entry_bytes = entry.to_bytes();
+            let entry_bytes = crate::stable::Storable::to_bytes(entry);
             out.extend_from_slice(
                 &u32::try_from(key_bytes.len())
                     .map_err(|_| PropertyIndexError::LengthOverflow)?
@@ -764,7 +832,7 @@ impl PropertyIndex {
             }
             let key = PropertyIndexKey::decode(&bytes[offset..key_end])?;
             let entry =
-                PropertyIndexEntry::from_bytes(Cow::Owned(bytes[key_end..value_end].to_vec()));
+                crate::stable::Storable::from_bytes(Cow::Owned(bytes[key_end..value_end].to_vec()));
             entries.insert(key, entry);
             offset = value_end;
         }

@@ -8,6 +8,9 @@ mod query_validation;
 
 use crate::ast::*;
 use crate::error::GqlError;
+use crate::name_limits::{
+    validate_graph_type_identifier, validate_label_name, validate_property_name,
+};
 use rapidhash::RapidHashSet;
 use std::collections::BTreeMap;
 
@@ -47,6 +50,9 @@ fn validate_session_command(cmd: &SessionCommand) -> VResult {
 
 fn validate_session_set(set: &SessionSetCommand) -> VResult {
     match set {
+        SessionSetCommand::Schema(on) | SessionSetCommand::Graph { name: on, .. } => {
+            validate_catalog_object_name(on)
+        }
         SessionSetCommand::Parameter { name, .. }
         | SessionSetCommand::GraphParameter { name, .. }
         | SessionSetCommand::BindingTableParameter { name, .. } => {
@@ -55,8 +61,16 @@ fn validate_session_set(set: &SessionSetCommand) -> VResult {
             }
             Ok(())
         }
-        _ => Ok(()),
+        SessionSetCommand::TimeZone(_) => Ok(()),
     }
+}
+
+/// Applies [`crate::name_limits`] to each segment of a catalog [`ObjectName`].
+pub(super) fn validate_catalog_object_name(name: &ObjectName) -> VResult {
+    for part in &name.parts {
+        crate::name_limits::validate_catalog_name_part(part).map_err(|e| verr(&e.to_string()))?;
+    }
+    Ok(())
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -145,18 +159,20 @@ fn validate_graph_type_definition(def: &GraphTypeDefinition) -> VResult {
         match element {
             GraphTypeElement::Node(node) => {
                 validate_graph_type_properties(&node.properties)?;
-                if let Some(name) = &node.name
-                    && !node_names.insert(name.clone())
-                {
-                    return Err(verr(&format!("duplicate graph type node name '{}'", name)));
+                if let Some(name) = &node.name {
+                    validate_graph_type_identifier(name).map_err(|e| verr(&e.to_string()))?;
+                    if !node_names.insert(name.clone()) {
+                        return Err(verr(&format!("duplicate graph type node name '{}'", name)));
+                    }
                 }
-                if let Some(alias) = &node.alias
-                    && !node_aliases.insert(alias.clone())
-                {
-                    return Err(verr(&format!(
-                        "duplicate graph type node alias '{}'",
-                        alias
-                    )));
+                if let Some(alias) = &node.alias {
+                    validate_graph_type_identifier(alias).map_err(|e| verr(&e.to_string()))?;
+                    if !node_aliases.insert(alias.clone()) {
+                        return Err(verr(&format!(
+                            "duplicate graph type node alias '{}'",
+                            alias
+                        )));
+                    }
                 }
                 if let Some(name) = &node.name {
                     node_refs.insert(name.clone());
@@ -168,6 +184,7 @@ fn validate_graph_type_definition(def: &GraphTypeDefinition) -> VResult {
                 }
                 if let Some(ref ls) = node.label_set {
                     for label in &ls.labels {
+                        validate_label_name(label).map_err(|e| verr(&e.to_string()))?;
                         node_refs.insert(label.clone());
                         *node_ref_counts.entry(label.clone()).or_insert(0) += 1;
                     }
@@ -175,10 +192,16 @@ fn validate_graph_type_definition(def: &GraphTypeDefinition) -> VResult {
             }
             GraphTypeElement::Edge(edge) => {
                 validate_graph_type_properties(&edge.properties)?;
-                if let Some(name) = &edge.name
-                    && !edge_names.insert(name.clone())
-                {
-                    return Err(verr(&format!("duplicate graph type edge name '{}'", name)));
+                if let Some(name) = &edge.name {
+                    validate_graph_type_identifier(name).map_err(|e| verr(&e.to_string()))?;
+                    if !edge_names.insert(name.clone()) {
+                        return Err(verr(&format!("duplicate graph type edge name '{}'", name)));
+                    }
+                }
+                if let Some(ref ls) = edge.label_set {
+                    for label in &ls.labels {
+                        validate_label_name(label).map_err(|e| verr(&e.to_string()))?;
+                    }
                 }
             }
         }
@@ -205,6 +228,7 @@ fn validate_graph_type_definition(def: &GraphTypeDefinition) -> VResult {
 fn validate_graph_type_properties(properties: &[PropertyDef]) -> VResult {
     let mut names = RapidHashSet::default();
     for property in properties {
+        validate_property_name(&property.name).map_err(|e| verr(&e.to_string()))?;
         if !names.insert(property.name.clone()) {
             return Err(verr(&format!(
                 "duplicate graph type property '{}'",
@@ -221,6 +245,12 @@ fn validate_graph_type_endpoint(
     node_ref_counts: &BTreeMap<String, usize>,
     role: &str,
 ) -> VResult {
+    if let Some(l) = &endpoint.label {
+        validate_graph_type_identifier(l).map_err(|e| verr(&e.to_string()))?;
+    }
+    if let Some(t) = &endpoint.type_name {
+        validate_graph_type_identifier(t).map_err(|e| verr(&e.to_string()))?;
+    }
     let reference = endpoint
         .type_name
         .as_ref()
@@ -255,7 +285,7 @@ fn validate_create_schema(create: &CreateSchemaStatement) -> VResult {
     if create.name.parts.is_empty() {
         return Err(verr("CREATE SCHEMA requires a non-empty name"));
     }
-    Ok(())
+    validate_catalog_object_name(&create.name)
 }
 
 fn validate_create_graph(create: &CreateGraphStatement) -> VResult {
@@ -268,6 +298,7 @@ fn validate_create_graph(create: &CreateGraphStatement) -> VResult {
     if create.name.parts.is_empty() {
         return Err(verr("CREATE GRAPH requires a non-empty name"));
     }
+    validate_catalog_object_name(&create.name)?;
     // Validate inline graph type definition if present.
     if let Some(GraphTypeSpec::Inline(def)) = &create.graph_type {
         validate_graph_type_definition(def)?;
@@ -285,6 +316,7 @@ fn validate_create_graph_type(create: &CreateGraphTypeStatement) -> VResult {
     if create.name.parts.is_empty() {
         return Err(verr("CREATE GRAPH TYPE requires a non-empty name"));
     }
+    validate_catalog_object_name(&create.name)?;
     validate_graph_type_definition(&create.definition)
 }
 
@@ -292,7 +324,7 @@ fn validate_drop_name(name: &ObjectName, stmt_label: &str) -> VResult {
     if name.parts.is_empty() {
         return Err(verr(&format!("{stmt_label} requires a non-empty name")));
     }
-    Ok(())
+    validate_catalog_object_name(name)
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -779,6 +811,7 @@ fn verr(msg: &str) -> GqlError {
 
 #[cfg(test)]
 mod tests {
+    use super::query_validation::{validate_graph_reference, validate_return, validate_select};
     use super::*;
     use crate::parser;
     use crate::token::Span;

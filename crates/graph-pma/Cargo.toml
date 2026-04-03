@@ -15,6 +15,7 @@ canbench-rs = ["dep:canbench-rs"]
 [dependencies]
 candid.workspace = true
 canbench-rs = { workspace = true, optional = true }
+ic-stable-structures.workspace = true
 gleaph-gql = { path = "../gql" }
 gleaph-graph-kernel = { path = "../graph-kernel" }
 gleaph-gql-planner = { path = "../gql-planner" }

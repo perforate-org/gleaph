@@ -94,6 +94,10 @@ use std::collections::BTreeMap;
 
 use memory::{BenchMemory, wipe_for_bench_iteration};
 
+use crate::{
+    execute_block_str, execute_query_str, parse_block, parse_query, plan_block,
+    standard_procedure_registry,
+};
 use canbench_rs::bench;
 use gleaph_gql::Value;
 use gleaph_gql_executor::ExecutionContext;
@@ -102,10 +106,6 @@ use gleaph_graph_kernel::PropertyMap;
 use gleaph_graph_pma::integration::{
     KernelBootstrapEdgeSpec, KernelBootstrapGraphSpec, KernelBootstrapNodeSpec,
     RewriteGraphPmaKernelHarness,
-};
-use crate::{
-    execute_block_str, execute_query_str, parse_block, parse_query, plan_block,
-    standard_procedure_registry,
 };
 
 fn execution_context() -> ExecutionContext {
@@ -322,7 +322,7 @@ macro_rules! bench_overlay_query {
         let (mut graph, _) = harness.bind_overlay_with_graph(&spec).expect("seed");
         let ctx = execution_context();
         canbench_rs::bench_fn(|| {
-            let _ = execute_query_str(&mut graph, $q, None, &ctx).expect("execute");
+            let _ = execute_query_str(&mut *graph, $q, None, &ctx).expect("execute");
         })
     }};
 }
@@ -336,7 +336,7 @@ macro_rules! bench_overlay_query_ctx {
         let (mut graph, _) = harness.bind_overlay_with_graph(&spec).expect("seed");
         let ctx = $ctx;
         canbench_rs::bench_fn(|| {
-            let _ = execute_query_str(&mut graph, $q, None, &ctx).expect("execute");
+            let _ = execute_query_str(&mut *graph, $q, None, &ctx).expect("execute");
         })
     }};
 }
@@ -356,7 +356,7 @@ macro_rules! bench_overlay_block {
         let (mut graph, _) = harness.bind_overlay_with_graph(&spec).expect("seed");
         let ctx = execution_context();
         canbench_rs::bench_fn(|| {
-            let _ = execute_block_str(&mut graph, $block, None, &ctx).expect("execute");
+            let _ = execute_block_str(&mut *graph, $block, None, &ctx).expect("execute");
         })
     }};
 }
@@ -760,4 +760,3 @@ fn bench_gql_execute_block_set_five_properties() -> canbench_rs::BenchResult {
         "MATCH (n:User) SET n.p1 = 1, n.p2 = 2, n.p3 = 3, n.p4 = 4, n.p5 = 5 RETURN n"
     )
 }
-

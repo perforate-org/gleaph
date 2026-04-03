@@ -23,6 +23,8 @@ pub mod ast;
 pub mod error;
 pub mod extensions;
 pub mod lexer;
+/// Gleaph identifier length limits for properties, labels, and graph-type names.
+pub mod name_limits;
 pub mod parser;
 pub mod temporal;
 pub mod token;

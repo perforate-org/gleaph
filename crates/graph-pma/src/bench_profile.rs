@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 thread_local! {
-    static ACCUM: RefCell<Option<HashMap<&'static str, (Duration, u64)>>> = RefCell::new(None);
+    static ACCUM: RefCell<Option<HashMap<&'static str, (Duration, u64)>>> = const { RefCell::new(None) };
 }
 
 thread_local! {
@@ -41,9 +41,7 @@ pub fn record(phase: &'static str, elapsed: Duration) {
     ACCUM.with(|cell| {
         let mut slot = cell.borrow_mut();
         let map = slot.get_or_insert_with(HashMap::new);
-        let e = map
-            .entry(phase)
-            .or_insert((Duration::ZERO, 0));
+        let e = map.entry(phase).or_insert((Duration::ZERO, 0));
         e.0 += elapsed;
         e.1 += 1;
     });

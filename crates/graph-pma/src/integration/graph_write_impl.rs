@@ -11,7 +11,7 @@ use super::{
     RewriteOverlayNodeDeleteSummary,
 };
 
-impl<'a, S: super::RewriteGraphStore, M: super::Memory> RewriteKernelOverlayGraph<'a, S, M> {
+impl<'a, S: super::RewriteGraphStore> RewriteKernelOverlayGraph<'a, S> {
     fn delete_edge_without_flush(&mut self, edge_id: EdgeId) -> GraphResult<()> {
         let edge = self
             .bridge
@@ -88,9 +88,7 @@ impl<'a, S: super::RewriteGraphStore, M: super::Memory> RewriteKernelOverlayGrap
     }
 }
 
-impl<'a, S: super::RewriteGraphStore, M: super::Memory> GraphWrite
-    for RewriteKernelOverlayGraph<'a, S, M>
-{
+impl<'a, S: super::RewriteGraphStore> GraphWrite for RewriteKernelOverlayGraph<'a, S> {
     fn insert_node(
         &mut self,
         labels: &[String],
@@ -157,6 +155,8 @@ impl<'a, S: super::RewriteGraphStore, M: super::Memory> GraphWrite
     }
 
     fn add_node_label(&mut self, node_id: NodeId, label: &str) -> GraphResult<NodeRecord> {
+        gleaph_gql::name_limits::validate_label_name(label)
+            .map_err(|e| GraphError::Message(e.to_string()))?;
         let mut should_add = false;
         let node = self
             .bridge
@@ -240,6 +240,10 @@ impl<'a, S: super::RewriteGraphStore, M: super::Memory> GraphWrite
     }
 
     fn set_edge_label(&mut self, edge_id: EdgeId, label: Option<&str>) -> GraphResult<EdgeRecord> {
+        if let Some(l) = label {
+            gleaph_gql::name_limits::validate_label_name(l)
+                .map_err(|e| GraphError::Message(e.to_string()))?;
+        }
         let edge = self
             .bridge
             .edges
@@ -372,9 +376,10 @@ impl<'a, S: super::RewriteGraphStore, M: super::Memory> GraphWrite
             .store
             .try_refresh_and_write_dirty_to_stable_memory(self.bridge.memory)
             .map_err(|e| GraphError::Message(e.to_string()))?;
-        self.bridge.patch_pending_property_summaries_after_stable_flush(
-            crate::facade::RewriteRefreshedVertices::new(fwd, rev),
-        );
+        self.bridge
+            .patch_pending_property_summaries_after_stable_flush(
+                crate::facade::RewriteRefreshedVertices::new(fwd, rev),
+            );
         Ok(())
     }
 }

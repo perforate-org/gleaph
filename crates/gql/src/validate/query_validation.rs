@@ -3,8 +3,8 @@ use crate::error::GqlError;
 use rapidhash::RapidHashSet;
 
 use super::{
-    VResult, validate_call_procedure, validate_delete_vars, validate_expr,
-    validate_inline_scope_vars, validate_insert, validate_let, validate_remove_vars,
+    VResult, validate_call_procedure, validate_catalog_object_name, validate_delete_vars,
+    validate_expr, validate_inline_scope_vars, validate_insert, validate_let, validate_remove_vars,
     validate_set_vars, validate_yield_alias_uniqueness, verr,
 };
 
@@ -212,7 +212,7 @@ fn validate_procedure_bindings(
     Ok(())
 }
 
-fn validate_return(
+pub(super) fn validate_return(
     ret: &ReturnStatement,
     scope: &RapidHashSet<String>,
     graph_scope: &RapidHashSet<String>,
@@ -279,7 +279,7 @@ fn validate_return(
     }
 }
 
-fn validate_select(
+pub(super) fn validate_select(
     sel: &SelectStatement,
     scope: &RapidHashSet<String>,
     graph_scope: &RapidHashSet<String>,
@@ -579,6 +579,7 @@ pub(super) fn validate_graph_reference(
     value_scope: &RapidHashSet<String>,
     graph_scope: &RapidHashSet<String>,
 ) -> VResult {
+    validate_catalog_object_name(name)?;
     if name.parts.len() != 1 {
         return Ok(());
     }

@@ -1,10 +1,9 @@
+use crate::integration::RewriteKernelOverlayGraph;
+
 use super::*;
 
-impl RewriteGraphPma {
-    fn persist_maintenance_queue(
-        &mut self,
-        memory: &impl Memory,
-    ) -> Result<u64, WritebackError> {
+impl<M: Memory> RewriteGraphPma<M> {
+    fn persist_maintenance_queue(&mut self, memory: &impl Memory) -> Result<u64, WritebackError> {
         let persisted_bytes = self.write_maintenance_queue_to_stable_memory(memory)?;
         self.production_metrics.record_maintenance_queue_write(
             persisted_bytes,
@@ -27,35 +26,40 @@ impl RewriteGraphPma {
 
     /// Writes the full forward/reverse runtime state back to stable memory.
     ///
-    /// The property-index region is written in compact form: logical PIDX bytes are omitted (empty
-    /// [`PropertyIndexSnapshot`]) in favour of paged node stores (see [`PropertyIndexStorageImage`]).
+    /// The property-index region is written as PIDX v3: a header plus serialized
+    /// [`PropertyEqualityStableMap`] (see [`PropertyIndexStorageImage`]).
     pub fn write_all_to_stable_memory(
         &mut self,
         memory: &impl Memory,
     ) -> RewriteGraphPmaResult<()> {
         let runtimes =
             HydratedSurfaceRuntimes::new(self.graph.forward.clone(), self.graph.reverse.clone());
-        write_surface_runtimes_to_stable_memory(&mut self.manager, memory, &runtimes)?;
-        write_graph_property_store_to_stable_memory(
-            &mut self.manager,
+        write_surface_runtimes_to_stable_memory(
+            &mut self.manager.borrow_mut(),
+            memory,
+            &runtimes,
+        )?;
+        crate::property_store::write_graph_property_stable_map_to_stable_memory(
+            &mut self.manager.borrow_mut(),
             memory,
             RegionKind::NodePropertyStore,
-            &self.node_property_store,
+            &self.node_property_btree_payload,
+            true,
         )?;
-        write_graph_property_store_to_stable_memory(
-            &mut self.manager,
+        crate::property_store::write_graph_property_stable_map_to_stable_memory(
+            &mut self.manager.borrow_mut(),
             memory,
             RegionKind::EdgePropertyStore,
-            &self.edge_property_store,
+            &self.edge_property_btree_payload,
+            true,
         )?;
-        self.try_sync_property_index_node_stores()?;
-        write_property_index_paged_stores_to_stable_memory(
-            &mut self.manager,
+        write_property_index_stable_equality_to_stable_memory(
+            &mut self.manager.borrow_mut(),
             memory,
-            64,
-            &mut self.node_property_index_nodes,
-            &mut self.edge_property_index_nodes,
+            &self.property_index_btree_payload,
+            self.property_index_dirty,
         )?;
+        self.property_index_dirty = false;
         self.persist_maintenance_queue(memory)?;
         self.node_property_store_dirty = false;
         self.edge_property_store_dirty = false;
@@ -77,86 +81,53 @@ impl RewriteGraphPma {
             self.node_property_store_dirty || self.edge_property_store_dirty;
         let refreshed = {
             let _p = crate::bench_profile::PhaseGuard::new("facade_low_level_graph_refresh_write");
-            let _cb = crate::canbench_scope::scope("pma_graph_refresh_write");
+            crate::canbench_scope::scope("pma_graph_refresh_write");
             self.graph
-                .refresh_and_write_dirty_to_stable_memory(&mut self.manager, memory)?
+                .refresh_and_write_dirty_to_stable_memory(&mut self.manager.borrow_mut(), memory)?
         };
         if self.node_property_store_dirty {
             let _p = crate::bench_profile::PhaseGuard::new("facade_flush_node_property_region");
-            let _cb = crate::canbench_scope::scope("pma_node_property_store_flush");
-            let incremental = self
-                .node_property_store_append_from
-                .and_then(|append_from| {
-                    write_graph_property_store_suffix_to_stable_memory(
-                        &mut self.manager,
-                        memory,
-                        RegionKind::NodePropertyStore,
-                        &self.node_property_store,
-                        append_from,
-                    )
-                    .ok()
-                })
-                .unwrap_or(false);
-            if !incremental {
-                write_graph_property_store_to_stable_memory(
-                    &mut self.manager,
-                    memory,
-                    RegionKind::NodePropertyStore,
-                    &self.node_property_store,
-                )?;
-            }
+            crate::canbench_scope::scope("pma_node_property_store_flush");
+            crate::property_store::write_graph_property_stable_map_to_stable_memory(
+                &mut self.manager.borrow_mut(),
+                memory,
+                RegionKind::NodePropertyStore,
+                &self.node_property_btree_payload,
+                true,
+            )?;
             self.node_property_store_dirty = false;
-            self.node_property_store_append_from = None;
         }
         if self.edge_property_store_dirty {
             let _p = crate::bench_profile::PhaseGuard::new("facade_flush_edge_property_region");
-            let _cb = crate::canbench_scope::scope("pma_edge_property_store_flush");
-            let incremental = self
-                .edge_property_store_append_from
-                .and_then(|append_from| {
-                    write_graph_property_store_suffix_to_stable_memory(
-                        &mut self.manager,
-                        memory,
-                        RegionKind::EdgePropertyStore,
-                        &self.edge_property_store,
-                        append_from,
-                    )
-                    .ok()
-                })
-                .unwrap_or(false);
-            if !incremental {
-                write_graph_property_store_to_stable_memory(
-                    &mut self.manager,
-                    memory,
-                    RegionKind::EdgePropertyStore,
-                    &self.edge_property_store,
-                )?;
-            }
+            crate::canbench_scope::scope("pma_edge_property_store_flush");
+            crate::property_store::write_graph_property_stable_map_to_stable_memory(
+                &mut self.manager.borrow_mut(),
+                memory,
+                RegionKind::EdgePropertyStore,
+                &self.edge_property_btree_payload,
+                true,
+            )?;
             self.edge_property_store_dirty = false;
-            self.edge_property_store_append_from = None;
         }
         if !property_store_was_dirty {
             let _p = crate::bench_profile::PhaseGuard::new("facade_maint_queue_only");
-            let _cb = crate::canbench_scope::scope("pma_maint_queue_persist");
+            crate::canbench_scope::scope("pma_maint_queue_persist");
             self.persist_maintenance_queue(memory)?;
             return Ok(refreshed);
         }
         {
             let _p = crate::bench_profile::PhaseGuard::new("facade_property_index_full_pipeline");
             {
-                let _cb = crate::canbench_scope::scope("pma_property_index_paged_flush");
-                // Incremental index mutations already maintain `*_property_index_nodes`; a full
-                // `try_sync_property_index_node_stores` rebuild here was redundant on the hot path and
-                // dominated insert/flush microbenchmarks.
-                write_property_index_paged_stores_to_stable_memory(
-                    &mut self.manager,
+                crate::canbench_scope::scope("pma_property_index_paged_flush");
+                write_property_index_stable_equality_to_stable_memory(
+                    &mut self.manager.borrow_mut(),
                     memory,
-                    64,
-                    &mut self.node_property_index_nodes,
-                    &mut self.edge_property_index_nodes,
+                    &self.property_index_btree_payload,
+                    self.property_index_dirty,
                 )?;
             }
-            let _cb = crate::canbench_scope::scope("pma_maint_queue_persist");
+            self.property_index_dirty = false;
+            crate::canbench_scope::scope("pma_maint_queue_persist");
             self.persist_maintenance_queue(memory)?;
         }
         Ok(refreshed)
@@ -268,13 +239,13 @@ impl RewriteGraphPma {
                 .iter()
                 .copied()
                 .zip(ordinals.iter().copied())
-                .map(
-                    |(vertex_ref, (forward_ordinal, reverse_ordinal))| RewriteVertexOrdinalMapping {
+                .map(|(vertex_ref, (forward_ordinal, reverse_ordinal))| {
+                    RewriteVertexOrdinalMapping {
                         vertex_ref,
                         forward_ordinal,
                         reverse_ordinal,
-                    },
-                )
+                    }
+                })
                 .collect();
             let (refreshed_forward_vertices, refreshed_reverse_vertices) =
                 self.try_refresh_and_write_dirty_to_stable_memory(memory)?;
@@ -426,7 +397,7 @@ impl RewriteGraphPma {
             .graph
             .ensure_local_capacity_for_incoming_live_entries_and_write(
                 spec,
-                &mut self.manager,
+                &mut self.manager.borrow_mut(),
                 memory,
             )?;
         self.record_write_event(RewriteFacadeWriteEvent::EnsureCapacity(summary.clone()));
@@ -443,7 +414,7 @@ impl RewriteGraphPma {
             .graph
             .ensure_local_capacity_for_incoming_live_entries_with_segment_replacement_and_write(
                 spec,
-                &mut self.manager,
+                &mut self.manager.borrow_mut(),
                 memory,
                 retired_epoch,
             )?;
@@ -461,7 +432,7 @@ impl RewriteGraphPma {
         spec.planned_incoming_live_entries = 1;
         let summary = self.graph.insert_edge_pair_with_local_rebalance_and_write(
             spec,
-            &mut self.manager,
+            &mut self.manager.borrow_mut(),
             memory,
         )?;
         self.record_write_event(RewriteFacadeWriteEvent::InsertEdge(summary.clone()));
@@ -479,13 +450,11 @@ impl RewriteGraphPma {
             .graph
             .insert_edge_pair_with_local_rebalance_and_segment_replacement_and_write(
                 spec,
-                &mut self.manager,
+                &mut self.manager.borrow_mut(),
                 memory,
                 retired_epoch,
             )?;
-        self.record_write_event(RewriteFacadeWriteEvent::InsertEdgeSegment(
-            summary.clone(),
-        ));
+        self.record_write_event(RewriteFacadeWriteEvent::InsertEdgeSegment(summary.clone()));
         Ok(summary)
     }
 
@@ -547,10 +516,7 @@ impl RewriteGraphPma {
             .collect_maintenance_work_items_at_epoch(vertex_refs, Some(current_epoch))
     }
 
-    pub fn rebuild_maintenance_queue(
-        &mut self,
-        vertex_refs: &[VertexRef],
-    ) -> Option<usize> {
+    pub fn rebuild_maintenance_queue(&mut self, vertex_refs: &[VertexRef]) -> Option<usize> {
         let queue_len_before = self.graph.maintenance_queue().len();
         let queue_len_after = self.graph.rebuild_maintenance_queue(vertex_refs)?;
         let persisted_bytes = Self::maintenance_queue_serialized_len(queue_len_after)
@@ -613,10 +579,7 @@ impl RewriteGraphPma {
         Ok(queue_len_after)
     }
 
-    pub fn refresh_maintenance_queue(
-        &mut self,
-        vertex_refs: &[VertexRef],
-    ) -> Option<usize> {
+    pub fn refresh_maintenance_queue(&mut self, vertex_refs: &[VertexRef]) -> Option<usize> {
         let queue_len_before = self.graph.maintenance_queue().len();
         let queue_len_after = self.graph.refresh_maintenance_queue(vertex_refs)?;
         let persisted_bytes = Self::maintenance_queue_serialized_len(queue_len_after)
@@ -674,8 +637,7 @@ impl RewriteGraphPma {
         current_epoch: u64,
         memory: &impl Memory,
     ) -> Result<Option<usize>, WritebackError> {
-        let queue_len_after =
-            self.refresh_maintenance_queue_at_epoch(vertex_refs, current_epoch);
+        let queue_len_after = self.refresh_maintenance_queue_at_epoch(vertex_refs, current_epoch);
         self.persist_maintenance_queue(memory)?;
         Ok(queue_len_after)
     }
@@ -715,11 +677,12 @@ impl RewriteGraphPma {
         retired_epoch: u64,
     ) -> Result<Option<GraphMaintenanceCycleWriteSummary>, WritebackError> {
         let queue_storage_before = Some(self.current_maintenance_queue_storage_snapshot(memory)?);
-        let mut summary = self.graph
+        let mut summary = self
+            .graph
             .run_one_maintenance_cycle_with_segment_replacement_and_write(
                 vertex_refs,
                 forward_base_edge_ids_by_ordinal,
-                &mut self.manager,
+                &mut self.manager.borrow_mut(),
                 memory,
                 retired_epoch,
             )?;
@@ -742,12 +705,13 @@ impl RewriteGraphPma {
         retired_epoch: u64,
     ) -> Result<Option<GraphMaintenanceCycleWriteSummary>, WritebackError> {
         let queue_storage_before = Some(self.current_maintenance_queue_storage_snapshot(memory)?);
-        let mut summary = self.graph
+        let mut summary = self
+            .graph
             .run_one_maintenance_cycle_from_work_item_with_segment_replacement_and_write(
                 work_item,
                 vertex_refs,
                 forward_base_edge_ids_by_ordinal,
-                &mut self.manager,
+                &mut self.manager.borrow_mut(),
                 memory,
                 retired_epoch,
             )?;
@@ -769,11 +733,12 @@ impl RewriteGraphPma {
         retired_epoch: u64,
     ) -> Result<Option<GraphMaintenanceCycleWriteSummary>, WritebackError> {
         let queue_storage_before = Some(self.current_maintenance_queue_storage_snapshot(memory)?);
-        let mut summary = self.graph
+        let mut summary = self
+            .graph
             .run_next_queued_maintenance_cycle_with_segment_replacement_and_write(
                 vertex_refs,
                 forward_base_edge_ids_by_ordinal,
-                &mut self.manager,
+                &mut self.manager.borrow_mut(),
                 memory,
                 retired_epoch,
             )?;
@@ -797,11 +762,12 @@ impl RewriteGraphPma {
         min_retired_epochs_before_sweep: u64,
     ) -> Result<GraphMaintenanceBatchWriteSummary, WritebackError> {
         let queue_storage_before = Some(self.current_maintenance_queue_storage_snapshot(memory)?);
-        let mut summary = self.graph
+        let mut summary = self
+            .graph
             .run_maintenance_cycles_with_segment_replacement_and_write(
                 vertex_refs,
                 forward_base_edge_ids_by_ordinal,
-                &mut self.manager,
+                &mut self.manager.borrow_mut(),
                 memory,
                 retired_epoch,
                 max_cycles,
@@ -825,11 +791,12 @@ impl RewriteGraphPma {
         min_retired_epochs_before_sweep: u64,
     ) -> Result<GraphMaintenanceBatchWriteSummary, WritebackError> {
         let queue_storage_before = Some(self.current_maintenance_queue_storage_snapshot(memory)?);
-        let mut summary = self.graph
+        let mut summary = self
+            .graph
             .run_queued_maintenance_cycles_with_segment_replacement_and_write(
                 vertex_refs,
                 forward_base_edge_ids_by_ordinal,
-                &mut self.manager,
+                &mut self.manager.borrow_mut(),
                 memory,
                 retired_epoch,
                 max_cycles,
@@ -857,7 +824,7 @@ impl RewriteGraphPma {
                 ))?;
         let (refreshed_forward_vertices, refreshed_reverse_vertices) = self
             .graph
-            .refresh_and_write_dirty_to_stable_memory(&mut self.manager, memory)?;
+            .refresh_and_write_dirty_to_stable_memory(&mut self.manager.borrow_mut(), memory)?;
         let summary = RewriteGraphMutationWriteSummary {
             mutation,
             refreshed: RewriteRefreshedVertices::new(
@@ -882,7 +849,7 @@ impl RewriteGraphPma {
                 ))?;
         let (refreshed_forward_vertices, refreshed_reverse_vertices) = self
             .graph
-            .refresh_and_write_dirty_to_stable_memory(&mut self.manager, memory)?;
+            .refresh_and_write_dirty_to_stable_memory(&mut self.manager.borrow_mut(), memory)?;
         let summary = RewriteGraphMutationWriteSummary {
             mutation,
             refreshed: RewriteRefreshedVertices::new(
@@ -894,24 +861,21 @@ impl RewriteGraphPma {
         Ok(summary)
     }
 
-    pub fn begin_batch_mutation<'a, M: Memory>(
+    pub fn begin_batch_mutation<'a>(
         &'a mut self,
         memory: &'a M,
     ) -> RewriteGraphPmaBatchSession<'a, M> {
-        RewriteGraphPmaBatchSession::new(&mut self.graph, &mut self.manager, memory)
+        RewriteGraphPmaBatchSession::new(&mut self.graph, &self.manager, memory)
     }
 
-    pub fn bind<'a, M: Memory>(
-        &'a mut self,
-        memory: &'a M,
-    ) -> RewriteGraphStoreAdapter<'a, Self, M> {
+    pub fn bind<'a>(&'a mut self, memory: &'a M) -> RewriteGraphStoreAdapter<'a, Self> {
         RewriteGraphStoreAdapter::new(self, memory)
     }
 
-    pub fn bind_kernel_overlay<'a, M: Memory>(
+    pub fn bind_kernel_overlay<'a>(
         &'a mut self,
         memory: &'a M,
-    ) -> RewriteGraphPmaKernelOverlay<'a, M> {
+    ) -> RewriteKernelOverlayGraph<'a, &'a mut Self> {
         self.bind(memory).into_kernel_overlay()
     }
 }

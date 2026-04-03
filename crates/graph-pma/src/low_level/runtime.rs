@@ -3,10 +3,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Deref, DerefMut};
 
-use gleaph_graph_kernel::{EdgeId, LabelId};
 use super::edge::{EdgeEntry, LogicalEdgeLocator};
-use super::locator::EdgeLogicalLocatorSidecar;
 use super::ids::{EdgeRef, VertexRef};
+use super::locator::EdgeLogicalLocatorSidecar;
 use super::overflow::{LogOffset, OverflowChain, OverflowEntry};
 use super::surface::{
     BaseNeighborhood, ForwardSurface, LabelNeighborhood, MergedNeighborhoodView, ReverseSurface,
@@ -15,6 +14,7 @@ use super::surface::{
 use super::vertex::{
     EMPTY_LOG_OFFSET, EdgeIndex, VertexEntry, VertexLabelIndexEntry, VertexLabelRange,
 };
+use gleaph_graph_kernel::{EdgeId, LabelId};
 
 /// Minimal read-side runtime for one directional surface.
 ///
@@ -126,7 +126,9 @@ impl SurfaceBaseBacking {
 
     fn get_by_ref(&self, edge_ref: EdgeRef) -> Option<EdgeEntry> {
         match self {
-            Self::Contiguous(entries) => entries.get(usize::try_from(edge_ref.start_slot()).ok()?).copied(),
+            Self::Contiguous(entries) => entries
+                .get(usize::try_from(edge_ref.start_slot()).ok()?)
+                .copied(),
             Self::Segmented(backing) => backing.get_by_ref(edge_ref),
         }
     }
@@ -221,7 +223,10 @@ impl SegmentedBaseBacking {
 
     fn get_by_ref(&self, edge_ref: EdgeRef) -> Option<EdgeEntry> {
         let index = usize::try_from(edge_ref.start_slot()).ok()?;
-        self.segments.get(&edge_ref.segment_id())?.get(index).copied()
+        self.segments
+            .get(&edge_ref.segment_id())?
+            .get(index)
+            .copied()
     }
 
     fn get_slice_by_ref(&self, edge_ref: EdgeRef, count: usize) -> Option<&[EdgeEntry]> {
@@ -294,7 +299,13 @@ impl SegmentedBaseBacking {
             if start > end || end > self.len() {
                 return None;
             }
-            if end_segment_id_mismatch_for_tail(last_segment_id, segment_id, local_start, end, self.len()) {
+            if end_segment_id_mismatch_for_tail(
+                last_segment_id,
+                segment_id,
+                local_start,
+                end,
+                self.len(),
+            ) {
                 return None;
             }
             (last_segment_id, last_entries.len())
@@ -382,7 +393,9 @@ impl SurfaceBaseSegmentLayout {
 
     fn sync_slot_capacity_from_manager(&mut self, segment_id: u32, slot_capacity: u64) {
         let effective = if segment_id == 0 {
-            self.slot_capacity(0).unwrap_or(slot_capacity).max(slot_capacity)
+            self.slot_capacity(0)
+                .unwrap_or(slot_capacity)
+                .max(slot_capacity)
         } else {
             slot_capacity
         };
@@ -493,7 +506,8 @@ impl SurfaceBaseStorage {
     }
 
     pub fn set_segment_slot_capacity(&mut self, segment_id: u32, slot_capacity: u64) {
-        self.segment_layout.set_slot_capacity(segment_id, slot_capacity);
+        self.segment_layout
+            .set_slot_capacity(segment_id, slot_capacity);
     }
 
     pub fn sync_segment_slot_capacity_from_manager(&mut self, segment_id: u32, slot_capacity: u64) {
@@ -525,7 +539,10 @@ impl SurfaceBaseStorage {
     fn span_for_ref_count(&self, edge_ref: EdgeRef, count: usize) -> Option<SurfaceBaseSpan> {
         let start = self.slot_for_ref(edge_ref)?;
         let (_, end_exclusive) = self.backing.global_span_for_ref_count(edge_ref, count)?;
-        Some(SurfaceBaseSpan { start, end_exclusive })
+        Some(SurfaceBaseSpan {
+            start,
+            end_exclusive,
+        })
     }
 
     pub fn edge_ref_for_vertex_logical_index(
@@ -575,7 +592,8 @@ impl SurfaceBaseStorage {
         segment_slot_capacity: u64,
     ) -> Option<usize> {
         let start = self.slot_for_ref(current.edge_ref())?.index;
-        let span_len = usize::try_from(current.reserved_span_len(next, segment_slot_capacity)?).ok()?;
+        let span_len =
+            usize::try_from(current.reserved_span_len(next, segment_slot_capacity)?).ok()?;
         start.checked_add(span_len)
     }
 
@@ -592,7 +610,10 @@ impl SurfaceBaseStorage {
         let start = self.slot_for_ref(current.edge_ref())?;
         let end_exclusive =
             self.capacity_end_exclusive_for_vertex(current, next, segment_slot_capacity)?;
-        Some(SurfaceBaseSpan { start, end_exclusive })
+        Some(SurfaceBaseSpan {
+            start,
+            end_exclusive,
+        })
     }
 
     pub fn live_slice_for_vertex(&self, current: VertexEntry) -> Option<&[EdgeEntry]> {
@@ -649,8 +670,9 @@ impl SurfaceBaseStorage {
     ) -> Option<usize> {
         let live_span = self.live_span_for_vertex(current)?;
         let reserved_span = self.reserved_span_for_vertex(current, next, segment_slot_capacity)?;
-        (live_span.end_exclusive == reserved_span.end_exclusive && reserved_span.end_exclusive == self.len())
-            .then_some(live_span.end_exclusive)
+        (live_span.end_exclusive == reserved_span.end_exclusive
+            && reserved_span.end_exclusive == self.len())
+        .then_some(live_span.end_exclusive)
     }
 
     pub fn window_span_for_vertices(
@@ -663,11 +685,10 @@ impl SurfaceBaseStorage {
         if first.segment_id() != last.segment_id() {
             return None;
         }
-        if let Some(after_last) = after_last {
-            if after_last.segment_id() != first.segment_id() && after_last.start_slot() != 0 {
+        if let Some(after_last) = after_last
+            && after_last.segment_id() != first.segment_id() && after_last.start_slot() != 0 {
                 return None;
             }
-        }
         let start = self.slot_for_ref(first.edge_ref())?;
         let end_exclusive =
             self.capacity_end_exclusive_for_vertex(last, after_last, segment_slot_capacity)?;
@@ -721,10 +742,17 @@ impl SurfaceBaseStorage {
         )
     }
 
-    pub fn append_entry_for_vertex(&mut self, current: VertexEntry, entry: EdgeEntry) -> Option<usize> {
+    pub fn append_entry_for_vertex(
+        &mut self,
+        current: VertexEntry,
+        entry: EdgeEntry,
+    ) -> Option<usize> {
         let slot = self.append_slot_for_vertex(current)?;
         self.push(entry);
-        self.set_segment_slot_capacity(current.segment_id(), u64::try_from(slot.checked_add(1)?).ok()?);
+        self.set_segment_slot_capacity(
+            current.segment_id(),
+            u64::try_from(slot.checked_add(1)?).ok()?,
+        );
         Some(slot)
     }
 
@@ -737,7 +765,10 @@ impl SurfaceBaseStorage {
     ) -> Option<usize> {
         let slot = self.append_slot_for_vertex_with(current, next, segment_slot_capacity)?;
         self.push(entry);
-        self.set_segment_slot_capacity(current.segment_id(), u64::try_from(slot.checked_add(1)?).ok()?);
+        self.set_segment_slot_capacity(
+            current.segment_id(),
+            u64::try_from(slot.checked_add(1)?).ok()?,
+        );
         Some(slot)
     }
 
@@ -1077,7 +1108,8 @@ impl SurfaceDirtyRegions {
 
 impl SurfaceRuntime {
     pub fn set_base_segment_slot_capacity(&mut self, segment_id: u32, slot_capacity: u64) {
-        self.base_entries.set_segment_slot_capacity(segment_id, slot_capacity);
+        self.base_entries
+            .set_segment_slot_capacity(segment_id, slot_capacity);
     }
 
     pub fn sync_base_segment_slot_capacity_from_manager(
@@ -1098,7 +1130,11 @@ impl SurfaceRuntime {
     pub fn vertex_reserved_span_len(&self, ordinal: usize) -> Option<u64> {
         let current = self.vertex_entry(ordinal)?;
         let next = self.vertex_entry(ordinal + 1);
-        current.reserved_span_len(next, self.base_entries.segment_slot_capacity(current.segment_id())?)
+        current.reserved_span_len(
+            next,
+            self.base_entries
+                .segment_slot_capacity(current.segment_id())?,
+        )
     }
 
     /// Derives the reserved base-span length for one vertex ordinal using a
@@ -1344,7 +1380,12 @@ impl SurfaceRuntime {
 
         if self.vertices.is_empty() {
             return Some((
-                BTreeMap::from([(0, SurfaceBaseStorage::iter(&self.base_entries).copied().collect())]),
+                BTreeMap::from([(
+                    0,
+                    SurfaceBaseStorage::iter(&self.base_entries)
+                        .copied()
+                        .collect(),
+                )]),
                 BTreeMap::from([(0, self.base_entries.segment_slot_capacity(0).unwrap_or(0))]),
             ));
         }
@@ -1365,7 +1406,10 @@ impl SurfaceRuntime {
                 after_last,
                 slot_capacity,
             )?;
-            segments.insert(segment_id, self.base_entries.get_slice(start, end)?.to_vec());
+            segments.insert(
+                segment_id,
+                self.base_entries.get_slice(start, end)?.to_vec(),
+            );
             slot_capacities.insert(segment_id, slot_capacity);
             ordinal = end_ordinal_exclusive;
         }
@@ -1493,7 +1537,8 @@ impl SurfaceRuntime {
                 .reserved_slice_for_vertex(
                     current,
                     next,
-                    self.base_entries.segment_slot_capacity(current.segment_id())?,
+                    self.base_entries
+                        .segment_slot_capacity(current.segment_id())?,
                 )?
                 .to_vec(),
         )
@@ -1517,11 +1562,7 @@ impl SurfaceRuntime {
     }
 
     /// Returns the overflow-chain descriptor for one vertex-local neighborhood.
-    pub fn overflow_chain(
-        &self,
-        vertex_ref: VertexRef,
-        ordinal: usize,
-    ) -> Option<OverflowChain> {
+    pub fn overflow_chain(&self, vertex_ref: VertexRef, ordinal: usize) -> Option<OverflowChain> {
         let entry = self.vertex_entry(ordinal)?;
         let head = if entry.has_overflow() {
             LogOffset::new(entry.log_offset)
@@ -1758,9 +1799,9 @@ impl SurfaceRuntime {
         new_entry: EdgeEntry,
     ) -> Option<EdgeEntry> {
         let current = self.vertex_entry(ordinal)?;
-        let old = self
-            .base_entries
-            .replace_live_entry_for_vertex(current, logical_index, new_entry)?;
+        let old =
+            self.base_entries
+                .replace_live_entry_for_vertex(current, logical_index, new_entry)?;
         self.dirty_regions.edge_entries = true;
         self.mark_vertex_dirty(ordinal)?;
         Some(old)
@@ -1776,13 +1817,11 @@ impl SurfaceRuntime {
         let old = self
             .base_entries
             .live_entry_for_vertex(current, logical_index)?;
-        let old = self
-            .base_entries
-            .replace_live_entry_for_vertex(
-                current,
-                logical_index,
-                EdgeEntry::new(old.target, old.meta.with_tombstone(true)),
-            )?;
+        let old = self.base_entries.replace_live_entry_for_vertex(
+            current,
+            logical_index,
+            EdgeEntry::new(old.target, old.meta.with_tombstone(true)),
+        )?;
         self.dirty_regions.edge_entries = true;
         self.mark_vertex_dirty(ordinal)?;
         Some(old)
@@ -1882,10 +1921,13 @@ impl SurfaceRuntime {
         let slot = self.base_entries.reserved_slot_for_vertex_logical_index(
             current,
             next,
-            self.base_entries.segment_slot_capacity(current.segment_id())?,
+            self.base_entries
+                .segment_slot_capacity(current.segment_id())?,
             degree,
         )?;
-        self.base_entries.get(slot).copied()?
+        self.base_entries
+            .get(slot)
+            .copied()?
             .meta
             .is_tombstone()
             .then_some(degree)
@@ -1908,7 +1950,9 @@ impl SurfaceRuntime {
             segment_slot_capacity(current.segment_id())?,
             degree,
         )?;
-        self.base_entries.get(slot).copied()?
+        self.base_entries
+            .get(slot)
+            .copied()?
             .meta
             .is_tombstone()
             .then_some(degree)
@@ -1935,7 +1979,7 @@ impl SurfaceRuntime {
         mut segment_slot_capacity: impl FnMut(u32) -> Option<u64>,
     ) -> Option<BaseInsertDecision> {
         if self
-            .can_append_base_entry_with(ordinal, |segment_id| segment_slot_capacity(segment_id))?
+            .can_append_base_entry_with(ordinal, &mut segment_slot_capacity)?
         {
             let logical_index = usize::try_from(self.vertices.get(ordinal)?.degree).ok()?;
             return Some(BaseInsertDecision::Append { logical_index });
@@ -2004,7 +2048,8 @@ impl SurfaceRuntime {
         let slot = self.base_entries.reserved_slot_for_vertex_logical_index(
             current,
             next,
-            self.base_entries.segment_slot_capacity(current.segment_id())?,
+            self.base_entries
+                .segment_slot_capacity(current.segment_id())?,
             logical_index,
         )?;
         if !self.base_entries.get(slot)?.meta.is_tombstone() {
@@ -2013,7 +2058,8 @@ impl SurfaceRuntime {
         let _ = self.base_entries.replace_reserved_entry_for_vertex(
             current,
             next,
-            self.base_entries.segment_slot_capacity(current.segment_id())?,
+            self.base_entries
+                .segment_slot_capacity(current.segment_id())?,
             logical_index,
             entry,
         )?;
@@ -2103,7 +2149,7 @@ impl SurfaceRuntime {
         mut segment_slot_capacity: impl FnMut(u32) -> Option<u64>,
     ) -> Option<EdgeInsertPath> {
         match self
-            .choose_base_insert_slot_with(ordinal, |segment_id| segment_slot_capacity(segment_id))?
+            .choose_base_insert_slot_with(ordinal, &mut segment_slot_capacity)?
         {
             BaseInsertDecision::Append { .. } => {
                 let inserted = self.append_base_entry_with(ordinal, entry, |segment_id| {
@@ -2123,7 +2169,7 @@ impl SurfaceRuntime {
                         BaseInsertDecision::Append { .. } => return None,
                     },
                     entry,
-                    |segment_id| segment_slot_capacity(segment_id),
+                    segment_slot_capacity,
                 )?;
                 Some(EdgeInsertPath::BaseReuseTombstone {
                     logical_index: inserted,
@@ -2150,7 +2196,8 @@ impl SurfaceRuntime {
         edge_ref: super::ids::EdgeRef,
     ) -> Option<usize> {
         let current = self.vertex_entry(ordinal)?;
-        self.base_entries.logical_index_for_edge_ref(current, edge_ref)
+        self.base_entries
+            .logical_index_for_edge_ref(current, edge_ref)
     }
 
     /// Materializes a contiguous base slice directly from a packed [`EdgeRef`].
@@ -2159,7 +2206,11 @@ impl SurfaceRuntime {
         edge_ref: super::ids::EdgeRef,
         count: usize,
     ) -> Option<Vec<EdgeEntry>> {
-        Some(self.base_entries.get_slice_by_ref(edge_ref, count)?.to_vec())
+        Some(
+            self.base_entries
+                .get_slice_by_ref(edge_ref, count)?
+                .to_vec(),
+        )
     }
 
     /// Materializes the exact-label base subrange as base entries.
@@ -2340,7 +2391,12 @@ impl SurfaceRuntime {
         base_edge_ids: &[EdgeId],
     ) -> Option<EdgeLogicalLocatorSidecar> {
         let mut sidecar = EdgeLogicalLocatorSidecar::new();
-        self.populate_logical_locator_sidecar_for(vertex_ref, ordinal, base_edge_ids, &mut sidecar)?;
+        self.populate_logical_locator_sidecar_for(
+            vertex_ref,
+            ordinal,
+            base_edge_ids,
+            &mut sidecar,
+        )?;
         Some(sidecar)
     }
 
@@ -2359,7 +2415,7 @@ impl SurfaceRuntime {
 
         for ordinal in 0..self.vertices.len() {
             self.populate_logical_locator_sidecar_for(
-                vertex_ids[ordinal].into(),
+                vertex_ids[ordinal],
                 ordinal,
                 &base_edge_ids_by_ordinal[ordinal],
                 sidecar,
@@ -2500,7 +2556,8 @@ impl SurfaceRuntime {
             let capacity_entries = self.base_entries.reserved_slice_for_vertex(
                 current,
                 next,
-                self.base_entries.segment_slot_capacity(current.segment_id())?,
+                self.base_entries
+                    .segment_slot_capacity(current.segment_id())?,
             )?;
             total_base_slots = total_base_slots.checked_add(capacity_entries.len())?;
             reclaimable_tombstones = reclaimable_tombstones.checked_add(
@@ -2556,7 +2613,9 @@ impl SurfaceRuntime {
         let old_first = self.vertex_entry(delta.start_ordinal)?;
         let old_last = self.vertex_entry(last_ordinal)?;
         let after_last = self.vertex_entry(delta.end_ordinal_exclusive);
-        let segment_slot_capacity = self.base_entries.segment_slot_capacity(old_first.segment_id())?;
+        let segment_slot_capacity = self
+            .base_entries
+            .segment_slot_capacity(old_first.segment_id())?;
         let _ = self.base_entries.window_span_for_vertices(
             old_first,
             old_last,
@@ -2689,7 +2748,8 @@ impl ForwardSurfaceRuntime {
     }
 
     pub fn set_base_segment_slot_capacity(&mut self, segment_id: u32, slot_capacity: u64) {
-        self.0.set_base_segment_slot_capacity(segment_id, slot_capacity);
+        self.0
+            .set_base_segment_slot_capacity(segment_id, slot_capacity);
     }
 
     pub fn sync_base_segment_slot_capacity_from_manager(
@@ -2725,7 +2785,11 @@ impl ForwardSurfaceRuntime {
     }
 
     /// Materializes merged read order for one vertex-local neighborhood.
-    pub fn merged_entries_for(&self, vertex_ref: VertexRef, ordinal: usize) -> Option<Vec<EdgeEntry>> {
+    pub fn merged_entries_for(
+        &self,
+        vertex_ref: VertexRef,
+        ordinal: usize,
+    ) -> Option<Vec<EdgeEntry>> {
         self.0.merged_entries_for(vertex_ref, ordinal)
     }
 
@@ -2736,7 +2800,8 @@ impl ForwardSurfaceRuntime {
         ordinal: usize,
         logical_index: usize,
     ) -> Option<LogicalEdgeLocator> {
-        self.0.logical_edge_locator_for(vertex_ref, ordinal, logical_index)
+        self.0
+            .logical_edge_locator_for(vertex_ref, ordinal, logical_index)
     }
 
     /// Resolves whether a locator points at a base slot or an overflow slot.
@@ -2746,7 +2811,8 @@ impl ForwardSurfaceRuntime {
         ordinal: usize,
         locator: LogicalEdgeLocator,
     ) -> Option<ResolvedEdgeSlot> {
-        self.0.resolve_logical_edge_slot(vertex_ref, ordinal, locator)
+        self.0
+            .resolve_logical_edge_slot(vertex_ref, ordinal, locator)
     }
 
     /// Builds a locator sidecar for one forward vertex-local neighborhood.
@@ -2791,7 +2857,8 @@ impl ForwardSurfaceRuntime {
         edge_id: EdgeId,
         entry: EdgeEntry,
     ) -> Option<LogOffset> {
-        self.0.append_overflow_entry(vertex_ref, ordinal, edge_id, entry)
+        self.0
+            .append_overflow_entry(vertex_ref, ordinal, edge_id, entry)
     }
 
     /// Returns whether the forward base interval can accept a tail append.
@@ -2845,7 +2912,8 @@ impl ForwardSurfaceRuntime {
         edge_id: EdgeId,
         new_entry: EdgeEntry,
     ) -> Option<OverflowEntry> {
-        self.0.replace_overflow_entry(vertex_ref, ordinal, edge_id, new_entry)
+        self.0
+            .replace_overflow_entry(vertex_ref, ordinal, edge_id, new_entry)
     }
 
     /// Tombstones one forward overflow entry identified by semantic edge id.
@@ -2855,7 +2923,8 @@ impl ForwardSurfaceRuntime {
         ordinal: usize,
         edge_id: EdgeId,
     ) -> Option<OverflowEntry> {
-        self.0.tombstone_overflow_entry(vertex_ref, ordinal, edge_id)
+        self.0
+            .tombstone_overflow_entry(vertex_ref, ordinal, edge_id)
     }
 
     /// Returns the exact-label base subrange as a typed view.
@@ -2901,7 +2970,8 @@ impl ReverseSurfaceRuntime {
     }
 
     pub fn set_base_segment_slot_capacity(&mut self, segment_id: u32, slot_capacity: u64) {
-        self.0.set_base_segment_slot_capacity(segment_id, slot_capacity);
+        self.0
+            .set_base_segment_slot_capacity(segment_id, slot_capacity);
     }
 
     pub fn sync_base_segment_slot_capacity_from_manager(
@@ -2937,7 +3007,11 @@ impl ReverseSurfaceRuntime {
     }
 
     /// Materializes merged read order for one vertex-local neighborhood.
-    pub fn merged_entries_for(&self, vertex_ref: VertexRef, ordinal: usize) -> Option<Vec<EdgeEntry>> {
+    pub fn merged_entries_for(
+        &self,
+        vertex_ref: VertexRef,
+        ordinal: usize,
+    ) -> Option<Vec<EdgeEntry>> {
         self.0.merged_entries_for(vertex_ref, ordinal)
     }
 
@@ -2948,7 +3022,8 @@ impl ReverseSurfaceRuntime {
         ordinal: usize,
         logical_index: usize,
     ) -> Option<LogicalEdgeLocator> {
-        self.0.logical_edge_locator_for(vertex_ref, ordinal, logical_index)
+        self.0
+            .logical_edge_locator_for(vertex_ref, ordinal, logical_index)
     }
 
     /// Resolves whether a locator points at a base slot or an overflow slot.
@@ -2958,7 +3033,8 @@ impl ReverseSurfaceRuntime {
         ordinal: usize,
         locator: LogicalEdgeLocator,
     ) -> Option<ResolvedEdgeSlot> {
-        self.0.resolve_logical_edge_slot(vertex_ref, ordinal, locator)
+        self.0
+            .resolve_logical_edge_slot(vertex_ref, ordinal, locator)
     }
 
     /// Builds a locator sidecar for one reverse vertex-local neighborhood.
@@ -3003,7 +3079,8 @@ impl ReverseSurfaceRuntime {
         edge_id: EdgeId,
         entry: EdgeEntry,
     ) -> Option<LogOffset> {
-        self.0.append_overflow_entry(vertex_ref, ordinal, edge_id, entry)
+        self.0
+            .append_overflow_entry(vertex_ref, ordinal, edge_id, entry)
     }
 
     /// Returns whether the reverse base interval can accept a tail append.
@@ -3057,7 +3134,8 @@ impl ReverseSurfaceRuntime {
         edge_id: EdgeId,
         new_entry: EdgeEntry,
     ) -> Option<OverflowEntry> {
-        self.0.replace_overflow_entry(vertex_ref, ordinal, edge_id, new_entry)
+        self.0
+            .replace_overflow_entry(vertex_ref, ordinal, edge_id, new_entry)
     }
 
     /// Tombstones one reverse overflow entry identified by semantic edge id.
@@ -3067,7 +3145,8 @@ impl ReverseSurfaceRuntime {
         ordinal: usize,
         edge_id: EdgeId,
     ) -> Option<OverflowEntry> {
-        self.0.tombstone_overflow_entry(vertex_ref, ordinal, edge_id)
+        self.0
+            .tombstone_overflow_entry(vertex_ref, ordinal, edge_id)
     }
 
     /// Returns the exact-label base subrange as a typed view.
@@ -3087,10 +3166,9 @@ mod tests {
     use super::{ForwardSurfaceRuntime, ReverseSurfaceRuntime, SurfaceBaseStorage, SurfaceRuntime};
     use crate::low_level::{
         EMPTY_LOG_OFFSET, EdgeEntry, EdgeIndex, EdgeMeta, EdgeRef, ForwardSurface, LogOffset,
-        OverflowEntry, RegionKind, RegionRef, RegionStorageKind, ResolvedEdgeSlot,
-        ReverseSurface, SurfaceKind, SurfaceRegions, VertexEntry, VertexLabelIndexEntry,
+        OverflowEntry, RegionKind, RegionRef, RegionStorageKind, ResolvedEdgeSlot, ReverseSurface,
+        SurfaceKind, SurfaceRegions, VertexEntry, VertexLabelIndexEntry, VertexLabelRange,
         VertexRef,
-        VertexLabelRange,
     };
 
     fn forward_surface() -> ForwardSurface {
@@ -3293,7 +3371,10 @@ mod tests {
         let edge_ref = runtime.base_edge_ref_for(0, 1).expect("edge ref");
         assert_eq!(edge_ref.segment_id(), 7);
         assert_eq!(edge_ref.start_slot(), 4);
-        assert_eq!(runtime.logical_base_index_for_edge_ref(0, edge_ref), Some(1));
+        assert_eq!(
+            runtime.logical_base_index_for_edge_ref(0, edge_ref),
+            Some(1)
+        );
         assert_eq!(runtime.logical_base_index_for_edge_ref(1, edge_ref), None);
     }
 
@@ -3355,7 +3436,10 @@ mod tests {
         assert_eq!(slot.index, 3);
         assert_eq!(
             storage.get_by_ref(EdgeRef::new(3, 1)),
-            Some(EdgeEntry::new(VertexRef::from(21u8), EdgeMeta::new(4, false)))
+            Some(EdgeEntry::new(
+                VertexRef::from(21u8),
+                EdgeMeta::new(4, false)
+            ))
         );
         assert_eq!(
             storage.get_slice_by_ref(EdgeRef::new(3, 1), 2),
@@ -3373,7 +3457,11 @@ mod tests {
     fn segmented_surface_runtime_reads_base_entries_by_ref() {
         let runtime = SurfaceRuntime {
             layout: forward_surface().layout(),
-            vertices: vec![VertexEntry::new(EdgeIndex::new((3_u64 << 40) | 1), 2, EMPTY_LOG_OFFSET)],
+            vertices: vec![VertexEntry::new(
+                EdgeIndex::new((3_u64 << 40) | 1),
+                2,
+                EMPTY_LOG_OFFSET,
+            )],
             base_entries: super::SurfaceBaseStorage::from_segmented_for_tests(BTreeMap::from([
                 (
                     1,
@@ -3559,7 +3647,10 @@ mod tests {
         );
         assert!(matches!(
             runtime.resolve_logical_edge_slot(vertex.into(), 0, overflow_locator),
-            Some(ResolvedEdgeSlot::Overflow { overflow_index: 0, .. })
+            Some(ResolvedEdgeSlot::Overflow {
+                overflow_index: 0,
+                ..
+            })
         ));
     }
 
@@ -3705,7 +3796,10 @@ mod tests {
 
         runtime
             .base_entries
-            .replace(2, EdgeEntry::new(VertexRef::from(3u8), EdgeMeta::new(7, false)))
+            .replace(
+                2,
+                EdgeEntry::new(VertexRef::from(3u8), EdgeMeta::new(7, false)),
+            )
             .expect("replace slot 2");
         runtime
             .rebuild_label_sidecar_for_vertex(0)
@@ -3829,12 +3923,14 @@ mod tests {
         let old = runtime.tombstone_base_entry(0, 1).expect("tombstoned");
         assert_eq!(old.meta.label_id(), 4);
         assert_eq!(runtime.dirty_vertices().collect::<Vec<_>>(), vec![0]);
-        assert!(runtime
-            .base_entries
-            .get(1)
-            .expect("entry 1")
-            .meta
-            .is_tombstone());
+        assert!(
+            runtime
+                .base_entries
+                .get(1)
+                .expect("entry 1")
+                .meta
+                .is_tombstone()
+        );
     }
 
     #[test]
@@ -3842,7 +3938,10 @@ mod tests {
         let mut runtime = SurfaceRuntime::new(
             forward_surface().layout(),
             vec![VertexEntry::new(EdgeIndex::new(0), 1, EMPTY_LOG_OFFSET)],
-            vec![EdgeEntry::new(VertexRef::from(1u8), EdgeMeta::new(3, false))],
+            vec![EdgeEntry::new(
+                VertexRef::from(1u8),
+                EdgeMeta::new(3, false),
+            )],
             Vec::new(),
             Vec::new(),
             Vec::new(),

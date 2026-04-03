@@ -2,10 +2,10 @@ use gleaph_graph_kernel::{EdgeId, EdgeRecord, NodeRecord};
 
 use crate::facade::{
     RewriteBootstrapEdgeProjection, RewriteBootstrapGraphProjection,
-    RewriteBootstrapVerticesProjection, RewriteEdgeLogicalLocatorMapping, RewriteEdgeWriteOperation,
-    RewriteEdgeWriteProjection, RewriteEnsureCapacityProjection, RewriteInsertEdgeProjection,
-    RewriteNodeDeleteProjection, RewritePropertyMutationWriteSummary, RewriteRefreshedVertices,
-    RewriteVertexOrdinalMapping, RewriteWriteEventProjection,
+    RewriteBootstrapVerticesProjection, RewriteEdgeLogicalLocatorMapping,
+    RewriteEdgeWriteOperation, RewriteEdgeWriteProjection, RewriteEnsureCapacityProjection,
+    RewriteInsertEdgeProjection, RewriteNodeDeleteProjection, RewritePropertyMutationWriteSummary,
+    RewriteRefreshedVertices, RewriteVertexOrdinalMapping, RewriteWriteEventProjection,
 };
 use crate::low_level::{EdgeInsertPath, GraphMutationPath, VertexRef};
 use crate::observability::{format_last_write_event, format_write_event_history};

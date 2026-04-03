@@ -33,12 +33,9 @@ impl EdgeIndex {
     /// Returns a new edge index advanced by `delta` `EdgeEntry` slots.
     pub fn checked_add(self, delta: u32) -> Option<Self> {
         let edge_ref = self.as_edge_ref();
-        match edge_ref.start_slot().checked_add(delta as u64) {
-            Some(start_slot) => Some(Self {
+        edge_ref.start_slot().checked_add(delta as u64).map(|start_slot| Self {
                 raw: edge_ref.with_start_slot(start_slot).raw(),
-            }),
-            None => None,
-        }
+            })
     }
 
     /// Returns the packed edge-ref interpretation of this index.

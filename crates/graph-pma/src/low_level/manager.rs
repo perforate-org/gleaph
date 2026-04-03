@@ -188,7 +188,8 @@ impl RegionManager {
         new_slot_capacity: u64,
         retired_epoch: u64,
     ) -> Option<(EdgeSegmentHeader, Option<EdgeSegmentHeader>)> {
-        let new_segment = self.allocate_edge_segment(kind, new_slot_capacity, EdgeSegmentState::Active)?;
+        let new_segment =
+            self.allocate_edge_segment(kind, new_slot_capacity, EdgeSegmentState::Active)?;
         let replaced = if replaced_segment_id == 0 {
             None
         } else {
@@ -896,11 +897,13 @@ mod tests {
                 WasmPages::new(0),
             ),
         );
-        manager.extent_table.insert(crate::low_level::ExtentHeader::new(
-            ExtentId::new(9),
-            ExtentRef::new(StableAddr(999), 320),
-            ExtentId::NULL,
-        ));
+        manager
+            .extent_table
+            .insert(crate::low_level::ExtentHeader::new(
+                ExtentId::new(9),
+                ExtentRef::new(StableAddr(999), 320),
+                ExtentId::NULL,
+            ));
         manager
             .register_edge_segment(
                 RegionKind::ForwardEdgeEntries,
@@ -916,7 +919,10 @@ mod tests {
         assert_eq!(segment.segment_id, 7);
         assert_eq!(segment.slot_capacity, 40);
         assert_eq!(extent.addr, StableAddr(999));
-        assert_eq!(manager.edge_ref_slot_capacity(RegionKind::ForwardEdgeEntries, edge_ref), Some(40));
+        assert_eq!(
+            manager.edge_ref_slot_capacity(RegionKind::ForwardEdgeEntries, edge_ref),
+            Some(40)
+        );
     }
 
     #[test]
@@ -932,11 +938,13 @@ mod tests {
                 WasmPages::new(0),
             ),
         );
-        manager.extent_table.insert(crate::low_level::ExtentHeader::new(
-            ExtentId::new(9),
-            ExtentRef::new(StableAddr(999), 320),
-            ExtentId::NULL,
-        ));
+        manager
+            .extent_table
+            .insert(crate::low_level::ExtentHeader::new(
+                ExtentId::new(9),
+                ExtentRef::new(StableAddr(999), 320),
+                ExtentId::NULL,
+            ));
         let segment_id = manager
             .next_edge_segment_id(RegionKind::ForwardEdgeEntries)
             .expect("segment directory should exist");
@@ -944,7 +952,13 @@ mod tests {
         manager
             .register_edge_segment(
                 RegionKind::ForwardEdgeEntries,
-                EdgeSegmentHeader::new(segment_id, ExtentId::new(9), 40, 0, EdgeSegmentState::Active),
+                EdgeSegmentHeader::new(
+                    segment_id,
+                    ExtentId::new(9),
+                    40,
+                    0,
+                    EdgeSegmentState::Active,
+                ),
             )
             .expect("edge segment registration should succeed");
 
@@ -953,11 +967,17 @@ mod tests {
             .expect("retire should succeed");
         assert_eq!(previous.state, EdgeSegmentState::Active);
         assert_eq!(
-            manager.edge_segment(RegionKind::ForwardEdgeEntries, segment_id).unwrap().state,
+            manager
+                .edge_segment(RegionKind::ForwardEdgeEntries, segment_id)
+                .unwrap()
+                .state,
             EdgeSegmentState::Retired
         );
         assert_eq!(
-            manager.edge_segment(RegionKind::ForwardEdgeEntries, segment_id).unwrap().retired_epoch,
+            manager
+                .edge_segment(RegionKind::ForwardEdgeEntries, segment_id)
+                .unwrap()
+                .retired_epoch,
             42
         );
 
@@ -966,11 +986,17 @@ mod tests {
             .expect("reactivate should succeed");
         assert_eq!(previous.state, EdgeSegmentState::Retired);
         assert_eq!(
-            manager.edge_segment(RegionKind::ForwardEdgeEntries, segment_id).unwrap().state,
+            manager
+                .edge_segment(RegionKind::ForwardEdgeEntries, segment_id)
+                .unwrap()
+                .state,
             EdgeSegmentState::Active
         );
         assert_eq!(
-            manager.edge_segment(RegionKind::ForwardEdgeEntries, segment_id).unwrap().retired_epoch,
+            manager
+                .edge_segment(RegionKind::ForwardEdgeEntries, segment_id)
+                .unwrap()
+                .retired_epoch,
             0
         );
 
@@ -979,7 +1005,10 @@ mod tests {
             .expect("free should succeed");
         assert_eq!(previous.state, EdgeSegmentState::Active);
         assert_eq!(
-            manager.edge_segment(RegionKind::ForwardEdgeEntries, segment_id).unwrap().state,
+            manager
+                .edge_segment(RegionKind::ForwardEdgeEntries, segment_id)
+                .unwrap()
+                .state,
             EdgeSegmentState::Free
         );
     }
@@ -1030,7 +1059,10 @@ mod tests {
             .allocate_edge_segment(RegionKind::ForwardEdgeEntries, 12, EdgeSegmentState::Active)
             .expect("segment allocation should succeed");
         let extent = manager
-            .resolve_edge_ref(RegionKind::ForwardEdgeEntries, EdgeRef::new(segment.segment_id, 0))
+            .resolve_edge_ref(
+                RegionKind::ForwardEdgeEntries,
+                EdgeRef::new(segment.segment_id, 0),
+            )
             .expect("allocated segment should resolve")
             .1;
 
@@ -1085,7 +1117,10 @@ mod tests {
             .allocate_edge_segment(RegionKind::ForwardEdgeEntries, 10, EdgeSegmentState::Active)
             .expect("re-allocation should succeed");
         let reused_extent = manager
-            .resolve_edge_ref(RegionKind::ForwardEdgeEntries, EdgeRef::new(reused.segment_id, 0))
+            .resolve_edge_ref(
+                RegionKind::ForwardEdgeEntries,
+                EdgeRef::new(reused.segment_id, 0),
+            )
             .expect("reused segment should resolve")
             .1;
         assert_eq!(reused_extent.len_bytes, 80);

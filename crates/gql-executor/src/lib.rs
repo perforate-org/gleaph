@@ -2008,10 +2008,11 @@ mod tests {
     };
     use gleaph_graph_pma::facade::RewriteWriteEventProjection;
     use gleaph_graph_pma::integration::{RewriteOverlayEdgeMutationKind, RewriteOverlayWriteEvent};
-    use gleaph_graph_pma::low_level::GraphMutationPath;
+    use gleaph_graph_pma::low_level::{BucketSizeInPages, GraphMutationPath};
     use gleaph_graph_pma::observability::project_overlay_write_event;
     use gleaph_graph_pma::property_index::PropertyIndexNodeStoreMutationKind;
     use gleaph_graph_pma::{GraphPma, VecMemory};
+    use std::rc::Rc;
 
     use self::backend_debug_helpers::{expect_graph_execution, expect_rewrite_overlay_execution};
     use self::overlay_test_helpers::{
@@ -2036,13 +2037,17 @@ mod tests {
     /// while running on top of graph-pma.
     struct InMemoryGraph {
         facade: RefCell<GraphPma>,
-        memory: VecMemory,
+        memory: Rc<RefCell<VecMemory>>,
     }
 
     impl InMemoryGraph {
         fn new() -> Self {
-            let memory = VecMemory::default();
-            let facade = GraphPma::bootstrap_empty(&memory).expect("bootstrap graph-pma");
+            let memory = Rc::new(RefCell::new(VecMemory::default()));
+            let facade = GraphPma::bootstrap_empty_with_bucket_size_using_memory_rc(
+                BucketSizeInPages::DEFAULT,
+                Rc::clone(&memory),
+            )
+            .expect("bootstrap graph-pma");
             Self {
                 facade: RefCell::new(facade),
                 memory,
@@ -2051,15 +2056,17 @@ mod tests {
 
         fn with_overlay<R>(&self, f: impl FnOnce(&dyn GraphRead) -> R) -> R {
             let mut facade = self.facade.borrow_mut();
-            let overlay = facade.bind_kernel_overlay(&self.memory);
+            let mem = self.memory.borrow();
+            let overlay = facade.bind_kernel_overlay(&*mem);
             f(&overlay)
         }
 
         fn with_overlay_mut<R>(&self, f: impl FnOnce(&mut dyn GraphWrite) -> R) -> R {
             let mut facade = self.facade.borrow_mut();
-            let mut overlay = facade.bind_kernel_overlay(&self.memory);
+            let mem = self.memory.borrow();
+            let mut overlay = facade.bind_kernel_overlay(&*mem);
             let out = f(&mut overlay);
-            let _ = facade.try_refresh_and_write_dirty_to_stable_memory(&self.memory);
+            let _ = facade.try_refresh_and_write_dirty_to_stable_memory(&*mem);
             out
         }
 
@@ -2297,8 +2304,8 @@ mod tests {
         use gleaph_graph_pma::RewriteVecMemory;
         use gleaph_graph_pma::facade::RewriteWriteEventProjection;
         use gleaph_graph_pma::integration::{
-            KernelBootstrapGraphSpec, RewriteGraphPmaKernelHarness, RewriteGraphPmaKernelOverlay,
-            RewriteOverlayWriteEvent,
+            KernelBootstrapGraphSpec, RewriteGraphPmaKernelHarness,
+            RewriteGraphPmaKernelHarnessOverlay, RewriteOverlayWriteEvent,
         };
         use gleaph_graph_pma::observability::{
             RewriteDiagnosticsView, last_projected_overlay_event, project_overlay_write_history,
@@ -2311,13 +2318,13 @@ mod tests {
         }
 
         pub(super) fn projected_history(
-            graph: &RewriteGraphPmaKernelOverlay<'_, RewriteVecMemory>,
+            graph: &RewriteGraphPmaKernelHarnessOverlay<'_, RewriteVecMemory>,
         ) -> Vec<RewriteWriteEventProjection> {
             project_overlay_write_history(graph.write_history())
         }
 
         pub(super) fn assert_last_projected_event(
-            graph: &RewriteGraphPmaKernelOverlay<'_, RewriteVecMemory>,
+            graph: &RewriteGraphPmaKernelHarnessOverlay<'_, RewriteVecMemory>,
             expected: RewriteWriteEventProjection,
         ) {
             assert_eq!(
@@ -2330,7 +2337,7 @@ mod tests {
             harness: &'a mut RewriteGraphPmaKernelHarness<RewriteVecMemory>,
             spec: &KernelBootstrapGraphSpec,
         ) -> (
-            RewriteGraphPmaKernelOverlay<'a, RewriteVecMemory>,
+            RewriteGraphPmaKernelHarnessOverlay<'a, RewriteVecMemory>,
             gleaph_graph_pma::integration::KernelBootstrapGraphSummary,
         ) {
             let (graph, summary) = harness
@@ -2344,7 +2351,7 @@ mod tests {
             harness: &'a mut RewriteGraphPmaKernelHarness<RewriteVecMemory>,
             uid: &str,
         ) -> (
-            RewriteGraphPmaKernelOverlay<'a, RewriteVecMemory>,
+            RewriteGraphPmaKernelHarnessOverlay<'a, RewriteVecMemory>,
             gleaph_graph_pma::integration::KernelBootstrapGraphSummary,
         ) {
             let spec = super::rewrite_seed_user_uid(uid);
@@ -2357,7 +2364,7 @@ mod tests {
             title: &str,
             weight: i64,
         ) -> (
-            RewriteGraphPmaKernelOverlay<'a, RewriteVecMemory>,
+            RewriteGraphPmaKernelHarnessOverlay<'a, RewriteVecMemory>,
             gleaph_graph_pma::integration::KernelBootstrapGraphSummary,
         ) {
             let spec = super::rewrite_seed_user_post_authored(uid, title, weight);
@@ -2367,7 +2374,7 @@ mod tests {
         pub(super) fn bootstrap_rewrite_overlay_authored_and_liked_posts<'a>(
             harness: &'a mut RewriteGraphPmaKernelHarness<RewriteVecMemory>,
         ) -> (
-            RewriteGraphPmaKernelOverlay<'a, RewriteVecMemory>,
+            RewriteGraphPmaKernelHarnessOverlay<'a, RewriteVecMemory>,
             gleaph_graph_pma::integration::KernelBootstrapGraphSummary,
         ) {
             let spec = super::rewrite_seed_authored_and_liked_posts();
@@ -2375,7 +2382,7 @@ mod tests {
         }
 
         fn assert_overlay_bootstrap_projection_matches_event(
-            graph: &RewriteGraphPmaKernelOverlay<'_, RewriteVecMemory>,
+            graph: &RewriteGraphPmaKernelHarnessOverlay<'_, RewriteVecMemory>,
             summary: &gleaph_graph_pma::integration::KernelBootstrapGraphSummary,
         ) {
             let event_projection = match graph.write_history().last() {
@@ -2414,13 +2421,13 @@ mod tests {
         use gleaph_gql::types::EdgeDirection;
         use gleaph_graph_kernel::{EdgeRecord, GraphRead, GraphWrite, PropertyMap};
         use gleaph_graph_pma::RewriteVecMemory;
-        use gleaph_graph_pma::integration::RewriteGraphPmaKernelOverlay;
+        use gleaph_graph_pma::integration::RewriteGraphPmaKernelHarnessOverlay;
         use gleaph_graph_pma::observability::RewriteDiagnosticsView;
 
         use super::{DEBUG_EDGE_PROPERTY_KEYS, DEBUG_NODE_PROPERTY_KEYS, ExecutionError};
 
         pub(super) fn expect_rewrite_overlay_execution<T>(
-            graph: &RewriteGraphPmaKernelOverlay<'_, RewriteVecMemory>,
+            graph: &RewriteGraphPmaKernelHarnessOverlay<'_, RewriteVecMemory>,
             result: super::super::ExecutionResultExt<T>,
             context: &str,
         ) -> T {
@@ -2458,7 +2465,7 @@ mod tests {
         }
 
         pub(super) fn rewrite_overlay_debug_report(
-            graph: &RewriteGraphPmaKernelOverlay<'_, RewriteVecMemory>,
+            graph: &RewriteGraphPmaKernelHarnessOverlay<'_, RewriteVecMemory>,
         ) -> String {
             RewriteDiagnosticsView::debug_report(graph)
         }
@@ -3899,17 +3906,19 @@ mod tests {
                 .is_empty()
         );
 
-        let memory = harness.memory().clone();
+        drop(graph);
+
+        let mem_clone = (*harness.memory()).clone();
         harness
             .facade_mut()
-            .try_write_all_to_stable_memory(&memory)
+            .try_write_all_to_stable_memory(&mem_clone)
             .expect("flush before reopen");
-        let mut reopened_facade = GraphPma::hydrate_from_stable_memory(
-            harness.facade().manager().clone(),
-            harness.memory(),
-        )
-        .expect("graph should reopen");
-        let reopened = reopened_facade.bind_kernel_overlay(harness.memory());
+        let manager = harness.facade().manager.borrow().clone();
+        let mut reopened_facade =
+            GraphPma::hydrate_from_stable_memory(manager, mem_clone).expect("graph should reopen");
+        let mem_rc = Rc::clone(&reopened_facade.memory);
+        let mem_guard = mem_rc.borrow();
+        let reopened = reopened_facade.bind_kernel_overlay(&*mem_guard);
         assert!(reopened.get_node(post_id).expect("get node").is_none());
     }
 
@@ -4947,36 +4956,46 @@ mod tests {
             .expect("shortest path");
 
         let spec = gleaph_graph_pma::integration::KernelBootstrapGraphSpec::empty()
-            .with_node(gleaph_graph_pma::integration::KernelBootstrapNodeSpec::from_parts(
-                &["U"],
-                &[("name".to_owned(), Value::Text("a".into()))]
-                    .into_iter()
-                    .collect(),
-            ))
-            .with_node(gleaph_graph_pma::integration::KernelBootstrapNodeSpec::from_parts(
-                &["U"],
-                &[("name".to_owned(), Value::Text("b".into()))]
-                    .into_iter()
-                    .collect(),
-            ))
-            .with_node(gleaph_graph_pma::integration::KernelBootstrapNodeSpec::from_parts(
-                &["U"],
-                &[("name".to_owned(), Value::Text("c".into()))]
-                    .into_iter()
-                    .collect(),
-            ))
-            .with_edge(gleaph_graph_pma::integration::KernelBootstrapEdgeSpec::from_parts(
-                0,
-                1,
-                Some("KNOWS"),
-                &PropertyMap::new(),
-            ))
-            .with_edge(gleaph_graph_pma::integration::KernelBootstrapEdgeSpec::from_parts(
-                1,
-                2,
-                Some("KNOWS"),
-                &PropertyMap::new(),
-            ));
+            .with_node(
+                gleaph_graph_pma::integration::KernelBootstrapNodeSpec::from_parts(
+                    &["U"],
+                    &[("name".to_owned(), Value::Text("a".into()))]
+                        .into_iter()
+                        .collect(),
+                ),
+            )
+            .with_node(
+                gleaph_graph_pma::integration::KernelBootstrapNodeSpec::from_parts(
+                    &["U"],
+                    &[("name".to_owned(), Value::Text("b".into()))]
+                        .into_iter()
+                        .collect(),
+                ),
+            )
+            .with_node(
+                gleaph_graph_pma::integration::KernelBootstrapNodeSpec::from_parts(
+                    &["U"],
+                    &[("name".to_owned(), Value::Text("c".into()))]
+                        .into_iter()
+                        .collect(),
+                ),
+            )
+            .with_edge(
+                gleaph_graph_pma::integration::KernelBootstrapEdgeSpec::from_parts(
+                    0,
+                    1,
+                    Some("KNOWS"),
+                    &PropertyMap::new(),
+                ),
+            )
+            .with_edge(
+                gleaph_graph_pma::integration::KernelBootstrapEdgeSpec::from_parts(
+                    1,
+                    2,
+                    Some("KNOWS"),
+                    &PropertyMap::new(),
+                ),
+            );
         let mut harness = bootstrap_empty_rewrite_harness();
         let (graph, _) = harness.bind_overlay_with_graph(&spec).expect("seed");
 
@@ -5022,7 +5041,11 @@ mod tests {
             .expect("exec shortest path");
         }
         let shortest_elapsed = t_shortest.elapsed();
-        assert_eq!(shortest_rows.len(), 2, "expected two reachable destinations");
+        assert_eq!(
+            shortest_rows.len(),
+            2,
+            "expected two reachable destinations"
+        );
 
         eprintln!(
             "GLEAPH_BENCH_PROFILE shortest_path_source_binding scan={scan_elapsed:?} shortest={shortest_elapsed:?} rows={} iters={iterations}",

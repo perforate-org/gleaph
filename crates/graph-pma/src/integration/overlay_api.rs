@@ -1,12 +1,5 @@
 use gleaph_graph_kernel::{EdgeRecord, GraphResult, NodeId, NodeRecord, PropertyMap};
 
-use crate::facade::{
-    RewriteGraphStore, RewriteGraphStoreAdapter, RewritePropertyMutationWriteSummary,
-    RewriteWriteEventProjection,
-};
-use crate::observability::{format_last_write_event, format_write_event_history};
-use crate::stable::Memory;
-
 use super::{
     KernelBootstrapEdgeSpec, KernelBootstrapGraphSpec, KernelBootstrapGraphSummary,
     KernelBootstrapNodeSpec, RewriteKernelBootstrapBridge, RewriteKernelOverlayGraph,
@@ -14,20 +7,25 @@ use super::{
     RewriteOverlayInsertEdgeSummary, RewriteOverlayNodeDeleteSummary, RewriteOverlayWriteEvent,
     bootstrap_kernel_overlay_graph,
 };
+use crate::facade::{
+    RewriteGraphStore, RewriteGraphStoreAdapter, RewritePropertyMutationWriteSummary,
+    RewriteWriteEventProjection,
+};
+use crate::observability::{format_last_write_event, format_write_event_history};
 
-impl<'a, S: RewriteGraphStore, M: Memory> RewriteKernelOverlayGraph<'a, S, M> {
+impl<'a, S: RewriteGraphStore> RewriteKernelOverlayGraph<'a, S> {
     /// Creates one overlay graph from a rewrite bootstrap bridge.
-    pub fn new(bridge: RewriteKernelBootstrapBridge<'a, S, M>) -> Self {
+    pub fn new(bridge: RewriteKernelBootstrapBridge<'a, S>) -> Self {
         Self { bridge }
     }
 
     /// Returns the underlying bootstrap bridge.
-    pub fn bridge(&self) -> &RewriteKernelBootstrapBridge<'a, S, M> {
+    pub fn bridge(&self) -> &RewriteKernelBootstrapBridge<'a, S> {
         &self.bridge
     }
 
     /// Returns mutable access to the underlying bootstrap bridge.
-    pub fn bridge_mut(&mut self) -> &mut RewriteKernelBootstrapBridge<'a, S, M> {
+    pub fn bridge_mut(&mut self) -> &mut RewriteKernelBootstrapBridge<'a, S> {
         &mut self.bridge
     }
 
@@ -94,7 +92,7 @@ impl<'a, S: RewriteGraphStore, M: Memory> RewriteKernelOverlayGraph<'a, S, M> {
     }
 
     /// Consumes the overlay and returns the underlying bootstrap bridge.
-    pub fn into_bridge(self) -> RewriteKernelBootstrapBridge<'a, S, M> {
+    pub fn into_bridge(self) -> RewriteKernelBootstrapBridge<'a, S> {
         self.bridge
     }
 
@@ -136,8 +134,8 @@ impl<'a, S: RewriteGraphStore, M: Memory> RewriteKernelOverlayGraph<'a, S, M> {
     }
 }
 
-impl<'a, S: RewriteGraphStore, M: Memory> RewriteKernelOverlayObservability
-    for RewriteKernelOverlayGraph<'a, S, M>
+impl<'a, S: RewriteGraphStore> RewriteKernelOverlayObservability
+    for RewriteKernelOverlayGraph<'a, S>
 {
     fn last_property_write_summary(&self) -> Option<&RewritePropertyMutationWriteSummary> {
         Self::last_property_write_summary(self)
@@ -176,9 +174,9 @@ impl<'a, S: RewriteGraphStore, M: Memory> RewriteKernelOverlayObservability
     }
 }
 
-impl<'a, S: RewriteGraphStore, M: Memory> RewriteGraphStoreAdapter<'a, S, M> {
+impl<'a, S: RewriteGraphStore> RewriteGraphStoreAdapter<'a, S> {
     /// Converts one bound rewrite adapter into a kernel-facing overlay graph.
-    pub fn into_kernel_overlay(self) -> RewriteKernelOverlayGraph<'a, &'a mut S, M> {
+    pub fn into_kernel_overlay(self) -> RewriteKernelOverlayGraph<'a, &'a mut S> {
         let (store, memory) = self.into_parts();
         RewriteKernelOverlayGraph::new(RewriteKernelBootstrapBridge::new(store, memory))
     }

@@ -1,8 +1,14 @@
+use std::cell::RefCell;
+
 use super::*;
 
 impl<'a, M: Memory> RewriteGraphPmaBatchSession<'a, M> {
     /// Creates one facade-level batch mutation session.
-    pub fn new(graph: &'a mut GraphRuntime, manager: &'a mut RegionManager, memory: &'a M) -> Self {
+    pub fn new(
+        graph: &'a mut GraphRuntime,
+        manager: &'a RefCell<RegionManager>,
+        memory: &'a M,
+    ) -> Self {
         Self {
             inner: GraphBatchMutationSession::new(graph, manager, memory),
         }
@@ -47,9 +53,9 @@ impl<'a, M: Memory> RewriteGraphPmaBatchSession<'a, M> {
     }
 }
 
-impl<'a, S: RewriteGraphStore, M: Memory> RewriteGraphStoreAdapter<'a, S, M> {
+impl<'a, S: RewriteGraphStore> RewriteGraphStoreAdapter<'a, S> {
     /// Creates one adapter over a rewrite store plus stable memory.
-    pub fn new(store: &'a mut S, memory: &'a M) -> Self {
+    pub fn new(store: &'a mut S, memory: &'a S::Mem) -> Self {
         Self { store, memory }
     }
 
@@ -91,7 +97,7 @@ impl<'a, S: RewriteGraphStore, M: Memory> RewriteGraphStoreAdapter<'a, S, M> {
     }
 
     /// Consumes the adapter and returns its wrapped store plus bound memory.
-    pub fn into_parts(self) -> (&'a mut S, &'a M) {
+    pub fn into_parts(self) -> (&'a mut S, &'a S::Mem) {
         (self.store, self.memory)
     }
 
@@ -114,8 +120,11 @@ impl<'a, S: RewriteGraphStore, M: Memory> RewriteGraphStoreAdapter<'a, S, M> {
         vertex_refs: &[VertexRef],
         initial_edges: &[(EdgeId, usize, usize, LabelId)],
     ) -> RewriteGraphPmaResult<RewriteBootstrapGraphWriteSummary> {
-        self.store
-            .bootstrap_vertex_refs_and_edges_and_write(vertex_refs, initial_edges, self.memory)
+        self.store.bootstrap_vertex_refs_and_edges_and_write(
+            vertex_refs,
+            initial_edges,
+            self.memory,
+        )
     }
 
     /// Inserts one logical edge using the bound memory handle.
@@ -178,16 +187,14 @@ impl<'a, S: RewriteGraphStore, M: Memory> RewriteGraphStoreAdapter<'a, S, M> {
     }
 }
 
-impl<'a, M: Memory> RewriteGraphStoreAdapter<'a, RewriteGraphPma, M> {
+impl<'a, M: Memory> RewriteGraphStoreAdapter<'a, RewriteGraphPma<M>> {
     /// Starts one facade-level batch mutation session through the bound adapter.
     pub fn begin_batch_mutation(&'a mut self) -> RewriteGraphPmaBatchSession<'a, M> {
         self.store.begin_batch_mutation(self.memory)
     }
 }
 
-impl<'a, S: RewriteGraphStore, M: Memory> RewriteGraphService
-    for RewriteGraphStoreAdapter<'a, S, M>
-{
+impl<'a, S: RewriteGraphStore> RewriteGraphService for RewriteGraphStoreAdapter<'a, S> {
     fn last_write_event(&self) -> Option<&RewriteFacadeWriteEvent> {
         Self::last_write_event(self)
     }

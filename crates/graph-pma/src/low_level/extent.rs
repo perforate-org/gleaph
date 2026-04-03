@@ -262,17 +262,14 @@ pub enum ExtentGrowthKind {
 /// Lifecycle state for one edge-storage segment.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, CandidType)]
+#[derive(Default)]
 pub enum EdgeSegmentState {
     Active = 0,
     Retired = 1,
+    #[default]
     Free = 2,
 }
 
-impl Default for EdgeSegmentState {
-    fn default() -> Self {
-        Self::Free
-    }
-}
 
 /// Metadata for one contiguous edge-storage segment.
 ///
@@ -328,8 +325,7 @@ impl EdgeSegmentDirectory {
             .checked_sub(1)
             .expect("segment id 0 is reserved as the null sentinel") as usize;
         if index >= self.headers.len() {
-            self.headers
-                .resize(index + 1, EdgeSegmentHeader::default());
+            self.headers.resize(index + 1, EdgeSegmentHeader::default());
         }
         self.headers[index] = header;
     }

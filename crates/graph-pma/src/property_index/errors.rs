@@ -4,9 +4,8 @@ use crate::low_level::RegionKind;
 
 use super::PropertyIndexNodeId;
 
-/// Why [`PropertyIndexNodeStore::incremental_leaf_chain_shape`] (or
-/// [`PropertyIndexNodeStore::try_incremental_leaf_chain_shape`]) could not build a consistent
-/// `(ordered leaf ids, internal ids, fanout)` view.
+/// Legacy error taxonomy for incremental **paged** property-index node chains (pre PIDX v3).
+/// Retained while call sites still map into [`PropertyIndexError`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PropertyIndexLeafChainShapeError {
     LeafOnlyStoreContainsInternalNode,

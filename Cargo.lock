@@ -1523,6 +1523,7 @@ dependencies = [
  "gleaph-gql",
  "gleaph-gql-planner",
  "gleaph-graph-kernel",
+ "ic-stable-structures",
  "roaring",
  "serde",
 ]

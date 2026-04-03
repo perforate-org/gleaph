@@ -133,7 +133,11 @@ mod tests {
 
     #[test]
     fn overflow_chain_is_surface_local_and_vertex_local() {
-        let chain = OverflowChain::new(SurfaceKind::Reverse, VertexRef::from(7u8), LogOffset::new(11));
+        let chain = OverflowChain::new(
+            SurfaceKind::Reverse,
+            VertexRef::from(7u8),
+            LogOffset::new(11),
+        );
 
         assert_eq!(chain.surface, SurfaceKind::Reverse);
         assert_eq!(u64::from(chain.vertex_ref), 7);

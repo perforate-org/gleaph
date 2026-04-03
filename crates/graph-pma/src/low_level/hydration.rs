@@ -9,15 +9,15 @@ use std::mem::size_of;
 use crate::stable::Memory;
 
 use super::edge::{EdgeEntry, EdgeMeta};
+use super::graph::{GraphInsertPolicy, SurfaceVertexWindowReserveHint};
 use super::ids::{EdgeRef, VertexRef};
 use super::manager::RegionManager;
 use super::overflow::{LogOffset, OverflowEntry};
 use super::region::{RegionKind, RegionManagerLayout, RegionRef, RegionStorageKind};
 use super::runtime::{
-    ForwardSurfaceRuntime, ReverseSurfaceRuntime, SurfaceBaseStorage, SurfaceRuntime, SurfaceVertexWindowSummary,
-    summarize_vertex_window_entries,
+    ForwardSurfaceRuntime, ReverseSurfaceRuntime, SurfaceBaseStorage, SurfaceRuntime,
+    SurfaceVertexWindowSummary, summarize_vertex_window_entries,
 };
-use super::graph::{GraphInsertPolicy, SurfaceVertexWindowReserveHint};
 use super::surface::{ForwardSurface, ReverseSurface, SurfaceLayout};
 use super::vertex::{EdgeIndex, VertexEntry, VertexLabelIndexEntry, VertexLabelRange};
 
@@ -31,7 +31,7 @@ const SERIALIZED_LABEL_RANGE_LEN: usize = 12;
 thread_local! {
     /// Reused across dirty surface flushes on this thread to avoid reallocating encode buffers
     /// (hot for repeated `append_empty_vertex` + writeback workloads).
-    static SURFACE_DIRTY_FLUSH_SCRATCH: RefCell<Vec<u8>> = RefCell::new(Vec::new());
+    static SURFACE_DIRTY_FLUSH_SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Reads raw bytes for a logical region.
@@ -114,9 +114,9 @@ impl<'a, M: Memory> StableVertexTableReader<'a, M> {
             .layout
             .region(self.kind)
             .ok_or(HydrationError::MissingRegionDefinition(self.kind))?;
-        let byte_offset = ordinal
-            .checked_mul(SERIALIZED_VERTEX_ENTRY_LEN)
-            .ok_or(HydrationError::RegionTooLarge(self.kind, region.logical_len_bytes))?;
+        let byte_offset = ordinal.checked_mul(SERIALIZED_VERTEX_ENTRY_LEN).ok_or(
+            HydrationError::RegionTooLarge(self.kind, region.logical_len_bytes),
+        )?;
         let logical_len = usize::try_from(region.logical_len_bytes)
             .map_err(|_| HydrationError::RegionTooLarge(self.kind, region.logical_len_bytes))?;
         let end = byte_offset + SERIALIZED_VERTEX_ENTRY_LEN;
@@ -131,29 +131,28 @@ impl<'a, M: Memory> StableVertexTableReader<'a, M> {
                     .manager
                     .region_extent(self.kind)
                     .ok_or(HydrationError::MissingExtentRegion(self.kind))?;
-                let start = extent
-                    .addr
-                    .0
-                    .checked_add(byte_offset as u64)
-                    .ok_or(HydrationError::RegionTooLarge(self.kind, region.logical_len_bytes))?;
+                let start = extent.addr.0.checked_add(byte_offset as u64).ok_or(
+                    HydrationError::RegionTooLarge(self.kind, region.logical_len_bytes),
+                )?;
                 self.memory.read(start, &mut bytes);
             }
             RegionStorageKind::BucketChain => {
-                let bucket_size = usize::try_from(self.manager.bucket_size_bytes())
-                    .map_err(|_| HydrationError::RegionTooLarge(self.kind, region.logical_len_bytes))?;
+                let bucket_size =
+                    usize::try_from(self.manager.bucket_size_bytes()).map_err(|_| {
+                        HydrationError::RegionTooLarge(self.kind, region.logical_len_bytes)
+                    })?;
                 let virtual_bucket_start = (byte_offset / bucket_size) * bucket_size;
                 let in_bucket_offset = byte_offset - virtual_bucket_start;
 
                 let cached = self.cache.get().filter(|entry| {
                     entry.virtual_bucket_start == virtual_bucket_start
-                        && in_bucket_offset + SERIALIZED_VERTEX_ENTRY_LEN <= entry.virtual_bucket_len
+                        && in_bucket_offset + SERIALIZED_VERTEX_ENTRY_LEN
+                            <= entry.virtual_bucket_len
                 });
 
                 if let Some(entry) = cached {
-                    self.memory.read(
-                        entry.real_bucket_addr + in_bucket_offset as u64,
-                        &mut bytes,
-                    );
+                    self.memory
+                        .read(entry.real_bucket_addr + in_bucket_offset as u64, &mut bytes);
                 } else {
                     let bucket_idx = byte_offset / bucket_size;
                     let chain = self
@@ -451,7 +450,8 @@ fn sync_surface_runtime_segment_capacities(
         legacy_segment.slot_capacity,
     );
     for header in manager.edge_segment_directory(kind)?.iter().copied() {
-        surface.sync_base_segment_slot_capacity_from_manager(header.segment_id, header.slot_capacity);
+        surface
+            .sync_base_segment_slot_capacity_from_manager(header.segment_id, header.slot_capacity);
     }
     Some(())
 }
@@ -533,16 +533,10 @@ pub fn hydrate_surface_runtimes_from_stable_memory(
 ) -> Result<HydratedSurfaceRuntimes, HydrationError> {
     let source = StableMemoryRegionByteSource::from_region_manager(manager, memory)?;
     let mut runtimes = hydrate_surface_runtimes_from_layout(&manager.layout, &source)?;
-    runtimes.forward.0.base_entries = hydrate_edge_storage_from_stable_memory(
-        manager,
-        memory,
-        RegionKind::ForwardEdgeEntries,
-    )?;
-    runtimes.reverse.0.base_entries = hydrate_edge_storage_from_stable_memory(
-        manager,
-        memory,
-        RegionKind::ReverseEdgeEntries,
-    )?;
+    runtimes.forward.0.base_entries =
+        hydrate_edge_storage_from_stable_memory(manager, memory, RegionKind::ForwardEdgeEntries)?;
+    runtimes.reverse.0.base_entries =
+        hydrate_edge_storage_from_stable_memory(manager, memory, RegionKind::ReverseEdgeEntries)?;
     let _ = sync_hydrated_surface_runtimes_segment_capacities(&mut runtimes, manager);
     Ok(runtimes)
 }
@@ -601,7 +595,8 @@ pub fn read_vertex_reserved_span_len_from_stable_memory(
         RegionKind::ReverseVertexTable => RegionKind::ReverseEdgeEntries,
         _ => return Ok(None),
     };
-    let Some(slot_capacity) = manager.edge_ref_slot_capacity(edge_region_kind, current.edge_ref()) else {
+    let Some(slot_capacity) = manager.edge_ref_slot_capacity(edge_region_kind, current.edge_ref())
+    else {
         return Ok(None);
     };
     Ok(current.reserved_span_len(next, slot_capacity))
@@ -700,7 +695,11 @@ pub fn read_vertex_base_edge_ref_from_stable_memory(
     if logical_index >= degree {
         return Ok(None);
     }
-    let start_slot = match vertex.edge_ref().start_slot().checked_add(logical_index as u64) {
+    let start_slot = match vertex
+        .edge_ref()
+        .start_slot()
+        .checked_add(logical_index as u64)
+    {
         Some(start_slot) => start_slot,
         None => return Ok(None),
     };
@@ -715,8 +714,13 @@ pub fn read_vertex_base_entry_from_stable_memory(
     ordinal: usize,
     logical_index: usize,
 ) -> Result<Option<EdgeEntry>, HydrationError> {
-    let Some(edge_ref) =
-        read_vertex_base_edge_ref_from_stable_memory(manager, memory, kind, ordinal, logical_index)?
+    let Some(edge_ref) = read_vertex_base_edge_ref_from_stable_memory(
+        manager,
+        memory,
+        kind,
+        ordinal,
+        logical_index,
+    )?
     else {
         return Ok(None);
     };
@@ -724,7 +728,8 @@ pub fn read_vertex_base_entry_from_stable_memory(
         Some(kind) => kind,
         None => return Ok(None),
     };
-    let mut entries = read_edge_entries_by_ref_from_stable_memory(manager, memory, edge_kind, edge_ref, 1)?;
+    let mut entries =
+        read_edge_entries_by_ref_from_stable_memory(manager, memory, edge_kind, edge_ref, 1)?;
     Ok(entries.pop())
 }
 
@@ -738,7 +743,9 @@ pub fn read_vertex_reserved_base_entries_from_stable_memory(
     let Some(vertex) = read_vertex_entry_from_stable_memory(manager, memory, kind, ordinal)? else {
         return Ok(None);
     };
-    let Some(span_len) = read_vertex_reserved_span_len_from_stable_memory(manager, memory, kind, ordinal)? else {
+    let Some(span_len) =
+        read_vertex_reserved_span_len_from_stable_memory(manager, memory, kind, ordinal)?
+    else {
         return Ok(None);
     };
     let edge_kind = match edge_region_kind_for_vertex_table(kind) {
@@ -764,7 +771,8 @@ pub fn summarize_vertex_window_from_stable_memory(
     start_ordinal: usize,
     count: usize,
 ) -> Result<Option<SurfaceVertexWindowSummary>, HydrationError> {
-    let entries = read_vertex_entries_from_stable_memory(manager, memory, kind, start_ordinal, count)?;
+    let entries =
+        read_vertex_entries_from_stable_memory(manager, memory, kind, start_ordinal, count)?;
     Ok(summarize_vertex_window_entries(start_ordinal, &entries))
 }
 
@@ -991,13 +999,19 @@ pub fn write_dirty_surface_runtime_to_stable_memory(
         }
         if dirty.edge_entries {
             let kind = layout.edge_entries_region().region_kind();
-            write_edge_storage_to_stable_memory(manager, memory, kind, &runtime.base_entries, true)?;
+            write_edge_storage_to_stable_memory(
+                manager,
+                memory,
+                kind,
+                &runtime.base_entries,
+                true,
+            )?;
         }
         if dirty.label_index {
             let kind = layout.label_index_region().region_kind();
             let mut wrote_label_incremental = false;
-            if let Some(append_from) = dirty.label_index_append_from {
-                if write_label_index_region_incremental_extent(
+            if let Some(append_from) = dirty.label_index_append_from
+                && write_label_index_region_incremental_extent(
                     manager,
                     memory,
                     kind,
@@ -1007,7 +1021,6 @@ pub fn write_dirty_surface_runtime_to_stable_memory(
                 )? {
                     wrote_label_incremental = true;
                 }
-            }
             if !wrote_label_incremental {
                 encode_label_index_region_into(
                     &runtime.label_index_entries,
@@ -1078,11 +1091,7 @@ pub fn encode_vertex_entries_into(entries: &[VertexEntry], out: &mut Vec<u8>) {
 }
 
 /// Encodes `entries[start..]` into `out` (clears `out` first).
-pub fn encode_vertex_entries_suffix_into(
-    entries: &[VertexEntry],
-    start: usize,
-    out: &mut Vec<u8>,
-) {
+pub fn encode_vertex_entries_suffix_into(entries: &[VertexEntry], start: usize, out: &mut Vec<u8>) {
     encode_vertex_entries_into(entries.get(start..).unwrap_or(&[]), out);
 }
 
@@ -1123,14 +1132,13 @@ fn write_label_index_region_incremental_extent(
     }
     let mut hdr = [0u8; SERIALIZED_LABEL_INDEX_HEADER_LEN];
     memory.read(extent.addr.0, &mut hdr);
-    let old_idx =
-        u32::from_le_bytes(hdr[0..4].try_into().expect("header index count")) as u64;
+    let old_idx = u32::from_le_bytes(hdr[0..4].try_into().expect("header index count")) as u64;
     let old_range_cnt =
         u32::from_le_bytes(hdr[4..8].try_into().expect("header range count")) as u64;
     let new_idx = u64::try_from(index_entries.len())
         .map_err(|_| WritebackError::RegionTooLarge(kind, u64::MAX))?;
-    let new_range_cnt = u64::try_from(ranges.len())
-        .map_err(|_| WritebackError::RegionTooLarge(kind, u64::MAX))?;
+    let new_range_cnt =
+        u64::try_from(ranges.len()).map_err(|_| WritebackError::RegionTooLarge(kind, u64::MAX))?;
     if u64::from(append_from) != old_idx
         || old_range_cnt != new_range_cnt
         || (append_from as usize) > index_entries.len()
@@ -1164,8 +1172,8 @@ fn write_label_index_region_incremental_extent(
     let _ = manager.set_region_logical_len(kind, new_total);
     let idx_u32 = u32::try_from(index_entries.len())
         .map_err(|_| WritebackError::RegionTooLarge(kind, u64::MAX))?;
-    let range_u32 = u32::try_from(ranges.len())
-        .map_err(|_| WritebackError::RegionTooLarge(kind, u64::MAX))?;
+    let range_u32 =
+        u32::try_from(ranges.len()).map_err(|_| WritebackError::RegionTooLarge(kind, u64::MAX))?;
     let mut new_hdr = [0u8; SERIALIZED_LABEL_INDEX_HEADER_LEN];
     new_hdr[0..4].copy_from_slice(&idx_u32.to_le_bytes());
     new_hdr[4..8].copy_from_slice(&range_u32.to_le_bytes());
@@ -1416,11 +1424,19 @@ fn hydrate_edge_storage_from_stable_memory(
         .region(kind)
         .ok_or(HydrationError::MissingRegionDefinition(kind))?;
     let mut segments = BTreeMap::new();
-    segments.insert(0, decode_edge_entries(kind, &read_region_bytes_from_stable_memory(manager, memory, base_region)?)?);
+    segments.insert(
+        0,
+        decode_edge_entries(
+            kind,
+            &read_region_bytes_from_stable_memory(manager, memory, base_region)?,
+        )?,
+    );
 
     if let Some(directory) = manager.edge_segment_directory(kind) {
         for header in directory.iter().copied() {
-            let Some((_, extent)) = manager.resolve_edge_ref(kind, EdgeRef::new(header.segment_id, 0)) else {
+            let Some((_, extent)) =
+                manager.resolve_edge_ref(kind, EdgeRef::new(header.segment_id, 0))
+            else {
                 continue;
             };
             let byte_len = usize::try_from(header.slot_capacity)
@@ -1443,7 +1459,10 @@ fn hydrate_edge_storage_from_stable_memory(
     }
 
     let mut slot_capacities = BTreeMap::new();
-    slot_capacities.insert(0, base_region.logical_len_bytes / SERIALIZED_EDGE_ENTRY_LEN as u64);
+    slot_capacities.insert(
+        0,
+        base_region.logical_len_bytes / SERIALIZED_EDGE_ENTRY_LEN as u64,
+    );
     if let Some(directory) = manager.edge_segment_directory(kind) {
         for header in directory.iter().copied() {
             slot_capacities.insert(header.segment_id, header.slot_capacity);
@@ -1795,6 +1814,24 @@ pub fn decode_label_index_region(
 
     let index_count = u32::from_le_bytes(bytes[0..4].try_into().expect("fixed slice")) as usize;
     let range_count = u32::from_le_bytes(bytes[4..8].try_into().expect("fixed slice")) as usize;
+
+    // Some write paths can clear the header to (0, 0) without shrinking `logical_len_bytes` or
+    // rewriting the trailing index-entry blob. Accept a tail of whole index-entry chunks as
+    // orphaned entries with an empty range table so hydration still succeeds.
+    if index_count == 0 && range_count == 0 && bytes.len() > SERIALIZED_LABEL_INDEX_HEADER_LEN {
+        let tail = &bytes[SERIALIZED_LABEL_INDEX_HEADER_LEN..];
+        if tail.len().is_multiple_of(SERIALIZED_LABEL_INDEX_ENTRY_LEN) {
+            let mut index_entries =
+                Vec::with_capacity(tail.len() / SERIALIZED_LABEL_INDEX_ENTRY_LEN);
+            for chunk in tail.chunks_exact(SERIALIZED_LABEL_INDEX_ENTRY_LEN) {
+                let start = u32::from_le_bytes(chunk[0..4].try_into().expect("fixed slice"));
+                let len = u32::from_le_bytes(chunk[4..8].try_into().expect("fixed slice"));
+                index_entries.push(VertexLabelIndexEntry::new(start, len));
+            }
+            return Ok((index_entries, Vec::new()));
+        }
+    }
+
     let expected_len = SERIALIZED_LABEL_INDEX_HEADER_LEN
         + index_count * SERIALIZED_LABEL_INDEX_ENTRY_LEN
         + range_count * SERIALIZED_LABEL_RANGE_LEN;
@@ -1851,28 +1888,23 @@ mod tests {
         StableVertexTableReader, WritebackError, decode_edge_entries, decode_label_index_region,
         decode_overflow_entries, decode_vertex_entries, encode_edge_entries,
         encode_label_index_region, encode_overflow_entries, encode_vertex_entries,
-        estimate_vertex_window_reserve_hint_from_stable_memory,
-        forward_surface_from_layout, hydrate_forward_surface_runtime,
-        hydrate_reverse_surface_runtime, hydrate_surface_runtime,
+        estimate_vertex_window_reserve_hint_from_stable_memory, forward_surface_from_layout,
+        hydrate_forward_surface_runtime, hydrate_reverse_surface_runtime, hydrate_surface_runtime,
         hydrate_surface_runtimes_from_layout, hydrate_surface_runtimes_from_stable_memory,
-        read_edge_entries_by_ref_from_stable_memory,
-        read_vertex_base_edge_ref_from_stable_memory,
-        read_vertex_base_entry_from_stable_memory,
-        read_vertex_base_entries_from_stable_memory,
-        read_vertex_entry_from_stable_memory, read_vertex_reserved_span_len_from_stable_memory,
-        read_vertex_reserved_base_entries_from_stable_memory,
-        reverse_surface_from_layout,
-        summarize_vertex_window_from_stable_memory,
-        write_dirty_surface_runtime_to_stable_memory,
+        read_edge_entries_by_ref_from_stable_memory, read_vertex_base_edge_ref_from_stable_memory,
+        read_vertex_base_entries_from_stable_memory, read_vertex_base_entry_from_stable_memory,
+        read_vertex_entry_from_stable_memory, read_vertex_reserved_base_entries_from_stable_memory,
+        read_vertex_reserved_span_len_from_stable_memory, reverse_surface_from_layout,
+        summarize_vertex_window_from_stable_memory, write_dirty_surface_runtime_to_stable_memory,
         write_forward_surface_runtime_to_stable_memory, write_surface_runtime_to_stable_memory,
         write_surface_runtimes_to_stable_memory,
     };
     use crate::low_level::{
-        BucketChain, BucketId, BucketSizeInPages, EMPTY_LOG_OFFSET, EdgeEntry, EdgeIndex,
-        EdgeMeta, EdgeRef, EdgeSegmentHeader, EdgeSegmentState, ExtentChain, ExtentId,
-        ForwardSurface, GraphInsertPolicy, LogOffset, OverflowEntry, RegionKind, RegionManager,
-        RegionManagerLayout, RegionRef, RegionStorageKind, ReverseSurface, SurfaceRegions, VertexEntry, VertexRef,
-        VertexLabelIndexEntry, VertexLabelRange, WasmPages,
+        BucketChain, BucketId, BucketSizeInPages, EMPTY_LOG_OFFSET, EdgeEntry, EdgeIndex, EdgeMeta,
+        EdgeRef, EdgeSegmentHeader, EdgeSegmentState, ExtentChain, ExtentId, ForwardSurface,
+        GraphInsertPolicy, LogOffset, OverflowEntry, RegionKind, RegionManager,
+        RegionManagerLayout, RegionRef, RegionStorageKind, ReverseSurface, SurfaceRegions,
+        VertexEntry, VertexLabelIndexEntry, VertexLabelRange, VertexRef, WasmPages,
     };
     use crate::stable::{Memory, VecMemory};
     use std::cell::RefCell;
@@ -2022,8 +2054,10 @@ mod tests {
 
     #[test]
     fn decode_edge_entries_reads_fixed_width_format() {
-        let bytes =
-            encode_edge_entries(&[EdgeEntry::new(VertexRef::from(9u8), EdgeMeta::new(4, false))]);
+        let bytes = encode_edge_entries(&[EdgeEntry::new(
+            VertexRef::from(9u8),
+            EdgeMeta::new(4, false),
+        )]);
         let decoded = decode_edge_entries(RegionKind::ForwardEdgeEntries, &bytes)
             .expect("edge entries should decode");
         assert_eq!(decoded[0].meta.label_id(), 4);
@@ -2129,7 +2163,10 @@ mod tests {
         );
         source.insert(
             RegionKind::ForwardEdgeEntries,
-            encode_edge_entries(&[EdgeEntry::new(VertexRef::from(1u8), EdgeMeta::new(1, false))]),
+            encode_edge_entries(&[EdgeEntry::new(
+                VertexRef::from(1u8),
+                EdgeMeta::new(1, false),
+            )]),
         );
         source.insert(RegionKind::ForwardLabelIndex, Vec::new());
         source.insert(RegionKind::ForwardSegmentLog, Vec::new());
@@ -2150,7 +2187,10 @@ mod tests {
         );
         source.insert(
             RegionKind::ReverseEdgeEntries,
-            encode_edge_entries(&[EdgeEntry::new(VertexRef::from(2u8), EdgeMeta::new(2, false))]),
+            encode_edge_entries(&[EdgeEntry::new(
+                VertexRef::from(2u8),
+                EdgeMeta::new(2, false),
+            )]),
         );
         source.insert(RegionKind::ReverseLabelIndex, Vec::new());
         source.insert(RegionKind::ReverseSegmentLog, Vec::new());
@@ -2195,7 +2235,10 @@ mod tests {
         );
         source.insert(
             RegionKind::ForwardEdgeEntries,
-            encode_edge_entries(&[EdgeEntry::new(VertexRef::from(1u8), EdgeMeta::new(1, false))]),
+            encode_edge_entries(&[EdgeEntry::new(
+                VertexRef::from(1u8),
+                EdgeMeta::new(1, false),
+            )]),
         );
         source.insert(RegionKind::ForwardLabelIndex, Vec::new());
         source.insert(RegionKind::ForwardSegmentLog, Vec::new());
@@ -2205,7 +2248,10 @@ mod tests {
         );
         source.insert(
             RegionKind::ReverseEdgeEntries,
-            encode_edge_entries(&[EdgeEntry::new(VertexRef::from(2u8), EdgeMeta::new(2, false))]),
+            encode_edge_entries(&[EdgeEntry::new(
+                VertexRef::from(2u8),
+                EdgeMeta::new(2, false),
+            )]),
         );
         source.insert(RegionKind::ReverseLabelIndex, Vec::new());
         source.insert(RegionKind::ReverseSegmentLog, Vec::new());
@@ -2359,7 +2405,9 @@ mod tests {
         let mut cursor = chain.head;
         let mut offset = 0usize;
         while !cursor.is_null() && offset < encoded.len() {
-            let header = manager.bucket_header(cursor).expect("bucket header should exist");
+            let header = manager
+                .bucket_header(cursor)
+                .expect("bucket header should exist");
             let len = bucket_size.min(encoded.len() - offset);
             memory.write(header.addr.0, &encoded[offset..offset + len]);
             offset += len;
@@ -2494,7 +2542,11 @@ mod tests {
         let edge_extent = manager
             .region_extent(RegionKind::ForwardEdgeEntries)
             .expect("edge extent");
-        let vertex = VertexEntry::new(EdgeIndex::from(crate::low_level::EdgeRef::new(0, 1)), 2, EMPTY_LOG_OFFSET);
+        let vertex = VertexEntry::new(
+            EdgeIndex::from(crate::low_level::EdgeRef::new(0, 1)),
+            2,
+            EMPTY_LOG_OFFSET,
+        );
         let entries = vec![
             EdgeEntry::new(VertexRef::from(1u8), EdgeMeta::new(1, false)),
             EdgeEntry::new(VertexRef::from(2u8), EdgeMeta::new(2, false)),
@@ -2645,7 +2697,8 @@ mod tests {
         ];
         let memory = TestStableMemory::default();
         memory.write(extent.addr.0, &encode_vertex_entries(&entries));
-        let reader = StableVertexTableReader::new(&manager, &memory, RegionKind::ForwardVertexTable);
+        let reader =
+            StableVertexTableReader::new(&manager, &memory, RegionKind::ForwardVertexTable);
 
         assert_eq!(
             reader.read_vertex_entry(0).expect("read should succeed"),
@@ -2681,24 +2734,33 @@ mod tests {
         let mut cursor = chain.head;
         let mut offset = 0usize;
         while !cursor.is_null() && offset < encoded.len() {
-            let header = manager.bucket_header(cursor).expect("bucket header should exist");
+            let header = manager
+                .bucket_header(cursor)
+                .expect("bucket header should exist");
             let len = bucket_size.min(encoded.len() - offset);
             memory.write(header.addr.0, &encoded[offset..offset + len]);
             offset += len;
             cursor = header.next;
         }
-        let reader = StableVertexTableReader::new(&manager, &memory, RegionKind::ForwardVertexTable);
+        let reader =
+            StableVertexTableReader::new(&manager, &memory, RegionKind::ForwardVertexTable);
 
         assert_eq!(
-            reader.read_vertex_entry(4_095).expect("read should succeed"),
+            reader
+                .read_vertex_entry(4_095)
+                .expect("read should succeed"),
             Some(entries[4_095])
         );
         assert_eq!(
-            reader.read_vertex_entry(4_096).expect("read should succeed"),
+            reader
+                .read_vertex_entry(4_096)
+                .expect("read should succeed"),
             Some(entries[4_096])
         );
         assert_eq!(
-            reader.read_vertex_entry(4_097).expect("read should succeed"),
+            reader
+                .read_vertex_entry(4_097)
+                .expect("read should succeed"),
             Some(entries[4_097])
         );
     }
@@ -2727,13 +2789,16 @@ mod tests {
         let mut cursor = chain.head;
         let mut offset = 0usize;
         while !cursor.is_null() && offset < encoded.len() {
-            let header = manager.bucket_header(cursor).expect("bucket header should exist");
+            let header = manager
+                .bucket_header(cursor)
+                .expect("bucket header should exist");
             let len = bucket_size.min(encoded.len() - offset);
             memory.write(header.addr.0, &encoded[offset..offset + len]);
             offset += len;
             cursor = header.next;
         }
-        let reader = StableVertexTableReader::new(&manager, &memory, RegionKind::ForwardVertexTable);
+        let reader =
+            StableVertexTableReader::new(&manager, &memory, RegionKind::ForwardVertexTable);
 
         let actual = reader
             .read_vertex_entries(4_094, 4)
@@ -2762,7 +2827,9 @@ mod tests {
         let chain = manager
             .bucket_chain(RegionKind::ForwardVertexTable)
             .expect("bucket chain should exist");
-        let head = manager.bucket_header(chain.head).expect("bucket header should exist");
+        let head = manager
+            .bucket_header(chain.head)
+            .expect("bucket header should exist");
         let memory = TestStableMemory::default();
         memory.write(head.addr.0, &encoded);
 
@@ -2805,7 +2872,9 @@ mod tests {
         let chain = manager
             .bucket_chain(RegionKind::ForwardVertexTable)
             .expect("bucket chain should exist");
-        let head = manager.bucket_header(chain.head).expect("bucket header should exist");
+        let head = manager
+            .bucket_header(chain.head)
+            .expect("bucket header should exist");
         let memory = TestStableMemory::default();
         memory.write(head.addr.0, &encoded);
 
@@ -2922,7 +2991,10 @@ mod tests {
             ),
             (
                 RegionKind::ForwardEdgeEntries,
-                encode_edge_entries(&[EdgeEntry::new(VertexRef::from(1u8), EdgeMeta::new(1, false))]),
+                encode_edge_entries(&[EdgeEntry::new(
+                    VertexRef::from(1u8),
+                    EdgeMeta::new(1, false),
+                )]),
             ),
             (RegionKind::ForwardLabelIndex, Vec::new()),
             (RegionKind::ForwardSegmentLog, Vec::new()),
@@ -2932,7 +3004,10 @@ mod tests {
             ),
             (
                 RegionKind::ReverseEdgeEntries,
-                encode_edge_entries(&[EdgeEntry::new(VertexRef::from(2u8), EdgeMeta::new(2, false))]),
+                encode_edge_entries(&[EdgeEntry::new(
+                    VertexRef::from(2u8),
+                    EdgeMeta::new(2, false),
+                )]),
             ),
             (RegionKind::ReverseLabelIndex, Vec::new()),
             (RegionKind::ReverseSegmentLog, Vec::new()),
@@ -3076,7 +3151,10 @@ mod tests {
             ),
             (
                 RegionKind::ForwardEdgeEntries,
-                encode_edge_entries(&[EdgeEntry::new(VertexRef::from(1u8), EdgeMeta::new(1, false))]),
+                encode_edge_entries(&[EdgeEntry::new(
+                    VertexRef::from(1u8),
+                    EdgeMeta::new(1, false),
+                )]),
             ),
             (RegionKind::ForwardLabelIndex, Vec::new()),
             (RegionKind::ForwardSegmentLog, Vec::new()),
@@ -3086,7 +3164,10 @@ mod tests {
             ),
             (
                 RegionKind::ReverseEdgeEntries,
-                encode_edge_entries(&[EdgeEntry::new(VertexRef::from(2u8), EdgeMeta::new(2, false))]),
+                encode_edge_entries(&[EdgeEntry::new(
+                    VertexRef::from(2u8),
+                    EdgeMeta::new(2, false),
+                )]),
             ),
             (RegionKind::ReverseLabelIndex, Vec::new()),
             (RegionKind::ReverseSegmentLog, Vec::new()),
@@ -3171,7 +3252,10 @@ mod tests {
             .expect("forward extent should resolve");
         memory.write(
             forward_extent.addr.0,
-            &encode_edge_entries(&[EdgeEntry::new(VertexRef::from(33u8), EdgeMeta::new(1, false))]),
+            &encode_edge_entries(&[EdgeEntry::new(
+                VertexRef::from(33u8),
+                EdgeMeta::new(1, false),
+            )]),
         );
         let (_, reverse_extent) = manager
             .resolve_edge_ref(
@@ -3181,7 +3265,10 @@ mod tests {
             .expect("reverse extent should resolve");
         memory.write(
             reverse_extent.addr.0,
-            &encode_edge_entries(&[EdgeEntry::new(VertexRef::from(44u8), EdgeMeta::new(2, false))]),
+            &encode_edge_entries(&[EdgeEntry::new(
+                VertexRef::from(44u8),
+                EdgeMeta::new(2, false),
+            )]),
         );
 
         let runtimes = hydrate_surface_runtimes_from_stable_memory(&manager, &memory)
@@ -3304,7 +3391,10 @@ mod tests {
             ),
             (
                 RegionKind::ForwardEdgeEntries,
-                encode_edge_entries(&[EdgeEntry::new(VertexRef::from(10u8), EdgeMeta::new(1, false))]),
+                encode_edge_entries(&[EdgeEntry::new(
+                    VertexRef::from(10u8),
+                    EdgeMeta::new(1, false),
+                )]),
             ),
             (RegionKind::ForwardLabelIndex, Vec::new()),
             (RegionKind::ForwardSegmentLog, Vec::new()),
@@ -3314,7 +3404,10 @@ mod tests {
             ),
             (
                 RegionKind::ReverseEdgeEntries,
-                encode_edge_entries(&[EdgeEntry::new(VertexRef::from(20u8), EdgeMeta::new(2, false))]),
+                encode_edge_entries(&[EdgeEntry::new(
+                    VertexRef::from(20u8),
+                    EdgeMeta::new(2, false),
+                )]),
             ),
             (RegionKind::ReverseLabelIndex, Vec::new()),
             (RegionKind::ReverseSegmentLog, Vec::new()),
@@ -3647,13 +3740,19 @@ mod tests {
             super::ForwardSurfaceRuntime::new(
                 forward_surface_from_layout(&manager.layout).expect("forward layout should exist"),
                 vec![VertexEntry::new(EdgeIndex::new(0), 1, -1)],
-                vec![EdgeEntry::new(VertexRef::from(10u8), EdgeMeta::new(1, false))],
+                vec![EdgeEntry::new(
+                    VertexRef::from(10u8),
+                    EdgeMeta::new(1, false),
+                )],
                 Vec::new(),
             ),
             super::ReverseSurfaceRuntime::new(
                 reverse_surface_from_layout(&manager.layout).expect("reverse layout should exist"),
                 vec![VertexEntry::new(EdgeIndex::new(0), 1, -1)],
-                vec![EdgeEntry::new(VertexRef::from(20u8), EdgeMeta::new(2, false))],
+                vec![EdgeEntry::new(
+                    VertexRef::from(20u8),
+                    EdgeMeta::new(2, false),
+                )],
                 Vec::new(),
             ),
         );
@@ -3731,16 +3830,21 @@ mod tests {
             vec![VertexLabelIndexEntry::new(0, 0)],
             Vec::new(),
         );
-        runtime.set_base_storage(super::SurfaceBaseStorage::from_segmented_with_slot_capacities(
-            BTreeMap::from([
-                (0, Vec::new()),
-                (
-                    explicit.segment_id,
-                    vec![EdgeEntry::new(VertexRef::from(77u8), EdgeMeta::new(9, false))],
-                ),
-            ]),
-            BTreeMap::from([(0, 0_u64), (explicit.segment_id, explicit.slot_capacity)]),
-        ));
+        runtime.set_base_storage(
+            super::SurfaceBaseStorage::from_segmented_with_slot_capacities(
+                BTreeMap::from([
+                    (0, Vec::new()),
+                    (
+                        explicit.segment_id,
+                        vec![EdgeEntry::new(
+                            VertexRef::from(77u8),
+                            EdgeMeta::new(9, false),
+                        )],
+                    ),
+                ]),
+                BTreeMap::from([(0, 0_u64), (explicit.segment_id, explicit.slot_capacity)]),
+            ),
+        );
 
         let memory = VecMemory::default();
         write_surface_runtime_to_stable_memory(&mut manager, &memory, &runtime)
@@ -3808,7 +3912,10 @@ mod tests {
                 VertexEntry::new(EdgeIndex::new(0), 2, -1),
                 VertexEntry::new(EdgeIndex::new(2), 0, -1),
             ],
-            vec![EdgeEntry::new(VertexRef::from(1u8), EdgeMeta::new(1, false))],
+            vec![EdgeEntry::new(
+                VertexRef::from(1u8),
+                EdgeMeta::new(1, false),
+            )],
             Vec::new(),
         );
         let memory = VecMemory::default();

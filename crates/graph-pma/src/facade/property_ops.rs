@@ -1,57 +1,46 @@
+use std::rc::Rc;
+
 use super::*;
 
-impl RewriteGraphPma {
-    fn note_node_property_store_appended_from(&mut self, append_from: usize) {
-        let append_from = u32::try_from(append_from).unwrap_or(u32::MAX);
-        self.node_property_store_append_from = Some(
-            self.node_property_store_append_from
-                .map_or(append_from, |current| current.min(append_from)),
-        );
+use gleaph_gql::Value;
+
+use crate::property_index::{PropertyIndexNodeId, PropertyIndexNodeStoreDelta};
+use crate::property_store::{
+    PropertyKey, StoredPropertyValue, btree_get_edge_property, btree_get_node_property,
+};
+
+impl<M: Memory> RewriteGraphPma<M> {
+    fn validate_property_key_name(property: &str) -> Result<(), PropertyStoreError> {
+        gleaph_gql::name_limits::validate_property_name(property)
+            .map_err(|e| PropertyStoreError::InvalidIdentifier(e.to_string()))
     }
 
-    fn note_edge_property_store_appended_from(&mut self, append_from: usize) {
-        let append_from = u32::try_from(append_from).unwrap_or(u32::MAX);
-        self.edge_property_store_append_from = Some(
-            self.edge_property_store_append_from
-                .map_or(append_from, |current| current.min(append_from)),
-        );
-    }
-
-    pub(super) fn property_index_page_size_bytes(&self) -> u32 {
-        const DEFAULT_PROPERTY_INDEX_PAGE_SIZE_BYTES: u32 = 4096;
-        #[cfg(test)]
-        if let Some(page) = property_index_page_size_test_hook::get() {
-            return page;
+    /// Whether an equality-index key changes for a SET, matching [`PropertyIndexKey`] binary encoding.
+    fn property_equality_key_changes_on_set(old_value: Option<&Value>, new_value: &Value) -> bool {
+        match old_value {
+            None => true,
+            Some(old) => {
+                old.to_binary_bytes()
+                    .expect("Value must encode to binary bytes")
+                    != new_value
+                        .to_binary_bytes()
+                        .expect("Value must encode to binary bytes")
+            }
         }
-        DEFAULT_PROPERTY_INDEX_PAGE_SIZE_BYTES
     }
 
-    fn try_sync_node_property_index_node_store(&mut self) -> Result<(), PropertyIndexError> {
-        #[cfg(test)]
-        if FAIL_NEXT_NODE_PROPERTY_INDEX_SYNC_TEST.swap(false, Ordering::SeqCst) {
-            return Err(PropertyIndexError::LeafPartitionMultiEntryExceedsPrimaryPage);
+    fn property_index_node_store_delta_if_equality_touched(
+        equality_touched: bool,
+    ) -> PropertyIndexNodeStoreDelta {
+        if equality_touched {
+            PropertyIndexNodeStoreDelta {
+                touched_node_ids: vec![PropertyIndexNodeId(1)],
+                allocated_node_ids: Vec::new(),
+                freed_node_ids: Vec::new(),
+            }
+        } else {
+            PropertyIndexNodeStoreDelta::empty()
         }
-        let page_size_bytes = self.property_index_page_size_bytes();
-        self.node_property_index_nodes =
-            PropertyIndexNodeStore::try_from_index(&self.node_property_index, page_size_bytes)?;
-        Ok(())
-    }
-
-    fn try_sync_edge_property_index_node_store(&mut self) -> Result<(), PropertyIndexError> {
-        #[cfg(test)]
-        if FAIL_NEXT_EDGE_PROPERTY_INDEX_SYNC_TEST.swap(false, Ordering::SeqCst) {
-            return Err(PropertyIndexError::LeafPartitionMultiEntryExceedsPrimaryPage);
-        }
-        let page_size_bytes = self.property_index_page_size_bytes();
-        self.edge_property_index_nodes =
-            PropertyIndexNodeStore::try_from_index(&self.edge_property_index, page_size_bytes)?;
-        Ok(())
-    }
-
-    pub(super) fn try_sync_property_index_node_stores(&mut self) -> Result<(), PropertyIndexError> {
-        self.try_sync_node_property_index_node_store()?;
-        self.try_sync_edge_property_index_node_store()?;
-        Ok(())
     }
 
     fn rollback_node_property_store_after_failed_index_bind(
@@ -62,14 +51,16 @@ impl RewriteGraphPma {
     ) -> Result<(), PropertyStoreError> {
         match old_value {
             Some(previous) => {
-                self.node_property_store
-                    .set(PropertyKey::node(node_id, property), previous.clone())?;
+                self.node_property_store.insert(
+                    PropertyKey::node(node_id, property),
+                    StoredPropertyValue(previous.clone()),
+                );
                 let _ =
                     self.insert_node_property_index_binding_with_kind(node_id, property, previous)?;
             }
             None => {
                 self.node_property_store
-                    .remove(PropertyKey::node(node_id, property))?;
+                    .remove(&PropertyKey::node(node_id, property));
             }
         }
         Ok(())
@@ -83,14 +74,16 @@ impl RewriteGraphPma {
     ) -> Result<(), PropertyStoreError> {
         match old_value {
             Some(previous) => {
-                self.edge_property_store
-                    .set(PropertyKey::edge(edge_id, property), previous.clone())?;
+                self.edge_property_store.insert(
+                    PropertyKey::edge(edge_id, property),
+                    StoredPropertyValue(previous.clone()),
+                );
                 let _ =
                     self.insert_edge_property_index_binding_with_kind(edge_id, property, previous)?;
             }
             None => {
                 self.edge_property_store
-                    .remove(PropertyKey::edge(edge_id, property))?;
+                    .remove(&PropertyKey::edge(edge_id, property));
             }
         }
         Ok(())
@@ -102,17 +95,16 @@ impl RewriteGraphPma {
         property: &str,
         value: &Value,
     ) -> Result<(), PropertyStoreError> {
-        let old_len = self.node_property_store.records.len();
-        let old_value = self
-            .node_property_store
-            .get_node_property(node_id, property);
+        Self::validate_property_key_name(property)?;
+        let old_value = btree_get_node_property(&self.node_property_store, node_id, property);
         let _ = self.remove_node_property_index_binding_with_kind(node_id, property)?;
-        self.node_property_store
-            .set(PropertyKey::node(node_id, property), value.clone())?;
+        self.node_property_store.insert(
+            PropertyKey::node(node_id, property),
+            StoredPropertyValue(value.clone()),
+        );
         match self.insert_node_property_index_binding_with_kind(node_id, property, value) {
             Ok(_) => {
                 self.node_property_store_dirty = true;
-                self.note_node_property_store_appended_from(old_len);
                 Ok(())
             }
             Err(e) => {
@@ -132,52 +124,42 @@ impl RewriteGraphPma {
         property: &str,
         value: &Value,
     ) -> Result<RewritePropertyIndexMutationSummary, PropertyStoreError> {
-        let old_len = self.node_property_store.records.len();
-        let before = self.node_property_index_nodes.clone();
-        let old_value = self
-            .node_property_store
-            .get_node_property(node_id, property);
+        Self::validate_property_key_name(property)?;
+        let old_value = btree_get_node_property(&self.node_property_store, node_id, property);
+        let equality_touched =
+            Self::property_equality_key_changes_on_set(old_value.as_ref(), value);
         let mut node_store_operations = Vec::new();
-        let mut fallback_reasons = Vec::new();
-        if let Some(kind) = self.remove_node_property_index_binding_with_kind(node_id, property)? {
-            if kind == PropertyIndexNodeStoreMutationKind::Rebuild {
-                fallback_reasons.push(PropertyIndexFallbackReason::NodeRemoveLocalUnavailable);
-                self.production_metrics.record_property_index_fallback(
-                    PropertyIndexFallbackReason::NodeRemoveLocalUnavailable,
-                );
+        if equality_touched
+            && let Some(kind) =
+                self.remove_node_property_index_binding_with_kind(node_id, property)?
+            {
+                node_store_operations.push(kind);
             }
-            node_store_operations.push(kind);
-        }
-        self.node_property_store
-            .set(PropertyKey::node(node_id, property), value.clone())?;
-        let insert_kind =
-            match self.insert_node_property_index_binding_with_kind(node_id, property, value) {
-                Ok((_key, kind)) => kind,
-                Err(e) => {
-                    self.rollback_node_property_store_after_failed_index_bind(
-                        node_id,
-                        property,
-                        old_value.as_ref(),
-                    )?;
-                    return Err(e.into());
-                }
-            };
-        if insert_kind == PropertyIndexNodeStoreMutationKind::Rebuild {
-            fallback_reasons.push(PropertyIndexFallbackReason::NodeUpsertLocalUnavailable);
-            self.production_metrics.record_property_index_fallback(
-                PropertyIndexFallbackReason::NodeUpsertLocalUnavailable,
-            );
-        }
-        node_store_operations.push(insert_kind);
-        self.node_property_store_dirty = true;
-        self.note_node_property_store_appended_from(old_len);
-        let summary = RewritePropertyIndexMutationSummary::from_delta(
-            self.node_property_index_nodes.diff_against(&before),
-            node_store_operations,
-            fallback_reasons,
+        self.node_property_store.insert(
+            PropertyKey::node(node_id, property),
+            StoredPropertyValue(value.clone()),
         );
-        self.node_property_index_nodes
-            .note_dirty_node_ids(summary.touched_node_ids.iter().copied());
+        if equality_touched {
+            let insert_kind =
+                match self.insert_node_property_index_binding_with_kind(node_id, property, value) {
+                    Ok((_key, kind)) => kind,
+                    Err(e) => {
+                        self.rollback_node_property_store_after_failed_index_bind(
+                            node_id,
+                            property,
+                            old_value.as_ref(),
+                        )?;
+                        return Err(e.into());
+                    }
+                };
+            node_store_operations.push(insert_kind);
+        }
+        self.node_property_store_dirty = true;
+        let summary = RewritePropertyIndexMutationSummary::from_delta(
+            Self::property_index_node_store_delta_if_equality_touched(equality_touched),
+            node_store_operations,
+            Vec::new(),
+        );
         Ok(summary)
     }
 
@@ -186,12 +168,11 @@ impl RewriteGraphPma {
         node_id: NodeId,
         property: &str,
     ) -> Result<(), PropertyStoreError> {
-        let old_len = self.node_property_store.records.len();
+        Self::validate_property_key_name(property)?;
         let _ = self.remove_node_property_index_binding_with_kind(node_id, property)?;
         self.node_property_store
-            .remove(PropertyKey::node(node_id, property))?;
+            .remove(&PropertyKey::node(node_id, property));
         self.node_property_store_dirty = true;
-        self.note_node_property_store_appended_from(old_len);
         Ok(())
     }
 
@@ -200,34 +181,20 @@ impl RewriteGraphPma {
         node_id: NodeId,
         property: &str,
     ) -> Result<RewritePropertyIndexMutationSummary, PropertyStoreError> {
-        let old_len = self.node_property_store.records.len();
-        let before = self.node_property_index_nodes.clone();
+        Self::validate_property_key_name(property)?;
         let node_store_operations: Vec<_> = self
             .remove_node_property_index_binding_with_kind(node_id, property)?
             .into_iter()
             .collect();
-        let fallback_reasons: Vec<_> = node_store_operations
-            .iter()
-            .filter_map(|kind| {
-                (*kind == PropertyIndexNodeStoreMutationKind::Rebuild)
-                    .then_some(PropertyIndexFallbackReason::NodeRemoveLocalUnavailable)
-            })
-            .collect();
-        for reason in &fallback_reasons {
-            self.production_metrics
-                .record_property_index_fallback(*reason);
-        }
+        let equality_touched = !node_store_operations.is_empty();
         self.node_property_store
-            .remove(PropertyKey::node(node_id, property))?;
+            .remove(&PropertyKey::node(node_id, property));
         self.node_property_store_dirty = true;
-        self.note_node_property_store_appended_from(old_len);
         let summary = RewritePropertyIndexMutationSummary::from_delta(
-            self.node_property_index_nodes.diff_against(&before),
+            Self::property_index_node_store_delta_if_equality_touched(equality_touched),
             node_store_operations,
-            fallback_reasons,
+            Vec::new(),
         );
-        self.node_property_index_nodes
-            .note_dirty_node_ids(summary.touched_node_ids.iter().copied());
         Ok(summary)
     }
 
@@ -237,17 +204,16 @@ impl RewriteGraphPma {
         property: &str,
         value: &Value,
     ) -> Result<(), PropertyStoreError> {
-        let old_len = self.edge_property_store.records.len();
-        let old_value = self
-            .edge_property_store
-            .get_edge_property(edge_id, property);
+        Self::validate_property_key_name(property)?;
+        let old_value = btree_get_edge_property(&self.edge_property_store, edge_id, property);
         let _ = self.remove_edge_property_index_binding_with_kind(edge_id, property)?;
-        self.edge_property_store
-            .set(PropertyKey::edge(edge_id, property), value.clone())?;
+        self.edge_property_store.insert(
+            PropertyKey::edge(edge_id, property),
+            StoredPropertyValue(value.clone()),
+        );
         match self.insert_edge_property_index_binding_with_kind(edge_id, property, value) {
             Ok(_) => {
                 self.edge_property_store_dirty = true;
-                self.note_edge_property_store_appended_from(old_len);
                 Ok(())
             }
             Err(e) => {
@@ -267,52 +233,42 @@ impl RewriteGraphPma {
         property: &str,
         value: &Value,
     ) -> Result<RewritePropertyIndexMutationSummary, PropertyStoreError> {
-        let old_len = self.edge_property_store.records.len();
-        let before = self.edge_property_index_nodes.clone();
-        let old_value = self
-            .edge_property_store
-            .get_edge_property(edge_id, property);
+        Self::validate_property_key_name(property)?;
+        let old_value = btree_get_edge_property(&self.edge_property_store, edge_id, property);
+        let equality_touched =
+            Self::property_equality_key_changes_on_set(old_value.as_ref(), value);
         let mut node_store_operations = Vec::new();
-        let mut fallback_reasons = Vec::new();
-        if let Some(kind) = self.remove_edge_property_index_binding_with_kind(edge_id, property)? {
-            if kind == PropertyIndexNodeStoreMutationKind::Rebuild {
-                fallback_reasons.push(PropertyIndexFallbackReason::EdgeRemoveLocalUnavailable);
-                self.production_metrics.record_property_index_fallback(
-                    PropertyIndexFallbackReason::EdgeRemoveLocalUnavailable,
-                );
+        if equality_touched
+            && let Some(kind) =
+                self.remove_edge_property_index_binding_with_kind(edge_id, property)?
+            {
+                node_store_operations.push(kind);
             }
-            node_store_operations.push(kind);
-        }
-        self.edge_property_store
-            .set(PropertyKey::edge(edge_id, property), value.clone())?;
-        let insert_kind =
-            match self.insert_edge_property_index_binding_with_kind(edge_id, property, value) {
-                Ok((_key, kind)) => kind,
-                Err(e) => {
-                    self.rollback_edge_property_store_after_failed_index_bind(
-                        edge_id,
-                        property,
-                        old_value.as_ref(),
-                    )?;
-                    return Err(e.into());
-                }
-            };
-        if insert_kind == PropertyIndexNodeStoreMutationKind::Rebuild {
-            fallback_reasons.push(PropertyIndexFallbackReason::EdgeUpsertLocalUnavailable);
-            self.production_metrics.record_property_index_fallback(
-                PropertyIndexFallbackReason::EdgeUpsertLocalUnavailable,
-            );
-        }
-        node_store_operations.push(insert_kind);
-        self.edge_property_store_dirty = true;
-        self.note_edge_property_store_appended_from(old_len);
-        let summary = RewritePropertyIndexMutationSummary::from_delta(
-            self.edge_property_index_nodes.diff_against(&before),
-            node_store_operations,
-            fallback_reasons,
+        self.edge_property_store.insert(
+            PropertyKey::edge(edge_id, property),
+            StoredPropertyValue(value.clone()),
         );
-        self.edge_property_index_nodes
-            .note_dirty_node_ids(summary.touched_node_ids.iter().copied());
+        if equality_touched {
+            let insert_kind =
+                match self.insert_edge_property_index_binding_with_kind(edge_id, property, value) {
+                    Ok((_key, kind)) => kind,
+                    Err(e) => {
+                        self.rollback_edge_property_store_after_failed_index_bind(
+                            edge_id,
+                            property,
+                            old_value.as_ref(),
+                        )?;
+                        return Err(e.into());
+                    }
+                };
+            node_store_operations.push(insert_kind);
+        }
+        self.edge_property_store_dirty = true;
+        let summary = RewritePropertyIndexMutationSummary::from_delta(
+            Self::property_index_node_store_delta_if_equality_touched(equality_touched),
+            node_store_operations,
+            Vec::new(),
+        );
         Ok(summary)
     }
 
@@ -321,12 +277,11 @@ impl RewriteGraphPma {
         edge_id: EdgeId,
         property: &str,
     ) -> Result<(), PropertyStoreError> {
-        let old_len = self.edge_property_store.records.len();
+        Self::validate_property_key_name(property)?;
         let _ = self.remove_edge_property_index_binding_with_kind(edge_id, property)?;
         self.edge_property_store
-            .remove(PropertyKey::edge(edge_id, property))?;
+            .remove(&PropertyKey::edge(edge_id, property));
         self.edge_property_store_dirty = true;
-        self.note_edge_property_store_appended_from(old_len);
         Ok(())
     }
 
@@ -335,34 +290,20 @@ impl RewriteGraphPma {
         edge_id: EdgeId,
         property: &str,
     ) -> Result<RewritePropertyIndexMutationSummary, PropertyStoreError> {
-        let old_len = self.edge_property_store.records.len();
-        let before = self.edge_property_index_nodes.clone();
+        Self::validate_property_key_name(property)?;
         let node_store_operations: Vec<_> = self
             .remove_edge_property_index_binding_with_kind(edge_id, property)?
             .into_iter()
             .collect();
-        let fallback_reasons: Vec<_> = node_store_operations
-            .iter()
-            .filter_map(|kind| {
-                (*kind == PropertyIndexNodeStoreMutationKind::Rebuild)
-                    .then_some(PropertyIndexFallbackReason::EdgeRemoveLocalUnavailable)
-            })
-            .collect();
-        for reason in &fallback_reasons {
-            self.production_metrics
-                .record_property_index_fallback(*reason);
-        }
+        let equality_touched = !node_store_operations.is_empty();
         self.edge_property_store
-            .remove(PropertyKey::edge(edge_id, property))?;
+            .remove(&PropertyKey::edge(edge_id, property));
         self.edge_property_store_dirty = true;
-        self.note_edge_property_store_appended_from(old_len);
         let summary = RewritePropertyIndexMutationSummary::from_delta(
-            self.edge_property_index_nodes.diff_against(&before),
+            Self::property_index_node_store_delta_if_equality_touched(equality_touched),
             node_store_operations,
-            fallback_reasons,
+            Vec::new(),
         );
-        self.edge_property_index_nodes
-            .note_dirty_node_ids(summary.touched_node_ids.iter().copied());
         Ok(summary)
     }
 
@@ -441,32 +382,55 @@ impl RewriteGraphPma {
     }
 
     pub(super) fn rebuild_property_indices(&mut self) -> Result<(), PropertyStoreError> {
+        // Snapshot property stores before touching the PIDX btree: `clear_new` on the equality
+        // map rewrites allocator pages in stable memory and can clobber neighboring bucket data
+        // if run while other btrees still depend on those bytes.
+        let node_entries: Vec<(PropertyKey, Value)> = self
+            .node_property_store
+            .iter()
+            .filter_map(|e| {
+                let key = e.key();
+                (key.entity_kind == crate::PropertyEntityKind::Node)
+                    .then_some((key.clone(), e.value().0.clone()))
+            })
+            .collect();
+        let edge_entries: Vec<(PropertyKey, Value)> = self
+            .edge_property_store
+            .iter()
+            .filter_map(|e| {
+                let key = e.key();
+                (key.entity_kind == crate::PropertyEntityKind::Edge)
+                    .then_some((key.clone(), e.value().0.clone()))
+            })
+            .collect();
+
         self.node_property_index = PropertyIndex::new(64);
         self.edge_property_index = PropertyIndex::new(64);
-
-        for (key, value) in self.node_property_store.latest_state() {
-            if let Some(value) = value {
-                let node_id = NodeId::try_from(key.entity_id)
-                    .map_err(|_| PropertyStoreError::LengthOverflow)?;
-                let _ = self.insert_node_property_index_binding_with_kind(
-                    node_id,
-                    &key.property_name,
-                    &value,
-                )?;
-            }
+        // Match `hydrate_from_stable_memory`: do not re-init the pixmap btree with payload len 0
+        // when the region already holds a BTR (`BTreeMap::new` would trash stable memory).
+        let btree_rc = Rc::clone(&self.property_index_btree_payload);
+        self.property_equality_map = crate::property_index::hydrate_property_equality_inplace_map(
+            Rc::clone(&self.manager),
+            Rc::clone(&self.memory),
+            Rc::clone(&btree_rc),
+        );
+        self.property_equality_map.clear_new();
+        for (key, v) in node_entries {
+            let node_id =
+                NodeId::try_from(key.entity_id).map_err(|_| PropertyStoreError::LengthOverflow)?;
+            let _ =
+                self.insert_node_property_index_binding_with_kind(node_id, &key.property_name, &v)?;
         }
 
-        for (key, value) in self.edge_property_store.latest_state() {
-            if let Some(value) = value {
-                let _ = self.insert_edge_property_index_binding_with_kind(
-                    key.entity_id,
-                    &key.property_name,
-                    &value,
-                )?;
-            }
+        for (key, v) in edge_entries {
+            let _ = self.insert_edge_property_index_binding_with_kind(
+                key.entity_id,
+                &key.property_name,
+                &v,
+            )?;
         }
 
-        self.try_sync_property_index_node_stores()?;
+        self.property_index_dirty = true;
         Ok(())
     }
 
@@ -476,6 +440,10 @@ impl RewriteGraphPma {
         property: &str,
         value: &Value,
     ) -> Result<(PropertyIndexKey, PropertyIndexNodeStoreMutationKind), PropertyIndexError> {
+        #[cfg(test)]
+        if FAIL_NEXT_NODE_PROPERTY_INDEX_SYNC_TEST.swap(false, Ordering::SeqCst) {
+            return Err(PropertyIndexError::LeafPartitionMultiEntryExceedsPrimaryPage);
+        }
         let key = PropertyIndexKey::node(
             node_id,
             property,
@@ -485,19 +453,10 @@ impl RewriteGraphPma {
         );
         self.node_property_index
             .insert(key.clone(), PropertyIndexEntry::empty());
-        match self
-            .node_property_index_nodes
-            .upsert_leaf_chain_entry_with_kind(key.clone(), PropertyIndexEntry::empty())
-        {
-            Some(operation) => Ok((key, operation)),
-            None => {
-                if let Err(e) = self.try_sync_node_property_index_node_store() {
-                    self.node_property_index.remove(&key);
-                    return Err(e);
-                }
-                Ok((key, PropertyIndexNodeStoreMutationKind::Rebuild))
-            }
-        }
+        self.property_equality_map
+            .insert(key.clone(), PropertyIndexEntry::empty());
+        self.property_index_dirty = true;
+        Ok((key, PropertyIndexNodeStoreMutationKind::LocalUpdate))
     }
 
     fn remove_node_property_index_binding_with_kind(
@@ -505,9 +464,12 @@ impl RewriteGraphPma {
         node_id: NodeId,
         property: &str,
     ) -> Result<Option<PropertyIndexNodeStoreMutationKind>, PropertyIndexError> {
-        if let Some(old_value) = self
-            .node_property_store
-            .get_node_property(node_id, property)
+        #[cfg(test)]
+        if FAIL_NEXT_NODE_PROPERTY_INDEX_SYNC_TEST.swap(false, Ordering::SeqCst) {
+            return Err(PropertyIndexError::LeafPartitionMultiEntryExceedsPrimaryPage);
+        }
+        if let Some(old_value) =
+            btree_get_node_property(&self.node_property_store, node_id, property)
         {
             let key = PropertyIndexKey::node(
                 node_id,
@@ -517,20 +479,9 @@ impl RewriteGraphPma {
                     .expect("Value must encode to binary bytes"),
             );
             self.node_property_index.remove(&key);
-            return match self
-                .node_property_index_nodes
-                .remove_leaf_chain_entry_with_kind(&key)
-            {
-                Some(operation) => Ok(Some(operation)),
-                None => {
-                    if let Err(e) = self.try_sync_node_property_index_node_store() {
-                        self.node_property_index
-                            .insert(key.clone(), PropertyIndexEntry::empty());
-                        return Err(e);
-                    }
-                    Ok(Some(PropertyIndexNodeStoreMutationKind::Rebuild))
-                }
-            };
+            self.property_equality_map.remove(&key);
+            self.property_index_dirty = true;
+            return Ok(Some(PropertyIndexNodeStoreMutationKind::Collapse));
         }
         Ok(None)
     }
@@ -541,6 +492,10 @@ impl RewriteGraphPma {
         property: &str,
         value: &Value,
     ) -> Result<(PropertyIndexKey, PropertyIndexNodeStoreMutationKind), PropertyIndexError> {
+        #[cfg(test)]
+        if FAIL_NEXT_EDGE_PROPERTY_INDEX_SYNC_TEST.swap(false, Ordering::SeqCst) {
+            return Err(PropertyIndexError::LeafPartitionMultiEntryExceedsPrimaryPage);
+        }
         let key = PropertyIndexKey::edge(
             edge_id,
             property,
@@ -550,19 +505,10 @@ impl RewriteGraphPma {
         );
         self.edge_property_index
             .insert(key.clone(), PropertyIndexEntry::empty());
-        match self
-            .edge_property_index_nodes
-            .upsert_leaf_chain_entry_with_kind(key.clone(), PropertyIndexEntry::empty())
-        {
-            Some(operation) => Ok((key, operation)),
-            None => {
-                if let Err(e) = self.try_sync_edge_property_index_node_store() {
-                    self.edge_property_index.remove(&key);
-                    return Err(e);
-                }
-                Ok((key, PropertyIndexNodeStoreMutationKind::Rebuild))
-            }
-        }
+        self.property_equality_map
+            .insert(key.clone(), PropertyIndexEntry::empty());
+        self.property_index_dirty = true;
+        Ok((key, PropertyIndexNodeStoreMutationKind::LocalUpdate))
     }
 
     fn remove_edge_property_index_binding_with_kind(
@@ -570,9 +516,12 @@ impl RewriteGraphPma {
         edge_id: EdgeId,
         property: &str,
     ) -> Result<Option<PropertyIndexNodeStoreMutationKind>, PropertyIndexError> {
-        if let Some(old_value) = self
-            .edge_property_store
-            .get_edge_property(edge_id, property)
+        #[cfg(test)]
+        if FAIL_NEXT_EDGE_PROPERTY_INDEX_SYNC_TEST.swap(false, Ordering::SeqCst) {
+            return Err(PropertyIndexError::LeafPartitionMultiEntryExceedsPrimaryPage);
+        }
+        if let Some(old_value) =
+            btree_get_edge_property(&self.edge_property_store, edge_id, property)
         {
             let key = PropertyIndexKey::edge(
                 edge_id,
@@ -582,20 +531,9 @@ impl RewriteGraphPma {
                     .expect("Value must encode to binary bytes"),
             );
             self.edge_property_index.remove(&key);
-            return match self
-                .edge_property_index_nodes
-                .remove_leaf_chain_entry_with_kind(&key)
-            {
-                Some(operation) => Ok(Some(operation)),
-                None => {
-                    if let Err(e) = self.try_sync_edge_property_index_node_store() {
-                        self.edge_property_index
-                            .insert(key.clone(), PropertyIndexEntry::empty());
-                        return Err(e);
-                    }
-                    Ok(Some(PropertyIndexNodeStoreMutationKind::Rebuild))
-                }
-            };
+            self.property_equality_map.remove(&key);
+            self.property_index_dirty = true;
+            return Ok(Some(PropertyIndexNodeStoreMutationKind::Collapse));
         }
         Ok(None)
     }

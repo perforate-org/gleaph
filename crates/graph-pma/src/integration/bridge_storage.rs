@@ -5,6 +5,11 @@ use gleaph_graph_kernel::{
     EdgeId, EdgeRecord, GraphError, GraphResult, LabelId, NodeId, NodeRecord, PropertyMap,
 };
 
+use super::{
+    RewriteKernelBootstrapBridge, VacuumStats, VertexGcState, VertexLabelIndex,
+    decode_vertex_label_catalog, encode_vertex_label_catalog, graph_error_from_property_store,
+    label_index,
+};
 use crate::facade::{
     RewriteGraphStore, RewritePropertyMutationWriteSummary, RewriteVertexOrdinalMapping,
 };
@@ -17,13 +22,7 @@ use crate::property_index::{
 use crate::property_store::PropertyStoreError;
 use crate::stable::Memory;
 
-use super::{
-    RewriteKernelBootstrapBridge, VacuumStats, VertexGcState, VertexLabelIndex,
-    decode_vertex_label_catalog, encode_vertex_label_catalog, graph_error_from_property_store,
-    label_index,
-};
-
-impl<'a, S: RewriteGraphStore, M: Memory> RewriteKernelBootstrapBridge<'a, S, M> {
+impl<'a, S: RewriteGraphStore> RewriteKernelBootstrapBridge<'a, S> {
     fn property_store_error(err: PropertyStoreError) -> GraphError {
         graph_error_from_property_store(err)
     }
@@ -98,7 +97,7 @@ impl<'a, S: RewriteGraphStore, M: Memory> RewriteKernelBootstrapBridge<'a, S, M>
                 .to_binary_bytes()
                 .expect("Value must encode to binary bytes");
             if let Ok(matches) = scan_node_property_index_value_prefix_from_stable_memory(
-                self.store.manager(),
+                &self.store.manager(),
                 self.memory,
                 property,
                 &encoded_value,
@@ -113,9 +112,9 @@ impl<'a, S: RewriteGraphStore, M: Memory> RewriteKernelBootstrapBridge<'a, S, M>
     }
 
     pub(crate) fn node_property_candidate_ids(&self, property: &str) -> Vec<NodeId> {
-        if !self.store.node_property_store_is_dirty() {
-            if let Ok(matches) = scan_node_property_index_property_prefix_from_stable_memory(
-                self.store.manager(),
+        if !self.store.node_property_store_is_dirty()
+            && let Ok(matches) = scan_node_property_index_property_prefix_from_stable_memory(
+                &self.store.manager(),
                 self.memory,
                 property,
             ) {
@@ -124,7 +123,6 @@ impl<'a, S: RewriteGraphStore, M: Memory> RewriteKernelBootstrapBridge<'a, S, M>
                     .filter_map(|(key, _)| NodeId::try_from(key.entity_id).ok())
                     .collect();
             }
-        }
         self.store.scan_node_ids_by_property(property)
     }
 
@@ -138,7 +136,7 @@ impl<'a, S: RewriteGraphStore, M: Memory> RewriteKernelBootstrapBridge<'a, S, M>
                 .to_binary_bytes()
                 .expect("Value must encode to binary bytes");
             if let Ok(matches) = scan_edge_property_index_value_prefix_from_stable_memory(
-                self.store.manager(),
+                &self.store.manager(),
                 self.memory,
                 property,
                 &encoded_value,
@@ -194,7 +192,7 @@ impl<'a, S: RewriteGraphStore, M: Memory> RewriteKernelBootstrapBridge<'a, S, M>
                 .store
                 .graph()
                 .forward
-                .resolve_logical_edge_slot(locator.vertex_ref.into(), ordinal, locator)
+                .resolve_logical_edge_slot(locator.vertex_ref, ordinal, locator)
                 .and_then(|slot| match slot {
                     crate::ResolvedEdgeSlot::Base { logical_index } => Some(logical_index),
                     crate::ResolvedEdgeSlot::Overflow { .. } => None,
@@ -211,7 +209,7 @@ impl<'a, S: RewriteGraphStore, M: Memory> RewriteKernelBootstrapBridge<'a, S, M>
         self.store
             .graph()
             .reverse
-            .resolve_logical_edge_slot(vertex_ref.into(), ordinal, locator)
+            .resolve_logical_edge_slot(vertex_ref, ordinal, locator)
             .and_then(|slot| match slot {
                 crate::ResolvedEdgeSlot::Base { logical_index } => Some(logical_index),
                 crate::ResolvedEdgeSlot::Overflow { .. } => None,
@@ -316,7 +314,7 @@ impl<'a, S: RewriteGraphStore, M: Memory> RewriteKernelBootstrapBridge<'a, S, M>
             &self.vertex_label_index,
             &self.vertex_gc_state,
         );
-        let manager = self.store.manager_mut();
+        let mut manager = self.store.manager_mut();
         let extent = manager.region_extent(RegionKind::LabelCatalog)?;
         if bytes.len() > usize::try_from(extent.len_bytes).ok()? {
             return None;

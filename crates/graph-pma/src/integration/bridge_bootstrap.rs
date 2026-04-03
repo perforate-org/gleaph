@@ -9,7 +9,6 @@ use crate::facade::{
     RewritePropertyMutationWriteSummary, RewriteRefreshedVertices, RewriteVertexOrdinalMapping,
 };
 use crate::low_level::{EdgeInsertPath, VertexRef};
-use crate::stable::Memory;
 
 use super::{
     OVERLAY_SUMMARY_HISTORY_LIMIT, RewriteKernelBootstrapBridge,
@@ -19,7 +18,7 @@ use super::{
     VertexGcState, VertexLabelIndex,
 };
 
-impl<'a, S: RewriteGraphStore, M: Memory> RewriteKernelBootstrapBridge<'a, S, M> {
+impl<'a, S: RewriteGraphStore> RewriteKernelBootstrapBridge<'a, S> {
     fn rollback_bootstrapped_node_properties(
         &mut self,
         node_id: NodeId,
@@ -34,7 +33,7 @@ impl<'a, S: RewriteGraphStore, M: Memory> RewriteKernelBootstrapBridge<'a, S, M>
     }
 
     /// Creates one bootstrap bridge over a bound rewrite graph adapter.
-    pub fn new(store: S, memory: &'a M) -> Self {
+    pub fn new(store: S, memory: &'a S::Mem) -> Self {
         let mut bridge = Self {
             store,
             memory,
@@ -158,8 +157,8 @@ impl<'a, S: RewriteGraphStore, M: Memory> RewriteKernelBootstrapBridge<'a, S, M>
         refreshed: RewriteRefreshedVertices,
     ) {
         for event in &mut self.write_history {
-            if let RewriteOverlayWriteEvent::Property(summary) = event {
-                if summary.is_pending_stable_flush() {
+            if let RewriteOverlayWriteEvent::Property(summary) = event
+                && summary.is_pending_stable_flush() {
                     summary.flushed_sections = summary.mutation.sections;
                     if !summary.flushed_sections.property_store
                         && !summary.flushed_sections.logical_index
@@ -173,7 +172,6 @@ impl<'a, S: RewriteGraphStore, M: Memory> RewriteKernelBootstrapBridge<'a, S, M>
                     }
                     summary.refreshed = refreshed.clone();
                 }
-            }
         }
         for summary in &mut self.property_write_history {
             if summary.is_pending_stable_flush() {
@@ -250,6 +248,14 @@ impl<'a, S: RewriteGraphStore, M: Memory> RewriteKernelBootstrapBridge<'a, S, M>
         labels: &[String],
         properties: &PropertyMap,
     ) -> GraphResult<NodeRecord> {
+        for label in labels {
+            gleaph_gql::name_limits::validate_label_name(label)
+                .map_err(|e| GraphError::Message(e.to_string()))?;
+        }
+        for name in properties.keys() {
+            gleaph_gql::name_limits::validate_property_name(name)
+                .map_err(|e| GraphError::Message(e.to_string()))?;
+        }
         let next_id = self
             .next_node_id
             .checked_add(1)
@@ -264,10 +270,11 @@ impl<'a, S: RewriteGraphStore, M: Memory> RewriteKernelBootstrapBridge<'a, S, M>
 
         let summary = {
             let _p = crate::bench_profile::PhaseGuard::new("bootstrap_node_vertex_refs_and_write");
-            match self
-                .store
-                .bootstrap_vertex_refs_and_edges_and_write(&[node_id.into()], &[], self.memory)
-            {
+            match self.store.bootstrap_vertex_refs_and_edges_and_write(
+                &[node_id.into()],
+                &[],
+                self.memory,
+            ) {
                 Ok(s) => s,
                 Err(err) => {
                     let _p = crate::bench_profile::PhaseGuard::new("bootstrap_node_rollback_props");
@@ -370,6 +377,14 @@ impl<'a, S: RewriteGraphStore, M: Memory> RewriteKernelBootstrapBridge<'a, S, M>
         properties: &PropertyMap,
         bootstrap_event: bool,
     ) -> GraphResult<EdgeRecord> {
+        if let Some(l) = label {
+            gleaph_gql::name_limits::validate_label_name(l)
+                .map_err(|e| GraphError::Message(e.to_string()))?;
+        }
+        for name in properties.keys() {
+            gleaph_gql::name_limits::validate_property_name(name)
+                .map_err(|e| GraphError::Message(e.to_string()))?;
+        }
         let src_mapping = self
             .vertex_mapping(src)
             .ok_or(GraphError::NodeNotFound(src))?;
@@ -475,9 +490,11 @@ impl<'a, S: RewriteGraphStore, M: Memory> RewriteKernelBootstrapBridge<'a, S, M>
             path,
             EdgeInsertPath::BaseAppend { .. } | EdgeInsertPath::BaseReuseTombstone { .. }
         ) {
-            let Some(src_logical_index) =
-                self.base_logical_index_from_path(path, src_mapping.forward_ordinal, locators.forward)
-            else {
+            let Some(src_logical_index) = self.base_logical_index_from_path(
+                path,
+                src_mapping.forward_ordinal,
+                locators.forward,
+            ) else {
                 return Err(GraphError::Message(
                     "failed to resolve forward base logical index".into(),
                 ));

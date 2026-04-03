@@ -1,9 +1,13 @@
+use std::cell::{Ref, RefMut};
+
 use super::*;
 
 impl<T> RewriteGraphStore for &mut T
 where
     T: RewriteGraphStore + ?Sized,
 {
+    type Mem = T::Mem;
+
     fn last_write_event(&self) -> Option<&RewriteFacadeWriteEvent> {
         (**self).last_write_event()
     }
@@ -12,11 +16,11 @@ where
         (**self).write_history()
     }
 
-    fn manager(&self) -> &RegionManager {
+    fn manager(&self) -> Ref<'_, RegionManager> {
         (**self).manager()
     }
 
-    fn manager_mut(&mut self) -> &mut RegionManager {
+    fn manager_mut(&mut self) -> RefMut<'_, RegionManager> {
         (**self).manager_mut()
     }
 
@@ -28,19 +32,19 @@ where
         (**self).graph_mut()
     }
 
-    fn node_property_store(&self) -> &GraphPropertyAppendLog {
+    fn node_property_store(&self) -> &GraphPropertyStableMap<Self::Mem> {
         (**self).node_property_store()
     }
 
-    fn node_property_store_mut(&mut self) -> &mut GraphPropertyAppendLog {
+    fn node_property_store_mut(&mut self) -> &mut GraphPropertyStableMap<Self::Mem> {
         (**self).node_property_store_mut()
     }
 
-    fn edge_property_store(&self) -> &GraphPropertyAppendLog {
+    fn edge_property_store(&self) -> &GraphPropertyStableMap<Self::Mem> {
         (**self).edge_property_store()
     }
 
-    fn edge_property_store_mut(&mut self) -> &mut GraphPropertyAppendLog {
+    fn edge_property_store_mut(&mut self) -> &mut GraphPropertyStableMap<Self::Mem> {
         (**self).edge_property_store_mut()
     }
 
@@ -288,7 +292,9 @@ where
     }
 }
 
-impl RewriteGraphStore for RewriteGraphPma {
+impl<M: Memory> RewriteGraphStore for RewriteGraphPma<M> {
+    type Mem = M;
+
     fn last_write_event(&self) -> Option<&RewriteFacadeWriteEvent> {
         Self::last_write_event(self)
     }
@@ -297,11 +303,11 @@ impl RewriteGraphStore for RewriteGraphPma {
         Self::write_history(self)
     }
 
-    fn manager(&self) -> &RegionManager {
+    fn manager(&self) -> Ref<'_, RegionManager> {
         Self::manager(self)
     }
 
-    fn manager_mut(&mut self) -> &mut RegionManager {
+    fn manager_mut(&mut self) -> RefMut<'_, RegionManager> {
         Self::manager_mut(self)
     }
 
@@ -313,19 +319,19 @@ impl RewriteGraphStore for RewriteGraphPma {
         Self::graph_mut(self)
     }
 
-    fn node_property_store(&self) -> &GraphPropertyAppendLog {
+    fn node_property_store(&self) -> &GraphPropertyStableMap<M> {
         Self::node_property_store(self)
     }
 
-    fn node_property_store_mut(&mut self) -> &mut GraphPropertyAppendLog {
+    fn node_property_store_mut(&mut self) -> &mut GraphPropertyStableMap<M> {
         Self::node_property_store_mut(self)
     }
 
-    fn edge_property_store(&self) -> &GraphPropertyAppendLog {
+    fn edge_property_store(&self) -> &GraphPropertyStableMap<M> {
         Self::edge_property_store(self)
     }
 
-    fn edge_property_store_mut(&mut self) -> &mut GraphPropertyAppendLog {
+    fn edge_property_store_mut(&mut self) -> &mut GraphPropertyStableMap<M> {
         Self::edge_property_store_mut(self)
     }
 
@@ -548,7 +554,6 @@ impl RewriteGraphStore for RewriteGraphPma {
     ) -> RewriteGraphPmaResult<RewriteBootstrapGraphWriteSummary> {
         Self::bootstrap_vertex_refs_and_edges_and_write(self, vertex_refs, initial_edges, memory)
     }
-
 
     fn insert_edge_pair_with_local_rebalance_and_write(
         &mut self,

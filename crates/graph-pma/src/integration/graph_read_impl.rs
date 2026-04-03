@@ -11,9 +11,7 @@ use gleaph_graph_kernel::{
 
 use super::RewriteKernelOverlayGraph;
 
-impl<'a, S: super::RewriteGraphStore, M: super::Memory> GraphRead
-    for RewriteKernelOverlayGraph<'a, S, M>
-{
+impl<'a, S: super::RewriteGraphStore> GraphRead for RewriteKernelOverlayGraph<'a, S> {
     fn scan_nodes(&self, label: Option<&str>) -> GraphResult<Vec<NodeRecord>> {
         let ids: Vec<NodeId> = if let Some(label_name) = label {
             if let Some(label_id) = self.bridge.lookup_label_id(label_name) {
@@ -256,7 +254,8 @@ impl<'a, S: super::RewriteGraphStore, M: super::Memory> GraphRead
                 let Some(mapping) = self.bridge.vertex_mapping(from) else {
                     return Ok(Vec::new());
                 };
-                let _prof_surf = crate::bench_profile::PhaseGuard::new("expand_single_label_surface");
+                let _prof_surf =
+                    crate::bench_profile::PhaseGuard::new("expand_single_label_surface");
                 let graph = self.bridge.store.graph();
                 let mut ids = BTreeSet::<EdgeId>::new();
                 let mut append_from_surface = |use_forward: bool, ordinal: usize| -> Option<()> {
@@ -341,7 +340,8 @@ impl<'a, S: super::RewriteGraphStore, M: super::Memory> GraphRead
                 let Some(mapping) = self.bridge.vertex_mapping(from) else {
                     return Ok(Vec::new());
                 };
-                let _prof_surf = crate::bench_profile::PhaseGuard::new("expand_any_of_label_surface");
+                let _prof_surf =
+                    crate::bench_profile::PhaseGuard::new("expand_any_of_label_surface");
                 let graph = self.bridge.store.graph();
                 let mut ids = BTreeSet::<EdgeId>::new();
                 let mut append_from_surface = |use_forward: bool, ordinal: usize| -> Option<()> {

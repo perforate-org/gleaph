@@ -199,8 +199,8 @@ const _: [(); 2] = [(); core::mem::size_of::<EdgeMeta>()];
 #[cfg(test)]
 mod tests {
     use super::{EdgeEntry, EdgeMeta, LogicalEdgeLocator, SurfaceKind, SurfaceRegions};
-    use crate::low_level::{RegionKind, RegionRef, RegionStorageKind};
     use crate::low_level::VertexRef;
+    use crate::low_level::{RegionKind, RegionRef, RegionStorageKind};
 
     #[test]
     fn edge_entry_has_expected_abi() {

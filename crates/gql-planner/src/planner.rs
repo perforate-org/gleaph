@@ -12,8 +12,8 @@ use gleaph_gql::type_check::{
     type_check_composite_query, type_check_statement, type_check_statement_block,
     type_diagnostic_from_warning,
 };
-use std::collections::BTreeMap;
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
+use std::collections::BTreeMap;
 
 use crate::anchor::{self, extract_simple_label};
 use crate::cost;
@@ -258,7 +258,7 @@ fn build_plan_core(
             &query.parts,
             stats,
             &conditional_candidates,
-            &binding_kinds,
+            binding_kinds,
             &mut ops,
             &mut annotations,
         )?;
@@ -270,7 +270,7 @@ fn build_plan_core(
                 stage,
                 stats,
                 &conditional_candidates,
-                &binding_kinds,
+                binding_kinds,
                 &mut ops,
                 &mut annotations,
             )?;

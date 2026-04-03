@@ -4,11 +4,11 @@ use std::sync::{Arc, Mutex};
 use gleaph_graph_kernel::EdgeId;
 
 use crate::low_level::{
-    EdgeInsertPath, GraphEnsureCapacitySegmentWriteSummary,
-    GraphEnsureCapacityWriteSummary, GraphInsertResult, GraphInsertSegmentWriteSummary,
-    GraphInsertWriteSummary, GraphMaintenanceBatchWriteSummary,
-    GraphMaintenanceCycleWriteSummary, GraphMaintenanceQueueStorageSnapshot,
-    GraphMaintenanceWorkItem, GraphMutationPath, LogicalEdgeLocator, VertexRef,
+    EdgeInsertPath, GraphEnsureCapacitySegmentWriteSummary, GraphEnsureCapacityWriteSummary,
+    GraphInsertResult, GraphInsertSegmentWriteSummary, GraphInsertWriteSummary,
+    GraphMaintenanceBatchWriteSummary, GraphMaintenanceCycleWriteSummary,
+    GraphMaintenanceQueueStorageSnapshot, GraphMaintenanceWorkItem, GraphMutationPath,
+    LogicalEdgeLocator, VertexRef,
 };
 use crate::property_index::{
     PropertyIndexNodeId, PropertyIndexNodeStoreDelta, PropertyIndexNodeStoreMutationKind,
@@ -380,30 +380,26 @@ impl RewriteFacadeWriteEvent {
             Self::EnsureCapacity(summary) => Some(RewriteWriteEventProjection::EnsureCapacity(
                 RewriteEnsureCapacityProjection::from_summary(summary),
             )),
-            Self::EnsureCapacitySegment(summary) => Some(
-                RewriteWriteEventProjection::EnsureCapacity(
+            Self::EnsureCapacitySegment(summary) => {
+                Some(RewriteWriteEventProjection::EnsureCapacity(
                     RewriteEnsureCapacityProjection::from_segment_summary(summary),
-                ),
-            ),
+                ))
+            }
             Self::InsertEdge(summary) => Some(RewriteWriteEventProjection::InsertEdge(
                 RewriteInsertEdgeProjection::from_summary(summary),
             )),
             Self::InsertEdgeSegment(summary) => Some(RewriteWriteEventProjection::InsertEdge(
                 RewriteInsertEdgeProjection::from_segment_summary(summary),
             )),
-            Self::MaintenanceCycle(summary) => Some(
-                RewriteWriteEventProjection::MaintenanceCycle(
-                    RewriteMaintenanceCycleProjection::from_summary(summary),
-                ),
-            ),
-            Self::MaintenanceBatch(summary) => Some(
-                RewriteWriteEventProjection::MaintenanceBatch(
-                    RewriteMaintenanceBatchProjection::from_summary(summary),
-                ),
-            ),
-            Self::MaintenanceQueue(summary) => Some(
-                RewriteWriteEventProjection::MaintenanceQueue(summary.clone()),
-            ),
+            Self::MaintenanceCycle(summary) => Some(RewriteWriteEventProjection::MaintenanceCycle(
+                RewriteMaintenanceCycleProjection::from_summary(summary),
+            )),
+            Self::MaintenanceBatch(summary) => Some(RewriteWriteEventProjection::MaintenanceBatch(
+                RewriteMaintenanceBatchProjection::from_summary(summary),
+            )),
+            Self::MaintenanceQueue(summary) => Some(RewriteWriteEventProjection::MaintenanceQueue(
+                summary.clone(),
+            )),
             Self::Property(summary) => {
                 Some(RewriteWriteEventProjection::Property(summary.projection()))
             }
@@ -689,10 +685,14 @@ impl RewriteInsertEdgeProjection {
     }
 
     pub(crate) fn from_segment_summary(summary: &GraphInsertSegmentWriteSummary) -> Self {
-        let path = summary.insert.as_ref().and_then(|insert| match insert {
-            GraphInsertResult::Inserted { path, .. } => Some(path),
-            GraphInsertResult::RebalanceRequired(_) => None,
-        }).copied();
+        let path = summary
+            .insert
+            .as_ref()
+            .and_then(|insert| match insert {
+                GraphInsertResult::Inserted { path, .. } => Some(path),
+                GraphInsertResult::RebalanceRequired(_) => None,
+            })
+            .copied();
         let (total_displacement, max_displacement) = summary
             .rebalance
             .as_ref()

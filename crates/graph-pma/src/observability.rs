@@ -4,12 +4,10 @@ use crate::facade::{
     PropertyIndexFallbackReason, RewriteEdgeWriteProjection, RewriteFacadeWriteEvent,
     RewriteGraphPma, RewriteGraphStore, RewriteGraphStoreAdapter,
     RewriteMaintenanceQueueItemProjection, RewriteMaintenanceQueueStorageProjection,
-    RewriteRefreshedVertices,
-    RewriteWriteEventProjection,
+    RewriteRefreshedVertices, RewriteWriteEventProjection,
 };
 use crate::integration::{RewriteKernelOverlayGraph, RewriteOverlayWriteEvent};
 use crate::property_index::{PropertyIndexNodeId, PropertyIndexNodeStoreMutationKind};
-use crate::stable::Memory;
 
 /// Small shared diagnostics boundary over rewrite observability surfaces.
 ///
@@ -201,14 +199,16 @@ pub fn format_write_event_projection(event: &RewriteWriteEventProjection) -> Str
                 summary.window_total_base_slots,
                 summary.total_displacement,
                 summary.max_displacement,
-                summary
-                    .queue_storage_before
-                    .as_ref()
-                    .map(|storage| (storage.logical_len_bytes, storage.queue_len, storage.checksum_valid)),
-                summary
-                    .queue_storage_after
-                    .as_ref()
-                    .map(|storage| (storage.logical_len_bytes, storage.queue_len, storage.checksum_valid)),
+                summary.queue_storage_before.as_ref().map(|storage| (
+                    storage.logical_len_bytes,
+                    storage.queue_len,
+                    storage.checksum_valid
+                )),
+                summary.queue_storage_after.as_ref().map(|storage| (
+                    storage.logical_len_bytes,
+                    storage.queue_len,
+                    storage.checksum_valid
+                )),
                 format_refreshed_vertices(&summary.refreshed)
             )
         }
@@ -218,14 +218,16 @@ pub fn format_write_event_projection(event: &RewriteWriteEventProjection) -> Str
                 summary.cycles,
                 summary.queue_len_before,
                 summary.queue_len_after,
-                summary
-                    .queue_storage_before
-                    .as_ref()
-                    .map(|storage| (storage.logical_len_bytes, storage.queue_len, storage.checksum_valid)),
-                summary
-                    .queue_storage_after
-                    .as_ref()
-                    .map(|storage| (storage.logical_len_bytes, storage.queue_len, storage.checksum_valid)),
+                summary.queue_storage_before.as_ref().map(|storage| (
+                    storage.logical_len_bytes,
+                    storage.queue_len,
+                    storage.checksum_valid
+                )),
+                summary.queue_storage_after.as_ref().map(|storage| (
+                    storage.logical_len_bytes,
+                    storage.queue_len,
+                    storage.checksum_valid
+                )),
                 summary.swept_forward_segments,
                 summary.swept_reverse_segments
             )
@@ -301,9 +303,7 @@ pub fn format_last_write_event(events: &[RewriteWriteEventProjection]) -> Option
     events.last().map(format_write_event_projection)
 }
 
-pub fn format_maintenance_queue_item(
-    item: &RewriteMaintenanceQueueItemProjection,
-) -> String {
+pub fn format_maintenance_queue_item(item: &RewriteMaintenanceQueueItemProjection) -> String {
     format!(
         "maintenance-queue vertex={} anchor={} window=({}, {}) priority={} recent=({:?}, {})",
         NodeId::from(item.vertex_ref),
@@ -316,9 +316,7 @@ pub fn format_maintenance_queue_item(
     )
 }
 
-pub fn format_maintenance_queue(
-    items: &[RewriteMaintenanceQueueItemProjection],
-) -> Vec<String> {
+pub fn format_maintenance_queue(items: &[RewriteMaintenanceQueueItemProjection]) -> Vec<String> {
     items.iter().map(format_maintenance_queue_item).collect()
 }
 
@@ -408,17 +406,13 @@ where
     }
 }
 
-impl<'a, S: RewriteGraphStore, M: Memory> RewriteDiagnosticsView
-    for RewriteGraphStoreAdapter<'a, S, M>
-{
+impl<'a, S: RewriteGraphStore> RewriteDiagnosticsView for RewriteGraphStoreAdapter<'a, S> {
     fn shared_write_history(&self) -> Vec<RewriteWriteEventProjection> {
         self.shared_write_history()
     }
 }
 
-impl<'a, S: RewriteGraphStore, M: Memory> RewriteDiagnosticsView
-    for RewriteKernelOverlayGraph<'a, S, M>
-{
+impl<'a, S: RewriteGraphStore> RewriteDiagnosticsView for RewriteKernelOverlayGraph<'a, S> {
     fn shared_write_history(&self) -> Vec<RewriteWriteEventProjection> {
         self.shared_write_history()
     }
@@ -428,16 +422,15 @@ impl<'a, S: RewriteGraphStore, M: Memory> RewriteDiagnosticsView
 mod tests {
     use super::{
         RewriteDiagnosticsView, format_last_write_event, format_maintenance_queue,
-        format_maintenance_queue_storage,
-        format_write_event_history, format_write_event_projection, format_write_event_report,
+        format_maintenance_queue_storage, format_write_event_history,
+        format_write_event_projection, format_write_event_report,
     };
     use crate::facade::{
         RewriteEdgeWriteOperation, RewriteEdgeWriteProjection, RewriteEnsureCapacityProjection,
         RewriteGraphPma, RewriteMaintenanceBatchProjection, RewriteMaintenanceCycleProjection,
         RewriteMaintenanceQueueAction, RewriteMaintenanceQueueItemProjection,
         RewriteMaintenanceQueueProjection, RewriteMaintenanceQueueStorageProjection,
-        RewriteNodeDeleteProjection,
-        RewritePropertyIndexTouchedSections,
+        RewriteNodeDeleteProjection, RewritePropertyIndexTouchedSections,
         RewritePropertyWriteProjection, RewriteRefreshedVertices, RewriteWriteEventProjection,
     };
     use crate::low_level::GraphMutationPath;
@@ -729,7 +722,7 @@ mod tests {
     #[test]
     fn diagnostics_view_formats_facade_history() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(&memory).expect("bootstrap");
+        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
 
         let _ = facade
             .append_empty_vertex_pair_and_write(&memory)

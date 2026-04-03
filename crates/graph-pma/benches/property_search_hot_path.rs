@@ -11,7 +11,7 @@ use gleaph_graph_pma::{RewriteGraphPma, RewriteVecMemory};
 
 fn setup_flushed_uid_index(entry_count: usize) -> (RewriteVecMemory, RewriteGraphPma) {
     let memory = RewriteVecMemory::default();
-    let mut facade = RewriteGraphPma::bootstrap_empty(&memory).expect("bootstrap");
+    let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
     for i in 0..entry_count {
         let id = NodeId::try_from((i + 1) as u64).expect("NodeId");
         facade

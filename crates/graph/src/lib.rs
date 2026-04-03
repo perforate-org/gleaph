@@ -48,9 +48,9 @@ use gleaph_gql_executor::{
     ExecutionContext, ExecutionError, ExecutionResult, execute_plan_with_context,
 };
 use gleaph_gql_planner::{
-    GraphStats, PhysicalPlan, PlanBuildOutput, PlanSummary, PlannerError,
-    build_block_plan_output, build_block_plan_output_for_execute, build_plan_output,
-    build_plan_output_for_execute, first_executor_unsupported_op,
+    GraphStats, PhysicalPlan, PlanBuildOutput, PlanSummary, PlannerError, build_block_plan_output,
+    build_block_plan_output_for_execute, build_plan_output, build_plan_output_for_execute,
+    first_executor_unsupported_op,
 };
 use gleaph_graph_kernel::{GraphRead, GraphWrite};
 use gleaph_graph_pma::integration::RewriteGraphPmaKernelOverlay;
@@ -113,20 +113,20 @@ impl CanisterGraphRuntime {
     fn bootstrap() -> Self {
         let memory = RewriteVecMemory::default();
         let facade =
-            RewriteGraphPma::bootstrap_empty(&memory).expect("bootstrap graph-pma runtime");
+            RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap graph-pma runtime");
         Self { facade, memory }
     }
 
     fn snapshot(&self) -> CanisterGraphRuntimeSnapshot {
         CanisterGraphRuntimeSnapshot {
-            manager: self.facade.manager.clone(),
+            manager: self.facade.manager.borrow().clone(),
             memory_bytes: self.memory.to_vec(),
         }
     }
 
     fn from_snapshot(snapshot: CanisterGraphRuntimeSnapshot) -> Result<Self, RewriteGraphPmaError> {
         let memory = RewriteVecMemory::from_vec(snapshot.memory_bytes);
-        let facade = RewriteGraphPma::hydrate_from_stable_memory(snapshot.manager, &memory)?;
+        let facade = RewriteGraphPma::hydrate_from_stable_memory(snapshot.manager, memory.clone())?;
         Ok(Self { facade, memory })
     }
 
@@ -1619,13 +1619,8 @@ mod tests {
         let query = parse_query(q).expect("parse query");
         let planned = plan_query(&query, None).expect("plan");
         assert!(planned.explain.contains("NodeScan"));
-        let output = execute_query_str(
-            &mut graph,
-            q,
-            None,
-            &ExecutionContext::default(),
-        )
-        .expect("run");
+        let output =
+            execute_query_str(&mut graph, q, None, &ExecutionContext::default()).expect("run");
 
         assert_eq!(output.execution.summary.row_count, 1);
         assert!(output.plan.explain.is_empty());
