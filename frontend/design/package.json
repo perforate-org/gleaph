@@ -1,0 +1,17 @@
+{
+  "name": "@gleaph/design",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Gleaph design tokens (CSS) and Figma variable manifest",
+  "gleaph": {
+    "figmaManifest": "./figma/variables.manifest.json"
+  },
+  "exports": {
+    ".": "./css/index.css",
+    "./manifest": "./figma/variables.manifest.json"
+  },
+  "scripts": {
+    "check": "node --eval \"console.log('@gleaph/design: no TypeScript')\""
+  }
+}

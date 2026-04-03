@@ -1,13 +1,15 @@
 [workspace]
 members = [
-    "crates/gleaph",
+    "crates/cli",
     "crates/gql",
-    "crates/gql-planner",
-    "crates/graph-kernel",
     "crates/gql-executor",
-    "crates/graph-mem",
+    "crates/gql-ic",
+    "crates/gql-macros",
+    "crates/gql-planner",
+    "crates/graph",
+    "crates/graph-kernel",
+    "crates/graph-registry",
     "crates/graph-pma",
-    "crates/graph-pma-legacy",
 ]
 resolver = "2"
 
@@ -17,12 +19,14 @@ version = "0.1.0"
 license = "MIT"
 
 [workspace.dependencies]
+canbench-rs = "0.4"
 candid = "0.10"
+concat-string = "1"
+ethnum = "1"
 ic-cdk = "0.20"
 ic-cdk-macros = "0.20"
+rapidhash = "4"
+roaring = "0.11"
+rust_decimal = "1"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
-rust_decimal = "1"
-ethnum = "1"
-roaring = "0.11"
-rapidhash = "4"

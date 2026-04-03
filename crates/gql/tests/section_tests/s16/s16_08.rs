@@ -13,12 +13,12 @@ fn node_label(input: &str) -> LabelExpr {
     match &b.first {
         Statement::Query(cq) => {
             for part in &cq.left.parts {
-                if let SimpleQueryStatement::Match(m) = part {
-                    if let PathPatternExpr::Term(t) = &m.pattern.paths[0].expr {
-                        for factor in &t.factors {
-                            if let PathPrimary::Node(np) = &factor.primary {
-                                return np.label.clone().expect("expected label on node pattern");
-                            }
+                if let SimpleQueryStatement::Match(m) = part
+                    && let PathPatternExpr::Term(t) = &m.pattern.paths[0].expr
+                {
+                    for factor in &t.factors {
+                        if let PathPrimary::Node(np) = &factor.primary {
+                            return np.label.clone().expect("expected label on node pattern");
                         }
                     }
                 }

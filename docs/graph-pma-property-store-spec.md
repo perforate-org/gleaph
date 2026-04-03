@@ -475,3 +475,20 @@ The rewrite property subsystem should be:
 
 This keeps the rewrite aligned with the old design direction while fitting the
 new region/bucket model already present in the current `graph-pma` rewrite.
+
+## Incremental flush (extent-backed regions)
+
+For `RegionStorageKind::Extent` node/edge property regions, flush contracts match
+[`graph-pma-low-level-spec.md`](graph-pma-low-level-spec.md)
+("Node and edge property store regions"):
+
+- Update `logical_len_bytes` to the encoded append-log length **before** writing
+  payload bytes.
+- Write **only** the serialized payload (`encoded.len()`), not the full extent
+  capacity.
+- When the logical payload **shrinks**, zero-clear the stable span from the new
+  logical end through the previous logical end so truncated tail bytes are not
+  left stale (same class of invariant as PIDX shrink handling).
+
+Bucket-chain-backed property regions continue to use whole-bucket writes on
+flush; narrowing those writes is a separate follow-up tied to bucket boundaries.

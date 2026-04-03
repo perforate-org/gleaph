@@ -10,7 +10,7 @@ pub use gleaph_gql::ast::CmpOp;
 use gleaph_gql::ast::{Expr, LetBinding, OrderByClause};
 pub use gleaph_gql::type_check::DmlDiagnostic as PlannerDiagnostic;
 pub use gleaph_gql::type_check::TypeDiagnostic;
-use gleaph_gql::types::EdgeDirection;
+use gleaph_gql::types::{EdgeDirection, LabelExpr};
 
 /// Cheaply-cloneable string type for identifiers (variable names, labels, properties, etc.).
 pub type Str = Rc<str>;
@@ -33,6 +33,10 @@ pub struct PhysicalPlan {
 impl PhysicalPlan {
     pub fn has_dml(&self) -> bool {
         self.ops.iter().any(PlanOp::is_dml)
+    }
+
+    pub fn use_graph_pushdown(&self) -> &[UseGraphPushdownInfo] {
+        &self.annotations.optimizer.use_graph_pushdown
     }
 }
 
@@ -77,13 +81,15 @@ impl PlanSummary {
 #[derive(Clone, Debug)]
 pub enum PlanOp {
     // ──── Scan ────
-
     /// Full or label-filtered vertex scan.
     NodeScan {
         /// Variable bound to each scanned vertex.
         variable: Str,
         /// Optional label constraint (only vertices with this label).
         label: Option<Str>,
+        /// When set, only these property keys are hydrated on each bound vertex record.
+        /// `None` retains full property maps (legacy path).
+        property_projection: Option<Rc<[Str]>>,
     },
 
     /// Equality or range scan on an indexed vertex property.
@@ -92,6 +98,7 @@ pub enum PlanOp {
         property: Str,
         value: ScanValue,
         cmp: CmpOp,
+        property_projection: Option<Rc<[Str]>>,
     },
 
     /// Equality scan on an indexed edge property.
@@ -99,6 +106,20 @@ pub enum PlanOp {
         variable: Str,
         property: Str,
         value: ScanValue,
+        property_projection: Option<Rc<[Str]>>,
+    },
+
+    /// After [`PlanOp::EdgeIndexScan`], bind the path endpoint nodes from the edge
+    /// record (`src` / `dst`) consistent with pattern [`EdgeDirection`] (same as [`PlanOp::Expand`]).
+    EdgeBindEndpoints {
+        edge: Str,
+        near: Str,
+        far: Str,
+        direction: EdgeDirection,
+        /// When set, rows whose edge label does not match are dropped.
+        label: Option<Str>,
+        near_property_projection: Option<Rc<[Str]>>,
+        far_property_projection: Option<Rc<[Str]>>,
     },
 
     /// Parameter-based conditional scan: tries index scan if parameter is
@@ -108,10 +129,10 @@ pub enum PlanOp {
         /// Fallback label for full scan when all parameters are null.
         fallback_label: Option<Str>,
         fallback_variable: Str,
+        property_projection: Option<Rc<[Str]>>,
     },
 
     // ──── Filter ────
-
     /// Apply one or more predicates (from WHERE or inline pattern constraints).
     PropertyFilter {
         /// The conjunctive predicates to evaluate.
@@ -121,7 +142,6 @@ pub enum PlanOp {
     },
 
     // ──── Traversal ────
-
     /// Expand along edges from a source vertex.
     Expand {
         src: Str,
@@ -129,8 +149,15 @@ pub enum PlanOp {
         dst: Str,
         direction: EdgeDirection,
         label: Option<Str>,
+        /// General edge label predicate (disjunction, negation, `&`, …). When set, `label` is `None`.
+        label_expr: Option<LabelExpr>,
         /// Variable-length expansion bounds (e.g. `*2..5`).
         var_len: Option<VarLenSpec>,
+        /// When set, expand by probing an indexed edge-property equality first (then
+        /// binding the far endpoint), instead of scanning all incident edges.
+        indexed_edge_equality: Option<(Str, ScanValue)>,
+        edge_property_projection: Option<Rc<[Str]>>,
+        dst_property_projection: Option<Rc<[Str]>>,
     },
 
     /// Fused Expand + property filter on the destination node (EVFusion).
@@ -141,26 +168,36 @@ pub enum PlanOp {
         dst: Str,
         direction: EdgeDirection,
         label: Option<Str>,
+        label_expr: Option<LabelExpr>,
         var_len: Option<VarLenSpec>,
+        /// When set, same indexed edge-property path as [`PlanOp::Expand`].
+        indexed_edge_equality: Option<(Str, ScanValue)>,
         /// Predicates evaluated on the destination node during expansion.
         dst_filter: Vec<Expr>,
+        edge_property_projection: Option<Rc<[Str]>>,
+        dst_property_projection: Option<Rc<[Str]>>,
     },
 
-    /// Shortest-path search.
+    /// Shortest-path search (unweighted hop count) between already-bound `src` and bound `dst`.
+    ///
+    /// `edge` is set to the **last** hop’s edge along each emitted shortest path (or
+    /// [`Value::Null`] scalar binding when the path has length zero and `min_hops == 0`).
     ShortestPath {
         src: Str,
         dst: Str,
         edge: Str,
         path_var: Option<Str>,
         mode: ShortestMode,
+        direction: EdgeDirection,
+        label: Option<Str>,
+        /// General edge label predicate (same convention as [`PlanOp::Expand`]). When set, `label` is `None`.
+        label_expr: Option<LabelExpr>,
+        var_len: Option<VarLenSpec>,
     },
 
     // ──── GQL-specific (not in gleaph-old) ────
-
     /// LET bindings: compute and bind intermediate values.
-    Let {
-        bindings: Vec<LetBinding>,
-    },
+    Let { bindings: Vec<LetBinding> },
 
     /// FOR loop: unnest a list into individual rows.
     For {
@@ -170,12 +207,9 @@ pub enum PlanOp {
     },
 
     /// Standalone FILTER statement (GQL §14.2).
-    Filter {
-        condition: Expr,
-    },
+    Filter { condition: Expr },
 
     // ──── Procedure calls ────
-
     /// External procedure call: CALL proc_name(args) [YIELD columns].
     CallProcedure {
         name: Vec<Str>,
@@ -198,7 +232,6 @@ pub enum PlanOp {
     },
 
     // ──── Join operators ────
-
     /// Hash join between two independently computed sub-plans.
     HashJoin {
         left: Vec<PlanOp>,
@@ -213,7 +246,6 @@ pub enum PlanOp {
     },
 
     // ──── Aggregation / Output ────
-
     /// GROUP BY + aggregate functions.
     Aggregate {
         group_by: Vec<Expr>,
@@ -228,9 +260,7 @@ pub enum PlanOp {
     },
 
     /// ORDER BY sorting.
-    Sort {
-        order_by: OrderByClause,
-    },
+    Sort { order_by: OrderByClause },
 
     /// LIMIT / OFFSET row truncation.
     Limit {
@@ -256,6 +286,7 @@ pub enum PlanOp {
     IndexIntersection {
         variable: Str,
         scans: Vec<IndexScanSpec>,
+        property_projection: Option<Rc<[Str]>>,
     },
 
     /// Worst-Case Optimal Join for cyclic patterns (e.g., triangles).
@@ -276,7 +307,6 @@ pub enum PlanOp {
     },
 
     // ──── Pipeline boundaries ────
-
     /// Materialize: pipeline boundary between NEXT-chained statement blocks.
     /// Collects the current result set and re-exposes specified columns.
     /// Analogous to Cypher's WITH or GQL's YIELD between NEXT statements.
@@ -287,7 +317,6 @@ pub enum PlanOp {
     },
 
     // ──── DML (Data Modification) ────
-
     /// Insert a new vertex with labels and properties.
     InsertVertex {
         variable: Option<Str>,
@@ -306,29 +335,19 @@ pub enum PlanOp {
     },
 
     /// Set properties or labels on bound variables.
-    SetProperties {
-        items: Vec<SetPlanItem>,
-    },
+    SetProperties { items: Vec<SetPlanItem> },
 
     /// Remove properties or labels from bound variables.
-    RemoveProperties {
-        items: Vec<RemovePlanItem>,
-    },
+    RemoveProperties { items: Vec<RemovePlanItem> },
 
     /// Delete a vertex (NODETACH — must have no edges).
-    DeleteVertex {
-        variable: Str,
-    },
+    DeleteVertex { variable: Str },
 
     /// Delete a vertex and all its connected edges (DETACH DELETE).
-    DetachDeleteVertex {
-        variable: Str,
-    },
+    DetachDeleteVertex { variable: Str },
 
     /// Delete an edge.
-    DeleteEdge {
-        variable: Str,
-    },
+    DeleteEdge { variable: Str },
 }
 
 impl PlanOp {
@@ -367,30 +386,18 @@ pub enum SetPlanItem {
         value: Expr,
     },
     /// SET v = expr (replace all properties)
-    AllProperties {
-        variable: Str,
-        value: Expr,
-    },
+    AllProperties { variable: Str, value: Expr },
     /// SET v IS Label
-    Label {
-        variable: Str,
-        label: Str,
-    },
+    Label { variable: Str, label: Str },
 }
 
 /// A single REMOVE plan item.
 #[derive(Clone, Debug)]
 pub enum RemovePlanItem {
     /// REMOVE v.property
-    Property {
-        variable: Str,
-        property: Str,
-    },
+    Property { variable: Str, property: Str },
     /// REMOVE v IS Label
-    Label {
-        variable: Str,
-        label: Str,
-    },
+    Label { variable: Str, label: Str },
 }
 
 /// A value used in index scan predicates.
@@ -516,6 +523,8 @@ pub struct OptimizerPlanAnnotations {
     pub late_project_applied: bool,
     /// Detected cyclic patterns (e.g., triangles) for potential WCOJ.
     pub cyclic_patterns: Option<Vec<CyclicPattern>>,
+    /// Remote `USE GRAPH` pushdown capability analysis per encountered focused graph.
+    pub use_graph_pushdown: Vec<UseGraphPushdownInfo>,
 }
 
 /// A detected cyclic pattern in a graph query (e.g., triangle).
@@ -523,6 +532,14 @@ pub struct OptimizerPlanAnnotations {
 pub struct CyclicPattern {
     /// Variables forming the cycle.
     pub variables: Vec<Str>,
+}
+
+/// Planner-side summary of whether one `USE GRAPH` sub-plan can be translated for remote pushdown.
+#[derive(Clone, Debug)]
+pub struct UseGraphPushdownInfo {
+    pub graph_name: String,
+    pub supported: bool,
+    pub reason: Option<String>,
 }
 
 /// A column yielded from a procedure call.
@@ -540,12 +557,21 @@ pub struct IndexScanSpec {
     pub cmp: CmpOp,
 }
 
-/// An edge in a WCOJ plan.
+/// An edge in a WCOJ plan: directed hop from pattern `src` to `dst` (cycle closes on last→first).
 #[derive(Clone, Debug)]
 pub struct WcojEdge {
+    pub src: Str,
+    pub dst: Str,
     pub variable: Str,
     pub label: Option<Str>,
+    pub label_expr: Option<LabelExpr>,
     pub direction: EdgeDirection,
+    /// Variable-length segment (`None` = exactly one edge).
+    pub var_len: Option<VarLenSpec>,
+    /// Indexed edge equality (mutually exclusive with `var_len` in the planner).
+    pub indexed_edge_equality: Option<(Str, ScanValue)>,
+    /// Predicates on destination `dst` (from `ExpandFilter` / pattern fusion).
+    pub dst_filter: Vec<Expr>,
 }
 
 /// Information about the chosen scan anchor.

@@ -10,6 +10,10 @@ rust-version = "1.88"
 gleaph-gql = { path = "../gql" }
 rapidhash = "4"
 
+[features]
+default = []
+cypher = ["gleaph-gql/cypher"]
+
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
 

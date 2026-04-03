@@ -40,16 +40,15 @@ mod limit_clause {
         match &b.first {
             Statement::Query(cq) => {
                 let result = cq.left.result.as_ref().expect("expected result statement");
-                match result {
-                    ResultStatement::Return(ret) => match &ret.body {
+                if let ResultStatement::Return(ret) = result {
+                    match &ret.body {
                         ReturnBody::Items { limit, .. } => {
                             assert!(limit.is_none(), "expected limit to be None");
                         }
                         _ => {
                             // Star body has no limit field to check in the same way
                         }
-                    },
-                    _ => {}
+                    }
                 }
             }
             other => panic!("expected Query, got {other:?}"),

@@ -1,6 +1,6 @@
 # graph-pma Rewrite Status
 
-_Last updated: 2026-03-29_
+Last updated: 2026-03-30
 
 ## Purpose
 
@@ -16,8 +16,10 @@ Use this document for:
 
 Design intent still lives in:
 
-- [`graph-pma-low-level-spec.md`](/Users/yota/dev/gleaph-project/docs/graph-pma-low-level-spec.md)
-- [`graph-pma-property-store-spec.md`](/Users/yota/dev/gleaph-project/docs/graph-pma-property-store-spec.md)
+- [`graph-pma-low-level-spec.md`](graph-pma-low-level-spec.md)
+- [`graph-pma-property-store-spec.md`](graph-pma-property-store-spec.md)
+- adjacency next-step handoff:
+  - [`graph-pma-adjacency-next-roadmap.md`](graph-pma-adjacency-next-roadmap.md)
 
 ## High-level Summary
 
@@ -204,6 +206,14 @@ The most important recent shifts are:
 4. hydrate paths were normalized so sectioned/paged forms are the main path
 5. observability became rich enough to explain property/index shape changes,
    including redistribution, split, merge, collapse, and rebuild
+6. local leaf split validates each post-split chunk for **single-page** encodability before
+   applying the structural update; oversized singleton entries still fall through to full
+   leaf-chain rewrite (overflow-style multi-page leaves remain a separate persistence concern)
+7. `partition_entries_into_leaf_chunks` returns `Result` and **validates emitted chunks**: multi-entry
+   chunks must fit one primary page (`LeafPartitionMultiEntryExceedsPrimaryPage`); a **singleton**
+   chunk may exceed one primary page only if it still encodes through [`encode_node_pages`] /
+   overflow slots (`LeafPartitionSingletonNotEncodable` otherwise). Callers propagate
+   `PropertyIndexError` from node-store construction and storage-image reconciliation.
 
 ## Recommended Next Steps
 
@@ -250,6 +260,25 @@ Goal:
 
 - preserve trust in diagnostics as the implementation evolves
 
+## Recovery and Corruption Handling (current contract)
+
+Current runtime and hydration paths treat persisted section shape checks as
+hard validation boundaries:
+
+- malformed or truncated property-index sections return typed
+  `PropertyIndexError` / `HydrationError` and abort hydration/writeback
+- fallback rebuild is allowed only when local node-store mutation cannot
+  preserve shape invariants; this path must be observable by reason
+- write paths that detect index synchronization failure must roll back
+  property-store mutations before returning error
+
+Operationally, this means:
+
+- do not continue serving with partially applied property/index writes
+- surface failure reason in diagnostics/metrics first, then retry via normal
+  hydrate+rebuild flow
+- treat repeated fallback-rebuild reasons as production alerts, not benign noise
+
 ## De-prioritized for Now
 
 The following are valuable, but not the current bottleneck.
@@ -264,7 +293,7 @@ These should stay behind the property-index and persistence work.
 
 If resuming implementation from scratch, the best next target is:
 
-1. open [`crates/graph-pma/src/facade.rs`](/Users/yota/dev/gleaph-project/crates/graph-pma/src/facade.rs)
+1. open [`crates/graph-pma/src/facade.rs`](../crates/graph-pma/src/facade.rs)
 2. inspect `load_property_index_image_from_stable_memory(...)`
 3. keep section-aware and paged-node-store paths visually primary
 4. re-run:
@@ -274,4 +303,6 @@ If resuming implementation from scratch, the best next target is:
 
 If that is already done, the next natural target is local-repair coverage in
 `PropertyIndexNodeStore` inside
-[`crates/graph-pma/src/property_index.rs`](/Users/yota/dev/gleaph-project/crates/graph-pma/src/property_index.rs).
+[`crates/graph-pma/src/property_index/`](../crates/graph-pma/src/property_index/)
+(primarily [`node_store.rs`](../crates/graph-pma/src/property_index/node_store.rs)
+and [`mod.rs`](../crates/graph-pma/src/property_index/mod.rs)).

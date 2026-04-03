@@ -1,0 +1,33 @@
+[package]
+name = "gleaph-graph"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+cypher = ["gleaph-gql/cypher", "gleaph-gql-planner/cypher"]
+canbench-rs = ["dep:canbench-rs", "gleaph-graph-pma/canbench-rs"]
+
+[dependencies]
+async-trait = "0.1"
+futures = { version = "0.3", default-features = false, features = ["executor"] }
+candid.workspace = true
+ic-cdk.workspace = true
+ic-cdk-macros.workspace = true
+gleaph-gql = { path = "../gql", features = ["f128", "f256"] }
+gleaph-gql-planner = { path = "../gql-planner" }
+gleaph-gql-executor = { path = "../gql-executor" }
+gleaph-graph-kernel = { path = "../graph-kernel" }
+gleaph-gql-ic = { path = "../gql-ic" }
+gleaph-graph-pma = { path = "../graph-pma" }
+serde.workspace = true
+thiserror.workspace = true
+canbench-rs = { workspace = true, optional = true }
+ic-cdk-timers = "1.0.0"
+
+[dev-dependencies]
+serde_json = "1"

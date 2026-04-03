@@ -7,7 +7,23 @@ license.workspace = true
 [lib]
 doctest = false
 
+[features]
+default = []
+# Enables `canbench_rs::bench_scope` in hot flush paths when the parent canister builds with canbench.
+canbench-rs = ["dep:canbench-rs"]
+
 [dependencies]
+candid.workspace = true
+canbench-rs = { workspace = true, optional = true }
 gleaph-gql = { path = "../gql" }
 gleaph-graph-kernel = { path = "../graph-kernel" }
-gleaph-graph-pma-legacy = { path = "../graph-pma-legacy" }
+gleaph-gql-planner = { path = "../gql-planner" }
+roaring = "0.11"
+serde.workspace = true
+
+[dev-dependencies]
+criterion = { version = "0.8", features = ["html_reports"] }
+
+[[bench]]
+name = "property_search_hot_path"
+harness = false

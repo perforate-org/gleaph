@@ -1,11 +1,27 @@
 //! Extent- and bucket-backed allocator metadata for stable-memory regions.
 
+use candid::CandidType;
+use serde::{Deserialize, Serialize};
+
 use super::ids::StableAddr;
 use super::region::WasmPages;
 
 /// Identifier for one extent-table entry.
 #[repr(transparent)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    Serialize,
+    Deserialize,
+    CandidType,
+)]
 pub struct ExtentId {
     pub raw: u32,
 }
@@ -27,7 +43,7 @@ impl ExtentId {
 
 /// Contiguous physical span inside stable memory.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize, CandidType)]
 pub struct ExtentRef {
     pub addr: StableAddr,
     pub len_bytes: u64,
@@ -42,7 +58,20 @@ impl ExtentRef {
 
 /// Reference to one bucket in a bucket-chain-backed region.
 #[repr(transparent)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    Serialize,
+    Deserialize,
+    CandidType,
+)]
 pub struct BucketRef {
     pub bucket_id: u32,
 }
@@ -56,7 +85,20 @@ impl BucketRef {
 
 /// Identifier for one bucket-table entry.
 #[repr(transparent)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    Serialize,
+    Deserialize,
+    CandidType,
+)]
 pub struct BucketId {
     pub raw: u32,
 }
@@ -81,7 +123,7 @@ impl BucketId {
 /// `next` is used both for extent chaining and for free-list chaining in the
 /// minimal allocator.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize, CandidType)]
 pub struct ExtentHeader {
     pub id: ExtentId,
     pub extent: ExtentRef,
@@ -105,7 +147,7 @@ impl ExtentHeader {
 /// - `slack_pages` is allocator slack, not semantic free slots inside PMA
 /// - `head` / `tail` are null together for an empty chain
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize, CandidType)]
 pub struct ExtentChain {
     pub head: ExtentId,
     pub tail: ExtentId,
@@ -159,13 +201,14 @@ impl ExtentChain {
 
         let shortage = requested - self.slack_pages.raw;
 
-        if let Some(trailing) = trailing_region_pages {
-            if trailing.raw > 0 && trailing.raw <= policy.small_region_relocation_max_pages.raw {
-                return ExtentGrowthDecision::new(
-                    ExtentGrowthKind::RelocateTrailingSmallRegions,
-                    WasmPages::new(shortage),
-                );
-            }
+        if let Some(trailing) = trailing_region_pages
+            && trailing.raw > 0
+            && trailing.raw <= policy.small_region_relocation_max_pages.raw
+        {
+            return ExtentGrowthDecision::new(
+                ExtentGrowthKind::RelocateTrailingSmallRegions,
+                WasmPages::new(shortage),
+            );
         }
 
         ExtentGrowthDecision::new(ExtentGrowthKind::RelocateSelf, WasmPages::new(shortage))
@@ -209,16 +252,116 @@ impl ExtentChain {
 
 /// Chosen growth path for an extent-backed region.
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, CandidType)]
 pub enum ExtentGrowthKind {
     InPlace = 0,
     RelocateTrailingSmallRegions = 1,
     RelocateSelf = 2,
 }
 
+/// Lifecycle state for one edge-storage segment.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, CandidType)]
+pub enum EdgeSegmentState {
+    Active = 0,
+    Retired = 1,
+    Free = 2,
+}
+
+impl Default for EdgeSegmentState {
+    fn default() -> Self {
+        Self::Free
+    }
+}
+
+/// Metadata for one contiguous edge-storage segment.
+///
+/// A segment is a logical run of `EdgeEntry` slots backed by one extent.
+/// `slot_capacity` is expressed in `EdgeEntry` units, not bytes.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize, CandidType)]
+pub struct EdgeSegmentHeader {
+    pub segment_id: u32,
+    pub extent_id: ExtentId,
+    pub slot_capacity: u64,
+    pub retired_epoch: u64,
+    pub state: EdgeSegmentState,
+    pub reserved: [u8; 7],
+}
+
+impl EdgeSegmentHeader {
+    /// Creates one segment-directory entry.
+    pub const fn new(
+        segment_id: u32,
+        extent_id: ExtentId,
+        slot_capacity: u64,
+        retired_epoch: u64,
+        state: EdgeSegmentState,
+    ) -> Self {
+        Self {
+            segment_id,
+            extent_id,
+            slot_capacity,
+            retired_epoch,
+            state,
+            reserved: [0; 7],
+        }
+    }
+
+    /// Returns whether this segment can serve traversal reads.
+    pub const fn is_active(self) -> bool {
+        matches!(self.state, EdgeSegmentState::Active)
+    }
+}
+
+/// Table of edge-segment headers keyed by segment id.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct EdgeSegmentDirectory {
+    headers: Vec<EdgeSegmentHeader>,
+}
+
+impl EdgeSegmentDirectory {
+    /// Inserts or replaces one segment header.
+    pub fn insert(&mut self, header: EdgeSegmentHeader) {
+        let index = header
+            .segment_id
+            .checked_sub(1)
+            .expect("segment id 0 is reserved as the null sentinel") as usize;
+        if index >= self.headers.len() {
+            self.headers
+                .resize(index + 1, EdgeSegmentHeader::default());
+        }
+        self.headers[index] = header;
+    }
+
+    /// Returns one segment header by id.
+    pub fn get(&self, segment_id: u32) -> Option<&EdgeSegmentHeader> {
+        let index = usize::try_from(segment_id.checked_sub(1)?).ok()?;
+        let header = self.headers.get(index)?;
+        (header.segment_id == segment_id).then_some(header)
+    }
+
+    /// Returns one mutable segment header by id.
+    pub fn get_mut(&mut self, segment_id: u32) -> Option<&mut EdgeSegmentHeader> {
+        let index = usize::try_from(segment_id.checked_sub(1)?).ok()?;
+        let header = self.headers.get_mut(index)?;
+        (header.segment_id == segment_id).then_some(header)
+    }
+
+    /// Returns the next fresh non-zero segment id.
+    pub fn next_segment_id(&self) -> u32 {
+        (self.headers.len() + 1) as u32
+    }
+
+    /// Iterates over initialized segment headers.
+    pub fn iter(&self) -> impl Iterator<Item = &EdgeSegmentHeader> {
+        self.headers.iter().filter(|header| header.segment_id != 0)
+    }
+}
+
 /// Policy knobs for extent growth planning.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize, CandidType)]
 pub struct ExtentGrowthPolicy {
     pub min_append_pages: WasmPages,
     pub small_region_relocation_max_pages: WasmPages,
@@ -239,7 +382,7 @@ impl ExtentGrowthPolicy {
 
 /// Request to grow an extent-backed region.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize, CandidType)]
 pub struct ExtentGrowthRequest {
     pub additional_pages: WasmPages,
 }
@@ -261,7 +404,7 @@ impl ExtentGrowthRequest {
 /// - `RelocateTrailingSmallRegions` refers only to colliding extent-backed
 ///   trailing regions
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize, CandidType)]
 pub struct ExtentGrowthDecision {
     pub kind: u8,
     pub reserved: [u8; 7],
@@ -291,7 +434,7 @@ impl ExtentGrowthDecision {
 
 /// Root metadata for a bucket-chain-backed region.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize, CandidType)]
 pub struct BucketChain {
     pub head: BucketId,
     pub tail: BucketId,
@@ -311,7 +454,7 @@ impl BucketChain {
 
 /// One bucket-table node.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize, CandidType)]
 pub struct BucketHeader {
     pub id: BucketId,
     pub addr: StableAddr,
@@ -333,7 +476,7 @@ impl BucketHeader {
 
 /// Free-list head for reusable extent ids.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize, CandidType)]
 pub struct FreeExtentList {
     pub head: ExtentId,
 }
@@ -368,7 +511,7 @@ impl FreeExtentList {
 
 /// Free-list head for reusable bucket ids.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize, CandidType)]
 pub struct FreeBucketList {
     pub head: BucketId,
 }
@@ -402,7 +545,7 @@ impl FreeBucketList {
 }
 
 /// Table of extent headers keyed by [`ExtentId`].
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct ExtentTable {
     headers: Vec<ExtentHeader>,
 }
@@ -436,6 +579,11 @@ impl ExtentTable {
         self.headers.len()
     }
 
+    /// Returns true when no extent headers are stored.
+    pub fn is_empty(&self) -> bool {
+        self.headers.is_empty()
+    }
+
     /// Returns the next append-only extent id when no free id is reused.
     pub fn next_id(&self) -> ExtentId {
         ExtentId::new((self.headers.len() + 1) as u32)
@@ -443,7 +591,7 @@ impl ExtentTable {
 }
 
 /// Table of bucket headers keyed by [`BucketId`].
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct BucketTable {
     headers: Vec<BucketHeader>,
 }
@@ -475,6 +623,11 @@ impl BucketTable {
     /// Returns the number of stored bucket headers.
     pub fn len(&self) -> usize {
         self.headers.len()
+    }
+
+    /// Returns true when no bucket headers are stored.
+    pub fn is_empty(&self) -> bool {
+        self.headers.is_empty()
     }
 
     /// Returns the next append-only bucket id when no free id is reused.

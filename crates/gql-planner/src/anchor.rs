@@ -16,16 +16,13 @@ use gleaph_gql::ast::*;
 use gleaph_gql::types::LabelExpr;
 
 use crate::plan::{AnchorInfo, AnchorSource};
-use crate::stats::GraphStats;
+use crate::stats::{self, GraphStats};
 
 /// Choose the best anchor variable for a match statement.
 ///
 /// Examines the graph pattern's node patterns and the WHERE clause to find
 /// the variable with the most selective access path.
-pub fn choose_anchor(
-    pattern: &GraphPattern,
-    stats: Option<&dyn GraphStats>,
-) -> Option<AnchorInfo> {
+pub fn choose_anchor(pattern: &GraphPattern, stats: Option<&dyn GraphStats>) -> Option<AnchorInfo> {
     let mut candidates: Vec<AnchorCandidate> = Vec::new();
 
     // Collect node variables with their labels and inline properties.
@@ -107,11 +104,9 @@ pub fn choose_anchor(
             if candidate.label.is_none() {
                 // Look for edges connected to this variable in the pattern.
                 for path in &pattern.paths {
-                    if let Some(label) = infer_label_from_edges(
-                        &candidate.variable,
-                        &path.expr,
-                        stats,
-                    ) {
+                    if let Some(label) =
+                        infer_label_from_edges(&candidate.variable, &path.expr, stats)
+                    {
                         inferred_labels.push((candidate.variable.clone(), label));
                         break;
                     }
@@ -121,24 +116,29 @@ pub fn choose_anchor(
 
         let mut best: Option<(String, String, u64)> = None;
         for candidate in &candidates {
-            let label = candidate
-                .label
-                .clone()
-                .or_else(|| {
-                    inferred_labels
-                        .iter()
-                        .find(|(v, _)| v == &candidate.variable)
-                        .map(|(_, l)| l.clone())
-                });
+            let label = candidate.label.clone().or_else(|| {
+                inferred_labels
+                    .iter()
+                    .find(|(v, _)| v == &candidate.variable)
+                    .map(|(_, l)| l.clone())
+            });
             if let Some(label) = label
-                && let Some(card) = stats.label_cardinality(&label)
-                    && best.as_ref().is_none_or(|(_, _, best_card)| card < *best_card) {
-                        best = Some((candidate.variable.clone(), label.clone(), card));
-                    }
+                && let Some(card) = stats::label_cardinality_with_id(stats, &label)
+                && best
+                    .as_ref()
+                    .is_none_or(|(_, _, best_card)| card < *best_card)
+            {
+                best = Some((candidate.variable.clone(), label.clone(), card));
+            }
         }
         if let Some((var, label, _)) = best {
-            let source = if candidates.iter().any(|c| c.variable == var && c.label.is_some()) {
-                AnchorSource::LabelCardinality { label: label.into() }
+            let source = if candidates
+                .iter()
+                .any(|c| c.variable == var && c.label.is_some())
+            {
+                AnchorSource::LabelCardinality {
+                    label: label.into(),
+                }
             } else {
                 AnchorSource::SchemaEndpoint
             };
@@ -192,11 +192,7 @@ fn collect_from_primary(primary: &PathPrimary, out: &mut Vec<AnchorCandidate>) {
         PathPrimary::Node(node) => {
             if let Some(var) = &node.variable {
                 let label = extract_simple_label(&node.label);
-                let inline_properties = node
-                    .properties
-                    .iter()
-                    .map(|p| p.name.clone())
-                    .collect();
+                let inline_properties = node.properties.iter().map(|p| p.name.clone()).collect();
                 // Extract equality properties from inline WHERE clause.
                 let inline_where_properties = node
                     .where_clause
@@ -225,10 +221,12 @@ fn extract_where_equality_props(var: &str, expr: &Expr) -> Vec<String> {
     for conjunct in conjuncts {
         if let ExprKind::Compare { left, op, right } = &conjunct.kind
             && *op == CmpOp::Eq
-                && let Some((v, p)) = extract_property_access(left)
-                    && v == var && is_scannable_value(right) {
-                        props.push(p);
-                    }
+            && let Some((v, p)) = extract_property_access(left)
+            && v == var
+            && is_scannable_value(right)
+        {
+            props.push(p);
+        }
     }
     props
 }
@@ -257,14 +255,18 @@ fn find_equality_anchor(
                     if stats.is_vertex_property_indexed(&prop) {
                         return Some(AnchorInfo {
                             variable: var.into(),
-                            source: AnchorSource::PropertyEquality { property: prop.into() },
+                            source: AnchorSource::PropertyEquality {
+                                property: prop.into(),
+                            },
                         });
                     }
                 } else {
                     // Without stats, assume the first equality predicate is a good anchor.
                     return Some(AnchorInfo {
                         variable: var.into(),
-                        source: AnchorSource::PropertyEquality { property: prop.into() },
+                        source: AnchorSource::PropertyEquality {
+                            property: prop.into(),
+                        },
                     });
                 }
             }
@@ -283,13 +285,16 @@ fn find_range_anchor(
     for pred in &predicates {
         if let Some((var, prop)) = extract_range_predicate(pred)
             && candidates.iter().any(|c| c.variable == var)
-                && let Some(stats) = stats
-                    && stats.is_vertex_property_range_indexed(&prop) {
-                        return Some(AnchorInfo {
-                            variable: var.into(),
-                            source: AnchorSource::PropertyRange { property: prop.into() },
-                        });
-                    }
+            && let Some(stats) = stats
+            && stats.is_vertex_property_range_indexed(&prop)
+        {
+            return Some(AnchorInfo {
+                variable: var.into(),
+                source: AnchorSource::PropertyRange {
+                    property: prop.into(),
+                },
+            });
+        }
     }
     None
 }
@@ -314,14 +319,16 @@ fn extract_equality_predicate(expr: &Expr) -> Option<(String, String)> {
         }
         // Check left side: var.prop
         if let Some((var, prop)) = extract_property_access(left)
-            && is_scannable_value(right) {
-                return Some((var, prop));
-            }
+            && is_scannable_value(right)
+        {
+            return Some((var, prop));
+        }
         // Check right side (reversed): <value> = var.prop
         if let Some((var, prop)) = extract_property_access(right)
-            && is_scannable_value(left) {
-                return Some((var, prop));
-            }
+            && is_scannable_value(left)
+        {
+            return Some((var, prop));
+        }
     }
     None
 }
@@ -334,23 +341,29 @@ fn extract_range_predicate(expr: &Expr) -> Option<(String, String)> {
             _ => return None,
         }
         if let Some((var, prop)) = extract_property_access(left)
-            && is_scannable_value(right) {
-                return Some((var, prop));
-            }
+            && is_scannable_value(right)
+        {
+            return Some((var, prop));
+        }
         if let Some((var, prop)) = extract_property_access(right)
-            && is_scannable_value(left) {
-                return Some((var, prop));
-            }
+            && is_scannable_value(left)
+        {
+            return Some((var, prop));
+        }
     }
     None
 }
 
 /// Extract (variable_name, property_name) from a PropertyAccess expression.
 fn extract_property_access(expr: &Expr) -> Option<(String, String)> {
-    if let ExprKind::PropertyAccess { expr: inner, property } = &expr.kind
-        && let ExprKind::Variable(var) = &inner.kind {
-            return Some((var.clone(), property.clone()));
-        }
+    if let ExprKind::PropertyAccess {
+        expr: inner,
+        property,
+    } = &expr.kind
+        && let ExprKind::Variable(var) = &inner.kind
+    {
+        return Some((var.clone(), property.clone()));
+    }
     None
 }
 
@@ -367,28 +380,27 @@ pub fn find_index_intersection(
 
     for pred in &predicates {
         if let Some((var, prop)) = extract_equality_predicate(pred)
-            && var == variable && stats.is_vertex_property_indexed(&prop) {
-                // Extract the value from the predicate.
-                if let ExprKind::Compare { right, .. } = &pred.kind
-                    && let Some(sv) = expr_to_scan_value(right) {
-                        specs.push(crate::plan::IndexScanSpec {
-                            property: prop.into(),
-                            value: sv,
-                            cmp: CmpOp::Eq,
-                        });
-                    }
+            && var == variable
+            && stats.is_vertex_property_indexed(&prop)
+        {
+            // Extract the value from the predicate.
+            if let ExprKind::Compare { right, .. } = &pred.kind
+                && let Some(sv) = scan_value_from_expr(right)
+            {
+                specs.push(crate::plan::IndexScanSpec {
+                    property: prop.into(),
+                    value: sv,
+                    cmp: CmpOp::Eq,
+                });
             }
+        }
     }
 
-    if specs.len() >= 2 {
-        Some(specs)
-    } else {
-        None
-    }
+    if specs.len() >= 2 { Some(specs) } else { None }
 }
 
-/// Convert an expression to a ScanValue if it's a literal or parameter.
-fn expr_to_scan_value(expr: &Expr) -> Option<crate::plan::ScanValue> {
+/// Convert an expression to a [`ScanValue`] if it's a literal or parameter.
+pub(crate) fn scan_value_from_expr(expr: &Expr) -> Option<crate::plan::ScanValue> {
     match &expr.kind {
         ExprKind::Literal(v) => Some(crate::plan::ScanValue::Literal(v.clone())),
         ExprKind::Parameter(p) => Some(crate::plan::ScanValue::Parameter(p.clone().into())),
@@ -397,10 +409,7 @@ fn expr_to_scan_value(expr: &Expr) -> Option<crate::plan::ScanValue> {
 }
 
 fn is_scannable_value(expr: &Expr) -> bool {
-    matches!(
-        &expr.kind,
-        ExprKind::Literal(_) | ExprKind::Parameter(_)
-    )
+    matches!(&expr.kind, ExprKind::Literal(_) | ExprKind::Parameter(_))
 }
 
 /// Infer a node label from connected edges using schema endpoint information.
@@ -411,17 +420,13 @@ fn infer_label_from_edges(
 ) -> Option<String> {
     match path_expr {
         PathPatternExpr::Term(term) => infer_from_term(node_var, term, stats),
-        PathPatternExpr::MultisetAlternation(terms) | PathPatternExpr::PatternUnion(terms) => {
-            terms.iter().find_map(|t| infer_from_term(node_var, t, stats))
-        }
+        PathPatternExpr::MultisetAlternation(terms) | PathPatternExpr::PatternUnion(terms) => terms
+            .iter()
+            .find_map(|t| infer_from_term(node_var, t, stats)),
     }
 }
 
-fn infer_from_term(
-    node_var: &str,
-    term: &PathTerm,
-    stats: &dyn GraphStats,
-) -> Option<String> {
+fn infer_from_term(node_var: &str, term: &PathTerm, stats: &dyn GraphStats) -> Option<String> {
     // Walk factors looking for edge-node pairs where the node matches our variable.
     for (i, factor) in term.factors.iter().enumerate() {
         if let PathPrimary::Edge(edge) = &factor.primary {
@@ -431,26 +436,30 @@ fn infer_from_term(
             // Check if the NEXT node is our target (node is destination).
             if let Some(next) = term.factors.get(i + 1)
                 && let PathPrimary::Node(node) = &next.primary
-                    && node.variable.as_deref() == Some(node_var) && node.label.is_none() {
-                        // Pick the lowest-cardinality destination label.
-                        return dst_labels
-                            .iter()
-                            .filter_map(|l| stats.label_cardinality(l).map(|c| (l.clone(), c)))
-                            .min_by_key(|(_, c)| *c)
-                            .map(|(l, _)| l);
-                    }
+                && node.variable.as_deref() == Some(node_var)
+                && node.label.is_none()
+            {
+                // Pick the lowest-cardinality destination label.
+                return dst_labels
+                    .iter()
+                    .filter_map(|l| stats.label_cardinality(l).map(|c| (l.clone(), c)))
+                    .min_by_key(|(_, c)| *c)
+                    .map(|(l, _)| l);
+            }
 
             // Check if the PREVIOUS node is our target (node is source).
             if i > 0
                 && let Some(prev) = term.factors.get(i - 1)
-                    && let PathPrimary::Node(node) = &prev.primary
-                        && node.variable.as_deref() == Some(node_var) && node.label.is_none() {
-                            return src_labels
-                                .iter()
-                                .filter_map(|l| stats.label_cardinality(l).map(|c| (l.clone(), c)))
-                                .min_by_key(|(_, c)| *c)
-                                .map(|(l, _)| l);
-                        }
+                && let PathPrimary::Node(node) = &prev.primary
+                && node.variable.as_deref() == Some(node_var)
+                && node.label.is_none()
+            {
+                return src_labels
+                    .iter()
+                    .filter_map(|l| stats.label_cardinality(l).map(|c| (l.clone(), c)))
+                    .min_by_key(|(_, c)| *c)
+                    .map(|(l, _)| l);
+            }
         }
     }
     None

@@ -1,0 +1,15 @@
+[package]
+name = "gleaph-gql-macros"
+edition = "2024"
+version = "0.0.1"
+authors = ["Inomoto Yota <yota@perforate.org>"]
+license = "MIT OR Apache-2.0"
+rust-version = "1.88"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }

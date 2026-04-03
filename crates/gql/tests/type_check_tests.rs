@@ -911,8 +911,10 @@ fn set_property_type_ok() {
 
 #[test]
 fn set_scalar_target_warns() {
-    let warnings =
-        parse_and_check_with_schema("MATCH (n:Person) LET x = n.age SET x.name = 'Bob'", &TestSchema);
+    let warnings = parse_and_check_with_schema(
+        "MATCH (n:Person) LET x = n.age SET x.name = 'Bob'",
+        &TestSchema,
+    );
     assert!(
         warnings
             .iter()
@@ -920,16 +922,17 @@ fn set_scalar_target_warns() {
         "expected DmlTargetMismatch for scalar SET, got: {warnings:?}"
     );
     assert!(
-        warnings
-            .iter()
-            .any(|w| w.kind == WarningKind::DmlTargetMismatch && w.code == Some(DML002_TARGET_VALUE)),
+        warnings.iter().any(
+            |w| w.kind == WarningKind::DmlTargetMismatch && w.code == Some(DML002_TARGET_VALUE)
+        ),
         "expected DML002 code for scalar SET, got: {warnings:?}"
     );
 }
 
 #[test]
 fn set_all_properties_warns_as_unsupported_dml() {
-    let warnings = parse_and_check_with_schema("MATCH (n:Person) SET n = {name: 'Bob'}", &TestSchema);
+    let warnings =
+        parse_and_check_with_schema("MATCH (n:Person) SET n = {name: 'Bob'}", &TestSchema);
     assert!(
         warnings
             .iter()
@@ -949,9 +952,9 @@ fn remove_scalar_target_warns() {
         "expected DmlTargetMismatch for scalar REMOVE, got: {warnings:?}"
     );
     assert!(
-        warnings
-            .iter()
-            .any(|w| w.kind == WarningKind::DmlTargetMismatch && w.code == Some(DML002_TARGET_VALUE)),
+        warnings.iter().any(
+            |w| w.kind == WarningKind::DmlTargetMismatch && w.code == Some(DML002_TARGET_VALUE)
+        ),
         "expected DML002 code for scalar REMOVE, got: {warnings:?}"
     );
 }

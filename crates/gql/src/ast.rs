@@ -1440,6 +1440,10 @@ pub enum ValueType {
     /// Union of multiple value types
     ClosedDynamicUnion(Vec<ValueType>),
 
+    // — Host extension type —
+    /// Host-defined scalar/type name accepted by parser and resolved by host runtime.
+    ExtensionType { name: ObjectName },
+
     // — NOT NULL wrapper —
     /// A value type with a NOT NULL constraint.
     NotNull(Box<ValueType>),

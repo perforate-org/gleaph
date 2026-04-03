@@ -1,11 +1,15 @@
 //! Region-manager metadata and allocator-side state transitions.
 
+use candid::CandidType;
+use serde::{Deserialize, Serialize};
+
 use super::extent::{
-    BucketChain, BucketHeader, BucketId, BucketTable, ExtentChain, ExtentGrowthDecision,
-    ExtentGrowthKind, ExtentGrowthPolicy, ExtentGrowthRequest, ExtentHeader, ExtentId, ExtentRef,
-    ExtentTable, FreeBucketList, FreeExtentList,
+    BucketChain, BucketHeader, BucketId, BucketTable, EdgeSegmentDirectory, EdgeSegmentHeader,
+    EdgeSegmentState, ExtentChain, ExtentGrowthDecision, ExtentGrowthKind, ExtentGrowthPolicy,
+    ExtentGrowthRequest, ExtentHeader, ExtentId, ExtentRef, ExtentTable, FreeBucketList,
+    FreeExtentList,
 };
-use super::ids::StableAddr;
+use super::ids::{EdgeRef, StableAddr};
 use super::region::{
     BucketSizeInPages, RegionKind, RegionManagerLayout, RegionRef, RegionStorageKind, WasmPages,
 };
@@ -21,13 +25,15 @@ use super::region::{
 /// - extent/bucket allocator metadata may change without changing adjacency
 ///   semantics
 /// - physical address reuse must not change surface-local indexes
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct RegionManager {
     pub layout: RegionManagerLayout,
     pub extent_table: ExtentTable,
     pub free_extents: FreeExtentList,
     pub bucket_table: BucketTable,
     pub free_buckets: FreeBucketList,
+    pub forward_edge_segments: EdgeSegmentDirectory,
+    pub reverse_edge_segments: EdgeSegmentDirectory,
     pub next_extent_addr: StableAddr,
     free_extent_addrs: Vec<ExtentRef>,
     extent_chains: Vec<ExtentChain>,
@@ -35,6 +41,8 @@ pub struct RegionManager {
 }
 
 impl RegionManager {
+    const EDGE_ENTRY_LEN_BYTES: u64 = 8;
+
     /// Creates an empty region manager with the chosen bucket granularity.
     pub fn with_bucket_size(bucket_size_in_pages: BucketSizeInPages) -> Self {
         Self {
@@ -43,6 +51,8 @@ impl RegionManager {
             free_extents: FreeExtentList::default(),
             bucket_table: BucketTable::default(),
             free_buckets: FreeBucketList::default(),
+            forward_edge_segments: EdgeSegmentDirectory::default(),
+            reverse_edge_segments: EdgeSegmentDirectory::default(),
             next_extent_addr: StableAddr(0),
             free_extent_addrs: Vec::new(),
             extent_chains: Vec::new(),
@@ -115,6 +125,224 @@ impl RegionManager {
             return None;
         }
         self.bucket_chains.get((region.root - 1) as usize).copied()
+    }
+
+    /// Returns the edge-segment directory attached to one edge-entry region.
+    pub fn edge_segment_directory(&self, kind: RegionKind) -> Option<&EdgeSegmentDirectory> {
+        match kind {
+            RegionKind::ForwardEdgeEntries => Some(&self.forward_edge_segments),
+            RegionKind::ReverseEdgeEntries => Some(&self.reverse_edge_segments),
+            _ => None,
+        }
+    }
+
+    /// Returns a mutable edge-segment directory attached to one edge-entry region.
+    pub fn edge_segment_directory_mut(
+        &mut self,
+        kind: RegionKind,
+    ) -> Option<&mut EdgeSegmentDirectory> {
+        match kind {
+            RegionKind::ForwardEdgeEntries => Some(&mut self.forward_edge_segments),
+            RegionKind::ReverseEdgeEntries => Some(&mut self.reverse_edge_segments),
+            _ => None,
+        }
+    }
+
+    /// Inserts or replaces one edge-segment header for the given edge-entry region.
+    pub fn register_edge_segment(
+        &mut self,
+        kind: RegionKind,
+        header: EdgeSegmentHeader,
+    ) -> Option<()> {
+        self.edge_segment_directory_mut(kind)?.insert(header);
+        Some(())
+    }
+
+    /// Allocates one new explicit edge segment backed by its own extent.
+    pub fn allocate_edge_segment(
+        &mut self,
+        kind: RegionKind,
+        slot_capacity: u64,
+        state: EdgeSegmentState,
+    ) -> Option<EdgeSegmentHeader> {
+        let region = self.layout.region(kind)?;
+        if region.storage_kind() != RegionStorageKind::Extent {
+            return None;
+        }
+        let segment_id = self.next_edge_segment_id(kind)?;
+        let len_bytes = slot_capacity.checked_mul(Self::EDGE_ENTRY_LEN_BYTES)?;
+        let extent_id = self.allocate_extent_id();
+        let extent = ExtentRef::new(self.allocate_extent_addr(len_bytes), len_bytes);
+        self.extent_table
+            .insert(ExtentHeader::new(extent_id, extent, ExtentId::NULL));
+        let header = EdgeSegmentHeader::new(segment_id, extent_id, slot_capacity, 0, state);
+        self.register_edge_segment(kind, header)?;
+        Some(header)
+    }
+
+    /// Allocates a fresh active edge segment and retires the replaced segment.
+    pub fn replace_edge_segment_for_maintenance(
+        &mut self,
+        kind: RegionKind,
+        replaced_segment_id: u32,
+        new_slot_capacity: u64,
+        retired_epoch: u64,
+    ) -> Option<(EdgeSegmentHeader, Option<EdgeSegmentHeader>)> {
+        let new_segment = self.allocate_edge_segment(kind, new_slot_capacity, EdgeSegmentState::Active)?;
+        let replaced = if replaced_segment_id == 0 {
+            None
+        } else {
+            self.retire_edge_segment(kind, replaced_segment_id, retired_epoch)?;
+            self.edge_segment(kind, replaced_segment_id)
+        };
+        Some((new_segment, replaced))
+    }
+
+    /// Returns the next fresh non-zero segment id for the given edge-entry region.
+    pub fn next_edge_segment_id(&self, kind: RegionKind) -> Option<u32> {
+        Some(self.edge_segment_directory(kind)?.next_segment_id())
+    }
+
+    /// Marks one explicit edge segment as retired at the given GC epoch.
+    pub fn retire_edge_segment(
+        &mut self,
+        kind: RegionKind,
+        segment_id: u32,
+        retired_epoch: u64,
+    ) -> Option<EdgeSegmentHeader> {
+        if segment_id == 0 {
+            return None;
+        }
+        let header = self.edge_segment_directory_mut(kind)?.get_mut(segment_id)?;
+        let previous = *header;
+        header.state = EdgeSegmentState::Retired;
+        header.retired_epoch = retired_epoch;
+        Some(previous)
+    }
+
+    /// Reactivates one explicit edge segment, clearing any retired epoch.
+    pub fn reactivate_edge_segment(
+        &mut self,
+        kind: RegionKind,
+        segment_id: u32,
+    ) -> Option<EdgeSegmentHeader> {
+        if segment_id == 0 {
+            return None;
+        }
+        let header = self.edge_segment_directory_mut(kind)?.get_mut(segment_id)?;
+        let previous = *header;
+        header.state = EdgeSegmentState::Active;
+        header.retired_epoch = 0;
+        Some(previous)
+    }
+
+    /// Marks one explicit edge segment as reusable.
+    pub fn free_edge_segment(
+        &mut self,
+        kind: RegionKind,
+        segment_id: u32,
+    ) -> Option<EdgeSegmentHeader> {
+        if segment_id == 0 {
+            return None;
+        }
+        let header = self.edge_segment_directory_mut(kind)?.get_mut(segment_id)?;
+        let previous = *header;
+        header.state = EdgeSegmentState::Free;
+        Some(previous)
+    }
+
+    /// Reclaims the extent backing one explicit free/retired edge segment.
+    pub fn reclaim_edge_segment_storage(
+        &mut self,
+        kind: RegionKind,
+        segment_id: u32,
+    ) -> Option<EdgeSegmentHeader> {
+        if segment_id == 0 {
+            return None;
+        }
+        let header = self.edge_segment(kind, segment_id)?;
+        if header.state == EdgeSegmentState::Active {
+            return None;
+        }
+        let extent = self.extent_table.get(header.extent_id)?.extent;
+        self.free_extent_addr(extent);
+        self.release_extent_id_internal(header.extent_id);
+        Some(header)
+    }
+
+    /// Returns one segment header by id for the given edge-entry region.
+    ///
+    /// Segment id 0 is treated as the legacy single-extent compatibility segment.
+    pub fn edge_segment(&self, kind: RegionKind, segment_id: u32) -> Option<EdgeSegmentHeader> {
+        if segment_id == 0 {
+            let region = self.layout.region(kind)?;
+            let slot_capacity = region.logical_len_bytes / 8;
+            return Some(EdgeSegmentHeader::new(
+                segment_id,
+                ExtentId::NULL,
+                slot_capacity,
+                0,
+                EdgeSegmentState::Active,
+            ));
+        }
+        self.edge_segment_directory(kind)?.get(segment_id).copied()
+    }
+
+    /// Returns explicit segments eligible for retirement sweep at `current_epoch`.
+    pub fn retired_edge_segments_eligible_for_sweep(
+        &self,
+        kind: RegionKind,
+        current_epoch: u64,
+        min_retired_epochs: u64,
+    ) -> Option<Vec<EdgeSegmentHeader>> {
+        let directory = self.edge_segment_directory(kind)?;
+        Some(
+            directory
+                .iter()
+                .copied()
+                .filter(|header| {
+                    header.state == EdgeSegmentState::Retired
+                        && current_epoch.saturating_sub(header.retired_epoch) >= min_retired_epochs
+                })
+                .collect(),
+        )
+    }
+
+    /// Frees and reclaims retired explicit segments eligible at `current_epoch`.
+    pub fn sweep_retired_edge_segments(
+        &mut self,
+        kind: RegionKind,
+        current_epoch: u64,
+        min_retired_epochs: u64,
+    ) -> Option<Vec<EdgeSegmentHeader>> {
+        let candidates =
+            self.retired_edge_segments_eligible_for_sweep(kind, current_epoch, min_retired_epochs)?;
+        let mut reclaimed = Vec::with_capacity(candidates.len());
+        for header in candidates {
+            self.free_edge_segment(kind, header.segment_id)?;
+            reclaimed.push(self.reclaim_edge_segment_storage(kind, header.segment_id)?);
+        }
+        Some(reclaimed)
+    }
+
+    /// Returns the segment slot capacity for one edge ref inside the given edge-entry region.
+    pub fn edge_ref_slot_capacity(&self, kind: RegionKind, edge_ref: EdgeRef) -> Option<u64> {
+        self.edge_segment(kind, edge_ref.segment_id())
+            .map(|header| header.slot_capacity)
+    }
+
+    /// Resolves one edge ref into a physical extent and segment metadata.
+    pub fn resolve_edge_ref(
+        &self,
+        kind: RegionKind,
+        edge_ref: EdgeRef,
+    ) -> Option<(EdgeSegmentHeader, ExtentRef)> {
+        let header = self.edge_segment(kind, edge_ref.segment_id())?;
+        if edge_ref.segment_id() == 0 {
+            return Some((header, self.region_extent(kind)?));
+        }
+        let extent = self.extent_table.get(header.extent_id)?.extent;
+        Some((header, extent))
     }
 
     /// Resolves one bucket header for a bucket-backed region.
@@ -559,12 +787,16 @@ impl RegionManager {
         count
     }
 
-    #[cfg(test)]
-    fn release_extent_id(&mut self, id: ExtentId) {
+    fn release_extent_id_internal(&mut self, id: ExtentId) {
         if let Some(header) = self.extent_table.get_mut(id) {
             header.next = self.free_extents.head;
             self.free_extents.head = id;
         }
+    }
+
+    #[cfg(test)]
+    fn release_extent_id(&mut self, id: ExtentId) {
+        self.release_extent_id_internal(id);
     }
 
     #[cfg(test)]
@@ -580,9 +812,9 @@ impl RegionManager {
 mod tests {
     use super::RegionManager;
     use crate::low_level::{
-        BucketChain, BucketId, BucketSizeInPages, ExtentChain, ExtentGrowthKind,
-        ExtentGrowthPolicy, ExtentGrowthRequest, ExtentId, ExtentRef, RegionKind, StableAddr,
-        WasmPages,
+        BucketChain, BucketId, BucketSizeInPages, EdgeRef, EdgeSegmentHeader, EdgeSegmentState,
+        ExtentChain, ExtentGrowthKind, ExtentGrowthPolicy, ExtentGrowthRequest, ExtentId,
+        ExtentRef, RegionKind, StableAddr, WasmPages,
     };
 
     #[test]
@@ -605,12 +837,16 @@ mod tests {
 
         assert_eq!(extent_region.root, 1);
         assert_eq!(bucket_region.root, 1);
-        assert!(manager
-            .extent_chain(RegionKind::ForwardEdgeEntries)
-            .is_some());
-        assert!(manager
-            .bucket_chain(RegionKind::NodePropertyStore)
-            .is_some());
+        assert!(
+            manager
+                .extent_chain(RegionKind::ForwardEdgeEntries)
+                .is_some()
+        );
+        assert!(
+            manager
+                .bucket_chain(RegionKind::NodePropertyStore)
+                .is_some()
+        );
         assert_eq!(manager.extent_table.len(), 1);
         assert_eq!(manager.bucket_table.len(), 1);
         assert_eq!(
@@ -620,6 +856,268 @@ mod tests {
                 .map(|header| header.extent.len_bytes),
             Some(8 * WasmPages::new(1).bytes())
         );
+    }
+
+    #[test]
+    fn region_manager_resolves_legacy_segment_zero_for_edge_region() {
+        let mut manager = RegionManager::with_bucket_size(BucketSizeInPages::DEFAULT);
+        manager.define_extent_region(
+            RegionKind::ForwardEdgeEntries,
+            ExtentChain::new(
+                ExtentId::NULL,
+                ExtentId::NULL,
+                128,
+                WasmPages::new(1),
+                WasmPages::new(0),
+            ),
+        );
+
+        let edge_ref = EdgeRef::new(0, 5);
+        let (segment, extent) = manager
+            .resolve_edge_ref(RegionKind::ForwardEdgeEntries, edge_ref)
+            .expect("legacy segment should resolve");
+
+        assert_eq!(segment.segment_id, 0);
+        assert_eq!(segment.state, EdgeSegmentState::Active);
+        assert_eq!(segment.slot_capacity, 16);
+        assert_eq!(extent.len_bytes / 8, 8192);
+    }
+
+    #[test]
+    fn region_manager_registers_and_reads_explicit_edge_segments() {
+        let mut manager = RegionManager::with_bucket_size(BucketSizeInPages::DEFAULT);
+        manager.define_extent_region(
+            RegionKind::ForwardEdgeEntries,
+            ExtentChain::new(
+                ExtentId::NULL,
+                ExtentId::NULL,
+                64,
+                WasmPages::new(1),
+                WasmPages::new(0),
+            ),
+        );
+        manager.extent_table.insert(crate::low_level::ExtentHeader::new(
+            ExtentId::new(9),
+            ExtentRef::new(StableAddr(999), 320),
+            ExtentId::NULL,
+        ));
+        manager
+            .register_edge_segment(
+                RegionKind::ForwardEdgeEntries,
+                EdgeSegmentHeader::new(7, ExtentId::new(9), 40, 0, EdgeSegmentState::Active),
+            )
+            .expect("edge segment registration should succeed");
+
+        let edge_ref = EdgeRef::new(7, 12);
+        let (segment, extent) = manager
+            .resolve_edge_ref(RegionKind::ForwardEdgeEntries, edge_ref)
+            .expect("registered segment should resolve");
+
+        assert_eq!(segment.segment_id, 7);
+        assert_eq!(segment.slot_capacity, 40);
+        assert_eq!(extent.addr, StableAddr(999));
+        assert_eq!(manager.edge_ref_slot_capacity(RegionKind::ForwardEdgeEntries, edge_ref), Some(40));
+    }
+
+    #[test]
+    fn region_manager_tracks_edge_segment_lifecycle_states() {
+        let mut manager = RegionManager::with_bucket_size(BucketSizeInPages::DEFAULT);
+        manager.define_extent_region(
+            RegionKind::ForwardEdgeEntries,
+            ExtentChain::new(
+                ExtentId::NULL,
+                ExtentId::NULL,
+                64,
+                WasmPages::new(1),
+                WasmPages::new(0),
+            ),
+        );
+        manager.extent_table.insert(crate::low_level::ExtentHeader::new(
+            ExtentId::new(9),
+            ExtentRef::new(StableAddr(999), 320),
+            ExtentId::NULL,
+        ));
+        let segment_id = manager
+            .next_edge_segment_id(RegionKind::ForwardEdgeEntries)
+            .expect("segment directory should exist");
+        assert_eq!(segment_id, 1);
+        manager
+            .register_edge_segment(
+                RegionKind::ForwardEdgeEntries,
+                EdgeSegmentHeader::new(segment_id, ExtentId::new(9), 40, 0, EdgeSegmentState::Active),
+            )
+            .expect("edge segment registration should succeed");
+
+        let previous = manager
+            .retire_edge_segment(RegionKind::ForwardEdgeEntries, segment_id, 42)
+            .expect("retire should succeed");
+        assert_eq!(previous.state, EdgeSegmentState::Active);
+        assert_eq!(
+            manager.edge_segment(RegionKind::ForwardEdgeEntries, segment_id).unwrap().state,
+            EdgeSegmentState::Retired
+        );
+        assert_eq!(
+            manager.edge_segment(RegionKind::ForwardEdgeEntries, segment_id).unwrap().retired_epoch,
+            42
+        );
+
+        let previous = manager
+            .reactivate_edge_segment(RegionKind::ForwardEdgeEntries, segment_id)
+            .expect("reactivate should succeed");
+        assert_eq!(previous.state, EdgeSegmentState::Retired);
+        assert_eq!(
+            manager.edge_segment(RegionKind::ForwardEdgeEntries, segment_id).unwrap().state,
+            EdgeSegmentState::Active
+        );
+        assert_eq!(
+            manager.edge_segment(RegionKind::ForwardEdgeEntries, segment_id).unwrap().retired_epoch,
+            0
+        );
+
+        let previous = manager
+            .free_edge_segment(RegionKind::ForwardEdgeEntries, segment_id)
+            .expect("free should succeed");
+        assert_eq!(previous.state, EdgeSegmentState::Active);
+        assert_eq!(
+            manager.edge_segment(RegionKind::ForwardEdgeEntries, segment_id).unwrap().state,
+            EdgeSegmentState::Free
+        );
+    }
+
+    #[test]
+    fn region_manager_does_not_mutate_legacy_segment_zero_state() {
+        let mut manager = RegionManager::with_bucket_size(BucketSizeInPages::DEFAULT);
+        manager.define_extent_region(
+            RegionKind::ForwardEdgeEntries,
+            ExtentChain::new(
+                ExtentId::NULL,
+                ExtentId::NULL,
+                64,
+                WasmPages::new(1),
+                WasmPages::new(0),
+            ),
+        );
+
+        assert_eq!(
+            manager.retire_edge_segment(RegionKind::ForwardEdgeEntries, 0, 1),
+            None
+        );
+        assert_eq!(
+            manager.reactivate_edge_segment(RegionKind::ForwardEdgeEntries, 0),
+            None
+        );
+        assert_eq!(
+            manager.free_edge_segment(RegionKind::ForwardEdgeEntries, 0),
+            None
+        );
+    }
+
+    #[test]
+    fn region_manager_can_allocate_explicit_edge_segment_storage() {
+        let mut manager = RegionManager::with_bucket_size(BucketSizeInPages::DEFAULT);
+        manager.define_extent_region(
+            RegionKind::ForwardEdgeEntries,
+            ExtentChain::new(
+                ExtentId::NULL,
+                ExtentId::NULL,
+                64,
+                WasmPages::new(1),
+                WasmPages::new(0),
+            ),
+        );
+
+        let segment = manager
+            .allocate_edge_segment(RegionKind::ForwardEdgeEntries, 12, EdgeSegmentState::Active)
+            .expect("segment allocation should succeed");
+        let extent = manager
+            .resolve_edge_ref(RegionKind::ForwardEdgeEntries, EdgeRef::new(segment.segment_id, 0))
+            .expect("allocated segment should resolve")
+            .1;
+
+        assert_eq!(segment.segment_id, 1);
+        assert_eq!(segment.slot_capacity, 12);
+        assert_eq!(extent.len_bytes, 96);
+    }
+
+    #[test]
+    fn region_manager_can_replace_and_reclaim_edge_segment_storage() {
+        let mut manager = RegionManager::with_bucket_size(BucketSizeInPages::DEFAULT);
+        manager.define_extent_region(
+            RegionKind::ForwardEdgeEntries,
+            ExtentChain::new(
+                ExtentId::NULL,
+                ExtentId::NULL,
+                64,
+                WasmPages::new(1),
+                WasmPages::new(0),
+            ),
+        );
+        let original = manager
+            .allocate_edge_segment(RegionKind::ForwardEdgeEntries, 10, EdgeSegmentState::Active)
+            .expect("segment allocation should succeed");
+
+        let (replacement, retired) = manager
+            .replace_edge_segment_for_maintenance(
+                RegionKind::ForwardEdgeEntries,
+                original.segment_id,
+                14,
+                77,
+            )
+            .expect("segment replacement should succeed");
+
+        assert_eq!(replacement.segment_id, 2);
+        assert_eq!(replacement.slot_capacity, 14);
+        let retired = retired.expect("original segment should be retired");
+        assert_eq!(retired.segment_id, original.segment_id);
+        assert_eq!(retired.state, EdgeSegmentState::Retired);
+        assert_eq!(retired.retired_epoch, 77);
+
+        let freed = manager
+            .free_edge_segment(RegionKind::ForwardEdgeEntries, original.segment_id)
+            .expect("free transition should succeed");
+        assert_eq!(freed.state, EdgeSegmentState::Retired);
+        let reclaimed = manager
+            .reclaim_edge_segment_storage(RegionKind::ForwardEdgeEntries, original.segment_id)
+            .expect("reclaim should succeed");
+        assert_eq!(reclaimed.segment_id, original.segment_id);
+
+        let reused = manager
+            .allocate_edge_segment(RegionKind::ForwardEdgeEntries, 10, EdgeSegmentState::Active)
+            .expect("re-allocation should succeed");
+        let reused_extent = manager
+            .resolve_edge_ref(RegionKind::ForwardEdgeEntries, EdgeRef::new(reused.segment_id, 0))
+            .expect("reused segment should resolve")
+            .1;
+        assert_eq!(reused_extent.len_bytes, 80);
+    }
+
+    #[test]
+    fn region_manager_can_sweep_retired_edge_segments() {
+        let mut manager = RegionManager::with_bucket_size(BucketSizeInPages::DEFAULT);
+        manager.define_extent_region(
+            RegionKind::ForwardEdgeEntries,
+            ExtentChain::new(
+                ExtentId::NULL,
+                ExtentId::NULL,
+                64,
+                WasmPages::new(1),
+                WasmPages::new(0),
+            ),
+        );
+        let active = manager
+            .allocate_edge_segment(RegionKind::ForwardEdgeEntries, 10, EdgeSegmentState::Active)
+            .expect("segment allocation should succeed");
+        manager
+            .retire_edge_segment(RegionKind::ForwardEdgeEntries, active.segment_id, 50)
+            .expect("retire should succeed");
+
+        let swept = manager
+            .sweep_retired_edge_segments(RegionKind::ForwardEdgeEntries, 60, 5)
+            .expect("sweep should succeed");
+
+        assert_eq!(swept.len(), 1);
+        assert_eq!(swept[0].segment_id, active.segment_id);
+        assert_eq!(swept[0].state, EdgeSegmentState::Free);
     }
 
     #[test]

@@ -1,0 +1,82 @@
+{
+  "figma": {
+    "name": "Gleaph Design System",
+    "fileKey": "mvYdHMZxwMx1On9i73X1yB",
+    "fileUrl": "https://www.figma.com/design/mvYdHMZxwMx1On9i73X1yB"
+  },
+  "css": {
+    "package": "@gleaph/design",
+    "entry": "css/index.css",
+    "manifest": "figma/variables.manifest.json",
+    "layers": [
+      {
+        "path": "css/primitives.css",
+        "collectionId": "gleaph-primitives",
+        "role": "Primitive values; single Figma mode"
+      },
+      {
+        "path": "css/semantic.css",
+        "collectionId": "gleaph-semantic",
+        "role": "Semantic aliases; maps to Figma light/dark modes"
+      },
+      {
+        "path": "css/elevation.css",
+        "collectionId": null,
+        "role": "Shadows; depends on --shadow-color from semantic.css"
+      },
+      {
+        "path": "css/typography.css",
+        "collectionId": null,
+        "role": "Type scale; mirror as Figma text styles when ready"
+      },
+      {
+        "path": "css/motion.css",
+        "collectionId": null,
+        "role": "Duration/easing; optional in Variables"
+      }
+    ]
+  },
+  "collections": [
+    {
+      "id": "gleaph-primitives",
+      "name": "Gleaph / Primitives",
+      "cssFile": "css/primitives.css",
+      "modes": [{ "name": "default" }],
+      "variables": [
+        { "name": "color/gray/0", "property": "--color-primitive-gray-0", "css": "var(--color-primitive-gray-0)", "type": "COLOR" },
+        { "name": "color/gray/50", "property": "--color-primitive-gray-50", "css": "var(--color-primitive-gray-50)", "type": "COLOR" },
+        { "name": "color/gray/100", "property": "--color-primitive-gray-100", "css": "var(--color-primitive-gray-100)", "type": "COLOR" },
+        { "name": "color/gray/200", "property": "--color-primitive-gray-200", "css": "var(--color-primitive-gray-200)", "type": "COLOR" },
+        { "name": "color/gray/300", "property": "--color-primitive-gray-300", "css": "var(--color-primitive-gray-300)", "type": "COLOR" },
+        { "name": "color/gray/400", "property": "--color-primitive-gray-400", "css": "var(--color-primitive-gray-400)", "type": "COLOR" },
+        { "name": "color/gray/500", "property": "--color-primitive-gray-500", "css": "var(--color-primitive-gray-500)", "type": "COLOR" },
+        { "name": "color/gray/600", "property": "--color-primitive-gray-600", "css": "var(--color-primitive-gray-600)", "type": "COLOR" },
+        { "name": "color/gray/700", "property": "--color-primitive-gray-700", "css": "var(--color-primitive-gray-700)", "type": "COLOR" },
+        { "name": "color/gray/800", "property": "--color-primitive-gray-800", "css": "var(--color-primitive-gray-800)", "type": "COLOR" },
+        { "name": "color/gray/900", "property": "--color-primitive-gray-900", "css": "var(--color-primitive-gray-900)", "type": "COLOR" },
+        { "name": "color/gray/950", "property": "--color-primitive-gray-950", "css": "var(--color-primitive-gray-950)", "type": "COLOR" },
+        { "name": "color/teal/500", "property": "--color-primitive-teal-500", "css": "var(--color-primitive-teal-500)", "type": "COLOR" },
+        { "name": "color/teal/600", "property": "--color-primitive-teal-600", "css": "var(--color-primitive-teal-600)", "type": "COLOR" },
+        { "name": "color/teal/700", "property": "--color-primitive-teal-700", "css": "var(--color-primitive-teal-700)", "type": "COLOR" },
+        { "name": "space/4", "property": "--space-primitive-4", "css": "var(--space-primitive-4)", "type": "FLOAT" },
+        { "name": "space/6", "property": "--space-primitive-6", "css": "var(--space-primitive-6)", "type": "FLOAT" },
+        { "name": "radius/md", "property": "--radius-primitive-md", "css": "var(--radius-primitive-md)", "type": "FLOAT" }
+      ]
+    },
+    {
+      "id": "gleaph-semantic",
+      "name": "Gleaph / Semantic",
+      "cssFile": "css/semantic.css",
+      "modes": [{ "name": "light" }, { "name": "dark" }],
+      "variables": [
+        { "name": "color/bg/canvas", "property": "--color-bg-canvas", "css": "var(--color-bg-canvas)", "type": "COLOR" },
+        { "name": "color/bg/surface", "property": "--color-bg-surface", "css": "var(--color-bg-surface)", "type": "COLOR" },
+        { "name": "color/text/primary", "property": "--color-text-primary", "css": "var(--color-text-primary)", "type": "COLOR" },
+        { "name": "color/text/secondary", "property": "--color-text-secondary", "css": "var(--color-text-secondary)", "type": "COLOR" },
+        { "name": "color/accent/primary", "property": "--color-accent-primary", "css": "var(--color-accent-primary)", "type": "COLOR" },
+        { "name": "color/border/default", "property": "--color-border-default", "css": "var(--color-border-default)", "type": "COLOR" },
+        { "name": "color/focus/ring", "property": "--color-focus-ring", "css": "var(--color-focus-ring)", "type": "COLOR" }
+      ]
+    }
+  ]
+}

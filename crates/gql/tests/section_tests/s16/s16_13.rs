@@ -40,14 +40,14 @@ mod where_clause {
     #[test]
     fn where_in_node_pattern() {
         let m = ms("MATCH (n WHERE n.age > 30) RETURN n");
-        if let PathPatternExpr::Term(t) = &m.pattern.paths[0].expr {
-            if let PathPrimary::Node(np) = &t.factors[0].primary {
-                assert!(
-                    np.where_clause.is_some(),
-                    "expected node where_clause to be Some"
-                );
-                return;
-            }
+        if let PathPatternExpr::Term(t) = &m.pattern.paths[0].expr
+            && let PathPrimary::Node(np) = &t.factors[0].primary
+        {
+            assert!(
+                np.where_clause.is_some(),
+                "expected node where_clause to be Some"
+            );
+            return;
         }
         panic!("could not find node pattern in first path");
     }

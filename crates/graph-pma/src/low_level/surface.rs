@@ -262,8 +262,8 @@ const _: [(); 32] = [(); core::mem::size_of::<MergedNeighborhoodView>()];
 mod tests {
     use super::{ForwardSurface, ReverseSurface, SurfaceKind, SurfaceLayout};
     use crate::low_level::{
-        EdgeIndex, LogOffset, OverflowChain, RegionKind, RegionRef, RegionStorageKind,
-        SurfaceRegions, VertexEntry, VertexLabelRange, EMPTY_LOG_OFFSET,
+        EMPTY_LOG_OFFSET, EdgeIndex, LogOffset, OverflowChain, RegionKind, RegionRef,
+        RegionStorageKind, SurfaceRegions, VertexEntry, VertexLabelRange, VertexRef,
     };
 
     fn forward_regions() -> SurfaceRegions {
@@ -359,7 +359,7 @@ mod tests {
         let vertex = VertexEntry::new(EdgeIndex::new(12), 5, 3);
         let overflow = OverflowChain::new(
             SurfaceKind::Forward,
-            gleaph_graph_kernel::NodeId::from(1u8),
+            VertexRef::from(1u8),
             LogOffset::new(3),
         );
         let merged = layout.merged_neighborhood(vertex, overflow);

@@ -1,33 +1,32 @@
-//! Semantic-to-physical locator sidecars.
+//! Semantic edge-id sidecars.
 
 use gleaph_graph_kernel::EdgeId;
 
-use super::edge::EdgeLocator;
+use super::edge::LogicalEdgeLocator;
 
-/// Minimal `EdgeId -> EdgeLocator` sidecar.
+/// Minimal `EdgeId -> LogicalEdgeLocator` sidecar.
 ///
-/// This is the semantic-to-physical bridge used by higher layers:
-/// `EdgeId` remains the stable semantic handle, while `EdgeLocator` describes
-/// where the edge currently lives inside a directional surface.
+/// This is the canonical semantic-to-logical bridge used by production
+/// mutation paths.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct EdgeLocatorSidecar {
-    locators: Vec<Option<EdgeLocator>>,
+pub struct EdgeLogicalLocatorSidecar {
+    locators: Vec<Option<LogicalEdgeLocator>>,
 }
 
-impl EdgeLocatorSidecar {
-    /// Creates an empty semantic-to-physical locator table.
+impl EdgeLogicalLocatorSidecar {
+    /// Creates an empty semantic-to-logical locator table.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Returns the locator currently associated with `edge_id`.
-    pub fn get(&self, edge_id: EdgeId) -> Option<EdgeLocator> {
+    /// Returns the logical locator currently associated with `edge_id`.
+    pub fn get(&self, edge_id: EdgeId) -> Option<LogicalEdgeLocator> {
         let idx = usize::try_from(edge_id).ok()?;
         self.locators.get(idx).copied().flatten()
     }
 
-    /// Stores or replaces the locator associated with `edge_id`.
-    pub fn set(&mut self, edge_id: EdgeId, locator: EdgeLocator) {
+    /// Stores or replaces the logical locator associated with `edge_id`.
+    pub fn set(&mut self, edge_id: EdgeId, locator: LogicalEdgeLocator) {
         let idx = usize::try_from(edge_id).expect("edge id should fit in usize");
         if idx >= self.locators.len() {
             self.locators.resize(idx + 1, None);
@@ -35,29 +34,19 @@ impl EdgeLocatorSidecar {
         self.locators[idx] = Some(locator);
     }
 
-    /// Removes and returns the locator associated with `edge_id`.
-    pub fn remove(&mut self, edge_id: EdgeId) -> Option<EdgeLocator> {
+    /// Removes and returns the logical locator associated with `edge_id`.
+    pub fn remove(&mut self, edge_id: EdgeId) -> Option<LogicalEdgeLocator> {
         let idx = usize::try_from(edge_id).ok()?;
         self.locators.get_mut(idx)?.take()
     }
 
-    /// Returns whether a locator is stored for `edge_id`.
+    /// Returns whether a logical locator is stored for `edge_id`.
     pub fn contains(&self, edge_id: EdgeId) -> bool {
         self.get(edge_id).is_some()
     }
 
-    /// Counts live locator mappings.
-    pub fn len(&self) -> usize {
-        self.locators.iter().filter(|entry| entry.is_some()).count()
-    }
-
-    /// Returns whether the sidecar currently stores no mappings.
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
     /// Retains only entries whose `(edge_id, locator)` pair matches `keep`.
-    pub fn retain(&mut self, mut keep: impl FnMut(EdgeId, EdgeLocator) -> bool) {
+    pub fn retain(&mut self, mut keep: impl FnMut(EdgeId, LogicalEdgeLocator) -> bool) {
         for (idx, slot) in self.locators.iter_mut().enumerate() {
             let Some(locator) = *slot else {
                 continue;
@@ -72,49 +61,17 @@ impl EdgeLocatorSidecar {
 
 #[cfg(test)]
 mod tests {
-    use super::EdgeLocatorSidecar;
-    use crate::low_level::{EdgeLocator, SurfaceKind};
-    use gleaph_graph_kernel::NodeId;
+    use super::EdgeLogicalLocatorSidecar;
+    use crate::low_level::{LogicalEdgeLocator, SurfaceKind, VertexRef};
 
     #[test]
-    fn sidecar_maps_edge_id_to_locator() {
-        let mut sidecar = EdgeLocatorSidecar::new();
-        let locator = EdgeLocator::new(SurfaceKind::Forward, NodeId::from(7u8), 12);
+    fn logical_sidecar_maps_edge_id_to_logical_locator() {
+        let mut sidecar = EdgeLogicalLocatorSidecar::new();
+        let locator = LogicalEdgeLocator::base(SurfaceKind::Forward, VertexRef::from(7u8), 12);
 
         sidecar.set(42, locator);
 
         assert_eq!(sidecar.get(42), Some(locator));
         assert!(sidecar.contains(42));
-        assert_eq!(sidecar.len(), 1);
-    }
-
-    #[test]
-    fn sidecar_can_remove_locator() {
-        let mut sidecar = EdgeLocatorSidecar::new();
-        let locator = EdgeLocator::new(SurfaceKind::Reverse, NodeId::from(3u8), 9);
-        sidecar.set(5, locator);
-
-        assert_eq!(sidecar.remove(5), Some(locator));
-        assert_eq!(sidecar.get(5), None);
-        assert!(sidecar.is_empty());
-    }
-
-    #[test]
-    fn sidecar_can_retain_subset_of_locators() {
-        let mut sidecar = EdgeLocatorSidecar::new();
-        sidecar.set(
-            1,
-            EdgeLocator::new(SurfaceKind::Forward, NodeId::from(3u8), 1),
-        );
-        sidecar.set(
-            2,
-            EdgeLocator::new(SurfaceKind::Forward, NodeId::from(4u8), 2),
-        );
-
-        sidecar.retain(|edge_id, _| edge_id == 2);
-
-        assert_eq!(sidecar.get(1), None);
-        assert!(sidecar.contains(2));
-        assert_eq!(sidecar.len(), 1);
     }
 }

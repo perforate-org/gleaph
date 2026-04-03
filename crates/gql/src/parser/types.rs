@@ -765,6 +765,14 @@ impl Parser<'_> {
                 Ok(self.wrap_not_null(ValueType::BindingTableRef { fields }))
             }
 
+            // ── Host extension value type ───────────────────────────────────
+            // Unknown identifiers in type position are accepted and deferred
+            // to host-side extension type resolution.
+            Some(Token::Ident(_)) => {
+                let name = self.parse_object_name()?;
+                Ok(self.wrap_not_null(ValueType::ExtensionType { name }))
+            }
+
             _ => Err(self.expected("value type")),
         }
     }

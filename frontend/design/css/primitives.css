@@ -1,0 +1,75 @@
+/**
+ * Gleaph — primitive tokens (mode-independent raw values).
+ * Semantic tokens alias these via semantic.css.
+ * Figma collection `gleaph-primitives` ↔ this file — ../figma/variables.manifest.json
+ */
+:root {
+  /* Gray (oklch-inspired stops, sRGB fallbacks) */
+  --color-primitive-gray-0: #ffffff;
+  --color-primitive-gray-50: #f6f7f9;
+  --color-primitive-gray-100: #eceff3;
+  --color-primitive-gray-200: #d8dde4;
+  --color-primitive-gray-300: #b8c0cc;
+  --color-primitive-gray-400: #8f9aad;
+  --color-primitive-gray-500: #6b778c;
+  --color-primitive-gray-600: #525f73;
+  --color-primitive-gray-700: #3d4758;
+  --color-primitive-gray-800: #2a3140;
+  --color-primitive-gray-900: #1a1f28;
+  --color-primitive-gray-950: #0b0d0f;
+
+  /* Brand — teal */
+  --color-primitive-teal-50: #effefb;
+  --color-primitive-teal-100: #c8fff4;
+  --color-primitive-teal-200: #90ffe6;
+  --color-primitive-teal-300: #4ff0d4;
+  --color-primitive-teal-400: #1dd8bf;
+  --color-primitive-teal-500: #0fb5a0;
+  --color-primitive-teal-600: #0a9083;
+  --color-primitive-teal-700: #0c736a;
+  --color-primitive-teal-800: #0f5c57;
+  --color-primitive-teal-900: #114c48;
+  --color-primitive-teal-950: #032d2c;
+
+  /* Accent — amber (CTA / highlight) */
+  --color-primitive-amber-400: #f7b955;
+  --color-primitive-amber-500: #f29c38;
+  --color-primitive-amber-600: #dd7f1c;
+
+  /* Status */
+  --color-primitive-red-500: #e04f4f;
+  --color-primitive-red-600: #c23b3b;
+  --color-primitive-green-500: #2fa86e;
+  --color-primitive-green-600: #248a5a;
+  --color-primitive-blue-500: #3d7dd9;
+  --color-primitive-blue-600: #2f63b5;
+
+  /* Spacing scale (4px base) */
+  --space-primitive-0: 0;
+  --space-primitive-1: 0.25rem;
+  --space-primitive-2: 0.5rem;
+  --space-primitive-3: 0.75rem;
+  --space-primitive-4: 1rem;
+  --space-primitive-5: 1.25rem;
+  --space-primitive-6: 1.5rem;
+  --space-primitive-8: 2rem;
+  --space-primitive-10: 2.5rem;
+  --space-primitive-12: 3rem;
+  --space-primitive-16: 4rem;
+
+  /* Radius */
+  --radius-primitive-sm: 0.25rem;
+  --radius-primitive-md: 0.375rem;
+  --radius-primitive-lg: 0.5rem;
+  --radius-primitive-xl: 0.75rem;
+  --radius-primitive-full: 624.9375rem;
+
+  /* Typography scale (rem) */
+  --font-size-primitive-xs: 0.75rem;
+  --font-size-primitive-sm: 0.875rem;
+  --font-size-primitive-md: 1rem;
+  --font-size-primitive-lg: 1.125rem;
+  --font-size-primitive-xl: 1.25rem;
+  --font-size-primitive-2xl: 1.5rem;
+  --font-size-primitive-3xl: 1.875rem;
+}

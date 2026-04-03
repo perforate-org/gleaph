@@ -20,20 +20,26 @@
 pub mod anchor;
 pub mod cost;
 pub mod cse;
+pub mod executor_contract;
 pub mod explain;
 pub mod join_order;
 pub mod plan;
 pub mod planner;
+pub mod property_projection;
 pub mod pushdown;
 pub mod semantic;
 pub mod stats;
 
 // Re-export key types and functions.
+pub use executor_contract::first_executor_unsupported_op;
 pub use explain::explain_plan;
-pub use plan::{PhysicalPlan, PlanAnnotations, PlanDiagnostics, PlanOp, PlanSummary};
+pub use plan::{
+    PhysicalPlan, PlanAnnotations, PlanDiagnostics, PlanOp, PlanSummary, UseGraphPushdownInfo,
+};
 pub use planner::{
-    PlanBuildOutput, PlannerError, build_block_plan, build_block_plan_output,
-    build_composite_plan, build_composite_plan_output, build_plan, build_plan_output,
+    PlanBuildOutput, PlannerError, analyze_remote_use_graph_pushdown, build_block_plan,
+    build_block_plan_output, build_block_plan_output_for_execute, build_composite_plan,
+    build_composite_plan_output, build_plan, build_plan_output, build_plan_output_for_execute,
     build_statement_plan, build_statement_plan_output,
 };
 pub use stats::{GraphStats, NoStats, TableStats};

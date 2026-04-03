@@ -2371,6 +2371,9 @@ fn s18_02_phrase_node_type() {
     ok_syntax(
         "CREATE GRAPH TYPE myType { NODE Person LABEL Person { name STRING NOT NULL, age INT32 } }",
     );
+    ok_syntax(
+        "CREATE GRAPH TYPE myType { NODE Person LABEL Person { name STRING NOT NULL, age INT32, identity PRINCIPAL } }",
+    );
 }
 
 #[test]

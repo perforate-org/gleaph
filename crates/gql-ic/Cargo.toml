@@ -1,0 +1,12 @@
+[package]
+name = "gleaph-gql-ic"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Internet Computer types as gleaph-gql Value::Extension (Candid Principal, etc.)"
+
+[dependencies]
+gleaph-gql = { path = "../gql" }
+candid.workspace = true
+thiserror.workspace = true
+serde.workspace = true

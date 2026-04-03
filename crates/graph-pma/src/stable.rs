@@ -53,6 +53,13 @@ impl VecMemory {
         Self::default()
     }
 
+    /// Reconstructs one in-memory stable-memory image from raw bytes.
+    pub fn from_vec(bytes: Vec<u8>) -> Self {
+        Self {
+            bytes: RefCell::new(bytes),
+        }
+    }
+
     /// Returns a snapshot of the underlying bytes.
     pub fn to_vec(&self) -> Vec<u8> {
         self.bytes.borrow().clone()

@@ -14,12 +14,12 @@ fn simplified_elements(input: &str) -> Vec<SimplifiedElement> {
     match &b.first {
         Statement::Query(cq) => {
             for part in &cq.left.parts {
-                if let SimpleQueryStatement::Match(m) = part {
-                    if let PathPatternExpr::Term(t) = &m.pattern.paths[0].expr {
-                        for factor in &t.factors {
-                            if let PathPrimary::Simplified(sp) = &factor.primary {
-                                return sp.elements.clone();
-                            }
+                if let SimpleQueryStatement::Match(m) = part
+                    && let PathPatternExpr::Term(t) = &m.pattern.paths[0].expr
+                {
+                    for factor in &t.factors {
+                        if let PathPrimary::Simplified(sp) = &factor.primary {
+                            return sp.elements.clone();
                         }
                     }
                 }

@@ -1,0 +1,14 @@
+/**
+ * Gleaph — motion tokens.
+ * Linked from variables.manifest.json `css.layers` → optional Figma variables.
+ */
+:root {
+  --duration-instant: 50ms;
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+  --duration-slow: 320ms;
+
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-emphasized: cubic-bezier(0.2, 0, 0, 1);
+  --ease-decelerate: cubic-bezier(0, 0, 0, 1);
+}

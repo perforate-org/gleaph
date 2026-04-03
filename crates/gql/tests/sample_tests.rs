@@ -11,7 +11,7 @@ fn try_parse(input: &str) -> Result<gleaph_gql::ast::GqlProgram, gleaph_gql::Gql
 fn parse_ok(input: &str) -> gleaph_gql::ast::GqlProgram {
     match try_parse(input) {
         Ok(prog) => {
-            validate(&prog).expect(&format!("validation failed for: {input}"));
+            validate(&prog).unwrap_or_else(|_| panic!("validation failed for: {input}"));
             prog
         }
         Err(e) => panic!("parse failed for: {input}\nerror: {e}"),

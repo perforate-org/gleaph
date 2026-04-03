@@ -463,3 +463,102 @@ This document intentionally chooses:
 
 If future code moves away from these decisions, it should do so explicitly and
 with measurement, not by accident.
+
+## Internet Computer: full property search stack (target)
+
+This section ties **persistent graph state** to **Gleaph query execution** the
+way a canister is expected to wire them. It is a contract for *big-picture*
+work; individual crates keep their own finer-grained docs.
+
+### End-to-end data flow
+
+1. **Stable memory** holds region-managed bytes: adjacency, property append
+   logs, property-index snapshots / paged node stores, and related metadata.
+2. **`RewriteGraphPma`** hydrates from those regions and exposes mutation +
+   `try_write_all_to_stable_memory` (or incremental write paths) after updates.
+3. **`RewriteKernelOverlayGraph`** implements **`GraphRead` / `GraphWrite`** for
+   the kernel-facing graph service: traversals, DML, and property lookups merge
+   hydrated structures with any dirty overlay state.
+4. **Property equality search** for queries must converge on:
+   - **clean index:** prefix scans in stable memory (
+     `scan_*_property_index_*_from_stable_memory`) keyed by binary-encoded
+     values, or an equivalent direct node-store walk; then resolve entities.
+   - **dirty stores / indexes:** the append-log and in-memory
+     `PropertyIndex` / `PropertyIndexNodeStore` until the next flush, without
+   requiring a full graph scan for exact equality when the index is
+   authoritative.
+5. **`gleaph-gql-planner`** chooses **`IndexScan`**, multi-predicate **`IndexIntersection`**,
+   and index-backed edge equality when **catalog stats** (
+   `indexed_vertex_properties`, `indexed_edge_properties`, selectivity,
+   cardinality) say the property is indexed—this is the **canister-facing
+   contract for “indexed means planner may skip NodeScan”** (for edges: may use
+   `scan_edges_by_property` during expansion instead of full incident-edge scan).
+   - **`IndexIntersection`** is executed by intersecting candidate **`NodeId`**
+     sets from repeated **`GraphRead::scan_nodes_by_property`** calls (see
+     `gleaph-gql-executor`).
+   - **Indexed edge equality** is usually carried on **`Expand` / `ExpandFilter`**
+     as `indexed_edge_equality: Option<(property, ScanValue)>` and executed via
+     **`scan_edges_by_property`** while preserving the already-bound source node
+     (see `gql-executor`).
+   - **Leading `EdgeIndexScan`:** when the **first path node** would only produce
+     an **unlabeled full vertex scan** and the **first hop** is a **directed**
+     edge with **indexed** property equality (per stats), the planner seeds the
+     path with **`EdgeIndexScan`** then **`EdgeBindEndpoints`** (binds near/far
+     nodes from the edge’s `src`/`dst`), applies residual edge filters, then
+     continues with later hops. This avoids scanning all vertices before using
+     the edge index. **`EdgeIndexScan`** is still valid as a standalone op for
+     tests and manual plans. Stack coverage: **`build_plan`** +
+     `gql-executor/tests/canister_property_search_stack.rs`.
+   - **`WorstCaseOptimalJoin`**: for simple cyclic **`Expand`** chains (no
+     variable-length / indexed-edge fusion / `ExpandFilter`), the planner may fuse
+     hops into one op. The executor evaluates the cycle via bounded backtracking on
+     **`GraphRead::expand`** (generic binary-relation join; output capped per input
+     row for safety).
+6. **`gleaph-gql-executor`** maps those ops to **`GraphRead::scan_nodes_by_property`** /
+   **`scan_edges_by_property`** (and filters). No executor shortcut may bypass
+   the kernel trait surface for persisted results.
+   - **Preflight:** before running ops, the executor calls
+     **`first_executor_unsupported_op`** (`gql-planner`) so plans that include
+     unimplemented operators (e.g. **`ShortestPath.path_var`**, **`Let`**,
+     variable-length **`Expand`**) fail
+     early with **`InvalidPlan`** and a stable operator name. **`ShortestPath`**
+     itself runs via unweighted BFS on **`GraphRead::expand`** (hop bounds from
+     the path quantifier). **IC / replica errors** (cycles, traps) are still
+     handled by the **canister host**, not inside `gql-executor`.
+   - **Bound parameters:** the planner often lowers indexed equality predicates
+     to **`IndexScan(..., Parameter("$propertyName"), ...)`**. The canister /
+     `gleaph` runtime must pass the same values through **`ExecutionContext::params`**
+     (e.g. `"uid" → Text("alice")` for parameter `"$uid"`). Missing bindings produce
+     null scan keys and empty results even when the index is correct.
+
+### Design commitments (bold moves)
+
+- **Single kernel trait boundary:** all search and mutation semantics for the
+  query engine go through **`GraphRead` / `GraphWrite`**. Canister code holds a
+  `G: GraphRead + GraphWrite` (backed by `graph-pma`), not ad-hoc index calls
+  in the executor.
+- **Index authority:** when the planner emits an index scan, the graph
+  implementation must return **the same** bindings as a filter after a full
+  scan, modulo intentional unsupported types. Tests in `gql-executor` lock this
+  stack-wise.
+- **Stats are part of the API:** deploying a canister must ship **planner stats**
+  (or a derived catalog) consistent with what is actually indexed on stable
+  memory; mismatches are correctness bugs, not “optimizer quirks”.
+- **Persistence rule:** any leaf or record that must survive upgrades uses
+ **`PropertyIndexNodeStore::encode_node_page`** (or the documented successor) at
+  the configured page size; multi-page experimental encodings stay off the
+  hot persistence path.
+
+### Observability and benchmarks
+
+- **Contract tests:** planner + executor + `RewriteKernelOverlayGraph` (or
+  harness equivalent) for indexed equality queries.
+- **Benchmarks:** hot paths are **stable-memory equality scans** and **index-
+  backed `GraphRead::scan_*_by_property`** over increasing entry counts;
+  regressions should be caught in CI when benches are run.
+
+### Non-goals (this milestone)
+
+- Arbitrary full-text or range indexes without a planned storage layout.
+- Pushing property-index logic into the executor or planner beyond **plan
+  selection**—storage stays in `graph-pma`.

@@ -13,11 +13,15 @@
 //! - `sql-compat` -- Enables SQL-compatible syntax extensions (e.g. SQL-style expressions and operators).
 //! - `f128` -- Enables `Value::Float128` using `std::f128` (requires nightly).
 //! - `f256` -- Enables `Value::Float256` using the `f256` crate.
+//!
+//! Internet Computer `Principal` as [`Value::Extension`](value::Value::Extension) lives in the
+//! sibling crate **`gleaph-gql-ic`** (adds a `candid` dependency only there; **tag 34** short blob).
 
 #![cfg_attr(feature = "f128", feature(f128))]
 
 pub mod ast;
 pub mod error;
+pub mod extensions;
 pub mod lexer;
 pub mod parser;
 pub mod temporal;
@@ -30,4 +34,6 @@ pub mod value_cmp;
 
 pub use error::{GqlError, GqlResult};
 pub use parser::ParseResult;
-pub use value::{StableValueError, Value};
+pub use value::{
+    DenyExtensionBinaryDecode, ExtensionBinaryDecode, ExtensionValue, Value, ValueBinaryError,
+};

@@ -7,7 +7,6 @@ use gleaph_gql::parser;
 use gleaph_gql_planner::stats::TableStats;
 use gleaph_gql_planner::{build_plan, explain_plan};
 
-
 // ════════════════════════════════════════════════════════════════════════════════
 // Helpers
 // ════════════════════════════════════════════════════════════════════════════════
@@ -28,8 +27,10 @@ fn parse_and_plan(input: &str, stats: Option<&TableStats>) {
 }
 
 fn make_stats() -> TableStats {
-    let mut stats = TableStats::default();
-    stats.avg_degree = 10.0;
+    let mut stats = TableStats {
+        avg_degree: 10.0,
+        ..TableStats::default()
+    };
     stats
         .label_cardinality
         .insert("Person".to_string(), 100_000);
@@ -38,21 +39,11 @@ fn make_stats() -> TableStats {
         .insert("Company".to_string(), 10_000);
     stats.label_cardinality.insert("Post".to_string(), 500_000);
     stats.label_cardinality.insert("Tag".to_string(), 1_000);
-    stats
-        .indexed_vertex_properties
-        .insert("uid".to_string());
-    stats
-        .indexed_vertex_properties
-        .insert("name".to_string());
-    stats
-        .property_selectivity
-        .insert("uid".to_string(), 0.001);
-    stats
-        .property_selectivity
-        .insert("name".to_string(), 0.01);
-    stats
-        .property_selectivity
-        .insert("age".to_string(), 0.05);
+    stats.indexed_vertex_properties.insert("uid".to_string());
+    stats.indexed_vertex_properties.insert("name".to_string());
+    stats.property_selectivity.insert("uid".to_string(), 0.001);
+    stats.property_selectivity.insert("name".to_string(), 0.01);
+    stats.property_selectivity.insert("age".to_string(), 0.05);
     stats.edge_endpoint_labels.insert(
         "WORKS_AT".to_string(),
         (vec!["Person".to_string()], vec!["Company".to_string()]),
@@ -97,10 +88,7 @@ fn gen_star(branches: usize) -> String {
     let mut patterns = Vec::new();
     let mut returns = vec!["center".to_string()];
     for i in 0..branches {
-        patterns.push(format!(
-            "(center:Person)-[e{0}:KNOWS]->(leaf{0}:Person)",
-            i
-        ));
+        patterns.push(format!("(center:Person)-[e{0}:KNOWS]->(leaf{0}:Person)", i));
         returns.push(format!("leaf{}", i));
     }
     format!(

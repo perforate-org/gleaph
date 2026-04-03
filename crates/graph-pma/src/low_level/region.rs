@@ -1,5 +1,8 @@
 //! Stable-memory region directory and page-granularity primitives.
 
+use candid::CandidType;
+use serde::{Deserialize, Serialize};
+
 /// Stable-memory page size used by the allocator layer.
 pub const WASM_PAGE_SIZE: u64 = 65_536;
 /// Maximum number of logical region kinds tracked by the directory.
@@ -7,7 +10,20 @@ pub const MAX_REGION_KINDS: usize = 32;
 
 /// One WebAssembly stable-memory page.
 #[repr(transparent)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    Serialize,
+    Deserialize,
+    CandidType,
+)]
 pub struct WasmPages {
     pub raw: u64,
 }
@@ -28,7 +44,20 @@ impl WasmPages {
 ///
 /// This belongs to the allocator layer, not the adjacency-kernel layer.
 #[repr(transparent)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    Serialize,
+    Deserialize,
+    CandidType,
+)]
 pub struct BucketSizeInPages {
     pub raw: u16,
 }
@@ -50,7 +79,7 @@ impl BucketSizeInPages {
 
 /// Physical backing strategy used by a region.
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, CandidType)]
 pub enum RegionStorageKind {
     Extent = 0,
     BucketChain = 1,
@@ -61,7 +90,9 @@ pub enum RegionStorageKind {
 /// Each kind names one well-known storage role such as forward edge entries,
 /// reverse segment logs, or the property index.
 #[repr(u16)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, CandidType,
+)]
 pub enum RegionKind {
     ForwardVertexTable = 0,
     ForwardEdgeEntries = 1,
@@ -71,11 +102,12 @@ pub enum RegionKind {
     ReverseEdgeEntries = 5,
     ReverseLabelIndex = 6,
     ReverseSegmentLog = 7,
-    EdgeLocatorSidecar = 8,
-    NodePropertyStore = 9,
-    EdgePropertyStore = 10,
-    PropertyIndex = 11,
-    LabelCatalog = 12,
+    NodePropertyStore = 8,
+    EdgePropertyStore = 9,
+    PropertyIndex = 10,
+    LabelCatalog = 11,
+    GcState = 12,
+    MaintenanceQueue = 13,
 }
 
 impl RegionKind {
@@ -96,7 +128,7 @@ impl RegionKind {
 /// - `storage` names how that tenant is physically backed
 /// - `logical_len_bytes` is the logical payload length, not allocator slack
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize, CandidType)]
 pub struct RegionRef {
     pub storage: u8,
     pub reserved: u8,
@@ -142,11 +174,12 @@ impl RegionRef {
             5 => RegionKind::ReverseEdgeEntries,
             6 => RegionKind::ReverseLabelIndex,
             7 => RegionKind::ReverseSegmentLog,
-            8 => RegionKind::EdgeLocatorSidecar,
-            9 => RegionKind::NodePropertyStore,
-            10 => RegionKind::EdgePropertyStore,
-            11 => RegionKind::PropertyIndex,
-            12 => RegionKind::LabelCatalog,
+            8 => RegionKind::NodePropertyStore,
+            9 => RegionKind::EdgePropertyStore,
+            10 => RegionKind::PropertyIndex,
+            11 => RegionKind::LabelCatalog,
+            12 => RegionKind::GcState,
+            13 => RegionKind::MaintenanceQueue,
             _ => panic!("invalid region kind"),
         }
     }
@@ -154,7 +187,7 @@ impl RegionRef {
 
 /// One entry in the stable-memory region directory.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize, CandidType)]
 pub struct RegionDirectoryEntry {
     pub region: RegionRef,
 }
@@ -169,7 +202,7 @@ impl RegionDirectoryEntry {
 /// Fixed directory of currently defined regions.
 ///
 /// This is metadata only; it does not store region payload bytes.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct RegionDirectory {
     entries: [Option<RegionDirectoryEntry>; MAX_REGION_KINDS],
 }
@@ -209,7 +242,7 @@ impl RegionDirectory {
 ///
 /// This records which regions exist and the allocator granularity used for
 /// bucket-backed tenants.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct RegionManagerLayout {
     pub directory: RegionDirectory,
     pub bucket_size_in_pages: BucketSizeInPages,
@@ -249,7 +282,7 @@ const _: [(); 2] = [(); core::mem::size_of::<BucketSizeInPages>()];
 mod tests {
     use super::{
         BucketSizeInPages, RegionDirectory, RegionKind, RegionManagerLayout, RegionRef,
-        RegionStorageKind, WasmPages, WASM_PAGE_SIZE,
+        RegionStorageKind, WASM_PAGE_SIZE, WasmPages,
     };
 
     #[test]

@@ -11,10 +11,7 @@ use gleaph_gql::ast::{Expr, ExprKind};
 use crate::plan::{PlanAnnotations, PlanOp};
 
 /// Detect common subexpressions across all plan operators.
-pub fn detect_common_subexpressions(
-    ops: &[PlanOp],
-    annotations: &mut PlanAnnotations,
-) {
+pub fn detect_common_subexpressions(ops: &[PlanOp], annotations: &mut PlanAnnotations) {
     let exprs = collect_all_expressions(ops);
     let mut counts: RapidHashMap<String, usize> = RapidHashMap::default();
 
@@ -34,7 +31,8 @@ pub fn detect_common_subexpressions(
     if !common.is_empty() {
         let mut sorted = common;
         sorted.sort();
-        annotations.optimizer.common_subexpressions = Some(sorted.into_iter().map(crate::plan::Str::from).collect());
+        annotations.optimizer.common_subexpressions =
+            Some(sorted.into_iter().map(crate::plan::Str::from).collect());
     }
 }
 
@@ -108,7 +106,10 @@ fn collect_subexprs<'a>(expr: &'a Expr, out: &mut Vec<&'a Expr>) {
 /// Create a canonical string representation of an expression for dedup.
 fn canonical_expr(expr: &Expr) -> String {
     match &expr.kind {
-        ExprKind::PropertyAccess { expr: inner, property } => {
+        ExprKind::PropertyAccess {
+            expr: inner,
+            property,
+        } => {
             format!("{}.{}", canonical_expr(inner), property)
         }
         ExprKind::Variable(v) => v.clone(),

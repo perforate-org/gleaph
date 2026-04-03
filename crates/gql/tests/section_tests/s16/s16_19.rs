@@ -40,14 +40,10 @@ mod offset_clause {
         match &b.first {
             Statement::Query(cq) => {
                 let result = cq.left.result.as_ref().expect("expected result statement");
-                match result {
-                    ResultStatement::Return(ret) => match &ret.body {
-                        ReturnBody::Items { offset, .. } => {
-                            assert!(offset.is_none(), "expected offset to be None");
-                        }
-                        _ => {}
-                    },
-                    _ => {}
+                if let ResultStatement::Return(ret) = result
+                    && let ReturnBody::Items { offset, .. } = &ret.body
+                {
+                    assert!(offset.is_none(), "expected offset to be None");
                 }
             }
             other => panic!("expected Query, got {other:?}"),

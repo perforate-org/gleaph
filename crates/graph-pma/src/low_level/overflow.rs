@@ -1,9 +1,10 @@
 //! DGAP-style overflow-log descriptors.
 
-use gleaph_graph_kernel::{EdgeId, NodeId};
+use gleaph_graph_kernel::EdgeId;
 
 use super::edge::{EdgeEntry, SurfaceKind};
-use super::vertex::EMPTY_LOG_OFFSET;
+use super::ids::VertexRef;
+use super::vertex::{EMPTY_LOG_OFFSET, LOG_EMPTY_BIT, LOG_OFFSET_BITS_MASK};
 
 /// Offset into a surface-local overflow log.
 ///
@@ -24,12 +25,23 @@ impl LogOffset {
 
     /// Creates a surface-local overflow-log offset from its raw slot index.
     pub const fn new(raw: i32) -> Self {
+        if raw == -1 {
+            return Self::EMPTY;
+        }
         Self { raw }
     }
 
     /// Returns whether this offset is the empty-chain sentinel.
     pub const fn is_empty(self) -> bool {
-        self.raw == EMPTY_LOG_OFFSET
+        (self.raw as u32 & LOG_EMPTY_BIT) != 0
+    }
+
+    /// Returns the decoded overflow-log slot index when not empty.
+    pub const fn index(self) -> Option<usize> {
+        if self.is_empty() {
+            return None;
+        }
+        Some((self.raw as u32 & LOG_OFFSET_BITS_MASK) as usize)
     }
 }
 
@@ -70,16 +82,16 @@ impl OverflowEntry {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct OverflowChain {
     pub surface: SurfaceKind,
-    pub vertex: NodeId,
+    pub vertex_ref: VertexRef,
     pub head: LogOffset,
 }
 
 impl OverflowChain {
     /// Creates one vertex-local overflow-chain descriptor.
-    pub const fn new(surface: SurfaceKind, vertex: NodeId, head: LogOffset) -> Self {
+    pub fn new(surface: SurfaceKind, vertex_ref: impl Into<VertexRef>, head: LogOffset) -> Self {
         Self {
             surface,
-            vertex,
+            vertex_ref: vertex_ref.into(),
             head,
         }
     }
@@ -97,8 +109,7 @@ const _: [(); 12] = [(); core::mem::size_of::<OverflowChain>()];
 #[cfg(test)]
 mod tests {
     use super::{LogOffset, OverflowChain, OverflowEntry};
-    use crate::low_level::{EdgeEntry, EdgeMeta, SurfaceKind};
-    use gleaph_graph_kernel::NodeId;
+    use crate::low_level::{EdgeEntry, EdgeMeta, SurfaceKind, VertexRef};
 
     #[test]
     fn log_offset_uses_empty_sentinel() {
@@ -110,7 +121,7 @@ mod tests {
     fn overflow_entry_keeps_semantic_id_outside_edge_entry() {
         let entry = OverflowEntry::new(
             42,
-            EdgeEntry::new(NodeId::from(9u8), EdgeMeta::new(3, false)),
+            EdgeEntry::new(VertexRef::from(9u8), EdgeMeta::new(3, false)),
             LogOffset::EMPTY,
         );
 
@@ -122,10 +133,10 @@ mod tests {
 
     #[test]
     fn overflow_chain_is_surface_local_and_vertex_local() {
-        let chain = OverflowChain::new(SurfaceKind::Reverse, NodeId::from(7u8), LogOffset::new(11));
+        let chain = OverflowChain::new(SurfaceKind::Reverse, VertexRef::from(7u8), LogOffset::new(11));
 
         assert_eq!(chain.surface, SurfaceKind::Reverse);
-        assert_eq!(u64::from(chain.vertex), 7);
+        assert_eq!(u64::from(chain.vertex_ref), 7);
         assert_eq!(chain.head.raw, 11);
         assert!(!chain.is_empty());
     }

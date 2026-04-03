@@ -74,9 +74,7 @@ pub enum SemanticConstraint {
     },
 
     /// Aggregate function call (COUNT, SUM, etc.)
-    AggregateCall {
-        func: String,
-    },
+    AggregateCall { func: String },
 }
 
 /// The right-hand value in a predicate.
@@ -211,7 +209,9 @@ fn analyze_path_primary(primary: &PathPrimary, analysis: &mut SemanticAnalysis) 
                 }
             }
         }
-        PathPrimary::Parenthesized { expr, where_clause, .. } => {
+        PathPrimary::Parenthesized {
+            expr, where_clause, ..
+        } => {
             analyze_path_pattern(expr, analysis);
             if let Some(w) = where_clause {
                 collect_where_predicates(w, analysis);
@@ -225,7 +225,10 @@ fn analyze_path_primary(primary: &PathPrimary, analysis: &mut SemanticAnalysis) 
 fn analyze_result_statement(result: &ResultStatement, analysis: &mut SemanticAnalysis) {
     match result {
         ResultStatement::Return(ret) => {
-            if let ReturnBody::Items { items, group_by, .. } = &ret.body {
+            if let ReturnBody::Items {
+                items, group_by, ..
+            } = &ret.body
+            {
                 for item in items {
                     collect_expr_property_accesses(&item.expr, false, analysis);
                     collect_aggregate_calls(&item.expr, analysis);
@@ -264,53 +267,55 @@ fn collect_where_predicates(expr: &Expr, analysis: &mut SemanticAnalysis) {
         if let ExprKind::Compare { left, op, right } = &conjunct.kind {
             // var.prop = value
             if let Some((var, prop)) = extract_property_access(left)
-                && let Some(value) = expr_to_predicate_value_opt(right) {
-                    collect_expr_property_accesses(left, true, analysis);
-                    if *op == CmpOp::Eq {
-                        analysis
-                            .constraints
-                            .push(SemanticConstraint::WhereEqualityPredicate {
-                                var,
-                                property: prop,
-                                value,
-                            });
-                    } else {
-                        analysis
-                            .constraints
-                            .push(SemanticConstraint::WhereRangePredicate {
-                                var,
-                                property: prop,
-                                op: *op,
-                                value,
-                            });
-                    }
-                    continue;
+                && let Some(value) = expr_to_predicate_value_opt(right)
+            {
+                collect_expr_property_accesses(left, true, analysis);
+                if *op == CmpOp::Eq {
+                    analysis
+                        .constraints
+                        .push(SemanticConstraint::WhereEqualityPredicate {
+                            var,
+                            property: prop,
+                            value,
+                        });
+                } else {
+                    analysis
+                        .constraints
+                        .push(SemanticConstraint::WhereRangePredicate {
+                            var,
+                            property: prop,
+                            op: *op,
+                            value,
+                        });
                 }
+                continue;
+            }
             // value = var.prop (reversed)
             if let Some((var, prop)) = extract_property_access(right)
-                && let Some(value) = expr_to_predicate_value_opt(left) {
-                    collect_expr_property_accesses(right, true, analysis);
-                    let reversed_op = reverse_cmp(*op);
-                    if reversed_op == CmpOp::Eq {
-                        analysis
-                            .constraints
-                            .push(SemanticConstraint::WhereEqualityPredicate {
-                                var,
-                                property: prop,
-                                value,
-                            });
-                    } else {
-                        analysis
-                            .constraints
-                            .push(SemanticConstraint::WhereRangePredicate {
-                                var,
-                                property: prop,
-                                op: reversed_op,
-                                value,
-                            });
-                    }
-                    continue;
+                && let Some(value) = expr_to_predicate_value_opt(left)
+            {
+                collect_expr_property_accesses(right, true, analysis);
+                let reversed_op = reverse_cmp(*op);
+                if reversed_op == CmpOp::Eq {
+                    analysis
+                        .constraints
+                        .push(SemanticConstraint::WhereEqualityPredicate {
+                            var,
+                            property: prop,
+                            value,
+                        });
+                } else {
+                    analysis
+                        .constraints
+                        .push(SemanticConstraint::WhereRangePredicate {
+                            var,
+                            property: prop,
+                            op: reversed_op,
+                            value,
+                        });
                 }
+                continue;
+            }
         }
 
         // Collect property accesses from non-predicate expressions too.
@@ -319,26 +324,23 @@ fn collect_where_predicates(expr: &Expr, analysis: &mut SemanticAnalysis) {
 }
 
 /// Collect inline WHERE predicates: `(n WHERE n.prop = value)`.
-fn collect_inline_where_predicates(
-    node_var: &str,
-    expr: &Expr,
-    analysis: &mut SemanticAnalysis,
-) {
+fn collect_inline_where_predicates(node_var: &str, expr: &Expr, analysis: &mut SemanticAnalysis) {
     let conjuncts = flatten_conjunction(expr);
     for conjunct in &conjuncts {
         if let ExprKind::Compare { left, op, right } = &conjunct.kind
             && *op == CmpOp::Eq
-                && let Some((var, prop)) = extract_property_access(left)
-                    && var == node_var
-                        && let Some(value) = expr_to_predicate_value_opt(right) {
-                            analysis.constraints.push(
-                                SemanticConstraint::InlineNodeWherePredicate {
-                                    var,
-                                    property: prop,
-                                    value,
-                                },
-                            );
-                        }
+            && let Some((var, prop)) = extract_property_access(left)
+            && var == node_var
+            && let Some(value) = expr_to_predicate_value_opt(right)
+        {
+            analysis
+                .constraints
+                .push(SemanticConstraint::InlineNodeWherePredicate {
+                    var,
+                    property: prop,
+                    value,
+                });
+        }
     }
 }
 
@@ -369,14 +371,13 @@ fn collect_narrowing_facts(expr: &Expr, analysis: &mut SemanticAnalysis) {
                 negated: false,
             } => {
                 if let ExprKind::Variable(var) = &inner.kind
-                    && let LabelExpr::Name(name) = label {
-                        analysis
-                            .narrowing_facts
-                            .push(NarrowingFact::LabelNarrowed {
-                                var: var.clone(),
-                                label: name.clone(),
-                            });
-                    }
+                    && let LabelExpr::Name(name) = label
+                {
+                    analysis.narrowing_facts.push(NarrowingFact::LabelNarrowed {
+                        var: var.clone(),
+                        label: name.clone(),
+                    });
+                }
             }
             _ => {}
         }
@@ -409,24 +410,26 @@ fn detect_optional_filter(expr: &Expr) -> Option<SemanticConstraint> {
     if let ExprKind::Or(left, right) = &expr.kind {
         // Left: $param IS NULL
         if let ExprKind::IsNull(inner) = &left.kind
-            && let ExprKind::Parameter(param_name) = &inner.kind {
-                // Right: var.prop <op> $param
-                if let ExprKind::Compare {
-                    left: cmp_left,
-                    op,
-                    right: cmp_right,
-                } = &right.kind
-                    && let Some((var, prop)) = extract_property_access(cmp_left)
-                        && let ExprKind::Parameter(rhs_param) = &cmp_right.kind
-                            && rhs_param == param_name {
-                                return Some(SemanticConstraint::OptionalFilterPredicate {
-                                    param_name: param_name.clone(),
-                                    var,
-                                    property: prop,
-                                    op: *op,
-                                });
-                            }
+            && let ExprKind::Parameter(param_name) = &inner.kind
+        {
+            // Right: var.prop <op> $param
+            if let ExprKind::Compare {
+                left: cmp_left,
+                op,
+                right: cmp_right,
+            } = &right.kind
+                && let Some((var, prop)) = extract_property_access(cmp_left)
+                && let ExprKind::Parameter(rhs_param) = &cmp_right.kind
+                && rhs_param == param_name
+            {
+                return Some(SemanticConstraint::OptionalFilterPredicate {
+                    param_name: param_name.clone(),
+                    var,
+                    property: prop,
+                    op: *op,
+                });
             }
+        }
     }
     None
 }
@@ -435,11 +438,7 @@ fn detect_optional_filter(expr: &Expr) -> Option<SemanticConstraint> {
 // Property access collection
 // ════════════════════════════════════════════════════════════════════════════════
 
-fn collect_expr_property_accesses(
-    expr: &Expr,
-    in_where: bool,
-    analysis: &mut SemanticAnalysis,
-) {
+fn collect_expr_property_accesses(expr: &Expr, in_where: bool, analysis: &mut SemanticAnalysis) {
     match &expr.kind {
         ExprKind::PropertyAccess {
             expr: inner,
@@ -482,9 +481,10 @@ fn extract_property_access(expr: &Expr) -> Option<(String, String)> {
         expr: inner,
         property,
     } = &expr.kind
-        && let ExprKind::Variable(var) = &inner.kind {
-            return Some((var.clone(), property.clone()));
-        }
+        && let ExprKind::Variable(var) = &inner.kind
+    {
+        return Some((var.clone(), property.clone()));
+    }
     None
 }
 
@@ -535,8 +535,7 @@ fn walk_expr_children(expr: &Expr, f: &mut dyn FnMut(&Expr)) {
             f(right);
         }
 
-        ExprKind::PropertyAccess { expr: e, .. }
-        | ExprKind::Cast { expr: e, .. } => f(e),
+        ExprKind::PropertyAccess { expr: e, .. } | ExprKind::Cast { expr: e, .. } => f(e),
 
         ExprKind::FunctionCall { args, .. } => {
             for arg in args {
@@ -592,9 +591,7 @@ fn walk_expr_children(expr: &Expr, f: &mut dyn FnMut(&Expr)) {
         }
 
         ExprKind::StringPredicate {
-            expr: e,
-            pattern,
-            ..
+            expr: e, pattern, ..
         } => {
             f(e);
             f(pattern);

@@ -1,7 +1,8 @@
 //! Hot adjacency-entry types and directional surface descriptors.
 
-use gleaph_graph_kernel::{LabelId, NodeId};
+use gleaph_graph_kernel::LabelId;
 
+use super::ids::VertexRef;
 use super::region::RegionRef;
 use super::vertex::{LABEL_ID_MASK, TOMBSTONE_MASK};
 
@@ -16,27 +17,52 @@ pub enum SurfaceKind {
     Reverse = 1,
 }
 
-/// Physical position of one edge inside a directional surface.
+/// Logical position of one edge inside a directional surface.
 ///
-/// This is not semantic edge identity. It is the storage-level locator that
-/// says "which surface, which vertex-local neighborhood, which ordinal slot".
+/// This does not depend on packed-memory physical slot assignment. It
+/// identifies one edge by `(surface, vertex_ref, logical_index)` plus whether
+/// the edge currently lives in base or overflow storage.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
-pub struct EdgeLocator {
+pub struct LogicalEdgeLocator {
     pub surface: u8,
-    pub reserved: [u8; 3],
-    pub vertex: NodeId,
-    pub ordinal: u32,
+    pub slot_kind: u8,
+    pub reserved: [u8; 2],
+    pub vertex_ref: VertexRef,
+    pub logical_index: u32,
 }
 
-impl EdgeLocator {
-    /// Creates one physical locator inside a directional surface.
-    pub const fn new(surface: SurfaceKind, vertex: NodeId, ordinal: u32) -> Self {
+impl LogicalEdgeLocator {
+    const BASE_SLOT_KIND: u8 = 0;
+    const OVERFLOW_SLOT_KIND: u8 = 1;
+
+    /// Creates one logical base-edge locator.
+    pub fn base(
+        surface: SurfaceKind,
+        vertex_ref: impl Into<VertexRef>,
+        logical_index: u32,
+    ) -> Self {
         Self {
             surface: surface as u8,
-            reserved: [0; 3],
-            vertex,
-            ordinal,
+            slot_kind: Self::BASE_SLOT_KIND,
+            reserved: [0; 2],
+            vertex_ref: vertex_ref.into(),
+            logical_index,
+        }
+    }
+
+    /// Creates one logical overflow-edge locator.
+    pub fn overflow(
+        surface: SurfaceKind,
+        vertex_ref: impl Into<VertexRef>,
+        logical_index: u32,
+    ) -> Self {
+        Self {
+            surface: surface as u8,
+            slot_kind: Self::OVERFLOW_SLOT_KIND,
+            reserved: [0; 2],
+            vertex_ref: vertex_ref.into(),
+            logical_index,
         }
     }
 
@@ -47,6 +73,11 @@ impl EdgeLocator {
             1 => SurfaceKind::Reverse,
             _ => panic!("invalid surface kind"),
         }
+    }
+
+    /// Returns whether this locator points into overflow storage.
+    pub const fn is_overflow(self) -> bool {
+        self.slot_kind == Self::OVERFLOW_SLOT_KIND
     }
 }
 
@@ -137,42 +168,44 @@ impl EdgeMeta {
 /// Fixed-size hot adjacency entry.
 ///
 /// This is the VCSR/DGAP-style base entry stored in a surface edge region.
-/// It intentionally contains only the neighbor node id and edge-local hot
+/// It intentionally contains only the neighbor vertex ref and edge-local hot
 /// metadata.
 ///
 /// Invariant:
 /// - one `EdgeEntry` is always exactly 8 bytes
-/// - `target` is a packed kernel `NodeId`
+/// - `target` is a packed low-level `VertexRef`
 /// - semantic edge identity is stored elsewhere, not here
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub struct EdgeEntry {
-    pub target: NodeId,
+    pub target: VertexRef,
     pub meta: EdgeMeta,
 }
 
 impl EdgeEntry {
     /// Creates one fixed-size hot adjacency entry.
-    pub const fn new(target: NodeId, meta: EdgeMeta) -> Self {
-        Self { target, meta }
+    pub fn new(target: impl Into<VertexRef>, meta: EdgeMeta) -> Self {
+        Self {
+            target: target.into(),
+            meta,
+        }
     }
 }
 
-const _: [(); 16] = [(); core::mem::size_of::<EdgeLocator>()];
 const _: [(); 64] = [(); core::mem::size_of::<SurfaceRegions>()];
 const _: [(); 8] = [(); core::mem::size_of::<EdgeEntry>()];
 const _: [(); 2] = [(); core::mem::size_of::<EdgeMeta>()];
 
 #[cfg(test)]
 mod tests {
-    use super::{EdgeEntry, EdgeLocator, EdgeMeta, SurfaceKind, SurfaceRegions};
+    use super::{EdgeEntry, EdgeMeta, LogicalEdgeLocator, SurfaceKind, SurfaceRegions};
     use crate::low_level::{RegionKind, RegionRef, RegionStorageKind};
-    use gleaph_graph_kernel::NodeId;
+    use crate::low_level::VertexRef;
 
     #[test]
     fn edge_entry_has_expected_abi() {
         assert_eq!(core::mem::size_of::<EdgeEntry>(), 8);
-        assert_eq!(core::mem::size_of::<NodeId>(), 6);
+        assert_eq!(core::mem::size_of::<VertexRef>(), 6);
         assert_eq!(core::mem::size_of::<EdgeMeta>(), 2);
     }
 
@@ -185,7 +218,7 @@ mod tests {
 
     #[test]
     fn edge_entry_uses_packed_kernel_node_id() {
-        let target = NodeId::from(7u8);
+        let target = VertexRef::from(7u8);
         let entry = EdgeEntry::new(target, EdgeMeta::new(3, false));
         assert_eq!(u64::from(entry.target), 7);
         assert_eq!(entry.meta.label_id(), 3);
@@ -193,11 +226,11 @@ mod tests {
     }
 
     #[test]
-    fn edge_locator_carries_surface_and_vertex_local_slot() {
-        let locator = EdgeLocator::new(SurfaceKind::Reverse, NodeId::from(9u8), 17);
+    fn logical_edge_locator_carries_surface_and_vertex_local_slot() {
+        let locator = LogicalEdgeLocator::base(SurfaceKind::Reverse, VertexRef::from(9u8), 17);
         assert_eq!(locator.surface_kind(), SurfaceKind::Reverse);
-        assert_eq!(u64::from(locator.vertex), 9);
-        assert_eq!(locator.ordinal, 17);
+        assert_eq!(u64::from(locator.vertex_ref), 9);
+        assert_eq!(locator.logical_index, 17);
     }
 
     #[test]

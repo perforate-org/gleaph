@@ -1,0 +1,23 @@
+{
+  "name": "gleaph-workspace",
+  "private": true,
+  "packageManager": "pnpm@10.8.1",
+  "scripts": {
+    "install:all": "vp install",
+    "check": "vp run -r check",
+    "test": "vp run -r test",
+    "build": "vp run -r build",
+    "pack": "vp run -r pack",
+    "sdk:check": "vp run @gleaph/sdk#check",
+    "sdk:test": "vp run @gleaph/sdk#test",
+    "sdk:build": "vp run @gleaph/sdk#build",
+    "sdk:pack": "vp run @gleaph/sdk#pack",
+    "product:check": "vp run @gleaph/product#check",
+    "product:build": "vp run @gleaph/product#build",
+    "dashboard:check": "vp run @gleaph/dashboard#check",
+    "dashboard:build": "vp run @gleaph/dashboard#build"
+  },
+  "devDependencies": {
+    "vite-plus": "^0.1.15"
+  }
+}

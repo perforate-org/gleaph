@@ -1,0 +1,32 @@
+{
+  "name": "@gleaph/sdk",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --eval \"console.log('sdk/js: no tests yet')\"",
+    "build": "tsc --outDir dist",
+    "pack": "pnpm run build"
+  },
+  "dependencies": {
+    "@icp-sdk/core": "^5.2.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  },
+  "peerDependencies": {
+    "@icp-sdk/core": ">=5.0.0"
+  }
+}

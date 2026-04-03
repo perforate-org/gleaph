@@ -6,12 +6,14 @@
 
 use gleaph_gql::ast::*;
 use gleaph_gql::type_check::{
-    dml_diagnostic_from_warning, infer_linear_query_binding_kinds,
+    BindingKind, DmlDiagnosticSeverity, TypeWarning, dml_diagnostic_from_warning,
+    infer_linear_query_binding_kinds, infer_linear_query_binding_kinds_and_warnings,
     infer_linear_query_binding_kinds_with_seed, infer_statement_block_binding_kinds,
-    type_check_composite_query, type_check_linear_query, type_check_statement,
-    type_check_statement_block, type_diagnostic_from_warning, BindingKind,
-    DmlDiagnosticSeverity, TypeWarning,
+    type_check_composite_query, type_check_statement, type_check_statement_block,
+    type_diagnostic_from_warning,
 };
+use std::collections::BTreeMap;
+use gleaph_gql::types::{EdgeDirection, LabelExpr};
 
 use crate::anchor::{self, extract_simple_label};
 use crate::cost;
@@ -26,6 +28,7 @@ use crate::stats::GraphStats;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PlannerError {
     FatalDml(PlannerDiagnostic),
+    UnsupportedPattern(String),
 }
 
 impl std::fmt::Display for PlannerError {
@@ -34,11 +37,9 @@ impl std::fmt::Display for PlannerError {
             Self::FatalDml(diagnostic) => write!(
                 f,
                 "fatal DML diagnostic [{}] at {}..{}: {}",
-                diagnostic.code,
-                diagnostic.span.start,
-                diagnostic.span.end,
-                diagnostic.message
+                diagnostic.code, diagnostic.span.start, diagnostic.span.end, diagnostic.message
             ),
+            Self::UnsupportedPattern(msg) => write!(f, "unsupported graph pattern: {msg}"),
         }
     }
 }
@@ -49,13 +50,23 @@ impl std::error::Error for PlannerError {}
 pub struct PlanBuildOutput {
     pub plan: PhysicalPlan,
     pub summary: PlanSummary,
+    /// Human-readable plan text from [`explain_plan`]. Empty when built via
+    /// [`build_plan_output_for_execute`] / [`build_block_plan_output_for_execute`] (execute hot path).
     pub explain: String,
 }
 
 impl PlanBuildOutput {
     fn from_plan(plan: PhysicalPlan) -> Self {
+        Self::from_plan_with_explain(plan, true)
+    }
+
+    fn from_plan_with_explain(plan: PhysicalPlan, include_explain: bool) -> Self {
         let summary = PlanSummary::from_plan(&plan);
-        let explain = explain_plan(&plan);
+        let explain = if include_explain {
+            explain_plan(&plan)
+        } else {
+            String::new()
+        };
         Self {
             plan,
             summary,
@@ -72,7 +83,7 @@ pub fn build_statement_plan(
     stmt: &Statement,
     stats: Option<&dyn GraphStats>,
 ) -> Result<PhysicalPlan, PlannerError> {
-    let mut plan = build_statement_plan_with_binding_kinds(stmt, stats, None);
+    let mut plan = build_statement_plan_with_binding_kinds(stmt, stats, None)?;
     apply_type_checker_dml_diagnostics(&mut plan.diagnostics, &type_check_statement(stmt));
     validate_plan(plan)
 }
@@ -88,17 +99,19 @@ fn build_statement_plan_with_binding_kinds(
     stmt: &Statement,
     stats: Option<&dyn GraphStats>,
     binding_kinds: Option<&std::collections::BTreeMap<String, BindingKind>>,
-) -> PhysicalPlan {
+) -> Result<PhysicalPlan, PlannerError> {
     match stmt {
-        Statement::Query(composite) => build_composite_plan_with_binding_kinds(composite, stats, binding_kinds),
+        Statement::Query(composite) => {
+            build_composite_plan_with_binding_kinds(composite, stats, binding_kinds)
+        }
         Statement::Insert(insert_stmt) => {
             let mut plan = PhysicalPlan::default();
             plan_insert(insert_stmt, &mut plan.ops, &mut plan.annotations);
             plan.annotations.optimizer.estimated_cost = Some(cost::estimate_cost(&plan.ops, stats));
             plan.annotations.optimizer.estimated_rows = Some(cost::estimate_rows(&plan.ops, stats));
-            plan
+            Ok(plan)
         }
-        _ => PhysicalPlan::default(), // TODO: DDL, Session
+        _ => Ok(PhysicalPlan::default()), // TODO: DDL, Session
     }
 }
 
@@ -113,7 +126,8 @@ pub fn build_block_plan(
     let binding_kinds = infer_statement_block_binding_kinds(block);
 
     // Plan the first statement.
-    let mut plan = build_statement_plan_with_binding_kinds(&block.first, stats, binding_kinds.first());
+    let mut plan =
+        build_statement_plan_with_binding_kinds(&block.first, stats, binding_kinds.first())?;
 
     // Process NEXT chains.
     for next in &block.next {
@@ -137,7 +151,7 @@ pub fn build_block_plan(
             &next.statement,
             stats,
             binding_kinds.get(index_for_next(&block.next, next)),
-        );
+        )?;
         plan.ops.extend(chained.ops);
 
         // Merge annotations and update cost.
@@ -171,8 +185,9 @@ pub fn build_plan(
     query: &LinearQueryStatement,
     stats: Option<&dyn GraphStats>,
 ) -> Result<PhysicalPlan, PlannerError> {
-    let mut plan = build_plan_with_binding_kinds(query, stats, None);
-    apply_type_checker_dml_diagnostics(&mut plan.diagnostics, &type_check_linear_query(query));
+    let (binding_kinds, type_warnings) = infer_linear_query_binding_kinds_and_warnings(query);
+    let mut plan = build_plan_core(query, stats, &binding_kinds)?;
+    apply_type_checker_dml_diagnostics(&mut plan.diagnostics, &type_warnings);
     validate_plan(plan)
 }
 
@@ -183,16 +198,44 @@ pub fn build_plan_output(
     build_plan(query, stats).map(PlanBuildOutput::from_plan)
 }
 
+/// Like [`build_plan_output`], but leaves [`PlanBuildOutput::explain`] empty so callers avoid
+/// [`explain_plan`] formatting on every execute iteration.
+pub fn build_plan_output_for_execute(
+    query: &LinearQueryStatement,
+    stats: Option<&dyn GraphStats>,
+) -> Result<PlanBuildOutput, PlannerError> {
+    build_plan(query, stats).map(|p| PlanBuildOutput::from_plan_with_explain(p, false))
+}
+
+/// Like [`build_block_plan_output`], but leaves [`PlanBuildOutput::explain`] empty for execute paths.
+pub fn build_block_plan_output_for_execute(
+    block: &StatementBlock,
+    stats: Option<&dyn GraphStats>,
+) -> Result<PlanBuildOutput, PlannerError> {
+    build_block_plan(block, stats).map(|p| PlanBuildOutput::from_plan_with_explain(p, false))
+}
+
 fn build_plan_with_binding_kinds(
     query: &LinearQueryStatement,
     stats: Option<&dyn GraphStats>,
-    seed_binding_kinds: Option<&std::collections::BTreeMap<String, BindingKind>>,
-) -> PhysicalPlan {
+    seed_binding_kinds: Option<&BTreeMap<String, BindingKind>>,
+) -> Result<PhysicalPlan, PlannerError> {
     let binding_kinds = match seed_binding_kinds {
-        Some(seed) => infer_linear_query_binding_kinds_with_seed(query, &gleaph_gql::type_check::NoSchema, seed),
+        Some(seed) => infer_linear_query_binding_kinds_with_seed(
+            query,
+            &gleaph_gql::type_check::NoSchema,
+            seed,
+        ),
         None => infer_linear_query_binding_kinds(query),
     };
+    build_plan_core(query, stats, &binding_kinds)
+}
 
+fn build_plan_core(
+    query: &LinearQueryStatement,
+    stats: Option<&dyn GraphStats>,
+    binding_kinds: &BTreeMap<String, BindingKind>,
+) -> Result<PhysicalPlan, PlannerError> {
     // Phase 1: Semantic analysis.
     let semantic = semantic::analyze(query);
 
@@ -218,7 +261,7 @@ fn build_plan_with_binding_kinds(
             &binding_kinds,
             &mut ops,
             &mut annotations,
-        );
+        )?;
     } else {
         // Sequential: process all parts in order (default behavior).
         for (stage, part) in query.parts.iter().enumerate() {
@@ -230,7 +273,7 @@ fn build_plan_with_binding_kinds(
                 &binding_kinds,
                 &mut ops,
                 &mut annotations,
-            );
+            )?;
         }
     }
 
@@ -246,20 +289,203 @@ fn build_plan_with_binding_kinds(
     pushdown::apply_late_project(&mut ops, &mut annotations);
     pushdown::apply_limit_pushdown(&mut ops, &mut annotations);
     pushdown::apply_topk_fusion(&mut ops, &mut annotations);
+    // Replace simple `Expand` cycles with a single `WorstCaseOptimalJoin` when safe.
     apply_wcoj_replacement(&mut ops, &mut annotations);
+    crate::property_projection::apply_node_property_projections(&mut ops);
 
     // Phase 2b: Annotation-only analysis.
     cse::detect_common_subexpressions(&ops, &mut annotations);
+    annotate_use_graph_pushdown(&ops, &mut annotations);
     set_reoptimization_hints(&ops, &mut annotations, stats);
 
     // Phase 3: Cost estimation.
     annotations.optimizer.estimated_cost = Some(cost::estimate_cost(&ops, stats));
     annotations.optimizer.estimated_rows = Some(cost::estimate_rows(&ops, stats));
 
-    PhysicalPlan {
+    Ok(PhysicalPlan {
         ops,
         diagnostics: PlanDiagnostics::default(),
         annotations,
+    })
+}
+
+fn annotate_use_graph_pushdown(ops: &[PlanOp], annotations: &mut PlanAnnotations) {
+    annotations.optimizer.use_graph_pushdown.clear();
+    collect_use_graph_pushdown(ops, &mut annotations.optimizer.use_graph_pushdown);
+}
+
+fn collect_use_graph_pushdown(ops: &[PlanOp], out: &mut Vec<UseGraphPushdownInfo>) {
+    for op in ops {
+        match op {
+            PlanOp::UseGraph {
+                graph_name,
+                sub_plan: Some(sub_plan),
+            } => {
+                let graph_name = graph_name
+                    .iter()
+                    .map(|part| part.as_ref())
+                    .collect::<Vec<_>>()
+                    .join(".");
+                out.push(analyze_remote_use_graph_pushdown(&graph_name, sub_plan));
+                collect_use_graph_pushdown(sub_plan, out);
+            }
+            PlanOp::UseGraph { sub_plan: None, .. } => {}
+            PlanOp::InlineProcedureCall { sub_plan, .. } => {
+                collect_use_graph_pushdown(&sub_plan.ops, out);
+            }
+            PlanOp::HashJoin { left, right, .. } | PlanOp::CartesianProduct { left, right } => {
+                collect_use_graph_pushdown(left, out);
+                collect_use_graph_pushdown(right, out);
+            }
+            PlanOp::SetOperation { right, .. } => collect_use_graph_pushdown(&right.ops, out),
+            PlanOp::OptionalMatch { sub_plan } => collect_use_graph_pushdown(sub_plan, out),
+            _ => {}
+        }
+    }
+}
+
+pub fn analyze_remote_use_graph_pushdown(
+    graph_name: &str,
+    sub_plan: &[PlanOp],
+) -> UseGraphPushdownInfo {
+    match check_remote_use_graph_pushdown(sub_plan) {
+        Ok(()) => UseGraphPushdownInfo {
+            graph_name: graph_name.to_owned(),
+            supported: true,
+            reason: None,
+        },
+        Err(reason) => UseGraphPushdownInfo {
+            graph_name: graph_name.to_owned(),
+            supported: false,
+            reason: Some(reason),
+        },
+    }
+}
+
+fn check_remote_use_graph_pushdown(sub_plan: &[PlanOp]) -> Result<(), String> {
+    if sub_plan.is_empty() {
+        return Err("empty sub-plan".to_owned());
+    }
+
+    let consumed = match &sub_plan[0] {
+        PlanOp::CallProcedure { .. } => 1,
+        PlanOp::NodeScan { variable, .. } | PlanOp::IndexScan { variable, .. } => {
+            consume_simple_expand_chain(sub_plan, 1, variable.as_ref())?
+        }
+        PlanOp::EdgeIndexScan { .. } => {
+            let Some(PlanOp::EdgeBindEndpoints { far, .. }) = sub_plan.get(1) else {
+                return Err(
+                    "EDGE INDEX SCAN root requires EDGE BIND ENDPOINTS immediately after it"
+                        .to_owned(),
+                );
+            };
+            consume_simple_expand_chain(sub_plan, 2, far.as_ref())?
+        }
+        other => {
+            return Err(format!(
+                "unsupported remote USE GRAPH root op: {}",
+                remote_use_graph_op_name(other)
+            ));
+        }
+    };
+
+    for op in &sub_plan[consumed..] {
+        match op {
+            PlanOp::Filter { .. }
+            | PlanOp::PropertyFilter { .. }
+            | PlanOp::Aggregate { .. }
+            | PlanOp::Project { .. }
+            | PlanOp::Sort { .. }
+            | PlanOp::TopK { .. }
+            | PlanOp::Limit { .. } => {}
+            other => {
+                return Err(format!(
+                    "unsupported remote USE GRAPH op after root: {}",
+                    remote_use_graph_op_name(other)
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn consume_simple_expand_chain(
+    sub_plan: &[PlanOp],
+    start_index: usize,
+    start_src: &str,
+) -> Result<usize, String> {
+    let mut index = start_index;
+    let mut current_src = start_src.to_owned();
+    while let Some(op) = sub_plan.get(index) {
+        match op {
+            PlanOp::Expand {
+                src,
+                dst,
+                label_expr,
+                var_len,
+                indexed_edge_equality,
+                ..
+            }
+            | PlanOp::ExpandFilter {
+                src,
+                dst,
+                label_expr,
+                var_len,
+                indexed_edge_equality,
+                ..
+            } if src.as_ref() == current_src => {
+                if label_expr.is_some() || var_len.is_some() || indexed_edge_equality.is_some() {
+                    return Err(
+                        "remote USE GRAPH expand chain supports only fixed 1-hop expansions without label expressions or indexed edge equality"
+                            .to_owned(),
+                    );
+                }
+                current_src = dst.as_ref().to_owned();
+                index += 1;
+            }
+            _ => break,
+        }
+    }
+    Ok(index)
+}
+
+fn remote_use_graph_op_name(op: &PlanOp) -> &'static str {
+    match op {
+        PlanOp::NodeScan { .. } => "NODE SCAN",
+        PlanOp::IndexScan { .. } => "INDEX SCAN",
+        PlanOp::EdgeIndexScan { .. } => "EDGE INDEX SCAN",
+        PlanOp::EdgeBindEndpoints { .. } => "EDGE BIND ENDPOINTS",
+        PlanOp::ConditionalIndexScan { .. } => "CONDITIONAL INDEX SCAN",
+        PlanOp::PropertyFilter { .. } => "PROPERTY FILTER",
+        PlanOp::Expand { .. } => "EXPAND",
+        PlanOp::ExpandFilter { .. } => "EXPAND FILTER",
+        PlanOp::ShortestPath { .. } => "SHORTEST PATH",
+        PlanOp::Let { .. } => "LET",
+        PlanOp::For { .. } => "FOR",
+        PlanOp::Filter { .. } => "FILTER",
+        PlanOp::CallProcedure { .. } => "CALL",
+        PlanOp::InlineProcedureCall { .. } => "INLINE CALL",
+        PlanOp::UseGraph { .. } => "USE GRAPH",
+        PlanOp::HashJoin { .. } => "HASH JOIN",
+        PlanOp::CartesianProduct { .. } => "CARTESIAN PRODUCT",
+        PlanOp::Aggregate { .. } => "AGGREGATE",
+        PlanOp::Project { .. } => "PROJECT",
+        PlanOp::Sort { .. } => "SORT",
+        PlanOp::Limit { .. } => "LIMIT",
+        PlanOp::SetOperation { .. } => "SET OPERATION",
+        PlanOp::OptionalMatch { .. } => "OPTIONAL MATCH",
+        PlanOp::IndexIntersection { .. } => "INDEX INTERSECTION",
+        PlanOp::WorstCaseOptimalJoin { .. } => "WORST-CASE OPTIMAL JOIN",
+        PlanOp::TopK { .. } => "TOPK",
+        PlanOp::Materialize { .. } => "MATERIALIZE",
+        PlanOp::InsertVertex { .. } => "INSERT VERTEX",
+        PlanOp::InsertEdge { .. } => "INSERT EDGE",
+        PlanOp::SetProperties { .. } => "SET PROPERTIES",
+        PlanOp::RemoveProperties { .. } => "REMOVE PROPERTIES",
+        PlanOp::DeleteVertex { .. } => "DELETE VERTEX",
+        PlanOp::DetachDeleteVertex { .. } => "DETACH DELETE VERTEX",
+        PlanOp::DeleteEdge { .. } => "DELETE EDGE",
     }
 }
 
@@ -288,13 +514,12 @@ fn populate_semantic_annotations(
                     where_props.push(key);
                 }
             }
-            SemanticConstraint::WhereEqualityPredicate {
-                var, property, ..
-            } => {
+            SemanticConstraint::WhereEqualityPredicate { var, property, .. } => {
                 if let Some(stats) = stats
-                    && stats.is_vertex_property_indexed(property) {
-                        indexable_props.push(format!("{}.{}", var, property).into());
-                    }
+                    && stats.is_vertex_property_indexed(property)
+                {
+                    indexable_props.push(format!("{}.{}", var, property).into());
+                }
             }
             SemanticConstraint::AggregateCall { .. } => {
                 has_aggregate = true;
@@ -331,8 +556,11 @@ pub fn build_composite_plan(
     composite: &CompositeQueryExpr,
     stats: Option<&dyn GraphStats>,
 ) -> Result<PhysicalPlan, PlannerError> {
-    let mut plan = build_composite_plan_with_binding_kinds(composite, stats, None);
-    apply_type_checker_dml_diagnostics(&mut plan.diagnostics, &type_check_composite_query(composite));
+    let mut plan = build_composite_plan_with_binding_kinds(composite, stats, None)?;
+    apply_type_checker_dml_diagnostics(
+        &mut plan.diagnostics,
+        &type_check_composite_query(composite),
+    );
     validate_plan(plan)
 }
 
@@ -346,20 +574,20 @@ pub fn build_composite_plan_output(
 fn build_composite_plan_with_binding_kinds(
     composite: &CompositeQueryExpr,
     stats: Option<&dyn GraphStats>,
-    seed_binding_kinds: Option<&std::collections::BTreeMap<String, BindingKind>>,
-) -> PhysicalPlan {
-    let mut plan = build_plan_with_binding_kinds(&composite.left, stats, seed_binding_kinds);
+    seed_binding_kinds: Option<&BTreeMap<String, BindingKind>>,
+) -> Result<PhysicalPlan, PlannerError> {
+    let mut plan = build_plan_with_binding_kinds(&composite.left, stats, seed_binding_kinds)?;
 
     // Append set operations (UNION, EXCEPT, INTERSECT, OTHERWISE).
     for (set_op, right_query) in &composite.rest {
-        let right_plan = build_plan_with_binding_kinds(right_query, stats, seed_binding_kinds);
+        let right_plan = build_plan_with_binding_kinds(right_query, stats, seed_binding_kinds)?;
         plan.ops.push(PlanOp::SetOperation {
             op: *set_op,
             right: Box::new(right_plan),
         });
     }
 
-    plan
+    Ok(plan)
 }
 
 fn validate_plan(plan: PhysicalPlan) -> Result<PhysicalPlan, PlannerError> {
@@ -370,10 +598,7 @@ fn validate_plan(plan: PhysicalPlan) -> Result<PhysicalPlan, PlannerError> {
     }
 }
 
-fn apply_type_checker_dml_diagnostics(
-    diagnostics: &mut PlanDiagnostics,
-    warnings: &[TypeWarning],
-) {
+fn apply_type_checker_dml_diagnostics(diagnostics: &mut PlanDiagnostics, warnings: &[TypeWarning]) {
     for warning in warnings {
         if let Some(dml) = dml_diagnostic_from_warning(warning) {
             match dml.severity {
@@ -449,18 +674,23 @@ fn plan_simple_statement(
     binding_kinds: &std::collections::BTreeMap<String, BindingKind>,
     ops: &mut Vec<PlanOp>,
     annotations: &mut PlanAnnotations,
-) {
+) -> Result<(), PlannerError> {
     match stmt {
-        SimpleQueryStatement::Match(m) => plan_match(m, stage, stats, conditional_candidates, ops, annotations),
+        SimpleQueryStatement::Match(m) => {
+            plan_match(m, stage, stats, conditional_candidates, ops, annotations)?;
+            Ok(())
+        }
         SimpleQueryStatement::Filter(f) => {
             ops.push(PlanOp::Filter {
                 condition: f.condition.clone(),
             });
+            Ok(())
         }
         SimpleQueryStatement::Let(l) => {
             ops.push(PlanOp::Let {
                 bindings: l.bindings.clone(),
             });
+            Ok(())
         }
         SimpleQueryStatement::For(f) => {
             ops.push(PlanOp::For {
@@ -468,17 +698,20 @@ fn plan_simple_statement(
                 list: f.list.clone(),
                 ordinality: f.ordinality.as_ref().map(|o| o.variable.clone().into()),
             });
+            Ok(())
         }
         SimpleQueryStatement::OrderBy(o) => {
             ops.push(PlanOp::Sort {
                 order_by: o.clone(),
             });
+            Ok(())
         }
         SimpleQueryStatement::Limit(l) => {
             ops.push(PlanOp::Limit {
                 count: Some(l.count.clone()),
                 offset: None,
             });
+            Ok(())
         }
         SimpleQueryStatement::Offset(o) => {
             // Merge with preceding Limit if possible, otherwise standalone.
@@ -490,18 +723,23 @@ fn plan_simple_statement(
                     offset: Some(o.count.clone()),
                 });
             }
+            Ok(())
         }
         SimpleQueryStatement::Insert(insert_stmt) => {
             plan_insert(insert_stmt, ops, annotations);
+            Ok(())
         }
         SimpleQueryStatement::Set(set_stmt) => {
             plan_set(set_stmt, binding_kinds, ops, annotations);
+            Ok(())
         }
         SimpleQueryStatement::Remove(remove_stmt) => {
             plan_remove(remove_stmt, binding_kinds, ops, annotations);
+            Ok(())
         }
         SimpleQueryStatement::Delete(delete_stmt) => {
             plan_delete(delete_stmt, binding_kinds, ops, annotations);
+            Ok(())
         }
         SimpleQueryStatement::CallProcedure(call) => {
             let yield_columns = call.yield_items.as_ref().map(|items| {
@@ -514,14 +752,20 @@ fn plan_simple_statement(
                     .collect()
             });
             ops.push(PlanOp::CallProcedure {
-                name: call.name.parts.iter().map(|s| Str::from(s.as_str())).collect(),
+                name: call
+                    .name
+                    .parts
+                    .iter()
+                    .map(|s| Str::from(s.as_str()))
+                    .collect(),
                 args: call.args.clone(),
                 yield_columns,
                 optional: call.optional,
             });
+            Ok(())
         }
         SimpleQueryStatement::InlineProcedureCall(inline) => {
-            let mut sub_plan = build_composite_plan_with_binding_kinds(&inline.body, stats, None);
+            let mut sub_plan = build_composite_plan_with_binding_kinds(&inline.body, stats, None)?;
             if let Some(graph) = &inline.use_graph {
                 let wrapped_ops = std::mem::take(&mut sub_plan.ops);
                 sub_plan.ops = vec![PlanOp::UseGraph {
@@ -531,9 +775,14 @@ fn plan_simple_statement(
             }
             ops.push(PlanOp::InlineProcedureCall {
                 sub_plan: Box::new(sub_plan),
-                scope_vars: inline.scope_vars.iter().map(|s| Str::from(s.as_str())).collect(),
+                scope_vars: inline
+                    .scope_vars
+                    .iter()
+                    .map(|s| Str::from(s.as_str()))
+                    .collect(),
                 optional: inline.optional,
             });
+            Ok(())
         }
         SimpleQueryStatement::Focused { graph, body } => {
             if let Some(inner) = body {
@@ -546,7 +795,7 @@ fn plan_simple_statement(
                     binding_kinds,
                     &mut sub_ops,
                     annotations,
-                );
+                )?;
                 ops.push(PlanOp::UseGraph {
                     graph_name: graph.parts.iter().map(|s| Str::from(s.as_str())).collect(),
                     sub_plan: Some(sub_ops),
@@ -557,6 +806,7 @@ fn plan_simple_statement(
                     sub_plan: None,
                 });
             }
+            Ok(())
         }
     }
 }
@@ -568,52 +818,73 @@ fn plan_match(
     conditional_candidates: &[ConditionalScanCandidate],
     ops: &mut Vec<PlanOp>,
     annotations: &mut PlanAnnotations,
-) {
+) -> Result<(), PlannerError> {
     let pattern = &match_stmt.pattern;
+    let mut where_conjuncts: Vec<Expr> = pattern
+        .where_clause
+        .as_ref()
+        .map(flatten_conjunction)
+        .unwrap_or_default();
 
     if match_stmt.optional {
         // OPTIONAL MATCH: build sub-plan and wrap in OptionalMatch.
         let mut sub_ops = Vec::new();
         for path_pattern in &pattern.paths {
-            plan_path_pattern(path_pattern, stats, conditional_candidates, &mut sub_ops, annotations);
+            plan_path_pattern(
+                path_pattern,
+                stats,
+                conditional_candidates,
+                &mut where_conjuncts,
+                &mut sub_ops,
+                annotations,
+            )?;
         }
-        if let Some(where_expr) = &pattern.where_clause {
+        if !where_conjuncts.is_empty() {
             sub_ops.push(PlanOp::PropertyFilter {
-                predicates: flatten_conjunction(where_expr),
+                predicates: where_conjuncts,
                 stage,
             });
         }
         ops.push(PlanOp::OptionalMatch { sub_plan: sub_ops });
-        return;
+        return Ok(());
     }
 
     // Choose anchor for this match.
     if stage == 0
-        && let Some(anchor_info) = anchor::choose_anchor(pattern, stats) {
-            annotations.optimizer.anchor = Some(anchor_info);
-        }
+        && let Some(anchor_info) = anchor::choose_anchor(pattern, stats)
+    {
+        annotations.optimizer.anchor = Some(anchor_info);
+    }
 
     // Plan each path pattern.
     for path_pattern in &pattern.paths {
-        plan_path_pattern(path_pattern, stats, conditional_candidates, ops, annotations);
+        plan_path_pattern(
+            path_pattern,
+            stats,
+            conditional_candidates,
+            &mut where_conjuncts,
+            ops,
+            annotations,
+        )?;
     }
 
-    // Plan WHERE clause as a PropertyFilter.
-    if let Some(where_expr) = &pattern.where_clause {
+    if !where_conjuncts.is_empty() {
         ops.push(PlanOp::PropertyFilter {
-            predicates: flatten_conjunction(where_expr),
+            predicates: where_conjuncts,
             stage,
         });
     }
+    Ok(())
 }
 
 fn plan_path_pattern(
     path: &PathPattern,
     stats: Option<&dyn GraphStats>,
     conditional_candidates: &[ConditionalScanCandidate],
+    where_conjuncts: &mut Vec<Expr>,
     ops: &mut Vec<PlanOp>,
     annotations: &mut PlanAnnotations,
-) {
+) -> Result<(), PlannerError> {
     // Check for shortest-path prefix.
     let shortest_mode = path.prefix.as_ref().and_then(|p| match p {
         PathPatternPrefix::Search(search) => match search {
@@ -626,7 +897,16 @@ fn plan_path_pattern(
     });
 
     // Walk the path expression to emit scan/expand ops.
-    plan_path_expr(&path.expr, shortest_mode, stats, conditional_candidates, ops, annotations);
+    plan_path_expr(
+        &path.expr,
+        shortest_mode,
+        stats,
+        conditional_candidates,
+        where_conjuncts,
+        ops,
+        annotations,
+    )?;
+    Ok(())
 }
 
 fn plan_path_expr(
@@ -634,18 +914,513 @@ fn plan_path_expr(
     shortest_mode: Option<ShortestMode>,
     stats: Option<&dyn GraphStats>,
     conditional_candidates: &[ConditionalScanCandidate],
+    where_conjuncts: &mut Vec<Expr>,
     ops: &mut Vec<PlanOp>,
     annotations: &mut PlanAnnotations,
-) {
+) -> Result<(), PlannerError> {
     match expr {
         PathPatternExpr::Term(term) => {
-            plan_path_term(term, shortest_mode, stats, conditional_candidates, ops, annotations);
+            plan_path_term(
+                term,
+                shortest_mode,
+                stats,
+                conditional_candidates,
+                where_conjuncts,
+                ops,
+                annotations,
+            )?;
         }
         PathPatternExpr::MultisetAlternation(terms) | PathPatternExpr::PatternUnion(terms) => {
             if let Some(term) = terms.first() {
-                plan_path_term(term, shortest_mode, stats, conditional_candidates, ops, annotations);
+                plan_path_term(
+                    term,
+                    shortest_mode,
+                    stats,
+                    conditional_candidates,
+                    where_conjuncts,
+                    ops,
+                    annotations,
+                )?;
             }
         }
+    }
+    Ok(())
+}
+
+/// Pre-extracted path element for lookahead during planning.
+enum PathElement {
+    Node {
+        var: String,
+        node: NodePattern,
+    },
+    Edge {
+        var: String,
+        edge: EdgePattern,
+        quantifier: Option<PathQuantifier>,
+    },
+    Sub(PathPatternExpr),
+}
+
+fn node_emits_unlabeled_full_vertex_scan(
+    var: &str,
+    label: &Option<String>,
+    node: &NodePattern,
+    stats: Option<&dyn GraphStats>,
+    conditional_candidates: &[ConditionalScanCandidate],
+    annotations: &PlanAnnotations,
+) -> bool {
+    if label.is_some() {
+        return false;
+    }
+    if let Some(stats) = stats
+        && let Some(where_expr) = &node.where_clause
+        && anchor::find_index_intersection(var, where_expr, stats).is_some()
+    {
+        return false;
+    }
+    if let Some(anchor) = &annotations.optimizer.anchor
+        && &*anchor.variable == var
+    {
+        match &anchor.source {
+            AnchorSource::PropertyEquality { .. }
+            | AnchorSource::InlinePropertyEquality { .. }
+            | AnchorSource::PropertyRange { .. } => return false,
+            AnchorSource::LabelCardinality { .. }
+            | AnchorSource::SchemaEndpoint
+            | AnchorSource::FullScan => {}
+        }
+    }
+    conditional_candidates
+        .iter()
+        .filter(|c| &*c.variable == var)
+        .count()
+        == 0
+}
+
+fn edge_has_indexed_scannable_equality(
+    edge_var: &str,
+    edge: &EdgePattern,
+    stats: Option<&dyn GraphStats>,
+    where_conjuncts: &[Expr],
+) -> bool {
+    let Some(stats) = stats else {
+        return false;
+    };
+    for p in &edge.properties {
+        if stats.is_edge_property_indexed(&p.name)
+            && anchor::scan_value_from_expr(&p.value).is_some()
+        {
+            return true;
+        }
+    }
+    for c in where_conjuncts {
+        if let Some((v, prop, _)) = parse_edge_var_property_equality(c)
+            && v == edge_var
+            && stats.is_edge_property_indexed(&prop)
+        {
+            return true;
+        }
+    }
+    if let Some(w) = &edge.where_clause {
+        for c in flatten_conjunction(w) {
+            if let Some((v, prop, _)) = parse_edge_var_property_equality(&c)
+                && v == edge_var
+                && stats.is_edge_property_indexed(&prop)
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn first_hop_supports_leading_edge_index(
+    elements: &[PathElement],
+    where_conjuncts: &[Expr],
+    stats: Option<&dyn GraphStats>,
+    conditional_candidates: &[ConditionalScanCandidate],
+    annotations: &PlanAnnotations,
+    shortest_mode: Option<ShortestMode>,
+) -> bool {
+    if shortest_mode.is_some() {
+        return false;
+    }
+    if elements.len() < 3 {
+        return false;
+    }
+    let PathElement::Node { var: nv, node } = &elements[0] else {
+        return false;
+    };
+    let PathElement::Edge {
+        edge,
+        quantifier,
+        var: ev,
+    } = &elements[1]
+    else {
+        return false;
+    };
+    if quantifier
+        .as_ref()
+        .and_then(quantifier_to_var_len)
+        .is_some()
+    {
+        return false;
+    }
+    if !matches!(
+        edge.direction,
+        EdgeDirection::PointingRight | EdgeDirection::PointingLeft
+    ) {
+        return false;
+    }
+    let label = extract_simple_label(&node.label);
+    if !node_emits_unlabeled_full_vertex_scan(
+        nv,
+        &label,
+        node,
+        stats,
+        conditional_candidates,
+        annotations,
+    ) {
+        return false;
+    }
+    edge_has_indexed_scannable_equality(ev, edge, stats, where_conjuncts)
+}
+
+/// Split edge pattern label into a cheap single-name [`PlanOp::Expand::label`] plus an optional
+/// [`PlanOp::Expand::label_expr`] for unions, negation, `&`, etc.
+fn plan_edge_expand_labels(edge: &EdgePattern) -> (Option<Str>, Option<LabelExpr>) {
+    match &edge.label {
+        None => (None, None),
+        Some(LabelExpr::Name(n)) => (Some(Str::from(n.as_str())), None),
+        Some(le) => (None, Some(le.clone())),
+    }
+}
+
+/// Expand §16.10 simplified path factors into ordinary `Edge` / `Node` factors so existing
+/// join-order, cycle detection, and `Expand` planning apply.
+fn normalize_path_term(term: &PathTerm) -> Result<PathTerm, PlannerError> {
+    let mut out_factors = Vec::with_capacity(term.factors.len().saturating_mul(2));
+    for (i, factor) in term.factors.iter().enumerate() {
+        match &factor.primary {
+            PathPrimary::Simplified(sp) => {
+                let n_el = sp.elements.len();
+                if n_el == 0 {
+                    return Err(PlannerError::UnsupportedPattern(
+                        "empty simplified path segment".into(),
+                    ));
+                }
+                let mut eid = 0usize;
+                let mut chunks: Vec<Vec<(EdgePattern, Option<PathQuantifier>)>> =
+                    Vec::with_capacity(n_el);
+                for elem in &sp.elements {
+                    chunks.push(lower_simplified_element_edges(elem, i, &mut eid)?);
+                }
+                let total_edges: usize = chunks.iter().map(|c| c.len()).sum();
+                if factor.quantifier.is_some() && total_edges != 1 {
+                    return Err(PlannerError::UnsupportedPattern(
+                        "path quantifier on multi-segment simplified edge is not supported".into(),
+                    ));
+                }
+                for (j, chunk) in chunks.into_iter().enumerate() {
+                    let n_in_chunk = chunk.len();
+                    for (k, (edge_pat, inner_q)) in chunk.into_iter().enumerate() {
+                        let quantifier = if total_edges == 1 {
+                            match (inner_q, factor.quantifier.clone()) {
+                                (Some(q), _) => Some(q),
+                                (None, outer) => outer,
+                            }
+                        } else {
+                            inner_q
+                        };
+                        out_factors.push(PathFactor {
+                            span: edge_pat.span,
+                            primary: PathPrimary::Edge(edge_pat),
+                            quantifier,
+                        });
+                        if k + 1 < n_in_chunk {
+                            let mid_var = format!("__simpl_mid_in_{i}_{j}_{k}");
+                            out_factors.push(PathFactor {
+                                span: factor.span,
+                                primary: PathPrimary::Node(NodePattern {
+                                    span: factor.span,
+                                    variable: Some(mid_var),
+                                    is_or_colon: None,
+                                    label: None,
+                                    properties: vec![],
+                                    where_clause: None,
+                                }),
+                                quantifier: None,
+                            });
+                        }
+                    }
+                    if j + 1 < n_el {
+                        let mid_var = format!("__simpl_mid_el_{i}_{j}");
+                        out_factors.push(PathFactor {
+                            span: factor.span,
+                            primary: PathPrimary::Node(NodePattern {
+                                span: factor.span,
+                                variable: Some(mid_var),
+                                is_or_colon: None,
+                                label: None,
+                                properties: vec![],
+                                where_clause: None,
+                            }),
+                            quantifier: None,
+                        });
+                    }
+                }
+            }
+            _ => out_factors.push(factor.clone()),
+        }
+    }
+    Ok(PathTerm {
+        span: term.span,
+        factors: out_factors,
+    })
+}
+
+fn peel_all_groups(mut c: &SimplifiedContents) -> &SimplifiedContents {
+    while let SimplifiedContents::Group(inner) = c {
+        c = inner.as_ref();
+    }
+    c
+}
+
+/// True when `c` contains `Concatenation` (juxtaposition of factorLows inside §16.12).
+fn has_concatenation(c: &SimplifiedContents) -> bool {
+    match c {
+        SimplifiedContents::Concatenation(_, _) => true,
+        SimplifiedContents::Group(inner)
+        | SimplifiedContents::Negation(inner)
+        | SimplifiedContents::Quantified(inner, _) => has_concatenation(inner),
+        SimplifiedContents::DirectionOverride(_, inner) => has_concatenation(inner),
+        SimplifiedContents::Conjunction(a, b)
+        | SimplifiedContents::Union(a, b)
+        | SimplifiedContents::MultisetAlternation(a, b) => {
+            has_concatenation(a) || has_concatenation(b)
+        }
+        SimplifiedContents::Label(_) => false,
+    }
+}
+
+fn flatten_alt_branches(c: &SimplifiedContents) -> Vec<&SimplifiedContents> {
+    match c {
+        SimplifiedContents::Union(a, b) | SimplifiedContents::MultisetAlternation(a, b) => {
+            let mut v = flatten_alt_branches(a);
+            v.extend(flatten_alt_branches(b));
+            v
+        }
+        _ => vec![c],
+    }
+}
+
+fn flatten_concat_branches(c: &SimplifiedContents) -> Vec<&SimplifiedContents> {
+    match c {
+        SimplifiedContents::Concatenation(a, b) => {
+            let mut v = flatten_concat_branches(a);
+            v.extend(flatten_concat_branches(b));
+            v
+        }
+        _ => vec![c],
+    }
+}
+
+/// One slash-delimited simplified element (`-/ ... /->` etc.) → 1+ edge tuples.
+fn lower_simplified_element_edges(
+    elem: &SimplifiedElement,
+    factor_idx: usize,
+    eid: &mut usize,
+) -> Result<Vec<(EdgePattern, Option<PathQuantifier>)>, PlannerError> {
+    let c = peel_all_groups(&elem.contents);
+    match c {
+        SimplifiedContents::Union(_, _) | SimplifiedContents::MultisetAlternation(_, _) => {
+            let branches = flatten_alt_branches(c);
+            if branches.is_empty() {
+                return Err(PlannerError::UnsupportedPattern(
+                    "empty simplified path alternative".into(),
+                ));
+            }
+            let mut merged_dir: Option<EdgeDirection> = None;
+            let mut label_acc: Option<LabelExpr> = None;
+            for b in &branches {
+                if has_concatenation(b) {
+                    return Err(PlannerError::UnsupportedPattern(
+                        "union or |+| combined with concatenated simplified hops is not supported by the planner".into(),
+                    ));
+                }
+                let b = peel_all_groups(b);
+                let (branch_q, after_q) = peel_simplified_quantifier(b);
+                if branch_q.is_some() {
+                    return Err(PlannerError::UnsupportedPattern(
+                        "quantified alternatives in a simplified path are not supported by the planner".into(),
+                    ));
+                }
+                let (dir, rest) = peel_simplified_direction_overrides(elem.direction, after_q)?;
+                let lbl = simplified_contents_to_label_expr(rest)?;
+                match merged_dir {
+                    None => merged_dir = Some(dir),
+                    Some(d) if d == dir => {}
+                    _ => {
+                        return Err(PlannerError::UnsupportedPattern(
+                            "simplified path alternatives with different directions are not supported by the planner".into(),
+                        ));
+                    }
+                }
+                label_acc = Some(match label_acc {
+                    None => lbl,
+                    Some(prev) => LabelExpr::Or(Box::new(prev), Box::new(lbl)),
+                });
+            }
+            let j = *eid;
+            *eid += 1;
+            Ok(vec![(
+                EdgePattern {
+                    span: elem.span,
+                    direction: merged_dir.expect("non-empty branches"),
+                    variable: Some(format!("__simpl_e{factor_idx}_{j}")),
+                    is_or_colon: None,
+                    label: Some(label_acc.expect("non-empty branches")),
+                    properties: vec![],
+                    where_clause: None,
+                },
+                None,
+            )])
+        }
+        _ => {
+            let parts = flatten_concat_branches(c);
+            let mut out = Vec::new();
+            for p in parts {
+                out.append(&mut lower_factor_low_maybe_multi(elem, p, factor_idx, eid)?);
+            }
+            Ok(out)
+        }
+    }
+}
+
+fn lower_factor_low_maybe_multi(
+    elem: &SimplifiedElement,
+    factor_low: &SimplifiedContents,
+    factor_idx: usize,
+    eid: &mut usize,
+) -> Result<Vec<(EdgePattern, Option<PathQuantifier>)>, PlannerError> {
+    let (quant, after_q) = peel_simplified_quantifier(factor_low);
+    let after_q = peel_all_groups(after_q);
+    if let SimplifiedContents::Concatenation(_, _) = after_q {
+        if quant.is_some() {
+            return Err(PlannerError::UnsupportedPattern(
+                "quantifier on a concatenated simplified path group is not supported".into(),
+            ));
+        }
+        let mut v = Vec::new();
+        for p in flatten_concat_branches(after_q) {
+            v.push(lower_one_simplified_edge_piece(
+                elem, p, factor_idx, *eid, None,
+            )?);
+            *eid += 1;
+        }
+        Ok(v)
+    } else {
+        let e = lower_one_simplified_edge_piece(elem, after_q, factor_idx, *eid, quant)?;
+        *eid += 1;
+        Ok(vec![e])
+    }
+}
+
+fn lower_one_simplified_edge_piece(
+    elem: &SimplifiedElement,
+    piece: &SimplifiedContents,
+    factor_idx: usize,
+    j: usize,
+    forced_quant: Option<PathQuantifier>,
+) -> Result<(EdgePattern, Option<PathQuantifier>), PlannerError> {
+    let (inner_q, after_q) = peel_simplified_quantifier(piece);
+    if inner_q.is_some() && forced_quant.is_some() {
+        return Err(PlannerError::UnsupportedPattern(
+            "conflicting quantifiers on simplified path piece".into(),
+        ));
+    }
+    let quant = inner_q.or(forced_quant);
+    let (direction, rest) = peel_simplified_direction_overrides(elem.direction, after_q)?;
+    if has_concatenation(rest) {
+        return Err(PlannerError::UnsupportedPattern(
+            "nested simplified path concatenation is not supported by the planner".into(),
+        ));
+    }
+    let label = simplified_contents_to_label_expr(rest)?;
+    Ok((
+        EdgePattern {
+            span: elem.span,
+            direction,
+            variable: Some(format!("__simpl_e{factor_idx}_{j}")),
+            is_or_colon: None,
+            label: Some(label),
+            properties: vec![],
+            where_clause: None,
+        },
+        quant,
+    ))
+}
+
+fn peel_simplified_quantifier(
+    c: &SimplifiedContents,
+) -> (Option<PathQuantifier>, &SimplifiedContents) {
+    match c {
+        SimplifiedContents::Quantified(inner, q) => (Some(q.clone()), inner.as_ref()),
+        SimplifiedContents::Group(inner) => peel_simplified_quantifier(inner),
+        _ => (None, c),
+    }
+}
+
+fn peel_simplified_direction_overrides(
+    mut dir: EdgeDirection,
+    mut c: &SimplifiedContents,
+) -> Result<(EdgeDirection, &SimplifiedContents), PlannerError> {
+    loop {
+        match c {
+            SimplifiedContents::Group(inner) => c = inner,
+            SimplifiedContents::DirectionOverride(d, inner) => {
+                dir = *d;
+                c = inner;
+            }
+            SimplifiedContents::Quantified(_, _) => {
+                return Err(PlannerError::UnsupportedPattern(
+                    "mis-ordered quantifier inside simplified path".into(),
+                ));
+            }
+            _ => return Ok((dir, c)),
+        }
+    }
+}
+
+fn simplified_contents_to_label_expr(c: &SimplifiedContents) -> Result<LabelExpr, PlannerError> {
+    match c {
+        SimplifiedContents::Label(le) => Ok(le.clone()),
+        SimplifiedContents::Group(inner) => simplified_contents_to_label_expr(inner),
+        SimplifiedContents::Conjunction(a, b) => Ok(LabelExpr::And(
+            Box::new(simplified_contents_to_label_expr(a)?),
+            Box::new(simplified_contents_to_label_expr(b)?),
+        )),
+        SimplifiedContents::Union(a, b) => Ok(LabelExpr::Or(
+            Box::new(simplified_contents_to_label_expr(a)?),
+            Box::new(simplified_contents_to_label_expr(b)?),
+        )),
+        // Multiset alternation (|+|): planner treats like set union for edge typing; multiplicity is not modeled.
+        SimplifiedContents::MultisetAlternation(a, b) => Ok(LabelExpr::Or(
+            Box::new(simplified_contents_to_label_expr(a)?),
+            Box::new(simplified_contents_to_label_expr(b)?),
+        )),
+        SimplifiedContents::Negation(inner) => Ok(LabelExpr::Not(Box::new(
+            simplified_contents_to_label_expr(inner)?,
+        ))),
+        SimplifiedContents::Concatenation(_, _) => Err(PlannerError::UnsupportedPattern(
+            "concatenated simplified path should be lowered before label conversion".into(),
+        )),
+        SimplifiedContents::Quantified(_, _) => Err(PlannerError::UnsupportedPattern(
+            "unexpected quantifier while lowering simplified path".into(),
+        )),
+        SimplifiedContents::DirectionOverride(_, _) => Err(PlannerError::UnsupportedPattern(
+            "unexpected direction override while lowering simplified path".into(),
+        )),
     }
 }
 
@@ -654,11 +1429,13 @@ fn plan_path_term(
     shortest_mode: Option<ShortestMode>,
     stats: Option<&dyn GraphStats>,
     conditional_candidates: &[ConditionalScanCandidate],
+    where_conjuncts: &mut Vec<Expr>,
     ops: &mut Vec<PlanOp>,
     annotations: &mut PlanAnnotations,
-) {
+) -> Result<(), PlannerError> {
+    let term = normalize_path_term(term)?;
     // Compute join ordering and detect cyclic patterns.
-    let hops = join_order::extract_hops(term);
+    let hops = join_order::extract_hops(&term);
     if hops.len() > 1 {
         let order = join_order::greedy_join_order(&hops, stats);
         if order != (0..hops.len()).collect::<Vec<_>>() {
@@ -711,11 +1488,23 @@ fn plan_path_term(
                 }
             }
             PathPrimary::Parenthesized { expr, .. } => PathElement::Sub(expr.as_ref().clone()),
-            PathPrimary::Simplified(_) => PathElement::Simplified,
+            PathPrimary::Simplified(_) => {
+                unreachable!("normalize_path_term should remove simplified primaries")
+            }
         })
         .collect();
 
+    let leading_first_hop_eligible = first_hop_supports_leading_edge_index(
+        &elements,
+        where_conjuncts.as_slice(),
+        stats,
+        conditional_candidates,
+        annotations,
+        shortest_mode,
+    );
+
     let mut prev_node_var: Option<String> = None;
+    let mut pending_deferred_first_scan: Option<(String, Option<String>, NodePattern)> = None;
     // Track nodes whose inline filters were fused into ExpandFilter.
     let mut fused_nodes: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
@@ -724,14 +1513,31 @@ fn plan_path_term(
             PathElement::Node { var, node } => {
                 let label = extract_simple_label(&node.label);
 
-                // First node: emit a scan.
+                // First node: emit a scan (unless deferred for leading EdgeIndexScan).
                 if prev_node_var.is_none() && !has_scan(ops) {
-                    emit_scan_for_node(var, &label, node, stats, conditional_candidates, ops, annotations);
+                    if leading_first_hop_eligible {
+                        pending_deferred_first_scan =
+                            Some((var.clone(), label.clone(), node.clone()));
+                    } else {
+                        emit_scan_for_node(
+                            var,
+                            &label,
+                            node,
+                            stats,
+                            conditional_candidates,
+                            ops,
+                            annotations,
+                        );
+                    }
                 }
 
-                // Emit inline filters only if they weren't already fused.
                 if !fused_nodes.contains(var) {
-                    emit_node_inline_filters(var, node, ops);
+                    let defer_near = leading_first_hop_eligible
+                        && idx == 0
+                        && pending_deferred_first_scan.is_some();
+                    if !defer_near {
+                        emit_node_inline_filters(var, node, ops);
+                    }
                 }
 
                 prev_node_var = Some(var.clone());
@@ -741,7 +1547,7 @@ fn plan_path_term(
                 edge,
                 quantifier,
             } => {
-                let edge_label = extract_simple_label(&edge.label);
+                let (label_str, label_expr) = plan_edge_expand_labels(edge);
 
                 if let Some(src_var) = &prev_node_var {
                     // Lookahead: find the next node and its variable.
@@ -763,72 +1569,135 @@ fn plan_path_term(
                     let src_str: Str = src_var.as_str().into();
                     let edge_str: Str = edge_var.as_str().into();
                     let dst_str: Str = dst_var.as_str().into();
-                    let label_str: Option<Str> = edge_label.map(Str::from);
 
-                    if let Some(mode) = shortest_mode {
-                        ops.push(PlanOp::ShortestPath {
-                            src: src_str,
-                            dst: dst_str.clone(),
-                            edge: edge_str,
-                            path_var: None,
-                            mode,
+                    let try_leading = idx == 1
+                        && shortest_mode.is_none()
+                        && pending_deferred_first_scan
+                            .as_ref()
+                            .is_some_and(|p| p.0 == *src_var);
+                    let mut wc_clone = where_conjuncts.clone();
+                    let fusion_on_clone =
+                        plan_edge_filter_fusion(edge_var, edge, stats, &mut wc_clone);
+                    let use_leading = try_leading
+                        && fusion_on_clone.indexed_equality.is_some()
+                        && var_len.is_none()
+                        && label_expr.is_none();
+
+                    if use_leading {
+                        *where_conjuncts = wc_clone;
+                        let (_, _, near_node) = pending_deferred_first_scan.take().unwrap();
+                        let (prop, scan_val) = fusion_on_clone.indexed_equality.as_ref().unwrap();
+                        ops.push(PlanOp::EdgeIndexScan {
+                            variable: edge_str.clone(),
+                            property: prop.clone(),
+                            value: scan_val.clone(),
+                            property_projection: None,
                         });
-                        // Cannot fuse filters into shortest path; emit separately.
+                        ops.push(PlanOp::EdgeBindEndpoints {
+                            edge: edge_str.clone(),
+                            near: src_str.clone(),
+                            far: dst_str.clone(),
+                            direction: edge.direction,
+                            label: label_str.clone(),
+                            near_property_projection: None,
+                            far_property_projection: None,
+                        });
+                        emit_edge_inline_filters(edge_var, edge, &fusion_on_clone, ops);
                         if !dst_filters.is_empty() {
                             ops.push(PlanOp::PropertyFilter {
                                 predicates: dst_filters,
                                 stage: 0,
                             });
+                            fused_nodes.insert(dst_var.clone());
                         }
-                    } else if !dst_filters.is_empty() {
-                        // Emit ExpandFilter (fused) — FilterIntoPattern optimization.
-                        ops.push(PlanOp::ExpandFilter {
-                            src: src_str,
-                            edge: edge_str,
-                            dst: dst_str.clone(),
-                            direction: edge.direction,
-                            label: label_str,
-                            var_len,
-                            dst_filter: dst_filters,
-                        });
-                        fused_nodes.insert(dst_var.clone());
+                        emit_node_inline_filters(src_var, &near_node, ops);
                     } else {
-                        ops.push(PlanOp::Expand {
-                            src: src_str,
-                            edge: edge_str,
-                            dst: dst_str,
-                            direction: edge.direction,
-                            label: label_str,
-                            var_len,
-                        });
-                    }
+                        if let Some((v, lbl, n)) = pending_deferred_first_scan.take() {
+                            emit_scan_for_node(
+                                &v,
+                                &lbl,
+                                &n,
+                                stats,
+                                conditional_candidates,
+                                ops,
+                                annotations,
+                            );
+                        }
 
-                    // Emit inline edge filters.
-                    emit_edge_inline_filters(edge_var, edge, ops);
+                        let edge_fusion = if shortest_mode.is_some() {
+                            EdgeFilterFusion::default()
+                        } else {
+                            plan_edge_filter_fusion(edge_var, edge, stats, where_conjuncts)
+                        };
+                        let indexed_edge_equality = edge_fusion.indexed_equality.clone();
+
+                        if let Some(mode) = shortest_mode {
+                            ops.push(PlanOp::ShortestPath {
+                                src: src_str,
+                                dst: dst_str.clone(),
+                                edge: edge_str,
+                                path_var: None,
+                                mode,
+                                direction: edge.direction,
+                                label: label_str.clone(),
+                                label_expr,
+                                var_len,
+                            });
+                            if !dst_filters.is_empty() {
+                                ops.push(PlanOp::PropertyFilter {
+                                    predicates: dst_filters,
+                                    stage: 0,
+                                });
+                            }
+                        } else if !dst_filters.is_empty() {
+                            ops.push(PlanOp::ExpandFilter {
+                                src: src_str,
+                                edge: edge_str,
+                                dst: dst_str.clone(),
+                                direction: edge.direction,
+                                label: label_str,
+                                label_expr,
+                                var_len,
+                                indexed_edge_equality,
+                                dst_filter: dst_filters,
+                                edge_property_projection: None,
+                                dst_property_projection: None,
+                            });
+                            fused_nodes.insert(dst_var.clone());
+                        } else {
+                            ops.push(PlanOp::Expand {
+                                src: src_str,
+                                edge: edge_str,
+                                dst: dst_str,
+                                direction: edge.direction,
+                                label: label_str,
+                                label_expr,
+                                var_len,
+                                indexed_edge_equality,
+                                edge_property_projection: None,
+                                dst_property_projection: None,
+                            });
+                        }
+
+                        emit_edge_inline_filters(edge_var, edge, &edge_fusion, ops);
+                    }
                 }
                 prev_node_var = None;
             }
             PathElement::Sub(expr) => {
-                plan_path_expr(expr, shortest_mode, stats, conditional_candidates, ops, annotations);
+                plan_path_expr(
+                    expr,
+                    shortest_mode,
+                    stats,
+                    conditional_candidates,
+                    where_conjuncts,
+                    ops,
+                    annotations,
+                )?;
             }
-            PathElement::Simplified => {}
         }
     }
-}
-
-/// Pre-extracted path element for lookahead during planning.
-enum PathElement {
-    Node {
-        var: String,
-        node: NodePattern,
-    },
-    Edge {
-        var: String,
-        edge: EdgePattern,
-        quantifier: Option<PathQuantifier>,
-    },
-    Sub(PathPatternExpr),
-    Simplified,
+    Ok(())
 }
 
 /// Collect all inline predicates from a node pattern (properties + WHERE clause)
@@ -903,33 +1772,159 @@ fn emit_node_inline_filters(var: &str, node: &NodePattern, ops: &mut Vec<PlanOp>
     }
 }
 
-fn emit_edge_inline_filters(edge_var: &str, edge: &EdgePattern, ops: &mut Vec<PlanOp>) {
-    if !edge.properties.is_empty() {
-        let filter_exprs: Vec<Expr> = edge
-            .properties
-            .iter()
-            .map(|p| {
-                Expr::new(ExprKind::Compare {
-                    left: Box::new(Expr::new(ExprKind::PropertyAccess {
-                        expr: Box::new(Expr::new(ExprKind::Variable(edge_var.to_string()))),
-                        property: p.name.clone(),
-                    })),
-                    op: CmpOp::Eq,
-                    right: Box::new(p.value.clone()),
-                })
+/// Planner-only: indexed edge equality plus residual edge filters.
+#[derive(Default, Clone)]
+struct EdgeFilterFusion {
+    indexed_equality: Option<(Str, ScanValue)>,
+    skip_inline_prop: Option<String>,
+    /// `None`: emit full `edge.where_clause`. `Some(predicates)` emits only these (empty = omit).
+    edge_where_override: Option<Vec<Expr>>,
+}
+
+fn plan_edge_filter_fusion(
+    edge_var: &str,
+    edge: &EdgePattern,
+    stats: Option<&dyn GraphStats>,
+    where_conjuncts: &mut Vec<Expr>,
+) -> EdgeFilterFusion {
+    let mut out = EdgeFilterFusion::default();
+    let Some(stats) = stats else {
+        return out;
+    };
+
+    for p in &edge.properties {
+        if stats.is_edge_property_indexed(&p.name)
+            && let Some(sv) = anchor::scan_value_from_expr(&p.value)
+        {
+            out.indexed_equality = Some((p.name.clone().into(), sv));
+            out.skip_inline_prop = Some(p.name.clone());
+            strip_edge_var_prop_eq_from_where(where_conjuncts, edge_var, &p.name);
+            out.edge_where_override = edge_where_after_fusing_prop(edge, edge_var, &p.name);
+            return out;
+        }
+    }
+
+    if let Some((idx, prop, sv)) =
+        find_first_indexed_edge_eq_in_conjunctions(where_conjuncts, edge_var, stats)
+    {
+        where_conjuncts.remove(idx);
+        out.indexed_equality = Some((prop.into(), sv));
+        return out;
+    }
+
+    if let Some(where_clause) = edge.where_clause.as_ref() {
+        let mut conj = flatten_conjunction(where_clause);
+        if let Some((idx, prop, sv)) =
+            find_first_indexed_edge_eq_in_conjunctions(&conj, edge_var, stats)
+        {
+            conj.remove(idx);
+            out.indexed_equality = Some((prop.into(), sv));
+            out.edge_where_override = Some(conj);
+        }
+    }
+
+    out
+}
+
+fn find_first_indexed_edge_eq_in_conjunctions(
+    conjuncts: &[Expr],
+    edge_var: &str,
+    stats: &dyn GraphStats,
+) -> Option<(usize, String, ScanValue)> {
+    for (i, c) in conjuncts.iter().enumerate() {
+        if let Some((v, p, sv)) = parse_edge_var_property_equality(c)
+            && v == edge_var
+            && stats.is_edge_property_indexed(&p)
+        {
+            return Some((i, p, sv));
+        }
+    }
+    None
+}
+
+fn parse_edge_var_property_equality(expr: &Expr) -> Option<(String, String, ScanValue)> {
+    if let ExprKind::Compare { left, op, right } = &expr.kind
+        && *op == CmpOp::Eq
+        && let ExprKind::PropertyAccess {
+            expr: inner,
+            property,
+        } = &left.kind
+        && let ExprKind::Variable(v) = &inner.kind
+    {
+        return anchor::scan_value_from_expr(right).map(|sv| (v.clone(), property.clone(), sv));
+    }
+    None
+}
+
+fn strip_edge_var_prop_eq_from_where(where_conjuncts: &mut Vec<Expr>, edge_var: &str, prop: &str) {
+    where_conjuncts.retain(|c| {
+        !parse_edge_var_property_equality(c).is_some_and(|(v, p, _)| v == edge_var && p == prop)
+    });
+}
+
+fn edge_where_after_fusing_prop(
+    edge: &EdgePattern,
+    edge_var: &str,
+    fused_prop: &str,
+) -> Option<Vec<Expr>> {
+    edge.where_clause.as_ref()?;
+    let mut conj = flatten_conjunction(edge.where_clause.as_ref().unwrap());
+    let orig_len = conj.len();
+    conj.retain(|c| {
+        !parse_edge_var_property_equality(c)
+            .is_some_and(|(v, p, _)| v == edge_var && p == fused_prop)
+    });
+    if conj.len() == orig_len {
+        None
+    } else {
+        Some(conj)
+    }
+}
+
+fn emit_edge_inline_filters(
+    edge_var: &str,
+    edge: &EdgePattern,
+    fusion: &EdgeFilterFusion,
+    ops: &mut Vec<PlanOp>,
+) {
+    let filter_exprs: Vec<Expr> = edge
+        .properties
+        .iter()
+        .filter(|p| fusion.skip_inline_prop.as_deref() != Some(p.name.as_str()))
+        .map(|p| {
+            Expr::new(ExprKind::Compare {
+                left: Box::new(Expr::new(ExprKind::PropertyAccess {
+                    expr: Box::new(Expr::new(ExprKind::Variable(edge_var.to_string()))),
+                    property: p.name.clone(),
+                })),
+                op: CmpOp::Eq,
+                right: Box::new(p.value.clone()),
             })
-            .collect();
+        })
+        .collect();
+    if !filter_exprs.is_empty() {
         ops.push(PlanOp::PropertyFilter {
             predicates: filter_exprs,
             stage: 0,
         });
     }
 
-    if let Some(where_expr) = &edge.where_clause {
-        ops.push(PlanOp::PropertyFilter {
-            predicates: flatten_conjunction(where_expr),
-            stage: 0,
-        });
+    match &fusion.edge_where_override {
+        None => {
+            if let Some(where_expr) = &edge.where_clause {
+                ops.push(PlanOp::PropertyFilter {
+                    predicates: flatten_conjunction(where_expr),
+                    stage: 0,
+                });
+            }
+        }
+        Some(preds) if !preds.is_empty() => {
+            ops.push(PlanOp::PropertyFilter {
+                predicates: preds.clone(),
+                stage: 0,
+            });
+        }
+        Some(_) => {}
     }
 }
 
@@ -945,54 +1940,59 @@ fn emit_scan_for_node(
     // Check for index intersection opportunity (multiple indexed predicates).
     if let Some(stats) = stats
         && let Some(where_expr) = &node.where_clause
-            && let Some(specs) = anchor::find_index_intersection(var, where_expr, stats) {
-                ops.push(PlanOp::IndexIntersection {
-                    variable: Str::from(var),
-                    scans: specs,
-                });
-                return;
-            }
+        && let Some(specs) = anchor::find_index_intersection(var, where_expr, stats)
+    {
+        ops.push(PlanOp::IndexIntersection {
+            variable: Str::from(var),
+            scans: specs,
+            property_projection: None,
+        });
+        return;
+    }
 
     // Check if anchor selection found an index scan for this variable.
     if let Some(anchor) = &annotations.optimizer.anchor
-        && &*anchor.variable == var {
-            match &anchor.source {
-                AnchorSource::PropertyEquality { property }
-                | AnchorSource::InlinePropertyEquality { property } => {
-                    // Find the value from inline properties or inline WHERE.
-                    let scan_value = node
-                        .properties
-                        .iter()
-                        .find(|p| p.name == **property)
-                        .map(|p| expr_to_scan_value(&p.value))
-                        .or_else(|| {
-                            // Try inline WHERE: (n WHERE n.prop = value)
-                            node.where_clause.as_ref().and_then(|w| {
-                                find_equality_value_in_where(var, property, w)
-                            })
-                        })
-                        .unwrap_or(ScanValue::Parameter(format!("${}", property).into()));
+        && &*anchor.variable == var
+    {
+        match &anchor.source {
+            AnchorSource::PropertyEquality { property }
+            | AnchorSource::InlinePropertyEquality { property } => {
+                // Find the value from inline properties or inline WHERE.
+                let scan_value = node
+                    .properties
+                    .iter()
+                    .find(|p| p.name == **property)
+                    .map(|p| expr_to_scan_value(&p.value))
+                    .or_else(|| {
+                        // Try inline WHERE: (n WHERE n.prop = value)
+                        node.where_clause
+                            .as_ref()
+                            .and_then(|w| find_equality_value_in_where(var, property, w))
+                    })
+                    .unwrap_or(ScanValue::Parameter(format!("${}", property).into()));
 
-                    ops.push(PlanOp::IndexScan {
-                        variable: Str::from(var),
-                        property: property.clone(),
-                        value: scan_value,
-                        cmp: CmpOp::Eq,
-                    });
-                    return;
-                }
-                AnchorSource::PropertyRange { property } => {
-                    ops.push(PlanOp::IndexScan {
-                        variable: Str::from(var),
-                        property: property.clone(),
-                        value: ScanValue::Parameter(format!("${}", property).into()),
-                        cmp: CmpOp::Ge,
-                    });
-                    return;
-                }
-                _ => {}
+                ops.push(PlanOp::IndexScan {
+                    variable: Str::from(var),
+                    property: property.clone(),
+                    value: scan_value,
+                    cmp: CmpOp::Eq,
+                    property_projection: None,
+                });
+                return;
             }
+            AnchorSource::PropertyRange { property } => {
+                ops.push(PlanOp::IndexScan {
+                    variable: Str::from(var),
+                    property: property.clone(),
+                    value: ScanValue::Parameter(format!("${}", property).into()),
+                    cmp: CmpOp::Ge,
+                    property_projection: None,
+                });
+                return;
+            }
+            _ => {}
         }
+    }
 
     // Check for conditional index scan candidates.
     let var_candidates: Vec<_> = conditional_candidates
@@ -1005,6 +2005,7 @@ fn emit_scan_for_node(
             candidates: var_candidates,
             fallback_label: label.as_ref().map(|s| Str::from(s.as_str())),
             fallback_variable: Str::from(var),
+            property_projection: None,
         });
         return;
     }
@@ -1013,6 +2014,7 @@ fn emit_scan_for_node(
     ops.push(PlanOp::NodeScan {
         variable: Str::from(var),
         label: label.as_ref().map(|s| Str::from(s.as_str())),
+        property_projection: None,
     });
 }
 
@@ -1030,14 +2032,16 @@ fn find_equality_value_in_where(var: &str, property: &str, where_expr: &Expr) ->
     for conjunct in &conjuncts {
         if let ExprKind::Compare { left, op, right } = &conjunct.kind
             && *op == CmpOp::Eq
-                && let ExprKind::PropertyAccess {
-                    expr: inner,
-                    property: prop,
-                } = &left.kind
-                    && let ExprKind::Variable(v) = &inner.kind
-                        && v == var && prop == property {
-                            return Some(expr_to_scan_value(right));
-                        }
+            && let ExprKind::PropertyAccess {
+                expr: inner,
+                property: prop,
+            } = &left.kind
+            && let ExprKind::Variable(v) = &inner.kind
+            && v == var
+            && prop == property
+        {
+            return Some(expr_to_scan_value(right));
+        }
     }
     None
 }
@@ -1071,7 +2075,15 @@ fn plan_return(ret: &ReturnStatement, ops: &mut Vec<PlanOp>) {
                 distinct,
             });
         }
-        // ReturnBody::NoBindings is cypher-only and not handled here.
+        #[cfg(feature = "cypher")]
+        ReturnBody::NoBindings => {
+            // Cypher extension: explicit empty return bindings.
+            // Produces an output row set with zero projected columns.
+            ops.push(PlanOp::Project {
+                columns: vec![],
+                distinct,
+            });
+        }
         ReturnBody::Items {
             items,
             group_by,
@@ -1085,6 +2097,21 @@ fn plan_return(ret: &ReturnStatement, ops: &mut Vec<PlanOp>) {
                 let (agg_specs, proj_cols) = extract_aggregates(items);
                 ops.push(PlanOp::Aggregate {
                     group_by: gb.items.clone(),
+                    aggregates: agg_specs,
+                });
+                ops.push(PlanOp::Project {
+                    columns: proj_cols,
+                    distinct,
+                });
+            } else if items
+                .iter()
+                .any(|item| try_extract_aggregate(&item.expr).is_some())
+            {
+                // Implicit whole-result aggregation (no GROUP BY): executor needs `Aggregate`
+                // before `Project`; bare `Aggregate` exprs in `Project` are not evaluable.
+                let (agg_specs, proj_cols) = extract_aggregates(items);
+                ops.push(PlanOp::Aggregate {
+                    group_by: Vec::new(),
                     aggregates: agg_specs,
                 });
                 ops.push(PlanOp::Project {
@@ -1152,14 +2179,29 @@ fn plan_select(sel: &SelectStatement, ops: &mut Vec<PlanOp>) {
             });
         }
     } else if let Some(items) = items {
-        let columns: Vec<ProjectColumn> = items
+        if items
             .iter()
-            .map(|item| ProjectColumn {
-                expr: item.expr.clone(),
-                alias: item.alias.as_ref().map(|a| Str::from(a.as_str())),
-            })
-            .collect();
-        ops.push(PlanOp::Project { columns, distinct });
+            .any(|item| try_extract_aggregate(&item.expr).is_some())
+        {
+            let (agg_specs, proj_cols) = extract_aggregates(items);
+            ops.push(PlanOp::Aggregate {
+                group_by: Vec::new(),
+                aggregates: agg_specs,
+            });
+            ops.push(PlanOp::Project {
+                columns: proj_cols,
+                distinct,
+            });
+        } else {
+            let columns: Vec<ProjectColumn> = items
+                .iter()
+                .map(|item| ProjectColumn {
+                    expr: item.expr.clone(),
+                    alias: item.alias.as_ref().map(|a| Str::from(a.as_str())),
+                })
+                .collect();
+            ops.push(PlanOp::Project { columns, distinct });
+        }
     } else {
         ops.push(PlanOp::Project {
             columns: vec![],
@@ -1398,7 +2440,7 @@ fn plan_bushy_join(
     binding_kinds: &std::collections::BTreeMap<String, BindingKind>,
     ops: &mut Vec<PlanOp>,
     annotations: &mut PlanAnnotations,
-) {
+) -> Result<(), PlannerError> {
     let mut sub_plans: Vec<Vec<PlanOp>> = Vec::new();
     let mut sub_vars: Vec<std::collections::BTreeSet<String>> = Vec::new();
 
@@ -1415,7 +2457,7 @@ fn plan_bushy_join(
                 binding_kinds,
                 &mut group_ops,
                 annotations,
-            );
+            )?;
             if let SimpleQueryStatement::Match(m) = &parts[idx] {
                 collect_pattern_variables(&m.pattern, &mut group_vars);
             }
@@ -1429,18 +2471,12 @@ fn plan_bushy_join(
     let mut result_ops = sub_plans.remove(0);
     let mut result_vars = sub_vars.remove(0);
 
-    for (plan, vars) in sub_plans.into_iter().zip(sub_vars.into_iter()) {
-        let shared: Vec<String> = result_vars
-            .intersection(&vars)
-            .cloned()
-            .collect();
+    for (plan, vars) in sub_plans.into_iter().zip(sub_vars) {
+        let shared: Vec<String> = result_vars.intersection(&vars).cloned().collect();
 
         let left = std::mem::take(&mut result_ops);
         if shared.is_empty() {
-            result_ops = vec![PlanOp::CartesianProduct {
-                left,
-                right: plan,
-            }];
+            result_ops = vec![PlanOp::CartesianProduct { left, right: plan }];
         } else {
             let join_keys: Vec<Str> = shared.iter().map(|s| Str::from(s.as_str())).collect();
             result_ops = vec![PlanOp::HashJoin {
@@ -1454,6 +2490,7 @@ fn plan_bushy_join(
     }
 
     ops.extend(result_ops);
+    Ok(())
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -1487,16 +2524,22 @@ fn set_reoptimization_hints(
 
     // Large plans: set reoptimization threshold.
     if let Some(rows) = annotations.optimizer.estimated_rows
-        && rows > 100_000.0 && annotations.optimizer.reoptimize_after_rows.is_none() {
-            annotations.optimizer.reoptimize_after_rows = Some(10_000);
-        }
+        && rows > 100_000.0
+        && annotations.optimizer.reoptimize_after_rows.is_none()
+    {
+        annotations.optimizer.reoptimize_after_rows = Some(10_000);
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
 // WCOJ Replacement
 // ════════════════════════════════════════════════════════════════════════════════
 
-/// Replace Expand chains that form a cycle with a single WorstCaseOptimalJoin op.
+/// Replace `Expand` / `ExpandFilter` chains that close a detected cycle with
+/// [`PlanOp::WorstCaseOptimalJoin`] when every hop can be represented on the edge ring.
+///
+/// Skips fusion when any hop combines **`indexed_edge_equality`** with **`var_len`** (executor uses
+/// plain expansion for variable-length segments).
 fn apply_wcoj_replacement(ops: &mut Vec<PlanOp>, annotations: &mut PlanAnnotations) {
     let cycles = match &annotations.optimizer.cyclic_patterns {
         Some(c) if !c.is_empty() => c.clone(),
@@ -1504,54 +2547,163 @@ fn apply_wcoj_replacement(ops: &mut Vec<PlanOp>, annotations: &mut PlanAnnotatio
     };
 
     for cycle in &cycles {
-        if cycle.variables.len() < 3 {
-            continue; // Need at least a triangle.
+        let uniq = normalize_cycle_variables(&cycle.variables);
+        if uniq.len() < 3 {
+            continue;
         }
+        let n = uniq.len();
 
-        // Find the Expand (or ExpandFilter) ops that form this cycle.
-        let cycle_vars: std::collections::BTreeSet<&str> =
-            cycle.variables.iter().map(|s| &**s).collect();
-
-        let mut cycle_expand_indices = Vec::new();
-        let mut wcoj_edges = Vec::new();
-
+        let mut expand_hops: Vec<CollectedWcojHop> = Vec::new();
         for (i, op) in ops.iter().enumerate() {
             match op {
                 PlanOp::Expand {
-                    src, dst, edge, direction, label, ..
-                }
-                | PlanOp::ExpandFilter {
-                    src, dst, edge, direction, label, ..
-                } if cycle_vars.contains(&**src) && cycle_vars.contains(&**dst) => {
-                    cycle_expand_indices.push(i);
-                    wcoj_edges.push(WcojEdge {
-                        variable: edge.clone(),
+                    src,
+                    dst,
+                    edge,
+                    direction,
+                    label,
+                    label_expr,
+                    var_len,
+                    indexed_edge_equality,
+                    ..
+                } => {
+                    expand_hops.push(CollectedWcojHop {
+                        op_idx: i,
+                        src: src.clone(),
+                        dst: dst.clone(),
+                        edge: edge.clone(),
                         label: label.clone(),
+                        label_expr: label_expr.clone(),
                         direction: *direction,
+                        var_len: *var_len,
+                        indexed_edge_equality: indexed_edge_equality.clone(),
+                        dst_filter: Vec::new(),
+                    });
+                }
+                PlanOp::ExpandFilter {
+                    src,
+                    dst,
+                    edge,
+                    direction,
+                    label,
+                    label_expr,
+                    var_len,
+                    indexed_edge_equality,
+                    dst_filter,
+                    ..
+                } => {
+                    expand_hops.push(CollectedWcojHop {
+                        op_idx: i,
+                        src: src.clone(),
+                        dst: dst.clone(),
+                        edge: edge.clone(),
+                        label: label.clone(),
+                        label_expr: label_expr.clone(),
+                        direction: *direction,
+                        var_len: *var_len,
+                        indexed_edge_equality: indexed_edge_equality.clone(),
+                        dst_filter: dst_filter.clone(),
                     });
                 }
                 _ => {}
             }
         }
 
-        // Only replace if we found enough edges for the cycle.
-        if wcoj_edges.len() >= cycle.variables.len() - 1 {
-            // Remove the cycle Expand ops (in reverse to preserve indices).
-            for &idx in cycle_expand_indices.iter().rev() {
-                ops.remove(idx);
-            }
-
-            // Insert WCOJ at the position of the first removed Expand.
-            let insert_pos = cycle_expand_indices[0].min(ops.len());
-            ops.insert(
-                insert_pos,
-                PlanOp::WorstCaseOptimalJoin {
-                    variables: cycle.variables.clone(),
-                    edges: wcoj_edges,
-                },
-            );
+        if expand_hops
+            .iter()
+            .any(|h| h.var_len.is_some() && h.indexed_edge_equality.is_some())
+        {
+            continue;
         }
+
+        let Some((ordered_edges, mut remove_indices)) =
+            order_wcoj_edges_for_cycle(&uniq, &expand_hops)
+        else {
+            continue;
+        };
+        if ordered_edges.len() != n || remove_indices.len() != n {
+            continue;
+        }
+        remove_indices.sort_unstable();
+        for &idx in remove_indices.iter().rev() {
+            ops.remove(idx);
+        }
+        let insert_pos = remove_indices[0].min(ops.len());
+        ops.insert(
+            insert_pos,
+            PlanOp::WorstCaseOptimalJoin {
+                variables: uniq,
+                edges: ordered_edges,
+            },
+        );
+        break;
     }
+}
+
+fn normalize_cycle_variables(variables: &[Str]) -> Vec<Str> {
+    if variables.len() >= 2 && variables.first() == variables.last() {
+        variables[..variables.len() - 1].to_vec()
+    } else {
+        variables.to_vec()
+    }
+}
+
+#[derive(Clone, Debug)]
+struct CollectedWcojHop {
+    op_idx: usize,
+    src: Str,
+    dst: Str,
+    edge: Str,
+    label: Option<Str>,
+    label_expr: Option<LabelExpr>,
+    direction: EdgeDirection,
+    var_len: Option<VarLenSpec>,
+    indexed_edge_equality: Option<(Str, ScanValue)>,
+    dst_filter: Vec<Expr>,
+}
+
+fn order_wcoj_edges_for_cycle(
+    uniq: &[Str],
+    expands: &[CollectedWcojHop],
+) -> Option<(Vec<WcojEdge>, Vec<usize>)> {
+    let n = uniq.len();
+    let mut used = vec![false; expands.len()];
+    let mut out_edges = Vec::with_capacity(n);
+    let mut remove_indices = Vec::with_capacity(n);
+
+    for i in 0..n {
+        let src = &uniq[i];
+        let dst = &uniq[(i + 1) % n];
+        let mut found = None;
+        for (j, hop) in expands.iter().enumerate() {
+            if used[j] {
+                continue;
+            }
+            if hop.src == *src && hop.dst == *dst {
+                found = Some((
+                    j,
+                    WcojEdge {
+                        src: src.clone(),
+                        dst: dst.clone(),
+                        variable: hop.edge.clone(),
+                        label: hop.label.clone(),
+                        label_expr: hop.label_expr.clone(),
+                        direction: hop.direction,
+                        var_len: hop.var_len,
+                        indexed_edge_equality: hop.indexed_edge_equality.clone(),
+                        dst_filter: hop.dst_filter.clone(),
+                    },
+                ));
+                break;
+            }
+        }
+        let (j, w) = found?;
+        used[j] = true;
+        remove_indices.push(expands[j].op_idx);
+        out_edges.push(w);
+    }
+
+    Some((out_edges, remove_indices))
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -1598,13 +2750,11 @@ fn plan_insert(
                     let dst = pattern.elements[i + 1..]
                         .iter()
                         .find_map(|e| match e {
-                            InsertElement::Node(n) => {
-                                Some(
-                                    n.variable
-                                        .clone()
-                                        .unwrap_or_else(|| format!("__insert_n{}", i + 1)),
-                                )
-                            }
+                            InsertElement::Node(n) => Some(
+                                n.variable
+                                    .clone()
+                                    .unwrap_or_else(|| format!("__insert_n{}", i + 1)),
+                            ),
                             _ => None,
                         })
                         .unwrap_or_else(|| format!("__insert_dst_{}", i));
@@ -1646,32 +2796,28 @@ fn plan_set(
                 variable,
                 property,
                 value,
-            } => {
-                SetPlanItem::Property {
-                    variable: variable.clone().into(),
-                    property: property.clone().into(),
-                    value: value.clone(),
-                }
-            }
+            } => SetPlanItem::Property {
+                variable: variable.clone().into(),
+                property: property.clone().into(),
+                value: value.clone(),
+            },
             SetItem::AllProperties {
                 span: _,
                 variable,
                 value,
-            } => {
-                SetPlanItem::AllProperties {
-                    variable: variable.clone().into(),
-                    value: value.clone(),
-                }
-            }
+            } => SetPlanItem::AllProperties {
+                variable: variable.clone().into(),
+                value: value.clone(),
+            },
             SetItem::Label {
                 span: _,
-                variable, label, ..
-            } => {
-                SetPlanItem::Label {
-                    variable: variable.clone().into(),
-                    label: label.clone().into(),
-                }
-            }
+                variable,
+                label,
+                ..
+            } => SetPlanItem::Label {
+                variable: variable.clone().into(),
+                label: label.clone().into(),
+            },
         })
         .collect();
 
@@ -1692,21 +2838,19 @@ fn plan_remove(
                 span: _,
                 variable,
                 property,
-            } => {
-                RemovePlanItem::Property {
-                    variable: variable.clone().into(),
-                    property: property.clone().into(),
-                }
-            }
+            } => RemovePlanItem::Property {
+                variable: variable.clone().into(),
+                property: property.clone().into(),
+            },
             RemoveItem::Label {
                 span: _,
-                variable, label, ..
-            } => {
-                RemovePlanItem::Label {
-                    variable: variable.clone().into(),
-                    label: label.clone().into(),
-                }
-            }
+                variable,
+                label,
+                ..
+            } => RemovePlanItem::Label {
+                variable: variable.clone().into(),
+                label: label.clone().into(),
+            },
         })
         .collect();
 
@@ -1733,17 +2877,16 @@ fn plan_delete(
             BindingKind::Edge => {
                 ops.push(PlanOp::DeleteEdge { variable });
             }
-            BindingKind::Node
-            | BindingKind::Unknown
-            | BindingKind::Path
-            | BindingKind::Value => match delete_stmt.detach {
-                DeleteDetach::Detach => {
-                    ops.push(PlanOp::DetachDeleteVertex { variable });
+            BindingKind::Node | BindingKind::Unknown | BindingKind::Path | BindingKind::Value => {
+                match delete_stmt.detach {
+                    DeleteDetach::Detach => {
+                        ops.push(PlanOp::DetachDeleteVertex { variable });
+                    }
+                    DeleteDetach::NoDetach | DeleteDetach::Unspecified => {
+                        ops.push(PlanOp::DeleteVertex { variable });
+                    }
                 }
-                DeleteDetach::NoDetach | DeleteDetach::Unspecified => {
-                    ops.push(PlanOp::DeleteVertex { variable });
-                }
-            },
+            }
         }
     }
 }
@@ -1752,7 +2895,7 @@ fn plan_delete(
 mod tests {
     use gleaph_gql::parser;
 
-    use super::{build_block_plan, PlanOp};
+    use super::{PlanOp, build_block_plan};
 
     fn parse_block(input: &str) -> gleaph_gql::ast::StatementBlock {
         let program = parser::parse(input).expect("query should parse");
@@ -1767,13 +2910,21 @@ mod tests {
     fn plans_delete_edge_when_binding_was_introduced_by_expand() {
         let block = parse_block("MATCH (a)-[e]->(b) DELETE e");
         let plan = build_block_plan(&block, None).expect("plan should build");
-        assert!(plan.ops.iter().any(|op| matches!(op, PlanOp::DeleteEdge { variable } if variable.as_ref() == "e")));
+        assert!(
+            plan.ops.iter().any(
+                |op| matches!(op, PlanOp::DeleteEdge { variable } if variable.as_ref() == "e")
+            )
+        );
     }
 
     #[test]
     fn keeps_delete_vertex_for_node_binding() {
         let block = parse_block("MATCH (a:User) DELETE a");
         let plan = build_block_plan(&block, None).expect("plan should build");
-        assert!(plan.ops.iter().any(|op| matches!(op, PlanOp::DeleteVertex { variable } if variable.as_ref() == "a")));
+        assert!(
+            plan.ops.iter().any(
+                |op| matches!(op, PlanOp::DeleteVertex { variable } if variable.as_ref() == "a")
+            )
+        );
     }
 }

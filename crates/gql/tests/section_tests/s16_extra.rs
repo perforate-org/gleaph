@@ -29,7 +29,7 @@ fn first_edge_dir(input: &str) -> EdgeDirection {
         PathPatternExpr::Term(term) => {
             for f in &term.factors {
                 if let PathPrimary::Edge(e) = &f.primary {
-                    return e.direction.clone();
+                    return e.direction;
                 }
             }
             panic!("no edge found");

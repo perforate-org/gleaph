@@ -4,15 +4,31 @@
 //! `Unknown` suppresses all warnings (open-world assumption).
 
 pub mod constraint;
+mod diagnostics;
 mod env;
 mod infer;
 mod narrowing;
 mod pattern;
+mod phase_b;
 pub mod schema;
 pub mod types;
 
 pub use constraint::{ConstraintSet, TypeVarId, TypedConstraint};
+pub use diagnostics::{
+    BindingKind, DML001_UNSUPPORTED_SET_REPLACE, DML002_TARGET_VALUE, DML003_TARGET_PATH,
+    DML004_TARGET_UNKNOWN, DiagnosticSeverity, DmlDiagnostic, DmlDiagnosticSeverity,
+    TypeDiagnostic, dml_diagnostic_from_warning, dml_diagnostic_severity, dml_target_path_message,
+    dml_target_unknown_message, dml_target_value_message, dml_unsupported_set_replace_message,
+    type_diagnostic_from_warning,
+};
 pub use env::{TypeWarning, WarningKind, WarningProvenance};
+pub use phase_b::{
+    infer_linear_query_binding_kinds, infer_linear_query_binding_kinds_and_warnings,
+    infer_linear_query_binding_kinds_and_warnings_with_seed,
+    infer_linear_query_binding_kinds_with_schema, infer_linear_query_binding_kinds_with_seed,
+    infer_statement_block_binding_kinds, infer_statement_block_binding_kinds_with_schema,
+    type_check_phase_b,
+};
 pub use schema::{NoSchema, ProcedureSignature, PropertySchema};
 pub use types::{EdgeTypeInfo, NodeTypeInfo, PathTypeInfo, Type};
 
@@ -27,114 +43,6 @@ use infer::{
 };
 use narrowing::{apply_narrowing, extract_narrowing_facts};
 use pattern::build_env_from_graph_pattern;
-use std::collections::BTreeMap;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BindingKind {
-    Node,
-    Edge,
-    Path,
-    Value,
-    Unknown,
-}
-
-pub const DML001_UNSUPPORTED_SET_REPLACE: &str = "DML001";
-pub const DML002_TARGET_VALUE: &str = "DML002";
-pub const DML003_TARGET_PATH: &str = "DML003";
-pub const DML004_TARGET_UNKNOWN: &str = "DML004";
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DmlDiagnosticSeverity {
-    Fatal,
-    Warning,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DiagnosticSeverity {
-    Error,
-    Warning,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TypeDiagnostic {
-    pub code: Option<&'static str>,
-    pub message: String,
-    pub span: Span,
-    pub severity: DiagnosticSeverity,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DmlDiagnostic {
-    pub code: &'static str,
-    pub message: String,
-    pub span: Span,
-    pub severity: DmlDiagnosticSeverity,
-}
-
-pub fn dml_diagnostic_severity(code: &str) -> Option<DmlDiagnosticSeverity> {
-    match code {
-        DML001_UNSUPPORTED_SET_REPLACE | DML002_TARGET_VALUE | DML003_TARGET_PATH => {
-            Some(DmlDiagnosticSeverity::Fatal)
-        }
-        DML004_TARGET_UNKNOWN => Some(DmlDiagnosticSeverity::Warning),
-        _ => None,
-    }
-}
-
-pub fn dml_diagnostic_from_warning(warning: &TypeWarning) -> Option<DmlDiagnostic> {
-    let code = warning.code?;
-    if warning.kind != WarningKind::DmlTargetMismatch
-        && warning.kind != WarningKind::UnsupportedDml
-    {
-        return None;
-    }
-    Some(DmlDiagnostic {
-        code,
-        message: warning.message.clone(),
-        span: warning.span.unwrap_or(Span::DUMMY),
-        severity: dml_diagnostic_severity(code)?,
-    })
-}
-
-pub fn type_diagnostic_from_warning(warning: &TypeWarning) -> TypeDiagnostic {
-    TypeDiagnostic {
-        code: warning.code,
-        message: warning.message.clone(),
-        span: warning.span.unwrap_or(Span::DUMMY),
-        severity: DiagnosticSeverity::Warning,
-    }
-}
-
-pub fn dml_target_value_message(op_name: &str, variable: Option<&str>) -> String {
-    format!(
-        "{op_name} target{} is inferred as a value, not a node/edge",
-        format_dml_target_ref(variable)
-    )
-}
-
-pub fn dml_target_path_message(op_name: &str, variable: Option<&str>) -> String {
-    format!(
-        "{op_name} target{} is inferred as a path, not a node/edge",
-        format_dml_target_ref(variable)
-    )
-}
-
-pub fn dml_target_unknown_message(op_name: &str, variable: Option<&str>) -> String {
-    format!(
-        "{op_name} target{} could not be typed statically",
-        format_dml_target_ref(variable)
-    )
-}
-
-pub fn dml_unsupported_set_replace_message(variable: &str) -> String {
-    format!("SET {variable} = ... is not yet supported by the executor")
-}
-
-fn format_dml_target_ref(variable: Option<&str>) -> String {
-    variable
-        .map(|name| format!(" `{name}`"))
-        .unwrap_or_default()
-}
 
 /// Run static type checking on a parsed program. Returns warnings.
 pub fn type_check(program: &GqlProgram) -> Vec<TypeWarning> {
@@ -203,119 +111,6 @@ pub fn type_check_composite_query_with_schema(
     env.warnings
 }
 
-/// Run constraint-based (Phase B) type checking with schema awareness.
-///
-/// This collects typed constraints from all expressions, then solves them
-/// in a separate pass. Warnings are prefixed with `[phase-b]` to distinguish
-/// them from the direct-inference (Phase A) warnings.
-pub fn type_check_phase_b(program: &GqlProgram, schema: &dyn PropertySchema) -> Vec<TypeWarning> {
-    // Phase A: build environment (bindings + endpoint checks).
-    let mut env = TypeEnv::new(schema);
-    check_program(&mut env, program);
-
-    // Phase B: constraint collection + solving.
-    if let Some(ref ta) = program.transaction_activity
-        && let Some(ref body) = ta.body
-    {
-        let mut cset = constraint::ConstraintSet::new();
-        collect_constraints_from_block(&mut cset, &env, body);
-        cset.solve(&mut env);
-    }
-    env.warnings
-}
-
-pub fn infer_linear_query_binding_kinds(query: &LinearQueryStatement) -> BTreeMap<String, BindingKind> {
-    infer_linear_query_binding_kinds_with_schema(query, &NoSchema)
-}
-
-pub fn infer_linear_query_binding_kinds_with_schema(
-    query: &LinearQueryStatement,
-    schema: &dyn PropertySchema,
-) -> BTreeMap<String, BindingKind> {
-    infer_linear_query_binding_kinds_with_seed(query, schema, &BTreeMap::new())
-}
-
-pub fn infer_linear_query_binding_kinds_with_seed(
-    query: &LinearQueryStatement,
-    schema: &dyn PropertySchema,
-    seed: &BTreeMap<String, BindingKind>,
-) -> BTreeMap<String, BindingKind> {
-    let mut env = TypeEnv::new(schema);
-    seed_env_with_binding_kinds(&mut env, seed);
-    check_linear_query(&mut env, query);
-    binding_kinds_from_env(&env)
-}
-
-pub fn infer_statement_block_binding_kinds(
-    block: &StatementBlock,
-) -> Vec<BTreeMap<String, BindingKind>> {
-    infer_statement_block_binding_kinds_with_schema(block, &NoSchema)
-}
-
-pub fn infer_statement_block_binding_kinds_with_schema(
-    block: &StatementBlock,
-    schema: &dyn PropertySchema,
-) -> Vec<BTreeMap<String, BindingKind>> {
-    let mut env = TypeEnv::new(schema);
-    let mut per_statement = Vec::with_capacity(1 + block.next.len());
-    per_statement.push(binding_kinds_from_env(&env));
-
-    check_statement(&mut env, &block.first);
-
-    let mut prev_return_types = infer_statement_return_types(&env, &block.first);
-    for next in &block.next {
-        if let Some(ref yield_items) = next.yield_items {
-            for yi in yield_items {
-                let binding_name = yi.alias.as_deref().unwrap_or(&yi.name);
-                let ty = prev_return_types
-                    .iter()
-                    .find(|(name, _)| name == &yi.name)
-                    .map(|(_, t)| t.clone())
-                    .unwrap_or(Type::Unknown);
-                env.bind(binding_name.to_string(), ty);
-            }
-        } else {
-            for (name, ty) in &prev_return_types {
-                env.bind(name.clone(), ty.clone());
-            }
-        }
-
-        per_statement.push(binding_kinds_from_env(&env));
-        check_statement(&mut env, &next.statement);
-        prev_return_types = infer_statement_return_types(&env, &next.statement);
-    }
-
-    per_statement
-}
-
-fn binding_kinds_from_env(env: &TypeEnv<'_>) -> BTreeMap<String, BindingKind> {
-    env.bindings
-        .iter()
-        .map(|(name, ty)| (name.clone(), binding_kind_from_type(ty)))
-        .collect()
-}
-
-fn collect_constraints_from_block(
-    cset: &mut constraint::ConstraintSet,
-    env: &TypeEnv<'_>,
-    block: &StatementBlock,
-) {
-    collect_constraints_from_statement(cset, env, &block.first);
-    for next in &block.next {
-        collect_constraints_from_statement(cset, env, &next.statement);
-    }
-}
-
-fn collect_constraints_from_statement(
-    cset: &mut constraint::ConstraintSet,
-    env: &TypeEnv<'_>,
-    stmt: &Statement,
-) {
-    if let Statement::Query(cq) = stmt {
-        cset.collect_from_composite_query(env, cq);
-    }
-}
-
 /// Strict-mode: returns `GqlError::TypeError` on first warning.
 pub fn type_check_strict(
     program: &GqlProgram,
@@ -348,12 +143,7 @@ fn dml_target_code_for_type(ty: &Type) -> Option<&'static str> {
     }
 }
 
-fn check_dml_target(
-    env: &mut TypeEnv<'_>,
-    op_name: &str,
-    variable: &str,
-    span: Span,
-) {
+fn check_dml_target(env: &mut TypeEnv<'_>, op_name: &str, variable: &str, span: Span) {
     let ty = env.get(variable);
     match binding_kind_from_type(&ty) {
         BindingKind::Node | BindingKind::Edge => {}
@@ -375,21 +165,6 @@ fn check_dml_target(
             dml_target_unknown_message(op_name, Some(variable)),
             span,
         ),
-    }
-}
-
-fn seed_env_with_binding_kinds(env: &mut TypeEnv<'_>, seed: &BTreeMap<String, BindingKind>) {
-    for (name, kind) in seed {
-        env.bind(name.clone(), type_from_binding_kind(*kind));
-    }
-}
-
-fn type_from_binding_kind(kind: BindingKind) -> Type {
-    match kind {
-        BindingKind::Node => Type::Node(NodeTypeInfo::from_labels(Vec::new())),
-        BindingKind::Edge => Type::Edge(EdgeTypeInfo::from_label(None)),
-        BindingKind::Path => Type::Path(PathTypeInfo::default()),
-        BindingKind::Value | BindingKind::Unknown => Type::Unknown,
     }
 }
 

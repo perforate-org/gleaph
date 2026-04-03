@@ -1,0 +1,5 @@
+packages:
+  - "sdk/*"
+  - "frontend/design"
+  - "frontend/product"
+  - "frontend/dashboard"

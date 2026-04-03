@@ -21,6 +21,12 @@ pub trait GraphStats {
         None
     }
 
+    /// Optional fast path when callers already resolved label id.
+    fn label_cardinality_id(&self, label_id: u16) -> Option<u64> {
+        let _ = label_id;
+        None
+    }
+
     /// Average out-degree of vertices.
     fn avg_degree(&self) -> Option<f64> {
         None
@@ -64,6 +70,20 @@ pub trait GraphStats {
     }
 }
 
+pub fn label_cardinality_with_id(stats: &dyn GraphStats, label: &str) -> Option<u64> {
+    stats.label_cardinality(label).or_else(|| {
+        label
+            .parse::<u16>()
+            .ok()
+            .or_else(|| {
+                label
+                    .strip_prefix('L')
+                    .and_then(|rest| rest.parse::<u16>().ok())
+            })
+            .and_then(|id| stats.label_cardinality_id(id))
+    })
+}
+
 /// An equi-width histogram for property value distribution.
 #[derive(Clone, Debug)]
 pub struct PropertyHistogram {
@@ -97,8 +117,8 @@ impl PropertyHistogram {
         }
         // Assume uniform distribution within buckets.
         let avg_bucket = self.total as f64 / self.buckets.len() as f64;
-        let distinct_estimate = self.buckets.iter().filter(|&&b| b > 0).count() as f64
-            * (avg_bucket.max(1.0));
+        let distinct_estimate =
+            self.buckets.iter().filter(|&&b| b > 0).count() as f64 * (avg_bucket.max(1.0));
         (1.0 / distinct_estimate.max(1.0)).min(1.0)
     }
 }

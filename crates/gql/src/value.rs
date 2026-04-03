@@ -2,8 +2,20 @@
 //!
 //! The [`Value`] enum covers all GQL standard value types plus an
 //! [`Extension`](Value::Extension) slot for platform-specific types.
+//!
+//! Extension binary encoding: **tag 33** (`u8` kind + `u32`-length payload), **tag 34**
+//! (`u8` length + ≤255 bytes, no kind) when [`ExtensionValue::short_blob`] is set
+//! (e.g. Internet Computer `Principal` in **`gleaph-gql-ic`**).
+//!
+//! Fixed-size binary wire payloads (no backward compatibility):
+//! - tag 7: `Int256` = `ethnum::I256` little-endian bytes (32 bytes)
+//! - tag 13: `Uint256` = `ethnum::U256` little-endian bytes (32 bytes)
+//! - tag 17: `Decimal` = `rust_decimal::Decimal::serialize()` bytes (16 bytes)
+//! - tag 31: `Float128` bits (see `f128::to_bits()`) (16 bytes)
+//! - tag 32: `Float256` little-endian bytes (32 bytes)
 
 use std::any::Any;
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::fmt;
 use std::str;
@@ -11,33 +23,42 @@ use std::str;
 use crate::types::{Decimal, Int256, PathElement, Uint256};
 
 /// Error returned when one [`Value`] cannot be encoded to, or decoded from,
-/// the rewrite-side stable byte format.
+/// the rewrite-side binary byte format.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum StableValueError {
+pub enum ValueBinaryError {
     UnexpectedEof,
     InvalidTag(u8),
     InvalidUtf8,
     InvalidDecimal,
     InvalidInt256,
     InvalidUint256,
+    /// Extension does not supply [`ExtensionValue::binary_payload`] and cannot be binary-encoded.
     InvalidExtensionType,
+    /// Encoded bytes contain an extension tag but the decoder does not handle this kind or short blob.
+    UnknownEncodedExtension,
+    /// Extension payload bytes could not be parsed (decoder-specific, e.g. invalid length).
+    InvalidExtensionPayload,
 }
 
-impl fmt::Display for StableValueError {
+impl fmt::Display for ValueBinaryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnexpectedEof => write!(f, "unexpected end of stable value bytes"),
-            Self::InvalidTag(tag) => write!(f, "invalid stable value tag: {tag}"),
-            Self::InvalidUtf8 => write!(f, "invalid UTF-8 in stable value bytes"),
-            Self::InvalidDecimal => write!(f, "invalid decimal in stable value bytes"),
-            Self::InvalidInt256 => write!(f, "invalid i256 in stable value bytes"),
-            Self::InvalidUint256 => write!(f, "invalid u256 in stable value bytes"),
-            Self::InvalidExtensionType => write!(f, "extension values are not stable-encodable"),
+            Self::UnexpectedEof => write!(f, "unexpected end of binary value bytes"),
+            Self::InvalidTag(tag) => write!(f, "invalid binary value tag: {tag}"),
+            Self::InvalidUtf8 => write!(f, "invalid UTF-8 in binary value bytes"),
+            Self::InvalidDecimal => write!(f, "invalid decimal in binary value bytes"),
+            Self::InvalidInt256 => write!(f, "invalid i256 in binary value bytes"),
+            Self::InvalidUint256 => write!(f, "invalid u256 in binary value bytes"),
+            Self::InvalidExtensionType => write!(f, "extension values are not binary-encodable"),
+            Self::UnknownEncodedExtension => {
+                write!(f, "unknown or unsupported extension wire type")
+            }
+            Self::InvalidExtensionPayload => write!(f, "invalid extension payload"),
         }
     }
 }
 
-impl std::error::Error for StableValueError {}
+impl std::error::Error for ValueBinaryError {}
 
 // ──── ExtensionValue trait ────
 
@@ -59,7 +80,56 @@ pub trait ExtensionValue: fmt::Debug + fmt::Display + Send + Sync {
 
     /// Downcast to concrete type.
     fn as_any(&self) -> &dyn Any;
+
+    /// Opaque payload for [`Value::to_binary_bytes`] / property-store encoding.
+    ///
+    /// Default: [`ValueBinaryError::InvalidExtensionType`] (extensions that only exist at runtime).
+    fn binary_payload(&self) -> Result<Cow<'_, [u8]>, ValueBinaryError> {
+        Err(ValueBinaryError::InvalidExtensionType)
+    }
+
+    /// When [`Some`], and [`Self::short_blob`] is [`None`], binary encoding uses **tag 33**:
+    /// `u8` kind + `u32`-length-prefixed payload from [`Self::binary_payload`].
+    /// If both this and [`Self::short_blob`] are set, **short blob (tag 34) wins**.
+    ///
+    /// Kind IDs (0–255) are agreed with [`ExtensionBinaryDecode::decode_extension_compact`].
+    fn compact_kind(&self) -> Option<u8> {
+        None
+    }
+
+    /// When [`Some`], binary encoding uses **tag 34**: `u8` byte length (≤255) + raw bytes (no kind).
+    ///
+    /// Checked before [`Self::compact_kind`]. See **`gleaph-gql-ic`** for `Principal`.
+    fn short_blob(&self) -> Option<Cow<'_, [u8]>> {
+        None
+    }
 }
+
+/// Decodes **tag 33** (compact kind) and **tag 34** (short blob) extension values.
+pub trait ExtensionBinaryDecode {
+    /// Tag **33**: `u8` kind + length-prefixed payload (`u32` length).
+    fn decode_extension_compact(
+        &self,
+        _kind: u8,
+        _payload: &[u8],
+    ) -> Result<Box<dyn ExtensionValue>, ValueBinaryError> {
+        Err(ValueBinaryError::UnknownEncodedExtension)
+    }
+
+    /// Tag **34**: payload only (length was stored as the preceding `u8`).
+    fn decode_extension_short_blob(
+        &self,
+        _payload: &[u8],
+    ) -> Result<Box<dyn ExtensionValue>, ValueBinaryError> {
+        Err(ValueBinaryError::UnknownEncodedExtension)
+    }
+}
+
+/// [`ExtensionBinaryDecode`] implementation that rejects every extension (used by [`Value::from_binary_bytes`]).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DenyExtensionBinaryDecode;
+
+impl ExtensionBinaryDecode for DenyExtensionBinaryDecode {}
 
 // ──── Value enum ────
 
@@ -374,12 +444,12 @@ fn write_len_prefixed_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
     out.extend_from_slice(bytes);
 }
 
-struct StableCursor<'a> {
+struct BinaryCursor<'a> {
     bytes: &'a [u8],
     offset: usize,
 }
 
-impl<'a> StableCursor<'a> {
+impl<'a> BinaryCursor<'a> {
     fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, offset: 0 }
     }
@@ -392,53 +462,57 @@ impl<'a> StableCursor<'a> {
         self.bytes.get(self.offset).copied()
     }
 
-    fn read_u8(&mut self) -> Result<u8, StableValueError> {
+    fn read_u8(&mut self) -> Result<u8, ValueBinaryError> {
         let byte = *self
             .bytes
             .get(self.offset)
-            .ok_or(StableValueError::UnexpectedEof)?;
+            .ok_or(ValueBinaryError::UnexpectedEof)?;
         self.offset += 1;
         Ok(byte)
     }
 
-    fn read_array<const N: usize>(&mut self) -> Result<[u8; N], StableValueError> {
+    fn read_array<const N: usize>(&mut self) -> Result<[u8; N], ValueBinaryError> {
         let end = self
             .offset
             .checked_add(N)
-            .ok_or(StableValueError::UnexpectedEof)?;
+            .ok_or(ValueBinaryError::UnexpectedEof)?;
         let slice = self
             .bytes
             .get(self.offset..end)
-            .ok_or(StableValueError::UnexpectedEof)?;
+            .ok_or(ValueBinaryError::UnexpectedEof)?;
         let mut out = [0u8; N];
         out.copy_from_slice(slice);
         self.offset = end;
         Ok(out)
     }
 
-    fn read_len(&mut self) -> Result<usize, StableValueError> {
+    fn read_len(&mut self) -> Result<usize, ValueBinaryError> {
         Ok(u32::from_le_bytes(self.read_array()?) as usize)
     }
 
-    fn read_len_prefixed_bytes(&mut self) -> Result<&'a [u8], StableValueError> {
+    fn read_len_prefixed_bytes(&mut self) -> Result<&'a [u8], ValueBinaryError> {
         let len = self.read_len()?;
+        self.read_exact_slice(len)
+    }
+
+    fn read_exact_slice(&mut self, len: usize) -> Result<&'a [u8], ValueBinaryError> {
         let end = self
             .offset
             .checked_add(len)
-            .ok_or(StableValueError::UnexpectedEof)?;
+            .ok_or(ValueBinaryError::UnexpectedEof)?;
         let slice = self
             .bytes
             .get(self.offset..end)
-            .ok_or(StableValueError::UnexpectedEof)?;
+            .ok_or(ValueBinaryError::UnexpectedEof)?;
         self.offset = end;
         Ok(slice)
     }
 
-    fn read_string(&mut self) -> Result<String, StableValueError> {
+    fn read_string(&mut self) -> Result<String, ValueBinaryError> {
         let bytes = self.read_len_prefixed_bytes()?;
         str::from_utf8(bytes)
             .map(|s| s.to_owned())
-            .map_err(|_| StableValueError::InvalidUtf8)
+            .map_err(|_| ValueBinaryError::InvalidUtf8)
     }
 }
 
@@ -541,27 +615,38 @@ impl<T: Into<Value>> From<Option<T>> for Value {
 // ──── Value helper methods ────
 
 impl Value {
-    /// Encodes this value to the rewrite-side stable byte format.
-    pub fn to_stable_bytes(&self) -> Result<Vec<u8>, StableValueError> {
+    /// Encodes this value to the rewrite-side binary byte format.
+    pub fn to_binary_bytes(&self) -> Result<Vec<u8>, ValueBinaryError> {
         let mut out = Vec::new();
-        self.encode_stable_into(&mut out)?;
+        self.encode_binary_into(&mut out)?;
         Ok(out)
     }
 
-    /// Decodes one value from the rewrite-side stable byte format.
-    pub fn from_stable_bytes(bytes: &[u8]) -> Result<Self, StableValueError> {
-        let mut cursor = StableCursor::new(bytes);
-        let value = Self::decode_stable_from(&mut cursor)?;
+    /// Decodes one value from the rewrite-side binary byte format.
+    ///
+    /// Extension values (**tags 33 / 34**) are rejected unless you use
+    /// [`Self::from_binary_bytes_with_extensions`].
+    pub fn from_binary_bytes(bytes: &[u8]) -> Result<Self, ValueBinaryError> {
+        Self::from_binary_bytes_with_extensions(bytes, &DenyExtensionBinaryDecode)
+    }
+
+    /// Like [`Self::from_binary_bytes`], but resolves [`Value::Extension`] using `decode`.
+    pub fn from_binary_bytes_with_extensions(
+        bytes: &[u8],
+        decode: &dyn ExtensionBinaryDecode,
+    ) -> Result<Self, ValueBinaryError> {
+        let mut cursor = BinaryCursor::new(bytes);
+        let value = Self::decode_binary_from(&mut cursor, decode)?;
         if cursor.remaining() == 0 {
             Ok(value)
         } else {
-            Err(StableValueError::InvalidTag(
+            Err(ValueBinaryError::InvalidTag(
                 cursor.peek_u8().unwrap_or_default(),
             ))
         }
     }
 
-    fn encode_stable_into(&self, out: &mut Vec<u8>) -> Result<(), StableValueError> {
+    fn encode_binary_into(&self, out: &mut Vec<u8>) -> Result<(), ValueBinaryError> {
         match self {
             Self::Null => out.push(0),
             Self::Bool(v) => {
@@ -590,7 +675,7 @@ impl Value {
             }
             Self::Int256(v) => {
                 out.push(7);
-                write_len_prefixed_bytes(out, v.to_string().as_bytes());
+                out.extend_from_slice(&v.0.to_le_bytes());
             }
             Self::Uint8(v) => {
                 out.push(8);
@@ -614,7 +699,7 @@ impl Value {
             }
             Self::Uint256(v) => {
                 out.push(13);
-                write_len_prefixed_bytes(out, v.to_string().as_bytes());
+                out.extend_from_slice(&v.0.to_le_bytes());
             }
             Self::Float16(v) => {
                 out.push(14);
@@ -630,7 +715,7 @@ impl Value {
             }
             Self::Decimal(v) => {
                 out.push(17);
-                write_len_prefixed_bytes(out, v.to_string().as_bytes());
+                out.extend_from_slice(&v.0.serialize());
             }
             Self::Text(v) => {
                 out.push(18);
@@ -682,7 +767,7 @@ impl Value {
                 out.push(28);
                 write_len(out, items.len());
                 for item in items {
-                    item.encode_stable_into(out)?;
+                    item.encode_binary_into(out)?;
                 }
             }
             Self::Path(items) => {
@@ -714,25 +799,46 @@ impl Value {
                 write_len(out, fields.len());
                 for (key, value) in fields {
                     write_len_prefixed_bytes(out, key.as_bytes());
-                    value.encode_stable_into(out)?;
+                    value.encode_binary_into(out)?;
                 }
             }
-            Self::Extension(_) => return Err(StableValueError::InvalidExtensionType),
             #[cfg(feature = "f128")]
             Self::Float128(v) => {
                 out.push(31);
-                write_len_prefixed_bytes(out, format!("{v:?}").as_bytes());
+                out.extend_from_slice(&v.to_bits().to_ne_bytes());
             }
             #[cfg(feature = "f256")]
             Self::Float256(v) => {
                 out.push(32);
-                write_len_prefixed_bytes(out, v.to_string().as_bytes());
+                out.extend_from_slice(&v.to_le_bytes());
+            }
+            Self::Extension(ext) => {
+                if let Some(blob) = ext.short_blob() {
+                    let blob = blob.as_ref();
+                    let len = blob.len();
+                    if len > 255 {
+                        return Err(ValueBinaryError::InvalidExtensionPayload);
+                    }
+                    out.push(34);
+                    out.push(len as u8);
+                    out.extend_from_slice(blob);
+                } else if let Some(kind) = ext.compact_kind() {
+                    let payload = ext.binary_payload()?;
+                    out.push(33);
+                    out.push(kind);
+                    write_len_prefixed_bytes(out, payload.as_ref());
+                } else {
+                    return Err(ValueBinaryError::InvalidExtensionType);
+                }
             }
         }
         Ok(())
     }
 
-    fn decode_stable_from(cursor: &mut StableCursor<'_>) -> Result<Self, StableValueError> {
+    fn decode_binary_from(
+        cursor: &mut BinaryCursor<'_>,
+        decode: &dyn ExtensionBinaryDecode,
+    ) -> Result<Self, ValueBinaryError> {
         match cursor.read_u8()? {
             0 => Ok(Self::Null),
             1 => Ok(Self::Bool(cursor.read_u8()? != 0)),
@@ -742,8 +848,10 @@ impl Value {
             5 => Ok(Self::Int64(i64::from_le_bytes(cursor.read_array()?))),
             6 => Ok(Self::Int128(i128::from_le_bytes(cursor.read_array()?))),
             7 => {
-                let s = cursor.read_string()?;
-                Ok(Self::Int256(Int256::parse(&s).ok_or(StableValueError::InvalidInt256)?))
+                let bytes = cursor.read_array::<32>()?;
+                Ok(Self::Int256(Int256::new(ethnum::I256::from_le_bytes(
+                    bytes,
+                ))))
             }
             8 => Ok(Self::Uint8(cursor.read_u8()?)),
             9 => Ok(Self::Uint16(u16::from_le_bytes(cursor.read_array()?))),
@@ -751,15 +859,21 @@ impl Value {
             11 => Ok(Self::Uint64(u64::from_le_bytes(cursor.read_array()?))),
             12 => Ok(Self::Uint128(u128::from_le_bytes(cursor.read_array()?))),
             13 => {
-                let s = cursor.read_string()?;
-                Ok(Self::Uint256(Uint256::parse(&s).ok_or(StableValueError::InvalidUint256)?))
+                let bytes = cursor.read_array::<32>()?;
+                Ok(Self::Uint256(Uint256::new(ethnum::U256::from_le_bytes(
+                    bytes,
+                ))))
             }
-            14 => Ok(Self::Float16(half::f16::from_bits(u16::from_le_bytes(cursor.read_array()?)))),
+            14 => Ok(Self::Float16(half::f16::from_bits(u16::from_le_bytes(
+                cursor.read_array()?,
+            )))),
             15 => Ok(Self::Float32(f32::from_le_bytes(cursor.read_array()?))),
             16 => Ok(Self::Float64(f64::from_le_bytes(cursor.read_array()?))),
             17 => {
-                let s = cursor.read_string()?;
-                Ok(Self::Decimal(Decimal::parse(&s).ok_or(StableValueError::InvalidDecimal)?))
+                let bytes = cursor.read_array::<16>()?;
+                Ok(Self::Decimal(Decimal::new(
+                    rust_decimal::Decimal::deserialize(bytes),
+                )))
             }
             18 => Ok(Self::Text(cursor.read_string()?)),
             19 => Ok(Self::Bytes(cursor.read_len_prefixed_bytes()?.to_vec())),
@@ -791,7 +905,7 @@ impl Value {
                 let len = cursor.read_len()?;
                 let mut items = Vec::with_capacity(len);
                 for _ in 0..len {
-                    items.push(Self::decode_stable_from(cursor)?);
+                    items.push(Self::decode_binary_from(cursor, decode)?);
                 }
                 Ok(Self::List(items))
             }
@@ -812,7 +926,7 @@ impl Value {
                             };
                             PathElement::Edge { src, dst, label }
                         }
-                        other => return Err(StableValueError::InvalidTag(other)),
+                        other => return Err(ValueBinaryError::InvalidTag(other)),
                     };
                     items.push(item);
                 }
@@ -823,24 +937,35 @@ impl Value {
                 let mut fields = Vec::with_capacity(len);
                 for _ in 0..len {
                     let key = cursor.read_string()?;
-                    let value = Self::decode_stable_from(cursor)?;
+                    let value = Self::decode_binary_from(cursor, decode)?;
                     fields.push((key, value));
                 }
                 Ok(Self::Record(fields))
             }
             #[cfg(feature = "f128")]
             31 => {
-                let s = cursor.read_string()?;
-                let v = s.parse::<f128>().map_err(|_| StableValueError::InvalidTag(31))?;
-                Ok(Self::Float128(v))
+                let bytes = cursor.read_array::<16>()?;
+                let bits = u128::from_ne_bytes(bytes);
+                Ok(Self::Float128(f128::from_bits(bits)))
             }
             #[cfg(feature = "f256")]
             32 => {
-                let s = cursor.read_string()?;
-                let v = s.parse::<f256::f256>().map_err(|_| StableValueError::InvalidTag(32))?;
-                Ok(Self::Float256(v))
+                let bytes = cursor.read_array::<32>()?;
+                Ok(Self::Float256(f256::f256::from_le_bytes(bytes)))
             }
-            tag => Err(StableValueError::InvalidTag(tag)),
+            33 => {
+                let kind = cursor.read_u8()?;
+                let payload = cursor.read_len_prefixed_bytes()?;
+                let ext = decode.decode_extension_compact(kind, payload)?;
+                Ok(Self::Extension(ext))
+            }
+            34 => {
+                let len = cursor.read_u8()? as usize;
+                let slice = cursor.read_exact_slice(len)?;
+                let ext = decode.decode_extension_short_blob(slice)?;
+                Ok(Self::Extension(ext))
+            }
+            tag => Err(ValueBinaryError::InvalidTag(tag)),
         }
     }
 
@@ -984,6 +1109,8 @@ impl Value {
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
+
     use super::*;
 
     #[test]
@@ -1555,6 +1682,39 @@ mod tests {
 
     // Test ExtensionValue trait with a mock implementation
     #[derive(Debug, Clone)]
+    struct UnencodableExtension;
+
+    impl fmt::Display for UnencodableExtension {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "UnencodableExtension")
+        }
+    }
+
+    impl ExtensionValue for UnencodableExtension {
+        fn type_name(&self) -> &str {
+            "Unencodable"
+        }
+        fn clone_box(&self) -> Box<dyn ExtensionValue> {
+            Box::new(self.clone())
+        }
+        fn eq_ext(&self, other: &dyn ExtensionValue) -> bool {
+            other.as_any().downcast_ref::<Self>().is_some()
+        }
+        fn cmp_ext(&self, other: &dyn ExtensionValue) -> Option<Ordering> {
+            other
+                .as_any()
+                .downcast_ref::<Self>()
+                .map(|_| Ordering::Equal)
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    /// Reserved compact kind for [`MockExt`] in tests (not for production use).
+    const MOCK_EXT_COMPACT_KIND: u8 = 42;
+
+    #[derive(Debug, Clone)]
     struct MockExt(String);
 
     impl fmt::Display for MockExt {
@@ -1586,6 +1746,72 @@ mod tests {
         fn as_any(&self) -> &dyn Any {
             self
         }
+        fn binary_payload(&self) -> Result<Cow<'_, [u8]>, ValueBinaryError> {
+            Ok(Cow::Borrowed(self.0.as_bytes()))
+        }
+        fn compact_kind(&self) -> Option<u8> {
+            Some(MOCK_EXT_COMPACT_KIND)
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct MockShortBlob(Vec<u8>);
+
+    impl fmt::Display for MockShortBlob {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "MockShortBlob({} bytes)", self.0.len())
+        }
+    }
+
+    impl ExtensionValue for MockShortBlob {
+        fn type_name(&self) -> &str {
+            "MockShortBlob"
+        }
+        fn clone_box(&self) -> Box<dyn ExtensionValue> {
+            Box::new(self.clone())
+        }
+        fn eq_ext(&self, other: &dyn ExtensionValue) -> bool {
+            if let Some(o) = other.as_any().downcast_ref::<MockShortBlob>() {
+                self.0 == o.0
+            } else {
+                false
+            }
+        }
+        fn cmp_ext(&self, other: &dyn ExtensionValue) -> Option<Ordering> {
+            other
+                .as_any()
+                .downcast_ref::<MockShortBlob>()
+                .map(|o| self.0.cmp(&o.0))
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+        fn short_blob(&self) -> Option<Cow<'_, [u8]>> {
+            Some(Cow::Borrowed(self.0.as_slice()))
+        }
+    }
+
+    struct MockDecode;
+
+    impl ExtensionBinaryDecode for MockDecode {
+        fn decode_extension_compact(
+            &self,
+            kind: u8,
+            payload: &[u8],
+        ) -> Result<Box<dyn ExtensionValue>, ValueBinaryError> {
+            if kind != MOCK_EXT_COMPACT_KIND {
+                return Err(ValueBinaryError::UnknownEncodedExtension);
+            }
+            let s = str::from_utf8(payload).map_err(|_| ValueBinaryError::InvalidUtf8)?;
+            Ok(Box::new(MockExt(s.to_owned())))
+        }
+
+        fn decode_extension_short_blob(
+            &self,
+            payload: &[u8],
+        ) -> Result<Box<dyn ExtensionValue>, ValueBinaryError> {
+            Ok(Box::new(MockShortBlob(payload.to_vec())))
+        }
     }
 
     #[test]
@@ -1610,26 +1836,117 @@ mod tests {
     }
 
     #[test]
-    fn stable_value_round_trips_nested_record() {
+    fn binary_value_round_trips_nested_record() {
         let value = Value::Record(vec![
             ("uid".to_owned(), Value::Text("u1".to_owned())),
             ("weight".to_owned(), Value::Int64(5)),
             (
                 "flags".to_owned(),
-                Value::List(vec![Value::Bool(true), Value::Null, Value::Bytes(vec![1, 2])]),
+                Value::List(vec![
+                    Value::Bool(true),
+                    Value::Null,
+                    Value::Bytes(vec![1, 2]),
+                ]),
             ),
         ]);
-        let restored = Value::from_stable_bytes(&value.to_stable_bytes().expect("encode"))
-            .expect("decode");
+        let restored =
+            Value::from_binary_bytes(&value.to_binary_bytes().expect("encode")).expect("decode");
         assert_eq!(restored, value);
     }
 
     #[test]
-    fn stable_value_rejects_extension_variant() {
-        let value = Value::Extension(Box::new(MockExt("hello".into())));
+    fn binary_value_int256_fixed_len_roundtrips() {
+        let v = Value::Int256(Int256::new(ethnum::I256::new(-123)));
+        let bytes = v.to_binary_bytes().expect("encode");
+        assert_eq!(bytes.first().copied(), Some(7));
+        assert_eq!(bytes.len(), 1 + 32);
+        let back = Value::from_binary_bytes(&bytes).expect("decode");
+        assert_eq!(back, v);
+    }
+
+    #[test]
+    fn binary_value_uint256_fixed_len_roundtrips() {
+        let v = Value::Uint256(Uint256::new(ethnum::U256::new(123)));
+        let bytes = v.to_binary_bytes().expect("encode");
+        assert_eq!(bytes.first().copied(), Some(13));
+        assert_eq!(bytes.len(), 1 + 32);
+        let back = Value::from_binary_bytes(&bytes).expect("decode");
+        assert_eq!(back, v);
+    }
+
+    #[test]
+    fn binary_value_decimal_fixed_len_roundtrips() {
+        let v = Value::Decimal(Decimal::parse("123.456").expect("valid decimal"));
+        let bytes = v.to_binary_bytes().expect("encode");
+        assert_eq!(bytes.first().copied(), Some(17));
+        assert_eq!(bytes.len(), 1 + 16);
+        let back = Value::from_binary_bytes(&bytes).expect("decode");
+        assert_eq!(back, v);
+    }
+
+    #[cfg(feature = "f128")]
+    #[test]
+    fn binary_value_float128_fixed_len_roundtrips() {
+        let v = Value::Float128(f128::from_bits(0));
+        let bytes = v.to_binary_bytes().expect("encode");
+        assert_eq!(bytes.first().copied(), Some(31));
+        assert_eq!(bytes.len(), 1 + 16);
+        let back = Value::from_binary_bytes(&bytes).expect("decode");
+        assert_eq!(back, v);
+    }
+
+    #[cfg(feature = "f256")]
+    #[test]
+    fn binary_value_float256_fixed_len_roundtrips() {
+        let v = Value::Float256(f256::f256::from_le_bytes([0u8; 32]));
+        let bytes = v.to_binary_bytes().expect("encode");
+        assert_eq!(bytes.first().copied(), Some(32));
+        assert_eq!(bytes.len(), 1 + 32);
+        let back = Value::from_binary_bytes(&bytes).expect("decode");
+        assert_eq!(back, v);
+    }
+
+    #[test]
+    fn binary_value_rejects_extension_without_binary_payload() {
+        let value = Value::Extension(Box::new(UnencodableExtension));
         assert_eq!(
-            value.to_stable_bytes().expect_err("extension should fail"),
-            StableValueError::InvalidExtensionType
+            value.to_binary_bytes().expect_err("extension should fail"),
+            ValueBinaryError::InvalidExtensionType
+        );
+    }
+
+    #[test]
+    fn binary_value_extension_compact_uses_tag_33() {
+        let bytes = Value::Extension(Box::new(MockExt("hello".into())))
+            .to_binary_bytes()
+            .expect("encode");
+        assert_eq!(bytes.first().copied(), Some(33));
+    }
+
+    #[test]
+    fn binary_value_extension_short_blob_uses_tag_34() {
+        let value = Value::Extension(Box::new(MockShortBlob(vec![1, 2, 3])));
+        let bytes = value.to_binary_bytes().expect("encode");
+        assert_eq!(bytes.first().copied(), Some(34));
+        let back = Value::from_binary_bytes_with_extensions(&bytes, &MockDecode).expect("decode");
+        assert_eq!(back, value);
+    }
+
+    #[test]
+    fn binary_value_extension_round_trips_with_registry() {
+        let value = Value::Extension(Box::new(MockExt("hello".into())));
+        let bytes = value.to_binary_bytes().expect("encode");
+        let back = Value::from_binary_bytes_with_extensions(&bytes, &MockDecode).expect("decode");
+        assert_eq!(back, value);
+    }
+
+    #[test]
+    fn binary_value_from_binary_bytes_rejects_extension_without_registry() {
+        let value = Value::Extension(Box::new(MockExt("x".into())));
+        let bytes = value.to_binary_bytes().expect("encode");
+        assert_eq!(
+            Value::from_binary_bytes(&bytes).expect_err("deny extensions"),
+            ValueBinaryError::UnknownEncodedExtension
         );
     }
 }

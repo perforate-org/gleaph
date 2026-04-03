@@ -1,12 +1,15 @@
-use gleaph_graph_kernel::EdgeId;
+use gleaph_graph_kernel::{EdgeId, NodeId};
 
-use crate::stable::Memory;
-use crate::PropertyIndexNodeId;
-use crate::PropertyIndexNodeStoreMutationKind;
-use crate::{
-    RewriteFacadeWriteEvent, RewriteGraphPma, RewriteGraphStore, RewriteGraphStoreAdapter,
-    RewriteKernelOverlayGraph, RewriteOverlayWriteEvent, RewriteWriteEventProjection,
+use crate::facade::{
+    PropertyIndexFallbackReason, RewriteEdgeWriteProjection, RewriteFacadeWriteEvent,
+    RewriteGraphPma, RewriteGraphStore, RewriteGraphStoreAdapter,
+    RewriteMaintenanceQueueItemProjection, RewriteMaintenanceQueueStorageProjection,
+    RewriteRefreshedVertices,
+    RewriteWriteEventProjection,
 };
+use crate::integration::{RewriteKernelOverlayGraph, RewriteOverlayWriteEvent};
+use crate::property_index::{PropertyIndexNodeId, PropertyIndexNodeStoreMutationKind};
+use crate::stable::Memory;
 
 /// Small shared diagnostics boundary over rewrite observability surfaces.
 ///
@@ -56,11 +59,31 @@ fn format_node_store_operations(operations: &[PropertyIndexNodeStoreMutationKind
         .join("|")
 }
 
-fn format_edge_write_operation(summary: &crate::RewriteEdgeWriteProjection) -> String {
+fn format_fallback_reason(reason: PropertyIndexFallbackReason) -> &'static str {
+    match reason {
+        PropertyIndexFallbackReason::NodeUpsertLocalUnavailable => "node-upsert-local-unavailable",
+        PropertyIndexFallbackReason::NodeRemoveLocalUnavailable => "node-remove-local-unavailable",
+        PropertyIndexFallbackReason::EdgeUpsertLocalUnavailable => "edge-upsert-local-unavailable",
+        PropertyIndexFallbackReason::EdgeRemoveLocalUnavailable => "edge-remove-local-unavailable",
+    }
+}
+
+fn format_fallback_reasons(reasons: &[PropertyIndexFallbackReason]) -> String {
+    if reasons.is_empty() {
+        return "none".to_owned();
+    }
+    reasons
+        .iter()
+        .map(|reason| format_fallback_reason(*reason))
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+fn format_edge_write_operation(summary: &RewriteEdgeWriteProjection) -> String {
     format!("{:?}@{:?}", summary.operation, summary.path)
 }
 
-fn format_edge_write_operations(summaries: &[crate::RewriteEdgeWriteProjection]) -> String {
+fn format_edge_write_operations(summaries: &[RewriteEdgeWriteProjection]) -> String {
     if summaries.is_empty() {
         return "none".to_owned();
     }
@@ -107,7 +130,7 @@ fn format_usize_list(values: &[usize]) -> String {
     format!("[{joined}]")
 }
 
-fn format_refreshed_vertices(summary: &crate::RewriteRefreshedVertices) -> String {
+fn format_refreshed_vertices(summary: &RewriteRefreshedVertices) -> String {
     format!(
         "({},{}) fwd={} rev={}",
         summary.forward.len(),
@@ -162,23 +185,90 @@ pub fn format_write_event_projection(event: &RewriteWriteEventProjection) -> Str
                 format_refreshed_vertices(&summary.refreshed)
             )
         }
-        RewriteWriteEventProjection::Property(summary) => {
+        RewriteWriteEventProjection::MaintenanceCycle(summary) => {
             format!(
-                "property sections=({},{},{}) ops={} nodes=touched:{}{} alloc:{}{} freed:{}{} flushed=({},{},{}) refreshed={}",
+                "maintenance-cycle vertex={} ordinal={} window=({}, {}) priority={} recent=({:?}, {}) score=direct:{} window:{} tomb:{} window_total_base_slots:{} displacement=({}, {}) queue=({:?}->{:?}) refreshed={}",
+                NodeId::from(summary.vertex_ref),
+                summary.ordinal,
+                summary.window_start_ordinal,
+                summary.window_end_ordinal_exclusive,
+                summary.priority_score,
+                summary.last_maintenance_epoch,
+                summary.recent_maintenance_penalty,
+                summary.direct_overflow_total,
+                summary.window_overflow_total,
+                summary.reclaimable_tombstones_total,
+                summary.window_total_base_slots,
+                summary.total_displacement,
+                summary.max_displacement,
+                summary
+                    .queue_storage_before
+                    .as_ref()
+                    .map(|storage| (storage.logical_len_bytes, storage.queue_len, storage.checksum_valid)),
+                summary
+                    .queue_storage_after
+                    .as_ref()
+                    .map(|storage| (storage.logical_len_bytes, storage.queue_len, storage.checksum_valid)),
+                format_refreshed_vertices(&summary.refreshed)
+            )
+        }
+        RewriteWriteEventProjection::MaintenanceBatch(summary) => {
+            format!(
+                "maintenance-batch cycles={} queue=({}, {}) maintenance_queue_storage=({:?}->{:?}) edge_segment_reclaims_fwd={} edge_segment_reclaims_rev={}",
+                summary.cycles,
+                summary.queue_len_before,
+                summary.queue_len_after,
+                summary
+                    .queue_storage_before
+                    .as_ref()
+                    .map(|storage| (storage.logical_len_bytes, storage.queue_len, storage.checksum_valid)),
+                summary
+                    .queue_storage_after
+                    .as_ref()
+                    .map(|storage| (storage.logical_len_bytes, storage.queue_len, storage.checksum_valid)),
+                summary.swept_forward_segments,
+                summary.swept_reverse_segments
+            )
+        }
+        RewriteWriteEventProjection::MaintenanceQueue(summary) => {
+            format!(
+                "maintenance-queue-update action={:?} queue=({}, {}) bytes={} version={}",
+                summary.action,
+                summary.queue_len_before,
+                summary.queue_len_after,
+                summary.persisted_bytes,
+                summary.format_version
+            )
+        }
+        RewriteWriteEventProjection::Property(summary) => {
+            let fallback_suffix = if summary.fallback_reasons.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " fallback={}",
+                    format_fallback_reasons(&summary.fallback_reasons)
+                )
+            };
+            let touched = format_property_index_node_id_list(&summary.touched_node_ids);
+            let allocated = format_property_index_node_id_list(&summary.allocated_node_ids);
+            let freed = format_property_index_node_id_list(&summary.freed_node_ids);
+            format!(
+                "property sections=({},{},{}) ops={} nodes=touched:{} {} alloc:{} {} freed:{} {} flushed=({},{},{}) refreshed={}{}",
                 summary.sections.property_store,
                 summary.sections.logical_index,
                 summary.sections.node_store,
                 format_node_store_operations(&summary.node_store_operations),
                 summary.touched_node_ids.len(),
-                format!(" {}", format_property_index_node_id_list(&summary.touched_node_ids)),
+                touched,
                 summary.allocated_node_ids.len(),
-                format!(" {}", format_property_index_node_id_list(&summary.allocated_node_ids)),
+                allocated,
                 summary.freed_node_ids.len(),
-                format!(" {}", format_property_index_node_id_list(&summary.freed_node_ids)),
+                freed,
                 summary.flushed_sections.property_store,
                 summary.flushed_sections.logical_index,
                 summary.flushed_sections.node_store,
-                format_refreshed_vertices(&summary.refreshed)
+                format_refreshed_vertices(&summary.refreshed),
+                fallback_suffix
             )
         }
         RewriteWriteEventProjection::Edge(summary) => {
@@ -209,6 +299,42 @@ pub fn format_write_event_history(events: &[RewriteWriteEventProjection]) -> Vec
 /// Formats the last shared write-event projection as a compact diagnostics string.
 pub fn format_last_write_event(events: &[RewriteWriteEventProjection]) -> Option<String> {
     events.last().map(format_write_event_projection)
+}
+
+pub fn format_maintenance_queue_item(
+    item: &RewriteMaintenanceQueueItemProjection,
+) -> String {
+    format!(
+        "maintenance-queue vertex={} anchor={} window=({}, {}) priority={} recent=({:?}, {})",
+        NodeId::from(item.vertex_ref),
+        item.anchor_ordinal,
+        item.window_start_ordinal,
+        item.window_end_ordinal_exclusive,
+        item.priority_score,
+        item.last_maintenance_epoch,
+        item.recent_maintenance_penalty,
+    )
+}
+
+pub fn format_maintenance_queue(
+    items: &[RewriteMaintenanceQueueItemProjection],
+) -> Vec<String> {
+    items.iter().map(format_maintenance_queue_item).collect()
+}
+
+pub fn format_maintenance_queue_storage(
+    storage: &RewriteMaintenanceQueueStorageProjection,
+) -> String {
+    format!(
+        "maintenance-queue-storage len={} queue={} legacy={} version={:?} checksum=({:?}, {:?}, {:?})",
+        storage.logical_len_bytes,
+        storage.queue_len,
+        storage.legacy_format,
+        storage.format_version,
+        storage.stored_checksum,
+        storage.computed_checksum,
+        storage.checksum_valid,
+    )
 }
 
 /// Formats a shared write-history sequence as one newline-joined diagnostics report.
@@ -301,17 +427,22 @@ impl<'a, S: RewriteGraphStore, M: Memory> RewriteDiagnosticsView
 #[cfg(test)]
 mod tests {
     use super::{
-        format_last_write_event, format_write_event_history, format_write_event_projection,
-        format_write_event_report, RewriteDiagnosticsView,
+        RewriteDiagnosticsView, format_last_write_event, format_maintenance_queue,
+        format_maintenance_queue_storage,
+        format_write_event_history, format_write_event_projection, format_write_event_report,
     };
+    use crate::facade::{
+        RewriteEdgeWriteOperation, RewriteEdgeWriteProjection, RewriteEnsureCapacityProjection,
+        RewriteGraphPma, RewriteMaintenanceBatchProjection, RewriteMaintenanceCycleProjection,
+        RewriteMaintenanceQueueAction, RewriteMaintenanceQueueItemProjection,
+        RewriteMaintenanceQueueProjection, RewriteMaintenanceQueueStorageProjection,
+        RewriteNodeDeleteProjection,
+        RewritePropertyIndexTouchedSections,
+        RewritePropertyWriteProjection, RewriteRefreshedVertices, RewriteWriteEventProjection,
+    };
+    use crate::low_level::GraphMutationPath;
     use crate::property_index::PropertyIndexNodeStoreMutationKind;
     use crate::stable::VecMemory;
-    use crate::{
-        GraphMutationPath, RewriteEdgeWriteOperation, RewriteEdgeWriteProjection,
-        RewriteEnsureCapacityProjection, RewriteGraphPma, RewriteNodeDeleteProjection,
-        RewritePropertyIndexTouchedSections, RewritePropertyWriteProjection,
-        RewriteRefreshedVertices, RewriteWriteEventProjection,
-    };
 
     #[test]
     fn formatter_formats_ensure_capacity_projection() {
@@ -326,6 +457,142 @@ mod tests {
         assert_eq!(
             format_write_event_projection(&projection),
             "ensure-capacity rebalanced=true displacement=(4, 2) refreshed=(2,1) fwd=[0,1] rev=[3]"
+        );
+    }
+
+    #[test]
+    fn formatter_formats_maintenance_projections() {
+        let cycle =
+            RewriteWriteEventProjection::MaintenanceCycle(RewriteMaintenanceCycleProjection {
+                vertex_ref: gleaph_graph_kernel::NodeId::from(7u8).into(),
+                ordinal: 3,
+                window_start_ordinal: 2,
+                window_end_ordinal_exclusive: 5,
+                priority_score: 12_345,
+                last_maintenance_epoch: Some(99),
+                recent_maintenance_penalty: 40_000,
+                direct_overflow_total: 2,
+                window_overflow_total: 5,
+                reclaimable_tombstones_total: 4,
+                window_total_base_slots: 9,
+                total_displacement: 4,
+                max_displacement: 2,
+                refreshed: RewriteRefreshedVertices::new(vec![1], vec![2]),
+                queue_storage_before: Some(RewriteMaintenanceQueueStorageProjection {
+                    logical_len_bytes: 136,
+                    queue_len: 2,
+                    legacy_format: false,
+                    format_version: Some(1),
+                    stored_checksum: None,
+                    computed_checksum: None,
+                    checksum_valid: Some(true),
+                }),
+                queue_storage_after: Some(RewriteMaintenanceQueueStorageProjection {
+                    logical_len_bytes: 80,
+                    queue_len: 1,
+                    legacy_format: false,
+                    format_version: Some(1),
+                    stored_checksum: None,
+                    computed_checksum: None,
+                    checksum_valid: Some(true),
+                }),
+            });
+        let batch =
+            RewriteWriteEventProjection::MaintenanceBatch(RewriteMaintenanceBatchProjection {
+                cycles: 2,
+                queue_len_before: 5,
+                queue_len_after: 1,
+                swept_forward_segments: 1,
+                swept_reverse_segments: 3,
+                queue_storage_before: Some(RewriteMaintenanceQueueStorageProjection {
+                    logical_len_bytes: 304,
+                    queue_len: 5,
+                    legacy_format: false,
+                    format_version: Some(1),
+                    stored_checksum: None,
+                    computed_checksum: None,
+                    checksum_valid: Some(true),
+                }),
+                queue_storage_after: Some(RewriteMaintenanceQueueStorageProjection {
+                    logical_len_bytes: 80,
+                    queue_len: 1,
+                    legacy_format: false,
+                    format_version: Some(1),
+                    stored_checksum: None,
+                    computed_checksum: None,
+                    checksum_valid: Some(true),
+                }),
+            });
+        let queue_update =
+            RewriteWriteEventProjection::MaintenanceQueue(RewriteMaintenanceQueueProjection {
+                action: RewriteMaintenanceQueueAction::Refresh,
+                queue_len_before: 4,
+                queue_len_after: 2,
+                persisted_bytes: 128,
+                format_version: 1,
+            });
+
+        assert_eq!(
+            format_write_event_projection(&cycle),
+            "maintenance-cycle vertex=7 ordinal=3 window=(2, 5) priority=12345 recent=(Some(99), 40000) score=direct:2 window:5 tomb:4 window_total_base_slots:9 displacement=(4, 2) queue=(Some((136, 2, Some(true)))->Some((80, 1, Some(true)))) refreshed=(1,1) fwd=[1] rev=[2]"
+        );
+        assert_eq!(
+            format_write_event_projection(&batch),
+            "maintenance-batch cycles=2 queue=(5, 1) maintenance_queue_storage=(Some((304, 5, Some(true)))->Some((80, 1, Some(true)))) edge_segment_reclaims_fwd=1 edge_segment_reclaims_rev=3"
+        );
+        assert_eq!(
+            format_write_event_projection(&queue_update),
+            "maintenance-queue-update action=Refresh queue=(4, 2) bytes=128 version=1"
+        );
+    }
+
+    #[test]
+    fn formatter_formats_maintenance_queue() {
+        let queue = vec![
+            RewriteMaintenanceQueueItemProjection {
+                vertex_ref: gleaph_graph_kernel::NodeId::from(7u8).into(),
+                anchor_ordinal: 3,
+                window_start_ordinal: 2,
+                window_end_ordinal_exclusive: 5,
+                priority_score: 12_345,
+                last_maintenance_epoch: Some(99),
+                recent_maintenance_penalty: 40_000,
+            },
+            RewriteMaintenanceQueueItemProjection {
+                vertex_ref: gleaph_graph_kernel::NodeId::from(8u8).into(),
+                anchor_ordinal: 5,
+                window_start_ordinal: 5,
+                window_end_ordinal_exclusive: 6,
+                priority_score: 99,
+                last_maintenance_epoch: None,
+                recent_maintenance_penalty: 0,
+            },
+        ];
+
+        assert_eq!(
+            format_maintenance_queue(&queue),
+            vec![
+                "maintenance-queue vertex=7 anchor=3 window=(2, 5) priority=12345 recent=(Some(99), 40000)".to_owned(),
+                "maintenance-queue vertex=8 anchor=5 window=(5, 6) priority=99 recent=(None, 0)".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn formatter_formats_maintenance_queue_storage() {
+        let storage = RewriteMaintenanceQueueStorageProjection {
+            logical_len_bytes: 136,
+            queue_len: 2,
+            legacy_format: false,
+            format_version: Some(1),
+            stored_checksum: Some(123),
+            computed_checksum: Some(123),
+            checksum_valid: Some(true),
+        };
+
+        assert_eq!(
+            format_maintenance_queue_storage(&storage),
+            "maintenance-queue-storage len=136 queue=2 legacy=false version=Some(1) checksum=(Some(123), Some(123), Some(true))"
         );
     }
 
@@ -354,6 +621,32 @@ mod tests {
     }
 
     #[test]
+    fn formatter_formats_property_write_split_only() {
+        let projection = RewriteWriteEventProjection::Property(RewritePropertyWriteProjection {
+            sections: RewritePropertyIndexTouchedSections {
+                property_store: false,
+                logical_index: true,
+                node_store: true,
+            },
+            node_store_operations: vec![PropertyIndexNodeStoreMutationKind::Split],
+            fallback_reasons: Vec::new(),
+            touched_node_ids: Vec::new(),
+            allocated_node_ids: Vec::new(),
+            freed_node_ids: Vec::new(),
+            flushed_sections: RewritePropertyIndexTouchedSections {
+                property_store: false,
+                logical_index: true,
+                node_store: true,
+            },
+            refreshed: RewriteRefreshedVertices::new(Vec::new(), Vec::new()),
+        });
+        assert_eq!(
+            format_write_event_projection(&projection),
+            "property sections=(false,true,true) ops=split nodes=touched:0 [] alloc:0 [] freed:0 [] flushed=(false,true,true) refreshed=(0,0) fwd=[] rev=[]"
+        );
+    }
+
+    #[test]
     fn formatter_formats_property_write_three_leaf_repack_only() {
         let projection = RewriteWriteEventProjection::Property(RewritePropertyWriteProjection {
             sections: RewritePropertyIndexTouchedSections {
@@ -362,6 +655,7 @@ mod tests {
                 node_store: true,
             },
             node_store_operations: vec![PropertyIndexNodeStoreMutationKind::ThreeLeafRepack],
+            fallback_reasons: Vec::new(),
             touched_node_ids: Vec::new(),
             allocated_node_ids: Vec::new(),
             freed_node_ids: Vec::new(),
@@ -392,6 +686,7 @@ mod tests {
                     PropertyIndexNodeStoreMutationKind::ThreeLeafRepack,
                     PropertyIndexNodeStoreMutationKind::Rebuild,
                 ],
+                fallback_reasons: Vec::new(),
                 touched_node_ids: vec![crate::PropertyIndexNodeId(7)],
                 allocated_node_ids: vec![crate::PropertyIndexNodeId(11)],
                 freed_node_ids: vec![crate::PropertyIndexNodeId(5)],

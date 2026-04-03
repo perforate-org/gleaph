@@ -1174,8 +1174,88 @@ Until a better name is chosen in code, the spec assumes:
 
 ## Current Bridge
 
-The crate currently re-exports `gleaph-graph-pma-legacy` so the workspace keeps
-building while the rewrite happens.
+The legacy compatibility bridge has been removed. The `graph-pma` crate now
+builds against the rewrite implementation only.
 
-That bridge should be removed once the new low-level implementation reaches the
-minimum Phase 1 target above.
+## Incremental surface and property-index persistence
+
+This section records the **contracts** for narrowing foreground flush work from
+full-region rewrites. Implementations may apply these optimizations only when
+all preconditions hold; otherwise they must fall back to whole-region encoding.
+
+### Vertex table (forward / reverse)
+
+- Each surface keeps a **suffix start ordinal** `s` when every in-memory row with
+  index `< s` is already bit-identical to the same prefix in stable memory for
+  that vertex table region.
+- A flush encodes `vertices[s..]` and, for **extent-backed** regions with a
+  matching stable logical length (`s * SERIALIZED_VERTEX_ENTRY_LEN`), may issue a
+  **tail write** at byte offset `s * SERIALIZED_VERTEX_ENTRY_LEN` instead of
+  rewriting the full extent payload in one write.
+- **Bucket-chain** vertex tables cannot patch a middle offset cheaply; flushes
+  fall back to the existing whole-region write path after a full encode.
+- Any mutation that can change a row before `s` **widens** the dirty suffix
+  (lowers `s`) or forces a full rewrite (drops the suffix hint).
+
+### Label sidecar
+
+- Layout is `header || index_entries[] || label_ranges[]`. Pure **tail append**
+  of `VertexLabelIndexEntry` rows (no change to `label_ranges.len()` and no
+  in-place edits earlier in the sidecar) allows a flush to rewrite the header,
+  append new index-entry bytes starting at the old index count, then write the
+  full ranges blob at its new offset after expanded index entries.
+- If the label region was marked **fully** dirty (no append hint), or if stable
+  header counts do not match the append-only preconditions, flushes fall back to
+  full sidecar encoding.
+
+### Property index (PIDX) paged node stores
+
+- When the property-index region’s **total logical length is unchanged** after
+  a compact re-encode, an **extent-backed** region may **diff** old and new
+  bytes and issue smaller `memory.write` spans for changed intervals only. This
+  avoids relying on explicit per-page dirty lists while still shrinking stable
+  writes when most pages are identical.
+- When the logical length **grows** but the new image is a **byte extension** of
+  the previous payload (`new[..old_len] == old`), implementations may write
+  **only the tail** starting at `old_len` instead of rewriting the full extent
+  capacity.
+- When the logical length **shrinks**, implementations must clear stable bytes
+  from the new logical end through the old logical end (zero-fill or equivalent)
+  so no stale indexed data remains after truncation.
+- In-memory [`PropertyIndexNodeStore`](../crates/graph-pma/src/property_index/node_store.rs)
+  tracks `pidx_side_must_flush`: compact PIDX flushes **reuse the on-disk bytes**
+  for a side that was not mutated since the last flush, avoiding a full
+  `encode_paged_area` for that side. **Full rewrite fallback** is required when
+  the on-disk header or section lengths are missing, inconsistent, or do not
+  match the read-back slice for a “clean” side.
+- Structural changes that alter paged-area length (new primary slots, different
+  overflow footprint, allocator header changes) still rely on encoding the
+  affected store and may use tail or diff paths only when the **combined region
+  image** still satisfies the prefix/tail rules above.
+
+### Node and edge property store regions (extent)
+
+- For **extent-backed** `NodePropertyStore` / `EdgePropertyStore`, flushes write
+  only the serialized append-log bytes required by `logical_len_bytes`, not the
+  entire extent allocation.
+- When logical length decreases, clear the stable range `(new_logical,
+  old_logical)` so clients scanning by `logical_len` never observe stale record
+  bytes beyond the new end.
+
+### Failure and recovery
+
+- Incremental paths rely on **prefix stability**: if stable memory does not match
+  the in-memory prefix assumed by the optimizer (e.g. torn write, manual
+  corruption, or a crash between metadata update and payload), the process must
+  **detect mismatch** (length/header checks) and fall back to a full encode or
+  treat the instance as damaged according to higher-layer policy.
+- Higher layers that split **logical graph bootstrap** into ordered steps (for
+  example properties before adjacency) must provide **explicit rollback** on
+  intermediate failure so kernel-visible state does not leak a committed
+  `NodeId` without its graph vertex slots.
+
+### Observability
+
+- Bench builds may set `GLEAPH_BENCH_PROFILE=1` to compare flush phases before
+  and after incremental persistence work; instruction counts on repeated
+  `INSERT` workloads are the primary regression signal.

@@ -10,7 +10,7 @@ use gleaph_gql::ast::*;
 use gleaph_gql::types::EdgeDirection;
 
 use crate::anchor::extract_simple_label;
-use crate::stats::GraphStats;
+use crate::stats::{self, GraphStats};
 
 /// A hop in a path pattern: edge + destination node.
 #[derive(Clone, Debug)]
@@ -111,7 +111,7 @@ fn hop_score(hop: &PathHop, stats: Option<&dyn GraphStats>) -> f64 {
     let dst_label = extract_simple_label(&hop.dst_node.label);
     let label_card = dst_label
         .as_ref()
-        .and_then(|l| stats.and_then(|s| s.label_cardinality(l)))
+        .and_then(|l| stats.and_then(|s| stats::label_cardinality_with_id(s, l)))
         .unwrap_or(u64::MAX / 4) as f64;
 
     // Variable-length path penalty.
@@ -174,10 +174,7 @@ pub fn detect_cyclic_patterns(
         let earlier_vars: Vec<&str> = node_vars[..=i].iter().map(|s| s.as_str()).collect();
         if earlier_vars.contains(&hop.dst_var.as_str()) {
             // Found a cycle. Collect the variables in the cycle.
-            let cycle_start_idx = earlier_vars
-                .iter()
-                .position(|v| *v == hop.dst_var)
-                .unwrap();
+            let cycle_start_idx = earlier_vars.iter().position(|v| *v == hop.dst_var).unwrap();
             let cycle_vars: Vec<crate::plan::Str> = node_vars[cycle_start_idx..=i + 1]
                 .iter()
                 .map(|s| crate::plan::Str::from(s.as_str()))

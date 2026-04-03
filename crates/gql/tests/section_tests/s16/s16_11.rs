@@ -16,12 +16,12 @@ fn quantifier_from(input: &str) -> PathQuantifier {
     match &b.first {
         Statement::Query(cq) => {
             for part in &cq.left.parts {
-                if let SimpleQueryStatement::Match(m) = part {
-                    if let PathPatternExpr::Term(t) = &m.pattern.paths[0].expr {
-                        for factor in &t.factors {
-                            if factor.quantifier.is_some() {
-                                return factor.quantifier.clone().unwrap();
-                            }
+                if let SimpleQueryStatement::Match(m) = part
+                    && let PathPatternExpr::Term(t) = &m.pattern.paths[0].expr
+                {
+                    for factor in &t.factors {
+                        if factor.quantifier.is_some() {
+                            return factor.quantifier.clone().unwrap();
                         }
                     }
                 }

@@ -6,10 +6,10 @@ use gleaph_gql::type_check::{
 };
 use gleaph_gql_planner::plan::*;
 use gleaph_gql_planner::semantic;
-use gleaph_gql_planner::stats::TableStats;
+use gleaph_gql_planner::stats::{GraphStats, TableStats};
 use gleaph_gql_planner::{
-    build_block_plan, build_block_plan_output, build_composite_plan, build_plan,
-    build_plan_output, build_statement_plan, explain_plan,
+    build_block_plan, build_block_plan_output, build_composite_plan, build_plan, build_plan_output,
+    build_plan_output_for_execute, build_statement_plan, explain_plan,
 };
 
 /// Helper: parse a GQL query string and extract the first linear query.
@@ -21,7 +21,10 @@ fn parse_query(input: &str) -> LinearQueryStatement {
     let block = tx.body.expect("expected statement block");
     match &block.first {
         Statement::Query(composite) => composite.left.clone(),
-        other => panic!("expected Query statement, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected Query statement, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -33,6 +36,11 @@ fn plan_query(input: &str) -> PhysicalPlan {
 
 /// Helper: build a plan with stats.
 fn plan_query_with_stats(input: &str, stats: &TableStats) -> PhysicalPlan {
+    let query = parse_query(input);
+    build_plan(&query, Some(stats)).expect("plan should build")
+}
+
+fn plan_query_with_dyn_stats(input: &str, stats: &dyn GraphStats) -> PhysicalPlan {
     let query = parse_query(input);
     build_plan(&query, Some(stats)).expect("plan should build")
 }
@@ -68,11 +76,16 @@ fn test_simple_match_return() {
 
     // Should have NodeScan + Project.
     assert!(
-        plan.ops.iter().any(|op| matches!(op, PlanOp::NodeScan { label: Some(l), .. } if &**l == "User")),
-        "expected NodeScan with label User, got: {:?}", plan.ops
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::NodeScan { label: Some(l), .. } if &**l == "User")),
+        "expected NodeScan with label User, got: {:?}",
+        plan.ops
     );
     assert!(
-        plan.ops.iter().any(|op| matches!(op, PlanOp::Project { .. })),
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::Project { .. })),
         "expected Project op"
     );
 }
@@ -83,15 +96,22 @@ fn test_match_with_edge() {
 
     // Should have NodeScan + Expand + Project.
     assert!(
-        plan.ops.iter().any(|op| matches!(op, PlanOp::NodeScan { .. })),
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::NodeScan { .. })),
         "expected NodeScan"
     );
     assert!(
-        plan.ops.iter().any(|op| matches!(op, PlanOp::Expand { .. })),
-        "expected Expand op, got: {:?}", plan.ops
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::Expand { .. })),
+        "expected Expand op, got: {:?}",
+        plan.ops
     );
     assert!(
-        plan.ops.iter().any(|op| matches!(op, PlanOp::Project { .. })),
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::Project { .. })),
         "expected Project op"
     );
 }
@@ -101,10 +121,17 @@ fn test_match_with_where() {
     let plan = plan_query("MATCH (n:User) WHERE n.age > 18 RETURN n.name");
 
     // Should have NodeScan + PropertyFilter + Project.
-    assert!(plan.ops.iter().any(|op| matches!(op, PlanOp::NodeScan { .. })));
     assert!(
-        plan.ops.iter().any(|op| matches!(op, PlanOp::PropertyFilter { .. })),
-        "expected PropertyFilter, got: {:?}", plan.ops
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::NodeScan { .. }))
+    );
+    assert!(
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::PropertyFilter { .. })),
+        "expected PropertyFilter, got: {:?}",
+        plan.ops
     );
 }
 
@@ -135,7 +162,8 @@ fn test_anchor_equality_no_stats() {
         assert_eq!(&*anchor.variable, "n");
         assert!(
             matches!(&anchor.source, AnchorSource::PropertyEquality { property } if &**property == "uid"),
-            "expected PropertyEquality anchor, got: {:?}", anchor.source
+            "expected PropertyEquality anchor, got: {:?}",
+            anchor.source
         );
     } else {
         panic!("expected anchor to be set");
@@ -149,10 +177,7 @@ fn test_anchor_label_cardinality_with_stats() {
     stats.label_cardinality.insert("Admin".to_string(), 10);
 
     // With two nodes, should pick Admin (lower cardinality).
-    let plan = plan_query_with_stats(
-        "MATCH (u:User)-[:MANAGES]->(a:Admin) RETURN u, a",
-        &stats,
-    );
+    let plan = plan_query_with_stats("MATCH (u:User)-[:MANAGES]->(a:Admin) RETURN u, a", &stats);
 
     if let Some(anchor) = &plan.annotations.optimizer.anchor {
         // Anchor should be chosen for the first MATCH pattern.
@@ -161,7 +186,8 @@ fn test_anchor_label_cardinality_with_stats() {
         assert!(
             matches!(&anchor.source, AnchorSource::LabelCardinality { label } if &**label == "Admin")
                 || matches!(&anchor.source, AnchorSource::FullScan),
-            "anchor source: {:?}", anchor.source
+            "anchor source: {:?}",
+            anchor.source
         );
     }
 }
@@ -175,7 +201,10 @@ fn test_explain_simple() {
     let plan = plan_query("MATCH (n:User) RETURN n.name");
     let output = explain_plan(&plan);
 
-    assert!(output.contains("Plan:"), "explain should contain Plan header");
+    assert!(
+        output.contains("Plan:"),
+        "explain should contain Plan header"
+    );
     assert!(
         output.contains("NodeScan"),
         "explain should mention NodeScan: {}",
@@ -217,15 +246,10 @@ fn test_cost_is_positive() {
 fn test_index_scan_cheaper_than_full_scan() {
     let mut stats = TableStats::default();
     stats.label_cardinality.insert("User".to_string(), 10000);
-    stats
-        .indexed_vertex_properties
-        .insert("uid".to_string());
+    stats.indexed_vertex_properties.insert("uid".to_string());
 
     let full_scan_plan = plan_query_with_stats("MATCH (n:User) RETURN n", &stats);
-    let index_plan = plan_query_with_stats(
-        "MATCH (n:User) WHERE n.uid = 'alice' RETURN n",
-        &stats,
-    );
+    let index_plan = plan_query_with_stats("MATCH (n:User) WHERE n.uid = 'alice' RETURN n", &stats);
 
     let full_cost = full_scan_plan.annotations.optimizer.estimated_cost.unwrap();
     let index_cost = index_plan.annotations.optimizer.estimated_cost.unwrap();
@@ -247,8 +271,11 @@ fn test_filter_statement() {
     let plan = plan_query("MATCH (n:User) FILTER n.active = TRUE RETURN n");
 
     assert!(
-        plan.ops.iter().any(|op| matches!(op, PlanOp::Filter { .. })),
-        "expected Filter op, got: {:?}", plan.ops
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::Filter { .. })),
+        "expected Filter op, got: {:?}",
+        plan.ops
     );
 }
 
@@ -258,7 +285,8 @@ fn test_let_statement() {
 
     assert!(
         plan.ops.iter().any(|op| matches!(op, PlanOp::Let { .. })),
-        "expected Let op, got: {:?}", plan.ops
+        "expected Let op, got: {:?}",
+        plan.ops
     );
 }
 
@@ -272,8 +300,14 @@ fn test_limit_pushdown_simple() {
 
     // Without ORDER BY, LIMIT should be pushed before Project.
     // Check that Limit comes before (or at) Project in the ops.
-    let limit_pos = plan.ops.iter().position(|op| matches!(op, PlanOp::Limit { .. }));
-    let project_pos = plan.ops.iter().position(|op| matches!(op, PlanOp::Project { .. }));
+    let limit_pos = plan
+        .ops
+        .iter()
+        .position(|op| matches!(op, PlanOp::Limit { .. }));
+    let project_pos = plan
+        .ops
+        .iter()
+        .position(|op| matches!(op, PlanOp::Project { .. }));
 
     if let (Some(lp), Some(pp)) = (limit_pos, project_pos) {
         assert!(
@@ -327,7 +361,9 @@ fn test_multi_hop_edge_dst_resolved() {
         .ops
         .iter()
         .filter_map(|op| match op {
-            PlanOp::Expand { src, dst, label, .. } => Some((src.clone(), dst.clone(), label.clone())),
+            PlanOp::Expand {
+                src, dst, label, ..
+            } => Some((src.clone(), dst.clone(), label.clone())),
             _ => None,
         })
         .collect();
@@ -341,23 +377,168 @@ fn test_multi_hop_edge_dst_resolved() {
     assert_eq!(expands[1].2.as_deref(), Some("WORKS_AT"));
 }
 
+#[test]
+fn test_indexed_edge_equality_inline_property_with_stats() {
+    let mut stats = TableStats::default();
+    stats.indexed_edge_properties.insert("weight".to_owned());
+
+    let plan = plan_query_with_stats(
+        "MATCH (a:Person)-[e:REL {weight: 5}]->(b:Person) RETURN a, b",
+        &stats,
+    );
+
+    let idx = plan.ops.iter().find_map(|op| match op {
+        PlanOp::Expand {
+            indexed_edge_equality,
+            ..
+        }
+        | PlanOp::ExpandFilter {
+            indexed_edge_equality,
+            ..
+        } => indexed_edge_equality.as_ref(),
+        _ => None,
+    });
+    let Some((prop, sv)) = idx else {
+        panic!(
+            "expected indexed edge equality on Expand, got ops={:?}",
+            plan.ops
+        );
+    };
+    assert_eq!(&**prop, "weight");
+    match sv {
+        ScanValue::Literal(v) => assert!(matches!(v, gleaph_gql::Value::Int64(5))),
+        other => panic!("expected Literal(Int64(5)), got {:?}", other),
+    }
+}
+
+#[test]
+fn test_indexed_edge_equality_disabled_without_stats_entry() {
+    let stats = TableStats::default();
+    let plan = plan_query_with_stats(
+        "MATCH (a:Person)-[e:REL {weight: 5}]->(b:Person) RETURN a, b",
+        &stats,
+    );
+    for op in &plan.ops {
+        if let PlanOp::Expand {
+            indexed_edge_equality,
+            ..
+        }
+        | PlanOp::ExpandFilter {
+            indexed_edge_equality,
+            ..
+        } = op
+        {
+            assert!(
+                indexed_edge_equality.is_none(),
+                "edge property should not be indexed without stats"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_indexed_edge_equality_top_level_where_strips_conjunct() {
+    let mut stats = TableStats::default();
+    stats.indexed_edge_properties.insert("weight".to_owned());
+    let plan = plan_query_with_stats(
+        "MATCH (a:Person)-[e:REL]->(b:Person) WHERE e.weight = 5 RETURN a, b",
+        &stats,
+    );
+
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::Expand {
+                indexed_edge_equality: Some(_),
+                ..
+            } | PlanOp::ExpandFilter {
+                indexed_edge_equality: Some(_),
+                ..
+            }
+        )),
+        "expected Expand indexed_edge_equality, ops={:?}",
+        plan.ops
+    );
+
+    let tail_pred_count: usize = plan
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            PlanOp::PropertyFilter { predicates, .. } => Some(predicates.len()),
+            _ => None,
+        })
+        .sum();
+    assert_eq!(
+        tail_pred_count, 0,
+        "WHERE e.weight = 5 should be stripped after index fusion"
+    );
+}
+
+#[test]
+fn test_leading_edge_index_scan_unlabeled_start_node() {
+    let mut stats = TableStats::default();
+    stats.indexed_edge_properties.insert("weight".to_owned());
+
+    let plan = plan_query_with_stats("MATCH ()-[e:REL {weight: 7}]->(b:User) RETURN e, b", &stats);
+
+    assert!(
+        matches!(
+            plan.ops.first(),
+            Some(PlanOp::EdgeIndexScan {
+                property,
+                value,
+                ..
+            }) if &**property == "weight"
+                && matches!(value, ScanValue::Literal(gleaph_gql::Value::Int64(7)))
+        ),
+        "expected leading EdgeIndexScan(weight=7), ops={:?}",
+        plan.ops
+    );
+    assert!(
+        matches!(
+            plan.ops.get(1),
+            Some(PlanOp::EdgeBindEndpoints {
+                edge,
+                near,
+                far,
+                label,
+                ..
+            }) if &**edge == "e"
+                && !near.starts_with("__pending_")
+                && &**far == "b"
+                && label.as_deref() == Some("REL")
+        ),
+        "expected EdgeBindEndpoints after EdgeIndexScan, ops={:?}",
+        plan.ops
+    );
+    assert!(
+        !plan
+            .ops
+            .iter()
+            .take(2)
+            .any(|op| matches!(op, PlanOp::NodeScan { .. })),
+        "first two ops should not be NodeScan when leading edge index applies"
+    );
+}
+
 // ════════════════════════════════════════════════════════════════════════════════
 // Set operations
 // ════════════════════════════════════════════════════════════════════════════════
 
 #[test]
 fn test_union_plan() {
-    let program = parser::parse(
-        "MATCH (n:User) RETURN n.name UNION ALL MATCH (m:Admin) RETURN m.name",
-    )
-    .unwrap();
+    let program =
+        parser::parse("MATCH (n:User) RETURN n.name UNION ALL MATCH (m:Admin) RETURN m.name")
+            .unwrap();
     let tx = program.transaction_activity.unwrap();
     let block = tx.body.unwrap();
     if let Statement::Query(composite) = &block.first {
         let plan = build_composite_plan(composite, None).expect("plan should build");
 
         assert!(
-            plan.ops.iter().any(|op| matches!(op, PlanOp::SetOperation { .. })),
+            plan.ops
+                .iter()
+                .any(|op| matches!(op, PlanOp::SetOperation { .. })),
             "expected SetOperation op, got: {:?}",
             plan.ops
         );
@@ -416,7 +597,9 @@ fn test_explain_edge_expansion() {
 fn test_return_star() {
     let plan = plan_query("MATCH (n:User) RETURN *");
     assert!(
-        plan.ops.iter().any(|op| matches!(op, PlanOp::Project { columns, .. } if columns.is_empty())),
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::Project { columns, .. } if columns.is_empty())),
         "RETURN * should produce Project with empty columns"
     );
 }
@@ -425,7 +608,9 @@ fn test_return_star() {
 fn test_return_distinct() {
     let plan = plan_query("MATCH (n:User) RETURN DISTINCT n.name");
     assert!(
-        plan.ops.iter().any(|op| matches!(op, PlanOp::Project { distinct: true, .. })),
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::Project { distinct: true, .. })),
         "RETURN DISTINCT should produce Project with distinct=true"
     );
 }
@@ -433,7 +618,10 @@ fn test_return_distinct() {
 #[test]
 fn test_offset() {
     let plan = plan_query("MATCH (n:User) RETURN n LIMIT 10 OFFSET 5");
-    let limit_op = plan.ops.iter().find(|op| matches!(op, PlanOp::Limit { .. }));
+    let limit_op = plan
+        .ops
+        .iter()
+        .find(|op| matches!(op, PlanOp::Limit { .. }));
     assert!(limit_op.is_some(), "expected Limit op");
     if let Some(PlanOp::Limit { count, offset }) = limit_op {
         assert!(count.is_some(), "expected count in Limit");
@@ -477,9 +665,9 @@ fn test_semantic_equality_predicate() {
         .constraints
         .iter()
         .filter_map(|c| match c {
-            semantic::SemanticConstraint::WhereEqualityPredicate {
-                var, property, ..
-            } => Some(format!("{}.{}", var, property)),
+            semantic::SemanticConstraint::WhereEqualityPredicate { var, property, .. } => {
+                Some(format!("{}.{}", var, property))
+            }
             _ => None,
         })
         .collect();
@@ -548,10 +736,7 @@ fn test_semantic_annotations_in_plan() {
         "plan should have semantic property accesses"
     );
     assert!(
-        plan.annotations
-            .semantic
-            .where_property_accesses
-            .is_some(),
+        plan.annotations.semantic.where_property_accesses.is_some(),
         "plan should have WHERE property accesses"
     );
 }
@@ -564,9 +749,7 @@ fn test_semantic_annotations_in_plan() {
 fn test_conditional_index_scan() {
     let mut stats = TableStats::default();
     stats.label_cardinality.insert("User".to_string(), 10000);
-    stats
-        .indexed_vertex_properties
-        .insert("uid".to_string());
+    stats.indexed_vertex_properties.insert("uid".to_string());
 
     let plan = plan_query_with_stats(
         "MATCH (n:User) WHERE $uid IS NULL OR n.uid = $uid RETURN n",
@@ -639,17 +822,14 @@ fn test_filter_pushdown_after_scan() {
 fn test_inline_property_index_scan_with_stats() {
     let mut stats = TableStats::default();
     stats.label_cardinality.insert("User".to_string(), 10000);
-    stats
-        .indexed_vertex_properties
-        .insert("uid".to_string());
+    stats.indexed_vertex_properties.insert("uid".to_string());
 
-    let plan = plan_query_with_stats(
-        "MATCH (n:User {uid: 'alice'}) RETURN n",
-        &stats,
-    );
+    let plan = plan_query_with_stats("MATCH (n:User {uid: 'alice'}) RETURN n", &stats);
 
     assert!(
-        plan.ops.iter().any(|op| matches!(op, PlanOp::IndexScan { property, .. } if &**property == "uid")),
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::IndexScan { property, .. } if &**property == "uid")),
         "expected IndexScan on uid from inline property, got: {:?}",
         plan.ops
     );
@@ -679,17 +859,14 @@ fn test_inline_property_anchor_without_stats() {
 fn test_inline_where_index_scan() {
     let mut stats = TableStats::default();
     stats.label_cardinality.insert("User".to_string(), 10000);
-    stats
-        .indexed_vertex_properties
-        .insert("uid".to_string());
+    stats.indexed_vertex_properties.insert("uid".to_string());
 
-    let plan = plan_query_with_stats(
-        "MATCH (n:User WHERE n.uid = 'alice') RETURN n",
-        &stats,
-    );
+    let plan = plan_query_with_stats("MATCH (n:User WHERE n.uid = 'alice') RETURN n", &stats);
 
     assert!(
-        plan.ops.iter().any(|op| matches!(op, PlanOp::IndexScan { property, .. } if &**property == "uid")),
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::IndexScan { property, .. } if &**property == "uid")),
         "expected IndexScan on uid from inline WHERE, got: {:?}",
         plan.ops
     );
@@ -701,9 +878,7 @@ fn test_inline_where_index_scan() {
 
 #[test]
 fn test_optional_match() {
-    let plan = plan_query(
-        "MATCH (n:User) OPTIONAL MATCH (n)-[:FRIEND]->(m:User) RETURN n, m",
-    );
+    let plan = plan_query("MATCH (n:User) OPTIONAL MATCH (n)-[:FRIEND]->(m:User) RETURN n, m");
 
     assert!(
         plan.ops
@@ -716,9 +891,7 @@ fn test_optional_match() {
 
 #[test]
 fn test_optional_match_explain() {
-    let plan = plan_query(
-        "MATCH (n:User) OPTIONAL MATCH (n)-[:FRIEND]->(m:User) RETURN n, m",
-    );
+    let plan = plan_query("MATCH (n:User) OPTIONAL MATCH (n)-[:FRIEND]->(m:User) RETURN n, m");
     let output = explain_plan(&plan);
 
     assert!(
@@ -736,14 +909,9 @@ fn test_optional_match_explain() {
 fn test_explain_indexable_properties() {
     let mut stats = TableStats::default();
     stats.label_cardinality.insert("User".to_string(), 10000);
-    stats
-        .indexed_vertex_properties
-        .insert("uid".to_string());
+    stats.indexed_vertex_properties.insert("uid".to_string());
 
-    let plan = plan_query_with_stats(
-        "MATCH (n:User) WHERE n.uid = 'alice' RETURN n",
-        &stats,
-    );
+    let plan = plan_query_with_stats("MATCH (n:User) WHERE n.uid = 'alice' RETURN n", &stats);
     let output = explain_plan(&plan);
 
     assert!(
@@ -771,13 +939,13 @@ fn test_explain_inline_anchor() {
 
 #[test]
 fn test_ev_fusion_basic() {
-    let plan = plan_query(
-        "MATCH (a:Person)-[r:KNOWS]->(b:Person) WHERE b.age > 18 RETURN a, b",
-    );
+    let plan = plan_query("MATCH (a:Person)-[r:KNOWS]->(b:Person) WHERE b.age > 18 RETURN a, b");
 
     // The WHERE predicate on `b` should be fused with Expand → ExpandFilter.
     assert!(
-        plan.ops.iter().any(|op| matches!(op, PlanOp::ExpandFilter { .. })),
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::ExpandFilter { .. })),
         "expected ExpandFilter from EVFusion, got: {:?}",
         plan.ops
     );
@@ -789,7 +957,10 @@ fn test_ev_fusion_multi_predicate() {
         "MATCH (a:Person)-[r:KNOWS]->(b:Person) WHERE b.age > 18 AND b.active = TRUE RETURN a, b",
     );
 
-    let ef = plan.ops.iter().find(|op| matches!(op, PlanOp::ExpandFilter { .. }));
+    let ef = plan
+        .ops
+        .iter()
+        .find(|op| matches!(op, PlanOp::ExpandFilter { .. }));
     assert!(ef.is_some(), "expected ExpandFilter, got: {:?}", plan.ops);
     if let Some(PlanOp::ExpandFilter { dst_filter, .. }) = ef {
         assert!(
@@ -802,9 +973,7 @@ fn test_ev_fusion_multi_predicate() {
 
 #[test]
 fn test_ev_fusion_skipped_src_ref() {
-    let plan = plan_query(
-        "MATCH (a:Person)-[r:KNOWS]->(b:Person) WHERE a.age > 18 RETURN a, b",
-    );
+    let plan = plan_query("MATCH (a:Person)-[r:KNOWS]->(b:Person) WHERE a.age > 18 RETURN a, b");
 
     // WHERE on `a` (src) should NOT be fused into ExpandFilter.
     // It should remain a separate PropertyFilter.
@@ -827,12 +996,13 @@ fn test_ev_fusion_skipped_src_ref() {
 
 #[test]
 fn test_ev_fusion_annotation() {
-    let plan = plan_query(
-        "MATCH (a:Person)-[r:KNOWS]->(b:Person) WHERE b.age > 18 RETURN a, b",
-    );
+    let plan = plan_query("MATCH (a:Person)-[r:KNOWS]->(b:Person) WHERE b.age > 18 RETURN a, b");
     assert!(
         plan.annotations.optimizer.ev_fusion_applied
-            || plan.ops.iter().any(|op| matches!(op, PlanOp::ExpandFilter { .. })),
+            || plan
+                .ops
+                .iter()
+                .any(|op| matches!(op, PlanOp::ExpandFilter { .. })),
         "expected EVFusion to be applied"
     );
 }
@@ -843,13 +1013,13 @@ fn test_ev_fusion_annotation() {
 
 #[test]
 fn test_filter_into_pattern_inline_property() {
-    let plan = plan_query(
-        "MATCH (a:Person)-[r:KNOWS]->(b:Person {active: TRUE}) RETURN a, b",
-    );
+    let plan = plan_query("MATCH (a:Person)-[r:KNOWS]->(b:Person {active: TRUE}) RETURN a, b");
 
     // The inline property {active: TRUE} on dst node `b` should be fused into ExpandFilter.
     assert!(
-        plan.ops.iter().any(|op| matches!(op, PlanOp::ExpandFilter { .. })),
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::ExpandFilter { .. })),
         "expected ExpandFilter from FilterIntoPattern, got: {:?}",
         plan.ops
     );
@@ -857,12 +1027,12 @@ fn test_filter_into_pattern_inline_property() {
 
 #[test]
 fn test_filter_into_pattern_inline_where() {
-    let plan = plan_query(
-        "MATCH (a:Person)-[r:KNOWS]->(b:Person WHERE b.score > 50) RETURN a, b",
-    );
+    let plan = plan_query("MATCH (a:Person)-[r:KNOWS]->(b:Person WHERE b.score > 50) RETURN a, b");
 
     assert!(
-        plan.ops.iter().any(|op| matches!(op, PlanOp::ExpandFilter { .. })),
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::ExpandFilter { .. })),
         "expected ExpandFilter from inline WHERE, got: {:?}",
         plan.ops
     );
@@ -875,9 +1045,8 @@ fn test_filter_into_pattern_inline_where() {
 #[test]
 fn test_late_project_annotation() {
     // For a query with filtering, Project should be after all filters.
-    let plan = plan_query(
-        "MATCH (a:Person)-[:KNOWS]->(b:Person) WHERE b.age > 18 RETURN a.name, b.name",
-    );
+    let plan =
+        plan_query("MATCH (a:Person)-[:KNOWS]->(b:Person) WHERE b.age > 18 RETURN a.name, b.name");
     // late_project_applied should be true (Project is already at the end,
     // or was moved there).
     assert!(
@@ -902,10 +1071,7 @@ fn test_schema_endpoint_inference() {
 
     // Node `m` has no label but is connected via :WORKS_AT edge.
     // Schema should infer Company label → lower cardinality → better anchor.
-    let plan = plan_query_with_stats(
-        "MATCH (n:Person)-[:WORKS_AT]->(m) RETURN n, m",
-        &stats,
-    );
+    let plan = plan_query_with_stats("MATCH (n:Person)-[:WORKS_AT]->(m) RETURN n, m", &stats);
 
     if let Some(anchor) = &plan.annotations.optimizer.anchor {
         // With schema inference, `m` should be inferred as Company (card=100)
@@ -940,9 +1106,7 @@ fn test_cyclic_pattern_triangle() {
 
 #[test]
 fn test_no_cyclic_pattern_chain() {
-    let plan = plan_query(
-        "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) RETURN a, c",
-    );
+    let plan = plan_query("MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) RETURN a, c");
 
     assert!(
         plan.annotations.optimizer.cyclic_patterns.is_none(),
@@ -972,14 +1136,9 @@ fn test_cyclic_pattern_explain() {
 fn test_predicate_selectivity_with_stats() {
     let mut stats = TableStats::default();
     stats.label_cardinality.insert("User".to_string(), 10000);
-    stats
-        .property_selectivity
-        .insert("age".to_string(), 0.05);
+    stats.property_selectivity.insert("age".to_string(), 0.05);
 
-    let plan_with = plan_query_with_stats(
-        "MATCH (n:User) WHERE n.age > 18 RETURN n",
-        &stats,
-    );
+    let plan_with = plan_query_with_stats("MATCH (n:User) WHERE n.age > 18 RETURN n", &stats);
     let plan_without = plan_query("MATCH (n:User) WHERE n.age > 18 RETURN n");
 
     let cost_with = plan_with.annotations.optimizer.estimated_cost.unwrap();
@@ -1020,10 +1179,8 @@ fn test_expand_filter_cheaper_than_separate() {
     );
 
     // Plan without inline property → Expand (unfused).
-    let unfused = plan_query_with_stats(
-        "MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a, b",
-        &stats,
-    );
+    let unfused =
+        plan_query_with_stats("MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a, b", &stats);
 
     // ExpandFilter should not be more expensive than plain Expand.
     let fused_cost = fused.annotations.optimizer.estimated_cost.unwrap();
@@ -1041,7 +1198,9 @@ fn test_expand_filter_cheaper_than_separate() {
 fn test_insert_vertex() {
     let plan = plan_statement("INSERT (n:User {name: 'Alice'})");
     assert!(
-        plan.ops.iter().any(|op| matches!(op, PlanOp::InsertVertex { .. })),
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::InsertVertex { .. })),
         "expected InsertVertex, got: {:?}",
         plan.ops
     );
@@ -1050,9 +1209,21 @@ fn test_insert_vertex() {
 #[test]
 fn test_insert_vertex_labels_and_props() {
     let plan = plan_statement("INSERT (n:User {name: 'Alice'})");
-    let iv = plan.ops.iter().find(|op| matches!(op, PlanOp::InsertVertex { .. }));
-    if let Some(PlanOp::InsertVertex { labels, properties, variable, .. }) = iv {
-        assert_eq!(labels.iter().map(|s| &**s).collect::<Vec<_>>(), vec!["User"]);
+    let iv = plan
+        .ops
+        .iter()
+        .find(|op| matches!(op, PlanOp::InsertVertex { .. }));
+    if let Some(PlanOp::InsertVertex {
+        labels,
+        properties,
+        variable,
+        ..
+    }) = iv
+    {
+        assert_eq!(
+            labels.iter().map(|s| &**s).collect::<Vec<_>>(),
+            vec!["User"]
+        );
         assert_eq!(properties.len(), 1);
         assert_eq!(&*properties[0].name, "name");
         assert!(variable.is_some());
@@ -1064,7 +1235,10 @@ fn test_insert_vertex_labels_and_props() {
 #[test]
 fn test_insert_edge() {
     let plan = plan_statement("INSERT (a)-[:KNOWS]->(b)");
-    let has_edge = plan.ops.iter().any(|op| matches!(op, PlanOp::InsertEdge { .. }));
+    let has_edge = plan
+        .ops
+        .iter()
+        .any(|op| matches!(op, PlanOp::InsertEdge { .. }));
     assert!(has_edge, "expected InsertEdge, got: {:?}", plan.ops);
 }
 
@@ -1072,11 +1246,15 @@ fn test_insert_edge() {
 fn test_insert_path() {
     let plan = plan_statement("INSERT (a:Person {name: 'A'})-[:KNOWS]->(b:Person {name: 'B'})");
     // Should have InsertVertex, InsertEdge, InsertVertex in that order.
-    let type_seq: Vec<&str> = plan.ops.iter().map(|op| match op {
-        PlanOp::InsertVertex { .. } => "vertex",
-        PlanOp::InsertEdge { .. } => "edge",
-        _ => "other",
-    }).collect();
+    let type_seq: Vec<&str> = plan
+        .ops
+        .iter()
+        .map(|op| match op {
+            PlanOp::InsertVertex { .. } => "vertex",
+            PlanOp::InsertEdge { .. } => "edge",
+            _ => "other",
+        })
+        .collect();
     assert_eq!(
         type_seq,
         vec!["vertex", "edge", "vertex"],
@@ -1089,7 +1267,9 @@ fn test_insert_path() {
 fn test_set_property() {
     let plan = plan_query("MATCH (n) SET n.name = 'Bob' RETURN n");
     assert!(
-        plan.ops.iter().any(|op| matches!(op, PlanOp::SetProperties { .. })),
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::SetProperties { .. })),
         "expected SetProperties, got: {:?}",
         plan.ops
     );
@@ -1098,10 +1278,15 @@ fn test_set_property() {
 #[test]
 fn test_set_label() {
     let plan = plan_query("MATCH (n) SET n IS Admin RETURN n");
-    let sp = plan.ops.iter().find(|op| matches!(op, PlanOp::SetProperties { .. }));
+    let sp = plan
+        .ops
+        .iter()
+        .find(|op| matches!(op, PlanOp::SetProperties { .. }));
     if let Some(PlanOp::SetProperties { items }) = sp {
         assert!(
-            items.iter().any(|i| matches!(i, SetPlanItem::Label { label, .. } if &**label == "Admin")),
+            items
+                .iter()
+                .any(|i| matches!(i, SetPlanItem::Label { label, .. } if &**label == "Admin")),
             "expected Label item for Admin, got: {:?}",
             items
         );
@@ -1114,7 +1299,9 @@ fn test_set_label() {
 fn test_remove_property() {
     let plan = plan_query("MATCH (n) REMOVE n.name RETURN n");
     assert!(
-        plan.ops.iter().any(|op| matches!(op, PlanOp::RemoveProperties { .. })),
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::RemoveProperties { .. })),
         "expected RemoveProperties, got: {:?}",
         plan.ops
     );
@@ -1123,10 +1310,15 @@ fn test_remove_property() {
 #[test]
 fn test_remove_label() {
     let plan = plan_query("MATCH (n) REMOVE n IS Admin RETURN n");
-    let rp = plan.ops.iter().find(|op| matches!(op, PlanOp::RemoveProperties { .. }));
+    let rp = plan
+        .ops
+        .iter()
+        .find(|op| matches!(op, PlanOp::RemoveProperties { .. }));
     if let Some(PlanOp::RemoveProperties { items }) = rp {
         assert!(
-            items.iter().any(|i| matches!(i, RemovePlanItem::Label { label, .. } if &**label == "Admin")),
+            items
+                .iter()
+                .any(|i| matches!(i, RemovePlanItem::Label { label, .. } if &**label == "Admin")),
             "expected Label removal for Admin, got: {:?}",
             items
         );
@@ -1139,7 +1331,9 @@ fn test_remove_label() {
 fn test_delete_vertex() {
     let plan = plan_query("MATCH (n) DELETE n");
     assert!(
-        plan.ops.iter().any(|op| matches!(op, PlanOp::DeleteVertex { .. })),
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::DeleteVertex { .. })),
         "expected DeleteVertex, got: {:?}",
         plan.ops
     );
@@ -1149,7 +1343,9 @@ fn test_delete_vertex() {
 fn test_detach_delete() {
     let plan = plan_query("MATCH (n) DETACH DELETE n");
     assert!(
-        plan.ops.iter().any(|op| matches!(op, PlanOp::DetachDeleteVertex { .. })),
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::DetachDeleteVertex { .. })),
         "expected DetachDeleteVertex, got: {:?}",
         plan.ops
     );
@@ -1189,14 +1385,14 @@ fn test_explain_includes_dml_warnings() {
         ops: vec![],
         diagnostics: PlanDiagnostics {
             dml_errors: vec![PlannerDiagnostic {
-                code: "DML002".into(),
-                message: dml_target_value_message("SET property", Some("x")).into(),
+                code: "DML002",
+                message: dml_target_value_message("SET property", Some("x")),
                 span: gleaph_gql::token::Span::DUMMY,
                 severity: DmlDiagnosticSeverity::Fatal,
             }],
             dml_warnings: vec![PlannerDiagnostic {
-                code: "DML004".into(),
-                message: dml_target_unknown_message("DELETE", Some("y")).into(),
+                code: "DML004",
+                message: dml_target_unknown_message("DELETE", Some("y")),
                 span: gleaph_gql::token::Span::DUMMY,
                 severity: DmlDiagnosticSeverity::Warning,
             }],
@@ -1211,17 +1407,22 @@ fn test_explain_includes_dml_warnings() {
     };
     let output = explain_plan(&plan);
     assert!(
-        output.contains("DML error [DML002] at 0..0: SET property target `x` is inferred as a value"),
+        output
+            .contains("DML error [DML002] at 0..0: SET property target `x` is inferred as a value"),
         "expected explain to include DML error, got: {}",
         output
     );
     assert!(
-        output.contains("DML warning [DML004] at 0..0: DELETE target `y` could not be typed statically"),
+        output.contains(
+            "DML warning [DML004] at 0..0: DELETE target `y` could not be typed statically"
+        ),
         "expected explain to include DML warning, got: {}",
         output
     );
     assert!(
-        output.contains("Type warning [TYPE] at 0..0: LIMIT expects a numeric expression, got String"),
+        output.contains(
+            "Type warning [TYPE] at 0..0: LIMIT expects a numeric expression, got String"
+        ),
         "expected explain to include type warning, got: {}",
         output
     );
@@ -1237,6 +1438,14 @@ fn test_build_plan_output_exposes_summary_and_explain() {
     assert!(!output.summary.has_dml);
     assert!(output.explain.contains("Plan:"));
     assert!(output.explain.contains("Estimated cost:"));
+    assert!(!output.plan.ops.is_empty());
+}
+
+#[test]
+fn test_build_plan_output_for_execute_omits_explain_text() {
+    let query = parse_query("MATCH (n:User) RETURN n.name LIMIT 5");
+    let output = build_plan_output_for_execute(&query, None).expect("plan output should build");
+    assert!(output.explain.is_empty());
     assert!(!output.plan.ops.is_empty());
 }
 
@@ -1277,11 +1486,11 @@ fn test_dml_explain_output() {
 
 #[test]
 fn test_next_yield_basic() {
-    let plan = plan_block(
-        "MATCH (n) RETURN n NEXT YIELD n MATCH (n)-[e]->(m) RETURN m",
-    );
+    let plan = plan_block("MATCH (n) RETURN n NEXT YIELD n MATCH (n)-[e]->(m) RETURN m");
     assert!(
-        plan.ops.iter().any(|op| matches!(op, PlanOp::Materialize { .. })),
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::Materialize { .. })),
         "expected Materialize op for YIELD, got: {:?}",
         plan.ops
     );
@@ -1289,10 +1498,11 @@ fn test_next_yield_basic() {
 
 #[test]
 fn test_next_yield_columns() {
-    let plan = plan_block(
-        "MATCH (n) RETURN n NEXT YIELD n MATCH (n)-[e]->(m) RETURN m",
-    );
-    let mat = plan.ops.iter().find(|op| matches!(op, PlanOp::Materialize { .. }));
+    let plan = plan_block("MATCH (n) RETURN n NEXT YIELD n MATCH (n)-[e]->(m) RETURN m");
+    let mat = plan
+        .ops
+        .iter()
+        .find(|op| matches!(op, PlanOp::Materialize { .. }));
     if let Some(PlanOp::Materialize { columns, .. }) = mat {
         assert!(!columns.is_empty(), "Materialize should have columns");
     } else {
@@ -1304,15 +1514,16 @@ fn test_next_yield_columns() {
 fn test_next_without_yield() {
     let plan = plan_block("MATCH (n) RETURN n NEXT MATCH (m) RETURN m");
     // Without YIELD, no Materialize should be emitted.
-    let has_mat = plan.ops.iter().any(|op| matches!(op, PlanOp::Materialize { .. }));
+    let has_mat = plan
+        .ops
+        .iter()
+        .any(|op| matches!(op, PlanOp::Materialize { .. }));
     assert!(!has_mat, "no YIELD → no Materialize, got: {:?}", plan.ops);
 }
 
 #[test]
 fn test_next_explain() {
-    let plan = plan_block(
-        "MATCH (n) RETURN n NEXT YIELD n MATCH (n)-[e]->(m) RETURN m",
-    );
+    let plan = plan_block("MATCH (n) RETURN n NEXT YIELD n MATCH (n)-[e]->(m) RETURN m");
     let output = explain_plan(&plan);
     assert!(
         output.contains("Materialize"),
@@ -1326,48 +1537,255 @@ fn test_block_plan_simple() {
     // A simple block with no NEXT should work like build_plan.
     let plan = plan_block("MATCH (n:User) RETURN n.name");
     assert!(
-        plan.ops.iter().any(|op| matches!(op, PlanOp::NodeScan { .. })),
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::NodeScan { .. })),
         "block plan should contain scan"
     );
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
-// WCOJ (Worst-Case Optimal Join)
+// Cyclic patterns: simple `Expand` triangles fuse into `WorstCaseOptimalJoin`.
 // ════════════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn test_wcoj_triangle() {
+fn test_simplified_path_lowers_to_expand() {
+    let plan = plan_query("MATCH (a:Person)-/KNOWS/->(b:Person) RETURN a, b");
+    assert!(
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::Expand { .. })),
+        "simplified edge should plan as Expand, got: {:?}",
+        plan.ops
+    );
+    assert!(
+        plan.ops.iter().any(
+            |op| matches!(op, PlanOp::Expand { label, .. } if label.as_deref() == Some("KNOWS"))
+        ),
+        "simplified /KNOWS/ label should reach Expand, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn test_simplified_path_concat_is_multi_expand() {
+    // §16.12 simplifiedTerm → concatenation of factorLows (implicit intermediate vertex).
+    let plan = plan_query("MATCH (a:Person)-/KNOWS LIKES/->(b:Person) RETURN a, b");
+    let expands: Vec<_> = plan
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            PlanOp::Expand { label, .. } => label.as_deref().map(str::to_string),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        expands,
+        vec!["KNOWS".to_string(), "LIKES".to_string()],
+        "concatenated simplified labels should emit two Expands, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn test_simplified_path_union_label_one_expand() {
+    let plan = plan_query("MATCH (a:Person)-/KNOWS|LIKES/->(b:Person) RETURN a, b");
+    let label_exprs: Vec<_> = plan
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            PlanOp::Expand {
+                label, label_expr, ..
+            } => {
+                assert!(
+                    label.is_none(),
+                    "union should use label_expr only, got label={label:?}"
+                );
+                label_expr.clone()
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        label_exprs.len(),
+        1,
+        "expected one Expand for union of labels: {:?}",
+        plan.ops
+    );
+    match &label_exprs[0] {
+        gleaph_gql::types::LabelExpr::Or(a, b) => {
+            assert!(matches!(a.as_ref(), gleaph_gql::types::LabelExpr::Name(n) if n == "KNOWS"));
+            assert!(matches!(b.as_ref(), gleaph_gql::types::LabelExpr::Name(n) if n == "LIKES"));
+        }
+        other => panic!("expected Or(KNOWS, LIKES) in label_expr, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_simplified_path_multiset_label_one_expand() {
+    let plan = plan_query("MATCH (a:Person)-/KNOWS|+|LIKES/->(b:Person) RETURN a, b");
+    let label_exprs: Vec<_> = plan
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            PlanOp::Expand {
+                label, label_expr, ..
+            } => {
+                assert!(
+                    label.is_none(),
+                    "multiset alt should use label_expr, got label={label:?}"
+                );
+                label_expr.clone()
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        label_exprs.len(),
+        1,
+        "multiset alternation lowers like union for planning: {:?}",
+        plan.ops
+    );
+    match &label_exprs[0] {
+        gleaph_gql::types::LabelExpr::Or(a, b) => {
+            assert!(matches!(a.as_ref(), gleaph_gql::types::LabelExpr::Name(n) if n == "KNOWS"));
+            assert!(matches!(b.as_ref(), gleaph_gql::types::LabelExpr::Name(n) if n == "LIKES"));
+        }
+        other => panic!("expected Or(KNOWS, LIKES) in label_expr, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_triangle_cycle_uses_wcoj() {
     let plan = plan_query(
         "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person)-[:KNOWS]->(a) RETURN a",
     );
     assert!(
-        plan.ops.iter().any(|op| matches!(op, PlanOp::WorstCaseOptimalJoin { .. })),
-        "expected WCOJ for triangle, got: {:?}",
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::WorstCaseOptimalJoin { .. })),
+        "triangle should emit WorstCaseOptimalJoin, got: {:?}",
+        plan.ops
+    );
+    assert!(
+        !plan
+            .ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::Expand { .. })),
+        "triangle should replace Expands with WCOJ, got: {:?}",
         plan.ops
     );
 }
 
 #[test]
 fn test_wcoj_not_applied_to_chain() {
-    let plan = plan_query(
-        "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) RETURN a, c",
-    );
+    let plan = plan_query("MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) RETURN a, c");
     assert!(
-        !plan.ops.iter().any(|op| matches!(op, PlanOp::WorstCaseOptimalJoin { .. })),
+        !plan
+            .ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::WorstCaseOptimalJoin { .. })),
         "chain should NOT use WCOJ"
     );
 }
 
 #[test]
-fn test_wcoj_explain() {
+fn test_triangle_explain_shows_wcoj() {
     let plan = plan_query(
         "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person)-[:KNOWS]->(a) RETURN a",
     );
     let output = explain_plan(&plan);
     assert!(
         output.contains("WCOJ"),
-        "explain should show WCOJ: {}",
+        "explain should show WCOJ for triangle: {}",
         output
+    );
+}
+
+#[test]
+fn test_triangle_where_on_mid_node_carries_dst_filter_in_wcoj() {
+    let plan = plan_query(
+        "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person)-[:KNOWS]->(a) \
+         WHERE b.age > 18 RETURN a",
+    );
+    let wcoj = plan.ops.iter().find_map(|op| match op {
+        PlanOp::WorstCaseOptimalJoin { edges, .. } => Some(edges),
+        _ => None,
+    });
+    let Some(edges) = wcoj else {
+        panic!(
+            "expected WorstCaseOptimalJoin for filtered triangle, got: {:?}",
+            plan.ops
+        );
+    };
+    let b_hop = edges
+        .iter()
+        .find(|e| &*e.dst == "b")
+        .expect("cycle should include hop into `b`");
+    assert!(
+        !b_hop.dst_filter.is_empty(),
+        "WHERE b.age > 18 should become dst_filter on a→b hop, edges={:?}",
+        edges
+    );
+}
+
+#[test]
+fn test_triangle_with_bounded_var_len_hop_uses_wcoj() {
+    let plan = plan_query(
+        "MATCH (a:Person)-/KNOWS{1,2}/->(b:Person)-[:KNOWS]->(c:Person)-[:KNOWS]->(a) RETURN a",
+    );
+    assert!(
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::WorstCaseOptimalJoin { .. })),
+        "var-length hop on triangle should still fuse to WCOJ, got: {:?}",
+        plan.ops
+    );
+    let wcoj = plan
+        .ops
+        .iter()
+        .find_map(|op| match op {
+            PlanOp::WorstCaseOptimalJoin { edges, .. } => Some(edges),
+            _ => None,
+        })
+        .expect("WCOJ");
+    assert!(
+        wcoj.iter().any(|e| e.var_len.is_some()),
+        "at least one WcojEdge should carry var_len, got: {:?}",
+        wcoj
+    );
+}
+
+#[test]
+fn test_triangle_with_indexed_edge_hop_preserves_index_in_wcoj() {
+    let mut stats = TableStats::default();
+    stats.indexed_edge_properties.insert("weight".to_owned());
+
+    let plan = plan_query_with_stats(
+        "MATCH (a:Person)-[e1:KNOWS {weight: 3}]->(b:Person)-[:KNOWS]->(c:Person)-[:KNOWS]->(a) \
+         RETURN a",
+        &stats,
+    );
+    let wcoj = plan
+        .ops
+        .iter()
+        .find_map(|op| match op {
+            PlanOp::WorstCaseOptimalJoin { edges, .. } => Some(edges),
+            _ => None,
+        })
+        .expect("WCOJ for indexed-edge triangle");
+    let e1 = wcoj
+        .iter()
+        .find(|e| &*e.variable == "e1")
+        .expect("edge variable e1");
+    assert!(
+        e1.indexed_edge_equality.is_some(),
+        "indexed edge equality should survive WCOJ fusion, edge={:?}",
+        e1
+    );
+    assert!(
+        e1.var_len.is_none(),
+        "this hop is single-hop indexed; var_len should be absent"
     );
 }
 
@@ -1406,7 +1824,10 @@ fn test_topk_not_applied_without_limit() {
 #[test]
 fn test_topk_annotation() {
     let plan = plan_query("MATCH (n:User) RETURN n.name ORDER BY n.name LIMIT 10");
-    assert!(plan.annotations.optimizer.topk_applied, "topk_applied should be true");
+    assert!(
+        plan.annotations.optimizer.topk_applied,
+        "topk_applied should be true"
+    );
 }
 
 #[test]
@@ -1467,7 +1888,11 @@ fn test_histogram_equality_selectivity() {
         total: 900,
     };
     let sel = hist.equality_selectivity();
-    assert!(sel > 0.0 && sel < 1.0, "equality selectivity should be reasonable: {}", sel);
+    assert!(
+        sel > 0.0 && sel < 1.0,
+        "equality selectivity should be reasonable: {}",
+        sel
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -1486,7 +1911,9 @@ fn test_index_intersection_two_props() {
         &stats,
     );
     assert!(
-        plan.ops.iter().any(|op| matches!(op, PlanOp::IndexIntersection { .. })),
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::IndexIntersection { .. })),
         "expected IndexIntersection with 2 indexed props, got: {:?}",
         plan.ops
     );
@@ -1498,12 +1925,12 @@ fn test_index_intersection_not_for_single() {
     stats.label_cardinality.insert("User".to_string(), 10000);
     stats.indexed_vertex_properties.insert("uid".to_string());
 
-    let plan = plan_query_with_stats(
-        "MATCH (n:User WHERE n.uid = 'alice') RETURN n",
-        &stats,
-    );
+    let plan = plan_query_with_stats("MATCH (n:User WHERE n.uid = 'alice') RETURN n", &stats);
     assert!(
-        !plan.ops.iter().any(|op| matches!(op, PlanOp::IndexIntersection { .. })),
+        !plan
+            .ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::IndexIntersection { .. })),
         "single indexed prop should NOT use IndexIntersection"
     );
 }
@@ -1543,24 +1970,47 @@ fn compat_plan_contains_expected_ops_for_query_shape() {
         "MATCH (a:User)-[:KNOWS]->(b) WHERE a.id = 1 RETURN b.name ORDER BY b.name LIMIT 5",
     );
     // Must have scan + filter + expand + project.
-    assert!(plan.ops.iter().any(|op| matches!(op, PlanOp::NodeScan { .. } | PlanOp::IndexScan { .. })));
-    assert!(plan.ops.iter().any(|op| matches!(op, PlanOp::PropertyFilter { .. })));
-    assert!(plan.ops.iter().any(|op| matches!(op, PlanOp::Expand { .. } | PlanOp::ExpandFilter { .. })));
-    assert!(plan.ops.iter().any(|op| matches!(op, PlanOp::Project { .. })));
+    assert!(
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::NodeScan { .. } | PlanOp::IndexScan { .. }))
+    );
+    assert!(
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::PropertyFilter { .. }))
+    );
+    assert!(
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::Expand { .. } | PlanOp::ExpandFilter { .. }))
+    );
+    assert!(
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::Project { .. }))
+    );
     // Sort+Limit or TopK must be present.
     let has_sort_limit = plan.ops.iter().any(|op| matches!(op, PlanOp::Sort { .. }))
         && plan.ops.iter().any(|op| matches!(op, PlanOp::Limit { .. }));
     let has_topk = plan.ops.iter().any(|op| matches!(op, PlanOp::TopK { .. }));
     assert!(has_sort_limit || has_topk, "must have Sort+Limit or TopK");
     // Anchor must be "a" (has WHERE equality predicate).
-    assert_eq!(&*plan.annotations.optimizer.anchor.as_ref().unwrap().variable, "a");
+    assert_eq!(
+        &*plan.annotations.optimizer.anchor.as_ref().unwrap().variable,
+        "a"
+    );
 }
 
 #[test]
 fn compat_planner_supports_mutations() {
     // gleaph-old rejected INSERT; new planner supports it.
     let plan = plan_statement("INSERT (n:User {name: 'test'})");
-    assert!(plan.ops.iter().any(|op| matches!(op, PlanOp::InsertVertex { .. })));
+    assert!(
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::InsertVertex { .. }))
+    );
 }
 
 #[test]
@@ -1568,33 +2018,64 @@ fn compat_planner_prefers_property_equality_anchor() {
     let plan = plan_query("MATCH (a)-[:X]->(b:User) WHERE b.id = 1 RETURN a, b LIMIT 10");
     let anchor = plan.annotations.optimizer.anchor.as_ref().unwrap();
     assert_eq!(&*anchor.variable, "b");
-    assert!(matches!(anchor.source, AnchorSource::PropertyEquality { .. }));
+    assert!(matches!(
+        anchor.source,
+        AnchorSource::PropertyEquality { .. }
+    ));
 }
 
 // ── Category 3: Anchor selection ──
 
 #[test]
 fn compat_shortest_path_operator() {
-    let plan = plan_query(
-        "MATCH ANY SHORTEST (a)-[:KNOWS]->{1,3}(b) RETURN a, b",
+    let plan = plan_query("MATCH ANY SHORTEST (a)-[:KNOWS]->{1,3}(b) RETURN a, b");
+    assert!(
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::ShortestPath { .. }))
     );
-    assert!(plan.ops.iter().any(|op| matches!(op, PlanOp::ShortestPath { .. })));
+}
+
+#[test]
+fn shortest_path_plans_compound_simplified_edge_labels() {
+    let plan = plan_query("MATCH ANY SHORTEST (a)-/KNOWS|LIKES/->{1,3}(b) RETURN a, b");
+    let (label, label_expr) = plan
+        .ops
+        .iter()
+        .find_map(|op| match op {
+            PlanOp::ShortestPath {
+                label, label_expr, ..
+            } => Some((label.clone(), label_expr.clone())),
+            _ => None,
+        })
+        .expect("ShortestPath op");
+    assert!(
+        label.is_none(),
+        "compound pattern should use label_expr only, got label={label:?}"
+    );
+    match label_expr.as_ref() {
+        Some(gleaph_gql::types::LabelExpr::Or(a, b)) => {
+            assert!(matches!(a.as_ref(), gleaph_gql::types::LabelExpr::Name(n) if n == "KNOWS"));
+            assert!(matches!(b.as_ref(), gleaph_gql::types::LabelExpr::Name(n) if n == "LIKES"));
+        }
+        other => panic!("expected Or(KNOWS, LIKES) in label_expr, got {:?}", other),
+    }
 }
 
 #[test]
 fn compat_aggregate_operator() {
-    // GQL uses COUNT(*) syntax; the planner should detect aggregate and emit Aggregate op.
+    // GQL uses COUNT(*) syntax; `Aggregate` must run before `Project` so the executor can bind results.
     let plan = plan_query("MATCH (a)-[:KNOWS]->(b) RETURN a.name, COUNT(*) AS cnt");
-    // The aggregate may be expressed within the Project op if the planner doesn't separate it.
-    // Pass if Aggregate exists OR if the plan has semantic aggregate detection.
-    let has_aggregate = plan.ops.iter().any(|op| matches!(op, PlanOp::Aggregate { .. }));
-    let semantic_agg = plan.annotations.semantic.has_aggregate;
+    let has_aggregate = plan
+        .ops
+        .iter()
+        .any(|op| matches!(op, PlanOp::Aggregate { .. }));
     assert!(
-        has_aggregate || semantic_agg,
-        "should detect aggregate: ops={:?}, has_aggregate={}",
-        plan.ops,
-        semantic_agg
+        has_aggregate,
+        "expected PlanOp::Aggregate in plan: {:?}",
+        plan.ops
     );
+    assert!(plan.annotations.semantic.has_aggregate);
 }
 
 #[test]
@@ -1604,8 +2085,58 @@ fn compat_label_cardinality_anchor_selection() {
     stats.label_cardinality.insert("Rare".to_string(), 3);
     let plan = plan_query_with_stats("MATCH (a:Hot)-[:X]->(b:Rare) RETURN a, b", &stats);
     let anchor = plan.annotations.optimizer.anchor.as_ref().unwrap();
-    assert_eq!(&*anchor.variable, "b", "should pick lowest-cardinality label as anchor");
-    assert!(matches!(anchor.source, AnchorSource::LabelCardinality { .. }));
+    assert_eq!(
+        &*anchor.variable, "b",
+        "should pick lowest-cardinality label as anchor"
+    );
+    assert!(matches!(
+        anchor.source,
+        AnchorSource::LabelCardinality { .. }
+    ));
+}
+
+#[test]
+fn compat_label_cardinality_id_anchor_selection() {
+    struct IdOnlyStats;
+    impl GraphStats for IdOnlyStats {
+        fn label_cardinality(&self, _label: &str) -> Option<u64> {
+            None
+        }
+        fn label_cardinality_id(&self, label_id: u16) -> Option<u64> {
+            match label_id {
+                7 => Some(10_000),
+                3 => Some(3),
+                _ => None,
+            }
+        }
+    }
+    let stats = IdOnlyStats;
+    let plan = plan_query_with_dyn_stats("MATCH (a:L7)-[:X]->(b:L3) RETURN a, b", &stats);
+    let anchor = plan.annotations.optimizer.anchor.as_ref().unwrap();
+    assert_eq!(&*anchor.variable, "b");
+    assert!(matches!(
+        anchor.source,
+        AnchorSource::LabelCardinality { .. }
+    ));
+}
+
+#[test]
+fn compat_label_cardinality_id_updates_cost_rows_estimate() {
+    struct IdOnlyStats;
+    impl GraphStats for IdOnlyStats {
+        fn label_cardinality(&self, _label: &str) -> Option<u64> {
+            None
+        }
+        fn label_cardinality_id(&self, label_id: u16) -> Option<u64> {
+            match label_id {
+                3 => Some(3),
+                _ => None,
+            }
+        }
+    }
+    let stats = IdOnlyStats;
+    let plan = plan_query_with_dyn_stats("MATCH (n:L3) RETURN n", &stats);
+    assert_eq!(plan.annotations.optimizer.estimated_rows, Some(3.0));
 }
 
 #[test]
@@ -1625,9 +2156,8 @@ fn compat_cost_estimate_populated() {
 fn compat_filter_pushdown_multi_hop() {
     // gleaph-old: filters pushed to stages [0, 1, 2]
     // New planner uses EVFusion, so some filters may be fused into ExpandFilter — better.
-    let plan = plan_query(
-        "MATCH (a)-[e:X]->(b)-[:Y]->(c) WHERE a.id = 1 AND c.name = 'x' RETURN c",
-    );
+    let plan =
+        plan_query("MATCH (a)-[e:X]->(b)-[:Y]->(c) WHERE a.id = 1 AND c.name = 'x' RETURN c");
     // Must have at least one filter or fused filter.
     let has_filtering = plan.ops.iter().any(|op| {
         matches!(
@@ -1641,7 +2171,10 @@ fn compat_filter_pushdown_multi_hop() {
 #[test]
 fn compat_limit_pushdown_before_project() {
     let plan = plan_query("MATCH (a)-[:X]->(b) RETURN b LIMIT 3");
-    assert!(plan.annotations.optimizer.limit_pushdown_applied, "limit should be pushed down");
+    assert!(
+        plan.annotations.optimizer.limit_pushdown_applied,
+        "limit should be pushed down"
+    );
 }
 
 #[test]
@@ -1667,10 +2200,17 @@ fn compat_join_order_annotation() {
         &stats,
     );
     // Join order should prefer Rare first (lowest cardinality).
-    assert!(plan.annotations.optimizer.join_order.is_some(), "join_order should be set");
+    assert!(
+        plan.annotations.optimizer.join_order.is_some(),
+        "join_order should be set"
+    );
     let order = plan.annotations.optimizer.join_order.as_ref().unwrap();
     // Hop 1 is b→c (Rare dest), which should come first.
-    assert_eq!(order[0], 1, "should start with Rare-endpoint hop, got: {:?}", order);
+    assert_eq!(
+        order[0], 1,
+        "should start with Rare-endpoint hop, got: {:?}",
+        order
+    );
 }
 
 // ── Category 5: Index scan ──
@@ -1681,10 +2221,7 @@ fn compat_index_scan_for_selective_property() {
     stats.label_cardinality.insert("User".to_string(), 50_000);
     stats.indexed_vertex_properties.insert("uid".to_string());
     stats.property_selectivity.insert("uid".to_string(), 0.0001);
-    let plan = plan_query_with_stats(
-        "MATCH (a:User)-[:X]->(b) WHERE a.uid = 42 RETURN a",
-        &stats,
-    );
+    let plan = plan_query_with_stats("MATCH (a:User)-[:X]->(b) WHERE a.uid = 42 RETURN a", &stats);
     assert!(
         matches!(plan.ops.first(), Some(PlanOp::IndexScan { .. })),
         "should use IndexScan, got: {:?}",
@@ -1697,10 +2234,7 @@ fn compat_label_scan_without_selectivity() {
     let mut stats = TableStats::default();
     stats.label_cardinality.insert("User".to_string(), 50_000);
     // No selectivity for uid — planner should prefer equality anchor (no stats → heuristic).
-    let plan = plan_query_with_stats(
-        "MATCH (a:User)-[:X]->(b) WHERE a.uid = 42 RETURN a",
-        &stats,
-    );
+    let plan = plan_query_with_stats("MATCH (a:User)-[:X]->(b) WHERE a.uid = 42 RETURN a", &stats);
     // Without indexed property, anchor falls back to property-equality heuristic or label scan.
     let first = plan.ops.first().unwrap();
     assert!(
@@ -1740,13 +2274,14 @@ fn compat_cost_multi_hop_multiplies_rows() {
     let mut stats = TableStats::default();
     stats.label_cardinality.insert("User".to_string(), 100);
     stats.avg_degree = 4.0;
-    let plan = plan_query_with_stats(
-        "MATCH (a:User)-[:X]->(b)-[:Y]->(c) RETURN c",
-        &stats,
-    );
+    let plan = plan_query_with_stats("MATCH (a:User)-[:X]->(b)-[:Y]->(c) RETURN c", &stats);
     let est_rows = plan.annotations.optimizer.estimated_rows.unwrap();
     // 100 * 4 * 4 = 1600 (may differ slightly due to filter selectivity)
-    assert!(est_rows > 1000.0, "multi-hop should multiply rows: got {}", est_rows);
+    assert!(
+        est_rows > 1000.0,
+        "multi-hop should multiply rows: got {}",
+        est_rows
+    );
 }
 
 #[test]
@@ -1772,7 +2307,11 @@ fn compat_cost_aggregate_caps_rows() {
     // If aggregate is emitted, rows should be capped.
     // If not (aggregate inside Project), rows may be large but plan is still valid.
     let est_rows = plan.annotations.optimizer.estimated_rows.unwrap();
-    assert!(est_rows > 0.0, "should have positive rows: got {}", est_rows);
+    assert!(
+        est_rows > 0.0,
+        "should have positive rows: got {}",
+        est_rows
+    );
 }
 
 #[test]
@@ -1786,10 +2325,8 @@ fn compat_cost_sort_limit_cheaper_than_sort_only() {
         "MATCH (a:User)-[:X]->(b) RETURN b ORDER BY b LIMIT 5",
         &stats,
     );
-    let plan_no_limit = plan_query_with_stats(
-        "MATCH (a:User)-[:X]->(b) RETURN b ORDER BY b",
-        &stats,
-    );
+    let plan_no_limit =
+        plan_query_with_stats("MATCH (a:User)-[:X]->(b) RETURN b ORDER BY b", &stats);
     let cost_limit = plan_limit.annotations.optimizer.estimated_cost.unwrap();
     let cost_no_limit = plan_no_limit.annotations.optimizer.estimated_cost.unwrap();
     assert!(
@@ -1814,7 +2351,10 @@ fn compat_detect_optional_filter_basic() {
     let query = parse_query("MATCH (u:User) WHERE $name IS NULL OR u.name = $name RETURN u");
     let semantic = semantic::analyze(&query);
     let conditional = semantic.constraints.iter().any(|c| {
-        matches!(c, semantic::SemanticConstraint::OptionalFilterPredicate { .. })
+        matches!(
+            c,
+            semantic::SemanticConstraint::OptionalFilterPredicate { .. }
+        )
     });
     assert!(conditional, "should detect optional filter pattern");
 }
@@ -1827,16 +2367,26 @@ fn compat_detect_optional_filter_multi() {
         "MATCH (u:User) WHERE ($name IS NULL OR u.name = $name) AND ($age IS NULL OR u.age = $age) RETURN u",
     );
     let semantic = semantic::analyze(&query);
-    let count = semantic.constraints.iter().filter(|c| {
-        matches!(c, semantic::SemanticConstraint::OptionalFilterPredicate { .. })
-    }).count();
+    let count = semantic
+        .constraints
+        .iter()
+        .filter(|c| {
+            matches!(
+                c,
+                semantic::SemanticConstraint::OptionalFilterPredicate { .. }
+            )
+        })
+        .count();
     // The new planner may detect these differently (e.g., only top-level OR patterns).
     // Passing if at least one is detected, or if none but the plan still handles them correctly.
-    assert!(count >= 1 || {
-        // Fallback: check that the query at least plans successfully.
-        let plan = build_plan(&query, None).expect("plan should build");
-        plan.ops.len() > 0
-    }, "should detect optional filter patterns or produce a valid plan: count={count}");
+    assert!(
+        count >= 1 || {
+            // Fallback: check that the query at least plans successfully.
+            let plan = build_plan(&query, None).expect("plan should build");
+            !plan.ops.is_empty()
+        },
+        "should detect optional filter patterns or produce a valid plan: count={count}"
+    );
 }
 
 #[test]
@@ -1844,7 +2394,10 @@ fn compat_no_optional_filter_for_literal() {
     let query = parse_query("MATCH (u:User) WHERE u.name = 'Alice' RETURN u");
     let semantic = semantic::analyze(&query);
     let conditional = semantic.constraints.iter().any(|c| {
-        matches!(c, semantic::SemanticConstraint::OptionalFilterPredicate { .. })
+        matches!(
+            c,
+            semantic::SemanticConstraint::OptionalFilterPredicate { .. }
+        )
     });
     assert!(!conditional, "literal should not trigger optional filter");
 }
@@ -1854,9 +2407,15 @@ fn compat_no_optional_filter_for_param_mismatch() {
     let query = parse_query("MATCH (u:User) WHERE $x IS NULL OR u.name = $y RETURN u");
     let semantic = semantic::analyze(&query);
     let conditional = semantic.constraints.iter().any(|c| {
-        matches!(c, semantic::SemanticConstraint::OptionalFilterPredicate { .. })
+        matches!(
+            c,
+            semantic::SemanticConstraint::OptionalFilterPredicate { .. }
+        )
     });
-    assert!(!conditional, "mismatched params should not trigger optional filter");
+    assert!(
+        !conditional,
+        "mismatched params should not trigger optional filter"
+    );
 }
 
 // ── Category 10: Conditional index scan ──
@@ -1871,7 +2430,9 @@ fn compat_conditional_index_scan_emitted() {
         &stats,
     );
     assert!(
-        plan.ops.iter().any(|op| matches!(op, PlanOp::ConditionalIndexScan { .. })),
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::ConditionalIndexScan { .. })),
         "should emit ConditionalIndexScan: {:?}",
         plan.ops
     );
@@ -1906,7 +2467,10 @@ fn compat_no_conditional_scan_without_index() {
         &stats,
     );
     assert!(
-        !plan.ops.iter().any(|op| matches!(op, PlanOp::ConditionalIndexScan { .. })),
+        !plan
+            .ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::ConditionalIndexScan { .. })),
         "no index → no ConditionalIndexScan"
     );
 }
@@ -1917,7 +2481,9 @@ fn compat_no_conditional_scan_without_index() {
 fn compat_range_index_scan_ge() {
     let mut stats = TableStats::default();
     stats.label_cardinality.insert("User".to_string(), 500);
-    stats.range_indexed_vertex_properties.insert("age".to_string());
+    stats
+        .range_indexed_vertex_properties
+        .insert("age".to_string());
     let plan = plan_query_with_stats("MATCH (u:User) WHERE u.age >= 30 RETURN u", &stats);
     assert!(
         matches!(plan.ops.first(), Some(PlanOp::IndexScan { cmp, .. }) if *cmp != CmpOp::Eq),
@@ -1930,7 +2496,9 @@ fn compat_range_index_scan_ge() {
 fn compat_range_index_scan_lt() {
     let mut stats = TableStats::default();
     stats.label_cardinality.insert("User".to_string(), 500);
-    stats.range_indexed_vertex_properties.insert("age".to_string());
+    stats
+        .range_indexed_vertex_properties
+        .insert("age".to_string());
     let plan = plan_query_with_stats("MATCH (u:User) WHERE u.age < 18 RETURN u", &stats);
     assert!(
         matches!(plan.ops.first(), Some(PlanOp::IndexScan { cmp, .. }) if *cmp != CmpOp::Eq),
@@ -1961,10 +2529,7 @@ fn compat_index_scan_for_parameter_equality() {
     let mut stats = TableStats::default();
     stats.label_cardinality.insert("User".to_string(), 500);
     stats.indexed_vertex_properties.insert("name".to_string());
-    let plan = plan_query_with_stats(
-        "MATCH (u:User) WHERE u.name = $name RETURN u",
-        &stats,
-    );
+    let plan = plan_query_with_stats("MATCH (u:User) WHERE u.name = $name RETURN u", &stats);
     assert!(
         matches!(plan.ops.first(), Some(PlanOp::IndexScan { .. })),
         "should use IndexScan for parameter equality: {:?}",
@@ -1976,11 +2541,10 @@ fn compat_index_scan_for_parameter_equality() {
 fn compat_range_index_scan_for_parameter_range() {
     let mut stats = TableStats::default();
     stats.label_cardinality.insert("User".to_string(), 500);
-    stats.range_indexed_vertex_properties.insert("age".to_string());
-    let plan = plan_query_with_stats(
-        "MATCH (u:User) WHERE u.age >= $min RETURN u",
-        &stats,
-    );
+    stats
+        .range_indexed_vertex_properties
+        .insert("age".to_string());
+    let plan = plan_query_with_stats("MATCH (u:User) WHERE u.age >= $min RETURN u", &stats);
     assert!(
         matches!(plan.ops.first(), Some(PlanOp::IndexScan { .. })),
         "should use IndexScan for parameter range: {:?}",
@@ -1994,9 +2558,11 @@ fn compat_range_index_scan_for_parameter_range() {
 
 #[test]
 fn test_call_procedure_basic() {
-    let plan = plan_query("CALL db.labels() YIELD label RETURN label");
+    let plan = plan_query("CALL db.labels() YIELD lbl RETURN lbl");
     assert!(
-        plan.ops.iter().any(|op| matches!(op, PlanOp::CallProcedure { .. })),
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::CallProcedure { .. })),
         "expected CallProcedure, got: {:?}",
         plan.ops
     );
@@ -2004,13 +2570,24 @@ fn test_call_procedure_basic() {
 
 #[test]
 fn test_call_procedure_yield_columns() {
-    let plan = plan_query("CALL db.labels() YIELD label RETURN label");
-    let cp = plan.ops.iter().find(|op| matches!(op, PlanOp::CallProcedure { .. }));
-    if let Some(PlanOp::CallProcedure { name, yield_columns, .. }) = cp {
-        assert_eq!(name.iter().map(|s| &**s).collect::<Vec<_>>(), vec!["db", "labels"]);
+    let plan = plan_query("CALL db.labels() YIELD lbl RETURN lbl");
+    let cp = plan
+        .ops
+        .iter()
+        .find(|op| matches!(op, PlanOp::CallProcedure { .. }));
+    if let Some(PlanOp::CallProcedure {
+        name,
+        yield_columns,
+        ..
+    }) = cp
+    {
+        assert_eq!(
+            name.iter().map(|s| &**s).collect::<Vec<_>>(),
+            vec!["db", "labels"]
+        );
         assert!(yield_columns.is_some());
         let cols = yield_columns.as_ref().unwrap();
-        assert_eq!(&*cols[0].name, "label");
+        assert_eq!(&*cols[0].name, "lbl");
     } else {
         panic!("expected CallProcedure");
     }
@@ -2018,7 +2595,7 @@ fn test_call_procedure_yield_columns() {
 
 #[test]
 fn test_call_procedure_explain() {
-    let plan = plan_query("CALL db.labels() YIELD label RETURN label");
+    let plan = plan_query("CALL db.labels() YIELD lbl RETURN lbl");
     let output = explain_plan(&plan);
     assert!(
         output.contains("CallProcedure(db.labels"),
@@ -2031,7 +2608,9 @@ fn test_call_procedure_explain() {
 fn test_inline_procedure_call() {
     let plan = plan_query("CALL { MATCH (n:User) RETURN n } RETURN n");
     assert!(
-        plan.ops.iter().any(|op| matches!(op, PlanOp::InlineProcedureCall { .. })),
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::InlineProcedureCall { .. })),
         "expected InlineProcedureCall, got: {:?}",
         plan.ops
     );
@@ -2040,7 +2619,10 @@ fn test_inline_procedure_call() {
 #[test]
 fn test_inline_procedure_call_has_subplan() {
     let plan = plan_query("CALL { MATCH (n:User) RETURN n } RETURN n");
-    let ipc = plan.ops.iter().find(|op| matches!(op, PlanOp::InlineProcedureCall { .. }));
+    let ipc = plan
+        .ops
+        .iter()
+        .find(|op| matches!(op, PlanOp::InlineProcedureCall { .. }));
     if let Some(PlanOp::InlineProcedureCall { sub_plan, .. }) = ipc {
         assert!(!sub_plan.ops.is_empty(), "sub_plan should have ops");
     } else {
@@ -2056,7 +2638,9 @@ fn test_inline_procedure_call_has_subplan() {
 fn test_use_graph_with_match() {
     let plan = plan_query("USE myGraph MATCH (n:User) RETURN n");
     assert!(
-        plan.ops.iter().any(|op| matches!(op, PlanOp::UseGraph { .. })),
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::UseGraph { .. })),
         "expected UseGraph, got: {:?}",
         plan.ops
     );
@@ -2065,9 +2649,19 @@ fn test_use_graph_with_match() {
 #[test]
 fn test_use_graph_graph_name() {
     let plan = plan_query("USE myGraph MATCH (n:User) RETURN n");
-    let ug = plan.ops.iter().find(|op| matches!(op, PlanOp::UseGraph { .. }));
-    if let Some(PlanOp::UseGraph { graph_name, sub_plan }) = ug {
-        assert_eq!(graph_name.iter().map(|s| &**s).collect::<Vec<_>>(), vec!["myGraph"]);
+    let ug = plan
+        .ops
+        .iter()
+        .find(|op| matches!(op, PlanOp::UseGraph { .. }));
+    if let Some(PlanOp::UseGraph {
+        graph_name,
+        sub_plan,
+    }) = ug
+    {
+        assert_eq!(
+            graph_name.iter().map(|s| &**s).collect::<Vec<_>>(),
+            vec!["myGraph"]
+        );
         assert!(sub_plan.is_some(), "should have sub_plan for MATCH");
     } else {
         panic!("expected UseGraph");
@@ -2081,6 +2675,27 @@ fn test_use_graph_explain() {
     assert!(
         output.contains("UseGraph(myGraph)"),
         "explain should show UseGraph: {}",
+        output
+    );
+    assert!(
+        output.contains("Remote USE GRAPH pushdown: myGraph = supported"),
+        "explain should show pushdown support: {}",
+        output
+    );
+}
+
+#[test]
+fn test_use_graph_explain_reports_pushdown_unsupported_reason() {
+    let plan = plan_query("USE myGraph MATCH ANY SHORTEST (a)-[:KNOWS]->{1,3}(b) RETURN b");
+    let output = explain_plan(&plan);
+    assert!(
+        output.contains("Remote USE GRAPH pushdown: myGraph = unsupported"),
+        "explain should show pushdown unsupported: {}",
+        output
+    );
+    assert!(
+        output.contains("SHORTEST PATH") || output.contains("unsupported remote USE GRAPH"),
+        "explain should include unsupported reason: {}",
         output
     );
 }
@@ -2144,8 +2759,12 @@ fn test_cse_no_duplicates() {
     // No common subexpressions between age and name.
     let cses = plan.annotations.optimizer.common_subexpressions.as_ref();
     assert!(
-        cses.is_none() || cses.unwrap().is_empty()
-            || !cses.unwrap().iter().any(|s| s.contains("age") && s.contains("name")),
+        cses.is_none()
+            || cses.unwrap().is_empty()
+            || !cses
+                .unwrap()
+                .iter()
+                .any(|s| s.contains("age") && s.contains("name")),
         "should not detect unrelated expressions as common"
     );
 }
@@ -2163,7 +2782,11 @@ fn test_reoptimize_hint_no_stats() {
         "should set reoptimize hint without stats"
     );
     assert!(
-        !plan.annotations.optimizer.cardinality_check_points.is_empty(),
+        !plan
+            .annotations
+            .optimizer
+            .cardinality_check_points
+            .is_empty(),
         "should have cardinality check points"
     );
 }
@@ -2176,7 +2799,10 @@ fn test_no_reoptimize_hint_with_stats() {
     let plan = plan_query_with_stats("MATCH (a:User)-[r]->(b) RETURN b", &stats);
     // With stats providing avg_degree, Expand is not uncertain.
     assert!(
-        plan.annotations.optimizer.cardinality_check_points.is_empty(),
+        plan.annotations
+            .optimizer
+            .cardinality_check_points
+            .is_empty(),
         "should not have check points with stats: {:?}",
         plan.annotations.optimizer.cardinality_check_points
     );
@@ -2191,7 +2817,9 @@ fn test_cartesian_product_independent_match() {
     // Two MATCH clauses with no shared variables → CartesianProduct.
     let plan = plan_query("MATCH (a:User) MATCH (b:Post) RETURN a, b");
     assert!(
-        plan.ops.iter().any(|op| matches!(op, PlanOp::CartesianProduct { .. })),
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::CartesianProduct { .. })),
         "independent MATCHes should produce CartesianProduct, got: {:?}",
         plan.ops
     );
@@ -2203,7 +2831,10 @@ fn test_hash_join_shared_variable() {
     let plan = plan_query("MATCH (a:User) MATCH (a)-[r:KNOWS]->(b) RETURN a, b");
     // Shared variable 'a' means they're in the same group → no join needed (sequential).
     let has_join = plan.ops.iter().any(|op| {
-        matches!(op, PlanOp::HashJoin { .. } | PlanOp::CartesianProduct { .. })
+        matches!(
+            op,
+            PlanOp::HashJoin { .. } | PlanOp::CartesianProduct { .. }
+        )
     });
     assert!(
         !has_join,
@@ -2216,7 +2847,10 @@ fn test_hash_join_shared_variable() {
 fn test_single_match_no_join() {
     let plan = plan_query("MATCH (a:User)-[r]->(b) RETURN a");
     let has_join = plan.ops.iter().any(|op| {
-        matches!(op, PlanOp::HashJoin { .. } | PlanOp::CartesianProduct { .. })
+        matches!(
+            op,
+            PlanOp::HashJoin { .. } | PlanOp::CartesianProduct { .. }
+        )
     });
     assert!(!has_join, "single MATCH should not produce join ops");
 }
@@ -2240,5 +2874,9 @@ fn test_cartesian_product_cost() {
     let plan = plan_query_with_stats("MATCH (a:User) MATCH (b:Post) RETURN a, b", &stats);
     let est_rows = plan.annotations.optimizer.estimated_rows.unwrap();
     // 100 * 200 = 20000 (cartesian product).
-    assert!(est_rows > 1000.0, "cartesian product should multiply rows: got {}", est_rows);
+    assert!(
+        est_rows > 1000.0,
+        "cartesian product should multiply rows: got {}",
+        est_rows
+    );
 }

@@ -305,9 +305,7 @@ mod remove_statement {
             if let Some(SimpleQueryStatement::Remove(rem)) = rm {
                 assert_eq!(rem.items.len(), 1);
                 if let RemoveItem::Property {
-                    variable,
-                    property,
-                    ..
+                    variable, property, ..
                 } = &rem.items[0]
                 {
                     assert_eq!(variable, "n");

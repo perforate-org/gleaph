@@ -1,0 +1,20 @@
+[package]
+name = "gleaph-graph-registry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+candid.workspace = true
+concat-string.workspace = true
+ic-cdk.workspace = true
+ic-cdk-macros.workspace = true
+ic-cdk-management-canister = "0.1"
+serde.workspace = true
+sha2 = "0.11"
+thiserror.workspace = true
+gleaph-gql-ic = { path = "../gql-ic" }
+
+[dev-dependencies]
+gleaph-graph = { path = "../graph" }
+pocket-ic = "13"

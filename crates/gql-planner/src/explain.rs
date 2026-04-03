@@ -28,6 +28,7 @@ struct ExplainView<'a> {
     reoptimize_after_rows: Option<u64>,
     cardinality_check_points: &'a [usize],
     statically_contradictory: bool,
+    use_graph_pushdown: &'a [UseGraphPushdownInfo],
 }
 
 impl<'a> ExplainView<'a> {
@@ -53,6 +54,7 @@ impl<'a> ExplainView<'a> {
             reoptimize_after_rows: plan.annotations.optimizer.reoptimize_after_rows,
             cardinality_check_points: &plan.annotations.optimizer.cardinality_check_points,
             statically_contradictory: plan.annotations.optimizer.statically_contradictory,
+            use_graph_pushdown: &plan.annotations.optimizer.use_graph_pushdown,
         }
     }
 }
@@ -112,6 +114,35 @@ pub fn explain_plan(plan: &PhysicalPlan) -> String {
         writeln!(out, "Indexable properties in WHERE: {}", props.join(", ")).unwrap();
     }
 
+    for info in view.use_graph_pushdown {
+        match (&info.supported, &info.reason) {
+            (true, _) => {
+                writeln!(
+                    out,
+                    "Remote USE GRAPH pushdown: {} = supported",
+                    info.graph_name
+                )
+                .unwrap();
+            }
+            (false, Some(reason)) => {
+                writeln!(
+                    out,
+                    "Remote USE GRAPH pushdown: {} = unsupported ({})",
+                    info.graph_name, reason
+                )
+                .unwrap();
+            }
+            (false, None) => {
+                writeln!(
+                    out,
+                    "Remote USE GRAPH pushdown: {} = unsupported",
+                    info.graph_name
+                )
+                .unwrap();
+            }
+        }
+    }
+
     if view.has_dml {
         writeln!(out, "Data modification: yes").unwrap();
     }
@@ -120,10 +151,7 @@ pub fn explain_plan(plan: &PhysicalPlan) -> String {
         writeln!(
             out,
             "DML error [{}] at {}..{}: {}",
-            error.code,
-            error.span.start,
-            error.span.end,
-            error.message
+            error.code, error.span.start, error.span.end, error.message
         )
         .unwrap();
     }
@@ -132,10 +160,7 @@ pub fn explain_plan(plan: &PhysicalPlan) -> String {
         writeln!(
             out,
             "DML warning [{}] at {}..{}: {}",
-            warning.code,
-            warning.span.start,
-            warning.span.end,
-            warning.message
+            warning.code, warning.span.start, warning.span.end, warning.message
         )
         .unwrap();
     }
@@ -145,10 +170,7 @@ pub fn explain_plan(plan: &PhysicalPlan) -> String {
         writeln!(
             out,
             "Type warning [{}] at {}..{}: {}",
-            code,
-            warning.span.start,
-            warning.span.end,
-            warning.message
+            code, warning.span.start, warning.span.end, warning.message
         )
         .unwrap();
     }
@@ -172,9 +194,10 @@ pub fn explain_plan(plan: &PhysicalPlan) -> String {
     }
 
     if let Some(cses) = view.common_subexpressions
-        && !cses.is_empty() {
-            writeln!(out, "Common subexpressions: [{}]", cses.join(", ")).unwrap();
-        }
+        && !cses.is_empty()
+    {
+        writeln!(out, "Common subexpressions: [{}]", cses.join(", ")).unwrap();
+    }
 
     if let Some(reopt) = view.reoptimize_after_rows {
         writeln!(out, "Reoptimization hint: after {} rows", reopt).unwrap();
@@ -190,20 +213,44 @@ pub fn explain_plan(plan: &PhysicalPlan) -> String {
     }
 
     if view.statically_contradictory {
-        writeln!(out, "Warning: statically contradictory (no results possible)").unwrap();
+        writeln!(
+            out,
+            "Warning: statically contradictory (no results possible)"
+        )
+        .unwrap();
     }
 
     out
 }
 
+fn format_property_projection(names: Option<&[crate::plan::Str]>) -> String {
+    match names {
+        None => String::new(),
+        Some([]) => " props=[]".to_owned(),
+        Some(s) => {
+            let joined: Vec<&str> = s.iter().map(|x| x.as_ref()).collect();
+            format!(" props=[{}]", joined.join(", "))
+        }
+    }
+}
+
 fn format_op(op: &PlanOp) -> String {
     match op {
-        PlanOp::NodeScan { variable, label } => {
-            if let Some(l) = label {
+        PlanOp::NodeScan {
+            variable,
+            label,
+            property_projection,
+        } => {
+            let base = if let Some(l) = label {
                 format!("NodeScan({}, label={})", variable, l)
             } else {
                 format!("NodeScan({})", variable)
-            }
+            };
+            format!(
+                "{}{}",
+                base,
+                format_property_projection(property_projection.as_deref())
+            )
         }
 
         PlanOp::IndexScan {
@@ -211,13 +258,15 @@ fn format_op(op: &PlanOp) -> String {
             property,
             value,
             cmp,
+            property_projection,
         } => {
             format!(
-                "IndexScan({}, {} {} {})",
+                "IndexScan({}, {} {} {}){}",
                 variable,
                 property,
                 format_cmp(cmp),
-                format_scan_value(value)
+                format_scan_value(value),
+                format_property_projection(property_projection.as_deref())
             )
         }
 
@@ -225,12 +274,36 @@ fn format_op(op: &PlanOp) -> String {
             variable,
             property,
             value,
+            property_projection,
         } => {
             format!(
-                "EdgeIndexScan({}, {} = {})",
+                "EdgeIndexScan({}, {} = {}){}",
                 variable,
                 property,
-                format_scan_value(value)
+                format_scan_value(value),
+                format_property_projection(property_projection.as_deref())
+            )
+        }
+
+        PlanOp::EdgeBindEndpoints {
+            edge,
+            near,
+            far,
+            direction,
+            label,
+            near_property_projection,
+            far_property_projection,
+        } => {
+            let arrow = format_direction(direction);
+            let label_str = label
+                .as_ref()
+                .map(|l| format!(":{}", l))
+                .unwrap_or_default();
+            let near_pp = format_property_projection(near_property_projection.as_deref());
+            let far_pp = format_property_projection(far_property_projection.as_deref());
+            format!(
+                "EdgeBindEndpoints({}{} {} near={}{} far={}{})",
+                edge, label_str, arrow.0, near, near_pp, far, far_pp
             )
         }
 
@@ -238,16 +311,18 @@ fn format_op(op: &PlanOp) -> String {
             candidates,
             fallback_variable,
             fallback_label,
+            property_projection,
         } => {
             let cands: Vec<String> = candidates
                 .iter()
                 .map(|c| format!("{}={}", c.property, c.param_name))
                 .collect();
             format!(
-                "ConditionalIndexScan({}, candidates=[{}], fallback={})",
+                "ConditionalIndexScan({}, candidates=[{}], fallback={}){}",
                 fallback_variable,
                 cands.join(", "),
-                fallback_label.as_deref().unwrap_or("*")
+                fallback_label.as_deref().unwrap_or("*"),
+                format_property_projection(property_projection.as_deref())
             )
         }
 
@@ -266,12 +341,20 @@ fn format_op(op: &PlanOp) -> String {
             dst,
             direction,
             label,
+            label_expr,
             var_len,
+            indexed_edge_equality,
+            edge_property_projection,
+            dst_property_projection,
         } => {
             let arrow = format_direction(direction);
             let label_str = label
                 .as_ref()
                 .map(|l| format!(":{}", l))
+                .unwrap_or_default();
+            let label_expr_str = label_expr
+                .as_ref()
+                .map(|e| format!(" labelExpr={e:?}"))
                 .unwrap_or_default();
             let var_len_str = var_len
                 .map(|vl| {
@@ -282,9 +365,24 @@ fn format_op(op: &PlanOp) -> String {
                     }
                 })
                 .unwrap_or_default();
+            let idx = indexed_edge_equality
+                .as_ref()
+                .map(|(p, _)| format!(" edgeIdx={}", p))
+                .unwrap_or_default();
+            let edge_pp = format_property_projection(edge_property_projection.as_deref());
+            let dst_pp = format_property_projection(dst_property_projection.as_deref());
             format!(
-                "Expand({} {}[{}{}]{} {})",
-                src, arrow.0, edge, label_str, var_len_str, dst
+                "Expand({} {}[{}{}]{} {}{}{}{}{})",
+                src,
+                arrow.0,
+                edge,
+                label_str,
+                var_len_str,
+                dst,
+                label_expr_str,
+                idx,
+                edge_pp,
+                dst_pp
             )
         }
 
@@ -294,13 +392,21 @@ fn format_op(op: &PlanOp) -> String {
             dst,
             direction,
             label,
+            label_expr,
             var_len,
+            indexed_edge_equality,
             dst_filter,
+            edge_property_projection,
+            dst_property_projection,
         } => {
             let arrow = format_direction(direction);
             let label_str = label
                 .as_ref()
                 .map(|l| format!(":{}", l))
+                .unwrap_or_default();
+            let label_expr_str = label_expr
+                .as_ref()
+                .map(|e| format!(" labelExpr={e:?}"))
                 .unwrap_or_default();
             let var_len_str = var_len
                 .map(|vl| {
@@ -312,22 +418,75 @@ fn format_op(op: &PlanOp) -> String {
                 })
                 .unwrap_or_default();
             let fc = dst_filter.len();
+            let idx = indexed_edge_equality
+                .as_ref()
+                .map(|(p, _)| format!(" edgeIdx={}", p))
+                .unwrap_or_default();
+            let edge_pp = format_property_projection(edge_property_projection.as_deref());
+            let dst_pp = format_property_projection(dst_property_projection.as_deref());
             format!(
-                "ExpandFilter({} {}[{}{}]{} {} | {} filter{})",
-                src, arrow.0, edge, label_str, var_len_str, dst,
-                fc, if fc == 1 { "" } else { "s" }
+                "ExpandFilter({} {}[{}{}]{} {} | {} filter{}{}{}{}{})",
+                src,
+                arrow.0,
+                edge,
+                label_str,
+                var_len_str,
+                dst,
+                fc,
+                if fc == 1 { "" } else { "s" },
+                idx,
+                label_expr_str,
+                edge_pp,
+                dst_pp
             )
         }
 
         PlanOp::ShortestPath {
-            src, dst, mode, ..
+            src,
+            dst,
+            mode,
+            direction,
+            label,
+            label_expr,
+            var_len,
+            edge,
+            ..
         } => {
+            let arrow = format_direction(direction);
+            let label_str = label
+                .as_deref()
+                .map(|l| format!(":{l}"))
+                .unwrap_or_default();
+            let label_expr_str = label_expr
+                .as_ref()
+                .map(|e| format!(" labelExpr={e:?}"))
+                .unwrap_or_default();
+            let bounds = var_len
+                .as_ref()
+                .map(|v| {
+                    if v.max == Some(v.min) {
+                        format!("{{{}}}", v.min)
+                    } else if let Some(m) = v.max {
+                        format!("{{{}, {}}}", v.min, m)
+                    } else {
+                        format!("{{{}, }}", v.min)
+                    }
+                })
+                .unwrap_or_default();
             let mode_str = match mode {
                 ShortestMode::AnyShortest => "ANY SHORTEST",
                 ShortestMode::AllShortest => "ALL SHORTEST",
-                ShortestMode::ShortestK(k) => return format!("ShortestPath({} -> {}, SHORTEST {})", src, dst, k),
+                ShortestMode::ShortestK(k) => {
+                    return format!(
+                        "ShortestPath({} {}[{}{}{}]{} {}{}, SHORTEST {})",
+                        src, arrow.0, edge, label_str, label_expr_str, bounds, arrow.1, dst, k
+                    );
+                }
             };
-            format!("ShortestPath({} -> {}, {})", src, dst, mode_str)
+            format!(
+                "ShortestPath({} {}[{}{}{}]{} {}{}, {})",
+                src, arrow.0, edge, label_str, label_expr_str, bounds, arrow.1, dst, mode_str
+            )
         }
 
         PlanOp::Let { bindings } => {
@@ -378,19 +537,25 @@ fn format_op(op: &PlanOp) -> String {
             if columns.is_empty() {
                 format!("Project(*{})", d)
             } else {
-                format!("Project({} column{}{})", columns.len(), if columns.len() == 1 { "" } else { "s" }, d)
+                format!(
+                    "Project({} column{}{})",
+                    columns.len(),
+                    if columns.len() == 1 { "" } else { "s" },
+                    d
+                )
             }
         }
 
         PlanOp::Sort { order_by } => {
-            format!("Sort({} key{})", order_by.items.len(), if order_by.items.len() == 1 { "" } else { "s" })
+            format!(
+                "Sort({} key{})",
+                order_by.items.len(),
+                if order_by.items.len() == 1 { "" } else { "s" }
+            )
         }
 
         PlanOp::Limit { count, offset } => {
-            let c = count
-                .as_ref()
-                .map(format_expr)
-                .unwrap_or_default();
+            let c = count.as_ref().map(format_expr).unwrap_or_default();
             let o = offset
                 .as_ref()
                 .map(|e| format!(" OFFSET {}", format_expr(e)))
@@ -409,12 +574,21 @@ fn format_op(op: &PlanOp) -> String {
             format!("OptionalMatch [{}]", sub_ops.join(" -> "))
         }
 
-        PlanOp::IndexIntersection { variable, scans } => {
+        PlanOp::IndexIntersection {
+            variable,
+            scans,
+            property_projection,
+        } => {
             let specs: Vec<String> = scans
                 .iter()
                 .map(|s| format!("{} {:?} {:?}", s.property, s.cmp, s.value))
                 .collect();
-            format!("IndexIntersection({}, [{}])", variable, specs.join(", "))
+            format!(
+                "IndexIntersection({}, [{}]){}",
+                variable,
+                specs.join(", "),
+                format_property_projection(property_projection.as_deref())
+            )
         }
 
         PlanOp::WorstCaseOptimalJoin { variables, edges } => {
@@ -426,14 +600,24 @@ fn format_op(op: &PlanOp) -> String {
             format!("WCOJ([{}], edges=[{}])", vars, edge_labels.join("->"))
         }
 
-        PlanOp::TopK { order_by, k, offset } => {
+        PlanOp::TopK {
+            order_by,
+            k,
+            offset,
+        } => {
             let keys = order_by.items.len();
             let k_str = format!("{:?}", k.kind);
             let offset_str = offset
                 .as_ref()
                 .map(|o| format!(", OFFSET {:?}", o.kind))
                 .unwrap_or_default();
-            format!("TopK({} key{}, k={}{})", keys, if keys == 1 { "" } else { "s" }, k_str, offset_str)
+            format!(
+                "TopK({} key{}, k={}{})",
+                keys,
+                if keys == 1 { "" } else { "s" },
+                k_str,
+                offset_str
+            )
         }
 
         PlanOp::Materialize { columns, distinct } => {
@@ -441,13 +625,20 @@ fn format_op(op: &PlanOp) -> String {
             if columns.is_empty() {
                 format!("Materialize(*{})", dist)
             } else {
-                format!("Materialize({} column{}{})", columns.len(), if columns.len() == 1 { "" } else { "s" }, dist)
+                format!(
+                    "Materialize({} column{}{})",
+                    columns.len(),
+                    if columns.len() == 1 { "" } else { "s" },
+                    dist
+                )
             }
         }
 
         // ──── DML ────
         PlanOp::InsertVertex {
-            variable, labels, properties,
+            variable,
+            labels,
+            properties,
         } => {
             let var = variable.as_deref().unwrap_or("_");
             let labels_str = if labels.is_empty() {
@@ -457,13 +648,20 @@ fn format_op(op: &PlanOp) -> String {
             };
             format!(
                 "InsertVertex({}{}, {} prop{})",
-                var, labels_str, properties.len(),
+                var,
+                labels_str,
+                properties.len(),
                 if properties.len() == 1 { "" } else { "s" }
             )
         }
 
         PlanOp::InsertEdge {
-            variable, src, dst, labels, properties, ..
+            variable,
+            src,
+            dst,
+            labels,
+            properties,
+            ..
         } => {
             let var = variable.as_deref().unwrap_or("_");
             let labels_str = if labels.is_empty() {
@@ -473,18 +671,29 @@ fn format_op(op: &PlanOp) -> String {
             };
             format!(
                 "InsertEdge({} -[{}{}]-> {}, {} prop{})",
-                src, var, labels_str, dst,
+                src,
+                var,
+                labels_str,
+                dst,
                 properties.len(),
                 if properties.len() == 1 { "" } else { "s" }
             )
         }
 
         PlanOp::SetProperties { items } => {
-            format!("SetProperties({} item{})", items.len(), if items.len() == 1 { "" } else { "s" })
+            format!(
+                "SetProperties({} item{})",
+                items.len(),
+                if items.len() == 1 { "" } else { "s" }
+            )
         }
 
         PlanOp::RemoveProperties { items } => {
-            format!("RemoveProperties({} item{})", items.len(), if items.len() == 1 { "" } else { "s" })
+            format!(
+                "RemoveProperties({} item{})",
+                items.len(),
+                if items.len() == 1 { "" } else { "s" }
+            )
         }
 
         PlanOp::DeleteVertex { variable } => {
@@ -500,26 +709,45 @@ fn format_op(op: &PlanOp) -> String {
         }
 
         // ──── Procedure / Context ────
-        PlanOp::CallProcedure { name, args, yield_columns, optional } => {
+        PlanOp::CallProcedure {
+            name,
+            args,
+            yield_columns,
+            optional,
+        } => {
             let opt = if *optional { "OPTIONAL " } else { "" };
             let proc_name = name.join(".");
-            let yield_str = yield_columns.as_ref().map(|cols| {
-                let items: Vec<String> = cols.iter().map(|c| {
-                    if let Some(alias) = &c.alias {
-                        format!("{} AS {}", c.name, alias)
-                    } else {
-                        c.name.to_string()
-                    }
-                }).collect();
-                format!(" YIELD {}", items.join(", "))
-            }).unwrap_or_default();
-            format!("{}CallProcedure({}, {} arg{}{})",
-                opt, proc_name, args.len(),
+            let yield_str = yield_columns
+                .as_ref()
+                .map(|cols| {
+                    let items: Vec<String> = cols
+                        .iter()
+                        .map(|c| {
+                            if let Some(alias) = &c.alias {
+                                format!("{} AS {}", c.name, alias)
+                            } else {
+                                c.name.to_string()
+                            }
+                        })
+                        .collect();
+                    format!(" YIELD {}", items.join(", "))
+                })
+                .unwrap_or_default();
+            format!(
+                "{}CallProcedure({}, {} arg{}{})",
+                opt,
+                proc_name,
+                args.len(),
                 if args.len() == 1 { "" } else { "s" },
-                yield_str)
+                yield_str
+            )
         }
 
-        PlanOp::InlineProcedureCall { sub_plan, scope_vars, optional } => {
+        PlanOp::InlineProcedureCall {
+            sub_plan,
+            scope_vars,
+            optional,
+        } => {
             let opt = if *optional { "OPTIONAL " } else { "" };
             let sub_ops: Vec<String> = sub_plan.ops.iter().map(format_op).collect();
             let scope = if scope_vars.is_empty() {
@@ -527,10 +755,18 @@ fn format_op(op: &PlanOp) -> String {
             } else {
                 format!(" scope=[{}]", scope_vars.join(", "))
             };
-            format!("{}InlineProcedureCall{} [{}]", opt, scope, sub_ops.join(" -> "))
+            format!(
+                "{}InlineProcedureCall{} [{}]",
+                opt,
+                scope,
+                sub_ops.join(" -> ")
+            )
         }
 
-        PlanOp::UseGraph { graph_name, sub_plan } => {
+        PlanOp::UseGraph {
+            graph_name,
+            sub_plan,
+        } => {
             let name = graph_name.join(".");
             if let Some(sub_ops) = sub_plan {
                 let inner: Vec<String> = sub_ops.iter().map(format_op).collect();
@@ -541,17 +777,29 @@ fn format_op(op: &PlanOp) -> String {
         }
 
         // ──── Join ────
-        PlanOp::HashJoin { left, right, join_keys } => {
+        PlanOp::HashJoin {
+            left,
+            right,
+            join_keys,
+        } => {
             let l: Vec<String> = left.iter().map(format_op).collect();
             let r: Vec<String> = right.iter().map(format_op).collect();
-            format!("HashJoin(keys=[{}], left=[{}], right=[{}])",
-                join_keys.join(", "), l.join(" -> "), r.join(" -> "))
+            format!(
+                "HashJoin(keys=[{}], left=[{}], right=[{}])",
+                join_keys.join(", "),
+                l.join(" -> "),
+                r.join(" -> ")
+            )
         }
 
         PlanOp::CartesianProduct { left, right } => {
             let l: Vec<String> = left.iter().map(format_op).collect();
             let r: Vec<String> = right.iter().map(format_op).collect();
-            format!("CartesianProduct(left=[{}], right=[{}])", l.join(" -> "), r.join(" -> "))
+            format!(
+                "CartesianProduct(left=[{}], right=[{}])",
+                l.join(" -> "),
+                r.join(" -> ")
+            )
         }
     }
 }
@@ -600,7 +848,7 @@ fn format_direction(dir: &gleaph_gql::types::EdgeDirection) -> (&str, &str) {
         EdgeDirection::PointingLeft => ("<-", "-"),
         EdgeDirection::LeftOrRight => ("<-", "->"),
         EdgeDirection::Undirected => ("~", "~"),
-        EdgeDirection::AnyDirection | _ => ("-", "-"),
+        _ => ("-", "-"),
     }
 }
 
@@ -640,7 +888,12 @@ fn format_expr(expr: &gleaph_gql::ast::Expr) -> String {
             format!("{} {} {}", format_expr(left), op_str, format_expr(right))
         }
         ExprKind::Compare { left, op, right } => {
-            format!("{} {} {}", format_expr(left), format_cmp(op), format_expr(right))
+            format!(
+                "{} {} {}",
+                format_expr(left),
+                format_cmp(op),
+                format_expr(right)
+            )
         }
         ExprKind::And(l, r) => format!("{} AND {}", format_expr(l), format_expr(r)),
         ExprKind::Or(l, r) => format!("{} OR {}", format_expr(l), format_expr(r)),
@@ -651,9 +904,17 @@ fn format_expr(expr: &gleaph_gql::ast::Expr) -> String {
             let args_str: Vec<String> = args.iter().map(format_expr).collect();
             format!("{}({})", name.parts.join("."), args_str.join(", "))
         }
-        ExprKind::Aggregate { func, expr: agg_expr, distinct, .. } => {
+        ExprKind::Aggregate {
+            func,
+            expr: agg_expr,
+            distinct,
+            ..
+        } => {
             let d = if *distinct { "DISTINCT " } else { "" };
-            let arg = agg_expr.as_ref().map(|e| format_expr(e)).unwrap_or("*".to_string());
+            let arg = agg_expr
+                .as_ref()
+                .map(|e| format_expr(e))
+                .unwrap_or("*".to_string());
             format!("{:?}({}{})", func, d, arg)
         }
         ExprKind::Paren(e) => format!("({})", format_expr(e)),

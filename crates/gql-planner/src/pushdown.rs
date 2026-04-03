@@ -54,7 +54,7 @@ pub fn apply_filter_pushdown(ops: &mut Vec<PlanOp>, annotations: &mut PlanAnnota
     }
 
     // Apply moves (in reverse order to preserve indices).
-    moves.sort_by(|a, b| b.0.cmp(&a.0));
+    moves.sort_by_key(|b| std::cmp::Reverse(b.0));
     for (from, to) in &moves {
         let op = ops.remove(*from);
         ops.insert(*to, op);
@@ -87,15 +87,17 @@ fn produced_vars_by_position(ops: &[PlanOp]) -> ProducedVars {
             PlanOp::IndexIntersection { variable, .. } => {
                 current.insert(variable.to_string());
             }
-            PlanOp::Expand {
-                src, edge, dst, ..
-            }
-            | PlanOp::ExpandFilter {
-                src, edge, dst, ..
-            } => {
+            PlanOp::Expand { src, edge, dst, .. } | PlanOp::ExpandFilter { src, edge, dst, .. } => {
                 current.insert(src.to_string());
                 current.insert(edge.to_string());
                 current.insert(dst.to_string());
+            }
+            PlanOp::EdgeBindEndpoints {
+                edge, near, far, ..
+            } => {
+                current.insert(edge.to_string());
+                current.insert(near.to_string());
+                current.insert(far.to_string());
             }
             PlanOp::ShortestPath {
                 src,
@@ -116,7 +118,11 @@ fn produced_vars_by_position(ops: &[PlanOp]) -> ProducedVars {
                     current.insert(b.variable.clone());
                 }
             }
-            PlanOp::For { variable, ordinality, .. } => {
+            PlanOp::For {
+                variable,
+                ordinality,
+                ..
+            } => {
                 current.insert(variable.to_string());
                 if let Some(ord) = ordinality {
                     current.insert(ord.to_string());
@@ -130,11 +136,12 @@ fn produced_vars_by_position(ops: &[PlanOp]) -> ProducedVars {
             } => {
                 current.insert(v.to_string());
             }
-            PlanOp::CallProcedure { yield_columns, .. } => {
-                if let Some(cols) = yield_columns {
-                    for col in cols {
-                        current.insert(col.alias.as_deref().unwrap_or(&col.name).to_string());
-                    }
+            PlanOp::CallProcedure {
+                yield_columns: Some(cols),
+                ..
+            } => {
+                for col in cols {
+                    current.insert(col.alias.as_deref().unwrap_or(&col.name).to_string());
                 }
             }
             PlanOp::InlineProcedureCall { scope_vars, .. } => {
@@ -142,12 +149,13 @@ fn produced_vars_by_position(ops: &[PlanOp]) -> ProducedVars {
                     current.insert(v.to_string());
                 }
             }
-            PlanOp::UseGraph { sub_plan, .. } => {
-                if let Some(sub_ops) = sub_plan {
-                    let sub_pv = produced_vars_by_position(sub_ops);
-                    if let Some(last) = sub_pv.last() {
-                        current.extend(last.iter().cloned());
-                    }
+            PlanOp::UseGraph {
+                sub_plan: Some(sub_ops),
+                ..
+            } => {
+                let sub_pv = produced_vars_by_position(sub_ops);
+                if let Some(last) = sub_pv.last() {
+                    current.extend(last.iter().cloned());
                 }
             }
             PlanOp::HashJoin { left, right, .. } | PlanOp::CartesianProduct { left, right } => {
@@ -264,12 +272,13 @@ pub fn apply_limit_pushdown(ops: &mut Vec<PlanOp>, annotations: &mut PlanAnnotat
     }
 
     if let (Some(li), Some(pi)) = (limit_idx, project_idx)
-        && li > pi {
-            // Move Limit before Project.
-            let limit_op = ops.remove(li);
-            ops.insert(pi, limit_op);
-            annotations.optimizer.limit_pushdown_applied = true;
-        }
+        && li > pi
+    {
+        // Move Limit before Project.
+        let limit_op = ops.remove(li);
+        ops.insert(pi, limit_op);
+        annotations.optimizer.limit_pushdown_applied = true;
+    }
 }
 
 /// TopK fusion: when Sort is immediately followed by Limit (possibly with
@@ -277,12 +286,16 @@ pub fn apply_limit_pushdown(ops: &mut Vec<PlanOp>, annotations: &mut PlanAnnotat
 pub fn apply_topk_fusion(ops: &mut Vec<PlanOp>, annotations: &mut PlanAnnotations) {
     // Look for Sort followed by Limit (with optional Project in between).
     let sort_idx = ops.iter().rposition(|op| matches!(op, PlanOp::Sort { .. }));
-    let limit_idx = ops.iter().rposition(|op| matches!(op, PlanOp::Limit { count: Some(_), .. }));
+    let limit_idx = ops
+        .iter()
+        .rposition(|op| matches!(op, PlanOp::Limit { count: Some(_), .. }));
 
     if let (Some(si), Some(li)) = (sort_idx, limit_idx) {
         // Limit must come after Sort, and there should be no Aggregate between them.
         if li > si
-            && !ops[si..li].iter().any(|op| matches!(op, PlanOp::Aggregate { .. }))
+            && !ops[si..li]
+                .iter()
+                .any(|op| matches!(op, PlanOp::Aggregate { .. }))
         {
             // Extract Sort and Limit.
             let limit_op = ops.remove(li);
@@ -290,10 +303,20 @@ pub fn apply_topk_fusion(ops: &mut Vec<PlanOp>, annotations: &mut PlanAnnotation
 
             if let (
                 PlanOp::Sort { order_by },
-                PlanOp::Limit { count: Some(k), offset },
+                PlanOp::Limit {
+                    count: Some(k),
+                    offset,
+                },
             ) = (sort_op, limit_op)
             {
-                ops.insert(si, PlanOp::TopK { order_by, k, offset });
+                ops.insert(
+                    si,
+                    PlanOp::TopK {
+                        order_by,
+                        k,
+                        offset,
+                    },
+                );
                 annotations.optimizer.topk_applied = true;
             }
         }
@@ -318,28 +341,29 @@ pub fn can_push_filter_to_stage(
 /// Predicate reordering: sort predicates within each PropertyFilter by
 /// estimated selectivity (most selective first) for early short-circuit.
 pub fn apply_predicate_reordering(
-    ops: &mut Vec<PlanOp>,
+    ops: &mut [PlanOp],
     annotations: &mut PlanAnnotations,
     stats: Option<&dyn crate::stats::GraphStats>,
 ) {
     let mut reordered = false;
     for op in ops.iter_mut() {
         if let PlanOp::PropertyFilter { predicates, .. } = op
-            && predicates.len() > 1 {
-                // Capture original order by pointer identity.
-                let original_ptrs: Vec<*const gleaph_gql::ast::Expr> =
-                    predicates.iter().map(|p| p as *const _).collect();
-                predicates.sort_by(|a, b| {
-                    let sa = crate::cost::estimate_predicate_selectivity(a, stats);
-                    let sb = crate::cost::estimate_predicate_selectivity(b, stats);
-                    sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
-                });
-                let new_ptrs: Vec<*const gleaph_gql::ast::Expr> =
-                    predicates.iter().map(|p| p as *const _).collect();
-                if original_ptrs != new_ptrs {
-                    reordered = true;
-                }
+            && predicates.len() > 1
+        {
+            // Capture original order by pointer identity.
+            let original_ptrs: Vec<*const gleaph_gql::ast::Expr> =
+                predicates.iter().map(|p| p as *const _).collect();
+            predicates.sort_by(|a, b| {
+                let sa = crate::cost::estimate_predicate_selectivity(a, stats);
+                let sb = crate::cost::estimate_predicate_selectivity(b, stats);
+                sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            let new_ptrs: Vec<*const gleaph_gql::ast::Expr> =
+                predicates.iter().map(|p| p as *const _).collect();
+            if original_ptrs != new_ptrs {
+                reordered = true;
             }
+        }
     }
     if reordered {
         annotations.optimizer.predicate_reordering_applied = true;
@@ -352,14 +376,9 @@ pub fn apply_ev_fusion(ops: &mut Vec<PlanOp>, annotations: &mut PlanAnnotations)
     let mut i = 0;
     while i + 1 < ops.len() {
         let can_fuse = match (&ops[i], &ops[i + 1]) {
-            (
-                PlanOp::Expand { dst, .. },
-                PlanOp::PropertyFilter { predicates, .. },
-            ) => {
+            (PlanOp::Expand { dst, .. }, PlanOp::PropertyFilter { predicates, .. }) => {
                 // Check all predicates reference only the dst variable (zero-copy).
-                predicates.iter().all(|pred| {
-                    all_variables_eq(pred, dst)
-                })
+                predicates.iter().all(|pred| all_variables_eq(pred, dst))
             }
             _ => false,
         };
@@ -376,7 +395,11 @@ pub fn apply_ev_fusion(ops: &mut Vec<PlanOp>, annotations: &mut PlanAnnotations)
                     dst,
                     direction,
                     label,
+                    label_expr,
                     var_len,
+                    indexed_edge_equality,
+                    edge_property_projection,
+                    dst_property_projection,
                 },
                 PlanOp::PropertyFilter { predicates, .. },
             ) = (expand_op, filter_op)
@@ -389,8 +412,12 @@ pub fn apply_ev_fusion(ops: &mut Vec<PlanOp>, annotations: &mut PlanAnnotations)
                         dst,
                         direction,
                         label,
+                        label_expr,
                         var_len,
+                        indexed_edge_equality,
                         dst_filter: predicates,
+                        edge_property_projection,
+                        dst_property_projection,
                     },
                 );
                 annotations.optimizer.ev_fusion_applied = true;
@@ -467,11 +494,7 @@ pub(crate) fn collect_variables_ref<'a>(
                 collect_variables_ref(arg, f);
             }
         }
-        ExprKind::Aggregate { expr: agg_expr, .. } => {
-            if let Some(e) = agg_expr {
-                collect_variables_ref(e, f);
-            }
-        }
+        ExprKind::Aggregate { expr: Some(e), .. } => collect_variables_ref(e, f),
         _ => {}
     }
 }

@@ -27,9 +27,10 @@ fn estimate_initial_rows(ops: &[PlanOp], stats: Option<&dyn GraphStats>) -> f64 
             PlanOp::NodeScan { label, .. } => {
                 if let Some(label) = label
                     && let Some(stats) = stats
-                        && let Some(card) = stats.label_cardinality(label) {
-                            return card as f64;
-                        }
+                    && let Some(card) = stats::label_cardinality_with_id(stats, label)
+                {
+                    return card as f64;
+                }
                 return 1000.0; // Default estimate.
             }
             PlanOp::IndexScan { .. } => return 10.0, // Index scans are very selective.
@@ -42,16 +43,12 @@ fn estimate_initial_rows(ops: &[PlanOp], stats: Option<&dyn GraphStats>) -> f64 
 }
 
 /// Estimate cost and output rows for a single operator.
-fn estimate_op_cost(
-    op: &PlanOp,
-    input_rows: f64,
-    stats: Option<&dyn GraphStats>,
-) -> (f64, f64) {
+fn estimate_op_cost(op: &PlanOp, input_rows: f64, stats: Option<&dyn GraphStats>) -> (f64, f64) {
     match op {
         PlanOp::NodeScan { label, .. } => {
             let rows = if let Some(label) = label {
                 stats
-                    .and_then(|s| s.label_cardinality(label))
+                    .and_then(|s| stats::label_cardinality_with_id(s, label))
                     .map(|c| c as f64)
                     .unwrap_or(1000.0)
             } else {
@@ -62,17 +59,31 @@ fn estimate_op_cost(
 
         PlanOp::IndexScan { .. } => {
             let rows = 10.0;
-            (rows * stats::COST_SCAN_PER_ROW * stats::COST_INDEX_SEEK_FRACTION, rows)
+            (
+                rows * stats::COST_SCAN_PER_ROW * stats::COST_INDEX_SEEK_FRACTION,
+                rows,
+            )
         }
 
         PlanOp::EdgeIndexScan { .. } => {
             let rows = 10.0;
-            (rows * stats::COST_SCAN_PER_ROW * stats::COST_INDEX_SEEK_FRACTION, rows)
+            (
+                rows * stats::COST_SCAN_PER_ROW * stats::COST_INDEX_SEEK_FRACTION,
+                rows,
+            )
+        }
+
+        PlanOp::EdgeBindEndpoints { .. } => {
+            let rows = input_rows.max(1.0);
+            (input_rows * stats::COST_EXPAND_MULTIPLIER * 0.02, rows)
         }
 
         PlanOp::ConditionalIndexScan { .. } => {
             let rows = 50.0;
-            (rows * stats::COST_SCAN_PER_ROW * stats::COST_INDEX_SEEK_FRACTION, rows)
+            (
+                rows * stats::COST_SCAN_PER_ROW * stats::COST_INDEX_SEEK_FRACTION,
+                rows,
+            )
         }
 
         PlanOp::PropertyFilter { predicates, .. } => {
@@ -93,34 +104,49 @@ fn estimate_op_cost(
             (input_rows * stats::COST_FILTER_PER_ROW, output_rows)
         }
 
-        PlanOp::Expand { var_len, .. } => {
-            let degree = stats
-                .and_then(|s| s.avg_degree())
-                .unwrap_or(10.0);
+        PlanOp::Expand {
+            var_len,
+            indexed_edge_equality,
+            ..
+        } => {
+            let degree = stats.and_then(|s| s.avg_degree()).unwrap_or(10.0);
             let multiplier = var_len_multiplier(var_len.as_ref(), degree);
-            let output_rows = input_rows * multiplier;
-            (input_rows * stats::COST_EXPAND_MULTIPLIER, output_rows)
+            let idx_sel = indexed_edge_equality
+                .as_ref()
+                .and_then(|(prop, _)| stats.and_then(|s| s.property_selectivity(prop.as_ref())))
+                .unwrap_or(1.0);
+            let output_rows = input_rows * multiplier * idx_sel;
+            (
+                input_rows * stats::COST_EXPAND_MULTIPLIER * idx_sel,
+                output_rows,
+            )
         }
 
         PlanOp::ExpandFilter {
-            var_len, dst_filter, ..
+            var_len,
+            indexed_edge_equality,
+            dst_filter,
+            ..
         } => {
-            let degree = stats
-                .and_then(|s| s.avg_degree())
-                .unwrap_or(10.0);
+            let degree = stats.and_then(|s| s.avg_degree()).unwrap_or(10.0);
             let multiplier = var_len_multiplier(var_len.as_ref(), degree);
+            let idx_sel = indexed_edge_equality
+                .as_ref()
+                .and_then(|(prop, _)| stats.and_then(|s| s.property_selectivity(prop.as_ref())))
+                .unwrap_or(1.0);
             let filter_sel: f64 = dst_filter
                 .iter()
                 .map(|p| estimate_predicate_selectivity(p, stats))
                 .product();
-            let output_rows = input_rows * multiplier * filter_sel;
+            let output_rows = input_rows * multiplier * idx_sel * filter_sel;
             // Cheaper than separate Expand + Filter (no intermediate materialization).
-            (input_rows * stats::COST_EXPAND_MULTIPLIER * 0.8, output_rows)
+            (
+                input_rows * stats::COST_EXPAND_MULTIPLIER * 0.8 * idx_sel,
+                output_rows,
+            )
         }
 
-        PlanOp::ShortestPath { .. } => {
-            (input_rows * stats::COST_SHORTEST_PER_ROW, input_rows)
-        }
+        PlanOp::ShortestPath { .. } => (input_rows * stats::COST_SHORTEST_PER_ROW, input_rows),
 
         PlanOp::Let { .. } | PlanOp::For { .. } => {
             // LET doesn't change row count; FOR may expand.
@@ -133,9 +159,7 @@ fn estimate_op_cost(
             (input_rows * stats::COST_AGGREGATE_PER_ROW, output_rows)
         }
 
-        PlanOp::Project { .. } => {
-            (input_rows * stats::COST_PROJECT_PER_ROW, input_rows)
-        }
+        PlanOp::Project { .. } => (input_rows * stats::COST_PROJECT_PER_ROW, input_rows),
 
         PlanOp::Sort { .. } => {
             let cost = if input_rows > 1.0 {
@@ -158,13 +182,19 @@ fn estimate_op_cost(
         PlanOp::SetOperation { right, .. } => {
             let right_cost = estimate_cost(&right.ops, stats);
             let right_rows = 1000.0;
-            (right_cost + input_rows * stats::COST_PROJECT_PER_ROW, input_rows + right_rows)
+            (
+                right_cost + input_rows * stats::COST_PROJECT_PER_ROW,
+                input_rows + right_rows,
+            )
         }
 
         PlanOp::OptionalMatch { sub_plan } => {
             let sub_cost = estimate_cost(sub_plan, stats);
             // OPTIONAL MATCH preserves all input rows (left-outer-join).
-            (sub_cost + input_rows * stats::COST_EXPAND_MULTIPLIER * 0.1, input_rows)
+            (
+                sub_cost + input_rows * stats::COST_EXPAND_MULTIPLIER * 0.1,
+                input_rows,
+            )
         }
 
         PlanOp::IndexIntersection { scans, .. } => {
@@ -173,7 +203,9 @@ fn estimate_op_cost(
                 .map(|_| stats::COST_INDEX_SEEK_FRACTION)
                 .product();
             let output_rows = (input_rows * selectivity).max(1.0);
-            let cost = input_rows * stats::COST_SCAN_PER_ROW * stats::COST_INDEX_SEEK_FRACTION
+            let cost = input_rows
+                * stats::COST_SCAN_PER_ROW
+                * stats::COST_INDEX_SEEK_FRACTION
                 * stats::COST_INDEX_INTERSECTION_OVERHEAD
                 * scans.len() as f64;
             (cost, output_rows)
@@ -184,7 +216,10 @@ fn estimate_op_cost(
             let cycle_len = edges.len() as f64;
             let multiplier = degree.powf(cycle_len - 1.0) * stats::COST_WCOJ_FRACTION;
             let output_rows = input_rows * multiplier;
-            (input_rows * stats::COST_EXPAND_MULTIPLIER * stats::COST_WCOJ_FRACTION * cycle_len, output_rows)
+            (
+                input_rows * stats::COST_EXPAND_MULTIPLIER * stats::COST_WCOJ_FRACTION * cycle_len,
+                output_rows,
+            )
         }
 
         PlanOp::TopK { k, .. } => {
@@ -194,7 +229,11 @@ fn estimate_op_cost(
         }
 
         PlanOp::Materialize { distinct, .. } => {
-            let output = if *distinct { input_rows * 0.5 } else { input_rows };
+            let output = if *distinct {
+                input_rows * 0.5
+            } else {
+                input_rows
+            };
             (input_rows * stats::COST_MATERIALIZE_PER_ROW, output)
         }
 
@@ -205,24 +244,22 @@ fn estimate_op_cost(
         PlanOp::SetProperties { .. } | PlanOp::RemoveProperties { .. } => {
             (input_rows * stats::COST_DML_PER_ROW * 0.5, input_rows)
         }
-        PlanOp::DeleteVertex { .. } => {
-            (input_rows * stats::COST_DML_PER_ROW, 0.0)
-        }
-        PlanOp::DetachDeleteVertex { .. } => {
-            (input_rows * stats::COST_DML_PER_ROW * 2.0, 0.0)
-        }
-        PlanOp::DeleteEdge { .. } => {
-            (input_rows * stats::COST_DML_PER_ROW, 0.0)
-        }
+        PlanOp::DeleteVertex { .. } => (input_rows * stats::COST_DML_PER_ROW, 0.0),
+        PlanOp::DetachDeleteVertex { .. } => (input_rows * stats::COST_DML_PER_ROW * 2.0, 0.0),
+        PlanOp::DeleteEdge { .. } => (input_rows * stats::COST_DML_PER_ROW, 0.0),
 
         // ──── Procedure / Context ────
-        PlanOp::CallProcedure { .. } => {
-            (stats::COST_PROCEDURE_CALL, stats::COST_PROCEDURE_DEFAULT_ROWS)
-        }
+        PlanOp::CallProcedure { .. } => (
+            stats::COST_PROCEDURE_CALL,
+            stats::COST_PROCEDURE_DEFAULT_ROWS,
+        ),
         PlanOp::InlineProcedureCall { sub_plan, .. } => {
             let sub_cost = estimate_cost(&sub_plan.ops, stats);
             let sub_rows = estimate_rows(&sub_plan.ops, stats);
-            (sub_cost + stats::COST_PROCEDURE_CALL * 0.1, sub_rows.max(input_rows))
+            (
+                sub_cost + stats::COST_PROCEDURE_CALL * 0.1,
+                sub_rows.max(input_rows),
+            )
         }
         PlanOp::UseGraph { sub_plan, .. } => {
             if let Some(sub_ops) = sub_plan {
@@ -251,7 +288,10 @@ fn estimate_op_cost(
             let left_rows = estimate_rows(left, stats);
             let right_rows = estimate_rows(right, stats);
             let product_rows = left_rows * right_rows;
-            (left_cost + right_cost + product_rows * stats::COST_PROJECT_PER_ROW, product_rows)
+            (
+                left_cost + right_cost + product_rows * stats::COST_PROJECT_PER_ROW,
+                product_rows,
+            )
         }
     }
 }
@@ -286,22 +326,23 @@ pub(crate) fn estimate_predicate_selectivity(
         ExprKind::Compare { left, op, right } => {
             // Check for property access and look up selectivity in stats.
             if let ExprKind::PropertyAccess { property, .. } = &left.kind
-                && let Some(stats) = stats {
-                    // Try histogram first.
-                    if let Some(hist) = stats.property_histogram(property) {
-                        if let Some(val) = extract_literal_f64(right) {
-                            return hist.range_selectivity(*op, val);
-                        }
-                        // Histogram exists but no literal → use histogram equality for Eq.
-                        if *op == CmpOp::Eq {
-                            return hist.equality_selectivity();
-                        }
+                && let Some(stats) = stats
+            {
+                // Try histogram first.
+                if let Some(hist) = stats.property_histogram(property) {
+                    if let Some(val) = extract_literal_f64(right) {
+                        return hist.range_selectivity(*op, val);
                     }
-                    // Fall back to property_selectivity.
-                    if let Some(sel) = stats.property_selectivity(property) {
-                        return sel;
+                    // Histogram exists but no literal → use histogram equality for Eq.
+                    if *op == CmpOp::Eq {
+                        return hist.equality_selectivity();
                     }
                 }
+                // Fall back to property_selectivity.
+                if let Some(sel) = stats.property_selectivity(property) {
+                    return sel;
+                }
+            }
             match op {
                 CmpOp::Eq => 0.1,
                 CmpOp::Ne => 0.9,
