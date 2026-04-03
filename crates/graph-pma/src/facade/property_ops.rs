@@ -171,11 +171,14 @@ impl RewriteGraphPma {
         node_store_operations.push(insert_kind);
         self.node_property_store_dirty = true;
         self.note_node_property_store_appended_from(old_len);
-        Ok(RewritePropertyIndexMutationSummary::from_delta(
+        let summary = RewritePropertyIndexMutationSummary::from_delta(
             self.node_property_index_nodes.diff_against(&before),
             node_store_operations,
             fallback_reasons,
-        ))
+        );
+        self.node_property_index_nodes
+            .note_dirty_node_ids(summary.touched_node_ids.iter().copied());
+        Ok(summary)
     }
 
     pub fn remove_node_property_value(
@@ -218,11 +221,14 @@ impl RewriteGraphPma {
             .remove(PropertyKey::node(node_id, property))?;
         self.node_property_store_dirty = true;
         self.note_node_property_store_appended_from(old_len);
-        Ok(RewritePropertyIndexMutationSummary::from_delta(
+        let summary = RewritePropertyIndexMutationSummary::from_delta(
             self.node_property_index_nodes.diff_against(&before),
             node_store_operations,
             fallback_reasons,
-        ))
+        );
+        self.node_property_index_nodes
+            .note_dirty_node_ids(summary.touched_node_ids.iter().copied());
+        Ok(summary)
     }
 
     pub fn set_edge_property_value(
@@ -300,11 +306,14 @@ impl RewriteGraphPma {
         node_store_operations.push(insert_kind);
         self.edge_property_store_dirty = true;
         self.note_edge_property_store_appended_from(old_len);
-        Ok(RewritePropertyIndexMutationSummary::from_delta(
+        let summary = RewritePropertyIndexMutationSummary::from_delta(
             self.edge_property_index_nodes.diff_against(&before),
             node_store_operations,
             fallback_reasons,
-        ))
+        );
+        self.edge_property_index_nodes
+            .note_dirty_node_ids(summary.touched_node_ids.iter().copied());
+        Ok(summary)
     }
 
     pub fn remove_edge_property_value(
@@ -347,11 +356,14 @@ impl RewriteGraphPma {
             .remove(PropertyKey::edge(edge_id, property))?;
         self.edge_property_store_dirty = true;
         self.note_edge_property_store_appended_from(old_len);
-        Ok(RewritePropertyIndexMutationSummary::from_delta(
+        let summary = RewritePropertyIndexMutationSummary::from_delta(
             self.edge_property_index_nodes.diff_against(&before),
             node_store_operations,
             fallback_reasons,
-        ))
+        );
+        self.edge_property_index_nodes
+            .note_dirty_node_ids(summary.touched_node_ids.iter().copied());
+        Ok(summary)
     }
 
     pub fn set_node_property_value_and_write(

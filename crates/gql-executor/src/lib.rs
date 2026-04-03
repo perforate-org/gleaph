@@ -418,6 +418,19 @@ pub fn execute_plan_with_context<G: GraphRead + GraphWrite>(
     plan: &PhysicalPlan,
     ctx: &ExecutionContext,
 ) -> ExecutionResultExt<ExecutionResult> {
+    execute_plan_with_context_maybe_flush(graph, plan, ctx, true)
+}
+
+/// Like [`execute_plan_with_context`], but `flush_at_end` controls the terminal [`GraphWrite::flush`].
+///
+/// Nested plans (e.g. [`PlanOp::SetOperation`] RHS) pass `false` so the outer plan performs a single
+/// stable flush, avoiding duplicate PMA refresh / PIDX work.
+fn execute_plan_with_context_maybe_flush<G: GraphRead + GraphWrite>(
+    graph: &mut G,
+    plan: &PhysicalPlan,
+    ctx: &ExecutionContext,
+    flush_at_end: bool,
+) -> ExecutionResultExt<ExecutionResult> {
     if let Some(error) = plan.diagnostics.dml_errors.first() {
         return Err(ExecutionError::InvalidPlan(format!(
             "[{}] at {}..{}: {}",
@@ -467,9 +480,11 @@ pub fn execute_plan_with_context<G: GraphRead + GraphWrite>(
         .collect();
     let summary = ExecutionSummary::from_result(&rows, &warnings, plan);
 
-    #[cfg(feature = "canbench-rs")]
-    let _flush_scope = canbench_rs::bench_scope("gql_exec_plan_flush");
-    graph.flush()?;
+    if flush_at_end {
+        #[cfg(feature = "canbench-rs")]
+        let _flush_scope = canbench_rs::bench_scope("gql_exec_plan_flush");
+        graph.flush()?;
+    }
 
     Ok(ExecutionResult {
         rows,
@@ -922,7 +937,7 @@ fn execute_ops_from_rows<G: GraphRead + GraphWrite>(
             }
             PlanOp::SetOperation { op, right } => {
                 let left_rows = normalize_to_output_rows(graph, rows, projected.take())?;
-                let right_result = execute_plan_with_context(graph, right, ctx)?;
+                let right_result = execute_plan_with_context_maybe_flush(graph, right, ctx, false)?;
                 let output = exec_set_operation(*op, left_rows, right_result.rows);
                 rows = Vec::new();
                 projected = Some(output);

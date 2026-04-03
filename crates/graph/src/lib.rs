@@ -27,6 +27,16 @@ mod subplan_wire_v1;
 #[cfg(feature = "canbench-rs")]
 mod bench;
 
+#[cfg(feature = "canbench-rs")]
+mod canbench_benches {
+    use canbench_rs::bench;
+
+    #[bench(raw)]
+    fn bench_gql_execute_block_bulk_detach_delete() -> canbench_rs::BenchResult {
+        super::bench::bench_gql_execute_block_bulk_detach_delete_impl()
+    }
+}
+
 pub use subplan_wire_v1::SubplanWireV1;
 
 use candid::CandidType;

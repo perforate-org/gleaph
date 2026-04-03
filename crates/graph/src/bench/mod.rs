@@ -23,6 +23,70 @@
 //! Prefer refreshing results with **`cd crates/graph && canbench --persist` without a bench
 //! filter** so `canbench_results.yml` keeps the full benchmark list instead of shrinking to one
 //! entry.
+//!
+//! ### Baseline regression axes (instruction scale is build-dependent)
+//!
+//! - **`pma_pidx_write_region`**: largest slice of PIDX work (full property-index region writeback).
+//! - **`pma_property_index_paged_flush`**: outer PIDX flush; should track closely with `pma_pidx_*`.
+//! - **`pma_graph_refresh_write`**: graph surface writeback. Compare `calls` across benchmarks:
+//!   a single terminal [`GraphWrite::flush`] should incur **one** entry per flush round-trip; values
+//!   above **1** often mean **`INSERT`** (`bootstrap_*_and_write` plus executor `flush`) or more than
+//!   one flush in the measured path. **`PlanOp::SetOperation`** RHS defers its terminal flush to the
+//!   outer plan (`execute_plan_with_context_maybe_flush` in `gleaph-gql-executor`). IC numbers track
+//!   whichever wasm is **installed** on the benchmark canister—rebuild/redeploy before trusting deltas.
+//! - **`gql_exec_plan_flush`**: overlaps nested PMA scopes in totals; use **`pma_*`** for attribution.
+//!
+//! Multi-`SET` / **`NEXT`**: expect **`pma_property_index_paged_flush.calls` == 1** per block sample and
+//! **`gql_exec_set_property_item.calls`** equal to the number of property `SET` items.
+//!
+//! ## `pma_graph_refresh_write.calls` on mutation benches (instrumentation vs code paths)
+//!
+//! The `pma_graph_refresh_write` [`canbench_rs::bench_scope`] is installed only on
+//! [`gleaph_graph_pma::facade::RewriteGraphPma::refresh_and_write_dirty_to_stable_memory`] (facade
+//! flush: graph refresh + optional property stores + PIDX paged flush + maintenance queue). It is
+//! **not** wrapped around low-level
+//! [`GraphRuntime::refresh_and_write_dirty_to_stable_memory`](gleaph_graph_pma::low_level::GraphRuntime::refresh_and_write_dirty_to_stable_memory),
+//! which is what internal `*_graph.*_and_write` helpers call **inside** some mutations (e.g.
+//! `tombstone_edge_pair_and_write` after `tombstone_edge_pair`).
+//!
+//! - **`bench_gql_execute_block_insert_person` (+ multi_prop / bare):** seed uses `INSERT` →
+//!   `bootstrap_vertex_refs_and_edges_and_write` → **facade** `try_refresh_and_write_dirty_to_stable_memory`
+//!   (**1** scoped entry), then executor terminal `GraphWrite::flush` → facade again (**2** scoped
+//!   entries in `canbench_results.yml`). Matching `pma_maint_queue_persist.calls` often **2** when the
+//!   first flush had no dirty property-store pipeline (early-return path persists the queue only).
+//! - **`bench_gql_execute_block_delete_edge`:** each `delete_edge` → `tombstone_edge_pair_and_write` →
+//!   **runtime** graph refresh (unscoped) + executor **`flush`** → facade (**`calls` == 1** is
+//!   expected, not a single end-to-end write).
+//! - **`bench_gql_execute_block_delete_vertex` / `bench_gql_execute_block_detach_delete_vertex`:**
+//!   structural deletes may perform multiple **unscoped** runtime refreshes (e.g. per tombstoned edge
+//!   on `DETACH DELETE`); **`pma_graph_refresh_write`** still counts **terminal facade flush(es)** only
+//!   (typically **1** per block when the executor runs one plan flush). Compare PIDX cost via
+//!   `pma_pidx_*` / `pma_property_index_paged_flush`, not only this label.
+//! - **Consolidation idea (future):** route tombstone/replace internal writeback through the facade
+//!   flush or add a matching scope on the runtime path if Profiles should attribute “every stable
+//!   graph refresh” under one label.
+//!
+//! ## Planned workload-shaped benches (design only; not implemented yet)
+//!
+//! Approximate real app update patterns on top of existing `overlay_block` / `person_ring` seeds:
+//!
+//! 1. **`bench_gql_execute_block_bulk_set_person_props`** — `seed_person_ring_spec(32)` (or 128),
+//!    block: `MATCH (n:Person) WHERE n.region = 'east' SET n.score = n.score + 1, n.bucket = 'hot'
+//!    RETURN count(n)` (tune `WHERE` / property count). **Read in canbench:** `gql_exec_set_property_item`,
+//!    `pma_property_index_paged_flush`, `pma_pidx_write_region`, `pma_node_property_store_flush`.
+//! 2. **`bench_gql_execute_block_follow_toggle_next`** — star or ring with a single `FOLLOWS` edge
+//!    pattern; block uses **`NEXT`**: first statement `INSERT` or `MATCH … CREATE` the edge, second
+//!    `MATCH … DELETE` it (alternate rows or fixed endpoints so toggling stays deterministic). **Read:**
+//!    mix of `pma_graph_refresh_write`, `pma_node_property_store_flush` / edge store, and tombstone
+//!    latency vs insert-heavy benches.
+//! 3. **`bench_gql_execute_block_bulk_detach_delete`** — larger fixed `Person` chain; one `DETACH DELETE`
+//!    of a high-degree or middle node per sample (optionally `LIMIT 1`). **Read:** `pma_pidx_*`
+//!    scaling with incident edges and label-catalog / GC persistence (`persist_vertex_label_index` is
+//!    outside `pma_graph_refresh_write` — use totals if investigating).
+//!
+//! Implementation notes when adding these: extend [`KernelBootstrapGraphSpec`] or local `seed_*`
+//! helpers; keep **`bench_overlay_block!`** so warmup/bootstrap stays outside the measured closure;
+//! document expected `calls` next to the new `#[bench(raw)]` like the inventory above.
 
 mod memory;
 
@@ -649,6 +713,23 @@ fn bench_gql_execute_block_detach_delete_vertex() -> canbench_rs::BenchResult {
     bench_overlay_block!(
         seed_three_users_path(),
         "MATCH (n:User {uid: 'u1'}) DETACH DELETE n"
+    )
+}
+
+/// Person/Post star with a high-outdegree `Person` hub for `DETACH DELETE`.
+///
+/// We intentionally reuse an already-stable bootstrap shape (`seed_person_ring_spec`) so the
+/// benchmark consistently executes on canbench wasm targets.
+fn seed_person_chain_detach_delete_high_degree() -> KernelBootstrapGraphSpec {
+    seed_person_ring_spec(256)
+}
+
+/// `DETACH DELETE` the high-degree "middle" node of a `Person` chain; first sample does
+/// structural DML, later samples match no rows.
+pub(crate) fn bench_gql_execute_block_bulk_detach_delete_impl() -> canbench_rs::BenchResult {
+    bench_overlay_block!(
+        seed_person_chain_detach_delete_high_degree(),
+        "MATCH (n:Person {uid: 'u16'}) DETACH DELETE n"
     )
 }
 

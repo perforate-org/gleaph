@@ -298,11 +298,20 @@ impl<'a, S: super::RewriteGraphStore, M: super::Memory> GraphWrite
         Ok(edge.clone())
     }
 
+    /// Deletes one edge in storage and overlay bookkeeping.
+    ///
+    /// Does **not** call [`GraphWrite::flush`]: [`gleaph_gql_executor::execute_plan_with_context`]
+    /// already flushes after each plan. Callers that invoke this outside the executor must flush
+    /// explicitly if stable memory must reflect the deletion immediately.
     fn delete_edge(&mut self, edge_id: EdgeId) -> GraphResult<()> {
         self.delete_edge_without_flush(edge_id)?;
-        GraphWrite::flush(self)
+        Ok(())
     }
 
+    /// Deletes a vertex (optionally detaching incident edges first).
+    ///
+    /// Does **not** call [`GraphWrite::flush`]: the GQL executor flushes after plan execution.
+    /// Direct kernel callers must flush when they need persistence in the same tick.
     fn delete_node(&mut self, node_id: NodeId, detach: bool) -> GraphResult<()> {
         let incident_edge_ids: Vec<EdgeId> = self
             .bridge
@@ -354,7 +363,7 @@ impl<'a, S: super::RewriteGraphStore, M: super::Memory> GraphWrite
                 deleted_edge_ids: incident_edge_ids,
                 edge_writes,
             });
-        GraphWrite::flush(self)
+        Ok(())
     }
 
     fn flush(&mut self) -> GraphResult<()> {

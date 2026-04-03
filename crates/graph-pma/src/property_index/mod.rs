@@ -34,6 +34,7 @@ mod node_store;
 
 pub use node_store::{
     PropertyIndexNodeStore, PropertyIndexNodeStoreDelta, PropertyIndexNodeStoreMutationKind,
+    PropertyIndexPagedAreaPagePatch,
 };
 
 /// Stable-memory image: PIDX logical snapshot plus paged node-store areas for node/edge indices.

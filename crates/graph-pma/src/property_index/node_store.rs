@@ -29,6 +29,9 @@ pub struct PropertyIndexNodeStore {
     /// next PIDX flush (unless the facade forces a full image write). Cleared after a successful
     /// compact PIDX flush. Not compared by [`PartialEq`].
     pub pidx_side_must_flush: bool,
+    /// Optional dirty-node hints captured from mutation summaries.
+    /// These hints are best-effort and consumed during flush planning.
+    pub pidx_dirty_node_hints: BTreeSet<PropertyIndexNodeId>,
 }
 
 impl PartialEq for PropertyIndexNodeStore {
@@ -50,6 +53,12 @@ pub struct PropertyIndexNodeStoreDelta {
     pub allocated_node_ids: Vec<PropertyIndexNodeId>,
     /// Node ids that were present in the previous state and were freed.
     pub freed_node_ids: Vec<PropertyIndexNodeId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PropertyIndexPagedAreaPagePatch {
+    pub slot_index: usize,
+    pub bytes: Vec<u8>,
 }
 
 /// Coarse-grained incremental mutation path taken by the persisted node store.
@@ -164,6 +173,7 @@ impl PropertyIndexNodeStore {
             free_node_ids: Vec::new(),
             nodes: BTreeMap::new(),
             pidx_side_must_flush: true,
+            pidx_dirty_node_hints: BTreeSet::new(),
         }
     }
 
@@ -181,6 +191,7 @@ impl PropertyIndexNodeStore {
             .copied()
             .unwrap_or(PropertyIndexNodeId::NULL);
         self.pidx_side_must_flush = true;
+        self.pidx_dirty_node_hints.insert(id);
         id
     }
 
@@ -190,7 +201,221 @@ impl PropertyIndexNodeStore {
         self.free_node_ids.push(node_id);
         self.allocator.free_list_head = node_id;
         self.pidx_side_must_flush = true;
+        self.pidx_dirty_node_hints.insert(node_id);
         Some(removed)
+    }
+
+    pub fn note_dirty_node_ids<I: IntoIterator<Item = PropertyIndexNodeId>>(&mut self, ids: I) {
+        self.pidx_dirty_node_hints.extend(ids);
+    }
+
+    pub fn take_dirty_node_hints(&mut self) -> Vec<PropertyIndexNodeId> {
+        self.pidx_dirty_node_hints.iter().copied().collect()
+    }
+
+    pub fn clear_dirty_node_hints(&mut self) {
+        self.pidx_dirty_node_hints.clear();
+    }
+
+    /// Expands seed node ids into a **minimal persistence workset** on the btree-shaped store:
+    /// start from dirty seeds, add **leaf-chain neighbours** (`prev_leaf` / `next_leaf`), then
+    /// **internal parents** that reference any id already in the set, iterating until fixpoint.
+    ///
+    /// Used so incremental encode / page patching touch only this set instead of every initial
+    /// slot up to `page_count` (cheap for sparse `next_node_id`).
+    pub(crate) fn expand_persist_closure_for_flush(
+        &self,
+        seeds: impl IntoIterator<Item = PropertyIndexNodeId>,
+    ) -> Vec<PropertyIndexNodeId> {
+        let mut ids: BTreeSet<PropertyIndexNodeId> = seeds.into_iter().collect();
+        loop {
+            let before = ids.len();
+            let layer: Vec<PropertyIndexNodeId> = ids.iter().copied().collect();
+            for id in layer {
+                if let Some(PropertyIndexNodeRecord::Leaf { header, .. }) = self.nodes.get(&id) {
+                    for adj in [header.prev_leaf, header.next_leaf] {
+                        if !adj.is_null() && self.nodes.contains_key(&adj) {
+                            ids.insert(adj);
+                        }
+                    }
+                }
+            }
+            for (&nid, rec) in &self.nodes {
+                if let PropertyIndexNodeRecord::Internal { children, .. } = rec {
+                    if children.iter().any(|c| ids.contains(c)) {
+                        ids.insert(nid);
+                    }
+                }
+            }
+            if ids.len() == before {
+                break;
+            }
+        }
+        ids.into_iter().collect()
+    }
+
+    /// Returns `Ok(false)` if incremental patching is not applicable for this slot (caller should
+    /// fall back to full encode). `Ok(true)` on success.
+    fn incremental_touch_one_initial_slot(
+        &self,
+        old_bytes: &[u8],
+        ps: usize,
+        base: usize,
+        page_count: usize,
+        global_indices: &[Vec<usize>],
+        counts_disk: &[usize],
+        raw: u64,
+        out: &mut Option<Vec<u8>>,
+    ) -> Result<bool, PropertyIndexError> {
+        if raw < 1 || raw > page_count as u64 {
+            return Ok(true);
+        }
+        let idx = (raw as usize).checked_sub(1).ok_or(PropertyIndexError::LengthOverflow)?;
+        let node_id = PropertyIndexNodeId(raw);
+        let gslots = &global_indices[idx];
+        let expected_pages = counts_disk[idx];
+
+        if let Some(node) = self.nodes.get(&node_id) {
+            let raw_pages = self.encode_node_pages(node)?;
+            if raw_pages.len() != expected_pages {
+                return Ok(false);
+            }
+            let finalized = Self::link_paged_pages_to_global_indices(raw_pages, gslots)?;
+            let mut node_mismatch = false;
+            for (page, &gidx) in finalized.iter().zip(gslots.iter()) {
+                let off = base
+                    .checked_add(
+                        gidx
+                            .checked_mul(ps)
+                            .ok_or(PropertyIndexError::LengthOverflow)?,
+                    )
+                    .ok_or(PropertyIndexError::LengthOverflow)?;
+                let disk = &old_bytes[off..off + ps];
+                if disk != page.as_slice() {
+                    node_mismatch = true;
+                    break;
+                }
+            }
+            if node_mismatch {
+                if out.is_none() {
+                    *out = Some(old_bytes.to_vec());
+                }
+                let buf = out.as_mut().expect("just set");
+                for (page, &gidx) in finalized.iter().zip(gslots.iter()) {
+                    let off = base
+                        .checked_add(
+                            gidx
+                                .checked_mul(ps)
+                                .ok_or(PropertyIndexError::LengthOverflow)?,
+                        )
+                        .ok_or(PropertyIndexError::LengthOverflow)?;
+                    buf[off..off + ps].copy_from_slice(page.as_slice());
+                }
+            }
+        } else {
+            if expected_pages != 1 {
+                return Ok(false);
+            }
+            let off = base
+                .checked_add(idx.checked_mul(ps).ok_or(PropertyIndexError::LengthOverflow)?)
+                .ok_or(PropertyIndexError::LengthOverflow)?;
+            let disk = &old_bytes[off..off + ps];
+            if !disk.iter().all(|b| *b == 0) {
+                if out.is_none() {
+                    *out = Some(old_bytes.to_vec());
+                }
+                let buf = out.as_mut().expect("just set");
+                buf[off..off + ps].fill(0);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Builds page-slot patches for one paged area using dirty-node hints.
+    ///
+    /// Returns `Ok(None)` when layout/shape changed and caller should fallback to section/full write.
+    pub fn try_build_paged_area_page_patches(
+        &self,
+        old_bytes: &[u8],
+        dirty_node_ids: &[PropertyIndexNodeId],
+    ) -> Result<Option<Vec<PropertyIndexPagedAreaPagePatch>>, PropertyIndexError> {
+        if dirty_node_ids.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+        let layout = match Self::parse_paged_area_layout_prefix(old_bytes) {
+            Ok(l) => l,
+            Err(_) => return Ok(None),
+        };
+        if layout.version != Self::PAGED_AREA_VERSION {
+            return Ok(None);
+        }
+        if self.allocator != layout.allocator || self.free_node_ids != layout.free_node_ids {
+            return Ok(None);
+        }
+        let counts_disk = match Self::page_counts_per_initial_slot_from_bytes(old_bytes, &layout) {
+            Ok(c) => c,
+            Err(_) => return Ok(None),
+        };
+        if counts_disk.len() != layout.page_count {
+            return Ok(None);
+        }
+        let overflow_from_counts: usize = counts_disk.iter().map(|c| c.saturating_sub(1)).sum();
+        if overflow_from_counts != layout.overflow_page_count {
+            return Ok(None);
+        }
+        let global_indices = Self::global_slot_indices_for_page_counts(&counts_disk);
+        let ps = layout.page_size;
+        let base = layout.pages_start;
+        let total_slots = layout
+            .page_count
+            .checked_add(layout.overflow_page_count)
+            .ok_or(PropertyIndexError::LengthOverflow)?;
+
+        let work_ids = self.expand_persist_closure_for_flush(dirty_node_ids.iter().copied());
+        let mut patches = Vec::new();
+        for node_id in work_ids {
+            if node_id.is_null() {
+                continue;
+            }
+            let raw = usize::try_from(node_id.0).map_err(|_| PropertyIndexError::LengthOverflow)?;
+            if raw == 0 || raw > layout.page_count {
+                // section length fixed path only; page_count mismatch requires fallback.
+                return Ok(None);
+            }
+            let idx = raw - 1;
+            let gslots = &global_indices[idx];
+            let expected_pages = counts_disk[idx];
+
+            if let Some(node) = self.nodes.get(&node_id) {
+                let raw_pages = self.encode_node_pages(node)?;
+                if raw_pages.len() != expected_pages {
+                    return Ok(None);
+                }
+                let finalized = Self::link_paged_pages_to_global_indices(raw_pages, gslots)?;
+                for (page, &gidx) in finalized.iter().zip(gslots.iter()) {
+                    let disk = Self::read_paged_slot_slice(old_bytes, base, ps, total_slots, gidx)?;
+                    if disk != page.as_slice() {
+                        patches.push(PropertyIndexPagedAreaPagePatch {
+                            slot_index: gidx,
+                            bytes: page.clone(),
+                        });
+                    }
+                }
+            } else {
+                if expected_pages != 1 {
+                    return Ok(None);
+                }
+                let gidx = idx;
+                let disk = Self::read_paged_slot_slice(old_bytes, base, ps, total_slots, gidx)?;
+                if !disk.iter().all(|b| *b == 0) {
+                    patches.push(PropertyIndexPagedAreaPagePatch {
+                        slot_index: gidx,
+                        bytes: vec![0u8; ps],
+                    });
+                }
+            }
+        }
+        Ok(Some(patches))
     }
 
     /// Returns one persisted node record by id.
@@ -341,6 +566,7 @@ impl PropertyIndexNodeStore {
             free_node_ids,
             nodes,
             pidx_side_must_flush: true,
+            pidx_dirty_node_hints: BTreeSet::new(),
         })
     }
 
@@ -3277,6 +3503,11 @@ impl PropertyIndexNodeStore {
     /// Compared to [`Self::encode_paged_area`], this avoids allocating one cleared `page_count`-long
     /// initial slot table when most slots are empty (sparse property index under a large
     /// `next_node_id`).
+    ///
+    /// When [`Self::pidx_dirty_node_hints`] is non-empty, only the **persistence closure** is
+    /// scanned: seeds plus leaf-chain neighbours and internal ancestors (see
+    /// [`Self::expand_persist_closure_for_flush`]), instead of every initial slot `1..=page_count`.
+    /// When hints are empty, behaviour is unchanged (full scan).
     pub(crate) fn try_encode_paged_area_incremental(
         &self,
         old_bytes: &[u8],
@@ -3310,63 +3541,45 @@ impl PropertyIndexNodeStore {
 
         let mut out: Option<Vec<u8>> = None;
 
-        for raw in 1..=page_count {
-            let idx = raw - 1;
-            let node_id = PropertyIndexNodeId(raw as u64);
-            let gslots = &global_indices[idx];
-            let expected_pages = counts_disk[idx];
-
-            if let Some(node) = self.nodes.get(&node_id) {
-                let raw_pages = self.encode_node_pages(node)?;
-                if raw_pages.len() != expected_pages {
+        if !self.pidx_dirty_node_hints.is_empty() {
+            let expanded = self.expand_persist_closure_for_flush(self.pidx_dirty_node_hints.iter().copied());
+            let mut raws: BTreeSet<u64> = BTreeSet::new();
+            for id in expanded {
+                let r = id.0;
+                if r >= 1 && r <= page_count as u64 {
+                    raws.insert(r);
+                }
+            }
+            if raws.is_empty() {
+                return Ok(None);
+            }
+            for raw in raws {
+                if !self.incremental_touch_one_initial_slot(
+                    old_bytes,
+                    ps,
+                    base,
+                    page_count,
+                    &global_indices,
+                    &counts_disk,
+                    raw,
+                    &mut out,
+                )? {
                     return Ok(None);
                 }
-                let finalized = Self::link_paged_pages_to_global_indices(raw_pages, gslots)?;
-                let mut node_mismatch = false;
-                for (page, &gidx) in finalized.iter().zip(gslots.iter()) {
-                    let off = base
-                        .checked_add(
-                            gidx
-                                .checked_mul(ps)
-                                .ok_or(PropertyIndexError::LengthOverflow)?,
-                        )
-                        .ok_or(PropertyIndexError::LengthOverflow)?;
-                    let disk = &old_bytes[off..off + ps];
-                    if disk != page.as_slice() {
-                        node_mismatch = true;
-                        break;
-                    }
-                }
-                if node_mismatch {
-                    if out.is_none() {
-                        out = Some(old_bytes.to_vec());
-                    }
-                    let buf = out.as_mut().expect("just set");
-                    for (page, &gidx) in finalized.iter().zip(gslots.iter()) {
-                        let off = base
-                            .checked_add(
-                                gidx
-                                    .checked_mul(ps)
-                                    .ok_or(PropertyIndexError::LengthOverflow)?,
-                            )
-                            .ok_or(PropertyIndexError::LengthOverflow)?;
-                        buf[off..off + ps].copy_from_slice(page.as_slice());
-                    }
-                }
-            } else {
-                if expected_pages != 1 {
+            }
+        } else {
+            for raw in 1..=page_count {
+                if !self.incremental_touch_one_initial_slot(
+                    old_bytes,
+                    ps,
+                    base,
+                    page_count,
+                    &global_indices,
+                    &counts_disk,
+                    raw as u64,
+                    &mut out,
+                )? {
                     return Ok(None);
-                }
-                let off = base
-                    .checked_add(idx.checked_mul(ps).ok_or(PropertyIndexError::LengthOverflow)?)
-                    .ok_or(PropertyIndexError::LengthOverflow)?;
-                let disk = &old_bytes[off..off + ps];
-                if !disk.iter().all(|b| *b == 0) {
-                    if out.is_none() {
-                        out = Some(old_bytes.to_vec());
-                    }
-                    let buf = out.as_mut().expect("just set");
-                    buf[off..off + ps].fill(0);
                 }
             }
         }
@@ -3649,6 +3862,7 @@ impl PropertyIndexNodeStore {
             free_node_ids: free_node_ids.clone(),
             nodes: BTreeMap::new(),
             pidx_side_must_flush: false,
+            pidx_dirty_node_hints: BTreeSet::new(),
         };
         let total_slots = page_count
             .checked_add(overflow_page_count)
@@ -3697,6 +3911,7 @@ impl PropertyIndexNodeStore {
             free_node_ids,
             nodes,
             pidx_side_must_flush: false,
+            pidx_dirty_node_hints: BTreeSet::new(),
         })
     }
 
