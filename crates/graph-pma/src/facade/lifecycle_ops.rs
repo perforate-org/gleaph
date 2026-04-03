@@ -765,8 +765,10 @@ impl<M: Memory> GraphPma<M> {
         let mut summary = self
             .graph
             .run_maintenance_cycles_with_segment_replacement_and_write(
-                vertex_refs,
-                forward_base_edge_ids_by_ordinal,
+                crate::low_level::MaintenanceCycleVertexInputs {
+                    vertex_ids: vertex_refs,
+                    forward_base_edge_ids_by_ordinal,
+                },
                 &mut self.manager.borrow_mut(),
                 memory,
                 retired_epoch,
@@ -794,8 +796,10 @@ impl<M: Memory> GraphPma<M> {
         let mut summary = self
             .graph
             .run_queued_maintenance_cycles_with_segment_replacement_and_write(
-                vertex_refs,
-                forward_base_edge_ids_by_ordinal,
+                crate::low_level::MaintenanceCycleVertexInputs {
+                    vertex_ids: vertex_refs,
+                    forward_base_edge_ids_by_ordinal,
+                },
                 &mut self.manager.borrow_mut(),
                 memory,
                 retired_epoch,

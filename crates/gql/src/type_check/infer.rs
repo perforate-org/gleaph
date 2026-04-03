@@ -965,28 +965,24 @@ fn check_arg_is_numeric(env: &mut TypeEnv<'_>, arg: &Expr, fn_name: &str, span: 
 #[cfg(feature = "cypher")]
 fn check_cypher_function_args(env: &mut TypeEnv<'_>, name: &str, args: &[Expr], span: Span) {
     match name {
-        "id" | "labels" => {
-            if args.len() == 1 {
-                let ty = infer_expr(env, &args[0]);
-                if !is_unknown(&ty) && !matches!(&ty, Type::Node(_)) {
-                    env.warn_at(
-                        WarningKind::FunctionArgMismatch,
-                        format!("{name}() expects a node argument, got {ty:?}"),
-                        span,
-                    );
-                }
+        "id" | "labels" if args.len() == 1 => {
+            let ty = infer_expr(env, &args[0]);
+            if !is_unknown(&ty) && !matches!(&ty, Type::Node(_)) {
+                env.warn_at(
+                    WarningKind::FunctionArgMismatch,
+                    format!("{name}() expects a node argument, got {ty:?}"),
+                    span,
+                );
             }
         }
-        "type" => {
-            if args.len() == 1 {
-                let ty = infer_expr(env, &args[0]);
-                if !is_unknown(&ty) && !matches!(&ty, Type::Edge(_)) {
-                    env.warn_at(
-                        WarningKind::FunctionArgMismatch,
-                        format!("type() expects an edge argument, got {ty:?}"),
-                        span,
-                    );
-                }
+        "type" if args.len() == 1 => {
+            let ty = infer_expr(env, &args[0]);
+            if !is_unknown(&ty) && !matches!(&ty, Type::Edge(_)) {
+                env.warn_at(
+                    WarningKind::FunctionArgMismatch,
+                    format!("type() expects an edge argument, got {ty:?}"),
+                    span,
+                );
             }
         }
         _ => {}

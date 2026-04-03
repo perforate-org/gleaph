@@ -488,6 +488,10 @@ impl SurfaceBaseStorage {
         self.backing.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.backing.len() == 0
+    }
+
     /// Iterates base entries in **flattened logical order** (matches [`Deref`] slice order).
     pub fn iter(&self) -> std::slice::Iter<'_, EdgeEntry> {
         self.backing.as_slice().iter()
@@ -1106,6 +1110,11 @@ impl SurfaceDirtyRegions {
     }
 }
 
+type SegmentedBaseStorageParts = (
+    BTreeMap<u32, Vec<EdgeEntry>>,
+    BTreeMap<u32, u64>,
+);
+
 impl SurfaceRuntime {
     pub fn set_base_segment_slot_capacity(&mut self, segment_id: u32, slot_capacity: u64) {
         self.base_entries
@@ -1370,7 +1379,7 @@ impl SurfaceRuntime {
 
     pub(crate) fn materialize_segmented_base_storage_parts(
         &self,
-    ) -> Option<(BTreeMap<u32, Vec<EdgeEntry>>, BTreeMap<u32, u64>)> {
+    ) -> Option<SegmentedBaseStorageParts> {
         if self.base_entries.is_segmented() {
             return Some((
                 self.base_entries.owned_segment_entries(),
@@ -3250,7 +3259,7 @@ mod tests {
         );
 
         let merged = runtime
-            .merged_neighborhood(VertexRef::from(1u8).into(), 0)
+            .merged_neighborhood(VertexRef::from(1u8), 0)
             .expect("merged neighborhood");
         assert_eq!(merged.base.start, EdgeIndex::new(4));
         assert!(!merged.has_overflow());
@@ -3528,7 +3537,7 @@ mod tests {
         );
 
         let merged = runtime
-            .merged_neighborhood(VertexRef::from(5u8).into(), 0)
+            .merged_neighborhood(VertexRef::from(5u8), 0)
             .expect("merged neighborhood");
         assert_eq!(merged.base.surface, SurfaceKind::Reverse);
         assert!(merged.has_overflow());
@@ -3564,7 +3573,7 @@ mod tests {
         );
 
         let entries = runtime
-            .overflow_entries_for(VertexRef::from(1u8).into(), 0)
+            .overflow_entries_for(VertexRef::from(1u8), 0)
             .expect("overflow entries");
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].edge_id, 42);
@@ -3597,7 +3606,7 @@ mod tests {
         );
 
         let merged = runtime
-            .merged_entries_for(VertexRef::from(7u8).into(), 0)
+            .merged_entries_for(VertexRef::from(7u8), 0)
             .expect("merged entries");
         assert_eq!(merged.len(), 4);
         assert_eq!(u64::from(merged[0].target), 3);
@@ -3633,20 +3642,20 @@ mod tests {
 
         let vertex = VertexRef::from(7u8);
         let base_locator = runtime
-            .logical_edge_locator_for(vertex.into(), 0, 1)
+            .logical_edge_locator_for(vertex, 0, 1)
             .expect("base logical locator");
         let overflow_locator = runtime
-            .logical_edge_locator_for(vertex.into(), 0, 2)
+            .logical_edge_locator_for(vertex, 0, 2)
             .expect("overflow logical locator");
 
         assert!(!base_locator.is_overflow());
         assert!(overflow_locator.is_overflow());
         assert_eq!(
-            runtime.resolve_logical_edge_slot(vertex.into(), 0, base_locator),
+            runtime.resolve_logical_edge_slot(vertex, 0, base_locator),
             Some(ResolvedEdgeSlot::Base { logical_index: 1 })
         );
         assert!(matches!(
-            runtime.resolve_logical_edge_slot(vertex.into(), 0, overflow_locator),
+            runtime.resolve_logical_edge_slot(vertex, 0, overflow_locator),
             Some(ResolvedEdgeSlot::Overflow {
                 overflow_index: 0,
                 ..
@@ -3949,7 +3958,7 @@ mod tests {
 
         let offset = runtime
             .append_overflow_entry(
-                VertexRef::from(9u8).into(),
+                VertexRef::from(9u8),
                 0,
                 77,
                 EdgeEntry::new(VertexRef::from(2u8), EdgeMeta::new(4, false)),
@@ -4057,7 +4066,7 @@ mod tests {
         let runtime = SurfaceRuntime::without_overflow(
             forward_surface().layout(),
             vec![
-                VertexEntry::new(EdgeIndex::new((1_u64 << 40) | 0), 1, EMPTY_LOG_OFFSET),
+                VertexEntry::new(EdgeIndex::new(1_u64 << 40), 1, EMPTY_LOG_OFFSET),
                 VertexEntry::new(EdgeIndex::new((2_u64 << 40) | 2), 1, EMPTY_LOG_OFFSET),
             ],
         );
@@ -4214,7 +4223,7 @@ mod tests {
         let mut runtime = SurfaceRuntime::new(
             forward_surface().layout(),
             vec![
-                VertexEntry::new(EdgeIndex::new((1_u64 << 40) | 0), 2, 0),
+                VertexEntry::new(EdgeIndex::new(1_u64 << 40), 2, 0),
                 VertexEntry::new(EdgeIndex::new((1_u64 << 40) | 2), 1, 2),
                 VertexEntry::new(EdgeIndex::new((1_u64 << 40) | 3), 1, EMPTY_LOG_OFFSET),
                 VertexEntry::new(EdgeIndex::new((2_u64 << 40) | 7), 1, EMPTY_LOG_OFFSET),

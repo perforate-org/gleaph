@@ -210,10 +210,10 @@ mod tests {
 
     #[test]
     fn edge_ref_packs_segment_and_start_slot() {
-        let edge = EdgeRef::new(0x00ab_cd, 0x1234_5678_9a);
+        let edge = EdgeRef::new(0x0000_abcd, 0x0012_3456_789a);
 
-        assert_eq!(edge.segment_id(), 0x00ab_cd);
-        assert_eq!(edge.start_slot(), 0x1234_5678_9a);
+        assert_eq!(edge.segment_id(), 0x0000_abcd);
+        assert_eq!(edge.start_slot(), 0x0012_3456_789a);
         assert_eq!(edge.raw(), 0x00ab_cd12_3456_789a);
     }
 }

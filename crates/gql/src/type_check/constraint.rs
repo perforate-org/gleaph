@@ -484,34 +484,30 @@ impl ConstraintSet {
                     {
                         let lower = _name.to_ascii_lowercase();
                         match lower.as_str() {
-                            "id" | "labels" => {
-                                if _args.len() == 1 {
-                                    let ty = self.get(_args[0]);
-                                    if !is_unknown(ty) && !matches!(ty, Type::Node(_)) {
-                                        env.warn_at_with_provenance(
-                                            WarningKind::FunctionArgMismatch,
-                                            format!(
-                                                "[phase-b] {lower}() expects a node argument, got {ty:?}"
-                                            ),
-                                            *_span,
-                                            super::env::WarningProvenance::Constraint(idx),
-                                        );
-                                    }
+                            "id" | "labels" if _args.len() == 1 => {
+                                let ty = self.get(_args[0]);
+                                if !is_unknown(ty) && !matches!(ty, Type::Node(_)) {
+                                    env.warn_at_with_provenance(
+                                        WarningKind::FunctionArgMismatch,
+                                        format!(
+                                            "[phase-b] {lower}() expects a node argument, got {ty:?}"
+                                        ),
+                                        *_span,
+                                        super::env::WarningProvenance::Constraint(idx),
+                                    );
                                 }
                             }
-                            "type" => {
-                                if _args.len() == 1 {
-                                    let ty = self.get(_args[0]);
-                                    if !is_unknown(ty) && !matches!(ty, Type::Edge(_)) {
-                                        env.warn_at_with_provenance(
-                                            WarningKind::FunctionArgMismatch,
-                                            format!(
-                                                "[phase-b] type() expects an edge argument, got {ty:?}"
-                                            ),
-                                            *_span,
-                                            super::env::WarningProvenance::Constraint(idx),
-                                        );
-                                    }
+                            "type" if _args.len() == 1 => {
+                                let ty = self.get(_args[0]);
+                                if !is_unknown(ty) && !matches!(ty, Type::Edge(_)) {
+                                    env.warn_at_with_provenance(
+                                        WarningKind::FunctionArgMismatch,
+                                        format!(
+                                            "[phase-b] type() expects an edge argument, got {ty:?}"
+                                        ),
+                                        *_span,
+                                        super::env::WarningProvenance::Constraint(idx),
+                                    );
                                 }
                             }
                             _ => {}

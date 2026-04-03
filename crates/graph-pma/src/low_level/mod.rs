@@ -42,6 +42,8 @@ pub use graph::{
     GraphMaintenanceCandidate, GraphMaintenanceCyclePlan, GraphMaintenanceCycleWriteSummary,
     GraphMaintenanceQueueStorageSnapshot, GraphMaintenanceWorkItem,
 };
+
+pub use graph::MaintenanceCycleVertexInputs;
 pub use hydration::{
     HydratedSurfaceRuntimes, HydrationError, InMemoryRegionByteSource, RegionByteSource,
     StableMemoryRegionByteSource, StableVertexTableReader, WritebackError, decode_edge_entries,

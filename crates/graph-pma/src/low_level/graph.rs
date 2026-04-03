@@ -293,6 +293,25 @@ pub struct GraphMaintenanceCandidate {
     pub priority_score: u64,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct MaintenanceCandidatePriorityScoreArgs {
+    forward_overflow_len: usize,
+    reverse_overflow_len: usize,
+    forward_window_overflow_entries: usize,
+    reverse_window_overflow_entries: usize,
+    forward_reclaimable_tombstones: usize,
+    reverse_reclaimable_tombstones: usize,
+    forward_window_total_base_slots: usize,
+    reverse_window_total_base_slots: usize,
+    ordinal: usize,
+    current_epoch: Option<u64>,
+}
+
+pub struct MaintenanceCycleVertexInputs<'a> {
+    pub vertex_ids: &'a [VertexRef],
+    pub forward_base_edge_ids_by_ordinal: &'a [Vec<EdgeId>],
+}
+
 impl GraphMaintenanceCandidate {
     /// Returns whether this candidate has any overflow backlog.
     pub const fn has_overflow_backlog(self) -> bool {
@@ -587,27 +606,31 @@ pub struct GraphInsertSegmentWriteSummary {
     pub refreshed_reverse_vertices: Vec<usize>,
 }
 
+type SurfaceSegmentReplacementParts = (
+    BTreeMap<u32, Vec<EdgeEntry>>,
+    BTreeMap<u32, u64>,
+    SurfaceAppliedRebalanceSummary,
+    u32,
+    Vec<usize>,
+);
+
 impl GraphRuntime {
     fn maintenance_candidate_priority_score(
         &self,
-        forward_overflow_len: usize,
-        reverse_overflow_len: usize,
-        forward_window_overflow_entries: usize,
-        reverse_window_overflow_entries: usize,
-        forward_reclaimable_tombstones: usize,
-        reverse_reclaimable_tombstones: usize,
-        forward_window_total_base_slots: usize,
-        reverse_window_total_base_slots: usize,
-        ordinal: usize,
-        current_epoch: Option<u64>,
+        args: MaintenanceCandidatePriorityScoreArgs,
     ) -> Option<u64> {
-        let overflow_total = forward_overflow_len.checked_add(reverse_overflow_len)?;
+        let overflow_total = args
+            .forward_overflow_len
+            .checked_add(args.reverse_overflow_len)?;
         let window_overflow_total =
-            forward_window_overflow_entries.checked_add(reverse_window_overflow_entries)?;
+            args.forward_window_overflow_entries
+                .checked_add(args.reverse_window_overflow_entries)?;
         let tombstone_total =
-            forward_reclaimable_tombstones.checked_add(reverse_reclaimable_tombstones)?;
+            args.forward_reclaimable_tombstones
+                .checked_add(args.reverse_reclaimable_tombstones)?;
         let window_total_base_slots =
-            forward_window_total_base_slots.checked_add(reverse_window_total_base_slots)?;
+            args.forward_window_total_base_slots
+                .checked_add(args.reverse_window_total_base_slots)?;
         let hard_limit_pressure = u64::try_from(overflow_total).ok()?.checked_mul(10_000)?;
         let window_overflow_score = u64::try_from(window_overflow_total)
             .ok()?
@@ -618,7 +641,8 @@ impl GraphRuntime {
             .checked_add(window_overflow_score)?
             .checked_add(tombstone_score)?
             .checked_add(density_bonus)?;
-        let penalty = self.recent_maintenance_penalty_for_ordinal(ordinal, current_epoch);
+        let penalty =
+            self.recent_maintenance_penalty_for_ordinal(args.ordinal, args.current_epoch);
         Some(base_score.saturating_sub(penalty))
     }
 
@@ -718,13 +742,7 @@ impl GraphRuntime {
         surface: &super::runtime::SurfaceRuntime,
         delta: &SurfaceLocalRebalanceDelta,
         new_segment: EdgeSegmentHeader,
-    ) -> Option<(
-        BTreeMap<u32, Vec<EdgeEntry>>,
-        BTreeMap<u32, u64>,
-        SurfaceAppliedRebalanceSummary,
-        u32,
-        Vec<usize>,
-    )> {
+    ) -> Option<SurfaceSegmentReplacementParts> {
         if delta.start_ordinal >= delta.end_ordinal_exclusive
             || delta.end_ordinal_exclusive > surface.vertices.len()
             || delta.rewritten_vertices.len()
@@ -940,16 +958,18 @@ impl GraphRuntime {
                 recent_maintenance_penalty: self
                     .recent_maintenance_penalty_for_ordinal(ordinal, current_epoch),
                 priority_score: self.maintenance_candidate_priority_score(
-                    forward_overflow_len,
-                    reverse_overflow_len,
-                    forward_window_overflow_entries,
-                    reverse_window_overflow_entries,
-                    forward_reclaimable_tombstones,
-                    reverse_reclaimable_tombstones,
-                    forward_window_total_base_slots,
-                    reverse_window_total_base_slots,
-                    ordinal,
-                    current_epoch,
+                    MaintenanceCandidatePriorityScoreArgs {
+                        forward_overflow_len,
+                        reverse_overflow_len,
+                        forward_window_overflow_entries,
+                        reverse_window_overflow_entries,
+                        forward_reclaimable_tombstones,
+                        reverse_reclaimable_tombstones,
+                        forward_window_total_base_slots,
+                        reverse_window_total_base_slots,
+                        ordinal,
+                        current_epoch,
+                    },
                 )?,
             });
         }
@@ -1055,16 +1075,20 @@ impl GraphRuntime {
             start_ordinal: work_item.start_ordinal,
             end_ordinal_exclusive: work_item.end_ordinal_exclusive,
             priority_score: self.maintenance_candidate_priority_score(
-                forward_overflow_len,
-                reverse_overflow_len,
-                forward_window_summary.overflow_entries_in_window,
-                reverse_window_summary.overflow_entries_in_window,
-                forward_reclaimable_tombstones,
-                reverse_reclaimable_tombstones,
-                forward_window_summary.total_base_slots,
-                reverse_window_summary.total_base_slots,
-                work_item.anchor_ordinal,
-                current_epoch,
+                MaintenanceCandidatePriorityScoreArgs {
+                    forward_overflow_len,
+                    reverse_overflow_len,
+                    forward_window_overflow_entries:
+                        forward_window_summary.overflow_entries_in_window,
+                    reverse_window_overflow_entries:
+                        reverse_window_summary.overflow_entries_in_window,
+                    forward_reclaimable_tombstones,
+                    reverse_reclaimable_tombstones,
+                    forward_window_total_base_slots: forward_window_summary.total_base_slots,
+                    reverse_window_total_base_slots: reverse_window_summary.total_base_slots,
+                    ordinal: work_item.anchor_ordinal,
+                    current_epoch,
+                },
             )?,
             last_maintenance_epoch: self
                 .recent_maintenance_epochs_by_ordinal
@@ -1907,14 +1931,15 @@ impl GraphRuntime {
     /// retired explicit segments old enough to reclaim.
     pub fn run_maintenance_cycles_with_segment_replacement_and_write(
         &mut self,
-        vertex_ids: &[VertexRef],
-        forward_base_edge_ids_by_ordinal: &[Vec<EdgeId>],
+        inputs: MaintenanceCycleVertexInputs<'_>,
         manager: &mut RegionManager,
         memory: &impl Memory,
         retired_epoch: u64,
         max_cycles: usize,
         min_retired_epochs_before_sweep: u64,
     ) -> Result<GraphMaintenanceBatchWriteSummary, WritebackError> {
+        let vertex_ids = inputs.vertex_ids;
+        let forward_base_edge_ids_by_ordinal = inputs.forward_base_edge_ids_by_ordinal;
         self.sync_base_segment_capacities_from_manager_best_effort(manager);
         let mut cycles = Vec::new();
         for step in 0..max_cycles {
@@ -1967,14 +1992,15 @@ impl GraphRuntime {
     /// refreshing remaining work items after each successful cycle.
     pub fn run_queued_maintenance_cycles_with_segment_replacement_and_write(
         &mut self,
-        vertex_ids: &[VertexRef],
-        forward_base_edge_ids_by_ordinal: &[Vec<EdgeId>],
+        inputs: MaintenanceCycleVertexInputs<'_>,
         manager: &mut RegionManager,
         memory: &impl Memory,
         retired_epoch: u64,
         max_cycles: usize,
         min_retired_epochs_before_sweep: u64,
     ) -> Result<GraphMaintenanceBatchWriteSummary, WritebackError> {
+        let vertex_ids = inputs.vertex_ids;
+        let forward_base_edge_ids_by_ordinal = inputs.forward_base_edge_ids_by_ordinal;
         self.sync_base_segment_capacities_from_manager_best_effort(manager);
         let queue_len_before = self.maintenance_queue.len();
         let mut cycles = Vec::new();
@@ -2370,10 +2396,7 @@ impl GraphRuntime {
 
         let insert = self.insert_edge_pair_with_manager(
             spec.edge_id,
-            spec.endpoints.src_vertex_ref,
-            spec.endpoints.src_ordinal,
-            spec.endpoints.dst_vertex_ref,
-            spec.endpoints.dst_ordinal,
+            spec.endpoints,
             spec.label_id,
             manager,
         );
@@ -2439,10 +2462,7 @@ impl GraphRuntime {
 
         let insert = self.insert_edge_pair_with_manager(
             spec.edge_id,
-            spec.endpoints.src_vertex_ref,
-            spec.endpoints.src_ordinal,
-            spec.endpoints.dst_vertex_ref,
-            spec.endpoints.dst_ordinal,
+            spec.endpoints,
             spec.label_id,
             manager,
         );
@@ -2537,10 +2557,7 @@ impl GraphRuntime {
 
         let insert = self.insert_edge_pair_with_manager(
             spec.edge_id,
-            spec.endpoints.src_vertex_ref,
-            spec.endpoints.src_ordinal,
-            spec.endpoints.dst_vertex_ref,
-            spec.endpoints.dst_ordinal,
+            spec.endpoints,
             spec.label_id,
             manager,
         );
@@ -2597,13 +2614,16 @@ impl GraphRuntime {
     fn insert_edge_pair_for_decision(
         &mut self,
         edge_id: EdgeId,
-        src_vertex_ref: VertexRef,
-        src_ordinal: usize,
-        dst_vertex_ref: VertexRef,
-        dst_ordinal: usize,
+        endpoints: EdgePairEndpoints,
         label_id: LabelId,
         decision: GraphInsertDecision,
     ) -> Option<GraphInsertResult> {
+        let EdgePairEndpoints {
+            src_vertex_ref,
+            src_ordinal,
+            dst_vertex_ref,
+            dst_ordinal,
+        } = endpoints;
         let (path, locators) = match decision {
             GraphInsertDecision::BaseInsert {
                 forward_path,
@@ -2858,13 +2878,16 @@ impl GraphRuntime {
     pub fn insert_base_edge_pair_with_manager(
         &mut self,
         edge_id: EdgeId,
-        src_vertex_ref: VertexRef,
-        src_ordinal: usize,
-        dst_vertex_ref: VertexRef,
-        dst_ordinal: usize,
+        endpoints: EdgePairEndpoints,
         label_id: LabelId,
         manager: &RegionManager,
     ) -> Option<(EdgeInsertPath, EdgeInsertPath, EdgePairLogicalLocators)> {
+        let EdgePairEndpoints {
+            src_vertex_ref,
+            src_ordinal,
+            dst_vertex_ref,
+            dst_ordinal,
+        } = endpoints;
         let forward_entry = EdgeEntry::new(dst_vertex_ref, EdgeMeta::new(label_id, false));
         let reverse_entry = EdgeEntry::new(src_vertex_ref, EdgeMeta::new(label_id, false));
 
@@ -2979,10 +3002,12 @@ impl GraphRuntime {
             self.choose_insert_decision(src_vertex_ref, src_ordinal, dst_vertex_ref, dst_ordinal)?;
         self.insert_edge_pair_for_decision(
             edge_id,
-            src_vertex_ref,
-            src_ordinal,
-            dst_vertex_ref,
-            dst_ordinal,
+            EdgePairEndpoints {
+                src_vertex_ref,
+                src_ordinal,
+                dst_vertex_ref,
+                dst_ordinal,
+            },
             label_id,
             decision,
         )
@@ -2993,13 +3018,16 @@ impl GraphRuntime {
     pub fn insert_edge_pair_with_manager(
         &mut self,
         edge_id: EdgeId,
-        src_vertex_ref: VertexRef,
-        src_ordinal: usize,
-        dst_vertex_ref: VertexRef,
-        dst_ordinal: usize,
+        endpoints: EdgePairEndpoints,
         label_id: LabelId,
         manager: &RegionManager,
     ) -> Option<GraphInsertResult> {
+        let EdgePairEndpoints {
+            src_vertex_ref,
+            src_ordinal,
+            dst_vertex_ref,
+            dst_ordinal,
+        } = endpoints;
         self.sync_base_segment_capacities_from_manager_best_effort(manager);
         let decision = self.choose_insert_decision_with_incoming_live_entries_and_manager(
             src_vertex_ref,
@@ -3017,10 +3045,12 @@ impl GraphRuntime {
                 let (actual_forward_path, actual_reverse_path, locators) = self
                     .insert_base_edge_pair_with_manager(
                         edge_id,
-                        src_vertex_ref,
-                        src_ordinal,
-                        dst_vertex_ref,
-                        dst_ordinal,
+                        EdgePairEndpoints {
+                            src_vertex_ref,
+                            src_ordinal,
+                            dst_vertex_ref,
+                            dst_ordinal,
+                        },
                         label_id,
                         manager,
                     )?;
@@ -3439,9 +3469,9 @@ mod tests {
         let locators = graph
             .append_overflow_edge_pair(
                 55,
-                VertexRef::from(1u8).into(),
+                VertexRef::from(1u8),
                 0,
-                VertexRef::from(2u8).into(),
+                VertexRef::from(2u8),
                 0,
                 9,
             )
@@ -3514,9 +3544,9 @@ mod tests {
         let GraphInsertResult::Inserted { path, locators } = graph
             .insert_edge_pair(
                 88,
-                VertexRef::from(1u8).into(),
+                VertexRef::from(1u8),
                 0,
-                VertexRef::from(2u8).into(),
+                VertexRef::from(2u8),
                 0,
                 9,
             )
@@ -3564,9 +3594,9 @@ mod tests {
         let GraphInsertResult::Inserted { path, .. } = graph
             .insert_edge_pair(
                 89,
-                VertexRef::from(1u8).into(),
+                VertexRef::from(1u8),
                 0,
-                VertexRef::from(2u8).into(),
+                VertexRef::from(2u8),
                 0,
                 9,
             )
@@ -3608,9 +3638,9 @@ mod tests {
         let GraphInsertResult::Inserted { path, .. } = graph
             .insert_edge_pair(
                 189,
-                VertexRef::from(1u8).into(),
+                VertexRef::from(1u8),
                 0,
-                VertexRef::from(2u8).into(),
+                VertexRef::from(2u8),
                 0,
                 9,
             )
@@ -3795,21 +3825,21 @@ mod tests {
 
         let decision = graph
             .choose_insert_decision(
-                VertexRef::from(1u8).into(),
+                VertexRef::from(1u8),
                 0,
-                VertexRef::from(2u8).into(),
+                VertexRef::from(2u8),
                 0,
             )
             .expect("decision");
         let GraphInsertDecision::RebalanceRequired(plan) = decision else {
             panic!("expected rebalance-required decision");
         };
-        assert_eq!(plan.forward.vertex_ref, VertexRef::from(1u8).into());
+        assert_eq!(plan.forward.vertex_ref, VertexRef::from(1u8));
         assert_eq!(plan.forward.ordinal, 0);
         assert_eq!(plan.forward.base_degree, 1);
         assert_eq!(plan.forward.overflow_len, 1);
         assert_eq!(plan.forward.incoming_live_entries, 1);
-        assert_eq!(plan.reverse.vertex_ref, VertexRef::from(2u8).into());
+        assert_eq!(plan.reverse.vertex_ref, VertexRef::from(2u8));
         assert_eq!(plan.reverse.ordinal, 0);
         assert_eq!(plan.reverse.base_degree, 1);
         assert_eq!(plan.reverse.overflow_len, 1);
@@ -3818,9 +3848,9 @@ mod tests {
         let result = graph
             .insert_edge_pair(
                 90,
-                VertexRef::from(1u8).into(),
+                VertexRef::from(1u8),
                 0,
-                VertexRef::from(2u8).into(),
+                VertexRef::from(2u8),
                 0,
                 9,
             )
@@ -3864,9 +3894,9 @@ mod tests {
 
         let plan = graph
             .plan_rebalance_for_insert_with_incoming_live_entries(
-                VertexRef::from(1u8).into(),
+                VertexRef::from(1u8),
                 0,
-                VertexRef::from(2u8).into(),
+                VertexRef::from(2u8),
                 0,
                 2,
             )
@@ -4005,9 +4035,9 @@ mod tests {
 
         let GraphInsertDecision::RebalanceRequired(plan) = graph
             .choose_insert_decision(
-                VertexRef::from(1u8).into(),
+                VertexRef::from(1u8),
                 1,
-                VertexRef::from(2u8).into(),
+                VertexRef::from(2u8),
                 1,
             )
             .expect("decision")
@@ -4123,9 +4153,9 @@ mod tests {
 
         let decision = graph
             .choose_insert_decision(
-                VertexRef::from(1u8).into(),
+                VertexRef::from(1u8),
                 0,
-                VertexRef::from(2u8).into(),
+                VertexRef::from(2u8),
                 0,
             )
             .expect("decision");
@@ -4170,9 +4200,9 @@ mod tests {
 
         let decision = graph
             .choose_insert_decision_with_incoming_live_entries(
-                VertexRef::from(1u8).into(),
+                VertexRef::from(1u8),
                 0,
-                VertexRef::from(2u8).into(),
+                VertexRef::from(2u8),
                 0,
                 2,
             )
@@ -4226,14 +4256,14 @@ mod tests {
             .insert_edge_pair_with_local_rebalance_for_incoming_live_entries(RebalanceInsertSpec {
                 edge_id: 91,
                 endpoints: EdgePairEndpoints {
-                    src_vertex_ref: VertexRef::from(1u8).into(),
+                    src_vertex_ref: VertexRef::from(1u8),
                     src_ordinal: 0,
-                    dst_vertex_ref: VertexRef::from(2u8).into(),
+                    dst_vertex_ref: VertexRef::from(2u8),
                     dst_ordinal: 0,
                 },
                 label_id: 11,
                 planned_incoming_live_entries: 2,
-                forward_rebalance_vertex_ids: &[VertexRef::from(1u8).into()],
+                forward_rebalance_vertex_ids: &[VertexRef::from(1u8)],
                 forward_rebalance_base_edge_ids_by_ordinal: &[vec![90, 91]],
             })
             .expect("insert result");
@@ -4304,13 +4334,13 @@ mod tests {
         let rebalanced = graph
             .ensure_local_capacity_for_incoming_live_entries(RebalancePrepareSpec {
                 endpoints: EdgePairEndpoints {
-                    src_vertex_ref: VertexRef::from(1u8).into(),
+                    src_vertex_ref: VertexRef::from(1u8),
                     src_ordinal: 0,
-                    dst_vertex_ref: VertexRef::from(2u8).into(),
+                    dst_vertex_ref: VertexRef::from(2u8),
                     dst_ordinal: 0,
                 },
                 planned_incoming_live_entries: 2,
-                forward_rebalance_vertex_ids: &[VertexRef::from(1u8).into()],
+                forward_rebalance_vertex_ids: &[VertexRef::from(1u8)],
                 forward_rebalance_base_edge_ids_by_ordinal: &[vec![80, 90]],
             })
             .expect("prepare capacity");
@@ -4407,13 +4437,13 @@ mod tests {
         let prepared = batch
             .prepare_local_capacity(RebalancePrepareSpec {
                 endpoints: EdgePairEndpoints {
-                    src_vertex_ref: VertexRef::from(1u8).into(),
+                    src_vertex_ref: VertexRef::from(1u8),
                     src_ordinal: 0,
-                    dst_vertex_ref: VertexRef::from(2u8).into(),
+                    dst_vertex_ref: VertexRef::from(2u8),
                     dst_ordinal: 0,
                 },
                 planned_incoming_live_entries: 2,
-                forward_rebalance_vertex_ids: &[VertexRef::from(1u8).into()],
+                forward_rebalance_vertex_ids: &[VertexRef::from(1u8)],
                 forward_rebalance_base_edge_ids_by_ordinal: &[vec![80, 90]],
             })
             .expect("prepare");
@@ -4423,14 +4453,14 @@ mod tests {
             .insert_edge_pair(RebalanceInsertSpec {
                 edge_id: 91,
                 endpoints: EdgePairEndpoints {
-                    src_vertex_ref: VertexRef::from(1u8).into(),
+                    src_vertex_ref: VertexRef::from(1u8),
                     src_ordinal: 0,
-                    dst_vertex_ref: VertexRef::from(2u8).into(),
+                    dst_vertex_ref: VertexRef::from(2u8),
                     dst_ordinal: 0,
                 },
                 label_id: 11,
                 planned_incoming_live_entries: 2,
-                forward_rebalance_vertex_ids: &[VertexRef::from(1u8).into()],
+                forward_rebalance_vertex_ids: &[VertexRef::from(1u8)],
                 forward_rebalance_base_edge_ids_by_ordinal: &[vec![80, 90]],
             })
             .expect("insert");
@@ -4515,13 +4545,13 @@ mod tests {
             .ensure_local_capacity_for_incoming_live_entries_with_segment_replacement(
                 RebalancePrepareSpec {
                     endpoints: EdgePairEndpoints {
-                        src_vertex_ref: VertexRef::from(1u8).into(),
+                        src_vertex_ref: VertexRef::from(1u8),
                         src_ordinal: 0,
-                        dst_vertex_ref: VertexRef::from(2u8).into(),
+                        dst_vertex_ref: VertexRef::from(2u8),
                         dst_ordinal: 0,
                     },
                     planned_incoming_live_entries: 2,
-                    forward_rebalance_vertex_ids: &[VertexRef::from(1u8).into()],
+                    forward_rebalance_vertex_ids: &[VertexRef::from(1u8)],
                     forward_rebalance_base_edge_ids_by_ordinal: &[vec![80, 90]],
                 },
                 &mut manager,
@@ -4587,9 +4617,9 @@ mod tests {
         graph
             .insert_base_edge_pair(
                 77,
-                VertexRef::from(1u8).into(),
+                VertexRef::from(1u8),
                 0,
-                VertexRef::from(2u8).into(),
+                VertexRef::from(2u8),
                 0,
                 7,
             )
@@ -4626,9 +4656,9 @@ mod tests {
             .replace_edge_pair(EdgeReplaceSpec {
                 edge_id: 77,
                 endpoints: EdgePairEndpoints {
-                    src_vertex_ref: VertexRef::from(1u8).into(),
+                    src_vertex_ref: VertexRef::from(1u8),
                     src_ordinal: 0,
-                    dst_vertex_ref: VertexRef::from(3u8).into(),
+                    dst_vertex_ref: VertexRef::from(3u8),
                     dst_ordinal: 0,
                 },
                 locators: EdgePairLogicalLocators {
@@ -4652,9 +4682,9 @@ mod tests {
             .tombstone_edge_pair(EdgeTombstoneSpec {
                 edge_id: 77,
                 endpoints: EdgePairEndpoints {
-                    src_vertex_ref: VertexRef::from(1u8).into(),
+                    src_vertex_ref: VertexRef::from(1u8),
                     src_ordinal: 0,
-                    dst_vertex_ref: VertexRef::from(3u8).into(),
+                    dst_vertex_ref: VertexRef::from(3u8),
                     dst_ordinal: 0,
                 },
                 locators: EdgePairLogicalLocators {
@@ -4722,9 +4752,9 @@ mod tests {
 
         let decision = graph
             .choose_insert_decision(
-                VertexRef::from(1u8).into(),
+                VertexRef::from(1u8),
                 0,
-                VertexRef::from(2u8).into(),
+                VertexRef::from(2u8),
                 0,
             )
             .expect("decision");
@@ -4779,9 +4809,9 @@ mod tests {
 
         let decision = graph
             .choose_insert_decision(
-                VertexRef::from(1u8).into(),
+                VertexRef::from(1u8),
                 0,
-                VertexRef::from(2u8).into(),
+                VertexRef::from(2u8),
                 0,
             )
             .expect("decision");
@@ -4836,9 +4866,9 @@ mod tests {
 
         let decision = graph
             .choose_insert_decision(
-                VertexRef::from(1u8).into(),
+                VertexRef::from(1u8),
                 0,
-                VertexRef::from(2u8).into(),
+                VertexRef::from(2u8),
                 0,
             )
             .expect("decision");
@@ -4895,18 +4925,18 @@ mod tests {
 
         let candidates = graph
             .collect_maintenance_candidates(&[
-                VertexRef::from(1u8).into(),
-                VertexRef::from(9u8).into(),
+                VertexRef::from(1u8),
+                VertexRef::from(9u8),
             ])
             .expect("maintenance candidates");
 
         assert_eq!(candidates.len(), 2);
-        assert_eq!(candidates[0].vertex_ref, VertexRef::from(1u8).into());
+        assert_eq!(candidates[0].vertex_ref, VertexRef::from(1u8));
         assert!(candidates[0].has_overflow_backlog());
         assert!(candidates[0].forward_window_overflow_entries > 0);
         assert!(candidates[0].forward_window_total_base_slots > 0);
         assert!(candidates[0].priority_score > candidates[1].priority_score);
-        assert_eq!(candidates[1].vertex_ref, VertexRef::from(9u8).into());
+        assert_eq!(candidates[1].vertex_ref, VertexRef::from(9u8));
         assert!(candidates[1].has_reclaimable_tombstones());
     }
 
@@ -4960,15 +4990,15 @@ mod tests {
 
         let candidates = graph
             .collect_maintenance_candidates_at_epoch(
-                &[VertexRef::from(1u8).into(), VertexRef::from(9u8).into()],
+                &[VertexRef::from(1u8), VertexRef::from(9u8)],
                 Some(11),
             )
             .expect("maintenance candidates");
 
         assert_eq!(candidates.len(), 2);
-        assert_eq!(candidates[0].vertex_ref, VertexRef::from(9u8).into());
+        assert_eq!(candidates[0].vertex_ref, VertexRef::from(9u8));
         assert_eq!(candidates[0].recent_maintenance_penalty, 0);
-        assert_eq!(candidates[1].vertex_ref, VertexRef::from(1u8).into());
+        assert_eq!(candidates[1].vertex_ref, VertexRef::from(1u8));
         assert_eq!(candidates[1].last_maintenance_epoch, Some(10));
         assert!(candidates[1].recent_maintenance_penalty > 0);
     }
@@ -5040,9 +5070,9 @@ mod tests {
 
         let items = graph
             .collect_maintenance_work_items(&[
-                VertexRef::from(1u8).into(),
-                VertexRef::from(2u8).into(),
-                VertexRef::from(3u8).into(),
+                VertexRef::from(1u8),
+                VertexRef::from(2u8),
+                VertexRef::from(3u8),
             ])
             .expect("work items");
 
@@ -5131,8 +5161,8 @@ mod tests {
 
         assert_eq!(
             graph.rebuild_maintenance_queue(&[
-                VertexRef::from(1u8).into(),
-                VertexRef::from(9u8).into()
+                VertexRef::from(1u8),
+                VertexRef::from(9u8)
             ]),
             Some(2)
         );
@@ -5140,7 +5170,7 @@ mod tests {
 
         let summary = graph
             .run_next_queued_maintenance_cycle_with_segment_replacement_and_write(
-                &[VertexRef::from(1u8).into(), VertexRef::from(9u8).into()],
+                &[VertexRef::from(1u8), VertexRef::from(9u8)],
                 &[vec![80, 81], vec![82]],
                 &mut manager,
                 &memory,
@@ -5149,7 +5179,7 @@ mod tests {
             .expect("run queued maintenance")
             .expect("queued maintenance summary");
 
-        assert_eq!(summary.candidate.vertex_ref, VertexRef::from(1u8).into());
+        assert_eq!(summary.candidate.vertex_ref, VertexRef::from(1u8));
         assert_eq!(graph.maintenance_queue().len(), 1);
     }
 
@@ -5202,8 +5232,8 @@ mod tests {
 
         assert_eq!(
             graph.rebuild_maintenance_queue(&[
-                VertexRef::from(1u8).into(),
-                VertexRef::from(9u8).into()
+                VertexRef::from(1u8),
+                VertexRef::from(9u8)
             ]),
             Some(2)
         );
@@ -5211,7 +5241,7 @@ mod tests {
 
         let refreshed_len = graph
             .refresh_maintenance_queue_at_epoch(
-                &[VertexRef::from(1u8).into(), VertexRef::from(9u8).into()],
+                &[VertexRef::from(1u8), VertexRef::from(9u8)],
                 Some(11),
             )
             .expect("refresh queue");
@@ -5219,11 +5249,11 @@ mod tests {
         assert_eq!(refreshed_len, 2);
         assert_eq!(
             graph.maintenance_queue()[0].vertex_ref,
-            VertexRef::from(9u8).into()
+            VertexRef::from(9u8)
         );
         assert_eq!(
             graph.maintenance_queue()[1].vertex_ref,
-            VertexRef::from(1u8).into()
+            VertexRef::from(1u8)
         );
         assert!(graph.maintenance_queue()[1].recent_maintenance_penalty > 0);
     }
@@ -5329,16 +5359,18 @@ mod tests {
 
         assert_eq!(
             graph.rebuild_maintenance_queue(&[
-                VertexRef::from(1u8).into(),
-                VertexRef::from(9u8).into()
+                VertexRef::from(1u8),
+                VertexRef::from(9u8)
             ]),
             Some(2)
         );
 
         let summary = graph
             .run_queued_maintenance_cycles_with_segment_replacement_and_write(
-                &[VertexRef::from(1u8).into(), VertexRef::from(9u8).into()],
-                &[vec![80, 81], vec![82]],
+                crate::low_level::MaintenanceCycleVertexInputs {
+                    vertex_ids: &[VertexRef::from(1u8), VertexRef::from(9u8)],
+                    forward_base_edge_ids_by_ordinal: &[vec![80, 81], vec![82]],
+                },
                 &mut manager,
                 &memory,
                 210,
@@ -5399,10 +5431,10 @@ mod tests {
         );
 
         let plan = graph
-            .plan_one_maintenance_cycle(&[VertexRef::from(1u8).into(), VertexRef::from(9u8).into()])
+            .plan_one_maintenance_cycle(&[VertexRef::from(1u8), VertexRef::from(9u8)])
             .expect("maintenance cycle plan");
 
-        assert_eq!(plan.candidate.vertex_ref, VertexRef::from(1u8).into());
+        assert_eq!(plan.candidate.vertex_ref, VertexRef::from(1u8));
         assert_eq!(plan.rebalance.forward.anchor_ordinal, 0);
         assert_eq!(plan.rebalance.reverse.anchor_ordinal, 0);
     }
@@ -5481,7 +5513,7 @@ mod tests {
 
         let summary = graph
             .run_one_maintenance_cycle_with_segment_replacement_and_write(
-                &[VertexRef::from(1u8).into(), VertexRef::from(9u8).into()],
+                &[VertexRef::from(1u8), VertexRef::from(9u8)],
                 &[vec![80, 81], vec![82]],
                 &mut manager,
                 &memory,
@@ -5490,7 +5522,7 @@ mod tests {
             .expect("run maintenance cycle")
             .expect("maintenance summary");
 
-        assert_eq!(summary.candidate.vertex_ref, VertexRef::from(1u8).into());
+        assert_eq!(summary.candidate.vertex_ref, VertexRef::from(1u8));
         assert_eq!(
             summary
                 .rebalance
@@ -5606,8 +5638,10 @@ mod tests {
 
         let summary = graph
             .run_maintenance_cycles_with_segment_replacement_and_write(
-                &[VertexRef::from(1u8).into(), VertexRef::from(9u8).into()],
-                &[vec![80, 81], vec![82]],
+                crate::low_level::MaintenanceCycleVertexInputs {
+                    vertex_ids: &[VertexRef::from(1u8), VertexRef::from(9u8)],
+                    forward_base_edge_ids_by_ordinal: &[vec![80, 81], vec![82]],
+                },
                 &mut manager,
                 &memory,
                 200,
@@ -5675,9 +5709,9 @@ mod tests {
 
         let decision = graph
             .choose_insert_decision(
-                VertexRef::from(1u8).into(),
+                VertexRef::from(1u8),
                 0,
-                VertexRef::from(2u8).into(),
+                VertexRef::from(2u8),
                 0,
             )
             .expect("decision");
@@ -5777,9 +5811,9 @@ mod tests {
 
         let GraphInsertDecision::RebalanceRequired(plan) = graph
             .choose_insert_decision(
-                VertexRef::from(1u8).into(),
+                VertexRef::from(1u8),
                 0,
-                VertexRef::from(2u8).into(),
+                VertexRef::from(2u8),
                 0,
             )
             .expect("decision")
@@ -5875,9 +5909,9 @@ mod tests {
 
         let GraphInsertDecision::RebalanceRequired(plan) = graph
             .choose_insert_decision(
-                VertexRef::from(1u8).into(),
+                VertexRef::from(1u8),
                 0,
-                VertexRef::from(2u8).into(),
+                VertexRef::from(2u8),
                 0,
             )
             .expect("decision")
@@ -5999,9 +6033,9 @@ mod tests {
 
         let GraphInsertDecision::RebalanceRequired(plan) = graph
             .choose_insert_decision(
-                VertexRef::from(1u8).into(),
+                VertexRef::from(1u8),
                 0,
-                VertexRef::from(2u8).into(),
+                VertexRef::from(2u8),
                 0,
             )
             .expect("decision")
@@ -6177,7 +6211,7 @@ mod tests {
             ForwardSurfaceRuntime::new(
                 forward_surface(),
                 vec![
-                    VertexEntry::new(EdgeIndex::new((7_u64 << 40) | 0), 1, EMPTY_LOG_OFFSET),
+                    VertexEntry::new(EdgeIndex::new(7_u64 << 40), 1, EMPTY_LOG_OFFSET),
                     VertexEntry::new(EdgeIndex::new((8_u64 << 40) | 2), 1, EMPTY_LOG_OFFSET),
                 ],
                 vec![
@@ -6190,7 +6224,7 @@ mod tests {
             ReverseSurfaceRuntime::new(
                 reverse_surface(),
                 vec![
-                    VertexEntry::new(EdgeIndex::new((9_u64 << 40) | 0), 1, EMPTY_LOG_OFFSET),
+                    VertexEntry::new(EdgeIndex::new(9_u64 << 40), 1, EMPTY_LOG_OFFSET),
                     VertexEntry::new(EdgeIndex::new((10_u64 << 40) | 2), 1, EMPTY_LOG_OFFSET),
                 ],
                 vec![
@@ -6263,14 +6297,14 @@ mod tests {
                 RebalanceInsertSpec {
                     edge_id: 91,
                     endpoints: EdgePairEndpoints {
-                        src_vertex_ref: VertexRef::from(1u8).into(),
+                        src_vertex_ref: VertexRef::from(1u8),
                         src_ordinal: 0,
-                        dst_vertex_ref: VertexRef::from(2u8).into(),
+                        dst_vertex_ref: VertexRef::from(2u8),
                         dst_ordinal: 0,
                     },
                     label_id: 11,
                     planned_incoming_live_entries: 1,
-                    forward_rebalance_vertex_ids: &[VertexRef::from(1u8).into()],
+                    forward_rebalance_vertex_ids: &[VertexRef::from(1u8)],
                     forward_rebalance_base_edge_ids_by_ordinal: &[vec![91]],
                 },
                 &mut manager,
@@ -6334,9 +6368,9 @@ mod tests {
 
         let GraphInsertDecision::RebalanceRequired(plan) = graph
             .choose_insert_decision(
-                VertexRef::from(1u8).into(),
+                VertexRef::from(1u8),
                 0,
-                VertexRef::from(2u8).into(),
+                VertexRef::from(2u8),
                 0,
             )
             .expect("decision")
@@ -6352,7 +6386,7 @@ mod tests {
         graph
             .apply_local_rebalance_delta_and_rebuild_logical_locator_sidecar(
                 delta,
-                &[VertexRef::from(1u8).into(), VertexRef::from(9u8).into()],
+                &[VertexRef::from(1u8), VertexRef::from(9u8)],
                 &[vec![90, 91, 92], vec![93]],
             )
             .expect("apply local rebalance delta with logical locator sidecar rebuild");
@@ -6447,9 +6481,9 @@ mod tests {
 
         let GraphInsertDecision::RebalanceRequired(plan) = graph
             .choose_insert_decision(
-                VertexRef::from(1u8).into(),
+                VertexRef::from(1u8),
                 0,
-                VertexRef::from(2u8).into(),
+                VertexRef::from(2u8),
                 0,
             )
             .expect("decision")
@@ -6465,7 +6499,7 @@ mod tests {
         graph
             .apply_local_rebalance_delta_and_refresh_logical_locator_sidecar_window(
                 delta,
-                &[VertexRef::from(1u8).into()],
+                &[VertexRef::from(1u8)],
                 &[vec![90, 91, 92]],
             )
             .expect("apply local rebalance delta with logical locator sidecar window refresh");
@@ -6578,9 +6612,9 @@ mod tests {
 
         let GraphInsertDecision::RebalanceRequired(plan) = graph
             .choose_insert_decision(
-                VertexRef::from(1u8).into(),
+                VertexRef::from(1u8),
                 0,
-                VertexRef::from(2u8).into(),
+                VertexRef::from(2u8),
                 0,
             )
             .expect("decision")
@@ -6596,7 +6630,7 @@ mod tests {
         let refreshed = graph
             .apply_local_rebalance_delta_refresh_window_and_write(
                 delta,
-                &[VertexRef::from(1u8).into()],
+                &[VertexRef::from(1u8)],
                 &[vec![90, 91, 92]],
                 &mut manager,
                 &memory,
@@ -6701,9 +6735,9 @@ mod tests {
 
         let GraphInsertDecision::RebalanceRequired(plan) = graph
             .choose_insert_decision(
-                VertexRef::from(1u8).into(),
+                VertexRef::from(1u8),
                 0,
-                VertexRef::from(2u8).into(),
+                VertexRef::from(2u8),
                 0,
             )
             .expect("decision")
@@ -6719,7 +6753,7 @@ mod tests {
         let refreshed = graph
             .apply_local_rebalance_delta_with_segment_replacement_refresh_window_and_write(
                 delta,
-                &[VertexRef::from(1u8).into()],
+                &[VertexRef::from(1u8)],
                 &[vec![90, 91, 92]],
                 &mut manager,
                 &memory,
@@ -6821,13 +6855,13 @@ mod tests {
             .ensure_local_capacity_for_incoming_live_entries_with_segment_replacement_and_write(
                 RebalancePrepareSpec {
                     endpoints: EdgePairEndpoints {
-                        src_vertex_ref: VertexRef::from(1u8).into(),
+                        src_vertex_ref: VertexRef::from(1u8),
                         src_ordinal: 0,
-                        dst_vertex_ref: VertexRef::from(2u8).into(),
+                        dst_vertex_ref: VertexRef::from(2u8),
                         dst_ordinal: 0,
                     },
                     planned_incoming_live_entries: 2,
-                    forward_rebalance_vertex_ids: &[VertexRef::from(1u8).into()],
+                    forward_rebalance_vertex_ids: &[VertexRef::from(1u8)],
                     forward_rebalance_base_edge_ids_by_ordinal: &[vec![80, 90]],
                 },
                 &mut manager,
@@ -6919,14 +6953,14 @@ mod tests {
                 RebalanceInsertSpec {
                     edge_id: 91,
                     endpoints: EdgePairEndpoints {
-                        src_vertex_ref: VertexRef::from(1u8).into(),
+                        src_vertex_ref: VertexRef::from(1u8),
                         src_ordinal: 0,
-                        dst_vertex_ref: VertexRef::from(2u8).into(),
+                        dst_vertex_ref: VertexRef::from(2u8),
                         dst_ordinal: 0,
                     },
                     label_id: 11,
                     planned_incoming_live_entries: 2,
-                    forward_rebalance_vertex_ids: &[VertexRef::from(1u8).into()],
+                    forward_rebalance_vertex_ids: &[VertexRef::from(1u8)],
                     forward_rebalance_base_edge_ids_by_ordinal: &[vec![90, 91]],
                 },
                 &mut manager,
@@ -7035,14 +7069,14 @@ mod tests {
                 RebalanceInsertSpec {
                     edge_id: 91,
                     endpoints: EdgePairEndpoints {
-                        src_vertex_ref: VertexRef::from(1u8).into(),
+                        src_vertex_ref: VertexRef::from(1u8),
                         src_ordinal: 0,
-                        dst_vertex_ref: VertexRef::from(2u8).into(),
+                        dst_vertex_ref: VertexRef::from(2u8),
                         dst_ordinal: 0,
                     },
                     label_id: 11,
                     planned_incoming_live_entries: 2,
-                    forward_rebalance_vertex_ids: &[VertexRef::from(1u8).into()],
+                    forward_rebalance_vertex_ids: &[VertexRef::from(1u8)],
                     forward_rebalance_base_edge_ids_by_ordinal: &[vec![90, 92]],
                 },
                 &mut manager,
@@ -7150,14 +7184,14 @@ mod tests {
                 RebalanceInsertSpec {
                     edge_id: 91,
                     endpoints: EdgePairEndpoints {
-                        src_vertex_ref: VertexRef::from(1u8).into(),
+                        src_vertex_ref: VertexRef::from(1u8),
                         src_ordinal: 0,
-                        dst_vertex_ref: VertexRef::from(2u8).into(),
+                        dst_vertex_ref: VertexRef::from(2u8),
                         dst_ordinal: 0,
                     },
                     label_id: 11,
                     planned_incoming_live_entries: 1,
-                    forward_rebalance_vertex_ids: &[VertexRef::from(1u8).into()],
+                    forward_rebalance_vertex_ids: &[VertexRef::from(1u8)],
                     forward_rebalance_base_edge_ids_by_ordinal: &[vec![90, 92, 93]],
                 },
                 &mut manager,
@@ -7209,9 +7243,9 @@ mod tests {
             .tombstone_base_edge_pair(
                 99,
                 EdgePairEndpoints {
-                    src_vertex_ref: VertexRef::from(1u8).into(),
+                    src_vertex_ref: VertexRef::from(1u8),
                     src_ordinal: 0,
-                    dst_vertex_ref: VertexRef::from(2u8).into(),
+                    dst_vertex_ref: VertexRef::from(2u8),
                     dst_ordinal: 0,
                 },
                 EdgePairLogicalLocators {
@@ -7279,9 +7313,9 @@ mod tests {
             .replace_base_edge_pair(EdgeReplaceSpec {
                 edge_id: 77,
                 endpoints: EdgePairEndpoints {
-                    src_vertex_ref: VertexRef::from(1u8).into(),
+                    src_vertex_ref: VertexRef::from(1u8),
                     src_ordinal: 0,
-                    dst_vertex_ref: VertexRef::from(3u8).into(),
+                    dst_vertex_ref: VertexRef::from(3u8),
                     dst_ordinal: 0,
                 },
                 locators: EdgePairLogicalLocators {
@@ -7373,9 +7407,9 @@ mod tests {
             .replace_base_edge_pair(EdgeReplaceSpec {
                 edge_id: 77,
                 endpoints: EdgePairEndpoints {
-                    src_vertex_ref: VertexRef::from(1u8).into(),
+                    src_vertex_ref: VertexRef::from(1u8),
                     src_ordinal: 0,
-                    dst_vertex_ref: VertexRef::from(3u8).into(),
+                    dst_vertex_ref: VertexRef::from(3u8),
                     dst_ordinal: 0,
                 },
                 locators: EdgePairLogicalLocators {
@@ -7439,9 +7473,9 @@ mod tests {
             .replace_edge_pair(EdgeReplaceSpec {
                 edge_id: 55,
                 endpoints: EdgePairEndpoints {
-                    src_vertex_ref: VertexRef::from(1u8).into(),
+                    src_vertex_ref: VertexRef::from(1u8),
                     src_ordinal: 0,
-                    dst_vertex_ref: VertexRef::from(3u8).into(),
+                    dst_vertex_ref: VertexRef::from(3u8),
                     dst_ordinal: 0,
                 },
                 locators: EdgePairLogicalLocators {
@@ -7500,9 +7534,9 @@ mod tests {
             .tombstone_edge_pair(EdgeTombstoneSpec {
                 edge_id: 55,
                 endpoints: EdgePairEndpoints {
-                    src_vertex_ref: VertexRef::from(1u8).into(),
+                    src_vertex_ref: VertexRef::from(1u8),
                     src_ordinal: 0,
-                    dst_vertex_ref: VertexRef::from(2u8).into(),
+                    dst_vertex_ref: VertexRef::from(2u8),
                     dst_ordinal: 0,
                 },
                 locators: EdgePairLogicalLocators {

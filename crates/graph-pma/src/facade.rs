@@ -89,24 +89,6 @@ pub use facade_types::{
 type GraphPmaReplaceEdgeSummary =
     GraphPmaMutationWriteSummary<(GraphMutationPath, (EdgeEntry, EdgeEntry))>;
 
-#[cfg(test)]
-mod property_index_page_size_test_hook {
-    use std::cell::Cell;
-
-    thread_local! {
-        static OVERRIDE: Cell<Option<u32>> = const { Cell::new(None) };
-    }
-
-    #[allow(dead_code)] // Used by tests that override PIDX logical page size via `set(Some(..))`.
-    pub fn set(v: Option<u32>) {
-        OVERRIDE.set(v);
-    }
-
-    pub fn get() -> Option<u32> {
-        OVERRIDE.get()
-    }
-}
-
 /// When true, the next node-side property index mutation path returns
 /// [`PropertyIndexError::LeafPartitionMultiEntryExceedsPrimaryPage`] (test-only).
 #[cfg(test)]
@@ -244,6 +226,21 @@ impl<M: Memory + Clone> Clone for GraphPma<M> {
         }
         clone
     }
+}
+
+struct AssembledAfterPropertyLoadArgs<M: Memory> {
+    manager: Rc<RefCell<RegionManager>>,
+    memory: Rc<RefCell<M>>,
+    graph: GraphRuntime,
+    node_property_store: GraphPropertyStableMap<M>,
+    edge_property_store: GraphPropertyStableMap<M>,
+    node_property_btree_payload: Rc<RefCell<u64>>,
+    edge_property_btree_payload: Rc<RefCell<u64>>,
+    node_property_index: PropertyIndex,
+    edge_property_index: PropertyIndex,
+    property_equality_map: PropertyEqualityInplaceMap<M>,
+    property_index_btree_payload: Rc<RefCell<u64>>,
+    property_index_dirty: bool,
 }
 
 /// Thin facade-level batch mutation session.
@@ -1181,32 +1178,21 @@ impl<M: Memory> GraphPma<M> {
     /// which issues `BTreeMap::new` and overwrites stable memory. That must not run after
     /// `load_graph_property_stable_map_from_stable_memory` has read the live PSB1 image.
     fn assembled_after_property_load(
-        manager: Rc<RefCell<RegionManager>>,
-        memory: Rc<RefCell<M>>,
-        graph: GraphRuntime,
-        node_property_store: GraphPropertyStableMap<M>,
-        edge_property_store: GraphPropertyStableMap<M>,
-        node_property_btree_payload: Rc<RefCell<u64>>,
-        edge_property_btree_payload: Rc<RefCell<u64>>,
-        node_property_index: PropertyIndex,
-        edge_property_index: PropertyIndex,
-        property_equality_map: PropertyEqualityInplaceMap<M>,
-        property_index_btree_payload: Rc<RefCell<u64>>,
-        property_index_dirty: bool,
+        args: AssembledAfterPropertyLoadArgs<M>,
     ) -> Self {
         Self {
-            manager,
-            memory,
-            graph,
-            node_property_store,
-            edge_property_store,
-            node_property_btree_payload,
-            edge_property_btree_payload,
-            node_property_index,
-            edge_property_index,
-            property_equality_map,
-            property_index_btree_payload,
-            property_index_dirty,
+            manager: args.manager,
+            memory: args.memory,
+            graph: args.graph,
+            node_property_store: args.node_property_store,
+            edge_property_store: args.edge_property_store,
+            node_property_btree_payload: args.node_property_btree_payload,
+            edge_property_btree_payload: args.edge_property_btree_payload,
+            node_property_index: args.node_property_index,
+            edge_property_index: args.edge_property_index,
+            property_equality_map: args.property_equality_map,
+            property_index_btree_payload: args.property_index_btree_payload,
+            property_index_dirty: args.property_index_dirty,
             node_property_store_dirty: false,
             edge_property_store_dirty: false,
             last_write_event: None,
@@ -1364,18 +1350,20 @@ impl<M: Memory> GraphPma<M> {
         };
 
         let mut facade = Self::assembled_after_property_load(
-            mgr_rc,
-            mem_rc,
-            graph,
-            node_property_store,
-            edge_property_store,
-            node_pl,
-            edge_pl,
-            node_property_index,
-            edge_property_index,
-            property_equality_map,
-            property_index_btree_payload,
-            property_index_dirty,
+            AssembledAfterPropertyLoadArgs {
+                manager: mgr_rc,
+                memory: mem_rc,
+                graph,
+                node_property_store,
+                edge_property_store,
+                node_property_btree_payload: node_pl,
+                edge_property_btree_payload: edge_pl,
+                node_property_index,
+                edge_property_index,
+                property_equality_map,
+                property_index_btree_payload,
+                property_index_dirty,
+            },
         );
 
         if facade.node_property_index.header.entry_count == 0
@@ -1467,18 +1455,20 @@ impl<M: Memory> GraphPma<M> {
         };
 
         let mut facade = Self::assembled_after_property_load(
-            mgr_rc,
-            mem_rc,
-            graph,
-            node_property_store,
-            edge_property_store,
-            node_pl,
-            edge_pl,
-            node_property_index,
-            edge_property_index,
-            property_equality_map,
-            property_index_btree_payload,
-            property_index_dirty,
+            AssembledAfterPropertyLoadArgs {
+                manager: mgr_rc,
+                memory: mem_rc,
+                graph,
+                node_property_store,
+                edge_property_store,
+                node_property_btree_payload: node_pl,
+                edge_property_btree_payload: edge_pl,
+                node_property_index,
+                edge_property_index,
+                property_equality_map,
+                property_index_btree_payload,
+                property_index_dirty,
+            },
         );
 
         if facade.node_property_index.header.entry_count == 0
@@ -2258,8 +2248,7 @@ impl<M: Memory> GraphPma<M> {
             RegionKind::ForwardVertexTable,
             start_ordinal,
             count,
-            self.graph.insert_policy,
-            anchor_live_degree_after_rebalance,
+            (self.graph.insert_policy, anchor_live_degree_after_rebalance),
             incoming_live_entries,
         )
     }
@@ -2279,8 +2268,7 @@ impl<M: Memory> GraphPma<M> {
             RegionKind::ReverseVertexTable,
             start_ordinal,
             count,
-            self.graph.insert_policy,
-            anchor_live_degree_after_rebalance,
+            (self.graph.insert_policy, anchor_live_degree_after_rebalance),
             incoming_live_entries,
         )
     }
@@ -2745,13 +2733,13 @@ mod tests {
             facade.graph.reverse.clone(),
         );
         write_surface_runtimes_to_stable_memory(
-            &mut *facade.manager.borrow_mut(),
+            &mut facade.manager.borrow_mut(),
             &*mem_rc.borrow(),
             &runtimes,
         )
         .expect("surface write");
         sync_graph_property_store_v1_header_to_stable_memory(
-            &mut *facade.manager.borrow_mut(),
+            &mut facade.manager.borrow_mut(),
             &*mem_rc.borrow(),
             RegionKind::NodePropertyStore,
             *facade.node_property_btree_payload.borrow(),
@@ -4177,12 +4165,12 @@ mod tests {
             .expect("write all");
 
         assert_eq!(
-            read_property_index_region_magic(&*facade.manager.borrow(), &*facade.memory.borrow())
+            read_property_index_region_magic(&facade.manager.borrow(), &*facade.memory.borrow())
                 .expect("magic"),
             Some(PIDX_V3_MAGIC)
         );
         let image = crate::property_index::read_property_index_storage_image_from_stable_memory(
-            &*facade.manager.borrow(),
+            &facade.manager.borrow(),
             &*facade.memory.borrow(),
         )
         .expect("read storage image");
@@ -5131,7 +5119,7 @@ mod tests {
         );
         let _ = facade
             .graph
-            .sync_base_segment_capacities_from_manager(&*facade.manager.borrow());
+            .sync_base_segment_capacities_from_manager(&facade.manager.borrow());
 
         let summary = facade
             .run_maintenance_cycles_with_segment_replacement_and_write(
@@ -5315,7 +5303,7 @@ mod tests {
             equality_map,
         };
         write_property_index_storage_image_to_stable_memory(
-            &mut *facade.manager.borrow_mut(),
+            &mut facade.manager.borrow_mut(),
             &*facade.memory.borrow(),
             &image,
         )

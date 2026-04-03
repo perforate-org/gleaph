@@ -447,7 +447,7 @@ impl<'a, S: super::GraphPmaStore> GraphRead for GraphPmaKernelOverlayGraph<'a, S
                 .ok_or(GraphError::EdgeNotFound(edge_id))?;
             match edge_property_names {
                 None => {}
-                Some(names) if names.is_empty() => edge_rec.properties = PropertyMap::new(),
+                Some([]) => edge_rec.properties = PropertyMap::new(),
                 Some(names) => {
                     let bt: BTreeSet<String> = names.iter().cloned().collect();
                     edge_rec.properties = edge_rec
@@ -467,7 +467,7 @@ impl<'a, S: super::GraphPmaStore> GraphRead for GraphPmaKernelOverlayGraph<'a, S
                 .ok_or(GraphError::NodeNotFound(target))?;
             match dst_property_names {
                 None => {}
-                Some(names) if names.is_empty() => node_rec.properties = PropertyMap::new(),
+                Some([]) => node_rec.properties = PropertyMap::new(),
                 Some(names) => {
                     let bt: BTreeSet<String> = names.iter().cloned().collect();
                     node_rec.properties = node_rec

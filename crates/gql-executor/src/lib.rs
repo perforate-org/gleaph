@@ -543,11 +543,13 @@ fn execute_ops_from_rows<G: GraphRead + GraphWrite>(
                 rows = exec_index_scan(
                     graph,
                     &rows,
-                    variable.as_ref(),
-                    property.as_ref(),
-                    value,
-                    *cmp,
-                    property_projection.as_deref(),
+                    IndexScanArgs {
+                        variable: variable.as_ref(),
+                        property: property.as_ref(),
+                        value,
+                        cmp: *cmp,
+                        property_projection: property_projection.as_deref(),
+                    },
                     ctx,
                 )?;
             }
@@ -593,13 +595,15 @@ fn execute_ops_from_rows<G: GraphRead + GraphWrite>(
                 rows = exec_edge_bind_endpoints(
                     graph,
                     rows,
-                    edge.as_ref(),
-                    near.as_ref(),
-                    far.as_ref(),
-                    *direction,
-                    label.as_deref(),
-                    near_property_projection.as_deref(),
-                    far_property_projection.as_deref(),
+                    EdgeBindEndpointsArgs {
+                        edge_var: edge.as_ref(),
+                        near_var: near.as_ref(),
+                        far_var: far.as_ref(),
+                        direction: *direction,
+                        label: label.as_deref(),
+                        near_property_projection: near_property_projection.as_deref(),
+                        far_property_projection: far_property_projection.as_deref(),
+                    },
                 )?;
             }
             PlanOp::ConditionalIndexScan {
@@ -1405,29 +1409,36 @@ fn exec_filter<G: GraphRead>(
     Ok(out)
 }
 
+struct IndexScanArgs<'a> {
+    variable: &'a str,
+    property: &'a str,
+    value: &'a ScanValue,
+    cmp: CmpOp,
+    property_projection: Option<&'a [Rc<str>]>,
+}
+
 fn exec_index_scan<G: GraphRead>(
     graph: &G,
     input: &[BindingRow],
-    variable: &str,
-    property: &str,
-    value: &ScanValue,
-    cmp: CmpOp,
-    property_projection: Option<&[Rc<str>]>,
+    args: IndexScanArgs<'_>,
     ctx: &ExecutionContext,
 ) -> ExecutionResultExt<Vec<BindingRow>> {
-    let value = resolve_scan_value(value, ctx)?;
-    let nodes = match property_projection {
-        None => graph.scan_nodes_by_property(property, &value, cmp)?,
+    let value = resolve_scan_value(args.value, ctx)?;
+    let nodes = match args.property_projection {
+        None => graph.scan_nodes_by_property(args.property, &value, args.cmp)?,
         Some(names) => {
             let v: Vec<String> = names.iter().map(|s| s.to_string()).collect();
-            graph.scan_nodes_by_property_projected(property, &value, cmp, &v)?
+            graph.scan_nodes_by_property_projected(args.property, &value, args.cmp, &v)?
         }
     };
     let mut next = Vec::new();
     for row in input {
         for node in &nodes {
             let mut out = row.clone();
-            out.insert(Rc::<str>::from(variable), BindingValue::Node(node.clone()));
+            out.insert(
+                Rc::<str>::from(args.variable),
+                BindingValue::Node(node.clone()),
+            );
             next.push(out);
         }
     }
@@ -1513,37 +1524,41 @@ fn exec_edge_index_scan<G: GraphRead>(
     Ok(next)
 }
 
+struct EdgeBindEndpointsArgs<'a> {
+    edge_var: &'a str,
+    near_var: &'a str,
+    far_var: &'a str,
+    direction: gleaph_gql::types::EdgeDirection,
+    label: Option<&'a str>,
+    near_property_projection: Option<&'a [Rc<str>]>,
+    far_property_projection: Option<&'a [Rc<str>]>,
+}
+
 fn exec_edge_bind_endpoints<G: GraphRead>(
     graph: &G,
     input: Vec<BindingRow>,
-    edge_var: &str,
-    near_var: &str,
-    far_var: &str,
-    direction: gleaph_gql::types::EdgeDirection,
-    label: Option<&str>,
-    near_property_projection: Option<&[Rc<str>]>,
-    far_property_projection: Option<&[Rc<str>]>,
+    args: EdgeBindEndpointsArgs<'_>,
 ) -> ExecutionResultExt<Vec<BindingRow>> {
     use gleaph_gql::types::EdgeDirection;
     let near_names: Option<Vec<String>> =
-        near_property_projection.map(|n| n.iter().map(|s| s.to_string()).collect());
+        args.near_property_projection.map(|n| n.iter().map(|s| s.to_string()).collect());
     let far_names: Option<Vec<String>> =
-        far_property_projection.map(|n| n.iter().map(|s| s.to_string()).collect());
+        args.far_property_projection.map(|n| n.iter().map(|s| s.to_string()).collect());
     let mut out = Vec::new();
     for row in input {
-        let edge_rec = match row.get(edge_var) {
+        let edge_rec = match row.get(args.edge_var) {
             Some(BindingValue::Edge(e)) => e,
             Some(_) => {
                 return Err(ExecutionError::TypeMismatch(
                     "EdgeBindEndpoints requires edge binding",
                 ));
             }
-            None => return Err(ExecutionError::MissingBinding(edge_var.to_owned())),
+            None => return Err(ExecutionError::MissingBinding(args.edge_var.to_owned())),
         };
-        if label.is_some_and(|l| edge_rec.label.as_deref() != Some(l)) {
+        if args.label.is_some_and(|l| edge_rec.label.as_deref() != Some(l)) {
             continue;
         }
-        let (near_id, far_id) = match direction {
+        let (near_id, far_id) = match args.direction {
             EdgeDirection::PointingRight => (edge_rec.src, edge_rec.dst),
             EdgeDirection::PointingLeft => (edge_rec.dst, edge_rec.src),
             EdgeDirection::LeftOrRight
@@ -1569,8 +1584,14 @@ fn exec_edge_bind_endpoints<G: GraphRead>(
             continue;
         };
         let mut next = row.clone();
-        next.insert(Rc::<str>::from(near_var), BindingValue::Node(near_node));
-        next.insert(Rc::<str>::from(far_var), BindingValue::Node(far_node));
+        next.insert(
+            Rc::<str>::from(args.near_var),
+            BindingValue::Node(near_node),
+        );
+        next.insert(
+            Rc::<str>::from(args.far_var),
+            BindingValue::Node(far_node),
+        );
         out.push(next);
     }
     Ok(out)
@@ -1593,11 +1614,13 @@ fn exec_conditional_index_scan<G: GraphRead>(
                 return exec_index_scan(
                     graph,
                     input,
-                    candidate.variable.as_ref(),
-                    candidate.property.as_ref(),
-                    &scan,
-                    candidate.cmp,
-                    property_projection,
+                    IndexScanArgs {
+                        variable: candidate.variable.as_ref(),
+                        property: candidate.property.as_ref(),
+                        value: &scan,
+                        cmp: candidate.cmp,
+                        property_projection,
+                    },
                     ctx,
                 );
             }
@@ -4949,7 +4972,7 @@ mod tests {
                     *direction,
                     label.clone(),
                     label_expr.clone(),
-                    var_len.clone(),
+                    *var_len,
                 )),
                 _ => None,
             })
@@ -5008,11 +5031,13 @@ mod tests {
             scanned_rows = super::exec_index_scan(
                 &graph,
                 &[BindingRow::new()],
-                index_scan.0.as_ref(),
-                index_scan.1.as_ref(),
-                &index_scan.2,
-                index_scan.3,
-                index_scan.4.as_deref(),
+                super::IndexScanArgs {
+                    variable: index_scan.0.as_ref(),
+                    property: index_scan.1.as_ref(),
+                    value: &index_scan.2,
+                    cmp: index_scan.3,
+                    property_projection: index_scan.4.as_deref(),
+                },
                 &ctx,
             )
             .expect("exec index scan");

@@ -162,15 +162,15 @@ fn collect_label_sets(
 fn try_extract_type_eq(func_side: &Expr, literal_side: &Expr, facts: &mut Vec<NarrowingFact>) {
     if let ExprKind::FunctionCall { name, args, .. } = &func_side.kind {
         let fn_name = name.parts.first().map(|s| s.to_ascii_lowercase());
-        if fn_name.as_deref() == Some("type") && args.len() == 1 {
-            if let ExprKind::Variable(var) = &args[0].kind {
-                if let ExprKind::Literal(crate::Value::Text(label)) = &literal_side.kind {
-                    facts.push(NarrowingFact::EdgeLabelNarrowed {
-                        var: var.clone(),
-                        label: label.clone(),
-                    });
-                }
-            }
+        if fn_name.as_deref() == Some("type")
+            && args.len() == 1
+            && let ExprKind::Variable(var) = &args[0].kind
+            && let ExprKind::Literal(crate::Value::Text(label)) = &literal_side.kind
+        {
+            facts.push(NarrowingFact::EdgeLabelNarrowed {
+                var: var.clone(),
+                label: label.clone(),
+            });
         }
     }
 }
@@ -212,17 +212,17 @@ pub(crate) fn apply_narrowing(env: &mut TypeEnv<'_>, facts: &[NarrowingFact]) {
             #[cfg(feature = "cypher")]
             NarrowingFact::EdgeLabelNarrowed { var, label } => {
                 env.narrowed_edge_labels.insert(var.clone(), label.clone());
-                if let Some(Type::Edge(info)) = env.bindings.get_mut(var) {
-                    if info.label.is_none() {
-                        info.label = Some(label.clone());
-                        // Also populate properties from schema now that the label is known.
-                        if info.properties.is_empty() {
-                            info.properties = env.schema.edge_property_types(label);
-                        }
-                        // Also populate endpoint constraints.
-                        if info.endpoints.is_empty() {
-                            info.endpoints = env.schema.edge_endpoint_types(label);
-                        }
+                if let Some(Type::Edge(info)) = env.bindings.get_mut(var)
+                    && info.label.is_none()
+                {
+                    info.label = Some(label.clone());
+                    // Also populate properties from schema now that the label is known.
+                    if info.properties.is_empty() {
+                        info.properties = env.schema.edge_property_types(label);
+                    }
+                    // Also populate endpoint constraints.
+                    if info.endpoints.is_empty() {
+                        info.endpoints = env.schema.edge_endpoint_types(label);
                     }
                 }
             }

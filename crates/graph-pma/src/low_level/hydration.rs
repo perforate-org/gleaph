@@ -790,10 +790,14 @@ pub fn estimate_vertex_window_reserve_hint_from_stable_memory(
     kind: RegionKind,
     start_ordinal: usize,
     count: usize,
-    insert_policy: GraphInsertPolicy,
-    anchor_live_degree_after_rebalance: u32,
+    insert_policy_and_anchor_live_degree_after_rebalance: (
+        GraphInsertPolicy,
+        u32,
+    ),
     incoming_live_entries: u32,
 ) -> Result<Option<SurfaceVertexWindowReserveHint>, HydrationError> {
+    let (insert_policy, anchor_live_degree_after_rebalance) =
+        insert_policy_and_anchor_live_degree_after_rebalance;
     let Some(summary) =
         summarize_vertex_window_from_stable_memory(manager, memory, kind, start_ordinal, count)?
     else {
@@ -1193,8 +1197,7 @@ fn write_label_index_region_incremental_extent(
             .ok_or(WritebackError::RegionTooLarge(kind, new_total))?,
     )?;
     memory.write(extent.addr.0, &new_hdr);
-    let mut buf = Vec::new();
-    buf.reserve(
+    let mut buf = Vec::with_capacity(
         index_entries
             .len()
             .saturating_sub(append_from as usize)
@@ -2891,8 +2894,7 @@ mod tests {
             RegionKind::ForwardVertexTable,
             0,
             3,
-            GraphInsertPolicy::default(),
-            5,
+            (GraphInsertPolicy::default(), 5),
             1,
         )
         .expect("reserve hint should succeed")
