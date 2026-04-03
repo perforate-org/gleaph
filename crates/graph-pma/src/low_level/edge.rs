@@ -135,21 +135,25 @@ impl EdgeMeta {
     }
 
     /// Wraps a raw packed 16-bit value.
+    #[inline]
     pub const fn from_raw(raw: u16) -> Self {
         Self(raw)
     }
 
     /// Returns the raw packed representation.
+    #[inline]
     pub const fn raw(self) -> u16 {
         self.0
     }
 
     /// Returns the stored label id.
+    #[inline]
     pub const fn label_id(self) -> LabelId {
         self.0 & LABEL_ID_MASK
     }
 
     /// Returns whether the tombstone bit is set.
+    #[inline]
     pub const fn is_tombstone(self) -> bool {
         (self.0 & TOMBSTONE_MASK) != 0
     }

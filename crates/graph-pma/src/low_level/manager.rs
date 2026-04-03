@@ -1061,7 +1061,7 @@ mod tests {
         let extent = manager
             .resolve_edge_ref(
                 RegionKind::ForwardEdgeEntries,
-                EdgeRef::new(segment.segment_id, 0),
+                EdgeRef::from_raw((segment.segment_id as u64) << EdgeRef::START_SLOT_BITS),
             )
             .expect("allocated segment should resolve")
             .1;
@@ -1119,7 +1119,7 @@ mod tests {
         let reused_extent = manager
             .resolve_edge_ref(
                 RegionKind::ForwardEdgeEntries,
-                EdgeRef::new(reused.segment_id, 0),
+                EdgeRef::from_raw((reused.segment_id as u64) << EdgeRef::START_SLOT_BITS),
             )
             .expect("reused segment should resolve")
             .1;

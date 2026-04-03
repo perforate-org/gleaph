@@ -53,16 +53,19 @@ impl VertexRef {
         Self(bytes)
     }
 
-    pub fn to_u64(self) -> u64 {
-        let [b0, b1, b2, b3, b4, b5] = self.0;
-        u64::from_be_bytes([0, 0, b0, b1, b2, b3, b4, b5])
+    #[inline]
+    pub const fn to_u64(self) -> u64 {
+        let b = self.0;
+        u64::from_be_bytes([0, 0, b[0], b[1], b[2], b[3], b[4], b[5]])
     }
 
-    pub fn as_bytes(self) -> [u8; 6] {
+    #[inline]
+    pub const fn as_bytes(self) -> [u8; 6] {
         self.0
     }
 
-    pub fn to_be_bytes(self) -> [u8; 6] {
+    #[inline]
+    pub const fn to_be_bytes(self) -> [u8; 6] {
         self.0
     }
 }
@@ -145,10 +148,12 @@ impl EdgeRef {
     pub const MAX_SEGMENT_ID: u32 = (1 << Self::SEGMENT_ID_BITS) - 1;
     pub const MAX_START_SLOT: u64 = (1u64 << Self::START_SLOT_BITS) - 1;
 
+    #[inline]
     pub const fn from_raw(raw: u64) -> Self {
         Self(raw)
     }
 
+    #[inline]
     pub fn new(segment_id: u32, start_slot: u64) -> Self {
         assert!(
             segment_id <= Self::MAX_SEGMENT_ID,
@@ -161,22 +166,27 @@ impl EdgeRef {
         Self(((segment_id as u64) << Self::START_SLOT_BITS) | start_slot)
     }
 
+    #[inline]
     pub const fn raw(self) -> u64 {
         self.0
     }
 
+    #[inline]
     pub const fn segment_id(self) -> u32 {
         (self.0 >> Self::START_SLOT_BITS) as u32
     }
 
+    #[inline]
     pub const fn start_slot(self) -> u64 {
         self.0 & Self::MAX_START_SLOT
     }
 
+    #[inline]
     pub fn with_start_slot(self, start_slot: u64) -> Self {
         Self::new(self.segment_id(), start_slot)
     }
 
+    #[inline]
     pub fn with_segment_id(self, segment_id: u32) -> Self {
         Self::new(segment_id, self.start_slot())
     }

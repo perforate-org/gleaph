@@ -529,7 +529,8 @@ impl SurfaceBaseStorage {
     }
 
     pub fn end_edge_ref(&self) -> Option<EdgeRef> {
-        Some(EdgeRef::new(0, u64::try_from(self.len()).ok()?))
+        // Segment 0: raw word is exactly the flattened slot index (same as `new(0, len)`).
+        Some(EdgeRef::from_raw(u64::try_from(self.len()).ok()?))
     }
 
     pub fn get_by_ref(&self, edge_ref: EdgeRef) -> Option<EdgeEntry> {

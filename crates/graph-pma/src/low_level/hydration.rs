@@ -1444,8 +1444,10 @@ fn hydrate_edge_storage_from_stable_memory(
 
     if let Some(directory) = manager.edge_segment_directory(kind) {
         for header in directory.iter().copied() {
-            let Some((_, extent)) =
-                manager.resolve_edge_ref(kind, EdgeRef::new(header.segment_id, 0))
+            let Some((_, extent)) = manager.resolve_edge_ref(
+                kind,
+                EdgeRef::from_raw((header.segment_id as u64) << EdgeRef::START_SLOT_BITS),
+            )
             else {
                 continue;
             };
@@ -1507,7 +1509,10 @@ fn write_edge_storage_to_stable_memory(
         }
 
         let (header, extent) = manager
-            .resolve_edge_ref(kind, EdgeRef::new(segment_id, 0))
+            .resolve_edge_ref(
+                kind,
+                EdgeRef::from_raw((segment_id as u64) << EdgeRef::START_SLOT_BITS),
+            )
             .ok_or(WritebackError::MissingExtentRegion(kind))?;
         let capacity_bytes = header
             .slot_capacity
@@ -1770,10 +1775,21 @@ pub fn decode_edge_entries(
     }
 
     let mut entries = Vec::with_capacity(bytes.len() / SERIALIZED_EDGE_ENTRY_LEN);
-    for chunk in bytes.chunks_exact(SERIALIZED_EDGE_ENTRY_LEN) {
-        let target = VertexRef::new(chunk[0..6].try_into().expect("fixed slice"));
-        let meta = u16::from_le_bytes(chunk[6..8].try_into().expect("fixed slice"));
-        entries.push(EdgeEntry::new(target, EdgeMeta::from_raw(meta)));
+    if cfg!(target_endian = "little") {
+        debug_assert_eq!(size_of::<EdgeEntry>(), SERIALIZED_EDGE_ENTRY_LEN);
+        for chunk in bytes.chunks_exact(SERIALIZED_EDGE_ENTRY_LEN) {
+            // SAFETY: Each chunk is exactly `SERIALIZED_EDGE_ENTRY_LEN` bytes. On little-endian
+            // targets this matches `encode_edge_entries` / `repr(C) EdgeEntry`: `[u8;6]`
+            // `VertexRef` then `u16` LE (`EdgeMeta`). `EdgeEntry` is 8 bytes with no padding.
+            let entry = unsafe { chunk.as_ptr().cast::<EdgeEntry>().read_unaligned() };
+            entries.push(entry);
+        }
+    } else {
+        for chunk in bytes.chunks_exact(SERIALIZED_EDGE_ENTRY_LEN) {
+            let target = VertexRef::new(chunk[0..6].try_into().expect("fixed slice"));
+            let meta = u16::from_le_bytes(chunk[6..8].try_into().expect("fixed slice"));
+            entries.push(EdgeEntry::new(target, EdgeMeta::from_raw(meta)));
+        }
     }
     Ok(entries)
 }
