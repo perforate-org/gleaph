@@ -1,4 +1,4 @@
-//! Thin rewrite-facing facade over the new low-level `graph-pma` runtime.
+//! Facade over the low-level `graph-pma` runtime (`GraphRuntime` + regions).
 //!
 //! This module deliberately stays small. It does not hide the low-level model;
 //! it only bundles the pieces that most callers would otherwise wire together
@@ -68,26 +68,26 @@ use crate::property_store::{
     btree_scan_entities_property_subset, btree_scan_entity, default_property_region_chain,
     empty_graph_property_stable_map, load_graph_property_stable_map_from_stable_memory,
 };
-pub use errors::{RewriteGraphPmaError, RewriteGraphPmaResult};
+pub use errors::{GraphPmaError, GraphPmaResult};
 pub use facade_types::{
-    PropertyIndexFallbackReason, RewriteAppendVertexWriteSummary,
-    RewriteAppendVerticesWriteSummary, RewriteBootstrapEdgeProjection,
-    RewriteBootstrapEdgeWriteSummary, RewriteBootstrapGraphProjection,
-    RewriteBootstrapGraphWriteSummary, RewriteBootstrapVerticesProjection,
-    RewriteEdgeLogicalLocatorMapping, RewriteEdgeWriteOperation, RewriteEdgeWriteProjection,
-    RewriteEnsureCapacityProjection, RewriteFacadeWriteEvent, RewriteGraphMutationWriteSummary,
-    RewriteInsertEdgeProjection, RewriteMaintenanceBatchProjection,
-    RewriteMaintenanceCycleProjection, RewriteMaintenanceQueueAction,
-    RewriteMaintenanceQueueItemProjection, RewriteMaintenanceQueueProjection,
-    RewriteMaintenanceQueueStorageProjection, RewriteNodeDeleteProjection,
-    RewriteProductionMetrics, RewriteProductionMetricsSnapshot,
-    RewritePropertyIndexMutationSummary, RewritePropertyIndexTouchedSections,
-    RewritePropertyMutationWriteSummary, RewritePropertyWriteProjection, RewriteRefreshedVertices,
-    RewriteVertexOrdinalMapping, RewriteWriteEventProjection,
+    PropertyIndexFallbackReason, GraphPmaAppendVertexWriteSummary,
+    GraphPmaAppendVerticesWriteSummary, GraphPmaBootstrapEdgeProjection,
+    GraphPmaBootstrapEdgeWriteSummary, GraphPmaBootstrapGraphProjection,
+    GraphPmaBootstrapGraphWriteSummary, GraphPmaBootstrapVerticesProjection,
+    GraphPmaEdgeLogicalLocatorMapping, GraphPmaEdgeWriteOperation, GraphPmaEdgeWriteProjection,
+    GraphPmaEnsureCapacityProjection, GraphPmaFacadeWriteEvent, GraphPmaMutationWriteSummary,
+    GraphPmaInsertEdgeProjection, GraphPmaMaintenanceBatchProjection,
+    GraphPmaMaintenanceCycleProjection, GraphPmaMaintenanceQueueAction,
+    GraphPmaMaintenanceQueueItemProjection, GraphPmaMaintenanceQueueProjection,
+    GraphPmaMaintenanceQueueStorageProjection, GraphPmaNodeDeleteProjection,
+    GraphPmaProductionMetrics, GraphPmaProductionMetricsSnapshot,
+    GraphPmaPropertyIndexMutationSummary, GraphPmaPropertyIndexTouchedSections,
+    GraphPmaPropertyMutationWriteSummary, GraphPmaPropertyWriteProjection, GraphPmaRefreshedVertices,
+    GraphPmaVertexOrdinalMapping, GraphPmaWriteEventProjection,
 };
 
-type RewriteReplaceEdgeSummary =
-    RewriteGraphMutationWriteSummary<(GraphMutationPath, (EdgeEntry, EdgeEntry))>;
+type GraphPmaReplaceEdgeSummary =
+    GraphPmaMutationWriteSummary<(GraphMutationPath, (EdgeEntry, EdgeEntry))>;
 
 #[cfg(test)]
 mod property_index_page_size_test_hook {
@@ -117,14 +117,14 @@ pub(crate) static FAIL_NEXT_NODE_PROPERTY_INDEX_SYNC_TEST: AtomicBool = AtomicBo
 #[cfg(test)]
 pub(crate) static FAIL_NEXT_EDGE_PROPERTY_INDEX_SYNC_TEST: AtomicBool = AtomicBool::new(false);
 
-/// Thin entrypoint for the rewrite implementation of `graph-pma`.
+/// Primary typed entrypoint for graph persistence in `graph-pma`.
 ///
 /// This facade owns the region-manager metadata together with the hydrated
 /// graph runtime, while keeping stable-memory access explicit at method call
-/// sites. The goal is to make the rewrite usable without hiding the
-/// low-level-first model we are still iterating on.
-pub struct RewriteGraphPma<M: Memory = VecMemory> {
-    /// Region metadata and allocator-side state for the rewrite.
+/// sites. The goal is to keep the low-level-first model visible while avoiding
+/// repetitive wiring for callers.
+pub struct GraphPma<M: Memory = VecMemory> {
+    /// Region metadata and allocator-side state.
     pub manager: Rc<RefCell<RegionManager>>,
     /// Canonical stable-memory backing (shared with PIDX btree subregion I/O).
     pub memory: Rc<RefCell<M>>,
@@ -153,16 +153,16 @@ pub struct RewriteGraphPma<M: Memory = VecMemory> {
     /// Whether the edge property region header may be out of sync with the btree length cell.
     pub edge_property_store_dirty: bool,
     /// Most recent facade-level write event.
-    pub last_write_event: Option<RewriteFacadeWriteEvent>,
+    pub last_write_event: Option<GraphPmaFacadeWriteEvent>,
     /// Recent facade-level write events in observation order.
-    pub write_history: Vec<RewriteFacadeWriteEvent>,
+    pub write_history: Vec<GraphPmaFacadeWriteEvent>,
     /// In-process production-facing metrics for property/index paths.
-    pub production_metrics: RewriteProductionMetrics,
+    pub production_metrics: GraphPmaProductionMetrics,
 }
 
-impl<M: Memory> std::fmt::Debug for RewriteGraphPma<M> {
+impl<M: Memory> std::fmt::Debug for GraphPma<M> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RewriteGraphPma")
+        f.debug_struct("GraphPma")
             .field("manager", &self.manager)
             .field("memory", &"...")
             .field("graph", &self.graph)
@@ -184,7 +184,7 @@ impl<M: Memory> std::fmt::Debug for RewriteGraphPma<M> {
     }
 }
 
-impl<M: Memory + Clone> Clone for RewriteGraphPma<M> {
+impl<M: Memory + Clone> Clone for GraphPma<M> {
     fn clone(&self) -> Self {
         let manager = Rc::new(RefCell::new(self.manager.borrow().clone()));
         let memory = Rc::new(RefCell::new(self.memory.borrow().clone()));
@@ -249,34 +249,34 @@ impl<M: Memory + Clone> Clone for RewriteGraphPma<M> {
 /// Thin facade-level batch mutation session.
 ///
 /// This wraps the low-level `GraphBatchMutationSession` so callers that start
-/// from `RewriteGraphPma` do not need to wire the manager and graph runtime
+/// from `GraphPma` do not need to wire the manager and graph runtime
 /// manually for each batch.
-pub struct RewriteGraphPmaBatchSession<'a, M: Memory> {
+pub struct GraphPmaBatchSession<'a, M: Memory> {
     inner: GraphBatchMutationSession<'a, M>,
 }
 
-/// Thin higher-level adapter that binds one [`RewriteGraphStore`] together with
+/// Thin higher-level adapter that binds one [`GraphPmaStore`] together with
 /// one stable-memory handle.
 ///
 /// This keeps upper layers from threading `memory` through every facade call
-/// while still reusing the rewrite-facing trait boundary instead of depending
-/// directly on [`RewriteGraphPma`].
-pub struct RewriteGraphStoreAdapter<'a, S: RewriteGraphStore> {
+/// while still reusing the facade trait boundary instead of depending
+/// directly on [`GraphPma`].
+pub struct GraphPmaStoreAdapter<'a, S: GraphPmaStore> {
     store: &'a mut S,
     memory: &'a S::Mem,
 }
 
-/// Thin higher-level service boundary over one bound rewrite graph store.
+/// Higher-level service boundary over one bound graph store.
 ///
-/// Unlike [`RewriteGraphStore`], this trait assumes stable memory is already
+/// Unlike [`GraphPmaStore`], this trait assumes stable memory is already
 /// bound, so upper layers can express bootstrap and mutation flows without
 /// threading a `Memory` handle through every call.
-pub trait RewriteGraphService {
+pub trait GraphPmaService {
     /// Returns the most recent facade-level write event observed through this service.
-    fn last_write_event(&self) -> Option<&RewriteFacadeWriteEvent>;
+    fn last_write_event(&self) -> Option<&GraphPmaFacadeWriteEvent>;
 
     /// Returns recent facade-level write events in observation order.
-    fn write_history(&self) -> &[RewriteFacadeWriteEvent];
+    fn write_history(&self) -> &[GraphPmaFacadeWriteEvent];
 
     /// Returns recent facade-level write events projected into shared diagnostics history.
     fn formatted_write_history(&self) -> Vec<String> {
@@ -284,7 +284,7 @@ pub trait RewriteGraphService {
             &self
                 .write_history()
                 .iter()
-                .flat_map(RewriteFacadeWriteEvent::shared_projections)
+                .flat_map(GraphPmaFacadeWriteEvent::shared_projections)
                 .collect::<Vec<_>>(),
         )
     }
@@ -295,7 +295,7 @@ pub trait RewriteGraphService {
             &self
                 .write_history()
                 .iter()
-                .flat_map(RewriteFacadeWriteEvent::shared_projections)
+                .flat_map(GraphPmaFacadeWriteEvent::shared_projections)
                 .collect::<Vec<_>>(),
         )
     }
@@ -305,7 +305,7 @@ pub trait RewriteGraphService {
         &mut self,
         vertex_refs: &[VertexRef],
         initial_edges: &[(EdgeId, usize, usize, LabelId)],
-    ) -> RewriteGraphPmaResult<RewriteBootstrapGraphWriteSummary>;
+    ) -> GraphPmaResult<GraphPmaBootstrapGraphWriteSummary>;
 
     /// Inserts one logical edge.
     fn insert_edge_pair_with_local_rebalance(
@@ -317,32 +317,32 @@ pub trait RewriteGraphService {
     fn replace_edge_pair(
         &mut self,
         spec: EdgeReplaceSpec,
-    ) -> Result<RewriteReplaceEdgeSummary, WritebackError>;
+    ) -> Result<GraphPmaReplaceEdgeSummary, WritebackError>;
 
     /// Tombstones one logical edge.
     fn tombstone_edge_pair(
         &mut self,
         spec: EdgeTombstoneSpec,
-    ) -> Result<RewriteGraphMutationWriteSummary<GraphMutationPath>, WritebackError>;
+    ) -> Result<GraphPmaMutationWriteSummary<GraphMutationPath>, WritebackError>;
 
     /// Flushes dirty state.
-    fn flush_dirty(&mut self) -> RewriteGraphPmaResult<RewriteRefreshedVertices>;
+    fn flush_dirty(&mut self) -> GraphPmaResult<GraphPmaRefreshedVertices>;
 }
 
-/// Thin trait boundary for the rewrite-facing graph-pma facade.
+/// Store trait for the graph-pma facade.
 ///
 /// This is intentionally small and non-object-safe. The goal is simply to let
 /// upper layers depend on a stable facade-shaped contract while the concrete
-/// rewrite implementation keeps evolving.
-pub trait RewriteGraphStore {
+/// storage layout keeps evolving.
+pub trait GraphPmaStore {
     /// Stable-memory type backing this store (same as the bound handle passed to write/hydrate paths).
     type Mem: Memory;
 
     /// Returns the most recent facade-level write event observed through this store.
-    fn last_write_event(&self) -> Option<&RewriteFacadeWriteEvent>;
+    fn last_write_event(&self) -> Option<&GraphPmaFacadeWriteEvent>;
 
     /// Returns recent facade-level write events in observation order.
-    fn write_history(&self) -> &[RewriteFacadeWriteEvent];
+    fn write_history(&self) -> &[GraphPmaFacadeWriteEvent];
 
     /// Returns recent facade-level write events projected into shared diagnostics history.
     fn formatted_write_history(&self) -> Vec<String> {
@@ -350,7 +350,7 @@ pub trait RewriteGraphStore {
             &self
                 .write_history()
                 .iter()
-                .flat_map(RewriteFacadeWriteEvent::shared_projections)
+                .flat_map(GraphPmaFacadeWriteEvent::shared_projections)
                 .collect::<Vec<_>>(),
         )
     }
@@ -361,7 +361,7 @@ pub trait RewriteGraphStore {
             &self
                 .write_history()
                 .iter()
-                .flat_map(RewriteFacadeWriteEvent::shared_projections)
+                .flat_map(GraphPmaFacadeWriteEvent::shared_projections)
                 .collect::<Vec<_>>(),
         )
     }
@@ -477,14 +477,14 @@ pub trait RewriteGraphStore {
         node_id: NodeId,
         property: &str,
         value: &Value,
-    ) -> Result<RewritePropertyIndexMutationSummary, PropertyStoreError>;
+    ) -> Result<GraphPmaPropertyIndexMutationSummary, PropertyStoreError>;
 
     /// Like [`Self::remove_node_property_value`], plus a structured property-index mutation summary.
     fn remove_node_property_value_with_summary(
         &mut self,
         node_id: NodeId,
         property: &str,
-    ) -> Result<RewritePropertyIndexMutationSummary, PropertyStoreError>;
+    ) -> Result<GraphPmaPropertyIndexMutationSummary, PropertyStoreError>;
 
     /// Like [`Self::set_edge_property_value`], plus a structured property-index mutation summary.
     fn set_edge_property_value_with_summary(
@@ -492,14 +492,14 @@ pub trait RewriteGraphStore {
         edge_id: EdgeId,
         property: &str,
         value: &Value,
-    ) -> Result<RewritePropertyIndexMutationSummary, PropertyStoreError>;
+    ) -> Result<GraphPmaPropertyIndexMutationSummary, PropertyStoreError>;
 
     /// Like [`Self::remove_edge_property_value`], plus a structured property-index mutation summary.
     fn remove_edge_property_value_with_summary(
         &mut self,
         edge_id: EdgeId,
         property: &str,
-    ) -> Result<RewritePropertyIndexMutationSummary, PropertyStoreError>;
+    ) -> Result<GraphPmaPropertyIndexMutationSummary, PropertyStoreError>;
 
     /// Appends or overwrites one node property, then flushes dirty state.
     fn set_node_property_value_and_write(
@@ -508,7 +508,7 @@ pub trait RewriteGraphStore {
         property: &str,
         value: &Value,
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<RewritePropertyMutationWriteSummary>;
+    ) -> GraphPmaResult<GraphPmaPropertyMutationWriteSummary>;
 
     /// Appends one node-property tombstone, then flushes dirty state.
     fn remove_node_property_value_and_write(
@@ -516,7 +516,7 @@ pub trait RewriteGraphStore {
         node_id: NodeId,
         property: &str,
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<RewritePropertyMutationWriteSummary>;
+    ) -> GraphPmaResult<GraphPmaPropertyMutationWriteSummary>;
 
     /// Appends or overwrites one edge property, then flushes dirty state.
     fn set_edge_property_value_and_write(
@@ -525,7 +525,7 @@ pub trait RewriteGraphStore {
         property: &str,
         value: &Value,
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<RewritePropertyMutationWriteSummary>;
+    ) -> GraphPmaResult<GraphPmaPropertyMutationWriteSummary>;
 
     /// Appends one edge-property tombstone, then flushes dirty state.
     fn remove_edge_property_value_and_write(
@@ -533,33 +533,33 @@ pub trait RewriteGraphStore {
         edge_id: EdgeId,
         property: &str,
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<RewritePropertyMutationWriteSummary>;
+    ) -> GraphPmaResult<GraphPmaPropertyMutationWriteSummary>;
 
     /// Rebuilds the canonical logical-locator sidecar from externally supplied forward-side ids.
     fn try_rebuild_logical_locator_sidecar(
         &mut self,
         forward_vertex_ids: &[VertexRef],
         forward_base_edge_ids_by_ordinal: &[Vec<EdgeId>],
-    ) -> RewriteGraphPmaResult<()>;
+    ) -> GraphPmaResult<()>;
 
-    /// Writes the full rewrite runtime state back to stable memory.
+    /// Writes the full graph runtime state back to stable memory.
     fn try_write_all_to_stable_memory(&mut self, memory: &impl Memory)
-    -> RewriteGraphPmaResult<()>;
+    -> GraphPmaResult<()>;
 
     /// Refreshes dirty state and writes it back.
     fn try_refresh_and_write_dirty_to_stable_memory(
         &mut self,
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<(Vec<usize>, Vec<usize>)>;
+    ) -> GraphPmaResult<(Vec<usize>, Vec<usize>)>;
 
     /// Appends one empty vertex slot pair to both surfaces.
-    fn append_empty_vertex_pair(&mut self) -> RewriteGraphPmaResult<(usize, usize)>;
+    fn append_empty_vertex_pair(&mut self) -> GraphPmaResult<(usize, usize)>;
 
     /// Appends `count` empty vertex slot pairs to both surfaces.
     fn append_empty_vertex_pairs(
         &mut self,
         count: usize,
-    ) -> RewriteGraphPmaResult<Vec<(usize, usize)>>;
+    ) -> GraphPmaResult<Vec<(usize, usize)>>;
 
     /// Bootstraps multiple new vertex slots plus initial logical edges.
     ///
@@ -571,7 +571,7 @@ pub trait RewriteGraphStore {
         vertex_refs: &[VertexRef],
         initial_edges: &[(EdgeId, usize, usize, LabelId)],
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<RewriteBootstrapGraphWriteSummary>;
+    ) -> GraphPmaResult<GraphPmaBootstrapGraphWriteSummary>;
 
     /// Inserts one logical edge and performs one local rebalance cycle first if needed.
     fn insert_edge_pair_with_local_rebalance_and_write(
@@ -585,20 +585,20 @@ pub trait RewriteGraphStore {
         &mut self,
         spec: EdgeReplaceSpec,
         memory: &impl Memory,
-    ) -> Result<RewriteReplaceEdgeSummary, WritebackError>;
+    ) -> Result<GraphPmaReplaceEdgeSummary, WritebackError>;
 
     /// Tombstones one logical edge and writes back dirty state.
     fn tombstone_edge_pair_and_write(
         &mut self,
         spec: EdgeTombstoneSpec,
         memory: &impl Memory,
-    ) -> Result<RewriteGraphMutationWriteSummary<GraphMutationPath>, WritebackError>;
+    ) -> Result<GraphPmaMutationWriteSummary<GraphMutationPath>, WritebackError>;
 }
 
 const FACADE_WRITE_HISTORY_LIMIT: usize = 16;
 
-impl<M: Memory> RewriteGraphPma<M> {
-    fn record_write_event(&mut self, event: RewriteFacadeWriteEvent) {
+impl<M: Memory> GraphPma<M> {
+    fn record_write_event(&mut self, event: GraphPmaFacadeWriteEvent) {
         self.last_write_event = Some(event.clone());
         self.write_history.push(event);
         if self.write_history.len() > FACADE_WRITE_HISTORY_LIMIT {
@@ -607,20 +607,20 @@ impl<M: Memory> RewriteGraphPma<M> {
     }
 
     /// Returns the most recent facade-level write event.
-    pub fn last_write_event(&self) -> Option<&RewriteFacadeWriteEvent> {
+    pub fn last_write_event(&self) -> Option<&GraphPmaFacadeWriteEvent> {
         self.last_write_event.as_ref()
     }
 
     /// Returns recent facade-level write events in observation order.
-    pub fn write_history(&self) -> &[RewriteFacadeWriteEvent] {
+    pub fn write_history(&self) -> &[GraphPmaFacadeWriteEvent] {
         &self.write_history
     }
 
     /// Returns the recent façade write history projected onto the shared event vocabulary.
-    pub fn shared_write_history(&self) -> Vec<RewriteWriteEventProjection> {
+    pub fn shared_write_history(&self) -> Vec<GraphPmaWriteEventProjection> {
         self.write_history
             .iter()
-            .flat_map(RewriteFacadeWriteEvent::shared_projections)
+            .flat_map(GraphPmaFacadeWriteEvent::shared_projections)
             .collect()
     }
 
@@ -634,12 +634,12 @@ impl<M: Memory> RewriteGraphPma<M> {
     }
 
     /// Returns the retained maintenance queue as structured projections.
-    pub fn maintenance_queue_projection(&self) -> Vec<RewriteMaintenanceQueueItemProjection> {
+    pub fn maintenance_queue_projection(&self) -> Vec<GraphPmaMaintenanceQueueItemProjection> {
         self.graph
             .maintenance_queue()
             .iter()
             .copied()
-            .map(RewriteMaintenanceQueueItemProjection::from_work_item)
+            .map(GraphPmaMaintenanceQueueItemProjection::from_work_item)
             .collect()
     }
 
@@ -652,7 +652,7 @@ impl<M: Memory> RewriteGraphPma<M> {
     pub fn try_read_maintenance_queue_from_stable_memory(
         &self,
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<Vec<GraphMaintenanceWorkItem>> {
+    ) -> GraphPmaResult<Vec<GraphMaintenanceWorkItem>> {
         Self::load_maintenance_queue_from_stable_memory(&self.manager.borrow(), memory)
     }
 
@@ -660,11 +660,11 @@ impl<M: Memory> RewriteGraphPma<M> {
     pub fn try_read_maintenance_queue_projection_from_stable_memory(
         &self,
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<Vec<RewriteMaintenanceQueueItemProjection>> {
+    ) -> GraphPmaResult<Vec<GraphPmaMaintenanceQueueItemProjection>> {
         Ok(self
             .try_read_maintenance_queue_from_stable_memory(memory)?
             .into_iter()
-            .map(RewriteMaintenanceQueueItemProjection::from_work_item)
+            .map(GraphPmaMaintenanceQueueItemProjection::from_work_item)
             .collect())
     }
 
@@ -672,7 +672,7 @@ impl<M: Memory> RewriteGraphPma<M> {
     pub fn try_format_maintenance_queue_from_stable_memory(
         &self,
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<Vec<String>> {
+    ) -> GraphPmaResult<Vec<String>> {
         Ok(format_maintenance_queue(
             &self.try_read_maintenance_queue_projection_from_stable_memory(memory)?,
         ))
@@ -682,17 +682,16 @@ impl<M: Memory> RewriteGraphPma<M> {
     pub fn try_read_maintenance_queue_storage_projection_from_stable_memory(
         &self,
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<RewriteMaintenanceQueueStorageProjection> {
+    ) -> GraphPmaResult<GraphPmaMaintenanceQueueStorageProjection> {
         let Some(region) = self
             .manager
             .borrow()
             .layout
             .region(RegionKind::MaintenanceQueue)
         else {
-            return Ok(RewriteMaintenanceQueueStorageProjection {
+            return Ok(GraphPmaMaintenanceQueueStorageProjection {
                 logical_len_bytes: 0,
                 queue_len: 0,
-                legacy_format: false,
                 format_version: None,
                 stored_checksum: None,
                 computed_checksum: None,
@@ -700,16 +699,15 @@ impl<M: Memory> RewriteGraphPma<M> {
             });
         };
         let logical_len = usize::try_from(region.logical_len_bytes).map_err(|_| {
-            RewriteGraphPmaError::Hydration(HydrationError::RegionTooLarge(
+            GraphPmaError::Hydration(HydrationError::RegionTooLarge(
                 RegionKind::MaintenanceQueue,
                 region.logical_len_bytes,
             ))
         })?;
         if logical_len == 0 {
-            return Ok(RewriteMaintenanceQueueStorageProjection {
+            return Ok(GraphPmaMaintenanceQueueStorageProjection {
                 logical_len_bytes: region.logical_len_bytes,
                 queue_len: 0,
-                legacy_format: false,
                 format_version: None,
                 stored_checksum: None,
                 computed_checksum: None,
@@ -720,11 +718,11 @@ impl<M: Memory> RewriteGraphPma<M> {
             .manager
             .borrow()
             .region_extent(RegionKind::MaintenanceQueue)
-            .ok_or(RewriteGraphPmaError::Hydration(
+            .ok_or(GraphPmaError::Hydration(
                 HydrationError::MissingExtentRegion(RegionKind::MaintenanceQueue),
             ))?;
         if logical_len > usize::try_from(extent.len_bytes).unwrap_or(usize::MAX) {
-            return Err(RewriteGraphPmaError::Hydration(
+            return Err(GraphPmaError::Hydration(
                 HydrationError::LogicalLengthExceedsExtent {
                     kind: RegionKind::MaintenanceQueue,
                     logical_len_bytes: region.logical_len_bytes,
@@ -734,58 +732,37 @@ impl<M: Memory> RewriteGraphPma<M> {
         }
         let mut bytes = vec![0u8; logical_len];
         memory.read(extent.addr.0, &mut bytes);
-        if bytes.len() < Self::LEGACY_SERIALIZED_MAINTENANCE_QUEUE_HEADER_LEN {
-            return Err(RewriteGraphPmaError::Hydration(
-                HydrationError::InvalidLength {
+        if bytes.len() < Self::SERIALIZED_MAINTENANCE_QUEUE_HEADER_LEN {
+            return Err(GraphPmaError::Hydration(
+                HydrationError::InvalidMaintenanceQueueHeader(RegionKind::MaintenanceQueue),
+            ));
+        }
+        if bytes[..4] != Self::SERIALIZED_MAINTENANCE_QUEUE_MAGIC {
+            return Err(GraphPmaError::Hydration(
+                HydrationError::InvalidMaintenanceQueueHeader(RegionKind::MaintenanceQueue),
+            ));
+        }
+        let version = u32::from_le_bytes(bytes[4..8].try_into().expect("queue version"));
+        if version != Self::SERIALIZED_MAINTENANCE_QUEUE_VERSION {
+            return Err(GraphPmaError::Hydration(
+                HydrationError::UnsupportedFormatVersion {
                     kind: RegionKind::MaintenanceQueue,
-                    expected_multiple: Self::LEGACY_SERIALIZED_MAINTENANCE_QUEUE_HEADER_LEN,
-                    actual: bytes.len(),
+                    expected: Self::SERIALIZED_MAINTENANCE_QUEUE_VERSION,
+                    actual: version,
                 },
             ));
         }
-
-        if bytes.len() >= Self::SERIALIZED_MAINTENANCE_QUEUE_HEADER_LEN
-            && bytes[..4] == Self::SERIALIZED_MAINTENANCE_QUEUE_MAGIC
-        {
-            let version = u32::from_le_bytes(bytes[4..8].try_into().expect("queue version"));
-            if version != Self::SERIALIZED_MAINTENANCE_QUEUE_VERSION {
-                return Err(RewriteGraphPmaError::Hydration(
-                    HydrationError::UnsupportedFormatVersion {
-                        kind: RegionKind::MaintenanceQueue,
-                        expected: Self::SERIALIZED_MAINTENANCE_QUEUE_VERSION,
-                        actual: version,
-                    },
-                ));
-            }
-            let queue_len =
-                u64::from_le_bytes(bytes[8..16].try_into().expect("queue count")) as usize;
-            let stored_checksum =
-                u64::from_le_bytes(bytes[16..24].try_into().expect("queue checksum"));
-            let body = &bytes[Self::SERIALIZED_MAINTENANCE_QUEUE_HEADER_LEN..];
-            let computed_checksum = Self::maintenance_queue_checksum(body);
-            return Ok(RewriteMaintenanceQueueStorageProjection {
-                logical_len_bytes: region.logical_len_bytes,
-                queue_len,
-                legacy_format: false,
-                format_version: Some(version),
-                stored_checksum: Some(stored_checksum),
-                computed_checksum: Some(computed_checksum),
-                checksum_valid: Some(stored_checksum == computed_checksum),
-            });
-        }
-
-        Ok(RewriteMaintenanceQueueStorageProjection {
+        let queue_len = u64::from_le_bytes(bytes[8..16].try_into().expect("queue count")) as usize;
+        let stored_checksum = u64::from_le_bytes(bytes[16..24].try_into().expect("queue checksum"));
+        let body = &bytes[Self::SERIALIZED_MAINTENANCE_QUEUE_HEADER_LEN..];
+        let computed_checksum = Self::maintenance_queue_checksum(body);
+        Ok(GraphPmaMaintenanceQueueStorageProjection {
             logical_len_bytes: region.logical_len_bytes,
-            queue_len: u64::from_le_bytes(
-                bytes[..Self::LEGACY_SERIALIZED_MAINTENANCE_QUEUE_HEADER_LEN]
-                    .try_into()
-                    .expect("legacy queue len"),
-            ) as usize,
-            legacy_format: true,
-            format_version: None,
-            stored_checksum: None,
-            computed_checksum: None,
-            checksum_valid: None,
+            queue_len,
+            format_version: Some(version),
+            stored_checksum: Some(stored_checksum),
+            computed_checksum: Some(computed_checksum),
+            checksum_valid: Some(stored_checksum == computed_checksum),
         })
     }
 
@@ -793,7 +770,7 @@ impl<M: Memory> RewriteGraphPma<M> {
     pub fn try_format_maintenance_queue_storage_from_stable_memory(
         &self,
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<String> {
+    ) -> GraphPmaResult<String> {
         Ok(format_maintenance_queue_storage(
             &self.try_read_maintenance_queue_storage_projection_from_stable_memory(memory)?,
         ))
@@ -807,11 +784,10 @@ impl<M: Memory> RewriteGraphPma<M> {
                 .expect("maintenance queue encoding should succeed")
                 [Self::SERIALIZED_MAINTENANCE_QUEUE_HEADER_LEN..],
         );
-        format_maintenance_queue_storage(&RewriteMaintenanceQueueStorageProjection {
+        format_maintenance_queue_storage(&GraphPmaMaintenanceQueueStorageProjection {
             logical_len_bytes: Self::maintenance_queue_serialized_len(queue.len())
                 .expect("maintenance queue serialized len should fit"),
             queue_len: queue.len(),
-            legacy_format: false,
             format_version: Some(Self::SERIALIZED_MAINTENANCE_QUEUE_VERSION),
             stored_checksum: Some(stored_checksum),
             computed_checksum: Some(stored_checksum),
@@ -820,26 +796,25 @@ impl<M: Memory> RewriteGraphPma<M> {
     }
 }
 
-impl<M: Memory> RewriteGraphPma<M> {
+impl<M: Memory> GraphPma<M> {
     const SERIALIZED_MAINTENANCE_QUEUE_HEADER_LEN: usize = 24;
     const SERIALIZED_MAINTENANCE_QUEUE_ITEM_LEN: usize = 56;
     const MAINTENANCE_QUEUE_LAST_EPOCH_NONE: u64 = u64::MAX;
     const SERIALIZED_MAINTENANCE_QUEUE_MAGIC: [u8; 4] = *b"MGQ1";
     const SERIALIZED_MAINTENANCE_QUEUE_VERSION: u32 = 1;
-    const LEGACY_SERIALIZED_MAINTENANCE_QUEUE_HEADER_LEN: usize = 8;
 
-    fn maintenance_queue_serialized_len(queue_len: usize) -> RewriteGraphPmaResult<u64> {
+    fn maintenance_queue_serialized_len(queue_len: usize) -> GraphPmaResult<u64> {
         let item_bytes = queue_len
             .checked_mul(Self::SERIALIZED_MAINTENANCE_QUEUE_ITEM_LEN)
             .and_then(|n| n.checked_add(Self::SERIALIZED_MAINTENANCE_QUEUE_HEADER_LEN))
             .ok_or({
-                RewriteGraphPmaError::Hydration(HydrationError::RegionTooLarge(
+                GraphPmaError::Hydration(HydrationError::RegionTooLarge(
                     RegionKind::MaintenanceQueue,
                     queue_len as u64,
                 ))
             })?;
         u64::try_from(item_bytes).map_err(|_| {
-            RewriteGraphPmaError::Hydration(HydrationError::RegionTooLarge(
+            GraphPmaError::Hydration(HydrationError::RegionTooLarge(
                 RegionKind::MaintenanceQueue,
                 queue_len as u64,
             ))
@@ -848,9 +823,9 @@ impl<M: Memory> RewriteGraphPma<M> {
 
     fn encode_maintenance_queue(
         queue: &[GraphMaintenanceWorkItem],
-    ) -> RewriteGraphPmaResult<Vec<u8>> {
+    ) -> GraphPmaResult<Vec<u8>> {
         let count = u64::try_from(queue.len()).map_err(|_| {
-            RewriteGraphPmaError::Hydration(HydrationError::RegionTooLarge(
+            GraphPmaError::Hydration(HydrationError::RegionTooLarge(
                 RegionKind::MaintenanceQueue,
                 queue.len() as u64,
             ))
@@ -896,59 +871,44 @@ impl<M: Memory> RewriteGraphPma<M> {
 
     fn decode_maintenance_queue(
         bytes: &[u8],
-    ) -> RewriteGraphPmaResult<Vec<GraphMaintenanceWorkItem>> {
+    ) -> GraphPmaResult<Vec<GraphMaintenanceWorkItem>> {
         if bytes.is_empty() {
             return Ok(Vec::new());
         }
-        if bytes.len() < Self::LEGACY_SERIALIZED_MAINTENANCE_QUEUE_HEADER_LEN {
-            return Err(RewriteGraphPmaError::Hydration(
-                HydrationError::InvalidLength {
+        if bytes.len() < Self::SERIALIZED_MAINTENANCE_QUEUE_HEADER_LEN {
+            return Err(GraphPmaError::Hydration(
+                HydrationError::InvalidMaintenanceQueueHeader(RegionKind::MaintenanceQueue),
+            ));
+        }
+        if bytes[..4] != Self::SERIALIZED_MAINTENANCE_QUEUE_MAGIC {
+            return Err(GraphPmaError::Hydration(
+                HydrationError::InvalidMaintenanceQueueHeader(RegionKind::MaintenanceQueue),
+            ));
+        }
+        let version = u32::from_le_bytes(bytes[4..8].try_into().expect("queue version"));
+        if version != Self::SERIALIZED_MAINTENANCE_QUEUE_VERSION {
+            return Err(GraphPmaError::Hydration(
+                HydrationError::UnsupportedFormatVersion {
                     kind: RegionKind::MaintenanceQueue,
-                    expected_multiple: Self::LEGACY_SERIALIZED_MAINTENANCE_QUEUE_HEADER_LEN,
-                    actual: bytes.len(),
+                    expected: Self::SERIALIZED_MAINTENANCE_QUEUE_VERSION,
+                    actual: version,
                 },
             ));
         }
-        let (count, checksum, body) = if bytes.len()
-            >= Self::SERIALIZED_MAINTENANCE_QUEUE_HEADER_LEN
-            && bytes[..4] == Self::SERIALIZED_MAINTENANCE_QUEUE_MAGIC
-        {
-            let version = u32::from_le_bytes(bytes[4..8].try_into().expect("queue version"));
-            if version != Self::SERIALIZED_MAINTENANCE_QUEUE_VERSION {
-                return Err(RewriteGraphPmaError::Hydration(
-                    HydrationError::UnsupportedFormatVersion {
-                        kind: RegionKind::MaintenanceQueue,
-                        expected: Self::SERIALIZED_MAINTENANCE_QUEUE_VERSION,
-                        actual: version,
-                    },
-                ));
-            }
-            (
-                u64::from_le_bytes(bytes[8..16].try_into().expect("queue item count")) as usize,
-                u64::from_le_bytes(bytes[16..24].try_into().expect("queue checksum")),
-                &bytes[Self::SERIALIZED_MAINTENANCE_QUEUE_HEADER_LEN..],
-            )
-        } else {
-            (
-                u64::from_le_bytes(
-                    bytes[..Self::LEGACY_SERIALIZED_MAINTENANCE_QUEUE_HEADER_LEN]
-                        .try_into()
-                        .expect("legacy queue header len"),
-                ) as usize,
-                0,
-                &bytes[Self::LEGACY_SERIALIZED_MAINTENANCE_QUEUE_HEADER_LEN..],
-            )
-        };
+        let count =
+            u64::from_le_bytes(bytes[8..16].try_into().expect("queue item count")) as usize;
+        let checksum = u64::from_le_bytes(bytes[16..24].try_into().expect("queue checksum"));
+        let body = &bytes[Self::SERIALIZED_MAINTENANCE_QUEUE_HEADER_LEN..];
         let expected = count
             .checked_mul(Self::SERIALIZED_MAINTENANCE_QUEUE_ITEM_LEN)
             .ok_or({
-                RewriteGraphPmaError::Hydration(HydrationError::RegionTooLarge(
+                GraphPmaError::Hydration(HydrationError::RegionTooLarge(
                     RegionKind::MaintenanceQueue,
                     body.len() as u64,
                 ))
             })?;
         if body.len() != expected {
-            return Err(RewriteGraphPmaError::Hydration(
+            return Err(GraphPmaError::Hydration(
                 HydrationError::InvalidLength {
                     kind: RegionKind::MaintenanceQueue,
                     expected_multiple: Self::SERIALIZED_MAINTENANCE_QUEUE_ITEM_LEN,
@@ -956,26 +916,22 @@ impl<M: Memory> RewriteGraphPma<M> {
                 },
             ));
         }
-        if bytes.len() >= Self::SERIALIZED_MAINTENANCE_QUEUE_HEADER_LEN
-            && bytes[..4] == Self::SERIALIZED_MAINTENANCE_QUEUE_MAGIC
-        {
-            let actual_checksum = Self::maintenance_queue_checksum(body);
-            if checksum != actual_checksum {
-                return Err(RewriteGraphPmaError::Hydration(
-                    HydrationError::ChecksumMismatch {
-                        kind: RegionKind::MaintenanceQueue,
-                        expected: checksum,
-                        actual: actual_checksum,
-                    },
-                ));
-            }
+        let actual_checksum = Self::maintenance_queue_checksum(body);
+        if checksum != actual_checksum {
+            return Err(GraphPmaError::Hydration(
+                HydrationError::ChecksumMismatch {
+                    kind: RegionKind::MaintenanceQueue,
+                    expected: checksum,
+                    actual: actual_checksum,
+                },
+            ));
         }
         let mut queue = Vec::with_capacity(count);
         for chunk in body.chunks_exact(Self::SERIALIZED_MAINTENANCE_QUEUE_ITEM_LEN) {
             let vertex =
                 NodeId::try_from(u64::from_le_bytes(chunk[0..8].try_into().expect("vertex")))
                     .map_err(|_| {
-                        RewriteGraphPmaError::Hydration(HydrationError::InvalidLength {
+                        GraphPmaError::Hydration(HydrationError::InvalidLength {
                             kind: RegionKind::MaintenanceQueue,
                             expected_multiple: Self::SERIALIZED_MAINTENANCE_QUEUE_ITEM_LEN,
                             actual: body.len(),
@@ -984,7 +940,7 @@ impl<M: Memory> RewriteGraphPma<M> {
             let anchor_ordinal =
                 usize::try_from(u64::from_le_bytes(chunk[8..16].try_into().expect("anchor")))
                     .map_err(|_| {
-                        RewriteGraphPmaError::Hydration(HydrationError::RegionTooLarge(
+                        GraphPmaError::Hydration(HydrationError::RegionTooLarge(
                             RegionKind::MaintenanceQueue,
                             u64::MAX,
                         ))
@@ -993,7 +949,7 @@ impl<M: Memory> RewriteGraphPma<M> {
                 chunk[16..24].try_into().expect("window start"),
             ))
             .map_err(|_| {
-                RewriteGraphPmaError::Hydration(HydrationError::RegionTooLarge(
+                GraphPmaError::Hydration(HydrationError::RegionTooLarge(
                     RegionKind::MaintenanceQueue,
                     u64::MAX,
                 ))
@@ -1002,7 +958,7 @@ impl<M: Memory> RewriteGraphPma<M> {
                 chunk[24..32].try_into().expect("window end"),
             ))
             .map_err(|_| {
-                RewriteGraphPmaError::Hydration(HydrationError::RegionTooLarge(
+                GraphPmaError::Hydration(HydrationError::RegionTooLarge(
                     RegionKind::MaintenanceQueue,
                     u64::MAX,
                 ))
@@ -1127,12 +1083,12 @@ impl<M: Memory> RewriteGraphPma<M> {
     fn load_maintenance_queue_from_stable_memory(
         manager: &RegionManager,
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<Vec<GraphMaintenanceWorkItem>> {
+    ) -> GraphPmaResult<Vec<GraphMaintenanceWorkItem>> {
         let Some(region) = manager.layout.region(RegionKind::MaintenanceQueue) else {
             return Ok(Vec::new());
         };
         let logical_len = usize::try_from(region.logical_len_bytes).map_err(|_| {
-            RewriteGraphPmaError::Hydration(HydrationError::RegionTooLarge(
+            GraphPmaError::Hydration(HydrationError::RegionTooLarge(
                 RegionKind::MaintenanceQueue,
                 region.logical_len_bytes,
             ))
@@ -1141,12 +1097,12 @@ impl<M: Memory> RewriteGraphPma<M> {
             return Ok(Vec::new());
         }
         let extent = manager.region_extent(RegionKind::MaintenanceQueue).ok_or(
-            RewriteGraphPmaError::Hydration(HydrationError::MissingExtentRegion(
+            GraphPmaError::Hydration(HydrationError::MissingExtentRegion(
                 RegionKind::MaintenanceQueue,
             )),
         )?;
         if logical_len > usize::try_from(extent.len_bytes).unwrap_or(usize::MAX) {
-            return Err(RewriteGraphPmaError::Hydration(
+            return Err(GraphPmaError::Hydration(
                 HydrationError::LogicalLengthExceedsExtent {
                     kind: RegionKind::MaintenanceQueue,
                     logical_len_bytes: region.logical_len_bytes,
@@ -1162,12 +1118,11 @@ impl<M: Memory> RewriteGraphPma<M> {
     }
 
     fn maintenance_queue_storage_snapshot_from_projection(
-        projection: RewriteMaintenanceQueueStorageProjection,
+        projection: GraphPmaMaintenanceQueueStorageProjection,
     ) -> crate::low_level::GraphMaintenanceQueueStorageSnapshot {
         crate::low_level::GraphMaintenanceQueueStorageSnapshot {
             logical_len_bytes: projection.logical_len_bytes,
             queue_len: projection.queue_len,
-            legacy_format: projection.legacy_format,
             format_version: projection.format_version,
             checksum_valid: projection.checksum_valid,
         }
@@ -1216,7 +1171,7 @@ impl<M: Memory> RewriteGraphPma<M> {
             edge_property_store_dirty: false,
             last_write_event: None,
             write_history: Vec::new(),
-            production_metrics: RewriteProductionMetrics::default(),
+            production_metrics: GraphPmaProductionMetrics::default(),
         }
     }
 
@@ -1256,20 +1211,20 @@ impl<M: Memory> RewriteGraphPma<M> {
             edge_property_store_dirty: false,
             last_write_event: None,
             write_history: Vec::new(),
-            production_metrics: RewriteProductionMetrics::default(),
+            production_metrics: GraphPmaProductionMetrics::default(),
         }
     }
 
-    /// Bootstraps one empty rewrite graph with the default bucket granularity.
-    pub fn bootstrap_empty(memory: M) -> RewriteGraphPmaResult<Self> {
+    /// Bootstraps one empty graph with the default bucket granularity.
+    pub fn bootstrap_empty(memory: M) -> GraphPmaResult<Self> {
         Self::bootstrap_empty_with_bucket_size(BucketSizeInPages::DEFAULT, memory)
     }
 
-    /// Bootstraps one empty rewrite graph with an explicit bucket granularity.
+    /// Bootstraps one empty graph with an explicit bucket granularity.
     pub fn bootstrap_empty_with_bucket_size(
         bucket_size_in_pages: BucketSizeInPages,
         memory: M,
-    ) -> RewriteGraphPmaResult<Self> {
+    ) -> GraphPmaResult<Self> {
         Self::bootstrap_empty_with_bucket_size_using_memory_rc(
             bucket_size_in_pages,
             Rc::new(RefCell::new(memory)),
@@ -1280,7 +1235,7 @@ impl<M: Memory> RewriteGraphPma<M> {
     pub fn bootstrap_empty_with_bucket_size_using_memory_rc(
         bucket_size_in_pages: BucketSizeInPages,
         mem_rc: Rc<RefCell<M>>,
-    ) -> RewriteGraphPmaResult<Self> {
+    ) -> GraphPmaResult<Self> {
         let mut manager = RegionManager::with_bucket_size(bucket_size_in_pages);
         Self::define_empty_surface_regions(&mut manager, crate::low_level::SurfaceKind::Forward);
         Self::define_empty_surface_regions(&mut manager, crate::low_level::SurfaceKind::Reverse);
@@ -1295,7 +1250,7 @@ impl<M: Memory> RewriteGraphPma<M> {
             reverse_surface_from_layout(&mgr_rc.borrow().layout)?,
             Vec::new(),
         );
-        let mut facade = RewriteGraphPma::new(
+        let mut facade = GraphPma::new(
             Rc::clone(&mgr_rc),
             Rc::clone(&mem_rc),
             GraphRuntime::new_with_empty_sidecars(forward, reverse),
@@ -1343,18 +1298,18 @@ impl<M: Memory> RewriteGraphPma<M> {
     pub fn hydrate_from_stable_memory(
         manager: RegionManager,
         memory: M,
-    ) -> RewriteGraphPmaResult<Self> {
+    ) -> GraphPmaResult<Self> {
         let mgr_rc = Rc::new(RefCell::new(manager));
         let mem_rc = Rc::new(RefCell::new(memory));
         let runtimes =
             hydrate_surface_runtimes_from_stable_memory(&mgr_rc.borrow(), &*mem_rc.borrow())?;
-        let (node_property_store, node_pl, node_mig) =
+        let (node_property_store, node_pl) =
             load_graph_property_stable_map_from_stable_memory(
                 Rc::clone(&mgr_rc),
                 Rc::clone(&mem_rc),
                 RegionKind::NodePropertyStore,
             )?;
-        let (edge_property_store, edge_pl, edge_mig) =
+        let (edge_property_store, edge_pl) =
             load_graph_property_stable_map_from_stable_memory(
                 Rc::clone(&mgr_rc),
                 Rc::clone(&mem_rc),
@@ -1434,8 +1389,6 @@ impl<M: Memory> RewriteGraphPma<M> {
             &*facade.memory.borrow(),
         )?;
         facade.graph.replace_maintenance_queue(maintenance_queue);
-        facade.node_property_store_dirty = node_mig;
-        facade.edge_property_store_dirty = edge_mig;
         Ok(facade)
     }
 
@@ -1444,18 +1397,18 @@ impl<M: Memory> RewriteGraphPma<M> {
         manager: RegionManager,
         memory: M,
         insert_policy: GraphInsertPolicy,
-    ) -> RewriteGraphPmaResult<Self> {
+    ) -> GraphPmaResult<Self> {
         let mgr_rc = Rc::new(RefCell::new(manager));
         let mem_rc = Rc::new(RefCell::new(memory));
         let runtimes =
             hydrate_surface_runtimes_from_stable_memory(&mgr_rc.borrow(), &*mem_rc.borrow())?;
-        let (node_property_store, node_pl, node_mig) =
+        let (node_property_store, node_pl) =
             load_graph_property_stable_map_from_stable_memory(
                 Rc::clone(&mgr_rc),
                 Rc::clone(&mem_rc),
                 RegionKind::NodePropertyStore,
             )?;
-        let (edge_property_store, edge_pl, edge_mig) =
+        let (edge_property_store, edge_pl) =
             load_graph_property_stable_map_from_stable_memory(
                 Rc::clone(&mgr_rc),
                 Rc::clone(&mem_rc),
@@ -1539,25 +1492,23 @@ impl<M: Memory> RewriteGraphPma<M> {
             &*facade.memory.borrow(),
         )?;
         facade.graph.replace_maintenance_queue(maintenance_queue);
-        facade.node_property_store_dirty = node_mig;
-        facade.edge_property_store_dirty = edge_mig;
         Ok(facade)
     }
 
-    /// Hydrates one rewrite facade from stable memory using the facade-level result type.
+    /// Hydrates one facade from stable memory using the facade-level result type.
     pub fn try_hydrate_from_stable_memory(
         manager: RegionManager,
         memory: M,
-    ) -> RewriteGraphPmaResult<Self> {
+    ) -> GraphPmaResult<Self> {
         Self::hydrate_from_stable_memory(manager, memory)
     }
 
-    /// Hydrates one rewrite facade with an explicit insert policy using the facade-level result type.
+    /// Hydrates one facade with an explicit insert policy using the facade-level result type.
     pub fn try_hydrate_from_stable_memory_with_insert_policy(
         manager: RegionManager,
         memory: M,
         insert_policy: GraphInsertPolicy,
-    ) -> RewriteGraphPmaResult<Self> {
+    ) -> GraphPmaResult<Self> {
         Self::hydrate_from_stable_memory_with_insert_policy(manager, memory, insert_policy)
     }
 
@@ -1570,7 +1521,7 @@ impl<M: Memory> RewriteGraphPma<M> {
         memory: M,
         forward_vertex_refs: &[VertexRef],
         forward_base_edge_ids_by_ordinal: &[Vec<EdgeId>],
-    ) -> RewriteGraphPmaResult<Self> {
+    ) -> GraphPmaResult<Self> {
         let mut facade = Self::try_hydrate_from_stable_memory(manager, memory)?;
         facade.try_rebuild_logical_locator_sidecar(
             forward_vertex_refs,
@@ -1590,7 +1541,7 @@ impl<M: Memory> RewriteGraphPma<M> {
         insert_policy: GraphInsertPolicy,
         forward_vertex_refs: &[VertexRef],
         forward_base_edge_ids_by_ordinal: &[Vec<EdgeId>],
-    ) -> RewriteGraphPmaResult<Self> {
+    ) -> GraphPmaResult<Self> {
         let mut facade = Self::try_hydrate_from_stable_memory_with_insert_policy(
             manager,
             memory,
@@ -2489,7 +2440,7 @@ impl<M: Memory> RewriteGraphPma<M> {
     }
 
     /// Returns a snapshot of production-facing property/index metrics.
-    pub fn production_metrics_snapshot(&self) -> RewriteProductionMetricsSnapshot {
+    pub fn production_metrics_snapshot(&self) -> GraphPmaProductionMetricsSnapshot {
         self.production_metrics.snapshot()
     }
 
@@ -2517,26 +2468,26 @@ impl<M: Memory> RewriteGraphPma<M> {
         &mut self,
         forward_vertex_refs: &[VertexRef],
         forward_base_edge_ids_by_ordinal: &[Vec<EdgeId>],
-    ) -> RewriteGraphPmaResult<()> {
+    ) -> GraphPmaResult<()> {
         self.rebuild_logical_locator_sidecar(forward_vertex_refs, forward_base_edge_ids_by_ordinal)
-            .ok_or(RewriteGraphPmaError::InvalidLocatorInputs)
+            .ok_or(GraphPmaError::InvalidLocatorInputs)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        RewriteAppendVertexWriteSummary, RewriteAppendVerticesWriteSummary,
-        RewriteBootstrapEdgeProjection, RewriteBootstrapEdgeWriteSummary,
-        RewriteBootstrapGraphProjection, RewriteBootstrapGraphWriteSummary,
-        RewriteBootstrapVerticesProjection, RewriteEdgeLogicalLocatorMapping,
-        RewriteEdgeWriteOperation, RewriteEnsureCapacityProjection, RewriteFacadeWriteEvent,
-        RewriteGraphMutationWriteSummary, RewriteGraphPma, RewriteGraphPmaError,
-        RewriteGraphPmaResult, RewriteGraphService, RewriteGraphStore, RewriteGraphStoreAdapter,
-        RewriteInsertEdgeProjection, RewriteMaintenanceBatchProjection,
-        RewriteMaintenanceCycleProjection, RewriteMaintenanceQueueAction,
-        RewriteMaintenanceQueueStorageProjection, RewritePropertyIndexTouchedSections,
-        RewriteRefreshedVertices, RewriteVertexOrdinalMapping, RewriteWriteEventProjection,
+        GraphPmaAppendVertexWriteSummary, GraphPmaAppendVerticesWriteSummary,
+        GraphPmaBootstrapEdgeProjection, GraphPmaBootstrapEdgeWriteSummary,
+        GraphPmaBootstrapGraphProjection, GraphPmaBootstrapGraphWriteSummary,
+        GraphPmaBootstrapVerticesProjection, GraphPmaEdgeLogicalLocatorMapping,
+        GraphPmaEdgeWriteOperation, GraphPmaEnsureCapacityProjection, GraphPmaFacadeWriteEvent,
+        GraphPmaMutationWriteSummary, GraphPma, GraphPmaError,
+        GraphPmaResult, GraphPmaService, GraphPmaStore, GraphPmaStoreAdapter,
+        GraphPmaInsertEdgeProjection, GraphPmaMaintenanceBatchProjection,
+        GraphPmaMaintenanceCycleProjection, GraphPmaMaintenanceQueueAction,
+        GraphPmaMaintenanceQueueStorageProjection, GraphPmaPropertyIndexTouchedSections,
+        GraphPmaRefreshedVertices, GraphPmaVertexOrdinalMapping, GraphPmaWriteEventProjection,
     };
     use crate::GraphInsertResult;
     use crate::low_level::GraphMutationPath;
@@ -2568,21 +2519,21 @@ mod tests {
     use std::rc::Rc;
     use std::sync::atomic::Ordering;
 
-    type TestPma = RewriteGraphPma<VecMemory>;
+    type TestPma = GraphPma<VecMemory>;
 
     fn assert_projected_history(
-        events: &[RewriteFacadeWriteEvent],
-        expected: Vec<RewriteWriteEventProjection>,
+        events: &[GraphPmaFacadeWriteEvent],
+        expected: Vec<GraphPmaWriteEventProjection>,
     ) {
         assert_eq!(project_facade_write_history(events), expected);
     }
 
     fn define_surface_regions(manager: &mut RegionManager, prefix: crate::low_level::SurfaceKind) {
-        RewriteGraphPma::<VecMemory>::define_empty_surface_regions(manager, prefix);
+        GraphPma::<VecMemory>::define_empty_surface_regions(manager, prefix);
     }
 
     fn define_property_regions(manager: &mut RegionManager) {
-        RewriteGraphPma::<VecMemory>::define_empty_property_regions(manager);
+        GraphPma::<VecMemory>::define_empty_property_regions(manager);
     }
 
     fn seeded_manager_and_memory() -> (RegionManager, VecMemory) {
@@ -2768,7 +2719,7 @@ mod tests {
     #[test]
     fn facade_hydrates_from_stable_memory() {
         let (manager, memory) = seeded_manager_and_memory();
-        let facade = RewriteGraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
+        let facade = GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
 
         assert_eq!(facade.graph.forward.0.vertices.len(), 1);
         assert_eq!(facade.graph.forward.0.base_entries.len(), 1);
@@ -2779,7 +2730,7 @@ mod tests {
     #[test]
     fn surface_write_after_property_insert_does_not_invalidate_node_property_btree() {
         let mem_rc = Rc::new(RefCell::new(VecMemory::default()));
-        let mut facade = RewriteGraphPma::bootstrap_empty_with_bucket_size_using_memory_rc(
+        let mut facade = GraphPma::bootstrap_empty_with_bucket_size_using_memory_rc(
             BucketSizeInPages::new(1),
             Rc::clone(&mem_rc),
         )
@@ -2870,7 +2821,7 @@ mod tests {
 
         let mgr_rc = Rc::new(RefCell::new(manager));
         let mem_rc = Rc::new(RefCell::new(VecMemory::default()));
-        let facade = RewriteGraphPma::from_hydrated_runtimes(mgr_rc, mem_rc, runtimes);
+        let facade = GraphPma::from_hydrated_runtimes(mgr_rc, mem_rc, runtimes);
 
         assert_eq!(
             facade.graph.forward.0.base_segment_slot_capacity(7),
@@ -2885,7 +2836,7 @@ mod tests {
     #[test]
     fn facade_persists_maintenance_queue_across_hydration() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let src = NodeId::from(73u8);
         let dst = NodeId::from(74u8);
 
@@ -2941,7 +2892,7 @@ mod tests {
             .try_refresh_and_write_dirty_to_stable_memory(&*mem_rc.borrow())
             .expect("write dirty including queue");
 
-        let hydrated = RewriteGraphPma::hydrate_from_stable_memory(
+        let hydrated = GraphPma::hydrate_from_stable_memory(
             facade.manager.borrow().clone(),
             facade.memory.borrow().clone(),
         )
@@ -2960,7 +2911,7 @@ mod tests {
     #[test]
     fn facade_can_read_maintenance_queue_directly_from_stable_memory() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let src = NodeId::from(83u8);
         let dst = NodeId::from(84u8);
 
@@ -3043,7 +2994,6 @@ mod tests {
         let storage = facade
             .try_read_maintenance_queue_storage_projection_from_stable_memory(&*mem_rc.borrow())
             .expect("read queue storage projection");
-        assert!(!storage.legacy_format);
         assert_eq!(
             storage.format_version,
             Some(TestPma::SERIALIZED_MAINTENANCE_QUEUE_VERSION)
@@ -3056,14 +3006,14 @@ mod tests {
             .try_format_maintenance_queue_storage_from_stable_memory(&*mem_rc.borrow())
             .expect("format storage metadata");
         assert!(formatted_storage.contains("maintenance-queue-storage"));
-        assert!(formatted_storage.contains("legacy=false"));
+        assert!(formatted_storage.contains("version="));
         assert!(formatted_storage.contains("checksum="));
     }
 
     #[test]
     fn facade_rebuild_maintenance_queue_and_write_persists_queue_without_graph_writeback() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let src = NodeId::from(78u8);
         let dst = NodeId::from(79u8);
 
@@ -3124,7 +3074,7 @@ mod tests {
             Some(2)
         );
 
-        let hydrated = RewriteGraphPma::hydrate_from_stable_memory(
+        let hydrated = GraphPma::hydrate_from_stable_memory(
             facade.manager.borrow().clone(),
             facade.memory.borrow().clone(),
         )
@@ -3133,7 +3083,7 @@ mod tests {
     }
 
     #[test]
-    fn facade_decodes_legacy_maintenance_queue_format() {
+    fn facade_rejects_premgq1_maintenance_queue_bytes() {
         let item = GraphMaintenanceWorkItem {
             vertex_ref: NodeId::from(88u8).into(),
             anchor_ordinal: 3,
@@ -3153,9 +3103,12 @@ mod tests {
         bytes.extend_from_slice(&item.last_maintenance_epoch.unwrap().to_le_bytes());
         bytes.extend_from_slice(&item.recent_maintenance_penalty.to_le_bytes());
 
-        let decoded = TestPma::decode_maintenance_queue(&bytes).expect("legacy decode");
-
-        assert_eq!(decoded, vec![item]);
+        match TestPma::decode_maintenance_queue(&bytes) {
+            Err(GraphPmaError::Hydration(HydrationError::InvalidMaintenanceQueueHeader(
+                kind,
+            ))) => assert_eq!(kind, RegionKind::MaintenanceQueue),
+            other => panic!("expected invalid maintenance-queue header, got {other:?}"),
+        }
     }
 
     #[test]
@@ -3167,7 +3120,7 @@ mod tests {
         bytes.extend_from_slice(&0u64.to_le_bytes());
 
         match TestPma::decode_maintenance_queue(&bytes) {
-            Err(RewriteGraphPmaError::Hydration(HydrationError::UnsupportedFormatVersion {
+            Err(GraphPmaError::Hydration(HydrationError::UnsupportedFormatVersion {
                 kind,
                 expected,
                 actual,
@@ -3196,7 +3149,7 @@ mod tests {
         bytes[last] ^= 0xFF;
 
         match TestPma::decode_maintenance_queue(&bytes) {
-            Err(RewriteGraphPmaError::Hydration(HydrationError::ChecksumMismatch {
+            Err(GraphPmaError::Hydration(HydrationError::ChecksumMismatch {
                 kind,
                 expected,
                 actual,
@@ -3209,9 +3162,9 @@ mod tests {
     }
 
     #[test]
-    fn facade_can_read_legacy_maintenance_queue_storage_projection() {
+    fn facade_rejects_premgq1_maintenance_queue_storage_projection() {
         let memory = VecMemory::default();
-        let facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let item = GraphMaintenanceWorkItem {
             vertex_ref: NodeId::from(90u8).into(),
             anchor_ordinal: 3,
@@ -3244,23 +3197,20 @@ mod tests {
             .expect("queue extent");
         facade.memory.borrow().write(extent.addr.0, &bytes);
 
-        let storage = facade
-            .try_read_maintenance_queue_storage_projection_from_stable_memory(
-                &*facade.memory.borrow(),
-            )
-            .expect("read legacy queue storage");
-
-        assert!(storage.legacy_format);
-        assert_eq!(storage.queue_len, 1);
-        assert_eq!(storage.format_version, None);
-        assert_eq!(storage.stored_checksum, None);
-        assert_eq!(storage.checksum_valid, None);
+        match facade.try_read_maintenance_queue_storage_projection_from_stable_memory(
+            &*facade.memory.borrow(),
+        ) {
+            Err(GraphPmaError::Hydration(HydrationError::InvalidMaintenanceQueueHeader(
+                kind,
+            ))) => assert_eq!(kind, RegionKind::MaintenanceQueue),
+            other => panic!("expected invalid maintenance-queue header, got {other:?}"),
+        }
     }
 
     #[test]
     fn facade_can_read_vertex_entry_directly_from_stable_memory() {
         let (manager, memory) = seeded_manager_and_memory();
-        let facade = RewriteGraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
+        let facade = GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
 
         let forward = facade
             .try_read_forward_vertex_entry_from_stable_memory(&memory, 0)
@@ -3282,7 +3232,7 @@ mod tests {
     #[test]
     fn facade_can_read_reserved_span_directly_from_stable_memory() {
         let (manager, memory) = seeded_manager_and_memory();
-        let facade = RewriteGraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
+        let facade = GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
 
         let forward = facade
             .try_read_forward_vertex_reserved_span_from_stable_memory(&memory, 0)
@@ -3298,7 +3248,7 @@ mod tests {
     #[test]
     fn facade_can_read_base_entries_directly_from_stable_memory() {
         let (manager, memory) = seeded_manager_and_memory();
-        let facade = RewriteGraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
+        let facade = GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
 
         let forward = facade
             .try_read_forward_vertex_base_entries_from_stable_memory(&memory, 0)
@@ -3326,7 +3276,7 @@ mod tests {
     #[test]
     fn facade_can_read_edge_entries_by_ref_directly_from_stable_memory() {
         let (manager, memory) = seeded_manager_and_memory();
-        let facade = RewriteGraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
+        let facade = GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
 
         let forward = facade
             .try_read_forward_edge_entries_by_ref_from_stable_memory(
@@ -3362,7 +3312,7 @@ mod tests {
     #[test]
     fn facade_can_read_base_edge_ref_and_entry_directly_from_stable_memory() {
         let (manager, memory) = seeded_manager_and_memory();
-        let facade = RewriteGraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
+        let facade = GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
 
         let forward_ref = facade
             .try_read_forward_vertex_base_edge_ref_from_stable_memory(&memory, 0, 0)
@@ -3399,7 +3349,7 @@ mod tests {
     fn facade_prefers_runtime_vertex_entry_when_vertex_table_is_dirty() {
         let (manager, memory) = seeded_manager_and_memory();
         let mut facade =
-            RewriteGraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
+            GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
 
         let appended = facade
             .append_empty_vertex_pair()
@@ -3424,7 +3374,7 @@ mod tests {
     fn facade_can_read_vertex_entry_ranges_directly_from_stable_memory() {
         let (manager, memory) = seeded_manager_and_memory();
         let mut facade =
-            RewriteGraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
+            GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
         facade.append_empty_vertex_pair_and_write(&memory).unwrap();
 
         let forward = facade
@@ -3454,7 +3404,7 @@ mod tests {
     fn facade_prefers_runtime_vertex_entry_ranges_when_vertex_table_is_dirty() {
         let (manager, memory) = seeded_manager_and_memory();
         let mut facade =
-            RewriteGraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
+            GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
         facade.append_empty_vertex_pair().unwrap();
 
         let forward = facade.read_forward_vertex_entries_preferring_stable_memory(&memory, 0, 2);
@@ -3480,7 +3430,7 @@ mod tests {
     fn facade_can_summarize_vertex_window_directly_from_stable_memory() {
         let (manager, memory) = seeded_manager_and_memory();
         let mut facade =
-            RewriteGraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
+            GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
         facade.append_empty_vertex_pair_and_write(&memory).unwrap();
 
         let forward = facade
@@ -3508,7 +3458,7 @@ mod tests {
     fn facade_prefers_runtime_vertex_window_summary_when_vertex_table_is_dirty() {
         let (manager, memory) = seeded_manager_and_memory();
         let mut facade =
-            RewriteGraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
+            GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
         facade.append_empty_vertex_pair().unwrap();
 
         let summary = facade
@@ -3526,7 +3476,7 @@ mod tests {
     fn facade_can_estimate_vertex_window_reserve_hint_directly_from_stable_memory() {
         let (manager, memory) = seeded_manager_and_memory();
         let mut facade =
-            RewriteGraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
+            GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
         facade.append_empty_vertex_pair_and_write(&memory).unwrap();
 
         let hint = facade
@@ -3546,7 +3496,7 @@ mod tests {
     fn facade_prefers_runtime_vertex_window_reserve_hint_when_vertex_table_is_dirty() {
         let (manager, memory) = seeded_manager_and_memory();
         let mut facade =
-            RewriteGraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
+            GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
         facade.append_empty_vertex_pair().unwrap();
 
         let hint = facade
@@ -3567,7 +3517,7 @@ mod tests {
     fn facade_refresh_and_write_dirty_round_trips() {
         let (manager, memory) = seeded_manager_and_memory();
         let mut facade =
-            RewriteGraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
+            GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
 
         let src = NodeId::new([0, 0, 0, 0, 0, 1]);
         let dst = NodeId::new([0, 0, 0, 0, 0, 3]);
@@ -3586,7 +3536,7 @@ mod tests {
             .refresh_and_write_dirty_to_stable_memory(&*mem_rc.borrow())
             .unwrap();
 
-        let rehydrated = RewriteGraphPma::hydrate_from_stable_memory(
+        let rehydrated = GraphPma::hydrate_from_stable_memory(
             facade.manager.borrow().clone(),
             facade.memory.borrow().clone(),
         )
@@ -3604,7 +3554,7 @@ mod tests {
     #[test]
     fn facade_property_stores_round_trip_through_stable_memory() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty_with_bucket_size(
+        let mut facade = GraphPma::bootstrap_empty_with_bucket_size(
             BucketSizeInPages::new(1),
             memory.clone(),
         )
@@ -3628,7 +3578,7 @@ mod tests {
             .try_write_all_to_stable_memory(&*mem_rc.borrow())
             .expect("write all");
 
-        let rehydrated = RewriteGraphPma::hydrate_from_stable_memory(
+        let rehydrated = GraphPma::hydrate_from_stable_memory(
             facade.manager.borrow().clone(),
             facade.memory.borrow().clone(),
         )
@@ -3648,7 +3598,7 @@ mod tests {
     #[test]
     fn facade_property_store_dirty_write_round_trips_and_clears_dirty_flags() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let node_id = NodeId::from(21u8);
 
         facade
@@ -3668,7 +3618,7 @@ mod tests {
         assert!(!facade.node_property_store_dirty);
         assert!(!facade.edge_property_store_dirty);
 
-        let rehydrated = RewriteGraphPma::hydrate_from_stable_memory(
+        let rehydrated = GraphPma::hydrate_from_stable_memory(
             facade.manager.borrow().clone(),
             facade.memory.borrow().clone(),
         )
@@ -3686,7 +3636,7 @@ mod tests {
     #[test]
     fn facade_hydrate_query_mutate_flush_rehydrate_roundtrip_contract() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let node_id = NodeId::from(41u8);
         let edge_id = 941u64;
 
@@ -3703,7 +3653,7 @@ mod tests {
             .expect("flush dirty");
 
         // rehydrate + query
-        let mut rehydrated = RewriteGraphPma::hydrate_from_stable_memory(
+        let mut rehydrated = GraphPma::hydrate_from_stable_memory(
             facade.manager.borrow().clone(),
             facade.memory.borrow().clone(),
         )
@@ -3729,7 +3679,7 @@ mod tests {
             .refresh_and_write_dirty_to_stable_memory(&*mem_rc2.borrow())
             .expect("flush dirty second time");
 
-        let rehydrated2 = RewriteGraphPma::hydrate_from_stable_memory(
+        let rehydrated2 = GraphPma::hydrate_from_stable_memory(
             rehydrated.manager.borrow().clone(),
             rehydrated.memory.borrow().clone(),
         )
@@ -3753,7 +3703,7 @@ mod tests {
     #[test]
     fn facade_property_index_tracks_equality_updates_and_removals() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let node_id = NodeId::from(31u8);
 
         facade
@@ -3795,7 +3745,7 @@ mod tests {
         //
         // Node property: injected index-bind error
         //
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let node_id = NodeId::from(1u8);
         facade
             .set_node_property_value(node_id, "a", &Value::Text("hello".into()))
@@ -3822,7 +3772,7 @@ mod tests {
         //
         // Edge property: injected `try_sync` error
         //
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let edge_id = 77u64;
         facade
             .set_edge_property_value(edge_id, "kind", &Value::Text("follows".into()))
@@ -3850,7 +3800,7 @@ mod tests {
     #[test]
     fn facade_property_index_mutation_summary_reports_touched_nodes() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let node_id = NodeId::from(32u8);
 
         let first = facade
@@ -3858,7 +3808,7 @@ mod tests {
             .expect("set initial property with summary");
         assert_eq!(
             first.sections,
-            RewritePropertyIndexTouchedSections {
+            GraphPmaPropertyIndexTouchedSections {
                 property_store: true,
                 logical_index: true,
                 node_store: true,
@@ -3878,7 +3828,7 @@ mod tests {
             .expect("overwrite property with summary");
         assert_eq!(
             overwrite.sections,
-            RewritePropertyIndexTouchedSections {
+            GraphPmaPropertyIndexTouchedSections {
                 property_store: true,
                 logical_index: true,
                 node_store: true,
@@ -3899,7 +3849,7 @@ mod tests {
             .expect("idempotent set same encoded value");
         assert_eq!(
             idempotent.sections,
-            RewritePropertyIndexTouchedSections {
+            GraphPmaPropertyIndexTouchedSections {
                 property_store: true,
                 logical_index: true,
                 node_store: false,
@@ -3913,7 +3863,7 @@ mod tests {
             .expect("remove property with summary");
         assert_eq!(
             removal.sections,
-            RewritePropertyIndexTouchedSections {
+            GraphPmaPropertyIndexTouchedSections {
                 property_store: true,
                 logical_index: true,
                 node_store: true,
@@ -3934,14 +3884,14 @@ mod tests {
     #[test]
     fn facade_property_index_mutation_summary_reports_edge_updates() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
 
         let set = facade
             .set_edge_property_value_with_summary(701, "weight", &Value::Int64(5))
             .expect("set edge property with summary");
         assert_eq!(
             set.sections,
-            RewritePropertyIndexTouchedSections {
+            GraphPmaPropertyIndexTouchedSections {
                 property_store: true,
                 logical_index: true,
                 node_store: true,
@@ -3954,7 +3904,7 @@ mod tests {
             .expect("remove edge property with summary");
         assert_eq!(
             remove.sections,
-            RewritePropertyIndexTouchedSections {
+            GraphPmaPropertyIndexTouchedSections {
                 property_store: true,
                 logical_index: true,
                 node_store: true,
@@ -3966,7 +3916,7 @@ mod tests {
     #[test]
     fn facade_property_mutation_write_summary_flushes_and_round_trips() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let node_id = NodeId::from(33u8);
 
         let mem_rc = Rc::clone(&facade.memory);
@@ -3981,7 +3931,7 @@ mod tests {
             .expect("set property and write");
         assert_eq!(
             summary.flushed_sections,
-            RewritePropertyIndexTouchedSections {
+            GraphPmaPropertyIndexTouchedSections {
                 property_store: true,
                 logical_index: true,
                 node_store: true,
@@ -3999,7 +3949,7 @@ mod tests {
                 .contains(&node_id)
         );
 
-        let rehydrated = RewriteGraphPma::hydrate_from_stable_memory(
+        let rehydrated = GraphPma::hydrate_from_stable_memory(
             facade.manager.borrow().clone(),
             facade.memory.borrow().clone(),
         )
@@ -4010,27 +3960,27 @@ mod tests {
         );
         assert!(matches!(
             facade.last_write_event(),
-            Some(RewriteFacadeWriteEvent::Property(_))
+            Some(GraphPmaFacadeWriteEvent::Property(_))
         ));
         let event_projection = facade
             .last_write_event()
-            .and_then(RewriteFacadeWriteEvent::property_projection)
+            .and_then(GraphPmaFacadeWriteEvent::property_projection)
             .expect("property event projection");
         assert_eq!(summary.projection(), event_projection);
         assert!(matches!(
             facade.write_history(),
-            [RewriteFacadeWriteEvent::Property(_)]
+            [GraphPmaFacadeWriteEvent::Property(_)]
         ));
         assert_eq!(
             project_facade_write_event(facade.write_history().last().expect("last facade event")),
-            vec![RewriteWriteEventProjection::Property(summary.projection())]
+            vec![GraphPmaWriteEventProjection::Property(summary.projection())]
         );
     }
 
     #[test]
     fn facade_edge_property_mutation_write_summary_flushes_and_clears_dirty_state() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
 
         let mem_rc = Rc::clone(&facade.memory);
         let mem_guard = mem_rc.borrow();
@@ -4039,7 +3989,7 @@ mod tests {
             .expect("set edge property and write");
         assert_eq!(
             set.flushed_sections,
-            RewritePropertyIndexTouchedSections {
+            GraphPmaPropertyIndexTouchedSections {
                 property_store: true,
                 logical_index: true,
                 node_store: true,
@@ -4052,7 +4002,7 @@ mod tests {
             .expect("remove edge property and write");
         assert_eq!(
             remove.flushed_sections,
-            RewritePropertyIndexTouchedSections {
+            GraphPmaPropertyIndexTouchedSections {
                 property_store: true,
                 logical_index: true,
                 node_store: true,
@@ -4074,27 +4024,27 @@ mod tests {
         assert!(matches!(
             facade.write_history(),
             [
-                RewriteFacadeWriteEvent::Property(_),
-                RewriteFacadeWriteEvent::Property(_)
+                GraphPmaFacadeWriteEvent::Property(_),
+                GraphPmaFacadeWriteEvent::Property(_)
             ]
         ));
         assert_projected_history(
             facade.write_history(),
             vec![
-                RewriteWriteEventProjection::Property(set.projection()),
-                RewriteWriteEventProjection::Property(remove.projection()),
+                GraphPmaWriteEventProjection::Property(set.projection()),
+                GraphPmaWriteEventProjection::Property(remove.projection()),
             ],
         );
         assert_eq!(
             project_facade_write_event(facade.write_history().last().expect("last facade event")),
-            vec![RewriteWriteEventProjection::Property(remove.projection())]
+            vec![GraphPmaWriteEventProjection::Property(remove.projection())]
         );
     }
 
     #[test]
     fn facade_records_edge_write_events_in_unified_history() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let src = NodeId::from(81u8);
         let dst = NodeId::from(82u8);
         let bootstrap = facade
@@ -4166,21 +4116,21 @@ mod tests {
         assert!(matches!(
             facade.write_history(),
             [
-                RewriteFacadeWriteEvent::BootstrapGraph(_),
-                RewriteFacadeWriteEvent::ReplaceEdge(_),
-                RewriteFacadeWriteEvent::DeleteEdge(_)
+                GraphPmaFacadeWriteEvent::BootstrapGraph(_),
+                GraphPmaFacadeWriteEvent::ReplaceEdge(_),
+                GraphPmaFacadeWriteEvent::DeleteEdge(_)
             ]
         ));
         assert!(matches!(
             facade.last_write_event(),
-            Some(RewriteFacadeWriteEvent::DeleteEdge(_))
+            Some(GraphPmaFacadeWriteEvent::DeleteEdge(_))
         ));
     }
 
     #[test]
     fn facade_property_index_snapshot_round_trips_through_stable_memory() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let node_id = NodeId::from(41u8);
 
         facade
@@ -4194,7 +4144,7 @@ mod tests {
             .try_write_all_to_stable_memory(&*mem_rc.borrow())
             .expect("write all");
 
-        let rehydrated = RewriteGraphPma::hydrate_from_stable_memory(
+        let rehydrated = GraphPma::hydrate_from_stable_memory(
             facade.manager.borrow().clone(),
             facade.memory.borrow().clone(),
         )
@@ -4212,7 +4162,7 @@ mod tests {
     #[test]
     fn facade_writes_pidx_v3_region_with_nonempty_btree() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let node_id = NodeId::from(42u8);
 
         facade
@@ -4238,7 +4188,7 @@ mod tests {
         .expect("read storage image");
         assert!(image.equality_map.len() >= 2);
 
-        let rehydrated = RewriteGraphPma::hydrate_from_stable_memory(
+        let rehydrated = GraphPma::hydrate_from_stable_memory(
             facade.manager.borrow().clone(),
             facade.memory.borrow().clone(),
         )
@@ -4256,7 +4206,7 @@ mod tests {
     #[test]
     fn facade_records_ensure_capacity_and_insert_in_shared_history() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let src = NodeId::from(91u8);
         let dst = NodeId::from(92u8);
 
@@ -4304,11 +4254,11 @@ mod tests {
         assert_projected_history(
             facade.write_history(),
             vec![
-                RewriteWriteEventProjection::BootstrapGraph(bootstrap.projection()),
-                RewriteWriteEventProjection::EnsureCapacity(
-                    RewriteEnsureCapacityProjection::from_summary(&ensure),
+                GraphPmaWriteEventProjection::BootstrapGraph(bootstrap.projection()),
+                GraphPmaWriteEventProjection::EnsureCapacity(
+                    GraphPmaEnsureCapacityProjection::from_summary(&ensure),
                 ),
-                RewriteWriteEventProjection::InsertEdge(RewriteInsertEdgeProjection::from_summary(
+                GraphPmaWriteEventProjection::InsertEdge(GraphPmaInsertEdgeProjection::from_summary(
                     &insert,
                 )),
             ],
@@ -4318,7 +4268,7 @@ mod tests {
     #[test]
     fn facade_can_collect_maintenance_candidates() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let src = NodeId::from(31u8);
         let dst = NodeId::from(32u8);
 
@@ -4374,7 +4324,7 @@ mod tests {
     #[test]
     fn facade_can_collect_epoch_aware_maintenance_candidates() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let src = NodeId::from(36u8);
         let dst = NodeId::from(37u8);
 
@@ -4435,7 +4385,7 @@ mod tests {
     #[test]
     fn facade_can_collect_and_run_maintenance_work_item() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let src = NodeId::from(38u8);
         let dst = NodeId::from(39u8);
 
@@ -4521,7 +4471,7 @@ mod tests {
     #[test]
     fn facade_can_format_maintenance_queue_snapshot() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let src = NodeId::from(58u8);
         let dst = NodeId::from(59u8);
 
@@ -4599,7 +4549,7 @@ mod tests {
     #[test]
     fn facade_can_rebuild_and_run_next_queued_maintenance_cycle() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let src = NodeId::from(43u8);
         let dst = NodeId::from(44u8);
 
@@ -4670,7 +4620,7 @@ mod tests {
     #[test]
     fn facade_can_refresh_retained_maintenance_queue() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let src = NodeId::from(48u8);
         let dst = NodeId::from(49u8);
 
@@ -4731,8 +4681,8 @@ mod tests {
         assert_eq!(facade.maintenance_queue()[1].vertex_ref, src.into());
         assert!(facade.maintenance_queue()[1].recent_maintenance_penalty > 0);
         match facade.last_write_event() {
-            Some(RewriteFacadeWriteEvent::MaintenanceQueue(event)) => {
-                assert_eq!(event.action, RewriteMaintenanceQueueAction::Refresh);
+            Some(GraphPmaFacadeWriteEvent::MaintenanceQueue(event)) => {
+                assert_eq!(event.action, GraphPmaMaintenanceQueueAction::Refresh);
                 assert_eq!(event.queue_len_before, 2);
                 assert_eq!(event.queue_len_after, 2);
                 assert_eq!(
@@ -4748,7 +4698,7 @@ mod tests {
     #[test]
     fn facade_can_run_queued_maintenance_batch_with_refresh() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let src = NodeId::from(53u8);
         let dst = NodeId::from(54u8);
 
@@ -4821,7 +4771,7 @@ mod tests {
     #[test]
     fn facade_records_maintenance_queue_rebuild_event() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let src = NodeId::from(63u8);
         let dst = NodeId::from(64u8);
 
@@ -4870,8 +4820,8 @@ mod tests {
             Some(2)
         );
         match facade.last_write_event() {
-            Some(RewriteFacadeWriteEvent::MaintenanceQueue(event)) => {
-                assert_eq!(event.action, RewriteMaintenanceQueueAction::Rebuild);
+            Some(GraphPmaFacadeWriteEvent::MaintenanceQueue(event)) => {
+                assert_eq!(event.action, GraphPmaMaintenanceQueueAction::Rebuild);
                 assert_eq!(event.queue_len_before, 0);
                 assert_eq!(event.queue_len_after, 2);
                 assert_eq!(
@@ -4893,7 +4843,7 @@ mod tests {
     #[test]
     fn facade_records_maintenance_queue_metrics() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let src = NodeId::from(68u8);
         let dst = NodeId::from(69u8);
 
@@ -4976,7 +4926,7 @@ mod tests {
     #[test]
     fn facade_can_run_one_maintenance_cycle_with_segment_replacement_and_write() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let src = NodeId::from(41u8);
         let dst = NodeId::from(42u8);
 
@@ -5048,8 +4998,8 @@ mod tests {
         assert!(!facade.graph.forward.0.has_dirty_regions());
         assert!(!facade.graph.reverse.0.has_dirty_regions());
         match facade.last_write_event() {
-            Some(RewriteFacadeWriteEvent::MaintenanceCycle(event_summary)) => {
-                let projection = RewriteMaintenanceCycleProjection::from_summary(event_summary);
+            Some(GraphPmaFacadeWriteEvent::MaintenanceCycle(event_summary)) => {
+                let projection = GraphPmaMaintenanceCycleProjection::from_summary(event_summary);
                 assert_eq!(projection.vertex_ref, src.into());
                 assert_eq!(projection.window_start_ordinal, 0);
                 assert_eq!(projection.window_end_ordinal_exclusive, 1);
@@ -5063,7 +5013,7 @@ mod tests {
     #[test]
     fn facade_can_run_maintenance_batch_with_segment_replacement_and_sweep() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let src = NodeId::from(51u8);
         let dst = NodeId::from(52u8);
 
@@ -5200,41 +5150,39 @@ mod tests {
         assert_projected_history(
             facade.write_history(),
             vec![
-                RewriteWriteEventProjection::BootstrapGraph(RewriteBootstrapGraphProjection {
+                GraphPmaWriteEventProjection::BootstrapGraph(GraphPmaBootstrapGraphProjection {
                     vertex_ordinals: vec![
-                        RewriteVertexOrdinalMapping {
+                        GraphPmaVertexOrdinalMapping {
                             vertex_ref: src.into(),
                             forward_ordinal: 0,
                             reverse_ordinal: 0,
                         },
-                        RewriteVertexOrdinalMapping {
+                        GraphPmaVertexOrdinalMapping {
                             vertex_ref: dst.into(),
                             forward_ordinal: 1,
                             reverse_ordinal: 1,
                         },
                     ],
                     locators: Vec::new(),
-                    refreshed: RewriteRefreshedVertices::new(Vec::new(), Vec::new()),
+                    refreshed: GraphPmaRefreshedVertices::new(Vec::new(), Vec::new()),
                 }),
-                RewriteWriteEventProjection::MaintenanceBatch(RewriteMaintenanceBatchProjection {
+                GraphPmaWriteEventProjection::MaintenanceBatch(GraphPmaMaintenanceBatchProjection {
                     cycles: 1,
                     queue_len_before: 0,
                     queue_len_after: 0,
                     swept_forward_segments: 1,
                     swept_reverse_segments: 1,
-                    queue_storage_before: Some(RewriteMaintenanceQueueStorageProjection {
+                    queue_storage_before: Some(GraphPmaMaintenanceQueueStorageProjection {
                         logical_len_bytes: 24,
                         queue_len: 0,
-                        legacy_format: false,
                         format_version: Some(1),
                         stored_checksum: None,
                         computed_checksum: None,
                         checksum_valid: Some(true),
                     }),
-                    queue_storage_after: Some(RewriteMaintenanceQueueStorageProjection {
+                    queue_storage_after: Some(GraphPmaMaintenanceQueueStorageProjection {
                         logical_len_bytes: 24,
                         queue_len: 0,
-                        legacy_format: false,
                         format_version: Some(1),
                         stored_checksum: None,
                         computed_checksum: None,
@@ -5248,7 +5196,7 @@ mod tests {
     #[test]
     fn facade_can_scan_property_index_directly_from_stable_memory_when_clean() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let node_id = NodeId::from(51u8);
 
         facade
@@ -5302,7 +5250,7 @@ mod tests {
     #[test]
     fn facade_prefers_hydrated_property_index_when_dirty() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let node_id = NodeId::from(61u8);
 
         facade
@@ -5345,7 +5293,7 @@ mod tests {
     #[test]
     fn facade_property_index_hydrate_uses_v3_equality_map_when_snapshot_empty() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let node_id = NodeId::from(41u8);
 
         facade
@@ -5373,7 +5321,7 @@ mod tests {
         )
         .expect("overwrite property index image");
 
-        let rehydrated = RewriteGraphPma::hydrate_from_stable_memory(
+        let rehydrated = GraphPma::hydrate_from_stable_memory(
             facade.manager.borrow().clone(),
             facade.memory.borrow().clone(),
         )
@@ -5392,7 +5340,7 @@ mod tests {
     fn facade_batch_session_supports_mixed_mutation_flow() {
         let (manager, memory) = seeded_manager_and_memory();
         let mut facade =
-            RewriteGraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
+            GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
         facade
             .graph
             .insert_base_edge_pair(
@@ -5407,7 +5355,7 @@ mod tests {
 
         let mem_rc = Rc::clone(&facade.memory);
         let mem_guard = mem_rc.borrow();
-        let mut adapter = RewriteGraphStoreAdapter::new(&mut facade, &*mem_guard);
+        let mut adapter = GraphPmaStoreAdapter::new(&mut facade, &*mem_guard);
         let mut batch = adapter.begin_batch_mutation();
         let replaced = batch
             .replace_edge_pair(EdgeReplaceSpec {
@@ -5453,7 +5401,7 @@ mod tests {
     fn facade_replace_and_tombstone_convenience_methods_write_back() {
         let (manager, memory) = seeded_manager_and_memory();
         let mut facade =
-            RewriteGraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
+            GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
         facade
             .graph
             .insert_base_edge_pair(
@@ -5466,7 +5414,7 @@ mod tests {
             )
             .expect("seed sidecar");
 
-        let replace_summary: RewriteGraphMutationWriteSummary<_> = facade
+        let replace_summary: GraphPmaMutationWriteSummary<_> = facade
             .replace_edge_pair_and_write(
                 EdgeReplaceSpec {
                     edge_id: 77,
@@ -5530,18 +5478,18 @@ mod tests {
     fn facade_try_rebuild_logical_locator_sidecar_rejects_mismatched_inputs() {
         let (manager, memory) = seeded_manager_and_memory();
         let mut facade =
-            RewriteGraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
+            GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
 
         let err = facade
             .try_rebuild_logical_locator_sidecar(&[NodeId::from(1u8).into()], &[])
             .expect_err("mismatched ids should fail");
-        assert_eq!(err, RewriteGraphPmaError::InvalidLocatorInputs);
+        assert_eq!(err, GraphPmaError::InvalidLocatorInputs);
     }
 
     #[test]
     fn facade_can_hydrate_with_logical_locator_sidecar_in_one_step() {
         let (manager, memory) = seeded_manager_and_memory();
-        let facade = RewriteGraphPma::hydrate_from_stable_memory_with_logical_locator_sidecar(
+        let facade = GraphPma::hydrate_from_stable_memory_with_logical_locator_sidecar(
             manager,
             memory,
             &[NodeId::from(1u8).into()],
@@ -5562,7 +5510,7 @@ mod tests {
     #[test]
     fn facade_can_bootstrap_empty_graph() {
         let memory = VecMemory::default();
-        let facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap empty");
+        let facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap empty");
 
         assert!(facade.graph.forward.0.vertices.is_empty());
         assert!(facade.graph.forward.0.base_entries.is_empty());
@@ -5589,23 +5537,23 @@ mod tests {
     #[test]
     fn facade_can_append_empty_vertex_pair_and_write() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
 
-        let summary: RewriteAppendVertexWriteSummary = facade
+        let summary: GraphPmaAppendVertexWriteSummary = facade
             .append_empty_vertex_pair_and_write(&memory)
             .expect("append empty vertex pair");
 
         assert_eq!(summary.ordinals, (0, 0));
         assert_eq!(
             summary.refreshed,
-            RewriteRefreshedVertices::new(Vec::new(), Vec::new())
+            GraphPmaRefreshedVertices::new(Vec::new(), Vec::new())
         );
         assert_eq!(facade.graph.forward.0.vertices.len(), 1);
         assert_eq!(facade.graph.reverse.0.vertices.len(), 1);
         assert_projected_history(
             facade.write_history(),
-            vec![RewriteWriteEventProjection::BootstrapVertices(
-                RewriteBootstrapVerticesProjection::from_single_summary(&summary),
+            vec![GraphPmaWriteEventProjection::BootstrapVertices(
+                GraphPmaBootstrapVerticesProjection::from_single_summary(&summary),
             )],
         );
     }
@@ -5613,16 +5561,16 @@ mod tests {
     #[test]
     fn facade_can_append_multiple_empty_vertex_pairs_and_write() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
 
-        let summary: RewriteAppendVerticesWriteSummary = facade
+        let summary: GraphPmaAppendVerticesWriteSummary = facade
             .append_empty_vertex_pairs_and_write(3, &memory)
             .expect("append empty vertex pairs");
 
         assert_eq!(summary.ordinals, vec![(0, 0), (1, 1), (2, 2)]);
         assert_eq!(
             summary.refreshed,
-            RewriteRefreshedVertices::new(Vec::new(), Vec::new())
+            GraphPmaRefreshedVertices::new(Vec::new(), Vec::new())
         );
         assert_eq!(facade.graph.forward.0.vertices.len(), 3);
         assert_eq!(facade.graph.reverse.0.vertices.len(), 3);
@@ -5631,9 +5579,9 @@ mod tests {
     #[test]
     fn facade_can_bootstrap_first_edge_between_new_vertices() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
 
-        let summary: RewriteBootstrapEdgeWriteSummary = facade
+        let summary: GraphPmaBootstrapEdgeWriteSummary = facade
             .bootstrap_edge_between_new_vertices_and_write(
                 77,
                 NodeId::from(1u8),
@@ -5651,8 +5599,8 @@ mod tests {
         assert_eq!(facade.graph.reverse.0.vertices.len(), 2);
         assert_eq!(
             facade.shared_write_history(),
-            vec![RewriteWriteEventProjection::BootstrapEdge(
-                RewriteBootstrapEdgeProjection::from_facade_summary(&summary),
+            vec![GraphPmaWriteEventProjection::BootstrapEdge(
+                GraphPmaBootstrapEdgeProjection::from_facade_summary(&summary),
             )]
         );
         assert_eq!(
@@ -5668,9 +5616,9 @@ mod tests {
     #[test]
     fn facade_can_bootstrap_multiple_vertices_and_edges() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
 
-        let summary: RewriteBootstrapGraphWriteSummary = facade
+        let summary: GraphPmaBootstrapGraphWriteSummary = facade
             .bootstrap_vertex_refs_and_edges_and_write(
                 &[
                     NodeId::from(1u8).into(),
@@ -5685,17 +5633,17 @@ mod tests {
         assert_eq!(
             summary.vertex_ordinals,
             vec![
-                RewriteVertexOrdinalMapping {
+                GraphPmaVertexOrdinalMapping {
                     vertex_ref: NodeId::from(1u8).into(),
                     forward_ordinal: 0,
                     reverse_ordinal: 0,
                 },
-                RewriteVertexOrdinalMapping {
+                GraphPmaVertexOrdinalMapping {
                     vertex_ref: NodeId::from(2u8).into(),
                     forward_ordinal: 1,
                     reverse_ordinal: 1,
                 },
-                RewriteVertexOrdinalMapping {
+                GraphPmaVertexOrdinalMapping {
                     vertex_ref: NodeId::from(3u8).into(),
                     forward_ordinal: 2,
                     reverse_ordinal: 2,
@@ -5706,7 +5654,7 @@ mod tests {
         assert_eq!(
             summary.locators,
             vec![
-                RewriteEdgeLogicalLocatorMapping {
+                GraphPmaEdgeLogicalLocatorMapping {
                     edge_id: 77,
                     canonical: crate::low_level::LogicalEdgeLocator::base(
                         crate::low_level::SurfaceKind::Forward,
@@ -5724,7 +5672,7 @@ mod tests {
                         0,
                     ),
                 },
-                RewriteEdgeLogicalLocatorMapping {
+                GraphPmaEdgeLogicalLocatorMapping {
                     edge_id: 88,
                     canonical: crate::low_level::LogicalEdgeLocator::overflow(
                         crate::low_level::SurfaceKind::Forward,
@@ -5765,11 +5713,11 @@ mod tests {
     }
 
     #[test]
-    fn facade_implements_rewrite_graph_store_trait() {
+    fn facade_implements_graph_pma_store_trait() {
         fn touch_store(
-            store: &mut impl RewriteGraphStore,
+            store: &mut impl GraphPmaStore,
             memory: &impl Memory,
-        ) -> RewriteGraphPmaResult<(usize, usize, usize, usize)> {
+        ) -> GraphPmaResult<(usize, usize, usize, usize)> {
             let _ = store.manager();
             let _ = store.graph();
             let _ = store.append_empty_vertex_pair()?;
@@ -5789,21 +5737,21 @@ mod tests {
         }
 
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let mem_rc = Rc::clone(&facade.memory);
         let mem_guard = mem_rc.borrow();
         let counts = touch_store(&mut facade, &*mem_guard).expect("touch via trait");
         assert_eq!(counts, (4, 4, 1, 1));
         assert_eq!(
-            RewriteGraphStore::formatted_last_write_event(&facade),
+            GraphPmaStore::formatted_last_write_event(&facade),
             Some("bootstrap-graph vertices=2 edges=1 refreshed=(1,1) fwd=[2] rev=[3]".to_owned())
         );
     }
 
     #[test]
-    fn rewrite_graph_store_adapter_can_bootstrap_via_trait_boundary() {
+    fn graph_pma_store_adapter_can_bootstrap_via_trait_boundary() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let mem_rc = Rc::clone(&facade.memory);
         let mem_guard = mem_rc.borrow();
         let mut adapter = facade.bind(&*mem_guard);
@@ -5820,10 +5768,10 @@ mod tests {
         assert_eq!(summary.locators.len(), 1);
         assert!(matches!(
             adapter.last_write_event(),
-            Some(RewriteFacadeWriteEvent::BootstrapGraph(_))
+            Some(GraphPmaFacadeWriteEvent::BootstrapGraph(_))
         ));
         let event_projection = match adapter.last_write_event() {
-            Some(RewriteFacadeWriteEvent::BootstrapGraph(event_summary)) => {
+            Some(GraphPmaFacadeWriteEvent::BootstrapGraph(event_summary)) => {
                 event_summary.projection()
             }
             other => panic!("expected bootstrap graph event, got {other:?}"),
@@ -5831,18 +5779,18 @@ mod tests {
         assert_eq!(summary.projection(), event_projection);
         assert!(matches!(
             adapter.write_history(),
-            [RewriteFacadeWriteEvent::BootstrapGraph(_)]
+            [GraphPmaFacadeWriteEvent::BootstrapGraph(_)]
         ));
         assert_eq!(
-            RewriteGraphStore::formatted_last_write_event(adapter.store),
+            GraphPmaStore::formatted_last_write_event(adapter.store),
             Some("bootstrap-graph vertices=2 edges=1 refreshed=(1,1) fwd=[0] rev=[1]".to_owned())
         );
     }
 
     #[test]
-    fn rewrite_graph_store_adapter_can_replace_and_tombstone_edges() {
+    fn graph_pma_store_adapter_can_replace_and_tombstone_edges() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let mem_rc = Rc::clone(&facade.memory);
         let mem_guard = mem_rc.borrow();
         let mut adapter = facade.bind(&*mem_guard);
@@ -5876,11 +5824,11 @@ mod tests {
         assert_eq!(replaced.mutation.0, GraphMutationPath::Base);
         let replace_projection = adapter
             .last_write_event()
-            .and_then(RewriteFacadeWriteEvent::edge_projection)
+            .and_then(GraphPmaFacadeWriteEvent::edge_projection)
             .expect("replace edge projection");
         assert_eq!(
             replace_projection.operation,
-            RewriteEdgeWriteOperation::ReplaceLabel
+            GraphPmaEdgeWriteOperation::ReplaceLabel
         );
         assert_eq!(replace_projection.path, GraphMutationPath::Base);
 
@@ -5902,19 +5850,19 @@ mod tests {
         assert_eq!(tombstoned.mutation, GraphMutationPath::Base);
         let delete_projection = adapter
             .last_write_event()
-            .and_then(RewriteFacadeWriteEvent::edge_projection)
+            .and_then(GraphPmaFacadeWriteEvent::edge_projection)
             .expect("delete edge projection");
         assert_eq!(
             delete_projection.operation,
-            RewriteEdgeWriteOperation::Delete
+            GraphPmaEdgeWriteOperation::Delete
         );
         assert_eq!(delete_projection.path, GraphMutationPath::Base);
         assert_eq!(
             adapter.shared_write_history(),
             vec![
-                RewriteWriteEventProjection::BootstrapGraph(bootstrap.projection()),
-                RewriteWriteEventProjection::Edge(replace_projection),
-                RewriteWriteEventProjection::Edge(delete_projection),
+                GraphPmaWriteEventProjection::BootstrapGraph(bootstrap.projection()),
+                GraphPmaWriteEventProjection::Edge(replace_projection),
+                GraphPmaWriteEventProjection::Edge(delete_projection),
             ]
         );
         assert_eq!(
@@ -5932,9 +5880,9 @@ mod tests {
     }
 
     #[test]
-    fn rewrite_graph_store_adapter_can_start_batch_session() {
+    fn graph_pma_store_adapter_can_start_batch_session() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let mem_rc = Rc::clone(&facade.memory);
         let mem_guard = mem_rc.borrow();
         let mut adapter = facade.bind(&*mem_guard);
@@ -5945,10 +5893,10 @@ mod tests {
     }
 
     #[test]
-    fn rewrite_graph_service_trait_can_drive_bootstrap_and_flush() {
+    fn graph_pma_service_trait_can_drive_bootstrap_and_flush() {
         fn use_service(
-            service: &mut impl RewriteGraphService,
-        ) -> RewriteGraphPmaResult<(usize, usize, bool, RewriteBootstrapGraphProjection)> {
+            service: &mut impl GraphPmaService,
+        ) -> GraphPmaResult<(usize, usize, bool, GraphPmaBootstrapGraphProjection)> {
             let summary = service.bootstrap_vertex_refs_and_edges(
                 &[NodeId::from(41u8).into(), NodeId::from(42u8).into()],
                 &[(903, 0, 1, 13)],
@@ -5960,14 +5908,14 @@ mod tests {
                 service.write_history().len(),
                 matches!(
                     service.last_write_event(),
-                    Some(RewriteFacadeWriteEvent::BootstrapGraph(_))
+                    Some(GraphPmaFacadeWriteEvent::BootstrapGraph(_))
                 ),
                 projection,
             ))
         }
 
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let mem_rc = Rc::clone(&facade.memory);
         let mem_guard = mem_rc.borrow();
         let mut adapter = facade.bind(&*mem_guard);
@@ -5977,14 +5925,14 @@ mod tests {
         assert_eq!(history_len, 1);
         assert!(has_insert_event);
         let event_projection = match adapter.last_write_event() {
-            Some(RewriteFacadeWriteEvent::BootstrapGraph(event_summary)) => {
+            Some(GraphPmaFacadeWriteEvent::BootstrapGraph(event_summary)) => {
                 event_summary.projection()
             }
             other => panic!("expected bootstrap graph event, got {other:?}"),
         };
         assert_eq!(summary_projection, event_projection);
         assert_eq!(
-            RewriteGraphService::formatted_last_write_event(&adapter),
+            GraphPmaService::formatted_last_write_event(&adapter),
             Some("bootstrap-graph vertices=2 edges=1 refreshed=(1,1) fwd=[0] rev=[1]".to_owned())
         );
     }

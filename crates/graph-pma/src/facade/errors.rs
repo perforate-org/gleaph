@@ -3,12 +3,12 @@ use std::fmt;
 
 use super::*;
 
-/// Facade-level error type for the rewrite entrypoint.
+/// Facade-level error type for `GraphPma`.
 ///
 /// This keeps the higher-level facade ergonomic without erasing the low-level
-/// failure modes that still matter during the rewrite phase.
+/// failure modes that still matter during integration.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RewriteGraphPmaError {
+pub enum GraphPmaError {
     /// Stable-memory hydration failed.
     Hydration(HydrationError),
     /// Stable-memory writeback failed.
@@ -21,16 +21,16 @@ pub enum RewriteGraphPmaError {
     InvalidLocatorInputs,
 }
 
-/// Facade-level result alias for the rewrite entrypoint.
-pub type RewriteGraphPmaResult<T> = Result<T, RewriteGraphPmaError>;
+/// Facade-level result alias for `GraphPma`.
+pub type GraphPmaResult<T> = Result<T, GraphPmaError>;
 
-impl fmt::Display for RewriteGraphPmaError {
+impl fmt::Display for GraphPmaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Hydration(err) => write!(f, "rewrite graph-pma hydration failed: {err}"),
-            Self::Writeback(err) => write!(f, "rewrite graph-pma writeback failed: {err}"),
-            Self::PropertyStore(err) => write!(f, "rewrite property-store operation failed: {err}"),
-            Self::PropertyIndex(err) => write!(f, "rewrite property-index operation failed: {err}"),
+            Self::Hydration(err) => write!(f, "graph-pma hydration failed: {err}"),
+            Self::Writeback(err) => write!(f, "graph-pma writeback failed: {err}"),
+            Self::PropertyStore(err) => write!(f, "graph-pma property-store operation failed: {err}"),
+            Self::PropertyIndex(err) => write!(f, "graph-pma property-index operation failed: {err}"),
             Self::InvalidLocatorInputs => {
                 write!(f, "invalid locator rebuild inputs for forward surface")
             }
@@ -38,7 +38,7 @@ impl fmt::Display for RewriteGraphPmaError {
     }
 }
 
-impl Error for RewriteGraphPmaError {
+impl Error for GraphPmaError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Hydration(err) => Some(err),
@@ -50,25 +50,25 @@ impl Error for RewriteGraphPmaError {
     }
 }
 
-impl From<HydrationError> for RewriteGraphPmaError {
+impl From<HydrationError> for GraphPmaError {
     fn from(value: HydrationError) -> Self {
         Self::Hydration(value)
     }
 }
 
-impl From<WritebackError> for RewriteGraphPmaError {
+impl From<WritebackError> for GraphPmaError {
     fn from(value: WritebackError) -> Self {
         Self::Writeback(value)
     }
 }
 
-impl From<PropertyStoreError> for RewriteGraphPmaError {
+impl From<PropertyStoreError> for GraphPmaError {
     fn from(value: PropertyStoreError) -> Self {
         Self::PropertyStore(value)
     }
 }
 
-impl From<PropertyIndexError> for RewriteGraphPmaError {
+impl From<PropertyIndexError> for GraphPmaError {
     fn from(value: PropertyIndexError) -> Self {
         Self::PropertyIndex(value)
     }

@@ -5,20 +5,20 @@ use gleaph_graph_kernel::{
 };
 
 use crate::facade::{
-    RewriteEdgeLogicalLocatorMapping, RewriteGraphStore, RewritePropertyIndexTouchedSections,
-    RewritePropertyMutationWriteSummary, RewriteRefreshedVertices, RewriteVertexOrdinalMapping,
+    GraphPmaEdgeLogicalLocatorMapping, GraphPmaStore, GraphPmaPropertyIndexTouchedSections,
+    GraphPmaPropertyMutationWriteSummary, GraphPmaRefreshedVertices, GraphPmaVertexOrdinalMapping,
 };
 use crate::low_level::{EdgeInsertPath, VertexRef};
 
 use super::{
-    OVERLAY_SUMMARY_HISTORY_LIMIT, RewriteKernelBootstrapBridge,
-    RewriteOverlayBootstrapGraphSummary, RewriteOverlayEdgeBootstrapSummary,
-    RewriteOverlayEdgeWriteSummary, RewriteOverlayInsertEdgeSummary,
-    RewriteOverlayNodeBootstrapSummary, RewriteOverlayNodeDeleteSummary, RewriteOverlayWriteEvent,
+    OVERLAY_SUMMARY_HISTORY_LIMIT, GraphPmaKernelBootstrapBridge,
+    GraphPmaOverlayBootstrapGraphSummary, GraphPmaOverlayEdgeBootstrapSummary,
+    GraphPmaOverlayEdgeWriteSummary, GraphPmaOverlayInsertEdgeSummary,
+    GraphPmaOverlayNodeBootstrapSummary, GraphPmaOverlayNodeDeleteSummary, GraphPmaOverlayWriteEvent,
     VertexGcState, VertexLabelIndex,
 };
 
-impl<'a, S: RewriteGraphStore> RewriteKernelBootstrapBridge<'a, S> {
+impl<'a, S: GraphPmaStore> GraphPmaKernelBootstrapBridge<'a, S> {
     fn rollback_bootstrapped_node_properties(
         &mut self,
         node_id: NodeId,
@@ -32,7 +32,7 @@ impl<'a, S: RewriteGraphStore> RewriteKernelBootstrapBridge<'a, S> {
         Ok(())
     }
 
-    /// Creates one bootstrap bridge over a bound rewrite graph adapter.
+    /// Creates one bootstrap bridge over a bound graph adapter.
     pub fn new(store: S, memory: &'a S::Mem) -> Self {
         let mut bridge = Self {
             store,
@@ -84,56 +84,56 @@ impl<'a, S: RewriteGraphStore> RewriteKernelBootstrapBridge<'a, S> {
     }
 
     /// Returns surface-local vertex ordinal mappings in forward order.
-    pub fn vertex_ordinals(&self) -> &[RewriteVertexOrdinalMapping] {
+    pub fn vertex_ordinals(&self) -> &[GraphPmaVertexOrdinalMapping] {
         &self.vertex_ordinals
     }
 
     /// Returns the most recent property-write summary observed through this bridge.
-    pub fn last_property_write_summary(&self) -> Option<&RewritePropertyMutationWriteSummary> {
+    pub fn last_property_write_summary(&self) -> Option<&GraphPmaPropertyMutationWriteSummary> {
         self.last_property_write_summary.as_ref()
     }
 
     /// Returns recent property-write summaries in observation order.
-    pub fn property_write_history(&self) -> &[RewritePropertyMutationWriteSummary] {
+    pub fn property_write_history(&self) -> &[GraphPmaPropertyMutationWriteSummary] {
         &self.property_write_history
     }
 
     /// Returns the most recent insert-edge summary observed through this bridge.
-    pub fn last_insert_edge_summary(&self) -> Option<&RewriteOverlayInsertEdgeSummary> {
+    pub fn last_insert_edge_summary(&self) -> Option<&GraphPmaOverlayInsertEdgeSummary> {
         self.last_insert_edge_summary.as_ref()
     }
 
     /// Returns recent insert-edge summaries in observation order.
-    pub fn insert_edge_history(&self) -> &[RewriteOverlayInsertEdgeSummary] {
+    pub fn insert_edge_history(&self) -> &[GraphPmaOverlayInsertEdgeSummary] {
         &self.insert_edge_history
     }
 
     /// Returns the most recent edge-write summary observed through this bridge.
-    pub fn last_edge_write_summary(&self) -> Option<&RewriteOverlayEdgeWriteSummary> {
+    pub fn last_edge_write_summary(&self) -> Option<&GraphPmaOverlayEdgeWriteSummary> {
         self.last_edge_write_summary.as_ref()
     }
 
     /// Returns recent edge-write summaries in observation order.
-    pub fn edge_write_history(&self) -> &[RewriteOverlayEdgeWriteSummary] {
+    pub fn edge_write_history(&self) -> &[GraphPmaOverlayEdgeWriteSummary] {
         &self.edge_write_history
     }
 
     /// Returns the most recent node-delete summary observed through this bridge.
-    pub fn last_node_delete_summary(&self) -> Option<&RewriteOverlayNodeDeleteSummary> {
+    pub fn last_node_delete_summary(&self) -> Option<&GraphPmaOverlayNodeDeleteSummary> {
         self.last_node_delete_summary.as_ref()
     }
 
     /// Returns recent node-delete summaries in observation order.
-    pub fn node_delete_history(&self) -> &[RewriteOverlayNodeDeleteSummary] {
+    pub fn node_delete_history(&self) -> &[GraphPmaOverlayNodeDeleteSummary] {
         &self.node_delete_history
     }
 
     /// Returns recent overlay write events in observation order.
-    pub fn write_history(&self) -> &[RewriteOverlayWriteEvent] {
+    pub fn write_history(&self) -> &[GraphPmaOverlayWriteEvent] {
         &self.write_history
     }
 
-    fn record_write_event(&mut self, event: RewriteOverlayWriteEvent) {
+    fn record_write_event(&mut self, event: GraphPmaOverlayWriteEvent) {
         self.write_history.push(event);
         if self.write_history.len() > OVERLAY_SUMMARY_HISTORY_LIMIT {
             self.write_history.remove(0);
@@ -142,9 +142,9 @@ impl<'a, S: RewriteGraphStore> RewriteKernelBootstrapBridge<'a, S> {
 
     pub(crate) fn record_property_write_summary(
         &mut self,
-        summary: RewritePropertyMutationWriteSummary,
+        summary: GraphPmaPropertyMutationWriteSummary,
     ) {
-        self.record_write_event(RewriteOverlayWriteEvent::Property(summary.clone()));
+        self.record_write_event(GraphPmaOverlayWriteEvent::Property(summary.clone()));
         self.last_property_write_summary = Some(summary.clone());
         self.property_write_history.push(summary);
         if self.property_write_history.len() > OVERLAY_SUMMARY_HISTORY_LIMIT {
@@ -154,17 +154,17 @@ impl<'a, S: RewriteGraphStore> RewriteKernelBootstrapBridge<'a, S> {
 
     pub(crate) fn patch_pending_property_summaries_after_stable_flush(
         &mut self,
-        refreshed: RewriteRefreshedVertices,
+        refreshed: GraphPmaRefreshedVertices,
     ) {
         for event in &mut self.write_history {
-            if let RewriteOverlayWriteEvent::Property(summary) = event
+            if let GraphPmaOverlayWriteEvent::Property(summary) = event
                 && summary.is_pending_stable_flush() {
                     summary.flushed_sections = summary.mutation.sections;
                     if !summary.flushed_sections.property_store
                         && !summary.flushed_sections.logical_index
                         && !summary.flushed_sections.node_store
                     {
-                        summary.flushed_sections = RewritePropertyIndexTouchedSections {
+                        summary.flushed_sections = GraphPmaPropertyIndexTouchedSections {
                             property_store: true,
                             logical_index: true,
                             node_store: true,
@@ -180,7 +180,7 @@ impl<'a, S: RewriteGraphStore> RewriteKernelBootstrapBridge<'a, S> {
                     && !summary.flushed_sections.logical_index
                     && !summary.flushed_sections.node_store
                 {
-                    summary.flushed_sections = RewritePropertyIndexTouchedSections {
+                    summary.flushed_sections = GraphPmaPropertyIndexTouchedSections {
                         property_store: true,
                         logical_index: true,
                         node_store: true,
@@ -194,8 +194,8 @@ impl<'a, S: RewriteGraphStore> RewriteKernelBootstrapBridge<'a, S> {
         }
     }
 
-    pub(crate) fn record_insert_edge_summary(&mut self, summary: RewriteOverlayInsertEdgeSummary) {
-        self.record_write_event(RewriteOverlayWriteEvent::InsertEdge(summary.clone()));
+    pub(crate) fn record_insert_edge_summary(&mut self, summary: GraphPmaOverlayInsertEdgeSummary) {
+        self.record_write_event(GraphPmaOverlayWriteEvent::InsertEdge(summary.clone()));
         self.last_insert_edge_summary = Some(summary.clone());
         self.insert_edge_history.push(summary);
         if self.insert_edge_history.len() > OVERLAY_SUMMARY_HISTORY_LIMIT {
@@ -203,8 +203,8 @@ impl<'a, S: RewriteGraphStore> RewriteKernelBootstrapBridge<'a, S> {
         }
     }
 
-    pub(crate) fn record_edge_write_summary(&mut self, summary: RewriteOverlayEdgeWriteSummary) {
-        self.record_write_event(RewriteOverlayWriteEvent::Edge(summary.clone()));
+    pub(crate) fn record_edge_write_summary(&mut self, summary: GraphPmaOverlayEdgeWriteSummary) {
+        self.record_write_event(GraphPmaOverlayWriteEvent::Edge(summary.clone()));
         self.last_edge_write_summary = Some(summary.clone());
         self.edge_write_history.push(summary);
         if self.edge_write_history.len() > OVERLAY_SUMMARY_HISTORY_LIMIT {
@@ -212,8 +212,8 @@ impl<'a, S: RewriteGraphStore> RewriteKernelBootstrapBridge<'a, S> {
         }
     }
 
-    pub(crate) fn record_node_delete_summary(&mut self, summary: RewriteOverlayNodeDeleteSummary) {
-        self.record_write_event(RewriteOverlayWriteEvent::NodeDelete(summary.clone()));
+    pub(crate) fn record_node_delete_summary(&mut self, summary: GraphPmaOverlayNodeDeleteSummary) {
+        self.record_write_event(GraphPmaOverlayWriteEvent::NodeDelete(summary.clone()));
         self.last_node_delete_summary = Some(summary.clone());
         self.node_delete_history.push(summary);
         if self.node_delete_history.len() > OVERLAY_SUMMARY_HISTORY_LIMIT {
@@ -223,26 +223,26 @@ impl<'a, S: RewriteGraphStore> RewriteKernelBootstrapBridge<'a, S> {
 
     pub(crate) fn record_node_bootstrap_summary(
         &mut self,
-        summary: RewriteOverlayNodeBootstrapSummary,
+        summary: GraphPmaOverlayNodeBootstrapSummary,
     ) {
-        self.record_write_event(RewriteOverlayWriteEvent::BootstrapNode(summary));
+        self.record_write_event(GraphPmaOverlayWriteEvent::BootstrapNode(summary));
     }
 
     pub(crate) fn record_edge_bootstrap_summary(
         &mut self,
-        summary: RewriteOverlayEdgeBootstrapSummary,
+        summary: GraphPmaOverlayEdgeBootstrapSummary,
     ) {
-        self.record_write_event(RewriteOverlayWriteEvent::BootstrapEdge(summary));
+        self.record_write_event(GraphPmaOverlayWriteEvent::BootstrapEdge(summary));
     }
 
     pub(crate) fn record_bootstrap_graph_summary(
         &mut self,
-        summary: RewriteOverlayBootstrapGraphSummary,
+        summary: GraphPmaOverlayBootstrapGraphSummary,
     ) {
-        self.record_write_event(RewriteOverlayWriteEvent::BootstrapGraph(summary));
+        self.record_write_event(GraphPmaOverlayWriteEvent::BootstrapGraph(summary));
     }
 
-    /// Bootstraps one logical node by appending one new rewrite vertex slot pair.
+    /// Bootstraps one logical node by appending one new vertex slot pair.
     pub fn bootstrap_node(
         &mut self,
         labels: &[String],
@@ -304,7 +304,7 @@ impl<'a, S: RewriteGraphStore> RewriteKernelBootstrapBridge<'a, S> {
         };
         self.nodes.insert(node_id, record.clone());
         self.sync_node_labels_to_index(node_id, &record.labels);
-        self.record_node_bootstrap_summary(RewriteOverlayNodeBootstrapSummary {
+        self.record_node_bootstrap_summary(GraphPmaOverlayNodeBootstrapSummary {
             node: record.clone(),
             ordinals: (mapping.forward_ordinal, mapping.reverse_ordinal),
             refreshed,
@@ -471,7 +471,7 @@ impl<'a, S: RewriteGraphStore> RewriteKernelBootstrapBridge<'a, S> {
             )
             .map_err(|err| GraphError::Message(err.to_string()))?;
 
-        let refreshed = RewriteRefreshedVertices::new(
+        let refreshed = GraphPmaRefreshedVertices::new(
             summary.refreshed_forward_vertices.clone(),
             summary.refreshed_reverse_vertices.clone(),
         );
@@ -521,7 +521,7 @@ impl<'a, S: RewriteGraphStore> RewriteKernelBootstrapBridge<'a, S> {
         }
         self.edge_locators.insert(
             edge_id,
-            RewriteEdgeLogicalLocatorMapping {
+            GraphPmaEdgeLogicalLocatorMapping {
                 edge_id,
                 canonical: locators.forward,
                 forward: locators.forward,
@@ -540,7 +540,7 @@ impl<'a, S: RewriteGraphStore> RewriteKernelBootstrapBridge<'a, S> {
         self.edges.insert(edge_id, record.clone());
         self.register_incident_edge(src, dst, edge_id);
         if bootstrap_event {
-            self.record_edge_bootstrap_summary(RewriteOverlayEdgeBootstrapSummary {
+            self.record_edge_bootstrap_summary(GraphPmaOverlayEdgeBootstrapSummary {
                 edge: record.clone(),
                 path,
                 refreshed,
@@ -556,7 +556,7 @@ impl<'a, S: RewriteGraphStore> RewriteKernelBootstrapBridge<'a, S> {
                     )
                 })
                 .unwrap_or((0, 0));
-            self.record_insert_edge_summary(RewriteOverlayInsertEdgeSummary {
+            self.record_insert_edge_summary(GraphPmaOverlayInsertEdgeSummary {
                 inserted: summary.insert.is_some(),
                 path: Some(path),
                 rebalanced: summary.rebalance.is_some(),

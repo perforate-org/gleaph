@@ -29,7 +29,7 @@ use gleaph_gql_planner::stats::TableStats;
 use gleaph_gql_planner::{PlanOp, build_plan};
 use gleaph_graph_kernel::{GraphWrite, NodeId, PropertyMap};
 use gleaph_graph_pma::low_level::BucketSizeInPages;
-use gleaph_graph_pma::{RewriteGraphPma, RewriteVecMemory};
+use gleaph_graph_pma::{GraphPma, GraphPmaVecMemory};
 
 fn linear_query_from_str(input: &str) -> gleaph_gql::ast::LinearQueryStatement {
     let program = parser::parse(input).expect("parse");
@@ -42,7 +42,7 @@ fn linear_query_from_str(input: &str) -> gleaph_gql::ast::LinearQueryStatement {
 }
 
 fn exec_ctx_bind_planner_uid_param(value: impl Into<String>) -> ExecutionContext {
-    // `IndexScan` rewrites equality literals on indexed properties to parameters (see planner).
+    // `IndexScan` lowers equality literals on indexed properties to parameters (see planner).
     // Canister / Gleaph callers must supply the same binding when executing.
     let mut ctx = ExecutionContext::default();
     ctx.params
@@ -74,8 +74,8 @@ fn stats_user_with_indexed_edge_weight() -> TableStats {
 
 #[test]
 fn indexed_person_uid_planner_emits_index_scan_and_executor_finds_node_via_graph_pma() {
-    let mem_rc = Rc::new(RefCell::new(RewriteVecMemory::default()));
-    let mut facade = RewriteGraphPma::bootstrap_empty_with_bucket_size_using_memory_rc(
+    let mem_rc = Rc::new(RefCell::new(GraphPmaVecMemory::default()));
+    let mut facade = GraphPma::bootstrap_empty_with_bucket_size_using_memory_rc(
         BucketSizeInPages::DEFAULT,
         Rc::clone(&mem_rc),
     )
@@ -131,8 +131,8 @@ fn indexed_person_uid_planner_emits_index_scan_and_executor_finds_node_via_graph
 
 #[test]
 fn index_scan_without_index_in_stats_falls_back_to_node_scan_but_results_match() {
-    let mem_rc = Rc::new(RefCell::new(RewriteVecMemory::default()));
-    let mut facade = RewriteGraphPma::bootstrap_empty_with_bucket_size_using_memory_rc(
+    let mem_rc = Rc::new(RefCell::new(GraphPmaVecMemory::default()));
+    let mut facade = GraphPma::bootstrap_empty_with_bucket_size_using_memory_rc(
         BucketSizeInPages::DEFAULT,
         Rc::clone(&mem_rc),
     )
@@ -192,8 +192,8 @@ fn index_scan_without_index_in_stats_falls_back_to_node_scan_but_results_match()
 
 #[test]
 fn index_intersection_planner_and_executor_agree_on_pma_overlay() {
-    let mem_rc = Rc::new(RefCell::new(RewriteVecMemory::default()));
-    let mut facade = RewriteGraphPma::bootstrap_empty_with_bucket_size_using_memory_rc(
+    let mem_rc = Rc::new(RefCell::new(GraphPmaVecMemory::default()));
+    let mut facade = GraphPma::bootstrap_empty_with_bucket_size_using_memory_rc(
         BucketSizeInPages::DEFAULT,
         Rc::clone(&mem_rc),
     )
@@ -248,8 +248,8 @@ fn index_intersection_planner_and_executor_agree_on_pma_overlay() {
 
 #[test]
 fn indexed_edge_expand_planner_path_runs_on_pma_overlay() {
-    let mem_rc = Rc::new(RefCell::new(RewriteVecMemory::default()));
-    let mut facade = RewriteGraphPma::bootstrap_empty_with_bucket_size_using_memory_rc(
+    let mem_rc = Rc::new(RefCell::new(GraphPmaVecMemory::default()));
+    let mut facade = GraphPma::bootstrap_empty_with_bucket_size_using_memory_rc(
         BucketSizeInPages::DEFAULT,
         Rc::clone(&mem_rc),
     )
@@ -302,8 +302,8 @@ fn indexed_edge_expand_planner_path_runs_on_pma_overlay() {
 
 #[test]
 fn indexed_edge_expand_matches_scan_filter_semantics() {
-    let mem_rc = Rc::new(RefCell::new(RewriteVecMemory::default()));
-    let mut facade = RewriteGraphPma::bootstrap_empty_with_bucket_size_using_memory_rc(
+    let mem_rc = Rc::new(RefCell::new(GraphPmaVecMemory::default()));
+    let mut facade = GraphPma::bootstrap_empty_with_bucket_size_using_memory_rc(
         BucketSizeInPages::DEFAULT,
         Rc::clone(&mem_rc),
     )
@@ -347,8 +347,8 @@ fn indexed_edge_expand_matches_scan_filter_semantics() {
 
 #[test]
 fn leading_edge_index_scan_planner_path_runs_on_pma_overlay() {
-    let mem_rc = Rc::new(RefCell::new(RewriteVecMemory::default()));
-    let mut facade = RewriteGraphPma::bootstrap_empty_with_bucket_size_using_memory_rc(
+    let mem_rc = Rc::new(RefCell::new(GraphPmaVecMemory::default()));
+    let mut facade = GraphPma::bootstrap_empty_with_bucket_size_using_memory_rc(
         BucketSizeInPages::DEFAULT,
         Rc::clone(&mem_rc),
     )
@@ -433,8 +433,8 @@ fn leading_edge_index_scan_planner_path_runs_on_pma_overlay() {
 
 #[test]
 fn edge_index_scan_manual_plan_runs_on_pma_overlay() {
-    let mem_rc = Rc::new(RefCell::new(RewriteVecMemory::default()));
-    let mut facade = RewriteGraphPma::bootstrap_empty_with_bucket_size_using_memory_rc(
+    let mem_rc = Rc::new(RefCell::new(GraphPmaVecMemory::default()));
+    let mut facade = GraphPma::bootstrap_empty_with_bucket_size_using_memory_rc(
         BucketSizeInPages::DEFAULT,
         Rc::clone(&mem_rc),
     )

@@ -2,17 +2,17 @@ use std::cell::{Ref, RefMut};
 
 use super::*;
 
-impl<T> RewriteGraphStore for &mut T
+impl<T> GraphPmaStore for &mut T
 where
-    T: RewriteGraphStore + ?Sized,
+    T: GraphPmaStore + ?Sized,
 {
     type Mem = T::Mem;
 
-    fn last_write_event(&self) -> Option<&RewriteFacadeWriteEvent> {
+    fn last_write_event(&self) -> Option<&GraphPmaFacadeWriteEvent> {
         (**self).last_write_event()
     }
 
-    fn write_history(&self) -> &[RewriteFacadeWriteEvent] {
+    fn write_history(&self) -> &[GraphPmaFacadeWriteEvent] {
         (**self).write_history()
     }
 
@@ -155,7 +155,7 @@ where
         node_id: NodeId,
         property: &str,
         value: &Value,
-    ) -> Result<RewritePropertyIndexMutationSummary, PropertyStoreError> {
+    ) -> Result<GraphPmaPropertyIndexMutationSummary, PropertyStoreError> {
         (**self).set_node_property_value_with_summary(node_id, property, value)
     }
 
@@ -163,7 +163,7 @@ where
         &mut self,
         node_id: NodeId,
         property: &str,
-    ) -> Result<RewritePropertyIndexMutationSummary, PropertyStoreError> {
+    ) -> Result<GraphPmaPropertyIndexMutationSummary, PropertyStoreError> {
         (**self).remove_node_property_value_with_summary(node_id, property)
     }
 
@@ -172,7 +172,7 @@ where
         edge_id: EdgeId,
         property: &str,
         value: &Value,
-    ) -> Result<RewritePropertyIndexMutationSummary, PropertyStoreError> {
+    ) -> Result<GraphPmaPropertyIndexMutationSummary, PropertyStoreError> {
         (**self).set_edge_property_value_with_summary(edge_id, property, value)
     }
 
@@ -180,7 +180,7 @@ where
         &mut self,
         edge_id: EdgeId,
         property: &str,
-    ) -> Result<RewritePropertyIndexMutationSummary, PropertyStoreError> {
+    ) -> Result<GraphPmaPropertyIndexMutationSummary, PropertyStoreError> {
         (**self).remove_edge_property_value_with_summary(edge_id, property)
     }
 
@@ -190,7 +190,7 @@ where
         property: &str,
         value: &Value,
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<RewritePropertyMutationWriteSummary> {
+    ) -> GraphPmaResult<GraphPmaPropertyMutationWriteSummary> {
         (**self).set_node_property_value_and_write(node_id, property, value, memory)
     }
 
@@ -199,7 +199,7 @@ where
         node_id: NodeId,
         property: &str,
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<RewritePropertyMutationWriteSummary> {
+    ) -> GraphPmaResult<GraphPmaPropertyMutationWriteSummary> {
         (**self).remove_node_property_value_and_write(node_id, property, memory)
     }
 
@@ -209,7 +209,7 @@ where
         property: &str,
         value: &Value,
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<RewritePropertyMutationWriteSummary> {
+    ) -> GraphPmaResult<GraphPmaPropertyMutationWriteSummary> {
         (**self).set_edge_property_value_and_write(edge_id, property, value, memory)
     }
 
@@ -218,7 +218,7 @@ where
         edge_id: EdgeId,
         property: &str,
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<RewritePropertyMutationWriteSummary> {
+    ) -> GraphPmaResult<GraphPmaPropertyMutationWriteSummary> {
         (**self).remove_edge_property_value_and_write(edge_id, property, memory)
     }
 
@@ -226,7 +226,7 @@ where
         &mut self,
         forward_vertex_refs: &[VertexRef],
         forward_base_edge_ids_by_ordinal: &[Vec<EdgeId>],
-    ) -> RewriteGraphPmaResult<()> {
+    ) -> GraphPmaResult<()> {
         (**self).try_rebuild_logical_locator_sidecar(
             forward_vertex_refs,
             forward_base_edge_ids_by_ordinal,
@@ -236,25 +236,25 @@ where
     fn try_write_all_to_stable_memory(
         &mut self,
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<()> {
+    ) -> GraphPmaResult<()> {
         (**self).try_write_all_to_stable_memory(memory)
     }
 
     fn try_refresh_and_write_dirty_to_stable_memory(
         &mut self,
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<(Vec<usize>, Vec<usize>)> {
+    ) -> GraphPmaResult<(Vec<usize>, Vec<usize>)> {
         (**self).try_refresh_and_write_dirty_to_stable_memory(memory)
     }
 
-    fn append_empty_vertex_pair(&mut self) -> RewriteGraphPmaResult<(usize, usize)> {
+    fn append_empty_vertex_pair(&mut self) -> GraphPmaResult<(usize, usize)> {
         (**self).append_empty_vertex_pair()
     }
 
     fn append_empty_vertex_pairs(
         &mut self,
         count: usize,
-    ) -> RewriteGraphPmaResult<Vec<(usize, usize)>> {
+    ) -> GraphPmaResult<Vec<(usize, usize)>> {
         (**self).append_empty_vertex_pairs(count)
     }
 
@@ -263,7 +263,7 @@ where
         vertex_refs: &[VertexRef],
         initial_edges: &[(EdgeId, usize, usize, LabelId)],
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<RewriteBootstrapGraphWriteSummary> {
+    ) -> GraphPmaResult<GraphPmaBootstrapGraphWriteSummary> {
         (**self).bootstrap_vertex_refs_and_edges_and_write(vertex_refs, initial_edges, memory)
     }
 
@@ -279,7 +279,7 @@ where
         &mut self,
         spec: EdgeReplaceSpec,
         memory: &impl Memory,
-    ) -> Result<RewriteReplaceEdgeSummary, WritebackError> {
+    ) -> Result<GraphPmaReplaceEdgeSummary, WritebackError> {
         (**self).replace_edge_pair_and_write(spec, memory)
     }
 
@@ -287,19 +287,19 @@ where
         &mut self,
         spec: EdgeTombstoneSpec,
         memory: &impl Memory,
-    ) -> Result<RewriteGraphMutationWriteSummary<GraphMutationPath>, WritebackError> {
+    ) -> Result<GraphPmaMutationWriteSummary<GraphMutationPath>, WritebackError> {
         (**self).tombstone_edge_pair_and_write(spec, memory)
     }
 }
 
-impl<M: Memory> RewriteGraphStore for RewriteGraphPma<M> {
+impl<M: Memory> GraphPmaStore for GraphPma<M> {
     type Mem = M;
 
-    fn last_write_event(&self) -> Option<&RewriteFacadeWriteEvent> {
+    fn last_write_event(&self) -> Option<&GraphPmaFacadeWriteEvent> {
         Self::last_write_event(self)
     }
 
-    fn write_history(&self) -> &[RewriteFacadeWriteEvent] {
+    fn write_history(&self) -> &[GraphPmaFacadeWriteEvent] {
         Self::write_history(self)
     }
 
@@ -442,7 +442,7 @@ impl<M: Memory> RewriteGraphStore for RewriteGraphPma<M> {
         node_id: NodeId,
         property: &str,
         value: &Value,
-    ) -> Result<RewritePropertyIndexMutationSummary, PropertyStoreError> {
+    ) -> Result<GraphPmaPropertyIndexMutationSummary, PropertyStoreError> {
         Self::set_node_property_value_with_summary(self, node_id, property, value)
     }
 
@@ -450,7 +450,7 @@ impl<M: Memory> RewriteGraphStore for RewriteGraphPma<M> {
         &mut self,
         node_id: NodeId,
         property: &str,
-    ) -> Result<RewritePropertyIndexMutationSummary, PropertyStoreError> {
+    ) -> Result<GraphPmaPropertyIndexMutationSummary, PropertyStoreError> {
         Self::remove_node_property_value_with_summary(self, node_id, property)
     }
 
@@ -459,7 +459,7 @@ impl<M: Memory> RewriteGraphStore for RewriteGraphPma<M> {
         edge_id: EdgeId,
         property: &str,
         value: &Value,
-    ) -> Result<RewritePropertyIndexMutationSummary, PropertyStoreError> {
+    ) -> Result<GraphPmaPropertyIndexMutationSummary, PropertyStoreError> {
         Self::set_edge_property_value_with_summary(self, edge_id, property, value)
     }
 
@@ -467,7 +467,7 @@ impl<M: Memory> RewriteGraphStore for RewriteGraphPma<M> {
         &mut self,
         edge_id: EdgeId,
         property: &str,
-    ) -> Result<RewritePropertyIndexMutationSummary, PropertyStoreError> {
+    ) -> Result<GraphPmaPropertyIndexMutationSummary, PropertyStoreError> {
         Self::remove_edge_property_value_with_summary(self, edge_id, property)
     }
 
@@ -477,7 +477,7 @@ impl<M: Memory> RewriteGraphStore for RewriteGraphPma<M> {
         property: &str,
         value: &Value,
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<RewritePropertyMutationWriteSummary> {
+    ) -> GraphPmaResult<GraphPmaPropertyMutationWriteSummary> {
         Self::set_node_property_value_and_write(self, node_id, property, value, memory)
     }
 
@@ -486,7 +486,7 @@ impl<M: Memory> RewriteGraphStore for RewriteGraphPma<M> {
         node_id: NodeId,
         property: &str,
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<RewritePropertyMutationWriteSummary> {
+    ) -> GraphPmaResult<GraphPmaPropertyMutationWriteSummary> {
         Self::remove_node_property_value_and_write(self, node_id, property, memory)
     }
 
@@ -496,7 +496,7 @@ impl<M: Memory> RewriteGraphStore for RewriteGraphPma<M> {
         property: &str,
         value: &Value,
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<RewritePropertyMutationWriteSummary> {
+    ) -> GraphPmaResult<GraphPmaPropertyMutationWriteSummary> {
         Self::set_edge_property_value_and_write(self, edge_id, property, value, memory)
     }
 
@@ -505,7 +505,7 @@ impl<M: Memory> RewriteGraphStore for RewriteGraphPma<M> {
         edge_id: EdgeId,
         property: &str,
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<RewritePropertyMutationWriteSummary> {
+    ) -> GraphPmaResult<GraphPmaPropertyMutationWriteSummary> {
         Self::remove_edge_property_value_and_write(self, edge_id, property, memory)
     }
 
@@ -513,7 +513,7 @@ impl<M: Memory> RewriteGraphStore for RewriteGraphPma<M> {
         &mut self,
         forward_vertex_refs: &[VertexRef],
         forward_base_edge_ids_by_ordinal: &[Vec<EdgeId>],
-    ) -> RewriteGraphPmaResult<()> {
+    ) -> GraphPmaResult<()> {
         Self::try_rebuild_logical_locator_sidecar(
             self,
             forward_vertex_refs,
@@ -524,25 +524,25 @@ impl<M: Memory> RewriteGraphStore for RewriteGraphPma<M> {
     fn try_write_all_to_stable_memory(
         &mut self,
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<()> {
+    ) -> GraphPmaResult<()> {
         Self::try_write_all_to_stable_memory(self, memory)
     }
 
     fn try_refresh_and_write_dirty_to_stable_memory(
         &mut self,
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<(Vec<usize>, Vec<usize>)> {
+    ) -> GraphPmaResult<(Vec<usize>, Vec<usize>)> {
         Self::try_refresh_and_write_dirty_to_stable_memory(self, memory)
     }
 
-    fn append_empty_vertex_pair(&mut self) -> RewriteGraphPmaResult<(usize, usize)> {
+    fn append_empty_vertex_pair(&mut self) -> GraphPmaResult<(usize, usize)> {
         Self::append_empty_vertex_pair(self)
     }
 
     fn append_empty_vertex_pairs(
         &mut self,
         count: usize,
-    ) -> RewriteGraphPmaResult<Vec<(usize, usize)>> {
+    ) -> GraphPmaResult<Vec<(usize, usize)>> {
         Self::append_empty_vertex_pairs(self, count)
     }
 
@@ -551,7 +551,7 @@ impl<M: Memory> RewriteGraphStore for RewriteGraphPma<M> {
         vertex_refs: &[VertexRef],
         initial_edges: &[(EdgeId, usize, usize, LabelId)],
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<RewriteBootstrapGraphWriteSummary> {
+    ) -> GraphPmaResult<GraphPmaBootstrapGraphWriteSummary> {
         Self::bootstrap_vertex_refs_and_edges_and_write(self, vertex_refs, initial_edges, memory)
     }
 
@@ -567,7 +567,7 @@ impl<M: Memory> RewriteGraphStore for RewriteGraphPma<M> {
         &mut self,
         spec: EdgeReplaceSpec,
         memory: &impl Memory,
-    ) -> Result<RewriteReplaceEdgeSummary, WritebackError> {
+    ) -> Result<GraphPmaReplaceEdgeSummary, WritebackError> {
         Self::replace_edge_pair_and_write(self, spec, memory)
     }
 
@@ -575,7 +575,7 @@ impl<M: Memory> RewriteGraphStore for RewriteGraphPma<M> {
         &mut self,
         spec: EdgeTombstoneSpec,
         memory: &impl Memory,
-    ) -> Result<RewriteGraphMutationWriteSummary<GraphMutationPath>, WritebackError> {
+    ) -> Result<GraphPmaMutationWriteSummary<GraphMutationPath>, WritebackError> {
         Self::tombstone_edge_pair_and_write(self, spec, memory)
     }
 }

@@ -1,7 +1,7 @@
-//! Legacy names for property-index mutation telemetry (formerly tied to [`PropertyIndexNodeStore`]).
+//! Property-index mutation telemetry types for diagnostics and integration tests.
 //!
 //! The persisted index is a single [`StableBTreeMap`](ic_stable_structures::StableBTreeMap); these
-//! kinds remain for diagnostics and integration tests.
+//! kinds describe logical mutation steps on the in-memory node-store view.
 
 use super::PropertyIndexNodeId;
 

@@ -1172,10 +1172,11 @@ Until a better name is chosen in code, the spec assumes:
 - `ReverseSurface`: destination-major adjacency
 - `AdjacencyArena`: stable-memory allocator backing both surfaces
 
-## Current Bridge
+## Current implementation
 
-The legacy compatibility bridge has been removed. The `graph-pma` crate now
-builds against the rewrite implementation only.
+`graph-pma` ships a single adjacency and persistence stack (`GraphPma` facade
+over the low-level `GraphRuntime` and region manager). Earlier prototype
+bridges and alternate on-disk formats are not supported.
 
 ## Incremental surface and property-index persistence
 

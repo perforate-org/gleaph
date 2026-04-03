@@ -1,8 +1,8 @@
-use crate::integration::RewriteKernelOverlayGraph;
+use crate::integration::GraphPmaKernelOverlayGraph;
 
 use super::*;
 
-impl<M: Memory> RewriteGraphPma<M> {
+impl<M: Memory> GraphPma<M> {
     fn persist_maintenance_queue(&mut self, memory: &impl Memory) -> Result<u64, WritebackError> {
         let persisted_bytes = self.write_maintenance_queue_to_stable_memory(memory)?;
         self.production_metrics.record_maintenance_queue_write(
@@ -31,7 +31,7 @@ impl<M: Memory> RewriteGraphPma<M> {
     pub fn write_all_to_stable_memory(
         &mut self,
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<()> {
+    ) -> GraphPmaResult<()> {
         let runtimes =
             HydratedSurfaceRuntimes::new(self.graph.forward.clone(), self.graph.reverse.clone());
         write_surface_runtimes_to_stable_memory(
@@ -69,14 +69,14 @@ impl<M: Memory> RewriteGraphPma<M> {
     pub fn try_write_all_to_stable_memory(
         &mut self,
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<()> {
+    ) -> GraphPmaResult<()> {
         self.write_all_to_stable_memory(memory)
     }
 
     pub fn refresh_and_write_dirty_to_stable_memory(
         &mut self,
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<(Vec<usize>, Vec<usize>)> {
+    ) -> GraphPmaResult<(Vec<usize>, Vec<usize>)> {
         let property_store_was_dirty =
             self.node_property_store_dirty || self.edge_property_store_dirty;
         let refreshed = {
@@ -136,40 +136,40 @@ impl<M: Memory> RewriteGraphPma<M> {
     pub fn try_refresh_and_write_dirty_to_stable_memory(
         &mut self,
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<(Vec<usize>, Vec<usize>)> {
+    ) -> GraphPmaResult<(Vec<usize>, Vec<usize>)> {
         self.refresh_and_write_dirty_to_stable_memory(memory)
     }
 
-    pub fn append_empty_vertex_pair(&mut self) -> RewriteGraphPmaResult<(usize, usize)> {
+    pub fn append_empty_vertex_pair(&mut self) -> GraphPmaResult<(usize, usize)> {
         self.graph
             .append_empty_vertex_pair()
-            .ok_or(RewriteGraphPmaError::InvalidLocatorInputs)
+            .ok_or(GraphPmaError::InvalidLocatorInputs)
     }
 
     pub fn append_empty_vertex_pairs(
         &mut self,
         count: usize,
-    ) -> RewriteGraphPmaResult<Vec<(usize, usize)>> {
+    ) -> GraphPmaResult<Vec<(usize, usize)>> {
         self.graph
             .append_empty_vertex_pairs(count)
-            .ok_or(RewriteGraphPmaError::InvalidLocatorInputs)
+            .ok_or(GraphPmaError::InvalidLocatorInputs)
     }
 
     pub fn append_empty_vertex_pair_and_write(
         &mut self,
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<RewriteAppendVertexWriteSummary> {
+    ) -> GraphPmaResult<GraphPmaAppendVertexWriteSummary> {
         let ordinals = self.append_empty_vertex_pair()?;
         let (refreshed_forward_vertices, refreshed_reverse_vertices) =
             self.try_refresh_and_write_dirty_to_stable_memory(memory)?;
-        let summary = RewriteAppendVertexWriteSummary {
+        let summary = GraphPmaAppendVertexWriteSummary {
             ordinals,
-            refreshed: RewriteRefreshedVertices::new(
+            refreshed: GraphPmaRefreshedVertices::new(
                 refreshed_forward_vertices,
                 refreshed_reverse_vertices,
             ),
         };
-        self.record_write_event(RewriteFacadeWriteEvent::AppendVertex(summary.clone()));
+        self.record_write_event(GraphPmaFacadeWriteEvent::AppendVertex(summary.clone()));
         Ok(summary)
     }
 
@@ -177,18 +177,18 @@ impl<M: Memory> RewriteGraphPma<M> {
         &mut self,
         count: usize,
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<RewriteAppendVerticesWriteSummary> {
+    ) -> GraphPmaResult<GraphPmaAppendVerticesWriteSummary> {
         let ordinals = self.append_empty_vertex_pairs(count)?;
         let (refreshed_forward_vertices, refreshed_reverse_vertices) =
             self.try_refresh_and_write_dirty_to_stable_memory(memory)?;
-        let summary = RewriteAppendVerticesWriteSummary {
+        let summary = GraphPmaAppendVerticesWriteSummary {
             ordinals,
-            refreshed: RewriteRefreshedVertices::new(
+            refreshed: GraphPmaRefreshedVertices::new(
                 refreshed_forward_vertices,
                 refreshed_reverse_vertices,
             ),
         };
-        self.record_write_event(RewriteFacadeWriteEvent::AppendVertices(summary.clone()));
+        self.record_write_event(GraphPmaFacadeWriteEvent::AppendVertices(summary.clone()));
         Ok(summary)
     }
 
@@ -199,7 +199,7 @@ impl<M: Memory> RewriteGraphPma<M> {
         dst_vertex: NodeId,
         label_id: LabelId,
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<RewriteBootstrapEdgeWriteSummary> {
+    ) -> GraphPmaResult<GraphPmaBootstrapEdgeWriteSummary> {
         let (src_ordinal, _) = self.append_empty_vertex_pair()?;
         let (dst_ordinal, _) = self.append_empty_vertex_pair()?;
         let insert = self
@@ -212,18 +212,18 @@ impl<M: Memory> RewriteGraphPma<M> {
                 dst_ordinal,
                 label_id,
             )
-            .ok_or(RewriteGraphPmaError::InvalidLocatorInputs)?;
+            .ok_or(GraphPmaError::InvalidLocatorInputs)?;
         let (refreshed_forward_vertices, refreshed_reverse_vertices) =
             self.try_refresh_and_write_dirty_to_stable_memory(memory)?;
-        let summary = RewriteBootstrapEdgeWriteSummary {
+        let summary = GraphPmaBootstrapEdgeWriteSummary {
             ordinals: (src_ordinal, dst_ordinal),
             insert,
-            refreshed: RewriteRefreshedVertices::new(
+            refreshed: GraphPmaRefreshedVertices::new(
                 refreshed_forward_vertices,
                 refreshed_reverse_vertices,
             ),
         };
-        self.record_write_event(RewriteFacadeWriteEvent::BootstrapEdge(summary.clone()));
+        self.record_write_event(GraphPmaFacadeWriteEvent::BootstrapEdge(summary.clone()));
         Ok(summary)
     }
 
@@ -232,7 +232,7 @@ impl<M: Memory> RewriteGraphPma<M> {
         vertex_refs: &[VertexRef],
         initial_edges: &[(EdgeId, usize, usize, LabelId)],
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<RewriteBootstrapGraphWriteSummary> {
+    ) -> GraphPmaResult<GraphPmaBootstrapGraphWriteSummary> {
         if initial_edges.is_empty() {
             let ordinals = self.append_empty_vertex_pairs(vertex_refs.len())?;
             let vertex_ordinals = vertex_refs
@@ -240,7 +240,7 @@ impl<M: Memory> RewriteGraphPma<M> {
                 .copied()
                 .zip(ordinals.iter().copied())
                 .map(|(vertex_ref, (forward_ordinal, reverse_ordinal))| {
-                    RewriteVertexOrdinalMapping {
+                    GraphPmaVertexOrdinalMapping {
                         vertex_ref,
                         forward_ordinal,
                         reverse_ordinal,
@@ -249,26 +249,26 @@ impl<M: Memory> RewriteGraphPma<M> {
                 .collect();
             let (refreshed_forward_vertices, refreshed_reverse_vertices) =
                 self.try_refresh_and_write_dirty_to_stable_memory(memory)?;
-            let summary = RewriteBootstrapGraphWriteSummary {
+            let summary = GraphPmaBootstrapGraphWriteSummary {
                 vertex_ordinals,
                 inserts: Vec::new(),
                 locators: Vec::new(),
-                refreshed: RewriteRefreshedVertices::new(
+                refreshed: GraphPmaRefreshedVertices::new(
                     refreshed_forward_vertices,
                     refreshed_reverse_vertices,
                 ),
             };
-            self.record_write_event(RewriteFacadeWriteEvent::BootstrapGraph(summary.clone()));
+            self.record_write_event(GraphPmaFacadeWriteEvent::BootstrapGraph(summary.clone()));
             return Ok(summary);
         }
 
         let ordinals = self.append_empty_vertex_pairs(vertex_refs.len())?;
-        let vertex_ordinals: Vec<RewriteVertexOrdinalMapping> = vertex_refs
+        let vertex_ordinals: Vec<GraphPmaVertexOrdinalMapping> = vertex_refs
             .iter()
             .copied()
             .zip(ordinals.iter().copied())
             .map(
-                |(vertex_ref, (forward_ordinal, reverse_ordinal))| RewriteVertexOrdinalMapping {
+                |(vertex_ref, (forward_ordinal, reverse_ordinal))| GraphPmaVertexOrdinalMapping {
                     vertex_ref,
                     forward_ordinal,
                     reverse_ordinal,
@@ -280,10 +280,10 @@ impl<M: Memory> RewriteGraphPma<M> {
         let mut locators = Vec::with_capacity(initial_edges.len());
         for (edge_id, src_index, dst_index, label_id) in initial_edges.iter().copied() {
             let Some(src_mapping) = vertex_ordinals.get(src_index).copied() else {
-                return Err(RewriteGraphPmaError::InvalidLocatorInputs);
+                return Err(GraphPmaError::InvalidLocatorInputs);
             };
             let Some(dst_mapping) = vertex_ordinals.get(dst_index).copied() else {
-                return Err(RewriteGraphPmaError::InvalidLocatorInputs);
+                return Err(GraphPmaError::InvalidLocatorInputs);
             };
             let insert = self
                 .graph
@@ -295,16 +295,16 @@ impl<M: Memory> RewriteGraphPma<M> {
                     dst_mapping.reverse_ordinal,
                     label_id,
                 )
-                .ok_or(RewriteGraphPmaError::InvalidLocatorInputs)?;
+                .ok_or(GraphPmaError::InvalidLocatorInputs)?;
             let GraphInsertResult::Inserted {
                 locators: inserted_locators,
                 ..
             } = insert
             else {
-                return Err(RewriteGraphPmaError::InvalidLocatorInputs);
+                return Err(GraphPmaError::InvalidLocatorInputs);
             };
             inserts.push(insert);
-            locators.push(RewriteEdgeLogicalLocatorMapping {
+            locators.push(GraphPmaEdgeLogicalLocatorMapping {
                 edge_id,
                 canonical: inserted_locators.forward,
                 forward: inserted_locators.forward,
@@ -314,16 +314,16 @@ impl<M: Memory> RewriteGraphPma<M> {
 
         let (refreshed_forward_vertices, refreshed_reverse_vertices) =
             self.try_refresh_and_write_dirty_to_stable_memory(memory)?;
-        let summary = RewriteBootstrapGraphWriteSummary {
+        let summary = GraphPmaBootstrapGraphWriteSummary {
             vertex_ordinals,
             inserts,
             locators,
-            refreshed: RewriteRefreshedVertices::new(
+            refreshed: GraphPmaRefreshedVertices::new(
                 refreshed_forward_vertices,
                 refreshed_reverse_vertices,
             ),
         };
-        self.record_write_event(RewriteFacadeWriteEvent::BootstrapGraph(summary.clone()));
+        self.record_write_event(GraphPmaFacadeWriteEvent::BootstrapGraph(summary.clone()));
         Ok(summary)
     }
 
@@ -400,7 +400,7 @@ impl<M: Memory> RewriteGraphPma<M> {
                 &mut self.manager.borrow_mut(),
                 memory,
             )?;
-        self.record_write_event(RewriteFacadeWriteEvent::EnsureCapacity(summary.clone()));
+        self.record_write_event(GraphPmaFacadeWriteEvent::EnsureCapacity(summary.clone()));
         Ok(summary)
     }
 
@@ -418,7 +418,7 @@ impl<M: Memory> RewriteGraphPma<M> {
                 memory,
                 retired_epoch,
             )?;
-        self.record_write_event(RewriteFacadeWriteEvent::EnsureCapacitySegment(
+        self.record_write_event(GraphPmaFacadeWriteEvent::EnsureCapacitySegment(
             summary.clone(),
         ));
         Ok(summary)
@@ -435,7 +435,7 @@ impl<M: Memory> RewriteGraphPma<M> {
             &mut self.manager.borrow_mut(),
             memory,
         )?;
-        self.record_write_event(RewriteFacadeWriteEvent::InsertEdge(summary.clone()));
+        self.record_write_event(GraphPmaFacadeWriteEvent::InsertEdge(summary.clone()));
         Ok(summary)
     }
 
@@ -454,7 +454,7 @@ impl<M: Memory> RewriteGraphPma<M> {
                 memory,
                 retired_epoch,
             )?;
-        self.record_write_event(RewriteFacadeWriteEvent::InsertEdgeSegment(summary.clone()));
+        self.record_write_event(GraphPmaFacadeWriteEvent::InsertEdgeSegment(summary.clone()));
         Ok(summary)
     }
 
@@ -521,9 +521,9 @@ impl<M: Memory> RewriteGraphPma<M> {
         let queue_len_after = self.graph.rebuild_maintenance_queue(vertex_refs)?;
         let persisted_bytes = Self::maintenance_queue_serialized_len(queue_len_after)
             .expect("queue serialized len should fit");
-        self.record_write_event(RewriteFacadeWriteEvent::MaintenanceQueue(
-            RewriteMaintenanceQueueProjection {
-                action: RewriteMaintenanceQueueAction::Rebuild,
+        self.record_write_event(GraphPmaFacadeWriteEvent::MaintenanceQueue(
+            GraphPmaMaintenanceQueueProjection {
+                action: GraphPmaMaintenanceQueueAction::Rebuild,
                 queue_len_before,
                 queue_len_after,
                 persisted_bytes,
@@ -555,9 +555,9 @@ impl<M: Memory> RewriteGraphPma<M> {
             .rebuild_maintenance_queue_at_epoch(vertex_refs, Some(current_epoch))?;
         let persisted_bytes = Self::maintenance_queue_serialized_len(queue_len_after)
             .expect("queue serialized len should fit");
-        self.record_write_event(RewriteFacadeWriteEvent::MaintenanceQueue(
-            RewriteMaintenanceQueueProjection {
-                action: RewriteMaintenanceQueueAction::Rebuild,
+        self.record_write_event(GraphPmaFacadeWriteEvent::MaintenanceQueue(
+            GraphPmaMaintenanceQueueProjection {
+                action: GraphPmaMaintenanceQueueAction::Rebuild,
                 queue_len_before,
                 queue_len_after,
                 persisted_bytes,
@@ -584,9 +584,9 @@ impl<M: Memory> RewriteGraphPma<M> {
         let queue_len_after = self.graph.refresh_maintenance_queue(vertex_refs)?;
         let persisted_bytes = Self::maintenance_queue_serialized_len(queue_len_after)
             .expect("queue serialized len should fit");
-        self.record_write_event(RewriteFacadeWriteEvent::MaintenanceQueue(
-            RewriteMaintenanceQueueProjection {
-                action: RewriteMaintenanceQueueAction::Refresh,
+        self.record_write_event(GraphPmaFacadeWriteEvent::MaintenanceQueue(
+            GraphPmaMaintenanceQueueProjection {
+                action: GraphPmaMaintenanceQueueAction::Refresh,
                 queue_len_before,
                 queue_len_after,
                 persisted_bytes,
@@ -618,9 +618,9 @@ impl<M: Memory> RewriteGraphPma<M> {
             .refresh_maintenance_queue_at_epoch(vertex_refs, Some(current_epoch))?;
         let persisted_bytes = Self::maintenance_queue_serialized_len(queue_len_after)
             .expect("queue serialized len should fit");
-        self.record_write_event(RewriteFacadeWriteEvent::MaintenanceQueue(
-            RewriteMaintenanceQueueProjection {
-                action: RewriteMaintenanceQueueAction::Refresh,
+        self.record_write_event(GraphPmaFacadeWriteEvent::MaintenanceQueue(
+            GraphPmaMaintenanceQueueProjection {
+                action: GraphPmaMaintenanceQueueAction::Refresh,
                 queue_len_before,
                 queue_len_after,
                 persisted_bytes,
@@ -691,7 +691,7 @@ impl<M: Memory> RewriteGraphPma<M> {
         if let Some(summary) = &mut summary {
             summary.queue_storage_before = queue_storage_before;
             summary.queue_storage_after = queue_storage_after;
-            self.record_write_event(RewriteFacadeWriteEvent::MaintenanceCycle(summary.clone()));
+            self.record_write_event(GraphPmaFacadeWriteEvent::MaintenanceCycle(summary.clone()));
         }
         Ok(summary)
     }
@@ -720,7 +720,7 @@ impl<M: Memory> RewriteGraphPma<M> {
         if let Some(summary) = &mut summary {
             summary.queue_storage_before = queue_storage_before;
             summary.queue_storage_after = queue_storage_after;
-            self.record_write_event(RewriteFacadeWriteEvent::MaintenanceCycle(summary.clone()));
+            self.record_write_event(GraphPmaFacadeWriteEvent::MaintenanceCycle(summary.clone()));
         }
         Ok(summary)
     }
@@ -747,7 +747,7 @@ impl<M: Memory> RewriteGraphPma<M> {
         if let Some(summary) = &mut summary {
             summary.queue_storage_before = queue_storage_before;
             summary.queue_storage_after = queue_storage_after;
-            self.record_write_event(RewriteFacadeWriteEvent::MaintenanceCycle(summary.clone()));
+            self.record_write_event(GraphPmaFacadeWriteEvent::MaintenanceCycle(summary.clone()));
         }
         Ok(summary)
     }
@@ -777,7 +777,7 @@ impl<M: Memory> RewriteGraphPma<M> {
         let queue_storage_after = Some(self.current_maintenance_queue_storage_snapshot(memory)?);
         summary.queue_storage_before = queue_storage_before;
         summary.queue_storage_after = queue_storage_after;
-        self.record_write_event(RewriteFacadeWriteEvent::MaintenanceBatch(summary.clone()));
+        self.record_write_event(GraphPmaFacadeWriteEvent::MaintenanceBatch(summary.clone()));
         Ok(summary)
     }
 
@@ -806,7 +806,7 @@ impl<M: Memory> RewriteGraphPma<M> {
         let queue_storage_after = Some(self.current_maintenance_queue_storage_snapshot(memory)?);
         summary.queue_storage_before = queue_storage_before;
         summary.queue_storage_after = queue_storage_after;
-        self.record_write_event(RewriteFacadeWriteEvent::MaintenanceBatch(summary.clone()));
+        self.record_write_event(GraphPmaFacadeWriteEvent::MaintenanceBatch(summary.clone()));
         self.production_metrics.record_maintenance_queued_batch();
         Ok(summary)
     }
@@ -815,7 +815,7 @@ impl<M: Memory> RewriteGraphPma<M> {
         &mut self,
         spec: EdgeReplaceSpec,
         memory: &impl Memory,
-    ) -> Result<RewriteReplaceEdgeSummary, WritebackError> {
+    ) -> Result<GraphPmaReplaceEdgeSummary, WritebackError> {
         let mutation =
             self.graph
                 .replace_edge_pair(spec)
@@ -825,14 +825,14 @@ impl<M: Memory> RewriteGraphPma<M> {
         let (refreshed_forward_vertices, refreshed_reverse_vertices) = self
             .graph
             .refresh_and_write_dirty_to_stable_memory(&mut self.manager.borrow_mut(), memory)?;
-        let summary = RewriteGraphMutationWriteSummary {
+        let summary = GraphPmaMutationWriteSummary {
             mutation,
-            refreshed: RewriteRefreshedVertices::new(
+            refreshed: GraphPmaRefreshedVertices::new(
                 refreshed_forward_vertices,
                 refreshed_reverse_vertices,
             ),
         };
-        self.record_write_event(RewriteFacadeWriteEvent::ReplaceEdge(summary.clone()));
+        self.record_write_event(GraphPmaFacadeWriteEvent::ReplaceEdge(summary.clone()));
         Ok(summary)
     }
 
@@ -840,7 +840,7 @@ impl<M: Memory> RewriteGraphPma<M> {
         &mut self,
         spec: EdgeTombstoneSpec,
         memory: &impl Memory,
-    ) -> Result<RewriteGraphMutationWriteSummary<GraphMutationPath>, WritebackError> {
+    ) -> Result<GraphPmaMutationWriteSummary<GraphMutationPath>, WritebackError> {
         let mutation =
             self.graph
                 .tombstone_edge_pair(spec)
@@ -850,32 +850,32 @@ impl<M: Memory> RewriteGraphPma<M> {
         let (refreshed_forward_vertices, refreshed_reverse_vertices) = self
             .graph
             .refresh_and_write_dirty_to_stable_memory(&mut self.manager.borrow_mut(), memory)?;
-        let summary = RewriteGraphMutationWriteSummary {
+        let summary = GraphPmaMutationWriteSummary {
             mutation,
-            refreshed: RewriteRefreshedVertices::new(
+            refreshed: GraphPmaRefreshedVertices::new(
                 refreshed_forward_vertices,
                 refreshed_reverse_vertices,
             ),
         };
-        self.record_write_event(RewriteFacadeWriteEvent::DeleteEdge(summary.clone()));
+        self.record_write_event(GraphPmaFacadeWriteEvent::DeleteEdge(summary.clone()));
         Ok(summary)
     }
 
     pub fn begin_batch_mutation<'a>(
         &'a mut self,
         memory: &'a M,
-    ) -> RewriteGraphPmaBatchSession<'a, M> {
-        RewriteGraphPmaBatchSession::new(&mut self.graph, &self.manager, memory)
+    ) -> GraphPmaBatchSession<'a, M> {
+        GraphPmaBatchSession::new(&mut self.graph, &self.manager, memory)
     }
 
-    pub fn bind<'a>(&'a mut self, memory: &'a M) -> RewriteGraphStoreAdapter<'a, Self> {
-        RewriteGraphStoreAdapter::new(self, memory)
+    pub fn bind<'a>(&'a mut self, memory: &'a M) -> GraphPmaStoreAdapter<'a, Self> {
+        GraphPmaStoreAdapter::new(self, memory)
     }
 
     pub fn bind_kernel_overlay<'a>(
         &'a mut self,
         memory: &'a M,
-    ) -> RewriteKernelOverlayGraph<'a, &'a mut Self> {
+    ) -> GraphPmaKernelOverlayGraph<'a, &'a mut Self> {
         self.bind(memory).into_kernel_overlay()
     }
 }

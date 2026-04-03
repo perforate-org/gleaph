@@ -1,4 +1,4 @@
-//! Low-level building blocks for the `graph-pma` rewrite.
+//! Low-level building blocks for `graph-pma`.
 //!
 //! This module tree is intentionally organized from physical layout upward:
 //!

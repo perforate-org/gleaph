@@ -2,83 +2,83 @@ use gleaph_graph_kernel::{EdgeRecord, GraphResult, NodeId, NodeRecord, PropertyM
 
 use super::{
     KernelBootstrapEdgeSpec, KernelBootstrapGraphSpec, KernelBootstrapGraphSummary,
-    KernelBootstrapNodeSpec, RewriteKernelBootstrapBridge, RewriteKernelOverlayGraph,
-    RewriteKernelOverlayObservability, RewriteOverlayEdgeWriteSummary,
-    RewriteOverlayInsertEdgeSummary, RewriteOverlayNodeDeleteSummary, RewriteOverlayWriteEvent,
+    KernelBootstrapNodeSpec, GraphPmaKernelBootstrapBridge, GraphPmaKernelOverlayGraph,
+    GraphPmaKernelOverlayObservability, GraphPmaOverlayEdgeWriteSummary,
+    GraphPmaOverlayInsertEdgeSummary, GraphPmaOverlayNodeDeleteSummary, GraphPmaOverlayWriteEvent,
     bootstrap_kernel_overlay_graph,
 };
 use crate::facade::{
-    RewriteGraphStore, RewriteGraphStoreAdapter, RewritePropertyMutationWriteSummary,
-    RewriteWriteEventProjection,
+    GraphPmaStore, GraphPmaStoreAdapter, GraphPmaPropertyMutationWriteSummary,
+    GraphPmaWriteEventProjection,
 };
 use crate::observability::{format_last_write_event, format_write_event_history};
 
-impl<'a, S: RewriteGraphStore> RewriteKernelOverlayGraph<'a, S> {
-    /// Creates one overlay graph from a rewrite bootstrap bridge.
-    pub fn new(bridge: RewriteKernelBootstrapBridge<'a, S>) -> Self {
+impl<'a, S: GraphPmaStore> GraphPmaKernelOverlayGraph<'a, S> {
+    /// Creates one overlay graph from a bootstrap bridge.
+    pub fn new(bridge: GraphPmaKernelBootstrapBridge<'a, S>) -> Self {
         Self { bridge }
     }
 
     /// Returns the underlying bootstrap bridge.
-    pub fn bridge(&self) -> &RewriteKernelBootstrapBridge<'a, S> {
+    pub fn bridge(&self) -> &GraphPmaKernelBootstrapBridge<'a, S> {
         &self.bridge
     }
 
     /// Returns mutable access to the underlying bootstrap bridge.
-    pub fn bridge_mut(&mut self) -> &mut RewriteKernelBootstrapBridge<'a, S> {
+    pub fn bridge_mut(&mut self) -> &mut GraphPmaKernelBootstrapBridge<'a, S> {
         &mut self.bridge
     }
 
     /// Returns the most recent property-write summary observed through this overlay.
-    pub fn last_property_write_summary(&self) -> Option<&RewritePropertyMutationWriteSummary> {
+    pub fn last_property_write_summary(&self) -> Option<&GraphPmaPropertyMutationWriteSummary> {
         self.bridge.last_property_write_summary()
     }
 
     /// Returns recent property-write summaries in observation order.
-    pub fn property_write_history(&self) -> &[RewritePropertyMutationWriteSummary] {
+    pub fn property_write_history(&self) -> &[GraphPmaPropertyMutationWriteSummary] {
         self.bridge.property_write_history()
     }
 
     /// Returns the most recent insert-edge summary observed through this overlay.
-    pub fn last_insert_edge_summary(&self) -> Option<&RewriteOverlayInsertEdgeSummary> {
+    pub fn last_insert_edge_summary(&self) -> Option<&GraphPmaOverlayInsertEdgeSummary> {
         self.bridge.last_insert_edge_summary()
     }
 
     /// Returns recent insert-edge summaries in observation order.
-    pub fn insert_edge_history(&self) -> &[RewriteOverlayInsertEdgeSummary] {
+    pub fn insert_edge_history(&self) -> &[GraphPmaOverlayInsertEdgeSummary] {
         self.bridge.insert_edge_history()
     }
 
     /// Returns the most recent edge-write summary observed through this overlay.
-    pub fn last_edge_write_summary(&self) -> Option<&RewriteOverlayEdgeWriteSummary> {
+    pub fn last_edge_write_summary(&self) -> Option<&GraphPmaOverlayEdgeWriteSummary> {
         self.bridge.last_edge_write_summary()
     }
 
     /// Returns recent edge-write summaries in observation order.
-    pub fn edge_write_history(&self) -> &[RewriteOverlayEdgeWriteSummary] {
+    pub fn edge_write_history(&self) -> &[GraphPmaOverlayEdgeWriteSummary] {
         self.bridge.edge_write_history()
     }
 
     /// Returns the most recent node-delete summary observed through this overlay.
-    pub fn last_node_delete_summary(&self) -> Option<&RewriteOverlayNodeDeleteSummary> {
+    pub fn last_node_delete_summary(&self) -> Option<&GraphPmaOverlayNodeDeleteSummary> {
         self.bridge.last_node_delete_summary()
     }
 
     /// Returns recent node-delete summaries in observation order.
-    pub fn node_delete_history(&self) -> &[RewriteOverlayNodeDeleteSummary] {
+    pub fn node_delete_history(&self) -> &[GraphPmaOverlayNodeDeleteSummary] {
         self.bridge.node_delete_history()
     }
 
     /// Returns recent overlay write events in observation order.
-    pub fn write_history(&self) -> &[RewriteOverlayWriteEvent] {
+    pub fn write_history(&self) -> &[GraphPmaOverlayWriteEvent] {
         self.bridge.write_history()
     }
 
     /// Returns the recent overlay write history projected onto the shared event vocabulary.
-    pub fn shared_write_history(&self) -> Vec<RewriteWriteEventProjection> {
+    pub fn shared_write_history(&self) -> Vec<GraphPmaWriteEventProjection> {
         self.write_history()
             .iter()
-            .flat_map(RewriteOverlayWriteEvent::shared_projections)
+            .flat_map(GraphPmaOverlayWriteEvent::shared_projections)
             .collect()
     }
 
@@ -92,7 +92,7 @@ impl<'a, S: RewriteGraphStore> RewriteKernelOverlayGraph<'a, S> {
     }
 
     /// Consumes the overlay and returns the underlying bootstrap bridge.
-    pub fn into_bridge(self) -> RewriteKernelBootstrapBridge<'a, S> {
+    pub fn into_bridge(self) -> GraphPmaKernelBootstrapBridge<'a, S> {
         self.bridge
     }
 
@@ -134,50 +134,50 @@ impl<'a, S: RewriteGraphStore> RewriteKernelOverlayGraph<'a, S> {
     }
 }
 
-impl<'a, S: RewriteGraphStore> RewriteKernelOverlayObservability
-    for RewriteKernelOverlayGraph<'a, S>
+impl<'a, S: GraphPmaStore> GraphPmaKernelOverlayObservability
+    for GraphPmaKernelOverlayGraph<'a, S>
 {
-    fn last_property_write_summary(&self) -> Option<&RewritePropertyMutationWriteSummary> {
+    fn last_property_write_summary(&self) -> Option<&GraphPmaPropertyMutationWriteSummary> {
         Self::last_property_write_summary(self)
     }
 
-    fn property_write_history(&self) -> &[RewritePropertyMutationWriteSummary] {
+    fn property_write_history(&self) -> &[GraphPmaPropertyMutationWriteSummary] {
         Self::property_write_history(self)
     }
 
-    fn last_insert_edge_summary(&self) -> Option<&RewriteOverlayInsertEdgeSummary> {
+    fn last_insert_edge_summary(&self) -> Option<&GraphPmaOverlayInsertEdgeSummary> {
         Self::last_insert_edge_summary(self)
     }
 
-    fn insert_edge_history(&self) -> &[RewriteOverlayInsertEdgeSummary] {
+    fn insert_edge_history(&self) -> &[GraphPmaOverlayInsertEdgeSummary] {
         Self::insert_edge_history(self)
     }
 
-    fn last_edge_write_summary(&self) -> Option<&RewriteOverlayEdgeWriteSummary> {
+    fn last_edge_write_summary(&self) -> Option<&GraphPmaOverlayEdgeWriteSummary> {
         Self::last_edge_write_summary(self)
     }
 
-    fn edge_write_history(&self) -> &[RewriteOverlayEdgeWriteSummary] {
+    fn edge_write_history(&self) -> &[GraphPmaOverlayEdgeWriteSummary] {
         Self::edge_write_history(self)
     }
 
-    fn last_node_delete_summary(&self) -> Option<&RewriteOverlayNodeDeleteSummary> {
+    fn last_node_delete_summary(&self) -> Option<&GraphPmaOverlayNodeDeleteSummary> {
         Self::last_node_delete_summary(self)
     }
 
-    fn node_delete_history(&self) -> &[RewriteOverlayNodeDeleteSummary] {
+    fn node_delete_history(&self) -> &[GraphPmaOverlayNodeDeleteSummary] {
         Self::node_delete_history(self)
     }
 
-    fn write_history(&self) -> &[RewriteOverlayWriteEvent] {
+    fn write_history(&self) -> &[GraphPmaOverlayWriteEvent] {
         Self::write_history(self)
     }
 }
 
-impl<'a, S: RewriteGraphStore> RewriteGraphStoreAdapter<'a, S> {
-    /// Converts one bound rewrite adapter into a kernel-facing overlay graph.
-    pub fn into_kernel_overlay(self) -> RewriteKernelOverlayGraph<'a, &'a mut S> {
+impl<'a, S: GraphPmaStore> GraphPmaStoreAdapter<'a, S> {
+    /// Converts one bound store adapter into a kernel-facing overlay graph.
+    pub fn into_kernel_overlay(self) -> GraphPmaKernelOverlayGraph<'a, &'a mut S> {
         let (store, memory) = self.into_parts();
-        RewriteKernelOverlayGraph::new(RewriteKernelBootstrapBridge::new(store, memory))
+        GraphPmaKernelOverlayGraph::new(GraphPmaKernelBootstrapBridge::new(store, memory))
     }
 }

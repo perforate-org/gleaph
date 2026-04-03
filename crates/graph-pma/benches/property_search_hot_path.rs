@@ -7,11 +7,11 @@ use std::hint::black_box;
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use gleaph_gql::Value;
 use gleaph_graph_kernel::NodeId;
-use gleaph_graph_pma::{RewriteGraphPma, RewriteVecMemory};
+use gleaph_graph_pma::{GraphPma, GraphPmaVecMemory};
 
-fn setup_flushed_uid_index(entry_count: usize) -> (RewriteVecMemory, RewriteGraphPma) {
-    let memory = RewriteVecMemory::default();
-    let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+fn setup_flushed_uid_index(entry_count: usize) -> (GraphPmaVecMemory, GraphPma) {
+    let memory = GraphPmaVecMemory::default();
+    let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
     for i in 0..entry_count {
         let id = NodeId::try_from((i + 1) as u64).expect("NodeId");
         facade

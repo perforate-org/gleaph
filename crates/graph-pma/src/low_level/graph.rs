@@ -352,7 +352,6 @@ pub struct GraphMaintenanceCyclePlan {
 pub struct GraphMaintenanceQueueStorageSnapshot {
     pub logical_len_bytes: u64,
     pub queue_len: usize,
-    pub legacy_format: bool,
     pub format_version: Option<u32>,
     pub checksum_valid: Option<bool>,
 }
@@ -827,14 +826,14 @@ impl GraphRuntime {
             .replace_base_storage_with_segmented(reverse_segments, reverse_slot_capacities);
     }
 
-    /// Wraps contiguous base backing into legacy segment `0` segmented storage on both surfaces without changing packed [`EdgeRef`] layout for segment `0`.
-    pub fn migrate_contiguous_base_to_segmented_legacy_zero(&mut self) {
+    /// Wraps contiguous base backing into segment `0` segmented storage on both surfaces without changing packed [`EdgeRef`] layout for segment `0`.
+    pub fn migrate_contiguous_base_to_segment_zero(&mut self) {
         self.forward
             .0
-            .migrate_contiguous_base_to_segmented_legacy_zero();
+            .migrate_contiguous_base_to_segment_zero();
         self.reverse
             .0
-            .migrate_contiguous_base_to_segmented_legacy_zero();
+            .migrate_contiguous_base_to_segment_zero();
     }
 
     /// Starts one batch-mutation session over this graph runtime.
@@ -1490,8 +1489,8 @@ impl GraphRuntime {
     /// [`Self::apply_local_rebalance_delta`], which splices base storage in place on the
     /// segments the graph already uses. Here, forward/reverse windows are retargeted to newly
     /// allocated active segments, the in-memory rewrite runs as **segment-local contiguous
-    /// windows**, then previously backing explicit segments are retired. Legacy segment `0`
-    /// stays a compatibility segment and is never retired.
+    /// windows**, then previously backing explicit segments are retired. Segment `0`
+    /// remains the root segment and is never retired.
     ///
     /// See also: [`SurfaceBaseStorage::rewrite_vertex_window_span`] for the per-surface
     /// in-place window rewrite primitive (used by [`SurfaceRuntime::apply_local_rebalance_delta`]).
@@ -3638,7 +3637,7 @@ mod tests {
     }
 
     #[test]
-    fn graph_runtime_migrate_contiguous_base_to_segmented_legacy_zero_preserves_slots() {
+    fn graph_runtime_migrate_contiguous_base_to_segment_zero_preserves_slots() {
         let mut graph = GraphRuntime::new_with_empty_sidecars(
             ForwardSurfaceRuntime::new(
                 forward_surface(),
@@ -3670,7 +3669,7 @@ mod tests {
                 .copied()
                 .collect();
 
-        graph.migrate_contiguous_base_to_segmented_legacy_zero();
+        graph.migrate_contiguous_base_to_segment_zero();
 
         assert!(graph.forward.0.base_entries.is_segmented());
         assert!(graph.reverse.0.base_entries.is_segmented());
@@ -6153,22 +6152,22 @@ mod tests {
             )
             .expect("register reverse segment b");
 
-        let legacy_forward = graph.forward.choose_base_insert_slot(0);
+        let forward_root = graph.forward.choose_base_insert_slot(0);
         let manager_aware_forward = graph.forward.choose_base_insert_slot_with(0, |segment_id| {
             manager
                 .edge_segment(RegionKind::ForwardEdgeEntries, segment_id)
                 .map(|segment| segment.slot_capacity)
         });
-        let legacy_reverse = graph.reverse.choose_base_insert_slot(0);
+        let reverse_root = graph.reverse.choose_base_insert_slot(0);
         let manager_aware_reverse = graph.reverse.choose_base_insert_slot_with(0, |segment_id| {
             manager
                 .edge_segment(RegionKind::ReverseEdgeEntries, segment_id)
                 .map(|segment| segment.slot_capacity)
         });
 
-        assert!(legacy_forward.is_none());
+        assert!(forward_root.is_none());
         assert!(manager_aware_forward.is_none());
-        assert!(legacy_reverse.is_none());
+        assert!(reverse_root.is_none());
         assert!(manager_aware_reverse.is_none());
     }
 

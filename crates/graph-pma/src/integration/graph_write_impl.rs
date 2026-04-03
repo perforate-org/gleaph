@@ -3,15 +3,15 @@ use gleaph_graph_kernel::{
     EdgeId, EdgeRecord, GraphError, GraphResult, GraphWrite, NodeId, NodeRecord, PropertyMap,
 };
 
-use crate::facade::RewritePropertyMutationWriteSummary;
+use crate::facade::GraphPmaPropertyMutationWriteSummary;
 use crate::low_level::GraphMutationPath;
 
 use super::{
-    RewriteKernelOverlayGraph, RewriteOverlayEdgeMutationKind, RewriteOverlayEdgeWriteSummary,
-    RewriteOverlayNodeDeleteSummary,
+    GraphPmaKernelOverlayGraph, GraphPmaOverlayEdgeMutationKind, GraphPmaOverlayEdgeWriteSummary,
+    GraphPmaOverlayNodeDeleteSummary,
 };
 
-impl<'a, S: super::RewriteGraphStore> RewriteKernelOverlayGraph<'a, S> {
+impl<'a, S: super::GraphPmaStore> GraphPmaKernelOverlayGraph<'a, S> {
     fn delete_edge_without_flush(&mut self, edge_id: EdgeId) -> GraphResult<()> {
         let edge = self
             .bridge
@@ -55,8 +55,8 @@ impl<'a, S: super::RewriteGraphStore> RewriteKernelOverlayGraph<'a, S> {
             )
             .map_err(|err| GraphError::Message(err.to_string()))?;
         self.bridge
-            .record_edge_write_summary(RewriteOverlayEdgeWriteSummary {
-                operation: RewriteOverlayEdgeMutationKind::Delete,
+            .record_edge_write_summary(GraphPmaOverlayEdgeWriteSummary {
+                operation: GraphPmaOverlayEdgeMutationKind::Delete,
                 path: path.mutation,
                 refreshed: path.refreshed,
             });
@@ -88,7 +88,7 @@ impl<'a, S: super::RewriteGraphStore> RewriteKernelOverlayGraph<'a, S> {
     }
 }
 
-impl<'a, S: super::RewriteGraphStore> GraphWrite for RewriteKernelOverlayGraph<'a, S> {
+impl<'a, S: super::GraphPmaStore> GraphWrite for GraphPmaKernelOverlayGraph<'a, S> {
     fn insert_node(
         &mut self,
         labels: &[String],
@@ -122,7 +122,7 @@ impl<'a, S: super::RewriteGraphStore> GraphWrite for RewriteKernelOverlayGraph<'
             .set_node_property_value_with_summary(node_id, property, value)
             .map_err(super::graph_error_from_property_store)?;
         self.bridge.record_property_write_summary(
-            RewritePropertyMutationWriteSummary::pending_from_mutation(mutation),
+            GraphPmaPropertyMutationWriteSummary::pending_from_mutation(mutation),
         );
         let node = self
             .bridge
@@ -143,7 +143,7 @@ impl<'a, S: super::RewriteGraphStore> GraphWrite for RewriteKernelOverlayGraph<'
             .remove_node_property_value_with_summary(node_id, property)
             .map_err(super::graph_error_from_property_store)?;
         self.bridge.record_property_write_summary(
-            RewritePropertyMutationWriteSummary::pending_from_mutation(mutation),
+            GraphPmaPropertyMutationWriteSummary::pending_from_mutation(mutation),
         );
         let node = self
             .bridge
@@ -207,7 +207,7 @@ impl<'a, S: super::RewriteGraphStore> GraphWrite for RewriteKernelOverlayGraph<'
             .set_edge_property_value_with_summary(edge_id, property, value)
             .map_err(super::graph_error_from_property_store)?;
         self.bridge.record_property_write_summary(
-            RewritePropertyMutationWriteSummary::pending_from_mutation(mutation),
+            GraphPmaPropertyMutationWriteSummary::pending_from_mutation(mutation),
         );
         let edge = self
             .bridge
@@ -228,7 +228,7 @@ impl<'a, S: super::RewriteGraphStore> GraphWrite for RewriteKernelOverlayGraph<'
             .remove_edge_property_value_with_summary(edge_id, property)
             .map_err(super::graph_error_from_property_store)?;
         self.bridge.record_property_write_summary(
-            RewritePropertyMutationWriteSummary::pending_from_mutation(mutation),
+            GraphPmaPropertyMutationWriteSummary::pending_from_mutation(mutation),
         );
         let edge = self
             .bridge
@@ -287,8 +287,8 @@ impl<'a, S: super::RewriteGraphStore> GraphWrite for RewriteKernelOverlayGraph<'
             .map_err(|err| GraphError::Message(err.to_string()))
             .map(|summary| {
                 self.bridge
-                    .record_edge_write_summary(RewriteOverlayEdgeWriteSummary {
-                        operation: RewriteOverlayEdgeMutationKind::ReplaceLabel,
+                    .record_edge_write_summary(GraphPmaOverlayEdgeWriteSummary {
+                        operation: GraphPmaOverlayEdgeMutationKind::ReplaceLabel,
                         path: summary.mutation.0,
                         refreshed: summary.refreshed,
                     });
@@ -362,7 +362,7 @@ impl<'a, S: super::RewriteGraphStore> GraphWrite for RewriteKernelOverlayGraph<'
         }
         self.bridge.vertex_ordinal_by_node_id.remove(&node_id);
         self.bridge
-            .record_node_delete_summary(RewriteOverlayNodeDeleteSummary {
+            .record_node_delete_summary(GraphPmaOverlayNodeDeleteSummary {
                 detached: detach,
                 deleted_edge_ids: incident_edge_ids,
                 edge_writes,
@@ -378,7 +378,7 @@ impl<'a, S: super::RewriteGraphStore> GraphWrite for RewriteKernelOverlayGraph<'
             .map_err(|e| GraphError::Message(e.to_string()))?;
         self.bridge
             .patch_pending_property_summaries_after_stable_flush(
-                crate::facade::RewriteRefreshedVertices::new(fwd, rev),
+                crate::facade::GraphPmaRefreshedVertices::new(fwd, rev),
             );
         Ok(())
     }

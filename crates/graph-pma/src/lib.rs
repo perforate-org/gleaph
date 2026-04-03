@@ -1,7 +1,6 @@
 #![doc = include_str!("../../../docs/graph-pma-target-design.md")]
 //!
-//! This crate is the rewrite entrypoint for `graph-pma`.
-//! It exposes only the rewrite implementation.
+//! Primary graph persistence and adjacency implementation for `graph-pma`.
 
 pub(crate) mod bench_profile;
 pub(crate) mod canbench_scope;
@@ -18,7 +17,6 @@ pub(crate) use property_index::PropertyIndexNodeId;
 pub(crate) use property_store::PropertyEntityKind;
 
 // Convenience aliases used by callers and tests.
-pub use facade::{RewriteGraphPma, RewriteGraphPmaError, RewriteGraphPmaResult};
-pub type GraphPma = facade::RewriteGraphPma;
+pub use facade::{GraphPma, GraphPmaError, GraphPmaResult};
 pub type VecMemory = stable::VecMemory;
-pub type RewriteVecMemory = stable::VecMemory;
+pub type GraphPmaVecMemory = stable::VecMemory;

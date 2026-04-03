@@ -2,8 +2,8 @@
 //! single [`PropertyEqualityStableMap`] (`ic_stable_structures::StableBTreeMap`) behind
 //! [`encode_pidx_v3_region`] / [`decode_pidx_v3_region`].
 //!
-//! Byte-ordered keys ([`PropertyIndexKey`]), optional legacy snapshot encoding
-//! ([`PropertyIndexSnapshot`]), and stable-memory region I/O live here.
+//! Byte-ordered keys ([`PropertyIndexKey`]), optional [`PropertyIndexSnapshot`] encoding,
+//! and stable-memory region I/O live here.
 
 mod errors;
 mod pidx_v3_layout;
@@ -20,11 +20,11 @@ pub use types::{
 };
 
 mod ic_pidx_linear_memory;
-mod mutation_legacy;
+mod mutation_telemetry;
 mod property_equality;
 
 pub use ic_pidx_linear_memory::PropertyIndexBtreeSubregionIcMemory;
-pub use mutation_legacy::{PropertyIndexNodeStoreDelta, PropertyIndexNodeStoreMutationKind};
+pub use mutation_telemetry::{PropertyIndexNodeStoreDelta, PropertyIndexNodeStoreMutationKind};
 pub use property_equality::{
     PropertyEqualityInplaceMap, PropertyEqualityStableMap, build_equality_map_from_snapshot,
     clone_property_equality_map, decode_pidx_v3_region, empty_property_equality_inplace_map,

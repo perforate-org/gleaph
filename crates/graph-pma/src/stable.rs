@@ -1,8 +1,8 @@
-//! Local stable-storage traits for the rewrite.
+//! Local stable-storage traits for graph-pma.
 //!
-//! The rewrite keeps its own storage boundaries instead of depending directly on
+//! This crate keeps its own storage boundaries instead of depending directly on
 //! `ic-stable-structures`. The traits in this module intentionally mirror only
-//! the subset of behavior the rewrite currently needs.
+//! the subset of behavior graph-pma currently needs.
 
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -24,7 +24,7 @@ pub trait Storable {
     const BOUND: Bound;
 }
 
-/// Minimal stable-memory abstraction used by the rewrite.
+/// Minimal stable-memory abstraction used by graph-pma.
 pub trait Memory {
     /// Returns current memory size in 64KiB wasm pages.
     fn size(&self) -> u64;

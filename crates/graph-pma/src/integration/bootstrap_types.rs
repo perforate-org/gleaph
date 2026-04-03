@@ -1,8 +1,8 @@
 use gleaph_graph_kernel::{EdgeId, EdgeRecord, LabelId, NodeId, NodeRecord, PropertyMap};
 
 use crate::facade::{
-    RewriteBootstrapGraphProjection, RewriteEdgeLogicalLocatorMapping, RewriteRefreshedVertices,
-    RewriteVertexOrdinalMapping,
+    GraphPmaBootstrapGraphProjection, GraphPmaEdgeLogicalLocatorMapping, GraphPmaRefreshedVertices,
+    GraphPmaVertexOrdinalMapping,
 };
 
 /// Declarative specification for one initial logical edge during bootstrap.
@@ -209,14 +209,14 @@ impl KernelBootstrapGraphSpec {
 pub struct KernelBootstrapGraphSummary {
     pub nodes: Vec<NodeRecord>,
     pub edges: Vec<EdgeRecord>,
-    pub vertex_ordinals: Vec<RewriteVertexOrdinalMapping>,
-    pub locators: Vec<RewriteEdgeLogicalLocatorMapping>,
-    pub refreshed: RewriteRefreshedVertices,
+    pub vertex_ordinals: Vec<GraphPmaVertexOrdinalMapping>,
+    pub locators: Vec<GraphPmaEdgeLogicalLocatorMapping>,
+    pub refreshed: GraphPmaRefreshedVertices,
 }
 
 impl KernelBootstrapGraphSummary {
-    pub fn projection(&self) -> RewriteBootstrapGraphProjection {
-        RewriteBootstrapGraphProjection {
+    pub fn projection(&self) -> GraphPmaBootstrapGraphProjection {
+        GraphPmaBootstrapGraphProjection {
             vertex_ordinals: self.vertex_ordinals.clone(),
             locators: self.locators.clone(),
             refreshed: self.refreshed.clone(),

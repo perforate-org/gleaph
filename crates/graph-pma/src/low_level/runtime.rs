@@ -146,7 +146,7 @@ impl SurfaceBaseBacking {
     fn push(&mut self, entry: EdgeEntry) {
         match self {
             Self::Contiguous(entries) => entries.push(entry),
-            Self::Segmented(backing) => backing.push_contiguous_legacy(entry),
+            Self::Segmented(backing) => backing.push_contiguous_to_segment_zero(entry),
         }
     }
 
@@ -326,7 +326,7 @@ impl SegmentedBaseBacking {
         Some((old_len, new_len))
     }
 
-    fn push_contiguous_legacy(&mut self, entry: EdgeEntry) {
+    fn push_contiguous_to_segment_zero(&mut self, entry: EdgeEntry) {
         self.segments.entry(0).or_default().push(entry);
         self.flat_entries.push(entry);
     }
@@ -358,7 +358,7 @@ struct SurfaceBaseSpan {
 
 /// Segment-capacity metadata for one surface's base adjacency backing.
 ///
-/// Segment `0` is the legacy compatibility segment. Its capacity should track
+/// Segment `0` is the root segment for flattened edge-entry storage. Its capacity should track
 /// the current backing length unless a larger manager-derived logical length is
 /// known.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -380,14 +380,14 @@ impl SurfaceBaseSegmentLayout {
     ///
     /// Hydrated or manager-backed graphs should treat
     /// [`SurfaceBaseStorage::sync_segment_slot_capacity_from_manager`] (and related header sync) as
-    /// authoritative; this helper only patches legacy segment `0` when that metadata is absent.
-    /// Call sites (legacy segment `0` tracks **total** flattened backing length for these paths):
-    /// - [`SurfaceBaseStorage::push`] — contiguous grow **or** segmented legacy append (segment `0` only).
+    /// authoritative; this helper only patches segment `0` when that metadata is absent.
+    /// Call sites (segment `0` tracks **total** flattened backing length for these paths):
+    /// - [`SurfaceBaseStorage::push`] — contiguous grow **or** segmented append on segment `0` only.
     /// - [`SurfaceBaseStorage::rewrite_span`] (crate-private) — after any single-segment splice.
     /// - [`From<Vec<EdgeEntry>>`] for `SurfaceBaseStorage` — **contiguous-only** construction.
     ///
     /// Shrinking or bypassing these calls requires listing invariants first; do not remove ad hoc.
-    fn sync_legacy_slot_capacity_from_storage_len(&mut self, storage_len: usize) {
+    fn sync_segment_zero_slot_capacity_from_storage_len(&mut self, storage_len: usize) {
         self.slot_capacities.insert(0, storage_len as u64);
     }
 
@@ -698,9 +698,9 @@ impl SurfaceBaseStorage {
 
     pub fn push(&mut self, entry: EdgeEntry) {
         self.backing.push(entry);
-        // Contiguous: length is segment 0. Segmented: only `push_contiguous_legacy` is used here.
+        // Contiguous: length is segment 0. Segmented: only `push_contiguous_to_segment_zero` is used here.
         self.segment_layout
-            .sync_legacy_slot_capacity_from_storage_len(self.backing.len());
+            .sync_segment_zero_slot_capacity_from_storage_len(self.backing.len());
     }
 
     pub fn replace(&mut self, index: usize, entry: EdgeEntry) -> Option<EdgeEntry> {
@@ -784,9 +784,9 @@ impl SurfaceBaseStorage {
         replacement: Vec<EdgeEntry>,
     ) -> Option<(usize, usize)> {
         let (old_len, new_len) = self.backing.rewrite_span(start, end, replacement)?;
-        // Same as `push`: no manager header → keep legacy segment 0 capacity aligned with flat len.
+        // Same as `push`: no manager header → keep segment 0 capacity aligned with flat len.
         self.segment_layout
-            .sync_legacy_slot_capacity_from_storage_len(self.backing.len());
+            .sync_segment_zero_slot_capacity_from_storage_len(self.backing.len());
         Some((old_len, new_len))
     }
 
@@ -833,7 +833,7 @@ impl From<Vec<EdgeEntry>> for SurfaceBaseStorage {
     fn from(value: Vec<EdgeEntry>) -> Self {
         let mut segment_layout = SurfaceBaseSegmentLayout::default();
         // Contiguous bootstrap only (`SurfaceBaseBacking::Contiguous`).
-        segment_layout.sync_legacy_slot_capacity_from_storage_len(value.len());
+        segment_layout.sync_segment_zero_slot_capacity_from_storage_len(value.len());
         Self {
             backing: SurfaceBaseBacking::Contiguous(value),
             segment_layout,
@@ -1350,7 +1350,7 @@ impl SurfaceRuntime {
     /// If base adjacency uses contiguous backing, re-home the same live slots into segment `0` segmented storage.
     ///
     /// No-op if already segmented. Valid when every live [`EdgeRef`] uses segment `0`.
-    pub fn migrate_contiguous_base_to_segmented_legacy_zero(&mut self) {
+    pub fn migrate_contiguous_base_to_segment_zero(&mut self) {
         if self.base_entries.is_segmented() {
             return;
         }

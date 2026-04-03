@@ -1,22 +1,22 @@
 use gleaph_graph_kernel::{EdgeId, NodeId};
 
 use crate::facade::{
-    PropertyIndexFallbackReason, RewriteEdgeWriteProjection, RewriteFacadeWriteEvent,
-    RewriteGraphPma, RewriteGraphStore, RewriteGraphStoreAdapter,
-    RewriteMaintenanceQueueItemProjection, RewriteMaintenanceQueueStorageProjection,
-    RewriteRefreshedVertices, RewriteWriteEventProjection,
+    PropertyIndexFallbackReason, GraphPmaEdgeWriteProjection, GraphPmaFacadeWriteEvent,
+    GraphPma, GraphPmaStore, GraphPmaStoreAdapter,
+    GraphPmaMaintenanceQueueItemProjection, GraphPmaMaintenanceQueueStorageProjection,
+    GraphPmaRefreshedVertices, GraphPmaWriteEventProjection,
 };
-use crate::integration::{RewriteKernelOverlayGraph, RewriteOverlayWriteEvent};
+use crate::integration::{GraphPmaKernelOverlayGraph, GraphPmaOverlayWriteEvent};
 use crate::property_index::{PropertyIndexNodeId, PropertyIndexNodeStoreMutationKind};
 
-/// Small shared diagnostics boundary over rewrite observability surfaces.
+/// Shared diagnostics boundary for facade/overlay observability.
 ///
 /// This lets upper layers treat facade-style and overlay-style callers
 /// uniformly when they only need shared write-event projections plus
 /// formatted diagnostics strings.
-pub trait RewriteDiagnosticsView {
+pub trait GraphPmaDiagnosticsView {
     /// Returns the recent write history projected onto the shared event vocabulary.
-    fn shared_write_history(&self) -> Vec<RewriteWriteEventProjection>;
+    fn shared_write_history(&self) -> Vec<GraphPmaWriteEventProjection>;
 
     /// Returns the recent projected write history formatted as diagnostics lines.
     fn formatted_write_history(&self) -> Vec<String> {
@@ -77,11 +77,11 @@ fn format_fallback_reasons(reasons: &[PropertyIndexFallbackReason]) -> String {
         .join("|")
 }
 
-fn format_edge_write_operation(summary: &RewriteEdgeWriteProjection) -> String {
+fn format_edge_write_operation(summary: &GraphPmaEdgeWriteProjection) -> String {
     format!("{:?}@{:?}", summary.operation, summary.path)
 }
 
-fn format_edge_write_operations(summaries: &[RewriteEdgeWriteProjection]) -> String {
+fn format_edge_write_operations(summaries: &[GraphPmaEdgeWriteProjection]) -> String {
     if summaries.is_empty() {
         return "none".to_owned();
     }
@@ -128,7 +128,7 @@ fn format_usize_list(values: &[usize]) -> String {
     format!("[{joined}]")
 }
 
-fn format_refreshed_vertices(summary: &RewriteRefreshedVertices) -> String {
+fn format_refreshed_vertices(summary: &GraphPmaRefreshedVertices) -> String {
     format!(
         "({},{}) fwd={} rev={}",
         summary.forward.len(),
@@ -139,23 +139,23 @@ fn format_refreshed_vertices(summary: &RewriteRefreshedVertices) -> String {
 }
 
 /// Formats one shared write-event projection as a compact diagnostics string.
-pub fn format_write_event_projection(event: &RewriteWriteEventProjection) -> String {
+pub fn format_write_event_projection(event: &GraphPmaWriteEventProjection) -> String {
     match event {
-        RewriteWriteEventProjection::BootstrapVertices(summary) => {
+        GraphPmaWriteEventProjection::BootstrapVertices(summary) => {
             format!(
                 "bootstrap-vertices ordinals={} refreshed={}",
                 summary.ordinals.len(),
                 format_refreshed_vertices(&summary.refreshed)
             )
         }
-        RewriteWriteEventProjection::BootstrapEdge(summary) => {
+        GraphPmaWriteEventProjection::BootstrapEdge(summary) => {
             format!(
                 "bootstrap-edge path={:?} refreshed={}",
                 summary.path,
                 format_refreshed_vertices(&summary.refreshed)
             )
         }
-        RewriteWriteEventProjection::BootstrapGraph(summary) => {
+        GraphPmaWriteEventProjection::BootstrapGraph(summary) => {
             format!(
                 "bootstrap-graph vertices={} edges={} refreshed={}",
                 summary.vertex_ordinals.len(),
@@ -163,7 +163,7 @@ pub fn format_write_event_projection(event: &RewriteWriteEventProjection) -> Str
                 format_refreshed_vertices(&summary.refreshed)
             )
         }
-        RewriteWriteEventProjection::EnsureCapacity(summary) => {
+        GraphPmaWriteEventProjection::EnsureCapacity(summary) => {
             format!(
                 "ensure-capacity rebalanced={} displacement=({}, {}) refreshed={}",
                 summary.rebalanced,
@@ -172,7 +172,7 @@ pub fn format_write_event_projection(event: &RewriteWriteEventProjection) -> Str
                 format_refreshed_vertices(&summary.refreshed)
             )
         }
-        RewriteWriteEventProjection::InsertEdge(summary) => {
+        GraphPmaWriteEventProjection::InsertEdge(summary) => {
             format!(
                 "insert-edge inserted={} path={:?} rebalanced={} displacement=({}, {}) refreshed={}",
                 summary.inserted,
@@ -183,7 +183,7 @@ pub fn format_write_event_projection(event: &RewriteWriteEventProjection) -> Str
                 format_refreshed_vertices(&summary.refreshed)
             )
         }
-        RewriteWriteEventProjection::MaintenanceCycle(summary) => {
+        GraphPmaWriteEventProjection::MaintenanceCycle(summary) => {
             format!(
                 "maintenance-cycle vertex={} ordinal={} window=({}, {}) priority={} recent=({:?}, {}) score=direct:{} window:{} tomb:{} window_total_base_slots:{} displacement=({}, {}) queue=({:?}->{:?}) refreshed={}",
                 NodeId::from(summary.vertex_ref),
@@ -212,7 +212,7 @@ pub fn format_write_event_projection(event: &RewriteWriteEventProjection) -> Str
                 format_refreshed_vertices(&summary.refreshed)
             )
         }
-        RewriteWriteEventProjection::MaintenanceBatch(summary) => {
+        GraphPmaWriteEventProjection::MaintenanceBatch(summary) => {
             format!(
                 "maintenance-batch cycles={} queue=({}, {}) maintenance_queue_storage=({:?}->{:?}) edge_segment_reclaims_fwd={} edge_segment_reclaims_rev={}",
                 summary.cycles,
@@ -232,7 +232,7 @@ pub fn format_write_event_projection(event: &RewriteWriteEventProjection) -> Str
                 summary.swept_reverse_segments
             )
         }
-        RewriteWriteEventProjection::MaintenanceQueue(summary) => {
+        GraphPmaWriteEventProjection::MaintenanceQueue(summary) => {
             format!(
                 "maintenance-queue-update action={:?} queue=({}, {}) bytes={} version={}",
                 summary.action,
@@ -242,7 +242,7 @@ pub fn format_write_event_projection(event: &RewriteWriteEventProjection) -> Str
                 summary.format_version
             )
         }
-        RewriteWriteEventProjection::Property(summary) => {
+        GraphPmaWriteEventProjection::Property(summary) => {
             let fallback_suffix = if summary.fallback_reasons.is_empty() {
                 String::new()
             } else {
@@ -273,7 +273,7 @@ pub fn format_write_event_projection(event: &RewriteWriteEventProjection) -> Str
                 fallback_suffix
             )
         }
-        RewriteWriteEventProjection::Edge(summary) => {
+        GraphPmaWriteEventProjection::Edge(summary) => {
             format!(
                 "edge operation={:?} path={:?} refreshed={}",
                 summary.operation,
@@ -281,7 +281,7 @@ pub fn format_write_event_projection(event: &RewriteWriteEventProjection) -> Str
                 format_refreshed_vertices(&summary.refreshed)
             )
         }
-        RewriteWriteEventProjection::NodeDelete(summary) => {
+        GraphPmaWriteEventProjection::NodeDelete(summary) => {
             format!(
                 "node-delete detached={} edges={} deleted={} edge-writes={}",
                 summary.detached,
@@ -294,16 +294,16 @@ pub fn format_write_event_projection(event: &RewriteWriteEventProjection) -> Str
 }
 
 /// Formats a shared write-history sequence as compact diagnostics lines.
-pub fn format_write_event_history(events: &[RewriteWriteEventProjection]) -> Vec<String> {
+pub fn format_write_event_history(events: &[GraphPmaWriteEventProjection]) -> Vec<String> {
     events.iter().map(format_write_event_projection).collect()
 }
 
 /// Formats the last shared write-event projection as a compact diagnostics string.
-pub fn format_last_write_event(events: &[RewriteWriteEventProjection]) -> Option<String> {
+pub fn format_last_write_event(events: &[GraphPmaWriteEventProjection]) -> Option<String> {
     events.last().map(format_write_event_projection)
 }
 
-pub fn format_maintenance_queue_item(item: &RewriteMaintenanceQueueItemProjection) -> String {
+pub fn format_maintenance_queue_item(item: &GraphPmaMaintenanceQueueItemProjection) -> String {
     format!(
         "maintenance-queue vertex={} anchor={} window=({}, {}) priority={} recent=({:?}, {})",
         NodeId::from(item.vertex_ref),
@@ -316,18 +316,17 @@ pub fn format_maintenance_queue_item(item: &RewriteMaintenanceQueueItemProjectio
     )
 }
 
-pub fn format_maintenance_queue(items: &[RewriteMaintenanceQueueItemProjection]) -> Vec<String> {
+pub fn format_maintenance_queue(items: &[GraphPmaMaintenanceQueueItemProjection]) -> Vec<String> {
     items.iter().map(format_maintenance_queue_item).collect()
 }
 
 pub fn format_maintenance_queue_storage(
-    storage: &RewriteMaintenanceQueueStorageProjection,
+    storage: &GraphPmaMaintenanceQueueStorageProjection,
 ) -> String {
     format!(
-        "maintenance-queue-storage len={} queue={} legacy={} version={:?} checksum=({:?}, {:?}, {:?})",
+        "maintenance-queue-storage len={} queue={} version={:?} checksum=({:?}, {:?}, {:?})",
         storage.logical_len_bytes,
         storage.queue_len,
-        storage.legacy_format,
         storage.format_version,
         storage.stored_checksum,
         storage.computed_checksum,
@@ -336,45 +335,45 @@ pub fn format_maintenance_queue_storage(
 }
 
 /// Formats a shared write-history sequence as one newline-joined diagnostics report.
-pub fn format_write_event_report(events: &[RewriteWriteEventProjection]) -> String {
+pub fn format_write_event_report(events: &[GraphPmaWriteEventProjection]) -> String {
     format_write_event_history(events).join("\n")
 }
 
 /// Projects one façade write event onto the shared event vocabulary.
 pub fn project_facade_write_event(
-    event: &RewriteFacadeWriteEvent,
-) -> Vec<RewriteWriteEventProjection> {
+    event: &GraphPmaFacadeWriteEvent,
+) -> Vec<GraphPmaWriteEventProjection> {
     event.shared_projections()
 }
 
 /// Projects façade write history onto the shared event vocabulary.
 pub fn project_facade_write_history(
-    events: &[RewriteFacadeWriteEvent],
-) -> Vec<RewriteWriteEventProjection> {
+    events: &[GraphPmaFacadeWriteEvent],
+) -> Vec<GraphPmaWriteEventProjection> {
     events.iter().flat_map(project_facade_write_event).collect()
 }
 
 /// Returns the last façade write event projected onto the shared event vocabulary.
 pub fn last_projected_facade_event(
-    events: &[RewriteFacadeWriteEvent],
-) -> Option<RewriteWriteEventProjection> {
+    events: &[GraphPmaFacadeWriteEvent],
+) -> Option<GraphPmaWriteEventProjection> {
     events
         .iter()
         .rev()
-        .find_map(RewriteFacadeWriteEvent::shared_projection)
+        .find_map(GraphPmaFacadeWriteEvent::shared_projection)
 }
 
 /// Projects one overlay write event onto the shared event vocabulary.
 pub fn project_overlay_write_event(
-    event: &RewriteOverlayWriteEvent,
-) -> Vec<RewriteWriteEventProjection> {
+    event: &GraphPmaOverlayWriteEvent,
+) -> Vec<GraphPmaWriteEventProjection> {
     event.shared_projections()
 }
 
 /// Projects overlay write history onto the shared event vocabulary.
 pub fn project_overlay_write_history(
-    events: &[RewriteOverlayWriteEvent],
-) -> Vec<RewriteWriteEventProjection> {
+    events: &[GraphPmaOverlayWriteEvent],
+) -> Vec<GraphPmaWriteEventProjection> {
     events
         .iter()
         .flat_map(project_overlay_write_event)
@@ -383,37 +382,37 @@ pub fn project_overlay_write_history(
 
 /// Returns the last overlay write event projected onto the shared event vocabulary.
 pub fn last_projected_overlay_event(
-    events: &[RewriteOverlayWriteEvent],
-) -> Option<RewriteWriteEventProjection> {
+    events: &[GraphPmaOverlayWriteEvent],
+) -> Option<GraphPmaWriteEventProjection> {
     events
         .iter()
         .rev()
-        .find_map(RewriteOverlayWriteEvent::shared_projection)
+        .find_map(GraphPmaOverlayWriteEvent::shared_projection)
 }
 
-impl RewriteDiagnosticsView for RewriteGraphPma {
-    fn shared_write_history(&self) -> Vec<RewriteWriteEventProjection> {
+impl GraphPmaDiagnosticsView for GraphPma {
+    fn shared_write_history(&self) -> Vec<GraphPmaWriteEventProjection> {
         self.shared_write_history()
     }
 }
 
-impl<T> RewriteDiagnosticsView for &T
+impl<T> GraphPmaDiagnosticsView for &T
 where
-    T: RewriteDiagnosticsView + ?Sized,
+    T: GraphPmaDiagnosticsView + ?Sized,
 {
-    fn shared_write_history(&self) -> Vec<RewriteWriteEventProjection> {
+    fn shared_write_history(&self) -> Vec<GraphPmaWriteEventProjection> {
         (**self).shared_write_history()
     }
 }
 
-impl<'a, S: RewriteGraphStore> RewriteDiagnosticsView for RewriteGraphStoreAdapter<'a, S> {
-    fn shared_write_history(&self) -> Vec<RewriteWriteEventProjection> {
+impl<'a, S: GraphPmaStore> GraphPmaDiagnosticsView for GraphPmaStoreAdapter<'a, S> {
+    fn shared_write_history(&self) -> Vec<GraphPmaWriteEventProjection> {
         self.shared_write_history()
     }
 }
 
-impl<'a, S: RewriteGraphStore> RewriteDiagnosticsView for RewriteKernelOverlayGraph<'a, S> {
-    fn shared_write_history(&self) -> Vec<RewriteWriteEventProjection> {
+impl<'a, S: GraphPmaStore> GraphPmaDiagnosticsView for GraphPmaKernelOverlayGraph<'a, S> {
+    fn shared_write_history(&self) -> Vec<GraphPmaWriteEventProjection> {
         self.shared_write_history()
     }
 }
@@ -421,17 +420,17 @@ impl<'a, S: RewriteGraphStore> RewriteDiagnosticsView for RewriteKernelOverlayGr
 #[cfg(test)]
 mod tests {
     use super::{
-        RewriteDiagnosticsView, format_last_write_event, format_maintenance_queue,
+        GraphPmaDiagnosticsView, format_last_write_event, format_maintenance_queue,
         format_maintenance_queue_storage, format_write_event_history,
         format_write_event_projection, format_write_event_report,
     };
     use crate::facade::{
-        RewriteEdgeWriteOperation, RewriteEdgeWriteProjection, RewriteEnsureCapacityProjection,
-        RewriteGraphPma, RewriteMaintenanceBatchProjection, RewriteMaintenanceCycleProjection,
-        RewriteMaintenanceQueueAction, RewriteMaintenanceQueueItemProjection,
-        RewriteMaintenanceQueueProjection, RewriteMaintenanceQueueStorageProjection,
-        RewriteNodeDeleteProjection, RewritePropertyIndexTouchedSections,
-        RewritePropertyWriteProjection, RewriteRefreshedVertices, RewriteWriteEventProjection,
+        GraphPmaEdgeWriteOperation, GraphPmaEdgeWriteProjection, GraphPmaEnsureCapacityProjection,
+        GraphPma, GraphPmaMaintenanceBatchProjection, GraphPmaMaintenanceCycleProjection,
+        GraphPmaMaintenanceQueueAction, GraphPmaMaintenanceQueueItemProjection,
+        GraphPmaMaintenanceQueueProjection, GraphPmaMaintenanceQueueStorageProjection,
+        GraphPmaNodeDeleteProjection, GraphPmaPropertyIndexTouchedSections,
+        GraphPmaPropertyWriteProjection, GraphPmaRefreshedVertices, GraphPmaWriteEventProjection,
     };
     use crate::low_level::GraphMutationPath;
     use crate::property_index::PropertyIndexNodeStoreMutationKind;
@@ -440,11 +439,11 @@ mod tests {
     #[test]
     fn formatter_formats_ensure_capacity_projection() {
         let projection =
-            RewriteWriteEventProjection::EnsureCapacity(RewriteEnsureCapacityProjection {
+            GraphPmaWriteEventProjection::EnsureCapacity(GraphPmaEnsureCapacityProjection {
                 rebalanced: true,
                 total_displacement: 4,
                 max_displacement: 2,
-                refreshed: RewriteRefreshedVertices::new(vec![0, 1], vec![3]),
+                refreshed: GraphPmaRefreshedVertices::new(vec![0, 1], vec![3]),
             });
 
         assert_eq!(
@@ -456,7 +455,7 @@ mod tests {
     #[test]
     fn formatter_formats_maintenance_projections() {
         let cycle =
-            RewriteWriteEventProjection::MaintenanceCycle(RewriteMaintenanceCycleProjection {
+            GraphPmaWriteEventProjection::MaintenanceCycle(GraphPmaMaintenanceCycleProjection {
                 vertex_ref: gleaph_graph_kernel::NodeId::from(7u8).into(),
                 ordinal: 3,
                 window_start_ordinal: 2,
@@ -470,20 +469,18 @@ mod tests {
                 window_total_base_slots: 9,
                 total_displacement: 4,
                 max_displacement: 2,
-                refreshed: RewriteRefreshedVertices::new(vec![1], vec![2]),
-                queue_storage_before: Some(RewriteMaintenanceQueueStorageProjection {
+                refreshed: GraphPmaRefreshedVertices::new(vec![1], vec![2]),
+                queue_storage_before: Some(GraphPmaMaintenanceQueueStorageProjection {
                     logical_len_bytes: 136,
                     queue_len: 2,
-                    legacy_format: false,
                     format_version: Some(1),
                     stored_checksum: None,
                     computed_checksum: None,
                     checksum_valid: Some(true),
                 }),
-                queue_storage_after: Some(RewriteMaintenanceQueueStorageProjection {
+                queue_storage_after: Some(GraphPmaMaintenanceQueueStorageProjection {
                     logical_len_bytes: 80,
                     queue_len: 1,
-                    legacy_format: false,
                     format_version: Some(1),
                     stored_checksum: None,
                     computed_checksum: None,
@@ -491,25 +488,23 @@ mod tests {
                 }),
             });
         let batch =
-            RewriteWriteEventProjection::MaintenanceBatch(RewriteMaintenanceBatchProjection {
+            GraphPmaWriteEventProjection::MaintenanceBatch(GraphPmaMaintenanceBatchProjection {
                 cycles: 2,
                 queue_len_before: 5,
                 queue_len_after: 1,
                 swept_forward_segments: 1,
                 swept_reverse_segments: 3,
-                queue_storage_before: Some(RewriteMaintenanceQueueStorageProjection {
+                queue_storage_before: Some(GraphPmaMaintenanceQueueStorageProjection {
                     logical_len_bytes: 304,
                     queue_len: 5,
-                    legacy_format: false,
                     format_version: Some(1),
                     stored_checksum: None,
                     computed_checksum: None,
                     checksum_valid: Some(true),
                 }),
-                queue_storage_after: Some(RewriteMaintenanceQueueStorageProjection {
+                queue_storage_after: Some(GraphPmaMaintenanceQueueStorageProjection {
                     logical_len_bytes: 80,
                     queue_len: 1,
-                    legacy_format: false,
                     format_version: Some(1),
                     stored_checksum: None,
                     computed_checksum: None,
@@ -517,8 +512,8 @@ mod tests {
                 }),
             });
         let queue_update =
-            RewriteWriteEventProjection::MaintenanceQueue(RewriteMaintenanceQueueProjection {
-                action: RewriteMaintenanceQueueAction::Refresh,
+            GraphPmaWriteEventProjection::MaintenanceQueue(GraphPmaMaintenanceQueueProjection {
+                action: GraphPmaMaintenanceQueueAction::Refresh,
                 queue_len_before: 4,
                 queue_len_after: 2,
                 persisted_bytes: 128,
@@ -542,7 +537,7 @@ mod tests {
     #[test]
     fn formatter_formats_maintenance_queue() {
         let queue = vec![
-            RewriteMaintenanceQueueItemProjection {
+            GraphPmaMaintenanceQueueItemProjection {
                 vertex_ref: gleaph_graph_kernel::NodeId::from(7u8).into(),
                 anchor_ordinal: 3,
                 window_start_ordinal: 2,
@@ -551,7 +546,7 @@ mod tests {
                 last_maintenance_epoch: Some(99),
                 recent_maintenance_penalty: 40_000,
             },
-            RewriteMaintenanceQueueItemProjection {
+            GraphPmaMaintenanceQueueItemProjection {
                 vertex_ref: gleaph_graph_kernel::NodeId::from(8u8).into(),
                 anchor_ordinal: 5,
                 window_start_ordinal: 5,
@@ -573,10 +568,9 @@ mod tests {
 
     #[test]
     fn formatter_formats_maintenance_queue_storage() {
-        let storage = RewriteMaintenanceQueueStorageProjection {
+        let storage = GraphPmaMaintenanceQueueStorageProjection {
             logical_len_bytes: 136,
             queue_len: 2,
-            legacy_format: false,
             format_version: Some(1),
             stored_checksum: Some(123),
             computed_checksum: Some(123),
@@ -585,19 +579,19 @@ mod tests {
 
         assert_eq!(
             format_maintenance_queue_storage(&storage),
-            "maintenance-queue-storage len=136 queue=2 legacy=false version=Some(1) checksum=(Some(123), Some(123), Some(true))"
+            "maintenance-queue-storage len=136 queue=2 version=Some(1) checksum=(Some(123), Some(123), Some(true))"
         );
     }
 
     #[test]
     fn formatter_formats_history_sequence() {
         let history = vec![
-            RewriteWriteEventProjection::Edge(RewriteEdgeWriteProjection {
-                operation: RewriteEdgeWriteOperation::Delete,
+            GraphPmaWriteEventProjection::Edge(GraphPmaEdgeWriteProjection {
+                operation: GraphPmaEdgeWriteOperation::Delete,
                 path: GraphMutationPath::Base,
-                refreshed: RewriteRefreshedVertices::new(vec![0], vec![]),
+                refreshed: GraphPmaRefreshedVertices::new(vec![0], vec![]),
             }),
-            RewriteWriteEventProjection::NodeDelete(RewriteNodeDeleteProjection {
+            GraphPmaWriteEventProjection::NodeDelete(GraphPmaNodeDeleteProjection {
                 detached: true,
                 deleted_edge_ids: vec![7, 8],
                 edge_writes: Vec::new(),
@@ -615,8 +609,8 @@ mod tests {
 
     #[test]
     fn formatter_formats_property_write_split_only() {
-        let projection = RewriteWriteEventProjection::Property(RewritePropertyWriteProjection {
-            sections: RewritePropertyIndexTouchedSections {
+        let projection = GraphPmaWriteEventProjection::Property(GraphPmaPropertyWriteProjection {
+            sections: GraphPmaPropertyIndexTouchedSections {
                 property_store: false,
                 logical_index: true,
                 node_store: true,
@@ -626,12 +620,12 @@ mod tests {
             touched_node_ids: Vec::new(),
             allocated_node_ids: Vec::new(),
             freed_node_ids: Vec::new(),
-            flushed_sections: RewritePropertyIndexTouchedSections {
+            flushed_sections: GraphPmaPropertyIndexTouchedSections {
                 property_store: false,
                 logical_index: true,
                 node_store: true,
             },
-            refreshed: RewriteRefreshedVertices::new(Vec::new(), Vec::new()),
+            refreshed: GraphPmaRefreshedVertices::new(Vec::new(), Vec::new()),
         });
         assert_eq!(
             format_write_event_projection(&projection),
@@ -641,8 +635,8 @@ mod tests {
 
     #[test]
     fn formatter_formats_property_write_three_leaf_repack_only() {
-        let projection = RewriteWriteEventProjection::Property(RewritePropertyWriteProjection {
-            sections: RewritePropertyIndexTouchedSections {
+        let projection = GraphPmaWriteEventProjection::Property(GraphPmaPropertyWriteProjection {
+            sections: GraphPmaPropertyIndexTouchedSections {
                 property_store: false,
                 logical_index: true,
                 node_store: true,
@@ -652,12 +646,12 @@ mod tests {
             touched_node_ids: Vec::new(),
             allocated_node_ids: Vec::new(),
             freed_node_ids: Vec::new(),
-            flushed_sections: RewritePropertyIndexTouchedSections {
+            flushed_sections: GraphPmaPropertyIndexTouchedSections {
                 property_store: false,
                 logical_index: true,
                 node_store: true,
             },
-            refreshed: RewriteRefreshedVertices::new(Vec::new(), Vec::new()),
+            refreshed: GraphPmaRefreshedVertices::new(Vec::new(), Vec::new()),
         });
         assert_eq!(
             format_write_event_projection(&projection),
@@ -667,9 +661,9 @@ mod tests {
 
     #[test]
     fn formatter_formats_property_operations() {
-        let history = vec![RewriteWriteEventProjection::Property(
-            RewritePropertyWriteProjection {
-                sections: RewritePropertyIndexTouchedSections {
+        let history = vec![GraphPmaWriteEventProjection::Property(
+            GraphPmaPropertyWriteProjection {
+                sections: GraphPmaPropertyIndexTouchedSections {
                     property_store: true,
                     logical_index: true,
                     node_store: true,
@@ -683,12 +677,12 @@ mod tests {
                 touched_node_ids: vec![crate::PropertyIndexNodeId(7)],
                 allocated_node_ids: vec![crate::PropertyIndexNodeId(11)],
                 freed_node_ids: vec![crate::PropertyIndexNodeId(5)],
-                flushed_sections: RewritePropertyIndexTouchedSections {
+                flushed_sections: GraphPmaPropertyIndexTouchedSections {
                     property_store: true,
                     logical_index: true,
                     node_store: true,
                 },
-                refreshed: RewriteRefreshedVertices::new(Vec::new(), Vec::new()),
+                refreshed: GraphPmaRefreshedVertices::new(Vec::new(), Vec::new()),
             },
         )];
 
@@ -701,12 +695,12 @@ mod tests {
     #[test]
     fn formatter_formats_last_history_event() {
         let history = vec![
-            RewriteWriteEventProjection::Edge(RewriteEdgeWriteProjection {
-                operation: RewriteEdgeWriteOperation::Delete,
+            GraphPmaWriteEventProjection::Edge(GraphPmaEdgeWriteProjection {
+                operation: GraphPmaEdgeWriteOperation::Delete,
                 path: GraphMutationPath::Base,
-                refreshed: RewriteRefreshedVertices::new(vec![0], vec![]),
+                refreshed: GraphPmaRefreshedVertices::new(vec![0], vec![]),
             }),
-            RewriteWriteEventProjection::NodeDelete(RewriteNodeDeleteProjection {
+            GraphPmaWriteEventProjection::NodeDelete(GraphPmaNodeDeleteProjection {
                 detached: true,
                 deleted_edge_ids: vec![7, 8],
                 edge_writes: Vec::new(),
@@ -722,22 +716,22 @@ mod tests {
     #[test]
     fn diagnostics_view_formats_facade_history() {
         let memory = VecMemory::default();
-        let mut facade = RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
 
         let _ = facade
             .append_empty_vertex_pair_and_write(&memory)
             .expect("append empty vertex");
 
         assert_eq!(
-            RewriteDiagnosticsView::formatted_write_history(&facade),
+            GraphPmaDiagnosticsView::formatted_write_history(&facade),
             vec!["bootstrap-vertices ordinals=1 refreshed=(0,0) fwd=[] rev=[]".to_owned()]
         );
         assert_eq!(
-            RewriteDiagnosticsView::formatted_last_write_event(&facade),
+            GraphPmaDiagnosticsView::formatted_last_write_event(&facade),
             Some("bootstrap-vertices ordinals=1 refreshed=(0,0) fwd=[] rev=[]".to_owned())
         );
         assert_eq!(
-            RewriteDiagnosticsView::debug_report(&facade),
+            GraphPmaDiagnosticsView::debug_report(&facade),
             "bootstrap-vertices ordinals=1 refreshed=(0,0) fwd=[] rev=[]"
         );
     }
@@ -745,12 +739,12 @@ mod tests {
     #[test]
     fn formatter_formats_multiline_report() {
         let history = vec![
-            RewriteWriteEventProjection::Edge(RewriteEdgeWriteProjection {
-                operation: RewriteEdgeWriteOperation::Delete,
+            GraphPmaWriteEventProjection::Edge(GraphPmaEdgeWriteProjection {
+                operation: GraphPmaEdgeWriteOperation::Delete,
                 path: GraphMutationPath::Base,
-                refreshed: RewriteRefreshedVertices::new(vec![0], vec![]),
+                refreshed: GraphPmaRefreshedVertices::new(vec![0], vec![]),
             }),
-            RewriteWriteEventProjection::NodeDelete(RewriteNodeDeleteProjection {
+            GraphPmaWriteEventProjection::NodeDelete(GraphPmaNodeDeleteProjection {
                 detached: true,
                 deleted_edge_ids: vec![7, 8],
                 edge_writes: Vec::new(),

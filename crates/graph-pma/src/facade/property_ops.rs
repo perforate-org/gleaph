@@ -9,7 +9,7 @@ use crate::property_store::{
     PropertyKey, StoredPropertyValue, btree_get_edge_property, btree_get_node_property,
 };
 
-impl<M: Memory> RewriteGraphPma<M> {
+impl<M: Memory> GraphPma<M> {
     fn validate_property_key_name(property: &str) -> Result<(), PropertyStoreError> {
         gleaph_gql::name_limits::validate_property_name(property)
             .map_err(|e| PropertyStoreError::InvalidIdentifier(e.to_string()))
@@ -123,7 +123,7 @@ impl<M: Memory> RewriteGraphPma<M> {
         node_id: NodeId,
         property: &str,
         value: &Value,
-    ) -> Result<RewritePropertyIndexMutationSummary, PropertyStoreError> {
+    ) -> Result<GraphPmaPropertyIndexMutationSummary, PropertyStoreError> {
         Self::validate_property_key_name(property)?;
         let old_value = btree_get_node_property(&self.node_property_store, node_id, property);
         let equality_touched =
@@ -155,7 +155,7 @@ impl<M: Memory> RewriteGraphPma<M> {
             node_store_operations.push(insert_kind);
         }
         self.node_property_store_dirty = true;
-        let summary = RewritePropertyIndexMutationSummary::from_delta(
+        let summary = GraphPmaPropertyIndexMutationSummary::from_delta(
             Self::property_index_node_store_delta_if_equality_touched(equality_touched),
             node_store_operations,
             Vec::new(),
@@ -180,7 +180,7 @@ impl<M: Memory> RewriteGraphPma<M> {
         &mut self,
         node_id: NodeId,
         property: &str,
-    ) -> Result<RewritePropertyIndexMutationSummary, PropertyStoreError> {
+    ) -> Result<GraphPmaPropertyIndexMutationSummary, PropertyStoreError> {
         Self::validate_property_key_name(property)?;
         let node_store_operations: Vec<_> = self
             .remove_node_property_index_binding_with_kind(node_id, property)?
@@ -190,7 +190,7 @@ impl<M: Memory> RewriteGraphPma<M> {
         self.node_property_store
             .remove(&PropertyKey::node(node_id, property));
         self.node_property_store_dirty = true;
-        let summary = RewritePropertyIndexMutationSummary::from_delta(
+        let summary = GraphPmaPropertyIndexMutationSummary::from_delta(
             Self::property_index_node_store_delta_if_equality_touched(equality_touched),
             node_store_operations,
             Vec::new(),
@@ -232,7 +232,7 @@ impl<M: Memory> RewriteGraphPma<M> {
         edge_id: EdgeId,
         property: &str,
         value: &Value,
-    ) -> Result<RewritePropertyIndexMutationSummary, PropertyStoreError> {
+    ) -> Result<GraphPmaPropertyIndexMutationSummary, PropertyStoreError> {
         Self::validate_property_key_name(property)?;
         let old_value = btree_get_edge_property(&self.edge_property_store, edge_id, property);
         let equality_touched =
@@ -264,7 +264,7 @@ impl<M: Memory> RewriteGraphPma<M> {
             node_store_operations.push(insert_kind);
         }
         self.edge_property_store_dirty = true;
-        let summary = RewritePropertyIndexMutationSummary::from_delta(
+        let summary = GraphPmaPropertyIndexMutationSummary::from_delta(
             Self::property_index_node_store_delta_if_equality_touched(equality_touched),
             node_store_operations,
             Vec::new(),
@@ -289,7 +289,7 @@ impl<M: Memory> RewriteGraphPma<M> {
         &mut self,
         edge_id: EdgeId,
         property: &str,
-    ) -> Result<RewritePropertyIndexMutationSummary, PropertyStoreError> {
+    ) -> Result<GraphPmaPropertyIndexMutationSummary, PropertyStoreError> {
         Self::validate_property_key_name(property)?;
         let node_store_operations: Vec<_> = self
             .remove_edge_property_index_binding_with_kind(edge_id, property)?
@@ -299,7 +299,7 @@ impl<M: Memory> RewriteGraphPma<M> {
         self.edge_property_store
             .remove(&PropertyKey::edge(edge_id, property));
         self.edge_property_store_dirty = true;
-        let summary = RewritePropertyIndexMutationSummary::from_delta(
+        let summary = GraphPmaPropertyIndexMutationSummary::from_delta(
             Self::property_index_node_store_delta_if_equality_touched(equality_touched),
             node_store_operations,
             Vec::new(),
@@ -313,16 +313,16 @@ impl<M: Memory> RewriteGraphPma<M> {
         property: &str,
         value: &Value,
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<RewritePropertyMutationWriteSummary> {
+    ) -> GraphPmaResult<GraphPmaPropertyMutationWriteSummary> {
         let mutation = self.set_node_property_value_with_summary(node_id, property, value)?;
         let (refreshed_forward_vertices, refreshed_reverse_vertices) =
             self.try_refresh_and_write_dirty_to_stable_memory(memory)?;
-        let summary = RewritePropertyMutationWriteSummary::from_mutation_and_refresh(
+        let summary = GraphPmaPropertyMutationWriteSummary::from_mutation_and_refresh(
             mutation,
             refreshed_forward_vertices,
             refreshed_reverse_vertices,
         );
-        self.record_write_event(RewriteFacadeWriteEvent::Property(summary.clone()));
+        self.record_write_event(GraphPmaFacadeWriteEvent::Property(summary.clone()));
         Ok(summary)
     }
 
@@ -331,16 +331,16 @@ impl<M: Memory> RewriteGraphPma<M> {
         node_id: NodeId,
         property: &str,
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<RewritePropertyMutationWriteSummary> {
+    ) -> GraphPmaResult<GraphPmaPropertyMutationWriteSummary> {
         let mutation = self.remove_node_property_value_with_summary(node_id, property)?;
         let (refreshed_forward_vertices, refreshed_reverse_vertices) =
             self.try_refresh_and_write_dirty_to_stable_memory(memory)?;
-        let summary = RewritePropertyMutationWriteSummary::from_mutation_and_refresh(
+        let summary = GraphPmaPropertyMutationWriteSummary::from_mutation_and_refresh(
             mutation,
             refreshed_forward_vertices,
             refreshed_reverse_vertices,
         );
-        self.record_write_event(RewriteFacadeWriteEvent::Property(summary.clone()));
+        self.record_write_event(GraphPmaFacadeWriteEvent::Property(summary.clone()));
         Ok(summary)
     }
 
@@ -350,16 +350,16 @@ impl<M: Memory> RewriteGraphPma<M> {
         property: &str,
         value: &Value,
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<RewritePropertyMutationWriteSummary> {
+    ) -> GraphPmaResult<GraphPmaPropertyMutationWriteSummary> {
         let mutation = self.set_edge_property_value_with_summary(edge_id, property, value)?;
         let (refreshed_forward_vertices, refreshed_reverse_vertices) =
             self.try_refresh_and_write_dirty_to_stable_memory(memory)?;
-        let summary = RewritePropertyMutationWriteSummary::from_mutation_and_refresh(
+        let summary = GraphPmaPropertyMutationWriteSummary::from_mutation_and_refresh(
             mutation,
             refreshed_forward_vertices,
             refreshed_reverse_vertices,
         );
-        self.record_write_event(RewriteFacadeWriteEvent::Property(summary.clone()));
+        self.record_write_event(GraphPmaFacadeWriteEvent::Property(summary.clone()));
         Ok(summary)
     }
 
@@ -368,16 +368,16 @@ impl<M: Memory> RewriteGraphPma<M> {
         edge_id: EdgeId,
         property: &str,
         memory: &impl Memory,
-    ) -> RewriteGraphPmaResult<RewritePropertyMutationWriteSummary> {
+    ) -> GraphPmaResult<GraphPmaPropertyMutationWriteSummary> {
         let mutation = self.remove_edge_property_value_with_summary(edge_id, property)?;
         let (refreshed_forward_vertices, refreshed_reverse_vertices) =
             self.try_refresh_and_write_dirty_to_stable_memory(memory)?;
-        let summary = RewritePropertyMutationWriteSummary::from_mutation_and_refresh(
+        let summary = GraphPmaPropertyMutationWriteSummary::from_mutation_and_refresh(
             mutation,
             refreshed_forward_vertices,
             refreshed_reverse_vertices,
         );
-        self.record_write_event(RewriteFacadeWriteEvent::Property(summary.clone()));
+        self.record_write_event(GraphPmaFacadeWriteEvent::Property(summary.clone()));
         Ok(summary)
     }
 

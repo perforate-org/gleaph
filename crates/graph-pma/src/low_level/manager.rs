@@ -14,7 +14,7 @@ use super::region::{
     BucketSizeInPages, RegionKind, RegionManagerLayout, RegionRef, RegionStorageKind, WasmPages,
 };
 
-/// Metadata-only region manager used during the rewrite.
+/// Metadata-only region manager for stable-memory layout and extents.
 ///
 /// This owns region directory state, extent/bucket allocator metadata, and the
 /// first pure growth / relocation rules. It does not yet perform stable-memory
@@ -273,7 +273,7 @@ impl RegionManager {
 
     /// Returns one segment header by id for the given edge-entry region.
     ///
-    /// Segment id 0 is treated as the legacy single-extent compatibility segment.
+    /// Segment id 0 is the root flat edge-index extent for single-segment layouts.
     pub fn edge_segment(&self, kind: RegionKind, segment_id: u32) -> Option<EdgeSegmentHeader> {
         if segment_id == 0 {
             let region = self.layout.region(kind)?;
@@ -860,7 +860,7 @@ mod tests {
     }
 
     #[test]
-    fn region_manager_resolves_legacy_segment_zero_for_edge_region() {
+    fn region_manager_resolves_segment_zero_for_edge_region() {
         let mut manager = RegionManager::with_bucket_size(BucketSizeInPages::DEFAULT);
         manager.define_extent_region(
             RegionKind::ForwardEdgeEntries,
@@ -876,7 +876,7 @@ mod tests {
         let edge_ref = EdgeRef::new(0, 5);
         let (segment, extent) = manager
             .resolve_edge_ref(RegionKind::ForwardEdgeEntries, edge_ref)
-            .expect("legacy segment should resolve");
+            .expect("segment zero should resolve");
 
         assert_eq!(segment.segment_id, 0);
         assert_eq!(segment.state, EdgeSegmentState::Active);
@@ -1014,7 +1014,7 @@ mod tests {
     }
 
     #[test]
-    fn region_manager_does_not_mutate_legacy_segment_zero_state() {
+    fn region_manager_does_not_mutate_segment_zero_state() {
         let mut manager = RegionManager::with_bucket_size(BucketSizeInPages::DEFAULT);
         manager.define_extent_region(
             RegionKind::ForwardEdgeEntries,

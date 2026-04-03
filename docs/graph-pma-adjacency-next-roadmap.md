@@ -5,7 +5,7 @@ Last updated: 2026-04-03
 ## Purpose
 
 This document captures the next implementation roadmap for the adjacency
-rewrite after the `VertexRef` / `EdgeRef` / `LogicalEdgeLocator` transition.
+subsystem after the `VertexRef` / `EdgeRef` / `LogicalEdgeLocator` transition.
 
 It is intended as a handoff document for the next agent or engineer who will
 continue the work.
@@ -96,7 +96,7 @@ Implemented pieces:
 - `EdgeRef -> global slot/span` resolution delegated to the backing
 - `window_span_for_vertices` guards against cross-segment window spans
 - `SurfaceRuntime::from_decoded_regions`, `set_base_storage`, `replace_base_storage_with_segmented`,
-  `migrate_contiguous_base_to_segmented_legacy_zero`
+  `migrate_contiguous_base_to_segment_zero`
 
 Primary file:
 
@@ -105,8 +105,8 @@ Primary file:
 ### Segment-aware stable-memory I/O (Phase 4 largely complete)
 
 - `hydrate_surface_runtimes_from_stable_memory` rebuilds `SurfaceBaseStorage` via
-  `hydrate_edge_storage_from_stable_memory` (legacy region 0 payload + explicit edge segments).
-- `write_edge_storage_to_stable_memory` flushes each segment to its resolved extent; legacy
+  `hydrate_edge_storage_from_stable_memory` (segment 0 payload + explicit edge segments).
+- `write_edge_storage_to_stable_memory` flushes each segment to its resolved extent; root
   segment 0 uses the region logical length contract.
 - Layout-only `hydrate_surface_runtime` builds **segment 0–only segmented** storage so the
   in-memory shape aligns with the stable-memory path (single flat region encoded as segment 0).
@@ -119,7 +119,7 @@ Primary files:
 ### Graph-level migration helpers (Phase 2 graph slice)
 
 - `GraphRuntime::replace_base_storages_with_segmented`
-- `GraphRuntime::migrate_contiguous_base_to_segmented_legacy_zero`
+- `GraphRuntime::migrate_contiguous_base_to_segment_zero`
 
 Primary file:
 
@@ -128,7 +128,7 @@ Primary file:
 ### Segment capacity metadata
 
 - `SurfaceBaseSegmentLayout::sync_slot_capacity_from_manager` no longer depends on a separate
-  “total storage length” argument for deriving slot capacity (legacy segment 0 still merges
+  “total storage length” argument for deriving slot capacity (segment 0 still merges
   with manager-reported capacity via the map).
 
 ### Base adjacency indexing and rewrite API surface
@@ -137,7 +137,7 @@ Primary file:
   production paths use `SurfaceBaseStorage::get`, `replace`, `copied()`, etc.
 - **Rewrite entrypoints:** `SurfaceBaseStorage::rewrite_span(start, end, …)` is **`pub(crate)`**;
   other crates and modules should use only `rewrite_vertex_window_span` / `rewrite_span_by_ref`.
-- **Legacy slot sync call sites:** `sync_legacy_slot_capacity_from_storage_len` and its three call
+- **Segment-zero slot sync call sites:** `sync_segment_zero_slot_capacity_from_storage_len` and its three call
   paths (`push`, crate-private `rewrite_span`, `From<Vec<EdgeEntry>>`) are documented in
   [`runtime.rs`](../crates/graph-pma/src/low_level/runtime.rs), including that **manager/header sync**
   is authoritative when present and that **shrinking** these calls needs an explicit invariant pass
@@ -179,10 +179,10 @@ in `graph.rs`).
 
 - **Subscript indexing is done** (see “Base adjacency indexing” above). **`Deref` / `DerefMut` to
   `[EdgeEntry]`** still encourages slice habits; **`SurfaceBaseStorage::iter`** is now used explicitly
-  in `migrate_contiguous_base_to_segmented_legacy_zero` and selected tests (graph migrate + runtime
+  in `migrate_contiguous_base_to_segment_zero` and selected tests (graph migrate + runtime
   rebalance snapshot). **Production** paths reviewed: no additional `&[EdgeEntry]` coercion issues
   beyond tests; Facade **`&runtime.base_entries`** for writeback remains typed storage, not slice abuse.
-- `sync_legacy_slot_capacity_from_storage_len` unchanged in behavior; **doc** now states manager sync
+- `sync_segment_zero_slot_capacity_from_storage_len` unchanged in behavior; **doc** now states manager sync
   is authoritative when present and warns against ad hoc removal.
 - Diagnostics: **`maintenance_queue_storage=`** on maintenance-batch lines. **2026-04-03:** grep review of
   remaining `insert-edge` / `maintenance-queue*` / `edge` lines — each already carries `path=`, vertex,
@@ -196,7 +196,7 @@ in `graph.rs`).
 ### Facade in-memory shape (policy)
 
 The low-level graph can still start life with **contiguous** backing in some construction paths.
-**Policy:** `RewriteFacade` does **not** auto-call `migrate_contiguous_base_to_segmented_legacy_zero`
+**Policy:** `GraphPma` does **not** auto-call `migrate_contiguous_base_to_segment_zero`
 today; callers that need a uniform segmented in-memory representation should invoke it explicitly
 after construction or in a dedicated normalization step. Revisit when all bootstrap paths emit
 segmented storage by construction.
@@ -209,7 +209,7 @@ segmented storage by construction.
 | 2 | Segmented backing in real paths | Done for stable-memory + layout hydrate + graph helpers |
 | 3 | Segment-local replacement as canonical rewrite | Partially done; **`rewrite_span` is `pub(crate)`**; **`SurfaceBaseStorage` doc** links maintenance to segment replacement; **optional `EdgeRef`-only thin wrappers** still open |
 | 4 | Segment-aware writeback/hydration | Done for stable-memory multi-segment flush/load |
-| 5 | Remove contiguous fallbacks | In progress (**explicit `iter` in migrate + tests**; **`maintenance_queue_storage=`**; test **`from_contiguous`** for `base_entries`; observability strings reviewed, **no change**; **`sync_legacy` doc**; optional further **`Deref` cleanup**) |
+| 5 | Remove contiguous fallbacks | In progress (**explicit `iter` in migrate + tests**; **`maintenance_queue_storage=`**; test **`from_contiguous`** for `base_entries`; observability strings reviewed, **no change**; **segment-zero slot sync doc**; optional further **`Deref` cleanup**) |
 
 ### Phase 3 (next implementation focus)
 
@@ -248,11 +248,11 @@ Goal:
 Tasks:
 
 - **Progress:** [`SurfaceBaseStorage::iter`](../crates/graph-pma/src/low_level/runtime.rs) used in
-  `migrate_contiguous_base_to_segmented_legacy_zero`, graph migrate test, and one runtime rebalance
+  `migrate_contiguous_base_to_segment_zero`, graph migrate test, and one runtime rebalance
   test (replacing `&*base_entries` / implicit `Deref` iteration there)
 - **Inventory (production):** no further mandatory changes found; continue preferring `iter` / `get`
   when touching code; Facade stable-memory paths use `SurfaceBaseStorage` by reference as intended
-- **`sync_legacy_slot_capacity_from_storage_len`:** behavior unchanged; **expanded rustdoc** on when
+- **`sync_segment_zero_slot_capacity_from_storage_len`:** behavior unchanged; **expanded rustdoc** on when
   manager sync wins and why not to delete call sites casually
 - **Observability:** maintenance-batch **`maintenance_queue_storage=`** label; **2026-04-03 audit:** other
   maintenance/edge strings left unchanged (already disambiguated by path/vertex/queue fields).
@@ -276,7 +276,7 @@ The next agent should preserve these invariants while implementing the roadmap.
   segment
 - `LogicalEdgeLocator` remains the mutation-side canonical locator
 - foreground writes stay light; hard structural cleanup stays maintenance-first
-- `segment 0` remains a legacy compatibility segment until segmented persistence
+- `segment 0` remains the root flat segment until segmented persistence
   fully replaces the old model
 
 ## Recommended Next Concrete Step
@@ -286,9 +286,9 @@ The next agent should preserve these invariants while implementing the roadmap.
    (no extra in-crate call sites) — **skip** until a repeated pattern appears. Keep **`rewrite_span`
    `pub(crate)`** and no new public global-index rewrite APIs.
 2. **Phase 5:** Optional remaining **`Deref` / slice** habits in tests; deliberate
-   **`sync_legacy_slot_capacity_from_storage_len`** vs **manager-backed** change only after an invariant
+   **`sync_segment_zero_slot_capacity_from_storage_len`** vs **manager-backed** change only after an invariant
    write-up. **Observability:** further **edge-segment** vocabulary only if new ambiguity shows up in
    production logs (current strings reviewed 2026-04-03).
 3. **Optional:** If a single in-memory shape is required at bootstrap, call
-   `GraphRuntime::migrate_contiguous_base_to_segmented_legacy_zero` from one facade hook **after**
+   `GraphRuntime::migrate_contiguous_base_to_segment_zero` from one facade hook **after**
    policy is agreed (currently intentionally not automatic).

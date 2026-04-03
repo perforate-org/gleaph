@@ -1,4 +1,4 @@
-//! Rewrite-side property-store skeleton.
+//! Property-store: stable regions backing node/edge properties.
 //!
 //! The adjacency kernel keeps hot fixed-size data in PMA-backed regions.
 //! Variable-length properties live outside those regions and are intended to be
@@ -9,7 +9,6 @@
 //! - explicit entity/property keys
 //! - raw value blobs
 //! - **v1 persistence**: a fixed header plus one [`ic_stable_structures::StableBTreeMap`] per region
-//! - legacy append-log decode for one-shot migration into the btree layout
 //!
 mod btree_subregion_memory;
 mod pstore_v1_layout;
@@ -687,7 +686,7 @@ impl<V: Storable + Clone> PropertyAppendLog<V> {
 /// Concrete append-log property runtime using raw value blobs.
 pub type BlobPropertyAppendLog = PropertyAppendLog<PropertyValueBlob>;
 
-/// Concrete append-log property runtime using rewrite-storable GQL values.
+/// In-memory append-log property runtime using storable GQL values (tests and dedicated write paths).
 pub type GraphPropertyAppendLog = PropertyAppendLog<Value>;
 
 /// Reads one graph-property append log from a fixed-size property region.
@@ -797,7 +796,7 @@ pub fn default_property_region_chain() -> BucketChain {
     BucketChain::new(BucketId::NULL, BucketId::NULL, 0)
 }
 
-/// Error type for rewrite-side property-store skeletons.
+/// Errors from property-store hydrate/write paths.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PropertyStoreError {
     InvalidKeyLength(usize),
@@ -1442,13 +1441,13 @@ fn pstore_region_entity_kind(kind: RegionKind) -> Result<PropertyEntityKind, Pro
     }
 }
 
-/// Loads v1 btree state, or migrates a legacy append-log region into a fresh btree (caller should flush).
+/// Loads v1 btree state from stable memory (PSB1 header required when the region is non-empty).
 pub fn load_graph_property_stable_map_from_stable_memory<M: Memory>(
     mgr_rc: Rc<RefCell<RegionManager>>,
     mem_rc: Rc<RefCell<M>>,
     kind: RegionKind,
-) -> Result<(GraphPropertyStableMap<M>, Rc<RefCell<u64>>, bool), PropertyStoreError> {
-    let expected_kind = pstore_region_entity_kind(kind)?;
+) -> Result<(GraphPropertyStableMap<M>, Rc<RefCell<u64>>), PropertyStoreError> {
+    pstore_region_entity_kind(kind)?;
     let bytes = {
         let mgr = mgr_rc.borrow();
         let mem = mem_rc.borrow();
@@ -1464,7 +1463,7 @@ pub fn load_graph_property_stable_map_from_stable_memory<M: Memory>(
             Rc::clone(&btree_rc),
             kind,
         );
-        return Ok((map, btree_rc, false));
+        return Ok((map, btree_rc));
     }
 
     if bytes.len() >= PROP_STORE_V1_HEADER_LEN {
@@ -1510,32 +1509,11 @@ pub fn load_graph_property_stable_map_from_stable_memory<M: Memory>(
                 Rc::clone(&btree_rc),
                 kind,
             );
-            return Ok((map, btree_rc, false));
+            return Ok((map, btree_rc));
         }
     }
 
-    let log = GraphPropertyAppendLog::decode(&bytes)
-        .map_err(|_| PropertyStoreError::PStoreUnsupportedOnDiskLayout)?;
-    let mut map = empty_graph_property_stable_map(
-        Rc::clone(&mgr_rc),
-        Rc::clone(&mem_rc),
-        Rc::clone(&btree_rc),
-        kind,
-    );
-    for (k, v) in log.latest_state() {
-        if k.entity_kind != expected_kind {
-            continue;
-        }
-        match v {
-            Some(val) => {
-                map.insert(k, StoredPropertyValue(val));
-            }
-            None => {
-                map.remove(&k);
-            }
-        }
-    }
-    Ok((map, btree_rc, true))
+    Err(PropertyStoreError::PStoreUnsupportedOnDiskLayout)
 }
 
 pub(crate) fn btree_get_node_property<M: Memory>(
@@ -1882,7 +1860,7 @@ mod tests {
     }
 
     #[test]
-    fn graph_property_store_rewrite_with_shorter_payload_round_trips_logical_length() {
+    fn graph_property_store_shorter_payload_round_trips_logical_length() {
         let memory = VecMemory::default();
         let mut manager = RegionManager::with_bucket_size(BucketSizeInPages::new(1));
         manager.define_bucket_region(
@@ -1989,7 +1967,7 @@ mod tests {
         )
         .expect("sync header");
 
-        let (map2, _, _) = load_graph_property_stable_map_from_stable_memory(
+        let (map2, _) = load_graph_property_stable_map_from_stable_memory(
             Rc::clone(&mgr_rc),
             Rc::clone(&mem_rc),
             RegionKind::NodePropertyStore,

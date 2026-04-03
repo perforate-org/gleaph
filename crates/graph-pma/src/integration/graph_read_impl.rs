@@ -9,9 +9,9 @@ use gleaph_graph_kernel::{
     NodeId, NodeRecord, PropertyMap,
 };
 
-use super::RewriteKernelOverlayGraph;
+use super::GraphPmaKernelOverlayGraph;
 
-impl<'a, S: super::RewriteGraphStore> GraphRead for RewriteKernelOverlayGraph<'a, S> {
+impl<'a, S: super::GraphPmaStore> GraphRead for GraphPmaKernelOverlayGraph<'a, S> {
     fn scan_nodes(&self, label: Option<&str>) -> GraphResult<Vec<NodeRecord>> {
         let ids: Vec<NodeId> = if let Some(label_name) = label {
             if let Some(label_id) = self.bridge.lookup_label_id(label_name) {

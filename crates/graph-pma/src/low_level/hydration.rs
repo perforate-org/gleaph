@@ -36,7 +36,7 @@ thread_local! {
 
 /// Reads raw bytes for a logical region.
 ///
-/// This is the first stable-memory-facing seam for the rewrite. The source may
+/// Stable-memory-facing hydration seam. The source may
 /// come from real stable memory later, but the low-level hydration logic only
 /// requires read access to region payload bytes.
 pub trait RegionByteSource {
@@ -349,6 +349,8 @@ pub enum HydrationError {
         expected: u64,
         actual: u64,
     },
+    /// Serialized bytes are present but do not start with the expected MGQ1 header (or are too short).
+    InvalidMaintenanceQueueHeader(RegionKind),
 }
 
 impl fmt::Display for HydrationError {
@@ -416,6 +418,11 @@ impl fmt::Display for HydrationError {
                 "region {:?} checksum mismatch: expected {}, actual {}",
                 kind, expected, actual
             ),
+            HydrationError::InvalidMaintenanceQueueHeader(kind) => write!(
+                f,
+                "region {:?} maintenance queue bytes are not a valid MGQ1 v1 header payload",
+                kind
+            ),
         }
     }
 }
@@ -444,10 +451,10 @@ fn sync_surface_runtime_segment_capacities(
     manager: &RegionManager,
     kind: RegionKind,
 ) -> Option<()> {
-    let legacy_segment = manager.edge_segment(kind, 0)?;
+    let segment_zero = manager.edge_segment(kind, 0)?;
     surface.sync_base_segment_slot_capacity_from_manager(
-        legacy_segment.segment_id,
-        legacy_segment.slot_capacity,
+        segment_zero.segment_id,
+        segment_zero.slot_capacity,
     );
     for header in manager.edge_segment_directory(kind)?.iter().copied() {
         surface

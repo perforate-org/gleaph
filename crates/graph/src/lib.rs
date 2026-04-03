@@ -53,8 +53,8 @@ use gleaph_gql_planner::{
     first_executor_unsupported_op,
 };
 use gleaph_graph_kernel::{GraphRead, GraphWrite};
-use gleaph_graph_pma::integration::RewriteGraphPmaKernelOverlay;
-use gleaph_graph_pma::{RewriteGraphPma, RewriteGraphPmaError, RewriteVecMemory};
+use gleaph_graph_pma::integration::GraphPmaKernelOverlay;
+use gleaph_graph_pma::{GraphPma, GraphPmaError, GraphPmaVecMemory};
 use ic_cdk::export_candid;
 use ic_cdk_macros::{init, post_upgrade, pre_upgrade, query, update};
 use serde::{Deserialize, Serialize};
@@ -93,8 +93,8 @@ thread_local! {
 }
 
 struct CanisterGraphRuntime {
-    facade: RewriteGraphPma,
-    memory: RewriteVecMemory,
+    facade: GraphPma,
+    memory: GraphPmaVecMemory,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, CandidType)]
@@ -111,9 +111,9 @@ struct CanisterStableState {
 
 impl CanisterGraphRuntime {
     fn bootstrap() -> Self {
-        let memory = RewriteVecMemory::default();
+        let memory = GraphPmaVecMemory::default();
         let facade =
-            RewriteGraphPma::bootstrap_empty(memory.clone()).expect("bootstrap graph-pma runtime");
+            GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap graph-pma runtime");
         Self { facade, memory }
     }
 
@@ -124,19 +124,19 @@ impl CanisterGraphRuntime {
         }
     }
 
-    fn from_snapshot(snapshot: CanisterGraphRuntimeSnapshot) -> Result<Self, RewriteGraphPmaError> {
-        let memory = RewriteVecMemory::from_vec(snapshot.memory_bytes);
-        let facade = RewriteGraphPma::hydrate_from_stable_memory(snapshot.manager, memory.clone())?;
+    fn from_snapshot(snapshot: CanisterGraphRuntimeSnapshot) -> Result<Self, GraphPmaError> {
+        let memory = GraphPmaVecMemory::from_vec(snapshot.memory_bytes);
+        let facade = GraphPma::hydrate_from_stable_memory(snapshot.manager, memory.clone())?;
         Ok(Self { facade, memory })
     }
 
-    fn bind_overlay(&mut self) -> RewriteGraphPmaKernelOverlay<'_, RewriteVecMemory> {
+    fn bind_overlay(&mut self) -> GraphPmaKernelOverlay<'_, GraphPmaVecMemory> {
         self.facade.bind_kernel_overlay(&self.memory)
     }
 }
 
 fn with_canister_graph<R>(
-    f: impl for<'a> FnOnce(&mut RewriteGraphPmaKernelOverlay<'a, RewriteVecMemory>) -> R,
+    f: impl for<'a> FnOnce(&mut GraphPmaKernelOverlay<'a, GraphPmaVecMemory>) -> R,
 ) -> R {
     GRAPH_STATE.with(|graph| {
         let mut runtime = graph.borrow_mut();
@@ -1498,8 +1498,8 @@ mod tests {
     use gleaph_gql_ic::PrincipalValue;
     use gleaph_gql_planner::PlanOp;
     use gleaph_graph_kernel::{GraphRead, GraphWrite, PropertyMap};
-    use gleaph_graph_pma::RewriteVecMemory;
-    use gleaph_graph_pma::integration::RewriteGraphPmaKernelHarness;
+    use gleaph_graph_pma::GraphPmaVecMemory;
+    use gleaph_graph_pma::integration::GraphPmaKernelHarness;
     use serde_json::{from_str, to_string};
     use std::collections::BTreeSet;
     use std::sync::Arc;
@@ -1518,8 +1518,8 @@ mod tests {
         test_principal("2vxsx-fae")
     }
 
-    fn new_pma_harness() -> RewriteGraphPmaKernelHarness<RewriteVecMemory> {
-        RewriteGraphPmaKernelHarness::bootstrap_empty(RewriteVecMemory::default())
+    fn new_pma_harness() -> GraphPmaKernelHarness<GraphPmaVecMemory> {
+        GraphPmaKernelHarness::bootstrap_empty(GraphPmaVecMemory::default())
             .expect("bootstrap harness")
     }
 

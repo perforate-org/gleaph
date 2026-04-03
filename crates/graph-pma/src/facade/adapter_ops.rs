@@ -2,7 +2,7 @@ use std::cell::RefCell;
 
 use super::*;
 
-impl<'a, M: Memory> RewriteGraphPmaBatchSession<'a, M> {
+impl<'a, M: Memory> GraphPmaBatchSession<'a, M> {
     /// Creates one facade-level batch mutation session.
     pub fn new(
         graph: &'a mut GraphRuntime,
@@ -53,32 +53,32 @@ impl<'a, M: Memory> RewriteGraphPmaBatchSession<'a, M> {
     }
 }
 
-impl<'a, S: RewriteGraphStore> RewriteGraphStoreAdapter<'a, S> {
-    /// Creates one adapter over a rewrite store plus stable memory.
+impl<'a, S: GraphPmaStore> GraphPmaStoreAdapter<'a, S> {
+    /// Creates one adapter over a graph store plus stable memory.
     pub fn new(store: &'a mut S, memory: &'a S::Mem) -> Self {
         Self { store, memory }
     }
 
-    /// Returns immutable access to the wrapped rewrite store.
+    /// Returns immutable access to the wrapped store.
     pub fn store(&self) -> &S {
         self.store
     }
 
     /// Returns the most recent facade-level write event observed through the bound store.
-    pub fn last_write_event(&self) -> Option<&RewriteFacadeWriteEvent> {
+    pub fn last_write_event(&self) -> Option<&GraphPmaFacadeWriteEvent> {
         self.store.last_write_event()
     }
 
     /// Returns recent facade-level write events in observation order.
-    pub fn write_history(&self) -> &[RewriteFacadeWriteEvent] {
+    pub fn write_history(&self) -> &[GraphPmaFacadeWriteEvent] {
         self.store.write_history()
     }
 
     /// Returns the recent façade write history projected onto the shared event vocabulary.
-    pub fn shared_write_history(&self) -> Vec<RewriteWriteEventProjection> {
+    pub fn shared_write_history(&self) -> Vec<GraphPmaWriteEventProjection> {
         self.write_history()
             .iter()
-            .flat_map(RewriteFacadeWriteEvent::shared_projections)
+            .flat_map(GraphPmaFacadeWriteEvent::shared_projections)
             .collect()
     }
 
@@ -91,7 +91,7 @@ impl<'a, S: RewriteGraphStore> RewriteGraphStoreAdapter<'a, S> {
         format_last_write_event(&self.shared_write_history())
     }
 
-    /// Returns mutable access to the wrapped rewrite store.
+    /// Returns mutable access to the wrapped store.
     pub fn store_mut(&mut self) -> &mut S {
         self.store
     }
@@ -102,7 +102,7 @@ impl<'a, S: RewriteGraphStore> RewriteGraphStoreAdapter<'a, S> {
     }
 
     /// Appends one empty vertex slot pair.
-    pub fn append_empty_vertex_pair(&mut self) -> RewriteGraphPmaResult<(usize, usize)> {
+    pub fn append_empty_vertex_pair(&mut self) -> GraphPmaResult<(usize, usize)> {
         self.store.append_empty_vertex_pair()
     }
 
@@ -110,7 +110,7 @@ impl<'a, S: RewriteGraphStore> RewriteGraphStoreAdapter<'a, S> {
     pub fn append_empty_vertex_pairs(
         &mut self,
         count: usize,
-    ) -> RewriteGraphPmaResult<Vec<(usize, usize)>> {
+    ) -> GraphPmaResult<Vec<(usize, usize)>> {
         self.store.append_empty_vertex_pairs(count)
     }
 
@@ -119,7 +119,7 @@ impl<'a, S: RewriteGraphStore> RewriteGraphStoreAdapter<'a, S> {
         &mut self,
         vertex_refs: &[VertexRef],
         initial_edges: &[(EdgeId, usize, usize, LabelId)],
-    ) -> RewriteGraphPmaResult<RewriteBootstrapGraphWriteSummary> {
+    ) -> GraphPmaResult<GraphPmaBootstrapGraphWriteSummary> {
         self.store.bootstrap_vertex_refs_and_edges_and_write(
             vertex_refs,
             initial_edges,
@@ -140,7 +140,7 @@ impl<'a, S: RewriteGraphStore> RewriteGraphStoreAdapter<'a, S> {
     pub fn replace_edge_pair(
         &mut self,
         spec: EdgeReplaceSpec,
-    ) -> Result<RewriteReplaceEdgeSummary, WritebackError> {
+    ) -> Result<GraphPmaReplaceEdgeSummary, WritebackError> {
         self.store.replace_edge_pair_and_write(spec, self.memory)
     }
 
@@ -148,19 +148,19 @@ impl<'a, S: RewriteGraphStore> RewriteGraphStoreAdapter<'a, S> {
     pub fn tombstone_edge_pair(
         &mut self,
         spec: EdgeTombstoneSpec,
-    ) -> Result<RewriteGraphMutationWriteSummary<GraphMutationPath>, WritebackError> {
+    ) -> Result<GraphPmaMutationWriteSummary<GraphMutationPath>, WritebackError> {
         self.store.tombstone_edge_pair_and_write(spec, self.memory)
     }
 
     /// Flushes dirty state using the bound memory handle.
-    pub fn flush_dirty(&mut self) -> RewriteGraphPmaResult<RewriteRefreshedVertices> {
+    pub fn flush_dirty(&mut self) -> GraphPmaResult<GraphPmaRefreshedVertices> {
         let (forward, reverse) = self
             .store
             .try_refresh_and_write_dirty_to_stable_memory(self.memory)?;
-        Ok(RewriteRefreshedVertices::new(forward, reverse))
+        Ok(GraphPmaRefreshedVertices::new(forward, reverse))
     }
 
-    /// Resolves one forward-surface logical locator against the current rewrite runtime.
+    /// Resolves one forward-surface logical locator against the current runtime.
     pub fn resolve_forward_logical_edge_slot(
         &self,
         vertex_ref: VertexRef,
@@ -173,7 +173,7 @@ impl<'a, S: RewriteGraphStore> RewriteGraphStoreAdapter<'a, S> {
             .resolve_logical_edge_slot(vertex_ref, ordinal, locator)
     }
 
-    /// Resolves one reverse-surface logical locator against the current rewrite runtime.
+    /// Resolves one reverse-surface logical locator against the current runtime.
     pub fn resolve_reverse_logical_edge_slot(
         &self,
         vertex_ref: VertexRef,
@@ -187,19 +187,19 @@ impl<'a, S: RewriteGraphStore> RewriteGraphStoreAdapter<'a, S> {
     }
 }
 
-impl<'a, M: Memory> RewriteGraphStoreAdapter<'a, RewriteGraphPma<M>> {
+impl<'a, M: Memory> GraphPmaStoreAdapter<'a, GraphPma<M>> {
     /// Starts one facade-level batch mutation session through the bound adapter.
-    pub fn begin_batch_mutation(&'a mut self) -> RewriteGraphPmaBatchSession<'a, M> {
+    pub fn begin_batch_mutation(&'a mut self) -> GraphPmaBatchSession<'a, M> {
         self.store.begin_batch_mutation(self.memory)
     }
 }
 
-impl<'a, S: RewriteGraphStore> RewriteGraphService for RewriteGraphStoreAdapter<'a, S> {
-    fn last_write_event(&self) -> Option<&RewriteFacadeWriteEvent> {
+impl<'a, S: GraphPmaStore> GraphPmaService for GraphPmaStoreAdapter<'a, S> {
+    fn last_write_event(&self) -> Option<&GraphPmaFacadeWriteEvent> {
         Self::last_write_event(self)
     }
 
-    fn write_history(&self) -> &[RewriteFacadeWriteEvent] {
+    fn write_history(&self) -> &[GraphPmaFacadeWriteEvent] {
         Self::write_history(self)
     }
 
@@ -207,7 +207,7 @@ impl<'a, S: RewriteGraphStore> RewriteGraphService for RewriteGraphStoreAdapter<
         &mut self,
         vertex_refs: &[VertexRef],
         initial_edges: &[(EdgeId, usize, usize, LabelId)],
-    ) -> RewriteGraphPmaResult<RewriteBootstrapGraphWriteSummary> {
+    ) -> GraphPmaResult<GraphPmaBootstrapGraphWriteSummary> {
         Self::bootstrap_vertex_refs_and_edges(self, vertex_refs, initial_edges)
     }
 
@@ -221,18 +221,18 @@ impl<'a, S: RewriteGraphStore> RewriteGraphService for RewriteGraphStoreAdapter<
     fn replace_edge_pair(
         &mut self,
         spec: EdgeReplaceSpec,
-    ) -> Result<RewriteReplaceEdgeSummary, WritebackError> {
+    ) -> Result<GraphPmaReplaceEdgeSummary, WritebackError> {
         Self::replace_edge_pair(self, spec)
     }
 
     fn tombstone_edge_pair(
         &mut self,
         spec: EdgeTombstoneSpec,
-    ) -> Result<RewriteGraphMutationWriteSummary<GraphMutationPath>, WritebackError> {
+    ) -> Result<GraphPmaMutationWriteSummary<GraphMutationPath>, WritebackError> {
         Self::tombstone_edge_pair(self, spec)
     }
 
-    fn flush_dirty(&mut self) -> RewriteGraphPmaResult<RewriteRefreshedVertices> {
+    fn flush_dirty(&mut self) -> GraphPmaResult<GraphPmaRefreshedVertices> {
         Self::flush_dirty(self)
     }
 }

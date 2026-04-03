@@ -4,7 +4,7 @@ use crate::low_level::RegionKind;
 
 use super::PropertyIndexNodeId;
 
-/// Legacy error taxonomy for incremental **paged** property-index node chains (pre PIDX v3).
+/// Errors for incremental **paged** property-index node chains (alongside PIDX v3 btree storage).
 /// Retained while call sites still map into [`PropertyIndexError`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PropertyIndexLeafChainShapeError {
@@ -51,7 +51,7 @@ impl fmt::Display for PropertyIndexLeafChainShapeError {
 
 impl std::error::Error for PropertyIndexLeafChainShapeError {}
 
-/// Error type for rewrite-side property-index skeletons.
+/// Property-index errors surfaced to callers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PropertyIndexError {
     InvalidRegionHeaderLength(usize),

@@ -6,12 +6,12 @@ use gleaph_graph_kernel::{
 };
 
 use super::{
-    RewriteKernelBootstrapBridge, VacuumStats, VertexGcState, VertexLabelIndex,
+    GraphPmaKernelBootstrapBridge, VacuumStats, VertexGcState, VertexLabelIndex,
     decode_vertex_label_catalog, encode_vertex_label_catalog, graph_error_from_property_store,
     label_index,
 };
 use crate::facade::{
-    RewriteGraphStore, RewritePropertyMutationWriteSummary, RewriteVertexOrdinalMapping,
+    GraphPmaStore, GraphPmaPropertyMutationWriteSummary, GraphPmaVertexOrdinalMapping,
 };
 use crate::low_level::{EdgeInsertPath, LogicalEdgeLocator, RegionKind, VertexRef};
 use crate::property_index::{
@@ -22,7 +22,7 @@ use crate::property_index::{
 use crate::property_store::PropertyStoreError;
 use crate::stable::Memory;
 
-impl<'a, S: RewriteGraphStore> RewriteKernelBootstrapBridge<'a, S> {
+impl<'a, S: GraphPmaStore> GraphPmaKernelBootstrapBridge<'a, S> {
     fn property_store_error(err: PropertyStoreError) -> GraphError {
         graph_error_from_property_store(err)
     }
@@ -68,7 +68,7 @@ impl<'a, S: RewriteGraphStore> RewriteKernelBootstrapBridge<'a, S> {
                 .remove_node_property_value_with_summary(node_id, &property)
                 .map_err(Self::property_store_error)?;
             self.record_property_write_summary(
-                RewritePropertyMutationWriteSummary::pending_from_mutation(mutation),
+                GraphPmaPropertyMutationWriteSummary::pending_from_mutation(mutation),
             );
         }
         Ok(())
@@ -81,7 +81,7 @@ impl<'a, S: RewriteGraphStore> RewriteKernelBootstrapBridge<'a, S> {
                 .remove_edge_property_value_with_summary(edge_id, &property)
                 .map_err(Self::property_store_error)?;
             self.record_property_write_summary(
-                RewritePropertyMutationWriteSummary::pending_from_mutation(mutation),
+                GraphPmaPropertyMutationWriteSummary::pending_from_mutation(mutation),
             );
         }
         Ok(())
@@ -161,7 +161,7 @@ impl<'a, S: RewriteGraphStore> RewriteKernelBootstrapBridge<'a, S> {
             .ok_or(GraphError::EdgeNotFound(edge_id))
     }
 
-    pub(crate) fn vertex_mapping(&self, node_id: NodeId) -> Option<RewriteVertexOrdinalMapping> {
+    pub(crate) fn vertex_mapping(&self, node_id: NodeId) -> Option<GraphPmaVertexOrdinalMapping> {
         self.vertex_ordinal_by_node_id.get(&node_id).copied()
     }
 

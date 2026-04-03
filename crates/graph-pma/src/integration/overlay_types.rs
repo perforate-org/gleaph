@@ -1,31 +1,31 @@
 use gleaph_graph_kernel::{EdgeId, EdgeRecord, NodeRecord};
 
 use crate::facade::{
-    RewriteBootstrapEdgeProjection, RewriteBootstrapGraphProjection,
-    RewriteBootstrapVerticesProjection, RewriteEdgeLogicalLocatorMapping,
-    RewriteEdgeWriteOperation, RewriteEdgeWriteProjection, RewriteEnsureCapacityProjection,
-    RewriteInsertEdgeProjection, RewriteNodeDeleteProjection, RewritePropertyMutationWriteSummary,
-    RewriteRefreshedVertices, RewriteVertexOrdinalMapping, RewriteWriteEventProjection,
+    GraphPmaBootstrapEdgeProjection, GraphPmaBootstrapGraphProjection,
+    GraphPmaBootstrapVerticesProjection, GraphPmaEdgeLogicalLocatorMapping,
+    GraphPmaEdgeWriteOperation, GraphPmaEdgeWriteProjection, GraphPmaEnsureCapacityProjection,
+    GraphPmaInsertEdgeProjection, GraphPmaNodeDeleteProjection, GraphPmaPropertyMutationWriteSummary,
+    GraphPmaRefreshedVertices, GraphPmaVertexOrdinalMapping, GraphPmaWriteEventProjection,
 };
 use crate::low_level::{EdgeInsertPath, GraphMutationPath, VertexRef};
 use crate::observability::{format_last_write_event, format_write_event_history};
 
 /// Observability summary for one overlay-level edge mutation write.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RewriteOverlayEdgeWriteSummary {
-    pub operation: RewriteOverlayEdgeMutationKind,
+pub struct GraphPmaOverlayEdgeWriteSummary {
+    pub operation: GraphPmaOverlayEdgeMutationKind,
     pub path: GraphMutationPath,
-    pub refreshed: RewriteRefreshedVertices,
+    pub refreshed: GraphPmaRefreshedVertices,
 }
 
-impl RewriteOverlayEdgeWriteSummary {
-    pub fn projection(&self) -> RewriteEdgeWriteProjection {
-        RewriteEdgeWriteProjection {
+impl GraphPmaOverlayEdgeWriteSummary {
+    pub fn projection(&self) -> GraphPmaEdgeWriteProjection {
+        GraphPmaEdgeWriteProjection {
             operation: match self.operation {
-                RewriteOverlayEdgeMutationKind::ReplaceLabel => {
-                    RewriteEdgeWriteOperation::ReplaceLabel
+                GraphPmaOverlayEdgeMutationKind::ReplaceLabel => {
+                    GraphPmaEdgeWriteOperation::ReplaceLabel
                 }
-                RewriteOverlayEdgeMutationKind::Delete => RewriteEdgeWriteOperation::Delete,
+                GraphPmaOverlayEdgeMutationKind::Delete => GraphPmaEdgeWriteOperation::Delete,
             },
             path: self.path,
             refreshed: self.refreshed.clone(),
@@ -34,18 +34,18 @@ impl RewriteOverlayEdgeWriteSummary {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RewriteOverlayInsertEdgeSummary {
+pub struct GraphPmaOverlayInsertEdgeSummary {
     pub inserted: bool,
     pub path: Option<EdgeInsertPath>,
     pub rebalanced: bool,
     pub total_displacement: i64,
     pub max_displacement: i64,
-    pub refreshed: RewriteRefreshedVertices,
+    pub refreshed: GraphPmaRefreshedVertices,
 }
 
-impl RewriteOverlayInsertEdgeSummary {
-    pub fn ensure_capacity_projection(&self) -> Option<RewriteEnsureCapacityProjection> {
-        self.rebalanced.then(|| RewriteEnsureCapacityProjection {
+impl GraphPmaOverlayInsertEdgeSummary {
+    pub fn ensure_capacity_projection(&self) -> Option<GraphPmaEnsureCapacityProjection> {
+        self.rebalanced.then(|| GraphPmaEnsureCapacityProjection {
             rebalanced: true,
             total_displacement: self.total_displacement,
             max_displacement: self.max_displacement,
@@ -53,8 +53,8 @@ impl RewriteOverlayInsertEdgeSummary {
         })
     }
 
-    pub fn projection(&self) -> RewriteInsertEdgeProjection {
-        RewriteInsertEdgeProjection {
+    pub fn projection(&self) -> GraphPmaInsertEdgeProjection {
+        GraphPmaInsertEdgeProjection {
             inserted: self.inserted,
             path: self.path,
             rebalanced: self.rebalanced,
@@ -66,50 +66,50 @@ impl RewriteOverlayInsertEdgeSummary {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RewriteOverlayEdgeMutationKind {
+pub enum GraphPmaOverlayEdgeMutationKind {
     ReplaceLabel,
     Delete,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RewriteOverlayNodeDeleteSummary {
+pub struct GraphPmaOverlayNodeDeleteSummary {
     pub detached: bool,
     pub deleted_edge_ids: Vec<EdgeId>,
-    pub edge_writes: Vec<RewriteOverlayEdgeWriteSummary>,
+    pub edge_writes: Vec<GraphPmaOverlayEdgeWriteSummary>,
 }
 
-impl RewriteOverlayNodeDeleteSummary {
-    pub fn projection(&self) -> RewriteNodeDeleteProjection {
-        RewriteNodeDeleteProjection {
+impl GraphPmaOverlayNodeDeleteSummary {
+    pub fn projection(&self) -> GraphPmaNodeDeleteProjection {
+        GraphPmaNodeDeleteProjection {
             detached: self.detached,
             deleted_edge_ids: self.deleted_edge_ids.clone(),
             edge_writes: self
                 .edge_writes
                 .iter()
-                .map(RewriteOverlayEdgeWriteSummary::projection)
+                .map(GraphPmaOverlayEdgeWriteSummary::projection)
                 .collect(),
         }
     }
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct RewriteOverlayNodeBootstrapSummary {
+pub struct GraphPmaOverlayNodeBootstrapSummary {
     pub node: NodeRecord,
     pub ordinals: (usize, usize),
-    pub refreshed: RewriteRefreshedVertices,
+    pub refreshed: GraphPmaRefreshedVertices,
 }
 
-impl RewriteOverlayNodeBootstrapSummary {
-    fn mapping(&self) -> RewriteVertexOrdinalMapping {
-        RewriteVertexOrdinalMapping {
+impl GraphPmaOverlayNodeBootstrapSummary {
+    fn mapping(&self) -> GraphPmaVertexOrdinalMapping {
+        GraphPmaVertexOrdinalMapping {
             vertex_ref: VertexRef::from(self.node.id),
             forward_ordinal: self.ordinals.0,
             reverse_ordinal: self.ordinals.1,
         }
     }
 
-    fn projection(&self) -> RewriteBootstrapVerticesProjection {
-        RewriteBootstrapVerticesProjection {
+    fn projection(&self) -> GraphPmaBootstrapVerticesProjection {
+        GraphPmaBootstrapVerticesProjection {
             ordinals: vec![self.ordinals],
             refreshed: self.refreshed.clone(),
         }
@@ -117,15 +117,15 @@ impl RewriteOverlayNodeBootstrapSummary {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct RewriteOverlayEdgeBootstrapSummary {
+pub struct GraphPmaOverlayEdgeBootstrapSummary {
     pub edge: EdgeRecord,
     pub path: EdgeInsertPath,
-    pub refreshed: RewriteRefreshedVertices,
+    pub refreshed: GraphPmaRefreshedVertices,
 }
 
-impl RewriteOverlayEdgeBootstrapSummary {
-    fn projection(&self) -> RewriteBootstrapEdgeProjection {
-        RewriteBootstrapEdgeProjection {
+impl GraphPmaOverlayEdgeBootstrapSummary {
+    fn projection(&self) -> GraphPmaBootstrapEdgeProjection {
+        GraphPmaBootstrapEdgeProjection {
             path: Some(self.path),
             refreshed: self.refreshed.clone(),
         }
@@ -133,19 +133,19 @@ impl RewriteOverlayEdgeBootstrapSummary {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct RewriteOverlayBootstrapGraphSummary {
+pub struct GraphPmaOverlayBootstrapGraphSummary {
     pub nodes: Vec<NodeRecord>,
     pub edges: Vec<EdgeRecord>,
-    pub vertex_ordinals: Vec<RewriteVertexOrdinalMapping>,
-    pub locators: Vec<RewriteEdgeLogicalLocatorMapping>,
-    pub refreshed: RewriteRefreshedVertices,
+    pub vertex_ordinals: Vec<GraphPmaVertexOrdinalMapping>,
+    pub locators: Vec<GraphPmaEdgeLogicalLocatorMapping>,
+    pub refreshed: GraphPmaRefreshedVertices,
 }
 
-impl RewriteOverlayBootstrapGraphSummary {
+impl GraphPmaOverlayBootstrapGraphSummary {
     pub fn from_bootstrap_summaries(
-        node_summaries: &[RewriteOverlayNodeBootstrapSummary],
-        edge_summaries: &[RewriteOverlayEdgeBootstrapSummary],
-        locators: Vec<RewriteEdgeLogicalLocatorMapping>,
+        node_summaries: &[GraphPmaOverlayNodeBootstrapSummary],
+        edge_summaries: &[GraphPmaOverlayEdgeBootstrapSummary],
+        locators: Vec<GraphPmaEdgeLogicalLocatorMapping>,
     ) -> Self {
         let mut refreshed_forward = Vec::new();
         let mut refreshed_reverse = Vec::new();
@@ -176,12 +176,12 @@ impl RewriteOverlayBootstrapGraphSummary {
                 .map(|summary| summary.mapping())
                 .collect(),
             locators,
-            refreshed: RewriteRefreshedVertices::new(refreshed_forward, refreshed_reverse),
+            refreshed: GraphPmaRefreshedVertices::new(refreshed_forward, refreshed_reverse),
         }
     }
 
-    pub fn projection(&self) -> RewriteBootstrapGraphProjection {
-        RewriteBootstrapGraphProjection {
+    pub fn projection(&self) -> GraphPmaBootstrapGraphProjection {
+        GraphPmaBootstrapGraphProjection {
             vertex_ordinals: self.vertex_ordinals.clone(),
             locators: self.locators.clone(),
             refreshed: self.refreshed.clone(),
@@ -190,25 +190,25 @@ impl RewriteOverlayBootstrapGraphSummary {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum RewriteOverlayWriteEvent {
-    BootstrapNode(RewriteOverlayNodeBootstrapSummary),
-    BootstrapEdge(RewriteOverlayEdgeBootstrapSummary),
-    InsertEdge(RewriteOverlayInsertEdgeSummary),
-    BootstrapGraph(RewriteOverlayBootstrapGraphSummary),
-    Property(RewritePropertyMutationWriteSummary),
-    Edge(RewriteOverlayEdgeWriteSummary),
-    NodeDelete(RewriteOverlayNodeDeleteSummary),
+pub enum GraphPmaOverlayWriteEvent {
+    BootstrapNode(GraphPmaOverlayNodeBootstrapSummary),
+    BootstrapEdge(GraphPmaOverlayEdgeBootstrapSummary),
+    InsertEdge(GraphPmaOverlayInsertEdgeSummary),
+    BootstrapGraph(GraphPmaOverlayBootstrapGraphSummary),
+    Property(GraphPmaPropertyMutationWriteSummary),
+    Edge(GraphPmaOverlayEdgeWriteSummary),
+    NodeDelete(GraphPmaOverlayNodeDeleteSummary),
 }
 
-impl RewriteOverlayWriteEvent {
-    pub fn shared_projections(&self) -> Vec<RewriteWriteEventProjection> {
+impl GraphPmaOverlayWriteEvent {
+    pub fn shared_projections(&self) -> Vec<GraphPmaWriteEventProjection> {
         match self {
             Self::InsertEdge(summary) => {
                 let mut projections = Vec::with_capacity(2);
                 if let Some(ensure) = summary.ensure_capacity_projection() {
-                    projections.push(RewriteWriteEventProjection::EnsureCapacity(ensure));
+                    projections.push(GraphPmaWriteEventProjection::EnsureCapacity(ensure));
                 }
-                projections.push(RewriteWriteEventProjection::InsertEdge(
+                projections.push(GraphPmaWriteEventProjection::InsertEdge(
                     summary.projection(),
                 ));
                 projections
@@ -217,31 +217,31 @@ impl RewriteOverlayWriteEvent {
         }
     }
 
-    pub fn shared_projection(&self) -> Option<RewriteWriteEventProjection> {
+    pub fn shared_projection(&self) -> Option<GraphPmaWriteEventProjection> {
         match self {
-            Self::BootstrapNode(summary) => Some(RewriteWriteEventProjection::BootstrapVertices(
+            Self::BootstrapNode(summary) => Some(GraphPmaWriteEventProjection::BootstrapVertices(
                 summary.projection(),
             )),
-            Self::BootstrapEdge(summary) => Some(RewriteWriteEventProjection::BootstrapEdge(
+            Self::BootstrapEdge(summary) => Some(GraphPmaWriteEventProjection::BootstrapEdge(
                 summary.projection(),
             )),
-            Self::InsertEdge(summary) => Some(RewriteWriteEventProjection::InsertEdge(
+            Self::InsertEdge(summary) => Some(GraphPmaWriteEventProjection::InsertEdge(
                 summary.projection(),
             )),
-            Self::BootstrapGraph(summary) => Some(RewriteWriteEventProjection::BootstrapGraph(
+            Self::BootstrapGraph(summary) => Some(GraphPmaWriteEventProjection::BootstrapGraph(
                 summary.projection(),
             )),
             Self::Property(summary) => {
-                Some(RewriteWriteEventProjection::Property(summary.projection()))
+                Some(GraphPmaWriteEventProjection::Property(summary.projection()))
             }
-            Self::Edge(summary) => Some(RewriteWriteEventProjection::Edge(summary.projection())),
-            Self::NodeDelete(summary) => Some(RewriteWriteEventProjection::NodeDelete(
+            Self::Edge(summary) => Some(GraphPmaWriteEventProjection::Edge(summary.projection())),
+            Self::NodeDelete(summary) => Some(GraphPmaWriteEventProjection::NodeDelete(
                 summary.projection(),
             )),
         }
     }
 
-    pub fn node_delete_projection(&self) -> Option<RewriteNodeDeleteProjection> {
+    pub fn node_delete_projection(&self) -> Option<GraphPmaNodeDeleteProjection> {
         match self {
             Self::NodeDelete(summary) => Some(summary.projection()),
             _ => None,
@@ -249,21 +249,21 @@ impl RewriteOverlayWriteEvent {
     }
 }
 
-pub trait RewriteKernelOverlayObservability {
-    fn last_property_write_summary(&self) -> Option<&RewritePropertyMutationWriteSummary>;
-    fn property_write_history(&self) -> &[RewritePropertyMutationWriteSummary];
-    fn last_insert_edge_summary(&self) -> Option<&RewriteOverlayInsertEdgeSummary>;
-    fn insert_edge_history(&self) -> &[RewriteOverlayInsertEdgeSummary];
-    fn last_edge_write_summary(&self) -> Option<&RewriteOverlayEdgeWriteSummary>;
-    fn edge_write_history(&self) -> &[RewriteOverlayEdgeWriteSummary];
-    fn last_node_delete_summary(&self) -> Option<&RewriteOverlayNodeDeleteSummary>;
-    fn node_delete_history(&self) -> &[RewriteOverlayNodeDeleteSummary];
-    fn write_history(&self) -> &[RewriteOverlayWriteEvent];
+pub trait GraphPmaKernelOverlayObservability {
+    fn last_property_write_summary(&self) -> Option<&GraphPmaPropertyMutationWriteSummary>;
+    fn property_write_history(&self) -> &[GraphPmaPropertyMutationWriteSummary];
+    fn last_insert_edge_summary(&self) -> Option<&GraphPmaOverlayInsertEdgeSummary>;
+    fn insert_edge_history(&self) -> &[GraphPmaOverlayInsertEdgeSummary];
+    fn last_edge_write_summary(&self) -> Option<&GraphPmaOverlayEdgeWriteSummary>;
+    fn edge_write_history(&self) -> &[GraphPmaOverlayEdgeWriteSummary];
+    fn last_node_delete_summary(&self) -> Option<&GraphPmaOverlayNodeDeleteSummary>;
+    fn node_delete_history(&self) -> &[GraphPmaOverlayNodeDeleteSummary];
+    fn write_history(&self) -> &[GraphPmaOverlayWriteEvent];
 
-    fn shared_write_history(&self) -> Vec<RewriteWriteEventProjection> {
+    fn shared_write_history(&self) -> Vec<GraphPmaWriteEventProjection> {
         self.write_history()
             .iter()
-            .flat_map(RewriteOverlayWriteEvent::shared_projections)
+            .flat_map(GraphPmaOverlayWriteEvent::shared_projections)
             .collect()
     }
 

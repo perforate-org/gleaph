@@ -42,7 +42,7 @@
 //! ## `pma_graph_refresh_write.calls` on mutation benches (instrumentation vs code paths)
 //!
 //! The `pma_graph_refresh_write` [`canbench_rs::bench_scope`] is installed only on
-//! [`gleaph_graph_pma::facade::RewriteGraphPma::refresh_and_write_dirty_to_stable_memory`] (facade
+//! [`gleaph_graph_pma::facade::GraphPma::refresh_and_write_dirty_to_stable_memory`] (facade
 //! flush: graph refresh + optional property stores + PIDX paged flush + maintenance queue). It is
 //! **not** wrapped around low-level
 //! [`GraphRuntime::refresh_and_write_dirty_to_stable_memory`](gleaph_graph_pma::low_level::GraphRuntime::refresh_and_write_dirty_to_stable_memory),
@@ -105,7 +105,7 @@ use gleaph_gql_planner::build_plan_output;
 use gleaph_graph_kernel::PropertyMap;
 use gleaph_graph_pma::integration::{
     KernelBootstrapEdgeSpec, KernelBootstrapGraphSpec, KernelBootstrapNodeSpec,
-    RewriteGraphPmaKernelHarness,
+    GraphPmaKernelHarness,
 };
 
 fn execution_context() -> ExecutionContext {
@@ -317,7 +317,7 @@ macro_rules! bench_overlay_query {
     ($spec:expr, $q:expr) => {{
         let spec = $spec;
         wipe_for_bench_iteration();
-        let mut harness = RewriteGraphPmaKernelHarness::bootstrap_empty(BenchMemory::default())
+        let mut harness = GraphPmaKernelHarness::bootstrap_empty(BenchMemory::default())
             .expect("bootstrap_empty");
         let (mut graph, _) = harness.bind_overlay_with_graph(&spec).expect("seed");
         let ctx = execution_context();
@@ -331,7 +331,7 @@ macro_rules! bench_overlay_query_ctx {
     ($spec:expr, $ctx:expr, $q:expr) => {{
         let spec = $spec;
         wipe_for_bench_iteration();
-        let mut harness = RewriteGraphPmaKernelHarness::bootstrap_empty(BenchMemory::default())
+        let mut harness = GraphPmaKernelHarness::bootstrap_empty(BenchMemory::default())
             .expect("bootstrap_empty");
         let (mut graph, _) = harness.bind_overlay_with_graph(&spec).expect("seed");
         let ctx = $ctx;
@@ -351,7 +351,7 @@ macro_rules! bench_overlay_block {
     ($spec:expr, $block:expr) => {{
         let spec = $spec;
         wipe_for_bench_iteration();
-        let mut harness = RewriteGraphPmaKernelHarness::bootstrap_empty(BenchMemory::default())
+        let mut harness = GraphPmaKernelHarness::bootstrap_empty(BenchMemory::default())
             .expect("bootstrap_empty");
         let (mut graph, _) = harness.bind_overlay_with_graph(&spec).expect("seed");
         let ctx = execution_context();

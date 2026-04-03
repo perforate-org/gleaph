@@ -474,9 +474,9 @@ work; individual crates keep their own finer-grained docs.
 
 1. **Stable memory** holds region-managed bytes: adjacency, property append
    logs, property-index snapshots / paged node stores, and related metadata.
-2. **`RewriteGraphPma`** hydrates from those regions and exposes mutation +
+2. **`GraphPma`** hydrates from those regions and exposes mutation +
    `try_write_all_to_stable_memory` (or incremental write paths) after updates.
-3. **`RewriteKernelOverlayGraph`** implements **`GraphRead` / `GraphWrite`** for
+3. **`GraphPmaKernelOverlayGraph`** implements **`GraphRead` / `GraphWrite`** for
    the kernel-facing graph service: traversals, DML, and property lookups merge
    hydrated structures with any dirty overlay state.
 4. **Property equality search** for queries must converge on:
@@ -551,7 +551,7 @@ work; individual crates keep their own finer-grained docs.
 
 ### Observability and benchmarks
 
-- **Contract tests:** planner + executor + `RewriteKernelOverlayGraph` (or
+- **Contract tests:** planner + executor + `GraphPmaKernelOverlayGraph` (or
   harness equivalent) for indexed equality queries.
 - **Benchmarks:** hot paths are **stable-memory equality scans** and **index-
   backed `GraphRead::scan_*_by_property`** over increasing entry counts;

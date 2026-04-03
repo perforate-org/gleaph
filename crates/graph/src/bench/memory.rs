@@ -55,4 +55,4 @@ impl gleaph_graph_pma::stable::Memory for IcStableMemory {
 pub(super) type BenchMemory = IcStableMemory;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(super) type BenchMemory = gleaph_graph_pma::RewriteVecMemory;
+pub(super) type BenchMemory = gleaph_graph_pma::GraphPmaVecMemory;

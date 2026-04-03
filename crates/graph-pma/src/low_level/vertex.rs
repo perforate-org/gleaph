@@ -17,7 +17,7 @@ pub const LOG_OFFSET_BITS_MASK: u32 = (1 << 30) - 1;
 /// Packed raw value meaning "no overflow chain" and "not tombstoned".
 pub const EMPTY_LOG_OFFSET: i32 = LOG_EMPTY_BIT as i32;
 
-/// Compatibility wrapper for the legacy single-extent edge-index model.
+/// Wrapper for single-extent edge-index layouts (segment `0` flat storage).
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct EdgeIndex {
