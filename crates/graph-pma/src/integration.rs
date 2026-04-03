@@ -827,6 +827,7 @@ mod tests {
         graph
             .set_node_property(alice.id, "uid", &Value::Text("alice".into()))
             .expect("set node property");
+        graph.flush().expect("flush after deferred property set");
         let summary = graph
             .last_property_write_summary()
             .expect("node property summary");
@@ -867,6 +868,7 @@ mod tests {
         graph
             .set_edge_property(edge.id, "weight", &Value::Int64(1))
             .expect("set edge property");
+        graph.flush().expect("flush after deferred edge property set");
         let edge_summary = graph
             .last_property_write_summary()
             .expect("edge property summary");

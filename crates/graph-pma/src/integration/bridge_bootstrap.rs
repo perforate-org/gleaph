@@ -5,8 +5,8 @@ use gleaph_graph_kernel::{
 };
 
 use crate::facade::{
-    RewriteEdgeLogicalLocatorMapping, RewriteGraphStore, RewritePropertyMutationWriteSummary,
-    RewriteRefreshedVertices, RewriteVertexOrdinalMapping,
+    RewriteEdgeLogicalLocatorMapping, RewriteGraphStore, RewritePropertyIndexTouchedSections,
+    RewritePropertyMutationWriteSummary, RewriteRefreshedVertices, RewriteVertexOrdinalMapping,
 };
 use crate::low_level::{EdgeInsertPath, VertexRef};
 use crate::stable::Memory;
@@ -150,6 +150,49 @@ impl<'a, S: RewriteGraphStore, M: Memory> RewriteKernelBootstrapBridge<'a, S, M>
         self.property_write_history.push(summary);
         if self.property_write_history.len() > OVERLAY_SUMMARY_HISTORY_LIMIT {
             self.property_write_history.remove(0);
+        }
+    }
+
+    pub(crate) fn patch_pending_property_summaries_after_stable_flush(
+        &mut self,
+        refreshed: RewriteRefreshedVertices,
+    ) {
+        for event in &mut self.write_history {
+            if let RewriteOverlayWriteEvent::Property(summary) = event {
+                if summary.is_pending_stable_flush() {
+                    summary.flushed_sections = summary.mutation.sections;
+                    if !summary.flushed_sections.property_store
+                        && !summary.flushed_sections.logical_index
+                        && !summary.flushed_sections.node_store
+                    {
+                        summary.flushed_sections = RewritePropertyIndexTouchedSections {
+                            property_store: true,
+                            logical_index: true,
+                            node_store: true,
+                        };
+                    }
+                    summary.refreshed = refreshed.clone();
+                }
+            }
+        }
+        for summary in &mut self.property_write_history {
+            if summary.is_pending_stable_flush() {
+                summary.flushed_sections = summary.mutation.sections;
+                if !summary.flushed_sections.property_store
+                    && !summary.flushed_sections.logical_index
+                    && !summary.flushed_sections.node_store
+                {
+                    summary.flushed_sections = RewritePropertyIndexTouchedSections {
+                        property_store: true,
+                        logical_index: true,
+                        node_store: true,
+                    };
+                }
+                summary.refreshed = refreshed.clone();
+            }
+        }
+        if let Some(last) = self.property_write_history.last() {
+            self.last_property_write_summary = Some(last.clone());
         }
     }
 

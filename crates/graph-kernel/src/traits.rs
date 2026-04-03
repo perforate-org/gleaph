@@ -157,4 +157,13 @@ pub trait GraphWrite {
     fn delete_edge(&mut self, edge_id: EdgeId) -> GraphResult<()>;
 
     fn delete_node(&mut self, node_id: NodeId, detach: bool) -> GraphResult<()>;
+
+    /// Persists any deferred graph mutations (e.g. stable-memory writeback).
+    ///
+    /// Default is a no-op for purely in-memory graphs. Persistent backends should
+    /// override this and callers should invoke it after a logical write batch such as
+    /// a full plan execution.
+    fn flush(&mut self) -> GraphResult<()> {
+        Ok(())
+    }
 }

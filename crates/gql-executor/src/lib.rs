@@ -467,6 +467,10 @@ pub fn execute_plan_with_context<G: GraphRead + GraphWrite>(
         .collect();
     let summary = ExecutionSummary::from_result(&rows, &warnings, plan);
 
+    #[cfg(feature = "canbench-rs")]
+    let _flush_scope = canbench_rs::bench_scope("gql_exec_plan_flush");
+    graph.flush()?;
+
     Ok(ExecutionResult {
         rows,
         warnings,
@@ -1060,6 +1064,8 @@ fn exec_set_properties<G: GraphRead + GraphWrite>(
                     property,
                     value,
                 } => {
+                    #[cfg(feature = "canbench-rs")]
+                    let _set_item_scope = canbench_rs::bench_scope("gql_exec_set_property_item");
                     let evaluated = eval_expr(graph, &row, value, ctx)?;
                     match row.get(variable.as_ref()) {
                         Some(BindingValue::Node(node)) => {

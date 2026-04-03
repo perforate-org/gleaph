@@ -4,6 +4,11 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 
+[features]
+default = []
+# Enables `canbench_rs::bench_scope` in executor hot paths when the canister builds with canbench.
+canbench-rs = ["dep:canbench-rs"]
+
 [dependencies]
 async-trait = "0.1"
 futures = "0.3"
@@ -11,6 +16,7 @@ gleaph-gql = { path = "../gql" }
 gleaph-gql-planner = { path = "../gql-planner" }
 gleaph-graph-kernel = { path = "../graph-kernel" }
 thiserror.workspace = true
+canbench-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
 gleaph-graph-pma = { path = "../graph-pma" }

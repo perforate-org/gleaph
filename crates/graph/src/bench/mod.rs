@@ -10,7 +10,19 @@
 //! [canbench_rs](https://docs.rs/canbench-rs/latest/canbench_rs/) (“Granular Benchmarking”).
 //! Names include `gql_block_parse`, `gql_block_plan`, `gql_block_execute`, and
 //! `pma_graph_refresh_write`, `pma_node_property_store_flush`, `pma_edge_property_store_flush`,
-//! `pma_property_index_paged_flush`, `pma_maint_queue_persist`.
+//! `pma_property_index_paged_flush`, `pma_maint_queue_persist`, finer PIDX scopes inside flush
+//! (`pma_pidx_*`), and (when enabled) `gql_exec_set_property_item` / `gql_exec_plan_flush`.
+//!
+//! ## Reading mutation baseline (`canbench_results.yml`)
+//!
+//! For each `bench_gql_execute_block_*` entry, compare `total.instructions` to
+//! `scopes` (e.g. `pma_property_index_paged_flush.instructions`) and note each scope’s `calls`
+//! (how often that region was entered). Multiple properties or flushes can increment the same
+//! label more than once per bench sample.
+//!
+//! Prefer refreshing results with **`cd crates/graph && canbench --persist` without a bench
+//! filter** so `canbench_results.yml` keeps the full benchmark list instead of shrinking to one
+//! entry.
 
 mod memory;
 
@@ -27,7 +39,6 @@ use gleaph_graph_pma::integration::{
     KernelBootstrapEdgeSpec, KernelBootstrapGraphSpec, KernelBootstrapNodeSpec,
     RewriteGraphPmaKernelHarness,
 };
-
 use crate::{
     execute_block_str, execute_query_str, parse_block, parse_query, plan_block,
     standard_procedure_registry,
@@ -171,6 +182,69 @@ fn seed_one_user_uid(uid: &str) -> KernelBootstrapGraphSpec {
     props.insert("uid".into(), Value::Text(uid.into()));
     KernelBootstrapGraphSpec::empty()
         .with_node(KernelBootstrapNodeSpec::from_parts(&["User"], &props))
+}
+
+/// Two `User` nodes and one `KNOWS` edge `u0 → u1` (for edge-property / `DELETE` edge benches).
+fn seed_two_users_knows_edge() -> KernelBootstrapGraphSpec {
+    let mut u0 = PropertyMap::new();
+    u0.insert("uid".into(), Value::Text("u0".into()));
+    let mut u1 = PropertyMap::new();
+    u1.insert("uid".into(), Value::Text("u1".into()));
+    KernelBootstrapGraphSpec::empty()
+        .with_node(KernelBootstrapNodeSpec::from_parts(&["User"], &u0))
+        .with_node(KernelBootstrapNodeSpec::from_parts(&["User"], &u1))
+        .with_edge(KernelBootstrapEdgeSpec::from_parts(
+            0,
+            1,
+            Some("KNOWS"),
+            &PropertyMap::new(),
+        ))
+}
+
+/// `u0 → u1` plus isolated `u2` (no incident edges) so plain `DELETE` on `u2` is valid.
+fn seed_two_users_knows_plus_isolated_leaf() -> KernelBootstrapGraphSpec {
+    let mut u0 = PropertyMap::new();
+    u0.insert("uid".into(), Value::Text("u0".into()));
+    let mut u1 = PropertyMap::new();
+    u1.insert("uid".into(), Value::Text("u1".into()));
+    let mut u2 = PropertyMap::new();
+    u2.insert("uid".into(), Value::Text("u2".into()));
+    KernelBootstrapGraphSpec::empty()
+        .with_node(KernelBootstrapNodeSpec::from_parts(&["User"], &u0))
+        .with_node(KernelBootstrapNodeSpec::from_parts(&["User"], &u1))
+        .with_node(KernelBootstrapNodeSpec::from_parts(&["User"], &u2))
+        .with_edge(KernelBootstrapEdgeSpec::from_parts(
+            0,
+            1,
+            Some("KNOWS"),
+            &PropertyMap::new(),
+        ))
+}
+
+/// Linear chain `u0 → u1 → u2` for `DETACH DELETE` on the middle vertex.
+fn seed_three_users_path() -> KernelBootstrapGraphSpec {
+    let mut u0 = PropertyMap::new();
+    u0.insert("uid".into(), Value::Text("u0".into()));
+    let mut u1 = PropertyMap::new();
+    u1.insert("uid".into(), Value::Text("u1".into()));
+    let mut u2 = PropertyMap::new();
+    u2.insert("uid".into(), Value::Text("u2".into()));
+    KernelBootstrapGraphSpec::empty()
+        .with_node(KernelBootstrapNodeSpec::from_parts(&["User"], &u0))
+        .with_node(KernelBootstrapNodeSpec::from_parts(&["User"], &u1))
+        .with_node(KernelBootstrapNodeSpec::from_parts(&["User"], &u2))
+        .with_edge(KernelBootstrapEdgeSpec::from_parts(
+            0,
+            1,
+            Some("KNOWS"),
+            &PropertyMap::new(),
+        ))
+        .with_edge(KernelBootstrapEdgeSpec::from_parts(
+            1,
+            2,
+            Some("KNOWS"),
+            &PropertyMap::new(),
+        ))
 }
 
 // --- Macros: warm PMA once, measure query/body only ---
@@ -531,3 +605,78 @@ fn bench_gql_execute_block_remove_property() -> canbench_rs::BenchResult {
         "MATCH (n:User) REMOVE n.uid RETURN n"
     )
 }
+
+/// Set a property on a matched relationship (stress on edge property store + edge PIDX).
+#[bench(raw)]
+fn bench_gql_execute_block_set_edge_property() -> canbench_rs::BenchResult {
+    bench_overlay_block!(
+        seed_two_users_knows_edge(),
+        "MATCH (a:User {uid: 'u0'})-[e:KNOWS]->(b:User {uid: 'u1'}) SET e.weight = 1 RETURN e"
+    )
+}
+
+/// Two statements in one block (`NEXT`): `SET` then `REMOVE` on the same graph (see PMA `calls`).
+#[bench(raw)]
+fn bench_gql_execute_block_set_then_remove_next() -> canbench_rs::BenchResult {
+    bench_overlay_block!(
+        seed_one_user_uid("u1"),
+        "MATCH (n:User {uid: 'u1'}) SET n.name = 'alice', n.role = 'admin' RETURN n \
+         NEXT MATCH (n:User {uid: 'u1'}) REMOVE n.role RETURN n"
+    )
+}
+
+/// Remove the only relationship on the seeded graph; later samples match zero rows (cost shifts).
+#[bench(raw)]
+fn bench_gql_execute_block_delete_edge() -> canbench_rs::BenchResult {
+    bench_overlay_block!(
+        seed_two_users_knows_edge(),
+        "MATCH (a:User {uid: 'u0'})-[e:KNOWS]->(b:User {uid: 'u1'}) DELETE e"
+    )
+}
+
+/// Delete an isolated `User` (`u2` has no edges); first sample removes it, later samples match nothing.
+#[bench(raw)]
+fn bench_gql_execute_block_delete_vertex() -> canbench_rs::BenchResult {
+    bench_overlay_block!(
+        seed_two_users_knows_plus_isolated_leaf(),
+        "MATCH (n:User {uid: 'u2'}) DELETE n"
+    )
+}
+
+/// `DETACH DELETE` the middle vertex of a chain; first sample is structural DML, later samples idle.
+#[bench(raw)]
+fn bench_gql_execute_block_detach_delete_vertex() -> canbench_rs::BenchResult {
+    bench_overlay_block!(
+        seed_three_users_path(),
+        "MATCH (n:User {uid: 'u1'}) DETACH DELETE n"
+    )
+}
+
+/// `NEXT`: two `SET` clauses (two planner statements / potential flush boundaries; graph growth stress on `role`).
+#[bench(raw)]
+fn bench_gql_execute_block_set_twice_next() -> canbench_rs::BenchResult {
+    bench_overlay_block!(
+        seed_one_user_uid("u1"),
+        "MATCH (n:User {uid: 'u1'}) SET n.name = 'a' RETURN n \
+         NEXT MATCH (n:User {uid: 'u1'}) SET n.role = 'b' RETURN n"
+    )
+}
+
+/// Three new properties on one `SET` (executor `SetProperties` + single flush shape vs 1-prop / 5-prop).
+#[bench(raw)]
+fn bench_gql_execute_block_set_three_properties() -> canbench_rs::BenchResult {
+    bench_overlay_block!(
+        seed_one_user_uid("u1"),
+        "MATCH (n:User) SET n.p1 = 1, n.p2 = 2, n.p3 = 3 RETURN n"
+    )
+}
+
+/// Five new properties on one `SET` (growth stress; compare `gql_exec_set_property_item` `calls`).
+#[bench(raw)]
+fn bench_gql_execute_block_set_five_properties() -> canbench_rs::BenchResult {
+    bench_overlay_block!(
+        seed_one_user_uid("u1"),
+        "MATCH (n:User) SET n.p1 = 1, n.p2 = 2, n.p3 = 3, n.p4 = 4, n.p5 = 5 RETURN n"
+    )
+}
+

@@ -5,7 +5,9 @@ use gleaph_graph_kernel::{
     EdgeId, EdgeRecord, GraphError, GraphResult, LabelId, NodeId, NodeRecord, PropertyMap,
 };
 
-use crate::facade::{RewriteGraphStore, RewriteVertexOrdinalMapping};
+use crate::facade::{
+    RewriteGraphStore, RewritePropertyMutationWriteSummary, RewriteVertexOrdinalMapping,
+};
 use crate::low_level::{EdgeInsertPath, LogicalEdgeLocator, RegionKind, VertexRef};
 use crate::property_index::{
     scan_edge_property_index_value_prefix_from_stable_memory,
@@ -62,22 +64,26 @@ impl<'a, S: RewriteGraphStore, M: Memory> RewriteKernelBootstrapBridge<'a, S, M>
 
     pub(crate) fn remove_persisted_node_properties(&mut self, node_id: NodeId) -> GraphResult<()> {
         for property in self.load_node_properties(node_id).into_keys() {
-            let summary = self
+            let mutation = self
                 .store
-                .remove_node_property_value_and_write(node_id, &property, self.memory)
-                .map_err(|err| GraphError::Message(err.to_string()))?;
-            self.record_property_write_summary(summary);
+                .remove_node_property_value_with_summary(node_id, &property)
+                .map_err(Self::property_store_error)?;
+            self.record_property_write_summary(
+                RewritePropertyMutationWriteSummary::pending_from_mutation(mutation),
+            );
         }
         Ok(())
     }
 
     pub(crate) fn remove_persisted_edge_properties(&mut self, edge_id: EdgeId) -> GraphResult<()> {
         for property in self.load_edge_properties(edge_id).into_keys() {
-            let summary = self
+            let mutation = self
                 .store
-                .remove_edge_property_value_and_write(edge_id, &property, self.memory)
-                .map_err(|err| GraphError::Message(err.to_string()))?;
-            self.record_property_write_summary(summary);
+                .remove_edge_property_value_with_summary(edge_id, &property)
+                .map_err(Self::property_store_error)?;
+            self.record_property_write_summary(
+                RewritePropertyMutationWriteSummary::pending_from_mutation(mutation),
+            );
         }
         Ok(())
     }

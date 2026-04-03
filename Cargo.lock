@@ -1445,6 +1445,7 @@ name = "gleaph-gql-executor"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "canbench-rs",
  "futures",
  "gleaph-gql",
  "gleaph-gql-planner",

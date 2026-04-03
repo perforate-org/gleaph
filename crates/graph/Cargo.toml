@@ -10,7 +10,11 @@ crate-type = ["cdylib", "rlib"]
 [features]
 default = []
 cypher = ["gleaph-gql/cypher", "gleaph-gql-planner/cypher"]
-canbench-rs = ["dep:canbench-rs", "gleaph-graph-pma/canbench-rs"]
+canbench-rs = [
+    "dep:canbench-rs",
+    "gleaph-graph-pma/canbench-rs",
+    "gleaph-gql-executor/canbench-rs",
+]
 
 [dependencies]
 async-trait = "0.1"

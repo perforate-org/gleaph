@@ -380,6 +380,36 @@ pub trait RewriteGraphStore {
         property: &str,
     ) -> Result<(), PropertyStoreError>;
 
+    /// Like [`Self::set_node_property_value`], plus a structured property-index mutation summary.
+    fn set_node_property_value_with_summary(
+        &mut self,
+        node_id: NodeId,
+        property: &str,
+        value: &Value,
+    ) -> Result<RewritePropertyIndexMutationSummary, PropertyStoreError>;
+
+    /// Like [`Self::remove_node_property_value`], plus a structured property-index mutation summary.
+    fn remove_node_property_value_with_summary(
+        &mut self,
+        node_id: NodeId,
+        property: &str,
+    ) -> Result<RewritePropertyIndexMutationSummary, PropertyStoreError>;
+
+    /// Like [`Self::set_edge_property_value`], plus a structured property-index mutation summary.
+    fn set_edge_property_value_with_summary(
+        &mut self,
+        edge_id: EdgeId,
+        property: &str,
+        value: &Value,
+    ) -> Result<RewritePropertyIndexMutationSummary, PropertyStoreError>;
+
+    /// Like [`Self::remove_edge_property_value`], plus a structured property-index mutation summary.
+    fn remove_edge_property_value_with_summary(
+        &mut self,
+        edge_id: EdgeId,
+        property: &str,
+    ) -> Result<RewritePropertyIndexMutationSummary, PropertyStoreError>;
+
     /// Appends or overwrites one node property, then flushes dirty state.
     fn set_node_property_value_and_write(
         &mut self,

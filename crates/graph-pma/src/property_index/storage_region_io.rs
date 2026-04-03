@@ -147,46 +147,66 @@ pub fn write_property_index_paged_stores_to_stable_memory(
                 let off = PropertyIndexRegionHeader::ENCODED_LEN
                     .checked_add(h.snapshot_len as usize)
                     .ok_or(PropertyIndexError::LengthOverflow)?;
-                read_property_index_region_slice(manager, memory, off, h.node_store_len as usize).ok()
+                {
+                    let _read = crate::canbench_scope::scope("pma_pidx_read_node_old");
+                    read_property_index_region_slice(manager, memory, off, h.node_store_len as usize).ok()
+                }
             }
         } else {
             None
         };
         if let Some(ref old) = old_node_slice {
-            if let Ok(Some(patched)) =
+            let inc = {
+                let _inc = crate::canbench_scope::scope("pma_pidx_node_inc");
                 PropertyIndexNodeStore::try_encode_paged_area_incremental(node_store, old)
-            {
+            };
+            if let Ok(Some(patched)) = inc {
                 crate::bench_profile::record_stat("pidx_node_incremental_paged_flush", 1);
                 patched
-            } else if let Ok(Some(patched)) =
-                PropertyIndexNodeStore::try_encode_paged_area_zero_overflow_tail_extend(
-                    node_store, old,
-                )
-            {
-                crate::bench_profile::record_stat("pidx_node_tail_extend_paged_flush", 1);
-                patched
             } else {
-                node_store.encode_paged_area()?
+                let tail = {
+                    let _tail = crate::canbench_scope::scope("pma_pidx_node_tail");
+                    PropertyIndexNodeStore::try_encode_paged_area_zero_overflow_tail_extend(
+                        node_store, old,
+                    )
+                };
+                if let Ok(Some(patched)) = tail {
+                    crate::bench_profile::record_stat("pidx_node_tail_extend_paged_flush", 1);
+                    patched
+                } else {
+                    let _full = crate::canbench_scope::scope("pma_pidx_node_full");
+                    node_store.encode_paged_area()?
+                }
             }
         } else {
+            let _full = crate::canbench_scope::scope("pma_pidx_node_full");
             node_store.encode_paged_area()?
         }
     } else if let Some(ref h) = header_existing {
         if h.node_store_len == 0 {
+            let _full = crate::canbench_scope::scope("pma_pidx_node_full");
             node_store.encode_paged_area()?
         } else {
             let off = PropertyIndexRegionHeader::ENCODED_LEN
                 .checked_add(h.snapshot_len as usize)
                 .ok_or(PropertyIndexError::LengthOverflow)?;
-            match read_property_index_region_slice(manager, memory, off, h.node_store_len as usize) {
+            let read_res = {
+                let _reuse = crate::canbench_scope::scope("pma_pidx_read_node_reuse");
+                read_property_index_region_slice(manager, memory, off, h.node_store_len as usize)
+            };
+            match read_res {
                 Ok(b) => {
                     node_from_encode = false;
                     b
                 }
-                Err(_) => node_store.encode_paged_area()?,
+                Err(_) => {
+                    let _full = crate::canbench_scope::scope("pma_pidx_node_full");
+                    node_store.encode_paged_area()?
+                }
             }
         }
     } else {
+        let _full = crate::canbench_scope::scope("pma_pidx_node_full");
         node_store.encode_paged_area()?
     };
 
@@ -200,47 +220,67 @@ pub fn write_property_index_paged_stores_to_stable_memory(
                     .checked_add(h.snapshot_len as usize)
                     .and_then(|v| v.checked_add(h.node_store_len as usize))
                     .ok_or(PropertyIndexError::LengthOverflow)?;
-                read_property_index_region_slice(manager, memory, off, h.edge_store_len as usize).ok()
+                {
+                    let _read = crate::canbench_scope::scope("pma_pidx_read_edge_old");
+                    read_property_index_region_slice(manager, memory, off, h.edge_store_len as usize).ok()
+                }
             }
         } else {
             None
         };
         if let Some(ref old) = old_edge_slice {
-            if let Ok(Some(patched)) =
+            let inc = {
+                let _inc = crate::canbench_scope::scope("pma_pidx_edge_inc");
                 PropertyIndexNodeStore::try_encode_paged_area_incremental(edge_store, old)
-            {
+            };
+            if let Ok(Some(patched)) = inc {
                 crate::bench_profile::record_stat("pidx_edge_incremental_paged_flush", 1);
                 patched
-            } else if let Ok(Some(patched)) =
-                PropertyIndexNodeStore::try_encode_paged_area_zero_overflow_tail_extend(
-                    edge_store, old,
-                )
-            {
-                crate::bench_profile::record_stat("pidx_edge_tail_extend_paged_flush", 1);
-                patched
             } else {
-                edge_store.encode_paged_area()?
+                let tail = {
+                    let _tail = crate::canbench_scope::scope("pma_pidx_edge_tail");
+                    PropertyIndexNodeStore::try_encode_paged_area_zero_overflow_tail_extend(
+                        edge_store, old,
+                    )
+                };
+                if let Ok(Some(patched)) = tail {
+                    crate::bench_profile::record_stat("pidx_edge_tail_extend_paged_flush", 1);
+                    patched
+                } else {
+                    let _full = crate::canbench_scope::scope("pma_pidx_edge_full");
+                    edge_store.encode_paged_area()?
+                }
             }
         } else {
+            let _full = crate::canbench_scope::scope("pma_pidx_edge_full");
             edge_store.encode_paged_area()?
         }
     } else if let Some(ref h) = header_existing {
         if h.edge_store_len == 0 {
+            let _full = crate::canbench_scope::scope("pma_pidx_edge_full");
             edge_store.encode_paged_area()?
         } else {
             let off = PropertyIndexRegionHeader::ENCODED_LEN
                 .checked_add(h.snapshot_len as usize)
                 .and_then(|v| v.checked_add(h.node_store_len as usize))
                 .ok_or(PropertyIndexError::LengthOverflow)?;
-            match read_property_index_region_slice(manager, memory, off, h.edge_store_len as usize) {
+            let read_res = {
+                let _reuse = crate::canbench_scope::scope("pma_pidx_read_edge_reuse");
+                read_property_index_region_slice(manager, memory, off, h.edge_store_len as usize)
+            };
+            match read_res {
                 Ok(b) => {
                     edge_from_encode = false;
                     b
                 }
-                Err(_) => edge_store.encode_paged_area()?,
+                Err(_) => {
+                    let _full = crate::canbench_scope::scope("pma_pidx_edge_full");
+                    edge_store.encode_paged_area()?
+                }
             }
         }
     } else {
+        let _full = crate::canbench_scope::scope("pma_pidx_edge_full");
         edge_store.encode_paged_area()?
     };
 
@@ -272,7 +312,10 @@ pub fn write_property_index_paged_stores_to_stable_memory(
     encoded.extend_from_slice(&node_bytes);
     encoded.extend_from_slice(&edge_bytes);
 
-    write_property_index_region_bytes(manager, memory, &encoded)?;
+    {
+        let _write = crate::canbench_scope::scope("pma_pidx_write_region");
+        write_property_index_region_bytes(manager, memory, &encoded)?;
+    }
     node_store.pidx_side_must_flush = false;
     edge_store.pidx_side_must_flush = false;
     Ok(())

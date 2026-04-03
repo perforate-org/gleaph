@@ -146,6 +146,40 @@ where
         (**self).remove_edge_property_value(edge_id, property)
     }
 
+    fn set_node_property_value_with_summary(
+        &mut self,
+        node_id: NodeId,
+        property: &str,
+        value: &Value,
+    ) -> Result<RewritePropertyIndexMutationSummary, PropertyStoreError> {
+        (**self).set_node_property_value_with_summary(node_id, property, value)
+    }
+
+    fn remove_node_property_value_with_summary(
+        &mut self,
+        node_id: NodeId,
+        property: &str,
+    ) -> Result<RewritePropertyIndexMutationSummary, PropertyStoreError> {
+        (**self).remove_node_property_value_with_summary(node_id, property)
+    }
+
+    fn set_edge_property_value_with_summary(
+        &mut self,
+        edge_id: EdgeId,
+        property: &str,
+        value: &Value,
+    ) -> Result<RewritePropertyIndexMutationSummary, PropertyStoreError> {
+        (**self).set_edge_property_value_with_summary(edge_id, property, value)
+    }
+
+    fn remove_edge_property_value_with_summary(
+        &mut self,
+        edge_id: EdgeId,
+        property: &str,
+    ) -> Result<RewritePropertyIndexMutationSummary, PropertyStoreError> {
+        (**self).remove_edge_property_value_with_summary(edge_id, property)
+    }
+
     fn set_node_property_value_and_write(
         &mut self,
         node_id: NodeId,
@@ -395,6 +429,40 @@ impl RewriteGraphStore for RewriteGraphPma {
         property: &str,
     ) -> Result<(), PropertyStoreError> {
         Self::remove_edge_property_value(self, edge_id, property)
+    }
+
+    fn set_node_property_value_with_summary(
+        &mut self,
+        node_id: NodeId,
+        property: &str,
+        value: &Value,
+    ) -> Result<RewritePropertyIndexMutationSummary, PropertyStoreError> {
+        Self::set_node_property_value_with_summary(self, node_id, property, value)
+    }
+
+    fn remove_node_property_value_with_summary(
+        &mut self,
+        node_id: NodeId,
+        property: &str,
+    ) -> Result<RewritePropertyIndexMutationSummary, PropertyStoreError> {
+        Self::remove_node_property_value_with_summary(self, node_id, property)
+    }
+
+    fn set_edge_property_value_with_summary(
+        &mut self,
+        edge_id: EdgeId,
+        property: &str,
+        value: &Value,
+    ) -> Result<RewritePropertyIndexMutationSummary, PropertyStoreError> {
+        Self::set_edge_property_value_with_summary(self, edge_id, property, value)
+    }
+
+    fn remove_edge_property_value_with_summary(
+        &mut self,
+        edge_id: EdgeId,
+        property: &str,
+    ) -> Result<RewritePropertyIndexMutationSummary, PropertyStoreError> {
+        Self::remove_edge_property_value_with_summary(self, edge_id, property)
     }
 
     fn set_node_property_value_and_write(

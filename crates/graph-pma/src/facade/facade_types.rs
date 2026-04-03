@@ -565,6 +565,25 @@ impl RewritePropertyIndexMutationSummary {
 }
 
 impl RewritePropertyMutationWriteSummary {
+    /// Property mutation recorded before stable writeback (until `flush` on the graph).
+    pub fn pending_from_mutation(mutation: RewritePropertyIndexMutationSummary) -> Self {
+        Self {
+            mutation,
+            flushed_sections: RewritePropertyIndexTouchedSections {
+                property_store: false,
+                logical_index: false,
+                node_store: false,
+            },
+            refreshed: RewriteRefreshedVertices::new(Vec::new(), Vec::new()),
+        }
+    }
+
+    pub fn is_pending_stable_flush(&self) -> bool {
+        !self.flushed_sections.property_store
+            && !self.flushed_sections.logical_index
+            && !self.flushed_sections.node_store
+    }
+
     pub fn projection(&self) -> RewritePropertyWriteProjection {
         RewritePropertyWriteProjection {
             sections: self.mutation.sections,
