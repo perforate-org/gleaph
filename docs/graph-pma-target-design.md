@@ -556,6 +556,10 @@ work; individual crates keep their own finer-grained docs.
 - **Benchmarks:** hot paths are **stable-memory equality scans** and **index-
   backed `GraphRead::scan_*_by_property`** over increasing entry counts;
   regressions should be caught in CI when benches are run.
+- **Wasm SIMD:** property-index `PropertyIndexKey` comparisons use a vectorized
+  path when the canister (or `wasm32-unknown-unknown` bench build) is compiled
+  with **`-C target-feature=+simd128`** (e.g. `RUSTFLAGS='-C target-feature=+simd128' cargo build ...`).
+  Builds without that flag still use a portable scalar fast path (big-endian `u64` chunks).
 
 ### Non-goals (this milestone)
 

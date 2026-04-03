@@ -3,6 +3,7 @@
 //! Primary graph persistence and adjacency implementation for `graph-pma`.
 
 pub(crate) mod bench_profile;
+pub(crate) mod byte_compare;
 pub(crate) mod canbench_scope;
 pub mod facade;
 pub mod integration;

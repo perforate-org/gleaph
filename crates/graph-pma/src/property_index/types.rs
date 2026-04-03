@@ -458,7 +458,7 @@ impl PropertyIndexNodeRecord {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PropertyIndexKey {
     pub entity_kind: PropertyIndexEntityKind,
     pub property_name: String,
@@ -594,13 +594,13 @@ impl PropertyIndexKey {
         encoded_value: &[u8],
     ) -> bool {
         self.matches_property_prefix(entity_kind, property_name)
-            && self.encoded_value == encoded_value
+            && crate::byte_compare::eq_u8_slices(&self.encoded_value, encoded_value)
     }
 
     /// Inclusive start bound for [`StableBTreeMap::range`] when scanning all index entries
     /// for one `(entity_kind, property_name)` (any `encoded_value` / `entity_id`).
     ///
-    /// Ordering is [`PropertyIndexKey`]'s derived [`Ord`]: `(entity_kind, property_name,
+    /// Ordering matches [`PropertyIndexKey`]'s [`Ord`]: `(entity_kind, property_name,
     /// encoded_value, entity_id)`.
     pub fn btree_property_range_start(
         entity_kind: PropertyIndexEntityKind,
@@ -625,6 +625,24 @@ impl PropertyIndexKey {
             name_limits::MAX_PROPERTY_NAME_BYTES,
         )?;
         Some(Self::property_lower_bound(entity_kind, next))
+    }
+}
+
+impl Ord for PropertyIndexKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.entity_kind
+            .cmp(&other.entity_kind)
+            .then_with(|| self.property_name.cmp(&other.property_name))
+            .then_with(|| {
+                crate::byte_compare::lex_cmp_u8_slices(&self.encoded_value, &other.encoded_value)
+            })
+            .then_with(|| self.entity_id.cmp(&other.entity_id))
+    }
+}
+
+impl PartialOrd for PropertyIndexKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
     }
 }
 
