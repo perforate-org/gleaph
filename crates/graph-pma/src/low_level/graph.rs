@@ -8,7 +8,7 @@ use gleaph_graph_kernel::{EdgeId, LabelId};
 use super::edge::{EdgeEntry, EdgeMeta};
 use super::extent::{EdgeSegmentHeader, EdgeSegmentState};
 use super::hydration::{
-    WritebackError, write_dirty_forward_surface_runtime_to_stable_memory,
+    HydrationError, WritebackError, write_dirty_forward_surface_runtime_to_stable_memory,
     write_dirty_reverse_surface_runtime_to_stable_memory,
 };
 use super::ids::VertexRef;
@@ -64,12 +64,35 @@ pub struct EdgePairLogicalLocators {
     pub reverse: super::edge::LogicalEdgeLocator,
 }
 
+/// Forward and reverse [`EdgeMeta`] for the two physical slots of one logical edge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EdgeDirectedMetaPair {
+    pub forward: EdgeMeta,
+    pub reverse: EdgeMeta,
+}
+
+impl EdgeDirectedMetaPair {
+    /// Both surfaces store the same local label (same-canister endpoints on both sides).
+    pub fn both_local_label(label_id: LabelId) -> Self {
+        Self {
+            forward: EdgeMeta::new(label_id, false),
+            reverse: EdgeMeta::new(label_id, false),
+        }
+    }
+}
+
+impl From<LabelId> for EdgeDirectedMetaPair {
+    fn from(label_id: LabelId) -> Self {
+        Self::both_local_label(label_id)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EdgeReplaceSpec {
     pub edge_id: EdgeId,
     pub endpoints: EdgePairEndpoints,
     pub locators: EdgePairLogicalLocators,
-    pub label_id: LabelId,
+    pub edge_meta: EdgeDirectedMetaPair,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,7 +114,7 @@ pub struct RebalancePrepareSpec<'a> {
 pub struct RebalanceInsertSpec<'a> {
     pub edge_id: EdgeId,
     pub endpoints: EdgePairEndpoints,
-    pub label_id: LabelId,
+    pub edge_meta: EdgeDirectedMetaPair,
     pub planned_incoming_live_entries: u32,
     pub forward_rebalance_vertex_ids: &'a [VertexRef],
     pub forward_rebalance_base_edge_ids_by_ordinal: &'a [Vec<EdgeId>],
@@ -622,15 +645,15 @@ impl GraphRuntime {
         let overflow_total = args
             .forward_overflow_len
             .checked_add(args.reverse_overflow_len)?;
-        let window_overflow_total =
-            args.forward_window_overflow_entries
-                .checked_add(args.reverse_window_overflow_entries)?;
-        let tombstone_total =
-            args.forward_reclaimable_tombstones
-                .checked_add(args.reverse_reclaimable_tombstones)?;
-        let window_total_base_slots =
-            args.forward_window_total_base_slots
-                .checked_add(args.reverse_window_total_base_slots)?;
+        let window_overflow_total = args
+            .forward_window_overflow_entries
+            .checked_add(args.reverse_window_overflow_entries)?;
+        let tombstone_total = args
+            .forward_reclaimable_tombstones
+            .checked_add(args.reverse_reclaimable_tombstones)?;
+        let window_total_base_slots = args
+            .forward_window_total_base_slots
+            .checked_add(args.reverse_window_total_base_slots)?;
         let hard_limit_pressure = u64::try_from(overflow_total).ok()?.checked_mul(10_000)?;
         let window_overflow_score = u64::try_from(window_overflow_total)
             .ok()?
@@ -641,8 +664,7 @@ impl GraphRuntime {
             .checked_add(window_overflow_score)?
             .checked_add(tombstone_score)?
             .checked_add(density_bonus)?;
-        let penalty =
-            self.recent_maintenance_penalty_for_ordinal(args.ordinal, args.current_epoch);
+        let penalty = self.recent_maintenance_penalty_for_ordinal(args.ordinal, args.current_epoch);
         Some(base_score.saturating_sub(penalty))
     }
 
@@ -846,12 +868,8 @@ impl GraphRuntime {
 
     /// Wraps contiguous base backing into segment `0` segmented storage on both surfaces without changing packed [`EdgeRef`] layout for segment `0`.
     pub fn migrate_contiguous_base_to_segment_zero(&mut self) {
-        self.forward
-            .0
-            .migrate_contiguous_base_to_segment_zero();
-        self.reverse
-            .0
-            .migrate_contiguous_base_to_segment_zero();
+        self.forward.0.migrate_contiguous_base_to_segment_zero();
+        self.reverse.0.migrate_contiguous_base_to_segment_zero();
     }
 
     /// Starts one batch-mutation session over this graph runtime.
@@ -919,14 +937,8 @@ impl GraphRuntime {
                 .reverse
                 .0
                 .summarize_window_slack(window_start, window_end_exclusive)?;
-            let forward_overflow_len = self
-                .forward
-                .overflow_entries_for(vertex, ordinal)?
-                .len();
-            let reverse_overflow_len = self
-                .reverse
-                .overflow_entries_for(vertex, ordinal)?
-                .len();
+            let forward_overflow_len = self.forward.overflow_entries_for(vertex, ordinal)?.len();
+            let reverse_overflow_len = self.reverse.overflow_entries_for(vertex, ordinal)?.len();
             let forward_reclaimable_tombstones = forward_window_summary.reclaimable_tombstones;
             let reverse_reclaimable_tombstones = reverse_window_summary.reclaimable_tombstones;
             let forward_window_overflow_entries = forward_window_summary.overflow_entries_in_window;
@@ -1078,10 +1090,10 @@ impl GraphRuntime {
                 MaintenanceCandidatePriorityScoreArgs {
                     forward_overflow_len,
                     reverse_overflow_len,
-                    forward_window_overflow_entries:
-                        forward_window_summary.overflow_entries_in_window,
-                    reverse_window_overflow_entries:
-                        reverse_window_summary.overflow_entries_in_window,
+                    forward_window_overflow_entries: forward_window_summary
+                        .overflow_entries_in_window,
+                    reverse_window_overflow_entries: reverse_window_summary
+                        .overflow_entries_in_window,
                     forward_reclaimable_tombstones,
                     reverse_reclaimable_tombstones,
                     forward_window_total_base_slots: forward_window_summary.total_base_slots,
@@ -1294,6 +1306,51 @@ impl GraphRuntime {
             recent_maintenance_epochs_by_ordinal: BTreeMap::new(),
             maintenance_queue: Vec::new(),
         }
+    }
+
+    /// Ensures every **live** (non-tombstone) cross-shard edge payload is a valid slot for `directory_len` principals.
+    pub fn validate_shard_canister_slots(
+        &self,
+        directory_len: usize,
+    ) -> Result<(), HydrationError> {
+        fn check_surface(
+            surface: &super::runtime::SurfaceRuntime,
+            directory_len: usize,
+        ) -> Result<(), HydrationError> {
+            for entry in surface.base_entries.iter() {
+                if entry.meta.is_tombstone() {
+                    continue;
+                }
+                if entry.meta.is_shard_canister() {
+                    let slot = entry.meta.shard_canister_slot().unwrap_or(0);
+                    if usize::from(slot) >= directory_len {
+                        return Err(HydrationError::ShardCanisterSlotOutOfRange {
+                            slot,
+                            directory_len,
+                        });
+                    }
+                }
+            }
+            for ov in &surface.overflow_entries {
+                let entry = &ov.entry;
+                if entry.meta.is_tombstone() {
+                    continue;
+                }
+                if entry.meta.is_shard_canister() {
+                    let slot = entry.meta.shard_canister_slot().unwrap_or(0);
+                    if usize::from(slot) >= directory_len {
+                        return Err(HydrationError::ShardCanisterSlotOutOfRange {
+                            slot,
+                            directory_len,
+                        });
+                    }
+                }
+            }
+            Ok(())
+        }
+        check_surface(&self.forward.0, directory_len)?;
+        check_surface(&self.reverse.0, directory_len)?;
+        Ok(())
     }
 
     /// Replaces the canonical logical-locator sidecar as one unit.
@@ -2326,7 +2383,7 @@ impl GraphRuntime {
                     spec.endpoints.src_ordinal,
                     spec.endpoints.dst_vertex_ref,
                     spec.endpoints.dst_ordinal,
-                    spec.label_id,
+                    spec.edge_meta,
                 )
             }
             _ => self.insert_edge_pair(
@@ -2335,7 +2392,7 @@ impl GraphRuntime {
                 spec.endpoints.src_ordinal,
                 spec.endpoints.dst_vertex_ref,
                 spec.endpoints.dst_ordinal,
-                spec.label_id,
+                spec.edge_meta,
             ),
         }
     }
@@ -2397,7 +2454,7 @@ impl GraphRuntime {
         let insert = self.insert_edge_pair_with_manager(
             spec.edge_id,
             spec.endpoints,
-            spec.label_id,
+            spec.edge_meta,
             manager,
         );
 
@@ -2463,7 +2520,7 @@ impl GraphRuntime {
         let insert = self.insert_edge_pair_with_manager(
             spec.edge_id,
             spec.endpoints,
-            spec.label_id,
+            spec.edge_meta,
             manager,
         );
 
@@ -2558,7 +2615,7 @@ impl GraphRuntime {
         let insert = self.insert_edge_pair_with_manager(
             spec.edge_id,
             spec.endpoints,
-            spec.label_id,
+            spec.edge_meta,
             manager,
         );
 
@@ -2615,7 +2672,7 @@ impl GraphRuntime {
         &mut self,
         edge_id: EdgeId,
         endpoints: EdgePairEndpoints,
-        label_id: LabelId,
+        edge_meta: EdgeDirectedMetaPair,
         decision: GraphInsertDecision,
     ) -> Option<GraphInsertResult> {
         let EdgePairEndpoints {
@@ -2636,7 +2693,7 @@ impl GraphRuntime {
                         src_ordinal,
                         dst_vertex_ref,
                         dst_ordinal,
-                        label_id,
+                        edge_meta,
                     )?;
                 debug_assert_eq!(actual_forward_path, forward_path);
                 debug_assert_eq!(actual_reverse_path, reverse_path);
@@ -2650,7 +2707,7 @@ impl GraphRuntime {
                     src_ordinal,
                     dst_vertex_ref,
                     dst_ordinal,
-                    label_id,
+                    edge_meta,
                 )?,
             ),
             GraphInsertDecision::RebalanceRequired(plan) => {
@@ -2833,10 +2890,10 @@ impl GraphRuntime {
         src_ordinal: usize,
         dst_vertex_ref: VertexRef,
         dst_ordinal: usize,
-        label_id: LabelId,
+        edge_meta: EdgeDirectedMetaPair,
     ) -> Option<(EdgeInsertPath, EdgeInsertPath, EdgePairLogicalLocators)> {
-        let forward_entry = EdgeEntry::new(dst_vertex_ref, EdgeMeta::new(label_id, false));
-        let reverse_entry = EdgeEntry::new(src_vertex_ref, EdgeMeta::new(label_id, false));
+        let forward_entry = EdgeEntry::new(dst_vertex_ref, edge_meta.forward);
+        let reverse_entry = EdgeEntry::new(src_vertex_ref, edge_meta.reverse);
 
         let forward_path = self.forward.insert_base_entry(src_ordinal, forward_entry)?;
         let reverse_path = self.reverse.insert_base_entry(dst_ordinal, reverse_entry)?;
@@ -2879,7 +2936,7 @@ impl GraphRuntime {
         &mut self,
         edge_id: EdgeId,
         endpoints: EdgePairEndpoints,
-        label_id: LabelId,
+        edge_meta: EdgeDirectedMetaPair,
         manager: &RegionManager,
     ) -> Option<(EdgeInsertPath, EdgeInsertPath, EdgePairLogicalLocators)> {
         let EdgePairEndpoints {
@@ -2888,8 +2945,8 @@ impl GraphRuntime {
             dst_vertex_ref,
             dst_ordinal,
         } = endpoints;
-        let forward_entry = EdgeEntry::new(dst_vertex_ref, EdgeMeta::new(label_id, false));
-        let reverse_entry = EdgeEntry::new(src_vertex_ref, EdgeMeta::new(label_id, false));
+        let forward_entry = EdgeEntry::new(dst_vertex_ref, edge_meta.forward);
+        let reverse_entry = EdgeEntry::new(src_vertex_ref, edge_meta.reverse);
 
         let forward_path =
             self.forward
@@ -2946,10 +3003,10 @@ impl GraphRuntime {
         src_ordinal: usize,
         dst_vertex_ref: VertexRef,
         dst_ordinal: usize,
-        label_id: LabelId,
+        edge_meta: EdgeDirectedMetaPair,
     ) -> Option<EdgePairLogicalLocators> {
-        let forward_entry = EdgeEntry::new(dst_vertex_ref, EdgeMeta::new(label_id, false));
-        let reverse_entry = EdgeEntry::new(src_vertex_ref, EdgeMeta::new(label_id, false));
+        let forward_entry = EdgeEntry::new(dst_vertex_ref, edge_meta.forward);
+        let reverse_entry = EdgeEntry::new(src_vertex_ref, edge_meta.reverse);
 
         let _forward_offset = self.forward.append_overflow_entry(
             src_vertex_ref,
@@ -2996,7 +3053,7 @@ impl GraphRuntime {
         src_ordinal: usize,
         dst_vertex_ref: VertexRef,
         dst_ordinal: usize,
-        label_id: LabelId,
+        edge_meta: EdgeDirectedMetaPair,
     ) -> Option<GraphInsertResult> {
         let decision =
             self.choose_insert_decision(src_vertex_ref, src_ordinal, dst_vertex_ref, dst_ordinal)?;
@@ -3008,7 +3065,7 @@ impl GraphRuntime {
                 dst_vertex_ref,
                 dst_ordinal,
             },
-            label_id,
+            edge_meta,
             decision,
         )
     }
@@ -3019,7 +3076,7 @@ impl GraphRuntime {
         &mut self,
         edge_id: EdgeId,
         endpoints: EdgePairEndpoints,
-        label_id: LabelId,
+        edge_meta: EdgeDirectedMetaPair,
         manager: &RegionManager,
     ) -> Option<GraphInsertResult> {
         let EdgePairEndpoints {
@@ -3051,7 +3108,7 @@ impl GraphRuntime {
                             dst_vertex_ref,
                             dst_ordinal,
                         },
-                        label_id,
+                        edge_meta,
                         manager,
                     )?;
                 debug_assert_eq!(actual_forward_path, forward_path);
@@ -3066,7 +3123,7 @@ impl GraphRuntime {
                     src_ordinal,
                     dst_vertex_ref,
                     dst_ordinal,
-                    label_id,
+                    edge_meta,
                 )?,
             ),
             GraphInsertDecision::RebalanceRequired(plan) => {
@@ -3146,18 +3203,12 @@ impl GraphRuntime {
         let forward_old = self.forward.replace_base_entry(
             spec.endpoints.src_ordinal,
             src_logical_index,
-            EdgeEntry::new(
-                spec.endpoints.dst_vertex_ref,
-                EdgeMeta::new(spec.label_id, false),
-            ),
+            EdgeEntry::new(spec.endpoints.dst_vertex_ref, spec.edge_meta.forward),
         )?;
         let reverse_old = self.reverse.replace_base_entry(
             spec.endpoints.dst_ordinal,
             dst_logical_index,
-            EdgeEntry::new(
-                spec.endpoints.src_vertex_ref,
-                EdgeMeta::new(spec.label_id, false),
-            ),
+            EdgeEntry::new(spec.endpoints.src_vertex_ref, spec.edge_meta.reverse),
         )?;
 
         Some((forward_old, reverse_old))
@@ -3183,19 +3234,13 @@ impl GraphRuntime {
                     spec.endpoints.src_vertex_ref,
                     spec.endpoints.src_ordinal,
                     spec.edge_id,
-                    EdgeEntry::new(
-                        spec.endpoints.dst_vertex_ref,
-                        EdgeMeta::new(spec.label_id, false),
-                    ),
+                    EdgeEntry::new(spec.endpoints.dst_vertex_ref, spec.edge_meta.forward),
                 )?;
                 let reverse_old = self.reverse.replace_overflow_entry(
                     spec.endpoints.dst_vertex_ref,
                     spec.endpoints.dst_ordinal,
                     spec.edge_id,
-                    EdgeEntry::new(
-                        spec.endpoints.src_vertex_ref,
-                        EdgeMeta::new(spec.label_id, false),
-                    ),
+                    EdgeEntry::new(spec.endpoints.src_vertex_ref, spec.edge_meta.reverse),
                 )?;
                 Some((
                     GraphMutationPath::Overflow,
@@ -3371,17 +3416,19 @@ impl<'a, M: Memory> GraphBatchMutationSession<'a, M> {
 #[cfg(test)]
 mod tests {
     use super::{
-        EdgePairEndpoints, EdgePairLogicalLocators, EdgeReplaceSpec, EdgeTombstoneSpec,
-        GraphBatchMutationSession, GraphInsertDecision, GraphInsertPolicy, GraphInsertResult,
-        GraphMutationPath, GraphRuntime, RebalanceInsertSpec, RebalancePrepareSpec,
+        EdgeDirectedMetaPair, EdgePairEndpoints, EdgePairLogicalLocators, EdgeReplaceSpec,
+        EdgeTombstoneSpec, GraphBatchMutationSession, GraphInsertDecision, GraphInsertPolicy,
+        GraphInsertResult, GraphMutationPath, GraphRuntime, RebalanceInsertSpec,
+        RebalancePrepareSpec,
     };
     use crate::low_level::runtime::SurfaceBaseStorage;
     use crate::low_level::{
         EMPTY_LOG_OFFSET, EdgeEntry, EdgeIndex, EdgeInsertPath, EdgeMeta, EdgeRef,
         EdgeSegmentHeader, EdgeSegmentState, ExtentChain, ExtentId, ForwardSurface,
-        ForwardSurfaceRuntime, LogOffset, LogicalEdgeLocator, OverflowEntry, RegionKind,
-        RegionManager, RegionRef, RegionStorageKind, ReverseSurface, ReverseSurfaceRuntime,
-        SurfaceKind, SurfaceRegions, VertexEntry, VertexRef, WasmPages,
+        ForwardSurfaceRuntime, HydrationError, LogOffset, LogicalEdgeLocator, OverflowEntry,
+        RegionKind, RegionManager, RegionRef, RegionStorageKind, ReverseSurface,
+        ReverseSurfaceRuntime, SurfaceKind, SurfaceRegions, VertexEntry, VertexRef, WasmPages,
+        decode_edge_entries, encode_edge_entries,
     };
     use crate::stable::VecMemory;
 
@@ -3473,7 +3520,7 @@ mod tests {
                 0,
                 VertexRef::from(2u8),
                 0,
-                9,
+                9u16.into(),
             )
             .expect("pair append");
 
@@ -3548,7 +3595,7 @@ mod tests {
                 0,
                 VertexRef::from(2u8),
                 0,
-                9,
+                9u16.into(),
             )
             .expect("base append")
         else {
@@ -3598,7 +3645,7 @@ mod tests {
                 0,
                 VertexRef::from(2u8),
                 0,
-                9,
+                9u16.into(),
             )
             .expect("overflow fallback")
         else {
@@ -3642,7 +3689,7 @@ mod tests {
                 0,
                 VertexRef::from(2u8),
                 0,
-                9,
+                9u16.into(),
             )
             .expect("tombstone reuse insert")
         else {
@@ -3824,12 +3871,7 @@ mod tests {
         );
 
         let decision = graph
-            .choose_insert_decision(
-                VertexRef::from(1u8),
-                0,
-                VertexRef::from(2u8),
-                0,
-            )
+            .choose_insert_decision(VertexRef::from(1u8), 0, VertexRef::from(2u8), 0)
             .expect("decision");
         let GraphInsertDecision::RebalanceRequired(plan) = decision else {
             panic!("expected rebalance-required decision");
@@ -3852,7 +3894,7 @@ mod tests {
                 0,
                 VertexRef::from(2u8),
                 0,
-                9,
+                9u16.into(),
             )
             .expect("insert result");
         let GraphInsertResult::RebalanceRequired(plan) = result else {
@@ -4034,12 +4076,7 @@ mod tests {
         );
 
         let GraphInsertDecision::RebalanceRequired(plan) = graph
-            .choose_insert_decision(
-                VertexRef::from(1u8),
-                1,
-                VertexRef::from(2u8),
-                1,
-            )
+            .choose_insert_decision(VertexRef::from(1u8), 1, VertexRef::from(2u8), 1)
             .expect("decision")
         else {
             panic!("expected rebalance-required decision");
@@ -4152,12 +4189,7 @@ mod tests {
         );
 
         let decision = graph
-            .choose_insert_decision(
-                VertexRef::from(1u8),
-                0,
-                VertexRef::from(2u8),
-                0,
-            )
+            .choose_insert_decision(VertexRef::from(1u8), 0, VertexRef::from(2u8), 0)
             .expect("decision");
         let GraphInsertDecision::RebalanceRequired(plan) = decision else {
             panic!("expected rebalance-required decision");
@@ -4261,7 +4293,7 @@ mod tests {
                     dst_vertex_ref: VertexRef::from(2u8),
                     dst_ordinal: 0,
                 },
-                label_id: 11,
+                edge_meta: 11u16.into(),
                 planned_incoming_live_entries: 2,
                 forward_rebalance_vertex_ids: &[VertexRef::from(1u8)],
                 forward_rebalance_base_edge_ids_by_ordinal: &[vec![90, 91]],
@@ -4458,7 +4490,7 @@ mod tests {
                     dst_vertex_ref: VertexRef::from(2u8),
                     dst_ordinal: 0,
                 },
-                label_id: 11,
+                edge_meta: 11u16.into(),
                 planned_incoming_live_entries: 2,
                 forward_rebalance_vertex_ids: &[VertexRef::from(1u8)],
                 forward_rebalance_base_edge_ids_by_ordinal: &[vec![80, 90]],
@@ -4621,7 +4653,7 @@ mod tests {
                 0,
                 VertexRef::from(2u8),
                 0,
-                7,
+                7u16.into(),
             )
             .expect("seed sidecar");
 
@@ -4673,7 +4705,7 @@ mod tests {
                         0,
                     ),
                 },
-                label_id: 9,
+                edge_meta: 9u16.into(),
             })
             .expect("replace");
         assert_eq!(replaced.0, GraphMutationPath::Base);
@@ -4751,12 +4783,7 @@ mod tests {
         );
 
         let decision = graph
-            .choose_insert_decision(
-                VertexRef::from(1u8),
-                0,
-                VertexRef::from(2u8),
-                0,
-            )
+            .choose_insert_decision(VertexRef::from(1u8), 0, VertexRef::from(2u8), 0)
             .expect("decision");
         assert_eq!(decision, GraphInsertDecision::Overflow);
     }
@@ -4808,12 +4835,7 @@ mod tests {
         );
 
         let decision = graph
-            .choose_insert_decision(
-                VertexRef::from(1u8),
-                0,
-                VertexRef::from(2u8),
-                0,
-            )
+            .choose_insert_decision(VertexRef::from(1u8), 0, VertexRef::from(2u8), 0)
             .expect("decision");
         assert_eq!(decision, GraphInsertDecision::Overflow);
     }
@@ -4865,12 +4887,7 @@ mod tests {
         );
 
         let decision = graph
-            .choose_insert_decision(
-                VertexRef::from(1u8),
-                0,
-                VertexRef::from(2u8),
-                0,
-            )
+            .choose_insert_decision(VertexRef::from(1u8), 0, VertexRef::from(2u8), 0)
             .expect("decision");
         assert!(matches!(
             decision,
@@ -4924,10 +4941,7 @@ mod tests {
         );
 
         let candidates = graph
-            .collect_maintenance_candidates(&[
-                VertexRef::from(1u8),
-                VertexRef::from(9u8),
-            ])
+            .collect_maintenance_candidates(&[VertexRef::from(1u8), VertexRef::from(9u8)])
             .expect("maintenance candidates");
 
         assert_eq!(candidates.len(), 2);
@@ -5160,10 +5174,7 @@ mod tests {
         let memory = VecMemory::default();
 
         assert_eq!(
-            graph.rebuild_maintenance_queue(&[
-                VertexRef::from(1u8),
-                VertexRef::from(9u8)
-            ]),
+            graph.rebuild_maintenance_queue(&[VertexRef::from(1u8), VertexRef::from(9u8)]),
             Some(2)
         );
         assert_eq!(graph.maintenance_queue().len(), 2);
@@ -5231,10 +5242,7 @@ mod tests {
         );
 
         assert_eq!(
-            graph.rebuild_maintenance_queue(&[
-                VertexRef::from(1u8),
-                VertexRef::from(9u8)
-            ]),
+            graph.rebuild_maintenance_queue(&[VertexRef::from(1u8), VertexRef::from(9u8)]),
             Some(2)
         );
         graph.record_recent_maintenance_window(0, 1, 10);
@@ -5358,10 +5366,7 @@ mod tests {
         let _ = graph.sync_base_segment_capacities_from_manager(&manager);
 
         assert_eq!(
-            graph.rebuild_maintenance_queue(&[
-                VertexRef::from(1u8),
-                VertexRef::from(9u8)
-            ]),
+            graph.rebuild_maintenance_queue(&[VertexRef::from(1u8), VertexRef::from(9u8)]),
             Some(2)
         );
 
@@ -5708,12 +5713,7 @@ mod tests {
         );
 
         let decision = graph
-            .choose_insert_decision(
-                VertexRef::from(1u8),
-                0,
-                VertexRef::from(2u8),
-                0,
-            )
+            .choose_insert_decision(VertexRef::from(1u8), 0, VertexRef::from(2u8), 0)
             .expect("decision");
         let GraphInsertDecision::RebalanceRequired(plan) = decision else {
             panic!("expected rebalance-required decision");
@@ -5810,12 +5810,7 @@ mod tests {
         );
 
         let GraphInsertDecision::RebalanceRequired(plan) = graph
-            .choose_insert_decision(
-                VertexRef::from(1u8),
-                0,
-                VertexRef::from(2u8),
-                0,
-            )
+            .choose_insert_decision(VertexRef::from(1u8), 0, VertexRef::from(2u8), 0)
             .expect("decision")
         else {
             panic!("expected rebalance-required decision");
@@ -5908,12 +5903,7 @@ mod tests {
         );
 
         let GraphInsertDecision::RebalanceRequired(plan) = graph
-            .choose_insert_decision(
-                VertexRef::from(1u8),
-                0,
-                VertexRef::from(2u8),
-                0,
-            )
+            .choose_insert_decision(VertexRef::from(1u8), 0, VertexRef::from(2u8), 0)
             .expect("decision")
         else {
             panic!("expected rebalance-required decision");
@@ -6032,12 +6022,7 @@ mod tests {
         let _ = graph.sync_base_segment_capacities_from_manager(&manager);
 
         let GraphInsertDecision::RebalanceRequired(plan) = graph
-            .choose_insert_decision(
-                VertexRef::from(1u8),
-                0,
-                VertexRef::from(2u8),
-                0,
-            )
+            .choose_insert_decision(VertexRef::from(1u8), 0, VertexRef::from(2u8), 0)
             .expect("decision")
         else {
             panic!("expected rebalance-required decision");
@@ -6302,7 +6287,7 @@ mod tests {
                         dst_vertex_ref: VertexRef::from(2u8),
                         dst_ordinal: 0,
                     },
-                    label_id: 11,
+                    edge_meta: 11u16.into(),
                     planned_incoming_live_entries: 1,
                     forward_rebalance_vertex_ids: &[VertexRef::from(1u8)],
                     forward_rebalance_base_edge_ids_by_ordinal: &[vec![91]],
@@ -6367,12 +6352,7 @@ mod tests {
         );
 
         let GraphInsertDecision::RebalanceRequired(plan) = graph
-            .choose_insert_decision(
-                VertexRef::from(1u8),
-                0,
-                VertexRef::from(2u8),
-                0,
-            )
+            .choose_insert_decision(VertexRef::from(1u8), 0, VertexRef::from(2u8), 0)
             .expect("decision")
         else {
             panic!("expected rebalance-required decision");
@@ -6480,12 +6460,7 @@ mod tests {
         graph.replace_logical_locator_sidecar(sidecar);
 
         let GraphInsertDecision::RebalanceRequired(plan) = graph
-            .choose_insert_decision(
-                VertexRef::from(1u8),
-                0,
-                VertexRef::from(2u8),
-                0,
-            )
+            .choose_insert_decision(VertexRef::from(1u8), 0, VertexRef::from(2u8), 0)
             .expect("decision")
         else {
             panic!("expected rebalance-required decision");
@@ -6611,12 +6586,7 @@ mod tests {
         let memory = VecMemory::default();
 
         let GraphInsertDecision::RebalanceRequired(plan) = graph
-            .choose_insert_decision(
-                VertexRef::from(1u8),
-                0,
-                VertexRef::from(2u8),
-                0,
-            )
+            .choose_insert_decision(VertexRef::from(1u8), 0, VertexRef::from(2u8), 0)
             .expect("decision")
         else {
             panic!("expected rebalance-required decision");
@@ -6734,12 +6704,7 @@ mod tests {
         let memory = VecMemory::default();
 
         let GraphInsertDecision::RebalanceRequired(plan) = graph
-            .choose_insert_decision(
-                VertexRef::from(1u8),
-                0,
-                VertexRef::from(2u8),
-                0,
-            )
+            .choose_insert_decision(VertexRef::from(1u8), 0, VertexRef::from(2u8), 0)
             .expect("decision")
         else {
             panic!("expected rebalance-required decision");
@@ -6958,7 +6923,7 @@ mod tests {
                         dst_vertex_ref: VertexRef::from(2u8),
                         dst_ordinal: 0,
                     },
-                    label_id: 11,
+                    edge_meta: 11u16.into(),
                     planned_incoming_live_entries: 2,
                     forward_rebalance_vertex_ids: &[VertexRef::from(1u8)],
                     forward_rebalance_base_edge_ids_by_ordinal: &[vec![90, 91]],
@@ -7074,7 +7039,7 @@ mod tests {
                         dst_vertex_ref: VertexRef::from(2u8),
                         dst_ordinal: 0,
                     },
-                    label_id: 11,
+                    edge_meta: 11u16.into(),
                     planned_incoming_live_entries: 2,
                     forward_rebalance_vertex_ids: &[VertexRef::from(1u8)],
                     forward_rebalance_base_edge_ids_by_ordinal: &[vec![90, 92]],
@@ -7189,7 +7154,7 @@ mod tests {
                         dst_vertex_ref: VertexRef::from(2u8),
                         dst_ordinal: 0,
                     },
-                    label_id: 11,
+                    edge_meta: 11u16.into(),
                     planned_incoming_live_entries: 1,
                     forward_rebalance_vertex_ids: &[VertexRef::from(1u8)],
                     forward_rebalance_base_edge_ids_by_ordinal: &[vec![90, 92, 93]],
@@ -7330,7 +7295,7 @@ mod tests {
                         0,
                     ),
                 },
-                label_id: 8,
+                edge_meta: 8u16.into(),
             })
             .expect("pair replace");
 
@@ -7354,6 +7319,106 @@ mod tests {
         assert_eq!(f0.meta.label_id(), 8);
         assert_eq!(u64::from(r0.target), 1);
         assert_eq!(r0.meta.label_id(), 8);
+    }
+
+    #[test]
+    fn graph_runtime_inserts_asymmetric_shard_meta_and_round_trips_edge_bytes() {
+        let mut graph = GraphRuntime::new_with_empty_sidecars(
+            ForwardSurfaceRuntime::new(
+                forward_surface(),
+                vec![VertexEntry::new(EdgeIndex::new(0), 1, EMPTY_LOG_OFFSET)],
+                vec![EdgeEntry::new(
+                    VertexRef::from(2u8),
+                    EdgeMeta::new(1, false),
+                )],
+                Vec::new(),
+            ),
+            ReverseSurfaceRuntime::new(
+                reverse_surface(),
+                vec![VertexEntry::new(EdgeIndex::new(0), 1, EMPTY_LOG_OFFSET)],
+                vec![EdgeEntry::new(
+                    VertexRef::from(1u8),
+                    EdgeMeta::new(1, false),
+                )],
+                Vec::new(),
+            ),
+        );
+        let meta = EdgeDirectedMetaPair {
+            forward: EdgeMeta::new_shard_canister(4, false),
+            reverse: EdgeMeta::new(6, false),
+        };
+        graph
+            .insert_base_edge_pair(501, VertexRef::from(1u8), 0, VertexRef::from(2u8), 0, meta)
+            .expect("asymmetric insert");
+
+        let f1 = graph
+            .forward
+            .0
+            .base_entries
+            .get(1)
+            .copied()
+            .expect("forward base slot 1");
+        assert!(f1.meta.is_shard_canister());
+        assert_eq!(f1.meta.shard_canister_slot(), Some(4));
+        let r1 = graph
+            .reverse
+            .0
+            .base_entries
+            .get(1)
+            .copied()
+            .expect("reverse base slot 1");
+        assert!(!r1.meta.is_shard_canister());
+        assert_eq!(r1.meta.local_label_id(), Some(6));
+
+        let bytes = encode_edge_entries(&[f1]);
+        let decoded =
+            decode_edge_entries(RegionKind::ForwardEdgeEntries, &bytes).expect("decode forward");
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].target, f1.target);
+        assert!(decoded[0].meta.is_shard_canister());
+        assert_eq!(decoded[0].meta.shard_canister_slot(), Some(4));
+    }
+
+    /// Unit-level check for [`HydrationError::ShardCanisterSlotOutOfRange`]. End-to-end
+    /// `GraphPma::hydrate_from_stable_memory` coverage: `integration::tests::hydrate_rejects_truncated_shard_directory_against_live_shard_edges`.
+    #[test]
+    fn validate_shard_canister_slots_rejects_out_of_range_live_shard_meta() {
+        let mut graph = GraphRuntime::new_with_empty_sidecars(
+            ForwardSurfaceRuntime::new(
+                forward_surface(),
+                vec![VertexEntry::new(EdgeIndex::new(0), 1, EMPTY_LOG_OFFSET)],
+                vec![EdgeEntry::new(
+                    VertexRef::from(2u8),
+                    EdgeMeta::new(1, false),
+                )],
+                Vec::new(),
+            ),
+            ReverseSurfaceRuntime::new(
+                reverse_surface(),
+                vec![VertexEntry::new(EdgeIndex::new(0), 1, EMPTY_LOG_OFFSET)],
+                vec![EdgeEntry::new(
+                    VertexRef::from(1u8),
+                    EdgeMeta::new(1, false),
+                )],
+                Vec::new(),
+            ),
+        );
+        let meta = EdgeDirectedMetaPair {
+            forward: EdgeMeta::new_shard_canister(4, false),
+            reverse: EdgeMeta::new(6, false),
+        };
+        graph
+            .insert_base_edge_pair(501, VertexRef::from(1u8), 0, VertexRef::from(2u8), 0, meta)
+            .expect("asymmetric insert");
+
+        assert_eq!(
+            graph.validate_shard_canister_slots(4),
+            Err(HydrationError::ShardCanisterSlotOutOfRange {
+                slot: 4,
+                directory_len: 4,
+            })
+        );
+        assert!(graph.validate_shard_canister_slots(5).is_ok());
     }
 
     #[test]
@@ -7424,7 +7489,7 @@ mod tests {
                         0,
                     ),
                 },
-                label_id: 8,
+                edge_meta: 8u16.into(),
             })
             .expect("pair replace");
         let refreshed = graph
@@ -7490,7 +7555,7 @@ mod tests {
                         0,
                     ),
                 },
-                label_id: 9,
+                edge_meta: 9u16.into(),
             })
             .expect("replace via overflow path");
 

@@ -24,9 +24,10 @@ use gleaph_gql_planner::plan::{
 };
 use gleaph_gql_planner::{PhysicalPlan, PlanOp};
 use gleaph_graph_kernel::{
-    EdgeLabelFilter, EdgeRecord, GraphError, GraphErrorKind, GraphRead, GraphWrite, NodeId,
+    EdgeLabelFilter, EdgeRecord, EdgeId, GraphError, GraphErrorKind, GraphRead, GraphWrite, NodeId,
     NodeRecord, PropertyMap,
 };
+use rapidhash::{HashMapExt, RapidHashMap};
 use thiserror::Error;
 
 use aggregates::{aggregate_expr_binding_name, exec_aggregate};
@@ -40,7 +41,7 @@ use exec_utils::{
 };
 use graph_ops::{
     exec_expand, exec_expand_edge_index, exec_expand_filter, exec_expand_filter_var_len,
-    exec_expand_var_len, exec_shortest_path, exec_worst_case_optimal_join,
+    exec_expand_var_len, exec_shortest_path, exec_worst_case_optimal_join, insert_hop_aux_binding,
 };
 
 /// Fills `out` with cloned leaf names when `expr` is only `Name` and `Or`.
@@ -112,6 +113,7 @@ pub enum BindingValue {
 
 pub type BindingRow = BTreeMap<Rc<str>, BindingValue>;
 pub type OutputRow = BTreeMap<String, Value>;
+
 type ShortestPathPredecessors = HashMap<NodeId, Vec<(NodeId, EdgeRecord)>>;
 type ShortestPathBfsState = (HashMap<NodeId, u32>, ShortestPathPredecessors);
 
@@ -174,6 +176,8 @@ struct ExpandSpec<'a> {
     label_expr: Option<&'a LabelExpr>,
     edge_property_names: Option<Vec<String>>,
     dst_property_names: Option<Vec<String>>,
+    /// When [`None`], the executor does not insert a hop auxiliary scalar (see planner `{edge}__hop_aux`).
+    hop_aux_var: Option<&'a str>,
 }
 
 fn projection_name_vec(names: Option<&[Rc<str>]>) -> Option<Vec<String>> {
@@ -241,6 +245,13 @@ pub struct ExecutionContext {
     pub graph_registry_resolver: Option<Arc<dyn GraphRegistryResolver>>,
     /// Optional router for remote `USE GRAPH` delegation.
     pub use_graph_router: Option<Arc<dyn UseGraphRouter>>,
+    /// When true, always run [`GraphWrite::flush`] after a successful plan when the executor would
+    /// otherwise flush (see [`execute_plan_with_context_maybe_flush`]).
+    ///
+    /// Default is `false`: read-only plans ([`PhysicalPlan::has_dml`] is false) skip the terminal
+    /// flush. Set when a procedure mutates the graph without DML in the plan, or when a stable-memory
+    /// round-trip is required after pure reads.
+    pub force_terminal_graph_flush: bool,
 }
 
 impl std::fmt::Debug for ExecutionContext {
@@ -264,6 +275,7 @@ impl std::fmt::Debug for ExecutionContext {
                 "use_graph_router",
                 &self.use_graph_router.as_ref().map(|_| "<custom>"),
             )
+            .field("force_terminal_graph_flush", &self.force_terminal_graph_flush)
             .finish()
     }
 }
@@ -421,10 +433,30 @@ pub fn execute_plan_with_context<G: GraphRead + GraphWrite>(
     execute_plan_with_context_maybe_flush(graph, plan, ctx, true)
 }
 
+/// Final `BindingRow` → [`OutputRow`] pass when the pipeline did not emit projected rows early.
+fn materialize_finishing_rows<G: GraphRead + GraphWrite>(
+    graph: &G,
+    rows: Vec<BindingRow>,
+) -> ExecutionResultExt<Vec<OutputRow>> {
+    #[cfg(feature = "canbench-rs")]
+    let _gql_exec_materialize_scope = canbench_rs::bench_scope("gql_exec_materialize");
+    let n = rows.len();
+    let mut out = Vec::with_capacity(n);
+    for row in rows {
+        out.push(materialize_row(graph, &row)?);
+    }
+    Ok(out)
+}
+
 /// Like [`execute_plan_with_context`], but `flush_at_end` controls the terminal [`GraphWrite::flush`].
 ///
 /// Nested plans (e.g. [`PlanOp::SetOperation`] RHS) pass `false` so the outer plan performs a single
 /// stable flush, avoiding duplicate PMA refresh / PIDX work.
+///
+/// When `flush_at_end` is true, the flush runs only if the plan contains DML (see
+/// [`PhysicalPlan::has_dml`], including nested sub-plans) or [`ExecutionContext::force_terminal_graph_flush`]
+/// is set. Pure read paths on [`GraphRead`] implementations that do not mutate stable state (such as
+/// the PMA kernel overlay) therefore avoid an extra terminal writeback.
 fn execute_plan_with_context_maybe_flush<G: GraphRead + GraphWrite>(
     graph: &mut G,
     plan: &PhysicalPlan,
@@ -444,14 +476,15 @@ fn execute_plan_with_context_maybe_flush<G: GraphRead + GraphWrite>(
         )));
     }
 
-    let (rows, projected) = execute_ops(graph, &plan.ops, ctx)?;
+    let (rows, projected) = {
+        #[cfg(feature = "canbench-rs")]
+        let _scope = canbench_rs::bench_scope("gql_exec_dispatch_ops");
+        execute_ops(graph, &plan.ops, ctx)?
+    };
 
     let rows = match projected {
         Some(rows) => rows,
-        None => rows
-            .into_iter()
-            .map(|row| materialize_row(graph, &row))
-            .collect::<Result<_, _>>()?,
+        None => materialize_finishing_rows(graph, rows)?,
     };
     let warnings: Vec<String> = plan
         .diagnostics
@@ -480,7 +513,9 @@ fn execute_plan_with_context_maybe_flush<G: GraphRead + GraphWrite>(
         .collect();
     let summary = ExecutionSummary::from_result(&rows, &warnings, plan);
 
-    if flush_at_end {
+    let run_terminal_flush = flush_at_end
+        && (plan.has_dml() || ctx.force_terminal_graph_flush);
+    if run_terminal_flush {
         #[cfg(feature = "canbench-rs")]
         let _flush_scope = canbench_rs::bench_scope("gql_exec_plan_flush");
         graph.flush()?;
@@ -525,6 +560,8 @@ fn execute_ops_from_rows<G: GraphRead + GraphWrite>(
                 label,
                 property_projection,
             } => {
+                #[cfg(feature = "canbench-rs")]
+                let _gql_exec_node_scan_scope = canbench_rs::bench_scope("gql_exec_node_scan");
                 rows = exec_node_scan(
                     graph,
                     &rows,
@@ -540,6 +577,8 @@ fn execute_ops_from_rows<G: GraphRead + GraphWrite>(
                 cmp,
                 property_projection,
             } => {
+                #[cfg(feature = "canbench-rs")]
+                let _gql_exec_index_scan_scope = canbench_rs::bench_scope("gql_exec_index_scan");
                 rows = exec_index_scan(
                     graph,
                     &rows,
@@ -573,6 +612,9 @@ fn execute_ops_from_rows<G: GraphRead + GraphWrite>(
                 value,
                 property_projection,
             } => {
+                #[cfg(feature = "canbench-rs")]
+                let _gql_exec_edge_index_scan_scope =
+                    canbench_rs::bench_scope("gql_exec_edge_index_scan");
                 rows = exec_edge_index_scan(
                     graph,
                     &rows,
@@ -591,7 +633,10 @@ fn execute_ops_from_rows<G: GraphRead + GraphWrite>(
                 label,
                 near_property_projection,
                 far_property_projection,
+                hop_aux_binding,
             } => {
+                #[cfg(feature = "canbench-rs")]
+                let _gql_exec_edge_bind_scope = canbench_rs::bench_scope("gql_exec_edge_bind");
                 rows = exec_edge_bind_endpoints(
                     graph,
                     rows,
@@ -603,6 +648,7 @@ fn execute_ops_from_rows<G: GraphRead + GraphWrite>(
                         label: label.as_deref(),
                         near_property_projection: near_property_projection.as_deref(),
                         far_property_projection: far_property_projection.as_deref(),
+                        hop_aux_binding: hop_aux_binding.as_deref(),
                     },
                 )?;
             }
@@ -731,7 +777,10 @@ fn execute_ops_from_rows<G: GraphRead + GraphWrite>(
                 indexed_edge_equality,
                 edge_property_projection,
                 dst_property_projection,
+                hop_aux_binding,
             } => {
+                #[cfg(feature = "canbench-rs")]
+                let _gql_exec_expand_scope = canbench_rs::bench_scope("gql_exec_expand");
                 let expand_spec = ExpandSpec {
                     src: src.as_ref(),
                     edge: edge.as_ref(),
@@ -741,6 +790,7 @@ fn execute_ops_from_rows<G: GraphRead + GraphWrite>(
                     label_expr: label_expr.as_ref(),
                     edge_property_names: projection_name_vec(edge_property_projection.as_deref()),
                     dst_property_names: projection_name_vec(dst_property_projection.as_deref()),
+                    hop_aux_var: hop_aux_binding.as_ref().map(|s| s.as_ref()),
                 };
                 if let Some(var_len) = var_len.as_ref() {
                     rows = exec_expand_var_len(
@@ -782,6 +832,7 @@ fn execute_ops_from_rows<G: GraphRead + GraphWrite>(
                 dst_filter,
                 edge_property_projection,
                 dst_property_projection,
+                hop_aux_binding,
             } => {
                 let expand_spec = ExpandSpec {
                     src: src.as_ref(),
@@ -792,6 +843,7 @@ fn execute_ops_from_rows<G: GraphRead + GraphWrite>(
                     label_expr: label_expr.as_ref(),
                     edge_property_names: projection_name_vec(edge_property_projection.as_deref()),
                     dst_property_names: projection_name_vec(dst_property_projection.as_deref()),
+                    hop_aux_var: hop_aux_binding.as_ref().map(|s| s.as_ref()),
                 };
                 if let Some(var_len) = var_len.as_ref() {
                     rows = exec_expand_filter_var_len(
@@ -983,6 +1035,8 @@ fn execute_ops_from_rows<G: GraphRead + GraphWrite>(
     Ok((rows, projected))
 }
 
+// `#[inline(never)]` wrappers keep `bench_scope` + static labels from being merged away under wasm
+// LTO (the huge `execute_ops_from_rows` match otherwise drops some `gql_exec_*` rodata).
 fn exec_node_scan<G: GraphRead>(
     graph: &G,
     input: &[BindingRow],
@@ -997,7 +1051,7 @@ fn exec_node_scan<G: GraphRead>(
             graph.scan_nodes_projected(label, &v)?
         }
     };
-    let mut next = Vec::new();
+    let mut next = Vec::with_capacity(input.len().saturating_mul(nodes.len()));
     for row in input {
         for node in &nodes {
             let mut out = row.clone();
@@ -1431,7 +1485,7 @@ fn exec_index_scan<G: GraphRead>(
             graph.scan_nodes_by_property_projected(args.property, &value, args.cmp, &v)?
         }
     };
-    let mut next = Vec::new();
+    let mut next = Vec::with_capacity(input.len().saturating_mul(nodes.len()));
     for row in input {
         for node in &nodes {
             let mut out = row.clone();
@@ -1513,7 +1567,7 @@ fn exec_edge_index_scan<G: GraphRead>(
             graph.scan_edges_by_property_projected(property, &value, &v)?
         }
     };
-    let mut next = Vec::new();
+    let mut next = Vec::with_capacity(input.len().saturating_mul(edges.len()));
     for row in input {
         for edge in &edges {
             let mut out = row.clone();
@@ -1532,6 +1586,7 @@ struct EdgeBindEndpointsArgs<'a> {
     label: Option<&'a str>,
     near_property_projection: Option<&'a [Rc<str>]>,
     far_property_projection: Option<&'a [Rc<str>]>,
+    hop_aux_binding: Option<&'a str>,
 }
 
 fn exec_edge_bind_endpoints<G: GraphRead>(
@@ -1544,6 +1599,7 @@ fn exec_edge_bind_endpoints<G: GraphRead>(
         args.near_property_projection.map(|n| n.iter().map(|s| s.to_string()).collect());
     let far_names: Option<Vec<String>> =
         args.far_property_projection.map(|n| n.iter().map(|s| s.to_string()).collect());
+    let mut hop_aux_cache: Option<RapidHashMap<EdgeId, Option<Vec<u8>>>> = None;
     let mut out = Vec::new();
     for row in input {
         let edge_rec = match row.get(args.edge_var) {
@@ -1592,6 +1648,17 @@ fn exec_edge_bind_endpoints<G: GraphRead>(
             Rc::<str>::from(args.far_var),
             BindingValue::Node(far_node),
         );
+        if let Some(hop_name) = args.hop_aux_binding {
+            let cache = hop_aux_cache.get_or_insert_with(|| RapidHashMap::with_capacity(8));
+            let hop_aux = if let Some(existing) = cache.get(&edge_rec.id) {
+                existing.clone()
+            } else {
+                let b = graph.hop_aux_bytes_for_edge(edge_rec.id)?;
+                cache.insert(edge_rec.id, b.clone());
+                b
+            };
+            insert_hop_aux_binding(&mut next, Rc::from(hop_name), hop_aux);
+        }
         out.push(next);
     }
     Ok(out)
@@ -2013,6 +2080,7 @@ fn exec_set_operation(
 
 #[cfg(test)]
 mod tests {
+    use candid::Principal;
     use gleaph_gql::Value;
     use gleaph_gql::ast::{
         CmpOp, Expr, ExprKind, NullOrder, OrderByClause, SortDirection, SortItem,
@@ -2026,8 +2094,8 @@ mod tests {
     };
     use gleaph_gql_planner::{PhysicalPlan, PlanAnnotations, PlanOp};
     use gleaph_graph_kernel::{
-        EdgeId, EdgeLabelFilter, EdgeRecord, Expansion, GraphRead, GraphResult, GraphWrite, NodeId,
-        NodeRecord, PropertyMap,
+        EdgeId, EdgeLabelFilter, EdgeRecord, Expansion, ExpansionHop, GraphRead, GraphResult,
+        GraphWrite, NodeId, NodeRecord, PropertyMap,
     };
     use gleaph_graph_pma::facade::GraphPmaWriteEventProjection;
     use gleaph_graph_pma::integration::{GraphPmaOverlayEdgeMutationKind, GraphPmaOverlayWriteEvent};
@@ -2040,6 +2108,7 @@ mod tests {
     use self::backend_debug_helpers::{expect_graph_execution, expect_graph_pma_overlay_execution};
     use self::overlay_test_helpers::{
         assert_last_projected_event, bootstrap_empty_graph_pma_harness,
+        bootstrap_graph_pma_overlay_alice_shard_authored_post,
         bootstrap_graph_pma_overlay_authored_and_liked_posts,
         bootstrap_graph_pma_overlay_user_post_authored, bootstrap_graph_pma_overlay_user_uid,
         projected_history,
@@ -2197,6 +2266,27 @@ mod tests {
                     dst_property_names,
                 )
             })
+        }
+        fn expand_hops_with_shard_meta(
+            &self,
+            from: NodeId,
+            direction: EdgeDirection,
+            filter: EdgeLabelFilter<'_, '_>,
+            edge_property_names: Option<&[String]>,
+            dst_property_names: Option<&[String]>,
+        ) -> GraphResult<Vec<ExpansionHop>> {
+            self.with_overlay(|g| {
+                g.expand_hops_with_shard_meta(
+                    from,
+                    direction,
+                    filter,
+                    edge_property_names,
+                    dst_property_names,
+                )
+            })
+        }
+        fn hop_aux_bytes_for_edge(&self, edge_id: EdgeId) -> GraphResult<Option<Vec<u8>>> {
+            self.with_overlay(|g| g.hop_aux_bytes_for_edge(edge_id))
         }
         fn scan_all_edges(&self) -> GraphResult<Vec<EdgeRecord>> {
             self.with_overlay(|g| g.scan_all_edges())
@@ -2401,6 +2491,17 @@ mod tests {
             gleaph_graph_pma::integration::KernelBootstrapGraphSummary,
         ) {
             let spec = super::graph_pma_seed_authored_and_liked_posts();
+            bootstrap_graph_pma_overlay(harness, &spec)
+        }
+
+        pub(super) fn bootstrap_graph_pma_overlay_alice_shard_authored_post<'a>(
+            harness: &'a mut GraphPmaKernelHarness<GraphPmaVecMemory>,
+            remote: candid::Principal,
+        ) -> (
+            GraphPmaKernelHarnessOverlay<'a, GraphPmaVecMemory>,
+            gleaph_graph_pma::integration::KernelBootstrapGraphSummary,
+        ) {
+            let spec = super::seed_helpers::graph_pma_seed_alice_shard_authored_post(remote);
             bootstrap_graph_pma_overlay(harness, &spec)
         }
 
@@ -2615,6 +2716,7 @@ mod tests {
     }
 
     mod seed_helpers {
+        use candid::Principal;
         use gleaph_gql::Value;
         use gleaph_graph_kernel::PropertyMap;
         use gleaph_graph_pma::integration::{
@@ -2698,6 +2800,37 @@ mod tests {
                         .collect(),
                 ))
         }
+
+        /// Alice —AUTHORED(shard)→ Post(Hello); the authored hop targets `remote` on the remote shard canister.
+        pub(super) fn graph_pma_seed_alice_shard_authored_post(
+            remote: Principal,
+        ) -> KernelBootstrapGraphSpec {
+            let edge_properties: PropertyMap = [("since".to_owned(), Value::Int64(2024))]
+                .into_iter()
+                .collect();
+            KernelBootstrapGraphSpec::empty()
+                .with_node(KernelBootstrapNodeSpec::labeled(
+                    "User",
+                    [("name".to_owned(), Value::Text("Alice".to_owned()))]
+                        .into_iter()
+                        .collect(),
+                ))
+                .with_node(KernelBootstrapNodeSpec::labeled(
+                    "Post",
+                    [("title".to_owned(), Value::Text("Hello".to_owned()))]
+                        .into_iter()
+                        .collect(),
+                ))
+                .with_edge(
+                    KernelBootstrapEdgeSpec::new(
+                        0,
+                        1,
+                        Some("AUTHORED".to_owned()),
+                        edge_properties,
+                    )
+                    .with_shard_canister_dst(remote),
+                )
+        }
     }
 
     #[test]
@@ -2736,6 +2869,7 @@ mod tests {
                     indexed_edge_equality: None,
                     edge_property_projection: None,
                     dst_property_projection: None,
+                    hop_aux_binding: None,
                 },
                 PlanOp::Project {
                     columns: vec![
@@ -2825,6 +2959,7 @@ mod tests {
                     )),
                     edge_property_projection: None,
                     dst_property_projection: None,
+                    hop_aux_binding: None,
                 },
                 PlanOp::Project {
                     columns: vec![],
@@ -2876,6 +3011,7 @@ mod tests {
                     indexed_edge_equality: None,
                     edge_property_projection: None,
                     dst_property_projection: None,
+                    hop_aux_binding: Some("e__hop_aux".into()),
                 },
                 PlanOp::Project {
                     columns: vec![
@@ -2892,6 +3028,10 @@ mod tests {
                                 property: "title".to_owned(),
                             }),
                             alias: Some("title".into()),
+                        },
+                        ProjectColumn {
+                            expr: Expr::new(ExprKind::Variable("e__hop_aux".to_owned())),
+                            alias: Some("shard_dst".into()),
                         },
                     ],
                     distinct: false,
@@ -2920,6 +3060,201 @@ mod tests {
             result.rows[0].get("title"),
             Some(&Value::Text("Hello".to_owned()))
         );
+        assert_eq!(result.rows[0].get("shard_dst"), Some(&Value::Null));
+    }
+
+    #[test]
+    fn expand_on_pma_overlay_surfaces_hop_aux_principal_bytes() {
+        let remote = Principal::from_slice(&[0xab; 29]);
+        let mut harness = bootstrap_empty_graph_pma_harness();
+        let (mut graph, _) = bootstrap_graph_pma_overlay_alice_shard_authored_post(&mut harness, remote);
+
+        let plan = PhysicalPlan {
+            ops: vec![
+                PlanOp::NodeScan {
+                    property_projection: None,
+                    variable: "u".into(),
+                    label: Some("User".into()),
+                },
+                PlanOp::PropertyFilter {
+                    predicates: vec![Expr::new(ExprKind::Compare {
+                        left: Box::new(Expr::new(ExprKind::PropertyAccess {
+                            expr: Box::new(Expr::new(ExprKind::Variable("u".to_owned()))),
+                            property: "name".to_owned(),
+                        })),
+                        op: CmpOp::Eq,
+                        right: Box::new(Expr::new(ExprKind::Literal(Value::Text(
+                            "Alice".to_owned(),
+                        )))),
+                    })],
+                    stage: 0,
+                },
+                PlanOp::Expand {
+                    src: "u".into(),
+                    edge: "e".into(),
+                    dst: "p".into(),
+                    direction: EdgeDirection::PointingRight,
+                    label: Some("AUTHORED".into()),
+                    label_expr: None,
+                    var_len: None,
+                    indexed_edge_equality: None,
+                    edge_property_projection: None,
+                    dst_property_projection: None,
+                    hop_aux_binding: Some("e__hop_aux".into()),
+                },
+                PlanOp::Project {
+                    columns: vec![ProjectColumn {
+                        expr: Expr::new(ExprKind::Variable("e__hop_aux".to_owned())),
+                        alias: Some("shard_dst".into()),
+                    }],
+                    distinct: false,
+                },
+            ],
+            diagnostics: gleaph_gql_planner::plan::PlanDiagnostics::default(),
+            annotations: PlanAnnotations::default(),
+        };
+
+        let plan_result = execute_plan(&mut graph, &plan);
+        let result = expect_graph_pma_overlay_execution(
+            &graph,
+            plan_result,
+            "shard expand should execute",
+        );
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(
+            result.rows[0].get("shard_dst"),
+            Some(&Value::Bytes(remote.as_slice().to_vec()))
+        );
+    }
+
+    #[test]
+    fn indexed_edge_expand_on_pma_overlay_surfaces_hop_aux_principal_bytes() {
+        let remote = Principal::from_slice(&[0xab; 29]);
+        let mut harness = bootstrap_empty_graph_pma_harness();
+        let (mut graph, _) = bootstrap_graph_pma_overlay_alice_shard_authored_post(&mut harness, remote);
+
+        let plan = PhysicalPlan {
+            ops: vec![
+                PlanOp::NodeScan {
+                    property_projection: None,
+                    variable: "u".into(),
+                    label: Some("User".into()),
+                },
+                PlanOp::PropertyFilter {
+                    predicates: vec![Expr::new(ExprKind::Compare {
+                        left: Box::new(Expr::new(ExprKind::PropertyAccess {
+                            expr: Box::new(Expr::new(ExprKind::Variable("u".to_owned()))),
+                            property: "name".to_owned(),
+                        })),
+                        op: CmpOp::Eq,
+                        right: Box::new(Expr::new(ExprKind::Literal(Value::Text(
+                            "Alice".to_owned(),
+                        )))),
+                    })],
+                    stage: 0,
+                },
+                PlanOp::Expand {
+                    src: "u".into(),
+                    edge: "e".into(),
+                    dst: "p".into(),
+                    direction: EdgeDirection::PointingRight,
+                    label: Some("AUTHORED".into()),
+                    label_expr: None,
+                    var_len: None,
+                    indexed_edge_equality: Some((
+                        "since".into(),
+                        ScanValue::Literal(Value::Int64(2024)),
+                    )),
+                    edge_property_projection: None,
+                    dst_property_projection: None,
+                    hop_aux_binding: Some("e__hop_aux".into()),
+                },
+                PlanOp::Project {
+                    columns: vec![ProjectColumn {
+                        expr: Expr::new(ExprKind::Variable("e__hop_aux".to_owned())),
+                        alias: Some("shard_dst".into()),
+                    }],
+                    distinct: false,
+                },
+            ],
+            diagnostics: gleaph_gql_planner::plan::PlanDiagnostics::default(),
+            annotations: PlanAnnotations::default(),
+        };
+
+        let plan_result = execute_plan(&mut graph, &plan);
+        let result = expect_graph_pma_overlay_execution(
+            &graph,
+            plan_result,
+            "indexed edge expand should execute",
+        );
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(
+            result.rows[0].get("shard_dst"),
+            Some(&Value::Bytes(remote.as_slice().to_vec()))
+        );
+    }
+
+    #[test]
+    fn indexed_edge_expand_on_pma_overlay_local_edge_hop_aux_is_null() {
+        let mut harness = bootstrap_empty_graph_pma_harness();
+        let (mut graph, _) = bootstrap_graph_pma_overlay_authored_and_liked_posts(&mut harness);
+
+        let plan = PhysicalPlan {
+            ops: vec![
+                PlanOp::NodeScan {
+                    property_projection: None,
+                    variable: "u".into(),
+                    label: Some("User".into()),
+                },
+                PlanOp::PropertyFilter {
+                    predicates: vec![Expr::new(ExprKind::Compare {
+                        left: Box::new(Expr::new(ExprKind::PropertyAccess {
+                            expr: Box::new(Expr::new(ExprKind::Variable("u".to_owned()))),
+                            property: "name".to_owned(),
+                        })),
+                        op: CmpOp::Eq,
+                        right: Box::new(Expr::new(ExprKind::Literal(Value::Text(
+                            "Alice".to_owned(),
+                        )))),
+                    })],
+                    stage: 0,
+                },
+                PlanOp::Expand {
+                    src: "u".into(),
+                    edge: "e".into(),
+                    dst: "p".into(),
+                    direction: EdgeDirection::PointingRight,
+                    label: Some("AUTHORED".into()),
+                    label_expr: None,
+                    var_len: None,
+                    indexed_edge_equality: Some((
+                        "since".into(),
+                        ScanValue::Literal(Value::Int64(2024)),
+                    )),
+                    edge_property_projection: None,
+                    dst_property_projection: None,
+                    hop_aux_binding: Some("e__hop_aux".into()),
+                },
+                PlanOp::Project {
+                    columns: vec![ProjectColumn {
+                        expr: Expr::new(ExprKind::Variable("e__hop_aux".to_owned())),
+                        alias: Some("shard_dst".into()),
+                    }],
+                    distinct: false,
+                },
+            ],
+            diagnostics: gleaph_gql_planner::plan::PlanDiagnostics::default(),
+            annotations: PlanAnnotations::default(),
+        };
+
+        let plan_result = execute_plan(&mut graph, &plan);
+        let result = expect_graph_pma_overlay_execution(
+            &graph,
+            plan_result,
+            "indexed local edge expand should execute",
+        );
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0].get("shard_dst"), Some(&Value::Null));
     }
 
     #[test]
@@ -3178,6 +3513,7 @@ mod tests {
                     })],
                     edge_property_projection: None,
                     dst_property_projection: None,
+                    hop_aux_binding: None,
                 },
                 PlanOp::TopK {
                     order_by,
@@ -3248,6 +3584,7 @@ mod tests {
                     indexed_edge_equality: None,
                     edge_property_projection: None,
                     dst_property_projection: None,
+                    hop_aux_binding: None,
                 },
                 PlanOp::Aggregate {
                     group_by: vec![Expr::new(ExprKind::PropertyAccess {
@@ -3355,6 +3692,7 @@ mod tests {
                     indexed_edge_equality: None,
                     edge_property_projection: None,
                     dst_property_projection: None,
+                    hop_aux_binding: None,
                 },
                 PlanOp::Aggregate {
                     group_by: vec![Expr::new(ExprKind::PropertyAccess {
@@ -3616,6 +3954,7 @@ mod tests {
                     indexed_edge_equality: None,
                     edge_property_projection: None,
                     dst_property_projection: None,
+                    hop_aux_binding: None,
                 },
                 PlanOp::Project {
                     columns: vec![
@@ -3808,6 +4147,7 @@ mod tests {
                     indexed_edge_equality: None,
                     edge_property_projection: None,
                     dst_property_projection: None,
+                    hop_aux_binding: None,
                 },
                 PlanOp::SetProperties {
                     items: vec![
@@ -4040,6 +4380,7 @@ mod tests {
                             indexed_edge_equality: None,
                             edge_property_projection: None,
                             dst_property_projection: None,
+                            hop_aux_binding: None,
                         },
                     ],
                     join_keys: vec!["a".into()],
@@ -4125,6 +4466,7 @@ mod tests {
                     indexed_edge_equality: None,
                     edge_property_projection: None,
                     dst_property_projection: None,
+                    hop_aux_binding: None,
                 },
                 PlanOp::Project {
                     columns: vec![ProjectColumn {
@@ -4182,6 +4524,7 @@ mod tests {
                         indexed_edge_equality: None,
                         edge_property_projection: None,
                         dst_property_projection: None,
+                        hop_aux_binding: None,
                     }],
                 },
                 PlanOp::Project {
@@ -4446,6 +4789,7 @@ mod tests {
                     indexed_edge_equality: None,
                     edge_property_projection: None,
                     dst_property_projection: None,
+                    hop_aux_binding: None,
                 },
                 PlanOp::SetProperties {
                     items: vec![
@@ -4688,6 +5032,7 @@ mod tests {
                     indexed_edge_equality: None,
                     edge_property_projection: None,
                     dst_property_projection: None,
+                    hop_aux_binding: None,
                 },
                 PlanOp::DeleteEdge {
                     variable: "e".into(),
@@ -4785,6 +5130,7 @@ mod tests {
                     indexed_edge_equality: None,
                     edge_property_projection: None,
                     dst_property_projection: None,
+                    hop_aux_binding: None,
                 },
                 PlanOp::SetProperties {
                     items: vec![SetPlanItem::Label {

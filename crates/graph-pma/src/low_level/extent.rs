@@ -261,15 +261,13 @@ pub enum ExtentGrowthKind {
 
 /// Lifecycle state for one edge-storage segment.
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, CandidType)]
-#[derive(Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, CandidType, Default)]
 pub enum EdgeSegmentState {
     Active = 0,
     Retired = 1,
     #[default]
     Free = 2,
 }
-
 
 /// Metadata for one contiguous edge-storage segment.
 ///

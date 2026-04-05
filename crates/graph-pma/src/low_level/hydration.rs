@@ -351,6 +351,16 @@ pub enum HydrationError {
     },
     /// Serialized bytes are present but do not start with the expected MGQ1 header (or are too short).
     InvalidMaintenanceQueueHeader(RegionKind),
+    /// [`ShardCanisterDirectory`](crate::low_level::ShardCanisterDirectory) bytes failed to decode.
+    InvalidShardCanisterDirectory {
+        kind: RegionKind,
+        reason: &'static str,
+    },
+    /// A live edge marks [`EdgeMeta::is_shard_canister`] with a slot at or beyond the directory length.
+    ShardCanisterSlotOutOfRange {
+        slot: u16,
+        directory_len: usize,
+    },
 }
 
 impl fmt::Display for HydrationError {
@@ -422,6 +432,19 @@ impl fmt::Display for HydrationError {
                 f,
                 "region {:?} maintenance queue bytes are not a valid MGQ1 v1 header payload",
                 kind
+            ),
+            HydrationError::InvalidShardCanisterDirectory { kind, reason } => write!(
+                f,
+                "region {:?} shard canister directory bytes are invalid: {}",
+                kind, reason
+            ),
+            HydrationError::ShardCanisterSlotOutOfRange {
+                slot,
+                directory_len,
+            } => write!(
+                f,
+                "shard canister edge slot {} is out of range for directory length {}",
+                slot, directory_len
             ),
         }
     }
@@ -790,10 +813,7 @@ pub fn estimate_vertex_window_reserve_hint_from_stable_memory(
     kind: RegionKind,
     start_ordinal: usize,
     count: usize,
-    insert_policy_and_anchor_live_degree_after_rebalance: (
-        GraphInsertPolicy,
-        u32,
-    ),
+    insert_policy_and_anchor_live_degree_after_rebalance: (GraphInsertPolicy, u32),
     incoming_live_entries: u32,
 ) -> Result<Option<SurfaceVertexWindowReserveHint>, HydrationError> {
     let (insert_policy, anchor_live_degree_after_rebalance) =
@@ -1029,9 +1049,10 @@ pub fn write_dirty_surface_runtime_to_stable_memory(
                     append_from,
                     &runtime.label_index_entries,
                     &runtime.label_ranges,
-                )? {
-                    wrote_label_incremental = true;
-                }
+                )?
+            {
+                wrote_label_incremental = true;
+            }
             if !wrote_label_incremental {
                 encode_label_index_region_into(
                     &runtime.label_index_entries,
@@ -1447,8 +1468,7 @@ fn hydrate_edge_storage_from_stable_memory(
             let Some((_, extent)) = manager.resolve_edge_ref(
                 kind,
                 EdgeRef::from_raw((header.segment_id as u64) << EdgeRef::START_SLOT_BITS),
-            )
-            else {
+            ) else {
                 continue;
             };
             let byte_len = usize::try_from(header.slot_capacity)

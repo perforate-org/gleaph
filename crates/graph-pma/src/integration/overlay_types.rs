@@ -1,14 +1,23 @@
-use gleaph_graph_kernel::{EdgeId, EdgeRecord, NodeRecord};
+use candid::Principal;
+use gleaph_graph_kernel::{EdgeId, EdgeRecord, Expansion, NodeRecord};
 
 use crate::facade::{
     GraphPmaBootstrapEdgeProjection, GraphPmaBootstrapGraphProjection,
     GraphPmaBootstrapVerticesProjection, GraphPmaEdgeLogicalLocatorMapping,
     GraphPmaEdgeWriteOperation, GraphPmaEdgeWriteProjection, GraphPmaEnsureCapacityProjection,
-    GraphPmaInsertEdgeProjection, GraphPmaNodeDeleteProjection, GraphPmaPropertyMutationWriteSummary,
-    GraphPmaRefreshedVertices, GraphPmaVertexOrdinalMapping, GraphPmaWriteEventProjection,
+    GraphPmaInsertEdgeProjection, GraphPmaNodeDeleteProjection,
+    GraphPmaPropertyMutationWriteSummary, GraphPmaRefreshedVertices, GraphPmaVertexOrdinalMapping,
+    GraphPmaWriteEventProjection,
 };
 use crate::low_level::{EdgeInsertPath, GraphMutationPath, VertexRef};
 use crate::observability::{format_last_write_event, format_write_event_history};
+
+/// One expand hop plus optional remote shard principal from forward-side [`EdgeMeta`](crate::low_level::edge::EdgeMeta).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExpansionWithShard {
+    pub expansion: Expansion,
+    pub shard_canister_dst: Option<Principal>,
+}
 
 /// Observability summary for one overlay-level edge mutation write.
 #[derive(Clone, Debug, PartialEq, Eq)]

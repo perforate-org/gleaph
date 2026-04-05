@@ -1446,12 +1446,14 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "canbench-rs",
+ "candid",
  "futures",
  "gleaph-gql",
  "gleaph-gql-planner",
  "gleaph-graph-kernel",
  "gleaph-graph-pma",
  "ic-stable-structures",
+ "rapidhash",
  "thiserror 2.0.18",
 ]
 

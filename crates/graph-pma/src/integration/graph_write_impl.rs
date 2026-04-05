@@ -280,7 +280,7 @@ impl<'a, S: super::GraphPmaStore> GraphWrite for GraphPmaKernelOverlayGraph<'a, 
                         forward: forward_loc,
                         reverse: reverse_loc,
                     },
-                    label_id,
+                    edge_meta: label_id.into(),
                 },
                 self.bridge.memory,
             )
@@ -304,9 +304,10 @@ impl<'a, S: super::GraphPmaStore> GraphWrite for GraphPmaKernelOverlayGraph<'a, 
 
     /// Deletes one edge in storage and overlay bookkeeping.
     ///
-    /// Does **not** call [`GraphWrite::flush`]: [`gleaph_gql_executor::execute_plan_with_context`]
-    /// already flushes after each plan. Callers that invoke this outside the executor must flush
-    /// explicitly if stable memory must reflect the deletion immediately.
+    /// Does **not** call [`GraphWrite::flush`]: the GQL executor flushes after some plans (DML, or
+    /// when [`gleaph_gql_executor::ExecutionContext::force_terminal_graph_flush`] is set). Callers
+    /// that invoke this outside the executor must flush explicitly if stable memory must reflect the
+    /// deletion immediately.
     fn delete_edge(&mut self, edge_id: EdgeId) -> GraphResult<()> {
         self.delete_edge_without_flush(edge_id)?;
         Ok(())
@@ -314,7 +315,8 @@ impl<'a, S: super::GraphPmaStore> GraphWrite for GraphPmaKernelOverlayGraph<'a, 
 
     /// Deletes a vertex (optionally detaching incident edges first).
     ///
-    /// Does **not** call [`GraphWrite::flush`]: the GQL executor flushes after plan execution.
+    /// Does **not** call [`GraphWrite::flush`]: the GQL executor flushes when the plan includes DML
+    /// or when forced via context (see [`gleaph_gql_executor::execute_plan_with_context`]).
     /// Direct kernel callers must flush when they need persistence in the same tick.
     fn delete_node(&mut self, node_id: NodeId, detach: bool) -> GraphResult<()> {
         let incident_edge_ids: Vec<EdgeId> = self

@@ -132,9 +132,9 @@ impl<M: Memory> GraphPma<M> {
         if equality_touched
             && let Some(kind) =
                 self.remove_node_property_index_binding_with_kind(node_id, property)?
-            {
-                node_store_operations.push(kind);
-            }
+        {
+            node_store_operations.push(kind);
+        }
         self.node_property_store.insert(
             PropertyKey::node(node_id, property),
             StoredPropertyValue(value.clone()),
@@ -241,9 +241,9 @@ impl<M: Memory> GraphPma<M> {
         if equality_touched
             && let Some(kind) =
                 self.remove_edge_property_index_binding_with_kind(edge_id, property)?
-            {
-                node_store_operations.push(kind);
-            }
+        {
+            node_store_operations.push(kind);
+        }
         self.edge_property_store.insert(
             PropertyKey::edge(edge_id, property),
             StoredPropertyValue(value.clone()),

@@ -4,10 +4,8 @@ use gleaph_graph_kernel::LabelId;
 
 use super::ids::EdgeRef;
 
-/// High bit reserved for the tombstone flag inside `EdgeMeta`.
+/// Bit 15 of [`super::edge::EdgeMeta`]: tombstone flag.
 pub const TOMBSTONE_MASK: u16 = 1 << 15;
-/// Low 15 bits reserved for the packed label id inside `EdgeMeta`.
-pub const LABEL_ID_MASK: u16 = !TOMBSTONE_MASK;
 /// Bit 31: vertex tombstone.
 pub const VERTEX_TOMBSTONE_BIT: u32 = 1 << 31;
 /// Bit 30: overflow-head empty sentinel.
@@ -33,7 +31,10 @@ impl EdgeIndex {
     /// Returns a new edge index advanced by `delta` `EdgeEntry` slots.
     pub fn checked_add(self, delta: u32) -> Option<Self> {
         let edge_ref = self.as_edge_ref();
-        edge_ref.start_slot().checked_add(delta as u64).map(|start_slot| Self {
+        edge_ref
+            .start_slot()
+            .checked_add(delta as u64)
+            .map(|start_slot| Self {
                 raw: edge_ref.with_start_slot(start_slot).raw(),
             })
     }

@@ -1,5 +1,7 @@
 use std::cell::{Ref, RefMut};
 
+use crate::low_level::ShardCanisterDirectory;
+
 use super::*;
 
 impl<T> GraphPmaStore for &mut T
@@ -30,6 +32,14 @@ where
 
     fn graph_mut(&mut self) -> &mut GraphRuntime {
         (**self).graph_mut()
+    }
+
+    fn shard_canister_directory(&self) -> &ShardCanisterDirectory {
+        (**self).shard_canister_directory()
+    }
+
+    fn shard_canister_directory_mut(&mut self) -> &mut ShardCanisterDirectory {
+        (**self).shard_canister_directory_mut()
     }
 
     fn node_property_store(&self) -> &GraphPropertyStableMap<Self::Mem> {
@@ -233,10 +243,7 @@ where
         )
     }
 
-    fn try_write_all_to_stable_memory(
-        &mut self,
-        memory: &impl Memory,
-    ) -> GraphPmaResult<()> {
+    fn try_write_all_to_stable_memory(&mut self, memory: &impl Memory) -> GraphPmaResult<()> {
         (**self).try_write_all_to_stable_memory(memory)
     }
 
@@ -251,10 +258,7 @@ where
         (**self).append_empty_vertex_pair()
     }
 
-    fn append_empty_vertex_pairs(
-        &mut self,
-        count: usize,
-    ) -> GraphPmaResult<Vec<(usize, usize)>> {
+    fn append_empty_vertex_pairs(&mut self, count: usize) -> GraphPmaResult<Vec<(usize, usize)>> {
         (**self).append_empty_vertex_pairs(count)
     }
 
@@ -317,6 +321,14 @@ impl<M: Memory> GraphPmaStore for GraphPma<M> {
 
     fn graph_mut(&mut self) -> &mut GraphRuntime {
         Self::graph_mut(self)
+    }
+
+    fn shard_canister_directory(&self) -> &ShardCanisterDirectory {
+        &self.shard_canister_directory
+    }
+
+    fn shard_canister_directory_mut(&mut self) -> &mut ShardCanisterDirectory {
+        &mut self.shard_canister_directory
     }
 
     fn node_property_store(&self) -> &GraphPropertyStableMap<M> {
@@ -521,10 +533,7 @@ impl<M: Memory> GraphPmaStore for GraphPma<M> {
         )
     }
 
-    fn try_write_all_to_stable_memory(
-        &mut self,
-        memory: &impl Memory,
-    ) -> GraphPmaResult<()> {
+    fn try_write_all_to_stable_memory(&mut self, memory: &impl Memory) -> GraphPmaResult<()> {
         Self::try_write_all_to_stable_memory(self, memory)
     }
 
@@ -539,10 +548,7 @@ impl<M: Memory> GraphPmaStore for GraphPma<M> {
         Self::append_empty_vertex_pair(self)
     }
 
-    fn append_empty_vertex_pairs(
-        &mut self,
-        count: usize,
-    ) -> GraphPmaResult<Vec<(usize, usize)>> {
+    fn append_empty_vertex_pairs(&mut self, count: usize) -> GraphPmaResult<Vec<(usize, usize)>> {
         Self::append_empty_vertex_pairs(self, count)
     }
 

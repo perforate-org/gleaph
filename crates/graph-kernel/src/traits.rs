@@ -4,7 +4,7 @@ use gleaph_gql::Value;
 use gleaph_gql::ast::CmpOp;
 use gleaph_gql::types::EdgeDirection;
 
-use crate::{EdgeId, EdgeRecord, Expansion, GraphResult, NodeId, NodeRecord, PropertyMap};
+use crate::{EdgeId, EdgeRecord, Expansion, ExpansionHop, GraphResult, NodeId, NodeRecord, PropertyMap};
 
 /// Incident-edge label constraint for [`GraphRead::expand`].
 ///
@@ -78,6 +78,41 @@ pub trait GraphRead {
         edge_property_names: Option<&[String]>,
         dst_property_names: Option<&[String]>,
     ) -> GraphResult<Vec<Expansion>>;
+
+    /// Like [`Self::expand_projected`], but each hop may carry remote shard principal bytes ([`ExpansionHop::shard_canister_principal`]).
+    ///
+    /// Default: delegates to [`Self::expand_projected`] with [`None`] shard principal bytes on every hop.
+    /// Persistent stores (e.g. graph-pma kernel overlay) may override to surface cross-canister targets.
+    fn expand_hops_with_shard_meta(
+        &self,
+        from: NodeId,
+        direction: EdgeDirection,
+        filter: EdgeLabelFilter<'_, '_>,
+        edge_property_names: Option<&[String]>,
+        dst_property_names: Option<&[String]>,
+    ) -> GraphResult<Vec<ExpansionHop>> {
+        Ok(self
+            .expand_projected(
+                from,
+                direction,
+                filter,
+                edge_property_names,
+                dst_property_names,
+            )?
+            .into_iter()
+            .map(|expansion| ExpansionHop {
+                expansion,
+                shard_canister_principal: None,
+            })
+            .collect())
+    }
+
+    /// Optional hop auxiliary bytes for one edge (e.g. remote shard canister principal for cross-shard stubs).
+    ///
+    /// Default: [`None`]. Stores that materialize shard metadata may override.
+    fn hop_aux_bytes_for_edge(&self, _edge_id: EdgeId) -> GraphResult<Option<Vec<u8>>> {
+        Ok(None)
+    }
 
     /// Returns every edge visible to this snapshot in one pass (no per-node `expand`).
     fn scan_all_edges(&self) -> GraphResult<Vec<EdgeRecord>>;

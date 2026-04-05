@@ -206,6 +206,31 @@ The hot path should not depend on semantic identity.
 `EdgeId` belongs in sidecars or locator mappings, not in every adjacency entry,
 unless measurement later proves the extra 8 bytes are worth it.
 
+## Shard canister directory (cross-canister edges)
+
+For edges that represent a stub vertex on a **remote** canister, packed `EdgeMeta`
+may use the cross-shard bit; the low 14 bits then name a **dense slot** in a
+`ShardCanisterDirectory`, not a `LabelId`.
+
+**On-disk / stable memory:**
+
+- Payload format: magic `SCD1`, little-endian `u32` count, then each principal as
+  `u16` byte length + raw bytes (`ShardCanisterDirectory::encode_bytes` in
+  `crates/graph-pma`).
+- Stored as its own extent region: `RegionKind::ShardCanisterDirectory`.
+- Flushed with the rest of the graph via `GraphPma::try_write_all_to_stable_memory`
+  (and the dirty refresh path).
+
+**Hydration policy (strict):** after decoding the directory,
+`GraphRuntime::validate_shard_canister_slots` requires every live cross-shard edge (forward
+and reverse, base and overflow) to reference `slot < directory.len()`. A mismatch
+fails hydration with `HydrationError::ShardCanisterSlotOutOfRange`. Corrupt `SCD1`
+bytes fail with `HydrationError::InvalidShardCanisterDirectory`.
+
+**Future:** if slots are compacted or reordered (GC), edge metadata and the
+directory must be updated in the same persistence unit; slot ids are otherwise
+assumed stable for the lifetime of the stored graph image.
+
 ## Label Access
 
 Exact-label traversal is a first-class requirement.
@@ -509,11 +534,22 @@ work; individual crates keep their own finer-grained docs.
      the edge index. **`EdgeIndexScan`** is still valid as a standalone op for
      tests and manual plans. Stack coverage: **`build_plan`** +
      `gql-executor/tests/canister_property_search_stack.rs`.
+   - **`{edge_var}__hop_aux`:** the planner may bind an auxiliary scalar per
+     matched edge (backed by **`GraphRead::hop_aux_bytes_for_edge`**, e.g. IC shard
+     metadata). The name is always **`{edge_var}__hop_aux`** for the physical edge
+     variable (including synthetic **`__anon_eN`** when the pattern omits a name).
+     **`RETURN *` does not project this column**; it appears in the plan only when
+     the query **explicitly references** that variable (e.g. in **`RETURN`** or
+     **`WHERE`**), via **`linear_query_referenced_variables`** in **`gleaph-gql-planner`**.
+     **`Expand`**, **`ExpandFilter`**, **`EdgeBindEndpoints`**, and each hop in
+     **`WorstCaseOptimalJoin`** (**`WcojEdge`**) carry an optional
+     **`hop_aux_binding`** when referenced.
    - **`WorstCaseOptimalJoin`**: for simple cyclic **`Expand`** chains (no
      variable-length / indexed-edge fusion / `ExpandFilter`), the planner may fuse
      hops into one op. The executor evaluates the cycle via bounded backtracking on
      **`GraphRead::expand`** (generic binary-relation join; output capped per input
-     row for safety).
+     row for safety). When a fused hop would have carried **`hop_aux_binding`** on
+     **`Expand`**, the same binding is preserved on the corresponding **`WcojEdge`**.
 6. **`gleaph-gql-executor`** maps those ops to **`GraphRead::scan_nodes_by_property`** /
    **`scan_edges_by_property`** (and filters). No executor shortcut may bypass
    the kernel trait surface for persisted results.

@@ -22,14 +22,14 @@ use gleaph_gql::ast::CmpOp;
 use gleaph_gql::types::EdgeDirection;
 use gleaph_gql_planner::stats::GraphStats;
 use gleaph_graph_kernel::{
-    EdgeId, EdgeLabelFilter, EdgeRecord, Expansion, GraphError, GraphRead, GraphResult, GraphWrite,
-    LabelId, NodeId, NodeRecord, PropertyMap,
+    EdgeId, EdgeLabelFilter, EdgeRecord, Expansion, ExpansionHop, GraphError, GraphRead,
+    GraphResult, GraphWrite, LabelId, NodeId, NodeRecord, PropertyMap,
 };
 
 use crate::facade::{
-    GraphPmaBootstrapGraphWriteSummary, GraphPmaEdgeLogicalLocatorMapping, GraphPma,
-    GraphPmaResult, GraphPmaService, GraphPmaStore, GraphPmaStoreAdapter,
-    GraphPmaPropertyMutationWriteSummary, GraphPmaVertexOrdinalMapping,
+    GraphPma, GraphPmaBootstrapGraphWriteSummary, GraphPmaEdgeLogicalLocatorMapping,
+    GraphPmaPropertyMutationWriteSummary, GraphPmaResult, GraphPmaService, GraphPmaStore,
+    GraphPmaStoreAdapter, GraphPmaVertexOrdinalMapping,
 };
 use crate::low_level::BucketSizeInPages;
 use crate::property_store::PropertyStoreError;
@@ -43,10 +43,11 @@ pub use label_index::{
     VertexLabelIndex, decode_vertex_label_catalog, encode_vertex_label_catalog,
 };
 pub use overlay_types::{
-    GraphPmaKernelOverlayObservability, GraphPmaOverlayBootstrapGraphSummary,
+    ExpansionWithShard, GraphPmaKernelOverlayObservability, GraphPmaOverlayBootstrapGraphSummary,
     GraphPmaOverlayEdgeBootstrapSummary, GraphPmaOverlayEdgeMutationKind,
     GraphPmaOverlayEdgeWriteSummary, GraphPmaOverlayInsertEdgeSummary,
-    GraphPmaOverlayNodeBootstrapSummary, GraphPmaOverlayNodeDeleteSummary, GraphPmaOverlayWriteEvent,
+    GraphPmaOverlayNodeBootstrapSummary, GraphPmaOverlayNodeDeleteSummary,
+    GraphPmaOverlayWriteEvent,
 };
 
 /// Applies one declarative bootstrap specification through the facade/service boundary.
@@ -72,7 +73,8 @@ pub fn bootstrap_kernel_overlay_graph<S: GraphPmaStore>(
     let mut nodes = Vec::with_capacity(spec.nodes.len());
     for node in &spec.nodes {
         nodes.push(graph.bootstrap_node(&node.labels, &node.properties)?);
-        if let Some(GraphPmaOverlayWriteEvent::BootstrapNode(summary)) = graph.write_history().last()
+        if let Some(GraphPmaOverlayWriteEvent::BootstrapNode(summary)) =
+            graph.write_history().last()
         {
             node_summaries.push(summary.clone());
         }
@@ -89,8 +91,20 @@ pub fn bootstrap_kernel_overlay_graph<S: GraphPmaStore>(
             .get(edge.dst_index)
             .ok_or_else(|| GraphError::Message("kernel bootstrap dst_index out of range".into()))?
             .id;
-        edges.push(graph.bootstrap_edge(src, dst, edge.label.as_deref(), &edge.properties)?);
-        if let Some(GraphPmaOverlayWriteEvent::BootstrapEdge(summary)) = graph.write_history().last()
+        let record = if let Some(principal) = edge.shard_canister_dst {
+            graph.bootstrap_edge_with_shard_canister_dst(
+                src,
+                dst,
+                principal,
+                edge.label.as_deref(),
+                &edge.properties,
+            )?
+        } else {
+            graph.bootstrap_edge(src, dst, edge.label.as_deref(), &edge.properties)?
+        };
+        edges.push(record);
+        if let Some(GraphPmaOverlayWriteEvent::BootstrapEdge(summary)) =
+            graph.write_history().last()
         {
             edge_summaries.push(summary.clone());
         }
@@ -189,8 +203,7 @@ pub struct GraphPmaKernelOverlayGraph<'a, S: GraphPmaStore> {
 }
 
 /// Concrete kernel overlay shape used when binding the main facade directly.
-pub type GraphPmaKernelOverlay<'a, M> =
-    GraphPmaKernelOverlayGraph<'a, &'a mut GraphPma<M>>;
+pub type GraphPmaKernelOverlay<'a, M> = GraphPmaKernelOverlayGraph<'a, &'a mut GraphPma<M>>;
 
 /// Harness overlay: keeps a [`Ref`] on the shared stable-memory cell while the bridge holds `&M`.
 pub struct GraphPmaKernelHarnessOverlay<'a, M: Memory> {
@@ -299,6 +312,27 @@ impl<'a, M: Memory> GraphRead for GraphPmaKernelHarnessOverlay<'a, M> {
             edge_property_names,
             dst_property_names,
         )
+    }
+
+    fn expand_hops_with_shard_meta(
+        &self,
+        from: NodeId,
+        direction: EdgeDirection,
+        filter: EdgeLabelFilter<'_, '_>,
+        edge_property_names: Option<&[String]>,
+        dst_property_names: Option<&[String]>,
+    ) -> GraphResult<Vec<ExpansionHop>> {
+        self.inner.expand_hops_with_shard_meta(
+            from,
+            direction,
+            filter,
+            edge_property_names,
+            dst_property_names,
+        )
+    }
+
+    fn hop_aux_bytes_for_edge(&self, edge_id: EdgeId) -> GraphResult<Option<Vec<u8>>> {
+        self.inner.hop_aux_bytes_for_edge(edge_id)
     }
 
     fn scan_all_edges(&self) -> GraphResult<Vec<EdgeRecord>> {
@@ -590,26 +624,29 @@ fn compare_op(ordering: Option<std::cmp::Ordering>, cmp: CmpOp) -> bool {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::rc::Rc;
 
     use super::{
-        BootstrapEdgeSpec, BootstrapGraphSpec, KernelBootstrapEdgeSpec, KernelBootstrapGraphSpec,
-        KernelBootstrapNodeSpec, LabelMembership, GraphPmaKernelHarness,
-        GraphPmaKernelBootstrapBridge, VERTEX_LABEL_PROMOTION_THRESHOLD_BASE, VertexGcState,
-        VertexLabelIndex, bootstrap_graph, bootstrap_kernel_overlay_graph,
+        BootstrapEdgeSpec, BootstrapGraphSpec, GraphPmaKernelBootstrapBridge,
+        GraphPmaKernelHarness, KernelBootstrapEdgeSpec, KernelBootstrapGraphSpec,
+        KernelBootstrapNodeSpec, LabelMembership, VERTEX_LABEL_PROMOTION_THRESHOLD_BASE,
+        VertexGcState, VertexLabelIndex, bootstrap_graph, bootstrap_kernel_overlay_graph,
         decode_vertex_label_catalog, encode_vertex_label_catalog, graph_error_from_property_store,
     };
-    use crate::GraphPma;
+    use crate::{GraphPma, GraphPmaError};
     use crate::facade::{
         GraphPmaBootstrapVerticesProjection, GraphPmaEdgeWriteOperation, GraphPmaRefreshedVertices,
         GraphPmaVertexOrdinalMapping, GraphPmaWriteEventProjection,
     };
     use crate::integration::{
-        GraphPmaKernelOverlayObservability, GraphPmaOverlayEdgeMutationKind, GraphPmaOverlayWriteEvent,
+        GraphPmaKernelOverlayObservability, GraphPmaOverlayEdgeMutationKind,
+        GraphPmaOverlayWriteEvent,
     };
     use crate::low_level::{
         EdgeEntry, EdgeIndex, EdgeInsertPath, EdgeLogicalLocatorSidecar, EdgeMeta,
-        GraphInsertPolicy, GraphMutationPath, LogOffset, LogicalEdgeLocator, OverflowEntry,
-        RegionKind, SurfaceBaseStorage, SurfaceKind, VertexEntry, VertexLabelIndexEntry,
+        GraphInsertPolicy, GraphMutationPath, HydrationError, LogOffset, LogicalEdgeLocator,
+        OverflowEntry, RegionKind, SurfaceBaseStorage, SurfaceKind, VertexEntry,
+        VertexLabelIndexEntry,
     };
     use crate::observability::{
         GraphPmaDiagnosticsView, project_overlay_write_event, project_overlay_write_history,
@@ -617,6 +654,7 @@ mod tests {
     use crate::property_index::{PropertyIndexError, PropertyIndexNodeStoreMutationKind};
     use crate::property_store::PropertyStoreError;
     use crate::stable::VecMemory;
+    use candid::Principal;
     use gleaph_gql::Value;
     use gleaph_gql::ast::{CmpOp, Statement};
     use gleaph_gql::parser;
@@ -931,6 +969,295 @@ mod tests {
         assert_eq!(edge.dst, bob.id);
         assert_eq!(edge.label.as_deref(), Some("KNOWS"));
         assert_eq!(bridge.vertex_ordinals().len(), 2);
+    }
+
+    #[test]
+    fn kernel_overlay_inserts_shard_canister_dst_edge() {
+        let memory = VecMemory::default();
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let remote = Principal::anonymous();
+        let links_id = {
+            let mut overlay = facade.bind_kernel_overlay(&memory);
+            let empty = PropertyMap::new();
+            let a = overlay
+                .bootstrap_node(&["A".to_owned()], &empty)
+                .expect("node a");
+            let b = overlay
+                .bootstrap_node(&["B".to_owned()], &empty)
+                .expect("node b");
+            overlay
+                .insert_edge_with_shard_canister_dst(a.id, b.id, remote, Some("LINKS"), &empty)
+                .expect("shard edge");
+
+            assert_eq!(
+                overlay.bridge().shard_canister_directory().principal(0),
+                Some(remote)
+            );
+            overlay
+                .bridge()
+                .lookup_label_id("LINKS")
+                .expect("LINKS label id")
+        };
+        assert_eq!(facade.shard_canister_directory.principal(0), Some(remote));
+
+        let entries = facade
+            .graph
+            .forward
+            .0
+            .merged_live_entries_for_ordinal(0)
+            .expect("forward neighborhood");
+        let shard_entry = entries
+            .iter()
+            .find(|e| e.meta.is_shard_canister())
+            .expect("shard forward entry");
+        assert_eq!(shard_entry.meta.shard_canister_slot(), Some(0));
+        let rev_entries = facade
+            .graph
+            .reverse
+            .0
+            .merged_live_entries_for_ordinal(1)
+            .expect("reverse neighborhood");
+        let rev = rev_entries
+            .iter()
+            .find(|e| !e.meta.is_shard_canister())
+            .expect("local reverse entry");
+        assert_eq!(rev.meta.local_label_id(), Some(links_id));
+
+        let mem_rc = Rc::clone(&facade.memory);
+        facade
+            .try_write_all_to_stable_memory(&*mem_rc.borrow())
+            .expect("flush shard directory");
+        let manager = facade.manager.borrow().clone();
+        let mem = facade.memory.borrow().clone();
+        let hydrated = GraphPma::hydrate_from_stable_memory(manager, mem).expect("hydrate");
+        assert_eq!(hydrated.shard_canister_directory.principal(0), Some(remote));
+    }
+
+    /// [`GraphPma::hydrate_from_stable_memory`] must reject a shard directory that is empty
+    /// (logical length 0) while adjacency still contains a live shard edge (slot 0).
+    #[test]
+    fn hydrate_rejects_truncated_shard_directory_against_live_shard_edges() {
+        let memory = VecMemory::default();
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        {
+            let mut overlay = facade.bind_kernel_overlay(&memory);
+            let empty = PropertyMap::new();
+            let a = overlay
+                .bootstrap_node(&["A".to_owned()], &empty)
+                .expect("node a");
+            let b = overlay
+                .bootstrap_node(&["B".to_owned()], &empty)
+                .expect("node b");
+            let remote = Principal::from_slice(&[3u8; 3]);
+            overlay
+                .insert_edge_with_shard_canister_dst(a.id, b.id, remote, Some("LINKS"), &empty)
+                .expect("shard edge");
+        }
+        let mem_rc = Rc::clone(&facade.memory);
+        facade
+            .try_write_all_to_stable_memory(&*mem_rc.borrow())
+            .expect("flush");
+
+        facade
+            .manager
+            .borrow_mut()
+            .set_region_logical_len(RegionKind::ShardCanisterDirectory, 0)
+            .expect("shard region exists");
+
+        let manager = facade.manager.borrow().clone();
+        let mem = mem_rc.borrow().clone();
+        let err = GraphPma::hydrate_from_stable_memory(manager, mem).expect_err("hydrate");
+        assert_eq!(
+            err,
+            GraphPmaError::Hydration(HydrationError::ShardCanisterSlotOutOfRange {
+                slot: 0,
+                directory_len: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn kernel_overlay_expand_with_shard_resolves_principal() {
+        let memory = VecMemory::default();
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut overlay = facade.bind_kernel_overlay(&memory);
+        let empty = PropertyMap::new();
+        let a = overlay
+            .bootstrap_node(&["A".to_owned()], &empty)
+            .expect("node a");
+        let b = overlay
+            .bootstrap_node(&["B".to_owned()], &empty)
+            .expect("node b");
+        let remote = Principal::from_slice(&[9u8; 9]);
+        let shard_edge = overlay
+            .insert_edge_with_shard_canister_dst(a.id, b.id, remote, Some("LINKS"), &empty)
+            .expect("shard edge");
+
+        assert_eq!(
+            overlay.shard_canister_principal_for_edge_id(shard_edge.id),
+            Some(remote)
+        );
+
+        let hops = overlay
+            .expand_with_shard(a.id, EdgeDirection::PointingRight, EdgeLabelFilter::All)
+            .expect("expand");
+        let shard_hop = hops
+            .iter()
+            .find(|h| h.expansion.edge.id == shard_edge.id)
+            .expect("shard hop");
+        assert_eq!(shard_hop.shard_canister_dst, Some(remote));
+    }
+
+    #[test]
+    fn kernel_overlay_expand_with_shard_local_edge_has_no_principal() {
+        let memory = VecMemory::default();
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut overlay = facade.bind_kernel_overlay(&memory);
+        let empty = PropertyMap::new();
+        let a = overlay
+            .bootstrap_node(&["A".to_owned()], &empty)
+            .expect("node a");
+        let b = overlay
+            .bootstrap_node(&["B".to_owned()], &empty)
+            .expect("node b");
+        let local_edge = overlay
+            .bootstrap_edge(a.id, b.id, Some("KNOWS"), &empty)
+            .expect("local edge");
+
+        assert_eq!(
+            overlay.shard_canister_principal_for_edge_id(local_edge.id),
+            None
+        );
+
+        let hops = overlay
+            .expand_with_shard(a.id, EdgeDirection::PointingRight, EdgeLabelFilter::All)
+            .expect("expand");
+        let hop = hops
+            .iter()
+            .find(|h| h.expansion.edge.id == local_edge.id)
+            .expect("local hop");
+        assert_eq!(hop.shard_canister_dst, None);
+    }
+
+    #[test]
+    fn expand_single_label_includes_shard_forward_edge() {
+        let memory = VecMemory::default();
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut overlay = facade.bind_kernel_overlay(&memory);
+        let empty = PropertyMap::new();
+        let a = overlay
+            .bootstrap_node(&["A".to_owned()], &empty)
+            .expect("node a");
+        let b = overlay
+            .bootstrap_node(&["B".to_owned()], &empty)
+            .expect("node b");
+        let remote = Principal::from_slice(&[2u8; 2]);
+        let shard_edge = overlay
+            .insert_edge_with_shard_canister_dst(a.id, b.id, remote, Some("LINKS"), &empty)
+            .expect("shard edge");
+
+        let ex = overlay
+            .expand(
+                a.id,
+                EdgeDirection::PointingRight,
+                EdgeLabelFilter::Single("LINKS"),
+            )
+            .expect("expand single LINKS");
+        assert_eq!(ex.len(), 1);
+        assert_eq!(ex[0].edge.id, shard_edge.id);
+        assert_eq!(ex[0].edge.dst, b.id);
+    }
+
+    #[test]
+    fn expand_anyof_includes_shard_forward_edge() {
+        let memory = VecMemory::default();
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut overlay = facade.bind_kernel_overlay(&memory);
+        let empty = PropertyMap::new();
+        let a = overlay
+            .bootstrap_node(&["A".to_owned()], &empty)
+            .expect("node a");
+        let b = overlay
+            .bootstrap_node(&["B".to_owned()], &empty)
+            .expect("node b");
+        let remote = Principal::from_slice(&[5u8; 5]);
+        let shard_edge = overlay
+            .insert_edge_with_shard_canister_dst(a.id, b.id, remote, Some("LINKS"), &empty)
+            .expect("shard edge");
+
+        let names = vec!["OTHER".to_owned(), "LINKS".to_owned()];
+        let ex = overlay
+            .expand(
+                a.id,
+                EdgeDirection::PointingRight,
+                EdgeLabelFilter::AnyOf(&names),
+            )
+            .expect("expand anyof");
+        assert_eq!(ex.len(), 1);
+        assert_eq!(ex[0].edge.id, shard_edge.id);
+    }
+
+    #[test]
+    fn expand_projected_with_shard_single_label_resolves_principal() {
+        let memory = VecMemory::default();
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut overlay = facade.bind_kernel_overlay(&memory);
+        let empty = PropertyMap::new();
+        let a = overlay
+            .bootstrap_node(&["A".to_owned()], &empty)
+            .expect("node a");
+        let b = overlay
+            .bootstrap_node(&["B".to_owned()], &empty)
+            .expect("node b");
+        let remote = Principal::from_slice(&[8u8; 8]);
+        let shard_edge = overlay
+            .insert_edge_with_shard_canister_dst(a.id, b.id, remote, Some("LINKS"), &empty)
+            .expect("shard edge");
+
+        let hops = overlay
+            .expand_projected_with_shard(
+                a.id,
+                EdgeDirection::PointingRight,
+                EdgeLabelFilter::Single("LINKS"),
+                None,
+                None,
+            )
+            .expect("expand projected with shard");
+        assert_eq!(hops.len(), 1);
+        assert_eq!(hops[0].expansion.edge.id, shard_edge.id);
+        assert_eq!(hops[0].shard_canister_dst, Some(remote));
+    }
+
+    #[test]
+    fn kernel_harness_bootstrap_graph_spec_can_add_shard_canister_edge() {
+        let mut harness = GraphPmaKernelHarness::bootstrap_empty(VecMemory::default())
+            .expect("bootstrap harness");
+        let empty = PropertyMap::new();
+        let remote = Principal::from_slice(&[7u8; 7]);
+        let spec = KernelBootstrapGraphSpec::empty()
+            .with_node(KernelBootstrapNodeSpec::labeled("A", empty.clone()))
+            .with_node(KernelBootstrapNodeSpec::labeled("B", empty.clone()))
+            .with_edge(
+                KernelBootstrapEdgeSpec::from_parts(0, 1, Some("LINKS"), &empty)
+                    .with_shard_canister_dst(remote),
+            );
+        let summary = harness
+            .bootstrap_kernel_overlay_graph(&spec)
+            .expect("bootstrap with shard edge");
+        assert_eq!(summary.edges.len(), 1);
+        let facade = harness.facade();
+        assert_eq!(facade.shard_canister_directory.principal(0), Some(remote));
+        let n0 = facade
+            .graph
+            .forward
+            .0
+            .merged_live_entries_for_ordinal(0)
+            .expect("n0");
+        let shard_forward = n0
+            .iter()
+            .find(|e| e.meta.is_shard_canister())
+            .expect("shard meta");
+        assert_eq!(shard_forward.meta.shard_canister_slot(), Some(0));
     }
 
     #[test]

@@ -25,6 +25,9 @@ pub struct AuthContext {
     /// Use [`ApiAuthContext`] with textual encoding at API boundaries.
     pub caller: Option<Principal>,
     pub is_controller: bool,
+    /// When set (federated routed query with a trusted `msg_caller`), ACL resolution uses this
+    /// principal instead of [`Self::caller`]. Ignored for controller callers beyond being stored.
+    pub query_subject: Option<Principal>,
 }
 
 impl AuthContext {
@@ -36,6 +39,7 @@ impl AuthContext {
         Self {
             caller: Some(caller),
             is_controller: false,
+            query_subject: None,
         }
     }
 
@@ -43,6 +47,7 @@ impl AuthContext {
         Self {
             caller: Some(caller),
             is_controller: true,
+            query_subject: None,
         }
     }
 
@@ -114,13 +119,14 @@ impl PermissionChecker {
         if auth.is_controller {
             return Some(AccessLevel::Admin);
         }
-        if let Some(caller) = &auth.caller {
-            let key = caller.to_text();
+        let acl_principal = auth.query_subject.as_ref().or(auth.caller.as_ref());
+        if let Some(p) = acl_principal {
+            let key = p.to_text();
             if let Some(level) = self.acl.get(key.as_str()) {
                 return Some(level.clone());
             }
         }
-        if auth.is_anonymous() {
+        if auth.is_anonymous() && auth.query_subject.is_none() {
             return Some(AccessLevel::Execute);
         }
         None
@@ -153,5 +159,27 @@ impl PermissionChecker {
                 Operation::ExecutePreparedQuery | Operation::ExecutePreparedUpdate
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_access_level_prefers_query_subject_over_caller() {
+        let mut checker = PermissionChecker::new();
+        let user = Principal::from_text("2vxsx-fae").expect("principal");
+        let peer = Principal::from_text("aaaaa-aa").expect("principal");
+        checker.set_acl_entry(user.to_text(), AccessLevel::Read);
+        let auth = AuthContext {
+            caller: Some(peer),
+            is_controller: false,
+            query_subject: Some(user),
+        };
+        assert_eq!(
+            checker.resolve_access_level(&auth),
+            Some(AccessLevel::Read)
+        );
     }
 }

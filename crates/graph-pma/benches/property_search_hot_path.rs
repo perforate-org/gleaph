@@ -24,7 +24,10 @@ fn encoded_blob_value(entry_index: usize, len: usize) -> Value {
     Value::Bytes(v)
 }
 
-fn setup_flushed_blob_prop_index(entry_count: usize, value_len: usize) -> (GraphPmaVecMemory, GraphPma) {
+fn setup_flushed_blob_prop_index(
+    entry_count: usize,
+    value_len: usize,
+) -> (GraphPmaVecMemory, GraphPma) {
     let memory = GraphPmaVecMemory::default();
     let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
     for i in 0..entry_count {

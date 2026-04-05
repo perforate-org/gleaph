@@ -13,7 +13,7 @@ use gleaph_gql::type_check::{
     type_diagnostic_from_warning,
 };
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::anchor::{self, extract_simple_label};
 use crate::cost;
@@ -238,6 +238,7 @@ fn build_plan_core(
 ) -> Result<PhysicalPlan, PlannerError> {
     // Phase 1: Semantic analysis.
     let semantic = semantic::analyze(query);
+    let referenced_vars = crate::variable_refs::linear_query_referenced_variables(query);
 
     // Pre-allocate: each query part typically produces 2-3 ops.
     let mut ops = Vec::with_capacity(query.parts.len() * 3 + 4);
@@ -259,6 +260,7 @@ fn build_plan_core(
             stats,
             &conditional_candidates,
             binding_kinds,
+            &referenced_vars,
             &mut ops,
             &mut annotations,
         )?;
@@ -271,6 +273,7 @@ fn build_plan_core(
                 stats,
                 &conditional_candidates,
                 binding_kinds,
+                &referenced_vars,
                 &mut ops,
                 &mut annotations,
             )?;
@@ -435,11 +438,19 @@ fn consume_simple_expand_chain(
                 indexed_edge_equality,
                 ..
             } if src.as_ref() == current_src => {
-                if label_expr.is_some() || var_len.is_some() || indexed_edge_equality.is_some() {
+                if label_expr.is_some() || indexed_edge_equality.is_some() {
                     return Err(
                         "remote USE GRAPH expand chain supports only fixed 1-hop expansions without label expressions or indexed edge equality"
                             .to_owned(),
                     );
+                }
+                if let Some(vl) = var_len {
+                    if vl.min != 1 || vl.max != Some(1) {
+                        return Err(
+                            "remote USE GRAPH expand chain supports only fixed 1-hop expansions without label expressions or indexed edge equality"
+                                .to_owned(),
+                        );
+                    }
                 }
                 current_src = dst.as_ref().to_owned();
                 index += 1;
@@ -672,12 +683,21 @@ fn plan_simple_statement(
     stats: Option<&dyn GraphStats>,
     conditional_candidates: &[ConditionalScanCandidate],
     binding_kinds: &std::collections::BTreeMap<String, BindingKind>,
+    referenced_vars: &BTreeSet<String>,
     ops: &mut Vec<PlanOp>,
     annotations: &mut PlanAnnotations,
 ) -> Result<(), PlannerError> {
     match stmt {
         SimpleQueryStatement::Match(m) => {
-            plan_match(m, stage, stats, conditional_candidates, ops, annotations)?;
+            plan_match(
+                m,
+                stage,
+                stats,
+                conditional_candidates,
+                referenced_vars,
+                ops,
+                annotations,
+            )?;
             Ok(())
         }
         SimpleQueryStatement::Filter(f) => {
@@ -793,6 +813,7 @@ fn plan_simple_statement(
                     stats,
                     conditional_candidates,
                     binding_kinds,
+                    referenced_vars,
                     &mut sub_ops,
                     annotations,
                 )?;
@@ -816,6 +837,7 @@ fn plan_match(
     stage: usize,
     stats: Option<&dyn GraphStats>,
     conditional_candidates: &[ConditionalScanCandidate],
+    referenced_vars: &BTreeSet<String>,
     ops: &mut Vec<PlanOp>,
     annotations: &mut PlanAnnotations,
 ) -> Result<(), PlannerError> {
@@ -834,6 +856,7 @@ fn plan_match(
                 path_pattern,
                 stats,
                 conditional_candidates,
+                referenced_vars,
                 &mut where_conjuncts,
                 &mut sub_ops,
                 annotations,
@@ -862,6 +885,7 @@ fn plan_match(
             path_pattern,
             stats,
             conditional_candidates,
+            referenced_vars,
             &mut where_conjuncts,
             ops,
             annotations,
@@ -881,6 +905,7 @@ fn plan_path_pattern(
     path: &PathPattern,
     stats: Option<&dyn GraphStats>,
     conditional_candidates: &[ConditionalScanCandidate],
+    referenced_vars: &BTreeSet<String>,
     where_conjuncts: &mut Vec<Expr>,
     ops: &mut Vec<PlanOp>,
     annotations: &mut PlanAnnotations,
@@ -902,6 +927,7 @@ fn plan_path_pattern(
         shortest_mode,
         stats,
         conditional_candidates,
+        referenced_vars,
         where_conjuncts,
         ops,
         annotations,
@@ -914,6 +940,7 @@ fn plan_path_expr(
     shortest_mode: Option<ShortestMode>,
     stats: Option<&dyn GraphStats>,
     conditional_candidates: &[ConditionalScanCandidate],
+    referenced_vars: &BTreeSet<String>,
     where_conjuncts: &mut Vec<Expr>,
     ops: &mut Vec<PlanOp>,
     annotations: &mut PlanAnnotations,
@@ -925,6 +952,7 @@ fn plan_path_expr(
                 shortest_mode,
                 stats,
                 conditional_candidates,
+                referenced_vars,
                 where_conjuncts,
                 ops,
                 annotations,
@@ -937,6 +965,7 @@ fn plan_path_expr(
                     shortest_mode,
                     stats,
                     conditional_candidates,
+                    referenced_vars,
                     where_conjuncts,
                     ops,
                     annotations,
@@ -1424,11 +1453,22 @@ fn simplified_contents_to_label_expr(c: &SimplifiedContents) -> Result<LabelExpr
     }
 }
 
+/// Per-hop auxiliary binding for [`PlanOp::Expand`] / [`PlanOp::ExpandFilter`] / [`PlanOp::EdgeBindEndpoints`]
+/// when the linear query references `{edge_var}__hop_aux`.
+fn hop_aux_binding_for_edge_if_referenced(
+    edge_var: &str,
+    referenced: &BTreeSet<String>,
+) -> Option<Str> {
+    let name = format!("{edge_var}__hop_aux");
+    referenced.contains(&name).then_some(name.into())
+}
+
 fn plan_path_term(
     term: &PathTerm,
     shortest_mode: Option<ShortestMode>,
     stats: Option<&dyn GraphStats>,
     conditional_candidates: &[ConditionalScanCandidate],
+    referenced_vars: &BTreeSet<String>,
     where_conjuncts: &mut Vec<Expr>,
     ops: &mut Vec<PlanOp>,
     annotations: &mut PlanAnnotations,
@@ -1601,6 +1641,10 @@ fn plan_path_term(
                             label: label_str.clone(),
                             near_property_projection: None,
                             far_property_projection: None,
+                            hop_aux_binding: hop_aux_binding_for_edge_if_referenced(
+                                edge_var,
+                                referenced_vars,
+                            ),
                         });
                         emit_edge_inline_filters(edge_var, edge, &fusion_on_clone, ops);
                         if !dst_filters.is_empty() {
@@ -1662,6 +1706,10 @@ fn plan_path_term(
                                 dst_filter: dst_filters,
                                 edge_property_projection: None,
                                 dst_property_projection: None,
+                                hop_aux_binding: hop_aux_binding_for_edge_if_referenced(
+                                    edge_var,
+                                    referenced_vars,
+                                ),
                             });
                             fused_nodes.insert(dst_var.clone());
                         } else {
@@ -1676,6 +1724,10 @@ fn plan_path_term(
                                 indexed_edge_equality,
                                 edge_property_projection: None,
                                 dst_property_projection: None,
+                                hop_aux_binding: hop_aux_binding_for_edge_if_referenced(
+                                    edge_var,
+                                    referenced_vars,
+                                ),
                             });
                         }
 
@@ -1690,6 +1742,7 @@ fn plan_path_term(
                     shortest_mode,
                     stats,
                     conditional_candidates,
+                    referenced_vars,
                     where_conjuncts,
                     ops,
                     annotations,
@@ -2438,6 +2491,7 @@ fn plan_bushy_join(
     stats: Option<&dyn GraphStats>,
     conditional_candidates: &[ConditionalScanCandidate],
     binding_kinds: &std::collections::BTreeMap<String, BindingKind>,
+    referenced_vars: &BTreeSet<String>,
     ops: &mut Vec<PlanOp>,
     annotations: &mut PlanAnnotations,
 ) -> Result<(), PlannerError> {
@@ -2455,6 +2509,7 @@ fn plan_bushy_join(
                 stats,
                 conditional_candidates,
                 binding_kinds,
+                referenced_vars,
                 &mut group_ops,
                 annotations,
             )?;
@@ -2565,6 +2620,7 @@ fn apply_wcoj_replacement(ops: &mut Vec<PlanOp>, annotations: &mut PlanAnnotatio
                     label_expr,
                     var_len,
                     indexed_edge_equality,
+                    hop_aux_binding,
                     ..
                 } => {
                     expand_hops.push(CollectedWcojHop {
@@ -2578,6 +2634,7 @@ fn apply_wcoj_replacement(ops: &mut Vec<PlanOp>, annotations: &mut PlanAnnotatio
                         var_len: *var_len,
                         indexed_edge_equality: indexed_edge_equality.clone(),
                         dst_filter: Vec::new(),
+                        hop_aux_binding: hop_aux_binding.clone(),
                     });
                 }
                 PlanOp::ExpandFilter {
@@ -2590,6 +2647,7 @@ fn apply_wcoj_replacement(ops: &mut Vec<PlanOp>, annotations: &mut PlanAnnotatio
                     var_len,
                     indexed_edge_equality,
                     dst_filter,
+                    hop_aux_binding,
                     ..
                 } => {
                     expand_hops.push(CollectedWcojHop {
@@ -2603,6 +2661,7 @@ fn apply_wcoj_replacement(ops: &mut Vec<PlanOp>, annotations: &mut PlanAnnotatio
                         var_len: *var_len,
                         indexed_edge_equality: indexed_edge_equality.clone(),
                         dst_filter: dst_filter.clone(),
+                        hop_aux_binding: hop_aux_binding.clone(),
                     });
                 }
                 _ => {}
@@ -2660,6 +2719,7 @@ struct CollectedWcojHop {
     var_len: Option<VarLenSpec>,
     indexed_edge_equality: Option<(Str, ScanValue)>,
     dst_filter: Vec<Expr>,
+    hop_aux_binding: Option<Str>,
 }
 
 fn order_wcoj_edges_for_cycle(
@@ -2692,6 +2752,7 @@ fn order_wcoj_edges_for_cycle(
                         var_len: hop.var_len,
                         indexed_edge_equality: hop.indexed_edge_equality.clone(),
                         dst_filter: hop.dst_filter.clone(),
+                        hop_aux_binding: hop.hop_aux_binding.clone(),
                     },
                 ));
                 break;

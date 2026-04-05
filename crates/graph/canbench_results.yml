@@ -2,108 +2,153 @@ benches:
   bench_gql_block_parse_insert_person:
     total:
       calls: 1
-      instructions: 17677
+      instructions: 17550
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_gql_block_plan_insert_person:
     total:
       calls: 1
-      instructions: 53856
+      instructions: 53661
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_gql_execute_any_shortest_path:
     total:
       calls: 1
-      instructions: 514237
+      instructions: 523558
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      gql_exec_plan_flush:
+      gql_exec_dispatch_ops:
         calls: 1
-        instructions: 5385
+        instructions: 313631
         heap_increase: 0
         stable_memory_increase: 0
-      pma_graph_refresh_write:
+      gql_exec_index_scan:
         calls: 1
-        instructions: 342
+        instructions: 233649
         heap_increase: 0
         stable_memory_increase: 0
-      pma_maint_queue_persist:
+      gql_query_execute:
         calls: 1
-        instructions: 342
+        instructions: 324895
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_parse:
+        calls: 1
+        instructions: 61250
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_plan:
+        calls: 1
+        instructions: 109170
         heap_increase: 0
         stable_memory_increase: 0
   bench_gql_execute_avg_x_256:
     total:
       calls: 1
-      instructions: 3835880
+      instructions: 3785621
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      gql_exec_plan_flush:
+      gql_exec_dispatch_ops:
         calls: 1
-        instructions: 5436
+        instructions: 3672348
         heap_increase: 0
         stable_memory_increase: 0
-      pma_graph_refresh_write:
+      gql_exec_node_scan:
         calls: 1
-        instructions: 342
+        instructions: 2874748
         heap_increase: 0
         stable_memory_increase: 0
-      pma_maint_queue_persist:
+      gql_query_execute:
         calls: 1
-        instructions: 342
+        instructions: 3677276
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_parse:
+        calls: 1
+        instructions: 34119
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_plan:
+        calls: 1
+        instructions: 58629
         heap_increase: 0
         stable_memory_increase: 0
   bench_gql_execute_avg_x_32:
     total:
       calls: 1
-      instructions: 576112
+      instructions: 574430
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      gql_exec_plan_flush:
+      gql_exec_dispatch_ops:
         calls: 1
-        instructions: 5444
+        instructions: 461355
         heap_increase: 0
         stable_memory_increase: 0
-      pma_graph_refresh_write:
+      gql_exec_node_scan:
         calls: 1
-        instructions: 342
+        instructions: 352604
         heap_increase: 0
         stable_memory_increase: 0
-      pma_maint_queue_persist:
+      gql_query_execute:
         calls: 1
-        instructions: 342
+        instructions: 466355
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_parse:
+        calls: 1
+        instructions: 33939
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_plan:
+        calls: 1
+        instructions: 58636
         heap_increase: 0
         stable_memory_increase: 0
   bench_gql_execute_block_bulk_detach_delete:
     total:
       calls: 1
-      instructions: 12659799
+      instructions: 12600727
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       gql_block_execute:
         calls: 1
-        instructions: 12541464
+        instructions: 12480998
         heap_increase: 0
         stable_memory_increase: 0
       gql_block_parse:
         calls: 1
-        instructions: 31123
+        instructions: 30655
         heap_increase: 0
         stable_memory_increase: 0
       gql_block_plan:
         calls: 1
-        instructions: 76158
+        instructions: 77040
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_exec_dispatch_ops:
+        calls: 1
+        instructions: 12453835
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_exec_index_scan:
+        calls: 1
+        instructions: 1738452
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_exec_materialize:
+        calls: 1
+        instructions: 1297
         heap_increase: 0
         stable_memory_increase: 0
       gql_exec_plan_flush:
         calls: 1
-        instructions: 16050
+        instructions: 18440
         heap_increase: 0
         stable_memory_increase: 0
       pma_graph_refresh_write:
@@ -134,28 +179,43 @@ benches:
   bench_gql_execute_block_delete_edge:
     total:
       calls: 1
-      instructions: 515913
+      instructions: 527980
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       gql_block_execute:
         calls: 1
-        instructions: 303903
+        instructions: 314457
         heap_increase: 0
         stable_memory_increase: 0
       gql_block_parse:
         calls: 1
-        instructions: 47321
+        instructions: 46278
         heap_increase: 0
         stable_memory_increase: 0
       gql_block_plan:
         calls: 1
-        instructions: 140016
+        instructions: 142477
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_exec_dispatch_ops:
+        calls: 1
+        instructions: 285333
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_exec_index_scan:
+        calls: 1
+        instructions: 235531
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_exec_materialize:
+        calls: 1
+        instructions: 14191
         heap_increase: 0
         stable_memory_increase: 0
       gql_exec_plan_flush:
         calls: 1
-        instructions: 5710
+        instructions: 7425
         heap_increase: 0
         stable_memory_increase: 0
       pma_graph_refresh_write:
@@ -171,28 +231,43 @@ benches:
   bench_gql_execute_block_delete_vertex:
     total:
       calls: 1
-      instructions: 520016
+      instructions: 529609
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       gql_block_execute:
         calls: 1
-        instructions: 399195
+        instructions: 406875
         heap_increase: 0
         stable_memory_increase: 0
       gql_block_parse:
         calls: 1
-        instructions: 29460
+        instructions: 29054
         heap_increase: 0
         stable_memory_increase: 0
       gql_block_plan:
         calls: 1
-        instructions: 78061
+        instructions: 79533
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_exec_dispatch_ops:
+        calls: 1
+        instructions: 380392
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_exec_index_scan:
+        calls: 1
+        instructions: 235090
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_exec_materialize:
+        calls: 1
+        instructions: 1284
         heap_increase: 0
         stable_memory_increase: 0
       gql_exec_plan_flush:
         calls: 1
-        instructions: 15384
+        instructions: 17773
         heap_increase: 0
         stable_memory_increase: 0
       pma_graph_refresh_write:
@@ -223,28 +298,43 @@ benches:
   bench_gql_execute_block_detach_delete_vertex:
     total:
       calls: 1
-      instructions: 563606
+      instructions: 572816
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       gql_block_execute:
         calls: 1
-        instructions: 442067
+        instructions: 449732
         heap_increase: 0
         stable_memory_increase: 0
       gql_block_parse:
         calls: 1
-        instructions: 31038
+        instructions: 30590
         heap_increase: 0
         stable_memory_increase: 0
       gql_block_plan:
         calls: 1
-        instructions: 77465
+        instructions: 78839
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_exec_dispatch_ops:
+        calls: 1
+        instructions: 423260
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_exec_index_scan:
+        calls: 1
+        instructions: 238850
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_exec_materialize:
+        calls: 1
+        instructions: 1283
         heap_increase: 0
         stable_memory_increase: 0
       gql_exec_plan_flush:
         calls: 1
-        instructions: 15394
+        instructions: 17763
         heap_increase: 0
         stable_memory_increase: 0
       pma_graph_refresh_write:
@@ -275,28 +365,38 @@ benches:
   bench_gql_execute_block_insert_person:
     total:
       calls: 1
-      instructions: 141331
+      instructions: 147838
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       gql_block_execute:
         calls: 1
-        instructions: 100769
+        instructions: 107954
         heap_increase: 0
         stable_memory_increase: 0
       gql_block_parse:
         calls: 1
-        instructions: 16250
+        instructions: 16099
         heap_increase: 0
         stable_memory_increase: 0
       gql_block_plan:
         calls: 1
-        instructions: 12185
+        instructions: 12134
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_exec_dispatch_ops:
+        calls: 1
+        instructions: 85801
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_exec_materialize:
+        calls: 1
+        instructions: 7659
         heap_increase: 0
         stable_memory_increase: 0
       gql_exec_plan_flush:
         calls: 1
-        instructions: 6152
+        instructions: 7719
         heap_increase: 0
         stable_memory_increase: 0
       pma_graph_refresh_write:
@@ -327,28 +427,38 @@ benches:
   bench_gql_execute_block_insert_person_bare:
     total:
       calls: 1
-      instructions: 68819
+      instructions: 76052
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       gql_block_execute:
         calls: 1
-        instructions: 40218
+        instructions: 47589
         heap_increase: 0
         stable_memory_increase: 0
       gql_block_parse:
         calls: 1
-        instructions: 9421
+        instructions: 9326
         heap_increase: 0
         stable_memory_increase: 0
       gql_block_plan:
         calls: 1
-        instructions: 9596
+        instructions: 9557
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_exec_dispatch_ops:
+        calls: 1
+        instructions: 27547
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_exec_materialize:
+        calls: 1
+        instructions: 5751
         heap_increase: 0
         stable_memory_increase: 0
       gql_exec_plan_flush:
         calls: 1
-        instructions: 6129
+        instructions: 7696
         heap_increase: 0
         stable_memory_increase: 0
       pma_graph_refresh_write:
@@ -364,28 +474,38 @@ benches:
   bench_gql_execute_block_insert_person_multi_prop:
     total:
       calls: 1
-      instructions: 509572
+      instructions: 513062
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       gql_block_execute:
         calls: 1
-        instructions: 446779
+        instructions: 451943
         heap_increase: 0
         stable_memory_increase: 0
       gql_block_parse:
         calls: 1
-        instructions: 29006
+        instructions: 28687
         heap_increase: 0
         stable_memory_increase: 0
       gql_block_plan:
         calls: 1
-        instructions: 17040
+        instructions: 16941
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_exec_dispatch_ops:
+        calls: 1
+        instructions: 426565
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_exec_materialize:
+        calls: 1
+        instructions: 10885
         heap_increase: 0
         stable_memory_increase: 0
       gql_exec_plan_flush:
         calls: 1
-        instructions: 6152
+        instructions: 7718
         heap_increase: 0
         stable_memory_increase: 0
       pma_graph_refresh_write:
@@ -416,28 +536,38 @@ benches:
   bench_gql_execute_block_remove_property:
     total:
       calls: 1
-      instructions: 189163
+      instructions: 195496
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       gql_block_execute:
         calls: 1
-        instructions: 79344
+        instructions: 84837
         heap_increase: 0
         stable_memory_increase: 0
       gql_block_parse:
         calls: 1
-        instructions: 33951
+        instructions: 33554
         heap_increase: 0
         stable_memory_increase: 0
       gql_block_plan:
         calls: 1
-        instructions: 62233
+        instructions: 63361
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_exec_dispatch_ops:
+        calls: 1
+        instructions: 61004
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_exec_node_scan:
+        calls: 1
+        instructions: 8117
         heap_increase: 0
         stable_memory_increase: 0
       gql_exec_plan_flush:
         calls: 1
-        instructions: 15315
+        instructions: 17316
         heap_increase: 0
         stable_memory_increase: 0
       pma_graph_refresh_write:
@@ -468,33 +598,43 @@ benches:
   bench_gql_execute_block_set_edge_property:
     total:
       calls: 1
-      instructions: 607898
+      instructions: 619684
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       gql_block_execute:
         calls: 1
-        instructions: 368236
+        instructions: 375563
         heap_increase: 0
         stable_memory_increase: 0
       gql_block_parse:
         calls: 1
-        instructions: 60167
+        instructions: 59463
         heap_increase: 0
         stable_memory_increase: 0
       gql_block_plan:
         calls: 1
-        instructions: 155267
+        instructions: 159189
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_exec_dispatch_ops:
+        calls: 1
+        instructions: 346322
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_exec_index_scan:
+        calls: 1
+        instructions: 236038
         heap_increase: 0
         stable_memory_increase: 0
       gql_exec_plan_flush:
         calls: 1
-        instructions: 16213
+        instructions: 18190
         heap_increase: 0
         stable_memory_increase: 0
       gql_exec_set_property_item:
         calls: 1
-        instructions: 75604
+        instructions: 74757
         heap_increase: 0
         stable_memory_increase: 0
       pma_edge_property_store_flush:
@@ -525,33 +665,43 @@ benches:
   bench_gql_execute_block_set_five_properties:
     total:
       calls: 1
-      instructions: 1010935
+      instructions: 1016043
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       gql_block_execute:
         calls: 1
-        instructions: 809953
+        instructions: 813056
         heap_increase: 0
         stable_memory_increase: 0
       gql_block_parse:
         calls: 1
-        instructions: 63914
+        instructions: 63241
         heap_increase: 0
         stable_memory_increase: 0
       gql_block_plan:
         calls: 1
-        instructions: 117610
+        instructions: 119298
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_exec_dispatch_ops:
+        calls: 1
+        instructions: 785073
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_exec_node_scan:
+        calls: 1
+        instructions: 8294
         heap_increase: 0
         stable_memory_increase: 0
       gql_exec_plan_flush:
         calls: 1
-        instructions: 16717
+        instructions: 18698
         heap_increase: 0
         stable_memory_increase: 0
       gql_exec_set_property_item:
         calls: 5
-        instructions: 762545
+        instructions: 758344
         heap_increase: 0
         stable_memory_increase: 0
       pma_graph_refresh_write:
@@ -582,33 +732,43 @@ benches:
   bench_gql_execute_block_set_property:
     total:
       calls: 1
-      instructions: 244653
+      instructions: 251560
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       gql_block_execute:
         calls: 1
-        instructions: 123769
+        instructions: 129494
         heap_increase: 0
         stable_memory_increase: 0
       gql_block_parse:
         calls: 1
-        instructions: 37012
+        instructions: 36563
         heap_increase: 0
         stable_memory_increase: 0
       gql_block_plan:
         calls: 1
-        instructions: 68505
+        instructions: 69681
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_exec_dispatch_ops:
+        calls: 1
+        instructions: 103754
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_exec_node_scan:
+        calls: 1
+        instructions: 8125
         heap_increase: 0
         stable_memory_increase: 0
       gql_exec_plan_flush:
         calls: 1
-        instructions: 15709
+        instructions: 17687
         heap_increase: 0
         stable_memory_increase: 0
       gql_exec_set_property_item:
         calls: 1
-        instructions: 87148
+        instructions: 86552
         heap_increase: 0
         stable_memory_increase: 0
       pma_graph_refresh_write:
@@ -639,33 +799,43 @@ benches:
   bench_gql_execute_block_set_then_remove_next:
     total:
       calls: 1
-      instructions: 924417
+      instructions: 937238
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       gql_block_execute:
         calls: 1
-        instructions: 615885
+        instructions: 626043
         heap_increase: 0
         stable_memory_increase: 0
       gql_block_parse:
         calls: 1
-        instructions: 87853
+        instructions: 86874
         heap_increase: 0
         stable_memory_increase: 0
       gql_block_plan:
         calls: 1
-        instructions: 190625
+        instructions: 193305
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_exec_dispatch_ops:
+        calls: 1
+        instructions: 598782
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_exec_index_scan:
+        calls: 2
+        instructions: 248742
         heap_increase: 0
         stable_memory_increase: 0
       gql_exec_plan_flush:
         calls: 1
-        instructions: 16211
+        instructions: 18212
         heap_increase: 0
         stable_memory_increase: 0
       gql_exec_set_property_item:
         calls: 2
-        instructions: 208941
+        instructions: 208017
         heap_increase: 0
         stable_memory_increase: 0
       pma_graph_refresh_write:
@@ -696,33 +866,43 @@ benches:
   bench_gql_execute_block_set_three_properties:
     total:
       calls: 1
-      instructions: 558087
+      instructions: 563740
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       gql_block_execute:
         calls: 1
-        instructions: 398734
+        instructions: 403203
         heap_increase: 0
         stable_memory_increase: 0
       gql_block_parse:
         calls: 1
-        instructions: 49274
+        instructions: 48713
         heap_increase: 0
         stable_memory_increase: 0
       gql_block_plan:
         calls: 1
-        instructions: 93007
+        instructions: 94140
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_exec_dispatch_ops:
+        calls: 1
+        instructions: 376257
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_exec_node_scan:
+        calls: 1
+        instructions: 8179
         heap_increase: 0
         stable_memory_increase: 0
       gql_exec_plan_flush:
         calls: 1
-        instructions: 16211
+        instructions: 18212
         heap_increase: 0
         stable_memory_increase: 0
       gql_exec_set_property_item:
         calls: 3
-        instructions: 357209
+        instructions: 354925
         heap_increase: 0
         stable_memory_increase: 0
       pma_graph_refresh_write:
@@ -753,33 +933,43 @@ benches:
   bench_gql_execute_block_set_twice_next:
     total:
       calls: 1
-      instructions: 793866
+      instructions: 803215
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       gql_block_execute:
         calls: 1
-        instructions: 496342
+        instructions: 503735
         heap_increase: 0
         stable_memory_increase: 0
       gql_block_parse:
         calls: 1
-        instructions: 83199
+        instructions: 82224
         heap_increase: 0
         stable_memory_increase: 0
       gql_block_plan:
         calls: 1
-        instructions: 185135
+        instructions: 187697
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_exec_dispatch_ops:
+        calls: 1
+        instructions: 476551
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_exec_index_scan:
+        calls: 2
+        instructions: 243788
         heap_increase: 0
         stable_memory_increase: 0
       gql_exec_plan_flush:
         calls: 1
-        instructions: 15959
+        instructions: 17960
         heap_increase: 0
         stable_memory_increase: 0
       gql_exec_set_property_item:
         calls: 2
-        instructions: 207053
+        instructions: 205839
         heap_increase: 0
         stable_memory_increase: 0
       pma_graph_refresh_write:
@@ -810,33 +1000,43 @@ benches:
   bench_gql_execute_block_set_two_properties:
     total:
       calls: 1
-      instructions: 390252
+      instructions: 397031
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       gql_block_execute:
         calls: 1
-        instructions: 247385
+        instructions: 252399
         heap_increase: 0
         stable_memory_increase: 0
       gql_block_parse:
         calls: 1
-        instructions: 45090
+        instructions: 44585
         heap_increase: 0
         stable_memory_increase: 0
       gql_block_plan:
         calls: 1
-        instructions: 81107
+        instructions: 82370
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_exec_dispatch_ops:
+        calls: 1
+        instructions: 225820
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_exec_node_scan:
+        calls: 1
+        instructions: 8157
         heap_increase: 0
         stable_memory_increase: 0
       gql_exec_plan_flush:
         calls: 1
-        instructions: 15961
+        instructions: 17939
         heap_increase: 0
         stable_memory_increase: 0
       gql_exec_set_property_item:
         calls: 2
-        instructions: 207586
+        instructions: 206262
         heap_increase: 0
         stable_memory_increase: 0
       pma_graph_refresh_write:
@@ -867,483 +1067,698 @@ benches:
   bench_gql_execute_call_db_labels_ring_32:
     total:
       calls: 1
-      instructions: 337921
+      instructions: 311003
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      gql_exec_plan_flush:
+      gql_exec_dispatch_ops:
         calls: 1
-        instructions: 5441
+        instructions: 242358
         heap_increase: 0
         stable_memory_increase: 0
-      pma_graph_refresh_write:
+      gql_query_execute:
         calls: 1
-        instructions: 342
+        instructions: 245700
         heap_increase: 0
         stable_memory_increase: 0
-      pma_maint_queue_persist:
+      gql_query_parse:
         calls: 1
-        instructions: 342
+        instructions: 27358
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_plan:
+        calls: 1
+        instructions: 27612
         heap_increase: 0
         stable_memory_increase: 0
   bench_gql_execute_call_db_property_keys_ring_128:
     total:
       calls: 1
-      instructions: 3843918
+      instructions: 3827249
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      gql_exec_plan_flush:
+      gql_exec_dispatch_ops:
         calls: 1
-        instructions: 5436
+        instructions: 3752739
         heap_increase: 0
         stable_memory_increase: 0
-      pma_graph_refresh_write:
+      gql_query_execute:
         calls: 1
-        instructions: 342
+        instructions: 3758033
         heap_increase: 0
         stable_memory_increase: 0
-      pma_maint_queue_persist:
+      gql_query_parse:
         calls: 1
-        instructions: 342
+        instructions: 28011
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_plan:
+        calls: 1
+        instructions: 27772
         heap_increase: 0
         stable_memory_increase: 0
   bench_gql_execute_call_db_relationship_types_ring_128:
     total:
       calls: 1
-      instructions: 450089
+      instructions: 445205
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      gql_exec_plan_flush:
+      gql_exec_dispatch_ops:
         calls: 1
-        instructions: 5436
+        instructions: 374556
         heap_increase: 0
         stable_memory_increase: 0
-      pma_graph_refresh_write:
+      gql_query_execute:
         calls: 1
-        instructions: 342
+        instructions: 377811
         heap_increase: 0
         stable_memory_increase: 0
-      pma_maint_queue_persist:
+      gql_query_parse:
         calls: 1
-        instructions: 342
+        instructions: 28987
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_plan:
+        calls: 1
+        instructions: 27829
         heap_increase: 0
         stable_memory_increase: 0
   bench_gql_execute_count_distinct_x_mod_stats_128:
     total:
       calls: 1
-      instructions: 2319969
+      instructions: 2321241
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      gql_exec_plan_flush:
+      gql_exec_dispatch_ops:
         calls: 1
-        instructions: 5437
+        instructions: 2206044
         heap_increase: 0
         stable_memory_increase: 0
-      pma_graph_refresh_write:
+      gql_exec_node_scan:
         calls: 1
-        instructions: 342
+        instructions: 1437937
         heap_increase: 0
         stable_memory_increase: 0
-      pma_maint_queue_persist:
+      gql_query_execute:
         calls: 1
-        instructions: 342
+        instructions: 2210922
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_parse:
+        calls: 1
+        instructions: 35894
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_plan:
+        calls: 1
+        instructions: 58473
         heap_increase: 0
         stable_memory_increase: 0
   bench_gql_execute_count_star_ring_128:
     total:
       calls: 1
-      instructions: 1552920
+      instructions: 1560014
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      gql_exec_plan_flush:
+      gql_exec_dispatch_ops:
         calls: 1
-        instructions: 5436
+        instructions: 1474669
         heap_increase: 0
         stable_memory_increase: 0
-      pma_graph_refresh_write:
+      gql_exec_node_scan:
         calls: 1
-        instructions: 342
+        instructions: 1241876
         heap_increase: 0
         stable_memory_increase: 0
-      pma_maint_queue_persist:
+      gql_query_execute:
         calls: 1
-        instructions: 342
+        instructions: 1479058
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_parse:
+        calls: 1
+        instructions: 26031
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_plan:
+        calls: 1
+        instructions: 44205
         heap_increase: 0
         stable_memory_increase: 0
   bench_gql_execute_count_star_ring_256:
     total:
       calls: 1
-      instructions: 2991035
+      instructions: 2990055
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      gql_exec_plan_flush:
+      gql_exec_dispatch_ops:
         calls: 1
-        instructions: 5435
+        instructions: 2903614
         heap_increase: 0
         stable_memory_increase: 0
-      pma_graph_refresh_write:
+      gql_exec_node_scan:
         calls: 1
-        instructions: 342
+        instructions: 2454361
         heap_increase: 0
         stable_memory_increase: 0
-      pma_maint_queue_persist:
+      gql_query_execute:
         calls: 1
-        instructions: 342
+        instructions: 2908152
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_parse:
+        calls: 1
+        instructions: 27332
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_plan:
+        calls: 1
+        instructions: 43966
         heap_increase: 0
         stable_memory_increase: 0
   bench_gql_execute_count_star_ring_64:
     total:
       calls: 1
-      instructions: 823505
+      instructions: 824634
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      gql_exec_plan_flush:
+      gql_exec_dispatch_ops:
         calls: 1
-        instructions: 5441
+        instructions: 739007
         heap_increase: 0
         stable_memory_increase: 0
-      pma_graph_refresh_write:
+      gql_exec_node_scan:
         calls: 1
-        instructions: 342
+        instructions: 617771
         heap_increase: 0
         stable_memory_increase: 0
-      pma_maint_queue_persist:
+      gql_query_execute:
         calls: 1
-        instructions: 342
+        instructions: 743599
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_parse:
+        calls: 1
+        instructions: 26239
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_plan:
+        calls: 1
+        instructions: 44003
         heap_increase: 0
         stable_memory_increase: 0
   bench_gql_execute_distinct_region_ring_256:
     total:
       calls: 1
-      instructions: 5838773
+      instructions: 5803501
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      gql_exec_plan_flush:
+      gql_exec_dispatch_ops:
         calls: 1
-        instructions: 5437
+        instructions: 5094685
         heap_increase: 0
         stable_memory_increase: 0
-      pma_graph_refresh_write:
+      gql_exec_node_scan:
         calls: 1
-        instructions: 342
+        instructions: 4039936
         heap_increase: 0
         stable_memory_increase: 0
-      pma_maint_queue_persist:
+      gql_query_execute:
         calls: 1
-        instructions: 342
+        instructions: 5711092
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_parse:
+        calls: 1
+        instructions: 31951
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_plan:
+        calls: 1
+        instructions: 47719
         heap_increase: 0
         stable_memory_increase: 0
   bench_gql_execute_expand_one_hop_ring_256:
     total:
       calls: 1
-      instructions: 13228216
+      instructions: 14843824
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      gql_exec_plan_flush:
+      gql_exec_dispatch_ops:
         calls: 1
-        instructions: 5437
+        instructions: 13110091
         heap_increase: 0
         stable_memory_increase: 0
-      pma_graph_refresh_write:
+      gql_exec_expand:
         calls: 1
-        instructions: 342
+        instructions: 8107265
         heap_increase: 0
         stable_memory_increase: 0
-      pma_maint_queue_persist:
+      gql_exec_node_scan:
         calls: 1
-        instructions: 342
+        instructions: 4038432
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_execute:
+        calls: 1
+        instructions: 14405940
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_parse:
+        calls: 1
+        instructions: 49520
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_plan:
+        calls: 1
+        instructions: 93255
         heap_increase: 0
         stable_memory_increase: 0
   bench_gql_execute_expand_one_hop_ring_64:
     total:
       calls: 1
-      instructions: 3358466
+      instructions: 3731872
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      gql_exec_plan_flush:
+      gql_exec_dispatch_ops:
         calls: 1
-        instructions: 5440
+        instructions: 3177467
         heap_increase: 0
         stable_memory_increase: 0
-      pma_graph_refresh_write:
+      gql_exec_expand:
         calls: 1
-        instructions: 342
+        instructions: 1930940
         heap_increase: 0
         stable_memory_increase: 0
-      pma_maint_queue_persist:
+      gql_exec_node_scan:
         calls: 1
-        instructions: 342
+        instructions: 1004186
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_execute:
+        calls: 1
+        instructions: 3504686
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_parse:
+        calls: 1
+        instructions: 47425
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_plan:
+        calls: 1
+        instructions: 94434
         heap_increase: 0
         stable_memory_increase: 0
   bench_gql_execute_expand_post_fanout_persons_32_fanout_6:
     total:
       calls: 1
-      instructions: 6214981
+      instructions: 6731804
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      gql_exec_plan_flush:
+      gql_exec_dispatch_ops:
         calls: 1
-        instructions: 5437
+        instructions: 5345760
         heap_increase: 0
         stable_memory_increase: 0
-      pma_graph_refresh_write:
+      gql_exec_expand:
         calls: 1
-        instructions: 342
+        instructions: 4142315
         heap_increase: 0
         stable_memory_increase: 0
-      pma_maint_queue_persist:
+      gql_exec_node_scan:
         calls: 1
-        instructions: 342
+        instructions: 461378
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_execute:
+        calls: 1
+        instructions: 6245056
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_parse:
+        calls: 1
+        instructions: 52239
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_plan:
+        calls: 1
+        instructions: 99700
         heap_increase: 0
         stable_memory_increase: 0
   bench_gql_execute_expand_two_hop_ring_128:
     total:
       calls: 1
-      instructions: 11148102
+      instructions: 12712372
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      gql_exec_plan_flush:
+      gql_exec_dispatch_ops:
         calls: 1
-        instructions: 5437
+        instructions: 11386278
         heap_increase: 0
         stable_memory_increase: 0
-      pma_graph_refresh_write:
-        calls: 1
-        instructions: 342
+      gql_exec_expand:
+        calls: 2
+        instructions: 8607868
         heap_increase: 0
         stable_memory_increase: 0
-      pma_maint_queue_persist:
+      gql_exec_node_scan:
         calls: 1
-        instructions: 342
+        instructions: 2014320
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_execute:
+        calls: 1
+        instructions: 12343975
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_parse:
+        calls: 1
+        instructions: 64798
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_plan:
+        calls: 1
+        instructions: 144062
         heap_increase: 0
         stable_memory_increase: 0
   bench_gql_execute_group_by_bucket_counts_ring_256:
     total:
       calls: 1
-      instructions: 5932584
+      instructions: 5899781
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      gql_exec_plan_flush:
+      gql_exec_dispatch_ops:
         calls: 1
-        instructions: 5436
+        instructions: 5729202
         heap_increase: 0
         stable_memory_increase: 0
-      pma_graph_refresh_write:
+      gql_exec_node_scan:
         calls: 1
-        instructions: 342
+        instructions: 4411927
         heap_increase: 0
         stable_memory_increase: 0
-      pma_maint_queue_persist:
+      gql_query_execute:
         calls: 1
-        instructions: 342
+        instructions: 5749589
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_parse:
+        calls: 1
+        instructions: 55560
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_plan:
+        calls: 1
+        instructions: 68702
         heap_increase: 0
         stable_memory_increase: 0
   bench_gql_execute_label_scan_ring_128:
     total:
       calls: 1
-      instructions: 2859538
+      instructions: 2874946
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      gql_exec_plan_flush:
+      gql_exec_dispatch_ops:
         calls: 1
-        instructions: 5438
+        instructions: 2327881
         heap_increase: 0
         stable_memory_increase: 0
-      pma_graph_refresh_write:
+      gql_exec_node_scan:
         calls: 1
-        instructions: 342
+        instructions: 2058615
         heap_increase: 0
         stable_memory_increase: 0
-      pma_maint_queue_persist:
+      gql_query_execute:
         calls: 1
-        instructions: 342
+        instructions: 2635772
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_parse:
+        calls: 1
+        instructions: 28806
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_plan:
+        calls: 1
+        instructions: 47541
         heap_increase: 0
         stable_memory_increase: 0
   bench_gql_execute_label_scan_ring_256:
     total:
       calls: 1
-      instructions: 5670354
+      instructions: 5668016
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      gql_exec_plan_flush:
+      gql_exec_dispatch_ops:
         calls: 1
-        instructions: 5437
+        instructions: 4672241
         heap_increase: 0
         stable_memory_increase: 0
-      pma_graph_refresh_write:
+      gql_exec_node_scan:
         calls: 1
-        instructions: 342
+        instructions: 4130918
         heap_increase: 0
         stable_memory_increase: 0
-      pma_maint_queue_persist:
+      gql_query_execute:
         calls: 1
-        instructions: 342
+        instructions: 5278246
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_parse:
+        calls: 1
+        instructions: 30107
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_plan:
+        calls: 1
+        instructions: 47705
         heap_increase: 0
         stable_memory_increase: 0
   bench_gql_execute_label_scan_ring_64:
     total:
       calls: 1
-      instructions: 1454209
+      instructions: 1457829
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      gql_exec_plan_flush:
+      gql_exec_dispatch_ops:
         calls: 1
-        instructions: 5440
+        instructions: 1145547
         heap_increase: 0
         stable_memory_increase: 0
-      pma_graph_refresh_write:
+      gql_exec_node_scan:
         calls: 1
-        instructions: 342
+        instructions: 1008954
         heap_increase: 0
         stable_memory_increase: 0
-      pma_maint_queue_persist:
+      gql_query_execute:
         calls: 1
-        instructions: 342
+        instructions: 1298360
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_parse:
+        calls: 1
+        instructions: 29014
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_plan:
+        calls: 1
+        instructions: 47901
         heap_increase: 0
         stable_memory_increase: 0
   bench_gql_execute_order_by_score_limit_ring_256:
     total:
       calls: 1
-      instructions: 6852255
+      instructions: 6830725
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      gql_exec_plan_flush:
+      gql_exec_dispatch_ops:
         calls: 1
-        instructions: 5437
+        instructions: 5946385
         heap_increase: 0
         stable_memory_increase: 0
-      pma_graph_refresh_write:
+      gql_exec_node_scan:
         calls: 1
-        instructions: 342
+        instructions: 4560426
         heap_increase: 0
         stable_memory_increase: 0
-      pma_maint_queue_persist:
+      gql_query_execute:
         calls: 1
-        instructions: 342
+        instructions: 6658604
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_parse:
+        calls: 1
+        instructions: 52265
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_plan:
+        calls: 1
+        instructions: 66147
         heap_increase: 0
         stable_memory_increase: 0
   bench_gql_execute_param_filter_ring_256:
     total:
       calls: 1
-      instructions: 6263532
+      instructions: 6242248
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      gql_exec_plan_flush:
+      gql_exec_dispatch_ops:
         calls: 1
-        instructions: 5436
+        instructions: 5499888
         heap_increase: 0
         stable_memory_increase: 0
-      pma_graph_refresh_write:
+      gql_exec_node_scan:
         calls: 1
-        instructions: 342
+        instructions: 4529131
         heap_increase: 0
         stable_memory_increase: 0
-      pma_maint_queue_persist:
+      gql_query_execute:
         calls: 1
-        instructions: 342
+        instructions: 5936320
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_parse:
+        calls: 1
+        instructions: 41610
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_plan:
+        calls: 1
+        instructions: 71079
         heap_increase: 0
         stable_memory_increase: 0
   bench_gql_execute_property_filter_ring_256:
     total:
       calls: 1
-      instructions: 6156038
+      instructions: 6126841
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      gql_exec_plan_flush:
+      gql_exec_dispatch_ops:
         calls: 1
-        instructions: 5437
+        instructions: 5327913
         heap_increase: 0
         stable_memory_increase: 0
-      pma_graph_refresh_write:
+      gql_exec_node_scan:
         calls: 1
-        instructions: 342
+        instructions: 4474304
         heap_increase: 0
         stable_memory_increase: 0
-      pma_maint_queue_persist:
+      gql_query_execute:
         calls: 1
-        instructions: 342
+        instructions: 5806282
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_parse:
+        calls: 1
+        instructions: 40368
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_plan:
+        calls: 1
+        instructions: 70957
         heap_increase: 0
         stable_memory_increase: 0
   bench_gql_execute_property_filter_ring_64:
     total:
       calls: 1
-      instructions: 1596452
+      instructions: 1590009
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      gql_exec_plan_flush:
+      gql_exec_dispatch_ops:
         calls: 1
-        instructions: 5437
+        instructions: 1327237
         heap_increase: 0
         stable_memory_increase: 0
-      pma_graph_refresh_write:
+      gql_exec_node_scan:
         calls: 1
-        instructions: 342
+        instructions: 1110009
         heap_increase: 0
         stable_memory_increase: 0
-      pma_maint_queue_persist:
+      gql_query_execute:
         calls: 1
-        instructions: 342
+        instructions: 1426683
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_parse:
+        calls: 1
+        instructions: 39389
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_plan:
+        calls: 1
+        instructions: 70949
         heap_increase: 0
         stable_memory_increase: 0
   bench_gql_execute_sum_min_max_stats_128:
     total:
       calls: 1
-      instructions: 2219899
+      instructions: 2196471
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      gql_exec_plan_flush:
+      gql_exec_dispatch_ops:
         calls: 1
-        instructions: 5436
+        instructions: 2005662
         heap_increase: 0
         stable_memory_increase: 0
-      pma_graph_refresh_write:
+      gql_exec_node_scan:
         calls: 1
-        instructions: 342
+        instructions: 1429895
         heap_increase: 0
         stable_memory_increase: 0
-      pma_maint_queue_persist:
+      gql_query_execute:
         calls: 1
-        instructions: 342
+        instructions: 2011450
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_parse:
+        calls: 1
+        instructions: 61964
+        heap_increase: 0
+        stable_memory_increase: 0
+      gql_query_plan:
+        calls: 1
+        instructions: 97569
         heap_increase: 0
         stable_memory_increase: 0
   bench_gql_planner_aggregates_group_by_multi:
     total:
       calls: 1
-      instructions: 131403
+      instructions: 135013
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_gql_planner_deep_chain_where_order_limit:
     total:
       calls: 1
-      instructions: 513764
+      instructions: 529592
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_gql_planner_match_join_where_order_limit:
     total:
       calls: 1
-      instructions: 283490
+      instructions: 291763
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}

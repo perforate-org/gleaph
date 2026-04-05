@@ -8,10 +8,22 @@
 //! With the `canbench-rs` feature (see `canbench.yml`), block execution and PMA dirty flush record
 //! [`canbench_rs::bench_scope`] regions for granular instruction splits — see
 //! [canbench_rs](https://docs.rs/canbench-rs/latest/canbench_rs/) (“Granular Benchmarking”).
-//! Names include `gql_block_parse`, `gql_block_plan`, `gql_block_execute`, and
+//! Names include `gql_block_parse`, `gql_block_plan`, `gql_block_execute`; single-query execution via
+//! [`crate::execute_query_str`] adds `gql_query_parse`, `gql_query_plan`, `gql_query_execute`.
+//! Executor operator dispatch is under `gql_exec_dispatch_ops`. `PlanOp::NodeScan` /
+//! `IndexScan` / `EdgeIndexScan` / `EdgeBindEndpoints` use `gql_exec_node_scan`, `gql_exec_index_scan`,
+//! `gql_exec_edge_index_scan`, `gql_exec_edge_bind` on the **match arms** (same pattern as
+//! `gql_exec_expand`). Leading-edge plans often skip `NodeScan`, so some workloads show
+//! `gql_exec_edge_index_scan` / `gql_exec_edge_bind` instead of `gql_exec_node_scan`. On typical
+//! ring expand benches (`bench_gql_execute_expand_*`), **`gql_exec_dispatch_ops` ≈ `gql_exec_node_scan`
+//! + `gql_exec_expand` + remaining ops** (Project / other `PlanOp`s); use that identity if a nested
+//! scope is missing in a given wasm build. `gql_exec_materialize` runs only when the plan does not emit projected rows early
+//! (e.g. `RETURN n.uid` often skips it; `RETURN n` does not).
+//! Terminal [`GraphWrite::flush`] is
+//! `gql_exec_plan_flush` (despite the name, not query planning). PMA flush scopes:
 //! `pma_graph_refresh_write`, `pma_node_property_store_flush`, `pma_edge_property_store_flush`,
 //! `pma_property_index_paged_flush`, `pma_maint_queue_persist`, finer PIDX scopes inside flush
-//! (`pma_pidx_*`), and (when enabled) `gql_exec_set_property_item` / `gql_exec_plan_flush`.
+//! (`pma_pidx_*`), and (when enabled) `gql_exec_set_property_item`.
 //!
 //! ## Reading mutation baseline (`canbench_results.yml`)
 //!
@@ -34,7 +46,18 @@
 //!   one flush in the measured path. **`PlanOp::SetOperation`** RHS defers its terminal flush to the
 //!   outer plan (`execute_plan_with_context_maybe_flush` in `gleaph-gql-executor`). IC numbers track
 //!   whichever wasm is **installed** on the benchmark canister—rebuild/redeploy before trusting deltas.
-//! - **`gql_exec_plan_flush`**: overlaps nested PMA scopes in totals; use **`pma_*`** for attribution.
+//! - **`gql_exec_plan_flush`**: terminal `graph.flush()` only; overlaps nested PMA scopes in totals;
+//!   use **`pma_*`** for attribution. The scope is only a few kilo-instructions; large **percentage**
+//!   deltas versus an older baseline often reflect **wasm build / canbench attribution drift** rather
+//!   than a regression in flush work—compare **`pma_graph_refresh_write`** and related `pma_*`
+//!   scopes on the **same** rebuilt wasm before treating `%` on `gql_exec_plan_flush` as meaningful.
+//! - **`gql_exec_dispatch_ops`**: gql-executor operator dispatch (`execute_ops`); Expand/scan body.
+//! - **`gql_exec_expand`**: `PlanOp::Expand` only (inside dispatch); narrows graph expand vs other ops.
+//! - **`gql_exec_node_scan`**: `PlanOp::NodeScan` only (may be absent when the plan leads with index).
+//! - **`gql_exec_index_scan` / `gql_exec_edge_index_scan` / `gql_exec_edge_bind`**: matching scan/bind ops.
+//! - **`gql_exec_materialize`**: post-pipeline `materialize_row` loop (`projected` was `None`).
+//! - **`gql_query_parse` / `gql_query_plan` / `gql_query_execute`**: split for
+//!   [`crate::execute_query_str`] (overlay query benches).
 //!
 //! Multi-`SET` / **`NEXT`**: expect **`pma_property_index_paged_flush.calls` == 1** per block sample and
 //! **`gql_exec_set_property_item.calls`** equal to the number of property `SET` items.

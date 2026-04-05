@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use gleaph_gql::Value;
+use candid::Principal;
 use gleaph_graph_kernel::{
     EdgeId, EdgeRecord, GraphError, GraphResult, LabelId, NodeId, NodeRecord, PropertyMap,
 };
@@ -11,9 +12,12 @@ use super::{
     label_index,
 };
 use crate::facade::{
-    GraphPmaStore, GraphPmaPropertyMutationWriteSummary, GraphPmaVertexOrdinalMapping,
+    GraphPmaPropertyMutationWriteSummary, GraphPmaStore, GraphPmaVertexOrdinalMapping,
 };
-use crate::low_level::{EdgeInsertPath, LogicalEdgeLocator, RegionKind, VertexRef};
+use crate::low_level::{
+    EdgeEntry, EdgeInsertPath, LogicalEdgeLocator, RegionKind, ResolvedEdgeSlot, SurfaceKind,
+    VertexRef,
+};
 use crate::property_index::{
     scan_edge_property_index_value_prefix_from_stable_memory,
     scan_node_property_index_property_prefix_from_stable_memory,
@@ -117,12 +121,13 @@ impl<'a, S: GraphPmaStore> GraphPmaKernelBootstrapBridge<'a, S> {
                 &self.store.manager(),
                 self.memory,
                 property,
-            ) {
-                return matches
-                    .into_iter()
-                    .filter_map(|(key, _)| NodeId::try_from(key.entity_id).ok())
-                    .collect();
-            }
+            )
+        {
+            return matches
+                .into_iter()
+                .filter_map(|(key, _)| NodeId::try_from(key.entity_id).ok())
+                .collect();
+        }
         self.store.scan_node_ids_by_property(property)
     }
 
@@ -356,5 +361,41 @@ impl<'a, S: GraphPmaStore> GraphPmaKernelBootstrapBridge<'a, S> {
             free_list_len: self.vertex_gc_state.free_list.len(),
             queue_cursor: self.vertex_gc_state.queue_cursor,
         }
+    }
+
+    /// Forward-surface [`EdgeEntry`] for `edge_id` at the source vertex (canonical insert layout).
+    pub(crate) fn forward_edge_entry_for_edge_id(&self, edge_id: EdgeId) -> Option<EdgeEntry> {
+        let edge = self.edges.get(&edge_id)?;
+        let src = edge.src;
+        let mapping = self.vertex_mapping(src)?;
+        let locator = self.edge_locators.get(&edge_id)?.forward;
+        let vertex_ref = VertexRef::from(src);
+        if locator.surface_kind() != SurfaceKind::Forward || locator.vertex_ref != vertex_ref {
+            return None;
+        }
+        let ordinal = mapping.forward_ordinal;
+        let forward = &self.store.graph().forward;
+        let surface = &forward.0;
+        let vertex = surface.vertex_entry(ordinal)?;
+        match forward.resolve_logical_edge_slot(vertex_ref, ordinal, locator)? {
+            ResolvedEdgeSlot::Base { logical_index } => {
+                surface
+                    .base_entries
+                    .live_entry_for_vertex(vertex, logical_index)
+            }
+            ResolvedEdgeSlot::Overflow { offset, .. } => {
+                Some(surface.overflow_entry(offset)?.entry)
+            }
+        }
+    }
+
+    /// Remote canister principal when this edge's forward metadata is cross-shard (`shard_canister`).
+    pub(crate) fn shard_canister_principal_for_edge(&self, edge_id: EdgeId) -> Option<Principal> {
+        let entry = self.forward_edge_entry_for_edge_id(edge_id)?;
+        if !entry.meta.is_shard_canister() {
+            return None;
+        }
+        let slot = entry.meta.shard_canister_slot()?;
+        self.store.shard_canister_directory().principal(slot)
     }
 }

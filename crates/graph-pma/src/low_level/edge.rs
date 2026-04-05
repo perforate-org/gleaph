@@ -4,7 +4,13 @@ use gleaph_graph_kernel::LabelId;
 
 use super::ids::VertexRef;
 use super::region::RegionRef;
-use super::vertex::{LABEL_ID_MASK, TOMBSTONE_MASK};
+use super::vertex::TOMBSTONE_MASK;
+
+/// Bit 14: when set, [`EdgeMeta`] holds a shard-canister slot in the payload, not a local label id.
+pub const EDGE_SHARD_CANISTER_MASK: u16 = 1 << 14;
+
+/// Low 14 bits: local [`LabelId`] (cross-shard flag clear) or [`ShardCanisterSlot`](super::shard_canister::ShardCanisterSlot).
+pub const EDGE_META_PAYLOAD_MASK: u16 = (1 << 14) - 1;
 
 /// Directional adjacency surface.
 ///
@@ -114,24 +120,35 @@ impl SurfaceRegions {
 /// Packed hot metadata for an [`EdgeEntry`].
 ///
 /// Layout:
-/// - high bit: tombstone
-/// - low 15 bits: label id
+/// - bit 15: tombstone
+/// - bit 14: shard-canister flag (`1` = payload is a shard slot id; `0` = payload is a local label id)
+/// - bits 0–13: payload (14 bits)
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct EdgeMeta(u16);
 
 impl EdgeMeta {
-    /// Packed edge metadata with no label and no tombstone bit set.
+    /// Packed edge metadata with no label, no tombstone, and no cross-shard flag.
     pub const UNLABELED: Self = Self(0);
 
-    /// Packs a label id and tombstone bit into the fixed 16-bit edge-meta layout.
+    /// Packs a local label id and tombstone bit (same-canister target).
     pub fn new(label_id: LabelId, tombstone: bool) -> Self {
         assert!(
-            label_id <= LABEL_ID_MASK,
-            "label id exceeds 15-bit edge meta layout"
+            label_id <= EDGE_META_PAYLOAD_MASK,
+            "label id exceeds 14-bit edge meta layout"
         );
         let tombstone_bits = if tombstone { TOMBSTONE_MASK } else { 0 };
         Self(tombstone_bits | label_id)
+    }
+
+    /// Packs a remote shard slot id and tombstone bit (`target` names a vertex in that canister).
+    pub fn new_shard_canister(shard_slot: u16, tombstone: bool) -> Self {
+        assert!(
+            shard_slot <= EDGE_META_PAYLOAD_MASK,
+            "shard canister slot exceeds 14-bit edge meta layout"
+        );
+        let tombstone_bits = if tombstone { TOMBSTONE_MASK } else { 0 };
+        Self(tombstone_bits | EDGE_SHARD_CANISTER_MASK | shard_slot)
     }
 
     /// Wraps a raw packed 16-bit value.
@@ -146,10 +163,10 @@ impl EdgeMeta {
         self.0
     }
 
-    /// Returns the stored label id.
+    /// Low 14 bits (local label id or shard slot id).
     #[inline]
-    pub const fn label_id(self) -> LabelId {
-        self.0 & LABEL_ID_MASK
+    pub const fn payload(self) -> u16 {
+        self.0 & EDGE_META_PAYLOAD_MASK
     }
 
     /// Returns whether the tombstone bit is set.
@@ -158,14 +175,52 @@ impl EdgeMeta {
         (self.0 & TOMBSTONE_MASK) != 0
     }
 
-    /// Returns a copy with only the tombstone bit changed.
-    pub fn with_tombstone(self, tombstone: bool) -> Self {
-        Self::new(self.label_id(), tombstone)
+    /// Returns whether the neighbor lives in another canister (payload is a shard slot id).
+    #[inline]
+    pub const fn is_shard_canister(self) -> bool {
+        (self.0 & EDGE_SHARD_CANISTER_MASK) != 0
     }
 
-    /// Returns a copy with only the label id changed.
+    /// Local label id when this edge targets a vertex in the same canister.
+    #[inline]
+    pub const fn local_label_id(self) -> Option<LabelId> {
+        if self.is_shard_canister() {
+            None
+        } else {
+            Some(self.payload())
+        }
+    }
+
+    /// Shard slot id when this edge targets another canister.
+    #[inline]
+    pub const fn shard_canister_slot(self) -> Option<u16> {
+        if self.is_shard_canister() {
+            Some(self.payload())
+        } else {
+            None
+        }
+    }
+
+    /// Returns the stored label id for **local** edges; for cross-shard edges returns the payload bits
+    /// (a slot id, not a graph label). Prefer [`Self::local_label_id`] when filtering by label.
+    #[inline]
+    pub const fn label_id(self) -> LabelId {
+        self.payload()
+    }
+
+    /// Returns a copy with only the tombstone bit changed.
+    pub fn with_tombstone(self, tombstone: bool) -> Self {
+        Self((self.0 & !TOMBSTONE_MASK) | if tombstone { TOMBSTONE_MASK } else { 0 })
+    }
+
+    /// Returns a copy with a local label id (clears the cross-shard flag).
     pub fn with_label_id(self, label_id: LabelId) -> Self {
         Self::new(label_id, self.is_tombstone())
+    }
+
+    /// Returns a copy with a shard slot (sets the cross-shard flag).
+    pub fn with_shard_canister_slot(self, shard_slot: u16) -> Self {
+        Self::new_shard_canister(shard_slot, self.is_tombstone())
     }
 }
 
@@ -216,8 +271,18 @@ mod tests {
     #[test]
     fn edge_meta_packs_label_and_tombstone() {
         let meta = EdgeMeta::new(42, true);
-        assert_eq!(meta.label_id(), 42);
+        assert_eq!(meta.local_label_id(), Some(42));
         assert!(meta.is_tombstone());
+        assert!(!meta.is_shard_canister());
+    }
+
+    #[test]
+    fn edge_meta_shard_canister_roundtrip() {
+        let meta = EdgeMeta::new_shard_canister(99, false);
+        assert_eq!(meta.shard_canister_slot(), Some(99));
+        assert_eq!(meta.local_label_id(), None);
+        assert!(!meta.is_tombstone());
+        assert!(meta.is_shard_canister());
     }
 
     #[test]
@@ -225,7 +290,7 @@ mod tests {
         let target = VertexRef::from(7u8);
         let entry = EdgeEntry::new(target, EdgeMeta::new(3, false));
         assert_eq!(u64::from(entry.target), 7);
-        assert_eq!(entry.meta.label_id(), 3);
+        assert_eq!(entry.meta.local_label_id(), Some(3));
         assert!(!entry.meta.is_tombstone());
     }
 

@@ -16,7 +16,7 @@ use gleaph_gql_ic::graph_registry::{
     GraphRegistryEntry, GraphRegistryError, GraphRegistryStore, InMemoryGraphRegistry,
 };
 use gleaph_gql_planner::PlanOp;
-use gleaph_gql_planner::plan::ScanValue;
+use gleaph_gql_planner::plan::{ScanValue, VarLenSpec};
 use ic_cdk::call::Call;
 
 #[derive(Clone, Default)]
@@ -170,13 +170,24 @@ fn remote_param_sets_from_rows(
         .collect::<ExecutionResultExt<Vec<_>>>()
 }
 
+fn query_subject_for_remote(ctx: &ExecutionContext) -> Option<Principal> {
+    let v = ctx.caller.as_ref()?;
+    match v {
+        Value::Extension(e) => e
+            .as_any()
+            .downcast_ref::<PrincipalValue>()
+            .map(|p| p.0),
+        _ => None,
+    }
+}
+
 #[async_trait::async_trait(?Send)]
 impl UseGraphRouter for IcUseGraphRouter {
     async fn execute_remote_subplan(
         &self,
         target: &GraphResolution,
         sub_plan: &[PlanOp],
-        _ctx: &ExecutionContext,
+        ctx: &ExecutionContext,
         input_rows: Vec<BindingRow>,
     ) -> ExecutionResultExt<(Vec<BindingRow>, Option<Vec<OutputRow>>)> {
         if input_rows.is_empty() {
@@ -189,26 +200,36 @@ impl UseGraphRouter for IcUseGraphRouter {
         })?;
         let canister_id = Principal::from_text(canister_id)
             .map_err(|e| ExecutionError::InvalidPlan(format!("invalid remote canister id: {e}")))?;
-        let mut rows = Vec::new();
-        for remote_params in remote_param_sets {
-            let remote: Result<crate::ApiExecutionResult, String> =
-                Call::bounded_wait(canister_id, "execute_routed_query")
-                    .with_arg((query.clone(), remote_params))
-                    .await
-                    .map_err(|e| ExecutionError::InvalidPlan(format!("remote call failed: {e}")))?
-                    .candid()
-                    .map_err(|e| {
-                        ExecutionError::InvalidPlan(format!("remote decode failed: {e}"))
-                    })?;
-            let response = remote.map_err(|e| {
-                ExecutionError::InvalidPlan(format!("remote query execution failed: {e}"))
-            })?;
-            rows.extend(response.rows.into_iter().map(|row| {
+        let subject = query_subject_for_remote(ctx);
+        let param_rows: Vec<BTreeMap<String, ApiValue>> = remote_param_sets
+            .into_iter()
+            .map(|o| o.unwrap_or_default())
+            .collect();
+        if param_rows.len() > crate::MAX_FEDERATION_ROUTED_PARAM_ROWS {
+            return Err(ExecutionError::InvalidPlan(format!(
+                "remote USE GRAPH exceeds federation param row limit {}",
+                crate::MAX_FEDERATION_ROUTED_PARAM_ROWS
+            )));
+        }
+        let remote: Result<crate::ApiExecutionResult, String> =
+            Call::bounded_wait(canister_id, "execute_routed_query_batch")
+                .with_arg((query, param_rows, subject))
+                .await
+                .map_err(|e| ExecutionError::InvalidPlan(format!("remote call failed: {e}")))?
+                .candid()
+                .map_err(|e| ExecutionError::InvalidPlan(format!("remote decode failed: {e}")))?;
+        let response = remote.map_err(|e| {
+            ExecutionError::InvalidPlan(format!("remote query execution failed: {e}"))
+        })?;
+        let rows = response
+            .rows
+            .into_iter()
+            .map(|row| {
                 row.into_iter()
                     .map(|(k, v)| (k, Value::from(&v)))
                     .collect::<OutputRow>()
-            }));
-        }
+            })
+            .collect();
         Ok((Vec::new(), Some(rows)))
     }
 }
@@ -524,7 +545,7 @@ fn translate_remote_subplan_root(sub_plan: &[PlanOp]) -> ExecutionResultExt<Remo
                             *direction,
                             label.as_deref(),
                             label_expr.is_some(),
-                            var_len.is_some(),
+                            remote_expand_var_len_unsupported(var_len.as_ref()),
                             indexed_edge_equality.is_some(),
                         )?);
                         current_src = dst.as_ref().to_owned();
@@ -548,7 +569,7 @@ fn translate_remote_subplan_root(sub_plan: &[PlanOp]) -> ExecutionResultExt<Remo
                             *direction,
                             label.as_deref(),
                             label_expr.is_some(),
-                            var_len.is_some(),
+                            remote_expand_var_len_unsupported(var_len.as_ref()),
                             indexed_edge_equality.is_some(),
                         )?);
                         where_exprs.extend(
@@ -605,7 +626,7 @@ fn translate_remote_subplan_root(sub_plan: &[PlanOp]) -> ExecutionResultExt<Remo
                             *direction,
                             label.as_deref(),
                             label_expr.is_some(),
-                            var_len.is_some(),
+                            remote_expand_var_len_unsupported(var_len.as_ref()),
                             indexed_edge_equality.is_some(),
                         )?);
                         current_src = dst.as_ref().to_owned();
@@ -629,7 +650,7 @@ fn translate_remote_subplan_root(sub_plan: &[PlanOp]) -> ExecutionResultExt<Remo
                             *direction,
                             label.as_deref(),
                             label_expr.is_some(),
-                            var_len.is_some(),
+                            remote_expand_var_len_unsupported(var_len.as_ref()),
                             indexed_edge_equality.is_some(),
                         )?);
                         where_exprs.extend(
@@ -699,7 +720,7 @@ fn translate_remote_subplan_root(sub_plan: &[PlanOp]) -> ExecutionResultExt<Remo
                             *direction,
                             label.as_deref(),
                             label_expr.is_some(),
-                            var_len.is_some(),
+                            remote_expand_var_len_unsupported(var_len.as_ref()),
                             indexed_edge_equality.is_some(),
                         )?);
                         current_src = dst.as_ref().to_owned();
@@ -723,7 +744,7 @@ fn translate_remote_subplan_root(sub_plan: &[PlanOp]) -> ExecutionResultExt<Remo
                             *direction,
                             label.as_deref(),
                             label_expr.is_some(),
-                            var_len.is_some(),
+                            remote_expand_var_len_unsupported(var_len.as_ref()),
                             indexed_edge_equality.is_some(),
                         )?);
                         where_exprs.extend(
@@ -957,6 +978,14 @@ fn render_scan_value(value: &ScanValue) -> ExecutionResultExt<String> {
     match value {
         ScanValue::Literal(value) => render_literal(value),
         ScanValue::Parameter(name) => Ok(format!("${name}")),
+    }
+}
+
+/// `true` when variable-length differs from a single fixed hop (`{1,1}`).
+fn remote_expand_var_len_unsupported(var_len: Option<&VarLenSpec>) -> bool {
+    match var_len {
+        None => false,
+        Some(v) => v.min != 1 || v.max != Some(1),
     }
 }
 
@@ -1583,6 +1612,7 @@ mod tests {
                 indexed_edge_equality: None,
                 edge_property_projection: None,
                 dst_property_projection: None,
+                hop_aux_binding: None,
             },
             PlanOp::Project {
                 columns: vec![ProjectColumn {
@@ -1684,6 +1714,7 @@ mod tests {
                 indexed_edge_equality: None,
                 edge_property_projection: None,
                 dst_property_projection: None,
+                hop_aux_binding: None,
             },
             PlanOp::Expand {
                 src: "b".into(),
@@ -1696,6 +1727,7 @@ mod tests {
                 indexed_edge_equality: None,
                 edge_property_projection: None,
                 dst_property_projection: None,
+                hop_aux_binding: None,
             },
             PlanOp::Project {
                 columns: vec![ProjectColumn {
@@ -1741,6 +1773,7 @@ mod tests {
                 })],
                 edge_property_projection: None,
                 dst_property_projection: None,
+                hop_aux_binding: None,
             },
             PlanOp::Expand {
                 src: "b".into(),
@@ -1753,6 +1786,7 @@ mod tests {
                 indexed_edge_equality: None,
                 edge_property_projection: None,
                 dst_property_projection: None,
+                hop_aux_binding: None,
             },
             PlanOp::Project {
                 columns: vec![ProjectColumn {
@@ -1786,6 +1820,7 @@ mod tests {
                 label: Some("REL".into()),
                 near_property_projection: None,
                 far_property_projection: None,
+                hop_aux_binding: None,
             },
             PlanOp::Project {
                 columns: vec![ProjectColumn {
@@ -1819,6 +1854,7 @@ mod tests {
                 label: Some("REL".into()),
                 near_property_projection: None,
                 far_property_projection: None,
+                hop_aux_binding: None,
             },
             PlanOp::Project {
                 columns: vec![ProjectColumn {
@@ -1852,6 +1888,7 @@ mod tests {
                 label: Some("REL".into()),
                 near_property_projection: None,
                 far_property_projection: None,
+                hop_aux_binding: None,
             },
             PlanOp::Project {
                 columns: vec![ProjectColumn {
@@ -1885,6 +1922,7 @@ mod tests {
                 label: Some("REL".into()),
                 near_property_projection: None,
                 far_property_projection: None,
+                hop_aux_binding: None,
             },
             PlanOp::Project {
                 columns: vec![ProjectColumn {
@@ -1918,6 +1956,7 @@ mod tests {
                 label: Some("REL".into()),
                 near_property_projection: None,
                 far_property_projection: None,
+                hop_aux_binding: None,
             },
             PlanOp::Expand {
                 src: "b".into(),
@@ -1930,6 +1969,7 @@ mod tests {
                 indexed_edge_equality: None,
                 edge_property_projection: None,
                 dst_property_projection: None,
+                hop_aux_binding: None,
             },
             PlanOp::Project {
                 columns: vec![ProjectColumn {
@@ -1963,6 +2003,7 @@ mod tests {
                 label: Some("REL".into()),
                 near_property_projection: None,
                 far_property_projection: None,
+                hop_aux_binding: None,
             },
             PlanOp::ExpandFilter {
                 src: "b".into(),
@@ -1983,6 +2024,7 @@ mod tests {
                 })],
                 edge_property_projection: None,
                 dst_property_projection: None,
+                hop_aux_binding: None,
             },
             PlanOp::Project {
                 columns: vec![ProjectColumn {
@@ -2045,6 +2087,7 @@ mod tests {
                 indexed_edge_equality: None,
                 edge_property_projection: None,
                 dst_property_projection: None,
+                hop_aux_binding: None,
             },
             PlanOp::Project {
                 columns: vec![ProjectColumn {
@@ -2079,6 +2122,7 @@ mod tests {
                 indexed_edge_equality: None,
                 edge_property_projection: None,
                 dst_property_projection: None,
+                hop_aux_binding: None,
             },
             PlanOp::Project {
                 columns: vec![ProjectColumn {
@@ -2113,6 +2157,7 @@ mod tests {
                 indexed_edge_equality: None,
                 edge_property_projection: None,
                 dst_property_projection: None,
+                hop_aux_binding: None,
             },
             PlanOp::Project {
                 columns: vec![ProjectColumn {
@@ -2147,6 +2192,7 @@ mod tests {
                 indexed_edge_equality: None,
                 edge_property_projection: None,
                 dst_property_projection: None,
+                hop_aux_binding: None,
             },
             PlanOp::Project {
                 columns: vec![ProjectColumn {
@@ -2181,6 +2227,7 @@ mod tests {
                 indexed_edge_equality: None,
                 edge_property_projection: None,
                 dst_property_projection: None,
+                hop_aux_binding: None,
             },
             PlanOp::Expand {
                 src: "b".into(),
@@ -2193,6 +2240,7 @@ mod tests {
                 indexed_edge_equality: None,
                 edge_property_projection: None,
                 dst_property_projection: None,
+                hop_aux_binding: None,
             },
             PlanOp::Project {
                 columns: vec![ProjectColumn {
@@ -2235,6 +2283,7 @@ mod tests {
                 })],
                 edge_property_projection: None,
                 dst_property_projection: None,
+                hop_aux_binding: None,
             },
             PlanOp::Expand {
                 src: "b".into(),
@@ -2247,6 +2296,7 @@ mod tests {
                 indexed_edge_equality: None,
                 edge_property_projection: None,
                 dst_property_projection: None,
+                hop_aux_binding: None,
             },
             PlanOp::Project {
                 columns: vec![ProjectColumn {
@@ -2285,6 +2335,7 @@ mod tests {
                 indexed_edge_equality: None,
                 edge_property_projection: None,
                 dst_property_projection: None,
+                hop_aux_binding: None,
             },
             PlanOp::Project {
                 columns: vec![ProjectColumn {
@@ -2301,6 +2352,43 @@ mod tests {
             ExecutionError::InvalidPlan(message)
                 if message.contains("single-hop expand")
         ));
+    }
+
+    #[test]
+    fn subplan_to_routed_query_accepts_trivial_var_len_one_one_expand() {
+        let plan = vec![
+            PlanOp::NodeScan {
+                variable: "a".into(),
+                label: Some("User".into()),
+                property_projection: None,
+            },
+            PlanOp::Expand {
+                src: "a".into(),
+                edge: "e".into(),
+                dst: "b".into(),
+                direction: gleaph_gql::types::EdgeDirection::PointingRight,
+                label: Some("KNOWS".into()),
+                label_expr: None,
+                var_len: Some(gleaph_gql_planner::plan::VarLenSpec {
+                    min: 1,
+                    max: Some(1),
+                }),
+                indexed_edge_equality: None,
+                edge_property_projection: None,
+                dst_property_projection: None,
+                hop_aux_binding: None,
+            },
+            PlanOp::Project {
+                columns: vec![ProjectColumn {
+                    expr: Expr::new(ExprKind::Variable("b".to_owned())),
+                    alias: None,
+                }],
+                distinct: false,
+            },
+        ];
+
+        let query = subplan_to_routed_query(&plan).expect("trivial {1,1} var-len is single hop");
+        assert!(query.starts_with("MATCH (a:User)-[e:KNOWS]->(b)"));
     }
 
     #[test]

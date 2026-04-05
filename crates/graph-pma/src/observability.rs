@@ -1,10 +1,10 @@
 use gleaph_graph_kernel::{EdgeId, NodeId};
 
 use crate::facade::{
-    PropertyIndexFallbackReason, GraphPmaEdgeWriteProjection, GraphPmaFacadeWriteEvent,
-    GraphPma, GraphPmaStore, GraphPmaStoreAdapter,
+    GraphPma, GraphPmaEdgeWriteProjection, GraphPmaFacadeWriteEvent,
     GraphPmaMaintenanceQueueItemProjection, GraphPmaMaintenanceQueueStorageProjection,
-    GraphPmaRefreshedVertices, GraphPmaWriteEventProjection,
+    GraphPmaRefreshedVertices, GraphPmaStore, GraphPmaStoreAdapter, GraphPmaWriteEventProjection,
+    PropertyIndexFallbackReason,
 };
 use crate::integration::{GraphPmaKernelOverlayGraph, GraphPmaOverlayWriteEvent};
 use crate::property_index::{PropertyIndexNodeId, PropertyIndexNodeStoreMutationKind};
@@ -425,12 +425,13 @@ mod tests {
         format_write_event_projection, format_write_event_report,
     };
     use crate::facade::{
-        GraphPmaEdgeWriteOperation, GraphPmaEdgeWriteProjection, GraphPmaEnsureCapacityProjection,
-        GraphPma, GraphPmaMaintenanceBatchProjection, GraphPmaMaintenanceCycleProjection,
-        GraphPmaMaintenanceQueueAction, GraphPmaMaintenanceQueueItemProjection,
-        GraphPmaMaintenanceQueueProjection, GraphPmaMaintenanceQueueStorageProjection,
-        GraphPmaNodeDeleteProjection, GraphPmaPropertyIndexTouchedSections,
-        GraphPmaPropertyWriteProjection, GraphPmaRefreshedVertices, GraphPmaWriteEventProjection,
+        GraphPma, GraphPmaEdgeWriteOperation, GraphPmaEdgeWriteProjection,
+        GraphPmaEnsureCapacityProjection, GraphPmaMaintenanceBatchProjection,
+        GraphPmaMaintenanceCycleProjection, GraphPmaMaintenanceQueueAction,
+        GraphPmaMaintenanceQueueItemProjection, GraphPmaMaintenanceQueueProjection,
+        GraphPmaMaintenanceQueueStorageProjection, GraphPmaNodeDeleteProjection,
+        GraphPmaPropertyIndexTouchedSections, GraphPmaPropertyWriteProjection,
+        GraphPmaRefreshedVertices, GraphPmaWriteEventProjection,
     };
     use crate::low_level::GraphMutationPath;
     use crate::property_index::PropertyIndexNodeStoreMutationKind;

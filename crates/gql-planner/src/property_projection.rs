@@ -779,6 +779,7 @@ mod tests {
                 indexed_edge_equality: None,
                 edge_property_projection: None,
                 dst_property_projection: None,
+                hop_aux_binding: None,
             },
         ];
         apply_node_property_projections(&mut ops);

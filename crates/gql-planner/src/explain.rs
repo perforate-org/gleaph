@@ -293,6 +293,7 @@ fn format_op(op: &PlanOp) -> String {
             label,
             near_property_projection,
             far_property_projection,
+            hop_aux_binding,
         } => {
             let arrow = format_direction(direction);
             let label_str = label
@@ -301,9 +302,13 @@ fn format_op(op: &PlanOp) -> String {
                 .unwrap_or_default();
             let near_pp = format_property_projection(near_property_projection.as_deref());
             let far_pp = format_property_projection(far_property_projection.as_deref());
+            let hop_aux_pp = hop_aux_binding
+                .as_ref()
+                .map(|s| format!(" hop_aux={}", s))
+                .unwrap_or_default();
             format!(
-                "EdgeBindEndpoints({}{} {} near={}{} far={}{})",
-                edge, label_str, arrow.0, near, near_pp, far, far_pp
+                "EdgeBindEndpoints({}{} {} near={}{} far={}{}{})",
+                edge, label_str, arrow.0, near, near_pp, far, far_pp, hop_aux_pp
             )
         }
 
@@ -346,6 +351,7 @@ fn format_op(op: &PlanOp) -> String {
             indexed_edge_equality,
             edge_property_projection,
             dst_property_projection,
+            hop_aux_binding,
         } => {
             let arrow = format_direction(direction);
             let label_str = label
@@ -371,8 +377,12 @@ fn format_op(op: &PlanOp) -> String {
                 .unwrap_or_default();
             let edge_pp = format_property_projection(edge_property_projection.as_deref());
             let dst_pp = format_property_projection(dst_property_projection.as_deref());
+            let hop_aux_pp = hop_aux_binding
+                .as_ref()
+                .map(|v| format!(" hopAux={v}"))
+                .unwrap_or_default();
             format!(
-                "Expand({} {}[{}{}]{} {}{}{}{}{})",
+                "Expand({} {}[{}{}]{} {}{}{}{}{}{})",
                 src,
                 arrow.0,
                 edge,
@@ -382,7 +392,8 @@ fn format_op(op: &PlanOp) -> String {
                 label_expr_str,
                 idx,
                 edge_pp,
-                dst_pp
+                dst_pp,
+                hop_aux_pp
             )
         }
 
@@ -398,6 +409,7 @@ fn format_op(op: &PlanOp) -> String {
             dst_filter,
             edge_property_projection,
             dst_property_projection,
+            hop_aux_binding,
         } => {
             let arrow = format_direction(direction);
             let label_str = label
@@ -424,8 +436,12 @@ fn format_op(op: &PlanOp) -> String {
                 .unwrap_or_default();
             let edge_pp = format_property_projection(edge_property_projection.as_deref());
             let dst_pp = format_property_projection(dst_property_projection.as_deref());
+            let hop_aux_pp = hop_aux_binding
+                .as_ref()
+                .map(|v| format!(" hopAux={v}"))
+                .unwrap_or_default();
             format!(
-                "ExpandFilter({} {}[{}{}]{} {} | {} filter{}{}{}{}{})",
+                "ExpandFilter({} {}[{}{}]{} {} | {} filter{}{}{}{}{}{})",
                 src,
                 arrow.0,
                 edge,
@@ -437,7 +453,8 @@ fn format_op(op: &PlanOp) -> String {
                 idx,
                 label_expr_str,
                 edge_pp,
-                dst_pp
+                dst_pp,
+                hop_aux_pp
             )
         }
 
@@ -593,11 +610,17 @@ fn format_op(op: &PlanOp) -> String {
 
         PlanOp::WorstCaseOptimalJoin { variables, edges } => {
             let vars = variables.join(", ");
-            let edge_labels: Vec<String> = edges
+            let edge_parts: Vec<String> = edges
                 .iter()
-                .map(|e| e.label.as_deref().unwrap_or("*").to_string())
+                .map(|e| {
+                    let mut s = e.label.as_deref().unwrap_or("*").to_string();
+                    if let Some(h) = e.hop_aux_binding.as_deref() {
+                        s.push_str(&format!(" hop_aux={h}"));
+                    }
+                    s
+                })
                 .collect();
-            format!("WCOJ([{}], edges=[{}])", vars, edge_labels.join("->"))
+            format!("WCOJ([{}], edges=[{}])", vars, edge_parts.join("->"))
         }
 
         PlanOp::TopK {

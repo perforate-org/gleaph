@@ -28,17 +28,10 @@ impl<M: Memory> GraphPma<M> {
     ///
     /// The property-index region is written as PIDX v3: a header plus serialized
     /// [`PropertyEqualityStableMap`] (see [`PropertyIndexStorageImage`]).
-    pub fn write_all_to_stable_memory(
-        &mut self,
-        memory: &impl Memory,
-    ) -> GraphPmaResult<()> {
+    pub fn write_all_to_stable_memory(&mut self, memory: &impl Memory) -> GraphPmaResult<()> {
         let runtimes =
             HydratedSurfaceRuntimes::new(self.graph.forward.clone(), self.graph.reverse.clone());
-        write_surface_runtimes_to_stable_memory(
-            &mut self.manager.borrow_mut(),
-            memory,
-            &runtimes,
-        )?;
+        write_surface_runtimes_to_stable_memory(&mut self.manager.borrow_mut(), memory, &runtimes)?;
         crate::property_store::write_graph_property_stable_map_to_stable_memory(
             &mut self.manager.borrow_mut(),
             memory,
@@ -61,15 +54,14 @@ impl<M: Memory> GraphPma<M> {
         )?;
         self.property_index_dirty = false;
         self.persist_maintenance_queue(memory)?;
+        self.write_shard_canister_directory_to_stable_memory(memory)
+            .map_err(GraphPmaError::Writeback)?;
         self.node_property_store_dirty = false;
         self.edge_property_store_dirty = false;
         Ok(())
     }
 
-    pub fn try_write_all_to_stable_memory(
-        &mut self,
-        memory: &impl Memory,
-    ) -> GraphPmaResult<()> {
+    pub fn try_write_all_to_stable_memory(&mut self, memory: &impl Memory) -> GraphPmaResult<()> {
         self.write_all_to_stable_memory(memory)
     }
 
@@ -113,6 +105,8 @@ impl<M: Memory> GraphPma<M> {
             let _p = crate::bench_profile::PhaseGuard::new("facade_maint_queue_only");
             crate::canbench_scope::scope("pma_maint_queue_persist");
             self.persist_maintenance_queue(memory)?;
+            self.write_shard_canister_directory_to_stable_memory(memory)
+                .map_err(GraphPmaError::Writeback)?;
             return Ok(refreshed);
         }
         {
@@ -129,6 +123,8 @@ impl<M: Memory> GraphPma<M> {
             self.property_index_dirty = false;
             crate::canbench_scope::scope("pma_maint_queue_persist");
             self.persist_maintenance_queue(memory)?;
+            self.write_shard_canister_directory_to_stable_memory(memory)
+                .map_err(GraphPmaError::Writeback)?;
         }
         Ok(refreshed)
     }
@@ -210,7 +206,7 @@ impl<M: Memory> GraphPma<M> {
                 src_ordinal,
                 dst_vertex.into(),
                 dst_ordinal,
-                label_id,
+                label_id.into(),
             )
             .ok_or(GraphPmaError::InvalidLocatorInputs)?;
         let (refreshed_forward_vertices, refreshed_reverse_vertices) =
@@ -293,7 +289,7 @@ impl<M: Memory> GraphPma<M> {
                     src_mapping.forward_ordinal,
                     dst_mapping.vertex_ref,
                     dst_mapping.reverse_ordinal,
-                    label_id,
+                    label_id.into(),
                 )
                 .ok_or(GraphPmaError::InvalidLocatorInputs)?;
             let GraphInsertResult::Inserted {
@@ -378,6 +374,16 @@ impl<M: Memory> GraphPma<M> {
         }
         manager.define_extent_region(
             RegionKind::MaintenanceQueue,
+            ExtentChain::new(
+                ExtentId::NULL,
+                ExtentId::NULL,
+                0,
+                WasmPages::new(1),
+                WasmPages::new(1),
+            ),
+        );
+        manager.define_extent_region(
+            RegionKind::ShardCanisterDirectory,
             ExtentChain::new(
                 ExtentId::NULL,
                 ExtentId::NULL,
@@ -865,10 +871,7 @@ impl<M: Memory> GraphPma<M> {
         Ok(summary)
     }
 
-    pub fn begin_batch_mutation<'a>(
-        &'a mut self,
-        memory: &'a M,
-    ) -> GraphPmaBatchSession<'a, M> {
+    pub fn begin_batch_mutation<'a>(&'a mut self, memory: &'a M) -> GraphPmaBatchSession<'a, M> {
         GraphPmaBatchSession::new(&mut self.graph, &self.manager, memory)
     }
 

@@ -1,20 +1,22 @@
 use std::collections::BTreeMap;
 
+use candid::Principal;
 use gleaph_graph_kernel::{
     EdgeId, EdgeRecord, GraphError, GraphResult, NodeId, NodeRecord, PropertyMap,
 };
 
 use crate::facade::{
-    GraphPmaEdgeLogicalLocatorMapping, GraphPmaStore, GraphPmaPropertyIndexTouchedSections,
-    GraphPmaPropertyMutationWriteSummary, GraphPmaRefreshedVertices, GraphPmaVertexOrdinalMapping,
+    GraphPmaEdgeLogicalLocatorMapping, GraphPmaPropertyIndexTouchedSections,
+    GraphPmaPropertyMutationWriteSummary, GraphPmaRefreshedVertices, GraphPmaStore,
+    GraphPmaVertexOrdinalMapping,
 };
-use crate::low_level::{EdgeInsertPath, VertexRef};
+use crate::low_level::{EdgeDirectedMetaPair, EdgeInsertPath, EdgeMeta, VertexRef};
 
 use super::{
-    OVERLAY_SUMMARY_HISTORY_LIMIT, GraphPmaKernelBootstrapBridge,
-    GraphPmaOverlayBootstrapGraphSummary, GraphPmaOverlayEdgeBootstrapSummary,
-    GraphPmaOverlayEdgeWriteSummary, GraphPmaOverlayInsertEdgeSummary,
-    GraphPmaOverlayNodeBootstrapSummary, GraphPmaOverlayNodeDeleteSummary, GraphPmaOverlayWriteEvent,
+    GraphPmaKernelBootstrapBridge, GraphPmaOverlayBootstrapGraphSummary,
+    GraphPmaOverlayEdgeBootstrapSummary, GraphPmaOverlayEdgeWriteSummary,
+    GraphPmaOverlayInsertEdgeSummary, GraphPmaOverlayNodeBootstrapSummary,
+    GraphPmaOverlayNodeDeleteSummary, GraphPmaOverlayWriteEvent, OVERLAY_SUMMARY_HISTORY_LIMIT,
     VertexGcState, VertexLabelIndex,
 };
 
@@ -158,20 +160,21 @@ impl<'a, S: GraphPmaStore> GraphPmaKernelBootstrapBridge<'a, S> {
     ) {
         for event in &mut self.write_history {
             if let GraphPmaOverlayWriteEvent::Property(summary) = event
-                && summary.is_pending_stable_flush() {
-                    summary.flushed_sections = summary.mutation.sections;
-                    if !summary.flushed_sections.property_store
-                        && !summary.flushed_sections.logical_index
-                        && !summary.flushed_sections.node_store
-                    {
-                        summary.flushed_sections = GraphPmaPropertyIndexTouchedSections {
-                            property_store: true,
-                            logical_index: true,
-                            node_store: true,
-                        };
-                    }
-                    summary.refreshed = refreshed.clone();
+                && summary.is_pending_stable_flush()
+            {
+                summary.flushed_sections = summary.mutation.sections;
+                if !summary.flushed_sections.property_store
+                    && !summary.flushed_sections.logical_index
+                    && !summary.flushed_sections.node_store
+                {
+                    summary.flushed_sections = GraphPmaPropertyIndexTouchedSections {
+                        property_store: true,
+                        logical_index: true,
+                        node_store: true,
+                    };
                 }
+                summary.refreshed = refreshed.clone();
+            }
         }
         for summary in &mut self.property_write_history {
             if summary.is_pending_stable_flush() {
@@ -323,6 +326,29 @@ impl<'a, S: GraphPmaStore> GraphPmaKernelBootstrapBridge<'a, S> {
         self.insert_edge_record(src, dst, label, properties, true)
     }
 
+    /// Like [`Self::bootstrap_edge`], but stores a shard-canister slot on the forward [`EdgeMeta`].
+    pub fn bootstrap_edge_with_shard_canister_dst(
+        &mut self,
+        src: NodeId,
+        dst: NodeId,
+        shard_canister: Principal,
+        label: Option<&str>,
+        properties: &PropertyMap,
+    ) -> GraphResult<EdgeRecord> {
+        self.validate_edge_insert_inputs(label, properties)?;
+        let slot = self
+            .store
+            .shard_canister_directory_mut()
+            .push_principal(shard_canister, false)
+            .ok_or_else(|| GraphError::Message("shard canister directory full".into()))?;
+        let label_id = self.label_id_for(label);
+        let edge_meta = EdgeDirectedMetaPair {
+            forward: EdgeMeta::new_shard_canister(slot, false),
+            reverse: EdgeMeta::new(label_id, false),
+        };
+        self.insert_edge_record_with_meta(src, dst, label, properties, true, edge_meta)
+    }
+
     /// Inserts one logical edge between already bootstrapped nodes.
     pub fn insert_edge(
         &mut self,
@@ -332,6 +358,41 @@ impl<'a, S: GraphPmaStore> GraphPmaKernelBootstrapBridge<'a, S> {
         properties: &PropertyMap,
     ) -> GraphResult<EdgeRecord> {
         self.insert_edge_record(src, dst, label, properties, false)
+    }
+
+    /// Resolves shard canister slots for cross-canister adjacency metadata.
+    pub fn shard_canister_directory(&self) -> &crate::low_level::ShardCanisterDirectory {
+        self.store.shard_canister_directory()
+    }
+
+    /// Mutable shard directory (e.g. to pre-register principals before inserting edges).
+    pub fn shard_canister_directory_mut(&mut self) -> &mut crate::low_level::ShardCanisterDirectory {
+        self.store.shard_canister_directory_mut()
+    }
+
+    /// Inserts an edge from local `src` to local stub `dst` that represents a vertex on `shard_canister`.
+    ///
+    /// Forward [`EdgeMeta`] stores a shard slot; reverse stores the local label id.
+    pub fn insert_edge_with_shard_canister_dst(
+        &mut self,
+        src: NodeId,
+        dst: NodeId,
+        shard_canister: Principal,
+        label: Option<&str>,
+        properties: &PropertyMap,
+    ) -> GraphResult<EdgeRecord> {
+        self.validate_edge_insert_inputs(label, properties)?;
+        let slot = self
+            .store
+            .shard_canister_directory_mut()
+            .push_principal(shard_canister, false)
+            .ok_or_else(|| GraphError::Message("shard canister directory full".into()))?;
+        let label_id = self.label_id_for(label);
+        let edge_meta = EdgeDirectedMetaPair {
+            forward: EdgeMeta::new_shard_canister(slot, false),
+            reverse: EdgeMeta::new(label_id, false),
+        };
+        self.insert_edge_record_with_meta(src, dst, label, properties, false, edge_meta)
     }
 
     pub(crate) fn register_incident_edge(&mut self, src: NodeId, dst: NodeId, edge_id: EdgeId) {
@@ -369,14 +430,11 @@ impl<'a, S: GraphPmaStore> GraphPmaKernelBootstrapBridge<'a, S> {
         }
     }
 
-    fn insert_edge_record(
-        &mut self,
-        src: NodeId,
-        dst: NodeId,
+    fn validate_edge_insert_inputs(
+        &self,
         label: Option<&str>,
         properties: &PropertyMap,
-        bootstrap_event: bool,
-    ) -> GraphResult<EdgeRecord> {
+    ) -> GraphResult<()> {
         if let Some(l) = label {
             gleaph_gql::name_limits::validate_label_name(l)
                 .map_err(|e| GraphError::Message(e.to_string()))?;
@@ -385,6 +443,31 @@ impl<'a, S: GraphPmaStore> GraphPmaKernelBootstrapBridge<'a, S> {
             gleaph_gql::name_limits::validate_property_name(name)
                 .map_err(|e| GraphError::Message(e.to_string()))?;
         }
+        Ok(())
+    }
+
+    fn insert_edge_record(
+        &mut self,
+        src: NodeId,
+        dst: NodeId,
+        label: Option<&str>,
+        properties: &PropertyMap,
+        bootstrap_event: bool,
+    ) -> GraphResult<EdgeRecord> {
+        self.validate_edge_insert_inputs(label, properties)?;
+        let edge_meta = self.label_id_for(label).into();
+        self.insert_edge_record_with_meta(src, dst, label, properties, bootstrap_event, edge_meta)
+    }
+
+    fn insert_edge_record_with_meta(
+        &mut self,
+        src: NodeId,
+        dst: NodeId,
+        label: Option<&str>,
+        properties: &PropertyMap,
+        bootstrap_event: bool,
+        edge_meta: EdgeDirectedMetaPair,
+    ) -> GraphResult<EdgeRecord> {
         let src_mapping = self
             .vertex_mapping(src)
             .ok_or(GraphError::NodeNotFound(src))?;
@@ -394,7 +477,6 @@ impl<'a, S: GraphPmaStore> GraphPmaKernelBootstrapBridge<'a, S> {
 
         self.next_edge_id += 1;
         let edge_id = self.next_edge_id;
-        let label_id = self.label_id_for(label);
         let (forward_rebalance_vertex_ids, forward_rebalance_base_edge_ids_by_ordinal) = match self
             .store
             .graph()
@@ -461,7 +543,7 @@ impl<'a, S: GraphPmaStore> GraphPmaKernelBootstrapBridge<'a, S> {
                         dst_vertex_ref: dst.into(),
                         dst_ordinal: dst_mapping.reverse_ordinal,
                     },
-                    label_id,
+                    edge_meta,
                     planned_incoming_live_entries: 1,
                     forward_rebalance_vertex_ids: &forward_rebalance_vertex_ids,
                     forward_rebalance_base_edge_ids_by_ordinal:

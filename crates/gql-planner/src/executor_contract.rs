@@ -349,6 +349,7 @@ mod tests {
                         var_len: None,
                         indexed_edge_equality: None,
                         dst_filter: vec![],
+                        hop_aux_binding: None,
                     },
                     WcojEdge {
                         src: "b".into(),
@@ -360,6 +361,7 @@ mod tests {
                         var_len: None,
                         indexed_edge_equality: None,
                         dst_filter: vec![],
+                        hop_aux_binding: None,
                     },
                     WcojEdge {
                         src: "c".into(),
@@ -371,6 +373,7 @@ mod tests {
                         var_len: None,
                         indexed_edge_equality: None,
                         dst_filter: vec![],
+                        hop_aux_binding: None,
                     },
                 ],
             }],

@@ -1,5 +1,14 @@
 //! Opt-in timing splits for `GLEAPH_BENCH_PROFILE=1` (stderr report).
 //!
+//! Expand hot path (overlay read) adds nested phases alongside the outer totals:
+//! `expand_projected_match_pairs` / `expand_projected_build_rows`, and
+//! `expand_projected_with_shard_match_pairs` / `expand_projected_with_shard_build_rows` /
+//! `expand_projected_with_shard_principal_attach`.
+//!
+//! When edge and destination projections are both unset, match and row materialization are fused
+//! into a single pass; only the `*_match_pairs` phase is recorded (the `*_build_rows` guard is
+//! omitted).
+//!
 //! Accumulators are **thread-local** so parallel `cargo test` targets do not mix samples.
 //! Use `cargo test -- --test-threads=1` if you run multiple profile tests in one invocation.
 

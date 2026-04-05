@@ -1,4 +1,4 @@
-use crate::auth::{AccessLevel, AclEntry, AuthContext, Operation, PermissionChecker};
+use crate::auth::{AccessLevel, AclEntry, AuthContext, Operation, PermissionChecker, Principal};
 use crate::prepared::{
     PreparedQueryInfo, PreparedQueryKind, PreparedQueryRegistry, PreparedSortSpec,
     plan_for_prepared_execute,
@@ -24,9 +24,8 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 fn caller_value_from_auth(auth: &AuthContext) -> Option<Value> {
-    auth.caller
-        .as_ref()
-        .map(|p| Value::Extension(Box::new(gleaph_gql_ic::PrincipalValue(*p))))
+    let p = auth.query_subject.as_ref().or(auth.caller.as_ref())?;
+    Some(Value::Extension(Box::new(gleaph_gql_ic::PrincipalValue(*p))))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
@@ -52,6 +51,8 @@ pub struct GleaphService {
     graph_registry_resolver: Option<Arc<dyn GraphRegistryResolver>>,
     ic_graph_registry_resolver: Option<crate::IcGraphRegistryResolver>,
     use_graph_router: Option<Arc<dyn UseGraphRouter>>,
+    /// Peers allowed to supply `query_subject` on routed query endpoints (`msg_caller` must match).
+    federation_trusted_callers: BTreeSet<Principal>,
 }
 
 impl Default for GleaphService {
@@ -64,6 +65,7 @@ impl Default for GleaphService {
             graph_registry_resolver: None,
             ic_graph_registry_resolver: None,
             use_graph_router: None,
+            federation_trusted_callers: BTreeSet::new(),
         }
     }
 }
@@ -92,6 +94,10 @@ impl std::fmt::Debug for GleaphService {
             .field(
                 "use_graph_router",
                 &self.use_graph_router.as_ref().map(|_| "<configured>"),
+            )
+            .field(
+                "federation_trusted_callers",
+                &self.federation_trusted_callers.len(),
             )
             .finish()
     }
@@ -196,6 +202,48 @@ impl GleaphService {
     /// Clears the configured remote `USE GRAPH` router.
     pub fn clear_use_graph_router(&mut self) {
         self.use_graph_router = None;
+    }
+
+    /// Allow this peer principal to pass `query_subject` on federated routed-query endpoints.
+    pub fn add_federation_trusted_caller(&mut self, caller: Principal) {
+        self.federation_trusted_callers.insert(caller);
+    }
+
+    pub fn remove_federation_trusted_caller(&mut self, caller: &Principal) -> bool {
+        self.federation_trusted_callers.remove(caller)
+    }
+
+    pub fn clear_federation_trusted_callers(&mut self) {
+        self.federation_trusted_callers.clear();
+    }
+
+    pub fn federation_trusted_callers(&self) -> &BTreeSet<Principal> {
+        &self.federation_trusted_callers
+    }
+
+    /// Builds [`AuthContext`] for `execute_routed_query*` after validating optional delegation.
+    pub fn auth_for_routed_query(
+        &self,
+        msg_caller: Principal,
+        is_controller: bool,
+        query_subject: Option<Principal>,
+    ) -> Result<AuthContext, GleaphError> {
+        let mut auth = AuthContext {
+            caller: Some(msg_caller),
+            is_controller,
+            query_subject: None,
+        };
+        if let Some(subject) = query_subject {
+            if is_controller || self.federation_trusted_callers.contains(&msg_caller) {
+                auth.query_subject = Some(subject);
+            } else {
+                return Err(GleaphError::FederationRoutedQuery(
+                    "query_subject requires caller to be a controller or in federation_trusted_callers"
+                        .to_owned(),
+                ));
+            }
+        }
+        Ok(auth)
     }
 
     /// Registers one host-side supported extension type name (case-insensitive).

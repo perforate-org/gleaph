@@ -30,6 +30,8 @@ pub mod pushdown;
 pub mod semantic;
 pub mod stats;
 
+mod variable_refs;
+
 // Re-export key types and functions.
 pub use executor_contract::first_executor_unsupported_op;
 pub use explain::explain_plan;

@@ -691,9 +691,11 @@ impl SurfaceBaseStorage {
             return None;
         }
         if let Some(after_last) = after_last
-            && after_last.segment_id() != first.segment_id() && after_last.start_slot() != 0 {
-                return None;
-            }
+            && after_last.segment_id() != first.segment_id()
+            && after_last.start_slot() != 0
+        {
+            return None;
+        }
         let start = self.slot_for_ref(first.edge_ref())?;
         let end_exclusive =
             self.capacity_end_exclusive_for_vertex(last, after_last, segment_slot_capacity)?;
@@ -1111,10 +1113,7 @@ impl SurfaceDirtyRegions {
     }
 }
 
-type SegmentedBaseStorageParts = (
-    BTreeMap<u32, Vec<EdgeEntry>>,
-    BTreeMap<u32, u64>,
-);
+type SegmentedBaseStorageParts = (BTreeMap<u32, Vec<EdgeEntry>>, BTreeMap<u32, u64>);
 
 impl SurfaceRuntime {
     pub fn set_base_segment_slot_capacity(&mut self, segment_id: u32, slot_capacity: u64) {
@@ -1699,6 +1698,14 @@ impl SurfaceRuntime {
                 continue;
             }
 
+            if entry.meta.is_shard_canister() {
+                if let Some(label_id) = current_label.take() {
+                    ranges.push(VertexLabelRange::new(label_id, current_start, current_len));
+                }
+                current_len = 0;
+                continue;
+            }
+
             let label_id = entry.meta.label_id();
             let global_start =
                 u32::try_from(current.start_slot().checked_add(local_index as u64)?).ok()?;
@@ -1988,9 +1995,7 @@ impl SurfaceRuntime {
         ordinal: usize,
         mut segment_slot_capacity: impl FnMut(u32) -> Option<u64>,
     ) -> Option<BaseInsertDecision> {
-        if self
-            .can_append_base_entry_with(ordinal, &mut segment_slot_capacity)?
-        {
+        if self.can_append_base_entry_with(ordinal, &mut segment_slot_capacity)? {
             let logical_index = usize::try_from(self.vertices.get(ordinal)?.degree).ok()?;
             return Some(BaseInsertDecision::Append { logical_index });
         }
@@ -2158,9 +2163,7 @@ impl SurfaceRuntime {
         entry: EdgeEntry,
         mut segment_slot_capacity: impl FnMut(u32) -> Option<u64>,
     ) -> Option<EdgeInsertPath> {
-        match self
-            .choose_base_insert_slot_with(ordinal, &mut segment_slot_capacity)?
-        {
+        match self.choose_base_insert_slot_with(ordinal, &mut segment_slot_capacity)? {
             BaseInsertDecision::Append { .. } => {
                 let inserted = self.append_base_entry_with(ordinal, entry, |segment_id| {
                     segment_slot_capacity(segment_id)

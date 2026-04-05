@@ -1,3 +1,4 @@
+use candid::Principal;
 use gleaph_graph_kernel::{EdgeId, EdgeRecord, LabelId, NodeId, NodeRecord, PropertyMap};
 
 use crate::facade::{
@@ -130,6 +131,8 @@ pub struct KernelBootstrapEdgeSpec {
     pub dst_index: usize,
     pub label: Option<String>,
     pub properties: PropertyMap,
+    /// When set, the forward [`EdgeMeta`](crate::low_level::edge::EdgeMeta) stores a shard slot for this principal.
+    pub shard_canister_dst: Option<Principal>,
 }
 
 impl KernelBootstrapEdgeSpec {
@@ -144,6 +147,7 @@ impl KernelBootstrapEdgeSpec {
             dst_index,
             label,
             properties,
+            shard_canister_dst: None,
         }
     }
 
@@ -158,11 +162,17 @@ impl KernelBootstrapEdgeSpec {
             dst_index,
             label: label.map(str::to_owned),
             properties: properties.clone(),
+            shard_canister_dst: None,
         }
     }
 
     pub fn unlabeled(src_index: usize, dst_index: usize, properties: &PropertyMap) -> Self {
         Self::from_parts(src_index, dst_index, None, properties)
+    }
+
+    pub fn with_shard_canister_dst(mut self, principal: Principal) -> Self {
+        self.shard_canister_dst = Some(principal);
+        self
     }
 }
 

@@ -3,6 +3,16 @@
 //! A [`PhysicalPlan`] represents a sequence of [`PlanOp`] operators that an
 //! executor can walk to evaluate a GQL query. The planner produces these from
 //! the parsed AST; the executor (in a separate crate) consumes them.
+//!
+//! ## Property projection and DML
+//!
+//! Expand / scan operators may carry `property_projection` lists so the executor hydrates only the
+//! properties needed by `RETURN` and downstream expressions; see
+//! [`crate::property_projection::apply_node_property_projections`].
+//!
+//! [`PhysicalPlan::has_dml`] is true when any operator in the plan (including nested sub-plans under
+//! joins, `OPTIONAL MATCH`, `USE GRAPH`, etc.) is graph-mutating. Executors use it to decide whether a
+//! terminal `GraphWrite::flush` is needed after the plan.
 
 use std::rc::Rc;
 
@@ -31,8 +41,9 @@ pub struct PhysicalPlan {
 }
 
 impl PhysicalPlan {
+    /// True if any operator in this plan (including nested sub-plans) is DML.
     pub fn has_dml(&self) -> bool {
-        self.ops.iter().any(PlanOp::is_dml)
+        ops_contain_dml(&self.ops)
     }
 
     pub fn use_graph_pushdown(&self) -> &[UseGraphPushdownInfo] {
@@ -120,6 +131,8 @@ pub enum PlanOp {
         label: Option<Str>,
         near_property_projection: Option<Rc<[Str]>>,
         far_property_projection: Option<Rc<[Str]>>,
+        /// When set, executor binds hop auxiliary bytes under this name (same semantics as [`PlanOp::Expand::hop_aux_binding`]).
+        hop_aux_binding: Option<Str>,
     },
 
     /// Parameter-based conditional scan: tries index scan if parameter is
@@ -158,6 +171,10 @@ pub enum PlanOp {
         indexed_edge_equality: Option<(Str, ScanValue)>,
         edge_property_projection: Option<Rc<[Str]>>,
         dst_property_projection: Option<Rc<[Str]>>,
+        /// Optional variable bound to a **per-hop auxiliary scalar** after each expansion row
+        /// (`Value::Bytes`, `Value::Null`, etc.). Semantics are executor/backend-defined (opaque to the planner).
+        /// When [`None`], the executor uses its default auxiliary binding name.
+        hop_aux_binding: Option<Str>,
     },
 
     /// Fused Expand + property filter on the destination node (EVFusion).
@@ -176,6 +193,8 @@ pub enum PlanOp {
         dst_filter: Vec<Expr>,
         edge_property_projection: Option<Rc<[Str]>>,
         dst_property_projection: Option<Rc<[Str]>>,
+        /// Same semantics as [`PlanOp::Expand::hop_aux_binding`].
+        hop_aux_binding: Option<Str>,
     },
 
     /// Shortest-path search (unweighted hop count) between already-bound `src` and bound `dst`.
@@ -363,6 +382,30 @@ impl PlanOp {
                 | Self::DeleteEdge { .. }
         )
     }
+}
+
+fn ops_contain_dml(ops: &[PlanOp]) -> bool {
+    ops.iter().any(|op| {
+        if op.is_dml() {
+            return true;
+        }
+        match op {
+            PlanOp::HashJoin { left, right, .. } => {
+                ops_contain_dml(left) || ops_contain_dml(right)
+            }
+            PlanOp::CartesianProduct { left, right } => {
+                ops_contain_dml(left) || ops_contain_dml(right)
+            }
+            PlanOp::SetOperation { right, .. } => ops_contain_dml(&right.ops),
+            PlanOp::OptionalMatch { sub_plan } => ops_contain_dml(sub_plan),
+            PlanOp::InlineProcedureCall { sub_plan, .. } => ops_contain_dml(&sub_plan.ops),
+            PlanOp::UseGraph {
+                sub_plan: Some(sp),
+                ..
+            } => ops_contain_dml(sp),
+            _ => false,
+        }
+    })
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -572,6 +615,8 @@ pub struct WcojEdge {
     pub indexed_edge_equality: Option<(Str, ScanValue)>,
     /// Predicates on destination `dst` (from `ExpandFilter` / pattern fusion).
     pub dst_filter: Vec<Expr>,
+    /// When set, executor binds hop auxiliary bytes under this name (same as [`PlanOp::Expand::hop_aux_binding`]).
+    pub hop_aux_binding: Option<Str>,
 }
 
 /// Information about the chosen scan anchor.

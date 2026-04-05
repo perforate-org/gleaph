@@ -8,8 +8,8 @@ use gleaph_gql_planner::plan::*;
 use gleaph_gql_planner::semantic;
 use gleaph_gql_planner::stats::{GraphStats, TableStats};
 use gleaph_gql_planner::{
-    build_block_plan, build_block_plan_output, build_composite_plan, build_plan, build_plan_output,
-    build_plan_output_for_execute, build_statement_plan, explain_plan,
+    analyze_remote_use_graph_pushdown, build_block_plan, build_block_plan_output, build_composite_plan,
+    build_plan, build_plan_output, build_plan_output_for_execute, build_statement_plan, explain_plan,
 };
 
 /// Helper: parse a GQL query string and extract the first linear query.
@@ -352,6 +352,114 @@ fn test_edge_dst_resolved_correctly() {
 }
 
 #[test]
+fn expand_hop_aux_binding_none_when_not_referenced() {
+    let plan = plan_query("MATCH (a:Person)-[e:KNOWS]->(b:Person) RETURN a, b");
+    let expand = plan
+        .ops
+        .iter()
+        .find_map(|op| match op {
+            PlanOp::Expand { .. } => Some(op),
+            _ => None,
+        })
+        .expect("Expand");
+    let PlanOp::Expand {
+        edge,
+        hop_aux_binding,
+        ..
+    } = expand
+    else {
+        unreachable!()
+    };
+    assert_eq!(&**edge, "e");
+    assert!(
+        hop_aux_binding.is_none(),
+        "hop_aux_binding should be None when e__hop_aux is not referenced, got {hop_aux_binding:?}"
+    );
+}
+
+#[test]
+fn expand_hop_aux_binding_some_when_return_references_named_edge() {
+    let plan = plan_query(
+        "MATCH (a:Person)-[e:KNOWS]->(b:Person) RETURN a, b, e__hop_aux",
+    );
+    let expand = plan
+        .ops
+        .iter()
+        .find_map(|op| match op {
+            PlanOp::Expand { .. } => Some(op),
+            _ => None,
+        })
+        .expect("Expand");
+    let PlanOp::Expand {
+        edge,
+        hop_aux_binding,
+        ..
+    } = expand
+    else {
+        unreachable!()
+    };
+    assert_eq!(&**edge, "e");
+    assert_eq!(hop_aux_binding.as_deref(), Some("e__hop_aux"));
+}
+
+#[test]
+fn expand_hop_aux_binding_none_when_anonymous_edge_not_referenced() {
+    let plan = plan_query("MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a, b");
+    let expand = plan
+        .ops
+        .iter()
+        .find_map(|op| match op {
+            PlanOp::Expand { .. } => Some(op),
+            _ => None,
+        })
+        .expect("Expand");
+    let PlanOp::Expand { hop_aux_binding, .. } = expand else {
+        unreachable!()
+    };
+    assert!(
+        hop_aux_binding.is_none(),
+        "hop_aux_binding should be None when synthetic __anon_e*__hop_aux is not referenced, got {hop_aux_binding:?}"
+    );
+}
+
+#[test]
+fn expand_hop_aux_binding_some_when_return_references_anonymous_edge_hop_aux() {
+    let base = "MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a, b";
+    let plan0 = plan_query(base);
+    let PlanOp::Expand { edge, .. } = plan0
+        .ops
+        .iter()
+        .find_map(|op| match op {
+            PlanOp::Expand { .. } => Some(op),
+            _ => None,
+        })
+        .expect("Expand")
+    else {
+        unreachable!()
+    };
+    let hop_col = format!("{}__hop_aux", edge.as_ref());
+    let plan = plan_query(&format!("{base}, {hop_col}"));
+    let expand = plan
+        .ops
+        .iter()
+        .find_map(|op| match op {
+            PlanOp::Expand { .. } => Some(op),
+            _ => None,
+        })
+        .expect("Expand");
+    let PlanOp::Expand {
+        edge: edge2,
+        hop_aux_binding,
+        ..
+    } = expand
+    else {
+        unreachable!()
+    };
+    assert_eq!(edge2.as_ref(), edge.as_ref());
+    assert_eq!(hop_aux_binding.as_deref(), Some(hop_col.as_str()));
+}
+
+#[test]
 fn test_multi_hop_edge_dst_resolved() {
     let plan = plan_query(
         "MATCH (a:Person)-[r1:KNOWS]->(b:Person)-[r2:WORKS_AT]->(c:Company) RETURN a, c",
@@ -518,6 +626,59 @@ fn test_leading_edge_index_scan_unlabeled_start_node() {
             .take(2)
             .any(|op| matches!(op, PlanOp::NodeScan { .. })),
         "first two ops should not be NodeScan when leading edge index applies"
+    );
+}
+
+#[test]
+fn test_leading_edge_bind_hop_aux_none_when_not_referenced() {
+    let mut stats = TableStats::default();
+    stats.indexed_edge_properties.insert("weight".to_owned());
+    let plan = plan_query_with_stats(
+        "MATCH ()-[e:REL {weight: 7}]->(b:User) RETURN e, b",
+        &stats,
+    );
+    let Some(PlanOp::EdgeBindEndpoints { hop_aux_binding, .. }) = plan.ops.get(1) else {
+        panic!("expected EdgeBindEndpoints at index 1, ops={:?}", plan.ops);
+    };
+    assert!(
+        hop_aux_binding.is_none(),
+        "hop_aux_binding should be None when e__hop_aux is not referenced, got {hop_aux_binding:?}"
+    );
+}
+
+#[test]
+fn test_leading_edge_bind_hop_aux_some_when_return_references() {
+    let mut stats = TableStats::default();
+    stats.indexed_edge_properties.insert("weight".to_owned());
+    let plan = plan_query_with_stats(
+        "MATCH ()-[e:REL {weight: 7}]->(b:User) RETURN e, e__hop_aux, b",
+        &stats,
+    );
+    let Some(PlanOp::EdgeBindEndpoints { hop_aux_binding, .. }) = plan.ops.get(1) else {
+        panic!("expected EdgeBindEndpoints at index 1, ops={:?}", plan.ops);
+    };
+    assert_eq!(
+        hop_aux_binding.as_deref(),
+        Some("e__hop_aux"),
+        "hop_aux_binding should follow RETURN, got {hop_aux_binding:?}"
+    );
+}
+
+#[test]
+fn test_leading_edge_bind_hop_aux_some_when_where_references() {
+    let mut stats = TableStats::default();
+    stats.indexed_edge_properties.insert("weight".to_owned());
+    let plan = plan_query_with_stats(
+        "MATCH ()-[e:REL {weight: 7}]->(b:User) WHERE e__hop_aux IS NOT NULL RETURN e, b",
+        &stats,
+    );
+    let Some(PlanOp::EdgeBindEndpoints { hop_aux_binding, .. }) = plan.ops.get(1) else {
+        panic!("expected EdgeBindEndpoints at index 1, ops={:?}", plan.ops);
+    };
+    assert_eq!(
+        hop_aux_binding.as_deref(),
+        Some("e__hop_aux"),
+        "hop_aux_binding should follow WHERE, got {hop_aux_binding:?}"
     );
 }
 
@@ -1656,6 +1817,55 @@ fn test_simplified_path_multiset_label_one_expand() {
 }
 
 #[test]
+fn test_triangle_wcoj_hop_aux_only_on_referenced_edge() {
+    let plan = plan_query(
+        "MATCH (a:Person)-[e1:KNOWS]->(b:Person)-[e2:KNOWS]->(c:Person)-[e3:KNOWS]->(a) \
+         RETURN a, e1__hop_aux",
+    );
+    let edges = plan
+        .ops
+        .iter()
+        .find_map(|op| match op {
+            PlanOp::WorstCaseOptimalJoin { edges, .. } => Some(edges.as_slice()),
+            _ => None,
+        })
+        .expect("WorstCaseOptimalJoin");
+    let e1 = edges
+        .iter()
+        .find(|e| &*e.variable == "e1")
+        .expect("edge e1");
+    let e2 = edges
+        .iter()
+        .find(|e| &*e.variable == "e2")
+        .expect("edge e2");
+    let e3 = edges
+        .iter()
+        .find(|e| &*e.variable == "e3")
+        .expect("edge e3");
+    assert_eq!(e1.hop_aux_binding.as_deref(), Some("e1__hop_aux"));
+    assert!(e2.hop_aux_binding.is_none() && e3.hop_aux_binding.is_none());
+}
+
+#[test]
+fn test_triangle_wcoj_no_hop_aux_when_not_referenced() {
+    let plan = plan_query(
+        "MATCH (a:Person)-[e1:KNOWS]->(b:Person)-[e2:KNOWS]->(c:Person)-[e3:KNOWS]->(a) RETURN a",
+    );
+    let edges = plan
+        .ops
+        .iter()
+        .find_map(|op| match op {
+            PlanOp::WorstCaseOptimalJoin { edges, .. } => Some(edges.as_slice()),
+            _ => None,
+        })
+        .expect("WorstCaseOptimalJoin");
+    assert!(
+        edges.iter().all(|e| e.hop_aux_binding.is_none()),
+        "no hop_aux in RETURN => all None, edges={edges:?}"
+    );
+}
+
+#[test]
 fn test_triangle_cycle_uses_wcoj() {
     let plan = plan_query(
         "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person)-[:KNOWS]->(a) RETURN a",
@@ -2700,6 +2910,30 @@ fn test_use_graph_explain_reports_pushdown_unsupported_reason() {
     );
 }
 
+#[test]
+fn test_use_graph_pushdown_supported_trivial_var_len_one_one() {
+    let plan = plan_query(
+        "USE myGraph MATCH (a:Person)-/KNOWS{1,1}/->(b:Person) RETURN b",
+    );
+    let sub = plan
+        .ops
+        .iter()
+        .find_map(|op| match op {
+            PlanOp::UseGraph {
+                sub_plan: Some(sp),
+                ..
+            } => Some(sp.as_slice()),
+            _ => None,
+        })
+        .expect("use graph sub plan");
+    let info = analyze_remote_use_graph_pushdown("myGraph", sub);
+    assert!(
+        info.supported,
+        "expected trivial {{1,1}} hop to be remote-pushdown supported: {:?}",
+        info.reason
+    );
+}
+
 // ════════════════════════════════════════════════════════════════════════════════
 // Phase F1: Predicate Reordering
 // ════════════════════════════════════════════════════════════════════════════════
@@ -2878,5 +3112,113 @@ fn test_cartesian_product_cost() {
         est_rows > 1000.0,
         "cartesian product should multiply rows: got {}",
         est_rows
+    );
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// Expand property projection (apply_node_property_projections)
+// ════════════════════════════════════════════════════════════════════════════════
+
+fn expand_projection_pairs(plan: &PhysicalPlan) -> Vec<(Option<Vec<String>>, Option<Vec<String>>)> {
+    let mut out = Vec::new();
+    fn walk(ops: &[PlanOp], out: &mut Vec<(Option<Vec<String>>, Option<Vec<String>>)>) {
+        for op in ops {
+            match op {
+                PlanOp::Expand {
+                    edge_property_projection,
+                    dst_property_projection,
+                    ..
+                }
+                | PlanOp::ExpandFilter {
+                    edge_property_projection,
+                    dst_property_projection,
+                    ..
+                } => {
+                    let ep = edge_property_projection.as_ref().map(|rc| {
+                        rc.iter().map(|s| s.as_ref().to_string()).collect::<Vec<_>>()
+                    });
+                    let dp = dst_property_projection.as_ref().map(|rc| {
+                        rc.iter().map(|s| s.as_ref().to_string()).collect::<Vec<_>>()
+                    });
+                    out.push((ep, dp));
+                }
+                PlanOp::HashJoin { left, right, .. } => {
+                    walk(left, out);
+                    walk(right, out);
+                }
+                PlanOp::CartesianProduct { left, right } => {
+                    walk(left, out);
+                    walk(right, out);
+                }
+                PlanOp::OptionalMatch { sub_plan } => walk(sub_plan, out),
+                PlanOp::InlineProcedureCall { sub_plan, .. } => walk(&sub_plan.ops, out),
+                PlanOp::SetOperation { right, .. } => walk(&right.ops, out),
+                PlanOp::UseGraph {
+                    sub_plan: Some(sp),
+                    ..
+                } => walk(sp.as_slice(), out),
+                _ => {}
+            }
+        }
+    }
+    walk(&plan.ops, &mut out);
+    out
+}
+
+#[test]
+fn expand_projects_only_dst_uid_when_return_property_access() {
+    let plan = plan_query(
+        "MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.uid, b.uid",
+    );
+    let pairs = expand_projection_pairs(&plan);
+    assert!(
+        !pairs.is_empty(),
+        "expected at least one Expand, ops: {:?}",
+        plan.ops
+    );
+    let (edge_p, dst_p) = pairs
+        .iter()
+        .find(|(_, d)| d.as_ref().is_some_and(|v| v.contains(&"uid".to_string())))
+        .expect("expected Expand with dst projection including uid");
+    assert_eq!(
+        dst_p.as_ref().map(|v| v.as_slice()),
+        Some(&["uid".to_string()][..]),
+        "dst should project only uid, got dst={dst_p:?} edge={edge_p:?}"
+    );
+    // Anonymous edge: no properties read — either full (None) or explicit empty projection.
+    assert!(
+        edge_p.is_none() || edge_p.as_ref() == Some(&Vec::<String>::new()),
+        "edge should not load property subset when unused, got {edge_p:?}"
+    );
+}
+
+#[test]
+fn expand_full_dst_when_return_whole_node() {
+    let plan = plan_query("MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a, b");
+    let pairs = expand_projection_pairs(&plan);
+    assert!(!pairs.is_empty(), "expected Expand");
+    let (_, dst_p) = &pairs[0];
+    assert!(
+        dst_p.is_none(),
+        "RETURN b (whole node) should keep full dst record (None projection), got {dst_p:?}"
+    );
+}
+
+#[test]
+fn expand_full_edge_when_return_whole_edge_var() {
+    let plan = plan_query("MATCH (a:Person)-[e:KNOWS]->(b:Person) RETURN a.uid, b.uid, e");
+    let pairs = expand_projection_pairs(&plan);
+    let (edge_p, dst_p) = pairs
+        .iter()
+        .find(|(e, d)| {
+            d.as_ref()
+                .is_some_and(|v| v.len() == 1 && v[0] == "uid")
+                && e.is_none()
+        })
+        .expect("expected Expand with full edge (e returned as value) and dst uid");
+    assert!(edge_p.is_none(), "edge e used as value => full edge, got {edge_p:?}");
+    assert_eq!(
+        dst_p.as_ref().map(|v| v.as_slice()),
+        Some(&["uid".to_string()][..])
     );
 }

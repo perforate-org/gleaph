@@ -87,17 +87,40 @@ fn produced_vars_by_position(ops: &[PlanOp]) -> ProducedVars {
             PlanOp::IndexIntersection { variable, .. } => {
                 current.insert(variable.to_string());
             }
-            PlanOp::Expand { src, edge, dst, .. } | PlanOp::ExpandFilter { src, edge, dst, .. } => {
+            PlanOp::Expand {
+                src,
+                edge,
+                dst,
+                hop_aux_binding,
+                ..
+            }
+            | PlanOp::ExpandFilter {
+                src,
+                edge,
+                dst,
+                hop_aux_binding,
+                ..
+            } => {
                 current.insert(src.to_string());
                 current.insert(edge.to_string());
                 current.insert(dst.to_string());
+                if let Some(h) = hop_aux_binding {
+                    current.insert(h.to_string());
+                }
             }
             PlanOp::EdgeBindEndpoints {
-                edge, near, far, ..
+                edge,
+                near,
+                far,
+                hop_aux_binding,
+                ..
             } => {
                 current.insert(edge.to_string());
                 current.insert(near.to_string());
                 current.insert(far.to_string());
+                if let Some(h) = hop_aux_binding {
+                    current.insert(h.to_string());
+                }
             }
             PlanOp::ShortestPath {
                 src,
@@ -166,6 +189,17 @@ fn produced_vars_by_position(ops: &[PlanOp]) -> ProducedVars {
                 }
                 if let Some(r) = right_pv.last() {
                     current.extend(r.iter().cloned());
+                }
+            }
+            PlanOp::WorstCaseOptimalJoin { variables, edges } => {
+                for v in variables {
+                    current.insert(v.to_string());
+                }
+                for e in edges {
+                    current.insert(e.variable.to_string());
+                    if let Some(h) = &e.hop_aux_binding {
+                        current.insert(h.to_string());
+                    }
                 }
             }
             PlanOp::Materialize { columns, .. } => {
@@ -400,6 +434,7 @@ pub fn apply_ev_fusion(ops: &mut Vec<PlanOp>, annotations: &mut PlanAnnotations)
                     indexed_edge_equality,
                     edge_property_projection,
                     dst_property_projection,
+                    hop_aux_binding,
                 },
                 PlanOp::PropertyFilter { predicates, .. },
             ) = (expand_op, filter_op)
@@ -418,6 +453,7 @@ pub fn apply_ev_fusion(ops: &mut Vec<PlanOp>, annotations: &mut PlanAnnotations)
                         dst_filter: predicates,
                         edge_property_projection,
                         dst_property_projection,
+                        hop_aux_binding,
                     },
                 );
                 annotations.optimizer.ev_fusion_applied = true;

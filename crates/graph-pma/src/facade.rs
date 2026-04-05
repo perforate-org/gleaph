@@ -35,15 +35,15 @@ use crate::low_level::{
     GraphInsertSegmentWriteSummary, GraphInsertWriteSummary, GraphMaintenanceBatchWriteSummary,
     GraphMaintenanceCandidate, GraphMaintenanceCyclePlan, GraphMaintenanceCycleWriteSummary,
     GraphMaintenanceWorkItem, GraphMutationPath, GraphRuntime, HydratedSurfaceRuntimes,
-    HydrationError, LogicalEdgeLocator, RebalanceInsertSpec, RebalancePrepareSpec, RegionKind,
-    RegionManager, ResolvedEdgeSlot, ReverseSurfaceRuntime, SurfaceVertexWindowReserveHint,
-    SurfaceVertexWindowSummary, VertexEntry, VertexRef, WasmPages, WritebackError,
-    estimate_vertex_window_reserve_hint_from_stable_memory, forward_surface_from_layout,
-    hydrate_surface_runtimes_from_stable_memory, read_edge_entries_by_ref_from_stable_memory,
-    read_vertex_base_edge_ref_from_stable_memory, read_vertex_base_entries_from_stable_memory,
-    read_vertex_base_entry_from_stable_memory, read_vertex_entries_from_stable_memory,
-    read_vertex_entry_by_ref_from_stable_memory, read_vertex_entry_from_stable_memory,
-    read_vertex_reserved_base_entries_from_stable_memory,
+    HydrationError, LogicalEdgeLocator, ShardCanisterDirectory, RebalanceInsertSpec,
+    RebalancePrepareSpec, RegionKind, RegionManager, ResolvedEdgeSlot, ReverseSurfaceRuntime,
+    SurfaceVertexWindowReserveHint, SurfaceVertexWindowSummary, VertexEntry, VertexRef,
+    WasmPages, WritebackError, estimate_vertex_window_reserve_hint_from_stable_memory,
+    forward_surface_from_layout, hydrate_surface_runtimes_from_stable_memory,
+    read_edge_entries_by_ref_from_stable_memory, read_vertex_base_edge_ref_from_stable_memory,
+    read_vertex_base_entries_from_stable_memory, read_vertex_base_entry_from_stable_memory,
+    read_vertex_entries_from_stable_memory, read_vertex_entry_by_ref_from_stable_memory,
+    read_vertex_entry_from_stable_memory, read_vertex_reserved_base_entries_from_stable_memory,
     read_vertex_reserved_span_len_from_stable_memory, reverse_surface_from_layout,
     summarize_vertex_window_from_stable_memory, write_surface_runtimes_to_stable_memory,
 };
@@ -70,20 +70,20 @@ use crate::property_store::{
 };
 pub use errors::{GraphPmaError, GraphPmaResult};
 pub use facade_types::{
-    PropertyIndexFallbackReason, GraphPmaAppendVertexWriteSummary,
-    GraphPmaAppendVerticesWriteSummary, GraphPmaBootstrapEdgeProjection,
-    GraphPmaBootstrapEdgeWriteSummary, GraphPmaBootstrapGraphProjection,
-    GraphPmaBootstrapGraphWriteSummary, GraphPmaBootstrapVerticesProjection,
-    GraphPmaEdgeLogicalLocatorMapping, GraphPmaEdgeWriteOperation, GraphPmaEdgeWriteProjection,
-    GraphPmaEnsureCapacityProjection, GraphPmaFacadeWriteEvent, GraphPmaMutationWriteSummary,
-    GraphPmaInsertEdgeProjection, GraphPmaMaintenanceBatchProjection,
+    GraphPmaAppendVertexWriteSummary, GraphPmaAppendVerticesWriteSummary,
+    GraphPmaBootstrapEdgeProjection, GraphPmaBootstrapEdgeWriteSummary,
+    GraphPmaBootstrapGraphProjection, GraphPmaBootstrapGraphWriteSummary,
+    GraphPmaBootstrapVerticesProjection, GraphPmaEdgeLogicalLocatorMapping,
+    GraphPmaEdgeWriteOperation, GraphPmaEdgeWriteProjection, GraphPmaEnsureCapacityProjection,
+    GraphPmaFacadeWriteEvent, GraphPmaInsertEdgeProjection, GraphPmaMaintenanceBatchProjection,
     GraphPmaMaintenanceCycleProjection, GraphPmaMaintenanceQueueAction,
     GraphPmaMaintenanceQueueItemProjection, GraphPmaMaintenanceQueueProjection,
-    GraphPmaMaintenanceQueueStorageProjection, GraphPmaNodeDeleteProjection,
-    GraphPmaProductionMetrics, GraphPmaProductionMetricsSnapshot,
+    GraphPmaMaintenanceQueueStorageProjection, GraphPmaMutationWriteSummary,
+    GraphPmaNodeDeleteProjection, GraphPmaProductionMetrics, GraphPmaProductionMetricsSnapshot,
     GraphPmaPropertyIndexMutationSummary, GraphPmaPropertyIndexTouchedSections,
-    GraphPmaPropertyMutationWriteSummary, GraphPmaPropertyWriteProjection, GraphPmaRefreshedVertices,
-    GraphPmaVertexOrdinalMapping, GraphPmaWriteEventProjection,
+    GraphPmaPropertyMutationWriteSummary, GraphPmaPropertyWriteProjection,
+    GraphPmaRefreshedVertices, GraphPmaVertexOrdinalMapping, GraphPmaWriteEventProjection,
+    PropertyIndexFallbackReason,
 };
 
 type GraphPmaReplaceEdgeSummary =
@@ -140,6 +140,8 @@ pub struct GraphPma<M: Memory = VecMemory> {
     pub write_history: Vec<GraphPmaFacadeWriteEvent>,
     /// In-process production-facing metrics for property/index paths.
     pub production_metrics: GraphPmaProductionMetrics,
+    /// Cross-canister principal table for [`EdgeMeta::is_shard_canister`](crate::low_level::edge::EdgeMeta::is_shard_canister) payloads.
+    pub shard_canister_directory: ShardCanisterDirectory,
 }
 
 impl<M: Memory> std::fmt::Debug for GraphPma<M> {
@@ -162,6 +164,7 @@ impl<M: Memory> std::fmt::Debug for GraphPma<M> {
             .field("last_write_event", &self.last_write_event)
             .field("write_history_len", &self.write_history.len())
             .field("production_metrics", &self.production_metrics)
+            .field("shard_canister_directory_len", &self.shard_canister_directory.len())
             .finish()
     }
 }
@@ -208,6 +211,7 @@ impl<M: Memory + Clone> Clone for GraphPma<M> {
             last_write_event: self.last_write_event.clone(),
             write_history: self.write_history.clone(),
             production_metrics: self.production_metrics.clone(),
+            shard_canister_directory: self.shard_canister_directory.clone(),
         };
         for e in self.property_equality_map.iter() {
             clone
@@ -241,6 +245,7 @@ struct AssembledAfterPropertyLoadArgs<M: Memory> {
     property_equality_map: PropertyEqualityInplaceMap<M>,
     property_index_btree_payload: Rc<RefCell<u64>>,
     property_index_dirty: bool,
+    shard_canister_directory: ShardCanisterDirectory,
 }
 
 /// Thin facade-level batch mutation session.
@@ -374,6 +379,12 @@ pub trait GraphPmaStore {
 
     /// Returns mutable access to the underlying graph runtime.
     fn graph_mut(&mut self) -> &mut GraphRuntime;
+
+    /// Cross-canister principal directory persisted with the graph facade.
+    fn shard_canister_directory(&self) -> &ShardCanisterDirectory;
+
+    /// Mutable shard directory (kept in sync on flush/write-all paths).
+    fn shard_canister_directory_mut(&mut self) -> &mut ShardCanisterDirectory;
 
     /// Returns immutable access to the stable node property map.
     fn node_property_store(&self) -> &GraphPropertyStableMap<Self::Mem>;
@@ -540,8 +551,7 @@ pub trait GraphPmaStore {
     ) -> GraphPmaResult<()>;
 
     /// Writes the full graph runtime state back to stable memory.
-    fn try_write_all_to_stable_memory(&mut self, memory: &impl Memory)
-    -> GraphPmaResult<()>;
+    fn try_write_all_to_stable_memory(&mut self, memory: &impl Memory) -> GraphPmaResult<()>;
 
     /// Refreshes dirty state and writes it back.
     fn try_refresh_and_write_dirty_to_stable_memory(
@@ -553,10 +563,7 @@ pub trait GraphPmaStore {
     fn append_empty_vertex_pair(&mut self) -> GraphPmaResult<(usize, usize)>;
 
     /// Appends `count` empty vertex slot pairs to both surfaces.
-    fn append_empty_vertex_pairs(
-        &mut self,
-        count: usize,
-    ) -> GraphPmaResult<Vec<(usize, usize)>>;
+    fn append_empty_vertex_pairs(&mut self, count: usize) -> GraphPmaResult<Vec<(usize, usize)>>;
 
     /// Bootstraps multiple new vertex slots plus initial logical edges.
     ///
@@ -818,9 +825,7 @@ impl<M: Memory> GraphPma<M> {
         })
     }
 
-    fn encode_maintenance_queue(
-        queue: &[GraphMaintenanceWorkItem],
-    ) -> GraphPmaResult<Vec<u8>> {
+    fn encode_maintenance_queue(queue: &[GraphMaintenanceWorkItem]) -> GraphPmaResult<Vec<u8>> {
         let count = u64::try_from(queue.len()).map_err(|_| {
             GraphPmaError::Hydration(HydrationError::RegionTooLarge(
                 RegionKind::MaintenanceQueue,
@@ -866,9 +871,7 @@ impl<M: Memory> GraphPma<M> {
         hash
     }
 
-    fn decode_maintenance_queue(
-        bytes: &[u8],
-    ) -> GraphPmaResult<Vec<GraphMaintenanceWorkItem>> {
+    fn decode_maintenance_queue(bytes: &[u8]) -> GraphPmaResult<Vec<GraphMaintenanceWorkItem>> {
         if bytes.is_empty() {
             return Ok(Vec::new());
         }
@@ -892,8 +895,7 @@ impl<M: Memory> GraphPma<M> {
                 },
             ));
         }
-        let count =
-            u64::from_le_bytes(bytes[8..16].try_into().expect("queue item count")) as usize;
+        let count = u64::from_le_bytes(bytes[8..16].try_into().expect("queue item count")) as usize;
         let checksum = u64::from_le_bytes(bytes[16..24].try_into().expect("queue checksum"));
         let body = &bytes[Self::SERIALIZED_MAINTENANCE_QUEUE_HEADER_LEN..];
         let expected = count
@@ -905,23 +907,19 @@ impl<M: Memory> GraphPma<M> {
                 ))
             })?;
         if body.len() != expected {
-            return Err(GraphPmaError::Hydration(
-                HydrationError::InvalidLength {
-                    kind: RegionKind::MaintenanceQueue,
-                    expected_multiple: Self::SERIALIZED_MAINTENANCE_QUEUE_ITEM_LEN,
-                    actual: body.len(),
-                },
-            ));
+            return Err(GraphPmaError::Hydration(HydrationError::InvalidLength {
+                kind: RegionKind::MaintenanceQueue,
+                expected_multiple: Self::SERIALIZED_MAINTENANCE_QUEUE_ITEM_LEN,
+                actual: body.len(),
+            }));
         }
         let actual_checksum = Self::maintenance_queue_checksum(body);
         if checksum != actual_checksum {
-            return Err(GraphPmaError::Hydration(
-                HydrationError::ChecksumMismatch {
-                    kind: RegionKind::MaintenanceQueue,
-                    expected: checksum,
-                    actual: actual_checksum,
-                },
-            ));
+            return Err(GraphPmaError::Hydration(HydrationError::ChecksumMismatch {
+                kind: RegionKind::MaintenanceQueue,
+                expected: checksum,
+                actual: actual_checksum,
+            }));
         }
         let mut queue = Vec::with_capacity(count);
         for chunk in body.chunks_exact(Self::SERIALIZED_MAINTENANCE_QUEUE_ITEM_LEN) {
@@ -1093,11 +1091,12 @@ impl<M: Memory> GraphPma<M> {
         if logical_len == 0 {
             return Ok(Vec::new());
         }
-        let extent = manager.region_extent(RegionKind::MaintenanceQueue).ok_or(
-            GraphPmaError::Hydration(HydrationError::MissingExtentRegion(
-                RegionKind::MaintenanceQueue,
-            )),
-        )?;
+        let extent =
+            manager
+                .region_extent(RegionKind::MaintenanceQueue)
+                .ok_or(GraphPmaError::Hydration(
+                    HydrationError::MissingExtentRegion(RegionKind::MaintenanceQueue),
+                ))?;
         if logical_len > usize::try_from(extent.len_bytes).unwrap_or(usize::MAX) {
             return Err(GraphPmaError::Hydration(
                 HydrationError::LogicalLengthExceedsExtent {
@@ -1112,6 +1111,142 @@ impl<M: Memory> GraphPma<M> {
             memory.read(extent.addr.0, &mut bytes);
         }
         Self::decode_maintenance_queue(&bytes)
+    }
+
+    fn ensure_shard_canister_directory_region(
+        manager: &mut RegionManager,
+    ) -> Result<(), WritebackError> {
+        if manager
+            .layout
+            .region(RegionKind::ShardCanisterDirectory)
+            .is_none()
+        {
+            manager.define_extent_region(
+                RegionKind::ShardCanisterDirectory,
+                ExtentChain::new(
+                    ExtentId::NULL,
+                    ExtentId::NULL,
+                    0,
+                    WasmPages::new(1),
+                    WasmPages::new(1),
+                ),
+            );
+        }
+        Ok(())
+    }
+
+    fn ensure_shard_canister_directory_capacity(
+        manager: &mut RegionManager,
+        required_bytes: usize,
+    ) -> Result<(), WritebackError> {
+        Self::ensure_shard_canister_directory_region(manager)?;
+        let extent = manager
+            .region_extent(RegionKind::ShardCanisterDirectory)
+            .ok_or(WritebackError::MissingExtentRegion(
+                RegionKind::ShardCanisterDirectory,
+            ))?;
+        let required_bytes = required_bytes as u64;
+        if required_bytes <= extent.len_bytes {
+            return Ok(());
+        }
+        let shortage = required_bytes.saturating_sub(extent.len_bytes);
+        let additional_pages = shortage.div_ceil(crate::low_level::WASM_PAGE_SIZE);
+        let request = ExtentGrowthRequest::new(WasmPages::new(additional_pages));
+        let policy =
+            ExtentGrowthPolicy::new(WasmPages::new(additional_pages.max(1)), WasmPages::new(1));
+        if let Some(decision) = manager.plan_extent_growth(
+            RegionKind::ShardCanisterDirectory,
+            request,
+            policy,
+        ) {
+            manager
+                .apply_extent_growth(
+                    RegionKind::ShardCanisterDirectory,
+                    request,
+                    policy,
+                    decision,
+                )
+                .ok_or(WritebackError::MissingExtentRegion(
+                    RegionKind::ShardCanisterDirectory,
+                ))?;
+        }
+        Ok(())
+    }
+
+    fn write_shard_canister_directory_to_stable_memory(
+        &mut self,
+        memory: &impl Memory,
+    ) -> Result<u64, WritebackError> {
+        let bytes = self.shard_canister_directory.encode_bytes();
+        {
+            let mut mgr = self.manager.borrow_mut();
+            Self::ensure_shard_canister_directory_capacity(&mut mgr, bytes.len())?;
+            mgr.set_region_logical_len(RegionKind::ShardCanisterDirectory, bytes.len() as u64)
+                .ok_or(WritebackError::MissingRegionDefinition(
+                    RegionKind::ShardCanisterDirectory,
+                ))?;
+        }
+        let extent_base = self
+            .manager
+            .borrow()
+            .region_extent(RegionKind::ShardCanisterDirectory)
+            .ok_or(WritebackError::MissingExtentRegion(
+                RegionKind::ShardCanisterDirectory,
+            ))?
+            .addr
+            .0;
+        let last_byte_exclusive = extent_base + bytes.len() as u64;
+        let current_bytes = memory.size() * crate::low_level::WASM_PAGE_SIZE;
+        if last_byte_exclusive > current_bytes {
+            let additional_pages =
+                (last_byte_exclusive - current_bytes).div_ceil(crate::low_level::WASM_PAGE_SIZE);
+            if memory.grow(additional_pages) < 0 {
+                return Err(WritebackError::RegionTooLarge(
+                    RegionKind::ShardCanisterDirectory,
+                    last_byte_exclusive,
+                ));
+            }
+        }
+        if !bytes.is_empty() {
+            memory.write(extent_base, &bytes);
+        }
+        Ok(bytes.len() as u64)
+    }
+
+    fn load_shard_canister_directory_from_stable_memory(
+        manager: &RegionManager,
+        memory: &impl Memory,
+    ) -> GraphPmaResult<ShardCanisterDirectory> {
+        let kind = RegionKind::ShardCanisterDirectory;
+        let Some(region) = manager.layout.region(kind) else {
+            return Ok(ShardCanisterDirectory::default());
+        };
+        let logical_len = usize::try_from(region.logical_len_bytes).map_err(|_| {
+            GraphPmaError::Hydration(HydrationError::RegionTooLarge(
+                kind,
+                region.logical_len_bytes,
+            ))
+        })?;
+        if logical_len == 0 {
+            return Ok(ShardCanisterDirectory::default());
+        }
+        let extent = manager.region_extent(kind).ok_or(GraphPmaError::Hydration(
+            HydrationError::MissingExtentRegion(kind),
+        ))?;
+        if logical_len > usize::try_from(extent.len_bytes).unwrap_or(usize::MAX) {
+            return Err(GraphPmaError::Hydration(
+                HydrationError::LogicalLengthExceedsExtent {
+                    kind,
+                    logical_len_bytes: region.logical_len_bytes,
+                    extent_len_bytes: extent.len_bytes,
+                },
+            ));
+        }
+        let mut bytes = vec![0u8; logical_len];
+        memory.read(extent.addr.0, &mut bytes);
+        ShardCanisterDirectory::decode_bytes(&bytes).map_err(|reason| {
+            GraphPmaError::Hydration(HydrationError::InvalidShardCanisterDirectory { kind, reason })
+        })
     }
 
     fn maintenance_queue_storage_snapshot_from_projection(
@@ -1169,6 +1304,7 @@ impl<M: Memory> GraphPma<M> {
             last_write_event: None,
             write_history: Vec::new(),
             production_metrics: GraphPmaProductionMetrics::default(),
+            shard_canister_directory: ShardCanisterDirectory::default(),
         }
     }
 
@@ -1177,9 +1313,7 @@ impl<M: Memory> GraphPma<M> {
     /// [`Self::new`] calls `StableBTreeMap::init` with payload length zero for each property region,
     /// which issues `BTreeMap::new` and overwrites stable memory. That must not run after
     /// `load_graph_property_stable_map_from_stable_memory` has read the live PSB1 image.
-    fn assembled_after_property_load(
-        args: AssembledAfterPropertyLoadArgs<M>,
-    ) -> Self {
+    fn assembled_after_property_load(args: AssembledAfterPropertyLoadArgs<M>) -> Self {
         Self {
             manager: args.manager,
             memory: args.memory,
@@ -1198,6 +1332,7 @@ impl<M: Memory> GraphPma<M> {
             last_write_event: None,
             write_history: Vec::new(),
             production_metrics: GraphPmaProductionMetrics::default(),
+            shard_canister_directory: args.shard_canister_directory,
         }
     }
 
@@ -1281,29 +1416,30 @@ impl<M: Memory> GraphPma<M> {
     /// Property indices are loaded through [`PropertyIndexStorageImage::try_from_sectioned_parts`],
     /// which normalizes an **empty on-disk logical snapshot** against non-empty node stores so
     /// in-memory `node_property_index` / `edge_property_index` match persisted pages.
-    pub fn hydrate_from_stable_memory(
-        manager: RegionManager,
-        memory: M,
-    ) -> GraphPmaResult<Self> {
+    pub fn hydrate_from_stable_memory(manager: RegionManager, memory: M) -> GraphPmaResult<Self> {
         let mgr_rc = Rc::new(RefCell::new(manager));
         let mem_rc = Rc::new(RefCell::new(memory));
         let runtimes =
             hydrate_surface_runtimes_from_stable_memory(&mgr_rc.borrow(), &*mem_rc.borrow())?;
-        let (node_property_store, node_pl) =
-            load_graph_property_stable_map_from_stable_memory(
-                Rc::clone(&mgr_rc),
-                Rc::clone(&mem_rc),
-                RegionKind::NodePropertyStore,
-            )?;
-        let (edge_property_store, edge_pl) =
-            load_graph_property_stable_map_from_stable_memory(
-                Rc::clone(&mgr_rc),
-                Rc::clone(&mem_rc),
-                RegionKind::EdgePropertyStore,
-            )?;
+        let (node_property_store, node_pl) = load_graph_property_stable_map_from_stable_memory(
+            Rc::clone(&mgr_rc),
+            Rc::clone(&mem_rc),
+            RegionKind::NodePropertyStore,
+        )?;
+        let (edge_property_store, edge_pl) = load_graph_property_stable_map_from_stable_memory(
+            Rc::clone(&mgr_rc),
+            Rc::clone(&mem_rc),
+            RegionKind::EdgePropertyStore,
+        )?;
 
         let mut graph = GraphRuntime::new_with_empty_sidecars(runtimes.forward, runtimes.reverse);
         let _ = graph.sync_base_segment_capacities_from_manager(&mgr_rc.borrow());
+
+        let shard_canister_directory = Self::load_shard_canister_directory_from_stable_memory(
+            &mgr_rc.borrow(),
+            &*mem_rc.borrow(),
+        )?;
+        graph.validate_shard_canister_slots(shard_canister_directory.len())?;
 
         let pidx_header =
             read_pidx_v3_header_from_stable_memory(&mgr_rc.borrow(), &*mem_rc.borrow())?;
@@ -1349,22 +1485,21 @@ impl<M: Memory> GraphPma<M> {
             )
         };
 
-        let mut facade = Self::assembled_after_property_load(
-            AssembledAfterPropertyLoadArgs {
-                manager: mgr_rc,
-                memory: mem_rc,
-                graph,
-                node_property_store,
-                edge_property_store,
-                node_property_btree_payload: node_pl,
-                edge_property_btree_payload: edge_pl,
-                node_property_index,
-                edge_property_index,
-                property_equality_map,
-                property_index_btree_payload,
-                property_index_dirty,
-            },
-        );
+        let mut facade = Self::assembled_after_property_load(AssembledAfterPropertyLoadArgs {
+            manager: mgr_rc,
+            memory: mem_rc,
+            graph,
+            node_property_store,
+            edge_property_store,
+            node_property_btree_payload: node_pl,
+            edge_property_btree_payload: edge_pl,
+            node_property_index,
+            edge_property_index,
+            property_equality_map,
+            property_index_btree_payload,
+            property_index_dirty,
+            shard_canister_directory,
+        });
 
         if facade.node_property_index.header.entry_count == 0
             && facade.edge_property_index.header.entry_count == 0
@@ -1390,18 +1525,16 @@ impl<M: Memory> GraphPma<M> {
         let mem_rc = Rc::new(RefCell::new(memory));
         let runtimes =
             hydrate_surface_runtimes_from_stable_memory(&mgr_rc.borrow(), &*mem_rc.borrow())?;
-        let (node_property_store, node_pl) =
-            load_graph_property_stable_map_from_stable_memory(
-                Rc::clone(&mgr_rc),
-                Rc::clone(&mem_rc),
-                RegionKind::NodePropertyStore,
-            )?;
-        let (edge_property_store, edge_pl) =
-            load_graph_property_stable_map_from_stable_memory(
-                Rc::clone(&mgr_rc),
-                Rc::clone(&mem_rc),
-                RegionKind::EdgePropertyStore,
-            )?;
+        let (node_property_store, node_pl) = load_graph_property_stable_map_from_stable_memory(
+            Rc::clone(&mgr_rc),
+            Rc::clone(&mem_rc),
+            RegionKind::NodePropertyStore,
+        )?;
+        let (edge_property_store, edge_pl) = load_graph_property_stable_map_from_stable_memory(
+            Rc::clone(&mgr_rc),
+            Rc::clone(&mem_rc),
+            RegionKind::EdgePropertyStore,
+        )?;
 
         let mut graph = GraphRuntime::with_insert_policy_and_empty_sidecars(
             runtimes.forward,
@@ -1409,6 +1542,12 @@ impl<M: Memory> GraphPma<M> {
             insert_policy,
         );
         let _ = graph.sync_base_segment_capacities_from_manager(&mgr_rc.borrow());
+
+        let shard_canister_directory = Self::load_shard_canister_directory_from_stable_memory(
+            &mgr_rc.borrow(),
+            &*mem_rc.borrow(),
+        )?;
+        graph.validate_shard_canister_slots(shard_canister_directory.len())?;
 
         let pidx_header =
             read_pidx_v3_header_from_stable_memory(&mgr_rc.borrow(), &*mem_rc.borrow())?;
@@ -1454,22 +1593,21 @@ impl<M: Memory> GraphPma<M> {
             )
         };
 
-        let mut facade = Self::assembled_after_property_load(
-            AssembledAfterPropertyLoadArgs {
-                manager: mgr_rc,
-                memory: mem_rc,
-                graph,
-                node_property_store,
-                edge_property_store,
-                node_property_btree_payload: node_pl,
-                edge_property_btree_payload: edge_pl,
-                node_property_index,
-                edge_property_index,
-                property_equality_map,
-                property_index_btree_payload,
-                property_index_dirty,
-            },
-        );
+        let mut facade = Self::assembled_after_property_load(AssembledAfterPropertyLoadArgs {
+            manager: mgr_rc,
+            memory: mem_rc,
+            graph,
+            node_property_store,
+            edge_property_store,
+            node_property_btree_payload: node_pl,
+            edge_property_btree_payload: edge_pl,
+            node_property_index,
+            edge_property_index,
+            property_equality_map,
+            property_index_btree_payload,
+            property_index_dirty,
+            shard_canister_directory,
+        });
 
         if facade.node_property_index.header.entry_count == 0
             && facade.edge_property_index.header.entry_count == 0
@@ -2465,17 +2603,17 @@ impl<M: Memory> GraphPma<M> {
 #[cfg(test)]
 mod tests {
     use super::{
-        GraphPmaAppendVertexWriteSummary, GraphPmaAppendVerticesWriteSummary,
+        GraphPma, GraphPmaAppendVertexWriteSummary, GraphPmaAppendVerticesWriteSummary,
         GraphPmaBootstrapEdgeProjection, GraphPmaBootstrapEdgeWriteSummary,
         GraphPmaBootstrapGraphProjection, GraphPmaBootstrapGraphWriteSummary,
         GraphPmaBootstrapVerticesProjection, GraphPmaEdgeLogicalLocatorMapping,
-        GraphPmaEdgeWriteOperation, GraphPmaEnsureCapacityProjection, GraphPmaFacadeWriteEvent,
-        GraphPmaMutationWriteSummary, GraphPma, GraphPmaError,
-        GraphPmaResult, GraphPmaService, GraphPmaStore, GraphPmaStoreAdapter,
-        GraphPmaInsertEdgeProjection, GraphPmaMaintenanceBatchProjection,
+        GraphPmaEdgeWriteOperation, GraphPmaEnsureCapacityProjection, GraphPmaError,
+        GraphPmaFacadeWriteEvent, GraphPmaInsertEdgeProjection, GraphPmaMaintenanceBatchProjection,
         GraphPmaMaintenanceCycleProjection, GraphPmaMaintenanceQueueAction,
-        GraphPmaMaintenanceQueueStorageProjection, GraphPmaPropertyIndexTouchedSections,
-        GraphPmaRefreshedVertices, GraphPmaVertexOrdinalMapping, GraphPmaWriteEventProjection,
+        GraphPmaMaintenanceQueueStorageProjection, GraphPmaMutationWriteSummary,
+        GraphPmaPropertyIndexTouchedSections, GraphPmaRefreshedVertices, GraphPmaResult,
+        GraphPmaService, GraphPmaStore, GraphPmaStoreAdapter, GraphPmaVertexOrdinalMapping,
+        GraphPmaWriteEventProjection,
     };
     use crate::GraphInsertResult;
     use crate::low_level::GraphMutationPath;
@@ -3092,9 +3230,9 @@ mod tests {
         bytes.extend_from_slice(&item.recent_maintenance_penalty.to_le_bytes());
 
         match TestPma::decode_maintenance_queue(&bytes) {
-            Err(GraphPmaError::Hydration(HydrationError::InvalidMaintenanceQueueHeader(
-                kind,
-            ))) => assert_eq!(kind, RegionKind::MaintenanceQueue),
+            Err(GraphPmaError::Hydration(HydrationError::InvalidMaintenanceQueueHeader(kind))) => {
+                assert_eq!(kind, RegionKind::MaintenanceQueue)
+            }
             other => panic!("expected invalid maintenance-queue header, got {other:?}"),
         }
     }
@@ -3188,9 +3326,9 @@ mod tests {
         match facade.try_read_maintenance_queue_storage_projection_from_stable_memory(
             &*facade.memory.borrow(),
         ) {
-            Err(GraphPmaError::Hydration(HydrationError::InvalidMaintenanceQueueHeader(
-                kind,
-            ))) => assert_eq!(kind, RegionKind::MaintenanceQueue),
+            Err(GraphPmaError::Hydration(HydrationError::InvalidMaintenanceQueueHeader(kind))) => {
+                assert_eq!(kind, RegionKind::MaintenanceQueue)
+            }
             other => panic!("expected invalid maintenance-queue header, got {other:?}"),
         }
     }
@@ -3336,8 +3474,7 @@ mod tests {
     #[test]
     fn facade_prefers_runtime_vertex_entry_when_vertex_table_is_dirty() {
         let (manager, memory) = seeded_manager_and_memory();
-        let mut facade =
-            GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
+        let mut facade = GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
 
         let appended = facade
             .append_empty_vertex_pair()
@@ -3361,8 +3498,7 @@ mod tests {
     #[test]
     fn facade_can_read_vertex_entry_ranges_directly_from_stable_memory() {
         let (manager, memory) = seeded_manager_and_memory();
-        let mut facade =
-            GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
+        let mut facade = GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
         facade.append_empty_vertex_pair_and_write(&memory).unwrap();
 
         let forward = facade
@@ -3391,8 +3527,7 @@ mod tests {
     #[test]
     fn facade_prefers_runtime_vertex_entry_ranges_when_vertex_table_is_dirty() {
         let (manager, memory) = seeded_manager_and_memory();
-        let mut facade =
-            GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
+        let mut facade = GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
         facade.append_empty_vertex_pair().unwrap();
 
         let forward = facade.read_forward_vertex_entries_preferring_stable_memory(&memory, 0, 2);
@@ -3417,8 +3552,7 @@ mod tests {
     #[test]
     fn facade_can_summarize_vertex_window_directly_from_stable_memory() {
         let (manager, memory) = seeded_manager_and_memory();
-        let mut facade =
-            GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
+        let mut facade = GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
         facade.append_empty_vertex_pair_and_write(&memory).unwrap();
 
         let forward = facade
@@ -3445,8 +3579,7 @@ mod tests {
     #[test]
     fn facade_prefers_runtime_vertex_window_summary_when_vertex_table_is_dirty() {
         let (manager, memory) = seeded_manager_and_memory();
-        let mut facade =
-            GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
+        let mut facade = GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
         facade.append_empty_vertex_pair().unwrap();
 
         let summary = facade
@@ -3463,8 +3596,7 @@ mod tests {
     #[test]
     fn facade_can_estimate_vertex_window_reserve_hint_directly_from_stable_memory() {
         let (manager, memory) = seeded_manager_and_memory();
-        let mut facade =
-            GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
+        let mut facade = GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
         facade.append_empty_vertex_pair_and_write(&memory).unwrap();
 
         let hint = facade
@@ -3483,8 +3615,7 @@ mod tests {
     #[test]
     fn facade_prefers_runtime_vertex_window_reserve_hint_when_vertex_table_is_dirty() {
         let (manager, memory) = seeded_manager_and_memory();
-        let mut facade =
-            GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
+        let mut facade = GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
         facade.append_empty_vertex_pair().unwrap();
 
         let hint = facade
@@ -3504,8 +3635,7 @@ mod tests {
     #[test]
     fn facade_refresh_and_write_dirty_round_trips() {
         let (manager, memory) = seeded_manager_and_memory();
-        let mut facade =
-            GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
+        let mut facade = GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
 
         let src = NodeId::new([0, 0, 0, 0, 0, 1]);
         let dst = NodeId::new([0, 0, 0, 0, 0, 3]);
@@ -3542,11 +3672,9 @@ mod tests {
     #[test]
     fn facade_property_stores_round_trip_through_stable_memory() {
         let memory = VecMemory::default();
-        let mut facade = GraphPma::bootstrap_empty_with_bucket_size(
-            BucketSizeInPages::new(1),
-            memory.clone(),
-        )
-        .expect("bootstrap");
+        let mut facade =
+            GraphPma::bootstrap_empty_with_bucket_size(BucketSizeInPages::new(1), memory.clone())
+                .expect("bootstrap");
         let node_id = NodeId::from(11u8);
 
         let _ = facade.node_property_store_mut().insert(
@@ -4067,7 +4195,7 @@ mod tests {
                             0,
                         ),
                     },
-                    label_id: 9,
+                    edge_meta: 9u16.into(),
                 },
                 &memory,
             )
@@ -4230,7 +4358,7 @@ mod tests {
                         dst_vertex_ref: dst.into(),
                         dst_ordinal: dst_mapping.reverse_ordinal,
                     },
-                    label_id: 7,
+                    edge_meta: 7u16.into(),
                     planned_incoming_live_entries: 1,
                     forward_rebalance_vertex_ids: &[src.into(), dst.into()],
                     forward_rebalance_base_edge_ids_by_ordinal: &[vec![9901], Vec::new()],
@@ -4246,9 +4374,9 @@ mod tests {
                 GraphPmaWriteEventProjection::EnsureCapacity(
                     GraphPmaEnsureCapacityProjection::from_summary(&ensure),
                 ),
-                GraphPmaWriteEventProjection::InsertEdge(GraphPmaInsertEdgeProjection::from_summary(
-                    &insert,
-                )),
+                GraphPmaWriteEventProjection::InsertEdge(
+                    GraphPmaInsertEdgeProjection::from_summary(&insert),
+                ),
             ],
         );
     }
@@ -5154,29 +5282,31 @@ mod tests {
                     locators: Vec::new(),
                     refreshed: GraphPmaRefreshedVertices::new(Vec::new(), Vec::new()),
                 }),
-                GraphPmaWriteEventProjection::MaintenanceBatch(GraphPmaMaintenanceBatchProjection {
-                    cycles: 1,
-                    queue_len_before: 0,
-                    queue_len_after: 0,
-                    swept_forward_segments: 1,
-                    swept_reverse_segments: 1,
-                    queue_storage_before: Some(GraphPmaMaintenanceQueueStorageProjection {
-                        logical_len_bytes: 24,
-                        queue_len: 0,
-                        format_version: Some(1),
-                        stored_checksum: None,
-                        computed_checksum: None,
-                        checksum_valid: Some(true),
-                    }),
-                    queue_storage_after: Some(GraphPmaMaintenanceQueueStorageProjection {
-                        logical_len_bytes: 24,
-                        queue_len: 0,
-                        format_version: Some(1),
-                        stored_checksum: None,
-                        computed_checksum: None,
-                        checksum_valid: Some(true),
-                    }),
-                }),
+                GraphPmaWriteEventProjection::MaintenanceBatch(
+                    GraphPmaMaintenanceBatchProjection {
+                        cycles: 1,
+                        queue_len_before: 0,
+                        queue_len_after: 0,
+                        swept_forward_segments: 1,
+                        swept_reverse_segments: 1,
+                        queue_storage_before: Some(GraphPmaMaintenanceQueueStorageProjection {
+                            logical_len_bytes: 24,
+                            queue_len: 0,
+                            format_version: Some(1),
+                            stored_checksum: None,
+                            computed_checksum: None,
+                            checksum_valid: Some(true),
+                        }),
+                        queue_storage_after: Some(GraphPmaMaintenanceQueueStorageProjection {
+                            logical_len_bytes: 24,
+                            queue_len: 0,
+                            format_version: Some(1),
+                            stored_checksum: None,
+                            computed_checksum: None,
+                            checksum_valid: Some(true),
+                        }),
+                    },
+                ),
             ],
         );
     }
@@ -5327,8 +5457,7 @@ mod tests {
     #[test]
     fn facade_batch_session_supports_mixed_mutation_flow() {
         let (manager, memory) = seeded_manager_and_memory();
-        let mut facade =
-            GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
+        let mut facade = GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
         facade
             .graph
             .insert_base_edge_pair(
@@ -5337,7 +5466,7 @@ mod tests {
                 0,
                 NodeId::from(2u8).into(),
                 0,
-                7,
+                7u16.into(),
             )
             .expect("seed sidecar");
 
@@ -5358,7 +5487,7 @@ mod tests {
                     forward: LogicalEdgeLocator::base(SurfaceKind::Forward, NodeId::from(1u8), 0),
                     reverse: LogicalEdgeLocator::base(SurfaceKind::Reverse, NodeId::from(3u8), 0),
                 },
-                label_id: 9,
+                edge_meta: 9u16.into(),
             })
             .expect("replace");
         assert_eq!(replaced.0, GraphMutationPath::Base);
@@ -5388,8 +5517,7 @@ mod tests {
     #[test]
     fn facade_replace_and_tombstone_convenience_methods_write_back() {
         let (manager, memory) = seeded_manager_and_memory();
-        let mut facade =
-            GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
+        let mut facade = GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
         facade
             .graph
             .insert_base_edge_pair(
@@ -5398,7 +5526,7 @@ mod tests {
                 0,
                 NodeId::from(2u8).into(),
                 0,
-                7,
+                7u16.into(),
             )
             .expect("seed sidecar");
 
@@ -5424,7 +5552,7 @@ mod tests {
                             0,
                         ),
                     },
-                    label_id: 9,
+                    edge_meta: 9u16.into(),
                 },
                 &memory,
             )
@@ -5465,8 +5593,7 @@ mod tests {
     #[test]
     fn facade_try_rebuild_logical_locator_sidecar_rejects_mismatched_inputs() {
         let (manager, memory) = seeded_manager_and_memory();
-        let mut facade =
-            GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
+        let mut facade = GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
 
         let err = facade
             .try_rebuild_logical_locator_sidecar(&[NodeId::from(1u8).into()], &[])
@@ -5806,7 +5933,7 @@ mod tests {
                     forward: LogicalEdgeLocator::base(SurfaceKind::Forward, src.vertex_ref, 0),
                     reverse: LogicalEdgeLocator::base(SurfaceKind::Reverse, NodeId::from(33u8), 0),
                 },
-                label_id: 7,
+                edge_meta: 7u16.into(),
             })
             .expect("replace through adapter");
         assert_eq!(replaced.mutation.0, GraphMutationPath::Base);

@@ -14,10 +14,8 @@ use crate::property_index::{
     PropertyIndexNodeId, PropertyIndexNodeStoreDelta, PropertyIndexNodeStoreMutationKind,
 };
 
-type GraphPmaReplaceEdgeSummary = super::GraphPmaMutationWriteSummary<(
-    GraphMutationPath,
-    (super::EdgeEntry, super::EdgeEntry),
-)>;
+type GraphPmaReplaceEdgeSummary =
+    super::GraphPmaMutationWriteSummary<(GraphMutationPath, (super::EdgeEntry, super::EdgeEntry))>;
 
 /// Structured reason for why property-index mutation fell back to full node-store rebuild.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -390,15 +388,19 @@ impl GraphPmaFacadeWriteEvent {
             Self::InsertEdgeSegment(summary) => Some(GraphPmaWriteEventProjection::InsertEdge(
                 GraphPmaInsertEdgeProjection::from_segment_summary(summary),
             )),
-            Self::MaintenanceCycle(summary) => Some(GraphPmaWriteEventProjection::MaintenanceCycle(
-                GraphPmaMaintenanceCycleProjection::from_summary(summary),
-            )),
-            Self::MaintenanceBatch(summary) => Some(GraphPmaWriteEventProjection::MaintenanceBatch(
-                GraphPmaMaintenanceBatchProjection::from_summary(summary),
-            )),
-            Self::MaintenanceQueue(summary) => Some(GraphPmaWriteEventProjection::MaintenanceQueue(
-                summary.clone(),
-            )),
+            Self::MaintenanceCycle(summary) => {
+                Some(GraphPmaWriteEventProjection::MaintenanceCycle(
+                    GraphPmaMaintenanceCycleProjection::from_summary(summary),
+                ))
+            }
+            Self::MaintenanceBatch(summary) => {
+                Some(GraphPmaWriteEventProjection::MaintenanceBatch(
+                    GraphPmaMaintenanceBatchProjection::from_summary(summary),
+                ))
+            }
+            Self::MaintenanceQueue(summary) => Some(
+                GraphPmaWriteEventProjection::MaintenanceQueue(summary.clone()),
+            ),
             Self::Property(summary) => {
                 Some(GraphPmaWriteEventProjection::Property(summary.projection()))
             }

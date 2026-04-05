@@ -11,6 +11,9 @@
 //!   `EdgeIndexScan` then `EdgeBindEndpoints` (see `gql-planner` + design doc).
 //! - **`EdgeIndexScan` alone**: also covered by a **manual** `PhysicalPlan` for callers that emit
 //!   it without endpoint binding.
+//! - **`WorstCaseOptimalJoin` + `e1__hop_aux`**: cyclic patterns may fuse to WCOJ; when `RETURN`
+//!   references `{edge}__hop_aux`, the plan carries `hop_aux_binding` on the corresponding
+//!   `WcojEdge` and the executor binds scalars via `hop_aux_bytes_for_edge`.
 //!
 //! Larger design text: `docs/graph-pma-target-design.md` (`Internet Computer: full property search stack`).
 
@@ -429,6 +432,144 @@ fn leading_edge_index_scan_planner_path_runs_on_pma_overlay() {
         panic!("id field");
     };
     assert_eq!(NodeId::try_from(*id).expect("id"), b.id);
+}
+
+#[test]
+fn leading_edge_bind_hop_aux_is_demand_driven_on_pma_overlay() {
+    let mem_rc = Rc::new(RefCell::new(GraphPmaVecMemory::default()));
+    let mut facade = GraphPma::bootstrap_empty_with_bucket_size_using_memory_rc(
+        BucketSizeInPages::DEFAULT,
+        Rc::clone(&mem_rc),
+    )
+    .expect("bootstrap");
+    let mem_guard = mem_rc.borrow();
+    let mut graph = facade.bind_kernel_overlay(&*mem_guard);
+
+    let empty = PropertyMap::new();
+    let user_labels = vec!["User".to_owned()];
+    let a = graph
+        .insert_node(&[], &empty)
+        .expect("unlabeled start node");
+    let b = graph.insert_node(&user_labels, &empty).expect("b:User");
+    let mut eprops = PropertyMap::new();
+    eprops.insert("weight".to_owned(), Value::Int64(7));
+    graph
+        .insert_edge(a.id, b.id, Some("KNOWS"), &eprops)
+        .expect("edge");
+
+    let stats = stats_user_with_indexed_edge_weight();
+
+    let q_no_aux =
+        linear_query_from_str("MATCH ()-[e:KNOWS {weight: 7}]->(b:User) RETURN e, b");
+    let plan_no = build_plan(&q_no_aux, Some(&stats)).expect("build_plan");
+    let Some(PlanOp::EdgeBindEndpoints {
+        hop_aux_binding: hop_none,
+        ..
+    }) = plan_no.ops.get(1)
+    else {
+        panic!("expected EdgeBindEndpoints, ops={:?}", plan_no.ops);
+    };
+    assert!(
+        hop_none.is_none(),
+        "plan should omit hop_aux when not referenced, got {hop_none:?}"
+    );
+    let out_no = execute_plan(&mut graph, &plan_no).expect("execute");
+    assert_eq!(out_no.rows.len(), 1);
+    assert!(
+        !out_no.rows[0].contains_key("e__hop_aux"),
+        "output should not include e__hop_aux when not projected"
+    );
+
+    let q_aux = linear_query_from_str(
+        "MATCH ()-[e:KNOWS {weight: 7}]->(b:User) RETURN e, e__hop_aux, b",
+    );
+    let plan_aux = build_plan(&q_aux, Some(&stats)).expect("build_plan");
+    let Some(PlanOp::EdgeBindEndpoints {
+        hop_aux_binding: hop_some,
+        ..
+    }) = plan_aux.ops.get(1)
+    else {
+        panic!("expected EdgeBindEndpoints, ops={:?}", plan_aux.ops);
+    };
+    assert_eq!(
+        hop_some.as_deref(),
+        Some("e__hop_aux"),
+        "plan should bind hop_aux when referenced, got {hop_some:?}"
+    );
+    let out_aux = execute_plan(&mut graph, &plan_aux).expect("execute with hop_aux");
+    assert_eq!(out_aux.rows.len(), 1);
+    let aux_val = out_aux.rows[0]
+        .get("e__hop_aux")
+        .expect("RETURN e__hop_aux should appear in output");
+    assert!(
+        matches!(aux_val, Value::Null | Value::Bytes(_)),
+        "local PMA overlay has no shard principal; expect Null or Bytes, got {aux_val:?}"
+    );
+}
+
+#[test]
+fn wcoj_triangle_hop_aux_on_pma_overlay() {
+    let mem_rc = Rc::new(RefCell::new(GraphPmaVecMemory::default()));
+    let mut facade = GraphPma::bootstrap_empty_with_bucket_size_using_memory_rc(
+        BucketSizeInPages::DEFAULT,
+        Rc::clone(&mem_rc),
+    )
+    .expect("bootstrap");
+    let mem_guard = mem_rc.borrow();
+    let mut graph = facade.bind_kernel_overlay(&*mem_guard);
+
+    let labels = vec!["Person".to_owned()];
+    let empty = PropertyMap::new();
+    let n1 = graph.insert_node(&labels, &empty).expect("n1");
+    let n2 = graph.insert_node(&labels, &empty).expect("n2");
+    let n3 = graph.insert_node(&labels, &empty).expect("n3");
+    graph
+        .insert_edge(n1.id, n2.id, Some("KNOWS"), &empty)
+        .expect("e12");
+    graph
+        .insert_edge(n2.id, n3.id, Some("KNOWS"), &empty)
+        .expect("e23");
+    graph
+        .insert_edge(n3.id, n1.id, Some("KNOWS"), &empty)
+        .expect("e31");
+
+    let q = linear_query_from_str(
+        "MATCH (a:Person)-[e1:KNOWS]->(b:Person)-[e2:KNOWS]->(c:Person)-[e3:KNOWS]->(a) RETURN a, e1__hop_aux",
+    );
+    let plan = build_plan(&q, None).expect("build_plan");
+    assert!(
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::WorstCaseOptimalJoin { .. })),
+        "expected WorstCaseOptimalJoin, ops={:?}",
+        plan.ops
+    );
+    let wcoj_edges = plan.ops.iter().find_map(|op| match op {
+        PlanOp::WorstCaseOptimalJoin { edges, .. } => Some(edges.as_slice()),
+        _ => None,
+    });
+    let e1 = wcoj_edges
+        .expect("wcoj edges")
+        .iter()
+        .find(|e| &*e.variable == "e1")
+        .expect("e1");
+    assert_eq!(e1.hop_aux_binding.as_deref(), Some("e1__hop_aux"));
+
+    let out = execute_plan(&mut graph, &plan).expect("execute wcoj triangle");
+    assert!(
+        !out.rows.is_empty(),
+        "triangle should produce at least one row, got {:?}",
+        out.rows
+    );
+    for row in &out.rows {
+        let aux = row
+            .get("e1__hop_aux")
+            .expect("RETURN e1__hop_aux should appear in output");
+        assert!(
+            matches!(aux, Value::Null | Value::Bytes(_)),
+            "unexpected hop_aux value {aux:?}"
+        );
+    }
 }
 
 #[test]

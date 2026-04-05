@@ -440,6 +440,9 @@ pub struct ApiUseGraphPushdownInfo {
 
 const USE_GRAPH_PUSHDOWN_WARNING_PREFIX: &str = "remote USE GRAPH pushdown unavailable";
 
+/// Max parameter rows for [`execute_routed_query_batch`] (federated `USE GRAPH` batching).
+pub const MAX_FEDERATION_ROUTED_PARAM_ROWS: usize = 512;
+
 /// External query response DTO.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, CandidType)]
 pub struct ApiQueryResponse {
@@ -780,6 +783,7 @@ impl From<&ApiAuthContext> for AuthContext {
                 .as_ref()
                 .and_then(|text| Principal::from_text(text).ok()),
             is_controller: value.is_controller,
+            query_subject: None,
         }
     }
 }
@@ -819,6 +823,8 @@ pub enum GleaphError {
     ExpectedQuery,
     #[error("expected a transaction statement block")]
     MissingStatementBlock,
+    #[error("federated routed query: {0}")]
+    FederationRoutedQuery(String),
 }
 
 impl GleaphError {
@@ -880,9 +886,17 @@ pub fn execute_query<G: GraphRead + GraphWrite>(
     stats: Option<&dyn GraphStats>,
     ctx: &ExecutionContext,
 ) -> Result<QueryRunOutput, GleaphError> {
-    let plan = build_plan_output_for_execute(query, stats)?;
+    let plan = {
+        #[cfg(feature = "canbench-rs")]
+        let _scope = canbench_rs::bench_scope("gql_query_plan");
+        build_plan_output_for_execute(query, stats)?
+    };
     ensure_plan_supported_by_executor(&plan.plan)?;
-    let execution = execute_plan_with_context(graph, &plan.plan, ctx)?;
+    let execution = {
+        #[cfg(feature = "canbench-rs")]
+        let _scope = canbench_rs::bench_scope("gql_query_execute");
+        execute_plan_with_context(graph, &plan.plan, ctx)?
+    };
     Ok(QueryRunOutput { plan, execution })
 }
 
@@ -900,7 +914,11 @@ pub fn execute_query_str<G: GraphRead + GraphWrite>(
     stats: Option<&dyn GraphStats>,
     ctx: &ExecutionContext,
 ) -> Result<QueryRunOutput, GleaphError> {
-    let query = parse_query(input)?;
+    let query = {
+        #[cfg(feature = "canbench-rs")]
+        let _scope = canbench_rs::bench_scope("gql_query_parse");
+        parse_query(input)?
+    };
     execute_query(graph, &query, stats, ctx)
 }
 
@@ -1056,6 +1074,7 @@ fn canister_auth_context() -> AuthContext {
     AuthContext {
         caller: Some(caller),
         is_controller,
+        query_subject: None,
     }
 }
 
@@ -1304,26 +1323,52 @@ fn update_gql(
     }
 }
 
-#[update(name = "execute_subplan_v1")]
-async fn execute_subplan_v1(
-    wire: SubplanWireV1,
-    params: Option<BTreeMap<String, ApiValue>>,
-) -> Result<ApiExecutionResult, String> {
-    let ops = subplan_wire_v1::wire_v1_to_plan_ops(&wire).map_err(map_err)?;
-    let gql = graph_registry::subplan_to_routed_query(&ops).map_err(|e| map_err(e.into()))?;
-    execute_routed_query(gql, params).await
+fn federation_routed_log(message: impl std::fmt::Display) {
+    #[cfg(target_arch = "wasm32")]
+    ic_cdk::println!("gleaph-fed {}", message);
+    #[cfg(not(target_arch = "wasm32"))]
+    drop(message);
 }
 
-#[update(name = "execute_routed_query")]
-async fn execute_routed_query(
+fn merge_api_execution_batch(parts: Vec<ApiExecutionResult>) -> ApiExecutionResult {
+    if parts.is_empty() {
+        return ApiExecutionResult {
+            rows: Vec::new(),
+            warnings: Vec::new(),
+            summary: ApiExecutionSummary {
+                row_count: 0,
+                warning_count: 0,
+                had_dml: false,
+            },
+        };
+    }
+    let mut rows = Vec::new();
+    let mut warnings = Vec::new();
+    let mut had_dml = false;
+    for p in parts {
+        rows.extend(p.rows);
+        warnings.extend(p.warnings);
+        had_dml |= p.summary.had_dml;
+    }
+    let row_count = rows.len();
+    let warning_count = warnings.len();
+    ApiExecutionResult {
+        rows,
+        warnings,
+        summary: ApiExecutionSummary {
+            row_count,
+            warning_count,
+            had_dml,
+        },
+    }
+}
+
+fn run_routed_query_execution(
+    auth: AuthContext,
     gql: String,
-    params: Option<BTreeMap<String, ApiValue>>,
-) -> Result<ApiExecutionResult, String> {
-    let request = ApiQueryRequest {
-        query: gql,
-        params: params.unwrap_or_default(),
-    };
-    let auth = canister_auth_context();
+    params: BTreeMap<String, ApiValue>,
+) -> Result<ApiExecutionResult, GleaphError> {
+    let request = ApiQueryRequest { query: gql, params };
     let run = |query_text: &str| {
         SERVICE_STATE.with(|service| {
             let req = ApiQueryRequest {
@@ -1338,15 +1383,111 @@ async fn execute_routed_query(
             })
         })
     };
-
     match run(&request.query) {
         Ok(result) => Ok(result),
         Err(GleaphError::Parse(_)) if request.query.contains("\\'") => {
             let normalized = request.query.replace("\\'", "''");
-            run(&normalized).map_err(map_err)
+            run(&normalized)
         }
-        Err(err) => Err(map_err(err)),
+        Err(err) => Err(err),
     }
+}
+
+#[update(name = "execute_subplan_v1")]
+async fn execute_subplan_v1(
+    wire: SubplanWireV1,
+    params: Option<BTreeMap<String, ApiValue>>,
+) -> Result<ApiExecutionResult, String> {
+    let ops = subplan_wire_v1::wire_v1_to_plan_ops(&wire).map_err(map_err)?;
+    let gql = graph_registry::subplan_to_routed_query(&ops).map_err(|e| map_err(e.into()))?;
+    let auth = canister_auth_context();
+    run_routed_query_execution(auth, gql, params.unwrap_or_default()).map_err(map_err)
+}
+
+#[update(name = "execute_routed_query")]
+async fn execute_routed_query(
+    gql: String,
+    params: Option<BTreeMap<String, ApiValue>>,
+) -> Result<ApiExecutionResult, String> {
+    let auth = canister_auth_context();
+    run_routed_query_execution(auth, gql, params.unwrap_or_default()).map_err(map_err)
+}
+
+#[update(name = "execute_routed_query_with_subject")]
+async fn execute_routed_query_with_subject(
+    gql: String,
+    params: Option<BTreeMap<String, ApiValue>>,
+    query_subject: Option<CandidPrincipal>,
+) -> Result<ApiExecutionResult, String> {
+    let msg = ic_cdk::api::msg_caller();
+    let is_controller = ic_cdk::api::is_controller(&msg);
+    let auth = match SERVICE_STATE.with(|service| {
+        service
+            .borrow()
+            .auth_for_routed_query(msg, is_controller, query_subject)
+    }) {
+        Ok(a) => a,
+        Err(err) => {
+            federation_routed_log(format!("delegation_rejected: {err}"));
+            return Err(map_err(err));
+        }
+    };
+    federation_routed_log(format!(
+        "routed_with_subject rows=1 subject={}",
+        query_subject.is_some()
+    ));
+    run_routed_query_execution(auth, gql, params.unwrap_or_default()).map_err(map_err)
+}
+
+#[update(name = "execute_routed_query_batch")]
+async fn execute_routed_query_batch(
+    gql: String,
+    param_rows: Vec<BTreeMap<String, ApiValue>>,
+    query_subject: Option<CandidPrincipal>,
+) -> Result<ApiExecutionResult, String> {
+    if param_rows.is_empty() {
+        return Ok(ApiExecutionResult {
+            rows: vec![],
+            warnings: vec![],
+            summary: ApiExecutionSummary {
+                row_count: 0,
+                warning_count: 0,
+                had_dml: false,
+            },
+        });
+    }
+    if param_rows.len() > MAX_FEDERATION_ROUTED_PARAM_ROWS {
+        return Err(map_err(GleaphError::FederationRoutedQuery(format!(
+            "param_rows len {} exceeds max {}",
+            param_rows.len(),
+            MAX_FEDERATION_ROUTED_PARAM_ROWS
+        ))));
+    }
+    let msg = ic_cdk::api::msg_caller();
+    let is_controller = ic_cdk::api::is_controller(&msg);
+    let auth = match SERVICE_STATE.with(|service| {
+        service
+            .borrow()
+            .auth_for_routed_query(msg, is_controller, query_subject)
+    }) {
+        Ok(a) => a,
+        Err(err) => {
+            federation_routed_log(format!("delegation_rejected: {err}"));
+            return Err(map_err(err));
+        }
+    };
+    federation_routed_log(format!(
+        "routed_batch param_rows={} subject={}",
+        param_rows.len(),
+        query_subject.is_some()
+    ));
+    let mut parts = Vec::with_capacity(param_rows.len());
+    for row in param_rows {
+        parts.push(
+            run_routed_query_execution(auth.clone(), gql.clone(), row).map_err(map_err)?,
+        );
+    }
+    Ok(merge_api_execution_batch(parts))
 }
 
 #[update]
@@ -2605,5 +2746,28 @@ mod tests {
             r2.execution.rows.first().and_then(|row| row.get("uid")),
             Some(&Value::Int64(2))
         );
+    }
+
+    #[test]
+    fn federation_auth_for_routed_query_rejects_untrusted_subject() {
+        let service = GleaphService::new();
+        let peer = sample_user();
+        let subject = mgmt();
+        let err = service
+            .auth_for_routed_query(peer, false, Some(subject))
+            .expect_err("untrusted");
+        assert!(matches!(err, GleaphError::FederationRoutedQuery(_)));
+    }
+
+    #[test]
+    fn federation_auth_for_routed_query_accepts_trusted_peer_subject() {
+        let mut service = GleaphService::new();
+        let peer = sample_user();
+        let subject = mgmt();
+        service.add_federation_trusted_caller(peer);
+        let auth = service
+            .auth_for_routed_query(peer, false, Some(subject))
+            .expect("ok");
+        assert_eq!(auth.query_subject, Some(subject));
     }
 }

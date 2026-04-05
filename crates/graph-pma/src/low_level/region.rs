@@ -108,6 +108,7 @@ pub enum RegionKind {
     LabelCatalog = 11,
     GcState = 12,
     MaintenanceQueue = 13,
+    ShardCanisterDirectory = 14,
 }
 
 impl RegionKind {
@@ -180,6 +181,7 @@ impl RegionRef {
             11 => RegionKind::LabelCatalog,
             12 => RegionKind::GcState,
             13 => RegionKind::MaintenanceQueue,
+            14 => RegionKind::ShardCanisterDirectory,
             _ => panic!("invalid region kind"),
         }
     }

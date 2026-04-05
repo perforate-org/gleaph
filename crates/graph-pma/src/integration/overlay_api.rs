@@ -1,14 +1,15 @@
+use candid::Principal;
 use gleaph_graph_kernel::{EdgeRecord, GraphResult, NodeId, NodeRecord, PropertyMap};
 
 use super::{
-    KernelBootstrapEdgeSpec, KernelBootstrapGraphSpec, KernelBootstrapGraphSummary,
-    KernelBootstrapNodeSpec, GraphPmaKernelBootstrapBridge, GraphPmaKernelOverlayGraph,
+    GraphPmaKernelBootstrapBridge, GraphPmaKernelOverlayGraph,
     GraphPmaKernelOverlayObservability, GraphPmaOverlayEdgeWriteSummary,
     GraphPmaOverlayInsertEdgeSummary, GraphPmaOverlayNodeDeleteSummary, GraphPmaOverlayWriteEvent,
-    bootstrap_kernel_overlay_graph,
+    KernelBootstrapEdgeSpec, KernelBootstrapGraphSpec, KernelBootstrapGraphSummary,
+    KernelBootstrapNodeSpec, bootstrap_kernel_overlay_graph,
 };
 use crate::facade::{
-    GraphPmaStore, GraphPmaStoreAdapter, GraphPmaPropertyMutationWriteSummary,
+    GraphPmaPropertyMutationWriteSummary, GraphPmaStore, GraphPmaStoreAdapter,
     GraphPmaWriteEventProjection,
 };
 use crate::observability::{format_last_write_event, format_write_event_history};
@@ -122,6 +123,37 @@ impl<'a, S: GraphPmaStore> GraphPmaKernelOverlayGraph<'a, S> {
         properties: &PropertyMap,
     ) -> GraphResult<EdgeRecord> {
         self.bridge.bootstrap_edge(src, dst, label, properties)
+    }
+
+    /// See [`GraphPmaKernelBootstrapBridge::bootstrap_edge_with_shard_canister_dst`].
+    pub fn bootstrap_edge_with_shard_canister_dst(
+        &mut self,
+        src: NodeId,
+        dst: NodeId,
+        shard_canister: Principal,
+        label: Option<&str>,
+        properties: &PropertyMap,
+    ) -> GraphResult<EdgeRecord> {
+        self.bridge.bootstrap_edge_with_shard_canister_dst(
+            src,
+            dst,
+            shard_canister,
+            label,
+            properties,
+        )
+    }
+
+    /// See [`GraphPmaKernelBootstrapBridge::insert_edge_with_shard_canister_dst`].
+    pub fn insert_edge_with_shard_canister_dst(
+        &mut self,
+        src: NodeId,
+        dst: NodeId,
+        shard_canister: Principal,
+        label: Option<&str>,
+        properties: &PropertyMap,
+    ) -> GraphResult<EdgeRecord> {
+        self.bridge
+            .insert_edge_with_shard_canister_dst(src, dst, shard_canister, label, properties)
     }
 
     /// Bootstraps kernel-facing node/edge record payloads directly on this overlay.

@@ -15,12 +15,16 @@ mod ids;
 mod locator;
 mod manager;
 mod overflow;
+mod shard_canister;
 mod region;
 mod runtime;
 mod surface;
 mod vertex;
 
-pub use edge::{EdgeEntry, EdgeMeta, LogicalEdgeLocator, SurfaceKind, SurfaceRegions};
+pub use edge::{
+    EDGE_META_PAYLOAD_MASK, EDGE_SHARD_CANISTER_MASK, EdgeEntry, EdgeMeta, LogicalEdgeLocator,
+    SurfaceKind, SurfaceRegions,
+};
 pub use extent::{
     BucketChain, BucketHeader, BucketId, BucketRef, BucketTable, EdgeSegmentDirectory,
     EdgeSegmentHeader, EdgeSegmentState, ExtentChain, ExtentGrowthDecision, ExtentGrowthKind,
@@ -28,12 +32,13 @@ pub use extent::{
     FreeBucketList, FreeExtentList,
 };
 pub use graph::{
-    EdgePairEndpoints, EdgePairLogicalLocators, EdgeReplaceSpec, EdgeTombstoneSpec,
-    GraphAppliedRebalanceSummary, GraphAppliedRebalanceWriteSummary, GraphBatchMutationSession,
-    GraphEnsureCapacityWriteSummary, GraphInsertDecision, GraphInsertPolicy, GraphInsertResult,
-    GraphInsertWriteSummary, GraphLocalRebalanceDelta, GraphLocalRebalancePlan, GraphMutationPath,
-    GraphRebalancePlan, GraphRuntime, RebalanceInsertSpec, RebalancePrepareSpec,
-    SurfaceRebalancePlan, SurfaceRebalanceWindowPlan, SurfaceVertexWindowReserveHint,
+    EdgeDirectedMetaPair, EdgePairEndpoints, EdgePairLogicalLocators, EdgeReplaceSpec,
+    EdgeTombstoneSpec, GraphAppliedRebalanceSummary, GraphAppliedRebalanceWriteSummary,
+    GraphBatchMutationSession, GraphEnsureCapacityWriteSummary, GraphInsertDecision,
+    GraphInsertPolicy, GraphInsertResult, GraphInsertWriteSummary, GraphLocalRebalanceDelta,
+    GraphLocalRebalancePlan, GraphMutationPath, GraphRebalancePlan, GraphRuntime,
+    RebalanceInsertSpec, RebalancePrepareSpec, SurfaceRebalancePlan, SurfaceRebalanceWindowPlan,
+    SurfaceVertexWindowReserveHint,
 };
 pub use graph::{
     GraphAppliedSegmentRebalanceSummary, GraphAppliedSegmentRebalanceWriteSummary,
@@ -42,6 +47,7 @@ pub use graph::{
     GraphMaintenanceCandidate, GraphMaintenanceCyclePlan, GraphMaintenanceCycleWriteSummary,
     GraphMaintenanceQueueStorageSnapshot, GraphMaintenanceWorkItem,
 };
+pub use shard_canister::{SHARD_CANISTER_DIRECTORY_MAGIC, ShardCanisterDirectory, ShardCanisterSlot};
 
 pub use graph::MaintenanceCycleVertexInputs;
 pub use hydration::{
@@ -83,6 +89,6 @@ pub use surface::{
     SurfaceRegionKinds,
 };
 pub use vertex::{
-    EMPTY_LOG_OFFSET, EdgeIndex, LABEL_ID_MASK, TOMBSTONE_MASK, VertexEntry, VertexLabelIndexEntry,
+    EMPTY_LOG_OFFSET, EdgeIndex, TOMBSTONE_MASK, VertexEntry, VertexLabelIndexEntry,
     VertexLabelRange,
 };

@@ -202,19 +202,45 @@ pub(super) fn collect_produced_vars(ops: &[PlanOp]) -> Vec<Rc<str>> {
             PlanOp::ConditionalIndexScan {
                 fallback_variable, ..
             } => push_var(&mut vars, fallback_variable),
-            PlanOp::Expand { src, edge, dst, .. }
-            | PlanOp::ExpandFilter { src, edge, dst, .. }
-            | PlanOp::ShortestPath { src, edge, dst, .. } => {
+            PlanOp::Expand {
+                src,
+                edge,
+                dst,
+                hop_aux_binding,
+                ..
+            }
+            | PlanOp::ExpandFilter {
+                src,
+                edge,
+                dst,
+                hop_aux_binding,
+                ..
+            } => {
+                push_var(&mut vars, src);
+                push_var(&mut vars, edge);
+                push_var(&mut vars, dst);
+                if let Some(pv) = hop_aux_binding {
+                    push_var(&mut vars, pv);
+                }
+            }
+            PlanOp::ShortestPath { src, edge, dst, .. } => {
                 push_var(&mut vars, src);
                 push_var(&mut vars, edge);
                 push_var(&mut vars, dst);
             }
             PlanOp::EdgeBindEndpoints {
-                edge, near, far, ..
+                edge,
+                near,
+                far,
+                hop_aux_binding,
+                ..
             } => {
                 push_var(&mut vars, edge);
                 push_var(&mut vars, near);
                 push_var(&mut vars, far);
+                if let Some(pv) = hop_aux_binding {
+                    push_var(&mut vars, pv);
+                }
             }
             PlanOp::HashJoin { left, right, .. } | PlanOp::CartesianProduct { left, right } => {
                 for var in collect_produced_vars(left) {
@@ -241,6 +267,9 @@ pub(super) fn collect_produced_vars(ops: &[PlanOp]) -> Vec<Rc<str>> {
                 }
                 for e in edges {
                     push_var(&mut vars, &e.variable);
+                    if let Some(pv) = &e.hop_aux_binding {
+                        push_var(&mut vars, pv);
+                    }
                 }
             }
             _ => {}

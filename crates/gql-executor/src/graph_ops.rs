@@ -8,7 +8,8 @@ use gleaph_gql::ast::Expr;
 use gleaph_gql::types::PathElement;
 use gleaph_gql::value_cmp::compare_values;
 use gleaph_gql_planner::plan::{ScanValue, ShortestMode, VarLenSpec, WcojEdge};
-use gleaph_graph_kernel::{EdgeRecord, GraphRead, NodeId};
+use gleaph_graph_kernel::{EdgeId, EdgeRecord, GraphRead, NodeId};
+use rapidhash::{HashMapExt, RapidHashMap};
 
 use super::{
     BindingRow, BindingValue, ExecutionContext, ExecutionError, ExecutionResultExt,
@@ -28,7 +29,208 @@ const WCOJ_VARLEN_MAX_DEPTH: u32 = 64;
 const WCOJ_VARLEN_MAX_STATES: usize = 200_000;
 const EXPAND_VAR_LEN_MAX_FRONTIER_STATES: usize = 200_000;
 
-pub(crate) fn exec_expand<G: GraphRead>(
+pub(crate) fn insert_hop_aux_binding(
+    row: &mut BindingRow,
+    binding_key: Rc<str>,
+    aux_bytes: Option<Vec<u8>>,
+) {
+    let v = match aux_bytes {
+        Some(b) => Value::Bytes(b),
+        None => Value::Null,
+    };
+    row.insert(binding_key, BindingValue::Scalar(v));
+}
+
+fn dst_filter_holds<G: GraphRead>(
+    graph: &G,
+    row: &BindingRow,
+    dst_filter: &[Expr],
+    ctx: &ExecutionContext,
+) -> ExecutionResultExt<bool> {
+    for pred in dst_filter {
+        match eval_expr(graph, row, pred, ctx)? {
+            Value::Bool(true) => {}
+            Value::Bool(false) | Value::Null => return Ok(false),
+            _ => {
+                return Err(ExecutionError::TypeMismatch(
+                    "ExpandFilter.dst_filter predicate must be boolean",
+                ));
+            }
+        }
+    }
+    Ok(true)
+}
+
+/// Split for variable-length expand so the hot loop does not branch on `hop_aux` presence.
+trait VarLenHopAuxBinding {
+    fn bind_min_h_zero(&self, row: &mut BindingRow);
+    fn bind_after_expand(&self, row: &mut BindingRow, shard_principal: Option<Vec<u8>>);
+}
+
+struct VarLenNoHopAux;
+
+impl VarLenHopAuxBinding for VarLenNoHopAux {
+    fn bind_min_h_zero(&self, _row: &mut BindingRow) {}
+    fn bind_after_expand(&self, _row: &mut BindingRow, _shard_principal: Option<Vec<u8>>) {}
+}
+
+struct VarLenYesHopAux(Rc<str>);
+
+impl VarLenHopAuxBinding for VarLenYesHopAux {
+    fn bind_min_h_zero(&self, row: &mut BindingRow) {
+        insert_hop_aux_binding(row, self.0.clone(), None);
+    }
+
+    fn bind_after_expand(&self, row: &mut BindingRow, shard_principal: Option<Vec<u8>>) {
+        insert_hop_aux_binding(row, self.0.clone(), shard_principal);
+    }
+}
+
+fn exec_expand_var_len_impl<const HAS_DST_FILTER: bool, G: GraphRead, B: VarLenHopAuxBinding>(
+    graph: &G,
+    input: Vec<BindingRow>,
+    spec: ExpandSpec<'_>,
+    var_len: &VarLenSpec,
+    indexed_edge_equality: Option<(&str, &ScanValue)>,
+    ctx: &ExecutionContext,
+    hop_binding: B,
+    dst_filter: &[Expr],
+) -> ExecutionResultExt<Vec<BindingRow>> {
+    let (min_h, max_h_cap) = shortest_hop_bounds(Some(var_len));
+    if max_h_cap < min_h {
+        return Ok(Vec::new());
+    }
+
+    let mut name_scratch = Vec::new();
+    let (filter, post_filter) =
+        edge_label_filter_for_expand(spec.label, spec.label_expr, &mut name_scratch);
+
+    let indexed_property = indexed_edge_equality.map(|(prop, scan_val)| {
+        let resolved = resolve_scan_value(scan_val, ctx)?;
+        Ok::<(&str, Value), ExecutionError>((prop, resolved))
+    });
+    let indexed_property = match indexed_property {
+        Some(Ok(v)) => Some(v),
+        Some(Err(e)) => return Err(e),
+        None => None,
+    };
+
+    let edge_names = spec.edge_property_names.as_deref();
+    let dst_names = spec.dst_property_names.as_deref();
+
+    let mut out = Vec::new();
+    const MAX_OUTPUT_PER_INPUT_ROW: usize = SHORTEST_PATH_ENUM_CAP;
+
+    for row in input {
+        let src_node = match row.get(spec.src) {
+            Some(BindingValue::Node(node)) => node,
+            Some(_) => return Err(ExecutionError::TypeMismatch("expand source must be a node")),
+            None => return Err(ExecutionError::MissingBinding(spec.src.to_owned())),
+        };
+
+        let mut emitted_this_row = 0usize;
+        let mut frontier = vec![src_node.id];
+
+        if min_h == 0 {
+            let mut next = row.clone();
+            next.insert(
+                Rc::<str>::from(spec.edge),
+                BindingValue::Scalar(Value::Null),
+            );
+            next.insert(
+                Rc::<str>::from(spec.dst),
+                BindingValue::Node(src_node.clone()),
+            );
+            hop_binding.bind_min_h_zero(&mut next);
+            let emit = if HAS_DST_FILTER {
+                dst_filter.is_empty() || dst_filter_holds(graph, &next, dst_filter, ctx)?
+            } else {
+                true
+            };
+            if emit {
+                out.push(next);
+                emitted_this_row += 1;
+            }
+        }
+
+        if max_h_cap == 0 {
+            continue;
+        }
+
+        'depths: for depth in 1..=max_h_cap {
+            if frontier.is_empty() || emitted_this_row >= MAX_OUTPUT_PER_INPUT_ROW {
+                break 'depths;
+            }
+
+            let mut next_frontier = Vec::new();
+            for from in frontier {
+                if next_frontier.len() >= EXPAND_VAR_LEN_MAX_FRONTIER_STATES {
+                    break;
+                }
+                let hops = graph.expand_hops_with_shard_meta(
+                    from,
+                    spec.direction,
+                    filter,
+                    edge_names,
+                    dst_names,
+                )?;
+                for hop in hops {
+                    let exp = hop.expansion;
+                    if post_filter
+                        && !edge_satisfies_expand_labels(
+                            exp.edge.label.as_deref(),
+                            spec.label,
+                            spec.label_expr,
+                        )
+                    {
+                        continue;
+                    }
+                    if let Some((prop, resolved_value)) = &indexed_property
+                        && !expand_indexed_edge_property_matches(&exp.edge, prop, resolved_value)
+                    {
+                        continue;
+                    }
+
+                    if depth >= min_h {
+                        let mut next = row.clone();
+                        next.insert(
+                            Rc::<str>::from(spec.edge),
+                            BindingValue::Edge(exp.edge.clone()),
+                        );
+                        next.insert(
+                            Rc::<str>::from(spec.dst),
+                            BindingValue::Node(exp.node.clone()),
+                        );
+                        hop_binding.bind_after_expand(&mut next, hop.shard_canister_principal);
+                        let emit = if HAS_DST_FILTER {
+                            dst_filter.is_empty() || dst_filter_holds(graph, &next, dst_filter, ctx)?
+                        } else {
+                            true
+                        };
+                        if emit {
+                            out.push(next);
+                            emitted_this_row += 1;
+                            if emitted_this_row >= MAX_OUTPUT_PER_INPUT_ROW {
+                                break 'depths;
+                            }
+                        }
+                    }
+
+                    if next_frontier.len() < EXPAND_VAR_LEN_MAX_FRONTIER_STATES {
+                        next_frontier.push(exp.node.id);
+                    } else {
+                        break;
+                    }
+                }
+            }
+            frontier = next_frontier;
+        }
+    }
+
+    Ok(out)
+}
+
+fn exec_expand_no_hop_aux<G: GraphRead>(
     graph: &G,
     input: Vec<BindingRow>,
     spec: ExpandSpec<'_>,
@@ -38,8 +240,9 @@ pub(crate) fn exec_expand<G: GraphRead>(
         edge_label_filter_for_expand(spec.label, spec.label_expr, &mut name_scratch);
     let edge_names = spec.edge_property_names.as_deref();
     let dst_names = spec.dst_property_names.as_deref();
-    let use_projected = edge_names.is_some() || dst_names.is_some();
+    let n_in = input.len();
     let mut out = Vec::new();
+    let mut reserved = false;
     for row in input {
         let src_node = match row.get(spec.src) {
             Some(BindingValue::Node(node)) => node,
@@ -47,13 +250,21 @@ pub(crate) fn exec_expand<G: GraphRead>(
             None => return Err(ExecutionError::MissingBinding(spec.src.to_owned())),
         };
 
-        let expansions = if use_projected {
-            graph.expand_projected(src_node.id, spec.direction, filter, edge_names, dst_names)?
-        } else {
-            graph.expand(src_node.id, spec.direction, filter)?
-        };
+        let hops = graph.expand_hops_with_shard_meta(
+            src_node.id,
+            spec.direction,
+            filter,
+            edge_names,
+            dst_names,
+        )?;
 
-        for expansion in expansions {
+        if !reserved {
+            out.reserve(hops.len().saturating_mul(n_in));
+            reserved = true;
+        }
+
+        for hop in hops {
+            let expansion = hop.expansion;
             if post_filter
                 && !edge_satisfies_expand_labels(
                     expansion.edge.label.as_deref(),
@@ -76,6 +287,82 @@ pub(crate) fn exec_expand<G: GraphRead>(
         }
     }
     Ok(out)
+}
+
+fn exec_expand_with_hop_aux<G: GraphRead>(
+    graph: &G,
+    input: Vec<BindingRow>,
+    spec: ExpandSpec<'_>,
+    hop_aux_key: Rc<str>,
+) -> ExecutionResultExt<Vec<BindingRow>> {
+    let mut name_scratch = Vec::new();
+    let (filter, post_filter) =
+        edge_label_filter_for_expand(spec.label, spec.label_expr, &mut name_scratch);
+    let edge_names = spec.edge_property_names.as_deref();
+    let dst_names = spec.dst_property_names.as_deref();
+    let n_in = input.len();
+    let mut out = Vec::new();
+    let mut reserved = false;
+    for row in input {
+        let src_node = match row.get(spec.src) {
+            Some(BindingValue::Node(node)) => node,
+            Some(_) => return Err(ExecutionError::TypeMismatch("expand source must be a node")),
+            None => return Err(ExecutionError::MissingBinding(spec.src.to_owned())),
+        };
+
+        let hops = graph.expand_hops_with_shard_meta(
+            src_node.id,
+            spec.direction,
+            filter,
+            edge_names,
+            dst_names,
+        )?;
+
+        if !reserved {
+            out.reserve(hops.len().saturating_mul(n_in));
+            reserved = true;
+        }
+
+        for hop in hops {
+            let expansion = hop.expansion;
+            if post_filter
+                && !edge_satisfies_expand_labels(
+                    expansion.edge.label.as_deref(),
+                    spec.label,
+                    spec.label_expr,
+                )
+            {
+                continue;
+            }
+            let mut next = row.clone();
+            next.insert(
+                Rc::<str>::from(spec.edge),
+                BindingValue::Edge(expansion.edge),
+            );
+            next.insert(
+                Rc::<str>::from(spec.dst),
+                BindingValue::Node(expansion.node),
+            );
+            insert_hop_aux_binding(
+                &mut next,
+                hop_aux_key.clone(),
+                hop.shard_canister_principal,
+            );
+            out.push(next);
+        }
+    }
+    Ok(out)
+}
+
+pub(crate) fn exec_expand<G: GraphRead>(
+    graph: &G,
+    input: Vec<BindingRow>,
+    spec: ExpandSpec<'_>,
+) -> ExecutionResultExt<Vec<BindingRow>> {
+    match spec.hop_aux_var {
+        None => exec_expand_no_hop_aux(graph, input, spec),
+        Some(name) => exec_expand_with_hop_aux(graph, input, spec, Rc::from(name)),
+    }
 }
 
 fn shortest_hop_bounds(var_len: Option<&VarLenSpec>) -> (u32, u32) {
@@ -110,7 +397,8 @@ fn shortest_bfs_multi_pred<G: GraphRead>(
         if d_u >= spec.max_depth {
             continue;
         }
-        for exp in graph.expand(u, spec.direction, spec.filter)? {
+        for hop in graph.expand_hops_with_shard_meta(u, spec.direction, spec.filter, None, None)? {
+            let exp = hop.expansion;
             if spec.post_filter
                 && !edge_satisfies_expand_labels(
                     exp.edge.label.as_deref(),
@@ -338,7 +626,8 @@ fn wcoj_unindexed_step_expansions<G: GraphRead>(
     let mut buf = Vec::new();
     let (filter, post) =
         edge_label_filter_for_expand(spec.label.as_deref(), spec.label_expr.as_ref(), &mut buf);
-    for exp in graph.expand(from, spec.direction, filter)? {
+    for hop in graph.expand_hops_with_shard_meta(from, spec.direction, filter, None, None)? {
+        let exp = hop.expansion;
         if post && !wcoj_edge_satisfies_labels(spec, exp.edge.label.as_deref()) {
             continue;
         }
@@ -435,7 +724,8 @@ fn wcoj_connect_last_edges<G: GraphRead>(
                 spec.label_expr.as_ref(),
                 &mut buf,
             );
-            for exp in graph.expand(from, spec.direction, filter)? {
+            for hop in graph.expand_hops_with_shard_meta(from, spec.direction, filter, None, None)? {
+                let exp = hop.expansion;
                 if post && !wcoj_edge_satisfies_labels(spec, exp.edge.label.as_deref()) {
                     continue;
                 }
@@ -525,6 +815,7 @@ fn wcoj_emit_row<G: GraphRead>(
     edges: &[WcojEdge],
     nodes: &HashMap<Rc<str>, NodeId>,
     edgs: &HashMap<Rc<str>, Option<EdgeRecord>>,
+    hop_aux_cache: &mut RapidHashMap<EdgeId, Option<Vec<u8>>>,
     out: &mut Vec<BindingRow>,
 ) -> ExecutionResultExt<()> {
     let mut row = base_row.clone();
@@ -549,6 +840,22 @@ fn wcoj_emit_row<G: GraphRead>(
         };
         row.insert(e.variable.clone(), binding);
     }
+    for e in edges {
+        let Some(name) = e.hop_aux_binding.as_ref() else {
+            continue;
+        };
+        let Some(Some(er)) = edgs.get(&e.variable) else {
+            continue;
+        };
+        let hop_aux = if let Some(existing) = hop_aux_cache.get(&er.id) {
+            existing.clone()
+        } else {
+            let b = graph.hop_aux_bytes_for_edge(er.id)?;
+            hop_aux_cache.insert(er.id, b.clone());
+            b
+        };
+        insert_hop_aux_binding(&mut row, Rc::from(name.as_ref()), hop_aux);
+    }
     out.push(row);
     Ok(())
 }
@@ -556,6 +863,7 @@ fn wcoj_emit_row<G: GraphRead>(
 fn wcoj_dfs<G: GraphRead>(
     graph: &G,
     spec: &WcojDfsSpec<'_>,
+    hop_aux_cache: &mut RapidHashMap<EdgeId, Option<Vec<u8>>>,
     k: usize,
     state: &mut WcojDfsState<'_>,
 ) -> ExecutionResultExt<()> {
@@ -575,6 +883,7 @@ fn wcoj_dfs<G: GraphRead>(
                 spec.edges,
                 state.nodes,
                 state.edgs,
+                hop_aux_cache,
                 state.out,
             )?;
             state.edgs.remove(&edge_spec.variable);
@@ -623,7 +932,7 @@ fn wcoj_dfs<G: GraphRead>(
                 }
                 state.nodes.insert(vk.clone(), id);
                 state.edgs.insert(hop.variable.clone(), opt_er);
-                wcoj_dfs(graph, spec, k + 1, state)?;
+                wcoj_dfs(graph, spec, hop_aux_cache, k + 1, state)?;
                 state.edgs.remove(&hop.variable);
                 state.nodes.remove(&vk);
                 if *state.budget == 0 {
@@ -633,7 +942,7 @@ fn wcoj_dfs<G: GraphRead>(
             return Ok(());
         }
         state.nodes.insert(vk.clone(), id);
-        wcoj_dfs(graph, spec, k + 1, state)?;
+        wcoj_dfs(graph, spec, hop_aux_cache, k + 1, state)?;
         state.nodes.remove(&vk);
         return Ok(());
     }
@@ -641,7 +950,7 @@ fn wcoj_dfs<G: GraphRead>(
     if k == 0 {
         for nr in graph.scan_nodes(None)? {
             state.nodes.insert(vk.clone(), nr.id);
-            wcoj_dfs(graph, spec, k + 1, state)?;
+            wcoj_dfs(graph, spec, hop_aux_cache, k + 1, state)?;
             state.nodes.remove(&vk);
             if *state.budget == 0 {
                 return Ok(());
@@ -667,7 +976,7 @@ fn wcoj_dfs<G: GraphRead>(
         }
         state.nodes.insert(vk.clone(), nid);
         state.edgs.insert(hop.variable.clone(), opt_erec);
-        wcoj_dfs(graph, spec, k + 1, state)?;
+        wcoj_dfs(graph, spec, hop_aux_cache, k + 1, state)?;
         state.nodes.remove(&vk);
         state.edgs.remove(&hop.variable);
         if *state.budget == 0 {
@@ -712,6 +1021,7 @@ pub(crate) fn exec_worst_case_optimal_join<G: GraphRead>(
         let mut nodes = HashMap::<Rc<str>, NodeId>::new();
         let mut edgs = HashMap::<Rc<str>, Option<EdgeRecord>>::new();
         let mut budget = WCOJ_MAX_ROWS_PER_INPUT;
+        let mut hop_aux_cache: RapidHashMap<EdgeId, Option<Vec<u8>>> = RapidHashMap::with_capacity(8);
         let spec = WcojDfsSpec {
             base_row: &base_row,
             vars: &vars,
@@ -725,7 +1035,7 @@ pub(crate) fn exec_worst_case_optimal_join<G: GraphRead>(
             out: &mut out,
             budget: &mut budget,
         };
-        wcoj_dfs(graph, &spec, 0, &mut state)?;
+        wcoj_dfs(graph, &spec, &mut hop_aux_cache, 0, &mut state)?;
     }
     Ok(out)
 }
@@ -764,6 +1074,19 @@ pub(crate) fn exec_expand_edge_index<G: GraphRead>(
         Some(names) => graph.scan_edges_by_property_projected(spec.property, &resolved, names)?,
     };
     let dst_proj = spec.expand.dst_property_names.as_deref();
+    let hop_aux_key = spec.expand.hop_aux_var.map(|s| Rc::<str>::from(s));
+    let mut hop_aux_by_edge: Option<RapidHashMap<EdgeId, Option<Vec<u8>>>> = None;
+    if hop_aux_key.is_some() {
+        let mut map: RapidHashMap<EdgeId, Option<Vec<u8>>> =
+            RapidHashMap::with_capacity(candidates.len());
+        for e in &candidates {
+            if map.contains_key(&e.id) {
+                continue;
+            }
+            map.insert(e.id, graph.hop_aux_bytes_for_edge(e.id)?);
+        }
+        hop_aux_by_edge = Some(map);
+    }
     let mut out = Vec::new();
     for row in input {
         let src_node = match row.get(spec.expand.src) {
@@ -798,6 +1121,13 @@ pub(crate) fn exec_expand_edge_index<G: GraphRead>(
                 Rc::<str>::from(spec.expand.dst),
                 BindingValue::Node(dst_node),
             );
+            if let (Some(key), Some(cache)) = (hop_aux_key.as_ref(), hop_aux_by_edge.as_ref()) {
+                let hop_aux = cache
+                    .get(&e.id)
+                    .expect("hop_aux cache covers all candidate edges")
+                    .clone();
+                insert_hop_aux_binding(&mut next, key.clone(), hop_aux);
+            }
             out.push(next);
         }
     }
@@ -834,140 +1164,28 @@ pub(crate) fn exec_expand_var_len<G: GraphRead>(
     indexed_edge_equality: Option<(&str, &ScanValue)>,
     ctx: &ExecutionContext,
 ) -> ExecutionResultExt<Vec<BindingRow>> {
-    let (min_h, max_h_cap) = shortest_hop_bounds(Some(var_len));
-    if max_h_cap < min_h {
-        return Ok(Vec::new());
+    match spec.hop_aux_var {
+        None => exec_expand_var_len_impl::<false, _, _>(
+            graph,
+            input,
+            spec,
+            var_len,
+            indexed_edge_equality,
+            ctx,
+            VarLenNoHopAux,
+            &[],
+        ),
+        Some(name) => exec_expand_var_len_impl::<false, _, _>(
+            graph,
+            input,
+            spec,
+            var_len,
+            indexed_edge_equality,
+            ctx,
+            VarLenYesHopAux(Rc::from(name)),
+            &[],
+        ),
     }
-
-    let mut name_scratch = Vec::new();
-    let (filter, post_filter) =
-        edge_label_filter_for_expand(spec.label, spec.label_expr, &mut name_scratch);
-
-    let indexed_property = indexed_edge_equality.map(|(prop, scan_val)| {
-        let resolved = resolve_scan_value(scan_val, ctx)?;
-        Ok::<(&str, Value), ExecutionError>((prop, resolved))
-    });
-    let indexed_property = match indexed_property {
-        Some(Ok(v)) => Some(v),
-        Some(Err(e)) => return Err(e),
-        None => None,
-    };
-
-    let edge_names = spec.edge_property_names.as_deref();
-    let dst_names = spec.dst_property_names.as_deref();
-    let use_projected = edge_names.is_some() || dst_names.is_some();
-
-    let mut out = Vec::new();
-    const MAX_OUTPUT_PER_INPUT_ROW: usize = SHORTEST_PATH_ENUM_CAP;
-
-    for row in input {
-        let src_node = match row.get(spec.src) {
-            Some(BindingValue::Node(node)) => node,
-            Some(_) => return Err(ExecutionError::TypeMismatch("expand source must be a node")),
-            None => return Err(ExecutionError::MissingBinding(spec.src.to_owned())),
-        };
-
-        let mut emitted_this_row = 0usize;
-
-        if min_h == 0 {
-            let mut next = row.clone();
-            next.insert(
-                Rc::<str>::from(spec.edge),
-                BindingValue::Scalar(Value::Null),
-            );
-            next.insert(
-                Rc::<str>::from(spec.dst),
-                BindingValue::Node(src_node.clone()),
-            );
-            out.push(next);
-            emitted_this_row += 1;
-        }
-
-        let mut frontier = vec![src_node.id];
-        if max_h_cap == 0 {
-            continue;
-        }
-
-        'depths: for depth in 1..=max_h_cap {
-            if frontier.is_empty() || emitted_this_row >= MAX_OUTPUT_PER_INPUT_ROW {
-                break 'depths;
-            }
-
-            let mut next_frontier = Vec::new();
-            for from in frontier {
-                if next_frontier.len() >= EXPAND_VAR_LEN_MAX_FRONTIER_STATES {
-                    break;
-                }
-                let expansions = if use_projected {
-                    graph.expand_projected(from, spec.direction, filter, edge_names, dst_names)?
-                } else {
-                    graph.expand(from, spec.direction, filter)?
-                };
-                for exp in expansions {
-                    if post_filter
-                        && !edge_satisfies_expand_labels(
-                            exp.edge.label.as_deref(),
-                            spec.label,
-                            spec.label_expr,
-                        )
-                    {
-                        continue;
-                    }
-                    if let Some((prop, resolved_value)) = &indexed_property
-                        && !expand_indexed_edge_property_matches(&exp.edge, prop, resolved_value)
-                    {
-                        continue;
-                    }
-
-                    if depth >= min_h {
-                        let mut next = row.clone();
-                        next.insert(
-                            Rc::<str>::from(spec.edge),
-                            BindingValue::Edge(exp.edge.clone()),
-                        );
-                        next.insert(
-                            Rc::<str>::from(spec.dst),
-                            BindingValue::Node(exp.node.clone()),
-                        );
-                        out.push(next);
-                        emitted_this_row += 1;
-                        if emitted_this_row >= MAX_OUTPUT_PER_INPUT_ROW {
-                            break 'depths;
-                        }
-                    }
-
-                    if next_frontier.len() < EXPAND_VAR_LEN_MAX_FRONTIER_STATES {
-                        next_frontier.push(exp.node.id);
-                    } else {
-                        break;
-                    }
-                }
-            }
-            frontier = next_frontier;
-        }
-    }
-
-    Ok(out)
-}
-
-fn dst_filter_holds<G: GraphRead>(
-    graph: &G,
-    row: &BindingRow,
-    dst_filter: &[Expr],
-    ctx: &ExecutionContext,
-) -> ExecutionResultExt<bool> {
-    for pred in dst_filter {
-        match eval_expr(graph, row, pred, ctx)? {
-            Value::Bool(true) => {}
-            Value::Bool(false) | Value::Null => return Ok(false),
-            _ => {
-                return Err(ExecutionError::TypeMismatch(
-                    "ExpandFilter.dst_filter predicate must be boolean",
-                ));
-            }
-        }
-    }
-    Ok(true)
 }
 
 pub(crate) fn exec_expand_filter_var_len<G: GraphRead>(
@@ -979,123 +1197,26 @@ pub(crate) fn exec_expand_filter_var_len<G: GraphRead>(
     indexed_edge_equality: Option<(&str, &ScanValue)>,
     ctx: &ExecutionContext,
 ) -> ExecutionResultExt<Vec<BindingRow>> {
-    let (min_h, max_h_cap) = shortest_hop_bounds(Some(var_len));
-    if max_h_cap < min_h {
-        return Ok(Vec::new());
+    match spec.hop_aux_var {
+        None => exec_expand_var_len_impl::<true, _, _>(
+            graph,
+            input,
+            spec,
+            var_len,
+            indexed_edge_equality,
+            ctx,
+            VarLenNoHopAux,
+            dst_filter,
+        ),
+        Some(name) => exec_expand_var_len_impl::<true, _, _>(
+            graph,
+            input,
+            spec,
+            var_len,
+            indexed_edge_equality,
+            ctx,
+            VarLenYesHopAux(Rc::from(name)),
+            dst_filter,
+        ),
     }
-
-    let mut name_scratch = Vec::new();
-    let (filter, post_filter) =
-        edge_label_filter_for_expand(spec.label, spec.label_expr, &mut name_scratch);
-
-    let indexed_property = indexed_edge_equality.map(|(prop, scan_val)| {
-        let resolved = resolve_scan_value(scan_val, ctx)?;
-        Ok::<(&str, Value), ExecutionError>((prop, resolved))
-    });
-    let indexed_property = match indexed_property {
-        Some(Ok(v)) => Some(v),
-        Some(Err(e)) => return Err(e),
-        None => None,
-    };
-
-    let edge_names = spec.edge_property_names.as_deref();
-    let dst_names = spec.dst_property_names.as_deref();
-    let use_projected = edge_names.is_some() || dst_names.is_some();
-
-    let mut out = Vec::new();
-    const MAX_OUTPUT_PER_INPUT_ROW: usize = SHORTEST_PATH_ENUM_CAP;
-
-    for row in input {
-        let src_node = match row.get(spec.src) {
-            Some(BindingValue::Node(node)) => node,
-            Some(_) => return Err(ExecutionError::TypeMismatch("expand source must be a node")),
-            None => return Err(ExecutionError::MissingBinding(spec.src.to_owned())),
-        };
-
-        let mut emitted_this_row = 0usize;
-        let mut frontier = vec![src_node.id];
-
-        if min_h == 0 {
-            let mut next = row.clone();
-            next.insert(
-                Rc::<str>::from(spec.edge),
-                BindingValue::Scalar(Value::Null),
-            );
-            next.insert(
-                Rc::<str>::from(spec.dst),
-                BindingValue::Node(src_node.clone()),
-            );
-            if dst_filter.is_empty() || dst_filter_holds(graph, &next, dst_filter, ctx)? {
-                out.push(next);
-                emitted_this_row += 1;
-            }
-        }
-
-        if max_h_cap == 0 {
-            continue;
-        }
-
-        'depths: for depth in 1..=max_h_cap {
-            if frontier.is_empty() || emitted_this_row >= MAX_OUTPUT_PER_INPUT_ROW {
-                break 'depths;
-            }
-
-            let mut next_frontier = Vec::new();
-            for from in frontier {
-                if next_frontier.len() >= EXPAND_VAR_LEN_MAX_FRONTIER_STATES {
-                    break;
-                }
-                let expansions = if use_projected {
-                    graph.expand_projected(from, spec.direction, filter, edge_names, dst_names)?
-                } else {
-                    graph.expand(from, spec.direction, filter)?
-                };
-                for exp in expansions {
-                    if post_filter
-                        && !edge_satisfies_expand_labels(
-                            exp.edge.label.as_deref(),
-                            spec.label,
-                            spec.label_expr,
-                        )
-                    {
-                        continue;
-                    }
-                    if let Some((prop, resolved_value)) = &indexed_property
-                        && !expand_indexed_edge_property_matches(&exp.edge, prop, resolved_value)
-                    {
-                        continue;
-                    }
-
-                    if depth >= min_h {
-                        let mut next = row.clone();
-                        next.insert(
-                            Rc::<str>::from(spec.edge),
-                            BindingValue::Edge(exp.edge.clone()),
-                        );
-                        next.insert(
-                            Rc::<str>::from(spec.dst),
-                            BindingValue::Node(exp.node.clone()),
-                        );
-                        if dst_filter.is_empty() || dst_filter_holds(graph, &next, dst_filter, ctx)?
-                        {
-                            out.push(next);
-                            emitted_this_row += 1;
-                            if emitted_this_row >= MAX_OUTPUT_PER_INPUT_ROW {
-                                break 'depths;
-                            }
-                        }
-                    }
-
-                    if next_frontier.len() < EXPAND_VAR_LEN_MAX_FRONTIER_STATES {
-                        next_frontier.push(exp.node.id);
-                    } else {
-                        break;
-                    }
-                }
-            }
-            frontier = next_frontier;
-        }
-    }
-
-    Ok(out)
 }

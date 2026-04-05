@@ -29,8 +29,12 @@ impl fmt::Display for GraphPmaError {
         match self {
             Self::Hydration(err) => write!(f, "graph-pma hydration failed: {err}"),
             Self::Writeback(err) => write!(f, "graph-pma writeback failed: {err}"),
-            Self::PropertyStore(err) => write!(f, "graph-pma property-store operation failed: {err}"),
-            Self::PropertyIndex(err) => write!(f, "graph-pma property-index operation failed: {err}"),
+            Self::PropertyStore(err) => {
+                write!(f, "graph-pma property-store operation failed: {err}")
+            }
+            Self::PropertyIndex(err) => {
+                write!(f, "graph-pma property-index operation failed: {err}")
+            }
             Self::InvalidLocatorInputs => {
                 write!(f, "invalid locator rebuild inputs for forward surface")
             }
