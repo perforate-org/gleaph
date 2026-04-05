@@ -65,6 +65,9 @@ pub struct EdgeTypeInfo {
     pub endpoints: Vec<(Vec<String>, Vec<String>)>,
     /// Schema-known property types: `(name, value_type, required)`.
     pub properties: Vec<(String, ValueType, bool)>,
+    /// `Some(true)` if the graph schema declares this edge label as undirected;
+    /// `Some(false)` if directed; `None` if unknown / open-world.
+    pub undirected: Option<bool>,
 }
 
 impl EdgeTypeInfo {
@@ -73,6 +76,7 @@ impl EdgeTypeInfo {
             label,
             endpoints: Vec::new(),
             properties: Vec::new(),
+            undirected: None,
         }
     }
 }

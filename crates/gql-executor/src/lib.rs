@@ -162,6 +162,7 @@ struct InsertEdgeSpec<'a> {
     variable: Option<&'a str>,
     src: &'a str,
     dst: &'a str,
+    direction: gleaph_gql::types::EdgeDirection,
     labels: &'a [Rc<str>],
     properties: &'a [gleaph_gql_planner::plan::PropertyAssignment],
 }
@@ -227,6 +228,12 @@ struct WcojDfsSpec<'a> {
     ctx: &'a ExecutionContext,
 }
 
+/// Execution-time configuration for GQL evaluation.
+///
+/// **Graph schema and planning:** when a catalog-backed [`gleaph_gql::type_check::PropertySchema`]
+/// is available, pass it to [`gleaph_gql_planner::build_plan_with_schema`] (or block/statement
+/// variants) so INSERT/MATCH edge syntax is checked against `UNDIRECTED EDGE` / `DIRECTED EDGE` DDL.
+/// Whether a stored edge is undirected still comes from the built plan (`PlanOp::InsertEdge`).
 #[derive(Clone, Default)]
 pub struct ExecutionContext {
     pub params: BTreeMap<String, Value>,
@@ -946,9 +953,9 @@ fn execute_ops_from_rows<G: GraphRead + GraphWrite>(
                 variable,
                 src,
                 dst,
+                direction,
                 labels,
                 properties,
-                ..
             } => {
                 rows = exec_insert_edge(
                     graph,
@@ -957,6 +964,7 @@ fn execute_ops_from_rows<G: GraphRead + GraphWrite>(
                         variable: variable.as_deref(),
                         src: src.as_ref(),
                         dst: dst.as_ref(),
+                        direction: *direction,
                         labels,
                         properties,
                     },
@@ -1112,7 +1120,8 @@ fn exec_insert_edge<G: GraphRead + GraphWrite>(
         };
         let property_map = eval_property_assignments(graph, &row, spec.properties, ctx)?;
         let edge_label = spec.labels.first().map(|label| label.as_ref());
-        let edge = graph.insert_edge(src_id, dst_id, edge_label, &property_map)?;
+        let undirected = matches!(spec.direction, gleaph_gql::types::EdgeDirection::Undirected);
+        let edge = graph.insert_edge(src_id, dst_id, edge_label, &property_map, undirected)?;
         let mut next = row;
         if let Some(variable) = spec.variable {
             next.insert(Rc::<str>::from(variable), BindingValue::Edge(edge));
@@ -1377,6 +1386,7 @@ fn value_to_binding_value(value: Value) -> ExecutionResultExt<BindingValue> {
                         dst,
                         label,
                         properties,
+                        undirected: false,
                     }))
                 }
                 _ => Ok(BindingValue::Scalar(Value::Record(fields))),
@@ -2181,13 +2191,14 @@ mod tests {
             dst: NodeId,
             label: Option<&str>,
             properties: impl IntoIterator<Item = (&'static str, Value)>,
+            undirected: bool,
         ) -> EdgeId {
             let mut props = PropertyMap::new();
             for (k, v) in properties {
                 props.insert(k.to_owned(), v);
             }
             self.with_overlay_mut(|g| {
-                g.insert_edge(src, dst, label, &props)
+                g.insert_edge(src, dst, label, &props, undirected)
                     .expect("insert edge")
                     .id
             })
@@ -2341,8 +2352,9 @@ mod tests {
             dst: NodeId,
             label: Option<&str>,
             properties: &PropertyMap,
+            undirected: bool,
         ) -> GraphResult<EdgeRecord> {
-            self.with_overlay_mut(|g| g.insert_edge(src, dst, label, properties))
+            self.with_overlay_mut(|g| g.insert_edge(src, dst, label, properties, undirected))
         }
         fn set_node_property(
             &mut self,
@@ -2930,12 +2942,12 @@ mod tests {
         let mut p1 = PropertyMap::new();
         p1.insert("weight".to_owned(), Value::Int64(5));
         let _ = graph
-            .insert_edge(a, b1, Some("REL"), &p1)
+            .insert_edge(a, b1, Some("REL"), &p1, false)
             .expect("insert e1");
         let mut p2 = PropertyMap::new();
         p2.insert("weight".to_owned(), Value::Int64(6));
         let _ = graph
-            .insert_edge(a, b2, Some("REL"), &p2)
+            .insert_edge(a, b2, Some("REL"), &p2, false)
             .expect("insert e2");
 
         let plan = PhysicalPlan {
@@ -3460,18 +3472,21 @@ mod tests {
             p1,
             Some("AUTHORED"),
             std::iter::empty::<(&str, Value)>(),
+            false,
         );
         graph.insert_edge(
             alice,
             p2,
             Some("AUTHORED"),
             std::iter::empty::<(&str, Value)>(),
+            false,
         );
         graph.insert_edge(
             bob,
             p3,
             Some("AUTHORED"),
             std::iter::empty::<(&str, Value)>(),
+            false,
         );
 
         let order_by = OrderByClause {
@@ -3557,14 +3572,22 @@ mod tests {
             p1,
             Some("KNOWS"),
             std::iter::empty::<(&str, Value)>(),
+            false,
         );
         graph.insert_edge(
             alice,
             p2,
             Some("KNOWS"),
             std::iter::empty::<(&str, Value)>(),
+            false,
         );
-        graph.insert_edge(bob, p3, Some("KNOWS"), std::iter::empty::<(&str, Value)>());
+        graph.insert_edge(
+            bob,
+            p3,
+            Some("KNOWS"),
+            std::iter::empty::<(&str, Value)>(),
+            false,
+        );
 
         let plan = PhysicalPlan {
             ops: vec![
@@ -3665,14 +3688,22 @@ mod tests {
             p1,
             Some("KNOWS"),
             std::iter::empty::<(&str, Value)>(),
+            false,
         );
         graph.insert_edge(
             alice,
             p2,
             Some("KNOWS"),
             std::iter::empty::<(&str, Value)>(),
+            false,
         );
-        graph.insert_edge(bob, p3, Some("KNOWS"), std::iter::empty::<(&str, Value)>());
+        graph.insert_edge(
+            bob,
+            p3,
+            Some("KNOWS"),
+            std::iter::empty::<(&str, Value)>(),
+            false,
+        );
 
         let plan = PhysicalPlan {
             ops: vec![
@@ -3931,6 +3962,7 @@ mod tests {
                 post,
                 Some("AUTHORED"),
                 &std::collections::BTreeMap::from([("weight".to_owned(), Value::Int64(10))]),
+                false,
             )
             .expect("insert authored edge");
 
@@ -4028,6 +4060,7 @@ mod tests {
                 post,
                 Some("AUTHORED"),
                 &std::collections::BTreeMap::from([("weight".to_owned(), Value::Int64(10))]),
+                false,
             )
             .expect("insert authored edge");
 
@@ -4353,6 +4386,7 @@ mod tests {
             post,
             Some("AUTHORED"),
             std::iter::empty::<(&str, Value)>(),
+            false,
         );
 
         let plan = PhysicalPlan {
@@ -4432,6 +4466,7 @@ mod tests {
             post,
             Some("AUTHORED"),
             std::iter::empty::<(&str, Value)>(),
+            false,
         );
 
         let plan = PhysicalPlan {
@@ -4503,6 +4538,7 @@ mod tests {
             post,
             Some("AUTHORED"),
             std::iter::empty::<(&str, Value)>(),
+            false,
         );
 
         let plan = PhysicalPlan {
@@ -4756,6 +4792,78 @@ mod tests {
                     gleaph_graph_kernel::EdgeLabelFilter::Single("AUTHORED")
                 )
                 .expect("expand")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn executor_insert_undirected_edge_sets_record_and_expand_filtering() {
+        let mut harness = bootstrap_empty_graph_pma_harness();
+        let (mut graph, summary) = bootstrap_graph_pma_overlay_user_uid(&mut harness, "u1");
+        let alice = summary.nodes[0].id;
+
+        let plan = PhysicalPlan {
+            ops: vec![
+                PlanOp::NodeScan {
+                    property_projection: None,
+                    variable: "a".into(),
+                    label: Some("User".into()),
+                },
+                PlanOp::InsertVertex {
+                    variable: Some("b".into()),
+                    labels: vec!["User".into()],
+                    properties: vec![gleaph_gql_planner::plan::PropertyAssignment {
+                        name: "name".into(),
+                        value: Expr::new(ExprKind::Literal(Value::Text("bob".to_owned()))),
+                    }],
+                },
+                PlanOp::InsertEdge {
+                    variable: Some("e".into()),
+                    src: "a".into(),
+                    dst: "b".into(),
+                    direction: EdgeDirection::Undirected,
+                    labels: vec!["R".into()],
+                    properties: vec![],
+                },
+            ],
+            diagnostics: gleaph_gql_planner::plan::PlanDiagnostics::default(),
+            annotations: PlanAnnotations::default(),
+        };
+
+        let plan_result = execute_plan(&mut graph, &plan);
+        let _ = expect_graph_pma_overlay_execution(
+            &graph,
+            plan_result,
+            "undirected insert dml should execute",
+        );
+
+        let undirected_edges: Vec<_> = graph
+            .bridge()
+            .edges()
+            .values()
+            .filter(|e| e.label.as_deref() == Some("R"))
+            .collect();
+        assert_eq!(undirected_edges.len(), 1);
+        assert!(undirected_edges[0].undirected);
+        assert!(
+            graph
+                .expand(
+                    alice,
+                    EdgeDirection::PointingRight,
+                    gleaph_graph_kernel::EdgeLabelFilter::Single("R"),
+                )
+                .expect("directed expand")
+                .is_empty()
+        );
+        assert_eq!(
+            graph
+                .expand(
+                    alice,
+                    EdgeDirection::Undirected,
+                    gleaph_graph_kernel::EdgeLabelFilter::Single("R"),
+                )
+                .expect("undirected expand")
                 .len(),
             1
         );
@@ -5453,8 +5561,8 @@ mod tests {
         let n1 = graph.insert_node(["U"], [("name", Value::Text("a".into()))]);
         let n2 = graph.insert_node(["U"], [("name", Value::Text("b".into()))]);
         let n3 = graph.insert_node(["U"], [("name", Value::Text("c".into()))]);
-        graph.insert_edge(n1, n2, Some("KNOWS"), std::iter::empty::<(&str, Value)>());
-        graph.insert_edge(n2, n3, Some("KNOWS"), std::iter::empty::<(&str, Value)>());
+        graph.insert_edge(n1, n2, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
+        graph.insert_edge(n2, n3, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
 
         let result = execute_plan(&mut graph, &plan).expect("shortest path should run");
         assert_eq!(
@@ -5499,9 +5607,9 @@ mod tests {
         let n2 = graph.insert_node(["U"], [("name", Value::Text("b".into()))]);
         let n3 = graph.insert_node(["U"], [("name", Value::Text("c".into()))]);
         let n4 = graph.insert_node(["U"], [("name", Value::Text("d".into()))]);
-        graph.insert_edge(n1, n2, Some("KNOWS"), std::iter::empty::<(&str, Value)>());
-        graph.insert_edge(n2, n3, Some("KNOWS"), std::iter::empty::<(&str, Value)>());
-        graph.insert_edge(n1, n4, Some("OTHER"), std::iter::empty::<(&str, Value)>());
+        graph.insert_edge(n1, n2, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
+        graph.insert_edge(n2, n3, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
+        graph.insert_edge(n1, n4, Some("OTHER"), std::iter::empty::<(&str, Value)>(), false);
 
         let result = execute_plan(&mut graph, &plan).expect("shortest path with union labels");
         assert_eq!(
@@ -5532,7 +5640,7 @@ mod tests {
         let mut graph = InMemoryGraph::new();
         let n1 = graph.insert_node(["U"], [("name", Value::Text("a".into()))]);
         let n2 = graph.insert_node(["U"], [("name", Value::Text("x".into()))]);
-        graph.insert_edge(n1, n2, Some("WORKS"), std::iter::empty::<(&str, Value)>());
+        graph.insert_edge(n1, n2, Some("WORKS"), std::iter::empty::<(&str, Value)>(), false);
 
         let result = execute_plan(&mut graph, &plan).expect("execute");
         assert_eq!(
@@ -5572,9 +5680,9 @@ mod tests {
         let n1 = graph.insert_node(["Person"], std::iter::empty::<(&str, Value)>());
         let n2 = graph.insert_node(["Person"], std::iter::empty::<(&str, Value)>());
         let n3 = graph.insert_node(["Person"], std::iter::empty::<(&str, Value)>());
-        graph.insert_edge(n1, n2, Some("KNOWS"), std::iter::empty::<(&str, Value)>());
-        graph.insert_edge(n2, n3, Some("KNOWS"), std::iter::empty::<(&str, Value)>());
-        graph.insert_edge(n3, n1, Some("KNOWS"), std::iter::empty::<(&str, Value)>());
+        graph.insert_edge(n1, n2, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
+        graph.insert_edge(n2, n3, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
+        graph.insert_edge(n3, n1, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
 
         let result = execute_plan(&mut graph, &plan).expect("wcoj executes");
         assert_eq!(
@@ -6367,8 +6475,8 @@ mod tests {
         let a = graph.insert_node(["U"], [("name", Value::Text("a".into()))]);
         let b = graph.insert_node(["U"], [("name", Value::Text("b".into()))]);
         let c = graph.insert_node(["U"], [("name", Value::Text("c".into()))]);
-        graph.insert_edge(a, b, Some("KNOWS"), std::iter::empty::<(&str, Value)>());
-        graph.insert_edge(b, c, Some("KNOWS"), std::iter::empty::<(&str, Value)>());
+        graph.insert_edge(a, b, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
+        graph.insert_edge(b, c, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
 
         let result = execute_plan(&mut graph, &plan).expect("execute");
         assert_eq!(result.rows.len(), 2, "result={:?}", result.rows);
@@ -6421,8 +6529,8 @@ mod tests {
         let a = graph.insert_node(["U"], [("name", Value::Text("a".into()))]);
         let b = graph.insert_node(["U"], [("name", Value::Text("b".into()))]);
         let c = graph.insert_node(["U"], [("name", Value::Text("c".into()))]);
-        graph.insert_edge(a, b, Some("KNOWS"), std::iter::empty::<(&str, Value)>());
-        graph.insert_edge(b, c, Some("KNOWS"), std::iter::empty::<(&str, Value)>());
+        graph.insert_edge(a, b, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
+        graph.insert_edge(b, c, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
 
         let result = execute_plan(&mut graph, &plan).expect("execute");
         assert_eq!(result.rows.len(), 1, "result={:?}", result.rows);
@@ -6441,10 +6549,10 @@ mod tests {
         let b2 = graph.insert_node(["U"], [("name", Value::Text("b2".into()))]);
         let d = graph.insert_node(["U"], [("name", Value::Text("d".into()))]);
 
-        graph.insert_edge(a, b1, Some("KNOWS"), std::iter::empty::<(&str, Value)>());
-        graph.insert_edge(a, b2, Some("KNOWS"), std::iter::empty::<(&str, Value)>());
-        graph.insert_edge(b1, d, Some("KNOWS"), std::iter::empty::<(&str, Value)>());
-        graph.insert_edge(b2, d, Some("KNOWS"), std::iter::empty::<(&str, Value)>());
+        graph.insert_edge(a, b1, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
+        graph.insert_edge(a, b2, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
+        graph.insert_edge(b1, d, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
+        graph.insert_edge(b2, d, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
 
         let expected_b1 = Value::Path(vec![
             PathElement::Vertex(a.into()),
@@ -6530,10 +6638,10 @@ mod tests {
         let b2 = graph.insert_node(["U"], [("name", Value::Text("b2".into()))]);
         let d = graph.insert_node(["U"], [("name", Value::Text("d".into()))]);
 
-        graph.insert_edge(a, b1, Some("KNOWS"), std::iter::empty::<(&str, Value)>());
-        graph.insert_edge(a, b2, Some("KNOWS"), std::iter::empty::<(&str, Value)>());
-        graph.insert_edge(b1, d, Some("KNOWS"), std::iter::empty::<(&str, Value)>());
-        graph.insert_edge(b2, d, Some("KNOWS"), std::iter::empty::<(&str, Value)>());
+        graph.insert_edge(a, b1, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
+        graph.insert_edge(a, b2, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
+        graph.insert_edge(b1, d, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
+        graph.insert_edge(b2, d, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
 
         let expected_b1 = Value::Path(vec![
             PathElement::Vertex(a.into()),
@@ -6616,10 +6724,10 @@ mod tests {
         let b2 = graph.insert_node(["U"], [("name", Value::Text("b2".into()))]);
         let d = graph.insert_node(["U"], [("name", Value::Text("d".into()))]);
 
-        graph.insert_edge(a, b1, Some("KNOWS"), std::iter::empty::<(&str, Value)>());
-        graph.insert_edge(a, b2, Some("KNOWS"), std::iter::empty::<(&str, Value)>());
-        graph.insert_edge(b1, d, Some("KNOWS"), std::iter::empty::<(&str, Value)>());
-        graph.insert_edge(b2, d, Some("KNOWS"), std::iter::empty::<(&str, Value)>());
+        graph.insert_edge(a, b1, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
+        graph.insert_edge(a, b2, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
+        graph.insert_edge(b1, d, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
+        graph.insert_edge(b2, d, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
 
         let expected_b1 = Value::Path(vec![
             PathElement::Vertex(a.into()),

@@ -1271,7 +1271,7 @@ pub fn encode_edge_entries(entries: &[EdgeEntry]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(entries.len() * SERIALIZED_EDGE_ENTRY_LEN);
     for entry in entries {
         bytes.extend_from_slice(&entry.target.as_bytes());
-        bytes.extend_from_slice(&entry.meta.raw().to_le_bytes());
+        bytes.extend_from_slice(&entry.meta.to_le_bytes());
     }
     bytes
 }
@@ -1291,7 +1291,7 @@ pub fn encode_overflow_entries_into(entries: &[OverflowEntry], out: &mut Vec<u8>
     for entry in entries {
         out.extend_from_slice(&entry.edge_id.to_le_bytes());
         out.extend_from_slice(&entry.entry.target.as_bytes());
-        out.extend_from_slice(&entry.entry.meta.raw().to_le_bytes());
+        out.extend_from_slice(&entry.entry.meta.to_le_bytes());
         out.extend_from_slice(&entry.next.raw.to_le_bytes());
     }
 }
@@ -1782,6 +1782,10 @@ pub fn decode_vertex_entries(
 }
 
 /// Decodes hot base-edge entries from the fixed-width low-level format.
+///
+/// Wire layout per entry: **5 bytes** big-endian [`VertexRef`] + **3 bytes** little-endian
+/// [`EdgeMeta`](super::edge::EdgeMeta) (24-bit). This supersedes the older 6+2 byte row shape;
+/// persisted images using the legacy layout are not supported.
 pub fn decode_edge_entries(
     kind: RegionKind,
     bytes: &[u8],
@@ -1795,21 +1799,10 @@ pub fn decode_edge_entries(
     }
 
     let mut entries = Vec::with_capacity(bytes.len() / SERIALIZED_EDGE_ENTRY_LEN);
-    if cfg!(target_endian = "little") {
-        debug_assert_eq!(size_of::<EdgeEntry>(), SERIALIZED_EDGE_ENTRY_LEN);
-        for chunk in bytes.chunks_exact(SERIALIZED_EDGE_ENTRY_LEN) {
-            // SAFETY: Each chunk is exactly `SERIALIZED_EDGE_ENTRY_LEN` bytes. On little-endian
-            // targets this matches `encode_edge_entries` / `repr(C) EdgeEntry`: `[u8;6]`
-            // `VertexRef` then `u16` LE (`EdgeMeta`). `EdgeEntry` is 8 bytes with no padding.
-            let entry = unsafe { chunk.as_ptr().cast::<EdgeEntry>().read_unaligned() };
-            entries.push(entry);
-        }
-    } else {
-        for chunk in bytes.chunks_exact(SERIALIZED_EDGE_ENTRY_LEN) {
-            let target = VertexRef::new(chunk[0..6].try_into().expect("fixed slice"));
-            let meta = u16::from_le_bytes(chunk[6..8].try_into().expect("fixed slice"));
-            entries.push(EdgeEntry::new(target, EdgeMeta::from_raw(meta)));
-        }
+    for chunk in bytes.chunks_exact(SERIALIZED_EDGE_ENTRY_LEN) {
+        let target = VertexRef::new(chunk[0..5].try_into().expect("fixed slice"));
+        let meta = EdgeMeta::from_le_bytes(chunk[5..8].try_into().expect("fixed slice"));
+        entries.push(EdgeEntry::new(target, meta));
     }
     Ok(entries)
 }
@@ -1830,12 +1823,12 @@ pub fn decode_overflow_entries(
     let mut entries = Vec::with_capacity(bytes.len() / SERIALIZED_OVERFLOW_ENTRY_LEN);
     for chunk in bytes.chunks_exact(SERIALIZED_OVERFLOW_ENTRY_LEN) {
         let edge_id = u64::from_le_bytes(chunk[0..8].try_into().expect("fixed slice"));
-        let target = VertexRef::new(chunk[8..14].try_into().expect("fixed slice"));
-        let meta = u16::from_le_bytes(chunk[14..16].try_into().expect("fixed slice"));
+        let target = VertexRef::new(chunk[8..13].try_into().expect("fixed slice"));
+        let meta = EdgeMeta::from_le_bytes(chunk[13..16].try_into().expect("fixed slice"));
         let next = i32::from_le_bytes(chunk[16..20].try_into().expect("fixed slice"));
         entries.push(OverflowEntry::new(
             edge_id,
-            EdgeEntry::new(target, EdgeMeta::from_raw(meta)),
+            EdgeEntry::new(target, meta),
             LogOffset::new(next),
         ));
     }

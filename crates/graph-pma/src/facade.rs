@@ -2674,7 +2674,7 @@ mod tests {
             crate::low_level::EMPTY_LOG_OFFSET,
         )];
         let forward_edges = vec![EdgeEntry::new(
-            NodeId::new([0, 0, 0, 0, 0, 2]),
+            NodeId::from(2u8),
             EdgeMeta::new(7, false),
         )];
         let reverse_vertices = vec![VertexEntry::new(
@@ -2683,7 +2683,7 @@ mod tests {
             crate::low_level::EMPTY_LOG_OFFSET,
         )];
         let reverse_edges = vec![EdgeEntry::new(
-            NodeId::new([0, 0, 0, 0, 0, 1]),
+            NodeId::from(1u8),
             EdgeMeta::new(7, false),
         )];
 
@@ -3386,14 +3386,14 @@ mod tests {
         assert_eq!(
             forward,
             Some(vec![EdgeEntry::new(
-                NodeId::new([0, 0, 0, 0, 0, 2]),
+                NodeId::from(2u8),
                 EdgeMeta::new(7, false)
             )])
         );
         assert_eq!(
             reverse,
             Some(vec![EdgeEntry::new(
-                NodeId::new([0, 0, 0, 0, 0, 1]),
+                NodeId::from(1u8),
                 EdgeMeta::new(7, false)
             )])
         );
@@ -3422,14 +3422,14 @@ mod tests {
         assert_eq!(
             forward,
             vec![EdgeEntry::new(
-                NodeId::new([0, 0, 0, 0, 0, 2]),
+                NodeId::from(2u8),
                 EdgeMeta::new(7, false)
             )]
         );
         assert_eq!(
             reverse,
             vec![EdgeEntry::new(
-                NodeId::new([0, 0, 0, 0, 0, 1]),
+                NodeId::from(1u8),
                 EdgeMeta::new(7, false)
             )]
         );
@@ -3458,14 +3458,14 @@ mod tests {
         assert_eq!(
             forward_entry,
             Some(EdgeEntry::new(
-                NodeId::new([0, 0, 0, 0, 0, 2]),
+                NodeId::from(2u8),
                 EdgeMeta::new(7, false)
             ))
         );
         assert_eq!(
             reverse_entry,
             Some(EdgeEntry::new(
-                NodeId::new([0, 0, 0, 0, 0, 1]),
+                NodeId::from(1u8),
                 EdgeMeta::new(7, false)
             ))
         );
@@ -3637,8 +3637,8 @@ mod tests {
         let (manager, memory) = seeded_manager_and_memory();
         let mut facade = GraphPma::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
 
-        let src = NodeId::new([0, 0, 0, 0, 0, 1]);
-        let dst = NodeId::new([0, 0, 0, 0, 0, 3]);
+        let src = NodeId::from(1u8);
+        let dst = NodeId::from(3u8);
         facade
             .graph
             .forward

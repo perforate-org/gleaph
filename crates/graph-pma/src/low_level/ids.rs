@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 )]
 pub struct StableAddr(pub u64);
 
-/// Packed 48-bit reference to a vertex-table ordinal.
+/// Packed 40-bit reference to a vertex-table ordinal.
 ///
 /// This is a low-level adjacency reference, not a semantic graph-node id.
 #[repr(transparent)]
@@ -44,28 +44,28 @@ pub struct StableAddr(pub u64);
     Deserialize,
     CandidType,
 )]
-pub struct VertexRef([u8; 6]);
+pub struct VertexRef([u8; 5]);
 
 impl VertexRef {
-    pub const MAX: u64 = (1u64 << 48) - 1;
+    pub const MAX: u64 = (1u64 << 40) - 1;
 
-    pub const fn new(bytes: [u8; 6]) -> Self {
+    pub const fn new(bytes: [u8; 5]) -> Self {
         Self(bytes)
     }
 
     #[inline]
     pub const fn to_u64(self) -> u64 {
         let b = self.0;
-        u64::from_be_bytes([0, 0, b[0], b[1], b[2], b[3], b[4], b[5]])
+        u64::from_be_bytes([0, 0, 0, b[0], b[1], b[2], b[3], b[4]])
     }
 
     #[inline]
-    pub const fn as_bytes(self) -> [u8; 6] {
+    pub const fn as_bytes(self) -> [u8; 5] {
         self.0
     }
 
     #[inline]
-    pub const fn to_be_bytes(self) -> [u8; 6] {
+    pub const fn to_be_bytes(self) -> [u8; 5] {
         self.0
     }
 }
@@ -75,11 +75,11 @@ impl TryFrom<u64> for VertexRef {
 
     fn try_from(value: u64) -> Result<Self, Self::Error> {
         if value > Self::MAX {
-            return Err("vertex ref exceeds 48-bit packed layout");
+            return Err("vertex ref exceeds 40-bit packed layout");
         }
         let bytes = value.to_be_bytes();
         Ok(Self([
-            bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
         ]))
     }
 }
@@ -192,7 +192,7 @@ impl EdgeRef {
     }
 }
 
-const _: () = assert!(core::mem::size_of::<VertexRef>() == 6);
+const _: () = assert!(core::mem::size_of::<VertexRef>() == 5);
 const _: () = assert!(core::mem::size_of::<EdgeRef>() == 8);
 
 #[cfg(test)]
@@ -201,12 +201,12 @@ mod tests {
     use gleaph_graph_kernel::NodeId;
 
     #[test]
-    fn vertex_ref_roundtrips_48_bit_payload() {
+    fn vertex_ref_roundtrips_40_bit_payload() {
         let raw = 0x0000_abcd_1234_u64;
-        let vertex = VertexRef::try_from(raw).expect("48-bit value should fit");
+        let vertex = VertexRef::try_from(raw).expect("40-bit value should fit");
 
         assert_eq!(u64::from(vertex), raw);
-        assert_eq!(vertex.as_bytes(), [0x00, 0x00, 0xab, 0xcd, 0x12, 0x34]);
+        assert_eq!(vertex.as_bytes(), [0x00, 0xab, 0xcd, 0x12, 0x34]);
     }
 
     #[test]

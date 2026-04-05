@@ -381,6 +381,40 @@ impl<'a, S: super::GraphPmaStore> GraphRead for GraphPmaKernelOverlayGraph<'a, S
 }
 
 impl<'a, S: super::GraphPmaStore> GraphPmaKernelOverlayGraph<'a, S> {
+    /// Whether `edge` is traversed when expanding from `from` with the given pattern direction.
+    ///
+    /// Directed arrows exclude [`EdgeRecord::undirected`]; pure undirected patterns require it.
+    /// [`EdgeDirection::LeftOrRight`] and [`EdgeDirection::AnyDirection`] remain fully incident-based.
+    fn expand_direction_matches(from: NodeId, direction: EdgeDirection, edge: &EdgeRecord) -> bool {
+        let incident = edge.src == from || edge.dst == from;
+        match direction {
+            EdgeDirection::PointingRight => !edge.undirected && edge.src == from,
+            EdgeDirection::PointingLeft => !edge.undirected && edge.dst == from,
+            EdgeDirection::Undirected => edge.undirected && incident,
+            EdgeDirection::LeftOrUndirected => {
+                (!edge.undirected && edge.dst == from) || (edge.undirected && incident)
+            }
+            EdgeDirection::UndirectedOrRight => {
+                (!edge.undirected && edge.src == from) || (edge.undirected && incident)
+            }
+            EdgeDirection::LeftOrRight | EdgeDirection::AnyDirection => incident,
+        }
+    }
+
+    fn filter_edge_ids_by_expand_direction(
+        &self,
+        from: NodeId,
+        direction: EdgeDirection,
+        ids: &mut BTreeSet<EdgeId>,
+    ) {
+        ids.retain(|id| {
+            self.bridge
+                .edges
+                .get(id)
+                .is_some_and(|e| Self::expand_direction_matches(from, direction, e))
+        });
+    }
+
     /// Adds incident `edge_id`s where [`EdgeRecord::label`] matches `label_matches`.
     ///
     /// Forward cross-shard edges are skipped by the low-level label sidecar
@@ -444,16 +478,7 @@ impl<'a, S: super::GraphPmaStore> GraphPmaKernelOverlayGraph<'a, S> {
             let Some(edge) = self.bridge.edges.get(&edge_id) else {
                 continue;
             };
-            let matched = match direction {
-                EdgeDirection::PointingRight => edge.src == from,
-                EdgeDirection::PointingLeft => edge.dst == from,
-                EdgeDirection::LeftOrRight
-                | EdgeDirection::Undirected
-                | EdgeDirection::LeftOrUndirected
-                | EdgeDirection::UndirectedOrRight
-                | EdgeDirection::AnyDirection => edge.src == from || edge.dst == from,
-            };
-            if !matched {
+            if !Self::expand_direction_matches(from, direction, edge) {
                 continue;
             }
             let target = if edge.src == from { edge.dst } else { edge.src };
@@ -482,16 +507,7 @@ impl<'a, S: super::GraphPmaStore> GraphPmaKernelOverlayGraph<'a, S> {
             let Some(edge) = self.bridge.edges.get(&edge_id) else {
                 continue;
             };
-            let matched = match direction {
-                EdgeDirection::PointingRight => edge.src == from,
-                EdgeDirection::PointingLeft => edge.dst == from,
-                EdgeDirection::LeftOrRight
-                | EdgeDirection::Undirected
-                | EdgeDirection::LeftOrUndirected
-                | EdgeDirection::UndirectedOrRight
-                | EdgeDirection::AnyDirection => edge.src == from || edge.dst == from,
-            };
-            if !matched {
+            if !Self::expand_direction_matches(from, direction, edge) {
                 continue;
             }
             let target = if edge.src == from { edge.dst } else { edge.src };
@@ -582,6 +598,7 @@ impl<'a, S: super::GraphPmaStore> GraphPmaKernelOverlayGraph<'a, S> {
         self.supplement_expand_ids_from_edge_record_labels(&mut ids, from, direction, |rec| {
             rec.label.as_deref() == Some(name)
         });
+        self.filter_edge_ids_by_expand_direction(from, direction, &mut ids);
         Ok(Some(ids))
     }
 
@@ -678,6 +695,7 @@ impl<'a, S: super::GraphPmaStore> GraphPmaKernelOverlayGraph<'a, S> {
                 .as_deref()
                 .is_some_and(|l| names.iter().any(|n| n == l))
         });
+        self.filter_edge_ids_by_expand_direction(from, direction, &mut ids);
         Ok(Some(ids))
     }
 

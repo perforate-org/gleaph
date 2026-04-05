@@ -15,6 +15,8 @@ pub const DML001_UNSUPPORTED_SET_REPLACE: &str = "DML001";
 pub const DML002_TARGET_VALUE: &str = "DML002";
 pub const DML003_TARGET_PATH: &str = "DML003";
 pub const DML004_TARGET_UNKNOWN: &str = "DML004";
+pub const DML005_INSERT_EDGE_DIRECTION: &str = "DML005";
+pub const DML006_MATCH_EDGE_DIRECTION: &str = "DML006";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DmlDiagnosticSeverity {
@@ -46,17 +48,20 @@ pub struct DmlDiagnostic {
 
 pub fn dml_diagnostic_severity(code: &str) -> Option<DmlDiagnosticSeverity> {
     match code {
-        DML001_UNSUPPORTED_SET_REPLACE | DML002_TARGET_VALUE | DML003_TARGET_PATH => {
-            Some(DmlDiagnosticSeverity::Fatal)
-        }
-        DML004_TARGET_UNKNOWN => Some(DmlDiagnosticSeverity::Warning),
+        DML001_UNSUPPORTED_SET_REPLACE
+        | DML002_TARGET_VALUE
+        | DML003_TARGET_PATH
+        | DML005_INSERT_EDGE_DIRECTION => Some(DmlDiagnosticSeverity::Fatal),
+        DML004_TARGET_UNKNOWN | DML006_MATCH_EDGE_DIRECTION => Some(DmlDiagnosticSeverity::Warning),
         _ => None,
     }
 }
 
 pub fn dml_diagnostic_from_warning(warning: &TypeWarning) -> Option<DmlDiagnostic> {
     let code = warning.code?;
-    if warning.kind != WarningKind::DmlTargetMismatch && warning.kind != WarningKind::UnsupportedDml
+    if warning.kind != WarningKind::DmlTargetMismatch
+        && warning.kind != WarningKind::UnsupportedDml
+        && warning.kind != WarningKind::SchemaEdgeDirectionMismatch
     {
         return None;
     }

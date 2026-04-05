@@ -6,10 +6,11 @@
 
 use gleaph_gql::ast::*;
 use gleaph_gql::type_check::{
-    BindingKind, DmlDiagnosticSeverity, TypeWarning, dml_diagnostic_from_warning,
-    infer_linear_query_binding_kinds, infer_linear_query_binding_kinds_and_warnings,
-    infer_linear_query_binding_kinds_with_seed, infer_statement_block_binding_kinds,
-    type_check_composite_query, type_check_statement, type_check_statement_block,
+    BindingKind, DmlDiagnosticSeverity, NoSchema, PropertySchema, TypeWarning,
+    dml_diagnostic_from_warning, infer_linear_query_binding_kinds_and_warnings_with_schema,
+    infer_linear_query_binding_kinds_with_schema, infer_linear_query_binding_kinds_with_seed,
+    infer_statement_block_binding_kinds_with_schema, type_check_composite_query_with_schema,
+    type_check_statement_block_with_schema, type_check_statement_with_schema,
     type_diagnostic_from_warning,
 };
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
@@ -83,8 +84,20 @@ pub fn build_statement_plan(
     stmt: &Statement,
     stats: Option<&dyn GraphStats>,
 ) -> Result<PhysicalPlan, PlannerError> {
-    let mut plan = build_statement_plan_with_binding_kinds(stmt, stats, None)?;
-    apply_type_checker_dml_diagnostics(&mut plan.diagnostics, &type_check_statement(stmt));
+    build_statement_plan_with_schema(stmt, stats, &NoSchema)
+}
+
+/// Like [`build_statement_plan`], but uses `schema` for binding inference and DML/type diagnostics.
+pub fn build_statement_plan_with_schema(
+    stmt: &Statement,
+    stats: Option<&dyn GraphStats>,
+    schema: &dyn PropertySchema,
+) -> Result<PhysicalPlan, PlannerError> {
+    let mut plan = build_statement_plan_with_binding_kinds(stmt, stats, None, schema)?;
+    apply_type_checker_dml_diagnostics(
+        &mut plan.diagnostics,
+        &type_check_statement_with_schema(stmt, schema),
+    );
     validate_plan(plan)
 }
 
@@ -95,14 +108,23 @@ pub fn build_statement_plan_output(
     build_statement_plan(stmt, stats).map(PlanBuildOutput::from_plan)
 }
 
+pub fn build_statement_plan_output_with_schema(
+    stmt: &Statement,
+    stats: Option<&dyn GraphStats>,
+    schema: &dyn PropertySchema,
+) -> Result<PlanBuildOutput, PlannerError> {
+    build_statement_plan_with_schema(stmt, stats, schema).map(PlanBuildOutput::from_plan)
+}
+
 fn build_statement_plan_with_binding_kinds(
     stmt: &Statement,
     stats: Option<&dyn GraphStats>,
     binding_kinds: Option<&std::collections::BTreeMap<String, BindingKind>>,
+    schema: &dyn PropertySchema,
 ) -> Result<PhysicalPlan, PlannerError> {
     match stmt {
         Statement::Query(composite) => {
-            build_composite_plan_with_binding_kinds(composite, stats, binding_kinds)
+            build_composite_plan_with_binding_kinds(composite, stats, binding_kinds, schema)
         }
         Statement::Insert(insert_stmt) => {
             let mut plan = PhysicalPlan::default();
@@ -123,11 +145,24 @@ pub fn build_block_plan(
     block: &StatementBlock,
     stats: Option<&dyn GraphStats>,
 ) -> Result<PhysicalPlan, PlannerError> {
-    let binding_kinds = infer_statement_block_binding_kinds(block);
+    build_block_plan_with_schema(block, stats, &NoSchema)
+}
+
+/// Like [`build_block_plan`], but uses `schema` for binding inference and diagnostics.
+pub fn build_block_plan_with_schema(
+    block: &StatementBlock,
+    stats: Option<&dyn GraphStats>,
+    schema: &dyn PropertySchema,
+) -> Result<PhysicalPlan, PlannerError> {
+    let binding_kinds = infer_statement_block_binding_kinds_with_schema(block, schema);
 
     // Plan the first statement.
-    let mut plan =
-        build_statement_plan_with_binding_kinds(&block.first, stats, binding_kinds.first())?;
+    let mut plan = build_statement_plan_with_binding_kinds(
+        &block.first,
+        stats,
+        binding_kinds.first(),
+        schema,
+    )?;
 
     // Process NEXT chains.
     for next in &block.next {
@@ -151,6 +186,7 @@ pub fn build_block_plan(
             &next.statement,
             stats,
             binding_kinds.get(index_for_next(&block.next, next)),
+            schema,
         )?;
         plan.ops.extend(chained.ops);
 
@@ -169,7 +205,10 @@ pub fn build_block_plan(
     // Re-estimate cost over the full plan.
     plan.annotations.optimizer.estimated_cost = Some(cost::estimate_cost(&plan.ops, stats));
     plan.annotations.optimizer.estimated_rows = Some(cost::estimate_rows(&plan.ops, stats));
-    apply_type_checker_dml_diagnostics(&mut plan.diagnostics, &type_check_statement_block(block));
+    apply_type_checker_dml_diagnostics(
+        &mut plan.diagnostics,
+        &type_check_statement_block_with_schema(block, schema),
+    );
     validate_plan(plan)
 }
 
@@ -180,13 +219,31 @@ pub fn build_block_plan_output(
     build_block_plan(block, stats).map(PlanBuildOutput::from_plan)
 }
 
+pub fn build_block_plan_output_with_schema(
+    block: &StatementBlock,
+    stats: Option<&dyn GraphStats>,
+    schema: &dyn PropertySchema,
+) -> Result<PlanBuildOutput, PlannerError> {
+    build_block_plan_with_schema(block, stats, schema).map(PlanBuildOutput::from_plan)
+}
+
 /// Build a physical plan from a linear query statement.
 pub fn build_plan(
     query: &LinearQueryStatement,
     stats: Option<&dyn GraphStats>,
 ) -> Result<PhysicalPlan, PlannerError> {
-    let (binding_kinds, type_warnings) = infer_linear_query_binding_kinds_and_warnings(query);
-    let mut plan = build_plan_core(query, stats, &binding_kinds)?;
+    build_plan_with_schema(query, stats, &NoSchema)
+}
+
+/// Like [`build_plan`], but uses `schema` for binding inference and DML/type diagnostics.
+pub fn build_plan_with_schema(
+    query: &LinearQueryStatement,
+    stats: Option<&dyn GraphStats>,
+    schema: &dyn PropertySchema,
+) -> Result<PhysicalPlan, PlannerError> {
+    let (binding_kinds, type_warnings) =
+        infer_linear_query_binding_kinds_and_warnings_with_schema(query, schema);
+    let mut plan = build_plan_core(query, stats, &binding_kinds, schema)?;
     apply_type_checker_dml_diagnostics(&mut plan.diagnostics, &type_warnings);
     validate_plan(plan)
 }
@@ -198,6 +255,14 @@ pub fn build_plan_output(
     build_plan(query, stats).map(PlanBuildOutput::from_plan)
 }
 
+pub fn build_plan_output_with_schema(
+    query: &LinearQueryStatement,
+    stats: Option<&dyn GraphStats>,
+    schema: &dyn PropertySchema,
+) -> Result<PlanBuildOutput, PlannerError> {
+    build_plan_with_schema(query, stats, schema).map(PlanBuildOutput::from_plan)
+}
+
 /// Like [`build_plan_output`], but leaves [`PlanBuildOutput::explain`] empty so callers avoid
 /// [`explain_plan`] formatting on every execute iteration.
 pub fn build_plan_output_for_execute(
@@ -205,6 +270,15 @@ pub fn build_plan_output_for_execute(
     stats: Option<&dyn GraphStats>,
 ) -> Result<PlanBuildOutput, PlannerError> {
     build_plan(query, stats).map(|p| PlanBuildOutput::from_plan_with_explain(p, false))
+}
+
+pub fn build_plan_output_for_execute_with_schema(
+    query: &LinearQueryStatement,
+    stats: Option<&dyn GraphStats>,
+    schema: &dyn PropertySchema,
+) -> Result<PlanBuildOutput, PlannerError> {
+    build_plan_with_schema(query, stats, schema)
+        .map(|p| PlanBuildOutput::from_plan_with_explain(p, false))
 }
 
 /// Like [`build_block_plan_output`], but leaves [`PlanBuildOutput::explain`] empty for execute paths.
@@ -215,26 +289,33 @@ pub fn build_block_plan_output_for_execute(
     build_block_plan(block, stats).map(|p| PlanBuildOutput::from_plan_with_explain(p, false))
 }
 
+pub fn build_block_plan_output_for_execute_with_schema(
+    block: &StatementBlock,
+    stats: Option<&dyn GraphStats>,
+    schema: &dyn PropertySchema,
+) -> Result<PlanBuildOutput, PlannerError> {
+    build_block_plan_with_schema(block, stats, schema)
+        .map(|p| PlanBuildOutput::from_plan_with_explain(p, false))
+}
+
 fn build_plan_with_binding_kinds(
     query: &LinearQueryStatement,
     stats: Option<&dyn GraphStats>,
     seed_binding_kinds: Option<&BTreeMap<String, BindingKind>>,
+    schema: &dyn PropertySchema,
 ) -> Result<PhysicalPlan, PlannerError> {
     let binding_kinds = match seed_binding_kinds {
-        Some(seed) => infer_linear_query_binding_kinds_with_seed(
-            query,
-            &gleaph_gql::type_check::NoSchema,
-            seed,
-        ),
-        None => infer_linear_query_binding_kinds(query),
+        Some(seed) => infer_linear_query_binding_kinds_with_seed(query, schema, seed),
+        None => infer_linear_query_binding_kinds_with_schema(query, schema),
     };
-    build_plan_core(query, stats, &binding_kinds)
+    build_plan_core(query, stats, &binding_kinds, schema)
 }
 
 fn build_plan_core(
     query: &LinearQueryStatement,
     stats: Option<&dyn GraphStats>,
     binding_kinds: &BTreeMap<String, BindingKind>,
+    schema: &dyn PropertySchema,
 ) -> Result<PhysicalPlan, PlannerError> {
     // Phase 1: Semantic analysis.
     let semantic = semantic::analyze(query);
@@ -261,6 +342,7 @@ fn build_plan_core(
             &conditional_candidates,
             binding_kinds,
             &referenced_vars,
+            schema,
             &mut ops,
             &mut annotations,
         )?;
@@ -274,6 +356,7 @@ fn build_plan_core(
                 &conditional_candidates,
                 binding_kinds,
                 &referenced_vars,
+                schema,
                 &mut ops,
                 &mut annotations,
             )?;
@@ -567,10 +650,18 @@ pub fn build_composite_plan(
     composite: &CompositeQueryExpr,
     stats: Option<&dyn GraphStats>,
 ) -> Result<PhysicalPlan, PlannerError> {
-    let mut plan = build_composite_plan_with_binding_kinds(composite, stats, None)?;
+    build_composite_plan_with_schema(composite, stats, &NoSchema)
+}
+
+pub fn build_composite_plan_with_schema(
+    composite: &CompositeQueryExpr,
+    stats: Option<&dyn GraphStats>,
+    schema: &dyn PropertySchema,
+) -> Result<PhysicalPlan, PlannerError> {
+    let mut plan = build_composite_plan_with_binding_kinds(composite, stats, None, schema)?;
     apply_type_checker_dml_diagnostics(
         &mut plan.diagnostics,
-        &type_check_composite_query(composite),
+        &type_check_composite_query_with_schema(composite, schema),
     );
     validate_plan(plan)
 }
@@ -582,16 +673,30 @@ pub fn build_composite_plan_output(
     build_composite_plan(composite, stats).map(PlanBuildOutput::from_plan)
 }
 
+pub fn build_composite_plan_output_with_schema(
+    composite: &CompositeQueryExpr,
+    stats: Option<&dyn GraphStats>,
+    schema: &dyn PropertySchema,
+) -> Result<PlanBuildOutput, PlannerError> {
+    build_composite_plan_with_schema(composite, stats, schema).map(PlanBuildOutput::from_plan)
+}
+
 fn build_composite_plan_with_binding_kinds(
     composite: &CompositeQueryExpr,
     stats: Option<&dyn GraphStats>,
     seed_binding_kinds: Option<&BTreeMap<String, BindingKind>>,
+    schema: &dyn PropertySchema,
 ) -> Result<PhysicalPlan, PlannerError> {
-    let mut plan = build_plan_with_binding_kinds(&composite.left, stats, seed_binding_kinds)?;
+    let mut plan = build_plan_with_binding_kinds(
+        &composite.left,
+        stats,
+        seed_binding_kinds,
+        schema,
+    )?;
 
     // Append set operations (UNION, EXCEPT, INTERSECT, OTHERWISE).
     for (set_op, right_query) in &composite.rest {
-        let right_plan = build_plan_with_binding_kinds(right_query, stats, seed_binding_kinds)?;
+        let right_plan = build_plan_with_binding_kinds(right_query, stats, seed_binding_kinds, schema)?;
         plan.ops.push(PlanOp::SetOperation {
             op: *set_op,
             right: Box::new(right_plan),
@@ -684,6 +789,7 @@ fn plan_simple_statement(
     conditional_candidates: &[ConditionalScanCandidate],
     binding_kinds: &std::collections::BTreeMap<String, BindingKind>,
     referenced_vars: &BTreeSet<String>,
+    schema: &dyn PropertySchema,
     ops: &mut Vec<PlanOp>,
     annotations: &mut PlanAnnotations,
 ) -> Result<(), PlannerError> {
@@ -785,7 +891,8 @@ fn plan_simple_statement(
             Ok(())
         }
         SimpleQueryStatement::InlineProcedureCall(inline) => {
-            let mut sub_plan = build_composite_plan_with_binding_kinds(&inline.body, stats, None)?;
+            let mut sub_plan =
+                build_composite_plan_with_binding_kinds(&inline.body, stats, None, schema)?;
             if let Some(graph) = &inline.use_graph {
                 let wrapped_ops = std::mem::take(&mut sub_plan.ops);
                 sub_plan.ops = vec![PlanOp::UseGraph {
@@ -814,6 +921,7 @@ fn plan_simple_statement(
                     conditional_candidates,
                     binding_kinds,
                     referenced_vars,
+                    schema,
                     &mut sub_ops,
                     annotations,
                 )?;
@@ -2492,6 +2600,7 @@ fn plan_bushy_join(
     conditional_candidates: &[ConditionalScanCandidate],
     binding_kinds: &std::collections::BTreeMap<String, BindingKind>,
     referenced_vars: &BTreeSet<String>,
+    schema: &dyn PropertySchema,
     ops: &mut Vec<PlanOp>,
     annotations: &mut PlanAnnotations,
 ) -> Result<(), PlannerError> {
@@ -2510,6 +2619,7 @@ fn plan_bushy_join(
                 conditional_candidates,
                 binding_kinds,
                 referenced_vars,
+                schema,
                 &mut group_ops,
                 annotations,
             )?;

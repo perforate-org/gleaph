@@ -6,6 +6,7 @@
 pub mod constraint;
 mod diagnostics;
 mod env;
+mod graph_type_schema;
 mod infer;
 mod narrowing;
 mod pattern;
@@ -16,14 +17,17 @@ pub mod types;
 pub use constraint::{ConstraintSet, TypeVarId, TypedConstraint};
 pub use diagnostics::{
     BindingKind, DML001_UNSUPPORTED_SET_REPLACE, DML002_TARGET_VALUE, DML003_TARGET_PATH,
-    DML004_TARGET_UNKNOWN, DiagnosticSeverity, DmlDiagnostic, DmlDiagnosticSeverity,
-    TypeDiagnostic, dml_diagnostic_from_warning, dml_diagnostic_severity, dml_target_path_message,
+    DML004_TARGET_UNKNOWN, DML005_INSERT_EDGE_DIRECTION, DML006_MATCH_EDGE_DIRECTION,
+    DiagnosticSeverity, DmlDiagnostic, DmlDiagnosticSeverity, TypeDiagnostic,
+    dml_diagnostic_from_warning, dml_diagnostic_severity, dml_target_path_message,
     dml_target_unknown_message, dml_target_value_message, dml_unsupported_set_replace_message,
     type_diagnostic_from_warning,
 };
+pub use graph_type_schema::GraphTypePropertySchema;
 pub use env::{TypeWarning, WarningKind, WarningProvenance};
 pub use phase_b::{
     infer_linear_query_binding_kinds, infer_linear_query_binding_kinds_and_warnings,
+    infer_linear_query_binding_kinds_and_warnings_with_schema,
     infer_linear_query_binding_kinds_and_warnings_with_seed,
     infer_linear_query_binding_kinds_with_schema, infer_linear_query_binding_kinds_with_seed,
     infer_statement_block_binding_kinds, infer_statement_block_binding_kinds_with_schema,
@@ -42,7 +46,10 @@ use infer::{
     check_null_test, check_string_predicate, check_unary_op, infer_expr,
 };
 use narrowing::{apply_narrowing, extract_narrowing_facts};
-use pattern::build_env_from_graph_pattern;
+use pattern::{
+    build_env_from_graph_pattern, check_graph_pattern_schema_edge_direction,
+    check_insert_path_schema_edge_direction,
+};
 
 /// Run static type checking on a parsed program. Returns warnings.
 pub fn type_check(program: &GqlProgram) -> Vec<TypeWarning> {
@@ -474,6 +481,7 @@ fn check_simple_query(env: &mut TypeEnv<'_>, sq: &SimpleQueryStatement) {
 
 fn check_match(env: &mut TypeEnv<'_>, m: &MatchStatement) {
     build_env_from_graph_pattern(env, &m.pattern, m.optional);
+    check_graph_pattern_schema_edge_direction(env, &m.pattern);
     // Check WHERE clauses embedded inside node/edge patterns.
     check_pattern_internal_wheres(env, &m.pattern);
     if let Some(ref where_expr) = m.pattern.where_clause {
@@ -665,6 +673,7 @@ fn check_select(env: &mut TypeEnv<'_>, sel: &SelectStatement) {
 
 fn check_insert(env: &mut TypeEnv<'_>, ins: &InsertStatement) {
     for path_pattern in &ins.patterns {
+        check_insert_path_schema_edge_direction(env, path_pattern);
         for element in &path_pattern.elements {
             match element {
                 InsertElement::Node(node) => {

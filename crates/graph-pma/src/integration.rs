@@ -98,9 +98,16 @@ pub fn bootstrap_kernel_overlay_graph<S: GraphPmaStore>(
                 principal,
                 edge.label.as_deref(),
                 &edge.properties,
+                edge.undirected,
             )?
         } else {
-            graph.bootstrap_edge(src, dst, edge.label.as_deref(), &edge.properties)?
+            graph.bootstrap_edge(
+                src,
+                dst,
+                edge.label.as_deref(),
+                &edge.properties,
+                edge.undirected,
+            )?
         };
         edges.push(record);
         if let Some(GraphPmaOverlayWriteEvent::BootstrapEdge(summary)) =
@@ -395,8 +402,9 @@ impl<'a, M: Memory> GraphWrite for GraphPmaKernelHarnessOverlay<'a, M> {
         dst: NodeId,
         label: Option<&str>,
         properties: &PropertyMap,
+        undirected: bool,
     ) -> GraphResult<EdgeRecord> {
-        self.inner.insert_edge(src, dst, label, properties)
+        self.inner.insert_edge(src, dst, label, properties, undirected)
     }
 
     fn set_node_property(
@@ -960,7 +968,7 @@ mod tests {
             .bootstrap_node(&person_labels, &empty_properties)
             .expect("bootstrap bob");
         let edge = bridge
-            .bootstrap_edge(alice.id, bob.id, Some("KNOWS"), &empty_properties)
+            .bootstrap_edge(alice.id, bob.id, Some("KNOWS"), &empty_properties, false)
             .expect("bootstrap edge");
 
         assert_eq!(bridge.nodes().len(), 2);
@@ -986,7 +994,14 @@ mod tests {
                 .bootstrap_node(&["B".to_owned()], &empty)
                 .expect("node b");
             overlay
-                .insert_edge_with_shard_canister_dst(a.id, b.id, remote, Some("LINKS"), &empty)
+                .insert_edge_with_shard_canister_dst(
+                    a.id,
+                    b.id,
+                    remote,
+                    Some("LINKS"),
+                    &empty,
+                    false,
+                )
                 .expect("shard edge");
 
             assert_eq!(
@@ -1050,7 +1065,14 @@ mod tests {
                 .expect("node b");
             let remote = Principal::from_slice(&[3u8; 3]);
             overlay
-                .insert_edge_with_shard_canister_dst(a.id, b.id, remote, Some("LINKS"), &empty)
+                .insert_edge_with_shard_canister_dst(
+                    a.id,
+                    b.id,
+                    remote,
+                    Some("LINKS"),
+                    &empty,
+                    false,
+                )
                 .expect("shard edge");
         }
         let mem_rc = Rc::clone(&facade.memory);
@@ -1090,7 +1112,14 @@ mod tests {
             .expect("node b");
         let remote = Principal::from_slice(&[9u8; 9]);
         let shard_edge = overlay
-            .insert_edge_with_shard_canister_dst(a.id, b.id, remote, Some("LINKS"), &empty)
+            .insert_edge_with_shard_canister_dst(
+                a.id,
+                b.id,
+                remote,
+                Some("LINKS"),
+                &empty,
+                false,
+            )
             .expect("shard edge");
 
         assert_eq!(
@@ -1121,7 +1150,7 @@ mod tests {
             .bootstrap_node(&["B".to_owned()], &empty)
             .expect("node b");
         let local_edge = overlay
-            .bootstrap_edge(a.id, b.id, Some("KNOWS"), &empty)
+            .bootstrap_edge(a.id, b.id, Some("KNOWS"), &empty, false)
             .expect("local edge");
 
         assert_eq!(
@@ -1153,7 +1182,14 @@ mod tests {
             .expect("node b");
         let remote = Principal::from_slice(&[2u8; 2]);
         let shard_edge = overlay
-            .insert_edge_with_shard_canister_dst(a.id, b.id, remote, Some("LINKS"), &empty)
+            .insert_edge_with_shard_canister_dst(
+                a.id,
+                b.id,
+                remote,
+                Some("LINKS"),
+                &empty,
+                false,
+            )
             .expect("shard edge");
 
         let ex = overlay
@@ -1182,7 +1218,14 @@ mod tests {
             .expect("node b");
         let remote = Principal::from_slice(&[5u8; 5]);
         let shard_edge = overlay
-            .insert_edge_with_shard_canister_dst(a.id, b.id, remote, Some("LINKS"), &empty)
+            .insert_edge_with_shard_canister_dst(
+                a.id,
+                b.id,
+                remote,
+                Some("LINKS"),
+                &empty,
+                false,
+            )
             .expect("shard edge");
 
         let names = vec!["OTHER".to_owned(), "LINKS".to_owned()];
@@ -1211,7 +1254,14 @@ mod tests {
             .expect("node b");
         let remote = Principal::from_slice(&[8u8; 8]);
         let shard_edge = overlay
-            .insert_edge_with_shard_canister_dst(a.id, b.id, remote, Some("LINKS"), &empty)
+            .insert_edge_with_shard_canister_dst(
+                a.id,
+                b.id,
+                remote,
+                Some("LINKS"),
+                &empty,
+                false,
+            )
             .expect("shard edge");
 
         let hops = overlay
@@ -1283,7 +1333,7 @@ mod tests {
             .insert_node(&person_labels, &bob_properties)
             .expect("insert bob");
         let edge = graph
-            .insert_edge(alice.id, bob.id, Some("KNOWS"), &edge_properties)
+            .insert_edge(alice.id, bob.id, Some("KNOWS"), &edge_properties, false)
             .expect("insert edge");
 
         let scanned = graph.scan_nodes(Some("Person")).expect("scan nodes");
@@ -1325,7 +1375,7 @@ mod tests {
             .insert_node(&person_labels, &empty_properties)
             .expect("insert bob");
         let edge = graph
-            .insert_edge(alice.id, bob.id, Some("KNOWS"), &empty_properties)
+            .insert_edge(alice.id, bob.id, Some("KNOWS"), &empty_properties, false)
             .expect("insert edge");
 
         graph
@@ -1363,10 +1413,10 @@ mod tests {
             .insert_node(&person_labels, &empty_properties)
             .expect("insert charlie");
         let e1 = graph
-            .insert_edge(alice.id, bob.id, Some("KNOWS"), &empty_properties)
+            .insert_edge(alice.id, bob.id, Some("KNOWS"), &empty_properties, false)
             .expect("insert knows");
         let e2 = graph
-            .insert_edge(alice.id, charlie.id, Some("LIKES"), &empty_properties)
+            .insert_edge(alice.id, charlie.id, Some("LIKES"), &empty_properties, false)
             .expect("insert likes");
 
         graph
@@ -1435,7 +1485,7 @@ mod tests {
         );
 
         let edge = graph
-            .insert_edge(alice.id, alice.id, Some("SELF"), &empty_properties)
+            .insert_edge(alice.id, alice.id, Some("SELF"), &empty_properties, false)
             .expect("insert self edge");
         let insert_summary = graph
             .last_insert_edge_summary()
@@ -1799,7 +1849,7 @@ mod tests {
             .expect("rebalance test delta");
 
         let edge = graph
-            .insert_edge(src, dst, Some("LIKES"), &empty_properties)
+            .insert_edge(src, dst, Some("LIKES"), &empty_properties, false)
             .expect("insert with rebalance");
         let summary = graph.last_insert_edge_summary().expect("insert summary");
         assert_eq!(edge.id, 91);
@@ -1899,7 +1949,7 @@ mod tests {
             .insert_node(&person_labels, &properties)
             .expect("insert bob");
         let edge = graph
-            .insert_edge(alice.id, bob.id, Some("KNOWS"), &properties)
+            .insert_edge(alice.id, bob.id, Some("KNOWS"), &properties, false)
             .expect("insert edge");
         let insert_summary = graph
             .last_insert_edge_summary()
@@ -1996,7 +2046,7 @@ mod tests {
             .insert_node(&person_labels, &PropertyMap::new())
             .expect("insert bob");
         let edge = graph
-            .insert_edge(alice.id, bob.id, Some("KNOWS"), &edge_properties)
+            .insert_edge(alice.id, bob.id, Some("KNOWS"), &edge_properties, false)
             .expect("insert edge");
 
         assert_eq!(
@@ -2043,7 +2093,7 @@ mod tests {
             .insert_node(&person_labels, &properties)
             .expect("insert bob");
         let edge = graph
-            .insert_edge(alice.id, bob.id, Some("KNOWS"), &properties)
+            .insert_edge(alice.id, bob.id, Some("KNOWS"), &properties, false)
             .expect("insert edge");
         assert_eq!(graph.insert_edge_history().len(), 1);
 
@@ -2180,6 +2230,89 @@ mod tests {
                 .all_property_key_names()
                 .expect("property keys after delete")
                 .contains("name")
+        );
+    }
+
+    #[test]
+    fn undirected_insert_edge_matches_undirected_expand_not_pointing_right() {
+        let memory = VecMemory::default();
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut graph = facade.bind_kernel_overlay(&memory);
+        let empty = PropertyMap::new();
+        let a = graph
+            .bootstrap_node(&["A".to_owned()], &empty)
+            .expect("node a");
+        let b = graph
+            .bootstrap_node(&["B".to_owned()], &empty)
+            .expect("node b");
+        let edge = graph
+            .insert_edge(a.id, b.id, Some("R"), &empty, true)
+            .expect("undirected edge");
+        assert!(edge.undirected);
+        assert!(
+            graph
+                .expand(
+                    a.id,
+                    EdgeDirection::PointingRight,
+                    EdgeLabelFilter::Single("R"),
+                )
+                .expect("expand right")
+                .is_empty()
+        );
+        assert_eq!(
+            graph
+                .expand(
+                    a.id,
+                    EdgeDirection::Undirected,
+                    EdgeLabelFilter::Single("R"),
+                )
+                .expect("expand undirected")
+                .len(),
+            1
+        );
+        let fwd = graph
+            .bridge()
+            .forward_edge_entry_for_edge_id(edge.id)
+            .expect("forward entry");
+        assert!(fwd.meta.is_undirected());
+    }
+
+    #[test]
+    fn directed_insert_edge_matches_pointing_right_not_undirected_expand() {
+        let memory = VecMemory::default();
+        let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut graph = facade.bind_kernel_overlay(&memory);
+        let empty = PropertyMap::new();
+        let a = graph
+            .bootstrap_node(&["A".to_owned()], &empty)
+            .expect("node a");
+        let b = graph
+            .bootstrap_node(&["B".to_owned()], &empty)
+            .expect("node b");
+        let edge = graph
+            .insert_edge(a.id, b.id, Some("R"), &empty, false)
+            .expect("directed edge");
+        assert!(!edge.undirected);
+        assert_eq!(
+            graph
+                .expand(
+                    a.id,
+                    EdgeDirection::PointingRight,
+                    EdgeLabelFilter::Single("R"),
+                )
+                .expect("expand right")
+                .len(),
+            1
+        );
+        assert!(
+            graph
+                .expand(
+                    a.id,
+                    EdgeDirection::Undirected,
+                    EdgeLabelFilter::Single("R"),
+                )
+                .expect("expand undirected")
+                .is_empty()
         );
     }
 

@@ -4,13 +4,27 @@ use gleaph_graph_kernel::LabelId;
 
 use super::ids::VertexRef;
 use super::region::RegionRef;
-use super::vertex::TOMBSTONE_MASK;
 
-/// Bit 14: when set, [`EdgeMeta`] holds a shard-canister slot in the payload, not a local label id.
-pub const EDGE_SHARD_CANISTER_MASK: u16 = 1 << 14;
+/// Low 24 bits of on-wire edge metadata (3 bytes, little-endian).
+pub const EDGE_META_RAW_MASK: u32 = 0x00FF_FFFF;
 
-/// Low 14 bits: local [`LabelId`] (cross-shard flag clear) or [`ShardCanisterSlot`](super::shard_canister::ShardCanisterSlot).
-pub const EDGE_META_PAYLOAD_MASK: u16 = (1 << 14) - 1;
+/// Bit 23: tombstone (logical deletion for this adjacency slot).
+pub const EDGE_TOMBSTONE_MASK: u32 = 1 << 23;
+
+/// Bit 22: when set, [`EdgeMeta`] payload is a shard-canister slot, not a local label id.
+pub const EDGE_SHARD_CANISTER_MASK: u32 = 1 << 22;
+
+/// Bit 21: undirected semantic tag (storage may still use directed surfaces).
+pub const EDGE_UNDIRECTED_MASK: u32 = 1 << 21;
+
+/// Bits 16–20: reserved; allocate new flags from bit 20 downward toward the payload.
+pub const EDGE_META_RSV_MASK: u32 = 0x1F << 16;
+
+/// Low 16 bits: local [`LabelId`] or shard slot (when shard flag is set).
+pub const EDGE_META_PAYLOAD_MASK: u16 = u16::MAX;
+
+/// Back-compat alias for [`EDGE_TOMBSTONE_MASK`] (historically named from the 16-bit layout).
+pub const TOMBSTONE_MASK: u32 = EDGE_TOMBSTONE_MASK;
 
 /// Directional adjacency surface.
 ///
@@ -117,68 +131,92 @@ impl SurfaceRegions {
     }
 }
 
-/// Packed hot metadata for an [`EdgeEntry`].
+/// Packed hot metadata for an [`EdgeEntry`] (24 significant bits, 3-byte little-endian on wire).
 ///
-/// Layout:
-/// - bit 15: tombstone
-/// - bit 14: shard-canister flag (`1` = payload is a shard slot id; `0` = payload is a local label id)
-/// - bits 0–13: payload (14 bits)
+/// Layout (LSB = bit 0):
+/// - bits 0–15: payload (local [`LabelId`] or shard slot when shard flag set)
+/// - bits 16–20: RSV (new flags consume from bit 20 downward)
+/// - bit 21: undirected
+/// - bit 22: shard-canister (`1` = payload is shard slot)
+/// - bit 23: tombstone
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub struct EdgeMeta(u16);
+pub struct EdgeMeta([u8; 3]);
 
 impl EdgeMeta {
     /// Packed edge metadata with no label, no tombstone, and no cross-shard flag.
-    pub const UNLABELED: Self = Self(0);
+    pub const UNLABELED: Self = Self([0, 0, 0]);
+
+    #[inline]
+    pub const fn from_raw(raw: u32) -> Self {
+        let r = raw & EDGE_META_RAW_MASK;
+        Self([r as u8, (r >> 8) as u8, (r >> 16) as u8])
+    }
+
+    #[inline]
+    pub const fn raw24(self) -> u32 {
+        let b = self.0;
+        (b[0] as u32) | ((b[1] as u32) << 8) | ((b[2] as u32) << 16)
+    }
+
+    /// Serializes to 3 little-endian bytes (on-wire `meta`).
+    #[inline]
+    pub const fn to_le_bytes(self) -> [u8; 3] {
+        self.0
+    }
+
+    #[inline]
+    pub const fn from_le_bytes(bytes: [u8; 3]) -> Self {
+        Self(bytes)
+    }
 
     /// Packs a local label id and tombstone bit (same-canister target).
     pub fn new(label_id: LabelId, tombstone: bool) -> Self {
         assert!(
             label_id <= EDGE_META_PAYLOAD_MASK,
-            "label id exceeds 14-bit edge meta layout"
+            "label id exceeds 16-bit edge meta payload"
         );
-        let tombstone_bits = if tombstone { TOMBSTONE_MASK } else { 0 };
-        Self(tombstone_bits | label_id)
+        let mut r = label_id as u32;
+        if tombstone {
+            r |= EDGE_TOMBSTONE_MASK;
+        }
+        Self::from_raw(r)
     }
 
     /// Packs a remote shard slot id and tombstone bit (`target` names a vertex in that canister).
     pub fn new_shard_canister(shard_slot: u16, tombstone: bool) -> Self {
         assert!(
             shard_slot <= EDGE_META_PAYLOAD_MASK,
-            "shard canister slot exceeds 14-bit edge meta layout"
+            "shard canister slot exceeds 16-bit edge meta payload"
         );
-        let tombstone_bits = if tombstone { TOMBSTONE_MASK } else { 0 };
-        Self(tombstone_bits | EDGE_SHARD_CANISTER_MASK | shard_slot)
+        let mut r = (shard_slot as u32) | EDGE_SHARD_CANISTER_MASK;
+        if tombstone {
+            r |= EDGE_TOMBSTONE_MASK;
+        }
+        Self::from_raw(r)
     }
 
-    /// Wraps a raw packed 16-bit value.
-    #[inline]
-    pub const fn from_raw(raw: u16) -> Self {
-        Self(raw)
-    }
-
-    /// Returns the raw packed representation.
-    #[inline]
-    pub const fn raw(self) -> u16 {
-        self.0
-    }
-
-    /// Low 14 bits (local label id or shard slot id).
+    /// Low 16 bits (local label id or shard slot id).
     #[inline]
     pub const fn payload(self) -> u16 {
-        self.0 & EDGE_META_PAYLOAD_MASK
+        (self.raw24() & (EDGE_META_PAYLOAD_MASK as u32)) as u16
     }
 
     /// Returns whether the tombstone bit is set.
     #[inline]
     pub const fn is_tombstone(self) -> bool {
-        (self.0 & TOMBSTONE_MASK) != 0
+        (self.raw24() & EDGE_TOMBSTONE_MASK) != 0
     }
 
     /// Returns whether the neighbor lives in another canister (payload is a shard slot id).
     #[inline]
     pub const fn is_shard_canister(self) -> bool {
-        (self.0 & EDGE_SHARD_CANISTER_MASK) != 0
+        (self.raw24() & EDGE_SHARD_CANISTER_MASK) != 0
+    }
+
+    #[inline]
+    pub const fn is_undirected(self) -> bool {
+        (self.raw24() & EDGE_UNDIRECTED_MASK) != 0
     }
 
     /// Local label id when this edge targets a vertex in the same canister.
@@ -210,17 +248,38 @@ impl EdgeMeta {
 
     /// Returns a copy with only the tombstone bit changed.
     pub fn with_tombstone(self, tombstone: bool) -> Self {
-        Self((self.0 & !TOMBSTONE_MASK) | if tombstone { TOMBSTONE_MASK } else { 0 })
+        let r = self.raw24();
+        let cleared = r & !EDGE_TOMBSTONE_MASK;
+        Self::from_raw(cleared | if tombstone { EDGE_TOMBSTONE_MASK } else { 0 })
     }
 
     /// Returns a copy with a local label id (clears the cross-shard flag).
     pub fn with_label_id(self, label_id: LabelId) -> Self {
-        Self::new(label_id, self.is_tombstone())
+        assert!(
+            label_id <= EDGE_META_PAYLOAD_MASK,
+            "label id exceeds 16-bit edge meta payload"
+        );
+        let keep = self.raw24()
+            & (EDGE_TOMBSTONE_MASK | EDGE_UNDIRECTED_MASK | EDGE_META_RSV_MASK);
+        Self::from_raw(keep | (label_id as u32))
     }
 
     /// Returns a copy with a shard slot (sets the cross-shard flag).
     pub fn with_shard_canister_slot(self, shard_slot: u16) -> Self {
-        Self::new_shard_canister(shard_slot, self.is_tombstone())
+        assert!(
+            shard_slot <= EDGE_META_PAYLOAD_MASK,
+            "shard canister slot exceeds 16-bit edge meta payload"
+        );
+        let keep = self.raw24()
+            & (EDGE_TOMBSTONE_MASK | EDGE_UNDIRECTED_MASK | EDGE_META_RSV_MASK);
+        Self::from_raw(keep | EDGE_SHARD_CANISTER_MASK | (shard_slot as u32))
+    }
+
+    /// Returns a copy with only the undirected bit changed.
+    pub fn with_undirected(self, undirected: bool) -> Self {
+        let r = self.raw24();
+        let cleared = r & !EDGE_UNDIRECTED_MASK;
+        Self::from_raw(cleared | if undirected { EDGE_UNDIRECTED_MASK } else { 0 })
     }
 }
 
@@ -231,14 +290,22 @@ impl EdgeMeta {
 /// metadata.
 ///
 /// Invariant:
-/// - one `EdgeEntry` is always exactly 8 bytes
-/// - `target` is a packed low-level `VertexRef`
+/// - one `EdgeEntry` is always exactly 8 bytes (5-byte BE `VertexRef` + 3-byte LE `EdgeMeta`)
 /// - semantic edge identity is stored elsewhere, not here
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[repr(C, packed)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EdgeEntry {
     pub target: VertexRef,
     pub meta: EdgeMeta,
+}
+
+impl Default for EdgeEntry {
+    fn default() -> Self {
+        Self {
+            target: VertexRef::default(),
+            meta: EdgeMeta::UNLABELED,
+        }
+    }
 }
 
 impl EdgeEntry {
@@ -253,7 +320,7 @@ impl EdgeEntry {
 
 const _: [(); 64] = [(); core::mem::size_of::<SurfaceRegions>()];
 const _: [(); 8] = [(); core::mem::size_of::<EdgeEntry>()];
-const _: [(); 2] = [(); core::mem::size_of::<EdgeMeta>()];
+const _: [(); 3] = [(); core::mem::size_of::<EdgeMeta>()];
 
 #[cfg(test)]
 mod tests {
@@ -264,8 +331,8 @@ mod tests {
     #[test]
     fn edge_entry_has_expected_abi() {
         assert_eq!(core::mem::size_of::<EdgeEntry>(), 8);
-        assert_eq!(core::mem::size_of::<VertexRef>(), 6);
-        assert_eq!(core::mem::size_of::<EdgeMeta>(), 2);
+        assert_eq!(core::mem::size_of::<VertexRef>(), 5);
+        assert_eq!(core::mem::size_of::<EdgeMeta>(), 3);
     }
 
     #[test]
@@ -286,7 +353,7 @@ mod tests {
     }
 
     #[test]
-    fn edge_entry_uses_packed_kernel_node_id() {
+    fn edge_entry_uses_packed_vertex_ref() {
         let target = VertexRef::from(7u8);
         let entry = EdgeEntry::new(target, EdgeMeta::new(3, false));
         assert_eq!(u64::from(entry.target), 7);

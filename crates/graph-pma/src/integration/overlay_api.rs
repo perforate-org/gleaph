@@ -121,8 +121,10 @@ impl<'a, S: GraphPmaStore> GraphPmaKernelOverlayGraph<'a, S> {
         dst: NodeId,
         label: Option<&str>,
         properties: &PropertyMap,
+        undirected: bool,
     ) -> GraphResult<EdgeRecord> {
-        self.bridge.bootstrap_edge(src, dst, label, properties)
+        self.bridge
+            .bootstrap_edge(src, dst, label, properties, undirected)
     }
 
     /// See [`GraphPmaKernelBootstrapBridge::bootstrap_edge_with_shard_canister_dst`].
@@ -133,6 +135,7 @@ impl<'a, S: GraphPmaStore> GraphPmaKernelOverlayGraph<'a, S> {
         shard_canister: Principal,
         label: Option<&str>,
         properties: &PropertyMap,
+        undirected: bool,
     ) -> GraphResult<EdgeRecord> {
         self.bridge.bootstrap_edge_with_shard_canister_dst(
             src,
@@ -140,6 +143,7 @@ impl<'a, S: GraphPmaStore> GraphPmaKernelOverlayGraph<'a, S> {
             shard_canister,
             label,
             properties,
+            undirected,
         )
     }
 
@@ -151,9 +155,16 @@ impl<'a, S: GraphPmaStore> GraphPmaKernelOverlayGraph<'a, S> {
         shard_canister: Principal,
         label: Option<&str>,
         properties: &PropertyMap,
+        undirected: bool,
     ) -> GraphResult<EdgeRecord> {
-        self.bridge
-            .insert_edge_with_shard_canister_dst(src, dst, shard_canister, label, properties)
+        self.bridge.insert_edge_with_shard_canister_dst(
+            src,
+            dst,
+            shard_canister,
+            label,
+            properties,
+            undirected,
+        )
     }
 
     /// Bootstraps kernel-facing node/edge record payloads directly on this overlay.

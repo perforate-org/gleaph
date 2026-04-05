@@ -18,6 +18,7 @@
 //! `Value::Text` when a string-encoded wide numeric value cannot be parsed.
 
 mod auth;
+pub mod catalog;
 mod graph_registry;
 mod prepared;
 mod procedure;
@@ -48,9 +49,8 @@ use gleaph_gql_executor::{
     ExecutionContext, ExecutionError, ExecutionResult, execute_plan_with_context,
 };
 use gleaph_gql_planner::{
-    GraphStats, PhysicalPlan, PlanBuildOutput, PlanSummary, PlannerError, build_block_plan_output,
-    build_block_plan_output_for_execute, build_plan_output, build_plan_output_for_execute,
-    first_executor_unsupported_op,
+    GraphStats, PhysicalPlan, PlanBuildOutput, PlanSummary, PlannerError, build_plan_output,
+    build_plan_output_for_execute, first_executor_unsupported_op,
 };
 use gleaph_graph_kernel::{GraphRead, GraphWrite};
 use gleaph_graph_pma::integration::GraphPmaKernelOverlay;
@@ -825,6 +825,23 @@ pub enum GleaphError {
     MissingStatementBlock,
     #[error("federated routed query: {0}")]
     FederationRoutedQuery(String),
+    #[error("graph catalog: {0}")]
+    Catalog(String),
+}
+
+impl From<catalog::PlanBlockError> for GleaphError {
+    fn from(e: catalog::PlanBlockError) -> Self {
+        match e {
+            catalog::PlanBlockError::Catalog(c) => GleaphError::Catalog(c.to_string()),
+            catalog::PlanBlockError::Planner(p) => GleaphError::Planner(p),
+        }
+    }
+}
+
+impl From<catalog::CatalogError> for GleaphError {
+    fn from(e: catalog::CatalogError) -> Self {
+        GleaphError::Catalog(e.to_string())
+    }
 }
 
 impl GleaphError {
@@ -1013,7 +1030,18 @@ pub fn plan_block(
     block: &StatementBlock,
     stats: Option<&dyn GraphStats>,
 ) -> Result<PlanBuildOutput, GleaphError> {
-    let out = build_block_plan_output(block, stats)?;
+    plan_block_with_catalog(block, stats, &catalog::GraphCatalog::default(), None)
+}
+
+/// Like [`plan_block`], but uses `catalog` and `active_graph` to supply a [`PropertySchema`] for planning.
+pub fn plan_block_with_catalog(
+    block: &StatementBlock,
+    stats: Option<&dyn GraphStats>,
+    catalog: &catalog::GraphCatalog,
+    active_graph: Option<&str>,
+) -> Result<PlanBuildOutput, GleaphError> {
+    let out = catalog::plan_block_with_catalog(block, stats, catalog, active_graph)
+        .map_err(GleaphError::from)?;
     ensure_plan_supported_by_executor(&out.plan)?;
     Ok(out)
 }
@@ -1032,18 +1060,20 @@ pub fn execute_block<G: GraphRead + GraphWrite>(
     stats: Option<&dyn GraphStats>,
     ctx: &ExecutionContext,
 ) -> Result<QueryRunOutput, GleaphError> {
-    let plan = {
-        #[cfg(feature = "canbench-rs")]
-        let _scope = canbench_rs::bench_scope("gql_block_plan");
-        build_block_plan_output_for_execute(block, stats)?
-    };
-    ensure_plan_supported_by_executor(&plan.plan)?;
-    let execution = {
-        #[cfg(feature = "canbench-rs")]
-        let _scope = canbench_rs::bench_scope("gql_block_execute");
-        execute_plan_with_context(graph, &plan.plan, ctx)?
-    };
-    Ok(QueryRunOutput { plan, execution })
+    execute_block_with_catalog(graph, block, stats, ctx, &catalog::GraphCatalog::default())
+}
+
+/// Like [`execute_block`], but supplies a [`PropertySchema`] from `catalog` using `ctx.selected_graph`.
+pub fn execute_block_with_catalog<G: GraphRead + GraphWrite>(
+    graph: &mut G,
+    block: &StatementBlock,
+    stats: Option<&dyn GraphStats>,
+    ctx: &ExecutionContext,
+    catalog: &catalog::GraphCatalog,
+) -> Result<QueryRunOutput, GleaphError> {
+    #[cfg(feature = "canbench-rs")]
+    let _scope = canbench_rs::bench_scope("gql_block_plan");
+    catalog::execute_block_with_catalog(graph, block, stats, ctx, catalog)
 }
 
 pub fn plan_block_str(
@@ -1910,7 +1940,7 @@ mod tests {
         let mut edge_props = PropertyMap::new();
         edge_props.insert("since".to_owned(), Value::Int64(2024));
         let _ = graph
-            .insert_edge(user, post, Some("AUTHORED"), &edge_props)
+            .insert_edge(user, post, Some("AUTHORED"), &edge_props, false)
             .expect("insert edge");
 
         let rel_req = QueryRequest {

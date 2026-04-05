@@ -9,14 +9,15 @@ use crate::{
     ApiListPreparedEndpointRequest, ApiListPreparedResponse, ApiPlanEndpointRequest,
     ApiPlanResponse, ApiPrepareEndpointRequest, ApiPrepareRequest, ApiPrepareResponse,
     ApiPreparedQueryInfo, ApiQueryRequest, ApiQueryResponse, GleaphError, QueryRequest,
-    QueryResponse, execute_plan_with_normalized_params, parse_block, plan_request,
+    QueryResponse, execute_plan_with_normalized_params, parse_block,
 };
 use candid::CandidType;
 use gleaph_gql::Value;
 use gleaph_gql_executor::{
     ExecutionContext, GraphRegistryResolver, ProcedureRegistry, UseGraphRouter,
 };
-use gleaph_gql_planner::{GraphStats, PlanOp, build_block_plan_output};
+use gleaph_gql_planner::{GraphStats, PlanOp};
+use std::cell::RefCell;
 use gleaph_graph_kernel::{GraphRead, GraphWrite};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -40,6 +41,9 @@ pub struct GleaphServiceSnapshot {
     pub acl_entries: Vec<AclEntry>,
     pub prepared_queries: Vec<PreparedQuerySnapshot>,
     pub supported_extension_types: Vec<String>,
+    /// Binary snapshot of [`crate::catalog::GraphCatalog`] (`ic_stable_structures::StableBTreeMap` wire format).
+    #[serde(default)]
+    pub graph_catalog_blob: Vec<u8>,
 }
 
 #[derive(Clone)]
@@ -53,6 +57,8 @@ pub struct GleaphService {
     use_graph_router: Option<Arc<dyn UseGraphRouter>>,
     /// Peers allowed to supply `query_subject` on routed query endpoints (`msg_caller` must match).
     federation_trusted_callers: BTreeSet<Principal>,
+    /// Persistent graph type catalog (`CREATE GRAPH TYPE` / typed `CREATE GRAPH`).
+    catalog: RefCell<crate::catalog::GraphCatalog>,
 }
 
 impl Default for GleaphService {
@@ -66,6 +72,7 @@ impl Default for GleaphService {
             ic_graph_registry_resolver: None,
             use_graph_router: None,
             federation_trusted_callers: BTreeSet::new(),
+            catalog: RefCell::new(crate::catalog::GraphCatalog::default()),
         }
     }
 }
@@ -99,6 +106,7 @@ impl std::fmt::Debug for GleaphService {
                 "federation_trusted_callers",
                 &self.federation_trusted_callers.len(),
             )
+            .field("catalog", &"...")
             .finish()
     }
 }
@@ -160,8 +168,11 @@ impl GleaphService {
         self.ensure_allowed(auth, Operation::PlanQuery)?;
         let block = crate::parse_block(&request.query)?;
         self.ensure_supported_extension_types_in_block(&block)?;
-        let planned = build_block_plan_output(&block, stats)?;
-        crate::ensure_plan_supported_by_executor(&planned.plan)?;
+        let mut overlay = self.catalog.borrow().clone();
+        overlay
+            .apply_statement_block(&block)
+            .map_err(GleaphError::from)?;
+        let planned = crate::plan_block_with_catalog(&block, stats, &overlay, None)?;
         let mut names = Vec::new();
         collect_use_graph_names(&planned.plan.ops, &mut names);
         names.sort();
@@ -277,6 +288,11 @@ impl GleaphService {
             acl_entries: self.permissions.list_acl_entries(),
             prepared_queries,
             supported_extension_types: self.supported_extension_types.iter().cloned().collect(),
+            graph_catalog_blob: self
+                .catalog
+                .borrow()
+                .to_stable_blob()
+                .unwrap_or_default(),
         }
     }
 
@@ -289,12 +305,20 @@ impl GleaphService {
         for acl in snapshot.acl_entries {
             service.permissions.set_acl_entry(acl.principal, acl.level);
         }
+        *service.catalog.borrow_mut() = if snapshot.graph_catalog_blob.is_empty() {
+            crate::catalog::GraphCatalog::default()
+        } else {
+            crate::catalog::GraphCatalog::from_stable_blob(&snapshot.graph_catalog_blob).map_err(
+                |e| GleaphError::Catalog(format!("restore graph catalog: {e}")),
+            )?
+        };
         for prepared in snapshot.prepared_queries {
             service.prepared.prepare(
                 prepared.name,
                 prepared.query,
                 prepared.options.as_ref(),
                 None,
+                Some(&*service.catalog.borrow()),
             )?;
         }
         Ok(service)
@@ -334,7 +358,23 @@ impl GleaphService {
         self.ensure_allowed(auth, Operation::PlanQuery)?;
         let block = parse_block(&request.query)?;
         self.ensure_supported_extension_types_in_block(&block)?;
-        plan_request(request, stats)
+        let mut overlay = self.catalog.borrow().clone();
+        overlay
+            .apply_statement_block(&block)
+            .map_err(GleaphError::from)?;
+        let plan = crate::plan_block_with_catalog(&block, stats, &overlay, None)?;
+        Ok(crate::PlanResponse {
+            explain: plan.explain,
+            summary: plan.summary,
+            use_graph_pushdown: plan
+                .plan
+                .annotations
+                .optimizer
+                .use_graph_pushdown
+                .iter()
+                .map(crate::ApiUseGraphPushdownInfo::from)
+                .collect(),
+        })
     }
 
     pub fn plan_api_request(
@@ -399,6 +439,10 @@ impl GleaphService {
     ) -> Result<QueryResponse, GleaphError> {
         let block = parse_block(&request.query)?;
         self.ensure_supported_extension_types_in_block(&block)?;
+        self.catalog
+            .borrow_mut()
+            .apply_statement_block(&block)
+            .map_err(GleaphError::from)?;
         let ctx = ExecutionContext {
             params: crate::normalize_params(&request.params),
             caller: caller_value_from_auth(auth),
@@ -407,7 +451,13 @@ impl GleaphService {
             use_graph_router: self.use_graph_router.as_ref().map(Arc::clone),
             ..ExecutionContext::default()
         };
-        let output = crate::execute_query_str(graph, &request.query, stats, &ctx)?;
+        let output = crate::execute_block_with_catalog(
+            graph,
+            &block,
+            stats,
+            &ctx,
+            &self.catalog.borrow(),
+        )?;
         Ok(QueryResponse {
             explain: output.plan.explain,
             plan_summary: output.plan.summary,
@@ -493,7 +543,10 @@ impl GleaphService {
         let source = source.into();
         let block = parse_block(&source)?;
         self.ensure_supported_extension_types_in_block(&block)?;
-        let prepared = self.prepared.prepare(name, source, options, stats)?;
+        let cat = self.catalog.borrow();
+        let prepared = self
+            .prepared
+            .prepare(name, source, options, stats, Some(&*cat))?;
         self.ensure_supported_extension_types(&prepared.extension_types)?;
         Ok(prepared)
     }

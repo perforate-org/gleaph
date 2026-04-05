@@ -120,11 +120,12 @@ Preferred kernel-local shape:
 type LocalVertexId = u32;
 ```
 
-`NodeId` is represented as a packed 48-bit kernel type. The adjacency kernel
-should treat that packed form as the native vertex id representation.
+`NodeId` is represented as a packed 40-bit kernel type (5 bytes, big-endian
+payload in wire layouts). The adjacency kernel should treat that packed form as
+the native vertex id representation.
 
-If 48-bit packing is retained internally, overflow beyond 48 bits must fail
-fast. Silent widening or truncation is not acceptable.
+Overflow beyond 40 bits must fail fast. Silent widening or truncation is not
+acceptable.
 
 ## VertexEntry
 
@@ -186,18 +187,25 @@ The target hot entry is:
 
 ```rust
 struct EdgeEntry {
-    target: PackedNodeId48,
-    meta: u16,
+    target: PackedNodeId40, // 5 bytes BE on wire
+    meta: u24,              // 3 bytes LE on wire (24-bit packed flags + payload)
 }
 ```
 
 Conceptually:
 
 - `target`: neighbor local vertex id
-- `meta`: tombstone bit + 15-bit label id
+- `meta`: tombstone, shard vs local label, optional undirected tag, RSV bits,
+  and a 16-bit payload (local `LabelId` or shard-directory slot index)
 
 This is the only information the traversal kernel should need for the common
 case.
+
+### Undirected semantic tag (bit 21)
+
+When the logical edge is **undirected** (GQL `~`), implementations set the packed **undirected** flag on **both** directional hot entries for the same `EdgeId`. The kernel-facing [`EdgeRecord::undirected`](../crates/graph-kernel/src/records.rs) mirrors that bit for DML and for expand filtering above the PMA overlay. Keeping forward and reverse metadata aligned simplifies maintenance and avoids divergent interpretations during neighborhood walks.
+
+**DDL vs runtime:** `UNDIRECTED EDGE` / `DIRECTED EDGE` in a graph type definition is enforced at plan time via [`PropertySchema::edge_is_undirected`](../crates/gql/src/type_check/schema.rs) (e.g. [`GraphTypePropertySchema`](../crates/gql/src/type_check/graph_type_schema.rs) built from inline `CREATE GRAPH` types). INSERT patterns must use matching syntax (`~[L]~` for undirected schema labels, arrows for directed); the executor still derives stored `undirected` from the physical `InsertEdge` op produced by the planner.
 
 ### Why `edge_id` is not in the hot entry
 
@@ -209,8 +217,8 @@ unless measurement later proves the extra 8 bytes are worth it.
 ## Shard canister directory (cross-canister edges)
 
 For edges that represent a stub vertex on a **remote** canister, packed `EdgeMeta`
-may use the cross-shard bit; the low 14 bits then name a **dense slot** in a
-`ShardCanisterDirectory`, not a `LabelId`.
+may use the cross-shard bit; the low 16 bits of the payload then name a **dense
+slot** in a `ShardCanisterDirectory`, not a `LabelId`.
 
 **On-disk / stable memory:**
 

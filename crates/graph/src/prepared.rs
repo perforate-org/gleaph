@@ -1,4 +1,7 @@
-use crate::{ApiTypeDiagnostic, GleaphError, parse_block, plan_block};
+use crate::catalog::GraphCatalog;
+use crate::{
+    ApiTypeDiagnostic, GleaphError, parse_block, plan_block, plan_block_with_catalog,
+};
 use candid::CandidType;
 use gleaph_gql::Value;
 use gleaph_gql::ast::{
@@ -112,12 +115,17 @@ impl PreparedQueryRegistry {
         source: impl Into<String>,
         options: Option<&PreparedOptions>,
         stats: Option<&dyn GraphStats>,
+        catalog_base: Option<&GraphCatalog>,
     ) -> Result<PreparedQueryInfo, GleaphError> {
         let name = name.into();
         let source = source.into();
         let block = parse_block(&source)?;
         let opts = options.cloned().unwrap_or_default();
-        let plan = plan_block(&block, stats)?;
+        let mut overlay = catalog_base.cloned().unwrap_or_default();
+        overlay
+            .apply_statement_block(&block)
+            .map_err(|e| GleaphError::Catalog(e.to_string()))?;
+        let plan = plan_block_with_catalog(&block, stats, &overlay, None)?;
         let kind = if plan.summary.has_dml {
             PreparedQueryKind::Update
         } else {

@@ -4,8 +4,9 @@ use gleaph_gql::ast::{Keyword, ValueType};
 use gleaph_gql::parser;
 use gleaph_gql::type_check::schema::PropertySchema;
 use gleaph_gql::type_check::{
-    DML002_TARGET_VALUE, DiagnosticSeverity, NoSchema, TypeWarning, WarningKind, type_check,
-    type_check_phase_b, type_check_strict, type_check_with_schema, type_diagnostic_from_warning,
+    DML002_TARGET_VALUE, DML005_INSERT_EDGE_DIRECTION, DML006_MATCH_EDGE_DIRECTION,
+    DiagnosticSeverity, NoSchema, TypeWarning, WarningKind, type_check, type_check_phase_b,
+    type_check_strict, type_check_with_schema, type_diagnostic_from_warning,
 };
 use gleaph_gql::validate::validate;
 
@@ -1845,5 +1846,86 @@ fn nested_or_right_associative() {
             .iter()
             .any(|w| w.kind == WarningKind::BinaryOpMismatch),
         "expected BinaryOpMismatch for String + Int with right-assoc 3-way OR, got: {warnings:?}"
+    );
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Schema edge direction (UNDIRECTED EDGE / DIRECTED EDGE vs pattern syntax)
+// ════════════════════════════════════════════════════════════════════════════
+
+struct UndirectedKnowsSchema;
+
+impl PropertySchema for UndirectedKnowsSchema {
+    fn node_property_types(&self, _labels: &[String]) -> Vec<(String, ValueType, bool)> {
+        vec![]
+    }
+
+    fn edge_property_types(&self, _label: &str) -> Vec<(String, ValueType, bool)> {
+        vec![]
+    }
+
+    fn edge_is_undirected(&self, label: &str) -> Option<bool> {
+        (label == "KNOWS").then_some(true)
+    }
+}
+
+struct DirectedKnowsSchema;
+
+impl PropertySchema for DirectedKnowsSchema {
+    fn node_property_types(&self, _labels: &[String]) -> Vec<(String, ValueType, bool)> {
+        vec![]
+    }
+
+    fn edge_property_types(&self, _label: &str) -> Vec<(String, ValueType, bool)> {
+        vec![]
+    }
+
+    fn edge_is_undirected(&self, label: &str) -> Option<bool> {
+        (label == "KNOWS").then_some(false)
+    }
+}
+
+#[test]
+fn insert_directed_arrow_conflicts_undirected_schema() {
+    let warnings = parse_and_check_with_schema(
+        "INSERT (a)-[:KNOWS]->(b)",
+        &UndirectedKnowsSchema,
+    );
+    assert!(
+        warnings.iter().any(|w| {
+            w.kind == WarningKind::SchemaEdgeDirectionMismatch
+                && w.code == Some(DML005_INSERT_EDGE_DIRECTION)
+        }),
+        "expected schema edge direction fatal for INSERT, got: {warnings:?}"
+    );
+}
+
+#[test]
+fn insert_undirected_syntax_conflicts_directed_schema() {
+    let warnings = parse_and_check_with_schema(
+        "INSERT (a)~[:KNOWS]~(b)",
+        &DirectedKnowsSchema,
+    );
+    assert!(
+        warnings.iter().any(|w| {
+            w.kind == WarningKind::SchemaEdgeDirectionMismatch
+                && w.code == Some(DML005_INSERT_EDGE_DIRECTION)
+        }),
+        "expected schema edge direction fatal for INSERT tilde, got: {warnings:?}"
+    );
+}
+
+#[test]
+fn match_directed_arrow_warns_on_undirected_schema() {
+    let warnings = parse_and_check_with_schema(
+        "MATCH (a)-[:KNOWS]->(b) RETURN a",
+        &UndirectedKnowsSchema,
+    );
+    assert!(
+        warnings.iter().any(|w| {
+            w.kind == WarningKind::SchemaEdgeDirectionMismatch
+                && w.code == Some(DML006_MATCH_EDGE_DIRECTION)
+        }),
+        "expected MATCH schema edge direction warning, got: {warnings:?}"
     );
 }

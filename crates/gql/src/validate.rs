@@ -222,6 +222,9 @@ fn validate_graph_type_definition(def: &GraphTypeDefinition) -> VResult {
         }
     }
 
+    crate::type_check::GraphTypePropertySchema::try_from_definition(def)
+        .map_err(|msg| verr(&msg))?;
+
     Ok(())
 }
 
@@ -1878,6 +1881,80 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("endpoint is missing a node reference"),
+        );
+    }
+
+    #[test]
+    fn invalid_graph_type_conflicting_edge_label_directedness() {
+        let label_r = KeyLabelSet {
+            span: Span::DUMMY,
+            label_keyword_plural: false,
+            labels: vec!["R".into()],
+        };
+        let def = GraphTypeDefinition {
+            span: Span::DUMMY,
+            elements: vec![
+                GraphTypeElement::Node(NodeTypeDef {
+                    span: Span::DUMMY,
+                    keyword: Keyword::new("NODE"),
+                    name: Some("A".into()),
+                    alias: None,
+                    label_set: None,
+                    properties: vec![],
+                }),
+                GraphTypeElement::Node(NodeTypeDef {
+                    span: Span::DUMMY,
+                    keyword: Keyword::new("NODE"),
+                    name: Some("B".into()),
+                    alias: None,
+                    label_set: None,
+                    properties: vec![],
+                }),
+                GraphTypeElement::Edge(EdgeTypeDef {
+                    span: Span::DUMMY,
+                    keyword: Keyword::new("EDGE"),
+                    name: Some("E1".into()),
+                    direction: crate::types::EdgeDirection::PointingRight,
+                    source: EdgeEndpoint {
+                        span: Span::DUMMY,
+                        label: None,
+                        type_name: Some("A".into()),
+                    },
+                    destination: EdgeEndpoint {
+                        span: Span::DUMMY,
+                        label: None,
+                        type_name: Some("B".into()),
+                    },
+                    label_set: Some(label_r.clone()),
+                    properties: vec![],
+                }),
+                GraphTypeElement::Edge(EdgeTypeDef {
+                    span: Span::DUMMY,
+                    keyword: Keyword::new("EDGE"),
+                    name: Some("E2".into()),
+                    direction: crate::types::EdgeDirection::Undirected,
+                    source: EdgeEndpoint {
+                        span: Span::DUMMY,
+                        label: None,
+                        type_name: Some("A".into()),
+                    },
+                    destination: EdgeEndpoint {
+                        span: Span::DUMMY,
+                        label: None,
+                        type_name: Some("B".into()),
+                    },
+                    label_set: Some(label_r),
+                    properties: vec![],
+                }),
+            ],
+        };
+        let result = validate_graph_type_definition(&def);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("conflicting directedness"),
         );
     }
 

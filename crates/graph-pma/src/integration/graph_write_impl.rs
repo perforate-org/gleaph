@@ -4,7 +4,7 @@ use gleaph_graph_kernel::{
 };
 
 use crate::facade::GraphPmaPropertyMutationWriteSummary;
-use crate::low_level::GraphMutationPath;
+use crate::low_level::{EdgeDirectedMetaPair, GraphMutationPath};
 
 use super::{
     GraphPmaKernelOverlayGraph, GraphPmaOverlayEdgeMutationKind, GraphPmaOverlayEdgeWriteSummary,
@@ -103,8 +103,9 @@ impl<'a, S: super::GraphPmaStore> GraphWrite for GraphPmaKernelOverlayGraph<'a, 
         dst: NodeId,
         label: Option<&str>,
         properties: &PropertyMap,
+        undirected: bool,
     ) -> GraphResult<EdgeRecord> {
-        self.bridge.insert_edge(src, dst, label, properties)
+        self.bridge.insert_edge(src, dst, label, properties, undirected)
     }
 
     fn set_node_property(
@@ -265,6 +266,13 @@ impl<'a, S: super::GraphPmaStore> GraphWrite for GraphPmaKernelOverlayGraph<'a, 
             .map(|m| (m.forward, m.reverse))
             .ok_or(GraphError::EdgeNotFound(edge_id))?;
         let label_id = self.bridge.label_id_for(label);
+        let mut edge_meta: EdgeDirectedMetaPair = label_id.into();
+        if edge.undirected {
+            edge_meta = EdgeDirectedMetaPair {
+                forward: edge_meta.forward.with_undirected(true),
+                reverse: edge_meta.reverse.with_undirected(true),
+            };
+        }
         self.bridge
             .store
             .replace_edge_pair_and_write(
@@ -280,7 +288,7 @@ impl<'a, S: super::GraphPmaStore> GraphWrite for GraphPmaKernelOverlayGraph<'a, 
                         forward: forward_loc,
                         reverse: reverse_loc,
                     },
-                    edge_meta: label_id.into(),
+                    edge_meta,
                 },
                 self.bridge.memory,
             )

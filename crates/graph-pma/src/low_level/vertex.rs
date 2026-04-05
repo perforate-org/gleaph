@@ -4,8 +4,6 @@ use gleaph_graph_kernel::LabelId;
 
 use super::ids::EdgeRef;
 
-/// Bit 15 of [`super::edge::EdgeMeta`]: tombstone flag.
-pub const TOMBSTONE_MASK: u16 = 1 << 15;
 /// Bit 31: vertex tombstone.
 pub const VERTEX_TOMBSTONE_BIT: u32 = 1 << 31;
 /// Bit 30: overflow-head empty sentinel.

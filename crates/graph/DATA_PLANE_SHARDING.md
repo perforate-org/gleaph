@@ -68,6 +68,10 @@ Question: how does code on **shard A** obtain **label and property** information
 | **Kernel API** | `GraphRead::expand_hops_with_shard_meta` fills `ExpansionHop::shard_canister_principal` (raw principal bytes). Default impl: no remote principal on the hop. |
 | **GQL (optional / auxiliary)** | Demand-driven `{edge}__hop_aux`: planner sets `hop_aux_binding`; executor binds `Value::Bytes` or `Null`. Treat as **observability or advanced** use, **not** as the primary way **sharding** is surfaced to authors—normal single-graph queries do not need it. |
 
+### Undirected edges (logical flag + hot meta)
+
+Logical undirected edges (GQL `~`) set [`EdgeRecord::undirected`](../graph-kernel/src/records.rs) and the **undirected bit** on **both** forward and reverse [`EdgeMeta`](../graph-pma/src/low_level/edge.rs) payloads for that `EdgeId`, including cross-shard pairs (shard slot on forward, label id on reverse). Pattern expansion filters on this flag: pure `->` / `<-` patterns skip undirected-only rows; `Undirected` and mixed directions combine directed and undirected semantics in the PMA overlay read path (`graph_read_impl`).
+
 ## Concepts
 
 ### Stub destination vertex
@@ -84,7 +88,7 @@ Typed `Principal` in the GQL surface (if desired) remains an extension concern. 
 ## Design decisions (locked)
 
 1. **Shard hint on the hop** — principal (via directory slot) is associated with the expansion hop for efficient runtime routing, not only with ad hoc node properties.
-2. **Directory is authoritative for “which canister”** — edge meta holds a **slot**, not an inline principal, to keep adjacency entries small and stable across compactions.
+2. **Directory is authoritative for “which canister”** — edge meta holds a **slot**, not an inline principal, to keep adjacency entries small and stable across compactions. The slot lives in the **16-bit** `EdgeMeta` payload when the cross-shard flag is set (`crates/graph-pma` `EdgeMeta`).
 3. **Single-graph cross-shard continuation is not `USE GRAPH`** — for one logical graph, following a cross-shard edge to another canister is an **executor/kernel** responsibility. **`USE GRAPH` is reserved for graph-unit federation** ([`FEDERATION.md`](./FEDERATION.md)), i.e. distinct logical graphs.
 
 ## Open design choices (to resolve next)
@@ -115,6 +119,13 @@ Graph-unit federation roadmaps (`USE GRAPH` pushdown, routed batching, etc.) sta
 ## Security note
 
 Any inter-canister read still enforces **that canister’s** ACL and caller rules. That is independent of whether the hop was triggered by **intra-graph** routing or by an explicit **graph-unit** `USE GRAPH` call. Surfacing `e__hop_aux` in a result does not grant rights on a remote shard.
+
+## Graph type catalog vs graph registry
+
+- **Graph registry** ([`crates/graph-registry`](../graph-registry)) maps a **logical graph name** to **which canister** serves that graph (`USE GRAPH`, federation routing). It does **not** store `CREATE GRAPH TYPE` definitions.
+- **Graph type catalog** ([`crates/graph/src/catalog.rs`](./src/catalog.rs)) holds **DDL** results: named graph types and optional **typed** `CREATE GRAPH` bindings. The planner resolves [`PropertySchema`](../../gql/src/type_check/graph_type_schema.rs) from the active graph (`ExecutionContext::selected_graph`) for DML direction and related checks.
+- **`COPY OF` / `LIKE`** on graph types or graphs are **not** implemented in the catalog yet; applying them returns a clear error.
+- **Persistence:** the canister serializes the catalog into [`GleaphServiceSnapshot::graph_catalog_blob`](./src/service.rs) as **`ic_stable_structures::StableBTreeMap` wire bytes** (prefix keys `t:` / `b:`), restored on upgrade alongside ACL and prepared statements.
 
 ## Related code
 

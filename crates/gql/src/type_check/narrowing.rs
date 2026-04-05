@@ -224,6 +224,9 @@ pub(crate) fn apply_narrowing(env: &mut TypeEnv<'_>, facts: &[NarrowingFact]) {
                     if info.endpoints.is_empty() {
                         info.endpoints = env.schema.edge_endpoint_types(label);
                     }
+                    if info.undirected.is_none() {
+                        info.undirected = env.schema.edge_is_undirected(label);
+                    }
                 }
             }
         }

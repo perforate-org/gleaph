@@ -1,6 +1,6 @@
 //! Compact shard-canister slots and principal resolution for cross-canister edges.
 //!
-//! When [`super::edge::EdgeMeta::is_shard_canister`] is set, the 14-bit payload names a row
+//! When [`super::edge::EdgeMeta::is_shard_canister`] is set, the 16-bit payload names a row
 //! in [`ShardCanisterDirectory`], not a graph [`LabelId`](gleaph_graph_kernel::LabelId).
 //!
 //! # Stable persistence (`SCD1`)
@@ -29,7 +29,7 @@
 
 use candid::Principal;
 
-/// 14-bit slot id stored in [`super::edge::EdgeMeta`] when the cross-shard flag is set.
+/// Slot id stored in the 16-bit [`super::edge::EdgeMeta`] payload when the cross-shard flag is set.
 pub type ShardCanisterSlot = u16;
 
 /// Maps compact shard slots to remote canister principals; persisted via [`RegionKind::ShardCanisterDirectory`](super::region::RegionKind::ShardCanisterDirectory) on the graph facade.
@@ -58,7 +58,7 @@ impl ShardCanisterDirectory {
 
     /// Appends a principal as the next slot; returns its slot id.
     ///
-    /// Returns `None` if the directory is full (14-bit slot space) or on duplicate `principal`
+    /// Returns `None` if the directory is full (16-bit slot space) or on duplicate `principal`
     /// when `reject_duplicates` is true.
     pub fn push_principal(
         &mut self,
@@ -68,12 +68,9 @@ impl ShardCanisterDirectory {
         if reject_duplicates && self.principals.contains(&principal) {
             return None;
         }
-        let next = u16::try_from(self.principals.len()).ok()?;
-        if next > super::edge::EDGE_META_PAYLOAD_MASK {
-            return None;
-        }
+        let slot = u16::try_from(self.principals.len()).ok()?;
         self.principals.push(principal);
-        Some(next)
+        Some(slot)
     }
 
     /// Serializes this directory for stable storage (wire format for future region/hydration).

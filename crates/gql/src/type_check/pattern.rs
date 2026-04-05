@@ -1,8 +1,10 @@
 //! Extract variable bindings from MATCH graph patterns.
 
 use crate::ast::*;
+use crate::token::Span;
 use crate::types::{EdgeDirection, LabelExpr};
 
+use super::diagnostics::{DML005_INSERT_EDGE_DIRECTION, DML006_MATCH_EDGE_DIRECTION};
 use super::env::{TypeEnv, WarningKind, WarningProvenance};
 use super::types::{EdgeTypeInfo, NodeTypeInfo, PathTypeInfo, Type};
 
@@ -165,10 +167,14 @@ fn bind_edge(
     } else {
         (Vec::new(), Vec::new())
     };
+    let undirected = label
+        .as_ref()
+        .and_then(|l| env.schema.edge_is_undirected(l));
     let ty = Type::Edge(EdgeTypeInfo {
         label,
         endpoints,
         properties,
+        undirected,
     });
     env.bind(
         var.clone(),
@@ -343,5 +349,104 @@ fn format_labels(labels: &[String]) -> String {
         "(unlabeled)".to_string()
     } else {
         format!(":{}", labels.join(":"))
+    }
+}
+
+/// Whether `direction` is forbidden for an edge with this schema directedness.
+fn edge_direction_conflicts_schema(schema_undirected: bool, direction: &EdgeDirection) -> bool {
+    if schema_undirected {
+        matches!(
+            direction,
+            EdgeDirection::PointingRight | EdgeDirection::PointingLeft
+        )
+    } else {
+        matches!(direction, EdgeDirection::Undirected)
+    }
+}
+
+fn warn_schema_edge_direction_if_needed(
+    env: &mut TypeEnv<'_>,
+    label: &str,
+    direction: &EdgeDirection,
+    span: Span,
+    is_insert: bool,
+) {
+    let Some(schema_undirected) = env.schema.edge_is_undirected(label) else {
+        return;
+    };
+    if !edge_direction_conflicts_schema(schema_undirected, direction) {
+        return;
+    }
+    let ctx = if is_insert { "INSERT" } else { "MATCH pattern" };
+    let message = if schema_undirected {
+        format!(
+            "{ctx}: edge `:{label}` is UNDIRECTED in the graph schema but the pattern uses a directed arrow; use `~[{label}]~` or an incident direction"
+        )
+    } else {
+        format!(
+            "{ctx}: edge `:{label}` is DIRECTED in the graph schema but the pattern uses `~[{label}]~`; use `->` or `<-`"
+        )
+    };
+    let code = if is_insert {
+        DML005_INSERT_EDGE_DIRECTION
+    } else {
+        DML006_MATCH_EDGE_DIRECTION
+    };
+    env.warn_at_with_code(
+        WarningKind::SchemaEdgeDirectionMismatch,
+        code,
+        message,
+        span,
+    );
+}
+
+/// Validate INSERT edge arrows against schema for single-label edges.
+pub(crate) fn check_insert_path_schema_edge_direction(
+    env: &mut TypeEnv<'_>,
+    path: &InsertPathPattern,
+) {
+    for el in &path.elements {
+        if let InsertElement::Edge(e) = el {
+            if e.labels.len() == 1 {
+                warn_schema_edge_direction_if_needed(
+                    env,
+                    &e.labels[0],
+                    &e.direction,
+                    e.span,
+                    true,
+                );
+            }
+        }
+    }
+}
+
+/// Validate MATCH edge directions against schema for single-label edges.
+pub(crate) fn check_graph_pattern_schema_edge_direction(env: &mut TypeEnv<'_>, gp: &GraphPattern) {
+    for path in &gp.paths {
+        check_path_expr_schema_edge_direction(env, &path.expr);
+    }
+}
+
+fn check_path_expr_schema_edge_direction(env: &mut TypeEnv<'_>, expr: &PathPatternExpr) {
+    match expr {
+        PathPatternExpr::Term(term) => check_path_term_schema_edge_direction(env, term),
+        PathPatternExpr::MultisetAlternation(terms) | PathPatternExpr::PatternUnion(terms) => {
+            for term in terms {
+                check_path_term_schema_edge_direction(env, term);
+            }
+        }
+    }
+}
+
+fn check_path_term_schema_edge_direction(env: &mut TypeEnv<'_>, term: &PathTerm) {
+    for factor in &term.factors {
+        if let PathPrimary::Edge(ep) = &factor.primary {
+            if let Some(l) = extract_single_label(&ep.label) {
+                warn_schema_edge_direction_if_needed(env, &l, &ep.direction, ep.span, false);
+            }
+        }
+        if let PathPrimary::Parenthesized { expr, .. } = &factor.primary {
+            check_path_expr_schema_edge_direction(env, expr);
+        }
     }
 }

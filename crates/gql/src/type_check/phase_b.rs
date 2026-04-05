@@ -62,6 +62,13 @@ pub fn infer_linear_query_binding_kinds_and_warnings(
     infer_linear_query_binding_kinds_and_warnings_with_seed(query, &NoSchema, &BTreeMap::new())
 }
 
+pub fn infer_linear_query_binding_kinds_and_warnings_with_schema(
+    query: &LinearQueryStatement,
+    schema: &dyn PropertySchema,
+) -> (BTreeMap<String, BindingKind>, Vec<super::TypeWarning>) {
+    infer_linear_query_binding_kinds_and_warnings_with_seed(query, schema, &BTreeMap::new())
+}
+
 pub fn infer_linear_query_binding_kinds_and_warnings_with_seed(
     query: &LinearQueryStatement,
     schema: &dyn PropertySchema,

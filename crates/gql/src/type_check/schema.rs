@@ -33,6 +33,13 @@ pub trait PropertySchema {
         None
     }
 
+    /// Whether edges with this **label** are undirected in the active graph schema.
+    ///
+    /// `Some(true)` = `UNDIRECTED EDGE`, `Some(false)` = `DIRECTED EDGE`, `None` = not declared.
+    fn edge_is_undirected(&self, _label: &str) -> Option<bool> {
+        None
+    }
+
     /// Return the signature for a stored procedure/catalog function.
     ///
     /// `params` are `(name, type)` for input arguments.

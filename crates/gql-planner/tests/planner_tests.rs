@@ -1,15 +1,16 @@
 use gleaph_gql::ast::*;
 use gleaph_gql::parser;
 use gleaph_gql::type_check::{
-    DiagnosticSeverity, DmlDiagnosticSeverity, TypeDiagnostic, dml_target_unknown_message,
-    dml_target_value_message,
+    DiagnosticSeverity, DmlDiagnosticSeverity, PropertySchema, TypeDiagnostic,
+    dml_target_unknown_message, dml_target_value_message,
 };
 use gleaph_gql_planner::plan::*;
 use gleaph_gql_planner::semantic;
 use gleaph_gql_planner::stats::{GraphStats, TableStats};
 use gleaph_gql_planner::{
     analyze_remote_use_graph_pushdown, build_block_plan, build_block_plan_output, build_composite_plan,
-    build_plan, build_plan_output, build_plan_output_for_execute, build_statement_plan, explain_plan,
+    build_plan, build_plan_output, build_plan_output_for_execute, build_plan_with_schema,
+    build_statement_plan, build_statement_plan_with_schema, explain_plan, PlannerError,
 };
 
 /// Helper: parse a GQL query string and extract the first linear query.
@@ -1537,6 +1538,58 @@ fn test_dml_warning_for_scalar_delete_target() {
         err.to_string()
             .contains("DELETE target `x` is inferred as a value"),
         "expected scalar DELETE error, got: {err}"
+    );
+}
+
+struct UndirectedKnowsPropertySchema;
+
+impl PropertySchema for UndirectedKnowsPropertySchema {
+    fn node_property_types(&self, _labels: &[String]) -> Vec<(String, ValueType, bool)> {
+        vec![]
+    }
+
+    fn edge_property_types(&self, _label: &str) -> Vec<(String, ValueType, bool)> {
+        vec![]
+    }
+
+    fn edge_is_undirected(&self, label: &str) -> Option<bool> {
+        (label == "KNOWS").then_some(true)
+    }
+}
+
+#[test]
+fn test_schema_insert_directed_edge_fatal_when_undirected_in_schema() {
+    let program = parser::parse("INSERT (a)-[:KNOWS]->(b)").expect("parse");
+    let block = program
+        .transaction_activity
+        .expect("transaction")
+        .body
+        .expect("body");
+    let err = build_statement_plan_with_schema(&block.first, None, &UndirectedKnowsPropertySchema)
+        .expect_err("DML005 should fail planning");
+    let PlannerError::FatalDml(d) = err else {
+        panic!("expected FatalDml, got {err:?}");
+    };
+    assert_eq!(d.code, "DML005");
+}
+
+#[test]
+fn test_schema_match_directed_edge_is_dml_warning_not_fatal() {
+    let query = parse_query("MATCH (a)-[:KNOWS]->(b) RETURN a");
+    let plan = build_plan_with_schema(&query, None, &UndirectedKnowsPropertySchema)
+        .expect("MATCH direction mismatch should not block planning");
+    assert!(
+        plan.diagnostics
+            .dml_warnings
+            .iter()
+            .any(|w| w.code == "DML006"),
+        "expected DML006 warning, got {:?}",
+        plan.diagnostics
+    );
+    assert!(
+        plan.diagnostics.dml_errors.is_empty(),
+        "unexpected fatal DML: {:?}",
+        plan.diagnostics.dml_errors
     );
 }
 

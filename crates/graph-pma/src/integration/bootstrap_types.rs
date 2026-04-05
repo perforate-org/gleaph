@@ -133,6 +133,7 @@ pub struct KernelBootstrapEdgeSpec {
     pub properties: PropertyMap,
     /// When set, the forward [`EdgeMeta`](crate::low_level::edge::EdgeMeta) stores a shard slot for this principal.
     pub shard_canister_dst: Option<Principal>,
+    pub undirected: bool,
 }
 
 impl KernelBootstrapEdgeSpec {
@@ -148,6 +149,7 @@ impl KernelBootstrapEdgeSpec {
             label,
             properties,
             shard_canister_dst: None,
+            undirected: false,
         }
     }
 
@@ -163,6 +165,7 @@ impl KernelBootstrapEdgeSpec {
             label: label.map(str::to_owned),
             properties: properties.clone(),
             shard_canister_dst: None,
+            undirected: false,
         }
     }
 
@@ -172,6 +175,11 @@ impl KernelBootstrapEdgeSpec {
 
     pub fn with_shard_canister_dst(mut self, principal: Principal) -> Self {
         self.shard_canister_dst = Some(principal);
+        self
+    }
+
+    pub fn with_undirected(mut self, undirected: bool) -> Self {
+        self.undirected = undirected;
         self
     }
 }

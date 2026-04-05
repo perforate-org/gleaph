@@ -163,6 +163,7 @@ pub trait GraphWrite {
         dst: NodeId,
         label: Option<&str>,
         properties: &PropertyMap,
+        undirected: bool,
     ) -> GraphResult<EdgeRecord>;
 
     fn set_node_property(

@@ -63,6 +63,8 @@ pub enum WarningKind {
     UnsupportedDml,
     /// UNION/EXCEPT/INTERSECT columns have incompatible types.
     SetOpColumnMismatch,
+    /// Edge pattern direction disagrees with graph schema (`DIRECTED` vs `UNDIRECTED` edge type).
+    SchemaEdgeDirectionMismatch,
 }
 
 /// Typing environment: maps variable names to inferred types.

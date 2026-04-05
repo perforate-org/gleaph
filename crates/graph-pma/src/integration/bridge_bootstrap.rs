@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use candid::Principal;
 use gleaph_graph_kernel::{
-    EdgeId, EdgeRecord, GraphError, GraphResult, NodeId, NodeRecord, PropertyMap,
+    EdgeId, EdgeRecord, GraphError, GraphResult, LabelId, NodeId, NodeRecord, PropertyMap,
 };
 
 use crate::facade::{
@@ -322,8 +322,9 @@ impl<'a, S: GraphPmaStore> GraphPmaKernelBootstrapBridge<'a, S> {
         dst: NodeId,
         label: Option<&str>,
         properties: &PropertyMap,
+        undirected: bool,
     ) -> GraphResult<EdgeRecord> {
-        self.insert_edge_record(src, dst, label, properties, true)
+        self.insert_edge_record(src, dst, label, properties, undirected, true)
     }
 
     /// Like [`Self::bootstrap_edge`], but stores a shard-canister slot on the forward [`EdgeMeta`].
@@ -334,6 +335,7 @@ impl<'a, S: GraphPmaStore> GraphPmaKernelBootstrapBridge<'a, S> {
         shard_canister: Principal,
         label: Option<&str>,
         properties: &PropertyMap,
+        undirected: bool,
     ) -> GraphResult<EdgeRecord> {
         self.validate_edge_insert_inputs(label, properties)?;
         let slot = self
@@ -343,10 +345,10 @@ impl<'a, S: GraphPmaStore> GraphPmaKernelBootstrapBridge<'a, S> {
             .ok_or_else(|| GraphError::Message("shard canister directory full".into()))?;
         let label_id = self.label_id_for(label);
         let edge_meta = EdgeDirectedMetaPair {
-            forward: EdgeMeta::new_shard_canister(slot, false),
-            reverse: EdgeMeta::new(label_id, false),
+            forward: EdgeMeta::new_shard_canister(slot, false).with_undirected(undirected),
+            reverse: EdgeMeta::new(label_id, false).with_undirected(undirected),
         };
-        self.insert_edge_record_with_meta(src, dst, label, properties, true, edge_meta)
+        self.insert_edge_record_with_meta(src, dst, label, properties, undirected, true, edge_meta)
     }
 
     /// Inserts one logical edge between already bootstrapped nodes.
@@ -356,8 +358,9 @@ impl<'a, S: GraphPmaStore> GraphPmaKernelBootstrapBridge<'a, S> {
         dst: NodeId,
         label: Option<&str>,
         properties: &PropertyMap,
+        undirected: bool,
     ) -> GraphResult<EdgeRecord> {
-        self.insert_edge_record(src, dst, label, properties, false)
+        self.insert_edge_record(src, dst, label, properties, undirected, false)
     }
 
     /// Resolves shard canister slots for cross-canister adjacency metadata.
@@ -380,6 +383,7 @@ impl<'a, S: GraphPmaStore> GraphPmaKernelBootstrapBridge<'a, S> {
         shard_canister: Principal,
         label: Option<&str>,
         properties: &PropertyMap,
+        undirected: bool,
     ) -> GraphResult<EdgeRecord> {
         self.validate_edge_insert_inputs(label, properties)?;
         let slot = self
@@ -389,10 +393,10 @@ impl<'a, S: GraphPmaStore> GraphPmaKernelBootstrapBridge<'a, S> {
             .ok_or_else(|| GraphError::Message("shard canister directory full".into()))?;
         let label_id = self.label_id_for(label);
         let edge_meta = EdgeDirectedMetaPair {
-            forward: EdgeMeta::new_shard_canister(slot, false),
-            reverse: EdgeMeta::new(label_id, false),
+            forward: EdgeMeta::new_shard_canister(slot, false).with_undirected(undirected),
+            reverse: EdgeMeta::new(label_id, false).with_undirected(undirected),
         };
-        self.insert_edge_record_with_meta(src, dst, label, properties, false, edge_meta)
+        self.insert_edge_record_with_meta(src, dst, label, properties, undirected, false, edge_meta)
     }
 
     pub(crate) fn register_incident_edge(&mut self, src: NodeId, dst: NodeId, edge_id: EdgeId) {
@@ -430,6 +434,17 @@ impl<'a, S: GraphPmaStore> GraphPmaKernelBootstrapBridge<'a, S> {
         }
     }
 
+    fn directed_meta_pair_for_label_id(label_id: LabelId, undirected: bool) -> EdgeDirectedMetaPair {
+        let mut pair: EdgeDirectedMetaPair = label_id.into();
+        if undirected {
+            pair = EdgeDirectedMetaPair {
+                forward: pair.forward.with_undirected(true),
+                reverse: pair.reverse.with_undirected(true),
+            };
+        }
+        pair
+    }
+
     fn validate_edge_insert_inputs(
         &self,
         label: Option<&str>,
@@ -452,11 +467,21 @@ impl<'a, S: GraphPmaStore> GraphPmaKernelBootstrapBridge<'a, S> {
         dst: NodeId,
         label: Option<&str>,
         properties: &PropertyMap,
+        undirected: bool,
         bootstrap_event: bool,
     ) -> GraphResult<EdgeRecord> {
         self.validate_edge_insert_inputs(label, properties)?;
-        let edge_meta = self.label_id_for(label).into();
-        self.insert_edge_record_with_meta(src, dst, label, properties, bootstrap_event, edge_meta)
+        let label_id = self.label_id_for(label);
+        let edge_meta = Self::directed_meta_pair_for_label_id(label_id, undirected);
+        self.insert_edge_record_with_meta(
+            src,
+            dst,
+            label,
+            properties,
+            undirected,
+            bootstrap_event,
+            edge_meta,
+        )
     }
 
     fn insert_edge_record_with_meta(
@@ -465,6 +490,7 @@ impl<'a, S: GraphPmaStore> GraphPmaKernelBootstrapBridge<'a, S> {
         dst: NodeId,
         label: Option<&str>,
         properties: &PropertyMap,
+        undirected: bool,
         bootstrap_event: bool,
         edge_meta: EdgeDirectedMetaPair,
     ) -> GraphResult<EdgeRecord> {
@@ -618,6 +644,7 @@ impl<'a, S: GraphPmaStore> GraphPmaKernelBootstrapBridge<'a, S> {
             dst,
             label: label.map(str::to_owned),
             properties: properties.clone(),
+            undirected,
         };
         self.edges.insert(edge_id, record.clone());
         self.register_incident_edge(src, dst, edge_id);

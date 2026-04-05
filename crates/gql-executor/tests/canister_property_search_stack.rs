@@ -267,7 +267,7 @@ fn indexed_edge_expand_planner_path_runs_on_pma_overlay() {
     let mut eprops = PropertyMap::new();
     eprops.insert("weight".to_owned(), Value::Int64(7));
     graph
-        .insert_edge(a.id, b.id, Some("KNOWS"), &eprops)
+        .insert_edge(a.id, b.id, Some("KNOWS"), &eprops, false)
         .expect("edge");
 
     let q = linear_query_from_str("MATCH (a:User)-[e:KNOWS {weight: 7}]->(b:User) RETURN e");
@@ -323,13 +323,13 @@ fn indexed_edge_expand_matches_scan_filter_semantics() {
     let mut w7 = PropertyMap::new();
     w7.insert("weight".to_owned(), Value::Int64(7));
     graph
-        .insert_edge(a.id, b.id, Some("KNOWS"), &w7)
+        .insert_edge(a.id, b.id, Some("KNOWS"), &w7, false)
         .expect("edge 7");
 
     let mut w3 = PropertyMap::new();
     w3.insert("weight".to_owned(), Value::Int64(3));
     graph
-        .insert_edge(a.id, c.id, Some("KNOWS"), &w3)
+        .insert_edge(a.id, c.id, Some("KNOWS"), &w3, false)
         .expect("edge 3");
 
     let q = linear_query_from_str("MATCH (a:User)-[e:KNOWS {weight: 7}]->(b:User) RETURN e, b");
@@ -368,7 +368,7 @@ fn leading_edge_index_scan_planner_path_runs_on_pma_overlay() {
     let mut eprops = PropertyMap::new();
     eprops.insert("weight".to_owned(), Value::Int64(7));
     graph
-        .insert_edge(a.id, b.id, Some("KNOWS"), &eprops)
+        .insert_edge(a.id, b.id, Some("KNOWS"), &eprops, false)
         .expect("edge");
 
     let q = linear_query_from_str("MATCH ()-[e:KNOWS {weight: 7}]->(b:User) RETURN e, b");
@@ -454,7 +454,7 @@ fn leading_edge_bind_hop_aux_is_demand_driven_on_pma_overlay() {
     let mut eprops = PropertyMap::new();
     eprops.insert("weight".to_owned(), Value::Int64(7));
     graph
-        .insert_edge(a.id, b.id, Some("KNOWS"), &eprops)
+        .insert_edge(a.id, b.id, Some("KNOWS"), &eprops, false)
         .expect("edge");
 
     let stats = stats_user_with_indexed_edge_weight();
@@ -524,13 +524,13 @@ fn wcoj_triangle_hop_aux_on_pma_overlay() {
     let n2 = graph.insert_node(&labels, &empty).expect("n2");
     let n3 = graph.insert_node(&labels, &empty).expect("n3");
     graph
-        .insert_edge(n1.id, n2.id, Some("KNOWS"), &empty)
+        .insert_edge(n1.id, n2.id, Some("KNOWS"), &empty, false)
         .expect("e12");
     graph
-        .insert_edge(n2.id, n3.id, Some("KNOWS"), &empty)
+        .insert_edge(n2.id, n3.id, Some("KNOWS"), &empty, false)
         .expect("e23");
     graph
-        .insert_edge(n3.id, n1.id, Some("KNOWS"), &empty)
+        .insert_edge(n3.id, n1.id, Some("KNOWS"), &empty, false)
         .expect("e31");
 
     let q = linear_query_from_str(
@@ -590,7 +590,7 @@ fn edge_index_scan_manual_plan_runs_on_pma_overlay() {
     let mut eprops = PropertyMap::new();
     eprops.insert("weight".to_owned(), Value::Int64(7));
     graph
-        .insert_edge(a.id, b.id, Some("KNOWS"), &eprops)
+        .insert_edge(a.id, b.id, Some("KNOWS"), &eprops, false)
         .expect("edge");
 
     let plan = PhysicalPlan {

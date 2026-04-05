@@ -20,6 +20,9 @@ pub struct EdgeRecord {
     pub dst: NodeId,
     pub label: Option<String>,
     pub properties: PropertyMap,
+    /// When true, the edge was inserted as undirected (`~`); pure directed patterns (`->`, `<-`)
+    /// do not traverse it, while undirected / mixed patterns do (see graph-pma expand).
+    pub undirected: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]

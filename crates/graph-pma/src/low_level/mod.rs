@@ -22,8 +22,9 @@ mod surface;
 mod vertex;
 
 pub use edge::{
-    EDGE_META_PAYLOAD_MASK, EDGE_SHARD_CANISTER_MASK, EdgeEntry, EdgeMeta, LogicalEdgeLocator,
-    SurfaceKind, SurfaceRegions,
+    EDGE_META_PAYLOAD_MASK, EDGE_META_RAW_MASK, EDGE_META_RSV_MASK, EDGE_SHARD_CANISTER_MASK,
+    EDGE_TOMBSTONE_MASK, EDGE_UNDIRECTED_MASK, EdgeEntry, EdgeMeta, LogicalEdgeLocator,
+    SurfaceKind, SurfaceRegions, TOMBSTONE_MASK,
 };
 pub use extent::{
     BucketChain, BucketHeader, BucketId, BucketRef, BucketTable, EdgeSegmentDirectory,
@@ -89,6 +90,5 @@ pub use surface::{
     SurfaceRegionKinds,
 };
 pub use vertex::{
-    EMPTY_LOG_OFFSET, EdgeIndex, TOMBSTONE_MASK, VertexEntry, VertexLabelIndexEntry,
-    VertexLabelRange,
+    EMPTY_LOG_OFFSET, EdgeIndex, VertexEntry, VertexLabelIndexEntry, VertexLabelRange,
 };
