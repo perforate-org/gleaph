@@ -11,15 +11,19 @@ mod edge;
 mod extent;
 mod graph;
 mod hydration;
+mod ic_stable_vcsr;
 mod ids;
 mod locator;
 mod manager;
 mod overflow;
+mod pma_stable_root;
 mod shard_canister;
 mod region;
+mod region_logical_slice;
 mod runtime;
 mod surface;
 mod vertex;
+mod virtual_region_memory;
 
 pub use edge::{
     EDGE_META_PAYLOAD_MASK, EDGE_META_RAW_MASK, EDGE_META_RSV_MASK, EDGE_SHARD_CANISTER_MASK,
@@ -71,6 +75,9 @@ pub use hydration::{
     write_forward_surface_runtime_to_stable_memory, write_reverse_surface_runtime_to_stable_memory,
     write_surface_runtime_to_stable_memory, write_surface_runtimes_to_stable_memory,
 };
+pub use ic_stable_vcsr::{
+    VCSR_EDGE_MEMORY_SLOT, VCSR_LOG_MEMORY_SLOT, VCSR_VERTEX_MEMORY_SLOT,
+};
 pub use ids::{EdgeRef, StableAddr, VertexRef};
 pub use locator::EdgeLogicalLocatorSidecar;
 pub use manager::RegionManager;
@@ -91,4 +98,14 @@ pub use surface::{
 };
 pub use vertex::{
     EMPTY_LOG_OFFSET, EdgeIndex, VertexEntry, VertexLabelIndexEntry, VertexLabelRange,
+};
+pub(crate) use region_logical_slice::{
+    read_region_logical_slice, write_region_logical_slice, RegionLogicalIoError,
+};
+pub use virtual_region_memory::{
+    GleaphMemoryManager, VirtualBucketMemory, VirtualExtentMemory, VirtualRegionMemoryError,
+};
+pub use pma_stable_root::{
+    decode_region_manager_for_hydrate, try_read_region_manager, write_region_manager_footer,
+    PMA_ROOT_FORMAT_VERSION, PMA_ROOT_MAGIC,
 };

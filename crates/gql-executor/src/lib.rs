@@ -2139,12 +2139,12 @@ mod tests {
     /// while running on top of graph-pma.
     struct InMemoryGraph {
         facade: RefCell<GraphPma>,
-        memory: Rc<RefCell<VecMemory>>,
+        memory: Rc<VecMemory>,
     }
 
     impl InMemoryGraph {
         fn new() -> Self {
-            let memory = Rc::new(RefCell::new(VecMemory::default()));
+            let memory = Rc::new(VecMemory::default());
             let facade = GraphPma::bootstrap_empty_with_bucket_size_using_memory_rc(
                 BucketSizeInPages::DEFAULT,
                 Rc::clone(&memory),
@@ -2158,17 +2158,15 @@ mod tests {
 
         fn with_overlay<R>(&self, f: impl FnOnce(&dyn GraphRead) -> R) -> R {
             let mut facade = self.facade.borrow_mut();
-            let mem = self.memory.borrow();
-            let overlay = facade.bind_kernel_overlay(&*mem);
+            let overlay = facade.bind_kernel_overlay(self.memory.as_ref());
             f(&overlay)
         }
 
         fn with_overlay_mut<R>(&self, f: impl FnOnce(&mut dyn GraphWrite) -> R) -> R {
             let mut facade = self.facade.borrow_mut();
-            let mem = self.memory.borrow();
-            let mut overlay = facade.bind_kernel_overlay(&*mem);
+            let mut overlay = facade.bind_kernel_overlay(self.memory.as_ref());
             let out = f(&mut overlay);
-            let _ = facade.try_refresh_and_write_dirty_to_stable_memory(&*mem);
+            let _ = facade.try_refresh_and_write_dirty_to_stable_memory(self.memory.as_ref());
             out
         }
 
@@ -3932,7 +3930,7 @@ mod tests {
     fn executes_plan_against_graph_pma_backend() {
         let mut harness =
             gleaph_graph_pma::integration::GraphPmaKernelHarness::bootstrap_empty(
-                VecMemory::new(),
+                VecMemory::default(),
             )
             .expect("bootstrap");
         let mut graph = harness.bind_overlay();
@@ -4030,7 +4028,7 @@ mod tests {
     fn persistent_graph_debug_report_formats_representative_graph_shape() {
         let mut harness =
             gleaph_graph_pma::integration::GraphPmaKernelHarness::bootstrap_empty(
-                VecMemory::new(),
+                VecMemory::default(),
             )
             .expect("bootstrap");
         let mut graph = harness.bind_overlay();
@@ -4089,7 +4087,7 @@ mod tests {
     fn executes_dml_against_graph_pma_backend_and_reopens() {
         let mut harness =
             gleaph_graph_pma::integration::GraphPmaKernelHarness::bootstrap_empty(
-                VecMemory::new(),
+                VecMemory::default(),
             )
             .expect("bootstrap");
         let mut graph = harness.bind_overlay();
@@ -4313,8 +4311,7 @@ mod tests {
         let mut reopened_facade =
             GraphPma::hydrate_from_stable_memory(manager, mem_clone).expect("graph should reopen");
         let mem_rc = Rc::clone(&reopened_facade.memory);
-        let mem_guard = mem_rc.borrow();
-        let reopened = reopened_facade.bind_kernel_overlay(&*mem_guard);
+        let reopened = reopened_facade.bind_kernel_overlay(mem_rc.as_ref());
         assert!(reopened.get_node(post_id).expect("get node").is_none());
     }
 

@@ -24,6 +24,7 @@ mod prepared;
 mod procedure;
 mod service;
 mod subplan_wire_v1;
+mod canister_host;
 
 #[cfg(feature = "canbench-rs")]
 mod bench;
@@ -54,10 +55,10 @@ use gleaph_gql_planner::{
 };
 use gleaph_graph_kernel::{GraphRead, GraphWrite};
 use gleaph_graph_pma::integration::GraphPmaKernelOverlay;
-use gleaph_graph_pma::{GraphPma, GraphPmaError, GraphPmaVecMemory};
 use ic_cdk::export_candid;
 use ic_cdk_macros::{init, post_upgrade, pre_upgrade, query, update};
 use serde::{Deserialize, Serialize};
+#[cfg(target_arch = "wasm32")]
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -77,11 +78,9 @@ pub use prepared::{
 pub use procedure::{
     DelegatingProcedureRegistry, delegated_procedure_registry, standard_procedure_registry,
 };
-pub use service::GleaphService;
+pub use service::{GleaphService, GleaphServiceCoreSnapshot};
 
 thread_local! {
-    static GRAPH_STATE: RefCell<CanisterGraphRuntime> = RefCell::new(CanisterGraphRuntime::bootstrap());
-    static SERVICE_STATE: RefCell<GleaphService> = RefCell::new(GleaphService::new());
     #[cfg(target_arch = "wasm32")]
     static VACUUM_TIMER: RefCell<Option<ic_cdk_timers::TimerId>> = RefCell::new(None);
     #[cfg(target_arch = "wasm32")]
@@ -92,56 +91,58 @@ thread_local! {
     static VACUUM_TICK_HANDLER: RefCell<Option<Arc<dyn Fn()>>> = const { RefCell::new(None) };
 }
 
-struct CanisterGraphRuntime {
-    facade: GraphPma,
-    memory: GraphPmaVecMemory,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, CandidType)]
-struct CanisterGraphRuntimeSnapshot {
-    manager: gleaph_graph_pma::low_level::RegionManager,
-    memory_bytes: Vec<u8>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, CandidType)]
-struct CanisterStableState {
-    graph: CanisterGraphRuntimeSnapshot,
-    service: crate::service::GleaphServiceSnapshot,
-}
-
-impl CanisterGraphRuntime {
-    fn bootstrap() -> Self {
-        let memory = GraphPmaVecMemory::default();
-        let facade =
-            GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap graph-pma runtime");
-        Self { facade, memory }
-    }
-
-    fn snapshot(&self) -> CanisterGraphRuntimeSnapshot {
-        CanisterGraphRuntimeSnapshot {
-            manager: self.facade.manager.borrow().clone(),
-            memory_bytes: self.memory.to_vec(),
-        }
-    }
-
-    fn from_snapshot(snapshot: CanisterGraphRuntimeSnapshot) -> Result<Self, GraphPmaError> {
-        let memory = GraphPmaVecMemory::from_vec(snapshot.memory_bytes);
-        let facade = GraphPma::hydrate_from_stable_memory(snapshot.manager, memory.clone())?;
-        Ok(Self { facade, memory })
-    }
-
-    fn bind_overlay(&mut self) -> GraphPmaKernelOverlay<'_, GraphPmaVecMemory> {
-        self.facade.bind_kernel_overlay(&self.memory)
-    }
-}
-
-fn with_canister_graph<R>(
-    f: impl for<'a> FnOnce(&mut GraphPmaKernelOverlay<'a, GraphPmaVecMemory>) -> R,
+/// Runs graph flush after `f`. Persists the service stable cell only when `f` returns `true`
+/// (graph catalog changed — see [`GleaphService::execute_api_request_with_service_stable_dirty`]).
+fn with_canister_graph_and_service<R>(
+    f: impl for<'a> FnOnce(
+        &mut GleaphService,
+        &mut GraphPmaKernelOverlay<'a, canister_host::CanisterGraphMemory>,
+    ) -> (R, bool),
 ) -> R {
-    GRAPH_STATE.with(|graph| {
-        let mut runtime = graph.borrow_mut();
-        let mut overlay = runtime.bind_overlay();
-        f(&mut overlay)
+    canister_host::CanisterHost::ensure_installed();
+    canister_host::CanisterHost::with(|host| {
+        let (out, persist_service) = host.with_graph_overlay_and_service(f);
+        host.flush_graph_stable_full();
+        if persist_service {
+            host.persist_service_stable();
+        }
+        out
+    })
+}
+
+#[cfg(test)]
+fn with_canister_graph<R>(
+    f: impl for<'a> FnOnce(&mut GraphPmaKernelOverlay<'a, canister_host::CanisterGraphMemory>) -> R,
+) -> R {
+    with_canister_graph_and_service(|_service, overlay| (f(overlay), false))
+}
+
+/// Graph flush to stable (region manager cell + dirty pages) without rewriting the service cell.
+/// Used by periodic vacuum so maintenance work does not re-encode the full service snapshot each tick.
+#[cfg(target_arch = "wasm32")]
+fn with_canister_graph_maintenance<R>(
+    f: impl for<'a> FnOnce(&mut GraphPmaKernelOverlay<'a, canister_host::CanisterGraphMemory>) -> R,
+) -> R {
+    canister_host::CanisterHost::ensure_installed();
+    canister_host::CanisterHost::with(|host| {
+        let mut overlay = host.bind_graph_overlay();
+        let out = f(&mut overlay);
+        host.flush_graph_stable_full();
+        out
+    })
+}
+
+fn with_canister_service<R>(f: impl FnOnce(&GleaphService) -> R) -> R {
+    canister_host::CanisterHost::ensure_installed();
+    canister_host::CanisterHost::with(|host| f(&host.service))
+}
+
+fn with_canister_service_mut_persist<R>(f: impl FnOnce(&mut GleaphService) -> R) -> R {
+    canister_host::CanisterHost::ensure_installed();
+    canister_host::CanisterHost::with(|host| {
+        let out = f(&mut host.service);
+        host.persist_service_stable();
+        out
     })
 }
 
@@ -1168,10 +1169,12 @@ fn wire_periodic_vacuum_runtime() {
     {
         wire_vacuum_runtime_hooks(
             Some(Arc::new(|| {
-                with_canister_graph(|graph| graph.vacuum_stats().queue_len)
+                with_canister_graph_maintenance(|graph| graph.vacuum_stats().queue_len)
             })),
             Some(Arc::new(|| {
-                let _ = with_canister_graph(|graph| graph.vacuum_step(MAX_OPS_PER_VACUUM_TICK));
+                let _ = with_canister_graph_maintenance(|graph| {
+                    graph.vacuum_step(MAX_OPS_PER_VACUUM_TICK)
+                });
             })),
         );
     }
@@ -1223,8 +1226,7 @@ fn maybe_reschedule_periodic_vacuum_timer() {
 
 #[init]
 fn canister_init() {
-    GRAPH_STATE.with(|graph| *graph.borrow_mut() = CanisterGraphRuntime::bootstrap());
-    SERVICE_STATE.with(|service| *service.borrow_mut() = GleaphService::new());
+    canister_host::CanisterHost::install_fresh();
     wire_periodic_vacuum_runtime();
     #[cfg(target_arch = "wasm32")]
     install_periodic_vacuum_timer(desired_vacuum_interval_secs());
@@ -1238,24 +1240,11 @@ fn canister_pre_upgrade() {
             ic_cdk_timers::clear_timer(id);
         }
     });
-    let graph = GRAPH_STATE.with(|graph| graph.borrow().snapshot());
-    let service = SERVICE_STATE.with(|service| service.borrow().snapshot());
-    let state = CanisterStableState { graph, service };
-    if let Err(err) = ic_cdk::storage::stable_save((state,)) {
-        ic_cdk::trap(format!("failed to persist canister state: {err}"));
-    }
 }
 
 #[post_upgrade]
 fn canister_post_upgrade() {
-    let (state,): (CanisterStableState,) = ic_cdk::storage::stable_restore()
-        .unwrap_or_else(|err| ic_cdk::trap(format!("failed to restore canister state: {err}")));
-    let graph = CanisterGraphRuntime::from_snapshot(state.graph)
-        .unwrap_or_else(|err| ic_cdk::trap(format!("failed to restore graph runtime: {err}")));
-    let service = GleaphService::from_snapshot(state.service)
-        .unwrap_or_else(|err| ic_cdk::trap(format!("failed to restore service state: {err}")));
-    GRAPH_STATE.with(|slot| *slot.borrow_mut() = graph);
-    SERVICE_STATE.with(|slot| *slot.borrow_mut() = service);
+    canister_host::CanisterHost::restore_after_upgrade();
     wire_periodic_vacuum_runtime();
     #[cfg(target_arch = "wasm32")]
     install_periodic_vacuum_timer(desired_vacuum_interval_secs());
@@ -1272,16 +1261,15 @@ fn query_gql(
     };
     let auth = canister_auth_context();
     let run = |query_text: &str| {
-        SERVICE_STATE.with(|service| {
-            let req = ApiQueryRequest {
-                query: query_text.to_owned(),
-                params: request.params.clone(),
-            };
-            with_canister_graph(|graph| {
-                service
-                    .borrow()
-                    .execute_api_request(graph, &auth, &req, None)
-            })
+        let req = ApiQueryRequest {
+            query: query_text.to_owned(),
+            params: request.params.clone(),
+        };
+        with_canister_graph_and_service(|service, graph| {
+            match service.execute_api_request_with_service_stable_dirty(graph, &auth, &req, None) {
+                Ok((resp, dirty)) => (Ok(resp), dirty),
+                Err(e) => (Err(e), false),
+            }
         })
     };
     match run(&request.query) {
@@ -1302,13 +1290,11 @@ fn explain_gql(gql: String) -> Result<ApiPlanResponse, String> {
     };
     let auth = canister_auth_context();
     let run = |query_text: &str| {
-        SERVICE_STATE.with(|service| {
-            let req = ApiQueryRequest {
-                query: query_text.to_owned(),
-                params: request.params.clone(),
-            };
-            service.borrow().plan_api_request(&auth, &req, None)
-        })
+        let req = ApiQueryRequest {
+            query: query_text.to_owned(),
+            params: request.params.clone(),
+        };
+        with_canister_service(|service| service.plan_api_request(&auth, &req, None))
     };
     match run(&request.query) {
         Ok(result) => Ok(result),
@@ -1331,16 +1317,16 @@ fn update_gql(
     };
     let auth = canister_auth_context();
     let run = |query_text: &str| {
-        SERVICE_STATE.with(|service| {
-            let req = ApiQueryRequest {
-                query: query_text.to_owned(),
-                params: request.params.clone(),
-            };
-            with_canister_graph(|graph| {
-                service
-                    .borrow()
-                    .execute_update_api_request(graph, &auth, &req, None)
-            })
+        let req = ApiQueryRequest {
+            query: query_text.to_owned(),
+            params: request.params.clone(),
+        };
+        with_canister_graph_and_service(|service, graph| {
+            match service.execute_update_api_request_with_service_stable_dirty(graph, &auth, &req, None)
+            {
+                Ok((resp, dirty)) => (Ok(resp), dirty),
+                Err(e) => (Err(e), false),
+            }
         })
     };
     match run(&request.query) {
@@ -1400,17 +1386,15 @@ fn run_routed_query_execution(
 ) -> Result<ApiExecutionResult, GleaphError> {
     let request = ApiQueryRequest { query: gql, params };
     let run = |query_text: &str| {
-        SERVICE_STATE.with(|service| {
-            let req = ApiQueryRequest {
-                query: query_text.to_owned(),
-                params: request.params.clone(),
-            };
-            with_canister_graph(|graph| {
-                service
-                    .borrow()
-                    .execute_api_request(graph, &auth, &req, None)
-                    .map(|r| r.execution)
-            })
+        let req = ApiQueryRequest {
+            query: query_text.to_owned(),
+            params: request.params.clone(),
+        };
+        with_canister_graph_and_service(|service, graph| {
+            match service.execute_api_request_with_service_stable_dirty(graph, &auth, &req, None) {
+                Ok((r, dirty)) => (Ok(r.execution), dirty),
+                Err(e) => (Err(e), false),
+            }
         })
     };
     match run(&request.query) {
@@ -1451,10 +1435,8 @@ async fn execute_routed_query_with_subject(
 ) -> Result<ApiExecutionResult, String> {
     let msg = ic_cdk::api::msg_caller();
     let is_controller = ic_cdk::api::is_controller(&msg);
-    let auth = match SERVICE_STATE.with(|service| {
-        service
-            .borrow()
-            .auth_for_routed_query(msg, is_controller, query_subject)
+    let auth = match with_canister_service(|service| {
+        service.auth_for_routed_query(msg, is_controller, query_subject)
     }) {
         Ok(a) => a,
         Err(err) => {
@@ -1495,10 +1477,8 @@ async fn execute_routed_query_batch(
     }
     let msg = ic_cdk::api::msg_caller();
     let is_controller = ic_cdk::api::is_controller(&msg);
-    let auth = match SERVICE_STATE.with(|service| {
-        service
-            .borrow()
-            .auth_for_routed_query(msg, is_controller, query_subject)
+    let auth = match with_canister_service(|service| {
+        service.auth_for_routed_query(msg, is_controller, query_subject)
     }) {
         Ok(a) => a,
         Err(err) => {
@@ -1532,9 +1512,8 @@ fn prepare(
         options,
     };
     let auth = canister_auth_context();
-    SERVICE_STATE.with(|service| {
+    with_canister_service_mut_persist(|service| {
         service
-            .borrow_mut()
             .prepare_api(&auth, &request, None)
             .map_err(map_err)
     })
@@ -1547,7 +1526,7 @@ async fn warm_use_graph_cache(gql: String) -> Result<Vec<String>, String> {
         params: BTreeMap::new(),
     };
     let auth = canister_auth_context();
-    let resolver = SERVICE_STATE.with(|service| service.borrow().clone());
+    let resolver = with_canister_service(|service| service.clone());
     resolver
         .warm_use_graph_cache_for_query(&auth, &request, None)
         .await
@@ -1557,9 +1536,8 @@ async fn warm_use_graph_cache(gql: String) -> Result<Vec<String>, String> {
 #[update(name = "invalidate_graph_registry_cache")]
 fn invalidate_graph_registry_cache(graph_name: Option<String>) -> Result<(), String> {
     let auth = canister_auth_context();
-    SERVICE_STATE.with(|service| {
+    with_canister_service(|service| {
         service
-            .borrow()
             .invalidate_graph_registry_cache(&auth, graph_name.as_deref())
             .map_err(map_err)
     })
@@ -1568,22 +1546,21 @@ fn invalidate_graph_registry_cache(graph_name: Option<String>) -> Result<(), Str
 #[query(name = "list_prepared")]
 fn list_prepared_canister() -> Result<Vec<PreparedQueryInfo>, String> {
     let auth = canister_auth_context();
-    SERVICE_STATE.with(|service| service.borrow().list_prepared(&auth).map_err(map_err))
+    with_canister_service(|service| service.list_prepared(&auth).map_err(map_err))
 }
 
 #[query(name = "list_prepared_api")]
 fn list_prepared_api_canister() -> Result<ApiListPreparedResponse, String> {
     let auth = canister_auth_context();
-    SERVICE_STATE.with(|service| service.borrow().list_prepared_api(&auth).map_err(map_err))
+    with_canister_service(|service| service.list_prepared_api(&auth).map_err(map_err))
 }
 
 #[update]
 fn drop_prepared(name: String) -> Result<ApiDropPreparedResponse, String> {
     let request = ApiDropPreparedRequest { name };
     let auth = canister_auth_context();
-    SERVICE_STATE.with(|service| {
+    with_canister_service_mut_persist(|service| {
         service
-            .borrow_mut()
             .drop_prepared_api(&auth, &request)
             .map_err(map_err)
     })
@@ -1597,13 +1574,11 @@ fn execute_prepared_query(
 ) -> Result<ApiQueryResponse, String> {
     let request = ApiExecutePreparedRequest { name, params, sort };
     let auth = canister_auth_context();
-    SERVICE_STATE.with(|service| {
-        with_canister_graph(|graph| {
-            service
-                .borrow()
-                .execute_prepared_api_request(graph, &auth, &request, None)
-                .map_err(map_err)
-        })
+    with_canister_graph_and_service(|service, graph| {
+        match service.execute_prepared_api_request(graph, &auth, &request, None) {
+            Ok(resp) => (Ok(resp), false),
+            Err(e) => (Err(map_err(e)), false),
+        }
     })
 }
 
@@ -1618,22 +1593,19 @@ fn execute_prepared_update(
         sort: None,
     };
     let auth = canister_auth_context();
-    SERVICE_STATE.with(|service| {
-        with_canister_graph(|graph| {
-            service
-                .borrow()
-                .execute_prepared_api_request(graph, &auth, &request, None)
-                .map_err(map_err)
-        })
+    with_canister_graph_and_service(|service, graph| {
+        match service.execute_prepared_api_request(graph, &auth, &request, None) {
+            Ok(resp) => (Ok(resp), false),
+            Err(e) => (Err(map_err(e)), false),
+        }
     })
 }
 
 #[update]
 fn set_acl_entry(principal: CandidPrincipal, level: AccessLevel) -> Result<(), String> {
     let auth = canister_auth_context();
-    SERVICE_STATE.with(|service| {
+    with_canister_service_mut_persist(|service| {
         service
-            .borrow_mut()
             .set_acl_entry(&auth, principal.to_text(), level)
             .map_err(map_err)
     })
@@ -1642,9 +1614,8 @@ fn set_acl_entry(principal: CandidPrincipal, level: AccessLevel) -> Result<(), S
 #[update]
 fn remove_acl_entry(principal: CandidPrincipal) -> Result<bool, String> {
     let auth = canister_auth_context();
-    SERVICE_STATE.with(|service| {
+    with_canister_service_mut_persist(|service| {
         service
-            .borrow_mut()
             .remove_acl_entry(&auth, &principal.to_text())
             .map_err(map_err)
     })
@@ -1653,7 +1624,7 @@ fn remove_acl_entry(principal: CandidPrincipal) -> Result<bool, String> {
 #[query]
 fn list_acl_entries() -> Result<Vec<AclEntry>, String> {
     let auth = canister_auth_context();
-    SERVICE_STATE.with(|service| service.borrow().list_acl_entries(&auth).map_err(map_err))
+    with_canister_service(|service| service.list_acl_entries(&auth).map_err(map_err))
 }
 
 export_candid!();

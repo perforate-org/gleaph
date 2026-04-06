@@ -2,7 +2,7 @@
 extern crate concat_string;
 
 use candid::{CandidType, Principal};
-use ic_cdk_macros::{post_upgrade, pre_upgrade, query, update};
+use ic_cdk_macros::{init, post_upgrade, pre_upgrade, query, update};
 #[cfg(target_arch = "wasm32")]
 use ic_cdk_management_canister::{
     CanisterIdRecord, CanisterInstallMode, CanisterSettings, ChunkHash, ClearChunkStoreArgs,
@@ -20,11 +20,13 @@ use thiserror::Error;
 
 use gleaph_gql_ic::graph_registry::{GraphStatus, ProvisioningState};
 
+mod registry_store;
+
 thread_local! {
     static REGISTRY: RefCell<BTreeMap<String, GraphEntry>> = const { RefCell::new(BTreeMap::new()) };
 }
 
-type RegistryStableState = Vec<(String, GraphEntry)>;
+pub(crate) type RegistryStableState = Vec<(String, GraphEntry)>;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct GraphEntry {
@@ -203,12 +205,21 @@ fn snapshot_registry_state() -> RegistryStableState {
     })
 }
 
+#[cfg_attr(
+    not(any(target_arch = "wasm32", test)),
+    allow(dead_code) // only referenced from canister macros (wasm) and unit tests
+)]
 fn restore_registry_state(state: RegistryStableState) {
     REGISTRY.with(|registry| {
         let mut guard = registry.borrow_mut();
         guard.clear();
         guard.extend(state);
     });
+}
+
+fn persist_registry_stable() {
+    let snap = snapshot_registry_state();
+    registry_store::persist_full(&snap);
 }
 
 fn mark_provisioning_failed(graph_name: &str, reason: String) {
@@ -227,6 +238,7 @@ fn mark_provisioning_failed(graph_name: &str, reason: String) {
             entry.updated_at_ns = now_ns();
         }
     });
+    persist_registry_stable();
 }
 
 async fn provision_graph_canister(controllers: Vec<Principal>) -> Result<Principal, RegistryError> {
@@ -260,6 +272,7 @@ async fn provision_graph_canister(controllers: Vec<Principal>) -> Result<Princip
             log_visibility: None,
             wasm_memory_limit: None,
             wasm_memory_threshold: None,
+            log_memory_limit: None,
             environment_variables: None,
         };
 
@@ -270,12 +283,10 @@ async fn provision_graph_canister(controllers: Vec<Principal>) -> Result<Princip
             CREATE_CANISTER_CYCLES,
         )
         .await
-        .map_err(|e| {
-            RegistryError::ManagementError(concat_string!("create_canister failed: ", e))
-        })?;
+        .map_err(|e| RegistryError::ManagementError(format!("create_canister failed: {e}")))?;
 
         let init_arg = candid::encode_args(()).map_err(|e| {
-            RegistryError::ManagementError(concat_string!("encode init arg failed: ", e))
+            RegistryError::ManagementError(format!("encode init arg failed: {e}"))
         })?;
 
         let install_result = if GRAPH_WASM.len() <= INSTALL_CODE_PAYLOAD_SOFT_LIMIT {
@@ -299,9 +310,8 @@ async fn provision_graph_canister(controllers: Vec<Principal>) -> Result<Princip
                 canister_id: created.canister_id,
             })
             .await;
-            return Err(RegistryError::ManagementError(concat_string!(
-                "install graph code failed: ",
-                err
+            return Err(RegistryError::ManagementError(format!(
+                "install graph code failed: {err:?}"
             )));
         }
 
@@ -310,7 +320,7 @@ async fn provision_graph_canister(controllers: Vec<Principal>) -> Result<Princip
         async fn install_chunked_graph_wasm(
             canister_id: Principal,
             init_arg: Vec<u8>,
-        ) -> Result<(), (ic_cdk::api::call::RejectionCode, String)> {
+        ) -> ic_cdk::call::CallResult<()> {
             static GRAPH_WASM: &[u8] =
                 include_bytes!(concat!(env!("OUT_DIR"), "/gleaph_graph.wasm"));
 
@@ -391,7 +401,7 @@ pub fn register_graph(req: RegisterGraphRequest) -> Result<GraphEntry, RegistryE
     ensure_controller(caller)?;
     let owner = req.owner.unwrap_or(caller);
 
-    REGISTRY.with(|registry| {
+    let entry = REGISTRY.with(|registry| {
         let mut guard = registry.borrow_mut();
         if guard.contains_key(&req.graph_name) {
             return Err(RegistryError::Conflict(req.graph_name.clone()));
@@ -408,7 +418,9 @@ pub fn register_graph(req: RegisterGraphRequest) -> Result<GraphEntry, RegistryE
         };
         guard.insert(req.graph_name, entry.clone());
         Ok(entry)
-    })
+    })?;
+    persist_registry_stable();
+    Ok(entry)
 }
 
 #[update]
@@ -439,6 +451,7 @@ pub async fn create_graph(req: CreateGraphRequest) -> Result<GraphEntry, Registr
         guard.insert(req.graph_name.clone(), pending);
         Ok(())
     })?;
+    persist_registry_stable();
 
     let controllers = admins;
 
@@ -450,7 +463,7 @@ pub async fn create_graph(req: CreateGraphRequest) -> Result<GraphEntry, Registr
         }
     };
 
-    REGISTRY.with(|registry| {
+    let entry = REGISTRY.with(|registry| {
         let mut guard = registry.borrow_mut();
         let entry = guard
             .get_mut(&req.graph_name)
@@ -463,30 +476,30 @@ pub async fn create_graph(req: CreateGraphRequest) -> Result<GraphEntry, Registr
         entry.version += 1;
         entry.updated_at_ns = now_ns();
         Ok(entry.clone())
-    })
+    })?;
+    persist_registry_stable();
+    Ok(entry)
 }
 
-#[pre_upgrade]
-fn canister_pre_upgrade() {
-    let state = snapshot_registry_state();
-    if let Err(err) = ic_cdk::storage::stable_save((state,)) {
-        ic_cdk::trap(concat_string!(
-            "failed to persist graph registry state: ",
-            err.to_string()
-        ));
+#[init]
+fn canister_init() {
+    #[cfg(target_arch = "wasm32")]
+    {
+        registry_store::ensure_installed();
+        restore_registry_state(registry_store::load_all());
     }
 }
 
+#[pre_upgrade]
+fn canister_pre_upgrade() {}
+
 #[post_upgrade]
 fn canister_post_upgrade() {
-    let (state,): (RegistryStableState,) =
-        ic_cdk::storage::stable_restore().unwrap_or_else(|err| {
-            ic_cdk::trap(concat_string!(
-                "failed to restore graph registry state: ",
-                err.to_string()
-            ))
-        });
-    restore_registry_state(state);
+    #[cfg(target_arch = "wasm32")]
+    {
+        registry_store::ensure_installed();
+        restore_registry_state(registry_store::load_all());
+    }
 }
 
 #[update]
@@ -508,7 +521,7 @@ pub fn deprecate_graph(graph_name: String) -> Result<GraphEntry, RegistryError> 
     let caller = ic_cdk::api::msg_caller();
     let caller_is_controller = ic_cdk::api::is_controller(&caller);
     ensure_authenticated_caller(caller)?;
-    REGISTRY.with(|registry| {
+    let entry = REGISTRY.with(|registry| {
         let mut guard = registry.borrow_mut();
         let entry = guard
             .get_mut(&graph_name)
@@ -520,7 +533,9 @@ pub fn deprecate_graph(graph_name: String) -> Result<GraphEntry, RegistryError> 
         entry.version += 1;
         entry.updated_at_ns = now_ns();
         Ok(entry.clone())
-    })
+    })?;
+    persist_registry_stable();
+    Ok(entry)
 }
 
 #[update]
@@ -528,7 +543,7 @@ pub fn update_graph_admins(req: UpdateAdminsRequest) -> Result<GraphEntry, Regis
     let caller = ic_cdk::api::msg_caller();
     let caller_is_controller = ic_cdk::api::is_controller(&caller);
     ensure_authenticated_caller(caller)?;
-    REGISTRY.with(|registry| {
+    let entry = REGISTRY.with(|registry| {
         let mut guard = registry.borrow_mut();
         let entry = guard
             .get_mut(&req.graph_name)
@@ -540,7 +555,9 @@ pub fn update_graph_admins(req: UpdateAdminsRequest) -> Result<GraphEntry, Regis
         entry.version += 1;
         entry.updated_at_ns = now_ns();
         Ok(entry.clone())
-    })
+    })?;
+    persist_registry_stable();
+    Ok(entry)
 }
 
 #[update]
@@ -548,7 +565,7 @@ pub fn transfer_graph_owner(req: TransferOwnerRequest) -> Result<GraphEntry, Reg
     let caller = ic_cdk::api::msg_caller();
     let caller_is_controller = ic_cdk::api::is_controller(&caller);
     ensure_authenticated_caller(caller)?;
-    REGISTRY.with(|registry| {
+    let entry = REGISTRY.with(|registry| {
         let mut guard = registry.borrow_mut();
         let entry = guard
             .get_mut(&req.graph_name)
@@ -561,7 +578,9 @@ pub fn transfer_graph_owner(req: TransferOwnerRequest) -> Result<GraphEntry, Reg
         entry.version += 1;
         entry.updated_at_ns = now_ns();
         Ok(entry.clone())
-    })
+    })?;
+    persist_registry_stable();
+    Ok(entry)
 }
 
 #[update]
@@ -590,6 +609,7 @@ pub async fn retry_provisioning(
         let controllers = normalize_admins(entry.owner, caller, entry.admins.clone());
         Ok((entry.graph_name.clone(), controllers))
     })?;
+    persist_registry_stable();
 
     let created_canister_id = match provision_graph_canister(controllers).await {
         Ok(id) => id,
@@ -598,7 +618,7 @@ pub async fn retry_provisioning(
             return Err(err);
         }
     };
-    REGISTRY.with(|registry| {
+    let entry = REGISTRY.with(|registry| {
         let mut guard = registry.borrow_mut();
         let entry = guard
             .get_mut(&graph_name)
@@ -608,14 +628,16 @@ pub async fn retry_provisioning(
         entry.version += 1;
         entry.updated_at_ns = now_ns();
         Ok(entry.clone())
-    })
+    })?;
+    persist_registry_stable();
+    Ok(entry)
 }
 
 #[update]
 pub fn reconcile_graph(req: ReconcileGraphRequest) -> Result<GraphEntry, RegistryError> {
     let caller = ic_cdk::api::msg_caller();
     ensure_controller(caller)?;
-    REGISTRY.with(|registry| {
+    let entry = REGISTRY.with(|registry| {
         let mut guard = registry.borrow_mut();
         let entry = guard
             .get_mut(&req.graph_name)
@@ -632,7 +654,9 @@ pub fn reconcile_graph(req: ReconcileGraphRequest) -> Result<GraphEntry, Registr
         entry.version += 1;
         entry.updated_at_ns = now_ns();
         Ok(entry.clone())
-    })
+    })?;
+    persist_registry_stable();
+    Ok(entry)
 }
 
 #[cfg(test)]

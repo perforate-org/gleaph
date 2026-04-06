@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::low_level::RegionKind;
+use crate::low_level::{RegionKind, RegionLogicalIoError};
 
 use super::PropertyIndexNodeId;
 
@@ -242,3 +242,33 @@ impl fmt::Display for PropertyIndexError {
 }
 
 impl std::error::Error for PropertyIndexError {}
+
+impl From<RegionLogicalIoError> for PropertyIndexError {
+    fn from(value: RegionLogicalIoError) -> Self {
+        match value {
+            RegionLogicalIoError::MissingRegion(kind) => Self::MissingPropertyIndexRegion(kind),
+            RegionLogicalIoError::LengthOverflow => Self::LengthOverflow,
+            RegionLogicalIoError::RecordLengthMismatch { expected, actual } => {
+                Self::RecordLengthMismatch { expected, actual }
+            }
+            RegionLogicalIoError::RegionTooSmall {
+                kind,
+                required,
+                capacity,
+            } => Self::RegionTooSmall {
+                kind,
+                required,
+                capacity,
+            },
+            RegionLogicalIoError::TruncatedBucketChain {
+                kind,
+                logical_len,
+                read,
+            } => Self::TruncatedBucketChain {
+                kind,
+                logical_len,
+                read,
+            },
+        }
+    }
+}

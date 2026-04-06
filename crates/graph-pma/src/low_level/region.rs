@@ -116,6 +116,29 @@ impl RegionKind {
     pub const fn slot(self) -> usize {
         self as usize
     }
+
+    /// Maps a stable slot index (same encoding as `MemoryId::new(slot)` in
+    /// `ic_stable_structures::memory_manager`) back to a region kind.
+    pub fn try_from_slot(slot: u8) -> Option<Self> {
+        match slot {
+            0 => Some(Self::ForwardVertexTable),
+            1 => Some(Self::ForwardEdgeEntries),
+            2 => Some(Self::ForwardLabelIndex),
+            3 => Some(Self::ForwardSegmentLog),
+            4 => Some(Self::ReverseVertexTable),
+            5 => Some(Self::ReverseEdgeEntries),
+            6 => Some(Self::ReverseLabelIndex),
+            7 => Some(Self::ReverseSegmentLog),
+            8 => Some(Self::NodePropertyStore),
+            9 => Some(Self::EdgePropertyStore),
+            10 => Some(Self::PropertyIndex),
+            11 => Some(Self::LabelCatalog),
+            12 => Some(Self::GcState),
+            13 => Some(Self::MaintenanceQueue),
+            14 => Some(Self::ShardCanisterDirectory),
+            _ => None,
+        }
+    }
 }
 
 /// Directory record for one region.

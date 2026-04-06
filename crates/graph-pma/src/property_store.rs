@@ -26,16 +26,17 @@ use std::fmt;
 use std::rc::Rc;
 
 use crate::low_level::{
-    BucketChain, BucketId, RegionKind, RegionManager, RegionStorageKind, WASM_PAGE_SIZE,
+    read_region_logical_slice, write_region_logical_slice, BucketChain, BucketId,
+    GleaphMemoryManager, RegionKind, RegionLogicalIoError, RegionManager, RegionStorageKind,
+    VirtualBucketMemory, VirtualRegionMemoryError, WASM_PAGE_SIZE,
 };
 use crate::property_index::PropertyIndexError;
-use crate::stable::Memory;
-use crate::stable::{Bound, Storable};
 use gleaph_gql::{Value, ValueBinaryError};
 use gleaph_graph_kernel::{EdgeId, NodeId};
 use ic_stable_structures::StableBTreeMap;
-use ic_stable_structures::Storable as IcStorable;
-use ic_stable_structures::storable::Bound as IcBound;
+use ic_stable_structures::Storable;
+use ic_stable_structures::storable::Bound;
+use ic_stable_structures::Memory;
 
 /// Node/edge discriminator for property-store keys.
 ///
@@ -167,22 +168,6 @@ impl Storable for PropertyKey {
     const BOUND: Bound = Bound::Unbounded;
 }
 
-impl IcStorable for PropertyKey {
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(self.encode())
-    }
-
-    fn into_bytes(self) -> Vec<u8> {
-        self.encode()
-    }
-
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Self::decode(bytes.as_ref()).expect("PropertyKey bytes must decode")
-    }
-
-    const BOUND: IcBound = IcBound::Unbounded;
-}
-
 /// Opaque property-value payload stored outside the adjacency kernel.
 ///
 /// Invariant:
@@ -219,47 +204,11 @@ impl Storable for PropertyValueBlob {
     const BOUND: Bound = Bound::Unbounded;
 }
 
-impl Storable for Value {
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(
-            self.to_binary_bytes()
-                .expect("Value must encode to binary bytes"),
-        )
-    }
-
-    fn into_bytes(self) -> Vec<u8> {
-        self.to_binary_bytes()
-            .expect("Value must encode to binary bytes")
-    }
-
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Value::from_binary_bytes(bytes.as_ref()).expect("Value bytes must decode")
-    }
-
-    const BOUND: Bound = Bound::Unbounded;
-}
-
 /// GQL value as stored in a property-region [`StableBTreeMap`] (newtype for `ic` `Storable`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct StoredPropertyValue(pub Value);
 
 impl Storable for StoredPropertyValue {
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        self.0.to_bytes()
-    }
-
-    fn into_bytes(self) -> Vec<u8> {
-        self.0.into_bytes()
-    }
-
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Self(Value::from_bytes(bytes))
-    }
-
-    const BOUND: Bound = Bound::Unbounded;
-}
-
-impl IcStorable for StoredPropertyValue {
     fn to_bytes(&self) -> Cow<'_, [u8]> {
         Cow::Owned(
             self.0
@@ -278,7 +227,7 @@ impl IcStorable for StoredPropertyValue {
         Self(Value::from_binary_bytes(bytes.as_ref()).expect("Value bytes must decode"))
     }
 
-    const BOUND: IcBound = IcBound::Unbounded;
+    const BOUND: Bound = Bound::Unbounded;
 }
 
 /// Fixed-width append-log header for one property record.
@@ -687,7 +636,7 @@ impl<V: Storable + Clone> PropertyAppendLog<V> {
 pub type BlobPropertyAppendLog = PropertyAppendLog<PropertyValueBlob>;
 
 /// In-memory append-log property runtime using storable GQL values (tests and dedicated write paths).
-pub type GraphPropertyAppendLog = PropertyAppendLog<Value>;
+pub type GraphPropertyAppendLog = PropertyAppendLog<StoredPropertyValue>;
 
 /// Reads one graph-property append log from a fixed-size property region.
 pub fn read_graph_property_store_from_stable_memory(
@@ -829,6 +778,8 @@ pub enum PropertyStoreError {
     PStoreUnsupportedVersion(u8),
     /// Bytes in a property region are neither PSB1 v1 nor a decodable append log.
     PStoreUnsupportedOnDiskLayout,
+    /// Region is missing or not bucket-backed when building a [`VirtualBucketMemory`] view.
+    VirtualRegionMemory(VirtualRegionMemoryError),
 }
 
 impl fmt::Display for PropertyStoreError {
@@ -876,7 +827,14 @@ impl fmt::Display for PropertyStoreError {
                     "property store region uses an unsupported on-disk layout"
                 )
             }
+            Self::VirtualRegionMemory(err) => write!(f, "{err}"),
         }
+    }
+}
+
+impl From<VirtualRegionMemoryError> for PropertyStoreError {
+    fn from(value: VirtualRegionMemoryError) -> Self {
+        Self::VirtualRegionMemory(value)
     }
 }
 
@@ -886,6 +844,7 @@ impl Error for PropertyStoreError {
             Self::InvalidUtf8(err) => Some(err),
             Self::InvalidBinaryValue(err) => Some(err),
             Self::PropertyIndex(err) => Some(err),
+            Self::VirtualRegionMemory(err) => Some(err),
             _ => None,
         }
     }
@@ -900,6 +859,36 @@ impl From<PropertyIndexError> for PropertyStoreError {
 impl From<ValueBinaryError> for PropertyStoreError {
     fn from(value: ValueBinaryError) -> Self {
         Self::InvalidBinaryValue(value)
+    }
+}
+
+impl From<RegionLogicalIoError> for PropertyStoreError {
+    fn from(value: RegionLogicalIoError) -> Self {
+        match value {
+            RegionLogicalIoError::MissingRegion(kind) => Self::MissingPropertyRegion(kind),
+            RegionLogicalIoError::LengthOverflow => Self::LengthOverflow,
+            RegionLogicalIoError::RecordLengthMismatch { expected, actual } => {
+                Self::RecordLengthMismatch { expected, actual }
+            }
+            RegionLogicalIoError::RegionTooSmall {
+                kind,
+                required,
+                capacity,
+            } => Self::RegionTooSmall {
+                kind,
+                required,
+                capacity,
+            },
+            RegionLogicalIoError::TruncatedBucketChain {
+                kind,
+                logical_len,
+                read,
+            } => Self::TruncatedBucketChain {
+                kind,
+                logical_len,
+                read,
+            },
+        }
     }
 }
 
@@ -929,83 +918,7 @@ pub(crate) fn read_property_store_region_slice(
     offset: usize,
     len: usize,
 ) -> Result<Vec<u8>, PropertyStoreError> {
-    let region = manager
-        .layout
-        .region(kind)
-        .ok_or(PropertyStoreError::MissingPropertyRegion(kind))?;
-    let logical_len = usize::try_from(region.logical_len_bytes)
-        .map_err(|_| PropertyStoreError::LengthOverflow)?;
-    let end = offset
-        .checked_add(len)
-        .ok_or(PropertyStoreError::LengthOverflow)?;
-    if end > logical_len {
-        return Err(PropertyStoreError::RecordLengthMismatch {
-            expected: end,
-            actual: logical_len,
-        });
-    }
-
-    match region.storage_kind() {
-        RegionStorageKind::Extent => {
-            let extent = manager
-                .region_extent(kind)
-                .ok_or(PropertyStoreError::MissingPropertyRegion(kind))?;
-            let mut bytes = vec![0u8; len];
-            if len > 0 {
-                memory.read(
-                    extent
-                        .addr
-                        .0
-                        .checked_add(offset as u64)
-                        .ok_or(PropertyStoreError::LengthOverflow)?,
-                    &mut bytes,
-                );
-            }
-            Ok(bytes)
-        }
-        RegionStorageKind::BucketChain => {
-            let chain = manager
-                .bucket_chain(kind)
-                .ok_or(PropertyStoreError::MissingPropertyRegion(kind))?;
-            let bucket_size = usize::try_from(manager.bucket_size_bytes())
-                .map_err(|_| PropertyStoreError::LengthOverflow)?;
-            let mut bytes = vec![0u8; len];
-            let mut remaining_skip = offset;
-            let mut output_offset = 0usize;
-            let mut cursor = chain.head;
-
-            while !cursor.is_null() && output_offset < len {
-                let header = manager
-                    .bucket_header(cursor)
-                    .ok_or(PropertyStoreError::MissingPropertyRegion(kind))?;
-                if remaining_skip >= bucket_size {
-                    remaining_skip -= bucket_size;
-                    cursor = header.next;
-                    continue;
-                }
-                let available = bucket_size - remaining_skip;
-                let take = available.min(len - output_offset);
-                let start_addr = header
-                    .addr
-                    .0
-                    .checked_add(remaining_skip as u64)
-                    .ok_or(PropertyStoreError::LengthOverflow)?;
-                memory.read(start_addr, &mut bytes[output_offset..output_offset + take]);
-                output_offset += take;
-                remaining_skip = 0;
-                cursor = header.next;
-            }
-
-            if output_offset < len {
-                return Err(PropertyStoreError::TruncatedBucketChain {
-                    kind,
-                    logical_len: len,
-                    read: output_offset,
-                });
-            }
-            Ok(bytes)
-        }
-    }
+    read_region_logical_slice(manager, memory, kind, offset, len).map_err(Into::into)
 }
 
 pub(crate) fn write_property_store_region_logical_slice(
@@ -1015,105 +928,7 @@ pub(crate) fn write_property_store_region_logical_slice(
     offset: usize,
     bytes: &[u8],
 ) -> Result<(), PropertyStoreError> {
-    let end = offset
-        .checked_add(bytes.len())
-        .ok_or(PropertyStoreError::LengthOverflow)?;
-    let prior_len = usize::try_from(
-        manager
-            .layout
-            .region(kind)
-            .ok_or(PropertyStoreError::MissingPropertyRegion(kind))?
-            .logical_len_bytes,
-    )
-    .map_err(|_| PropertyStoreError::LengthOverflow)?;
-    let new_len =
-        u64::try_from(prior_len.max(end)).map_err(|_| PropertyStoreError::LengthOverflow)?;
-    match manager
-        .layout
-        .region(kind)
-        .ok_or(PropertyStoreError::MissingPropertyRegion(kind))?
-        .storage_kind()
-    {
-        RegionStorageKind::Extent => {
-            let extent = manager
-                .region_extent(kind)
-                .ok_or(PropertyStoreError::MissingPropertyRegion(kind))?;
-            ensure_memory_covers(memory, extent.addr.0.saturating_add(extent.len_bytes))?;
-            if new_len > extent.len_bytes {
-                return Err(PropertyStoreError::RegionTooSmall {
-                    kind,
-                    required: new_len,
-                    capacity: extent.len_bytes,
-                });
-            }
-            manager
-                .set_region_logical_len(kind, new_len)
-                .ok_or(PropertyStoreError::MissingPropertyRegion(kind))?;
-            if !bytes.is_empty() {
-                memory.write(
-                    extent
-                        .addr
-                        .0
-                        .checked_add(offset as u64)
-                        .ok_or(PropertyStoreError::LengthOverflow)?,
-                    bytes,
-                );
-            }
-        }
-        RegionStorageKind::BucketChain => {
-            manager
-                .ensure_bucket_region_capacity(kind, new_len)
-                .ok_or(PropertyStoreError::MissingPropertyRegion(kind))?;
-            let chain = manager
-                .bucket_chain(kind)
-                .ok_or(PropertyStoreError::MissingPropertyRegion(kind))?;
-            let bucket_size = usize::try_from(manager.bucket_size_bytes())
-                .map_err(|_| PropertyStoreError::LengthOverflow)?;
-            let last_byte_exclusive = manager
-                .bucket_header(chain.tail)
-                .map(|header| header.addr.0 + manager.bucket_size_bytes())
-                .ok_or(PropertyStoreError::MissingPropertyRegion(kind))?;
-            ensure_memory_covers(memory, last_byte_exclusive)?;
-
-            let mut remaining_skip = offset;
-            let mut written = 0usize;
-            let mut cursor = chain.head;
-            while !cursor.is_null() && written < bytes.len() {
-                let header = manager
-                    .bucket_header(cursor)
-                    .ok_or(PropertyStoreError::MissingPropertyRegion(kind))?;
-                if remaining_skip >= bucket_size {
-                    remaining_skip -= bucket_size;
-                    cursor = header.next;
-                    continue;
-                }
-                let available = bucket_size - remaining_skip;
-                let take = available.min(bytes.len() - written);
-                memory.write(
-                    header
-                        .addr
-                        .0
-                        .checked_add(remaining_skip as u64)
-                        .ok_or(PropertyStoreError::LengthOverflow)?,
-                    &bytes[written..written + take],
-                );
-                written += take;
-                remaining_skip = 0;
-                cursor = header.next;
-            }
-            if written < bytes.len() {
-                return Err(PropertyStoreError::TruncatedBucketChain {
-                    kind,
-                    logical_len: offset.saturating_add(bytes.len()),
-                    read: offset.saturating_add(written),
-                });
-            }
-            manager
-                .set_region_logical_len(kind, new_len)
-                .ok_or(PropertyStoreError::MissingPropertyRegion(kind))?;
-        }
-    }
-    Ok(())
+    write_region_logical_slice(manager, memory, kind, offset, bytes).map_err(Into::into)
 }
 
 fn read_property_region_bytes(
@@ -1127,46 +942,7 @@ fn read_property_region_bytes(
         .ok_or(PropertyStoreError::MissingPropertyRegion(kind))?;
     let logical_len = usize::try_from(region.logical_len_bytes)
         .map_err(|_| PropertyStoreError::LengthOverflow)?;
-
-    match region.storage_kind() {
-        RegionStorageKind::Extent => {
-            let extent = manager
-                .region_extent(kind)
-                .ok_or(PropertyStoreError::MissingPropertyRegion(kind))?;
-            let mut bytes = vec![0u8; logical_len];
-            if logical_len > 0 {
-                memory.read(extent.addr.0, &mut bytes);
-            }
-            Ok(bytes)
-        }
-        RegionStorageKind::BucketChain => {
-            let chain = manager
-                .bucket_chain(kind)
-                .ok_or(PropertyStoreError::MissingPropertyRegion(kind))?;
-            let bucket_size = usize::try_from(manager.bucket_size_bytes())
-                .map_err(|_| PropertyStoreError::LengthOverflow)?;
-            let mut bytes = vec![0u8; logical_len];
-            let mut offset = 0usize;
-            let mut cursor = chain.head;
-            while !cursor.is_null() && offset < logical_len {
-                let header = manager
-                    .bucket_header(cursor)
-                    .ok_or(PropertyStoreError::MissingPropertyRegion(kind))?;
-                let len = bucket_size.min(logical_len - offset);
-                memory.read(header.addr.0, &mut bytes[offset..offset + len]);
-                offset += len;
-                cursor = header.next;
-            }
-            if offset < logical_len {
-                return Err(PropertyStoreError::TruncatedBucketChain {
-                    kind,
-                    logical_len,
-                    read: offset,
-                });
-            }
-            Ok(bytes)
-        }
-    }
+    read_region_logical_slice(manager, memory, kind, 0, logical_len).map_err(Into::into)
 }
 
 fn write_property_region_bytes(
@@ -1348,35 +1124,39 @@ fn write_property_region_suffix_bytes(
 }
 
 /// Node or edge property bag backed by stable memory (`PSB1` header + btree).
-pub type GraphPropertyStableMap<M> =
-    StableBTreeMap<PropertyKey, StoredPropertyValue, PropertyStoreBtreeSubregionIcMemory<M>>;
+///
+/// `M` is the canister-wide backing memory; btree I/O uses [`VirtualBucketMemory`] for the property region.
+pub type GraphPropertyStableMap<M> = StableBTreeMap<
+    PropertyKey,
+    StoredPropertyValue,
+    PropertyStoreBtreeSubregionIcMemory<VirtualBucketMemory<M>>,
+>;
 
 pub fn empty_graph_property_stable_map<M: Memory>(
-    manager: Rc<RefCell<RegionManager>>,
-    memory: Rc<RefCell<M>>,
+    gleaph: &GleaphMemoryManager<M>,
     btree_payload_len: Rc<RefCell<u64>>,
     region_kind: RegionKind,
-) -> GraphPropertyStableMap<M> {
+) -> Result<GraphPropertyStableMap<M>, VirtualRegionMemoryError> {
     debug_assert!(matches!(
         region_kind,
         RegionKind::NodePropertyStore | RegionKind::EdgePropertyStore
     ));
-    GraphPropertyStableMap::init(PropertyStoreBtreeSubregionIcMemory::new(
-        manager,
-        memory,
+    let region_memory = gleaph.get_bucket(region_kind)?;
+    Ok(GraphPropertyStableMap::init(PropertyStoreBtreeSubregionIcMemory::new(
+        Rc::clone(gleaph.manager()),
+        region_memory,
         btree_payload_len,
         region_kind,
-    ))
+    )))
 }
 
 /// Reads existing btree bytes after [`PROP_STORE_V1_HEADER_LEN`]; `btree_payload_len` must match the header.
 pub fn hydrate_graph_property_stable_map<M: Memory>(
-    manager: Rc<RefCell<RegionManager>>,
-    memory: Rc<RefCell<M>>,
+    gleaph: &GleaphMemoryManager<M>,
     btree_payload_len: Rc<RefCell<u64>>,
     region_kind: RegionKind,
-) -> GraphPropertyStableMap<M> {
-    empty_graph_property_stable_map(manager, memory, btree_payload_len, region_kind)
+) -> Result<GraphPropertyStableMap<M>, VirtualRegionMemoryError> {
+    empty_graph_property_stable_map(gleaph, btree_payload_len, region_kind)
 }
 
 pub fn read_prop_store_v1_header_from_stable_memory(
@@ -1444,25 +1224,24 @@ fn pstore_region_entity_kind(kind: RegionKind) -> Result<PropertyEntityKind, Pro
 /// Loads v1 btree state from stable memory (PSB1 header required when the region is non-empty).
 pub fn load_graph_property_stable_map_from_stable_memory<M: Memory>(
     mgr_rc: Rc<RefCell<RegionManager>>,
-    mem_rc: Rc<RefCell<M>>,
+    mem_rc: Rc<M>,
     kind: RegionKind,
 ) -> Result<(GraphPropertyStableMap<M>, Rc<RefCell<u64>>), PropertyStoreError> {
     pstore_region_entity_kind(kind)?;
+    let gleaph = GleaphMemoryManager::new(Rc::clone(&mgr_rc), Rc::clone(&mem_rc));
     let bytes = {
         let mgr = mgr_rc.borrow();
-        let mem = mem_rc.borrow();
-        read_property_region_bytes(&mgr, &*mem, kind)?
+        read_property_region_bytes(&mgr, mem_rc.as_ref(), kind)?
     };
 
     let btree_rc = Rc::new(RefCell::new(0u64));
 
     if bytes.is_empty() {
         let map = empty_graph_property_stable_map(
-            Rc::clone(&mgr_rc),
-            Rc::clone(&mem_rc),
+            &gleaph,
             Rc::clone(&btree_rc),
             kind,
-        );
+        )?;
         return Ok((map, btree_rc));
     }
 
@@ -1496,19 +1275,18 @@ pub fn load_graph_property_stable_map_from_stable_memory<M: Memory>(
                         .map_err(|_| PropertyStoreError::LengthOverflow)?;
                     if gap_len > 0 {
                         let zeros = vec![0u8; gap_len];
-                        let m = mem_rc.borrow();
+                        let m = mem_rc.as_ref();
                         write_property_store_region_logical_slice(
-                            &mut mgr, &*m, kind, gap_offset, &zeros,
+                            &mut mgr, m, kind, gap_offset, &zeros,
                         )?;
                     }
                 }
             }
             let map = hydrate_graph_property_stable_map(
-                Rc::clone(&mgr_rc),
-                Rc::clone(&mem_rc),
+                &gleaph,
                 Rc::clone(&btree_rc),
                 kind,
-            );
+            )?;
             return Ok((map, btree_rc));
         }
     }
@@ -1614,7 +1392,7 @@ pub(crate) fn btree_distinct_property_names<M: Memory>(
 mod tests {
     use super::*;
     use crate::low_level::{BucketSizeInPages, RegionManager};
-    use crate::stable::VecMemory;
+    use crate::VecMemory;
 
     #[test]
     fn property_key_round_trips_through_storable_bytes() {
@@ -1693,11 +1471,17 @@ mod tests {
     #[test]
     fn scan_entity_agrees_with_latest_state_for_one_entity() {
         let mut log = GraphPropertyAppendLog::default();
-        log.set(PropertyKey::node(NodeId::from(1u8), "a"), Value::Int64(1))
-            .unwrap();
-        log.set(PropertyKey::node(NodeId::from(2u8), "b"), Value::Int64(2))
-            .unwrap();
-        let expected: BTreeMap<String, Value> = log
+        log.set(
+            PropertyKey::node(NodeId::from(1u8), "a"),
+            StoredPropertyValue(Value::Int64(1)),
+        )
+        .unwrap();
+        log.set(
+            PropertyKey::node(NodeId::from(2u8), "b"),
+            StoredPropertyValue(Value::Int64(2)),
+        )
+        .unwrap();
+        let expected: BTreeMap<String, StoredPropertyValue> = log
             .latest_state()
             .into_iter()
             .filter_map(|(k, v)| {
@@ -1715,29 +1499,40 @@ mod tests {
     fn get_node_property_uses_last_record_for_key() {
         let mut log = GraphPropertyAppendLog::default();
         let k = PropertyKey::node(NodeId::from(3u8), "x");
-        log.set(k.clone(), Value::Int64(1)).unwrap();
-        log.set(k.clone(), Value::Int64(2)).unwrap();
-        assert_eq!(
-            log.get_node_property(NodeId::from(3u8), "x"),
-            Some(Value::Int64(2))
-        );
-        log.remove(k).unwrap();
-        assert_eq!(log.get_node_property(NodeId::from(3u8), "x"), None);
-        log.set(PropertyKey::node(NodeId::from(3u8), "x"), Value::Int64(3))
+        log.set(k.clone(), StoredPropertyValue(Value::Int64(1)))
+            .unwrap();
+        log.set(k.clone(), StoredPropertyValue(Value::Int64(2)))
             .unwrap();
         assert_eq!(
             log.get_node_property(NodeId::from(3u8), "x"),
-            Some(Value::Int64(3))
+            Some(StoredPropertyValue(Value::Int64(2)))
+        );
+        log.remove(k).unwrap();
+        assert_eq!(log.get_node_property(NodeId::from(3u8), "x"), None);
+        log.set(
+            PropertyKey::node(NodeId::from(3u8), "x"),
+            StoredPropertyValue(Value::Int64(3)),
+        )
+        .unwrap();
+        assert_eq!(
+            log.get_node_property(NodeId::from(3u8), "x"),
+            Some(StoredPropertyValue(Value::Int64(3)))
         );
     }
 
     #[test]
     fn scan_entities_batch_matches_individual_scan_entity() {
         let mut log = GraphPropertyAppendLog::default();
-        log.set(PropertyKey::node(NodeId::from(1u8), "a"), Value::Int64(1))
-            .unwrap();
-        log.set(PropertyKey::node(NodeId::from(2u8), "b"), Value::Int64(2))
-            .unwrap();
+        log.set(
+            PropertyKey::node(NodeId::from(1u8), "a"),
+            StoredPropertyValue(Value::Int64(1)),
+        )
+        .unwrap();
+        log.set(
+            PropertyKey::node(NodeId::from(2u8), "b"),
+            StoredPropertyValue(Value::Int64(2)),
+        )
+        .unwrap();
         let ids: BTreeSet<u64> = [1u64, 2].into_iter().collect();
         let batch = log.scan_entities(PropertyEntityKind::Node, &ids);
         assert_eq!(
@@ -1753,17 +1548,26 @@ mod tests {
     #[test]
     fn scan_entities_property_subset_filters_keys_and_skips_empty_filter_without_scan() {
         let mut log = GraphPropertyAppendLog::default();
-        log.set(PropertyKey::node(NodeId::from(1u8), "a"), Value::Int64(1))
-            .unwrap();
-        log.set(PropertyKey::node(NodeId::from(1u8), "b"), Value::Int64(2))
-            .unwrap();
+        log.set(
+            PropertyKey::node(NodeId::from(1u8), "a"),
+            StoredPropertyValue(Value::Int64(1)),
+        )
+        .unwrap();
+        log.set(
+            PropertyKey::node(NodeId::from(1u8), "b"),
+            StoredPropertyValue(Value::Int64(2)),
+        )
+        .unwrap();
         let ids: BTreeSet<u64> = [1u64].into_iter().collect();
         let mut want = BTreeSet::new();
         want.insert("a".to_owned());
         let sub = log.scan_entities_property_subset(PropertyEntityKind::Node, &ids, &want);
         let one = sub.get(&1).unwrap();
         assert_eq!(one.len(), 1);
-        assert_eq!(one.get("a"), Some(&Value::Int64(1)));
+        assert_eq!(
+            one.get("a"),
+            Some(&StoredPropertyValue(Value::Int64(1)))
+        );
         assert!(!one.contains_key("b"));
 
         let empty: BTreeSet<String> = BTreeSet::new();
@@ -1775,11 +1579,12 @@ mod tests {
     fn distinct_property_names_omits_tombstoned_keys() {
         let mut log = GraphPropertyAppendLog::default();
         let k = PropertyKey::node(NodeId::from(1u8), "gone");
-        log.set(k.clone(), Value::Bool(true)).unwrap();
+        log.set(k.clone(), StoredPropertyValue(Value::Bool(true)))
+            .unwrap();
         log.remove(k).unwrap();
         log.set(
             PropertyKey::node(NodeId::from(1u8), "kept"),
-            Value::Bool(false),
+            StoredPropertyValue(Value::Bool(false)),
         )
         .unwrap();
         let names = log.distinct_property_names();
@@ -1793,8 +1598,9 @@ mod tests {
             ("uid".to_owned(), Value::Text("u1".to_owned())),
             ("weight".to_owned(), Value::Int64(5)),
         ]);
-        let restored = Value::from_bytes(value.to_bytes());
-        assert_eq!(restored, value);
+        let wrapped = StoredPropertyValue(value.clone());
+        let restored = StoredPropertyValue::from_bytes(wrapped.to_bytes());
+        assert_eq!(restored.0, value);
     }
 
     #[test]
@@ -1802,13 +1608,13 @@ mod tests {
         let mut log = GraphPropertyAppendLog::default();
         log.set(
             PropertyKey::node(NodeId::from(7u8), "uid"),
-            Value::Text("u7".into()),
+            StoredPropertyValue(Value::Text("u7".into())),
         )
         .expect("set property");
 
         assert_eq!(
             log.get_node_property(NodeId::from(7u8), "uid"),
-            Some(Value::Text("u7".into()))
+            Some(StoredPropertyValue(Value::Text("u7".into())))
         );
         assert_eq!(log.get_node_property(NodeId::from(7u8), "missing"), None);
     }
@@ -1827,7 +1633,7 @@ mod tests {
         store
             .set(
                 PropertyKey::node(NodeId::from(42u8), "payload"),
-                Value::Text(large_text.clone()),
+                StoredPropertyValue(Value::Text(large_text.clone())),
             )
             .expect("set large property");
 
@@ -1848,7 +1654,7 @@ mod tests {
 
         assert_eq!(
             restored.get_node_property(NodeId::from(42u8), "payload"),
-            Some(Value::Text(large_text))
+            Some(StoredPropertyValue(Value::Text(large_text)))
         );
         let chain = manager
             .bucket_chain(RegionKind::NodePropertyStore)
@@ -1872,7 +1678,9 @@ mod tests {
         initial
             .set(
                 PropertyKey::node(NodeId::from(5u8), "payload"),
-                Value::Text("x".repeat((WASM_PAGE_SIZE as usize) + 2048)),
+                StoredPropertyValue(Value::Text(
+                    "x".repeat((WASM_PAGE_SIZE as usize) + 2048),
+                )),
             )
             .expect("set initial");
         write_graph_property_store_to_stable_memory(
@@ -1887,7 +1695,7 @@ mod tests {
         rewritten
             .set(
                 PropertyKey::node(NodeId::from(5u8), "payload"),
-                Value::Text("short".into()),
+                StoredPropertyValue(Value::Text("short".into())),
             )
             .expect("set rewritten");
         write_graph_property_store_to_stable_memory(
@@ -1906,7 +1714,7 @@ mod tests {
         .expect("read rewritten");
         assert_eq!(
             restored.get_node_property(NodeId::from(5u8), "payload"),
-            Some(Value::Text("short".into()))
+            Some(StoredPropertyValue(Value::Text("short".into())))
         );
     }
 
@@ -1940,20 +1748,21 @@ mod tests {
 
     #[test]
     fn graph_property_stable_map_large_value_round_trips() {
-        let mem_rc = Rc::new(RefCell::new(VecMemory::default()));
+        let mem_rc = Rc::new(VecMemory::default());
         let mut manager = RegionManager::with_bucket_size(BucketSizeInPages::new(1));
         manager.define_bucket_region(
             RegionKind::NodePropertyStore,
             default_property_region_chain(),
         );
         let mgr_rc = Rc::new(RefCell::new(manager));
+        let gleaph = GleaphMemoryManager::new(Rc::clone(&mgr_rc), Rc::clone(&mem_rc));
         let btree_rc = Rc::new(RefCell::new(0u64));
         let mut map = empty_graph_property_stable_map(
-            Rc::clone(&mgr_rc),
-            Rc::clone(&mem_rc),
+            &gleaph,
             Rc::clone(&btree_rc),
             RegionKind::NodePropertyStore,
-        );
+        )
+        .expect("node property bucket region");
         let large = Value::Text("x".repeat((WASM_PAGE_SIZE as usize) + 512));
         let _ = map.insert(
             PropertyKey::node(NodeId::from(11u8), "profile"),
@@ -1961,7 +1770,7 @@ mod tests {
         );
         sync_graph_property_store_v1_header_to_stable_memory(
             &mut mgr_rc.borrow_mut(),
-            &*mem_rc.borrow(),
+            mem_rc.as_ref(),
             RegionKind::NodePropertyStore,
             *btree_rc.borrow(),
         )

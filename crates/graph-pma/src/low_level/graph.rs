@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::stable::Memory;
+use ic_stable_structures::Memory;
 use gleaph_graph_kernel::{EdgeId, LabelId};
 
 use super::edge::{EdgeEntry, EdgeMeta};
@@ -3430,7 +3430,7 @@ mod tests {
         ReverseSurfaceRuntime, SurfaceKind, SurfaceRegions, VertexEntry, VertexRef, WasmPages,
         decode_edge_entries, encode_edge_entries,
     };
-    use crate::stable::VecMemory;
+    use crate::VecMemory;
 
     fn forward_surface() -> ForwardSurface {
         ForwardSurface::new(SurfaceRegions::new(

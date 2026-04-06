@@ -13,7 +13,6 @@ mod label_index;
 mod overlay_api;
 mod overlay_types;
 
-use std::cell::{Ref, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
@@ -33,7 +32,7 @@ use crate::facade::{
 };
 use crate::low_level::BucketSizeInPages;
 use crate::property_store::PropertyStoreError;
-use crate::stable::Memory;
+use ic_stable_structures::Memory;
 pub use bootstrap_types::{
     BootstrapEdgeSpec, BootstrapGraphSpec, KernelBootstrapEdgeSpec, KernelBootstrapGraphSpec,
     KernelBootstrapGraphSummary, KernelBootstrapNodeSpec,
@@ -212,21 +211,16 @@ pub struct GraphPmaKernelOverlayGraph<'a, S: GraphPmaStore> {
 /// Concrete kernel overlay shape used when binding the main facade directly.
 pub type GraphPmaKernelOverlay<'a, M> = GraphPmaKernelOverlayGraph<'a, &'a mut GraphPma<M>>;
 
-/// Harness overlay: keeps a [`Ref`] on the shared stable-memory cell while the bridge holds `&M`.
+/// Harness overlay: holds `&M` into the harness-owned stable-memory handle while the bridge mutates the facade.
 pub struct GraphPmaKernelHarnessOverlay<'a, M: Memory> {
-    _mem: Ref<'a, M>,
     inner: GraphPmaKernelOverlay<'a, M>,
 }
 
 impl<'a, M: Memory> GraphPmaKernelHarnessOverlay<'a, M> {
-    /// # Safety contract
-    /// `'a` must end before the backing [`RefCell`] storage for `M` is dropped; here it matches the
-    /// borrow of the enclosing harness, and `_mem` keeps the guard alive until `Self` drops.
-    fn new(facade: &'a mut GraphPma<M>, mem: Ref<'a, M>) -> Self {
-        let mref: &'a M = unsafe { std::mem::transmute::<&M, &'a M>(&*mem) };
-        let adapter = GraphPmaStoreAdapter::new(facade, mref);
+    fn new(facade: &'a mut GraphPma<M>, mem: &'a M) -> Self {
+        let adapter = GraphPmaStoreAdapter::new(facade, mem);
         let inner = adapter.into_kernel_overlay();
-        Self { _mem: mem, inner }
+        Self { inner }
     }
 }
 
@@ -484,13 +478,13 @@ impl<'a, M: Memory> GraphStats for GraphPmaKernelHarnessOverlay<'a, M> {
 /// site.
 pub struct GraphPmaKernelHarness<M: Memory> {
     facade: GraphPma<M>,
-    memory: Rc<RefCell<M>>,
+    memory: Rc<M>,
 }
 
 impl<M: Memory> GraphPmaKernelHarness<M> {
     /// Bootstraps one empty graph together with owned stable memory.
     pub fn bootstrap_empty(memory: M) -> GraphPmaResult<Self> {
-        let mem = Rc::new(RefCell::new(memory));
+        let mem = Rc::new(memory);
         let facade = GraphPma::bootstrap_empty_with_bucket_size_using_memory_rc(
             BucketSizeInPages::DEFAULT,
             Rc::clone(&mem),
@@ -501,9 +495,9 @@ impl<M: Memory> GraphPmaKernelHarness<M> {
         })
     }
 
-    /// Borrow the shared stable-memory backing (same cell as the facade).
-    pub fn memory(&self) -> Ref<'_, M> {
-        self.memory.borrow()
+    /// Borrow the shared stable-memory backing (same handle as the facade).
+    pub fn memory(&self) -> &M {
+        self.memory.as_ref()
     }
 
     /// Returns the facade stored inside this harness.
@@ -518,7 +512,7 @@ impl<M: Memory> GraphPmaKernelHarness<M> {
 
     /// Binds the owned facade and memory as one kernel-facing overlay graph.
     pub fn bind_overlay(&mut self) -> GraphPmaKernelHarnessOverlay<'_, M> {
-        GraphPmaKernelHarnessOverlay::new(&mut self.facade, self.memory.borrow())
+        GraphPmaKernelHarnessOverlay::new(&mut self.facade, self.memory.as_ref())
     }
 
     /// Binds one overlay and seeds it on that same bound instance.
@@ -539,8 +533,7 @@ impl<M: Memory> GraphPmaKernelHarness<M> {
         &mut self,
         spec: &BootstrapGraphSpec,
     ) -> GraphPmaResult<GraphPmaBootstrapGraphWriteSummary> {
-        let mem = self.memory.borrow();
-        let mut adapter = self.facade.bind(&*mem);
+        let mut adapter = self.facade.bind(self.memory.as_ref());
         bootstrap_graph(&mut adapter, spec)
     }
 
@@ -550,8 +543,7 @@ impl<M: Memory> GraphPmaKernelHarness<M> {
         vertex_refs: &[crate::low_level::VertexRef],
         initial_edges: &[(EdgeId, usize, usize, LabelId)],
     ) -> GraphPmaResult<GraphPmaBootstrapGraphWriteSummary> {
-        let mem = self.memory.borrow();
-        let mut adapter = self.facade.bind(&*mem);
+        let mut adapter = self.facade.bind(self.memory.as_ref());
         adapter.bootstrap_vertex_refs_and_edges(vertex_refs, initial_edges)
     }
 
@@ -661,7 +653,7 @@ mod tests {
     };
     use crate::property_index::{PropertyIndexError, PropertyIndexNodeStoreMutationKind};
     use crate::property_store::PropertyStoreError;
-    use crate::stable::VecMemory;
+    use crate::VecMemory;
     use candid::Principal;
     use gleaph_gql::Value;
     use gleaph_gql::ast::{CmpOp, Statement};
@@ -1040,10 +1032,10 @@ mod tests {
 
         let mem_rc = Rc::clone(&facade.memory);
         facade
-            .try_write_all_to_stable_memory(&*mem_rc.borrow())
+            .try_write_all_to_stable_memory(mem_rc.as_ref())
             .expect("flush shard directory");
         let manager = facade.manager.borrow().clone();
-        let mem = facade.memory.borrow().clone();
+        let mem = (*facade.memory).clone();
         let hydrated = GraphPma::hydrate_from_stable_memory(manager, mem).expect("hydrate");
         assert_eq!(hydrated.shard_canister_directory.principal(0), Some(remote));
     }
@@ -1077,7 +1069,7 @@ mod tests {
         }
         let mem_rc = Rc::clone(&facade.memory);
         facade
-            .try_write_all_to_stable_memory(&*mem_rc.borrow())
+            .try_write_all_to_stable_memory(mem_rc.as_ref())
             .expect("flush");
 
         facade
@@ -1087,7 +1079,7 @@ mod tests {
             .expect("shard region exists");
 
         let manager = facade.manager.borrow().clone();
-        let mem = mem_rc.borrow().clone();
+        let mem = (*mem_rc).clone();
         let err = GraphPma::hydrate_from_stable_memory(manager, mem).expect_err("hydrate");
         assert_eq!(
             err,

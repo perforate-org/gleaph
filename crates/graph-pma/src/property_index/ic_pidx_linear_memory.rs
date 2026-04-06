@@ -1,40 +1,37 @@
 //! [`ic_stable_structures::Memory`] view over the btree payload slice (PIDX bytes `[PIDX_V3_HEADER_LEN..]`).
+//!
+//! I/O uses a logical region [`Memory`] (typically [`crate::low_level::VirtualBucketMemory`]) from
+//! [`crate::low_level::GleaphMemoryManager`].
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use ic_stable_structures::Memory as IcMemory;
 
-use crate::low_level::{
-    ExtentGrowthPolicy, ExtentGrowthRequest, RegionKind, RegionManager, RegionStorageKind,
-    WASM_PAGE_SIZE, WasmPages,
-};
-use crate::stable::Memory as StableMemoryTrait;
+use crate::low_level::{RegionKind, RegionManager, WASM_PAGE_SIZE};
+use ic_stable_structures::Memory as StableMemoryTrait;
 
 use super::pidx_v3_layout::PIDX_V3_HEADER_LEN;
-use super::storage::region_io::{
-    read_property_index_region_slice, write_property_index_region_logical_slice,
-};
 
 const IC_PAGE: u64 = WASM_PAGE_SIZE;
 
 /// Backing btree bytes live in the PIDX region after the v3 fixed header.
 #[derive(Clone)]
-pub struct PropertyIndexBtreeSubregionIcMemory<M: StableMemoryTrait> {
+pub struct PropertyIndexBtreeSubregionIcMemory<R: StableMemoryTrait> {
     manager: Rc<RefCell<RegionManager>>,
-    memory: Rc<RefCell<M>>,
+    region_memory: R,
     btree_content_len: Rc<RefCell<u64>>,
 }
 
-impl<M: StableMemoryTrait> PropertyIndexBtreeSubregionIcMemory<M> {
+impl<R: StableMemoryTrait> PropertyIndexBtreeSubregionIcMemory<R> {
     pub fn new(
         manager: Rc<RefCell<RegionManager>>,
-        memory: Rc<RefCell<M>>,
+        region_memory: R,
         btree_content_len: Rc<RefCell<u64>>,
     ) -> Self {
         Self {
             manager,
-            memory,
+            region_memory,
             btree_content_len,
         }
     }
@@ -48,7 +45,7 @@ impl<M: StableMemoryTrait> PropertyIndexBtreeSubregionIcMemory<M> {
     }
 }
 
-impl<M: StableMemoryTrait> IcMemory for PropertyIndexBtreeSubregionIcMemory<M> {
+impl<R: StableMemoryTrait> IcMemory for PropertyIndexBtreeSubregionIcMemory<R> {
     fn size(&self) -> u64 {
         (*self.btree_content_len.borrow()).div_ceil(IC_PAGE)
     }
@@ -61,74 +58,32 @@ impl<M: StableMemoryTrait> IcMemory for PropertyIndexBtreeSubregionIcMemory<M> {
         let new_content_len = new_pages.saturating_mul(IC_PAGE);
         *self.btree_content_len.borrow_mut() = new_content_len;
         let total = Self::base().saturating_add(new_content_len);
+
+        let cur_vm_pages = self.region_memory.size();
+        let need_pages = total.div_ceil(IC_PAGE);
+        let delta = need_pages.saturating_sub(cur_vm_pages);
+        if delta > 0 && self.region_memory.grow(delta) == -1 {
+            return -1;
+        }
+
         {
             let mut mgr = self.manager.borrow_mut();
-            let Some(region) = mgr.layout.region(RegionKind::PropertyIndex) else {
-                return -1;
-            };
-            match region.storage_kind() {
-                RegionStorageKind::BucketChain => {
-                    let _ = mgr.ensure_bucket_region_capacity(RegionKind::PropertyIndex, total);
-                }
-                RegionStorageKind::Extent => {
-                    let extent = match mgr.region_extent(RegionKind::PropertyIndex) {
-                        Some(e) => e,
-                        None => return -1,
-                    };
-                    if total > extent.len_bytes {
-                        let shortage = total - extent.len_bytes;
-                        let additional_pages = shortage.div_ceil(WASM_PAGE_SIZE);
-                        if additional_pages == 0 {
-                            return -1;
-                        }
-                        let request = ExtentGrowthRequest::new(WasmPages::new(additional_pages));
-                        let policy = ExtentGrowthPolicy::new(
-                            WasmPages::new(additional_pages.max(1)),
-                            WasmPages::new(1),
-                        );
-                        let Some(decision) =
-                            mgr.plan_extent_growth(RegionKind::PropertyIndex, request, policy)
-                        else {
-                            return -1;
-                        };
-                        if mgr
-                            .apply_extent_growth(
-                                RegionKind::PropertyIndex,
-                                request,
-                                policy,
-                                decision,
-                            )
-                            .is_none()
-                        {
-                            return -1;
-                        }
-                    }
-                }
-            }
             let _ = mgr.set_region_logical_len(RegionKind::PropertyIndex, total);
         }
+
         let prior = old_pages.saturating_mul(IC_PAGE);
         if new_content_len > prior {
-            let start = (Self::base() + prior) as usize;
+            let start = Self::base().saturating_add(prior);
             let add = (new_content_len - prior) as usize;
             let zeros = vec![0u8; add];
-            let mut mgr = self.manager.borrow_mut();
-            let m = self.memory.borrow();
-            if write_property_index_region_logical_slice(&mut mgr, &*m, start, &zeros).is_err() {
-                return -1;
-            }
+            self.region_memory.write(start, &zeros);
         }
         old_pages as i64
     }
 
     fn read(&self, offset: u64, dst: &mut [u8]) {
         let abs = Self::base().saturating_add(offset);
-        let abs_usize = usize::try_from(abs).expect("offset");
-        let mgr = self.manager.borrow();
-        let m = self.memory.borrow();
-        let got = read_property_index_region_slice(&mgr, &*m, abs_usize, dst.len())
-            .expect("property index btree read");
-        dst.copy_from_slice(&got);
+        self.region_memory.read(abs, dst);
     }
 
     fn write(&self, offset: u64, src: &[u8]) {
@@ -141,11 +96,9 @@ impl<M: StableMemoryTrait> IcMemory for PropertyIndexBtreeSubregionIcMemory<M> {
         }
         cur = cur.div_ceil(IC_PAGE).saturating_mul(IC_PAGE);
         *self.btree_content_len.borrow_mut() = cur;
-        let abs = Self::base().saturating_add(offset) as usize;
+        let abs = Self::base().saturating_add(offset);
+        self.region_memory.write(abs, src);
         let mut mgr = self.manager.borrow_mut();
-        let m = self.memory.borrow();
-        write_property_index_region_logical_slice(&mut mgr, &*m, abs, src)
-            .expect("property index btree write");
         let _ =
             mgr.set_region_logical_len(RegionKind::PropertyIndex, Self::base().saturating_add(cur));
     }

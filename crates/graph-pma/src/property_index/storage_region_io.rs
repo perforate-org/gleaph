@@ -2,8 +2,11 @@
 
 use std::cell::RefCell;
 
-use crate::low_level::{RegionKind, RegionManager, RegionStorageKind, WASM_PAGE_SIZE};
-use crate::stable::Memory;
+use crate::low_level::{
+    read_region_logical_slice, write_region_logical_slice, RegionKind, RegionManager,
+    RegionStorageKind, WASM_PAGE_SIZE,
+};
+use ic_stable_structures::Memory;
 
 use super::super::pidx_v3_layout::{
     PIDX_V3_HEADER_LEN, PIDX_V3_MAGIC, PropertyIndexRegionHeaderV3,
@@ -16,82 +19,8 @@ pub(crate) fn read_property_index_region_slice(
     offset: usize,
     len: usize,
 ) -> Result<Vec<u8>, PropertyIndexError> {
-    let region = manager.layout.region(RegionKind::PropertyIndex).ok_or(
-        PropertyIndexError::MissingPropertyIndexRegion(RegionKind::PropertyIndex),
-    )?;
-    let logical_len = usize::try_from(region.logical_len_bytes)
-        .map_err(|_| PropertyIndexError::LengthOverflow)?;
-    let end = offset
-        .checked_add(len)
-        .ok_or(PropertyIndexError::LengthOverflow)?;
-    if end > logical_len {
-        return Err(PropertyIndexError::RecordLengthMismatch {
-            expected: end,
-            actual: logical_len,
-        });
-    }
-
-    match region.storage_kind() {
-        RegionStorageKind::Extent => {
-            let extent = manager.region_extent(RegionKind::PropertyIndex).ok_or(
-                PropertyIndexError::MissingPropertyIndexRegion(RegionKind::PropertyIndex),
-            )?;
-            let mut bytes = vec![0u8; len];
-            if len > 0 {
-                memory.read(
-                    extent
-                        .addr
-                        .0
-                        .checked_add(offset as u64)
-                        .ok_or(PropertyIndexError::LengthOverflow)?,
-                    &mut bytes,
-                );
-            }
-            Ok(bytes)
-        }
-        RegionStorageKind::BucketChain => {
-            let chain = manager.bucket_chain(RegionKind::PropertyIndex).ok_or(
-                PropertyIndexError::MissingPropertyIndexRegion(RegionKind::PropertyIndex),
-            )?;
-            let bucket_size = usize::try_from(manager.bucket_size_bytes())
-                .map_err(|_| PropertyIndexError::LengthOverflow)?;
-            let mut bytes = vec![0u8; len];
-            let mut remaining_skip = offset;
-            let mut output_offset = 0usize;
-            let mut cursor = chain.head;
-
-            while !cursor.is_null() && output_offset < len {
-                let header = manager.bucket_header(cursor).ok_or(
-                    PropertyIndexError::MissingPropertyIndexRegion(RegionKind::PropertyIndex),
-                )?;
-                if remaining_skip >= bucket_size {
-                    remaining_skip -= bucket_size;
-                    cursor = header.next;
-                    continue;
-                }
-                let available = bucket_size - remaining_skip;
-                let take = available.min(len - output_offset);
-                let start_addr = header
-                    .addr
-                    .0
-                    .checked_add(remaining_skip as u64)
-                    .ok_or(PropertyIndexError::LengthOverflow)?;
-                memory.read(start_addr, &mut bytes[output_offset..output_offset + take]);
-                output_offset += take;
-                remaining_skip = 0;
-                cursor = header.next;
-            }
-
-            if output_offset < len {
-                return Err(PropertyIndexError::TruncatedBucketChain {
-                    kind: RegionKind::PropertyIndex,
-                    logical_len: len,
-                    read: output_offset,
-                });
-            }
-            Ok(bytes)
-        }
-    }
+    read_region_logical_slice(manager, memory, RegionKind::PropertyIndex, offset, len)
+        .map_err(Into::into)
 }
 
 /// Writes `bytes` at logical `offset` inside the PIDX region, extending layout/capacity as needed.
@@ -101,117 +30,8 @@ pub(crate) fn write_property_index_region_logical_slice(
     offset: usize,
     bytes: &[u8],
 ) -> Result<(), PropertyIndexError> {
-    let end = offset
-        .checked_add(bytes.len())
-        .ok_or(PropertyIndexError::LengthOverflow)?;
-    let prior_len = usize::try_from(
-        manager
-            .layout
-            .region(RegionKind::PropertyIndex)
-            .ok_or(PropertyIndexError::MissingPropertyIndexRegion(
-                RegionKind::PropertyIndex,
-            ))?
-            .logical_len_bytes,
-    )
-    .map_err(|_| PropertyIndexError::LengthOverflow)?;
-    let new_len =
-        u64::try_from(prior_len.max(end)).map_err(|_| PropertyIndexError::LengthOverflow)?;
-    match manager
-        .layout
-        .region(RegionKind::PropertyIndex)
-        .ok_or(PropertyIndexError::MissingPropertyIndexRegion(
-            RegionKind::PropertyIndex,
-        ))?
-        .storage_kind()
-    {
-        RegionStorageKind::Extent => {
-            let extent = manager.region_extent(RegionKind::PropertyIndex).ok_or(
-                PropertyIndexError::MissingPropertyIndexRegion(RegionKind::PropertyIndex),
-            )?;
-            ensure_memory_covers(memory, extent.addr.0.saturating_add(extent.len_bytes))?;
-            if new_len > extent.len_bytes {
-                return Err(PropertyIndexError::RegionTooSmall {
-                    kind: RegionKind::PropertyIndex,
-                    required: new_len,
-                    capacity: extent.len_bytes,
-                });
-            }
-            manager
-                .set_region_logical_len(RegionKind::PropertyIndex, new_len)
-                .ok_or(PropertyIndexError::MissingPropertyIndexRegion(
-                    RegionKind::PropertyIndex,
-                ))?;
-            if !bytes.is_empty() {
-                memory.write(
-                    extent
-                        .addr
-                        .0
-                        .checked_add(offset as u64)
-                        .ok_or(PropertyIndexError::LengthOverflow)?,
-                    bytes,
-                );
-            }
-        }
-        RegionStorageKind::BucketChain => {
-            manager
-                .ensure_bucket_region_capacity(RegionKind::PropertyIndex, new_len)
-                .ok_or(PropertyIndexError::MissingPropertyIndexRegion(
-                    RegionKind::PropertyIndex,
-                ))?;
-            let chain = manager.bucket_chain(RegionKind::PropertyIndex).ok_or(
-                PropertyIndexError::MissingPropertyIndexRegion(RegionKind::PropertyIndex),
-            )?;
-            let bucket_size = usize::try_from(manager.bucket_size_bytes())
-                .map_err(|_| PropertyIndexError::LengthOverflow)?;
-            let last_byte_exclusive = manager
-                .bucket_header(chain.tail)
-                .map(|header| header.addr.0 + manager.bucket_size_bytes())
-                .ok_or(PropertyIndexError::MissingPropertyIndexRegion(
-                    RegionKind::PropertyIndex,
-                ))?;
-            ensure_memory_covers(memory, last_byte_exclusive)?;
-
-            let mut remaining_skip = offset;
-            let mut written = 0usize;
-            let mut cursor = chain.head;
-            while !cursor.is_null() && written < bytes.len() {
-                let header = manager.bucket_header(cursor).ok_or(
-                    PropertyIndexError::MissingPropertyIndexRegion(RegionKind::PropertyIndex),
-                )?;
-                if remaining_skip >= bucket_size {
-                    remaining_skip -= bucket_size;
-                    cursor = header.next;
-                    continue;
-                }
-                let available = bucket_size - remaining_skip;
-                let take = available.min(bytes.len() - written);
-                memory.write(
-                    header
-                        .addr
-                        .0
-                        .checked_add(remaining_skip as u64)
-                        .ok_or(PropertyIndexError::LengthOverflow)?,
-                    &bytes[written..written + take],
-                );
-                written += take;
-                remaining_skip = 0;
-                cursor = header.next;
-            }
-            if written < bytes.len() {
-                return Err(PropertyIndexError::TruncatedBucketChain {
-                    kind: RegionKind::PropertyIndex,
-                    logical_len: offset.saturating_add(bytes.len()),
-                    read: offset.saturating_add(written),
-                });
-            }
-            manager
-                .set_region_logical_len(RegionKind::PropertyIndex, new_len)
-                .ok_or(PropertyIndexError::MissingPropertyIndexRegion(
-                    RegionKind::PropertyIndex,
-                ))?;
-        }
-    }
-    Ok(())
+    write_region_logical_slice(manager, memory, RegionKind::PropertyIndex, offset, bytes)
+        .map_err(Into::into)
 }
 
 fn ensure_memory_covers(
@@ -398,46 +218,8 @@ pub fn read_property_index_region_bytes(
     )?;
     let logical_len = usize::try_from(region.logical_len_bytes)
         .map_err(|_| PropertyIndexError::LengthOverflow)?;
-
-    match region.storage_kind() {
-        RegionStorageKind::Extent => {
-            let extent = manager.region_extent(RegionKind::PropertyIndex).ok_or(
-                PropertyIndexError::MissingPropertyIndexRegion(RegionKind::PropertyIndex),
-            )?;
-            let mut bytes = vec![0u8; logical_len];
-            if logical_len > 0 {
-                memory.read(extent.addr.0, &mut bytes);
-            }
-            Ok(bytes)
-        }
-        RegionStorageKind::BucketChain => {
-            let chain = manager.bucket_chain(RegionKind::PropertyIndex).ok_or(
-                PropertyIndexError::MissingPropertyIndexRegion(RegionKind::PropertyIndex),
-            )?;
-            let bucket_size = usize::try_from(manager.bucket_size_bytes())
-                .map_err(|_| PropertyIndexError::LengthOverflow)?;
-            let mut bytes = vec![0u8; logical_len];
-            let mut offset = 0usize;
-            let mut cursor = chain.head;
-            while !cursor.is_null() && offset < logical_len {
-                let header = manager.bucket_header(cursor).ok_or(
-                    PropertyIndexError::MissingPropertyIndexRegion(RegionKind::PropertyIndex),
-                )?;
-                let len = bucket_size.min(logical_len - offset);
-                memory.read(header.addr.0, &mut bytes[offset..offset + len]);
-                offset += len;
-                cursor = header.next;
-            }
-            if offset < logical_len {
-                return Err(PropertyIndexError::TruncatedBucketChain {
-                    kind: RegionKind::PropertyIndex,
-                    logical_len,
-                    read: offset,
-                });
-            }
-            Ok(bytes)
-        }
-    }
+    read_region_logical_slice(manager, memory, RegionKind::PropertyIndex, 0, logical_len)
+        .map_err(Into::into)
 }
 
 fn write_property_index_region_bytes(
@@ -598,13 +380,14 @@ mod tests {
     use super::{read_property_index_region_bytes, write_property_index_region_bytes};
     use crate::VecMemory;
     use crate::low_level::{
-        BucketSizeInPages, ExtentChain, ExtentId, RegionKind, RegionManager, WasmPages,
+        BucketSizeInPages, ExtentChain, ExtentId, RegionKind, RegionManager, WASM_PAGE_SIZE,
+        WasmPages,
     };
     use crate::property_index::PIDX_V3_MAGIC;
     use crate::property_index::property_equality::{
         decode_pidx_v3_region, empty_property_equality_map,
     };
-    use crate::stable::Memory;
+    use ic_stable_structures::Memory;
 
     fn setup_property_index_extent(
         old_logical_len: usize,
@@ -630,6 +413,15 @@ mod tests {
             .region_extent(RegionKind::PropertyIndex)
             .expect("region extent");
         let capacity = usize::try_from(extent.len_bytes).expect("capacity usize");
+        let end_byte = extent
+            .addr
+            .0
+            .checked_add(extent.len_bytes)
+            .expect("extent end");
+        let pages_needed = end_byte.div_ceil(WASM_PAGE_SIZE);
+        while memory.size() < pages_needed {
+            assert!(memory.grow(1) >= 0, "grow vector backing for tests");
+        }
         if capacity > 0 {
             memory.write(extent.addr.0, &vec![0u8; capacity]);
         }

@@ -4,6 +4,7 @@ use super::*;
 
 use gleaph_gql::Value;
 
+use crate::low_level::GleaphMemoryManager;
 use crate::property_index::{PropertyIndexNodeId, PropertyIndexNodeStoreDelta};
 use crate::property_store::{
     PropertyKey, StoredPropertyValue, btree_get_edge_property, btree_get_node_property,
@@ -409,11 +410,12 @@ impl<M: Memory> GraphPma<M> {
         // Match `hydrate_from_stable_memory`: do not re-init the pixmap btree with payload len 0
         // when the region already holds a BTR (`BTreeMap::new` would trash stable memory).
         let btree_rc = Rc::clone(&self.property_index_btree_payload);
+        let gleaph = GleaphMemoryManager::new(Rc::clone(&self.manager), Rc::clone(&self.memory));
         self.property_equality_map = crate::property_index::hydrate_property_equality_inplace_map(
-            Rc::clone(&self.manager),
-            Rc::clone(&self.memory),
+            &gleaph,
             Rc::clone(&btree_rc),
-        );
+        )
+        .map_err(crate::property_store::PropertyStoreError::from)?;
         self.property_equality_map.clear_new();
         for (key, v) in node_entries {
             let node_id =

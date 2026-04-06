@@ -1,7 +1,7 @@
 use std::ops::Bound;
 
 use crate::low_level::RegionManager;
-use crate::stable::Memory;
+use ic_stable_structures::Memory;
 
 use super::super::property_equality::decode_pidx_v3_region;
 use super::super::{

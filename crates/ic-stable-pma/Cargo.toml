@@ -1,0 +1,12 @@
+[package]
+name = "ic-stable-pma"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ic-stable-structures.workspace = true
+ic-stable-vec-deque = { path = "../ic-stable-vec-deque" }

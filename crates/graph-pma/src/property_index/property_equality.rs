@@ -5,8 +5,10 @@ use std::rc::Rc;
 
 use ic_stable_structures::{Memory as IcMemory, StableBTreeMap, VectorMemory};
 
-use crate::low_level::{RegionManager, WASM_PAGE_SIZE};
-use crate::stable::Memory as StableMemoryTrait;
+use crate::low_level::{
+    GleaphMemoryManager, RegionKind, VirtualBucketMemory, VirtualRegionMemoryError, WASM_PAGE_SIZE,
+};
+use ic_stable_structures::Memory as StableMemoryTrait;
 
 use super::ic_pidx_linear_memory::PropertyIndexBtreeSubregionIcMemory;
 use super::pidx_v3_layout::{PIDX_V3_HEADER_LEN, PropertyIndexRegionHeaderV3};
@@ -18,8 +20,12 @@ use super::{
 pub type PropertyEqualityStableMap =
     StableBTreeMap<PropertyIndexKey, PropertyIndexEntry, VectorMemory>;
 
-pub type PropertyEqualityInplaceMap<M> =
-    StableBTreeMap<PropertyIndexKey, PropertyIndexEntry, PropertyIndexBtreeSubregionIcMemory<M>>;
+/// `M` is the canister-wide backing memory; btree I/O uses [`VirtualBucketMemory`] for PIDX.
+pub type PropertyEqualityInplaceMap<M> = StableBTreeMap<
+    PropertyIndexKey,
+    PropertyIndexEntry,
+    PropertyIndexBtreeSubregionIcMemory<VirtualBucketMemory<M>>,
+>;
 
 pub fn pad_ic_vector_memory_bytes(mut v: Vec<u8>) -> Vec<u8> {
     if v.is_empty() {
@@ -37,28 +43,23 @@ pub fn empty_property_equality_map() -> PropertyEqualityStableMap {
 
 /// Fresh equality map backed by the PIDX v3 btree subregion (logical bytes after the fixed header).
 pub fn empty_property_equality_inplace_map<M: StableMemoryTrait>(
-    manager: Rc<RefCell<RegionManager>>,
-    memory: Rc<RefCell<M>>,
+    gleaph: &GleaphMemoryManager<M>,
     btree_payload_len: Rc<RefCell<u64>>,
-) -> PropertyEqualityInplaceMap<M> {
-    StableBTreeMap::init(PropertyIndexBtreeSubregionIcMemory::new(
-        manager,
-        memory,
+) -> Result<PropertyEqualityInplaceMap<M>, VirtualRegionMemoryError> {
+    let region_memory = gleaph.get_bucket(RegionKind::PropertyIndex)?;
+    Ok(StableBTreeMap::init(PropertyIndexBtreeSubregionIcMemory::new(
+        Rc::clone(gleaph.manager()),
+        region_memory,
         btree_payload_len,
-    ))
+    )))
 }
 
 /// Hydrates [`StableBTreeMap::init`] against existing subregion bytes; `btree_payload_len` must match the v3 header.
 pub fn hydrate_property_equality_inplace_map<M: StableMemoryTrait>(
-    manager: Rc<RefCell<RegionManager>>,
-    memory: Rc<RefCell<M>>,
+    gleaph: &GleaphMemoryManager<M>,
     btree_payload_len: Rc<RefCell<u64>>,
-) -> PropertyEqualityInplaceMap<M> {
-    StableBTreeMap::init(PropertyIndexBtreeSubregionIcMemory::new(
-        manager,
-        memory,
-        btree_payload_len,
-    ))
+) -> Result<PropertyEqualityInplaceMap<M>, VirtualRegionMemoryError> {
+    empty_property_equality_inplace_map(gleaph, btree_payload_len)
 }
 
 pub fn clone_property_equality_map(src: &PropertyEqualityStableMap) -> PropertyEqualityStableMap {

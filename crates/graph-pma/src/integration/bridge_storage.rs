@@ -24,7 +24,7 @@ use crate::property_index::{
     scan_node_property_index_value_prefix_from_stable_memory,
 };
 use crate::property_store::PropertyStoreError;
-use crate::stable::Memory;
+use ic_stable_structures::Memory;
 
 impl<'a, S: GraphPmaStore> GraphPmaKernelBootstrapBridge<'a, S> {
     fn property_store_error(err: PropertyStoreError) -> GraphError {

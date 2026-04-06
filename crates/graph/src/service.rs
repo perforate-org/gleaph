@@ -46,6 +46,36 @@ pub struct GleaphServiceSnapshot {
     pub graph_catalog_blob: Vec<u8>,
 }
 
+/// Service fields persisted in the primary service stable cell (catalog blob lives separately).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct GleaphServiceCoreSnapshot {
+    pub acl_entries: Vec<AclEntry>,
+    pub prepared_queries: Vec<PreparedQuerySnapshot>,
+    pub supported_extension_types: Vec<String>,
+}
+
+impl GleaphServiceSnapshot {
+    pub fn split_for_stable_cells(&self) -> (GleaphServiceCoreSnapshot, Vec<u8>) {
+        (
+            GleaphServiceCoreSnapshot {
+                acl_entries: self.acl_entries.clone(),
+                prepared_queries: self.prepared_queries.clone(),
+                supported_extension_types: self.supported_extension_types.clone(),
+            },
+            self.graph_catalog_blob.clone(),
+        )
+    }
+
+    pub fn from_stable_cell_parts(core: GleaphServiceCoreSnapshot, graph_catalog_blob: Vec<u8>) -> Self {
+        Self {
+            acl_entries: core.acl_entries,
+            prepared_queries: core.prepared_queries,
+            supported_extension_types: core.supported_extension_types,
+            graph_catalog_blob,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct GleaphService {
     permissions: PermissionChecker,
@@ -297,6 +327,21 @@ impl GleaphService {
     }
 
     pub fn from_snapshot(snapshot: GleaphServiceSnapshot) -> Result<Self, GleaphError> {
+        Self::from_core_and_catalog(
+            GleaphServiceCoreSnapshot {
+                acl_entries: snapshot.acl_entries,
+                prepared_queries: snapshot.prepared_queries,
+                supported_extension_types: snapshot.supported_extension_types,
+            },
+            snapshot.graph_catalog_blob,
+        )
+    }
+
+    pub fn from_core_and_catalog(
+        core: GleaphServiceCoreSnapshot,
+        graph_catalog_blob: Vec<u8>,
+    ) -> Result<Self, GleaphError> {
+        let snapshot = GleaphServiceSnapshot::from_stable_cell_parts(core, graph_catalog_blob);
         let mut service = Self::new();
         service.supported_extension_types.clear();
         for type_name in snapshot.supported_extension_types {
@@ -417,6 +462,7 @@ impl GleaphService {
     ) -> Result<QueryResponse, GleaphError> {
         self.ensure_allowed(auth, Operation::ExecuteQuery)?;
         self.execute_block_request(graph, auth, request, stats)
+            .map(|(response, _)| response)
     }
 
     pub fn execute_update_request<G: GraphRead + GraphWrite>(
@@ -428,6 +474,7 @@ impl GleaphService {
     ) -> Result<QueryResponse, GleaphError> {
         self.ensure_allowed(auth, Operation::Update)?;
         self.execute_block_request(graph, auth, request, stats)
+            .map(|(response, _)| response)
     }
 
     fn execute_block_request<G: GraphRead + GraphWrite>(
@@ -436,13 +483,17 @@ impl GleaphService {
         auth: &AuthContext,
         request: &QueryRequest,
         stats: Option<&dyn GraphStats>,
-    ) -> Result<QueryResponse, GleaphError> {
+    ) -> Result<(QueryResponse, bool), GleaphError> {
         let block = parse_block(&request.query)?;
         self.ensure_supported_extension_types_in_block(&block)?;
-        self.catalog
-            .borrow_mut()
-            .apply_statement_block(&block)
-            .map_err(GleaphError::from)?;
+        let catalog_dirty = {
+            let cat_before = self.catalog.borrow().clone();
+            self.catalog
+                .borrow_mut()
+                .apply_statement_block(&block)
+                .map_err(GleaphError::from)?;
+            cat_before != *self.catalog.borrow()
+        };
         let ctx = ExecutionContext {
             params: crate::normalize_params(&request.params),
             caller: caller_value_from_auth(auth),
@@ -458,18 +509,21 @@ impl GleaphService {
             &ctx,
             &self.catalog.borrow(),
         )?;
-        Ok(QueryResponse {
-            explain: output.plan.explain,
-            plan_summary: output.plan.summary,
-            use_graph_pushdown: output
-                .plan
-                .plan
-                .use_graph_pushdown()
-                .iter()
-                .map(crate::ApiUseGraphPushdownInfo::from)
-                .collect(),
-            execution: output.execution,
-        })
+        Ok((
+            QueryResponse {
+                explain: output.plan.explain,
+                plan_summary: output.plan.summary,
+                use_graph_pushdown: output
+                    .plan
+                    .plan
+                    .use_graph_pushdown()
+                    .iter()
+                    .map(crate::ApiUseGraphPushdownInfo::from)
+                    .collect(),
+                execution: output.execution,
+            },
+            catalog_dirty,
+        ))
     }
 
     pub fn execute_api_request<G: GraphRead + GraphWrite>(
@@ -479,6 +533,19 @@ impl GleaphService {
         request: &ApiQueryRequest,
         stats: Option<&dyn GraphStats>,
     ) -> Result<ApiQueryResponse, GleaphError> {
+        self.execute_api_request_with_service_stable_dirty(graph, auth, request, stats)
+            .map(|(r, _)| r)
+    }
+
+    /// Same as [`Self::execute_api_request`], plus whether the graph catalog changed (service stable cell must persist).
+    pub(crate) fn execute_api_request_with_service_stable_dirty<G: GraphRead + GraphWrite>(
+        &self,
+        graph: &mut G,
+        auth: &AuthContext,
+        request: &ApiQueryRequest,
+        stats: Option<&dyn GraphStats>,
+    ) -> Result<(ApiQueryResponse, bool), GleaphError> {
+        self.ensure_allowed(auth, Operation::ExecuteQuery)?;
         let request = QueryRequest {
             query: request.query.clone(),
             params: request
@@ -487,13 +554,17 @@ impl GleaphService {
                 .map(|(k, v)| (k.clone(), Value::from(v)))
                 .collect(),
         };
-        let response = self.execute_request(graph, auth, &request, stats)?;
-        Ok(ApiQueryResponse {
-            explain: response.explain,
-            plan_summary: crate::ApiPlanSummary::from(&response.plan_summary),
-            use_graph_pushdown: response.use_graph_pushdown,
-            execution: crate::ApiExecutionResult::from(&response.execution),
-        })
+        let (response, catalog_dirty) =
+            self.execute_block_request(graph, auth, &request, stats)?;
+        Ok((
+            ApiQueryResponse {
+                explain: response.explain,
+                plan_summary: crate::ApiPlanSummary::from(&response.plan_summary),
+                use_graph_pushdown: response.use_graph_pushdown,
+                execution: crate::ApiExecutionResult::from(&response.execution),
+            },
+            catalog_dirty,
+        ))
     }
 
     pub fn execute_update_api_request<G: GraphRead + GraphWrite>(
@@ -503,6 +574,18 @@ impl GleaphService {
         request: &ApiQueryRequest,
         stats: Option<&dyn GraphStats>,
     ) -> Result<ApiQueryResponse, GleaphError> {
+        self.execute_update_api_request_with_service_stable_dirty(graph, auth, request, stats)
+            .map(|(r, _)| r)
+    }
+
+    pub(crate) fn execute_update_api_request_with_service_stable_dirty<G: GraphRead + GraphWrite>(
+        &self,
+        graph: &mut G,
+        auth: &AuthContext,
+        request: &ApiQueryRequest,
+        stats: Option<&dyn GraphStats>,
+    ) -> Result<(ApiQueryResponse, bool), GleaphError> {
+        self.ensure_allowed(auth, Operation::Update)?;
         let request = QueryRequest {
             query: request.query.clone(),
             params: request
@@ -511,13 +594,17 @@ impl GleaphService {
                 .map(|(k, v)| (k.clone(), Value::from(v)))
                 .collect(),
         };
-        let response = self.execute_update_request(graph, auth, &request, stats)?;
-        Ok(ApiQueryResponse {
-            explain: response.explain,
-            plan_summary: crate::ApiPlanSummary::from(&response.plan_summary),
-            use_graph_pushdown: response.use_graph_pushdown,
-            execution: crate::ApiExecutionResult::from(&response.execution),
-        })
+        let (response, catalog_dirty) =
+            self.execute_block_request(graph, auth, &request, stats)?;
+        Ok((
+            ApiQueryResponse {
+                explain: response.explain,
+                plan_summary: crate::ApiPlanSummary::from(&response.plan_summary),
+                use_graph_pushdown: response.use_graph_pushdown,
+                execution: crate::ApiExecutionResult::from(&response.execution),
+            },
+            catalog_dirty,
+        ))
     }
 
     pub fn execute_api_endpoint<G: GraphRead + GraphWrite>(

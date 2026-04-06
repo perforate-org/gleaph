@@ -4,10 +4,8 @@ use std::collections::BTreeMap;
 use gleaph_gql::name_limits;
 use gleaph_graph_kernel::{EdgeId, NodeId};
 
-use ic_stable_structures::Storable as IcStorable;
-use ic_stable_structures::storable::Bound as IcBound;
-
-use crate::stable::{Bound, Storable};
+use ic_stable_structures::Storable;
+use ic_stable_structures::storable::Bound;
 
 use super::PropertyIndexError;
 
@@ -328,7 +326,7 @@ impl PropertyIndexNodeRecord {
                 );
                 for (key, entry) in entries {
                     let key_bytes = key.encode()?;
-                    let value_bytes = crate::stable::Storable::to_bytes(entry);
+                    let value_bytes = Storable::to_bytes(entry);
                     out.extend_from_slice(
                         &u32::try_from(key_bytes.len())
                             .map_err(|_| PropertyIndexError::LengthOverflow)?
@@ -446,7 +444,7 @@ impl PropertyIndexNodeRecord {
                         });
                     }
                     let key = PropertyIndexKey::decode(&bytes[offset..key_end])?;
-                    let entry = crate::stable::Storable::from_bytes(Cow::Owned(
+                    let entry = Storable::from_bytes(Cow::Owned(
                         bytes[key_end..value_end].to_vec(),
                     ));
                     entries.push((key, entry));
@@ -662,22 +660,6 @@ impl Storable for PropertyIndexKey {
     const BOUND: Bound = Bound::Unbounded;
 }
 
-impl IcStorable for PropertyIndexKey {
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(self.encode().expect("PropertyIndexKey must encode"))
-    }
-
-    fn into_bytes(self) -> Vec<u8> {
-        self.encode().expect("PropertyIndexKey must encode")
-    }
-
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Self::decode(bytes.as_ref()).expect("PropertyIndexKey bytes must decode")
-    }
-
-    const BOUND: IcBound = IcBound::Unbounded;
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PropertyIndexEntry {
     pub payload: Vec<u8>,
@@ -707,24 +689,6 @@ impl Storable for PropertyIndexEntry {
     }
 
     const BOUND: Bound = Bound::Unbounded;
-}
-
-impl IcStorable for PropertyIndexEntry {
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Borrowed(&self.payload)
-    }
-
-    fn into_bytes(self) -> Vec<u8> {
-        self.payload
-    }
-
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Self {
-            payload: bytes.into_owned(),
-        }
-    }
-
-    const BOUND: IcBound = IcBound::Unbounded;
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -793,7 +757,7 @@ impl PropertyIndex {
         );
         for (key, entry) in &self.entries {
             let key_bytes = key.encode()?;
-            let entry_bytes = crate::stable::Storable::to_bytes(entry);
+            let entry_bytes = Storable::to_bytes(entry);
             out.extend_from_slice(
                 &u32::try_from(key_bytes.len())
                     .map_err(|_| PropertyIndexError::LengthOverflow)?
@@ -850,7 +814,7 @@ impl PropertyIndex {
             }
             let key = PropertyIndexKey::decode(&bytes[offset..key_end])?;
             let entry =
-                crate::stable::Storable::from_bytes(Cow::Owned(bytes[key_end..value_end].to_vec()));
+                Storable::from_bytes(Cow::Owned(bytes[key_end..value_end].to_vec()));
             entries.insert(key, entry);
             offset = value_end;
         }

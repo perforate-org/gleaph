@@ -11,10 +11,13 @@ doctest = false
 default = []
 # Enables `canbench_rs::bench_scope` in hot flush paths when the parent canister builds with canbench.
 canbench-rs = ["dep:canbench-rs"]
+# Reserved `MemoryId` slots + helpers for `ic-stable-pma` VCSR (`MemoryManager` alongside Gleaph).
+experimental-vcsr = []
 
 [dependencies]
 candid.workspace = true
 canbench-rs = { workspace = true, optional = true }
+ic-stable-pma = { path = "../ic-stable-pma" }
 ic-stable-structures.workspace = true
 gleaph-gql = { path = "../gql" }
 gleaph-graph-kernel = { path = "../graph-kernel" }

@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use crate::VecMemory;
-use crate::stable::Memory;
+use ic_stable_structures::Memory;
 use gleaph_gql::Value;
 use gleaph_graph_kernel::{EdgeId, LabelId, NodeId, PropertyMap};
 
@@ -37,8 +37,8 @@ use crate::low_level::{
     GraphMaintenanceWorkItem, GraphMutationPath, GraphRuntime, HydratedSurfaceRuntimes,
     HydrationError, LogicalEdgeLocator, ShardCanisterDirectory, RebalanceInsertSpec,
     RebalancePrepareSpec, RegionKind, RegionManager, ResolvedEdgeSlot, ReverseSurfaceRuntime,
-    SurfaceVertexWindowReserveHint, SurfaceVertexWindowSummary, VertexEntry, VertexRef,
-    WasmPages, WritebackError, estimate_vertex_window_reserve_hint_from_stable_memory,
+    GleaphMemoryManager, SurfaceVertexWindowReserveHint, SurfaceVertexWindowSummary, VertexEntry,
+    VertexRef, WasmPages, WritebackError, estimate_vertex_window_reserve_hint_from_stable_memory,
     forward_surface_from_layout, hydrate_surface_runtimes_from_stable_memory,
     read_edge_entries_by_ref_from_stable_memory, read_vertex_base_edge_ref_from_stable_memory,
     read_vertex_base_entries_from_stable_memory, read_vertex_base_entry_from_stable_memory,
@@ -109,7 +109,7 @@ pub struct GraphPma<M: Memory = VecMemory> {
     /// Region metadata and allocator-side state.
     pub manager: Rc<RefCell<RegionManager>>,
     /// Canonical stable-memory backing (shared with PIDX btree subregion I/O).
-    pub memory: Rc<RefCell<M>>,
+    pub memory: Rc<M>,
     /// In-memory forward/reverse adjacency runtime plus locator sidecar.
     pub graph: GraphRuntime,
     /// Node properties: `PSB1` header + [`StableBTreeMap`] (`StableBTreeMap` in stable memory).
@@ -172,27 +172,28 @@ impl<M: Memory> std::fmt::Debug for GraphPma<M> {
 impl<M: Memory + Clone> Clone for GraphPma<M> {
     fn clone(&self) -> Self {
         let manager = Rc::new(RefCell::new(self.manager.borrow().clone()));
-        let memory = Rc::new(RefCell::new(self.memory.borrow().clone()));
+        let memory = Rc::new((*self.memory).clone());
         let btree_payload = Rc::new(RefCell::new(*self.property_index_btree_payload.borrow()));
+        let gleaph = GleaphMemoryManager::new(Rc::clone(&manager), Rc::clone(&memory));
         let property_equality_map = empty_property_equality_inplace_map(
-            Rc::clone(&manager),
-            Rc::clone(&memory),
+            &gleaph,
             Rc::clone(&btree_payload),
-        );
+        )
+        .expect("property index bucket region");
         let node_pl = Rc::new(RefCell::new(*self.node_property_btree_payload.borrow()));
         let edge_pl = Rc::new(RefCell::new(*self.edge_property_btree_payload.borrow()));
         let node_property_store = empty_graph_property_stable_map(
-            Rc::clone(&manager),
-            Rc::clone(&memory),
+            &gleaph,
             Rc::clone(&node_pl),
             RegionKind::NodePropertyStore,
-        );
+        )
+        .expect("node property bucket region");
         let edge_property_store = empty_graph_property_stable_map(
-            Rc::clone(&manager),
-            Rc::clone(&memory),
+            &gleaph,
             Rc::clone(&edge_pl),
             RegionKind::EdgePropertyStore,
-        );
+        )
+        .expect("edge property bucket region");
         let mut clone = Self {
             manager,
             memory,
@@ -234,7 +235,7 @@ impl<M: Memory + Clone> Clone for GraphPma<M> {
 
 struct AssembledAfterPropertyLoadArgs<M: Memory> {
     manager: Rc<RefCell<RegionManager>>,
-    memory: Rc<RefCell<M>>,
+    memory: Rc<M>,
     graph: GraphRuntime,
     node_property_store: GraphPropertyStableMap<M>,
     edge_property_store: GraphPropertyStableMap<M>,
@@ -1263,29 +1264,30 @@ impl<M: Memory> GraphPma<M> {
     /// Bundles an existing region manager and graph runtime into one facade.
     pub fn new(
         manager: Rc<RefCell<RegionManager>>,
-        memory: Rc<RefCell<M>>,
+        memory: Rc<M>,
         graph: GraphRuntime,
     ) -> Self {
+        let gleaph = GleaphMemoryManager::new(Rc::clone(&manager), Rc::clone(&memory));
         let btree_payload = Rc::new(RefCell::new(0u64));
         let property_equality_map = empty_property_equality_inplace_map(
-            Rc::clone(&manager),
-            Rc::clone(&memory),
+            &gleaph,
             Rc::clone(&btree_payload),
-        );
+        )
+        .expect("property index bucket region");
         let node_pl = Rc::new(RefCell::new(0u64));
         let edge_pl = Rc::new(RefCell::new(0u64));
         let node_property_store = empty_graph_property_stable_map(
-            Rc::clone(&manager),
-            Rc::clone(&memory),
+            &gleaph,
             Rc::clone(&node_pl),
             RegionKind::NodePropertyStore,
-        );
+        )
+        .expect("node property bucket region");
         let edge_property_store = empty_graph_property_stable_map(
-            Rc::clone(&manager),
-            Rc::clone(&memory),
+            &gleaph,
             Rc::clone(&edge_pl),
             RegionKind::EdgePropertyStore,
-        );
+        )
+        .expect("edge property bucket region");
         Self {
             manager,
             memory,
@@ -1346,16 +1348,16 @@ impl<M: Memory> GraphPma<M> {
         bucket_size_in_pages: BucketSizeInPages,
         memory: M,
     ) -> GraphPmaResult<Self> {
-        Self::bootstrap_empty_with_bucket_size_using_memory_rc(
+        Self::bootstrap_empty_with_bucket_size_using_shared_memory(
             bucket_size_in_pages,
-            Rc::new(RefCell::new(memory)),
+            Rc::new(memory),
         )
     }
 
-    /// Like [`Self::bootstrap_empty_with_bucket_size`], but reuses one shared [`Rc<RefCell<M>>`].
-    pub fn bootstrap_empty_with_bucket_size_using_memory_rc(
+    /// Like [`Self::bootstrap_empty_with_bucket_size`], but reuses one shared [`Rc<M>`].
+    pub fn bootstrap_empty_with_bucket_size_using_shared_memory(
         bucket_size_in_pages: BucketSizeInPages,
-        mem_rc: Rc<RefCell<M>>,
+        mem_rc: Rc<M>,
     ) -> GraphPmaResult<Self> {
         let mut manager = RegionManager::with_bucket_size(bucket_size_in_pages);
         Self::define_empty_surface_regions(&mut manager, crate::low_level::SurfaceKind::Forward);
@@ -1376,14 +1378,22 @@ impl<M: Memory> GraphPma<M> {
             Rc::clone(&mem_rc),
             GraphRuntime::new_with_empty_sidecars(forward, reverse),
         );
-        facade.try_write_all_to_stable_memory(&*mem_rc.borrow())?;
+        facade.try_write_all_to_stable_memory(mem_rc.as_ref())?;
         Ok(facade)
+    }
+
+    /// Like [`Self::bootstrap_empty_with_bucket_size_using_shared_memory`]; legacy alias.
+    pub fn bootstrap_empty_with_bucket_size_using_memory_rc(
+        bucket_size_in_pages: BucketSizeInPages,
+        mem_rc: Rc<M>,
+    ) -> GraphPmaResult<Self> {
+        Self::bootstrap_empty_with_bucket_size_using_shared_memory(bucket_size_in_pages, mem_rc)
     }
 
     /// Creates one facade from already-hydrated directional runtimes.
     pub fn from_hydrated_runtimes(
         manager: Rc<RefCell<RegionManager>>,
-        memory: Rc<RefCell<M>>,
+        memory: Rc<M>,
         runtimes: HydratedSurfaceRuntimes,
     ) -> Self {
         let mut graph = GraphRuntime::new_with_empty_sidecars(runtimes.forward, runtimes.reverse);
@@ -1394,7 +1404,7 @@ impl<M: Memory> GraphPma<M> {
     /// Creates one facade from hydrated runtimes and an explicit insert policy.
     pub fn from_hydrated_runtimes_with_insert_policy(
         manager: Rc<RefCell<RegionManager>>,
-        memory: Rc<RefCell<M>>,
+        memory: Rc<M>,
         runtimes: HydratedSurfaceRuntimes,
         insert_policy: GraphInsertPolicy,
     ) -> Self {
@@ -1405,6 +1415,25 @@ impl<M: Memory> GraphPma<M> {
         );
         let _ = graph.sync_base_segment_capacities_from_manager(&manager.borrow());
         Self::new(manager, memory, graph)
+    }
+
+    /// Hydrates from graph backing by reading the tail [`crate::low_level::pma_stable_root`] footer,
+    /// or `legacy_region_manager_candid` when upgrading from canisters that stored metadata in a
+    /// separate stable cell.
+    pub fn hydrate_from_graph_stable_memory_with_legacy(
+        memory: M,
+        legacy_region_manager_candid: Option<&[u8]>,
+    ) -> GraphPmaResult<Self> {
+        let manager = crate::low_level::decode_region_manager_for_hydrate(
+            &memory,
+            legacy_region_manager_candid,
+        )?;
+        Self::hydrate_from_stable_memory(manager, memory)
+    }
+
+    /// Like [`Self::hydrate_from_graph_stable_memory_with_legacy`] with no legacy cell (footer only).
+    pub fn hydrate_from_graph_stable_memory(memory: M) -> GraphPmaResult<Self> {
+        Self::hydrate_from_graph_stable_memory_with_legacy(memory, None)
     }
 
     /// Hydrates forward/reverse runtimes from stable memory and builds a facade.
@@ -1418,9 +1447,10 @@ impl<M: Memory> GraphPma<M> {
     /// in-memory `node_property_index` / `edge_property_index` match persisted pages.
     pub fn hydrate_from_stable_memory(manager: RegionManager, memory: M) -> GraphPmaResult<Self> {
         let mgr_rc = Rc::new(RefCell::new(manager));
-        let mem_rc = Rc::new(RefCell::new(memory));
+        let mem_rc = Rc::new(memory);
+        let gleaph = GleaphMemoryManager::new(Rc::clone(&mgr_rc), Rc::clone(&mem_rc));
         let runtimes =
-            hydrate_surface_runtimes_from_stable_memory(&mgr_rc.borrow(), &*mem_rc.borrow())?;
+            hydrate_surface_runtimes_from_stable_memory(&mgr_rc.borrow(), mem_rc.as_ref())?;
         let (node_property_store, node_pl) = load_graph_property_stable_map_from_stable_memory(
             Rc::clone(&mgr_rc),
             Rc::clone(&mem_rc),
@@ -1437,12 +1467,12 @@ impl<M: Memory> GraphPma<M> {
 
         let shard_canister_directory = Self::load_shard_canister_directory_from_stable_memory(
             &mgr_rc.borrow(),
-            &*mem_rc.borrow(),
+            mem_rc.as_ref(),
         )?;
         graph.validate_shard_canister_slots(shard_canister_directory.len())?;
 
         let pidx_header =
-            read_pidx_v3_header_from_stable_memory(&mgr_rc.borrow(), &*mem_rc.borrow())?;
+            read_pidx_v3_header_from_stable_memory(&mgr_rc.borrow(), mem_rc.as_ref())?;
         let (
             property_equality_map,
             property_index_btree_payload,
@@ -1452,15 +1482,15 @@ impl<M: Memory> GraphPma<M> {
         ) = if let Some(header) = pidx_header {
             let virt = ensure_pidx_v3_btree_subregion_for_hydrate(
                 &mut mgr_rc.borrow_mut(),
-                &*mem_rc.borrow(),
+                mem_rc.as_ref(),
                 &header,
             )?;
             let btree_rc = Rc::new(RefCell::new(virt));
             let property_equality_map = hydrate_property_equality_inplace_map(
-                Rc::clone(&mgr_rc),
-                Rc::clone(&mem_rc),
+                &gleaph,
                 Rc::clone(&btree_rc),
-            );
+            )
+            .map_err(PropertyStoreError::from)?;
             let snap = snapshot_from_equality_any_memory(&property_equality_map, 64);
             (
                 property_equality_map,
@@ -1472,10 +1502,10 @@ impl<M: Memory> GraphPma<M> {
         } else {
             let btree_rc = Rc::new(RefCell::new(0u64));
             let property_equality_map = empty_property_equality_inplace_map(
-                Rc::clone(&mgr_rc),
-                Rc::clone(&mem_rc),
+                &gleaph,
                 Rc::clone(&btree_rc),
-            );
+            )
+            .map_err(PropertyStoreError::from)?;
             (
                 property_equality_map,
                 btree_rc,
@@ -1509,7 +1539,7 @@ impl<M: Memory> GraphPma<M> {
         }
         let maintenance_queue = Self::load_maintenance_queue_from_stable_memory(
             &facade.manager.borrow(),
-            &*facade.memory.borrow(),
+            facade.memory.as_ref(),
         )?;
         facade.graph.replace_maintenance_queue(maintenance_queue);
         Ok(facade)
@@ -1522,9 +1552,10 @@ impl<M: Memory> GraphPma<M> {
         insert_policy: GraphInsertPolicy,
     ) -> GraphPmaResult<Self> {
         let mgr_rc = Rc::new(RefCell::new(manager));
-        let mem_rc = Rc::new(RefCell::new(memory));
+        let mem_rc = Rc::new(memory);
+        let gleaph = GleaphMemoryManager::new(Rc::clone(&mgr_rc), Rc::clone(&mem_rc));
         let runtimes =
-            hydrate_surface_runtimes_from_stable_memory(&mgr_rc.borrow(), &*mem_rc.borrow())?;
+            hydrate_surface_runtimes_from_stable_memory(&mgr_rc.borrow(), mem_rc.as_ref())?;
         let (node_property_store, node_pl) = load_graph_property_stable_map_from_stable_memory(
             Rc::clone(&mgr_rc),
             Rc::clone(&mem_rc),
@@ -1545,12 +1576,12 @@ impl<M: Memory> GraphPma<M> {
 
         let shard_canister_directory = Self::load_shard_canister_directory_from_stable_memory(
             &mgr_rc.borrow(),
-            &*mem_rc.borrow(),
+            mem_rc.as_ref(),
         )?;
         graph.validate_shard_canister_slots(shard_canister_directory.len())?;
 
         let pidx_header =
-            read_pidx_v3_header_from_stable_memory(&mgr_rc.borrow(), &*mem_rc.borrow())?;
+            read_pidx_v3_header_from_stable_memory(&mgr_rc.borrow(), mem_rc.as_ref())?;
         let (
             property_equality_map,
             property_index_btree_payload,
@@ -1560,15 +1591,15 @@ impl<M: Memory> GraphPma<M> {
         ) = if let Some(header) = pidx_header {
             let virt = ensure_pidx_v3_btree_subregion_for_hydrate(
                 &mut mgr_rc.borrow_mut(),
-                &*mem_rc.borrow(),
+                mem_rc.as_ref(),
                 &header,
             )?;
             let btree_rc = Rc::new(RefCell::new(virt));
             let property_equality_map = hydrate_property_equality_inplace_map(
-                Rc::clone(&mgr_rc),
-                Rc::clone(&mem_rc),
+                &gleaph,
                 Rc::clone(&btree_rc),
-            );
+            )
+            .map_err(PropertyStoreError::from)?;
             let snap = snapshot_from_equality_any_memory(&property_equality_map, 64);
             (
                 property_equality_map,
@@ -1580,10 +1611,10 @@ impl<M: Memory> GraphPma<M> {
         } else {
             let btree_rc = Rc::new(RefCell::new(0u64));
             let property_equality_map = empty_property_equality_inplace_map(
-                Rc::clone(&mgr_rc),
-                Rc::clone(&mem_rc),
+                &gleaph,
                 Rc::clone(&btree_rc),
-            );
+            )
+            .map_err(PropertyStoreError::from)?;
             (
                 property_equality_map,
                 btree_rc,
@@ -1617,7 +1648,7 @@ impl<M: Memory> GraphPma<M> {
         }
         let maintenance_queue = Self::load_maintenance_queue_from_stable_memory(
             &facade.manager.borrow(),
-            &*facade.memory.borrow(),
+            facade.memory.as_ref(),
         )?;
         facade.graph.replace_maintenance_queue(maintenance_queue);
         Ok(facade)
@@ -2638,7 +2669,8 @@ mod tests {
         load_graph_property_stable_map_from_stable_memory,
         sync_graph_property_store_v1_header_to_stable_memory,
     };
-    use crate::stable::{Memory, VecMemory};
+    use crate::VecMemory;
+    use ic_stable_structures::Memory;
     use gleaph_gql::Value;
     use gleaph_graph_kernel::NodeId;
     use std::cell::RefCell;
@@ -2855,7 +2887,7 @@ mod tests {
 
     #[test]
     fn surface_write_after_property_insert_does_not_invalidate_node_property_btree() {
-        let mem_rc = Rc::new(RefCell::new(VecMemory::default()));
+        let mem_rc = Rc::new(VecMemory::default());
         let mut facade = GraphPma::bootstrap_empty_with_bucket_size_using_memory_rc(
             BucketSizeInPages::new(1),
             Rc::clone(&mem_rc),
@@ -2872,13 +2904,13 @@ mod tests {
         );
         write_surface_runtimes_to_stable_memory(
             &mut facade.manager.borrow_mut(),
-            &*mem_rc.borrow(),
+            mem_rc.as_ref(),
             &runtimes,
         )
         .expect("surface write");
         sync_graph_property_store_v1_header_to_stable_memory(
             &mut facade.manager.borrow_mut(),
-            &*mem_rc.borrow(),
+            mem_rc.as_ref(),
             RegionKind::NodePropertyStore,
             *facade.node_property_btree_payload.borrow(),
         )
@@ -2946,7 +2978,7 @@ mod tests {
         );
 
         let mgr_rc = Rc::new(RefCell::new(manager));
-        let mem_rc = Rc::new(RefCell::new(VecMemory::default()));
+        let mem_rc = Rc::new(VecMemory::default());
         let facade = GraphPma::from_hydrated_runtimes(mgr_rc, mem_rc, runtimes);
 
         assert_eq!(
@@ -3015,12 +3047,12 @@ mod tests {
         );
         let mem_rc = Rc::clone(&facade.memory);
         facade
-            .try_refresh_and_write_dirty_to_stable_memory(&*mem_rc.borrow())
+            .try_refresh_and_write_dirty_to_stable_memory(mem_rc.as_ref())
             .expect("write dirty including queue");
 
         let hydrated = GraphPma::hydrate_from_stable_memory(
             facade.manager.borrow().clone(),
-            facade.memory.borrow().clone(),
+            (*facade.memory).clone(),
         )
         .unwrap();
         let queue = hydrated.maintenance_queue_projection();
@@ -3084,30 +3116,30 @@ mod tests {
         )];
         let mem_rc = Rc::clone(&facade.memory);
         facade
-            .try_refresh_and_write_dirty_to_stable_memory(&*mem_rc.borrow())
+            .try_refresh_and_write_dirty_to_stable_memory(mem_rc.as_ref())
             .expect("persist graph state");
         facade
             .rebuild_maintenance_queue_at_epoch_and_write(
                 &[src.into(), dst.into()],
                 11,
-                &*mem_rc.borrow(),
+                mem_rc.as_ref(),
             )
             .expect("persist maintenance queue");
 
         let queue = facade
-            .try_read_maintenance_queue_from_stable_memory(&*mem_rc.borrow())
+            .try_read_maintenance_queue_from_stable_memory(mem_rc.as_ref())
             .expect("read queue bytes");
         assert_eq!(queue.len(), 2);
         assert_eq!(queue[0].start_ordinal, 0);
 
         let projection = facade
-            .try_read_maintenance_queue_projection_from_stable_memory(&*mem_rc.borrow())
+            .try_read_maintenance_queue_projection_from_stable_memory(mem_rc.as_ref())
             .expect("read queue projection");
         assert_eq!(projection.len(), 2);
         assert!(projection.iter().any(|item| item.vertex_ref == src.into()));
 
         let formatted = facade
-            .try_format_maintenance_queue_from_stable_memory(&*mem_rc.borrow())
+            .try_format_maintenance_queue_from_stable_memory(mem_rc.as_ref())
             .expect("format queue");
         assert_eq!(formatted.len(), 2);
         assert!(
@@ -3118,7 +3150,7 @@ mod tests {
         );
 
         let storage = facade
-            .try_read_maintenance_queue_storage_projection_from_stable_memory(&*mem_rc.borrow())
+            .try_read_maintenance_queue_storage_projection_from_stable_memory(mem_rc.as_ref())
             .expect("read queue storage projection");
         assert_eq!(
             storage.format_version,
@@ -3129,7 +3161,7 @@ mod tests {
         assert!(storage.logical_len_bytes > 0);
 
         let formatted_storage = facade
-            .try_format_maintenance_queue_storage_from_stable_memory(&*mem_rc.borrow())
+            .try_format_maintenance_queue_storage_from_stable_memory(mem_rc.as_ref())
             .expect("format storage metadata");
         assert!(formatted_storage.contains("maintenance-queue-storage"));
         assert!(formatted_storage.contains("version="));
@@ -3186,7 +3218,7 @@ mod tests {
         )];
         let mem_rc = Rc::clone(&facade.memory);
         facade
-            .try_refresh_and_write_dirty_to_stable_memory(&*mem_rc.borrow())
+            .try_refresh_and_write_dirty_to_stable_memory(mem_rc.as_ref())
             .expect("persist graph state");
 
         assert_eq!(
@@ -3194,7 +3226,7 @@ mod tests {
                 .rebuild_maintenance_queue_at_epoch_and_write(
                     &[src.into(), dst.into()],
                     11,
-                    &*mem_rc.borrow(),
+                    mem_rc.as_ref(),
                 )
                 .expect("persist queue"),
             Some(2)
@@ -3202,7 +3234,7 @@ mod tests {
 
         let hydrated = GraphPma::hydrate_from_stable_memory(
             facade.manager.borrow().clone(),
-            facade.memory.borrow().clone(),
+            (*facade.memory).clone(),
         )
         .unwrap();
         assert_eq!(hydrated.maintenance_queue_projection().len(), 2);
@@ -3321,10 +3353,10 @@ mod tests {
             .borrow()
             .region_extent(RegionKind::MaintenanceQueue)
             .expect("queue extent");
-        facade.memory.borrow().write(extent.addr.0, &bytes);
+        facade.memory.as_ref().write(extent.addr.0, &bytes);
 
         match facade.try_read_maintenance_queue_storage_projection_from_stable_memory(
-            &*facade.memory.borrow(),
+            facade.memory.as_ref(),
         ) {
             Err(GraphPmaError::Hydration(HydrationError::InvalidMaintenanceQueueHeader(kind))) => {
                 assert_eq!(kind, RegionKind::MaintenanceQueue)
@@ -3651,12 +3683,12 @@ mod tests {
             .unwrap();
         let mem_rc = Rc::clone(&facade.memory);
         let _ = facade
-            .refresh_and_write_dirty_to_stable_memory(&*mem_rc.borrow())
+            .refresh_and_write_dirty_to_stable_memory(mem_rc.as_ref())
             .unwrap();
 
         let rehydrated = GraphPma::hydrate_from_stable_memory(
             facade.manager.borrow().clone(),
-            facade.memory.borrow().clone(),
+            (*facade.memory).clone(),
         )
         .unwrap();
         assert_eq!(
@@ -3691,12 +3723,12 @@ mod tests {
         facade.edge_property_store_dirty = true;
         let mem_rc = Rc::clone(&facade.memory);
         facade
-            .try_write_all_to_stable_memory(&*mem_rc.borrow())
+            .try_write_all_to_stable_memory(mem_rc.as_ref())
             .expect("write all");
 
         let rehydrated = GraphPma::hydrate_from_stable_memory(
             facade.manager.borrow().clone(),
-            facade.memory.borrow().clone(),
+            (*facade.memory).clone(),
         )
         .unwrap();
         assert_eq!(
@@ -3728,7 +3760,7 @@ mod tests {
 
         let mem_rc = Rc::clone(&facade.memory);
         let refreshed = facade
-            .refresh_and_write_dirty_to_stable_memory(&*mem_rc.borrow())
+            .refresh_and_write_dirty_to_stable_memory(mem_rc.as_ref())
             .expect("write dirty");
         assert_eq!(refreshed, (Vec::new(), Vec::new()));
         assert!(!facade.node_property_store_dirty);
@@ -3736,7 +3768,7 @@ mod tests {
 
         let rehydrated = GraphPma::hydrate_from_stable_memory(
             facade.manager.borrow().clone(),
-            facade.memory.borrow().clone(),
+            (*facade.memory).clone(),
         )
         .unwrap();
         assert_eq!(
@@ -3765,13 +3797,13 @@ mod tests {
             .expect("set edge property");
         let mem_rc_flush = Rc::clone(&facade.memory);
         facade
-            .refresh_and_write_dirty_to_stable_memory(&*mem_rc_flush.borrow())
+            .refresh_and_write_dirty_to_stable_memory(mem_rc_flush.as_ref())
             .expect("flush dirty");
 
         // rehydrate + query
         let mut rehydrated = GraphPma::hydrate_from_stable_memory(
             facade.manager.borrow().clone(),
-            facade.memory.borrow().clone(),
+            (*facade.memory).clone(),
         )
         .expect("rehydrate");
         assert_eq!(
@@ -3792,12 +3824,12 @@ mod tests {
             .expect("remove edge property");
         let mem_rc2 = Rc::clone(&rehydrated.memory);
         rehydrated
-            .refresh_and_write_dirty_to_stable_memory(&*mem_rc2.borrow())
+            .refresh_and_write_dirty_to_stable_memory(mem_rc2.as_ref())
             .expect("flush dirty second time");
 
         let rehydrated2 = GraphPma::hydrate_from_stable_memory(
             rehydrated.manager.borrow().clone(),
-            rehydrated.memory.borrow().clone(),
+            (*rehydrated.memory).clone(),
         )
         .expect("rehydrate second");
         assert!(
@@ -4036,13 +4068,12 @@ mod tests {
         let node_id = NodeId::from(33u8);
 
         let mem_rc = Rc::clone(&facade.memory);
-        let mem_guard = mem_rc.borrow();
         let summary = facade
             .set_node_property_value_and_write(
                 node_id,
                 "uid",
                 &Value::Text("carol".into()),
-                &*mem_guard,
+                mem_rc.as_ref(),
             )
             .expect("set property and write");
         assert_eq!(
@@ -4058,7 +4089,7 @@ mod tests {
         assert!(
             facade
                 .scan_node_ids_by_property_eq_preferring_stable_memory(
-                    &*mem_guard,
+                    mem_rc.as_ref(),
                     "uid",
                     &Value::Text("carol".into()),
                 )
@@ -4067,7 +4098,7 @@ mod tests {
 
         let rehydrated = GraphPma::hydrate_from_stable_memory(
             facade.manager.borrow().clone(),
-            facade.memory.borrow().clone(),
+            (*facade.memory).clone(),
         )
         .unwrap();
         assert_eq!(
@@ -4099,9 +4130,8 @@ mod tests {
         let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
 
         let mem_rc = Rc::clone(&facade.memory);
-        let mem_guard = mem_rc.borrow();
         let set = facade
-            .set_edge_property_value_and_write(702, "weight", &Value::Int64(9), &*mem_guard)
+            .set_edge_property_value_and_write(702, "weight", &Value::Int64(9), mem_rc.as_ref())
             .expect("set edge property and write");
         assert_eq!(
             set.flushed_sections,
@@ -4114,7 +4144,7 @@ mod tests {
         assert!(!facade.edge_property_store_is_dirty());
 
         let remove = facade
-            .remove_edge_property_value_and_write(702, "weight", &*mem_guard)
+            .remove_edge_property_value_and_write(702, "weight", mem_rc.as_ref())
             .expect("remove edge property and write");
         assert_eq!(
             remove.flushed_sections,
@@ -4128,7 +4158,7 @@ mod tests {
         assert!(
             facade
                 .scan_edge_ids_by_property_eq_preferring_stable_memory(
-                    &*mem_guard,
+                    mem_rc.as_ref(),
                     "weight",
                     &Value::Int64(9),
                 )
@@ -4257,12 +4287,12 @@ mod tests {
             .expect("set edge property");
         let mem_rc = Rc::clone(&facade.memory);
         facade
-            .try_write_all_to_stable_memory(&*mem_rc.borrow())
+            .try_write_all_to_stable_memory(mem_rc.as_ref())
             .expect("write all");
 
         let rehydrated = GraphPma::hydrate_from_stable_memory(
             facade.manager.borrow().clone(),
-            facade.memory.borrow().clone(),
+            (*facade.memory).clone(),
         )
         .unwrap();
         assert_eq!(
@@ -4289,24 +4319,24 @@ mod tests {
             .expect("set edge property");
         let mem_rc = Rc::clone(&facade.memory);
         facade
-            .try_write_all_to_stable_memory(&*mem_rc.borrow())
+            .try_write_all_to_stable_memory(mem_rc.as_ref())
             .expect("write all");
 
         assert_eq!(
-            read_property_index_region_magic(&facade.manager.borrow(), &*facade.memory.borrow())
+            read_property_index_region_magic(&facade.manager.borrow(), facade.memory.as_ref())
                 .expect("magic"),
             Some(PIDX_V3_MAGIC)
         );
         let image = crate::property_index::read_property_index_storage_image_from_stable_memory(
             &facade.manager.borrow(),
-            &*facade.memory.borrow(),
+            facade.memory.as_ref(),
         )
         .expect("read storage image");
         assert!(image.equality_map.len() >= 2);
 
         let rehydrated = GraphPma::hydrate_from_stable_memory(
             facade.manager.borrow().clone(),
-            facade.memory.borrow().clone(),
+            (*facade.memory).clone(),
         )
         .unwrap();
         assert_eq!(
@@ -5325,13 +5355,13 @@ mod tests {
             .expect("set edge property");
         let mem_rc = Rc::clone(&facade.memory);
         facade
-            .try_write_all_to_stable_memory(&*mem_rc.borrow())
+            .try_write_all_to_stable_memory(mem_rc.as_ref())
             .expect("write all");
 
         assert_eq!(
             facade
                 .try_scan_node_ids_by_property_eq_from_stable_memory(
-                    &*facade.memory.borrow(),
+                    facade.memory.as_ref(),
                     "uid",
                     &Value::Text("alice".into()),
                 )
@@ -5340,14 +5370,14 @@ mod tests {
         );
         assert_eq!(
             facade
-                .try_scan_node_ids_by_property_from_stable_memory(&*facade.memory.borrow(), "uid",)
+                .try_scan_node_ids_by_property_from_stable_memory(facade.memory.as_ref(), "uid",)
                 .expect("scan node property from stable memory"),
             vec![node_id]
         );
         assert_eq!(
             facade
                 .try_scan_edge_ids_by_property_eq_from_stable_memory(
-                    &*facade.memory.borrow(),
+                    facade.memory.as_ref(),
                     "weight",
                     &Value::Int64(5),
                 )
@@ -5357,7 +5387,7 @@ mod tests {
         assert_eq!(
             facade
                 .try_scan_edge_ids_by_property_from_stable_memory(
-                    &*facade.memory.borrow(),
+                    facade.memory.as_ref(),
                     "weight",
                 )
                 .expect("scan edge property from stable memory"),
@@ -5381,29 +5411,29 @@ mod tests {
         assert!(facade.node_property_store_is_dirty());
         assert!(facade.edge_property_store_is_dirty());
 
-        let m = facade.memory.borrow();
+        let m = facade.memory.as_ref();
         assert_eq!(
             facade.scan_node_ids_by_property_eq_preferring_stable_memory(
-                &*m,
+                m,
                 "uid",
                 &Value::Text("alice".into()),
             ),
             vec![node_id]
         );
         assert_eq!(
-            facade.scan_node_ids_by_property_preferring_stable_memory(&*m, "uid"),
+            facade.scan_node_ids_by_property_preferring_stable_memory(m, "uid"),
             vec![node_id]
         );
         assert_eq!(
             facade.scan_edge_ids_by_property_eq_preferring_stable_memory(
-                &*m,
+                m,
                 "weight",
                 &Value::Int64(7),
             ),
             vec![999]
         );
         assert_eq!(
-            facade.scan_edge_ids_by_property_preferring_stable_memory(&*m, "weight"),
+            facade.scan_edge_ids_by_property_preferring_stable_memory(m, "weight"),
             vec![999]
         );
     }
@@ -5422,7 +5452,7 @@ mod tests {
             .expect("set edge property");
         let mem_rc = Rc::clone(&facade.memory);
         facade
-            .try_write_all_to_stable_memory(&*mem_rc.borrow())
+            .try_write_all_to_stable_memory(mem_rc.as_ref())
             .expect("write all");
 
         let eq_bytes = serialize_property_equality_btree(&facade.property_equality_map);
@@ -5434,14 +5464,14 @@ mod tests {
         };
         write_property_index_storage_image_to_stable_memory(
             &mut facade.manager.borrow_mut(),
-            &*facade.memory.borrow(),
+            facade.memory.as_ref(),
             &image,
         )
         .expect("overwrite property index image");
 
         let rehydrated = GraphPma::hydrate_from_stable_memory(
             facade.manager.borrow().clone(),
-            facade.memory.borrow().clone(),
+            (*facade.memory).clone(),
         )
         .unwrap();
         assert_eq!(
@@ -5471,8 +5501,7 @@ mod tests {
             .expect("seed sidecar");
 
         let mem_rc = Rc::clone(&facade.memory);
-        let mem_guard = mem_rc.borrow();
-        let mut adapter = GraphPmaStoreAdapter::new(&mut facade, &*mem_guard);
+        let mut adapter = GraphPmaStoreAdapter::new(&mut facade, mem_rc.as_ref());
         let mut batch = adapter.begin_batch_mutation();
         let replaced = batch
             .replace_edge_pair(EdgeReplaceSpec {
@@ -5854,8 +5883,7 @@ mod tests {
         let memory = VecMemory::default();
         let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let mem_rc = Rc::clone(&facade.memory);
-        let mem_guard = mem_rc.borrow();
-        let counts = touch_store(&mut facade, &*mem_guard).expect("touch via trait");
+        let counts = touch_store(&mut facade, mem_rc.as_ref()).expect("touch via trait");
         assert_eq!(counts, (4, 4, 1, 1));
         assert_eq!(
             GraphPmaStore::formatted_last_write_event(&facade),
@@ -5868,8 +5896,7 @@ mod tests {
         let memory = VecMemory::default();
         let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let mem_rc = Rc::clone(&facade.memory);
-        let mem_guard = mem_rc.borrow();
-        let mut adapter = facade.bind(&*mem_guard);
+        let mut adapter = facade.bind(mem_rc.as_ref());
 
         let summary = adapter
             .bootstrap_vertex_refs_and_edges(
@@ -5907,8 +5934,7 @@ mod tests {
         let memory = VecMemory::default();
         let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let mem_rc = Rc::clone(&facade.memory);
-        let mem_guard = mem_rc.borrow();
-        let mut adapter = facade.bind(&*mem_guard);
+        let mut adapter = facade.bind(mem_rc.as_ref());
 
         let bootstrap = adapter
             .bootstrap_vertex_refs_and_edges(
@@ -5999,8 +6025,7 @@ mod tests {
         let memory = VecMemory::default();
         let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let mem_rc = Rc::clone(&facade.memory);
-        let mem_guard = mem_rc.borrow();
-        let mut adapter = facade.bind(&*mem_guard);
+        let mut adapter = facade.bind(mem_rc.as_ref());
 
         let mut batch = adapter.begin_batch_mutation();
         let refreshed = batch.flush().expect("flush empty batch");
@@ -6032,8 +6057,7 @@ mod tests {
         let memory = VecMemory::default();
         let mut facade = GraphPma::bootstrap_empty(memory.clone()).expect("bootstrap");
         let mem_rc = Rc::clone(&facade.memory);
-        let mem_guard = mem_rc.borrow();
-        let mut adapter = facade.bind(&*mem_guard);
+        let mut adapter = facade.bind(mem_rc.as_ref());
         let (insert_count, history_len, has_insert_event, summary_projection) =
             use_service(&mut adapter).expect("drive via service trait");
         assert_eq!(insert_count, 1);
@@ -6050,5 +6074,24 @@ mod tests {
             GraphPmaService::formatted_last_write_event(&adapter),
             Some("bootstrap-graph vertices=2 edges=1 refreshed=(1,1) fwd=[0] rev=[1]".to_owned())
         );
+    }
+}
+
+#[cfg(feature = "experimental-vcsr")]
+pub mod experimental_vcsr {
+    //! Reserved [`MemoryId`](ic_stable_structures::memory_manager::MemoryId) slots for [`ic_stable_pma`]
+    //! (`M_v` / `M_e`; third id is optional legacy stream log only).
+    pub use crate::low_level::{
+        GleaphMemoryManager, VCSR_EDGE_MEMORY_SLOT, VCSR_LOG_MEMORY_SLOT, VCSR_VERTEX_MEMORY_SLOT,
+    };
+    use ic_stable_structures::memory_manager::MemoryId;
+
+    #[inline]
+    pub fn triple_memory_ids() -> (MemoryId, MemoryId, MemoryId) {
+        (
+            MemoryId::new(VCSR_VERTEX_MEMORY_SLOT),
+            MemoryId::new(VCSR_EDGE_MEMORY_SLOT),
+            MemoryId::new(VCSR_LOG_MEMORY_SLOT),
+        )
     }
 }

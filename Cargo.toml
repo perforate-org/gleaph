@@ -10,6 +10,8 @@ members = [
     "crates/graph-kernel",
     "crates/graph-registry",
     "crates/graph-pma",
+    "crates/ic-stable-pma",
+    "crates/ic-stable-vec-deque",
 ]
 resolver = "2"
 

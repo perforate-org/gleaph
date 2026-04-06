@@ -17,7 +17,6 @@
 //!
 //! Larger design text: `docs/graph-pma-target-design.md` (`Internet Computer: full property search stack`).
 
-use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
@@ -77,14 +76,13 @@ fn stats_user_with_indexed_edge_weight() -> TableStats {
 
 #[test]
 fn indexed_person_uid_planner_emits_index_scan_and_executor_finds_node_via_graph_pma() {
-    let mem_rc = Rc::new(RefCell::new(GraphPmaVecMemory::default()));
+    let mem_rc = Rc::new(GraphPmaVecMemory::default());
     let mut facade = GraphPma::bootstrap_empty_with_bucket_size_using_memory_rc(
         BucketSizeInPages::DEFAULT,
         Rc::clone(&mem_rc),
     )
     .expect("bootstrap");
-    let mem_guard = mem_rc.borrow();
-    let mut graph = facade.bind_kernel_overlay(&*mem_guard);
+    let mut graph = facade.bind_kernel_overlay(mem_rc.as_ref());
 
     let labels = vec!["Person".to_owned()];
     let mut props: PropertyMap = BTreeMap::new();
@@ -134,14 +132,13 @@ fn indexed_person_uid_planner_emits_index_scan_and_executor_finds_node_via_graph
 
 #[test]
 fn index_scan_without_index_in_stats_falls_back_to_node_scan_but_results_match() {
-    let mem_rc = Rc::new(RefCell::new(GraphPmaVecMemory::default()));
+    let mem_rc = Rc::new(GraphPmaVecMemory::default());
     let mut facade = GraphPma::bootstrap_empty_with_bucket_size_using_memory_rc(
         BucketSizeInPages::DEFAULT,
         Rc::clone(&mem_rc),
     )
     .expect("bootstrap");
-    let mem_guard = mem_rc.borrow();
-    let mut graph = facade.bind_kernel_overlay(&*mem_guard);
+    let mut graph = facade.bind_kernel_overlay(mem_rc.as_ref());
 
     let labels = vec!["Person".to_owned()];
     let mut props: PropertyMap = BTreeMap::new();
@@ -195,14 +192,13 @@ fn index_scan_without_index_in_stats_falls_back_to_node_scan_but_results_match()
 
 #[test]
 fn index_intersection_planner_and_executor_agree_on_pma_overlay() {
-    let mem_rc = Rc::new(RefCell::new(GraphPmaVecMemory::default()));
+    let mem_rc = Rc::new(GraphPmaVecMemory::default());
     let mut facade = GraphPma::bootstrap_empty_with_bucket_size_using_memory_rc(
         BucketSizeInPages::DEFAULT,
         Rc::clone(&mem_rc),
     )
     .expect("bootstrap");
-    let mem_guard = mem_rc.borrow();
-    let mut graph = facade.bind_kernel_overlay(&*mem_guard);
+    let mut graph = facade.bind_kernel_overlay(mem_rc.as_ref());
 
     let labels = vec!["User".to_owned()];
 
@@ -251,14 +247,13 @@ fn index_intersection_planner_and_executor_agree_on_pma_overlay() {
 
 #[test]
 fn indexed_edge_expand_planner_path_runs_on_pma_overlay() {
-    let mem_rc = Rc::new(RefCell::new(GraphPmaVecMemory::default()));
+    let mem_rc = Rc::new(GraphPmaVecMemory::default());
     let mut facade = GraphPma::bootstrap_empty_with_bucket_size_using_memory_rc(
         BucketSizeInPages::DEFAULT,
         Rc::clone(&mem_rc),
     )
     .expect("bootstrap");
-    let mem_guard = mem_rc.borrow();
-    let mut graph = facade.bind_kernel_overlay(&*mem_guard);
+    let mut graph = facade.bind_kernel_overlay(mem_rc.as_ref());
 
     let labels = vec!["User".to_owned()];
     let empty = PropertyMap::new();
@@ -305,14 +300,13 @@ fn indexed_edge_expand_planner_path_runs_on_pma_overlay() {
 
 #[test]
 fn indexed_edge_expand_matches_scan_filter_semantics() {
-    let mem_rc = Rc::new(RefCell::new(GraphPmaVecMemory::default()));
+    let mem_rc = Rc::new(GraphPmaVecMemory::default());
     let mut facade = GraphPma::bootstrap_empty_with_bucket_size_using_memory_rc(
         BucketSizeInPages::DEFAULT,
         Rc::clone(&mem_rc),
     )
     .expect("bootstrap");
-    let mem_guard = mem_rc.borrow();
-    let mut graph = facade.bind_kernel_overlay(&*mem_guard);
+    let mut graph = facade.bind_kernel_overlay(mem_rc.as_ref());
 
     let labels = vec!["User".to_owned()];
     let empty = PropertyMap::new();
@@ -350,14 +344,13 @@ fn indexed_edge_expand_matches_scan_filter_semantics() {
 
 #[test]
 fn leading_edge_index_scan_planner_path_runs_on_pma_overlay() {
-    let mem_rc = Rc::new(RefCell::new(GraphPmaVecMemory::default()));
+    let mem_rc = Rc::new(GraphPmaVecMemory::default());
     let mut facade = GraphPma::bootstrap_empty_with_bucket_size_using_memory_rc(
         BucketSizeInPages::DEFAULT,
         Rc::clone(&mem_rc),
     )
     .expect("bootstrap");
-    let mem_guard = mem_rc.borrow();
-    let mut graph = facade.bind_kernel_overlay(&*mem_guard);
+    let mut graph = facade.bind_kernel_overlay(mem_rc.as_ref());
 
     let empty = PropertyMap::new();
     let user_labels = vec!["User".to_owned()];
@@ -436,14 +429,13 @@ fn leading_edge_index_scan_planner_path_runs_on_pma_overlay() {
 
 #[test]
 fn leading_edge_bind_hop_aux_is_demand_driven_on_pma_overlay() {
-    let mem_rc = Rc::new(RefCell::new(GraphPmaVecMemory::default()));
+    let mem_rc = Rc::new(GraphPmaVecMemory::default());
     let mut facade = GraphPma::bootstrap_empty_with_bucket_size_using_memory_rc(
         BucketSizeInPages::DEFAULT,
         Rc::clone(&mem_rc),
     )
     .expect("bootstrap");
-    let mem_guard = mem_rc.borrow();
-    let mut graph = facade.bind_kernel_overlay(&*mem_guard);
+    let mut graph = facade.bind_kernel_overlay(mem_rc.as_ref());
 
     let empty = PropertyMap::new();
     let user_labels = vec!["User".to_owned()];
@@ -509,14 +501,13 @@ fn leading_edge_bind_hop_aux_is_demand_driven_on_pma_overlay() {
 
 #[test]
 fn wcoj_triangle_hop_aux_on_pma_overlay() {
-    let mem_rc = Rc::new(RefCell::new(GraphPmaVecMemory::default()));
+    let mem_rc = Rc::new(GraphPmaVecMemory::default());
     let mut facade = GraphPma::bootstrap_empty_with_bucket_size_using_memory_rc(
         BucketSizeInPages::DEFAULT,
         Rc::clone(&mem_rc),
     )
     .expect("bootstrap");
-    let mem_guard = mem_rc.borrow();
-    let mut graph = facade.bind_kernel_overlay(&*mem_guard);
+    let mut graph = facade.bind_kernel_overlay(mem_rc.as_ref());
 
     let labels = vec!["Person".to_owned()];
     let empty = PropertyMap::new();
@@ -574,14 +565,13 @@ fn wcoj_triangle_hop_aux_on_pma_overlay() {
 
 #[test]
 fn edge_index_scan_manual_plan_runs_on_pma_overlay() {
-    let mem_rc = Rc::new(RefCell::new(GraphPmaVecMemory::default()));
+    let mem_rc = Rc::new(GraphPmaVecMemory::default());
     let mut facade = GraphPma::bootstrap_empty_with_bucket_size_using_memory_rc(
         BucketSizeInPages::DEFAULT,
         Rc::clone(&mem_rc),
     )
     .expect("bootstrap");
-    let mem_guard = mem_rc.borrow();
-    let mut graph = facade.bind_kernel_overlay(&*mem_guard);
+    let mut graph = facade.bind_kernel_overlay(mem_rc.as_ref());
 
     let labels = vec!["User".to_owned()];
     let empty = PropertyMap::new();

@@ -435,7 +435,7 @@ mod tests {
     };
     use crate::low_level::GraphMutationPath;
     use crate::property_index::PropertyIndexNodeStoreMutationKind;
-    use crate::stable::VecMemory;
+    use crate::VecMemory;
 
     #[test]
     fn formatter_formats_ensure_capacity_projection() {

@@ -1526,6 +1526,7 @@ dependencies = [
  "gleaph-gql",
  "gleaph-gql-planner",
  "gleaph-graph-kernel",
+ "ic-stable-pma",
  "ic-stable-structures",
  "roaring",
  "serde",
@@ -1542,6 +1543,7 @@ dependencies = [
  "ic-cdk 0.20.0",
  "ic-cdk-macros 0.20.0",
  "ic-cdk-management-canister",
+ "ic-stable-structures",
  "pocket-ic",
  "serde",
  "sha2 0.11.0",
@@ -1983,12 +1985,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "ic-stable-pma"
+version = "0.1.0"
+dependencies = [
+ "ic-stable-structures",
+ "ic-stable-vec-deque",
+]
+
+[[package]]
 name = "ic-stable-structures"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ee3372ddc0cf2a747fc26ce2d075a240ed6bfab151e63bc70109e8967f7ce6f"
 dependencies = [
  "ic_principal",
+]
+
+[[package]]
+name = "ic-stable-vec-deque"
+version = "0.1.0"
+dependencies = [
+ "ic-stable-structures",
 ]
 
 [[package]]

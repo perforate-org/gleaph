@@ -6,7 +6,7 @@ use std::error::Error;
 use std::fmt;
 use std::mem::size_of;
 
-use crate::stable::Memory;
+use ic_stable_structures::Memory;
 
 use super::edge::{EdgeEntry, EdgeMeta};
 use super::graph::{GraphInsertPolicy, SurfaceVertexWindowReserveHint};
@@ -256,6 +256,8 @@ pub enum WritebackError {
         current_pages: u64,
         delta_pages: u64,
     },
+    /// Failed to write the tail [`super::pma_stable_root`] footer.
+    PmaStableRoot(String),
 }
 
 impl fmt::Display for WritebackError {
@@ -310,6 +312,7 @@ impl fmt::Display for WritebackError {
                 "failed to grow memory from {} pages by {} pages",
                 current_pages, delta_pages
             ),
+            WritebackError::PmaStableRoot(msg) => write!(f, "PMA stable root write: {msg}"),
         }
     }
 }
@@ -361,6 +364,8 @@ pub enum HydrationError {
         slot: u16,
         directory_len: usize,
     },
+    /// Tail [`super::pma_stable_root`] footer could not be decoded or conflicts with graph data.
+    PmaStableRoot(String),
 }
 
 impl fmt::Display for HydrationError {
@@ -446,6 +451,7 @@ impl fmt::Display for HydrationError {
                 "shard canister edge slot {} is out of range for directory length {}",
                 slot, directory_len
             ),
+            HydrationError::PmaStableRoot(msg) => write!(f, "PMA stable root: {msg}"),
         }
     }
 }
@@ -1945,7 +1951,8 @@ mod tests {
         RegionManagerLayout, RegionRef, RegionStorageKind, ReverseSurface, SurfaceRegions,
         VertexEntry, VertexLabelIndexEntry, VertexLabelRange, VertexRef, WasmPages,
     };
-    use crate::stable::{Memory, VecMemory};
+    use crate::VecMemory;
+    use ic_stable_structures::Memory;
     use std::cell::RefCell;
 
     fn assert_same_base_edge_payload(
