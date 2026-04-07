@@ -1,7 +1,7 @@
 //! PMA layer for DGAP (segment tree density, `calculate_positions_v1`, `rebalance_weighted`); mirrors reference `graph.h`.
 
 use crate::csr::vertex_column::CsrVertexColumn;
-use crate::traits::{CsrEdgeSlot, CsrVertex};
+use crate::traits::{CsrEdge, CsrVertex};
 
 /// Upper density at root / leaves (C++ `up_h` / `up_0`).
 pub const UP_H: f64 = 0.75;
@@ -174,7 +174,7 @@ pub fn rebalance_decision(
 /// In-memory DGAP `rebalance_weighted` on a **vertex window** `vertices_win` (global indices `[left, right)`).
 ///
 /// `next_base_after_window` is the first edge slot **after** the window (or `elem_capacity_slots` if `right == num_vertices`).
-pub fn rebalance_weighted_window<V: CsrVertex, E: CsrEdgeSlot>(
+pub fn rebalance_weighted_window<V: CsrVertex, E: CsrEdge>(
     vertices_win: &mut [V],
     next_base_after_window: u64,
     edges: &mut [E],
@@ -261,7 +261,7 @@ pub fn rebalance_weighted_window<V: CsrVertex, E: CsrEdgeSlot>(
 }
 
 /// In-memory DGAP `rebalance_weighted` on global edge slot indices (full `vertices` slice).
-pub fn rebalance_weighted<V: CsrVertex, E: CsrEdgeSlot>(
+pub fn rebalance_weighted<V: CsrVertex, E: CsrEdge>(
     vertices: &mut [V],
     edges: &mut [E],
     start_vertex: usize,

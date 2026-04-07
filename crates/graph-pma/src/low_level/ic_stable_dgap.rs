@@ -1,4 +1,4 @@
-//! DGAP bridge: Gleaph [`VertexEntry`] / [`EdgeEntry`] as [`ic_stable_dgap`] CSR traits (`StableVec` / `DgapEdgeStore`).
+//! DGAP bridge: Gleaph [`VertexEntry`] / [`EdgeEntry`] as [`ic_stable_dgap`] CSR traits (`CsrVertex` / `CsrEdge` / `CsrEdgeUndirected`).
 //!
 //! [`VertexEntry::log_offset`] holds the packed overflow head used by `graph-pma`; [`CsrVertex::log_head`]
 //! / [`CsrVertex::with_log_head`] map that to the DGAP per-leaf log array index (`-1` when empty).
@@ -6,7 +6,7 @@
 
 use std::borrow::Cow;
 
-use ic_stable_dgap::traits::{CsrEdgeSlot, CsrVertex};
+use ic_stable_dgap::traits::{CsrEdge, CsrEdgeUndirected, CsrVertex};
 use ic_stable_structures::Storable;
 use ic_stable_structures::storable::Bound;
 
@@ -103,7 +103,7 @@ impl Storable for VertexEntry {
     };
 }
 
-impl CsrEdgeSlot for EdgeEntry {
+impl CsrEdge for EdgeEntry {
     const EDGE_BYTES: usize = 8;
 
     fn read_from(bytes: &[u8]) -> Self {
@@ -114,6 +114,30 @@ impl CsrEdgeSlot for EdgeEntry {
     fn write_to(self, bytes: &mut [u8]) {
         let v = self.to_bytes();
         bytes.copy_from_slice(v.as_ref());
+    }
+
+    fn neighbor_vid(&self) -> usize {
+        usize::try_from(u64::from(self.target)).expect("vertex id fits usize")
+    }
+
+    fn with_neighbor_vid(self, vid: usize) -> Self {
+        Self::new(
+            VertexRef::try_from(vid as u64).expect("neighbor fits VertexRef"),
+            self.meta,
+        )
+    }
+}
+
+impl CsrEdgeUndirected for EdgeEntry {
+    fn is_undirected(&self) -> bool {
+        self.meta.is_undirected()
+    }
+
+    fn with_undirected(self, undirected: bool) -> Self {
+        Self {
+            target: self.target,
+            meta: self.meta.with_undirected(undirected),
+        }
     }
 }
 

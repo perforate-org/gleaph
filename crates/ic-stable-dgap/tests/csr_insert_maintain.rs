@@ -7,7 +7,7 @@ use std::rc::Rc;
 use ic_stable_dgap::{
     Bound, DgapEdgeStore, DgapGraphMemories, DgapStores, DgapStoresError, StableVec, Storable,
     VectorMemory,
-    traits::{CsrEdgeSlot, CsrVertex},
+    traits::{CsrEdge, CsrVertex},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,7 +75,7 @@ impl Storable for TV {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct TE([u8; 4]);
 
-impl CsrEdgeSlot for TE {
+impl CsrEdge for TE {
     const EDGE_BYTES: usize = 4;
 
     fn read_from(bytes: &[u8]) -> Self {
@@ -84,6 +84,16 @@ impl CsrEdgeSlot for TE {
 
     fn write_to(self, bytes: &mut [u8]) {
         bytes.copy_from_slice(&self.0);
+    }
+
+    fn neighbor_vid(&self) -> usize {
+        self.0[0] as usize
+    }
+
+    fn with_neighbor_vid(self, vid: usize) -> Self {
+        let mut b = self.0;
+        b[0] = vid as u8;
+        Self(b)
     }
 }
 

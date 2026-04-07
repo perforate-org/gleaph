@@ -9,9 +9,11 @@
 use std::fmt;
 use std::marker::PhantomData;
 
+pub mod csr_graph;
 pub mod insert;
 pub mod vertex_column;
 
+pub use csr_graph::{CsrGraph, CsrGraphError};
 pub use insert::{
     insert_edge_into_slab, insert_edge_into_slab_column, CsrInsertError,
 };
@@ -19,7 +21,7 @@ pub use vertex_column::CsrVertexColumn;
 
 use ic_stable_structures::Memory;
 
-use crate::traits::{CsrEdgeSlot, CsrVertex};
+use crate::traits::{CsrEdge, CsrVertex};
 use crate::dgap::{DgapGraphMemories, DgapEdgeStore};
 
 /// Failure from [`DgapStores`] graph mutation (CSR vertex column + DGAP PMA / edge region).
@@ -48,7 +50,7 @@ impl std::error::Error for DgapStoresError {}
 pub struct DgapStores<V, E, Vs, M1, M2, M3>
 where
     V: CsrVertex,
-    E: CsrEdgeSlot,
+    E: CsrEdge,
     Vs: CsrVertexColumn<V>,
     M1: Memory,
     M2: Memory,
@@ -62,7 +64,7 @@ where
 impl<V, E, Vs, M1, M2, M3> DgapStores<V, E, Vs, M1, M2, M3>
 where
     V: CsrVertex,
-    E: CsrEdgeSlot,
+    E: CsrEdge,
     Vs: CsrVertexColumn<V>,
     M1: Memory,
     M2: Memory,

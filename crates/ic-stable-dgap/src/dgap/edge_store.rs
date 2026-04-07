@@ -16,7 +16,7 @@ use crate::layout::dgap::{
     DGAP_DEFAULT_MAX_LOG_ENTRIES,
 };
 use crate::memory_util::GrowFailed;
-use crate::traits::{CsrEdgeSlot, CsrVertex};
+use crate::traits::{CsrEdge, CsrVertex};
 use crate::dgap::dgap_graph_memories::DgapGraphMemories;
 use crate::dgap::pma_meta::{rebalance_decision, RebalanceDecision};
 
@@ -29,7 +29,7 @@ const MAX_INLINE_EDGE: usize = 64;
 /// `start_offset` is applied like C++: `min(requested, degree)` global edges are skipped before the first yield.
 ///
 /// Yields [`Result`] so a truncated log chain surfaces as `Err("log chain short")` (then the iterator fuses).
-pub struct NeighborhoodIter<'a, E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> {
+pub struct NeighborhoodIter<'a, E: CsrEdge, M1: Memory, M2: Memory, M3: Memory> {
     store: &'a DgapEdgeStore<E, M1, M2, M3>,
     h: DgapEdgeHeaderV1,
     stride: u32,
@@ -44,7 +44,7 @@ pub struct NeighborhoodIter<'a, E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memo
     scratch: [u8; MAX_INLINE_EDGE],
 }
 
-impl<'a, E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> Iterator
+impl<'a, E: CsrEdge, M1: Memory, M2: Memory, M3: Memory> Iterator
     for NeighborhoodIter<'a, E, M1, M2, M3>
 {
     type Item = Result<E, &'static str>;
@@ -94,23 +94,23 @@ impl<'a, E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> Iterator
     }
 }
 
-impl<'a, E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> ExactSizeIterator
+impl<'a, E: CsrEdge, M1: Memory, M2: Memory, M3: Memory> ExactSizeIterator
     for NeighborhoodIter<'a, E, M1, M2, M3>
 {
 }
 
-impl<'a, E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> FusedIterator
+impl<'a, E: CsrEdge, M1: Memory, M2: Memory, M3: Memory> FusedIterator
     for NeighborhoodIter<'a, E, M1, M2, M3>
 {
 }
 
 /// Owns the three-`Memory` DGAP edge bundle (`M_e`).
-pub struct DgapEdgeStore<E: CsrEdgeSlot, M1, M2, M3> {
+pub struct DgapEdgeStore<E: CsrEdge, M1, M2, M3> {
     mem: DgapGraphMemories<M1, M2, M3>,
     _marker: PhantomData<E>,
 }
 
-impl<E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> DgapEdgeStore<E, M1, M2, M3> {
+impl<E: CsrEdge, M1: Memory, M2: Memory, M3: Memory> DgapEdgeStore<E, M1, M2, M3> {
     pub fn new(mem: DgapGraphMemories<M1, M2, M3>) -> Self {
         Self {
             mem,

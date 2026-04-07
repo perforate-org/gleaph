@@ -4,7 +4,7 @@
 //! [`DgapEdgeStore`](crate::dgap::DgapEdgeStore), resize) lives on [`DgapEdgeStore`](crate::dgap::DgapEdgeStore).
 
 use crate::csr::vertex_column::CsrVertexColumn;
-use crate::traits::{CsrEdgeSlot, CsrVertex};
+use crate::traits::{CsrEdge, CsrVertex};
 
 /// Local failure modes for one insert attempt before resize.
 #[derive(Debug, PartialEq, Eq)]
@@ -58,7 +58,7 @@ fn rightmost_occupied_end_inner<V: CsrVertex, G: FnMut(usize) -> V>(n: usize, ge
 }
 
 /// Insert using random-access getters/setters (no full `Vec<V>` snapshot).
-pub fn insert_edge_into_slab_inner<V: CsrVertex, E: CsrEdgeSlot, G, S>(
+pub fn insert_edge_into_slab_inner<V: CsrVertex, E: CsrEdge, G, S>(
     n: usize,
     v: usize,
     mut get: G,
@@ -120,7 +120,7 @@ where
 }
 
 /// Remove one edge at `local_index` within `v`'s adjacency list (inverse of [`insert_edge_into_slab_inner`] slide rules).
-pub fn remove_edge_from_slab_inner<V: CsrVertex, E: CsrEdgeSlot, G, S>(
+pub fn remove_edge_from_slab_inner<V: CsrVertex, E: CsrEdge, G, S>(
     n: usize,
     v: usize,
     local_index: usize,
@@ -183,7 +183,7 @@ pub fn remove_edge_from_slab_column<C, V, E>(
 where
     C: CsrVertexColumn<V>,
     V: CsrVertex,
-    E: CsrEdgeSlot,
+    E: CsrEdge,
 {
     let n = col.col_len() as usize;
     remove_edge_from_slab_inner(
@@ -201,7 +201,7 @@ where
 }
 
 /// Test / bench helper: contiguous `&mut [V]` without a column type.
-pub fn remove_edge_from_slab<V: CsrVertex, E: CsrEdgeSlot>(
+pub fn remove_edge_from_slab<V: CsrVertex, E: CsrEdge>(
     vertices: &mut [V],
     edges: &mut [E],
     v: usize,
@@ -265,7 +265,7 @@ pub fn insert_edge_into_slab_column<C, V, E>(
 where
     C: CsrVertexColumn<V>,
     V: CsrVertex,
-    E: CsrEdgeSlot,
+    E: CsrEdge,
 {
     let n = col.col_len() as usize;
     insert_edge_into_slab_inner(
@@ -283,7 +283,7 @@ where
 }
 
 /// Test / bench helper: contiguous `&mut [V]` without a column type.
-pub fn insert_edge_into_slab<V: CsrVertex, E: CsrEdgeSlot>(
+pub fn insert_edge_into_slab<V: CsrVertex, E: CsrEdge>(
     vertices: &mut [V],
     edges: &mut [E],
     v: usize,
@@ -351,7 +351,7 @@ pub fn insert_edge_into_slab<V: CsrVertex, E: CsrEdgeSlot>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traits::{CsrEdgeSlot, CsrVertex};
+    use crate::traits::{CsrEdge, CsrVertex};
     use std::borrow::Cow;
 
     use crate::{Bound, Storable};
@@ -421,7 +421,7 @@ mod tests {
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     struct TE(u8);
 
-    impl CsrEdgeSlot for TE {
+    impl CsrEdge for TE {
         const EDGE_BYTES: usize = 1;
 
         fn read_from(bytes: &[u8]) -> Self {
@@ -430,6 +430,14 @@ mod tests {
 
         fn write_to(self, bytes: &mut [u8]) {
             bytes[0] = self.0;
+        }
+
+        fn neighbor_vid(&self) -> usize {
+            self.0 as usize
+        }
+
+        fn with_neighbor_vid(self, vid: usize) -> Self {
+            Self(vid as u8)
         }
     }
 
