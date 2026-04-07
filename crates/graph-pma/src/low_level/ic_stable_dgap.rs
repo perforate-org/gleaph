@@ -1,4 +1,4 @@
-//! Bridge types for [`ic_stable_pma`] (`StableVec` / `VcsrEdgeStore` / `CsrVertex` / `CsrEdgeSlot`).
+//! DGAP bridge: Gleaph [`VertexEntry`] / [`EdgeEntry`] as [`ic_stable_pma`] CSR traits (`StableVec` / `DgapEdgeStore`).
 //!
 //! [`VertexEntry::log_offset`] holds the packed overflow head used by `graph-pma`; [`CsrVertex::log_head`]
 //! / [`CsrVertex::with_log_head`] map that to the DGAP per-leaf log array index (`-1` when empty).
@@ -12,14 +12,41 @@ use ic_stable_structures::Storable;
 
 use super::edge::{EdgeEntry, EdgeMeta};
 use super::ids::{EdgeRef, VertexRef};
-use super::vertex::VertexEntry;
+use super::vertex::{VertexEntry, EMPTY_LOG_OFFSET};
 use super::EdgeIndex;
 
-/// Reserved [`MemoryId`](ic_stable_structures::memory_manager::MemoryId) slots for a dual-region
-/// `MemoryManager` layout (`M_v` / `M_e`; optional third slot kept for legacy stream logs).
-pub const VCSR_VERTEX_MEMORY_SLOT: u8 = 220;
-pub const VCSR_EDGE_MEMORY_SLOT: u8 = 221;
-pub const VCSR_LOG_MEMORY_SLOT: u8 = 222;
+/// Reserved [`MemoryId`](ic_stable_structures::memory_manager::MemoryId) slots when using a dedicated
+/// [`ic_stable_structures::memory_manager::MemoryManager`] for [`ic_stable_pma`]: `M_v`,
+/// three `M_e` regions, optional append-only stream log.
+///
+/// | Slot | Role | [`ic_stable_pma`] |
+/// |------|------|-------------------|
+/// | [`DGAP_VERTEX_MEMORY_SLOT`] | Vertex CSR column | `M_v` |
+/// | [`DGAP_SEGMENT_EDGES_ACTUAL_MEMORY_SLOT`] | PMA `segment_edges_actual` (`VCA` + array) | `M1` |
+/// | [`DGAP_SEGMENT_EDGES_TOTAL_MEMORY_SLOT`] | PMA `segment_edges_total` (`VCT` + array) | `M2` |
+/// | [`DGAP_EDGES_AND_LOG_MEMORY_SLOT`] | `VCE` header + CSR slab + log idx + pool | `M3` |
+/// | [`DGAP_LOG_MEMORY_SLOT`] | Optional legacy stream (not `DgapEdgeStore`) | `layout::log_region` |
+pub const DGAP_VERTEX_MEMORY_SLOT: u8 = 220;
+pub const DGAP_SEGMENT_EDGES_ACTUAL_MEMORY_SLOT: u8 = 221;
+pub const DGAP_SEGMENT_EDGES_TOTAL_MEMORY_SLOT: u8 = 222;
+pub const DGAP_EDGES_AND_LOG_MEMORY_SLOT: u8 = 223;
+pub const DGAP_LOG_MEMORY_SLOT: u8 = 224;
+
+/// Builds a tail [`VertexEntry`] for [`ic_stable_pma::DgapStores::insert_vertex`].
+///
+/// `new_vid` must be [`ic_stable_pma::csr::CsrVertexColumn::col_len`] on `M_v` **before** push.
+/// `next_base` must be [`ic_stable_pma::DgapEdgeStore::slab_append_base_slot`] on that column.
+/// `segment_size` comes from the `M_e` header; `segment_id` in the packed [`EdgeRef`] is the DGAP
+/// leaf index `new_vid / segment_size` (same convention as [`ic_stable_pma::layout::dgap::dgap_leaf_segment_id`]).
+pub fn vertex_entry_for_ic_stable_append(
+    new_vid: usize,
+    segment_size: u32,
+    next_base: u64,
+) -> VertexEntry {
+    let leaf = (new_vid as u64 / segment_size.max(1) as u64) as u32;
+    let er = EdgeRef::new(leaf, next_base);
+    VertexEntry::new(EdgeIndex::from(er), 0, EMPTY_LOG_OFFSET)
+}
 
 impl Storable for EdgeEntry {
     fn to_bytes(&self) -> Cow<'_, [u8]> {

@@ -11,8 +11,8 @@ doctest = false
 default = []
 # Enables `canbench_rs::bench_scope` in hot flush paths when the parent canister builds with canbench.
 canbench-rs = ["dep:canbench-rs"]
-# Reserved `MemoryId` slots + helpers for `ic-stable-pma` VCSR (`MemoryManager` alongside Gleaph).
-experimental-vcsr = []
+# Reserved `MemoryId` slots + helpers for `ic-stable-pma` DGAP (`MemoryManager` alongside Gleaph).
+experimental-dgap = []
 
 [dependencies]
 candid.workspace = true

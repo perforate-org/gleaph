@@ -1,4 +1,6 @@
-//! VCSR + DGAP overflow edge region (`M_e`): header, PMA meta, CSR slab, per-leaf log pools.
+//! DGAP edge region (`M_e`): three [`Memory`] regions behind [`DgapGraphMemories`] (CSR slab + per-leaf overflow logs).
+//!
+//! Persistent layout (per-memory offsets, `ic-stable_structures`-style diagrams): [`crate::layout::dgap`].
 //!
 //! Insert path follows [`gleaph-old/reference/DGAP/dgap/src/graph.h`](../../../../gleaph-old/reference/DGAP/dgap/src/graph.h)
 //! `do_insertion` / `insert_into_log` / `have_space_onseg`.
@@ -8,39 +10,38 @@ use std::marker::PhantomData;
 use ic_stable_structures::Memory;
 
 use crate::csr::vertex_column::CsrVertexColumn;
-use crate::layout::edge_region::{
-    dgap_leaf_segment_id, dgap_log_entry_stride, edge_slot_offset, log_entry_offset, read_actual,
-    read_log_segment_idx, read_total as read_total_mem, required_byte_len, write_actual,
-    write_log_segment_idx, write_total as write_total_mem, VcsrEdgeHeaderV1,
+use crate::layout::dgap::{
+    dgap_leaf_segment_id, dgap_log_entry_stride, required_edges_and_log_bytes, DgapEdgeHeaderV1,
     DGAP_DEFAULT_MAX_LOG_ENTRIES,
 };
-use crate::memory_util::{memory_byte_len, read_i32_le, read_u64_le, safe_write, write_i32_le, write_u64_le, GrowFailed};
+use crate::memory_util::GrowFailed;
 use crate::traits::{CsrEdgeSlot, CsrVertex};
-use crate::vcsr::pma_meta::{rebalance_decision, RebalanceDecision};
+use crate::dgap::dgap_graph_memories::DgapGraphMemories;
+use crate::dgap::pma_meta::{rebalance_decision, RebalanceDecision};
 
-/// Owns `M_e` for DGAP layout (v2 header).
-pub struct VcsrEdgeStore<E: CsrEdgeSlot, M: Memory> {
-    memory: M,
+/// Owns the three-`Memory` DGAP edge bundle (`M_e`).
+pub struct DgapEdgeStore<E: CsrEdgeSlot, M1, M2, M3> {
+    mem: DgapGraphMemories<M1, M2, M3>,
     _marker: PhantomData<E>,
 }
 
-impl<E: CsrEdgeSlot, M: Memory> VcsrEdgeStore<E, M> {
-    pub fn new(memory: M) -> Self {
+impl<E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> DgapEdgeStore<E, M1, M2, M3> {
+    pub fn new(mem: DgapGraphMemories<M1, M2, M3>) -> Self {
         Self {
-            memory,
+            mem,
             _marker: PhantomData,
         }
     }
 
-    pub fn memory(&self) -> &M {
-        &self.memory
+    pub fn memories(&self) -> &DgapGraphMemories<M1, M2, M3> {
+        &self.mem
     }
 
-    pub fn into_memory(self) -> M {
-        self.memory
+    pub fn into_memories(self) -> DgapGraphMemories<M1, M2, M3> {
+        self.mem
     }
 
-    /// Format new region: v2 header, PMA arrays, slab, log idx, log pool (zeroed).
+    /// Format new regions: grow all three, write PMA mini headers, write `VCE` graph header on edges+log memory.
     pub fn format_new(
         &self,
         elem_capacity: u64,
@@ -50,8 +51,8 @@ impl<E: CsrEdgeSlot, M: Memory> VcsrEdgeStore<E, M> {
     ) -> Result<(), GrowFailed> {
         let edge_stride = E::EDGE_BYTES as u32;
         let log_entry_stride = dgap_log_entry_stride(edge_stride);
-        let tree_height = crate::vcsr::pma_meta::floor_log2_u32(segment_count.max(1));
-        let h = VcsrEdgeHeaderV1 {
+        let tree_height = crate::dgap::pma_meta::floor_log2_u32(segment_count.max(1));
+        let h = DgapEdgeHeaderV1 {
             elem_capacity,
             segment_count,
             segment_size,
@@ -61,121 +62,79 @@ impl<E: CsrEdgeSlot, M: Memory> VcsrEdgeStore<E, M> {
             max_log_entries: DGAP_DEFAULT_MAX_LOG_ENTRIES,
             log_entry_stride,
         };
-        let need = required_byte_len(&h);
-        safe_write(&self.memory, 0, &[0u8; 64])?;
-        h.write(&self.memory);
-        let meta_end = crate::layout::edge_region::csr_slab_base_offset(segment_count);
-        safe_write(
-            &self.memory,
-            64,
-            &vec![0u8; (meta_end - 64) as usize],
-        )?;
-        safe_write(&self.memory, meta_end, &vec![0u8; (need - meta_end) as usize])?;
+        self.mem.grow_all_regions_for_header(&h)?;
+        self.mem.write_header(&h);
         Ok(())
     }
 
-    pub fn header(&self) -> Option<VcsrEdgeHeaderV1> {
-        VcsrEdgeHeaderV1::read(&self.memory)
+    pub fn header(&self) -> Option<DgapEdgeHeaderV1> {
+        self.mem.read_header()
     }
 
-    pub fn read_slot(&self, segment_count: u32, edge_stride: u32, slot: u64) -> E {
-        let off = edge_slot_offset(segment_count, edge_stride, slot);
+    pub fn read_slot(&self, edge_stride: u32, slot: u64) -> E {
         let mut buf = vec![0u8; edge_stride as usize];
-        self.memory.read(off, &mut buf);
+        self.mem.read_edge_slab(edge_stride, slot, &mut buf);
         E::read_from(&buf)
     }
 
     pub fn write_slot(
         &self,
-        segment_count: u32,
         edge_stride: u32,
         slot: u64,
         value: E,
     ) -> Result<(), GrowFailed> {
-        let off = edge_slot_offset(segment_count, edge_stride, slot);
         let mut buf = vec![0u8; edge_stride as usize];
         value.write_to(&mut buf);
-        safe_write(&self.memory, off, &buf)
+        self.mem.write_edge_slab(edge_stride, slot, &buf)
     }
 
-    pub fn read_actual(&self, segment_count: u32, j: usize) -> i64 {
-        read_actual(&self.memory, segment_count, j)
+    pub fn read_actual(&self, j: usize) -> i64 {
+        self.mem.read_actual(j)
     }
 
-    pub fn read_total(&self, segment_count: u32, j: usize) -> i64 {
-        read_total_mem(&self.memory, segment_count, j)
+    pub fn read_total(&self, j: usize) -> i64 {
+        self.mem.read_total(j)
     }
 
-    pub fn write_actual(&self, segment_count: u32, j: usize, v: i64) {
-        write_actual(&self.memory, segment_count, j, v);
+    pub fn write_actual(&self, j: usize, v: i64) {
+        self.mem.write_actual(j, v);
     }
 
-    pub fn write_total(&self, segment_count: u32, j: usize, v: i64) {
-        write_total_mem(&self.memory, segment_count, j, v);
+    pub fn write_total(&self, j: usize, v: i64) {
+        self.mem.write_total(j, v);
     }
 
-    fn read_log_entry(&self, h: &VcsrEdgeHeaderV1, leaf_seg: u32, idx: u32) -> (i32, i32, E) {
-        let off = log_entry_offset(
-            h.segment_count,
-            h.edge_stride,
-            h.elem_capacity,
-            h.log_entry_stride,
-            h.max_log_entries,
-            leaf_seg,
-            idx,
-        );
-        let prev = read_i32_le(&self.memory, off);
-        let src = read_i32_le(&self.memory, off + 4);
-        let mut eb = vec![0u8; E::EDGE_BYTES];
-        self.memory.read(off + 8, &mut eb);
+    fn read_log_entry(&self, h: &DgapEdgeHeaderV1, leaf_seg: u32, idx: u32) -> (i32, i32, E) {
+        let (prev, src, eb) = self
+            .mem
+            .read_log_entry_raw(h, leaf_seg, idx, E::EDGE_BYTES);
         (prev, src, E::read_from(&eb))
     }
 
     fn write_log_entry(
         &self,
-        h: &VcsrEdgeHeaderV1,
+        h: &DgapEdgeHeaderV1,
         leaf_seg: u32,
         idx: u32,
         prev: i32,
         src_vid: i32,
         edge: E,
     ) -> Result<(), GrowFailed> {
-        let off = log_entry_offset(
-            h.segment_count,
-            h.edge_stride,
-            h.elem_capacity,
-            h.log_entry_stride,
-            h.max_log_entries,
-            leaf_seg,
-            idx,
-        );
-        write_i32_le(&self.memory, off, prev);
-        write_i32_le(&self.memory, off + 4, src_vid);
-        let mut eb = vec![0u8; h.log_entry_stride as usize];
-        edge.write_to(&mut eb[..E::EDGE_BYTES]);
-        safe_write(&self.memory, off + 8, &eb[..E::EDGE_BYTES])?;
-        Ok(())
+        let mut eb = vec![0u8; E::EDGE_BYTES];
+        edge.write_to(&mut eb);
+        self.mem
+            .write_log_entry_raw(h, leaf_seg, idx, prev, src_vid, &eb)
     }
 
-    fn release_log_segment(&self, h: &VcsrEdgeHeaderV1, leaf_seg: u32) -> Result<(), GrowFailed> {
-        let cur = read_log_segment_idx(&self.memory, h, leaf_seg);
+    fn release_log_segment(&self, h: &DgapEdgeHeaderV1, leaf_seg: u32) -> Result<(), GrowFailed> {
+        let cur = self.mem.read_log_idx(h, leaf_seg);
         if cur <= 0 {
             return Ok(());
         }
-        let z = vec![0u8; h.log_entry_stride as usize];
         for i in 0..(cur as u32) {
-            let off = log_entry_offset(
-                h.segment_count,
-                h.edge_stride,
-                h.elem_capacity,
-                h.log_entry_stride,
-                h.max_log_entries,
-                leaf_seg,
-                i,
-            );
-            safe_write(&self.memory, off, &z)?;
+            self.mem.zero_log_entry_slot(h, leaf_seg, i)?;
         }
-        write_log_segment_idx(&self.memory, h, leaf_seg, 0);
+        self.mem.write_log_idx(h, leaf_seg, 0);
         Ok(())
     }
 
@@ -238,7 +197,7 @@ impl<E: CsrEdgeSlot, M: Memory> VcsrEdgeStore<E, M> {
         let mut out = Vec::with_capacity(d);
         let base = v.base_slot_start();
         for i in 0..n_slab {
-            out.push(self.read_slot(h.segment_count, h.edge_stride, base + i as u64));
+            out.push(self.read_slot(h.edge_stride, base + i as u64));
         }
         let mut remaining = d - n_slab;
         let h_copy = h.clone();
@@ -317,13 +276,8 @@ impl<E: CsrEdgeSlot, M: Memory> VcsrEdgeStore<E, M> {
             let row = col.col_get(vid as u64).ok_or("missing vertex")?;
             let d = edges.len();
             for (i, e) in edges.iter().enumerate() {
-                self.write_slot(
-                    h.segment_count,
-                    h.edge_stride,
-                    cur + i as u64,
-                    *e,
-                )
-                .map_err(|_| "write slot")?;
+                self.write_slot(h.edge_stride, cur + i as u64, *e)
+                    .map_err(|_| "write slot")?;
             }
             col.col_set(
                 vid as u64,
@@ -385,15 +339,15 @@ impl<E: CsrEdgeSlot, M: Memory> VcsrEdgeStore<E, M> {
             return Err("empty range");
         }
         let cap = (to - from) as i64;
-        let total_at = read_total_mem(&self.memory, h.segment_count, pma_idx);
-        let actual_at = read_actual(&self.memory, h.segment_count, pma_idx);
+        let total_at = self.mem.read_total(pma_idx);
+        let actual_at = self.mem.read_actual(pma_idx);
         if total_at != cap {
             return Err("segment total mismatch");
         }
         let mut edges_full: Vec<E> = (0..h.elem_capacity)
-            .map(|s| self.read_slot(h.segment_count, h.edge_stride, s))
+            .map(|s| self.read_slot(h.edge_stride, s))
             .collect();
-        crate::vcsr::pma_meta::rebalance_weighted_window(
+        crate::dgap::pma_meta::rebalance_weighted_window(
             &mut win,
             next_base,
             &mut edges_full,
@@ -402,7 +356,7 @@ impl<E: CsrEdgeSlot, M: Memory> VcsrEdgeStore<E, M> {
             actual_at,
         );
         for s in 0..h.elem_capacity {
-            self.write_slot(h.segment_count, h.edge_stride, s, edges_full[s as usize])
+            self.write_slot(h.edge_stride, s, edges_full[s as usize])
                 .map_err(|_| "grow failed")?;
         }
         for li in 0..win.len() {
@@ -412,7 +366,7 @@ impl<E: CsrEdgeSlot, M: Memory> VcsrEdgeStore<E, M> {
     }
 
     pub fn set_num_edges_header(&self, n: u64) {
-        write_u64_le(&self.memory, 32, n);
+        self.mem.set_num_edges(n);
     }
 
     pub fn resize_double<V, C>(&self, col: &C) -> Result<(), &'static str>
@@ -424,7 +378,6 @@ impl<E: CsrEdgeSlot, M: Memory> VcsrEdgeStore<E, M> {
         let h = self.header().ok_or("bad edge header")?;
         let old_cap = h.elem_capacity;
         let new_cap = old_cap.checked_mul(2).ok_or("capacity overflow")?;
-        let sc = h.segment_count;
         let stride = h.edge_stride;
         let n = col.col_len() as usize;
         if n > 0 {
@@ -432,30 +385,24 @@ impl<E: CsrEdgeSlot, M: Memory> VcsrEdgeStore<E, M> {
         }
         let h = self.header().ok_or("bad header")?;
         let mut edges: Vec<E> = (0..old_cap)
-            .map(|s| self.read_slot(sc, stride, s))
+            .map(|s| self.read_slot(stride, s))
             .collect();
         let z = vec![0u8; stride as usize];
         while (edges.len() as u64) < new_cap {
             edges.push(E::read_from(&z));
         }
-        let h2 = VcsrEdgeHeaderV1 {
+        let h2 = DgapEdgeHeaderV1 {
             elem_capacity: new_cap,
             ..h.clone()
         };
-        let need = required_byte_len(&h2);
-        let cur = memory_byte_len(&self.memory);
-        if need > cur {
-            safe_write(
-                &self.memory,
-                cur,
-                &vec![0u8; (need - cur) as usize],
-            )
+        let need = required_edges_and_log_bytes(&h2);
+        self.mem
+            .grow_edges_and_log_to(need)
             .map_err(|_| "grow failed")?;
-        }
         if n == 0 {
-            h2.write(&self.memory);
+            self.mem.write_header(&h2);
             for s in 0..new_cap {
-                self.write_slot(sc, stride, s, edges[s as usize])
+                self.write_slot(stride, s, edges[s as usize])
                     .map_err(|_| "write slot")?;
             }
             self.sync_pma_totals(col)?;
@@ -475,7 +422,7 @@ impl<E: CsrEdgeSlot, M: Memory> VcsrEdgeStore<E, M> {
         let cap_span = (new_cap - from) as i64;
         let sum_d: i64 = vertices.iter().map(|v| v.degree() as i64).sum();
         let nv = vertices.len();
-        crate::vcsr::pma_meta::rebalance_weighted(
+        crate::dgap::pma_meta::rebalance_weighted(
             &mut vertices,
             &mut edges,
             0,
@@ -484,33 +431,17 @@ impl<E: CsrEdgeSlot, M: Memory> VcsrEdgeStore<E, M> {
             cap_span,
             sum_d,
         );
-        h2.write(&self.memory);
+        self.mem.write_header(&h2);
         for s in 0..new_cap {
-            self.write_slot(sc, stride, s, edges[s as usize])
+            self.write_slot(stride, s, edges[s as usize])
                 .map_err(|_| "write slot")?;
         }
         for i in 0..n {
             col.col_set(i as u64, vertices[i]);
         }
-        let idx_base = crate::layout::edge_region::dgap_log_idx_base_offset(
-            h2.segment_count,
-            h2.edge_stride,
-            h2.elem_capacity,
-        );
-        safe_write(
-            &self.memory,
-            idx_base,
-            &vec![0u8; (h2.segment_count as usize).saturating_mul(4)],
-        )
-        .map_err(|_| "zero log idx")?;
-        let pool_base = crate::layout::edge_region::dgap_log_pool_base_offset(
-            h2.segment_count,
-            h2.edge_stride,
-            h2.elem_capacity,
-        );
-        let pool_bytes = need.saturating_sub(pool_base);
-        safe_write(&self.memory, pool_base, &vec![0u8; pool_bytes as usize])
-            .map_err(|_| "zero log pool")?;
+        self.mem
+            .zero_log_partition(&h2)
+            .map_err(|_| "zero log partition")?;
         self.sync_pma_totals(col)?;
         self.sync_pma_actuals(col)?;
         Ok(())
@@ -529,7 +460,7 @@ impl<E: CsrEdgeSlot, M: Memory> VcsrEdgeStore<E, M> {
     {
         let h = self.header().ok_or("bad edge header")?;
         let leaf = dgap_leaf_segment_id(vid, h.segment_size);
-        let idx = read_log_segment_idx(&self.memory, &h, leaf);
+        let idx = self.mem.read_log_idx(&h, leaf);
         if idx >= h.max_log_entries as i32 {
             return Err("log full");
         }
@@ -538,14 +469,14 @@ impl<E: CsrEdgeSlot, M: Memory> VcsrEdgeStore<E, M> {
         let entry_idx = idx as u32;
         self.write_log_entry(&h, leaf, entry_idx, prev, vid as i32, edge)
             .map_err(|_| "write log")?;
-        write_log_segment_idx(&self.memory, &h, leaf, idx + 1);
+        self.mem.write_log_idx(&h, leaf, idx + 1);
         col.col_set(
             vid as u64,
             v.with_log_head(idx)
                 .with_degree(v.degree() + 1),
         );
-        let ne = read_u64_le(&self.memory, 32);
-        write_u64_le(&self.memory, 32, ne.saturating_add(1));
+        let ne = self.mem.read_num_edges();
+        self.mem.set_num_edges(ne.saturating_add(1));
         Ok(())
     }
 
@@ -563,15 +494,15 @@ impl<E: CsrEdgeSlot, M: Memory> VcsrEdgeStore<E, M> {
         let v = col.col_get(vid as u64).ok_or("missing vertex")?;
         let loc = v.base_slot_start().saturating_add(v.degree() as u64);
         if Self::have_space_onseg(col, vid, loc, h.elem_capacity) {
-            self.write_slot(h.segment_count, h.edge_stride, loc, edge)
+            self.write_slot(h.edge_stride, loc, edge)
                 .map_err(|_| "write slot")?;
             col.col_set(vid as u64, v.with_degree(v.degree() + 1));
-            let ne = read_u64_le(&self.memory, 32);
-            write_u64_le(&self.memory, 32, ne.saturating_add(1));
+            let ne = self.mem.read_num_edges();
+            self.mem.set_num_edges(ne.saturating_add(1));
             return Ok(());
         }
         let leaf = dgap_leaf_segment_id(vid, h.segment_size);
-        let idx = read_log_segment_idx(&self.memory, &h, leaf);
+        let idx = self.mem.read_log_idx(&h, leaf);
         if idx >= h.max_log_entries as i32 {
             return Err("log full");
         }
@@ -598,7 +529,7 @@ impl<E: CsrEdgeSlot, M: Memory> VcsrEdgeStore<E, M> {
                 return Err("vertex out of range");
             }
             let leaf = dgap_leaf_segment_id(vid, h.segment_size);
-            let idx = read_log_segment_idx(&self.memory, &h, leaf);
+            let idx = self.mem.read_log_idx(&h, leaf);
             if idx >= h.max_log_entries as i32 {
                 let left_index = (vid / h.segment_size as usize) * h.segment_size as usize;
                 let right_index = ((left_index + h.segment_size as usize).min(n)).min(n);
@@ -646,8 +577,8 @@ impl<E: CsrEdgeSlot, M: Memory> VcsrEdgeStore<E, M> {
             let mut actual = vec![0i64; len];
             let mut total = vec![0i64; len];
             for j in 0..len {
-                actual[j] = self.read_actual(h.segment_count, j);
-                total[j] = self.read_total(h.segment_count, j);
+                actual[j] = self.read_actual(j);
+                total[j] = self.read_total(j);
             }
             let num_v = col.col_len() as usize;
             match rebalance_decision(
@@ -676,9 +607,68 @@ impl<E: CsrEdgeSlot, M: Memory> VcsrEdgeStore<E, M> {
         }
         Err("rebalance maintenance limit")
     }
-}
 
-impl<E: CsrEdgeSlot, M: Memory> VcsrEdgeStore<E, M> {
+    /// Maximum vertex rows such that every `vid` satisfies `dgap_leaf_segment_id(vid, segment_size) < segment_count`.
+    #[inline]
+    pub fn max_vertex_slots(segment_count: u32, segment_size: u32) -> u64 {
+        let ss = segment_size.max(1) as u64;
+        (segment_count as u64).saturating_mul(ss)
+    }
+
+    /// `current_len` is [`CsrVertexColumn::col_len`] **before** push; the new row will get `vid == current_len`.
+    #[inline]
+    pub fn check_vertex_append_cap(
+        current_len: u64,
+        segment_count: u32,
+        segment_size: u32,
+    ) -> Result<(), &'static str> {
+        let cap = Self::max_vertex_slots(segment_count, segment_size);
+        if current_len >= cap {
+            return Err("vertex column cap exceeded (segment_count * segment_size)");
+        }
+        Ok(())
+    }
+
+    /// `max_v (base + degree)` over existing rows.
+    pub fn slab_occupied_tail<V, C>(&self, col: &C) -> Result<u64, &'static str>
+    where
+        V: CsrVertex,
+        C: CsrVertexColumn<V>,
+    {
+        let n = col.col_len() as usize;
+        let mut end = 0u64;
+        for i in 0..n {
+            let v = col.col_get(i as u64).ok_or("missing vertex row")?;
+            let b = v.base_slot_start();
+            let d = v.degree() as u64;
+            end = end.max(b.saturating_add(d));
+        }
+        Ok(end)
+    }
+
+    /// Next `base_slot_start` for a **new tail** vertex row (before `col_push_back`).
+    ///
+    /// Uses the occupied slab tail plus a one-slot bump when the current last vertex has `degree == 0`
+    /// and would otherwise share the same insertion cursor as another empty tail (see `dgap_insert_once`).
+    pub fn slab_append_base_slot<V, C>(&self, col: &C) -> Result<u64, &'static str>
+    where
+        V: CsrVertex,
+        C: CsrVertexColumn<V>,
+    {
+        let n = col.col_len() as usize;
+        if n == 0 {
+            return Ok(0);
+        }
+        let mut expected = self.slab_occupied_tail(col)?;
+        let last = col
+            .col_get((n - 1) as u64)
+            .ok_or("missing last vertex row")?;
+        if last.degree() == 0 && expected == last.base_slot_start() {
+            expected = expected.saturating_add(1);
+        }
+        Ok(expected)
+    }
+
     pub fn sync_pma_totals<V, C>(&self, col: &C) -> Result<(), &'static str>
     where
         V: CsrVertex,
@@ -687,7 +677,7 @@ impl<E: CsrEdgeSlot, M: Memory> VcsrEdgeStore<E, M> {
         let h = self.header().ok_or("bad header")?;
         let sc = h.segment_count as usize;
         let mut total = vec![0i64; sc * 2];
-        crate::vcsr::pma_meta::recount_segment_total_column(
+        crate::dgap::pma_meta::recount_segment_total_column(
             col,
             col.col_len(),
             h.segment_count,
@@ -696,7 +686,7 @@ impl<E: CsrEdgeSlot, M: Memory> VcsrEdgeStore<E, M> {
             &mut total,
         );
         for j in 0..total.len() {
-            self.write_total(h.segment_count, j, total[j]);
+            self.write_total(j, total[j]);
         }
         Ok(())
     }
@@ -709,7 +699,7 @@ impl<E: CsrEdgeSlot, M: Memory> VcsrEdgeStore<E, M> {
         let h = self.header().ok_or("bad header")?;
         let sc = h.segment_count as usize;
         let mut actual = vec![0i64; sc * 2];
-        crate::vcsr::pma_meta::recount_segment_actual_column(
+        crate::dgap::pma_meta::recount_segment_actual_column(
             col,
             col.col_len(),
             h.segment_count,
@@ -717,7 +707,7 @@ impl<E: CsrEdgeSlot, M: Memory> VcsrEdgeStore<E, M> {
             &mut actual,
         );
         for j in 0..actual.len() {
-            self.write_actual(h.segment_count, j, actual[j]);
+            self.write_actual(j, actual[j]);
         }
         Ok(())
     }

@@ -1,15 +1,17 @@
-//! Optional **append-only stream journal** on a dedicated [`Memory`] (framed records in [`crate::layout::log_region`]).
+//! DGAP edge bundle (`M_e`) and PMA metadata (segment density, rebalance), following the reference `graph.h` layout.
 //!
-//! VCSR edge mutations **do not** use this module: overflow edges live in the `M_e` DGAP log pool
-//! ([`crate::vcsr::VcsrEdgeStore`]). Use `dgap` here only when you need a separate replay / audit stream.
-//!
-//! # Relation to C++ DGAP (`reference/DGAP/dgap/src/graph.h`)
-//!
-//! The C++ reference uses per-segment `LogEntry` arrays **inside the edge region**; this crate mirrors that
-//! layout in [`crate::layout::edge_region`] (v2 header + `log_segment_idx` + log pool). The stream format
-//! below is **IC-specific** and is **not** byte-compatible with the reference’s on-disk OIDs.
+//! Persistent layout of the three `M_e` memories is documented under [`crate::layout::dgap`] and
+//! [`DgapGraphMemories`] (ASCII diagrams, `ic-stable_structures`-style).
 
-pub use crate::layout::log_region::{
-    append_record, init_empty_log_region, LogRegionHeaderV1, LOG_HEADER_SIZE, LOG_REGION_MAGIC,
-    LOG_REGION_VERSION,
+mod dgap_graph_memories;
+mod edge_store;
+mod pma_meta;
+
+pub use dgap_graph_memories::DgapGraphMemories;
+pub use edge_store::DgapEdgeStore;
+pub use pma_meta::{
+    calculate_positions_v1, calculate_positions_v1_window, density_deltas, floor_log2_u32,
+    pma_tree_index, rebalance_decision, rebalance_weighted, rebalance_weighted_window,
+    recount_segment_actual_column, recount_segment_actual_from_degrees, recount_segment_total,
+    recount_segment_total_column, RebalanceDecision, LOW_0, LOW_H, UP_0, UP_H,
 };

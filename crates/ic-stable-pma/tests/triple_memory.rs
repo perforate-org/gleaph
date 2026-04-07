@@ -5,10 +5,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use ic_stable_pma::{
-    layout::edge_region::EDGE_REGION_MAGIC,
+    layout::dgap::{
+        EDGE_REGION_MAGIC, PMA_SEGMENT_EDGES_ACTUAL_MAGIC, PMA_SEGMENT_EDGES_TOTAL_MAGIC,
+    },
     traits::{CsrEdgeSlot, CsrVertex},
-    vcsr::{calculate_positions_v1, pma_tree_index, VcsrEdgeStore},
-    Bound, StableVec, Storable, VectorMemory, VcsrStores,
+    dgap::{calculate_positions_v1, pma_tree_index, DgapEdgeStore},
+    Bound, DgapGraphMemories, StableVec, Storable, VectorMemory, DgapStores,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,13 +97,29 @@ impl CsrEdgeSlot for TestEdge {
     }
 }
 
+type TestEdgeStore = DgapEdgeStore<TestEdge, VectorMemory, VectorMemory, VectorMemory>;
+
+fn triple_edge_memories() -> DgapGraphMemories<VectorMemory, VectorMemory, VectorMemory> {
+    DgapGraphMemories::new(
+        Rc::new(RefCell::new(Vec::new())),
+        Rc::new(RefCell::new(Vec::new())),
+        Rc::new(RefCell::new(Vec::new())),
+    )
+}
+
 #[test]
-fn two_memories_are_isolated_regions() {
+fn vertex_and_triple_edge_memories_are_isolated_regions() {
     let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
-    let me: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+    let m_actual: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+    let m_total: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+    let m_edges_log: VectorMemory = Rc::new(RefCell::new(Vec::new()));
 
     let vertices = StableVec::new(mv.clone());
-    let edges = VcsrEdgeStore::<TestEdge, _>::new(me.clone());
+    let edges = TestEdgeStore::new(DgapGraphMemories::new(
+        m_actual.clone(),
+        m_total.clone(),
+        m_edges_log.clone(),
+    ));
     edges
         .format_new(16, 1, 2, 0)
         .expect("format edge region");
@@ -118,10 +136,26 @@ fn two_memories_are_isolated_regions() {
     });
 
     let v_bytes = mv.borrow();
-    let e_bytes = me.borrow();
+    let a_bytes = m_actual.borrow();
+    let t_bytes = m_total.borrow();
+    let el_bytes = m_edges_log.borrow();
 
     assert_eq!(&v_bytes[0..3], b"SVC", "StableVec magic on M_v");
-    assert_eq!(&e_bytes[0..3], EDGE_REGION_MAGIC, "VCSR edge magic on M_e");
+    assert_eq!(
+        &a_bytes[0..3],
+        PMA_SEGMENT_EDGES_ACTUAL_MAGIC,
+        "PMA actual region magic"
+    );
+    assert_eq!(
+        &t_bytes[0..3],
+        PMA_SEGMENT_EDGES_TOTAL_MAGIC,
+        "PMA total region magic"
+    );
+    assert_eq!(
+        &el_bytes[0..3],
+        EDGE_REGION_MAGIC,
+        "VCE graph header on edges+log memory"
+    );
 }
 
 #[test]
@@ -140,12 +174,11 @@ fn pma_tree_index_single_segment() {
 }
 
 #[test]
-fn vcsr_stores_sync_meta() {
+fn dgap_stores_sync_meta() {
     let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
-    let me: VectorMemory = Rc::new(RefCell::new(Vec::new()));
 
     let vertices = StableVec::new(mv);
-    let edges = VcsrEdgeStore::<TestEdge, _>::new(me);
+    let edges = TestEdgeStore::new(triple_edge_memories());
     edges.format_new(32, 1, 2, 0).unwrap();
     vertices.push(&TestVertex {
         slot_base: 0,
@@ -158,9 +191,9 @@ fn vcsr_stores_sync_meta() {
         log_head: -1,
     });
 
-    let stores = VcsrStores::new(vertices, edges);
+    let stores = DgapStores::new(vertices, edges);
     stores.sync_pma_meta().unwrap();
 
-    let e = stores.edges.read_actual(1, 1);
+    let e = stores.edges.read_actual(1);
     assert!(e >= 1);
 }

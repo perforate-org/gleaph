@@ -285,7 +285,7 @@ impl EdgeMeta {
 
 /// Fixed-size hot adjacency entry.
 ///
-/// This is the VCSR/DGAP-style base entry stored in a surface edge region.
+/// This is the DGAP-style base entry stored in a surface edge region (CSR slab slot).
 /// It intentionally contains only the neighbor vertex ref and edge-local hot
 /// metadata.
 ///

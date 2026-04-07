@@ -279,7 +279,7 @@ pub struct SurfaceRebalanceWindowPlan {
     pub reserved_base_len: u32,
     /// Extra gap budget available after placing all live entries in the window.
     pub gap_budget: u32,
-    /// Total VCSR-style placement weight for the window, using `degree + 1`.
+    /// Total DGAP-style placement weight for the window, using `degree + 1`.
     pub total_weight: u64,
     /// Expected weighted placement for the rewritten window.
     pub weighted_layout: SurfaceWeightedWindowLayout,

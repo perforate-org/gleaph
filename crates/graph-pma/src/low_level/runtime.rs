@@ -1005,7 +1005,7 @@ pub struct SurfaceAppliedRebalanceSummary {
 
 /// Pure weighted placement metadata for one rebalance window.
 ///
-/// This is the runtime-side analogue of VCSR's position calculation: it says
+/// This is the runtime-side analogue of DGAP's PMA position calculation: it says
 /// where each rewritten neighborhood starts and how many base-capacity slots it
 /// receives after redistributing reserved slack within the window.
 #[derive(Clone, Debug, PartialEq, Eq)]

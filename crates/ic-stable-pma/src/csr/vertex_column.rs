@@ -1,4 +1,7 @@
-//! Random-access vertex column (`M_v`) for CSR / VCSR without full `Vec<V>` snapshots.
+//! Random-access vertex column (`M_v`) for CSR (paired with DGAP `M_e`) without full `Vec<V>` snapshots.
+//!
+//! When backed by [`StableVec`], the bytes at the start of `M_v` are **`ic_stable_structures::vec::Vec` V1**
+//! (magic `SVC`, 64-byte header, then element slots — see `ic_stable_structures::base_vec` module documentation).
 
 use ic_stable_structures::vec::Vec as StableVec;
 use ic_stable_structures::Memory;

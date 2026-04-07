@@ -1,18 +1,50 @@
-//! VCSR / CSR utilities for Internet Computer stable memory with **two logical [`Memory`] regions**:
-//! `M_v` (vertex CSR column) and `M_e` (DGAP-style edge region: PMA meta, CSR slab, per-leaf overflow logs).
+//! **DGAP**-aligned graph edges on Internet Computer stable memory, plus a plain CSR vertex column **`M_v`**.
+//! Edge state uses **`M_e`** as **three** [`Memory`] regions ([`DgapGraphMemories`]: PMA actual / PMA total /
+//! edges+log with [`DgapEdgeHeaderV1`](crate::layout::dgap::DgapEdgeHeaderV1) at offset 0 on the latter). **v2** single-`Memory` `M_e` layouts are not read or migrated.
+//!
+//! # Logical memories (`ic_stable_structures::Memory`)
+//!
+//! Each named region below is a **separate** [`Memory`] (for example three [`VirtualMemory`](ic_stable_structures::memory_manager::VirtualMemory)
+//! instances from [`MemoryManager::get`](ic_stable_structures::memory_manager::MemoryManager::get), plus one for vertices).
+//! Layout diagrams in this crate use the same ASCII style as `ic-stable_structures` (`memory_manager`, `base_vec`):
+//! horizontal rules, byte sizes (`↕`), and `<- Address 0` on the right.
+//!
+//! ```text
+//! -------------------------------------------------- <- M_v (vertex CSR column)
+//! | [`ic_stable_structures::vec::Vec`] V1 header + element slots (`SVC` magic)      |
+//! --------------------------------------------------
+//!
+//! -------------------------------------------------- <- M_e memory 1 (`segment_edges_actual`)
+//! | V1 mini header `VCA` + `segment_edges_actual` PMA `i64` tree array              |
+//! --------------------------------------------------
+//!
+//! -------------------------------------------------- <- M_e memory 2 (`segment_edges_total`)
+//! | V1 mini header `VCT` + `segment_edges_total` PMA `i64` tree array                 |
+//! --------------------------------------------------
+//!
+//! -------------------------------------------------- <- M_e memory 3 (`edges_and_log_segment`)
+//! | [`DgapEdgeHeaderV1`] (`VCE`) + CSR slab + log idx[] + per-leaf log entry pool     |
+//! --------------------------------------------------
+//!
+//! (optional) -------------------------------------------------- <- M_l stream journal
+//! | [`layout::log_region`] V1 header `DGL` + append-only records                      |
+//! --------------------------------------------------
+//! ```
 //!
 //! Gleaph-specific types (`VertexEntry`, `EdgeEntry`) should implement [`traits::CsrVertex`] /
 //! [`traits::CsrEdgeSlot`] in `graph-pma` (keeps this crate free of `gleaph_graph_kernel`).
 //!
-//! The [`dgap`] module remains for **append-only stream** tooling on a separate memory (`layout::log_region`);
-//! it is not used by [`VcsrStores::insert_edge`].
+//! Optional **append-only stream** helpers live in [`layout::log_region`] (re-exported from [`layout`]);
+//! they are not used by [`DgapStores::insert_edge`].
+//!
+//! **Vertices:** use [`DgapStores::insert_vertex`] to append rows to `M_v` (subject to
+//! [`DgapEdgeStore::max_vertex_slots`] for the formatted `segment_count` / `segment_size`).
 
 pub mod csr;
 pub mod dgap;
 pub mod layout;
 pub mod memory_util;
 pub mod traits;
-pub mod vcsr;
 
 pub use ic_stable_structures::storable::Bound;
 pub use ic_stable_structures::vec::Vec as StableVec;
@@ -20,10 +52,10 @@ pub use ic_stable_structures::vec_mem::VectorMemory;
 pub use ic_stable_structures::{Memory, Storable};
 
 pub use csr::{
-    insert_edge_into_slab, insert_edge_into_slab_column, CsrInsertError, CsrVertexColumn, VcsrStores,
-    VcsrStoresError,
+    CsrInsertError, CsrVertexColumn, DgapStores, DgapStoresError, insert_edge_into_slab,
+    insert_edge_into_slab_column,
 };
+pub use dgap::{DgapEdgeStore, DgapGraphMemories};
 pub use ic_stable_vec_deque::VecDeque as StableVecDeque;
-pub use memory_util::{memory_byte_len, safe_write, GrowFailed, WASM_PAGE_SIZE};
+pub use memory_util::{GrowFailed, WASM_PAGE_SIZE, memory_byte_len, safe_write};
 pub use traits::{CsrEdgeSlot, CsrVertex};
-pub use vcsr::VcsrEdgeStore;

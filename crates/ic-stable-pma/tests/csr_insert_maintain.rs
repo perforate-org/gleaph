@@ -1,4 +1,4 @@
-//! `VcsrStores::insert_edge`, DGAP overflow logs inside `M_e`, and `resize_double`.
+//! `DgapStores::insert_edge`, DGAP overflow logs inside `M_e`, and `resize_double`.
 
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -6,7 +6,8 @@ use std::rc::Rc;
 
 use ic_stable_pma::{
     traits::{CsrEdgeSlot, CsrVertex},
-    Bound, StableVec, Storable, VectorMemory, VcsrEdgeStore, VcsrStores,
+    Bound, DgapGraphMemories, StableVec, Storable, VectorMemory, DgapEdgeStore, DgapStores,
+    DgapStoresError,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,13 +87,22 @@ impl CsrEdgeSlot for TE {
     }
 }
 
+type TeEdgeStore = DgapEdgeStore<TE, VectorMemory, VectorMemory, VectorMemory>;
+
+fn triple_edge_memories() -> DgapGraphMemories<VectorMemory, VectorMemory, VectorMemory> {
+    DgapGraphMemories::new(
+        Rc::new(RefCell::new(Vec::new())),
+        Rc::new(RefCell::new(Vec::new())),
+        Rc::new(RefCell::new(Vec::new())),
+    )
+}
+
 #[test]
 fn insert_maintain_triggers_resize_when_slab_full() {
     let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
-    let me: VectorMemory = Rc::new(RefCell::new(Vec::new()));
 
     let vertices = StableVec::new(mv);
-    let edges = VcsrEdgeStore::<TE, _>::new(me);
+    let edges = TeEdgeStore::new(triple_edge_memories());
     edges.format_new(2, 1, 8, 0).expect("format");
 
     vertices.push(&TV {
@@ -101,7 +111,7 @@ fn insert_maintain_triggers_resize_when_slab_full() {
         log_head: -1,
     });
 
-    let stores = VcsrStores::new(vertices, edges);
+    let stores = DgapStores::new(vertices, edges);
     stores.sync_pma_meta().unwrap();
 
     stores.insert_edge(0, TE([1, 0, 0, 0])).unwrap();
@@ -118,10 +128,9 @@ fn insert_maintain_triggers_resize_when_slab_full() {
 #[test]
 fn overflow_goes_to_log_then_neighborhood_matches_insert_order() {
     let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
-    let me: VectorMemory = Rc::new(RefCell::new(Vec::new()));
 
     let vertices = StableVec::new(mv);
-    let edges = VcsrEdgeStore::<TE, _>::new(me);
+    let edges = TeEdgeStore::new(triple_edge_memories());
     edges.format_new(32, 1, 8, 0).expect("format");
 
     // Two vertices: v0 may only use slab slots [0, next_base) = [0, 2); the third out-edge overflows to the log.
@@ -136,7 +145,7 @@ fn overflow_goes_to_log_then_neighborhood_matches_insert_order() {
         log_head: -1,
     });
 
-    let stores = VcsrStores::new(vertices, edges);
+    let stores = DgapStores::new(vertices, edges);
     stores.sync_pma_meta().unwrap();
 
     stores.insert_edge(0, TE([1, 0, 0, 0])).unwrap();
@@ -160,10 +169,9 @@ fn overflow_goes_to_log_then_neighborhood_matches_insert_order() {
 #[test]
 fn merge_window_clears_log_head() {
     let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
-    let me: VectorMemory = Rc::new(RefCell::new(Vec::new()));
 
     let vertices = StableVec::new(mv);
-    let edges = VcsrEdgeStore::<TE, _>::new(me);
+    let edges = TeEdgeStore::new(triple_edge_memories());
     edges.format_new(32, 1, 8, 0).expect("format");
 
     vertices.push(&TV {
@@ -177,7 +185,7 @@ fn merge_window_clears_log_head() {
         log_head: -1,
     });
 
-    let stores = VcsrStores::new(vertices, edges);
+    let stores = DgapStores::new(vertices, edges);
     stores.sync_pma_meta().unwrap();
 
     stores.insert_edge(0, TE([1, 0, 0, 0])).unwrap();
@@ -201,12 +209,118 @@ fn merge_window_clears_log_head() {
 }
 
 #[test]
-fn two_vertices_preallocated_sync_meta() {
+fn insert_vertex_twice_then_insert_edges_on_each() {
     let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
-    let me: VectorMemory = Rc::new(RefCell::new(Vec::new()));
 
     let vertices = StableVec::new(mv);
-    let edges = VcsrEdgeStore::<TE, _>::new(me);
+    let edges = TeEdgeStore::new(triple_edge_memories());
+    edges.format_new(16, 1, 8, 0).expect("format");
+
+    let stores = DgapStores::new(vertices, edges);
+    stores.sync_pma_meta().unwrap();
+
+    assert_eq!(stores.edges.slab_append_base_slot(&stores.vertices).unwrap(), 0);
+    let id0 = stores
+        .insert_vertex(TV {
+            slot_base: 0,
+            deg: 0,
+            log_head: -1,
+        })
+        .unwrap();
+    assert_eq!(id0, 0);
+
+    let next = stores.edges.slab_append_base_slot(&stores.vertices).unwrap();
+    assert_eq!(next, 1, "second empty tail must not share slab cursor with first");
+    let id1 = stores
+        .insert_vertex(TV {
+            slot_base: next,
+            deg: 0,
+            log_head: -1,
+        })
+        .unwrap();
+    assert_eq!(id1, 1);
+
+    stores.insert_edge(0, TE([1, 0, 0, 0])).unwrap();
+    stores.insert_edge(1, TE([2, 0, 0, 0])).unwrap();
+    assert_eq!(stores.vertices.get(0).unwrap().degree(), 1);
+    assert_eq!(stores.vertices.get(1).unwrap().degree(), 1);
+}
+
+#[test]
+fn insert_vertex_rejects_wrong_base() {
+    let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+
+    let vertices = StableVec::new(mv);
+    let edges = TeEdgeStore::new(triple_edge_memories());
+    edges.format_new(16, 1, 8, 0).expect("format");
+
+    let stores = DgapStores::new(vertices, edges);
+    stores.sync_pma_meta().unwrap();
+
+    let err = stores
+        .insert_vertex(TV {
+            slot_base: 99,
+            deg: 0,
+            log_head: -1,
+        })
+        .unwrap_err();
+    assert_eq!(
+        err,
+        DgapStoresError::Graph(
+            "insert_vertex base_slot_start mismatch (use DgapEdgeStore::slab_append_base_slot)"
+        )
+    );
+}
+
+#[test]
+fn insert_vertex_honors_segment_vertex_cap() {
+    let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+
+    let vertices = StableVec::new(mv);
+    let edges = TeEdgeStore::new(triple_edge_memories());
+    edges.format_new(32, 1, 2, 0).expect("format");
+
+    let stores = DgapStores::new(vertices, edges);
+    stores.sync_pma_meta().unwrap();
+
+    let b0 = stores.edges.slab_append_base_slot(&stores.vertices).unwrap();
+    stores
+        .insert_vertex(TV {
+            slot_base: b0,
+            deg: 0,
+            log_head: -1,
+        })
+        .unwrap();
+    let b1 = stores.edges.slab_append_base_slot(&stores.vertices).unwrap();
+    stores
+        .insert_vertex(TV {
+            slot_base: b1,
+            deg: 0,
+            log_head: -1,
+        })
+        .unwrap();
+    assert_eq!(stores.vertices.len(), 2);
+
+    let b2 = stores.edges.slab_append_base_slot(&stores.vertices).unwrap();
+    let err = stores
+        .insert_vertex(TV {
+            slot_base: b2,
+            deg: 0,
+            log_head: -1,
+        })
+        .unwrap_err();
+    assert_eq!(
+        err,
+        DgapStoresError::Graph("vertex column cap exceeded (segment_count * segment_size)")
+    );
+}
+
+#[test]
+fn two_vertices_preallocated_sync_meta() {
+    let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+
+    let vertices = StableVec::new(mv);
+    let edges = TeEdgeStore::new(triple_edge_memories());
     edges.format_new(32, 1, 8, 0).expect("format");
 
     vertices.push(&TV {
@@ -220,7 +334,7 @@ fn two_vertices_preallocated_sync_meta() {
         log_head: -1,
     });
 
-    let stores = VcsrStores::new(vertices, edges);
+    let stores = DgapStores::new(vertices, edges);
     stores.sync_pma_meta().unwrap();
 
     stores.insert_edge(0, TE([7, 0, 0, 0])).unwrap();

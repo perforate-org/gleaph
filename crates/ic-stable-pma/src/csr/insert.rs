@@ -1,7 +1,7 @@
 //! CSR slab insert (gap fill + right-slide) for a **single flat segment** (`segment_count == 1`).
 //!
-//! Higher-level orchestration (PMA sync, [`crate::vcsr::pma_meta::rebalance_decision`],
-//! [`crate::vcsr::VcsrEdgeStore`], resize) lives on [`crate::vcsr::VcsrEdgeStore`].
+//! Higher-level orchestration (PMA sync, [`rebalance_decision`](crate::dgap::rebalance_decision),
+//! [`DgapEdgeStore`](crate::dgap::DgapEdgeStore), resize) lives on [`DgapEdgeStore`](crate::dgap::DgapEdgeStore).
 
 use crate::csr::vertex_column::CsrVertexColumn;
 use crate::traits::{CsrEdgeSlot, CsrVertex};

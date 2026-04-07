@@ -1,4 +1,4 @@
-//! Minimal traits for VCSR / CSR without Gleaph-specific types.
+//! Minimal traits for DGAP edge slots and CSR vertices without Gleaph-specific types.
 //!
 //! `graph-pma` can implement [`CsrVertex`] for `VertexEntry` in a follow-up (avoids a dependency here).
 

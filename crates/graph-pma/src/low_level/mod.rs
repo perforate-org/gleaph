@@ -11,7 +11,7 @@ mod edge;
 mod extent;
 mod graph;
 mod hydration;
-mod ic_stable_vcsr;
+mod ic_stable_dgap;
 mod ids;
 mod locator;
 mod manager;
@@ -75,8 +75,10 @@ pub use hydration::{
     write_forward_surface_runtime_to_stable_memory, write_reverse_surface_runtime_to_stable_memory,
     write_surface_runtime_to_stable_memory, write_surface_runtimes_to_stable_memory,
 };
-pub use ic_stable_vcsr::{
-    VCSR_EDGE_MEMORY_SLOT, VCSR_LOG_MEMORY_SLOT, VCSR_VERTEX_MEMORY_SLOT,
+pub use ic_stable_dgap::{
+    vertex_entry_for_ic_stable_append, DGAP_EDGES_AND_LOG_MEMORY_SLOT, DGAP_LOG_MEMORY_SLOT,
+    DGAP_SEGMENT_EDGES_ACTUAL_MEMORY_SLOT, DGAP_SEGMENT_EDGES_TOTAL_MEMORY_SLOT,
+    DGAP_VERTEX_MEMORY_SLOT,
 };
 pub use ids::{EdgeRef, StableAddr, VertexRef};
 pub use locator::EdgeLogicalLocatorSidecar;

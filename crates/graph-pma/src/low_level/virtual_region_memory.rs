@@ -203,25 +203,39 @@ impl<M: Memory> GleaphMemoryManager<M> {
     }
 
     /// Reserved [`MemoryId`] for `M_v` when using a **separate** [`ic_stable_structures::memory_manager::MemoryManager`]
-    /// on the canister backing store for [`ic_stable_pma`] (see `experimental-vcsr`).
-    #[cfg(feature = "experimental-vcsr")]
+    /// on the canister backing store for [`ic_stable_pma`] (see `experimental-dgap`).
+    #[cfg(feature = "experimental-dgap")]
     #[inline]
-    pub fn vcsr_vertex_memory_id() -> MemoryId {
-        MemoryId::new(super::VCSR_VERTEX_MEMORY_SLOT)
+    pub fn dgap_vertex_memory_id() -> MemoryId {
+        MemoryId::new(super::DGAP_VERTEX_MEMORY_SLOT)
     }
 
-    /// Reserved [`MemoryId`] for `M_e` (VCSR edge region).
-    #[cfg(feature = "experimental-vcsr")]
+    /// Reserved [`MemoryId`] for `M_e` PMA `segment_edges_actual` (`M1`).
+    #[cfg(feature = "experimental-dgap")]
     #[inline]
-    pub fn vcsr_edge_memory_id() -> MemoryId {
-        MemoryId::new(super::VCSR_EDGE_MEMORY_SLOT)
+    pub fn dgap_segment_edges_actual_memory_id() -> MemoryId {
+        MemoryId::new(super::DGAP_SEGMENT_EDGES_ACTUAL_MEMORY_SLOT)
     }
 
-    /// Reserved [`MemoryId`] for `M_l` (DGAP log).
-    #[cfg(feature = "experimental-vcsr")]
+    /// Reserved [`MemoryId`] for `M_e` PMA `segment_edges_total` (`M2`).
+    #[cfg(feature = "experimental-dgap")]
     #[inline]
-    pub fn vcsr_log_memory_id() -> MemoryId {
-        MemoryId::new(super::VCSR_LOG_MEMORY_SLOT)
+    pub fn dgap_segment_edges_total_memory_id() -> MemoryId {
+        MemoryId::new(super::DGAP_SEGMENT_EDGES_TOTAL_MEMORY_SLOT)
+    }
+
+    /// Reserved [`MemoryId`] for `M_e` CSR slab + log idx + log pool (`M3`).
+    #[cfg(feature = "experimental-dgap")]
+    #[inline]
+    pub fn dgap_edges_and_log_memory_id() -> MemoryId {
+        MemoryId::new(super::DGAP_EDGES_AND_LOG_MEMORY_SLOT)
+    }
+
+    /// Reserved [`MemoryId`] for `M_l` (optional append-only stream; not the per-leaf DGAP overflow pool).
+    #[cfg(feature = "experimental-dgap")]
+    #[inline]
+    pub fn dgap_log_memory_id() -> MemoryId {
+        MemoryId::new(super::DGAP_LOG_MEMORY_SLOT)
     }
 }
 

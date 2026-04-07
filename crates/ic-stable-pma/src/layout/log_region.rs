@@ -1,10 +1,30 @@
 //! V1 layout for the **`M_l` journal region** (append-only stream). Named “DGAP-style” in project docs
 //! for the *pattern* (log-structured updates), not for binary compatibility with the C++ DGAP reference
-//! or with `ic-stable-structures::log::Log` (`GLI`/`GLD`). See [`crate::dgap`] for a reference comparison.
+//! or with `ic-stable-structures::log::Log` (`GLI`/`GLD`).
+//!
+//! # V1 header ([`LOG_REGION_VERSION`])
 //!
 //! ```text
-//! [0..64)   header
-//! [64..)    records (each: u32 len LE + payload[len])
+//! -------------------------------------------------- <- Address 0
+//! Magic "DGL"                           ↕ 3 bytes
+//! --------------------------------------------------
+//! Layout version                        ↕ 1 byte
+//! --------------------------------------------------
+//! Reserved                              ↕ 4 bytes
+//! --------------------------------------------------
+//! append_tail (u64 LE)                  ↕ 8 bytes   (next record starts here; ≥ [`LOG_HEADER_SIZE`])
+//! --------------------------------------------------
+//! record_count (u64 LE)                 ↕ 8 bytes
+//! --------------------------------------------------
+//! Reserved                              ↕ 40 bytes
+//! -------------------------------------------------- <- Address 64 ([`LOG_HEADER_SIZE`])
+//! Record 0: u32 len LE + payload[len]   ↕ 4 + len₀ bytes
+//! --------------------------------------------------
+//! Record 1: u32 len LE + payload[len]   ↕ 4 + len₁ bytes
+//! --------------------------------------------------
+//! …
+//! --------------------------------------------------
+//! Unallocated space
 //! ```
 
 use ic_stable_structures::Memory;
