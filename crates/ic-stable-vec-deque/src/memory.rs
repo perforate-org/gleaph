@@ -53,6 +53,10 @@ pub(crate) fn write_u64<M: Memory>(m: &M, addr: Address, val: u64) {
     write(m, addr.get(), &val.to_le_bytes());
 }
 
+/// Stable memory grow failed while writing the deque (e.g. [`crate::VecDeque::new`],
+/// [`crate::VecDeque::push_back`], [`crate::VecDeque::push_front`]).
+///
+/// Page sizes follow [`ic_stable_structures::Memory`] (65536 bytes per page).
 #[derive(Debug, PartialEq, Eq)]
 pub struct GrowFailed {
     current_size: u64,

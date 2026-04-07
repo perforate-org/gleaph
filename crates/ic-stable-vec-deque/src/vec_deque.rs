@@ -1,19 +1,44 @@
-//! A double-ended queue in stable memory (ring buffer).
+//! Implementation of [`VecDeque`] and [`Iter`].
 //!
-//! Internally wraps [crate::base_vec::BaseVec] for the shared V1 header and slot region layout.
+//! Layout details and examples live on [`VecDeque`]; the [crate root](crate) summarizes the format.
 //!
 //! # V1 layout
 //!
-//! Same 64-byte header as `BaseVec`, with the first 16 bytes of the former reserved region
-//! used for the ring:
+//! Same 64-byte header prefix as [`ic_stable_structures::vec::Vec`] (`SVC`); bytes **17–32** hold
+//! the ring `head` and `capacity` instead of the single 47-byte reserved block in `BaseVec`.
+//! Magic is **`SVD`**. Logical index `i` maps to physical slot `(head + i) % capacity`.
 //!
 //! ```text
-//! Bytes 17–24: head (u64) — physical slot index of logical element 0
-//! Bytes 25–32: capacity (u64) — allocated slot count (may exceed len)
-//! Bytes 33–63: reserved
+//! ---------------------------------------- <- Address 0
+//! Magic `SVD`            ↕ 3 bytes
+//! ----------------------------------------
+//! Layout version         ↕ 1 byte
+//! ----------------------------------------
+//! Number of entries = L  ↕ 8 bytes
+//! ----------------------------------------
+//! Max entry size         ↕ 4 bytes
+//! ----------------------------------------
+//! Fixed size flag        ↕ 1 byte
+//! ----------------------------------------
+//! Ring head              ↕ 8 bytes
+//! ----------------------------------------
+//! Capacity               ↕ 8 bytes
+//! ----------------------------------------
+//! Reserved space         ↕ 31 bytes
+//! ---------------------------------------- <- Address 64
+//! E_0                    ↕ SLOT_SIZE bytes
+//! ----------------------------------------
+//! E_1                    ↕ SLOT_SIZE bytes
+//! ----------------------------------------
+//! ...
+//! ----------------------------------------
+//! E_(C-1)                ↕ SLOT_SIZE bytes
+//! ----------------------------------------
+//! Unallocated space
 //! ```
 //!
-//! Slots start at offset 64; logical index `i` maps to physical slot `(head + i) % capacity`.
+//! `SLOT_SIZE` matches [`ic_stable_structures::vec::Vec`]: fixed `max_size`, or `max_size` plus the
+//! length-prefix width for variable-size [`Storable`] items.
 
 use crate::memory::{
     GrowFailed, WASM_PAGE_SIZE, grow_memory_to_at_least_bytes, read_u32, read_u64, safe_write,
@@ -24,8 +49,6 @@ use crate::storable::bounds;
 use crate::types::Address;
 use ic_stable_structures::{Memory, Storable};
 
-#[cfg(test)]
-use ic_stable_structures::VectorMemory;
 use std::borrow::Cow;
 use std::cmp::min;
 use std::fmt;
@@ -40,21 +63,18 @@ const LEN_OFFSET: u64 = 4;
 const HEAD_OFFSET: u64 = 17;
 const CAP_OFFSET: u64 = 25;
 
+/// Failure opening existing memory with [`VecDeque::init`].
 #[derive(PartialEq, Eq, Debug)]
 pub enum InitError {
-    /// The memory already contains another data structure.
-    /// Use [Vec::new] to overwrite it.
+    /// First three bytes are not magic `SVD`. Use [`VecDeque::new`] to overwrite the region.
     BadMagic { actual: [u8; 3], expected: [u8; 3] },
-    /// The current version of [Vec] does not support the version of the
-    /// memory layout.
+    /// Persisted layout version is not supported by this crate.
     IncompatibleVersion(u8),
-    /// The vector type is not compatible with the current vector
-    /// layout: the type's bounds differ from the original initialization
-    /// parameters.
+    /// `T`'s [`Storable`](ic_stable_structures::Storable) bounds do not match `max_size` / `is_fixed_size` in the header.
     IncompatibleElementType,
-    /// Failed to allocate memory for the vector.
+    /// Empty memory and [`VecDeque::new`] failed (e.g. could not write header).
     OutOfMemory,
-    /// The deque layout is invalid.
+    /// `len`, `head`, `capacity`, or allocated memory size are inconsistent.
     InvalidLayout,
 }
 
@@ -80,14 +100,54 @@ impl fmt::Display for InitError {
 
 impl std::error::Error for InitError {}
 
-/// A deque in stable memory backed by a growable ring buffer.
+/// Double-ended queue in stable [`Memory`](ic_stable_structures::Memory), **V1** ring buffer (`SVD` magic).
+///
+/// Logical indices are `0 .. len`; [`push_front`](VecDeque::push_front) / [`pop_front`](VecDeque::pop_front)
+/// rotate `head` in the ring without shifting all elements until a grow linearizes storage.
+///
+/// # Type parameters
+///
+/// - `T`: [`Storable`](ic_stable_structures::Storable) with bounded encoding (same rules as [`ic_stable_structures::vec::Vec`]).
+/// - `M`: typically [`DefaultMemoryImpl`](ic_stable_structures::DefaultMemoryImpl) in application code.
+///
+/// # Panics
+///
+/// [`set`](VecDeque::set) panics if `index >= len` (unlike [`get`](VecDeque::get), which returns `None`).
+///
+/// # Example
+///
+/// ```
+/// use ic_stable_structures::DefaultMemoryImpl;
+/// use ic_stable_vec_deque::VecDeque;
+///
+/// let dq = VecDeque::<u64, _>::new(DefaultMemoryImpl::default()).unwrap();
+/// dq.push_back(&10).unwrap();
+/// dq.push_front(&5).unwrap();
+/// assert_eq!(dq.get(0), Some(5));
+/// assert_eq!(dq.get(1), Some(10));
+/// assert_eq!(dq.pop_back(), Some(10));
+/// ```
 pub struct VecDeque<T: Storable, M: Memory> {
     memory: M,
     _marker: PhantomData<T>,
 }
 
 impl<T: Storable, M: Memory> VecDeque<T, M> {
-    /// Creates a new empty deque, overwriting any previous contents of `memory`.
+    /// Writes a fresh V1 header (`SVD`, `len = 0`, `capacity = 0`, `head = 0`) over `memory`.
+    ///
+    /// # Errors
+    ///
+    /// [`GrowFailed`] if the header cannot be written.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ic_stable_structures::DefaultMemoryImpl;
+    /// use ic_stable_vec_deque::VecDeque;
+    ///
+    /// let dq = VecDeque::<u64, _>::new(DefaultMemoryImpl::default()).unwrap();
+    /// assert!(dq.is_empty());
+    /// ```
     pub fn new(memory: M) -> Result<Self, GrowFailed> {
         let t_bounds = bounds::<T>();
         write_deque_header(
@@ -108,7 +168,27 @@ impl<T: Storable, M: Memory> VecDeque<T, M> {
         })
     }
 
-    /// Initializes a deque from existing memory.
+    /// Attaches to a region previously written by [`VecDeque::new`] (or compatible producer).
+    ///
+    /// # Errors
+    ///
+    /// See [`InitError`] variants.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ic_stable_structures::DefaultMemoryImpl;
+    /// use ic_stable_vec_deque::VecDeque;
+    ///
+    /// let mem = DefaultMemoryImpl::default();
+    /// let mem = {
+    ///     let dq = VecDeque::<u64, _>::new(mem).unwrap();
+    ///     dq.push_back(&1).unwrap();
+    ///     dq.into_memory()
+    /// };
+    /// let dq = VecDeque::<u64, _>::init(mem).unwrap();
+    /// assert_eq!(dq.get(0), Some(1));
+    /// ```
     pub fn init(memory: M) -> Result<Self, InitError> {
         if memory.size() == 0 {
             return Self::new(memory).map_err(|_| InitError::OutOfMemory);
@@ -154,14 +234,37 @@ impl<T: Storable, M: Memory> VecDeque<T, M> {
         })
     }
 
+    /// Returns the backing [`Memory`](ic_stable_structures::Memory) for persistence or [`init`](VecDeque::init).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ic_stable_structures::DefaultMemoryImpl;
+    /// use ic_stable_vec_deque::VecDeque;
+    ///
+    /// let dq = VecDeque::<u64, _>::new(DefaultMemoryImpl::default()).unwrap();
+    /// let mem = dq.into_memory();
+    /// let _ = VecDeque::<u64, _>::init(mem).unwrap();
+    /// ```
     pub fn into_memory(self) -> M {
         self.memory
     }
 
+    /// `true` when [`len`](VecDeque::len) is zero.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ic_stable_structures::DefaultMemoryImpl;
+    /// # use ic_stable_vec_deque::VecDeque;
+    /// let dq = VecDeque::<u64, _>::new(DefaultMemoryImpl::default()).unwrap();
+    /// assert!(dq.is_empty());
+    /// ```
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
+    /// Number of elements (logical length).
     pub fn len(&self) -> u64 {
         read_u64(&self.memory, Address::from(LEN_OFFSET))
     }
@@ -230,6 +333,23 @@ impl<T: Storable, M: Memory> VecDeque<T, M> {
         (head + logical) % cap
     }
 
+    /// Returns element at logical `index`, or `None` if `index >= len`.
+    ///
+    /// # Complexity
+    ///
+    /// O(size of `T`) for one slot read.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ic_stable_structures::DefaultMemoryImpl;
+    /// use ic_stable_vec_deque::VecDeque;
+    ///
+    /// let dq = VecDeque::<u64, _>::new(DefaultMemoryImpl::default()).unwrap();
+    /// dq.push_back(&3).unwrap();
+    /// assert_eq!(dq.get(0), Some(3));
+    /// assert_eq!(dq.get(1), None);
+    /// ```
     pub fn get(&self, index: u64) -> Option<T> {
         let len = self.len();
         if index >= len {
@@ -241,6 +361,23 @@ impl<T: Storable, M: Memory> VecDeque<T, M> {
         Some(slot::read_slot(&self.memory, self.slot_byte_offset(phys)))
     }
 
+    /// Overwrites the element at logical `index`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `index >= len` (use [`get`](VecDeque::get) for a non-panicking check).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ic_stable_structures::DefaultMemoryImpl;
+    /// use ic_stable_vec_deque::VecDeque;
+    ///
+    /// let dq = VecDeque::<u64, _>::new(DefaultMemoryImpl::default()).unwrap();
+    /// dq.push_back(&1).unwrap();
+    /// dq.set(0, &2);
+    /// assert_eq!(dq.get(0), Some(2));
+    /// ```
     pub fn set(&self, index: u64, item: &T) {
         assert!(index < self.len());
         let cap = self.capacity();
@@ -250,6 +387,23 @@ impl<T: Storable, M: Memory> VecDeque<T, M> {
             .expect("writing into allocated ring must succeed");
     }
 
+    /// Appends `item` at the back; grows the ring if `len == capacity`.
+    ///
+    /// # Errors
+    ///
+    /// [`GrowFailed`] if stable memory cannot grow.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ic_stable_structures::DefaultMemoryImpl;
+    /// use ic_stable_vec_deque::VecDeque;
+    ///
+    /// let dq = VecDeque::<u64, _>::new(DefaultMemoryImpl::default()).unwrap();
+    /// dq.push_back(&1).unwrap();
+    /// dq.push_back(&2).unwrap();
+    /// assert_eq!(dq.to_vec(), vec![1, 2]);
+    /// ```
     pub fn push_back(&self, item: &T) -> Result<(), GrowFailed> {
         self.grow_if_full()?;
         let len = self.len();
@@ -261,6 +415,23 @@ impl<T: Storable, M: Memory> VecDeque<T, M> {
         Ok(())
     }
 
+    /// Prepends `item` at the front; may grow the ring like [`push_back`](VecDeque::push_back).
+    ///
+    /// # Errors
+    ///
+    /// [`GrowFailed`] if stable memory cannot grow.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ic_stable_structures::DefaultMemoryImpl;
+    /// use ic_stable_vec_deque::VecDeque;
+    ///
+    /// let dq = VecDeque::<u64, _>::new(DefaultMemoryImpl::default()).unwrap();
+    /// dq.push_front(&2).unwrap();
+    /// dq.push_front(&1).unwrap();
+    /// assert_eq!(dq.to_vec(), vec![1, 2]);
+    /// ```
     pub fn push_front(&self, item: &T) -> Result<(), GrowFailed> {
         self.grow_if_full()?;
         let len = self.len();
@@ -274,6 +445,19 @@ impl<T: Storable, M: Memory> VecDeque<T, M> {
         Ok(())
     }
 
+    /// Removes and returns the back element, or `None` if empty.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ic_stable_structures::DefaultMemoryImpl;
+    /// use ic_stable_vec_deque::VecDeque;
+    ///
+    /// let dq = VecDeque::<u64, _>::new(DefaultMemoryImpl::default()).unwrap();
+    /// dq.push_back(&1).unwrap();
+    /// assert_eq!(dq.pop_back(), Some(1));
+    /// assert_eq!(dq.pop_back(), None);
+    /// ```
     pub fn pop_back(&self) -> Option<T> {
         let len = self.len();
         if len == 0 {
@@ -291,6 +475,18 @@ impl<T: Storable, M: Memory> VecDeque<T, M> {
         Some(value)
     }
 
+    /// Removes and returns the front element, or `None` if empty.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ic_stable_structures::DefaultMemoryImpl;
+    /// use ic_stable_vec_deque::VecDeque;
+    ///
+    /// let dq = VecDeque::<u64, _>::new(DefaultMemoryImpl::default()).unwrap();
+    /// dq.push_back(&1).unwrap();
+    /// assert_eq!(dq.pop_front(), Some(1));
+    /// ```
     pub fn pop_front(&self) -> Option<T> {
         let len = self.len();
         if len == 0 {
@@ -309,6 +505,22 @@ impl<T: Storable, M: Memory> VecDeque<T, M> {
         Some(value)
     }
 
+    /// Borrows the deque as a forward iterator over logical order `[0, len)`.
+    ///
+    /// Also implements [`DoubleEndedIterator`] (see [`Iter`]).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ic_stable_structures::DefaultMemoryImpl;
+    /// use ic_stable_vec_deque::VecDeque;
+    ///
+    /// let dq = VecDeque::<u64, _>::new(DefaultMemoryImpl::default()).unwrap();
+    /// dq.push_back(&1).unwrap();
+    /// dq.push_back(&2).unwrap();
+    /// let v: Vec<_> = dq.iter().collect();
+    /// assert_eq!(v, vec![1, 2]);
+    /// ```
     pub fn iter(&self) -> Iter<'_, T, M> {
         Iter {
             deque: self,
@@ -325,6 +537,18 @@ impl<T: Storable, M: Memory> VecDeque<T, M> {
         slot::read_entry_to::<M, T>(&self.memory, self.slot_byte_offset(phys), buf);
     }
 
+    /// Copies all elements into a heap [`Vec`](std::vec::Vec) in logical order.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ic_stable_structures::DefaultMemoryImpl;
+    /// use ic_stable_vec_deque::VecDeque;
+    ///
+    /// let dq = VecDeque::<u64, _>::new(DefaultMemoryImpl::default()).unwrap();
+    /// dq.push_back(&7).unwrap();
+    /// assert_eq!(dq.to_vec(), vec![7]);
+    /// ```
     pub fn to_vec(&self) -> std::vec::Vec<T> {
         self.iter().collect()
     }
@@ -379,6 +603,20 @@ fn read_deque_header<M: Memory>(memory: &M) -> DequeHeaderV1 {
     }
 }
 
+/// Iterator over [`VecDeque`] in logical index order (also [`DoubleEndedIterator`]).
+///
+/// # Example
+///
+/// ```
+/// use ic_stable_structures::DefaultMemoryImpl;
+/// use ic_stable_vec_deque::VecDeque;
+///
+/// let dq = VecDeque::<u64, _>::new(DefaultMemoryImpl::default()).unwrap();
+/// dq.push_back(&1).unwrap();
+/// dq.push_back(&2).unwrap();
+/// let rev: Vec<_> = dq.iter().rev().collect();
+/// assert_eq!(rev, vec![2, 1]);
+/// ```
 pub struct Iter<'a, T, M>
 where
     T: Storable,
@@ -489,7 +727,7 @@ mod tests {
 
     #[test]
     fn mirror_random_ops_u64() {
-        let mem = VectorMemory::default();
+        let mem = ic_stable_structures::DefaultMemoryImpl::default();
         let dq = VecDeque::<u64, _>::new(mem).unwrap();
         let mut std_dq = StdDeque::new();
 
@@ -524,7 +762,7 @@ mod tests {
 
     #[test]
     fn mirror_storable_type() {
-        let mem = VectorMemory::default();
+        let mem = ic_stable_structures::DefaultMemoryImpl::default();
         let dq = VecDeque::<Test, _>::new(mem).unwrap();
         let mut std_dq = StdDeque::new();
         for i in 0..100 {
@@ -540,7 +778,7 @@ mod tests {
 
     #[test]
     fn init_roundtrip() {
-        let mem = VectorMemory::default();
+        let mem = ic_stable_structures::DefaultMemoryImpl::default();
         let mem = {
             let dq = VecDeque::<u64, _>::new(mem).unwrap();
             for i in 0u64..50 {
