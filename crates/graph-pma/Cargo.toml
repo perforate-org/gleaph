@@ -27,6 +27,7 @@ serde.workspace = true
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
+ic-stable-slot-map = { path = "../ic-stable-slot-map" }
 
 [[bench]]
 name = "property_search_hot_path"

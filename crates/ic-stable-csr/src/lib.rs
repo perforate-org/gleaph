@@ -1,4 +1,5 @@
-//! **DGAP**-aligned graph edges on Internet Computer stable memory, plus a plain CSR vertex column **`M_v`**.
+//! **DGAP**-aligned graph edges on Internet Computer stable memory, plus a CSR vertex table **`M_v`**
+//! ([`ic_stable_slot_map::SlotMap`] V1, magic **`SSM`**).
 //!
 //! This crate uses unstable **`specialization`** internally (for optional [`traits::CsrEdgeUndirected`]
 //! checks on directed inserts). Dependent crates do not need to enable the feature.
@@ -13,9 +14,9 @@
 //! horizontal rules, byte sizes (`↕`), and `<- Address 0` on the right.
 //!
 //! ```text
-//! -------------------------------------------------- <- M_v (vertex CSR column)
-//! | [`ic_stable_structures::vec::Vec`] V1 header + element slots (`SVC` magic)      |
-//! --------------------------------------------------
+//! ---------------------------------------- <- M_v (vertex CSR table)
+//! | [`ic_stable_slot_map::SlotMap`] V1 header + slot cells (`SSM` magic)           |
+//! ----------------------------------------
 //!
 //! -------------------------------------------------- <- M_e memory 1 (`segment_edges_actual`)
 //! | V1 mini header `VCA` + `segment_edges_actual` PMA `i64` tree array              |
@@ -69,9 +70,8 @@ pub use ic_stable_structures::vec_mem::VectorMemory;
 pub use ic_stable_structures::{Memory, Storable};
 
 pub use csr::{
-    CsrGraph, CsrGraphError, CsrGraphWithGcQueue, CsrInsertError, CsrVertexColumn, DgapStores,
-    DgapStoresError, GcWorkItem, LogicalNeighborhoodIter, insert_edge_into_slab,
-    insert_edge_into_slab_column,
+    CsrGraph, CsrGraphError, CsrGraphWithGcQueue, CsrInsertError, DgapStores, DgapStoresError,
+    GcWorkItem, LogicalNeighborhoodIter, insert_edge_into_slab, insert_edge_into_slab_column,
 };
 pub use dgap::{DgapEdgeStore, DgapGraphMemories, NeighborhoodIter};
 pub use ic_stable_vec_deque::VecDeque as StableVecDeque;

@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use ic_stable_csr::{
     Bound, CsrEdge, CsrEdgeTombstone, CsrEdgeUndirected, CsrGraphError, CsrGraphWithGcQueue,
-    CsrVertex, CsrVertexColumn, CsrVertexTombstone, Storable, VectorMemory,
+    CsrVertex, CsrVertexTombstone, Storable, VectorMemory,
 };
 
 const DEG_TOMB: u32 = 1u32 << 31;
@@ -182,7 +182,7 @@ fn delete_edge_tombstone_gc_and_degrees() {
         g.graph()
             .forward_dgap()
             .vertices
-            .col_get(0)
+            .get_dense(0)
             .unwrap()
             .degree(),
         1
@@ -191,7 +191,7 @@ fn delete_edge_tombstone_gc_and_degrees() {
         g.graph()
             .reverse_dgap()
             .vertices
-            .col_get(1)
+            .get_dense(1)
             .unwrap()
             .degree(),
         1
@@ -202,7 +202,7 @@ fn delete_edge_tombstone_gc_and_degrees() {
         g.graph()
             .forward_dgap()
             .vertices
-            .col_get(0)
+            .get_dense(0)
             .unwrap()
             .degree(),
         0
@@ -211,7 +211,7 @@ fn delete_edge_tombstone_gc_and_degrees() {
         g.graph()
             .reverse_dgap()
             .vertices
-            .col_get(1)
+            .get_dense(1)
             .unwrap()
             .degree(),
         0
@@ -259,7 +259,7 @@ fn delete_vertex_hides_edges_until_gc() {
         g.graph()
             .forward_dgap()
             .vertices
-            .col_get(1)
+            .get_dense(1)
             .unwrap()
             .degree(),
         1
@@ -269,7 +269,7 @@ fn delete_vertex_hides_edges_until_gc() {
         g.graph()
             .forward_dgap()
             .vertices
-            .col_get(0)
+            .get_dense(0)
             .unwrap()
             .is_tombstone()
     );

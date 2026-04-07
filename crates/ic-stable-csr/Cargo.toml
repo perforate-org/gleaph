@@ -8,5 +8,6 @@ license.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+ic-stable-slot-map = { path = "../ic-stable-slot-map" }
 ic-stable-structures.workspace = true
 ic-stable-vec-deque = { path = "../ic-stable-vec-deque" }

@@ -600,6 +600,66 @@ impl<T: Storable, M: Memory> SlotMap<T, M> {
         }
     }
 
+    /// Dense-index read for layouts that keep indices `0..live_count` occupied (e.g. CSR vertex tables).
+    ///
+    /// Returns `None` if `index as u64 >= `[`len`](Self::len)` or the cell is not occupied.
+    ///
+    /// **Convention:** If the map is only grown via [`insert`](Self::insert) append-style (no [`remove`](Self::remove)
+    /// that frees slots below the logical tail), then `get_dense(i)` matches row `i` for `i < len`.
+    /// Calling [`remove`](Self::remove) can create holes while [`len`](Self::len) drops; mixing that with
+    /// dense access yields inconsistent results.
+    ///
+    /// # Complexity
+    ///
+    /// O(size of `T`) for one cell read/decode.
+    pub fn get_dense(&self, index: u32) -> Option<T> {
+        let n = self.len();
+        if index as u64 >= n {
+            return None;
+        }
+        if index as u64 >= self.slot_capacity() {
+            return None;
+        }
+        match self.read_cell(index) {
+            Occupied { value, .. } => Some(value),
+            Vacant { .. } => None,
+        }
+    }
+
+    /// Dense-index update: overwrites the payload at `index` without changing `generation`.
+    ///
+    /// The slot must be occupied and `index as u64 < `[`len`](Self::len)` (same convention as [`get_dense`](Self::get_dense)).
+    ///
+    /// # Errors
+    ///
+    /// - [`SlotMapError::OutOfRange`] — `index` out of bounds or `index as u64 >= len()`.
+    /// - [`SlotMapError::Vacant`] — slot is not occupied.
+    ///
+    /// # Complexity
+    ///
+    /// O(size of `T`) for read + write of one cell.
+    pub fn set_dense(&self, index: u32, value: &T) -> Result<(), SlotMapError> {
+        let n = self.len();
+        if index as u64 >= self.slot_capacity() {
+            return Err(SlotMapError::OutOfRange);
+        }
+        if index as u64 >= n {
+            return Err(SlotMapError::OutOfRange);
+        }
+        match self.read_cell(index) {
+            Occupied { generation, .. } => {
+                let occ = Occupied {
+                    generation,
+                    value: T::from_bytes(value.to_bytes_checked()),
+                };
+                self.write_cell(index, &occ)
+                    .map_err(|_| SlotMapError::OutOfRange)?;
+                Ok(())
+            }
+            Vacant { .. } => Err(SlotMapError::Vacant),
+        }
+    }
+
     /// Overwrites the value at `key` without changing `generation`.
     ///
     /// The slot must already be occupied with the same generation as `key`.
@@ -895,6 +955,21 @@ mod tests {
         let k = m.insert(&Test { x: 1 }).unwrap();
         m.set(k, &Test { x: 99 }).unwrap();
         assert_eq!(m.get(k), Some(Test { x: 99 }));
+    }
+
+    #[test]
+    fn get_dense_set_dense_append_only() {
+        let m = SlotMap::<u64, _>::new(DefaultMemoryImpl::default()).unwrap();
+        assert_eq!(m.get_dense(0), None);
+        m.insert(&10).unwrap();
+        m.insert(&20).unwrap();
+        assert_eq!(m.get_dense(0), Some(10));
+        assert_eq!(m.get_dense(1), Some(20));
+        assert_eq!(m.get_dense(2), None);
+        m.set_dense(1, &21).unwrap();
+        assert_eq!(m.get_dense(1), Some(21));
+        m.insert(&30).unwrap();
+        assert_eq!(m.get_dense(2), Some(30));
     }
 
     #[test]

@@ -3,7 +3,9 @@
 //! Higher-level orchestration (PMA sync, [`rebalance_decision`](crate::dgap::rebalance_decision),
 //! [`DgapEdgeStore`](crate::dgap::DgapEdgeStore), resize) lives on [`DgapEdgeStore`](crate::dgap::DgapEdgeStore).
 
-use crate::csr::vertex_column::CsrVertexColumn;
+use ic_stable_slot_map::SlotMap;
+use ic_stable_structures::Memory;
+
 use crate::traits::{CsrEdge, CsrVertex};
 
 /// Local failure modes for one insert attempt before resize.
@@ -172,29 +174,32 @@ where
     Ok(())
 }
 
-/// Remove using a [`CsrVertexColumn`] (`StableVec` / [`ic_stable_vec_deque::VecDeque`]).
-pub fn remove_edge_from_slab_column<C, V, E>(
-    col: &C,
+/// Remove using a dense [`SlotMap`] vertex table (same append-only convention as CSR `M_v`).
+pub fn remove_edge_from_slab_column<V, M, E>(
+    col: &SlotMap<V, M>,
     edges: &mut [E],
     v: usize,
     local_index: usize,
     elem_capacity: u64,
 ) -> Result<(), CsrRemoveError>
 where
-    C: CsrVertexColumn<V>,
     V: CsrVertex,
+    M: Memory,
     E: CsrEdge,
 {
-    let n = col.col_len() as usize;
+    let n = col.len() as usize;
     remove_edge_from_slab_inner(
         n,
         v,
         local_index,
         |i| {
-            col.col_get(i as u64)
+            col.get_dense(i as u32)
                 .unwrap_or_else(|| panic!("vertex index {i} out of range for len {n}"))
         },
-        |i, x| col.col_set(i as u64, x),
+        |i, x| {
+            col.set_dense(i as u32, &x)
+                .unwrap_or_else(|e| panic!("vertex set_dense failed: {e:?}"))
+        },
         edges,
         elem_capacity,
     )
@@ -254,28 +259,31 @@ pub fn remove_edge_from_slab<V: CsrVertex, E: CsrEdge>(
     Ok(())
 }
 
-/// Insert using a [`CsrVertexColumn`] (`StableVec` / [`ic_stable_vec_deque::VecDeque`]).
-pub fn insert_edge_into_slab_column<C, V, E>(
-    col: &C,
+/// Insert using a dense [`SlotMap`] vertex table (same append-only convention as CSR `M_v`).
+pub fn insert_edge_into_slab_column<V, M, E>(
+    col: &SlotMap<V, M>,
     edges: &mut [E],
     v: usize,
     edge: E,
     elem_capacity: u64,
 ) -> Result<(), CsrInsertError>
 where
-    C: CsrVertexColumn<V>,
     V: CsrVertex,
+    M: Memory,
     E: CsrEdge,
 {
-    let n = col.col_len() as usize;
+    let n = col.len() as usize;
     insert_edge_into_slab_inner(
         n,
         v,
         |i| {
-            col.col_get(i as u64)
+            col.get_dense(i as u32)
                 .unwrap_or_else(|| panic!("vertex index {i} out of range for len {n}"))
         },
-        |i, x| col.col_set(i as u64, x),
+        |i, x| {
+            col.set_dense(i as u32, &x)
+                .unwrap_or_else(|e| panic!("vertex set_dense failed: {e:?}"))
+        },
         edges,
         edge,
         elem_capacity,

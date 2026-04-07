@@ -40,7 +40,7 @@ pub const DGAP_GC_QUEUE_MEMORY_SLOT: u8 = 225;
 
 /// Builds a tail [`VertexEntry`] for [`ic_stable_csr::DgapStores::insert_vertex`].
 ///
-/// `new_vid` must be [`ic_stable_csr::csr::CsrVertexColumn::col_len`] on `M_v` **before** push.
+/// `new_vid` must equal the logical vertex count on `M_v` (**`SlotMap::len`**, from `ic-stable-slot-map`) **before** `SlotMap::insert`.
 /// `next_base` must be [`ic_stable_csr::DgapEdgeStore::slab_append_base_slot`] on that column.
 /// `segment_size` comes from the `M_e` header; `segment_id` in the packed [`EdgeRef`] is the DGAP
 /// leaf index `new_vid / segment_size` (same convention as [`ic_stable_csr::layout::dgap::dgap_leaf_segment_id`]).

@@ -2,26 +2,25 @@
 //!
 //! ```text
 //! [`DgapStores`]
-//!   ├─ vertices: one `Memory` — usually [`ic_stable_structures::vec::Vec`] V1 on `M_v`
+//!   ├─ vertices: [`ic_stable_slot_map::SlotMap`] V1 on `M_v` (`SSM` magic)
 //!   └─ edges:    [`DgapGraphMemories`] — three `Memory` values for DGAP `M_e` (see crate root diagram)
 //! ```
 
 use std::fmt;
 use std::marker::PhantomData;
 
+use ic_stable_slot_map::SlotMap;
+use ic_stable_structures::Memory;
+
 pub mod csr_graph;
 pub mod csr_graph_gc;
 pub mod gc_work_item;
 pub mod insert;
-pub mod vertex_column;
 
 pub use csr_graph::{CsrGraph, CsrGraphError, LogicalNeighborhoodIter};
 pub use csr_graph_gc::CsrGraphWithGcQueue;
 pub use gc_work_item::{GC_TAG_EDGE_DIRECTED, GC_TAG_EDGE_UNDIRECTED, GC_TAG_VERTEX, GcWorkItem};
 pub use insert::{CsrInsertError, insert_edge_into_slab, insert_edge_into_slab_column};
-pub use vertex_column::CsrVertexColumn;
-
-use ic_stable_structures::Memory;
 
 use crate::dgap::{DgapEdgeStore, DgapGraphMemories};
 use crate::traits::{CsrEdge, CsrVertex};
@@ -42,37 +41,38 @@ impl fmt::Display for DgapStoresError {
 
 impl std::error::Error for DgapStoresError {}
 
-/// Two-way split: vertex column (`M_v`) and DGAP edge bundle (`M_e` = three [`Memory`] regions).
+/// Two-way split: vertex table (`M_v`) and DGAP edge bundle (`M_e` = three [`Memory`] regions).
 ///
-/// `Vs` is typically [`ic_stable_structures::vec::Vec`] or [`ic_stable_vec_deque::VecDeque`].
+/// Vertices live in [`SlotMap`] (`SSM`); use append-only [`SlotMap::insert`] via [`Self::insert_vertex`].
 ///
 /// **Vertex capacity:** at most [`DgapEdgeStore::max_vertex_slots`] rows for the edge header’s
 /// `segment_count` and `segment_size` (`dgap_leaf_segment_id` must stay in range). Size
 /// [`DgapEdgeStore::format_new`](crate::dgap::DgapEdgeStore::format_new) accordingly.
-pub struct DgapStores<V, E, Vs, M1, M2, M3>
+pub struct DgapStores<V, E, Mvs, M1, M2, M3>
 where
     V: CsrVertex,
     E: CsrEdge,
-    Vs: CsrVertexColumn<V>,
+    Mvs: Memory,
     M1: Memory,
     M2: Memory,
     M3: Memory,
 {
-    pub vertices: Vs,
+    pub vertices: SlotMap<V, Mvs>,
     pub edges: DgapEdgeStore<E, M1, M2, M3>,
     _vertex: PhantomData<V>,
 }
 
-impl<V, E, Vs, M1, M2, M3> DgapStores<V, E, Vs, M1, M2, M3>
+impl<V, E, Mvs, M1, M2, M3> DgapStores<V, E, Mvs, M1, M2, M3>
 where
     V: CsrVertex,
     E: CsrEdge,
-    Vs: CsrVertexColumn<V>,
+    Mvs: Memory,
     M1: Memory,
     M2: Memory,
     M3: Memory,
 {
-    pub fn new(vertices: Vs, edges: DgapEdgeStore<E, M1, M2, M3>) -> Self {
+    #[doc(hidden)]
+    pub fn new(vertices: SlotMap<V, Mvs>, edges: DgapEdgeStore<E, M1, M2, M3>) -> Self {
         Self {
             vertices,
             edges,
@@ -116,7 +116,7 @@ where
     /// for the column **before** the push (other fields are taken from `row`). If that tail is not
     /// below `elem_capacity`, [`DgapEdgeStore::resize_double`] is run until there is room.
     ///
-    /// Returns the new vertex id (`vid`) equal to the previous [`CsrVertexColumn::col_len`].
+    /// Returns the new vertex id (`vid`) equal to the previous [`SlotMap::len`](ic_stable_slot_map::SlotMap::len).
     ///
     /// To require a caller-supplied base that already matches the append cursor, use
     /// [`Self::insert_vertex_strict`].
@@ -125,7 +125,7 @@ where
             .edges
             .header()
             .ok_or(DgapStoresError::Graph("bad edge header"))?;
-        let new_vid = self.vertices.col_len();
+        let new_vid = self.vertices.len();
         DgapEdgeStore::<E, M1, M2, M3>::check_vertex_append_cap(
             new_vid,
             h.segment_count,
@@ -149,7 +149,7 @@ where
             .edges
             .header()
             .ok_or(DgapStoresError::Graph("bad edge header"))?;
-        let new_vid = self.vertices.col_len();
+        let new_vid = self.vertices.len();
         DgapEdgeStore::<E, M1, M2, M3>::check_vertex_append_cap(
             new_vid,
             h.segment_count,
@@ -190,7 +190,7 @@ where
         }
 
         self.vertices
-            .col_push_back(&row)
+            .insert(&row)
             .map_err(|_| DgapStoresError::Graph("vertex column grow failed"))?;
 
         self.sync_pma_meta().map_err(DgapStoresError::Graph)?;

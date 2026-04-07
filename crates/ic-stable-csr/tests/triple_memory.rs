@@ -5,13 +5,14 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use ic_stable_csr::{
-    Bound, DgapGraphMemories, DgapStores, StableVec, Storable, VectorMemory,
+    Bound, DgapGraphMemories, DgapStores, Storable, VectorMemory,
     dgap::{DgapEdgeStore, calculate_positions_v1, pma_tree_index},
     layout::dgap::{
         EDGE_REGION_MAGIC, PMA_SEGMENT_EDGES_ACTUAL_MAGIC, PMA_SEGMENT_EDGES_TOTAL_MAGIC,
     },
     traits::{CsrEdge, CsrVertex},
 };
+use ic_stable_slot_map::SlotMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C)]
@@ -124,7 +125,7 @@ fn vertex_and_triple_edge_memories_are_isolated_regions() {
     let m_total: VectorMemory = Rc::new(RefCell::new(Vec::new()));
     let m_edges_log: VectorMemory = Rc::new(RefCell::new(Vec::new()));
 
-    let vertices = StableVec::new(mv.clone());
+    let vertices = SlotMap::new(mv.clone()).unwrap();
     let edges = TestEdgeStore::new(DgapGraphMemories::new(
         m_actual.clone(),
         m_total.clone(),
@@ -132,23 +133,27 @@ fn vertex_and_triple_edge_memories_are_isolated_regions() {
     ));
     edges.format_new(16, 1, 2, 0).expect("format edge region");
 
-    vertices.push(&TestVertex {
-        slot_base: 0,
-        deg: 0,
-        log_head: -1,
-    });
-    vertices.push(&TestVertex {
-        slot_base: 0,
-        deg: 0,
-        log_head: -1,
-    });
+    vertices
+        .insert(&TestVertex {
+            slot_base: 0,
+            deg: 0,
+            log_head: -1,
+        })
+        .unwrap();
+    vertices
+        .insert(&TestVertex {
+            slot_base: 0,
+            deg: 0,
+            log_head: -1,
+        })
+        .unwrap();
 
     let v_bytes = mv.borrow();
     let a_bytes = m_actual.borrow();
     let t_bytes = m_total.borrow();
     let el_bytes = m_edges_log.borrow();
 
-    assert_eq!(&v_bytes[0..3], b"SVC", "StableVec magic on M_v");
+    assert_eq!(&v_bytes[0..3], b"SSM", "SlotMap magic on M_v");
     assert_eq!(
         &a_bytes[0..3],
         PMA_SEGMENT_EDGES_ACTUAL_MAGIC,
@@ -185,19 +190,23 @@ fn pma_tree_index_single_segment() {
 fn dgap_stores_sync_meta() {
     let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
 
-    let vertices = StableVec::new(mv);
+    let vertices = SlotMap::new(mv).unwrap();
     let edges = TestEdgeStore::new(triple_edge_memories());
     edges.format_new(32, 1, 2, 0).unwrap();
-    vertices.push(&TestVertex {
-        slot_base: 0,
-        deg: 1,
-        log_head: -1,
-    });
-    vertices.push(&TestVertex {
-        slot_base: 4,
-        deg: 1,
-        log_head: -1,
-    });
+    vertices
+        .insert(&TestVertex {
+            slot_base: 0,
+            deg: 1,
+            log_head: -1,
+        })
+        .unwrap();
+    vertices
+        .insert(&TestVertex {
+            slot_base: 4,
+            deg: 1,
+            log_head: -1,
+        })
+        .unwrap();
 
     let stores = DgapStores::new(vertices, edges);
     stores.sync_pma_meta().unwrap();

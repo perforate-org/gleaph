@@ -1,6 +1,8 @@
 //! PMA layer for DGAP (segment tree density, `calculate_positions_v1`, `rebalance_weighted`); mirrors reference `graph.h`.
 
-use crate::csr::vertex_column::CsrVertexColumn;
+use ic_stable_slot_map::SlotMap;
+use ic_stable_structures::Memory;
+
 use crate::traits::{CsrEdge, CsrVertex};
 
 /// Upper density at root / leaves (C++ `up_h` / `up_0`).
@@ -354,9 +356,9 @@ pub fn recount_segment_actual_from_degrees<V: CsrVertex>(
     }
 }
 
-/// [`recount_segment_total`] reading vertices through [`CsrVertexColumn`] (no `&[V]` snapshot).
-pub fn recount_segment_total_column<V, C>(
-    col: &C,
+/// [`recount_segment_total`] reading vertices through a dense [`SlotMap`] (no `&[V]` snapshot).
+pub fn recount_segment_total_column<V, M>(
+    col: &SlotMap<V, M>,
     num_vertices: u64,
     segment_count: u32,
     segment_size: u32,
@@ -364,7 +366,7 @@ pub fn recount_segment_total_column<V, C>(
     total: &mut [i64],
 ) where
     V: CsrVertex,
-    C: CsrVertexColumn<V>,
+    M: Memory,
 {
     let nv = num_vertices as usize;
     total.fill(0);
@@ -381,12 +383,12 @@ pub fn recount_segment_total_column<V, C>(
             if ni >= nv {
                 elem_capacity_slots
             } else {
-                col.col_get(ni as u64)
+                col.get_dense(ni as u32)
                     .expect("vertex column get")
                     .base_slot_start()
             }
         };
-        let v0_row = col.col_get(v0 as u64).expect("vertex column get v0");
+        let v0_row = col.get_dense(v0 as u32).expect("vertex column get v0");
         let segment_total_p = next_starter as i64 - v0_row.base_slot_start() as i64;
         let mut j = i + sc;
         while j > 0 && j < total.len() {
@@ -396,16 +398,16 @@ pub fn recount_segment_total_column<V, C>(
     }
 }
 
-/// [`recount_segment_actual_from_degrees`] via [`CsrVertexColumn`].
-pub fn recount_segment_actual_column<V, C>(
-    col: &C,
+/// [`recount_segment_actual_from_degrees`] via a dense [`SlotMap`] vertex table.
+pub fn recount_segment_actual_column<V, M>(
+    col: &SlotMap<V, M>,
     num_vertices: u64,
     segment_count: u32,
     segment_size: u32,
     actual: &mut [i64],
 ) where
     V: CsrVertex,
-    C: CsrVertexColumn<V>,
+    M: Memory,
 {
     let nv = num_vertices as usize;
     let sc = segment_count as usize;
@@ -419,7 +421,10 @@ pub fn recount_segment_actual_column<V, C>(
         let vend = ((i + 1) * segment_size as usize).min(nv);
         let mut sum = 0i64;
         for v in v0..vend {
-            sum += col.col_get(v as u64).expect("vertex column get").degree() as i64;
+            sum += col
+                .get_dense(v as u32)
+                .expect("vertex column get")
+                .degree() as i64;
         }
         let leaf = i + sc;
         if leaf < actual.len() {

@@ -5,9 +5,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use ic_stable_csr::{
-    Bound, DgapEdgeStore, DgapGraphMemories, StableVec, Storable, VectorMemory,
+    Bound, DgapEdgeStore, DgapGraphMemories, Storable, VectorMemory,
     traits::{CsrEdge, CsrVertex},
 };
+use ic_stable_slot_map::SlotMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TV {
@@ -109,15 +110,17 @@ fn triple_edge_memories() -> DgapGraphMemories<VectorMemory, VectorMemory, Vecto
 #[test]
 fn neighborhood_iter_errors_when_edge_stride_exceeds_inline_cap() {
     let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
-    let vertices = StableVec::new(mv);
+    let vertices = SlotMap::new(mv).unwrap();
     let edges = FatEdgeStore::new(triple_edge_memories());
     edges.format_new(8, 1, 8, 0).expect("format");
 
-    vertices.push(&TV {
-        slot_base: 0,
-        deg: 0,
-        log_head: -1,
-    });
+    vertices
+        .insert(&TV {
+            slot_base: 0,
+            deg: 0,
+            log_head: -1,
+        })
+        .unwrap();
 
     assert!(matches!(
         edges.try_neighborhood_iter(&vertices, 0),

@@ -1,7 +1,6 @@
 //! [`CsrGraph`] plus a ninth [`Memory`] backing a persisted [`StableVecDeque`](crate::StableVecDeque) GC work queue.
 
 use ic_stable_structures::Memory;
-use ic_stable_structures::vec::Vec as StableVec;
 
 use crate::StableVecDeque;
 use crate::csr::DgapStoresError;
@@ -9,15 +8,28 @@ use crate::csr::csr_graph::{CsrGraph, CsrGraphError, LogicalNeighborhoodIter};
 use crate::csr::gc_work_item::{
     GC_TAG_EDGE_DIRECTED, GC_TAG_EDGE_UNDIRECTED, GC_TAG_VERTEX, GcWorkItem,
 };
-use crate::csr::vertex_column::CsrVertexColumn;
 use crate::traits::{CsrEdge, CsrEdgeTombstone, CsrEdgeUndirected, CsrVertex, CsrVertexTombstone};
 
+#[inline]
+fn vertex_set_dense<V, M>(
+    map: &ic_stable_slot_map::SlotMap<V, M>,
+    index: usize,
+    row: V,
+) -> Result<(), CsrGraphError>
+where
+    V: CsrVertex,
+    M: Memory,
+{
+    map.set_dense(index as u32, &row)
+        .map_err(|_| CsrGraphError::LogicalMutation("vertex set_dense failed"))
+}
+
 /// Bidirectional CSR with a stable work queue for lazy physical compaction.
-pub struct CsrGraphWithGcQueue<V, E, Vs, F1, F2, F3, R1, R2, R3, QM>
+pub struct CsrGraphWithGcQueue<V, E, Mvs, F1, F2, F3, R1, R2, R3, QM>
 where
     V: CsrVertex,
     E: CsrEdge,
-    Vs: CsrVertexColumn<V>,
+    Mvs: Memory,
     F1: Memory,
     F2: Memory,
     F3: Memory,
@@ -26,15 +38,15 @@ where
     R3: Memory,
     QM: Memory,
 {
-    graph: CsrGraph<V, E, Vs, F1, F2, F3, R1, R2, R3>,
+    graph: CsrGraph<V, E, Mvs, F1, F2, F3, R1, R2, R3>,
     work_queue: StableVecDeque<GcWorkItem, QM>,
 }
 
-impl<V, E, Vs, F1, F2, F3, R1, R2, R3, QM> CsrGraphWithGcQueue<V, E, Vs, F1, F2, F3, R1, R2, R3, QM>
+impl<V, E, Mvs, F1, F2, F3, R1, R2, R3, QM> CsrGraphWithGcQueue<V, E, Mvs, F1, F2, F3, R1, R2, R3, QM>
 where
     V: CsrVertex + CsrVertexTombstone,
     E: CsrEdge + CsrEdgeTombstone,
-    Vs: CsrVertexColumn<V>,
+    Mvs: Memory,
     F1: Memory,
     F2: Memory,
     F3: Memory,
@@ -43,7 +55,7 @@ where
     R3: Memory,
     QM: Memory,
 {
-    pub fn graph(&self) -> &CsrGraph<V, E, Vs, F1, F2, F3, R1, R2, R3> {
+    pub fn graph(&self) -> &CsrGraph<V, E, Mvs, F1, F2, F3, R1, R2, R3> {
         &self.graph
     }
 
@@ -61,7 +73,7 @@ where
         self.graph
             .forward_dgap()
             .vertices
-            .col_get(vid as u64)
+            .get_dense(vid as u32)
             .map(|v| v.is_tombstone())
             .unwrap_or(true)
     }
@@ -133,29 +145,27 @@ where
             return Ok(());
         }
         fwd.edges
-            .tombstone_edge_with_neighbor::<V, Vs>(&fwd.vertices, src, dst)
+            .tombstone_edge_with_neighbor::<V, Mvs>(&fwd.vertices, src, dst)
             .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?;
         rev.edges
-            .tombstone_edge_with_neighbor::<V, Vs>(&rev.vertices, dst, src)
+            .tombstone_edge_with_neighbor::<V, Mvs>(&rev.vertices, dst, src)
             .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?;
         let fs = fwd
             .vertices
-            .col_get(src as u64)
+            .get_dense(src as u32)
             .ok_or(CsrGraphError::VertexOutOfRange {
                 vid: src,
-                len: fwd.vertices.col_len(),
+                len: fwd.vertices.len(),
             })?;
         let rd = rev
             .vertices
-            .col_get(dst as u64)
+            .get_dense(dst as u32)
             .ok_or(CsrGraphError::VertexOutOfRange {
                 vid: dst,
-                len: rev.vertices.col_len(),
+                len: rev.vertices.len(),
             })?;
-        fwd.vertices
-            .col_set(src as u64, fs.with_degree(fs.degree().saturating_sub(1)));
-        rev.vertices
-            .col_set(dst as u64, rd.with_degree(rd.degree().saturating_sub(1)));
+        vertex_set_dense(&fwd.vertices, src, fs.with_degree(fs.degree().saturating_sub(1)))?;
+        vertex_set_dense(&rev.vertices, dst, rd.with_degree(rd.degree().saturating_sub(1)))?;
         self.graph.sync_pma_meta()?;
         self.push_queue(GcWorkItem::edge_directed(src as u32, dst as u32))?;
         Ok(())
@@ -191,29 +201,27 @@ where
             }
             changed = true;
             fwd.edges
-                .tombstone_edge_with_neighbor::<V, Vs>(&fwd.vertices, owner, nb)
+                .tombstone_edge_with_neighbor::<V, Mvs>(&fwd.vertices, owner, nb)
                 .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?;
             rev.edges
-                .tombstone_edge_with_neighbor::<V, Vs>(&rev.vertices, nb, owner)
+                .tombstone_edge_with_neighbor::<V, Mvs>(&rev.vertices, nb, owner)
                 .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?;
             let fs = fwd
                 .vertices
-                .col_get(owner as u64)
+                .get_dense(owner as u32)
                 .ok_or(CsrGraphError::VertexOutOfRange {
                     vid: owner,
-                    len: fwd.vertices.col_len(),
+                    len: fwd.vertices.len(),
                 })?;
             let rd = rev
                 .vertices
-                .col_get(nb as u64)
+                .get_dense(nb as u32)
                 .ok_or(CsrGraphError::VertexOutOfRange {
                     vid: nb,
-                    len: rev.vertices.col_len(),
+                    len: rev.vertices.len(),
                 })?;
-            fwd.vertices
-                .col_set(owner as u64, fs.with_degree(fs.degree().saturating_sub(1)));
-            rev.vertices
-                .col_set(nb as u64, rd.with_degree(rd.degree().saturating_sub(1)));
+            vertex_set_dense(&fwd.vertices, owner, fs.with_degree(fs.degree().saturating_sub(1)))?;
+            vertex_set_dense(&rev.vertices, nb, rd.with_degree(rd.degree().saturating_sub(1)))?;
         }
         self.graph.sync_pma_meta()?;
         if changed {
@@ -243,13 +251,12 @@ where
             }
             let ru = rev
                 .vertices
-                .col_get(u as u64)
+                .get_dense(u as u32)
                 .ok_or(CsrGraphError::VertexOutOfRange {
                     vid: u,
-                    len: rev.vertices.col_len(),
+                    len: rev.vertices.len(),
                 })?;
-            rev.vertices
-                .col_set(u as u64, ru.with_degree(ru.degree().saturating_sub(1)));
+            vertex_set_dense(&rev.vertices, u, ru.with_degree(ru.degree().saturating_sub(1)))?;
         }
         let in_raw = rev
             .edges
@@ -265,18 +272,17 @@ where
             }
             let fu = fwd
                 .vertices
-                .col_get(u as u64)
+                .get_dense(u as u32)
                 .ok_or(CsrGraphError::VertexOutOfRange {
                     vid: u,
-                    len: fwd.vertices.col_len(),
+                    len: fwd.vertices.len(),
                 })?;
-            fwd.vertices
-                .col_set(u as u64, fu.with_degree(fu.degree().saturating_sub(1)));
+            vertex_set_dense(&fwd.vertices, u, fu.with_degree(fu.degree().saturating_sub(1)))?;
         }
-        let fv = fwd.vertices.col_get(vid as u64).unwrap();
-        let rv = rev.vertices.col_get(vid as u64).unwrap();
-        fwd.vertices.col_set(vid as u64, fv.with_tombstone(true));
-        rev.vertices.col_set(vid as u64, rv.with_tombstone(true));
+        let fv = fwd.vertices.get_dense(vid as u32).unwrap();
+        let rv = rev.vertices.get_dense(vid as u32).unwrap();
+        vertex_set_dense(&fwd.vertices, vid, fv.with_tombstone(true))?;
+        vertex_set_dense(&rev.vertices, vid, rv.with_tombstone(true))?;
         self.graph.sync_pma_meta()?;
         self.push_queue(GcWorkItem::vertex_delete(vid as u64))?;
         Ok(())
@@ -285,14 +291,14 @@ where
     pub fn out_edges_logical<'a>(
         &'a self,
         vid: usize,
-    ) -> Result<LogicalNeighborhoodIter<'a, E, Vs, V, F1, F2, F3>, CsrGraphError> {
+    ) -> Result<LogicalNeighborhoodIter<'a, E, V, Mvs, F1, F2, F3>, CsrGraphError> {
         self.graph.out_edges_logical(vid)
     }
 
     pub fn in_edges_logical<'a>(
         &'a self,
         vid: usize,
-    ) -> Result<LogicalNeighborhoodIter<'a, E, Vs, V, R1, R2, R3>, CsrGraphError> {
+    ) -> Result<LogicalNeighborhoodIter<'a, E, V, Mvs, R1, R2, R3>, CsrGraphError> {
         self.graph.in_edges_logical(vid)
     }
 
@@ -335,7 +341,7 @@ where
         let rev = g.reverse_dgap();
         let fi = fwd
             .edges
-            .neighbor_local_index::<V, Vs>(&fwd.vertices, src, dst)
+            .neighbor_local_index::<V, Mvs>(&fwd.vertices, src, dst)
             .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?;
         if fi.is_none() {
             return Ok(true);
@@ -348,10 +354,10 @@ where
         let stride = h.edge_stride;
         let base = fwd
             .vertices
-            .col_get(src as u64)
+            .get_dense(src as u32)
             .ok_or(CsrGraphError::VertexOutOfRange {
                 vid: src,
-                len: fwd.vertices.col_len(),
+                len: fwd.vertices.len(),
             })?
             .base_slot_start();
         let e = fwd.edges.read_slot(stride, base.saturating_add(i as u64));
@@ -361,17 +367,17 @@ where
             ));
         }
         fwd.edges
-            .remove_slab_edge_at_local_index_physically::<V, Vs>(&fwd.vertices, src, i)
+            .remove_slab_edge_at_local_index_physically::<V, Mvs>(&fwd.vertices, src, i)
             .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?;
         let j = rev
             .edges
-            .neighbor_local_index::<V, Vs>(&rev.vertices, dst, src)
+            .neighbor_local_index::<V, Mvs>(&rev.vertices, dst, src)
             .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?
             .ok_or(CsrGraphError::LogicalMutation(
                 "gc: reverse edge missing after forward remove",
             ))?;
         rev.edges
-            .remove_slab_edge_at_local_index_physically::<V, Vs>(&rev.vertices, dst, j)
+            .remove_slab_edge_at_local_index_physically::<V, Mvs>(&rev.vertices, dst, j)
             .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?;
         Ok(true)
     }
@@ -404,7 +410,7 @@ where
         let rev = g.reverse_dgap();
         let fi = fwd
             .edges
-            .neighbor_local_index::<V, Vs>(&fwd.vertices, src, dst)
+            .neighbor_local_index::<V, Mvs>(&fwd.vertices, src, dst)
             .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?;
         let Some(i) = fi else {
             return Ok(false);
@@ -416,10 +422,10 @@ where
         let stride = h.edge_stride;
         let base = fwd
             .vertices
-            .col_get(src as u64)
+            .get_dense(src as u32)
             .ok_or(CsrGraphError::VertexOutOfRange {
                 vid: src,
-                len: fwd.vertices.col_len(),
+                len: fwd.vertices.len(),
             })?
             .base_slot_start();
         let e = fwd.edges.read_slot(stride, base.saturating_add(i as u64));
@@ -427,17 +433,17 @@ where
             return Ok(false);
         }
         fwd.edges
-            .remove_slab_edge_at_local_index_physically::<V, Vs>(&fwd.vertices, src, i)
+            .remove_slab_edge_at_local_index_physically::<V, Mvs>(&fwd.vertices, src, i)
             .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?;
         let j = rev
             .edges
-            .neighbor_local_index::<V, Vs>(&rev.vertices, dst, src)
+            .neighbor_local_index::<V, Mvs>(&rev.vertices, dst, src)
             .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?
             .ok_or(CsrGraphError::LogicalMutation(
                 "gc: reverse edge missing after forward remove",
             ))?;
         rev.edges
-            .remove_slab_edge_at_local_index_physically::<V, Vs>(&rev.vertices, dst, j)
+            .remove_slab_edge_at_local_index_physically::<V, Mvs>(&rev.vertices, dst, j)
             .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?;
         Ok(true)
     }
@@ -450,7 +456,7 @@ where
         let g = &self.graph;
         let fwd = g.forward_dgap();
         let rev = g.reverse_dgap();
-        let fd = fwd.vertices.col_get(vid as u64).unwrap().degree();
+        let fd = fwd.vertices.get_dense(vid as u32).unwrap().degree();
         if fd > 0 {
             let edges = fwd
                 .edges
@@ -458,20 +464,20 @@ where
                 .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?;
             let dst = edges[0].neighbor_vid();
             fwd.edges
-                .remove_slab_edge_at_local_index_physically::<V, Vs>(&fwd.vertices, vid, 0)
+                .remove_slab_edge_at_local_index_physically::<V, Mvs>(&fwd.vertices, vid, 0)
                 .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?;
             if let Some(j) = rev
                 .edges
-                .neighbor_local_index::<V, Vs>(&rev.vertices, dst, vid)
+                .neighbor_local_index::<V, Mvs>(&rev.vertices, dst, vid)
                 .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?
             {
                 rev.edges
-                    .remove_slab_edge_at_local_index_physically::<V, Vs>(&rev.vertices, dst, j)
+                    .remove_slab_edge_at_local_index_physically::<V, Mvs>(&rev.vertices, dst, j)
                     .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?;
             }
             return Ok(false);
         }
-        let rd = rev.vertices.col_get(vid as u64).unwrap().degree();
+        let rd = rev.vertices.get_dense(vid as u32).unwrap().degree();
         if rd > 0 {
             let edges = rev
                 .edges
@@ -479,15 +485,15 @@ where
                 .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?;
             let src = edges[0].neighbor_vid();
             rev.edges
-                .remove_slab_edge_at_local_index_physically::<V, Vs>(&rev.vertices, vid, 0)
+                .remove_slab_edge_at_local_index_physically::<V, Mvs>(&rev.vertices, vid, 0)
                 .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?;
             if let Some(j) = fwd
                 .edges
-                .neighbor_local_index::<V, Vs>(&fwd.vertices, src, vid)
+                .neighbor_local_index::<V, Mvs>(&fwd.vertices, src, vid)
                 .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?
             {
                 fwd.edges
-                    .remove_slab_edge_at_local_index_physically::<V, Vs>(&fwd.vertices, src, j)
+                    .remove_slab_edge_at_local_index_physically::<V, Mvs>(&fwd.vertices, src, j)
                     .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?;
             }
             return Ok(false);
@@ -496,7 +502,7 @@ where
     }
 }
 
-impl<V, E, M, QM> CsrGraphWithGcQueue<V, E, StableVec<V, M>, M, M, M, M, M, M, QM>
+impl<V, E, M, QM> CsrGraphWithGcQueue<V, E, M, M, M, M, M, M, M, QM>
 where
     V: CsrVertex + CsrVertexTombstone,
     E: CsrEdge + CsrEdgeTombstone,
