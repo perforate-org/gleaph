@@ -42,7 +42,7 @@ pub const EDGE_REGION_MAGIC: &[u8; 3] = b"VCE";
 pub const EDGE_REGION_VERSION: u8 = 4;
 pub const EDGE_HEADER_SIZE: u64 = 64;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DgapEdgeHeaderV1 {
     pub elem_capacity: u64,
     pub segment_count: u32,

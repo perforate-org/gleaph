@@ -58,7 +58,7 @@ fn rightmost_occupied_end_inner<V: CsrVertex, G: FnMut(usize) -> V>(n: usize, ge
 }
 
 /// Insert using random-access getters/setters (no full `Vec<V>` snapshot).
-pub fn insert_edge_into_slab_inner<V: CsrVertex, E: CsrEdgeSlot + Clone, G, S>(
+pub fn insert_edge_into_slab_inner<V: CsrVertex, E: CsrEdgeSlot, G, S>(
     n: usize,
     v: usize,
     mut get: G,
@@ -105,7 +105,7 @@ where
     let ip = insert_pos as usize;
     let rm = rmax as usize;
     for s in (ip..=rm).rev() {
-        edges[s + 1] = edges[s].clone();
+        edges[s + 1] = edges[s];
     }
     edges[ip] = edge;
 
@@ -120,7 +120,7 @@ where
 }
 
 /// Remove one edge at `local_index` within `v`'s adjacency list (inverse of [`insert_edge_into_slab_inner`] slide rules).
-pub fn remove_edge_from_slab_inner<V: CsrVertex, E: CsrEdgeSlot + Clone, G, S>(
+pub fn remove_edge_from_slab_inner<V: CsrVertex, E: CsrEdgeSlot, G, S>(
     n: usize,
     v: usize,
     local_index: usize,
@@ -159,7 +159,7 @@ where
     let end = occ_end as usize;
     let rp = remove_pos as usize;
     for s in rp..end.saturating_sub(1) {
-        edges[s] = edges[s + 1].clone();
+        edges[s] = edges[s + 1];
     }
 
     for j in 0..n {
@@ -183,7 +183,7 @@ pub fn remove_edge_from_slab_column<C, V, E>(
 where
     C: CsrVertexColumn<V>,
     V: CsrVertex,
-    E: CsrEdgeSlot + Clone,
+    E: CsrEdgeSlot,
 {
     let n = col.col_len() as usize;
     remove_edge_from_slab_inner(
@@ -201,7 +201,7 @@ where
 }
 
 /// Test / bench helper: contiguous `&mut [V]` without a column type.
-pub fn remove_edge_from_slab<V: CsrVertex, E: CsrEdgeSlot + Clone>(
+pub fn remove_edge_from_slab<V: CsrVertex, E: CsrEdgeSlot>(
     vertices: &mut [V],
     edges: &mut [E],
     v: usize,
@@ -241,7 +241,7 @@ pub fn remove_edge_from_slab<V: CsrVertex, E: CsrEdgeSlot + Clone>(
     let end = occ_end as usize;
     let rp = remove_pos as usize;
     for s in rp..end.saturating_sub(1) {
-        edges[s] = edges[s + 1].clone();
+        edges[s] = edges[s + 1];
     }
 
     for j in 0..n {
@@ -265,7 +265,7 @@ pub fn insert_edge_into_slab_column<C, V, E>(
 where
     C: CsrVertexColumn<V>,
     V: CsrVertex,
-    E: CsrEdgeSlot + Clone,
+    E: CsrEdgeSlot,
 {
     let n = col.col_len() as usize;
     insert_edge_into_slab_inner(
@@ -283,7 +283,7 @@ where
 }
 
 /// Test / bench helper: contiguous `&mut [V]` without a column type.
-pub fn insert_edge_into_slab<V: CsrVertex, E: CsrEdgeSlot + Clone>(
+pub fn insert_edge_into_slab<V: CsrVertex, E: CsrEdgeSlot>(
     vertices: &mut [V],
     edges: &mut [E],
     v: usize,
@@ -334,7 +334,7 @@ pub fn insert_edge_into_slab<V: CsrVertex, E: CsrEdgeSlot + Clone>(
     let ip = insert_pos as usize;
     let rm = rmax as usize;
     for s in (ip..=rm).rev() {
-        edges[s + 1] = edges[s].clone();
+        edges[s + 1] = edges[s];
     }
     edges[ip] = edge;
 

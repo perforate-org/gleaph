@@ -104,7 +104,7 @@ pub fn calculate_positions_v1_window(
     out
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RebalanceDecision {
     Noop,
     RebalanceWindow {

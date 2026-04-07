@@ -20,7 +20,9 @@ pub trait CsrVertex: Storable + Copy {
 }
 
 /// One fixed-width edge slot in the CSR edge slab (`M_e`).
-pub trait CsrEdgeSlot: Copy + Clone {
+///
+/// Hot paths use a **64-byte stack buffer** when `EDGE_BYTES <= 64`; larger widths still work via heap.
+pub trait CsrEdgeSlot: Copy {
     const EDGE_BYTES: usize;
     fn read_from(bytes: &[u8]) -> Self;
     fn write_to(self, bytes: &mut [u8]);

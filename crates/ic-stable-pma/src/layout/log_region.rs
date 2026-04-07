@@ -38,7 +38,7 @@ pub const LOG_HEADER_SIZE: u64 = 64;
 const OFFSET_APPEND_TAIL: u64 = 8;
 const OFFSET_RECORD_COUNT: u64 = 16;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LogRegionHeaderV1 {
     /// Byte offset in `M_l` where next record starts (>= LOG_HEADER_SIZE).
     pub append_tail: u64,

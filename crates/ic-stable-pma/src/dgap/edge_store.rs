@@ -105,10 +105,24 @@ impl<E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> DgapEdgeStore<E, M1, M2
     }
 
     fn read_log_entry(&self, h: &DgapEdgeHeaderV1, leaf_seg: u32, idx: u32) -> (i32, i32, E) {
-        let (prev, src, eb) = self
-            .mem
-            .read_log_entry_raw(h, leaf_seg, idx, E::EDGE_BYTES);
-        (prev, src, E::read_from(&eb))
+        const MAX_INLINE_EDGE: usize = 64;
+        let eb_len = E::EDGE_BYTES;
+        if eb_len <= MAX_INLINE_EDGE {
+            let mut eb = [0u8; MAX_INLINE_EDGE];
+            let (prev, src) = self.mem.read_log_entry_raw_into(
+                h,
+                leaf_seg,
+                idx,
+                &mut eb[..eb_len],
+            );
+            (prev, src, E::read_from(&eb[..eb_len]))
+        } else {
+            let mut eb = vec![0u8; eb_len];
+            let (prev, src) = self
+                .mem
+                .read_log_entry_raw_into(h, leaf_seg, idx, &mut eb);
+            (prev, src, E::read_from(&eb))
+        }
     }
 
     fn write_log_entry(
@@ -120,10 +134,19 @@ impl<E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> DgapEdgeStore<E, M1, M2
         src_vid: i32,
         edge: E,
     ) -> Result<(), GrowFailed> {
-        let mut eb = vec![0u8; E::EDGE_BYTES];
-        edge.write_to(&mut eb);
-        self.mem
-            .write_log_entry_raw(h, leaf_seg, idx, prev, src_vid, &eb)
+        const MAX_INLINE_EDGE: usize = 64;
+        let n = E::EDGE_BYTES;
+        if n <= MAX_INLINE_EDGE {
+            let mut eb = [0u8; MAX_INLINE_EDGE];
+            edge.write_to(&mut eb[..n]);
+            self.mem
+                .write_log_entry_raw(h, leaf_seg, idx, prev, src_vid, &eb[..n])
+        } else {
+            let mut eb = vec![0u8; n];
+            edge.write_to(&mut eb);
+            self.mem
+                .write_log_entry_raw(h, leaf_seg, idx, prev, src_vid, &eb)
+        }
     }
 
     fn release_log_segment(&self, h: &DgapEdgeHeaderV1, leaf_seg: u32) -> Result<(), GrowFailed> {
@@ -173,7 +196,6 @@ impl<E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> DgapEdgeStore<E, M1, M2
     where
         V: CsrVertex,
         C: CsrVertexColumn<V>,
-        E: Clone,
     {
         self.collect_out_edges(col, vid)
     }
@@ -183,7 +205,6 @@ impl<E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> DgapEdgeStore<E, M1, M2
     where
         V: CsrVertex,
         C: CsrVertexColumn<V>,
-        E: Clone,
     {
         let h = self.header().ok_or("bad edge header")?;
         let n = col.col_len() as usize;
@@ -200,7 +221,6 @@ impl<E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> DgapEdgeStore<E, M1, M2
             out.push(self.read_slot(h.edge_stride, base + i as u64));
         }
         let mut remaining = d - n_slab;
-        let h_copy = h.clone();
         let mut log_i = v.log_head();
         let leaf = dgap_leaf_segment_id(vid, h.segment_size);
         while remaining > 0 {
@@ -208,7 +228,7 @@ impl<E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> DgapEdgeStore<E, M1, M2
                 return Err("log chain short");
             }
             let li = log_i as u32;
-            let (prev, _src, e) = self.read_log_entry(&h_copy, leaf, li);
+            let (prev, _src, e) = self.read_log_entry(&h, leaf, li);
             out.push(e);
             log_i = prev;
             remaining -= 1;
@@ -247,9 +267,8 @@ impl<E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> DgapEdgeStore<E, M1, M2
         end_vertex: usize,
     ) -> Result<(), &'static str>
     where
-        V: CsrVertex + Copy,
+        V: CsrVertex,
         C: CsrVertexColumn<V>,
-        E: Clone + Copy,
     {
         let h = self.header().ok_or("bad edge header")?;
         let n = col.col_len() as usize;
@@ -306,9 +325,8 @@ impl<E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> DgapEdgeStore<E, M1, M2
         pma_idx: usize,
     ) -> Result<(), &'static str>
     where
-        V: CsrVertex + Copy,
+        V: CsrVertex,
         C: CsrVertexColumn<V>,
-        E: CsrEdgeSlot + Clone + Copy,
     {
         self.merge_logs_into_slab_for_window(col, start_vertex, end_vertex)?;
         let h = self.header().ok_or("bad edge header")?;
@@ -371,9 +389,8 @@ impl<E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> DgapEdgeStore<E, M1, M2
 
     pub fn resize_double<V, C>(&self, col: &C) -> Result<(), &'static str>
     where
-        V: CsrVertex + Copy,
+        V: CsrVertex,
         C: CsrVertexColumn<V>,
-        E: Clone + Copy,
     {
         let h = self.header().ok_or("bad edge header")?;
         let old_cap = h.elem_capacity;
@@ -393,7 +410,7 @@ impl<E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> DgapEdgeStore<E, M1, M2
         }
         let h2 = DgapEdgeHeaderV1 {
             elem_capacity: new_cap,
-            ..h.clone()
+            ..h
         };
         let need = required_edges_and_log_bytes(&h2);
         self.mem
@@ -454,9 +471,8 @@ impl<E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> DgapEdgeStore<E, M1, M2
         edge: E,
     ) -> Result<(), &'static str>
     where
-        V: CsrVertex + Copy,
+        V: CsrVertex,
         C: CsrVertexColumn<V>,
-        E: Copy,
     {
         let h = self.header().ok_or("bad edge header")?;
         let leaf = dgap_leaf_segment_id(vid, h.segment_size);
@@ -482,9 +498,8 @@ impl<E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> DgapEdgeStore<E, M1, M2
 
     fn dgap_insert_once<V, C>(&self, col: &C, vid: usize, edge: E) -> Result<(), &'static str>
     where
-        V: CsrVertex + Copy,
+        V: CsrVertex,
         C: CsrVertexColumn<V>,
-        E: Copy,
     {
         let h = self.header().ok_or("bad edge header")?;
         let n = col.col_len() as usize;
@@ -517,9 +532,8 @@ impl<E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> DgapEdgeStore<E, M1, M2
         edge: E,
     ) -> Result<(), &'static str>
     where
-        V: CsrVertex + Copy,
+        V: CsrVertex,
         C: CsrVertexColumn<V>,
-        E: Clone + Copy,
     {
         const MAX_TRIES: usize = 64;
         for _try in 0..MAX_TRIES {
@@ -566,9 +580,8 @@ impl<E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> DgapEdgeStore<E, M1, M2
 
     pub(crate) fn maintain_rebalance_loop<V, C>(&self, col: &C, vid: usize) -> Result<(), &'static str>
     where
-        V: CsrVertex + Copy,
+        V: CsrVertex,
         C: CsrVertexColumn<V>,
-        E: Clone + Copy,
     {
         for _ in 0..32 {
             let h = self.header().ok_or("bad header")?;

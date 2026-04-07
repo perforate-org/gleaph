@@ -89,11 +89,7 @@ where
     }
 
     /// Insert one edge for `vid` (CSR slab or DGAP segment log) and run PMA maintenance.
-    pub fn insert_edge(&self, vid: usize, edge: E) -> Result<(), DgapStoresError>
-    where
-        E: Clone + Copy,
-        V: Copy,
-    {
+    pub fn insert_edge(&self, vid: usize, edge: E) -> Result<(), DgapStoresError> {
         self.edges
             .insert_edge_and_maintain(&self.vertices, vid, edge)
             .map_err(DgapStoresError::Graph)
@@ -106,11 +102,7 @@ where
     /// below `elem_capacity`, [`DgapEdgeStore::resize_double`] is run until there is room.
     ///
     /// Returns the new vertex id (`vid`) equal to the previous [`CsrVertexColumn::col_len`].
-    pub fn insert_vertex(&self, row: V) -> Result<u64, DgapStoresError>
-    where
-        E: Clone + Copy,
-        V: Copy,
-    {
+    pub fn insert_vertex(&self, row: V) -> Result<u64, DgapStoresError> {
         let h = self
             .edges
             .header()

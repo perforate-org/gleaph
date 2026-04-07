@@ -94,19 +94,19 @@ impl<M1: Memory, M2: Memory, M3: Memory> DgapGraphMemories<M1, M2, M3> {
         write_log_segment_idx(&self.edges_and_log_segment, h, leaf_seg, v);
     }
 
-    pub fn read_log_entry_raw(
+    /// Reads `prev`, `src`, and the edge payload into `edge_out` (length must equal `edge_bytes`).
+    pub fn read_log_entry_raw_into(
         &self,
         h: &DgapEdgeHeaderV1,
         leaf_seg: u32,
         entry_idx: u32,
-        edge_bytes: usize,
-    ) -> (i32, i32, Vec<u8>) {
+        edge_out: &mut [u8],
+    ) -> (i32, i32) {
         let off = log_entry_offset(h, leaf_seg, entry_idx);
         let prev = read_i32_le(&self.edges_and_log_segment, off);
         let src = read_i32_le(&self.edges_and_log_segment, off + 4);
-        let mut eb = vec![0u8; edge_bytes];
-        self.edges_and_log_segment.read(off + 8, &mut eb);
-        (prev, src, eb)
+        self.edges_and_log_segment.read(off + 8, edge_out);
+        (prev, src)
     }
 
     pub fn write_log_entry_raw(
