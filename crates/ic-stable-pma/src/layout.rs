@@ -11,8 +11,10 @@ pub mod log_region;
 
 pub use dgap::{
     required_edges_and_log_bytes, required_segment_edges_actual_bytes,
-    required_segment_edges_total_bytes, DgapEdgeHeaderV1, EDGE_REGION_MAGIC, EDGE_REGION_VERSION,
-    EDGE_PAYLOAD_HEADER_SIZE, PMA_SEGMENT_EDGES_ACTUAL_MAGIC, PMA_SEGMENT_EDGES_TOTAL_MAGIC,
+    required_segment_edges_total_bytes, DgapEdgeHeaderV1, DgapSuggestedFormat, EDGE_REGION_MAGIC,
+    EDGE_REGION_VERSION, EDGE_PAYLOAD_HEADER_SIZE, PMA_SEGMENT_EDGES_ACTUAL_MAGIC,
+    PMA_SEGMENT_EDGES_TOTAL_MAGIC, SUGGESTED_ELEM_CAPACITY_MULTIPLIER, SUGGESTED_MIN_ELEM_CAPACITY,
+    suggested_format,
 };
 pub use log_region::{
     append_record, init_empty_log_region, LogRegionHeaderV1, LOG_HEADER_SIZE, LOG_REGION_MAGIC,

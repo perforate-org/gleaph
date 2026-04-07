@@ -41,6 +41,10 @@
 //! from the edge store’s append cursor; use [`DgapStores::insert_vertex_strict`] to require a matching
 //! caller-supplied base). Subject to [`DgapEdgeStore::max_vertex_slots`] for the formatted
 //! `segment_count` / `segment_size`.
+//!
+//! **New `M_e` layout:** [`layout::suggested_format`] / [`layout::DgapSuggestedFormat`] propose
+//! `elem_capacity`, `segment_count`, and `segment_size` for [`DgapEdgeStore::format_new`] (heuristic;
+//! see that type’s docs for `tree_height` and log-pool limits not included).
 
 pub mod csr;
 pub mod dgap;

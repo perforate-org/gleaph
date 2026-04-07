@@ -24,6 +24,7 @@
 mod edges_and_log;
 mod header;
 mod segment_arrays;
+mod suggested_format;
 
 pub use edges_and_log::{
     dgap_log_entry_stride, edge_slab_slot_offset, log_entry_offset, log_idx_base, log_pool_base,
@@ -40,4 +41,8 @@ pub use segment_arrays::{
     write_actual, write_segment_edges_actual_region_header, write_segment_edges_total_region_header,
     write_total, PMA_REGION_HEADER_SIZE, PMA_REGION_VERSION, PMA_SEGMENT_EDGES_ACTUAL_MAGIC,
     PMA_SEGMENT_EDGES_TOTAL_MAGIC,
+};
+pub use suggested_format::{
+    suggested_format, DgapSuggestedFormat, SUGGESTED_ELEM_CAPACITY_MULTIPLIER,
+    SUGGESTED_MIN_ELEM_CAPACITY,
 };
