@@ -1,0 +1,116 @@
+//! `try_neighborhood_iter` rejects edge strides above the 64-byte inline cap.
+
+use std::borrow::Cow;
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use ic_stable_pma::{
+    traits::{CsrEdgeSlot, CsrVertex},
+    Bound, DgapEdgeStore, DgapGraphMemories, StableVec, Storable, VectorMemory,
+};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TV {
+    slot_base: u64,
+    deg: u32,
+    log_head: i32,
+}
+
+impl CsrVertex for TV {
+    fn base_slot_start(&self) -> u64 {
+        self.slot_base
+    }
+    fn degree(&self) -> u32 {
+        self.deg
+    }
+    fn with_base_slot_start(self, start: u64) -> Self {
+        Self {
+            slot_base: start,
+            ..self
+        }
+    }
+    fn with_degree(self, degree: u32) -> Self {
+        Self {
+            deg: degree,
+            ..self
+        }
+    }
+    fn log_head(self) -> i32 {
+        self.log_head
+    }
+    fn with_log_head(self, idx: i32) -> Self {
+        Self {
+            log_head: idx,
+            ..self
+        }
+    }
+}
+
+impl Storable for TV {
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        let mut b = [0u8; 16];
+        b[0..8].copy_from_slice(&self.slot_base.to_le_bytes());
+        b[8..12].copy_from_slice(&self.deg.to_le_bytes());
+        b[12..16].copy_from_slice(&self.log_head.to_le_bytes());
+        Cow::Owned(b.to_vec())
+    }
+    fn into_bytes(self) -> Vec<u8> {
+        self.to_bytes().into_owned()
+    }
+    fn from_bytes(bytes: Cow<[u8]>) -> Self {
+        let s = bytes.as_ref();
+        Self {
+            slot_base: u64::from_le_bytes(s[0..8].try_into().unwrap()),
+            deg: u32::from_le_bytes(s[8..12].try_into().unwrap()),
+            log_head: i32::from_le_bytes(s[12..16].try_into().unwrap()),
+        }
+    }
+    const BOUND: Bound = Bound::Bounded {
+        max_size: 16,
+        is_fixed_size: true,
+    };
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TEFat([u8; 65]);
+
+impl CsrEdgeSlot for TEFat {
+    const EDGE_BYTES: usize = 65;
+
+    fn read_from(bytes: &[u8]) -> Self {
+        Self(bytes.try_into().unwrap())
+    }
+
+    fn write_to(self, bytes: &mut [u8]) {
+        bytes.copy_from_slice(&self.0);
+    }
+}
+
+type FatEdgeStore = DgapEdgeStore<TEFat, VectorMemory, VectorMemory, VectorMemory>;
+
+fn triple_edge_memories() -> DgapGraphMemories<VectorMemory, VectorMemory, VectorMemory> {
+    DgapGraphMemories::new(
+        Rc::new(RefCell::new(Vec::new())),
+        Rc::new(RefCell::new(Vec::new())),
+        Rc::new(RefCell::new(Vec::new())),
+    )
+}
+
+#[test]
+fn neighborhood_iter_errors_when_edge_stride_exceeds_inline_cap() {
+    let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+    let vertices = StableVec::new(mv);
+    let edges = FatEdgeStore::new(triple_edge_memories());
+    edges.format_new(8, 1, 8, 0).expect("format");
+
+    vertices.push(&TV {
+        slot_base: 0,
+        deg: 0,
+        log_head: -1,
+    });
+
+    assert!(matches!(
+        edges.try_neighborhood_iter(&vertices, 0),
+        Err("neighborhood iter: edge stride too large for inline buffer")
+    ));
+}

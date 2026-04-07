@@ -20,6 +20,9 @@ use crate::traits::{CsrEdgeSlot, CsrVertex};
 use crate::dgap::dgap_graph_memories::DgapGraphMemories;
 use crate::dgap::pma_meta::{rebalance_decision, RebalanceDecision};
 
+/// Stack / inline scratch cap for edge bytes (slab read, log entry payload, [`NeighborhoodIter`]).
+const MAX_INLINE_EDGE: usize = 64;
+
 /// Lazy outgoing neighborhood in DGAP `Neighborhood` order: contiguous **on-segment** slab slots,
 /// then overflow **log** chain (same walk as C++ `CSRGraph::Neighborhood` / [`DgapEdgeStore::collect_out_edges`]).
 ///
@@ -38,6 +41,7 @@ pub struct NeighborhoodIter<'a, E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memo
     log_i: i32,
     log_remaining: usize,
     remaining: usize,
+    scratch: [u8; MAX_INLINE_EDGE],
 }
 
 impl<'a, E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> Iterator
@@ -50,9 +54,13 @@ impl<'a, E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> Iterator
             return None;
         }
         if self.slab_cursor < self.n_slab {
-            let e = self
-                .store
-                .read_slot(self.stride, self.base + self.slab_cursor as u64);
+            let stride = self.stride as usize;
+            self.store.read_slot_into(
+                self.stride,
+                self.base + self.slab_cursor as u64,
+                &mut self.scratch[..stride],
+            );
+            let e = E::read_from(&self.scratch[..stride]);
             self.slab_cursor += 1;
             self.remaining -= 1;
             return Some(Ok(e));
@@ -67,7 +75,14 @@ impl<'a, E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> Iterator
             return Some(Err("log chain short"));
         }
         let li = self.log_i as u32;
-        let (prev, _src, e) = self.store.read_log_entry(&self.h, self.leaf, li);
+        let eb_len = E::EDGE_BYTES;
+        let (prev, _src) = self.store.read_log_entry_into(
+            &self.h,
+            self.leaf,
+            li,
+            &mut self.scratch[..eb_len],
+        );
+        let e = E::read_from(&self.scratch[..eb_len]);
         self.log_i = prev;
         self.log_remaining -= 1;
         self.remaining -= 1;
@@ -141,10 +156,24 @@ impl<E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> DgapEdgeStore<E, M1, M2
         self.mem.read_header()
     }
 
+    /// Read one slab slot into `out`. Requires `out.len() >= edge_stride`.
+    pub fn read_slot_into(&self, edge_stride: u32, slot: u64, out: &mut [u8]) {
+        let n = edge_stride as usize;
+        debug_assert!(out.len() >= n);
+        self.mem.read_edge_slab(edge_stride, slot, &mut out[..n]);
+    }
+
     pub fn read_slot(&self, edge_stride: u32, slot: u64) -> E {
-        let mut buf = vec![0u8; edge_stride as usize];
-        self.mem.read_edge_slab(edge_stride, slot, &mut buf);
-        E::read_from(&buf)
+        let n = edge_stride as usize;
+        if n <= MAX_INLINE_EDGE {
+            let mut buf = [0u8; MAX_INLINE_EDGE];
+            self.read_slot_into(edge_stride, slot, &mut buf);
+            E::read_from(&buf[..n])
+        } else {
+            let mut buf = vec![0u8; n];
+            self.read_slot_into(edge_stride, slot, &mut buf);
+            E::read_from(&buf)
+        }
     }
 
     pub fn write_slot(
@@ -174,23 +203,27 @@ impl<E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> DgapEdgeStore<E, M1, M2
         self.mem.write_total(j, v);
     }
 
+    fn read_log_entry_into(
+        &self,
+        h: &DgapEdgeHeaderV1,
+        leaf_seg: u32,
+        idx: u32,
+        out: &mut [u8],
+    ) -> (i32, i32) {
+        debug_assert!(out.len() >= E::EDGE_BYTES);
+        self.mem
+            .read_log_entry_raw_into(h, leaf_seg, idx, &mut out[..E::EDGE_BYTES])
+    }
+
     fn read_log_entry(&self, h: &DgapEdgeHeaderV1, leaf_seg: u32, idx: u32) -> (i32, i32, E) {
-        const MAX_INLINE_EDGE: usize = 64;
         let eb_len = E::EDGE_BYTES;
         if eb_len <= MAX_INLINE_EDGE {
             let mut eb = [0u8; MAX_INLINE_EDGE];
-            let (prev, src) = self.mem.read_log_entry_raw_into(
-                h,
-                leaf_seg,
-                idx,
-                &mut eb[..eb_len],
-            );
+            let (prev, src) = self.read_log_entry_into(h, leaf_seg, idx, &mut eb);
             (prev, src, E::read_from(&eb[..eb_len]))
         } else {
             let mut eb = vec![0u8; eb_len];
-            let (prev, src) = self
-                .mem
-                .read_log_entry_raw_into(h, leaf_seg, idx, &mut eb);
+            let (prev, src) = self.read_log_entry_into(h, leaf_seg, idx, &mut eb);
             (prev, src, E::read_from(&eb))
         }
     }
@@ -204,7 +237,6 @@ impl<E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> DgapEdgeStore<E, M1, M2
         src_vid: i32,
         edge: E,
     ) -> Result<(), GrowFailed> {
-        const MAX_INLINE_EDGE: usize = 64;
         let n = E::EDGE_BYTES;
         if n <= MAX_INLINE_EDGE {
             let mut eb = [0u8; MAX_INLINE_EDGE];
@@ -297,6 +329,9 @@ impl<E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> DgapEdgeStore<E, M1, M2
         C: CsrVertexColumn<V>,
     {
         let h = self.header().ok_or("bad edge header")?;
+        if h.edge_stride as usize > MAX_INLINE_EDGE || E::EDGE_BYTES > MAX_INLINE_EDGE {
+            return Err("neighborhood iter: edge stride too large for inline buffer");
+        }
         let n = col.col_len() as usize;
         if vid >= n {
             return Err("vertex out of range");
@@ -335,6 +370,7 @@ impl<E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> DgapEdgeStore<E, M1, M2
             log_i,
             log_remaining,
             remaining,
+            scratch: [0u8; MAX_INLINE_EDGE],
         })
     }
 
