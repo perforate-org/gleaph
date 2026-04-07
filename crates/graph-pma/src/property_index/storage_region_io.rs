@@ -3,8 +3,8 @@
 use std::cell::RefCell;
 
 use crate::low_level::{
-    read_region_logical_slice, write_region_logical_slice, RegionKind, RegionManager,
-    RegionStorageKind, WASM_PAGE_SIZE,
+    RegionKind, RegionManager, RegionStorageKind, WASM_PAGE_SIZE, read_region_logical_slice,
+    write_region_logical_slice,
 };
 use ic_stable_structures::Memory;
 

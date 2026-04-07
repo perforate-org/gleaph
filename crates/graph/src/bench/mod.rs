@@ -127,8 +127,8 @@ use gleaph_gql_executor::ExecutionContext;
 use gleaph_gql_planner::build_plan_output;
 use gleaph_graph_kernel::PropertyMap;
 use gleaph_graph_pma::integration::{
-    KernelBootstrapEdgeSpec, KernelBootstrapGraphSpec, KernelBootstrapNodeSpec,
-    GraphPmaKernelHarness,
+    GraphPmaKernelHarness, KernelBootstrapEdgeSpec, KernelBootstrapGraphSpec,
+    KernelBootstrapNodeSpec,
 };
 
 fn execution_context() -> ExecutionContext {

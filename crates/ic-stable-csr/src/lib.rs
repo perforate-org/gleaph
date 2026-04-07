@@ -76,6 +76,4 @@ pub use csr::{
 pub use dgap::{DgapEdgeStore, DgapGraphMemories, NeighborhoodIter};
 pub use ic_stable_vec_deque::VecDeque as StableVecDeque;
 pub use memory_util::{GrowFailed, WASM_PAGE_SIZE, memory_byte_len, safe_write};
-pub use traits::{
-    CsrEdge, CsrEdgeTombstone, CsrEdgeUndirected, CsrVertex, CsrVertexTombstone,
-};
+pub use traits::{CsrEdge, CsrEdgeTombstone, CsrEdgeUndirected, CsrVertex, CsrVertexTombstone};

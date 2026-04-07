@@ -390,9 +390,7 @@ fn ops_contain_dml(ops: &[PlanOp]) -> bool {
             return true;
         }
         match op {
-            PlanOp::HashJoin { left, right, .. } => {
-                ops_contain_dml(left) || ops_contain_dml(right)
-            }
+            PlanOp::HashJoin { left, right, .. } => ops_contain_dml(left) || ops_contain_dml(right),
             PlanOp::CartesianProduct { left, right } => {
                 ops_contain_dml(left) || ops_contain_dml(right)
             }
@@ -400,8 +398,7 @@ fn ops_contain_dml(ops: &[PlanOp]) -> bool {
             PlanOp::OptionalMatch { sub_plan } => ops_contain_dml(sub_plan),
             PlanOp::InlineProcedureCall { sub_plan, .. } => ops_contain_dml(&sub_plan.ops),
             PlanOp::UseGraph {
-                sub_plan: Some(sp),
-                ..
+                sub_plan: Some(sp), ..
             } => ops_contain_dml(sp),
             _ => false,
         }

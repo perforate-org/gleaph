@@ -177,9 +177,6 @@ mod tests {
             is_controller: false,
             query_subject: Some(user),
         };
-        assert_eq!(
-            checker.resolve_access_level(&auth),
-            Some(AccessLevel::Read)
-        );
+        assert_eq!(checker.resolve_access_level(&auth), Some(AccessLevel::Read));
     }
 }

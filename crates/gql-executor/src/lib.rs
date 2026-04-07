@@ -24,7 +24,7 @@ use gleaph_gql_planner::plan::{
 };
 use gleaph_gql_planner::{PhysicalPlan, PlanOp};
 use gleaph_graph_kernel::{
-    EdgeLabelFilter, EdgeRecord, EdgeId, GraphError, GraphErrorKind, GraphRead, GraphWrite, NodeId,
+    EdgeId, EdgeLabelFilter, EdgeRecord, GraphError, GraphErrorKind, GraphRead, GraphWrite, NodeId,
     NodeRecord, PropertyMap,
 };
 use rapidhash::{HashMapExt, RapidHashMap};
@@ -282,7 +282,10 @@ impl std::fmt::Debug for ExecutionContext {
                 "use_graph_router",
                 &self.use_graph_router.as_ref().map(|_| "<custom>"),
             )
-            .field("force_terminal_graph_flush", &self.force_terminal_graph_flush)
+            .field(
+                "force_terminal_graph_flush",
+                &self.force_terminal_graph_flush,
+            )
             .finish()
     }
 }
@@ -520,8 +523,7 @@ fn execute_plan_with_context_maybe_flush<G: GraphRead + GraphWrite>(
         .collect();
     let summary = ExecutionSummary::from_result(&rows, &warnings, plan);
 
-    let run_terminal_flush = flush_at_end
-        && (plan.has_dml() || ctx.force_terminal_graph_flush);
+    let run_terminal_flush = flush_at_end && (plan.has_dml() || ctx.force_terminal_graph_flush);
     if run_terminal_flush {
         #[cfg(feature = "canbench-rs")]
         let _flush_scope = canbench_rs::bench_scope("gql_exec_plan_flush");
@@ -1605,10 +1607,12 @@ fn exec_edge_bind_endpoints<G: GraphRead>(
     args: EdgeBindEndpointsArgs<'_>,
 ) -> ExecutionResultExt<Vec<BindingRow>> {
     use gleaph_gql::types::EdgeDirection;
-    let near_names: Option<Vec<String>> =
-        args.near_property_projection.map(|n| n.iter().map(|s| s.to_string()).collect());
-    let far_names: Option<Vec<String>> =
-        args.far_property_projection.map(|n| n.iter().map(|s| s.to_string()).collect());
+    let near_names: Option<Vec<String>> = args
+        .near_property_projection
+        .map(|n| n.iter().map(|s| s.to_string()).collect());
+    let far_names: Option<Vec<String>> = args
+        .far_property_projection
+        .map(|n| n.iter().map(|s| s.to_string()).collect());
     let mut hop_aux_cache: Option<RapidHashMap<EdgeId, Option<Vec<u8>>>> = None;
     let mut out = Vec::new();
     for row in input {
@@ -1621,7 +1625,10 @@ fn exec_edge_bind_endpoints<G: GraphRead>(
             }
             None => return Err(ExecutionError::MissingBinding(args.edge_var.to_owned())),
         };
-        if args.label.is_some_and(|l| edge_rec.label.as_deref() != Some(l)) {
+        if args
+            .label
+            .is_some_and(|l| edge_rec.label.as_deref() != Some(l))
+        {
             continue;
         }
         let (near_id, far_id) = match args.direction {
@@ -1654,10 +1661,7 @@ fn exec_edge_bind_endpoints<G: GraphRead>(
             Rc::<str>::from(args.near_var),
             BindingValue::Node(near_node),
         );
-        next.insert(
-            Rc::<str>::from(args.far_var),
-            BindingValue::Node(far_node),
-        );
+        next.insert(Rc::<str>::from(args.far_var), BindingValue::Node(far_node));
         if let Some(hop_name) = args.hop_aux_binding {
             let cache = hop_aux_cache.get_or_insert_with(|| RapidHashMap::with_capacity(8));
             let hop_aux = if let Some(existing) = cache.get(&edge_rec.id) {
@@ -2108,7 +2112,9 @@ mod tests {
         GraphWrite, NodeId, NodeRecord, PropertyMap,
     };
     use gleaph_graph_pma::facade::GraphPmaWriteEventProjection;
-    use gleaph_graph_pma::integration::{GraphPmaOverlayEdgeMutationKind, GraphPmaOverlayWriteEvent};
+    use gleaph_graph_pma::integration::{
+        GraphPmaOverlayEdgeMutationKind, GraphPmaOverlayWriteEvent,
+    };
     use gleaph_graph_pma::low_level::{BucketSizeInPages, GraphMutationPath};
     use gleaph_graph_pma::observability::project_overlay_write_event;
     use gleaph_graph_pma::property_index::PropertyIndexNodeStoreMutationKind;
@@ -2427,15 +2433,15 @@ mod tests {
         use gleaph_graph_pma::GraphPmaVecMemory;
         use gleaph_graph_pma::facade::GraphPmaWriteEventProjection;
         use gleaph_graph_pma::integration::{
-            KernelBootstrapGraphSpec, GraphPmaKernelHarness,
-            GraphPmaKernelHarnessOverlay, GraphPmaOverlayWriteEvent,
+            GraphPmaKernelHarness, GraphPmaKernelHarnessOverlay, GraphPmaOverlayWriteEvent,
+            KernelBootstrapGraphSpec,
         };
         use gleaph_graph_pma::observability::{
             GraphPmaDiagnosticsView, last_projected_overlay_event, project_overlay_write_history,
         };
 
-        pub(super) fn bootstrap_empty_graph_pma_harness()
-        -> GraphPmaKernelHarness<GraphPmaVecMemory> {
+        pub(super) fn bootstrap_empty_graph_pma_harness() -> GraphPmaKernelHarness<GraphPmaVecMemory>
+        {
             GraphPmaKernelHarness::bootstrap_empty(GraphPmaVecMemory::default())
                 .expect("bootstrap graph-pma harness")
         }
@@ -3077,7 +3083,8 @@ mod tests {
     fn expand_on_pma_overlay_surfaces_hop_aux_principal_bytes() {
         let remote = Principal::from_slice(&[0xab; 29]);
         let mut harness = bootstrap_empty_graph_pma_harness();
-        let (mut graph, _) = bootstrap_graph_pma_overlay_alice_shard_authored_post(&mut harness, remote);
+        let (mut graph, _) =
+            bootstrap_graph_pma_overlay_alice_shard_authored_post(&mut harness, remote);
 
         let plan = PhysicalPlan {
             ops: vec![
@@ -3125,11 +3132,8 @@ mod tests {
         };
 
         let plan_result = execute_plan(&mut graph, &plan);
-        let result = expect_graph_pma_overlay_execution(
-            &graph,
-            plan_result,
-            "shard expand should execute",
-        );
+        let result =
+            expect_graph_pma_overlay_execution(&graph, plan_result, "shard expand should execute");
         assert_eq!(result.rows.len(), 1);
         assert_eq!(
             result.rows[0].get("shard_dst"),
@@ -3141,7 +3145,8 @@ mod tests {
     fn indexed_edge_expand_on_pma_overlay_surfaces_hop_aux_principal_bytes() {
         let remote = Principal::from_slice(&[0xab; 29]);
         let mut harness = bootstrap_empty_graph_pma_harness();
-        let (mut graph, _) = bootstrap_graph_pma_overlay_alice_shard_authored_post(&mut harness, remote);
+        let (mut graph, _) =
+            bootstrap_graph_pma_overlay_alice_shard_authored_post(&mut harness, remote);
 
         let plan = PhysicalPlan {
             ops: vec![
@@ -3928,11 +3933,10 @@ mod tests {
 
     #[test]
     fn executes_plan_against_graph_pma_backend() {
-        let mut harness =
-            gleaph_graph_pma::integration::GraphPmaKernelHarness::bootstrap_empty(
-                VecMemory::default(),
-            )
-            .expect("bootstrap");
+        let mut harness = gleaph_graph_pma::integration::GraphPmaKernelHarness::bootstrap_empty(
+            VecMemory::default(),
+        )
+        .expect("bootstrap");
         let mut graph = harness.bind_overlay();
         let alice = graph
             .insert_node(
@@ -4026,11 +4030,10 @@ mod tests {
 
     #[test]
     fn persistent_graph_debug_report_formats_representative_graph_shape() {
-        let mut harness =
-            gleaph_graph_pma::integration::GraphPmaKernelHarness::bootstrap_empty(
-                VecMemory::default(),
-            )
-            .expect("bootstrap");
+        let mut harness = gleaph_graph_pma::integration::GraphPmaKernelHarness::bootstrap_empty(
+            VecMemory::default(),
+        )
+        .expect("bootstrap");
         let mut graph = harness.bind_overlay();
         let alice = graph
             .insert_node(
@@ -4085,11 +4088,10 @@ mod tests {
 
     #[test]
     fn executes_dml_against_graph_pma_backend_and_reopens() {
-        let mut harness =
-            gleaph_graph_pma::integration::GraphPmaKernelHarness::bootstrap_empty(
-                VecMemory::default(),
-            )
-            .expect("bootstrap");
+        let mut harness = gleaph_graph_pma::integration::GraphPmaKernelHarness::bootstrap_empty(
+            VecMemory::default(),
+        )
+        .expect("bootstrap");
         let mut graph = harness.bind_overlay();
         let alice = graph
             .insert_node(
@@ -5558,8 +5560,20 @@ mod tests {
         let n1 = graph.insert_node(["U"], [("name", Value::Text("a".into()))]);
         let n2 = graph.insert_node(["U"], [("name", Value::Text("b".into()))]);
         let n3 = graph.insert_node(["U"], [("name", Value::Text("c".into()))]);
-        graph.insert_edge(n1, n2, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
-        graph.insert_edge(n2, n3, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
+        graph.insert_edge(
+            n1,
+            n2,
+            Some("KNOWS"),
+            std::iter::empty::<(&str, Value)>(),
+            false,
+        );
+        graph.insert_edge(
+            n2,
+            n3,
+            Some("KNOWS"),
+            std::iter::empty::<(&str, Value)>(),
+            false,
+        );
 
         let result = execute_plan(&mut graph, &plan).expect("shortest path should run");
         assert_eq!(
@@ -5604,9 +5618,27 @@ mod tests {
         let n2 = graph.insert_node(["U"], [("name", Value::Text("b".into()))]);
         let n3 = graph.insert_node(["U"], [("name", Value::Text("c".into()))]);
         let n4 = graph.insert_node(["U"], [("name", Value::Text("d".into()))]);
-        graph.insert_edge(n1, n2, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
-        graph.insert_edge(n2, n3, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
-        graph.insert_edge(n1, n4, Some("OTHER"), std::iter::empty::<(&str, Value)>(), false);
+        graph.insert_edge(
+            n1,
+            n2,
+            Some("KNOWS"),
+            std::iter::empty::<(&str, Value)>(),
+            false,
+        );
+        graph.insert_edge(
+            n2,
+            n3,
+            Some("KNOWS"),
+            std::iter::empty::<(&str, Value)>(),
+            false,
+        );
+        graph.insert_edge(
+            n1,
+            n4,
+            Some("OTHER"),
+            std::iter::empty::<(&str, Value)>(),
+            false,
+        );
 
         let result = execute_plan(&mut graph, &plan).expect("shortest path with union labels");
         assert_eq!(
@@ -5637,7 +5669,13 @@ mod tests {
         let mut graph = InMemoryGraph::new();
         let n1 = graph.insert_node(["U"], [("name", Value::Text("a".into()))]);
         let n2 = graph.insert_node(["U"], [("name", Value::Text("x".into()))]);
-        graph.insert_edge(n1, n2, Some("WORKS"), std::iter::empty::<(&str, Value)>(), false);
+        graph.insert_edge(
+            n1,
+            n2,
+            Some("WORKS"),
+            std::iter::empty::<(&str, Value)>(),
+            false,
+        );
 
         let result = execute_plan(&mut graph, &plan).expect("execute");
         assert_eq!(
@@ -5677,9 +5715,27 @@ mod tests {
         let n1 = graph.insert_node(["Person"], std::iter::empty::<(&str, Value)>());
         let n2 = graph.insert_node(["Person"], std::iter::empty::<(&str, Value)>());
         let n3 = graph.insert_node(["Person"], std::iter::empty::<(&str, Value)>());
-        graph.insert_edge(n1, n2, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
-        graph.insert_edge(n2, n3, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
-        graph.insert_edge(n3, n1, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
+        graph.insert_edge(
+            n1,
+            n2,
+            Some("KNOWS"),
+            std::iter::empty::<(&str, Value)>(),
+            false,
+        );
+        graph.insert_edge(
+            n2,
+            n3,
+            Some("KNOWS"),
+            std::iter::empty::<(&str, Value)>(),
+            false,
+        );
+        graph.insert_edge(
+            n3,
+            n1,
+            Some("KNOWS"),
+            std::iter::empty::<(&str, Value)>(),
+            false,
+        );
 
         let result = execute_plan(&mut graph, &plan).expect("wcoj executes");
         assert_eq!(
@@ -6472,8 +6528,20 @@ mod tests {
         let a = graph.insert_node(["U"], [("name", Value::Text("a".into()))]);
         let b = graph.insert_node(["U"], [("name", Value::Text("b".into()))]);
         let c = graph.insert_node(["U"], [("name", Value::Text("c".into()))]);
-        graph.insert_edge(a, b, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
-        graph.insert_edge(b, c, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
+        graph.insert_edge(
+            a,
+            b,
+            Some("KNOWS"),
+            std::iter::empty::<(&str, Value)>(),
+            false,
+        );
+        graph.insert_edge(
+            b,
+            c,
+            Some("KNOWS"),
+            std::iter::empty::<(&str, Value)>(),
+            false,
+        );
 
         let result = execute_plan(&mut graph, &plan).expect("execute");
         assert_eq!(result.rows.len(), 2, "result={:?}", result.rows);
@@ -6526,8 +6594,20 @@ mod tests {
         let a = graph.insert_node(["U"], [("name", Value::Text("a".into()))]);
         let b = graph.insert_node(["U"], [("name", Value::Text("b".into()))]);
         let c = graph.insert_node(["U"], [("name", Value::Text("c".into()))]);
-        graph.insert_edge(a, b, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
-        graph.insert_edge(b, c, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
+        graph.insert_edge(
+            a,
+            b,
+            Some("KNOWS"),
+            std::iter::empty::<(&str, Value)>(),
+            false,
+        );
+        graph.insert_edge(
+            b,
+            c,
+            Some("KNOWS"),
+            std::iter::empty::<(&str, Value)>(),
+            false,
+        );
 
         let result = execute_plan(&mut graph, &plan).expect("execute");
         assert_eq!(result.rows.len(), 1, "result={:?}", result.rows);
@@ -6546,10 +6626,34 @@ mod tests {
         let b2 = graph.insert_node(["U"], [("name", Value::Text("b2".into()))]);
         let d = graph.insert_node(["U"], [("name", Value::Text("d".into()))]);
 
-        graph.insert_edge(a, b1, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
-        graph.insert_edge(a, b2, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
-        graph.insert_edge(b1, d, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
-        graph.insert_edge(b2, d, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
+        graph.insert_edge(
+            a,
+            b1,
+            Some("KNOWS"),
+            std::iter::empty::<(&str, Value)>(),
+            false,
+        );
+        graph.insert_edge(
+            a,
+            b2,
+            Some("KNOWS"),
+            std::iter::empty::<(&str, Value)>(),
+            false,
+        );
+        graph.insert_edge(
+            b1,
+            d,
+            Some("KNOWS"),
+            std::iter::empty::<(&str, Value)>(),
+            false,
+        );
+        graph.insert_edge(
+            b2,
+            d,
+            Some("KNOWS"),
+            std::iter::empty::<(&str, Value)>(),
+            false,
+        );
 
         let expected_b1 = Value::Path(vec![
             PathElement::Vertex(a.into()),
@@ -6635,10 +6739,34 @@ mod tests {
         let b2 = graph.insert_node(["U"], [("name", Value::Text("b2".into()))]);
         let d = graph.insert_node(["U"], [("name", Value::Text("d".into()))]);
 
-        graph.insert_edge(a, b1, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
-        graph.insert_edge(a, b2, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
-        graph.insert_edge(b1, d, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
-        graph.insert_edge(b2, d, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
+        graph.insert_edge(
+            a,
+            b1,
+            Some("KNOWS"),
+            std::iter::empty::<(&str, Value)>(),
+            false,
+        );
+        graph.insert_edge(
+            a,
+            b2,
+            Some("KNOWS"),
+            std::iter::empty::<(&str, Value)>(),
+            false,
+        );
+        graph.insert_edge(
+            b1,
+            d,
+            Some("KNOWS"),
+            std::iter::empty::<(&str, Value)>(),
+            false,
+        );
+        graph.insert_edge(
+            b2,
+            d,
+            Some("KNOWS"),
+            std::iter::empty::<(&str, Value)>(),
+            false,
+        );
 
         let expected_b1 = Value::Path(vec![
             PathElement::Vertex(a.into()),
@@ -6721,10 +6849,34 @@ mod tests {
         let b2 = graph.insert_node(["U"], [("name", Value::Text("b2".into()))]);
         let d = graph.insert_node(["U"], [("name", Value::Text("d".into()))]);
 
-        graph.insert_edge(a, b1, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
-        graph.insert_edge(a, b2, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
-        graph.insert_edge(b1, d, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
-        graph.insert_edge(b2, d, Some("KNOWS"), std::iter::empty::<(&str, Value)>(), false);
+        graph.insert_edge(
+            a,
+            b1,
+            Some("KNOWS"),
+            std::iter::empty::<(&str, Value)>(),
+            false,
+        );
+        graph.insert_edge(
+            a,
+            b2,
+            Some("KNOWS"),
+            std::iter::empty::<(&str, Value)>(),
+            false,
+        );
+        graph.insert_edge(
+            b1,
+            d,
+            Some("KNOWS"),
+            std::iter::empty::<(&str, Value)>(),
+            false,
+        );
+        graph.insert_edge(
+            b2,
+            d,
+            Some("KNOWS"),
+            std::iter::empty::<(&str, Value)>(),
+            false,
+        );
 
         let expected_b1 = Value::Path(vec![
             PathElement::Vertex(a.into()),

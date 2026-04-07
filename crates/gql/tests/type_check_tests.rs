@@ -1887,10 +1887,7 @@ impl PropertySchema for DirectedKnowsSchema {
 
 #[test]
 fn insert_directed_arrow_conflicts_undirected_schema() {
-    let warnings = parse_and_check_with_schema(
-        "INSERT (a)-[:KNOWS]->(b)",
-        &UndirectedKnowsSchema,
-    );
+    let warnings = parse_and_check_with_schema("INSERT (a)-[:KNOWS]->(b)", &UndirectedKnowsSchema);
     assert!(
         warnings.iter().any(|w| {
             w.kind == WarningKind::SchemaEdgeDirectionMismatch
@@ -1902,10 +1899,7 @@ fn insert_directed_arrow_conflicts_undirected_schema() {
 
 #[test]
 fn insert_undirected_syntax_conflicts_directed_schema() {
-    let warnings = parse_and_check_with_schema(
-        "INSERT (a)~[:KNOWS]~(b)",
-        &DirectedKnowsSchema,
-    );
+    let warnings = parse_and_check_with_schema("INSERT (a)~[:KNOWS]~(b)", &DirectedKnowsSchema);
     assert!(
         warnings.iter().any(|w| {
             w.kind == WarningKind::SchemaEdgeDirectionMismatch
@@ -1917,10 +1911,8 @@ fn insert_undirected_syntax_conflicts_directed_schema() {
 
 #[test]
 fn match_directed_arrow_warns_on_undirected_schema() {
-    let warnings = parse_and_check_with_schema(
-        "MATCH (a)-[:KNOWS]->(b) RETURN a",
-        &UndirectedKnowsSchema,
-    );
+    let warnings =
+        parse_and_check_with_schema("MATCH (a)-[:KNOWS]->(b) RETURN a", &UndirectedKnowsSchema);
     assert!(
         warnings.iter().any(|w| {
             w.kind == WarningKind::SchemaEdgeDirectionMismatch

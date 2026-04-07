@@ -1,7 +1,5 @@
 use crate::catalog::GraphCatalog;
-use crate::{
-    ApiTypeDiagnostic, GleaphError, parse_block, plan_block, plan_block_with_catalog,
-};
+use crate::{ApiTypeDiagnostic, GleaphError, parse_block, plan_block, plan_block_with_catalog};
 use candid::CandidType;
 use gleaph_gql::Value;
 use gleaph_gql::ast::{

@@ -28,8 +28,8 @@ use gleaph_graph_kernel::{
     GraphResult, LabelId, NodeId, NodeRecord, PropertyMap,
 };
 
-use super::overlay_types::ExpansionWithShard;
 use super::GraphPmaKernelOverlayGraph;
+use super::overlay_types::ExpansionWithShard;
 
 impl<'a, S: super::GraphPmaStore> GraphRead for GraphPmaKernelOverlayGraph<'a, S> {
     fn scan_nodes(&self, label: Option<&str>) -> GraphResult<Vec<NodeRecord>> {
@@ -272,9 +272,7 @@ impl<'a, S: super::GraphPmaStore> GraphRead for GraphPmaKernelOverlayGraph<'a, S
             .into_iter()
             .map(|hop| ExpansionHop {
                 expansion: hop.expansion,
-                shard_canister_principal: hop
-                    .shard_canister_dst
-                    .map(|p| p.as_slice().to_vec()),
+                shard_canister_principal: hop.shard_canister_dst.map(|p| p.as_slice().to_vec()),
             })
             .collect())
     }
@@ -432,19 +430,24 @@ impl<'a, S: super::GraphPmaStore> GraphPmaKernelOverlayGraph<'a, S> {
         let rows: Vec<(EdgeId, Expansion)> = match filter {
             EdgeLabelFilter::All => {
                 let mut out = Vec::new();
-                self.for_each_expand_all_valid_incident(from, direction, |edge_id, edge, _t, node| {
-                    out.push((
-                        edge_id,
-                        Expansion {
-                            edge: edge.clone(),
-                            node: node.clone(),
-                        },
-                    ));
-                });
+                self.for_each_expand_all_valid_incident(
+                    from,
+                    direction,
+                    |edge_id, edge, _t, node| {
+                        out.push((
+                            edge_id,
+                            Expansion {
+                                edge: edge.clone(),
+                                node: node.clone(),
+                            },
+                        ));
+                    },
+                );
                 out
             }
             EdgeLabelFilter::Single(name) => {
-                let Some(ids) = self.collect_expand_edge_ids_single_label(from, direction, name)? else {
+                let Some(ids) = self.collect_expand_edge_ids_single_label(from, direction, name)?
+                else {
                     return Ok(Vec::new());
                 };
                 self.edge_ids_to_unprojected_rows(from, ids)
@@ -531,8 +534,7 @@ impl<'a, S: super::GraphPmaStore> GraphPmaKernelOverlayGraph<'a, S> {
         let Some(mapping) = self.bridge.vertex_mapping(from) else {
             return Ok(None);
         };
-        let _prof_surf =
-            crate::bench_profile::PhaseGuard::new("expand_single_label_surface");
+        let _prof_surf = crate::bench_profile::PhaseGuard::new("expand_single_label_surface");
         let graph = self.bridge.store.graph();
         let mut ids = BTreeSet::<EdgeId>::new();
         let mut append_from_surface = |use_forward: bool, ordinal: usize| -> Option<()> {
@@ -619,8 +621,7 @@ impl<'a, S: super::GraphPmaStore> GraphPmaKernelOverlayGraph<'a, S> {
         let Some(mapping) = self.bridge.vertex_mapping(from) else {
             return Ok(None);
         };
-        let _prof_surf =
-            crate::bench_profile::PhaseGuard::new("expand_any_of_label_surface");
+        let _prof_surf = crate::bench_profile::PhaseGuard::new("expand_any_of_label_surface");
         let graph = self.bridge.store.graph();
         let mut ids = BTreeSet::<EdgeId>::new();
         let mut append_from_surface = |use_forward: bool, ordinal: usize| -> Option<()> {
@@ -650,8 +651,8 @@ impl<'a, S: super::GraphPmaStore> GraphPmaKernelOverlayGraph<'a, S> {
                 if let Some(view) = label_view {
                     let start = usize::try_from(view.start.raw).ok()?;
                     let len = usize::try_from(view.degree).ok()?;
-                    for logical in start.saturating_sub(base_start)
-                        ..start.saturating_sub(base_start) + len
+                    for logical in
+                        start.saturating_sub(base_start)..start.saturating_sub(base_start) + len
                     {
                         if let Some(Some(edge_id)) = slots.get(logical) {
                             ids.insert(*edge_id);
@@ -699,7 +700,11 @@ impl<'a, S: super::GraphPmaStore> GraphPmaKernelOverlayGraph<'a, S> {
         Ok(Some(ids))
     }
 
-    fn edge_ids_to_match_pairs(&self, from: NodeId, ids: BTreeSet<EdgeId>) -> Vec<(EdgeId, NodeId)> {
+    fn edge_ids_to_match_pairs(
+        &self,
+        from: NodeId,
+        ids: BTreeSet<EdgeId>,
+    ) -> Vec<(EdgeId, NodeId)> {
         ids.into_iter()
             .filter_map(|edge_id| {
                 let edge = self.bridge.edges.get(&edge_id)?;
@@ -746,13 +751,18 @@ impl<'a, S: super::GraphPmaStore> GraphPmaKernelOverlayGraph<'a, S> {
         let matches: Vec<(EdgeId, NodeId)> = match filter {
             EdgeLabelFilter::All => {
                 let mut out = Vec::new();
-                self.for_each_expand_all_valid_incident(from, direction, |edge_id, _edge, target, _node| {
-                    out.push((edge_id, target));
-                });
+                self.for_each_expand_all_valid_incident(
+                    from,
+                    direction,
+                    |edge_id, _edge, target, _node| {
+                        out.push((edge_id, target));
+                    },
+                );
                 out
             }
             EdgeLabelFilter::Single(name) => {
-                let Some(ids) = self.collect_expand_edge_ids_single_label(from, direction, name)? else {
+                let Some(ids) = self.collect_expand_edge_ids_single_label(from, direction, name)?
+                else {
                     return Ok(Vec::new());
                 };
                 self.edge_ids_to_match_pairs(from, ids)
@@ -810,7 +820,9 @@ impl<'a, S: super::GraphPmaStore> GraphPmaKernelOverlayGraph<'a, S> {
                 None => {}
                 Some([]) => edge_rec.properties = PropertyMap::new(),
                 Some(_) => {
-                    let bt = edge_keys.as_ref().expect("non-empty names => set built above");
+                    let bt = edge_keys
+                        .as_ref()
+                        .expect("non-empty names => set built above");
                     edge_rec.properties = edge_rec
                         .properties
                         .iter()
@@ -830,7 +842,9 @@ impl<'a, S: super::GraphPmaStore> GraphPmaKernelOverlayGraph<'a, S> {
                 None => {}
                 Some([]) => node_rec.properties = PropertyMap::new(),
                 Some(_) => {
-                    let bt = dst_keys.as_ref().expect("non-empty names => set built above");
+                    let bt = dst_keys
+                        .as_ref()
+                        .expect("non-empty names => set built above");
                     node_rec.properties = node_rec
                         .properties
                         .iter()

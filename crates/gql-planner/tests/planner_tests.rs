@@ -8,9 +8,9 @@ use gleaph_gql_planner::plan::*;
 use gleaph_gql_planner::semantic;
 use gleaph_gql_planner::stats::{GraphStats, TableStats};
 use gleaph_gql_planner::{
-    analyze_remote_use_graph_pushdown, build_block_plan, build_block_plan_output, build_composite_plan,
-    build_plan, build_plan_output, build_plan_output_for_execute, build_plan_with_schema,
-    build_statement_plan, build_statement_plan_with_schema, explain_plan, PlannerError,
+    PlannerError, analyze_remote_use_graph_pushdown, build_block_plan, build_block_plan_output,
+    build_composite_plan, build_plan, build_plan_output, build_plan_output_for_execute,
+    build_plan_with_schema, build_statement_plan, build_statement_plan_with_schema, explain_plan,
 };
 
 /// Helper: parse a GQL query string and extract the first linear query.
@@ -380,9 +380,7 @@ fn expand_hop_aux_binding_none_when_not_referenced() {
 
 #[test]
 fn expand_hop_aux_binding_some_when_return_references_named_edge() {
-    let plan = plan_query(
-        "MATCH (a:Person)-[e:KNOWS]->(b:Person) RETURN a, b, e__hop_aux",
-    );
+    let plan = plan_query("MATCH (a:Person)-[e:KNOWS]->(b:Person) RETURN a, b, e__hop_aux");
     let expand = plan
         .ops
         .iter()
@@ -414,7 +412,10 @@ fn expand_hop_aux_binding_none_when_anonymous_edge_not_referenced() {
             _ => None,
         })
         .expect("Expand");
-    let PlanOp::Expand { hop_aux_binding, .. } = expand else {
+    let PlanOp::Expand {
+        hop_aux_binding, ..
+    } = expand
+    else {
         unreachable!()
     };
     assert!(
@@ -634,11 +635,11 @@ fn test_leading_edge_index_scan_unlabeled_start_node() {
 fn test_leading_edge_bind_hop_aux_none_when_not_referenced() {
     let mut stats = TableStats::default();
     stats.indexed_edge_properties.insert("weight".to_owned());
-    let plan = plan_query_with_stats(
-        "MATCH ()-[e:REL {weight: 7}]->(b:User) RETURN e, b",
-        &stats,
-    );
-    let Some(PlanOp::EdgeBindEndpoints { hop_aux_binding, .. }) = plan.ops.get(1) else {
+    let plan = plan_query_with_stats("MATCH ()-[e:REL {weight: 7}]->(b:User) RETURN e, b", &stats);
+    let Some(PlanOp::EdgeBindEndpoints {
+        hop_aux_binding, ..
+    }) = plan.ops.get(1)
+    else {
         panic!("expected EdgeBindEndpoints at index 1, ops={:?}", plan.ops);
     };
     assert!(
@@ -655,7 +656,10 @@ fn test_leading_edge_bind_hop_aux_some_when_return_references() {
         "MATCH ()-[e:REL {weight: 7}]->(b:User) RETURN e, e__hop_aux, b",
         &stats,
     );
-    let Some(PlanOp::EdgeBindEndpoints { hop_aux_binding, .. }) = plan.ops.get(1) else {
+    let Some(PlanOp::EdgeBindEndpoints {
+        hop_aux_binding, ..
+    }) = plan.ops.get(1)
+    else {
         panic!("expected EdgeBindEndpoints at index 1, ops={:?}", plan.ops);
     };
     assert_eq!(
@@ -673,7 +677,10 @@ fn test_leading_edge_bind_hop_aux_some_when_where_references() {
         "MATCH ()-[e:REL {weight: 7}]->(b:User) WHERE e__hop_aux IS NOT NULL RETURN e, b",
         &stats,
     );
-    let Some(PlanOp::EdgeBindEndpoints { hop_aux_binding, .. }) = plan.ops.get(1) else {
+    let Some(PlanOp::EdgeBindEndpoints {
+        hop_aux_binding, ..
+    }) = plan.ops.get(1)
+    else {
         panic!("expected EdgeBindEndpoints at index 1, ops={:?}", plan.ops);
     };
     assert_eq!(
@@ -2965,16 +2972,13 @@ fn test_use_graph_explain_reports_pushdown_unsupported_reason() {
 
 #[test]
 fn test_use_graph_pushdown_supported_trivial_var_len_one_one() {
-    let plan = plan_query(
-        "USE myGraph MATCH (a:Person)-/KNOWS{1,1}/->(b:Person) RETURN b",
-    );
+    let plan = plan_query("USE myGraph MATCH (a:Person)-/KNOWS{1,1}/->(b:Person) RETURN b");
     let sub = plan
         .ops
         .iter()
         .find_map(|op| match op {
             PlanOp::UseGraph {
-                sub_plan: Some(sp),
-                ..
+                sub_plan: Some(sp), ..
             } => Some(sp.as_slice()),
             _ => None,
         })
@@ -3188,10 +3192,14 @@ fn expand_projection_pairs(plan: &PhysicalPlan) -> Vec<(Option<Vec<String>>, Opt
                     ..
                 } => {
                     let ep = edge_property_projection.as_ref().map(|rc| {
-                        rc.iter().map(|s| s.as_ref().to_string()).collect::<Vec<_>>()
+                        rc.iter()
+                            .map(|s| s.as_ref().to_string())
+                            .collect::<Vec<_>>()
                     });
                     let dp = dst_property_projection.as_ref().map(|rc| {
-                        rc.iter().map(|s| s.as_ref().to_string()).collect::<Vec<_>>()
+                        rc.iter()
+                            .map(|s| s.as_ref().to_string())
+                            .collect::<Vec<_>>()
                     });
                     out.push((ep, dp));
                 }
@@ -3207,8 +3215,7 @@ fn expand_projection_pairs(plan: &PhysicalPlan) -> Vec<(Option<Vec<String>>, Opt
                 PlanOp::InlineProcedureCall { sub_plan, .. } => walk(&sub_plan.ops, out),
                 PlanOp::SetOperation { right, .. } => walk(&right.ops, out),
                 PlanOp::UseGraph {
-                    sub_plan: Some(sp),
-                    ..
+                    sub_plan: Some(sp), ..
                 } => walk(sp.as_slice(), out),
                 _ => {}
             }
@@ -3220,9 +3227,7 @@ fn expand_projection_pairs(plan: &PhysicalPlan) -> Vec<(Option<Vec<String>>, Opt
 
 #[test]
 fn expand_projects_only_dst_uid_when_return_property_access() {
-    let plan = plan_query(
-        "MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.uid, b.uid",
-    );
+    let plan = plan_query("MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.uid, b.uid");
     let pairs = expand_projection_pairs(&plan);
     assert!(
         !pairs.is_empty(),
@@ -3263,13 +3268,12 @@ fn expand_full_edge_when_return_whole_edge_var() {
     let pairs = expand_projection_pairs(&plan);
     let (edge_p, dst_p) = pairs
         .iter()
-        .find(|(e, d)| {
-            d.as_ref()
-                .is_some_and(|v| v.len() == 1 && v[0] == "uid")
-                && e.is_none()
-        })
+        .find(|(e, d)| d.as_ref().is_some_and(|v| v.len() == 1 && v[0] == "uid") && e.is_none())
         .expect("expected Expand with full edge (e returned as value) and dst uid");
-    assert!(edge_p.is_none(), "edge e used as value => full edge, got {edge_p:?}");
+    assert!(
+        edge_p.is_none(),
+        "edge e used as value => full edge, got {edge_p:?}"
+    );
     assert_eq!(
         dst_p.as_ref().map(|v| v.as_slice()),
         Some(&["uid".to_string()][..])

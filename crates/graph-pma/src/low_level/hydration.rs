@@ -1944,6 +1944,7 @@ mod tests {
         write_forward_surface_runtime_to_stable_memory, write_surface_runtime_to_stable_memory,
         write_surface_runtimes_to_stable_memory,
     };
+    use crate::VecMemory;
     use crate::low_level::{
         BucketChain, BucketId, BucketSizeInPages, EMPTY_LOG_OFFSET, EdgeEntry, EdgeIndex, EdgeMeta,
         EdgeRef, EdgeSegmentHeader, EdgeSegmentState, ExtentChain, ExtentId, ForwardSurface,
@@ -1951,7 +1952,6 @@ mod tests {
         RegionManagerLayout, RegionRef, RegionStorageKind, ReverseSurface, SurfaceRegions,
         VertexEntry, VertexLabelIndexEntry, VertexLabelRange, VertexRef, WasmPages,
     };
-    use crate::VecMemory;
     use ic_stable_structures::Memory;
     use std::cell::RefCell;
 

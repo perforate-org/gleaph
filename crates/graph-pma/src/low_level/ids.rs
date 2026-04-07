@@ -78,9 +78,7 @@ impl TryFrom<u64> for VertexRef {
             return Err("vertex ref exceeds 40-bit packed layout");
         }
         let bytes = value.to_be_bytes();
-        Ok(Self([
-            bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-        ]))
+        Ok(Self([bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]]))
     }
 }
 

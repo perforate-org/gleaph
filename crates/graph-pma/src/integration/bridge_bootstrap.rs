@@ -369,7 +369,9 @@ impl<'a, S: GraphPmaStore> GraphPmaKernelBootstrapBridge<'a, S> {
     }
 
     /// Mutable shard directory (e.g. to pre-register principals before inserting edges).
-    pub fn shard_canister_directory_mut(&mut self) -> &mut crate::low_level::ShardCanisterDirectory {
+    pub fn shard_canister_directory_mut(
+        &mut self,
+    ) -> &mut crate::low_level::ShardCanisterDirectory {
         self.store.shard_canister_directory_mut()
     }
 
@@ -434,7 +436,10 @@ impl<'a, S: GraphPmaStore> GraphPmaKernelBootstrapBridge<'a, S> {
         }
     }
 
-    fn directed_meta_pair_for_label_id(label_id: LabelId, undirected: bool) -> EdgeDirectedMetaPair {
+    fn directed_meta_pair_for_label_id(
+        label_id: LabelId,
+        undirected: bool,
+    ) -> EdgeDirectedMetaPair {
         let mut pair: EdgeDirectedMetaPair = label_id.into();
         if undirected {
             pair = EdgeDirectedMetaPair {

@@ -259,8 +259,7 @@ impl EdgeMeta {
             label_id <= EDGE_META_PAYLOAD_MASK,
             "label id exceeds 16-bit edge meta payload"
         );
-        let keep = self.raw24()
-            & (EDGE_TOMBSTONE_MASK | EDGE_UNDIRECTED_MASK | EDGE_META_RSV_MASK);
+        let keep = self.raw24() & (EDGE_TOMBSTONE_MASK | EDGE_UNDIRECTED_MASK | EDGE_META_RSV_MASK);
         Self::from_raw(keep | (label_id as u32))
     }
 
@@ -270,8 +269,7 @@ impl EdgeMeta {
             shard_slot <= EDGE_META_PAYLOAD_MASK,
             "shard canister slot exceeds 16-bit edge meta payload"
         );
-        let keep = self.raw24()
-            & (EDGE_TOMBSTONE_MASK | EDGE_UNDIRECTED_MASK | EDGE_META_RSV_MASK);
+        let keep = self.raw24() & (EDGE_TOMBSTONE_MASK | EDGE_UNDIRECTED_MASK | EDGE_META_RSV_MASK);
         Self::from_raw(keep | EDGE_SHARD_CANISTER_MASK | (shard_slot as u32))
     }
 

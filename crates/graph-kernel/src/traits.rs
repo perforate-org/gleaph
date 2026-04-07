@@ -4,7 +4,9 @@ use gleaph_gql::Value;
 use gleaph_gql::ast::CmpOp;
 use gleaph_gql::types::EdgeDirection;
 
-use crate::{EdgeId, EdgeRecord, Expansion, ExpansionHop, GraphResult, NodeId, NodeRecord, PropertyMap};
+use crate::{
+    EdgeId, EdgeRecord, Expansion, ExpansionHop, GraphResult, NodeId, NodeRecord, PropertyMap,
+};
 
 /// Incident-edge label constraint for [`GraphRead::expand`].
 ///

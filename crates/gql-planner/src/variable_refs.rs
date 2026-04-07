@@ -15,7 +15,10 @@ pub fn linear_query_referenced_variables(query: &LinearQueryStatement) -> BTreeS
     out
 }
 
-fn linear_query_referenced_variables_into(query: &LinearQueryStatement, out: &mut BTreeSet<String>) {
+fn linear_query_referenced_variables_into(
+    query: &LinearQueryStatement,
+    out: &mut BTreeSet<String>,
+) {
     for def in &query.prefix_bindings {
         match &def.initializer {
             ProcedureBindingInitializer::Expr(e) => add_expr_vars(e, out),

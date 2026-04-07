@@ -408,13 +408,7 @@ pub(crate) fn check_insert_path_schema_edge_direction(
     for el in &path.elements {
         if let InsertElement::Edge(e) = el {
             if e.labels.len() == 1 {
-                warn_schema_edge_direction_if_needed(
-                    env,
-                    &e.labels[0],
-                    &e.direction,
-                    e.span,
-                    true,
-                );
+                warn_schema_edge_direction_if_needed(env, &e.labels[0], &e.direction, e.span, true);
             }
         }
     }

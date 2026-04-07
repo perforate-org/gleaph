@@ -24,12 +24,14 @@
 use ic_stable_structures::Memory;
 
 use crate::layout::dgap::{
-    edge_slab_slot_offset, log_entry_offset, read_actual as read_actual_arr, read_log_segment_idx,
-    read_total as read_total_arr, write_actual as write_actual_arr, write_log_segment_idx,
-    write_segment_edges_actual_region_header, write_segment_edges_total_region_header,
-    write_total as write_total_arr, DgapEdgeHeaderV1,
+    DgapEdgeHeaderV1, edge_slab_slot_offset, log_entry_offset, read_actual as read_actual_arr,
+    read_log_segment_idx, read_total as read_total_arr, write_actual as write_actual_arr,
+    write_log_segment_idx, write_segment_edges_actual_region_header,
+    write_segment_edges_total_region_header, write_total as write_total_arr,
 };
-use crate::memory_util::{read_i32_le, read_u64_le, safe_write, write_i32_le, write_u64_le, GrowFailed};
+use crate::memory_util::{
+    GrowFailed, read_i32_le, read_u64_le, safe_write, write_i32_le, write_u64_le,
+};
 
 #[derive(Clone, Debug)]
 pub struct DgapGraphMemories<M1, M2, M3> {
@@ -39,7 +41,11 @@ pub struct DgapGraphMemories<M1, M2, M3> {
 }
 
 impl<M1: Memory, M2: Memory, M3: Memory> DgapGraphMemories<M1, M2, M3> {
-    pub fn new(segment_edges_actual: M1, segment_edges_total: M2, edges_and_log_segment: M3) -> Self {
+    pub fn new(
+        segment_edges_actual: M1,
+        segment_edges_total: M2,
+        edges_and_log_segment: M3,
+    ) -> Self {
         Self {
             segment_edges_actual,
             segment_edges_total,

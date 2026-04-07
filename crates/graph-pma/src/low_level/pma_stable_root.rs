@@ -37,7 +37,10 @@ fn stable_byte_len<M: Memory>(memory: &M) -> Result<u64, HydrationError> {
         .ok_or_else(|| HydrationError::PmaStableRoot("stable byte length overflow".into()))
 }
 
-fn ensure_stable_covers(memory: &impl Memory, last_byte_exclusive: u64) -> Result<(), WritebackError> {
+fn ensure_stable_covers(
+    memory: &impl Memory,
+    last_byte_exclusive: u64,
+) -> Result<(), WritebackError> {
     let current_pages = memory.size();
     let current_bytes = current_pages
         .checked_mul(WASM_PAGE_SIZE)
@@ -59,7 +62,9 @@ fn ensure_stable_covers(memory: &impl Memory, last_byte_exclusive: u64) -> Resul
 /// Read a v1 [`RegionManager`] from the graph memory tail, if the magic matches.
 ///
 /// Returns `Ok(None)` when stable memory is too small or the tail is not a PMA root.
-pub fn try_read_region_manager<M: Memory>(memory: &M) -> Result<Option<RegionManager>, HydrationError> {
+pub fn try_read_region_manager<M: Memory>(
+    memory: &M,
+) -> Result<Option<RegionManager>, HydrationError> {
     let total = stable_byte_len(memory)?;
     if total < HEADER_LEN {
         return Ok(None);
@@ -99,7 +104,10 @@ pub fn try_read_region_manager<M: Memory>(memory: &M) -> Result<Option<RegionMan
 }
 
 /// Write (or replace) the v1 tail footer for `rm`, growing stable memory as needed.
-pub fn write_region_manager_footer<M: Memory>(memory: &M, rm: &RegionManager) -> Result<(), WritebackError> {
+pub fn write_region_manager_footer<M: Memory>(
+    memory: &M,
+    rm: &RegionManager,
+) -> Result<(), WritebackError> {
     let payload = candid::encode_one(rm).map_err(|e| {
         WritebackError::PmaStableRoot(format!("region manager candid encode failed: {e}"))
     })?;

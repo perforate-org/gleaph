@@ -47,11 +47,13 @@ pub fn empty_property_equality_inplace_map<M: StableMemoryTrait>(
     btree_payload_len: Rc<RefCell<u64>>,
 ) -> Result<PropertyEqualityInplaceMap<M>, VirtualRegionMemoryError> {
     let region_memory = gleaph.get_bucket(RegionKind::PropertyIndex)?;
-    Ok(StableBTreeMap::init(PropertyIndexBtreeSubregionIcMemory::new(
-        Rc::clone(gleaph.manager()),
-        region_memory,
-        btree_payload_len,
-    )))
+    Ok(StableBTreeMap::init(
+        PropertyIndexBtreeSubregionIcMemory::new(
+            Rc::clone(gleaph.manager()),
+            region_memory,
+            btree_payload_len,
+        ),
+    ))
 }
 
 /// Hydrates [`StableBTreeMap::init`] against existing subregion bytes; `btree_payload_len` must match the v3 header.

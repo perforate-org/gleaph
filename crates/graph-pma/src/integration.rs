@@ -32,11 +32,11 @@ use crate::facade::{
 };
 use crate::low_level::BucketSizeInPages;
 use crate::property_store::PropertyStoreError;
-use ic_stable_structures::Memory;
 pub use bootstrap_types::{
     BootstrapEdgeSpec, BootstrapGraphSpec, KernelBootstrapEdgeSpec, KernelBootstrapGraphSpec,
     KernelBootstrapGraphSummary, KernelBootstrapNodeSpec,
 };
+use ic_stable_structures::Memory;
 pub use label_index::{
     LabelMembership, VERTEX_LABEL_PROMOTION_THRESHOLD_BASE, VacuumStats, VertexGcState,
     VertexLabelIndex, decode_vertex_label_catalog, encode_vertex_label_catalog,
@@ -398,7 +398,8 @@ impl<'a, M: Memory> GraphWrite for GraphPmaKernelHarnessOverlay<'a, M> {
         properties: &PropertyMap,
         undirected: bool,
     ) -> GraphResult<EdgeRecord> {
-        self.inner.insert_edge(src, dst, label, properties, undirected)
+        self.inner
+            .insert_edge(src, dst, label, properties, undirected)
     }
 
     fn set_node_property(
@@ -633,7 +634,7 @@ mod tests {
         VertexGcState, VertexLabelIndex, bootstrap_graph, bootstrap_kernel_overlay_graph,
         decode_vertex_label_catalog, encode_vertex_label_catalog, graph_error_from_property_store,
     };
-    use crate::{GraphPma, GraphPmaError};
+    use crate::VecMemory;
     use crate::facade::{
         GraphPmaBootstrapVerticesProjection, GraphPmaEdgeWriteOperation, GraphPmaRefreshedVertices,
         GraphPmaVertexOrdinalMapping, GraphPmaWriteEventProjection,
@@ -653,7 +654,7 @@ mod tests {
     };
     use crate::property_index::{PropertyIndexError, PropertyIndexNodeStoreMutationKind};
     use crate::property_store::PropertyStoreError;
-    use crate::VecMemory;
+    use crate::{GraphPma, GraphPmaError};
     use candid::Principal;
     use gleaph_gql::Value;
     use gleaph_gql::ast::{CmpOp, Statement};
@@ -1104,14 +1105,7 @@ mod tests {
             .expect("node b");
         let remote = Principal::from_slice(&[9u8; 9]);
         let shard_edge = overlay
-            .insert_edge_with_shard_canister_dst(
-                a.id,
-                b.id,
-                remote,
-                Some("LINKS"),
-                &empty,
-                false,
-            )
+            .insert_edge_with_shard_canister_dst(a.id, b.id, remote, Some("LINKS"), &empty, false)
             .expect("shard edge");
 
         assert_eq!(
@@ -1174,14 +1168,7 @@ mod tests {
             .expect("node b");
         let remote = Principal::from_slice(&[2u8; 2]);
         let shard_edge = overlay
-            .insert_edge_with_shard_canister_dst(
-                a.id,
-                b.id,
-                remote,
-                Some("LINKS"),
-                &empty,
-                false,
-            )
+            .insert_edge_with_shard_canister_dst(a.id, b.id, remote, Some("LINKS"), &empty, false)
             .expect("shard edge");
 
         let ex = overlay
@@ -1210,14 +1197,7 @@ mod tests {
             .expect("node b");
         let remote = Principal::from_slice(&[5u8; 5]);
         let shard_edge = overlay
-            .insert_edge_with_shard_canister_dst(
-                a.id,
-                b.id,
-                remote,
-                Some("LINKS"),
-                &empty,
-                false,
-            )
+            .insert_edge_with_shard_canister_dst(a.id, b.id, remote, Some("LINKS"), &empty, false)
             .expect("shard edge");
 
         let names = vec!["OTHER".to_owned(), "LINKS".to_owned()];
@@ -1246,14 +1226,7 @@ mod tests {
             .expect("node b");
         let remote = Principal::from_slice(&[8u8; 8]);
         let shard_edge = overlay
-            .insert_edge_with_shard_canister_dst(
-                a.id,
-                b.id,
-                remote,
-                Some("LINKS"),
-                &empty,
-                false,
-            )
+            .insert_edge_with_shard_canister_dst(a.id, b.id, remote, Some("LINKS"), &empty, false)
             .expect("shard edge");
 
         let hops = overlay
@@ -1408,7 +1381,13 @@ mod tests {
             .insert_edge(alice.id, bob.id, Some("KNOWS"), &empty_properties, false)
             .expect("insert knows");
         let e2 = graph
-            .insert_edge(alice.id, charlie.id, Some("LIKES"), &empty_properties, false)
+            .insert_edge(
+                alice.id,
+                charlie.id,
+                Some("LIKES"),
+                &empty_properties,
+                false,
+            )
             .expect("insert likes");
 
         graph

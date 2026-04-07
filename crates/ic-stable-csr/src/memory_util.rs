@@ -1,8 +1,8 @@
 //! Grow-safe reads/writes for [`ic_stable_structures::Memory`].
 
 use ic_stable_structures::Memory;
-use std::fmt::{Display, Formatter};
 use std::error::Error;
+use std::fmt::{Display, Formatter};
 
 /// WebAssembly / IC stable memory page size (64 KiB).
 pub const WASM_PAGE_SIZE: u64 = 65536;

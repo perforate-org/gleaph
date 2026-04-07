@@ -451,8 +451,7 @@ fn leading_edge_bind_hop_aux_is_demand_driven_on_pma_overlay() {
 
     let stats = stats_user_with_indexed_edge_weight();
 
-    let q_no_aux =
-        linear_query_from_str("MATCH ()-[e:KNOWS {weight: 7}]->(b:User) RETURN e, b");
+    let q_no_aux = linear_query_from_str("MATCH ()-[e:KNOWS {weight: 7}]->(b:User) RETURN e, b");
     let plan_no = build_plan(&q_no_aux, Some(&stats)).expect("build_plan");
     let Some(PlanOp::EdgeBindEndpoints {
         hop_aux_binding: hop_none,
@@ -472,9 +471,8 @@ fn leading_edge_bind_hop_aux_is_demand_driven_on_pma_overlay() {
         "output should not include e__hop_aux when not projected"
     );
 
-    let q_aux = linear_query_from_str(
-        "MATCH ()-[e:KNOWS {weight: 7}]->(b:User) RETURN e, e__hop_aux, b",
-    );
+    let q_aux =
+        linear_query_from_str("MATCH ()-[e:KNOWS {weight: 7}]->(b:User) RETURN e, e__hop_aux, b");
     let plan_aux = build_plan(&q_aux, Some(&stats)).expect("build_plan");
     let Some(PlanOp::EdgeBindEndpoints {
         hop_aux_binding: hop_some,

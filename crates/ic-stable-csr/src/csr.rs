@@ -17,16 +17,14 @@ pub mod vertex_column;
 
 pub use csr_graph::{CsrGraph, CsrGraphError, LogicalNeighborhoodIter};
 pub use csr_graph_gc::CsrGraphWithGcQueue;
-pub use gc_work_item::{GcWorkItem, GC_TAG_EDGE_DIRECTED, GC_TAG_EDGE_UNDIRECTED, GC_TAG_VERTEX};
-pub use insert::{
-    insert_edge_into_slab, insert_edge_into_slab_column, CsrInsertError,
-};
+pub use gc_work_item::{GC_TAG_EDGE_DIRECTED, GC_TAG_EDGE_UNDIRECTED, GC_TAG_VERTEX, GcWorkItem};
+pub use insert::{CsrInsertError, insert_edge_into_slab, insert_edge_into_slab_column};
 pub use vertex_column::CsrVertexColumn;
 
 use ic_stable_structures::Memory;
 
+use crate::dgap::{DgapEdgeStore, DgapGraphMemories};
 use crate::traits::{CsrEdge, CsrVertex};
-use crate::dgap::{DgapGraphMemories, DgapEdgeStore};
 
 /// Failure from [`DgapStores`] graph mutation (CSR vertex column + DGAP PMA / edge region).
 #[derive(Debug, PartialEq, Eq)]

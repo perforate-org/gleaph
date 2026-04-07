@@ -285,9 +285,8 @@ async fn provision_graph_canister(controllers: Vec<Principal>) -> Result<Princip
         .await
         .map_err(|e| RegistryError::ManagementError(format!("create_canister failed: {e}")))?;
 
-        let init_arg = candid::encode_args(()).map_err(|e| {
-            RegistryError::ManagementError(format!("encode init arg failed: {e}"))
-        })?;
+        let init_arg = candid::encode_args(())
+            .map_err(|e| RegistryError::ManagementError(format!("encode init arg failed: {e}")))?;
 
         let install_result = if GRAPH_WASM.len() <= INSTALL_CODE_PAYLOAD_SOFT_LIMIT {
             install_code(&InstallCodeArgs {

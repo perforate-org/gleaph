@@ -43,11 +43,7 @@ fn ceil_log2(x: u64) -> u32 {
         return 0;
     }
     let f = 63 - x.leading_zeros();
-    if x.is_power_of_two() {
-        f
-    } else {
-        f + 1
-    }
+    if x.is_power_of_two() { f } else { f + 1 }
 }
 
 #[inline]

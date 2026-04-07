@@ -2,8 +2,8 @@
 
 use std::collections::BTreeMap;
 
-use ic_stable_structures::Memory;
 use gleaph_graph_kernel::{EdgeId, LabelId};
+use ic_stable_structures::Memory;
 
 use super::edge::{EdgeEntry, EdgeMeta};
 use super::extent::{EdgeSegmentHeader, EdgeSegmentState};
@@ -3421,6 +3421,7 @@ mod tests {
         GraphInsertResult, GraphMutationPath, GraphRuntime, RebalanceInsertSpec,
         RebalancePrepareSpec,
     };
+    use crate::VecMemory;
     use crate::low_level::runtime::SurfaceBaseStorage;
     use crate::low_level::{
         EMPTY_LOG_OFFSET, EdgeEntry, EdgeIndex, EdgeInsertPath, EdgeMeta, EdgeRef,
@@ -3430,7 +3431,6 @@ mod tests {
         ReverseSurfaceRuntime, SurfaceKind, SurfaceRegions, VertexEntry, VertexRef, WasmPages,
         decode_edge_entries, encode_edge_entries,
     };
-    use crate::VecMemory;
 
     fn forward_surface() -> ForwardSurface {
         ForwardSurface::new(SurfaceRegions::new(

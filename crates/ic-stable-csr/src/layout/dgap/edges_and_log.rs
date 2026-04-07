@@ -50,7 +50,8 @@ pub fn log_idx_base(elem_capacity: u64, edge_stride: u32) -> u64 {
 
 #[inline]
 pub fn log_pool_base(segment_count: u32, elem_capacity: u64, edge_stride: u32) -> u64 {
-    log_idx_base(elem_capacity, edge_stride).saturating_add((segment_count as u64).saturating_mul(4))
+    log_idx_base(elem_capacity, edge_stride)
+        .saturating_add((segment_count as u64).saturating_mul(4))
 }
 
 #[inline]
@@ -67,21 +68,12 @@ pub fn log_entry_offset(h: &DgapEdgeHeaderV1, leaf_seg: u32, entry_idx: u32) -> 
     pool.saturating_add(row.saturating_mul(h.log_entry_stride as u64))
 }
 
-pub fn read_log_segment_idx<M: Memory>(
-    memory: &M,
-    h: &DgapEdgeHeaderV1,
-    leaf_seg: u32,
-) -> i32 {
+pub fn read_log_segment_idx<M: Memory>(memory: &M, h: &DgapEdgeHeaderV1, leaf_seg: u32) -> i32 {
     let off = log_segment_idx_offset(h.elem_capacity, h.edge_stride, leaf_seg);
     read_i32_le(memory, off)
 }
 
-pub fn write_log_segment_idx<M: Memory>(
-    memory: &M,
-    h: &DgapEdgeHeaderV1,
-    leaf_seg: u32,
-    v: i32,
-) {
+pub fn write_log_segment_idx<M: Memory>(memory: &M, h: &DgapEdgeHeaderV1, leaf_seg: u32, v: i32) {
     let off = log_segment_idx_offset(h.elem_capacity, h.edge_stride, leaf_seg);
     write_i32_le(memory, off, v);
 }

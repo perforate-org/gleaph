@@ -105,7 +105,8 @@ impl<'a, S: super::GraphPmaStore> GraphWrite for GraphPmaKernelOverlayGraph<'a, 
         properties: &PropertyMap,
         undirected: bool,
     ) -> GraphResult<EdgeRecord> {
-        self.bridge.insert_edge(src, dst, label, properties, undirected)
+        self.bridge
+            .insert_edge(src, dst, label, properties, undirected)
     }
 
     fn set_node_property(

@@ -64,7 +64,10 @@ impl fmt::Display for RegionLogicalIoError {
 
 impl std::error::Error for RegionLogicalIoError {}
 
-fn ensure_backing_covers(memory: &impl Memory, last_byte_exclusive: u64) -> Result<(), RegionLogicalIoError> {
+fn ensure_backing_covers(
+    memory: &impl Memory,
+    last_byte_exclusive: u64,
+) -> Result<(), RegionLogicalIoError> {
     let current_pages = memory.size();
     let current_bytes = current_pages
         .checked_mul(WASM_PAGE_SIZE)

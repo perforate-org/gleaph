@@ -82,7 +82,10 @@ impl GraphCatalog {
         }
     }
 
-    fn apply_create_graph_type(&mut self, c: &CreateGraphTypeStatement) -> Result<(), CatalogError> {
+    fn apply_create_graph_type(
+        &mut self,
+        c: &CreateGraphTypeStatement,
+    ) -> Result<(), CatalogError> {
         if c.copy_of.is_some() {
             return Err(CatalogError::Unsupported(
                 "CREATE GRAPH TYPE ... COPY OF is not supported yet".into(),
@@ -94,7 +97,8 @@ impl GraphCatalog {
         }
         if self.graph_type_definitions.contains_key(&key) {
             if c.or_replace {
-                self.graph_type_definitions.insert(key, c.definition.clone());
+                self.graph_type_definitions
+                    .insert(key, c.definition.clone());
                 return Ok(());
             }
             return Err(CatalogError::GraphTypeExists(key));
@@ -231,10 +235,8 @@ impl GraphCatalog {
     fn from_persisted(p: PersistedCatalog) -> Result<Self, CatalogRestoreError> {
         let mut c = GraphCatalog::default();
         for (k, def) in p.graph_types {
-            c.graph_type_definitions.insert(
-                k,
-                def.into_ast().map_err(CatalogRestoreError::Invalid)?,
-            );
+            c.graph_type_definitions
+                .insert(k, def.into_ast().map_err(CatalogRestoreError::Invalid)?);
         }
         for (k, b) in p.graph_bindings {
             let binding = match b {
@@ -269,7 +271,10 @@ impl GraphCatalog {
             let payload = serde_json::to_vec(&persisted)?;
             map.insert(key, StableCatalogValue(payload));
         }
-        Ok(clone_stable_catalog_map(&map).into_memory().borrow().clone())
+        Ok(clone_stable_catalog_map(&map)
+            .into_memory()
+            .borrow()
+            .clone())
     }
 
     /// Decode [`Self::to_stable_blob`] output. Empty slice yields an empty catalog.
@@ -285,8 +290,8 @@ impl GraphCatalog {
         let mut c = GraphCatalog::default();
         for e in map.iter() {
             let key_bytes = &e.key().0;
-            let key_str =
-                std::str::from_utf8(key_bytes).map_err(|e| CatalogRestoreError::Invalid(e.to_string()))?;
+            let key_str = std::str::from_utf8(key_bytes)
+                .map_err(|e| CatalogRestoreError::Invalid(e.to_string()))?;
             if let Some(name) = key_str.strip_prefix("t:") {
                 let def: GraphTypeDefinitionPersisted = serde_json::from_slice(&e.value().0)?;
                 c.graph_type_definitions.insert(
@@ -452,11 +457,7 @@ impl GraphTypeDefinitionPersisted {
         use gleaph_gql::ast::GraphTypeDefinition;
         use gleaph_gql::token::Span;
 
-        let elements: Result<Vec<_>, _> = self
-            .elements
-            .into_iter()
-            .map(|e| e.into_ast())
-            .collect();
+        let elements: Result<Vec<_>, _> = self.elements.into_iter().map(|e| e.into_ast()).collect();
         Ok(GraphTypeDefinition {
             span: Span::DUMMY,
             elements: elements?,
@@ -502,12 +503,16 @@ impl NodeTypeDefPersisted {
             alias: n.alias.clone(),
             label_keyword_plural,
             labels,
-            properties: n.properties.iter().map(PropertyDefPersisted::from_ast).collect(),
+            properties: n
+                .properties
+                .iter()
+                .map(PropertyDefPersisted::from_ast)
+                .collect(),
         }
     }
 
     fn into_ast(self) -> Result<gleaph_gql::ast::NodeTypeDef, String> {
-        use gleaph_gql::ast::{Keyword, KeyLabelSet, NodeTypeDef};
+        use gleaph_gql::ast::{KeyLabelSet, Keyword, NodeTypeDef};
         use gleaph_gql::token::Span;
 
         let label_set = if self.labels.is_empty() {
@@ -519,11 +524,8 @@ impl NodeTypeDefPersisted {
                 labels: self.labels,
             })
         };
-        let properties: Result<Vec<_>, _> = self
-            .properties
-            .into_iter()
-            .map(|p| p.into_ast())
-            .collect();
+        let properties: Result<Vec<_>, _> =
+            self.properties.into_iter().map(|p| p.into_ast()).collect();
         Ok(NodeTypeDef {
             span: Span::DUMMY,
             keyword: Keyword::new("NODE"),
@@ -549,12 +551,16 @@ impl EdgeTypeDefPersisted {
             destination: EdgeEndpointPersisted::from_ast(&e.destination),
             label_keyword_plural,
             labels,
-            properties: e.properties.iter().map(PropertyDefPersisted::from_ast).collect(),
+            properties: e
+                .properties
+                .iter()
+                .map(PropertyDefPersisted::from_ast)
+                .collect(),
         }
     }
 
     fn into_ast(self) -> Result<gleaph_gql::ast::EdgeTypeDef, String> {
-        use gleaph_gql::ast::{EdgeTypeDef, Keyword, KeyLabelSet};
+        use gleaph_gql::ast::{EdgeTypeDef, KeyLabelSet, Keyword};
         use gleaph_gql::token::Span;
         use gleaph_gql::types::EdgeDirection;
 
@@ -572,11 +578,8 @@ impl EdgeTypeDefPersisted {
                 labels: self.labels,
             })
         };
-        let properties: Result<Vec<_>, _> = self
-            .properties
-            .into_iter()
-            .map(|p| p.into_ast())
-            .collect();
+        let properties: Result<Vec<_>, _> =
+            self.properties.into_iter().map(|p| p.into_ast()).collect();
         Ok(EdgeTypeDef {
             span: Span::DUMMY,
             keyword: Keyword::new("EDGE"),
@@ -695,7 +698,9 @@ pub fn plan_block_with_catalog(
     Ok(build_block_plan_output_with_schema(block, stats, schema)?)
 }
 
-pub fn execute_block_with_catalog<G: gleaph_graph_kernel::GraphRead + gleaph_graph_kernel::GraphWrite>(
+pub fn execute_block_with_catalog<
+    G: gleaph_graph_kernel::GraphRead + gleaph_graph_kernel::GraphWrite,
+>(
     graph: &mut G,
     block: &StatementBlock,
     stats: Option<&dyn gleaph_gql_planner::GraphStats>,
@@ -741,7 +746,11 @@ mod tests {
         c.apply_statement_block(&block).expect("apply");
         let j = c.to_json().expect("json");
         let c2 = GraphCatalog::from_json(&j).expect("restore");
-        assert_eq!(j, c2.to_json().expect("re-json"), "json round-trip must stabilize");
+        assert_eq!(
+            j,
+            c2.to_json().expect("re-json"),
+            "json round-trip must stabilize"
+        );
     }
 
     #[test]

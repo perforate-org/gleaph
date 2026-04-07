@@ -173,10 +173,7 @@ fn remote_param_sets_from_rows(
 fn query_subject_for_remote(ctx: &ExecutionContext) -> Option<Principal> {
     let v = ctx.caller.as_ref()?;
     match v {
-        Value::Extension(e) => e
-            .as_any()
-            .downcast_ref::<PrincipalValue>()
-            .map(|p| p.0),
+        Value::Extension(e) => e.as_any().downcast_ref::<PrincipalValue>().map(|p| p.0),
         _ => None,
     }
 }

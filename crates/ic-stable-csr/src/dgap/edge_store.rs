@@ -11,14 +11,14 @@ use std::marker::PhantomData;
 use ic_stable_structures::Memory;
 
 use crate::csr::vertex_column::CsrVertexColumn;
+use crate::dgap::dgap_graph_memories::DgapGraphMemories;
+use crate::dgap::pma_meta::{RebalanceDecision, rebalance_decision};
 use crate::layout::dgap::{
-    dgap_leaf_segment_id, dgap_log_entry_stride, required_edges_and_log_bytes, DgapEdgeHeaderV1,
-    DGAP_DEFAULT_MAX_LOG_ENTRIES,
+    DGAP_DEFAULT_MAX_LOG_ENTRIES, DgapEdgeHeaderV1, dgap_leaf_segment_id, dgap_log_entry_stride,
+    required_edges_and_log_bytes,
 };
 use crate::memory_util::GrowFailed;
 use crate::traits::{CsrEdge, CsrEdgeTombstone, CsrVertex};
-use crate::dgap::dgap_graph_memories::DgapGraphMemories;
-use crate::dgap::pma_meta::{rebalance_decision, RebalanceDecision};
 
 /// Stack / inline scratch cap for edge bytes (slab read, log entry payload, [`NeighborhoodIter`]).
 const MAX_INLINE_EDGE: usize = 64;
@@ -76,12 +76,9 @@ impl<'a, E: CsrEdge, M1: Memory, M2: Memory, M3: Memory> Iterator
         }
         let li = self.log_i as u32;
         let eb_len = E::EDGE_BYTES;
-        let (prev, _src) = self.store.read_log_entry_into(
-            &self.h,
-            self.leaf,
-            li,
-            &mut self.scratch[..eb_len],
-        );
+        let (prev, _src) =
+            self.store
+                .read_log_entry_into(&self.h, self.leaf, li, &mut self.scratch[..eb_len]);
         let e = E::read_from(&self.scratch[..eb_len]);
         self.log_i = prev;
         self.log_remaining -= 1;
@@ -176,12 +173,7 @@ impl<E: CsrEdge, M1: Memory, M2: Memory, M3: Memory> DgapEdgeStore<E, M1, M2, M3
         }
     }
 
-    pub fn write_slot(
-        &self,
-        edge_stride: u32,
-        slot: u64,
-        value: E,
-    ) -> Result<(), GrowFailed> {
+    pub fn write_slot(&self, edge_stride: u32, slot: u64, value: E) -> Result<(), GrowFailed> {
         let mut buf = vec![0u8; edge_stride as usize];
         value.write_to(&mut buf);
         self.mem.write_edge_slab(edge_stride, slot, &buf)
@@ -264,13 +256,7 @@ impl<E: CsrEdge, M1: Memory, M2: Memory, M3: Memory> DgapEdgeStore<E, M1, M2, M3
     }
 
     /// DGAP `out_neigh` slab span count (`onseg_edges`).
-    fn onseg_edges<V, C>(
-        col: &C,
-        vid: usize,
-        n: usize,
-        elem_capacity: u64,
-        v: &V,
-    ) -> u32
+    fn onseg_edges<V, C>(col: &C, vid: usize, n: usize, elem_capacity: u64, v: &V) -> u32
     where
         V: CsrVertex,
         C: CsrVertexColumn<V>,
@@ -388,12 +374,7 @@ impl<E: CsrEdge, M1: Memory, M2: Memory, M3: Memory> DgapEdgeStore<E, M1, M2, M3
         Ok(out)
     }
 
-    fn have_space_onseg<V, C>(
-        col: &C,
-        vid: usize,
-        loc: u64,
-        elem_capacity: u64,
-    ) -> bool
+    fn have_space_onseg<V, C>(col: &C, vid: usize, loc: u64, elem_capacity: u64) -> bool
     where
         V: CsrVertex,
         C: CsrVertexColumn<V>,
@@ -464,7 +445,8 @@ impl<E: CsrEdge, M1: Memory, M2: Memory, M3: Memory> DgapEdgeStore<E, M1, M2, M3
         let first_leaf = dgap_leaf_segment_id(start_vertex, h.segment_size);
         let last_leaf = dgap_leaf_segment_id(end_vertex.saturating_sub(1), h.segment_size);
         for ls in first_leaf..=last_leaf {
-            self.release_log_segment(&h, ls).map_err(|_| "release log")?;
+            self.release_log_segment(&h, ls)
+                .map_err(|_| "release log")?;
         }
         Ok(())
     }
@@ -553,9 +535,7 @@ impl<E: CsrEdge, M1: Memory, M2: Memory, M3: Memory> DgapEdgeStore<E, M1, M2, M3
             self.merge_logs_into_slab_for_window(col, 0, n)?;
         }
         let h = self.header().ok_or("bad header")?;
-        let mut edges: Vec<E> = (0..old_cap)
-            .map(|s| self.read_slot(stride, s))
-            .collect();
+        let mut edges: Vec<E> = (0..old_cap).map(|s| self.read_slot(stride, s)).collect();
         let z = vec![0u8; stride as usize];
         while (edges.len() as u64) < new_cap {
             edges.push(E::read_from(&z));
@@ -579,10 +559,7 @@ impl<E: CsrEdge, M1: Memory, M2: Memory, M3: Memory> DgapEdgeStore<E, M1, M2, M3
             return Ok(());
         }
         let mut vertices: Vec<V> = (0..n)
-            .map(|i| {
-                col.col_get(i as u64)
-                    .ok_or("missing vertex during resize")
-            })
+            .map(|i| col.col_get(i as u64).ok_or("missing vertex during resize"))
             .collect::<Result<_, _>>()?;
         let from = vertices[0].base_slot_start();
         if from >= new_cap {
@@ -616,12 +593,7 @@ impl<E: CsrEdge, M1: Memory, M2: Memory, M3: Memory> DgapEdgeStore<E, M1, M2, M3
         Ok(())
     }
 
-    fn try_insert_into_log<V, C>(
-        &self,
-        col: &C,
-        vid: usize,
-        edge: E,
-    ) -> Result<(), &'static str>
+    fn try_insert_into_log<V, C>(&self, col: &C, vid: usize, edge: E) -> Result<(), &'static str>
     where
         V: CsrVertex,
         C: CsrVertexColumn<V>,
@@ -638,11 +610,7 @@ impl<E: CsrEdge, M1: Memory, M2: Memory, M3: Memory> DgapEdgeStore<E, M1, M2, M3
         self.write_log_entry(&h, leaf, entry_idx, prev, vid as i32, edge)
             .map_err(|_| "write log")?;
         self.mem.write_log_idx(&h, leaf, idx + 1);
-        col.col_set(
-            vid as u64,
-            v.with_log_head(idx)
-                .with_degree(v.degree() + 1),
-        );
+        col.col_set(vid as u64, v.with_log_head(idx).with_degree(v.degree() + 1));
         let ne = self.mem.read_num_edges();
         self.mem.set_num_edges(ne.saturating_add(1));
         Ok(())
@@ -875,7 +843,11 @@ impl<E: CsrEdge, M1: Memory, M2: Memory, M3: Memory> DgapEdgeStore<E, M1, M2, M3
         Err("same-vid batch insert tries exhausted")
     }
 
-    pub(crate) fn maintain_rebalance_loop<V, C>(&self, col: &C, vid: usize) -> Result<(), &'static str>
+    pub(crate) fn maintain_rebalance_loop<V, C>(
+        &self,
+        col: &C,
+        vid: usize,
+    ) -> Result<(), &'static str>
     where
         V: CsrVertex,
         C: CsrVertexColumn<V>,

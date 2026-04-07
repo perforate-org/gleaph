@@ -76,9 +76,12 @@ impl CanisterHost {
         )
         .expect("bootstrap graph PMA");
 
-        let service_cell = StableCell::init(memory_manager.get(MEMORY_ID_SERVICE), CandidBlob::default());
-        let graph_catalog_cell =
-            StableCell::init(memory_manager.get(MEMORY_ID_GRAPH_CATALOG), CandidBlob::default());
+        let service_cell =
+            StableCell::init(memory_manager.get(MEMORY_ID_SERVICE), CandidBlob::default());
+        let graph_catalog_cell = StableCell::init(
+            memory_manager.get(MEMORY_ID_GRAPH_CATALOG),
+            CandidBlob::default(),
+        );
         let service = GleaphService::new();
 
         let mut host = Self {
@@ -111,15 +114,19 @@ impl CanisterHost {
         )
         .expect("hydrate graph PMA");
 
-        let service_cell = StableCell::init(memory_manager.get(MEMORY_ID_SERVICE), CandidBlob::default());
-        let graph_catalog_cell =
-            StableCell::init(memory_manager.get(MEMORY_ID_GRAPH_CATALOG), CandidBlob::default());
+        let service_cell =
+            StableCell::init(memory_manager.get(MEMORY_ID_SERVICE), CandidBlob::default());
+        let graph_catalog_cell = StableCell::init(
+            memory_manager.get(MEMORY_ID_GRAPH_CATALOG),
+            CandidBlob::default(),
+        );
         let blob = service_cell.get();
         let catalog_blob = graph_catalog_cell.get().0.clone();
         let service = if blob.0.is_empty() {
             GleaphService::new()
         } else if let Ok(core) = candid::decode_one::<GleaphServiceCoreSnapshot>(&blob.0) {
-            GleaphService::from_core_and_catalog(core, catalog_blob).expect("restore Gleaph service")
+            GleaphService::from_core_and_catalog(core, catalog_blob)
+                .expect("restore Gleaph service")
         } else {
             let snap: GleaphServiceSnapshot =
                 candid::decode_one(&blob.0).expect("decode legacy monolithic service snapshot");
@@ -147,9 +154,7 @@ impl CanisterHost {
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub fn bind_graph_overlay(
-        &mut self,
-    ) -> GraphPmaKernelOverlay<'_, CanisterGraphMemory> {
+    pub fn bind_graph_overlay(&mut self) -> GraphPmaKernelOverlay<'_, CanisterGraphMemory> {
         self.graph_facade
             .bind_kernel_overlay(self.graph_memory.as_ref())
     }
@@ -161,7 +166,9 @@ impl CanisterHost {
             &mut GraphPmaKernelOverlay<'a, CanisterGraphMemory>,
         ) -> R,
     ) -> R {
-        let mut overlay = self.graph_facade.bind_kernel_overlay(self.graph_memory.as_ref());
+        let mut overlay = self
+            .graph_facade
+            .bind_kernel_overlay(self.graph_memory.as_ref());
         f(&mut self.service, &mut overlay)
     }
 

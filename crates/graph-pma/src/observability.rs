@@ -424,6 +424,7 @@ mod tests {
         format_maintenance_queue_storage, format_write_event_history,
         format_write_event_projection, format_write_event_report,
     };
+    use crate::VecMemory;
     use crate::facade::{
         GraphPma, GraphPmaEdgeWriteOperation, GraphPmaEdgeWriteProjection,
         GraphPmaEnsureCapacityProjection, GraphPmaMaintenanceBatchProjection,
@@ -435,7 +436,6 @@ mod tests {
     };
     use crate::low_level::GraphMutationPath;
     use crate::property_index::PropertyIndexNodeStoreMutationKind;
-    use crate::VecMemory;
 
     #[test]
     fn formatter_formats_ensure_capacity_projection() {

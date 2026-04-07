@@ -203,7 +203,8 @@ fn exec_expand_var_len_impl<const HAS_DST_FILTER: bool, G: GraphRead, B: VarLenH
                         );
                         hop_binding.bind_after_expand(&mut next, hop.shard_canister_principal);
                         let emit = if HAS_DST_FILTER {
-                            dst_filter.is_empty() || dst_filter_holds(graph, &next, dst_filter, ctx)?
+                            dst_filter.is_empty()
+                                || dst_filter_holds(graph, &next, dst_filter, ctx)?
                         } else {
                             true
                         };
@@ -343,11 +344,7 @@ fn exec_expand_with_hop_aux<G: GraphRead>(
                 Rc::<str>::from(spec.dst),
                 BindingValue::Node(expansion.node),
             );
-            insert_hop_aux_binding(
-                &mut next,
-                hop_aux_key.clone(),
-                hop.shard_canister_principal,
-            );
+            insert_hop_aux_binding(&mut next, hop_aux_key.clone(), hop.shard_canister_principal);
             out.push(next);
         }
     }
@@ -724,7 +721,9 @@ fn wcoj_connect_last_edges<G: GraphRead>(
                 spec.label_expr.as_ref(),
                 &mut buf,
             );
-            for hop in graph.expand_hops_with_shard_meta(from, spec.direction, filter, None, None)? {
+            for hop in
+                graph.expand_hops_with_shard_meta(from, spec.direction, filter, None, None)?
+            {
                 let exp = hop.expansion;
                 if post && !wcoj_edge_satisfies_labels(spec, exp.edge.label.as_deref()) {
                     continue;
@@ -1021,7 +1020,8 @@ pub(crate) fn exec_worst_case_optimal_join<G: GraphRead>(
         let mut nodes = HashMap::<Rc<str>, NodeId>::new();
         let mut edgs = HashMap::<Rc<str>, Option<EdgeRecord>>::new();
         let mut budget = WCOJ_MAX_ROWS_PER_INPUT;
-        let mut hop_aux_cache: RapidHashMap<EdgeId, Option<Vec<u8>>> = RapidHashMap::with_capacity(8);
+        let mut hop_aux_cache: RapidHashMap<EdgeId, Option<Vec<u8>>> =
+            RapidHashMap::with_capacity(8);
         let spec = WcojDfsSpec {
             base_row: &base_row,
             vars: &vars,

@@ -135,10 +135,7 @@ impl PropertySchema for GraphTypePropertySchema {
     }
 
     fn edge_property_types(&self, label: &str) -> Vec<(String, ValueType, bool)> {
-        self.edge_properties
-            .get(label)
-            .cloned()
-            .unwrap_or_default()
+        self.edge_properties.get(label).cloned().unwrap_or_default()
     }
 
     fn edge_endpoint_types(&self, label: &str) -> Vec<(Vec<String>, Vec<String>)> {

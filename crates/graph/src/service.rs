@@ -17,16 +17,18 @@ use gleaph_gql_executor::{
     ExecutionContext, GraphRegistryResolver, ProcedureRegistry, UseGraphRouter,
 };
 use gleaph_gql_planner::{GraphStats, PlanOp};
-use std::cell::RefCell;
 use gleaph_graph_kernel::{GraphRead, GraphWrite};
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
 fn caller_value_from_auth(auth: &AuthContext) -> Option<Value> {
     let p = auth.query_subject.as_ref().or(auth.caller.as_ref())?;
-    Some(Value::Extension(Box::new(gleaph_gql_ic::PrincipalValue(*p))))
+    Some(Value::Extension(Box::new(gleaph_gql_ic::PrincipalValue(
+        *p,
+    ))))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
@@ -66,7 +68,10 @@ impl GleaphServiceSnapshot {
         )
     }
 
-    pub fn from_stable_cell_parts(core: GleaphServiceCoreSnapshot, graph_catalog_blob: Vec<u8>) -> Self {
+    pub fn from_stable_cell_parts(
+        core: GleaphServiceCoreSnapshot,
+        graph_catalog_blob: Vec<u8>,
+    ) -> Self {
         Self {
             acl_entries: core.acl_entries,
             prepared_queries: core.prepared_queries,
@@ -318,11 +323,7 @@ impl GleaphService {
             acl_entries: self.permissions.list_acl_entries(),
             prepared_queries,
             supported_extension_types: self.supported_extension_types.iter().cloned().collect(),
-            graph_catalog_blob: self
-                .catalog
-                .borrow()
-                .to_stable_blob()
-                .unwrap_or_default(),
+            graph_catalog_blob: self.catalog.borrow().to_stable_blob().unwrap_or_default(),
         }
     }
 
@@ -353,9 +354,8 @@ impl GleaphService {
         *service.catalog.borrow_mut() = if snapshot.graph_catalog_blob.is_empty() {
             crate::catalog::GraphCatalog::default()
         } else {
-            crate::catalog::GraphCatalog::from_stable_blob(&snapshot.graph_catalog_blob).map_err(
-                |e| GleaphError::Catalog(format!("restore graph catalog: {e}")),
-            )?
+            crate::catalog::GraphCatalog::from_stable_blob(&snapshot.graph_catalog_blob)
+                .map_err(|e| GleaphError::Catalog(format!("restore graph catalog: {e}")))?
         };
         for prepared in snapshot.prepared_queries {
             service.prepared.prepare(
@@ -502,13 +502,8 @@ impl GleaphService {
             use_graph_router: self.use_graph_router.as_ref().map(Arc::clone),
             ..ExecutionContext::default()
         };
-        let output = crate::execute_block_with_catalog(
-            graph,
-            &block,
-            stats,
-            &ctx,
-            &self.catalog.borrow(),
-        )?;
+        let output =
+            crate::execute_block_with_catalog(graph, &block, stats, &ctx, &self.catalog.borrow())?;
         Ok((
             QueryResponse {
                 explain: output.plan.explain,
@@ -554,8 +549,7 @@ impl GleaphService {
                 .map(|(k, v)| (k.clone(), Value::from(v)))
                 .collect(),
         };
-        let (response, catalog_dirty) =
-            self.execute_block_request(graph, auth, &request, stats)?;
+        let (response, catalog_dirty) = self.execute_block_request(graph, auth, &request, stats)?;
         Ok((
             ApiQueryResponse {
                 explain: response.explain,
@@ -578,7 +572,9 @@ impl GleaphService {
             .map(|(r, _)| r)
     }
 
-    pub(crate) fn execute_update_api_request_with_service_stable_dirty<G: GraphRead + GraphWrite>(
+    pub(crate) fn execute_update_api_request_with_service_stable_dirty<
+        G: GraphRead + GraphWrite,
+    >(
         &self,
         graph: &mut G,
         auth: &AuthContext,
@@ -594,8 +590,7 @@ impl GleaphService {
                 .map(|(k, v)| (k.clone(), Value::from(v)))
                 .collect(),
         };
-        let (response, catalog_dirty) =
-            self.execute_block_request(graph, auth, &request, stats)?;
+        let (response, catalog_dirty) = self.execute_block_request(graph, auth, &request, stats)?;
         Ok((
             ApiQueryResponse {
                 explain: response.explain,

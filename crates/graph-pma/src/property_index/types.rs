@@ -444,9 +444,8 @@ impl PropertyIndexNodeRecord {
                         });
                     }
                     let key = PropertyIndexKey::decode(&bytes[offset..key_end])?;
-                    let entry = Storable::from_bytes(Cow::Owned(
-                        bytes[key_end..value_end].to_vec(),
-                    ));
+                    let entry =
+                        Storable::from_bytes(Cow::Owned(bytes[key_end..value_end].to_vec()));
                     entries.push((key, entry));
                     offset = value_end;
                 }
@@ -813,8 +812,7 @@ impl PropertyIndex {
                 });
             }
             let key = PropertyIndexKey::decode(&bytes[offset..key_end])?;
-            let entry =
-                Storable::from_bytes(Cow::Owned(bytes[key_end..value_end].to_vec()));
+            let entry = Storable::from_bytes(Cow::Owned(bytes[key_end..value_end].to_vec()));
             entries.insert(key, entry);
             offset = value_end;
         }

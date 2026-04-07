@@ -26,17 +26,17 @@ use std::fmt;
 use std::rc::Rc;
 
 use crate::low_level::{
-    read_region_logical_slice, write_region_logical_slice, BucketChain, BucketId,
-    GleaphMemoryManager, RegionKind, RegionLogicalIoError, RegionManager, RegionStorageKind,
-    VirtualBucketMemory, VirtualRegionMemoryError, WASM_PAGE_SIZE,
+    BucketChain, BucketId, GleaphMemoryManager, RegionKind, RegionLogicalIoError, RegionManager,
+    RegionStorageKind, VirtualBucketMemory, VirtualRegionMemoryError, WASM_PAGE_SIZE,
+    read_region_logical_slice, write_region_logical_slice,
 };
 use crate::property_index::PropertyIndexError;
 use gleaph_gql::{Value, ValueBinaryError};
 use gleaph_graph_kernel::{EdgeId, NodeId};
+use ic_stable_structures::Memory;
 use ic_stable_structures::StableBTreeMap;
 use ic_stable_structures::Storable;
 use ic_stable_structures::storable::Bound;
-use ic_stable_structures::Memory;
 
 /// Node/edge discriminator for property-store keys.
 ///
@@ -1142,12 +1142,14 @@ pub fn empty_graph_property_stable_map<M: Memory>(
         RegionKind::NodePropertyStore | RegionKind::EdgePropertyStore
     ));
     let region_memory = gleaph.get_bucket(region_kind)?;
-    Ok(GraphPropertyStableMap::init(PropertyStoreBtreeSubregionIcMemory::new(
-        Rc::clone(gleaph.manager()),
-        region_memory,
-        btree_payload_len,
-        region_kind,
-    )))
+    Ok(GraphPropertyStableMap::init(
+        PropertyStoreBtreeSubregionIcMemory::new(
+            Rc::clone(gleaph.manager()),
+            region_memory,
+            btree_payload_len,
+            region_kind,
+        ),
+    ))
 }
 
 /// Reads existing btree bytes after [`PROP_STORE_V1_HEADER_LEN`]; `btree_payload_len` must match the header.
@@ -1237,11 +1239,7 @@ pub fn load_graph_property_stable_map_from_stable_memory<M: Memory>(
     let btree_rc = Rc::new(RefCell::new(0u64));
 
     if bytes.is_empty() {
-        let map = empty_graph_property_stable_map(
-            &gleaph,
-            Rc::clone(&btree_rc),
-            kind,
-        )?;
+        let map = empty_graph_property_stable_map(&gleaph, Rc::clone(&btree_rc), kind)?;
         return Ok((map, btree_rc));
     }
 
@@ -1282,11 +1280,7 @@ pub fn load_graph_property_stable_map_from_stable_memory<M: Memory>(
                     }
                 }
             }
-            let map = hydrate_graph_property_stable_map(
-                &gleaph,
-                Rc::clone(&btree_rc),
-                kind,
-            )?;
+            let map = hydrate_graph_property_stable_map(&gleaph, Rc::clone(&btree_rc), kind)?;
             return Ok((map, btree_rc));
         }
     }
@@ -1391,8 +1385,8 @@ pub(crate) fn btree_distinct_property_names<M: Memory>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::low_level::{BucketSizeInPages, RegionManager};
     use crate::VecMemory;
+    use crate::low_level::{BucketSizeInPages, RegionManager};
 
     #[test]
     fn property_key_round_trips_through_storable_bytes() {
@@ -1564,10 +1558,7 @@ mod tests {
         let sub = log.scan_entities_property_subset(PropertyEntityKind::Node, &ids, &want);
         let one = sub.get(&1).unwrap();
         assert_eq!(one.len(), 1);
-        assert_eq!(
-            one.get("a"),
-            Some(&StoredPropertyValue(Value::Int64(1)))
-        );
+        assert_eq!(one.get("a"), Some(&StoredPropertyValue(Value::Int64(1))));
         assert!(!one.contains_key("b"));
 
         let empty: BTreeSet<String> = BTreeSet::new();
@@ -1678,9 +1669,7 @@ mod tests {
         initial
             .set(
                 PropertyKey::node(NodeId::from(5u8), "payload"),
-                StoredPropertyValue(Value::Text(
-                    "x".repeat((WASM_PAGE_SIZE as usize) + 2048),
-                )),
+                StoredPropertyValue(Value::Text("x".repeat((WASM_PAGE_SIZE as usize) + 2048))),
             )
             .expect("set initial");
         write_graph_property_store_to_stable_memory(

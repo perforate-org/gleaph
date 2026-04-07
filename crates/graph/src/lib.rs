@@ -18,13 +18,13 @@
 //! `Value::Text` when a string-encoded wide numeric value cannot be parsed.
 
 mod auth;
+mod canister_host;
 pub mod catalog;
 mod graph_registry;
 mod prepared;
 mod procedure;
 mod service;
 mod subplan_wire_v1;
-mod canister_host;
 
 #[cfg(feature = "canbench-rs")]
 mod bench;
@@ -1322,7 +1322,8 @@ fn update_gql(
             params: request.params.clone(),
         };
         with_canister_graph_and_service(|service, graph| {
-            match service.execute_update_api_request_with_service_stable_dirty(graph, &auth, &req, None)
+            match service
+                .execute_update_api_request_with_service_stable_dirty(graph, &auth, &req, None)
             {
                 Ok((resp, dirty)) => (Ok(resp), dirty),
                 Err(e) => (Err(e), false),
@@ -1493,9 +1494,7 @@ async fn execute_routed_query_batch(
     ));
     let mut parts = Vec::with_capacity(param_rows.len());
     for row in param_rows {
-        parts.push(
-            run_routed_query_execution(auth.clone(), gql.clone(), row).map_err(map_err)?,
-        );
+        parts.push(run_routed_query_execution(auth.clone(), gql.clone(), row).map_err(map_err)?);
     }
     Ok(merge_api_execution_batch(parts))
 }
@@ -1513,9 +1512,7 @@ fn prepare(
     };
     let auth = canister_auth_context();
     with_canister_service_mut_persist(|service| {
-        service
-            .prepare_api(&auth, &request, None)
-            .map_err(map_err)
+        service.prepare_api(&auth, &request, None).map_err(map_err)
     })
 }
 
@@ -1560,9 +1557,7 @@ fn drop_prepared(name: String) -> Result<ApiDropPreparedResponse, String> {
     let request = ApiDropPreparedRequest { name };
     let auth = canister_auth_context();
     with_canister_service_mut_persist(|service| {
-        service
-            .drop_prepared_api(&auth, &request)
-            .map_err(map_err)
+        service.drop_prepared_api(&auth, &request).map_err(map_err)
     })
 }
 

@@ -687,16 +687,13 @@ fn build_composite_plan_with_binding_kinds(
     seed_binding_kinds: Option<&BTreeMap<String, BindingKind>>,
     schema: &dyn PropertySchema,
 ) -> Result<PhysicalPlan, PlannerError> {
-    let mut plan = build_plan_with_binding_kinds(
-        &composite.left,
-        stats,
-        seed_binding_kinds,
-        schema,
-    )?;
+    let mut plan =
+        build_plan_with_binding_kinds(&composite.left, stats, seed_binding_kinds, schema)?;
 
     // Append set operations (UNION, EXCEPT, INTERSECT, OTHERWISE).
     for (set_op, right_query) in &composite.rest {
-        let right_plan = build_plan_with_binding_kinds(right_query, stats, seed_binding_kinds, schema)?;
+        let right_plan =
+            build_plan_with_binding_kinds(right_query, stats, seed_binding_kinds, schema)?;
         plan.ops.push(PlanOp::SetOperation {
             op: *set_op,
             right: Box::new(right_plan),

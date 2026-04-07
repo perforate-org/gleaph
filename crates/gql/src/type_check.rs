@@ -23,8 +23,8 @@ pub use diagnostics::{
     dml_target_unknown_message, dml_target_value_message, dml_unsupported_set_replace_message,
     type_diagnostic_from_warning,
 };
-pub use graph_type_schema::GraphTypePropertySchema;
 pub use env::{TypeWarning, WarningKind, WarningProvenance};
+pub use graph_type_schema::GraphTypePropertySchema;
 pub use phase_b::{
     infer_linear_query_binding_kinds, infer_linear_query_binding_kinds_and_warnings,
     infer_linear_query_binding_kinds_and_warnings_with_schema,

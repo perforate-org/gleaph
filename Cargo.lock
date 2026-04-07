@@ -1993,6 +1993,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ic-stable-slot-map"
+version = "0.1.0"
+dependencies = [
+ "ic-stable-structures",
+]
+
+[[package]]
 name = "ic-stable-structures"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

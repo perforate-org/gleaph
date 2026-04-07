@@ -6,13 +6,13 @@ mod imp {
     #[cfg(target_arch = "wasm32")]
     use std::cell::RefCell;
 
+    #[cfg(target_arch = "wasm32")]
+    use ic_stable_structures::DefaultMemoryImpl;
+    #[cfg(target_arch = "wasm32")]
+    use ic_stable_structures::memory_manager::VirtualMemory;
     use ic_stable_structures::memory_manager::{MemoryId, MemoryManager};
     use ic_stable_structures::storable::Bound;
     use ic_stable_structures::{StableBTreeMap, Storable};
-    #[cfg(target_arch = "wasm32")]
-    use ic_stable_structures::memory_manager::VirtualMemory;
-    #[cfg(target_arch = "wasm32")]
-    use ic_stable_structures::DefaultMemoryImpl;
 
     use crate::GraphEntry;
 
@@ -155,7 +155,9 @@ mod imp {
 
             let map2: StableBTreeMap<GraphNameKey, EntryBlob, _> =
                 StableBTreeMap::init(mem_mgr.get(MEMORY_ID_REGISTRY_MAP));
-            let v = map2.get(&GraphNameKey::from_name("tenant.main")).expect("key");
+            let v = map2
+                .get(&GraphNameKey::from_name("tenant.main"))
+                .expect("key");
             let decoded: GraphEntry = candid::decode_one(&v.0).unwrap();
             assert_eq!(decoded, entry);
         }

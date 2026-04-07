@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
-use gleaph_gql::Value;
 use candid::Principal;
+use gleaph_gql::Value;
 use gleaph_graph_kernel::{
     EdgeId, EdgeRecord, GraphError, GraphResult, LabelId, NodeId, NodeRecord, PropertyMap,
 };
@@ -378,11 +378,9 @@ impl<'a, S: GraphPmaStore> GraphPmaKernelBootstrapBridge<'a, S> {
         let surface = &forward.0;
         let vertex = surface.vertex_entry(ordinal)?;
         match forward.resolve_logical_edge_slot(vertex_ref, ordinal, locator)? {
-            ResolvedEdgeSlot::Base { logical_index } => {
-                surface
-                    .base_entries
-                    .live_entry_for_vertex(vertex, logical_index)
-            }
+            ResolvedEdgeSlot::Base { logical_index } => surface
+                .base_entries
+                .live_entry_for_vertex(vertex, logical_index),
             ResolvedEdgeSlot::Overflow { offset, .. } => {
                 Some(surface.overflow_entry(offset)?.entry)
             }
