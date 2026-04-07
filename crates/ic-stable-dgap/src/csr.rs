@@ -10,10 +10,14 @@ use std::fmt;
 use std::marker::PhantomData;
 
 pub mod csr_graph;
+pub mod csr_graph_gc;
+pub mod gc_work_item;
 pub mod insert;
 pub mod vertex_column;
 
-pub use csr_graph::{CsrGraph, CsrGraphError};
+pub use csr_graph::{CsrGraph, CsrGraphError, LogicalNeighborhoodIter};
+pub use csr_graph_gc::CsrGraphWithGcQueue;
+pub use gc_work_item::{GcWorkItem, GC_TAG_EDGE_DIRECTED, GC_TAG_EDGE_UNDIRECTED, GC_TAG_VERTEX};
 pub use insert::{
     insert_edge_into_slab, insert_edge_into_slab_column, CsrInsertError,
 };

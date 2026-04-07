@@ -6,7 +6,9 @@
 
 use std::borrow::Cow;
 
-use ic_stable_dgap::traits::{CsrEdge, CsrEdgeUndirected, CsrVertex};
+use ic_stable_dgap::traits::{
+    CsrEdge, CsrEdgeTombstone, CsrEdgeUndirected, CsrVertex, CsrVertexTombstone,
+};
 use ic_stable_structures::Storable;
 use ic_stable_structures::storable::Bound;
 
@@ -26,11 +28,15 @@ use super::vertex::{EMPTY_LOG_OFFSET, VertexEntry};
 /// | [`DGAP_SEGMENT_EDGES_TOTAL_MEMORY_SLOT`] | PMA `segment_edges_total` (`VCT` + array) | `M2` |
 /// | [`DGAP_EDGES_AND_LOG_MEMORY_SLOT`] | `VCE` header + CSR slab + log idx + pool | `M3` |
 /// | [`DGAP_LOG_MEMORY_SLOT`] | Optional legacy stream (not `DgapEdgeStore`) | `layout::log_region` |
+/// | [`DGAP_GC_QUEUE_MEMORY_SLOT`] | Persistent GC work queue ([`ic_stable_dgap::StableVecDeque`]) | 9th `Memory` |
 pub const DGAP_VERTEX_MEMORY_SLOT: u8 = 220;
 pub const DGAP_SEGMENT_EDGES_ACTUAL_MEMORY_SLOT: u8 = 221;
 pub const DGAP_SEGMENT_EDGES_TOTAL_MEMORY_SLOT: u8 = 222;
 pub const DGAP_EDGES_AND_LOG_MEMORY_SLOT: u8 = 223;
 pub const DGAP_LOG_MEMORY_SLOT: u8 = 224;
+/// Stable deque backing store for [`ic_stable_dgap::csr::CsrGraphWithGcQueue`] work items (canister wiring).
+#[allow(dead_code)]
+pub const DGAP_GC_QUEUE_MEMORY_SLOT: u8 = 225;
 
 /// Builds a tail [`VertexEntry`] for [`ic_stable_dgap::DgapStores::insert_vertex`].
 ///
@@ -128,6 +134,19 @@ impl CsrEdge for EdgeEntry {
     }
 }
 
+impl CsrEdgeTombstone for EdgeEntry {
+    fn is_tombstone(&self) -> bool {
+        self.meta.is_tombstone()
+    }
+
+    fn with_tombstone(self, tombstone: bool) -> Self {
+        Self {
+            target: self.target,
+            meta: self.meta.with_tombstone(tombstone),
+        }
+    }
+}
+
 impl CsrEdgeUndirected for EdgeEntry {
     fn is_undirected(&self) -> bool {
         self.meta.is_undirected()
@@ -176,5 +195,15 @@ impl CsrVertex for VertexEntry {
         } else {
             self.with_overflow_head(Some(idx as u32))
         }
+    }
+}
+
+impl CsrVertexTombstone for VertexEntry {
+    fn is_tombstone(&self) -> bool {
+        VertexEntry::is_tombstone(*self)
+    }
+
+    fn with_tombstone(self, tombstone: bool) -> Self {
+        VertexEntry::with_tombstone(self, tombstone)
     }
 }

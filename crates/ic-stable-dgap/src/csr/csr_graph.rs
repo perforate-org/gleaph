@@ -1,6 +1,7 @@
 //! Bidirectional CSR: forward out-adjacency + reverse (transpose) in-adjacency.
 
 use std::fmt;
+use std::marker::PhantomData;
 
 use ic_stable_structures::Memory;
 use ic_stable_structures::vec::Vec as StableVec;
@@ -9,7 +10,7 @@ use crate::csr::vertex_column::CsrVertexColumn;
 use crate::csr::{DgapStores, DgapStoresError};
 use crate::dgap::{DgapEdgeStore, DgapGraphMemories, NeighborhoodIter};
 use crate::memory_util::GrowFailed;
-use crate::traits::{CsrEdge, CsrEdgeUndirected, CsrVertex};
+use crate::traits::{CsrEdge, CsrEdgeTombstone, CsrEdgeUndirected, CsrVertex, CsrVertexTombstone};
 
 // --- specialization: detect undirected flag only when `E: CsrEdgeUndirected` ---
 
@@ -42,6 +43,16 @@ pub enum CsrGraphError {
     NeighborMismatch { expected: usize, actual: usize },
     /// Use [`CsrGraph::insert_undirected`] when the edge is marked undirected.
     UndirectedEdgeInDirectedInsert,
+    /// Mutation refused because this vertex row is tombstoned.
+    EndpointTombstone { vid: usize },
+    /// Insert refused: an adjacency slot to that neighbor already exists (including tombstones).
+    AdjacencySlotOccupied { src: usize, dst: usize },
+    /// Logical delete could not find the requested neighbor edge.
+    EdgeNotFound { owner: usize, neighbor: usize },
+    /// Stable deque backing the GC work queue failed to grow.
+    GcQueue(GrowFailed),
+    /// Logical delete / GC helper failed inside the edge region.
+    LogicalMutation(&'static str),
 }
 
 impl fmt::Display for CsrGraphError {
@@ -65,6 +76,19 @@ impl fmt::Display for CsrGraphError {
                 f,
                 "directed insert: edge is marked undirected; use insert_undirected"
             ),
+            Self::EndpointTombstone { vid } => {
+                write!(f, "vertex {vid} is tombstoned")
+            }
+            Self::AdjacencySlotOccupied { src, dst } => write!(
+                f,
+                "vertex {src} already has an adjacency slot for neighbor {dst}"
+            ),
+            Self::EdgeNotFound { owner, neighbor } => write!(
+                f,
+                "no edge from owner {owner} to neighbor {neighbor}"
+            ),
+            Self::GcQueue(e) => write!(f, "gc work queue: {e}"),
+            Self::LogicalMutation(s) => write!(f, "logical mutation: {s}"),
         }
     }
 }
@@ -73,7 +97,7 @@ impl std::error::Error for CsrGraphError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Forward(e) | Self::Reverse(e) => Some(e),
-            Self::Format(e) => Some(e),
+            Self::Format(e) | Self::GcQueue(e) => Some(e),
             _ => None,
         }
     }
@@ -141,7 +165,7 @@ where
         self.forward.vertices.col_len()
     }
 
-    fn ensure_vertex(&self, vid: usize) -> Result<u64, CsrGraphError> {
+    pub(crate) fn ensure_vertex(&self, vid: usize) -> Result<u64, CsrGraphError> {
         let n = self.vertex_count();
         if (vid as u64) >= n {
             return Err(CsrGraphError::VertexOutOfRange { vid, len: n });
@@ -265,6 +289,35 @@ where
             .try_neighborhood_iter(&self.reverse.vertices, vid)
             .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))
     }
+
+    /// Raw neighborhood scan (includes tombstones). Used for insert-uniqueness checks.
+    pub(crate) fn has_forward_slot_to_neighbor(
+        &self,
+        src: usize,
+        dst: usize,
+    ) -> Result<bool, CsrGraphError> {
+        self.ensure_vertex(src)?;
+        let it = self
+            .forward
+            .edges
+            .try_neighborhood_iter(&self.forward.vertices, src)
+            .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?;
+        for x in it {
+            let e = x.map_err(|m| CsrGraphError::LogicalMutation(m))?;
+            if e.neighbor_vid() == dst {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    pub fn forward_dgap(&self) -> &DgapStores<V, E, Vs, F1, F2, F3> {
+        &self.forward
+    }
+
+    pub fn reverse_dgap(&self) -> &DgapStores<V, E, Vs, R1, R2, R3> {
+        &self.reverse
+    }
 }
 
 impl<V, E, M> CsrGraph<V, E, StableVec<V, M>, M, M, M, M, M, M>
@@ -319,5 +372,128 @@ where
         let reverse = DgapStores::new(vertices_reverse, reverse_edges);
 
         Ok(Self { forward, reverse })
+    }
+}
+
+/// Neighborhood iterator hiding tombstone edges and edges incident to tombstoned vertices.
+pub enum LogicalNeighborhoodIter<'a, E, Vs, V, M1, M2, M3>
+where
+    E: CsrEdge + CsrEdgeTombstone,
+    V: CsrVertex + CsrVertexTombstone,
+    Vs: CsrVertexColumn<V>,
+    M1: Memory,
+    M2: Memory,
+    M3: Memory,
+{
+    Active {
+        inner: NeighborhoodIter<'a, E, M1, M2, M3>,
+        verts: &'a Vs,
+        _p: PhantomData<(V, E)>,
+    },
+    Empty,
+}
+
+impl<'a, E, Vs, V, M1, M2, M3> Iterator for LogicalNeighborhoodIter<'a, E, Vs, V, M1, M2, M3>
+where
+    E: CsrEdge + CsrEdgeTombstone,
+    V: CsrVertex + CsrVertexTombstone,
+    Vs: CsrVertexColumn<V>,
+    M1: Memory,
+    M2: Memory,
+    M3: Memory,
+{
+    type Item = Result<E, &'static str>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            LogicalNeighborhoodIter::Empty => None,
+            LogicalNeighborhoodIter::Active { inner, verts, .. } => loop {
+                let x = inner.next()?;
+                match x {
+                    Err(e) => return Some(Err(e)),
+                    Ok(e) => {
+                        if e.is_tombstone() {
+                            continue;
+                        }
+                        let nb = e.neighbor_vid();
+                        let dead = verts
+                            .col_get(nb as u64)
+                            .map(|v| v.is_tombstone())
+                            .unwrap_or(true);
+                        if dead {
+                            continue;
+                        }
+                        return Some(Ok(e));
+                    }
+                }
+            },
+        }
+    }
+}
+
+impl<V, E, Vs, F1, F2, F3, R1, R2, R3> CsrGraph<V, E, Vs, F1, F2, F3, R1, R2, R3>
+where
+    V: CsrVertex + CsrVertexTombstone,
+    E: CsrEdge + CsrEdgeTombstone,
+    Vs: CsrVertexColumn<V>,
+    F1: Memory,
+    F2: Memory,
+    F3: Memory,
+    R1: Memory,
+    R2: Memory,
+    R3: Memory,
+{
+    /// Out-neighbors omitting edge tombstones and neighbors whose vertex row is tombstoned.
+    pub fn out_edges_logical<'a>(
+        &'a self,
+        vid: usize,
+    ) -> Result<LogicalNeighborhoodIter<'a, E, Vs, V, F1, F2, F3>, CsrGraphError> {
+        self.ensure_vertex(vid)?;
+        if self
+            .forward
+            .vertices
+            .col_get(vid as u64)
+            .map(|v| v.is_tombstone())
+            == Some(true)
+        {
+            return Ok(LogicalNeighborhoodIter::Empty);
+        }
+        let inner = self
+            .forward
+            .edges
+            .try_neighborhood_iter(&self.forward.vertices, vid)
+            .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?;
+        Ok(LogicalNeighborhoodIter::Active {
+            inner,
+            verts: &self.forward.vertices,
+            _p: PhantomData,
+        })
+    }
+
+    /// In-neighbors (transpose) with the same filtering as [`Self::out_edges_logical`].
+    pub fn in_edges_logical<'a>(
+        &'a self,
+        vid: usize,
+    ) -> Result<LogicalNeighborhoodIter<'a, E, Vs, V, R1, R2, R3>, CsrGraphError> {
+        self.ensure_vertex(vid)?;
+        if self
+            .reverse
+            .vertices
+            .col_get(vid as u64)
+            .map(|v| v.is_tombstone())
+            == Some(true)
+        {
+            return Ok(LogicalNeighborhoodIter::Empty);
+        }
+        let inner = self
+            .reverse
+            .edges
+            .try_neighborhood_iter(&self.reverse.vertices, vid)
+            .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?;
+        Ok(LogicalNeighborhoodIter::Active {
+            inner,
+            verts: &self.forward.vertices,
+            _p: PhantomData,
+        })
     }
 }

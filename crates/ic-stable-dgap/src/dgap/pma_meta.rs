@@ -157,8 +157,7 @@ pub fn rebalance_decision(
     }
 
     if density < up_height {
-        let window_size =
-            (segment_size as usize).saturating_mul(1usize << (height as u32).max(0));
+        let window_size = (segment_size as usize).saturating_mul(1usize << (height as u32));
         let left = (src_vertex as usize / window_size) * window_size;
         let right = (left + window_size).min(num_vertices);
         RebalanceDecision::RebalanceWindow {
@@ -210,9 +209,7 @@ pub fn rebalance_weighted_window<V: CsrVertex, E: CsrEdge>(
     );
 
     let index_boundary = next_base_after_window;
-    debug_assert!(
-        new_index[w - 1].saturating_add(local_deg[w - 1] as u64) <= index_boundary
-    );
+    debug_assert!(new_index[w - 1].saturating_add(local_deg[w - 1] as u64) <= index_boundary);
 
     let mut curr_li = 1usize;
     while curr_li < w {
@@ -389,9 +386,7 @@ pub fn recount_segment_total_column<V, C>(
                     .base_slot_start()
             }
         };
-        let v0_row = col
-            .col_get(v0 as u64)
-            .expect("vertex column get v0");
+        let v0_row = col.col_get(v0 as u64).expect("vertex column get v0");
         let segment_total_p = next_starter as i64 - v0_row.base_slot_start() as i64;
         let mut j = i + sc;
         while j > 0 && j < total.len() {
@@ -424,10 +419,7 @@ pub fn recount_segment_actual_column<V, C>(
         let vend = ((i + 1) * segment_size as usize).min(nv);
         let mut sum = 0i64;
         for v in v0..vend {
-            sum += col
-                .col_get(v as u64)
-                .expect("vertex column get")
-                .degree() as i64;
+            sum += col.col_get(v as u64).expect("vertex column get").degree() as i64;
         }
         let leaf = i + sc;
         if leaf < actual.len() {

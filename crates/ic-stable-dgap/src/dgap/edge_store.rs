@@ -16,7 +16,7 @@ use crate::layout::dgap::{
     DGAP_DEFAULT_MAX_LOG_ENTRIES,
 };
 use crate::memory_util::GrowFailed;
-use crate::traits::{CsrEdge, CsrVertex};
+use crate::traits::{CsrEdge, CsrEdgeTombstone, CsrVertex};
 use crate::dgap::dgap_graph_memories::DgapGraphMemories;
 use crate::dgap::pma_meta::{rebalance_decision, RebalanceDecision};
 
@@ -1020,5 +1020,128 @@ impl<E: CsrEdge, M1: Memory, M2: Memory, M3: Memory> DgapEdgeStore<E, M1, M2, M3
             self.write_actual(j, actual[j]);
         }
         Ok(())
+    }
+
+    /// Merge overflow logs into the slab for every vertex in the same DGAP leaf segment as `vid`.
+    pub fn merge_logs_for_vertex_segment<V, C>(
+        &self,
+        col: &C,
+        vid: usize,
+    ) -> Result<(), &'static str>
+    where
+        V: CsrVertex,
+        C: CsrVertexColumn<V>,
+    {
+        let h = self.header().ok_or("bad edge header")?;
+        let n = col.col_len() as usize;
+        let ss = h.segment_size as usize;
+        let left = (vid / ss) * ss;
+        let right = (left + ss).min(n);
+        if left < right {
+            self.merge_logs_into_slab_for_window(col, left, right)?;
+        }
+        Ok(())
+    }
+
+    /// After merging logs, set the slot for `owner_vid → neighbor_vid` to a tombstone (`E: CsrEdgeTombstone`).
+    pub fn tombstone_edge_with_neighbor<V, C>(
+        &self,
+        col: &C,
+        owner_vid: usize,
+        neighbor_vid: usize,
+    ) -> Result<(), &'static str>
+    where
+        V: CsrVertex,
+        C: CsrVertexColumn<V>,
+        E: CsrEdge + CsrEdgeTombstone,
+    {
+        self.merge_logs_for_vertex_segment(col, owner_vid)?;
+        let h = self.header().ok_or("bad edge header")?;
+        let edges = self.collect_out_edges(col, owner_vid)?;
+        let row = col.col_get(owner_vid as u64).ok_or("missing vertex")?;
+        let base = row.base_slot_start();
+        for (i, e) in edges.iter().enumerate() {
+            if e.neighbor_vid() == neighbor_vid {
+                let tomb = (*e).with_tombstone(true);
+                let slot = base.saturating_add(i as u64);
+                self.write_slot(h.edge_stride, slot, tomb)
+                    .map_err(|_| "tombstone write slot")?;
+                return Ok(());
+            }
+        }
+        Err("tombstone: neighbor not found")
+    }
+
+    /// Physically remove one edge at `local_index` in `vid`'s neighborhood (slab compaction + PMA sync).
+    pub fn remove_slab_edge_at_local_index_physically<V, C>(
+        &self,
+        col: &C,
+        vid: usize,
+        local_index: usize,
+    ) -> Result<(), &'static str>
+    where
+        V: CsrVertex,
+        C: CsrVertexColumn<V>,
+    {
+        self.merge_logs_for_vertex_segment(col, vid)?;
+        let h = self.header().ok_or("bad edge header")?;
+        let n = col.col_len() as usize;
+        if vid >= n {
+            return Err("vertex out of range");
+        }
+        let row = col.col_get(vid as u64).ok_or("missing vertex")?;
+        let deg = row.degree() as usize;
+        if local_index >= deg {
+            return Err("local edge index out of range");
+        }
+        let base = row.base_slot_start();
+        let remove_pos = base.saturating_add(local_index as u64);
+        let occ_end = self.slab_occupied_tail(col)?;
+        if remove_pos >= occ_end {
+            return Err("remove position past occupied tail");
+        }
+        let stride = h.edge_stride;
+        let end = occ_end as usize;
+        let rp = remove_pos as usize;
+        for s in rp..end.saturating_sub(1) {
+            let e = self.read_slot(stride, (s + 1) as u64);
+            self.write_slot(stride, s as u64, e)
+                .map_err(|_| "slide write")?;
+        }
+        for j in 0..n {
+            let vr = col.col_get(j as u64).ok_or("missing vertex")?;
+            let b = vr.base_slot_start();
+            if b > remove_pos {
+                col.col_set(j as u64, vr.with_base_slot_start(b.saturating_sub(1)));
+            }
+        }
+        col.col_set(
+            vid as u64,
+            col.col_get(vid as u64)
+                .ok_or("missing vertex")?
+                .with_degree((deg.saturating_sub(1)) as u32),
+        );
+        let ne = self.mem.read_num_edges();
+        self.mem.set_num_edges(ne.saturating_sub(1));
+        self.sync_pma_totals(col)?;
+        self.sync_pma_actuals(col)?;
+        self.maintain_rebalance_loop(col, vid)?;
+        Ok(())
+    }
+
+    /// After merging logs, returns the neighborhood index of `neighbor_vid` at `owner_vid`, if present.
+    pub fn neighbor_local_index<V, C>(
+        &self,
+        col: &C,
+        owner_vid: usize,
+        neighbor_vid: usize,
+    ) -> Result<Option<usize>, &'static str>
+    where
+        V: CsrVertex,
+        C: CsrVertexColumn<V>,
+    {
+        self.merge_logs_for_vertex_segment(col, owner_vid)?;
+        let edges = self.collect_out_edges(col, owner_vid)?;
+        Ok(edges.iter().position(|e| e.neighbor_vid() == neighbor_vid))
     }
 }

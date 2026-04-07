@@ -32,6 +32,9 @@
 //! (optional) -------------------------------------------------- <- M_l stream journal
 //! | [`layout::log_region`] V1 header `DGL` + append-only records                      |
 //! --------------------------------------------------
+//!
+//! **GC queue (ninth `Memory`):** [`csr::CsrGraphWithGcQueue::format_new_with_gc_queue`] takes one extra
+//! region for [`StableVecDeque`](crate::StableVecDeque)`<`[`csr::GcWorkItem`](crate::csr::gc_work_item::GcWorkItem)`>` (not an audit log).
 //! ```
 //!
 //! Gleaph-specific types (`VertexEntry`, `EdgeEntry`) should implement [`traits::CsrVertex`] /
@@ -66,10 +69,13 @@ pub use ic_stable_structures::vec_mem::VectorMemory;
 pub use ic_stable_structures::{Memory, Storable};
 
 pub use csr::{
-    CsrGraph, CsrGraphError, CsrInsertError, CsrVertexColumn, DgapStores, DgapStoresError,
-    insert_edge_into_slab, insert_edge_into_slab_column,
+    CsrGraph, CsrGraphError, CsrGraphWithGcQueue, CsrInsertError, CsrVertexColumn, DgapStores,
+    DgapStoresError, GcWorkItem, LogicalNeighborhoodIter, insert_edge_into_slab,
+    insert_edge_into_slab_column,
 };
 pub use dgap::{DgapEdgeStore, DgapGraphMemories, NeighborhoodIter};
 pub use ic_stable_vec_deque::VecDeque as StableVecDeque;
 pub use memory_util::{GrowFailed, WASM_PAGE_SIZE, memory_byte_len, safe_write};
-pub use traits::{CsrEdge, CsrEdgeTombstone, CsrEdgeUndirected, CsrVertex};
+pub use traits::{
+    CsrEdge, CsrEdgeTombstone, CsrEdgeUndirected, CsrVertex, CsrVertexTombstone,
+};
