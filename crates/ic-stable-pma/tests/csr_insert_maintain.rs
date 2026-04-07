@@ -164,6 +164,41 @@ fn overflow_goes_to_log_then_neighborhood_matches_insert_order() {
     assert_eq!(neigh[0].0, [1, 0, 0, 0]);
     assert_eq!(neigh[1].0, [2, 0, 0, 0]);
     assert_eq!(neigh[2].0, [3, 0, 0, 0]);
+
+    let from1: Vec<_> = stores
+        .edges
+        .try_neighborhood_iter_from(&stores.vertices, 0, 1)
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert_eq!(from1.len(), 2);
+    assert_eq!(from1[0].0, [2, 0, 0, 0]);
+    assert_eq!(from1[1].0, [3, 0, 0, 0]);
+
+    let from2: Vec<_> = stores
+        .edges
+        .try_neighborhood_iter_from(&stores.vertices, 0, 2)
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert_eq!(from2.len(), 1);
+    assert_eq!(from2[0].0, [3, 0, 0, 0]);
+
+    let at_degree: Vec<_> = stores
+        .edges
+        .try_neighborhood_iter_from(&stores.vertices, 0, 3)
+        .unwrap()
+        .filter_map(Result::ok)
+        .collect();
+    assert!(at_degree.is_empty());
+
+    let clamped: Vec<_> = stores
+        .edges
+        .try_neighborhood_iter_from(&stores.vertices, 0, 99)
+        .unwrap()
+        .filter_map(Result::ok)
+        .collect();
+    assert!(clamped.is_empty());
 }
 
 #[test]

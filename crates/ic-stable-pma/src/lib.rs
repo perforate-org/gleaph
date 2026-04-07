@@ -55,7 +55,7 @@ pub use csr::{
     CsrInsertError, CsrVertexColumn, DgapStores, DgapStoresError, insert_edge_into_slab,
     insert_edge_into_slab_column,
 };
-pub use dgap::{DgapEdgeStore, DgapGraphMemories};
+pub use dgap::{DgapEdgeStore, DgapGraphMemories, NeighborhoodIter};
 pub use ic_stable_vec_deque::VecDeque as StableVecDeque;
 pub use memory_util::{GrowFailed, WASM_PAGE_SIZE, memory_byte_len, safe_write};
 pub use traits::{CsrEdgeSlot, CsrVertex};

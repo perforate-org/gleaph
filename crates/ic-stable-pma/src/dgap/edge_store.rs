@@ -5,6 +5,7 @@
 //! Insert path follows [`gleaph-old/reference/DGAP/dgap/src/graph.h`](../../../../gleaph-old/reference/DGAP/dgap/src/graph.h)
 //! `do_insertion` / `insert_into_log` / `have_space_onseg`.
 
+use std::iter::{ExactSizeIterator, FusedIterator};
 use std::marker::PhantomData;
 
 use ic_stable_structures::Memory;
@@ -18,6 +19,75 @@ use crate::memory_util::GrowFailed;
 use crate::traits::{CsrEdgeSlot, CsrVertex};
 use crate::dgap::dgap_graph_memories::DgapGraphMemories;
 use crate::dgap::pma_meta::{rebalance_decision, RebalanceDecision};
+
+/// Lazy outgoing neighborhood in DGAP `Neighborhood` order: contiguous **on-segment** slab slots,
+/// then overflow **log** chain (same walk as C++ `CSRGraph::Neighborhood` / [`DgapEdgeStore::collect_out_edges`]).
+///
+/// `start_offset` is applied like C++: `min(requested, degree)` global edges are skipped before the first yield.
+///
+/// Yields [`Result`] so a truncated log chain surfaces as `Err("log chain short")` (then the iterator fuses).
+pub struct NeighborhoodIter<'a, E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> {
+    store: &'a DgapEdgeStore<E, M1, M2, M3>,
+    h: DgapEdgeHeaderV1,
+    stride: u32,
+    base: u64,
+    /// Next slab slot index in `0..n_slab` (relative offset added to `base`).
+    slab_cursor: usize,
+    n_slab: usize,
+    leaf: u32,
+    log_i: i32,
+    log_remaining: usize,
+    remaining: usize,
+}
+
+impl<'a, E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> Iterator
+    for NeighborhoodIter<'a, E, M1, M2, M3>
+{
+    type Item = Result<E, &'static str>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        if self.slab_cursor < self.n_slab {
+            let e = self
+                .store
+                .read_slot(self.stride, self.base + self.slab_cursor as u64);
+            self.slab_cursor += 1;
+            self.remaining -= 1;
+            return Some(Ok(e));
+        }
+        if self.log_remaining == 0 {
+            self.remaining = 0;
+            return None;
+        }
+        if self.log_i < 0 {
+            self.remaining = 0;
+            self.log_remaining = 0;
+            return Some(Err("log chain short"));
+        }
+        let li = self.log_i as u32;
+        let (prev, _src, e) = self.store.read_log_entry(&self.h, self.leaf, li);
+        self.log_i = prev;
+        self.log_remaining -= 1;
+        self.remaining -= 1;
+        Some(Ok(e))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl<'a, E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> ExactSizeIterator
+    for NeighborhoodIter<'a, E, M1, M2, M3>
+{
+}
+
+impl<'a, E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> FusedIterator
+    for NeighborhoodIter<'a, E, M1, M2, M3>
+{
+}
 
 /// Owns the three-`Memory` DGAP edge bundle (`M_e`).
 pub struct DgapEdgeStore<E: CsrEdgeSlot, M1, M2, M3> {
@@ -200,8 +270,28 @@ impl<E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> DgapEdgeStore<E, M1, M2
         self.collect_out_edges(col, vid)
     }
 
-    /// Alias for [`Self::neighborhood_edges`].
-    pub fn collect_out_edges<V, C>(&self, col: &C, vid: usize) -> Result<Vec<E>, &'static str>
+    /// Lazy [`NeighborhoodIter`] with `start_offset == 0`. See [`Self::try_neighborhood_iter_from`].
+    pub fn try_neighborhood_iter<V, C>(
+        &self,
+        col: &C,
+        vid: usize,
+    ) -> Result<NeighborhoodIter<'_, E, M1, M2, M3>, &'static str>
+    where
+        V: CsrVertex,
+        C: CsrVertexColumn<V>,
+    {
+        self.try_neighborhood_iter_from(col, vid, 0)
+    }
+
+    /// Lazy [`NeighborhoodIter`] (no up-front `Vec`); C++ `Neighborhood`-style traversal.
+    ///
+    /// `start_offset` is clamped to `degree` (same as `std::min(start_offset_, src_v->degree)` in `graph.h`).
+    pub fn try_neighborhood_iter_from<V, C>(
+        &self,
+        col: &C,
+        vid: usize,
+        start_offset: usize,
+    ) -> Result<NeighborhoodIter<'_, E, M1, M2, M3>, &'static str>
     where
         V: CsrVertex,
         C: CsrVertexColumn<V>,
@@ -213,25 +303,51 @@ impl<E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> DgapEdgeStore<E, M1, M2
         }
         let v = col.col_get(vid as u64).ok_or("missing vertex")?;
         let d = v.degree() as usize;
+        let skip = start_offset.min(d);
         let ons = Self::onseg_edges(col, vid, n, h.elem_capacity, &v) as usize;
         let n_slab = d.min(ons);
-        let mut out = Vec::with_capacity(d);
-        let base = v.base_slot_start();
-        for i in 0..n_slab {
-            out.push(self.read_slot(h.edge_stride, base + i as u64));
-        }
-        let mut remaining = d - n_slab;
-        let mut log_i = v.log_head();
         let leaf = dgap_leaf_segment_id(vid, h.segment_size);
-        while remaining > 0 {
+        let slab_start = skip.min(n_slab);
+        let log_skip = skip.saturating_sub(n_slab);
+        let log_edges_total = d.saturating_sub(n_slab);
+
+        let mut log_i = v.log_head();
+        for _ in 0..log_skip {
             if log_i < 0 {
                 return Err("log chain short");
             }
             let li = log_i as u32;
-            let (prev, _src, e) = self.read_log_entry(&h, leaf, li);
-            out.push(e);
+            let (prev, _src, _e) = self.read_log_entry(&h, leaf, li);
             log_i = prev;
-            remaining -= 1;
+        }
+
+        let log_remaining = log_edges_total.saturating_sub(log_skip);
+        let remaining = d.saturating_sub(skip);
+
+        Ok(NeighborhoodIter {
+            store: self,
+            h,
+            stride: h.edge_stride,
+            base: v.base_slot_start(),
+            slab_cursor: slab_start,
+            n_slab,
+            leaf,
+            log_i,
+            log_remaining,
+            remaining,
+        })
+    }
+
+    /// Alias for [`Self::neighborhood_edges`].
+    pub fn collect_out_edges<V, C>(&self, col: &C, vid: usize) -> Result<Vec<E>, &'static str>
+    where
+        V: CsrVertex,
+        C: CsrVertexColumn<V>,
+    {
+        let it = self.try_neighborhood_iter(col, vid)?;
+        let mut out = Vec::with_capacity(it.remaining);
+        for x in it {
+            out.push(x?);
         }
         Ok(out)
     }

@@ -8,7 +8,7 @@ mod edge_store;
 mod pma_meta;
 
 pub use dgap_graph_memories::DgapGraphMemories;
-pub use edge_store::DgapEdgeStore;
+pub use edge_store::{DgapEdgeStore, NeighborhoodIter};
 pub use pma_meta::{
     calculate_positions_v1, calculate_positions_v1_window, density_deltas, floor_log2_u32,
     pma_tree_index, rebalance_decision, rebalance_weighted, rebalance_weighted_window,
