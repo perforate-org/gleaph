@@ -1,9 +1,9 @@
-//! CSR orchestration across `M_v` and three-`Memory` `M_e` ([`DgapGraphMemories`]).
+//! CSR orchestration across `M_v` and two-`Memory` `M_e` ([`DgapGraphMemories`]).
 //!
 //! ```text
 //! [`DgapStores`]
 //!   ├─ vertices: [`ic_stable_slot_map::SlotMap`] V1 on `M_v` (`SSM` magic)
-//!   └─ edges:    [`DgapGraphMemories`] — three `Memory` values for DGAP `M_e` (see crate root diagram)
+//!   └─ edges:    [`DgapGraphMemories`] — two `Memory` values for DGAP `M_e` (see crate root diagram)
 //! ```
 
 use std::fmt;
@@ -41,38 +41,36 @@ impl fmt::Display for DgapStoresError {
 
 impl std::error::Error for DgapStoresError {}
 
-/// Two-way split: vertex table (`M_v`) and DGAP edge bundle (`M_e` = three [`Memory`] regions).
+/// Two-way split: vertex table (`M_v`) and DGAP edge bundle (`M_e` = two [`Memory`] regions).
 ///
 /// Vertices live in [`SlotMap`] (`SSM`); use append-only [`SlotMap::insert`] via [`Self::insert_vertex`].
 ///
 /// **Vertex capacity:** at most [`DgapEdgeStore::max_vertex_slots`] rows for the edge header’s
 /// `segment_count` and `segment_size` (`dgap_leaf_segment_id` must stay in range). Size
 /// [`DgapEdgeStore::format_new`](crate::dgap::DgapEdgeStore::format_new) accordingly.
-pub struct DgapStores<V, E, Mvs, M1, M2, M3>
+pub struct DgapStores<V, E, Mvs, M1, M2>
 where
     V: CsrVertex,
     E: CsrEdge,
     Mvs: Memory,
     M1: Memory,
     M2: Memory,
-    M3: Memory,
 {
     pub vertices: SlotMap<V, Mvs>,
-    pub edges: DgapEdgeStore<E, M1, M2, M3>,
+    pub edges: DgapEdgeStore<E, M1, M2>,
     _vertex: PhantomData<V>,
 }
 
-impl<V, E, Mvs, M1, M2, M3> DgapStores<V, E, Mvs, M1, M2, M3>
+impl<V, E, Mvs, M1, M2> DgapStores<V, E, Mvs, M1, M2>
 where
     V: CsrVertex,
     E: CsrEdge,
     Mvs: Memory,
     M1: Memory,
     M2: Memory,
-    M3: Memory,
 {
     #[doc(hidden)]
-    pub fn new(vertices: SlotMap<V, Mvs>, edges: DgapEdgeStore<E, M1, M2, M3>) -> Self {
+    pub fn new(vertices: SlotMap<V, Mvs>, edges: DgapEdgeStore<E, M1, M2>) -> Self {
         Self {
             vertices,
             edges,
@@ -81,15 +79,13 @@ where
     }
 
     /// Borrow the underlying [`DgapGraphMemories`] (e.g. for canister wiring).
-    pub fn edge_memories(&self) -> &DgapGraphMemories<M1, M2, M3> {
+    pub fn edge_memories(&self) -> &DgapGraphMemories<M1, M2> {
         self.edges.memories()
     }
 
-    /// Sync PMA `total` and `actual` from the vertex column (no `&[V]` snapshot).
+    /// Sync PMA segment edge counts from the vertex column (no `&[V]` snapshot).
     pub fn sync_pma_meta(&self) -> Result<(), &'static str> {
-        self.edges.sync_pma_totals(&self.vertices)?;
-        self.edges.sync_pma_actuals(&self.vertices)?;
-        Ok(())
+        self.edges.sync_pma_edge_counts(&self.vertices)
     }
 
     /// Insert one edge for `vid` (CSR slab or DGAP segment log) and run PMA maintenance.
@@ -126,7 +122,7 @@ where
             .header()
             .ok_or(DgapStoresError::Graph("bad edge header"))?;
         let new_vid = self.vertices.len();
-        DgapEdgeStore::<E, M1, M2, M3>::check_vertex_append_cap(
+        DgapEdgeStore::<E, M1, M2>::check_vertex_append_cap(
             new_vid,
             h.segment_count,
             h.segment_size,
@@ -150,7 +146,7 @@ where
             .header()
             .ok_or(DgapStoresError::Graph("bad edge header"))?;
         let new_vid = self.vertices.len();
-        DgapEdgeStore::<E, M1, M2, M3>::check_vertex_append_cap(
+        DgapEdgeStore::<E, M1, M2>::check_vertex_append_cap(
             new_vid,
             h.segment_count,
             h.segment_size,

@@ -97,11 +97,10 @@ impl CsrEdge for TE {
     }
 }
 
-type TeEdgeStore = DgapEdgeStore<TE, VectorMemory, VectorMemory, VectorMemory>;
+type TeEdgeStore = DgapEdgeStore<TE, VectorMemory, VectorMemory>;
 
-fn triple_edge_memories() -> DgapGraphMemories<VectorMemory, VectorMemory, VectorMemory> {
+fn dual_edge_memories() -> DgapGraphMemories<VectorMemory, VectorMemory> {
     DgapGraphMemories::new(
-        Rc::new(RefCell::new(Vec::new())),
         Rc::new(RefCell::new(Vec::new())),
         Rc::new(RefCell::new(Vec::new())),
     )
@@ -112,7 +111,7 @@ fn insert_maintain_triggers_resize_when_slab_full() {
     let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
 
     let vertices = SlotMap::new(mv).unwrap();
-    let edges = TeEdgeStore::new(triple_edge_memories());
+    let edges = TeEdgeStore::new(dual_edge_memories());
     edges.format_new(2, 1, 8, 0).expect("format");
 
     vertices.insert(&TV {
@@ -140,7 +139,7 @@ fn overflow_goes_to_log_then_neighborhood_matches_insert_order() {
     let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
 
     let vertices = SlotMap::new(mv).unwrap();
-    let edges = TeEdgeStore::new(triple_edge_memories());
+    let edges = TeEdgeStore::new(dual_edge_memories());
     edges.format_new(32, 1, 8, 0).expect("format");
 
     // Two vertices: v0 may only use slab slots [0, next_base) = [0, 2); the third out-edge overflows to the log.
@@ -219,7 +218,7 @@ fn merge_window_clears_log_head() {
     let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
 
     let vertices = SlotMap::new(mv).unwrap();
-    let edges = TeEdgeStore::new(triple_edge_memories());
+    let edges = TeEdgeStore::new(dual_edge_memories());
     edges.format_new(32, 1, 8, 0).expect("format");
 
     vertices.insert(&TV {
@@ -261,7 +260,7 @@ fn insert_vertex_twice_then_insert_edges_on_each() {
     let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
 
     let vertices = SlotMap::new(mv).unwrap();
-    let edges = TeEdgeStore::new(triple_edge_memories());
+    let edges = TeEdgeStore::new(dual_edge_memories());
     edges.format_new(16, 1, 8, 0).expect("format");
 
     let stores = DgapStores::new(vertices, edges);
@@ -316,7 +315,7 @@ fn insert_vertex_rejects_wrong_base() {
     let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
 
     let vertices = SlotMap::new(mv).unwrap();
-    let edges = TeEdgeStore::new(triple_edge_memories());
+    let edges = TeEdgeStore::new(dual_edge_memories());
     edges.format_new(16, 1, 8, 0).expect("format");
 
     let stores = DgapStores::new(vertices, edges);
@@ -342,7 +341,7 @@ fn insert_vertex_honors_segment_vertex_cap() {
     let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
 
     let vertices = SlotMap::new(mv).unwrap();
-    let edges = TeEdgeStore::new(triple_edge_memories());
+    let edges = TeEdgeStore::new(dual_edge_memories());
     edges.format_new(32, 1, 2, 0).expect("format");
 
     let stores = DgapStores::new(vertices, edges);
@@ -382,7 +381,7 @@ fn two_vertices_preallocated_sync_meta() {
     let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
 
     let vertices = SlotMap::new(mv).unwrap();
-    let edges = TeEdgeStore::new(triple_edge_memories());
+    let edges = TeEdgeStore::new(dual_edge_memories());
     edges.format_new(32, 1, 8, 0).expect("format");
 
     vertices.insert(&TV {
@@ -407,7 +406,7 @@ fn two_vertices_preallocated_sync_meta() {
 
 #[test]
 fn write_edge_slab_span_round_trips_two_slots() {
-    let edges = TeEdgeStore::new(triple_edge_memories());
+    let edges = TeEdgeStore::new(dual_edge_memories());
     edges.format_new(16, 1, 8, 0).expect("format");
     let h = edges.header().unwrap();
     let mut packed = vec![0u8; 8];
@@ -425,7 +424,7 @@ fn write_edge_slab_span_round_trips_two_slots() {
 fn insert_edges_matches_sequential_single_vertex_overflow() {
     let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
     let vertices = SlotMap::new(mv).unwrap();
-    let edges = TeEdgeStore::new(triple_edge_memories());
+    let edges = TeEdgeStore::new(dual_edge_memories());
     edges.format_new(32, 1, 8, 0).expect("format");
     vertices.insert(&TV {
         slot_base: 0,
@@ -449,7 +448,7 @@ fn insert_edges_matches_sequential_single_vertex_overflow() {
 
     let mv_b: VectorMemory = Rc::new(RefCell::new(Vec::new()));
     let vertices_b = SlotMap::new(mv_b).unwrap();
-    let edges_b = TeEdgeStore::new(triple_edge_memories());
+    let edges_b = TeEdgeStore::new(dual_edge_memories());
     edges_b.format_new(32, 1, 8, 0).expect("format");
     vertices_b.insert(&TV {
         slot_base: 0,
@@ -481,7 +480,7 @@ fn insert_edges_matches_sequential_single_vertex_overflow() {
 fn insert_edges_interleaved_matches_sequential() {
     let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
     let vertices = SlotMap::new(mv).unwrap();
-    let edges = TeEdgeStore::new(triple_edge_memories());
+    let edges = TeEdgeStore::new(dual_edge_memories());
     edges.format_new(32, 1, 8, 0).expect("format");
     vertices.insert(&TV {
         slot_base: 0,
@@ -509,7 +508,7 @@ fn insert_edges_interleaved_matches_sequential() {
 
     let mv_b: VectorMemory = Rc::new(RefCell::new(Vec::new()));
     let vertices_b = SlotMap::new(mv_b).unwrap();
-    let edges_b = TeEdgeStore::new(triple_edge_memories());
+    let edges_b = TeEdgeStore::new(dual_edge_memories());
     edges_b.format_new(32, 1, 8, 0).expect("format");
     vertices_b.insert(&TV {
         slot_base: 0,

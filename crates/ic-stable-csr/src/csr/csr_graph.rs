@@ -134,38 +134,34 @@ impl From<ic_stable_slot_map::GrowFailed> for CsrGraphError {
 
 /// Directed CSR plus transpose CSR, kept in sync on mutation.
 ///
-/// Use [`Self::format_new`] to construct from eight [`Memory`](ic_stable_structures::Memory) regions
+/// Use [`Self::format_new`] to construct from six [`Memory`](ic_stable_structures::Memory) regions
 /// without assembling [`DgapStores`] manually.
 ///
 /// **Iterator limit:** [`Self::out_edges`] / [`Self::in_edges`] require `E::EDGE_BYTES <= 64`
 /// (same as [`DgapEdgeStore::try_neighborhood_iter`](crate::dgap::DgapEdgeStore::try_neighborhood_iter)).
-pub struct CsrGraph<V, E, Mvs, F1, F2, F3, R1, R2, R3>
+pub struct CsrGraph<V, E, Mvs, F1, F2, R1, R2>
 where
     V: CsrVertex,
     E: CsrEdge,
     Mvs: Memory,
     F1: Memory,
     F2: Memory,
-    F3: Memory,
     R1: Memory,
     R2: Memory,
-    R3: Memory,
 {
-    forward: DgapStores<V, E, Mvs, F1, F2, F3>,
-    reverse: DgapStores<V, E, Mvs, R1, R2, R3>,
+    forward: DgapStores<V, E, Mvs, F1, F2>,
+    reverse: DgapStores<V, E, Mvs, R1, R2>,
 }
 
-impl<V, E, Mvs, F1, F2, F3, R1, R2, R3> CsrGraph<V, E, Mvs, F1, F2, F3, R1, R2, R3>
+impl<V, E, Mvs, F1, F2, R1, R2> CsrGraph<V, E, Mvs, F1, F2, R1, R2>
 where
     V: CsrVertex,
     E: CsrEdge,
     Mvs: Memory,
     F1: Memory,
     F2: Memory,
-    F3: Memory,
     R1: Memory,
     R2: Memory,
-    R3: Memory,
 {
     pub fn vertex_count(&self) -> u64 {
         self.forward.vertices.len()
@@ -283,7 +279,7 @@ where
     pub fn out_edges<'a>(
         &'a self,
         vid: usize,
-    ) -> Result<NeighborhoodIter<'a, E, F1, F2, F3>, CsrGraphError> {
+    ) -> Result<NeighborhoodIter<'a, E, F1, F2>, CsrGraphError> {
         self.ensure_vertex(vid)?;
         self.forward
             .edges
@@ -294,7 +290,7 @@ where
     pub fn in_edges<'a>(
         &'a self,
         vid: usize,
-    ) -> Result<NeighborhoodIter<'a, E, R1, R2, R3>, CsrGraphError> {
+    ) -> Result<NeighborhoodIter<'a, E, R1, R2>, CsrGraphError> {
         self.ensure_vertex(vid)?;
         self.reverse
             .edges
@@ -323,35 +319,33 @@ where
         Ok(false)
     }
 
-    pub fn forward_dgap(&self) -> &DgapStores<V, E, Mvs, F1, F2, F3> {
+    pub fn forward_dgap(&self) -> &DgapStores<V, E, Mvs, F1, F2> {
         &self.forward
     }
 
-    pub fn reverse_dgap(&self) -> &DgapStores<V, E, Mvs, R1, R2, R3> {
+    pub fn reverse_dgap(&self) -> &DgapStores<V, E, Mvs, R1, R2> {
         &self.reverse
     }
 }
 
-impl<V, E, M> CsrGraph<V, E, M, M, M, M, M, M, M>
+impl<V, E, M> CsrGraph<V, E, M, M, M, M, M>
 where
     V: CsrVertex,
     E: CsrEdge,
     M: Memory,
 {
-    /// Format empty vertex columns and both edge regions from **eight** memories (see crate root diagram).
+    /// Format empty vertex columns and both edge regions from **six** memories (see crate root diagram).
     ///
-    /// Order: forward `M_v`, reverse `M_v`, then forward `segment_edges_actual`, `segment_edges_total`,
-    /// `edges_and_log`, then the same three for reverse. All edge regions receive the same
+    /// Order: forward `M_v`, reverse `M_v`, then forward `segment_edge_counts`, `edges_and_log`,
+    /// then the same pair for reverse. All edge regions receive the same
     /// `elem_capacity` / `segment_count` / `segment_size` / `num_edges` via [`DgapEdgeStore::format_new`].
     #[allow(clippy::too_many_arguments)]
     pub fn format_new(
         mem_vertices_forward: M,
         mem_vertices_reverse: M,
-        forward_segment_edges_actual: M,
-        forward_segment_edges_total: M,
+        forward_segment_edge_counts: M,
         forward_edges_and_log: M,
-        reverse_segment_edges_actual: M,
-        reverse_segment_edges_total: M,
+        reverse_segment_edge_counts: M,
         reverse_edges_and_log: M,
         elem_capacity: u64,
         segment_count: u32,
@@ -361,16 +355,8 @@ where
         let vertices_forward = SlotMap::new(mem_vertices_forward).map_err(CsrGraphError::from)?;
         let vertices_reverse = SlotMap::new(mem_vertices_reverse).map_err(CsrGraphError::from)?;
 
-        let fwd_mem = DgapGraphMemories::new(
-            forward_segment_edges_actual,
-            forward_segment_edges_total,
-            forward_edges_and_log,
-        );
-        let rev_mem = DgapGraphMemories::new(
-            reverse_segment_edges_actual,
-            reverse_segment_edges_total,
-            reverse_edges_and_log,
-        );
+        let fwd_mem = DgapGraphMemories::new(forward_segment_edge_counts, forward_edges_and_log);
+        let rev_mem = DgapGraphMemories::new(reverse_segment_edge_counts, reverse_edges_and_log);
 
         let forward_edges = DgapEdgeStore::new(fwd_mem);
         forward_edges
@@ -389,31 +375,29 @@ where
 }
 
 /// Neighborhood iterator hiding tombstone edges and edges incident to tombstoned vertices.
-pub enum LogicalNeighborhoodIter<'a, E, V, Mvs, M1, M2, M3>
+pub enum LogicalNeighborhoodIter<'a, E, V, Mvs, M1, M2>
 where
     E: CsrEdge + CsrEdgeTombstone,
     V: CsrVertex + CsrVertexTombstone,
     Mvs: Memory,
     M1: Memory,
     M2: Memory,
-    M3: Memory,
 {
     Active {
-        inner: NeighborhoodIter<'a, E, M1, M2, M3>,
+        inner: NeighborhoodIter<'a, E, M1, M2>,
         verts: &'a SlotMap<V, Mvs>,
         _p: PhantomData<(V, E)>,
     },
     Empty,
 }
 
-impl<'a, E, V, Mvs, M1, M2, M3> Iterator for LogicalNeighborhoodIter<'a, E, V, Mvs, M1, M2, M3>
+impl<'a, E, V, Mvs, M1, M2> Iterator for LogicalNeighborhoodIter<'a, E, V, Mvs, M1, M2>
 where
     E: CsrEdge + CsrEdgeTombstone,
     V: CsrVertex + CsrVertexTombstone,
     Mvs: Memory,
     M1: Memory,
     M2: Memory,
-    M3: Memory,
 {
     type Item = Result<E, &'static str>;
 
@@ -444,23 +428,21 @@ where
     }
 }
 
-impl<V, E, Mvs, F1, F2, F3, R1, R2, R3> CsrGraph<V, E, Mvs, F1, F2, F3, R1, R2, R3>
+impl<V, E, Mvs, F1, F2, R1, R2> CsrGraph<V, E, Mvs, F1, F2, R1, R2>
 where
     V: CsrVertex + CsrVertexTombstone,
     E: CsrEdge + CsrEdgeTombstone,
     Mvs: Memory,
     F1: Memory,
     F2: Memory,
-    F3: Memory,
     R1: Memory,
     R2: Memory,
-    R3: Memory,
 {
     /// Out-neighbors omitting edge tombstones and neighbors whose vertex row is tombstoned.
     pub fn out_edges_logical<'a>(
         &'a self,
         vid: usize,
-    ) -> Result<LogicalNeighborhoodIter<'a, E, V, Mvs, F1, F2, F3>, CsrGraphError> {
+    ) -> Result<LogicalNeighborhoodIter<'a, E, V, Mvs, F1, F2>, CsrGraphError> {
         self.ensure_vertex(vid)?;
         if self
             .forward
@@ -487,7 +469,7 @@ where
     pub fn in_edges_logical<'a>(
         &'a self,
         vid: usize,
-    ) -> Result<LogicalNeighborhoodIter<'a, E, V, Mvs, R1, R2, R3>, CsrGraphError> {
+    ) -> Result<LogicalNeighborhoodIter<'a, E, V, Mvs, R1, R2>, CsrGraphError> {
         self.ensure_vertex(vid)?;
         if self
             .reverse

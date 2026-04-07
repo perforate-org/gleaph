@@ -7,9 +7,7 @@ use std::rc::Rc;
 use ic_stable_csr::{
     Bound, DgapGraphMemories, DgapStores, Storable, VectorMemory,
     dgap::{DgapEdgeStore, calculate_positions_v1, pma_tree_index},
-    layout::dgap::{
-        EDGE_REGION_MAGIC, PMA_SEGMENT_EDGES_ACTUAL_MAGIC, PMA_SEGMENT_EDGES_TOTAL_MAGIC,
-    },
+    layout::dgap::{EDGE_REGION_MAGIC, PMA_SEGMENT_EDGE_COUNTS_MAGIC},
     traits::{CsrEdge, CsrVertex},
 };
 use ic_stable_slot_map::SlotMap;
@@ -108,27 +106,24 @@ impl CsrEdge for TestEdge {
     }
 }
 
-type TestEdgeStore = DgapEdgeStore<TestEdge, VectorMemory, VectorMemory, VectorMemory>;
+type TestEdgeStore = DgapEdgeStore<TestEdge, VectorMemory, VectorMemory>;
 
-fn triple_edge_memories() -> DgapGraphMemories<VectorMemory, VectorMemory, VectorMemory> {
+fn dual_edge_memories() -> DgapGraphMemories<VectorMemory, VectorMemory> {
     DgapGraphMemories::new(
-        Rc::new(RefCell::new(Vec::new())),
         Rc::new(RefCell::new(Vec::new())),
         Rc::new(RefCell::new(Vec::new())),
     )
 }
 
 #[test]
-fn vertex_and_triple_edge_memories_are_isolated_regions() {
+fn vertex_and_dual_edge_memories_are_isolated_regions() {
     let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
-    let m_actual: VectorMemory = Rc::new(RefCell::new(Vec::new()));
-    let m_total: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+    let m_pma: VectorMemory = Rc::new(RefCell::new(Vec::new()));
     let m_edges_log: VectorMemory = Rc::new(RefCell::new(Vec::new()));
 
     let vertices = SlotMap::new(mv.clone()).unwrap();
     let edges = TestEdgeStore::new(DgapGraphMemories::new(
-        m_actual.clone(),
-        m_total.clone(),
+        m_pma.clone(),
         m_edges_log.clone(),
     ));
     edges.format_new(16, 1, 2, 0).expect("format edge region");
@@ -149,20 +144,14 @@ fn vertex_and_triple_edge_memories_are_isolated_regions() {
         .unwrap();
 
     let v_bytes = mv.borrow();
-    let a_bytes = m_actual.borrow();
-    let t_bytes = m_total.borrow();
+    let p_bytes = m_pma.borrow();
     let el_bytes = m_edges_log.borrow();
 
     assert_eq!(&v_bytes[0..3], b"SSM", "SlotMap magic on M_v");
     assert_eq!(
-        &a_bytes[0..3],
-        PMA_SEGMENT_EDGES_ACTUAL_MAGIC,
-        "PMA actual region magic"
-    );
-    assert_eq!(
-        &t_bytes[0..3],
-        PMA_SEGMENT_EDGES_TOTAL_MAGIC,
-        "PMA total region magic"
+        &p_bytes[0..3],
+        PMA_SEGMENT_EDGE_COUNTS_MAGIC,
+        "PMA segment_edge_counts region magic"
     );
     assert_eq!(
         &el_bytes[0..3],
@@ -191,7 +180,7 @@ fn dgap_stores_sync_meta() {
     let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
 
     let vertices = SlotMap::new(mv).unwrap();
-    let edges = TestEdgeStore::new(triple_edge_memories());
+    let edges = TestEdgeStore::new(dual_edge_memories());
     edges.format_new(32, 1, 2, 0).unwrap();
     vertices
         .insert(&TestVertex {
@@ -211,6 +200,6 @@ fn dgap_stores_sync_meta() {
     let stores = DgapStores::new(vertices, edges);
     stores.sync_pma_meta().unwrap();
 
-    let e = stores.edges.read_actual(1);
+    let e = stores.edges.read_segment_edge_counts(1).actual;
     assert!(e >= 1);
 }

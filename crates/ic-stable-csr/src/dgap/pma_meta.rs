@@ -3,6 +3,7 @@
 use ic_stable_slot_map::SlotMap;
 use ic_stable_structures::Memory;
 
+use crate::layout::dgap::SegmentEdgeCounts;
 use crate::traits::{CsrEdge, CsrVertex};
 
 /// Upper density at root / leaves (C++ `up_h` / `up_0`).
@@ -440,5 +441,82 @@ pub fn recount_segment_actual_column<V, M>(
     }
     if sc > 1 {
         actual[0] = actual[1];
+    }
+}
+
+/// Recompute PMA leaves from the vertex column, then aggregate `actual` / `total` / `tombstone` for internal nodes.
+///
+/// `tombstone` is always **0** on this path (reserved for future tombstone accounting).
+pub fn recount_segment_edge_counts_column<V, M>(
+    col: &SlotMap<V, M>,
+    num_vertices: u64,
+    segment_count: u32,
+    segment_size: u32,
+    elem_capacity_slots: u64,
+    out: &mut [SegmentEdgeCounts],
+) where
+    V: CsrVertex,
+    M: Memory,
+{
+    let nv = num_vertices as usize;
+    let sc = segment_count as usize;
+    let n = sc * 2;
+    if out.len() < n {
+        return;
+    }
+    out.fill(SegmentEdgeCounts {
+        actual: 0,
+        total: 0,
+        tombstone: 0,
+    });
+    for i in 0..segment_count as usize {
+        let v0 = i * segment_size as usize;
+        if v0 >= nv {
+            continue;
+        }
+        let vend = ((i + 1) * segment_size as usize).min(nv);
+        let mut actual_sum = 0i64;
+        for v in v0..vend {
+            actual_sum += col
+                .get_dense(v as u32)
+                .expect("vertex column get")
+                .degree() as i64;
+        }
+        let next_starter = if i + 1 == segment_count as usize {
+            elem_capacity_slots
+        } else {
+            let ni = (i + 1) * segment_size as usize;
+            if ni >= nv {
+                elem_capacity_slots
+            } else {
+                col.get_dense(ni as u32)
+                    .expect("vertex column get")
+                    .base_slot_start()
+            }
+        };
+        let v0_row = col.get_dense(v0 as u32).expect("vertex column get v0");
+        let segment_total_p = next_starter as i64 - v0_row.base_slot_start() as i64;
+        let leaf = i + sc;
+        if leaf < out.len() {
+            out[leaf] = SegmentEdgeCounts {
+                actual: actual_sum,
+                total: segment_total_p,
+                tombstone: 0,
+            };
+        }
+    }
+    for p in (1..sc).rev() {
+        let l = p * 2;
+        let r = l + 1;
+        if r < n {
+            out[p] = SegmentEdgeCounts {
+                actual: out[l].actual.saturating_add(out[r].actual),
+                total: out[l].total.saturating_add(out[r].total),
+                tombstone: out[l].tombstone.saturating_add(out[r].tombstone),
+            };
+        }
+    }
+    if sc > 1 {
+        out[0] = out[1];
     }
 }

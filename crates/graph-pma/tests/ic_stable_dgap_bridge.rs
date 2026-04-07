@@ -1,34 +1,30 @@
-//! Gleaph `VertexEntry` / `EdgeEntry` on `ic-stable-csr` DGAP layout (`M_v` / three `M_e` memories).
+//! Gleaph `VertexEntry` / `EdgeEntry` on `ic-stable-csr` DGAP layout (`M_v` / two `M_e` memories).
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use gleaph_graph_pma::low_level::{
-    DGAP_EDGES_AND_LOG_MEMORY_SLOT, DGAP_LOG_MEMORY_SLOT, DGAP_SEGMENT_EDGES_ACTUAL_MEMORY_SLOT,
-    DGAP_SEGMENT_EDGES_TOTAL_MEMORY_SLOT, DGAP_VERTEX_MEMORY_SLOT, EMPTY_LOG_OFFSET, EdgeEntry,
+    DGAP_EDGES_AND_LOG_MEMORY_SLOT, DGAP_GC_QUEUE_MEMORY_SLOT, DGAP_LOG_MEMORY_SLOT,
+    DGAP_SEGMENT_EDGE_COUNTS_MEMORY_SLOT, DGAP_VERTEX_MEMORY_SLOT, EMPTY_LOG_OFFSET, EdgeEntry,
     EdgeIndex, EdgeRef, VertexEntry, vertex_entry_for_ic_stable_append,
 };
 use ic_stable_csr::{
     DgapEdgeStore, DgapGraphMemories, DgapStores, VectorMemory,
-    layout::dgap::{
-        EDGE_REGION_MAGIC, PMA_SEGMENT_EDGES_ACTUAL_MAGIC, PMA_SEGMENT_EDGES_TOTAL_MAGIC,
-    },
+    layout::dgap::{EDGE_REGION_MAGIC, PMA_SEGMENT_EDGE_COUNTS_MAGIC},
 };
 use ic_stable_slot_map::SlotMap;
 
-type GleaphEdgeStore = DgapEdgeStore<EdgeEntry, VectorMemory, VectorMemory, VectorMemory>;
+type GleaphEdgeStore = DgapEdgeStore<EdgeEntry, VectorMemory, VectorMemory>;
 
 #[test]
-fn gleaph_types_on_vertex_and_triple_edge_memories() {
+fn gleaph_types_on_vertex_and_dual_edge_memories() {
     let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
-    let m_actual: VectorMemory = Rc::new(RefCell::new(Vec::new()));
-    let m_total: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+    let m_pma: VectorMemory = Rc::new(RefCell::new(Vec::new()));
     let m_edges_log: VectorMemory = Rc::new(RefCell::new(Vec::new()));
 
     let vertices = SlotMap::new(mv.clone()).unwrap();
     let edges = GleaphEdgeStore::new(DgapGraphMemories::new(
-        m_actual.clone(),
-        m_total.clone(),
+        m_pma.clone(),
         m_edges_log.clone(),
     ));
     edges.format_new(16, 1, 2, 0).expect("format edge region");
@@ -49,19 +45,21 @@ fn gleaph_types_on_vertex_and_triple_edge_memories() {
         .unwrap();
 
     let vb = mv.borrow();
-    let ab = m_actual.borrow();
-    let tb = m_total.borrow();
+    let pb = m_pma.borrow();
     let elb = m_edges_log.borrow();
     assert_eq!(&vb[0..3], b"SSM");
-    assert_eq!(&ab[0..3], PMA_SEGMENT_EDGES_ACTUAL_MAGIC);
-    assert_eq!(&tb[0..3], PMA_SEGMENT_EDGES_TOTAL_MAGIC);
+    assert_eq!(&pb[0..3], PMA_SEGMENT_EDGE_COUNTS_MAGIC);
     assert_eq!(&elb[0..3], EDGE_REGION_MAGIC);
 
+    // `EdgeEntry: CsrEdgeTombstone` => PMA stride 24; tombstone i64 for node 0 at offset 32..40.
+    assert!(pb.len() >= 40);
+    assert_eq!(i64::from_le_bytes(pb[32..40].try_into().unwrap()), 0);
+
     assert_eq!(DGAP_VERTEX_MEMORY_SLOT, 220);
-    assert_eq!(DGAP_SEGMENT_EDGES_ACTUAL_MEMORY_SLOT, 221);
-    assert_eq!(DGAP_SEGMENT_EDGES_TOTAL_MEMORY_SLOT, 222);
-    assert_eq!(DGAP_EDGES_AND_LOG_MEMORY_SLOT, 223);
-    assert_eq!(DGAP_LOG_MEMORY_SLOT, 224);
+    assert_eq!(DGAP_SEGMENT_EDGE_COUNTS_MEMORY_SLOT, 221);
+    assert_eq!(DGAP_EDGES_AND_LOG_MEMORY_SLOT, 222);
+    assert_eq!(DGAP_LOG_MEMORY_SLOT, 223);
+    assert_eq!(DGAP_GC_QUEUE_MEMORY_SLOT, 224);
 }
 
 #[test]
@@ -70,7 +68,6 @@ fn dgap_stores_insert_vertex_with_gleaph_row_helper() {
 
     let vertices = SlotMap::new(mv).unwrap();
     let edges = GleaphEdgeStore::new(DgapGraphMemories::new(
-        Rc::new(RefCell::new(Vec::new())),
         Rc::new(RefCell::new(Vec::new())),
         Rc::new(RefCell::new(Vec::new())),
     ));

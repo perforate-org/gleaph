@@ -25,37 +25,33 @@ where
 }
 
 /// Bidirectional CSR with a stable work queue for lazy physical compaction.
-pub struct CsrGraphWithGcQueue<V, E, Mvs, F1, F2, F3, R1, R2, R3, QM>
+pub struct CsrGraphWithGcQueue<V, E, Mvs, F1, F2, R1, R2, QM>
 where
     V: CsrVertex,
     E: CsrEdge,
     Mvs: Memory,
     F1: Memory,
     F2: Memory,
-    F3: Memory,
     R1: Memory,
     R2: Memory,
-    R3: Memory,
     QM: Memory,
 {
-    graph: CsrGraph<V, E, Mvs, F1, F2, F3, R1, R2, R3>,
+    graph: CsrGraph<V, E, Mvs, F1, F2, R1, R2>,
     work_queue: StableVecDeque<GcWorkItem, QM>,
 }
 
-impl<V, E, Mvs, F1, F2, F3, R1, R2, R3, QM> CsrGraphWithGcQueue<V, E, Mvs, F1, F2, F3, R1, R2, R3, QM>
+impl<V, E, Mvs, F1, F2, R1, R2, QM> CsrGraphWithGcQueue<V, E, Mvs, F1, F2, R1, R2, QM>
 where
     V: CsrVertex + CsrVertexTombstone,
     E: CsrEdge + CsrEdgeTombstone,
     Mvs: Memory,
     F1: Memory,
     F2: Memory,
-    F3: Memory,
     R1: Memory,
     R2: Memory,
-    R3: Memory,
     QM: Memory,
 {
-    pub fn graph(&self) -> &CsrGraph<V, E, Mvs, F1, F2, F3, R1, R2, R3> {
+    pub fn graph(&self) -> &CsrGraph<V, E, Mvs, F1, F2, R1, R2> {
         &self.graph
     }
 
@@ -291,14 +287,14 @@ where
     pub fn out_edges_logical<'a>(
         &'a self,
         vid: usize,
-    ) -> Result<LogicalNeighborhoodIter<'a, E, V, Mvs, F1, F2, F3>, CsrGraphError> {
+    ) -> Result<LogicalNeighborhoodIter<'a, E, V, Mvs, F1, F2>, CsrGraphError> {
         self.graph.out_edges_logical(vid)
     }
 
     pub fn in_edges_logical<'a>(
         &'a self,
         vid: usize,
-    ) -> Result<LogicalNeighborhoodIter<'a, E, V, Mvs, R1, R2, R3>, CsrGraphError> {
+    ) -> Result<LogicalNeighborhoodIter<'a, E, V, Mvs, R1, R2>, CsrGraphError> {
         self.graph.in_edges_logical(vid)
     }
 
@@ -502,23 +498,21 @@ where
     }
 }
 
-impl<V, E, M, QM> CsrGraphWithGcQueue<V, E, M, M, M, M, M, M, M, QM>
+impl<V, E, M, QM> CsrGraphWithGcQueue<V, E, M, M, M, M, M, QM>
 where
     V: CsrVertex + CsrVertexTombstone,
     E: CsrEdge + CsrEdgeTombstone,
     M: Memory,
     QM: Memory,
 {
-    /// Like [`CsrGraph::format_new`] plus a **ninth** `Memory` for [`StableVecDeque`](crate::StableVecDeque)`<`[`GcWorkItem`](crate::csr::gc_work_item::GcWorkItem)`>`.
+    /// Like [`CsrGraph::format_new`] plus a **seventh** `Memory` for [`StableVecDeque`](crate::StableVecDeque)`<`[`GcWorkItem`](crate::csr::gc_work_item::GcWorkItem)`>`.
     #[allow(clippy::too_many_arguments)]
     pub fn format_new_with_gc_queue(
         mem_vertices_forward: M,
         mem_vertices_reverse: M,
-        forward_segment_edges_actual: M,
-        forward_segment_edges_total: M,
+        forward_segment_edge_counts: M,
         forward_edges_and_log: M,
-        reverse_segment_edges_actual: M,
-        reverse_segment_edges_total: M,
+        reverse_segment_edge_counts: M,
         reverse_edges_and_log: M,
         mem_gc_work_queue: QM,
         elem_capacity: u64,
@@ -529,11 +523,9 @@ where
         let graph = CsrGraph::format_new(
             mem_vertices_forward,
             mem_vertices_reverse,
-            forward_segment_edges_actual,
-            forward_segment_edges_total,
+            forward_segment_edge_counts,
             forward_edges_and_log,
-            reverse_segment_edges_actual,
-            reverse_segment_edges_total,
+            reverse_segment_edge_counts,
             reverse_edges_and_log,
             elem_capacity,
             segment_count,

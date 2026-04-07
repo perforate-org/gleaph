@@ -161,8 +161,6 @@ fn delete_edge_tombstone_gc_and_degrees() {
         vm(),
         vm(),
         vm(),
-        vm(),
-        vm(),
         64,
         1,
         8,
@@ -239,8 +237,6 @@ fn delete_vertex_hides_edges_until_gc() {
         vm(),
         vm(),
         vm(),
-        vm(),
-        vm(),
         64,
         1,
         8,
@@ -294,8 +290,6 @@ fn insert_rejects_tombstone_endpoint() {
         vm(),
         vm(),
         vm(),
-        vm(),
-        vm(),
         64,
         1,
         8,
@@ -319,8 +313,6 @@ fn insert_rejects_tombstone_endpoint() {
 #[test]
 fn insert_rejects_duplicate_neighbor_slot() {
     let g = CsrGraphWithGcQueue::format_new_with_gc_queue(
-        vm(),
-        vm(),
         vm(),
         vm(),
         vm(),

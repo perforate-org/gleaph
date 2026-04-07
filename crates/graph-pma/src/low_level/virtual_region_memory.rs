@@ -214,21 +214,14 @@ impl<M: Memory> GleaphMemoryManager<M> {
         MemoryId::new(super::DGAP_VERTEX_MEMORY_SLOT)
     }
 
-    /// Reserved [`MemoryId`] for `M_e` PMA `segment_edges_actual` (`M1`).
+    /// Reserved [`MemoryId`] for `M_e` PMA `segment_edge_counts` (`M1`, `SEC`).
     #[cfg(feature = "experimental-dgap")]
     #[inline]
-    pub fn dgap_segment_edges_actual_memory_id() -> MemoryId {
-        MemoryId::new(super::DGAP_SEGMENT_EDGES_ACTUAL_MEMORY_SLOT)
+    pub fn dgap_segment_edge_counts_memory_id() -> MemoryId {
+        MemoryId::new(super::DGAP_SEGMENT_EDGE_COUNTS_MEMORY_SLOT)
     }
 
-    /// Reserved [`MemoryId`] for `M_e` PMA `segment_edges_total` (`M2`).
-    #[cfg(feature = "experimental-dgap")]
-    #[inline]
-    pub fn dgap_segment_edges_total_memory_id() -> MemoryId {
-        MemoryId::new(super::DGAP_SEGMENT_EDGES_TOTAL_MEMORY_SLOT)
-    }
-
-    /// Reserved [`MemoryId`] for `M_e` CSR slab + log idx + log pool (`M3`).
+    /// Reserved [`MemoryId`] for `M_e` CSR slab + log idx + log pool (`M2`).
     #[cfg(feature = "experimental-dgap")]
     #[inline]
     pub fn dgap_edges_and_log_memory_id() -> MemoryId {

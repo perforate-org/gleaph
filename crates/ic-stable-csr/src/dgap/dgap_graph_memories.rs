@@ -1,21 +1,16 @@
-//! Three [`ic_stable_structures::Memory`] handles for DGAP-aligned edge state (`M_e`).
+//! Two [`ic_stable_structures::Memory`] handles for DGAP-aligned edge state (`M_e`).
 //!
-//! Typically these are three [`VirtualMemory`](ic_stable_structures::memory_manager::VirtualMemory) values
+//! Typically these are two [`VirtualMemory`](ic_stable_structures::memory_manager::VirtualMemory) values
 //! from one [`MemoryManager`](ic_stable_structures::memory_manager::MemoryManager) (distinct [`MemoryId`] per
-//! region), or three [`VectorMemory`](ic_stable_structures::vec_mem::VectorMemory) instances in tests.
+//! region), or two [`VectorMemory`](ic_stable_structures::vec_mem::VectorMemory) instances in tests.
 //!
 //! ```text
-//! [`DgapGraphMemories::segment_edges_actual`]  — Memory #1
+//! [`DgapGraphMemories::segment_edge_counts`] — Memory #1
 //! --------------------------------------------------
-//! | `VCA` V1 mini header + `segment_edges_actual` PMA `i64` array (`layout::dgap`)    |
-//! --------------------------------------------------
-//!
-//! [`DgapGraphMemories::segment_edges_total`]   — Memory #2
-//! --------------------------------------------------
-//! | `VCT` V1 mini header + `segment_edges_total` PMA `i64` array (`layout::dgap`)     |
+//! | `SEC` V1 mini header + packed [`SegmentEdgeCounts`] PMA tree (`layout::dgap`)     |
 //! --------------------------------------------------
 //!
-//! [`DgapGraphMemories::edges_and_log_segment`] — Memory #3
+//! [`DgapGraphMemories::edges_and_log_segment`] — Memory #2
 //! --------------------------------------------------
 //! | `VCE` [`crate::layout::dgap::DgapEdgeHeaderV1`] + CSR slab + log idx + log pool |
 //! --------------------------------------------------
@@ -24,31 +19,24 @@
 use ic_stable_structures::Memory;
 
 use crate::layout::dgap::{
-    DgapEdgeHeaderV1, edge_slab_slot_offset, log_entry_offset, read_actual as read_actual_arr,
-    read_log_segment_idx, read_total as read_total_arr, write_actual as write_actual_arr,
-    write_log_segment_idx, write_segment_edges_actual_region_header,
-    write_segment_edges_total_region_header, write_total as write_total_arr,
+    DgapEdgeHeaderV1, SegmentEdgeCounts, edge_slab_slot_offset, log_entry_offset,
+    read_log_segment_idx, read_segment_edge_counts, required_segment_edge_counts_bytes,
+    write_log_segment_idx, write_segment_edge_counts, write_segment_edge_counts_region_header,
 };
 use crate::memory_util::{
     GrowFailed, read_i32_le, read_u64_le, safe_write, write_i32_le, write_u64_le,
 };
 
 #[derive(Clone, Debug)]
-pub struct DgapGraphMemories<M1, M2, M3> {
-    pub segment_edges_actual: M1,
-    pub segment_edges_total: M2,
-    pub edges_and_log_segment: M3,
+pub struct DgapGraphMemories<M1, M2> {
+    pub segment_edge_counts: M1,
+    pub edges_and_log_segment: M2,
 }
 
-impl<M1: Memory, M2: Memory, M3: Memory> DgapGraphMemories<M1, M2, M3> {
-    pub fn new(
-        segment_edges_actual: M1,
-        segment_edges_total: M2,
-        edges_and_log_segment: M3,
-    ) -> Self {
+impl<M1: Memory, M2: Memory> DgapGraphMemories<M1, M2> {
+    pub fn new(segment_edge_counts: M1, edges_and_log_segment: M2) -> Self {
         Self {
-            segment_edges_actual,
-            segment_edges_total,
+            segment_edge_counts,
             edges_and_log_segment,
         }
     }
@@ -61,20 +49,12 @@ impl<M1: Memory, M2: Memory, M3: Memory> DgapGraphMemories<M1, M2, M3> {
         h.write(&self.edges_and_log_segment);
     }
 
-    pub fn read_actual(&self, j: usize) -> i64 {
-        read_actual_arr(&self.segment_edges_actual, j)
+    pub fn read_segment_edge_counts(&self, j: usize, stride: u64) -> SegmentEdgeCounts {
+        read_segment_edge_counts(&self.segment_edge_counts, j, stride)
     }
 
-    pub fn write_actual(&self, j: usize, v: i64) {
-        write_actual_arr(&self.segment_edges_actual, j, v);
-    }
-
-    pub fn read_total(&self, j: usize) -> i64 {
-        read_total_arr(&self.segment_edges_total, j)
-    }
-
-    pub fn write_total(&self, j: usize, v: i64) {
-        write_total_arr(&self.segment_edges_total, j, v);
+    pub fn write_segment_edge_counts(&self, j: usize, stride: u64, c: SegmentEdgeCounts) {
+        write_segment_edge_counts(&self.segment_edge_counts, j, stride, c);
     }
 
     pub fn read_edge_slab(&self, edge_stride: u32, slot: u64, out: &mut [u8]) {
@@ -120,7 +100,7 @@ impl<M1: Memory, M2: Memory, M3: Memory> DgapGraphMemories<M1, M2, M3> {
     }
 
     pub fn write_log_idx(&self, h: &DgapEdgeHeaderV1, leaf_seg: u32, v: i32) {
-        write_log_segment_idx(&self.edges_and_log_segment, h, leaf_seg, v);
+        write_log_segment_idx(&self.edges_and_log_segment, h, leaf_seg, v)
     }
 
     /// Reads `prev`, `src`, and the edge payload into `edge_out` (length must equal `edge_bytes`).
@@ -183,22 +163,18 @@ impl<M1: Memory, M2: Memory, M3: Memory> DgapGraphMemories<M1, M2, M3> {
         Ok(())
     }
 
-    pub fn grow_all_regions_for_header(&self, h: &DgapEdgeHeaderV1) -> Result<(), GrowFailed> {
-        use crate::layout::dgap::{
-            required_edges_and_log_bytes, required_segment_edges_actual_bytes,
-            required_segment_edges_total_bytes,
-        };
+    pub fn grow_all_regions_for_header(
+        &self,
+        h: &DgapEdgeHeaderV1,
+        pma_stride: u64,
+    ) -> Result<(), GrowFailed> {
+        use crate::layout::dgap::required_edges_and_log_bytes;
         grow_memory_to(
-            &self.segment_edges_actual,
-            required_segment_edges_actual_bytes(h.segment_count),
-        )?;
-        grow_memory_to(
-            &self.segment_edges_total,
-            required_segment_edges_total_bytes(h.segment_count),
+            &self.segment_edge_counts,
+            required_segment_edge_counts_bytes(h.segment_count, pma_stride),
         )?;
         grow_memory_to(&self.edges_and_log_segment, required_edges_and_log_bytes(h))?;
-        write_segment_edges_actual_region_header(&self.segment_edges_actual);
-        write_segment_edges_total_region_header(&self.segment_edges_total);
+        write_segment_edge_counts_region_header(&self.segment_edge_counts);
         Ok(())
     }
 

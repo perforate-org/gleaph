@@ -78,8 +78,8 @@ pub use hydration::{
     write_surface_runtime_to_stable_memory, write_surface_runtimes_to_stable_memory,
 };
 pub use ic_stable_csr::{
-    DGAP_EDGES_AND_LOG_MEMORY_SLOT, DGAP_LOG_MEMORY_SLOT, DGAP_SEGMENT_EDGES_ACTUAL_MEMORY_SLOT,
-    DGAP_SEGMENT_EDGES_TOTAL_MEMORY_SLOT, DGAP_VERTEX_MEMORY_SLOT,
+    DGAP_EDGES_AND_LOG_MEMORY_SLOT, DGAP_GC_QUEUE_MEMORY_SLOT, DGAP_LOG_MEMORY_SLOT,
+    DGAP_SEGMENT_EDGE_COUNTS_MEMORY_SLOT, DGAP_VERTEX_MEMORY_SLOT,
     vertex_entry_for_ic_stable_append,
 };
 pub use ids::{EdgeRef, StableAddr, VertexRef};

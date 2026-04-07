@@ -19,24 +19,22 @@ use super::vertex::{EMPTY_LOG_OFFSET, VertexEntry};
 
 /// Reserved [`MemoryId`](ic_stable_structures::memory_manager::MemoryId) slots when using a dedicated
 /// [`ic_stable_structures::memory_manager::MemoryManager`] for [`ic_stable_csr`]: `M_v`,
-/// three `M_e` regions, optional append-only stream log.
+/// two `M_e` regions, optional append-only stream log (contiguous slots **220–224**).
 ///
 /// | Slot | Role | [`ic_stable_csr`] |
 /// |------|------|-------------------|
 /// | [`DGAP_VERTEX_MEMORY_SLOT`] | Vertex CSR column | `M_v` |
-/// | [`DGAP_SEGMENT_EDGES_ACTUAL_MEMORY_SLOT`] | PMA `segment_edges_actual` (`VCA` + array) | `M1` |
-/// | [`DGAP_SEGMENT_EDGES_TOTAL_MEMORY_SLOT`] | PMA `segment_edges_total` (`VCT` + array) | `M2` |
-/// | [`DGAP_EDGES_AND_LOG_MEMORY_SLOT`] | `VCE` header + CSR slab + log idx + pool | `M3` |
+/// | [`DGAP_SEGMENT_EDGE_COUNTS_MEMORY_SLOT`] | PMA `segment_edge_counts` (`SEC` + packed nodes) | `M1` |
+/// | [`DGAP_EDGES_AND_LOG_MEMORY_SLOT`] | `VCE` header + CSR slab + log idx + pool | `M2` |
 /// | [`DGAP_LOG_MEMORY_SLOT`] | Optional legacy stream (not `DgapEdgeStore`) | `layout::log_region` |
-/// | [`DGAP_GC_QUEUE_MEMORY_SLOT`] | Persistent GC work queue ([`ic_stable_csr::StableVecDeque`]) | 9th `Memory` |
+/// | [`DGAP_GC_QUEUE_MEMORY_SLOT`] | Persistent GC work queue ([`ic_stable_csr::StableVecDeque`]) | extra `Memory` |
 pub const DGAP_VERTEX_MEMORY_SLOT: u8 = 220;
-pub const DGAP_SEGMENT_EDGES_ACTUAL_MEMORY_SLOT: u8 = 221;
-pub const DGAP_SEGMENT_EDGES_TOTAL_MEMORY_SLOT: u8 = 222;
-pub const DGAP_EDGES_AND_LOG_MEMORY_SLOT: u8 = 223;
-pub const DGAP_LOG_MEMORY_SLOT: u8 = 224;
+pub const DGAP_SEGMENT_EDGE_COUNTS_MEMORY_SLOT: u8 = 221;
+pub const DGAP_EDGES_AND_LOG_MEMORY_SLOT: u8 = 222;
+pub const DGAP_LOG_MEMORY_SLOT: u8 = 223;
 /// Stable deque backing store for [`ic_stable_csr::csr::CsrGraphWithGcQueue`] work items (canister wiring).
 #[allow(dead_code)]
-pub const DGAP_GC_QUEUE_MEMORY_SLOT: u8 = 225;
+pub const DGAP_GC_QUEUE_MEMORY_SLOT: u8 = 224;
 
 /// Builds a tail [`VertexEntry`] for [`ic_stable_csr::DgapStores::insert_vertex`].
 ///

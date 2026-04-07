@@ -97,11 +97,10 @@ impl CsrEdge for TEFat {
     }
 }
 
-type FatEdgeStore = DgapEdgeStore<TEFat, VectorMemory, VectorMemory, VectorMemory>;
+type FatEdgeStore = DgapEdgeStore<TEFat, VectorMemory, VectorMemory>;
 
-fn triple_edge_memories() -> DgapGraphMemories<VectorMemory, VectorMemory, VectorMemory> {
+fn dual_edge_memories() -> DgapGraphMemories<VectorMemory, VectorMemory> {
     DgapGraphMemories::new(
-        Rc::new(RefCell::new(Vec::new())),
         Rc::new(RefCell::new(Vec::new())),
         Rc::new(RefCell::new(Vec::new())),
     )
@@ -111,7 +110,7 @@ fn triple_edge_memories() -> DgapGraphMemories<VectorMemory, VectorMemory, Vecto
 fn neighborhood_iter_errors_when_edge_stride_exceeds_inline_cap() {
     let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
     let vertices = SlotMap::new(mv).unwrap();
-    let edges = FatEdgeStore::new(triple_edge_memories());
+    let edges = FatEdgeStore::new(dual_edge_memories());
     edges.format_new(8, 1, 8, 0).expect("format");
 
     vertices
