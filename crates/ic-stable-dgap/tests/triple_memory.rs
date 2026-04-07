@@ -4,13 +4,13 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use ic_stable_pma::{
+use ic_stable_dgap::{
+    Bound, DgapGraphMemories, DgapStores, StableVec, Storable, VectorMemory,
+    dgap::{DgapEdgeStore, calculate_positions_v1, pma_tree_index},
     layout::dgap::{
         EDGE_REGION_MAGIC, PMA_SEGMENT_EDGES_ACTUAL_MAGIC, PMA_SEGMENT_EDGES_TOTAL_MAGIC,
     },
     traits::{CsrEdgeSlot, CsrVertex},
-    dgap::{calculate_positions_v1, pma_tree_index, DgapEdgeStore},
-    Bound, DgapGraphMemories, StableVec, Storable, VectorMemory, DgapStores,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,9 +120,7 @@ fn vertex_and_triple_edge_memories_are_isolated_regions() {
         m_total.clone(),
         m_edges_log.clone(),
     ));
-    edges
-        .format_new(16, 1, 2, 0)
-        .expect("format edge region");
+    edges.format_new(16, 1, 2, 0).expect("format edge region");
 
     vertices.push(&TestVertex {
         slot_base: 0,

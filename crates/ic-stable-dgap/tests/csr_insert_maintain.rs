@@ -4,10 +4,10 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use ic_stable_pma::{
+use ic_stable_dgap::{
+    Bound, DgapEdgeStore, DgapGraphMemories, DgapStores, DgapStoresError, StableVec, Storable,
+    VectorMemory,
     traits::{CsrEdgeSlot, CsrVertex},
-    Bound, DgapGraphMemories, StableVec, Storable, VectorMemory, DgapEdgeStore, DgapStores,
-    DgapStoresError,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -154,7 +154,10 @@ fn overflow_goes_to_log_then_neighborhood_matches_insert_order() {
 
     let v0 = stores.vertices.get(0).unwrap();
     assert_eq!(v0.degree(), 3);
-    assert!(v0.log_head() >= 0, "third edge should use overflow log (slab capped by next vertex base)");
+    assert!(
+        v0.log_head() >= 0,
+        "third edge should use overflow log (slab capped by next vertex base)"
+    );
 
     let neigh = stores
         .edges
@@ -254,7 +257,13 @@ fn insert_vertex_twice_then_insert_edges_on_each() {
     let stores = DgapStores::new(vertices, edges);
     stores.sync_pma_meta().unwrap();
 
-    assert_eq!(stores.edges.slab_append_base_slot(&stores.vertices).unwrap(), 0);
+    assert_eq!(
+        stores
+            .edges
+            .slab_append_base_slot(&stores.vertices)
+            .unwrap(),
+        0
+    );
     let id0 = stores
         .insert_vertex(TV {
             slot_base: 999,
@@ -270,7 +279,10 @@ fn insert_vertex_twice_then_insert_edges_on_each() {
     );
 
     assert_eq!(
-        stores.edges.slab_append_base_slot(&stores.vertices).unwrap(),
+        stores
+            .edges
+            .slab_append_base_slot(&stores.vertices)
+            .unwrap(),
         1,
         "second empty tail must not share slab cursor with first"
     );

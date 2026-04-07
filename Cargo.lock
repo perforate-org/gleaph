@@ -1526,7 +1526,7 @@ dependencies = [
  "gleaph-gql",
  "gleaph-gql-planner",
  "gleaph-graph-kernel",
- "ic-stable-pma",
+ "ic-stable-dgap",
  "ic-stable-structures",
  "roaring",
  "serde",
@@ -1985,7 +1985,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ic-stable-pma"
+name = "ic-stable-dgap"
 version = "0.1.0"
 dependencies = [
  "ic-stable-structures",

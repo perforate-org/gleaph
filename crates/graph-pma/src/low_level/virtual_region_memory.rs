@@ -30,13 +30,13 @@ use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
 
-use ic_stable_structures::memory_manager::MemoryId;
 use ic_stable_structures::Memory;
+use ic_stable_structures::memory_manager::MemoryId;
 
 use super::manager::RegionManager;
 use super::region::{RegionKind, RegionStorageKind, WASM_PAGE_SIZE};
-use super::{ExtentGrowthPolicy, ExtentGrowthRequest, WasmPages};
 use super::region_logical_slice::{read_region_logical_slice, write_region_logical_slice};
+use super::{ExtentGrowthPolicy, ExtentGrowthRequest, WasmPages};
 
 /// Errors from [`GleaphMemoryManager::get_bucket`] / [`GleaphMemoryManager::get_extent`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,9 +84,7 @@ fn memory_id_raw(id: MemoryId) -> u8 {
 
 fn ensure_backing_covers(memory: &impl Memory, last_byte_exclusive: u64) -> Result<(), ()> {
     let current_pages = memory.size();
-    let current_bytes = current_pages
-        .checked_mul(WASM_PAGE_SIZE)
-        .ok_or(())?;
+    let current_bytes = current_pages.checked_mul(WASM_PAGE_SIZE).ok_or(())?;
     if current_bytes >= last_byte_exclusive {
         return Ok(());
     }
@@ -126,7 +124,10 @@ impl<M: Memory> GleaphMemoryManager<M> {
         &self.backing
     }
 
-    pub fn get_bucket(&self, kind: RegionKind) -> Result<VirtualBucketMemory<M>, VirtualRegionMemoryError> {
+    pub fn get_bucket(
+        &self,
+        kind: RegionKind,
+    ) -> Result<VirtualBucketMemory<M>, VirtualRegionMemoryError> {
         let region = self
             .manager
             .borrow()
@@ -147,7 +148,10 @@ impl<M: Memory> GleaphMemoryManager<M> {
         })
     }
 
-    pub fn get_extent(&self, kind: RegionKind) -> Result<VirtualExtentMemory<M>, VirtualRegionMemoryError> {
+    pub fn get_extent(
+        &self,
+        kind: RegionKind,
+    ) -> Result<VirtualExtentMemory<M>, VirtualRegionMemoryError> {
         let region = self
             .manager
             .borrow()
@@ -203,7 +207,7 @@ impl<M: Memory> GleaphMemoryManager<M> {
     }
 
     /// Reserved [`MemoryId`] for `M_v` when using a **separate** [`ic_stable_structures::memory_manager::MemoryManager`]
-    /// on the canister backing store for [`ic_stable_pma`] (see `experimental-dgap`).
+    /// on the canister backing store for [`ic_stable_dgap`] (see `experimental-dgap`).
     #[cfg(feature = "experimental-dgap")]
     #[inline]
     pub fn dgap_vertex_memory_id() -> MemoryId {
@@ -280,7 +284,10 @@ impl<M: Memory> Memory for VirtualBucketMemory<M> {
 
         {
             let mut mgr = self.manager.borrow_mut();
-            if mgr.ensure_bucket_region_capacity(self.kind, new_bytes).is_none() {
+            if mgr
+                .ensure_bucket_region_capacity(self.kind, new_bytes)
+                .is_none()
+            {
                 return -1;
             }
             let Some(chain) = mgr.bucket_chain(self.kind) else {
@@ -328,8 +335,14 @@ impl<M: Memory> Memory for VirtualBucketMemory<M> {
     fn read(&self, offset: u64, dst: &mut [u8]) {
         let offset_usize = usize::try_from(offset).expect("offset fits usize");
         let mgr = self.manager.borrow();
-        let slice = read_region_logical_slice(&mgr, self.backing.as_ref(), self.kind, offset_usize, dst.len())
-            .expect("VirtualBucketMemory::read in bounds");
+        let slice = read_region_logical_slice(
+            &mgr,
+            self.backing.as_ref(),
+            self.kind,
+            offset_usize,
+            dst.len(),
+        )
+        .expect("VirtualBucketMemory::read in bounds");
         dst.copy_from_slice(&slice);
     }
 
@@ -429,7 +442,10 @@ impl<M: Memory> Memory for VirtualExtentMemory<M> {
 
         {
             let mut mgr = self.manager.borrow_mut();
-            if mgr.set_region_logical_len(self.kind, new_bytes_vm).is_none() {
+            if mgr
+                .set_region_logical_len(self.kind, new_bytes_vm)
+                .is_none()
+            {
                 return -1;
             }
         }
@@ -458,8 +474,14 @@ impl<M: Memory> Memory for VirtualExtentMemory<M> {
     fn read(&self, offset: u64, dst: &mut [u8]) {
         let offset_usize = usize::try_from(offset).expect("offset fits usize");
         let mgr = self.manager.borrow();
-        let slice = read_region_logical_slice(&mgr, self.backing.as_ref(), self.kind, offset_usize, dst.len())
-            .expect("VirtualExtentMemory::read in bounds");
+        let slice = read_region_logical_slice(
+            &mgr,
+            self.backing.as_ref(),
+            self.kind,
+            offset_usize,
+            dst.len(),
+        )
+        .expect("VirtualExtentMemory::read in bounds");
         dst.copy_from_slice(&slice);
     }
 
@@ -480,7 +502,9 @@ impl<M: Memory> Memory for VirtualExtentMemory<M> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::low_level::{BucketChain, BucketId, BucketSizeInPages, ExtentChain, ExtentId, WasmPages};
+    use crate::low_level::{
+        BucketChain, BucketId, BucketSizeInPages, ExtentChain, ExtentId, WasmPages,
+    };
     use ic_stable_structures::VectorMemory;
 
     fn sample_bucket_manager() -> RegionManager {
@@ -516,7 +540,10 @@ mod tests {
 
     fn sample_forward_reverse_edge_extent_manager() -> RegionManager {
         let mut manager = RegionManager::with_bucket_size(BucketSizeInPages::DEFAULT);
-        for kind in [RegionKind::ForwardEdgeEntries, RegionKind::ReverseEdgeEntries] {
+        for kind in [
+            RegionKind::ForwardEdgeEntries,
+            RegionKind::ReverseEdgeEntries,
+        ] {
             manager.define_extent_region(
                 kind,
                 ExtentChain::new(

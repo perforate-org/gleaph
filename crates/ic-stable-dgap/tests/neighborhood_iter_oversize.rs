@@ -4,9 +4,9 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use ic_stable_pma::{
-    traits::{CsrEdgeSlot, CsrVertex},
+use ic_stable_dgap::{
     Bound, DgapEdgeStore, DgapGraphMemories, StableVec, Storable, VectorMemory,
+    traits::{CsrEdgeSlot, CsrVertex},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

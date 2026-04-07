@@ -1,18 +1,18 @@
-//! Gleaph `VertexEntry` / `EdgeEntry` on `ic-stable-pma` DGAP layout (`M_v` / three `M_e` memories).
+//! Gleaph `VertexEntry` / `EdgeEntry` on `ic-stable-dgap` DGAP layout (`M_v` / three `M_e` memories).
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use gleaph_graph_pma::low_level::{
-    vertex_entry_for_ic_stable_append, EdgeEntry, EdgeIndex, EdgeRef, VertexEntry, EMPTY_LOG_OFFSET,
     DGAP_EDGES_AND_LOG_MEMORY_SLOT, DGAP_LOG_MEMORY_SLOT, DGAP_SEGMENT_EDGES_ACTUAL_MEMORY_SLOT,
-    DGAP_SEGMENT_EDGES_TOTAL_MEMORY_SLOT, DGAP_VERTEX_MEMORY_SLOT,
+    DGAP_SEGMENT_EDGES_TOTAL_MEMORY_SLOT, DGAP_VERTEX_MEMORY_SLOT, EMPTY_LOG_OFFSET, EdgeEntry,
+    EdgeIndex, EdgeRef, VertexEntry, vertex_entry_for_ic_stable_append,
 };
-use ic_stable_pma::{
+use ic_stable_dgap::{
+    DgapEdgeStore, DgapGraphMemories, DgapStores, StableVec, VectorMemory,
     layout::dgap::{
         EDGE_REGION_MAGIC, PMA_SEGMENT_EDGES_ACTUAL_MAGIC, PMA_SEGMENT_EDGES_TOTAL_MAGIC,
     },
-    DgapGraphMemories, StableVec, VectorMemory, DgapEdgeStore, DgapStores,
 };
 
 type GleaphEdgeStore = DgapEdgeStore<EdgeEntry, VectorMemory, VectorMemory, VectorMemory>;
@@ -75,12 +75,18 @@ fn dgap_stores_insert_vertex_with_gleaph_row_helper() {
     stores.sync_pma_meta().unwrap();
 
     let segment_size = 4u32;
-    let b0 = stores.edges.slab_append_base_slot(&stores.vertices).unwrap();
+    let b0 = stores
+        .edges
+        .slab_append_base_slot(&stores.vertices)
+        .unwrap();
     let row0 = vertex_entry_for_ic_stable_append(0, segment_size, b0);
     assert_eq!(row0.segment_id(), 0);
     stores.insert_vertex(row0).unwrap();
 
-    let b1 = stores.edges.slab_append_base_slot(&stores.vertices).unwrap();
+    let b1 = stores
+        .edges
+        .slab_append_base_slot(&stores.vertices)
+        .unwrap();
     let row1 = vertex_entry_for_ic_stable_append(1, segment_size, b1);
     assert_eq!(row1.segment_id(), 0);
     stores.insert_vertex(row1).unwrap();

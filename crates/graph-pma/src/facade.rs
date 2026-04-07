@@ -23,22 +23,22 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use crate::VecMemory;
-use ic_stable_structures::Memory;
 use gleaph_gql::Value;
 use gleaph_graph_kernel::{EdgeId, LabelId, NodeId, PropertyMap};
+use ic_stable_structures::Memory;
 
 use crate::low_level::{
     BucketSizeInPages, EdgeEntry, EdgeReplaceSpec, EdgeTombstoneSpec, ExtentChain,
-    ExtentGrowthPolicy, ExtentGrowthRequest, ExtentId, ForwardSurfaceRuntime,
+    ExtentGrowthPolicy, ExtentGrowthRequest, ExtentId, ForwardSurfaceRuntime, GleaphMemoryManager,
     GraphBatchMutationSession, GraphEnsureCapacitySegmentWriteSummary,
     GraphEnsureCapacityWriteSummary, GraphInsertPolicy, GraphInsertResult,
     GraphInsertSegmentWriteSummary, GraphInsertWriteSummary, GraphMaintenanceBatchWriteSummary,
     GraphMaintenanceCandidate, GraphMaintenanceCyclePlan, GraphMaintenanceCycleWriteSummary,
     GraphMaintenanceWorkItem, GraphMutationPath, GraphRuntime, HydratedSurfaceRuntimes,
-    HydrationError, LogicalEdgeLocator, ShardCanisterDirectory, RebalanceInsertSpec,
-    RebalancePrepareSpec, RegionKind, RegionManager, ResolvedEdgeSlot, ReverseSurfaceRuntime,
-    GleaphMemoryManager, SurfaceVertexWindowReserveHint, SurfaceVertexWindowSummary, VertexEntry,
-    VertexRef, WasmPages, WritebackError, estimate_vertex_window_reserve_hint_from_stable_memory,
+    HydrationError, LogicalEdgeLocator, RebalanceInsertSpec, RebalancePrepareSpec, RegionKind,
+    RegionManager, ResolvedEdgeSlot, ReverseSurfaceRuntime, ShardCanisterDirectory,
+    SurfaceVertexWindowReserveHint, SurfaceVertexWindowSummary, VertexEntry, VertexRef, WasmPages,
+    WritebackError, estimate_vertex_window_reserve_hint_from_stable_memory,
     forward_surface_from_layout, hydrate_surface_runtimes_from_stable_memory,
     read_edge_entries_by_ref_from_stable_memory, read_vertex_base_edge_ref_from_stable_memory,
     read_vertex_base_entries_from_stable_memory, read_vertex_base_entry_from_stable_memory,
@@ -164,7 +164,10 @@ impl<M: Memory> std::fmt::Debug for GraphPma<M> {
             .field("last_write_event", &self.last_write_event)
             .field("write_history_len", &self.write_history.len())
             .field("production_metrics", &self.production_metrics)
-            .field("shard_canister_directory_len", &self.shard_canister_directory.len())
+            .field(
+                "shard_canister_directory_len",
+                &self.shard_canister_directory.len(),
+            )
             .finish()
     }
 }
@@ -175,11 +178,9 @@ impl<M: Memory + Clone> Clone for GraphPma<M> {
         let memory = Rc::new((*self.memory).clone());
         let btree_payload = Rc::new(RefCell::new(*self.property_index_btree_payload.borrow()));
         let gleaph = GleaphMemoryManager::new(Rc::clone(&manager), Rc::clone(&memory));
-        let property_equality_map = empty_property_equality_inplace_map(
-            &gleaph,
-            Rc::clone(&btree_payload),
-        )
-        .expect("property index bucket region");
+        let property_equality_map =
+            empty_property_equality_inplace_map(&gleaph, Rc::clone(&btree_payload))
+                .expect("property index bucket region");
         let node_pl = Rc::new(RefCell::new(*self.node_property_btree_payload.borrow()));
         let edge_pl = Rc::new(RefCell::new(*self.edge_property_btree_payload.borrow()));
         let node_property_store = empty_graph_property_stable_map(
@@ -1155,11 +1156,9 @@ impl<M: Memory> GraphPma<M> {
         let request = ExtentGrowthRequest::new(WasmPages::new(additional_pages));
         let policy =
             ExtentGrowthPolicy::new(WasmPages::new(additional_pages.max(1)), WasmPages::new(1));
-        if let Some(decision) = manager.plan_extent_growth(
-            RegionKind::ShardCanisterDirectory,
-            request,
-            policy,
-        ) {
+        if let Some(decision) =
+            manager.plan_extent_growth(RegionKind::ShardCanisterDirectory, request, policy)
+        {
             manager
                 .apply_extent_growth(
                     RegionKind::ShardCanisterDirectory,
@@ -1262,18 +1261,12 @@ impl<M: Memory> GraphPma<M> {
     }
 
     /// Bundles an existing region manager and graph runtime into one facade.
-    pub fn new(
-        manager: Rc<RefCell<RegionManager>>,
-        memory: Rc<M>,
-        graph: GraphRuntime,
-    ) -> Self {
+    pub fn new(manager: Rc<RefCell<RegionManager>>, memory: Rc<M>, graph: GraphRuntime) -> Self {
         let gleaph = GleaphMemoryManager::new(Rc::clone(&manager), Rc::clone(&memory));
         let btree_payload = Rc::new(RefCell::new(0u64));
-        let property_equality_map = empty_property_equality_inplace_map(
-            &gleaph,
-            Rc::clone(&btree_payload),
-        )
-        .expect("property index bucket region");
+        let property_equality_map =
+            empty_property_equality_inplace_map(&gleaph, Rc::clone(&btree_payload))
+                .expect("property index bucket region");
         let node_pl = Rc::new(RefCell::new(0u64));
         let edge_pl = Rc::new(RefCell::new(0u64));
         let node_property_store = empty_graph_property_stable_map(
@@ -1486,11 +1479,9 @@ impl<M: Memory> GraphPma<M> {
                 &header,
             )?;
             let btree_rc = Rc::new(RefCell::new(virt));
-            let property_equality_map = hydrate_property_equality_inplace_map(
-                &gleaph,
-                Rc::clone(&btree_rc),
-            )
-            .map_err(PropertyStoreError::from)?;
+            let property_equality_map =
+                hydrate_property_equality_inplace_map(&gleaph, Rc::clone(&btree_rc))
+                    .map_err(PropertyStoreError::from)?;
             let snap = snapshot_from_equality_any_memory(&property_equality_map, 64);
             (
                 property_equality_map,
@@ -1501,11 +1492,9 @@ impl<M: Memory> GraphPma<M> {
             )
         } else {
             let btree_rc = Rc::new(RefCell::new(0u64));
-            let property_equality_map = empty_property_equality_inplace_map(
-                &gleaph,
-                Rc::clone(&btree_rc),
-            )
-            .map_err(PropertyStoreError::from)?;
+            let property_equality_map =
+                empty_property_equality_inplace_map(&gleaph, Rc::clone(&btree_rc))
+                    .map_err(PropertyStoreError::from)?;
             (
                 property_equality_map,
                 btree_rc,
@@ -1595,11 +1584,9 @@ impl<M: Memory> GraphPma<M> {
                 &header,
             )?;
             let btree_rc = Rc::new(RefCell::new(virt));
-            let property_equality_map = hydrate_property_equality_inplace_map(
-                &gleaph,
-                Rc::clone(&btree_rc),
-            )
-            .map_err(PropertyStoreError::from)?;
+            let property_equality_map =
+                hydrate_property_equality_inplace_map(&gleaph, Rc::clone(&btree_rc))
+                    .map_err(PropertyStoreError::from)?;
             let snap = snapshot_from_equality_any_memory(&property_equality_map, 64);
             (
                 property_equality_map,
@@ -1610,11 +1597,9 @@ impl<M: Memory> GraphPma<M> {
             )
         } else {
             let btree_rc = Rc::new(RefCell::new(0u64));
-            let property_equality_map = empty_property_equality_inplace_map(
-                &gleaph,
-                Rc::clone(&btree_rc),
-            )
-            .map_err(PropertyStoreError::from)?;
+            let property_equality_map =
+                empty_property_equality_inplace_map(&gleaph, Rc::clone(&btree_rc))
+                    .map_err(PropertyStoreError::from)?;
             (
                 property_equality_map,
                 btree_rc,
@@ -2647,6 +2632,7 @@ mod tests {
         GraphPmaWriteEventProjection,
     };
     use crate::GraphInsertResult;
+    use crate::VecMemory;
     use crate::low_level::GraphMutationPath;
     use crate::low_level::{
         BucketSizeInPages, EMPTY_LOG_OFFSET, EdgeEntry, EdgeIndex, EdgeMeta, EdgePairEndpoints,
@@ -2669,10 +2655,9 @@ mod tests {
         load_graph_property_stable_map_from_stable_memory,
         sync_graph_property_store_v1_header_to_stable_memory,
     };
-    use crate::VecMemory;
-    use ic_stable_structures::Memory;
     use gleaph_gql::Value;
     use gleaph_graph_kernel::NodeId;
+    use ic_stable_structures::Memory;
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::sync::atomic::Ordering;
@@ -2705,19 +2690,13 @@ mod tests {
             1,
             crate::low_level::EMPTY_LOG_OFFSET,
         )];
-        let forward_edges = vec![EdgeEntry::new(
-            NodeId::from(2u8),
-            EdgeMeta::new(7, false),
-        )];
+        let forward_edges = vec![EdgeEntry::new(NodeId::from(2u8), EdgeMeta::new(7, false))];
         let reverse_vertices = vec![VertexEntry::new(
             EdgeIndex::new(0),
             1,
             crate::low_level::EMPTY_LOG_OFFSET,
         )];
-        let reverse_edges = vec![EdgeEntry::new(
-            NodeId::from(1u8),
-            EdgeMeta::new(7, false),
-        )];
+        let reverse_edges = vec![EdgeEntry::new(NodeId::from(1u8), EdgeMeta::new(7, false))];
 
         manager
             .set_region_logical_len(
@@ -3453,17 +3432,11 @@ mod tests {
 
         assert_eq!(
             forward,
-            vec![EdgeEntry::new(
-                NodeId::from(2u8),
-                EdgeMeta::new(7, false)
-            )]
+            vec![EdgeEntry::new(NodeId::from(2u8), EdgeMeta::new(7, false))]
         );
         assert_eq!(
             reverse,
-            vec![EdgeEntry::new(
-                NodeId::from(1u8),
-                EdgeMeta::new(7, false)
-            )]
+            vec![EdgeEntry::new(NodeId::from(1u8), EdgeMeta::new(7, false))]
         );
     }
 
@@ -3489,17 +3462,11 @@ mod tests {
         assert_eq!(reverse_ref, Some(crate::low_level::EdgeRef::new(0, 0)));
         assert_eq!(
             forward_entry,
-            Some(EdgeEntry::new(
-                NodeId::from(2u8),
-                EdgeMeta::new(7, false)
-            ))
+            Some(EdgeEntry::new(NodeId::from(2u8), EdgeMeta::new(7, false)))
         );
         assert_eq!(
             reverse_entry,
-            Some(EdgeEntry::new(
-                NodeId::from(1u8),
-                EdgeMeta::new(7, false)
-            ))
+            Some(EdgeEntry::new(NodeId::from(1u8), EdgeMeta::new(7, false)))
         );
     }
 
@@ -5386,10 +5353,7 @@ mod tests {
         );
         assert_eq!(
             facade
-                .try_scan_edge_ids_by_property_from_stable_memory(
-                    facade.memory.as_ref(),
-                    "weight",
-                )
+                .try_scan_edge_ids_by_property_from_stable_memory(facade.memory.as_ref(), "weight",)
                 .expect("scan edge property from stable memory"),
             vec![888]
         );
@@ -6079,12 +6043,12 @@ mod tests {
 
 #[cfg(feature = "experimental-dgap")]
 pub mod experimental_dgap {
-    //! Reserved [`MemoryId`](ic_stable_structures::memory_manager::MemoryId) slots for [`ic_stable_pma`]
+    //! Reserved [`MemoryId`](ic_stable_structures::memory_manager::MemoryId) slots for [`ic_stable_dgap`]
     //! DGAP: `M_v`, three `M_e` regions, optional separate stream log.
     pub use crate::low_level::{
-        GleaphMemoryManager, DGAP_EDGES_AND_LOG_MEMORY_SLOT, DGAP_LOG_MEMORY_SLOT,
+        DGAP_EDGES_AND_LOG_MEMORY_SLOT, DGAP_LOG_MEMORY_SLOT,
         DGAP_SEGMENT_EDGES_ACTUAL_MEMORY_SLOT, DGAP_SEGMENT_EDGES_TOTAL_MEMORY_SLOT,
-        DGAP_VERTEX_MEMORY_SLOT,
+        DGAP_VERTEX_MEMORY_SLOT, GleaphMemoryManager,
     };
     use ic_stable_structures::memory_manager::MemoryId;
 

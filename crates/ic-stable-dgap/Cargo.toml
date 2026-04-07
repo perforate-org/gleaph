@@ -1,5 +1,5 @@
 [package]
-name = "ic-stable-pma"
+name = "ic-stable-dgap"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
