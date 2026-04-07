@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use ic_stable_dgap::{
+use ic_stable_csr::{
     Bound, CsrEdge, CsrEdgeUndirected, CsrGraph, CsrGraphError, CsrVertex, Storable, VectorMemory,
 };
 
@@ -122,21 +122,8 @@ fn empty_vertex() -> TV {
 
 #[test]
 fn format_new_directed_transpose_neighbors() {
-    let g = CsrGraph::format_new(
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        64,
-        1,
-        8,
-        0,
-    )
-    .expect("format_new");
+    let g = CsrGraph::format_new(vm(), vm(), vm(), vm(), vm(), vm(), vm(), vm(), 64, 1, 8, 0)
+        .expect("format_new");
 
     for _ in 0..3 {
         g.insert_vertex(empty_vertex()).unwrap();
@@ -161,21 +148,8 @@ fn format_new_directed_transpose_neighbors() {
 
 #[test]
 fn insert_directed_rejects_undirected_flag_via_specialization() {
-    let g = CsrGraph::format_new(
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        32,
-        1,
-        8,
-        0,
-    )
-    .unwrap();
+    let g =
+        CsrGraph::format_new(vm(), vm(), vm(), vm(), vm(), vm(), vm(), vm(), 32, 1, 8, 0).unwrap();
 
     g.insert_vertex(empty_vertex()).unwrap();
     g.insert_vertex(empty_vertex()).unwrap();
@@ -188,21 +162,8 @@ fn insert_directed_rejects_undirected_flag_via_specialization() {
 
 #[test]
 fn insert_undirected_sets_flag_and_symmetric_degrees() {
-    let g = CsrGraph::format_new(
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        128,
-        1,
-        8,
-        0,
-    )
-    .unwrap();
+    let g =
+        CsrGraph::format_new(vm(), vm(), vm(), vm(), vm(), vm(), vm(), vm(), 128, 1, 8, 0).unwrap();
 
     for _ in 0..3 {
         g.insert_vertex(empty_vertex()).unwrap();
@@ -233,29 +194,14 @@ fn insert_undirected_sets_flag_and_symmetric_degrees() {
 
 #[test]
 fn neighbor_mismatch_on_directed_insert() {
-    let g = CsrGraph::format_new(
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        32,
-        1,
-        8,
-        0,
-    )
-    .unwrap();
+    let g =
+        CsrGraph::format_new(vm(), vm(), vm(), vm(), vm(), vm(), vm(), vm(), 32, 1, 8, 0).unwrap();
 
     g.insert_vertex(empty_vertex()).unwrap();
     g.insert_vertex(empty_vertex()).unwrap();
     g.sync_pma_meta().unwrap();
 
-    let err = g
-        .insert_directed(0, 1, TE([9, 0, 0, 0]))
-        .unwrap_err();
+    let err = g.insert_directed(0, 1, TE([9, 0, 0, 0])).unwrap_err();
     assert_eq!(
         err,
         CsrGraphError::NeighborMismatch {

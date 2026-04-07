@@ -207,7 +207,7 @@ impl<M: Memory> GleaphMemoryManager<M> {
     }
 
     /// Reserved [`MemoryId`] for `M_v` when using a **separate** [`ic_stable_structures::memory_manager::MemoryManager`]
-    /// on the canister backing store for [`ic_stable_dgap`] (see `experimental-dgap`).
+    /// on the canister backing store for [`ic_stable_csr`] (see `experimental-dgap`).
     #[cfg(feature = "experimental-dgap")]
     #[inline]
     pub fn dgap_vertex_memory_id() -> MemoryId {

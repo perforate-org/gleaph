@@ -37,18 +37,35 @@ pub enum CsrGraphError {
     Reverse(DgapStoresError),
     /// [`DgapEdgeStore::format_new`] or region grow failed while building the graph.
     Format(GrowFailed),
-    VertexCountMismatch { forward: u64, reverse: u64 },
-    VertexOutOfRange { vid: usize, len: u64 },
+    VertexCountMismatch {
+        forward: u64,
+        reverse: u64,
+    },
+    VertexOutOfRange {
+        vid: usize,
+        len: u64,
+    },
     /// [`CsrGraph::insert_directed`] requires `edge.neighbor_vid() == dst`.
-    NeighborMismatch { expected: usize, actual: usize },
+    NeighborMismatch {
+        expected: usize,
+        actual: usize,
+    },
     /// Use [`CsrGraph::insert_undirected`] when the edge is marked undirected.
     UndirectedEdgeInDirectedInsert,
     /// Mutation refused because this vertex row is tombstoned.
-    EndpointTombstone { vid: usize },
+    EndpointTombstone {
+        vid: usize,
+    },
     /// Insert refused: an adjacency slot to that neighbor already exists (including tombstones).
-    AdjacencySlotOccupied { src: usize, dst: usize },
+    AdjacencySlotOccupied {
+        src: usize,
+        dst: usize,
+    },
     /// Logical delete could not find the requested neighbor edge.
-    EdgeNotFound { owner: usize, neighbor: usize },
+    EdgeNotFound {
+        owner: usize,
+        neighbor: usize,
+    },
     /// Stable deque backing the GC work queue failed to grow.
     GcQueue(GrowFailed),
     /// Logical delete / GC helper failed inside the edge region.
@@ -83,10 +100,9 @@ impl fmt::Display for CsrGraphError {
                 f,
                 "vertex {src} already has an adjacency slot for neighbor {dst}"
             ),
-            Self::EdgeNotFound { owner, neighbor } => write!(
-                f,
-                "no edge from owner {owner} to neighbor {neighbor}"
-            ),
+            Self::EdgeNotFound { owner, neighbor } => {
+                write!(f, "no edge from owner {owner} to neighbor {neighbor}")
+            }
             Self::GcQueue(e) => write!(f, "gc work queue: {e}"),
             Self::LogicalMutation(s) => write!(f, "logical mutation: {s}"),
         }
@@ -191,7 +207,10 @@ where
         self.reverse
             .insert_vertex(row_template)
             .map_err(CsrGraphError::Reverse)?;
-        debug_assert_eq!(self.forward.vertices.col_len(), self.reverse.vertices.col_len());
+        debug_assert_eq!(
+            self.forward.vertices.col_len(),
+            self.reverse.vertices.col_len()
+        );
         Ok(id)
     }
 
@@ -203,7 +222,10 @@ where
         self.reverse
             .insert_vertex_strict(row_template)
             .map_err(CsrGraphError::Reverse)?;
-        debug_assert_eq!(self.forward.vertices.col_len(), self.reverse.vertices.col_len());
+        debug_assert_eq!(
+            self.forward.vertices.col_len(),
+            self.reverse.vertices.col_len()
+        );
         Ok(id)
     }
 
@@ -331,6 +353,7 @@ where
     /// Order: forward `M_v`, reverse `M_v`, then forward `segment_edges_actual`, `segment_edges_total`,
     /// `edges_and_log`, then the same three for reverse. All edge regions receive the same
     /// `elem_capacity` / `segment_count` / `segment_size` / `num_edges` via [`DgapEdgeStore::format_new`].
+    #[allow(clippy::too_many_arguments)]
     pub fn format_new(
         mem_vertices_forward: M,
         mem_vertices_reverse: M,

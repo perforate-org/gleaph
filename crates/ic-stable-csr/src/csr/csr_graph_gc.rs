@@ -3,12 +3,14 @@
 use ic_stable_structures::Memory;
 use ic_stable_structures::vec::Vec as StableVec;
 
-use crate::csr::csr_graph::{CsrGraph, CsrGraphError, LogicalNeighborhoodIter};
-use crate::csr::gc_work_item::{GcWorkItem, GC_TAG_EDGE_DIRECTED, GC_TAG_EDGE_UNDIRECTED, GC_TAG_VERTEX};
-use crate::csr::vertex_column::CsrVertexColumn;
-use crate::csr::DgapStoresError;
-use crate::traits::{CsrEdge, CsrEdgeTombstone, CsrEdgeUndirected, CsrVertex, CsrVertexTombstone};
 use crate::StableVecDeque;
+use crate::csr::DgapStoresError;
+use crate::csr::csr_graph::{CsrGraph, CsrGraphError, LogicalNeighborhoodIter};
+use crate::csr::gc_work_item::{
+    GC_TAG_EDGE_DIRECTED, GC_TAG_EDGE_UNDIRECTED, GC_TAG_VERTEX, GcWorkItem,
+};
+use crate::csr::vertex_column::CsrVertexColumn;
+use crate::traits::{CsrEdge, CsrEdgeTombstone, CsrEdgeUndirected, CsrVertex, CsrVertexTombstone};
 
 /// Bidirectional CSR with a stable work queue for lazy physical compaction.
 pub struct CsrGraphWithGcQueue<V, E, Vs, F1, F2, F3, R1, R2, R3, QM>
@@ -136,14 +138,20 @@ where
         rev.edges
             .tombstone_edge_with_neighbor::<V, Vs>(&rev.vertices, dst, src)
             .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?;
-        let fs = fwd.vertices.col_get(src as u64).ok_or(CsrGraphError::VertexOutOfRange {
-            vid: src,
-            len: fwd.vertices.col_len(),
-        })?;
-        let rd = rev.vertices.col_get(dst as u64).ok_or(CsrGraphError::VertexOutOfRange {
-            vid: dst,
-            len: rev.vertices.col_len(),
-        })?;
+        let fs = fwd
+            .vertices
+            .col_get(src as u64)
+            .ok_or(CsrGraphError::VertexOutOfRange {
+                vid: src,
+                len: fwd.vertices.col_len(),
+            })?;
+        let rd = rev
+            .vertices
+            .col_get(dst as u64)
+            .ok_or(CsrGraphError::VertexOutOfRange {
+                vid: dst,
+                len: rev.vertices.col_len(),
+            })?;
         fwd.vertices
             .col_set(src as u64, fs.with_degree(fs.degree().saturating_sub(1)));
         rev.vertices
@@ -188,14 +196,20 @@ where
             rev.edges
                 .tombstone_edge_with_neighbor::<V, Vs>(&rev.vertices, nb, owner)
                 .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?;
-            let fs = fwd.vertices.col_get(owner as u64).ok_or(CsrGraphError::VertexOutOfRange {
-                vid: owner,
-                len: fwd.vertices.col_len(),
-            })?;
-            let rd = rev.vertices.col_get(nb as u64).ok_or(CsrGraphError::VertexOutOfRange {
-                vid: nb,
-                len: rev.vertices.col_len(),
-            })?;
+            let fs = fwd
+                .vertices
+                .col_get(owner as u64)
+                .ok_or(CsrGraphError::VertexOutOfRange {
+                    vid: owner,
+                    len: fwd.vertices.col_len(),
+                })?;
+            let rd = rev
+                .vertices
+                .col_get(nb as u64)
+                .ok_or(CsrGraphError::VertexOutOfRange {
+                    vid: nb,
+                    len: rev.vertices.col_len(),
+                })?;
             fwd.vertices
                 .col_set(owner as u64, fs.with_degree(fs.degree().saturating_sub(1)));
             rev.vertices
@@ -227,10 +241,13 @@ where
             if self.vertex_tombstone_fwd(u) {
                 continue;
             }
-            let ru = rev.vertices.col_get(u as u64).ok_or(CsrGraphError::VertexOutOfRange {
-                vid: u,
-                len: rev.vertices.col_len(),
-            })?;
+            let ru = rev
+                .vertices
+                .col_get(u as u64)
+                .ok_or(CsrGraphError::VertexOutOfRange {
+                    vid: u,
+                    len: rev.vertices.col_len(),
+                })?;
             rev.vertices
                 .col_set(u as u64, ru.with_degree(ru.degree().saturating_sub(1)));
         }
@@ -246,19 +263,20 @@ where
             if self.vertex_tombstone_fwd(u) {
                 continue;
             }
-            let fu = fwd.vertices.col_get(u as u64).ok_or(CsrGraphError::VertexOutOfRange {
-                vid: u,
-                len: fwd.vertices.col_len(),
-            })?;
+            let fu = fwd
+                .vertices
+                .col_get(u as u64)
+                .ok_or(CsrGraphError::VertexOutOfRange {
+                    vid: u,
+                    len: fwd.vertices.col_len(),
+                })?;
             fwd.vertices
                 .col_set(u as u64, fu.with_degree(fu.degree().saturating_sub(1)));
         }
         let fv = fwd.vertices.col_get(vid as u64).unwrap();
         let rv = rev.vertices.col_get(vid as u64).unwrap();
-        fwd.vertices
-            .col_set(vid as u64, fv.with_tombstone(true));
-        rev.vertices
-            .col_set(vid as u64, rv.with_tombstone(true));
+        fwd.vertices.col_set(vid as u64, fv.with_tombstone(true));
+        rev.vertices.col_set(vid as u64, rv.with_tombstone(true));
         self.graph.sync_pma_meta()?;
         self.push_queue(GcWorkItem::vertex_delete(vid as u64))?;
         Ok(())
@@ -307,9 +325,9 @@ where
     }
 
     fn gc_one_edge_directed(&self, item: GcWorkItem) -> Result<bool, CsrGraphError> {
-        let (src, dst) = item.edge_endpoints().ok_or(CsrGraphError::LogicalMutation(
-            "gc: bad edge work item",
-        ))?;
+        let (src, dst) = item
+            .edge_endpoints()
+            .ok_or(CsrGraphError::LogicalMutation("gc: bad edge work item"))?;
         let src = src as usize;
         let dst = dst as usize;
         let g = &self.graph;
@@ -425,9 +443,10 @@ where
     }
 
     fn gc_one_vertex(&self, item: GcWorkItem) -> Result<bool, CsrGraphError> {
-        let vid = item.vertex_id().ok_or(CsrGraphError::LogicalMutation(
-            "gc: bad vertex work item",
-        ))? as usize;
+        let vid = item
+            .vertex_id()
+            .ok_or(CsrGraphError::LogicalMutation("gc: bad vertex work item"))?
+            as usize;
         let g = &self.graph;
         let fwd = g.forward_dgap();
         let rev = g.reverse_dgap();
@@ -485,6 +504,7 @@ where
     QM: Memory,
 {
     /// Like [`CsrGraph::format_new`] plus a **ninth** `Memory` for [`StableVecDeque`](crate::StableVecDeque)`<`[`GcWorkItem`](crate::csr::gc_work_item::GcWorkItem)`>`.
+    #[allow(clippy::too_many_arguments)]
     pub fn format_new_with_gc_queue(
         mem_vertices_forward: M,
         mem_vertices_reverse: M,
@@ -514,8 +534,8 @@ where
             segment_size,
             num_edges,
         )?;
-        let work_queue = StableVecDeque::new(mem_gc_work_queue)
-            .map_err(|e| CsrGraphError::GcQueue(e.into()))?;
+        let work_queue =
+            StableVecDeque::new(mem_gc_work_queue).map_err(|e| CsrGraphError::GcQueue(e.into()))?;
         Ok(Self { graph, work_queue })
     }
 }

@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use ic_stable_dgap::{
+use ic_stable_csr::{
     Bound, DgapEdgeStore, DgapGraphMemories, StableVec, Storable, VectorMemory,
     traits::{CsrEdge, CsrVertex},
 };

@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use ic_stable_dgap::{
+use ic_stable_csr::{
     Bound, CsrEdge, CsrEdgeTombstone, CsrEdgeUndirected, CsrGraphError, CsrGraphWithGcQueue,
     CsrVertex, CsrVertexColumn, CsrVertexTombstone, Storable, VectorMemory,
 };
@@ -179,21 +179,41 @@ fn delete_edge_tombstone_gc_and_degrees() {
     g.insert_directed(1, 2, TE([2, 0, 0, 0])).unwrap();
 
     assert_eq!(
-        g.graph().forward_dgap().vertices.col_get(0).unwrap().degree(),
+        g.graph()
+            .forward_dgap()
+            .vertices
+            .col_get(0)
+            .unwrap()
+            .degree(),
         1
     );
     assert_eq!(
-        g.graph().reverse_dgap().vertices.col_get(1).unwrap().degree(),
+        g.graph()
+            .reverse_dgap()
+            .vertices
+            .col_get(1)
+            .unwrap()
+            .degree(),
         1
     );
 
     g.delete_edge_directed(0, 1).unwrap();
     assert_eq!(
-        g.graph().forward_dgap().vertices.col_get(0).unwrap().degree(),
+        g.graph()
+            .forward_dgap()
+            .vertices
+            .col_get(0)
+            .unwrap()
+            .degree(),
         0
     );
     assert_eq!(
-        g.graph().reverse_dgap().vertices.col_get(1).unwrap().degree(),
+        g.graph()
+            .reverse_dgap()
+            .vertices
+            .col_get(1)
+            .unwrap()
+            .degree(),
         0
     );
 
@@ -236,11 +256,23 @@ fn delete_vertex_hides_edges_until_gc() {
     g.insert_directed(1, 0, TE([0, 0, 0, 0])).unwrap();
 
     assert_eq!(
-        g.graph().forward_dgap().vertices.col_get(1).unwrap().degree(),
+        g.graph()
+            .forward_dgap()
+            .vertices
+            .col_get(1)
+            .unwrap()
+            .degree(),
         1
     );
     g.delete_vertex(0).unwrap();
-    assert!(g.graph().forward_dgap().vertices.col_get(0).unwrap().is_tombstone());
+    assert!(
+        g.graph()
+            .forward_dgap()
+            .vertices
+            .col_get(0)
+            .unwrap()
+            .is_tombstone()
+    );
 
     let out1: Vec<_> = g
         .out_edges_logical(1)

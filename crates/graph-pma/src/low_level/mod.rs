@@ -11,16 +11,16 @@ mod edge;
 mod extent;
 mod graph;
 mod hydration;
-mod ic_stable_dgap;
+mod ic_stable_csr;
 mod ids;
 mod locator;
 mod manager;
 mod overflow;
 mod pma_stable_root;
-mod shard_canister;
 mod region;
 mod region_logical_slice;
 mod runtime;
+mod shard_canister;
 mod surface;
 mod vertex;
 mod virtual_region_memory;
@@ -52,7 +52,9 @@ pub use graph::{
     GraphMaintenanceCandidate, GraphMaintenanceCyclePlan, GraphMaintenanceCycleWriteSummary,
     GraphMaintenanceQueueStorageSnapshot, GraphMaintenanceWorkItem,
 };
-pub use shard_canister::{SHARD_CANISTER_DIRECTORY_MAGIC, ShardCanisterDirectory, ShardCanisterSlot};
+pub use shard_canister::{
+    SHARD_CANISTER_DIRECTORY_MAGIC, ShardCanisterDirectory, ShardCanisterSlot,
+};
 
 pub use graph::MaintenanceCycleVertexInputs;
 pub use hydration::{
@@ -75,18 +77,25 @@ pub use hydration::{
     write_forward_surface_runtime_to_stable_memory, write_reverse_surface_runtime_to_stable_memory,
     write_surface_runtime_to_stable_memory, write_surface_runtimes_to_stable_memory,
 };
-pub use ic_stable_dgap::{
-    vertex_entry_for_ic_stable_append, DGAP_EDGES_AND_LOG_MEMORY_SLOT, DGAP_LOG_MEMORY_SLOT,
-    DGAP_SEGMENT_EDGES_ACTUAL_MEMORY_SLOT, DGAP_SEGMENT_EDGES_TOTAL_MEMORY_SLOT,
-    DGAP_VERTEX_MEMORY_SLOT,
+pub use ic_stable_csr::{
+    DGAP_EDGES_AND_LOG_MEMORY_SLOT, DGAP_LOG_MEMORY_SLOT, DGAP_SEGMENT_EDGES_ACTUAL_MEMORY_SLOT,
+    DGAP_SEGMENT_EDGES_TOTAL_MEMORY_SLOT, DGAP_VERTEX_MEMORY_SLOT,
+    vertex_entry_for_ic_stable_append,
 };
 pub use ids::{EdgeRef, StableAddr, VertexRef};
 pub use locator::EdgeLogicalLocatorSidecar;
 pub use manager::RegionManager;
 pub use overflow::{LogOffset, OverflowChain, OverflowEntry};
+pub use pma_stable_root::{
+    PMA_ROOT_FORMAT_VERSION, PMA_ROOT_MAGIC, decode_region_manager_for_hydrate,
+    try_read_region_manager, write_region_manager_footer,
+};
 pub use region::{
     BucketSizeInPages, MAX_REGION_KINDS, RegionDirectory, RegionDirectoryEntry, RegionKind,
     RegionManagerLayout, RegionRef, RegionStorageKind, WASM_PAGE_SIZE, WasmPages,
+};
+pub(crate) use region_logical_slice::{
+    RegionLogicalIoError, read_region_logical_slice, write_region_logical_slice,
 };
 pub use runtime::{
     EdgeInsertPath, ForwardSurfaceRuntime, ResolvedEdgeSlot, ReverseSurfaceRuntime,
@@ -101,13 +110,6 @@ pub use surface::{
 pub use vertex::{
     EMPTY_LOG_OFFSET, EdgeIndex, VertexEntry, VertexLabelIndexEntry, VertexLabelRange,
 };
-pub(crate) use region_logical_slice::{
-    read_region_logical_slice, write_region_logical_slice, RegionLogicalIoError,
-};
 pub use virtual_region_memory::{
     GleaphMemoryManager, VirtualBucketMemory, VirtualExtentMemory, VirtualRegionMemoryError,
-};
-pub use pma_stable_root::{
-    decode_region_manager_for_hydrate, try_read_region_manager, write_region_manager_footer,
-    PMA_ROOT_FORMAT_VERSION, PMA_ROOT_MAGIC,
 };

@@ -11,13 +11,13 @@ doctest = false
 default = []
 # Enables `canbench_rs::bench_scope` in hot flush paths when the parent canister builds with canbench.
 canbench-rs = ["dep:canbench-rs"]
-# Reserved `MemoryId` slots + helpers for `ic-stable-dgap` DGAP (`MemoryManager` alongside Gleaph).
+# Reserved `MemoryId` slots + helpers for `ic-stable-csr` DGAP (`MemoryManager` alongside Gleaph).
 experimental-dgap = []
 
 [dependencies]
 candid.workspace = true
 canbench-rs = { workspace = true, optional = true }
-ic-stable-dgap = { path = "../ic-stable-dgap" }
+ic-stable-csr = { path = "../ic-stable-csr" }
 ic-stable-structures.workspace = true
 gleaph-gql = { path = "../gql" }
 gleaph-graph-kernel = { path = "../graph-kernel" }

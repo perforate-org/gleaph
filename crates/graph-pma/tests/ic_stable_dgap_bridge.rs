@@ -1,4 +1,4 @@
-//! Gleaph `VertexEntry` / `EdgeEntry` on `ic-stable-dgap` DGAP layout (`M_v` / three `M_e` memories).
+//! Gleaph `VertexEntry` / `EdgeEntry` on `ic-stable-csr` DGAP layout (`M_v` / three `M_e` memories).
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -8,7 +8,7 @@ use gleaph_graph_pma::low_level::{
     DGAP_SEGMENT_EDGES_TOTAL_MEMORY_SLOT, DGAP_VERTEX_MEMORY_SLOT, EMPTY_LOG_OFFSET, EdgeEntry,
     EdgeIndex, EdgeRef, VertexEntry, vertex_entry_for_ic_stable_append,
 };
-use ic_stable_dgap::{
+use ic_stable_csr::{
     DgapEdgeStore, DgapGraphMemories, DgapStores, StableVec, VectorMemory,
     layout::dgap::{
         EDGE_REGION_MAGIC, PMA_SEGMENT_EDGES_ACTUAL_MAGIC, PMA_SEGMENT_EDGES_TOTAL_MAGIC,

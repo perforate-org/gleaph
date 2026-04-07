@@ -6043,7 +6043,7 @@ mod tests {
 
 #[cfg(feature = "experimental-dgap")]
 pub mod experimental_dgap {
-    //! Reserved [`MemoryId`](ic_stable_structures::memory_manager::MemoryId) slots for [`ic_stable_dgap`]
+    //! Reserved [`MemoryId`](ic_stable_structures::memory_manager::MemoryId) slots for [`ic_stable_csr`]
     //! DGAP: `M_v`, three `M_e` regions, optional separate stream log.
     pub use crate::low_level::{
         DGAP_EDGES_AND_LOG_MEMORY_SLOT, DGAP_LOG_MEMORY_SLOT,
@@ -6054,7 +6054,7 @@ pub mod experimental_dgap {
 
     /// `(M_v, M1 actual, M2 total, M3 edges+log, M_l stream)`.
     #[inline]
-    pub fn ic_stable_dgap_memory_ids() -> (MemoryId, MemoryId, MemoryId, MemoryId, MemoryId) {
+    pub fn ic_stable_csr_memory_ids() -> (MemoryId, MemoryId, MemoryId, MemoryId, MemoryId) {
         (
             MemoryId::new(DGAP_VERTEX_MEMORY_SLOT),
             MemoryId::new(DGAP_SEGMENT_EDGES_ACTUAL_MEMORY_SLOT),
