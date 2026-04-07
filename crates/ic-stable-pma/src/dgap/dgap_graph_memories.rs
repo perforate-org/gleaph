@@ -86,6 +86,29 @@ impl<M1: Memory, M2: Memory, M3: Memory> DgapGraphMemories<M1, M2, M3> {
         safe_write(&self.edges_and_log_segment, off, bytes)
     }
 
+    /// Writes `n` contiguous CSR slab slots starting at `start_slot` in a single [`safe_write`].
+    ///
+    /// **Contract:** `payload.len() == n * edge_stride` for some `n` (if `payload` is empty, this is a no-op).
+    /// The caller must ensure `start_slot + n <= elem_capacity` and preserve PMA / vertex-boundary invariants;
+    /// this method only writes bytes. Vertex `degree` and [`Self::set_num_edges`] are the caller's duty.
+    pub fn write_edge_slab_span(
+        &self,
+        edge_stride: u32,
+        start_slot: u64,
+        payload: &[u8],
+    ) -> Result<(), GrowFailed> {
+        let st = edge_stride as usize;
+        if st == 0 || payload.is_empty() {
+            return Ok(());
+        }
+        assert!(
+            payload.len().is_multiple_of(st),
+            "write_edge_slab_span: payload length must be a multiple of edge_stride"
+        );
+        let off = edge_slab_slot_offset(edge_stride, start_slot);
+        safe_write(&self.edges_and_log_segment, off, payload)
+    }
+
     pub fn read_log_idx(&self, h: &DgapEdgeHeaderV1, leaf_seg: u32) -> i32 {
         read_log_segment_idx(&self.edges_and_log_segment, h, leaf_seg)
     }

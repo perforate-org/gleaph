@@ -35,10 +35,12 @@
 //! [`traits::CsrEdgeSlot`] in `graph-pma` (keeps this crate free of `gleaph_graph_kernel`).
 //!
 //! Optional **append-only stream** helpers live in [`layout::log_region`] (re-exported from [`layout`]);
-//! they are not used by [`DgapStores::insert_edge`].
+//! they are not used by [`DgapStores::insert_edge`] / [`DgapStores::insert_edges`].
 //!
-//! **Vertices:** use [`DgapStores::insert_vertex`] to append rows to `M_v` (subject to
-//! [`DgapEdgeStore::max_vertex_slots`] for the formatted `segment_count` / `segment_size`).
+//! **Vertices:** use [`DgapStores::insert_vertex`] to append rows to `M_v` (it sets `base_slot_start`
+//! from the edge store’s append cursor; use [`DgapStores::insert_vertex_strict`] to require a matching
+//! caller-supplied base). Subject to [`DgapEdgeStore::max_vertex_slots`] for the formatted
+//! `segment_count` / `segment_size`.
 
 pub mod csr;
 pub mod dgap;

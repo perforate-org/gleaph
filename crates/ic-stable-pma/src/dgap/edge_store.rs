@@ -730,6 +730,151 @@ impl<E: CsrEdgeSlot, M1: Memory, M2: Memory, M3: Memory> DgapEdgeStore<E, M1, M2
         Err("insert maintenance tries exhausted")
     }
 
+    /// Insert many `(source_vid, edge)` pairs in iterator order. Consecutive edges with the same `vid` are
+    /// batched (preflight, one slab [`DgapGraphMemories::write_edge_slab_span`] when possible, then log
+    /// rows via [`write_log_entry_raw`]), with `sync_pma_*` and [`Self::maintain_rebalance_loop`] once per
+    /// same-`vid` run. On failure, earlier successful inserts remain (same partial-commit semantics as
+    /// repeated [`Self::insert_edge_and_maintain`]).
+    pub fn insert_edges_and_maintain<V, C, I>(&self, col: &C, edges: I) -> Result<(), &'static str>
+    where
+        V: CsrVertex,
+        C: CsrVertexColumn<V>,
+        I: IntoIterator<Item = (usize, E)>,
+    {
+        let mut iter = edges.into_iter();
+        let mut cur_vid: Option<usize> = None;
+        let mut run: Vec<E> = Vec::new();
+
+        while let Some((vid, e)) = iter.next() {
+            match cur_vid {
+                None => {
+                    cur_vid = Some(vid);
+                    run.push(e);
+                }
+                Some(cv) if cv == vid => run.push(e),
+                Some(cv) => {
+                    self.flush_insert_run(col, cv, &run)?;
+                    run.clear();
+                    cur_vid = Some(vid);
+                    run.push(e);
+                }
+            }
+        }
+        if let Some(cv) = cur_vid {
+            self.flush_insert_run(col, cv, &run)?;
+        }
+        Ok(())
+    }
+
+    fn flush_insert_run<V, C>(&self, col: &C, vid: usize, run: &[E]) -> Result<(), &'static str>
+    where
+        V: CsrVertex,
+        C: CsrVertexColumn<V>,
+    {
+        if run.is_empty() {
+            return Ok(());
+        }
+        if run.len() == 1 {
+            self.insert_edge_and_maintain(col, vid, run[0])
+        } else {
+            self.insert_same_vid_run_batch(col, vid, run)
+        }
+    }
+
+    /// Preflight (merge / resize as needed), write up to `k` new edges for `vid` with at most one slab span
+    /// write and per-log-row writes, then sync + PMA maintain once.
+    fn insert_same_vid_run_batch<V, C>(
+        &self,
+        col: &C,
+        vid: usize,
+        edges: &[E],
+    ) -> Result<(), &'static str>
+    where
+        V: CsrVertex,
+        C: CsrVertexColumn<V>,
+    {
+        let k = edges.len();
+        if k == 0 {
+            return Ok(());
+        }
+
+        const MAX_TRIES: usize = 64;
+        for _try in 0..MAX_TRIES {
+            let h = self.header().ok_or("bad edge header")?;
+            let n = col.col_len() as usize;
+            if vid >= n {
+                return Err("vertex out of range");
+            }
+            let leaf = dgap_leaf_segment_id(vid, h.segment_size);
+            let idx = self.mem.read_log_idx(&h, leaf);
+            if idx >= h.max_log_entries as i32 {
+                let left_index = (vid / h.segment_size as usize) * h.segment_size as usize;
+                let right_index = (left_index + h.segment_size as usize).min(n);
+                self.merge_logs_into_slab_for_window(col, left_index, right_index)?;
+                self.sync_pma_totals(col)?;
+                self.sync_pma_actuals(col)?;
+                continue;
+            }
+
+            let v = col.col_get(vid as u64).ok_or("missing vertex")?;
+            let stride = h.edge_stride as usize;
+            let loc0 = v.base_slot_start().saturating_add(v.degree() as u64);
+
+            let mut k_slab = 0usize;
+            let mut test_loc = loc0;
+            while k_slab < k && Self::have_space_onseg(col, vid, test_loc, h.elem_capacity) {
+                k_slab += 1;
+                test_loc = test_loc.saturating_add(1);
+            }
+
+            let log_free = (h.max_log_entries as i32 - idx).max(0) as usize;
+            let k_log_needed = k.saturating_sub(k_slab);
+            if k_log_needed > log_free {
+                let left_index = (vid / h.segment_size as usize) * h.segment_size as usize;
+                let right_index = (left_index + h.segment_size as usize).min(n);
+                self.merge_logs_into_slab_for_window(col, left_index, right_index)?;
+                self.sync_pma_totals(col)?;
+                self.sync_pma_actuals(col)?;
+                continue;
+            }
+
+            if k_slab > 0 && loc0.saturating_add(k_slab as u64) > h.elem_capacity {
+                self.resize_double(col)?;
+                continue;
+            }
+
+            if k_slab > 0 {
+                let mut payload = vec![0u8; k_slab * stride];
+                for i in 0..k_slab {
+                    edges[i].write_to(&mut payload[i * stride..(i + 1) * stride]);
+                }
+                if self
+                    .mem
+                    .write_edge_slab_span(h.edge_stride, loc0, &payload)
+                    .is_err()
+                {
+                    self.resize_double(col)?;
+                    continue;
+                }
+                let deg_new = v.degree().saturating_add(k_slab as u32);
+                col.col_set(vid as u64, v.with_degree(deg_new));
+                let ne = self.mem.read_num_edges();
+                self.mem.set_num_edges(ne.saturating_add(k_slab as u64));
+            }
+
+            for i in k_slab..k {
+                self.try_insert_into_log(col, vid, edges[i])?;
+            }
+
+            self.sync_pma_totals(col).map_err(|_| "sync totals")?;
+            self.sync_pma_actuals(col).map_err(|_| "sync actuals")?;
+            self.maintain_rebalance_loop(col, vid)?;
+            return Ok(());
+        }
+
+        Err("same-vid batch insert tries exhausted")
+    }
+
     pub(crate) fn maintain_rebalance_loop<V, C>(&self, col: &C, vid: usize) -> Result<(), &'static str>
     where
         V: CsrVertex,

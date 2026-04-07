@@ -95,14 +95,52 @@ where
             .map_err(DgapStoresError::Graph)
     }
 
+    /// Insert many edges in iterator order. Consecutive same-`vid` runs use the batched edge-store path;
+    /// see [`DgapEdgeStore::insert_edges_and_maintain`].
+    pub fn insert_edges<I>(&self, edges: I) -> Result<(), DgapStoresError>
+    where
+        I: IntoIterator<Item = (usize, E)>,
+    {
+        self.edges
+            .insert_edges_and_maintain(&self.vertices, edges)
+            .map_err(DgapStoresError::Graph)
+    }
+
     /// Append one vertex row at the end of `M_v`.
     ///
-    /// `row.base_slot_start()` must equal [`DgapEdgeStore::slab_append_base_slot`] on [`Self::edges`]
-    /// and the column **before** the push (see also [`DgapEdgeStore::slab_occupied_tail`]). If that tail is not
+    /// Sets `row.base_slot_start()` to [`DgapEdgeStore::slab_append_base_slot`] on [`Self::edges`]
+    /// for the column **before** the push (other fields are taken from `row`). If that tail is not
     /// below `elem_capacity`, [`DgapEdgeStore::resize_double`] is run until there is room.
     ///
     /// Returns the new vertex id (`vid`) equal to the previous [`CsrVertexColumn::col_len`].
+    ///
+    /// To require a caller-supplied base that already matches the append cursor, use
+    /// [`Self::insert_vertex_strict`].
     pub fn insert_vertex(&self, row: V) -> Result<u64, DgapStoresError> {
+        let h = self
+            .edges
+            .header()
+            .ok_or(DgapStoresError::Graph("bad edge header"))?;
+        let new_vid = self.vertices.col_len();
+        DgapEdgeStore::<E, M1, M2, M3>::check_vertex_append_cap(
+            new_vid,
+            h.segment_count,
+            h.segment_size,
+        )
+        .map_err(DgapStoresError::Graph)?;
+
+        let expected_base = self
+            .edges
+            .slab_append_base_slot(&self.vertices)
+            .map_err(DgapStoresError::Graph)?;
+        let row = row.with_base_slot_start(expected_base);
+        self.append_vertex_row_after_base_checks(new_vid, row, expected_base)
+    }
+
+    /// Like [`Self::insert_vertex`], but **`row.base_slot_start()` must already equal**
+    /// [`DgapEdgeStore::slab_append_base_slot`] before the push. Use this when you want an explicit
+    /// error instead of silently coercing the base field.
+    pub fn insert_vertex_strict(&self, row: V) -> Result<u64, DgapStoresError> {
         let h = self
             .edges
             .header()
@@ -121,10 +159,19 @@ where
             .map_err(DgapStoresError::Graph)?;
         if row.base_slot_start() != expected_base {
             return Err(DgapStoresError::Graph(
-                "insert_vertex base_slot_start mismatch (use DgapEdgeStore::slab_append_base_slot)",
+                "insert_vertex_strict: base_slot_start mismatch (expected slab_append_base_slot)",
             ));
         }
 
+        self.append_vertex_row_after_base_checks(new_vid, row, expected_base)
+    }
+
+    fn append_vertex_row_after_base_checks(
+        &self,
+        new_vid: u64,
+        row: V,
+        expected_base: u64,
+    ) -> Result<u64, DgapStoresError> {
         loop {
             let h = self
                 .edges
