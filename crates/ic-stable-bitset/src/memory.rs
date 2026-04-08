@@ -83,17 +83,11 @@ pub(crate) fn write_u64<M: Memory>(m: &M, offset: u64, value: u64) {
     write(m, offset, &value.to_le_bytes());
 }
 
-pub(crate) fn write_u64_words_into<M: Memory>(
-    m: &M,
-    offset: u64,
-    words: &[u64],
-    scratch: &mut [u8],
-) {
-    let chunk_words = (scratch.len() / 8).clamp(1, BULK_WORDS);
-    let mut remaining = words;
+pub(crate) fn write_u64_words_direct<M: Memory>(m: &M, offset: u64, words: &[u64]) {
     let mut base = offset;
+    let mut remaining = words;
     while !remaining.is_empty() {
-        let take = remaining.len().min(chunk_words);
+        let take = remaining.len().min(BULK_WORDS);
         #[cfg(target_endian = "little")]
         {
             let bytes = unsafe {
@@ -103,11 +97,11 @@ pub(crate) fn write_u64_words_into<M: Memory>(
         }
         #[cfg(not(target_endian = "little"))]
         {
-            let bytes = &mut scratch[..take * 8];
+            let mut scratch = vec![0u8; take * 8];
             for (i, word) in remaining[..take].iter().enumerate() {
-                bytes[i * 8..(i + 1) * 8].copy_from_slice(&word.to_le_bytes());
+                scratch[i * 8..(i + 1) * 8].copy_from_slice(&word.to_le_bytes());
             }
-            write(m, base, bytes);
+            write(m, base, &scratch);
         }
         base += (take as u64) * 8;
         remaining = &remaining[take..];

@@ -16,8 +16,8 @@
 //! heap back into stable memory once the journal is full.
 
 use crate::memory::{
-    BULK_WORDS, GrowFailed, grow_memory_to_at_least_bytes, read_u64, read_u64_words_into,
-    read_u64_words_vec, write, write_u64, write_u64_words_into, write_zero_words,
+    GrowFailed, grow_memory_to_at_least_bytes, read_u64, read_u64_words_into,
+    read_u64_words_vec, write, write_u64, write_u64_words_direct, write_zero_words,
 };
 use core::cell::{Cell, RefCell};
 use core::fmt;
@@ -528,8 +528,7 @@ impl<M: Memory> BitSet<M> {
         let (len_bits, word_cap) = {
             let st = self.state.borrow();
             let word_offset = data_offset(self.journal_cap);
-            let mut scratch = vec![0u8; BULK_WORDS * 8];
-            write_u64_words_into(&self.memory, word_offset, &st.words, &mut scratch);
+            write_u64_words_direct(&self.memory, word_offset, &st.words);
             (st.len_bits, st.word_cap)
         };
         write_u64(&self.memory, LEN_OFFSET, len_bits);
