@@ -20,7 +20,7 @@ pub mod insert;
 pub use crate::dgap::{SegmentMaintainAction, SegmentMaintainThresholds};
 pub use csr_graph::{CsrGraph, CsrGraphError, LogicalNeighborhoodIter};
 pub use csr_graph_gc::CsrGraphWithGcQueue;
-pub use gc_work_item::{GC_TAG_SEGMENT_FWD, GC_TAG_SEGMENT_REV, GC_TAG_VERTEX, GcWorkItem};
+pub use gc_work_item::{GC_TAG_SEGMENT_FWD, GC_TAG_SEGMENT_REV, GcWorkItem};
 pub use insert::{CsrInsertError, insert_edge_into_slab, insert_edge_into_slab_column};
 
 use crate::dgap::{DgapEdgeStore, DgapGraphMemories};
