@@ -198,6 +198,7 @@ fn dgap_stores_sync_meta() {
         .unwrap();
 
     let stores = DgapStores::new(vertices, edges);
+    stores.refresh_slab_occupied_tail_meta().unwrap();
     stores.sync_pma_meta().unwrap();
 
     let e = stores.edges.read_segment_edge_counts(1).actual;

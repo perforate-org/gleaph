@@ -5,7 +5,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use ic_stable_csr::{
-    Bound, DgapEdgeStore, DgapGraphMemories, DgapStores, DgapStoresError, Storable, VectorMemory,
+    Bound, CsrEdgeSlotTombstoneScan, DgapEdgeStore, DgapGraphMemories, DgapStores, DgapStoresError,
+    SegmentEdgeCounts, Storable, VectorMemory,
+    dgap::recount_segment_edge_counts_column,
     traits::{CsrEdge, CsrVertex},
 };
 use ic_stable_slot_map::SlotMap;
@@ -106,6 +108,130 @@ fn dual_edge_memories() -> DgapGraphMemories<VectorMemory, VectorMemory> {
     )
 }
 
+fn assert_sec_matches_full_recount(
+    stores: &DgapStores<TV, TE, VectorMemory, VectorMemory, VectorMemory>,
+) {
+    let h = stores.edges.header().unwrap();
+    let sc = h.segment_count as usize;
+    let len = sc * 2;
+    let mut buf = vec![
+        SegmentEdgeCounts {
+            actual: 0,
+            total: 0,
+            tombstone: 0,
+        };
+        len
+    ];
+    let es = h.edge_stride;
+    recount_segment_edge_counts_column(
+        &stores.vertices,
+        stores.vertices.len(),
+        h.segment_count,
+        h.segment_size,
+        h.elem_capacity,
+        |slot| {
+            let e = stores.edges.read_slot(es, slot);
+            TE::record_is_physical_tombstone(&e)
+        },
+        &mut buf,
+    );
+    for j in 0..len {
+        assert_eq!(
+            stores.edges.read_segment_edge_counts(j),
+            buf[j],
+            "SEC node {j} diverges from full recount"
+        );
+    }
+}
+
+fn assert_slab_tail_matches_column(
+    stores: &DgapStores<TV, TE, VectorMemory, VectorMemory, VectorMemory>,
+) {
+    let h = stores.edges.header().unwrap();
+    let n = stores.vertices.len() as usize;
+    let mut truth = 0u64;
+    for i in 0..n {
+        let v = stores.vertices.get_dense(i as u32).unwrap();
+        truth = truth.max(v.base_slot_start().saturating_add(v.degree() as u64));
+    }
+    assert_eq!(
+        h.slab_occupied_tail, truth,
+        "VCE slab_occupied_tail must equal max(base+degree)"
+    );
+}
+
+#[test]
+fn sec_delta_matches_full_recount_after_light_inserts() {
+    let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+    let vertices = SlotMap::new(mv).unwrap();
+    let edges = TeEdgeStore::new(dual_edge_memories());
+    edges.format_new(128, 2, 4, 0).expect("format");
+    for i in 0..4u64 {
+        vertices
+            .insert(&TV {
+                slot_base: i * 16,
+                deg: 0,
+                log_head: -1,
+            })
+            .unwrap();
+    }
+    let stores = DgapStores::new(vertices, edges);
+    stores.refresh_slab_occupied_tail_meta().unwrap();
+    stores.sync_pma_meta().unwrap();
+    assert_slab_tail_matches_column(&stores);
+    assert_sec_matches_full_recount(&stores);
+
+    stores.insert_edge(1, TE([2, 0, 0, 0])).unwrap();
+    assert_sec_matches_full_recount(&stores);
+    assert_slab_tail_matches_column(&stores);
+
+    stores
+        .insert_edges([(2, TE([0, 0, 0, 0])), (2, TE([3, 0, 0, 0]))])
+        .unwrap();
+    assert_sec_matches_full_recount(&stores);
+    assert_slab_tail_matches_column(&stores);
+}
+
+#[test]
+fn insert_vertex_partial_pma_sync_matches_full_recount() {
+    let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+    let vertices = SlotMap::new(mv).unwrap();
+    let edges = TeEdgeStore::new(dual_edge_memories());
+    edges.format_new(256, 4, 4, 0).expect("format");
+    for i in 0..4u64 {
+        vertices
+            .insert(&TV {
+                slot_base: i * 8,
+                deg: 0,
+                log_head: -1,
+            })
+            .unwrap();
+    }
+    let stores = DgapStores::new(vertices, edges);
+    stores.refresh_slab_occupied_tail_meta().unwrap();
+    stores.sync_pma_meta().unwrap();
+
+    stores
+        .insert_vertex(TV {
+            slot_base: 0,
+            deg: 0,
+            log_head: -1,
+        })
+        .unwrap();
+    assert_sec_matches_full_recount(&stores);
+    assert_slab_tail_matches_column(&stores);
+
+    stores
+        .insert_vertex(TV {
+            slot_base: 0,
+            deg: 0,
+            log_head: -1,
+        })
+        .unwrap();
+    assert_sec_matches_full_recount(&stores);
+    assert_slab_tail_matches_column(&stores);
+}
+
 #[test]
 fn insert_maintain_triggers_resize_when_slab_full() {
     let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
@@ -121,6 +247,7 @@ fn insert_maintain_triggers_resize_when_slab_full() {
     }).unwrap();
 
     let stores = DgapStores::new(vertices, edges);
+    stores.refresh_slab_occupied_tail_meta().unwrap();
     stores.sync_pma_meta().unwrap();
 
     stores.insert_edge(0, TE([1, 0, 0, 0])).unwrap();
@@ -132,6 +259,7 @@ fn insert_maintain_triggers_resize_when_slab_full() {
     stores.insert_edge(0, TE([3, 0, 0, 0])).unwrap();
     assert_eq!(stores.vertices.get_dense(0).unwrap().degree(), 3);
     assert!(stores.edges.header().unwrap().elem_capacity >= cap_after_two);
+    assert_slab_tail_matches_column(&stores);
 }
 
 #[test]
@@ -155,11 +283,13 @@ fn overflow_goes_to_log_then_neighborhood_matches_insert_order() {
     }).unwrap();
 
     let stores = DgapStores::new(vertices, edges);
+    stores.refresh_slab_occupied_tail_meta().unwrap();
     stores.sync_pma_meta().unwrap();
 
     stores.insert_edge(0, TE([1, 0, 0, 0])).unwrap();
     stores.insert_edge(0, TE([2, 0, 0, 0])).unwrap();
     stores.insert_edge(0, TE([3, 0, 0, 0])).unwrap();
+    assert_slab_tail_matches_column(&stores);
 
     let v0 = stores.vertices.get_dense(0).unwrap();
     assert_eq!(v0.degree(), 3);
@@ -233,6 +363,7 @@ fn merge_window_clears_log_head() {
     }).unwrap();
 
     let stores = DgapStores::new(vertices, edges);
+    stores.refresh_slab_occupied_tail_meta().unwrap();
     stores.sync_pma_meta().unwrap();
 
     stores.insert_edge(0, TE([1, 0, 0, 0])).unwrap();
@@ -253,6 +384,7 @@ fn merge_window_clears_log_head() {
         .neighborhood_edges(&stores.vertices, 0)
         .unwrap();
     assert_eq!(neigh.len(), 3);
+    assert_slab_tail_matches_column(&stores);
 }
 
 #[test]
@@ -264,6 +396,7 @@ fn insert_vertex_twice_then_insert_edges_on_each() {
     edges.format_new(16, 1, 8, 0).expect("format");
 
     let stores = DgapStores::new(vertices, edges);
+    stores.refresh_slab_occupied_tail_meta().unwrap();
     stores.sync_pma_meta().unwrap();
 
     assert_eq!(
@@ -308,6 +441,7 @@ fn insert_vertex_twice_then_insert_edges_on_each() {
     stores.insert_edge(1, TE([2, 0, 0, 0])).unwrap();
     assert_eq!(stores.vertices.get_dense(0).unwrap().degree(), 1);
     assert_eq!(stores.vertices.get_dense(1).unwrap().degree(), 1);
+    assert_slab_tail_matches_column(&stores);
 }
 
 #[test]
@@ -319,6 +453,7 @@ fn insert_vertex_rejects_wrong_base() {
     edges.format_new(16, 1, 8, 0).expect("format");
 
     let stores = DgapStores::new(vertices, edges);
+    stores.refresh_slab_occupied_tail_meta().unwrap();
     stores.sync_pma_meta().unwrap();
 
     let err = stores
@@ -345,6 +480,7 @@ fn insert_vertex_honors_segment_vertex_cap() {
     edges.format_new(32, 1, 2, 0).expect("format");
 
     let stores = DgapStores::new(vertices, edges);
+    stores.refresh_slab_occupied_tail_meta().unwrap();
     stores.sync_pma_meta().unwrap();
 
     stores
@@ -362,6 +498,7 @@ fn insert_vertex_honors_segment_vertex_cap() {
         })
         .unwrap();
     assert_eq!(stores.vertices.len(), 2);
+    assert_slab_tail_matches_column(&stores);
 
     let err = stores
         .insert_vertex(TV {
@@ -396,12 +533,14 @@ fn two_vertices_preallocated_sync_meta() {
     }).unwrap();
 
     let stores = DgapStores::new(vertices, edges);
+    stores.refresh_slab_occupied_tail_meta().unwrap();
     stores.sync_pma_meta().unwrap();
 
     stores.insert_edge(0, TE([7, 0, 0, 0])).unwrap();
     stores.insert_edge(0, TE([8, 0, 0, 0])).unwrap();
     assert_eq!(stores.vertices.get_dense(0).unwrap().degree(), 2);
     assert_eq!(stores.vertices.get_dense(1).unwrap().base_slot_start(), 4);
+    assert_slab_tail_matches_column(&stores);
 }
 
 #[test]
@@ -409,6 +548,7 @@ fn write_edge_slab_span_round_trips_two_slots() {
     let edges = TeEdgeStore::new(dual_edge_memories());
     edges.format_new(16, 1, 8, 0).expect("format");
     let h = edges.header().unwrap();
+    assert_eq!(h.slab_occupied_tail, 0);
     let mut packed = vec![0u8; 8];
     TE([10, 0, 0, 0]).write_to(&mut packed[0..4]);
     TE([11, 0, 0, 0]).write_to(&mut packed[4..8]);
@@ -437,6 +577,7 @@ fn insert_edges_matches_sequential_single_vertex_overflow() {
         log_head: -1,
     }).unwrap();
     let stores_a = DgapStores::new(vertices, edges);
+    stores_a.refresh_slab_occupied_tail_meta().unwrap();
     stores_a.sync_pma_meta().unwrap();
     stores_a.insert_edge(0, TE([1, 0, 0, 0])).unwrap();
     stores_a.insert_edge(0, TE([2, 0, 0, 0])).unwrap();
@@ -461,6 +602,7 @@ fn insert_edges_matches_sequential_single_vertex_overflow() {
         log_head: -1,
     }).unwrap();
     let stores_b = DgapStores::new(vertices_b, edges_b);
+    stores_b.refresh_slab_occupied_tail_meta().unwrap();
     stores_b.sync_pma_meta().unwrap();
     stores_b
         .insert_edges([
@@ -474,6 +616,8 @@ fn insert_edges_matches_sequential_single_vertex_overflow() {
         .neighborhood_edges(&stores_b.vertices, 0)
         .unwrap();
     assert_eq!(neigh_a, neigh_b);
+    assert_slab_tail_matches_column(&stores_a);
+    assert_slab_tail_matches_column(&stores_b);
 }
 
 #[test]
@@ -493,6 +637,7 @@ fn insert_edges_interleaved_matches_sequential() {
         log_head: -1,
     }).unwrap();
     let stores_a = DgapStores::new(vertices, edges);
+    stores_a.refresh_slab_occupied_tail_meta().unwrap();
     stores_a.sync_pma_meta().unwrap();
     stores_a.insert_edge(0, TE([1, 0, 0, 0])).unwrap();
     stores_a.insert_edge(1, TE([2, 0, 0, 0])).unwrap();
@@ -521,6 +666,7 @@ fn insert_edges_interleaved_matches_sequential() {
         log_head: -1,
     }).unwrap();
     let stores_b = DgapStores::new(vertices_b, edges_b);
+    stores_b.refresh_slab_occupied_tail_meta().unwrap();
     stores_b.sync_pma_meta().unwrap();
     stores_b
         .insert_edges([
@@ -529,6 +675,8 @@ fn insert_edges_interleaved_matches_sequential() {
             (0, TE([3, 0, 0, 0])),
         ])
         .unwrap();
+    assert_slab_tail_matches_column(&stores_a);
+    assert_slab_tail_matches_column(&stores_b);
     assert_eq!(
         n0_a,
         stores_b

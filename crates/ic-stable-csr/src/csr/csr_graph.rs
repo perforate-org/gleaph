@@ -185,6 +185,31 @@ where
         Ok(())
     }
 
+    pub fn sync_pma_meta_for_vertex_range(
+        &self,
+        left: usize,
+        right: usize,
+    ) -> Result<(), CsrGraphError> {
+        self.forward
+            .sync_pma_meta_for_vertex_range(left, right)
+            .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?;
+        self.reverse
+            .sync_pma_meta_for_vertex_range(left, right)
+            .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?;
+        Ok(())
+    }
+
+    /// Refresh persisted slab tail metadata on both DGAP columns (see [`DgapStores::refresh_slab_occupied_tail_meta`]).
+    pub fn refresh_slab_occupied_tail_meta(&self) -> Result<(), CsrGraphError> {
+        self.forward
+            .refresh_slab_occupied_tail_meta()
+            .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?;
+        self.reverse
+            .refresh_slab_occupied_tail_meta()
+            .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?;
+        Ok(())
+    }
+
     pub fn insert_vertex(&self, row_template: V) -> Result<u64, CsrGraphError> {
         let id = self
             .forward

@@ -8,7 +8,7 @@
 //! [`log_pool_base`], [`log_entry_offset`].
 //!
 //! ```text
-//! -------------------------------------------------- <- Address 0 (see `header` module for `VCE` header)
+//! -------------------------------------------------- <- Address 0 (see `header` module for `VCE` header incl. `slab_occupied_tail`)
 //! … [`DgapEdgeHeaderV1`] …               ↕ [`EDGE_PAYLOAD_HEADER_SIZE`] bytes
 //! -------------------------------------------------- <- CSR slab base
 //! Edge slot 0 … slot (elem_capacity - 1) ↕ elem_capacity × edge_stride bytes

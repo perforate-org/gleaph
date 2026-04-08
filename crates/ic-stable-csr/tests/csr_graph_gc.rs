@@ -5,8 +5,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use ic_stable_csr::{
-    Bound, CsrEdge, CsrEdgeTombstone, CsrEdgeUndirected, CsrGraphError, CsrGraphWithGcQueue,
-    CsrVertex, CsrVertexTombstone, Storable, VectorMemory,
+    Bound, CsrEdge, CsrEdgeSlotTombstoneScan, CsrEdgeTombstone, CsrEdgeUndirected, CsrGraphError,
+    CsrGraphWithGcQueue, CsrVertex, CsrVertexTombstone, DgapStores, SegmentEdgeCounts,
+    SegmentMaintainThresholds, Storable, VectorMemory,
+    dgap::recount_segment_edge_counts_column,
 };
 
 const DEG_TOMB: u32 = 1u32 << 31;
@@ -151,6 +153,42 @@ fn empty_vertex() -> TV {
     }
 }
 
+fn assert_sec_matches_full_recount_te(
+    stores: &DgapStores<TV, TE, VectorMemory, VectorMemory, VectorMemory>,
+) {
+    let h = stores.edges.header().unwrap();
+    let sc = h.segment_count as usize;
+    let len = sc * 2;
+    let mut buf = vec![
+        SegmentEdgeCounts {
+            actual: 0,
+            total: 0,
+            tombstone: 0,
+        };
+        len
+    ];
+    let es = h.edge_stride;
+    recount_segment_edge_counts_column(
+        &stores.vertices,
+        stores.vertices.len(),
+        h.segment_count,
+        h.segment_size,
+        h.elem_capacity,
+        |slot| {
+            let e = stores.edges.read_slot(es, slot);
+            TE::record_is_physical_tombstone(&e)
+        },
+        &mut buf,
+    );
+    for j in 0..len {
+        assert_eq!(
+            stores.edges.read_segment_edge_counts(j),
+            buf[j],
+            "SEC node {j} diverges from full recount"
+        );
+    }
+}
+
 #[test]
 fn delete_edge_tombstone_gc_and_degrees() {
     let g = CsrGraphWithGcQueue::format_new_with_gc_queue(
@@ -165,6 +203,10 @@ fn delete_edge_tombstone_gc_and_degrees() {
         1,
         8,
         0,
+        Some(SegmentMaintainThresholds {
+            min_tombstones_for_enqueue: 1,
+            ..Default::default()
+        }),
     )
     .expect("format");
 
@@ -196,6 +238,8 @@ fn delete_edge_tombstone_gc_and_degrees() {
     );
 
     g.delete_edge_directed(0, 1).unwrap();
+    assert_sec_matches_full_recount_te(g.graph().forward_dgap());
+    assert_sec_matches_full_recount_te(g.graph().reverse_dgap());
     assert_eq!(
         g.graph()
             .forward_dgap()
@@ -219,6 +263,9 @@ fn delete_edge_tombstone_gc_and_degrees() {
     let n = g.gc_step(8).expect("gc");
     assert!(n >= 1);
 
+    assert_sec_matches_full_recount_te(g.graph().forward_dgap());
+    assert_sec_matches_full_recount_te(g.graph().reverse_dgap());
+
     let out0: Vec<_> = g
         .out_edges_logical(0)
         .unwrap()
@@ -241,6 +288,7 @@ fn delete_vertex_hides_edges_until_gc() {
         1,
         8,
         0,
+        None,
     )
     .expect("format");
 
@@ -294,6 +342,7 @@ fn insert_rejects_tombstone_endpoint() {
         1,
         8,
         0,
+        None,
     )
     .expect("format");
 
@@ -324,6 +373,7 @@ fn insert_rejects_duplicate_neighbor_slot() {
         1,
         8,
         0,
+        None,
     )
     .expect("format");
 
@@ -338,4 +388,42 @@ fn insert_rejects_duplicate_neighbor_slot() {
         e,
         Err(CsrGraphError::AdjacencySlotOccupied { src: 0, dst: 1 })
     ));
+}
+
+#[test]
+fn delete_edge_inline_when_queue_pressure_threshold_zero() {
+    let thr = SegmentMaintainThresholds {
+        queue_depth_inline_pressure: 0,
+        ..Default::default()
+    };
+    let g = CsrGraphWithGcQueue::format_new_with_gc_queue(
+        vm(),
+        vm(),
+        vm(),
+        vm(),
+        vm(),
+        vm(),
+        vm(),
+        64,
+        1,
+        8,
+        0,
+        Some(thr),
+    )
+    .expect("format");
+
+    for _ in 0..3 {
+        g.insert_vertex(empty_vertex()).unwrap();
+    }
+    g.sync_pma_meta().unwrap();
+    g.insert_directed(0, 1, TE([1, 0, 0, 0])).unwrap();
+    g.delete_edge_directed(0, 1).unwrap();
+    assert_eq!(g.work_queue_len(), 0);
+    assert_eq!(g.gc_step(8).unwrap(), 0);
+    let out0: Vec<_> = g
+        .out_edges_logical(0)
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert!(out0.is_empty());
 }

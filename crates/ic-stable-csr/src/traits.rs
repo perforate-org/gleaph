@@ -47,6 +47,25 @@ pub trait CsrEdgeTombstone: CsrEdge {
     fn with_tombstone(self, tomb: bool) -> Self;
 }
 
+/// Physical slab tombstone detection for PMA `tombstone` recounts.
+///
+/// Default: never counts slots as tombstones. Specialized when [`CsrEdgeTombstone`] is implemented.
+pub trait CsrEdgeSlotTombstoneScan: CsrEdge {
+    fn record_is_physical_tombstone(record: &Self) -> bool;
+}
+
+impl<E: CsrEdge> CsrEdgeSlotTombstoneScan for E {
+    default fn record_is_physical_tombstone(_: &Self) -> bool {
+        false
+    }
+}
+
+impl<E: CsrEdge + CsrEdgeTombstone> CsrEdgeSlotTombstoneScan for E {
+    fn record_is_physical_tombstone(e: &Self) -> bool {
+        e.is_tombstone()
+    }
+}
+
 /// Extension of [`CsrEdge`] for edges that carry an **undirected** semantic flag in the slot payload.
 ///
 /// Storage remains directed CSR (forward + reverse in [`crate::csr::CsrGraph`]); this bit records that

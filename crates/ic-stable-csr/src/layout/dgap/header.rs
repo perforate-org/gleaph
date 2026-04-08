@@ -29,7 +29,9 @@
 //! --------------------------------------------------
 //! log_entry_stride (u32 LE)             ↕ 4 bytes
 //! --------------------------------------------------
-//! Reserved                              ↕ 12 bytes
+//! slab_occupied_tail (u64 LE)           ↕ 8 bytes  (max_v base+degree; see [`DgapEdgeHeaderV1::slab_occupied_tail`])
+//! --------------------------------------------------
+//! Reserved                              ↕ 4 bytes
 //! -------------------------------------------------- <- Address 64 ([`EDGE_HEADER_SIZE`])
 //! CSR edge slab, log idx[], log pool … (see `edges_and_log`)
 //! ```
@@ -52,6 +54,8 @@ pub struct DgapEdgeHeaderV1 {
     pub edge_stride: u32,
     pub max_log_entries: u32,
     pub log_entry_stride: u32,
+    /// `max_i (vertex[i].base_slot_start + vertex[i].degree)` for the vertex column paired with this edge region.
+    pub slab_occupied_tail: u64,
 }
 
 impl DgapEdgeHeaderV1 {
@@ -75,6 +79,7 @@ impl DgapEdgeHeaderV1 {
             edge_stride: read_u32_le(memory, 40),
             max_log_entries: read_u32_le(memory, 44),
             log_entry_stride: read_u32_le(memory, 48),
+            slab_occupied_tail: read_u64_le(memory, 52),
         })
     }
 
@@ -91,6 +96,48 @@ impl DgapEdgeHeaderV1 {
         write_u32_le(memory, 40, self.edge_stride);
         write_u32_le(memory, 44, self.max_log_entries);
         write_u32_le(memory, 48, self.log_entry_stride);
-        memory.write(52, &[0u8; 12]);
+        write_u64_le(memory, 52, self.slab_occupied_tail);
+        memory.write(60, &[0u8; 4]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use ic_stable_structures::Memory;
+
+    use crate::VectorMemory;
+
+    use super::{DgapEdgeHeaderV1, EDGE_REGION_MAGIC, EDGE_REGION_VERSION};
+
+    #[test]
+    fn slab_occupied_tail_round_trips_at_offset_52() {
+        let mem: VectorMemory = Rc::new(RefCell::new(vec![0u8; 128]));
+        let h = DgapEdgeHeaderV1 {
+            elem_capacity: 100,
+            segment_count: 2,
+            segment_size: 4,
+            tree_height: 1,
+            num_edges: 5,
+            edge_stride: 4,
+            max_log_entries: 10,
+            log_entry_stride: 20,
+            slab_occupied_tail: 42,
+        };
+        h.write(&mem);
+        let got = DgapEdgeHeaderV1::read(&mem).unwrap();
+        assert_eq!(got.slab_occupied_tail, 42);
+        assert_eq!(got.elem_capacity, 100);
+        let mut tail = [0u8; 8];
+        mem.read(52, &mut tail);
+        assert_eq!(u64::from_le_bytes(tail), 42);
+        let mut ver = [0u8; 1];
+        mem.read(3, &mut ver);
+        assert_eq!(ver[0], EDGE_REGION_VERSION);
+        let mut magic = [0u8; 3];
+        mem.read(0, &mut magic);
+        assert_eq!(&magic, EDGE_REGION_MAGIC);
     }
 }

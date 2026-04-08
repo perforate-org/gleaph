@@ -19,7 +19,8 @@ pub mod insert;
 
 pub use csr_graph::{CsrGraph, CsrGraphError, LogicalNeighborhoodIter};
 pub use csr_graph_gc::CsrGraphWithGcQueue;
-pub use gc_work_item::{GC_TAG_EDGE_DIRECTED, GC_TAG_EDGE_UNDIRECTED, GC_TAG_VERTEX, GcWorkItem};
+pub use gc_work_item::{GC_TAG_SEGMENT_FWD, GC_TAG_SEGMENT_REV, GC_TAG_VERTEX, GcWorkItem};
+pub use crate::dgap::{SegmentMaintainAction, SegmentMaintainThresholds};
 pub use insert::{CsrInsertError, insert_edge_into_slab, insert_edge_into_slab_column};
 
 use crate::dgap::{DgapEdgeStore, DgapGraphMemories};
@@ -86,6 +87,22 @@ where
     /// Sync PMA segment edge counts from the vertex column (no `&[V]` snapshot).
     pub fn sync_pma_meta(&self) -> Result<(), &'static str> {
         self.edges.sync_pma_edge_counts(&self.vertices)
+    }
+
+    /// Recompute SEC only for DGAP segments touched by vertices `[left, right)` (`right` exclusive).
+    pub fn sync_pma_meta_for_vertex_range(
+        &self,
+        left: usize,
+        right: usize,
+    ) -> Result<(), &'static str> {
+        self.edges
+            .sync_pma_edge_counts_for_vertex_range(&self.vertices, left, right)
+    }
+
+    /// Recompute and persist [`crate::layout::dgap::DgapEdgeHeaderV1::slab_occupied_tail`] from `vertices`.
+    pub fn refresh_slab_occupied_tail_meta(&self) -> Result<(), &'static str> {
+        self.edges
+            .refresh_slab_occupied_tail_from_column(&self.vertices)
     }
 
     /// Insert one edge for `vid` (CSR slab or DGAP segment log) and run PMA maintenance.
@@ -189,7 +206,13 @@ where
             .insert(&row)
             .map_err(|_| DgapStoresError::Graph("vertex column grow failed"))?;
 
-        self.sync_pma_meta().map_err(DgapStoresError::Graph)?;
+        self.edges
+            .refresh_slab_occupied_tail_from_column(&self.vertices)
+            .map_err(DgapStoresError::Graph)?;
+
+        let idx = new_vid as usize;
+        self.sync_pma_meta_for_vertex_range(idx, idx.saturating_add(1))
+            .map_err(DgapStoresError::Graph)?;
 
         Ok(new_vid)
     }

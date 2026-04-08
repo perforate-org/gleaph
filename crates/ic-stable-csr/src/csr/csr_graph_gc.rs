@@ -1,13 +1,20 @@
-//! [`CsrGraph`] plus a ninth [`Memory`] backing a persisted [`StableVecDeque`](crate::StableVecDeque) GC work queue.
+//! [`CsrGraph`] plus a seventh [`Memory`] backing a persisted [`StableVecDeque`](crate::StableVecDeque)
+//! **segment maintenance** queue (per DGAP leaf: tombstone compaction + PMA rebalance).
 
 use ic_stable_structures::Memory;
 
 use crate::StableVecDeque;
-use crate::csr::DgapStoresError;
+use crate::csr::{DgapStores, DgapStoresError};
 use crate::csr::csr_graph::{CsrGraph, CsrGraphError, LogicalNeighborhoodIter};
 use crate::csr::gc_work_item::{
-    GC_TAG_EDGE_DIRECTED, GC_TAG_EDGE_UNDIRECTED, GC_TAG_VERTEX, GcWorkItem,
+    GC_TAG_SEGMENT_FWD, GC_TAG_SEGMENT_REV, GC_TAG_VERTEX, GcWorkItem,
 };
+use crate::dgap::{
+    RebalanceDecision, rebalance_decision_with_reader, segment_maintenance_decision,
+    SegmentMaintainAction,
+    SegmentMaintainThresholds,
+};
+use crate::layout::dgap::dgap_leaf_segment_id;
 use crate::traits::{CsrEdge, CsrEdgeTombstone, CsrEdgeUndirected, CsrVertex, CsrVertexTombstone};
 
 #[inline]
@@ -24,7 +31,9 @@ where
         .map_err(|_| CsrGraphError::LogicalMutation("vertex set_dense failed"))
 }
 
-/// Bidirectional CSR with a stable work queue for lazy physical compaction.
+/// Bidirectional CSR with a stable work queue for lazy **per-leaf** physical compaction (tombstones + PMA).
+///
+/// Single-threaded canister assumption: inline maintenance and the queue are not interleaved concurrently.
 pub struct CsrGraphWithGcQueue<V, E, Mvs, F1, F2, R1, R2, QM>
 where
     V: CsrVertex,
@@ -38,6 +47,7 @@ where
 {
     graph: CsrGraph<V, E, Mvs, F1, F2, R1, R2>,
     work_queue: StableVecDeque<GcWorkItem, QM>,
+    maintain_thresholds: SegmentMaintainThresholds,
 }
 
 impl<V, E, Mvs, F1, F2, R1, R2, QM> CsrGraphWithGcQueue<V, E, Mvs, F1, F2, R1, R2, QM>
@@ -57,6 +67,10 @@ where
 
     pub fn work_queue_len(&self) -> u64 {
         self.work_queue.len()
+    }
+
+    pub fn maintain_thresholds(&self) -> SegmentMaintainThresholds {
+        self.maintain_thresholds
     }
 
     fn push_queue(&self, item: GcWorkItem) -> Result<(), CsrGraphError> {
@@ -83,6 +97,14 @@ where
 
     pub fn sync_pma_meta(&self) -> Result<(), CsrGraphError> {
         self.graph.sync_pma_meta()
+    }
+
+    pub fn sync_pma_meta_for_vertex_range(
+        &self,
+        left: usize,
+        right: usize,
+    ) -> Result<(), CsrGraphError> {
+        self.graph.sync_pma_meta_for_vertex_range(left, right)
     }
 
     pub fn insert_vertex(&self, row_template: V) -> Result<u64, CsrGraphError> {
@@ -119,7 +141,116 @@ where
         self.graph.insert_undirected(u, v, edge)
     }
 
-    /// Logical delete: tombstones both orientations, decrements stored degrees, enqueues physical GC.
+    /// LSM-style trigger composition: PMA density ([`rebalance_decision`]) + tombstone ratio + queue depth.
+    fn schedule_maintain_for_vertex_column<M1: Memory, M2: Memory>(
+        &self,
+        stores: &DgapStores<V, E, Mvs, M1, M2>,
+        pivot_vid: usize,
+        queue_len: u64,
+        forward_column: bool,
+    ) -> Result<(), CsrGraphError> {
+        let h = stores
+            .edges
+            .header()
+            .ok_or(CsrGraphError::LogicalMutation("no edge header"))?;
+        let sc = h.segment_count as usize;
+        let n = stores.vertices.len() as usize;
+        let leaf = dgap_leaf_segment_id(pivot_vid, h.segment_size);
+        let pma_idx = leaf as usize + sc;
+        let leaf_counts = stores.edges.read_segment_edge_counts(pma_idx);
+        let reb = rebalance_decision_with_reader(
+            pivot_vid as u32,
+            h.segment_size,
+            h.segment_count,
+            n,
+            h.tree_height,
+            |j| {
+                let c = stores.edges.read_segment_edge_counts(j);
+                (c.actual, c.total)
+            },
+        );
+        let action = segment_maintenance_decision(
+            leaf_counts,
+            reb,
+            queue_len,
+            &self.maintain_thresholds,
+        );
+        let map_g = |m: &'static str| {
+            if forward_column {
+                CsrGraphError::Forward(DgapStoresError::Graph(m))
+            } else {
+                CsrGraphError::Reverse(DgapStoresError::Graph(m))
+            }
+        };
+        match action {
+            SegmentMaintainAction::Noop => Ok(()),
+            SegmentMaintainAction::Enqueue => {
+                let item = if forward_column {
+                    GcWorkItem::segment_maintain_forward(leaf)
+                } else {
+                    GcWorkItem::segment_maintain_reverse(leaf)
+                };
+                self.push_queue(item)
+            }
+            SegmentMaintainAction::InlineNow => {
+                self.run_segment_maintain_for_leaf(stores, leaf, map_g)
+            }
+        }
+    }
+
+    /// Resize slab if PMA demands it, then [`DgapEdgeStore::maintain_segment_leaf_plan_and_commit`].
+    fn run_segment_maintain_for_leaf<M1: Memory, M2: Memory>(
+        &self,
+        stores: &DgapStores<V, E, Mvs, M1, M2>,
+        leaf: u32,
+        map_g: impl Fn(&'static str) -> CsrGraphError,
+    ) -> Result<(), CsrGraphError> {
+        let mut h = stores
+            .edges
+            .header()
+            .ok_or(CsrGraphError::LogicalMutation("no edge header"))?;
+        let sc = h.segment_count as usize;
+        let n = stores.vertices.len() as usize;
+        let ss = h.segment_size.max(1) as usize;
+        let left = (leaf as usize).saturating_mul(ss).min(n);
+        let right = (left + ss).min(n);
+        let pivot_vid = left.min(n.saturating_sub(1));
+        let pma_idx = leaf as usize + sc;
+        for _ in 0..16 {
+            let reb = rebalance_decision_with_reader(
+                pivot_vid as u32,
+                h.segment_size,
+                h.segment_count,
+                n,
+                h.tree_height,
+                |j| {
+                    let c = stores.edges.read_segment_edge_counts(j);
+                    (c.actual, c.total)
+                },
+            );
+            if matches!(reb, RebalanceDecision::ResizeNeeded) {
+                stores
+                    .edges
+                    .resize_double(&stores.vertices)
+                    .map_err(|m| map_g(m))?;
+                stores.sync_pma_meta().map_err(|m| map_g(m))?;
+                h = stores
+                    .edges
+                    .header()
+                    .ok_or(CsrGraphError::LogicalMutation("no edge header"))?;
+                continue;
+            }
+            stores
+                .edges
+                .maintain_segment_leaf_plan_and_commit(&stores.vertices, left, right, pma_idx)
+                .map_err(|m| map_g(m))?;
+            return Ok(());
+        }
+        Err(CsrGraphError::LogicalMutation(
+            "segment maintain: resize loop limit",
+        ))
+    }
+
     pub fn delete_edge_directed(&self, src: usize, dst: usize) -> Result<(), CsrGraphError> {
         self.graph.ensure_vertex(src)?;
         self.graph.ensure_vertex(dst)?;
@@ -162,8 +293,16 @@ where
             })?;
         vertex_set_dense(&fwd.vertices, src, fs.with_degree(fs.degree().saturating_sub(1)))?;
         vertex_set_dense(&rev.vertices, dst, rd.with_degree(rd.degree().saturating_sub(1)))?;
-        self.graph.sync_pma_meta()?;
-        self.push_queue(GcWorkItem::edge_directed(src as u32, dst as u32))?;
+        fwd.edges
+            .bump_segment_edge_counts_leaf_delta(src, -1, 0, 1)
+            .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?;
+        rev.edges
+            .bump_segment_edge_counts_leaf_delta(dst, -1, 0, 1)
+            .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?;
+        self.graph.refresh_slab_occupied_tail_meta()?;
+        let qlen = self.work_queue.len();
+        self.schedule_maintain_for_vertex_column(fwd, src, qlen, true)?;
+        self.schedule_maintain_for_vertex_column(rev, dst, qlen, false)?;
         Ok(())
     }
 
@@ -218,10 +357,20 @@ where
                 })?;
             vertex_set_dense(&fwd.vertices, owner, fs.with_degree(fs.degree().saturating_sub(1)))?;
             vertex_set_dense(&rev.vertices, nb, rd.with_degree(rd.degree().saturating_sub(1)))?;
+            fwd.edges
+                .bump_segment_edge_counts_leaf_delta(owner, -1, 0, 1)
+                .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?;
+            rev.edges
+                .bump_segment_edge_counts_leaf_delta(nb, -1, 0, 1)
+                .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?;
         }
-        self.graph.sync_pma_meta()?;
         if changed {
-            self.push_queue(GcWorkItem::edge_undirected(u as u32, v as u32))?;
+            self.graph.refresh_slab_occupied_tail_meta()?;
+            let qlen = self.work_queue.len();
+            self.schedule_maintain_for_vertex_column(fwd, u, qlen, true)?;
+            self.schedule_maintain_for_vertex_column(rev, v, qlen, false)?;
+            self.schedule_maintain_for_vertex_column(fwd, v, qlen, true)?;
+            self.schedule_maintain_for_vertex_column(rev, u, qlen, false)?;
         }
         Ok(())
     }
@@ -279,6 +428,13 @@ where
         let rv = rev.vertices.get_dense(vid as u32).unwrap();
         vertex_set_dense(&fwd.vertices, vid, fv.with_tombstone(true))?;
         vertex_set_dense(&rev.vertices, vid, rv.with_tombstone(true))?;
+        self.graph.refresh_slab_occupied_tail_meta()?;
+        // Phase D (partial PMA sync): full dual-column recount is conservative. A tighter approach
+        // would union `sync_pma_meta_for_vertex_range` over `vid`, each neighbor’s segment, and
+        // any segment touched by the degree bumps above, then prove SEC internal nodes stay
+        // consistent (or add targeted `bump_segment_edge_counts_leaf_delta`). Before changing this,
+        // add tests that compare partial sync vs `sync_pma_meta()` on random small graphs after
+        // `delete_vertex` (forward + reverse SEC, rebalance triggers, tombstone neighbors).
         self.graph.sync_pma_meta()?;
         self.push_queue(GcWorkItem::vertex_delete(vid as u64))?;
         Ok(())
@@ -298,7 +454,6 @@ where
         self.graph.in_edges_logical(vid)
     }
 
-    /// Drain at most `budget` queue entries (each entry may perform several stable writes).
     pub fn gc_step(&self, budget: usize) -> Result<usize, CsrGraphError> {
         let mut completed = 0usize;
         for _ in 0..budget {
@@ -307,8 +462,24 @@ where
             }
             let item = self.work_queue.get(0).expect("len > 0");
             let done = match item.tag() {
-                GC_TAG_EDGE_DIRECTED => self.gc_one_edge_directed(item)?,
-                GC_TAG_EDGE_UNDIRECTED => self.gc_one_edge_undirected(item)?,
+                GC_TAG_SEGMENT_FWD => {
+                    let leaf = item.leaf_segment_id().ok_or(CsrGraphError::LogicalMutation(
+                        "gc: bad segment fwd item",
+                    ))?;
+                    let map_g =
+                        |m: &'static str| CsrGraphError::Forward(DgapStoresError::Graph(m));
+                    self.run_segment_maintain_for_leaf(self.graph.forward_dgap(), leaf, map_g)?;
+                    true
+                }
+                GC_TAG_SEGMENT_REV => {
+                    let leaf = item.leaf_segment_id().ok_or(CsrGraphError::LogicalMutation(
+                        "gc: bad segment rev item",
+                    ))?;
+                    let map_g =
+                        |m: &'static str| CsrGraphError::Reverse(DgapStoresError::Graph(m));
+                    self.run_segment_maintain_for_leaf(self.graph.reverse_dgap(), leaf, map_g)?;
+                    true
+                }
                 GC_TAG_VERTEX => self.gc_one_vertex(item)?,
                 _ => {
                     self.work_queue.pop_front();
@@ -322,126 +493,7 @@ where
                 break;
             }
         }
-        self.graph.sync_pma_meta()?;
         Ok(completed)
-    }
-
-    fn gc_one_edge_directed(&self, item: GcWorkItem) -> Result<bool, CsrGraphError> {
-        let (src, dst) = item
-            .edge_endpoints()
-            .ok_or(CsrGraphError::LogicalMutation("gc: bad edge work item"))?;
-        let src = src as usize;
-        let dst = dst as usize;
-        let g = &self.graph;
-        let fwd = g.forward_dgap();
-        let rev = g.reverse_dgap();
-        let fi = fwd
-            .edges
-            .neighbor_local_index::<V, Mvs>(&fwd.vertices, src, dst)
-            .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?;
-        if fi.is_none() {
-            return Ok(true);
-        }
-        let i = fi.unwrap();
-        let h = fwd
-            .edges
-            .header()
-            .ok_or(CsrGraphError::LogicalMutation("gc: no edge header"))?;
-        let stride = h.edge_stride;
-        let base = fwd
-            .vertices
-            .get_dense(src as u32)
-            .ok_or(CsrGraphError::VertexOutOfRange {
-                vid: src,
-                len: fwd.vertices.len(),
-            })?
-            .base_slot_start();
-        let e = fwd.edges.read_slot(stride, base.saturating_add(i as u64));
-        if !e.is_tombstone() {
-            return Err(CsrGraphError::LogicalMutation(
-                "gc: expected tombstone edge for directed gc",
-            ));
-        }
-        fwd.edges
-            .remove_slab_edge_at_local_index_physically::<V, Mvs>(&fwd.vertices, src, i)
-            .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?;
-        let j = rev
-            .edges
-            .neighbor_local_index::<V, Mvs>(&rev.vertices, dst, src)
-            .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?
-            .ok_or(CsrGraphError::LogicalMutation(
-                "gc: reverse edge missing after forward remove",
-            ))?;
-        rev.edges
-            .remove_slab_edge_at_local_index_physically::<V, Mvs>(&rev.vertices, dst, j)
-            .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?;
-        Ok(true)
-    }
-
-    fn gc_one_edge_undirected(&self, item: GcWorkItem) -> Result<bool, CsrGraphError> {
-        let (u, v) = item.edge_endpoints().ok_or(CsrGraphError::LogicalMutation(
-            "gc: bad undirected work item",
-        ))?;
-        let u = u as usize;
-        let v = v as usize;
-        if u == v {
-            return self.gc_one_edge_directed(GcWorkItem::edge_directed(u as u32, u as u32));
-        }
-        for (a, b) in [(u, v), (v, u)] {
-            if self.gc_try_remove_one_tombstone_directed(a, b)? {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    }
-
-    /// Returns `true` if one directed tombstone pair `(src → dst)` was physically removed.
-    fn gc_try_remove_one_tombstone_directed(
-        &self,
-        src: usize,
-        dst: usize,
-    ) -> Result<bool, CsrGraphError> {
-        let g = &self.graph;
-        let fwd = g.forward_dgap();
-        let rev = g.reverse_dgap();
-        let fi = fwd
-            .edges
-            .neighbor_local_index::<V, Mvs>(&fwd.vertices, src, dst)
-            .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?;
-        let Some(i) = fi else {
-            return Ok(false);
-        };
-        let h = fwd
-            .edges
-            .header()
-            .ok_or(CsrGraphError::LogicalMutation("gc: no edge header"))?;
-        let stride = h.edge_stride;
-        let base = fwd
-            .vertices
-            .get_dense(src as u32)
-            .ok_or(CsrGraphError::VertexOutOfRange {
-                vid: src,
-                len: fwd.vertices.len(),
-            })?
-            .base_slot_start();
-        let e = fwd.edges.read_slot(stride, base.saturating_add(i as u64));
-        if !e.is_tombstone() {
-            return Ok(false);
-        }
-        fwd.edges
-            .remove_slab_edge_at_local_index_physically::<V, Mvs>(&fwd.vertices, src, i)
-            .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?;
-        let j = rev
-            .edges
-            .neighbor_local_index::<V, Mvs>(&rev.vertices, dst, src)
-            .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?
-            .ok_or(CsrGraphError::LogicalMutation(
-                "gc: reverse edge missing after forward remove",
-            ))?;
-        rev.edges
-            .remove_slab_edge_at_local_index_physically::<V, Mvs>(&rev.vertices, dst, j)
-            .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?;
-        Ok(true)
     }
 
     fn gc_one_vertex(&self, item: GcWorkItem) -> Result<bool, CsrGraphError> {
@@ -449,52 +501,25 @@ where
             .vertex_id()
             .ok_or(CsrGraphError::LogicalMutation("gc: bad vertex work item"))?
             as usize;
-        let g = &self.graph;
-        let fwd = g.forward_dgap();
-        let rev = g.reverse_dgap();
+        let fwd = self.graph.forward_dgap();
+        let h = fwd
+            .edges
+            .header()
+            .ok_or(CsrGraphError::LogicalMutation("no edge header"))?;
+        let leaf = dgap_leaf_segment_id(vid, h.segment_size);
+        let map_fwd = |m: &'static str| CsrGraphError::Forward(DgapStoresError::Graph(m));
+        let map_rev = |m: &'static str| CsrGraphError::Reverse(DgapStoresError::Graph(m));
+        self.run_segment_maintain_for_leaf(fwd, leaf, map_fwd)?;
+        self.run_segment_maintain_for_leaf(self.graph.reverse_dgap(), leaf, map_rev)?;
         let fd = fwd.vertices.get_dense(vid as u32).unwrap().degree();
-        if fd > 0 {
-            let edges = fwd
-                .edges
-                .collect_out_edges(&fwd.vertices, vid)
-                .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?;
-            let dst = edges[0].neighbor_vid();
-            fwd.edges
-                .remove_slab_edge_at_local_index_physically::<V, Mvs>(&fwd.vertices, vid, 0)
-                .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?;
-            if let Some(j) = rev
-                .edges
-                .neighbor_local_index::<V, Mvs>(&rev.vertices, dst, vid)
-                .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?
-            {
-                rev.edges
-                    .remove_slab_edge_at_local_index_physically::<V, Mvs>(&rev.vertices, dst, j)
-                    .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?;
-            }
-            return Ok(false);
-        }
-        let rd = rev.vertices.get_dense(vid as u32).unwrap().degree();
-        if rd > 0 {
-            let edges = rev
-                .edges
-                .collect_out_edges(&rev.vertices, vid)
-                .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?;
-            let src = edges[0].neighbor_vid();
-            rev.edges
-                .remove_slab_edge_at_local_index_physically::<V, Mvs>(&rev.vertices, vid, 0)
-                .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?;
-            if let Some(j) = fwd
-                .edges
-                .neighbor_local_index::<V, Mvs>(&fwd.vertices, src, vid)
-                .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?
-            {
-                fwd.edges
-                    .remove_slab_edge_at_local_index_physically::<V, Mvs>(&fwd.vertices, src, j)
-                    .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?;
-            }
-            return Ok(false);
-        }
-        Ok(true)
+        let rd = self
+            .graph
+            .reverse_dgap()
+            .vertices
+            .get_dense(vid as u32)
+            .unwrap()
+            .degree();
+        Ok(fd == 0 && rd == 0)
     }
 }
 
@@ -519,6 +544,7 @@ where
         segment_count: u32,
         segment_size: u32,
         num_edges: u64,
+        maintain_thresholds: Option<SegmentMaintainThresholds>,
     ) -> Result<Self, CsrGraphError> {
         let graph = CsrGraph::format_new(
             mem_vertices_forward,
@@ -534,6 +560,10 @@ where
         )?;
         let work_queue =
             StableVecDeque::new(mem_gc_work_queue).map_err(|e| CsrGraphError::GcQueue(e.into()))?;
-        Ok(Self { graph, work_queue })
+        Ok(Self {
+            graph,
+            work_queue,
+            maintain_thresholds: maintain_thresholds.unwrap_or_default(),
+        })
     }
 }

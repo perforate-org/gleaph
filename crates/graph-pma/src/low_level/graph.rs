@@ -3008,20 +3008,18 @@ impl GraphRuntime {
         let forward_entry = EdgeEntry::new(dst_vertex_ref, edge_meta.forward);
         let reverse_entry = EdgeEntry::new(src_vertex_ref, edge_meta.reverse);
 
-        let _forward_offset = self.forward.append_overflow_entry(
+        self.forward.append_overflow_entry(
             src_vertex_ref,
             src_ordinal,
             edge_id,
             forward_entry,
         )?;
-        let reverse_offset = self.reverse.append_overflow_entry(
+        self.reverse.append_overflow_entry(
             dst_vertex_ref,
             dst_ordinal,
             edge_id,
             reverse_entry,
         )?;
-
-        let _ = reverse_offset;
         self.logical_locator_sidecar.set(
             edge_id,
             super::edge::LogicalEdgeLocator::overflow(

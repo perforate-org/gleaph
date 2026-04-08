@@ -150,6 +150,11 @@ impl<M1: Memory, M2: Memory> DgapGraphMemories<M1, M2> {
         write_u64_le(&self.edges_and_log_segment, 32, n);
     }
 
+    /// Patch only [`DgapEdgeHeaderV1::slab_occupied_tail`] (offset 52); other header fields unchanged.
+    pub fn set_slab_occupied_tail(&self, tail: u64) {
+        write_u64_le(&self.edges_and_log_segment, 52, tail);
+    }
+
     pub fn read_num_edges(&self) -> u64 {
         read_u64_le(&self.edges_and_log_segment, 32)
     }

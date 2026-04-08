@@ -1989,9 +1989,23 @@ dependencies = [
 name = "ic-stable-csr"
 version = "0.1.0"
 dependencies = [
+ "canbench-rs",
  "ic-stable-slot-map",
  "ic-stable-structures",
  "ic-stable-vec-deque",
+]
+
+[[package]]
+name = "ic-stable-csr-canbench"
+version = "0.1.0"
+dependencies = [
+ "canbench-rs",
+ "candid",
+ "ic-cdk 0.20.0",
+ "ic-cdk-macros 0.20.0",
+ "ic-stable-csr",
+ "ic-stable-slot-map",
+ "ic-stable-structures",
 ]
 
 [[package]]

@@ -2,6 +2,10 @@
 //!
 //! Persistent layout (per-memory offsets, `ic-stable_structures`-style diagrams): [`crate::layout::dgap`].
 //!
+//! **Phase C profiling:** enable this crate’s `canbench-rs` feature so [`DgapEdgeStore::remove_slab_edge_at_local_index_physically`]
+//! records `canbench_rs::bench_scope` splits (`dgap_remove_slab_*`). PocketIC + `canbench` live in
+//! `crates/ic-stable-csr-canbench` (`README.md`, `canbench_results.yml`).
+//!
 //! Insert path follows [`gleaph-old/reference/DGAP/dgap/src/graph.h`](../../../../gleaph-old/reference/DGAP/dgap/src/graph.h)
 //! `do_insertion` / `insert_into_log` / `have_space_onseg`.
 
@@ -37,14 +41,16 @@ where
 
 use crate::dgap::dgap_graph_memories::DgapGraphMemories;
 use crate::dgap::edge_pma_stride::EdgePmaCountsStride;
-use crate::dgap::pma_meta::{RebalanceDecision, rebalance_decision};
+use crate::dgap::pma_meta::{
+    RebalanceDecision, rebalance_decision_with_reader, rebalance_weighted_window_rel,
+};
 use crate::layout::dgap::SegmentEdgeCounts;
 use crate::layout::dgap::{
     DGAP_DEFAULT_MAX_LOG_ENTRIES, DgapEdgeHeaderV1, dgap_leaf_segment_id, dgap_log_entry_stride,
     required_edges_and_log_bytes,
 };
 use crate::memory_util::GrowFailed;
-use crate::traits::{CsrEdge, CsrEdgeTombstone, CsrVertex};
+use crate::traits::{CsrEdge, CsrEdgeSlotTombstoneScan, CsrEdgeTombstone, CsrVertex};
 
 /// Stack / inline scratch cap for edge bytes (slab read, log entry payload, [`NeighborhoodIter`]).
 const MAX_INLINE_EDGE: usize = 64;
@@ -174,6 +180,7 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
             edge_stride,
             max_log_entries: DGAP_DEFAULT_MAX_LOG_ENTRIES,
             log_entry_stride,
+            slab_occupied_tail: 0,
         };
         self.mem
             .grow_all_regions_for_header(&h, E::pma_counts_stride_bytes())?;
@@ -214,6 +221,29 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
     /// One PMA tree node: `actual` / `total` / `tombstone` (tombstone is 0 when `stride` is 16).
     pub fn read_segment_edge_counts(&self, j: usize) -> SegmentEdgeCounts {
         self.mem.read_segment_edge_counts(j, self.pma_stride())
+    }
+
+    /// Incremental SEC update for `owner_vid`'s DGAP leaf: apply deltas at the leaf, then re-aggregate ancestors.
+    ///
+    /// Stride-16 stores ignore `d_tombstone` on disk (see [`crate::dgap::pma_meta::propagate_segment_edge_counts_leaf_delta`]).
+    pub fn bump_segment_edge_counts_leaf_delta(
+        &self,
+        owner_vid: usize,
+        d_actual: i64,
+        d_total: i64,
+        d_tombstone: i64,
+    ) -> Result<(), &'static str> {
+        let h = self.header().ok_or("bad header")?;
+        let seg_id = dgap_leaf_segment_id(owner_vid, h.segment_size) as usize;
+        crate::dgap::pma_meta::propagate_segment_edge_counts_leaf_delta(
+            &self.mem.segment_edge_counts,
+            self.pma_stride(),
+            h.segment_count,
+            seg_id,
+            d_actual,
+            d_total,
+            d_tombstone,
+        )
     }
 
     fn read_log_entry_into(
@@ -467,6 +497,7 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
             self.release_log_segment(&h, ls)
                 .map_err(|_| "release log")?;
         }
+        self.refresh_slab_occupied_tail_from_column(col)?;
         Ok(())
     }
 
@@ -512,24 +543,25 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
         if total_at != cap {
             return Err("segment total mismatch");
         }
-        let mut edges_full: Vec<E> = (0..h.elem_capacity)
+        let mut edges_local: Vec<E> = (from..to)
             .map(|s| self.read_slot(h.edge_stride, s))
             .collect();
-        crate::dgap::pma_meta::rebalance_weighted_window(
+        rebalance_weighted_window_rel(
             &mut win,
+            from,
             next_base,
-            &mut edges_full,
-            h.elem_capacity,
+            &mut edges_local,
             total_at,
             actual_at,
         );
-        for s in 0..h.elem_capacity {
-            self.write_slot(h.edge_stride, s, edges_full[s as usize])
+        for (i, slot) in (from..to).enumerate() {
+            self.write_slot(h.edge_stride, slot, edges_local[i])
                 .map_err(|_| "grow failed")?;
         }
         for li in 0..win.len() {
             col_set(col, start_vertex + li, win[li])?;
         }
+        self.refresh_slab_occupied_tail_from_column(col)?;
         Ok(())
     }
 
@@ -571,6 +603,7 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
                     .map_err(|_| "write slot")?;
             }
             self.sync_pma_edge_counts(col)?;
+            self.refresh_slab_occupied_tail_from_column(col)?;
             return Ok(());
         }
         let mut vertices: Vec<V> = (0..n)
@@ -604,6 +637,7 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
             .zero_log_partition(&h2)
             .map_err(|_| "zero log partition")?;
         self.sync_pma_edge_counts(col)?;
+        self.refresh_slab_occupied_tail_from_column(col)?;
         Ok(())
     }
 
@@ -682,20 +716,22 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
                 let left_index = (vid / h.segment_size as usize) * h.segment_size as usize;
                 let right_index = ((left_index + h.segment_size as usize).min(n)).min(n);
                 self.merge_logs_into_slab_for_window(col, left_index, right_index)?;
-                self.sync_pma_edge_counts(col)?;
+                self.sync_pma_edge_counts_for_vertex_range(col, left_index, right_index)?;
                 continue;
             }
             match self.dgap_insert_once(col, vid, edge) {
                 Ok(()) => {
-                    self.sync_pma_edge_counts(col).map_err(|_| "sync edge counts")?;
+                    self.bump_segment_edge_counts_leaf_delta(vid, 1, 0, 0)
+                        .map_err(|_| "sync edge counts")?;
                     self.maintain_rebalance_loop(col, vid)?;
+                    self.refresh_slab_occupied_tail_from_column(col)?;
                     return Ok(());
                 }
                 Err("log full") => {
                     let left_index = (vid / h.segment_size as usize) * h.segment_size as usize;
                     let right_index = (left_index + h.segment_size as usize).min(n);
                     self.merge_logs_into_slab_for_window(col, left_index, right_index)?;
-                    self.sync_pma_edge_counts(col)?;
+                    self.sync_pma_edge_counts_for_vertex_range(col, left_index, right_index)?;
                 }
                 Err(e) if e == "vertex out of range" || e == "missing vertex" => {
                     return Err(e);
@@ -790,7 +826,7 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
                 let left_index = (vid / h.segment_size as usize) * h.segment_size as usize;
                 let right_index = (left_index + h.segment_size as usize).min(n);
                 self.merge_logs_into_slab_for_window(col, left_index, right_index)?;
-                self.sync_pma_edge_counts(col)?;
+                self.sync_pma_edge_counts_for_vertex_range(col, left_index, right_index)?;
                 continue;
             }
 
@@ -811,7 +847,7 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
                 let left_index = (vid / h.segment_size as usize) * h.segment_size as usize;
                 let right_index = (left_index + h.segment_size as usize).min(n);
                 self.merge_logs_into_slab_for_window(col, left_index, right_index)?;
-                self.sync_pma_edge_counts(col)?;
+                self.sync_pma_edge_counts_for_vertex_range(col, left_index, right_index)?;
                 continue;
             }
 
@@ -843,8 +879,10 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
                 self.try_insert_into_log(col, vid, edges[i])?;
             }
 
-            self.sync_pma_edge_counts(col).map_err(|_| "sync edge counts")?;
+            self.bump_segment_edge_counts_leaf_delta(vid, k as i64, 0, 0)
+                .map_err(|_| "sync edge counts")?;
             self.maintain_rebalance_loop(col, vid)?;
+            self.refresh_slab_occupied_tail_from_column(col)?;
             return Ok(());
         }
 
@@ -862,25 +900,18 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
     {
         for _ in 0..32 {
             let h = self.header().ok_or("bad header")?;
-            let sc = h.segment_count as usize;
-            let len = sc * 2;
-            let mut actual = vec![0i64; len];
-            let mut total = vec![0i64; len];
             let st = self.pma_stride();
-            for j in 0..len {
-                let c = self.mem.read_segment_edge_counts(j, st);
-                actual[j] = c.actual;
-                total[j] = c.total;
-            }
             let num_v = col.len() as usize;
-            match rebalance_decision(
+            match rebalance_decision_with_reader(
                 vid as u32,
                 h.segment_size,
                 h.segment_count,
                 num_v,
                 h.tree_height,
-                &actual,
-                &total,
+                |j| {
+                    let c = self.mem.read_segment_edge_counts(j, st);
+                    (c.actual, c.total)
+                },
             ) {
                 RebalanceDecision::Noop => return Ok(()),
                 RebalanceDecision::RebalanceWindow {
@@ -889,7 +920,7 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
                     pma_idx,
                 } => {
                     self.rebalance_weighted(col, left_vertex, right_vertex, pma_idx)?;
-                    self.sync_pma_edge_counts(col)?;
+                    self.sync_pma_edge_counts_for_vertex_range(col, left_vertex, right_vertex)?;
                 }
                 RebalanceDecision::ResizeNeeded => {
                     self.resize_double(col)?;
@@ -921,8 +952,38 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
         Ok(())
     }
 
-    /// `max_v (base + degree)` over existing rows.
+    /// Returns [`DgapEdgeHeaderV1::slab_occupied_tail`], maintained to equal `max_i (base_i + degree_i)`.
+    /// Use [`Self::refresh_slab_occupied_tail_from_column`] after any mutation that changes vertex
+    /// `base_slot_start` or `degree` without going through this store’s normal paths.
     pub fn slab_occupied_tail<V, Mvs>(&self, col: &SlotMap<V, Mvs>) -> Result<u64, &'static str>
+    where
+        V: CsrVertex,
+        Mvs: Memory,
+    {
+        let h = self.header().ok_or("bad header")?;
+        #[cfg(debug_assertions)]
+        {
+            let mut truth = 0u64;
+            let n = col.len() as usize;
+            for i in 0..n {
+                let v = col_get(col, i).map_err(|_| "missing vertex row")?;
+                truth = truth.max(v.base_slot_start().saturating_add(v.degree() as u64));
+            }
+            debug_assert_eq!(
+                h.slab_occupied_tail, truth,
+                "slab_occupied_tail header out of sync with vertex column"
+            );
+        }
+        #[cfg(not(debug_assertions))]
+        let _ = col;
+        Ok(h.slab_occupied_tail)
+    }
+
+    /// Recompute `max_i (base_i + degree_i)` from `col` and persist it in the VCE header.
+    pub fn refresh_slab_occupied_tail_from_column<V, Mvs>(
+        &self,
+        col: &SlotMap<V, Mvs>,
+    ) -> Result<(), &'static str>
     where
         V: CsrVertex,
         Mvs: Memory,
@@ -935,7 +996,8 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
             let d = v.degree() as u64;
             end = end.max(b.saturating_add(d));
         }
-        Ok(end)
+        self.mem.set_slab_occupied_tail(end);
+        Ok(())
     }
 
     /// Next `base_slot_start` for a **new tail** vertex row (before [`SlotMap::insert`](ic_stable_slot_map::SlotMap::insert)).
@@ -974,12 +1036,17 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
             };
             sc * 2
         ];
+        let stride = h.edge_stride;
         crate::dgap::pma_meta::recount_segment_edge_counts_column(
             col,
             col.len(),
             h.segment_count,
             h.segment_size,
             h.elem_capacity,
+            |slot| {
+                let e = self.read_slot(stride, slot);
+                <E as CsrEdgeSlotTombstoneScan>::record_is_physical_tombstone(&e)
+            },
             &mut buf,
         );
         let st = self.pma_stride();
@@ -987,6 +1054,65 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
             self.mem.write_segment_edge_counts(j, st, buf[j]);
         }
         Ok(())
+    }
+
+    /// Recompute PMA leaves for the given DGAP segment indices only, then propagate ancestors (see
+    /// [`crate::dgap::pma_meta::refresh_segment_edge_counts_leaves`]). No-op if `segment_indices` is empty.
+    pub fn sync_pma_edge_counts_for_segments<V, Mvs>(
+        &self,
+        col: &SlotMap<V, Mvs>,
+        segment_indices: &[usize],
+    ) -> Result<(), &'static str>
+    where
+        V: CsrVertex,
+        Mvs: Memory,
+    {
+        if segment_indices.is_empty() {
+            return Ok(());
+        }
+        let h = self.header().ok_or("bad header")?;
+        let stride = h.edge_stride;
+        let st = self.pma_stride();
+        crate::dgap::pma_meta::refresh_segment_edge_counts_leaves(
+            col,
+            col.len(),
+            h.segment_count,
+            h.segment_size,
+            h.elem_capacity,
+            &self.mem.segment_edge_counts,
+            st,
+            segment_indices,
+            |slot| {
+                let e = self.read_slot(stride, slot);
+                <E as CsrEdgeSlotTombstoneScan>::record_is_physical_tombstone(&e)
+            },
+        )
+    }
+
+    /// Recompute SEC leaves for DGAP segments touched by vertices `[left, right)` (`right` exclusive),
+    /// including the predecessor segment when `left` is a segment boundary (see
+    /// [`crate::dgap::pma_meta::segments_for_vertex_range`]). No-op if `left >= right`.
+    pub fn sync_pma_edge_counts_for_vertex_range<V, Mvs>(
+        &self,
+        col: &SlotMap<V, Mvs>,
+        left: usize,
+        right: usize,
+    ) -> Result<(), &'static str>
+    where
+        V: CsrVertex,
+        Mvs: Memory,
+    {
+        if left >= right {
+            return Ok(());
+        }
+        let h = self.header().ok_or("bad header")?;
+        let segs = crate::dgap::pma_meta::segments_for_vertex_range(
+            left,
+            right,
+            h.segment_size,
+            h.segment_count,
+        );
+        self.sync_pma_edge_counts_for_segments(col, &segs)
     }
 
     /// Merge overflow logs into the slab for every vertex in the same DGAP leaf segment as `vid`.
@@ -1070,24 +1196,40 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
         let stride = h.edge_stride;
         let end = occ_end as usize;
         let rp = remove_pos as usize;
-        for s in rp..end.saturating_sub(1) {
-            let e = self.read_slot(stride, (s + 1) as u64);
-            self.write_slot(stride, s as u64, e)
-                .map_err(|_| "slide write")?;
+        {
+            let _s = crate::canbench_scope::scope("dgap_remove_slab_slide");
+            for s in rp..end.saturating_sub(1) {
+                let e = self.read_slot(stride, (s + 1) as u64);
+                self.write_slot(stride, s as u64, e)
+                    .map_err(|_| "slide write")?;
+            }
         }
-        for j in 0..n {
-            let vr = col_get(col, j)?;
-            let b = vr.base_slot_start();
-            if b > remove_pos {
-                col_set(col, j, vr.with_base_slot_start(b.saturating_sub(1)))?;
+        {
+            let _s = crate::canbench_scope::scope("dgap_remove_slab_base_decrement");
+            for j in 0..n {
+                let vr = col_get(col, j)?;
+                let b = vr.base_slot_start();
+                if b > remove_pos {
+                    col_set(col, j, vr.with_base_slot_start(b.saturating_sub(1)))?;
+                }
             }
         }
         let v_after = col_get(col, vid)?;
         col_set(col, vid, v_after.with_degree((deg.saturating_sub(1)) as u32))?;
         let ne = self.mem.read_num_edges();
         self.mem.set_num_edges(ne.saturating_sub(1));
-        self.sync_pma_edge_counts(col)?;
-        self.maintain_rebalance_loop(col, vid)?;
+        {
+            let _s = crate::canbench_scope::scope("dgap_remove_slab_sync_pma_full");
+            self.sync_pma_edge_counts(col)?;
+        }
+        {
+            let _s = crate::canbench_scope::scope("dgap_remove_slab_maintain");
+            self.maintain_rebalance_loop(col, vid)?;
+        }
+        {
+            let _s = crate::canbench_scope::scope("dgap_remove_slab_refresh_tail");
+            self.refresh_slab_occupied_tail_from_column(col)?;
+        }
         Ok(())
     }
 
@@ -1105,5 +1247,149 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
         self.merge_logs_for_vertex_segment(col, owner_vid)?;
         let edges = self.collect_out_edges(col, owner_vid)?;
         Ok(edges.iter().position(|e| e.neighbor_vid() == neighbor_vid))
+    }
+}
+
+#[inline]
+fn zero_edge_record<E: CsrEdge>() -> E {
+    if E::EDGE_BYTES <= MAX_INLINE_EDGE {
+        let z = [0u8; MAX_INLINE_EDGE];
+        E::read_from(&z[..E::EDGE_BYTES])
+    } else {
+        E::read_from(&vec![0u8; E::EDGE_BYTES])
+    }
+}
+
+/// Slide live edges within each vertex span inside `[left, right)`, drop tombstones, zero freed tail slots.
+/// `edges_local` indexes global slot `range_from + i`.
+fn slide_remove_tombstones_in_window_edges<V, Mvs, E>(
+    col: &SlotMap<V, Mvs>,
+    edges_local: &mut [E],
+    range_from: u64,
+    left: usize,
+    right: usize,
+    nv: usize,
+    elem_cap: u64,
+) -> Result<u64, &'static str>
+where
+    V: CsrVertex,
+    Mvs: Memory,
+    E: CsrEdge + CsrEdgeTombstone,
+{
+    let zero = zero_edge_record::<E>();
+    let mut removed = 0u64;
+    for v in left..right {
+        let row = col_get(col, v)?;
+        let b = row.base_slot_start();
+        let end = if v + 1 < nv {
+            col_get(col, v + 1)?.base_slot_start()
+        } else {
+            elem_cap
+        };
+        if b < range_from || end < b || end > range_from.saturating_add(edges_local.len() as u64) {
+            return Err("vertex span outside local edge buffer");
+        }
+        let mut write = b;
+        for s in b..end {
+            let idx = (s - range_from) as usize;
+            let e = edges_local[idx];
+            if e.is_tombstone() {
+                removed = removed.saturating_add(1);
+            } else {
+                if write != s {
+                    let wi = (write - range_from) as usize;
+                    edges_local[wi] = e;
+                }
+                write = write.saturating_add(1);
+            }
+        }
+        let mut t = write;
+        while t < end {
+            edges_local[(t - range_from) as usize] = zero;
+            t = t.saturating_add(1);
+        }
+    }
+    Ok(removed)
+}
+
+impl<E: CsrEdge + CsrEdgeTombstone, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
+    /// Merge logs, strip physical tombstones in the vertex window, rebalance in RAM, write slab + vertices,
+    /// sync PMA, then [`Self::maintain_rebalance_loop`]. Returns tombstone slots physically removed.
+    pub fn maintain_segment_leaf_plan_and_commit<V, Mvs>(
+        &self,
+        col: &SlotMap<V, Mvs>,
+        left: usize,
+        right: usize,
+        pma_idx: usize,
+    ) -> Result<u64, &'static str>
+    where
+        V: CsrVertex,
+        Mvs: Memory,
+    {
+        self.merge_logs_into_slab_for_window(col, left, right)?;
+        let h = self.header().ok_or("bad header")?;
+        let stride = h.edge_stride;
+        if stride as usize != E::EDGE_BYTES {
+            return Err("edge stride mismatch");
+        }
+        let n = col.len() as usize;
+        if left >= n || right > n || right <= left {
+            return Err("bad leaf bounds");
+        }
+        let from = col_get(col, left)?.base_slot_start();
+        let to = if right < n {
+            col_get(col, right)?.base_slot_start()
+        } else {
+            h.elem_capacity
+        };
+        if to <= from {
+            return Err("empty slab range");
+        }
+        let mut edges_local: Vec<E> = (from..to)
+            .map(|s| self.read_slot(stride, s))
+            .collect();
+        let removed = slide_remove_tombstones_in_window_edges(
+            col,
+            &mut edges_local,
+            from,
+            left,
+            right,
+            n,
+            h.elem_capacity,
+        )?;
+        let cap = (to - from) as i64;
+        let c = self.mem.read_segment_edge_counts(pma_idx, self.pma_stride());
+        let total_at = c.total;
+        let actual_at = c.actual;
+        if total_at != cap {
+            return Err("segment total mismatch");
+        }
+        let mut win: Vec<V> = Vec::with_capacity(right - left);
+        for i in left..right {
+            win.push(col_get(col, i)?);
+        }
+        rebalance_weighted_window_rel(
+            &mut win,
+            from,
+            to,
+            &mut edges_local,
+            total_at,
+            actual_at,
+        );
+        for (i, slot) in (from..to).enumerate() {
+            self.write_slot(stride, slot, edges_local[i])
+                .map_err(|_| "maintain commit write")?;
+        }
+        for li in 0..win.len() {
+            col_set(col, left + li, win[li])?;
+        }
+        if removed > 0 {
+            let ne = self.mem.read_num_edges();
+            self.mem.set_num_edges(ne.saturating_sub(removed));
+        }
+        self.sync_pma_edge_counts_for_vertex_range(col, left, right)?;
+        self.maintain_rebalance_loop(col, left)?;
+        self.refresh_slab_occupied_tail_from_column(col)?;
+        Ok(removed)
     }
 }

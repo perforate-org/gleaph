@@ -31,8 +31,10 @@
 //! | [`layout::log_region`] V1 header `DGL` + append-only records                      |
 //! ----------------------------------------
 //!
-//! **GC queue (extra `Memory`):** [`csr::CsrGraphWithGcQueue::format_new_with_gc_queue`] takes one more
-//! region for [`StableVecDeque`](crate::StableVecDeque)`<`[`csr::GcWorkItem`](crate::csr::gc_work_item::GcWorkItem)`>` (not an audit log).
+//! **Segment maintenance queue (seventh `Memory`):** [`csr::CsrGraphWithGcQueue::format_new_with_gc_queue`]
+//! takes one more region for [`StableVecDeque`](crate::StableVecDeque)`<`[`csr::GcWorkItem`](crate::csr::gc_work_item::GcWorkItem)`>`
+//! (per-leaf tombstone compaction + PMA sync; not an audit log). Optional [`SegmentMaintainThresholds`]
+//! combines PMA density hints with tombstone soft ratio / minimum tombstone count (and queue depth).
 //! ```
 //!
 //! Gleaph-specific types (`VertexEntry`, `EdgeEntry`) should implement [`traits::CsrVertex`] /
@@ -55,6 +57,7 @@
 
 #![feature(specialization)]
 
+mod canbench_scope;
 pub mod csr;
 pub mod dgap;
 pub mod layout;
@@ -68,9 +71,13 @@ pub use ic_stable_structures::{Memory, Storable};
 
 pub use csr::{
     CsrGraph, CsrGraphError, CsrGraphWithGcQueue, CsrInsertError, DgapStores, DgapStoresError,
-    GcWorkItem, LogicalNeighborhoodIter, insert_edge_into_slab, insert_edge_into_slab_column,
+    GcWorkItem, LogicalNeighborhoodIter, SegmentMaintainAction, SegmentMaintainThresholds,
+    insert_edge_into_slab, insert_edge_into_slab_column,
 };
 pub use dgap::{DgapEdgeStore, DgapGraphMemories, NeighborhoodIter, SegmentEdgeCounts};
 pub use ic_stable_vec_deque::VecDeque as StableVecDeque;
 pub use memory_util::{GrowFailed, WASM_PAGE_SIZE, memory_byte_len, safe_write};
-pub use traits::{CsrEdge, CsrEdgeTombstone, CsrEdgeUndirected, CsrVertex, CsrVertexTombstone};
+pub use traits::{
+    CsrEdge, CsrEdgeSlotTombstoneScan, CsrEdgeTombstone, CsrEdgeUndirected, CsrVertex,
+    CsrVertexTombstone,
+};
