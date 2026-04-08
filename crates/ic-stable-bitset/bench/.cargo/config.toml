@@ -1,0 +1,12 @@
+# Do not set a global [build] target here. With `target = wasm32-unknown-unknown`,
+# `cargo check --workspace` would build every workspace member (including `gleaph-cli`)
+# for WASM and fail early on `getrandom` / host-only crates.
+#
+# From this directory: `cargo check --workspace` uses the host triple.
+# For the canister only: `cargo check-wasm` (alias below).
+
+[alias]
+check-wasm = "check -p gleaph-graph --target wasm32-unknown-unknown"
+
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]

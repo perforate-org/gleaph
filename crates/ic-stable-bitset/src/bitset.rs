@@ -540,7 +540,17 @@ impl<M: Memory> BitSet<M> {
     }
 }
 
+#[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
 fn remove_heap_bit(words: &mut [u64], len_bits: u64, index: u64) -> u64 {
+    remove_heap_bit_scalar(words, len_bits, index)
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+fn remove_heap_bit(words: &mut [u64], len_bits: u64, index: u64) -> u64 {
+    unsafe { remove_heap_bit_simd(words, len_bits, index) }
+}
+
+fn remove_heap_bit_scalar(words: &mut [u64], len_bits: u64, index: u64) -> u64 {
     let new_len = len_bits - 1;
     debug_assert!(index < len_bits);
 
@@ -571,6 +581,73 @@ fn remove_heap_bit(words: &mut [u64], len_bits: u64, index: u64) -> u64 {
             };
             words[word_idx] = next_word;
         }
+    }
+
+    clear_suffix(words, new_len);
+    new_len
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+const SIMD_REMOVE_MIN_WORDS: usize = 8;
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[target_feature(enable = "simd128")]
+unsafe fn remove_heap_bit_simd(words: &mut [u64], len_bits: u64, index: u64) -> u64 {
+    use core::arch::wasm32::{
+        i64x2_shl, i64x2_shr, u64x2_replace_lane, u64x2_splat, v128_load, v128_or, v128_store,
+    };
+
+    let new_len = len_bits - 1;
+    debug_assert!(index < len_bits);
+
+    if new_len == 0 {
+        words.fill(0);
+        return 0;
+    }
+
+    let start_word = (index >> 6) as usize;
+    let start_bit = (index & 63) as u32;
+    let last_word = (words_for_bits(new_len) - 1) as usize;
+    let remaining_words = last_word.saturating_sub(start_word).saturating_add(1);
+
+    if remaining_words < SIMD_REMOVE_MIN_WORDS {
+        return remove_heap_bit_scalar(words, len_bits, index);
+    }
+
+    let mut cursor = start_word;
+    if start_bit > 0 {
+        let old = words[cursor];
+        let carry = words.get(cursor + 1).copied().unwrap_or(0) & 1;
+        let prefix_mask = (1u64 << start_bit) - 1;
+        words[cursor] = (old & prefix_mask) | ((old >> 1) & !prefix_mask) | (carry << 63);
+        cursor += 1;
+    }
+
+    while cursor + 1 <= last_word {
+        let words_left = last_word - cursor + 1;
+        if words_left < SIMD_REMOVE_MIN_WORDS {
+            break;
+        }
+
+        let curr = unsafe { v128_load(words.as_ptr().add(cursor) as *const _) };
+        let carry0 = words.get(cursor + 1).copied().unwrap_or(0) & 1;
+        let carry1 = words.get(cursor + 2).copied().unwrap_or(0) & 1;
+
+        let mut carry = u64x2_splat(0);
+        carry = u64x2_replace_lane::<0>(carry, carry0);
+        carry = u64x2_replace_lane::<1>(carry, carry1);
+
+        let shifted = i64x2_shr(curr, 1);
+        let out = v128_or(shifted, i64x2_shl(carry, 63));
+        unsafe { v128_store(words.as_mut_ptr().add(cursor) as *mut _, out) };
+        cursor += 2;
+    }
+
+    while cursor <= last_word {
+        let old = words[cursor];
+        let carry = words.get(cursor + 1).copied().unwrap_or(0) & 1;
+        words[cursor] = (old >> 1) | (carry << 63);
+        cursor += 1;
     }
 
     clear_suffix(words, new_len);

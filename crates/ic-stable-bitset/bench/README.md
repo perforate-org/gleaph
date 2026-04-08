@@ -29,4 +29,5 @@ canbench --persist --show-summary
 
 The harness builds a wasm canister and exercises the stable bitset through
 `DefaultMemoryImpl`, matching the standard `ic_stable_structures` setup used by
-other stable-memory crates.
+other stable-memory crates. To exercise the SIMD remove path, build the wasm
+target with `simd128` enabled (for example via `RUSTFLAGS=-C target-feature=+simd128`).

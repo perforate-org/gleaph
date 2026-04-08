@@ -2,7 +2,7 @@ benches:
   bench_bitset_checkpoint_after_full_journal_4096:
     total:
       calls: 1
-      instructions: 2873
+      instructions: 2869
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -14,7 +14,7 @@ benches:
   bench_bitset_contains_1024:
     total:
       calls: 1
-      instructions: 1496
+      instructions: 1492
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -26,7 +26,7 @@ benches:
   bench_bitset_contains_65536_4096:
     total:
       calls: 1
-      instructions: 167390
+      instructions: 167386
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -38,7 +38,7 @@ benches:
   bench_bitset_insert_1024:
     total:
       calls: 1
-      instructions: 316905
+      instructions: 316886
       heap_increase: 0
       stable_memory_increase: 1
     scopes:
@@ -50,103 +50,103 @@ benches:
   bench_bitset_remove_1024_head:
     total:
       calls: 1
-      instructions: 2611
+      instructions: 2412
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bitset_remove_1024_head:
         calls: 1
-        instructions: 1602
+        instructions: 1407
         heap_increase: 0
         stable_memory_increase: 0
   bench_bitset_remove_1024_mid:
     total:
       calls: 1
-      instructions: 2163
+      instructions: 2136
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bitset_remove_1024_mid:
         calls: 1
-        instructions: 1154
+        instructions: 1131
         heap_increase: 0
         stable_memory_increase: 0
   bench_bitset_remove_1024_tail:
     total:
       calls: 1
-      instructions: 1794
+      instructions: 1803
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bitset_remove_1024_tail:
         calls: 1
-        instructions: 785
+        instructions: 798
         heap_increase: 0
         stable_memory_increase: 0
   bench_bitset_remove_65536_head:
     total:
       calls: 1
-      instructions: 59059
+      instructions: 37188
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bitset_remove_65536_head:
         calls: 1
-        instructions: 58050
+        instructions: 36183
         heap_increase: 0
         stable_memory_increase: 0
   bench_bitset_remove_65536_mid:
     total:
       calls: 1
-      instructions: 30387
+      instructions: 19524
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bitset_remove_65536_mid:
         calls: 1
-        instructions: 29378
+        instructions: 18519
         heap_increase: 0
         stable_memory_increase: 0
   bench_bitset_remove_65536_tail:
     total:
       calls: 1
-      instructions: 1794
+      instructions: 1803
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bitset_remove_65536_tail:
         calls: 1
-        instructions: 785
+        instructions: 798
         heap_increase: 0
         stable_memory_increase: 0
   bench_bitset_reopen_after_journal_4096:
     total:
       calls: 1
-      instructions: 43385
+      instructions: 43181
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bitset_reopen:
         calls: 1
-        instructions: 42352
+        instructions: 42152
         heap_increase: 0
         stable_memory_increase: 0
   bench_bitset_reopen_after_large_snapshot_65536:
     total:
       calls: 1
-      instructions: 86585
+      instructions: 83501
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bitset_reopen_large:
         calls: 1
-        instructions: 85552
+        instructions: 82472
         heap_increase: 0
         stable_memory_increase: 0
   bench_bitset_truncate_2048_to_1024:
     total:
       calls: 1
-      instructions: 1926
+      instructions: 1922
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -158,7 +158,7 @@ benches:
   bench_bitset_truncate_large_suffix_65536_to_32768:
     total:
       calls: 1
-      instructions: 5894
+      instructions: 5890
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
