@@ -40,6 +40,20 @@ where
         .map_err(|_| "vertex column set failed")
 }
 
+#[inline]
+fn push_remove_slab_pma_dirty_segments(segs: &mut BTreeSet<usize>, idx: usize, ss: usize, sc: usize) {
+    let seg = idx / ss;
+    if seg < sc {
+        segs.insert(seg);
+    }
+    if idx > 0 && idx % ss == 0 {
+        let prev = seg.saturating_sub(1);
+        if prev < sc {
+            segs.insert(prev);
+        }
+    }
+}
+
 use crate::dgap::dgap_graph_memories::DgapGraphMemories;
 use crate::dgap::edge_pma_stride::EdgePmaCountsStride;
 use crate::dgap::pma_meta::{
@@ -1222,52 +1236,60 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
                 }
             }
         }
-        let mut base_touched = vec![false; n];
-        {
-            let _s = crate::canbench_scope::scope("dgap_remove_slab_base_decrement");
-            for j in 0..n {
-                let vr = col_get(col, j)?;
-                let b = vr.base_slot_start();
-                if b > remove_pos {
-                    base_touched[j] = true;
-                    col_set(col, j, vr.with_base_slot_start(b.saturating_sub(1)))?;
-                }
-            }
-        }
         let v_after = col_get(col, vid)?;
         col_set(col, vid, v_after.with_degree((deg.saturating_sub(1)) as u32))?;
         let ne = self.mem.read_num_edges();
         self.mem.set_num_edges(ne.saturating_sub(1));
+        let ss = h.segment_size.max(1) as usize;
+        let sc = h.segment_count as usize;
+        let mut segs = BTreeSet::new();
         {
-            let _s = crate::canbench_scope::scope("dgap_remove_slab_sync_pma_full");
-            let ss = h.segment_size.max(1) as usize;
-            let sc = h.segment_count as usize;
-            let mut segs = BTreeSet::new();
+            let _s = crate::canbench_scope::scope("dgap_remove_slab_base_decrement");
+            let mut prev_final: Option<V> = None;
+            let mut prev_had_base_dec = false;
             for j in 0..n {
-                let row = col_get(col, j)?;
-                let b = row.base_slot_start();
-                let nxt = if j + 1 < n {
-                    col_get(col, j + 1)?.base_slot_start()
+                let vr = col_get(col, j)?;
+                let b = vr.base_slot_start();
+                let had_dec = b > remove_pos;
+                let cur_final = if had_dec {
+                    let nf = vr.with_base_slot_start(b.saturating_sub(1));
+                    col_set(col, j, nf)?;
+                    nf
                 } else {
-                    h.elem_capacity
+                    vr
                 };
-                let mut dirty = j == vid || base_touched[j];
-                if !dirty && b < slide_hi && nxt > slide_lo {
-                    dirty = true;
+
+                if j > 0 {
+                    let idx = j - 1;
+                    let prev = prev_final.ok_or("remove_slab: column scan invariant")?;
+                    let b_prev = prev.base_slot_start();
+                    let nxt_prev = cur_final.base_slot_start();
+                    let dirty = idx == vid
+                        || prev_had_base_dec
+                        || (b_prev < slide_hi && nxt_prev > slide_lo);
+                    if dirty {
+                        push_remove_slab_pma_dirty_segments(&mut segs, idx, ss, sc);
+                    }
                 }
+
+                prev_final = Some(cur_final);
+                prev_had_base_dec = had_dec;
+            }
+            if n > 0 {
+                let prev = prev_final.ok_or("remove_slab: column scan invariant")?;
+                let b_prev = prev.base_slot_start();
+                let nxt_prev = h.elem_capacity;
+                let last = n - 1;
+                let dirty = last == vid
+                    || prev_had_base_dec
+                    || (b_prev < slide_hi && nxt_prev > slide_lo);
                 if dirty {
-                    let seg = j / ss;
-                    if seg < sc {
-                        segs.insert(seg);
-                    }
-                    if j > 0 && j % ss == 0 {
-                        let prev = seg.saturating_sub(1);
-                        if prev < sc {
-                            segs.insert(prev);
-                        }
-                    }
+                    push_remove_slab_pma_dirty_segments(&mut segs, last, ss, sc);
                 }
             }
+        }
+        {
+            let _s = crate::canbench_scope::scope("dgap_remove_slab_sync_pma_full");
             let idx: Vec<usize> = segs.into_iter().collect();
             if idx.is_empty() {
                 self.sync_pma_edge_counts(col)?;

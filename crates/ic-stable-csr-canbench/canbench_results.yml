@@ -2,18 +2,18 @@ benches:
   bench_remove_slab_physically_chain_1024:
     total:
       calls: 1
-      instructions: 30511912
+      instructions: 28322152
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       dgap_remove_slab_base_decrement:
         calls: 1
-        instructions: 3147159
+        instructions: 3405832
         heap_increase: 0
         stable_memory_increase: 0
       dgap_remove_slab_maintain:
         calls: 1
-        instructions: 2456
+        instructions: 2457
         heap_increase: 0
         stable_memory_increase: 0
       dgap_remove_slab_refresh_tail:
@@ -23,29 +23,29 @@ benches:
         stable_memory_increase: 0
       dgap_remove_slab_slide:
         calls: 1
-        instructions: 544582
+        instructions: 544572
         heap_increase: 0
         stable_memory_increase: 0
       dgap_remove_slab_sync_pma_full:
         calls: 1
-        instructions: 23646943
+        instructions: 21200009
         heap_increase: 0
         stable_memory_increase: 0
   bench_remove_slab_physically_chain_32:
     total:
       calls: 1
-      instructions: 18567264
+      instructions: 18499427
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       dgap_remove_slab_base_decrement:
         calls: 1
-        instructions: 96759
+        instructions: 101014
         heap_increase: 0
         stable_memory_increase: 0
       dgap_remove_slab_maintain:
         calls: 1
-        instructions: 2456
+        instructions: 2457
         heap_increase: 0
         stable_memory_increase: 0
       dgap_remove_slab_refresh_tail:
@@ -55,12 +55,12 @@ benches:
         stable_memory_increase: 0
       dgap_remove_slab_slide:
         calls: 1
-        instructions: 9641
+        instructions: 9631
         heap_increase: 0
         stable_memory_increase: 0
       dgap_remove_slab_sync_pma_full:
         calls: 1
-        instructions: 18137079
+        instructions: 18065459
         heap_increase: 0
         stable_memory_increase: 0
 version: 0.4.0
