@@ -11,3 +11,5 @@ gleaph-old/reference/**/._git_bak/
 
 node_modules/
 .pnpm-store/
+
+.canbench/

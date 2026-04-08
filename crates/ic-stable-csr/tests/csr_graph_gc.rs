@@ -190,6 +190,8 @@ fn delete_vertex_hides_edges_until_gc() {
     );
     g.delete_vertex(0).unwrap();
     assert_fwd_rev_bases_non_decreasing(&g);
+    assert_sec_matches_full_recount_te(g.graph().forward_dgap());
+    assert_sec_matches_full_recount_te(g.graph().reverse_dgap());
     assert!(
         g.graph()
             .forward_dgap()
@@ -208,6 +210,8 @@ fn delete_vertex_hides_edges_until_gc() {
 
     let _ = g.gc_step(16).expect("gc");
     assert_fwd_rev_bases_non_decreasing(&g);
+    assert_sec_matches_full_recount_te(g.graph().forward_dgap());
+    assert_sec_matches_full_recount_te(g.graph().reverse_dgap());
 }
 
 #[test]

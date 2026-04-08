@@ -1,6 +1,6 @@
 # `ic-stable-csr-canbench`
 
-Wasm + PocketIC benchmarks for `ic_stable_csr::dgap::DgapEdgeStore::remove_slab_edge_at_local_index_physically`. Stable backing uses [`DefaultMemoryImpl`](https://docs.rs/ic-stable-structures/latest/ic_stable_structures/struct.DefaultMemoryImpl.html) and [`MemoryManager`](https://docs.rs/ic-stable-structures/latest/ic_stable_structures/memory_manager/struct.MemoryManager.html) (three virtual memories: `M_v`, PMA `segment_edge_counts`, edges+log).
+Wasm + PocketIC benchmarks for `ic_stable_csr::dgap::DgapEdgeStore::remove_slab_edge_at_local_index_physically` and `ic_stable_csr::csr::CsrGraphWithGcQueue::delete_vertex`. Stable backing uses [`DefaultMemoryImpl`](https://docs.rs/ic-stable-structures/latest/ic_stable_structures/struct.DefaultMemoryImpl.html) and [`MemoryManager`](https://docs.rs/ic-stable-structures/latest/ic_stable_structures/memory_manager/struct.MemoryManager.html).
 
 ## Build
 
@@ -19,12 +19,20 @@ cd crates/ic-stable-csr-canbench
 canbench --runtime-path "${POCKET_IC_BIN:-$HOME/.local/bin/pocket-ic}" --show-summary bench_remove_slab
 ```
 
+To measure the Phase D `delete_vertex` path, run:
+
+```bash
+cd crates/ic-stable-csr-canbench
+canbench --runtime-path "${POCKET_IC_BIN:-$HOME/.local/bin/pocket-ic}" --show-summary bench_delete_vertex
+```
+
 If `canbench` reports a runtime digest mismatch, either let it re-download the expected PocketIC build or pass `--no-runtime-integrity-check` (see the repo’s canbench-runner skill).
 
 Optional baseline update (writes `canbench_results.yml`):
 
 ```bash
 canbench --runtime-path … --no-runtime-integrity-check --persist --show-summary bench_remove_slab
+canbench --runtime-path … --no-runtime-integrity-check --persist --show-summary bench_delete_vertex
 ```
 
 ## Scenarios
@@ -34,10 +42,16 @@ canbench --runtime-path … --no-runtime-integrity-check --persist --show-summar
 | `bench_remove_slab_physically_chain_32` | 32-vertex chain `0→1→…`; measures one physical remove at `(vid=0, local_index=0)`. |
 | `bench_remove_slab_physically_chain_1024` | Same pattern at 1024 vertices so the `0..n` base scan does ~1023 slot-map updates when `remove_pos == 0`. |
 | `bench_remove_slab_physically_tail_vertex_chain_1024` | Same chain; remove at `(vid=n-2, local_index=0)` (last edge in the chain) so `remove_pos` is large and the base-decrement suffix is usually empty. |
+| `bench_delete_vertex_hub_star_1024` | Hub-and-spoke graph with 1024 vertices and bidirectional center spokes; deleting vertex `0` exercises the partial forward/reverse PMA resync path. |
 
-Scopes inside the hot path (feature `canbench-rs` on `ic-stable-csr`): `dgap_remove_slab_slide`, `dgap_remove_slab_base_decrement`, `dgap_remove_slab_sync_pma_full`, `dgap_remove_slab_maintain`, `dgap_remove_slab_refresh_tail`.
+Scopes inside the hot path (feature `canbench-rs` on `ic-stable-csr`):
+
+- `remove_slab`: `dgap_remove_slab_slide`, `dgap_remove_slab_base_decrement`, `dgap_remove_slab_sync_pma_full`, `dgap_remove_slab_maintain`, `dgap_remove_slab_refresh_tail`
+- `delete_vertex`: `dgap_delete_vertex_collect_touched`, `dgap_delete_vertex_out_neighbors`, `dgap_delete_vertex_in_neighbors`, `dgap_delete_vertex_refresh_tail`, `dgap_delete_vertex_sync_pma_forward`, `dgap_delete_vertex_sync_pma_reverse`, `dgap_delete_vertex_push_queue`
 
 **Implementation note:** `remove_slab` uses chunked `read_edge_slab_span` / `write_edge_slab_span` for the slide, then a vertex-column pass that finds the first row with `base > remove_pos` (binary search when dense bases are non-decreasing), reads only the candidate PMA-dirty prefix window, decrements bases only on the suffix, then `sync_pma_edge_counts_for_segments` (or full sync). The `dgap_remove_slab_base_decrement` scope includes that scan (plus `O(log n)` binary search); `dgap_remove_slab_sync_pma_full` covers only the SEC write path.
+
+**Implementation note:** `delete_vertex` now does a conservative partial PMA resync. It collects the live touched vertex set per column, compresses each set into contiguous vertex ranges, and then calls `sync_pma_meta_for_vertex_range` on forward and reverse separately before enqueuing GC work.
 
 ## Phase C: how to read results (go / no-go)
 
@@ -54,3 +68,5 @@ Compare scope instruction counts (see `canbench_results.yml` for a committed bas
 - **Chain 32:** total ~18.5M; `sync_pma_full` scope ~18.1M; `base_decrement` ~120.4K; slide ~9.6K. This is slightly higher than the prior baseline, but still tiny versus SEC sync.
 
 Re-run after code changes; refresh the YAML with `canbench --persist` when you want regression tracking.
+
+The committed baseline in `canbench_results.yml` now contains both the `remove_slab` and `delete_vertex` scenarios.

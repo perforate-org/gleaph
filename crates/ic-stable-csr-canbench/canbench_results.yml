@@ -95,4 +95,46 @@ benches:
         instructions: 1935841
         heap_increase: 0
         stable_memory_increase: 0
+  bench_delete_vertex_hub_star_1024:
+    total:
+      calls: 1
+      instructions: 57441181
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      dgap_delete_vertex_collect_touched:
+        calls: 1
+        instructions: 13786665
+        heap_increase: 0
+        stable_memory_increase: 0
+      dgap_delete_vertex_in_neighbors:
+        calls: 1
+        instructions: 5779770
+        heap_increase: 0
+        stable_memory_increase: 0
+      dgap_delete_vertex_out_neighbors:
+        calls: 1
+        instructions: 5784801
+        heap_increase: 0
+        stable_memory_increase: 0
+      dgap_delete_vertex_push_queue:
+        calls: 1
+        instructions: 2042
+        heap_increase: 0
+        stable_memory_increase: 0
+      dgap_delete_vertex_refresh_tail:
+        calls: 1
+        instructions: 2216828
+        heap_increase: 0
+        stable_memory_increase: 0
+      dgap_delete_vertex_sync_pma_forward:
+        calls: 1
+        instructions: 21729980
+        heap_increase: 0
+        stable_memory_increase: 0
+      dgap_delete_vertex_sync_pma_reverse:
+        calls: 1
+        instructions: 21729991
+        heap_increase: 0
+        stable_memory_increase: 0
 version: 0.4.0

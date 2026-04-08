@@ -1,6 +1,8 @@
 //! [`CsrGraph`] plus a seventh [`Memory`] backing a persisted [`StableVecDeque`](crate::StableVecDeque)
 //! **segment maintenance** queue (per DGAP leaf: tombstone compaction + PMA rebalance).
 
+use std::collections::BTreeSet;
+
 use ic_stable_structures::Memory;
 
 use crate::StableVecDeque;
@@ -26,6 +28,35 @@ where
 {
     map.set_dense(index as u32, &row)
         .map_err(|_| CsrGraphError::LogicalMutation("vertex set_dense failed"))
+}
+
+fn sync_pma_meta_for_touched_vertices<V, E, Mvs, M1, M2>(
+    stores: &DgapStores<V, E, Mvs, M1, M2>,
+    touched: &BTreeSet<usize>,
+) -> Result<(), &'static str>
+where
+    V: CsrVertex,
+    E: CsrEdge,
+    Mvs: Memory,
+    M1: Memory,
+    M2: Memory,
+{
+    let mut iter = touched.iter().copied();
+    let Some(mut range_start) = iter.next() else {
+        return Ok(());
+    };
+    let mut prev = range_start;
+    for vid in iter {
+        if vid == prev + 1 {
+            prev = vid;
+            continue;
+        }
+        stores.sync_pma_meta_for_vertex_range(range_start, prev.saturating_add(1))?;
+        range_start = vid;
+        prev = vid;
+    }
+    stores.sync_pma_meta_for_vertex_range(range_start, prev.saturating_add(1))?;
+    Ok(())
 }
 
 /// Bidirectional CSR with a stable work queue for lazy **per-leaf** physical compaction (tombstones + PMA).
@@ -389,69 +420,111 @@ where
         if self.vertex_tombstone_fwd(vid) {
             return Ok(());
         }
+        let (forward_touched, reverse_touched) = {
+            let _s = crate::canbench_scope::scope("dgap_delete_vertex_collect_touched");
+            self.delete_vertex_collect_touched(vid)?
+        };
+        {
+            let _s = crate::canbench_scope::scope("dgap_delete_vertex_sync_pma_forward");
+            sync_pma_meta_for_touched_vertices(self.graph.forward_dgap(), &forward_touched)
+                .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?;
+        }
+        {
+            let _s = crate::canbench_scope::scope("dgap_delete_vertex_sync_pma_reverse");
+            sync_pma_meta_for_touched_vertices(self.graph.reverse_dgap(), &reverse_touched)
+                .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?;
+        }
+        {
+            let _s = crate::canbench_scope::scope("dgap_delete_vertex_push_queue");
+            self.push_queue(GcWorkItem::vertex_delete(vid as u64))?;
+        }
+        Ok(())
+    }
+
+    fn delete_vertex_collect_touched(
+        &self,
+        vid: usize,
+    ) -> Result<(BTreeSet<usize>, BTreeSet<usize>), CsrGraphError> {
         let fwd = self.graph.forward_dgap();
         let rev = self.graph.reverse_dgap();
-        let out_raw = fwd
-            .edges
-            .collect_out_edges(&fwd.vertices, vid)
-            .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?;
-        for e in &out_raw {
-            if e.is_tombstone() {
-                continue;
+        let mut forward_touched = BTreeSet::new();
+        let mut reverse_touched = BTreeSet::new();
+        forward_touched.insert(vid);
+        reverse_touched.insert(vid);
+        {
+            let _s = crate::canbench_scope::scope("dgap_delete_vertex_out_neighbors");
+            let out_raw = fwd
+                .edges
+                .collect_out_edges(&fwd.vertices, vid)
+                .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?;
+            for e in &out_raw {
+                if e.is_tombstone() {
+                    continue;
+                }
+                let u = e.neighbor_vid();
+                if self.vertex_tombstone_fwd(u) {
+                    continue;
+                }
+                reverse_touched.insert(u);
+                let ru = rev
+                    .vertices
+                    .get_dense(u as u32)
+                    .ok_or(CsrGraphError::VertexOutOfRange {
+                        vid: u,
+                        len: rev.vertices.len(),
+                    })?;
+                vertex_set_dense(
+                    &rev.vertices,
+                    u,
+                    ru.with_degree(ru.degree().saturating_sub(1)),
+                )?;
             }
-            let u = e.neighbor_vid();
-            if self.vertex_tombstone_fwd(u) {
-                continue;
-            }
-            let ru = rev
-                .vertices
-                .get_dense(u as u32)
-                .ok_or(CsrGraphError::VertexOutOfRange {
-                    vid: u,
-                    len: rev.vertices.len(),
-                })?;
-            vertex_set_dense(
-                &rev.vertices,
-                u,
-                ru.with_degree(ru.degree().saturating_sub(1)),
-            )?;
         }
-        let in_raw = rev
-            .edges
-            .collect_out_edges(&rev.vertices, vid)
-            .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?;
-        for e in &in_raw {
-            if e.is_tombstone() {
-                continue;
+        {
+            let _s = crate::canbench_scope::scope("dgap_delete_vertex_in_neighbors");
+            let in_raw = rev
+                .edges
+                .collect_out_edges(&rev.vertices, vid)
+                .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?;
+            for e in &in_raw {
+                if e.is_tombstone() {
+                    continue;
+                }
+                let u = e.neighbor_vid();
+                if self.vertex_tombstone_fwd(u) {
+                    continue;
+                }
+                forward_touched.insert(u);
+                let fu = fwd
+                    .vertices
+                    .get_dense(u as u32)
+                    .ok_or(CsrGraphError::VertexOutOfRange {
+                        vid: u,
+                        len: fwd.vertices.len(),
+                    })?;
+                vertex_set_dense(
+                    &fwd.vertices,
+                    u,
+                    fu.with_degree(fu.degree().saturating_sub(1)),
+                )?;
             }
-            let u = e.neighbor_vid();
-            if self.vertex_tombstone_fwd(u) {
-                continue;
-            }
-            let fu = fwd
-                .vertices
-                .get_dense(u as u32)
-                .ok_or(CsrGraphError::VertexOutOfRange {
-                    vid: u,
-                    len: fwd.vertices.len(),
-                })?;
-            vertex_set_dense(
-                &fwd.vertices,
-                u,
-                fu.with_degree(fu.degree().saturating_sub(1)),
-            )?;
         }
+        let _s = crate::canbench_scope::scope("dgap_delete_vertex_refresh_tail");
         let fv = fwd.vertices.get_dense(vid as u32).unwrap();
         let rv = rev.vertices.get_dense(vid as u32).unwrap();
         vertex_set_dense(&fwd.vertices, vid, fv.with_tombstone(true))?;
         vertex_set_dense(&rev.vertices, vid, rv.with_tombstone(true))?;
         self.graph.refresh_slab_occupied_tail_meta()?;
-        // Phase D (partial PMA sync): full dual-column recount is conservative. A tighter approach
-        // would union `sync_pma_meta_for_vertex_range` over `vid`, each neighbor’s segment, and
-        // any segment touched by the degree bumps above, then prove SEC internal nodes stay
-        // consistent (or add targeted `bump_segment_edge_counts_leaf_delta`). Before changing this,
-        // add tests that compare partial sync vs `sync_pma_meta()` on random small graphs after
-        // `delete_vertex` (forward + reverse SEC, rebalance triggers, tombstone neighbors).
+        Ok((forward_touched, reverse_touched))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn delete_vertex_full_sync_for_test(&self, vid: usize) -> Result<(), CsrGraphError> {
+        self.graph.ensure_vertex(vid)?;
+        if self.vertex_tombstone_fwd(vid) {
+            return Ok(());
+        }
+        let _ = self.delete_vertex_collect_touched(vid)?;
         self.graph.sync_pma_meta()?;
         self.push_queue(GcWorkItem::vertex_delete(vid as u64))?;
         Ok(())
@@ -535,6 +608,374 @@ where
             .unwrap()
             .degree();
         Ok(fd == 0 && rd == 0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::borrow::Cow;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use crate::dgap::recount_segment_edge_counts_column;
+    use crate::traits::{
+        CsrEdge, CsrEdgeSlotTombstoneScan, CsrEdgeTombstone, CsrEdgeUndirected, CsrVertex,
+        CsrVertexTombstone,
+    };
+    use crate::{
+        Bound, DgapStores, Memory, SegmentEdgeCounts, Storable, VectorMemory,
+    };
+
+    const DEG_TOMB: u32 = 1u32 << 31;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct TestVertex {
+        slot_base: u64,
+        deg: u32,
+        log_head: i32,
+    }
+
+    impl CsrVertex for TestVertex {
+        fn base_slot_start(&self) -> u64 {
+            self.slot_base
+        }
+        fn degree(&self) -> u32 {
+            self.deg & !DEG_TOMB
+        }
+        fn with_base_slot_start(self, start: u64) -> Self {
+            Self {
+                slot_base: start,
+                ..self
+            }
+        }
+        fn with_degree(self, degree: u32) -> Self {
+            Self {
+                deg: (self.deg & DEG_TOMB) | (degree & !DEG_TOMB),
+                ..self
+            }
+        }
+        fn log_head(self) -> i32 {
+            self.log_head
+        }
+        fn with_log_head(self, idx: i32) -> Self {
+            Self {
+                log_head: idx,
+                ..self
+            }
+        }
+    }
+
+    impl CsrVertexTombstone for TestVertex {
+        fn is_tombstone(&self) -> bool {
+            (self.deg & DEG_TOMB) != 0
+        }
+
+        fn with_tombstone(self, tombstone: bool) -> Self {
+            Self {
+                deg: if tombstone {
+                    self.deg | DEG_TOMB
+                } else {
+                    self.deg & !DEG_TOMB
+                },
+                ..self
+            }
+        }
+    }
+
+    impl Storable for TestVertex {
+        fn to_bytes(&self) -> Cow<'_, [u8]> {
+            let mut b = [0u8; 16];
+            b[0..8].copy_from_slice(&self.slot_base.to_le_bytes());
+            b[8..12].copy_from_slice(&self.deg.to_le_bytes());
+            b[12..16].copy_from_slice(&self.log_head.to_le_bytes());
+            Cow::Owned(b.to_vec())
+        }
+        fn into_bytes(self) -> Vec<u8> {
+            self.to_bytes().into_owned()
+        }
+        fn from_bytes(bytes: Cow<[u8]>) -> Self {
+            let s = bytes.as_ref();
+            Self {
+                slot_base: u64::from_le_bytes(s[0..8].try_into().unwrap()),
+                deg: u32::from_le_bytes(s[8..12].try_into().unwrap()),
+                log_head: i32::from_le_bytes(s[12..16].try_into().unwrap()),
+            }
+        }
+        const BOUND: Bound = Bound::Bounded {
+            max_size: 16,
+            is_fixed_size: true,
+        };
+    }
+
+    /// `[0]` = neighbor vid, `[1]` = undirected flag, `[2]` = tombstone flag.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct TestEdge([u8; 4]);
+
+    impl CsrEdge for TestEdge {
+        const EDGE_BYTES: usize = 4;
+
+        fn read_from(bytes: &[u8]) -> Self {
+            Self(bytes.try_into().unwrap())
+        }
+
+        fn write_to(self, bytes: &mut [u8]) {
+            bytes.copy_from_slice(&self.0);
+        }
+
+        fn neighbor_vid(&self) -> usize {
+            self.0[0] as usize
+        }
+
+        fn with_neighbor_vid(self, vid: usize) -> Self {
+            let mut b = self.0;
+            b[0] = vid as u8;
+            Self(b)
+        }
+    }
+
+    impl CsrEdgeTombstone for TestEdge {
+        fn is_tombstone(&self) -> bool {
+            self.0[2] != 0
+        }
+
+        fn with_tombstone(self, tombstone: bool) -> Self {
+            let mut b = self.0;
+            b[2] = if tombstone { 1 } else { 0 };
+            Self(b)
+        }
+    }
+
+    impl CsrEdgeUndirected for TestEdge {
+        fn is_undirected(&self) -> bool {
+            self.0[1] != 0
+        }
+
+        fn with_undirected(self, undirected: bool) -> Self {
+            let mut b = self.0;
+            b[1] = if undirected { 1 } else { 0 };
+            Self(b)
+        }
+    }
+
+    pub(crate) fn vm() -> VectorMemory {
+        Rc::new(RefCell::new(Vec::new()))
+    }
+
+    fn empty_vertex() -> TestVertex {
+        TestVertex {
+            slot_base: 0,
+            deg: 0,
+            log_head: -1,
+        }
+    }
+
+    fn assert_dense_vertex_bases_non_decreasing<V, E, Mvs, M1, M2>(
+        stores: &DgapStores<V, E, Mvs, M1, M2>,
+    ) where
+        V: CsrVertex,
+        E: CsrEdge,
+        Mvs: Memory,
+        M1: Memory,
+        M2: Memory,
+    {
+        let n = stores.vertices.len() as usize;
+        if n < 2 {
+            return;
+        }
+        let mut prev = stores.vertices.get_dense(0).unwrap().base_slot_start();
+        for j in 1..n {
+            let b = stores
+                .vertices
+                .get_dense(j as u32)
+                .unwrap()
+                .base_slot_start();
+            assert!(
+                prev <= b,
+                "dense vertex bases must be non-decreasing: base[{}]={} > base[{}]={}",
+                j - 1,
+                prev,
+                j,
+                b
+            );
+            prev = b;
+        }
+    }
+
+    type TestGcGraph = CsrGraphWithGcQueue<
+        TestVertex,
+        TestEdge,
+        VectorMemory,
+        VectorMemory,
+        VectorMemory,
+        VectorMemory,
+        VectorMemory,
+        VectorMemory,
+    >;
+
+    fn new_graph() -> TestGcGraph {
+        CsrGraphWithGcQueue::format_new_with_gc_queue(
+            vm(),
+            vm(),
+            vm(),
+            vm(),
+            vm(),
+            vm(),
+            vm(),
+            64,
+            4,
+            2,
+            0,
+            None,
+        )
+        .expect("format")
+    }
+
+    fn populate_graph(g: &TestGcGraph) {
+        for _ in 0..4 {
+            g.insert_vertex(empty_vertex()).unwrap();
+        }
+        g.sync_pma_meta().unwrap();
+        g.insert_directed(0, 1, TestEdge([1, 0, 0, 0])).unwrap();
+        g.insert_directed(1, 0, TestEdge([0, 0, 0, 0])).unwrap();
+        g.insert_directed(0, 2, TestEdge([2, 0, 0, 0])).unwrap();
+        g.insert_directed(3, 0, TestEdge([0, 0, 0, 0])).unwrap();
+        assert_dense_vertex_bases_non_decreasing(g.graph().forward_dgap());
+        assert_dense_vertex_bases_non_decreasing(g.graph().reverse_dgap());
+    }
+
+    fn assert_sec_matches_full_recount_te(
+        stores: &DgapStores<TestVertex, TestEdge, VectorMemory, VectorMemory, VectorMemory>,
+    ) {
+        let h = stores.edges.header().unwrap();
+        let sc = h.segment_count as usize;
+        let len = sc * 2;
+        let mut buf = vec![
+            SegmentEdgeCounts {
+                actual: 0,
+                total: 0,
+                tombstone: 0,
+            };
+            len
+        ];
+        let es = h.edge_stride;
+        recount_segment_edge_counts_column(
+            &stores.vertices,
+            stores.vertices.len(),
+            h.segment_count,
+            h.segment_size,
+            h.elem_capacity,
+            |slot| {
+                let e = stores.edges.read_slot(es, slot);
+                TestEdge::record_is_physical_tombstone(&e)
+            },
+            &mut buf,
+        );
+        for j in 0..len {
+            assert_eq!(
+                stores.edges.read_segment_edge_counts(j),
+                buf[j],
+                "SEC node {j} diverges from full recount"
+            );
+        }
+    }
+
+    fn logical_neighbors_out(g: &TestGcGraph, vid: usize) -> Vec<usize> {
+        g.out_edges_logical(vid)
+            .unwrap()
+            .map(|r| r.unwrap().neighbor_vid())
+            .collect()
+    }
+
+    fn logical_neighbors_in(g: &TestGcGraph, vid: usize) -> Vec<usize> {
+        g.in_edges_logical(vid)
+            .unwrap()
+            .map(|r| r.unwrap().neighbor_vid())
+            .collect()
+    }
+
+    fn assert_graph_equiv(left: &TestGcGraph, right: &TestGcGraph) {
+        assert_eq!(left.work_queue_len(), right.work_queue_len());
+        assert_dense_vertex_bases_non_decreasing(left.graph().forward_dgap());
+        assert_dense_vertex_bases_non_decreasing(left.graph().reverse_dgap());
+        assert_dense_vertex_bases_non_decreasing(right.graph().forward_dgap());
+        assert_dense_vertex_bases_non_decreasing(right.graph().reverse_dgap());
+        assert_sec_matches_full_recount_te(left.graph().forward_dgap());
+        assert_sec_matches_full_recount_te(left.graph().reverse_dgap());
+        assert_sec_matches_full_recount_te(right.graph().forward_dgap());
+        assert_sec_matches_full_recount_te(right.graph().reverse_dgap());
+
+        let n = left.graph().forward_dgap().vertices.len() as usize;
+        assert_eq!(n, right.graph().forward_dgap().vertices.len() as usize);
+        for vid in 0..n {
+            let lf = left
+                .graph()
+                .forward_dgap()
+                .vertices
+                .get_dense(vid as u32)
+                .unwrap();
+            let rf = right
+                .graph()
+                .forward_dgap()
+                .vertices
+                .get_dense(vid as u32)
+                .unwrap();
+            let lr = left
+                .graph()
+                .reverse_dgap()
+                .vertices
+                .get_dense(vid as u32)
+                .unwrap();
+            let rr = right
+                .graph()
+                .reverse_dgap()
+                .vertices
+                .get_dense(vid as u32)
+                .unwrap();
+            assert_eq!(lf.degree(), rf.degree(), "forward degree mismatch at {vid}");
+            assert_eq!(
+                lf.is_tombstone(),
+                rf.is_tombstone(),
+                "forward tombstone mismatch at {vid}"
+            );
+            assert_eq!(lr.degree(), rr.degree(), "reverse degree mismatch at {vid}");
+            assert_eq!(
+                lr.is_tombstone(),
+                rr.is_tombstone(),
+                "reverse tombstone mismatch at {vid}"
+            );
+            assert_eq!(
+                logical_neighbors_out(left, vid),
+                logical_neighbors_out(right, vid),
+                "logical out neighborhood mismatch at {vid}"
+            );
+            assert_eq!(
+                logical_neighbors_in(left, vid),
+                logical_neighbors_in(right, vid),
+                "logical in neighborhood mismatch at {vid}"
+            );
+        }
+    }
+
+    #[test]
+    fn delete_vertex_partial_sync_matches_full_sync() {
+        let partial = new_graph();
+        let full = new_graph();
+        populate_graph(&partial);
+        populate_graph(&full);
+
+        partial.delete_vertex(1).unwrap();
+        full.delete_vertex_full_sync_for_test(1).unwrap();
+        assert_graph_equiv(&partial, &full);
+
+        partial.delete_vertex(0).unwrap();
+        full.delete_vertex_full_sync_for_test(0).unwrap();
+        assert_graph_equiv(&partial, &full);
+
+        let _ = partial.gc_step(32).unwrap();
+        let _ = full.gc_step(32).unwrap();
+        assert_graph_equiv(&partial, &full);
     }
 }
 

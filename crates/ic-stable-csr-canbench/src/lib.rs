@@ -9,8 +9,8 @@ use std::borrow::Cow;
 use ic_cdk::export_candid;
 use ic_cdk_macros::{init, post_upgrade, pre_upgrade};
 use ic_stable_csr::{
-    Bound, DgapEdgeStore, DgapGraphMemories, DgapStores, Storable,
-    traits::{CsrEdge, CsrVertex},
+    Bound, CsrGraphWithGcQueue, DgapEdgeStore, DgapGraphMemories, DgapStores, Storable,
+    traits::{CsrEdge, CsrEdgeTombstone, CsrVertex, CsrVertexTombstone},
 };
 use ic_stable_slot_map::SlotMap;
 use ic_stable_structures::DefaultMemoryImpl;
@@ -27,6 +27,8 @@ struct BenchVertex {
     log_head: i32,
 }
 
+const DEG_TOMB: u32 = 1u32 << 31;
+
 impl CsrVertex for BenchVertex {
     fn base_slot_start(&self) -> u64 {
         self.slot_base
@@ -42,7 +44,7 @@ impl CsrVertex for BenchVertex {
     }
     fn with_degree(self, degree: u32) -> Self {
         Self {
-            deg: degree,
+            deg: (self.deg & DEG_TOMB) | (degree & !DEG_TOMB),
             ..self
         }
     }
@@ -52,6 +54,23 @@ impl CsrVertex for BenchVertex {
     fn with_log_head(self, idx: i32) -> Self {
         Self {
             log_head: idx,
+            ..self
+        }
+    }
+}
+
+impl CsrVertexTombstone for BenchVertex {
+    fn is_tombstone(&self) -> bool {
+        (self.deg & DEG_TOMB) != 0
+    }
+
+    fn with_tombstone(self, tombstone: bool) -> Self {
+        Self {
+            deg: if tombstone {
+                self.deg | DEG_TOMB
+            } else {
+                self.deg & !DEG_TOMB
+            },
             ..self
         }
     }
@@ -105,8 +124,30 @@ impl CsrEdge for BenchEdge {
     }
 }
 
+impl CsrEdgeTombstone for BenchEdge {
+    fn is_tombstone(&self) -> bool {
+        self.0[2] != 0
+    }
+
+    fn with_tombstone(self, tombstone: bool) -> Self {
+        let mut b = self.0;
+        b[2] = if tombstone { 1 } else { 0 };
+        Self(b)
+    }
+}
+
 type BenchEdgeStore = DgapEdgeStore<BenchEdge, BenchMemory, BenchMemory>;
 type BenchStores = DgapStores<BenchVertex, BenchEdge, BenchMemory, BenchMemory, BenchMemory>;
+type BenchGcGraph = CsrGraphWithGcQueue<
+    BenchVertex,
+    BenchEdge,
+    BenchMemory,
+    BenchMemory,
+    BenchMemory,
+    BenchMemory,
+    BenchMemory,
+    BenchMemory,
+>;
 
 /// Chain `0→1→…→(n-1)` on the slab so vertex `0` has one out-edge at local index `0` and
 /// `remove_pos == 0` while every other row has `base > 0`, maximizing work in the
@@ -153,6 +194,51 @@ fn build_chain_stores(n: usize) -> BenchStores {
     stores
 }
 
+fn build_star_gc_graph(n: usize) -> BenchGcGraph {
+    assert!(n >= 2);
+    const ELEM_CAP: u64 = 65_536;
+    const SEGMENT_COUNT: u32 = 32;
+    const SEGMENT_SIZE: u32 = 128;
+    assert!(
+        (SEGMENT_COUNT as u64) * (SEGMENT_SIZE as u64) >= n as u64,
+        "segment_count * segment_size must cover n vertices"
+    );
+
+    let mgr = MemoryManager::init(DefaultMemoryImpl::default());
+    let m_v_f = mgr.get(MemoryId::new(0));
+    let m_v_r = mgr.get(MemoryId::new(1));
+    let m_f_sec = mgr.get(MemoryId::new(2));
+    let m_f_edges = mgr.get(MemoryId::new(3));
+    let m_r_sec = mgr.get(MemoryId::new(4));
+    let m_r_edges = mgr.get(MemoryId::new(5));
+    let m_q = mgr.get(MemoryId::new(6));
+
+    let graph = BenchGcGraph::format_new_with_gc_queue(
+        m_v_f, m_v_r, m_f_sec, m_f_edges, m_r_sec, m_r_edges, m_q, ELEM_CAP, SEGMENT_COUNT,
+        SEGMENT_SIZE, 0, None,
+    )
+    .expect("format_new_with_gc_queue");
+
+    let template = BenchVertex {
+        slot_base: 0,
+        deg: 0,
+        log_head: -1,
+    };
+    for _ in 0..n {
+        graph.insert_vertex(template).expect("insert_vertex");
+    }
+    for i in 1..n {
+        graph
+            .insert_directed(0, i, BenchEdge::default().with_neighbor_vid(i))
+            .expect("insert_directed hub out");
+        graph
+            .insert_directed(i, 0, BenchEdge::default().with_neighbor_vid(0))
+            .expect("insert_directed hub in");
+    }
+    graph.sync_pma_meta().expect("sync_pma_meta");
+    graph
+}
+
 use canbench_rs::bench;
 
 #[bench(raw)]
@@ -191,6 +277,17 @@ fn bench_remove_slab_physically_tail_vertex_chain_1024() -> canbench_rs::BenchRe
             .edges
             .remove_slab_edge_at_local_index_physically(&stores.vertices, vid, 0)
             .expect("remove_slab tail");
+    })
+}
+
+/// Hub-and-spoke graph where deleting the center touches many live neighbors and exercises the
+/// partial forward/reverse PMA resync path added in Phase D.
+#[bench(raw)]
+fn bench_delete_vertex_hub_star_1024() -> canbench_rs::BenchResult {
+    crate::wipe::wipe_stable_memory();
+    let graph = build_star_gc_graph(1024);
+    canbench_rs::bench_fn(|| {
+        graph.delete_vertex(0).expect("delete_vertex");
     })
 }
 
