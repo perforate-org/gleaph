@@ -12,6 +12,8 @@ members = [
     "crates/graph-pma",
     "crates/ic-stable-csr",
     "crates/ic-stable-csr-canbench",
+    "crates/ic-stable-bitset",
+    "crates/ic-stable-bitset/bench",
     "crates/ic-stable-slot-map",
     "crates/ic-stable-vec-deque",
 ]
