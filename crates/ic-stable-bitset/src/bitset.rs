@@ -300,10 +300,7 @@ impl<M: Memory> BitSet<M> {
         let mut remaining = journal_cap as usize;
         let mut offset = journal_offset();
         let mut journal_buf = [0u64; JOURNAL_REPLAY_CHUNK_WORDS];
-        let mut journal_scratch = Vec::<u8>::with_capacity(JOURNAL_REPLAY_CHUNK_WORDS * 8);
-        unsafe {
-            journal_scratch.set_len(JOURNAL_REPLAY_CHUNK_WORDS * 8);
-        }
+        let mut journal_scratch = vec![0u8; JOURNAL_REPLAY_CHUNK_WORDS * 8];
         while remaining > 0 {
             let take = remaining.min(JOURNAL_REPLAY_CHUNK_WORDS);
             read_u64_words_into(
@@ -499,10 +496,7 @@ impl<M: Memory> BitSet<M> {
     fn checkpoint(&self) -> Result<(), GrowFailed> {
         let st = self.state.borrow();
         let word_offset = data_offset(self.journal_cap);
-        let mut scratch = Vec::<u8>::with_capacity(BULK_WORDS * 8);
-        unsafe {
-            scratch.set_len(BULK_WORDS * 8);
-        }
+        let mut scratch = vec![0u8; BULK_WORDS * 8];
         write_u64_words_into(&self.memory, word_offset, &st.words, &mut scratch);
         write_u64(&self.memory, LEN_OFFSET, st.len_bits);
         write_u64(&self.memory, WORD_CAP_OFFSET, st.word_cap);

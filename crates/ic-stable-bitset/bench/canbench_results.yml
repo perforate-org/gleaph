@@ -50,25 +50,25 @@ benches:
   bench_bitset_reopen_after_journal_4096:
     total:
       calls: 1
-      instructions: 9353
+      instructions: 43390
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bitset_reopen:
         calls: 1
-        instructions: 8320
+        instructions: 42357
         heap_increase: 0
         stable_memory_increase: 0
   bench_bitset_reopen_after_large_snapshot_65536:
     total:
       calls: 1
-      instructions: 52553
+      instructions: 86590
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bitset_reopen_large:
         calls: 1
-        instructions: 51520
+        instructions: 85557
         heap_increase: 0
         stable_memory_increase: 0
   bench_bitset_truncate_2048_to_1024:

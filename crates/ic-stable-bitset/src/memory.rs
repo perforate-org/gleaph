@@ -35,10 +35,7 @@ pub(crate) fn read_u64_words_into<M: Memory>(
 pub(crate) fn read_u64_words_vec<M: Memory>(m: &M, offset: u64, word_count: u64) -> Vec<u64> {
     let count = word_count as usize;
     let mut words: Vec<u64> = Vec::with_capacity(count);
-    let mut scratch = Vec::<u8>::with_capacity(BULK_WORDS * 8);
-    unsafe {
-        scratch.set_len(BULK_WORDS * 8);
-    }
+    let mut scratch = vec![0u8; BULK_WORDS * 8];
     let mut filled = 0usize;
     let mut base = offset;
     let spare = words.spare_capacity_mut();
