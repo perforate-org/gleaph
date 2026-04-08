@@ -14,7 +14,10 @@
 //! they append a packed journal record, then update the heap mirror, and finally checkpoint the
 //! heap back into stable memory once the journal is full.
 
-use crate::memory::{GrowFailed, grow_memory_to_at_least_bytes, read_u64, write, write_u64};
+use crate::memory::{
+    GrowFailed, BULK_WORDS, grow_memory_to_at_least_bytes, read_u64, read_u64_words_into,
+    read_u64_words_vec, write, write_u64, write_u64_words_into, write_zero_words,
+};
 use core::cell::{Cell, RefCell};
 use core::fmt;
 use ic_stable_structures::Memory;
@@ -26,6 +29,7 @@ const JOURNAL_RECORD_SIZE: u64 = 8;
 const DEFAULT_JOURNAL_CAP: u64 = 4096;
 const JOURNAL_KIND_SHIFT: u32 = 62;
 const JOURNAL_VALUE_SHIFT: u32 = 61;
+const JOURNAL_REPLAY_CHUNK_WORDS: usize = 128;
 
 const MAGIC_OFFSET: u64 = 0;
 const VERSION_OFFSET: u64 = 3;
@@ -166,9 +170,7 @@ fn clear_suffix(words: &mut [u64], len_bits: u64) {
     let full_words = words_for_bits(len_bits);
     let full_words_usize = full_words as usize;
     if full_words_usize < words.len() {
-        for w in &mut words[full_words_usize..] {
-            *w = 0;
-        }
+        words[full_words_usize..].fill(0);
     }
     if !len_bits.is_multiple_of(64) {
         let idx = full_words_usize.saturating_sub(1);
@@ -290,10 +292,7 @@ impl<M: Memory> BitSet<M> {
         if size_bytes < need {
             return Err(InitError::InvalidLayout);
         }
-        let mut words = Vec::with_capacity(word_cap as usize);
-        for i in 0..word_cap {
-            words.push(read_u64(&memory, data_offset(journal_cap) + i * 8));
-        }
+        let words = read_u64_words_vec(&memory, data_offset(journal_cap), word_cap);
         let mut state = HeapState {
             len_bits,
             word_cap,
@@ -302,15 +301,36 @@ impl<M: Memory> BitSet<M> {
         clear_suffix(&mut state.words, state.len_bits);
 
         let mut journal_len = 0u64;
-        for i in 0..journal_cap {
-            let base = journal_offset() + i * JOURNAL_RECORD_SIZE;
-            let raw = read_u64(&memory, base);
-            if raw == 0 {
+        let mut remaining = journal_cap as usize;
+        let mut offset = journal_offset();
+        let mut journal_buf = [0u64; JOURNAL_REPLAY_CHUNK_WORDS];
+        let mut journal_scratch = Vec::<u8>::with_capacity(JOURNAL_REPLAY_CHUNK_WORDS * 8);
+        unsafe {
+            journal_scratch.set_len(JOURNAL_REPLAY_CHUNK_WORDS * 8);
+        }
+        while remaining > 0 {
+            let take = remaining.min(JOURNAL_REPLAY_CHUNK_WORDS);
+            read_u64_words_into(
+                &memory,
+                offset,
+                &mut journal_buf[..take],
+                &mut journal_scratch,
+            );
+            for raw in &journal_buf[..take] {
+                let raw = *raw;
+                if raw == 0 {
+                    remaining = 0;
+                    break;
+                }
+                let rec = JournalRecord::from_bytes(&raw.to_le_bytes());
+                apply_record(&mut state, rec)?;
+                journal_len += 1;
+            }
+            if remaining == 0 {
                 break;
             }
-            let rec = JournalRecord::from_bytes(&raw.to_le_bytes());
-            apply_record(&mut state, rec)?;
-            journal_len += 1;
+            offset += (take as u64) * 8;
+            remaining -= take;
         }
         Ok(Self {
             memory,
@@ -484,15 +504,14 @@ impl<M: Memory> BitSet<M> {
     fn checkpoint(&self) -> Result<(), GrowFailed> {
         let st = self.state.borrow();
         let word_offset = data_offset(self.journal_cap);
-        for (i, word) in st.words.iter().enumerate() {
-            write_u64(&self.memory, word_offset + (i as u64) * 8, *word);
+        let mut scratch = Vec::<u8>::with_capacity(BULK_WORDS * 8);
+        unsafe {
+            scratch.set_len(BULK_WORDS * 8);
         }
+        write_u64_words_into(&self.memory, word_offset, &st.words, &mut scratch);
         write_u64(&self.memory, LEN_OFFSET, st.len_bits);
         write_u64(&self.memory, WORD_CAP_OFFSET, st.word_cap);
-        for i in 0..self.journal_len.get() {
-            let base = journal_offset() + i * JOURNAL_RECORD_SIZE;
-            write_u64(&self.memory, base, 0);
-        }
+        write_zero_words(&self.memory, journal_offset(), self.journal_len.get());
         self.journal_len.set(0);
         Ok(())
     }

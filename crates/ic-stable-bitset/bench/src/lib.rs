@@ -18,6 +18,10 @@ const INSERT_COUNT: u64 = 1_024;
 const TRUNCATE_FROM: u64 = 2_048;
 const TRUNCATE_TO: u64 = 1_024;
 const REOPEN_COUNT: u64 = 4_096;
+const LARGE_SNAPSHOT_BITS: u64 = 65_536;
+const LARGE_TRUNCATE_FROM: u64 = 65_536;
+const LARGE_TRUNCATE_TO: u64 = 32_768;
+const JOURNAL_CAP_FILL: u64 = 4_096;
 
 fn make_bitset() -> BitSet<DefaultMemoryImpl> {
     BitSet::new(DefaultMemoryImpl::default()).expect("bitset init")
@@ -73,6 +77,47 @@ fn bench_bitset_reopen_after_journal_4096() -> canbench_rs::BenchResult {
         let _p = canbench_rs::bench_scope("bitset_reopen");
         let reopened = BitSet::init(bitset.into_memory()).expect("reopen");
         black_box(reopened.contains(REOPEN_COUNT));
+    })
+}
+
+#[bench(raw)]
+fn bench_bitset_truncate_large_suffix_65536_to_32768() -> canbench_rs::BenchResult {
+    wipe::wipe_stable_memory();
+    let bitset = make_bitset();
+    populate(&bitset, LARGE_TRUNCATE_FROM);
+    canbench_rs::bench_fn(|| {
+        let _p = canbench_rs::bench_scope("bitset_truncate_large");
+        bitset.truncate(LARGE_TRUNCATE_TO).expect("truncate");
+        black_box(bitset.len());
+    })
+}
+
+#[bench(raw)]
+fn bench_bitset_checkpoint_after_full_journal_4096() -> canbench_rs::BenchResult {
+    wipe::wipe_stable_memory();
+    let bitset = make_bitset();
+    populate(&bitset, JOURNAL_CAP_FILL);
+    canbench_rs::bench_fn(|| {
+        let _p = canbench_rs::bench_scope("bitset_checkpoint");
+        bitset
+            .insert(JOURNAL_CAP_FILL)
+            .expect("insert triggering checkpoint");
+        black_box(bitset.contains(JOURNAL_CAP_FILL));
+    })
+}
+
+#[bench(raw)]
+fn bench_bitset_reopen_after_large_snapshot_65536() -> canbench_rs::BenchResult {
+    wipe::wipe_stable_memory();
+    let bitset = make_bitset();
+    populate(&bitset, LARGE_SNAPSHOT_BITS);
+    bitset
+        .insert(LARGE_SNAPSHOT_BITS)
+        .expect("insert triggering checkpoint");
+    canbench_rs::bench_fn(|| {
+        let _p = canbench_rs::bench_scope("bitset_reopen_large");
+        let reopened = BitSet::init(bitset.into_memory()).expect("reopen");
+        black_box(reopened.contains(LARGE_SNAPSHOT_BITS));
     })
 }
 

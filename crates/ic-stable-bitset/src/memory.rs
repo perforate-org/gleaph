@@ -3,6 +3,7 @@ use ic_stable_structures::Memory;
 use std::error;
 
 pub(crate) const WASM_PAGE_SIZE: u64 = 65536;
+pub(crate) const BULK_WORDS: usize = 4096;
 
 pub(crate) fn read_u64<M: Memory>(m: &M, offset: u64) -> u64 {
     let mut buf = [0u8; 8];
@@ -10,8 +11,95 @@ pub(crate) fn read_u64<M: Memory>(m: &M, offset: u64) -> u64 {
     u64::from_le_bytes(buf)
 }
 
+pub(crate) fn read_u64_words_into<M: Memory>(
+    m: &M,
+    offset: u64,
+    words: &mut [u64],
+    scratch: &mut [u8],
+) {
+    let chunk_words = (scratch.len() / 8).max(1).min(BULK_WORDS);
+    let mut remaining = words;
+    let mut base = offset;
+    while !remaining.is_empty() {
+        let take = remaining.len().min(chunk_words);
+        let bytes = &mut scratch[..take * 8];
+        m.read(base, bytes);
+        for (slot, chunk) in remaining[..take].iter_mut().zip(bytes.chunks_exact(8)) {
+            *slot = u64::from_le_bytes(chunk.try_into().unwrap());
+        }
+        base += (take as u64) * 8;
+        remaining = &mut remaining[take..];
+    }
+}
+
+pub(crate) fn read_u64_words_vec<M: Memory>(m: &M, offset: u64, word_count: u64) -> Vec<u64> {
+    let count = word_count as usize;
+    let mut words: Vec<u64> = Vec::with_capacity(count);
+    let mut scratch = Vec::<u8>::with_capacity(BULK_WORDS * 8);
+    unsafe {
+        scratch.set_len(BULK_WORDS * 8);
+    }
+    let mut filled = 0usize;
+    let mut base = offset;
+    let spare = words.spare_capacity_mut();
+    while filled < count {
+        let take = (count - filled).min(BULK_WORDS);
+        let bytes = &mut scratch[..take * 8];
+        m.read(base, bytes);
+        for (dst, chunk) in spare[filled..filled + take]
+            .iter_mut()
+            .zip(bytes.chunks_exact(8))
+        {
+            dst.write(u64::from_le_bytes(chunk.try_into().unwrap()));
+        }
+        base += (take as u64) * 8;
+        filled += take;
+    }
+    unsafe {
+        words.set_len(count);
+    }
+    words
+}
+
 pub(crate) fn write_u64<M: Memory>(m: &M, offset: u64, value: u64) {
     write(m, offset, &value.to_le_bytes());
+}
+
+pub(crate) fn write_u64_words_into<M: Memory>(
+    m: &M,
+    offset: u64,
+    words: &[u64],
+    scratch: &mut [u8],
+) {
+    let chunk_words = (scratch.len() / 8).max(1).min(BULK_WORDS);
+    let mut remaining = words;
+    let mut base = offset;
+    while !remaining.is_empty() {
+        let take = remaining.len().min(chunk_words);
+        let bytes = &mut scratch[..take * 8];
+        for (i, word) in remaining[..take].iter().enumerate() {
+            bytes[i * 8..(i + 1) * 8].copy_from_slice(&word.to_le_bytes());
+        }
+        write(m, base, bytes);
+        base += (take as u64) * 8;
+        remaining = &remaining[take..];
+    }
+}
+
+pub(crate) fn write_zero_words<M: Memory>(m: &M, offset: u64, word_count: u64) {
+    if word_count == 0 {
+        return;
+    }
+    let mut scratch = vec![0u8; BULK_WORDS * 8];
+    let mut remaining = word_count as usize;
+    let mut base = offset;
+    while remaining > 0 {
+        let take = remaining.min(BULK_WORDS);
+        scratch[..take * 8].fill(0);
+        write(m, base, &scratch[..take * 8]);
+        base += (take as u64) * 8;
+        remaining -= take;
+    }
 }
 
 pub(crate) fn safe_write<M: Memory>(memory: &M, offset: u64, bytes: &[u8]) -> Result<(), GrowFailed> {
@@ -100,4 +188,3 @@ impl Display for GrowFailed {
 }
 
 impl error::Error for GrowFailed {}
-
