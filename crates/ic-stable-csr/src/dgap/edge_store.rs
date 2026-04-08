@@ -58,7 +58,7 @@ fn push_remove_slab_pma_dirty_segments(segs: &mut BTreeSet<usize>, idx: usize, s
 /// Smallest dense vertex index `j` with `base_slot_start(j) > remove_pos`, or `n` if none.
 ///
 /// This matches a linear scan only when `base_slot_start` is **non-decreasing** along dense
-/// order `0..n-1` (integration tests in `csr_insert_maintain.rs`). The remove-slab path uses it
+/// order `0..n-1` (integration tests: `tests/common/mod.rs`, `csr_insert_maintain.rs`). The remove-slab path uses it
 /// to skip `col_set` base decrements on the prefix `[0, L)` where every base is `<= remove_pos`.
 #[inline]
 fn first_dense_vertex_base_gt<V, M>(
@@ -82,6 +82,31 @@ where
         }
     }
     Ok(lo)
+}
+
+/// When feature `strict-dgap-invariants` is enabled, [`DgapEdgeStore::remove_slab_edge_at_local_index_physically`]
+/// runs this before [`first_dense_vertex_base_gt`] (full column read, `O(n)`).
+#[cfg(feature = "strict-dgap-invariants")]
+fn strict_check_dense_bases_monotone_remove_slab<V, M>(
+    col: &SlotMap<V, M>,
+    n: usize,
+) -> Result<(), &'static str>
+where
+    V: CsrVertex,
+    M: Memory,
+{
+    if n < 2 {
+        return Ok(());
+    }
+    let mut prev = col_get(col, 0)?.base_slot_start();
+    for j in 1..n {
+        let b = col_get(col, j)?.base_slot_start();
+        if prev > b {
+            return Err("strict-dgap-invariants: dense base_slot_start not non-decreasing (remove_slab binary search invalid)");
+        }
+        prev = b;
+    }
+    Ok(())
 }
 
 use crate::dgap::dgap_graph_memories::DgapGraphMemories;
@@ -1278,6 +1303,8 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
             // `L`: first row whose slab base is strictly past `remove_pos` (suffix needs `--`).
             // Prefix `[0, L)` only contributes PMA dirty segments (no base writes). The pair
             // `(L-1, L)` is the first where the lagged neighbor uses `row L` *after* decrement.
+            #[cfg(feature = "strict-dgap-invariants")]
+            strict_check_dense_bases_monotone_remove_slab(col, n)?;
             let l_suffix = first_dense_vertex_base_gt(col, n, remove_pos)?;
             let mut prev_final: Option<V> = None;
             let mut prev_had_base_dec = false;

@@ -4,6 +4,10 @@
 //! This crate uses unstable **`specialization`** internally (for optional [`traits::CsrEdgeUndirected`]
 //! checks on directed inserts, and PMA node **stride** when [`traits::CsrEdgeTombstone`] is implemented).
 //! Dependent crates do not need to enable the feature.
+//!
+//! Optional Cargo feature **`strict-dgap-invariants`**: before each physical `remove_slab`, performs a
+//! full dense-order scan to ensure `base_slot_start` is non-decreasing (validates the binary-search
+//! split on `L`; costs `O(n)` vertex reads per remove).
 //! Edge state uses **`M_e`** as **two** [`Memory`] regions ([`DgapGraphMemories`]: unified PMA `segment_edge_counts` /
 //! edges+log with [`DgapEdgeHeaderV1`](crate::layout::dgap::DgapEdgeHeaderV1) at offset 0 on the latter).
 //!

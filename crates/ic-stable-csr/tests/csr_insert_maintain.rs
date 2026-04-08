@@ -1,112 +1,22 @@
 //! `DgapStores::insert_edge`, DGAP overflow logs inside `M_e`, and `resize_double`.
 
-use std::borrow::Cow;
+mod common;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use common::{
+    assert_dense_vertex_bases_non_decreasing, dual_edge_memories, TestEdge as TE, TestVertex as TV,
+};
 use ic_stable_csr::{
-    Bound, CsrEdgeSlotTombstoneScan, DgapEdgeStore, DgapGraphMemories, DgapStores, DgapStoresError,
-    SegmentEdgeCounts, Storable, VectorMemory,
+    CsrEdgeSlotTombstoneScan, DgapEdgeStore, DgapStores, DgapStoresError, SegmentEdgeCounts,
+    VectorMemory,
     dgap::recount_segment_edge_counts_column,
     traits::{CsrEdge, CsrVertex},
 };
 use ic_stable_slot_map::SlotMap;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct TV {
-    slot_base: u64,
-    deg: u32,
-    log_head: i32,
-}
-
-impl CsrVertex for TV {
-    fn base_slot_start(&self) -> u64 {
-        self.slot_base
-    }
-    fn degree(&self) -> u32 {
-        self.deg
-    }
-    fn with_base_slot_start(self, start: u64) -> Self {
-        Self {
-            slot_base: start,
-            ..self
-        }
-    }
-    fn with_degree(self, degree: u32) -> Self {
-        Self {
-            deg: degree,
-            ..self
-        }
-    }
-    fn log_head(self) -> i32 {
-        self.log_head
-    }
-    fn with_log_head(self, idx: i32) -> Self {
-        Self {
-            log_head: idx,
-            ..self
-        }
-    }
-}
-
-impl Storable for TV {
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        let mut b = [0u8; 16];
-        b[0..8].copy_from_slice(&self.slot_base.to_le_bytes());
-        b[8..12].copy_from_slice(&self.deg.to_le_bytes());
-        b[12..16].copy_from_slice(&self.log_head.to_le_bytes());
-        Cow::Owned(b.to_vec())
-    }
-    fn into_bytes(self) -> Vec<u8> {
-        self.to_bytes().into_owned()
-    }
-    fn from_bytes(bytes: Cow<[u8]>) -> Self {
-        let s = bytes.as_ref();
-        Self {
-            slot_base: u64::from_le_bytes(s[0..8].try_into().unwrap()),
-            deg: u32::from_le_bytes(s[8..12].try_into().unwrap()),
-            log_head: i32::from_le_bytes(s[12..16].try_into().unwrap()),
-        }
-    }
-    const BOUND: Bound = Bound::Bounded {
-        max_size: 16,
-        is_fixed_size: true,
-    };
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct TE([u8; 4]);
-
-impl CsrEdge for TE {
-    const EDGE_BYTES: usize = 4;
-
-    fn read_from(bytes: &[u8]) -> Self {
-        Self(bytes.try_into().unwrap())
-    }
-
-    fn write_to(self, bytes: &mut [u8]) {
-        bytes.copy_from_slice(&self.0);
-    }
-
-    fn neighbor_vid(&self) -> usize {
-        self.0[0] as usize
-    }
-
-    fn with_neighbor_vid(self, vid: usize) -> Self {
-        let mut b = self.0;
-        b[0] = vid as u8;
-        Self(b)
-    }
-}
-
 type TeEdgeStore = DgapEdgeStore<TE, VectorMemory, VectorMemory>;
-
-fn dual_edge_memories() -> DgapGraphMemories<VectorMemory, VectorMemory> {
-    DgapGraphMemories::new(
-        Rc::new(RefCell::new(Vec::new())),
-        Rc::new(RefCell::new(Vec::new())),
-    )
-}
 
 fn assert_sec_matches_full_recount(
     stores: &DgapStores<TV, TE, VectorMemory, VectorMemory, VectorMemory>,
@@ -158,30 +68,6 @@ fn assert_slab_tail_matches_column(
         h.slab_occupied_tail, truth,
         "VCE slab_occupied_tail must equal max(base+degree)"
     );
-}
-
-/// Dense order `base_slot_start` must be non-decreasing for the remove-slab suffix split
-/// (`first_dense_vertex_base_gt` / binary search on `L`).
-fn assert_dense_vertex_bases_non_decreasing(
-    stores: &DgapStores<TV, TE, VectorMemory, VectorMemory, VectorMemory>,
-) {
-    let n = stores.vertices.len() as usize;
-    if n < 2 {
-        return;
-    }
-    let mut prev = stores.vertices.get_dense(0).unwrap().base_slot_start();
-    for j in 1..n {
-        let b = stores.vertices.get_dense(j as u32).unwrap().base_slot_start();
-        assert!(
-            prev <= b,
-            "dense vertex bases must be non-decreasing: base[{}]={} > base[{}]={}",
-            j - 1,
-            prev,
-            j,
-            b
-        );
-        prev = b;
-    }
 }
 
 #[test]
@@ -284,6 +170,7 @@ fn insert_maintain_triggers_resize_when_slab_full() {
     assert_eq!(stores.vertices.get_dense(0).unwrap().degree(), 3);
     assert!(stores.edges.header().unwrap().elem_capacity >= cap_after_two);
     assert_slab_tail_matches_column(&stores);
+    assert_dense_vertex_bases_non_decreasing(&stores);
 }
 
 #[test]
