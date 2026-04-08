@@ -2,25 +2,25 @@ benches:
   bench_bitset_checkpoint_after_full_journal_4096:
     total:
       calls: 1
-      instructions: 2908
+      instructions: 2856
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bitset_checkpoint:
         calls: 1
-        instructions: 1899
+        instructions: 1812
         heap_increase: 0
         stable_memory_increase: 0
   bench_bitset_contains_1024:
     total:
       calls: 1
-      instructions: 1487
+      instructions: 1488
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bitset_contains:
         calls: 1
-        instructions: 478
+        instructions: 479
         heap_increase: 0
         stable_memory_increase: 0
   bench_bitset_insert_1024:
@@ -38,49 +38,49 @@ benches:
   bench_bitset_reopen_after_journal_4096:
     total:
       calls: 1
-      instructions: 9346
+      instructions: 9336
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bitset_reopen:
         calls: 1
-        instructions: 8313
+        instructions: 8303
         heap_increase: 0
         stable_memory_increase: 0
   bench_bitset_reopen_after_large_snapshot_65536:
     total:
       calls: 1
-      instructions: 52546
+      instructions: 52536
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bitset_reopen_large:
         calls: 1
-        instructions: 51513
+        instructions: 51503
         heap_increase: 0
         stable_memory_increase: 0
   bench_bitset_truncate_2048_to_1024:
     total:
       calls: 1
-      instructions: 1931
+      instructions: 1926
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bitset_truncate:
         calls: 1
-        instructions: 922
+        instructions: 917
         heap_increase: 0
         stable_memory_increase: 0
   bench_bitset_truncate_large_suffix_65536_to_32768:
     total:
       calls: 1
-      instructions: 5899
+      instructions: 5894
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bitset_truncate_large:
         calls: 1
-        instructions: 4890
+        instructions: 4885
         heap_increase: 0
         stable_memory_increase: 0
 version: 0.4.0

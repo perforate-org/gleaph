@@ -165,6 +165,7 @@ fn word_mask(bit: u64) -> u64 {
     1u64 << bit
 }
 
+#[inline]
 /// Clears any bits beyond the logical length.
 fn clear_suffix(words: &mut [u64], len_bits: u64) {
     let full_words = words_for_bits(len_bits);
@@ -356,16 +357,14 @@ impl<M: Memory> BitSet<M> {
     }
 
     /// Tests whether the selected bit is set.
+    #[inline]
     pub fn contains(&self, index: u64) -> bool {
         let st = self.state.borrow();
         if index >= st.len_bits {
             return false;
         }
         let (word, bit) = bit_offset(index);
-        st.words
-            .get(word)
-            .map(|w| (w & word_mask(bit)) != 0)
-            .unwrap_or(false)
+        contains_word(&st.words, word, word_mask(bit))
     }
 
     /// Ensures that the logical length is at least `min_len`.
@@ -515,6 +514,14 @@ impl<M: Memory> BitSet<M> {
         self.journal_len.set(0);
         Ok(())
     }
+}
+
+#[inline]
+pub(crate) fn contains_word(words: &[u64], word_index: usize, bit_mask: u64) -> bool {
+    words
+        .get(word_index)
+        .map(|word| (*word & bit_mask) != 0)
+        .unwrap_or(false)
 }
 
 fn set_heap_bit(words: &mut [u64], index: u64, value: bool) {
