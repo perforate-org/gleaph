@@ -19,6 +19,10 @@ const TRUNCATE_FROM: u64 = 2_048;
 const TRUNCATE_TO: u64 = 1_024;
 const REOPEN_COUNT: u64 = 4_096;
 const LARGE_SNAPSHOT_BITS: u64 = 65_536;
+const CONTAINS_BITMAP_BITS: u64 = 65_536;
+const CONTAINS_QUERY_COUNT: u64 = 4_096;
+const CONTAINS_SPREAD_MULTIPLIER: u64 = 0x9E37;
+const CONTAINS_SPREAD_INCREMENT: u64 = 0xB529;
 const LARGE_TRUNCATE_FROM: u64 = 65_536;
 const LARGE_TRUNCATE_TO: u64 = 32_768;
 const JOURNAL_CAP_FILL: u64 = 4_096;
@@ -33,13 +37,26 @@ fn populate(bitset: &BitSet<DefaultMemoryImpl>, count: u64) {
     }
 }
 
+fn make_spread_queries(count: u64, modulo: u64) -> Vec<u64> {
+    assert!(modulo.is_power_of_two(), "bitmap size should be a power of two");
+    let mask = modulo - 1;
+    let mut queries = Vec::with_capacity(count as usize);
+    for i in 0..count {
+        let mixed = i
+            .wrapping_mul(CONTAINS_SPREAD_MULTIPLIER)
+            .wrapping_add(CONTAINS_SPREAD_INCREMENT);
+        queries.push(mixed & mask);
+    }
+    queries
+}
+
 #[bench(raw)]
 fn bench_bitset_insert_1024() -> canbench_rs::BenchResult {
     wipe::wipe_stable_memory();
     canbench_rs::bench_fn(|| {
         let bitset = make_bitset();
         let _p = canbench_rs::bench_scope("bitset_insert");
-        populate(&bitset, INSERT_COUNT);
+        populate(&bitset, black_box(INSERT_COUNT));
         black_box(bitset.len());
     })
 }
@@ -51,7 +68,24 @@ fn bench_bitset_contains_1024() -> canbench_rs::BenchResult {
     populate(&bitset, INSERT_COUNT);
     canbench_rs::bench_fn(|| {
         let _p = canbench_rs::bench_scope("bitset_contains");
-        black_box(bitset.contains(INSERT_COUNT - 1));
+        let index = black_box(INSERT_COUNT - 1);
+        black_box(bitset.contains(index));
+    })
+}
+
+#[bench(raw)]
+fn bench_bitset_contains_65536_4096() -> canbench_rs::BenchResult {
+    wipe::wipe_stable_memory();
+    let bitset = make_bitset();
+    populate(&bitset, CONTAINS_BITMAP_BITS);
+    let queries = make_spread_queries(CONTAINS_QUERY_COUNT, CONTAINS_BITMAP_BITS);
+    canbench_rs::bench_fn(|| {
+        let _p = canbench_rs::bench_scope("bitset_contains_large");
+        let mut acc = false;
+        for index in black_box(&queries) {
+            acc ^= bitset.contains(*index);
+        }
+        black_box(acc);
     })
 }
 
@@ -62,7 +96,7 @@ fn bench_bitset_truncate_2048_to_1024() -> canbench_rs::BenchResult {
     populate(&bitset, TRUNCATE_FROM);
     canbench_rs::bench_fn(|| {
         let _p = canbench_rs::bench_scope("bitset_truncate");
-        bitset.truncate(TRUNCATE_TO).expect("truncate");
+        bitset.truncate(black_box(TRUNCATE_TO)).expect("truncate");
         black_box(bitset.len());
     })
 }
@@ -76,7 +110,7 @@ fn bench_bitset_reopen_after_journal_4096() -> canbench_rs::BenchResult {
     canbench_rs::bench_fn(|| {
         let _p = canbench_rs::bench_scope("bitset_reopen");
         let reopened = BitSet::init(bitset.into_memory()).expect("reopen");
-        black_box(reopened.contains(REOPEN_COUNT));
+        black_box(reopened.contains(black_box(REOPEN_COUNT)));
     })
 }
 
@@ -87,7 +121,7 @@ fn bench_bitset_truncate_large_suffix_65536_to_32768() -> canbench_rs::BenchResu
     populate(&bitset, LARGE_TRUNCATE_FROM);
     canbench_rs::bench_fn(|| {
         let _p = canbench_rs::bench_scope("bitset_truncate_large");
-        bitset.truncate(LARGE_TRUNCATE_TO).expect("truncate");
+        bitset.truncate(black_box(LARGE_TRUNCATE_TO)).expect("truncate");
         black_box(bitset.len());
     })
 }
@@ -100,9 +134,9 @@ fn bench_bitset_checkpoint_after_full_journal_4096() -> canbench_rs::BenchResult
     canbench_rs::bench_fn(|| {
         let _p = canbench_rs::bench_scope("bitset_checkpoint");
         bitset
-            .insert(JOURNAL_CAP_FILL)
+            .insert(black_box(JOURNAL_CAP_FILL))
             .expect("insert triggering checkpoint");
-        black_box(bitset.contains(JOURNAL_CAP_FILL));
+        black_box(bitset.contains(black_box(JOURNAL_CAP_FILL)));
     })
 }
 
@@ -117,7 +151,7 @@ fn bench_bitset_reopen_after_large_snapshot_65536() -> canbench_rs::BenchResult 
     canbench_rs::bench_fn(|| {
         let _p = canbench_rs::bench_scope("bitset_reopen_large");
         let reopened = BitSet::init(bitset.into_memory()).expect("reopen");
-        black_box(reopened.contains(LARGE_SNAPSHOT_BITS));
+        black_box(reopened.contains(black_box(LARGE_SNAPSHOT_BITS)));
     })
 }
 

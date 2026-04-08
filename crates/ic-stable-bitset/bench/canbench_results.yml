@@ -23,6 +23,18 @@ benches:
         instructions: 471
         heap_increase: 0
         stable_memory_increase: 0
+  bench_bitset_contains_65536_4096:
+    total:
+      calls: 1
+      instructions: 167390
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      bitset_contains_large:
+        calls: 1
+        instructions: 166381
+        heap_increase: 0
+        stable_memory_increase: 0
   bench_bitset_insert_1024:
     total:
       calls: 1
