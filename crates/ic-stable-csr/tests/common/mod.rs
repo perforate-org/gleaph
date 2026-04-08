@@ -6,10 +6,14 @@
 //! `remove_slab` uses binary search on the first row with `base > remove_pos`; that is valid only
 //! when dense vertex indices have non-decreasing `base_slot_start`.
 //!
-//! **Rebalance coverage:** `rebalance_weighted` without `resize_double` depends on PMA density
-//! thresholds; integration tests exercise `maintain_rebalance_loop` via resize in
-//! `insert_maintain_triggers_resize_when_slab_full` in `csr_insert_maintain.rs`. A dedicated
-//! density-only rebalance scenario can be added later if needed.
+//! **Rebalance coverage:** `rebalance_weighted` without `resize_double` is covered by the crate-local
+//! unit test `rebalance_dense_window::rebalance_weighted_direct_preserves_dense_bases_after_rebalance_window`
+//! (`src/rebalance_dense_window.rs`). Normal [`DgapStores::insert_edge`] runs
+//! [`ic_stable_csr::dgap::DgapEdgeStore::maintain_rebalance_loop`] and clears a density window before
+//! returning, so that test uses [`ic_stable_csr::dgap::DgapEdgeStore::insert_edge_skip_maintain_for_test`]
+//! (test-only, `cfg(test)` build) to leave a `RebalanceWindow` visible after `sync_pma_meta` + full SEC
+//! recount. Resize-with-rebalance remains exercised in `insert_maintain_triggers_resize_when_slab_full`
+//! in `csr_insert_maintain.rs`.
 
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -185,7 +189,11 @@ pub fn assert_dense_vertex_bases_non_decreasing<V, E, Mvs, M1, M2>(
     }
     let mut prev = stores.vertices.get_dense(0).unwrap().base_slot_start();
     for j in 1..n {
-        let b = stores.vertices.get_dense(j as u32).unwrap().base_slot_start();
+        let b = stores
+            .vertices
+            .get_dense(j as u32)
+            .unwrap()
+            .base_slot_start();
         assert!(
             prev <= b,
             "dense vertex bases must be non-decreasing: base[{}]={} > base[{}]={}",

@@ -3,12 +3,12 @@
 use std::fmt;
 use std::marker::PhantomData;
 
-use ic_stable_slot_map::SlotMap;
-use ic_stable_structures::Memory;
 use crate::csr::{DgapStores, DgapStoresError};
 use crate::dgap::{DgapEdgeStore, DgapGraphMemories, NeighborhoodIter};
 use crate::memory_util::GrowFailed;
 use crate::traits::{CsrEdge, CsrEdgeTombstone, CsrEdgeUndirected, CsrVertex, CsrVertexTombstone};
+use ic_stable_slot_map::SlotMap;
+use ic_stable_structures::Memory;
 
 // --- specialization: detect undirected flag only when `E: CsrEdgeUndirected` ---
 
@@ -218,10 +218,7 @@ where
         self.reverse
             .insert_vertex(row_template)
             .map_err(CsrGraphError::Reverse)?;
-        debug_assert_eq!(
-            self.forward.vertices.len(),
-            self.reverse.vertices.len()
-        );
+        debug_assert_eq!(self.forward.vertices.len(), self.reverse.vertices.len());
         Ok(id)
     }
 
@@ -233,10 +230,7 @@ where
         self.reverse
             .insert_vertex_strict(row_template)
             .map_err(CsrGraphError::Reverse)?;
-        debug_assert_eq!(
-            self.forward.vertices.len(),
-            self.reverse.vertices.len()
-        );
+        debug_assert_eq!(self.forward.vertices.len(), self.reverse.vertices.len());
         Ok(id)
     }
 

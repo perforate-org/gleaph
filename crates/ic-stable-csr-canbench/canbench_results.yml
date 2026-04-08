@@ -2,13 +2,13 @@ benches:
   bench_remove_slab_physically_chain_1024:
     total:
       calls: 1
-      instructions: 28360660
+      instructions: 28383549
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       dgap_remove_slab_base_decrement:
         calls: 1
-        instructions: 3444326
+        instructions: 3467217
         heap_increase: 0
         stable_memory_increase: 0
       dgap_remove_slab_maintain:
@@ -34,13 +34,13 @@ benches:
   bench_remove_slab_physically_chain_32:
     total:
       calls: 1
-      instructions: 18506753
+      instructions: 18518857
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       dgap_remove_slab_base_decrement:
         calls: 1
-        instructions: 108326
+        instructions: 120432
         heap_increase: 0
         stable_memory_increase: 0
       dgap_remove_slab_maintain:
@@ -66,13 +66,13 @@ benches:
   bench_remove_slab_physically_tail_vertex_chain_1024:
     total:
       calls: 1
-      instructions: 6238375
+      instructions: 5143146
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       dgap_remove_slab_base_decrement:
         calls: 1
-        instructions: 1132821
+        instructions: 37594
         heap_increase: 0
         stable_memory_increase: 0
       dgap_remove_slab_maintain:

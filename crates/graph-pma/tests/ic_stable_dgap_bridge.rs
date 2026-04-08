@@ -23,10 +23,7 @@ fn gleaph_types_on_vertex_and_dual_edge_memories() {
     let m_edges_log: VectorMemory = Rc::new(RefCell::new(Vec::new()));
 
     let vertices = SlotMap::new(mv.clone()).unwrap();
-    let edges = GleaphEdgeStore::new(DgapGraphMemories::new(
-        m_pma.clone(),
-        m_edges_log.clone(),
-    ));
+    let edges = GleaphEdgeStore::new(DgapGraphMemories::new(m_pma.clone(), m_edges_log.clone()));
     edges.format_new(16, 1, 2, 0).expect("format edge region");
 
     vertices

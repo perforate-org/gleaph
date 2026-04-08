@@ -42,7 +42,12 @@ where
 }
 
 #[inline]
-fn push_remove_slab_pma_dirty_segments(segs: &mut BTreeSet<usize>, idx: usize, ss: usize, sc: usize) {
+fn push_remove_slab_pma_dirty_segments(
+    segs: &mut BTreeSet<usize>,
+    idx: usize,
+    ss: usize,
+    sc: usize,
+) {
     let seg = idx / ss;
     if seg < sc {
         segs.insert(seg);
@@ -84,6 +89,45 @@ where
     Ok(lo)
 }
 
+/// Smallest dense vertex index `j` with `base_slot_start(j) >= threshold`, or `n` if none.
+#[inline]
+fn first_dense_vertex_base_ge_count<V, M>(
+    col: &SlotMap<V, M>,
+    n: usize,
+    threshold: u64,
+) -> Result<usize, &'static str>
+where
+    V: CsrVertex,
+    M: Memory,
+{
+    let mut lo = 0usize;
+    let mut hi = n;
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        let b = col_get(col, mid)?.base_slot_start();
+        if b >= threshold {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    Ok(lo)
+}
+
+/// First dense vertex index whose `next_base` is strictly greater than `threshold`.
+#[inline]
+fn first_dense_vertex_next_base_gt<V, M>(
+    col: &SlotMap<V, M>,
+    n: usize,
+    threshold: u64,
+) -> Result<usize, &'static str>
+where
+    V: CsrVertex,
+    M: Memory,
+{
+    Ok(first_dense_vertex_base_ge_count(col, n, threshold.saturating_add(1))?.saturating_sub(1))
+}
+
 /// When feature `strict-dgap-invariants` is enabled, [`DgapEdgeStore::remove_slab_edge_at_local_index_physically`]
 /// runs this before [`first_dense_vertex_base_gt`] (full column read, `O(n)`).
 #[cfg(feature = "strict-dgap-invariants")]
@@ -102,7 +146,9 @@ where
     for j in 1..n {
         let b = col_get(col, j)?.base_slot_start();
         if prev > b {
-            return Err("strict-dgap-invariants: dense base_slot_start not non-decreasing (remove_slab binary search invalid)");
+            return Err(
+                "strict-dgap-invariants: dense base_slot_start not non-decreasing (remove_slab binary search invalid)",
+            );
         }
         prev = b;
     }
@@ -146,9 +192,7 @@ pub struct NeighborhoodIter<'a, E: CsrEdge, M1: Memory, M2: Memory> {
     scratch: [u8; MAX_INLINE_EDGE],
 }
 
-impl<'a, E: CsrEdge, M1: Memory, M2: Memory> Iterator
-    for NeighborhoodIter<'a, E, M1, M2>
-{
+impl<'a, E: CsrEdge, M1: Memory, M2: Memory> Iterator for NeighborhoodIter<'a, E, M1, M2> {
     type Item = Result<E, &'static str>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -193,15 +237,9 @@ impl<'a, E: CsrEdge, M1: Memory, M2: Memory> Iterator
     }
 }
 
-impl<'a, E: CsrEdge, M1: Memory, M2: Memory> ExactSizeIterator
-    for NeighborhoodIter<'a, E, M1, M2>
-{
-}
+impl<'a, E: CsrEdge, M1: Memory, M2: Memory> ExactSizeIterator for NeighborhoodIter<'a, E, M1, M2> {}
 
-impl<'a, E: CsrEdge, M1: Memory, M2: Memory> FusedIterator
-    for NeighborhoodIter<'a, E, M1, M2>
-{
-}
+impl<'a, E: CsrEdge, M1: Memory, M2: Memory> FusedIterator for NeighborhoodIter<'a, E, M1, M2> {}
 
 /// Owns the two-`Memory` DGAP edge bundle (`M_e`).
 pub struct DgapEdgeStore<E: CsrEdge, M1, M2> {
@@ -377,7 +415,13 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
     }
 
     /// DGAP `out_neigh` slab span count (`onseg_edges`).
-    fn onseg_edges<V, Mvs>(col: &SlotMap<V, Mvs>, vid: usize, n: usize, elem_capacity: u64, v: &V) -> u32
+    fn onseg_edges<V, Mvs>(
+        col: &SlotMap<V, Mvs>,
+        vid: usize,
+        n: usize,
+        elem_capacity: u64,
+        v: &V,
+    ) -> u32
     where
         V: CsrVertex,
         Mvs: Memory,
@@ -402,7 +446,11 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
     }
 
     /// Outgoing edges in DGAP `Neighborhood` order (contiguous slab prefix, then overflow log chain).
-    pub fn neighborhood_edges<V, Mvs>(&self, col: &SlotMap<V, Mvs>, vid: usize) -> Result<Vec<E>, &'static str>
+    pub fn neighborhood_edges<V, Mvs>(
+        &self,
+        col: &SlotMap<V, Mvs>,
+        vid: usize,
+    ) -> Result<Vec<E>, &'static str>
     where
         V: CsrVertex,
         Mvs: Memory,
@@ -483,7 +531,11 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
     }
 
     /// Alias for [`Self::neighborhood_edges`].
-    pub fn collect_out_edges<V, Mvs>(&self, col: &SlotMap<V, Mvs>, vid: usize) -> Result<Vec<E>, &'static str>
+    pub fn collect_out_edges<V, Mvs>(
+        &self,
+        col: &SlotMap<V, Mvs>,
+        vid: usize,
+    ) -> Result<Vec<E>, &'static str>
     where
         V: CsrVertex,
         Mvs: Memory,
@@ -496,7 +548,12 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
         Ok(out)
     }
 
-    fn have_space_onseg<V, Mvs>(col: &SlotMap<V, Mvs>, vid: usize, loc: u64, elem_capacity: u64) -> bool
+    fn have_space_onseg<V, Mvs>(
+        col: &SlotMap<V, Mvs>,
+        vid: usize,
+        loc: u64,
+        elem_capacity: u64,
+    ) -> bool
     where
         V: CsrVertex,
         Mvs: Memory,
@@ -598,7 +655,8 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
         let next_base = if end_vertex >= n {
             h.elem_capacity
         } else {
-            col_get(col, end_vertex).map_err(|_| "missing boundary vertex")?
+            col_get(col, end_vertex)
+                .map_err(|_| "missing boundary vertex")?
                 .base_slot_start()
         };
         let to = next_base;
@@ -607,7 +665,9 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
             return Err("empty range");
         }
         let cap = (to - from) as i64;
-        let c = self.mem.read_segment_edge_counts(pma_idx, self.pma_stride());
+        let c = self
+            .mem
+            .read_segment_edge_counts(pma_idx, self.pma_stride());
         let total_at = c.total;
         let actual_at = c.actual;
         if total_at != cap {
@@ -711,7 +771,12 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
         Ok(())
     }
 
-    fn try_insert_into_log<V, Mvs>(&self, col: &SlotMap<V, Mvs>, vid: usize, edge: E) -> Result<(), &'static str>
+    fn try_insert_into_log<V, Mvs>(
+        &self,
+        col: &SlotMap<V, Mvs>,
+        vid: usize,
+        edge: E,
+    ) -> Result<(), &'static str>
     where
         V: CsrVertex,
         Mvs: Memory,
@@ -734,7 +799,12 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
         Ok(())
     }
 
-    fn dgap_insert_once<V, Mvs>(&self, col: &SlotMap<V, Mvs>, vid: usize, edge: E) -> Result<(), &'static str>
+    fn dgap_insert_once<V, Mvs>(
+        &self,
+        col: &SlotMap<V, Mvs>,
+        vid: usize,
+        edge: E,
+    ) -> Result<(), &'static str>
     where
         V: CsrVertex,
         Mvs: Memory,
@@ -815,12 +885,71 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
         Err("insert maintenance tries exhausted")
     }
 
+    /// Same retry loop as [`Self::insert_edge_and_maintain`], but **does not** run
+    /// [`Self::maintain_rebalance_loop`] (no PMA density rebalance / resize). Used from crate-local
+    /// `#[cfg(test)]` modules (not from integration tests: those build the library without `cfg(test)`).
+    #[cfg(test)]
+    pub(crate) fn insert_edge_skip_maintain_for_test<V, Mvs>(
+        &self,
+        col: &SlotMap<V, Mvs>,
+        vid: usize,
+        edge: E,
+    ) -> Result<(), &'static str>
+    where
+        V: CsrVertex,
+        Mvs: Memory,
+    {
+        const MAX_TRIES: usize = 64;
+        for _try in 0..MAX_TRIES {
+            let h = self.header().ok_or("bad edge header")?;
+            let n = col.len() as usize;
+            if vid >= n {
+                return Err("vertex out of range");
+            }
+            let leaf = dgap_leaf_segment_id(vid, h.segment_size);
+            let idx = self.mem.read_log_idx(&h, leaf);
+            if idx >= h.max_log_entries as i32 {
+                let left_index = (vid / h.segment_size as usize) * h.segment_size as usize;
+                let right_index = ((left_index + h.segment_size as usize).min(n)).min(n);
+                self.merge_logs_into_slab_for_window(col, left_index, right_index)?;
+                self.sync_pma_edge_counts_for_vertex_range(col, left_index, right_index)?;
+                continue;
+            }
+            match self.dgap_insert_once(col, vid, edge) {
+                Ok(()) => {
+                    self.bump_segment_edge_counts_leaf_delta(vid, 1, 0, 0)
+                        .map_err(|_| "sync edge counts")?;
+                    self.refresh_slab_occupied_tail_from_column(col)?;
+                    return Ok(());
+                }
+                Err("log full") => {
+                    let left_index = (vid / h.segment_size as usize) * h.segment_size as usize;
+                    let right_index = (left_index + h.segment_size as usize).min(n);
+                    self.merge_logs_into_slab_for_window(col, left_index, right_index)?;
+                    self.sync_pma_edge_counts_for_vertex_range(col, left_index, right_index)?;
+                }
+                Err(e) if e == "vertex out of range" || e == "missing vertex" => {
+                    return Err(e);
+                }
+                Err("write slot") => {
+                    self.resize_double(col)?;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err("insert maintenance tries exhausted")
+    }
+
     /// Insert many `(source_vid, edge)` pairs in iterator order. Consecutive edges with the same `vid` are
     /// batched (preflight, one slab [`DgapGraphMemories::write_edge_slab_span`] when possible, then log
     /// rows via [`write_log_entry_raw`]), with `sync_pma_*` and [`Self::maintain_rebalance_loop`] once per
     /// same-`vid` run. On failure, earlier successful inserts remain (same partial-commit semantics as
     /// repeated [`Self::insert_edge_and_maintain`]).
-    pub fn insert_edges_and_maintain<V, Mvs, I>(&self, col: &SlotMap<V, Mvs>, edges: I) -> Result<(), &'static str>
+    pub fn insert_edges_and_maintain<V, Mvs, I>(
+        &self,
+        col: &SlotMap<V, Mvs>,
+        edges: I,
+    ) -> Result<(), &'static str>
     where
         V: CsrVertex,
         Mvs: Memory,
@@ -851,7 +980,12 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
         Ok(())
     }
 
-    fn flush_insert_run<V, Mvs>(&self, col: &SlotMap<V, Mvs>, vid: usize, run: &[E]) -> Result<(), &'static str>
+    fn flush_insert_run<V, Mvs>(
+        &self,
+        col: &SlotMap<V, Mvs>,
+        vid: usize,
+        run: &[E],
+    ) -> Result<(), &'static str>
     where
         V: CsrVertex,
         Mvs: Memory,
@@ -1283,7 +1417,8 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
                     let byte_len = chunk_slots.saturating_mul(st);
                     let src_slot = (rp + 1 + offset) as u64;
                     let dst_slot = (rp + offset) as u64;
-                    self.mem.read_edge_slab_span(stride, src_slot, &mut buf[..byte_len]);
+                    self.mem
+                        .read_edge_slab_span(stride, src_slot, &mut buf[..byte_len]);
                     self.mem
                         .write_edge_slab_span(stride, dst_slot, &buf[..byte_len])
                         .map_err(|_| "slide write")?;
@@ -1292,7 +1427,11 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
             }
         }
         let v_after = col_get(col, vid)?;
-        col_set(col, vid, v_after.with_degree((deg.saturating_sub(1)) as u32))?;
+        col_set(
+            col,
+            vid,
+            v_after.with_degree((deg.saturating_sub(1)) as u32),
+        )?;
         let ne = self.mem.read_num_edges();
         self.mem.set_num_edges(ne.saturating_sub(1));
         let ss = h.segment_size.max(1) as usize;
@@ -1306,22 +1445,36 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
             #[cfg(feature = "strict-dgap-invariants")]
             strict_check_dense_bases_monotone_remove_slab(col, n)?;
             let l_suffix = first_dense_vertex_base_gt(col, n, remove_pos)?;
+            let pure_limit = l_suffix.saturating_sub(1);
+            let pure_start = first_dense_vertex_next_base_gt(col, n, slide_lo)?.min(pure_limit);
+            let pure_end = first_dense_vertex_base_ge_count(col, n, slide_hi)?.min(pure_limit);
             let mut prev_final: Option<V> = None;
             let mut prev_had_base_dec = false;
+            push_remove_slab_pma_dirty_segments(&mut segs, vid, ss, sc);
 
-            for j in 0..l_suffix {
-                let cur = col_get(col, j)?;
-                if j > 0 {
+            // Path B (read reduction): the pure-overlap dirty indices form a contiguous interval
+            // on non-decreasing dense bases, so we only `get_dense` the candidate window rather than
+            // the full prefix. The suffix still needs a dense walk because every base decrement can
+            // affect the next row's `next_base`.
+            if pure_start < pure_end {
+                let cur = col_get(col, pure_start)?;
+                prev_final = Some(cur);
+                for j in (pure_start + 1)..=pure_end {
+                    let next = col_get(col, j)?;
                     let idx = j - 1;
-                    let prev = prev_final.ok_or("remove_slab: column scan invariant")?;
+                    let prev = prev_final.ok_or("remove_slab: candidate scan invariant")?;
                     let b_prev = prev.base_slot_start();
-                    let nxt_prev = cur.base_slot_start();
+                    let nxt_prev = next.base_slot_start();
                     let dirty = idx == vid || (b_prev < slide_hi && nxt_prev > slide_lo);
                     if dirty {
                         push_remove_slab_pma_dirty_segments(&mut segs, idx, ss, sc);
                     }
+                    prev_final = Some(next);
                 }
-                prev_final = Some(cur);
+            }
+
+            if l_suffix > 0 {
+                prev_final = Some(col_get(col, l_suffix - 1)?);
             }
 
             for j in l_suffix..n {
@@ -1357,9 +1510,8 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
                 let b_prev = prev.base_slot_start();
                 let nxt_prev = h.elem_capacity;
                 let last = n - 1;
-                let dirty = last == vid
-                    || prev_had_base_dec
-                    || (b_prev < slide_hi && nxt_prev > slide_lo);
+                let dirty =
+                    last == vid || prev_had_base_dec || (b_prev < slide_hi && nxt_prev > slide_lo);
                 if dirty {
                     push_remove_slab_pma_dirty_segments(&mut segs, last, ss, sc);
                 }
@@ -1497,9 +1649,7 @@ impl<E: CsrEdge + CsrEdgeTombstone, M1: Memory, M2: Memory> DgapEdgeStore<E, M1,
         if to <= from {
             return Err("empty slab range");
         }
-        let mut edges_local: Vec<E> = (from..to)
-            .map(|s| self.read_slot(stride, s))
-            .collect();
+        let mut edges_local: Vec<E> = (from..to).map(|s| self.read_slot(stride, s)).collect();
         let removed = slide_remove_tombstones_in_window_edges(
             col,
             &mut edges_local,
@@ -1510,7 +1660,9 @@ impl<E: CsrEdge + CsrEdgeTombstone, M1: Memory, M2: Memory> DgapEdgeStore<E, M1,
             h.elem_capacity,
         )?;
         let cap = (to - from) as i64;
-        let c = self.mem.read_segment_edge_counts(pma_idx, self.pma_stride());
+        let c = self
+            .mem
+            .read_segment_edge_counts(pma_idx, self.pma_stride());
         let total_at = c.total;
         let actual_at = c.actual;
         if total_at != cap {
@@ -1520,14 +1672,7 @@ impl<E: CsrEdge + CsrEdgeTombstone, M1: Memory, M2: Memory> DgapEdgeStore<E, M1,
         for i in left..right {
             win.push(col_get(col, i)?);
         }
-        rebalance_weighted_window_rel(
-            &mut win,
-            from,
-            to,
-            &mut edges_local,
-            total_at,
-            actual_at,
-        );
+        rebalance_weighted_window_rel(&mut win, from, to, &mut edges_local, total_at, actual_at);
         for (i, slot) in (from..to).enumerate() {
             self.write_slot(stride, slot, edges_local[i])
                 .map_err(|_| "maintain commit write")?;

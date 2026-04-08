@@ -3,9 +3,7 @@
 use ic_stable_slot_map::SlotMap;
 use ic_stable_structures::Memory;
 
-use crate::layout::dgap::{
-    SegmentEdgeCounts, read_segment_edge_counts, write_segment_edge_counts,
-};
+use crate::layout::dgap::{SegmentEdgeCounts, read_segment_edge_counts, write_segment_edge_counts};
 use crate::traits::{CsrEdge, CsrVertex};
 
 /// Upper density at root / leaves (C++ `up_h` / `up_0`).
@@ -43,7 +41,10 @@ pub fn pma_tree_index(vertex_id: u32, segment_size: u32, segment_count: u32) -> 
 }
 
 #[inline]
-fn merge_segment_edge_counts_children(l: SegmentEdgeCounts, r: SegmentEdgeCounts) -> SegmentEdgeCounts {
+fn merge_segment_edge_counts_children(
+    l: SegmentEdgeCounts,
+    r: SegmentEdgeCounts,
+) -> SegmentEdgeCounts {
     SegmentEdgeCounts {
         actual: l.actual.saturating_add(r.actual),
         total: l.total.saturating_add(r.total),
@@ -546,8 +547,7 @@ pub fn segment_maintenance_decision(
 
     let tomb_garbage = tombstone_garbage_significant(leaf, tomb_r, thr);
 
-    let queue_pressure =
-        queue_len >= thr.queue_depth_inline_pressure && tomb_garbage;
+    let queue_pressure = queue_len >= thr.queue_depth_inline_pressure && tomb_garbage;
 
     if tomb_r >= thr.strict_tombstone_ratio || queue_pressure {
         return SegmentMaintainAction::InlineNow;
@@ -734,10 +734,7 @@ pub fn recount_segment_actual_column<V, M>(
         let vend = ((i + 1) * segment_size as usize).min(nv);
         let mut sum = 0i64;
         for v in v0..vend {
-            sum += col
-                .get_dense(v as u32)
-                .expect("vertex column get")
-                .degree() as i64;
+            sum += col.get_dense(v as u32).expect("vertex column get").degree() as i64;
         }
         let leaf = leaf_pma_tree_index(i, segment_count);
         if leaf < actual.len() {
@@ -832,10 +829,7 @@ where
     let mut actual_sum = 0i64;
     let mut tombstone_sum = 0i64;
     for v in v0..vend {
-        actual_sum += col
-            .get_dense(v as u32)
-            .expect("vertex column get")
-            .degree() as i64;
+        actual_sum += col.get_dense(v as u32).expect("vertex column get").degree() as i64;
         let row = col.get_dense(v as u32).expect("vertex column get");
         let b = row.base_slot_start();
         let end_exclusive = if v + 1 < nv {
@@ -1045,12 +1039,7 @@ mod segment_maintain_tests {
             total: 1,
             tombstone: 0,
         };
-        let a = segment_maintenance_decision(
-            leaf,
-            RebalanceDecision::ResizeNeeded,
-            0,
-            &thr(),
-        );
+        let a = segment_maintenance_decision(leaf, RebalanceDecision::ResizeNeeded, 0, &thr());
         assert_eq!(a, SegmentMaintainAction::InlineNow);
     }
 
@@ -1198,23 +1187,10 @@ mod rebalance_reader_parity_tests {
                     total[j] = actual[j].max(1) + ((j * 7 + pattern as usize) % 20) as i64;
                 }
                 for vtx in 0..nv.min(32) {
-                    let d1 = rebalance_decision(
-                        vtx as u32,
-                        ss,
-                        sc,
-                        nv,
-                        th,
-                        &actual,
-                        &total,
-                    );
-                    let d2 = rebalance_decision_with_reader(
-                        vtx as u32,
-                        ss,
-                        sc,
-                        nv,
-                        th,
-                        |i| (actual[i], total[i]),
-                    );
+                    let d1 = rebalance_decision(vtx as u32, ss, sc, nv, th, &actual, &total);
+                    let d2 = rebalance_decision_with_reader(vtx as u32, ss, sc, nv, th, |i| {
+                        (actual[i], total[i])
+                    });
                     assert_eq!(d1, d2, "sc={sc} vtx={vtx} pattern={pattern}");
                 }
             }
@@ -1260,5 +1236,91 @@ mod segments_for_vertex_range_tests {
     fn caps_at_segment_count() {
         let s = segments_for_vertex_range(0, 100, 4, 2);
         assert_eq!(s, vec![0, 1]);
+    }
+}
+
+/// Path B prototype: vertex row `idx` covers `[bases[idx], next(idx))` with `next(i)=bases[i+1]` or
+/// `elem_cap` for the last row. Overlap with slide `[slide_lo, slide_hi)` is
+/// `bases[idx] < slide_hi && next(idx) > slide_lo`. On non-decreasing `bases`, the set of such `idx`
+/// is an index interval `[start, k)` (`k` = count of `bases[i] < slide_hi`, `start` = first `i` with
+/// `next(i) > slide_lo`), provably matching the linear scan (see `linear_matches_range_stub_on_random_monotone`).
+#[cfg(test)]
+mod remove_slab_dirty_overlap_tests {
+    use std::collections::BTreeSet;
+
+    fn next_base(bases: &[u64], i: usize, elem_cap: u64) -> u64 {
+        if i + 1 < bases.len() {
+            bases[i + 1]
+        } else {
+            elem_cap
+        }
+    }
+
+    fn dirty_overlap_linear(
+        bases: &[u64],
+        elem_cap: u64,
+        slide_lo: u64,
+        slide_hi: u64,
+    ) -> BTreeSet<usize> {
+        let n = bases.len();
+        let mut out = BTreeSet::new();
+        for idx in 0..n {
+            let b = bases[idx];
+            let nx = next_base(bases, idx, elem_cap);
+            if b < slide_hi && nx > slide_lo {
+                out.insert(idx);
+            }
+        }
+        out
+    }
+
+    fn dirty_overlap_range_stub(
+        bases: &[u64],
+        elem_cap: u64,
+        slide_lo: u64,
+        slide_hi: u64,
+    ) -> BTreeSet<usize> {
+        let n = bases.len();
+        if n == 0 {
+            return BTreeSet::new();
+        }
+        let next_b: Vec<u64> = (0..n).map(|i| next_base(bases, i, elem_cap)).collect();
+        let k = bases.partition_point(|&b| b < slide_hi);
+        let start = next_b.partition_point(|&nb| nb <= slide_lo);
+        (start..k).collect()
+    }
+
+    #[test]
+    fn linear_matches_range_stub_on_random_monotone() {
+        let mut rng = 1u64;
+        let mut next = 0u64;
+        for _ in 0..200 {
+            let n = (rng % 30 + 1) as usize;
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let mut bases = Vec::with_capacity(n);
+            for _ in 0..n {
+                let delta = (rng % 5) as u64;
+                rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+                next = next.saturating_add(delta);
+                bases.push(next);
+            }
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let span = next.saturating_add(20);
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let slide_lo = (rng % span.max(1)) as u64;
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let mut slide_hi = (rng % span.max(1)) as u64;
+            if slide_hi <= slide_lo {
+                slide_hi = slide_lo.saturating_add(1);
+            }
+            let elem_cap = span.saturating_mul(2).max(next.saturating_add(1));
+
+            let a = dirty_overlap_linear(&bases, elem_cap, slide_lo, slide_hi);
+            let b = dirty_overlap_range_stub(&bases, elem_cap, slide_lo, slide_hi);
+            assert_eq!(
+                a, b,
+                "bases={bases:?} cap={elem_cap} lo={slide_lo} hi={slide_hi}"
+            );
+        }
     }
 }

@@ -13,8 +13,8 @@ use ic_stable_csr::{
     traits::{CsrEdge, CsrVertex},
 };
 use ic_stable_slot_map::SlotMap;
-use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use ic_stable_structures::DefaultMemoryImpl;
+use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 
 mod wipe;
 

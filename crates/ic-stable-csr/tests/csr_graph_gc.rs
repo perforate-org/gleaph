@@ -3,11 +3,11 @@
 mod common;
 
 use common::{
-    assert_dense_vertex_bases_non_decreasing, empty_vertex, vm, TestEdge as TE, TestVertex as TV,
+    TestEdge as TE, TestVertex as TV, assert_dense_vertex_bases_non_decreasing, empty_vertex, vm,
 };
 use ic_stable_csr::{
-    CsrEdgeSlotTombstoneScan as _, CsrGraphError, CsrGraphWithGcQueue, DgapStores, SegmentEdgeCounts,
-    SegmentMaintainThresholds, VectorMemory,
+    CsrEdgeSlotTombstoneScan as _, CsrGraphError, CsrGraphWithGcQueue, DgapStores,
+    SegmentEdgeCounts, SegmentMaintainThresholds, VectorMemory,
     dgap::recount_segment_edge_counts_column,
     traits::{CsrVertex, CsrVertexTombstone},
 };

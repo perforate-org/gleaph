@@ -61,6 +61,10 @@
 
 #![feature(specialization)]
 
+// `tests/common/mod.rs` (included by `rebalance_dense_window`) uses `ic_stable_csr::…` paths.
+#[cfg(test)]
+extern crate self as ic_stable_csr;
+
 mod canbench_scope;
 pub mod csr;
 pub mod dgap;
@@ -85,3 +89,6 @@ pub use traits::{
     CsrEdge, CsrEdgeSlotTombstoneScan, CsrEdgeTombstone, CsrEdgeUndirected, CsrVertex,
     CsrVertexTombstone,
 };
+
+#[cfg(test)]
+mod rebalance_dense_window;

@@ -4,15 +4,12 @@
 use ic_stable_structures::Memory;
 
 use crate::StableVecDeque;
-use crate::csr::{DgapStores, DgapStoresError};
 use crate::csr::csr_graph::{CsrGraph, CsrGraphError, LogicalNeighborhoodIter};
-use crate::csr::gc_work_item::{
-    GC_TAG_SEGMENT_FWD, GC_TAG_SEGMENT_REV, GC_TAG_VERTEX, GcWorkItem,
-};
+use crate::csr::gc_work_item::{GC_TAG_SEGMENT_FWD, GC_TAG_SEGMENT_REV, GC_TAG_VERTEX, GcWorkItem};
+use crate::csr::{DgapStores, DgapStoresError};
 use crate::dgap::{
-    RebalanceDecision, rebalance_decision_with_reader, segment_maintenance_decision,
-    SegmentMaintainAction,
-    SegmentMaintainThresholds,
+    RebalanceDecision, SegmentMaintainAction, SegmentMaintainThresholds,
+    rebalance_decision_with_reader, segment_maintenance_decision,
 };
 use crate::layout::dgap::dgap_leaf_segment_id;
 use crate::traits::{CsrEdge, CsrEdgeTombstone, CsrEdgeUndirected, CsrVertex, CsrVertexTombstone};
@@ -169,12 +166,8 @@ where
                 (c.actual, c.total)
             },
         );
-        let action = segment_maintenance_decision(
-            leaf_counts,
-            reb,
-            queue_len,
-            &self.maintain_thresholds,
-        );
+        let action =
+            segment_maintenance_decision(leaf_counts, reb, queue_len, &self.maintain_thresholds);
         let map_g = |m: &'static str| {
             if forward_column {
                 CsrGraphError::Forward(DgapStoresError::Graph(m))
@@ -291,8 +284,16 @@ where
                 vid: dst,
                 len: rev.vertices.len(),
             })?;
-        vertex_set_dense(&fwd.vertices, src, fs.with_degree(fs.degree().saturating_sub(1)))?;
-        vertex_set_dense(&rev.vertices, dst, rd.with_degree(rd.degree().saturating_sub(1)))?;
+        vertex_set_dense(
+            &fwd.vertices,
+            src,
+            fs.with_degree(fs.degree().saturating_sub(1)),
+        )?;
+        vertex_set_dense(
+            &rev.vertices,
+            dst,
+            rd.with_degree(rd.degree().saturating_sub(1)),
+        )?;
         fwd.edges
             .bump_segment_edge_counts_leaf_delta(src, -1, 0, 1)
             .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?;
@@ -341,13 +342,13 @@ where
             rev.edges
                 .tombstone_edge_with_neighbor::<V, Mvs>(&rev.vertices, nb, owner)
                 .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?;
-            let fs = fwd
-                .vertices
-                .get_dense(owner as u32)
-                .ok_or(CsrGraphError::VertexOutOfRange {
-                    vid: owner,
-                    len: fwd.vertices.len(),
-                })?;
+            let fs =
+                fwd.vertices
+                    .get_dense(owner as u32)
+                    .ok_or(CsrGraphError::VertexOutOfRange {
+                        vid: owner,
+                        len: fwd.vertices.len(),
+                    })?;
             let rd = rev
                 .vertices
                 .get_dense(nb as u32)
@@ -355,8 +356,16 @@ where
                     vid: nb,
                     len: rev.vertices.len(),
                 })?;
-            vertex_set_dense(&fwd.vertices, owner, fs.with_degree(fs.degree().saturating_sub(1)))?;
-            vertex_set_dense(&rev.vertices, nb, rd.with_degree(rd.degree().saturating_sub(1)))?;
+            vertex_set_dense(
+                &fwd.vertices,
+                owner,
+                fs.with_degree(fs.degree().saturating_sub(1)),
+            )?;
+            vertex_set_dense(
+                &rev.vertices,
+                nb,
+                rd.with_degree(rd.degree().saturating_sub(1)),
+            )?;
             fwd.edges
                 .bump_segment_edge_counts_leaf_delta(owner, -1, 0, 1)
                 .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?;
@@ -401,7 +410,11 @@ where
                     vid: u,
                     len: rev.vertices.len(),
                 })?;
-            vertex_set_dense(&rev.vertices, u, ru.with_degree(ru.degree().saturating_sub(1)))?;
+            vertex_set_dense(
+                &rev.vertices,
+                u,
+                ru.with_degree(ru.degree().saturating_sub(1)),
+            )?;
         }
         let in_raw = rev
             .edges
@@ -422,7 +435,11 @@ where
                     vid: u,
                     len: fwd.vertices.len(),
                 })?;
-            vertex_set_dense(&fwd.vertices, u, fu.with_degree(fu.degree().saturating_sub(1)))?;
+            vertex_set_dense(
+                &fwd.vertices,
+                u,
+                fu.with_degree(fu.degree().saturating_sub(1)),
+            )?;
         }
         let fv = fwd.vertices.get_dense(vid as u32).unwrap();
         let rv = rev.vertices.get_dense(vid as u32).unwrap();
@@ -463,20 +480,18 @@ where
             let item = self.work_queue.get(0).expect("len > 0");
             let done = match item.tag() {
                 GC_TAG_SEGMENT_FWD => {
-                    let leaf = item.leaf_segment_id().ok_or(CsrGraphError::LogicalMutation(
-                        "gc: bad segment fwd item",
-                    ))?;
-                    let map_g =
-                        |m: &'static str| CsrGraphError::Forward(DgapStoresError::Graph(m));
+                    let leaf = item
+                        .leaf_segment_id()
+                        .ok_or(CsrGraphError::LogicalMutation("gc: bad segment fwd item"))?;
+                    let map_g = |m: &'static str| CsrGraphError::Forward(DgapStoresError::Graph(m));
                     self.run_segment_maintain_for_leaf(self.graph.forward_dgap(), leaf, map_g)?;
                     true
                 }
                 GC_TAG_SEGMENT_REV => {
-                    let leaf = item.leaf_segment_id().ok_or(CsrGraphError::LogicalMutation(
-                        "gc: bad segment rev item",
-                    ))?;
-                    let map_g =
-                        |m: &'static str| CsrGraphError::Reverse(DgapStoresError::Graph(m));
+                    let leaf = item
+                        .leaf_segment_id()
+                        .ok_or(CsrGraphError::LogicalMutation("gc: bad segment rev item"))?;
+                    let map_g = |m: &'static str| CsrGraphError::Reverse(DgapStoresError::Graph(m));
                     self.run_segment_maintain_for_leaf(self.graph.reverse_dgap(), leaf, map_g)?;
                     true
                 }

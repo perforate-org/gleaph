@@ -33,7 +33,8 @@ pub use segment_arrays::{
 pub use segment_edge_counts::{
     PMA_SEGMENT_EDGE_COUNTS_MAGIC, SegmentEdgeCounts, pma_edge_counts_array_bytes,
     read_segment_edge_counts, required_segment_edge_counts_bytes, segment_edge_counts_node_offset,
-    segment_edge_counts_region_ok, write_segment_edge_counts, write_segment_edge_counts_region_header,
+    segment_edge_counts_region_ok, write_segment_edge_counts,
+    write_segment_edge_counts_region_header,
 };
 pub use suggested_format::{
     DgapSuggestedFormat, SUGGESTED_ELEM_CAPACITY_MULTIPLIER, SUGGESTED_MIN_ELEM_CAPACITY,

@@ -66,12 +66,7 @@ impl<M1: Memory, M2: Memory> DgapGraphMemories<M1, M2> {
     ///
     /// **Contract:** `out.len() == n * edge_stride` for some `n` (if `out` is empty, this is a no-op).
     /// The caller must ensure `start_slot + n <= elem_capacity`. This method only reads bytes.
-    pub fn read_edge_slab_span(
-        &self,
-        edge_stride: u32,
-        start_slot: u64,
-        out: &mut [u8],
-    ) {
+    pub fn read_edge_slab_span(&self, edge_stride: u32, start_slot: u64, out: &mut [u8]) {
         let st = edge_stride as usize;
         if st == 0 || out.is_empty() {
             return;
