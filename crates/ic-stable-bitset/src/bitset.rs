@@ -225,9 +225,6 @@ pub struct BitSet<M: Memory> {
     journal_cap: u64,
 }
 
-/// Stable-memory bitset backed by a heap mirror and journal.
-pub type StableBitSet<M> = BitSet<M>;
-
 impl<M: Memory> fmt::Debug for BitSet<M> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let st = self.state.borrow();

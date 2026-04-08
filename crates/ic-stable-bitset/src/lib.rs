@@ -94,5 +94,5 @@ pub const JOURNAL_PAYLOAD_BITS: u32 = 61;
 /// Maximum bit index or logical length representable by a packed journal record.
 pub const JOURNAL_PAYLOAD_MAX: u64 = (1u64 << JOURNAL_PAYLOAD_BITS) - 1;
 
-pub use bitset::{BitSet, InitError, StableBitSet};
+pub use bitset::{BitSet, BitSet as StableBitSet, InitError};
 pub use memory::GrowFailed;
