@@ -166,7 +166,9 @@ use crate::layout::dgap::{
     required_edges_and_log_bytes,
 };
 use crate::memory_util::GrowFailed;
-use crate::traits::{CsrEdge, CsrEdgeSlotTombstoneScan, CsrEdgeTombstone, CsrVertex};
+use crate::traits::{
+    CsrEdge, CsrEdgeSlotTombstoneScan, CsrEdgeTombstone, CsrVertex, CsrVertexTombstone,
+};
 
 /// Stack / inline scratch cap for edge bytes (slab read, log entry payload, [`NeighborhoodIter`]).
 const MAX_INLINE_EDGE: usize = 64;
@@ -1564,25 +1566,45 @@ fn zero_edge_record<E: CsrEdge>() -> E {
     }
 }
 
-/// Slide live edges within each vertex span inside `[left, right)`, drop tombstones, zero freed tail slots.
+fn vertex_is_tombstoned<V, Mvs>(col: &SlotMap<V, Mvs>, vid: usize) -> bool
+where
+    V: CsrVertex + CsrVertexTombstone,
+    Mvs: Memory,
+{
+    match u32::try_from(vid) {
+        Ok(v) => col.get_dense(v).map(|row| row.is_tombstone()).unwrap_or(true),
+        Err(_) => true,
+    }
+}
+
+/// Slide live edges within each vertex span inside `[left, right)`, drop physical tombstones and
+/// edges whose endpoint vertex is tombstoned, zero freed tail slots, and update row degrees to match
+/// the kept edges.
+///
+/// Returns `(removed_slots, kept_actual_total)`, where:
+/// - `removed_slots` is the number of physical slab slots zeroed out.
+/// - `kept_actual_total` is the sum of row degrees after compaction.
+///
 /// `edges_local` indexes global slot `range_from + i`.
-fn slide_remove_tombstones_in_window_edges<V, Mvs, E>(
+fn slide_remove_garbage_in_window_edges<V, Mvs, E>(
     col: &SlotMap<V, Mvs>,
+    vertices_win: &mut [V],
     edges_local: &mut [E],
     range_from: u64,
     left: usize,
     right: usize,
     nv: usize,
     elem_cap: u64,
-) -> Result<u64, &'static str>
+) -> Result<(u64, i64), &'static str>
 where
-    V: CsrVertex,
+    V: CsrVertex + CsrVertexTombstone,
     Mvs: Memory,
     E: CsrEdge + CsrEdgeTombstone,
 {
     let zero = zero_edge_record::<E>();
     let mut removed = 0u64;
-    for v in left..right {
+    let mut kept_actual_total = 0i64;
+    for (li, v) in (left..right).enumerate() {
         let row = col_get(col, v)?;
         let b = row.base_slot_start();
         let end = if v + 1 < nv {
@@ -1594,10 +1616,15 @@ where
             return Err("vertex span outside local edge buffer");
         }
         let mut write = b;
+        let mut kept = 0u32;
+        let owner_dead = row.is_tombstone();
         for s in b..end {
             let idx = (s - range_from) as usize;
             let e = edges_local[idx];
-            if e.is_tombstone() {
+            let remove = e.is_tombstone()
+                || owner_dead
+                || vertex_is_tombstoned(col, e.neighbor_vid());
+            if remove {
                 removed = removed.saturating_add(1);
             } else {
                 if write != s {
@@ -1605,6 +1632,7 @@ where
                     edges_local[wi] = e;
                 }
                 write = write.saturating_add(1);
+                kept = kept.saturating_add(1);
             }
         }
         let mut t = write;
@@ -1612,8 +1640,10 @@ where
             edges_local[(t - range_from) as usize] = zero;
             t = t.saturating_add(1);
         }
+        vertices_win[li] = vertices_win[li].with_degree(kept);
+        kept_actual_total = kept_actual_total.saturating_add(kept as i64);
     }
-    Ok(removed)
+    Ok((removed, kept_actual_total))
 }
 
 impl<E: CsrEdge + CsrEdgeTombstone, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
@@ -1627,7 +1657,7 @@ impl<E: CsrEdge + CsrEdgeTombstone, M1: Memory, M2: Memory> DgapEdgeStore<E, M1,
         pma_idx: usize,
     ) -> Result<u64, &'static str>
     where
-        V: CsrVertex,
+        V: CsrVertex + CsrVertexTombstone,
         Mvs: Memory,
     {
         self.merge_logs_into_slab_for_window(col, left, right)?;
@@ -1649,9 +1679,14 @@ impl<E: CsrEdge + CsrEdgeTombstone, M1: Memory, M2: Memory> DgapEdgeStore<E, M1,
         if to <= from {
             return Err("empty slab range");
         }
+        let mut win: Vec<V> = Vec::with_capacity(right - left);
+        for i in left..right {
+            win.push(col_get(col, i)?);
+        }
         let mut edges_local: Vec<E> = (from..to).map(|s| self.read_slot(stride, s)).collect();
-        let removed = slide_remove_tombstones_in_window_edges(
+        let (removed, actual_after) = slide_remove_garbage_in_window_edges(
             col,
+            &mut win,
             &mut edges_local,
             from,
             left,
@@ -1664,15 +1699,10 @@ impl<E: CsrEdge + CsrEdgeTombstone, M1: Memory, M2: Memory> DgapEdgeStore<E, M1,
             .mem
             .read_segment_edge_counts(pma_idx, self.pma_stride());
         let total_at = c.total;
-        let actual_at = c.actual;
         if total_at != cap {
             return Err("segment total mismatch");
         }
-        let mut win: Vec<V> = Vec::with_capacity(right - left);
-        for i in left..right {
-            win.push(col_get(col, i)?);
-        }
-        rebalance_weighted_window_rel(&mut win, from, to, &mut edges_local, total_at, actual_at);
+        rebalance_weighted_window_rel(&mut win, from, to, &mut edges_local, total_at, actual_after);
         for (i, slot) in (from..to).enumerate() {
             self.write_slot(stride, slot, edges_local[i])
                 .map_err(|_| "maintain commit write")?;
