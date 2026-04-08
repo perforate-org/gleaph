@@ -2,25 +2,25 @@ benches:
   bench_bitset_checkpoint_after_full_journal_4096:
     total:
       calls: 1
-      instructions: 2856
+      instructions: 2900
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bitset_checkpoint:
         calls: 1
-        instructions: 1812
+        instructions: 1891
         heap_increase: 0
         stable_memory_increase: 0
   bench_bitset_contains_1024:
     total:
       calls: 1
-      instructions: 1488
+      instructions: 1480
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bitset_contains:
         calls: 1
-        instructions: 479
+        instructions: 471
         heap_increase: 0
         stable_memory_increase: 0
   bench_bitset_insert_1024:
@@ -38,25 +38,25 @@ benches:
   bench_bitset_reopen_after_journal_4096:
     total:
       calls: 1
-      instructions: 9336
+      instructions: 9330
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bitset_reopen:
         calls: 1
-        instructions: 8303
+        instructions: 8297
         heap_increase: 0
         stable_memory_increase: 0
   bench_bitset_reopen_after_large_snapshot_65536:
     total:
       calls: 1
-      instructions: 52536
+      instructions: 52530
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bitset_reopen_large:
         calls: 1
-        instructions: 51503
+        instructions: 51497
         heap_increase: 0
         stable_memory_increase: 0
   bench_bitset_truncate_2048_to_1024:

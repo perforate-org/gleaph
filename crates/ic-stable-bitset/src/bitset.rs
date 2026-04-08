@@ -155,11 +155,6 @@ fn data_offset(journal_cap: u64) -> u64 {
     HEADER_SIZE + journal_cap.saturating_mul(JOURNAL_RECORD_SIZE)
 }
 
-/// Converts a bit index into `(word_index, bit_index)`.
-fn bit_offset(index: u64) -> (usize, u64) {
-    ((index / 64) as usize, index % 64)
-}
-
 /// Returns a mask for the selected bit position.
 fn word_mask(bit: u64) -> u64 {
     1u64 << bit
@@ -363,8 +358,9 @@ impl<M: Memory> BitSet<M> {
         if index >= st.len_bits {
             return false;
         }
-        let (word, bit) = bit_offset(index);
-        contains_word(&st.words, word, word_mask(bit))
+        let word = (index >> 6) as usize;
+        let bit_mask = 1u64 << (index & 63);
+        unsafe { (*st.words.get_unchecked(word) & bit_mask) != 0 }
     }
 
     /// Ensures that the logical length is at least `min_len`.
@@ -516,16 +512,9 @@ impl<M: Memory> BitSet<M> {
     }
 }
 
-#[inline]
-pub(crate) fn contains_word(words: &[u64], word_index: usize, bit_mask: u64) -> bool {
-    words
-        .get(word_index)
-        .map(|word| (*word & bit_mask) != 0)
-        .unwrap_or(false)
-}
-
 fn set_heap_bit(words: &mut [u64], index: u64, value: bool) {
-    let (word, bit) = bit_offset(index);
+    let word = (index >> 6) as usize;
+    let bit = index & 63;
     if let Some(slot) = words.get_mut(word) {
         let mask = word_mask(bit);
         if value {
