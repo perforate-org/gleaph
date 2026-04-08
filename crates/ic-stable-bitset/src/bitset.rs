@@ -15,7 +15,7 @@
 //! heap back into stable memory once the journal is full.
 
 use crate::memory::{
-    GrowFailed, BULK_WORDS, grow_memory_to_at_least_bytes, read_u64, read_u64_words_into,
+    BULK_WORDS, GrowFailed, grow_memory_to_at_least_bytes, read_u64, read_u64_words_into,
     read_u64_words_vec, write, write_u64, write_u64_words_into, write_zero_words,
 };
 use core::cell::{Cell, RefCell};

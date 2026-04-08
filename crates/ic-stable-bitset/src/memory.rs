@@ -17,7 +17,7 @@ pub(crate) fn read_u64_words_into<M: Memory>(
     words: &mut [u64],
     scratch: &mut [u8],
 ) {
-    let chunk_words = (scratch.len() / 8).max(1).min(BULK_WORDS);
+    let chunk_words = (scratch.len() / 8).clamp(1, BULK_WORDS);
     let mut remaining = words;
     let mut base = offset;
     while !remaining.is_empty() {
@@ -71,7 +71,7 @@ pub(crate) fn write_u64_words_into<M: Memory>(
     words: &[u64],
     scratch: &mut [u8],
 ) {
-    let chunk_words = (scratch.len() / 8).max(1).min(BULK_WORDS);
+    let chunk_words = (scratch.len() / 8).clamp(1, BULK_WORDS);
     let mut remaining = words;
     let mut base = offset;
     while !remaining.is_empty() {
@@ -102,7 +102,11 @@ pub(crate) fn write_zero_words<M: Memory>(m: &M, offset: u64, word_count: u64) {
     }
 }
 
-pub(crate) fn safe_write<M: Memory>(memory: &M, offset: u64, bytes: &[u8]) -> Result<(), GrowFailed> {
+pub(crate) fn safe_write<M: Memory>(
+    memory: &M,
+    offset: u64,
+    bytes: &[u8],
+) -> Result<(), GrowFailed> {
     let last_byte = offset
         .checked_add(bytes.len() as u64)
         .expect("address overflow");
@@ -131,7 +135,9 @@ pub(crate) fn write<M: Memory>(memory: &M, offset: u64, bytes: &[u8]) {
     if let Err(e) = safe_write(memory, offset, bytes) {
         panic!(
             "Failed to grow memory from {} pages to {} pages (delta = {} pages).",
-            e.current_size, e.current_size + e.delta, e.delta
+            e.current_size,
+            e.current_size + e.delta,
+            e.delta
         );
     }
 }
