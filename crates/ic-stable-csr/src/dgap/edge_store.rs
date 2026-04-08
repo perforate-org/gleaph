@@ -9,6 +9,7 @@
 //! Insert path follows [`gleaph-old/reference/DGAP/dgap/src/graph.h`](../../../../gleaph-old/reference/DGAP/dgap/src/graph.h)
 //! `do_insertion` / `insert_into_log` / `have_space_onseg`.
 
+use std::collections::BTreeSet;
 use std::iter::{ExactSizeIterator, FusedIterator};
 use std::marker::PhantomData;
 
@@ -1196,20 +1197,39 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
         let stride = h.edge_stride;
         let end = occ_end as usize;
         let rp = remove_pos as usize;
+        let slide_lo = remove_pos;
+        let slide_hi = occ_end;
         {
             let _s = crate::canbench_scope::scope("dgap_remove_slab_slide");
-            for s in rp..end.saturating_sub(1) {
-                let e = self.read_slot(stride, (s + 1) as u64);
-                self.write_slot(stride, s as u64, e)
-                    .map_err(|_| "slide write")?;
+            const MAX_SLIDE_CHUNK_BYTES: usize = 8192;
+            let st = stride as usize;
+            let num_slots = end.saturating_sub(1).saturating_sub(rp);
+            if num_slots > 0 && st > 0 {
+                let max_chunk_slots = (MAX_SLIDE_CHUNK_BYTES / st).max(1);
+                let cap_bytes = max_chunk_slots.saturating_mul(st);
+                let mut buf = vec![0u8; cap_bytes];
+                let mut offset = 0usize;
+                while offset < num_slots {
+                    let chunk_slots = (num_slots - offset).min(max_chunk_slots);
+                    let byte_len = chunk_slots.saturating_mul(st);
+                    let src_slot = (rp + 1 + offset) as u64;
+                    let dst_slot = (rp + offset) as u64;
+                    self.mem.read_edge_slab_span(stride, src_slot, &mut buf[..byte_len]);
+                    self.mem
+                        .write_edge_slab_span(stride, dst_slot, &buf[..byte_len])
+                        .map_err(|_| "slide write")?;
+                    offset += chunk_slots;
+                }
             }
         }
+        let mut base_touched = vec![false; n];
         {
             let _s = crate::canbench_scope::scope("dgap_remove_slab_base_decrement");
             for j in 0..n {
                 let vr = col_get(col, j)?;
                 let b = vr.base_slot_start();
                 if b > remove_pos {
+                    base_touched[j] = true;
                     col_set(col, j, vr.with_base_slot_start(b.saturating_sub(1)))?;
                 }
             }
@@ -1220,7 +1240,40 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
         self.mem.set_num_edges(ne.saturating_sub(1));
         {
             let _s = crate::canbench_scope::scope("dgap_remove_slab_sync_pma_full");
-            self.sync_pma_edge_counts(col)?;
+            let ss = h.segment_size.max(1) as usize;
+            let sc = h.segment_count as usize;
+            let mut segs = BTreeSet::new();
+            for j in 0..n {
+                let row = col_get(col, j)?;
+                let b = row.base_slot_start();
+                let nxt = if j + 1 < n {
+                    col_get(col, j + 1)?.base_slot_start()
+                } else {
+                    h.elem_capacity
+                };
+                let mut dirty = j == vid || base_touched[j];
+                if !dirty && b < slide_hi && nxt > slide_lo {
+                    dirty = true;
+                }
+                if dirty {
+                    let seg = j / ss;
+                    if seg < sc {
+                        segs.insert(seg);
+                    }
+                    if j > 0 && j % ss == 0 {
+                        let prev = seg.saturating_sub(1);
+                        if prev < sc {
+                            segs.insert(prev);
+                        }
+                    }
+                }
+            }
+            let idx: Vec<usize> = segs.into_iter().collect();
+            if idx.is_empty() {
+                self.sync_pma_edge_counts(col)?;
+            } else {
+                self.sync_pma_edge_counts_for_segments(col, &idx)?;
+            }
         }
         {
             let _s = crate::canbench_scope::scope("dgap_remove_slab_maintain");

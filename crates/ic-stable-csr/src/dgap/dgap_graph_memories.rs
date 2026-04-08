@@ -62,6 +62,28 @@ impl<M1: Memory, M2: Memory> DgapGraphMemories<M1, M2> {
         self.edges_and_log_segment.read(off, out);
     }
 
+    /// Reads `n` contiguous CSR slab slots starting at `start_slot` in one [`Memory::read`].
+    ///
+    /// **Contract:** `out.len() == n * edge_stride` for some `n` (if `out` is empty, this is a no-op).
+    /// The caller must ensure `start_slot + n <= elem_capacity`. This method only reads bytes.
+    pub fn read_edge_slab_span(
+        &self,
+        edge_stride: u32,
+        start_slot: u64,
+        out: &mut [u8],
+    ) {
+        let st = edge_stride as usize;
+        if st == 0 || out.is_empty() {
+            return;
+        }
+        assert!(
+            out.len().is_multiple_of(st),
+            "read_edge_slab_span: buffer length must be a multiple of edge_stride"
+        );
+        let off = edge_slab_slot_offset(edge_stride, start_slot);
+        self.edges_and_log_segment.read(off, out);
+    }
+
     pub fn write_edge_slab(
         &self,
         edge_stride: u32,

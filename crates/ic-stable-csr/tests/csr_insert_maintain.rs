@@ -558,6 +558,12 @@ fn write_edge_slab_span_round_trips_two_slots() {
         .expect("span write");
     assert_eq!(edges.read_slot(h.edge_stride, 3), TE([10, 0, 0, 0]));
     assert_eq!(edges.read_slot(h.edge_stride, 4), TE([11, 0, 0, 0]));
+
+    let mut read_back = vec![0u8; 8];
+    edges
+        .memories()
+        .read_edge_slab_span(h.edge_stride, 3, &mut read_back);
+    assert_eq!(read_back, packed);
 }
 
 #[test]
@@ -691,4 +697,36 @@ fn insert_edges_interleaved_matches_sequential() {
             .neighborhood_edges(&stores_b.vertices, 1)
             .unwrap()
     );
+}
+
+#[test]
+fn remove_slab_physically_preserves_sec_on_chain() {
+    let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+    let vertices = SlotMap::new(mv).unwrap();
+    let edges = TeEdgeStore::new(dual_edge_memories());
+    edges.format_new(64, 2, 8, 0).expect("format");
+    let template = TV {
+        slot_base: 0,
+        deg: 0,
+        log_head: -1,
+    };
+    for _ in 0..8 {
+        vertices.insert(&template).unwrap();
+    }
+    let stores = DgapStores::new(vertices, edges);
+    stores.refresh_slab_occupied_tail_meta().unwrap();
+    stores.sync_pma_meta().unwrap();
+    for i in 0..7 {
+        stores
+            .insert_edge(i, TE([(i + 1) as u8, 0, 0, 0]))
+            .unwrap();
+    }
+    assert_sec_matches_full_recount(&stores);
+    assert_slab_tail_matches_column(&stores);
+    stores
+        .edges
+        .remove_slab_edge_at_local_index_physically(&stores.vertices, 0, 0)
+        .expect("remove");
+    assert_sec_matches_full_recount(&stores);
+    assert_slab_tail_matches_column(&stores);
 }
