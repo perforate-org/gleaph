@@ -1,12 +1,12 @@
 //! Bidirectional CSR: forward out-adjacency + reverse (transpose) in-adjacency.
 
 use std::fmt;
-use std::marker::PhantomData;
 
 use crate::csr::{DgapStores, DgapStoresError};
 use crate::dgap::{DgapEdgeStore, DgapGraphMemories, NeighborhoodIter};
 use crate::memory_util::GrowFailed;
 use crate::traits::{CsrEdge, CsrEdgeTombstone, CsrEdgeUndirected, CsrVertex, CsrVertexTombstone};
+use ic_stable_bitset::BitSet;
 use ic_stable_slot_map::SlotMap;
 use ic_stable_structures::Memory;
 
@@ -134,12 +134,12 @@ impl From<ic_stable_slot_map::GrowFailed> for CsrGraphError {
 
 /// Directed CSR plus transpose CSR, kept in sync on mutation.
 ///
-/// Use [`Self::format_new`] to construct from six [`Memory`](ic_stable_structures::Memory) regions
+/// Use [`Self::format_new`] to construct from seven [`Memory`](ic_stable_structures::Memory) regions
 /// without assembling [`DgapStores`] manually.
 ///
 /// **Iterator limit:** [`Self::out_edges`] / [`Self::in_edges`] require `E::EDGE_BYTES <= 64`
 /// (same as [`DgapEdgeStore::try_neighborhood_iter`](crate::dgap::DgapEdgeStore::try_neighborhood_iter)).
-pub struct CsrGraph<V, E, Mvs, F1, F2, R1, R2>
+pub struct CsrGraph<V, E, Mvs, F1, F2, R1, R2, Dv>
 where
     V: CsrVertex,
     E: CsrEdge,
@@ -148,12 +148,14 @@ where
     F2: Memory,
     R1: Memory,
     R2: Memory,
+    Dv: Memory,
 {
     forward: DgapStores<V, E, Mvs, F1, F2>,
     reverse: DgapStores<V, E, Mvs, R1, R2>,
+    deleted_vertices: BitSet<Dv>,
 }
 
-impl<V, E, Mvs, F1, F2, R1, R2> CsrGraph<V, E, Mvs, F1, F2, R1, R2>
+impl<V, E, Mvs, F1, F2, R1, R2, Dv> CsrGraph<V, E, Mvs, F1, F2, R1, R2, Dv>
 where
     V: CsrVertex,
     E: CsrEdge,
@@ -162,6 +164,7 @@ where
     F2: Memory,
     R1: Memory,
     R2: Memory,
+    Dv: Memory,
 {
     pub fn vertex_count(&self) -> u64 {
         self.forward.vertices.len()
@@ -208,6 +211,14 @@ where
             .refresh_slab_occupied_tail_meta()
             .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?;
         Ok(())
+    }
+
+    pub(crate) fn deleted_vertices(&self) -> &BitSet<Dv> {
+        &self.deleted_vertices
+    }
+
+    pub(crate) fn vertex_deleted(&self, vid: usize) -> bool {
+        self.deleted_vertices.contains(vid as u64)
     }
 
     pub fn insert_vertex(&self, row_template: V) -> Result<u64, CsrGraphError> {
@@ -347,13 +358,14 @@ where
     }
 }
 
-impl<V, E, M> CsrGraph<V, E, M, M, M, M, M>
+impl<V, E, M> CsrGraph<V, E, M, M, M, M, M, M>
 where
     V: CsrVertex,
     E: CsrEdge,
     M: Memory,
 {
-    /// Format empty vertex columns and both edge regions from **six** memories (see crate root diagram).
+    /// Format empty vertex columns, the deleted-vertex bitset, and both edge regions from **seven**
+    /// memories (see crate root diagram).
     ///
     /// Order: forward `M_v`, reverse `M_v`, then forward `segment_edge_counts`, `edges_and_log`,
     /// then the same pair for reverse. All edge regions receive the same
@@ -366,6 +378,7 @@ where
         forward_edges_and_log: M,
         reverse_segment_edge_counts: M,
         reverse_edges_and_log: M,
+        mem_deleted_vertices: M,
         elem_capacity: u64,
         segment_count: u32,
         segment_size: u32,
@@ -388,33 +401,40 @@ where
 
         let forward = DgapStores::new(vertices_forward, forward_edges);
         let reverse = DgapStores::new(vertices_reverse, reverse_edges);
+        let deleted_vertices = BitSet::new(mem_deleted_vertices).map_err(|e| {
+            CsrGraphError::Format(GrowFailed {
+                current_size_pages: e.current_size_pages(),
+                delta_pages: e.delta_pages(),
+            })
+        })?;
 
-        Ok(Self { forward, reverse })
+        Ok(Self {
+            forward,
+            reverse,
+            deleted_vertices,
+        })
     }
 }
 
-/// Neighborhood iterator hiding tombstone edges and edges incident to tombstoned vertices.
-pub enum LogicalNeighborhoodIter<'a, E, V, Mvs, M1, M2>
+/// Neighborhood iterator hiding tombstone edges and edges incident to deleted vertices.
+pub enum LogicalNeighborhoodIter<'a, E, Dv, M1, M2>
 where
     E: CsrEdge + CsrEdgeTombstone,
-    V: CsrVertex + CsrVertexTombstone,
-    Mvs: Memory,
+    Dv: Memory,
     M1: Memory,
     M2: Memory,
 {
     Active {
         inner: NeighborhoodIter<'a, E, M1, M2>,
-        verts: &'a SlotMap<V, Mvs>,
-        _p: PhantomData<(V, E)>,
+        deleted_vertices: &'a BitSet<Dv>,
     },
     Empty,
 }
 
-impl<'a, E, V, Mvs, M1, M2> Iterator for LogicalNeighborhoodIter<'a, E, V, Mvs, M1, M2>
+impl<'a, E, Dv, M1, M2> Iterator for LogicalNeighborhoodIter<'a, E, Dv, M1, M2>
 where
     E: CsrEdge + CsrEdgeTombstone,
-    V: CsrVertex + CsrVertexTombstone,
-    Mvs: Memory,
+    Dv: Memory,
     M1: Memory,
     M2: Memory,
 {
@@ -423,7 +443,10 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         match self {
             LogicalNeighborhoodIter::Empty => None,
-            LogicalNeighborhoodIter::Active { inner, verts, .. } => loop {
+            LogicalNeighborhoodIter::Active {
+                inner,
+                deleted_vertices,
+            } => loop {
                 let x = inner.next()?;
                 match x {
                     Err(e) => return Some(Err(e)),
@@ -431,12 +454,7 @@ where
                         if e.is_tombstone() {
                             continue;
                         }
-                        let nb = e.neighbor_vid();
-                        let dead = verts
-                            .get_dense(nb as u32)
-                            .map(|v| v.is_tombstone())
-                            .unwrap_or(true);
-                        if dead {
+                        if deleted_vertices.contains(e.neighbor_vid() as u64) {
                             continue;
                         }
                         return Some(Ok(e));
@@ -447,7 +465,7 @@ where
     }
 }
 
-impl<V, E, Mvs, F1, F2, R1, R2> CsrGraph<V, E, Mvs, F1, F2, R1, R2>
+impl<V, E, Mvs, F1, F2, R1, R2, Dv> CsrGraph<V, E, Mvs, F1, F2, R1, R2, Dv>
 where
     V: CsrVertex + CsrVertexTombstone,
     E: CsrEdge + CsrEdgeTombstone,
@@ -456,20 +474,15 @@ where
     F2: Memory,
     R1: Memory,
     R2: Memory,
+    Dv: Memory,
 {
-    /// Out-neighbors omitting edge tombstones and neighbors whose vertex row is tombstoned.
+    /// Out-neighbors omitting edge tombstones and neighbors whose vertex id is marked deleted.
     pub fn out_edges_logical<'a>(
         &'a self,
         vid: usize,
-    ) -> Result<LogicalNeighborhoodIter<'a, E, V, Mvs, F1, F2>, CsrGraphError> {
+    ) -> Result<LogicalNeighborhoodIter<'a, E, Dv, F1, F2>, CsrGraphError> {
         self.ensure_vertex(vid)?;
-        if self
-            .forward
-            .vertices
-            .get_dense(vid as u32)
-            .map(|v| v.is_tombstone())
-            == Some(true)
-        {
+        if self.vertex_deleted(vid) {
             return Ok(LogicalNeighborhoodIter::Empty);
         }
         let inner = self
@@ -479,8 +492,7 @@ where
             .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?;
         Ok(LogicalNeighborhoodIter::Active {
             inner,
-            verts: &self.forward.vertices,
-            _p: PhantomData,
+            deleted_vertices: self.deleted_vertices(),
         })
     }
 
@@ -488,15 +500,9 @@ where
     pub fn in_edges_logical<'a>(
         &'a self,
         vid: usize,
-    ) -> Result<LogicalNeighborhoodIter<'a, E, V, Mvs, R1, R2>, CsrGraphError> {
+    ) -> Result<LogicalNeighborhoodIter<'a, E, Dv, R1, R2>, CsrGraphError> {
         self.ensure_vertex(vid)?;
-        if self
-            .reverse
-            .vertices
-            .get_dense(vid as u32)
-            .map(|v| v.is_tombstone())
-            == Some(true)
-        {
+        if self.vertex_deleted(vid) {
             return Ok(LogicalNeighborhoodIter::Empty);
         }
         let inner = self
@@ -506,8 +512,7 @@ where
             .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?;
         Ok(LogicalNeighborhoodIter::Active {
             inner,
-            verts: &self.forward.vertices,
-            _p: PhantomData,
+            deleted_vertices: self.deleted_vertices(),
         })
     }
 }

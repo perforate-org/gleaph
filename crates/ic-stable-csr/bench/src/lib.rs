@@ -150,6 +150,7 @@ type BenchGcGraph = CsrGraphWithGcQueue<
     BenchMemory,
     BenchMemory,
     BenchMemory,
+    BenchMemory,
 >;
 
 /// Chain `0→1→…→(n-1)` on the slab so vertex `0` has one out-edge at local index `0` and
@@ -214,11 +215,23 @@ fn build_star_gc_graph(n: usize) -> BenchGcGraph {
     let m_f_edges = mgr.get(MemoryId::new(3));
     let m_r_sec = mgr.get(MemoryId::new(4));
     let m_r_edges = mgr.get(MemoryId::new(5));
-    let m_q = mgr.get(MemoryId::new(6));
+    let m_deleted = mgr.get(MemoryId::new(6));
+    let m_q = mgr.get(MemoryId::new(7));
 
     let graph = BenchGcGraph::format_new_with_gc_queue(
-        m_v_f, m_v_r, m_f_sec, m_f_edges, m_r_sec, m_r_edges, m_q, ELEM_CAP, SEGMENT_COUNT,
-        SEGMENT_SIZE, 0, None,
+        m_v_f,
+        m_v_r,
+        m_f_sec,
+        m_f_edges,
+        m_r_sec,
+        m_r_edges,
+        m_deleted,
+        m_q,
+        ELEM_CAP,
+        SEGMENT_COUNT,
+        SEGMENT_SIZE,
+        0,
+        None,
     )
     .expect("format_new_with_gc_queue");
 

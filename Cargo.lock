@@ -2009,6 +2009,7 @@ name = "ic-stable-csr"
 version = "0.1.0"
 dependencies = [
  "canbench-rs",
+ "ic-stable-bitset",
  "ic-stable-slot-map",
  "ic-stable-structures",
  "ic-stable-vec-deque",

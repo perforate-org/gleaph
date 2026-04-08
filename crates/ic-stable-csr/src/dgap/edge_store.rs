@@ -1566,19 +1566,8 @@ fn zero_edge_record<E: CsrEdge>() -> E {
     }
 }
 
-fn vertex_is_tombstoned<V, Mvs>(col: &SlotMap<V, Mvs>, vid: usize) -> bool
-where
-    V: CsrVertex + CsrVertexTombstone,
-    Mvs: Memory,
-{
-    match u32::try_from(vid) {
-        Ok(v) => col.get_dense(v).map(|row| row.is_tombstone()).unwrap_or(true),
-        Err(_) => true,
-    }
-}
-
 /// Slide live edges within each vertex span inside `[left, right)`, drop physical tombstones and
-/// edges whose endpoint vertex is tombstoned, zero freed tail slots, and update row degrees to match
+/// edges whose endpoint vertex is deleted, zero freed tail slots, and update row degrees to match
 /// the kept edges.
 ///
 /// Returns `(removed_slots, kept_actual_total)`, where:
@@ -1595,6 +1584,7 @@ fn slide_remove_garbage_in_window_edges<V, Mvs, E>(
     right: usize,
     nv: usize,
     elem_cap: u64,
+    is_deleted: &impl Fn(usize) -> bool,
 ) -> Result<(u64, i64), &'static str>
 where
     V: CsrVertex + CsrVertexTombstone,
@@ -1617,13 +1607,11 @@ where
         }
         let mut write = b;
         let mut kept = 0u32;
-        let owner_dead = row.is_tombstone();
+        let owner_dead = is_deleted(v);
         for s in b..end {
             let idx = (s - range_from) as usize;
             let e = edges_local[idx];
-            let remove = e.is_tombstone()
-                || owner_dead
-                || vertex_is_tombstoned(col, e.neighbor_vid());
+            let remove = e.is_tombstone() || owner_dead || is_deleted(e.neighbor_vid());
             if remove {
                 removed = removed.saturating_add(1);
             } else {
@@ -1655,6 +1643,7 @@ impl<E: CsrEdge + CsrEdgeTombstone, M1: Memory, M2: Memory> DgapEdgeStore<E, M1,
         left: usize,
         right: usize,
         pma_idx: usize,
+        is_deleted: impl Fn(usize) -> bool,
     ) -> Result<u64, &'static str>
     where
         V: CsrVertex + CsrVertexTombstone,
@@ -1693,6 +1682,7 @@ impl<E: CsrEdge + CsrEdgeTombstone, M1: Memory, M2: Memory> DgapEdgeStore<E, M1,
             right,
             n,
             h.elem_capacity,
+            &is_deleted,
         )?;
         let cap = (to - from) as i64;
         let c = self

@@ -34,8 +34,8 @@ fn leaf_segment_for_vid(vid: usize, segment_size: u32) -> usize {
     dgap_leaf_segment_id(vid, segment_size) as usize
 }
 
-fn enqueue_maintain_for_leafs<V, E, Mvs, F1, F2, R1, R2, QM, M1, M2>(
-    graph: &CsrGraphWithGcQueue<V, E, Mvs, F1, F2, R1, R2, QM>,
+fn enqueue_maintain_for_leafs<V, E, Mvs, F1, F2, R1, R2, Dv, QM, M1, M2>(
+    graph: &CsrGraphWithGcQueue<V, E, Mvs, F1, F2, R1, R2, Dv, QM>,
     stores: &DgapStores<V, E, Mvs, M1, M2>,
     leafs: &BTreeSet<usize>,
     queue_len: u64,
@@ -49,6 +49,7 @@ where
     F2: Memory,
     R1: Memory,
     R2: Memory,
+    Dv: Memory,
     QM: Memory,
     M1: Memory,
     M2: Memory,
@@ -62,7 +63,7 @@ where
 /// Bidirectional CSR with a stable work queue for lazy **per-leaf** physical compaction (tombstones + PMA).
 ///
 /// Single-threaded canister assumption: inline maintenance and the queue are not interleaved concurrently.
-pub struct CsrGraphWithGcQueue<V, E, Mvs, F1, F2, R1, R2, QM>
+pub struct CsrGraphWithGcQueue<V, E, Mvs, F1, F2, R1, R2, Dv, QM>
 where
     V: CsrVertex,
     E: CsrEdge,
@@ -71,14 +72,15 @@ where
     F2: Memory,
     R1: Memory,
     R2: Memory,
+    Dv: Memory,
     QM: Memory,
 {
-    graph: CsrGraph<V, E, Mvs, F1, F2, R1, R2>,
+    graph: CsrGraph<V, E, Mvs, F1, F2, R1, R2, Dv>,
     work_queue: StableVecDeque<GcWorkItem, QM>,
     maintain_thresholds: SegmentMaintainThresholds,
 }
 
-impl<V, E, Mvs, F1, F2, R1, R2, QM> CsrGraphWithGcQueue<V, E, Mvs, F1, F2, R1, R2, QM>
+impl<V, E, Mvs, F1, F2, R1, R2, Dv, QM> CsrGraphWithGcQueue<V, E, Mvs, F1, F2, R1, R2, Dv, QM>
 where
     V: CsrVertex + CsrVertexTombstone,
     E: CsrEdge + CsrEdgeTombstone,
@@ -87,9 +89,10 @@ where
     F2: Memory,
     R1: Memory,
     R2: Memory,
+    Dv: Memory,
     QM: Memory,
 {
-    pub fn graph(&self) -> &CsrGraph<V, E, Mvs, F1, F2, R1, R2> {
+    pub fn graph(&self) -> &CsrGraph<V, E, Mvs, F1, F2, R1, R2, Dv> {
         &self.graph
     }
 
@@ -108,12 +111,7 @@ where
     }
 
     fn vertex_tombstone_fwd(&self, vid: usize) -> bool {
-        self.graph
-            .forward_dgap()
-            .vertices
-            .get_dense(vid as u32)
-            .map(|v| v.is_tombstone())
-            .unwrap_or(true)
+        self.graph.vertex_deleted(vid)
     }
 
     fn ensure_endpoint_live(&self, vid: usize) -> Result<(), CsrGraphError> {
@@ -382,7 +380,13 @@ where
             }
             stores
                 .edges
-                .maintain_segment_leaf_plan_and_commit(&stores.vertices, left, right, pma_idx)
+                .maintain_segment_leaf_plan_and_commit(
+                    &stores.vertices,
+                    left,
+                    right,
+                    pma_idx,
+                    |vid| self.graph.vertex_deleted(vid),
+                )
                 .map_err(|m| map_g(m))?;
             return Ok(());
         }
@@ -579,6 +583,10 @@ where
             }
             reverse_touched.insert(leaf_segment_for_vid(vid, h.segment_size));
         }
+        self.graph
+            .deleted_vertices()
+            .insert(vid as u64)
+            .map_err(|_| CsrGraphError::LogicalMutation("deleted vertex bitset insert failed"))?;
         let _s = crate::canbench_scope::scope("dgap_delete_vertex_refresh_tail");
         let fv = fwd.vertices.get_dense(vid as u32).unwrap();
         let rv = rev.vertices.get_dense(vid as u32).unwrap();
@@ -607,14 +615,14 @@ where
     pub fn out_edges_logical<'a>(
         &'a self,
         vid: usize,
-    ) -> Result<LogicalNeighborhoodIter<'a, E, V, Mvs, F1, F2>, CsrGraphError> {
+    ) -> Result<LogicalNeighborhoodIter<'a, E, Dv, F1, F2>, CsrGraphError> {
         self.graph.out_edges_logical(vid)
     }
 
     pub fn in_edges_logical<'a>(
         &'a self,
         vid: usize,
-    ) -> Result<LogicalNeighborhoodIter<'a, E, V, Mvs, R1, R2>, CsrGraphError> {
+    ) -> Result<LogicalNeighborhoodIter<'a, E, Dv, R1, R2>, CsrGraphError> {
         self.graph.in_edges_logical(vid)
     }
 
@@ -859,10 +867,12 @@ mod tests {
         VectorMemory,
         VectorMemory,
         VectorMemory,
+        VectorMemory,
     >;
 
     fn new_graph() -> TestGcGraph {
         CsrGraphWithGcQueue::format_new_with_gc_queue(
+            vm(),
             vm(),
             vm(),
             vm(),
@@ -1025,14 +1035,15 @@ mod tests {
     }
 }
 
-impl<V, E, M, QM> CsrGraphWithGcQueue<V, E, M, M, M, M, M, QM>
+impl<V, E, M, QM> CsrGraphWithGcQueue<V, E, M, M, M, M, M, M, QM>
 where
     V: CsrVertex + CsrVertexTombstone,
     E: CsrEdge + CsrEdgeTombstone,
     M: Memory,
     QM: Memory,
 {
-    /// Like [`CsrGraph::format_new`] plus a **seventh** `Memory` for [`StableVecDeque`](crate::StableVecDeque)`<`[`GcWorkItem`](crate::csr::gc_work_item::GcWorkItem)`>`.
+    /// Like [`CsrGraph::format_new`] plus a deleted-vertex bitset and a queue `Memory` for
+    /// [`StableVecDeque`](crate::StableVecDeque)`<`[`GcWorkItem`](crate::csr::gc_work_item::GcWorkItem)`>`.
     #[allow(clippy::too_many_arguments)]
     pub fn format_new_with_gc_queue(
         mem_vertices_forward: M,
@@ -1041,6 +1052,7 @@ where
         forward_edges_and_log: M,
         reverse_segment_edge_counts: M,
         reverse_edges_and_log: M,
+        mem_deleted_vertices: M,
         mem_gc_work_queue: QM,
         elem_capacity: u64,
         segment_count: u32,
@@ -1055,6 +1067,7 @@ where
             forward_edges_and_log,
             reverse_segment_edge_counts,
             reverse_edges_and_log,
+            mem_deleted_vertices,
             elem_capacity,
             segment_count,
             segment_size,

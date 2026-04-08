@@ -21,6 +21,7 @@ type GcTestGraph = CsrGraphWithGcQueue<
     VectorMemory,
     VectorMemory,
     VectorMemory,
+    VectorMemory,
 >;
 
 fn assert_fwd_rev_bases_non_decreasing(g: &GcTestGraph) {
@@ -67,17 +68,18 @@ fn assert_sec_matches_full_recount_te(
 #[test]
 fn delete_edge_tombstone_gc_and_degrees() {
     let g = CsrGraphWithGcQueue::format_new_with_gc_queue(
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        64,
-        1,
-        8,
-        0,
+            vm(),
+            vm(),
+            vm(),
+            vm(),
+            vm(),
+            vm(),
+            vm(),
+            vm(),
+            64,
+            1,
+            8,
+            0,
         Some(SegmentMaintainThresholds {
             soft_tombstone_score_threshold: 0.05,
             strict_tombstone_score_threshold: 0.20,
@@ -157,17 +159,18 @@ fn delete_edge_tombstone_gc_and_degrees() {
 #[test]
 fn delete_vertex_hides_edges_until_gc() {
     let g = CsrGraphWithGcQueue::format_new_with_gc_queue(
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        64,
-        1,
-        8,
-        0,
+            vm(),
+            vm(),
+            vm(),
+            vm(),
+            vm(),
+            vm(),
+            vm(),
+            vm(),
+            64,
+            1,
+            8,
+            0,
         None,
     )
     .expect("format");
@@ -218,17 +221,18 @@ fn delete_vertex_hides_edges_until_gc() {
 #[test]
 fn insert_rejects_tombstone_endpoint() {
     let g = CsrGraphWithGcQueue::format_new_with_gc_queue(
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        64,
-        1,
-        8,
-        0,
+            vm(),
+            vm(),
+            vm(),
+            vm(),
+            vm(),
+            vm(),
+            vm(),
+            vm(),
+            64,
+            1,
+            8,
+            0,
         None,
     )
     .expect("format");
@@ -250,17 +254,18 @@ fn insert_rejects_tombstone_endpoint() {
 #[test]
 fn insert_rejects_duplicate_neighbor_slot() {
     let g = CsrGraphWithGcQueue::format_new_with_gc_queue(
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        64,
-        1,
-        8,
-        0,
+            vm(),
+            vm(),
+            vm(),
+            vm(),
+            vm(),
+            vm(),
+            vm(),
+            vm(),
+            64,
+            1,
+            8,
+            0,
         None,
     )
     .expect("format");
@@ -286,17 +291,18 @@ fn delete_edge_inline_when_queue_pressure_threshold_zero() {
         ..Default::default()
     };
     let g = CsrGraphWithGcQueue::format_new_with_gc_queue(
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        vm(),
-        64,
-        1,
-        8,
-        0,
+            vm(),
+            vm(),
+            vm(),
+            vm(),
+            vm(),
+            vm(),
+            vm(),
+            vm(),
+            64,
+            1,
+            8,
+            0,
         Some(thr),
     )
     .expect("format");
