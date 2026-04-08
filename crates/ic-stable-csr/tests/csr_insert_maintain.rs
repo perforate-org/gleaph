@@ -160,6 +160,30 @@ fn assert_slab_tail_matches_column(
     );
 }
 
+/// Dense order `base_slot_start` must be non-decreasing for the remove-slab suffix split
+/// (`first_dense_vertex_base_gt` / binary search on `L`).
+fn assert_dense_vertex_bases_non_decreasing(
+    stores: &DgapStores<TV, TE, VectorMemory, VectorMemory, VectorMemory>,
+) {
+    let n = stores.vertices.len() as usize;
+    if n < 2 {
+        return;
+    }
+    let mut prev = stores.vertices.get_dense(0).unwrap().base_slot_start();
+    for j in 1..n {
+        let b = stores.vertices.get_dense(j as u32).unwrap().base_slot_start();
+        assert!(
+            prev <= b,
+            "dense vertex bases must be non-decreasing: base[{}]={} > base[{}]={}",
+            j - 1,
+            prev,
+            j,
+            b
+        );
+        prev = b;
+    }
+}
+
 #[test]
 fn sec_delta_matches_full_recount_after_light_inserts() {
     let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
@@ -729,4 +753,80 @@ fn remove_slab_physically_preserves_sec_on_chain() {
         .expect("remove");
     assert_sec_matches_full_recount(&stores);
     assert_slab_tail_matches_column(&stores);
+}
+
+#[test]
+fn dense_vertex_bases_non_decreasing_across_mutation_paths() {
+    let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+    let vertices = SlotMap::new(mv).unwrap();
+    let edges = TeEdgeStore::new(dual_edge_memories());
+    edges.format_new(64, 2, 8, 0).expect("format");
+    let template = TV {
+        slot_base: 0,
+        deg: 0,
+        log_head: -1,
+    };
+    for _ in 0..8 {
+        vertices.insert(&template).unwrap();
+    }
+    let stores = DgapStores::new(vertices, edges);
+    stores.refresh_slab_occupied_tail_meta().unwrap();
+    stores.sync_pma_meta().unwrap();
+    assert_dense_vertex_bases_non_decreasing(&stores);
+
+    for i in 0..7 {
+        stores
+            .insert_edge(i, TE([(i + 1) as u8, 0, 0, 0]))
+            .unwrap();
+        assert_dense_vertex_bases_non_decreasing(&stores);
+    }
+
+    stores
+        .insert_edges([(3usize, TE([5, 0, 0, 0])), (4, TE([6, 0, 0, 0]))])
+        .unwrap();
+    assert_dense_vertex_bases_non_decreasing(&stores);
+
+    stores
+        .edges
+        .merge_logs_into_slab_for_window(&stores.vertices, 0, 8)
+        .expect("merge (no-op if empty)");
+    assert_dense_vertex_bases_non_decreasing(&stores);
+
+    stores
+        .edges
+        .remove_slab_edge_at_local_index_physically(&stores.vertices, 0, 0)
+        .expect("remove head slab edge");
+    assert_dense_vertex_bases_non_decreasing(&stores);
+
+    stores
+        .edges
+        .remove_slab_edge_at_local_index_physically(&stores.vertices, 5, 0)
+        .expect("remove mid slab edge");
+    assert_dense_vertex_bases_non_decreasing(&stores);
+}
+
+#[test]
+fn dense_vertex_bases_non_decreasing_after_resize_double_path() {
+    let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+    let vertices = SlotMap::new(mv).unwrap();
+    let edges = TeEdgeStore::new(dual_edge_memories());
+    edges.format_new(2, 1, 8, 0).expect("format");
+    vertices
+        .insert(&TV {
+            slot_base: 0,
+            deg: 0,
+            log_head: -1,
+        })
+        .unwrap();
+    let stores = DgapStores::new(vertices, edges);
+    stores.refresh_slab_occupied_tail_meta().unwrap();
+    stores.sync_pma_meta().unwrap();
+    assert_dense_vertex_bases_non_decreasing(&stores);
+
+    stores.insert_edge(0, TE([1, 0, 0, 0])).unwrap();
+    stores.insert_edge(0, TE([2, 0, 0, 0])).unwrap();
+    assert_dense_vertex_bases_non_decreasing(&stores);
+
+    stores.insert_edge(0, TE([3, 0, 0, 0])).unwrap();
+    assert_dense_vertex_bases_non_decreasing(&stores);
 }

@@ -153,34 +153,45 @@ fn build_chain_stores(n: usize) -> BenchStores {
     stores
 }
 
-mod canbench_benches {
-    use canbench_rs::bench;
+use canbench_rs::bench;
 
-    use super::*;
+#[bench(raw)]
+fn bench_remove_slab_physically_chain_32() -> canbench_rs::BenchResult {
+    crate::wipe::wipe_stable_memory();
+    let stores = build_chain_stores(32);
+    canbench_rs::bench_fn(|| {
+        stores
+            .edges
+            .remove_slab_edge_at_local_index_physically(&stores.vertices, 0, 0)
+            .expect("remove_slab");
+    })
+}
 
-    #[bench(raw)]
-    fn bench_remove_slab_physically_chain_32() -> canbench_rs::BenchResult {
-        crate::wipe::wipe_stable_memory();
-        let stores = build_chain_stores(32);
-        canbench_rs::bench_fn(|| {
-            stores
-                .edges
-                .remove_slab_edge_at_local_index_physically(&stores.vertices, 0, 0)
-                .expect("remove_slab");
-        })
-    }
+#[bench(raw)]
+fn bench_remove_slab_physically_chain_1024() -> canbench_rs::BenchResult {
+    crate::wipe::wipe_stable_memory();
+    let stores = build_chain_stores(1024);
+    canbench_rs::bench_fn(|| {
+        stores
+            .edges
+            .remove_slab_edge_at_local_index_physically(&stores.vertices, 0, 0)
+            .expect("remove_slab");
+    })
+}
 
-    #[bench(raw)]
-    fn bench_remove_slab_physically_chain_1024() -> canbench_rs::BenchResult {
-        crate::wipe::wipe_stable_memory();
-        let stores = build_chain_stores(1024);
-        canbench_rs::bench_fn(|| {
-            stores
-                .edges
-                .remove_slab_edge_at_local_index_physically(&stores.vertices, 0, 0)
-                .expect("remove_slab");
-        })
-    }
+/// Remove the last chain edge on vertex `n-2` (the tail of the slab): large `remove_pos`, so path A skips almost all base `--`.
+#[bench(raw)]
+fn bench_remove_slab_physically_tail_vertex_chain_1024() -> canbench_rs::BenchResult {
+    crate::wipe::wipe_stable_memory();
+    let n = 1024usize;
+    let stores = build_chain_stores(n);
+    let vid = n - 2;
+    canbench_rs::bench_fn(|| {
+        stores
+            .edges
+            .remove_slab_edge_at_local_index_physically(&stores.vertices, vid, 0)
+            .expect("remove_slab tail");
+    })
 }
 
 #[init]

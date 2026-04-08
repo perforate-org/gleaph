@@ -3,7 +3,8 @@
 //! Persistent layout (per-memory offsets, `ic-stable_structures`-style diagrams): [`crate::layout::dgap`].
 //!
 //! **Phase C profiling:** enable this crate’s `canbench-rs` feature so [`DgapEdgeStore::remove_slab_edge_at_local_index_physically`]
-//! records `canbench_rs::bench_scope` splits (`dgap_remove_slab_*`). PocketIC + `canbench` live in
+//! records `canbench_rs::bench_scope` splits (`dgap_remove_slab_*`). The base pass uses a binary-search split when dense
+//! `base_slot_start` is non-decreasing (see tests in `csr_insert_maintain.rs`). PocketIC + `canbench` live in
 //! `crates/ic-stable-csr-canbench` (`README.md`, `canbench_results.yml`).
 //!
 //! Insert path follows [`gleaph-old/reference/DGAP/dgap/src/graph.h`](../../../../gleaph-old/reference/DGAP/dgap/src/graph.h)
@@ -52,6 +53,35 @@ fn push_remove_slab_pma_dirty_segments(segs: &mut BTreeSet<usize>, idx: usize, s
             segs.insert(prev);
         }
     }
+}
+
+/// Smallest dense vertex index `j` with `base_slot_start(j) > remove_pos`, or `n` if none.
+///
+/// This matches a linear scan only when `base_slot_start` is **non-decreasing** along dense
+/// order `0..n-1` (integration tests in `csr_insert_maintain.rs`). The remove-slab path uses it
+/// to skip `col_set` base decrements on the prefix `[0, L)` where every base is `<= remove_pos`.
+#[inline]
+fn first_dense_vertex_base_gt<V, M>(
+    col: &SlotMap<V, M>,
+    n: usize,
+    remove_pos: u64,
+) -> Result<usize, &'static str>
+where
+    V: CsrVertex,
+    M: Memory,
+{
+    let mut lo = 0usize;
+    let mut hi = n;
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        let b = col_get(col, mid)?.base_slot_start();
+        if b > remove_pos {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    Ok(lo)
 }
 
 use crate::dgap::dgap_graph_memories::DgapGraphMemories;
@@ -1245,9 +1275,29 @@ impl<E: CsrEdge, M1: Memory, M2: Memory> DgapEdgeStore<E, M1, M2> {
         let mut segs = BTreeSet::new();
         {
             let _s = crate::canbench_scope::scope("dgap_remove_slab_base_decrement");
+            // `L`: first row whose slab base is strictly past `remove_pos` (suffix needs `--`).
+            // Prefix `[0, L)` only contributes PMA dirty segments (no base writes). The pair
+            // `(L-1, L)` is the first where the lagged neighbor uses `row L` *after* decrement.
+            let l_suffix = first_dense_vertex_base_gt(col, n, remove_pos)?;
             let mut prev_final: Option<V> = None;
             let mut prev_had_base_dec = false;
-            for j in 0..n {
+
+            for j in 0..l_suffix {
+                let cur = col_get(col, j)?;
+                if j > 0 {
+                    let idx = j - 1;
+                    let prev = prev_final.ok_or("remove_slab: column scan invariant")?;
+                    let b_prev = prev.base_slot_start();
+                    let nxt_prev = cur.base_slot_start();
+                    let dirty = idx == vid || (b_prev < slide_hi && nxt_prev > slide_lo);
+                    if dirty {
+                        push_remove_slab_pma_dirty_segments(&mut segs, idx, ss, sc);
+                    }
+                }
+                prev_final = Some(cur);
+            }
+
+            for j in l_suffix..n {
                 let vr = col_get(col, j)?;
                 let b = vr.base_slot_start();
                 let had_dec = b > remove_pos;
