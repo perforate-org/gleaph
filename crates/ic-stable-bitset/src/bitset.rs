@@ -16,8 +16,8 @@
 //! heap back into stable memory once the journal is full.
 
 use crate::memory::{
-    GrowFailed, grow_memory_to_at_least_bytes, read_u64, read_u64_words_into,
-    read_u64_words_vec, write, write_u64, write_u64_words_direct, write_zero_words,
+    GrowFailed, grow_memory_to_at_least_bytes, read_u64, read_u64_words_into, read_u64_words_vec,
+    write, write_u64, write_u64_words_direct, write_zero_words,
 };
 use core::cell::{Cell, RefCell};
 use core::fmt;
@@ -587,6 +587,8 @@ fn remove_heap_bit_scalar(words: &mut [u64], len_bits: u64, index: u64) -> u64 {
 }
 
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+// Empirically tuned for the current remove benchmarks: keep very short suffixes scalar,
+// and route the larger head/mid cases through SIMD.
 const SIMD_REMOVE_MIN_WORDS: usize = 8;
 
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
