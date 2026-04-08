@@ -19,6 +19,7 @@ const REOPEN_COUNT: u64 = 4_096;
 const LARGE_SNAPSHOT_BITS: u64 = 65_536;
 const CONTAINS_BITMAP_BITS: u64 = 65_536;
 const CONTAINS_QUERY_COUNT: u64 = 4_096;
+const CONTAINS_QUERY_COUNT_LARGE: u64 = 32_768;
 const CONTAINS_SPREAD_MULTIPLIER: u64 = 0x9E37;
 const CONTAINS_SPREAD_INCREMENT: u64 = 0xB529;
 const LARGE_TRUNCATE_FROM: u64 = 65_536;
@@ -160,6 +161,22 @@ fn bench_bitset_contains_65536_4096() -> canbench_rs::BenchResult {
     let queries = make_spread_queries(CONTAINS_QUERY_COUNT, CONTAINS_BITMAP_BITS);
     canbench_rs::bench_fn(|| {
         let _p = canbench_rs::bench_scope("bitset_contains_large");
+        let mut acc = false;
+        for index in black_box(&queries) {
+            acc ^= bitset.contains(*index);
+        }
+        black_box(acc);
+    })
+}
+
+#[bench(raw)]
+fn bench_bitset_contains_65536_32768() -> canbench_rs::BenchResult {
+    wipe::wipe_stable_memory();
+    let bitset = make_bitset();
+    populate(&bitset, CONTAINS_BITMAP_BITS);
+    let queries = make_spread_queries(CONTAINS_QUERY_COUNT_LARGE, CONTAINS_BITMAP_BITS);
+    canbench_rs::bench_fn(|| {
+        let _p = canbench_rs::bench_scope("bitset_contains_large_32768");
         let mut acc = false;
         for index in black_box(&queries) {
             acc ^= bitset.contains(*index);
