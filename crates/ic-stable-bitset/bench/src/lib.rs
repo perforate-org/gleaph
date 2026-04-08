@@ -26,6 +26,8 @@ const CONTAINS_SPREAD_INCREMENT: u64 = 0xB529;
 const LARGE_TRUNCATE_FROM: u64 = 65_536;
 const LARGE_TRUNCATE_TO: u64 = 32_768;
 const JOURNAL_CAP_FILL: u64 = 4_096;
+const REPLAY_BLOCK: u64 = JOURNAL_CAP_FILL / 4;
+const REPLAY_HALF: u64 = JOURNAL_CAP_FILL / 2;
 const REMOVE_SMALL_BITS: u64 = 1_024;
 const REMOVE_SMALL_HEAD: u64 = 0;
 const REMOVE_SMALL_MID: u64 = 512;
@@ -58,6 +60,59 @@ fn bench_remove_case(
         bitset.remove(black_box(remove_index)).expect("remove");
         black_box(bitset.len());
     })
+}
+
+fn bench_reopen_case(
+    scope_name: &'static str,
+    setup: impl FnOnce(&BitSet<DefaultMemoryImpl>),
+) -> canbench_rs::BenchResult {
+    wipe::wipe_stable_memory();
+    let bitset = make_bitset();
+    setup(&bitset);
+    canbench_rs::bench_fn(|| {
+        let _p = canbench_rs::bench_scope(scope_name);
+        let reopened = BitSet::init(bitset.into_memory()).expect("reopen");
+        black_box((reopened.len(), reopened.contains(black_box(0))));
+    })
+}
+
+fn setup_pure_replay_journal(bitset: &BitSet<DefaultMemoryImpl>) {
+    for index in 0..REPLAY_HALF {
+        bitset.insert(index).expect("insert");
+    }
+    for index in 0..REPLAY_HALF {
+        bitset.clear(index).expect("clear");
+    }
+}
+
+fn setup_segmented_replay_journal(bitset: &BitSet<DefaultMemoryImpl>) {
+    for index in 0..REPLAY_BLOCK {
+        bitset.insert(index).expect("insert");
+    }
+    for index in 0..REPLAY_BLOCK {
+        bitset.clear(index).expect("clear");
+    }
+    for index in 0..REPLAY_BLOCK {
+        bitset.insert(index).expect("insert");
+    }
+    for _ in 0..REPLAY_BLOCK {
+        bitset.remove(0).expect("remove");
+    }
+}
+
+fn setup_remove_heavy_replay_journal(bitset: &BitSet<DefaultMemoryImpl>) {
+    for index in 0..REPLAY_HALF {
+        bitset.insert(index).expect("insert");
+    }
+    for _ in 0..REPLAY_HALF {
+        bitset.remove(0).expect("remove");
+    }
+    for index in 0..REPLAY_HALF {
+        bitset.insert(index).expect("insert");
+    }
+    for _ in 0..REPLAY_HALF {
+        bitset.remove(0).expect("remove");
+    }
 }
 
 fn make_spread_queries(count: u64, modulo: u64) -> Vec<u64> {
@@ -135,6 +190,27 @@ fn bench_bitset_reopen_after_journal_4096() -> canbench_rs::BenchResult {
         let reopened = BitSet::init(bitset.into_memory()).expect("reopen");
         black_box(reopened.contains(black_box(REOPEN_COUNT)));
     })
+}
+
+#[bench(raw)]
+fn bench_bitset_reopen_after_pure_journal_4096() -> canbench_rs::BenchResult {
+    bench_reopen_case("bitset_reopen_pure_journal", setup_pure_replay_journal)
+}
+
+#[bench(raw)]
+fn bench_bitset_reopen_after_segmented_journal_4096() -> canbench_rs::BenchResult {
+    bench_reopen_case(
+        "bitset_reopen_segmented_journal",
+        setup_segmented_replay_journal,
+    )
+}
+
+#[bench(raw)]
+fn bench_bitset_reopen_after_remove_heavy_journal_4096() -> canbench_rs::BenchResult {
+    bench_reopen_case(
+        "bitset_reopen_remove_heavy_journal",
+        setup_remove_heavy_replay_journal,
+    )
 }
 
 #[bench(raw)]
