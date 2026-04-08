@@ -1,6 +1,8 @@
 use core::fmt::{Display, Formatter};
 use ic_stable_structures::Memory;
+use core::slice;
 use std::error;
+use std::sync::OnceLock;
 
 pub(crate) const WASM_PAGE_SIZE: u64 = 65536;
 pub(crate) const BULK_WORDS: usize = 4096;
@@ -22,10 +24,20 @@ pub(crate) fn read_u64_words_into<M: Memory>(
     let mut base = offset;
     while !remaining.is_empty() {
         let take = remaining.len().min(chunk_words);
-        let bytes = &mut scratch[..take * 8];
-        m.read(base, bytes);
-        for (slot, chunk) in remaining[..take].iter_mut().zip(bytes.chunks_exact(8)) {
-            *slot = u64::from_le_bytes(chunk.try_into().unwrap());
+        #[cfg(target_endian = "little")]
+        {
+            let bytes = unsafe {
+                slice::from_raw_parts_mut(remaining[..take].as_mut_ptr() as *mut u8, take * 8)
+            };
+            m.read(base, bytes);
+        }
+        #[cfg(not(target_endian = "little"))]
+        {
+            let bytes = &mut scratch[..take * 8];
+            m.read(base, bytes);
+            for (slot, chunk) in remaining[..take].iter_mut().zip(bytes.chunks_exact(8)) {
+                *slot = u64::from_le_bytes(chunk.try_into().unwrap());
+            }
         }
         base += (take as u64) * 8;
         remaining = &mut remaining[take..];
@@ -35,19 +47,28 @@ pub(crate) fn read_u64_words_into<M: Memory>(
 pub(crate) fn read_u64_words_vec<M: Memory>(m: &M, offset: u64, word_count: u64) -> Vec<u64> {
     let count = word_count as usize;
     let mut words: Vec<u64> = Vec::with_capacity(count);
-    let mut scratch = vec![0u8; BULK_WORDS * 8];
     let mut filled = 0usize;
     let mut base = offset;
     let spare = words.spare_capacity_mut();
     while filled < count {
         let take = (count - filled).min(BULK_WORDS);
-        let bytes = &mut scratch[..take * 8];
-        m.read(base, bytes);
-        for (dst, chunk) in spare[filled..filled + take]
-            .iter_mut()
-            .zip(bytes.chunks_exact(8))
+        #[cfg(target_endian = "little")]
         {
-            dst.write(u64::from_le_bytes(chunk.try_into().unwrap()));
+            let bytes = unsafe {
+                slice::from_raw_parts_mut(spare[filled..filled + take].as_mut_ptr() as *mut u8, take * 8)
+            };
+            m.read(base, bytes);
+        }
+        #[cfg(not(target_endian = "little"))]
+        {
+            let mut scratch = vec![0u8; take * 8];
+            m.read(base, &mut scratch);
+            for (dst, chunk) in spare[filled..filled + take]
+                .iter_mut()
+                .zip(scratch.chunks_exact(8))
+            {
+                dst.write(u64::from_le_bytes(chunk.try_into().unwrap()));
+            }
         }
         base += (take as u64) * 8;
         filled += take;
@@ -73,11 +94,21 @@ pub(crate) fn write_u64_words_into<M: Memory>(
     let mut base = offset;
     while !remaining.is_empty() {
         let take = remaining.len().min(chunk_words);
-        let bytes = &mut scratch[..take * 8];
-        for (i, word) in remaining[..take].iter().enumerate() {
-            bytes[i * 8..(i + 1) * 8].copy_from_slice(&word.to_le_bytes());
+        #[cfg(target_endian = "little")]
+        {
+            let bytes = unsafe {
+                slice::from_raw_parts(remaining[..take].as_ptr() as *const u8, take * 8)
+            };
+            write(m, base, bytes);
         }
-        write(m, base, bytes);
+        #[cfg(not(target_endian = "little"))]
+        {
+            let bytes = &mut scratch[..take * 8];
+            for (i, word) in remaining[..take].iter().enumerate() {
+                bytes[i * 8..(i + 1) * 8].copy_from_slice(&word.to_le_bytes());
+            }
+            write(m, base, bytes);
+        }
         base += (take as u64) * 8;
         remaining = &remaining[take..];
     }
@@ -87,13 +118,13 @@ pub(crate) fn write_zero_words<M: Memory>(m: &M, offset: u64, word_count: u64) {
     if word_count == 0 {
         return;
     }
-    let mut scratch = vec![0u8; BULK_WORDS * 8];
+    static ZERO_BYTES: OnceLock<Box<[u8]>> = OnceLock::new();
+    let zero_bytes = ZERO_BYTES.get_or_init(|| vec![0u8; BULK_WORDS * 8].into_boxed_slice());
     let mut remaining = word_count as usize;
     let mut base = offset;
     while remaining > 0 {
         let take = remaining.min(BULK_WORDS);
-        scratch[..take * 8].fill(0);
-        write(m, base, &scratch[..take * 8]);
+        write(m, base, &zero_bytes[..take * 8]);
         base += (take as u64) * 8;
         remaining -= take;
     }
