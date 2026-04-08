@@ -26,6 +26,14 @@ const CONTAINS_SPREAD_INCREMENT: u64 = 0xB529;
 const LARGE_TRUNCATE_FROM: u64 = 65_536;
 const LARGE_TRUNCATE_TO: u64 = 32_768;
 const JOURNAL_CAP_FILL: u64 = 4_096;
+const REMOVE_SMALL_BITS: u64 = 1_024;
+const REMOVE_SMALL_HEAD: u64 = 0;
+const REMOVE_SMALL_MID: u64 = 512;
+const REMOVE_SMALL_TAIL: u64 = REMOVE_SMALL_BITS - 1;
+const REMOVE_LARGE_BITS: u64 = 65_536;
+const REMOVE_LARGE_HEAD: u64 = 0;
+const REMOVE_LARGE_MID: u64 = 32_768;
+const REMOVE_LARGE_TAIL: u64 = REMOVE_LARGE_BITS - 1;
 
 fn make_bitset() -> BitSet<DefaultMemoryImpl> {
     BitSet::new(DefaultMemoryImpl::default()).expect("bitset init")
@@ -35,6 +43,21 @@ fn populate(bitset: &BitSet<DefaultMemoryImpl>, count: u64) {
     for index in 0..count {
         bitset.insert(index).expect("insert");
     }
+}
+
+fn bench_remove_case(
+    scope_name: &'static str,
+    count: u64,
+    remove_index: u64,
+) -> canbench_rs::BenchResult {
+    wipe::wipe_stable_memory();
+    let bitset = make_bitset();
+    populate(&bitset, count);
+    canbench_rs::bench_fn(|| {
+        let _p = canbench_rs::bench_scope(scope_name);
+        bitset.remove(black_box(remove_index)).expect("remove");
+        black_box(bitset.len());
+    })
 }
 
 fn make_spread_queries(count: u64, modulo: u64) -> Vec<u64> {
@@ -124,6 +147,36 @@ fn bench_bitset_truncate_large_suffix_65536_to_32768() -> canbench_rs::BenchResu
         bitset.truncate(black_box(LARGE_TRUNCATE_TO)).expect("truncate");
         black_box(bitset.len());
     })
+}
+
+#[bench(raw)]
+fn bench_bitset_remove_1024_head() -> canbench_rs::BenchResult {
+    bench_remove_case("bitset_remove_1024_head", REMOVE_SMALL_BITS, REMOVE_SMALL_HEAD)
+}
+
+#[bench(raw)]
+fn bench_bitset_remove_1024_mid() -> canbench_rs::BenchResult {
+    bench_remove_case("bitset_remove_1024_mid", REMOVE_SMALL_BITS, REMOVE_SMALL_MID)
+}
+
+#[bench(raw)]
+fn bench_bitset_remove_1024_tail() -> canbench_rs::BenchResult {
+    bench_remove_case("bitset_remove_1024_tail", REMOVE_SMALL_BITS, REMOVE_SMALL_TAIL)
+}
+
+#[bench(raw)]
+fn bench_bitset_remove_65536_head() -> canbench_rs::BenchResult {
+    bench_remove_case("bitset_remove_65536_head", REMOVE_LARGE_BITS, REMOVE_LARGE_HEAD)
+}
+
+#[bench(raw)]
+fn bench_bitset_remove_65536_mid() -> canbench_rs::BenchResult {
+    bench_remove_case("bitset_remove_65536_mid", REMOVE_LARGE_BITS, REMOVE_LARGE_MID)
+}
+
+#[bench(raw)]
+fn bench_bitset_remove_65536_tail() -> canbench_rs::BenchResult {
+    bench_remove_case("bitset_remove_65536_tail", REMOVE_LARGE_BITS, REMOVE_LARGE_TAIL)
 }
 
 #[bench(raw)]

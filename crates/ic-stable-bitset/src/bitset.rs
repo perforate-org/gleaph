@@ -4,7 +4,8 @@
 //!
 //! - a stable header with layout metadata,
 //! - a packed `u64` snapshot of the bitset words,
-//! - an append-only journal of packed `u64` records for pending `set` and `truncate` updates.
+//! - an append-only journal of packed `u64` records for pending `set`, `truncate`, and `remove`
+//!   updates.
 //!
 //! Each packed journal record reserves payload space for `2 ^ 61` distinct values, so the largest
 //! bit index or logical length representable by the journal is `2 ^ 61 - 1`
@@ -23,105 +24,19 @@ use core::fmt;
 use ic_stable_structures::Memory;
 
 const MAGIC: [u8; 3] = *b"SBS";
-const VERSION: u8 = 1;
+const VERSION: u8 = 2;
 const HEADER_SIZE: u64 = 64;
 const JOURNAL_RECORD_SIZE: u64 = 8;
 const DEFAULT_JOURNAL_CAP: u64 = 4096;
+const JOURNAL_REPLAY_CHUNK_WORDS: usize = 128;
 const JOURNAL_KIND_SHIFT: u32 = 62;
 const JOURNAL_VALUE_SHIFT: u32 = 61;
-const JOURNAL_REPLAY_CHUNK_WORDS: usize = 128;
 
 const MAGIC_OFFSET: u64 = 0;
 const VERSION_OFFSET: u64 = 3;
 const LEN_OFFSET: u64 = 4;
 const WORD_CAP_OFFSET: u64 = 12;
 const JOURNAL_CAP_OFFSET: u64 = 20;
-
-/// Error returned when a stable bitset cannot be opened from memory.
-#[derive(Debug, PartialEq, Eq)]
-pub enum InitError {
-    BadMagic { actual: [u8; 3], expected: [u8; 3] },
-    IncompatibleVersion(u8),
-    InvalidLayout,
-    OutOfMemory,
-}
-
-impl fmt::Display for InitError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::BadMagic { actual, expected } => {
-                write!(f, "bad magic number {actual:?}, expected {expected:?}")
-            }
-            Self::IncompatibleVersion(version) => write!(
-                f,
-                "unsupported layout version {version}; supported version numbers are 1..={VERSION}"
-            ),
-            Self::InvalidLayout => write!(f, "invalid stable bitset layout"),
-            Self::OutOfMemory => write!(f, "failed to allocate memory for stable bitset"),
-        }
-    }
-}
-
-impl std::error::Error for InitError {}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum JournalTag {
-    Empty = 0,
-    SetLen = 1,
-    SetBit = 2,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct JournalRecord(u64);
-
-impl JournalRecord {
-    fn set_len(len: u64) -> Self {
-        assert!(
-            len <= crate::JOURNAL_PAYLOAD_MAX,
-            "bitset length exceeds supported 2 ^ 61 - 1 payload"
-        );
-        Self::pack(JournalTag::SetLen, false, len)
-    }
-
-    fn set_bit(index: u64, value: bool) -> Self {
-        assert!(
-            index <= crate::JOURNAL_PAYLOAD_MAX,
-            "bit index exceeds supported 2 ^ 61 - 1 payload"
-        );
-        Self::pack(JournalTag::SetBit, value, index)
-    }
-
-    fn pack(tag: JournalTag, value: bool, payload: u64) -> Self {
-        debug_assert!(payload <= crate::JOURNAL_PAYLOAD_MAX);
-        let raw = ((tag as u64) << JOURNAL_KIND_SHIFT)
-            | (u64::from(value) << JOURNAL_VALUE_SHIFT)
-            | (payload & crate::JOURNAL_PAYLOAD_MAX);
-        Self(raw)
-    }
-
-    fn unpack(self) -> Result<(JournalTag, bool, u64), InitError> {
-        let raw_tag = (self.0 >> JOURNAL_KIND_SHIFT) & 0b11;
-        let tag = match raw_tag {
-            0 => JournalTag::Empty,
-            1 => JournalTag::SetLen,
-            2 => JournalTag::SetBit,
-            _ => return Err(InitError::InvalidLayout),
-        };
-        let value = ((self.0 >> JOURNAL_VALUE_SHIFT) & 1) != 0;
-        let payload = self.0 & crate::JOURNAL_PAYLOAD_MAX;
-        Ok((tag, value, payload))
-    }
-
-    fn to_bytes(self) -> [u8; JOURNAL_RECORD_SIZE as usize] {
-        self.0.to_le_bytes()
-    }
-
-    fn from_bytes(bytes: &[u8]) -> Self {
-        let mut raw = [0u8; 8];
-        raw.copy_from_slice(bytes);
-        Self(u64::from_le_bytes(raw))
-    }
-}
 
 #[derive(Clone, Debug)]
 struct HeapState {
@@ -140,6 +55,33 @@ impl HeapState {
     }
 }
 
+/// Error returned when a stable bitset cannot be opened from memory.
+#[derive(Debug, PartialEq, Eq)]
+pub enum InitError {
+    BadMagic { actual: [u8; 3], expected: [u8; 3] },
+    IncompatibleVersion(u8),
+    InvalidLayout,
+    OutOfMemory,
+}
+
+impl fmt::Display for InitError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BadMagic { actual, expected } => {
+                write!(f, "bad magic number {actual:?}, expected {expected:?}")
+            }
+            Self::IncompatibleVersion(version) => write!(
+                f,
+                "unsupported layout version {version}; supported version number is {VERSION}"
+            ),
+            Self::InvalidLayout => write!(f, "invalid stable bitset layout"),
+            Self::OutOfMemory => write!(f, "failed to allocate memory for stable bitset"),
+        }
+    }
+}
+
+impl std::error::Error for InitError {}
+
 /// Returns the number of `u64` words needed to store `bits` bits.
 fn words_for_bits(bits: u64) -> u64 {
     if bits == 0 { 0 } else { (bits - 1) / 64 + 1 }
@@ -155,9 +97,9 @@ fn data_offset(journal_cap: u64) -> u64 {
     HEADER_SIZE + journal_cap.saturating_mul(JOURNAL_RECORD_SIZE)
 }
 
-/// Returns a mask for the selected bit position.
-fn word_mask(bit: u64) -> u64 {
-    1u64 << bit
+/// Converts a bit index into `(word_index, bit_index)`.
+fn bit_offset(index: u64) -> (usize, u64) {
+    ((index / 64) as usize, index & 63)
 }
 
 #[inline]
@@ -205,6 +147,75 @@ fn write_header<M: Memory>(
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum JournalTag {
+    Empty = 0,
+    SetLen = 1,
+    SetBit = 2,
+    Remove = 3,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct JournalRecord(u64);
+
+impl JournalRecord {
+    fn set_len(len: u64) -> Self {
+        assert!(
+            len <= crate::JOURNAL_PAYLOAD_MAX,
+            "bitset length exceeds supported 2 ^ 61 - 1 payload"
+        );
+        Self::pack(JournalTag::SetLen, false, len)
+    }
+
+    fn set_bit(index: u64, value: bool) -> Self {
+        assert!(
+            index <= crate::JOURNAL_PAYLOAD_MAX,
+            "bit index exceeds supported 2 ^ 61 - 1 payload"
+        );
+        Self::pack(JournalTag::SetBit, value, index)
+    }
+
+    fn remove(index: u64) -> Self {
+        assert!(
+            index <= crate::JOURNAL_PAYLOAD_MAX,
+            "remove index exceeds supported 2 ^ 61 - 1 payload"
+        );
+        Self::pack(JournalTag::Remove, false, index)
+    }
+
+    fn pack(tag: JournalTag, value: bool, payload: u64) -> Self {
+        debug_assert!(payload <= crate::JOURNAL_PAYLOAD_MAX);
+        let raw = ((tag as u64) << JOURNAL_KIND_SHIFT)
+            | (u64::from(value) << JOURNAL_VALUE_SHIFT)
+            | (payload & crate::JOURNAL_PAYLOAD_MAX);
+        Self(raw)
+    }
+
+    fn unpack(self) -> Result<(JournalTag, bool, u64), InitError> {
+        let raw_tag = (self.0 >> JOURNAL_KIND_SHIFT) & 0b11;
+        let tag = match raw_tag {
+            0 => JournalTag::Empty,
+            1 => JournalTag::SetLen,
+            2 => JournalTag::SetBit,
+            3 => JournalTag::Remove,
+            _ => return Err(InitError::InvalidLayout),
+        };
+        let value = ((self.0 >> JOURNAL_VALUE_SHIFT) & 1) != 0;
+        let payload = self.0 & crate::JOURNAL_PAYLOAD_MAX;
+        Ok((tag, value, payload))
+    }
+
+    fn to_bytes(self) -> [u8; JOURNAL_RECORD_SIZE as usize] {
+        self.0.to_le_bytes()
+    }
+
+    fn from_bytes(bytes: &[u8]) -> Self {
+        let mut raw = [0u8; 8];
+        raw.copy_from_slice(bytes);
+        Self(u64::from_le_bytes(raw))
+    }
+}
+
 /// Stable bitset with a heap mirror and a durable journal.
 ///
 /// # Storage model
@@ -217,7 +228,7 @@ fn write_header<M: Memory>(
 ///
 /// - The type is intended for single-writer use.
 /// - `contains` always reads the heap mirror.
-/// - `set` and `truncate` are durable-first and may trigger checkpointing.
+/// - `set`, `remove`, and `truncate` are durable-first and may trigger checkpointing.
 pub struct BitSet<M: Memory> {
     memory: M,
     state: RefCell<HeapState>,
@@ -259,7 +270,7 @@ impl<M: Memory> BitSet<M> {
         })
     }
 
-    /// Reopens a bitset from stable memory and replays any pending journal records.
+    /// Reopens a bitset from stable memory and replays any pending mutation records.
     pub fn init(memory: M) -> Result<Self, InitError> {
         if memory.size() == 0 {
             return Self::new(memory).map_err(|_| InitError::OutOfMemory);
@@ -399,10 +410,11 @@ impl<M: Memory> BitSet<M> {
                     }
                     set_heap_bit(&mut st.words, index, true);
                 }
-                self.maybe_checkpoint()?;
             }
+            self.maybe_checkpoint()?;
             return Ok(());
         }
+
         if !self.contains(index) {
             return Ok(());
         }
@@ -422,9 +434,31 @@ impl<M: Memory> BitSet<M> {
         self.set(index, true)
     }
 
-    /// Removes a bit by setting it to `false`.
-    pub fn remove(&self, index: u64) -> Result<(), GrowFailed> {
+    /// Clears a bit by setting it to `false` without shifting later bits.
+    pub fn clear(&self, index: u64) -> Result<(), GrowFailed> {
         self.set(index, false)
+    }
+
+    /// Removes a bit and shifts all later bits left by one position.
+    pub fn remove(&self, index: u64) -> Result<(), GrowFailed> {
+        assert!(
+            index <= crate::JOURNAL_PAYLOAD_MAX,
+            "remove index exceeds supported 2 ^ 61 - 1 payload"
+        );
+        assert!(
+            index < self.len(),
+            "remove index out of bounds: index={index} len={}",
+            self.len()
+        );
+        self.append_record(JournalRecord::remove(index))?;
+        {
+            let mut st = self.state.borrow_mut();
+            let len_bits = st.len_bits;
+            let new_len = remove_heap_bit(&mut st.words, len_bits, index);
+            st.len_bits = new_len;
+        }
+        self.maybe_checkpoint()?;
+        Ok(())
     }
 
     /// Shrinks the logical length to `new_len`.
@@ -469,7 +503,7 @@ impl<M: Memory> BitSet<M> {
         Ok(())
     }
 
-    /// Appends a record to the journal.
+    /// Appends a packed mutation record to the journal.
     fn append_record(&self, record: JournalRecord) -> Result<(), GrowFailed> {
         if self.journal_len.get() >= self.journal_cap {
             self.checkpoint()?;
@@ -491,34 +525,71 @@ impl<M: Memory> BitSet<M> {
 
     /// Writes the heap mirror back into stable memory and clears the journal.
     fn checkpoint(&self) -> Result<(), GrowFailed> {
-        let st = self.state.borrow();
-        let word_offset = data_offset(self.journal_cap);
-        let mut scratch = vec![0u8; BULK_WORDS * 8];
-        write_u64_words_into(&self.memory, word_offset, &st.words, &mut scratch);
-        write_u64(&self.memory, LEN_OFFSET, st.len_bits);
-        write_u64(&self.memory, WORD_CAP_OFFSET, st.word_cap);
+        let (len_bits, word_cap) = {
+            let st = self.state.borrow();
+            let word_offset = data_offset(self.journal_cap);
+            let mut scratch = vec![0u8; BULK_WORDS * 8];
+            write_u64_words_into(&self.memory, word_offset, &st.words, &mut scratch);
+            (st.len_bits, st.word_cap)
+        };
+        write_u64(&self.memory, LEN_OFFSET, len_bits);
+        write_u64(&self.memory, WORD_CAP_OFFSET, word_cap);
         write_zero_words(&self.memory, journal_offset(), self.journal_len.get());
         self.journal_len.set(0);
         Ok(())
     }
 }
 
-fn set_heap_bit(words: &mut [u64], index: u64, value: bool) {
-    let word = (index >> 6) as usize;
-    let bit = index & 63;
-    if let Some(slot) = words.get_mut(word) {
-        let mask = word_mask(bit);
-        if value {
-            *slot |= mask;
+fn remove_heap_bit(words: &mut [u64], len_bits: u64, index: u64) -> u64 {
+    let new_len = len_bits - 1;
+    debug_assert!(index < len_bits);
+
+    if new_len == 0 {
+        words.fill(0);
+        return 0;
+    }
+
+    let start_word = (index >> 6) as usize;
+    let start_bit = (index & 63) as u32;
+    let last_word = (words_for_bits(new_len) - 1) as usize;
+
+    if start_word <= last_word {
+        let prefix_mask = if start_bit == 0 {
+            0
         } else {
-            *slot &= !mask;
+            (1u64 << start_bit) - 1
+        };
+
+        for word_idx in start_word..=last_word {
+            let old = words[word_idx];
+            let carry = words.get(word_idx + 1).copied().unwrap_or(0) & 1;
+
+            let next_word = if word_idx == start_word && start_bit > 0 {
+                (old & prefix_mask) | ((old >> 1) & !prefix_mask) | (carry << 63)
+            } else {
+                (old >> 1) | (carry << 63)
+            };
+            words[word_idx] = next_word;
         }
     }
+
+    clear_suffix(words, new_len);
+    new_len
+}
+
+fn apply_remove_record(state: &mut HeapState, index: u64) -> Result<(), InitError> {
+    if index >= state.len_bits {
+        return Err(InitError::InvalidLayout);
+    }
+    let len_bits = state.len_bits;
+    state.len_bits = remove_heap_bit(&mut state.words, len_bits, index);
+    Ok(())
 }
 
 fn apply_record(state: &mut HeapState, record: JournalRecord) -> Result<(), InitError> {
     let (tag, value, payload) = record.unpack()?;
     match tag {
+        JournalTag::Empty => {}
         JournalTag::SetLen => {
             let new_len = payload;
             if new_len < state.len_bits {
@@ -543,9 +614,23 @@ fn apply_record(state: &mut HeapState, record: JournalRecord) -> Result<(), Init
                 set_heap_bit(&mut state.words, index, false);
             }
         }
-        JournalTag::Empty => {}
+        JournalTag::Remove => {
+            apply_remove_record(state, payload)?;
+        }
     }
     Ok(())
+}
+
+fn set_heap_bit(words: &mut [u64], index: u64, value: bool) {
+    let (word, bit) = bit_offset(index);
+    if let Some(slot) = words.get_mut(word) {
+        let mask = 1u64 << bit;
+        if value {
+            *slot |= mask;
+        } else {
+            *slot &= !mask;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -561,16 +646,77 @@ mod tests {
     fn insert_and_remove_roundtrip() {
         let mem = VectorMemory::default();
         let bs = BitSet::new_with_journal_capacity(mem, 8).unwrap();
+        bs.insert(0).unwrap();
+        bs.insert(1).unwrap();
+        bs.insert(2).unwrap();
         bs.insert(3).unwrap();
-        bs.insert(65).unwrap();
+        assert!(bs.contains(0));
+        assert!(bs.contains(1));
+        assert!(bs.contains(2));
         assert!(bs.contains(3));
-        assert!(bs.contains(65));
-        bs.remove(3).unwrap();
-        assert!(!bs.contains(3));
+        bs.remove(1).unwrap();
+        assert!(bs.contains(0));
+        assert!(bs.contains(1));
+        assert!(bs.contains(2));
+        assert_eq!(bs.len(), 3);
         let mem = bs.into_memory();
         let bs = reopen(mem);
-        assert!(!bs.contains(3));
+        assert!(bs.contains(0));
+        assert!(bs.contains(1));
+        assert!(bs.contains(2));
+        assert_eq!(bs.len(), 3);
+    }
+
+    #[test]
+    fn remove_shifts_across_word_boundary() {
+        let mem = VectorMemory::default();
+        let bs = BitSet::new_with_journal_capacity(mem, 8).unwrap();
+        for index in 0..80 {
+            if matches!(index, 60..=67) {
+                bs.insert(index).unwrap();
+            }
+        }
+        bs.remove(63).unwrap();
+        assert!(bs.contains(60));
+        assert!(bs.contains(61));
+        assert!(bs.contains(62));
+        assert!(bs.contains(63));
+        assert!(bs.contains(64));
         assert!(bs.contains(65));
+        assert!(bs.contains(66));
+        assert!(!bs.contains(67));
+        assert_eq!(bs.len(), 67);
+        let mem = bs.into_memory();
+        let bs = reopen(mem);
+        assert!(bs.contains(60));
+        assert!(bs.contains(61));
+        assert!(bs.contains(62));
+        assert!(bs.contains(63));
+        assert!(bs.contains(64));
+        assert!(bs.contains(65));
+        assert!(bs.contains(66));
+        assert!(!bs.contains(67));
+        assert_eq!(bs.len(), 67);
+    }
+
+    #[test]
+    fn clear_only_unsets_bit() {
+        let mem = VectorMemory::default();
+        let bs = BitSet::new_with_journal_capacity(mem, 8).unwrap();
+        bs.insert(0).unwrap();
+        bs.insert(1).unwrap();
+        bs.insert(2).unwrap();
+        bs.clear(1).unwrap();
+        assert!(bs.contains(0));
+        assert!(!bs.contains(1));
+        assert!(bs.contains(2));
+        assert_eq!(bs.len(), 3);
+        let mem = bs.into_memory();
+        let bs = reopen(mem);
+        assert!(bs.contains(0));
+        assert!(!bs.contains(1));
+        assert!(bs.contains(2));
+        assert_eq!(bs.len(), 3);
     }
 
     #[test]
@@ -589,27 +735,55 @@ mod tests {
     }
 
     #[test]
-    fn checkpoint_clears_journal() {
+    fn checkpoint_clears_remove_journal() {
         let mem = VectorMemory::default();
         let bs = BitSet::new_with_journal_capacity(mem, 2).unwrap();
         bs.insert(0).unwrap();
         bs.insert(1).unwrap();
         bs.insert(2).unwrap();
-        assert!(bs.contains(2));
+        bs.remove(1).unwrap();
+        bs.remove(0).unwrap();
         let mem = bs.into_memory();
         let bs = reopen(mem);
         assert!(bs.contains(0));
-        assert!(bs.contains(1));
-        assert!(bs.contains(2));
+        assert!(!bs.contains(1));
+        assert_eq!(bs.len(), 1);
     }
 
     #[test]
-    fn packed_journal_uses_61_bit_payload() {
-        let rec = JournalRecord::set_bit(crate::JOURNAL_PAYLOAD_MAX, true);
-        let roundtrip = JournalRecord::from_bytes(&rec.to_bytes());
-        let (tag, value, payload) = roundtrip.unpack().unwrap();
-        assert_eq!(tag, JournalTag::SetBit);
-        assert!(value);
-        assert_eq!(payload, crate::JOURNAL_PAYLOAD_MAX);
+    fn ensure_len_replays_after_reopen() {
+        let mem = VectorMemory::default();
+        let bs = BitSet::new_with_journal_capacity(mem, 8).unwrap();
+        bs.ensure_len(4).unwrap();
+        assert_eq!(bs.len(), 4);
+        let mem = bs.into_memory();
+        let bs = reopen(mem);
+        assert_eq!(bs.len(), 4);
+        assert!(!bs.contains(0));
+        assert!(!bs.contains(3));
+    }
+
+    #[test]
+    fn mixed_remove_and_set_replays_after_reopen() {
+        let mem = VectorMemory::default();
+        let bs = BitSet::new_with_journal_capacity(mem, 8).unwrap();
+        bs.insert(0).unwrap();
+        bs.insert(1).unwrap();
+        bs.insert(3).unwrap();
+        bs.clear(1).unwrap();
+        bs.ensure_len(5).unwrap();
+        bs.insert(4).unwrap();
+        bs.remove(0).unwrap();
+        bs.truncate(3).unwrap();
+        assert_eq!(bs.len(), 3);
+        assert!(!bs.contains(0));
+        assert!(!bs.contains(1));
+        assert!(bs.contains(2));
+        let mem = bs.into_memory();
+        let bs = reopen(mem);
+        assert_eq!(bs.len(), 3);
+        assert!(!bs.contains(0));
+        assert!(!bs.contains(1));
+        assert!(bs.contains(2));
     }
 }

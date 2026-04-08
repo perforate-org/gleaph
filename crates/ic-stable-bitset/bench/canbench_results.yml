@@ -2,13 +2,13 @@ benches:
   bench_bitset_checkpoint_after_full_journal_4096:
     total:
       calls: 1
-      instructions: 2874
+      instructions: 2873
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bitset_checkpoint:
         calls: 1
-        instructions: 1822
+        instructions: 1821
         heap_increase: 0
         stable_memory_increase: 0
   bench_bitset_contains_1024:
@@ -38,37 +38,109 @@ benches:
   bench_bitset_insert_1024:
     total:
       calls: 1
-      instructions: 317929
+      instructions: 316905
       heap_increase: 0
       stable_memory_increase: 1
     scopes:
       bitset_insert:
         calls: 1
-        instructions: 314973
+        instructions: 313949
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_bitset_remove_1024_head:
+    total:
+      calls: 1
+      instructions: 2611
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      bitset_remove_1024_head:
+        calls: 1
+        instructions: 1602
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_bitset_remove_1024_mid:
+    total:
+      calls: 1
+      instructions: 2163
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      bitset_remove_1024_mid:
+        calls: 1
+        instructions: 1154
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_bitset_remove_1024_tail:
+    total:
+      calls: 1
+      instructions: 1794
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      bitset_remove_1024_tail:
+        calls: 1
+        instructions: 785
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_bitset_remove_65536_head:
+    total:
+      calls: 1
+      instructions: 59059
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      bitset_remove_65536_head:
+        calls: 1
+        instructions: 58050
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_bitset_remove_65536_mid:
+    total:
+      calls: 1
+      instructions: 30387
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      bitset_remove_65536_mid:
+        calls: 1
+        instructions: 29378
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_bitset_remove_65536_tail:
+    total:
+      calls: 1
+      instructions: 1794
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      bitset_remove_65536_tail:
+        calls: 1
+        instructions: 785
         heap_increase: 0
         stable_memory_increase: 0
   bench_bitset_reopen_after_journal_4096:
     total:
       calls: 1
-      instructions: 43390
+      instructions: 43385
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bitset_reopen:
         calls: 1
-        instructions: 42357
+        instructions: 42352
         heap_increase: 0
         stable_memory_increase: 0
   bench_bitset_reopen_after_large_snapshot_65536:
     total:
       calls: 1
-      instructions: 86590
+      instructions: 86585
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       bitset_reopen_large:
         calls: 1
-        instructions: 85557
+        instructions: 85552
         heap_increase: 0
         stable_memory_increase: 0
   bench_bitset_truncate_2048_to_1024:
