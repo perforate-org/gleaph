@@ -12,6 +12,6 @@ candid.workspace = true
 canbench-rs.workspace = true
 ic-cdk.workspace = true
 ic-cdk-macros.workspace = true
-ic-stable-csr = { path = "../ic-stable-csr", features = ["canbench-rs"] }
-ic-stable-slot-map = { path = "../ic-stable-slot-map" }
+ic-stable-csr = { workspace = true, features = ["canbench-rs"] }
+ic-stable-slot-map.workspace = true
 ic-stable-structures.workspace = true

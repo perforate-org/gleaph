@@ -11,7 +11,7 @@ members = [
     "crates/graph-registry",
     "crates/graph-pma",
     "crates/ic-stable-csr",
-    "crates/ic-stable-csr-canbench",
+    "crates/ic-stable-csr/bench",
     "crates/ic-stable-bitset",
     "crates/ic-stable-bitset/bench",
     "crates/ic-stable-slot-map",
@@ -25,6 +25,11 @@ version = "0.1.0"
 license = "MIT"
 
 [workspace.dependencies]
+ic-stable-bitset = { path = "crates/ic-stable-bitset" }
+ic-stable-csr = { path = "crates/ic-stable-csr" }
+ic-stable-slot-map = { path = "crates/ic-stable-slot-map" }
+ic-stable-vec-deque = { path = "crates/ic-stable-vec-deque" }
+
 ic-stable-structures = "0.7.2"
 canbench-rs = "0.4"
 candid = "0.10"

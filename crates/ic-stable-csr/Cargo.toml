@@ -15,6 +15,6 @@ strict-dgap-invariants = []
 
 [dependencies]
 canbench-rs = { workspace = true, optional = true }
-ic-stable-slot-map = { path = "../ic-stable-slot-map" }
+ic-stable-slot-map.workspace = true
 ic-stable-structures.workspace = true
-ic-stable-vec-deque = { path = "../ic-stable-vec-deque" }
+ic-stable-vec-deque.workspace = true
