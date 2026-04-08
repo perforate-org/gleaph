@@ -79,7 +79,8 @@ fn delete_edge_tombstone_gc_and_degrees() {
         8,
         0,
         Some(SegmentMaintainThresholds {
-            min_tombstones_for_enqueue: 1,
+            soft_tombstone_score_threshold: 0.05,
+            strict_tombstone_score_threshold: 0.20,
             ..Default::default()
         }),
     )

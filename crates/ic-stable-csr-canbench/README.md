@@ -1,6 +1,6 @@
 # `ic-stable-csr-canbench`
 
-Wasm + PocketIC benchmarks for `ic_stable_csr::dgap::DgapEdgeStore::remove_slab_edge_at_local_index_physically` and `ic_stable_csr::csr::CsrGraphWithGcQueue::delete_vertex`. Stable backing uses [`DefaultMemoryImpl`](https://docs.rs/ic-stable-structures/latest/ic_stable_structures/struct.DefaultMemoryImpl.html) and [`MemoryManager`](https://docs.rs/ic-stable-structures/latest/ic_stable_structures/memory_manager/struct.MemoryManager.html).
+Wasm + PocketIC benchmarks for `ic_stable_csr::dgap::DgapEdgeStore::remove_slab_edge_at_local_index_physically`, `ic_stable_csr::csr::CsrGraphWithGcQueue::delete_vertex`, and the `segment_maintenance_decision` score gate. Stable backing uses [`DefaultMemoryImpl`](https://docs.rs/ic-stable-structures/latest/ic_stable_structures/struct.DefaultMemoryImpl.html) and [`MemoryManager`](https://docs.rs/ic-stable-structures/latest/ic_stable_structures/memory_manager/struct.MemoryManager.html).
 
 ## Build
 
@@ -33,6 +33,7 @@ Optional baseline update (writes `canbench_results.yml`):
 ```bash
 canbench --runtime-path … --no-runtime-integrity-check --persist --show-summary bench_remove_slab
 canbench --runtime-path … --no-runtime-integrity-check --persist --show-summary bench_delete_vertex
+canbench --runtime-path … --no-runtime-integrity-check --persist --show-summary bench_segment_maintain
 ```
 
 ## Scenarios
@@ -43,11 +44,18 @@ canbench --runtime-path … --no-runtime-integrity-check --persist --show-summar
 | `bench_remove_slab_physically_chain_1024` | Same pattern at 1024 vertices so the `0..n` base scan does ~1023 slot-map updates when `remove_pos == 0`. |
 | `bench_remove_slab_physically_tail_vertex_chain_1024` | Same chain; remove at `(vid=n-2, local_index=0)` (last edge in the chain) so `remove_pos` is large and the base-decrement suffix is usually empty. |
 | `bench_delete_vertex_hub_star_1024` | Hub-and-spoke graph with 1024 vertices and bidirectional center spokes; deleting vertex `0` exercises the partial forward/reverse PMA resync path. |
+| `bench_segment_maintain_small_noop` | Small leaf with one tombstone stays below the score gate and should return `Noop`. |
+| `bench_segment_maintain_small_enqueue` | Small leaf crosses the soft tombstone ratio gate and should return `Enqueue`. |
+| `bench_segment_maintain_large_enqueue_by_score` | Same tombstone ratio as the small case, but a larger span pushes the score over the enqueue threshold. |
+| `bench_segment_maintain_strict_inline` | Tombstone ratio above the strict gate should return `InlineNow`. |
+| `bench_segment_maintain_queue_pressure_inline` | Soft garbage plus queue pressure should return `InlineNow`. |
+| `bench_segment_maintain_rebalance_window_enqueue` | A rebalance window hint should enqueue even with zero tombstones. |
 
 Scopes inside the hot path (feature `canbench-rs` on `ic-stable-csr`):
 
 - `remove_slab`: `dgap_remove_slab_slide`, `dgap_remove_slab_base_decrement`, `dgap_remove_slab_sync_pma_full`, `dgap_remove_slab_maintain`, `dgap_remove_slab_refresh_tail`
 - `delete_vertex`: `dgap_delete_vertex_collect_touched`, `dgap_delete_vertex_out_neighbors`, `dgap_delete_vertex_in_neighbors`, `dgap_delete_vertex_refresh_tail`, `dgap_delete_vertex_sync_pma_forward`, `dgap_delete_vertex_sync_pma_reverse`, `dgap_delete_vertex_push_queue`
+- `segment_maintain`: `dgap_segment_maintain_tombstone_ratio`, `dgap_segment_maintain_tombstone_score`, `dgap_segment_maintain_soft_garbage`, `dgap_segment_maintain_strict_garbage`, `dgap_segment_maintain_queue_pressure`
 
 **Implementation note:** `remove_slab` uses chunked `read_edge_slab_span` / `write_edge_slab_span` for the slide, then a vertex-column pass that finds the first row with `base > remove_pos` (binary search when dense bases are non-decreasing), reads only the candidate PMA-dirty prefix window, decrements bases only on the suffix, then `sync_pma_edge_counts_for_segments` (or full sync). The `dgap_remove_slab_base_decrement` scope includes that scan (plus `O(log n)` binary search); `dgap_remove_slab_sync_pma_full` covers only the SEC write path.
 
@@ -70,3 +78,4 @@ Compare scope instruction counts (see `canbench_results.yml` for a committed bas
 Re-run after code changes; refresh the YAML with `canbench --persist` when you want regression tracking.
 
 The committed baseline in `canbench_results.yml` now contains both the `remove_slab` and `delete_vertex` scenarios.
+It also includes the `segment_maintain` microbench cases used to compare ratio- and score-based gating across small and large leaves.

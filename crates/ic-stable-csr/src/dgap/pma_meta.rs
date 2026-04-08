@@ -486,21 +486,22 @@ pub fn rebalance_weighted_window_rel<V: CsrVertex, E: CsrEdge>(
 /// **PMA density:** structural work is driven by [`rebalance_decision`] (`actual` / `total` vs
 /// implicit tree thresholds), not by these ratios alone.
 ///
-/// **Physical tombstones:** modeled after LSM-style *tombstone-density* triggers (e.g. file/segment
-/// garbage fraction or a minimum dead-slot count). A leaf is not considered “garbage-heavy” until
-/// `tombstone/total` reaches [`Self::soft_tombstone_ratio`] or the leaf has at least
-/// [`Self::min_tombstones_for_enqueue`] tombstones (whichever comes first).
+/// **Physical tombstones:** modeled after LSM-style *tombstone-density* triggers, but the fixed
+/// dead-slot count gate is replaced with a size-corrected score (`tombstone_ratio * log2(total+1)`).
+/// This keeps small leaves from enqueueing too early while still surfacing large leaves with
+/// meaningful waste.
 #[derive(Clone, Copy, Debug)]
 pub struct SegmentMaintainThresholds {
     /// Treat a leaf as tombstone-backed work when `tombstone / total` is at least this (`total > 0`).
     pub soft_tombstone_ratio: f64,
     /// Prefer inline maintenance when `tombstone / total` is at least this.
     pub strict_tombstone_ratio: f64,
-    /// Even if [`Self::soft_tombstone_ratio`] is not met, enqueue (or participate in queue pressure)
-    /// once the leaf has this many physical tombstone slots (approximate TSD count threshold).
-    pub min_tombstones_for_enqueue: u64,
+    /// Treat a leaf as garbage-heavy when `tombstone_ratio * log2(total + 1)` is at least this.
+    pub soft_tombstone_score_threshold: f64,
+    /// Prefer inline maintenance when `tombstone_ratio * log2(total + 1)` is at least this.
+    pub strict_tombstone_score_threshold: f64,
     /// When the work queue is at least this long and the leaf has **significant** tombstone garbage
-    /// (same rule as enqueue: soft ratio or `min_tombstones_for_enqueue`), prefer inline.
+    /// (same rule as enqueue: soft ratio or score), prefer inline.
     pub queue_depth_inline_pressure: u64,
 }
 
@@ -509,7 +510,8 @@ impl Default for SegmentMaintainThresholds {
         Self {
             soft_tombstone_ratio: 0.05,
             strict_tombstone_ratio: 0.25,
-            min_tombstones_for_enqueue: 2,
+            soft_tombstone_score_threshold: 0.20,
+            strict_tombstone_score_threshold: 0.60,
             queue_depth_inline_pressure: 64,
         }
     }
@@ -526,8 +528,8 @@ pub enum SegmentMaintainAction {
 /// Combine PMA rebalance hints, tombstone pressure, and queue depth.
 ///
 /// - **Density:** [`RebalanceDecision::ResizeNeeded`] or non-`Noop` rebalance window schedules structural work.
-/// - **Tombstones:** physical garbage uses soft ratio and/or [`SegmentMaintainThresholds::min_tombstones_for_enqueue`]
-///   (LSM tombstone-density style), not “any single tombstone”.
+/// - **Tombstones:** physical garbage uses a ratio gate plus a size-corrected score gate, not a fixed
+///   dead-slot count.
 /// - **Backlog:** long queue + significant tombstone garbage biases toward [`SegmentMaintainAction::InlineNow`].
 pub fn segment_maintenance_decision(
     leaf: SegmentEdgeCounts,
@@ -539,17 +541,18 @@ pub fn segment_maintenance_decision(
         return SegmentMaintainAction::InlineNow;
     }
 
-    let tomb_r = if leaf.total > 0 {
-        leaf.tombstone as f64 / leaf.total as f64
-    } else {
-        0.0
+    let tomb_garbage_strict = tombstone_garbage_strict(leaf, thr);
+    if tomb_garbage_strict {
+        return SegmentMaintainAction::InlineNow;
+    }
+
+    let tomb_garbage = tombstone_garbage_significant(leaf, thr);
+
+    let queue_pressure = {
+        let _s = crate::canbench_scope::scope("dgap_segment_maintain_queue_pressure");
+        queue_len >= thr.queue_depth_inline_pressure && tomb_garbage
     };
-
-    let tomb_garbage = tombstone_garbage_significant(leaf, tomb_r, thr);
-
-    let queue_pressure = queue_len >= thr.queue_depth_inline_pressure && tomb_garbage;
-
-    if tomb_r >= thr.strict_tombstone_ratio || queue_pressure {
+    if queue_pressure {
         return SegmentMaintainAction::InlineNow;
     }
 
@@ -563,16 +566,42 @@ pub fn segment_maintenance_decision(
 }
 
 #[inline]
-fn tombstone_garbage_significant(
-    leaf: SegmentEdgeCounts,
-    tomb_r: f64,
-    thr: &SegmentMaintainThresholds,
-) -> bool {
-    if leaf.tombstone <= 0 {
+fn tombstone_ratio(leaf: SegmentEdgeCounts) -> f64 {
+    let _s = crate::canbench_scope::scope("dgap_segment_maintain_tombstone_ratio");
+    if leaf.total <= 0 || leaf.tombstone <= 0 {
+        return 0.0;
+    }
+    leaf.tombstone as f64 / leaf.total as f64
+}
+
+#[inline]
+fn tombstone_score(leaf: SegmentEdgeCounts) -> f64 {
+    let _s = crate::canbench_scope::scope("dgap_segment_maintain_tombstone_score");
+    let tomb_r = tombstone_ratio(leaf);
+    if tomb_r <= 0.0 {
+        return 0.0;
+    }
+    tomb_r * ((leaf.total.max(0) as f64) + 1.0).log2()
+}
+
+#[inline]
+fn tombstone_garbage_significant(leaf: SegmentEdgeCounts, thr: &SegmentMaintainThresholds) -> bool {
+    let _s = crate::canbench_scope::scope("dgap_segment_maintain_soft_garbage");
+    if leaf.tombstone <= 0 || leaf.total <= 0 {
         return false;
     }
-    let min = thr.min_tombstones_for_enqueue as i64;
-    tomb_r >= thr.soft_tombstone_ratio || leaf.tombstone >= min
+    let tomb_r = tombstone_ratio(leaf);
+    tomb_r >= thr.soft_tombstone_ratio || tombstone_score(leaf) >= thr.soft_tombstone_score_threshold
+}
+
+#[inline]
+fn tombstone_garbage_strict(leaf: SegmentEdgeCounts, thr: &SegmentMaintainThresholds) -> bool {
+    let _s = crate::canbench_scope::scope("dgap_segment_maintain_strict_garbage");
+    if leaf.tombstone <= 0 || leaf.total <= 0 {
+        return false;
+    }
+    let tomb_r = tombstone_ratio(leaf);
+    tomb_r >= thr.strict_tombstone_ratio || tombstone_score(leaf) >= thr.strict_tombstone_score_threshold
 }
 
 /// In-memory DGAP `rebalance_weighted` on global edge slot indices (full `vertices` slice).
@@ -983,7 +1012,8 @@ mod segment_maintain_tests {
         SegmentMaintainThresholds {
             soft_tombstone_ratio: 0.05,
             strict_tombstone_ratio: 0.25,
-            min_tombstones_for_enqueue: 2,
+            soft_tombstone_score_threshold: 0.20,
+            strict_tombstone_score_threshold: 0.60,
             queue_depth_inline_pressure: 64,
         }
     }
@@ -1000,31 +1030,54 @@ mod segment_maintain_tests {
     }
 
     #[test]
-    fn enqueue_when_two_tombstones_meets_min_count() {
+    fn enqueue_when_same_ratio_large_segment_crosses_score_threshold() {
+        let leaf_small = SegmentEdgeCounts {
+            actual: 29,
+            total: 30,
+            tombstone: 1,
+        };
+        assert_eq!(
+            segment_maintenance_decision(leaf_small, RebalanceDecision::Noop, 0, &thr()),
+            SegmentMaintainAction::Noop
+        );
+
+        let leaf_large = SegmentEdgeCounts {
+            actual: 2900,
+            total: 3000,
+            tombstone: 100,
+        };
+        assert_eq!(
+            segment_maintenance_decision(leaf_large, RebalanceDecision::Noop, 0, &thr()),
+            SegmentMaintainAction::Enqueue
+        );
+    }
+
+    #[test]
+    fn enqueue_when_score_meets_soft_threshold() {
         let leaf = SegmentEdgeCounts {
-            actual: 10,
-            total: 100,
-            tombstone: 2,
+            actual: 960,
+            total: 1000,
+            tombstone: 40,
         };
         let a = segment_maintenance_decision(leaf, RebalanceDecision::Noop, 0, &thr());
         assert_eq!(a, SegmentMaintainAction::Enqueue);
     }
 
     #[test]
-    fn enqueue_when_one_tombstone_meets_soft_ratio() {
+    fn inline_when_score_meets_strict_threshold() {
         let leaf = SegmentEdgeCounts {
-            actual: 5,
-            total: 10,
-            tombstone: 1,
+            actual: 900,
+            total: 1000,
+            tombstone: 100,
         };
         let a = segment_maintenance_decision(leaf, RebalanceDecision::Noop, 0, &thr());
-        assert_eq!(a, SegmentMaintainAction::Enqueue);
+        assert_eq!(a, SegmentMaintainAction::InlineNow);
     }
 
     #[test]
     fn inline_when_strict_ratio() {
         let leaf = SegmentEdgeCounts {
-            actual: 5,
+            actual: 7,
             total: 10,
             tombstone: 3,
         };
@@ -1046,8 +1099,8 @@ mod segment_maintain_tests {
     #[test]
     fn queue_pressure_inline_only_with_significant_garbage() {
         let leaf_low = SegmentEdgeCounts {
-            actual: 10,
-            total: 100,
+            actual: 999,
+            total: 1000,
             tombstone: 1,
         };
         assert_eq!(
@@ -1056,9 +1109,9 @@ mod segment_maintain_tests {
         );
 
         let leaf_ok = SegmentEdgeCounts {
-            actual: 10,
-            total: 100,
-            tombstone: 2,
+            actual: 960,
+            total: 1000,
+            tombstone: 40,
         };
         assert_eq!(
             segment_maintenance_decision(leaf_ok, RebalanceDecision::Noop, 100, &thr()),
@@ -1080,6 +1133,21 @@ mod segment_maintain_tests {
         };
         let a = segment_maintenance_decision(leaf, reb, 0, &thr());
         assert_eq!(a, SegmentMaintainAction::Enqueue);
+    }
+
+    #[test]
+    fn total_zero_is_safe_and_noop() {
+        let leaf = SegmentEdgeCounts {
+            actual: 0,
+            total: 0,
+            tombstone: 1,
+        };
+        assert_eq!(super::tombstone_ratio(leaf), 0.0);
+        assert_eq!(super::tombstone_score(leaf), 0.0);
+        assert_eq!(
+            segment_maintenance_decision(leaf, RebalanceDecision::Noop, 0, &thr()),
+            SegmentMaintainAction::Noop
+        );
     }
 }
 

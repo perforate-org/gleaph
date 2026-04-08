@@ -38,7 +38,7 @@
 //! **Segment maintenance queue (seventh `Memory`):** [`csr::CsrGraphWithGcQueue::format_new_with_gc_queue`]
 //! takes one more region for [`StableVecDeque`](crate::StableVecDeque)`<`[`csr::GcWorkItem`](crate::csr::gc_work_item::GcWorkItem)`>`
 //! (per-leaf tombstone compaction + PMA sync; not an audit log). Optional [`SegmentMaintainThresholds`]
-//! combines PMA density hints with tombstone soft ratio / minimum tombstone count (and queue depth).
+//! combines PMA density hints with tombstone ratio + size-corrected score (and queue depth).
 //! ```
 //!
 //! Gleaph-specific types (`VertexEntry`, `EdgeEntry`) should implement [`traits::CsrVertex`] /

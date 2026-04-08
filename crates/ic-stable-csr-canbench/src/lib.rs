@@ -5,11 +5,14 @@
 #![cfg_attr(target_arch = "wasm32", no_main)]
 
 use std::borrow::Cow;
+use std::hint::black_box;
 
 use ic_cdk::export_candid;
 use ic_cdk_macros::{init, post_upgrade, pre_upgrade};
 use ic_stable_csr::{
-    Bound, CsrGraphWithGcQueue, DgapEdgeStore, DgapGraphMemories, DgapStores, Storable,
+    Bound, CsrGraphWithGcQueue, DgapEdgeStore, DgapGraphMemories, DgapStores, SegmentEdgeCounts,
+    Storable,
+    dgap::{RebalanceDecision, SegmentMaintainAction, SegmentMaintainThresholds, segment_maintenance_decision},
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex, CsrVertexTombstone},
 };
 use ic_stable_slot_map::SlotMap;
@@ -239,6 +242,48 @@ fn build_star_gc_graph(n: usize) -> BenchGcGraph {
     graph
 }
 
+#[derive(Clone, Copy)]
+struct SegmentMaintainBenchCase {
+    leaf: SegmentEdgeCounts,
+    rebalance: RebalanceDecision,
+    queue_len: u64,
+    thresholds: SegmentMaintainThresholds,
+    expected: SegmentMaintainAction,
+}
+
+fn segment_maintain_thresholds() -> SegmentMaintainThresholds {
+    SegmentMaintainThresholds::default()
+}
+
+fn segment_maintain_case(
+    leaf: SegmentEdgeCounts,
+    rebalance: RebalanceDecision,
+    queue_len: u64,
+    expected: SegmentMaintainAction,
+) -> SegmentMaintainBenchCase {
+    SegmentMaintainBenchCase {
+        leaf,
+        rebalance,
+        queue_len,
+        thresholds: segment_maintain_thresholds(),
+        expected,
+    }
+}
+
+fn bench_segment_maintain(case: SegmentMaintainBenchCase) -> canbench_rs::BenchResult {
+    crate::wipe::wipe_stable_memory();
+    canbench_rs::bench_fn(move || {
+        let action = segment_maintenance_decision(
+            case.leaf,
+            case.rebalance,
+            case.queue_len,
+            &case.thresholds,
+        );
+        assert_eq!(action, case.expected, "segment maintenance decision changed");
+        black_box(action);
+    })
+}
+
 use canbench_rs::bench;
 
 #[bench(raw)]
@@ -289,6 +334,112 @@ fn bench_delete_vertex_hub_star_1024() -> canbench_rs::BenchResult {
     canbench_rs::bench_fn(|| {
         graph.delete_vertex(0).expect("delete_vertex");
     })
+}
+
+/// Small leaf with a single tombstone stays below the score gate and should not enqueue work.
+#[bench(raw)]
+fn bench_segment_maintain_small_noop() -> canbench_rs::BenchResult {
+    bench_segment_maintain(
+        segment_maintain_case(
+            SegmentEdgeCounts {
+                actual: 10,
+                total: 100,
+                tombstone: 1,
+            },
+            RebalanceDecision::Noop,
+            0,
+            SegmentMaintainAction::Noop,
+        ),
+    )
+}
+
+/// Small leaf crosses the soft ratio threshold and should enqueue.
+#[bench(raw)]
+fn bench_segment_maintain_small_enqueue() -> canbench_rs::BenchResult {
+    bench_segment_maintain(
+        segment_maintain_case(
+            SegmentEdgeCounts {
+                actual: 95,
+                total: 100,
+                tombstone: 5,
+            },
+            RebalanceDecision::Noop,
+            0,
+            SegmentMaintainAction::Enqueue,
+        ),
+    )
+}
+
+/// Same ratio as the small case, but the larger span raises the score enough to enqueue.
+#[bench(raw)]
+fn bench_segment_maintain_large_enqueue_by_score() -> canbench_rs::BenchResult {
+    bench_segment_maintain(
+        segment_maintain_case(
+            SegmentEdgeCounts {
+                actual: 2900,
+                total: 3000,
+                tombstone: 100,
+            },
+            RebalanceDecision::Noop,
+            0,
+            SegmentMaintainAction::Enqueue,
+        ),
+    )
+}
+
+/// Tombstone ratio above the strict gate should inline immediately.
+#[bench(raw)]
+fn bench_segment_maintain_strict_inline() -> canbench_rs::BenchResult {
+    bench_segment_maintain(
+        segment_maintain_case(
+            SegmentEdgeCounts {
+                actual: 7,
+                total: 10,
+                tombstone: 3,
+            },
+            RebalanceDecision::Noop,
+            0,
+            SegmentMaintainAction::InlineNow,
+        ),
+    )
+}
+
+/// Queue pressure only promotes significant tombstone garbage to inline work.
+#[bench(raw)]
+fn bench_segment_maintain_queue_pressure_inline() -> canbench_rs::BenchResult {
+    bench_segment_maintain(
+        segment_maintain_case(
+            SegmentEdgeCounts {
+                actual: 95,
+                total: 100,
+                tombstone: 5,
+            },
+            RebalanceDecision::Noop,
+            64,
+            SegmentMaintainAction::InlineNow,
+        ),
+    )
+}
+
+/// Rebalance hints should enqueue even when tombstones are absent.
+#[bench(raw)]
+fn bench_segment_maintain_rebalance_window_enqueue() -> canbench_rs::BenchResult {
+    bench_segment_maintain(
+        segment_maintain_case(
+            SegmentEdgeCounts {
+                actual: 10,
+                total: 100,
+                tombstone: 0,
+            },
+            RebalanceDecision::RebalanceWindow {
+                left_vertex: 0,
+                right_vertex: 32,
+                pma_idx: 16,
+            },
+            0,
+            SegmentMaintainAction::Enqueue,
+        ),
+    )
 }
 
 #[init]
