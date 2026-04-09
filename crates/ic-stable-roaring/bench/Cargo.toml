@@ -1,0 +1,18 @@
+[package]
+name = "ic-stable-roaring-canbench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+canbench-rs.workspace = true
+candid.workspace = true
+ic-cdk.workspace = true
+ic-cdk-macros.workspace = true
+ic-stable-roaring = { path = ".." }
+ic-stable-structures.workspace = true
+

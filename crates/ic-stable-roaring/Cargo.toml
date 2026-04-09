@@ -1,0 +1,9 @@
+[package]
+name = "ic-stable-roaring"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ic-stable-structures.workspace = true
+roaring.workspace = true
+

@@ -2029,6 +2029,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "ic-stable-roaring"
+version = "0.1.0"
+dependencies = [
+ "ic-stable-structures",
+ "roaring",
+]
+
+[[package]]
+name = "ic-stable-roaring-canbench"
+version = "0.1.0"
+dependencies = [
+ "canbench-rs",
+ "candid",
+ "ic-cdk 0.20.0",
+ "ic-cdk-macros 0.20.0",
+ "ic-stable-roaring",
+ "ic-stable-structures",
+]
+
+[[package]]
 name = "ic-stable-slot-map"
 version = "0.1.0"
 dependencies = [
