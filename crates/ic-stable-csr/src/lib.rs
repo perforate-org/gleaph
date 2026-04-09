@@ -35,7 +35,10 @@
 //! | [`layout::log_region`] V1 header `DGL` + append-only records                      |
 //! ----------------------------------------
 //!
-//! **Segment maintenance queue (seventh `Memory`):** [`csr::CsrGraphWithGcQueue::format_new_with_gc_queue`]
+//! **Segment maintenance queue:** use one of
+//! [`csr::CsrGraphWithGcQueueRowTombstone::format_new_with_gc_queue`],
+//! [`csr::CsrGraphWithGcQueueSparseDeleted::format_new_with_gc_queue`], or
+//! [`csr::CsrGraphWithGcQueueDenseDeleted::format_new_with_gc_queue`]
 //! takes one more region for [`StableVecDeque`](crate::StableVecDeque)`<`[`csr::GcWorkItem`](crate::csr::gc_work_item::GcWorkItem)`>`
 //! (per-leaf tombstone compaction + PMA sync; not an audit log). Optional [`SegmentMaintainThresholds`]
 //! combines PMA density hints with tombstone ratio + size-corrected score (and queue depth).
@@ -56,8 +59,8 @@
 //! `elem_capacity`, `segment_count`, and `segment_size` for [`DgapEdgeStore::format_new`] (heuristic;
 //! see that type’s docs for `tree_height` and log-pool limits not included).
 //!
-//! **Bidirectional CSR:** [`csr::CsrGraph`] keeps forward and transpose [`DgapStores`] in sync; prefer
-//! [`CsrGraph::format_new`](csr::CsrGraph::format_new) over assembling [`DgapStores`] by hand.
+//! **Bidirectional CSR:** choose one of [`csr::CsrGraphRowTombstone`], [`csr::CsrGraphSparseDeleted`],
+//! or [`csr::CsrGraphDenseDeleted`] depending on deleted-vertex tracking strategy.
 
 #![feature(specialization)]
 
@@ -78,8 +81,10 @@ pub use ic_stable_structures::vec_mem::VectorMemory;
 pub use ic_stable_structures::{Memory, Storable};
 
 pub use csr::{
-    CsrGraph, CsrGraphError, CsrGraphWithGcQueue, CsrInsertError, DgapStores, DgapStoresError,
-    GcWorkItem, LogicalNeighborhoodIter, SegmentMaintainAction, SegmentMaintainThresholds,
+    CsrGraphDenseDeleted, CsrGraphError, CsrGraphRowTombstone, CsrGraphSparseDeleted,
+    CsrGraphWithGcQueueDenseDeleted, CsrGraphWithGcQueueRowTombstone,
+    CsrGraphWithGcQueueSparseDeleted, CsrInsertError, DgapStores, DgapStoresError, GcWorkItem,
+    LogicalNeighborhoodIter, SegmentMaintainAction, SegmentMaintainThresholds,
     insert_edge_into_slab, insert_edge_into_slab_column,
 };
 pub use dgap::{DgapEdgeStore, DgapGraphMemories, NeighborhoodIter, SegmentEdgeCounts};

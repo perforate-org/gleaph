@@ -2,15 +2,15 @@
 
 use std::fmt;
 
+use ic_stable_bitset::BitSet;
+use ic_stable_roaring::StableRoaringBitMap;
+use ic_stable_slot_map::SlotMap;
+use ic_stable_structures::Memory;
+
 use crate::csr::{DgapStores, DgapStoresError};
 use crate::dgap::{DgapEdgeStore, DgapGraphMemories, NeighborhoodIter};
 use crate::memory_util::GrowFailed;
 use crate::traits::{CsrEdge, CsrEdgeTombstone, CsrEdgeUndirected, CsrVertex, CsrVertexTombstone};
-use ic_stable_bitset::BitSet;
-use ic_stable_slot_map::SlotMap;
-use ic_stable_structures::Memory;
-
-// --- specialization: detect undirected flag only when `E: CsrEdgeUndirected` ---
 
 trait UndirectedEdgeFlag {
     fn marked_undirected(&self) -> bool;
@@ -28,12 +28,11 @@ impl<E: CsrEdge + CsrEdgeUndirected> UndirectedEdgeFlag for E {
     }
 }
 
-/// Failure from [`CsrGraph`] operations.
+/// Failure from CSR graph operations.
 #[derive(Debug, PartialEq, Eq)]
 pub enum CsrGraphError {
     Forward(DgapStoresError),
     Reverse(DgapStoresError),
-    /// [`DgapEdgeStore::format_new`] or region grow failed while building the graph.
     Format(GrowFailed),
     VertexCountMismatch {
         forward: u64,
@@ -43,30 +42,23 @@ pub enum CsrGraphError {
         vid: usize,
         len: u64,
     },
-    /// [`CsrGraph::insert_directed`] requires `edge.neighbor_vid() == dst`.
     NeighborMismatch {
         expected: usize,
         actual: usize,
     },
-    /// Use [`CsrGraph::insert_undirected`] when the edge is marked undirected.
     UndirectedEdgeInDirectedInsert,
-    /// Mutation refused because this vertex row is tombstoned.
     EndpointTombstone {
         vid: usize,
     },
-    /// Insert refused: an adjacency slot to that neighbor already exists (including tombstones).
     AdjacencySlotOccupied {
         src: usize,
         dst: usize,
     },
-    /// Logical delete could not find the requested neighbor edge.
     EdgeNotFound {
         owner: usize,
         neighbor: usize,
     },
-    /// Stable deque backing the GC work queue failed to grow.
     GcQueue(GrowFailed),
-    /// Logical delete / GC helper failed inside the edge region.
     LogicalMutation(&'static str),
 }
 
@@ -91,9 +83,7 @@ impl fmt::Display for CsrGraphError {
                 f,
                 "directed insert: edge is marked undirected; use insert_undirected"
             ),
-            Self::EndpointTombstone { vid } => {
-                write!(f, "vertex {vid} is tombstoned")
-            }
+            Self::EndpointTombstone { vid } => write!(f, "vertex {vid} is tombstoned"),
             Self::AdjacencySlotOccupied { src, dst } => write!(
                 f,
                 "vertex {src} already has an adjacency slot for neighbor {dst}"
@@ -132,30 +122,141 @@ impl From<ic_stable_slot_map::GrowFailed> for CsrGraphError {
     }
 }
 
-/// Directed CSR plus transpose CSR, kept in sync on mutation.
-///
-/// Use [`Self::format_new`] to construct from seven [`Memory`](ic_stable_structures::Memory) regions
-/// without assembling [`DgapStores`] manually.
-///
-/// **Iterator limit:** [`Self::out_edges`] / [`Self::in_edges`] require `E::EDGE_BYTES <= 64`
-/// (same as [`DgapEdgeStore::try_neighborhood_iter`](crate::dgap::DgapEdgeStore::try_neighborhood_iter)).
-pub struct CsrGraph<V, E, Mvs, F1, F2, R1, R2, Dv>
+fn bitset_grow_failed(e: ic_stable_bitset::GrowFailed) -> CsrGraphError {
+    CsrGraphError::Format(GrowFailed {
+        current_size_pages: e.current_size_pages(),
+        delta_pages: e.delta_pages(),
+    })
+}
+
+fn roaring_grow_failed(e: ic_stable_roaring::GrowFailed) -> CsrGraphError {
+    CsrGraphError::Format(GrowFailed {
+        current_size_pages: e.current_size_pages(),
+        delta_pages: e.delta_pages(),
+    })
+}
+
+#[doc(hidden)]
+pub trait DeletedVertexRead {
+    fn contains_deleted(&self, vid: usize) -> bool;
+}
+
+pub(crate) trait DeletedVertexState<V, Mvs>: Sized
 where
-    V: CsrVertex,
-    E: CsrEdge,
+    V: CsrVertex + CsrVertexTombstone,
     Mvs: Memory,
-    F1: Memory,
-    F2: Memory,
-    R1: Memory,
-    R2: Memory,
-    Dv: Memory,
 {
-    forward: DgapStores<V, E, Mvs, F1, F2>,
-    reverse: DgapStores<V, E, Mvs, R1, R2>,
+    fn is_deleted(&self, vertices: &SlotMap<V, Mvs>, vid: usize) -> bool;
+    fn mark_deleted(&self, vertices: &SlotMap<V, Mvs>, vid: usize) -> Result<(), CsrGraphError>;
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct RowTombstoneDeleted;
+
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct DenseDeletedIndex<Dv: Memory> {
     deleted_vertices: BitSet<Dv>,
 }
 
-impl<V, E, Mvs, F1, F2, R1, R2, Dv> CsrGraph<V, E, Mvs, F1, F2, R1, R2, Dv>
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct SparseDeletedIndex<Dv: Memory> {
+    deleted_vertices: StableRoaringBitMap<Dv>,
+}
+
+impl<Dv: Memory> DeletedVertexRead for DenseDeletedIndex<Dv> {
+    fn contains_deleted(&self, vid: usize) -> bool {
+        self.deleted_vertices.contains(vid as u64)
+    }
+}
+
+impl<Dv: Memory> DeletedVertexRead for SparseDeletedIndex<Dv> {
+    fn contains_deleted(&self, vid: usize) -> bool {
+        self.deleted_vertices.contains(vid as u64)
+    }
+}
+
+impl<V, Mvs> DeletedVertexState<V, Mvs> for RowTombstoneDeleted
+where
+    V: CsrVertex + CsrVertexTombstone,
+    Mvs: Memory,
+{
+    fn is_deleted(&self, vertices: &SlotMap<V, Mvs>, vid: usize) -> bool {
+        vertices
+            .get_dense(vid as u32)
+            .map(|row| row.is_tombstone())
+            .unwrap_or(false)
+    }
+
+    fn mark_deleted(&self, _vertices: &SlotMap<V, Mvs>, _vid: usize) -> Result<(), CsrGraphError> {
+        Ok(())
+    }
+}
+
+impl<V, Mvs, Dv> DeletedVertexState<V, Mvs> for DenseDeletedIndex<Dv>
+where
+    V: CsrVertex + CsrVertexTombstone,
+    Mvs: Memory,
+    Dv: Memory,
+{
+    fn is_deleted(&self, _vertices: &SlotMap<V, Mvs>, vid: usize) -> bool {
+        self.contains_deleted(vid)
+    }
+
+    fn mark_deleted(&self, _vertices: &SlotMap<V, Mvs>, vid: usize) -> Result<(), CsrGraphError> {
+        self.deleted_vertices
+            .insert(vid as u64)
+            .map_err(bitset_grow_failed)
+    }
+}
+
+impl<V, Mvs, Dv> DeletedVertexState<V, Mvs> for SparseDeletedIndex<Dv>
+where
+    V: CsrVertex + CsrVertexTombstone,
+    Mvs: Memory,
+    Dv: Memory,
+{
+    fn is_deleted(&self, _vertices: &SlotMap<V, Mvs>, vid: usize) -> bool {
+        self.contains_deleted(vid)
+    }
+
+    fn mark_deleted(&self, _vertices: &SlotMap<V, Mvs>, vid: usize) -> Result<(), CsrGraphError> {
+        self.deleted_vertices
+            .insert(vid as u64)
+            .map_err(roaring_grow_failed)
+    }
+}
+
+pub(crate) struct CsrGraphBase<V, E, Mvs, F1, F2, R1, R2, D>
+where
+    V: CsrVertex,
+    E: CsrEdge,
+    Mvs: Memory,
+    F1: Memory,
+    F2: Memory,
+    R1: Memory,
+    R2: Memory,
+{
+    forward: DgapStores<V, E, Mvs, F1, F2>,
+    reverse: DgapStores<V, E, Mvs, R1, R2>,
+    deleted: D,
+}
+
+pub struct CsrGraphRowTombstone<V, E, Mvs, F1, F2, R1, R2>
+where
+    V: CsrVertex,
+    E: CsrEdge,
+    Mvs: Memory,
+    F1: Memory,
+    F2: Memory,
+    R1: Memory,
+    R2: Memory,
+{
+    pub(crate) inner: CsrGraphBase<V, E, Mvs, F1, F2, R1, R2, RowTombstoneDeleted>,
+}
+
+pub struct CsrGraphDenseDeleted<V, E, Mvs, F1, F2, R1, R2, Dv>
 where
     V: CsrVertex,
     E: CsrEdge,
@@ -166,6 +267,87 @@ where
     R2: Memory,
     Dv: Memory,
 {
+    pub(crate) inner: CsrGraphBase<V, E, Mvs, F1, F2, R1, R2, DenseDeletedIndex<Dv>>,
+}
+
+pub struct CsrGraphSparseDeleted<V, E, Mvs, F1, F2, R1, R2, Dv>
+where
+    V: CsrVertex,
+    E: CsrEdge,
+    Mvs: Memory,
+    F1: Memory,
+    F2: Memory,
+    R1: Memory,
+    R2: Memory,
+    Dv: Memory,
+{
+    pub(crate) inner: CsrGraphBase<V, E, Mvs, F1, F2, R1, R2, SparseDeletedIndex<Dv>>,
+}
+
+fn format_stores<V, E, Mvs, F1, F2, R1, R2>(
+    mem_vertices_forward: Mvs,
+    mem_vertices_reverse: Mvs,
+    forward_segment_edge_counts: F1,
+    forward_edges_and_log: F2,
+    reverse_segment_edge_counts: R1,
+    reverse_edges_and_log: R2,
+    elem_capacity: u64,
+    segment_count: u32,
+    segment_size: u32,
+    num_edges: u64,
+) -> Result<(DgapStores<V, E, Mvs, F1, F2>, DgapStores<V, E, Mvs, R1, R2>), CsrGraphError>
+where
+    V: CsrVertex,
+    E: CsrEdge,
+    Mvs: Memory,
+    F1: Memory,
+    F2: Memory,
+    R1: Memory,
+    R2: Memory,
+{
+    let vertices_forward = SlotMap::new(mem_vertices_forward).map_err(CsrGraphError::from)?;
+    let vertices_reverse = SlotMap::new(mem_vertices_reverse).map_err(CsrGraphError::from)?;
+
+    let fwd_mem = DgapGraphMemories::new(forward_segment_edge_counts, forward_edges_and_log);
+    let rev_mem = DgapGraphMemories::new(reverse_segment_edge_counts, reverse_edges_and_log);
+
+    let forward_edges = DgapEdgeStore::new(fwd_mem);
+    forward_edges
+        .format_new(elem_capacity, segment_count, segment_size, num_edges)
+        .map_err(CsrGraphError::from)?;
+    let reverse_edges = DgapEdgeStore::new(rev_mem);
+    reverse_edges
+        .format_new(elem_capacity, segment_count, segment_size, num_edges)
+        .map_err(CsrGraphError::from)?;
+
+    Ok((
+        DgapStores::new(vertices_forward, forward_edges),
+        DgapStores::new(vertices_reverse, reverse_edges),
+    ))
+}
+
+impl<V, E, Mvs, F1, F2, R1, R2, D> CsrGraphBase<V, E, Mvs, F1, F2, R1, R2, D>
+where
+    V: CsrVertex,
+    E: CsrEdge,
+    Mvs: Memory,
+    F1: Memory,
+    F2: Memory,
+    R1: Memory,
+    R2: Memory,
+{
+    pub(crate) fn new(
+        forward: DgapStores<V, E, Mvs, F1, F2>,
+        reverse: DgapStores<V, E, Mvs, R1, R2>,
+        deleted: D,
+    ) -> Self {
+        Self {
+            forward,
+            reverse,
+            deleted,
+        }
+    }
+
     pub fn vertex_count(&self) -> u64 {
         self.forward.vertices.len()
     }
@@ -202,7 +384,6 @@ where
         Ok(())
     }
 
-    /// Refresh persisted slab tail metadata on both DGAP columns (see [`DgapStores::refresh_slab_occupied_tail_meta`]).
     pub fn refresh_slab_occupied_tail_meta(&self) -> Result<(), CsrGraphError> {
         self.forward
             .refresh_slab_occupied_tail_meta()
@@ -211,14 +392,6 @@ where
             .refresh_slab_occupied_tail_meta()
             .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?;
         Ok(())
-    }
-
-    pub(crate) fn deleted_vertices(&self) -> &BitSet<Dv> {
-        &self.deleted_vertices
-    }
-
-    pub(crate) fn vertex_deleted(&self, vid: usize) -> bool {
-        self.deleted_vertices.contains(vid as u64)
     }
 
     pub fn insert_vertex(&self, row_template: V) -> Result<u64, CsrGraphError> {
@@ -328,7 +501,6 @@ where
             .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))
     }
 
-    /// Raw neighborhood scan (includes tombstones). Used for insert-uniqueness checks.
     pub(crate) fn has_forward_slot_to_neighbor(
         &self,
         src: usize,
@@ -341,7 +513,7 @@ where
             .try_neighborhood_iter(&self.forward.vertices, src)
             .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?;
         for x in it {
-            let e = x.map_err(|m| CsrGraphError::LogicalMutation(m))?;
+            let e = x.map_err(CsrGraphError::LogicalMutation)?;
             if e.neighbor_vid() == dst {
                 return Ok(true);
             }
@@ -358,83 +530,45 @@ where
     }
 }
 
-impl<V, E, M> CsrGraph<V, E, M, M, M, M, M, M>
+impl<V, E, Mvs, F1, F2, R1, R2, D> CsrGraphBase<V, E, Mvs, F1, F2, R1, R2, D>
 where
-    V: CsrVertex,
+    V: CsrVertex + CsrVertexTombstone,
     E: CsrEdge,
-    M: Memory,
+    Mvs: Memory,
+    F1: Memory,
+    F2: Memory,
+    R1: Memory,
+    R2: Memory,
+    D: DeletedVertexState<V, Mvs>,
 {
-    /// Format empty vertex columns, the deleted-vertex bitset, and both edge regions from **seven**
-    /// memories (see crate root diagram).
-    ///
-    /// Order: forward `M_v`, reverse `M_v`, then forward `segment_edge_counts`, `edges_and_log`,
-    /// then the same pair for reverse. All edge regions receive the same
-    /// `elem_capacity` / `segment_count` / `segment_size` / `num_edges` via [`DgapEdgeStore::format_new`].
-    #[allow(clippy::too_many_arguments)]
-    pub fn format_new(
-        mem_vertices_forward: M,
-        mem_vertices_reverse: M,
-        forward_segment_edge_counts: M,
-        forward_edges_and_log: M,
-        reverse_segment_edge_counts: M,
-        reverse_edges_and_log: M,
-        mem_deleted_vertices: M,
-        elem_capacity: u64,
-        segment_count: u32,
-        segment_size: u32,
-        num_edges: u64,
-    ) -> Result<Self, CsrGraphError> {
-        let vertices_forward = SlotMap::new(mem_vertices_forward).map_err(CsrGraphError::from)?;
-        let vertices_reverse = SlotMap::new(mem_vertices_reverse).map_err(CsrGraphError::from)?;
+    pub(crate) fn vertex_deleted(&self, vid: usize) -> bool {
+        self.deleted.is_deleted(&self.forward.vertices, vid)
+    }
 
-        let fwd_mem = DgapGraphMemories::new(forward_segment_edge_counts, forward_edges_and_log);
-        let rev_mem = DgapGraphMemories::new(reverse_segment_edge_counts, reverse_edges_and_log);
-
-        let forward_edges = DgapEdgeStore::new(fwd_mem);
-        forward_edges
-            .format_new(elem_capacity, segment_count, segment_size, num_edges)
-            .map_err(CsrGraphError::from)?;
-        let reverse_edges = DgapEdgeStore::new(rev_mem);
-        reverse_edges
-            .format_new(elem_capacity, segment_count, segment_size, num_edges)
-            .map_err(CsrGraphError::from)?;
-
-        let forward = DgapStores::new(vertices_forward, forward_edges);
-        let reverse = DgapStores::new(vertices_reverse, reverse_edges);
-        let deleted_vertices = BitSet::new(mem_deleted_vertices).map_err(|e| {
-            CsrGraphError::Format(GrowFailed {
-                current_size_pages: e.current_size_pages(),
-                delta_pages: e.delta_pages(),
-            })
-        })?;
-
-        Ok(Self {
-            forward,
-            reverse,
-            deleted_vertices,
-        })
+    pub(crate) fn mark_vertex_deleted(&self, vid: usize) -> Result<(), CsrGraphError> {
+        self.deleted.mark_deleted(&self.forward.vertices, vid)
     }
 }
 
 /// Neighborhood iterator hiding tombstone edges and edges incident to deleted vertices.
-pub enum LogicalNeighborhoodIter<'a, E, Dv, M1, M2>
+pub enum LogicalNeighborhoodIter<'a, E, D, M1, M2>
 where
     E: CsrEdge + CsrEdgeTombstone,
-    Dv: Memory,
+    D: DeletedVertexRead,
     M1: Memory,
     M2: Memory,
 {
     Active {
         inner: NeighborhoodIter<'a, E, M1, M2>,
-        deleted_vertices: &'a BitSet<Dv>,
+        deleted_vertices: &'a D,
     },
     Empty,
 }
 
-impl<'a, E, Dv, M1, M2> Iterator for LogicalNeighborhoodIter<'a, E, Dv, M1, M2>
+impl<'a, E, D, M1, M2> Iterator for LogicalNeighborhoodIter<'a, E, D, M1, M2>
 where
     E: CsrEdge + CsrEdgeTombstone,
-    Dv: Memory,
+    D: DeletedVertexRead,
     M1: Memory,
     M2: Memory,
 {
@@ -454,7 +588,7 @@ where
                         if e.is_tombstone() {
                             continue;
                         }
-                        if deleted_vertices.contains(e.neighbor_vid() as u64) {
+                        if deleted_vertices.contains_deleted(e.neighbor_vid()) {
                             continue;
                         }
                         return Some(Ok(e));
@@ -465,7 +599,7 @@ where
     }
 }
 
-impl<V, E, Mvs, F1, F2, R1, R2, Dv> CsrGraph<V, E, Mvs, F1, F2, R1, R2, Dv>
+impl<V, E, Mvs, F1, F2, R1, R2, D> CsrGraphBase<V, E, Mvs, F1, F2, R1, R2, D>
 where
     V: CsrVertex + CsrVertexTombstone,
     E: CsrEdge + CsrEdgeTombstone,
@@ -474,13 +608,12 @@ where
     F2: Memory,
     R1: Memory,
     R2: Memory,
-    Dv: Memory,
+    D: DeletedVertexState<V, Mvs> + DeletedVertexRead,
 {
-    /// Out-neighbors omitting edge tombstones and neighbors whose vertex id is marked deleted.
     pub fn out_edges_logical<'a>(
         &'a self,
         vid: usize,
-    ) -> Result<LogicalNeighborhoodIter<'a, E, Dv, F1, F2>, CsrGraphError> {
+    ) -> Result<LogicalNeighborhoodIter<'a, E, D, F1, F2>, CsrGraphError> {
         self.ensure_vertex(vid)?;
         if self.vertex_deleted(vid) {
             return Ok(LogicalNeighborhoodIter::Empty);
@@ -492,15 +625,14 @@ where
             .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?;
         Ok(LogicalNeighborhoodIter::Active {
             inner,
-            deleted_vertices: self.deleted_vertices(),
+            deleted_vertices: &self.deleted,
         })
     }
 
-    /// In-neighbors (transpose) with the same filtering as [`Self::out_edges_logical`].
     pub fn in_edges_logical<'a>(
         &'a self,
         vid: usize,
-    ) -> Result<LogicalNeighborhoodIter<'a, E, Dv, R1, R2>, CsrGraphError> {
+    ) -> Result<LogicalNeighborhoodIter<'a, E, D, R1, R2>, CsrGraphError> {
         self.ensure_vertex(vid)?;
         if self.vertex_deleted(vid) {
             return Ok(LogicalNeighborhoodIter::Empty);
@@ -512,7 +644,403 @@ where
             .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?;
         Ok(LogicalNeighborhoodIter::Active {
             inner,
-            deleted_vertices: self.deleted_vertices(),
+            deleted_vertices: &self.deleted,
+        })
+    }
+}
+
+impl<V, E, Mvs, F1, F2, R1, R2> CsrGraphRowTombstone<V, E, Mvs, F1, F2, R1, R2>
+where
+    V: CsrVertex,
+    E: CsrEdge,
+    Mvs: Memory,
+    F1: Memory,
+    F2: Memory,
+    R1: Memory,
+    R2: Memory,
+{
+    pub fn vertex_count(&self) -> u64 {
+        self.inner.vertex_count()
+    }
+
+    pub fn sync_pma_meta(&self) -> Result<(), CsrGraphError> {
+        self.inner.sync_pma_meta()
+    }
+
+    pub fn sync_pma_meta_for_vertex_range(
+        &self,
+        left: usize,
+        right: usize,
+    ) -> Result<(), CsrGraphError> {
+        self.inner.sync_pma_meta_for_vertex_range(left, right)
+    }
+
+    pub fn refresh_slab_occupied_tail_meta(&self) -> Result<(), CsrGraphError> {
+        self.inner.refresh_slab_occupied_tail_meta()
+    }
+
+    pub fn insert_vertex(&self, row_template: V) -> Result<u64, CsrGraphError> {
+        self.inner.insert_vertex(row_template)
+    }
+
+    pub fn insert_vertex_strict(&self, row_template: V) -> Result<u64, CsrGraphError> {
+        self.inner.insert_vertex_strict(row_template)
+    }
+
+    pub fn insert_directed(&self, src: usize, dst: usize, edge: E) -> Result<(), CsrGraphError> {
+        self.inner.insert_directed(src, dst, edge)
+    }
+
+    pub fn insert_undirected(&self, u: usize, v: usize, edge: E) -> Result<(), CsrGraphError>
+    where
+        E: CsrEdgeUndirected,
+    {
+        self.inner.insert_undirected(u, v, edge)
+    }
+
+    pub fn out_edges<'a>(
+        &'a self,
+        vid: usize,
+    ) -> Result<NeighborhoodIter<'a, E, F1, F2>, CsrGraphError> {
+        self.inner.out_edges(vid)
+    }
+
+    pub fn in_edges<'a>(
+        &'a self,
+        vid: usize,
+    ) -> Result<NeighborhoodIter<'a, E, R1, R2>, CsrGraphError> {
+        self.inner.in_edges(vid)
+    }
+
+    pub fn forward_dgap(&self) -> &DgapStores<V, E, Mvs, F1, F2> {
+        self.inner.forward_dgap()
+    }
+
+    pub fn reverse_dgap(&self) -> &DgapStores<V, E, Mvs, R1, R2> {
+        self.inner.reverse_dgap()
+    }
+}
+
+impl<V, E, Mvs, F1, F2, R1, R2, Dv> CsrGraphDenseDeleted<V, E, Mvs, F1, F2, R1, R2, Dv>
+where
+    V: CsrVertex,
+    E: CsrEdge,
+    Mvs: Memory,
+    F1: Memory,
+    F2: Memory,
+    R1: Memory,
+    R2: Memory,
+    Dv: Memory,
+{
+    pub fn vertex_count(&self) -> u64 {
+        self.inner.vertex_count()
+    }
+
+    pub fn sync_pma_meta(&self) -> Result<(), CsrGraphError> {
+        self.inner.sync_pma_meta()
+    }
+
+    pub fn sync_pma_meta_for_vertex_range(
+        &self,
+        left: usize,
+        right: usize,
+    ) -> Result<(), CsrGraphError> {
+        self.inner.sync_pma_meta_for_vertex_range(left, right)
+    }
+
+    pub fn refresh_slab_occupied_tail_meta(&self) -> Result<(), CsrGraphError> {
+        self.inner.refresh_slab_occupied_tail_meta()
+    }
+
+    pub fn insert_vertex(&self, row_template: V) -> Result<u64, CsrGraphError> {
+        self.inner.insert_vertex(row_template)
+    }
+
+    pub fn insert_vertex_strict(&self, row_template: V) -> Result<u64, CsrGraphError> {
+        self.inner.insert_vertex_strict(row_template)
+    }
+
+    pub fn insert_directed(&self, src: usize, dst: usize, edge: E) -> Result<(), CsrGraphError> {
+        self.inner.insert_directed(src, dst, edge)
+    }
+
+    pub fn insert_undirected(&self, u: usize, v: usize, edge: E) -> Result<(), CsrGraphError>
+    where
+        E: CsrEdgeUndirected,
+    {
+        self.inner.insert_undirected(u, v, edge)
+    }
+
+    pub fn out_edges<'a>(
+        &'a self,
+        vid: usize,
+    ) -> Result<NeighborhoodIter<'a, E, F1, F2>, CsrGraphError> {
+        self.inner.out_edges(vid)
+    }
+
+    pub fn in_edges<'a>(
+        &'a self,
+        vid: usize,
+    ) -> Result<NeighborhoodIter<'a, E, R1, R2>, CsrGraphError> {
+        self.inner.in_edges(vid)
+    }
+
+    pub fn forward_dgap(&self) -> &DgapStores<V, E, Mvs, F1, F2> {
+        self.inner.forward_dgap()
+    }
+
+    pub fn reverse_dgap(&self) -> &DgapStores<V, E, Mvs, R1, R2> {
+        self.inner.reverse_dgap()
+    }
+}
+
+impl<V, E, Mvs, F1, F2, R1, R2, Dv> CsrGraphSparseDeleted<V, E, Mvs, F1, F2, R1, R2, Dv>
+where
+    V: CsrVertex,
+    E: CsrEdge,
+    Mvs: Memory,
+    F1: Memory,
+    F2: Memory,
+    R1: Memory,
+    R2: Memory,
+    Dv: Memory,
+{
+    pub fn vertex_count(&self) -> u64 {
+        self.inner.vertex_count()
+    }
+
+    pub fn sync_pma_meta(&self) -> Result<(), CsrGraphError> {
+        self.inner.sync_pma_meta()
+    }
+
+    pub fn sync_pma_meta_for_vertex_range(
+        &self,
+        left: usize,
+        right: usize,
+    ) -> Result<(), CsrGraphError> {
+        self.inner.sync_pma_meta_for_vertex_range(left, right)
+    }
+
+    pub fn refresh_slab_occupied_tail_meta(&self) -> Result<(), CsrGraphError> {
+        self.inner.refresh_slab_occupied_tail_meta()
+    }
+
+    pub fn insert_vertex(&self, row_template: V) -> Result<u64, CsrGraphError> {
+        self.inner.insert_vertex(row_template)
+    }
+
+    pub fn insert_vertex_strict(&self, row_template: V) -> Result<u64, CsrGraphError> {
+        self.inner.insert_vertex_strict(row_template)
+    }
+
+    pub fn insert_directed(&self, src: usize, dst: usize, edge: E) -> Result<(), CsrGraphError> {
+        self.inner.insert_directed(src, dst, edge)
+    }
+
+    pub fn insert_undirected(&self, u: usize, v: usize, edge: E) -> Result<(), CsrGraphError>
+    where
+        E: CsrEdgeUndirected,
+    {
+        self.inner.insert_undirected(u, v, edge)
+    }
+
+    pub fn out_edges<'a>(
+        &'a self,
+        vid: usize,
+    ) -> Result<NeighborhoodIter<'a, E, F1, F2>, CsrGraphError> {
+        self.inner.out_edges(vid)
+    }
+
+    pub fn in_edges<'a>(
+        &'a self,
+        vid: usize,
+    ) -> Result<NeighborhoodIter<'a, E, R1, R2>, CsrGraphError> {
+        self.inner.in_edges(vid)
+    }
+
+    pub fn forward_dgap(&self) -> &DgapStores<V, E, Mvs, F1, F2> {
+        self.inner.forward_dgap()
+    }
+
+    pub fn reverse_dgap(&self) -> &DgapStores<V, E, Mvs, R1, R2> {
+        self.inner.reverse_dgap()
+    }
+}
+
+impl<V, E, Mvs, F1, F2, R1, R2, Dv> CsrGraphDenseDeleted<V, E, Mvs, F1, F2, R1, R2, Dv>
+where
+    V: CsrVertex + CsrVertexTombstone,
+    E: CsrEdge + CsrEdgeTombstone,
+    Mvs: Memory,
+    F1: Memory,
+    F2: Memory,
+    R1: Memory,
+    R2: Memory,
+    Dv: Memory,
+{
+    pub fn out_edges_logical<'a>(
+        &'a self,
+        vid: usize,
+    ) -> Result<LogicalNeighborhoodIter<'a, E, DenseDeletedIndex<Dv>, F1, F2>, CsrGraphError>
+    {
+        self.inner.out_edges_logical(vid)
+    }
+
+    pub fn in_edges_logical<'a>(
+        &'a self,
+        vid: usize,
+    ) -> Result<LogicalNeighborhoodIter<'a, E, DenseDeletedIndex<Dv>, R1, R2>, CsrGraphError>
+    {
+        self.inner.in_edges_logical(vid)
+    }
+}
+
+impl<V, E, Mvs, F1, F2, R1, R2, Dv> CsrGraphSparseDeleted<V, E, Mvs, F1, F2, R1, R2, Dv>
+where
+    V: CsrVertex + CsrVertexTombstone,
+    E: CsrEdge + CsrEdgeTombstone,
+    Mvs: Memory,
+    F1: Memory,
+    F2: Memory,
+    R1: Memory,
+    R2: Memory,
+    Dv: Memory,
+{
+    pub fn out_edges_logical<'a>(
+        &'a self,
+        vid: usize,
+    ) -> Result<LogicalNeighborhoodIter<'a, E, SparseDeletedIndex<Dv>, F1, F2>, CsrGraphError>
+    {
+        self.inner.out_edges_logical(vid)
+    }
+
+    pub fn in_edges_logical<'a>(
+        &'a self,
+        vid: usize,
+    ) -> Result<LogicalNeighborhoodIter<'a, E, SparseDeletedIndex<Dv>, R1, R2>, CsrGraphError>
+    {
+        self.inner.in_edges_logical(vid)
+    }
+}
+
+impl<V, E, M> CsrGraphRowTombstone<V, E, M, M, M, M, M>
+where
+    V: CsrVertex,
+    E: CsrEdge,
+    M: Memory,
+{
+    #[allow(clippy::too_many_arguments)]
+    pub fn format_new(
+        mem_vertices_forward: M,
+        mem_vertices_reverse: M,
+        forward_segment_edge_counts: M,
+        forward_edges_and_log: M,
+        reverse_segment_edge_counts: M,
+        reverse_edges_and_log: M,
+        elem_capacity: u64,
+        segment_count: u32,
+        segment_size: u32,
+        num_edges: u64,
+    ) -> Result<Self, CsrGraphError> {
+        let (forward, reverse) = format_stores(
+            mem_vertices_forward,
+            mem_vertices_reverse,
+            forward_segment_edge_counts,
+            forward_edges_and_log,
+            reverse_segment_edge_counts,
+            reverse_edges_and_log,
+            elem_capacity,
+            segment_count,
+            segment_size,
+            num_edges,
+        )?;
+        Ok(Self {
+            inner: CsrGraphBase::new(forward, reverse, RowTombstoneDeleted),
+        })
+    }
+}
+
+impl<V, E, M, Dv> CsrGraphDenseDeleted<V, E, M, M, M, M, M, Dv>
+where
+    V: CsrVertex,
+    E: CsrEdge,
+    M: Memory,
+    Dv: Memory,
+{
+    #[allow(clippy::too_many_arguments)]
+    pub fn format_new(
+        mem_vertices_forward: M,
+        mem_vertices_reverse: M,
+        forward_segment_edge_counts: M,
+        forward_edges_and_log: M,
+        reverse_segment_edge_counts: M,
+        reverse_edges_and_log: M,
+        mem_deleted_vertices: Dv,
+        elem_capacity: u64,
+        segment_count: u32,
+        segment_size: u32,
+        num_edges: u64,
+    ) -> Result<Self, CsrGraphError> {
+        let (forward, reverse) = format_stores(
+            mem_vertices_forward,
+            mem_vertices_reverse,
+            forward_segment_edge_counts,
+            forward_edges_and_log,
+            reverse_segment_edge_counts,
+            reverse_edges_and_log,
+            elem_capacity,
+            segment_count,
+            segment_size,
+            num_edges,
+        )?;
+        let deleted = DenseDeletedIndex {
+            deleted_vertices: BitSet::new(mem_deleted_vertices).map_err(bitset_grow_failed)?,
+        };
+        Ok(Self {
+            inner: CsrGraphBase::new(forward, reverse, deleted),
+        })
+    }
+}
+
+impl<V, E, M, Dv> CsrGraphSparseDeleted<V, E, M, M, M, M, M, Dv>
+where
+    V: CsrVertex,
+    E: CsrEdge,
+    M: Memory,
+    Dv: Memory,
+{
+    #[allow(clippy::too_many_arguments)]
+    pub fn format_new(
+        mem_vertices_forward: M,
+        mem_vertices_reverse: M,
+        forward_segment_edge_counts: M,
+        forward_edges_and_log: M,
+        reverse_segment_edge_counts: M,
+        reverse_edges_and_log: M,
+        mem_deleted_vertices: Dv,
+        elem_capacity: u64,
+        segment_count: u32,
+        segment_size: u32,
+        num_edges: u64,
+    ) -> Result<Self, CsrGraphError> {
+        let (forward, reverse) = format_stores(
+            mem_vertices_forward,
+            mem_vertices_reverse,
+            forward_segment_edge_counts,
+            forward_edges_and_log,
+            reverse_segment_edge_counts,
+            reverse_edges_and_log,
+            elem_capacity,
+            segment_count,
+            segment_size,
+            num_edges,
+        )?;
+        let deleted = SparseDeletedIndex {
+            deleted_vertices: StableRoaringBitMap::new(mem_deleted_vertices)
+                .map_err(roaring_grow_failed)?,
+        };
+        Ok(Self {
+            inner: CsrGraphBase::new(forward, reverse, deleted),
         })
     }
 }

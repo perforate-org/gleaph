@@ -1,4 +1,4 @@
-//! Fixed-width [`Storable`] work items for [`super::csr_graph_gc::CsrGraphWithGcQueue`].
+//! Fixed-width [`Storable`] work items for the queue-backed CSR graph wrappers.
 
 use std::borrow::Cow;
 

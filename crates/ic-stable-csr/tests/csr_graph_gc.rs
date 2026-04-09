@@ -6,13 +6,13 @@ use common::{
     TestEdge as TE, TestVertex as TV, assert_dense_vertex_bases_non_decreasing, empty_vertex, vm,
 };
 use ic_stable_csr::{
-    CsrEdgeSlotTombstoneScan as _, CsrGraphError, CsrGraphWithGcQueue, DgapStores,
+    CsrEdgeSlotTombstoneScan as _, CsrGraphError, CsrGraphWithGcQueueDenseDeleted, DgapStores,
     SegmentEdgeCounts, SegmentMaintainThresholds, VectorMemory,
     dgap::recount_segment_edge_counts_column,
     traits::{CsrVertex, CsrVertexTombstone},
 };
 
-type GcTestGraph = CsrGraphWithGcQueue<
+type GcTestGraph = CsrGraphWithGcQueueDenseDeleted<
     TV,
     TE,
     VectorMemory,
@@ -67,7 +67,7 @@ fn assert_sec_matches_full_recount_te(
 
 #[test]
 fn delete_edge_tombstone_gc_and_degrees() {
-    let g = CsrGraphWithGcQueue::format_new_with_gc_queue(
+    let g = CsrGraphWithGcQueueDenseDeleted::format_new_with_gc_queue(
             vm(),
             vm(),
             vm(),
@@ -158,7 +158,7 @@ fn delete_edge_tombstone_gc_and_degrees() {
 
 #[test]
 fn delete_vertex_hides_edges_until_gc() {
-    let g = CsrGraphWithGcQueue::format_new_with_gc_queue(
+    let g = CsrGraphWithGcQueueDenseDeleted::format_new_with_gc_queue(
             vm(),
             vm(),
             vm(),
@@ -220,7 +220,7 @@ fn delete_vertex_hides_edges_until_gc() {
 
 #[test]
 fn insert_rejects_tombstone_endpoint() {
-    let g = CsrGraphWithGcQueue::format_new_with_gc_queue(
+    let g = CsrGraphWithGcQueueDenseDeleted::format_new_with_gc_queue(
             vm(),
             vm(),
             vm(),
@@ -253,7 +253,7 @@ fn insert_rejects_tombstone_endpoint() {
 
 #[test]
 fn insert_rejects_duplicate_neighbor_slot() {
-    let g = CsrGraphWithGcQueue::format_new_with_gc_queue(
+    let g = CsrGraphWithGcQueueDenseDeleted::format_new_with_gc_queue(
             vm(),
             vm(),
             vm(),
@@ -290,7 +290,7 @@ fn delete_edge_inline_when_queue_pressure_threshold_zero() {
         queue_depth_inline_pressure: 0,
         ..Default::default()
     };
-    let g = CsrGraphWithGcQueue::format_new_with_gc_queue(
+    let g = CsrGraphWithGcQueueDenseDeleted::format_new_with_gc_queue(
             vm(),
             vm(),
             vm(),

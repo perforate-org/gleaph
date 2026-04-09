@@ -1,6 +1,6 @@
 # `ic-stable-csr-canbench`
 
-Wasm + PocketIC benchmarks for `ic_stable_csr::dgap::DgapEdgeStore::remove_slab_edge_at_local_index_physically`, `ic_stable_csr::csr::CsrGraphWithGcQueue::delete_vertex`, and the `segment_maintenance_decision` score gate. Stable backing uses [`DefaultMemoryImpl`](https://docs.rs/ic-stable-structures/latest/ic_stable_structures/struct.DefaultMemoryImpl.html) and [`MemoryManager`](https://docs.rs/ic-stable-structures/latest/ic_stable_structures/memory_manager/struct.MemoryManager.html).
+Wasm + PocketIC benchmarks for `ic_stable_csr::dgap::DgapEdgeStore::remove_slab_edge_at_local_index_physically`, `ic_stable_csr::csr::CsrGraphWithGcQueueDenseDeleted::delete_vertex`, and the `segment_maintenance_decision` score gate. Stable backing uses [`DefaultMemoryImpl`](https://docs.rs/ic-stable-structures/latest/ic_stable_structures/struct.DefaultMemoryImpl.html) and [`MemoryManager`](https://docs.rs/ic-stable-structures/latest/ic_stable_structures/memory_manager/struct.MemoryManager.html).
 
 ## Build
 

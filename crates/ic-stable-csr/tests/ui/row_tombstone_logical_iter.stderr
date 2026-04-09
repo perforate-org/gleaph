@@ -1,0 +1,11 @@
+error[E0599]: no method named `out_edges_logical` found for struct `CsrGraphRowTombstone<V, E, Mvs, F1, F2, R1, R2>` in the current scope
+  --> tests/ui/row_tombstone_logical_iter.rs:19:15
+   |
+19 |     let _ = g.out_edges_logical(0);
+   |               ^^^^^^^^^^^^^^^^^
+   |
+help: there is a method `out_edges` with a similar name
+   |
+19 -     let _ = g.out_edges_logical(0);
+19 +     let _ = g.out_edges(0);
+   |

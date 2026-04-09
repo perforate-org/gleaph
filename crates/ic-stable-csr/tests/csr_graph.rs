@@ -1,4 +1,4 @@
-//! [`CsrGraph::format_new`] and bidirectional insert / neighborhood iterators.
+//! [`CsrGraphRowTombstone::format_new`] and bidirectional insert / neighborhood iterators.
 
 mod common;
 
@@ -6,12 +6,12 @@ use common::{
     TestEdge as TE, TestVertex as TV, assert_dense_vertex_bases_non_decreasing, empty_vertex, vm,
 };
 use ic_stable_csr::{
-    CsrGraph, CsrGraphError, VectorMemory,
+    CsrGraphError, CsrGraphRowTombstone, VectorMemory,
     traits::{CsrEdge, CsrEdgeUndirected},
 };
 
 type CsrTestGraph =
-    CsrGraph<TV, TE, VectorMemory, VectorMemory, VectorMemory, VectorMemory, VectorMemory, VectorMemory>;
+    CsrGraphRowTombstone<TV, TE, VectorMemory, VectorMemory, VectorMemory, VectorMemory, VectorMemory>;
 
 fn assert_csr_fwd_rev_bases_non_decreasing(g: &CsrTestGraph) {
     assert_dense_vertex_bases_non_decreasing(g.forward_dgap());
@@ -21,8 +21,7 @@ fn assert_csr_fwd_rev_bases_non_decreasing(g: &CsrTestGraph) {
 #[test]
 fn format_new_directed_transpose_neighbors() {
     let g =
-        CsrGraph::format_new(
-            vm(),
+        CsrGraphRowTombstone::format_new(
             vm(),
             vm(),
             vm(),
@@ -61,7 +60,8 @@ fn format_new_directed_transpose_neighbors() {
 
 #[test]
 fn insert_directed_rejects_undirected_flag_via_specialization() {
-    let g = CsrGraph::format_new(vm(), vm(), vm(), vm(), vm(), vm(), vm(), 32, 1, 8, 0).unwrap();
+    let g = CsrGraphRowTombstone::format_new(vm(), vm(), vm(), vm(), vm(), vm(), 32, 1, 8, 0)
+        .unwrap();
 
     g.insert_vertex(empty_vertex()).unwrap();
     g.insert_vertex(empty_vertex()).unwrap();
@@ -75,7 +75,8 @@ fn insert_directed_rejects_undirected_flag_via_specialization() {
 
 #[test]
 fn insert_undirected_sets_flag_and_symmetric_degrees() {
-    let g = CsrGraph::format_new(vm(), vm(), vm(), vm(), vm(), vm(), vm(), 128, 1, 8, 0).unwrap();
+    let g = CsrGraphRowTombstone::format_new(vm(), vm(), vm(), vm(), vm(), vm(), 128, 1, 8, 0)
+        .unwrap();
 
     for _ in 0..3 {
         g.insert_vertex(empty_vertex()).unwrap();
@@ -108,7 +109,8 @@ fn insert_undirected_sets_flag_and_symmetric_degrees() {
 
 #[test]
 fn neighbor_mismatch_on_directed_insert() {
-    let g = CsrGraph::format_new(vm(), vm(), vm(), vm(), vm(), vm(), vm(), 32, 1, 8, 0).unwrap();
+    let g = CsrGraphRowTombstone::format_new(vm(), vm(), vm(), vm(), vm(), vm(), 32, 1, 8, 0)
+        .unwrap();
 
     g.insert_vertex(empty_vertex()).unwrap();
     g.insert_vertex(empty_vertex()).unwrap();

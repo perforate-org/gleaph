@@ -28,7 +28,7 @@ pub trait CsrVertexTombstone: CsrVertex {
 /// One fixed-width **edge record** stored in a CSR slab cell (`M_e`).
 ///
 /// In the forward CSR, [`Self::neighbor_vid`](Self::neighbor_vid) is the **other** endpoint (out-neighbor).
-/// [`crate::csr::CsrGraph`] builds the transpose CSR by storing [`Self::with_neighbor_vid`](Self::with_neighbor_vid)(`src`)
+/// The CSR graph wrappers build the transpose CSR by storing [`Self::with_neighbor_vid`](Self::with_neighbor_vid)(`src`)
 /// at row `dst` in the reverse store.
 ///
 /// Hot paths use a **64-byte stack buffer** when `EDGE_BYTES <= 64`; larger widths still work via heap.
@@ -68,9 +68,9 @@ impl<E: CsrEdge + CsrEdgeTombstone> CsrEdgeSlotTombstoneScan for E {
 
 /// Extension of [`CsrEdge`] for edges that carry an **undirected** semantic flag in the slot payload.
 ///
-/// Storage remains directed CSR (forward + reverse in [`crate::csr::CsrGraph`]); this bit records that
-/// the logical relationship is undirected so APIs can reject [`crate::csr::CsrGraph::insert_directed`]
-/// when inappropriate and route to [`crate::csr::CsrGraph::insert_undirected`].
+/// Storage remains directed CSR (forward + reverse in the CSR graph wrappers); this bit records that
+/// the logical relationship is undirected so APIs can reject `insert_directed`
+/// when inappropriate and route to `insert_undirected`.
 ///
 /// Implementations should keep the flag consistent with any other packed metadata when rewriting the edge
 /// (for example the undirected bit in `graph-pma`’s `EdgeMeta`).

@@ -591,7 +591,8 @@ fn tombstone_garbage_significant(leaf: SegmentEdgeCounts, thr: &SegmentMaintainT
         return false;
     }
     let tomb_r = tombstone_ratio(leaf);
-    tomb_r >= thr.soft_tombstone_ratio || tombstone_score(leaf) >= thr.soft_tombstone_score_threshold
+    tomb_r >= thr.soft_tombstone_ratio
+        || tombstone_score(leaf) >= thr.soft_tombstone_score_threshold
 }
 
 #[inline]
@@ -601,7 +602,8 @@ fn tombstone_garbage_strict(leaf: SegmentEdgeCounts, thr: &SegmentMaintainThresh
         return false;
     }
     let tomb_r = tombstone_ratio(leaf);
-    tomb_r >= thr.strict_tombstone_ratio || tombstone_score(leaf) >= thr.strict_tombstone_score_threshold
+    tomb_r >= thr.strict_tombstone_ratio
+        || tombstone_score(leaf) >= thr.strict_tombstone_score_threshold
 }
 
 /// In-memory DGAP `rebalance_weighted` on global edge slot indices (full `vertices` slice).
@@ -1367,7 +1369,7 @@ mod remove_slab_dirty_overlap_tests {
             rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
             let mut bases = Vec::with_capacity(n);
             for _ in 0..n {
-                let delta = (rng % 5) as u64;
+                let delta = rng % 5;
                 rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
                 next = next.saturating_add(delta);
                 bases.push(next);
@@ -1375,9 +1377,9 @@ mod remove_slab_dirty_overlap_tests {
             rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
             let span = next.saturating_add(20);
             rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
-            let slide_lo = (rng % span.max(1)) as u64;
+            let slide_lo = rng % span.max(1);
             rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
-            let mut slide_hi = (rng % span.max(1)) as u64;
+            let mut slide_hi = rng % span.max(1);
             if slide_hi <= slide_lo {
                 slide_hi = slide_lo.saturating_add(1);
             }
