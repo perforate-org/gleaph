@@ -213,8 +213,8 @@ Compare total instructions first, then heap / stable-memory increase.
 
 Ignore any historical results that included graph construction inside the measured closure. The fixture-based benches are the source of truth for operation cost comparisons.
 
-- If `SparseDeleted` and `DenseDeleted` are close, prefer `SparseDeleted` unless deletion density stays high in service traffic.
-- If `DenseDeleted` clearly wins on both hub-heavy and random topologies, that is a signal to investigate it as a default candidate.
+- Current interpretation: delete costs are largely DGAP-maintenance dominated, so small sparse/dense deltas here should not drive the default choice by themselves.
+- If `SparseDeleted` and `DenseDeleted` are close, keep `SparseDeleted` as the service default hypothesis.
 
 ### GC Step
 
@@ -228,6 +228,7 @@ Use GC runs to answer whether a strategy only shifts cost from delete time into 
 - `RowTombstone` should only be judged on raw read.
 - `SparseDeleted` vs `DenseDeleted` should be judged on logical read, because that is the service-facing traversal path.
 - Pay attention to `dgap_logical_read_deleted_filter` when delete density rises.
+- Current interpretation: `DenseDeleted` is the variant to prefer when logical traversal is the hot path and read latency sensitivity matters more than write-path neutrality.
 
 ### Scenario Runs
 
@@ -237,8 +238,9 @@ Current decision rule:
 
 - default hypothesis: `SparseDeleted`
 - switch to `DenseDeleted` only if:
-  - `DenseDeleted` wins both `delete_heavy` and `mixed`
+  - `DenseDeleted` remains clearly better on logical reads
   - `DenseDeleted` is at least neutral on `read_heavy`
+  - `DenseDeleted` is not materially worse on `mixed`
 
 `RowTombstone` is never the service default.
 
@@ -251,16 +253,20 @@ Interpret the build results in this order:
 - `bench_snapshot_fixture_*`: cost of copying the fully built stable-memory image
 - `bench_build_fixture_*`: total of all three phases together
 
-If the row/sparse/dense full-build numbers are all close, that usually means the shared fixture
-construction path dominates and the deleted-index representation is not the bottleneck.
+Current interpretation:
+
+- `bench_build_edges_*` is the main build bottleneck
+- `bench_build_vertices_*` is already secondary
+- if row/sparse/dense full-build numbers are all close, the shared fixture construction path still dominates and the deleted-index representation is not the main build bottleneck
+- use `bench_snapshot_fixture_*` to determine whether remaining full-build cost is dominated by stable-memory copying rather than graph construction
 
 ## Recommendation Table
 
 | Variant | Recommended use |
 |--------|------------------|
 | `RowTombstone` | Low-level or internal use where logical traversal is unnecessary and minimum structural overhead matters most |
-| `SparseDeleted` | Service default unless delete density is consistently high |
-| `DenseDeleted` | Use when delete density remains high and logical traversal stays hot |
+| `SparseDeleted` | Service default; best general-purpose choice when delete/gc costs are close and no strong logical-read bottleneck dominates |
+| `DenseDeleted` | Use when logical traversal is hot and read sensitivity matters; do not promote to default based on delete/gc numbers alone |
 
 ## Manual Large-Graph Runs
 

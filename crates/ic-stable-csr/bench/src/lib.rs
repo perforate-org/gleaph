@@ -800,37 +800,53 @@ fn build_packed_edge_column(
 ) {
     let h = stores.edges.header().expect("edge header");
     let stride = h.edge_stride as usize;
-    let mut by_owner = vec![Vec::<usize>::new(); n];
+
+    let mut owner_offsets = vec![0usize; n + 1];
     for &(src, dst) in edges {
-        let (owner, neighbor) = if reverse { (dst, src) } else { (src, dst) };
-        by_owner[owner].push(neighbor);
+        let owner = if reverse { dst } else { src };
+        owner_offsets[owner + 1] += 1;
+    }
+    for owner in 0..n {
+        owner_offsets[owner + 1] += owner_offsets[owner];
     }
 
-    let mut next_base = 0u64;
-    let mut total_edges = 0u64;
-    for (owner, neighbors) in by_owner.into_iter().enumerate() {
-        let mut neighbors = neighbors;
-        neighbors.sort_unstable();
-        let degree = neighbors.len();
-        if degree > 0 {
-            let mut payload = vec![0u8; degree * stride];
-            for (i, neighbor) in neighbors.iter().copied().enumerate() {
-                BenchEdge::default()
-                    .with_neighbor_vid(neighbor)
-                    .write_to(&mut payload[i * stride..(i + 1) * stride]);
-            }
-            stores
-                .edges
-                .memories()
-                .write_edge_slab_span(h.edge_stride, next_base, &payload)
-                .expect("write packed slab span");
-        }
+    let total_edges = owner_offsets[n];
+    let mut neighbors_flat = vec![0usize; total_edges];
+    let mut owner_cursor = owner_offsets[..n].to_vec();
+    for &(src, dst) in edges {
+        let (owner, neighbor) = if reverse { (dst, src) } else { (src, dst) };
+        let slot = owner_cursor[owner];
+        neighbors_flat[slot] = neighbor;
+        owner_cursor[owner] += 1;
+    }
+
+    for owner in 0..n {
+        neighbors_flat[owner_offsets[owner]..owner_offsets[owner + 1]].sort_unstable();
+    }
+
+    let mut payload = vec![0u8; total_edges * stride];
+    for (i, neighbor) in neighbors_flat.into_iter().enumerate() {
+        BenchEdge::default()
+            .with_neighbor_vid(neighbor)
+            .write_to(&mut payload[i * stride..(i + 1) * stride]);
+    }
+    if !payload.is_empty() {
+        stores
+            .edges
+            .memories()
+            .write_edge_slab_span(h.edge_stride, 0, &payload)
+            .expect("write packed slab span");
+    }
+
+    for owner in 0..n {
+        let base = owner_offsets[owner] as u64;
+        let degree = owner_offsets[owner + 1] - owner_offsets[owner];
         let prev = stores
             .vertices
             .get_dense(owner as u32)
             .expect("vertex row for packed edge build");
         let row = prev
-            .with_base_slot_start(next_base)
+            .with_base_slot_start(base)
             .with_degree(degree as u32)
             .with_log_head(-1)
             .with_tombstone(false);
@@ -838,10 +854,8 @@ fn build_packed_edge_column(
             .vertices
             .set_dense(owner as u32, &row)
             .expect("packed edge build row update");
-        next_base = next_base.saturating_add(degree as u64);
-        total_edges = total_edges.saturating_add(degree as u64);
     }
-    stores.edges.set_num_edges_header(total_edges);
+    stores.edges.set_num_edges_header(total_edges as u64);
     stores
         .refresh_slab_occupied_tail_meta()
         .expect("refresh_slab_occupied_tail_meta");

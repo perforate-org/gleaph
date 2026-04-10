@@ -2,70 +2,70 @@ benches:
   bench_build_edges_dense_uniform_random_sparse_8192:
     total:
       calls: 1
-      instructions: 354652836
-      heap_increase: 2
+      instructions: 336618252
+      heap_increase: 3
       stable_memory_increase: 0
     scopes: {}
   bench_build_edges_row_uniform_random_sparse_8192:
     total:
       calls: 1
-      instructions: 335774907
-      heap_increase: 2
+      instructions: 317767146
+      heap_increase: 3
       stable_memory_increase: 0
     scopes: {}
   bench_build_edges_sparse_uniform_random_sparse_8192:
     total:
       calls: 1
-      instructions: 354664863
-      heap_increase: 2
+      instructions: 336633027
+      heap_increase: 3
       stable_memory_increase: 0
     scopes: {}
   bench_build_fixture_dense_uniform_random_sparse_8192:
     total:
       calls: 1
-      instructions: 498891072
+      instructions: 480342487
       heap_increase: 1037
       stable_memory_increase: 1025
     scopes: {}
   bench_build_fixture_row_uniform_random_sparse_8192:
     total:
       calls: 1
-      instructions: 482086310
+      instructions: 463551257
       heap_increase: 909
       stable_memory_increase: 897
     scopes: {}
   bench_build_fixture_sparse_uniform_random_sparse_8192:
     total:
       calls: 1
-      instructions: 498907922
+      instructions: 480347701
       heap_increase: 1037
       stable_memory_increase: 1025
     scopes: {}
   bench_build_vertices_dense_uniform_random_sparse_8192:
     total:
       calls: 1
-      instructions: 161059973
+      instructions: 160534979
       heap_increase: 6
       stable_memory_increase: 1025
     scopes: {}
   bench_build_vertices_row_uniform_random_sparse_8192:
     total:
       calls: 1
-      instructions: 161051327
+      instructions: 160526333
       heap_increase: 6
       stable_memory_increase: 897
     scopes: {}
   bench_build_vertices_sparse_uniform_random_sparse_8192:
     total:
       calls: 1
-      instructions: 161059922
+      instructions: 160534928
       heap_increase: 6
       stable_memory_increase: 1025
     scopes: {}
   bench_delete_edge_dense_clustered_community_32768_clustered_contiguous_d10pct:
     total:
       calls: 1
-      instructions: 472378577766
+      instructions: 475834181190
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -97,7 +97,7 @@ benches:
   bench_delete_edge_dense_uniform_random_sparse_32768_uniform_random_d1pct:
     total:
       calls: 1
-      instructions: 47289725137
+      instructions: 47634652556
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -129,7 +129,7 @@ benches:
   bench_delete_edge_row_clustered_community_32768_clustered_contiguous_d10pct:
     total:
       calls: 1
-      instructions: 472378584103
+      instructions: 475834187527
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -161,7 +161,7 @@ benches:
   bench_delete_edge_row_uniform_random_sparse_32768_uniform_random_d1pct:
     total:
       calls: 1
-      instructions: 47289725576
+      instructions: 47634652995
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -193,7 +193,7 @@ benches:
   bench_delete_edge_sparse_clustered_community_32768_clustered_contiguous_d10pct:
     total:
       calls: 1
-      instructions: 472378584331
+      instructions: 475834187755
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -225,7 +225,7 @@ benches:
   bench_delete_edge_sparse_uniform_random_sparse_32768_uniform_random_d1pct:
     total:
       calls: 1
-      instructions: 47289725804
+      instructions: 47634653223
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -257,7 +257,7 @@ benches:
   bench_delete_vertex_dense_hub_star_1024_hub_first_d10pct:
     total:
       calls: 1
-      instructions: 388193427
+      instructions: 390503115
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -279,7 +279,7 @@ benches:
   bench_delete_vertex_dense_uniform_random_sparse_32768_uniform_random_d1pct:
     total:
       calls: 1
-      instructions: 23630949947
+      instructions: 23804438967
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -301,7 +301,7 @@ benches:
   bench_delete_vertex_row_hub_star_1024_hub_first_d10pct:
     total:
       calls: 1
-      instructions: 381672822
+      instructions: 383983326
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -323,7 +323,7 @@ benches:
   bench_delete_vertex_sparse_hub_star_1024_hub_first_d10pct:
     total:
       calls: 1
-      instructions: 381946150
+      instructions: 384255838
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -345,7 +345,7 @@ benches:
   bench_delete_vertex_sparse_uniform_random_sparse_32768_uniform_random_d1pct:
     total:
       calls: 1
-      instructions: 23632064689
+      instructions: 23805553789
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -409,7 +409,7 @@ benches:
   bench_logical_read_dense_uniform_random_sparse_32768_uniform_random_d1pct:
     total:
       calls: 1
-      instructions: 342156
+      instructions: 342668
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -420,7 +420,7 @@ benches:
         stable_memory_increase: 0
       dgap_logical_read_scan:
         calls: 1
-        instructions: 328086
+        instructions: 328598
         heap_increase: 0
         stable_memory_increase: 0
       dgap_logical_read_yield:
@@ -431,7 +431,7 @@ benches:
   bench_logical_read_sparse_uniform_random_sparse_32768_uniform_random_d1pct:
     total:
       calls: 1
-      instructions: 473006
+      instructions: 473518
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -442,7 +442,7 @@ benches:
         stable_memory_increase: 0
       dgap_logical_read_scan:
         calls: 1
-        instructions: 458246
+        instructions: 458758
         heap_increase: 0
         stable_memory_increase: 0
       dgap_logical_read_yield:
@@ -453,49 +453,49 @@ benches:
   bench_raw_read_dense_uniform_random_sparse_32768_uniform_random_d1pct:
     total:
       calls: 1
-      instructions: 294004
+      instructions: 294516
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       dgap_raw_read_scan:
         calls: 1
-        instructions: 284999
+        instructions: 285511
         heap_increase: 0
         stable_memory_increase: 0
   bench_raw_read_row_uniform_random_sparse_32768_uniform_random_d1pct:
     total:
       calls: 1
-      instructions: 293497
+      instructions: 294009
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       dgap_raw_read_scan:
         calls: 1
-        instructions: 285127
+        instructions: 285639
         heap_increase: 0
         stable_memory_increase: 0
   bench_raw_read_sparse_uniform_random_sparse_32768_uniform_random_d1pct:
     total:
       calls: 1
-      instructions: 294811
+      instructions: 295323
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       dgap_raw_read_scan:
         calls: 1
-        instructions: 285127
+        instructions: 285639
         heap_increase: 0
         stable_memory_increase: 0
   bench_remove_slab_physically_chain_1024:
     total:
       calls: 1
-      instructions: 29006818
+      instructions: 29067634
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       dgap_remove_slab_base_decrement:
         calls: 1
-        instructions: 3465152
+        instructions: 3481784
         heap_increase: 0
         stable_memory_increase: 0
       dgap_remove_slab_maintain:
@@ -505,7 +505,7 @@ benches:
         stable_memory_increase: 0
       dgap_remove_slab_refresh_tail:
         calls: 1
-        instructions: 1107591
+        instructions: 1115783
         heap_increase: 0
         stable_memory_increase: 0
       dgap_remove_slab_slide:
@@ -515,19 +515,19 @@ benches:
         stable_memory_increase: 0
       dgap_remove_slab_sync_pma_full:
         calls: 1
-        instructions: 21728923
+        instructions: 21753611
         heap_increase: 0
         stable_memory_increase: 0
   bench_remove_slab_physically_chain_32:
     total:
       calls: 1
-      instructions: 18996602
+      instructions: 18999322
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       dgap_remove_slab_base_decrement:
         calls: 1
-        instructions: 120927
+        instructions: 121567
         heap_increase: 0
         stable_memory_increase: 0
       dgap_remove_slab_maintain:
@@ -537,7 +537,7 @@ benches:
         stable_memory_increase: 0
       dgap_remove_slab_refresh_tail:
         calls: 1
-        instructions: 35208
+        instructions: 35464
         heap_increase: 0
         stable_memory_increase: 0
       dgap_remove_slab_slide:
@@ -547,19 +547,19 @@ benches:
         stable_memory_increase: 0
       dgap_remove_slab_sync_pma_full:
         calls: 1
-        instructions: 18518599
+        instructions: 18519367
         heap_increase: 0
         stable_memory_increase: 0
   bench_remove_slab_physically_tail_vertex_chain_1024:
     total:
       calls: 1
-      instructions: 5309129
+      instructions: 5331953
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       dgap_remove_slab_base_decrement:
         calls: 1
-        instructions: 37587
+        instructions: 37851
         heap_increase: 0
         stable_memory_increase: 0
       dgap_remove_slab_maintain:
@@ -569,7 +569,7 @@ benches:
         stable_memory_increase: 0
       dgap_remove_slab_refresh_tail:
         calls: 1
-        instructions: 1107560
+        instructions: 1115752
         heap_increase: 0
         stable_memory_increase: 0
       dgap_remove_slab_slide:
@@ -579,13 +579,13 @@ benches:
         stable_memory_increase: 0
       dgap_remove_slab_sync_pma_full:
         calls: 1
-        instructions: 2005472
+        instructions: 2008544
         heap_increase: 0
         stable_memory_increase: 0
   bench_scenario_delete_heavy_dense_power_law_32768_uniform_random_d10pct:
     total:
       calls: 1
-      instructions: 3082960396
+      instructions: 3104182772
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -607,7 +607,7 @@ benches:
   bench_scenario_delete_heavy_sparse_power_law_32768_uniform_random_d10pct:
     total:
       calls: 1
-      instructions: 3134820146
+      instructions: 3156042514
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -629,7 +629,7 @@ benches:
   bench_scenario_mixed_dense_power_law_32768_uniform_random_d10pct:
     total:
       calls: 1
-      instructions: 897267724
+      instructions: 902573876
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -651,7 +651,7 @@ benches:
   bench_scenario_mixed_sparse_power_law_32768_uniform_random_d10pct:
     total:
       calls: 1
-      instructions: 891971477
+      instructions: 897277629
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -673,7 +673,7 @@ benches:
   bench_scenario_read_heavy_dense_uniform_random_sparse_32768_uniform_random_d1pct:
     total:
       calls: 1
-      instructions: 360701366
+      instructions: 363354866
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -695,7 +695,7 @@ benches:
   bench_scenario_read_heavy_sparse_uniform_random_sparse_32768_uniform_random_d1pct:
     total:
       calls: 1
-      instructions: 360720710
+      instructions: 363374210
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
