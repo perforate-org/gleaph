@@ -792,15 +792,11 @@ fn populate_vertices_bulk(graph: &BenchVariantGraph, n: usize) {
     graph.append_empty_vertices_fast_for_fixture(empty_vertex(), n);
 }
 
-fn build_packed_edge_column(
-    stores: &BenchStores,
+fn build_owner_offsets(
     n: usize,
     edges: &[(usize, usize)],
     reverse: bool,
-) {
-    let h = stores.edges.header().expect("edge header");
-    let stride = h.edge_stride as usize;
-
+) -> Vec<usize> {
     let mut owner_offsets = vec![0usize; n + 1];
     for &(src, dst) in edges {
         let owner = if reverse { dst } else { src };
@@ -809,7 +805,15 @@ fn build_packed_edge_column(
     for owner in 0..n {
         owner_offsets[owner + 1] += owner_offsets[owner];
     }
+    owner_offsets
+}
 
+fn flatten_sorted_neighbors(
+    n: usize,
+    edges: &[(usize, usize)],
+    reverse: bool,
+    owner_offsets: &[usize],
+) -> Vec<usize> {
     let total_edges = owner_offsets[n];
     let mut neighbors_flat = vec![0usize; total_edges];
     let mut owner_cursor = owner_offsets[..n].to_vec();
@@ -819,25 +823,13 @@ fn build_packed_edge_column(
         neighbors_flat[slot] = neighbor;
         owner_cursor[owner] += 1;
     }
-
     for owner in 0..n {
         neighbors_flat[owner_offsets[owner]..owner_offsets[owner + 1]].sort_unstable();
     }
+    neighbors_flat
+}
 
-    let mut payload = vec![0u8; total_edges * stride];
-    for (i, neighbor) in neighbors_flat.into_iter().enumerate() {
-        BenchEdge::default()
-            .with_neighbor_vid(neighbor)
-            .write_to(&mut payload[i * stride..(i + 1) * stride]);
-    }
-    if !payload.is_empty() {
-        stores
-            .edges
-            .memories()
-            .write_edge_slab_span(h.edge_stride, 0, &payload)
-            .expect("write packed slab span");
-    }
-
+fn apply_owner_rows_from_offsets(stores: &BenchStores, n: usize, owner_offsets: &[usize]) {
     for owner in 0..n {
         let base = owner_offsets[owner] as u64;
         let degree = owner_offsets[owner + 1] - owner_offsets[owner];
@@ -855,6 +847,38 @@ fn build_packed_edge_column(
             .set_dense(owner as u32, &row)
             .expect("packed edge build row update");
     }
+}
+
+fn encode_neighbors_payload(neighbors_flat: &[usize], stride: usize) -> Vec<u8> {
+    let mut payload = vec![0u8; neighbors_flat.len() * stride];
+    for (i, neighbor) in neighbors_flat.iter().copied().enumerate() {
+        BenchEdge::default()
+            .with_neighbor_vid(neighbor)
+            .write_to(&mut payload[i * stride..(i + 1) * stride]);
+    }
+    payload
+}
+
+fn build_packed_edge_column(
+    stores: &BenchStores,
+    n: usize,
+    edges: &[(usize, usize)],
+    reverse: bool,
+) {
+    let h = stores.edges.header().expect("edge header");
+    let stride = h.edge_stride as usize;
+    let owner_offsets = build_owner_offsets(n, edges, reverse);
+    let total_edges = owner_offsets[n];
+    let neighbors_flat = flatten_sorted_neighbors(n, edges, reverse, &owner_offsets);
+    let payload = encode_neighbors_payload(&neighbors_flat, stride);
+    if !payload.is_empty() {
+        stores
+            .edges
+            .memories()
+            .write_edge_slab_span(h.edge_stride, 0, &payload)
+            .expect("write packed slab span");
+    }
+    apply_owner_rows_from_offsets(stores, n, &owner_offsets);
     stores.edges.set_num_edges_header(total_edges as u64);
     stores
         .refresh_slab_occupied_tail_meta()
@@ -1303,8 +1327,10 @@ fn bench_workload(
 /// Measures fixture construction cost itself.
 ///
 /// Unlike the operation benchmarks, this intentionally includes graph formatting, vertex
-/// population, edge bulk load, and stable-memory snapshot generation so build cost can be
-/// tracked separately from delete/read/GC costs.
+/// population, packed edge build, and stable-memory snapshot generation so build cost can be
+/// tracked separately from delete/read/GC costs. Current readings should be interpreted together
+/// with `bench_build_edges_*` and `bench_snapshot_fixture_*`, because those are the dominant
+/// sub-phases.
 fn bench_build_fixture(
     variant: BenchVariant,
     topology: GraphTopology,
@@ -1323,6 +1349,9 @@ fn bench_build_fixture(
 }
 
 /// Measures only the bulk vertex-append phase for fixture setup.
+///
+/// This is expected to be secondary once the fixture fast path is in place; if it regresses back
+/// toward the edge-build cost, the bulk append helper is a likely culprit.
 fn bench_build_vertices(variant: BenchVariant, n: usize) -> canbench_rs::BenchResult {
     canbench_rs::bench_fn(move || {
         wipe::wipe_stable_memory();
@@ -1332,6 +1361,9 @@ fn bench_build_vertices(variant: BenchVariant, n: usize) -> canbench_rs::BenchRe
 }
 
 /// Measures only the packed edge-build phase, starting from a vertex-only fixture snapshot.
+///
+/// This is the current build bottleneck and the primary benchmark to watch when iterating on the
+/// fixture direct-builder path.
 fn bench_build_edges(
     variant: BenchVariant,
     topology: GraphTopology,
@@ -1353,6 +1385,9 @@ fn bench_build_edges(
 }
 
 /// Measures only the stable-memory snapshot phase for a fully built fixture.
+///
+/// This is currently the third-largest build sub-phase and the main indicator for whether further
+/// stable-memory copy tuning is worth pursuing.
 fn bench_snapshot_fixture(
     variant: BenchVariant,
     topology: GraphTopology,
