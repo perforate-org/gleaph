@@ -171,9 +171,25 @@ Examples:
   - `bench_raw_read_row_uniform_random_sparse_32768_uniform_random_d1pct`
   - `bench_raw_read_sparse_uniform_random_sparse_32768_uniform_random_d1pct`
   - `bench_raw_read_dense_uniform_random_sparse_32768_uniform_random_d1pct`
+  - `bench_raw_read_degree_scaling_sparse_uniform_random_sparse_32768_uniform_random_d1pct`
+  - `bench_raw_read_degree_scaling_sparse_uniform_random_medium_32768_uniform_random_d1pct`
+  - `bench_raw_read_degree_scaling_sparse_uniform_random_dense_local_32768_uniform_random_d1pct`
+  - `bench_raw_read_degree_scaling_dense_uniform_random_sparse_32768_uniform_random_d1pct`
+  - `bench_raw_read_degree_scaling_dense_uniform_random_medium_32768_uniform_random_d1pct`
+  - `bench_raw_read_degree_scaling_dense_uniform_random_dense_local_32768_uniform_random_d1pct`
+  - `bench_raw_read_band_local_sparse_32768_uniform_random_d1pct`
+  - `bench_raw_read_band_local_dense_32768_uniform_random_d1pct`
 - logical:
   - `bench_logical_read_sparse_uniform_random_sparse_32768_uniform_random_d1pct`
   - `bench_logical_read_dense_uniform_random_sparse_32768_uniform_random_d1pct`
+  - `bench_logical_read_degree_scaling_sparse_uniform_random_sparse_32768_uniform_random_d1pct`
+  - `bench_logical_read_degree_scaling_sparse_uniform_random_medium_32768_uniform_random_d1pct`
+  - `bench_logical_read_degree_scaling_sparse_uniform_random_dense_local_32768_uniform_random_d1pct`
+  - `bench_logical_read_degree_scaling_dense_uniform_random_sparse_32768_uniform_random_d1pct`
+  - `bench_logical_read_degree_scaling_dense_uniform_random_medium_32768_uniform_random_d1pct`
+  - `bench_logical_read_degree_scaling_dense_uniform_random_dense_local_32768_uniform_random_d1pct`
+  - `bench_logical_read_band_local_sparse_32768_uniform_random_d1pct`
+  - `bench_logical_read_band_local_dense_32768_uniform_random_d1pct`
   - `bench_logical_read_hot_vertex_sparse_power_law_32768_uniform_random_d10pct`
   - `bench_logical_read_hot_vertex_dense_power_law_32768_uniform_random_d10pct`
   - `bench_logical_read_vertex_range_sparse_uniform_random_sparse_32768_uniform_random_d1pct`
@@ -197,6 +213,8 @@ Examples:
 - `bench_scenario_delete_heavy_dense_power_law_32768_uniform_random_d10pct`
 - `bench_scenario_read_burst_sparse_power_law_32768_uniform_random_d10pct`
 - `bench_scenario_read_burst_dense_power_law_32768_uniform_random_d10pct`
+- `bench_scenario_read_burst_sparse_uniform_random_dense_local_32768_uniform_random_d1pct`
+- `bench_scenario_read_burst_dense_uniform_random_dense_local_32768_uniform_random_d1pct`
 
 Legacy DGAP/PMA maintenance benchmarks remain available:
 
@@ -240,6 +258,8 @@ Use GC runs to answer whether a strategy only shifts cost from delete time into 
 - `RowTombstone` should only be judged on raw read.
 - `SparseDeleted` vs `DenseDeleted` should be judged on logical read, because that is the service-facing traversal path.
 - Judge read regressions and improvements by total logical-read benchmark results, not by per-edge hot-path instrumentation.
+- Use degree-scaling benchmarks to see how costs grow as per-vertex adjacency gets larger.
+- Use `BandLocal` to check whether relatively contiguous local-neighbor scans stay lightweight even at higher degree.
 - Use the hot-vertex and degree-split benchmarks to decide whether `DenseDeleted` is helping on hub-dominated workloads or only on evenly distributed scans.
 - Current interpretation: `DenseDeleted` is the variant to prefer when logical traversal is the hot path and read latency sensitivity matters more than write-path neutrality.
 

@@ -29,6 +29,9 @@ const COMMUNITY_SIZE: usize = 64;
 const RAW_READ_PROBE_COUNT: usize = 64;
 const WORKLOAD_STEPS: usize = 100;
 const RANDOM_SPARSE_DEGREE: usize = 4;
+const RANDOM_MEDIUM_DEGREE: usize = 16;
+const RANDOM_DENSE_LOCAL_DEGREE: usize = 32;
+const BAND_LOCAL_DEGREE: usize = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct BenchVertex {
@@ -192,7 +195,10 @@ enum GraphTopology {
     Chain,
     HubStar,
     UniformRandomSparse,
+    UniformRandomMedium,
+    UniformRandomDenseLocal,
     PowerLaw,
+    BandLocal,
     ClusteredCommunity,
 }
 
@@ -331,7 +337,14 @@ fn generate_edges(topology: GraphTopology, n: usize, seed: u64) -> Vec<(usize, u
         GraphTopology::Chain => generate_chain_edges(n),
         GraphTopology::HubStar => generate_hub_star_edges(n),
         GraphTopology::UniformRandomSparse => generate_uniform_random_sparse_edges(n, seed),
+        GraphTopology::UniformRandomMedium => {
+            generate_fixed_out_degree_random_edges(n, seed, RANDOM_MEDIUM_DEGREE)
+        }
+        GraphTopology::UniformRandomDenseLocal => {
+            generate_fixed_out_degree_random_edges(n, seed, RANDOM_DENSE_LOCAL_DEGREE)
+        }
         GraphTopology::PowerLaw => generate_power_law_edges(n),
+        GraphTopology::BandLocal => generate_band_local_edges(n, BAND_LOCAL_DEGREE),
         GraphTopology::ClusteredCommunity => generate_clustered_community_edges(n),
     }
 }
@@ -350,11 +363,16 @@ fn generate_hub_star_edges(n: usize) -> Vec<(usize, usize)> {
 }
 
 fn generate_uniform_random_sparse_edges(n: usize, seed: u64) -> Vec<(usize, usize)> {
+    generate_fixed_out_degree_random_edges(n, seed, RANDOM_SPARSE_DEGREE)
+}
+
+fn generate_fixed_out_degree_random_edges(n: usize, seed: u64, degree: usize) -> Vec<(usize, usize)> {
     let mut rng = XorShift64::new(seed);
-    let mut edges = Vec::with_capacity(n.saturating_mul(RANDOM_SPARSE_DEGREE));
+    let target_degree = degree.min(n.saturating_sub(1));
+    let mut edges = Vec::with_capacity(n.saturating_mul(target_degree));
     for src in 0..n {
         let mut picked = BTreeSet::new();
-        while picked.len() < RANDOM_SPARSE_DEGREE.min(n.saturating_sub(1)) {
+        while picked.len() < target_degree {
             let dst = rng.gen_range(n);
             if dst != src {
                 picked.insert(dst);
@@ -362,6 +380,20 @@ fn generate_uniform_random_sparse_edges(n: usize, seed: u64) -> Vec<(usize, usiz
         }
         for dst in picked {
             edges.push((src, dst));
+        }
+    }
+    edges
+}
+
+fn generate_band_local_edges(n: usize, degree: usize) -> Vec<(usize, usize)> {
+    let target_degree = degree.min(n.saturating_sub(1));
+    let mut edges = Vec::with_capacity(n.saturating_mul(target_degree));
+    for src in 0..n {
+        for step in 1..=target_degree {
+            let dst = (src + step) % n;
+            if dst != src {
+                edges.push((src, dst));
+            }
         }
     }
     edges
@@ -1461,6 +1493,75 @@ fn bench_logical_read_degree_split(
     })
 }
 
+/// Measures logical reads for a fixed topology family while varying per-vertex degree.
+///
+/// This is the primary benchmark for checking whether logical traversal scales gently as each
+/// vertex owns more physically contiguous adjacency slots.
+fn bench_logical_read_degree_scaling(
+    variant: BenchVariant,
+    topology: GraphTopology,
+    n: usize,
+    delete_pattern: DeletePattern,
+    density: DeleteDensity,
+    seed: u64,
+) -> canbench_rs::BenchResult {
+    bench_logical_read(variant, topology, n, delete_pattern, density, seed)
+}
+
+/// Measures raw reads for the same degree-scaling topology family used by logical-read benches.
+///
+/// Comparing this to `bench_logical_read_degree_scaling` helps isolate the deleted-filtering
+/// contribution from the underlying adjacency scan cost.
+fn bench_raw_read_degree_scaling(
+    variant: BenchVariant,
+    topology: GraphTopology,
+    n: usize,
+    delete_pattern: DeletePattern,
+    density: DeleteDensity,
+    seed: u64,
+) -> canbench_rs::BenchResult {
+    bench_raw_read(variant, topology, n, delete_pattern, density, seed)
+}
+
+/// Measures logical reads on a topology where each vertex connects to a contiguous local band.
+///
+/// This validates the hypothesis that scans stay relatively light when adjacency slots are both
+/// numerous and locally clustered.
+fn bench_logical_read_band_local(
+    variant: BenchVariant,
+    n: usize,
+    delete_pattern: DeletePattern,
+    density: DeleteDensity,
+    seed: u64,
+) -> canbench_rs::BenchResult {
+    bench_logical_read(
+        variant,
+        GraphTopology::BandLocal,
+        n,
+        delete_pattern,
+        density,
+        seed,
+    )
+}
+
+/// Raw-read companion benchmark for `BandLocal`.
+fn bench_raw_read_band_local(
+    variant: BenchVariant,
+    n: usize,
+    delete_pattern: DeletePattern,
+    density: DeleteDensity,
+    seed: u64,
+) -> canbench_rs::BenchResult {
+    bench_raw_read(
+        variant,
+        GraphTopology::BandLocal,
+        n,
+        delete_pattern,
+        density,
+        seed,
+    )
+}
+
 /// Measures a mixed workload over a reopened fixture graph.
 ///
 /// Depending on `kind`, the runner interleaves reads, vertex deletes, and periodic GC to model
@@ -2286,6 +2387,115 @@ fn bench_logical_read_dense_uniform_random_sparse_32768_uniform_random_d50pct()
     )
 }
 
+/// Logical-read degree-scaling baseline: low out-degree fixed-random graph on sparse-deleted.
+#[bench(raw)]
+fn bench_logical_read_degree_scaling_sparse_uniform_random_sparse_32768_uniform_random_d1pct()
+-> canbench_rs::BenchResult {
+    bench_logical_read_degree_scaling(
+        BenchVariant::Sparse,
+        GraphTopology::UniformRandomSparse,
+        32_768,
+        DeletePattern::UniformRandom,
+        DeleteDensity::D1Pct,
+        0x4051,
+    )
+}
+
+/// Logical-read degree-scaling middle point: medium out-degree fixed-random graph on
+/// sparse-deleted.
+#[bench(raw)]
+fn bench_logical_read_degree_scaling_sparse_uniform_random_medium_32768_uniform_random_d1pct()
+-> canbench_rs::BenchResult {
+    bench_logical_read_degree_scaling(
+        BenchVariant::Sparse,
+        GraphTopology::UniformRandomMedium,
+        32_768,
+        DeletePattern::UniformRandom,
+        DeleteDensity::D1Pct,
+        0x4052,
+    )
+}
+
+/// Logical-read degree-scaling high point: higher out-degree fixed-random graph on sparse-deleted.
+#[bench(raw)]
+fn bench_logical_read_degree_scaling_sparse_uniform_random_dense_local_32768_uniform_random_d1pct()
+-> canbench_rs::BenchResult {
+    bench_logical_read_degree_scaling(
+        BenchVariant::Sparse,
+        GraphTopology::UniformRandomDenseLocal,
+        32_768,
+        DeletePattern::UniformRandom,
+        DeleteDensity::D1Pct,
+        0x4053,
+    )
+}
+
+/// Dense-deleted companion for the low out-degree degree-scaling logical-read baseline.
+#[bench(raw)]
+fn bench_logical_read_degree_scaling_dense_uniform_random_sparse_32768_uniform_random_d1pct()
+-> canbench_rs::BenchResult {
+    bench_logical_read_degree_scaling(
+        BenchVariant::Dense,
+        GraphTopology::UniformRandomSparse,
+        32_768,
+        DeletePattern::UniformRandom,
+        DeleteDensity::D1Pct,
+        0x4054,
+    )
+}
+
+/// Dense-deleted companion for the medium out-degree degree-scaling logical-read case.
+#[bench(raw)]
+fn bench_logical_read_degree_scaling_dense_uniform_random_medium_32768_uniform_random_d1pct()
+-> canbench_rs::BenchResult {
+    bench_logical_read_degree_scaling(
+        BenchVariant::Dense,
+        GraphTopology::UniformRandomMedium,
+        32_768,
+        DeletePattern::UniformRandom,
+        DeleteDensity::D1Pct,
+        0x4055,
+    )
+}
+
+/// Dense-deleted companion for the high out-degree degree-scaling logical-read case.
+#[bench(raw)]
+fn bench_logical_read_degree_scaling_dense_uniform_random_dense_local_32768_uniform_random_d1pct()
+-> canbench_rs::BenchResult {
+    bench_logical_read_degree_scaling(
+        BenchVariant::Dense,
+        GraphTopology::UniformRandomDenseLocal,
+        32_768,
+        DeletePattern::UniformRandom,
+        DeleteDensity::D1Pct,
+        0x4056,
+    )
+}
+
+/// Measures sparse-deleted logical reads on the band-local topology.
+#[bench(raw)]
+fn bench_logical_read_band_local_sparse_32768_uniform_random_d1pct() -> canbench_rs::BenchResult {
+    bench_logical_read_band_local(
+        BenchVariant::Sparse,
+        32_768,
+        DeletePattern::UniformRandom,
+        DeleteDensity::D1Pct,
+        0x4061,
+    )
+}
+
+/// Measures dense-deleted logical reads on the band-local topology.
+#[bench(raw)]
+fn bench_logical_read_band_local_dense_32768_uniform_random_d1pct() -> canbench_rs::BenchResult {
+    bench_logical_read_band_local(
+        BenchVariant::Dense,
+        32_768,
+        DeletePattern::UniformRandom,
+        DeleteDensity::D1Pct,
+        0x4062,
+    )
+}
+
 /// Measures raw storage scans on `RowTombstone` after a 1% uniform-random delete set has been
 /// applied to a 32k uniform-random sparse graph.
 #[bench(raw)]
@@ -2327,6 +2537,114 @@ fn bench_raw_read_dense_uniform_random_sparse_32768_uniform_random_d1pct()
         DeletePattern::UniformRandom,
         DeleteDensity::D1Pct,
         0x4103,
+    )
+}
+
+/// Raw-read degree-scaling baseline: low out-degree fixed-random graph on sparse-deleted.
+#[bench(raw)]
+fn bench_raw_read_degree_scaling_sparse_uniform_random_sparse_32768_uniform_random_d1pct()
+-> canbench_rs::BenchResult {
+    bench_raw_read_degree_scaling(
+        BenchVariant::Sparse,
+        GraphTopology::UniformRandomSparse,
+        32_768,
+        DeletePattern::UniformRandom,
+        DeleteDensity::D1Pct,
+        0x4111,
+    )
+}
+
+/// Raw-read degree-scaling medium out-degree graph on sparse-deleted.
+#[bench(raw)]
+fn bench_raw_read_degree_scaling_sparse_uniform_random_medium_32768_uniform_random_d1pct()
+-> canbench_rs::BenchResult {
+    bench_raw_read_degree_scaling(
+        BenchVariant::Sparse,
+        GraphTopology::UniformRandomMedium,
+        32_768,
+        DeletePattern::UniformRandom,
+        DeleteDensity::D1Pct,
+        0x4112,
+    )
+}
+
+/// Raw-read degree-scaling high out-degree graph on sparse-deleted.
+#[bench(raw)]
+fn bench_raw_read_degree_scaling_sparse_uniform_random_dense_local_32768_uniform_random_d1pct()
+-> canbench_rs::BenchResult {
+    bench_raw_read_degree_scaling(
+        BenchVariant::Sparse,
+        GraphTopology::UniformRandomDenseLocal,
+        32_768,
+        DeletePattern::UniformRandom,
+        DeleteDensity::D1Pct,
+        0x4113,
+    )
+}
+
+/// Dense-deleted companion for the low out-degree raw degree-scaling baseline.
+#[bench(raw)]
+fn bench_raw_read_degree_scaling_dense_uniform_random_sparse_32768_uniform_random_d1pct()
+-> canbench_rs::BenchResult {
+    bench_raw_read_degree_scaling(
+        BenchVariant::Dense,
+        GraphTopology::UniformRandomSparse,
+        32_768,
+        DeletePattern::UniformRandom,
+        DeleteDensity::D1Pct,
+        0x4114,
+    )
+}
+
+/// Dense-deleted companion for the medium out-degree raw degree-scaling case.
+#[bench(raw)]
+fn bench_raw_read_degree_scaling_dense_uniform_random_medium_32768_uniform_random_d1pct()
+-> canbench_rs::BenchResult {
+    bench_raw_read_degree_scaling(
+        BenchVariant::Dense,
+        GraphTopology::UniformRandomMedium,
+        32_768,
+        DeletePattern::UniformRandom,
+        DeleteDensity::D1Pct,
+        0x4115,
+    )
+}
+
+/// Dense-deleted companion for the high out-degree raw degree-scaling case.
+#[bench(raw)]
+fn bench_raw_read_degree_scaling_dense_uniform_random_dense_local_32768_uniform_random_d1pct()
+-> canbench_rs::BenchResult {
+    bench_raw_read_degree_scaling(
+        BenchVariant::Dense,
+        GraphTopology::UniformRandomDenseLocal,
+        32_768,
+        DeletePattern::UniformRandom,
+        DeleteDensity::D1Pct,
+        0x4116,
+    )
+}
+
+/// Raw-read companion benchmark for sparse-deleted band-local topology.
+#[bench(raw)]
+fn bench_raw_read_band_local_sparse_32768_uniform_random_d1pct() -> canbench_rs::BenchResult {
+    bench_raw_read_band_local(
+        BenchVariant::Sparse,
+        32_768,
+        DeletePattern::UniformRandom,
+        DeleteDensity::D1Pct,
+        0x4121,
+    )
+}
+
+/// Raw-read companion benchmark for dense-deleted band-local topology.
+#[bench(raw)]
+fn bench_raw_read_band_local_dense_32768_uniform_random_d1pct() -> canbench_rs::BenchResult {
+    bench_raw_read_band_local(
+        BenchVariant::Dense,
+        32_768,
+        DeletePattern::UniformRandom,
+        DeleteDensity::D1Pct,
+        0x4122,
     )
 }
 
@@ -2463,6 +2781,36 @@ fn bench_scenario_read_burst_dense_power_law_32768_uniform_random_d10pct()
     )
 }
 
+/// High-degree read-burst scenario benchmark for sparse-deleted on the fixed high out-degree
+/// random topology.
+#[bench(raw)]
+fn bench_scenario_read_burst_sparse_uniform_random_dense_local_32768_uniform_random_d1pct()
+-> canbench_rs::BenchResult {
+    bench_read_burst_workload(
+        BenchVariant::Sparse,
+        GraphTopology::UniformRandomDenseLocal,
+        32_768,
+        DeletePattern::UniformRandom,
+        DeleteDensity::D1Pct,
+        0x5009,
+    )
+}
+
+/// High-degree read-burst scenario benchmark for dense-deleted on the fixed high out-degree
+/// random topology.
+#[bench(raw)]
+fn bench_scenario_read_burst_dense_uniform_random_dense_local_32768_uniform_random_d1pct()
+-> canbench_rs::BenchResult {
+    bench_read_burst_workload(
+        BenchVariant::Dense,
+        GraphTopology::UniformRandomDenseLocal,
+        32_768,
+        DeletePattern::UniformRandom,
+        DeleteDensity::D1Pct,
+        0x5010,
+    )
+}
+
 /// Segment-maintenance policy micro-benchmark for a small leaf with negligible garbage.
 ///
 /// Expected result is `Noop`, so this case catches regressions that accidentally over-schedule
@@ -2590,8 +2938,24 @@ mod tests {
     }
 
     #[test]
+    fn uniform_random_medium_edges_are_deterministic() {
+        let a = generate_edges(GraphTopology::UniformRandomMedium, 64, 42);
+        let b = generate_edges(GraphTopology::UniformRandomMedium, 64, 42);
+        assert_eq!(a, b);
+    }
+
+    #[test]
     fn chain_topology_has_expected_edge_count() {
         assert_eq!(generate_edges(GraphTopology::Chain, 32, 1).len(), 31);
+    }
+
+    #[test]
+    fn band_local_topology_has_expected_edge_count() {
+        let n = 128;
+        assert_eq!(
+            generate_edges(GraphTopology::BandLocal, n, 1).len(),
+            n * BAND_LOCAL_DEGREE.min(n - 1)
+        );
     }
 
     #[test]
@@ -2646,6 +3010,21 @@ mod tests {
             256,
             7,
         );
+    }
+
+    #[test]
+    fn direct_builder_matches_uniform_random_medium_topology() {
+        assert_graph_matches_generated_edges(
+            BenchVariant::Dense,
+            GraphTopology::UniformRandomMedium,
+            256,
+            11,
+        );
+    }
+
+    #[test]
+    fn direct_builder_matches_band_local_topology() {
+        assert_graph_matches_generated_edges(BenchVariant::Sparse, GraphTopology::BandLocal, 256, 5);
     }
 
     #[cfg(target_arch = "wasm32")]
