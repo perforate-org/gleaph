@@ -219,6 +219,7 @@ enum WorkloadKind {
     ReadHeavy,
     Mixed,
     DeleteHeavy,
+    ReadBurst,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -457,6 +458,68 @@ fn choose_probe_vertices(n: usize, deleted: &[usize]) -> Vec<usize> {
         probes.push(0);
     }
     probes
+}
+
+fn choose_vertex_range_probes(n: usize, deleted: &[usize], count: usize) -> Vec<usize> {
+    let deleted: BTreeSet<_> = deleted.iter().copied().collect();
+    let mut best = Vec::new();
+    let mut current = Vec::new();
+    for vid in 0..n {
+        if deleted.contains(&vid) {
+            current.clear();
+            continue;
+        }
+        current.push(vid);
+        if current.len() > count {
+            current.remove(0);
+        }
+        if current.len() > best.len() {
+            best.clone_from(&current);
+            if best.len() == count {
+                break;
+            }
+        }
+    }
+    if best.is_empty() {
+        vec![0]
+    } else {
+        best
+    }
+}
+
+fn choose_hot_vertex_probes(graph: &BenchVariantGraph, n: usize, deleted: &[usize], count: usize) -> Vec<usize> {
+    let deleted: BTreeSet<_> = deleted.iter().copied().collect();
+    let hot = (0..n)
+        .filter(|vid| !deleted.contains(vid))
+        .max_by_key(|&vid| graph.raw_out_edge_count(vid))
+        .unwrap_or(0);
+    vec![hot; count.max(1)]
+}
+
+fn choose_degree_split_probes(
+    graph: &BenchVariantGraph,
+    n: usize,
+    deleted: &[usize],
+    high_degree: bool,
+    count: usize,
+) -> Vec<usize> {
+    let deleted: BTreeSet<_> = deleted.iter().copied().collect();
+    let mut ranked: Vec<_> = (0..n)
+        .filter(|vid| !deleted.contains(vid))
+        .map(|vid| (graph.raw_out_edge_count(vid), vid))
+        .collect();
+    if ranked.is_empty() {
+        return vec![0];
+    }
+    ranked.sort_unstable_by_key(|&(degree, vid)| (degree, vid));
+    if high_degree {
+        ranked.reverse();
+    }
+    ranked
+        .into_iter()
+        .take(count.max(1))
+        .map(|(_, vid)| vid)
+        .collect()
 }
 
 trait QueueGraphOps {
@@ -1062,15 +1125,10 @@ fn scan_raw_reads(graph: &BenchVariantGraph, probe_vertices: &[usize]) -> usize 
 
 fn scan_logical_reads(graph: &BenchVariantGraph, probe_vertices: &[usize]) -> usize {
     let _scan_scope = canbench_rs::bench_scope("dgap_logical_read_scan");
-    let counts: Vec<_> = probe_vertices
+    let yielded: usize = probe_vertices
         .iter()
         .map(|&vid| graph.logical_out_edge_count(vid).unwrap_or(0))
-        .collect();
-    drop(_scan_scope);
-    let _filter_scope = canbench_rs::bench_scope("dgap_logical_read_deleted_filter");
-    let yielded: usize = counts.iter().sum();
-    drop(_filter_scope);
-    let _yield_scope = canbench_rs::bench_scope("dgap_logical_read_yield");
+        .sum();
     black_box(yielded);
     yielded
 }
@@ -1091,11 +1149,13 @@ fn run_workload(
             WorkloadKind::ReadHeavy => step % 20 == 19,
             WorkloadKind::Mixed => step % 10 == 8,
             WorkloadKind::DeleteHeavy => step % 5 <= 1,
+            WorkloadKind::ReadBurst => false,
         };
         let do_gc = match kind {
             WorkloadKind::ReadHeavy => step % 25 == 24,
             WorkloadKind::Mixed => step % 10 == 9,
             WorkloadKind::DeleteHeavy => step % 5 == 4,
+            WorkloadKind::ReadBurst => false,
         };
         if do_delete && delete_idx < delete_set.len() {
             graph.delete_vertex(delete_set[delete_idx]);
@@ -1295,6 +1355,112 @@ fn bench_logical_read(
     })
 }
 
+/// Measures logical reads against one repeatedly accessed hot vertex.
+///
+/// This approximates service workloads where a small number of high-degree vertices dominate read
+/// traffic. It is especially useful for comparing deleted-neighbor filtering cost in sparse vs.
+/// dense deleted-index variants.
+fn bench_logical_read_hot_vertex(
+    variant: BenchVariant,
+    topology: GraphTopology,
+    n: usize,
+    delete_pattern: DeletePattern,
+    density: DeleteDensity,
+    seed: u64,
+) -> canbench_rs::BenchResult {
+    let spec = FixtureSpec {
+        variant,
+        topology,
+        n,
+        seed,
+    };
+    let fixture = build_fixture(spec);
+    let graph = load_fixture(spec, &fixture);
+    let delete_set = make_delete_set(delete_pattern, n, density, seed);
+    apply_delete_set(&graph, &delete_set);
+    let probes = choose_hot_vertex_probes(&graph, n, &delete_set, RAW_READ_PROBE_COUNT);
+    canbench_rs::bench_fn(move || {
+        let summary = WorkloadSummary {
+            deleted_count: delete_set.len(),
+            yielded_edge_count: scan_logical_reads(&graph, &probes),
+            queue_len_before: graph.work_queue_len(),
+            queue_len_after: graph.work_queue_len(),
+            completed_gc_items: 0,
+        };
+        black_box(summary);
+    })
+}
+
+/// Measures logical reads across a contiguous range of live vertices.
+///
+/// This models scans over nearby IDs, which tends to happen in page-wise reads and batched graph
+/// traversal code.
+fn bench_logical_read_vertex_range(
+    variant: BenchVariant,
+    topology: GraphTopology,
+    n: usize,
+    delete_pattern: DeletePattern,
+    density: DeleteDensity,
+    seed: u64,
+) -> canbench_rs::BenchResult {
+    let spec = FixtureSpec {
+        variant,
+        topology,
+        n,
+        seed,
+    };
+    let fixture = build_fixture(spec);
+    let graph = load_fixture(spec, &fixture);
+    let delete_set = make_delete_set(delete_pattern, n, density, seed);
+    apply_delete_set(&graph, &delete_set);
+    let probes = choose_vertex_range_probes(n, &delete_set, RAW_READ_PROBE_COUNT);
+    canbench_rs::bench_fn(move || {
+        let summary = WorkloadSummary {
+            deleted_count: delete_set.len(),
+            yielded_edge_count: scan_logical_reads(&graph, &probes),
+            queue_len_before: graph.work_queue_len(),
+            queue_len_after: graph.work_queue_len(),
+            completed_gc_items: 0,
+        };
+        black_box(summary);
+    })
+}
+
+/// Measures logical reads split by vertex degree.
+///
+/// `high_degree = true` focuses on hub-like vertices, while `false` focuses on the sparse tail.
+fn bench_logical_read_degree_split(
+    variant: BenchVariant,
+    topology: GraphTopology,
+    n: usize,
+    delete_pattern: DeletePattern,
+    density: DeleteDensity,
+    seed: u64,
+    high_degree: bool,
+) -> canbench_rs::BenchResult {
+    let spec = FixtureSpec {
+        variant,
+        topology,
+        n,
+        seed,
+    };
+    let fixture = build_fixture(spec);
+    let graph = load_fixture(spec, &fixture);
+    let delete_set = make_delete_set(delete_pattern, n, density, seed);
+    apply_delete_set(&graph, &delete_set);
+    let probes = choose_degree_split_probes(&graph, n, &delete_set, high_degree, RAW_READ_PROBE_COUNT);
+    canbench_rs::bench_fn(move || {
+        let summary = WorkloadSummary {
+            deleted_count: delete_set.len(),
+            yielded_edge_count: scan_logical_reads(&graph, &probes),
+            queue_len_before: graph.work_queue_len(),
+            queue_len_after: graph.work_queue_len(),
+            completed_gc_items: 0,
+        };
+        black_box(summary);
+    })
+}
+
 /// Measures a mixed workload over a reopened fixture graph.
 ///
 /// Depending on `kind`, the runner interleaves reads, vertex deletes, and periodic GC to model
@@ -1320,6 +1486,35 @@ fn bench_workload(
     let probes = choose_probe_vertices(n, &[]);
     canbench_rs::bench_fn(move || {
         let summary = run_workload(&graph, kind, &delete_set, &probes);
+        black_box(summary);
+    })
+}
+
+/// Measures a read burst over a reopened fixture without interleaving deletes or GC.
+///
+/// This isolates steady-state logical read cost under repeated access and complements the more
+/// mixed scenario benchmarks.
+fn bench_read_burst_workload(
+    variant: BenchVariant,
+    topology: GraphTopology,
+    n: usize,
+    delete_pattern: DeletePattern,
+    density: DeleteDensity,
+    seed: u64,
+) -> canbench_rs::BenchResult {
+    let spec = FixtureSpec {
+        variant,
+        topology,
+        n,
+        seed,
+    };
+    let fixture = build_fixture(spec);
+    let graph = load_fixture(spec, &fixture);
+    let delete_set = make_delete_set(delete_pattern, n, density, seed);
+    apply_delete_set(&graph, &delete_set);
+    let probes = choose_hot_vertex_probes(&graph, n, &delete_set, RAW_READ_PROBE_COUNT);
+    canbench_rs::bench_fn(move || {
+        let summary = run_workload(&graph, WorkloadKind::ReadBurst, &[], &probes);
         black_box(summary);
     })
 }
@@ -1911,6 +2106,186 @@ fn bench_logical_read_dense_uniform_random_sparse_32768_uniform_random_d1pct()
     )
 }
 
+/// Measures repeated logical reads against the hottest surviving vertex in a power-law graph,
+/// using the roaring-backed sparse-deleted variant.
+#[bench(raw)]
+fn bench_logical_read_hot_vertex_sparse_power_law_32768_uniform_random_d10pct()
+-> canbench_rs::BenchResult {
+    bench_logical_read_hot_vertex(
+        BenchVariant::Sparse,
+        GraphTopology::PowerLaw,
+        32_768,
+        DeletePattern::UniformRandom,
+        DeleteDensity::D10Pct,
+        0x4011,
+    )
+}
+
+/// Same hot-vertex logical-read case as the sparse benchmark, but using the dense-deleted graph.
+#[bench(raw)]
+fn bench_logical_read_hot_vertex_dense_power_law_32768_uniform_random_d10pct()
+-> canbench_rs::BenchResult {
+    bench_logical_read_hot_vertex(
+        BenchVariant::Dense,
+        GraphTopology::PowerLaw,
+        32_768,
+        DeletePattern::UniformRandom,
+        DeleteDensity::D10Pct,
+        0x4012,
+    )
+}
+
+/// Measures logical reads across a contiguous live vertex range in a uniform-random sparse graph
+/// using the roaring-backed sparse-deleted variant.
+#[bench(raw)]
+fn bench_logical_read_vertex_range_sparse_uniform_random_sparse_32768_uniform_random_d1pct()
+-> canbench_rs::BenchResult {
+    bench_logical_read_vertex_range(
+        BenchVariant::Sparse,
+        GraphTopology::UniformRandomSparse,
+        32_768,
+        DeletePattern::UniformRandom,
+        DeleteDensity::D1Pct,
+        0x4021,
+    )
+}
+
+/// Same contiguous-range logical-read case as the sparse benchmark, but using the dense-deleted
+/// graph.
+#[bench(raw)]
+fn bench_logical_read_vertex_range_dense_uniform_random_sparse_32768_uniform_random_d1pct()
+-> canbench_rs::BenchResult {
+    bench_logical_read_vertex_range(
+        BenchVariant::Dense,
+        GraphTopology::UniformRandomSparse,
+        32_768,
+        DeletePattern::UniformRandom,
+        DeleteDensity::D1Pct,
+        0x4022,
+    )
+}
+
+/// Measures logical reads over low-degree vertices in a power-law graph using the sparse-deleted
+/// variant.
+#[bench(raw)]
+fn bench_logical_read_degree_split_sparse_power_law_32768_uniform_random_d10pct_low()
+-> canbench_rs::BenchResult {
+    bench_logical_read_degree_split(
+        BenchVariant::Sparse,
+        GraphTopology::PowerLaw,
+        32_768,
+        DeletePattern::UniformRandom,
+        DeleteDensity::D10Pct,
+        0x4031,
+        false,
+    )
+}
+
+/// Measures logical reads over high-degree vertices in a power-law graph using the sparse-deleted
+/// variant.
+#[bench(raw)]
+fn bench_logical_read_degree_split_sparse_power_law_32768_uniform_random_d10pct_high()
+-> canbench_rs::BenchResult {
+    bench_logical_read_degree_split(
+        BenchVariant::Sparse,
+        GraphTopology::PowerLaw,
+        32_768,
+        DeletePattern::UniformRandom,
+        DeleteDensity::D10Pct,
+        0x4032,
+        true,
+    )
+}
+
+/// Measures logical reads over low-degree vertices in a power-law graph using the dense-deleted
+/// variant.
+#[bench(raw)]
+fn bench_logical_read_degree_split_dense_power_law_32768_uniform_random_d10pct_low()
+-> canbench_rs::BenchResult {
+    bench_logical_read_degree_split(
+        BenchVariant::Dense,
+        GraphTopology::PowerLaw,
+        32_768,
+        DeletePattern::UniformRandom,
+        DeleteDensity::D10Pct,
+        0x4033,
+        false,
+    )
+}
+
+/// Measures logical reads over high-degree vertices in a power-law graph using the dense-deleted
+/// variant.
+#[bench(raw)]
+fn bench_logical_read_degree_split_dense_power_law_32768_uniform_random_d10pct_high()
+-> canbench_rs::BenchResult {
+    bench_logical_read_degree_split(
+        BenchVariant::Dense,
+        GraphTopology::PowerLaw,
+        32_768,
+        DeletePattern::UniformRandom,
+        DeleteDensity::D10Pct,
+        0x4034,
+        true,
+    )
+}
+
+/// Measures sparse-deleted logical reads at a denser 10% delete level on a uniform-random sparse
+/// graph.
+#[bench(raw)]
+fn bench_logical_read_sparse_uniform_random_sparse_32768_uniform_random_d10pct()
+-> canbench_rs::BenchResult {
+    bench_logical_read(
+        BenchVariant::Sparse,
+        GraphTopology::UniformRandomSparse,
+        32_768,
+        DeletePattern::UniformRandom,
+        DeleteDensity::D10Pct,
+        0x4041,
+    )
+}
+
+/// Same 10%-delete logical-read case as the sparse benchmark, but using the dense-deleted graph.
+#[bench(raw)]
+fn bench_logical_read_dense_uniform_random_sparse_32768_uniform_random_d10pct()
+-> canbench_rs::BenchResult {
+    bench_logical_read(
+        BenchVariant::Dense,
+        GraphTopology::UniformRandomSparse,
+        32_768,
+        DeletePattern::UniformRandom,
+        DeleteDensity::D10Pct,
+        0x4042,
+    )
+}
+
+/// Measures sparse-deleted logical reads at a 50% delete level on a uniform-random sparse graph.
+#[bench(raw)]
+fn bench_logical_read_sparse_uniform_random_sparse_32768_uniform_random_d50pct()
+-> canbench_rs::BenchResult {
+    bench_logical_read(
+        BenchVariant::Sparse,
+        GraphTopology::UniformRandomSparse,
+        32_768,
+        DeletePattern::UniformRandom,
+        DeleteDensity::D50Pct,
+        0x4043,
+    )
+}
+
+/// Same 50%-delete logical-read case as the sparse benchmark, but using the dense-deleted graph.
+#[bench(raw)]
+fn bench_logical_read_dense_uniform_random_sparse_32768_uniform_random_d50pct()
+-> canbench_rs::BenchResult {
+    bench_logical_read(
+        BenchVariant::Dense,
+        GraphTopology::UniformRandomSparse,
+        32_768,
+        DeletePattern::UniformRandom,
+        DeleteDensity::D50Pct,
+        0x4044,
+    )
+}
+
 /// Measures raw storage scans on `RowTombstone` after a 1% uniform-random delete set has been
 /// applied to a 32k uniform-random sparse graph.
 #[bench(raw)]
@@ -2054,6 +2429,37 @@ fn bench_scenario_delete_heavy_dense_power_law_32768_uniform_random_d10pct()
         DeletePattern::UniformRandom,
         DeleteDensity::D10Pct,
         0x5006,
+    )
+}
+
+/// Read-burst scenario benchmark for the roaring-backed sparse-deleted graph on a 32k power-law
+/// topology.
+///
+/// This isolates steady-state logical reads over hot vertices without delete or GC interleaving.
+#[bench(raw)]
+fn bench_scenario_read_burst_sparse_power_law_32768_uniform_random_d10pct()
+-> canbench_rs::BenchResult {
+    bench_read_burst_workload(
+        BenchVariant::Sparse,
+        GraphTopology::PowerLaw,
+        32_768,
+        DeletePattern::UniformRandom,
+        DeleteDensity::D10Pct,
+        0x5007,
+    )
+}
+
+/// Same read-burst power-law workload as the sparse benchmark, but using the dense-deleted graph.
+#[bench(raw)]
+fn bench_scenario_read_burst_dense_power_law_32768_uniform_random_d10pct()
+-> canbench_rs::BenchResult {
+    bench_read_burst_workload(
+        BenchVariant::Dense,
+        GraphTopology::PowerLaw,
+        32_768,
+        DeletePattern::UniformRandom,
+        DeleteDensity::D10Pct,
+        0x5008,
     )
 }
 

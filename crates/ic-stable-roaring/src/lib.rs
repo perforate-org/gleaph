@@ -81,6 +81,6 @@ mod memory;
 /// Maximum payload value that can be stored in a packed journal record.
 pub const JOURNAL_PAYLOAD_MAX: u64 = (1u64 << 61) - 1;
 
-pub use bitmap::{InitError, RoaringBitMap};
+pub use bitmap::{ContainsView, InitError, RoaringBitMap};
 pub use bitmap::RoaringBitMap as StableRoaringBitMap;
 pub use memory::GrowFailed;

@@ -88,5 +88,5 @@ mod memory;
 /// Maximum payload value that can be stored in a packed journal record.
 pub const JOURNAL_PAYLOAD_MAX: u64 = (1u64 << 61) - 1;
 
-pub use bitset::{BitSet, BitSet as StableBitSet, InitError};
+pub use bitset::{BitSet, BitSet as StableBitSet, ContainsView, InitError};
 pub use memory::GrowFailed;

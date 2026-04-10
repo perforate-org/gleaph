@@ -2,7 +2,7 @@ use crate::memory::{
     MemoryReader, MemoryWriter, grow_memory_to_at_least_bytes, read_u64, read_u64_words_into,
     safe_write, write_u64, write_zero_bytes,
 };
-use core::cell::{Cell, RefCell};
+use core::cell::{Cell, Ref, RefCell};
 use core::fmt;
 use ic_stable_structures::Memory;
 use roaring::RoaringTreemap;
@@ -168,6 +168,22 @@ pub struct RoaringBitMap<M: Memory> {
     journal_cap: u64,
 }
 
+/// Borrowed view for repeated membership checks against a [`RoaringBitMap`].
+pub struct ContainsView<'a> {
+    state: Ref<'a, HeapState>,
+}
+
+impl ContainsView<'_> {
+    /// Tests whether the selected bit is set while reusing a previously borrowed heap mirror.
+    #[inline]
+    pub fn contains(&self, index: u64) -> bool {
+        if index >= self.state.len_bits {
+            return false;
+        }
+        self.state.bitmap.contains(index)
+    }
+}
+
 impl<M: Memory> fmt::Debug for RoaringBitMap<M> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let st = self.state.borrow();
@@ -293,6 +309,14 @@ impl<M: Memory> RoaringBitMap<M> {
             return false;
         }
         st.bitmap.contains(index)
+    }
+
+    /// Returns a borrowed view that can be reused for repeated membership checks during a scan.
+    #[inline]
+    pub fn contains_view(&self) -> ContainsView<'_> {
+        ContainsView {
+            state: self.state.borrow(),
+        }
     }
 
     /// Ensures that the logical length is at least `min_len`.

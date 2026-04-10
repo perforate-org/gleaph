@@ -1,9 +1,10 @@
 //! Bidirectional CSR: forward out-adjacency + reverse (transpose) in-adjacency.
 
 use std::fmt;
+use std::marker::PhantomData;
 
-use ic_stable_bitset::BitSet;
-use ic_stable_roaring::StableRoaringBitMap;
+use ic_stable_bitset::{BitSet, ContainsView as BitSetContainsView};
+use ic_stable_roaring::{ContainsView as RoaringContainsView, StableRoaringBitMap};
 use ic_stable_slot_map::SlotMap;
 use ic_stable_structures::Memory;
 
@@ -138,6 +139,15 @@ fn roaring_grow_failed(e: ic_stable_roaring::GrowFailed) -> CsrGraphError {
 
 #[doc(hidden)]
 pub trait DeletedVertexRead {
+    type Scan<'a>: DeletedVertexScan
+    where
+        Self: 'a;
+
+    fn scan_deleted(&self) -> Self::Scan<'_>;
+}
+
+#[doc(hidden)]
+pub trait DeletedVertexScan {
     fn contains_deleted(&self, vid: usize) -> bool;
 }
 
@@ -165,15 +175,53 @@ pub struct SparseDeletedIndex<Dv: Memory> {
     deleted_vertices: StableRoaringBitMap<Dv>,
 }
 
-impl<Dv: Memory> DeletedVertexRead for DenseDeletedIndex<Dv> {
+pub struct DenseDeletedScan<'a> {
+    view: BitSetContainsView<'a>,
+}
+
+pub struct SparseDeletedScan<'a> {
+    view: RoaringContainsView<'a>,
+}
+
+impl DeletedVertexScan for DenseDeletedScan<'_> {
+    #[inline]
     fn contains_deleted(&self, vid: usize) -> bool {
-        self.deleted_vertices.contains(vid as u64)
+        self.view.contains(vid as u64)
+    }
+}
+
+impl DeletedVertexScan for SparseDeletedScan<'_> {
+    #[inline]
+    fn contains_deleted(&self, vid: usize) -> bool {
+        self.view.contains(vid as u64)
+    }
+}
+
+impl<Dv: Memory> DeletedVertexRead for DenseDeletedIndex<Dv> {
+    type Scan<'a>
+        = DenseDeletedScan<'a>
+    where
+        Self: 'a;
+
+    #[inline]
+    fn scan_deleted(&self) -> Self::Scan<'_> {
+        DenseDeletedScan {
+            view: self.deleted_vertices.contains_view(),
+        }
     }
 }
 
 impl<Dv: Memory> DeletedVertexRead for SparseDeletedIndex<Dv> {
-    fn contains_deleted(&self, vid: usize) -> bool {
-        self.deleted_vertices.contains(vid as u64)
+    type Scan<'a>
+        = SparseDeletedScan<'a>
+    where
+        Self: 'a;
+
+    #[inline]
+    fn scan_deleted(&self) -> Self::Scan<'_> {
+        SparseDeletedScan {
+            view: self.deleted_vertices.contains_view(),
+        }
     }
 }
 
@@ -201,7 +249,7 @@ where
     Dv: Memory,
 {
     fn is_deleted(&self, _vertices: &SlotMap<V, Mvs>, vid: usize) -> bool {
-        self.contains_deleted(vid)
+        self.deleted_vertices.contains(vid as u64)
     }
 
     fn mark_deleted(&self, _vertices: &SlotMap<V, Mvs>, vid: usize) -> Result<(), CsrGraphError> {
@@ -218,7 +266,7 @@ where
     Dv: Memory,
 {
     fn is_deleted(&self, _vertices: &SlotMap<V, Mvs>, vid: usize) -> bool {
-        self.contains_deleted(vid)
+        self.deleted_vertices.contains(vid as u64)
     }
 
     fn mark_deleted(&self, _vertices: &SlotMap<V, Mvs>, vid: usize) -> Result<(), CsrGraphError> {
@@ -625,7 +673,8 @@ where
 {
     Active {
         inner: NeighborhoodIter<'a, E, M1, M2>,
-        deleted_vertices: &'a D,
+        deleted_vertices: D::Scan<'a>,
+        _marker: PhantomData<&'a D>,
     },
     Empty,
 }
@@ -645,6 +694,7 @@ where
             LogicalNeighborhoodIter::Active {
                 inner,
                 deleted_vertices,
+                ..
             } => loop {
                 let x = inner.next()?;
                 match x {
@@ -690,7 +740,8 @@ where
             .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?;
         Ok(LogicalNeighborhoodIter::Active {
             inner,
-            deleted_vertices: &self.deleted,
+            deleted_vertices: self.deleted.scan_deleted(),
+            _marker: PhantomData,
         })
     }
 
@@ -709,7 +760,8 @@ where
             .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?;
         Ok(LogicalNeighborhoodIter::Active {
             inner,
-            deleted_vertices: &self.deleted,
+            deleted_vertices: self.deleted.scan_deleted(),
+            _marker: PhantomData,
         })
     }
 }

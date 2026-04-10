@@ -174,6 +174,18 @@ Examples:
 - logical:
   - `bench_logical_read_sparse_uniform_random_sparse_32768_uniform_random_d1pct`
   - `bench_logical_read_dense_uniform_random_sparse_32768_uniform_random_d1pct`
+  - `bench_logical_read_hot_vertex_sparse_power_law_32768_uniform_random_d10pct`
+  - `bench_logical_read_hot_vertex_dense_power_law_32768_uniform_random_d10pct`
+  - `bench_logical_read_vertex_range_sparse_uniform_random_sparse_32768_uniform_random_d1pct`
+  - `bench_logical_read_vertex_range_dense_uniform_random_sparse_32768_uniform_random_d1pct`
+  - `bench_logical_read_degree_split_sparse_power_law_32768_uniform_random_d10pct_low`
+  - `bench_logical_read_degree_split_sparse_power_law_32768_uniform_random_d10pct_high`
+  - `bench_logical_read_degree_split_dense_power_law_32768_uniform_random_d10pct_low`
+  - `bench_logical_read_degree_split_dense_power_law_32768_uniform_random_d10pct_high`
+  - `bench_logical_read_sparse_uniform_random_sparse_32768_uniform_random_d10pct`
+  - `bench_logical_read_dense_uniform_random_sparse_32768_uniform_random_d10pct`
+  - `bench_logical_read_sparse_uniform_random_sparse_32768_uniform_random_d50pct`
+  - `bench_logical_read_dense_uniform_random_sparse_32768_uniform_random_d50pct`
 
 ### Scenarios
 
@@ -183,6 +195,8 @@ Examples:
 - `bench_scenario_mixed_dense_power_law_32768_uniform_random_d10pct`
 - `bench_scenario_delete_heavy_sparse_power_law_32768_uniform_random_d10pct`
 - `bench_scenario_delete_heavy_dense_power_law_32768_uniform_random_d10pct`
+- `bench_scenario_read_burst_sparse_power_law_32768_uniform_random_d10pct`
+- `bench_scenario_read_burst_dense_power_law_32768_uniform_random_d10pct`
 
 Legacy DGAP/PMA maintenance benchmarks remain available:
 
@@ -197,8 +211,6 @@ The harness records these scope names:
   - `dgap_raw_read_scan`
 - logical read:
   - `dgap_logical_read_scan`
-  - `dgap_logical_read_deleted_filter`
-  - `dgap_logical_read_yield`
 - gc:
   - `dgap_gc_step_run_leaf`
   - `dgap_gc_step_pop_queue`
@@ -227,7 +239,8 @@ Use GC runs to answer whether a strategy only shifts cost from delete time into 
 
 - `RowTombstone` should only be judged on raw read.
 - `SparseDeleted` vs `DenseDeleted` should be judged on logical read, because that is the service-facing traversal path.
-- Pay attention to `dgap_logical_read_deleted_filter` when delete density rises.
+- Judge read regressions and improvements by total logical-read benchmark results, not by per-edge hot-path instrumentation.
+- Use the hot-vertex and degree-split benchmarks to decide whether `DenseDeleted` is helping on hub-dominated workloads or only on evenly distributed scans.
 - Current interpretation: `DenseDeleted` is the variant to prefer when logical traversal is the hot path and read latency sensitivity matters more than write-path neutrality.
 
 ### Scenario Runs

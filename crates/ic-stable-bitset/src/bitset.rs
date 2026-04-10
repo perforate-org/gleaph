@@ -19,7 +19,7 @@ use crate::memory::{
     GrowFailed, grow_memory_to_at_least_bytes, read_u64, read_u64_words_into, read_u64_words_vec,
     write, write_u64, write_u64_words_direct, write_zero_words,
 };
-use core::cell::{Cell, RefCell};
+use core::cell::{Cell, Ref, RefCell};
 use core::fmt;
 use ic_stable_structures::Memory;
 
@@ -236,6 +236,24 @@ pub struct BitSet<M: Memory> {
     journal_cap: u64,
 }
 
+/// Borrowed view for repeated membership checks against a [`BitSet`].
+pub struct ContainsView<'a> {
+    state: Ref<'a, HeapState>,
+}
+
+impl ContainsView<'_> {
+    /// Tests whether the selected bit is set while reusing a previously borrowed heap mirror.
+    #[inline]
+    pub fn contains(&self, index: u64) -> bool {
+        if index >= self.state.len_bits {
+            return false;
+        }
+        let word = (index >> 6) as usize;
+        let bit_mask = 1u64 << (index & 63);
+        unsafe { (*self.state.words.get_unchecked(word) & bit_mask) != 0 }
+    }
+}
+
 impl<M: Memory> fmt::Debug for BitSet<M> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let st = self.state.borrow();
@@ -366,6 +384,14 @@ impl<M: Memory> BitSet<M> {
         let word = (index >> 6) as usize;
         let bit_mask = 1u64 << (index & 63);
         unsafe { (*st.words.get_unchecked(word) & bit_mask) != 0 }
+    }
+
+    /// Returns a borrowed view that can be reused for repeated membership checks during a scan.
+    #[inline]
+    pub fn contains_view(&self) -> ContainsView<'_> {
+        ContainsView {
+            state: self.state.borrow(),
+        }
     }
 
     /// Ensures that the logical length is at least `min_len`.
