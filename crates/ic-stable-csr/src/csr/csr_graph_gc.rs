@@ -561,6 +561,16 @@ macro_rules! impl_gc_common {
                 self.graph.insert_vertex_strict(row_template)
             }
 
+            #[doc(hidden)]
+            pub fn append_empty_vertices_fast_for_fixture(
+                &self,
+                row_template: V,
+                count: usize,
+            ) -> Result<(), CsrGraphError> {
+                self.graph
+                    .append_empty_vertices_fast_for_fixture(row_template, count)
+            }
+
             pub fn insert_directed(&self, src: usize, dst: usize, edge: E) -> Result<(), CsrGraphError> {
                 self.ctx().ensure_endpoint_live(src)?;
                 self.ctx().ensure_endpoint_live(dst)?;

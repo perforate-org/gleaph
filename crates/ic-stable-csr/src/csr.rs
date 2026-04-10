@@ -189,6 +189,76 @@ where
         self.append_vertex_row_after_base_checks(new_vid, row, expected_base)
     }
 
+    /// Benchmark/fixture-only fast path for appending many empty tail rows.
+    ///
+    /// Unlike [`Self::insert_vertex`], this avoids per-row slab-tail refresh and PMA sync. The
+    /// caller must only use it for empty rows (`degree == 0`) during fixture construction.
+    #[doc(hidden)]
+    pub fn append_empty_vertices_fast_for_fixture(
+        &self,
+        row_template: V,
+        count: usize,
+    ) -> Result<(), DgapStoresError> {
+        if count == 0 {
+            return Ok(());
+        }
+        if row_template.degree() != 0 {
+            return Err(DgapStoresError::Graph(
+                "append_empty_vertices_fast_for_fixture requires degree == 0",
+            ));
+        }
+
+        let h = self
+            .edges
+            .header()
+            .ok_or(DgapStoresError::Graph("bad edge header"))?;
+        let start_vid = self.vertices.len();
+        let end_vid = start_vid
+            .checked_add(count as u64)
+            .ok_or(DgapStoresError::Graph("vertex count overflow"))?;
+        for vid in start_vid..end_vid {
+            DgapEdgeStore::<E, M1, M2>::check_vertex_append_cap(
+                vid,
+                h.segment_count,
+                h.segment_size,
+            )
+            .map_err(DgapStoresError::Graph)?;
+        }
+
+        let start_base = self
+            .edges
+            .slab_append_base_slot(&self.vertices)
+            .map_err(DgapStoresError::Graph)?;
+
+        loop {
+            let h = self
+                .edges
+                .header()
+                .ok_or(DgapStoresError::Graph("bad edge header"))?;
+            let last_base = start_base.saturating_add((count - 1) as u64);
+            if last_base < h.elem_capacity {
+                break;
+            }
+            self.edges
+                .resize_double(&self.vertices)
+                .map_err(DgapStoresError::Graph)?;
+        }
+
+        for i in 0..count {
+            let row = row_template.with_base_slot_start(start_base + i as u64);
+            self.vertices
+                .insert(&row)
+                .map_err(|_| DgapStoresError::Graph("vertex column grow failed"))?;
+        }
+
+        self.edges
+            .refresh_slab_occupied_tail_from_column(&self.vertices)
+            .map_err(DgapStoresError::Graph)?;
+        self.sync_pma_meta_for_vertex_range(start_vid as usize, end_vid as usize)
+            .map_err(DgapStoresError::Graph)?;
+        Ok(())
+    }
+
     fn append_vertex_row_after_base_checks(
         &self,
         new_vid: u64,

@@ -416,13 +416,6 @@ fn dedup_edges(edges: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
     deduped
 }
 
-fn interleaved_owner_key(owner: usize) -> (usize, usize) {
-    (
-        owner % BASE_SEGMENT_SIZE as usize,
-        owner / BASE_SEGMENT_SIZE as usize,
-    )
-}
-
 fn make_delete_set(
     pattern: DeletePattern,
     n: usize,
@@ -467,9 +460,7 @@ fn choose_probe_vertices(n: usize, deleted: &[usize]) -> Vec<usize> {
 }
 
 trait QueueGraphOps {
-    fn insert_vertex(&self, row: BenchVertex);
     fn delete_edge_directed(&self, src: usize, dst: usize);
-    fn sync_pma_meta(&self);
     fn delete_vertex(&self, vid: usize);
     fn gc_step(&self, budget: usize) -> usize;
     fn work_queue_len(&self) -> u64;
@@ -478,15 +469,9 @@ trait QueueGraphOps {
 }
 
 impl QueueGraphOps for BenchRowGraph {
-    fn insert_vertex(&self, row: BenchVertex) {
-        self.insert_vertex(row).expect("insert_vertex");
-    }
     fn delete_edge_directed(&self, src: usize, dst: usize) {
         self.delete_edge_directed(src, dst)
             .expect("delete_edge_directed");
-    }
-    fn sync_pma_meta(&self) {
-        self.sync_pma_meta().expect("sync_pma_meta");
     }
     fn delete_vertex(&self, vid: usize) {
         self.delete_vertex(vid).expect("delete_vertex");
@@ -506,15 +491,9 @@ impl QueueGraphOps for BenchRowGraph {
 }
 
 impl QueueGraphOps for BenchSparseGraph {
-    fn insert_vertex(&self, row: BenchVertex) {
-        self.insert_vertex(row).expect("insert_vertex");
-    }
     fn delete_edge_directed(&self, src: usize, dst: usize) {
         self.delete_edge_directed(src, dst)
             .expect("delete_edge_directed");
-    }
-    fn sync_pma_meta(&self) {
-        self.sync_pma_meta().expect("sync_pma_meta");
     }
     fn delete_vertex(&self, vid: usize) {
         self.delete_vertex(vid).expect("delete_vertex");
@@ -538,15 +517,9 @@ impl QueueGraphOps for BenchSparseGraph {
 }
 
 impl QueueGraphOps for BenchDenseGraph {
-    fn insert_vertex(&self, row: BenchVertex) {
-        self.insert_vertex(row).expect("insert_vertex");
-    }
     fn delete_edge_directed(&self, src: usize, dst: usize) {
         self.delete_edge_directed(src, dst)
             .expect("delete_edge_directed");
-    }
-    fn sync_pma_meta(&self) {
-        self.sync_pma_meta().expect("sync_pma_meta");
     }
     fn delete_vertex(&self, vid: usize) {
         self.delete_vertex(vid).expect("delete_vertex");
@@ -576,11 +549,17 @@ enum BenchVariantGraph {
 }
 
 impl BenchVariantGraph {
-    fn insert_vertex(&self, row: BenchVertex) {
+    fn append_empty_vertices_fast_for_fixture(&self, row: BenchVertex, count: usize) {
         match self {
-            Self::Row(g) => QueueGraphOps::insert_vertex(g, row),
-            Self::Sparse(g) => QueueGraphOps::insert_vertex(g, row),
-            Self::Dense(g) => QueueGraphOps::insert_vertex(g, row),
+            Self::Row(g) => g
+                .append_empty_vertices_fast_for_fixture(row, count)
+                .expect("append_empty_vertices_fast_for_fixture"),
+            Self::Sparse(g) => g
+                .append_empty_vertices_fast_for_fixture(row, count)
+                .expect("append_empty_vertices_fast_for_fixture"),
+            Self::Dense(g) => g
+                .append_empty_vertices_fast_for_fixture(row, count)
+                .expect("append_empty_vertices_fast_for_fixture"),
         }
     }
 
@@ -589,14 +568,6 @@ impl BenchVariantGraph {
             Self::Row(g) => QueueGraphOps::delete_edge_directed(g, src, dst),
             Self::Sparse(g) => QueueGraphOps::delete_edge_directed(g, src, dst),
             Self::Dense(g) => QueueGraphOps::delete_edge_directed(g, src, dst),
-        }
-    }
-
-    fn sync_pma_meta(&self) {
-        match self {
-            Self::Row(g) => QueueGraphOps::sync_pma_meta(g),
-            Self::Sparse(g) => QueueGraphOps::sync_pma_meta(g),
-            Self::Dense(g) => QueueGraphOps::sync_pma_meta(g),
         }
     }
 
@@ -818,50 +789,69 @@ fn open_queue_graph(variant: BenchVariant) -> BenchVariantGraph {
 }
 
 fn populate_vertices_bulk(graph: &BenchVariantGraph, n: usize) {
-    for _ in 0..n {
-        graph.insert_vertex(empty_vertex());
+    graph.append_empty_vertices_fast_for_fixture(empty_vertex(), n);
+}
+
+fn build_packed_edge_column(
+    stores: &BenchStores,
+    n: usize,
+    edges: &[(usize, usize)],
+    reverse: bool,
+) {
+    let h = stores.edges.header().expect("edge header");
+    let stride = h.edge_stride as usize;
+    let mut by_owner = vec![Vec::<usize>::new(); n];
+    for &(src, dst) in edges {
+        let (owner, neighbor) = if reverse { (dst, src) } else { (src, dst) };
+        by_owner[owner].push(neighbor);
     }
-}
 
-fn sorted_forward_edges(edges: &[(usize, usize)]) -> Vec<(usize, BenchEdge)> {
-    let mut out: Vec<_> = edges
-        .iter()
-        .copied()
-        .map(|(src, dst)| (src, BenchEdge::default().with_neighbor_vid(dst)))
-        .collect();
-    out.sort_unstable_by_key(|(src, edge)| {
-        let (lane, block) = interleaved_owner_key(*src);
-        (lane, block, edge.neighbor_vid())
-    });
-    out
-}
-
-fn sorted_reverse_edges(edges: &[(usize, usize)]) -> Vec<(usize, BenchEdge)> {
-    let mut out: Vec<_> = edges
-        .iter()
-        .copied()
-        .map(|(src, dst)| (dst, BenchEdge::default().with_neighbor_vid(src)))
-        .collect();
-    out.sort_unstable_by_key(|(src, edge)| {
-        let (lane, block) = interleaved_owner_key(*src);
-        (lane, block, edge.neighbor_vid())
-    });
-    out
+    let mut next_base = 0u64;
+    let mut total_edges = 0u64;
+    for (owner, neighbors) in by_owner.into_iter().enumerate() {
+        let mut neighbors = neighbors;
+        neighbors.sort_unstable();
+        let degree = neighbors.len();
+        if degree > 0 {
+            let mut payload = vec![0u8; degree * stride];
+            for (i, neighbor) in neighbors.iter().copied().enumerate() {
+                BenchEdge::default()
+                    .with_neighbor_vid(neighbor)
+                    .write_to(&mut payload[i * stride..(i + 1) * stride]);
+            }
+            stores
+                .edges
+                .memories()
+                .write_edge_slab_span(h.edge_stride, next_base, &payload)
+                .expect("write packed slab span");
+        }
+        let prev = stores
+            .vertices
+            .get_dense(owner as u32)
+            .expect("vertex row for packed edge build");
+        let row = prev
+            .with_base_slot_start(next_base)
+            .with_degree(degree as u32)
+            .with_log_head(-1)
+            .with_tombstone(false);
+        stores
+            .vertices
+            .set_dense(owner as u32, &row)
+            .expect("packed edge build row update");
+        next_base = next_base.saturating_add(degree as u64);
+        total_edges = total_edges.saturating_add(degree as u64);
+    }
+    stores.edges.set_num_edges_header(total_edges);
+    stores
+        .refresh_slab_occupied_tail_meta()
+        .expect("refresh_slab_occupied_tail_meta");
+    stores.sync_pma_meta().expect("sync_pma_meta");
 }
 
 fn bulk_load_fixture_graph(graph: &BenchVariantGraph, n: usize, edges: &[(usize, usize)]) {
     populate_vertices_bulk(graph, n);
-    let forward_edges = sorted_forward_edges(edges);
-    let reverse_edges = sorted_reverse_edges(edges);
-    graph
-        .forward_dgap()
-        .insert_edges(forward_edges)
-        .expect("bulk insert forward");
-    graph
-        .reverse_dgap()
-        .insert_edges(reverse_edges)
-        .expect("bulk insert reverse");
-    graph.sync_pma_meta();
+    build_packed_edge_column(graph.forward_dgap(), n, edges, false);
+    build_packed_edge_column(graph.reverse_dgap(), n, edges, true);
 }
 
 fn build_variant_graph(
@@ -877,9 +867,24 @@ fn build_variant_graph(
     graph
 }
 
+fn build_vertices_only_graph(variant: BenchVariant, n: usize) -> BenchVariantGraph {
+    let format = graph_format_for_vertices(n);
+    let graph = format_queue_graph(variant, format);
+    populate_vertices_bulk(&graph, n);
+    graph
+}
+
 fn build_fixture(spec: FixtureSpec) -> FixtureImage {
     wipe::wipe_stable_memory();
     let _graph = build_variant_graph(spec.variant, spec.topology, spec.n, spec.seed);
+    FixtureImage {
+        bytes: wipe::snapshot_stable_memory(),
+    }
+}
+
+fn build_vertices_fixture(spec: FixtureSpec) -> FixtureImage {
+    wipe::wipe_stable_memory();
+    let _graph = build_vertices_only_graph(spec.variant, spec.n);
     FixtureImage {
         bytes: wipe::snapshot_stable_memory(),
     }
@@ -889,6 +894,12 @@ fn load_fixture(spec: FixtureSpec, image: &FixtureImage) -> BenchVariantGraph {
     let _ = spec;
     wipe::restore_stable_memory(&image.bytes);
     open_queue_graph(spec.variant)
+}
+
+fn build_edges_from_fixture(graph: &BenchVariantGraph, topology: GraphTopology, n: usize, seed: u64) {
+    let edges = generate_edges(topology, n, seed);
+    build_packed_edge_column(graph.forward_dgap(), n, &edges, false);
+    build_packed_edge_column(graph.reverse_dgap(), n, &edges, true);
 }
 
 fn apply_delete_set(graph: &BenchVariantGraph, deleted: &[usize]) -> usize {
@@ -1297,6 +1308,51 @@ fn bench_build_fixture(
     })
 }
 
+/// Measures only the bulk vertex-append phase for fixture setup.
+fn bench_build_vertices(variant: BenchVariant, n: usize) -> canbench_rs::BenchResult {
+    canbench_rs::bench_fn(move || {
+        wipe::wipe_stable_memory();
+        let graph = build_vertices_only_graph(variant, n);
+        black_box(graph.forward_dgap().vertices.len());
+    })
+}
+
+/// Measures only the packed edge-build phase, starting from a vertex-only fixture snapshot.
+fn bench_build_edges(
+    variant: BenchVariant,
+    topology: GraphTopology,
+    n: usize,
+    seed: u64,
+) -> canbench_rs::BenchResult {
+    let spec = FixtureSpec {
+        variant,
+        topology,
+        n,
+        seed,
+    };
+    let vertex_fixture = build_vertices_fixture(spec);
+    canbench_rs::bench_fn(move || {
+        let graph = load_fixture(spec, &vertex_fixture);
+        build_edges_from_fixture(&graph, topology, n, seed);
+        black_box(graph.forward_dgap().edges.memories().read_num_edges());
+    })
+}
+
+/// Measures only the stable-memory snapshot phase for a fully built fixture.
+fn bench_snapshot_fixture(
+    variant: BenchVariant,
+    topology: GraphTopology,
+    n: usize,
+    seed: u64,
+) -> canbench_rs::BenchResult {
+    wipe::wipe_stable_memory();
+    let _graph = build_variant_graph(variant, topology, n, seed);
+    canbench_rs::bench_fn(move || {
+        let bytes = wipe::snapshot_stable_memory();
+        black_box(bytes.len());
+    })
+}
+
 #[derive(Clone, Copy)]
 struct SegmentMaintainBenchCase {
     leaf: SegmentEdgeCounts,
@@ -1462,6 +1518,61 @@ fn bench_build_fixture_dense_uniform_random_sparse_8192() -> canbench_rs::BenchR
         GraphTopology::UniformRandomSparse,
         8_192,
         0x0803,
+    )
+}
+
+#[bench(raw)]
+fn bench_build_vertices_row_uniform_random_sparse_8192() -> canbench_rs::BenchResult {
+    bench_build_vertices(BenchVariant::Row, 8_192)
+}
+
+#[bench(raw)]
+fn bench_build_vertices_sparse_uniform_random_sparse_8192() -> canbench_rs::BenchResult {
+    bench_build_vertices(BenchVariant::Sparse, 8_192)
+}
+
+#[bench(raw)]
+fn bench_build_vertices_dense_uniform_random_sparse_8192() -> canbench_rs::BenchResult {
+    bench_build_vertices(BenchVariant::Dense, 8_192)
+}
+
+#[bench(raw)]
+fn bench_build_edges_row_uniform_random_sparse_8192() -> canbench_rs::BenchResult {
+    bench_build_edges(BenchVariant::Row, GraphTopology::UniformRandomSparse, 8_192, 0x0811)
+}
+
+#[bench(raw)]
+fn bench_build_edges_sparse_uniform_random_sparse_8192() -> canbench_rs::BenchResult {
+    bench_build_edges(BenchVariant::Sparse, GraphTopology::UniformRandomSparse, 8_192, 0x0812)
+}
+
+#[bench(raw)]
+fn bench_build_edges_dense_uniform_random_sparse_8192() -> canbench_rs::BenchResult {
+    bench_build_edges(BenchVariant::Dense, GraphTopology::UniformRandomSparse, 8_192, 0x0813)
+}
+
+#[bench(raw)]
+fn bench_snapshot_fixture_row_uniform_random_sparse_8192() -> canbench_rs::BenchResult {
+    bench_snapshot_fixture(BenchVariant::Row, GraphTopology::UniformRandomSparse, 8_192, 0x0821)
+}
+
+#[bench(raw)]
+fn bench_snapshot_fixture_sparse_uniform_random_sparse_8192() -> canbench_rs::BenchResult {
+    bench_snapshot_fixture(
+        BenchVariant::Sparse,
+        GraphTopology::UniformRandomSparse,
+        8_192,
+        0x0822,
+    )
+}
+
+#[bench(raw)]
+fn bench_snapshot_fixture_dense_uniform_random_sparse_8192() -> canbench_rs::BenchResult {
+    bench_snapshot_fixture(
+        BenchVariant::Dense,
+        GraphTopology::UniformRandomSparse,
+        8_192,
+        0x0823,
     )
 }
 
@@ -2033,6 +2144,53 @@ mod tests {
         let edges = generate_edges(GraphTopology::ClusteredCommunity, 128, 1);
         assert!(edges.contains(&(0, 64)));
         assert!(edges.contains(&(64, 0)));
+    }
+
+    fn assert_graph_matches_generated_edges(
+        variant: BenchVariant,
+        topology: GraphTopology,
+        n: usize,
+        seed: u64,
+    ) {
+        wipe::wipe_stable_memory();
+        let graph = build_variant_graph(variant, topology, n, seed);
+        let expected = generate_edges(topology, n, seed);
+        let mut actual = collect_actual_edges(&graph, n);
+        let mut expected_sorted = expected.clone();
+        actual.sort_unstable();
+        expected_sorted.sort_unstable();
+        assert_eq!(actual, expected_sorted, "out-edge set mismatch");
+        for (src, dst) in expected {
+            assert!(
+                graph.raw_in_has_neighbor(dst, src),
+                "missing reverse in-edge view for {src}->{dst}"
+            );
+        }
+    }
+
+    #[test]
+    fn direct_builder_matches_chain_topology() {
+        assert_graph_matches_generated_edges(BenchVariant::Row, GraphTopology::Chain, 64, 1);
+    }
+
+    #[test]
+    fn direct_builder_matches_uniform_random_sparse_topology() {
+        assert_graph_matches_generated_edges(
+            BenchVariant::Dense,
+            GraphTopology::UniformRandomSparse,
+            256,
+            42,
+        );
+    }
+
+    #[test]
+    fn direct_builder_matches_clustered_community_topology() {
+        assert_graph_matches_generated_edges(
+            BenchVariant::Sparse,
+            GraphTopology::ClusteredCommunity,
+            256,
+            7,
+        );
     }
 
     #[cfg(target_arch = "wasm32")]

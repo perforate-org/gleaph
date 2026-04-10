@@ -69,6 +69,16 @@ Operation benchmarks are fixture-based:
 
 This means `delete`, `gc`, and `read` instruction counts exclude graph construction time.
 
+Build benchmarks are intentionally split into phases:
+
+- `bench_build_vertices_*`
+- `bench_build_edges_*`
+- `bench_snapshot_fixture_*`
+- `bench_build_fixture_*`
+
+Use the split benchmarks to diagnose bottlenecks. Treat `bench_build_fixture_*` as the combined
+"all phases together" number.
+
 Implemented groups:
 
 - `bench_build_fixture_*`
@@ -116,6 +126,15 @@ Examples:
 
 ### Build Fixture
 
+- `bench_build_vertices_row_uniform_random_sparse_8192`
+- `bench_build_vertices_sparse_uniform_random_sparse_8192`
+- `bench_build_vertices_dense_uniform_random_sparse_8192`
+- `bench_build_edges_row_uniform_random_sparse_8192`
+- `bench_build_edges_sparse_uniform_random_sparse_8192`
+- `bench_build_edges_dense_uniform_random_sparse_8192`
+- `bench_snapshot_fixture_row_uniform_random_sparse_8192`
+- `bench_snapshot_fixture_sparse_uniform_random_sparse_8192`
+- `bench_snapshot_fixture_dense_uniform_random_sparse_8192`
 - `bench_build_fixture_row_uniform_random_sparse_8192`
 - `bench_build_fixture_sparse_uniform_random_sparse_8192`
 - `bench_build_fixture_dense_uniform_random_sparse_8192`
@@ -222,6 +241,18 @@ Current decision rule:
   - `DenseDeleted` is at least neutral on `read_heavy`
 
 `RowTombstone` is never the service default.
+
+### Build Benchmarks
+
+Interpret the build results in this order:
+
+- `bench_build_vertices_*`: cost of formatting a graph and bulk-appending empty vertex rows
+- `bench_build_edges_*`: cost of packing already-generated topology edges into the slab layout
+- `bench_snapshot_fixture_*`: cost of copying the fully built stable-memory image
+- `bench_build_fixture_*`: total of all three phases together
+
+If the row/sparse/dense full-build numbers are all close, that usually means the shared fixture
+construction path dominates and the deleted-index representation is not the bottleneck.
 
 ## Recommendation Table
 

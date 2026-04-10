@@ -467,6 +467,22 @@ where
         Ok(id)
     }
 
+    #[doc(hidden)]
+    pub fn append_empty_vertices_fast_for_fixture(
+        &self,
+        row_template: V,
+        count: usize,
+    ) -> Result<(), CsrGraphError> {
+        self.forward
+            .append_empty_vertices_fast_for_fixture(row_template, count)
+            .map_err(CsrGraphError::Forward)?;
+        self.reverse
+            .append_empty_vertices_fast_for_fixture(row_template, count)
+            .map_err(CsrGraphError::Reverse)?;
+        debug_assert_eq!(self.forward.vertices.len(), self.reverse.vertices.len());
+        Ok(())
+    }
+
     pub fn insert_directed(&self, src: usize, dst: usize, edge: E) -> Result<(), CsrGraphError> {
         self.ensure_vertex(src)?;
         self.ensure_vertex(dst)?;
@@ -736,6 +752,16 @@ where
         self.inner.insert_vertex_strict(row_template)
     }
 
+    #[doc(hidden)]
+    pub fn append_empty_vertices_fast_for_fixture(
+        &self,
+        row_template: V,
+        count: usize,
+    ) -> Result<(), CsrGraphError> {
+        self.inner
+            .append_empty_vertices_fast_for_fixture(row_template, count)
+    }
+
     pub fn insert_directed(&self, src: usize, dst: usize, edge: E) -> Result<(), CsrGraphError> {
         self.inner.insert_directed(src, dst, edge)
     }
@@ -809,6 +835,16 @@ where
         self.inner.insert_vertex_strict(row_template)
     }
 
+    #[doc(hidden)]
+    pub fn append_empty_vertices_fast_for_fixture(
+        &self,
+        row_template: V,
+        count: usize,
+    ) -> Result<(), CsrGraphError> {
+        self.inner
+            .append_empty_vertices_fast_for_fixture(row_template, count)
+    }
+
     pub fn insert_directed(&self, src: usize, dst: usize, edge: E) -> Result<(), CsrGraphError> {
         self.inner.insert_directed(src, dst, edge)
     }
@@ -880,6 +916,16 @@ where
 
     pub fn insert_vertex_strict(&self, row_template: V) -> Result<u64, CsrGraphError> {
         self.inner.insert_vertex_strict(row_template)
+    }
+
+    #[doc(hidden)]
+    pub fn append_empty_vertices_fast_for_fixture(
+        &self,
+        row_template: V,
+        count: usize,
+    ) -> Result<(), CsrGraphError> {
+        self.inner
+            .append_empty_vertices_fast_for_fixture(row_template, count)
     }
 
     pub fn insert_directed(&self, src: usize, dst: usize, edge: E) -> Result<(), CsrGraphError> {
