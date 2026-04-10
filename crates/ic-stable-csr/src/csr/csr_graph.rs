@@ -326,6 +326,55 @@ where
     ))
 }
 
+fn open_stores<V, E, Mvs, F1, F2, R1, R2>(
+    mem_vertices_forward: Mvs,
+    mem_vertices_reverse: Mvs,
+    forward_segment_edge_counts: F1,
+    forward_edges_and_log: F2,
+    reverse_segment_edge_counts: R1,
+    reverse_edges_and_log: R2,
+) -> Result<(DgapStores<V, E, Mvs, F1, F2>, DgapStores<V, E, Mvs, R1, R2>), CsrGraphError>
+where
+    V: CsrVertex,
+    E: CsrEdge,
+    Mvs: Memory,
+    F1: Memory,
+    F2: Memory,
+    R1: Memory,
+    R2: Memory,
+{
+    let vertices_forward = SlotMap::init(mem_vertices_forward)
+        .map_err(|_| CsrGraphError::LogicalMutation("open_existing: forward vertices init failed"))?;
+    let vertices_reverse = SlotMap::init(mem_vertices_reverse)
+        .map_err(|_| CsrGraphError::LogicalMutation("open_existing: reverse vertices init failed"))?;
+    if vertices_forward.len() != vertices_reverse.len() {
+        return Err(CsrGraphError::VertexCountMismatch {
+            forward: vertices_forward.len(),
+            reverse: vertices_reverse.len(),
+        });
+    }
+
+    let forward_edges =
+        DgapEdgeStore::new(DgapGraphMemories::new(forward_segment_edge_counts, forward_edges_and_log));
+    if forward_edges.header().is_none() {
+        return Err(CsrGraphError::LogicalMutation(
+            "open_existing: missing forward edge header",
+        ));
+    }
+    let reverse_edges =
+        DgapEdgeStore::new(DgapGraphMemories::new(reverse_segment_edge_counts, reverse_edges_and_log));
+    if reverse_edges.header().is_none() {
+        return Err(CsrGraphError::LogicalMutation(
+            "open_existing: missing reverse edge header",
+        ));
+    }
+
+    Ok((
+        DgapStores::new(vertices_forward, forward_edges),
+        DgapStores::new(vertices_reverse, reverse_edges),
+    ))
+}
+
 impl<V, E, Mvs, F1, F2, R1, R2, D> CsrGraphBase<V, E, Mvs, F1, F2, R1, R2, D>
 where
     V: CsrVertex,
@@ -958,6 +1007,27 @@ where
             inner: CsrGraphBase::new(forward, reverse, RowTombstoneDeleted),
         })
     }
+
+    pub fn open_existing(
+        mem_vertices_forward: M,
+        mem_vertices_reverse: M,
+        forward_segment_edge_counts: M,
+        forward_edges_and_log: M,
+        reverse_segment_edge_counts: M,
+        reverse_edges_and_log: M,
+    ) -> Result<Self, CsrGraphError> {
+        let (forward, reverse) = open_stores(
+            mem_vertices_forward,
+            mem_vertices_reverse,
+            forward_segment_edge_counts,
+            forward_edges_and_log,
+            reverse_segment_edge_counts,
+            reverse_edges_and_log,
+        )?;
+        Ok(Self {
+            inner: CsrGraphBase::new(forward, reverse, RowTombstoneDeleted),
+        })
+    }
 }
 
 impl<V, E, M, Dv> CsrGraphDenseDeleted<V, E, M, M, M, M, M, Dv>
@@ -995,6 +1065,32 @@ where
         )?;
         let deleted = DenseDeletedIndex {
             deleted_vertices: BitSet::new(mem_deleted_vertices).map_err(bitset_grow_failed)?,
+        };
+        Ok(Self {
+            inner: CsrGraphBase::new(forward, reverse, deleted),
+        })
+    }
+
+    pub fn open_existing(
+        mem_vertices_forward: M,
+        mem_vertices_reverse: M,
+        forward_segment_edge_counts: M,
+        forward_edges_and_log: M,
+        reverse_segment_edge_counts: M,
+        reverse_edges_and_log: M,
+        mem_deleted_vertices: Dv,
+    ) -> Result<Self, CsrGraphError> {
+        let (forward, reverse) = open_stores(
+            mem_vertices_forward,
+            mem_vertices_reverse,
+            forward_segment_edge_counts,
+            forward_edges_and_log,
+            reverse_segment_edge_counts,
+            reverse_edges_and_log,
+        )?;
+        let deleted = DenseDeletedIndex {
+            deleted_vertices: BitSet::init(mem_deleted_vertices)
+                .map_err(|_| CsrGraphError::LogicalMutation("open_existing: dense deleted init failed"))?,
         };
         Ok(Self {
             inner: CsrGraphBase::new(forward, reverse, deleted),
@@ -1038,6 +1134,33 @@ where
         let deleted = SparseDeletedIndex {
             deleted_vertices: StableRoaringBitMap::new(mem_deleted_vertices)
                 .map_err(roaring_grow_failed)?,
+        };
+        Ok(Self {
+            inner: CsrGraphBase::new(forward, reverse, deleted),
+        })
+    }
+
+    pub fn open_existing(
+        mem_vertices_forward: M,
+        mem_vertices_reverse: M,
+        forward_segment_edge_counts: M,
+        forward_edges_and_log: M,
+        reverse_segment_edge_counts: M,
+        reverse_edges_and_log: M,
+        mem_deleted_vertices: Dv,
+    ) -> Result<Self, CsrGraphError> {
+        let (forward, reverse) = open_stores(
+            mem_vertices_forward,
+            mem_vertices_reverse,
+            forward_segment_edge_counts,
+            forward_edges_and_log,
+            reverse_segment_edge_counts,
+            reverse_edges_and_log,
+        )?;
+        let deleted = SparseDeletedIndex {
+            deleted_vertices: StableRoaringBitMap::init(mem_deleted_vertices).map_err(|_| {
+                CsrGraphError::LogicalMutation("open_existing: sparse deleted init failed")
+            })?,
         };
         Ok(Self {
             inner: CsrGraphBase::new(forward, reverse, deleted),

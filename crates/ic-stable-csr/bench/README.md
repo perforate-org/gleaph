@@ -1,81 +1,255 @@
 # `ic-stable-csr-canbench`
 
-Wasm + PocketIC benchmarks for `ic_stable_csr::dgap::DgapEdgeStore::remove_slab_edge_at_local_index_physically`, `ic_stable_csr::csr::CsrGraphWithGcQueueDenseDeleted::delete_vertex`, and the `segment_maintenance_decision` score gate. Stable backing uses [`DefaultMemoryImpl`](https://docs.rs/ic-stable-structures/latest/ic_stable_structures/struct.DefaultMemoryImpl.html) and [`MemoryManager`](https://docs.rs/ic-stable-structures/latest/ic_stable_structures/memory_manager/struct.MemoryManager.html).
+`canbench` benchmark harness for `ic-stable-csr`, focused on comparing deleted-vertex strategies:
+
+- `RowTombstone`
+- `SparseDeleted` (`ic-stable-roaring`)
+- `DenseDeleted` (`ic-stable-bitset`)
+
+The benchmark set is organized to answer three questions:
+
+1. Which variant is cheaper for a given operation?
+2. Which graph / delete pattern favors each variant?
+3. Should service default stay `SparseDeleted`, or switch to `DenseDeleted`?
+
+`RowTombstone` is included as a low-level raw-traversal comparison target. It is not a service-default candidate because it intentionally does not provide logical iterators.
 
 ## Build
 
-From the repository root (default `target/` layout matches `canbench.yml`):
+From the repository root:
 
 ```bash
 cargo build --release --target wasm32-unknown-unknown -p ic-stable-csr-canbench
 ```
 
-## Run (`canbench`)
+## Run
 
-Install the CLI (`cargo install canbench`) and point `--runtime-path` at a [PocketIC](https://github.com/dfinity/pocketic) binary (or set `POCKET_IC_BIN`). Run **from this directory** so `canbench.yml` paths resolve.
-
-```bash
-cd crates/ic-stable-csr-canbench
-canbench --runtime-path "${POCKET_IC_BIN:-$HOME/.local/bin/pocket-ic}" --show-summary bench_remove_slab
-```
-
-To measure the Phase D `delete_vertex` path, run:
+Install [`canbench`](https://github.com/dfinity/canbench) and point it at a PocketIC binary. Run from this directory so `canbench.yml` resolves correctly.
 
 ```bash
-cd crates/ic-stable-csr-canbench
+cd /Users/yota/dev/gleaph-project/crates/ic-stable-csr/bench
 canbench --runtime-path "${POCKET_IC_BIN:-$HOME/.local/bin/pocket-ic}" --show-summary bench_delete_vertex
 ```
 
-If `canbench` reports a runtime digest mismatch, either let it re-download the expected PocketIC build or pass `--no-runtime-integrity-check` (see the repo’s canbench-runner skill).
+If PocketIC digest validation gets in the way during local iteration, use `--no-runtime-integrity-check`.
 
-Optional baseline update (writes `canbench_results.yml`):
+Persist a refreshed baseline:
 
 ```bash
-canbench --runtime-path … --no-runtime-integrity-check --persist --show-summary bench_remove_slab
-canbench --runtime-path … --no-runtime-integrity-check --persist --show-summary bench_delete_vertex
-canbench --runtime-path … --no-runtime-integrity-check --persist --show-summary bench_segment_maintain
+canbench --runtime-path "${POCKET_IC_BIN:-$HOME/.local/bin/pocket-ic}" --no-runtime-integrity-check --persist --show-summary bench_delete_vertex
 ```
 
-## Scenarios
+## Benchmark Layers
 
-| Benchmark | Setup |
-|-----------|--------|
-| `bench_remove_slab_physically_chain_32` | 32-vertex chain `0→1→…`; measures one physical remove at `(vid=0, local_index=0)`. |
-| `bench_remove_slab_physically_chain_1024` | Same pattern at 1024 vertices so the `0..n` base scan does ~1023 slot-map updates when `remove_pos == 0`. |
-| `bench_remove_slab_physically_tail_vertex_chain_1024` | Same chain; remove at `(vid=n-2, local_index=0)` (last edge in the chain) so `remove_pos` is large and the base-decrement suffix is usually empty. |
-| `bench_delete_vertex_hub_star_1024` | Hub-and-spoke graph with 1024 vertices and bidirectional center spokes; deleting vertex `0` exercises the partial forward/reverse PMA resync path. |
-| `bench_segment_maintain_small_noop` | Small leaf with one tombstone stays below the score gate and should return `Noop`. |
-| `bench_segment_maintain_small_enqueue` | Small leaf crosses the soft tombstone ratio gate and should return `Enqueue`. |
-| `bench_segment_maintain_large_enqueue_by_score` | Same tombstone ratio as the small case, but a larger span pushes the score over the enqueue threshold. |
-| `bench_segment_maintain_strict_inline` | Tombstone ratio above the strict gate should return `InlineNow`. |
-| `bench_segment_maintain_queue_pressure_inline` | Soft garbage plus queue pressure should return `InlineNow`. |
-| `bench_segment_maintain_rebalance_window_enqueue` | A rebalance window hint should enqueue even with zero tombstones. |
+### 1. Micro
 
-Scopes inside the hot path (feature `canbench-rs` on `ic-stable-csr`):
+Deleted-index-only microbenchmarks live in the dedicated crates:
 
-- `remove_slab`: `dgap_remove_slab_slide`, `dgap_remove_slab_base_decrement`, `dgap_remove_slab_sync_pma_full`, `dgap_remove_slab_maintain`, `dgap_remove_slab_refresh_tail`
-- `delete_vertex`: `dgap_delete_vertex_collect_touched`, `dgap_delete_vertex_out_neighbors`, `dgap_delete_vertex_in_neighbors`, `dgap_delete_vertex_refresh_tail`, `dgap_delete_vertex_sync_pma_forward`, `dgap_delete_vertex_sync_pma_reverse`, `dgap_delete_vertex_push_queue`
-- `segment_maintain`: `dgap_segment_maintain_tombstone_ratio`, `dgap_segment_maintain_tombstone_score`, `dgap_segment_maintain_soft_garbage`, `dgap_segment_maintain_strict_garbage`, `dgap_segment_maintain_queue_pressure`
+- `crates/ic-stable-bitset/bench`
+- `crates/ic-stable-roaring/bench`
 
-**Implementation note:** `remove_slab` uses chunked `read_edge_slab_span` / `write_edge_slab_span` for the slide, then a vertex-column pass that finds the first row with `base > remove_pos` (binary search when dense bases are non-decreasing), reads only the candidate PMA-dirty prefix window, decrements bases only on the suffix, then `sync_pma_edge_counts_for_segments` (or full sync). The `dgap_remove_slab_base_decrement` scope includes that scan (plus `O(log n)` binary search); `dgap_remove_slab_sync_pma_full` covers only the SEC write path.
+Use those for:
 
-**Implementation note:** `delete_vertex` now does a conservative partial PMA resync. It collects the live touched vertex set per column, compresses each set into contiguous vertex ranges, and then calls `sync_pma_meta_for_vertex_range` on forward and reverse separately before enqueuing GC work.
+- `insert`
+- `contains`
+- `reopen`
+- truncate / remove / checkpoint behavior
 
-## Phase C: how to read results (go / no-go)
+This CSR harness intentionally focuses on graph-level costs. In particular, `reopen` differences between roaring and bitset should be judged from those dedicated index benches, because `ic-stable-csr` currently exposes `format_new` constructors rather than a graph-level reopen API.
 
-Compare scope instruction counts (see `canbench_results.yml` for a committed baseline):
+### 2. Operation
 
-1. **`dgap_remove_slab_base_decrement` vs `dgap_remove_slab_sync_pma_full`** — If the base scan is a **large fraction** of the full PMA resync, narrowing or indexing the `base > remove_pos` walk is more attractive.
-2. **`dgap_remove_slab_slide` vs the rest** — Sliding the tail of the slab after a remove near the front is often **O(occupied tail)**; if it dominates, Phase C should address slide cost before micro-optimizing the base loop alone.
-3. **Small `n` sanity** — On the 32-vertex chain, `sync_pma_full` can still cost millions of instructions because the work is tied to the **formatted PMA tree**, not only local degree; interpret large graphs in light of that.
+Single-operation benchmarks compare direct graph costs across variants.
 
-**Recorded baseline (`canbench_results.yml`, PocketIC 10.0.0, after candidate-window base scan + partial SEC write):**
+Operation benchmarks are fixture-based:
 
-- **Chain 1024 (head remove):** total ~28.4M instructions; `slide` ~0.54M; `sync_pma_full` scope ~21.2M (SEC write only); `base_decrement` scope ~3.47M (candidate-window scan + `BTreeSet`). **PMA SEC write** still dominates.
-- **Chain 1024 (tail remove, `vid=n-2`):** total ~5.14M; `slide` ~0.4K; `sync_pma_full` scope ~1.94M; `base_decrement` scope ~37.6K — the candidate-only prefix window pays off most when `remove_pos` is large.
-- **Chain 32:** total ~18.5M; `sync_pma_full` scope ~18.1M; `base_decrement` ~120.4K; slide ~9.6K. This is slightly higher than the prior baseline, but still tiny versus SEC sync.
+- build a graph once outside the measured closure
+- snapshot stable memory
+- restore + `open_existing_*` before the measured operation
 
-Re-run after code changes; refresh the YAML with `canbench --persist` when you want regression tracking.
+This means `delete`, `gc`, and `read` instruction counts exclude graph construction time.
 
-The committed baseline in `canbench_results.yml` now contains both the `remove_slab` and `delete_vertex` scenarios.
-It also includes the `segment_maintain` microbench cases used to compare ratio- and score-based gating across small and large leaves.
+Implemented groups:
+
+- `bench_build_fixture_*`
+- `bench_delete_vertex_*`
+- `bench_delete_edge_*`
+- `bench_gc_step_*`
+- `bench_raw_read_*`
+- `bench_logical_read_*` (`SparseDeleted` / `DenseDeleted` only)
+
+### 3. Scenario
+
+Service-like mixed workloads:
+
+- `bench_scenario_read_heavy_*`
+- `bench_scenario_mixed_*`
+- `bench_scenario_delete_heavy_*`
+
+These are the main inputs for service-default decisions.
+
+## Topologies, Delete Patterns, Densities
+
+The harness has generators for:
+
+- topologies: `chain`, `hub_star`, `uniform_random_sparse`, `power_law`, `clustered_community`
+- delete patterns: `uniform_random`, `clustered_contiguous`, `hub_first`, `leaf_first`
+- delete densities: `0.1%`, `1%`, `10%`, `50%`
+
+Committed baseline scenarios stay intentionally small and reviewable. Large `256k` graphs are for manual local runs.
+
+## Naming
+
+Bench names follow:
+
+```text
+bench_<operation>_<variant>_<graph>_<scale>_<delete-pattern>_<density>
+```
+
+Examples:
+
+- `bench_delete_vertex_dense_hub_star_1024_hub_first_d10pct`
+- `bench_gc_step_sparse_uniform_random_sparse_32768_uniform_random_d1pct`
+- `bench_raw_read_row_clustered_community_32768_clustered_contiguous_d10pct`
+
+## Implemented Comparison Matrix
+
+### Build Fixture
+
+- `bench_build_fixture_row_uniform_random_sparse_8192`
+- `bench_build_fixture_sparse_uniform_random_sparse_8192`
+- `bench_build_fixture_dense_uniform_random_sparse_8192`
+
+### Delete Vertex
+
+- `bench_delete_vertex_row_hub_star_1024_hub_first_d10pct`
+- `bench_delete_vertex_sparse_hub_star_1024_hub_first_d10pct`
+- `bench_delete_vertex_dense_hub_star_1024_hub_first_d10pct`
+- `bench_delete_vertex_sparse_uniform_random_sparse_32768_uniform_random_d1pct`
+- `bench_delete_vertex_dense_uniform_random_sparse_32768_uniform_random_d1pct`
+
+### Delete Edge
+
+- `bench_delete_edge_row_uniform_random_sparse_32768_uniform_random_d1pct`
+- `bench_delete_edge_sparse_uniform_random_sparse_32768_uniform_random_d1pct`
+- `bench_delete_edge_dense_uniform_random_sparse_32768_uniform_random_d1pct`
+- `bench_delete_edge_row_clustered_community_32768_clustered_contiguous_d10pct`
+- `bench_delete_edge_sparse_clustered_community_32768_clustered_contiguous_d10pct`
+- `bench_delete_edge_dense_clustered_community_32768_clustered_contiguous_d10pct`
+
+### GC Step
+
+- `bench_gc_step_row_hub_star_1024_hub_first_d10pct`
+- `bench_gc_step_sparse_hub_star_1024_hub_first_d10pct`
+- `bench_gc_step_dense_hub_star_1024_hub_first_d10pct`
+- `bench_gc_step_row_clustered_community_32768_clustered_contiguous_d10pct`
+- `bench_gc_step_sparse_clustered_community_32768_clustered_contiguous_d10pct`
+- `bench_gc_step_dense_clustered_community_32768_clustered_contiguous_d10pct`
+
+### Read
+
+- raw:
+  - `bench_raw_read_row_uniform_random_sparse_32768_uniform_random_d1pct`
+  - `bench_raw_read_sparse_uniform_random_sparse_32768_uniform_random_d1pct`
+  - `bench_raw_read_dense_uniform_random_sparse_32768_uniform_random_d1pct`
+- logical:
+  - `bench_logical_read_sparse_uniform_random_sparse_32768_uniform_random_d1pct`
+  - `bench_logical_read_dense_uniform_random_sparse_32768_uniform_random_d1pct`
+
+### Scenarios
+
+- `bench_scenario_read_heavy_sparse_uniform_random_sparse_32768_uniform_random_d1pct`
+- `bench_scenario_read_heavy_dense_uniform_random_sparse_32768_uniform_random_d1pct`
+- `bench_scenario_mixed_sparse_power_law_32768_uniform_random_d10pct`
+- `bench_scenario_mixed_dense_power_law_32768_uniform_random_d10pct`
+- `bench_scenario_delete_heavy_sparse_power_law_32768_uniform_random_d10pct`
+- `bench_scenario_delete_heavy_dense_power_law_32768_uniform_random_d10pct`
+
+Legacy DGAP/PMA maintenance benchmarks remain available:
+
+- `bench_remove_slab_physically_*`
+- `bench_segment_maintain_*`
+
+## Scopes
+
+The harness records these scope names:
+
+- raw read:
+  - `dgap_raw_read_scan`
+- logical read:
+  - `dgap_logical_read_scan`
+  - `dgap_logical_read_deleted_filter`
+  - `dgap_logical_read_yield`
+- gc:
+  - `dgap_gc_step_run_leaf`
+  - `dgap_gc_step_pop_queue`
+
+Existing DGAP scopes from the remove-slab and segment-maintenance benches are still emitted as before.
+
+## How To Read Results
+
+### Delete Vertex / Delete Edge
+
+Compare total instructions first, then heap / stable-memory increase.
+
+Ignore any historical results that included graph construction inside the measured closure. The fixture-based benches are the source of truth for operation cost comparisons.
+
+- If `SparseDeleted` and `DenseDeleted` are close, prefer `SparseDeleted` unless deletion density stays high in service traffic.
+- If `DenseDeleted` clearly wins on both hub-heavy and random topologies, that is a signal to investigate it as a default candidate.
+
+### GC Step
+
+Use GC runs to answer whether a strategy only shifts cost from delete time into maintenance time.
+
+- If delete is cheap but `gc_step` balloons, the variant may not help end-to-end.
+- Compare `queue_len_before`, `queue_len_after`, and `completed_gc_items` in the benchmark summaries.
+
+### Raw vs Logical Read
+
+- `RowTombstone` should only be judged on raw read.
+- `SparseDeleted` vs `DenseDeleted` should be judged on logical read, because that is the service-facing traversal path.
+- Pay attention to `dgap_logical_read_deleted_filter` when delete density rises.
+
+### Scenario Runs
+
+These decide the default.
+
+Current decision rule:
+
+- default hypothesis: `SparseDeleted`
+- switch to `DenseDeleted` only if:
+  - `DenseDeleted` wins both `delete_heavy` and `mixed`
+  - `DenseDeleted` is at least neutral on `read_heavy`
+
+`RowTombstone` is never the service default.
+
+## Recommendation Table
+
+| Variant | Recommended use |
+|--------|------------------|
+| `RowTombstone` | Low-level or internal use where logical traversal is unnecessary and minimum structural overhead matters most |
+| `SparseDeleted` | Service default unless delete density is consistently high |
+| `DenseDeleted` | Use when delete density remains high and logical traversal stays hot |
+
+## Manual Large-Graph Runs
+
+The committed baseline is intentionally smaller than the full matrix. For large local comparison runs, use explicit names and update only when you want to keep the result:
+
+```bash
+cd /Users/yota/dev/gleaph-project/crates/ic-stable-csr/bench
+canbench --runtime-path "${POCKET_IC_BIN:-$HOME/.local/bin/pocket-ic}" --show-summary bench_scenario_mixed_dense_power_law_32768_uniform_random_d10pct
+```
+
+For `256k`-scale runs, keep them manual and ad hoc rather than committing every result to `canbench_results.yml`.
+
+## Verification Notes
+
+Development-time checks for this harness:
+
+```bash
+cargo check -p ic-stable-csr-canbench
+cargo test -p ic-stable-csr-canbench
+cargo test -p ic-stable-csr
+```
+
+`canbench_results.yml` should only be refreshed from actual `canbench --persist` runs. Do not hand-edit benchmark totals.

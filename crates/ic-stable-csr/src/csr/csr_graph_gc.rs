@@ -729,6 +729,33 @@ where
             maintain_thresholds: maintain_thresholds.unwrap_or_default(),
         })
     }
+
+    pub fn open_existing_with_gc_queue(
+        mem_vertices_forward: M,
+        mem_vertices_reverse: M,
+        forward_segment_edge_counts: M,
+        forward_edges_and_log: M,
+        reverse_segment_edge_counts: M,
+        reverse_edges_and_log: M,
+        mem_gc_work_queue: QM,
+        maintain_thresholds: Option<SegmentMaintainThresholds>,
+    ) -> Result<Self, CsrGraphError> {
+        let graph = CsrGraphRowTombstone::open_existing(
+            mem_vertices_forward,
+            mem_vertices_reverse,
+            forward_segment_edge_counts,
+            forward_edges_and_log,
+            reverse_segment_edge_counts,
+            reverse_edges_and_log,
+        )?;
+        let work_queue = StableVecDeque::init(mem_gc_work_queue)
+            .map_err(|_| CsrGraphError::LogicalMutation("open_existing: gc queue init failed"))?;
+        Ok(Self {
+            graph,
+            work_queue,
+            maintain_thresholds: maintain_thresholds.unwrap_or_default(),
+        })
+    }
 }
 
 impl<V, E, M, Dv, QM> CsrGraphWithGcQueueDenseDeleted<V, E, M, M, M, M, M, Dv, QM>
@@ -776,6 +803,35 @@ where
             maintain_thresholds: maintain_thresholds.unwrap_or_default(),
         })
     }
+
+    pub fn open_existing_with_gc_queue(
+        mem_vertices_forward: M,
+        mem_vertices_reverse: M,
+        forward_segment_edge_counts: M,
+        forward_edges_and_log: M,
+        reverse_segment_edge_counts: M,
+        reverse_edges_and_log: M,
+        mem_deleted_vertices: Dv,
+        mem_gc_work_queue: QM,
+        maintain_thresholds: Option<SegmentMaintainThresholds>,
+    ) -> Result<Self, CsrGraphError> {
+        let graph = CsrGraphDenseDeleted::open_existing(
+            mem_vertices_forward,
+            mem_vertices_reverse,
+            forward_segment_edge_counts,
+            forward_edges_and_log,
+            reverse_segment_edge_counts,
+            reverse_edges_and_log,
+            mem_deleted_vertices,
+        )?;
+        let work_queue = StableVecDeque::init(mem_gc_work_queue)
+            .map_err(|_| CsrGraphError::LogicalMutation("open_existing: gc queue init failed"))?;
+        Ok(Self {
+            graph,
+            work_queue,
+            maintain_thresholds: maintain_thresholds.unwrap_or_default(),
+        })
+    }
 }
 
 impl<V, E, M, Dv, QM> CsrGraphWithGcQueueSparseDeleted<V, E, M, M, M, M, M, Dv, QM>
@@ -817,6 +873,35 @@ where
         )?;
         let work_queue =
             StableVecDeque::new(mem_gc_work_queue).map_err(|e| CsrGraphError::GcQueue(e.into()))?;
+        Ok(Self {
+            graph,
+            work_queue,
+            maintain_thresholds: maintain_thresholds.unwrap_or_default(),
+        })
+    }
+
+    pub fn open_existing_with_gc_queue(
+        mem_vertices_forward: M,
+        mem_vertices_reverse: M,
+        forward_segment_edge_counts: M,
+        forward_edges_and_log: M,
+        reverse_segment_edge_counts: M,
+        reverse_edges_and_log: M,
+        mem_deleted_vertices: Dv,
+        mem_gc_work_queue: QM,
+        maintain_thresholds: Option<SegmentMaintainThresholds>,
+    ) -> Result<Self, CsrGraphError> {
+        let graph = CsrGraphSparseDeleted::open_existing(
+            mem_vertices_forward,
+            mem_vertices_reverse,
+            forward_segment_edge_counts,
+            forward_edges_and_log,
+            reverse_segment_edge_counts,
+            reverse_edges_and_log,
+            mem_deleted_vertices,
+        )?;
+        let work_queue = StableVecDeque::init(mem_gc_work_queue)
+            .map_err(|_| CsrGraphError::LogicalMutation("open_existing: gc queue init failed"))?;
         Ok(Self {
             graph,
             work_queue,
