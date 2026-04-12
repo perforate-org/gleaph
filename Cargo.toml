@@ -9,7 +9,7 @@ members = [
     "crates/graph",
     "crates/graph-kernel",
     "crates/graph-registry",
-    "crates/graph-pma",
+    "crates/graph-store",
     "crates/ic-stable-csr",
     "crates/ic-stable-csr/bench",
     "crates/ic-stable-bitset",

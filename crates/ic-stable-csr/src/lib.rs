@@ -45,7 +45,7 @@
 //! ```
 //!
 //! Gleaph-specific types (`VertexEntry`, `EdgeEntry`) should implement [`traits::CsrVertex`] /
-//! [`traits::CsrEdge`] in `graph-pma` (keeps this crate free of `gleaph_graph_kernel`).
+//! [`traits::CsrEdge`] in `graph-store` (keeps this crate free of `gleaph_graph_kernel`).
 //!
 //! Optional **append-only stream** helpers live in [`layout::log_region`] (re-exported from [`layout`]);
 //! they are not used by [`DgapStores::insert_edge`] / [`DgapStores::insert_edges`].

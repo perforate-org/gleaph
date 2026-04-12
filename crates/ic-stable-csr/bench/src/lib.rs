@@ -4,10 +4,12 @@
 #![cfg_attr(target_arch = "wasm32", no_main)]
 
 use std::borrow::Cow;
+use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::hint::black_box;
 
 use canbench_rs::bench;
+use gleaph_graph_store::low_level::{EdgeEntry, EdgeMeta, VertexRef};
 use ic_stable_csr::{
     Bound, CsrGraphWithGcQueueDenseDeleted, CsrGraphWithGcQueueRowTombstone,
     CsrGraphWithGcQueueSparseDeleted, DgapEdgeStore, DgapGraphMemories, DgapStores,
@@ -32,6 +34,10 @@ const RANDOM_SPARSE_DEGREE: usize = 4;
 const RANDOM_MEDIUM_DEGREE: usize = 16;
 const RANDOM_DENSE_LOCAL_DEGREE: usize = 32;
 const BAND_LOCAL_DEGREE: usize = 32;
+const ID_COMPARE_PAIRS: usize = 1_024;
+const ID_COMPARE_ROUNDS: usize = 32;
+const NEIGHBOR_SCAN_LEN: usize = 512;
+const NEIGHBOR_SCAN_ROUNDS: usize = 128;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct BenchVertex {
@@ -218,6 +224,259 @@ enum DeleteDensity {
     D1Pct,
     D10Pct,
     D50Pct,
+}
+
+fn usize_compare_pairs(equal: bool) -> Vec<(usize, usize)> {
+    let mut pairs = Vec::with_capacity(ID_COMPARE_PAIRS);
+    for i in 0..ID_COMPARE_PAIRS {
+        let lhs = i.wrapping_mul(1_103_515_245usize) ^ 0x9e37_79b9usize;
+        let rhs = if equal {
+            lhs
+        } else {
+            lhs.wrapping_add((i & 7) + 1)
+        };
+        pairs.push((lhs, rhs));
+    }
+    pairs
+}
+
+fn vertex_ref_compare_pairs(equal: bool) -> Vec<(VertexRef, VertexRef)> {
+    let mut pairs = Vec::with_capacity(ID_COMPARE_PAIRS);
+    for i in 0..ID_COMPARE_PAIRS {
+        let lhs = ((i as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15u64)
+            ^ 0x00ab_cdef_1234u64)
+            & VertexRef::MAX;
+        let rhs = if equal {
+            lhs
+        } else {
+            lhs.wrapping_add(((i as u64) & 7) + 1) & VertexRef::MAX
+        };
+        pairs.push((
+            VertexRef::try_from(lhs).expect("lhs fits VertexRef"),
+            VertexRef::try_from(rhs).expect("rhs fits VertexRef"),
+        ));
+    }
+    pairs
+}
+
+fn u64_compare_pairs(equal: bool) -> Vec<(u64, u64)> {
+    let mut pairs = Vec::with_capacity(ID_COMPARE_PAIRS);
+    for i in 0..ID_COMPARE_PAIRS {
+        let lhs = ((i as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15u64) ^ 0x00ab_cdef_1234u64)
+            & VertexRef::MAX;
+        let rhs = if equal {
+            lhs
+        } else {
+            lhs.wrapping_add(((i as u64) & 7) + 1) & VertexRef::MAX
+        };
+        pairs.push((lhs, rhs));
+    }
+    pairs
+}
+
+fn bench_usize_eq(equal: bool) -> canbench_rs::BenchResult {
+    let pairs = usize_compare_pairs(equal);
+    canbench_rs::bench_fn(move || {
+        let mut matches = 0usize;
+        for _ in 0..black_box(ID_COMPARE_ROUNDS) {
+            for &(lhs, rhs) in &pairs {
+                matches += usize::from(black_box(lhs) == black_box(rhs));
+            }
+        }
+        black_box(matches);
+    })
+}
+
+fn bench_vertex_ref_eq(equal: bool) -> canbench_rs::BenchResult {
+    let pairs = vertex_ref_compare_pairs(equal);
+    canbench_rs::bench_fn(move || {
+        let mut matches = 0usize;
+        for _ in 0..black_box(ID_COMPARE_ROUNDS) {
+            for &(lhs, rhs) in &pairs {
+                matches += usize::from(black_box(lhs) == black_box(rhs));
+            }
+        }
+        black_box(matches);
+    })
+}
+
+fn bench_u64_eq(equal: bool) -> canbench_rs::BenchResult {
+    let pairs = u64_compare_pairs(equal);
+    canbench_rs::bench_fn(move || {
+        let mut matches = 0usize;
+        for _ in 0..black_box(ID_COMPARE_ROUNDS) {
+            for &(lhs, rhs) in &pairs {
+                matches += usize::from(black_box(lhs) == black_box(rhs));
+            }
+        }
+        black_box(matches);
+    })
+}
+
+fn bench_usize_cmp() -> canbench_rs::BenchResult {
+    let pairs = usize_compare_pairs(false);
+    canbench_rs::bench_fn(move || {
+        let mut less = 0usize;
+        for _ in 0..black_box(ID_COMPARE_ROUNDS) {
+            for &(lhs, rhs) in &pairs {
+                less += usize::from(matches!(
+                    black_box(lhs).cmp(&black_box(rhs)),
+                    Ordering::Less
+                ));
+            }
+        }
+        black_box(less);
+    })
+}
+
+fn bench_u64_cmp() -> canbench_rs::BenchResult {
+    let pairs = u64_compare_pairs(false);
+    canbench_rs::bench_fn(move || {
+        let mut less = 0usize;
+        for _ in 0..black_box(ID_COMPARE_ROUNDS) {
+            for &(lhs, rhs) in &pairs {
+                less += usize::from(matches!(
+                    black_box(lhs).cmp(&black_box(rhs)),
+                    Ordering::Less
+                ));
+            }
+        }
+        black_box(less);
+    })
+}
+
+fn bench_vertex_ref_cmp() -> canbench_rs::BenchResult {
+    let pairs = vertex_ref_compare_pairs(false);
+    canbench_rs::bench_fn(move || {
+        let mut less = 0usize;
+        for _ in 0..black_box(ID_COMPARE_ROUNDS) {
+            for &(lhs, rhs) in &pairs {
+                less += usize::from(matches!(
+                    black_box(lhs).cmp(&black_box(rhs)),
+                    Ordering::Less
+                ));
+            }
+        }
+        black_box(less);
+    })
+}
+
+fn usize_neighbor_scan_fixture() -> (Vec<usize>, usize) {
+    let mut neighbors = Vec::with_capacity(NEIGHBOR_SCAN_LEN);
+    for i in 0..(NEIGHBOR_SCAN_LEN - 1) {
+        neighbors.push((i as u32).wrapping_mul(17).wrapping_add(5) as usize);
+    }
+    let needle = 0x7fff_fffbusize;
+    neighbors.push(needle);
+    (neighbors, needle)
+}
+
+fn vertex_ref_neighbor_scan_fixture() -> (Vec<EdgeEntry>, VertexRef) {
+    let mut edges = Vec::with_capacity(NEIGHBOR_SCAN_LEN);
+    for i in 0..(NEIGHBOR_SCAN_LEN - 1) {
+        let target =
+            VertexRef::try_from((i as u64).wrapping_mul(17).wrapping_add(5)).expect("fits");
+        edges.push(EdgeEntry::new(target, EdgeMeta::UNLABELED));
+    }
+    let needle = VertexRef::try_from(0x00ff_ffff_fffb_u64 & VertexRef::MAX).expect("fits");
+    edges.push(EdgeEntry::new(needle, EdgeMeta::UNLABELED));
+    (edges, needle)
+}
+
+fn vertex_ref_targets_scan_fixture() -> (Vec<VertexRef>, VertexRef) {
+    let mut targets = Vec::with_capacity(NEIGHBOR_SCAN_LEN);
+    for i in 0..(NEIGHBOR_SCAN_LEN - 1) {
+        targets.push(VertexRef::try_from((i as u64).wrapping_mul(17).wrapping_add(5)).expect("fits"));
+    }
+    let needle = VertexRef::try_from(0x00ff_ffff_fffb_u64 & VertexRef::MAX).expect("fits");
+    targets.push(needle);
+    (targets, needle)
+}
+
+fn u64_neighbor_scan_fixture() -> (Vec<u64>, u64) {
+    let mut neighbors = Vec::with_capacity(NEIGHBOR_SCAN_LEN);
+    for i in 0..(NEIGHBOR_SCAN_LEN - 1) {
+        neighbors.push(((i as u64).wrapping_mul(17).wrapping_add(5)) & VertexRef::MAX);
+    }
+    let needle = 0x00ff_ffff_fffb_u64 & VertexRef::MAX;
+    neighbors.push(needle);
+    (neighbors, needle)
+}
+
+fn bench_usize_neighbor_scan_tail_hit() -> canbench_rs::BenchResult {
+    let (neighbors, needle) = usize_neighbor_scan_fixture();
+    canbench_rs::bench_fn(move || {
+        let mut sum = 0usize;
+        for _ in 0..black_box(NEIGHBOR_SCAN_ROUNDS) {
+            let pos = neighbors
+                .iter()
+                .position(|neighbor| black_box(*neighbor) == black_box(needle))
+                .expect("tail hit");
+            sum = sum.wrapping_add(pos);
+        }
+        black_box(sum);
+    })
+}
+
+fn bench_u64_neighbor_scan_tail_hit() -> canbench_rs::BenchResult {
+    let (neighbors, needle) = u64_neighbor_scan_fixture();
+    canbench_rs::bench_fn(move || {
+        let mut sum = 0usize;
+        for _ in 0..black_box(NEIGHBOR_SCAN_ROUNDS) {
+            let pos = neighbors
+                .iter()
+                .position(|neighbor| black_box(*neighbor) == black_box(needle))
+                .expect("tail hit");
+            sum = sum.wrapping_add(pos);
+        }
+        black_box(sum);
+    })
+}
+
+fn bench_vertex_ref_neighbor_scan_tail_hit() -> canbench_rs::BenchResult {
+    let (edges, needle) = vertex_ref_neighbor_scan_fixture();
+    canbench_rs::bench_fn(move || {
+        let mut sum = 0usize;
+        for _ in 0..black_box(NEIGHBOR_SCAN_ROUNDS) {
+            let pos = edges
+                .iter()
+                .position(|edge| black_box(edge.target) == black_box(needle))
+                .expect("tail hit");
+            sum = sum.wrapping_add(pos);
+        }
+        black_box(sum);
+    })
+}
+
+fn bench_vertex_ref_targets_scan_tail_hit() -> canbench_rs::BenchResult {
+    let (targets, needle) = vertex_ref_targets_scan_fixture();
+    canbench_rs::bench_fn(move || {
+        let mut sum = 0usize;
+        for _ in 0..black_box(NEIGHBOR_SCAN_ROUNDS) {
+            let pos = targets
+                .iter()
+                .position(|target| black_box(*target) == black_box(needle))
+                .expect("tail hit");
+            sum = sum.wrapping_add(pos);
+        }
+        black_box(sum);
+    })
+}
+
+fn bench_vertex_ref_to_u64_neighbor_scan_tail_hit() -> canbench_rs::BenchResult {
+    let (edges, needle) = vertex_ref_neighbor_scan_fixture();
+    let needle = u64::from(needle);
+    canbench_rs::bench_fn(move || {
+        let mut sum = 0usize;
+        for _ in 0..black_box(NEIGHBOR_SCAN_ROUNDS) {
+            let pos = edges
+                .iter()
+                .position(|edge| black_box(u64::from(edge.target)) == black_box(needle))
+                .expect("tail hit");
+            sum = sum.wrapping_add(pos);
+        }
+        black_box(sum);
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2911,6 +3170,61 @@ fn bench_segment_maintain_rebalance_window_enqueue() -> canbench_rs::BenchResult
         0,
         SegmentMaintainAction::Enqueue,
     ))
+}
+
+#[bench(raw)]
+fn bench_id_compare_usize_eq_equal() -> canbench_rs::BenchResult {
+    bench_usize_eq(true)
+}
+
+#[bench(raw)]
+fn bench_id_compare_vertex_ref_eq_equal() -> canbench_rs::BenchResult {
+    bench_vertex_ref_eq(true)
+}
+
+#[bench(raw)]
+fn bench_id_compare_u64_eq_equal() -> canbench_rs::BenchResult {
+    bench_u64_eq(true)
+}
+
+#[bench(raw)]
+fn bench_id_compare_usize_cmp_non_equal() -> canbench_rs::BenchResult {
+    bench_usize_cmp()
+}
+
+#[bench(raw)]
+fn bench_id_compare_u64_cmp_non_equal() -> canbench_rs::BenchResult {
+    bench_u64_cmp()
+}
+
+#[bench(raw)]
+fn bench_id_compare_vertex_ref_cmp_non_equal() -> canbench_rs::BenchResult {
+    bench_vertex_ref_cmp()
+}
+
+#[bench(raw)]
+fn bench_neighbor_scan_usize_tail_hit() -> canbench_rs::BenchResult {
+    bench_usize_neighbor_scan_tail_hit()
+}
+
+#[bench(raw)]
+fn bench_neighbor_scan_u64_tail_hit() -> canbench_rs::BenchResult {
+    bench_u64_neighbor_scan_tail_hit()
+}
+
+#[bench(raw)]
+fn bench_neighbor_scan_vertex_ref_tail_hit() -> canbench_rs::BenchResult {
+    bench_vertex_ref_neighbor_scan_tail_hit()
+}
+
+#[bench(raw)]
+fn bench_neighbor_scan_vertex_ref_targets_tail_hit() -> canbench_rs::BenchResult {
+    bench_vertex_ref_targets_scan_tail_hit()
+}
+
+#[bench(raw)]
+fn bench_neighbor_scan_vertex_ref_to_u64_tail_hit() -> canbench_rs::BenchResult {
+    bench_vertex_ref_to_u64_neighbor_scan_tail_hit()
 }
 
 #[cfg(test)]

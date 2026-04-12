@@ -10,6 +10,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 candid.workspace = true
 canbench-rs.workspace = true
+gleaph-graph-store = { path = "../../graph-store" }
 ic-cdk.workspace = true
 ic-cdk-macros.workspace = true
 ic-stable-csr = { workspace = true, features = ["canbench-rs"] }

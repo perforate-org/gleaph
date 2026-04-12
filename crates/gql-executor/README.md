@@ -15,7 +15,7 @@ After a successful plan, `execute_plan_with_context` may call `graph.flush()`:
 
 Nested execution passes `flush_at_end: false` so only the outer plan performs one flush.
 
-For why read-only paths on the PMA kernel overlay skip flush safely, see the module-level documentation in `crates/graph-pma/src/integration/graph_read_impl.rs`.
+For why read-only paths on the PMA kernel overlay skip flush safely, see the module-level documentation in `crates/graph-store/src/integration/graph_read_impl.rs`.
 
 ## Federation (`USE GRAPH` across canisters)
 

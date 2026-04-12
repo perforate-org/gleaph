@@ -1,10 +1,10 @@
-//! Single [`MemoryManager`] root for graph PMA (including tail [`gleaph_graph_pma::low_level::pma_stable_root`])
+//! Single [`MemoryManager`] root for graph PMA (including tail [`gleaph_graph_store::low_level::pma_stable_root`])
 //! and the service aggregate stable cell.
 //!
 //! See `STABLE_MEMORY_LAYOUT.md` for [`MemoryId`] assignments.
 
-use gleaph_graph_pma::integration::GraphPmaKernelOverlay;
-use gleaph_graph_pma::{GraphPma, GraphPmaResult};
+use gleaph_graph_store::integration::GraphStoreKernelOverlay;
+use gleaph_graph_store::{GraphStore, GraphStoreResult};
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use ic_stable_structures::storable::Bound;
 use ic_stable_structures::{DefaultMemoryImpl, StableCell, Storable};
@@ -51,7 +51,7 @@ pub struct CanisterHost {
     #[allow(dead_code)]
     memory_manager: MemoryManager<DefaultMemoryImpl>,
     graph_memory: Rc<CanisterGraphMemory>,
-    graph_facade: GraphPma<CanisterGraphMemory>,
+    graph_facade: GraphStore<CanisterGraphMemory>,
     service_cell: StableCell<CandidBlob, CanisterGraphMemory>,
     graph_catalog_cell: StableCell<CandidBlob, CanisterGraphMemory>,
     pub service: GleaphService,
@@ -70,8 +70,8 @@ impl CanisterHost {
         let memory_manager = MemoryManager::init(DefaultMemoryImpl::default());
         let graph_vm = memory_manager.get(MEMORY_ID_GRAPH);
         let graph_memory = Rc::new(graph_vm);
-        let graph_facade = GraphPma::bootstrap_empty_with_bucket_size_using_memory_rc(
-            gleaph_graph_pma::low_level::BucketSizeInPages::DEFAULT,
+        let graph_facade = GraphStore::bootstrap_empty_with_bucket_size_using_memory_rc(
+            gleaph_graph_store::low_level::BucketSizeInPages::DEFAULT,
             Rc::clone(&graph_memory),
         )
         .expect("bootstrap graph PMA");
@@ -108,7 +108,7 @@ impl CanisterHost {
             CandidBlob::default(),
         );
         let legacy_blob = legacy_rm_cell.get().0.clone();
-        let graph_facade = GraphPma::hydrate_from_graph_stable_memory_with_legacy(
+        let graph_facade = GraphStore::hydrate_from_graph_stable_memory_with_legacy(
             (*graph_memory).clone(),
             Some(legacy_blob.as_slice()),
         )
@@ -154,7 +154,7 @@ impl CanisterHost {
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub fn bind_graph_overlay(&mut self) -> GraphPmaKernelOverlay<'_, CanisterGraphMemory> {
+    pub fn bind_graph_overlay(&mut self) -> GraphStoreKernelOverlay<'_, CanisterGraphMemory> {
         self.graph_facade
             .bind_kernel_overlay(self.graph_memory.as_ref())
     }
@@ -163,7 +163,7 @@ impl CanisterHost {
         &mut self,
         f: impl for<'a> FnOnce(
             &mut GleaphService,
-            &mut GraphPmaKernelOverlay<'a, CanisterGraphMemory>,
+            &mut GraphStoreKernelOverlay<'a, CanisterGraphMemory>,
         ) -> R,
     ) -> R {
         let mut overlay = self
@@ -172,14 +172,14 @@ impl CanisterHost {
         f(&mut self.service, &mut overlay)
     }
 
-    pub fn flush_graph_to_stable(&mut self) -> GraphPmaResult<()> {
+    pub fn flush_graph_to_stable(&mut self) -> GraphStoreResult<()> {
         self.graph_facade
             .try_refresh_and_write_dirty_to_stable_memory(self.graph_memory.as_ref())
             .map(|_| ())
     }
 
     pub fn flush_graph_metadata_stable(&mut self) {
-        gleaph_graph_pma::low_level::write_region_manager_footer(
+        gleaph_graph_store::low_level::write_region_manager_footer(
             self.graph_memory.as_ref(),
             &*self.graph_facade.manager.borrow(),
         )

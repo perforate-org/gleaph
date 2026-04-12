@@ -1,6 +1,6 @@
 //! Minimal traits for DGAP CSR edges and vertices without Gleaph-specific types.
 //!
-//! `graph-pma` can implement [`CsrVertex`] / [`CsrEdge`] for `VertexEntry` / `EdgeEntry` in a follow-up
+//! `graph-store` can implement [`CsrVertex`] / [`CsrEdge`] for `VertexEntry` / `EdgeEntry` in a follow-up
 //! (keeps this crate free of `gleaph_graph_kernel`).
 
 use ic_stable_structures::Storable;
@@ -73,7 +73,7 @@ impl<E: CsrEdge + CsrEdgeTombstone> CsrEdgeSlotTombstoneScan for E {
 /// when inappropriate and route to `insert_undirected`.
 ///
 /// Implementations should keep the flag consistent with any other packed metadata when rewriting the edge
-/// (for example the undirected bit in `graph-pma`’s `EdgeMeta`).
+/// (for example the undirected bit in `graph-store`’s `EdgeMeta`).
 pub trait CsrEdgeUndirected: CsrEdge {
     /// `true` if this slot represents an undirected logical edge (caller-defined; typically mirrored in both directions).
     fn is_undirected(&self) -> bool;

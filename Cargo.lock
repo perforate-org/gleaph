@@ -1451,7 +1451,7 @@ dependencies = [
  "gleaph-gql",
  "gleaph-gql-planner",
  "gleaph-graph-kernel",
- "gleaph-graph-pma",
+ "gleaph-graph-store",
  "ic-stable-structures",
  "rapidhash",
  "thiserror 2.0.18",
@@ -1498,7 +1498,7 @@ dependencies = [
  "gleaph-gql-ic",
  "gleaph-gql-planner",
  "gleaph-graph-kernel",
- "gleaph-graph-pma",
+ "gleaph-graph-store",
  "ic-cdk 0.20.0",
  "ic-cdk-macros 0.20.0",
  "ic-cdk-timers",
@@ -1517,23 +1517,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gleaph-graph-pma"
-version = "0.1.0"
-dependencies = [
- "canbench-rs",
- "candid",
- "criterion",
- "gleaph-gql",
- "gleaph-gql-planner",
- "gleaph-graph-kernel",
- "ic-stable-csr",
- "ic-stable-slot-map",
- "ic-stable-structures",
- "roaring",
- "serde",
-]
-
-[[package]]
 name = "gleaph-graph-registry"
 version = "0.1.0"
 dependencies = [
@@ -1549,6 +1532,23 @@ dependencies = [
  "serde",
  "sha2 0.11.0",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "gleaph-graph-store"
+version = "0.1.0"
+dependencies = [
+ "canbench-rs",
+ "candid",
+ "criterion",
+ "gleaph-gql",
+ "gleaph-gql-planner",
+ "gleaph-graph-kernel",
+ "ic-stable-csr",
+ "ic-stable-slot-map",
+ "ic-stable-structures",
+ "roaring",
+ "serde",
 ]
 
 [[package]]
@@ -2029,6 +2029,7 @@ version = "0.1.0"
 dependencies = [
  "canbench-rs",
  "candid",
+ "gleaph-graph-store",
  "ic-cdk 0.20.0",
  "ic-cdk-macros 0.20.0",
  "ic-stable-csr",

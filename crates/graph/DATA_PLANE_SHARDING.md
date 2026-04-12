@@ -70,7 +70,7 @@ Question: how does code on **shard A** obtain **label and property** information
 
 ### Undirected edges (logical flag + hot meta)
 
-Logical undirected edges (GQL `~`) set [`EdgeRecord::undirected`](../graph-kernel/src/records.rs) and the **undirected bit** on **both** forward and reverse [`EdgeMeta`](../graph-pma/src/low_level/edge.rs) payloads for that `EdgeId`, including cross-shard pairs (shard slot on forward, label id on reverse). Pattern expansion filters on this flag: pure `->` / `<-` patterns skip undirected-only rows; `Undirected` and mixed directions combine directed and undirected semantics in the PMA overlay read path (`graph_read_impl`).
+Logical undirected edges (GQL `~`) set [`EdgeRecord::undirected`](../graph-kernel/src/records.rs) and the **undirected bit** on **both** forward and reverse [`EdgeMeta`](../graph-store/src/low_level/edge.rs) payloads for that `EdgeId`, including cross-shard pairs (shard slot on forward, label id on reverse). Pattern expansion filters on this flag: pure `->` / `<-` patterns skip undirected-only rows; `Undirected` and mixed directions combine directed and undirected semantics in the PMA overlay read path (`graph_read_impl`).
 
 ## Concepts
 
@@ -88,7 +88,7 @@ Typed `Principal` in the GQL surface (if desired) remains an extension concern. 
 ## Design decisions (locked)
 
 1. **Shard hint on the hop** — principal (via directory slot) is associated with the expansion hop for efficient runtime routing, not only with ad hoc node properties.
-2. **Directory is authoritative for “which canister”** — edge meta holds a **slot**, not an inline principal, to keep adjacency entries small and stable across compactions. The slot lives in the **16-bit** `EdgeMeta` payload when the cross-shard flag is set (`crates/graph-pma` `EdgeMeta`).
+2. **Directory is authoritative for “which canister”** — edge meta holds a **slot**, not an inline principal, to keep adjacency entries small and stable across compactions. The slot lives in the **16-bit** `EdgeMeta` payload when the cross-shard flag is set (`crates/graph-store` `EdgeMeta`).
 3. **Single-graph cross-shard continuation is not `USE GRAPH`** — for one logical graph, following a cross-shard edge to another canister is an **executor/kernel** responsibility. **`USE GRAPH` is reserved for graph-unit federation** ([`FEDERATION.md`](./FEDERATION.md)), i.e. distinct logical graphs.
 
 ## Open design choices (to resolve next)
@@ -129,8 +129,8 @@ Any inter-canister read still enforces **that canister’s** ACL and caller rule
 
 ## Related code
 
-- `crates/graph-pma/src/low_level/shard_canister.rs` — directory encoding (`ShardCanisterDirectory`)
-- `crates/graph-pma/src/integration/bridge_bootstrap.rs` — `insert_edge_with_shard_canister_dst`
+- `crates/graph-store/src/low_level/shard_canister.rs` — directory encoding (`ShardCanisterDirectory`)
+- `crates/graph-store/src/integration/bridge_bootstrap.rs` — `insert_edge_with_shard_canister_dst`
 - `crates/graph-kernel/src/traits.rs` — `expand_hops_with_shard_meta`, `hop_aux_bytes_for_edge`
 - `crates/gql-planner/src/planner.rs` — `hop_aux_binding_for_edge_if_referenced`
 - `crates/gql-executor/src/graph_ops.rs` — `insert_hop_aux_binding`

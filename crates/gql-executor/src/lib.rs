@@ -2111,14 +2111,14 @@ mod tests {
         EdgeId, EdgeLabelFilter, EdgeRecord, Expansion, ExpansionHop, GraphRead, GraphResult,
         GraphWrite, NodeId, NodeRecord, PropertyMap,
     };
-    use gleaph_graph_pma::facade::GraphPmaWriteEventProjection;
-    use gleaph_graph_pma::integration::{
-        GraphPmaOverlayEdgeMutationKind, GraphPmaOverlayWriteEvent,
+    use gleaph_graph_store::facade::GraphStoreWriteEventProjection;
+    use gleaph_graph_store::integration::{
+        GraphStoreOverlayEdgeMutationKind, GraphStoreOverlayWriteEvent,
     };
-    use gleaph_graph_pma::low_level::{BucketSizeInPages, GraphMutationPath};
-    use gleaph_graph_pma::observability::project_overlay_write_event;
-    use gleaph_graph_pma::property_index::PropertyIndexNodeStoreMutationKind;
-    use gleaph_graph_pma::{GraphPma, VecMemory};
+    use gleaph_graph_store::low_level::{BucketSizeInPages, GraphMutationPath};
+    use gleaph_graph_store::observability::project_overlay_write_event;
+    use gleaph_graph_store::property_index::PropertyIndexNodeStoreMutationKind;
+    use gleaph_graph_store::{GraphStore, VecMemory};
     use std::rc::Rc;
 
     use self::backend_debug_helpers::{expect_graph_execution, expect_graph_pma_overlay_execution};
@@ -2142,20 +2142,20 @@ mod tests {
     use std::cell::RefCell;
 
     /// Test-only graph adapter that preserves the old `InMemoryGraph` helper API
-    /// while running on top of graph-pma.
+    /// while running on top of graph-store.
     struct InMemoryGraph {
-        facade: RefCell<GraphPma>,
+        facade: RefCell<GraphStore>,
         memory: Rc<VecMemory>,
     }
 
     impl InMemoryGraph {
         fn new() -> Self {
             let memory = Rc::new(VecMemory::default());
-            let facade = GraphPma::bootstrap_empty_with_bucket_size_using_memory_rc(
+            let facade = GraphStore::bootstrap_empty_with_bucket_size_using_memory_rc(
                 BucketSizeInPages::DEFAULT,
                 Rc::clone(&memory),
             )
-            .expect("bootstrap graph-pma");
+            .expect("bootstrap graph-store");
             Self {
                 facade: RefCell::new(facade),
                 memory,
@@ -2430,31 +2430,31 @@ mod tests {
     const DEBUG_EDGE_PROPERTY_KEYS: &[&str] = &["weight", "score"];
 
     mod overlay_test_helpers {
-        use gleaph_graph_pma::GraphPmaVecMemory;
-        use gleaph_graph_pma::facade::GraphPmaWriteEventProjection;
-        use gleaph_graph_pma::integration::{
-            GraphPmaKernelHarness, GraphPmaKernelHarnessOverlay, GraphPmaOverlayWriteEvent,
+        use gleaph_graph_store::GraphStoreVecMemory;
+        use gleaph_graph_store::facade::GraphStoreWriteEventProjection;
+        use gleaph_graph_store::integration::{
+            GraphStoreKernelHarness, GraphStoreKernelHarnessOverlay, GraphStoreOverlayWriteEvent,
             KernelBootstrapGraphSpec,
         };
-        use gleaph_graph_pma::observability::{
-            GraphPmaDiagnosticsView, last_projected_overlay_event, project_overlay_write_history,
+        use gleaph_graph_store::observability::{
+            GraphStoreDiagnosticsView, last_projected_overlay_event, project_overlay_write_history,
         };
 
-        pub(super) fn bootstrap_empty_graph_pma_harness() -> GraphPmaKernelHarness<GraphPmaVecMemory>
+        pub(super) fn bootstrap_empty_graph_pma_harness() -> GraphStoreKernelHarness<GraphStoreVecMemory>
         {
-            GraphPmaKernelHarness::bootstrap_empty(GraphPmaVecMemory::default())
-                .expect("bootstrap graph-pma harness")
+            GraphStoreKernelHarness::bootstrap_empty(GraphStoreVecMemory::default())
+                .expect("bootstrap graph-store harness")
         }
 
         pub(super) fn projected_history(
-            graph: &GraphPmaKernelHarnessOverlay<'_, GraphPmaVecMemory>,
-        ) -> Vec<GraphPmaWriteEventProjection> {
+            graph: &GraphStoreKernelHarnessOverlay<'_, GraphStoreVecMemory>,
+        ) -> Vec<GraphStoreWriteEventProjection> {
             project_overlay_write_history(graph.write_history())
         }
 
         pub(super) fn assert_last_projected_event(
-            graph: &GraphPmaKernelHarnessOverlay<'_, GraphPmaVecMemory>,
-            expected: GraphPmaWriteEventProjection,
+            graph: &GraphStoreKernelHarnessOverlay<'_, GraphStoreVecMemory>,
+            expected: GraphStoreWriteEventProjection,
         ) {
             assert_eq!(
                 last_projected_overlay_event(graph.write_history()).as_ref(),
@@ -2463,70 +2463,70 @@ mod tests {
         }
 
         pub(super) fn bootstrap_graph_pma_overlay<'a>(
-            harness: &'a mut GraphPmaKernelHarness<GraphPmaVecMemory>,
+            harness: &'a mut GraphStoreKernelHarness<GraphStoreVecMemory>,
             spec: &KernelBootstrapGraphSpec,
         ) -> (
-            GraphPmaKernelHarnessOverlay<'a, GraphPmaVecMemory>,
-            gleaph_graph_pma::integration::KernelBootstrapGraphSummary,
+            GraphStoreKernelHarnessOverlay<'a, GraphStoreVecMemory>,
+            gleaph_graph_store::integration::KernelBootstrapGraphSummary,
         ) {
             let (graph, summary) = harness
                 .bind_overlay_with_graph(spec)
-                .expect("seed graph-pma overlay graph");
+                .expect("seed graph-store overlay graph");
             assert_overlay_bootstrap_projection_matches_event(&graph, &summary);
             (graph, summary)
         }
 
         pub(super) fn bootstrap_graph_pma_overlay_user_uid<'a>(
-            harness: &'a mut GraphPmaKernelHarness<GraphPmaVecMemory>,
+            harness: &'a mut GraphStoreKernelHarness<GraphStoreVecMemory>,
             uid: &str,
         ) -> (
-            GraphPmaKernelHarnessOverlay<'a, GraphPmaVecMemory>,
-            gleaph_graph_pma::integration::KernelBootstrapGraphSummary,
+            GraphStoreKernelHarnessOverlay<'a, GraphStoreVecMemory>,
+            gleaph_graph_store::integration::KernelBootstrapGraphSummary,
         ) {
             let spec = super::graph_pma_seed_user_uid(uid);
             bootstrap_graph_pma_overlay(harness, &spec)
         }
 
         pub(super) fn bootstrap_graph_pma_overlay_user_post_authored<'a>(
-            harness: &'a mut GraphPmaKernelHarness<GraphPmaVecMemory>,
+            harness: &'a mut GraphStoreKernelHarness<GraphStoreVecMemory>,
             uid: &str,
             title: &str,
             weight: i64,
         ) -> (
-            GraphPmaKernelHarnessOverlay<'a, GraphPmaVecMemory>,
-            gleaph_graph_pma::integration::KernelBootstrapGraphSummary,
+            GraphStoreKernelHarnessOverlay<'a, GraphStoreVecMemory>,
+            gleaph_graph_store::integration::KernelBootstrapGraphSummary,
         ) {
             let spec = super::graph_pma_seed_user_post_authored(uid, title, weight);
             bootstrap_graph_pma_overlay(harness, &spec)
         }
 
         pub(super) fn bootstrap_graph_pma_overlay_authored_and_liked_posts<'a>(
-            harness: &'a mut GraphPmaKernelHarness<GraphPmaVecMemory>,
+            harness: &'a mut GraphStoreKernelHarness<GraphStoreVecMemory>,
         ) -> (
-            GraphPmaKernelHarnessOverlay<'a, GraphPmaVecMemory>,
-            gleaph_graph_pma::integration::KernelBootstrapGraphSummary,
+            GraphStoreKernelHarnessOverlay<'a, GraphStoreVecMemory>,
+            gleaph_graph_store::integration::KernelBootstrapGraphSummary,
         ) {
             let spec = super::graph_pma_seed_authored_and_liked_posts();
             bootstrap_graph_pma_overlay(harness, &spec)
         }
 
         pub(super) fn bootstrap_graph_pma_overlay_alice_shard_authored_post<'a>(
-            harness: &'a mut GraphPmaKernelHarness<GraphPmaVecMemory>,
+            harness: &'a mut GraphStoreKernelHarness<GraphStoreVecMemory>,
             remote: candid::Principal,
         ) -> (
-            GraphPmaKernelHarnessOverlay<'a, GraphPmaVecMemory>,
-            gleaph_graph_pma::integration::KernelBootstrapGraphSummary,
+            GraphStoreKernelHarnessOverlay<'a, GraphStoreVecMemory>,
+            gleaph_graph_store::integration::KernelBootstrapGraphSummary,
         ) {
             let spec = super::seed_helpers::graph_pma_seed_alice_shard_authored_post(remote);
             bootstrap_graph_pma_overlay(harness, &spec)
         }
 
         fn assert_overlay_bootstrap_projection_matches_event(
-            graph: &GraphPmaKernelHarnessOverlay<'_, GraphPmaVecMemory>,
-            summary: &gleaph_graph_pma::integration::KernelBootstrapGraphSummary,
+            graph: &GraphStoreKernelHarnessOverlay<'_, GraphStoreVecMemory>,
+            summary: &gleaph_graph_store::integration::KernelBootstrapGraphSummary,
         ) {
             let event_projection = match graph.write_history().last() {
-                Some(GraphPmaOverlayWriteEvent::BootstrapGraph(event_summary)) => {
+                Some(GraphStoreOverlayWriteEvent::BootstrapGraph(event_summary)) => {
                     event_summary.projection()
                 }
                 other => panic!("expected aggregate bootstrap event, got {other:?}"),
@@ -2542,11 +2542,11 @@ mod tests {
                 super::backend_debug_helpers::format_usize_list(&summary.refreshed.reverse),
             );
             assert_eq!(
-                GraphPmaDiagnosticsView::formatted_last_write_event(graph),
+                GraphStoreDiagnosticsView::formatted_last_write_event(graph),
                 Some(expected.clone())
             );
             assert_eq!(
-                GraphPmaDiagnosticsView::debug_report(graph)
+                GraphStoreDiagnosticsView::debug_report(graph)
                     .lines()
                     .last()
                     .map(str::to_owned),
@@ -2560,21 +2560,21 @@ mod tests {
 
         use gleaph_gql::types::EdgeDirection;
         use gleaph_graph_kernel::{EdgeRecord, GraphRead, GraphWrite, PropertyMap};
-        use gleaph_graph_pma::GraphPmaVecMemory;
-        use gleaph_graph_pma::integration::GraphPmaKernelHarnessOverlay;
-        use gleaph_graph_pma::observability::GraphPmaDiagnosticsView;
+        use gleaph_graph_store::GraphStoreVecMemory;
+        use gleaph_graph_store::integration::GraphStoreKernelHarnessOverlay;
+        use gleaph_graph_store::observability::GraphStoreDiagnosticsView;
 
         use super::{DEBUG_EDGE_PROPERTY_KEYS, DEBUG_NODE_PROPERTY_KEYS, ExecutionError};
 
         pub(super) fn expect_graph_pma_overlay_execution<T>(
-            graph: &GraphPmaKernelHarnessOverlay<'_, GraphPmaVecMemory>,
+            graph: &GraphStoreKernelHarnessOverlay<'_, GraphStoreVecMemory>,
             result: super::super::ExecutionResultExt<T>,
             context: &str,
         ) -> T {
             expect_execution_with_report(
                 result,
                 context,
-                "graph-pma diagnostics",
+                "graph-store diagnostics",
                 graph_pma_overlay_debug_report(graph),
             )
         }
@@ -2605,9 +2605,9 @@ mod tests {
         }
 
         pub(super) fn graph_pma_overlay_debug_report(
-            graph: &GraphPmaKernelHarnessOverlay<'_, GraphPmaVecMemory>,
+            graph: &GraphStoreKernelHarnessOverlay<'_, GraphStoreVecMemory>,
         ) -> String {
-            GraphPmaDiagnosticsView::debug_report(graph)
+            GraphStoreDiagnosticsView::debug_report(graph)
         }
 
         fn panic_with_debug_report(
@@ -2735,7 +2735,7 @@ mod tests {
         use candid::Principal;
         use gleaph_gql::Value;
         use gleaph_graph_kernel::PropertyMap;
-        use gleaph_graph_pma::integration::{
+        use gleaph_graph_store::integration::{
             KernelBootstrapEdgeSpec, KernelBootstrapGraphSpec, KernelBootstrapNodeSpec,
         };
 
@@ -3065,7 +3065,7 @@ mod tests {
         let result = expect_graph_pma_overlay_execution(
             &graph,
             plan_result,
-            "graph-pma overlay plan should execute",
+            "graph-store overlay plan should execute",
         );
         assert_eq!(result.rows.len(), 1);
         assert_eq!(
@@ -3273,7 +3273,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "superseded: in-memory backend path; graph-pma overlay tests cover this behavior"]
+    #[ignore = "superseded: in-memory backend path; graph-store overlay tests cover this behavior"]
     fn executes_index_scan_and_conditional_fallback() {
         let mut graph = InMemoryGraph::new();
         graph.insert_node(["User"], [("uid", Value::Text("u1".to_owned()))]);
@@ -3444,7 +3444,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "superseded: in-memory backend path; graph-pma overlay tests cover this behavior"]
+    #[ignore = "superseded: in-memory backend path; graph-store overlay tests cover this behavior"]
     fn executes_expand_filter_and_topk() {
         let mut graph = InMemoryGraph::new();
         let alice = graph.insert_node(["User"], [("name", Value::Text("Alice".to_owned()))]);
@@ -3562,7 +3562,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "superseded: in-memory backend path; graph-pma overlay tests cover this behavior"]
+    #[ignore = "superseded: in-memory backend path; graph-store overlay tests cover this behavior"]
     fn executes_grouped_count_aggregate() {
         let mut graph = InMemoryGraph::new();
         let alice = graph.insert_node(["User"], [("name", Value::Text("Alice".to_owned()))]);
@@ -3678,7 +3678,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "superseded: in-memory backend path; graph-pma overlay tests cover this behavior"]
+    #[ignore = "superseded: in-memory backend path; graph-store overlay tests cover this behavior"]
     fn executes_sum_min_max_aggregate() {
         let mut graph = InMemoryGraph::new();
         let alice = graph.insert_node(["User"], [("name", Value::Text("Alice".to_owned()))]);
@@ -3845,7 +3845,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "superseded: in-memory backend path; graph-pma overlay tests cover this behavior"]
+    #[ignore = "superseded: in-memory backend path; graph-store overlay tests cover this behavior"]
     fn executes_avg_aggregate() {
         let mut graph = InMemoryGraph::new();
         let n1 = graph.insert_node(["N"], [("v", Value::Int64(10))]);
@@ -3933,7 +3933,7 @@ mod tests {
 
     #[test]
     fn executes_plan_against_graph_pma_backend() {
-        let mut harness = gleaph_graph_pma::integration::GraphPmaKernelHarness::bootstrap_empty(
+        let mut harness = gleaph_graph_store::integration::GraphStoreKernelHarness::bootstrap_empty(
             VecMemory::default(),
         )
         .expect("bootstrap");
@@ -4016,7 +4016,7 @@ mod tests {
 
         let plan_result = execute_plan(&mut graph, &plan);
         let result =
-            expect_graph_execution(&graph, plan_result, "plan should execute on graph-pma");
+            expect_graph_execution(&graph, plan_result, "plan should execute on graph-store");
         assert_eq!(result.rows.len(), 1);
         assert_eq!(
             result.rows[0].get("uid"),
@@ -4030,7 +4030,7 @@ mod tests {
 
     #[test]
     fn persistent_graph_debug_report_formats_representative_graph_shape() {
-        let mut harness = gleaph_graph_pma::integration::GraphPmaKernelHarness::bootstrap_empty(
+        let mut harness = gleaph_graph_store::integration::GraphStoreKernelHarness::bootstrap_empty(
             VecMemory::default(),
         )
         .expect("bootstrap");
@@ -4088,7 +4088,7 @@ mod tests {
 
     #[test]
     fn executes_dml_against_graph_pma_backend_and_reopens() {
-        let mut harness = gleaph_graph_pma::integration::GraphPmaKernelHarness::bootstrap_empty(
+        let mut harness = gleaph_graph_store::integration::GraphStoreKernelHarness::bootstrap_empty(
             VecMemory::default(),
         )
         .expect("bootstrap");
@@ -4311,14 +4311,14 @@ mod tests {
             .expect("flush before reopen");
         let manager = harness.facade().manager.borrow().clone();
         let mut reopened_facade =
-            GraphPma::hydrate_from_stable_memory(manager, mem_clone).expect("graph should reopen");
+            GraphStore::hydrate_from_stable_memory(manager, mem_clone).expect("graph should reopen");
         let mem_rc = Rc::clone(&reopened_facade.memory);
         let reopened = reopened_facade.bind_kernel_overlay(mem_rc.as_ref());
         assert!(reopened.get_node(post_id).expect("get node").is_none());
     }
 
     #[test]
-    #[ignore = "superseded: in-memory backend path; graph-pma overlay tests cover this behavior"]
+    #[ignore = "superseded: in-memory backend path; graph-store overlay tests cover this behavior"]
     fn executes_cartesian_product_subplans() {
         let mut graph = InMemoryGraph::new();
         graph.insert_node(["User"], [("uid", Value::Text("u1".to_owned()))]);
@@ -4375,7 +4375,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "superseded: in-memory backend path; graph-pma overlay tests cover this behavior"]
+    #[ignore = "superseded: in-memory backend path; graph-store overlay tests cover this behavior"]
     fn executes_hash_join_subplans() {
         let mut graph = InMemoryGraph::new();
         let alice = graph.insert_node(["User"], [("uid", Value::Text("u1".to_owned()))]);
@@ -4455,7 +4455,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "superseded: in-memory backend path; graph-pma overlay tests cover this behavior"]
+    #[ignore = "superseded: in-memory backend path; graph-store overlay tests cover this behavior"]
     fn executes_materialize_between_pipeline_stages() {
         let mut graph = InMemoryGraph::new();
         let alice = graph.insert_node(["User"], [("uid", Value::Text("u1".to_owned()))]);
@@ -4526,7 +4526,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "superseded: in-memory backend path; graph-pma overlay tests cover this behavior"]
+    #[ignore = "superseded: in-memory backend path; graph-store overlay tests cover this behavior"]
     fn executes_optional_match_with_null_padding() {
         let mut graph = InMemoryGraph::new();
         let alice = graph.insert_node(["User"], [("uid", Value::Text("u1".to_owned()))]);
@@ -4616,7 +4616,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "superseded: in-memory backend path; graph-pma overlay tests cover this behavior"]
+    #[ignore = "superseded: in-memory backend path; graph-store overlay tests cover this behavior"]
     fn executes_union_all_set_operation() {
         let mut graph = InMemoryGraph::new();
         graph.insert_node(["User"], [("name", Value::Text("alice".to_owned()))]);
@@ -4754,7 +4754,7 @@ mod tests {
         let result = expect_graph_pma_overlay_execution(
             &graph,
             plan_result,
-            "graph-pma overlay insert dml should execute",
+            "graph-store overlay insert dml should execute",
         );
         assert_eq!(result.rows.len(), 1);
         assert_eq!(
@@ -4764,19 +4764,19 @@ mod tests {
         assert_eq!(result.rows[0].get("weight"), Some(&Value::Int64(10)));
         let insert_summary = graph
             .last_insert_edge_summary()
-            .expect("graph-pma overlay insert summary");
+            .expect("graph-store overlay insert summary");
         assert!(insert_summary.inserted);
         assert_eq!(graph.insert_edge_history().len(), 1);
         assert_eq!(insert_summary.ensure_capacity_projection(), None);
         assert!(matches!(
             graph.write_history().last(),
-            Some(GraphPmaOverlayWriteEvent::InsertEdge(_))
+            Some(GraphStoreOverlayWriteEvent::InsertEdge(_))
         ));
         assert_eq!(
-            gleaph_graph_pma::observability::project_overlay_write_event(
+            gleaph_graph_store::observability::project_overlay_write_event(
                 graph.write_history().last().expect("last overlay event")
             ),
-            vec![GraphPmaWriteEventProjection::InsertEdge(
+            vec![GraphStoreWriteEventProjection::InsertEdge(
                 insert_summary.projection()
             )]
         );
@@ -4956,7 +4956,7 @@ mod tests {
         let result = expect_graph_pma_overlay_execution(
             &graph,
             plan_result,
-            "graph-pma overlay set/remove should execute",
+            "graph-store overlay set/remove should execute",
         );
         assert_eq!(
             result.rows[0].get("title"),
@@ -4969,7 +4969,7 @@ mod tests {
         );
         let property_summary = graph
             .last_property_write_summary()
-            .expect("graph-pma overlay property write summary");
+            .expect("graph-store overlay property write summary");
         assert!(property_summary.flushed_sections.property_store);
         assert!(property_summary.flushed_sections.logical_index);
         assert_eq!(
@@ -4981,7 +4981,7 @@ mod tests {
         let property_events: Vec<_> = projected_history(&graph)
             .into_iter()
             .filter_map(|event| match event {
-                GraphPmaWriteEventProjection::Property(summary) => Some(summary),
+                GraphStoreWriteEventProjection::Property(summary) => Some(summary),
                 _ => None,
             })
             .collect();
@@ -4989,7 +4989,7 @@ mod tests {
         assert_eq!(property_events.last(), Some(&property_summary.projection()));
         assert_eq!(
             project_overlay_write_event(graph.write_history().last().expect("last overlay event")),
-            vec![GraphPmaWriteEventProjection::Property(
+            vec![GraphStoreWriteEventProjection::Property(
                 property_summary.projection()
             )]
         );
@@ -5000,13 +5000,13 @@ mod tests {
         assert!(matches!(
             graph.write_history(),
             [
-                GraphPmaOverlayWriteEvent::BootstrapNode(_),
-                GraphPmaOverlayWriteEvent::BootstrapNode(_),
-                GraphPmaOverlayWriteEvent::BootstrapEdge(_),
-                GraphPmaOverlayWriteEvent::BootstrapGraph(_),
-                GraphPmaOverlayWriteEvent::Property(_),
-                GraphPmaOverlayWriteEvent::Property(_),
-                GraphPmaOverlayWriteEvent::Property(_)
+                GraphStoreOverlayWriteEvent::BootstrapNode(_),
+                GraphStoreOverlayWriteEvent::BootstrapNode(_),
+                GraphStoreOverlayWriteEvent::BootstrapEdge(_),
+                GraphStoreOverlayWriteEvent::BootstrapGraph(_),
+                GraphStoreOverlayWriteEvent::Property(_),
+                GraphStoreOverlayWriteEvent::Property(_),
+                GraphStoreOverlayWriteEvent::Property(_)
             ]
         ));
         let _ = edge_id;
@@ -5048,32 +5048,32 @@ mod tests {
         expect_graph_pma_overlay_execution(
             &graph,
             detach_result,
-            "graph-pma overlay detach delete should succeed",
+            "graph-store overlay detach delete should succeed",
         );
         let delete_summary = graph
             .last_node_delete_summary()
-            .expect("graph-pma overlay node delete summary");
+            .expect("graph-store overlay node delete summary");
         assert!(delete_summary.detached);
         assert_eq!(delete_summary.deleted_edge_ids.len(), 1);
         assert_eq!(
             delete_summary.edge_writes[0].operation,
-            GraphPmaOverlayEdgeMutationKind::Delete
+            GraphStoreOverlayEdgeMutationKind::Delete
         );
         let delete_event_projection = graph
             .write_history()
             .iter()
-            .find_map(GraphPmaOverlayWriteEvent::node_delete_projection)
-            .expect("graph-pma overlay node delete event projection");
+            .find_map(GraphStoreOverlayWriteEvent::node_delete_projection)
+            .expect("graph-store overlay node delete event projection");
         assert_eq!(delete_summary.projection(), delete_event_projection);
         assert_eq!(
             project_overlay_write_event(graph.write_history().last().expect("last overlay event")),
-            vec![GraphPmaWriteEventProjection::NodeDelete(
+            vec![GraphStoreWriteEventProjection::NodeDelete(
                 delete_summary.projection()
             )]
         );
         assert_last_projected_event(
             &graph,
-            gleaph_graph_pma::facade::GraphPmaWriteEventProjection::NodeDelete(
+            gleaph_graph_store::facade::GraphStoreWriteEventProjection::NodeDelete(
                 delete_summary.projection(),
             ),
         );
@@ -5087,16 +5087,16 @@ mod tests {
         assert!(
             history[..history.len() - 1]
                 .iter()
-                .any(|event| matches!(event, GraphPmaOverlayWriteEvent::Property(_)))
+                .any(|event| matches!(event, GraphStoreOverlayWriteEvent::Property(_)))
         );
         assert!(
             history[..history.len() - 1]
                 .iter()
-                .any(|event| matches!(event, GraphPmaOverlayWriteEvent::Edge(_)))
+                .any(|event| matches!(event, GraphStoreOverlayWriteEvent::Edge(_)))
         );
         assert!(matches!(
             history.last(),
-            Some(GraphPmaOverlayWriteEvent::NodeDelete(_))
+            Some(GraphStoreOverlayWriteEvent::NodeDelete(_))
         ));
         assert!(graph.get_node(post).expect("node").is_none());
         assert_eq!(
@@ -5153,7 +5153,7 @@ mod tests {
         expect_graph_pma_overlay_execution(
             &graph,
             plan_result,
-            "graph-pma overlay delete edge should execute",
+            "graph-store overlay delete edge should execute",
         );
         assert!(
             !graph.property_write_history().is_empty(),
@@ -5162,40 +5162,40 @@ mod tests {
         );
         let summary = graph
             .last_edge_write_summary()
-            .expect("graph-pma overlay edge delete summary");
-        assert_eq!(summary.operation, GraphPmaOverlayEdgeMutationKind::Delete);
+            .expect("graph-store overlay edge delete summary");
+        assert_eq!(summary.operation, GraphStoreOverlayEdgeMutationKind::Delete);
         assert_eq!(summary.path, GraphMutationPath::Base);
         assert!(summary.refreshed.forward.contains(&0));
         assert_eq!(
             project_overlay_write_event(graph.write_history().last().expect("last overlay event")),
-            vec![GraphPmaWriteEventProjection::Edge(summary.projection())]
+            vec![GraphStoreWriteEventProjection::Edge(summary.projection())]
         );
         assert_eq!(graph.edge_write_history().len(), 1);
         let history = graph.write_history();
         assert!(matches!(
             history.first(),
-            Some(GraphPmaOverlayWriteEvent::BootstrapNode(_))
+            Some(GraphStoreOverlayWriteEvent::BootstrapNode(_))
         ));
         assert!(matches!(
             history.get(1),
-            Some(GraphPmaOverlayWriteEvent::BootstrapNode(_))
+            Some(GraphStoreOverlayWriteEvent::BootstrapNode(_))
         ));
         assert!(matches!(
             history.get(2),
-            Some(GraphPmaOverlayWriteEvent::BootstrapEdge(_))
+            Some(GraphStoreOverlayWriteEvent::BootstrapEdge(_))
         ));
         assert!(matches!(
             history.get(3),
-            Some(GraphPmaOverlayWriteEvent::BootstrapGraph(_))
+            Some(GraphStoreOverlayWriteEvent::BootstrapGraph(_))
         ));
         assert!(
             history[..history.len() - 1]
                 .iter()
-                .any(|event| matches!(event, GraphPmaOverlayWriteEvent::Property(_)))
+                .any(|event| matches!(event, GraphStoreOverlayWriteEvent::Property(_)))
         );
         assert!(matches!(
             history.last(),
-            Some(GraphPmaOverlayWriteEvent::Edge(_))
+            Some(GraphStoreOverlayWriteEvent::Edge(_))
         ));
         assert_eq!(
             graph
@@ -5260,31 +5260,31 @@ mod tests {
         expect_graph_pma_overlay_execution(
             &graph,
             plan_result,
-            "graph-pma overlay edge-label dml should execute",
+            "graph-store overlay edge-label dml should execute",
         );
         let summary = graph
             .last_edge_write_summary()
-            .expect("graph-pma overlay edge label summary");
+            .expect("graph-store overlay edge label summary");
         assert_eq!(
             summary.operation,
-            GraphPmaOverlayEdgeMutationKind::ReplaceLabel
+            GraphStoreOverlayEdgeMutationKind::ReplaceLabel
         );
         assert_eq!(summary.path, GraphMutationPath::Base);
         assert!(summary.refreshed.forward.contains(&0));
         assert_eq!(
             project_overlay_write_event(graph.write_history().last().expect("last overlay event")),
-            vec![GraphPmaWriteEventProjection::Edge(summary.projection())]
+            vec![GraphStoreWriteEventProjection::Edge(summary.projection())]
         );
         assert_eq!(graph.edge_write_history().len(), 2);
         assert!(matches!(
             graph.write_history(),
             [
-                GraphPmaOverlayWriteEvent::BootstrapNode(_),
-                GraphPmaOverlayWriteEvent::BootstrapNode(_),
-                GraphPmaOverlayWriteEvent::BootstrapEdge(_),
-                GraphPmaOverlayWriteEvent::BootstrapGraph(_),
-                GraphPmaOverlayWriteEvent::Edge(_),
-                GraphPmaOverlayWriteEvent::Edge(_)
+                GraphStoreOverlayWriteEvent::BootstrapNode(_),
+                GraphStoreOverlayWriteEvent::BootstrapNode(_),
+                GraphStoreOverlayWriteEvent::BootstrapEdge(_),
+                GraphStoreOverlayWriteEvent::BootstrapGraph(_),
+                GraphStoreOverlayWriteEvent::Edge(_),
+                GraphStoreOverlayWriteEvent::Edge(_)
             ]
         ));
         assert_eq!(
@@ -5301,7 +5301,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "superseded: in-memory backend path; graph-pma overlay tests cover this behavior"]
+    #[ignore = "superseded: in-memory backend path; graph-store overlay tests cover this behavior"]
     fn rejects_plan_with_fatal_dml_errors_before_execution() {
         let mut graph = InMemoryGraph::new();
         let plan = PhysicalPlan {
@@ -5431,9 +5431,9 @@ mod tests {
             })
             .expect("shortest path");
 
-        let spec = gleaph_graph_pma::integration::KernelBootstrapGraphSpec::empty()
+        let spec = gleaph_graph_store::integration::KernelBootstrapGraphSpec::empty()
             .with_node(
-                gleaph_graph_pma::integration::KernelBootstrapNodeSpec::from_parts(
+                gleaph_graph_store::integration::KernelBootstrapNodeSpec::from_parts(
                     &["U"],
                     &[("name".to_owned(), Value::Text("a".into()))]
                         .into_iter()
@@ -5441,7 +5441,7 @@ mod tests {
                 ),
             )
             .with_node(
-                gleaph_graph_pma::integration::KernelBootstrapNodeSpec::from_parts(
+                gleaph_graph_store::integration::KernelBootstrapNodeSpec::from_parts(
                     &["U"],
                     &[("name".to_owned(), Value::Text("b".into()))]
                         .into_iter()
@@ -5449,7 +5449,7 @@ mod tests {
                 ),
             )
             .with_node(
-                gleaph_graph_pma::integration::KernelBootstrapNodeSpec::from_parts(
+                gleaph_graph_store::integration::KernelBootstrapNodeSpec::from_parts(
                     &["U"],
                     &[("name".to_owned(), Value::Text("c".into()))]
                         .into_iter()
@@ -5457,7 +5457,7 @@ mod tests {
                 ),
             )
             .with_edge(
-                gleaph_graph_pma::integration::KernelBootstrapEdgeSpec::from_parts(
+                gleaph_graph_store::integration::KernelBootstrapEdgeSpec::from_parts(
                     0,
                     1,
                     Some("KNOWS"),
@@ -5465,7 +5465,7 @@ mod tests {
                 ),
             )
             .with_edge(
-                gleaph_graph_pma::integration::KernelBootstrapEdgeSpec::from_parts(
+                gleaph_graph_store::integration::KernelBootstrapEdgeSpec::from_parts(
                     1,
                     2,
                     Some("KNOWS"),
@@ -5532,7 +5532,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "superseded: in-memory backend path; graph-pma overlay tests cover this behavior"]
+    #[ignore = "superseded: in-memory backend path; graph-store overlay tests cover this behavior"]
     fn executes_any_shortest_path_bounded_hops() {
         use gleaph_gql::ast::Statement;
         use gleaph_gql::parser;
@@ -5585,7 +5585,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "superseded: in-memory backend path; graph-pma overlay tests cover this behavior"]
+    #[ignore = "superseded: in-memory backend path; graph-store overlay tests cover this behavior"]
     fn executes_any_shortest_path_union_edge_labels() {
         use gleaph_gql::ast::Statement;
         use gleaph_gql::parser;
@@ -5650,7 +5650,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "superseded: in-memory backend path; graph-pma overlay tests cover this behavior"]
+    #[ignore = "superseded: in-memory backend path; graph-store overlay tests cover this behavior"]
     fn expand_three_way_label_disjunction_reaches_matching_edge() {
         use gleaph_gql::ast::Statement;
         use gleaph_gql::parser;
@@ -5687,7 +5687,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "superseded: in-memory backend path; graph-pma overlay tests cover this behavior"]
+    #[ignore = "superseded: in-memory backend path; graph-store overlay tests cover this behavior"]
     fn executes_wcoj_triangle_cycle() {
         use gleaph_gql::ast::Statement;
         use gleaph_gql::parser;
@@ -5747,7 +5747,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "superseded: in-memory backend path; graph-pma overlay tests cover this behavior"]
+    #[ignore = "superseded: in-memory backend path; graph-store overlay tests cover this behavior"]
     fn returns_non_dml_type_warnings_in_execution_result() {
         let mut graph = InMemoryGraph::new();
         let plan = PhysicalPlan {
@@ -5775,7 +5775,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "superseded: in-memory backend path; graph-pma overlay tests cover this behavior"]
+    #[ignore = "superseded: in-memory backend path; graph-store overlay tests cover this behavior"]
     fn execution_summary_marks_dml_and_row_count() {
         let mut graph = InMemoryGraph::new();
         graph.insert_node(["User"], [("uid", Value::Text("u1".to_owned()))]);
@@ -5849,7 +5849,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "superseded: in-memory backend path; graph-pma overlay tests cover this behavior"]
+    #[ignore = "superseded: in-memory backend path; graph-store overlay tests cover this behavior"]
     fn executes_filter_statement() {
         use gleaph_gql::ast::Statement;
         use gleaph_gql::parser;
@@ -5897,7 +5897,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "superseded: in-memory backend path; graph-pma overlay tests cover this behavior"]
+    #[ignore = "superseded: in-memory backend path; graph-store overlay tests cover this behavior"]
     fn executes_let_statement() {
         use gleaph_gql::ast::Statement;
         use gleaph_gql::parser;
@@ -5991,7 +5991,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "superseded: in-memory backend path; graph-pma overlay tests cover this behavior"]
+    #[ignore = "superseded: in-memory backend path; graph-store overlay tests cover this behavior"]
     fn executes_call_procedure_db_labels() {
         use gleaph_gql::ast::Statement;
         use gleaph_gql::parser;
@@ -6095,7 +6095,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "superseded: in-memory backend path; graph-pma overlay tests cover this behavior"]
+    #[ignore = "superseded: in-memory backend path; graph-store overlay tests cover this behavior"]
     fn executes_inline_procedure_call_returns_nodes() {
         use gleaph_gql::ast::Statement;
         use gleaph_gql::parser;
@@ -6166,7 +6166,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "superseded: in-memory backend path; graph-pma overlay tests cover this behavior"]
+    #[ignore = "superseded: in-memory backend path; graph-store overlay tests cover this behavior"]
     fn executes_use_graph_scoped_call_procedure() {
         use gleaph_gql::ast::Statement;
         use gleaph_gql::parser;
@@ -6230,7 +6230,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "superseded: in-memory backend path; graph-pma overlay tests cover this behavior"]
+    #[ignore = "superseded: in-memory backend path; graph-store overlay tests cover this behavior"]
     fn resolves_use_current_graph_from_context() {
         use gleaph_gql::ast::Statement;
         use gleaph_gql::parser;
@@ -6496,7 +6496,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "superseded: in-memory backend path; graph-pma overlay tests cover this behavior"]
+    #[ignore = "superseded: in-memory backend path; graph-store overlay tests cover this behavior"]
     fn executes_expand_var_len_bounded_hops() {
         use gleaph_gql::ast::Statement;
         use gleaph_gql::parser;
@@ -6561,7 +6561,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "superseded: in-memory backend path; graph-pma overlay tests cover this behavior"]
+    #[ignore = "superseded: in-memory backend path; graph-store overlay tests cover this behavior"]
     fn executes_expand_filter_var_len_dst_filter() {
         use gleaph_gql::ast::Statement;
         use gleaph_gql::parser;
@@ -6616,7 +6616,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "superseded: in-memory backend path; graph-pma overlay tests cover this behavior"]
+    #[ignore = "superseded: in-memory backend path; graph-store overlay tests cover this behavior"]
     fn shortest_path_path_var_any_shortest() {
         use gleaph_gql_planner::plan::{ShortestMode, VarLenSpec};
 
@@ -6729,7 +6729,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "superseded: in-memory backend path; graph-pma overlay tests cover this behavior"]
+    #[ignore = "superseded: in-memory backend path; graph-store overlay tests cover this behavior"]
     fn shortest_path_path_var_all_shortest() {
         use gleaph_gql_planner::plan::{ShortestMode, VarLenSpec};
 
@@ -6839,7 +6839,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "superseded: in-memory backend path; graph-pma overlay tests cover this behavior"]
+    #[ignore = "superseded: in-memory backend path; graph-store overlay tests cover this behavior"]
     fn shortest_path_path_var_shortest_k() {
         use gleaph_gql_planner::plan::{ShortestMode, VarLenSpec};
 

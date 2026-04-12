@@ -84,7 +84,7 @@ pub trait GraphRead {
     /// Like [`Self::expand_projected`], but each hop may carry remote shard principal bytes ([`ExpansionHop::shard_canister_principal`]).
     ///
     /// Default: delegates to [`Self::expand_projected`] with [`None`] shard principal bytes on every hop.
-    /// Persistent stores (e.g. graph-pma kernel overlay) may override to surface cross-canister targets.
+    /// Persistent stores (e.g. graph-store kernel overlay) may override to surface cross-canister targets.
     fn expand_hops_with_shard_meta(
         &self,
         from: NodeId,

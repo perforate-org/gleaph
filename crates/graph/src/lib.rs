@@ -54,7 +54,7 @@ use gleaph_gql_planner::{
     build_plan_output_for_execute, first_executor_unsupported_op,
 };
 use gleaph_graph_kernel::{GraphRead, GraphWrite};
-use gleaph_graph_pma::integration::GraphPmaKernelOverlay;
+use gleaph_graph_store::integration::GraphStoreKernelOverlay;
 use ic_cdk::export_candid;
 use ic_cdk_macros::{init, post_upgrade, pre_upgrade, query, update};
 use serde::{Deserialize, Serialize};
@@ -96,7 +96,7 @@ thread_local! {
 fn with_canister_graph_and_service<R>(
     f: impl for<'a> FnOnce(
         &mut GleaphService,
-        &mut GraphPmaKernelOverlay<'a, canister_host::CanisterGraphMemory>,
+        &mut GraphStoreKernelOverlay<'a, canister_host::CanisterGraphMemory>,
     ) -> (R, bool),
 ) -> R {
     canister_host::CanisterHost::ensure_installed();
@@ -112,7 +112,7 @@ fn with_canister_graph_and_service<R>(
 
 #[cfg(test)]
 fn with_canister_graph<R>(
-    f: impl for<'a> FnOnce(&mut GraphPmaKernelOverlay<'a, canister_host::CanisterGraphMemory>) -> R,
+    f: impl for<'a> FnOnce(&mut GraphStoreKernelOverlay<'a, canister_host::CanisterGraphMemory>) -> R,
 ) -> R {
     with_canister_graph_and_service(|_service, overlay| (f(overlay), false))
 }
@@ -121,7 +121,7 @@ fn with_canister_graph<R>(
 /// Used by periodic vacuum so maintenance work does not re-encode the full service snapshot each tick.
 #[cfg(target_arch = "wasm32")]
 fn with_canister_graph_maintenance<R>(
-    f: impl for<'a> FnOnce(&mut GraphPmaKernelOverlay<'a, canister_host::CanisterGraphMemory>) -> R,
+    f: impl for<'a> FnOnce(&mut GraphStoreKernelOverlay<'a, canister_host::CanisterGraphMemory>) -> R,
 ) -> R {
     canister_host::CanisterHost::ensure_installed();
     canister_host::CanisterHost::with(|host| {
@@ -1115,7 +1115,7 @@ fn map_err(err: GleaphError) -> String {
 
 /// Registers a runtime provider for GC backlog length (`reclaim_queue` size).
 ///
-/// This allows the canister wiring layer to connect `graph-pma` vacuum stats
+/// This allows the canister wiring layer to connect `graph-store` vacuum stats
 /// without hard-coupling this crate to one concrete runtime backend.
 #[cfg(target_arch = "wasm32")]
 pub fn set_vacuum_backlog_provider(provider: Option<Arc<dyn Fn() -> usize>>) {
@@ -1127,7 +1127,7 @@ pub fn set_vacuum_backlog_provider(provider: Option<Arc<dyn Fn() -> usize>>) {
 
 /// Registers a periodic vacuum handler invoked on every timer tick.
 ///
-/// Typical use: call graph-pma `vacuum_step(max_ops)` and then expose queue
+/// Typical use: call graph-store `vacuum_step(max_ops)` and then expose queue
 /// length via [`set_vacuum_backlog_provider`].
 #[cfg(target_arch = "wasm32")]
 pub fn set_vacuum_tick_handler(handler: Option<Arc<dyn Fn()>>) {
@@ -1157,7 +1157,7 @@ async fn run_periodic_maintenance_tick() {
         }
     });
     // The current canister runtime uses in-memory graph state by default.
-    // Keep this hook explicit so graph-pma vacuum wiring can be attached here.
+    // Keep this hook explicit so graph-store vacuum wiring can be attached here.
     maybe_reschedule_periodic_vacuum_timer();
 }
 
@@ -1635,8 +1635,8 @@ mod tests {
     use gleaph_gql_ic::PrincipalValue;
     use gleaph_gql_planner::PlanOp;
     use gleaph_graph_kernel::{GraphRead, GraphWrite, PropertyMap};
-    use gleaph_graph_pma::GraphPmaVecMemory;
-    use gleaph_graph_pma::integration::GraphPmaKernelHarness;
+    use gleaph_graph_store::GraphStoreVecMemory;
+    use gleaph_graph_store::integration::GraphStoreKernelHarness;
     use serde_json::{from_str, to_string};
     use std::collections::BTreeSet;
     use std::sync::Arc;
@@ -1655,8 +1655,8 @@ mod tests {
         test_principal("2vxsx-fae")
     }
 
-    fn new_pma_harness() -> GraphPmaKernelHarness<GraphPmaVecMemory> {
-        GraphPmaKernelHarness::bootstrap_empty(GraphPmaVecMemory::default())
+    fn new_pma_harness() -> GraphStoreKernelHarness<GraphStoreVecMemory> {
+        GraphStoreKernelHarness::bootstrap_empty(GraphStoreVecMemory::default())
             .expect("bootstrap harness")
     }
 
