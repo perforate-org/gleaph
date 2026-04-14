@@ -216,11 +216,11 @@ pub struct GraphStoreKernelOverlayGraph<'a, S: GraphStoreStore> {
 pub type GraphStoreKernelOverlay<'a, M> = GraphStoreKernelOverlayGraph<'a, &'a mut GraphStore<M>>;
 
 /// Harness overlay: holds `&M` into the harness-owned stable-memory handle while the bridge mutates the facade.
-pub struct GraphStoreKernelHarnessOverlay<'a, M: Memory> {
+pub struct GraphStoreKernelHarnessOverlay<'a, M: Memory + Clone> {
     inner: GraphStoreKernelOverlay<'a, M>,
 }
 
-impl<'a, M: Memory> GraphStoreKernelHarnessOverlay<'a, M> {
+impl<'a, M: Memory + Clone> GraphStoreKernelHarnessOverlay<'a, M> {
     fn new(facade: &'a mut GraphStore<M>, mem: &'a M) -> Self {
         let adapter = GraphStoreStoreAdapter::new(facade, mem);
         let inner = adapter.into_kernel_overlay();
@@ -228,7 +228,7 @@ impl<'a, M: Memory> GraphStoreKernelHarnessOverlay<'a, M> {
     }
 }
 
-impl<'a, M: Memory> std::ops::Deref for GraphStoreKernelHarnessOverlay<'a, M> {
+impl<'a, M: Memory + Clone> std::ops::Deref for GraphStoreKernelHarnessOverlay<'a, M> {
     type Target = GraphStoreKernelOverlay<'a, M>;
 
     fn deref(&self) -> &Self::Target {
@@ -236,13 +236,13 @@ impl<'a, M: Memory> std::ops::Deref for GraphStoreKernelHarnessOverlay<'a, M> {
     }
 }
 
-impl<'a, M: Memory> std::ops::DerefMut for GraphStoreKernelHarnessOverlay<'a, M> {
+impl<'a, M: Memory + Clone> std::ops::DerefMut for GraphStoreKernelHarnessOverlay<'a, M> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.inner
     }
 }
 
-impl<'a, M: Memory> GraphRead for GraphStoreKernelHarnessOverlay<'a, M> {
+impl<'a, M: Memory + Clone> GraphRead for GraphStoreKernelHarnessOverlay<'a, M> {
     fn scan_nodes(&self, label: Option<&str>) -> GraphResult<Vec<NodeRecord>> {
         self.inner.scan_nodes(label)
     }
@@ -385,7 +385,7 @@ impl<'a, M: Memory> GraphRead for GraphStoreKernelHarnessOverlay<'a, M> {
     }
 }
 
-impl<'a, M: Memory> GraphWrite for GraphStoreKernelHarnessOverlay<'a, M> {
+impl<'a, M: Memory + Clone> GraphWrite for GraphStoreKernelHarnessOverlay<'a, M> {
     fn insert_node(
         &mut self,
         labels: &[String],
@@ -457,7 +457,7 @@ impl<'a, M: Memory> GraphWrite for GraphStoreKernelHarnessOverlay<'a, M> {
     }
 }
 
-impl<'a, M: Memory> crate::observability::GraphStoreDiagnosticsView
+impl<'a, M: Memory + Clone> crate::observability::GraphStoreDiagnosticsView
     for GraphStoreKernelHarnessOverlay<'a, M>
 {
     fn shared_write_history(&self) -> Vec<crate::facade::GraphStoreWriteEventProjection> {
@@ -465,7 +465,7 @@ impl<'a, M: Memory> crate::observability::GraphStoreDiagnosticsView
     }
 }
 
-impl<'a, M: Memory> GraphStats for GraphStoreKernelHarnessOverlay<'a, M> {
+impl<'a, M: Memory + Clone> GraphStats for GraphStoreKernelHarnessOverlay<'a, M> {
     fn label_cardinality(&self, label: &str) -> Option<u64> {
         self.inner.label_cardinality(label)
     }
@@ -481,12 +481,12 @@ impl<'a, M: Memory> GraphStats for GraphStoreKernelHarnessOverlay<'a, M> {
 /// that want one reusable owner for the graph plus its bound stable
 /// memory, without repeating the same bootstrap-and-bind setup in every call
 /// site.
-pub struct GraphStoreKernelHarness<M: Memory> {
+pub struct GraphStoreKernelHarness<M: Memory + Clone> {
     facade: GraphStore<M>,
     memory: Rc<M>,
 }
 
-impl<M: Memory> GraphStoreKernelHarness<M> {
+impl<M: Memory + Clone> GraphStoreKernelHarness<M> {
     /// Bootstraps one empty graph together with owned stable memory.
     pub fn bootstrap_empty(memory: M) -> GraphStoreResult<Self> {
         let mem = Rc::new(memory);

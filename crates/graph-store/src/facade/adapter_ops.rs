@@ -183,7 +183,7 @@ impl<'a, S: GraphStoreStore> GraphStoreStoreAdapter<'a, S> {
     }
 }
 
-impl<'a, M: Memory> GraphStoreStoreAdapter<'a, GraphStore<M>> {
+impl<'a, M: Memory + Clone> GraphStoreStoreAdapter<'a, GraphStore<M>> {
     /// Starts one facade-level batch mutation session through the bound adapter.
     pub fn begin_batch_mutation(&'a mut self) -> GraphStoreBatchSession<'a, M> {
         self.store.begin_batch_mutation(self.memory)

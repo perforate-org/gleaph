@@ -15,6 +15,7 @@ use ic_stable_structures::{StableCell, Storable};
 use std::borrow::Cow;
 use std::fmt;
 use std::ops::Range;
+use std::rc::Rc;
 
 use crate::low_level::{
     EdgeEntry, EdgeLogicalLocatorSidecar, GraphInsertPolicy, ShardCanisterDirectory,
@@ -154,6 +155,29 @@ impl<'a, M: Memory> BorrowedMemory<'a, M> {
 }
 
 impl<'a, M: Memory> Memory for BorrowedMemory<'a, M> {
+    fn size(&self) -> u64 {
+        self.0.size()
+    }
+
+    fn grow(&self, pages: u64) -> i64 {
+        self.0.grow(pages)
+    }
+
+    fn read(&self, offset: u64, dst: &mut [u8]) {
+        self.0.read(offset, dst)
+    }
+
+    fn write(&self, offset: u64, src: &[u8]) {
+        self.0.write(offset, src)
+    }
+}
+
+/// [`Rc`] handle to the graph root stable memory, implementing [`Memory`] for use inside
+/// [`GraphStoreMemorySlots`] without cloning the full backing store on every accessor.
+#[derive(Clone)]
+pub struct RcGraphMemory<M: Memory>(pub Rc<M>);
+
+impl<M: Memory> Memory for RcGraphMemory<M> {
     fn size(&self) -> u64 {
         self.0.size()
     }

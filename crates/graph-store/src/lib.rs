@@ -19,7 +19,7 @@ pub(crate) use property_store::PropertyEntityKind;
 
 // Convenience aliases used by callers and tests.
 pub use adjacency::{
-    GraphAdjacency, GraphAdjacencyBackend, GraphStoreMemorySlots, GraphStoreSlotError,
+    GraphAdjacency, GraphAdjacencyBackend, GraphStoreMemorySlots, GraphStoreSlotError, RcGraphMemory,
     GRAPH_STORE_FIXED_MEMORY_IDS,
     GRAPH_STORE_MEMORY_ID_ADJACENCY_GC_QUEUE,
     GRAPH_STORE_MEMORY_ID_DELETED_VERTICES, GRAPH_STORE_MEMORY_ID_EDGE_PROPERTY_STORE,

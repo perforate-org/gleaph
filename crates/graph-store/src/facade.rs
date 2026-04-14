@@ -23,14 +23,14 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use crate::VecMemory;
-use crate::adjacency::{BorrowedMemory, GraphStoreMemorySlots, PageRangeMemory};
+use crate::adjacency::{BorrowedMemory, GraphStoreMemorySlots, PageRangeMemory, RcGraphMemory};
 use gleaph_gql::Value;
 use gleaph_graph_kernel::{EdgeId, LabelId, NodeId, PropertyMap};
 use ic_stable_structures::Memory;
 
 use crate::low_level::{
     BucketSizeInPages, EdgeEntry, EdgeReplaceSpec, EdgeTombstoneSpec, ExtentChain,
-    ExtentGrowthPolicy, ExtentGrowthRequest, ExtentId, ForwardSurfaceRuntime, GleaphMemoryManager,
+    ExtentGrowthPolicy, ExtentGrowthRequest, ExtentId, ForwardSurfaceRuntime,
     GraphBatchMutationSession, GraphEnsureCapacitySegmentWriteSummary,
     GraphEnsureCapacityWriteSummary, GraphInsertDecision, GraphInsertPolicy, GraphInsertResult,
     GraphInsertSegmentWriteSummary, GraphInsertWriteSummary, GraphLocalRebalanceDelta,
@@ -54,17 +54,16 @@ use crate::observability::{
     format_write_event_history,
 };
 use crate::property_index::{
-    FixedSlotPropertyEqualityMap, PropertyEqualityInplaceMap, PropertyIndex,
-    PropertyIndexEntityKind, PropertyIndexEntry, PropertyIndexError, PropertyIndexKey,
-    PropertyIndexNodeStoreMutationKind, empty_property_equality_inplace_map,
+    FixedSlotPropertyEqualityMap, PropertyIndex, PropertyIndexEntityKind, PropertyIndexEntry,
+    PropertyIndexError, PropertyIndexKey, PropertyIndexNodeStoreMutationKind,
     open_fixed_slot_property_equality_map, snapshot_fixed_slot_property_equality_map,
-    snapshot_from_equality_map,
+    snapshot_from_equality_any_memory, snapshot_from_equality_map,
 };
 use crate::property_store::{
-    FixedSlotGraphPropertyStableMap, GraphPropertyStableMap, PropertyKey, PropertyStoreError,
+    FixedSlotGraphPropertyStableMap, PropertyKey, PropertyStoreError,
     StoredPropertyValue, btree_distinct_property_names, btree_get_edge_property,
     btree_get_node_property, btree_scan_entities, btree_scan_entities_property_subset,
-    btree_scan_entity, default_property_region_chain, empty_graph_property_stable_map,
+    btree_scan_entity, default_property_region_chain,
     open_fixed_slot_edge_property_store, open_fixed_slot_node_property_store,
     snapshot_fixed_slot_graph_property_store,
 };
@@ -89,32 +88,18 @@ pub use facade_types::{
 type GraphStoreReplaceEdgeSummary =
     GraphStoreMutationWriteSummary<(GraphMutationPath, (EdgeEntry, EdgeEntry))>;
 
-fn replace_graph_property_store_snapshot<M: Memory>(
-    map: &mut GraphPropertyStableMap<M>,
-    entries: &BTreeMap<PropertyKey, StoredPropertyValue>,
-) {
-    let existing_keys: Vec<PropertyKey> = map.iter().map(|entry| entry.key().clone()).collect();
-    for key in existing_keys {
-        map.remove(&key);
-    }
-    for (key, value) in entries {
-        map.insert(key.clone(), value.clone());
-    }
-}
+/// Root memory for fixed-slot property and PIDX maps (`MemoryManager` over the reserved page range).
+pub type GraphStorePropertySlotRoot<M> = PageRangeMemory<RcGraphMemory<M>>;
 
-fn replace_property_equality_snapshot<M: Memory>(
-    map: &mut PropertyEqualityInplaceMap<M>,
-    entries: &crate::property_index::PropertyEqualityStableMap,
-) {
-    let existing_keys: Vec<PropertyIndexKey> =
-        map.iter().map(|entry| entry.key().clone()).collect();
-    for key in existing_keys {
-        map.remove(&key);
-    }
-    for entry in entries.iter() {
-        map.insert(entry.key().clone(), entry.value().clone());
-    }
-}
+/// Node property btree in fixed slot 8 (same encoding as legacy PSB1 region; header unused on this path).
+pub type GraphStoreNodePropertyMap<M> = FixedSlotGraphPropertyStableMap<GraphStorePropertySlotRoot<M>>;
+
+/// Edge property btree in fixed slot 9.
+pub type GraphStoreEdgePropertyMap<M> = FixedSlotGraphPropertyStableMap<GraphStorePropertySlotRoot<M>>;
+
+/// PIDX equality btree in fixed slot 10.
+pub type GraphStorePropertyEqualityFixedMap<M> =
+    FixedSlotPropertyEqualityMap<GraphStorePropertySlotRoot<M>>;
 
 #[cfg(test)]
 thread_local! {
@@ -136,30 +121,25 @@ thread_local! {
 /// graph runtime, while keeping stable-memory access explicit at method call
 /// sites. The goal is to keep the low-level-first model visible while avoiding
 /// repetitive wiring for callers.
-pub struct GraphStore<M: Memory = VecMemory> {
+pub struct GraphStore<M: Memory + Clone = VecMemory> {
     /// Region metadata and allocator-side state.
     pub manager: Rc<RefCell<RegionManager>>,
     /// Canonical stable-memory backing (shared with PIDX btree subregion I/O).
     pub memory: Rc<M>,
+    /// Fixed-slot [`MemoryManager`] view for node/edge property stores and PIDX (slots 8–10).
+    pub property_slots: GraphStoreMemorySlots<GraphStorePropertySlotRoot<M>>,
     /// In-memory forward/reverse adjacency runtime plus locator sidecar.
     pub graph: GraphRuntime,
-    /// Node properties: `PSB1` header + [`StableBTreeMap`] (`StableBTreeMap` in stable memory).
-    pub node_property_store: GraphPropertyStableMap<M>,
-    /// Edge properties: same layout as [`Self::node_property_store`].
-    pub edge_property_store: GraphPropertyStableMap<M>,
-    /// Btree payload byte length for [`Self::node_property_store`].
-    pub node_property_btree_payload: Rc<RefCell<u64>>,
-    /// Btree payload byte length for [`Self::edge_property_store`].
-    pub edge_property_btree_payload: Rc<RefCell<u64>>,
+    /// Node properties in fixed stable slot 8 ([`StableBTreeMap`]).
+    pub node_property_store: GraphStoreNodePropertyMap<M>,
+    /// Edge properties in fixed stable slot 9.
+    pub edge_property_store: GraphStoreEdgePropertyMap<M>,
     /// Derived equality index for node properties.
     pub node_property_index: PropertyIndex,
     /// Derived equality index for edge properties.
     pub edge_property_index: PropertyIndex,
-    /// Stable B-tree backing the persisted node + edge property equality index (PIDX v3).
-    pub property_equality_map: PropertyEqualityInplaceMap<M>,
-    /// Byte length of the btree payload (after the PIDX v3 header); kept in sync with the subregion memory.
-    pub property_index_btree_payload: Rc<RefCell<u64>>,
-    /// When set, the next PIDX flush must sync the v3 header with [`Self::property_index_btree_payload`].
+    /// Persisted equality btree in fixed stable slot 10 (PIDX keys; btree bytes only).
+    pub property_equality_map: GraphStorePropertyEqualityFixedMap<M>,
     pub property_index_dirty: bool,
     /// Whether the node property region header may be out of sync with the btree length cell.
     pub node_property_store_dirty: bool,
@@ -175,7 +155,7 @@ pub struct GraphStore<M: Memory = VecMemory> {
     pub shard_canister_directory: ShardCanisterDirectory,
 }
 
-impl<M: Memory> std::fmt::Debug for GraphStore<M> {
+impl<M: Memory + Clone> std::fmt::Debug for GraphStore<M> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GraphStore")
             .field("manager", &self.manager)
@@ -185,10 +165,7 @@ impl<M: Memory> std::fmt::Debug for GraphStore<M> {
             .field("edge_property_store_len", &self.edge_property_store.len())
             .field("node_property_index", &self.node_property_index)
             .field("edge_property_index", &self.edge_property_index)
-            .field(
-                "property_equality_map_len",
-                &self.property_equality_map.len(),
-            )
+            .field("property_equality_map_len", &self.property_equality_map.len())
             .field("property_index_dirty", &self.property_index_dirty)
             .field("node_property_store_dirty", &self.node_property_store_dirty)
             .field("edge_property_store_dirty", &self.edge_property_store_dirty)
@@ -207,37 +184,30 @@ impl<M: Memory + Clone> Clone for GraphStore<M> {
     fn clone(&self) -> Self {
         let manager = Rc::new(RefCell::new(self.manager.borrow().clone()));
         let memory = Rc::new((*self.memory).clone());
-        let btree_payload = Rc::new(RefCell::new(*self.property_index_btree_payload.borrow()));
-        let gleaph = GleaphMemoryManager::new(Rc::clone(&manager), Rc::clone(&memory));
-        let property_equality_map =
-            empty_property_equality_inplace_map(&gleaph, Rc::clone(&btree_payload))
-                .expect("property index bucket region");
-        let node_pl = Rc::new(RefCell::new(*self.node_property_btree_payload.borrow()));
-        let edge_pl = Rc::new(RefCell::new(*self.edge_property_btree_payload.borrow()));
-        let node_property_store = empty_graph_property_stable_map(
-            &gleaph,
-            Rc::clone(&node_pl),
-            RegionKind::NodePropertyStore,
-        )
-        .expect("node property bucket region");
-        let edge_property_store = empty_graph_property_stable_map(
-            &gleaph,
-            Rc::clone(&edge_pl),
-            RegionKind::EdgePropertyStore,
-        )
-        .expect("edge property bucket region");
-        let mut clone = Self {
+        let property_slots =
+            GraphStoreMemorySlots::for_root_memory(RcGraphMemory(Rc::clone(&memory)));
+        let mut node_property_store = open_fixed_slot_node_property_store(&property_slots);
+        let mut edge_property_store = open_fixed_slot_edge_property_store(&property_slots);
+        let mut property_equality_map = open_fixed_slot_property_equality_map(&property_slots);
+        for e in self.property_equality_map.iter() {
+            property_equality_map.insert(e.key().clone(), e.value().clone());
+        }
+        for e in self.node_property_store.iter() {
+            node_property_store.insert(e.key().clone(), e.value().clone());
+        }
+        for e in self.edge_property_store.iter() {
+            edge_property_store.insert(e.key().clone(), e.value().clone());
+        }
+        Self {
             manager,
             memory,
+            property_slots,
             graph: self.graph.clone(),
             node_property_store,
             edge_property_store,
-            node_property_btree_payload: node_pl,
-            edge_property_btree_payload: edge_pl,
             node_property_index: self.node_property_index.clone(),
             edge_property_index: self.edge_property_index.clone(),
             property_equality_map,
-            property_index_btree_payload: btree_payload,
             property_index_dirty: self.property_index_dirty,
             node_property_store_dirty: self.node_property_store_dirty,
             edge_property_store_dirty: self.edge_property_store_dirty,
@@ -245,38 +215,20 @@ impl<M: Memory + Clone> Clone for GraphStore<M> {
             write_history: self.write_history.clone(),
             production_metrics: self.production_metrics.clone(),
             shard_canister_directory: self.shard_canister_directory.clone(),
-        };
-        for e in self.property_equality_map.iter() {
-            clone
-                .property_equality_map
-                .insert(e.key().clone(), e.value().clone());
         }
-        for e in self.node_property_store.iter() {
-            clone
-                .node_property_store
-                .insert(e.key().clone(), e.value().clone());
-        }
-        for e in self.edge_property_store.iter() {
-            clone
-                .edge_property_store
-                .insert(e.key().clone(), e.value().clone());
-        }
-        clone
     }
 }
 
-struct AssembledAfterPropertyLoadArgs<M: Memory> {
+struct AssembledAfterPropertyLoadArgs<M: Memory + Clone> {
     manager: Rc<RefCell<RegionManager>>,
     memory: Rc<M>,
+    property_slots: GraphStoreMemorySlots<GraphStorePropertySlotRoot<M>>,
     graph: GraphRuntime,
-    node_property_store: GraphPropertyStableMap<M>,
-    edge_property_store: GraphPropertyStableMap<M>,
-    node_property_btree_payload: Rc<RefCell<u64>>,
-    edge_property_btree_payload: Rc<RefCell<u64>>,
+    node_property_store: GraphStoreNodePropertyMap<M>,
+    edge_property_store: GraphStoreEdgePropertyMap<M>,
     node_property_index: PropertyIndex,
     edge_property_index: PropertyIndex,
-    property_equality_map: PropertyEqualityInplaceMap<M>,
-    property_index_btree_payload: Rc<RefCell<u64>>,
+    property_equality_map: GraphStorePropertyEqualityFixedMap<M>,
     property_index_dirty: bool,
     shard_canister_directory: ShardCanisterDirectory,
 }
@@ -371,7 +323,7 @@ pub trait GraphStoreService {
 /// storage layout keeps evolving.
 pub trait GraphStoreStore {
     /// Stable-memory type backing this store (same as the bound handle passed to write/hydrate paths).
-    type Mem: Memory;
+    type Mem: Memory + Clone;
 
     /// Returns the most recent facade-level write event observed through this store.
     fn last_write_event(&self) -> Option<&GraphStoreFacadeWriteEvent>;
@@ -450,16 +402,16 @@ pub trait GraphStoreStore {
     fn shard_canister_directory_mut(&mut self) -> &mut ShardCanisterDirectory;
 
     /// Returns immutable access to the stable node property map.
-    fn node_property_store(&self) -> &GraphPropertyStableMap<Self::Mem>;
+    fn node_property_store(&self) -> &GraphStoreNodePropertyMap<Self::Mem>;
 
     /// Returns mutable access to the stable node property map.
-    fn node_property_store_mut(&mut self) -> &mut GraphPropertyStableMap<Self::Mem>;
+    fn node_property_store_mut(&mut self) -> &mut GraphStoreNodePropertyMap<Self::Mem>;
 
     /// Returns immutable access to the stable edge property map.
-    fn edge_property_store(&self) -> &GraphPropertyStableMap<Self::Mem>;
+    fn edge_property_store(&self) -> &GraphStoreEdgePropertyMap<Self::Mem>;
 
     /// Returns mutable access to the stable edge property map.
-    fn edge_property_store_mut(&mut self) -> &mut GraphPropertyStableMap<Self::Mem>;
+    fn edge_property_store_mut(&mut self) -> &mut GraphStoreEdgePropertyMap<Self::Mem>;
 
     /// Returns the latest node properties for one semantic node id.
     fn scan_node_properties(&self, node_id: NodeId) -> PropertyMap;
@@ -664,7 +616,7 @@ pub trait GraphStoreStore {
 
 const FACADE_WRITE_HISTORY_LIMIT: usize = 16;
 
-impl<M: Memory> GraphStore<M> {
+impl<M: Memory + Clone> GraphStore<M> {
     fn fixed_memory_slots(&self) -> GraphStoreMemorySlots<PageRangeMemory<BorrowedMemory<'_, M>>> {
         GraphStoreMemorySlots::for_root_memory(BorrowedMemory::new(self.memory.as_ref()))
     }
@@ -687,32 +639,17 @@ impl<M: Memory> GraphStore<M> {
         open_fixed_slot_property_equality_map(&self.fixed_memory_slots())
     }
 
-    fn sync_shadow_property_state_from_fixed_slots(&mut self) {
-        let node_entries = {
-            let fixed = self.open_fixed_slot_node_property_store();
-            snapshot_fixed_slot_graph_property_store(&fixed)
-        };
-        replace_graph_property_store_snapshot(&mut self.node_property_store, &node_entries);
-
-        let edge_entries = {
-            let fixed = self.open_fixed_slot_edge_property_store();
-            snapshot_fixed_slot_graph_property_store(&fixed)
-        };
-        replace_graph_property_store_snapshot(&mut self.edge_property_store, &edge_entries);
-
-        let equality_snapshot = {
-            let fixed = self.open_fixed_slot_property_equality_map();
-            snapshot_fixed_slot_property_equality_map(&fixed)
-        };
-        replace_property_equality_snapshot(&mut self.property_equality_map, &equality_snapshot);
-
-        let snap = snapshot_from_equality_map(&equality_snapshot, 64);
+    fn sync_property_indices_from_equality_btree(&mut self) {
+        let snap = snapshot_from_equality_any_memory(&self.property_equality_map, 64);
         self.node_property_index = snap.node_index;
         self.edge_property_index = snap.edge_index;
-
         self.node_property_store_dirty = false;
         self.edge_property_store_dirty = false;
         self.property_index_dirty = false;
+    }
+
+    fn sync_shadow_property_state_from_fixed_slots(&mut self) {
+        self.sync_property_indices_from_equality_btree();
     }
 
     fn record_write_event(&mut self, event: GraphStoreFacadeWriteEvent) {
@@ -913,7 +850,7 @@ impl<M: Memory> GraphStore<M> {
     }
 }
 
-impl<M: Memory> GraphStore<M> {
+impl<M: Memory + Clone> GraphStore<M> {
     const SERIALIZED_MAINTENANCE_QUEUE_HEADER_LEN: usize = 24;
     const SERIALIZED_MAINTENANCE_QUEUE_ITEM_LEN: usize = 56;
     const MAINTENANCE_QUEUE_LAST_EPOCH_NONE: u64 = u64::MAX;
@@ -1259,37 +1196,21 @@ impl<M: Memory> GraphStore<M> {
 
     /// Bundles an existing region manager and graph runtime into one facade.
     pub fn new(manager: Rc<RefCell<RegionManager>>, memory: Rc<M>, graph: GraphRuntime) -> Self {
-        let gleaph = GleaphMemoryManager::new(Rc::clone(&manager), Rc::clone(&memory));
-        let btree_payload = Rc::new(RefCell::new(0u64));
-        let property_equality_map =
-            empty_property_equality_inplace_map(&gleaph, Rc::clone(&btree_payload))
-                .expect("property index bucket region");
-        let node_pl = Rc::new(RefCell::new(0u64));
-        let edge_pl = Rc::new(RefCell::new(0u64));
-        let node_property_store = empty_graph_property_stable_map(
-            &gleaph,
-            Rc::clone(&node_pl),
-            RegionKind::NodePropertyStore,
-        )
-        .expect("node property bucket region");
-        let edge_property_store = empty_graph_property_stable_map(
-            &gleaph,
-            Rc::clone(&edge_pl),
-            RegionKind::EdgePropertyStore,
-        )
-        .expect("edge property bucket region");
+        let property_slots =
+            GraphStoreMemorySlots::for_root_memory(RcGraphMemory(Rc::clone(&memory)));
+        let node_property_store = open_fixed_slot_node_property_store(&property_slots);
+        let edge_property_store = open_fixed_slot_edge_property_store(&property_slots);
+        let property_equality_map = open_fixed_slot_property_equality_map(&property_slots);
         let mut store = Self {
             manager,
             memory,
+            property_slots,
             graph,
             node_property_store,
             edge_property_store,
-            node_property_btree_payload: node_pl,
-            edge_property_btree_payload: edge_pl,
             node_property_index: PropertyIndex::new(64),
             edge_property_index: PropertyIndex::new(64),
             property_equality_map,
-            property_index_btree_payload: btree_payload,
             property_index_dirty: false,
             node_property_store_dirty: false,
             edge_property_store_dirty: false,
@@ -1302,24 +1223,18 @@ impl<M: Memory> GraphStore<M> {
         store
     }
 
-    /// Assembles a facade after hydration **without** re-initializing empty property btrees on disk.
-    ///
-    /// [`Self::new`] calls `StableBTreeMap::init` with payload length zero for each property region,
-    /// which issues `BTreeMap::new` and overwrites stable memory. That must not run after
-    /// `load_graph_property_stable_map_from_stable_memory` has read the live PSB1 image.
+    /// Assembles a facade after hydration when property maps are already opened on fixed slots.
     fn assembled_after_property_load(args: AssembledAfterPropertyLoadArgs<M>) -> Self {
         Self {
             manager: args.manager,
             memory: args.memory,
+            property_slots: args.property_slots,
             graph: args.graph,
             node_property_store: args.node_property_store,
             edge_property_store: args.edge_property_store,
-            node_property_btree_payload: args.node_property_btree_payload,
-            edge_property_btree_payload: args.edge_property_btree_payload,
             node_property_index: args.node_property_index,
             edge_property_index: args.edge_property_index,
             property_equality_map: args.property_equality_map,
-            property_index_btree_payload: args.property_index_btree_payload,
             property_index_dirty: args.property_index_dirty,
             node_property_store_dirty: false,
             edge_property_store_dirty: false,
@@ -1424,23 +1339,13 @@ impl<M: Memory> GraphStore<M> {
     pub fn hydrate_from_stable_memory(manager: RegionManager, memory: M) -> GraphStoreResult<Self> {
         let mgr_rc = Rc::new(RefCell::new(manager));
         let mem_rc = Rc::new(memory);
-        let gleaph = GleaphMemoryManager::new(Rc::clone(&mgr_rc), Rc::clone(&mem_rc));
+        let property_slots =
+            GraphStoreMemorySlots::for_root_memory(RcGraphMemory(Rc::clone(&mem_rc)));
+        let node_property_store = open_fixed_slot_node_property_store(&property_slots);
+        let edge_property_store = open_fixed_slot_edge_property_store(&property_slots);
+        let property_equality_map = open_fixed_slot_property_equality_map(&property_slots);
         let runtimes =
             hydrate_surface_runtimes_from_stable_memory(&mgr_rc.borrow(), mem_rc.as_ref())?;
-        let node_pl = Rc::new(RefCell::new(0u64));
-        let edge_pl = Rc::new(RefCell::new(0u64));
-        let node_property_store = empty_graph_property_stable_map(
-            &gleaph,
-            Rc::clone(&node_pl),
-            RegionKind::NodePropertyStore,
-        )
-        .map_err(PropertyStoreError::from)?;
-        let edge_property_store = empty_graph_property_stable_map(
-            &gleaph,
-            Rc::clone(&edge_pl),
-            RegionKind::EdgePropertyStore,
-        )
-        .map_err(PropertyStoreError::from)?;
 
         let mut graph = GraphRuntime::new_with_empty_sidecars(runtimes.forward, runtimes.reverse);
         let _ = graph.sync_base_segment_capacities_from_manager(&mgr_rc.borrow());
@@ -1451,10 +1356,6 @@ impl<M: Memory> GraphStore<M> {
         )?;
         graph.validate_shard_canister_slots(shard_canister_directory.len())?;
 
-        let property_index_btree_payload = Rc::new(RefCell::new(0u64));
-        let property_equality_map =
-            empty_property_equality_inplace_map(&gleaph, Rc::clone(&property_index_btree_payload))
-                .map_err(PropertyStoreError::from)?;
         let node_property_index = PropertyIndex::new(64);
         let edge_property_index = PropertyIndex::new(64);
         let property_index_dirty = false;
@@ -1462,15 +1363,13 @@ impl<M: Memory> GraphStore<M> {
         let mut facade = Self::assembled_after_property_load(AssembledAfterPropertyLoadArgs {
             manager: mgr_rc,
             memory: mem_rc,
+            property_slots,
             graph,
             node_property_store,
             edge_property_store,
-            node_property_btree_payload: node_pl,
-            edge_property_btree_payload: edge_pl,
             node_property_index,
             edge_property_index,
             property_equality_map,
-            property_index_btree_payload,
             property_index_dirty,
             shard_canister_directory,
         });
@@ -1493,23 +1392,13 @@ impl<M: Memory> GraphStore<M> {
     ) -> GraphStoreResult<Self> {
         let mgr_rc = Rc::new(RefCell::new(manager));
         let mem_rc = Rc::new(memory);
-        let gleaph = GleaphMemoryManager::new(Rc::clone(&mgr_rc), Rc::clone(&mem_rc));
+        let property_slots =
+            GraphStoreMemorySlots::for_root_memory(RcGraphMemory(Rc::clone(&mem_rc)));
+        let node_property_store = open_fixed_slot_node_property_store(&property_slots);
+        let edge_property_store = open_fixed_slot_edge_property_store(&property_slots);
+        let property_equality_map = open_fixed_slot_property_equality_map(&property_slots);
         let runtimes =
             hydrate_surface_runtimes_from_stable_memory(&mgr_rc.borrow(), mem_rc.as_ref())?;
-        let node_pl = Rc::new(RefCell::new(0u64));
-        let edge_pl = Rc::new(RefCell::new(0u64));
-        let node_property_store = empty_graph_property_stable_map(
-            &gleaph,
-            Rc::clone(&node_pl),
-            RegionKind::NodePropertyStore,
-        )
-        .map_err(PropertyStoreError::from)?;
-        let edge_property_store = empty_graph_property_stable_map(
-            &gleaph,
-            Rc::clone(&edge_pl),
-            RegionKind::EdgePropertyStore,
-        )
-        .map_err(PropertyStoreError::from)?;
 
         let mut graph = GraphRuntime::with_insert_policy_and_empty_sidecars(
             runtimes.forward,
@@ -1524,10 +1413,6 @@ impl<M: Memory> GraphStore<M> {
         )?;
         graph.validate_shard_canister_slots(shard_canister_directory.len())?;
 
-        let property_index_btree_payload = Rc::new(RefCell::new(0u64));
-        let property_equality_map =
-            empty_property_equality_inplace_map(&gleaph, Rc::clone(&property_index_btree_payload))
-                .map_err(PropertyStoreError::from)?;
         let node_property_index = PropertyIndex::new(64);
         let edge_property_index = PropertyIndex::new(64);
         let property_index_dirty = false;
@@ -1535,15 +1420,13 @@ impl<M: Memory> GraphStore<M> {
         let mut facade = Self::assembled_after_property_load(AssembledAfterPropertyLoadArgs {
             manager: mgr_rc,
             memory: mem_rc,
+            property_slots,
             graph,
             node_property_store,
             edge_property_store,
-            node_property_btree_payload: node_pl,
-            edge_property_btree_payload: edge_pl,
             node_property_index,
             edge_property_index,
             property_equality_map,
-            property_index_btree_payload,
             property_index_dirty,
             shard_canister_directory,
         });
@@ -1693,42 +1576,51 @@ impl<M: Memory> GraphStore<M> {
     }
 
     /// Returns immutable access to the stable node property map.
-    pub fn node_property_store(&self) -> &GraphPropertyStableMap<M> {
+    pub fn node_property_store(&self) -> &GraphStoreNodePropertyMap<M> {
         &self.node_property_store
     }
 
     /// Returns mutable access to the stable node property map.
-    pub fn node_property_store_mut(&mut self) -> &mut GraphPropertyStableMap<M> {
+    pub fn node_property_store_mut(&mut self) -> &mut GraphStoreNodePropertyMap<M> {
         &mut self.node_property_store
     }
 
     /// Returns immutable access to the stable edge property map.
-    pub fn edge_property_store(&self) -> &GraphPropertyStableMap<M> {
+    pub fn edge_property_store(&self) -> &GraphStoreEdgePropertyMap<M> {
         &self.edge_property_store
     }
 
     /// Returns mutable access to the stable edge property map.
-    pub fn edge_property_store_mut(&mut self) -> &mut GraphPropertyStableMap<M> {
+    pub fn edge_property_store_mut(&mut self) -> &mut GraphStoreEdgePropertyMap<M> {
         &mut self.edge_property_store
     }
 
     /// Returns the latest node properties for one semantic node id.
     pub fn scan_node_properties(&self, node_id: NodeId) -> PropertyMap {
-        let store = self.open_fixed_slot_node_property_store();
-        btree_scan_entity(&store, crate::PropertyEntityKind::Node, u64::from(node_id))
+        btree_scan_entity(
+            &self.node_property_store,
+            crate::PropertyEntityKind::Node,
+            u64::from(node_id),
+        )
     }
 
     /// Returns the latest edge properties for one semantic edge id.
     pub fn scan_edge_properties(&self, edge_id: EdgeId) -> PropertyMap {
-        let store = self.open_fixed_slot_edge_property_store();
-        btree_scan_entity(&store, crate::PropertyEntityKind::Edge, edge_id)
+        btree_scan_entity(
+            &self.edge_property_store,
+            crate::PropertyEntityKind::Edge,
+            edge_id,
+        )
     }
 
     /// Latest node properties for many ids in one btree scan.
     pub fn scan_node_properties_batch(&self, node_ids: &[NodeId]) -> BTreeMap<NodeId, PropertyMap> {
         let id_set: BTreeSet<u64> = node_ids.iter().map(|n| u64::from(*n)).collect();
-        let store = self.open_fixed_slot_node_property_store();
-        let by_u64 = btree_scan_entities(&store, crate::PropertyEntityKind::Node, &id_set);
+        let by_u64 = btree_scan_entities(
+            &self.node_property_store,
+            crate::PropertyEntityKind::Node,
+            &id_set,
+        );
         by_u64
             .into_iter()
             .filter_map(|(u, m)| NodeId::try_from(u).ok().map(|id| (id, m)))
@@ -1744,9 +1636,8 @@ impl<M: Memory> GraphStore<M> {
             return BTreeMap::new();
         }
         let id_set: BTreeSet<u64> = node_ids.iter().map(|n| u64::from(*n)).collect();
-        let store = self.open_fixed_slot_node_property_store();
         let by_u64 = btree_scan_entities_property_subset(
-            &store,
+            &self.node_property_store,
             crate::PropertyEntityKind::Node,
             &id_set,
             property_names,
@@ -1770,9 +1661,8 @@ impl<M: Memory> GraphStore<M> {
             return BTreeMap::new();
         }
         let id_set: BTreeSet<u64> = edge_ids.iter().copied().collect();
-        let store = self.open_fixed_slot_edge_property_store();
         let by_u64 = btree_scan_entities_property_subset(
-            &store,
+            &self.edge_property_store,
             crate::PropertyEntityKind::Edge,
             &id_set,
             property_names,
@@ -1787,23 +1677,19 @@ impl<M: Memory> GraphStore<M> {
     }
 
     pub fn get_node_property_value(&self, node_id: NodeId, property: &str) -> Option<Value> {
-        let store = self.open_fixed_slot_node_property_store();
-        btree_get_node_property(&store, node_id, property)
+        btree_get_node_property(&self.node_property_store, node_id, property)
     }
 
     pub fn get_edge_property_value(&self, edge_id: EdgeId, property: &str) -> Option<Value> {
-        let store = self.open_fixed_slot_edge_property_store();
-        btree_get_edge_property(&store, edge_id, property)
+        btree_get_edge_property(&self.edge_property_store, edge_id, property)
     }
 
     pub fn distinct_node_property_names(&self) -> BTreeSet<String> {
-        let store = self.open_fixed_slot_node_property_store();
-        btree_distinct_property_names(&store)
+        btree_distinct_property_names(&self.node_property_store)
     }
 
     pub fn distinct_edge_property_names(&self) -> BTreeSet<String> {
-        let store = self.open_fixed_slot_edge_property_store();
-        btree_distinct_property_names(&store)
+        btree_distinct_property_names(&self.edge_property_store)
     }
 
     /// Returns node ids matching one exact equality property predicate.
@@ -1865,8 +1751,7 @@ impl<M: Memory> GraphStore<M> {
     ) -> Result<Vec<NodeId>, PropertyIndexError> {
         let slots = GraphStoreMemorySlots::for_root_memory(BorrowedMemory::new(memory));
         let map = open_fixed_slot_property_equality_map(&slots);
-        let snapshot = snapshot_fixed_slot_property_equality_map(&map);
-        let node_index = snapshot_from_equality_map(&snapshot, 64).node_index;
+        let node_index = snapshot_from_equality_any_memory(&map, 64).node_index;
         let encoded_value = value
             .to_binary_bytes()
             .expect("Value must encode to binary bytes");
@@ -1889,8 +1774,7 @@ impl<M: Memory> GraphStore<M> {
     ) -> Result<Vec<NodeId>, PropertyIndexError> {
         let slots = GraphStoreMemorySlots::for_root_memory(BorrowedMemory::new(memory));
         let map = open_fixed_slot_property_equality_map(&slots);
-        let snapshot = snapshot_fixed_slot_property_equality_map(&map);
-        let node_index = snapshot_from_equality_map(&snapshot, 64).node_index;
+        let node_index = snapshot_from_equality_any_memory(&map, 64).node_index;
         Ok(node_index
             .scan_property_prefix(PropertyIndexEntityKind::VertexNode, property)
             .into_iter()
@@ -1907,8 +1791,7 @@ impl<M: Memory> GraphStore<M> {
     ) -> Result<Vec<EdgeId>, PropertyIndexError> {
         let slots = GraphStoreMemorySlots::for_root_memory(BorrowedMemory::new(memory));
         let map = open_fixed_slot_property_equality_map(&slots);
-        let snapshot = snapshot_fixed_slot_property_equality_map(&map);
-        let edge_index = snapshot_from_equality_map(&snapshot, 64).edge_index;
+        let edge_index = snapshot_from_equality_any_memory(&map, 64).edge_index;
         let encoded_value = value
             .to_binary_bytes()
             .expect("Value must encode to binary bytes");
@@ -1931,8 +1814,7 @@ impl<M: Memory> GraphStore<M> {
     ) -> Result<Vec<EdgeId>, PropertyIndexError> {
         let slots = GraphStoreMemorySlots::for_root_memory(BorrowedMemory::new(memory));
         let map = open_fixed_slot_property_equality_map(&slots);
-        let snapshot = snapshot_fixed_slot_property_equality_map(&map);
-        let edge_index = snapshot_from_equality_map(&snapshot, 64).edge_index;
+        let edge_index = snapshot_from_equality_any_memory(&map, 64).edge_index;
         Ok(edge_index
             .scan_property_prefix(PropertyIndexEntityKind::VertexEdge, property)
             .into_iter()
@@ -2887,9 +2769,10 @@ mod tests {
         )
         .unwrap();
         let node_id = NodeId::from(11u8);
+        let payload = Value::Text("y".repeat((WASM_PAGE_SIZE as usize) + 512));
         let _ = facade.node_property_store_mut().insert(
             PropertyKey::node(node_id, "profile"),
-            StoredPropertyValue(Value::Text("y".repeat((WASM_PAGE_SIZE as usize) + 512))),
+            StoredPropertyValue(payload.clone()),
         );
         let runtimes = HydratedSurfaceRuntimes::new(
             facade.graph.forward.clone(),
@@ -2901,19 +2784,10 @@ mod tests {
             &runtimes,
         )
         .expect("surface write");
-        sync_graph_property_store_v1_header_to_stable_memory(
-            &mut facade.manager.borrow_mut(),
-            mem_rc.as_ref(),
-            RegionKind::NodePropertyStore,
-            *facade.node_property_btree_payload.borrow(),
-        )
-        .expect("sync psb header");
-        let _ = load_graph_property_stable_map_from_stable_memory(
-            Rc::clone(&facade.manager),
-            Rc::clone(&facade.memory),
-            RegionKind::NodePropertyStore,
-        )
-        .expect("reload node property btree");
+        assert_eq!(
+            facade.get_node_property_value(node_id, "profile"),
+            Some(payload)
+        );
     }
 
     #[test]

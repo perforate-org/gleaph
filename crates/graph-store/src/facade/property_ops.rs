@@ -7,7 +7,7 @@ use crate::property_store::{
     PropertyKey, StoredPropertyValue, btree_get_edge_property, btree_get_node_property,
 };
 
-impl<M: Memory> GraphStore<M> {
+impl<M: Memory + Clone> GraphStore<M> {
     fn validate_property_key_name(property: &str) -> Result<(), PropertyStoreError> {
         gleaph_gql::name_limits::validate_property_name(property)
             .map_err(|e| PropertyStoreError::InvalidIdentifier(e.to_string()))
@@ -47,13 +47,8 @@ impl<M: Memory> GraphStore<M> {
         property: &str,
         old_value: Option<&Value>,
     ) -> Result<(), PropertyStoreError> {
-        let mut node_property_store = self.open_fixed_slot_node_property_store();
         match old_value {
             Some(previous) => {
-                node_property_store.insert(
-                    PropertyKey::node(node_id, property),
-                    StoredPropertyValue(previous.clone()),
-                );
                 self.node_property_store.insert(
                     PropertyKey::node(node_id, property),
                     StoredPropertyValue(previous.clone()),
@@ -62,7 +57,6 @@ impl<M: Memory> GraphStore<M> {
                     self.insert_node_property_index_binding_with_kind(node_id, property, previous)?;
             }
             None => {
-                node_property_store.remove(&PropertyKey::node(node_id, property));
                 self.node_property_store
                     .remove(&PropertyKey::node(node_id, property));
             }
@@ -76,13 +70,8 @@ impl<M: Memory> GraphStore<M> {
         property: &str,
         old_value: Option<&Value>,
     ) -> Result<(), PropertyStoreError> {
-        let mut edge_property_store = self.open_fixed_slot_edge_property_store();
         match old_value {
             Some(previous) => {
-                edge_property_store.insert(
-                    PropertyKey::edge(edge_id, property),
-                    StoredPropertyValue(previous.clone()),
-                );
                 self.edge_property_store.insert(
                     PropertyKey::edge(edge_id, property),
                     StoredPropertyValue(previous.clone()),
@@ -91,7 +80,6 @@ impl<M: Memory> GraphStore<M> {
                     self.insert_edge_property_index_binding_with_kind(edge_id, property, previous)?;
             }
             None => {
-                edge_property_store.remove(&PropertyKey::edge(edge_id, property));
                 self.edge_property_store
                     .remove(&PropertyKey::edge(edge_id, property));
             }
@@ -106,16 +94,8 @@ impl<M: Memory> GraphStore<M> {
         value: &Value,
     ) -> Result<(), PropertyStoreError> {
         Self::validate_property_key_name(property)?;
-        let old_value = {
-            let node_property_store = self.open_fixed_slot_node_property_store();
-            btree_get_node_property(&node_property_store, node_id, property)
-        };
+        let old_value = btree_get_node_property(&self.node_property_store, node_id, property);
         let _ = self.remove_node_property_index_binding_with_kind(node_id, property)?;
-        let mut node_property_store = self.open_fixed_slot_node_property_store();
-        node_property_store.insert(
-            PropertyKey::node(node_id, property),
-            StoredPropertyValue(value.clone()),
-        );
         self.node_property_store.insert(
             PropertyKey::node(node_id, property),
             StoredPropertyValue(value.clone()),
@@ -140,10 +120,7 @@ impl<M: Memory> GraphStore<M> {
         value: &Value,
     ) -> Result<GraphStorePropertyIndexMutationSummary, PropertyStoreError> {
         Self::validate_property_key_name(property)?;
-        let old_value = {
-            let node_property_store = self.open_fixed_slot_node_property_store();
-            btree_get_node_property(&node_property_store, node_id, property)
-        };
+        let old_value = btree_get_node_property(&self.node_property_store, node_id, property);
         let equality_touched =
             Self::property_equality_key_changes_on_set(old_value.as_ref(), value);
         let mut node_store_operations = Vec::new();
@@ -153,11 +130,6 @@ impl<M: Memory> GraphStore<M> {
         {
             node_store_operations.push(kind);
         }
-        let mut node_property_store = self.open_fixed_slot_node_property_store();
-        node_property_store.insert(
-            PropertyKey::node(node_id, property),
-            StoredPropertyValue(value.clone()),
-        );
         self.node_property_store.insert(
             PropertyKey::node(node_id, property),
             StoredPropertyValue(value.clone()),
@@ -192,8 +164,6 @@ impl<M: Memory> GraphStore<M> {
     ) -> Result<(), PropertyStoreError> {
         Self::validate_property_key_name(property)?;
         let _ = self.remove_node_property_index_binding_with_kind(node_id, property)?;
-        let mut node_property_store = self.open_fixed_slot_node_property_store();
-        node_property_store.remove(&PropertyKey::node(node_id, property));
         self.node_property_store
             .remove(&PropertyKey::node(node_id, property));
         Ok(())
@@ -210,8 +180,6 @@ impl<M: Memory> GraphStore<M> {
             .into_iter()
             .collect();
         let equality_touched = !node_store_operations.is_empty();
-        let mut node_property_store = self.open_fixed_slot_node_property_store();
-        node_property_store.remove(&PropertyKey::node(node_id, property));
         self.node_property_store
             .remove(&PropertyKey::node(node_id, property));
         let summary = GraphStorePropertyIndexMutationSummary::from_delta(
@@ -229,16 +197,8 @@ impl<M: Memory> GraphStore<M> {
         value: &Value,
     ) -> Result<(), PropertyStoreError> {
         Self::validate_property_key_name(property)?;
-        let old_value = {
-            let edge_property_store = self.open_fixed_slot_edge_property_store();
-            btree_get_edge_property(&edge_property_store, edge_id, property)
-        };
+        let old_value = btree_get_edge_property(&self.edge_property_store, edge_id, property);
         let _ = self.remove_edge_property_index_binding_with_kind(edge_id, property)?;
-        let mut edge_property_store = self.open_fixed_slot_edge_property_store();
-        edge_property_store.insert(
-            PropertyKey::edge(edge_id, property),
-            StoredPropertyValue(value.clone()),
-        );
         self.edge_property_store.insert(
             PropertyKey::edge(edge_id, property),
             StoredPropertyValue(value.clone()),
@@ -263,10 +223,7 @@ impl<M: Memory> GraphStore<M> {
         value: &Value,
     ) -> Result<GraphStorePropertyIndexMutationSummary, PropertyStoreError> {
         Self::validate_property_key_name(property)?;
-        let old_value = {
-            let edge_property_store = self.open_fixed_slot_edge_property_store();
-            btree_get_edge_property(&edge_property_store, edge_id, property)
-        };
+        let old_value = btree_get_edge_property(&self.edge_property_store, edge_id, property);
         let equality_touched =
             Self::property_equality_key_changes_on_set(old_value.as_ref(), value);
         let mut node_store_operations = Vec::new();
@@ -276,11 +233,6 @@ impl<M: Memory> GraphStore<M> {
         {
             node_store_operations.push(kind);
         }
-        let mut edge_property_store = self.open_fixed_slot_edge_property_store();
-        edge_property_store.insert(
-            PropertyKey::edge(edge_id, property),
-            StoredPropertyValue(value.clone()),
-        );
         self.edge_property_store.insert(
             PropertyKey::edge(edge_id, property),
             StoredPropertyValue(value.clone()),
@@ -315,8 +267,6 @@ impl<M: Memory> GraphStore<M> {
     ) -> Result<(), PropertyStoreError> {
         Self::validate_property_key_name(property)?;
         let _ = self.remove_edge_property_index_binding_with_kind(edge_id, property)?;
-        let mut edge_property_store = self.open_fixed_slot_edge_property_store();
-        edge_property_store.remove(&PropertyKey::edge(edge_id, property));
         self.edge_property_store
             .remove(&PropertyKey::edge(edge_id, property));
         Ok(())
@@ -333,8 +283,6 @@ impl<M: Memory> GraphStore<M> {
             .into_iter()
             .collect();
         let equality_touched = !node_store_operations.is_empty();
-        let mut edge_property_store = self.open_fixed_slot_edge_property_store();
-        edge_property_store.remove(&PropertyKey::edge(edge_id, property));
         self.edge_property_store
             .remove(&PropertyKey::edge(edge_id, property));
         let summary = GraphStorePropertyIndexMutationSummary::from_delta(
@@ -420,44 +368,30 @@ impl<M: Memory> GraphStore<M> {
     }
 
     pub(super) fn rebuild_property_indices(&mut self) -> Result<(), PropertyStoreError> {
-        let node_entries: Vec<(PropertyKey, Value)> = {
-            let node_property_store = self.open_fixed_slot_node_property_store();
-            node_property_store
-                .iter()
-                .filter_map(|e| {
-                    let key = e.key();
-                    (key.entity_kind == crate::PropertyEntityKind::Node)
-                        .then_some((key.clone(), e.value().0.clone()))
-                })
-                .collect()
-        };
-        let edge_entries: Vec<(PropertyKey, Value)> = {
-            let edge_property_store = self.open_fixed_slot_edge_property_store();
-            edge_property_store
-                .iter()
-                .filter_map(|e| {
-                    let key = e.key();
-                    (key.entity_kind == crate::PropertyEntityKind::Edge)
-                        .then_some((key.clone(), e.value().0.clone()))
-                })
-                .collect()
-        };
-        {
-            let mut property_equality_map = self.open_fixed_slot_property_equality_map();
-            let existing_keys: Vec<_> = property_equality_map
-                .iter()
-                .map(|entry| entry.key().clone())
-                .collect();
-            for key in existing_keys {
-                property_equality_map.remove(&key);
-            }
-        }
-        let existing_shadow_keys: Vec<_> = self
+        let node_entries: Vec<(PropertyKey, Value)> = self
+            .node_property_store
+            .iter()
+            .filter_map(|e| {
+                let key = e.key();
+                (key.entity_kind == crate::PropertyEntityKind::Node)
+                    .then_some((key.clone(), e.value().0.clone()))
+            })
+            .collect();
+        let edge_entries: Vec<(PropertyKey, Value)> = self
+            .edge_property_store
+            .iter()
+            .filter_map(|e| {
+                let key = e.key();
+                (key.entity_kind == crate::PropertyEntityKind::Edge)
+                    .then_some((key.clone(), e.value().0.clone()))
+            })
+            .collect();
+        let existing_eq_keys: Vec<_> = self
             .property_equality_map
             .iter()
             .map(|entry| entry.key().clone())
             .collect();
-        for key in existing_shadow_keys {
+        for key in existing_eq_keys {
             self.property_equality_map.remove(&key);
         }
 
@@ -509,8 +443,6 @@ impl<M: Memory> GraphStore<M> {
             .insert(key.clone(), PropertyIndexEntry::empty());
         self.property_equality_map
             .insert(key.clone(), PropertyIndexEntry::empty());
-        let mut property_equality_map = self.open_fixed_slot_property_equality_map();
-        property_equality_map.insert(key.clone(), PropertyIndexEntry::empty());
         self.property_index_dirty = false;
         Ok((key, PropertyIndexNodeStoreMutationKind::LocalUpdate))
     }
@@ -530,8 +462,9 @@ impl<M: Memory> GraphStore<M> {
         }) {
             return Err(PropertyIndexError::LeafPartitionMultiEntryExceedsPrimaryPage);
         }
-        let node_property_store = self.open_fixed_slot_node_property_store();
-        if let Some(old_value) = btree_get_node_property(&node_property_store, node_id, property) {
+        if let Some(old_value) =
+            btree_get_node_property(&self.node_property_store, node_id, property)
+        {
             let key = PropertyIndexKey::node(
                 node_id,
                 property,
@@ -541,8 +474,6 @@ impl<M: Memory> GraphStore<M> {
             );
             self.node_property_index.remove(&key);
             self.property_equality_map.remove(&key);
-            let mut property_equality_map = self.open_fixed_slot_property_equality_map();
-            property_equality_map.remove(&key);
             self.property_index_dirty = false;
             return Ok(Some(PropertyIndexNodeStoreMutationKind::Collapse));
         }
@@ -576,8 +507,6 @@ impl<M: Memory> GraphStore<M> {
             .insert(key.clone(), PropertyIndexEntry::empty());
         self.property_equality_map
             .insert(key.clone(), PropertyIndexEntry::empty());
-        let mut property_equality_map = self.open_fixed_slot_property_equality_map();
-        property_equality_map.insert(key.clone(), PropertyIndexEntry::empty());
         self.property_index_dirty = false;
         Ok((key, PropertyIndexNodeStoreMutationKind::LocalUpdate))
     }
@@ -597,8 +526,9 @@ impl<M: Memory> GraphStore<M> {
         }) {
             return Err(PropertyIndexError::LeafPartitionMultiEntryExceedsPrimaryPage);
         }
-        let edge_property_store = self.open_fixed_slot_edge_property_store();
-        if let Some(old_value) = btree_get_edge_property(&edge_property_store, edge_id, property) {
+        if let Some(old_value) =
+            btree_get_edge_property(&self.edge_property_store, edge_id, property)
+        {
             let key = PropertyIndexKey::edge(
                 edge_id,
                 property,
@@ -608,8 +538,6 @@ impl<M: Memory> GraphStore<M> {
             );
             self.edge_property_index.remove(&key);
             self.property_equality_map.remove(&key);
-            let mut property_equality_map = self.open_fixed_slot_property_equality_map();
-            property_equality_map.remove(&key);
             self.property_index_dirty = false;
             return Ok(Some(PropertyIndexNodeStoreMutationKind::Collapse));
         }

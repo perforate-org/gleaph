@@ -390,7 +390,7 @@ pub fn last_projected_overlay_event(
         .find_map(GraphStoreOverlayWriteEvent::shared_projection)
 }
 
-impl GraphStoreDiagnosticsView for GraphStore {
+impl<M: ic_stable_structures::Memory + Clone> GraphStoreDiagnosticsView for GraphStore<M> {
     fn shared_write_history(&self) -> Vec<GraphStoreWriteEventProjection> {
         self.shared_write_history()
     }

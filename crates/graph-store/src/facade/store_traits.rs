@@ -91,19 +91,19 @@ where
         (**self).shard_canister_directory_mut()
     }
 
-    fn node_property_store(&self) -> &GraphPropertyStableMap<Self::Mem> {
+    fn node_property_store(&self) -> &GraphStoreNodePropertyMap<Self::Mem> {
         (**self).node_property_store()
     }
 
-    fn node_property_store_mut(&mut self) -> &mut GraphPropertyStableMap<Self::Mem> {
+    fn node_property_store_mut(&mut self) -> &mut GraphStoreNodePropertyMap<Self::Mem> {
         (**self).node_property_store_mut()
     }
 
-    fn edge_property_store(&self) -> &GraphPropertyStableMap<Self::Mem> {
+    fn edge_property_store(&self) -> &GraphStoreEdgePropertyMap<Self::Mem> {
         (**self).edge_property_store()
     }
 
-    fn edge_property_store_mut(&mut self) -> &mut GraphPropertyStableMap<Self::Mem> {
+    fn edge_property_store_mut(&mut self) -> &mut GraphStoreEdgePropertyMap<Self::Mem> {
         (**self).edge_property_store_mut()
     }
 
@@ -345,7 +345,7 @@ where
     }
 }
 
-impl<M: Memory> GraphStoreStore for GraphStore<M> {
+impl<M: Memory + Clone> GraphStoreStore for GraphStore<M> {
     type Mem = M;
 
     fn last_write_event(&self) -> Option<&GraphStoreFacadeWriteEvent> {
@@ -430,19 +430,19 @@ impl<M: Memory> GraphStoreStore for GraphStore<M> {
         &mut self.shard_canister_directory
     }
 
-    fn node_property_store(&self) -> &GraphPropertyStableMap<M> {
+    fn node_property_store(&self) -> &GraphStoreNodePropertyMap<M> {
         Self::node_property_store(self)
     }
 
-    fn node_property_store_mut(&mut self) -> &mut GraphPropertyStableMap<M> {
+    fn node_property_store_mut(&mut self) -> &mut GraphStoreNodePropertyMap<M> {
         Self::node_property_store_mut(self)
     }
 
-    fn edge_property_store(&self) -> &GraphPropertyStableMap<M> {
+    fn edge_property_store(&self) -> &GraphStoreEdgePropertyMap<M> {
         Self::edge_property_store(self)
     }
 
-    fn edge_property_store_mut(&mut self) -> &mut GraphPropertyStableMap<M> {
+    fn edge_property_store_mut(&mut self) -> &mut GraphStoreEdgePropertyMap<M> {
         Self::edge_property_store_mut(self)
     }
 

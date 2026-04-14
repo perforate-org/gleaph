@@ -2,7 +2,7 @@ use crate::integration::GraphStoreKernelOverlayGraph;
 
 use super::*;
 
-impl<M: Memory> GraphStore<M> {
+impl<M: Memory + Clone> GraphStore<M> {
     /// Builds an in-memory [`RegionManager`] layout used for PMA adjacency read/write paths.
     ///
     /// Stable bytes for surfaces and legacy bucket-backed property regions still use this
