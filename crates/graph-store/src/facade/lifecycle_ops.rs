@@ -4,6 +4,19 @@ use crate::maintenance_dirty::{merge_dirty_ordinal_interval, pop_first_dirty_int
 use super::*;
 
 impl<M: Memory + Clone> GraphStore<M> {
+    fn note_maintenance_dirty_after_forward_refresh(&mut self, refreshed_forward: &[usize]) {
+        let radius = self.graph.insert_policy.rebalance_window_radius;
+        let vmax = self.graph.forward.0.vertices.len();
+        for &ordinal in refreshed_forward {
+            let lo = ordinal.saturating_sub(radius);
+            let hi = ordinal
+                .saturating_add(radius)
+                .saturating_add(1)
+                .min(vmax);
+            self.merge_maintenance_dirty_forward_ordinal_interval(lo as u64, hi as u64);
+        }
+    }
+
     /// Builds an in-memory [`RegionManager`] layout used for PMA adjacency read/write paths.
     ///
     /// Stable bytes for surfaces and legacy bucket-backed property regions still use this
@@ -70,6 +83,7 @@ impl<M: Memory + Clone> GraphStore<M> {
             self.graph
                 .refresh_and_write_dirty_to_stable_memory(&mut self.manager.borrow_mut(), memory)?
         };
+        self.note_maintenance_dirty_after_forward_refresh(&refreshed.0);
         self.node_property_store_dirty = false;
         self.edge_property_store_dirty = false;
         self.property_index_dirty = false;
@@ -348,6 +362,7 @@ impl<M: Memory + Clone> GraphStore<M> {
                 &mut self.manager.borrow_mut(),
                 memory,
             )?;
+        self.note_maintenance_dirty_after_forward_refresh(&summary.refreshed_forward_vertices);
         self.record_write_event(GraphStoreFacadeWriteEvent::EnsureCapacity(summary.clone()));
         Ok(summary)
     }
@@ -366,6 +381,7 @@ impl<M: Memory + Clone> GraphStore<M> {
                 memory,
                 retired_epoch,
             )?;
+        self.note_maintenance_dirty_after_forward_refresh(&summary.refreshed_forward_vertices);
         self.record_write_event(GraphStoreFacadeWriteEvent::EnsureCapacitySegment(
             summary.clone(),
         ));
@@ -383,6 +399,7 @@ impl<M: Memory + Clone> GraphStore<M> {
             &mut self.manager.borrow_mut(),
             memory,
         )?;
+        self.note_maintenance_dirty_after_forward_refresh(&summary.refreshed_forward_vertices);
         self.record_write_event(GraphStoreFacadeWriteEvent::InsertEdge(summary.clone()));
         Ok(summary)
     }
@@ -402,6 +419,7 @@ impl<M: Memory + Clone> GraphStore<M> {
                 memory,
                 retired_epoch,
             )?;
+        self.note_maintenance_dirty_after_forward_refresh(&summary.refreshed_forward_vertices);
         self.record_write_event(GraphStoreFacadeWriteEvent::InsertEdgeSegment(summary.clone()));
         Ok(summary)
     }
@@ -446,6 +464,92 @@ impl<M: Memory + Clone> GraphStore<M> {
     /// Removes and returns the smallest dirty interval `(start, end)` by lexicographic key order.
     pub fn pop_maintenance_dirty_forward_ordinal_interval(&mut self) -> Option<(u64, u64)> {
         pop_first_dirty_interval(&mut self.maintenance_dirty_ordinal_map)
+    }
+
+    /// Pops up to `max_intervals` disjoint dirty ranges from stable memory and, for each forward
+    /// ordinal in those ranges, scores maintenance need and merges resulting work items into the
+    /// in-memory queue (no full-graph candidate scan).
+    pub fn drain_maintenance_dirty_into_queue_at_epoch(
+        &mut self,
+        vertex_refs: &[VertexRef],
+        current_epoch: Option<u64>,
+        max_intervals: usize,
+    ) -> GraphStoreMaintenanceDirtyDrainSummary {
+        let mut intervals_drained = 0usize;
+        let mut work_items_merged = 0usize;
+        let radius = self.graph.insert_policy.rebalance_window_radius;
+        let vertex_count = vertex_refs
+            .len()
+            .min(self.graph.forward.0.vertices.len())
+            .min(self.graph.reverse.0.vertices.len());
+        for _ in 0..max_intervals {
+            let Some((start_u64, end_u64)) = self.pop_maintenance_dirty_forward_ordinal_interval()
+            else {
+                break;
+            };
+            intervals_drained += 1;
+            let Ok(start) = usize::try_from(start_u64) else {
+                continue;
+            };
+            let Ok(end) = usize::try_from(end_u64) else {
+                continue;
+            };
+            if start >= end {
+                continue;
+            }
+            let end = end.min(vertex_count);
+            for ordinal in start..end {
+                let Some(candidate) = self.graph.collect_maintenance_candidate_at_ordinal_at_epoch(
+                    vertex_refs,
+                    current_epoch,
+                    ordinal,
+                ) else {
+                    continue;
+                };
+                let item = candidate.into_work_item(radius, vertex_count);
+                self.graph.merge_maintenance_work_item_into_queue(item);
+                work_items_merged += 1;
+            }
+        }
+        let queue_len_after = self.graph.maintenance_queue().len();
+        GraphStoreMaintenanceDirtyDrainSummary {
+            intervals_drained,
+            work_items_merged,
+            queue_len_after,
+        }
+    }
+
+    pub fn drain_maintenance_dirty_into_queue(
+        &mut self,
+        vertex_refs: &[VertexRef],
+        max_intervals: usize,
+    ) -> GraphStoreMaintenanceDirtyDrainSummary {
+        self.drain_maintenance_dirty_into_queue_at_epoch(vertex_refs, None, max_intervals)
+    }
+
+    pub fn drain_maintenance_dirty_into_queue_at_epoch_and_write(
+        &mut self,
+        vertex_refs: &[VertexRef],
+        current_epoch: Option<u64>,
+        max_intervals: usize,
+        memory: &impl Memory,
+    ) -> Result<GraphStoreMaintenanceDirtyDrainSummary, WritebackError> {
+        let summary = self.drain_maintenance_dirty_into_queue_at_epoch(
+            vertex_refs,
+            current_epoch,
+            max_intervals,
+        );
+        self.persist_maintenance_queue(memory)?;
+        Ok(summary)
+    }
+
+    pub fn drain_maintenance_dirty_into_queue_and_write(
+        &mut self,
+        vertex_refs: &[VertexRef],
+        max_intervals: usize,
+        memory: &impl Memory,
+    ) -> Result<GraphStoreMaintenanceDirtyDrainSummary, WritebackError> {
+        self.drain_maintenance_dirty_into_queue_at_epoch_and_write(vertex_refs, None, max_intervals, memory)
     }
 
     pub fn collect_maintenance_candidates(
@@ -793,6 +897,7 @@ impl<M: Memory + Clone> GraphStore<M> {
         let (refreshed_forward_vertices, refreshed_reverse_vertices) = self
             .graph
             .refresh_and_write_dirty_to_stable_memory(&mut self.manager.borrow_mut(), memory)?;
+        self.note_maintenance_dirty_after_forward_refresh(&refreshed_forward_vertices);
         let summary = GraphStoreMutationWriteSummary {
             mutation,
             refreshed: GraphStoreRefreshedVertices::new(
@@ -818,6 +923,7 @@ impl<M: Memory + Clone> GraphStore<M> {
         let (refreshed_forward_vertices, refreshed_reverse_vertices) = self
             .graph
             .refresh_and_write_dirty_to_stable_memory(&mut self.manager.borrow_mut(), memory)?;
+        self.note_maintenance_dirty_after_forward_refresh(&refreshed_forward_vertices);
         let summary = GraphStoreMutationWriteSummary {
             mutation,
             refreshed: GraphStoreRefreshedVertices::new(

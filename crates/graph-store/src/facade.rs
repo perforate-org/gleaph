@@ -77,6 +77,7 @@ pub use facade_types::{
     GraphStoreEdgeWriteOperation, GraphStoreEdgeWriteProjection,
     GraphStoreEnsureCapacityProjection, GraphStoreFacadeWriteEvent, GraphStoreInsertEdgeProjection,
     GraphStoreMaintenanceBatchProjection, GraphStoreMaintenanceCycleProjection,
+    GraphStoreMaintenanceDirtyDrainSummary,
     GraphStoreMaintenanceQueueAction, GraphStoreMaintenanceQueueItemProjection,
     GraphStoreMaintenanceQueueProjection, GraphStoreMaintenanceQueueStorageProjection,
     GraphStoreMutationWriteSummary, GraphStoreNodeDeleteProjection, GraphStoreProductionMetrics,
@@ -2901,6 +2902,72 @@ mod tests {
             Some((10, 20))
         );
         assert_eq!(h.pop_maintenance_dirty_forward_ordinal_interval(), None);
+    }
+
+    #[test]
+    fn facade_drain_dirty_merges_queue_without_full_candidate_scan() {
+        let memory = VecMemory::default();
+        let mut facade = GraphStore::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let src = NodeId::from(118u8);
+        let dst = NodeId::from(119u8);
+
+        facade
+            .bootstrap_vertex_refs_and_edges_and_write(&[src.into(), dst.into()], &[], &memory)
+            .expect("bootstrap vertices");
+        facade.set_insert_policy(GraphInsertPolicy {
+            rebalance_window_radius: 0,
+            ..GraphInsertPolicy::default()
+        });
+        facade.graph.forward.0.base_entries = SurfaceBaseStorage::from_contiguous(vec![
+            EdgeEntry::new(
+                NodeId::from(119u8),
+                crate::low_level::EdgeMeta::new(7, false),
+            ),
+            EdgeEntry::new(NodeId::from(120u8), crate::low_level::EdgeMeta::new(8, true)),
+        ]);
+        facade.graph.forward.0.vertices[0] = VertexEntry::new(EdgeIndex::new(0), 1, 0);
+        facade.graph.forward.0.vertices[1] =
+            VertexEntry::new(EdgeIndex::new(2), 0, EMPTY_LOG_OFFSET);
+        facade.graph.forward.0.overflow_entries = vec![crate::low_level::OverflowEntry::new(
+            1995,
+            EdgeEntry::new(
+                NodeId::from(121u8),
+                crate::low_level::EdgeMeta::new(9, false),
+            ),
+            crate::low_level::LogOffset::EMPTY,
+        )];
+        facade.graph.reverse.0.base_entries = SurfaceBaseStorage::from_contiguous(vec![
+            EdgeEntry::new(
+                NodeId::from(118u8),
+                crate::low_level::EdgeMeta::new(7, false),
+            ),
+            EdgeEntry::new(NodeId::from(122u8), crate::low_level::EdgeMeta::new(8, true)),
+        ]);
+        facade.graph.reverse.0.vertices[0] = VertexEntry::new(EdgeIndex::new(0), 1, 0);
+        facade.graph.reverse.0.vertices[1] =
+            VertexEntry::new(EdgeIndex::new(2), 0, EMPTY_LOG_OFFSET);
+        facade.graph.reverse.0.overflow_entries = vec![crate::low_level::OverflowEntry::new(
+            1996,
+            EdgeEntry::new(
+                NodeId::from(118u8),
+                crate::low_level::EdgeMeta::new(9, false),
+            ),
+            crate::low_level::LogOffset::EMPTY,
+        )];
+
+        let expected = facade
+            .collect_maintenance_work_items(&[src.into(), dst.into()])
+            .expect("full scan work items");
+
+        facade.merge_maintenance_dirty_forward_ordinal_interval(0, 2);
+        let summary = facade.drain_maintenance_dirty_into_queue(&[src.into(), dst.into()], 1);
+        assert_eq!(summary.intervals_drained, 1);
+        assert_eq!(summary.work_items_merged, 1);
+        assert_eq!(summary.queue_len_after, 1);
+        let drained = facade.maintenance_queue_projection();
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].vertex_ref, expected[0].vertex_ref);
+        assert_eq!(drained[0].anchor_ordinal, expected[0].anchor_ordinal);
     }
 
     #[test]

@@ -81,6 +81,14 @@ pub struct GraphStoreRefreshedVertices {
     pub reverse: Vec<usize>,
 }
 
+/// Result of draining stable dirty ordinal intervals into the in-memory maintenance queue.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GraphStoreMaintenanceDirtyDrainSummary {
+    pub intervals_drained: usize,
+    pub work_items_merged: usize,
+    pub queue_len_after: usize,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GraphStoreAppendVertexWriteSummary {
     pub ordinals: (usize, usize),

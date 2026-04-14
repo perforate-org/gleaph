@@ -994,6 +994,84 @@ impl GraphRuntime {
         Some(candidates)
     }
 
+    /// Like [`Self::collect_maintenance_candidates_at_epoch`] but only evaluates `ordinal` when it
+    /// lies in the shared vertex table prefix of `vertex_ids` and the surfaces.
+    pub fn collect_maintenance_candidate_at_ordinal_at_epoch(
+        &self,
+        vertex_ids: &[VertexRef],
+        current_epoch: Option<u64>,
+        ordinal: usize,
+    ) -> Option<GraphMaintenanceCandidate> {
+        let vertex_count = vertex_ids
+            .len()
+            .min(self.forward.0.vertices.len())
+            .min(self.reverse.0.vertices.len());
+        if ordinal >= vertex_count {
+            return None;
+        }
+        let vertex = *vertex_ids.get(ordinal)?;
+        let window_start = ordinal.saturating_sub(self.insert_policy.rebalance_window_radius);
+        let window_end_exclusive = ordinal
+            .saturating_add(self.insert_policy.rebalance_window_radius)
+            .saturating_add(1)
+            .min(vertex_count);
+        let forward_window_summary = self
+            .forward
+            .0
+            .summarize_window_slack(window_start, window_end_exclusive)?;
+        let reverse_window_summary = self
+            .reverse
+            .0
+            .summarize_window_slack(window_start, window_end_exclusive)?;
+        let forward_overflow_len = self.forward.overflow_entries_for(vertex, ordinal)?.len();
+        let reverse_overflow_len = self.reverse.overflow_entries_for(vertex, ordinal)?.len();
+        let forward_reclaimable_tombstones = forward_window_summary.reclaimable_tombstones;
+        let reverse_reclaimable_tombstones = reverse_window_summary.reclaimable_tombstones;
+        let forward_window_overflow_entries = forward_window_summary.overflow_entries_in_window;
+        let reverse_window_overflow_entries = reverse_window_summary.overflow_entries_in_window;
+        let forward_window_total_base_slots = forward_window_summary.total_base_slots;
+        let reverse_window_total_base_slots = reverse_window_summary.total_base_slots;
+        if forward_overflow_len == 0
+            && reverse_overflow_len == 0
+            && forward_reclaimable_tombstones == 0
+            && reverse_reclaimable_tombstones == 0
+        {
+            return None;
+        }
+        Some(GraphMaintenanceCandidate {
+            vertex_ref: vertex,
+            ordinal,
+            forward_overflow_len,
+            reverse_overflow_len,
+            forward_window_overflow_entries,
+            reverse_window_overflow_entries,
+            forward_reclaimable_tombstones,
+            reverse_reclaimable_tombstones,
+            forward_window_total_base_slots,
+            reverse_window_total_base_slots,
+            last_maintenance_epoch: self
+                .recent_maintenance_epochs_by_ordinal
+                .get(&ordinal)
+                .copied(),
+            recent_maintenance_penalty: self
+                .recent_maintenance_penalty_for_ordinal(ordinal, current_epoch),
+            priority_score: self.maintenance_candidate_priority_score(
+                MaintenanceCandidatePriorityScoreArgs {
+                    forward_overflow_len,
+                    reverse_overflow_len,
+                    forward_window_overflow_entries,
+                    reverse_window_overflow_entries,
+                    forward_reclaimable_tombstones,
+                    reverse_reclaimable_tombstones,
+                    forward_window_total_base_slots,
+                    reverse_window_total_base_slots,
+                    ordinal,
+                    current_epoch,
+                },
+            )?,
+        })
+    }
+
     /// Collects deduplicated maintenance work items keyed by local rebalance
     /// window so timer code can queue work without rescanning every vertex.
     pub fn collect_maintenance_work_items_at_epoch(
@@ -1165,6 +1243,35 @@ impl GraphRuntime {
         maintenance_queue: Vec<GraphMaintenanceWorkItem>,
     ) {
         self.maintenance_queue = maintenance_queue;
+    }
+
+    /// Merges one work item into the retained queue using the same window-dedup rule as
+    /// [`Self::collect_maintenance_work_items_at_epoch`]: one entry per `(start, end)` window,
+    /// keeping the higher `priority_score` (tie-break: lower `anchor_ordinal`).
+    pub fn merge_maintenance_work_item_into_queue(&mut self, item: GraphMaintenanceWorkItem) {
+        let key = (item.start_ordinal, item.end_ordinal_exclusive);
+        let mut found = false;
+        for existing in self.maintenance_queue.iter_mut() {
+            if existing.start_ordinal == key.0 && existing.end_ordinal_exclusive == key.1 {
+                found = true;
+                if item.priority_score > existing.priority_score
+                    || (item.priority_score == existing.priority_score
+                        && item.anchor_ordinal < existing.anchor_ordinal)
+                {
+                    *existing = item;
+                }
+                break;
+            }
+        }
+        if !found {
+            self.maintenance_queue.push(item);
+        }
+        self.maintenance_queue.sort_by(|left, right| {
+            right
+                .priority_score
+                .cmp(&left.priority_score)
+                .then_with(|| left.anchor_ordinal.cmp(&right.anchor_ordinal))
+        });
     }
 
     /// Pops the next queued maintenance work item, if any.
