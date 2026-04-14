@@ -141,22 +141,10 @@ pub fn write_region_manager_footer<M: Memory>(
     Ok(())
 }
 
-/// Decode a [`RegionManager`] for hydration: prefer the tail footer on `memory`, otherwise legacy
-/// candid bytes (pre-footer canisters used a separate `StableCell`).
-pub fn decode_region_manager_for_hydrate<M: Memory>(
-    memory: &M,
-    legacy_candid: Option<&[u8]>,
-) -> Result<RegionManager, HydrationError> {
-    if let Some(m) = try_read_region_manager(memory)? {
-        return Ok(m);
-    }
-    let Some(bytes) = legacy_candid.filter(|b| !b.is_empty()) else {
-        return Err(HydrationError::PmaStableRoot(
-            "missing PMA stable root footer and no legacy region manager candid".into(),
-        ));
-    };
-    candid::decode_one(bytes).map_err(|e| {
-        HydrationError::PmaStableRoot(format!("legacy region manager candid decode failed: {e}"))
+/// Decode a [`RegionManager`] for hydration from the tail footer on `memory`.
+pub fn decode_region_manager_for_hydrate<M: Memory>(memory: &M) -> Result<RegionManager, HydrationError> {
+    try_read_region_manager(memory)?.ok_or_else(|| {
+        HydrationError::PmaStableRoot("missing PMA stable root footer (GLEPMA01)".into())
     })
 }
 
@@ -187,13 +175,4 @@ mod tests {
         assert_eq!(got, rm);
     }
 
-    #[test]
-    fn decode_for_hydrate_prefers_footer_over_legacy() {
-        let mem = VectorMemory::default();
-        let rm = RegionManager::with_bucket_size(BucketSizeInPages::DEFAULT);
-        write_region_manager_footer(&mem, &rm).expect("write");
-        let legacy = candid::encode_one(&RegionManager::default()).expect("legacy bytes");
-        let out = decode_region_manager_for_hydrate(&mem, Some(&legacy)).expect("decode");
-        assert_eq!(out, rm);
-    }
 }

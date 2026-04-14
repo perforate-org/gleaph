@@ -1351,12 +1351,9 @@ impl<M: Memory> GraphStore<M> {
         bucket_size_in_pages: BucketSizeInPages,
         mem_rc: Rc<M>,
     ) -> GraphStoreResult<Self> {
-        let mut manager = RegionManager::with_bucket_size(bucket_size_in_pages);
-        Self::define_empty_surface_regions(&mut manager, crate::low_level::SurfaceKind::Forward);
-        Self::define_empty_surface_regions(&mut manager, crate::low_level::SurfaceKind::Reverse);
-        Self::define_empty_property_regions(&mut manager);
-
-        let mgr_rc = Rc::new(RefCell::new(manager));
+        let mgr_rc = Rc::new(RefCell::new(Self::bootstrap_region_manager_skeleton(
+            bucket_size_in_pages,
+        )));
         let forward = ForwardSurfaceRuntime::without_overflow(
             forward_surface_from_layout(&mgr_rc.borrow().layout)?,
             Vec::new(),
@@ -1409,23 +1406,10 @@ impl<M: Memory> GraphStore<M> {
         Self::new(manager, memory, graph)
     }
 
-    /// Hydrates from graph backing by reading the tail [`crate::low_level::pma_stable_root`] footer,
-    /// or `legacy_region_manager_candid` when upgrading from canisters that stored metadata in a
-    /// separate stable cell.
-    pub fn hydrate_from_graph_stable_memory_with_legacy(
-        memory: M,
-        legacy_region_manager_candid: Option<&[u8]>,
-    ) -> GraphStoreResult<Self> {
-        let manager = crate::low_level::decode_region_manager_for_hydrate(
-            &memory,
-            legacy_region_manager_candid,
-        )?;
-        Self::hydrate_from_stable_memory(manager, memory)
-    }
-
-    /// Like [`Self::hydrate_from_graph_stable_memory_with_legacy`] with no legacy cell (footer only).
+    /// Hydrates from graph backing by reading the tail [`crate::low_level::pma_stable_root`] footer.
     pub fn hydrate_from_graph_stable_memory(memory: M) -> GraphStoreResult<Self> {
-        Self::hydrate_from_graph_stable_memory_with_legacy(memory, None)
+        let manager = crate::low_level::decode_region_manager_for_hydrate(&memory)?;
+        Self::hydrate_from_stable_memory(manager, memory)
     }
 
     /// Hydrates forward/reverse runtimes from stable memory and builds a facade.

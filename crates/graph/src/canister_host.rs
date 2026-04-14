@@ -38,7 +38,8 @@ pub type CanisterGraphMemory = VirtualMemory<DefaultMemoryImpl>;
 
 pub const MEMORY_ID_GRAPH: MemoryId = MemoryId::new(0);
 pub const MEMORY_ID_SERVICE: MemoryId = MemoryId::new(1);
-/// Legacy stable cell used **only** on `post_upgrade` to read pre-footer canisters; never written after migration.
+/// Reserved stable slot (previously used for a legacy region-manager cell).
+#[allow(dead_code)]
 pub const MEMORY_ID_LEGACY_REGION_MANAGER: MemoryId = MemoryId::new(2);
 /// Graph catalog blob (`StableBTreeMap` wire) split out from the monolithic [`GleaphServiceSnapshot`].
 pub const MEMORY_ID_GRAPH_CATALOG: MemoryId = MemoryId::new(3);
@@ -103,16 +104,9 @@ impl CanisterHost {
         let memory_manager = MemoryManager::init(DefaultMemoryImpl::default());
         let graph_vm = memory_manager.get(MEMORY_ID_GRAPH);
         let graph_memory = Rc::new(graph_vm);
-        let legacy_rm_cell = StableCell::init(
-            memory_manager.get(MEMORY_ID_LEGACY_REGION_MANAGER),
-            CandidBlob::default(),
-        );
-        let legacy_blob = legacy_rm_cell.get().0.clone();
-        let graph_facade = GraphStore::hydrate_from_graph_stable_memory_with_legacy(
-            (*graph_memory).clone(),
-            Some(legacy_blob.as_slice()),
-        )
-        .expect("hydrate graph PMA");
+        let graph_facade =
+            GraphStore::hydrate_from_graph_stable_memory((*graph_memory).clone())
+                .expect("hydrate graph PMA");
 
         let service_cell =
             StableCell::init(memory_manager.get(MEMORY_ID_SERVICE), CandidBlob::default());

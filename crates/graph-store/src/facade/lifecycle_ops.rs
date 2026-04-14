@@ -3,6 +3,21 @@ use crate::integration::GraphStoreKernelOverlayGraph;
 use super::*;
 
 impl<M: Memory> GraphStore<M> {
+    /// Builds an in-memory [`RegionManager`] layout used for PMA adjacency read/write paths.
+    ///
+    /// Stable bytes for surfaces and legacy bucket-backed property regions still use this
+    /// metadata to resolve physical addresses. Callers that only need a matching skeleton for
+    /// hydration should use the same `bucket_size_in_pages` as the store that wrote `memory`.
+    pub(super) fn bootstrap_region_manager_skeleton(
+        bucket_size_in_pages: BucketSizeInPages,
+    ) -> RegionManager {
+        let mut manager = RegionManager::with_bucket_size(bucket_size_in_pages);
+        Self::define_empty_surface_regions(&mut manager, crate::low_level::SurfaceKind::Forward);
+        Self::define_empty_surface_regions(&mut manager, crate::low_level::SurfaceKind::Reverse);
+        Self::define_empty_property_regions(&mut manager);
+        manager
+    }
+
     fn persist_maintenance_queue(&mut self, memory: &impl Memory) -> Result<u64, WritebackError> {
         let persisted_bytes = self.write_maintenance_queue_to_stable_memory(memory)?;
         self.production_metrics.record_maintenance_queue_write(
