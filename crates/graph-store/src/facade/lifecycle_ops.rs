@@ -4,10 +4,20 @@ use crate::maintenance_dirty::{merge_dirty_ordinal_interval, pop_first_dirty_int
 use super::*;
 
 impl<M: Memory + Clone> GraphStore<M> {
-    fn note_maintenance_dirty_after_forward_refresh(&mut self, refreshed_forward: &[usize]) {
+    /// After forward/reverse label sidecar refresh, mark the corresponding **forward-layout vertex
+    /// ordinals** (forward and reverse tables stay row-aligned per
+    /// [`GraphRuntime::append_empty_vertex_pair`]) for incremental maintenance scoring.
+    fn note_maintenance_dirty_after_label_sidecar_refresh(
+        &mut self,
+        refreshed_forward: &[usize],
+        refreshed_reverse: &[usize],
+    ) {
         let radius = self.graph.insert_policy.rebalance_window_radius;
         let vmax = self.graph.forward.0.vertices.len();
-        for &ordinal in refreshed_forward {
+        for &ordinal in refreshed_forward
+            .iter()
+            .chain(refreshed_reverse.iter())
+        {
             let lo = ordinal.saturating_sub(radius);
             let hi = ordinal
                 .saturating_add(radius)
@@ -83,7 +93,7 @@ impl<M: Memory + Clone> GraphStore<M> {
             self.graph
                 .refresh_and_write_dirty_to_stable_memory(&mut self.manager.borrow_mut(), memory)?
         };
-        self.note_maintenance_dirty_after_forward_refresh(&refreshed.0);
+        self.note_maintenance_dirty_after_label_sidecar_refresh(&refreshed.0, &refreshed.1);
         self.node_property_store_dirty = false;
         self.edge_property_store_dirty = false;
         self.property_index_dirty = false;
@@ -362,7 +372,10 @@ impl<M: Memory + Clone> GraphStore<M> {
                 &mut self.manager.borrow_mut(),
                 memory,
             )?;
-        self.note_maintenance_dirty_after_forward_refresh(&summary.refreshed_forward_vertices);
+        self.note_maintenance_dirty_after_label_sidecar_refresh(
+            &summary.refreshed_forward_vertices,
+            &summary.refreshed_reverse_vertices,
+        );
         self.record_write_event(GraphStoreFacadeWriteEvent::EnsureCapacity(summary.clone()));
         Ok(summary)
     }
@@ -381,7 +394,10 @@ impl<M: Memory + Clone> GraphStore<M> {
                 memory,
                 retired_epoch,
             )?;
-        self.note_maintenance_dirty_after_forward_refresh(&summary.refreshed_forward_vertices);
+        self.note_maintenance_dirty_after_label_sidecar_refresh(
+            &summary.refreshed_forward_vertices,
+            &summary.refreshed_reverse_vertices,
+        );
         self.record_write_event(GraphStoreFacadeWriteEvent::EnsureCapacitySegment(
             summary.clone(),
         ));
@@ -399,7 +415,10 @@ impl<M: Memory + Clone> GraphStore<M> {
             &mut self.manager.borrow_mut(),
             memory,
         )?;
-        self.note_maintenance_dirty_after_forward_refresh(&summary.refreshed_forward_vertices);
+        self.note_maintenance_dirty_after_label_sidecar_refresh(
+            &summary.refreshed_forward_vertices,
+            &summary.refreshed_reverse_vertices,
+        );
         self.record_write_event(GraphStoreFacadeWriteEvent::InsertEdge(summary.clone()));
         Ok(summary)
     }
@@ -419,7 +438,10 @@ impl<M: Memory + Clone> GraphStore<M> {
                 memory,
                 retired_epoch,
             )?;
-        self.note_maintenance_dirty_after_forward_refresh(&summary.refreshed_forward_vertices);
+        self.note_maintenance_dirty_after_label_sidecar_refresh(
+            &summary.refreshed_forward_vertices,
+            &summary.refreshed_reverse_vertices,
+        );
         self.record_write_event(GraphStoreFacadeWriteEvent::InsertEdgeSegment(summary.clone()));
         Ok(summary)
     }
@@ -897,7 +919,10 @@ impl<M: Memory + Clone> GraphStore<M> {
         let (refreshed_forward_vertices, refreshed_reverse_vertices) = self
             .graph
             .refresh_and_write_dirty_to_stable_memory(&mut self.manager.borrow_mut(), memory)?;
-        self.note_maintenance_dirty_after_forward_refresh(&refreshed_forward_vertices);
+        self.note_maintenance_dirty_after_label_sidecar_refresh(
+            &refreshed_forward_vertices,
+            &refreshed_reverse_vertices,
+        );
         let summary = GraphStoreMutationWriteSummary {
             mutation,
             refreshed: GraphStoreRefreshedVertices::new(
@@ -923,7 +948,10 @@ impl<M: Memory + Clone> GraphStore<M> {
         let (refreshed_forward_vertices, refreshed_reverse_vertices) = self
             .graph
             .refresh_and_write_dirty_to_stable_memory(&mut self.manager.borrow_mut(), memory)?;
-        self.note_maintenance_dirty_after_forward_refresh(&refreshed_forward_vertices);
+        self.note_maintenance_dirty_after_label_sidecar_refresh(
+            &refreshed_forward_vertices,
+            &refreshed_reverse_vertices,
+        );
         let summary = GraphStoreMutationWriteSummary {
             mutation,
             refreshed: GraphStoreRefreshedVertices::new(
