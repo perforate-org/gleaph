@@ -705,9 +705,9 @@ impl<M: Memory + Clone> GraphStore<M> {
     /// Reads the persisted maintenance queue directly from stable memory.
     pub fn try_read_maintenance_queue_from_stable_memory(
         &self,
-        memory: &impl Memory,
+        _memory: &impl Memory,
     ) -> GraphStoreResult<Vec<GraphMaintenanceWorkItem>> {
-        Self::load_maintenance_queue_from_stable_memory(&self.manager.borrow(), memory)
+        Self::load_maintenance_queue_from_slot(&self.property_slots)
     }
 
     /// Reads the persisted maintenance queue directly from stable memory as structured projections.
@@ -735,14 +735,16 @@ impl<M: Memory + Clone> GraphStore<M> {
     /// Reads metadata for the persisted maintenance queue directly from stable memory.
     pub fn try_read_maintenance_queue_storage_projection_from_stable_memory(
         &self,
-        memory: &impl Memory,
+        _memory: &impl Memory,
     ) -> GraphStoreResult<GraphStoreMaintenanceQueueStorageProjection> {
-        let Some(region) = self
-            .manager
-            .borrow()
-            .layout
-            .region(RegionKind::MaintenanceQueue)
-        else {
+        let bytes = Self::read_maintenance_queue_slot_bytes(&self.property_slots)?;
+        let logical_len_bytes = u64::try_from(bytes.len()).map_err(|_| {
+            GraphStoreError::Hydration(HydrationError::RegionTooLarge(
+                RegionKind::MaintenanceQueue,
+                u64::MAX,
+            ))
+        })?;
+        if bytes.is_empty() {
             return Ok(GraphStoreMaintenanceQueueStorageProjection {
                 logical_len_bytes: 0,
                 queue_len: 0,
@@ -751,41 +753,7 @@ impl<M: Memory + Clone> GraphStore<M> {
                 computed_checksum: None,
                 checksum_valid: None,
             });
-        };
-        let logical_len = usize::try_from(region.logical_len_bytes).map_err(|_| {
-            GraphStoreError::Hydration(HydrationError::RegionTooLarge(
-                RegionKind::MaintenanceQueue,
-                region.logical_len_bytes,
-            ))
-        })?;
-        if logical_len == 0 {
-            return Ok(GraphStoreMaintenanceQueueStorageProjection {
-                logical_len_bytes: region.logical_len_bytes,
-                queue_len: 0,
-                format_version: None,
-                stored_checksum: None,
-                computed_checksum: None,
-                checksum_valid: None,
-            });
         }
-        let extent = self
-            .manager
-            .borrow()
-            .region_extent(RegionKind::MaintenanceQueue)
-            .ok_or(GraphStoreError::Hydration(
-                HydrationError::MissingExtentRegion(RegionKind::MaintenanceQueue),
-            ))?;
-        if logical_len > usize::try_from(extent.len_bytes).unwrap_or(usize::MAX) {
-            return Err(GraphStoreError::Hydration(
-                HydrationError::LogicalLengthExceedsExtent {
-                    kind: RegionKind::MaintenanceQueue,
-                    logical_len_bytes: region.logical_len_bytes,
-                    extent_len_bytes: extent.len_bytes,
-                },
-            ));
-        }
-        let mut bytes = vec![0u8; logical_len];
-        memory.read(extent.addr.0, &mut bytes);
         if bytes.len() < Self::SERIALIZED_MAINTENANCE_QUEUE_HEADER_LEN {
             return Err(GraphStoreError::Hydration(
                 HydrationError::InvalidMaintenanceQueueHeader(RegionKind::MaintenanceQueue),
@@ -811,7 +779,7 @@ impl<M: Memory + Clone> GraphStore<M> {
         let body = &bytes[Self::SERIALIZED_MAINTENANCE_QUEUE_HEADER_LEN..];
         let computed_checksum = Self::maintenance_queue_checksum(body);
         Ok(GraphStoreMaintenanceQueueStorageProjection {
-            logical_len_bytes: region.logical_len_bytes,
+            logical_len_bytes,
             queue_len,
             format_version: Some(version),
             stored_checksum: Some(stored_checksum),
@@ -1032,58 +1000,80 @@ impl<M: Memory + Clone> GraphStore<M> {
         Ok(queue)
     }
 
-    fn ensure_maintenance_queue_region(manager: &mut RegionManager) -> Result<(), WritebackError> {
-        if manager
-            .layout
-            .region(RegionKind::MaintenanceQueue)
-            .is_none()
-        {
-            manager.define_extent_region(
-                RegionKind::MaintenanceQueue,
-                ExtentChain::new(
-                    ExtentId::NULL,
-                    ExtentId::NULL,
-                    0,
-                    WasmPages::new(1),
-                    WasmPages::new(1),
-                ),
-            );
+    pub(crate) fn read_maintenance_queue_slot_bytes(
+        slots: &GraphStoreMemorySlots<GraphStorePropertySlotRoot<M>>,
+    ) -> GraphStoreResult<Vec<u8>> {
+        let mem = slots.maintenance_queue();
+        let pages = mem.size();
+        if pages == 0 {
+            return Ok(Vec::new());
         }
-        Ok(())
+        let total = pages
+            .checked_mul(crate::low_level::WASM_PAGE_SIZE)
+            .ok_or_else(|| {
+                GraphStoreError::Hydration(HydrationError::RegionTooLarge(
+                    RegionKind::MaintenanceQueue,
+                    u64::MAX,
+                ))
+            })?;
+        let len = usize::try_from(total).map_err(|_| {
+            GraphStoreError::Hydration(HydrationError::RegionTooLarge(
+                RegionKind::MaintenanceQueue,
+                total,
+            ))
+        })?;
+        let mut bytes = vec![0u8; len];
+        mem.read(0, &mut bytes);
+        if bytes.len() >= Self::SERIALIZED_MAINTENANCE_QUEUE_HEADER_LEN
+            && bytes[..4] == Self::SERIALIZED_MAINTENANCE_QUEUE_MAGIC
+        {
+            let count = u64::from_le_bytes(bytes[8..16].try_into().expect("queue count")) as usize;
+            let body_len = count
+                .checked_mul(Self::SERIALIZED_MAINTENANCE_QUEUE_ITEM_LEN)
+                .ok_or_else(|| {
+                    GraphStoreError::Hydration(HydrationError::RegionTooLarge(
+                        RegionKind::MaintenanceQueue,
+                        count as u64,
+                    ))
+                })?;
+            let need = Self::SERIALIZED_MAINTENANCE_QUEUE_HEADER_LEN
+                .checked_add(body_len)
+                .ok_or_else(|| {
+                    GraphStoreError::Hydration(HydrationError::RegionTooLarge(
+                        RegionKind::MaintenanceQueue,
+                        u64::MAX,
+                    ))
+                })?;
+            if need <= bytes.len() {
+                bytes.truncate(need);
+            }
+        }
+        Ok(bytes)
     }
 
-    fn ensure_maintenance_queue_capacity(
-        manager: &mut RegionManager,
-        required_bytes: usize,
+    pub(crate) fn write_maintenance_queue_slot_bytes(
+        slots: &GraphStoreMemorySlots<GraphStorePropertySlotRoot<M>>,
+        bytes: &[u8],
     ) -> Result<(), WritebackError> {
-        Self::ensure_maintenance_queue_region(manager)?;
-        let extent = manager.region_extent(RegionKind::MaintenanceQueue).ok_or(
-            WritebackError::MissingExtentRegion(RegionKind::MaintenanceQueue),
-        )?;
-        let required_bytes = required_bytes as u64;
-        if required_bytes <= extent.len_bytes {
-            return Ok(());
+        let mem = slots.maintenance_queue();
+        let needed_pages = (bytes.len() as u64).div_ceil(crate::low_level::WASM_PAGE_SIZE);
+        while mem.size() < needed_pages {
+            if mem.grow(1) < 0 {
+                return Err(WritebackError::MemoryGrowFailed {
+                    current_pages: mem.size(),
+                    delta_pages: 1,
+                });
+            }
         }
-        let shortage = required_bytes.saturating_sub(extent.len_bytes);
-        let additional_pages = shortage.div_ceil(crate::low_level::WASM_PAGE_SIZE);
-        let request = ExtentGrowthRequest::new(WasmPages::new(additional_pages));
-        let policy =
-            ExtentGrowthPolicy::new(WasmPages::new(additional_pages.max(1)), WasmPages::new(1));
-        if let Some(decision) =
-            manager.plan_extent_growth(RegionKind::MaintenanceQueue, request, policy)
-        {
-            manager
-                .apply_extent_growth(RegionKind::MaintenanceQueue, request, policy, decision)
-                .ok_or(WritebackError::MissingExtentRegion(
-                    RegionKind::MaintenanceQueue,
-                ))?;
+        if !bytes.is_empty() {
+            mem.write(0, bytes);
         }
         Ok(())
     }
 
     fn write_maintenance_queue_to_stable_memory(
         &mut self,
-        memory: &impl Memory,
+        _memory: &impl Memory,
     ) -> Result<u64, WritebackError> {
         let bytes =
             Self::encode_maintenance_queue(self.graph.maintenance_queue()).map_err(|_| {
@@ -1092,75 +1082,14 @@ impl<M: Memory + Clone> GraphStore<M> {
                     self.graph.maintenance_queue().len() as u64,
                 )
             })?;
-        {
-            let mut mgr = self.manager.borrow_mut();
-            Self::ensure_maintenance_queue_capacity(&mut mgr, bytes.len())?;
-            mgr.set_region_logical_len(RegionKind::MaintenanceQueue, bytes.len() as u64)
-                .ok_or(WritebackError::MissingRegionDefinition(
-                    RegionKind::MaintenanceQueue,
-                ))?;
-        }
-        let extent_base = self
-            .manager
-            .borrow()
-            .region_extent(RegionKind::MaintenanceQueue)
-            .ok_or(WritebackError::MissingExtentRegion(
-                RegionKind::MaintenanceQueue,
-            ))?
-            .addr
-            .0;
-        let last_byte_exclusive = extent_base + bytes.len() as u64;
-        let current_bytes = memory.size() * crate::low_level::WASM_PAGE_SIZE;
-        if last_byte_exclusive > current_bytes {
-            let additional_pages =
-                (last_byte_exclusive - current_bytes).div_ceil(crate::low_level::WASM_PAGE_SIZE);
-            if memory.grow(additional_pages) < 0 {
-                return Err(WritebackError::RegionTooLarge(
-                    RegionKind::MaintenanceQueue,
-                    last_byte_exclusive,
-                ));
-            }
-        }
-        if !bytes.is_empty() {
-            memory.write(extent_base, &bytes);
-        }
+        Self::write_maintenance_queue_slot_bytes(&self.property_slots, &bytes)?;
         Ok(bytes.len() as u64)
     }
 
-    fn load_maintenance_queue_from_stable_memory(
-        manager: &RegionManager,
-        memory: &impl Memory,
+    fn load_maintenance_queue_from_slot(
+        slots: &GraphStoreMemorySlots<GraphStorePropertySlotRoot<M>>,
     ) -> GraphStoreResult<Vec<GraphMaintenanceWorkItem>> {
-        let Some(region) = manager.layout.region(RegionKind::MaintenanceQueue) else {
-            return Ok(Vec::new());
-        };
-        let logical_len = usize::try_from(region.logical_len_bytes).map_err(|_| {
-            GraphStoreError::Hydration(HydrationError::RegionTooLarge(
-                RegionKind::MaintenanceQueue,
-                region.logical_len_bytes,
-            ))
-        })?;
-        if logical_len == 0 {
-            return Ok(Vec::new());
-        }
-        let extent = manager.region_extent(RegionKind::MaintenanceQueue).ok_or(
-            GraphStoreError::Hydration(HydrationError::MissingExtentRegion(
-                RegionKind::MaintenanceQueue,
-            )),
-        )?;
-        if logical_len > usize::try_from(extent.len_bytes).unwrap_or(usize::MAX) {
-            return Err(GraphStoreError::Hydration(
-                HydrationError::LogicalLengthExceedsExtent {
-                    kind: RegionKind::MaintenanceQueue,
-                    logical_len_bytes: region.logical_len_bytes,
-                    extent_len_bytes: extent.len_bytes,
-                },
-            ));
-        }
-        let mut bytes = vec![0u8; logical_len];
-        if logical_len > 0 {
-            memory.read(extent.addr.0, &mut bytes);
-        }
+        let bytes = Self::read_maintenance_queue_slot_bytes(slots)?;
         Self::decode_maintenance_queue(&bytes)
     }
 
@@ -1376,10 +1305,7 @@ impl<M: Memory + Clone> GraphStore<M> {
 
         facade.sync_shadow_property_state_from_fixed_slots();
 
-        let maintenance_queue = Self::load_maintenance_queue_from_stable_memory(
-            &facade.manager.borrow(),
-            facade.memory.as_ref(),
-        )?;
+        let maintenance_queue = Self::load_maintenance_queue_from_slot(&facade.property_slots)?;
         facade.graph.replace_maintenance_queue(maintenance_queue);
         Ok(facade)
     }
@@ -1433,10 +1359,7 @@ impl<M: Memory + Clone> GraphStore<M> {
 
         facade.sync_shadow_property_state_from_fixed_slots();
 
-        let maintenance_queue = Self::load_maintenance_queue_from_stable_memory(
-            &facade.manager.borrow(),
-            facade.memory.as_ref(),
-        )?;
+        let maintenance_queue = Self::load_maintenance_queue_from_slot(&facade.property_slots)?;
         facade.graph.replace_maintenance_queue(maintenance_queue);
         Ok(facade)
     }
@@ -3210,19 +3133,8 @@ mod tests {
         bytes.extend_from_slice(&item.priority_score.to_le_bytes());
         bytes.extend_from_slice(&item.last_maintenance_epoch.unwrap().to_le_bytes());
         bytes.extend_from_slice(&item.recent_maintenance_penalty.to_le_bytes());
-        TestPma::ensure_maintenance_queue_capacity(&mut facade.manager.borrow_mut(), bytes.len())
-            .expect("ensure queue capacity");
-        facade
-            .manager
-            .borrow_mut()
-            .set_region_logical_len(RegionKind::MaintenanceQueue, bytes.len() as u64)
-            .expect("set queue logical len");
-        let extent = facade
-            .manager
-            .borrow()
-            .region_extent(RegionKind::MaintenanceQueue)
-            .expect("queue extent");
-        facade.memory.as_ref().write(extent.addr.0, &bytes);
+        TestPma::write_maintenance_queue_slot_bytes(&facade.property_slots, &bytes)
+            .expect("write invalid queue bytes to fixed slot");
 
         match facade.try_read_maintenance_queue_storage_projection_from_stable_memory(
             facade.memory.as_ref(),
@@ -5956,7 +5868,8 @@ pub mod experimental_dgap {
         GRAPH_STORE_MEMORY_ID_FORWARD_EDGES_AND_LOG,
         GRAPH_STORE_MEMORY_ID_FORWARD_SEGMENT_EDGE_COUNTS,
         GRAPH_STORE_MEMORY_ID_FORWARD_VERTEX_TABLE, GRAPH_STORE_MEMORY_ID_GC_STATE,
-        GRAPH_STORE_MEMORY_ID_LABEL_CATALOG, GRAPH_STORE_MEMORY_ID_NODE_PROPERTY_STORE,
+        GRAPH_STORE_MEMORY_ID_LABEL_CATALOG, GRAPH_STORE_MEMORY_ID_MAINTENANCE_QUEUE,
+        GRAPH_STORE_MEMORY_ID_NODE_PROPERTY_STORE,
         GRAPH_STORE_MEMORY_ID_PROPERTY_INDEX, GRAPH_STORE_MEMORY_ID_REVERSE_EDGES_AND_LOG,
         GRAPH_STORE_MEMORY_ID_REVERSE_SEGMENT_EDGE_COUNTS,
         GRAPH_STORE_MEMORY_ID_REVERSE_VERTEX_TABLE, GRAPH_STORE_MEMORY_ID_SHARD_CANISTER_DIRECTORY,

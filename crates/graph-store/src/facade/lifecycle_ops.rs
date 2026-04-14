@@ -324,16 +324,6 @@ impl<M: Memory + Clone> GraphStore<M> {
             manager.define_bucket_region(kind, default_property_region_chain());
         }
         manager.define_extent_region(
-            RegionKind::MaintenanceQueue,
-            ExtentChain::new(
-                ExtentId::NULL,
-                ExtentId::NULL,
-                0,
-                WasmPages::new(1),
-                WasmPages::new(1),
-            ),
-        );
-        manager.define_extent_region(
             RegionKind::ShardCanisterDirectory,
             ExtentChain::new(
                 ExtentId::NULL,
