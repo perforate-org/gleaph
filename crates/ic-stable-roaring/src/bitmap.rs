@@ -1,6 +1,6 @@
 use crate::memory::{
-    MemoryReader, MemoryWriter, grow_memory_to_at_least_bytes, read_5_bytes, read_u64,
-    safe_write, write_5_bytes, write_u64, write_zero_bytes,
+    MemoryReader, MemoryWriter, grow_memory_to_at_least_bytes, read_bytes, read_u64, safe_write,
+    write_5_bytes, write_u64, write_zero_bytes,
 };
 use core::cell::{Cell, Ref, RefCell};
 use core::fmt;
@@ -309,15 +309,19 @@ impl<M: Memory> RoaringBitmap<M> {
         let mut state = HeapState { len_bits, bitmap };
 
         let mut journal_len = 0u64;
-        let mut slot = [0u8; 5];
-        for i in 0..crate::JOURNAL_CAP_SLOTS {
-            let base = journal_offset() + (i as u64) * JOURNAL_RECORD_SIZE;
-            read_5_bytes(&memory, base, &mut slot);
-            if slot == [0u8; 5] {
-                break;
+        let mut chunk_buf = [0u8; crate::JOURNAL_READ_CHUNK_BYTES];
+        let n_chunks = crate::JOURNAL_REGION_BYTES / crate::JOURNAL_READ_CHUNK_BYTES;
+        'replay: for chunk_idx in 0..n_chunks {
+            let off = journal_offset() + (chunk_idx * crate::JOURNAL_READ_CHUNK_BYTES) as u64;
+            read_bytes(&memory, off, &mut chunk_buf);
+            for slot in chunk_buf.chunks_exact(JOURNAL_RECORD_SIZE as usize) {
+                let slot: [u8; 5] = slot.try_into().expect("chunks_exact by 5");
+                if slot == [0u8; 5] {
+                    break 'replay;
+                }
+                apply_record(&mut state, JournalRecord(slot))?;
+                journal_len += 1;
             }
-            apply_record(&mut state, JournalRecord(slot))?;
-            journal_len += 1;
         }
 
         Ok(Self {
