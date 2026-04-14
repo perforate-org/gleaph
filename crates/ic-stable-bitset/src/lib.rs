@@ -3,7 +3,7 @@
 //! [`Bitset`] is the primary type, and [`StableBitset`] is a convenience alias for the same
 //! implementation. The type stores the authoritative bits in a heap mirror for fast reads, while
 //! stable memory holds a compact header, a packed `u64` bitset snapshot, and an append-only
-//! journal of packed mutation records.
+//! journal of **5-byte** packed mutation records.
 //!
 //! # Design
 //!
@@ -26,18 +26,20 @@
 //! ----------------------------------------
 //! Word capacity               ↕ 8 bytes
 //! ----------------------------------------
-//! Journal capacity            ↕ 8 bytes
+//! Journal slots (fixed)       ↕ 8 bytes (`JOURNAL_CAP_SLOTS` as `u64`)
 //! ----------------------------------------
 //! Reserved space              ↕ 36 bytes
 //! ---------------------------------------- <- Address 64
-//! Mutation record 0           ↕ 8 bytes
+//! Mutation record 0           ↕ 5 bytes
 //! ----------------------------------------
-//! Mutation record 1           ↕ 8 bytes
+//! Mutation record 1           ↕ 5 bytes
 //! ----------------------------------------
 //! ...
 //! ----------------------------------------
-//! Mutation record N-1         ↕ 8 bytes
-//! ---------------------------------------- <- Address 64 + journal_cap * 8
+//! Mutation record N-1         ↕ 5 bytes
+//! ---------------------------------------- <- 64 + JOURNAL_CAP_SLOTS * 5 (not always 8-aligned)
+//! Zero padding                ↕ 0..7 bytes
+//! ---------------------------------------- <- snapshot_base = align_up(64 + N*5, 8)
 //! Packed snapshot word 0      ↕ 8 bytes
 //! ----------------------------------------
 //! Packed snapshot word 1      ↕ 8 bytes
@@ -47,8 +49,8 @@
 //! ```
 //!
 //! The header occupies a fixed 64-byte prefix, matching the stable-memory layout style used by
-//! the other `ic-stable-*` crates. The journal stores packed 8-byte mutation records, and the
-//! snapshot stores the current packed `u64` words used to rebuild the heap mirror on upgrade.
+//! the other `ic-stable-*` crates. The journal stores **5-byte** records ([`JOURNAL_RECORD_RAW_MASK`]);
+//! the snapshot stores the current packed `u64` words starting at an **8-byte aligned** offset.
 //!
 //! # Type parameters
 //!
@@ -85,8 +87,12 @@
 mod bitset;
 mod memory;
 
-/// Bit mask for the payload field in a packed journal record (61 low bits; tag/value use the top bits).
-pub const JOURNAL_PAYLOAD_MASK: u64 = (1u64 << 61) - 1;
+/// Number of journal slots on stable memory (compile-time constant). Must match the `u64` at
+/// header offset 20 on disk.
+pub const JOURNAL_CAP_SLOTS: usize = 4096;
+
+/// Bit mask for one on-disk journal record: **40 low bits** of a little-endian 5-byte encoding.
+pub const JOURNAL_RECORD_RAW_MASK: u64 = (1u64 << 40) - 1;
 
 /// Maximum exclusive logical length (`len_bits`) and maximum `SetLen` value supported by the API.
 ///

@@ -4,10 +4,10 @@
 //!
 //! - a stable header with layout metadata,
 //! - a packed `u64` snapshot of the bitset words,
-//! - an append-only journal of packed `u64` records for pending `set`, `truncate`, and `remove`
+//! - an append-only journal of **5-byte** packed records for pending `set`, `truncate`, and `remove`
 //!   updates.
 //!
-//! Each packed journal record stores a payload masked by [`crate::JOURNAL_PAYLOAD_MASK`]; the
+//! Each journal record is 40 little-endian bits (see [`crate::JOURNAL_RECORD_RAW_MASK`]); the
 //! API allows bit indices up to `u32::MAX` and exclusive logical length up to `u32::MAX + 1`
 //! ([`crate::JOURNAL_LEN_MAX`]).
 //!
@@ -16,8 +16,8 @@
 //! heap back into stable memory once the journal is full.
 
 use crate::memory::{
-    GrowFailed, grow_memory_to_at_least_bytes, read_u64, read_u64_words_into, read_u64_words_vec,
-    write, write_u64, write_u64_words_direct, write_zero_words,
+    GrowFailed, grow_memory_to_at_least_bytes, read_5_bytes, read_u64, read_u64_words_vec, write,
+    write_5_bytes, write_u64, write_u64_words_direct, write_zero_bytes,
 };
 use core::cell::{Cell, Ref, RefCell};
 use core::fmt;
@@ -26,17 +26,14 @@ use ic_stable_structures::Memory;
 const MAGIC: [u8; 3] = *b"SBS";
 const VERSION: u8 = 2;
 const HEADER_SIZE: u64 = 64;
-const JOURNAL_RECORD_SIZE: u64 = 8;
-const DEFAULT_JOURNAL_CAP: u64 = 4096;
-const JOURNAL_REPLAY_CHUNK_WORDS: usize = 128;
-const JOURNAL_KIND_SHIFT: u32 = 62;
-const JOURNAL_VALUE_SHIFT: u32 = 61;
+const JOURNAL_RECORD_SIZE: u64 = 5;
 
 const MAGIC_OFFSET: u64 = 0;
 const VERSION_OFFSET: u64 = 3;
 const LEN_OFFSET: u64 = 4;
 const WORD_CAP_OFFSET: u64 = 12;
-const JOURNAL_CAP_OFFSET: u64 = 20;
+/// Header field: must equal [`crate::JOURNAL_CAP_SLOTS`] as `u64` (fixed journal size on disk).
+const JOURNAL_SLOTS_METADATA_OFFSET: u64 = 20;
 
 #[derive(Clone, Debug)]
 struct HeapState {
@@ -92,9 +89,14 @@ fn journal_offset() -> u64 {
     HEADER_SIZE
 }
 
-/// Start offset of the packed bitset words in stable memory.
-fn data_offset(journal_cap: u64) -> u64 {
-    HEADER_SIZE + journal_cap.saturating_mul(JOURNAL_RECORD_SIZE)
+fn journal_end_bytes() -> u64 {
+    journal_offset().saturating_add((crate::JOURNAL_CAP_SLOTS as u64).saturating_mul(JOURNAL_RECORD_SIZE))
+}
+
+/// Start of the packed `u64` snapshot; always 8-byte aligned after zero padding.
+fn snapshot_base() -> u64 {
+    let end = journal_end_bytes();
+    (end + 7) & !7
 }
 
 /// Converts a bit index into `(word_index, bit_index)`.
@@ -128,8 +130,8 @@ fn read_header<M: Memory>(memory: &M) -> ([u8; 3], u8, u64, u64, u64) {
     memory.read(VERSION_OFFSET, &mut version);
     let len_bits = read_u64(memory, LEN_OFFSET);
     let word_cap = read_u64(memory, WORD_CAP_OFFSET);
-    let journal_cap = read_u64(memory, JOURNAL_CAP_OFFSET);
-    (magic, version[0], len_bits, word_cap, journal_cap)
+    let journal_slots = read_u64(memory, JOURNAL_SLOTS_METADATA_OFFSET);
+    (magic, version[0], len_bits, word_cap, journal_slots)
 }
 
 /// Writes the stable header fields.
@@ -137,13 +139,16 @@ fn write_header<M: Memory>(
     memory: &M,
     len_bits: u64,
     word_cap: u64,
-    journal_cap: u64,
 ) -> Result<(), GrowFailed> {
     write(memory, MAGIC_OFFSET, &MAGIC);
     write(memory, VERSION_OFFSET, &[VERSION]);
     write_u64(memory, LEN_OFFSET, len_bits);
     write_u64(memory, WORD_CAP_OFFSET, word_cap);
-    write_u64(memory, JOURNAL_CAP_OFFSET, journal_cap);
+    write_u64(
+        memory,
+        JOURNAL_SLOTS_METADATA_OFFSET,
+        crate::JOURNAL_CAP_SLOTS as u64,
+    );
     Ok(())
 }
 
@@ -155,8 +160,10 @@ enum JournalTag {
     Remove = 3,
 }
 
+/// 5-byte journal record (40 bits LE). Same bit layout as `ic-stable-roaring`; `tag` includes
+/// `Remove = 3`. Replay ends at five zero bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct JournalRecord(u64);
+struct JournalRecord([u8; 5]);
 
 impl JournalRecord {
     fn set_len(len: u64) -> Self {
@@ -164,47 +171,70 @@ impl JournalRecord {
             len <= crate::JOURNAL_LEN_MAX,
             "bitset length exceeds supported u32 index space"
         );
-        Self::pack(JournalTag::SetLen, false, len)
+        let payload_lo = len as u32;
+        let len_hi = ((len >> 32) & 1) as u32;
+        Self::pack_fields(JournalTag::SetLen, false, payload_lo, len_hi)
     }
 
     fn set_bit(index: u32, value: bool) -> Self {
-        Self::pack(JournalTag::SetBit, value, u64::from(index))
+        Self::pack_fields(JournalTag::SetBit, value, index, 0)
     }
 
     fn remove(index: u32) -> Self {
-        Self::pack(JournalTag::Remove, false, u64::from(index))
+        Self::pack_fields(JournalTag::Remove, false, index, 0)
     }
 
-    fn pack(tag: JournalTag, value: bool, payload: u64) -> Self {
-        debug_assert!(payload <= crate::JOURNAL_PAYLOAD_MASK);
-        let raw = ((tag as u64) << JOURNAL_KIND_SHIFT)
-            | (u64::from(value) << JOURNAL_VALUE_SHIFT)
-            | (payload & crate::JOURNAL_PAYLOAD_MASK);
-        Self(raw)
+    fn pack_fields(tag: JournalTag, value: bool, payload_lo: u32, len_hi: u32) -> Self {
+        let raw = (payload_lo as u64)
+            | (((len_hi & 1) as u64) << 32)
+            | (((value as u64) & 1) << 37)
+            | (((tag as u64) & 3) << 38);
+        Self::from_raw(raw)
+    }
+
+    fn from_raw(raw: u64) -> Self {
+        let raw = raw & crate::JOURNAL_RECORD_RAW_MASK;
+        let b = raw.to_le_bytes();
+        Self([b[0], b[1], b[2], b[3], b[4]])
+    }
+
+    fn raw(&self) -> u64 {
+        let mut w = [0u8; 8];
+        w[..5].copy_from_slice(&self.0);
+        u64::from_le_bytes(w) & crate::JOURNAL_RECORD_RAW_MASK
     }
 
     fn unpack(self) -> Result<(JournalTag, bool, u64), InitError> {
-        let raw_tag = (self.0 >> JOURNAL_KIND_SHIFT) & 0b11;
-        let tag = match raw_tag {
-            0 => JournalTag::Empty,
+        let raw = self.raw();
+        if raw == 0 {
+            return Ok((JournalTag::Empty, false, 0));
+        }
+        let reserved = (raw >> 33) & 0xF;
+        if reserved != 0 {
+            return Err(InitError::InvalidLayout);
+        }
+        let tag_bits = (raw >> 38) & 3;
+        let tag = match tag_bits {
+            0 => return Err(InitError::InvalidLayout),
             1 => JournalTag::SetLen,
             2 => JournalTag::SetBit,
             3 => JournalTag::Remove,
             _ => return Err(InitError::InvalidLayout),
         };
-        let value = ((self.0 >> JOURNAL_VALUE_SHIFT) & 1) != 0;
-        let payload = self.0 & crate::JOURNAL_PAYLOAD_MASK;
+        let value = ((raw >> 37) & 1) != 0;
+        let len_hi = (raw >> 32) & 1;
+        let payload_lo = raw as u32;
+        let payload = match tag {
+            JournalTag::SetLen => (len_hi << 32) | (payload_lo as u64),
+            JournalTag::SetBit | JournalTag::Remove => {
+                if len_hi != 0 {
+                    return Err(InitError::InvalidLayout);
+                }
+                payload_lo as u64
+            }
+            JournalTag::Empty => unreachable!(),
+        };
         Ok((tag, value, payload))
-    }
-
-    fn to_bytes(self) -> [u8; JOURNAL_RECORD_SIZE as usize] {
-        self.0.to_le_bytes()
-    }
-
-    fn from_bytes(bytes: &[u8]) -> Self {
-        let mut raw = [0u8; 8];
-        raw.copy_from_slice(bytes);
-        Self(u64::from_le_bytes(raw))
     }
 }
 
@@ -225,7 +255,6 @@ pub struct Bitset<M: Memory> {
     memory: M,
     state: RefCell<HeapState>,
     journal_len: Cell<u64>,
-    journal_cap: u64,
 }
 
 /// Borrowed view for repeated membership checks against a [`Bitset`].
@@ -254,7 +283,7 @@ impl<M: Memory> fmt::Debug for Bitset<M> {
             .field("len_bits", &st.len_bits)
             .field("word_cap", &st.word_cap)
             .field("journal_len", &self.journal_len.get())
-            .field("journal_cap", &self.journal_cap)
+            .field("journal_cap_slots", &crate::JOURNAL_CAP_SLOTS)
             .finish()
     }
 }
@@ -262,22 +291,17 @@ impl<M: Memory> fmt::Debug for Bitset<M> {
 impl<M: Memory> Bitset<M> {
     /// Creates a new empty bitset using the provided stable memory.
     pub fn new(memory: M) -> Result<Self, GrowFailed> {
-        Self::new_with_journal_capacity(memory, DEFAULT_JOURNAL_CAP)
-    }
-
-    /// Creates a new empty bitset with an explicit journal capacity.
-    pub(crate) fn new_with_journal_capacity(
-        memory: M,
-        journal_cap: u64,
-    ) -> Result<Self, GrowFailed> {
-        let journal_cap = journal_cap.max(1);
-        write_header(&memory, 0, 0, journal_cap)?;
-        grow_memory_to_at_least_bytes(&memory, data_offset(journal_cap))?;
+        write_header(&memory, 0, 0)?;
+        let snap = snapshot_base();
+        grow_memory_to_at_least_bytes(&memory, snap)?;
+        let journal_end = journal_end_bytes();
+        if journal_end < snap {
+            write_zero_bytes(&memory, journal_end, snap - journal_end)?;
+        }
         Ok(Self {
             memory,
             state: RefCell::new(HeapState::new()),
             journal_len: Cell::new(0),
-            journal_cap,
         })
     }
 
@@ -286,7 +310,7 @@ impl<M: Memory> Bitset<M> {
         if memory.size() == 0 {
             return Self::new(memory).map_err(|_| InitError::OutOfMemory);
         }
-        let (magic, version, len_bits, word_cap, journal_cap) = read_header(&memory);
+        let (magic, version, len_bits, word_cap, journal_slots) = read_header(&memory);
         if magic != MAGIC {
             return Err(InitError::BadMagic {
                 actual: magic,
@@ -296,10 +320,10 @@ impl<M: Memory> Bitset<M> {
         if version != VERSION {
             return Err(InitError::IncompatibleVersion(version));
         }
-        if journal_cap == 0 {
+        if journal_slots != crate::JOURNAL_CAP_SLOTS as u64 {
             return Err(InitError::InvalidLayout);
         }
-        let need = data_offset(journal_cap).saturating_add(word_cap.saturating_mul(8));
+        let need = snapshot_base().saturating_add(word_cap.saturating_mul(8));
         let size_bytes = memory
             .size()
             .checked_mul(crate::memory::WASM_PAGE_SIZE)
@@ -310,7 +334,7 @@ impl<M: Memory> Bitset<M> {
         if len_bits > crate::JOURNAL_LEN_MAX {
             return Err(InitError::InvalidLayout);
         }
-        let words = read_u64_words_vec(&memory, data_offset(journal_cap), word_cap);
+        let words = read_u64_words_vec(&memory, snapshot_base(), word_cap);
         let mut state = HeapState {
             len_bits,
             word_cap,
@@ -319,39 +343,20 @@ impl<M: Memory> Bitset<M> {
         clear_suffix(&mut state.words, state.len_bits);
 
         let mut journal_len = 0u64;
-        let mut remaining = journal_cap as usize;
-        let mut offset = journal_offset();
-        let mut journal_buf = [0u64; JOURNAL_REPLAY_CHUNK_WORDS];
-        let mut journal_scratch = vec![0u8; JOURNAL_REPLAY_CHUNK_WORDS * 8];
-        while remaining > 0 {
-            let take = remaining.min(JOURNAL_REPLAY_CHUNK_WORDS);
-            read_u64_words_into(
-                &memory,
-                offset,
-                &mut journal_buf[..take],
-                &mut journal_scratch,
-            );
-            for raw in &journal_buf[..take] {
-                let raw = *raw;
-                if raw == 0 {
-                    remaining = 0;
-                    break;
-                }
-                let rec = JournalRecord::from_bytes(&raw.to_le_bytes());
-                apply_record(&mut state, rec)?;
-                journal_len += 1;
-            }
-            if remaining == 0 {
+        let mut slot = [0u8; 5];
+        for i in 0..crate::JOURNAL_CAP_SLOTS {
+            let base = journal_offset() + (i as u64) * JOURNAL_RECORD_SIZE;
+            read_5_bytes(&memory, base, &mut slot);
+            if slot == [0u8; 5] {
                 break;
             }
-            offset += (take as u64) * 8;
-            remaining -= take;
+            apply_record(&mut state, JournalRecord(slot))?;
+            journal_len += 1;
         }
         Ok(Self {
             memory,
             state: RefCell::new(state),
             journal_len: Cell::new(journal_len),
-            journal_cap,
         })
     }
 
@@ -509,7 +514,7 @@ impl<M: Memory> Bitset<M> {
             return Ok(());
         }
         let new_cap = need_words.max(st.word_cap.max(1).saturating_mul(2));
-        let need_bytes = data_offset(self.journal_cap) + new_cap.saturating_mul(8);
+        let need_bytes = snapshot_base().saturating_add(new_cap.saturating_mul(8));
         grow_memory_to_at_least_bytes(&self.memory, need_bytes)?;
         let old_cap = st.word_cap as usize;
         let new_cap_usize = new_cap as usize;
@@ -526,19 +531,19 @@ impl<M: Memory> Bitset<M> {
 
     /// Appends a packed mutation record to the journal.
     fn append_record(&self, record: JournalRecord) -> Result<(), GrowFailed> {
-        if self.journal_len.get() >= self.journal_cap {
+        if self.journal_len.get() >= crate::JOURNAL_CAP_SLOTS as u64 {
             self.checkpoint()?;
         }
         let idx = self.journal_len.get();
         let base = journal_offset() + idx * JOURNAL_RECORD_SIZE;
-        write_u64(&self.memory, base, u64::from_le_bytes(record.to_bytes()));
+        write_5_bytes(&self.memory, base, &record.0)?;
         self.journal_len.set(idx + 1);
         Ok(())
     }
 
     /// Checkpoints the heap mirror when the journal reaches capacity.
     fn maybe_checkpoint(&self) -> Result<(), GrowFailed> {
-        if self.journal_len.get() >= self.journal_cap {
+        if self.journal_len.get() >= crate::JOURNAL_CAP_SLOTS as u64 {
             self.checkpoint()?;
         }
         Ok(())
@@ -548,13 +553,17 @@ impl<M: Memory> Bitset<M> {
     fn checkpoint(&self) -> Result<(), GrowFailed> {
         let (len_bits, word_cap) = {
             let st = self.state.borrow();
-            let word_offset = data_offset(self.journal_cap);
+            let word_offset = snapshot_base();
             write_u64_words_direct(&self.memory, word_offset, &st.words);
             (st.len_bits, st.word_cap)
         };
         write_u64(&self.memory, LEN_OFFSET, len_bits);
         write_u64(&self.memory, WORD_CAP_OFFSET, word_cap);
-        write_zero_words(&self.memory, journal_offset(), self.journal_len.get());
+        write_zero_bytes(
+            &self.memory,
+            journal_offset(),
+            self.journal_len.get() * JOURNAL_RECORD_SIZE,
+        )?;
         self.journal_len.set(0);
         Ok(())
     }
@@ -753,7 +762,7 @@ mod tests {
     #[test]
     fn insert_and_remove_roundtrip() {
         let mem = VectorMemory::default();
-        let bs = Bitset::new_with_journal_capacity(mem, 8).unwrap();
+        let bs = Bitset::new(mem).unwrap();
         bs.insert(0).unwrap();
         bs.insert(1).unwrap();
         bs.insert(2).unwrap();
@@ -778,7 +787,7 @@ mod tests {
     #[test]
     fn remove_shifts_across_word_boundary() {
         let mem = VectorMemory::default();
-        let bs = Bitset::new_with_journal_capacity(mem, 8).unwrap();
+        let bs = Bitset::new(mem).unwrap();
         for index in 0..80 {
             if matches!(index, 60..=67) {
                 bs.insert(index as u32).unwrap();
@@ -810,7 +819,7 @@ mod tests {
     #[test]
     fn clear_only_unsets_bit() {
         let mem = VectorMemory::default();
-        let bs = Bitset::new_with_journal_capacity(mem, 8).unwrap();
+        let bs = Bitset::new(mem).unwrap();
         bs.insert(0).unwrap();
         bs.insert(1).unwrap();
         bs.insert(2).unwrap();
@@ -830,7 +839,7 @@ mod tests {
     #[test]
     fn truncate_replays_after_reopen() {
         let mem = VectorMemory::default();
-        let bs = Bitset::new_with_journal_capacity(mem, 8).unwrap();
+        let bs = Bitset::new(mem).unwrap();
         bs.insert(1).unwrap();
         bs.insert(70).unwrap();
         bs.truncate(4).unwrap();
@@ -843,25 +852,26 @@ mod tests {
     }
 
     #[test]
-    fn checkpoint_clears_remove_journal() {
+    fn checkpoint_roundtrip_after_full_journal() {
         let mem = VectorMemory::default();
-        let bs = Bitset::new_with_journal_capacity(mem, 2).unwrap();
-        bs.insert(0).unwrap();
-        bs.insert(1).unwrap();
-        bs.insert(2).unwrap();
-        bs.remove(1).unwrap();
-        bs.remove(0).unwrap();
+        let bs = Bitset::new(mem).unwrap();
+        for i in 0..crate::JOURNAL_CAP_SLOTS {
+            bs.insert(i as u32).unwrap();
+        }
+        bs.insert(crate::JOURNAL_CAP_SLOTS as u32).unwrap();
+        assert_eq!(bs.len(), (crate::JOURNAL_CAP_SLOTS + 1) as u64);
+        assert!(bs.contains(crate::JOURNAL_CAP_SLOTS as u32));
         let mem = bs.into_memory();
         let bs = reopen(mem);
+        assert_eq!(bs.len(), (crate::JOURNAL_CAP_SLOTS + 1) as u64);
+        assert!(bs.contains(crate::JOURNAL_CAP_SLOTS as u32));
         assert!(bs.contains(0));
-        assert!(!bs.contains(1));
-        assert_eq!(bs.len(), 1);
     }
 
     #[test]
     fn ensure_len_replays_after_reopen() {
         let mem = VectorMemory::default();
-        let bs = Bitset::new_with_journal_capacity(mem, 8).unwrap();
+        let bs = Bitset::new(mem).unwrap();
         bs.ensure_len(4).unwrap();
         assert_eq!(bs.len(), 4);
         let mem = bs.into_memory();
@@ -874,7 +884,7 @@ mod tests {
     #[test]
     fn mixed_remove_and_set_replays_after_reopen() {
         let mem = VectorMemory::default();
-        let bs = Bitset::new_with_journal_capacity(mem, 8).unwrap();
+        let bs = Bitset::new(mem).unwrap();
         bs.insert(0).unwrap();
         bs.insert(1).unwrap();
         bs.insert(3).unwrap();

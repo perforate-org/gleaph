@@ -9,7 +9,8 @@ The primary type is [`RoaringBitmap`], also exported as [`StableRoaringBitmap`].
 ## What it stores
 
 The bitmap keeps its stable-memory state in a compact header, an append-only
-journal, and a serialized [`RoaringBitmap`](https://docs.rs/roaring/latest/roaring/bitmap/struct.RoaringBitmap.html) snapshot. Reopen reads the snapshot
+**5-byte-per-record** journal (with up to 7 bytes of zero padding before the snapshot so the
+serialized snapshot stays 8-byte aligned), and a serialized [`RoaringBitmap`](https://docs.rs/roaring/latest/roaring/bitmap/struct.RoaringBitmap.html) snapshot. Reopen reads the snapshot
 back into memory and replays any pending journal entries. Bit indices are `u32`;
 the layout header version byte is unchanged from earlier releases, but the snapshot
 bytes are **not** compatible with older `RoaringTreemap` snapshots—reopen may fail

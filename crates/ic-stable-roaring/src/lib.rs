@@ -24,28 +24,30 @@
 //! ----------------------------------------
 //! Length (`len_bits`)         ↕ 8 bytes
 //! ----------------------------------------
-//! Journal capacity            ↕ 8 bytes
+//! Journal slots (fixed)       ↕ 8 bytes (`JOURNAL_CAP_SLOTS` as `u64`)
 //! ----------------------------------------
 //! Snapshot length             ↕ 8 bytes
 //! ----------------------------------------
 //! Reserved space              ↕ 36 bytes
 //! ---------------------------------------- <- Address 64
-//! Mutation record 0           ↕ 8 bytes
+//! Mutation record 0           ↕ 5 bytes
 //! ----------------------------------------
-//! Mutation record 1           ↕ 8 bytes
+//! Mutation record 1           ↕ 5 bytes
 //! ----------------------------------------
 //! ...
 //! ----------------------------------------
-//! Mutation record N-1         ↕ 8 bytes
-//! ---------------------------------------- <- Address 64 + journal_cap * 8
+//! Mutation record N-1         ↕ 5 bytes
+//! ---------------------------------------- <- 64 + JOURNAL_CAP_SLOTS * 5 (not always 8-aligned)
+//! Zero padding                ↕ 0..7 bytes
+//! ---------------------------------------- <- snapshot_base = align_up(64 + N*5, 8)
 //! Serialized Roaring snapshot bytes
 //! ----------------------------------------
 //! ```
 //!
 //! The snapshot is the canonical `RoaringBitmap` serialization (not wire-compatible with older
-//! `RoaringTreemap` snapshots at the same layout version). The journal stores fixed-width packed
-//! `u64` records (61-bit payload masked by [`JOURNAL_PAYLOAD_MASK`]; lengths bounded by
-//! [`JOURNAL_LEN_MAX`]) so reopen can replay pending mutations before the next checkpoint.
+//! `RoaringTreemap` snapshots at the same layout version). The journal stores **5-byte** packed
+//! records (40 low bits; see module-level [`JOURNAL_RECORD_RAW_MASK`]); logical lengths are
+//! bounded by [`JOURNAL_LEN_MAX`]. Replay stops at the first all-zero record.
 //!
 //! # Type parameters
 //!
@@ -80,8 +82,12 @@
 pub mod bitmap;
 mod memory;
 
-/// Bit mask for the payload field in a packed journal record (61 low bits; tag/value use the top bits).
-pub const JOURNAL_PAYLOAD_MASK: u64 = (1u64 << 61) - 1;
+/// Number of journal slots on stable memory (compile-time constant). Must match the `u64` at
+/// header offset 12 on disk.
+pub const JOURNAL_CAP_SLOTS: usize = 4096;
+
+/// Bit mask for one on-disk journal record: **40 low bits** of a little-endian 5-byte encoding.
+pub const JOURNAL_RECORD_RAW_MASK: u64 = (1u64 << 40) - 1;
 
 /// Maximum exclusive logical length (`len_bits`) and maximum `SetLen` value supported by the API.
 ///

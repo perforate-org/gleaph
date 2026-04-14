@@ -13,14 +13,16 @@ pub(crate) fn read_u64<M: Memory>(m: &M, offset: u64) -> u64 {
     u64::from_le_bytes(buf)
 }
 
-pub(crate) fn read_u64_words_into<M: Memory>(m: &M, offset: u64, words: &mut [u64]) {
-    let mut base = offset;
-    let mut buf = [0u8; 8];
-    for word in words {
-        m.read(base, &mut buf);
-        *word = u64::from_le_bytes(buf);
-        base += 8;
-    }
+pub(crate) fn read_5_bytes<M: Memory>(m: &M, offset: u64, dst: &mut [u8; 5]) {
+    m.read(offset, dst.as_mut_slice());
+}
+
+pub(crate) fn write_5_bytes<M: Memory>(
+    memory: &M,
+    offset: u64,
+    bytes: &[u8; 5],
+) -> Result<(), GrowFailed> {
+    safe_write(memory, offset, bytes.as_slice())
 }
 
 pub(crate) fn safe_write<M: Memory>(

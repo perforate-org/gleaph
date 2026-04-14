@@ -13,35 +13,37 @@ pub(crate) fn read_u64<M: Memory>(m: &M, offset: u64) -> u64 {
     u64::from_le_bytes(buf)
 }
 
-pub(crate) fn read_u64_words_into<M: Memory>(
+pub(crate) fn read_5_bytes<M: Memory>(m: &M, offset: u64, dst: &mut [u8; 5]) {
+    m.read(offset, dst.as_mut_slice());
+}
+
+pub(crate) fn write_5_bytes<M: Memory>(
+    memory: &M,
+    offset: u64,
+    bytes: &[u8; 5],
+) -> Result<(), GrowFailed> {
+    safe_write(memory, offset, bytes.as_slice())
+}
+
+pub(crate) fn write_zero_bytes<M: Memory>(
     m: &M,
     offset: u64,
-    words: &mut [u64],
-    scratch: &mut [u8],
-) {
-    let chunk_words = (scratch.len() / 8).clamp(1, BULK_WORDS);
-    let mut remaining = words;
-    let mut base = offset;
-    while !remaining.is_empty() {
-        let take = remaining.len().min(chunk_words);
-        #[cfg(target_endian = "little")]
-        {
-            let bytes = unsafe {
-                slice::from_raw_parts_mut(remaining[..take].as_mut_ptr() as *mut u8, take * 8)
-            };
-            m.read(base, bytes);
-        }
-        #[cfg(not(target_endian = "little"))]
-        {
-            let bytes = &mut scratch[..take * 8];
-            m.read(base, bytes);
-            for (slot, chunk) in remaining[..take].iter_mut().zip(bytes.chunks_exact(8)) {
-                *slot = u64::from_le_bytes(chunk.try_into().unwrap());
-            }
-        }
-        base += (take as u64) * 8;
-        remaining = &mut remaining[take..];
+    byte_len: u64,
+) -> Result<(), GrowFailed> {
+    if byte_len == 0 {
+        return Ok(());
     }
+    static ZERO_BYTES: OnceLock<Box<[u8]>> = OnceLock::new();
+    let zero_bytes = ZERO_BYTES.get_or_init(|| vec![0u8; BULK_WORDS * 8].into_boxed_slice());
+    let mut remaining = byte_len as usize;
+    let mut base = offset;
+    while remaining > 0 {
+        let take = remaining.min(BULK_WORDS * 8);
+        safe_write(m, base, &zero_bytes[..take])?;
+        base += take as u64;
+        remaining -= take;
+    }
+    Ok(())
 }
 
 pub(crate) fn read_u64_words_vec<M: Memory>(m: &M, offset: u64, word_count: u64) -> Vec<u64> {
@@ -105,22 +107,6 @@ pub(crate) fn write_u64_words_direct<M: Memory>(m: &M, offset: u64, words: &[u64
         }
         base += (take as u64) * 8;
         remaining = &remaining[take..];
-    }
-}
-
-pub(crate) fn write_zero_words<M: Memory>(m: &M, offset: u64, word_count: u64) {
-    if word_count == 0 {
-        return;
-    }
-    static ZERO_BYTES: OnceLock<Box<[u8]>> = OnceLock::new();
-    let zero_bytes = ZERO_BYTES.get_or_init(|| vec![0u8; BULK_WORDS * 8].into_boxed_slice());
-    let mut remaining = word_count as usize;
-    let mut base = offset;
-    while remaining > 0 {
-        let take = remaining.min(BULK_WORDS);
-        write(m, base, &zero_bytes[..take * 8]);
-        base += (take as u64) * 8;
-        remaining -= take;
     }
 }
 

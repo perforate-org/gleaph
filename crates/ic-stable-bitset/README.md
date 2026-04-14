@@ -9,8 +9,9 @@ The primary type is [`Bitset`], also exported as [`StableBitset`].
 ## What it stores
 
 The bitset keeps its stable-memory state in a compact header, an append-only
-journal, and a packed `u64` snapshot. Journal records are packed `u64` values,
-and reopen scans the journal until the first empty slot.
+**5-byte-per-record** journal (with optional zero padding so the `u64` snapshot
+starts on an 8-byte boundary), and a packed `u64` snapshot. Reopen scans the
+journal until the first all-zero record.
 
 ## Operations
 
@@ -40,8 +41,7 @@ and reopen scans the journal until the first empty slot.
 - The type is intended for single-writer use.
 - The stable memory region should not be mutated through another wrapper while a
   bitset instance is active.
-- Mutation records store packed `u64` values and are bounded by the journal
-  capacity.
+- Mutation records are five bytes each and are bounded by the journal capacity.
 - Bit indices are `u32`; logical length is capped by [`JOURNAL_LEN_MAX`](crate::JOURNAL_LEN_MAX) (`u32::MAX + 1`).
 
 ## Example
