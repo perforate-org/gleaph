@@ -77,7 +77,7 @@ fn row_tombstone_queue_supports_delete_vertex_and_gc_step() {
         .graph()
         .forward_dgap()
         .vertices
-        .get_dense(0)
+        .get(0)
         .unwrap()
         .is_tombstone());
 

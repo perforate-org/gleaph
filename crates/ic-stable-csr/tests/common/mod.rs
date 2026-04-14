@@ -20,7 +20,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use ic_stable_csr::{
-    Bound, DgapGraphMemories, DgapStores, Memory, Storable, VectorMemory,
+    Bound, DgapGraphMemories, DgapStores, Memory, Storable, VectorMemory, VertexId,
     traits::{CsrEdge, CsrEdgeTombstone, CsrEdgeUndirected, CsrVertex, CsrVertexTombstone},
 };
 
@@ -120,11 +120,11 @@ impl CsrEdge for TestEdge {
         bytes.copy_from_slice(&self.0);
     }
 
-    fn neighbor_vid(&self) -> usize {
-        self.0[0] as usize
+    fn neighbor_vid(&self) -> VertexId {
+        self.0[0] as VertexId
     }
 
-    fn with_neighbor_vid(self, vid: usize) -> Self {
+    fn with_neighbor_vid(self, vid: VertexId) -> Self {
         let mut b = self.0;
         b[0] = vid as u8;
         Self(b)
@@ -187,11 +187,11 @@ pub fn assert_dense_vertex_bases_non_decreasing<V, E, Mvs, M1, M2>(
     if n < 2 {
         return;
     }
-    let mut prev = stores.vertices.get_dense(0).unwrap().base_slot_start();
+    let mut prev = stores.vertices.get(0).unwrap().base_slot_start();
     for j in 1..n {
         let b = stores
             .vertices
-            .get_dense(j as u32)
+            .get(j as u64)
             .unwrap()
             .base_slot_start();
         assert!(

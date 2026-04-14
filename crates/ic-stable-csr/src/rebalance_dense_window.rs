@@ -12,10 +12,9 @@ use std::rc::Rc;
 use common::{
     TestEdge as TE, TestVertex as TV, assert_dense_vertex_bases_non_decreasing, dual_edge_memories,
 };
-use ic_stable_slot_map::SlotMap;
-
 use crate::{
-    CsrEdgeSlotTombstoneScan, DgapEdgeStore, DgapStores, SegmentEdgeCounts, VectorMemory,
+    CsrEdgeSlotTombstoneScan, DgapEdgeStore, DgapStores, SegmentEdgeCounts, StableVec,
+    VectorMemory, VertexCount, VertexId,
     dgap::{RebalanceDecision, rebalance_decision, recount_segment_edge_counts_column},
     traits::CsrEdge,
 };
@@ -98,7 +97,7 @@ fn assert_sec_matches_recount(
 #[test]
 fn rebalance_weighted_direct_preserves_dense_bases_after_rebalance_window() {
     let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
-    let vertices = SlotMap::new(mv).unwrap();
+    let vertices = StableVec::new(mv);
     let edges = TeStore::new(dual_edge_memories());
     edges.format_new(512, 2, 4, 0).expect("format_new");
     let stores = DgapStores::new(vertices, edges);
@@ -175,7 +174,12 @@ fn rebalance_weighted_direct_preserves_dense_bases_after_rebalance_window() {
 
     stores
         .edges
-        .rebalance_weighted(&stores.vertices, left, right, pma_idx)
+        .rebalance_weighted(
+            &stores.vertices,
+            left as VertexId,
+            right as VertexCount,
+            pma_idx,
+        )
         .expect("rebalance_weighted");
 
     stores.sync_pma_meta().unwrap();

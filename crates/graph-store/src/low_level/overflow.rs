@@ -127,7 +127,7 @@ mod tests {
 
         assert_eq!(entry.edge_id, 42);
         assert_eq!(u64::from(entry.entry.target), 9);
-        assert_eq!(entry.entry.meta.label_id(), 3);
+        assert_eq!(entry.entry.meta.local_id(), Some(3));
         assert!(entry.next.is_empty());
     }
 

@@ -2,14 +2,13 @@
 //!
 //! ```text
 //! [`DgapStores`]
-//!   ├─ vertices: [`ic_stable_slot_map::SlotMap`] V1 on `M_v` (`SSM` magic)
+//!   ├─ vertices: [`crate::StableVec`] on `M_v` (`SVC` magic)
 //!   └─ edges:    [`DgapGraphMemories`] — two `Memory` values for DGAP `M_e` (see crate root diagram)
 //! ```
 
 use std::fmt;
 use std::marker::PhantomData;
 
-use ic_stable_slot_map::SlotMap;
 use ic_stable_structures::Memory;
 
 pub mod csr_graph;
@@ -31,6 +30,7 @@ pub use insert::{CsrInsertError, insert_edge_into_slab, insert_edge_into_slab_co
 
 use crate::dgap::{DgapEdgeStore, DgapGraphMemories};
 use crate::traits::{CsrEdge, CsrVertex};
+use crate::{StableVec, VertexCount, VertexId};
 
 /// Failure from [`DgapStores`] graph mutation (CSR vertex column + DGAP PMA / edge region).
 #[derive(Debug, PartialEq, Eq)]
@@ -50,7 +50,7 @@ impl std::error::Error for DgapStoresError {}
 
 /// Two-way split: vertex table (`M_v`) and DGAP edge bundle (`M_e` = two [`Memory`] regions).
 ///
-/// Vertices live in [`SlotMap`] (`SSM`); use append-only [`SlotMap::insert`] via [`Self::insert_vertex`].
+/// Vertices live in [`StableVec`] (`SVC`); use append-only [`StableVec::push`] via [`Self::insert_vertex`].
 ///
 /// **Vertex capacity:** at most [`DgapEdgeStore::max_vertex_slots`] rows for the edge header’s
 /// `segment_count` and `segment_size` (`dgap_leaf_segment_id` must stay in range). Size
@@ -63,7 +63,7 @@ where
     M1: Memory,
     M2: Memory,
 {
-    pub vertices: SlotMap<V, Mvs>,
+    pub vertices: StableVec<V, Mvs>,
     pub edges: DgapEdgeStore<E, M1, M2>,
     _vertex: PhantomData<V>,
 }
@@ -77,7 +77,7 @@ where
     M2: Memory,
 {
     #[doc(hidden)]
-    pub fn new(vertices: SlotMap<V, Mvs>, edges: DgapEdgeStore<E, M1, M2>) -> Self {
+    pub fn new(vertices: StableVec<V, Mvs>, edges: DgapEdgeStore<E, M1, M2>) -> Self {
         Self {
             vertices,
             edges,
@@ -98,8 +98,8 @@ where
     /// Recompute SEC only for DGAP segments touched by vertices `[left, right)` (`right` exclusive).
     pub fn sync_pma_meta_for_vertex_range(
         &self,
-        left: usize,
-        right: usize,
+        left: VertexId,
+        right: VertexCount,
     ) -> Result<(), &'static str> {
         self.edges
             .sync_pma_edge_counts_for_vertex_range(&self.vertices, left, right)
@@ -112,7 +112,7 @@ where
     }
 
     /// Insert one edge for `vid` (CSR slab or DGAP segment log) and run PMA maintenance.
-    pub fn insert_edge(&self, vid: usize, edge: E) -> Result<(), DgapStoresError> {
+    pub fn insert_edge(&self, vid: VertexId, edge: E) -> Result<(), DgapStoresError> {
         self.edges
             .insert_edge_and_maintain(&self.vertices, vid, edge)
             .map_err(DgapStoresError::Graph)
@@ -122,7 +122,7 @@ where
     /// see [`DgapEdgeStore::insert_edges_and_maintain`].
     pub fn insert_edges<I>(&self, edges: I) -> Result<(), DgapStoresError>
     where
-        I: IntoIterator<Item = (usize, E)>,
+        I: IntoIterator<Item = (VertexId, E)>,
     {
         self.edges
             .insert_edges_and_maintain(&self.vertices, edges)
@@ -135,7 +135,7 @@ where
     /// for the column **before** the push (other fields are taken from `row`). If that tail is not
     /// below `elem_capacity`, [`DgapEdgeStore::resize_double`] is run until there is room.
     ///
-    /// Returns the new vertex id (`vid`) equal to the previous [`SlotMap::len`](ic_stable_slot_map::SlotMap::len).
+    /// Returns the new vertex id (`vid`) equal to the previous [`StableVec::len`].
     ///
     /// To require a caller-supplied base that already matches the append cursor, use
     /// [`Self::insert_vertex_strict`].
@@ -157,7 +157,7 @@ where
             .slab_append_base_slot(&self.vertices)
             .map_err(DgapStoresError::Graph)?;
         let row = row.with_base_slot_start(expected_base);
-        self.append_vertex_row_after_base_checks(new_vid, row, expected_base)
+        self.append_vertex_row_after_base_checks(VertexCount(new_vid), row, expected_base)
     }
 
     /// Like [`Self::insert_vertex`], but **`row.base_slot_start()` must already equal**
@@ -186,7 +186,7 @@ where
             ));
         }
 
-        self.append_vertex_row_after_base_checks(new_vid, row, expected_base)
+        self.append_vertex_row_after_base_checks(VertexCount(new_vid), row, expected_base)
     }
 
     /// Benchmark/fixture-only fast path for appending many empty tail rows.
@@ -247,21 +247,20 @@ where
         for i in 0..count {
             let row = row_template.with_base_slot_start(start_base + i as u64);
             self.vertices
-                .insert(&row)
-                .map_err(|_| DgapStoresError::Graph("vertex column grow failed"))?;
+                .push(&row);
         }
 
         self.edges
             .refresh_slab_occupied_tail_from_column(&self.vertices)
             .map_err(DgapStoresError::Graph)?;
-        self.sync_pma_meta_for_vertex_range(start_vid as usize, end_vid as usize)
+        self.sync_pma_meta_for_vertex_range(VertexId::try_from(start_vid).map_err(|_| DgapStoresError::Graph("vertex id exceeds u32 range"))?, VertexCount(end_vid))
             .map_err(DgapStoresError::Graph)?;
         Ok(())
     }
 
     fn append_vertex_row_after_base_checks(
         &self,
-        new_vid: u64,
+        new_vid: VertexCount,
         row: V,
         expected_base: u64,
     ) -> Result<u64, DgapStoresError> {
@@ -279,17 +278,17 @@ where
         }
 
         self.vertices
-            .insert(&row)
-            .map_err(|_| DgapStoresError::Graph("vertex column grow failed"))?;
+            .push(&row);
 
         self.edges
             .refresh_slab_occupied_tail_from_column(&self.vertices)
             .map_err(DgapStoresError::Graph)?;
 
-        let idx = new_vid as usize;
-        self.sync_pma_meta_for_vertex_range(idx, idx.saturating_add(1))
+        let idx = VertexId::try_from(u64::from(new_vid))
+            .map_err(|_| DgapStoresError::Graph("vertex id exceeds u32 range"))?;
+        self.sync_pma_meta_for_vertex_range(idx, new_vid.saturating_add(1))
             .map_err(DgapStoresError::Graph)?;
 
-        Ok(new_vid)
+        Ok(new_vid.into())
     }
 }

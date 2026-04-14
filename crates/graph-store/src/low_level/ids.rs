@@ -29,59 +29,43 @@ pub struct StableAddr(pub u64);
 /// Packed 40-bit reference to a vertex-table ordinal.
 ///
 /// This is a low-level adjacency reference, not a semantic graph-node id.
-#[allow(clippy::derived_hash_with_manual_eq)]
 #[repr(transparent)]
-#[derive(Clone, Copy, Debug, Hash, Default, Serialize, Deserialize, CandidType)]
-pub struct VertexRef([u8; 5]);
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
+    CandidType,
+)]
+pub struct VertexRef(u32);
 
 impl VertexRef {
-    pub const MAX: u64 = (1u64 << 40) - 1;
+    pub const MAX: u64 = u32::MAX as u64;
 
-    pub const fn new(bytes: [u8; 5]) -> Self {
-        Self(bytes)
+    pub const fn new(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    #[inline]
+    pub const fn to_u32(self) -> u32 {
+        self.0
     }
 
     #[inline]
     pub const fn to_u64(self) -> u64 {
-        let b = self.0;
-        u64::from_be_bytes([0, 0, 0, b[0], b[1], b[2], b[3], b[4]])
+        self.0 as u64
     }
 
     #[inline]
-    pub const fn as_bytes(self) -> [u8; 5] {
-        self.0
+    pub const fn as_bytes(self) -> [u8; 4] {
+        self.0.to_be_bytes()
     }
 
     #[inline]
-    pub const fn to_be_bytes(self) -> [u8; 5] {
-        self.0
+    pub const fn to_be_bytes(self) -> [u8; 4] {
+        self.0.to_be_bytes()
     }
-}
 
-impl PartialEq for VertexRef {
-    #[inline(always)]
-    fn eq(&self, other: &Self) -> bool {
-        unsafe {
-            let a4 = core::ptr::read_unaligned(self.0.as_ptr() as *const u32);
-            let b4 = core::ptr::read_unaligned(other.0.as_ptr() as *const u32);
-            a4 == b4 && *self.0.get_unchecked(4) == *other.0.get_unchecked(4)
-        }
-    }
-}
-
-impl Eq for VertexRef {}
-
-impl Ord for VertexRef {
-    #[inline(always)]
-    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        unsafe {
-            let a4 = u32::from_be(core::ptr::read_unaligned(self.0.as_ptr() as *const u32));
-            let b4 = u32::from_be(core::ptr::read_unaligned(other.0.as_ptr() as *const u32));
-            match a4.cmp(&b4) {
-                core::cmp::Ordering::Equal => self.0.get_unchecked(4).cmp(other.0.get_unchecked(4)),
-                ord => ord,
-            }
-        }
+    #[inline]
+    pub const fn from_be_bytes(bytes: [u8; 4]) -> Self {
+        Self(u32::from_be_bytes(bytes))
     }
 }
 
@@ -90,17 +74,9 @@ impl TryFrom<u64> for VertexRef {
 
     fn try_from(value: u64) -> Result<Self, Self::Error> {
         if value > Self::MAX {
-            return Err("vertex ref exceeds 40-bit packed layout");
+            return Err("vertex ref exceeds 32-bit packed layout");
         }
-        let bytes = value.to_be_bytes();
-        Ok(Self([bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]]))
-    }
-}
-
-impl PartialOrd for VertexRef {
-    #[inline(always)]
-    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        Some(self.cmp(other))
+        Ok(Self(value as u32))
     }
 }
 
@@ -130,13 +106,13 @@ impl From<u32> for VertexRef {
 
 impl From<NodeId> for VertexRef {
     fn from(value: NodeId) -> Self {
-        Self::new(value.as_bytes())
+        Self::new(value.to_u32())
     }
 }
 
 impl From<VertexRef> for NodeId {
     fn from(value: VertexRef) -> Self {
-        NodeId::new(value.as_bytes())
+        NodeId::new(value.to_u32())
     }
 }
 
@@ -212,7 +188,7 @@ impl EdgeRef {
     }
 }
 
-const _: () = assert!(core::mem::size_of::<VertexRef>() == 5);
+const _: () = assert!(core::mem::size_of::<VertexRef>() == 4);
 const _: () = assert!(core::mem::size_of::<EdgeRef>() == 8);
 
 #[cfg(test)]
@@ -221,12 +197,12 @@ mod tests {
     use gleaph_graph_kernel::NodeId;
 
     #[test]
-    fn vertex_ref_roundtrips_40_bit_payload() {
-        let raw = 0x0000_abcd_1234_u64;
-        let vertex = VertexRef::try_from(raw).expect("40-bit value should fit");
+    fn vertex_ref_roundtrips_32_bit_payload() {
+        let raw = 0xabcd_1234_u64;
+        let vertex = VertexRef::try_from(raw).expect("32-bit value should fit");
 
         assert_eq!(u64::from(vertex), raw);
-        assert_eq!(vertex.as_bytes(), [0x00, 0xab, 0xcd, 0x12, 0x34]);
+        assert_eq!(vertex.as_bytes(), [0xab, 0xcd, 0x12, 0x34]);
     }
 
     #[test]

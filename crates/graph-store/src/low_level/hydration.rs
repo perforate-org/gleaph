@@ -1789,8 +1789,8 @@ pub fn decode_vertex_entries(
 
 /// Decodes hot base-edge entries from the fixed-width low-level format.
 ///
-/// Wire layout per entry: **5 bytes** big-endian [`VertexRef`] + **3 bytes** little-endian
-/// [`EdgeMeta`](super::edge::EdgeMeta) (24-bit). This supersedes the older 6+2 byte row shape;
+/// Wire layout per entry: **4 bytes** big-endian [`VertexRef`] + **4 bytes** little-endian
+/// [`EdgeMeta`](super::edge::EdgeMeta). This supersedes the older 6+2 byte row shape;
 /// persisted images using the legacy layout are not supported.
 pub fn decode_edge_entries(
     kind: RegionKind,
@@ -1806,8 +1806,8 @@ pub fn decode_edge_entries(
 
     let mut entries = Vec::with_capacity(bytes.len() / SERIALIZED_EDGE_ENTRY_LEN);
     for chunk in bytes.chunks_exact(SERIALIZED_EDGE_ENTRY_LEN) {
-        let target = VertexRef::new(chunk[0..5].try_into().expect("fixed slice"));
-        let meta = EdgeMeta::from_le_bytes(chunk[5..8].try_into().expect("fixed slice"));
+        let target = VertexRef::from_be_bytes(chunk[0..4].try_into().expect("fixed slice"));
+        let meta = EdgeMeta::from_le_bytes(chunk[4..8].try_into().expect("fixed slice"));
         entries.push(EdgeEntry::new(target, meta));
     }
     Ok(entries)
@@ -1829,8 +1829,8 @@ pub fn decode_overflow_entries(
     let mut entries = Vec::with_capacity(bytes.len() / SERIALIZED_OVERFLOW_ENTRY_LEN);
     for chunk in bytes.chunks_exact(SERIALIZED_OVERFLOW_ENTRY_LEN) {
         let edge_id = u64::from_le_bytes(chunk[0..8].try_into().expect("fixed slice"));
-        let target = VertexRef::new(chunk[8..13].try_into().expect("fixed slice"));
-        let meta = EdgeMeta::from_le_bytes(chunk[13..16].try_into().expect("fixed slice"));
+        let target = VertexRef::from_be_bytes(chunk[8..12].try_into().expect("fixed slice"));
+        let meta = EdgeMeta::from_le_bytes(chunk[12..16].try_into().expect("fixed slice"));
         let next = i32::from_le_bytes(chunk[16..20].try_into().expect("fixed slice"));
         entries.push(OverflowEntry::new(
             edge_id,
@@ -2106,7 +2106,7 @@ mod tests {
         )]);
         let decoded = decode_edge_entries(RegionKind::ForwardEdgeEntries, &bytes)
             .expect("edge entries should decode");
-        assert_eq!(decoded[0].meta.label_id(), 4);
+        assert_eq!(decoded[0].meta.local_id(), Some(4));
         assert_eq!(u64::from(decoded[0].target), 9);
     }
 
@@ -3319,26 +3319,22 @@ mod tests {
         let runtimes = hydrate_surface_runtimes_from_stable_memory(&manager, &memory)
             .expect("stable-memory hydration should succeed");
 
-        assert_eq!(
-            runtimes
-                .forward
-                .0
-                .base_entries
-                .get_by_ref(EdgeRef::new(forward_segment.segment_id, 0))
-                .expect("forward explicit entry should be readable")
-                .target,
-            VertexRef::from(33u8)
-        );
-        assert_eq!(
-            runtimes
-                .reverse
-                .0
-                .base_entries
-                .get_by_ref(EdgeRef::new(reverse_segment.segment_id, 0))
-                .expect("reverse explicit entry should be readable")
-                .target,
-            VertexRef::from(44u8)
-        );
+        let forward_target = runtimes
+            .forward
+            .0
+            .base_entries
+            .get_by_ref(EdgeRef::new(forward_segment.segment_id, 0))
+            .expect("forward explicit entry should be readable")
+            .target;
+        let reverse_target = runtimes
+            .reverse
+            .0
+            .base_entries
+            .get_by_ref(EdgeRef::new(reverse_segment.segment_id, 0))
+            .expect("reverse explicit entry should be readable")
+            .target;
+        assert_eq!(forward_target, VertexRef::from(33u8));
+        assert_eq!(reverse_target, VertexRef::from(44u8));
     }
 
     #[test]
@@ -3746,8 +3742,8 @@ mod tests {
                 .get(1)
                 .expect("base entry 1")
                 .meta
-                .label_id(),
-            3
+                .local_id(),
+            Some(3)
         );
         assert_eq!(
             hydrated.label_index_entries,

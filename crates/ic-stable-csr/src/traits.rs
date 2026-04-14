@@ -5,6 +5,8 @@
 
 use ic_stable_structures::Storable;
 
+use crate::VertexId;
+
 /// One vertex row in the CSR vertex column (`M_v`).
 ///
 /// `log_head` is the DGAP per-segment log array index of the head of this vertex's overflow chain,
@@ -38,8 +40,8 @@ pub trait CsrEdge: Copy {
     fn write_to(self, bytes: &mut [u8]);
 
     /// Adjacent vertex id for this orientation (out-neighbor in the forward CSR).
-    fn neighbor_vid(&self) -> usize;
-    fn with_neighbor_vid(self, vid: usize) -> Self;
+    fn neighbor_vid(&self) -> VertexId;
+    fn with_neighbor_vid(self, vid: VertexId) -> Self;
 }
 
 pub trait CsrEdgeTombstone: CsrEdge {

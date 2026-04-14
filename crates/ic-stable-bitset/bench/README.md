@@ -1,6 +1,6 @@
 # ic-stable-bitset canbench
 
-This directory contains a small `canbench` harness for `ic_stable_bitset::BitSet`.
+This directory contains a small `canbench` harness for `ic_stable_bitset::Bitset`.
 
 ## Benchmarks
 

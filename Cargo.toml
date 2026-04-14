@@ -33,6 +33,7 @@ ic-stable-csr = { path = "crates/ic-stable-csr" }
 ic-stable-slot-map = { path = "crates/ic-stable-slot-map" }
 ic-stable-vec-deque = { path = "crates/ic-stable-vec-deque" }
 
+bitflags = "2"
 ic-stable-structures = "0.7.2"
 canbench-rs = "0.4"
 candid = "0.10"

@@ -54,11 +54,17 @@ impl<M: Memory> GraphStore<M> {
                     PropertyKey::node(node_id, property),
                     StoredPropertyValue(previous.clone()),
                 );
+                self.node_property_store.insert(
+                    PropertyKey::node(node_id, property),
+                    StoredPropertyValue(previous.clone()),
+                );
                 let _ =
                     self.insert_node_property_index_binding_with_kind(node_id, property, previous)?;
             }
             None => {
                 node_property_store.remove(&PropertyKey::node(node_id, property));
+                self.node_property_store
+                    .remove(&PropertyKey::node(node_id, property));
             }
         }
         Ok(())
@@ -77,11 +83,17 @@ impl<M: Memory> GraphStore<M> {
                     PropertyKey::edge(edge_id, property),
                     StoredPropertyValue(previous.clone()),
                 );
+                self.edge_property_store.insert(
+                    PropertyKey::edge(edge_id, property),
+                    StoredPropertyValue(previous.clone()),
+                );
                 let _ =
                     self.insert_edge_property_index_binding_with_kind(edge_id, property, previous)?;
             }
             None => {
                 edge_property_store.remove(&PropertyKey::edge(edge_id, property));
+                self.edge_property_store
+                    .remove(&PropertyKey::edge(edge_id, property));
             }
         }
         Ok(())
@@ -101,6 +113,10 @@ impl<M: Memory> GraphStore<M> {
         let _ = self.remove_node_property_index_binding_with_kind(node_id, property)?;
         let mut node_property_store = self.open_fixed_slot_node_property_store();
         node_property_store.insert(
+            PropertyKey::node(node_id, property),
+            StoredPropertyValue(value.clone()),
+        );
+        self.node_property_store.insert(
             PropertyKey::node(node_id, property),
             StoredPropertyValue(value.clone()),
         );
@@ -142,6 +158,10 @@ impl<M: Memory> GraphStore<M> {
             PropertyKey::node(node_id, property),
             StoredPropertyValue(value.clone()),
         );
+        self.node_property_store.insert(
+            PropertyKey::node(node_id, property),
+            StoredPropertyValue(value.clone()),
+        );
         if equality_touched {
             let insert_kind =
                 match self.insert_node_property_index_binding_with_kind(node_id, property, value) {
@@ -174,6 +194,8 @@ impl<M: Memory> GraphStore<M> {
         let _ = self.remove_node_property_index_binding_with_kind(node_id, property)?;
         let mut node_property_store = self.open_fixed_slot_node_property_store();
         node_property_store.remove(&PropertyKey::node(node_id, property));
+        self.node_property_store
+            .remove(&PropertyKey::node(node_id, property));
         Ok(())
     }
 
@@ -190,6 +212,8 @@ impl<M: Memory> GraphStore<M> {
         let equality_touched = !node_store_operations.is_empty();
         let mut node_property_store = self.open_fixed_slot_node_property_store();
         node_property_store.remove(&PropertyKey::node(node_id, property));
+        self.node_property_store
+            .remove(&PropertyKey::node(node_id, property));
         let summary = GraphStorePropertyIndexMutationSummary::from_delta(
             Self::property_index_node_store_delta_if_equality_touched(equality_touched),
             node_store_operations,
@@ -212,6 +236,10 @@ impl<M: Memory> GraphStore<M> {
         let _ = self.remove_edge_property_index_binding_with_kind(edge_id, property)?;
         let mut edge_property_store = self.open_fixed_slot_edge_property_store();
         edge_property_store.insert(
+            PropertyKey::edge(edge_id, property),
+            StoredPropertyValue(value.clone()),
+        );
+        self.edge_property_store.insert(
             PropertyKey::edge(edge_id, property),
             StoredPropertyValue(value.clone()),
         );
@@ -253,6 +281,10 @@ impl<M: Memory> GraphStore<M> {
             PropertyKey::edge(edge_id, property),
             StoredPropertyValue(value.clone()),
         );
+        self.edge_property_store.insert(
+            PropertyKey::edge(edge_id, property),
+            StoredPropertyValue(value.clone()),
+        );
         if equality_touched {
             let insert_kind =
                 match self.insert_edge_property_index_binding_with_kind(edge_id, property, value) {
@@ -285,6 +317,8 @@ impl<M: Memory> GraphStore<M> {
         let _ = self.remove_edge_property_index_binding_with_kind(edge_id, property)?;
         let mut edge_property_store = self.open_fixed_slot_edge_property_store();
         edge_property_store.remove(&PropertyKey::edge(edge_id, property));
+        self.edge_property_store
+            .remove(&PropertyKey::edge(edge_id, property));
         Ok(())
     }
 
@@ -301,6 +335,8 @@ impl<M: Memory> GraphStore<M> {
         let equality_touched = !node_store_operations.is_empty();
         let mut edge_property_store = self.open_fixed_slot_edge_property_store();
         edge_property_store.remove(&PropertyKey::edge(edge_id, property));
+        self.edge_property_store
+            .remove(&PropertyKey::edge(edge_id, property));
         let summary = GraphStorePropertyIndexMutationSummary::from_delta(
             Self::property_index_node_store_delta_if_equality_touched(equality_touched),
             node_store_operations,
@@ -416,6 +452,14 @@ impl<M: Memory> GraphStore<M> {
                 property_equality_map.remove(&key);
             }
         }
+        let existing_shadow_keys: Vec<_> = self
+            .property_equality_map
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect();
+        for key in existing_shadow_keys {
+            self.property_equality_map.remove(&key);
+        }
 
         self.node_property_index = PropertyIndex::new(64);
         self.edge_property_index = PropertyIndex::new(64);
@@ -457,6 +501,8 @@ impl<M: Memory> GraphStore<M> {
         );
         self.node_property_index
             .insert(key.clone(), PropertyIndexEntry::empty());
+        self.property_equality_map
+            .insert(key.clone(), PropertyIndexEntry::empty());
         let mut property_equality_map = self.open_fixed_slot_property_equality_map();
         property_equality_map.insert(key.clone(), PropertyIndexEntry::empty());
         self.property_index_dirty = false;
@@ -482,6 +528,7 @@ impl<M: Memory> GraphStore<M> {
                     .expect("Value must encode to binary bytes"),
             );
             self.node_property_index.remove(&key);
+            self.property_equality_map.remove(&key);
             let mut property_equality_map = self.open_fixed_slot_property_equality_map();
             property_equality_map.remove(&key);
             self.property_index_dirty = false;
@@ -509,6 +556,8 @@ impl<M: Memory> GraphStore<M> {
         );
         self.edge_property_index
             .insert(key.clone(), PropertyIndexEntry::empty());
+        self.property_equality_map
+            .insert(key.clone(), PropertyIndexEntry::empty());
         let mut property_equality_map = self.open_fixed_slot_property_equality_map();
         property_equality_map.insert(key.clone(), PropertyIndexEntry::empty());
         self.property_index_dirty = false;
@@ -534,6 +583,7 @@ impl<M: Memory> GraphStore<M> {
                     .expect("Value must encode to binary bytes"),
             );
             self.edge_property_index.remove(&key);
+            self.property_equality_map.remove(&key);
             let mut property_equality_map = self.open_fixed_slot_property_equality_map();
             property_equality_map.remove(&key);
             self.property_index_dirty = false;

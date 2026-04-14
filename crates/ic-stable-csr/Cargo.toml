@@ -17,7 +17,6 @@ strict-dgap-invariants = []
 canbench-rs = { workspace = true, optional = true }
 ic-stable-bitset.workspace = true
 ic-stable-roaring.workspace = true
-ic-stable-slot-map.workspace = true
 ic-stable-structures.workspace = true
 ic-stable-vec-deque.workspace = true
 

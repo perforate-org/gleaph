@@ -7306,9 +7306,9 @@ mod tests {
             .copied()
             .expect("reverse base entry 0");
         assert_eq!(u64::from(f0.target), 3);
-        assert_eq!(f0.meta.label_id(), 8);
+        assert_eq!(f0.meta.local_id(), Some(8));
         assert_eq!(u64::from(r0.target), 1);
-        assert_eq!(r0.meta.label_id(), 8);
+        assert_eq!(r0.meta.local_id(), Some(8));
     }
 
     #[test]
@@ -7358,13 +7358,15 @@ mod tests {
             .copied()
             .expect("reverse base slot 1");
         assert!(!r1.meta.is_shard_canister());
-        assert_eq!(r1.meta.local_label_id(), Some(6));
+        assert_eq!(r1.meta.local_id(), Some(6));
 
         let bytes = encode_edge_entries(&[f1]);
         let decoded =
             decode_edge_entries(RegionKind::ForwardEdgeEntries, &bytes).expect("decode forward");
         assert_eq!(decoded.len(), 1);
-        assert_eq!(decoded[0].target, f1.target);
+        let decoded_target = decoded[0].target;
+        let expected_target = f1.target;
+        assert_eq!(decoded_target, expected_target);
         assert!(decoded[0].meta.is_shard_canister());
         assert_eq!(decoded[0].meta.shard_canister_slot(), Some(4));
     }
@@ -7556,8 +7558,8 @@ mod tests {
             u64::from(graph.forward.0.overflow_entries[0].entry.target),
             3
         );
-        assert_eq!(graph.forward.0.overflow_entries[0].entry.meta.label_id(), 9);
-        assert_eq!(graph.reverse.0.overflow_entries[0].entry.meta.label_id(), 9);
+        assert_eq!(graph.forward.0.overflow_entries[0].entry.meta.local_id(), Some(9));
+        assert_eq!(graph.reverse.0.overflow_entries[0].entry.meta.local_id(), Some(9));
     }
 
     #[test]

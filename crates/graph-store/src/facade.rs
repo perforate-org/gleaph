@@ -63,10 +63,12 @@ use crate::property_index::{
 };
 use crate::property_store::{
     FixedSlotGraphPropertyStableMap, GraphPropertyStableMap, PropertyStoreError,
+    PropertyKey, StoredPropertyValue,
     btree_distinct_property_names, btree_get_edge_property, btree_get_node_property,
     btree_scan_entities, btree_scan_entities_property_subset, btree_scan_entity,
     default_property_region_chain, empty_graph_property_stable_map,
     open_fixed_slot_edge_property_store, open_fixed_slot_node_property_store,
+    snapshot_fixed_slot_graph_property_store,
 };
 pub use errors::{GraphStoreError, GraphStoreResult};
 pub use facade_types::{
@@ -88,6 +90,32 @@ pub use facade_types::{
 
 type GraphStoreReplaceEdgeSummary =
     GraphStoreMutationWriteSummary<(GraphMutationPath, (EdgeEntry, EdgeEntry))>;
+
+fn replace_graph_property_store_snapshot<M: Memory>(
+    map: &mut GraphPropertyStableMap<M>,
+    entries: &BTreeMap<PropertyKey, StoredPropertyValue>,
+) {
+    let existing_keys: Vec<PropertyKey> = map.iter().map(|entry| entry.key().clone()).collect();
+    for key in existing_keys {
+        map.remove(&key);
+    }
+    for (key, value) in entries {
+        map.insert(key.clone(), value.clone());
+    }
+}
+
+fn replace_property_equality_snapshot<M: Memory>(
+    map: &mut PropertyEqualityInplaceMap<M>,
+    entries: &crate::property_index::PropertyEqualityStableMap,
+) {
+    let existing_keys: Vec<PropertyIndexKey> = map.iter().map(|entry| entry.key().clone()).collect();
+    for key in existing_keys {
+        map.remove(&key);
+    }
+    for entry in entries.iter() {
+        map.insert(entry.key().clone(), entry.value().clone());
+    }
+}
 
 /// When true, the next node-side property index mutation path returns
 /// [`PropertyIndexError::LeafPartitionMultiEntryExceedsPrimaryPage`] (test-only).
@@ -659,6 +687,34 @@ impl<M: Memory> GraphStore<M> {
         open_fixed_slot_property_equality_map(&self.fixed_memory_slots())
     }
 
+    fn sync_shadow_property_state_from_fixed_slots(&mut self) {
+        let node_entries = {
+            let fixed = self.open_fixed_slot_node_property_store();
+            snapshot_fixed_slot_graph_property_store(&fixed)
+        };
+        replace_graph_property_store_snapshot(&mut self.node_property_store, &node_entries);
+
+        let edge_entries = {
+            let fixed = self.open_fixed_slot_edge_property_store();
+            snapshot_fixed_slot_graph_property_store(&fixed)
+        };
+        replace_graph_property_store_snapshot(&mut self.edge_property_store, &edge_entries);
+
+        let equality_snapshot = {
+            let fixed = self.open_fixed_slot_property_equality_map();
+            snapshot_fixed_slot_property_equality_map(&fixed)
+        };
+        replace_property_equality_snapshot(&mut self.property_equality_map, &equality_snapshot);
+
+        let snap = snapshot_from_equality_map(&equality_snapshot, 64);
+        self.node_property_index = snap.node_index;
+        self.edge_property_index = snap.edge_index;
+
+        self.node_property_store_dirty = false;
+        self.edge_property_store_dirty = false;
+        self.property_index_dirty = false;
+    }
+
     fn record_write_event(&mut self, event: GraphStoreFacadeWriteEvent) {
         self.last_write_event = Some(event.clone());
         self.write_history.push(event);
@@ -1221,7 +1277,7 @@ impl<M: Memory> GraphStore<M> {
             RegionKind::EdgePropertyStore,
         )
         .expect("edge property bucket region");
-        Self {
+        let mut store = Self {
             manager,
             memory,
             graph,
@@ -1240,7 +1296,9 @@ impl<M: Memory> GraphStore<M> {
             write_history: Vec::new(),
             production_metrics: GraphStoreProductionMetrics::default(),
             shard_canister_directory: ShardCanisterDirectory::default(),
-        }
+        };
+        store.sync_shadow_property_state_from_fixed_slots();
+        store
     }
 
     /// Assembles a facade after hydration **without** re-initializing empty property btrees on disk.
@@ -1432,16 +1490,7 @@ impl<M: Memory> GraphStore<M> {
             shard_canister_directory,
         });
 
-        let fixed_slots = GraphStoreMemorySlots::for_root_memory(BorrowedMemory::new(
-            facade.memory.as_ref(),
-        ));
-        let fixed_eq = open_fixed_slot_property_equality_map(&fixed_slots);
-        if !fixed_eq.is_empty() {
-            let snapshot = snapshot_fixed_slot_property_equality_map(&fixed_eq);
-            let snap = snapshot_from_equality_map(&snapshot, 64);
-            facade.node_property_index = snap.node_index;
-            facade.edge_property_index = snap.edge_index;
-        }
+        facade.sync_shadow_property_state_from_fixed_slots();
 
         let maintenance_queue = Self::load_maintenance_queue_from_stable_memory(
             &facade.manager.borrow(),
@@ -1514,16 +1563,7 @@ impl<M: Memory> GraphStore<M> {
             shard_canister_directory,
         });
 
-        let fixed_slots = GraphStoreMemorySlots::for_root_memory(BorrowedMemory::new(
-            facade.memory.as_ref(),
-        ));
-        let fixed_eq = open_fixed_slot_property_equality_map(&fixed_slots);
-        if !fixed_eq.is_empty() {
-            let snapshot = snapshot_fixed_slot_property_equality_map(&fixed_eq);
-            let snap = snapshot_from_equality_map(&snapshot, 64);
-            facade.node_property_index = snap.node_index;
-            facade.edge_property_index = snap.edge_index;
-        }
+        facade.sync_shadow_property_state_from_fixed_slots();
 
         let maintenance_queue = Self::load_maintenance_queue_from_stable_memory(
             &facade.manager.borrow(),
@@ -2578,6 +2618,7 @@ mod tests {
     };
     use crate::GraphInsertResult;
     use crate::VecMemory;
+    use crate::adjacency::{BorrowedMemory, GraphStoreMemorySlots};
     use crate::low_level::GraphMutationPath;
     use crate::low_level::{
         BucketSizeInPages, EMPTY_LOG_OFFSET, EdgeEntry, EdgeIndex, EdgeMeta, EdgePairEndpoints,
@@ -2598,6 +2639,7 @@ mod tests {
     use crate::property_store::{
         PropertyKey, PropertyStoreError, StoredPropertyValue,
         load_graph_property_stable_map_from_stable_memory,
+        open_fixed_slot_edge_property_store, open_fixed_slot_node_property_store,
         sync_graph_property_store_v1_header_to_stable_memory,
     };
     use gleaph_gql::Value;
@@ -2807,6 +2849,58 @@ mod tests {
         assert_eq!(facade.graph.forward.0.base_entries.len(), 1);
         assert_eq!(facade.graph.reverse.0.vertices.len(), 1);
         assert_eq!(facade.graph.reverse.0.base_entries.len(), 1);
+    }
+
+    #[test]
+    fn facade_hydrate_syncs_fixed_slot_property_state_into_shadow_maps() {
+        let (manager, memory) = seeded_manager_and_memory();
+        let slots = GraphStoreMemorySlots::for_root_memory(BorrowedMemory::new(&memory));
+
+        let mut node_store = open_fixed_slot_node_property_store(&slots);
+        node_store.insert(
+            PropertyKey::node(NodeId::from(11u8), "name"),
+            StoredPropertyValue(Value::Text("alice".into())),
+        );
+        let mut edge_store = open_fixed_slot_edge_property_store(&slots);
+        edge_store.insert(
+            PropertyKey::edge(99, "weight"),
+            StoredPropertyValue(Value::Int64(7)),
+        );
+        let mut equality = open_fixed_slot_property_equality_map(&slots);
+        equality.insert(
+            crate::property_index::PropertyIndexKey::node(
+                NodeId::from(11u8),
+                "name",
+                Value::Text("alice".into()).to_binary_bytes().unwrap(),
+            ),
+            crate::property_index::PropertyIndexEntry::empty(),
+        );
+
+        let facade = GraphStore::hydrate_from_stable_memory(manager, memory.clone()).unwrap();
+
+        assert_eq!(
+            facade.scan_node_properties(NodeId::from(11u8)).get("name"),
+            Some(&Value::Text("alice".into()))
+        );
+        assert_eq!(
+            facade.scan_edge_properties(99).get("weight"),
+            Some(&Value::Int64(7))
+        );
+        assert_eq!(
+            facade
+                .node_property_store()
+                .get(&PropertyKey::node(NodeId::from(11u8), "name"))
+                .map(|value| value.0.clone()),
+            Some(Value::Text("alice".into()))
+        );
+        assert_eq!(facade.property_equality_map.len(), 1);
+        assert!(facade.node_property_index.get(
+            &crate::property_index::PropertyIndexKey::node(
+                NodeId::from(11u8),
+                "name",
+                Value::Text("alice".into()).to_binary_bytes().unwrap(),
+            )
+        ).is_some());
     }
 
     #[test]
@@ -5983,7 +6077,6 @@ mod tests {
     }
 }
 
-#[cfg(feature = "experimental-dgap")]
 pub mod experimental_dgap {
     //! Fixed [`MemoryId`](ic_stable_structures::memory_manager::MemoryId) slots for the
     //! phase-1 `graph-store` layout.

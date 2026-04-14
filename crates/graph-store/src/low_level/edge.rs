@@ -1,30 +1,49 @@
 //! Hot adjacency-entry types and directional surface descriptors.
 
+use bitflags::bitflags;
 use gleaph_graph_kernel::LabelId;
 
 use super::ids::VertexRef;
 use super::region::RegionRef;
 
-/// Low 24 bits of on-wire edge metadata (3 bytes, little-endian).
-pub const EDGE_META_RAW_MASK: u32 = 0x00FF_FFFF;
-
-/// Bit 23: tombstone (logical deletion for this adjacency slot).
-pub const EDGE_TOMBSTONE_MASK: u32 = 1 << 23;
-
-/// Bit 22: when set, [`EdgeMeta`] payload is a shard-canister slot, not a local label id.
-pub const EDGE_SHARD_CANISTER_MASK: u32 = 1 << 22;
-
-/// Bit 21: undirected semantic tag (storage may still use directed surfaces).
-pub const EDGE_UNDIRECTED_MASK: u32 = 1 << 21;
-
-/// Bits 16–20: reserved; allocate new flags from bit 20 downward toward the payload.
-pub const EDGE_META_RSV_MASK: u32 = 0x1F << 16;
-
-/// Low 16 bits: local [`LabelId`] or shard slot (when shard flag is set).
+/// Low 16 bits of on-wire edge metadata.
 pub const EDGE_META_PAYLOAD_MASK: u16 = u16::MAX;
 
-/// Back-compat alias for [`EDGE_TOMBSTONE_MASK`] (historically named from the 16-bit layout).
-pub const TOMBSTONE_MASK: u32 = EDGE_TOMBSTONE_MASK;
+/// Packed edge-kind nibble values.
+pub const EDGE_KIND_PLAIN_LOCAL: u8 = 0;
+pub const EDGE_KIND_PLAIN_REMOTE: u8 = 1;
+pub const EDGE_KIND_WEIGHTED: u8 = 2;
+pub const EDGE_KIND_TEMPORAL_BUCKET: u8 = 3;
+pub const EDGE_KIND_VISIBILITY: u8 = 4;
+pub const EDGE_KIND_SIDECAR_A: u8 = 5;
+pub const EDGE_KIND_SIDECAR_B: u8 = 6;
+pub const EDGE_KIND_RESERVED_START: u8 = 7;
+
+pub const EDGE_KIND_MASK: u8 = 0x0F;
+pub const EDGE_INLINE_MASK: u8 = 0x0F;
+pub const EDGE_KIND_SHIFT: u32 = 24;
+pub const EDGE_INLINE_SHIFT: u32 = 28;
+pub const EDGE_FLAGS_SHIFT: u32 = 16;
+pub const EDGE_AUX_MEANING_MASK: u32 = 0x00FF_0000;
+
+bitflags! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+    pub struct EdgeFlags: u8 {
+        const TOMBSTONE = 1 << 0;
+        const HAS_SIDECAR = 1 << 1;
+        const IS_REMOTE = 1 << 2;
+        const UNDIRECTED = 1 << 3;
+        const PAYLOAD_EXTENDED = 1 << 4;
+        const RESERVED5 = 1 << 5;
+        const RESERVED6 = 1 << 6;
+        const RESERVED7 = 1 << 7;
+    }
+}
+
+pub const EDGE_RESERVED_FLAGS: EdgeFlags =
+    EdgeFlags::RESERVED5.union(EdgeFlags::RESERVED6).union(EdgeFlags::RESERVED7);
+
+pub const TOMBSTONE_MASK: u32 = (EdgeFlags::TOMBSTONE.bits() as u32) << EDGE_FLAGS_SHIFT;
 
 /// Directional adjacency surface.
 ///
@@ -131,90 +150,112 @@ impl SurfaceRegions {
     }
 }
 
-/// Packed hot metadata for an [`EdgeEntry`] (24 significant bits, 3-byte little-endian on wire).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum EdgeMetaMode {
+    LocalInline,
+    RemoteInline,
+    LocalSidecar,
+    RemoteSidecar,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum EdgeMetaError {
+    ReservedFlags(EdgeFlags),
+    ReservedKind(u8),
+    InvalidRemoteKind(u8),
+    InvalidLocalKind(u8),
+    InvalidInlineForPlainKind(u8),
+    PayloadExtendedWithoutSidecar,
+}
+
+/// Packed hot metadata for an [`EdgeEntry`] (32 significant bits, little-endian on wire).
 ///
 /// Layout (LSB = bit 0):
-/// - bits 0–15: payload (local [`LabelId`] or shard slot when shard flag set)
-/// - bits 16–20: RSV (new flags consume from bit 20 downward)
-/// - bit 21: undirected
-/// - bit 22: shard-canister (`1` = payload is shard slot)
-/// - bit 23: tombstone
+/// - bits 0–15: payload (local [`LabelId`] / shard slot / sidecar handle low16)
+/// - bits 16–23: [`EdgeFlags`]
+/// - bits 24–27: edge `kind`
+/// - bits 28–31: inline payload nibble / sidecar decode hint
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub struct EdgeMeta([u8; 3]);
+pub struct EdgeMeta(u32);
 
 impl EdgeMeta {
-    /// Packed edge metadata with no label, no tombstone, and no cross-shard flag.
-    pub const UNLABELED: Self = Self([0, 0, 0]);
+    /// Packed edge metadata with no label and no flags.
+    pub const UNLABELED: Self = Self(0);
 
     #[inline]
     pub const fn from_raw(raw: u32) -> Self {
-        let r = raw & EDGE_META_RAW_MASK;
-        Self([r as u8, (r >> 8) as u8, (r >> 16) as u8])
+        Self(raw)
     }
 
     #[inline]
-    pub const fn raw24(self) -> u32 {
-        let b = self.0;
-        (b[0] as u32) | ((b[1] as u32) << 8) | ((b[2] as u32) << 16)
-    }
-
-    /// Serializes to 3 little-endian bytes (on-wire `meta`).
-    #[inline]
-    pub const fn to_le_bytes(self) -> [u8; 3] {
+    pub const fn raw(self) -> u32 {
         self.0
     }
 
     #[inline]
-    pub const fn from_le_bytes(bytes: [u8; 3]) -> Self {
-        Self(bytes)
+    pub const fn to_le_bytes(self) -> [u8; 4] {
+        self.0.to_le_bytes()
     }
 
-    /// Packs a local label id and tombstone bit (same-canister target).
+    #[inline]
+    pub const fn from_le_bytes(bytes: [u8; 4]) -> Self {
+        Self(u32::from_le_bytes(bytes))
+    }
+
+    pub const fn new_local(label_id: LabelId) -> Self {
+        Self::from_components(label_id, EdgeFlags::empty(), EDGE_KIND_PLAIN_LOCAL, 0)
+    }
+
+    pub const fn new_remote(shard_slot: u16) -> Self {
+        Self::from_components(
+            shard_slot,
+            EdgeFlags::IS_REMOTE,
+            EDGE_KIND_PLAIN_REMOTE,
+            0,
+        )
+    }
+
     pub fn new(label_id: LabelId, tombstone: bool) -> Self {
-        let mut r = label_id as u32;
-        if tombstone {
-            r |= EDGE_TOMBSTONE_MASK;
-        }
-        Self::from_raw(r)
+        Self::new_local(label_id).with_tombstone(tombstone)
     }
 
-    /// Packs a remote shard slot id and tombstone bit (`target` names a vertex in that canister).
     pub fn new_shard_canister(shard_slot: u16, tombstone: bool) -> Self {
-        let mut r = (shard_slot as u32) | EDGE_SHARD_CANISTER_MASK;
-        if tombstone {
-            r |= EDGE_TOMBSTONE_MASK;
-        }
-        Self::from_raw(r)
+        Self::new_remote(shard_slot).with_tombstone(tombstone)
     }
 
-    /// Low 16 bits (local label id or shard slot id).
+    pub const fn from_components(payload: u16, flags: EdgeFlags, kind: u8, inline: u8) -> Self {
+        Self(
+            (payload as u32)
+                | ((flags.bits() as u32) << EDGE_FLAGS_SHIFT)
+                | (((kind & EDGE_KIND_MASK) as u32) << EDGE_KIND_SHIFT)
+                | (((inline & EDGE_INLINE_MASK) as u32) << EDGE_INLINE_SHIFT),
+        )
+    }
+
     #[inline]
     pub const fn payload(self) -> u16 {
-        (self.raw24() & (EDGE_META_PAYLOAD_MASK as u32)) as u16
-    }
-
-    /// Returns whether the tombstone bit is set.
-    #[inline]
-    pub const fn is_tombstone(self) -> bool {
-        (self.raw24() & EDGE_TOMBSTONE_MASK) != 0
-    }
-
-    /// Returns whether the neighbor lives in another canister (payload is a shard slot id).
-    #[inline]
-    pub const fn is_shard_canister(self) -> bool {
-        (self.raw24() & EDGE_SHARD_CANISTER_MASK) != 0
+        (self.0 & EDGE_META_PAYLOAD_MASK as u32) as u16
     }
 
     #[inline]
-    pub const fn is_undirected(self) -> bool {
-        (self.raw24() & EDGE_UNDIRECTED_MASK) != 0
+    pub fn flags(self) -> EdgeFlags {
+        EdgeFlags::from_bits_retain(((self.0 >> EDGE_FLAGS_SHIFT) & 0xFF) as u8)
     }
 
-    /// Local label id when this edge targets a vertex in the same canister.
     #[inline]
-    pub const fn local_label_id(self) -> Option<LabelId> {
-        if self.is_shard_canister() {
+    pub const fn kind(self) -> u8 {
+        ((self.0 >> EDGE_KIND_SHIFT) & EDGE_KIND_MASK as u32) as u8
+    }
+
+    #[inline]
+    pub const fn inline(self) -> u8 {
+        ((self.0 >> EDGE_INLINE_SHIFT) & EDGE_INLINE_MASK as u32) as u8
+    }
+
+    #[inline]
+    pub fn local_id(self) -> Option<LabelId> {
+        if self.is_shard_canister() || self.has_sidecar() {
             None
         } else {
             Some(self.payload())
@@ -223,45 +264,126 @@ impl EdgeMeta {
 
     /// Shard slot id when this edge targets another canister.
     #[inline]
-    pub const fn shard_canister_slot(self) -> Option<u16> {
-        if self.is_shard_canister() {
+    pub fn shard_canister_slot(self) -> Option<u16> {
+        if self.is_shard_canister() && !self.has_sidecar() {
             Some(self.payload())
         } else {
             None
         }
     }
 
-    /// Returns the stored label id for **local** edges; for cross-shard edges returns the payload bits
-    /// (a slot id, not a graph label). Prefer [`Self::local_label_id`] when filtering by label.
     #[inline]
-    pub const fn label_id(self) -> LabelId {
-        self.payload()
+    pub fn mode(self) -> EdgeMetaMode {
+        match (
+            self.flags().contains(EdgeFlags::IS_REMOTE),
+            self.flags().contains(EdgeFlags::HAS_SIDECAR),
+        ) {
+            (false, false) => EdgeMetaMode::LocalInline,
+            (true, false) => EdgeMetaMode::RemoteInline,
+            (false, true) => EdgeMetaMode::LocalSidecar,
+            (true, true) => EdgeMetaMode::RemoteSidecar,
+        }
     }
 
-    /// Returns a copy with only the tombstone bit changed.
+    #[inline]
+    pub fn validate(self) -> Result<(), EdgeMetaError> {
+        let flags = self.flags();
+        let kind = self.kind();
+        if !(flags & EDGE_RESERVED_FLAGS).is_empty() {
+            return Err(EdgeMetaError::ReservedFlags(flags & EDGE_RESERVED_FLAGS));
+        }
+        if kind >= EDGE_KIND_RESERVED_START && !flags.contains(EdgeFlags::HAS_SIDECAR) {
+            return Err(EdgeMetaError::ReservedKind(kind));
+        }
+        if flags.contains(EdgeFlags::IS_REMOTE) && kind == EDGE_KIND_PLAIN_LOCAL {
+            return Err(EdgeMetaError::InvalidRemoteKind(kind));
+        }
+        if !flags.contains(EdgeFlags::IS_REMOTE) && kind == EDGE_KIND_PLAIN_REMOTE {
+            return Err(EdgeMetaError::InvalidLocalKind(kind));
+        }
+        if matches!(kind, EDGE_KIND_PLAIN_LOCAL | EDGE_KIND_PLAIN_REMOTE) && self.inline() != 0 {
+            return Err(EdgeMetaError::InvalidInlineForPlainKind(kind));
+        }
+        if flags.contains(EdgeFlags::PAYLOAD_EXTENDED) && !flags.contains(EdgeFlags::HAS_SIDECAR) {
+            return Err(EdgeMetaError::PayloadExtendedWithoutSidecar);
+        }
+        Ok(())
+    }
+
+    #[inline]
+    pub fn is_tombstone(self) -> bool {
+        self.flags().contains(EdgeFlags::TOMBSTONE)
+    }
+
+    #[inline]
+    pub fn has_sidecar(self) -> bool {
+        self.flags().contains(EdgeFlags::HAS_SIDECAR)
+    }
+
+    #[inline]
+    pub fn is_shard_canister(self) -> bool {
+        self.flags().contains(EdgeFlags::IS_REMOTE)
+    }
+
+    #[inline]
+    pub fn is_undirected(self) -> bool {
+        self.flags().contains(EdgeFlags::UNDIRECTED)
+    }
+
+    pub fn with_flags(self, flags: EdgeFlags) -> Self {
+        Self::from_components(self.payload(), flags, self.kind(), self.inline())
+    }
+
     pub fn with_tombstone(self, tombstone: bool) -> Self {
-        let r = self.raw24();
-        let cleared = r & !EDGE_TOMBSTONE_MASK;
-        Self::from_raw(cleared | if tombstone { EDGE_TOMBSTONE_MASK } else { 0 })
+        let mut flags = self.flags();
+        if tombstone {
+            flags.insert(EdgeFlags::TOMBSTONE);
+        } else {
+            flags.remove(EdgeFlags::TOMBSTONE);
+        }
+        self.with_flags(flags)
     }
 
-    /// Returns a copy with a local label id (clears the cross-shard flag).
     pub fn with_label_id(self, label_id: LabelId) -> Self {
-        let keep = self.raw24() & (EDGE_TOMBSTONE_MASK | EDGE_UNDIRECTED_MASK | EDGE_META_RSV_MASK);
-        Self::from_raw(keep | (label_id as u32))
+        let mut flags = self.flags();
+        flags.remove(EdgeFlags::IS_REMOTE);
+        Self::from_components(label_id, flags, EDGE_KIND_PLAIN_LOCAL, 0)
     }
 
-    /// Returns a copy with a shard slot (sets the cross-shard flag).
     pub fn with_shard_canister_slot(self, shard_slot: u16) -> Self {
-        let keep = self.raw24() & (EDGE_TOMBSTONE_MASK | EDGE_UNDIRECTED_MASK | EDGE_META_RSV_MASK);
-        Self::from_raw(keep | EDGE_SHARD_CANISTER_MASK | (shard_slot as u32))
+        let mut flags = self.flags();
+        flags.insert(EdgeFlags::IS_REMOTE);
+        Self::from_components(shard_slot, flags, EDGE_KIND_PLAIN_REMOTE, 0)
     }
 
-    /// Returns a copy with only the undirected bit changed.
     pub fn with_undirected(self, undirected: bool) -> Self {
-        let r = self.raw24();
-        let cleared = r & !EDGE_UNDIRECTED_MASK;
-        Self::from_raw(cleared | if undirected { EDGE_UNDIRECTED_MASK } else { 0 })
+        let mut flags = self.flags();
+        if undirected {
+            flags.insert(EdgeFlags::UNDIRECTED);
+        } else {
+            flags.remove(EdgeFlags::UNDIRECTED);
+        }
+        self.with_flags(flags)
+    }
+
+    pub fn with_kind_inline(self, kind: u8, inline: u8) -> Self {
+        Self::from_components(self.payload(), self.flags(), kind, inline)
+    }
+
+    pub fn with_sidecar(self, handle_low16: u16, kind: u8, inline_hint: u8) -> Self {
+        let mut flags = self.flags();
+        flags.insert(EdgeFlags::HAS_SIDECAR);
+        Self::from_components(handle_low16, flags, kind, inline_hint)
+    }
+
+    pub fn with_extended_payload(self, extended: bool) -> Self {
+        let mut flags = self.flags();
+        if extended {
+            flags.insert(EdgeFlags::PAYLOAD_EXTENDED);
+        } else {
+            flags.remove(EdgeFlags::PAYLOAD_EXTENDED);
+        }
+        self.with_flags(flags)
     }
 }
 
@@ -272,7 +394,7 @@ impl EdgeMeta {
 /// metadata.
 ///
 /// Invariant:
-/// - one `EdgeEntry` is always exactly 8 bytes (5-byte BE `VertexRef` + 3-byte LE `EdgeMeta`)
+/// - one `EdgeEntry` is always exactly 8 bytes (4-byte BE `VertexRef` + 4-byte LE `EdgeMeta`)
 /// - semantic edge identity is stored elsewhere, not here
 #[repr(C, packed)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -302,36 +424,41 @@ impl EdgeEntry {
 
 const _: [(); 64] = [(); core::mem::size_of::<SurfaceRegions>()];
 const _: [(); 8] = [(); core::mem::size_of::<EdgeEntry>()];
-const _: [(); 3] = [(); core::mem::size_of::<EdgeMeta>()];
+const _: [(); 4] = [(); core::mem::size_of::<EdgeMeta>()];
 
 #[cfg(test)]
 mod tests {
-    use super::{EdgeEntry, EdgeMeta, LogicalEdgeLocator, SurfaceKind, SurfaceRegions};
+    use super::{
+        EdgeEntry, EdgeFlags, EdgeMeta, EdgeMetaMode, LogicalEdgeLocator, SurfaceKind,
+        SurfaceRegions,
+    };
     use crate::low_level::VertexRef;
     use crate::low_level::{RegionKind, RegionRef, RegionStorageKind};
 
     #[test]
     fn edge_entry_has_expected_abi() {
         assert_eq!(core::mem::size_of::<EdgeEntry>(), 8);
-        assert_eq!(core::mem::size_of::<VertexRef>(), 5);
-        assert_eq!(core::mem::size_of::<EdgeMeta>(), 3);
+        assert_eq!(core::mem::size_of::<VertexRef>(), 4);
+        assert_eq!(core::mem::size_of::<EdgeMeta>(), 4);
     }
 
     #[test]
     fn edge_meta_packs_label_and_tombstone() {
         let meta = EdgeMeta::new(42, true);
-        assert_eq!(meta.local_label_id(), Some(42));
+        assert_eq!(meta.local_id(), Some(42));
         assert!(meta.is_tombstone());
         assert!(!meta.is_shard_canister());
+        assert_eq!(meta.kind(), super::EDGE_KIND_PLAIN_LOCAL);
     }
 
     #[test]
     fn edge_meta_shard_canister_roundtrip() {
         let meta = EdgeMeta::new_shard_canister(99, false);
         assert_eq!(meta.shard_canister_slot(), Some(99));
-        assert_eq!(meta.local_label_id(), None);
+        assert_eq!(meta.local_id(), None);
         assert!(!meta.is_tombstone());
         assert!(meta.is_shard_canister());
+        assert_eq!(meta.kind(), super::EDGE_KIND_PLAIN_REMOTE);
     }
 
     #[test]
@@ -339,8 +466,21 @@ mod tests {
         let target = VertexRef::from(7u8);
         let entry = EdgeEntry::new(target, EdgeMeta::new(3, false));
         assert_eq!(u64::from(entry.target), 7);
-        assert_eq!(entry.meta.local_label_id(), Some(3));
+        assert_eq!(entry.meta.local_id(), Some(3));
         assert!(!entry.meta.is_tombstone());
+    }
+
+    #[test]
+    fn edge_meta_sidecar_roundtrip() {
+        let meta = EdgeMeta::new_local(7)
+            .with_sidecar(42, super::EDGE_KIND_SIDECAR_A, 3)
+            .with_extended_payload(true);
+        assert!(meta.has_sidecar());
+        assert_eq!(meta.payload(), 42);
+        assert_eq!(meta.kind(), super::EDGE_KIND_SIDECAR_A);
+        assert_eq!(meta.inline(), 3);
+        assert_eq!(meta.mode(), EdgeMetaMode::LocalSidecar);
+        assert!(meta.flags().contains(EdgeFlags::PAYLOAD_EXTENDED));
     }
 
     #[test]

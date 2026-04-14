@@ -1,10 +1,11 @@
 //! PMA layer for DGAP (segment tree density, `calculate_positions_v1`, `rebalance_weighted`); mirrors reference `graph.h`.
 
-use ic_stable_slot_map::SlotMap;
 use ic_stable_structures::Memory;
+use crate::StableVec;
 
 use crate::layout::dgap::{SegmentEdgeCounts, read_segment_edge_counts, write_segment_edge_counts};
 use crate::traits::{CsrEdge, CsrVertex};
+use crate::{SegmentId, VertexId};
 
 /// Upper density at root / leaves (C++ `up_h` / `up_0`).
 pub const UP_H: f64 = 0.75;
@@ -29,14 +30,14 @@ pub fn floor_log2_u32(mut n: u32) -> u32 {
 /// PMA tree index of the leaf for `segment_id` (`0..segment_count`), matching
 /// [`recount_segment_edge_counts_column`] (`leaf = segment_id + segment_count`).
 #[inline]
-pub fn leaf_pma_tree_index(segment_id: usize, segment_count: u32) -> usize {
-    segment_id + segment_count as usize
+pub fn leaf_pma_tree_index(segment_id: SegmentId, segment_count: SegmentId) -> usize {
+    usize::from(segment_id) + usize::from(segment_count)
 }
 
 /// Leaf PMA tree index for `vertex_id` (C++ `get_segment_id`).
 #[inline]
-pub fn pma_tree_index(vertex_id: u32, segment_size: u32, segment_count: u32) -> usize {
-    let sid = (vertex_id / segment_size.max(1)) as usize;
+pub fn pma_tree_index(vertex_id: VertexId, segment_size: SegmentId, segment_count: SegmentId) -> usize {
+    let sid = SegmentId(vertex_id.0 / segment_size.0.max(1));
     leaf_pma_tree_index(sid, segment_count)
 }
 
@@ -93,7 +94,7 @@ pub fn propagate_segment_edge_counts_leaf_delta<M: Memory>(
     sec_mem: &M,
     stride: u64,
     segment_count: u32,
-    segment_id: usize,
+    segment_id: SegmentId,
     d_actual: i64,
     d_total: i64,
     d_tombstone: i64,
@@ -103,7 +104,7 @@ pub fn propagate_segment_edge_counts_leaf_delta<M: Memory>(
     if sc == 0 {
         return Err("segment_count is 0");
     }
-    let leaf_j = segment_id.saturating_add(sc);
+    let leaf_j = usize::from(segment_id) + sc;
     if leaf_j >= n {
         return Err("leaf index oob");
     }
@@ -197,8 +198,8 @@ pub fn calculate_positions_v1_window(
 pub enum RebalanceDecision {
     Noop,
     RebalanceWindow {
-        left_vertex: usize,
-        right_vertex: usize,
+        left_vertex: VertexId,
+        right_vertex: u64,
         pma_idx: usize,
     },
     ResizeNeeded,
@@ -208,14 +209,14 @@ pub enum RebalanceDecision {
 ///
 /// Only reads PMA indices on the leaf-to-root path (`window`, `window/2`, …), not the full `segment_count * 2` array.
 pub fn rebalance_decision_with_reader(
-    src_vertex: u32,
-    segment_size: u32,
-    segment_count: u32,
+    src_vertex: VertexId,
+    segment_size: SegmentId,
+    segment_count: SegmentId,
     num_vertices: usize,
     tree_height: u32,
     mut read_at: impl FnMut(usize) -> (i64, i64),
 ) -> RebalanceDecision {
-    let sc = segment_count as usize;
+    let sc = usize::from(segment_count);
     let len = sc * 2;
     if sc == 0 {
         return RebalanceDecision::Noop;
@@ -252,12 +253,12 @@ pub fn rebalance_decision_with_reader(
     }
 
     if density < up_height {
-        let window_size = (segment_size as usize).saturating_mul(1usize << (height as u32));
-        let left = (src_vertex as usize / window_size) * window_size;
+        let window_size = usize::from(segment_size).saturating_mul(1usize << (height as u32));
+        let left = (usize::from(src_vertex) / window_size) * window_size;
         let right = (left + window_size).min(num_vertices);
         RebalanceDecision::RebalanceWindow {
-            left_vertex: left,
-            right_vertex: right,
+            left_vertex: VertexId::try_from(left).expect("left vertex exceeds u32 range"),
+            right_vertex: right as u64,
             pma_idx: window,
         }
     } else {
@@ -267,15 +268,15 @@ pub fn rebalance_decision_with_reader(
 
 /// Same as [`rebalance_decision_with_reader`] using preloaded `actual` / `total` slices (length `segment_count * 2`).
 pub fn rebalance_decision(
-    src_vertex: u32,
-    segment_size: u32,
-    segment_count: u32,
+    src_vertex: VertexId,
+    segment_size: SegmentId,
+    segment_count: SegmentId,
     num_vertices: usize,
     tree_height: u32,
     actual: &[i64],
     total: &[i64],
 ) -> RebalanceDecision {
-    let sc = segment_count as usize;
+    let sc = usize::from(segment_count);
     let len = sc * 2;
     if actual.len() < len || total.len() < len || sc == 0 {
         return RebalanceDecision::Noop;
@@ -656,7 +657,7 @@ pub fn recount_segment_total<V: CsrVertex>(
             }
         };
         let segment_total_p = next_starter as i64 - vertices[v0].base_slot_start() as i64;
-        let mut j = leaf_pma_tree_index(i, segment_count);
+        let mut j = leaf_pma_tree_index(SegmentId::try_from(i).expect("segment id exceeds u32 range"), SegmentId(segment_count));
         while j > 0 && j < total.len() {
             total[j] += segment_total_p;
             j /= 2;
@@ -684,7 +685,7 @@ pub fn recount_segment_actual_from_degrees<V: CsrVertex>(
         for v in v0..vend {
             sum += vertices[v].degree() as i64;
         }
-        let leaf = leaf_pma_tree_index(i, segment_count);
+        let leaf = leaf_pma_tree_index(SegmentId::try_from(i).expect("segment id exceeds u32 range"), SegmentId(segment_count));
         if leaf < actual.len() {
             actual[leaf] = sum;
         }
@@ -701,9 +702,9 @@ pub fn recount_segment_actual_from_degrees<V: CsrVertex>(
     }
 }
 
-/// [`recount_segment_total`] reading vertices through a dense [`SlotMap`] (no `&[V]` snapshot).
+/// [`recount_segment_total`] reading vertices through a dense [`StableVec`] (no `&[V]` snapshot).
 pub fn recount_segment_total_column<V, M>(
-    col: &SlotMap<V, M>,
+    col: &StableVec<V, M>,
     num_vertices: u64,
     segment_count: u32,
     segment_size: u32,
@@ -727,14 +728,14 @@ pub fn recount_segment_total_column<V, M>(
             if ni >= nv {
                 elem_capacity_slots
             } else {
-                col.get_dense(ni as u32)
+                col.get(ni as u64)
                     .expect("vertex column get")
                     .base_slot_start()
             }
         };
-        let v0_row = col.get_dense(v0 as u32).expect("vertex column get v0");
+        let v0_row = col.get(v0 as u64).expect("vertex column get v0");
         let segment_total_p = next_starter as i64 - v0_row.base_slot_start() as i64;
-        let mut j = leaf_pma_tree_index(i, segment_count);
+        let mut j = leaf_pma_tree_index(SegmentId::try_from(i).expect("segment id exceeds u32 range"), SegmentId(segment_count));
         while j > 0 && j < total.len() {
             total[j] += segment_total_p;
             j /= 2;
@@ -742,9 +743,9 @@ pub fn recount_segment_total_column<V, M>(
     }
 }
 
-/// [`recount_segment_actual_from_degrees`] via a dense [`SlotMap`] vertex table.
+/// [`recount_segment_actual_from_degrees`] via a dense [`StableVec`] vertex table.
 pub fn recount_segment_actual_column<V, M>(
-    col: &SlotMap<V, M>,
+    col: &StableVec<V, M>,
     num_vertices: u64,
     segment_count: u32,
     segment_size: u32,
@@ -765,9 +766,9 @@ pub fn recount_segment_actual_column<V, M>(
         let vend = ((i + 1) * segment_size as usize).min(nv);
         let mut sum = 0i64;
         for v in v0..vend {
-            sum += col.get_dense(v as u32).expect("vertex column get").degree() as i64;
+            sum += col.get(v as u64).expect("vertex column get").degree() as i64;
         }
-        let leaf = leaf_pma_tree_index(i, segment_count);
+        let leaf = leaf_pma_tree_index(SegmentId::try_from(i).expect("segment id exceeds u32 range"), SegmentId(segment_count));
         if leaf < actual.len() {
             actual[leaf] = sum;
         }
@@ -795,7 +796,7 @@ pub fn segments_for_vertex_range(
     right: usize,
     segment_size: u32,
     segment_count: u32,
-) -> Vec<usize> {
+) -> Vec<SegmentId> {
     if left >= right {
         return Vec::new();
     }
@@ -817,7 +818,9 @@ pub fn segments_for_vertex_range(
     if lo > hi {
         return Vec::new();
     }
-    (lo..=hi).collect()
+    (lo..=hi)
+        .map(|seg| SegmentId::try_from(seg).expect("segment id exceeds u32 range"))
+        .collect()
 }
 
 /// One PMA leaf's [`SegmentEdgeCounts`] for DGAP segment index `segment_idx`, same definition as
@@ -826,7 +829,7 @@ pub fn segments_for_vertex_range(
 /// If the segment has no vertices (`segment_idx * segment_size >= num_vertices`) or `segment_idx >= segment_count`,
 /// returns zeros.
 pub fn segment_edge_counts_leaf_from_column<V, M, F>(
-    col: &SlotMap<V, M>,
+    col: &StableVec<V, M>,
     num_vertices: u64,
     segment_count: u32,
     segment_size: u32,
@@ -860,11 +863,11 @@ where
     let mut actual_sum = 0i64;
     let mut tombstone_sum = 0i64;
     for v in v0..vend {
-        actual_sum += col.get_dense(v as u32).expect("vertex column get").degree() as i64;
-        let row = col.get_dense(v as u32).expect("vertex column get");
+        actual_sum += col.get(v as u64).expect("vertex column get").degree() as i64;
+        let row = col.get(v as u64).expect("vertex column get");
         let b = row.base_slot_start();
         let end_exclusive = if v + 1 < nv {
-            col.get_dense((v + 1) as u32)
+            col.get((v + 1) as u64)
                 .expect("vertex column get")
                 .base_slot_start()
         } else {
@@ -885,12 +888,12 @@ where
         if ni >= nv {
             elem_capacity_slots
         } else {
-            col.get_dense(ni as u32)
+            col.get(ni as u64)
                 .expect("vertex column get")
                 .base_slot_start()
         }
     };
-    let v0_row = col.get_dense(v0 as u32).expect("vertex column get v0");
+    let v0_row = col.get(v0 as u64).expect("vertex column get v0");
     let segment_total_p = next_starter as i64 - v0_row.base_slot_start() as i64;
     SegmentEdgeCounts {
         actual: actual_sum,
@@ -901,14 +904,14 @@ where
 
 /// Recompute selected PMA leaves from the vertex column, write `SEC`, and re-aggregate ancestors for each leaf (ascending `segment_idx`).
 pub fn refresh_segment_edge_counts_leaves<V, M, F, SecM: Memory>(
-    col: &SlotMap<V, M>,
+    col: &StableVec<V, M>,
     num_vertices: u64,
     segment_count: u32,
     segment_size: u32,
     elem_capacity_slots: u64,
     sec_mem: &SecM,
     stride: u64,
-    segment_indices: &[usize],
+    segment_indices: &[SegmentId],
     mut slot_is_tombstone: F,
 ) -> Result<(), &'static str>
 where
@@ -917,11 +920,12 @@ where
     F: FnMut(u64) -> bool,
 {
     let sc = segment_count as usize;
-    let mut sorted: Vec<usize> = segment_indices.to_vec();
+    let mut sorted: Vec<SegmentId> = segment_indices.to_vec();
     sorted.sort_unstable();
     sorted.dedup();
     for &seg in &sorted {
-        if seg >= sc {
+        let seg_usize = usize::from(seg);
+        if seg_usize >= sc {
             return Err("segment index oob for segment_count");
         }
         let c = segment_edge_counts_leaf_from_column(
@@ -930,10 +934,10 @@ where
             segment_count,
             segment_size,
             elem_capacity_slots,
-            seg,
+            seg_usize,
             &mut slot_is_tombstone,
         );
-        let leaf_j = leaf_pma_tree_index(seg, segment_count);
+        let leaf_j = leaf_pma_tree_index(seg, SegmentId(segment_count));
         write_segment_edge_counts(sec_mem, leaf_j, stride, c);
         reaggregate_segment_edge_counts_ancestors(sec_mem, stride, segment_count, leaf_j);
     }
@@ -945,7 +949,7 @@ where
 /// `slot_is_tombstone` is invoked for every slab slot in each vertex span `[base, next_vertex_base)` inside
 /// the leaf (including slots not covered by `degree`, e.g. orphaned tombstones after logical delete).
 pub fn recount_segment_edge_counts_column<V, M, F>(
-    col: &SlotMap<V, M>,
+    col: &StableVec<V, M>,
     num_vertices: u64,
     segment_count: u32,
     segment_size: u32,
@@ -973,7 +977,7 @@ pub fn recount_segment_edge_counts_column<V, M, F>(
         if v0 >= nv {
             continue;
         }
-        let leaf = leaf_pma_tree_index(i, segment_count);
+        let leaf = leaf_pma_tree_index(SegmentId::try_from(i).expect("segment id exceeds u32 range"), SegmentId(segment_count));
         if leaf < out.len() {
             out[leaf] = segment_edge_counts_leaf_from_column(
                 col,
@@ -1129,8 +1133,8 @@ mod segment_maintain_tests {
             tombstone: 0,
         };
         let reb = RebalanceDecision::RebalanceWindow {
-            left_vertex: 0,
-            right_vertex: 8,
+            left_vertex: 0u32,
+            right_vertex: 8u64,
             pma_idx: 1,
         };
         let a = segment_maintenance_decision(leaf, reb, 0, &thr());
@@ -1257,8 +1261,8 @@ mod rebalance_reader_parity_tests {
                     total[j] = actual[j].max(1) + ((j * 7 + pattern as usize) % 20) as i64;
                 }
                 for vtx in 0..nv.min(32) {
-                    let d1 = rebalance_decision(vtx as u32, ss, sc, nv, th, &actual, &total);
-                    let d2 = rebalance_decision_with_reader(vtx as u32, ss, sc, nv, th, |i| {
+                    let d1 = rebalance_decision(vtx as VertexId, ss, sc, nv, th, &actual, &total);
+                    let d2 = rebalance_decision_with_reader(vtx as VertexId, ss, sc, nv, th, |i| {
                         (actual[i], total[i])
                     });
                     assert_eq!(d1, d2, "sc={sc} vtx={vtx} pattern={pattern}");

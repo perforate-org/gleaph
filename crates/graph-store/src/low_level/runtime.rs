@@ -1706,7 +1706,7 @@ impl SurfaceRuntime {
                 continue;
             }
 
-            let label_id = entry.meta.label_id();
+            let label_id = entry.meta.local_id()?;
             let global_start =
                 u32::try_from(current.start_slot().checked_add(local_index as u64)?).ok()?;
 
@@ -3934,7 +3934,7 @@ mod tests {
         );
 
         let old = runtime.tombstone_base_entry(0, 1).expect("tombstoned");
-        assert_eq!(old.meta.label_id(), 4);
+        assert_eq!(old.meta.local_id(), Some(4));
         assert_eq!(runtime.dirty_vertices().collect::<Vec<_>>(), vec![0]);
         assert!(
             runtime

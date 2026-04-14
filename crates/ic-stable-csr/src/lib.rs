@@ -1,5 +1,5 @@
 //! **DGAP**-aligned graph edges on Internet Computer stable memory, plus a CSR vertex table **`M_v`**
-//! ([`ic_stable_slot_map::SlotMap`] V1, magic **`SSM`**).
+//! ([`StableVec`] V1, magic **`SVC`**).
 //!
 //! This crate uses unstable **`specialization`** internally (for optional [`traits::CsrEdgeUndirected`]
 //! checks on directed inserts, and PMA node **stride** when [`traits::CsrEdgeTombstone`] is implemented).
@@ -20,7 +20,7 @@
 //!
 //! ```text
 //! ---------------------------------------- <- M_v (vertex CSR table)
-//! | [`ic_stable_slot_map::SlotMap`] V1 header + slot cells (`SSM` magic)              |
+//! | [`StableVec`] V1 header + items (`SVC` magic)                                      |
 //! ----------------------------------------
 //!
 //! ---------------------------------------- <- M_e memory 1 (`segment_edge_counts`)
@@ -74,6 +74,170 @@ pub mod dgap;
 pub mod layout;
 pub mod memory_util;
 pub mod traits;
+
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct VertexId(pub u32);
+
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct SegmentId(pub u32);
+
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct VertexCount(pub u64);
+
+pub type SlotIndex = u64;
+
+impl std::fmt::Display for VertexId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::fmt::Display for SegmentId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::fmt::Display for VertexCount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl VertexId {
+    #[inline]
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
+impl SegmentId {
+    #[inline]
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
+impl VertexCount {
+    #[inline]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+
+    #[inline]
+    pub const fn saturating_add(self, rhs: u64) -> Self {
+        Self(self.0.saturating_add(rhs))
+    }
+}
+
+impl From<u32> for VertexId {
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+
+impl From<u32> for SegmentId {
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+
+impl From<u64> for VertexCount {
+    fn from(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+impl From<VertexId> for u32 {
+    fn from(value: VertexId) -> Self {
+        value.0
+    }
+}
+
+impl From<VertexId> for u64 {
+    fn from(value: VertexId) -> Self {
+        u64::from(value.0)
+    }
+}
+
+impl From<VertexId> for usize {
+    fn from(value: VertexId) -> Self {
+        value.0 as usize
+    }
+}
+
+impl From<SegmentId> for u32 {
+    fn from(value: SegmentId) -> Self {
+        value.0
+    }
+}
+
+impl From<SegmentId> for u64 {
+    fn from(value: SegmentId) -> Self {
+        u64::from(value.0)
+    }
+}
+
+impl From<SegmentId> for usize {
+    fn from(value: SegmentId) -> Self {
+        value.0 as usize
+    }
+}
+
+impl From<VertexCount> for u64 {
+    fn from(value: VertexCount) -> Self {
+        value.0
+    }
+}
+
+impl From<usize> for VertexCount {
+    fn from(value: usize) -> Self {
+        Self(value as u64)
+    }
+}
+
+impl TryFrom<usize> for VertexId {
+    type Error = std::num::TryFromIntError;
+
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        u32::try_from(value).map(Self)
+    }
+}
+
+impl TryFrom<u64> for VertexId {
+    type Error = std::num::TryFromIntError;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        u32::try_from(value).map(Self)
+    }
+}
+
+impl TryFrom<usize> for SegmentId {
+    type Error = std::num::TryFromIntError;
+
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        u32::try_from(value).map(Self)
+    }
+}
+
+impl TryFrom<VertexId> for i32 {
+    type Error = std::num::TryFromIntError;
+
+    fn try_from(value: VertexId) -> Result<Self, Self::Error> {
+        i32::try_from(value.0)
+    }
+}
+
+impl TryFrom<VertexCount> for usize {
+    type Error = std::num::TryFromIntError;
+
+    fn try_from(value: VertexCount) -> Result<Self, Self::Error> {
+        usize::try_from(value.0)
+    }
+}
 
 pub use ic_stable_structures::storable::Bound;
 pub use ic_stable_structures::vec::Vec as StableVec;

@@ -7,9 +7,9 @@
 //! - an append-only journal of packed `u64` records for pending `set`, `truncate`, and `remove`
 //!   updates.
 //!
-//! Each packed journal record reserves payload space for `2 ^ 61` distinct values, so the largest
-//! bit index or logical length representable by the journal is `2 ^ 61 - 1`
-//! (`crate::JOURNAL_PAYLOAD_MAX`).
+//! Each packed journal record stores a payload masked by [`crate::JOURNAL_PAYLOAD_MASK`]; the
+//! API allows bit indices up to `u32::MAX` and exclusive logical length up to `u32::MAX + 1`
+//! ([`crate::JOURNAL_LEN_MAX`]).
 //!
 //! Reads always use the heap mirror so membership checks stay cheap. Writes are durable-first:
 //! they append a packed journal record, then update the heap mirror, and finally checkpoint the
@@ -161,33 +161,25 @@ struct JournalRecord(u64);
 impl JournalRecord {
     fn set_len(len: u64) -> Self {
         assert!(
-            len <= crate::JOURNAL_PAYLOAD_MAX,
-            "bitset length exceeds supported 2 ^ 61 - 1 payload"
+            len <= crate::JOURNAL_LEN_MAX,
+            "bitset length exceeds supported u32 index space"
         );
         Self::pack(JournalTag::SetLen, false, len)
     }
 
-    fn set_bit(index: u64, value: bool) -> Self {
-        assert!(
-            index <= crate::JOURNAL_PAYLOAD_MAX,
-            "bit index exceeds supported 2 ^ 61 - 1 payload"
-        );
-        Self::pack(JournalTag::SetBit, value, index)
+    fn set_bit(index: u32, value: bool) -> Self {
+        Self::pack(JournalTag::SetBit, value, u64::from(index))
     }
 
-    fn remove(index: u64) -> Self {
-        assert!(
-            index <= crate::JOURNAL_PAYLOAD_MAX,
-            "remove index exceeds supported 2 ^ 61 - 1 payload"
-        );
-        Self::pack(JournalTag::Remove, false, index)
+    fn remove(index: u32) -> Self {
+        Self::pack(JournalTag::Remove, false, u64::from(index))
     }
 
     fn pack(tag: JournalTag, value: bool, payload: u64) -> Self {
-        debug_assert!(payload <= crate::JOURNAL_PAYLOAD_MAX);
+        debug_assert!(payload <= crate::JOURNAL_PAYLOAD_MASK);
         let raw = ((tag as u64) << JOURNAL_KIND_SHIFT)
             | (u64::from(value) << JOURNAL_VALUE_SHIFT)
-            | (payload & crate::JOURNAL_PAYLOAD_MAX);
+            | (payload & crate::JOURNAL_PAYLOAD_MASK);
         Self(raw)
     }
 
@@ -201,7 +193,7 @@ impl JournalRecord {
             _ => return Err(InitError::InvalidLayout),
         };
         let value = ((self.0 >> JOURNAL_VALUE_SHIFT) & 1) != 0;
-        let payload = self.0 & crate::JOURNAL_PAYLOAD_MAX;
+        let payload = self.0 & crate::JOURNAL_PAYLOAD_MASK;
         Ok((tag, value, payload))
     }
 
@@ -229,14 +221,14 @@ impl JournalRecord {
 /// - The type is intended for single-writer use.
 /// - `contains` always reads the heap mirror.
 /// - `set`, `remove`, and `truncate` are durable-first and may trigger checkpointing.
-pub struct BitSet<M: Memory> {
+pub struct Bitset<M: Memory> {
     memory: M,
     state: RefCell<HeapState>,
     journal_len: Cell<u64>,
     journal_cap: u64,
 }
 
-/// Borrowed view for repeated membership checks against a [`BitSet`].
+/// Borrowed view for repeated membership checks against a [`Bitset`].
 pub struct ContainsView<'a> {
     state: Ref<'a, HeapState>,
 }
@@ -244,7 +236,8 @@ pub struct ContainsView<'a> {
 impl ContainsView<'_> {
     /// Tests whether the selected bit is set while reusing a previously borrowed heap mirror.
     #[inline]
-    pub fn contains(&self, index: u64) -> bool {
+    pub fn contains(&self, index: u32) -> bool {
+        let index = u64::from(index);
         if index >= self.state.len_bits {
             return false;
         }
@@ -254,10 +247,10 @@ impl ContainsView<'_> {
     }
 }
 
-impl<M: Memory> fmt::Debug for BitSet<M> {
+impl<M: Memory> fmt::Debug for Bitset<M> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let st = self.state.borrow();
-        f.debug_struct("BitSet")
+        f.debug_struct("Bitset")
             .field("len_bits", &st.len_bits)
             .field("word_cap", &st.word_cap)
             .field("journal_len", &self.journal_len.get())
@@ -266,7 +259,7 @@ impl<M: Memory> fmt::Debug for BitSet<M> {
     }
 }
 
-impl<M: Memory> BitSet<M> {
+impl<M: Memory> Bitset<M> {
     /// Creates a new empty bitset using the provided stable memory.
     pub fn new(memory: M) -> Result<Self, GrowFailed> {
         Self::new_with_journal_capacity(memory, DEFAULT_JOURNAL_CAP)
@@ -312,6 +305,9 @@ impl<M: Memory> BitSet<M> {
             .checked_mul(crate::memory::WASM_PAGE_SIZE)
             .expect("address overflow");
         if size_bytes < need {
+            return Err(InitError::InvalidLayout);
+        }
+        if len_bits > crate::JOURNAL_LEN_MAX {
             return Err(InitError::InvalidLayout);
         }
         let words = read_u64_words_vec(&memory, data_offset(journal_cap), word_cap);
@@ -376,7 +372,8 @@ impl<M: Memory> BitSet<M> {
 
     /// Tests whether the selected bit is set.
     #[inline]
-    pub fn contains(&self, index: u64) -> bool {
+    pub fn contains(&self, index: u32) -> bool {
+        let index = u64::from(index);
         let st = self.state.borrow();
         if index >= st.len_bits {
             return false;
@@ -397,8 +394,8 @@ impl<M: Memory> BitSet<M> {
     /// Ensures that the logical length is at least `min_len`.
     pub fn ensure_len(&self, min_len: u64) -> Result<(), GrowFailed> {
         assert!(
-            min_len <= crate::JOURNAL_PAYLOAD_MAX,
-            "bitset length exceeds supported 2 ^ 61 - 1 payload"
+            min_len <= crate::JOURNAL_LEN_MAX,
+            "bitset length exceeds supported u32 index space"
         );
         let current = self.len();
         if min_len <= current {
@@ -417,13 +414,14 @@ impl<M: Memory> BitSet<M> {
     }
 
     /// Sets or clears a bit.
-    pub fn set(&self, index: u64, value: bool) -> Result<(), GrowFailed> {
+    pub fn set(&self, index: u32, value: bool) -> Result<(), GrowFailed> {
+        let i = u64::from(index);
+        let need_len = i.saturating_add(1);
         assert!(
-            index <= crate::JOURNAL_PAYLOAD_MAX,
-            "bit index exceeds supported 2 ^ 61 - 1 payload"
+            need_len <= crate::JOURNAL_LEN_MAX,
+            "bit index exceeds supported u32 index space"
         );
         if value {
-            let need_len = index.saturating_add(1);
             if need_len > self.len() {
                 self.ensure_word_capacity(words_for_bits(need_len))?;
             }
@@ -431,10 +429,10 @@ impl<M: Memory> BitSet<M> {
                 self.append_record(JournalRecord::set_bit(index, true))?;
                 {
                     let mut st = self.state.borrow_mut();
-                    if index >= st.len_bits {
+                    if i >= st.len_bits {
                         st.len_bits = need_len;
                     }
-                    set_heap_bit(&mut st.words, index, true);
+                    set_heap_bit(&mut st.words, i, true);
                 }
             }
             self.maybe_checkpoint()?;
@@ -447,8 +445,8 @@ impl<M: Memory> BitSet<M> {
         self.append_record(JournalRecord::set_bit(index, false))?;
         {
             let mut st = self.state.borrow_mut();
-            if index < st.len_bits {
-                set_heap_bit(&mut st.words, index, false);
+            if i < st.len_bits {
+                set_heap_bit(&mut st.words, i, false);
             }
         }
         self.maybe_checkpoint()?;
@@ -456,31 +454,28 @@ impl<M: Memory> BitSet<M> {
     }
 
     /// Inserts a bit by setting it to `true`.
-    pub fn insert(&self, index: u64) -> Result<(), GrowFailed> {
+    pub fn insert(&self, index: u32) -> Result<(), GrowFailed> {
         self.set(index, true)
     }
 
     /// Clears a bit by setting it to `false` without shifting later bits.
-    pub fn clear(&self, index: u64) -> Result<(), GrowFailed> {
+    pub fn clear(&self, index: u32) -> Result<(), GrowFailed> {
         self.set(index, false)
     }
 
     /// Removes a bit and shifts all later bits left by one position.
-    pub fn remove(&self, index: u64) -> Result<(), GrowFailed> {
+    pub fn remove(&self, index: u32) -> Result<(), GrowFailed> {
+        let i = u64::from(index);
         assert!(
-            index <= crate::JOURNAL_PAYLOAD_MAX,
-            "remove index exceeds supported 2 ^ 61 - 1 payload"
-        );
-        assert!(
-            index < self.len(),
-            "remove index out of bounds: index={index} len={}",
+            i < self.len(),
+            "remove index out of bounds: index={i} len={}",
             self.len()
         );
         self.append_record(JournalRecord::remove(index))?;
         {
             let mut st = self.state.borrow_mut();
             let len_bits = st.len_bits;
-            let new_len = remove_heap_bit(&mut st.words, len_bits, index);
+            let new_len = remove_heap_bit(&mut st.words, len_bits, i);
             st.len_bits = new_len;
         }
         self.maybe_checkpoint()?;
@@ -490,8 +485,8 @@ impl<M: Memory> BitSet<M> {
     /// Shrinks the logical length to `new_len`.
     pub fn truncate(&self, new_len: u64) -> Result<(), GrowFailed> {
         assert!(
-            new_len <= crate::JOURNAL_PAYLOAD_MAX,
-            "bitset length exceeds supported 2 ^ 61 - 1 payload"
+            new_len <= crate::JOURNAL_LEN_MAX,
+            "bitset length exceeds supported u32 index space"
         );
         if new_len >= self.len() {
             return Ok(());
@@ -696,6 +691,9 @@ fn apply_record(state: &mut HeapState, record: JournalRecord) -> Result<(), Init
         JournalTag::Empty => {}
         JournalTag::SetLen => {
             let new_len = payload;
+            if new_len > crate::JOURNAL_LEN_MAX {
+                return Err(InitError::InvalidLayout);
+            }
             if new_len < state.len_bits {
                 state.len_bits = new_len;
                 clear_suffix(&mut state.words, state.len_bits);
@@ -704,6 +702,9 @@ fn apply_record(state: &mut HeapState, record: JournalRecord) -> Result<(), Init
             }
         }
         JournalTag::SetBit => {
+            if payload > u32::MAX as u64 {
+                return Err(InitError::InvalidLayout);
+            }
             let index = payload;
             if value {
                 if index >= state.len_bits {
@@ -719,6 +720,9 @@ fn apply_record(state: &mut HeapState, record: JournalRecord) -> Result<(), Init
             }
         }
         JournalTag::Remove => {
+            if payload > u32::MAX as u64 {
+                return Err(InitError::InvalidLayout);
+            }
             apply_remove_record(state, payload)?;
         }
     }
@@ -742,14 +746,14 @@ mod tests {
     use super::*;
     use ic_stable_structures::vec_mem::VectorMemory;
 
-    fn reopen(memory: VectorMemory) -> BitSet<VectorMemory> {
-        BitSet::init(memory).unwrap()
+    fn reopen(memory: VectorMemory) -> Bitset<VectorMemory> {
+        Bitset::init(memory).unwrap()
     }
 
     #[test]
     fn insert_and_remove_roundtrip() {
         let mem = VectorMemory::default();
-        let bs = BitSet::new_with_journal_capacity(mem, 8).unwrap();
+        let bs = Bitset::new_with_journal_capacity(mem, 8).unwrap();
         bs.insert(0).unwrap();
         bs.insert(1).unwrap();
         bs.insert(2).unwrap();
@@ -774,10 +778,10 @@ mod tests {
     #[test]
     fn remove_shifts_across_word_boundary() {
         let mem = VectorMemory::default();
-        let bs = BitSet::new_with_journal_capacity(mem, 8).unwrap();
+        let bs = Bitset::new_with_journal_capacity(mem, 8).unwrap();
         for index in 0..80 {
             if matches!(index, 60..=67) {
-                bs.insert(index).unwrap();
+                bs.insert(index as u32).unwrap();
             }
         }
         bs.remove(63).unwrap();
@@ -806,7 +810,7 @@ mod tests {
     #[test]
     fn clear_only_unsets_bit() {
         let mem = VectorMemory::default();
-        let bs = BitSet::new_with_journal_capacity(mem, 8).unwrap();
+        let bs = Bitset::new_with_journal_capacity(mem, 8).unwrap();
         bs.insert(0).unwrap();
         bs.insert(1).unwrap();
         bs.insert(2).unwrap();
@@ -826,7 +830,7 @@ mod tests {
     #[test]
     fn truncate_replays_after_reopen() {
         let mem = VectorMemory::default();
-        let bs = BitSet::new_with_journal_capacity(mem, 8).unwrap();
+        let bs = Bitset::new_with_journal_capacity(mem, 8).unwrap();
         bs.insert(1).unwrap();
         bs.insert(70).unwrap();
         bs.truncate(4).unwrap();
@@ -841,7 +845,7 @@ mod tests {
     #[test]
     fn checkpoint_clears_remove_journal() {
         let mem = VectorMemory::default();
-        let bs = BitSet::new_with_journal_capacity(mem, 2).unwrap();
+        let bs = Bitset::new_with_journal_capacity(mem, 2).unwrap();
         bs.insert(0).unwrap();
         bs.insert(1).unwrap();
         bs.insert(2).unwrap();
@@ -857,7 +861,7 @@ mod tests {
     #[test]
     fn ensure_len_replays_after_reopen() {
         let mem = VectorMemory::default();
-        let bs = BitSet::new_with_journal_capacity(mem, 8).unwrap();
+        let bs = Bitset::new_with_journal_capacity(mem, 8).unwrap();
         bs.ensure_len(4).unwrap();
         assert_eq!(bs.len(), 4);
         let mem = bs.into_memory();
@@ -870,7 +874,7 @@ mod tests {
     #[test]
     fn mixed_remove_and_set_replays_after_reopen() {
         let mem = VectorMemory::default();
-        let bs = BitSet::new_with_journal_capacity(mem, 8).unwrap();
+        let bs = Bitset::new_with_journal_capacity(mem, 8).unwrap();
         bs.insert(0).unwrap();
         bs.insert(1).unwrap();
         bs.insert(3).unwrap();

@@ -3,21 +3,24 @@ use std::ops::AddAssign;
 
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub struct NodeId([u8; 5]);
+pub struct NodeId(u32);
 
 pub type EdgeId = u64;
 pub type LabelId = u16;
 
 impl NodeId {
-    pub const MAX: u64 = (1u64 << 40) - 1;
+    pub const MAX: u64 = u32::MAX as u64;
 
-    pub const fn new(bytes: [u8; 5]) -> Self {
-        Self(bytes)
+    pub const fn new(raw: u32) -> Self {
+        Self(raw)
     }
 
-    pub fn to_u64(self) -> u64 {
-        let [b0, b1, b2, b3, b4] = self.0;
-        u64::from_be_bytes([0, 0, 0, b0, b1, b2, b3, b4])
+    pub const fn to_u32(self) -> u32 {
+        self.0
+    }
+
+    pub const fn to_u64(self) -> u64 {
+        self.0 as u64
     }
 
     pub fn checked_next(self) -> Option<Self> {
@@ -26,12 +29,16 @@ impl NodeId {
             .and_then(|value| Self::try_from(value).ok())
     }
 
-    pub fn as_bytes(self) -> [u8; 5] {
-        self.0
+    pub const fn as_bytes(self) -> [u8; 4] {
+        self.0.to_be_bytes()
     }
 
-    pub fn to_be_bytes(self) -> [u8; 5] {
-        self.0
+    pub const fn to_be_bytes(self) -> [u8; 4] {
+        self.0.to_be_bytes()
+    }
+
+    pub const fn from_be_bytes(bytes: [u8; 4]) -> Self {
+        Self(u32::from_be_bytes(bytes))
     }
 }
 
@@ -42,8 +49,7 @@ impl TryFrom<u64> for NodeId {
         if value > Self::MAX {
             return Err(NodeIdOverflow(value));
         }
-        let bytes = value.to_be_bytes();
-        Ok(Self([bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]]))
+        Ok(Self(value as u32))
     }
 }
 
@@ -93,4 +99,4 @@ impl fmt::Display for NodeId {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NodeIdOverflow(pub u64);
 
-const _: () = assert!(core::mem::size_of::<NodeId>() == 5);
+const _: () = assert!(core::mem::size_of::<NodeId>() == 4);

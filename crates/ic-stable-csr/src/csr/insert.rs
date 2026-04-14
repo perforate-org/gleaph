@@ -3,10 +3,10 @@
 //! Higher-level orchestration (PMA sync, [`rebalance_decision`](crate::dgap::rebalance_decision),
 //! [`DgapEdgeStore`](crate::dgap::DgapEdgeStore), resize) lives on [`DgapEdgeStore`](crate::dgap::DgapEdgeStore).
 
-use ic_stable_slot_map::SlotMap;
 use ic_stable_structures::Memory;
 
 use crate::traits::{CsrEdge, CsrVertex};
+use crate::StableVec;
 
 /// Local failure modes for one insert attempt before resize.
 #[derive(Debug, PartialEq, Eq)]
@@ -174,9 +174,9 @@ where
     Ok(())
 }
 
-/// Remove using a dense [`SlotMap`] vertex table (same append-only convention as CSR `M_v`).
+/// Remove using a dense [`StableVec`] vertex table (same append-only convention as CSR `M_v`).
 pub fn remove_edge_from_slab_column<V, M, E>(
-    col: &SlotMap<V, M>,
+    col: &StableVec<V, M>,
     edges: &mut [E],
     v: usize,
     local_index: usize,
@@ -193,12 +193,14 @@ where
         v,
         local_index,
         |i| {
-            col.get_dense(i as u32)
+            col.get(i as u64)
                 .unwrap_or_else(|| panic!("vertex index {i} out of range for len {n}"))
         },
         |i, x| {
-            col.set_dense(i as u32, &x)
-                .unwrap_or_else(|e| panic!("vertex set_dense failed: {e:?}"))
+            if col.get(i as u64).is_none() {
+                panic!("vertex set failed: index {i} out of range for len {n}");
+            }
+            col.set(i as u64, &x)
         },
         edges,
         elem_capacity,
@@ -259,9 +261,9 @@ pub fn remove_edge_from_slab<V: CsrVertex, E: CsrEdge>(
     Ok(())
 }
 
-/// Insert using a dense [`SlotMap`] vertex table (same append-only convention as CSR `M_v`).
+/// Insert using a dense [`StableVec`] vertex table (same append-only convention as CSR `M_v`).
 pub fn insert_edge_into_slab_column<V, M, E>(
-    col: &SlotMap<V, M>,
+    col: &StableVec<V, M>,
     edges: &mut [E],
     v: usize,
     edge: E,
@@ -277,12 +279,14 @@ where
         n,
         v,
         |i| {
-            col.get_dense(i as u32)
+            col.get(i as u64)
                 .unwrap_or_else(|| panic!("vertex index {i} out of range for len {n}"))
         },
         |i, x| {
-            col.set_dense(i as u32, &x)
-                .unwrap_or_else(|e| panic!("vertex set_dense failed: {e:?}"))
+            if col.get(i as u64).is_none() {
+                panic!("vertex set failed: index {i} out of range for len {n}");
+            }
+            col.set(i as u64, &x)
         },
         edges,
         edge,
@@ -360,6 +364,7 @@ pub fn insert_edge_into_slab<V: CsrVertex, E: CsrEdge>(
 mod tests {
     use super::*;
     use crate::traits::{CsrEdge, CsrVertex};
+    use crate::VertexId;
     use std::borrow::Cow;
 
     use crate::{Bound, Storable};
@@ -440,11 +445,11 @@ mod tests {
             bytes[0] = self.0;
         }
 
-        fn neighbor_vid(&self) -> usize {
-            self.0 as usize
+        fn neighbor_vid(&self) -> VertexId {
+            self.0 as VertexId
         }
 
-        fn with_neighbor_vid(self, vid: usize) -> Self {
+        fn with_neighbor_vid(self, vid: VertexId) -> Self {
             Self(vid as u8)
         }
     }

@@ -5,7 +5,7 @@ use crate::memory::{
 use core::cell::{Cell, Ref, RefCell};
 use core::fmt;
 use ic_stable_structures::Memory;
-use roaring::RoaringTreemap;
+use roaring::RoaringBitmap;
 
 const MAGIC: [u8; 3] = *b"RSB";
 const VERSION: u8 = 1;
@@ -25,16 +25,24 @@ const SNAPSHOT_LEN_OFFSET: u64 = 20;
 #[derive(Clone, Debug)]
 struct HeapState {
     len_bits: u64,
-    bitmap: RoaringTreemap,
+    bitmap: RoaringBitmap,
 }
 
 impl HeapState {
     fn new() -> Self {
         Self {
             len_bits: 0,
-            bitmap: RoaringTreemap::new(),
+            bitmap: RoaringBitmap::new(),
         }
     }
+}
+
+/// Clears all set bits with index `>= start_exclusive` (indices are `u32`).
+fn remove_suffix_bits(bitmap: &mut RoaringBitmap, start_exclusive: u64) {
+    if start_exclusive > u32::MAX as u64 {
+        return;
+    }
+    bitmap.remove_range(start_exclusive as u32..=u32::MAX);
 }
 
 /// Error returned when a stable roaring bitmap cannot be opened from memory.
@@ -112,25 +120,21 @@ struct JournalRecord(u64);
 impl JournalRecord {
     fn set_len(len: u64) -> Self {
         assert!(
-            len <= crate::JOURNAL_PAYLOAD_MAX,
-            "bitmap length exceeds supported 2 ^ 61 - 1 payload"
+            len <= crate::JOURNAL_LEN_MAX,
+            "bitmap length exceeds supported u32 index space"
         );
         Self::pack(JournalTag::SetLen, false, len)
     }
 
-    fn set_bit(index: u64, value: bool) -> Self {
-        assert!(
-            index <= crate::JOURNAL_PAYLOAD_MAX,
-            "bit index exceeds supported 2 ^ 61 - 1 payload"
-        );
-        Self::pack(JournalTag::SetBit, value, index)
+    fn set_bit(index: u32, value: bool) -> Self {
+        Self::pack(JournalTag::SetBit, value, u64::from(index))
     }
 
     fn pack(tag: JournalTag, value: bool, payload: u64) -> Self {
-        debug_assert!(payload <= crate::JOURNAL_PAYLOAD_MAX);
+        debug_assert!(payload <= crate::JOURNAL_PAYLOAD_MASK);
         let raw = ((tag as u64) << JOURNAL_KIND_SHIFT)
             | (u64::from(value) << JOURNAL_VALUE_SHIFT)
-            | (payload & crate::JOURNAL_PAYLOAD_MAX);
+            | (payload & crate::JOURNAL_PAYLOAD_MASK);
         Self(raw)
     }
 
@@ -143,7 +147,7 @@ impl JournalRecord {
             _ => return Err(InitError::InvalidLayout),
         };
         let value = ((self.0 >> JOURNAL_VALUE_SHIFT) & 1) != 0;
-        let payload = self.0 & crate::JOURNAL_PAYLOAD_MAX;
+        let payload = self.0 & crate::JOURNAL_PAYLOAD_MASK;
         Ok((tag, value, payload))
     }
 }
@@ -152,7 +156,7 @@ impl JournalRecord {
 ///
 /// # Storage model
 ///
-/// The type keeps the read path in a heap-backed `RoaringTreemap` and mirrors updates into stable
+/// The type keeps the read path in a heap-backed `RoaringBitmap` and mirrors updates into stable
 /// memory via a compact journal. Once the journal is full, the current heap state is checkpointed
 /// into the stable snapshot and the journal is cleared.
 ///
@@ -161,14 +165,14 @@ impl JournalRecord {
 /// - The type is intended for single-writer use.
 /// - `contains` always reads the heap mirror.
 /// - `set`, `clear`, `ensure_len`, and `truncate` are durable-first and may trigger checkpointing.
-pub struct RoaringBitMap<M: Memory> {
+pub struct RoaringBitmap<M: Memory> {
     memory: M,
     state: RefCell<HeapState>,
     journal_len: Cell<u64>,
     journal_cap: u64,
 }
 
-/// Borrowed view for repeated membership checks against a [`RoaringBitMap`].
+/// Borrowed view for repeated membership checks against a [`RoaringBitmap`].
 pub struct ContainsView<'a> {
     state: Ref<'a, HeapState>,
 }
@@ -176,18 +180,18 @@ pub struct ContainsView<'a> {
 impl ContainsView<'_> {
     /// Tests whether the selected bit is set while reusing a previously borrowed heap mirror.
     #[inline]
-    pub fn contains(&self, index: u64) -> bool {
-        if index >= self.state.len_bits {
+    pub fn contains(&self, index: u32) -> bool {
+        if u64::from(index) >= self.state.len_bits {
             return false;
         }
         self.state.bitmap.contains(index)
     }
 }
 
-impl<M: Memory> fmt::Debug for RoaringBitMap<M> {
+impl<M: Memory> fmt::Debug for RoaringBitmap<M> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let st = self.state.borrow();
-        f.debug_struct("RoaringBitMap")
+        f.debug_struct("RoaringBitmap")
             .field("len_bits", &st.len_bits)
             .field("cardinality", &st.bitmap.len())
             .field("journal_len", &self.journal_len.get())
@@ -196,7 +200,7 @@ impl<M: Memory> fmt::Debug for RoaringBitMap<M> {
     }
 }
 
-impl<M: Memory> RoaringBitMap<M> {
+impl<M: Memory> RoaringBitmap<M> {
     /// Creates a new empty bitmap using the provided stable memory.
     pub fn new(memory: M) -> Result<Self, crate::GrowFailed> {
         Self::new_with_journal_capacity(memory, DEFAULT_JOURNAL_CAP)
@@ -246,12 +250,15 @@ impl<M: Memory> RoaringBitMap<M> {
         if size_bytes < need {
             return Err(InitError::InvalidLayout);
         }
+        if len_bits > crate::JOURNAL_LEN_MAX {
+            return Err(InitError::InvalidLayout);
+        }
 
         let bitmap = if snapshot_len_bytes == 0 {
-            RoaringTreemap::new()
+            RoaringBitmap::new()
         } else {
             let reader = MemoryReader::new(&memory, data_offset(journal_cap), snapshot_len_bytes);
-            RoaringTreemap::deserialize_from(reader).map_err(|_| InitError::InvalidLayout)?
+            RoaringBitmap::deserialize_from(reader).map_err(|_| InitError::InvalidLayout)?
         };
         let mut state = HeapState { len_bits, bitmap };
 
@@ -303,9 +310,9 @@ impl<M: Memory> RoaringBitMap<M> {
 
     /// Tests whether the selected bit is set.
     #[inline]
-    pub fn contains(&self, index: u64) -> bool {
+    pub fn contains(&self, index: u32) -> bool {
         let st = self.state.borrow();
-        if index >= st.len_bits {
+        if u64::from(index) >= st.len_bits {
             return false;
         }
         st.bitmap.contains(index)
@@ -322,8 +329,8 @@ impl<M: Memory> RoaringBitMap<M> {
     /// Ensures that the logical length is at least `min_len`.
     pub fn ensure_len(&self, min_len: u64) -> Result<(), crate::GrowFailed> {
         assert!(
-            min_len <= crate::JOURNAL_PAYLOAD_MAX,
-            "bitmap length exceeds supported 2 ^ 61 - 1 payload"
+            min_len <= crate::JOURNAL_LEN_MAX,
+            "bitmap length exceeds supported u32 index space"
         );
         let current = self.len();
         if min_len <= current {
@@ -339,13 +346,13 @@ impl<M: Memory> RoaringBitMap<M> {
     }
 
     /// Sets or clears a bit.
-    pub fn set(&self, index: u64, value: bool) -> Result<(), crate::GrowFailed> {
+    pub fn set(&self, index: u32, value: bool) -> Result<(), crate::GrowFailed> {
+        let need_len = u64::from(index).saturating_add(1);
         assert!(
-            index <= crate::JOURNAL_PAYLOAD_MAX,
-            "bit index exceeds supported 2 ^ 61 - 1 payload"
+            need_len <= crate::JOURNAL_LEN_MAX,
+            "bit index exceeds supported u32 index space"
         );
         if value {
-            let need_len = index.saturating_add(1);
             if !self.contains(index) {
                 self.append_record(JournalRecord::set_bit(index, true))?;
                 {
@@ -373,20 +380,20 @@ impl<M: Memory> RoaringBitMap<M> {
     }
 
     /// Inserts a bit by setting it to `true`.
-    pub fn insert(&self, index: u64) -> Result<(), crate::GrowFailed> {
+    pub fn insert(&self, index: u32) -> Result<(), crate::GrowFailed> {
         self.set(index, true)
     }
 
     /// Clears a bit by setting it to `false`.
-    pub fn clear(&self, index: u64) -> Result<(), crate::GrowFailed> {
+    pub fn clear(&self, index: u32) -> Result<(), crate::GrowFailed> {
         self.set(index, false)
     }
 
     /// Shrinks the logical length to `new_len`.
     pub fn truncate(&self, new_len: u64) -> Result<(), crate::GrowFailed> {
         assert!(
-            new_len <= crate::JOURNAL_PAYLOAD_MAX,
-            "bitmap length exceeds supported 2 ^ 61 - 1 payload"
+            new_len <= crate::JOURNAL_LEN_MAX,
+            "bitmap length exceeds supported u32 index space"
         );
         if new_len >= self.len() {
             return Ok(());
@@ -395,7 +402,7 @@ impl<M: Memory> RoaringBitMap<M> {
         {
             let mut st = self.state.borrow_mut();
             st.len_bits = new_len;
-            st.bitmap.remove_range(new_len..=u64::MAX);
+            remove_suffix_bits(&mut st.bitmap, new_len);
         }
         self.maybe_checkpoint()?;
         Ok(())
@@ -457,22 +464,32 @@ fn apply_record(state: &mut HeapState, record: JournalRecord) -> Result<(), Init
         JournalTag::Empty => return Err(InitError::InvalidLayout),
         JournalTag::SetLen => {
             let new_len = payload;
+            if new_len > crate::JOURNAL_LEN_MAX {
+                return Err(InitError::InvalidLayout);
+            }
             if new_len < state.len_bits {
                 state.len_bits = new_len;
-                state.bitmap.remove_range(new_len..=u64::MAX);
+                remove_suffix_bits(&mut state.bitmap, new_len);
             } else {
                 state.len_bits = new_len;
             }
         }
         JournalTag::SetBit => {
+            if payload > u32::MAX as u64 {
+                return Err(InitError::InvalidLayout);
+            }
+            let index = payload as u32;
             if value {
-                let need_len = payload.saturating_add(1);
+                let need_len = u64::from(index).saturating_add(1);
+                if need_len > crate::JOURNAL_LEN_MAX {
+                    return Err(InitError::InvalidLayout);
+                }
                 if need_len > state.len_bits {
                     state.len_bits = need_len;
                 }
-                state.bitmap.insert(payload);
+                state.bitmap.insert(index);
             } else {
-                state.bitmap.remove(payload);
+                state.bitmap.remove(index);
             }
         }
     }
@@ -484,14 +501,14 @@ mod tests {
     use super::*;
     use ic_stable_structures::{Memory, vec_mem::VectorMemory};
 
-    fn reopen(memory: VectorMemory) -> RoaringBitMap<VectorMemory> {
-        RoaringBitMap::init(memory).unwrap()
+    fn reopen(memory: VectorMemory) -> RoaringBitmap<VectorMemory> {
+        RoaringBitmap::init(memory).unwrap()
     }
 
     #[test]
     fn fresh_create_and_reopen_roundtrip() {
         let mem = VectorMemory::default();
-        let bs = RoaringBitMap::new_with_journal_capacity(mem, 8).unwrap();
+        let bs = RoaringBitmap::new_with_journal_capacity(mem, 8).unwrap();
         assert_eq!(bs.len(), 0);
         assert!(bs.is_empty());
         let mem = bs.into_memory();
@@ -503,7 +520,7 @@ mod tests {
     #[test]
     fn insert_clear_contains_roundtrip() {
         let mem = VectorMemory::default();
-        let bs = RoaringBitMap::new_with_journal_capacity(mem, 8).unwrap();
+        let bs = RoaringBitmap::new_with_journal_capacity(mem, 8).unwrap();
         bs.insert(0).unwrap();
         bs.insert(3).unwrap();
         bs.insert(10).unwrap();
@@ -523,7 +540,7 @@ mod tests {
     #[test]
     fn ensure_len_preserves_zero_suffix_across_reopen() {
         let mem = VectorMemory::default();
-        let bs = RoaringBitMap::new_with_journal_capacity(mem, 8).unwrap();
+        let bs = RoaringBitmap::new_with_journal_capacity(mem, 8).unwrap();
         bs.ensure_len(16).unwrap();
         assert_eq!(bs.len(), 16);
         assert!(!bs.contains(0));
@@ -538,7 +555,7 @@ mod tests {
     #[test]
     fn truncate_clears_suffix_across_reopen() {
         let mem = VectorMemory::default();
-        let bs = RoaringBitMap::new_with_journal_capacity(mem, 8).unwrap();
+        let bs = RoaringBitmap::new_with_journal_capacity(mem, 8).unwrap();
         bs.insert(1).unwrap();
         bs.insert(70).unwrap();
         bs.insert(130).unwrap();
@@ -558,7 +575,7 @@ mod tests {
     #[test]
     fn checkpoint_after_full_journal_preserves_state() {
         let mem = VectorMemory::default();
-        let bs = RoaringBitMap::new_with_journal_capacity(mem, 2).unwrap();
+        let bs = RoaringBitmap::new_with_journal_capacity(mem, 2).unwrap();
         bs.insert(0).unwrap();
         bs.insert(1).unwrap();
         bs.clear(1).unwrap();
@@ -578,7 +595,7 @@ mod tests {
     #[test]
     fn mixed_operations_replay_deterministically() {
         let mem = VectorMemory::default();
-        let bs = RoaringBitMap::new_with_journal_capacity(mem, 3).unwrap();
+        let bs = RoaringBitmap::new_with_journal_capacity(mem, 3).unwrap();
         bs.insert(0).unwrap();
         bs.insert(9).unwrap();
         bs.clear(0).unwrap();
@@ -598,50 +615,59 @@ mod tests {
     }
 
     #[test]
-    fn sparse_high_index_inserts_roundtrip() {
+    fn sparse_high_u32_index_inserts_roundtrip() {
         let mem = VectorMemory::default();
-        let bs = RoaringBitMap::new_with_journal_capacity(mem, 8).unwrap();
-        let a = 1u64 << 40;
-        let b = (1u64 << 48) + 123;
+        let bs = RoaringBitmap::new_with_journal_capacity(mem, 8).unwrap();
+        let a = (1u32 << 31) + 123;
+        let b = u32::MAX;
         bs.insert(a).unwrap();
         bs.insert(b).unwrap();
         assert!(bs.contains(a));
         assert!(bs.contains(b));
-        assert_eq!(bs.len(), b + 1);
+        assert_eq!(bs.len(), u32::MAX as u64 + 1);
         let mem = bs.into_memory();
         let bs = reopen(mem);
         assert!(bs.contains(a));
         assert!(bs.contains(b));
-        assert_eq!(bs.len(), b + 1);
+        assert_eq!(bs.len(), u32::MAX as u64 + 1);
     }
 
     #[test]
     fn invalid_magic_version_layout_and_snapshot_are_rejected() {
         let mem = VectorMemory::default();
-        let bs = RoaringBitMap::new_with_journal_capacity(mem, 1).unwrap();
+        let bs = RoaringBitmap::new_with_journal_capacity(mem, 1).unwrap();
         bs.insert(1).unwrap();
         let mem = bs.into_memory();
         mem.write(0, b"BAD");
-        assert!(matches!(RoaringBitMap::init(mem), Err(InitError::BadMagic { .. })));
+        assert!(matches!(
+            RoaringBitmap::init(mem),
+            Err(InitError::BadMagic { .. })
+        ));
 
-        let bs = RoaringBitMap::new_with_journal_capacity(VectorMemory::default(), 1).unwrap();
+        let bs = RoaringBitmap::new_with_journal_capacity(VectorMemory::default(), 1).unwrap();
         let mem = bs.into_memory();
         mem.write(VERSION_OFFSET, &[VERSION.wrapping_add(1)]);
         assert!(matches!(
-            RoaringBitMap::init(mem),
+            RoaringBitmap::init(mem),
             Err(InitError::IncompatibleVersion(_))
         ));
 
-        let bs = RoaringBitMap::new_with_journal_capacity(VectorMemory::default(), 1).unwrap();
+        let bs = RoaringBitmap::new_with_journal_capacity(VectorMemory::default(), 1).unwrap();
         let mem = bs.into_memory();
         mem.write(JOURNAL_CAP_OFFSET, &0u64.to_le_bytes());
-        assert!(matches!(RoaringBitMap::init(mem), Err(InitError::InvalidLayout)));
+        assert!(matches!(
+            RoaringBitmap::init(mem),
+            Err(InitError::InvalidLayout)
+        ));
 
-        let bs = RoaringBitMap::new_with_journal_capacity(VectorMemory::default(), 1).unwrap();
+        let bs = RoaringBitmap::new_with_journal_capacity(VectorMemory::default(), 1).unwrap();
         bs.insert(1).unwrap();
         let mem = bs.into_memory();
         let snapshot_offset = data_offset(1);
         mem.write(snapshot_offset, &[0xff]);
-        assert!(matches!(RoaringBitMap::init(mem), Err(InitError::InvalidLayout)));
+        assert!(matches!(
+            RoaringBitmap::init(mem),
+            Err(InitError::InvalidLayout)
+        ));
     }
 }

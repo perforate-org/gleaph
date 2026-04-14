@@ -3,7 +3,7 @@
 //! Phase 1 of the `graph-store` migration keeps property/index storage on the
 //! legacy low-level stack, but moves adjacency to fixed-slot
 //! [`MemoryManager`](ic_stable_structures::memory_manager::MemoryManager)
-//! regions. This module defines the canonical slot map and a thin wrapper over
+//! regions. This module defines the canonical dense vertex table and a thin wrapper over
 //! [`ic_stable_csr::csr::CsrGraphWithGcQueueSparseDeleted`].
 
 use ic_stable_csr::csr::{CsrGraphError, CsrGraphWithGcQueueSparseDeleted};

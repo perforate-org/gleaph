@@ -5,10 +5,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use ic_stable_csr::{
-    Bound, DgapEdgeStore, DgapGraphMemories, Storable, VectorMemory,
+    Bound, DgapEdgeStore, DgapGraphMemories, StableVec, Storable, VectorMemory, VertexId,
     traits::{CsrEdge, CsrVertex},
 };
-use ic_stable_slot_map::SlotMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TV {
@@ -86,11 +85,11 @@ impl CsrEdge for TEFat {
         bytes.copy_from_slice(&self.0);
     }
 
-    fn neighbor_vid(&self) -> usize {
-        self.0[0] as usize
+    fn neighbor_vid(&self) -> VertexId {
+        self.0[0] as VertexId
     }
 
-    fn with_neighbor_vid(self, vid: usize) -> Self {
+    fn with_neighbor_vid(self, vid: VertexId) -> Self {
         let mut b = self.0;
         b[0] = vid as u8;
         Self(b)
@@ -109,17 +108,15 @@ fn dual_edge_memories() -> DgapGraphMemories<VectorMemory, VectorMemory> {
 #[test]
 fn neighborhood_iter_errors_when_edge_stride_exceeds_inline_cap() {
     let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
-    let vertices = SlotMap::new(mv).unwrap();
+    let vertices = StableVec::new(mv);
     let edges = FatEdgeStore::new(dual_edge_memories());
     edges.format_new(8, 1, 8, 0).expect("format");
 
-    vertices
-        .insert(&TV {
-            slot_base: 0,
-            deg: 0,
-            log_head: -1,
-        })
-        .unwrap();
+    vertices.push(&TV {
+        slot_base: 0,
+        deg: 0,
+        log_head: -1,
+    });
 
     assert!(matches!(
         edges.try_neighborhood_iter(&vertices, 0),

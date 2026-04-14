@@ -570,7 +570,7 @@ impl<'a, S: super::GraphStoreStore> GraphStoreKernelOverlayGraph<'a, S> {
             }
             for overflow_entry in overflow {
                 if !overflow_entry.entry.meta.is_tombstone()
-                    && overflow_entry.entry.meta.local_label_id() == Some(label_id)
+                    && overflow_entry.entry.meta.local_id() == Some(label_id)
                 {
                     ids.insert(overflow_entry.edge_id);
                 }
@@ -662,7 +662,7 @@ impl<'a, S: super::GraphStoreStore> GraphStoreKernelOverlayGraph<'a, S> {
             }
             for overflow_entry in overflow {
                 if !overflow_entry.entry.meta.is_tombstone() {
-                    if let Some(lid) = overflow_entry.entry.meta.local_label_id() {
+                    if let Some(lid) = overflow_entry.entry.meta.local_id() {
                         if resolved.contains(&lid) {
                             ids.insert(overflow_entry.edge_id);
                         }

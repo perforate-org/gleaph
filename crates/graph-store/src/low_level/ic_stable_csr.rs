@@ -38,7 +38,7 @@ pub const DGAP_GC_QUEUE_MEMORY_SLOT: u8 = 224;
 
 /// Builds a tail [`VertexEntry`] for [`ic_stable_csr::DgapStores::insert_vertex`].
 ///
-/// `new_vid` must equal the logical vertex count on `M_v` (**`SlotMap::len`**, from `ic-stable-slot-map`) **before** `SlotMap::insert`.
+/// `new_vid` must equal the logical vertex count on `M_v` (**`StableVec::len`**, from `ic-stable-csr`) **before** `StableVec::push`.
 /// `next_base` must be [`ic_stable_csr::DgapEdgeStore::slab_append_base_slot`] on that column.
 /// `segment_size` comes from the `M_e` header; `segment_id` in the packed [`EdgeRef`] is the DGAP
 /// leaf index `new_vid / segment_size` (same convention as [`ic_stable_csr::layout::dgap::dgap_leaf_segment_id`]).
@@ -55,8 +55,8 @@ pub fn vertex_entry_for_ic_stable_append(
 impl Storable for EdgeEntry {
     fn to_bytes(&self) -> Cow<'_, [u8]> {
         let mut b = [0u8; 8];
-        b[..5].copy_from_slice(&self.target.as_bytes());
-        b[5..8].copy_from_slice(&self.meta.to_le_bytes());
+        b[..4].copy_from_slice(&self.target.as_bytes());
+        b[4..8].copy_from_slice(&self.meta.to_le_bytes());
         Cow::Owned(b.to_vec())
     }
 
@@ -67,8 +67,8 @@ impl Storable for EdgeEntry {
     fn from_bytes(bytes: Cow<[u8]>) -> Self {
         let s = bytes.as_ref();
         assert_eq!(s.len(), 8, "EdgeEntry Storable expects 8 bytes");
-        let target = VertexRef::new(s[..5].try_into().expect("target bytes"));
-        let meta = EdgeMeta::from_le_bytes(s[5..8].try_into().expect("meta bytes"));
+        let target = VertexRef::from_be_bytes(s[..4].try_into().expect("target bytes"));
+        let meta = EdgeMeta::from_le_bytes(s[4..8].try_into().expect("meta bytes"));
         Self { target, meta }
     }
 
@@ -120,13 +120,15 @@ impl CsrEdge for EdgeEntry {
         bytes.copy_from_slice(v.as_ref());
     }
 
-    fn neighbor_vid(&self) -> usize {
-        usize::try_from(u64::from(self.target)).expect("vertex id fits usize")
+    fn neighbor_vid(&self) -> ic_stable_csr::VertexId {
+        ic_stable_csr::VertexId(
+            u32::try_from(u64::from(self.target)).expect("vertex id fits VertexId"),
+        )
     }
 
-    fn with_neighbor_vid(self, vid: usize) -> Self {
+    fn with_neighbor_vid(self, vid: ic_stable_csr::VertexId) -> Self {
         Self::new(
-            VertexRef::try_from(vid as u64).expect("neighbor fits VertexRef"),
+            VertexRef::try_from(u64::from(vid)).expect("neighbor fits VertexRef"),
             self.meta,
         )
     }

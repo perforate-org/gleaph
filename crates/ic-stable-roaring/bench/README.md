@@ -1,6 +1,6 @@
 # ic-stable-roaring canbench
 
-This directory contains a small `canbench` harness for `ic_stable_roaring::StableRoaringBitMap`.
+This directory contains a small `canbench` harness for `ic_stable_roaring::StableRoaringBitmap`.
 
 ## Benchmarks
 

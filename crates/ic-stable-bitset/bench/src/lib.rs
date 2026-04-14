@@ -1,4 +1,4 @@
-//! PocketIC / `canbench` harness for [`ic_stable_bitset::BitSet`].
+//! PocketIC / `canbench` harness for [`ic_stable_bitset::Bitset`].
 //!
 //! See the local `README.md` for build and run commands.
 
@@ -7,7 +7,7 @@
 use std::hint::black_box;
 
 use canbench_rs::bench;
-use ic_stable_bitset::BitSet;
+use ic_stable_bitset::Bitset;
 use ic_stable_structures::DefaultMemoryImpl;
 
 mod wipe;
@@ -36,13 +36,13 @@ const REMOVE_LARGE_HEAD: u64 = 0;
 const REMOVE_LARGE_MID: u64 = 32_768;
 const REMOVE_LARGE_TAIL: u64 = REMOVE_LARGE_BITS - 1;
 
-fn make_bitset() -> BitSet<DefaultMemoryImpl> {
-    BitSet::new(DefaultMemoryImpl::default()).expect("bitset init")
+fn make_bitset() -> Bitset<DefaultMemoryImpl> {
+    Bitset::new(DefaultMemoryImpl::default()).expect("bitset init")
 }
 
-fn populate(bitset: &BitSet<DefaultMemoryImpl>, count: u64) {
+fn populate(bitset: &Bitset<DefaultMemoryImpl>, count: u64) {
     for index in 0..count {
-        bitset.insert(index).expect("insert");
+        bitset.insert(index as u32).expect("insert");
     }
 }
 
@@ -56,76 +56,79 @@ fn bench_remove_case(
     populate(&bitset, count);
     canbench_rs::bench_fn(|| {
         let _p = canbench_rs::bench_scope(scope_name);
-        bitset.remove(black_box(remove_index)).expect("remove");
+        bitset
+            .remove(black_box(remove_index as u32))
+            .expect("remove");
         black_box(bitset.len());
     })
 }
 
 fn bench_reopen_case(
     scope_name: &'static str,
-    setup: impl FnOnce(&BitSet<DefaultMemoryImpl>),
+    setup: impl FnOnce(&Bitset<DefaultMemoryImpl>),
 ) -> canbench_rs::BenchResult {
     wipe::wipe_stable_memory();
     let bitset = make_bitset();
     setup(&bitset);
     canbench_rs::bench_fn(|| {
         let _p = canbench_rs::bench_scope(scope_name);
-        let reopened = BitSet::init(bitset.into_memory()).expect("reopen");
-        black_box((reopened.len(), reopened.contains(black_box(0))));
+        let reopened = Bitset::init(bitset.into_memory()).expect("reopen");
+        black_box((reopened.len(), reopened.contains(black_box(0u32))));
     })
 }
 
-fn setup_pure_replay_journal(bitset: &BitSet<DefaultMemoryImpl>) {
+fn setup_pure_replay_journal(bitset: &Bitset<DefaultMemoryImpl>) {
     for index in 0..REPLAY_HALF {
-        bitset.insert(index).expect("insert");
+        bitset.insert(index as u32).expect("insert");
     }
     for index in 0..REPLAY_HALF {
-        bitset.clear(index).expect("clear");
+        bitset.clear(index as u32).expect("clear");
     }
 }
 
-fn setup_segmented_replay_journal(bitset: &BitSet<DefaultMemoryImpl>) {
+fn setup_segmented_replay_journal(bitset: &Bitset<DefaultMemoryImpl>) {
     for index in 0..REPLAY_BLOCK {
-        bitset.insert(index).expect("insert");
+        bitset.insert(index as u32).expect("insert");
     }
     for index in 0..REPLAY_BLOCK {
-        bitset.clear(index).expect("clear");
+        bitset.clear(index as u32).expect("clear");
     }
     for index in 0..REPLAY_BLOCK {
-        bitset.insert(index).expect("insert");
+        bitset.insert(index as u32).expect("insert");
     }
     for _ in 0..REPLAY_BLOCK {
         bitset.remove(0).expect("remove");
     }
 }
 
-fn setup_remove_heavy_replay_journal(bitset: &BitSet<DefaultMemoryImpl>) {
+fn setup_remove_heavy_replay_journal(bitset: &Bitset<DefaultMemoryImpl>) {
     for index in 0..REPLAY_HALF {
-        bitset.insert(index).expect("insert");
+        bitset.insert(index as u32).expect("insert");
     }
     for _ in 0..REPLAY_HALF {
         bitset.remove(0).expect("remove");
     }
     for index in 0..REPLAY_HALF {
-        bitset.insert(index).expect("insert");
+        bitset.insert(index as u32).expect("insert");
     }
     for _ in 0..REPLAY_HALF {
         bitset.remove(0).expect("remove");
     }
 }
 
-fn make_spread_queries(count: u64, modulo: u64) -> Vec<u64> {
+fn make_spread_queries(count: u64, modulo: u64) -> Vec<u32> {
     assert!(
         modulo.is_power_of_two(),
         "bitmap size should be a power of two"
     );
+    assert!(modulo <= u32::MAX as u64 + 1);
     let mask = modulo - 1;
     let mut queries = Vec::with_capacity(count as usize);
     for i in 0..count {
         let mixed = i
             .wrapping_mul(CONTAINS_SPREAD_MULTIPLIER)
             .wrapping_add(CONTAINS_SPREAD_INCREMENT);
-        queries.push(mixed & mask);
+        queries.push((mixed & mask) as u32);
     }
     queries
 }
@@ -149,7 +152,7 @@ fn bench_bitset_contains_1024() -> canbench_rs::BenchResult {
     canbench_rs::bench_fn(|| {
         let _p = canbench_rs::bench_scope("bitset_contains");
         let index = black_box(INSERT_COUNT - 1);
-        black_box(bitset.contains(index));
+        black_box(bitset.contains(index as u32));
     })
 }
 
@@ -202,11 +205,11 @@ fn bench_bitset_reopen_after_journal_4096() -> canbench_rs::BenchResult {
     wipe::wipe_stable_memory();
     let bitset = make_bitset();
     populate(&bitset, REOPEN_COUNT);
-    bitset.insert(REOPEN_COUNT).expect("insert");
+    bitset.insert(REOPEN_COUNT as u32).expect("insert");
     canbench_rs::bench_fn(|| {
         let _p = canbench_rs::bench_scope("bitset_reopen");
-        let reopened = BitSet::init(bitset.into_memory()).expect("reopen");
-        black_box(reopened.contains(black_box(REOPEN_COUNT)));
+        let reopened = Bitset::init(bitset.into_memory()).expect("reopen");
+        black_box(reopened.contains(black_box(REOPEN_COUNT as u32)));
     })
 }
 
@@ -307,9 +310,9 @@ fn bench_bitset_checkpoint_after_full_journal_4096() -> canbench_rs::BenchResult
     canbench_rs::bench_fn(|| {
         let _p = canbench_rs::bench_scope("bitset_checkpoint");
         bitset
-            .insert(black_box(JOURNAL_CAP_FILL))
+            .insert(black_box(JOURNAL_CAP_FILL as u32))
             .expect("insert triggering checkpoint");
-        black_box(bitset.contains(black_box(JOURNAL_CAP_FILL)));
+        black_box(bitset.contains(black_box(JOURNAL_CAP_FILL as u32)));
     })
 }
 
@@ -319,11 +322,11 @@ fn bench_bitset_reopen_after_large_snapshot_65536() -> canbench_rs::BenchResult 
     let bitset = make_bitset();
     populate(&bitset, LARGE_SNAPSHOT_BITS);
     bitset
-        .insert(LARGE_SNAPSHOT_BITS)
+        .insert(LARGE_SNAPSHOT_BITS as u32)
         .expect("insert triggering checkpoint");
     canbench_rs::bench_fn(|| {
         let _p = canbench_rs::bench_scope("bitset_reopen_large");
-        let reopened = BitSet::init(bitset.into_memory()).expect("reopen");
-        black_box(reopened.contains(black_box(LARGE_SNAPSHOT_BITS)));
+        let reopened = Bitset::init(bitset.into_memory()).expect("reopen");
+        black_box(reopened.contains(black_box(LARGE_SNAPSHOT_BITS as u32)));
     })
 }

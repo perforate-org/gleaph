@@ -8,7 +8,7 @@ use crate::StableVecDeque;
 use crate::csr::csr_graph::{
     CsrGraphBase, CsrGraphDenseDeleted, CsrGraphError, CsrGraphRowTombstone,
     CsrGraphSparseDeleted, DeletedVertexState, DenseDeletedIndex, LogicalNeighborhoodIter,
-    RowTombstoneDeleted, SparseDeletedIndex,
+    RowTombstoneDeleted, SparseDeletedIndex, vertex_index,
 };
 use crate::csr::gc_work_item::{GC_TAG_SEGMENT_FWD, GC_TAG_SEGMENT_REV, GcWorkItem};
 use crate::csr::{DgapStores, DgapStoresError};
@@ -18,23 +18,23 @@ use crate::dgap::{
 };
 use crate::layout::dgap::dgap_leaf_segment_id;
 use crate::traits::{CsrEdge, CsrEdgeTombstone, CsrEdgeUndirected, CsrVertex, CsrVertexTombstone};
+use crate::{SegmentId, StableVec, VertexId};
 
 #[inline]
 fn vertex_set_dense<V, M>(
-    map: &ic_stable_slot_map::SlotMap<V, M>,
-    index: usize,
-    row: V,
-) -> Result<(), CsrGraphError>
+    map: &StableVec<V, M>,
+    index: VertexId,
+    row: &V,
+)
 where
     V: CsrVertex,
     M: Memory,
 {
-    map.set_dense(index as u32, &row)
-        .map_err(|_| CsrGraphError::LogicalMutation("vertex set_dense failed"))
+    map.set(u64::from(index), row);
 }
 
-fn leaf_segment_for_vid(vid: usize, segment_size: u32) -> usize {
-    dgap_leaf_segment_id(vid, segment_size) as usize
+fn leaf_segment_for_vid(vid: VertexId, segment_size: u32) -> SegmentId {
+    dgap_leaf_segment_id(vid, SegmentId(segment_size))
 }
 
 struct GcGraphCtx<'a, V, E, Mvs, F1, F2, R1, R2, D, QM>
@@ -76,7 +76,7 @@ where
             .map_err(|e| CsrGraphError::GcQueue(e.into()))
     }
 
-    fn ensure_endpoint_live(&self, vid: usize) -> Result<(), CsrGraphError> {
+    fn ensure_endpoint_live(&self, vid: VertexId) -> Result<(), CsrGraphError> {
         if self.graph.vertex_deleted(vid) {
             return Err(CsrGraphError::EndpointTombstone { vid });
         }
@@ -86,7 +86,7 @@ where
     fn schedule_maintain_for_leaf<M1: Memory, M2: Memory>(
         &self,
         stores: &DgapStores<V, E, Mvs, M1, M2>,
-        leaf: usize,
+        leaf: SegmentId,
         queue_len: u64,
         forward_column: bool,
     ) -> Result<(), CsrGraphError> {
@@ -96,14 +96,14 @@ where
             .ok_or(CsrGraphError::LogicalMutation("no edge header"))?;
         let sc = h.segment_count as usize;
         let n = stores.vertices.len() as usize;
-        let pma_idx = leaf + sc;
+        let pma_idx = usize::from(leaf) + sc;
         let leaf_counts = stores.edges.read_segment_edge_counts(pma_idx);
         let ss = h.segment_size.max(1) as usize;
-        let pivot_vid = leaf.saturating_mul(ss).min(n.saturating_sub(1));
+        let pivot_vid = usize::from(leaf).saturating_mul(ss).min(n.saturating_sub(1));
         let reb = rebalance_decision_with_reader(
-            pivot_vid as u32,
-            h.segment_size,
-            h.segment_count,
+            VertexId::try_from(pivot_vid).expect("vertex id exceeds u32 range"),
+            SegmentId(h.segment_size),
+            SegmentId(h.segment_count),
             n,
             h.tree_height,
             |j| {
@@ -114,9 +114,9 @@ where
         let action =
             segment_maintenance_decision(leaf_counts, reb, queue_len, &self.maintain_thresholds);
         let item = if forward_column {
-            GcWorkItem::segment_maintain_forward(leaf as u32)
+            GcWorkItem::segment_maintain_forward(leaf.into())
         } else {
-            GcWorkItem::segment_maintain_reverse(leaf as u32)
+            GcWorkItem::segment_maintain_reverse(leaf.into())
         };
         match action {
             SegmentMaintainAction::Noop => Ok(()),
@@ -127,7 +127,7 @@ where
     fn enqueue_maintain_for_leafs<M1: Memory, M2: Memory>(
         &self,
         stores: &DgapStores<V, E, Mvs, M1, M2>,
-        leafs: &BTreeSet<usize>,
+        leafs: &BTreeSet<SegmentId>,
         queue_len: u64,
         forward_column: bool,
     ) -> Result<(), CsrGraphError> {
@@ -140,7 +140,7 @@ where
     fn run_segment_maintain_for_leaf<M1: Memory, M2: Memory>(
         &self,
         stores: &DgapStores<V, E, Mvs, M1, M2>,
-        leaf: u32,
+        leaf: SegmentId,
         map_g: impl Fn(&'static str) -> CsrGraphError,
     ) -> Result<(), CsrGraphError> {
         let mut h = stores
@@ -150,15 +150,15 @@ where
         let sc = h.segment_count as usize;
         let n = stores.vertices.len() as usize;
         let ss = h.segment_size.max(1) as usize;
-        let left = (leaf as usize).saturating_mul(ss).min(n);
+        let left = usize::from(leaf).saturating_mul(ss).min(n);
         let right = (left + ss).min(n);
         let pivot_vid = left.min(n.saturating_sub(1));
-        let pma_idx = leaf as usize + sc;
+        let pma_idx = usize::from(leaf) + sc;
         for _ in 0..16 {
             let reb = rebalance_decision_with_reader(
-                pivot_vid as u32,
-                h.segment_size,
-                h.segment_count,
+                VertexId::try_from(pivot_vid).expect("vertex id exceeds u32 range"),
+                SegmentId(h.segment_size),
+                SegmentId(h.segment_count),
                 n,
                 h.tree_height,
                 |j| {
@@ -188,7 +188,7 @@ where
         ))
     }
 
-    fn tombstone_directed_edge_pair(&self, src: usize, dst: usize) -> Result<bool, CsrGraphError> {
+    fn tombstone_directed_edge_pair(&self, src: VertexId, dst: VertexId) -> Result<bool, CsrGraphError> {
         let fwd = self.graph.forward_dgap();
         let rev = self.graph.reverse_dgap();
         let edges_f = fwd
@@ -214,28 +214,28 @@ where
             .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?;
         let fs = fwd
             .vertices
-            .get_dense(src as u32)
+            .get(u64::from(src))
             .ok_or(CsrGraphError::VertexOutOfRange {
                 vid: src,
-                len: fwd.vertices.len(),
+                len: crate::VertexCount(fwd.vertices.len()),
             })?;
         let rd = rev
             .vertices
-            .get_dense(dst as u32)
+            .get(u64::from(dst))
             .ok_or(CsrGraphError::VertexOutOfRange {
                 vid: dst,
-                len: rev.vertices.len(),
+                len: crate::VertexCount(rev.vertices.len()),
             })?;
         vertex_set_dense(
             &fwd.vertices,
             src,
-            fs.with_degree(fs.degree().saturating_sub(1)),
-        )?;
+            &fs.with_degree(fs.degree().saturating_sub(1)),
+        );
         vertex_set_dense(
             &rev.vertices,
             dst,
-            rd.with_degree(rd.degree().saturating_sub(1)),
-        )?;
+            &rd.with_degree(rd.degree().saturating_sub(1)),
+        );
         fwd.edges
             .bump_segment_edge_counts_leaf_delta(src, -1, 0, 1)
             .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?;
@@ -247,8 +247,8 @@ where
 
     fn delete_vertex_collect_tombstones(
         &self,
-        vid: usize,
-    ) -> Result<(BTreeSet<usize>, BTreeSet<usize>), CsrGraphError> {
+        vid: VertexId,
+    ) -> Result<(BTreeSet<SegmentId>, BTreeSet<SegmentId>), CsrGraphError> {
         let fwd = self.graph.forward_dgap();
         let rev = self.graph.reverse_dgap();
         let h = fwd
@@ -264,8 +264,12 @@ where
             .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?;
         let removed_out = out_raw.iter().filter(|e| !e.is_tombstone()).count() as i64;
         if removed_out > 0 {
-            let fv = fwd.vertices.get_dense(vid as u32).unwrap();
-            vertex_set_dense(&fwd.vertices, vid, fv.with_degree(0).with_log_head(-1))?;
+            let fv = fwd.vertices.get(u64::from(vid)).unwrap();
+            vertex_set_dense(
+                &fwd.vertices,
+                vid,
+                &fv.with_degree(0).with_log_head(-1),
+            );
             fwd.edges
                 .bump_segment_edge_counts_leaf_delta(vid, -removed_out, 0, removed_out)
                 .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?;
@@ -278,8 +282,12 @@ where
             .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?;
         let removed_in = in_raw.iter().filter(|e| !e.is_tombstone()).count() as i64;
         if removed_in > 0 {
-            let rv = rev.vertices.get_dense(vid as u32).unwrap();
-            vertex_set_dense(&rev.vertices, vid, rv.with_degree(0).with_log_head(-1))?;
+            let rv = rev.vertices.get(u64::from(vid)).unwrap();
+            vertex_set_dense(
+                &rev.vertices,
+                vid,
+                &rv.with_degree(0).with_log_head(-1),
+            );
             rev.edges
                 .bump_segment_edge_counts_leaf_delta(vid, -removed_in, 0, removed_in)
                 .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?;
@@ -287,17 +295,25 @@ where
         reverse_touched.insert(leaf_segment_for_vid(vid, h.segment_size));
 
         self.graph.mark_vertex_deleted(vid)?;
-        let fv = fwd.vertices.get_dense(vid as u32).unwrap();
-        let rv = rev.vertices.get_dense(vid as u32).unwrap();
-        vertex_set_dense(&fwd.vertices, vid, fv.with_tombstone(true))?;
-        vertex_set_dense(&rev.vertices, vid, rv.with_tombstone(true))?;
+        let fv = fwd.vertices.get(u64::from(vid)).unwrap();
+        let rv = rev.vertices.get(u64::from(vid)).unwrap();
+        vertex_set_dense(
+            &fwd.vertices,
+            vid,
+            &fv.with_tombstone(true),
+        );
+        vertex_set_dense(
+            &rev.vertices,
+            vid,
+            &rv.with_tombstone(true),
+        );
         self.graph.refresh_slab_occupied_tail_meta()?;
         Ok((forward_touched, reverse_touched))
     }
 
-    fn delete_edge_directed(&self, src: usize, dst: usize) -> Result<(), CsrGraphError> {
-        self.graph.ensure_vertex(src)?;
-        self.graph.ensure_vertex(dst)?;
+    fn delete_edge_directed(&self, src: VertexId, dst: VertexId) -> Result<(), CsrGraphError> {
+        self.graph.ensure_vertex(vertex_index(src))?;
+        self.graph.ensure_vertex(vertex_index(dst))?;
         let changed = self.tombstone_directed_edge_pair(src, dst)?;
         if !changed {
             return Ok(());
@@ -335,15 +351,15 @@ where
         Ok(())
     }
 
-    fn delete_edge_undirected(&self, u: usize, v: usize) -> Result<(), CsrGraphError>
+    fn delete_edge_undirected(&self, u: VertexId, v: VertexId) -> Result<(), CsrGraphError>
     where
         E: CsrEdgeUndirected,
     {
         if u == v {
             return self.delete_edge_directed(u, u);
         }
-        self.graph.ensure_vertex(u)?;
-        self.graph.ensure_vertex(v)?;
+        self.graph.ensure_vertex(vertex_index(u))?;
+        self.graph.ensure_vertex(vertex_index(v))?;
         let fwd = self.graph.forward_dgap();
         let rev = self.graph.reverse_dgap();
         let mut changed = false;
@@ -370,18 +386,18 @@ where
             rev.edges
                 .tombstone_edge_with_neighbor::<V, Mvs>(&rev.vertices, nb, owner)
                 .map_err(|m| CsrGraphError::Reverse(DgapStoresError::Graph(m)))?;
-            let fs = fwd.vertices.get_dense(owner as u32).unwrap();
-            let rd = rev.vertices.get_dense(nb as u32).unwrap();
+            let fs = fwd.vertices.get(u64::from(owner)).unwrap();
+            let rd = rev.vertices.get(u64::from(nb)).unwrap();
             vertex_set_dense(
                 &fwd.vertices,
                 owner,
-                fs.with_degree(fs.degree().saturating_sub(1)),
-            )?;
+                &fs.with_degree(fs.degree().saturating_sub(1)),
+            );
             vertex_set_dense(
                 &rev.vertices,
                 nb,
-                rd.with_degree(rd.degree().saturating_sub(1)),
-            )?;
+                &rd.with_degree(rd.degree().saturating_sub(1)),
+            );
             fwd.edges
                 .bump_segment_edge_counts_leaf_delta(owner, -1, 0, 1)
                 .map_err(|m| CsrGraphError::Forward(DgapStoresError::Graph(m)))?;
@@ -404,8 +420,8 @@ where
         Ok(())
     }
 
-    fn delete_vertex(&self, vid: usize) -> Result<(), CsrGraphError> {
-        self.graph.ensure_vertex(vid)?;
+    fn delete_vertex(&self, vid: VertexId) -> Result<(), CsrGraphError> {
+        self.graph.ensure_vertex(vertex_index(vid))?;
         if self.graph.vertex_deleted(vid) {
             return Ok(());
         }
@@ -439,14 +455,14 @@ where
                         .leaf_segment_id()
                         .ok_or(CsrGraphError::LogicalMutation("gc: bad segment fwd item"))?;
                     let map_g = |m: &'static str| CsrGraphError::Forward(DgapStoresError::Graph(m));
-                    self.run_segment_maintain_for_leaf(self.graph.forward_dgap(), leaf, map_g)?;
+                    self.run_segment_maintain_for_leaf(self.graph.forward_dgap(), SegmentId(leaf), map_g)?;
                 }
                 GC_TAG_SEGMENT_REV => {
                     let leaf = item
                         .leaf_segment_id()
                         .ok_or(CsrGraphError::LogicalMutation("gc: bad segment rev item"))?;
                     let map_g = |m: &'static str| CsrGraphError::Reverse(DgapStoresError::Graph(m));
-                    self.run_segment_maintain_for_leaf(self.graph.reverse_dgap(), leaf, map_g)?;
+                    self.run_segment_maintain_for_leaf(self.graph.reverse_dgap(), SegmentId(leaf), map_g)?;
                 }
                 _ => {}
             }
@@ -547,8 +563,8 @@ macro_rules! impl_gc_common {
 
             pub fn sync_pma_meta_for_vertex_range(
                 &self,
-                left: usize,
-                right: usize,
+                left: VertexId,
+                right: crate::VertexCount,
             ) -> Result<(), CsrGraphError> {
                 self.graph.sync_pma_meta_for_vertex_range(left, right)
             }
@@ -571,7 +587,7 @@ macro_rules! impl_gc_common {
                     .append_empty_vertices_fast_for_fixture(row_template, count)
             }
 
-            pub fn insert_directed(&self, src: usize, dst: usize, edge: E) -> Result<(), CsrGraphError> {
+            pub fn insert_directed(&self, src: VertexId, dst: VertexId, edge: E) -> Result<(), CsrGraphError> {
                 self.ctx().ensure_endpoint_live(src)?;
                 self.ctx().ensure_endpoint_live(dst)?;
                 if self.graph.inner.has_forward_slot_to_neighbor(src, dst)? {
@@ -580,7 +596,7 @@ macro_rules! impl_gc_common {
                 self.graph.insert_directed(src, dst, edge)
             }
 
-            pub fn insert_undirected(&self, u: usize, v: usize, edge: E) -> Result<(), CsrGraphError>
+            pub fn insert_undirected(&self, u: VertexId, v: VertexId, edge: E) -> Result<(), CsrGraphError>
             where
                 E: CsrEdgeUndirected,
             {
@@ -597,18 +613,18 @@ macro_rules! impl_gc_common {
                 self.graph.insert_undirected(u, v, edge)
             }
 
-            pub fn delete_edge_directed(&self, src: usize, dst: usize) -> Result<(), CsrGraphError> {
+            pub fn delete_edge_directed(&self, src: VertexId, dst: VertexId) -> Result<(), CsrGraphError> {
                 self.ctx().delete_edge_directed(src, dst)
             }
 
-            pub fn delete_edge_undirected(&self, u: usize, v: usize) -> Result<(), CsrGraphError>
+            pub fn delete_edge_undirected(&self, u: VertexId, v: VertexId) -> Result<(), CsrGraphError>
             where
                 E: CsrEdgeUndirected,
             {
                 self.ctx().delete_edge_undirected(u, v)
             }
 
-            pub fn delete_vertex(&self, vid: usize) -> Result<(), CsrGraphError> {
+            pub fn delete_vertex(&self, vid: VertexId) -> Result<(), CsrGraphError> {
                 self.ctx().delete_vertex(vid)
             }
 
@@ -652,7 +668,7 @@ where
 {
     pub fn out_edges_logical<'a>(
         &'a self,
-        vid: usize,
+        vid: VertexId,
     ) -> Result<LogicalNeighborhoodIter<'a, E, DenseDeletedIndex<Dv>, F1, F2>, CsrGraphError>
     {
         self.graph.out_edges_logical(vid)
@@ -660,7 +676,7 @@ where
 
     pub fn in_edges_logical<'a>(
         &'a self,
-        vid: usize,
+        vid: VertexId,
     ) -> Result<LogicalNeighborhoodIter<'a, E, DenseDeletedIndex<Dv>, R1, R2>, CsrGraphError>
     {
         self.graph.in_edges_logical(vid)
@@ -682,7 +698,7 @@ where
 {
     pub fn out_edges_logical<'a>(
         &'a self,
-        vid: usize,
+        vid: VertexId,
     ) -> Result<LogicalNeighborhoodIter<'a, E, SparseDeletedIndex<Dv>, F1, F2>, CsrGraphError>
     {
         self.graph.out_edges_logical(vid)
@@ -690,7 +706,7 @@ where
 
     pub fn in_edges_logical<'a>(
         &'a self,
-        vid: usize,
+        vid: VertexId,
     ) -> Result<LogicalNeighborhoodIter<'a, E, SparseDeletedIndex<Dv>, R1, R2>, CsrGraphError>
     {
         self.graph.in_edges_logical(vid)

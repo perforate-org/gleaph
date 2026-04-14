@@ -1,9 +1,9 @@
 //! Stable-memory roaring bitmap with a heap mirror and a durable mutation journal.
 //!
-//! [`bitmap::RoaringBitMap`] is the primary type, and [`StableRoaringBitMap`] is a convenience
+//! [`bitmap::RoaringBitmap`] is the primary type, and [`StableRoaringBitmap`] is a convenience
 //! alias for the same implementation. The type stores the authoritative set bits in a heap-mirrored
-//! [`roaring::RoaringTreemap`], while stable memory holds a compact header, an append-only journal
-//! of packed mutation records, and a serialized snapshot of the roaring structure.
+//! [`roaring::RoaringBitmap`] (indices are `u32`), while stable memory holds a compact header, an
+//! append-only journal of packed mutation records, and a serialized snapshot of the roaring structure.
 //!
 //! # Design
 //!
@@ -42,8 +42,10 @@
 //! ----------------------------------------
 //! ```
 //!
-//! The snapshot is the canonical `RoaringTreemap` serialization. The journal stores fixed-width
-//! packed `u64` records so reopen can replay pending mutations before the next checkpoint.
+//! The snapshot is the canonical `RoaringBitmap` serialization (not wire-compatible with older
+//! `RoaringTreemap` snapshots at the same layout version). The journal stores fixed-width packed
+//! `u64` records (61-bit payload masked by [`JOURNAL_PAYLOAD_MASK`]; lengths bounded by
+//! [`JOURNAL_LEN_MAX`]) so reopen can replay pending mutations before the next checkpoint.
 //!
 //! # Type parameters
 //!
@@ -52,25 +54,25 @@
 //!
 //! # Complexity
 //!
-//! - [`bitmap::RoaringBitMap::contains`] is **O(1)**.
-//! - [`bitmap::RoaringBitMap::set`] and [`bitmap::RoaringBitMap::clear`] are **O(1)** amortized, with journal append plus a heap
+//! - [`bitmap::RoaringBitmap::contains`] is **O(1)**.
+//! - [`bitmap::RoaringBitmap::set`] and [`bitmap::RoaringBitmap::clear`] are **O(1)** amortized, with journal append plus a heap
 //!   update.
-//! - [`bitmap::RoaringBitMap::truncate`] and [`bitmap::RoaringBitMap::ensure_len`] are **O(number of roaring containers
+//! - [`bitmap::RoaringBitmap::truncate`] and [`bitmap::RoaringBitmap::ensure_len`] are **O(number of roaring containers
 //!   touched)**.
 //!
 //! # Concurrency
 //!
-//! `RoaringBitMap` uses interior mutability for the heap mirror and is intended for single-writer use.
+//! `RoaringBitmap` uses interior mutability for the heap mirror and is intended for single-writer use.
 //! The stable memory region should not be mutated through another wrapper while a bitmap instance
 //! is in use.
 //!
 //! # Example
 //!
 //! ```rust
-//! # use ic_stable_roaring::StableRoaringBitMap;
+//! # use ic_stable_roaring::StableRoaringBitmap;
 //! # use ic_stable_structures::DefaultMemoryImpl;
 //! let memory = DefaultMemoryImpl::default();
-//! let bitset = StableRoaringBitMap::new(memory).unwrap();
+//! let bitset = StableRoaringBitmap::new(memory).unwrap();
 //! bitset.insert(7).unwrap();
 //! assert!(bitset.contains(7));
 //! ```
@@ -78,9 +80,14 @@
 pub mod bitmap;
 mod memory;
 
-/// Maximum payload value that can be stored in a packed journal record.
-pub const JOURNAL_PAYLOAD_MAX: u64 = (1u64 << 61) - 1;
+/// Bit mask for the payload field in a packed journal record (61 low bits; tag/value use the top bits).
+pub const JOURNAL_PAYLOAD_MASK: u64 = (1u64 << 61) - 1;
 
-pub use bitmap::{ContainsView, InitError, RoaringBitMap};
-pub use bitmap::RoaringBitMap as StableRoaringBitMap;
+/// Maximum exclusive logical length (`len_bits`) and maximum `SetLen` value supported by the API.
+///
+/// Bit indices are `u32`; the exclusive logical length may be `u32::MAX + 1`.
+pub const JOURNAL_LEN_MAX: u64 = (u32::MAX as u64) + 1;
+
+pub use bitmap::RoaringBitmap as StableRoaringBitmap;
+pub use bitmap::{ContainsView, InitError, RoaringBitmap};
 pub use memory::GrowFailed;

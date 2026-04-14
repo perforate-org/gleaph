@@ -17,6 +17,7 @@ experimental-dgap = []
 [dependencies]
 candid.workspace = true
 canbench-rs = { workspace = true, optional = true }
+bitflags.workspace = true
 ic-stable-csr = { path = "../ic-stable-csr" }
 ic-stable-structures.workspace = true
 gleaph-gql = { path = "../gql" }
@@ -27,7 +28,6 @@ serde.workspace = true
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
-ic-stable-slot-map = { path = "../ic-stable-slot-map" }
 
 [[bench]]
 name = "property_search_hot_path"

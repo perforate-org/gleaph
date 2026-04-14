@@ -102,7 +102,7 @@ fn delete_edge_tombstone_gc_and_degrees() {
         g.graph()
             .forward_dgap()
             .vertices
-            .get_dense(0)
+            .get(0)
             .unwrap()
             .degree(),
         1
@@ -111,7 +111,7 @@ fn delete_edge_tombstone_gc_and_degrees() {
         g.graph()
             .reverse_dgap()
             .vertices
-            .get_dense(1)
+            .get(1)
             .unwrap()
             .degree(),
         1
@@ -125,7 +125,7 @@ fn delete_edge_tombstone_gc_and_degrees() {
         g.graph()
             .forward_dgap()
             .vertices
-            .get_dense(0)
+            .get(0)
             .unwrap()
             .degree(),
         0
@@ -134,7 +134,7 @@ fn delete_edge_tombstone_gc_and_degrees() {
         g.graph()
             .reverse_dgap()
             .vertices
-            .get_dense(1)
+            .get(1)
             .unwrap()
             .degree(),
         0
@@ -187,7 +187,7 @@ fn delete_vertex_hides_edges_until_gc() {
         g.graph()
             .forward_dgap()
             .vertices
-            .get_dense(1)
+            .get(1)
             .unwrap()
             .degree(),
         1
@@ -200,7 +200,7 @@ fn delete_vertex_hides_edges_until_gc() {
         g.graph()
             .forward_dgap()
             .vertices
-            .get_dense(0)
+            .get(0)
             .unwrap()
             .is_tombstone()
     );

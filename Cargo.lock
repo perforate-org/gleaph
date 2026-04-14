@@ -1538,6 +1538,7 @@ dependencies = [
 name = "gleaph-graph-store"
 version = "0.1.0"
 dependencies = [
+ "bitflags",
  "canbench-rs",
  "candid",
  "criterion",
@@ -1545,7 +1546,6 @@ dependencies = [
  "gleaph-gql-planner",
  "gleaph-graph-kernel",
  "ic-stable-csr",
- "ic-stable-slot-map",
  "ic-stable-structures",
  "roaring",
  "serde",
@@ -2017,7 +2017,6 @@ dependencies = [
  "canbench-rs",
  "ic-stable-bitset",
  "ic-stable-roaring",
- "ic-stable-slot-map",
  "ic-stable-structures",
  "ic-stable-vec-deque",
  "trybuild",

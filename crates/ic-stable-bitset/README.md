@@ -4,7 +4,7 @@
 It keeps a heap mirror for reads and uses a durable append-only journal for
 `set`, `truncate`, and `remove` mutations.
 
-The primary type is [`BitSet`], also exported as [`StableBitSet`].
+The primary type is [`Bitset`], also exported as [`StableBitset`].
 
 ## What it stores
 
@@ -14,14 +14,14 @@ and reopen scans the journal until the first empty slot.
 
 ## Operations
 
-- `contains(index)` reads the heap mirror only.
-- `set(index, value)` appends a journal record and updates the heap mirror.
-- `insert(index)` is a convenience alias for `set(index, true)`.
-- `clear(index)` is a convenience alias for `set(index, false)`.
-- `remove(index)` removes the bit at `index`, shifts all later bits left by one,
+- `contains(index: u32)` reads the heap mirror only.
+- `set(index: u32, value)` appends a journal record and updates the heap mirror.
+- `insert(index: u32)` is a convenience alias for `set(index, true)`.
+- `clear(index: u32)` is a convenience alias for `set(index, false)`.
+- `remove(index: u32)` removes the bit at `index`, shifts all later bits left by one,
   and appends the remove index to the journal.
-- `truncate(len)` shortens the logical length and records the new length.
-- `ensure_len(len)` grows the logical length and records the new length.
+- `truncate(len: u64)` shortens the logical length and records the new length (bounded by `JOURNAL_LEN_MAX`).
+- `ensure_len(len: u64)` grows the logical length and records the new length (same bound).
 
 ## Guarantees
 
@@ -42,15 +42,16 @@ and reopen scans the journal until the first empty slot.
   bitset instance is active.
 - Mutation records store packed `u64` values and are bounded by the journal
   capacity.
+- Bit indices are `u32`; logical length is capped by [`JOURNAL_LEN_MAX`](crate::JOURNAL_LEN_MAX) (`u32::MAX + 1`).
 
 ## Example
 
 ```rust
-use ic_stable_bitset::BitSet;
+use ic_stable_bitset::Bitset;
 use ic_stable_structures::DefaultMemoryImpl;
 
 let memory = DefaultMemoryImpl::default();
-let bitset = BitSet::new(memory).unwrap();
+let bitset = Bitset::new(memory).unwrap();
 
 bitset.insert(7).unwrap();
 assert!(bitset.contains(7));

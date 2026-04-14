@@ -26,9 +26,12 @@ mod vertex;
 mod virtual_region_memory;
 
 pub use edge::{
-    EDGE_META_PAYLOAD_MASK, EDGE_META_RAW_MASK, EDGE_META_RSV_MASK, EDGE_SHARD_CANISTER_MASK,
-    EDGE_TOMBSTONE_MASK, EDGE_UNDIRECTED_MASK, EdgeEntry, EdgeMeta, LogicalEdgeLocator,
-    SurfaceKind, SurfaceRegions, TOMBSTONE_MASK,
+    EDGE_AUX_MEANING_MASK, EDGE_INLINE_MASK, EDGE_INLINE_SHIFT, EDGE_KIND_MASK,
+    EDGE_KIND_PLAIN_LOCAL, EDGE_KIND_PLAIN_REMOTE, EDGE_KIND_RESERVED_START, EDGE_KIND_SHIFT,
+    EDGE_KIND_SIDECAR_A, EDGE_KIND_SIDECAR_B, EDGE_KIND_TEMPORAL_BUCKET,
+    EDGE_KIND_VISIBILITY, EDGE_KIND_WEIGHTED, EDGE_META_PAYLOAD_MASK, EDGE_RESERVED_FLAGS,
+    EDGE_FLAGS_SHIFT, EdgeEntry, EdgeFlags, EdgeMeta, EdgeMetaError, EdgeMetaMode,
+    LogicalEdgeLocator, SurfaceKind, SurfaceRegions, TOMBSTONE_MASK,
 };
 pub use extent::{
     BucketChain, BucketHeader, BucketId, BucketRef, BucketTable, EdgeSegmentDirectory,

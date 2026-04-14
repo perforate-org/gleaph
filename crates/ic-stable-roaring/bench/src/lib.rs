@@ -1,4 +1,4 @@
-//! PocketIC / `canbench` harness for [`ic_stable_roaring::StableRoaringBitMap`].
+//! PocketIC / `canbench` harness for [`ic_stable_roaring::StableRoaringBitmap`].
 //!
 //! See the local `README.md` for build and run commands.
 
@@ -7,7 +7,7 @@
 use std::hint::black_box;
 
 use canbench_rs::bench;
-use ic_stable_roaring::StableRoaringBitMap;
+use ic_stable_roaring::StableRoaringBitmap;
 use ic_stable_structures::DefaultMemoryImpl;
 
 mod wipe;
@@ -28,65 +28,66 @@ const JOURNAL_CAP_FILL: u64 = 4_096;
 const REPLAY_BLOCK: u64 = JOURNAL_CAP_FILL / 4;
 const REPLAY_HALF: u64 = JOURNAL_CAP_FILL / 2;
 
-fn make_bitset() -> StableRoaringBitMap<DefaultMemoryImpl> {
-    StableRoaringBitMap::new(DefaultMemoryImpl::default()).expect("bitmap init")
+fn make_bitset() -> StableRoaringBitmap<DefaultMemoryImpl> {
+    StableRoaringBitmap::new(DefaultMemoryImpl::default()).expect("bitmap init")
 }
 
-fn populate(bitset: &StableRoaringBitMap<DefaultMemoryImpl>, count: u64) {
+fn populate(bitset: &StableRoaringBitmap<DefaultMemoryImpl>, count: u64) {
     for index in 0..count {
-        bitset.insert(index).expect("insert");
+        bitset.insert(index as u32).expect("insert");
     }
 }
 
 fn bench_reopen_case(
     scope_name: &'static str,
-    setup: impl FnOnce(&StableRoaringBitMap<DefaultMemoryImpl>),
+    setup: impl FnOnce(&StableRoaringBitmap<DefaultMemoryImpl>),
 ) -> canbench_rs::BenchResult {
     wipe::wipe_stable_memory();
     let bitset = make_bitset();
     setup(&bitset);
     canbench_rs::bench_fn(|| {
         let _p = canbench_rs::bench_scope(scope_name);
-        let reopened = StableRoaringBitMap::init(bitset.into_memory()).expect("reopen");
-        black_box((reopened.len(), reopened.contains(black_box(0))));
+        let reopened = StableRoaringBitmap::init(bitset.into_memory()).expect("reopen");
+        black_box((reopened.len(), reopened.contains(black_box(0u32))));
     })
 }
 
-fn setup_pure_replay_journal(bitset: &StableRoaringBitMap<DefaultMemoryImpl>) {
+fn setup_pure_replay_journal(bitset: &StableRoaringBitmap<DefaultMemoryImpl>) {
     for index in 0..REPLAY_HALF {
-        bitset.insert(index).expect("insert");
+        bitset.insert(index as u32).expect("insert");
     }
     for index in 0..REPLAY_HALF {
-        bitset.clear(index).expect("clear");
+        bitset.clear(index as u32).expect("clear");
     }
 }
 
-fn setup_segmented_replay_journal(bitset: &StableRoaringBitMap<DefaultMemoryImpl>) {
+fn setup_segmented_replay_journal(bitset: &StableRoaringBitmap<DefaultMemoryImpl>) {
     for index in 0..REPLAY_BLOCK {
-        bitset.insert(index).expect("insert");
+        bitset.insert(index as u32).expect("insert");
     }
     for index in 0..REPLAY_BLOCK {
-        bitset.clear(index).expect("clear");
+        bitset.clear(index as u32).expect("clear");
     }
     for index in 0..REPLAY_BLOCK {
-        bitset.insert(index).expect("insert");
+        bitset.insert(index as u32).expect("insert");
     }
     bitset.ensure_len(REPLAY_BLOCK * 4).expect("ensure_len");
     bitset.truncate(REPLAY_BLOCK * 3).expect("truncate");
 }
 
-fn make_spread_queries(count: u64, modulo: u64) -> Vec<u64> {
+fn make_spread_queries(count: u64, modulo: u64) -> Vec<u32> {
     assert!(
         modulo.is_power_of_two(),
         "bitmap size should be a power of two"
     );
+    assert!(modulo <= u32::MAX as u64 + 1);
     let mask = modulo - 1;
     let mut queries = Vec::with_capacity(count as usize);
     for i in 0..count {
         let mixed = i
             .wrapping_mul(CONTAINS_SPREAD_MULTIPLIER)
             .wrapping_add(CONTAINS_SPREAD_INCREMENT);
-        queries.push(mixed & mask);
+        queries.push((mixed & mask) as u32);
     }
     queries
 }
@@ -110,7 +111,7 @@ fn bench_roaring_contains_1024() -> canbench_rs::BenchResult {
     canbench_rs::bench_fn(|| {
         let _p = canbench_rs::bench_scope("roaring_contains");
         let index = black_box(INSERT_COUNT - 1);
-        black_box(bitset.contains(index));
+        black_box(bitset.contains(index as u32));
     })
 }
 
@@ -163,11 +164,11 @@ fn bench_roaring_reopen_after_journal_4096() -> canbench_rs::BenchResult {
     wipe::wipe_stable_memory();
     let bitset = make_bitset();
     populate(&bitset, REOPEN_COUNT);
-    bitset.insert(REOPEN_COUNT).expect("insert");
+    bitset.insert(REOPEN_COUNT as u32).expect("insert");
     canbench_rs::bench_fn(|| {
         let _p = canbench_rs::bench_scope("roaring_reopen");
-        let reopened = StableRoaringBitMap::init(bitset.into_memory()).expect("reopen");
-        black_box(reopened.contains(black_box(REOPEN_COUNT)));
+        let reopened = StableRoaringBitmap::init(bitset.into_memory()).expect("reopen");
+        black_box(reopened.contains(black_box(REOPEN_COUNT as u32)));
     })
 }
 
@@ -206,9 +207,9 @@ fn bench_roaring_checkpoint_after_full_journal_4096() -> canbench_rs::BenchResul
     canbench_rs::bench_fn(|| {
         let _p = canbench_rs::bench_scope("roaring_checkpoint");
         bitset
-            .insert(black_box(JOURNAL_CAP_FILL))
+            .insert(black_box(JOURNAL_CAP_FILL as u32))
             .expect("insert triggering checkpoint");
-        black_box(bitset.contains(black_box(JOURNAL_CAP_FILL)));
+        black_box(bitset.contains(black_box(JOURNAL_CAP_FILL as u32)));
     })
 }
 
@@ -218,11 +219,11 @@ fn bench_roaring_reopen_after_large_snapshot_65536() -> canbench_rs::BenchResult
     let bitset = make_bitset();
     populate(&bitset, LARGE_SNAPSHOT_BITS);
     bitset
-        .insert(LARGE_SNAPSHOT_BITS)
+        .insert(LARGE_SNAPSHOT_BITS as u32)
         .expect("insert triggering checkpoint");
     canbench_rs::bench_fn(|| {
         let _p = canbench_rs::bench_scope("roaring_reopen_large");
-        let reopened = StableRoaringBitMap::init(bitset.into_memory()).expect("reopen");
-        black_box(reopened.contains(black_box(LARGE_SNAPSHOT_BITS)));
+        let reopened = StableRoaringBitmap::init(bitset.into_memory()).expect("reopen");
+        black_box(reopened.contains(black_box(LARGE_SNAPSHOT_BITS as u32)));
     })
 }

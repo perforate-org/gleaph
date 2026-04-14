@@ -9,10 +9,9 @@ use gleaph_graph_store::low_level::{
     EdgeIndex, EdgeRef, VertexEntry, vertex_entry_for_ic_stable_append,
 };
 use ic_stable_csr::{
-    DgapEdgeStore, DgapGraphMemories, DgapStores, VectorMemory,
+    DgapEdgeStore, DgapGraphMemories, DgapStores, StableVec, VectorMemory,
     layout::dgap::{EDGE_REGION_MAGIC, PMA_SEGMENT_EDGE_COUNTS_MAGIC},
 };
-use ic_stable_slot_map::SlotMap;
 
 type GleaphEdgeStore = DgapEdgeStore<EdgeEntry, VectorMemory, VectorMemory>;
 
@@ -22,29 +21,25 @@ fn gleaph_types_on_vertex_and_dual_edge_memories() {
     let m_pma: VectorMemory = Rc::new(RefCell::new(Vec::new()));
     let m_edges_log: VectorMemory = Rc::new(RefCell::new(Vec::new()));
 
-    let vertices = SlotMap::new(mv.clone()).unwrap();
+    let vertices = StableVec::new(mv.clone());
     let edges = GleaphEdgeStore::new(DgapGraphMemories::new(m_pma.clone(), m_edges_log.clone()));
     edges.format_new(16, 1, 2, 0).expect("format edge region");
 
-    vertices
-        .insert(&VertexEntry::new(
-            EdgeIndex::from(EdgeRef::new(0, 0)),
-            0,
-            EMPTY_LOG_OFFSET,
-        ))
-        .unwrap();
-    vertices
-        .insert(&VertexEntry::new(
-            EdgeIndex::from(EdgeRef::new(0, 4)),
-            0,
-            EMPTY_LOG_OFFSET,
-        ))
-        .unwrap();
+    vertices.push(&VertexEntry::new(
+        EdgeIndex::from(EdgeRef::new(0, 0)),
+        0,
+        EMPTY_LOG_OFFSET,
+    ));
+    vertices.push(&VertexEntry::new(
+        EdgeIndex::from(EdgeRef::new(0, 4)),
+        0,
+        EMPTY_LOG_OFFSET,
+    ));
 
     let vb = mv.borrow();
     let pb = m_pma.borrow();
     let elb = m_edges_log.borrow();
-    assert_eq!(&vb[0..3], b"SSM");
+    assert_eq!(&vb[0..3], b"SVC");
     assert_eq!(&pb[0..3], PMA_SEGMENT_EDGE_COUNTS_MAGIC);
     assert_eq!(&elb[0..3], EDGE_REGION_MAGIC);
 
@@ -63,7 +58,7 @@ fn gleaph_types_on_vertex_and_dual_edge_memories() {
 fn dgap_stores_insert_vertex_with_gleaph_row_helper() {
     let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
 
-    let vertices = SlotMap::new(mv).unwrap();
+    let vertices = StableVec::new(mv);
     let edges = GleaphEdgeStore::new(DgapGraphMemories::new(
         Rc::new(RefCell::new(Vec::new())),
         Rc::new(RefCell::new(Vec::new())),

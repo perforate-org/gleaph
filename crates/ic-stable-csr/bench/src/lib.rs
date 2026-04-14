@@ -13,11 +13,11 @@ use gleaph_graph_store::low_level::{EdgeEntry, EdgeMeta, VertexRef};
 use ic_stable_csr::{
     Bound, CsrGraphWithGcQueueDenseDeleted, CsrGraphWithGcQueueRowTombstone,
     CsrGraphWithGcQueueSparseDeleted, DgapEdgeStore, DgapGraphMemories, DgapStores,
-    SegmentEdgeCounts, SegmentMaintainAction, SegmentMaintainThresholds, Storable,
+    SegmentEdgeCounts, SegmentMaintainAction, SegmentMaintainThresholds, StableVec, Storable,
+    VertexId,
     dgap::{RebalanceDecision, segment_maintenance_decision},
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex, CsrVertexTombstone},
 };
-use ic_stable_slot_map::SlotMap;
 use ic_stable_structures::DefaultMemoryImpl;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 
@@ -38,6 +38,11 @@ const ID_COMPARE_PAIRS: usize = 1_024;
 const ID_COMPARE_ROUNDS: usize = 32;
 const NEIGHBOR_SCAN_LEN: usize = 512;
 const NEIGHBOR_SCAN_ROUNDS: usize = 128;
+
+#[inline]
+fn vid(index: usize) -> VertexId {
+    VertexId::try_from(index).expect("vertex id exceeds u32 range")
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct BenchVertex {
@@ -132,12 +137,12 @@ impl CsrEdge for BenchEdge {
         bytes.copy_from_slice(&self.0);
     }
 
-    fn neighbor_vid(&self) -> usize {
-        u32::from_le_bytes(self.0) as usize
+    fn neighbor_vid(&self) -> VertexId {
+        VertexId(u32::from_le_bytes(self.0))
     }
 
-    fn with_neighbor_vid(self, vid: usize) -> Self {
-        Self((vid as u32).to_le_bytes())
+    fn with_neighbor_vid(self, vid: VertexId) -> Self {
+        Self(vid.0.to_le_bytes())
     }
 }
 
@@ -824,11 +829,11 @@ trait QueueGraphOps {
 
 impl QueueGraphOps for BenchRowGraph {
     fn delete_edge_directed(&self, src: usize, dst: usize) {
-        self.delete_edge_directed(src, dst)
+        self.delete_edge_directed(vid(src), vid(dst))
             .expect("delete_edge_directed");
     }
     fn delete_vertex(&self, vid: usize) {
-        self.delete_vertex(vid).expect("delete_vertex");
+        self.delete_vertex(crate::vid(vid)).expect("delete_vertex");
     }
     fn gc_step(&self, budget: usize) -> usize {
         self.gc_step(budget).expect("gc_step")
@@ -837,7 +842,7 @@ impl QueueGraphOps for BenchRowGraph {
         self.work_queue_len()
     }
     fn raw_out_edge_count(&self, vid: usize) -> usize {
-        self.graph().out_edges(vid).expect("out_edges").count()
+        self.graph().out_edges(crate::vid(vid)).expect("out_edges").count()
     }
     fn logical_out_edge_count(&self, _vid: usize) -> Option<usize> {
         None
@@ -846,11 +851,11 @@ impl QueueGraphOps for BenchRowGraph {
 
 impl QueueGraphOps for BenchSparseGraph {
     fn delete_edge_directed(&self, src: usize, dst: usize) {
-        self.delete_edge_directed(src, dst)
+        self.delete_edge_directed(vid(src), vid(dst))
             .expect("delete_edge_directed");
     }
     fn delete_vertex(&self, vid: usize) {
-        self.delete_vertex(vid).expect("delete_vertex");
+        self.delete_vertex(crate::vid(vid)).expect("delete_vertex");
     }
     fn gc_step(&self, budget: usize) -> usize {
         self.gc_step(budget).expect("gc_step")
@@ -859,11 +864,11 @@ impl QueueGraphOps for BenchSparseGraph {
         self.work_queue_len()
     }
     fn raw_out_edge_count(&self, vid: usize) -> usize {
-        self.graph().out_edges(vid).expect("out_edges").count()
+        self.graph().out_edges(crate::vid(vid)).expect("out_edges").count()
     }
     fn logical_out_edge_count(&self, vid: usize) -> Option<usize> {
         Some(
-            self.out_edges_logical(vid)
+            self.out_edges_logical(crate::vid(vid))
                 .expect("out_edges_logical")
                 .count(),
         )
@@ -872,11 +877,11 @@ impl QueueGraphOps for BenchSparseGraph {
 
 impl QueueGraphOps for BenchDenseGraph {
     fn delete_edge_directed(&self, src: usize, dst: usize) {
-        self.delete_edge_directed(src, dst)
+        self.delete_edge_directed(vid(src), vid(dst))
             .expect("delete_edge_directed");
     }
     fn delete_vertex(&self, vid: usize) {
-        self.delete_vertex(vid).expect("delete_vertex");
+        self.delete_vertex(crate::vid(vid)).expect("delete_vertex");
     }
     fn gc_step(&self, budget: usize) -> usize {
         self.gc_step(budget).expect("gc_step")
@@ -885,11 +890,11 @@ impl QueueGraphOps for BenchDenseGraph {
         self.work_queue_len()
     }
     fn raw_out_edge_count(&self, vid: usize) -> usize {
-        self.graph().out_edges(vid).expect("out_edges").count()
+        self.graph().out_edges(crate::vid(vid)).expect("out_edges").count()
     }
     fn logical_out_edge_count(&self, vid: usize) -> Option<usize> {
         Some(
-            self.out_edges_logical(vid)
+            self.out_edges_logical(crate::vid(vid))
                 .expect("out_edges_logical")
                 .count(),
         )
@@ -969,21 +974,21 @@ impl BenchVariantGraph {
         match self {
             Self::Row(g) => g
                 .graph()
-                .out_edges(vid)
+                .out_edges(crate::vid(vid))
                 .expect("out_edges")
-                .map(|r| r.expect("raw edge").neighbor_vid())
+                .map(|r| usize::from(r.expect("raw edge").neighbor_vid()))
                 .collect(),
             Self::Sparse(g) => g
                 .graph()
-                .out_edges(vid)
+                .out_edges(crate::vid(vid))
                 .expect("out_edges")
-                .map(|r| r.expect("raw edge").neighbor_vid())
+                .map(|r| usize::from(r.expect("raw edge").neighbor_vid()))
                 .collect(),
             Self::Dense(g) => g
                 .graph()
-                .out_edges(vid)
+                .out_edges(crate::vid(vid))
                 .expect("out_edges")
-                .map(|r| r.expect("raw edge").neighbor_vid())
+                .map(|r| usize::from(r.expect("raw edge").neighbor_vid()))
                 .collect(),
         }
     }
@@ -992,19 +997,19 @@ impl BenchVariantGraph {
         match self {
             Self::Row(g) => g
                 .graph()
-                .in_edges(vid)
+                .in_edges(crate::vid(vid))
                 .expect("in_edges")
-                .any(|r| r.expect("raw edge").neighbor_vid() == neighbor),
+                .any(|r| r.expect("raw edge").neighbor_vid() == crate::vid(neighbor)),
             Self::Sparse(g) => g
                 .graph()
-                .in_edges(vid)
+                .in_edges(crate::vid(vid))
                 .expect("in_edges")
-                .any(|r| r.expect("raw edge").neighbor_vid() == neighbor),
+                .any(|r| r.expect("raw edge").neighbor_vid() == crate::vid(neighbor)),
             Self::Dense(g) => g
                 .graph()
-                .in_edges(vid)
+                .in_edges(crate::vid(vid))
                 .expect("in_edges")
-                .any(|r| r.expect("raw edge").neighbor_vid() == neighbor),
+                .any(|r| r.expect("raw edge").neighbor_vid() == crate::vid(neighbor)),
         }
     }
 
@@ -1189,7 +1194,7 @@ fn apply_owner_rows_from_offsets(stores: &BenchStores, n: usize, owner_offsets: 
         let degree = owner_offsets[owner + 1] - owner_offsets[owner];
         let prev = stores
             .vertices
-            .get_dense(owner as u32)
+            .get(owner as u64)
             .expect("vertex row for packed edge build");
         let row = prev
             .with_base_slot_start(base)
@@ -1198,8 +1203,7 @@ fn apply_owner_rows_from_offsets(stores: &BenchStores, n: usize, owner_offsets: 
             .with_tombstone(false);
         stores
             .vertices
-            .set_dense(owner as u32, &row)
-            .expect("packed edge build row update");
+            .set(owner as u64, &row);
     }
 }
 
@@ -1207,7 +1211,7 @@ fn encode_neighbors_payload(neighbors_flat: &[usize], stride: usize) -> Vec<u8> 
     let mut payload = vec![0u8; neighbors_flat.len() * stride];
     for (i, neighbor) in neighbors_flat.iter().copied().enumerate() {
         BenchEdge::default()
-            .with_neighbor_vid(neighbor)
+            .with_neighbor_vid(vid(neighbor))
             .write_to(&mut payload[i * stride..(i + 1) * stride]);
     }
     payload
@@ -2010,7 +2014,7 @@ fn bench_segment_maintain(case: SegmentMaintainBenchCase) -> canbench_rs::BenchR
 fn build_chain_stores(n: usize) -> BenchStores {
     let format = graph_format_for_vertices(n);
     let mgr = MemoryManager::init(DefaultMemoryImpl::default());
-    let vertices = SlotMap::new(mgr.get(MemoryId::new(0))).expect("vertex SlotMap");
+    let vertices = StableVec::new(mgr.get(MemoryId::new(0)));
     let edges = BenchEdgeStore::new(DgapGraphMemories::new(
         mgr.get(MemoryId::new(1)),
         mgr.get(MemoryId::new(2)),
@@ -2030,7 +2034,7 @@ fn build_chain_stores(n: usize) -> BenchStores {
     }
     for (src, dst) in generate_chain_edges(n) {
         stores
-            .insert_edge(src, BenchEdge::default().with_neighbor_vid(dst))
+            .insert_edge(vid(src), BenchEdge::default().with_neighbor_vid(vid(dst)))
             .expect("insert_edge");
     }
     stores
@@ -2051,7 +2055,7 @@ fn bench_remove_slab_physically_chain_32() -> canbench_rs::BenchResult {
     canbench_rs::bench_fn(|| {
         stores
             .edges
-            .remove_slab_edge_at_local_index_physically(&stores.vertices, 0, 0)
+            .remove_slab_edge_at_local_index_physically(&stores.vertices, VertexId(0), 0)
             .expect("remove_slab");
     })
 }
@@ -2065,7 +2069,7 @@ fn bench_remove_slab_physically_chain_1024() -> canbench_rs::BenchResult {
     canbench_rs::bench_fn(|| {
         stores
             .edges
-            .remove_slab_edge_at_local_index_physically(&stores.vertices, 0, 0)
+            .remove_slab_edge_at_local_index_physically(&stores.vertices, VertexId(0), 0)
             .expect("remove_slab");
     })
 }
@@ -2083,7 +2087,7 @@ fn bench_remove_slab_physically_tail_vertex_chain_1024() -> canbench_rs::BenchRe
     canbench_rs::bench_fn(|| {
         stores
             .edges
-            .remove_slab_edge_at_local_index_physically(&stores.vertices, vid, 0)
+            .remove_slab_edge_at_local_index_physically(&stores.vertices, crate::vid(vid), 0)
             .expect("remove_slab tail");
     })
 }
@@ -3163,8 +3167,8 @@ fn bench_segment_maintain_rebalance_window_enqueue() -> canbench_rs::BenchResult
             tombstone: 0,
         },
         RebalanceDecision::RebalanceWindow {
-            left_vertex: 0,
-            right_vertex: 32,
+            left_vertex: VertexId(0),
+            right_vertex: 32u64,
             pma_idx: 16,
         },
         0,

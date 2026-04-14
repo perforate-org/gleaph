@@ -1034,7 +1034,7 @@ mod tests {
             .iter()
             .find(|e| !e.meta.is_shard_canister())
             .expect("local reverse entry");
-        assert_eq!(rev.meta.local_label_id(), Some(links_id));
+        assert_eq!(rev.meta.local_id(), Some(links_id));
 
         let mem_rc = Rc::clone(&facade.memory);
         facade
