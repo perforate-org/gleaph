@@ -121,12 +121,12 @@ impl CsrEdge for TestEdge {
     }
 
     fn neighbor_vid(&self) -> VertexId {
-        self.0[0] as VertexId
+        VertexId(self.0[0] as u32)
     }
 
     fn with_neighbor_vid(self, vid: VertexId) -> Self {
         let mut b = self.0;
-        b[0] = vid as u8;
+        b[0] = vid.get() as u8;
         Self(b)
     }
 }

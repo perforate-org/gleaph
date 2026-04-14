@@ -3,8 +3,7 @@ mod common;
 use common::{TestEdge as TE, TestVertex as TV, empty_vertex, vm};
 use ic_stable_csr::{
     CsrGraphWithGcQueueDenseDeleted, CsrGraphWithGcQueueRowTombstone,
-    CsrGraphWithGcQueueSparseDeleted, SegmentMaintainThresholds,
-    VectorMemory,
+    CsrGraphWithGcQueueSparseDeleted, SegmentMaintainThresholds, VectorMemory, VertexId,
     traits::CsrVertexTombstone,
 };
 
@@ -69,10 +68,12 @@ fn row_tombstone_queue_supports_delete_vertex_and_gc_step() {
         g.insert_vertex(empty_vertex()).unwrap();
     }
     g.sync_pma_meta().unwrap();
-    g.insert_directed(0, 1, TE([1, 0, 0, 0])).unwrap();
-    g.insert_directed(1, 0, TE([0, 0, 0, 0])).unwrap();
+    g.insert_directed(VertexId(0), VertexId(1), TE([1, 0, 0, 0]))
+        .unwrap();
+    g.insert_directed(VertexId(1), VertexId(0), TE([0, 0, 0, 0]))
+        .unwrap();
 
-    g.delete_vertex(0).unwrap();
+    g.delete_vertex(VertexId(0)).unwrap();
     assert!(g
         .graph()
         .forward_dgap()
@@ -81,7 +82,12 @@ fn row_tombstone_queue_supports_delete_vertex_and_gc_step() {
         .unwrap()
         .is_tombstone());
 
-    let raw_before_gc: Vec<_> = g.graph().out_edges(1).unwrap().map(|r| r.unwrap()).collect();
+    let raw_before_gc: Vec<_> = g
+        .graph()
+        .out_edges(VertexId(1))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
     assert_eq!(raw_before_gc, vec![TE([0, 0, 0, 0])]);
 
     let _ = g.gc_step(16).unwrap();
@@ -110,13 +116,15 @@ fn sparse_deleted_logical_iter_hides_deleted_neighbors_immediately() {
         g.insert_vertex(empty_vertex()).unwrap();
     }
     g.sync_pma_meta().unwrap();
-    g.insert_directed(0, 1, TE([1, 0, 0, 0])).unwrap();
-    g.insert_directed(1, 0, TE([0, 0, 0, 0])).unwrap();
+    g.insert_directed(VertexId(0), VertexId(1), TE([1, 0, 0, 0]))
+        .unwrap();
+    g.insert_directed(VertexId(1), VertexId(0), TE([0, 0, 0, 0]))
+        .unwrap();
 
-    g.delete_vertex(0).unwrap();
+    g.delete_vertex(VertexId(0)).unwrap();
 
     let out1: Vec<_> = g
-        .out_edges_logical(1)
+        .out_edges_logical(VertexId(1))
         .unwrap()
         .map(|r| r.unwrap())
         .collect();
@@ -157,7 +165,8 @@ fn row_queue_open_existing_preserves_edges_and_queue_state() {
             g.insert_vertex(empty_vertex()).unwrap();
         }
         g.sync_pma_meta().unwrap();
-        g.insert_directed(0, 1, TE([1, 0, 0, 0])).unwrap();
+        g.insert_directed(VertexId(0), VertexId(1), TE([1, 0, 0, 0]))
+            .unwrap();
     }
 
     let reopened = RowQueueGraph::open_existing_with_gc_queue(
@@ -178,7 +187,7 @@ fn row_queue_open_existing_preserves_edges_and_queue_state() {
     assert_eq!(reopened.graph().vertex_count(), 3);
     let raw0: Vec<_> = reopened
         .graph()
-        .out_edges(0)
+        .out_edges(VertexId(0))
         .unwrap()
         .map(|r| r.unwrap())
         .collect();
@@ -221,8 +230,9 @@ fn dense_queue_open_existing_preserves_deleted_index_and_logical_view() {
             g.insert_vertex(empty_vertex()).unwrap();
         }
         g.sync_pma_meta().unwrap();
-        g.insert_directed(1, 0, TE([0, 0, 0, 0])).unwrap();
-        g.delete_vertex(0).unwrap();
+        g.insert_directed(VertexId(1), VertexId(0), TE([0, 0, 0, 0]))
+            .unwrap();
+        g.delete_vertex(VertexId(0)).unwrap();
         g.work_queue_len()
     };
 
@@ -245,7 +255,7 @@ fn dense_queue_open_existing_preserves_deleted_index_and_logical_view() {
     assert_eq!(reopened.graph().vertex_count(), 3);
     assert_eq!(reopened.work_queue_len(), queue_before_reopen);
     let logical: Vec<_> = reopened
-        .out_edges_logical(1)
+        .out_edges_logical(VertexId(1))
         .unwrap()
         .map(|r| r.unwrap())
         .collect();

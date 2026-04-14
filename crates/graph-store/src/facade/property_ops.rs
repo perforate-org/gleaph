@@ -489,7 +489,13 @@ impl<M: Memory> GraphStore<M> {
         value: &Value,
     ) -> Result<(PropertyIndexKey, PropertyIndexNodeStoreMutationKind), PropertyIndexError> {
         #[cfg(test)]
-        if FAIL_NEXT_NODE_PROPERTY_INDEX_SYNC_TEST.swap(false, Ordering::SeqCst) {
+        if FAIL_NEXT_NODE_PROPERTY_INDEX_SYNC_TEST.with(|c| {
+            let v = c.get();
+            if v {
+                c.set(false);
+            }
+            v
+        }) {
             return Err(PropertyIndexError::LeafPartitionMultiEntryExceedsPrimaryPage);
         }
         let key = PropertyIndexKey::node(
@@ -515,7 +521,13 @@ impl<M: Memory> GraphStore<M> {
         property: &str,
     ) -> Result<Option<PropertyIndexNodeStoreMutationKind>, PropertyIndexError> {
         #[cfg(test)]
-        if FAIL_NEXT_NODE_PROPERTY_INDEX_SYNC_TEST.swap(false, Ordering::SeqCst) {
+        if FAIL_NEXT_NODE_PROPERTY_INDEX_SYNC_TEST.with(|c| {
+            let v = c.get();
+            if v {
+                c.set(false);
+            }
+            v
+        }) {
             return Err(PropertyIndexError::LeafPartitionMultiEntryExceedsPrimaryPage);
         }
         let node_property_store = self.open_fixed_slot_node_property_store();
@@ -544,7 +556,13 @@ impl<M: Memory> GraphStore<M> {
         value: &Value,
     ) -> Result<(PropertyIndexKey, PropertyIndexNodeStoreMutationKind), PropertyIndexError> {
         #[cfg(test)]
-        if FAIL_NEXT_EDGE_PROPERTY_INDEX_SYNC_TEST.swap(false, Ordering::SeqCst) {
+        if FAIL_NEXT_EDGE_PROPERTY_INDEX_SYNC_TEST.with(|c| {
+            let v = c.get();
+            if v {
+                c.set(false);
+            }
+            v
+        }) {
             return Err(PropertyIndexError::LeafPartitionMultiEntryExceedsPrimaryPage);
         }
         let key = PropertyIndexKey::edge(
@@ -570,7 +588,13 @@ impl<M: Memory> GraphStore<M> {
         property: &str,
     ) -> Result<Option<PropertyIndexNodeStoreMutationKind>, PropertyIndexError> {
         #[cfg(test)]
-        if FAIL_NEXT_EDGE_PROPERTY_INDEX_SYNC_TEST.swap(false, Ordering::SeqCst) {
+        if FAIL_NEXT_EDGE_PROPERTY_INDEX_SYNC_TEST.with(|c| {
+            let v = c.get();
+            if v {
+                c.set(false);
+            }
+            v
+        }) {
             return Err(PropertyIndexError::LeafPartitionMultiEntryExceedsPrimaryPage);
         }
         let edge_property_store = self.open_fixed_slot_edge_property_store();

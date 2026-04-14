@@ -15,11 +15,11 @@ mod lifecycle_ops;
 mod property_ops;
 mod store_traits;
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::cell::{Ref, RefCell, RefMut};
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
-#[cfg(test)]
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use crate::VecMemory;
@@ -32,14 +32,13 @@ use crate::low_level::{
     BucketSizeInPages, EdgeEntry, EdgeReplaceSpec, EdgeTombstoneSpec, ExtentChain,
     ExtentGrowthPolicy, ExtentGrowthRequest, ExtentId, ForwardSurfaceRuntime, GleaphMemoryManager,
     GraphBatchMutationSession, GraphEnsureCapacitySegmentWriteSummary,
-    GraphEnsureCapacityWriteSummary, GraphInsertPolicy, GraphInsertResult,
-    GraphInsertDecision, GraphInsertSegmentWriteSummary, GraphInsertWriteSummary,
-    GraphLocalRebalanceDelta, GraphLocalRebalancePlan, GraphMaintenanceBatchWriteSummary,
-    GraphMaintenanceCandidate, GraphMaintenanceCyclePlan, GraphMaintenanceCycleWriteSummary,
-    GraphMaintenanceWorkItem, GraphMutationPath, GraphRebalancePlan, GraphRuntime, HydratedSurfaceRuntimes,
-    HydrationError, LogicalEdgeLocator, RebalanceInsertSpec, RebalancePrepareSpec, RegionKind,
-    RegionManager, ResolvedEdgeSlot, ReverseSurfaceRuntime, ShardCanisterDirectory,
-    ShardDirectoryStore,
+    GraphEnsureCapacityWriteSummary, GraphInsertDecision, GraphInsertPolicy, GraphInsertResult,
+    GraphInsertSegmentWriteSummary, GraphInsertWriteSummary, GraphLocalRebalanceDelta,
+    GraphLocalRebalancePlan, GraphMaintenanceBatchWriteSummary, GraphMaintenanceCandidate,
+    GraphMaintenanceCyclePlan, GraphMaintenanceCycleWriteSummary, GraphMaintenanceWorkItem,
+    GraphMutationPath, GraphRebalancePlan, GraphRuntime, HydratedSurfaceRuntimes, HydrationError,
+    LogicalEdgeLocator, RebalanceInsertSpec, RebalancePrepareSpec, RegionKind, RegionManager,
+    ResolvedEdgeSlot, ReverseSurfaceRuntime, ShardCanisterDirectory, ShardDirectoryStore,
     SurfaceVertexWindowReserveHint, SurfaceVertexWindowSummary, VertexEntry, VertexRef, WasmPages,
     WritebackError, estimate_vertex_window_reserve_hint_from_stable_memory,
     forward_surface_from_layout, hydrate_surface_runtimes_from_stable_memory,
@@ -57,16 +56,15 @@ use crate::observability::{
 use crate::property_index::{
     FixedSlotPropertyEqualityMap, PropertyEqualityInplaceMap, PropertyIndex,
     PropertyIndexEntityKind, PropertyIndexEntry, PropertyIndexError, PropertyIndexKey,
-    PropertyIndexNodeStoreMutationKind,
-    empty_property_equality_inplace_map, open_fixed_slot_property_equality_map,
-    snapshot_fixed_slot_property_equality_map, snapshot_from_equality_map,
+    PropertyIndexNodeStoreMutationKind, empty_property_equality_inplace_map,
+    open_fixed_slot_property_equality_map, snapshot_fixed_slot_property_equality_map,
+    snapshot_from_equality_map,
 };
 use crate::property_store::{
-    FixedSlotGraphPropertyStableMap, GraphPropertyStableMap, PropertyStoreError,
-    PropertyKey, StoredPropertyValue,
-    btree_distinct_property_names, btree_get_edge_property, btree_get_node_property,
-    btree_scan_entities, btree_scan_entities_property_subset, btree_scan_entity,
-    default_property_region_chain, empty_graph_property_stable_map,
+    FixedSlotGraphPropertyStableMap, GraphPropertyStableMap, PropertyKey, PropertyStoreError,
+    StoredPropertyValue, btree_distinct_property_names, btree_get_edge_property,
+    btree_get_node_property, btree_scan_entities, btree_scan_entities_property_subset,
+    btree_scan_entity, default_property_region_chain, empty_graph_property_stable_map,
     open_fixed_slot_edge_property_store, open_fixed_slot_node_property_store,
     snapshot_fixed_slot_graph_property_store,
 };
@@ -76,16 +74,16 @@ pub use facade_types::{
     GraphStoreBootstrapEdgeProjection, GraphStoreBootstrapEdgeWriteSummary,
     GraphStoreBootstrapGraphProjection, GraphStoreBootstrapGraphWriteSummary,
     GraphStoreBootstrapVerticesProjection, GraphStoreEdgeLogicalLocatorMapping,
-    GraphStoreEdgeWriteOperation, GraphStoreEdgeWriteProjection, GraphStoreEnsureCapacityProjection,
-    GraphStoreFacadeWriteEvent, GraphStoreInsertEdgeProjection, GraphStoreMaintenanceBatchProjection,
-    GraphStoreMaintenanceCycleProjection, GraphStoreMaintenanceQueueAction,
-    GraphStoreMaintenanceQueueItemProjection, GraphStoreMaintenanceQueueProjection,
-    GraphStoreMaintenanceQueueStorageProjection, GraphStoreMutationWriteSummary,
-    GraphStoreNodeDeleteProjection, GraphStoreProductionMetrics, GraphStoreProductionMetricsSnapshot,
-    GraphStorePropertyIndexMutationSummary, GraphStorePropertyIndexTouchedSections,
-    GraphStorePropertyMutationWriteSummary, GraphStorePropertyWriteProjection,
-    GraphStoreRefreshedVertices, GraphStoreVertexOrdinalMapping, GraphStoreWriteEventProjection,
-    PropertyIndexFallbackReason,
+    GraphStoreEdgeWriteOperation, GraphStoreEdgeWriteProjection,
+    GraphStoreEnsureCapacityProjection, GraphStoreFacadeWriteEvent, GraphStoreInsertEdgeProjection,
+    GraphStoreMaintenanceBatchProjection, GraphStoreMaintenanceCycleProjection,
+    GraphStoreMaintenanceQueueAction, GraphStoreMaintenanceQueueItemProjection,
+    GraphStoreMaintenanceQueueProjection, GraphStoreMaintenanceQueueStorageProjection,
+    GraphStoreMutationWriteSummary, GraphStoreNodeDeleteProjection, GraphStoreProductionMetrics,
+    GraphStoreProductionMetricsSnapshot, GraphStorePropertyIndexMutationSummary,
+    GraphStorePropertyIndexTouchedSections, GraphStorePropertyMutationWriteSummary,
+    GraphStorePropertyWriteProjection, GraphStoreRefreshedVertices, GraphStoreVertexOrdinalMapping,
+    GraphStoreWriteEventProjection, PropertyIndexFallbackReason,
 };
 
 type GraphStoreReplaceEdgeSummary =
@@ -108,7 +106,8 @@ fn replace_property_equality_snapshot<M: Memory>(
     map: &mut PropertyEqualityInplaceMap<M>,
     entries: &crate::property_index::PropertyEqualityStableMap,
 ) {
-    let existing_keys: Vec<PropertyIndexKey> = map.iter().map(|entry| entry.key().clone()).collect();
+    let existing_keys: Vec<PropertyIndexKey> =
+        map.iter().map(|entry| entry.key().clone()).collect();
     for key in existing_keys {
         map.remove(&key);
     }
@@ -117,15 +116,19 @@ fn replace_property_equality_snapshot<M: Memory>(
     }
 }
 
-/// When true, the next node-side property index mutation path returns
-/// [`PropertyIndexError::LeafPartitionMultiEntryExceedsPrimaryPage`] (test-only).
 #[cfg(test)]
-pub(crate) static FAIL_NEXT_NODE_PROPERTY_INDEX_SYNC_TEST: AtomicBool = AtomicBool::new(false);
+thread_local! {
+    /// When true, the next node-side property index mutation path on **this thread** returns
+    /// [`PropertyIndexError::LeafPartitionMultiEntryExceedsPrimaryPage`] (test-only).
+    pub(crate) static FAIL_NEXT_NODE_PROPERTY_INDEX_SYNC_TEST: Cell<bool> = const { Cell::new(false) };
+}
 
-/// When true, the next edge-side property index mutation path returns
-/// [`PropertyIndexError::LeafPartitionMultiEntryExceedsPrimaryPage`] (test-only).
 #[cfg(test)]
-pub(crate) static FAIL_NEXT_EDGE_PROPERTY_INDEX_SYNC_TEST: AtomicBool = AtomicBool::new(false);
+thread_local! {
+    /// When true, the next edge-side property index mutation path on **this thread** returns
+    /// [`PropertyIndexError::LeafPartitionMultiEntryExceedsPrimaryPage`] (test-only).
+    pub(crate) static FAIL_NEXT_EDGE_PROPERTY_INDEX_SYNC_TEST: Cell<bool> = const { Cell::new(false) };
+}
 
 /// Primary typed entrypoint for graph persistence in `graph-store`.
 ///
@@ -433,10 +436,7 @@ pub trait GraphStoreStore {
         incoming_live_entries: usize,
     ) -> Option<GraphInsertDecision>;
 
-    fn plan_local_rebalance(
-        &self,
-        plan: GraphRebalancePlan,
-    ) -> Option<GraphLocalRebalancePlan>;
+    fn plan_local_rebalance(&self, plan: GraphRebalancePlan) -> Option<GraphLocalRebalancePlan>;
 
     fn build_local_rebalance_delta(
         &self,
@@ -1028,11 +1028,13 @@ impl<M: Memory> GraphStore<M> {
         }
         let actual_checksum = Self::maintenance_queue_checksum(body);
         if checksum != actual_checksum {
-            return Err(GraphStoreError::Hydration(HydrationError::ChecksumMismatch {
-                kind: RegionKind::MaintenanceQueue,
-                expected: checksum,
-                actual: actual_checksum,
-            }));
+            return Err(GraphStoreError::Hydration(
+                HydrationError::ChecksumMismatch {
+                    kind: RegionKind::MaintenanceQueue,
+                    expected: checksum,
+                    actual: actual_checksum,
+                },
+            ));
         }
         let mut queue = Vec::with_capacity(count);
         for chunk in body.chunks_exact(Self::SERIALIZED_MAINTENANCE_QUEUE_ITEM_LEN) {
@@ -1204,12 +1206,11 @@ impl<M: Memory> GraphStore<M> {
         if logical_len == 0 {
             return Ok(Vec::new());
         }
-        let extent =
-            manager
-                .region_extent(RegionKind::MaintenanceQueue)
-                .ok_or(GraphStoreError::Hydration(
-                    HydrationError::MissingExtentRegion(RegionKind::MaintenanceQueue),
-                ))?;
+        let extent = manager.region_extent(RegionKind::MaintenanceQueue).ok_or(
+            GraphStoreError::Hydration(HydrationError::MissingExtentRegion(
+                RegionKind::MaintenanceQueue,
+            )),
+        )?;
         if logical_len > usize::try_from(extent.len_bytes).unwrap_or(usize::MAX) {
             return Err(GraphStoreError::Hydration(
                 HydrationError::LogicalLengthExceedsExtent {
@@ -1683,13 +1684,14 @@ impl<M: Memory> GraphStore<M> {
         incoming_live_entries: usize,
     ) -> Option<GraphInsertDecision> {
         let incoming_live_entries = u32::try_from(incoming_live_entries).ok()?;
-        self.graph.choose_insert_decision_with_incoming_live_entries(
-            src_vertex_ref,
-            src_ordinal,
-            dst_vertex_ref,
-            dst_ordinal,
-            incoming_live_entries,
-        )
+        self.graph
+            .choose_insert_decision_with_incoming_live_entries(
+                src_vertex_ref,
+                src_ordinal,
+                dst_vertex_ref,
+                dst_ordinal,
+                incoming_live_entries,
+            )
     }
 
     pub fn plan_local_rebalance(
@@ -1729,32 +1731,20 @@ impl<M: Memory> GraphStore<M> {
     /// Returns the latest node properties for one semantic node id.
     pub fn scan_node_properties(&self, node_id: NodeId) -> PropertyMap {
         let store = self.open_fixed_slot_node_property_store();
-        btree_scan_entity(
-            &store,
-            crate::PropertyEntityKind::Node,
-            u64::from(node_id),
-        )
+        btree_scan_entity(&store, crate::PropertyEntityKind::Node, u64::from(node_id))
     }
 
     /// Returns the latest edge properties for one semantic edge id.
     pub fn scan_edge_properties(&self, edge_id: EdgeId) -> PropertyMap {
         let store = self.open_fixed_slot_edge_property_store();
-        btree_scan_entity(
-            &store,
-            crate::PropertyEntityKind::Edge,
-            edge_id,
-        )
+        btree_scan_entity(&store, crate::PropertyEntityKind::Edge, edge_id)
     }
 
     /// Latest node properties for many ids in one btree scan.
     pub fn scan_node_properties_batch(&self, node_ids: &[NodeId]) -> BTreeMap<NodeId, PropertyMap> {
         let id_set: BTreeSet<u64> = node_ids.iter().map(|n| u64::from(*n)).collect();
         let store = self.open_fixed_slot_node_property_store();
-        let by_u64 = btree_scan_entities(
-            &store,
-            crate::PropertyEntityKind::Node,
-            &id_set,
-        );
+        let by_u64 = btree_scan_entities(&store, crate::PropertyEntityKind::Node, &id_set);
         by_u64
             .into_iter()
             .filter_map(|(u, m)| NodeId::try_from(u).ok().map(|id| (id, m)))
@@ -2609,12 +2599,12 @@ mod tests {
         GraphStoreBootstrapGraphProjection, GraphStoreBootstrapGraphWriteSummary,
         GraphStoreBootstrapVerticesProjection, GraphStoreEdgeLogicalLocatorMapping,
         GraphStoreEdgeWriteOperation, GraphStoreEnsureCapacityProjection, GraphStoreError,
-        GraphStoreFacadeWriteEvent, GraphStoreInsertEdgeProjection, GraphStoreMaintenanceBatchProjection,
-        GraphStoreMaintenanceCycleProjection, GraphStoreMaintenanceQueueAction,
-        GraphStoreMaintenanceQueueStorageProjection, GraphStoreMutationWriteSummary,
-        GraphStorePropertyIndexTouchedSections, GraphStoreRefreshedVertices, GraphStoreResult,
-        GraphStoreService, GraphStoreStore, GraphStoreStoreAdapter, GraphStoreVertexOrdinalMapping,
-        GraphStoreWriteEventProjection,
+        GraphStoreFacadeWriteEvent, GraphStoreInsertEdgeProjection,
+        GraphStoreMaintenanceBatchProjection, GraphStoreMaintenanceCycleProjection,
+        GraphStoreMaintenanceQueueAction, GraphStoreMaintenanceQueueStorageProjection,
+        GraphStoreMutationWriteSummary, GraphStorePropertyIndexTouchedSections,
+        GraphStoreRefreshedVertices, GraphStoreResult, GraphStoreService, GraphStoreStore,
+        GraphStoreStoreAdapter, GraphStoreVertexOrdinalMapping, GraphStoreWriteEventProjection,
     };
     use crate::GraphInsertResult;
     use crate::VecMemory;
@@ -2631,23 +2621,21 @@ mod tests {
     };
     use crate::observability::{project_facade_write_event, project_facade_write_history};
     use crate::property_index::{
-        open_fixed_slot_property_equality_map, snapshot_fixed_slot_property_equality_map,
+        PropertyIndexEntityKind, PropertyIndexError, PropertyIndexNodeStoreMutationKind,
     };
     use crate::property_index::{
-        PropertyIndexEntityKind, PropertyIndexError, PropertyIndexNodeStoreMutationKind,
+        open_fixed_slot_property_equality_map, snapshot_fixed_slot_property_equality_map,
     };
     use crate::property_store::{
         PropertyKey, PropertyStoreError, StoredPropertyValue,
-        load_graph_property_stable_map_from_stable_memory,
-        open_fixed_slot_edge_property_store, open_fixed_slot_node_property_store,
-        sync_graph_property_store_v1_header_to_stable_memory,
+        load_graph_property_stable_map_from_stable_memory, open_fixed_slot_edge_property_store,
+        open_fixed_slot_node_property_store, sync_graph_property_store_v1_header_to_stable_memory,
     };
     use gleaph_gql::Value;
     use gleaph_graph_kernel::NodeId;
     use ic_stable_structures::Memory;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use std::sync::atomic::Ordering;
 
     type TestPma = GraphStore<VecMemory>;
 
@@ -2894,13 +2882,16 @@ mod tests {
             Some(Value::Text("alice".into()))
         );
         assert_eq!(facade.property_equality_map.len(), 1);
-        assert!(facade.node_property_index.get(
-            &crate::property_index::PropertyIndexKey::node(
-                NodeId::from(11u8),
-                "name",
-                Value::Text("alice".into()).to_binary_bytes().unwrap(),
-            )
-        ).is_some());
+        assert!(
+            facade
+                .node_property_index
+                .get(&crate::property_index::PropertyIndexKey::node(
+                    NodeId::from(11u8),
+                    "name",
+                    Value::Text("alice".into()).to_binary_bytes().unwrap(),
+                ))
+                .is_some()
+        );
     }
 
     #[test]
@@ -3280,7 +3271,9 @@ mod tests {
         bytes.extend_from_slice(&item.recent_maintenance_penalty.to_le_bytes());
 
         match TestPma::decode_maintenance_queue(&bytes) {
-            Err(GraphStoreError::Hydration(HydrationError::InvalidMaintenanceQueueHeader(kind))) => {
+            Err(GraphStoreError::Hydration(HydrationError::InvalidMaintenanceQueueHeader(
+                kind,
+            ))) => {
                 assert_eq!(kind, RegionKind::MaintenanceQueue)
             }
             other => panic!("expected invalid maintenance-queue header, got {other:?}"),
@@ -3376,7 +3369,9 @@ mod tests {
         match facade.try_read_maintenance_queue_storage_projection_from_stable_memory(
             facade.memory.as_ref(),
         ) {
-            Err(GraphStoreError::Hydration(HydrationError::InvalidMaintenanceQueueHeader(kind))) => {
+            Err(GraphStoreError::Hydration(HydrationError::InvalidMaintenanceQueueHeader(
+                kind,
+            ))) => {
                 assert_eq!(kind, RegionKind::MaintenanceQueue)
             }
             other => panic!("expected invalid maintenance-queue header, got {other:?}"),
@@ -3893,7 +3888,7 @@ mod tests {
 
     #[test]
     fn facade_property_index_sync_failure_rolls_back_property_store() {
-        // One test: avoid parallel tests racing on the injected atomics.
+        // Thread-local injection flags so parallel tests do not consume each other's hooks.
         let memory = VecMemory::default();
 
         //
@@ -3904,7 +3899,7 @@ mod tests {
         facade
             .set_node_property_value(node_id, "a", &Value::Text("hello".into()))
             .expect("seed node property");
-        super::FAIL_NEXT_NODE_PROPERTY_INDEX_SYNC_TEST.store(true, Ordering::SeqCst);
+        super::FAIL_NEXT_NODE_PROPERTY_INDEX_SYNC_TEST.with(|c| c.set(true));
         let err = facade
             .set_node_property_value(node_id, "b", &Value::Text("world".into()))
             .expect_err("injected node sync failure");
@@ -3931,7 +3926,7 @@ mod tests {
         facade
             .set_edge_property_value(edge_id, "kind", &Value::Text("follows".into()))
             .expect("seed edge property");
-        super::FAIL_NEXT_EDGE_PROPERTY_INDEX_SYNC_TEST.store(true, Ordering::SeqCst);
+        super::FAIL_NEXT_EDGE_PROPERTY_INDEX_SYNC_TEST.with(|c| c.set(true));
         let err = facade
             .set_edge_property_value(edge_id, "role", &Value::Text("actor".into()))
             .expect_err("injected edge sync failure");
@@ -4126,7 +4121,9 @@ mod tests {
         ));
         assert_eq!(
             project_facade_write_event(facade.write_history().last().expect("last facade event")),
-            vec![GraphStoreWriteEventProjection::Property(summary.projection())]
+            vec![GraphStoreWriteEventProjection::Property(
+                summary.projection()
+            )]
         );
     }
 
@@ -4189,7 +4186,9 @@ mod tests {
         );
         assert_eq!(
             project_facade_write_event(facade.write_history().last().expect("last facade event")),
-            vec![GraphStoreWriteEventProjection::Property(remove.projection())]
+            vec![GraphStoreWriteEventProjection::Property(
+                remove.projection()
+            )]
         );
     }
 
@@ -5295,22 +5294,24 @@ mod tests {
         assert_projected_history(
             facade.write_history(),
             vec![
-                GraphStoreWriteEventProjection::BootstrapGraph(GraphStoreBootstrapGraphProjection {
-                    vertex_ordinals: vec![
-                        GraphStoreVertexOrdinalMapping {
-                            vertex_ref: src.into(),
-                            forward_ordinal: 0,
-                            reverse_ordinal: 0,
-                        },
-                        GraphStoreVertexOrdinalMapping {
-                            vertex_ref: dst.into(),
-                            forward_ordinal: 1,
-                            reverse_ordinal: 1,
-                        },
-                    ],
-                    locators: Vec::new(),
-                    refreshed: GraphStoreRefreshedVertices::new(Vec::new(), Vec::new()),
-                }),
+                GraphStoreWriteEventProjection::BootstrapGraph(
+                    GraphStoreBootstrapGraphProjection {
+                        vertex_ordinals: vec![
+                            GraphStoreVertexOrdinalMapping {
+                                vertex_ref: src.into(),
+                                forward_ordinal: 0,
+                                reverse_ordinal: 0,
+                            },
+                            GraphStoreVertexOrdinalMapping {
+                                vertex_ref: dst.into(),
+                                forward_ordinal: 1,
+                                reverse_ordinal: 1,
+                            },
+                        ],
+                        locators: Vec::new(),
+                        refreshed: GraphStoreRefreshedVertices::new(Vec::new(), Vec::new()),
+                    },
+                ),
                 GraphStoreWriteEventProjection::MaintenanceBatch(
                     GraphStoreMaintenanceBatchProjection {
                         cycles: 1,
@@ -5457,14 +5458,20 @@ mod tests {
         assert_eq!(
             snapshot
                 .iter()
-                .filter(|entry| matches!(entry.key().entity_kind, PropertyIndexEntityKind::VertexNode))
+                .filter(|entry| matches!(
+                    entry.key().entity_kind,
+                    PropertyIndexEntityKind::VertexNode
+                ))
                 .count(),
             1
         );
         assert_eq!(
             snapshot
                 .iter()
-                .filter(|entry| matches!(entry.key().entity_kind, PropertyIndexEntityKind::VertexEdge))
+                .filter(|entry| matches!(
+                    entry.key().entity_kind,
+                    PropertyIndexEntityKind::VertexEdge
+                ))
                 .count(),
             1
         );
@@ -6102,7 +6109,16 @@ pub mod experimental_dgap {
     /// The seven adjacency-related memories used by the Phase-1
     /// `CsrGraphWithGcQueueSparseDeleted` backend.
     #[inline]
-    pub fn ic_stable_csr_memory_ids() -> (MemoryId, MemoryId, MemoryId, MemoryId, MemoryId, MemoryId, MemoryId, MemoryId) {
+    pub fn ic_stable_csr_memory_ids() -> (
+        MemoryId,
+        MemoryId,
+        MemoryId,
+        MemoryId,
+        MemoryId,
+        MemoryId,
+        MemoryId,
+        MemoryId,
+    ) {
         (
             GRAPH_STORE_MEMORY_ID_FORWARD_VERTEX_TABLE,
             GRAPH_STORE_MEMORY_ID_REVERSE_VERTEX_TABLE,

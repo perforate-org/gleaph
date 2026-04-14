@@ -10,7 +10,7 @@ use common::{
 };
 use ic_stable_csr::{
     CsrEdgeSlotTombstoneScan, DgapEdgeStore, DgapStores, DgapStoresError, SegmentEdgeCounts,
-    StableVec, VectorMemory,
+    StableVec, VectorMemory, VertexCount, VertexId,
     dgap::recount_segment_edge_counts_column,
     traits::{CsrEdge, CsrVertex},
 };
@@ -89,12 +89,15 @@ fn sec_delta_matches_full_recount_after_light_inserts() {
     assert_slab_tail_matches_column(&stores);
     assert_sec_matches_full_recount(&stores);
 
-    stores.insert_edge(1, TE([2, 0, 0, 0])).unwrap();
+    stores.insert_edge(VertexId(1), TE([2, 0, 0, 0])).unwrap();
     assert_sec_matches_full_recount(&stores);
     assert_slab_tail_matches_column(&stores);
 
     stores
-        .insert_edges([(2, TE([0, 0, 0, 0])), (2, TE([3, 0, 0, 0]))])
+        .insert_edges([
+            (VertexId(2), TE([0, 0, 0, 0])),
+            (VertexId(2), TE([3, 0, 0, 0])),
+        ])
         .unwrap();
     assert_sec_matches_full_recount(&stores);
     assert_slab_tail_matches_column(&stores);
@@ -158,13 +161,13 @@ fn insert_maintain_triggers_resize_when_slab_full() {
     stores.refresh_slab_occupied_tail_meta().unwrap();
     stores.sync_pma_meta().unwrap();
 
-    stores.insert_edge(0, TE([1, 0, 0, 0])).unwrap();
-    stores.insert_edge(0, TE([2, 0, 0, 0])).unwrap();
+    stores.insert_edge(VertexId(0), TE([1, 0, 0, 0])).unwrap();
+    stores.insert_edge(VertexId(0), TE([2, 0, 0, 0])).unwrap();
     assert_eq!(stores.vertices.get(0).unwrap().degree(), 2);
     let cap_after_two = stores.edges.header().unwrap().elem_capacity;
     assert!(cap_after_two >= 2);
 
-    stores.insert_edge(0, TE([3, 0, 0, 0])).unwrap();
+    stores.insert_edge(VertexId(0), TE([3, 0, 0, 0])).unwrap();
     assert_eq!(stores.vertices.get(0).unwrap().degree(), 3);
     assert!(stores.edges.header().unwrap().elem_capacity >= cap_after_two);
     assert_slab_tail_matches_column(&stores);
@@ -197,9 +200,9 @@ fn overflow_goes_to_log_then_neighborhood_matches_insert_order() {
     stores.refresh_slab_occupied_tail_meta().unwrap();
     stores.sync_pma_meta().unwrap();
 
-    stores.insert_edge(0, TE([1, 0, 0, 0])).unwrap();
-    stores.insert_edge(0, TE([2, 0, 0, 0])).unwrap();
-    stores.insert_edge(0, TE([3, 0, 0, 0])).unwrap();
+    stores.insert_edge(VertexId(0), TE([1, 0, 0, 0])).unwrap();
+    stores.insert_edge(VertexId(0), TE([2, 0, 0, 0])).unwrap();
+    stores.insert_edge(VertexId(0), TE([3, 0, 0, 0])).unwrap();
     assert_slab_tail_matches_column(&stores);
 
     let v0 = stores.vertices.get(0).unwrap();
@@ -211,7 +214,7 @@ fn overflow_goes_to_log_then_neighborhood_matches_insert_order() {
 
     let neigh = stores
         .edges
-        .neighborhood_edges(&stores.vertices, 0)
+        .neighborhood_edges(&stores.vertices, VertexId(0))
         .unwrap();
     assert_eq!(neigh.len(), 3);
     assert_eq!(neigh[0].0, [1, 0, 0, 0]);
@@ -220,7 +223,7 @@ fn overflow_goes_to_log_then_neighborhood_matches_insert_order() {
 
     let from1: Vec<_> = stores
         .edges
-        .try_neighborhood_iter_from(&stores.vertices, 0, 1)
+        .try_neighborhood_iter_from(&stores.vertices, VertexId(0), 1)
         .unwrap()
         .map(|r| r.unwrap())
         .collect();
@@ -230,7 +233,7 @@ fn overflow_goes_to_log_then_neighborhood_matches_insert_order() {
 
     let from2: Vec<_> = stores
         .edges
-        .try_neighborhood_iter_from(&stores.vertices, 0, 2)
+        .try_neighborhood_iter_from(&stores.vertices, VertexId(0), 2)
         .unwrap()
         .map(|r| r.unwrap())
         .collect();
@@ -239,7 +242,7 @@ fn overflow_goes_to_log_then_neighborhood_matches_insert_order() {
 
     let at_degree: Vec<_> = stores
         .edges
-        .try_neighborhood_iter_from(&stores.vertices, 0, 3)
+        .try_neighborhood_iter_from(&stores.vertices, VertexId(0), 3)
         .unwrap()
         .filter_map(Result::ok)
         .collect();
@@ -247,7 +250,7 @@ fn overflow_goes_to_log_then_neighborhood_matches_insert_order() {
 
     let clamped: Vec<_> = stores
         .edges
-        .try_neighborhood_iter_from(&stores.vertices, 0, 99)
+        .try_neighborhood_iter_from(&stores.vertices, VertexId(0), 99)
         .unwrap()
         .filter_map(Result::ok)
         .collect();
@@ -279,14 +282,18 @@ fn merge_window_clears_log_head() {
     stores.refresh_slab_occupied_tail_meta().unwrap();
     stores.sync_pma_meta().unwrap();
 
-    stores.insert_edge(0, TE([1, 0, 0, 0])).unwrap();
-    stores.insert_edge(0, TE([2, 0, 0, 0])).unwrap();
-    stores.insert_edge(0, TE([3, 0, 0, 0])).unwrap();
+    stores.insert_edge(VertexId(0), TE([1, 0, 0, 0])).unwrap();
+    stores.insert_edge(VertexId(0), TE([2, 0, 0, 0])).unwrap();
+    stores.insert_edge(VertexId(0), TE([3, 0, 0, 0])).unwrap();
     assert!(stores.vertices.get(0).unwrap().log_head() >= 0);
 
     stores
         .edges
-        .merge_logs_into_slab_for_window(&stores.vertices, 0, 2)
+        .merge_logs_into_slab_for_window(
+            &stores.vertices,
+            VertexId(0),
+            VertexCount::from(2u64),
+        )
         .expect("merge");
 
     let v0 = stores.vertices.get(0).unwrap();
@@ -294,7 +301,7 @@ fn merge_window_clears_log_head() {
     assert_eq!(v0.degree(), 3);
     let neigh = stores
         .edges
-        .neighborhood_edges(&stores.vertices, 0)
+        .neighborhood_edges(&stores.vertices, VertexId(0))
         .unwrap();
     assert_eq!(neigh.len(), 3);
     assert_slab_tail_matches_column(&stores);
@@ -350,8 +357,8 @@ fn insert_vertex_twice_then_insert_edges_on_each() {
         .unwrap();
     assert_eq!(id1, 1);
 
-    stores.insert_edge(0, TE([1, 0, 0, 0])).unwrap();
-    stores.insert_edge(1, TE([2, 0, 0, 0])).unwrap();
+    stores.insert_edge(VertexId(0), TE([1, 0, 0, 0])).unwrap();
+    stores.insert_edge(VertexId(1), TE([2, 0, 0, 0])).unwrap();
     assert_eq!(stores.vertices.get(0).unwrap().degree(), 1);
     assert_eq!(stores.vertices.get(1).unwrap().degree(), 1);
     assert_slab_tail_matches_column(&stores);
@@ -451,8 +458,8 @@ fn two_vertices_preallocated_sync_meta() {
     stores.refresh_slab_occupied_tail_meta().unwrap();
     stores.sync_pma_meta().unwrap();
 
-    stores.insert_edge(0, TE([7, 0, 0, 0])).unwrap();
-    stores.insert_edge(0, TE([8, 0, 0, 0])).unwrap();
+    stores.insert_edge(VertexId(0), TE([7, 0, 0, 0])).unwrap();
+    stores.insert_edge(VertexId(0), TE([8, 0, 0, 0])).unwrap();
     assert_eq!(stores.vertices.get(0).unwrap().degree(), 2);
     assert_eq!(stores.vertices.get(1).unwrap().base_slot_start(), 4);
     assert_slab_tail_matches_column(&stores);
@@ -502,12 +509,12 @@ fn insert_edges_matches_sequential_single_vertex_overflow() {
     let stores_a = DgapStores::new(vertices, edges);
     stores_a.refresh_slab_occupied_tail_meta().unwrap();
     stores_a.sync_pma_meta().unwrap();
-    stores_a.insert_edge(0, TE([1, 0, 0, 0])).unwrap();
-    stores_a.insert_edge(0, TE([2, 0, 0, 0])).unwrap();
-    stores_a.insert_edge(0, TE([3, 0, 0, 0])).unwrap();
+    stores_a.insert_edge(VertexId(0), TE([1, 0, 0, 0])).unwrap();
+    stores_a.insert_edge(VertexId(0), TE([2, 0, 0, 0])).unwrap();
+    stores_a.insert_edge(VertexId(0), TE([3, 0, 0, 0])).unwrap();
     let neigh_a = stores_a
         .edges
-        .neighborhood_edges(&stores_a.vertices, 0)
+        .neighborhood_edges(&stores_a.vertices, VertexId(0))
         .unwrap();
 
     let mv_b: VectorMemory = Rc::new(RefCell::new(Vec::new()));
@@ -531,14 +538,14 @@ fn insert_edges_matches_sequential_single_vertex_overflow() {
     stores_b.sync_pma_meta().unwrap();
     stores_b
         .insert_edges([
-            (0, TE([1, 0, 0, 0])),
-            (0, TE([2, 0, 0, 0])),
-            (0, TE([3, 0, 0, 0])),
+            (VertexId(0), TE([1, 0, 0, 0])),
+            (VertexId(0), TE([2, 0, 0, 0])),
+            (VertexId(0), TE([3, 0, 0, 0])),
         ])
         .unwrap();
     let neigh_b = stores_b
         .edges
-        .neighborhood_edges(&stores_b.vertices, 0)
+        .neighborhood_edges(&stores_b.vertices, VertexId(0))
         .unwrap();
     assert_eq!(neigh_a, neigh_b);
     assert_slab_tail_matches_column(&stores_a);
@@ -566,16 +573,16 @@ fn insert_edges_interleaved_matches_sequential() {
     let stores_a = DgapStores::new(vertices, edges);
     stores_a.refresh_slab_occupied_tail_meta().unwrap();
     stores_a.sync_pma_meta().unwrap();
-    stores_a.insert_edge(0, TE([1, 0, 0, 0])).unwrap();
-    stores_a.insert_edge(1, TE([2, 0, 0, 0])).unwrap();
-    stores_a.insert_edge(0, TE([3, 0, 0, 0])).unwrap();
+    stores_a.insert_edge(VertexId(0), TE([1, 0, 0, 0])).unwrap();
+    stores_a.insert_edge(VertexId(1), TE([2, 0, 0, 0])).unwrap();
+    stores_a.insert_edge(VertexId(0), TE([3, 0, 0, 0])).unwrap();
     let n0_a = stores_a
         .edges
-        .neighborhood_edges(&stores_a.vertices, 0)
+        .neighborhood_edges(&stores_a.vertices, VertexId(0))
         .unwrap();
     let n1_a = stores_a
         .edges
-        .neighborhood_edges(&stores_a.vertices, 1)
+        .neighborhood_edges(&stores_a.vertices, VertexId(1))
         .unwrap();
 
     let mv_b: VectorMemory = Rc::new(RefCell::new(Vec::new()));
@@ -599,9 +606,9 @@ fn insert_edges_interleaved_matches_sequential() {
     stores_b.sync_pma_meta().unwrap();
     stores_b
         .insert_edges([
-            (0, TE([1, 0, 0, 0])),
-            (1, TE([2, 0, 0, 0])),
-            (0, TE([3, 0, 0, 0])),
+            (VertexId(0), TE([1, 0, 0, 0])),
+            (VertexId(1), TE([2, 0, 0, 0])),
+            (VertexId(0), TE([3, 0, 0, 0])),
         ])
         .unwrap();
     assert_slab_tail_matches_column(&stores_a);
@@ -610,14 +617,14 @@ fn insert_edges_interleaved_matches_sequential() {
         n0_a,
         stores_b
             .edges
-            .neighborhood_edges(&stores_b.vertices, 0)
+            .neighborhood_edges(&stores_b.vertices, VertexId(0))
             .unwrap()
     );
     assert_eq!(
         n1_a,
         stores_b
             .edges
-            .neighborhood_edges(&stores_b.vertices, 1)
+            .neighborhood_edges(&stores_b.vertices, VertexId(1))
             .unwrap()
     );
 }
@@ -640,13 +647,15 @@ fn remove_slab_physically_preserves_sec_on_chain() {
     stores.refresh_slab_occupied_tail_meta().unwrap();
     stores.sync_pma_meta().unwrap();
     for i in 0..7 {
-        stores.insert_edge(i, TE([(i + 1) as u8, 0, 0, 0])).unwrap();
+        stores
+            .insert_edge(VertexId(i as u32), TE([(i + 1) as u8, 0, 0, 0]))
+            .unwrap();
     }
     assert_sec_matches_full_recount(&stores);
     assert_slab_tail_matches_column(&stores);
     stores
         .edges
-        .remove_slab_edge_at_local_index_physically(&stores.vertices, 0, 0)
+        .remove_slab_edge_at_local_index_physically(&stores.vertices, VertexId(0), 0)
         .expect("remove");
     assert_sec_matches_full_recount(&stores);
     assert_slab_tail_matches_column(&stores);
@@ -672,30 +681,39 @@ fn dense_vertex_bases_non_decreasing_across_mutation_paths() {
     assert_dense_vertex_bases_non_decreasing(&stores);
 
     for i in 0..7 {
-        stores.insert_edge(i, TE([(i + 1) as u8, 0, 0, 0])).unwrap();
+        stores
+            .insert_edge(VertexId(i as u32), TE([(i + 1) as u8, 0, 0, 0]))
+            .unwrap();
         assert_dense_vertex_bases_non_decreasing(&stores);
     }
 
     stores
-        .insert_edges([(3usize, TE([5, 0, 0, 0])), (4, TE([6, 0, 0, 0]))])
+        .insert_edges([
+            (VertexId(3), TE([5, 0, 0, 0])),
+            (VertexId(4), TE([6, 0, 0, 0])),
+        ])
         .unwrap();
     assert_dense_vertex_bases_non_decreasing(&stores);
 
     stores
         .edges
-        .merge_logs_into_slab_for_window(&stores.vertices, 0, 8)
+        .merge_logs_into_slab_for_window(
+            &stores.vertices,
+            VertexId(0),
+            VertexCount::from(8u64),
+        )
         .expect("merge (no-op if empty)");
     assert_dense_vertex_bases_non_decreasing(&stores);
 
     stores
         .edges
-        .remove_slab_edge_at_local_index_physically(&stores.vertices, 0, 0)
+        .remove_slab_edge_at_local_index_physically(&stores.vertices, VertexId(0), 0)
         .expect("remove head slab edge");
     assert_dense_vertex_bases_non_decreasing(&stores);
 
     stores
         .edges
-        .remove_slab_edge_at_local_index_physically(&stores.vertices, 5, 0)
+        .remove_slab_edge_at_local_index_physically(&stores.vertices, VertexId(5), 0)
         .expect("remove mid slab edge");
     assert_dense_vertex_bases_non_decreasing(&stores);
 }
@@ -717,10 +735,10 @@ fn dense_vertex_bases_non_decreasing_after_resize_double_path() {
     stores.sync_pma_meta().unwrap();
     assert_dense_vertex_bases_non_decreasing(&stores);
 
-    stores.insert_edge(0, TE([1, 0, 0, 0])).unwrap();
-    stores.insert_edge(0, TE([2, 0, 0, 0])).unwrap();
+    stores.insert_edge(VertexId(0), TE([1, 0, 0, 0])).unwrap();
+    stores.insert_edge(VertexId(0), TE([2, 0, 0, 0])).unwrap();
     assert_dense_vertex_bases_non_decreasing(&stores);
 
-    stores.insert_edge(0, TE([3, 0, 0, 0])).unwrap();
+    stores.insert_edge(VertexId(0), TE([3, 0, 0, 0])).unwrap();
     assert_dense_vertex_bases_non_decreasing(&stores);
 }

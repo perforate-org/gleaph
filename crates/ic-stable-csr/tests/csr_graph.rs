@@ -6,7 +6,7 @@ use common::{
     TestEdge as TE, TestVertex as TV, assert_dense_vertex_bases_non_decreasing, empty_vertex, vm,
 };
 use ic_stable_csr::{
-    CsrGraphError, CsrGraphRowTombstone, VectorMemory,
+    CsrGraphError, CsrGraphRowTombstone, VectorMemory, VertexId,
     traits::{CsrEdge, CsrEdgeUndirected},
 };
 
@@ -41,20 +41,38 @@ fn format_new_directed_transpose_neighbors() {
     g.sync_pma_meta().unwrap();
     assert_csr_fwd_rev_bases_non_decreasing(&g);
 
-    g.insert_directed(0, 1, TE([1, 0, 0, 0])).unwrap();
-    g.insert_directed(1, 2, TE([2, 0, 0, 0])).unwrap();
+    g.insert_directed(VertexId(0), VertexId(1), TE([1, 0, 0, 0]))
+        .unwrap();
+    g.insert_directed(VertexId(1), VertexId(2), TE([2, 0, 0, 0]))
+        .unwrap();
     assert_csr_fwd_rev_bases_non_decreasing(&g);
 
-    let out0: Vec<_> = g.out_edges(0).unwrap().map(|r| r.unwrap()).collect();
+    let out0: Vec<_> = g
+        .out_edges(VertexId(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
     assert_eq!(out0, vec![TE([1, 0, 0, 0])]);
 
-    let out1: Vec<_> = g.out_edges(1).unwrap().map(|r| r.unwrap()).collect();
+    let out1: Vec<_> = g
+        .out_edges(VertexId(1))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
     assert_eq!(out1, vec![TE([2, 0, 0, 0])]);
 
-    let in1: Vec<_> = g.in_edges(1).unwrap().map(|r| r.unwrap()).collect();
+    let in1: Vec<_> = g
+        .in_edges(VertexId(1))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
     assert_eq!(in1, vec![TE([0, 0, 0, 0])]);
 
-    let in2: Vec<_> = g.in_edges(2).unwrap().map(|r| r.unwrap()).collect();
+    let in2: Vec<_> = g
+        .in_edges(VertexId(2))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
     assert_eq!(in2, vec![TE([1, 0, 0, 0])]);
 }
 
@@ -68,7 +86,9 @@ fn insert_directed_rejects_undirected_flag_via_specialization() {
     g.sync_pma_meta().unwrap();
 
     let e = TE([1, 1, 0, 0]).with_undirected(true);
-    let err = g.insert_directed(0, 1, e).unwrap_err();
+    let err = g
+        .insert_directed(VertexId(0), VertexId(1), e)
+        .unwrap_err();
     assert_eq!(err, CsrGraphError::UndirectedEdgeInDirectedInsert);
     assert_csr_fwd_rev_bases_non_decreasing(&g);
 }
@@ -83,27 +103,47 @@ fn insert_undirected_sets_flag_and_symmetric_degrees() {
     }
     g.sync_pma_meta().unwrap();
 
-    g.insert_undirected(0, 2, TE([0, 0, 0, 0]).with_neighbor_vid(2))
-        .unwrap();
+    g.insert_undirected(
+        VertexId(0),
+        VertexId(2),
+        TE([0, 0, 0, 0]).with_neighbor_vid(VertexId(2)),
+    )
+    .unwrap();
     assert_csr_fwd_rev_bases_non_decreasing(&g);
 
-    let out0: Vec<_> = g.out_edges(0).unwrap().map(|r| r.unwrap()).collect();
+    let out0: Vec<_> = g
+        .out_edges(VertexId(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
     assert_eq!(out0.len(), 1);
-    assert_eq!(out0[0].neighbor_vid(), 2);
+    assert_eq!(out0[0].neighbor_vid(), VertexId(2));
     assert!(out0[0].is_undirected());
 
-    let out2: Vec<_> = g.out_edges(2).unwrap().map(|r| r.unwrap()).collect();
+    let out2: Vec<_> = g
+        .out_edges(VertexId(2))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
     assert_eq!(out2.len(), 1);
-    assert_eq!(out2[0].neighbor_vid(), 0);
+    assert_eq!(out2[0].neighbor_vid(), VertexId(0));
     assert!(out2[0].is_undirected());
 
-    let in2: Vec<_> = g.in_edges(2).unwrap().map(|r| r.unwrap()).collect();
+    let in2: Vec<_> = g
+        .in_edges(VertexId(2))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
     assert_eq!(in2.len(), 1);
-    assert_eq!(in2[0].neighbor_vid(), 0);
+    assert_eq!(in2[0].neighbor_vid(), VertexId(0));
 
-    let in0: Vec<_> = g.in_edges(0).unwrap().map(|r| r.unwrap()).collect();
+    let in0: Vec<_> = g
+        .in_edges(VertexId(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
     assert_eq!(in0.len(), 1);
-    assert_eq!(in0[0].neighbor_vid(), 2);
+    assert_eq!(in0[0].neighbor_vid(), VertexId(2));
     assert_csr_fwd_rev_bases_non_decreasing(&g);
 }
 
@@ -117,12 +157,14 @@ fn neighbor_mismatch_on_directed_insert() {
     g.sync_pma_meta().unwrap();
     assert_csr_fwd_rev_bases_non_decreasing(&g);
 
-    let err = g.insert_directed(0, 1, TE([9, 0, 0, 0])).unwrap_err();
+    let err = g
+        .insert_directed(VertexId(0), VertexId(1), TE([9, 0, 0, 0]))
+        .unwrap_err();
     assert_eq!(
         err,
         CsrGraphError::NeighborMismatch {
-            expected: 1,
-            actual: 9
+            expected: VertexId(1),
+            actual: VertexId(9)
         }
     );
     assert_csr_fwd_rev_bases_non_decreasing(&g);

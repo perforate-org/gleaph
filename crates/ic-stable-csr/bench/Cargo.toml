@@ -1,18 +1,23 @@
 [package]
 name = "ic-stable-csr-canbench"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-candid.workspace = true
-canbench-rs.workspace = true
+candid = "0.10"
+canbench-rs = "0.4"
 gleaph-graph-store = { path = "../../graph-store" }
-ic-cdk.workspace = true
-ic-cdk-macros.workspace = true
-ic-stable-csr = { workspace = true, features = ["canbench-rs"] }
-ic-stable-slot-map.workspace = true
-ic-stable-structures.workspace = true
+ic-cdk = "0.20"
+ic-cdk-macros = "0.20"
+ic-stable-csr = { path = "..", features = ["canbench-rs"] }
+ic-stable-structures = "0.7.2"
+
+# Own workspace so `canbench-rs` / `ic-cdk` do not enable `ic-stable-csr`'s `canbench-rs`
+# feature for the main repo workspace (which would break host `cargo test`).
+[workspace]
+members = ["."]
+resolver = "2"

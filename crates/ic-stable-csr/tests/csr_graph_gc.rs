@@ -7,7 +7,7 @@ use common::{
 };
 use ic_stable_csr::{
     CsrEdgeSlotTombstoneScan as _, CsrGraphError, CsrGraphWithGcQueueDenseDeleted, DgapStores,
-    SegmentEdgeCounts, SegmentMaintainThresholds, VectorMemory,
+    SegmentEdgeCounts, SegmentMaintainThresholds, VectorMemory, VertexId,
     dgap::recount_segment_edge_counts_column,
     traits::{CsrVertex, CsrVertexTombstone},
 };
@@ -94,8 +94,10 @@ fn delete_edge_tombstone_gc_and_degrees() {
     g.sync_pma_meta().unwrap();
     assert_fwd_rev_bases_non_decreasing(&g);
 
-    g.insert_directed(0, 1, TE([1, 0, 0, 0])).unwrap();
-    g.insert_directed(1, 2, TE([2, 0, 0, 0])).unwrap();
+    g.insert_directed(VertexId(0), VertexId(1), TE([1, 0, 0, 0]))
+        .unwrap();
+    g.insert_directed(VertexId(1), VertexId(2), TE([2, 0, 0, 0]))
+        .unwrap();
     assert_fwd_rev_bases_non_decreasing(&g);
 
     assert_eq!(
@@ -117,7 +119,7 @@ fn delete_edge_tombstone_gc_and_degrees() {
         1
     );
 
-    g.delete_edge_directed(0, 1).unwrap();
+    g.delete_edge_directed(VertexId(0), VertexId(1)).unwrap();
     assert_fwd_rev_bases_non_decreasing(&g);
     assert_sec_matches_full_recount_te(g.graph().forward_dgap());
     assert_sec_matches_full_recount_te(g.graph().reverse_dgap());
@@ -149,7 +151,7 @@ fn delete_edge_tombstone_gc_and_degrees() {
     assert_fwd_rev_bases_non_decreasing(&g);
 
     let out0: Vec<_> = g
-        .out_edges_logical(0)
+        .out_edges_logical(VertexId(0))
         .unwrap()
         .map(|r| r.unwrap())
         .collect();
@@ -179,8 +181,10 @@ fn delete_vertex_hides_edges_until_gc() {
         g.insert_vertex(empty_vertex()).unwrap();
     }
     g.sync_pma_meta().unwrap();
-    g.insert_directed(0, 1, TE([1, 0, 0, 0])).unwrap();
-    g.insert_directed(1, 0, TE([0, 0, 0, 0])).unwrap();
+    g.insert_directed(VertexId(0), VertexId(1), TE([1, 0, 0, 0]))
+        .unwrap();
+    g.insert_directed(VertexId(1), VertexId(0), TE([0, 0, 0, 0]))
+        .unwrap();
     assert_fwd_rev_bases_non_decreasing(&g);
 
     assert_eq!(
@@ -192,7 +196,7 @@ fn delete_vertex_hides_edges_until_gc() {
             .degree(),
         1
     );
-    g.delete_vertex(0).unwrap();
+    g.delete_vertex(VertexId(0)).unwrap();
     assert_fwd_rev_bases_non_decreasing(&g);
     assert_sec_matches_full_recount_te(g.graph().forward_dgap());
     assert_sec_matches_full_recount_te(g.graph().reverse_dgap());
@@ -206,7 +210,7 @@ fn delete_vertex_hides_edges_until_gc() {
     );
 
     let out1: Vec<_> = g
-        .out_edges_logical(1)
+        .out_edges_logical(VertexId(1))
         .unwrap()
         .map(|r| r.unwrap())
         .collect();
@@ -241,13 +245,13 @@ fn insert_rejects_tombstone_endpoint() {
         g.insert_vertex(empty_vertex()).unwrap();
     }
     g.sync_pma_meta().unwrap();
-    g.delete_vertex(0).unwrap();
+    g.delete_vertex(VertexId(0)).unwrap();
     assert_fwd_rev_bases_non_decreasing(&g);
 
-    let e = g.insert_directed(0, 1, TE([1, 0, 0, 0]));
+    let e = g.insert_directed(VertexId(0), VertexId(1), TE([1, 0, 0, 0]));
     assert!(matches!(
         e,
-        Err(CsrGraphError::EndpointTombstone { vid: 0 })
+        Err(CsrGraphError::EndpointTombstone { vid: VertexId(0) })
     ));
 }
 
@@ -274,13 +278,17 @@ fn insert_rejects_duplicate_neighbor_slot() {
         g.insert_vertex(empty_vertex()).unwrap();
     }
     g.sync_pma_meta().unwrap();
-    g.insert_directed(0, 1, TE([1, 0, 0, 0])).unwrap();
+    g.insert_directed(VertexId(0), VertexId(1), TE([1, 0, 0, 0]))
+        .unwrap();
     assert_fwd_rev_bases_non_decreasing(&g);
 
-    let e = g.insert_directed(0, 1, TE([1, 0, 0, 0]));
+    let e = g.insert_directed(VertexId(0), VertexId(1), TE([1, 0, 0, 0]));
     assert!(matches!(
         e,
-        Err(CsrGraphError::AdjacencySlotOccupied { src: 0, dst: 1 })
+        Err(CsrGraphError::AdjacencySlotOccupied {
+            src: VertexId(0),
+            dst: VertexId(1)
+        })
     ));
 }
 
@@ -311,13 +319,14 @@ fn delete_edge_inline_when_queue_pressure_threshold_zero() {
         g.insert_vertex(empty_vertex()).unwrap();
     }
     g.sync_pma_meta().unwrap();
-    g.insert_directed(0, 1, TE([1, 0, 0, 0])).unwrap();
-    g.delete_edge_directed(0, 1).unwrap();
+    g.insert_directed(VertexId(0), VertexId(1), TE([1, 0, 0, 0]))
+        .unwrap();
+    g.delete_edge_directed(VertexId(0), VertexId(1)).unwrap();
     assert_eq!(g.work_queue_len(), 0);
     assert_eq!(g.gc_step(8).unwrap(), 0);
     assert_fwd_rev_bases_non_decreasing(&g);
     let out0: Vec<_> = g
-        .out_edges_logical(0)
+        .out_edges_logical(VertexId(0))
         .unwrap()
         .map(|r| r.unwrap())
         .collect();

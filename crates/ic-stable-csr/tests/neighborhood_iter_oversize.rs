@@ -86,12 +86,12 @@ impl CsrEdge for TEFat {
     }
 
     fn neighbor_vid(&self) -> VertexId {
-        self.0[0] as VertexId
+        VertexId(self.0[0] as u32)
     }
 
     fn with_neighbor_vid(self, vid: VertexId) -> Self {
         let mut b = self.0;
-        b[0] = vid as u8;
+        b[0] = vid.get() as u8;
         Self(b)
     }
 }
@@ -119,7 +119,7 @@ fn neighborhood_iter_errors_when_edge_stride_exceeds_inline_cap() {
     });
 
     assert!(matches!(
-        edges.try_neighborhood_iter(&vertices, 0),
+        edges.try_neighborhood_iter(&vertices, VertexId(0)),
         Err("neighborhood iter: edge stride too large for inline buffer")
     ));
 }

@@ -13,7 +13,7 @@ use common::{
     TestEdge as TE, TestVertex as TV, assert_dense_vertex_bases_non_decreasing, dual_edge_memories,
 };
 use crate::{
-    CsrEdgeSlotTombstoneScan, DgapEdgeStore, DgapStores, SegmentEdgeCounts, StableVec,
+    CsrEdgeSlotTombstoneScan, DgapEdgeStore, DgapStores, SegmentEdgeCounts, SegmentId, StableVec,
     VectorMemory, VertexCount, VertexId,
     dgap::{RebalanceDecision, rebalance_decision, recount_segment_edge_counts_column},
     traits::CsrEdge,
@@ -118,7 +118,10 @@ fn rebalance_weighted_direct_preserves_dense_bases_after_rebalance_window() {
 
     for vid in 4..8usize {
         stores
-            .insert_edge(vid, TE([0, 0, 0, 0]).with_neighbor_vid(0))
+            .insert_edge(
+                VertexId(vid as u32),
+                TE([0, 0, 0, 0]).with_neighbor_vid(VertexId(0)),
+            )
             .unwrap();
     }
 
@@ -131,9 +134,9 @@ fn rebalance_weighted_direct_preserves_dense_bases_after_rebalance_window() {
         let n = stores.vertices.len() as usize;
         let (actual, total) = sec_actual_total_for_decision(&stores);
         let dec = rebalance_decision(
-            0,
-            h.segment_size,
-            h.segment_count,
+            VertexId(0),
+            SegmentId(h.segment_size),
+            SegmentId(h.segment_count),
             n,
             h.tree_height,
             &actual,
@@ -162,8 +165,8 @@ fn rebalance_weighted_direct_preserves_dense_bases_after_rebalance_window() {
             .edges
             .insert_edge_skip_maintain_for_test(
                 &stores.vertices,
-                src,
-                TE([0, 0, 0, 0]).with_neighbor_vid(dst),
+                VertexId(src as u32),
+                TE([0, 0, 0, 0]).with_neighbor_vid(VertexId(dst as u32)),
             )
             .unwrap();
         extra += 1;
@@ -176,8 +179,8 @@ fn rebalance_weighted_direct_preserves_dense_bases_after_rebalance_window() {
         .edges
         .rebalance_weighted(
             &stores.vertices,
-            left as VertexId,
-            right as VertexCount,
+            left,
+            VertexCount::from(right),
             pma_idx,
         )
         .expect("rebalance_weighted");

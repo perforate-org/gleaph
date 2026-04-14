@@ -446,11 +446,11 @@ mod tests {
         }
 
         fn neighbor_vid(&self) -> VertexId {
-            self.0 as VertexId
+            VertexId(self.0 as u32)
         }
 
         fn with_neighbor_vid(self, vid: VertexId) -> Self {
-            Self(vid as u8)
+            Self(vid.get() as u8)
         }
     }
 

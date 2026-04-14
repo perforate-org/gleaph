@@ -1,7 +1,7 @@
 //! PMA layer for DGAP (segment tree density, `calculate_positions_v1`, `rebalance_weighted`); mirrors reference `graph.h`.
 
-use ic_stable_structures::Memory;
 use crate::StableVec;
+use ic_stable_structures::Memory;
 
 use crate::layout::dgap::{SegmentEdgeCounts, read_segment_edge_counts, write_segment_edge_counts};
 use crate::traits::{CsrEdge, CsrVertex};
@@ -36,7 +36,11 @@ pub fn leaf_pma_tree_index(segment_id: SegmentId, segment_count: SegmentId) -> u
 
 /// Leaf PMA tree index for `vertex_id` (C++ `get_segment_id`).
 #[inline]
-pub fn pma_tree_index(vertex_id: VertexId, segment_size: SegmentId, segment_count: SegmentId) -> usize {
+pub fn pma_tree_index(
+    vertex_id: VertexId,
+    segment_size: SegmentId,
+    segment_count: SegmentId,
+) -> usize {
     let sid = SegmentId(vertex_id.0 / segment_size.0.max(1));
     leaf_pma_tree_index(sid, segment_count)
 }
@@ -657,7 +661,10 @@ pub fn recount_segment_total<V: CsrVertex>(
             }
         };
         let segment_total_p = next_starter as i64 - vertices[v0].base_slot_start() as i64;
-        let mut j = leaf_pma_tree_index(SegmentId::try_from(i).expect("segment id exceeds u32 range"), SegmentId(segment_count));
+        let mut j = leaf_pma_tree_index(
+            SegmentId::try_from(i).expect("segment id exceeds u32 range"),
+            SegmentId(segment_count),
+        );
         while j > 0 && j < total.len() {
             total[j] += segment_total_p;
             j /= 2;
@@ -685,7 +692,10 @@ pub fn recount_segment_actual_from_degrees<V: CsrVertex>(
         for v in v0..vend {
             sum += vertices[v].degree() as i64;
         }
-        let leaf = leaf_pma_tree_index(SegmentId::try_from(i).expect("segment id exceeds u32 range"), SegmentId(segment_count));
+        let leaf = leaf_pma_tree_index(
+            SegmentId::try_from(i).expect("segment id exceeds u32 range"),
+            SegmentId(segment_count),
+        );
         if leaf < actual.len() {
             actual[leaf] = sum;
         }
@@ -735,7 +745,10 @@ pub fn recount_segment_total_column<V, M>(
         };
         let v0_row = col.get(v0 as u64).expect("vertex column get v0");
         let segment_total_p = next_starter as i64 - v0_row.base_slot_start() as i64;
-        let mut j = leaf_pma_tree_index(SegmentId::try_from(i).expect("segment id exceeds u32 range"), SegmentId(segment_count));
+        let mut j = leaf_pma_tree_index(
+            SegmentId::try_from(i).expect("segment id exceeds u32 range"),
+            SegmentId(segment_count),
+        );
         while j > 0 && j < total.len() {
             total[j] += segment_total_p;
             j /= 2;
@@ -768,7 +781,10 @@ pub fn recount_segment_actual_column<V, M>(
         for v in v0..vend {
             sum += col.get(v as u64).expect("vertex column get").degree() as i64;
         }
-        let leaf = leaf_pma_tree_index(SegmentId::try_from(i).expect("segment id exceeds u32 range"), SegmentId(segment_count));
+        let leaf = leaf_pma_tree_index(
+            SegmentId::try_from(i).expect("segment id exceeds u32 range"),
+            SegmentId(segment_count),
+        );
         if leaf < actual.len() {
             actual[leaf] = sum;
         }
@@ -977,7 +993,10 @@ pub fn recount_segment_edge_counts_column<V, M, F>(
         if v0 >= nv {
             continue;
         }
-        let leaf = leaf_pma_tree_index(SegmentId::try_from(i).expect("segment id exceeds u32 range"), SegmentId(segment_count));
+        let leaf = leaf_pma_tree_index(
+            SegmentId::try_from(i).expect("segment id exceeds u32 range"),
+            SegmentId(segment_count),
+        );
         if leaf < out.len() {
             out[leaf] = segment_edge_counts_leaf_from_column(
                 col,
@@ -1012,6 +1031,7 @@ mod segment_maintain_tests {
         RebalanceDecision, SegmentMaintainAction, SegmentMaintainThresholds,
         segment_maintenance_decision,
     };
+    use crate::VertexId;
     use crate::layout::dgap::SegmentEdgeCounts;
 
     fn thr() -> SegmentMaintainThresholds {
@@ -1133,7 +1153,7 @@ mod segment_maintain_tests {
             tombstone: 0,
         };
         let reb = RebalanceDecision::RebalanceWindow {
-            left_vertex: 0u32,
+            left_vertex: VertexId(0),
             right_vertex: 8u64,
             pma_idx: 1,
         };
@@ -1169,6 +1189,8 @@ mod propagate_leaf_delta_tests {
         write_segment_edge_counts, write_segment_edge_counts_region_header,
     };
 
+    use crate::SegmentId;
+
     use super::{leaf_pma_tree_index, propagate_segment_edge_counts_leaf_delta};
 
     fn make_sec_memory(sc: u32, stride: u64) -> VectorMemory {
@@ -1178,8 +1200,8 @@ mod propagate_leaf_delta_tests {
 
     #[test]
     fn leaf_pma_tree_index_examples() {
-        assert_eq!(leaf_pma_tree_index(0, 4), 4);
-        assert_eq!(leaf_pma_tree_index(3, 4), 7);
+        assert_eq!(leaf_pma_tree_index(SegmentId(0), SegmentId(4)), 4);
+        assert_eq!(leaf_pma_tree_index(SegmentId(3), SegmentId(4)), 7);
     }
 
     #[test]
@@ -1200,8 +1222,12 @@ mod propagate_leaf_delta_tests {
                 },
             );
         }
-        propagate_segment_edge_counts_leaf_delta(&mem, stride, sc, 0, 0, 0, 99).unwrap();
-        let leaf = read_segment_edge_counts(&mem, leaf_pma_tree_index(0, sc), stride);
+        propagate_segment_edge_counts_leaf_delta(&mem, stride, sc, SegmentId(0), 0, 0, 99).unwrap();
+        let leaf = read_segment_edge_counts(
+            &mem,
+            leaf_pma_tree_index(SegmentId(0), SegmentId(sc)),
+            stride,
+        );
         assert_eq!(leaf.tombstone, 0);
     }
 
@@ -1229,7 +1255,7 @@ mod propagate_leaf_delta_tests {
                 &mem,
                 stride,
                 sc,
-                sid,
+                SegmentId(sid),
                 (sid + 1) as i64,
                 10,
                 0,
@@ -1245,6 +1271,7 @@ mod propagate_leaf_delta_tests {
 #[cfg(test)]
 mod rebalance_reader_parity_tests {
     use super::{floor_log2_u32, rebalance_decision, rebalance_decision_with_reader};
+    use crate::{SegmentId, VertexId};
 
     #[test]
     fn reader_matches_slice_over_small_grids() {
@@ -1261,10 +1288,24 @@ mod rebalance_reader_parity_tests {
                     total[j] = actual[j].max(1) + ((j * 7 + pattern as usize) % 20) as i64;
                 }
                 for vtx in 0..nv.min(32) {
-                    let d1 = rebalance_decision(vtx as VertexId, ss, sc, nv, th, &actual, &total);
-                    let d2 = rebalance_decision_with_reader(vtx as VertexId, ss, sc, nv, th, |i| {
-                        (actual[i], total[i])
-                    });
+                    let vtx = VertexId(vtx as u32);
+                    let d1 = rebalance_decision(
+                        vtx,
+                        SegmentId(ss),
+                        SegmentId(sc),
+                        nv,
+                        th,
+                        &actual,
+                        &total,
+                    );
+                    let d2 = rebalance_decision_with_reader(
+                        vtx,
+                        SegmentId(ss),
+                        SegmentId(sc),
+                        nv,
+                        th,
+                        |i| (actual[i], total[i]),
+                    );
                     assert_eq!(d1, d2, "sc={sc} vtx={vtx} pattern={pattern}");
                 }
             }
@@ -1275,6 +1316,7 @@ mod rebalance_reader_parity_tests {
 #[cfg(test)]
 mod segments_for_vertex_range_tests {
     use super::segments_for_vertex_range;
+    use crate::SegmentId;
 
     #[test]
     fn empty_range_yields_no_segments() {
@@ -1285,31 +1327,31 @@ mod segments_for_vertex_range_tests {
     #[test]
     fn single_vertex_mid_segment() {
         let s = segments_for_vertex_range(9, 10, 4, 8);
-        assert_eq!(s, vec![2]);
+        assert_eq!(s, vec![SegmentId(2)]);
     }
 
     #[test]
     fn segment_boundary_includes_predecessor() {
         let s = segments_for_vertex_range(8, 9, 4, 8);
-        assert_eq!(s, vec![1, 2]);
+        assert_eq!(s, vec![SegmentId(1), SegmentId(2)]);
     }
 
     #[test]
     fn span_two_segments() {
         let s = segments_for_vertex_range(6, 10, 4, 8);
-        assert_eq!(s, vec![1, 2]);
+        assert_eq!(s, vec![SegmentId(1), SegmentId(2)]);
     }
 
     #[test]
     fn first_vertex_no_predecessor() {
         let s = segments_for_vertex_range(0, 1, 4, 8);
-        assert_eq!(s, vec![0]);
+        assert_eq!(s, vec![SegmentId(0)]);
     }
 
     #[test]
     fn caps_at_segment_count() {
         let s = segments_for_vertex_range(0, 100, 4, 2);
-        assert_eq!(s, vec![0, 1]);
+        assert_eq!(s, vec![SegmentId(0), SegmentId(1)]);
     }
 }
 
