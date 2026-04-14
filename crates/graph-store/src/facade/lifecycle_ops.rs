@@ -1,4 +1,5 @@
 use crate::integration::GraphStoreKernelOverlayGraph;
+use crate::maintenance_dirty::{merge_dirty_ordinal_interval, pop_first_dirty_interval};
 
 use super::*;
 
@@ -429,6 +430,22 @@ impl<M: Memory + Clone> GraphStore<M> {
 
     pub fn disable_maintenance_fairness(&mut self) {
         self.set_maintenance_fairness(0, 0);
+    }
+
+    /// Records one half-open forward-layout ordinal interval `[start, end)` into the stable dirty btree,
+    /// merging overlaps. Used by incremental maintenance (no full-graph rescans).
+    pub fn merge_maintenance_dirty_forward_ordinal_interval(&mut self, start: u64, end: u64) {
+        merge_dirty_ordinal_interval(&mut self.maintenance_dirty_ordinal_map, start, end);
+    }
+
+    /// Count of disjoint dirty intervals currently in stable memory (slot 15).
+    pub fn maintenance_dirty_forward_ordinal_interval_count(&self) -> u64 {
+        self.maintenance_dirty_ordinal_map.len()
+    }
+
+    /// Removes and returns the smallest dirty interval `(start, end)` by lexicographic key order.
+    pub fn pop_maintenance_dirty_forward_ordinal_interval(&mut self) -> Option<(u64, u64)> {
+        pop_first_dirty_interval(&mut self.maintenance_dirty_ordinal_map)
     }
 
     pub fn collect_maintenance_candidates(

@@ -12,6 +12,7 @@ pub mod low_level;
 pub mod observability;
 pub mod property_index;
 pub mod property_store;
+pub mod maintenance_dirty;
 pub(crate) use low_level::{GraphInsertDecision, GraphInsertResult, ResolvedEdgeSlot};
 #[cfg(any(test, doctest))]
 pub(crate) use property_index::PropertyIndexNodeId;
@@ -27,7 +28,8 @@ pub use adjacency::{
     GRAPH_STORE_MEMORY_ID_FORWARD_SEGMENT_EDGE_COUNTS,
     GRAPH_STORE_MEMORY_ID_FORWARD_VERTEX_TABLE, GRAPH_STORE_MEMORY_ID_GC_STATE,
     graph_store_fixed_memory_ids,
-    GRAPH_STORE_MEMORY_ID_LABEL_CATALOG, GRAPH_STORE_MEMORY_ID_MAINTENANCE_QUEUE,
+    GRAPH_STORE_MEMORY_ID_LABEL_CATALOG, GRAPH_STORE_MEMORY_ID_MAINTENANCE_DIRTY_ORDINALS,
+    GRAPH_STORE_MEMORY_ID_MAINTENANCE_QUEUE,
     GRAPH_STORE_MEMORY_ID_NODE_PROPERTY_STORE,
     GRAPH_STORE_MEMORY_ID_PROPERTY_INDEX, GRAPH_STORE_MEMORY_ID_REVERSE_EDGES_AND_LOG,
     GRAPH_STORE_MEMORY_ID_REVERSE_SEGMENT_EDGE_COUNTS,

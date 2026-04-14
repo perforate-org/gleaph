@@ -38,14 +38,18 @@ pub const GRAPH_STORE_MEMORY_ID_GC_STATE: MemoryId = MemoryId::new(12);
 pub const GRAPH_STORE_MEMORY_ID_SHARD_CANISTER_DIRECTORY: MemoryId = MemoryId::new(13);
 /// Serialized maintenance queue (`MGQ1` header + items) in the reserved graph root map.
 pub const GRAPH_STORE_MEMORY_ID_MAINTENANCE_QUEUE: MemoryId = MemoryId::new(14);
+/// Disjoint forward-ordinal dirty intervals for incremental maintenance (`StableBTreeMap`).
+pub const GRAPH_STORE_MEMORY_ID_MAINTENANCE_DIRTY_ORDINALS: MemoryId = MemoryId::new(15);
 pub const GRAPH_STORE_RESERVED_ROOT_PAGE_START: u64 = 1024;
-pub const GRAPH_STORE_RESERVED_ROOT_PAGE_END: u64 = 2048;
+/// Upper bound (exclusive) on pages reserved for the graph-root [`MemoryManager`] virtual slots.
+/// Must stay large enough for all fixed ids (including btree growth) without `grow failed`.
+pub const GRAPH_STORE_RESERVED_ROOT_PAGE_END: u64 = 3072;
 const WASM_PAGE_BYTES: u64 = 65_536;
 
 /// Canonical fixed-slot layout for the phase-1 `graph-store` stable memory map.
 ///
 /// Canonical fixed-slot ids for the graph root `MemoryManager` (adjacency, properties, PIDX, …).
-pub const GRAPH_STORE_FIXED_MEMORY_IDS: [MemoryId; 15] = [
+pub const GRAPH_STORE_FIXED_MEMORY_IDS: [MemoryId; 16] = [
     GRAPH_STORE_MEMORY_ID_FORWARD_VERTEX_TABLE,
     GRAPH_STORE_MEMORY_ID_REVERSE_VERTEX_TABLE,
     GRAPH_STORE_MEMORY_ID_FORWARD_SEGMENT_EDGE_COUNTS,
@@ -61,6 +65,7 @@ pub const GRAPH_STORE_FIXED_MEMORY_IDS: [MemoryId; 15] = [
     GRAPH_STORE_MEMORY_ID_GC_STATE,
     GRAPH_STORE_MEMORY_ID_SHARD_CANISTER_DIRECTORY,
     GRAPH_STORE_MEMORY_ID_MAINTENANCE_QUEUE,
+    GRAPH_STORE_MEMORY_ID_MAINTENANCE_DIRTY_ORDINALS,
 ];
 
 pub type GraphAdjacencyMemory<M> = VirtualMemory<M>;
@@ -364,6 +369,11 @@ impl<M: Memory + Clone> GraphStoreMemorySlots<M> {
             .get(GRAPH_STORE_MEMORY_ID_MAINTENANCE_QUEUE)
     }
 
+    pub fn maintenance_dirty_ordinals(&self) -> GraphAdjacencyMemory<M> {
+        self.memory_manager
+            .get(GRAPH_STORE_MEMORY_ID_MAINTENANCE_DIRTY_ORDINALS)
+    }
+
     /// Reads one slot as an opaque stable blob.
     pub fn load_blob(&self, id: MemoryId) -> Vec<u8> {
         let cell: StableCell<StableBytes, GraphAdjacencyMemory<M>> =
@@ -484,7 +494,7 @@ impl<M: Memory + Clone> GraphAdjacency<M> {
 }
 
 #[inline]
-pub const fn graph_store_fixed_memory_ids() -> [MemoryId; 15] {
+pub const fn graph_store_fixed_memory_ids() -> [MemoryId; 16] {
     GRAPH_STORE_FIXED_MEMORY_IDS
 }
 

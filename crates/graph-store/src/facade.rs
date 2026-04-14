@@ -67,6 +67,7 @@ use crate::property_store::{
     open_fixed_slot_edge_property_store, open_fixed_slot_node_property_store,
     snapshot_fixed_slot_graph_property_store,
 };
+use crate::maintenance_dirty::{GraphMaintenanceDirtyOrdinalMap, open_maintenance_dirty_ordinal_map};
 pub use errors::{GraphStoreError, GraphStoreResult};
 pub use facade_types::{
     GraphStoreAppendVertexWriteSummary, GraphStoreAppendVerticesWriteSummary,
@@ -100,6 +101,9 @@ pub type GraphStoreEdgePropertyMap<M> = FixedSlotGraphPropertyStableMap<GraphSto
 /// PIDX equality btree in fixed slot 10.
 pub type GraphStorePropertyEqualityFixedMap<M> =
     FixedSlotPropertyEqualityMap<GraphStorePropertySlotRoot<M>>;
+
+/// Disjoint forward-ordinal dirty intervals in fixed slot 15 ([`StableBTreeMap`]).
+pub type GraphStoreMaintenanceDirtyOrdinalMap<M> = GraphMaintenanceDirtyOrdinalMap<M>;
 
 #[cfg(test)]
 thread_local! {
@@ -153,6 +157,8 @@ pub struct GraphStore<M: Memory + Clone = VecMemory> {
     pub production_metrics: GraphStoreProductionMetrics,
     /// Cross-canister principal table for [`EdgeMeta::is_shard_canister`](crate::low_level::edge::EdgeMeta::is_shard_canister) payloads.
     pub shard_canister_directory: ShardCanisterDirectory,
+    /// Forward-layout ordinal intervals pending incremental maintenance scoring (stable btree, slot 15).
+    pub maintenance_dirty_ordinal_map: GraphStoreMaintenanceDirtyOrdinalMap<M>,
 }
 
 impl<M: Memory + Clone> std::fmt::Debug for GraphStore<M> {
@@ -198,6 +204,10 @@ impl<M: Memory + Clone> Clone for GraphStore<M> {
         for e in self.edge_property_store.iter() {
             edge_property_store.insert(e.key().clone(), e.value().clone());
         }
+        let mut maintenance_dirty_ordinal_map = open_maintenance_dirty_ordinal_map(&property_slots);
+        for e in self.maintenance_dirty_ordinal_map.iter() {
+            maintenance_dirty_ordinal_map.insert(e.key().clone(), e.value().clone());
+        }
         Self {
             manager,
             memory,
@@ -215,6 +225,7 @@ impl<M: Memory + Clone> Clone for GraphStore<M> {
             write_history: self.write_history.clone(),
             production_metrics: self.production_metrics.clone(),
             shard_canister_directory: self.shard_canister_directory.clone(),
+            maintenance_dirty_ordinal_map,
         }
     }
 }
@@ -231,6 +242,7 @@ struct AssembledAfterPropertyLoadArgs<M: Memory + Clone> {
     property_equality_map: GraphStorePropertyEqualityFixedMap<M>,
     property_index_dirty: bool,
     shard_canister_directory: ShardCanisterDirectory,
+    maintenance_dirty_ordinal_map: GraphStoreMaintenanceDirtyOrdinalMap<M>,
 }
 
 /// Thin facade-level batch mutation session.
@@ -1130,6 +1142,7 @@ impl<M: Memory + Clone> GraphStore<M> {
         let node_property_store = open_fixed_slot_node_property_store(&property_slots);
         let edge_property_store = open_fixed_slot_edge_property_store(&property_slots);
         let property_equality_map = open_fixed_slot_property_equality_map(&property_slots);
+        let maintenance_dirty_ordinal_map = open_maintenance_dirty_ordinal_map(&property_slots);
         let mut store = Self {
             manager,
             memory,
@@ -1147,6 +1160,7 @@ impl<M: Memory + Clone> GraphStore<M> {
             write_history: Vec::new(),
             production_metrics: GraphStoreProductionMetrics::default(),
             shard_canister_directory: ShardCanisterDirectory::default(),
+            maintenance_dirty_ordinal_map,
         };
         store.sync_shadow_property_state_from_fixed_slots();
         store
@@ -1171,6 +1185,7 @@ impl<M: Memory + Clone> GraphStore<M> {
             write_history: Vec::new(),
             production_metrics: GraphStoreProductionMetrics::default(),
             shard_canister_directory: args.shard_canister_directory,
+            maintenance_dirty_ordinal_map: args.maintenance_dirty_ordinal_map,
         }
     }
 
@@ -1289,6 +1304,8 @@ impl<M: Memory + Clone> GraphStore<M> {
         let edge_property_index = PropertyIndex::new(64);
         let property_index_dirty = false;
 
+        let maintenance_dirty_ordinal_map = open_maintenance_dirty_ordinal_map(&property_slots);
+
         let mut facade = Self::assembled_after_property_load(AssembledAfterPropertyLoadArgs {
             manager: mgr_rc,
             memory: mem_rc,
@@ -1301,6 +1318,7 @@ impl<M: Memory + Clone> GraphStore<M> {
             property_equality_map,
             property_index_dirty,
             shard_canister_directory,
+            maintenance_dirty_ordinal_map,
         });
 
         facade.sync_shadow_property_state_from_fixed_slots();
@@ -1343,6 +1361,8 @@ impl<M: Memory + Clone> GraphStore<M> {
         let edge_property_index = PropertyIndex::new(64);
         let property_index_dirty = false;
 
+        let maintenance_dirty_ordinal_map = open_maintenance_dirty_ordinal_map(&property_slots);
+
         let mut facade = Self::assembled_after_property_load(AssembledAfterPropertyLoadArgs {
             manager: mgr_rc,
             memory: mem_rc,
@@ -1355,6 +1375,7 @@ impl<M: Memory + Clone> GraphStore<M> {
             property_equality_map,
             property_index_dirty,
             shard_canister_directory,
+            maintenance_dirty_ordinal_map,
         });
 
         facade.sync_shadow_property_state_from_fixed_slots();
@@ -2854,6 +2875,32 @@ mod tests {
         assert_eq!(src_item.window_start_ordinal, 0);
         assert_eq!(src_item.window_end_ordinal_exclusive, 1);
         assert!(src_item.recent_maintenance_penalty > 0);
+    }
+
+    #[test]
+    fn facade_persists_maintenance_dirty_ordinals_across_hydration() {
+        let memory = VecMemory::default();
+        let mut facade = GraphStore::bootstrap_empty(memory.clone()).expect("bootstrap");
+        facade.merge_maintenance_dirty_forward_ordinal_interval(10, 20);
+        facade.merge_maintenance_dirty_forward_ordinal_interval(1, 5);
+        assert_eq!(facade.maintenance_dirty_forward_ordinal_interval_count(), 2);
+
+        let hydrated = GraphStore::hydrate_from_stable_memory(
+            facade.manager.borrow().clone(),
+            (*facade.memory).clone(),
+        )
+        .expect("hydrate");
+        assert_eq!(hydrated.maintenance_dirty_forward_ordinal_interval_count(), 2);
+        let mut h = hydrated;
+        assert_eq!(
+            h.pop_maintenance_dirty_forward_ordinal_interval(),
+            Some((1, 5))
+        );
+        assert_eq!(
+            h.pop_maintenance_dirty_forward_ordinal_interval(),
+            Some((10, 20))
+        );
+        assert_eq!(h.pop_maintenance_dirty_forward_ordinal_interval(), None);
     }
 
     #[test]
@@ -5868,7 +5915,8 @@ pub mod experimental_dgap {
         GRAPH_STORE_MEMORY_ID_FORWARD_EDGES_AND_LOG,
         GRAPH_STORE_MEMORY_ID_FORWARD_SEGMENT_EDGE_COUNTS,
         GRAPH_STORE_MEMORY_ID_FORWARD_VERTEX_TABLE, GRAPH_STORE_MEMORY_ID_GC_STATE,
-        GRAPH_STORE_MEMORY_ID_LABEL_CATALOG, GRAPH_STORE_MEMORY_ID_MAINTENANCE_QUEUE,
+        GRAPH_STORE_MEMORY_ID_LABEL_CATALOG, GRAPH_STORE_MEMORY_ID_MAINTENANCE_DIRTY_ORDINALS,
+        GRAPH_STORE_MEMORY_ID_MAINTENANCE_QUEUE,
         GRAPH_STORE_MEMORY_ID_NODE_PROPERTY_STORE,
         GRAPH_STORE_MEMORY_ID_PROPERTY_INDEX, GRAPH_STORE_MEMORY_ID_REVERSE_EDGES_AND_LOG,
         GRAPH_STORE_MEMORY_ID_REVERSE_SEGMENT_EDGE_COUNTS,
