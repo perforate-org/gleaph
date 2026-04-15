@@ -994,27 +994,34 @@ impl GraphRuntime {
         Some(candidates)
     }
 
-    /// Like [`Self::collect_maintenance_candidates_at_epoch`] but only evaluates `ordinal` when it
-    /// lies in the shared vertex table prefix of `vertex_ids` and the surfaces.
+    /// Like [`Self::collect_maintenance_candidates_at_epoch`] but only evaluates one global forward
+    /// `ordinal`, resolving `vertex_ids[ordinal - vertex_ids_base_ordinal]` when that index exists.
+    ///
+    /// Rebalance slack windows still use **global** ordinals on the full adjacency surfaces
+    /// (`graph_vertex_count`), not the length of `vertex_ids`.
     pub fn collect_maintenance_candidate_at_ordinal_at_epoch(
         &self,
         vertex_ids: &[VertexRef],
+        vertex_ids_base_ordinal: usize,
         current_epoch: Option<u64>,
         ordinal: usize,
     ) -> Option<GraphMaintenanceCandidate> {
-        let vertex_count = vertex_ids
+        let graph_vertex_count = self
+            .forward
+            .0
+            .vertices
             .len()
-            .min(self.forward.0.vertices.len())
             .min(self.reverse.0.vertices.len());
-        if ordinal >= vertex_count {
+        if ordinal >= graph_vertex_count {
             return None;
         }
-        let vertex = *vertex_ids.get(ordinal)?;
+        let local = ordinal.checked_sub(vertex_ids_base_ordinal)?;
+        let vertex = *vertex_ids.get(local)?;
         let window_start = ordinal.saturating_sub(self.insert_policy.rebalance_window_radius);
         let window_end_exclusive = ordinal
             .saturating_add(self.insert_policy.rebalance_window_radius)
             .saturating_add(1)
-            .min(vertex_count);
+            .min(graph_vertex_count);
         let forward_window_summary = self
             .forward
             .0
@@ -2154,6 +2161,13 @@ impl GraphRuntime {
 
     /// Runs up to `max_cycles` maintenance cycles from the retained queue,
     /// refreshing remaining work items after each successful cycle.
+    ///
+    /// Per-cycle scoring uses `retired_epoch + step` as the maintenance epoch, but **retired edge
+    /// segment sweep** uses the original `retired_epoch` argument as `current_epoch` in
+    /// [`RegionManager::sweep_retired_edge_segments`]. Therefore `min_retired_epochs_before_sweep`
+    /// is a **wall-clock age in the same units as `retired_epoch`** (e.g. nanoseconds from
+    /// [`ic_cdk::api::time`]) comparing the tick’s `retired_epoch` to each header’s
+    /// `retired_epoch` stamped at replacement time.
     pub fn run_queued_maintenance_cycles_with_segment_replacement_and_write(
         &mut self,
         inputs: MaintenanceCycleVertexInputs<'_>,

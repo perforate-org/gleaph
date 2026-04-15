@@ -290,6 +290,9 @@ impl RegionManager {
     }
 
     /// Returns explicit segments eligible for retirement sweep at `current_epoch`.
+    ///
+    /// Eligibility uses `current_epoch.saturating_sub(header.retired_epoch) >= min_retired_epochs`.
+    /// Callers should pass the same **unit** for both values (e.g. both IC time in nanoseconds).
     pub fn retired_edge_segments_eligible_for_sweep(
         &self,
         kind: RegionKind,

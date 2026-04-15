@@ -87,6 +87,17 @@ pub struct GraphStoreMaintenanceDirtyDrainSummary {
     pub intervals_drained: usize,
     pub work_items_merged: usize,
     pub queue_len_after: usize,
+    pub budget_exhausted: bool,
+    /// Instructions consumed during this drain when a budget was supplied; otherwise zero.
+    pub instructions_used: u64,
+}
+
+/// Volatile property-store / PIDX backlog for timer-driven maintenance (separate from ordinal dirty).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GraphStorePropertyMaintenanceBacklog {
+    pub property_index_dirty: bool,
+    pub node_property_store_dirty: bool,
+    pub edge_property_store_dirty: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

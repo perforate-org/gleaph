@@ -26,6 +26,9 @@ gleaph-gql-planner = { path = "../gql-planner" }
 roaring = "0.11"
 serde.workspace = true
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+ic-cdk.workspace = true
+
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
 

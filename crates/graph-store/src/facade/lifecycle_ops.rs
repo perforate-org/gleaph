@@ -1,5 +1,7 @@
 use crate::integration::GraphStoreKernelOverlayGraph;
-use crate::maintenance_dirty::{merge_dirty_ordinal_interval, pop_first_dirty_interval};
+use crate::maintenance_dirty::{
+    merge_dirty_ordinal_interval, peek_first_dirty_interval, pop_first_dirty_interval,
+};
 
 use super::*;
 
@@ -483,6 +485,23 @@ impl<M: Memory + Clone> GraphStore<M> {
         self.maintenance_dirty_ordinal_map.len()
     }
 
+    /// Smallest forward dirty ordinal interval `[start, end)` currently stored (peek; does not pop).
+    pub fn peek_smallest_maintenance_dirty_forward_interval(&self) -> Option<(u64, u64)> {
+        peek_first_dirty_interval(&self.maintenance_dirty_ordinal_map)
+    }
+
+    pub fn maintenance_queue_len(&self) -> usize {
+        self.graph.maintenance_queue().len()
+    }
+
+    pub fn property_maintenance_backlog(&self) -> GraphStorePropertyMaintenanceBacklog {
+        GraphStorePropertyMaintenanceBacklog {
+            property_index_dirty: self.property_index_dirty,
+            node_property_store_dirty: self.node_property_store_dirty,
+            edge_property_store_dirty: self.edge_property_store_dirty,
+        }
+    }
+
     /// Removes and returns the smallest dirty interval `(start, end)` by lexicographic key order.
     pub fn pop_maintenance_dirty_forward_ordinal_interval(&mut self) -> Option<(u64, u64)> {
         pop_first_dirty_interval(&mut self.maintenance_dirty_ordinal_map)
@@ -497,47 +516,150 @@ impl<M: Memory + Clone> GraphStore<M> {
         current_epoch: Option<u64>,
         max_intervals: usize,
     ) -> GraphStoreMaintenanceDirtyDrainSummary {
+        self.drain_maintenance_dirty_into_queue_at_epoch_with_budget(
+            vertex_refs,
+            current_epoch,
+            max_intervals,
+            None,
+            0,
+        )
+    }
+
+    /// Like [`Self::drain_maintenance_dirty_into_queue_at_epoch`], but stops early when `budget`
+    /// is exhausted. Unprocessed ordinals in the current interval are merged back into the stable
+    /// dirty map.
+    ///
+    /// `vertex_refs_base_ordinal` is the global forward ordinal of `vertex_refs[0]` when
+    /// `vertex_refs` is a sub-slice of the full vertex table; use `0` when `vertex_refs[i]` is
+    /// the ref for global ordinal `i`.
+    pub fn drain_maintenance_dirty_into_queue_at_epoch_with_budget(
+        &mut self,
+        vertex_refs: &[VertexRef],
+        current_epoch: Option<u64>,
+        max_intervals: usize,
+        mut budget: Option<&mut crate::InstructionBudget>,
+        vertex_refs_base_ordinal: usize,
+    ) -> GraphStoreMaintenanceDirtyDrainSummary {
         let mut intervals_drained = 0usize;
         let mut work_items_merged = 0usize;
+        let mut budget_exhausted = false;
         let radius = self.graph.insert_policy.rebalance_window_radius;
-        let vertex_count = vertex_refs
+        let graph_vertex_count = self
+            .graph
+            .forward
+            .0
+            .vertices
             .len()
-            .min(self.graph.forward.0.vertices.len())
             .min(self.graph.reverse.0.vertices.len());
-        for _ in 0..max_intervals {
+        let base = vertex_refs_base_ordinal;
+        // Cover exactly the vertex-ref slice; `collect_maintenance_candidate_at_ordinal_at_epoch`
+        // still rejects ordinals past `graph_vertex_count`.
+        let window_hi = base.saturating_add(vertex_refs.len());
+
+        'intervals: for _ in 0..max_intervals {
+            if let Some(b) = budget.as_mut() {
+                if b.exhausted() {
+                    budget_exhausted = true;
+                    break 'intervals;
+                }
+            }
             let Some((start_u64, end_u64)) = self.pop_maintenance_dirty_forward_ordinal_interval()
             else {
-                break;
+                break 'intervals;
             };
-            intervals_drained += 1;
             let Ok(start) = usize::try_from(start_u64) else {
                 continue;
             };
-            let Ok(end) = usize::try_from(end_u64) else {
+            let Ok(end_raw) = usize::try_from(end_u64) else {
                 continue;
             };
-            if start >= end {
+            if start >= end_raw {
                 continue;
             }
-            let end = end.min(vertex_count);
-            for ordinal in start..end {
+
+            let vis_start = start.max(base);
+            let vis_end = end_raw.min(window_hi);
+
+            if vis_start >= vis_end {
+                merge_dirty_ordinal_interval(
+                    &mut self.maintenance_dirty_ordinal_map,
+                    start_u64,
+                    end_u64,
+                );
+                // Interval does not intersect this vertex-ref window; restoring it and stopping
+                // avoids spinning on the same key until `max_intervals` is exhausted (the window
+                // may advance on a later timer tick).
+                break;
+            }
+
+            intervals_drained += 1;
+
+            if start < vis_start {
+                let Ok(hi_u64) = u64::try_from(vis_start) else {
+                    continue;
+                };
+                merge_dirty_ordinal_interval(
+                    &mut self.maintenance_dirty_ordinal_map,
+                    start_u64,
+                    hi_u64,
+                );
+            }
+            if vis_end < end_raw {
+                let Ok(lo_u64) = u64::try_from(vis_end) else {
+                    continue;
+                };
+                merge_dirty_ordinal_interval(
+                    &mut self.maintenance_dirty_ordinal_map,
+                    lo_u64,
+                    end_u64,
+                );
+            }
+
+            let mut ordinal = vis_start;
+            while ordinal < vis_end {
+                if let Some(b) = budget.as_mut() {
+                    if b.exhausted() {
+                        budget_exhausted = true;
+                        let Ok(lo_u64) = u64::try_from(ordinal) else {
+                            break 'intervals;
+                        };
+                        let Ok(hi_u64) = u64::try_from(vis_end) else {
+                            break 'intervals;
+                        };
+                        merge_dirty_ordinal_interval(
+                            &mut self.maintenance_dirty_ordinal_map,
+                            lo_u64,
+                            hi_u64,
+                        );
+                        break 'intervals;
+                    }
+                }
                 let Some(candidate) = self.graph.collect_maintenance_candidate_at_ordinal_at_epoch(
                     vertex_refs,
+                    base,
                     current_epoch,
                     ordinal,
                 ) else {
+                    ordinal += 1;
                     continue;
                 };
-                let item = candidate.into_work_item(radius, vertex_count);
+                let item = candidate.into_work_item(radius, graph_vertex_count);
                 self.graph.merge_maintenance_work_item_into_queue(item);
                 work_items_merged += 1;
+                ordinal += 1;
             }
         }
         let queue_len_after = self.graph.maintenance_queue().len();
+        let instructions_used = match &mut budget {
+            Some(b) => b.used(),
+            None => 0,
+        };
         GraphStoreMaintenanceDirtyDrainSummary {
             intervals_drained,
             work_items_merged,
             queue_len_after,
+            budget_exhausted,
+            instructions_used,
         }
     }
 
@@ -556,10 +678,31 @@ impl<M: Memory + Clone> GraphStore<M> {
         max_intervals: usize,
         memory: &impl Memory,
     ) -> Result<GraphStoreMaintenanceDirtyDrainSummary, WritebackError> {
-        let summary = self.drain_maintenance_dirty_into_queue_at_epoch(
+        self.drain_maintenance_dirty_into_queue_at_epoch_with_budget_and_write(
             vertex_refs,
             current_epoch,
             max_intervals,
+            None,
+            0,
+            memory,
+        )
+    }
+
+    pub fn drain_maintenance_dirty_into_queue_at_epoch_with_budget_and_write(
+        &mut self,
+        vertex_refs: &[VertexRef],
+        current_epoch: Option<u64>,
+        max_intervals: usize,
+        budget: Option<&mut crate::InstructionBudget>,
+        vertex_refs_base_ordinal: usize,
+        memory: &impl Memory,
+    ) -> Result<GraphStoreMaintenanceDirtyDrainSummary, WritebackError> {
+        let summary = self.drain_maintenance_dirty_into_queue_at_epoch_with_budget(
+            vertex_refs,
+            current_epoch,
+            max_intervals,
+            budget,
+            vertex_refs_base_ordinal,
         );
         self.persist_maintenance_queue(memory)?;
         Ok(summary)

@@ -97,6 +97,13 @@ pub fn pop_first_dirty_interval<M: Memory + Clone>(
     Some(k.unpack())
 }
 
+/// Smallest dirty interval by key order, without removing it (peek).
+pub fn peek_first_dirty_interval<M: Memory + Clone>(
+    map: &GraphMaintenanceDirtyOrdinalMap<M>,
+) -> Option<(u64, u64)> {
+    map.first_key_value().map(|(k, ())| k.unpack())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

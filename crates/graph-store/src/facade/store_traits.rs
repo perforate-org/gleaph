@@ -343,6 +343,60 @@ where
     ) -> Result<GraphStoreMutationWriteSummary<GraphMutationPath>, WritebackError> {
         (**self).tombstone_edge_pair_and_write(spec, memory)
     }
+
+    fn maintenance_dirty_forward_ordinal_interval_count(&self) -> u64 {
+        (**self).maintenance_dirty_forward_ordinal_interval_count()
+    }
+
+    fn maintenance_queue_len(&self) -> usize {
+        (**self).maintenance_queue_len()
+    }
+
+    fn property_maintenance_backlog(&self) -> GraphStorePropertyMaintenanceBacklog {
+        (**self).property_maintenance_backlog()
+    }
+
+    fn peek_smallest_maintenance_dirty_forward_interval(&self) -> Option<(u64, u64)> {
+        (**self).peek_smallest_maintenance_dirty_forward_interval()
+    }
+
+    fn drain_maintenance_dirty_into_queue_at_epoch_with_budget_and_write(
+        &mut self,
+        vertex_refs: &[VertexRef],
+        current_epoch: Option<u64>,
+        max_intervals: usize,
+        budget: Option<&mut crate::InstructionBudget>,
+        vertex_refs_base_ordinal: usize,
+        memory: &impl Memory,
+    ) -> Result<GraphStoreMaintenanceDirtyDrainSummary, WritebackError> {
+        (**self).drain_maintenance_dirty_into_queue_at_epoch_with_budget_and_write(
+            vertex_refs,
+            current_epoch,
+            max_intervals,
+            budget,
+            vertex_refs_base_ordinal,
+            memory,
+        )
+    }
+
+    fn run_queued_maintenance_cycles_with_segment_replacement_and_write(
+        &mut self,
+        vertex_refs: &[VertexRef],
+        forward_base_edge_ids_by_ordinal: &[Vec<EdgeId>],
+        memory: &impl Memory,
+        retired_epoch: u64,
+        max_cycles: usize,
+        min_retired_epochs_before_sweep: u64,
+    ) -> Result<GraphMaintenanceBatchWriteSummary, WritebackError> {
+        (**self).run_queued_maintenance_cycles_with_segment_replacement_and_write(
+            vertex_refs,
+            forward_base_edge_ids_by_ordinal,
+            memory,
+            retired_epoch,
+            max_cycles,
+            min_retired_epochs_before_sweep,
+        )
+    }
 }
 
 impl<M: Memory + Clone> GraphStoreStore for GraphStore<M> {
@@ -682,5 +736,61 @@ impl<M: Memory + Clone> GraphStoreStore for GraphStore<M> {
         memory: &impl Memory,
     ) -> Result<GraphStoreMutationWriteSummary<GraphMutationPath>, WritebackError> {
         Self::tombstone_edge_pair_and_write(self, spec, memory)
+    }
+
+    fn maintenance_dirty_forward_ordinal_interval_count(&self) -> u64 {
+        Self::maintenance_dirty_forward_ordinal_interval_count(self)
+    }
+
+    fn maintenance_queue_len(&self) -> usize {
+        Self::maintenance_queue_len(self)
+    }
+
+    fn property_maintenance_backlog(&self) -> GraphStorePropertyMaintenanceBacklog {
+        Self::property_maintenance_backlog(self)
+    }
+
+    fn peek_smallest_maintenance_dirty_forward_interval(&self) -> Option<(u64, u64)> {
+        Self::peek_smallest_maintenance_dirty_forward_interval(self)
+    }
+
+    fn drain_maintenance_dirty_into_queue_at_epoch_with_budget_and_write(
+        &mut self,
+        vertex_refs: &[VertexRef],
+        current_epoch: Option<u64>,
+        max_intervals: usize,
+        budget: Option<&mut crate::InstructionBudget>,
+        vertex_refs_base_ordinal: usize,
+        memory: &impl Memory,
+    ) -> Result<GraphStoreMaintenanceDirtyDrainSummary, WritebackError> {
+        Self::drain_maintenance_dirty_into_queue_at_epoch_with_budget_and_write(
+            self,
+            vertex_refs,
+            current_epoch,
+            max_intervals,
+            budget,
+            vertex_refs_base_ordinal,
+            memory,
+        )
+    }
+
+    fn run_queued_maintenance_cycles_with_segment_replacement_and_write(
+        &mut self,
+        vertex_refs: &[VertexRef],
+        forward_base_edge_ids_by_ordinal: &[Vec<EdgeId>],
+        memory: &impl Memory,
+        retired_epoch: u64,
+        max_cycles: usize,
+        min_retired_epochs_before_sweep: u64,
+    ) -> Result<GraphMaintenanceBatchWriteSummary, WritebackError> {
+        Self::run_queued_maintenance_cycles_with_segment_replacement_and_write(
+            self,
+            vertex_refs,
+            forward_base_edge_ids_by_ordinal,
+            memory,
+            retired_epoch,
+            max_cycles,
+            min_retired_epochs_before_sweep,
+        )
     }
 }

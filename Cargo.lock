@@ -1545,6 +1545,7 @@ dependencies = [
  "gleaph-gql",
  "gleaph-gql-planner",
  "gleaph-graph-kernel",
+ "ic-cdk 0.20.0",
  "ic-stable-csr",
  "ic-stable-structures",
  "roaring",

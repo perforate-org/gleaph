@@ -13,6 +13,7 @@ pub mod observability;
 pub mod property_index;
 pub mod property_store;
 pub mod maintenance_dirty;
+pub mod instruction_budget;
 pub(crate) use low_level::{GraphInsertDecision, GraphInsertResult, ResolvedEdgeSlot};
 #[cfg(any(test, doctest))]
 pub(crate) use property_index::PropertyIndexNodeId;
@@ -35,6 +36,11 @@ pub use adjacency::{
     GRAPH_STORE_MEMORY_ID_REVERSE_SEGMENT_EDGE_COUNTS,
     GRAPH_STORE_MEMORY_ID_REVERSE_VERTEX_TABLE, GRAPH_STORE_MEMORY_ID_SHARD_CANISTER_DIRECTORY,
 };
-pub use facade::{GraphStore, GraphStoreError, GraphStoreResult};
+pub use facade::{GraphStore, GraphStoreError, GraphStoreResult, GraphStorePropertyMaintenanceBacklog};
+pub use instruction_budget::{
+    DEFAULT_MAINTENANCE_DRAIN_INSTRUCTION_BUDGET, DEFAULT_MAINTENANCE_DRAIN_INSTRUCTION_MARGIN,
+    DEFAULT_PROPERTY_FLUSH_INSTRUCTION_BUDGET, DEFAULT_PROPERTY_FLUSH_INSTRUCTION_MARGIN,
+    IC_PER_MESSAGE_INSTRUCTION_BUDGET_HINT, InstructionBudget,
+};
 pub type VecMemory = ic_stable_structures::VectorMemory;
 pub type GraphStoreVecMemory = ic_stable_structures::VectorMemory;

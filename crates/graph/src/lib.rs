@@ -55,11 +55,18 @@ use gleaph_gql_planner::{
 };
 use gleaph_graph_kernel::{GraphRead, GraphWrite};
 use gleaph_graph_store::integration::GraphStoreKernelOverlay;
+#[cfg(target_arch = "wasm32")]
+use gleaph_graph_store::integration::GraphMaintenanceTimerTickArgs;
+#[cfg(target_arch = "wasm32")]
+use gleaph_graph_store::{
+    DEFAULT_MAINTENANCE_DRAIN_INSTRUCTION_BUDGET, DEFAULT_PROPERTY_FLUSH_INSTRUCTION_BUDGET,
+    InstructionBudget,
+};
 use ic_cdk::export_candid;
 use ic_cdk_macros::{init, post_upgrade, pre_upgrade, query, update};
 use serde::{Deserialize, Serialize};
 #[cfg(target_arch = "wasm32")]
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 #[cfg(target_arch = "wasm32")]
@@ -89,6 +96,14 @@ thread_local! {
     static VACUUM_BACKLOG_PROVIDER: RefCell<Option<Arc<dyn Fn() -> usize>>> = const { RefCell::new(None) };
     #[cfg(target_arch = "wasm32")]
     static VACUUM_TICK_HANDLER: RefCell<Option<Arc<dyn Fn()>>> = const { RefCell::new(None) };
+    #[cfg(target_arch = "wasm32")]
+    static GRAPH_MAINTENANCE_BACKLOG_PROVIDER: RefCell<Option<Arc<dyn Fn() -> usize>>> =
+        const { RefCell::new(None) };
+    #[cfg(target_arch = "wasm32")]
+    static PROPERTY_MAINTENANCE_BACKLOG_PROVIDER: RefCell<Option<Arc<dyn Fn() -> usize>>> =
+        const { RefCell::new(None) };
+    #[cfg(target_arch = "wasm32")]
+    static GRAPH_MAINTENANCE_VERTEX_WINDOW_START: Cell<usize> = const { Cell::new(0) };
 }
 
 /// Runs graph flush after `f`. Persists the service stable cell only when `f` returns `true`
@@ -1149,6 +1164,27 @@ pub fn wire_vacuum_runtime_hooks(
     set_vacuum_backlog_provider(backlog_provider);
 }
 
+/// Provider for [`GraphStoreKernelOverlay::graph_maintenance_backlog_len_for_timer`] (dirty ordinal
+/// intervals + maintenance queue length). Used with the vacuum timer to tighten intervals when the
+/// graph maintenance backlog grows.
+#[cfg(target_arch = "wasm32")]
+pub fn set_graph_maintenance_backlog_provider(provider: Option<Arc<dyn Fn() -> usize>>) {
+    GRAPH_MAINTENANCE_BACKLOG_PROVIDER.with(|slot| {
+        *slot.borrow_mut() = provider;
+    });
+    maybe_reschedule_periodic_vacuum_timer();
+}
+
+/// Score (e.g. 0 vs 1) for property-index / property-store dirty flags, folded into vacuum timer
+/// interval heuristics alongside graph ordinal backlog.
+#[cfg(target_arch = "wasm32")]
+pub fn set_property_maintenance_backlog_provider(provider: Option<Arc<dyn Fn() -> usize>>) {
+    PROPERTY_MAINTENANCE_BACKLOG_PROVIDER.with(|slot| {
+        *slot.borrow_mut() = provider;
+    });
+    maybe_reschedule_periodic_vacuum_timer();
+}
+
 #[cfg(target_arch = "wasm32")]
 async fn run_periodic_maintenance_tick() {
     VACUUM_TICK_HANDLER.with(|handler| {
@@ -1164,6 +1200,28 @@ async fn run_periodic_maintenance_tick() {
 #[cfg(target_arch = "wasm32")]
 const MAX_OPS_PER_VACUUM_TICK: usize = 64;
 
+#[cfg(target_arch = "wasm32")]
+const MAX_INTERVALS_PER_GRAPH_MAINTENANCE_TICK: usize = 8;
+
+/// Cap for [`GraphMaintenanceTimerTickArgs::max_vertices_for_tick`]. `None` scans all vertices
+/// (default). When `Some`, the timer rotates [`GraphMaintenanceTimerTickArgs::vertex_window_start`]
+/// across valid starts each tick and sets
+/// [`GraphMaintenanceTimerTickArgs::align_vertex_window_to_dirty`].
+#[cfg(target_arch = "wasm32")]
+const MAX_VERTICES_FOR_GRAPH_MAINTENANCE_TICK: Option<usize> = None;
+
+/// Minimum time (nanoseconds, same units as [`ic_cdk::api::time`]) a segment must remain retired
+/// before [`RegionManager::sweep_retired_edge_segments`] may reclaim it. `0` matches the historical
+/// immediate sweep behavior.
+#[cfg(target_arch = "wasm32")]
+const MIN_RETIRED_EPOCHS_BEFORE_SWEEP_NS: u64 = 0;
+
+/// Added to the vacuum timer backlog sum when [`set_property_maintenance_backlog_provider`] reports
+/// non-zero (property / PIDX dirty). Tuned to sit below [`VACUUM_QUEUE_BUSY_THRESHOLD`] alone but
+/// combine with graph backlog toward busy intervals.
+#[cfg(target_arch = "wasm32")]
+const PROPERTY_MAINTENANCE_BACKLOG_SCORE: usize = 64;
+
 fn wire_periodic_vacuum_runtime() {
     #[cfg(target_arch = "wasm32")]
     {
@@ -1172,11 +1230,76 @@ fn wire_periodic_vacuum_runtime() {
                 with_canister_graph_maintenance(|graph| graph.vacuum_stats().queue_len)
             })),
             Some(Arc::new(|| {
+                let now = ic_cdk::api::time();
                 let _ = with_canister_graph_maintenance(|graph| {
+                    let vtx_n = graph.bridge().vertex_ordinals().len();
+                    let cap = MAX_VERTICES_FOR_GRAPH_MAINTENANCE_TICK
+                        .map(|m| m.min(vtx_n))
+                        .unwrap_or(vtx_n);
+                    let vertex_window_start = GRAPH_MAINTENANCE_VERTEX_WINDOW_START.with(|c| {
+                        if MAX_VERTICES_FOR_GRAPH_MAINTENANCE_TICK.is_none() || vtx_n == 0
+                            || cap >= vtx_n
+                        {
+                            return 0usize;
+                        }
+                        let max_start = vtx_n.saturating_sub(cap);
+                        let span = max_start.saturating_add(1);
+                        let cur = c.get() % span;
+                        c.set((cur + 1) % span);
+                        cur
+                    });
+                    if let Err(err) = graph.graph_maintenance_timer_tick_bounded(
+                        GraphMaintenanceTimerTickArgs {
+                            max_intervals: MAX_INTERVALS_PER_GRAPH_MAINTENANCE_TICK,
+                            maintenance_instruction_budget: Some(
+                                DEFAULT_MAINTENANCE_DRAIN_INSTRUCTION_BUDGET,
+                            ),
+                            current_epoch: Some(now),
+                            retired_epoch: now,
+                            min_retired_epochs_before_sweep: MIN_RETIRED_EPOCHS_BEFORE_SWEEP_NS,
+                            max_maintenance_cycles: 1,
+                            max_vertices_for_tick: MAX_VERTICES_FOR_GRAPH_MAINTENANCE_TICK,
+                            align_vertex_window_to_dirty: MAX_VERTICES_FOR_GRAPH_MAINTENANCE_TICK
+                                .is_some(),
+                            vertex_window_start,
+                        },
+                    ) {
+                        ic_cdk::println!(
+                            "[gleaph-graph] graph_maintenance_timer_tick_bounded failed: {err:?}"
+                        );
+                    }
+                    let backlog = graph.property_maintenance_backlog();
+                    if backlog.property_index_dirty
+                        || backlog.node_property_store_dirty
+                        || backlog.edge_property_store_dirty
+                    {
+                        let mut prop_budget =
+                            InstructionBudget::new(DEFAULT_PROPERTY_FLUSH_INSTRUCTION_BUDGET);
+                        if let Err(err) = graph
+                            .property_maintenance_flush_step_bounded(Some(&mut prop_budget))
+                        {
+                            ic_cdk::println!(
+                                "[gleaph-graph] property_maintenance_flush_step_bounded failed: {err:?}"
+                            );
+                        }
+                    }
                     graph.vacuum_step(MAX_OPS_PER_VACUUM_TICK)
                 });
             })),
         );
+        set_graph_maintenance_backlog_provider(Some(Arc::new(|| {
+            with_canister_graph_maintenance(|g| g.graph_maintenance_backlog_len_for_timer())
+        })));
+        set_property_maintenance_backlog_provider(Some(Arc::new(|| {
+            with_canister_graph_maintenance(|g| {
+                let b = g.property_maintenance_backlog();
+                usize::from(
+                    b.property_index_dirty
+                        || b.node_property_store_dirty
+                        || b.edge_property_store_dirty,
+                ) * PROPERTY_MAINTENANCE_BACKLOG_SCORE
+            })
+        })));
     }
 }
 
@@ -1187,8 +1310,24 @@ fn current_vacuum_backlog_len() -> usize {
 }
 
 #[cfg(target_arch = "wasm32")]
+fn current_graph_maintenance_backlog_len() -> usize {
+    GRAPH_MAINTENANCE_BACKLOG_PROVIDER.with(|provider| {
+        provider.borrow().as_ref().map(|f| f()).unwrap_or_default()
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+fn current_property_maintenance_backlog_score() -> usize {
+    PROPERTY_MAINTENANCE_BACKLOG_PROVIDER.with(|provider| {
+        provider.borrow().as_ref().map(|f| f()).unwrap_or_default()
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
 fn desired_vacuum_interval_secs() -> u64 {
-    let backlog = current_vacuum_backlog_len();
+    let backlog = current_vacuum_backlog_len()
+        .saturating_add(current_graph_maintenance_backlog_len())
+        .saturating_add(current_property_maintenance_backlog_score());
     if backlog == 0 {
         VACUUM_INTERVAL_IDLE_SECS
     } else if backlog > VACUUM_QUEUE_BUSY_THRESHOLD {

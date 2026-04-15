@@ -79,6 +79,7 @@ pub use facade_types::{
     GraphStoreMaintenanceBatchProjection, GraphStoreMaintenanceCycleProjection,
     GraphStoreMaintenanceDirtyDrainSummary,
     GraphStoreMaintenanceQueueAction, GraphStoreMaintenanceQueueItemProjection,
+    GraphStorePropertyMaintenanceBacklog,
     GraphStoreMaintenanceQueueProjection, GraphStoreMaintenanceQueueStorageProjection,
     GraphStoreMutationWriteSummary, GraphStoreNodeDeleteProjection, GraphStoreProductionMetrics,
     GraphStoreProductionMetricsSnapshot, GraphStorePropertyIndexMutationSummary,
@@ -625,6 +626,34 @@ pub trait GraphStoreStore {
         spec: EdgeTombstoneSpec,
         memory: &impl Memory,
     ) -> Result<GraphStoreMutationWriteSummary<GraphMutationPath>, WritebackError>;
+
+    fn maintenance_dirty_forward_ordinal_interval_count(&self) -> u64;
+
+    fn maintenance_queue_len(&self) -> usize;
+
+    fn property_maintenance_backlog(&self) -> GraphStorePropertyMaintenanceBacklog;
+
+    fn peek_smallest_maintenance_dirty_forward_interval(&self) -> Option<(u64, u64)>;
+
+    fn drain_maintenance_dirty_into_queue_at_epoch_with_budget_and_write(
+        &mut self,
+        vertex_refs: &[VertexRef],
+        current_epoch: Option<u64>,
+        max_intervals: usize,
+        budget: Option<&mut crate::InstructionBudget>,
+        vertex_refs_base_ordinal: usize,
+        memory: &impl Memory,
+    ) -> Result<GraphStoreMaintenanceDirtyDrainSummary, WritebackError>;
+
+    fn run_queued_maintenance_cycles_with_segment_replacement_and_write(
+        &mut self,
+        vertex_refs: &[VertexRef],
+        forward_base_edge_ids_by_ordinal: &[Vec<EdgeId>],
+        memory: &impl Memory,
+        retired_epoch: u64,
+        max_cycles: usize,
+        min_retired_epochs_before_sweep: u64,
+    ) -> Result<GraphMaintenanceBatchWriteSummary, WritebackError>;
 }
 
 const FACADE_WRITE_HISTORY_LIMIT: usize = 16;
@@ -2418,6 +2447,7 @@ mod tests {
         GraphStoreStoreAdapter, GraphStoreVertexOrdinalMapping, GraphStoreWriteEventProjection,
     };
     use crate::GraphInsertResult;
+    use crate::InstructionBudget;
     use crate::VecMemory;
     use crate::adjacency::{BorrowedMemory, GraphStoreMemorySlots};
     use crate::low_level::GraphMutationPath;
@@ -2964,10 +2994,82 @@ mod tests {
         assert_eq!(summary.intervals_drained, 1);
         assert_eq!(summary.work_items_merged, 1);
         assert_eq!(summary.queue_len_after, 1);
+        assert!(!summary.budget_exhausted);
+        assert_eq!(summary.instructions_used, 0);
         let drained = facade.maintenance_queue_projection();
         assert_eq!(drained.len(), 1);
         assert_eq!(drained[0].vertex_ref, expected[0].vertex_ref);
         assert_eq!(drained[0].anchor_ordinal, expected[0].anchor_ordinal);
+    }
+
+    #[test]
+    fn facade_drain_maintenance_dirty_requeues_suffix_when_instruction_budget_exhausted() {
+        use std::sync::atomic::AtomicU64;
+        use std::sync::Arc;
+
+        let memory = VecMemory::default();
+        let mut facade = GraphStore::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let src = NodeId::from(130u8);
+        let dst = NodeId::from(131u8);
+        facade
+            .bootstrap_vertex_refs_and_edges_and_write(&[src.into(), dst.into()], &[], &memory)
+            .expect("bootstrap vertices");
+        facade.merge_maintenance_dirty_forward_ordinal_interval(0, 10);
+        let counter = Arc::new(AtomicU64::new(0));
+        let mut budget = InstructionBudget::new_for_test(Arc::clone(&counter), 2);
+        let summary = facade.drain_maintenance_dirty_into_queue_at_epoch_with_budget(
+            &[src.into(), dst.into()],
+            None,
+            1,
+            Some(&mut budget),
+            0,
+        );
+        assert!(summary.budget_exhausted);
+        assert_eq!(facade.maintenance_dirty_forward_ordinal_interval_count(), 2);
+        assert_eq!(
+            facade.pop_maintenance_dirty_forward_ordinal_interval(),
+            Some((1, 2))
+        );
+        assert_eq!(
+            facade.pop_maintenance_dirty_forward_ordinal_interval(),
+            Some((2, 10))
+        );
+        assert_eq!(facade.pop_maintenance_dirty_forward_ordinal_interval(), None);
+    }
+
+    #[test]
+    fn facade_drain_maintenance_dirty_requeues_full_interval_when_budget_exhausts_before_ordinal() {
+        use std::sync::atomic::AtomicU64;
+        use std::sync::Arc;
+
+        let memory = VecMemory::default();
+        let mut facade = GraphStore::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let src = NodeId::from(140u8);
+        let dst = NodeId::from(141u8);
+        facade
+            .bootstrap_vertex_refs_and_edges_and_write(&[src.into(), dst.into()], &[], &memory)
+            .expect("bootstrap vertices");
+        facade.merge_maintenance_dirty_forward_ordinal_interval(0, 10);
+        let counter = Arc::new(AtomicU64::new(0));
+        let mut budget = InstructionBudget::new_for_test(Arc::clone(&counter), 1);
+        let summary = facade.drain_maintenance_dirty_into_queue_at_epoch_with_budget(
+            &[src.into(), dst.into()],
+            None,
+            1,
+            Some(&mut budget),
+            0,
+        );
+        assert!(summary.budget_exhausted);
+        assert_eq!(facade.maintenance_dirty_forward_ordinal_interval_count(), 2);
+        assert_eq!(
+            facade.pop_maintenance_dirty_forward_ordinal_interval(),
+            Some((0, 2))
+        );
+        assert_eq!(
+            facade.pop_maintenance_dirty_forward_ordinal_interval(),
+            Some((2, 10))
+        );
+        assert_eq!(summary.intervals_drained, 1);
     }
 
     #[test]

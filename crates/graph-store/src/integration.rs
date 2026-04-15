@@ -27,10 +27,13 @@ use gleaph_graph_kernel::{
 
 use crate::facade::{
     GraphStore, GraphStoreBootstrapGraphWriteSummary, GraphStoreEdgeLogicalLocatorMapping,
+    GraphStoreMaintenanceDirtyDrainSummary, GraphStorePropertyMaintenanceBacklog,
     GraphStorePropertyMutationWriteSummary, GraphStoreResult, GraphStoreService, GraphStoreStore,
     GraphStoreStoreAdapter, GraphStoreVertexOrdinalMapping,
 };
-use crate::low_level::BucketSizeInPages;
+use crate::low_level::{
+    BucketSizeInPages, GraphMaintenanceBatchWriteSummary, VertexRef, WritebackError,
+};
 use crate::property_store::PropertyStoreError;
 pub use bootstrap_types::{
     BootstrapEdgeSpec, BootstrapGraphSpec, KernelBootstrapEdgeSpec, KernelBootstrapGraphSpec,
@@ -201,6 +204,41 @@ fn graph_error_from_property_store(err: PropertyStoreError) -> GraphError {
 
 const OVERLAY_SUMMARY_HISTORY_LIMIT: usize = 8;
 
+/// Arguments for one bounded graph maintenance pass from a canister timer.
+#[derive(Clone, Copy, Debug)]
+pub struct GraphMaintenanceTimerTickArgs {
+    pub max_intervals: usize,
+    /// When `Some`, drain uses [`crate::InstructionBudget`] with this instruction limit.
+    pub maintenance_instruction_budget: Option<u64>,
+    pub current_epoch: Option<u64>,
+    /// Epoch passed into queued maintenance cycles and segment retirement. Should be monotonic
+    /// (e.g. [`ic_cdk::api::time`] nanoseconds on the IC).
+    pub retired_epoch: u64,
+    /// Minimum age (in the same epoch units as `retired_epoch`) before sweeping retired edge
+    /// segments. `0` sweeps aggressively (test-oriented); production may use a larger window.
+    pub min_retired_epochs_before_sweep: u64,
+    /// When zero, skips [`GraphStoreStore::run_queued_maintenance_cycles_with_segment_replacement_and_write`].
+    pub max_maintenance_cycles: usize,
+    /// Cap forward vertex snapshot size for this tick (`vertex_refs` / base-edge table). `None` =
+    /// all vertices. Ordinals beyond the cap are not visible to drain scoring this tick; dirty
+    /// intervals for higher ordinals remain until a later tick or a full scan.
+    pub max_vertices_for_tick: Option<usize>,
+    /// When `max_vertices_for_tick` caps the drain window, align that window to the smallest dirty
+    /// ordinal (via [`GraphStoreStore::peek_smallest_maintenance_dirty_forward_interval`]) when
+    /// present.
+    pub align_vertex_window_to_dirty: bool,
+    /// When the drain window is capped, base rotation offset into `0..=n.saturating_sub(cap)`
+    /// (typically advanced by one valid start per timer tick when alignment does not apply).
+    pub vertex_window_start: usize,
+}
+
+/// Observed effects of [`GraphStoreKernelOverlayGraph::graph_maintenance_timer_tick_bounded`].
+#[derive(Clone, Debug)]
+pub struct GraphMaintenanceTimerTickSummary {
+    pub drain: GraphStoreMaintenanceDirtyDrainSummary,
+    pub queued: Option<GraphMaintenanceBatchWriteSummary>,
+}
+
 /// Kernel-facing overlay adapter over the bootstrap bridge.
 ///
 /// This adapter is intentionally conservative. Structural bootstrap goes
@@ -210,6 +248,30 @@ const OVERLAY_SUMMARY_HISTORY_LIMIT: usize = 8;
 /// grows towards a full record-authoritative graph implementation.
 pub struct GraphStoreKernelOverlayGraph<'a, S: GraphStoreStore> {
     bridge: GraphStoreKernelBootstrapBridge<'a, S>,
+}
+
+/// Computes the forward-layout ordinal at which a capped drain window starts.
+pub(crate) fn maintenance_vertex_window_start_idx(
+    n: usize,
+    cap: usize,
+    align_to_dirty: bool,
+    peek_min_start: Option<u64>,
+    vertex_window_start: usize,
+) -> usize {
+    if n == 0 || cap >= n {
+        return 0;
+    }
+    let max_start = n.saturating_sub(cap);
+    if align_to_dirty {
+        if let Some(s) = peek_min_start {
+            if let Ok(s_usize) = usize::try_from(s) {
+                return s_usize.min(max_start);
+            }
+        }
+        vertex_window_start.min(max_start)
+    } else {
+        vertex_window_start.min(max_start)
+    }
 }
 
 /// Concrete kernel overlay shape used when binding the main facade directly.
@@ -607,6 +669,113 @@ impl<'a, S: GraphStoreStore> GraphStoreKernelOverlayGraph<'a, S> {
     pub fn vacuum_stats(&self) -> VacuumStats {
         self.bridge.vacuum_stats()
     }
+
+    /// Drains stable ordinal dirty intervals into the maintenance queue (optional instruction
+    /// budget), then optionally runs up to `max_maintenance_cycles` queued maintenance cycles.
+    ///
+    /// Uses [`GraphStoreKernelBootstrapBridge::vertex_ordinals`] for vertex counts and
+    /// [`VertexRef`] snapshots. [`GraphStoreKernelBootstrapBridge::new`] starts with an empty
+    /// `vertex_ordinals` list, so callers must bootstrap (or otherwise repopulate) the overlay
+    /// **on the same bridge instance** before invoking this method.
+    pub fn graph_maintenance_timer_tick_bounded(
+        &mut self,
+        args: GraphMaintenanceTimerTickArgs,
+    ) -> Result<GraphMaintenanceTimerTickSummary, WritebackError> {
+        let n = self.bridge.vertex_ordinals.len();
+        let cap = args
+            .max_vertices_for_tick
+            .map(|m| m.min(n))
+            .unwrap_or(n);
+        let full_vertex_refs: Vec<VertexRef> = self
+            .bridge
+            .vertex_ordinals
+            .iter()
+            .map(|m| m.vertex_ref)
+            .collect();
+        let forward_full = self.bridge.forward_live_base_edge_ids_by_ordinal();
+        let peek_dirty = if args.max_vertices_for_tick.is_some() {
+            self.bridge
+                .store
+                .peek_smallest_maintenance_dirty_forward_interval()
+        } else {
+            None
+        };
+        let start_idx = maintenance_vertex_window_start_idx(
+            n,
+            cap,
+            args.align_vertex_window_to_dirty,
+            peek_dirty.map(|(s, _)| s),
+            args.vertex_window_start,
+        );
+        let end_excl = start_idx.saturating_add(cap).min(n);
+        let drain_vertex_refs: Vec<VertexRef> = self.bridge.vertex_ordinals[start_idx..end_excl]
+            .iter()
+            .map(|m| m.vertex_ref)
+            .collect();
+        let memory = self.bridge.memory;
+        let mut budget = args
+            .maintenance_instruction_budget
+            .map(crate::InstructionBudget::new);
+        let drain = self
+            .bridge
+            .store
+            .drain_maintenance_dirty_into_queue_at_epoch_with_budget_and_write(
+                &drain_vertex_refs,
+                args.current_epoch,
+                args.max_intervals,
+                budget.as_mut(),
+                start_idx,
+                memory,
+            )?;
+        let queued = if args.max_maintenance_cycles > 0 {
+            Some(
+                self.bridge
+                    .store
+                    .run_queued_maintenance_cycles_with_segment_replacement_and_write(
+                        &full_vertex_refs,
+                        &forward_full,
+                        memory,
+                        args.retired_epoch,
+                        args.max_maintenance_cycles,
+                        args.min_retired_epochs_before_sweep,
+                    )?,
+            )
+        } else {
+            None
+        };
+        Ok(GraphMaintenanceTimerTickSummary { drain, queued })
+    }
+
+    /// Best-effort property-store / property-index flush under a separate instruction budget from
+    /// graph maintenance drain.
+    pub fn property_maintenance_flush_step_bounded(
+        &mut self,
+        budget: Option<&mut crate::InstructionBudget>,
+    ) -> GraphStoreResult<Option<(Vec<usize>, Vec<usize>)>> {
+        if let Some(b) = budget {
+            if b.exhausted() {
+                return Ok(None);
+            }
+        }
+        self.bridge
+            .store
+            .try_refresh_and_write_dirty_to_stable_memory(self.bridge.memory)
+            .map(Some)
+    }
+
+    /// Dirty interval count plus maintenance queue length (for timer interval heuristics).
+    pub fn graph_maintenance_backlog_len_for_timer(&self) -> usize {
+        let dirty = self
+            .bridge
+            .store
+            .maintenance_dirty_forward_ordinal_interval_count() as usize;
+        let q = self.bridge.store.maintenance_queue_len();
+        dirty.saturating_add(q)
+    }
+
+    pub fn property_maintenance_backlog(&self) -> GraphStorePropertyMaintenanceBacklog {
+        self.bridge.store.property_maintenance_backlog()
+    }
 }
 
 fn compare_op(ordering: Option<std::cmp::Ordering>, cmp: CmpOp) -> bool {
@@ -632,11 +801,12 @@ mod tests {
     use std::rc::Rc;
 
     use super::{
-        BootstrapEdgeSpec, BootstrapGraphSpec, GraphStoreKernelBootstrapBridge,
-        GraphStoreKernelHarness, KernelBootstrapEdgeSpec, KernelBootstrapGraphSpec,
-        KernelBootstrapNodeSpec, LabelMembership, VERTEX_LABEL_PROMOTION_THRESHOLD_BASE,
-        VertexGcState, VertexLabelIndex, bootstrap_graph, bootstrap_kernel_overlay_graph,
-        decode_vertex_label_catalog, encode_vertex_label_catalog, graph_error_from_property_store,
+        BootstrapEdgeSpec, BootstrapGraphSpec, GraphMaintenanceTimerTickArgs,
+        GraphStoreKernelBootstrapBridge, GraphStoreKernelHarness, KernelBootstrapEdgeSpec,
+        KernelBootstrapGraphSpec, KernelBootstrapNodeSpec, LabelMembership,
+        VERTEX_LABEL_PROMOTION_THRESHOLD_BASE, VertexGcState, VertexLabelIndex, bootstrap_graph,
+        bootstrap_kernel_overlay_graph, decode_vertex_label_catalog, encode_vertex_label_catalog,
+        graph_error_from_property_store,
     };
     use crate::VecMemory;
     use crate::adjacency::{BorrowedMemory, GraphStoreMemorySlots};
@@ -975,6 +1145,96 @@ mod tests {
         assert_eq!(edge.dst, bob.id);
         assert_eq!(edge.label.as_deref(), Some("KNOWS"));
         assert_eq!(bridge.vertex_ordinals().len(), 2);
+    }
+
+    #[test]
+    fn graph_maintenance_timer_tick_respects_max_vertices_for_tick() {
+        let memory = VecMemory::default();
+        let mut facade = GraphStore::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut overlay = facade.bind_kernel_overlay(&memory);
+        let empty = PropertyMap::new();
+        overlay
+            .bootstrap_node(&["A".to_owned()], &empty)
+            .expect("bootstrap a");
+        overlay
+            .bootstrap_node(&["B".to_owned()], &empty)
+            .expect("bootstrap b");
+        overlay
+            .bootstrap_node(&["C".to_owned()], &empty)
+            .expect("bootstrap c");
+        assert_eq!(overlay.bridge().vertex_ordinals().len(), 3);
+        overlay
+            .graph_maintenance_timer_tick_bounded(GraphMaintenanceTimerTickArgs {
+                max_intervals: 0,
+                maintenance_instruction_budget: None,
+                current_epoch: None,
+                retired_epoch: 0,
+                min_retired_epochs_before_sweep: 0,
+                max_maintenance_cycles: 0,
+                max_vertices_for_tick: Some(2),
+                align_vertex_window_to_dirty: false,
+                vertex_window_start: 0,
+            })
+            .expect("maintenance tick with vertex cap");
+    }
+
+    #[test]
+    fn maintenance_vertex_window_start_idx_aligns_to_min_dirty() {
+        assert_eq!(
+            super::maintenance_vertex_window_start_idx(8, 3, true, Some(5), 0),
+            5
+        );
+        assert_eq!(
+            super::maintenance_vertex_window_start_idx(8, 3, false, Some(5), 0),
+            0
+        );
+        assert_eq!(
+            super::maintenance_vertex_window_start_idx(8, 3, false, Some(5), 4),
+            4
+        );
+    }
+
+    #[test]
+    fn graph_maintenance_timer_tick_aligns_dirty_window_and_preserves_tail_interval() {
+        let memory = VecMemory::default();
+        let mut facade = GraphStore::bootstrap_empty(memory.clone()).expect("bootstrap");
+        let mut overlay = facade.bind_kernel_overlay(&memory);
+        let empty = PropertyMap::new();
+        for label in ["A", "B", "C", "D", "E", "F", "G", "H"] {
+            overlay
+                .bootstrap_node(&[label.to_owned()], &empty)
+                .expect("bootstrap node");
+        }
+        while overlay
+            .bridge_mut()
+            .store
+            .pop_maintenance_dirty_forward_ordinal_interval()
+            .is_some()
+        {}
+        overlay
+            .bridge_mut()
+            .store
+            .merge_maintenance_dirty_forward_ordinal_interval(5, 10);
+        overlay
+            .graph_maintenance_timer_tick_bounded(GraphMaintenanceTimerTickArgs {
+                max_intervals: 8,
+                maintenance_instruction_budget: None,
+                current_epoch: None,
+                retired_epoch: 0,
+                min_retired_epochs_before_sweep: 0,
+                max_maintenance_cycles: 0,
+                max_vertices_for_tick: Some(3),
+                align_vertex_window_to_dirty: true,
+                vertex_window_start: 0,
+            })
+            .expect("tick");
+        assert_eq!(
+            overlay
+                .bridge()
+                .store
+                .peek_smallest_maintenance_dirty_forward_interval(),
+            Some((8, 10))
+        );
     }
 
     #[test]
