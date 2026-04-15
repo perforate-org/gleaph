@@ -2,17 +2,46 @@
 //!
 //! ## Measuring instruction cost for the periodic maintenance timer (wasm32)
 //!
-//! 1. In the canister timer closure (or a thin test hook), call
-//!    `ic_cdk::api::performance_counter(PerformanceCounterType::InstructionCounter)` immediately
-//!    before and after the sequence you want to bound: graph
-//!    [`gleaph_graph_store::integration::GraphStoreKernelOverlayGraph::graph_maintenance_timer_tick_bounded`],
-//!    optional [`gleaph_graph_store::integration::GraphStoreKernelOverlayGraph::property_maintenance_flush_step_bounded`],
-//!    then [`gleaph_graph_store::integration::GraphStoreKernelOverlayGraph::vacuum_step`].
-//! 2. Subtract end − start for the delta (instructions).
-//! 3. Compare against subnet per-message limits and set
-//!    [`DEFAULT_MAINTENANCE_DRAIN_INSTRUCTION_MARGIN`],
-//!    [`DEFAULT_PROPERTY_FLUSH_INSTRUCTION_MARGIN`], and the corresponding budgets so the sum of
-//!    drain + property flush + vacuum stays safely under the envelope you measured.
+//! The canister wires a `performance_counter` around the full maintenance callback (graph tick +
+//! optional property flush + vacuum + stable flush). When
+//! `LOG_MAINTENANCE_TICK_INSTRUCTION_METRICS` is enabled in `gleaph-graph`, each invocation logs:
+//!
+//! ```text
+//! [gleaph-graph] maintenance_tick_instructions total=T drain=D property_flush=P
+//! ```
+//!
+//! - **`total`**: whole timer callback including `flush_graph_stable_full` (not just drain).
+//! - **`drain`**: `instructions_used` from [`GraphStoreMaintenanceDirtyDrainSummary`](crate::facade::GraphStoreMaintenanceDirtyDrainSummary)
+//!   for the graph tick's drain step (0 if the tick failed before drain finished).
+//! - **`property_flush`**: `InstructionBudget::used()` for the property flush attempt when backlog
+//!   was non-empty.
+//!
+//! **Wasm canbench (gleaph-graph, `canbench-rs`, release wasm):** Person ring 256, same tick args as
+//! the benches. One representative run: **`bench_graph_maintenance_timer_tick_idle_person_ring_256`**
+//! total **~507K** instructions (`graph_maint_tick_drain` **~25K**, `graph_maint_tick_queued`
+//! **~440K**) — idle dirty btree means almost all tick work is the **queued** phase, not drain.
+//! **`bench_graph_maintenance_timer_tick_dirty_person_ring_256`** (merge `[100, 200)` each sample)
+//! total **~3.13M** (`graph_maint_tick_drain` **~1.16M**, `graph_maint_tick_queued` **~1.92M**).
+//! Rebuild wasm before comparing deltas. Scopes live in
+//! [`crate::integration::GraphStoreKernelOverlayGraph::graph_maintenance_timer_tick_bounded`]
+//! (`graph_maint_tick_drain` / `graph_maint_tick_queued`); the gleaph-graph bench adds
+//! `graph_maintenance_timer_tick`. Note: [`DEFAULT_MAINTENANCE_DRAIN_INSTRUCTION_BUDGET`] applies to
+//! the drain path only — queued maintenance is not instruction-capped by that budget.
+//!
+//! **Tuning margins (after collecting peaks on staging, e.g. busy graph + property dirty):**
+//!
+//! 1. Record high `D` with `budget_exhausted == false` in drain summary; if drain often exhausts,
+//!    raise [`DEFAULT_MAINTENANCE_DRAIN_INSTRUCTION_BUDGET`] by lowering
+//!    [`DEFAULT_MAINTENANCE_DRAIN_INSTRUCTION_MARGIN`], or raise the explicit drain limit directly.
+//! 2. Record high `P`; size [`DEFAULT_PROPERTY_FLUSH_INSTRUCTION_BUDGET`] the same way via
+//!    [`DEFAULT_PROPERTY_FLUSH_INSTRUCTION_MARGIN`].
+//! 3. Ensure `T` stays safely below the subnet per-message instruction ceiling (order of 40B).
+//!    If `T` is high, reduce per-tick work (`max_vertices_for_tick`, `max_maintenance_cycles`,
+//!    vacuum ops) before shrinking margins.
+//!
+//! Default margins below reserve multi‑billion instruction headroom under the 40B hint so queued
+//! maintenance, vacuum, and stable flush in the same callback are less likely to contend with drain
+//! or property budgets; tighten from real `T`/`D`/`P` logs when available.
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
@@ -25,11 +54,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub const IC_PER_MESSAGE_INSTRUCTION_BUDGET_HINT: u64 = 40_000_000_000;
 
 /// Safety margin subtracted from [`IC_PER_MESSAGE_INSTRUCTION_BUDGET_HINT`] for drain work alone.
-/// After measuring end-to-end tick cost, adjust this (or replace with an explicit limit from data).
-pub const DEFAULT_MAINTENANCE_DRAIN_INSTRUCTION_MARGIN: u64 = 50_000_000;
+/// Tuned with staging `maintenance_tick_instructions` logs (`drain=` / `total=`).
+pub const DEFAULT_MAINTENANCE_DRAIN_INSTRUCTION_MARGIN: u64 = 2_000_000_000;
 
 /// Safety margin for [`DEFAULT_PROPERTY_FLUSH_INSTRUCTION_BUDGET`] (separate from drain).
-pub const DEFAULT_PROPERTY_FLUSH_INSTRUCTION_MARGIN: u64 = 50_000_000;
+/// Tuned with staging `maintenance_tick_instructions` logs (`property_flush=` / `total=`).
+pub const DEFAULT_PROPERTY_FLUSH_INSTRUCTION_MARGIN: u64 = 1_000_000_000;
 
 /// Default instruction budget passed into [`crate::facade::GraphStore::drain_maintenance_dirty_into_queue_at_epoch_with_budget`]
 /// from the canister timer.

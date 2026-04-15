@@ -37,6 +37,16 @@ mod canbench_benches {
     fn bench_gql_execute_block_bulk_detach_delete() -> canbench_rs::BenchResult {
         super::bench::bench_gql_execute_block_bulk_detach_delete_impl()
     }
+
+    #[bench(raw)]
+    fn bench_graph_maintenance_timer_tick_idle_person_ring_256() -> canbench_rs::BenchResult {
+        super::bench::bench_graph_maintenance_timer_tick_idle_person_ring_256_impl()
+    }
+
+    #[bench(raw)]
+    fn bench_graph_maintenance_timer_tick_dirty_person_ring_256() -> canbench_rs::BenchResult {
+        super::bench::bench_graph_maintenance_timer_tick_dirty_person_ring_256_impl()
+    }
 }
 
 pub use subplan_wire_v1::SubplanWireV1;
@@ -1203,24 +1213,30 @@ const MAX_OPS_PER_VACUUM_TICK: usize = 64;
 #[cfg(target_arch = "wasm32")]
 const MAX_INTERVALS_PER_GRAPH_MAINTENANCE_TICK: usize = 8;
 
-/// Cap for [`GraphMaintenanceTimerTickArgs::max_vertices_for_tick`]. `None` scans all vertices
-/// (default). When `Some`, the timer rotates [`GraphMaintenanceTimerTickArgs::vertex_window_start`]
-/// across valid starts each tick and sets
-/// [`GraphMaintenanceTimerTickArgs::align_vertex_window_to_dirty`].
+/// Cap for [`GraphMaintenanceTimerTickArgs::max_vertices_for_tick`]. `None` = full vertex scan each
+/// tick (heavy). Production uses a bounded window plus rotation / dirty alignment (see timer wiring).
 #[cfg(target_arch = "wasm32")]
-const MAX_VERTICES_FOR_GRAPH_MAINTENANCE_TICK: Option<usize> = None;
+const MAX_VERTICES_FOR_GRAPH_MAINTENANCE_TICK: Option<usize> = Some(1000);
 
-/// Minimum time (nanoseconds, same units as [`ic_cdk::api::time`]) a segment must remain retired
-/// before [`RegionManager::sweep_retired_edge_segments`] may reclaim it. `0` matches the historical
-/// immediate sweep behavior.
+/// Minimum wall-clock age (nanoseconds, same units as [`ic_cdk::api::time`]) before sweeping a
+/// retired edge segment. Tied to [`PERIODIC_VACUUM_INTERVAL_SECS`] so segments typically survive at
+/// least one nominal maintenance period after retirement. Use `0` only for aggressive test sweeps.
 #[cfg(target_arch = "wasm32")]
-const MIN_RETIRED_EPOCHS_BEFORE_SWEEP_NS: u64 = 0;
+const MIN_RETIRED_EPOCHS_BEFORE_SWEEP_NS: u64 =
+    PERIODIC_VACUUM_INTERVAL_SECS.saturating_mul(1_000_000_000);
 
 /// Added to the vacuum timer backlog sum when [`set_property_maintenance_backlog_provider`] reports
 /// non-zero (property / PIDX dirty). Tuned to sit below [`VACUUM_QUEUE_BUSY_THRESHOLD`] alone but
 /// combine with graph backlog toward busy intervals.
 #[cfg(target_arch = "wasm32")]
 const PROPERTY_MAINTENANCE_BACKLOG_SCORE: usize = 64;
+
+/// Log one line per timer invocation: full callback instruction delta (includes stable flush) plus
+/// drain / property flush counters when available. Enable on staging to tune
+/// [`gleaph_graph_store::DEFAULT_MAINTENANCE_DRAIN_INSTRUCTION_MARGIN`] /
+/// [`gleaph_graph_store::DEFAULT_PROPERTY_FLUSH_INSTRUCTION_MARGIN`], then turn off.
+#[cfg(target_arch = "wasm32")]
+const LOG_MAINTENANCE_TICK_INSTRUCTION_METRICS: bool = false;
 
 fn wire_periodic_vacuum_runtime() {
     #[cfg(target_arch = "wasm32")]
@@ -1231,60 +1247,85 @@ fn wire_periodic_vacuum_runtime() {
             })),
             Some(Arc::new(|| {
                 let now = ic_cdk::api::time();
-                let _ = with_canister_graph_maintenance(|graph| {
-                    let vtx_n = graph.bridge().vertex_ordinals().len();
-                    let cap = MAX_VERTICES_FOR_GRAPH_MAINTENANCE_TICK
-                        .map(|m| m.min(vtx_n))
-                        .unwrap_or(vtx_n);
-                    let vertex_window_start = GRAPH_MAINTENANCE_VERTEX_WINDOW_START.with(|c| {
-                        if MAX_VERTICES_FOR_GRAPH_MAINTENANCE_TICK.is_none() || vtx_n == 0
-                            || cap >= vtx_n
-                        {
-                            return 0usize;
+                let t0 = ic_cdk::api::performance_counter(
+                    ic_cdk::api::PerformanceCounterType::InstructionCounter,
+                );
+                let (drain_instructions_used, property_flush_instructions_used) =
+                    with_canister_graph_maintenance(|graph| {
+                        let vtx_n = graph.bridge().vertex_ordinals().len();
+                        let cap = MAX_VERTICES_FOR_GRAPH_MAINTENANCE_TICK
+                            .map(|m| m.min(vtx_n))
+                            .unwrap_or(vtx_n);
+                        let vertex_window_start = GRAPH_MAINTENANCE_VERTEX_WINDOW_START.with(|c| {
+                            if MAX_VERTICES_FOR_GRAPH_MAINTENANCE_TICK.is_none() || vtx_n == 0
+                                || cap >= vtx_n
+                            {
+                                return 0usize;
+                            }
+                            let max_start = vtx_n.saturating_sub(cap);
+                            let span = max_start.saturating_add(1);
+                            let cur = c.get() % span;
+                            c.set((cur + 1) % span);
+                            cur
+                        });
+                        let mut drain_instructions_used = 0u64;
+                        match graph.graph_maintenance_timer_tick_bounded(
+                            GraphMaintenanceTimerTickArgs {
+                                max_intervals: MAX_INTERVALS_PER_GRAPH_MAINTENANCE_TICK,
+                                maintenance_instruction_budget: Some(
+                                    DEFAULT_MAINTENANCE_DRAIN_INSTRUCTION_BUDGET,
+                                ),
+                                current_epoch: Some(now),
+                                retired_epoch: now,
+                                min_retired_epochs_before_sweep: MIN_RETIRED_EPOCHS_BEFORE_SWEEP_NS,
+                                max_maintenance_cycles: 1,
+                                max_vertices_for_tick: MAX_VERTICES_FOR_GRAPH_MAINTENANCE_TICK,
+                                align_vertex_window_to_dirty:
+                                    MAX_VERTICES_FOR_GRAPH_MAINTENANCE_TICK.is_some(),
+                                vertex_window_start,
+                            },
+                        ) {
+                            Ok(summary) => {
+                                drain_instructions_used = summary.drain.instructions_used;
+                            }
+                            Err(err) => {
+                                ic_cdk::println!(
+                                    "[gleaph-graph] graph_maintenance_timer_tick_bounded failed: {err:?}"
+                                );
+                            }
                         }
-                        let max_start = vtx_n.saturating_sub(cap);
-                        let span = max_start.saturating_add(1);
-                        let cur = c.get() % span;
-                        c.set((cur + 1) % span);
-                        cur
+                        let backlog = graph.property_maintenance_backlog();
+                        let mut property_flush_instructions_used = 0u64;
+                        if backlog.property_index_dirty
+                            || backlog.node_property_store_dirty
+                            || backlog.edge_property_store_dirty
+                        {
+                            let mut prop_budget =
+                                InstructionBudget::new(DEFAULT_PROPERTY_FLUSH_INSTRUCTION_BUDGET);
+                            match graph.property_maintenance_flush_step_bounded(Some(&mut prop_budget))
+                            {
+                                Ok(_) => {
+                                    property_flush_instructions_used = prop_budget.used();
+                                }
+                                Err(err) => {
+                                    ic_cdk::println!(
+                                        "[gleaph-graph] property_maintenance_flush_step_bounded failed: {err:?}"
+                                    );
+                                }
+                            }
+                        }
+                        let _ = graph.vacuum_step(MAX_OPS_PER_VACUUM_TICK);
+                        (drain_instructions_used, property_flush_instructions_used)
                     });
-                    if let Err(err) = graph.graph_maintenance_timer_tick_bounded(
-                        GraphMaintenanceTimerTickArgs {
-                            max_intervals: MAX_INTERVALS_PER_GRAPH_MAINTENANCE_TICK,
-                            maintenance_instruction_budget: Some(
-                                DEFAULT_MAINTENANCE_DRAIN_INSTRUCTION_BUDGET,
-                            ),
-                            current_epoch: Some(now),
-                            retired_epoch: now,
-                            min_retired_epochs_before_sweep: MIN_RETIRED_EPOCHS_BEFORE_SWEEP_NS,
-                            max_maintenance_cycles: 1,
-                            max_vertices_for_tick: MAX_VERTICES_FOR_GRAPH_MAINTENANCE_TICK,
-                            align_vertex_window_to_dirty: MAX_VERTICES_FOR_GRAPH_MAINTENANCE_TICK
-                                .is_some(),
-                            vertex_window_start,
-                        },
-                    ) {
-                        ic_cdk::println!(
-                            "[gleaph-graph] graph_maintenance_timer_tick_bounded failed: {err:?}"
-                        );
-                    }
-                    let backlog = graph.property_maintenance_backlog();
-                    if backlog.property_index_dirty
-                        || backlog.node_property_store_dirty
-                        || backlog.edge_property_store_dirty
-                    {
-                        let mut prop_budget =
-                            InstructionBudget::new(DEFAULT_PROPERTY_FLUSH_INSTRUCTION_BUDGET);
-                        if let Err(err) = graph
-                            .property_maintenance_flush_step_bounded(Some(&mut prop_budget))
-                        {
-                            ic_cdk::println!(
-                                "[gleaph-graph] property_maintenance_flush_step_bounded failed: {err:?}"
-                            );
-                        }
-                    }
-                    graph.vacuum_step(MAX_OPS_PER_VACUUM_TICK)
-                });
+                let t1 = ic_cdk::api::performance_counter(
+                    ic_cdk::api::PerformanceCounterType::InstructionCounter,
+                );
+                let total = t1.saturating_sub(t0);
+                if LOG_MAINTENANCE_TICK_INSTRUCTION_METRICS {
+                    ic_cdk::println!(
+                        "[gleaph-graph] maintenance_tick_instructions total={total} drain={drain_instructions_used} property_flush={property_flush_instructions_used}",
+                    );
+                }
             })),
         );
         set_graph_maintenance_backlog_provider(Some(Arc::new(|| {

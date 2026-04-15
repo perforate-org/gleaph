@@ -344,6 +344,10 @@ where
         (**self).tombstone_edge_pair_and_write(spec, memory)
     }
 
+    fn merge_maintenance_dirty_forward_ordinal_interval(&mut self, start: u64, end: u64) {
+        (**self).merge_maintenance_dirty_forward_ordinal_interval(start, end)
+    }
+
     fn maintenance_dirty_forward_ordinal_interval_count(&self) -> u64 {
         (**self).maintenance_dirty_forward_ordinal_interval_count()
     }
@@ -736,6 +740,10 @@ impl<M: Memory + Clone> GraphStoreStore for GraphStore<M> {
         memory: &impl Memory,
     ) -> Result<GraphStoreMutationWriteSummary<GraphMutationPath>, WritebackError> {
         Self::tombstone_edge_pair_and_write(self, spec, memory)
+    }
+
+    fn merge_maintenance_dirty_forward_ordinal_interval(&mut self, start: u64, end: u64) {
+        GraphStore::merge_maintenance_dirty_forward_ordinal_interval(self, start, end)
     }
 
     fn maintenance_dirty_forward_ordinal_interval_count(&self) -> u64 {

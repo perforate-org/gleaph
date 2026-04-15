@@ -670,6 +670,14 @@ impl<'a, S: GraphStoreStore> GraphStoreKernelOverlayGraph<'a, S> {
         self.bridge.vacuum_stats()
     }
 
+    /// Records a half-open forward ordinal dirty interval `[start, end)` for incremental
+    /// maintenance (delegates to [`GraphStoreStore::merge_maintenance_dirty_forward_ordinal_interval`]).
+    pub fn merge_maintenance_dirty_forward_ordinal_interval(&mut self, start: u64, end: u64) {
+        self.bridge
+            .store
+            .merge_maintenance_dirty_forward_ordinal_interval(start, end);
+    }
+
     /// Drains stable ordinal dirty intervals into the maintenance queue (optional instruction
     /// budget), then optionally runs up to `max_maintenance_cycles` queued maintenance cycles.
     ///
@@ -716,18 +724,21 @@ impl<'a, S: GraphStoreStore> GraphStoreKernelOverlayGraph<'a, S> {
         let mut budget = args
             .maintenance_instruction_budget
             .map(crate::InstructionBudget::new);
-        let drain = self
-            .bridge
-            .store
-            .drain_maintenance_dirty_into_queue_at_epoch_with_budget_and_write(
-                &drain_vertex_refs,
-                args.current_epoch,
-                args.max_intervals,
-                budget.as_mut(),
-                start_idx,
-                memory,
-            )?;
+        let drain = {
+            let _scope = crate::canbench_scope::scope("graph_maint_tick_drain");
+            self.bridge
+                .store
+                .drain_maintenance_dirty_into_queue_at_epoch_with_budget_and_write(
+                    &drain_vertex_refs,
+                    args.current_epoch,
+                    args.max_intervals,
+                    budget.as_mut(),
+                    start_idx,
+                    memory,
+                )?
+        };
         let queued = if args.max_maintenance_cycles > 0 {
+            let _scope = crate::canbench_scope::scope("graph_maint_tick_queued");
             Some(
                 self.bridge
                     .store

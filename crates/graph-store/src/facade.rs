@@ -627,6 +627,8 @@ pub trait GraphStoreStore {
         memory: &impl Memory,
     ) -> Result<GraphStoreMutationWriteSummary<GraphMutationPath>, WritebackError>;
 
+    fn merge_maintenance_dirty_forward_ordinal_interval(&mut self, start: u64, end: u64);
+
     fn maintenance_dirty_forward_ordinal_interval_count(&self) -> u64;
 
     fn maintenance_queue_len(&self) -> usize;

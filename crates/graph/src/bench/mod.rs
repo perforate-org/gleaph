@@ -127,9 +127,10 @@ use gleaph_gql_executor::ExecutionContext;
 use gleaph_gql_planner::build_plan_output;
 use gleaph_graph_kernel::PropertyMap;
 use gleaph_graph_store::integration::{
-    GraphStoreKernelHarness, KernelBootstrapEdgeSpec, KernelBootstrapGraphSpec,
-    KernelBootstrapNodeSpec,
+    GraphMaintenanceTimerTickArgs, GraphStoreKernelHarness, KernelBootstrapEdgeSpec,
+    KernelBootstrapGraphSpec, KernelBootstrapNodeSpec,
 };
+use gleaph_graph_store::DEFAULT_MAINTENANCE_DRAIN_INSTRUCTION_BUDGET;
 
 fn execution_context() -> ExecutionContext {
     ExecutionContext {
@@ -754,6 +755,68 @@ pub(crate) fn bench_gql_execute_block_bulk_detach_delete_impl() -> canbench_rs::
         seed_person_chain_detach_delete_high_degree(),
         "MATCH (n:Person {uid: 'u16'}) DETACH DELETE n"
     )
+}
+
+fn maintenance_timer_tick_args_canbench() -> GraphMaintenanceTimerTickArgs {
+    GraphMaintenanceTimerTickArgs {
+        max_intervals: 8,
+        maintenance_instruction_budget: Some(DEFAULT_MAINTENANCE_DRAIN_INSTRUCTION_BUDGET),
+        current_epoch: None,
+        retired_epoch: 0,
+        min_retired_epochs_before_sweep: 0,
+        max_maintenance_cycles: 1,
+        max_vertices_for_tick: Some(1000),
+        align_vertex_window_to_dirty: true,
+        vertex_window_start: 0,
+    }
+}
+
+/// One timer tick on a seeded `Person` ring (256 vertices); measured path is drain + at most one
+/// queued maintenance cycle. No synthetic dirty interval — steady-state / mostly-empty dirty btree.
+///
+/// Canbench scopes: outer `graph_maintenance_timer_tick`; inner (graph-store `canbench-rs`)
+/// `graph_maint_tick_drain` / `graph_maint_tick_queued`.
+pub(crate) fn bench_graph_maintenance_timer_tick_idle_person_ring_256_impl(
+) -> canbench_rs::BenchResult {
+    let spec = seed_person_ring_spec(256);
+    wipe_for_bench_iteration();
+    let mut harness = GraphStoreKernelHarness::bootstrap_empty(BenchMemory::default())
+        .expect("bootstrap_empty");
+    let (mut overlay, _) = harness
+        .bind_overlay_with_graph(&spec)
+        .expect("seed person ring");
+    let args = maintenance_timer_tick_args_canbench();
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("graph_maintenance_timer_tick");
+        overlay
+            .graph_maintenance_timer_tick_bounded(args)
+            .expect("maintenance timer tick");
+    })
+}
+
+/// Same overlay shape as [`bench_graph_maintenance_timer_tick_idle_person_ring_256_impl`], but each
+/// sample merges a forward dirty ordinal window `[100, 200)` before the tick so drain + alignment
+/// paths see real work.
+///
+/// Canbench scopes: same as the idle bench (`graph_maintenance_timer_tick` plus
+/// `graph_maint_tick_drain` / `graph_maint_tick_queued` when graph-store enables `canbench-rs`).
+pub(crate) fn bench_graph_maintenance_timer_tick_dirty_person_ring_256_impl(
+) -> canbench_rs::BenchResult {
+    let spec = seed_person_ring_spec(256);
+    wipe_for_bench_iteration();
+    let mut harness = GraphStoreKernelHarness::bootstrap_empty(BenchMemory::default())
+        .expect("bootstrap_empty");
+    let (mut overlay, _) = harness
+        .bind_overlay_with_graph(&spec)
+        .expect("seed person ring");
+    let args = maintenance_timer_tick_args_canbench();
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("graph_maintenance_timer_tick");
+        overlay.merge_maintenance_dirty_forward_ordinal_interval(100, 200);
+        overlay
+            .graph_maintenance_timer_tick_bounded(args)
+            .expect("maintenance timer tick");
+    })
 }
 
 /// `NEXT`: two `SET` clauses (two planner statements / potential flush boundaries; graph growth stress on `role`).
