@@ -89,6 +89,71 @@ pub fn merge_dirty_ordinal_interval<M: Memory + Clone>(
     map.insert(MaintenanceDirtyPackedInterval::pack(start, end), ());
 }
 
+/// Half-open intervals `[lo, hi)` on the forward-layout ordinal axis for maintenance dirty
+/// recording after label sidecar refresh.
+///
+/// Merges forward and reverse refreshed ordinals (deduplicated), expands each by `radius`, clips
+/// to `[0, vmax)`, coalesces overlaps in memory, then returns disjoint intervals for stable-map
+/// merges. When every ordinal `0..vmax-1` appears (full sidecar rebuild), returns a single
+/// `[0, vmax)`.
+pub fn dirty_intervals_from_label_sidecar_refresh(
+    refreshed_forward: &[usize],
+    refreshed_reverse: &[usize],
+    radius: usize,
+    vmax: usize,
+) -> Vec<(u64, u64)> {
+    if vmax == 0 {
+        return Vec::new();
+    }
+
+    let mut ordinals: Vec<usize> = refreshed_forward
+        .iter()
+        .chain(refreshed_reverse.iter())
+        .copied()
+        .collect();
+    ordinals.sort_unstable();
+    ordinals.dedup();
+
+    if ordinals.len() == vmax
+        && ordinals.first().copied() == Some(0)
+        && ordinals.last().copied() == Some(vmax.saturating_sub(1))
+        && ordinals.windows(2).all(|w| w[1] == w[0] + 1)
+    {
+        return vec![(0, vmax as u64)];
+    }
+
+    let mut intervals: Vec<(u64, u64)> = Vec::with_capacity(ordinals.len());
+    for ordinal in ordinals {
+        if ordinal >= vmax {
+            continue;
+        }
+        let lo = ordinal.saturating_sub(radius);
+        let hi = ordinal
+            .saturating_add(radius)
+            .saturating_add(1)
+            .min(vmax);
+        if lo < hi {
+            intervals.push((lo as u64, hi as u64));
+        }
+    }
+    if intervals.is_empty() {
+        return Vec::new();
+    }
+    intervals.sort_by_key(|&(lo, _)| lo);
+
+    let mut merged: Vec<(u64, u64)> = Vec::new();
+    for (lo, hi) in intervals {
+        if let Some(last) = merged.last_mut() {
+            if lo <= last.1 {
+                last.1 = last.1.max(hi);
+                continue;
+            }
+        }
+        merged.push((lo, hi));
+    }
+    merged
+}
+
 /// Pops the smallest interval by `(start, end)` lexicographic order.
 pub fn pop_first_dirty_interval<M: Memory + Clone>(
     map: &mut GraphMaintenanceDirtyOrdinalMap<M>,
@@ -135,5 +200,36 @@ mod tests {
         assert_eq!(pop_first_dirty_interval(&mut map), Some((1, 2)));
         assert_eq!(pop_first_dirty_interval(&mut map), Some((5, 7)));
         assert_eq!(pop_first_dirty_interval(&mut map), None);
+    }
+
+    #[test]
+    fn dirty_intervals_full_span_single_interval() {
+        let fwd: Vec<usize> = (0..4).collect();
+        let rev: Vec<usize> = (0..4).collect();
+        assert_eq!(
+            dirty_intervals_from_label_sidecar_refresh(&fwd, &rev, 1, 4),
+            vec![(0, 4)]
+        );
+    }
+
+    #[test]
+    fn dirty_intervals_coalesce_adjacent_with_radius_zero() {
+        assert_eq!(
+            dirty_intervals_from_label_sidecar_refresh(&[0, 1, 2], &[], 0, 10),
+            vec![(0, 3)]
+        );
+    }
+
+    #[test]
+    fn dirty_intervals_dedup_forward_reverse_same_ordinal() {
+        assert_eq!(
+            dirty_intervals_from_label_sidecar_refresh(&[0], &[0], 0, 5),
+            vec![(0, 1)]
+        );
+    }
+
+    #[test]
+    fn dirty_intervals_empty_when_vmax_zero() {
+        assert!(dirty_intervals_from_label_sidecar_refresh(&[0], &[], 0, 0).is_empty());
     }
 }

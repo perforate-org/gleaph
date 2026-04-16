@@ -1,6 +1,7 @@
 use crate::integration::GraphStoreKernelOverlayGraph;
 use crate::maintenance_dirty::{
-    merge_dirty_ordinal_interval, peek_first_dirty_interval, pop_first_dirty_interval,
+    dirty_intervals_from_label_sidecar_refresh, merge_dirty_ordinal_interval,
+    peek_first_dirty_interval, pop_first_dirty_interval,
 };
 
 use super::*;
@@ -9,6 +10,12 @@ impl<M: Memory + Clone> GraphStore<M> {
     /// After forward/reverse label sidecar refresh, mark the corresponding **forward-layout vertex
     /// ordinals** (forward and reverse tables stay row-aligned per
     /// [`GraphRuntime::append_empty_vertex_pair`]) for incremental maintenance scoring.
+    ///
+    /// Ordinals from forward/reverse are deduplicated, expanded to `[ordinal ± radius)` clipped to
+    /// `[0, vmax)`, merged in memory, then written with one stable-map merge per disjoint interval
+    /// (avoids O(k) separate [`merge_dirty_ordinal_interval`] calls when k is large). When every
+    /// forward-layout ordinal appears (full sidecar rebuild path), records a single `[0, vmax)`
+    /// interval. See [`crate::maintenance_dirty::dirty_intervals_from_label_sidecar_refresh`].
     fn note_maintenance_dirty_after_label_sidecar_refresh(
         &mut self,
         refreshed_forward: &[usize],
@@ -16,16 +23,14 @@ impl<M: Memory + Clone> GraphStore<M> {
     ) {
         let radius = self.graph.insert_policy.rebalance_window_radius;
         let vmax = self.graph.forward.0.vertices.len();
-        for &ordinal in refreshed_forward
-            .iter()
-            .chain(refreshed_reverse.iter())
-        {
-            let lo = ordinal.saturating_sub(radius);
-            let hi = ordinal
-                .saturating_add(radius)
-                .saturating_add(1)
-                .min(vmax);
-            self.merge_maintenance_dirty_forward_ordinal_interval(lo as u64, hi as u64);
+        let intervals = dirty_intervals_from_label_sidecar_refresh(
+            refreshed_forward,
+            refreshed_reverse,
+            radius,
+            vmax,
+        );
+        for (lo, hi) in intervals {
+            self.merge_maintenance_dirty_forward_ordinal_interval(lo, hi);
         }
     }
 
@@ -91,16 +96,19 @@ impl<M: Memory + Clone> GraphStore<M> {
     ) -> GraphStoreResult<(Vec<usize>, Vec<usize>)> {
         let refreshed = {
             let _p = crate::bench_profile::PhaseGuard::new("facade_low_level_graph_refresh_write");
-            crate::canbench_scope::scope("pma_graph_refresh_write");
+            let _pma_rw = crate::canbench_scope::scope("pma_graph_refresh_write");
             self.graph
                 .refresh_and_write_dirty_to_stable_memory(&mut self.manager.borrow_mut(), memory)?
         };
-        self.note_maintenance_dirty_after_label_sidecar_refresh(&refreshed.0, &refreshed.1);
+        {
+            let _dirty_note = crate::canbench_scope::scope("pma_maint_dirty_ordinal_note");
+            self.note_maintenance_dirty_after_label_sidecar_refresh(&refreshed.0, &refreshed.1);
+        }
         self.node_property_store_dirty = false;
         self.edge_property_store_dirty = false;
         self.property_index_dirty = false;
         let _p = crate::bench_profile::PhaseGuard::new("facade_maint_queue_only");
-        crate::canbench_scope::scope("pma_maint_queue_persist");
+        let _mq = crate::canbench_scope::scope("pma_maint_queue_persist");
         self.persist_maintenance_queue(memory)?;
         self.write_shard_canister_directory_to_stable_memory(memory)
             .map_err(GraphStoreError::Writeback)?;

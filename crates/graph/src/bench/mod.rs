@@ -22,8 +22,18 @@
 //! Terminal [`GraphWrite::flush`] is
 //! `gql_exec_plan_flush` (despite the name, not query planning). PMA flush scopes:
 //! `pma_graph_refresh_write`, `pma_node_property_store_flush`, `pma_edge_property_store_flush`,
-//! `pma_property_index_paged_flush`, `pma_maint_queue_persist`, finer PIDX scopes inside flush
+//! `pma_property_index_paged_flush`, `pma_maint_queue_persist`, `pma_maint_dirty_ordinal_note`
+//! (maintenance dirty ordinal merges after surface refresh), finer PIDX scopes inside flush
 //! (`pma_pidx_*`), and (when enabled) `gql_exec_set_property_item`.
+//!
+//! **`pma_graph_refresh_write` / `pma_maint_queue_persist` vs old `canbench_results.yml`:** those
+//! scopes use `let`-bound `canbench_rs::bench_scope` guards so `Drop` runs **after** the refresh /
+//! queue persist calls (not at a bare `bench_scope(...);` statement boundary). Older
+//! persisted rows often showed **~hundreds of instructions** because the scope ended before the
+//! measured work—**not** because queue persist was cheap. Comparing new runs to stale YAML then
+//! shows huge positive `ins Δ%` on those labels; **`pma_maint_dirty_ordinal_note`** (~hundreds to low
+//! thousands per call) isolates the maintenance-dirty ordinal merge alone. Re-run
+//! **`canbench --persist`** to reset baselines.
 //!
 //! ## Reading mutation baseline (`canbench_results.yml`)
 //!

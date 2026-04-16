@@ -28,6 +28,11 @@
 //! `graph_maintenance_timer_tick`. Note: [`DEFAULT_MAINTENANCE_DRAIN_INSTRUCTION_BUDGET`] applies to
 //! the drain path only — queued maintenance is not instruction-capped by that budget.
 //!
+//! DML terminal flush (`gql_exec_plan_flush` in gleaph-graph) includes stable maintenance-dirty
+//! ordinal merges under **`pma_maint_dirty_ordinal_note`** (after `pma_graph_refresh_write`, still
+//! inside graph-store `canbench-rs`); compare that scope when insert/mutation benches shift without
+//! `pma_graph_refresh_write` moving.
+//!
 //! **Tuning margins (after collecting peaks on staging, e.g. busy graph + property dirty):**
 //!
 //! 1. Record high `D` with `budget_exhausted == false` in drain summary; if drain often exhausts,
