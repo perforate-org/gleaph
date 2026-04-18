@@ -22,9 +22,11 @@ half = "2"
 rapidhash = "4"
 rust_decimal = "1"
 thiserror = "2"
+rkyv = { workspace = true, optional = true }
 
 [features]
 default = []
+ast-rkyv-no-span = ["dep:rkyv"]
 cypher = []
 sql-compat = []
 f128 = []

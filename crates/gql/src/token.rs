@@ -26,6 +26,12 @@ impl Span {
     }
 }
 
+impl Default for Span {
+    fn default() -> Self {
+        Span::DUMMY
+    }
+}
+
 /// A token with its source span.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Spanned {

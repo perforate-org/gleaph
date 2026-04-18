@@ -115,17 +115,41 @@ impl fmt::Display for Decimal {
 ///
 /// Supports AND (`&`), OR (`|`), NOT (`!`), wildcard (`%`), and plain names.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    rkyv(
+        serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+        ),
+        deserialize_bounds(__D::Error: rkyv::rancor::Source),
+        bytecheck(bounds(
+            __C: rkyv::validation::ArchiveContext,
+            __C::Error: rkyv::rancor::Source,
+        )),
+    )
+)]
 pub enum LabelExpr {
     /// A single label name, e.g. `:Person`
     Name(String),
     /// Wildcard `%` -- matches any entity that has at least one label.
     Wildcard,
     /// AND expression `A&B` -- entity must have both labels.
-    And(Box<LabelExpr>, Box<LabelExpr>),
+    And(
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))] Box<LabelExpr>,
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))] Box<LabelExpr>,
+    ),
     /// OR expression `A|B` -- entity must have at least one of the labels.
-    Or(Box<LabelExpr>, Box<LabelExpr>),
+    Or(
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))] Box<LabelExpr>,
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))] Box<LabelExpr>,
+    ),
     /// NOT expression `!A` -- entity must not have the label.
-    Not(Box<LabelExpr>),
+    Not(#[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))] Box<LabelExpr>),
 }
 
 /// Evaluate a label expression against a single edge label string.
@@ -150,6 +174,10 @@ pub fn matches_edge_label(expr: &LabelExpr, edge_label: Option<&str>) -> bool {
 
 /// Specifies whether a pattern element refers to a vertex or an edge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum EntityType {
     Vertex,
     Edge,
@@ -159,6 +187,10 @@ pub enum EntityType {
 
 /// An element along a path result: alternating vertices and edges.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum PathElement {
     Vertex(u64),
     Edge {
@@ -172,6 +204,10 @@ pub enum PathElement {
 
 /// All seven edge directions defined in GQL.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum EdgeDirection {
     /// `->` or `~>`
     PointingRight,
@@ -218,6 +254,59 @@ pub fn narrow_unsigned(v: u128, width: u16) -> Option<crate::Value> {
         128 => Some(Value::Uint128(v)),
         256 => Some(Value::Uint256(Uint256::new(ethnum::U256::from(v)))),
         _ => None,
+    }
+}
+
+// ──── rkyv remote defs (gleaph-gql `ast-rkyv-no-span`) ────
+
+#[cfg(feature = "ast-rkyv-no-span")]
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[rkyv(remote = Int256)]
+pub(crate) struct Int256Def(#[rkyv(getter = int256_le_bytes)] [u8; 32]);
+
+#[cfg(feature = "ast-rkyv-no-span")]
+fn int256_le_bytes(i: &Int256) -> [u8; 32] {
+    i.0.to_le_bytes()
+}
+
+#[cfg(feature = "ast-rkyv-no-span")]
+impl From<Int256Def> for Int256 {
+    fn from(Int256Def(bytes): Int256Def) -> Self {
+        Int256(ethnum::I256::from_le_bytes(bytes))
+    }
+}
+
+#[cfg(feature = "ast-rkyv-no-span")]
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[rkyv(remote = Uint256)]
+pub(crate) struct Uint256Def(#[rkyv(getter = uint256_le_bytes)] [u8; 32]);
+
+#[cfg(feature = "ast-rkyv-no-span")]
+fn uint256_le_bytes(i: &Uint256) -> [u8; 32] {
+    i.0.to_le_bytes()
+}
+
+#[cfg(feature = "ast-rkyv-no-span")]
+impl From<Uint256Def> for Uint256 {
+    fn from(Uint256Def(bytes): Uint256Def) -> Self {
+        Uint256(ethnum::U256::from_le_bytes(bytes))
+    }
+}
+
+#[cfg(feature = "ast-rkyv-no-span")]
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[rkyv(remote = Decimal)]
+pub(crate) struct DecimalDef(#[rkyv(getter = decimal_le_bytes)] [u8; 16]);
+
+#[cfg(feature = "ast-rkyv-no-span")]
+fn decimal_le_bytes(d: &Decimal) -> [u8; 16] {
+    d.0.serialize()
+}
+
+#[cfg(feature = "ast-rkyv-no-span")]
+impl From<DecimalDef> for Decimal {
+    fn from(DecimalDef(bytes): DecimalDef) -> Self {
+        Decimal(rust_decimal::Decimal::deserialize(bytes))
     }
 }
 

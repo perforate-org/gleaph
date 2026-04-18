@@ -14,7 +14,12 @@ use crate::types::{EdgeDirection, LabelExpr};
 /// Top-level GQL program: an optional session activity followed by an optional
 /// transaction activity.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct GqlProgram {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub session_activity: Vec<SessionCommand>,
     pub transaction_activity: Option<TransactionActivity>,
@@ -23,7 +28,12 @@ pub struct GqlProgram {
 /// A transaction activity contains an optional start-transaction command, a
 /// statement block, and an optional commit/rollback.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct TransactionActivity {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub start: Option<StartTransactionCommand>,
     pub body: Option<StatementBlock>,
@@ -33,7 +43,12 @@ pub struct TransactionActivity {
 /// A statement block: a primary statement optionally followed by NEXT-chained
 /// statements (GQL `statementBlock`).
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct StatementBlock {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub first: Statement,
     pub next: Vec<NextStatement>,
@@ -49,7 +64,12 @@ impl StatementBlock {
 /// A NEXT-chained statement with optional YIELD clause
 /// (GQL `nextStatement`).
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct NextStatement {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub yield_items: Option<Vec<YieldItem>>,
     pub statement: Statement,
@@ -57,6 +77,10 @@ pub struct NextStatement {
 
 /// How to end a transaction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum TransactionEnd {
     Commit,
     Rollback,
@@ -68,6 +92,10 @@ pub enum TransactionEnd {
 
 /// A session command (SET, RESET, or CLOSE).
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum SessionCommand {
     Set(SessionSetCommand),
     Reset(SessionResetCommand),
@@ -76,6 +104,10 @@ pub enum SessionCommand {
 
 /// SESSION SET — set a session attribute.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum SessionSetCommand {
     /// SESSION SET SCHEMA <catalog-qualified name>
     Schema(ObjectName),
@@ -116,6 +148,10 @@ pub enum SessionSetCommand {
 
 /// SESSION RESET — reset a session attribute.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum SessionResetCommand {
     /// SESSION RESET (no arguments — reset everything)
     All,
@@ -148,7 +184,12 @@ pub enum SessionResetCommand {
 
 /// START TRANSACTION with optional transaction characteristics.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct StartTransactionCommand {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     /// Transaction characteristics (may include multiple comma-separated modes).
     pub access_modes: Vec<TransactionAccessMode>,
@@ -156,6 +197,10 @@ pub struct StartTransactionCommand {
 
 /// Transaction access mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum TransactionAccessMode {
     ReadOnly,
     ReadWrite,
@@ -167,6 +212,10 @@ pub enum TransactionAccessMode {
 
 /// A fully-qualified (optionally schema-qualified) object name.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct ObjectName {
     pub parts: Vec<String>,
 }
@@ -185,6 +234,10 @@ impl ObjectName {
 
 /// All GQL statement types.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum Statement {
     // — DDL (§12) —
     CreateSchema(CreateSchemaStatement),
@@ -215,7 +268,12 @@ pub enum Statement {
 
 /// CREATE SCHEMA [IF NOT EXISTS] <name>
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct CreateSchemaStatement {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub if_not_exists: bool,
     pub name: ObjectName,
@@ -223,7 +281,12 @@ pub struct CreateSchemaStatement {
 
 /// DROP SCHEMA [IF EXISTS] <name>
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct DropSchemaStatement {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub if_exists: bool,
     pub name: ObjectName,
@@ -231,7 +294,12 @@ pub struct DropSchemaStatement {
 
 /// CREATE [PROPERTY] GRAPH [IF NOT EXISTS] [OR REPLACE] <name> ...
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct CreateGraphStatement {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     /// Whether the `PROPERTY` keyword was present (syntactic only — semantically equivalent).
     pub property_keyword: bool,
@@ -246,6 +314,10 @@ pub struct CreateGraphStatement {
 
 /// Specifies a graph type — either inline or by referencing a named type.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum GraphTypeSpec {
     /// ANY [PROPERTY] [GRAPH] — open graph type (accepts any schema).
     Any {
@@ -265,7 +337,12 @@ pub enum GraphTypeSpec {
 
 /// DROP [PROPERTY] GRAPH [IF EXISTS] <name>
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct DropGraphStatement {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub property_keyword: bool,
     pub if_exists: bool,
@@ -274,7 +351,12 @@ pub struct DropGraphStatement {
 
 /// CREATE [PROPERTY] GRAPH TYPE [IF NOT EXISTS] [OR REPLACE] <name> AS <definition>
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct CreateGraphTypeStatement {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub property_keyword: bool,
     pub or_replace: bool,
@@ -289,7 +371,12 @@ pub struct CreateGraphTypeStatement {
 
 /// DROP [PROPERTY] GRAPH TYPE [IF EXISTS] <name>
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct DropGraphTypeStatement {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub property_keyword: bool,
     pub if_exists: bool,
@@ -302,7 +389,12 @@ pub struct DropGraphTypeStatement {
 
 /// INSERT <insert-graph-pattern>
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct InsertStatement {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub graph_name: Option<ObjectName>,
     pub patterns: Vec<InsertPathPattern>,
@@ -310,13 +402,22 @@ pub struct InsertStatement {
 
 /// An insert path pattern — a sequence of alternating node and edge patterns.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct InsertPathPattern {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub elements: Vec<InsertElement>,
 }
 
 /// An element within an insert pattern.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum InsertElement {
     Node(InsertNodePattern),
     Edge(InsertEdgePattern),
@@ -324,7 +425,12 @@ pub enum InsertElement {
 
 /// A node in an INSERT pattern: (var :Label {props})
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct InsertNodePattern {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub variable: Option<String>,
     pub is_or_colon: Option<IsOrColon>,
@@ -334,7 +440,12 @@ pub struct InsertNodePattern {
 
 /// An edge in an INSERT pattern with direction and label.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct InsertEdgePattern {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub direction: EdgeDirection,
     pub variable: Option<String>,
@@ -345,7 +456,12 @@ pub struct InsertEdgePattern {
 
 /// A property assignment: key = value.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct PropertySetting {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub name: String,
     pub value: Expr,
@@ -353,16 +469,26 @@ pub struct PropertySetting {
 
 /// SET statement with a list of set items.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct SetStatement {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub items: Vec<SetItem>,
 }
 
 /// A single SET clause item.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum SetItem {
     /// SET v.prop = expr
     Property {
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
         span: Span,
         variable: String,
         property: String,
@@ -370,12 +496,14 @@ pub enum SetItem {
     },
     /// SET v = expr  (replace all properties)
     AllProperties {
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
         span: Span,
         variable: String,
         value: Expr,
     },
     /// SET v :Label or SET v IS Label
     Label {
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
         span: Span,
         variable: String,
         label: String,
@@ -385,22 +513,33 @@ pub enum SetItem {
 
 /// REMOVE statement with a list of items.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct RemoveStatement {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub items: Vec<RemoveItem>,
 }
 
 /// A single REMOVE clause item.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum RemoveItem {
     /// REMOVE v.prop
     Property {
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
         span: Span,
         variable: String,
         property: String,
     },
     /// REMOVE v :Label or REMOVE v IS Label
     Label {
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
         span: Span,
         variable: String,
         label: String,
@@ -410,7 +549,12 @@ pub enum RemoveItem {
 
 /// DELETE [DETACH | NODETACH] <variable-list>
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct DeleteStatement {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub detach: DeleteDetach,
     /// Delete items — each is a value expression (typically a variable
@@ -420,6 +564,10 @@ pub struct DeleteStatement {
 
 /// Whether a DELETE is DETACH, NODETACH, or unspecified.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum DeleteDetach {
     Detach,
     NoDetach,
@@ -433,13 +581,38 @@ pub enum DeleteDetach {
 /// A composite query expression: a linear query optionally combined with
 /// UNION / EXCEPT / INTERSECT / OTHERWISE operators.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    rkyv(
+        serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+        ),
+        deserialize_bounds(__D::Error: rkyv::rancor::Source),
+        bytecheck(bounds(
+            __C: rkyv::validation::ArchiveContext,
+            __C::Error: rkyv::rancor::Source,
+        )),
+    )
+)]
 pub struct CompositeQueryExpr {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
     pub left: LinearQueryStatement,
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
     pub rest: Vec<(SetOp, LinearQueryStatement)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum ProcedureBindingKind {
     Graph,
     Table,
@@ -447,14 +620,36 @@ pub enum ProcedureBindingKind {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    rkyv(
+        serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+        ),
+        deserialize_bounds(__D::Error: rkyv::rancor::Source),
+        bytecheck(bounds(
+            __C: rkyv::validation::ArchiveContext,
+            __C::Error: rkyv::rancor::Source,
+        )),
+    )
+)]
 pub enum ProcedureBindingInitializer {
     Object(ObjectName),
-    Expr(Expr),
-    Query(Box<CompositeQueryExpr>),
+    Expr(#[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))] Expr),
+    Query(#[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))] Box<CompositeQueryExpr>),
 }
 
 /// How a type annotation was introduced syntactically.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum TypedPrefix {
     /// `::` (double colon)
     DoubleColon,
@@ -466,6 +661,10 @@ pub enum TypedPrefix {
 
 /// How a label was introduced syntactically (GQL `isOrColon`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum IsOrColon {
     /// `IS` keyword
     Is,
@@ -475,6 +674,10 @@ pub enum IsOrColon {
 
 /// Whether `PATH` (singular) or `PATHS` (plural) keyword was used (GQL `pathOrPaths`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum PathOrPaths {
     Path,
     Paths,
@@ -482,6 +685,10 @@ pub enum PathOrPaths {
 
 /// Whether `GROUP` (singular) or `GROUPS` (plural) keyword was used.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum GroupOrGroups {
     Group,
     Groups,
@@ -492,6 +699,10 @@ pub enum GroupOrGroups {
 /// Always compares equal so that semantic `PartialEq` on the containing type
 /// is unaffected by keyword spelling differences.
 #[derive(Clone, Eq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct Keyword(pub String);
 
 impl Keyword {
@@ -518,6 +729,24 @@ impl std::fmt::Debug for Keyword {
 ///
 /// Syntax: `[TYPED | ::] <type>`.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    rkyv(
+        serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+        ),
+        deserialize_bounds(__D::Error: rkyv::rancor::Source),
+        bytecheck(bounds(
+            __C: rkyv::validation::ArchiveContext,
+            __C::Error: rkyv::rancor::Source,
+        )),
+    )
+)]
 pub enum BindingTypeAnnotation {
     /// `ANY [PROPERTY] [GRAPH] [NOT NULL]`
     AnyGraph {
@@ -539,11 +768,30 @@ pub enum BindingTypeAnnotation {
         not_null: bool,
     },
     /// A value type such as `INT32`, `STRING`, etc.
-    Value(ValueType),
+    Value(#[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))] ValueType),
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    rkyv(
+        serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+        ),
+        deserialize_bounds(__D::Error: rkyv::rancor::Source),
+        bytecheck(bounds(
+            __C: rkyv::validation::ArchiveContext,
+            __C::Error: rkyv::rancor::Source,
+        )),
+    )
+)]
 pub struct ProcedureBindingDefinition {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub kind: ProcedureBindingKind,
     pub variable: String,
@@ -551,11 +799,16 @@ pub struct ProcedureBindingDefinition {
     pub typed_prefix: TypedPrefix,
     /// Optional type annotation between the variable name and the `=`.
     pub type_annotation: Option<BindingTypeAnnotation>,
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
     pub initializer: ProcedureBindingInitializer,
 }
 
 /// Set operation combining two query expressions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum SetOp {
     /// UNION (bare — no quantifier)
     Union,
@@ -581,6 +834,10 @@ pub enum SetOp {
 
 /// A schema reference in an AT clause (GQL `schemaReference`).
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum SchemaReference {
     /// HOME_SCHEMA or CURRENT_SCHEMA keyword.
     Current(String),
@@ -595,11 +852,31 @@ pub enum SchemaReference {
 /// A linear query: a sequence of simple query statements ending in a
 /// result statement (RETURN/SELECT) or a nested query.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    rkyv(
+        serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+        ),
+        deserialize_bounds(__D::Error: rkyv::rancor::Source),
+        bytecheck(bounds(
+            __C: rkyv::validation::ArchiveContext,
+            __C::Error: rkyv::rancor::Source,
+        )),
+    )
+)]
 pub struct LinearQueryStatement {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     /// Optional AT schema clause (GQL `atSchemaClause`).
     pub at_schema: Option<SchemaReference>,
     /// Procedure-body prefix bindings declared before the first query clause.
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
     pub prefix_bindings: Vec<ProcedureBindingDefinition>,
     /// The sequence of simple query parts (MATCH, FILTER, LET, FOR, etc.).
     pub parts: Vec<SimpleQueryStatement>,
@@ -609,6 +886,24 @@ pub struct LinearQueryStatement {
 
 /// A simple (non-composite) query statement.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    rkyv(
+        serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+        ),
+        deserialize_bounds(__D::Error: rkyv::rancor::Source),
+        bytecheck(bounds(
+            __C: rkyv::validation::ArchiveContext,
+            __C::Error: rkyv::rancor::Source,
+        )),
+    )
+)]
 pub enum SimpleQueryStatement {
     Match(MatchStatement),
     Filter(FilterStatement),
@@ -629,6 +924,7 @@ pub enum SimpleQueryStatement {
     /// that follows (e.g. `USE myGraph RETURN 1` — `focusedPrimitiveResultStatement`).
     Focused {
         graph: ObjectName,
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
         body: Option<Box<SimpleQueryStatement>>,
     },
     /// Inline data modification (INSERT, SET, REMOVE, DELETE) as a query step.
@@ -640,6 +936,10 @@ pub enum SimpleQueryStatement {
 
 /// The result statement of a linear query.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum ResultStatement {
     Return(Box<ReturnStatement>),
     Select(Box<SelectStatement>),
@@ -651,7 +951,12 @@ pub enum ResultStatement {
 
 /// MATCH [OPTIONAL] <graph_pattern> [ON <graph_name>]
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct MatchStatement {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub optional: bool,
     pub graph_name: Option<ObjectName>,
@@ -663,7 +968,12 @@ pub struct MatchStatement {
 
 /// FILTER [WHERE] <condition>
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct FilterStatement {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub where_keyword: bool,
     pub condition: Expr,
@@ -673,14 +983,24 @@ pub struct FilterStatement {
 
 /// LET <bindings>
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct LetStatement {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub bindings: Vec<LetBinding>,
 }
 
 /// A single LET binding: variable = expression.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct LetBinding {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub variable: String,
     pub value: Expr,
@@ -690,7 +1010,12 @@ pub struct LetBinding {
 
 /// FOR <variable> IN <list-expression> [WITH ORDINALITY <ordinal-var>]
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct ForStatement {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub variable: String,
     pub list: Expr,
@@ -700,7 +1025,12 @@ pub struct ForStatement {
 
 /// Ordinality clause of a FOR statement.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct ForOrdinality {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     /// Whether `OFFSET` was used instead of `ORDINALITY`.
     pub offset_keyword: bool,
@@ -711,7 +1041,12 @@ pub struct ForOrdinality {
 
 /// RETURN statement.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct ReturnStatement {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub set_quantifier: SetQuantifier,
     pub body: ReturnBody,
@@ -719,7 +1054,12 @@ pub struct ReturnStatement {
 
 /// SELECT statement.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct SelectStatement {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub set_quantifier: SetQuantifier,
     pub source: Option<SelectSource>,
@@ -728,6 +1068,10 @@ pub struct SelectStatement {
 
 /// Set quantifier: DISTINCT, ALL, or none (GQL `setQuantifier`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum SetQuantifier {
     /// No keyword specified.
     None,
@@ -738,18 +1082,30 @@ pub enum SetQuantifier {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum SelectSource {
     GraphMatchList(Vec<SelectGraphMatch>),
     QuerySpecification(SelectQuerySpecification),
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct SelectGraphMatch {
     pub graph: ObjectName,
     pub match_statement: MatchStatement,
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum SelectQuerySpecification {
     Nested(Box<CompositeQueryExpr>),
     GraphNested {
@@ -760,6 +1116,10 @@ pub enum SelectQuerySpecification {
 
 /// The body of a RETURN statement.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 #[allow(clippy::large_enum_variant)]
 pub enum ReturnBody {
     /// RETURN * — return all bindings.
@@ -780,6 +1140,10 @@ pub enum ReturnBody {
 
 /// The body of a SELECT statement.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum SelectBody {
     Star {
         group_by: Option<GroupByClause>,
@@ -800,7 +1164,12 @@ pub enum SelectBody {
 
 /// A single return item: expression [AS alias].
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct ReturnItem {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub expr: Expr,
     pub alias: Option<String>,
@@ -810,14 +1179,24 @@ pub struct ReturnItem {
 
 /// ORDER BY <sort-items>
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct OrderByClause {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub items: Vec<SortItem>,
 }
 
 /// A single sort specification.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct SortItem {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub expr: Expr,
     pub direction: Option<SortDirection>,
@@ -826,6 +1205,10 @@ pub struct SortItem {
 
 /// Sort direction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum SortDirection {
     /// `ASC`
     Asc,
@@ -839,6 +1222,10 @@ pub enum SortDirection {
 
 /// Position of NULLs in ordering.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum NullOrder {
     First,
     Last,
@@ -846,14 +1233,24 @@ pub enum NullOrder {
 
 /// LIMIT <count>
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct LimitClause {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub count: Expr,
 }
 
 /// OFFSET <count> or SKIP <count>
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct OffsetClause {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     /// Whether `SKIP` was used instead of `OFFSET`.
     pub skip_keyword: bool,
@@ -862,7 +1259,12 @@ pub struct OffsetClause {
 
 /// GROUP BY <items>
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct GroupByClause {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub items: Vec<Expr>,
 }
@@ -874,7 +1276,12 @@ pub struct GroupByClause {
 /// CALL <procedure-name> ( <args> ) [YIELD <items>]
 /// or CALL { <inline-procedure-body> }
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct CallProcedureStatement {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub optional: bool,
     pub name: ObjectName,
@@ -888,7 +1295,12 @@ pub struct CallProcedureStatement {
 /// `focusedNestedDataModifyingProcedureSpecification`:
 /// `USE GRAPH <name> { <body> }`.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct InlineProcedureCall {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub optional: bool,
     pub use_graph: Option<ObjectName>,
@@ -898,7 +1310,12 @@ pub struct InlineProcedureCall {
 
 /// A YIELD item: identifier [AS alias].
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct YieldItem {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub name: String,
     pub alias: Option<String>,
@@ -910,16 +1327,41 @@ pub struct YieldItem {
 
 /// A graph pattern: [match-mode] <path-patterns> [KEEP <clause>] [WHERE <cond>]
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    rkyv(
+        serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+        ),
+        deserialize_bounds(__D::Error: rkyv::rancor::Source),
+        bytecheck(bounds(
+            __C: rkyv::validation::ArchiveContext,
+            __C::Error: rkyv::rancor::Source,
+        )),
+    )
+)]
 pub struct GraphPattern {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub match_mode: Option<MatchMode>,
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
     pub paths: Vec<PathPattern>,
     pub keep: Option<KeepClause>,
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
     pub where_clause: Option<Expr>,
 }
 
 /// Match mode for a graph pattern.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum MatchMode {
     RepeatableElements {
         /// The exact keyword form used.
@@ -933,6 +1375,10 @@ pub enum MatchMode {
 
 /// How `REPEATABLE ELEMENT(S)` was spelled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum MatchModeElementKeyword {
     /// `ELEMENT`
     Element,
@@ -944,6 +1390,10 @@ pub enum MatchModeElementKeyword {
 
 /// How `DIFFERENT EDGE(S)/RELATIONSHIP(S)` was spelled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum MatchModeEdgeKeyword {
     /// `EDGE`
     Edge,
@@ -964,7 +1414,12 @@ pub enum MatchModeEdgeKeyword {
 /// Preserves a path pattern prefix for filtering. Per the spec, KEEP takes
 /// a path pattern prefix (a path mode or search prefix), not a variable list.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct KeepClause {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub prefix: PathPatternPrefix,
 }
@@ -973,18 +1428,42 @@ pub struct KeepClause {
 
 /// A path pattern: [<var> =] [<prefix>] <path-expr>
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    rkyv(
+        serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+        ),
+        deserialize_bounds(__D::Error: rkyv::rancor::Source),
+        bytecheck(bounds(
+            __C: rkyv::validation::ArchiveContext,
+            __C::Error: rkyv::rancor::Source,
+        )),
+    )
+)]
 pub struct PathPattern {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     /// Optional path variable assigned with `=`.
     pub variable: Option<String>,
     /// Optional path prefix (mode or search).
     pub prefix: Option<PathPatternPrefix>,
     /// The path expression itself.
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
     pub expr: PathPatternExpr,
 }
 
 /// A path pattern prefix — either a path mode or a search prefix.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum PathPatternPrefix {
     Mode {
         mode: PathMode,
@@ -995,6 +1474,10 @@ pub enum PathPatternPrefix {
 
 /// Path traversal mode (§16.4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum PathMode {
     Walk,
     Trail,
@@ -1004,6 +1487,10 @@ pub enum PathMode {
 
 /// Search prefix for path patterns.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum SearchPrefix {
     /// ALL — all paths.
     All {
@@ -1049,6 +1536,24 @@ pub enum SearchPrefix {
 
 /// A path pattern expression (§16.5).
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    rkyv(
+        serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+        ),
+        deserialize_bounds(__D::Error: rkyv::rancor::Source),
+        bytecheck(bounds(
+            __C: rkyv::validation::ArchiveContext,
+            __C::Error: rkyv::rancor::Source,
+        )),
+    )
+)]
 pub enum PathPatternExpr {
     /// A single path term.
     Term(PathTerm),
@@ -1060,14 +1565,24 @@ pub enum PathPatternExpr {
 
 /// A path term is a sequence of path factors.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct PathTerm {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub factors: Vec<PathFactor>,
 }
 
 /// A path factor is a path primary with an optional quantifier.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct PathFactor {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub primary: PathPrimary,
     pub quantifier: Option<PathQuantifier>,
@@ -1075,6 +1590,24 @@ pub struct PathFactor {
 
 /// A path primary — the atomic building block of a path pattern.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    rkyv(
+        serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+        ),
+        deserialize_bounds(__D::Error: rkyv::rancor::Source),
+        bytecheck(bounds(
+            __C: rkyv::validation::ArchiveContext,
+            __C::Error: rkyv::rancor::Source,
+        )),
+    )
+)]
 pub enum PathPrimary {
     /// A node pattern: `(var :Label {props} WHERE cond)`
     Node(NodePattern),
@@ -1085,7 +1618,9 @@ pub enum PathPrimary {
         variable: Option<String>,
         mode: Option<PathMode>,
         path_keyword: Option<PathOrPaths>,
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
         expr: Box<PathPatternExpr>,
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
         where_clause: Option<Box<Expr>>,
     },
     /// A simplified path pattern (e.g., `->`, `-[:KNOWS]->`, etc.).
@@ -1094,6 +1629,10 @@ pub enum PathPrimary {
 
 /// Path quantifier (§16.7).
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum PathQuantifier {
     /// `*` — zero or more (equivalent to `{0,}`)
     Star,
@@ -1111,7 +1650,12 @@ pub enum PathQuantifier {
 
 /// A node (vertex) pattern: `(var :Label {props} WHERE cond)`
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct NodePattern {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub variable: Option<String>,
     pub is_or_colon: Option<IsOrColon>,
@@ -1124,7 +1668,12 @@ pub struct NodePattern {
 
 /// An edge (relationship) pattern.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct EdgePattern {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub direction: EdgeDirection,
     pub variable: Option<String>,
@@ -1138,8 +1687,28 @@ pub struct EdgePattern {
 
 /// A simplified path pattern using label expressions with directions.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    rkyv(
+        serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+        ),
+        deserialize_bounds(__D::Error: rkyv::rancor::Source),
+        bytecheck(bounds(
+            __C: rkyv::validation::ArchiveContext,
+            __C::Error: rkyv::rancor::Source,
+        )),
+    )
+)]
 pub struct SimplifiedPathPattern {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
     pub elements: Vec<SimplifiedElement>,
 }
 
@@ -1150,9 +1719,29 @@ pub struct SimplifiedPathPattern {
 /// simplified expression tree (which may itself contain quantifiers,
 /// conjunction, union, etc.).
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    rkyv(
+        serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+        ),
+        deserialize_bounds(__D::Error: rkyv::rancor::Source),
+        bytecheck(bounds(
+            __C: rkyv::validation::ArchiveContext,
+            __C::Error: rkyv::rancor::Source,
+        )),
+    )
+)]
 pub struct SimplifiedElement {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub direction: EdgeDirection,
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
     pub contents: SimplifiedContents,
 }
 
@@ -1167,25 +1756,61 @@ pub struct SimplifiedElement {
 ///   simplifiedSecondary → optional negation on primary
 ///   simplifiedPrimary → labelName | (simplifiedContents)
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    rkyv(
+        serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+        ),
+        deserialize_bounds(__D::Error: rkyv::rancor::Source),
+        bytecheck(bounds(
+            __C: rkyv::validation::ArchiveContext,
+            __C::Error: rkyv::rancor::Source,
+        )),
+    )
+)]
 pub enum SimplifiedContents {
     /// A single label name or wildcard (`%`).
-    Label(LabelExpr),
+    Label(#[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))] LabelExpr),
     /// Negation: `!primary`
-    Negation(Box<SimplifiedContents>),
+    Negation(#[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))] Box<SimplifiedContents>),
     /// Conjunction: `a & b`
-    Conjunction(Box<SimplifiedContents>, Box<SimplifiedContents>),
+    Conjunction(
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))] Box<SimplifiedContents>,
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))] Box<SimplifiedContents>,
+    ),
     /// Union: `a | b`
-    Union(Box<SimplifiedContents>, Box<SimplifiedContents>),
+    Union(
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))] Box<SimplifiedContents>,
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))] Box<SimplifiedContents>,
+    ),
     /// Multiset alternation: `a |+| b`
-    MultisetAlternation(Box<SimplifiedContents>, Box<SimplifiedContents>),
+    MultisetAlternation(
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))] Box<SimplifiedContents>,
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))] Box<SimplifiedContents>,
+    ),
     /// Concatenation (juxtaposition of terms): `a b`
-    Concatenation(Box<SimplifiedContents>, Box<SimplifiedContents>),
+    Concatenation(
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))] Box<SimplifiedContents>,
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))] Box<SimplifiedContents>,
+    ),
     /// Quantified: `a+`, `a{2,5}`, `a?`
-    Quantified(Box<SimplifiedContents>, PathQuantifier),
+    Quantified(
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))] Box<SimplifiedContents>,
+        PathQuantifier,
+    ),
     /// Direction override on a sub-expression (e.g., `<KNOWS`, `~LIKES`).
-    DirectionOverride(EdgeDirection, Box<SimplifiedContents>),
+    DirectionOverride(
+        EdgeDirection,
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))] Box<SimplifiedContents>,
+    ),
     /// Parenthesized group: `(simplifiedContents)`
-    Group(Box<SimplifiedContents>),
+    Group(#[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))] Box<SimplifiedContents>),
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -1194,13 +1819,22 @@ pub enum SimplifiedContents {
 
 /// A graph type definition containing node and edge type definitions.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct GraphTypeDefinition {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub elements: Vec<GraphTypeElement>,
 }
 
 /// An element of a graph type definition.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum GraphTypeElement {
     Node(NodeTypeDef),
     Edge(EdgeTypeDef),
@@ -1212,7 +1846,12 @@ pub enum GraphTypeElement {
 /// Represents the `LABEL(S) label1 & label2 & ...` phrase within a graph
 /// type element definition.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct KeyLabelSet {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     /// Whether `LABEL` (false) or `LABELS` (true) keyword was used.
     pub label_keyword_plural: bool,
@@ -1221,7 +1860,12 @@ pub struct KeyLabelSet {
 
 /// A node type definition.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct NodeTypeDef {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     /// Which keyword was used: NODE or VERTEX (GQL `nodeSynonym`).
     pub keyword: Keyword,
@@ -1233,7 +1877,12 @@ pub struct NodeTypeDef {
 
 /// An edge type definition.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct EdgeTypeDef {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     /// Which keyword was used: EDGE or RELATIONSHIP (GQL `edgeSynonym`).
     pub keyword: Keyword,
@@ -1247,7 +1896,12 @@ pub struct EdgeTypeDef {
 
 /// An endpoint reference in an edge type definition.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct EdgeEndpoint {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     /// The node type name or label this endpoint connects to.
     pub label: Option<String>,
@@ -1257,11 +1911,32 @@ pub struct EdgeEndpoint {
 
 /// A property definition within a node or edge type.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    rkyv(
+        serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+        ),
+        deserialize_bounds(__D::Error: rkyv::rancor::Source),
+        bytecheck(bounds(
+            __C: rkyv::validation::ArchiveContext,
+            __C::Error: rkyv::rancor::Source,
+        )),
+    )
+)]
 pub struct PropertyDef {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub name: String,
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
     pub value_type: ValueType,
     pub not_null: bool,
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
     pub default_value: Option<Expr>,
 }
 
@@ -1276,6 +1951,24 @@ pub struct PropertyDef {
 /// the original source spelling for formatting / round-tripping.  `Keyword`
 /// always compares equal, so semantic `PartialEq` is unaffected.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    rkyv(
+        serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+        ),
+        deserialize_bounds(__D::Error: rkyv::rancor::Source),
+        bytecheck(bounds(
+            __C: rkyv::validation::ArchiveContext,
+            __C::Error: rkyv::rancor::Source,
+        )),
+    )
+)]
 pub enum ValueType {
     // — Boolean —
     /// BOOL / BOOLEAN
@@ -1395,6 +2088,7 @@ pub enum ValueType {
     /// LIST / ARRAY ( element_type ) [( max_length )]
     List {
         keyword: Keyword,
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
         element_type: Box<ValueType>,
         max_length: Option<u64>,
     },
@@ -1403,6 +2097,7 @@ pub enum ValueType {
     /// [RECORD] { fields... }
     Record {
         record_keyword: bool,
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
         fields: Vec<RecordFieldType>,
     },
 
@@ -1438,7 +2133,7 @@ pub enum ValueType {
 
     // — Closed dynamic union —
     /// Union of multiple value types
-    ClosedDynamicUnion(Vec<ValueType>),
+    ClosedDynamicUnion(#[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))] Vec<ValueType>),
 
     // — Host extension type —
     /// Host-defined scalar/type name accepted by parser and resolved by host runtime.
@@ -1446,16 +2141,36 @@ pub enum ValueType {
 
     // — NOT NULL wrapper —
     /// A value type with a NOT NULL constraint.
-    NotNull(Box<ValueType>),
+    NotNull(#[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))] Box<ValueType>),
 }
 
 /// A field in a RECORD type definition.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    rkyv(
+        serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+        ),
+        deserialize_bounds(__D::Error: rkyv::rancor::Source),
+        bytecheck(bounds(
+            __C: rkyv::validation::ArchiveContext,
+            __C::Error: rkyv::rancor::Source,
+        )),
+    )
+)]
 pub struct RecordFieldType {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub name: String,
     /// How the type was introduced (`::`, `TYPED`, or none).
     pub typed_prefix: TypedPrefix,
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
     pub value_type: ValueType,
 }
 
@@ -1469,8 +2184,28 @@ pub struct RecordFieldType {
 /// `PartialEq` intentionally ignores the span so that semantic equality
 /// comparisons (including tests) are unaffected by source positions.
 #[derive(Clone, Debug)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    rkyv(
+        serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+        ),
+        deserialize_bounds(__D::Error: rkyv::rancor::Source),
+        bytecheck(bounds(
+            __C: rkyv::validation::ArchiveContext,
+            __C::Error: rkyv::rancor::Source,
+        )),
+    )
+)]
 pub struct Expr {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
     pub kind: ExprKind,
 }
 
@@ -1492,6 +2227,24 @@ impl Expr {
 
 /// A GQL expression covering all expression forms from §19–§20.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    rkyv(
+        serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+        ),
+        deserialize_bounds(__D::Error: rkyv::rancor::Source),
+        bytecheck(bounds(
+            __C: rkyv::validation::ArchiveContext,
+            __C::Error: rkyv::rancor::Source,
+        )),
+    )
+)]
 pub enum ExprKind {
     // ── Parenthesized ──
     /// A parenthesized expression: `(expr)`
@@ -1599,6 +2352,7 @@ pub enum ExprKind {
     /// IS [NOT] TYPED <value-type>
     IsTyped {
         expr: Box<Expr>,
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
         target: ValueType,
         negated: bool,
     },
@@ -1613,13 +2367,17 @@ pub enum ExprKind {
 
     // ── Existential subquery (§20.14) ──
     /// EXISTS { <subquery> }
-    ExistsSubquery(Box<CompositeQueryExpr>),
+    ExistsSubquery(
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))] Box<CompositeQueryExpr>,
+    ),
     /// EXISTS { <pattern> }
-    ExistsPattern(Box<GraphPattern>),
+    ExistsPattern(#[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))] Box<GraphPattern>),
 
     // ── Value subquery (§20.15) ──
     /// VALUE { <subquery> }
-    ValueSubquery(Box<CompositeQueryExpr>),
+    ValueSubquery(
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))] Box<CompositeQueryExpr>,
+    ),
 
     // ── Let expression ──
     /// LET <bindings> IN <expr>
@@ -1875,6 +2633,10 @@ pub enum ExprKind {
 
 /// Arithmetic binary operator.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum BinaryOp {
     Add,
     Sub,
@@ -1886,6 +2648,10 @@ pub enum BinaryOp {
 
 /// Unary operator.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum UnaryOp {
     /// Unary negation `-`
     Neg,
@@ -1897,6 +2663,10 @@ pub enum UnaryOp {
 
 /// Comparison operator.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum CmpOp {
     Eq,
     Ne,
@@ -1910,6 +2680,10 @@ pub enum CmpOp {
 
 /// The kind of string predicate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    all(feature = "ast-rkyv-no-span", feature = "cypher"),
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum StringPredicateKind {
     /// STARTS WITH (cypher extension)
     #[cfg(feature = "cypher")]
@@ -1923,10 +2697,61 @@ pub enum StringPredicateKind {
     ILike,
 }
 
+/// When `cypher` is disabled, [`StringPredicateKind`] is an empty enum; rkyv cannot derive
+/// `Archive` for it, so we archive it as `()` and reject deserialization (the AST variant is
+/// unreachable at runtime).
+#[cfg(all(feature = "ast-rkyv-no-span", not(feature = "cypher")))]
+impl rkyv::Archive for StringPredicateKind {
+    type Archived = ();
+    type Resolver = ();
+
+    fn resolve(&self, _: Self::Resolver, _: rkyv::Place<Self::Archived>) {
+        match *self {}
+    }
+}
+
+#[cfg(all(feature = "ast-rkyv-no-span", not(feature = "cypher")))]
+impl<S: rkyv::rancor::Fallible + ?Sized> rkyv::Serialize<S> for StringPredicateKind {
+    fn serialize(&self, _: &mut S) -> Result<Self::Resolver, S::Error> {
+        match *self {}
+    }
+}
+
+#[cfg(all(feature = "ast-rkyv-no-span", not(feature = "cypher")))]
+#[derive(Debug)]
+struct StringPredicateKindDeserializeError;
+
+#[cfg(all(feature = "ast-rkyv-no-span", not(feature = "cypher")))]
+impl std::fmt::Display for StringPredicateKindDeserializeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "cannot deserialize StringPredicateKind without cypher feature"
+        )
+    }
+}
+
+#[cfg(all(feature = "ast-rkyv-no-span", not(feature = "cypher")))]
+impl std::error::Error for StringPredicateKindDeserializeError {}
+
+#[cfg(all(feature = "ast-rkyv-no-span", not(feature = "cypher")))]
+impl<D: rkyv::rancor::Fallible + ?Sized> rkyv::Deserialize<StringPredicateKind, D> for ()
+where
+    D::Error: rkyv::rancor::Source,
+{
+    fn deserialize(&self, _: &mut D) -> Result<StringPredicateKind, D::Error> {
+        rkyv::rancor::fail!(StringPredicateKindDeserializeError);
+    }
+}
+
 // ──── Truth values ──
 
 /// Truth value for IS TRUE / IS FALSE / IS UNKNOWN tests.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum TruthValue {
     True,
     False,
@@ -1935,6 +2760,10 @@ pub enum TruthValue {
 
 /// Qualifier on a duration expression such as `YEAR TO MONTH`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum DurationQualifier {
     YearToMonth,
     DayToSecond,
@@ -1944,6 +2773,10 @@ pub enum DurationQualifier {
 
 /// Unicode normalization form.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum NormalForm {
     NFC,
     NFD,
@@ -1955,6 +2788,10 @@ pub enum NormalForm {
 
 /// Trim direction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum TrimSpec {
     Leading,
     Trailing,
@@ -1965,6 +2802,10 @@ pub enum TrimSpec {
 
 /// String fold/trim variant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum StringFoldKind {
     BTrim,
     LTrim,
@@ -1975,6 +2816,10 @@ pub enum StringFoldKind {
 
 /// Aggregate function identifier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum AggregateFunc {
     Count,
     CountStar,
@@ -1993,7 +2838,12 @@ pub enum AggregateFunc {
 
 /// A single WHEN clause in a CASE expression.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct WhenClause {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub condition: Expr,
     pub result: Expr,
@@ -2800,5 +3650,19 @@ mod tests {
         assert!(lq.prefix_bindings.is_empty());
         assert!(lq.parts.is_empty());
         assert!(lq.result.is_none());
+    }
+}
+
+#[cfg(all(test, feature = "ast-rkyv-no-span"))]
+mod rkyv_roundtrip_tests {
+    use super::*;
+    use rkyv::{from_bytes_unchecked, rancor::Error, to_bytes};
+
+    #[test]
+    fn truth_value_roundtrip() {
+        let v = TruthValue::Unknown;
+        let bytes = to_bytes::<Error>(&v).unwrap();
+        let back = unsafe { from_bytes_unchecked::<TruthValue, Error>(&bytes).unwrap() };
+        assert_eq!(back, v);
     }
 }

@@ -25,6 +25,7 @@ version = "0.1.0"
 license = "MIT"
 
 [workspace.dependencies]
+gleaph-gql = { path = "crates/gql" }
 ic-stable-bitset = { path = "crates/ic-stable-bitset" }
 ic-stable-roaring = { path = "crates/ic-stable-roaring" }
 ic-stable-csr = { path = "crates/ic-stable-csr" }
@@ -39,6 +40,7 @@ ethnum = "1"
 ic-cdk = "0.20"
 ic-cdk-macros = "0.20"
 rapidhash = "4"
+rkyv = "0.8"
 roaring = "0.11"
 rust_decimal = "1"
 serde = { version = "1", features = ["derive"] }

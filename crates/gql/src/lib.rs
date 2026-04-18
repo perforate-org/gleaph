@@ -13,11 +13,16 @@
 //! - `sql-compat` -- Enables SQL-compatible syntax extensions (e.g. SQL-style expressions and operators).
 //! - `f128` -- Enables `Value::Float128` using `std::f128` (requires nightly).
 //! - `f256` -- Enables `Value::Float256` using the `f256` crate.
+//! - `ast-rkyv-no-span` -- Derives `rkyv::Archive` / `Serialize` / `Deserialize` for AST types and related
+//!   values; source [`Span`](token::Span) fields are omitted from the archived form (`rkyv::with::Skip`).
+//!   The workspace pins `rkyv` without the `bytecheck` default feature (validated `from_bytes` is unavailable;
+//!   use `to_bytes` / `deserialize` / `from_bytes_unchecked` as in unit tests).
 //!
 //! Internet Computer `Principal` as [`Value::Extension`](value::Value::Extension) lives in the
 //! sibling crate **`gleaph-gql-ic`** (adds a `candid` dependency only there; **tag 34** short blob).
 
 #![cfg_attr(feature = "f128", feature(f128))]
+#![cfg_attr(feature = "ast-rkyv-no-span", feature(trivial_bounds))]
 
 pub mod ast;
 pub mod error;
@@ -26,6 +31,8 @@ pub mod lexer;
 /// Gleaph identifier length limits for properties, labels, and graph-type names.
 pub mod name_limits;
 pub mod parser;
+#[cfg(feature = "ast-rkyv-no-span")]
+pub(crate) mod rkyv_support;
 pub mod temporal;
 pub mod token;
 pub mod type_check;

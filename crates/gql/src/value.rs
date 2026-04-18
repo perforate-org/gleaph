@@ -134,6 +134,24 @@ impl ExtensionBinaryDecode for DenyExtensionBinaryDecode {}
 // ──── Value enum ────
 
 /// GQL runtime value, covering all standard types from GQL plus extensions.
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    rkyv(
+        serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+        ),
+        deserialize_bounds(__D::Error: rkyv::rancor::Source),
+        bytecheck(bounds(
+            __C: rkyv::validation::ArchiveContext,
+            __C::Error: rkyv::rancor::Source,
+        )),
+    )
+)]
 pub enum Value {
     Null,
     Bool(bool),
@@ -144,7 +162,7 @@ pub enum Value {
     Int32(i32),
     Int64(i64),
     Int128(i128),
-    Int256(Int256),
+    Int256(#[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = crate::types::Int256Def))] Int256),
 
     // unsignedBinaryExactNumericType
     Uint8(u8),
@@ -152,19 +170,31 @@ pub enum Value {
     Uint32(u32),
     Uint64(u64),
     Uint128(u128),
-    Uint256(Uint256),
+    Uint256(
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = crate::types::Uint256Def))] Uint256,
+    ),
 
     // approximateNumericType
-    Float16(half::f16),
+    Float16(
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = crate::rkyv_support::F16Def))]
+        half::f16,
+    ),
     Float32(f32),
     Float64(f64),
     #[cfg(feature = "f128")]
-    Float128(f128),
+    Float128(
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = crate::rkyv_support::F128Def))] f128,
+    ),
     #[cfg(feature = "f256")]
-    Float256(f256::f256),
+    Float256(
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = crate::rkyv_support::F256Def))]
+        f256::f256,
+    ),
 
     // decimalExactNumericType
-    Decimal(Decimal),
+    Decimal(
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = crate::types::DecimalDef))] Decimal,
+    ),
 
     // characterStringType / byteStringType
     Text(String),
@@ -191,12 +221,15 @@ pub enum Value {
     Duration(i32, i64),
 
     // constructed types
-    List(Vec<Value>),
+    List(#[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))] Vec<Value>),
     Path(Vec<PathElement>),
-    Record(Vec<(String, Value)>),
+    Record(#[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))] Vec<(String, Value)>),
 
     // extension slot
-    Extension(Box<dyn ExtensionValue>),
+    Extension(
+        #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = crate::rkyv_support::ExtensionBinaryWire))]
+         Box<dyn ExtensionValue>,
+    ),
 }
 
 // ──── Clone ────
