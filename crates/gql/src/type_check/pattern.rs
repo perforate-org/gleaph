@@ -406,10 +406,10 @@ pub(crate) fn check_insert_path_schema_edge_direction(
     path: &InsertPathPattern,
 ) {
     for el in &path.elements {
-        if let InsertElement::Edge(e) = el {
-            if e.labels.len() == 1 {
-                warn_schema_edge_direction_if_needed(env, &e.labels[0], &e.direction, e.span, true);
-            }
+        if let InsertElement::Edge(e) = el
+            && e.labels.len() == 1
+        {
+            warn_schema_edge_direction_if_needed(env, &e.labels[0], &e.direction, e.span, true);
         }
     }
 }
@@ -434,10 +434,10 @@ fn check_path_expr_schema_edge_direction(env: &mut TypeEnv<'_>, expr: &PathPatte
 
 fn check_path_term_schema_edge_direction(env: &mut TypeEnv<'_>, term: &PathTerm) {
     for factor in &term.factors {
-        if let PathPrimary::Edge(ep) = &factor.primary {
-            if let Some(l) = extract_single_label(&ep.label) {
-                warn_schema_edge_direction_if_needed(env, &l, &ep.direction, ep.span, false);
-            }
+        if let PathPrimary::Edge(ep) = &factor.primary
+            && let Some(l) = extract_single_label(&ep.label)
+        {
+            warn_schema_edge_direction_if_needed(env, &l, &ep.direction, ep.span, false);
         }
         if let PathPrimary::Parenthesized { expr, .. } = &factor.primary {
             check_path_expr_schema_edge_direction(env, expr);

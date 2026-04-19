@@ -7,12 +7,15 @@ use crate::types::EdgeDirection;
 
 use super::schema::PropertySchema;
 
+type EndpointLabelsPair = (Vec<String>, Vec<String>);
+type PropertyTypeSpec = (String, ValueType, bool);
+
 /// Property and endpoint metadata derived from `CREATE GRAPH` / `CREATE GRAPH TYPE` inline types.
 #[derive(Clone, Debug, Default)]
 pub struct GraphTypePropertySchema {
     edge_undirected: BTreeMap<String, bool>,
-    edge_endpoints: BTreeMap<String, Vec<(Vec<String>, Vec<String>)>>,
-    edge_properties: BTreeMap<String, Vec<(String, ValueType, bool)>>,
+    edge_endpoints: BTreeMap<String, Vec<EndpointLabelsPair>>,
+    edge_properties: BTreeMap<String, Vec<PropertyTypeSpec>>,
 }
 
 impl GraphTypePropertySchema {
@@ -32,18 +35,18 @@ impl GraphTypePropertySchema {
 
             let undirected = matches!(edge.direction, EdgeDirection::Undirected);
             for k in &keys {
-                if let Some(existing) = s.edge_undirected.get(k) {
-                    if *existing != undirected {
-                        return Err(format!(
-                            "conflicting directedness for edge label `{k}`: graph type defines both DIRECTED and UNDIRECTED edges with this label"
-                        ));
-                    }
+                if let Some(existing) = s.edge_undirected.get(k)
+                    && *existing != undirected
+                {
+                    return Err(format!(
+                        "conflicting directedness for edge label `{k}`: graph type defines both DIRECTED and UNDIRECTED edges with this label"
+                    ));
                 }
             }
 
             let from = endpoint_constraint_labels(&edge.source, &node_map);
             let to = endpoint_constraint_labels(&edge.destination, &node_map);
-            let mut pairs = vec![(from.clone(), to.clone())];
+            let mut pairs: Vec<EndpointLabelsPair> = vec![(from.clone(), to.clone())];
             if undirected && from != to {
                 pairs.push((to, from));
             }
@@ -73,10 +76,10 @@ fn edge_schema_keys(edge: &EdgeTypeDef) -> Vec<String> {
         .as_ref()
         .map(|ls| ls.labels.clone())
         .unwrap_or_default();
-    if out.is_empty() {
-        if let Some(ref n) = edge.name {
-            out.push(n.clone());
-        }
+    if out.is_empty()
+        && let Some(ref n) = edge.name
+    {
+        out.push(n.clone());
     }
     out
 }
@@ -130,15 +133,15 @@ fn endpoint_constraint_labels(
 }
 
 impl PropertySchema for GraphTypePropertySchema {
-    fn node_property_types(&self, _labels: &[String]) -> Vec<(String, ValueType, bool)> {
+    fn node_property_types(&self, _labels: &[String]) -> Vec<PropertyTypeSpec> {
         vec![]
     }
 
-    fn edge_property_types(&self, label: &str) -> Vec<(String, ValueType, bool)> {
+    fn edge_property_types(&self, label: &str) -> Vec<PropertyTypeSpec> {
         self.edge_properties.get(label).cloned().unwrap_or_default()
     }
 
-    fn edge_endpoint_types(&self, label: &str) -> Vec<(Vec<String>, Vec<String>)> {
+    fn edge_endpoint_types(&self, label: &str) -> Vec<EndpointLabelsPair> {
         self.edge_endpoints.get(label).cloned().unwrap_or_default()
     }
 
