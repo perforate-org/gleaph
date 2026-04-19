@@ -1823,6 +1823,30 @@ mod tests {
     }
 
     #[test]
+    fn invalid_union_star_result_order_mismatch() {
+        let err = parse_and_validate("MATCH (a), (b) RETURN * UNION MATCH (b), (a) RETURN *")
+            .expect_err("expected star union column order mismatch to fail");
+        assert!(
+            err.to_string()
+                .contains("composite query branches must expose the same result bindings"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn invalid_next_yield_graph_binding_must_exist_in_all_union_branches() {
+        let err = parse_and_validate(
+            "START TRANSACTION GRAPH g = myGraph RETURN g UNION RETURN 1 AS g NEXT YIELD g USE g MATCH (n) RETURN n COMMIT",
+        )
+        .expect_err("expected mixed graph/value union binding to fail");
+        assert!(
+            err.to_string()
+                .contains("composite query branches must expose the same result bindings"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn invalid_union_mixed_named_and_unnamed_result_column_count_mismatch() {
         let err = parse_and_validate("MATCH (n) RETURN 1 AS x, 2 UNION MATCH (m) RETURN 3 AS x")
             .expect_err("expected mixed named/unnamed union mismatch to fail");

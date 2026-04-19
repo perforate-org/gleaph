@@ -539,12 +539,14 @@ fn linear_query_result_layout(
 ) -> Result<Vec<Option<String>>, GqlError> {
     let mut query_scope = outer.clone();
     let mut query_graph_scope = outer_graph.clone();
-    collect_linear_query_scopes(query, &mut query_scope, &mut query_graph_scope)?;
-    Ok(result_column_layout(
-        query.result.as_ref(),
-        &query_scope,
-        &query_graph_scope,
-    ))
+    let mut query_order = sorted_scope_names(outer);
+    collect_linear_query_scopes_with_order(
+        query,
+        &mut query_scope,
+        &mut query_graph_scope,
+        &mut query_order,
+    )?;
+    Ok(result_column_layout(query.result.as_ref(), &query_order))
 }
 
 fn linear_query_result_bindings(
@@ -568,7 +570,7 @@ pub(super) fn composite_query_result_scopes(
     let expected = linear_query_result_scopes(&query.left, outer, outer_graph)?;
     for (_, rhs) in &query.rest {
         let rhs_scopes = linear_query_result_scopes(rhs, outer, outer_graph)?;
-        if rhs_scopes.0 != expected.0 {
+        if rhs_scopes != expected {
             return Err(verr(
                 "composite query branches must expose the same result bindings",
             ));
@@ -688,6 +690,123 @@ fn collect_linear_query_scopes(
     Ok(())
 }
 
+fn collect_linear_query_scopes_with_order(
+    query: &LinearQueryStatement,
+    scope: &mut RapidHashSet<String>,
+    graph_scope: &mut RapidHashSet<String>,
+    order: &mut Vec<String>,
+) -> VResult {
+    for binding in &query.prefix_bindings {
+        replace_visible_binding(scope, order, &binding.variable);
+        if matches!(binding.kind, ProcedureBindingKind::Graph) {
+            graph_scope.insert(binding.variable.clone());
+        }
+    }
+    for part in &query.parts {
+        match part {
+            SimpleQueryStatement::Match(m) => {
+                let mut match_scope = scope.clone();
+                let mut match_order = order.clone();
+                collect_pattern_bindings_with_order(
+                    &m.pattern,
+                    &mut match_scope,
+                    &mut match_order,
+                )?;
+                if let Some(yields) = &m.yield_items {
+                    *scope = project_yield_items(yields);
+                    *graph_scope = project_graph_yield_items(yields, graph_scope);
+                    *order = projected_yield_order(yields);
+                } else {
+                    *scope = match_scope;
+                    *order = match_order;
+                }
+            }
+            SimpleQueryStatement::Let(l) => {
+                for binding in &l.bindings {
+                    replace_visible_binding(scope, order, &binding.variable);
+                }
+            }
+            SimpleQueryStatement::For(f) => {
+                replace_visible_binding(scope, order, &f.variable);
+                if let Some(ord) = &f.ordinality {
+                    replace_visible_binding(scope, order, &ord.variable);
+                }
+            }
+            SimpleQueryStatement::CallProcedure(cp) => {
+                if let Some(yields) = &cp.yield_items {
+                    for item in yields {
+                        replace_visible_binding(
+                            scope,
+                            order,
+                            item.alias.as_ref().unwrap_or(&item.name),
+                        );
+                    }
+                }
+            }
+            SimpleQueryStatement::InlineProcedureCall(ipc) => {
+                let outer_scope = scope.clone();
+                let outer_graph_scope = graph_scope.clone();
+                let layout =
+                    composite_query_result_layout(&ipc.body, &outer_scope, &outer_graph_scope)?;
+                collect_inline_procedure_result_bindings(
+                    ipc,
+                    &outer_scope,
+                    &outer_graph_scope,
+                    scope,
+                    graph_scope,
+                )?;
+                for name in layout.into_iter().flatten() {
+                    replace_visible_binding(scope, order, &name);
+                }
+            }
+            SimpleQueryStatement::Focused { body, .. } => {
+                if let Some(inner) = body {
+                    match inner.as_ref() {
+                        SimpleQueryStatement::Match(m) => {
+                            let mut match_scope = scope.clone();
+                            let mut match_order = order.clone();
+                            collect_pattern_bindings_with_order(
+                                &m.pattern,
+                                &mut match_scope,
+                                &mut match_order,
+                            )?;
+                            if let Some(yields) = &m.yield_items {
+                                *scope = project_yield_items(yields);
+                                *graph_scope = project_graph_yield_items(yields, graph_scope);
+                                *order = projected_yield_order(yields);
+                            } else {
+                                *scope = match_scope;
+                                *order = match_order;
+                            }
+                        }
+                        SimpleQueryStatement::CallProcedure(cp) => {
+                            if let Some(yields) = &cp.yield_items {
+                                for item in yields {
+                                    replace_visible_binding(
+                                        scope,
+                                        order,
+                                        item.alias.as_ref().unwrap_or(&item.name),
+                                    );
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            SimpleQueryStatement::Filter(_)
+            | SimpleQueryStatement::OrderBy(_)
+            | SimpleQueryStatement::Limit(_)
+            | SimpleQueryStatement::Offset(_)
+            | SimpleQueryStatement::Insert(_)
+            | SimpleQueryStatement::Set(_)
+            | SimpleQueryStatement::Remove(_)
+            | SimpleQueryStatement::Delete(_) => {}
+        }
+    }
+    Ok(())
+}
+
 fn collect_result_bindings(
     result: Option<&ResultStatement>,
     query_scope: &RapidHashSet<String>,
@@ -781,12 +900,11 @@ fn collect_result_graph_bindings(
 
 fn result_column_layout(
     result: Option<&ResultStatement>,
-    query_scope: &RapidHashSet<String>,
-    _query_graph_scope: &RapidHashSet<String>,
+    query_order: &[String],
 ) -> Vec<Option<String>> {
     match result {
         Some(ResultStatement::Return(ret)) => match &ret.body {
-            ReturnBody::Star => query_scope.iter().map(|name| Some(name.clone())).collect(),
+            ReturnBody::Star => query_order.iter().map(|name| Some(name.clone())).collect(),
             #[cfg(feature = "cypher")]
             ReturnBody::NoBindings => vec![],
             ReturnBody::Items { items, .. } => items
@@ -800,7 +918,7 @@ fn result_column_layout(
                 .collect(),
         },
         Some(ResultStatement::Select(sel)) => match &sel.body {
-            SelectBody::Star { .. } => query_scope.iter().map(|name| Some(name.clone())).collect(),
+            SelectBody::Star { .. } => query_order.iter().map(|name| Some(name.clone())).collect(),
             SelectBody::Items { items, .. } => items
                 .iter()
                 .map(|item| {
@@ -813,6 +931,48 @@ fn result_column_layout(
         },
         Some(ResultStatement::Finish) | None => vec![],
     }
+}
+
+fn composite_query_result_layout(
+    query: &CompositeQueryExpr,
+    outer: &RapidHashSet<String>,
+    outer_graph: &RapidHashSet<String>,
+) -> Result<Vec<Option<String>>, GqlError> {
+    let expected = linear_query_result_layout(&query.left, outer, outer_graph)?;
+    for (_, rhs) in &query.rest {
+        let rhs_layout = linear_query_result_layout(rhs, outer, outer_graph)?;
+        if rhs_layout != expected {
+            return Err(verr(
+                "composite query branches must expose the same result bindings",
+            ));
+        }
+    }
+    Ok(expected)
+}
+
+fn sorted_scope_names(scope: &RapidHashSet<String>) -> Vec<String> {
+    let mut names: Vec<_> = scope.iter().cloned().collect();
+    names.sort();
+    names
+}
+
+fn replace_visible_binding(scope: &mut RapidHashSet<String>, order: &mut Vec<String>, name: &str) {
+    scope.insert(name.to_owned());
+    order.retain(|existing| existing != name);
+    order.push(name.to_owned());
+}
+
+fn push_pattern_binding(scope: &mut RapidHashSet<String>, order: &mut Vec<String>, name: &str) {
+    if scope.insert(name.to_owned()) {
+        order.push(name.to_owned());
+    }
+}
+
+fn projected_yield_order(yields: &[YieldItem]) -> Vec<String> {
+    yields
+        .iter()
+        .map(|item| item.alias.clone().unwrap_or_else(|| item.name.clone()))
+        .collect()
 }
 
 pub(super) fn validate_graph_reference(
@@ -1060,6 +1220,20 @@ pub(super) fn collect_pattern_bindings(
     Ok(())
 }
 
+fn collect_pattern_bindings_with_order(
+    pattern: &GraphPattern,
+    scope: &mut RapidHashSet<String>,
+    order: &mut Vec<String>,
+) -> VResult {
+    for path in &pattern.paths {
+        if let Some(ref var) = path.variable {
+            push_pattern_binding(scope, order, var);
+        }
+        collect_path_expr_bindings_with_order(&path.expr, scope, order)?;
+    }
+    Ok(())
+}
+
 fn collect_path_expr_bindings(expr: &PathPatternExpr, scope: &mut RapidHashSet<String>) -> VResult {
     match expr {
         PathPatternExpr::Term(term) => collect_path_term_bindings(term, scope),
@@ -1072,9 +1246,37 @@ fn collect_path_expr_bindings(expr: &PathPatternExpr, scope: &mut RapidHashSet<S
     }
 }
 
+fn collect_path_expr_bindings_with_order(
+    expr: &PathPatternExpr,
+    scope: &mut RapidHashSet<String>,
+    order: &mut Vec<String>,
+) -> VResult {
+    match expr {
+        PathPatternExpr::Term(term) => collect_path_term_bindings_with_order(term, scope, order),
+        PathPatternExpr::MultisetAlternation(terms) | PathPatternExpr::PatternUnion(terms) => {
+            for term in terms {
+                collect_path_term_bindings_with_order(term, scope, order)?;
+            }
+            Ok(())
+        }
+    }
+}
+
 fn collect_path_term_bindings(term: &PathTerm, scope: &mut RapidHashSet<String>) -> VResult {
     for factor in &term.factors {
         collect_path_primary_bindings(&factor.primary, scope)?;
+        validate_path_quantifier(&factor.quantifier)?;
+    }
+    Ok(())
+}
+
+fn collect_path_term_bindings_with_order(
+    term: &PathTerm,
+    scope: &mut RapidHashSet<String>,
+    order: &mut Vec<String>,
+) -> VResult {
+    for factor in &term.factors {
+        collect_path_primary_bindings_with_order(&factor.primary, scope, order)?;
         validate_path_quantifier(&factor.quantifier)?;
     }
     Ok(())
@@ -1096,6 +1298,30 @@ fn collect_path_primary_bindings(
             }
         }
         PathPrimary::Parenthesized { expr, .. } => collect_path_expr_bindings(expr, scope)?,
+        PathPrimary::Simplified(_) => {}
+    }
+    Ok(())
+}
+
+fn collect_path_primary_bindings_with_order(
+    primary: &PathPrimary,
+    scope: &mut RapidHashSet<String>,
+    order: &mut Vec<String>,
+) -> VResult {
+    match primary {
+        PathPrimary::Node(node) => {
+            if let Some(ref var) = node.variable {
+                push_pattern_binding(scope, order, var);
+            }
+        }
+        PathPrimary::Edge(edge) => {
+            if let Some(ref var) = edge.variable {
+                push_pattern_binding(scope, order, var);
+            }
+        }
+        PathPrimary::Parenthesized { expr, .. } => {
+            collect_path_expr_bindings_with_order(expr, scope, order)?
+        }
         PathPrimary::Simplified(_) => {}
     }
     Ok(())
