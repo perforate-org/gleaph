@@ -149,6 +149,7 @@ impl std::fmt::Debug for GleaphService {
 impl GleaphService {
     pub fn new() -> Self {
         let mut service = Self::default();
+        gleaph_gql_ic::install_ic_extension_binary_decode_for_rkyv();
         gleaph_gql_ic::IcExtensionBinaryDecode::for_each_extension_type(|name| {
             service.register_extension_type(name);
         });

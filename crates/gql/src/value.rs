@@ -1982,4 +1982,32 @@ mod tests {
             ValueBinaryError::UnknownEncodedExtension
         );
     }
+
+    #[cfg(feature = "ast-rkyv-no-span")]
+    static MOCK_DECODE_FOR_RKYV: MockDecode = MockDecode;
+
+    /// [`crate::rkyv_support::ExtensionBinaryWire`] path round-trips when a thread-local decoder is installed.
+    #[cfg(feature = "ast-rkyv-no-span")]
+    #[test]
+    fn extension_rkyv_roundtrips_with_thread_decode_override() {
+        let _guard =
+            crate::rkyv_support::RkyvExtensionDecodeScopeGuard::set(&MOCK_DECODE_FOR_RKYV);
+        let v: Value = Value::Extension(Box::new(MockExt("hello".into())));
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&v).expect("to_bytes");
+        let back: Value = rkyv::from_bytes::<Value, rkyv::rancor::Error>(&bytes).expect("from_bytes");
+        assert_eq!(back, v);
+    }
+
+    #[cfg(feature = "ast-rkyv-no-span")]
+    #[test]
+    fn extension_rkyv_deserialize_fails_without_decode_hook() {
+        let v: Value = Value::Extension(Box::new(MockExt("x".into())));
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&v).expect("to_bytes");
+        let err = rkyv::from_bytes::<Value, rkyv::rancor::Error>(&bytes).expect_err("from_bytes");
+        let s = err.to_string();
+        assert!(
+            s.contains("unknown or unsupported extension wire type"),
+            "unexpected error: {s}"
+        );
+    }
 }

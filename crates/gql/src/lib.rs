@@ -17,6 +17,8 @@
 //!   values; source [`Span`](token::Span) fields are omitted from the archived form (`rkyv::with::Skip`).
 //!   The workspace pins `rkyv` without the `bytecheck` default feature (validated `from_bytes` is unavailable;
 //!   use `to_bytes` / `deserialize` / `from_bytes_unchecked` as in unit tests).
+//!   rkyv-deserialized [`Value::Extension`](value::Value::Extension) wire bytes need a registered
+//!   [`ExtensionBinaryDecode`](value::ExtensionBinaryDecode) — see [`try_install_global_rkyv_extension_binary_decode`].
 //!
 //! Internet Computer `Principal` as [`Value::Extension`](value::Value::Extension) lives in the
 //! sibling crate **`gleaph-gql-ic`** (adds a `candid` dependency only there; **tag 34** short blob).
@@ -45,4 +47,10 @@ pub use error::{GqlError, GqlResult};
 pub use parser::ParseResult;
 pub use value::{
     DenyExtensionBinaryDecode, ExtensionBinaryDecode, ExtensionValue, Value, ValueBinaryError,
+};
+
+#[cfg(feature = "ast-rkyv-no-span")]
+pub use rkyv_support::{
+    GlobalRkyvExtensionDecodeAlreadyInstalled, RkyvExtensionDecodeScopeGuard,
+    try_install_global_rkyv_extension_binary_decode,
 };

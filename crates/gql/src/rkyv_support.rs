@@ -1,13 +1,78 @@
 //! rkyv helpers for [`crate::Value::Extension`] (wire bytes) and related `with` types.
+//!
+//! Deserializing [`Value::Extension`] through rkyv requires a registered
+//! [`crate::ExtensionBinaryDecode`] implementation (e.g. IC `Principal` via **`gleaph-gql-ic`**):
+//! call [`try_install_global_rkyv_extension_binary_decode`] at process startup, or
+//! [`RkyvExtensionDecodeScopeGuard`] for thread-local overrides in tests.
+
+use std::cell::Cell;
+use std::sync::OnceLock;
 
 use rkyv::rancor::{Fallible, Source};
 use rkyv::vec::{ArchivedVec, VecResolver};
 use rkyv::with::{ArchiveWith, DeserializeWith, SerializeWith};
 use rkyv::{Archive, Deserialize, Place, Serialize};
 
+use thiserror::Error;
+
 use crate::Value;
 use crate::ValueBinaryError;
-use crate::value::ExtensionValue;
+use crate::value::{DenyExtensionBinaryDecode, ExtensionBinaryDecode, ExtensionValue};
+
+/// Returned when [`try_install_global_rkyv_extension_binary_decode`] is called after a decoder was already installed (first wins).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("global rkyv extension binary decode hook is already installed")]
+pub struct GlobalRkyvExtensionDecodeAlreadyInstalled;
+
+thread_local! {
+    static RKYV_EXT_DECODE_OVERRIDE: Cell<Option<&'static (dyn ExtensionBinaryDecode + Sync)>> =
+        const { Cell::new(None) };
+}
+
+static RKYV_EXT_DECODE_GLOBAL: OnceLock<&'static (dyn ExtensionBinaryDecode + Sync)> =
+    OnceLock::new();
+
+static DENY_RKYV: DenyExtensionBinaryDecode = DenyExtensionBinaryDecode;
+
+fn effective_rkyv_extension_binary_decode() -> &'static (dyn ExtensionBinaryDecode + Sync) {
+    if let Some(d) = RKYV_EXT_DECODE_OVERRIDE.with(|c| c.get()) {
+        return d;
+    }
+    RKYV_EXT_DECODE_GLOBAL
+        .get()
+        .copied()
+        .unwrap_or(&DENY_RKYV)
+}
+
+/// Registers a process-wide [`ExtensionBinaryDecode`] for rkyv [`ExtensionBinaryWire`] deserialization.
+///
+/// Returns `Ok(())` if this call installed the decoder, or `Err(`[`GlobalRkyvExtensionDecodeAlreadyInstalled`]`)` if a decoder was already set (first wins).
+pub fn try_install_global_rkyv_extension_binary_decode(
+    decoder: &'static (dyn ExtensionBinaryDecode + Sync),
+) -> Result<(), GlobalRkyvExtensionDecodeAlreadyInstalled> {
+    RKYV_EXT_DECODE_GLOBAL
+        .set(decoder)
+        .map_err(|_| GlobalRkyvExtensionDecodeAlreadyInstalled)
+}
+
+/// Thread-local override for rkyv extension decoding (e.g. unit tests). Restores the previous override on drop.
+pub struct RkyvExtensionDecodeScopeGuard {
+    previous: Option<&'static (dyn ExtensionBinaryDecode + Sync)>,
+}
+
+impl RkyvExtensionDecodeScopeGuard {
+    pub fn set(decoder: &'static (dyn ExtensionBinaryDecode + Sync)) -> Self {
+        let previous = RKYV_EXT_DECODE_OVERRIDE.with(|c| c.replace(Some(decoder)));
+        Self { previous }
+    }
+}
+
+impl Drop for RkyvExtensionDecodeScopeGuard {
+    fn drop(&mut self) {
+        let prev = self.previous.take();
+        RKYV_EXT_DECODE_OVERRIDE.with(|c| c.set(prev));
+    }
+}
 
 #[cfg(feature = "ast-rkyv-no-span")]
 #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
@@ -62,8 +127,9 @@ impl From<F256Def> for f256::f256 {
 
 /// Archives [`Value::Extension`] as the same byte layout as [`Value::to_binary_bytes`].
 ///
-/// Deserialization uses [`Value::from_binary_bytes`], which rejects extension tags unless a
-/// custom [`crate::ExtensionBinaryDecode`] path is added in the future.
+/// Deserialization uses [`Value::from_binary_bytes_with_extensions`] with the decoder from
+/// [`try_install_global_rkyv_extension_binary_decode`] and/or [`RkyvExtensionDecodeScopeGuard`];
+/// if none is set, extensions are rejected like [`Value::from_binary_bytes`].
 #[derive(Debug)]
 pub struct ExtensionBinaryWire;
 
@@ -110,7 +176,8 @@ where
         deserializer: &mut D,
     ) -> Result<Box<dyn ExtensionValue>, D::Error> {
         let bytes: Vec<u8> = field.deserialize(deserializer)?;
-        match Value::from_binary_bytes(&bytes) {
+        match Value::from_binary_bytes_with_extensions(&bytes, effective_rkyv_extension_binary_decode())
+        {
             Ok(Value::Extension(ext)) => Ok(ext),
             Ok(_) => Err(D::Error::new(ExtensionDeserializeWrongVariant)),
             Err(e) => Err(D::Error::new(e)),
