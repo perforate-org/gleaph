@@ -88,13 +88,13 @@ impl<MT: Memory, MB: Memory> GraphCatalog<MT, MB> {
     /// Handles `CREATE` / `DROP` for graph types and property graphs. Other [`Statement`] variants are ignored.
     pub fn apply_statement_block(&mut self, block: &StatementBlock) -> Result<(), CatalogError> {
         for stmt in block.iter_statements() {
-            self.apply_statement(stmt.clone())?;
+            self.apply_statement(stmt)?;
         }
         Ok(())
     }
 
     /// Dispatches a single top-level [`Statement`] to the corresponding catalog handler.
-    fn apply_statement(&mut self, stmt: Statement) -> Result<(), CatalogError> {
+    fn apply_statement(&mut self, stmt: &Statement) -> Result<(), CatalogError> {
         match stmt {
             Statement::CreateGraphType(c) => self.apply_create_graph_type(c),
             Statement::CreateGraph(c) => self.apply_create_graph(c),
@@ -111,7 +111,10 @@ impl<MT: Memory, MB: Memory> GraphCatalog<MT, MB> {
     }
 
     /// Inserts or replaces a named graph type; supports `IF NOT EXISTS` and `OR REPLACE`. `COPY OF` is rejected.
-    fn apply_create_graph_type(&mut self, c: CreateGraphTypeStatement) -> Result<(), CatalogError> {
+    fn apply_create_graph_type(
+        &mut self,
+        c: &CreateGraphTypeStatement,
+    ) -> Result<(), CatalogError> {
         if c.copy_of.is_some() {
             return Err(CatalogError::Unsupported(
                 "CREATE GRAPH TYPE ... COPY OF is not supported yet".into(),
@@ -123,17 +126,17 @@ impl<MT: Memory, MB: Memory> GraphCatalog<MT, MB> {
         }
         if self.type_map.contains_key(&key) {
             if c.or_replace {
-                self.type_map.insert(key, c.definition.into());
+                self.type_map.insert(key, c.definition.clone().into());
                 return Ok(());
             }
             return Err(CatalogError::GraphTypeExists(key.to_string()));
         }
-        self.type_map.insert(key, c.definition.into());
+        self.type_map.insert(key, c.definition.clone().into());
         Ok(())
     }
 
     /// Binds a property graph name to an inline definition, a named type (`TYPED`), `ANY`, or no stored binding. Rejects `LIKE` and `AS COPY OF`.
-    fn apply_create_graph(&mut self, c: CreateGraphStatement) -> Result<(), CatalogError> {
+    fn apply_create_graph(&mut self, c: &CreateGraphStatement) -> Result<(), CatalogError> {
         if c.copy_of.is_some() {
             return Err(CatalogError::Unsupported(
                 "CREATE GRAPH ... AS COPY OF is not supported yet".into(),
@@ -187,7 +190,7 @@ impl<MT: Memory, MB: Memory> GraphCatalog<MT, MB> {
     }
 
     /// Removes a graph type and any property graphs that referenced it by `TYPED` ([`GraphSchemaBinding::TypeRef`]).
-    fn apply_drop_graph_type(&mut self, d: DropGraphTypeStatement) -> Result<(), CatalogError> {
+    fn apply_drop_graph_type(&mut self, d: &DropGraphTypeStatement) -> Result<(), CatalogError> {
         let key: CatalogTypeKey = object_name_key(&d.name);
         self.type_map.remove(&key);
 
@@ -206,7 +209,7 @@ impl<MT: Memory, MB: Memory> GraphCatalog<MT, MB> {
     }
 
     /// Removes the binding for a property graph name only (does not delete named graph types).
-    fn apply_drop_graph(&mut self, d: DropGraphStatement) {
+    fn apply_drop_graph(&mut self, d: &DropGraphStatement) {
         let key: CatalogBindingKey = object_name_key(&d.name);
         self.binding_map.remove(&key);
     }
