@@ -5,6 +5,7 @@ members = [
     "crates/gql-executor",
     "crates/gql-ic",
     "crates/gql-macros",
+    "crates/graph-catalog",
     "crates/gql-planner",
     "crates/graph",
     "crates/graph-kernel",

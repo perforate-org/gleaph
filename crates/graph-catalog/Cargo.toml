@@ -1,0 +1,29 @@
+[package]
+name = "gleaph-graph-catalog"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+canbench = ["dep:candid", "dep:canbench-rs", "dep:ic-cdk"]
+
+[dependencies]
+concat-string.workspace = true
+derive_more = { version = "2", features = ["as_ref", "from", "into"] }
+ic-stable-structures.workspace = true
+gleaph-gql = { workspace = true, features = [
+    "ast-rkyv-no-span",
+    "f128",
+    "f256",
+] }
+rkyv.workspace = true
+thiserror.workspace = true
+
+# for canbench
+canbench-rs = { workspace = true, optional = true }
+candid = { workspace = true, optional = true }
+ic-cdk = { workspace = true, optional = true }

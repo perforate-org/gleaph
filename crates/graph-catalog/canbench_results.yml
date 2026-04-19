@@ -1,0 +1,86 @@
+benches:
+  bench_catalog_apply_32_new_graph_types:
+    total:
+      calls: 1
+      instructions: 2631874
+      heap_increase: 0
+      stable_memory_increase: 257
+    scopes:
+      catalog_apply:
+        calls: 1
+        instructions: 2552458
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_catalog_apply_or_replace_type_and_graph:
+    total:
+      calls: 1
+      instructions: 81838
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      catalog_apply:
+        calls: 1
+        instructions: 80799
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_catalog_drop_graph_type_cascade_32_graphs:
+    total:
+      calls: 1
+      instructions: 3670677
+      heap_increase: 0
+      stable_memory_increase: 257
+    scopes:
+      catalog_drop_type:
+        calls: 1
+        instructions: 1363804
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_catalog_parse_small_ddl:
+    total:
+      calls: 1
+      instructions: 58637
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      catalog_parse:
+        calls: 1
+        instructions: 57564
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_catalog_resolve_inline_medium:
+    total:
+      calls: 1
+      instructions: 97550
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      catalog_resolve:
+        calls: 1
+        instructions: 96505
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_catalog_resolve_typed_schema:
+    total:
+      calls: 1
+      instructions: 37037
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      catalog_resolve:
+        calls: 1
+        instructions: 35903
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_catalog_resolve_typed_schema_among_128_graphs:
+    total:
+      calls: 1
+      instructions: 58968
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      catalog_resolve:
+        calls: 1
+        instructions: 57923
+        heap_increase: 0
+        stable_memory_increase: 0
+version: 0.4.0
