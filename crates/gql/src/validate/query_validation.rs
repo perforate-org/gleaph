@@ -14,10 +14,10 @@ pub(super) fn validate_composite_query(
     outer_graph: &RapidHashSet<String>,
 ) -> VResult {
     validate_linear_query(&cq.left, outer, outer_graph)?;
-    let expected_bindings = linear_query_result_bindings(&cq.left, outer)?;
+    let expected_bindings = linear_query_result_layout(&cq.left, outer)?;
     for (_, rhs) in &cq.rest {
         validate_linear_query(rhs, outer, outer_graph)?;
-        let rhs_bindings = linear_query_result_bindings(rhs, outer)?;
+        let rhs_bindings = linear_query_result_layout(rhs, outer)?;
         if rhs_bindings != expected_bindings {
             return Err(verr(
                 "composite query branches must expose the same result bindings",
@@ -36,16 +36,7 @@ fn validate_linear_query(
     let mut graph_scope = outer_graph.clone();
     validate_procedure_bindings(&lq.prefix_bindings, &mut scope, &mut graph_scope)?;
 
-    let validate_all_parts = !matches!(lq.result, Some(ResultStatement::Select(_)));
     for part in &lq.parts {
-        if !validate_all_parts
-            && matches!(
-                part,
-                SimpleQueryStatement::Focused { .. } | SimpleQueryStatement::Match(_)
-            )
-        {
-            continue;
-        }
         match part {
             SimpleQueryStatement::Match(m) => {
                 if let Some(graph_name) = &m.graph_name {
@@ -65,9 +56,8 @@ fn validate_linear_query(
                                 yi.name
                             )));
                         }
-                        let name = yi.alias.as_ref().unwrap_or(&yi.name);
-                        scope.insert(name.clone());
                     }
+                    scope = project_yield_items(yields);
                 } else {
                     scope = match_scope;
                 }
@@ -127,11 +117,19 @@ fn validate_linear_query(
                                             yi.name
                                         )));
                                     }
+                                }
+                                scope = project_yield_items(yields);
+                            } else {
+                                scope = match_scope;
+                            }
+                        }
+                        SimpleQueryStatement::CallProcedure(cp) => {
+                            validate_call_procedure(cp)?;
+                            if let Some(yields) = &cp.yield_items {
+                                for yi in yields {
                                     let name = yi.alias.as_ref().unwrap_or(&yi.name);
                                     scope.insert(name.clone());
                                 }
-                            } else {
-                                scope = match_scope;
                             }
                         }
                         SimpleQueryStatement::Insert(ins) => validate_insert(ins)?,
@@ -161,6 +159,14 @@ fn validate_linear_query(
     }
 
     Ok(())
+}
+
+fn project_yield_items(yields: &[YieldItem]) -> RapidHashSet<String> {
+    let mut projected = RapidHashSet::default();
+    for item in yields {
+        projected.insert(item.alias.clone().unwrap_or_else(|| item.name.clone()));
+    }
+    projected
 }
 
 fn validate_inline_procedure_call(
@@ -465,7 +471,7 @@ fn collect_inline_procedure_result_bindings(
     Ok(())
 }
 
-fn composite_query_result_bindings(
+pub(super) fn composite_query_result_bindings(
     query: &CompositeQueryExpr,
     outer: &RapidHashSet<String>,
 ) -> Result<RapidHashSet<String>, GqlError> {
@@ -479,6 +485,19 @@ fn composite_query_result_bindings(
         }
     }
     Ok(expected)
+}
+
+fn linear_query_result_layout(
+    query: &LinearQueryStatement,
+    outer: &RapidHashSet<String>,
+) -> Result<(RapidHashSet<String>, usize), GqlError> {
+    let mut query_scope = outer.clone();
+    collect_linear_query_bindings(query, &mut query_scope);
+    let result_scope = linear_query_result_bindings(query, outer)?;
+    Ok((
+        result_scope,
+        result_column_count(query.result.as_ref(), &query_scope),
+    ))
 }
 
 fn linear_query_result_bindings(
@@ -502,9 +521,7 @@ fn collect_linear_query_bindings(query: &LinearQueryStatement, scope: &mut Rapid
                 let mut match_scope = scope.clone();
                 let _ = collect_pattern_bindings(&m.pattern, &mut match_scope);
                 if let Some(yields) = &m.yield_items {
-                    for item in yields {
-                        scope.insert(item.alias.clone().unwrap_or_else(|| item.name.clone()));
-                    }
+                    *scope = project_yield_items(yields);
                 } else {
                     *scope = match_scope;
                 }
@@ -538,11 +555,7 @@ fn collect_linear_query_bindings(query: &LinearQueryStatement, scope: &mut Rapid
                             let mut match_scope = scope.clone();
                             let _ = collect_pattern_bindings(&m.pattern, &mut match_scope);
                             if let Some(yields) = &m.yield_items {
-                                for item in yields {
-                                    scope.insert(
-                                        item.alias.clone().unwrap_or_else(|| item.name.clone()),
-                                    );
-                                }
+                                *scope = project_yield_items(yields);
                             } else {
                                 *scope = match_scope;
                             }
@@ -608,6 +621,25 @@ fn collect_result_bindings(
             }
         },
         ResultStatement::Finish => {}
+    }
+}
+
+fn result_column_count(
+    result: Option<&ResultStatement>,
+    query_scope: &RapidHashSet<String>,
+) -> usize {
+    match result {
+        Some(ResultStatement::Return(ret)) => match &ret.body {
+            ReturnBody::Star => query_scope.len(),
+            #[cfg(feature = "cypher")]
+            ReturnBody::NoBindings => 0,
+            ReturnBody::Items { items, .. } => items.len(),
+        },
+        Some(ResultStatement::Select(sel)) => match &sel.body {
+            SelectBody::Star { .. } => query_scope.len(),
+            SelectBody::Items { items, .. } => items.len(),
+        },
+        Some(ResultStatement::Finish) | None => 0,
     }
 }
 

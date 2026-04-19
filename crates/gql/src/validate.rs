@@ -14,7 +14,9 @@ use crate::name_limits::{
 use rapidhash::RapidHashSet;
 use std::collections::BTreeMap;
 
-use query_validation::{collect_pattern_bindings, validate_composite_query};
+use query_validation::{
+    collect_pattern_bindings, composite_query_result_bindings, validate_composite_query,
+};
 
 /// Result alias for validation.
 type VResult = Result<(), GqlError>;
@@ -85,13 +87,29 @@ fn validate_transaction_activity(ta: &TransactionActivity) -> VResult {
 
     // Validate the statement body.
     if let Some(ref body) = ta.body {
-        validate_statement(&body.first)?;
+        let mut scope = RapidHashSet::default();
+        validate_statement_with_scope(&body.first, &scope)?;
+        let mut prev_result_scope = statement_result_bindings(&body.first, &scope)?;
         for next in &body.next {
             // Validate YIELD alias uniqueness within a NEXT boundary.
             if let Some(ref yields) = next.yield_items {
                 validate_yield_alias_uniqueness(yields, "NEXT YIELD")?;
+                let mut projected = RapidHashSet::default();
+                for yi in yields {
+                    if !prev_result_scope.contains(&yi.name) {
+                        return Err(verr(&format!(
+                            "NEXT YIELD variable '{}' is not in scope",
+                            yi.name
+                        )));
+                    }
+                    projected.insert(yi.alias.clone().unwrap_or_else(|| yi.name.clone()));
+                }
+                scope = projected;
+            } else {
+                scope = prev_result_scope.clone();
             }
-            validate_statement(&next.statement)?;
+            validate_statement_with_scope(&next.statement, &scope)?;
+            prev_result_scope = statement_result_bindings(&next.statement, &scope)?;
         }
     }
 
@@ -123,11 +141,9 @@ fn validate_start_transaction(start: &StartTransactionCommand) -> VResult {
 // Statement dispatch
 // ════════════════════════════════════════════════════════════════════════════════
 
-fn validate_statement(stmt: &Statement) -> VResult {
+fn validate_statement_with_scope(stmt: &Statement, scope: &RapidHashSet<String>) -> VResult {
     match stmt {
-        Statement::Query(cq) => {
-            validate_composite_query(cq, &RapidHashSet::default(), &RapidHashSet::default())
-        }
+        Statement::Query(cq) => validate_composite_query(cq, scope, &RapidHashSet::default()),
 
         // — DDL (§12) —
         Statement::CreateSchema(create) => validate_create_schema(create),
@@ -145,6 +161,16 @@ fn validate_statement(stmt: &Statement) -> VResult {
 
         // — Session (§7) — already validated at the program level.
         Statement::Session(_) => Ok(()),
+    }
+}
+
+fn statement_result_bindings(
+    stmt: &Statement,
+    scope: &RapidHashSet<String>,
+) -> Result<RapidHashSet<String>, GqlError> {
+    match stmt {
+        Statement::Query(cq) => composite_query_result_bindings(cq, scope),
+        _ => Ok(RapidHashSet::default()),
     }
 }
 
@@ -1591,6 +1617,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn valid_next_yield_alias_propagates_scope() {
+        assert!(
+            parse_and_validate("MATCH (n) RETURN n AS x NEXT YIELD x MATCH (m) RETURN x").is_ok()
+        );
+    }
+
+    #[test]
+    fn invalid_next_yield_unknown_binding() {
+        let err = parse_and_validate("MATCH (n) RETURN n NEXT YIELD x MATCH (m) RETURN m")
+            .expect_err("expected unknown NEXT YIELD binding to fail");
+        assert!(
+            err.to_string()
+                .contains("NEXT YIELD variable 'x' is not in scope"),
+            "unexpected error: {err}"
+        );
+    }
+
     // ── FOR statement with ordinality ──
 
     #[test]
@@ -1660,12 +1704,66 @@ mod tests {
         );
     }
 
+    #[test]
+    fn invalid_match_yield_hides_previous_bindings() {
+        let err = parse_and_validate("MATCH (p) MATCH (a) YIELD a AS x RETURN p")
+            .expect_err("expected hidden binding after MATCH YIELD to fail");
+        assert!(err.to_string().contains("'p'"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn invalid_focused_match_yield_hides_previous_bindings() {
+        let err = parse_and_validate("MATCH (p) USE myGraph MATCH (a) YIELD a AS x RETURN p")
+            .expect_err("expected hidden binding after focused MATCH YIELD to fail");
+        assert!(err.to_string().contains("'p'"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn invalid_select_prefix_unbound_yield_is_still_checked() {
+        let err = parse_and_validate("MATCH (n) YIELD z SELECT * FROM myGraph MATCH (m)")
+            .expect_err("expected invalid MATCH YIELD before SELECT to fail");
+        assert!(
+            err.to_string()
+                .contains("MATCH YIELD variable 'z' is not in scope"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn invalid_select_prefix_unbound_where_is_still_checked() {
+        let err = parse_and_validate("MATCH (n) WHERE z = 1 SELECT * FROM myGraph MATCH (m)")
+            .expect_err("expected invalid MATCH WHERE before SELECT to fail");
+        assert!(err.to_string().contains("'z'"), "unexpected error: {err}");
+    }
+
     // ── Composite query binding mismatch (top-level UNION) ──
 
     #[test]
     fn invalid_union_binding_mismatch() {
         let err = parse_and_validate("MATCH (n) RETURN n UNION MATCH (m) RETURN m AS x")
             .expect_err("expected union binding mismatch to fail");
+        assert!(
+            err.to_string()
+                .contains("composite query branches must expose the same result bindings"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn invalid_union_unnamed_result_column_count_mismatch() {
+        let err = parse_and_validate("MATCH (n) RETURN 1 UNION MATCH (m) RETURN 2, 3")
+            .expect_err("expected unnamed union column-count mismatch to fail");
+        assert!(
+            err.to_string()
+                .contains("composite query branches must expose the same result bindings"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn invalid_union_mixed_named_and_unnamed_result_column_count_mismatch() {
+        let err = parse_and_validate("MATCH (n) RETURN 1 AS x, 2 UNION MATCH (m) RETURN 3 AS x")
+            .expect_err("expected mixed named/unnamed union mismatch to fail");
         assert!(
             err.to_string()
                 .contains("composite query branches must expose the same result bindings"),
