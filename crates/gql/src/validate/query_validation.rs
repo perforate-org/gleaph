@@ -58,6 +58,7 @@ fn validate_linear_query(
                         }
                     }
                     scope = project_yield_items(yields);
+                    graph_scope = project_graph_yield_items(yields, &graph_scope);
                 } else {
                     scope = match_scope;
                 }
@@ -126,6 +127,7 @@ fn validate_linear_query(
                                     }
                                 }
                                 scope = project_yield_items(yields);
+                                graph_scope = project_graph_yield_items(yields, &graph_scope);
                             } else {
                                 scope = match_scope;
                             }
@@ -179,13 +181,27 @@ fn project_yield_items(yields: &[YieldItem]) -> RapidHashSet<String> {
     projected
 }
 
+fn project_graph_yield_items(
+    yields: &[YieldItem],
+    visible_graph_scope: &RapidHashSet<String>,
+) -> RapidHashSet<String> {
+    let mut projected = RapidHashSet::default();
+    for item in yields {
+        if visible_graph_scope.contains(&item.name) {
+            projected.insert(item.alias.clone().unwrap_or_else(|| item.name.clone()));
+        }
+    }
+    projected
+}
+
 fn validate_inline_procedure_call(
     ipc: &InlineProcedureCall,
     scope: &RapidHashSet<String>,
     graph_scope: &RapidHashSet<String>,
 ) -> VResult {
     let body_scope = inline_procedure_body_scope(ipc, scope)?;
-    validate_composite_query(&ipc.body, &body_scope, graph_scope)
+    let body_graph_scope = inline_procedure_body_graph_scope(ipc, graph_scope);
+    validate_composite_query(&ipc.body, &body_scope, &body_graph_scope)
 }
 
 fn inline_procedure_body_scope(
@@ -205,6 +221,20 @@ fn inline_procedure_body_scope(
         selected.insert(name.clone());
     }
     Ok(selected)
+}
+
+fn inline_procedure_body_graph_scope(
+    ipc: &InlineProcedureCall,
+    graph_scope: &RapidHashSet<String>,
+) -> RapidHashSet<String> {
+    if ipc.scope_vars.is_empty() {
+        return graph_scope.clone();
+    }
+    ipc.scope_vars
+        .iter()
+        .filter(|name| graph_scope.contains(*name))
+        .cloned()
+        .collect()
 }
 
 fn validate_procedure_bindings(
@@ -478,8 +508,9 @@ fn collect_inline_procedure_result_bindings(
     graph_scope: &mut RapidHashSet<String>,
 ) -> VResult {
     let body_scope = inline_procedure_body_scope(ipc, outer_scope)?;
+    let body_graph_scope = inline_procedure_body_graph_scope(ipc, outer_graph_scope);
     let (bindings, graph_bindings) =
-        composite_query_result_scopes(&ipc.body, &body_scope, outer_graph_scope)?;
+        composite_query_result_scopes(&ipc.body, &body_scope, &body_graph_scope)?;
     scope.extend(bindings);
     graph_scope.extend(graph_bindings);
     Ok(())
@@ -584,6 +615,7 @@ fn collect_linear_query_scopes(
                 let _ = collect_pattern_bindings(&m.pattern, &mut match_scope);
                 if let Some(yields) = &m.yield_items {
                     *scope = project_yield_items(yields);
+                    *graph_scope = project_graph_yield_items(yields, graph_scope);
                 } else {
                     *scope = match_scope;
                 }
@@ -625,6 +657,7 @@ fn collect_linear_query_scopes(
                             let _ = collect_pattern_bindings(&m.pattern, &mut match_scope);
                             if let Some(yields) = &m.yield_items {
                                 *scope = project_yield_items(yields);
+                                *graph_scope = project_graph_yield_items(yields, graph_scope);
                             } else {
                                 *scope = match_scope;
                             }

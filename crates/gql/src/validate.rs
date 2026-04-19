@@ -1066,6 +1066,19 @@ mod tests {
     }
 
     #[test]
+    fn invalid_inline_procedure_scope_var_hides_graph_binding_in_body() {
+        let err = parse_and_validate(
+            "GRAPH g = myGraph VALUE x = 1 CALL (x) { VALUE g = 1 USE g MATCH (n) RETURN n } RETURN x",
+        )
+        .expect_err("expected graph binding to be hidden by inline CALL scope clause");
+        assert!(
+            err.to_string()
+                .contains("cannot be used as a graph reference"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn valid_inline_procedure_exports_result_bindings() {
         assert!(parse_and_validate("MATCH (n) CALL { RETURN 1 AS x } RETURN x").is_ok());
     }
@@ -1644,6 +1657,19 @@ mod tests {
         assert!(
             parse_and_validate("GRAPH g = myGraph RETURN g NEXT YIELD g USE g MATCH (n) RETURN n")
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn invalid_match_yield_hides_graph_bindings() {
+        let err = parse_and_validate(
+            "GRAPH g = myGraph MATCH (n) YIELD n NEXT VALUE g = 1 USE g MATCH (m) RETURN m",
+        )
+        .expect_err("expected hidden graph binding after MATCH YIELD to fail");
+        assert!(
+            err.to_string()
+                .contains("cannot be used as a graph reference"),
+            "unexpected error: {err}"
         );
     }
 
