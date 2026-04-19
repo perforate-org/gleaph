@@ -15,7 +15,7 @@ use rapidhash::RapidHashSet;
 use std::collections::BTreeMap;
 
 use query_validation::{
-    collect_pattern_bindings, composite_query_result_bindings, validate_composite_query,
+    collect_pattern_bindings, composite_query_result_scopes, validate_composite_query,
 };
 
 /// Result alias for validation.
@@ -88,13 +88,16 @@ fn validate_transaction_activity(ta: &TransactionActivity) -> VResult {
     // Validate the statement body.
     if let Some(ref body) = ta.body {
         let mut scope = RapidHashSet::default();
-        validate_statement_with_scope(&body.first, &scope)?;
-        let mut prev_result_scope = statement_result_bindings(&body.first, &scope)?;
+        let mut graph_scope = RapidHashSet::default();
+        validate_statement_with_scope(&body.first, &scope, &graph_scope)?;
+        let (mut prev_result_scope, mut prev_result_graph_scope) =
+            statement_result_scopes(&body.first, &scope, &graph_scope)?;
         for next in &body.next {
             // Validate YIELD alias uniqueness within a NEXT boundary.
             if let Some(ref yields) = next.yield_items {
                 validate_yield_alias_uniqueness(yields, "NEXT YIELD")?;
                 let mut projected = RapidHashSet::default();
+                let mut projected_graph = RapidHashSet::default();
                 for yi in yields {
                     if !prev_result_scope.contains(&yi.name) {
                         return Err(verr(&format!(
@@ -102,14 +105,21 @@ fn validate_transaction_activity(ta: &TransactionActivity) -> VResult {
                             yi.name
                         )));
                     }
-                    projected.insert(yi.alias.clone().unwrap_or_else(|| yi.name.clone()));
+                    let output_name = yi.alias.clone().unwrap_or_else(|| yi.name.clone());
+                    if prev_result_graph_scope.contains(&yi.name) {
+                        projected_graph.insert(output_name.clone());
+                    }
+                    projected.insert(output_name);
                 }
                 scope = projected;
+                graph_scope = projected_graph;
             } else {
                 scope = prev_result_scope.clone();
+                graph_scope = prev_result_graph_scope.clone();
             }
-            validate_statement_with_scope(&next.statement, &scope)?;
-            prev_result_scope = statement_result_bindings(&next.statement, &scope)?;
+            validate_statement_with_scope(&next.statement, &scope, &graph_scope)?;
+            (prev_result_scope, prev_result_graph_scope) =
+                statement_result_scopes(&next.statement, &scope, &graph_scope)?;
         }
     }
 
@@ -141,9 +151,13 @@ fn validate_start_transaction(start: &StartTransactionCommand) -> VResult {
 // Statement dispatch
 // ════════════════════════════════════════════════════════════════════════════════
 
-fn validate_statement_with_scope(stmt: &Statement, scope: &RapidHashSet<String>) -> VResult {
+fn validate_statement_with_scope(
+    stmt: &Statement,
+    scope: &RapidHashSet<String>,
+    graph_scope: &RapidHashSet<String>,
+) -> VResult {
     match stmt {
-        Statement::Query(cq) => validate_composite_query(cq, scope, &RapidHashSet::default()),
+        Statement::Query(cq) => validate_composite_query(cq, scope, graph_scope),
 
         // — DDL (§12) —
         Statement::CreateSchema(create) => validate_create_schema(create),
@@ -164,13 +178,14 @@ fn validate_statement_with_scope(stmt: &Statement, scope: &RapidHashSet<String>)
     }
 }
 
-fn statement_result_bindings(
+fn statement_result_scopes(
     stmt: &Statement,
     scope: &RapidHashSet<String>,
-) -> Result<RapidHashSet<String>, GqlError> {
+    graph_scope: &RapidHashSet<String>,
+) -> Result<(RapidHashSet<String>, RapidHashSet<String>), GqlError> {
     match stmt {
-        Statement::Query(cq) => composite_query_result_bindings(cq, scope),
-        _ => Ok(RapidHashSet::default()),
+        Statement::Query(cq) => composite_query_result_scopes(cq, scope, graph_scope),
+        _ => Ok((RapidHashSet::default(), RapidHashSet::default())),
     }
 }
 
@@ -1625,6 +1640,14 @@ mod tests {
     }
 
     #[test]
+    fn valid_next_yield_preserves_graph_scope() {
+        assert!(
+            parse_and_validate("GRAPH g = myGraph RETURN g NEXT YIELD g USE g MATCH (n) RETURN n")
+                .is_ok()
+        );
+    }
+
+    #[test]
     fn invalid_next_yield_unknown_binding() {
         let err = parse_and_validate("MATCH (n) RETURN n NEXT YIELD x MATCH (m) RETURN m")
             .expect_err("expected unknown NEXT YIELD binding to fail");
@@ -1750,6 +1773,19 @@ mod tests {
     }
 
     #[test]
+    fn invalid_union_named_result_order_mismatch() {
+        let err = parse_and_validate(
+            "MATCH (n),(m) RETURN n AS x, m AS y UNION MATCH (a),(b) RETURN b AS y, a AS x",
+        )
+        .expect_err("expected named union column order mismatch to fail");
+        assert!(
+            err.to_string()
+                .contains("composite query branches must expose the same result bindings"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn invalid_union_unnamed_result_column_count_mismatch() {
         let err = parse_and_validate("MATCH (n) RETURN 1 UNION MATCH (m) RETURN 2, 3")
             .expect_err("expected unnamed union column-count mismatch to fail");
@@ -1834,6 +1870,13 @@ mod tests {
     #[test]
     fn valid_focused_call_procedure_yield_exports_bindings() {
         assert!(parse_and_validate("MATCH (n) CALL myproc() YIELD x RETURN n, x").is_ok());
+    }
+
+    #[test]
+    fn invalid_focused_call_procedure_unbound_arg() {
+        let err = parse_and_validate("MATCH (n) USE myGraph CALL myproc(x) YIELD z RETURN z")
+            .expect_err("expected unbound arg in focused CALL");
+        assert!(err.to_string().contains("'x'"), "unexpected error: {err}");
     }
 
     // ── SELECT with nested subquery ──

@@ -96,6 +96,9 @@ pub fn validate_catalog_name_part(name: &str) -> Result<(), NameLimitError> {
 /// `StableBTreeMap::range` when keys are ordered as `(entity_kind, property_name, …)`
 /// and all `property_name` values respect `max_bytes`.
 pub fn lexicographic_successor_within_max_bytes(s: &str, max_bytes: usize) -> Option<String> {
+    if s.is_empty() {
+        return (max_bytes > 0).then(|| "\0".to_string());
+    }
     let mut chars: Vec<char> = s.chars().collect();
     while let Some(last) = chars.pop() {
         let mut code = last as u32;
@@ -129,5 +132,11 @@ mod tests {
     fn successor_none_when_max_too_small() {
         // The successor of `""` with length budget `0` is nonempty, so impossible.
         assert!(lexicographic_successor_within_max_bytes("", 0).is_none());
+    }
+
+    #[test]
+    fn successor_empty_string_is_nul_when_budget_allows() {
+        let s = lexicographic_successor_within_max_bytes("", 1).unwrap();
+        assert_eq!(s, "\0");
     }
 }

@@ -14,10 +14,10 @@ pub(super) fn validate_composite_query(
     outer_graph: &RapidHashSet<String>,
 ) -> VResult {
     validate_linear_query(&cq.left, outer, outer_graph)?;
-    let expected_bindings = linear_query_result_layout(&cq.left, outer)?;
+    let expected_bindings = linear_query_result_layout(&cq.left, outer, outer_graph)?;
     for (_, rhs) in &cq.rest {
         validate_linear_query(rhs, outer, outer_graph)?;
-        let rhs_bindings = linear_query_result_layout(rhs, outer)?;
+        let rhs_bindings = linear_query_result_layout(rhs, outer, outer_graph)?;
         if rhs_bindings != expected_bindings {
             return Err(verr(
                 "composite query branches must expose the same result bindings",
@@ -94,7 +94,14 @@ fn validate_linear_query(
                 validate_inline_scope_vars(ipc)?;
                 validate_inline_procedure_call(ipc, &scope, &graph_scope)?;
                 let outer_scope = scope.clone();
-                collect_inline_procedure_result_bindings(ipc, &outer_scope, &mut scope)?;
+                let outer_graph_scope = graph_scope.clone();
+                collect_inline_procedure_result_bindings(
+                    ipc,
+                    &outer_scope,
+                    &outer_graph_scope,
+                    &mut scope,
+                    &mut graph_scope,
+                )?;
             }
             SimpleQueryStatement::Focused { graph, body } => {
                 validate_graph_reference(graph, &scope, &graph_scope)?;
@@ -125,6 +132,9 @@ fn validate_linear_query(
                         }
                         SimpleQueryStatement::CallProcedure(cp) => {
                             validate_call_procedure(cp)?;
+                            for arg in &cp.args {
+                                validate_expr(arg, &scope, &graph_scope)?;
+                            }
                             if let Some(yields) = &cp.yield_items {
                                 for yi in yields {
                                     let name = yi.alias.as_ref().unwrap_or(&yi.name);
@@ -463,11 +473,15 @@ fn collect_query_result_bindings(query: &CompositeQueryExpr, scope: &mut RapidHa
 fn collect_inline_procedure_result_bindings(
     ipc: &InlineProcedureCall,
     outer_scope: &RapidHashSet<String>,
+    outer_graph_scope: &RapidHashSet<String>,
     scope: &mut RapidHashSet<String>,
+    graph_scope: &mut RapidHashSet<String>,
 ) -> VResult {
     let body_scope = inline_procedure_body_scope(ipc, outer_scope)?;
-    let bindings = composite_query_result_bindings(&ipc.body, &body_scope)?;
+    let (bindings, graph_bindings) =
+        composite_query_result_scopes(&ipc.body, &body_scope, outer_graph_scope)?;
     scope.extend(bindings);
+    graph_scope.extend(graph_bindings);
     Ok(())
 }
 
@@ -475,9 +489,9 @@ pub(super) fn composite_query_result_bindings(
     query: &CompositeQueryExpr,
     outer: &RapidHashSet<String>,
 ) -> Result<RapidHashSet<String>, GqlError> {
-    let expected = linear_query_result_bindings(&query.left, outer)?;
+    let expected = linear_query_result_bindings(&query.left, outer, &RapidHashSet::default())?;
     for (_, rhs) in &query.rest {
-        let rhs_bindings = linear_query_result_bindings(rhs, outer)?;
+        let rhs_bindings = linear_query_result_bindings(rhs, outer, &RapidHashSet::default())?;
         if rhs_bindings != expected {
             return Err(verr(
                 "composite query branches must expose the same result bindings",
@@ -490,30 +504,78 @@ pub(super) fn composite_query_result_bindings(
 fn linear_query_result_layout(
     query: &LinearQueryStatement,
     outer: &RapidHashSet<String>,
-) -> Result<(RapidHashSet<String>, usize), GqlError> {
+    outer_graph: &RapidHashSet<String>,
+) -> Result<Vec<Option<String>>, GqlError> {
     let mut query_scope = outer.clone();
-    collect_linear_query_bindings(query, &mut query_scope);
-    let result_scope = linear_query_result_bindings(query, outer)?;
-    Ok((
-        result_scope,
-        result_column_count(query.result.as_ref(), &query_scope),
+    let mut query_graph_scope = outer_graph.clone();
+    collect_linear_query_scopes(query, &mut query_scope, &mut query_graph_scope)?;
+    Ok(result_column_layout(
+        query.result.as_ref(),
+        &query_scope,
+        &query_graph_scope,
     ))
 }
 
 fn linear_query_result_bindings(
     query: &LinearQueryStatement,
     outer: &RapidHashSet<String>,
+    outer_graph: &RapidHashSet<String>,
 ) -> Result<RapidHashSet<String>, GqlError> {
     let mut query_scope = outer.clone();
-    collect_linear_query_bindings(query, &mut query_scope);
+    let mut query_graph_scope = outer_graph.clone();
+    collect_linear_query_scopes(query, &mut query_scope, &mut query_graph_scope)?;
     let mut result_scope = RapidHashSet::default();
     collect_result_bindings(query.result.as_ref(), &query_scope, &mut result_scope);
     Ok(result_scope)
 }
 
-fn collect_linear_query_bindings(query: &LinearQueryStatement, scope: &mut RapidHashSet<String>) {
+pub(super) fn composite_query_result_scopes(
+    query: &CompositeQueryExpr,
+    outer: &RapidHashSet<String>,
+    outer_graph: &RapidHashSet<String>,
+) -> Result<(RapidHashSet<String>, RapidHashSet<String>), GqlError> {
+    let expected = linear_query_result_scopes(&query.left, outer, outer_graph)?;
+    for (_, rhs) in &query.rest {
+        let rhs_scopes = linear_query_result_scopes(rhs, outer, outer_graph)?;
+        if rhs_scopes.0 != expected.0 {
+            return Err(verr(
+                "composite query branches must expose the same result bindings",
+            ));
+        }
+    }
+    Ok(expected)
+}
+
+fn linear_query_result_scopes(
+    query: &LinearQueryStatement,
+    outer: &RapidHashSet<String>,
+    outer_graph: &RapidHashSet<String>,
+) -> Result<(RapidHashSet<String>, RapidHashSet<String>), GqlError> {
+    let mut query_scope = outer.clone();
+    let mut query_graph_scope = outer_graph.clone();
+    collect_linear_query_scopes(query, &mut query_scope, &mut query_graph_scope)?;
+    let mut result_scope = RapidHashSet::default();
+    collect_result_bindings(query.result.as_ref(), &query_scope, &mut result_scope);
+    let mut result_graph_scope = RapidHashSet::default();
+    collect_result_graph_bindings(
+        query.result.as_ref(),
+        &query_scope,
+        &query_graph_scope,
+        &mut result_graph_scope,
+    );
+    Ok((result_scope, result_graph_scope))
+}
+
+fn collect_linear_query_scopes(
+    query: &LinearQueryStatement,
+    scope: &mut RapidHashSet<String>,
+    graph_scope: &mut RapidHashSet<String>,
+) -> VResult {
     for binding in &query.prefix_bindings {
         scope.insert(binding.variable.clone());
+        if matches!(binding.kind, ProcedureBindingKind::Graph) {
+            graph_scope.insert(binding.variable.clone());
+        }
     }
     for part in &query.parts {
         match part {
@@ -546,7 +608,14 @@ fn collect_linear_query_bindings(query: &LinearQueryStatement, scope: &mut Rapid
             }
             SimpleQueryStatement::InlineProcedureCall(ipc) => {
                 let outer_scope = scope.clone();
-                let _ = collect_inline_procedure_result_bindings(ipc, &outer_scope, scope);
+                let outer_graph_scope = graph_scope.clone();
+                collect_inline_procedure_result_bindings(
+                    ipc,
+                    &outer_scope,
+                    &outer_graph_scope,
+                    scope,
+                    graph_scope,
+                )?;
             }
             SimpleQueryStatement::Focused { body, .. } => {
                 if let Some(inner) = body {
@@ -583,6 +652,7 @@ fn collect_linear_query_bindings(query: &LinearQueryStatement, scope: &mut Rapid
             | SimpleQueryStatement::Delete(_) => {}
         }
     }
+    Ok(())
 }
 
 fn collect_result_bindings(
@@ -624,22 +694,91 @@ fn collect_result_bindings(
     }
 }
 
-fn result_column_count(
+fn collect_result_graph_bindings(
     result: Option<&ResultStatement>,
     query_scope: &RapidHashSet<String>,
-) -> usize {
+    query_graph_scope: &RapidHashSet<String>,
+    scope: &mut RapidHashSet<String>,
+) {
+    let Some(result) = result else {
+        return;
+    };
+    match result {
+        ResultStatement::Return(ret) => match &ret.body {
+            ReturnBody::Star => {
+                for name in query_scope {
+                    if query_graph_scope.contains(name) {
+                        scope.insert(name.clone());
+                    }
+                }
+            }
+            #[cfg(feature = "cypher")]
+            ReturnBody::NoBindings => {}
+            ReturnBody::Items { items, .. } => {
+                for item in items {
+                    if let ExprKind::Variable(name) = &item.expr.kind
+                        && query_graph_scope.contains(name)
+                    {
+                        scope.insert(item.alias.clone().unwrap_or_else(|| name.clone()));
+                    }
+                }
+            }
+        },
+        ResultStatement::Select(sel) => match &sel.body {
+            SelectBody::Star { .. } => {
+                for name in query_scope {
+                    if query_graph_scope.contains(name) {
+                        scope.insert(name.clone());
+                    }
+                }
+            }
+            SelectBody::Items { items, .. } => {
+                for item in items {
+                    if let ExprKind::Variable(name) = &item.expr.kind
+                        && query_graph_scope.contains(name)
+                    {
+                        scope.insert(item.alias.clone().unwrap_or_else(|| name.clone()));
+                    }
+                }
+            }
+        },
+        ResultStatement::Finish => {}
+    }
+}
+
+fn result_column_layout(
+    result: Option<&ResultStatement>,
+    query_scope: &RapidHashSet<String>,
+    _query_graph_scope: &RapidHashSet<String>,
+) -> Vec<Option<String>> {
     match result {
         Some(ResultStatement::Return(ret)) => match &ret.body {
-            ReturnBody::Star => query_scope.len(),
+            ReturnBody::Star => query_scope.iter().map(|name| Some(name.clone())).collect(),
             #[cfg(feature = "cypher")]
-            ReturnBody::NoBindings => 0,
-            ReturnBody::Items { items, .. } => items.len(),
+            ReturnBody::NoBindings => vec![],
+            ReturnBody::Items { items, .. } => items
+                .iter()
+                .map(|item| {
+                    item.alias.clone().or_else(|| match &item.expr.kind {
+                        ExprKind::Variable(name) => Some(name.clone()),
+                        _ => None,
+                    })
+                })
+                .collect(),
         },
         Some(ResultStatement::Select(sel)) => match &sel.body {
-            SelectBody::Star { .. } => query_scope.len(),
-            SelectBody::Items { items, .. } => items.len(),
+            SelectBody::Star { .. } => query_scope.iter().map(|name| Some(name.clone())).collect(),
+            SelectBody::Items { items, .. } => items
+                .iter()
+                .map(|item| {
+                    item.alias.clone().or_else(|| match &item.expr.kind {
+                        ExprKind::Variable(name) => Some(name.clone()),
+                        _ => None,
+                    })
+                })
+                .collect(),
         },
-        Some(ResultStatement::Finish) | None => 0,
+        Some(ResultStatement::Finish) | None => vec![],
     }
 }
 
