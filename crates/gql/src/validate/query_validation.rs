@@ -234,6 +234,7 @@ pub(super) fn validate_return(
                     "RETURN must have at least one item, *, or NO BINDINGS",
                 ));
             }
+            validate_result_item_output_name_uniqueness(items, "RETURN")?;
             let mut extended = scope.clone();
             for item in items {
                 validate_expr(&item.expr, scope, graph_scope)?;
@@ -303,10 +304,24 @@ pub(super) fn validate_select(
                 }
             }
             if let Some(expr) = having {
+                if let Some(gb) = group_by
+                    && !expr_is_group_compatible(expr, &gb.items)
+                {
+                    return Err(verr(
+                        "HAVING expression must be grouped or aggregated when GROUP BY is present",
+                    ));
+                }
                 validate_expr(expr, &scope, &graph_scope)?;
             }
             if let Some(ob) = order_by {
                 for item in &ob.items {
+                    if let Some(gb) = group_by
+                        && !expr_is_group_compatible(&item.expr, &gb.items)
+                    {
+                        return Err(verr(
+                            "ORDER BY expression must be grouped or aggregated when GROUP BY is present",
+                        ));
+                    }
                     validate_expr(&item.expr, &scope, &graph_scope)?;
                 }
             }
@@ -329,6 +344,7 @@ pub(super) fn validate_select(
             if items.is_empty() {
                 return Err(verr("SELECT must have at least one item or *"));
             }
+            validate_result_item_output_name_uniqueness(items, "SELECT")?;
             let mut extended = scope.clone();
             for item in items {
                 validate_expr(&item.expr, &scope, &graph_scope)?;
@@ -379,6 +395,24 @@ pub(super) fn validate_select(
             Ok(())
         }
     }
+}
+
+fn validate_result_item_output_name_uniqueness(items: &[ReturnItem], context: &str) -> VResult {
+    let mut seen = RapidHashSet::default();
+    for item in items {
+        let output_name = item.alias.as_ref().or(match &item.expr.kind {
+            ExprKind::Variable(name) => Some(name),
+            _ => None,
+        });
+        if let Some(output_name) = output_name
+            && !seen.insert(output_name.clone())
+        {
+            return Err(verr(&format!(
+                "{context}: duplicate output name '{output_name}'"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn validate_select_source(

@@ -1163,6 +1163,26 @@ mod tests {
     }
 
     #[test]
+    fn invalid_return_duplicate_output_alias() {
+        let err = parse_and_validate("MATCH (n) RETURN n AS x, n AS x")
+            .expect_err("expected duplicate RETURN output alias to fail");
+        assert!(
+            err.to_string().contains("duplicate output name 'x'"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn invalid_select_duplicate_output_alias() {
+        let err = parse_and_validate("SELECT 1 AS x, 2 AS x")
+            .expect_err("expected duplicate SELECT output alias to fail");
+        assert!(
+            err.to_string().contains("duplicate output name 'x'"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn valid_match_yield_alias_exports_binding() {
         assert!(parse_and_validate("MATCH (a)-[e]->(b) YIELD e AS edge RETURN edge").is_ok());
     }
@@ -1489,6 +1509,32 @@ mod tests {
                 "SELECT * FROM myGraph MATCH (n) GROUP BY n.name HAVING COUNT(*) > 1 ORDER BY n.name LIMIT 10 OFFSET 5"
             )
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn invalid_select_star_group_by_ungrouped_having_expr() {
+        let err =
+            parse_and_validate("SELECT * FROM myGraph MATCH (n) GROUP BY n.name HAVING n.age > 1")
+                .expect_err("expected ungrouped HAVING in SELECT * to fail");
+        assert!(
+            err.to_string().contains(
+                "HAVING expression must be grouped or aggregated when GROUP BY is present"
+            ),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn invalid_select_star_group_by_ungrouped_order_by_expr() {
+        let err =
+            parse_and_validate("SELECT * FROM myGraph MATCH (n) GROUP BY n.name ORDER BY n.age")
+                .expect_err("expected ungrouped ORDER BY in SELECT * to fail");
+        assert!(
+            err.to_string().contains(
+                "ORDER BY expression must be grouped or aggregated when GROUP BY is present"
+            ),
+            "unexpected error: {err}"
         );
     }
 

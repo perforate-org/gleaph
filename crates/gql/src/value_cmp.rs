@@ -6,6 +6,8 @@ use std::cmp::Ordering;
 use crate::Value;
 use crate::types::Decimal;
 
+const NANOS_PER_DAY: i64 = 86_400_000_000_000;
+
 /// Compare two integer [`Value`]s of any width/signedness and return their
 /// ordering. Returns `None` if either operand is not an integer variant.
 fn compare_int_values(left: &Value, right: &Value) -> Option<Ordering> {
@@ -111,6 +113,59 @@ fn uint_to_u256(v: &Value) -> Option<ethnum::U256> {
     }
 }
 
+fn compare_value_slices(left: &[Value], right: &[Value]) -> Option<Ordering> {
+    for (l, r) in left.iter().zip(right) {
+        let ord = compare_values(l, r)?;
+        if ord != Ordering::Equal {
+            return Some(ord);
+        }
+    }
+    Some(left.len().cmp(&right.len()))
+}
+
+fn compare_path_elements(
+    left: &crate::types::PathElement,
+    right: &crate::types::PathElement,
+) -> Ordering {
+    use crate::types::PathElement;
+
+    match (left, right) {
+        (PathElement::Vertex(a), PathElement::Vertex(b)) => a.cmp(b),
+        (
+            PathElement::Edge {
+                src: src_a,
+                dst: dst_a,
+                label: label_a,
+            },
+            PathElement::Edge {
+                src: src_b,
+                dst: dst_b,
+                label: label_b,
+            },
+        ) => (src_a, dst_a, label_a).cmp(&(src_b, dst_b, label_b)),
+        (PathElement::Vertex(_), PathElement::Edge { .. }) => Ordering::Less,
+        (PathElement::Edge { .. }, PathElement::Vertex(_)) => Ordering::Greater,
+    }
+}
+
+fn compare_path_slices(
+    left: &[crate::types::PathElement],
+    right: &[crate::types::PathElement],
+) -> Ordering {
+    for (l, r) in left.iter().zip(right) {
+        let ord = compare_path_elements(l, r);
+        if ord != Ordering::Equal {
+            return ord;
+        }
+    }
+    left.len().cmp(&right.len())
+}
+
+fn normalize_zoned_time_utc(nanos: u64, tz_seconds: i32) -> i64 {
+    let utc = nanos as i64 - (tz_seconds as i64) * 1_000_000_000;
+    utc.rem_euclid(NANOS_PER_DAY)
+}
+
 /// Compares two [`Value`]s and returns their ordering, or `None` if the types
 /// are incomparable (e.g. `Text` vs `Int64`).
 ///
@@ -151,13 +206,13 @@ pub fn compare_values(left: &Value, right: &Value) -> Option<Ordering> {
         }
         (Value::ZonedTime(n1, t1), Value::ZonedTime(n2, t2)) => {
             // Normalize to UTC for comparison.
-            let utc1 = *n1 as i64 - (*t1 as i64) * 1_000_000_000;
-            let utc2 = *n2 as i64 - (*t2 as i64) * 1_000_000_000;
+            let utc1 = normalize_zoned_time_utc(*n1, *t1);
+            let utc2 = normalize_zoned_time_utc(*n2, *t2);
             Some(utc1.cmp(&utc2))
         }
         (Value::Duration(m1, n1), Value::Duration(m2, n2)) => Some((m1, n1).cmp(&(m2, n2))),
-        (Value::List(a), Value::List(b)) => Some(a.len().cmp(&b.len())),
-        (Value::Path(a), Value::Path(b)) => Some(a.len().cmp(&b.len())),
+        (Value::List(a), Value::List(b)) => compare_value_slices(a, b),
+        (Value::Path(a), Value::Path(b)) => Some(compare_path_slices(a, b)),
         (Value::Decimal(a), Value::Decimal(b)) => Some(a.cmp(b)),
         (Value::Extension(a), Value::Extension(b)) => a.cmp_ext(b.as_ref()),
 
@@ -530,7 +585,7 @@ mod tests {
         );
     }
 
-    // ── List comparison (by length) ────────────────────────────────────
+    // ── List comparison (lexicographic) ────────────────────────────────
     #[test]
     fn list_comparisons() {
         let short = Value::List(vec![Value::Int32(1)]);
@@ -540,8 +595,34 @@ mod tests {
         assert_eq!(compare_values(&short, &long), Some(Ordering::Less));
         assert_eq!(compare_values(&long, &short), Some(Ordering::Greater));
         assert_eq!(compare_values(&empty, &short), Some(Ordering::Less));
-        // Same length => Equal (content ignored)
-        assert_eq!(compare_values(&short, &also_short), Some(Ordering::Equal));
+        assert_eq!(compare_values(&short, &also_short), Some(Ordering::Less));
+    }
+
+    #[test]
+    fn path_comparisons_are_lexicographic() {
+        let a = Value::Path(vec![crate::types::PathElement::Vertex(1)]);
+        let b = Value::Path(vec![crate::types::PathElement::Vertex(2)]);
+        let c = Value::Path(vec![
+            crate::types::PathElement::Vertex(1),
+            crate::types::PathElement::Edge {
+                src: 1,
+                dst: 2,
+                label: Some("KNOWS".into()),
+            },
+        ]);
+        assert_eq!(compare_values(&a, &b), Some(Ordering::Less));
+        assert_eq!(compare_values(&b, &a), Some(Ordering::Greater));
+        assert_eq!(compare_values(&a, &c), Some(Ordering::Less));
+    }
+
+    #[test]
+    fn zoned_time_comparison_wraps_utc_day_boundary() {
+        let plus_one = Value::ZonedTime(30 * 60 * 1_000_000_000u64, 3600);
+        let utc_prev_day = Value::ZonedTime((23 * 3600 + 30 * 60) * 1_000_000_000u64, 0);
+        assert_eq!(
+            compare_values(&plus_one, &utc_prev_day),
+            Some(Ordering::Equal)
+        );
     }
 
     // ── Integer x Decimal (signed) ─────────────────────────────────────
