@@ -38,10 +38,7 @@ fn effective_rkyv_extension_binary_decode() -> &'static (dyn ExtensionBinaryDeco
     if let Some(d) = RKYV_EXT_DECODE_OVERRIDE.with(|c| c.get()) {
         return d;
     }
-    RKYV_EXT_DECODE_GLOBAL
-        .get()
-        .copied()
-        .unwrap_or(&DENY_RKYV)
+    RKYV_EXT_DECODE_GLOBAL.get().copied().unwrap_or(&DENY_RKYV)
 }
 
 /// Registers a process-wide [`ExtensionBinaryDecode`] for rkyv [`ExtensionBinaryWire`] deserialization.
@@ -176,8 +173,10 @@ where
         deserializer: &mut D,
     ) -> Result<Box<dyn ExtensionValue>, D::Error> {
         let bytes: Vec<u8> = field.deserialize(deserializer)?;
-        match Value::from_binary_bytes_with_extensions(&bytes, effective_rkyv_extension_binary_decode())
-        {
+        match Value::from_binary_bytes_with_extensions(
+            &bytes,
+            effective_rkyv_extension_binary_decode(),
+        ) {
             Ok(Value::Extension(ext)) => Ok(ext),
             Ok(_) => Err(D::Error::new(ExtensionDeserializeWrongVariant)),
             Err(e) => Err(D::Error::new(e)),

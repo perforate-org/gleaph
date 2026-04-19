@@ -493,6 +493,10 @@ fn collect_linear_query_bindings(query: &LinearQueryStatement, scope: &mut Rapid
                     }
                 }
             }
+            SimpleQueryStatement::InlineProcedureCall(ipc) => {
+                let outer_scope = scope.clone();
+                let _ = collect_inline_procedure_result_bindings(ipc, &outer_scope, scope);
+            }
             SimpleQueryStatement::Focused { body, .. } => {
                 if let Some(inner) = body {
                     match inner.as_ref() {
@@ -526,7 +530,6 @@ fn collect_linear_query_bindings(query: &LinearQueryStatement, scope: &mut Rapid
             | SimpleQueryStatement::OrderBy(_)
             | SimpleQueryStatement::Limit(_)
             | SimpleQueryStatement::Offset(_)
-            | SimpleQueryStatement::InlineProcedureCall(_)
             | SimpleQueryStatement::Insert(_)
             | SimpleQueryStatement::Set(_)
             | SimpleQueryStatement::Remove(_)

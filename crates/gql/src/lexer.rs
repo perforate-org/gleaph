@@ -85,7 +85,7 @@ impl<'a> Lexer<'a> {
 
     fn run(&mut self) -> Result<(), GqlError> {
         while self.pos < self.bytes.len() {
-            self.skip_ws_and_comments();
+            self.skip_ws_and_comments()?;
             if self.pos >= self.bytes.len() {
                 break;
             }
@@ -96,14 +96,14 @@ impl<'a> Lexer<'a> {
 
     // ── Whitespace & comments ────────────────────────────────────────────
 
-    fn skip_ws_and_comments(&mut self) {
+    fn skip_ws_and_comments(&mut self) -> Result<(), GqlError> {
         loop {
             // Skip whitespace.
             while self.pos < self.bytes.len() && is_whitespace(self.bytes[self.pos]) {
                 self.pos += 1; // is_whitespace only matches single-byte ASCII
             }
             if self.pos >= self.bytes.len() {
-                return;
+                return Ok(());
             }
             // Line comment: // or --
             if self.pos + 1 < self.bytes.len() {
@@ -150,6 +150,9 @@ impl<'a> Lexer<'a> {
                         self.pos += 1;
                     }
                 }
+                if depth > 0 {
+                    return Err(self.err("unterminated block comment"));
+                }
                 // text_end is before the final */
                 let text_end = if self.pos >= 2 {
                     self.pos - 2
@@ -168,6 +171,7 @@ impl<'a> Lexer<'a> {
             }
             break;
         }
+        Ok(())
     }
 
     // ── Main dispatch ────────────────────────────────────────────────────
@@ -1405,6 +1409,18 @@ mod tests {
             toks("a /* outer /* inner */ still comment */ b"),
             vec![Token::Ident("a".into()), Token::Ident("b".into())]
         );
+    }
+
+    #[test]
+    fn unterminated_block_comment_errors() {
+        let result = tokenize_bare("a /* block");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn unterminated_nested_block_comment_errors() {
+        let result = tokenize_bare("a /* outer /* inner */");
+        assert!(result.is_err());
     }
 
     // ── Realistic queries ────────────────────────────────────────────────

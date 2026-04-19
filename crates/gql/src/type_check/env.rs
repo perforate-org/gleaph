@@ -168,6 +168,17 @@ impl<'a> TypeEnv<'a> {
         self.bindings = snapshot;
     }
 
+    /// Replace the current visible scope and drop flow-sensitive facts from
+    /// the previous scope.
+    pub fn replace_scope(&mut self, bindings: RapidHashMap<String, Type>) {
+        self.bindings = bindings;
+        self.optional_vars.clear();
+        self.narrowed_nonnull.clear();
+        self.narrowed_labels.clear();
+        #[cfg(feature = "cypher")]
+        self.narrowed_edge_labels.clear();
+    }
+
     #[allow(dead_code)]
     pub fn warn_with_provenance(
         &mut self,

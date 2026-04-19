@@ -550,6 +550,20 @@ fn endpoint_left_arrow_ok() {
     );
 }
 
+#[test]
+fn complex_label_expr_does_not_infer_partial_schema_labels() {
+    let warnings = parse_and_check_with_schema(
+        "MATCH (n:(Person|Company)&Animal) WHERE n.species IS NULL RETURN n",
+        &TestSchema,
+    );
+    assert!(
+        !warnings
+            .iter()
+            .any(|w| w.kind == WarningKind::NullCheckOnNonNull),
+        "unexpected NullCheckOnNonNull from partial label extraction: {warnings:?}"
+    );
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // 2. Phase B constraint tests
 // ════════════════════════════════════════════════════════════════════════════
@@ -1678,6 +1692,21 @@ fn return_star_next_yield_clean() {
             .iter()
             .any(|w| w.kind == WarningKind::BinaryOpMismatch),
         "unexpected BinaryOpMismatch: {warnings:?}"
+    );
+}
+
+#[test]
+fn next_yield_hides_non_projected_bindings() {
+    let program = parser::parse(
+        "MATCH (n:Person)-[:KNOWS]->(m:Person) RETURN n, m NEXT YIELD n RETURN m + 1",
+    )
+    .unwrap();
+    let warnings = type_check_with_schema(&program, &TestSchema);
+    assert!(
+        !warnings
+            .iter()
+            .any(|w| w.kind == WarningKind::BinaryOpMismatch),
+        "unexpected BinaryOpMismatch from leaked NEXT scope: {warnings:?}"
     );
 }
 

@@ -1067,6 +1067,21 @@ mod tests {
     }
 
     #[test]
+    fn invalid_inline_procedure_return_star_union_binding_mismatch() {
+        let err = parse_and_validate(
+            "MATCH (n) CALL { RETURN 1 AS x } RETURN * \
+             UNION \
+             MATCH (n) CALL { RETURN 1 AS y } RETURN *",
+        )
+        .expect_err("expected RETURN * branches to include inline procedure exports");
+        assert!(
+            err.to_string()
+                .contains("composite query branches must expose the same result bindings"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn valid_nested_table_prefix_binding_in_scope() {
         assert!(parse_and_validate("TABLE t = { MATCH (n) RETURN n } RETURN t").is_ok());
     }

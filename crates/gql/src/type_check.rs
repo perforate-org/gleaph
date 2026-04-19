@@ -39,6 +39,7 @@ pub use types::{EdgeTypeInfo, NodeTypeInfo, PathTypeInfo, Type};
 use crate::ast::*;
 use crate::error::GqlError;
 use crate::token::Span;
+use rapidhash::RapidHashMap;
 
 use env::TypeEnv;
 use infer::{
@@ -194,6 +195,7 @@ fn check_statement_block(env: &mut TypeEnv<'_>, block: &StatementBlock) {
     for next in &block.next {
         // If there are yield items, project only those columns into the next scope.
         // Otherwise, all columns from the previous RETURN carry over.
+        let mut next_scope = RapidHashMap::default();
         if let Some(ref yield_items) = next.yield_items {
             for yi in yield_items {
                 let binding_name = yi.alias.as_deref().unwrap_or(&yi.name);
@@ -202,14 +204,15 @@ fn check_statement_block(env: &mut TypeEnv<'_>, block: &StatementBlock) {
                     .find(|(name, _)| name == &yi.name)
                     .map(|(_, t)| t.clone())
                     .unwrap_or(Type::Unknown);
-                env.bind(binding_name.to_string(), ty);
+                next_scope.insert(binding_name.to_string(), ty);
             }
         } else {
             // No explicit yield → all columns pass through.
             for (name, ty) in &prev_return_types {
-                env.bind(name.clone(), ty.clone());
+                next_scope.insert(name.clone(), ty.clone());
             }
         }
+        env.replace_scope(next_scope);
 
         check_statement(env, &next.statement);
         prev_return_types = infer_statement_return_types(env, &next.statement);

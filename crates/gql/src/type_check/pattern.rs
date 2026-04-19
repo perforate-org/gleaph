@@ -31,7 +31,7 @@ pub(crate) fn build_env_from_graph_pattern(
 }
 
 fn path_type_info_from_prefix(_path: &PathPattern) -> PathTypeInfo {
-    PathTypeInfo::unbounded()
+    PathTypeInfo::unbounded() // TODO
 }
 
 fn extract_from_path_expr(
@@ -190,24 +190,23 @@ fn bind_edge(
 /// For simple Name labels and AND combinations, returns the label strings.
 /// For complex expressions (OR, NOT, Wildcard), returns empty.
 fn extract_label_names(label_expr: &Option<LabelExpr>) -> Vec<String> {
-    let Some(expr) = label_expr else {
-        return vec![];
-    };
-    let mut labels = Vec::new();
-    collect_and_labels(expr, &mut labels);
-    labels
+    label_expr
+        .as_ref()
+        .and_then(collect_and_labels)
+        .unwrap_or_default()
 }
 
 /// Recursively collect label names from AND expressions.
-fn collect_and_labels(expr: &LabelExpr, out: &mut Vec<String>) {
+fn collect_and_labels(expr: &LabelExpr) -> Option<Vec<String>> {
     match expr {
-        LabelExpr::Name(name) => out.push(name.clone()),
+        LabelExpr::Name(name) => Some(vec![name.clone()]),
         LabelExpr::And(a, b) => {
-            collect_and_labels(a, out);
-            collect_and_labels(b, out);
+            let mut labels = collect_and_labels(a)?;
+            labels.extend(collect_and_labels(b)?);
+            Some(labels)
         }
         // OR, NOT, Wildcard — cannot extract concrete labels.
-        _ => out.clear(),
+        _ => None,
     }
 }
 
