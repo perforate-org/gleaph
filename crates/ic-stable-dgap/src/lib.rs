@@ -213,6 +213,49 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct TombstoneEdge {
+        neighbor: u32,
+        tombstone: bool,
+    }
+
+    impl CsrEdge for TombstoneEdge {
+        const EDGE_BYTES: usize = 5;
+
+        fn read_from(bytes: &[u8]) -> Self {
+            Self {
+                neighbor: u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
+                tombstone: bytes[4] != 0,
+            }
+        }
+
+        fn write_to(self, bytes: &mut [u8]) {
+            bytes[0..4].copy_from_slice(&self.neighbor.to_le_bytes());
+            bytes[4] = u8::from(self.tombstone);
+        }
+
+        fn neighbor_vid(&self) -> VertexId {
+            VertexId::from(self.neighbor)
+        }
+
+        fn with_neighbor_vid(self, vid: VertexId) -> Self {
+            Self {
+                neighbor: u32::from(vid),
+                ..self
+            }
+        }
+    }
+
+    impl CsrEdgeTombstone for TombstoneEdge {
+        fn is_tombstone(&self) -> bool {
+            self.tombstone
+        }
+
+        fn with_tombstone(self, tombstone: bool) -> Self {
+            Self { tombstone, ..self }
+        }
+    }
+
     fn vector_memory() -> VectorMemory {
         Rc::new(RefCell::new(Vec::new()))
     }
@@ -282,6 +325,40 @@ mod tests {
                 .unwrap();
         }
         graph
+    }
+
+    #[test]
+    fn segment_edge_counts_stride_depends_on_edge_tombstone_capability() {
+        use crate::dgap::edge::counts::{SegmentEdgeCounts, SegmentEdgeCountsStore};
+
+        let plain = SegmentEdgeCountsStore::<TestEdge, _>::new(vector_memory()).unwrap();
+        let tombstone = SegmentEdgeCountsStore::<TombstoneEdge, _>::new(vector_memory()).unwrap();
+
+        assert_eq!(
+            SegmentEdgeCountsStore::<TestEdge, VectorMemory>::entry_size(),
+            16
+        );
+        assert_eq!(
+            SegmentEdgeCountsStore::<TombstoneEdge, VectorMemory>::entry_size(),
+            24
+        );
+
+        let counts = SegmentEdgeCounts {
+            actual: 1,
+            total: 2,
+            tombstone: 3,
+        };
+        plain.push(counts).unwrap();
+        tombstone.push(counts).unwrap();
+
+        assert_eq!(
+            plain.get(0),
+            SegmentEdgeCounts {
+                tombstone: 0,
+                ..counts
+            }
+        );
+        assert_eq!(tombstone.get(0), counts);
     }
 
     #[test]
@@ -499,7 +576,10 @@ mod tests {
                 .insert_edge_deferred(VertexId::from(0), TestEdge(dst))
                 .unwrap();
         }
-        graph.maintenance_queue().mark_dirty(SegmentId::from(1)).unwrap();
+        graph
+            .maintenance_queue()
+            .mark_dirty(SegmentId::from(1))
+            .unwrap();
 
         let report = graph
             .maintenance(MaintenanceBudget {

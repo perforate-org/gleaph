@@ -451,8 +451,7 @@ where
             .is_none_or(|max_segments| report.processed_segments < max_segments)
         {
             report.instructions_used = current_instruction_counter();
-            if budget.max_instructions > 0 && report.instructions_used >= budget.max_instructions
-            {
+            if budget.max_instructions > 0 && report.instructions_used >= budget.max_instructions {
                 report.instruction_budget_exhausted = true;
                 break;
             }
@@ -477,8 +476,8 @@ where
         }
 
         report.instructions_used = current_instruction_counter();
-        report.instruction_budget_exhausted = budget.max_instructions > 0
-            && report.instructions_used >= budget.max_instructions;
+        report.instruction_budget_exhausted =
+            budget.max_instructions > 0 && report.instructions_used >= budget.max_instructions;
         report.remaining_queue_len = self.maintenance.len();
         Ok(report)
     }

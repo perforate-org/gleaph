@@ -12,9 +12,9 @@
 //! ----------------------------------------
 //! Reserved space          ↕ 20 bytes
 //! ---------------------------------------- <- Address 32
-//! C_0                     ↕ 24 bytes
+//! C_0                     ↕ 16 or 24 bytes
 //! ----------------------------------------
-//! C_1                     ↕ 24 bytes
+//! C_1                     ↕ 16 or 24 bytes
 //! ----------------------------------------
 //! ...
 //! ----------------------------------------
@@ -23,9 +23,14 @@
 //! Unallocated space
 //! ```
 
-use crate::{GrowFailed, read_u64, safe_write, types::Address, write, write_u64};
+use crate::{
+    GrowFailed, read_u64, safe_write,
+    traits::{CsrEdge, CsrEdgeTombstone},
+    types::Address,
+    write, write_u64,
+};
 use ic_stable_structures::Memory;
-use std::{convert::TryInto, fmt};
+use std::{convert::TryInto, fmt, marker::PhantomData};
 
 pub const MAGIC: [u8; 3] = *b"DSC";
 
@@ -34,8 +39,6 @@ const LAYOUT_VERSION: u8 = 1;
 const DATA_OFFSET: u64 = 32;
 /// The offset where the vector length resides.
 const LEN_OFFSET: u64 = 4;
-
-const ENTRY_SIZE: u64 = 24;
 
 #[derive(Debug)]
 struct HeaderV1 {
@@ -74,6 +77,10 @@ impl fmt::Display for InitError {
 impl std::error::Error for InitError {}
 
 /// Packed PMA counts for one segment-tree node (leaf = vertex block, internal = sum of children).
+///
+/// `tombstone` is persisted only when `E: CsrEdgeTombstone`. For non-tombstone
+/// edge types the counts store uses a 16-byte stride and reads this field back
+/// as `0`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SegmentEdgeCounts {
     pub actual: i64,
@@ -81,33 +88,58 @@ pub struct SegmentEdgeCounts {
     pub tombstone: i64,
 }
 
+/// Bytes per PMA tree node in the segment counts store.
+pub trait EdgePmaCountsStride {
+    fn pma_counts_stride_bytes() -> u64;
+}
+
+impl<E: CsrEdge> EdgePmaCountsStride for E {
+    default fn pma_counts_stride_bytes() -> u64 {
+        16
+    }
+}
+
+impl<E: CsrEdge + CsrEdgeTombstone> EdgePmaCountsStride for E {
+    fn pma_counts_stride_bytes() -> u64 {
+        24
+    }
+}
+
 impl SegmentEdgeCounts {
-    /// Three LE `i64` values (aligned with PMA `SEG`/`SEC` layouts in `ic-stable-csr`).
     #[inline]
-    fn as_le_bytes(&self) -> [u8; 24] {
+    fn as_le_bytes(&self, stride: u64) -> [u8; 24] {
+        debug_assert!(matches!(stride, 16 | 24));
         let mut b = [0u8; 24];
         b[0..8].copy_from_slice(&self.actual.to_le_bytes());
         b[8..16].copy_from_slice(&self.total.to_le_bytes());
-        b[16..24].copy_from_slice(&self.tombstone.to_le_bytes());
+        if stride >= 24 {
+            b[16..24].copy_from_slice(&self.tombstone.to_le_bytes());
+        }
         b
     }
 
     #[inline]
-    fn unpack_le(bs: &[u8; 24]) -> Self {
+    fn unpack_le(bs: &[u8; 24], stride: u64) -> Self {
+        debug_assert!(matches!(stride, 16 | 24));
         Self {
             actual: i64::from_le_bytes(bs[0..8].try_into().unwrap()),
             total: i64::from_le_bytes(bs[8..16].try_into().unwrap()),
-            tombstone: i64::from_le_bytes(bs[16..24].try_into().unwrap()),
+            tombstone: if stride >= 24 {
+                i64::from_le_bytes(bs[16..24].try_into().unwrap())
+            } else {
+                0
+            },
         }
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct SegmentEdgeCountsStore<M: Memory> {
+pub struct SegmentEdgeCountsStore<E: CsrEdge, M: Memory> {
     memory: M,
+    _marker: PhantomData<E>,
 }
 
-impl<M: Memory> SegmentEdgeCountsStore<M> {
+impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> SegmentEdgeCountsStore<E, M> {
     pub fn new(memory: M) -> Result<Self, GrowFailed> {
         let header = HeaderV1 {
             magic: MAGIC,
@@ -115,7 +147,36 @@ impl<M: Memory> SegmentEdgeCountsStore<M> {
             len: 0,
         };
         Self::write_header(&header, &memory)?;
-        Ok(Self { memory })
+        Ok(Self {
+            memory,
+            _marker: PhantomData,
+        })
+    }
+
+    /// Initializes a vector in the specified memory.
+    ///
+    /// Complexity: O(1)
+    ///
+    /// PRECONDITION: the memory is either empty or contains a valid
+    /// stable vector.
+    pub fn init(memory: M) -> Result<Self, InitError> {
+        if memory.size() == 0 {
+            return Self::new(memory).map_err(|_| InitError::OutOfMemory);
+        }
+        let header = Self::read_header(&memory);
+        if header.magic != MAGIC {
+            return Err(InitError::BadMagic {
+                actual: header.magic,
+            });
+        }
+        if header.version != LAYOUT_VERSION {
+            return Err(InitError::IncompatibleVersion(header.version));
+        }
+
+        Ok(Self {
+            memory,
+            _marker: PhantomData,
+        })
     }
 
     /// Write the layout header to the memory.
@@ -146,21 +207,27 @@ impl<M: Memory> SegmentEdgeCountsStore<M> {
     }
 
     #[inline]
+    pub fn entry_size() -> u64 {
+        E::pma_counts_stride_bytes()
+    }
+
+    #[inline]
     fn entry_offset(index: u64) -> u64 {
-        DATA_OFFSET + ENTRY_SIZE * index
+        DATA_OFFSET + Self::entry_size() * index
     }
 
     /// Reads `index` without checking logical length (caller must ensure the slot exists).
     #[inline]
     fn read_entry(memory: &M, index: u64) -> SegmentEdgeCounts {
         let mut buf = [0u8; 24];
-        memory.read(Self::entry_offset(index), &mut buf);
-        SegmentEdgeCounts::unpack_le(&buf)
+        let stride = Self::entry_size();
+        memory.read(Self::entry_offset(index), &mut buf[..stride as usize]);
+        SegmentEdgeCounts::unpack_le(&buf, stride)
     }
 
     /// Returns the counts at `index`.
     ///
-    /// Complexity: one 24-byte stable-memory read.
+    /// Complexity: one 16- or 24-byte stable-memory read.
     ///
     /// PRECONDITION: index < self.len()
     pub fn get(&self, index: u64) -> SegmentEdgeCounts {
@@ -169,12 +236,13 @@ impl<M: Memory> SegmentEdgeCountsStore<M> {
     }
 
     /// Iterator over all entries in index order (length is fixed when [`Self::iter`] is called).
-    pub fn iter(&self) -> Iter<'_, M> {
+    pub fn iter(&self) -> Iter<'_, E, M> {
         let len = self.len();
         Iter {
             memory: &self.memory,
             front: 0,
             back: len,
+            _marker: PhantomData,
         }
     }
 
@@ -185,7 +253,13 @@ impl<M: Memory> SegmentEdgeCountsStore<M> {
     /// PRECONDITION: index < self.len()
     pub fn set(&self, index: u64, item: &SegmentEdgeCounts) {
         assert!(index < self.len());
-        write(&self.memory, Self::entry_offset(index), &item.as_le_bytes());
+        let stride = Self::entry_size();
+        let bytes = item.as_le_bytes(stride);
+        write(
+            &self.memory,
+            Self::entry_offset(index),
+            &bytes[..stride as usize],
+        );
     }
 
     /// Appends `item` after all existing entries, growing stable memory if necessary.
@@ -196,7 +270,13 @@ impl<M: Memory> SegmentEdgeCountsStore<M> {
         let new_len = len
             .checked_add(1)
             .expect("segment counts vector length overflow");
-        safe_write(&self.memory, Self::entry_offset(len), &item.as_le_bytes())?;
+        let stride = Self::entry_size();
+        let bytes = item.as_le_bytes(stride);
+        safe_write(
+            &self.memory,
+            Self::entry_offset(len),
+            &bytes[..stride as usize],
+        )?;
         self.set_len(new_len);
         Ok(())
     }
@@ -220,29 +300,6 @@ impl<M: Memory> SegmentEdgeCountsStore<M> {
         write_u64(&self.memory, Address::from(LEN_OFFSET), new_len);
     }
 
-    /// Initializes a vector in the specified memory.
-    ///
-    /// Complexity: O(1)
-    ///
-    /// PRECONDITION: the memory is either empty or contains a valid
-    /// stable vector.
-    pub fn init(memory: M) -> Result<Self, InitError> {
-        if memory.size() == 0 {
-            return Self::new(memory).map_err(|_| InitError::OutOfMemory);
-        }
-        let header = Self::read_header(&memory);
-        if header.magic != MAGIC {
-            return Err(InitError::BadMagic {
-                actual: header.magic,
-            });
-        }
-        if header.version != LAYOUT_VERSION {
-            return Err(InitError::IncompatibleVersion(header.version));
-        }
-
-        Ok(Self { memory })
-    }
-
     /// Reads the header from the specified memory.
     ///
     /// PRECONDITION: memory.size() > 0
@@ -264,15 +321,16 @@ impl<M: Memory> SegmentEdgeCountsStore<M> {
 }
 
 /// Double-ended iterator over [`SegmentEdgeCounts`] in index order (`front` … `back` exclusive).
-pub struct Iter<'a, M: Memory> {
+pub struct Iter<'a, E: CsrEdge, M: Memory> {
     memory: &'a M,
     /// Next index for [`Iterator::next`].
     front: u64,
     /// One past the last index for [`DoubleEndedIterator::next_back`].
     back: u64,
+    _marker: PhantomData<E>,
 }
 
-impl<'a, M: Memory> Iterator for Iter<'a, M> {
+impl<'a, E: CsrEdge + EdgePmaCountsStride, M: Memory> Iterator for Iter<'a, E, M> {
     type Item = SegmentEdgeCounts;
 
     #[inline]
@@ -292,7 +350,7 @@ impl<'a, M: Memory> Iterator for Iter<'a, M> {
         if self.front >= self.back {
             return None;
         }
-        let item = SegmentEdgeCountsStore::<M>::read_entry(self.memory, self.front);
+        let item = SegmentEdgeCountsStore::<E, M>::read_entry(self.memory, self.front);
         self.front += 1;
         Some(item)
     }
@@ -311,7 +369,7 @@ impl<'a, M: Memory> Iterator for Iter<'a, M> {
     }
 }
 
-impl<'a, M: Memory> DoubleEndedIterator for Iter<'a, M> {
+impl<'a, E: CsrEdge + EdgePmaCountsStride, M: Memory> DoubleEndedIterator for Iter<'a, E, M> {
     #[inline]
     fn nth_back(&mut self, n: usize) -> Option<Self::Item> {
         let skip = n as u64;
@@ -330,13 +388,13 @@ impl<'a, M: Memory> DoubleEndedIterator for Iter<'a, M> {
             return None;
         }
         self.back -= 1;
-        Some(SegmentEdgeCountsStore::<M>::read_entry(
+        Some(SegmentEdgeCountsStore::<E, M>::read_entry(
             self.memory,
             self.back,
         ))
     }
 }
 
-impl<'a, M: Memory> ExactSizeIterator for Iter<'a, M> {}
+impl<'a, E: CsrEdge + EdgePmaCountsStride, M: Memory> ExactSizeIterator for Iter<'a, E, M> {}
 
-impl<'a, M: Memory> std::iter::FusedIterator for Iter<'a, M> {}
+impl<'a, E: CsrEdge + EdgePmaCountsStride, M: Memory> std::iter::FusedIterator for Iter<'a, E, M> {}

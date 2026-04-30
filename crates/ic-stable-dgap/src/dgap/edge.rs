@@ -6,7 +6,7 @@ use crate::{
     GrowFailed, SegmentId, VertexId,
     traits::{CsrEdge, CsrVertex},
 };
-use counts::{SegmentEdgeCounts, SegmentEdgeCountsStore};
+use counts::{EdgePmaCountsStride, SegmentEdgeCounts, SegmentEdgeCountsStore};
 use edges::EdgeSlabStore;
 pub use edges::HeaderV1 as EdgeHeaderV1;
 use ic_stable_structures::Memory;
@@ -83,12 +83,14 @@ pub(crate) trait VertexAccess<V: CsrVertex> {
 
 #[derive(Clone, Debug)]
 pub struct EdgeStore<E: CsrEdge, MC: Memory, ME: Memory, ML: Memory> {
-    counts: SegmentEdgeCountsStore<MC>,
+    counts: SegmentEdgeCountsStore<E, MC>,
     edges: EdgeSlabStore<E, ME>,
     log: LogStore<E, ML>,
 }
 
-impl<E: CsrEdge, MC: Memory, ME: Memory, ML: Memory> EdgeStore<E, MC, ME, ML> {
+impl<E: CsrEdge + EdgePmaCountsStride, MC: Memory, ME: Memory, ML: Memory>
+    EdgeStore<E, MC, ME, ML>
+{
     pub fn new(
         counts: MC,
         edges: ME,
@@ -135,7 +137,7 @@ impl<E: CsrEdge, MC: Memory, ME: Memory, ML: Memory> EdgeStore<E, MC, ME, ML> {
             .expect("edge header is valid after init")
     }
 
-    pub fn counts_store(&self) -> &SegmentEdgeCountsStore<MC> {
+    pub fn counts_store(&self) -> &SegmentEdgeCountsStore<E, MC> {
         &self.counts
     }
 

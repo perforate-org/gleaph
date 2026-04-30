@@ -5,7 +5,10 @@ pub mod vertex;
 use crate::{
     GrowFailed, SegmentId, VertexId,
     dgap::{
-        edge::{EdgeHeaderV1, EdgeStore, InsertLocation, VertexAccess, counts::SegmentEdgeCounts},
+        edge::{
+            EdgeHeaderV1, EdgeStore, InsertLocation, VertexAccess,
+            counts::{EdgePmaCountsStride, SegmentEdgeCounts},
+        },
         vertex::VertexStore,
     },
     traits::{CsrEdge, CsrVertex},
@@ -90,7 +93,7 @@ impl std::error::Error for InitError {}
 #[derive(Clone, Debug)]
 pub struct Dgap<E, V, MV, MC, ME, ML>
 where
-    E: CsrEdge,
+    E: CsrEdge + EdgePmaCountsStride,
     V: CsrVertex,
     MV: Memory,
     MC: Memory,
@@ -104,7 +107,7 @@ where
 
 impl<E, V, MV, MC, ME, ML> Dgap<E, V, MV, MC, ME, ML>
 where
-    E: CsrEdge,
+    E: CsrEdge + EdgePmaCountsStride,
     V: CsrVertex,
     MV: Memory,
     MC: Memory,
