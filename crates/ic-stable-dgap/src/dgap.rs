@@ -426,18 +426,6 @@ where
         (start..end).any(|vid| self.vertices.get(vid).log_head() >= 0)
     }
 
-    pub(super) fn segment_actual_edges(&self, segment: SegmentId) -> i64 {
-        let layout = self.layout();
-        let leaf = u64::from(u32::from(segment));
-        if leaf >= u64::from(layout.segment_count) {
-            return 0;
-        }
-        self.edges
-            .counts_store()
-            .get(leaf + u64::from(layout.segment_count))
-            .actual
-    }
-
     fn rebalance_weighted_with_layout(
         &self,
         layout: &DgapLayout,

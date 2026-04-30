@@ -231,8 +231,17 @@ fn validate_ratio(field: &'static str, value: f64) -> Result<(), DeferredConfigE
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MaintenanceBudget {
-    pub max_segments: u32,
-    pub max_edges: usize,
+    /// Upper instruction-counter value allowed for the current call.
+    ///
+    /// On IC wasm builds this is compared with
+    /// `ic_cdk::api::instruction_counter()`, which is scoped to the current
+    /// message execution. Use `0` to disable instruction-based termination.
+    pub max_instructions: u64,
+    /// Optional hard cap on the number of segments processed in one call.
+    ///
+    /// This is useful for deterministic tests or fairness tuning. `None` means
+    /// instruction budget and queue exhaustion are the only maintenance caps.
+    pub max_segments: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -240,7 +249,21 @@ pub struct MaintenanceReport {
     pub processed_segments: u32,
     pub rebalanced_segments: u32,
     pub resized: bool,
+    pub instructions_used: u64,
+    pub instruction_budget_exhausted: bool,
     pub remaining_queue_len: u64,
+}
+
+#[inline]
+fn current_instruction_counter() -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        ic_cdk::api::instruction_counter()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        0
+    }
 }
 
 #[derive(Debug)]
@@ -422,10 +445,18 @@ where
         budget: MaintenanceBudget,
     ) -> Result<MaintenanceReport, DeferredError> {
         let mut report = MaintenanceReport::default();
-        let max_segments = budget.max_segments.max(1);
-        let mut used_edges = 0usize;
 
-        while report.processed_segments < max_segments {
+        while budget
+            .max_segments
+            .is_none_or(|max_segments| report.processed_segments < max_segments)
+        {
+            report.instructions_used = current_instruction_counter();
+            if budget.max_instructions > 0 && report.instructions_used >= budget.max_instructions
+            {
+                report.instruction_budget_exhausted = true;
+                break;
+            }
+
             let Some(segment) = self
                 .maintenance
                 .pop_next()
@@ -435,25 +466,19 @@ where
             };
             report.processed_segments += 1;
 
-            let estimated = self.graph.segment_actual_edges(segment) as usize;
-            if budget.max_edges > 0 && used_edges.saturating_add(estimated) > budget.max_edges {
-                self.maintenance
-                    .mark_urgent(segment)
-                    .map_err(DeferredError::Maintenance)?;
-                break;
-            }
-
             let before_capacity = self.graph.edges.header().elem_capacity;
             if self.graph.rebalance_maintenance_segment(segment) {
                 self.graph
                     .rebalance_dirty_segment(segment)
                     .map_err(DeferredError::Grow)?;
                 report.rebalanced_segments += 1;
-                used_edges = used_edges.saturating_add(estimated);
                 report.resized |= self.graph.edges.header().elem_capacity != before_capacity;
             }
         }
 
+        report.instructions_used = current_instruction_counter();
+        report.instruction_budget_exhausted = budget.max_instructions > 0
+            && report.instructions_used >= budget.max_instructions;
         report.remaining_queue_len = self.maintenance.len();
         Ok(report)
     }

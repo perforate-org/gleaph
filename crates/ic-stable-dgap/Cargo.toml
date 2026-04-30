@@ -9,6 +9,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 derive_more = { version = "2", features = ["display", "from", "into"] }
+ic-cdk.workspace = true
 ic-stable-roaring.workspace = true
 ic-stable-structures.workspace = true
 ic-stable-vec-deque.workspace = true

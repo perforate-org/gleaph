@@ -476,8 +476,8 @@ mod tests {
 
         let report = graph
             .maintenance(MaintenanceBudget {
-                max_segments: 1,
-                max_edges: 100,
+                max_instructions: 0,
+                max_segments: Some(1),
             })
             .unwrap();
 
@@ -491,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn deferred_maintenance_budget_requeues_unprocessed_segment() {
+    fn deferred_maintenance_segment_cap_leaves_unprocessed_segments_queued() {
         let graph = deferred_test_graph(8, 2, 2, &[0, 2, 4, 6]);
 
         for dst in 10..13 {
@@ -499,17 +499,19 @@ mod tests {
                 .insert_edge_deferred(VertexId::from(0), TestEdge(dst))
                 .unwrap();
         }
+        graph.maintenance_queue().mark_dirty(SegmentId::from(1)).unwrap();
 
         let report = graph
             .maintenance(MaintenanceBudget {
-                max_segments: 1,
-                max_edges: 1,
+                max_instructions: 0,
+                max_segments: Some(1),
             })
             .unwrap();
 
         assert_eq!(report.processed_segments, 1);
-        assert_eq!(report.rebalanced_segments, 0);
-        assert!(graph.maintenance_queue().is_dirty(SegmentId::from(0)));
+        assert_eq!(report.rebalanced_segments, 1);
+        assert!(!graph.maintenance_queue().is_dirty(SegmentId::from(0)));
+        assert!(graph.maintenance_queue().is_dirty(SegmentId::from(1)));
         assert_eq!(graph.maintenance_queue().len(), 1);
     }
 
