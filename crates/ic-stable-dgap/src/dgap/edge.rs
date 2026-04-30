@@ -99,12 +99,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, MC: Memory, ME: Memory, ML: Memory>
         segment_count: u32,
         segment_size: u32,
     ) -> Result<Self, GrowFailed> {
-        let header = EdgeHeaderV1::new(
-            elem_capacity,
-            segment_count,
-            segment_size,
-            E::EDGE_BYTES as u32,
-        );
+        let header = EdgeHeaderV1::new(elem_capacity, segment_count, segment_size, E::BYTES as u32);
         let counts = SegmentEdgeCountsStore::new(counts)?;
         for _ in 0..u64::from(header.segment_count).saturating_mul(2) {
             counts.push(SegmentEdgeCounts {
@@ -158,24 +153,24 @@ impl<E: CsrEdge + EdgePmaCountsStride, MC: Memory, ME: Memory, ML: Memory>
     }
 
     pub fn read_slot(&self, slot: u64) -> E {
-        if E::EDGE_BYTES <= INLINE_EDGE_BYTES {
+        if E::BYTES <= INLINE_EDGE_BYTES {
             let mut buf = [0u8; INLINE_EDGE_BYTES];
-            self.edges.read_slot(slot, &mut buf[..E::EDGE_BYTES]);
-            E::read_from(&buf[..E::EDGE_BYTES])
+            self.edges.read_slot(slot, &mut buf[..E::BYTES]);
+            E::read_from(&buf[..E::BYTES])
         } else {
-            let mut buf = vec![0u8; E::EDGE_BYTES];
+            let mut buf = vec![0u8; E::BYTES];
             self.edges.read_slot(slot, &mut buf);
             E::read_from(&buf)
         }
     }
 
     pub fn write_slot(&self, slot: u64, edge: E) -> Result<(), GrowFailed> {
-        if E::EDGE_BYTES <= INLINE_EDGE_BYTES {
+        if E::BYTES <= INLINE_EDGE_BYTES {
             let mut buf = [0u8; INLINE_EDGE_BYTES];
-            edge.write_to(&mut buf[..E::EDGE_BYTES]);
-            self.edges.write_slot(slot, &buf[..E::EDGE_BYTES])
+            edge.write_to(&mut buf[..E::BYTES]);
+            self.edges.write_slot(slot, &buf[..E::BYTES])
         } else {
-            let mut buf = vec![0u8; E::EDGE_BYTES];
+            let mut buf = vec![0u8; E::BYTES];
             edge.write_to(&mut buf);
             self.edges.write_slot(slot, &buf)
         }
@@ -237,14 +232,12 @@ impl<E: CsrEdge + EdgePmaCountsStride, MC: Memory, ME: Memory, ML: Memory>
     }
 
     fn read_log_edge(&self, leaf: u32, log_idx: u32) -> (i32, E) {
-        if E::EDGE_BYTES <= INLINE_EDGE_BYTES {
+        if E::BYTES <= INLINE_EDGE_BYTES {
             let mut buf = [0u8; INLINE_EDGE_BYTES];
-            let (prev, _src) = self
-                .log
-                .read_entry(leaf, log_idx, &mut buf[..E::EDGE_BYTES]);
-            (prev, E::read_from(&buf[..E::EDGE_BYTES]))
+            let (prev, _src) = self.log.read_entry(leaf, log_idx, &mut buf[..E::BYTES]);
+            (prev, E::read_from(&buf[..E::BYTES]))
         } else {
-            let mut buf = vec![0u8; E::EDGE_BYTES];
+            let mut buf = vec![0u8; E::BYTES];
             let (prev, _src) = self.log.read_entry(leaf, log_idx, &mut buf);
             (prev, E::read_from(&buf))
         }
@@ -302,20 +295,14 @@ impl<E: CsrEdge + EdgePmaCountsStride, MC: Memory, ME: Memory, ML: Memory>
             return Err("segment log full");
         }
         let src = i32::try_from(u32::from(vid)).map_err(|_| "vertex id exceeds i32")?;
-        if E::EDGE_BYTES <= INLINE_EDGE_BYTES {
+        if E::BYTES <= INLINE_EDGE_BYTES {
             let mut payload = [0u8; INLINE_EDGE_BYTES];
-            edge.write_to(&mut payload[..E::EDGE_BYTES]);
+            edge.write_to(&mut payload[..E::BYTES]);
             self.log
-                .write_entry(
-                    leaf,
-                    idx as u32,
-                    v.log_head(),
-                    src,
-                    &payload[..E::EDGE_BYTES],
-                )
+                .write_entry(leaf, idx as u32, v.log_head(), src, &payload[..E::BYTES])
                 .map_err(|_| "write log failed")?;
         } else {
-            let mut payload = vec![0u8; E::EDGE_BYTES];
+            let mut payload = vec![0u8; E::BYTES];
             edge.write_to(&mut payload);
             self.log
                 .write_entry(leaf, idx as u32, v.log_head(), src, &payload)

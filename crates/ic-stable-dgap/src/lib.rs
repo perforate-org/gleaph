@@ -194,7 +194,7 @@ mod tests {
     struct TestEdge(u32);
 
     impl CsrEdge for TestEdge {
-        const EDGE_BYTES: usize = 4;
+        const BYTES: usize = 4;
 
         fn read_from(bytes: &[u8]) -> Self {
             Self(u32::from_le_bytes(bytes[0..4].try_into().unwrap()))
@@ -220,7 +220,7 @@ mod tests {
     }
 
     impl CsrEdge for TombstoneEdge {
-        const EDGE_BYTES: usize = 5;
+        const BYTES: usize = 5;
 
         fn read_from(bytes: &[u8]) -> Self {
             Self {

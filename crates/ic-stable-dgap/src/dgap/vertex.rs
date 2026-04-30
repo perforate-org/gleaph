@@ -2,6 +2,31 @@
 //!
 //! Each row mirrors DGAP's `vertex_element`: base slab index, degree, and
 //! per-segment log head (`-1` when the whole neighborhood is on the slab).
+//!
+//! # V1 layout
+//!
+//! ```text
+//! -------------------------------------------------- <- Address 0
+//! Magic "DVX"                           ↕ 3 bytes
+//! --------------------------------------------------
+//! Layout version                        ↕ 1 byte
+//! --------------------------------------------------
+//! Number of vertices                    ↕ 8 bytes
+//! --------------------------------------------------
+//! Vertex row stride                     ↕ 4 bytes
+//! --------------------------------------------------
+//! Reserved                              ↕ 48 bytes
+//! -------------------------------------------------- <- Address 64
+//! V_0                                   ↕ V::BYTES bytes
+//! --------------------------------------------------
+//! V_1                                   ↕ V::BYTES bytes
+//! --------------------------------------------------
+//! ...
+//! --------------------------------------------------
+//! V_(len-1)                             ↕ V::BYTES bytes
+//! --------------------------------------------------
+//! Unallocated space
+//! ```
 
 use crate::{GrowFailed, read_u64, safe_write, traits::CsrVertex, types::Address, write_u64};
 use ic_stable_structures::{Memory, Storable, storable::Bound};
@@ -13,10 +38,19 @@ const DATA_OFFSET: u64 = 64;
 const LEN_OFFSET: u64 = 4;
 const STRIDE_OFFSET: u64 = 12;
 
+#[derive(Debug)]
+struct HeaderV1 {
+    magic: [u8; 3],
+    version: u8,
+    len: u64,
+    stride: u32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InitError {
     BadMagic { actual: [u8; 3] },
     IncompatibleVersion(u8),
+    StrideMismatch { expected: u32, actual: u32 },
     VariableWidthVertex,
     OutOfMemory,
 }
@@ -28,6 +62,12 @@ impl fmt::Display for InitError {
                 write!(f, "bad vertex magic {actual:?}, expected {MAGIC:?}")
             }
             Self::IncompatibleVersion(v) => write!(f, "unsupported vertex layout version {v}"),
+            Self::StrideMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "vertex stride mismatch: expected {expected}, got {actual}"
+                )
+            }
             Self::VariableWidthVertex => {
                 write!(f, "DGAP vertices must use fixed-width Storable encoding")
             }
@@ -46,6 +86,8 @@ pub struct Vertex {
 }
 
 impl CsrVertex for Vertex {
+    const BYTES: usize = 16;
+
     fn base_slot_start(&self) -> u64 {
         self.base_slot_start
     }
@@ -106,42 +148,48 @@ impl Storable for Vertex {
 #[derive(Clone, Debug)]
 pub struct VertexStore<V: CsrVertex, M: Memory> {
     memory: M,
-    stride: u32,
     _marker: std::marker::PhantomData<V>,
 }
 
 impl<V: CsrVertex, M: Memory> VertexStore<V, M> {
     pub fn new(memory: M) -> Result<Self, GrowFailed> {
-        let stride = fixed_stride::<V>().expect("DGAP vertices must be fixed-width");
-        safe_write(&memory, 0, &MAGIC)?;
-        memory.write(3, &[LAYOUT_VERSION]);
-        write_u64(&memory, Address::from(LEN_OFFSET), 0);
-        crate::write_u32(&memory, Address::from(STRIDE_OFFSET), stride);
+        verify_vertex_width::<V>().expect("DGAP vertices must be fixed-width");
+        let header = HeaderV1 {
+            magic: MAGIC,
+            version: LAYOUT_VERSION,
+            len: 0,
+            stride: V::BYTES as u32,
+        };
+        Self::write_header(&header, &memory)?;
         Ok(Self {
             memory,
-            stride,
             _marker: std::marker::PhantomData,
         })
     }
 
     pub fn init(memory: M) -> Result<Self, InitError> {
-        let stride = fixed_stride::<V>().ok_or(InitError::VariableWidthVertex)?;
+        verify_vertex_width::<V>()?;
         if memory.size() == 0 {
             return Self::new(memory).map_err(|_| InitError::OutOfMemory);
         }
-        let mut magic = [0u8; 3];
-        memory.read(0, &mut magic);
-        if magic != MAGIC {
-            return Err(InitError::BadMagic { actual: magic });
+        let header = Self::read_header(&memory);
+        if header.magic != MAGIC {
+            return Err(InitError::BadMagic {
+                actual: header.magic,
+            });
         }
-        let mut version = [0u8; 1];
-        memory.read(3, &mut version);
-        if version[0] != LAYOUT_VERSION {
-            return Err(InitError::IncompatibleVersion(version[0]));
+        if header.version != LAYOUT_VERSION {
+            return Err(InitError::IncompatibleVersion(header.version));
+        }
+        let expected_stride = V::BYTES as u32;
+        if header.stride != expected_stride {
+            return Err(InitError::StrideMismatch {
+                expected: expected_stride,
+                actual: header.stride,
+            });
         }
         Ok(Self {
             memory,
-            stride,
             _marker: std::marker::PhantomData,
         })
     }
@@ -158,7 +206,7 @@ impl<V: CsrVertex, M: Memory> VertexStore<V, M> {
 
     pub fn get(&self, index: u64) -> V {
         assert!(index < self.len());
-        let mut buf = vec![0u8; self.stride as usize];
+        let mut buf = vec![0u8; V::BYTES];
         self.memory.read(self.entry_offset(index), &mut buf);
         V::from_bytes(Cow::Owned(buf))
     }
@@ -184,16 +232,42 @@ impl<V: CsrVertex, M: Memory> VertexStore<V, M> {
     }
 
     fn entry_offset(&self, index: u64) -> u64 {
-        DATA_OFFSET + u64::from(self.stride) * index
+        DATA_OFFSET + V::BYTES as u64 * index
+    }
+
+    fn write_header(header: &HeaderV1, memory: &M) -> Result<(), GrowFailed> {
+        safe_write(memory, 0, &header.magic)?;
+        memory.write(3, &[header.version]);
+        write_u64(memory, Address::from(LEN_OFFSET), header.len);
+        crate::write_u32(memory, Address::from(STRIDE_OFFSET), header.stride);
+        Ok(())
+    }
+
+    fn read_header(memory: &M) -> HeaderV1 {
+        debug_assert!(memory.size() > 0);
+
+        let mut magic = [0u8; 3];
+        let mut version = [0u8; 1];
+        memory.read(0, &mut magic);
+        memory.read(3, &mut version);
+        let len = read_u64(memory, Address::from(LEN_OFFSET));
+        let stride = crate::read_u32(memory, Address::from(STRIDE_OFFSET));
+
+        HeaderV1 {
+            magic,
+            version: version[0],
+            len,
+            stride,
+        }
     }
 }
 
-fn fixed_stride<V: Storable>() -> Option<u32> {
+fn verify_vertex_width<V: CsrVertex>() -> Result<(), InitError> {
     match V::BOUND {
         Bound::Bounded {
             max_size,
             is_fixed_size: true,
-        } => Some(max_size),
-        _ => None,
+        } if max_size as usize == V::BYTES => Ok(()),
+        _ => Err(InitError::VariableWidthVertex),
     }
 }

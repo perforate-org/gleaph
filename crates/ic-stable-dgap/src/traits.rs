@@ -12,6 +12,7 @@ use crate::VertexId;
 /// `log_head` is the DGAP per-segment log array index of the head of this vertex's overflow chain,
 /// or `-1` if all neighbors live on the CSR slab (`gleaph-old/reference/DGAP/dgap/src/graph.h` `vertex_element.offset`).
 pub trait CsrVertex: Storable + Copy {
+    const BYTES: usize;
     /// Global edge-slot index where this vertex's base neighborhood starts (flat slab model).
     fn base_slot_start(&self) -> u64;
     fn degree(&self) -> u32;
@@ -33,9 +34,9 @@ pub trait CsrVertexTombstone: CsrVertex {
 /// The CSR graph wrappers build the transpose CSR by storing [`Self::with_neighbor_vid`](Self::with_neighbor_vid)(`src`)
 /// at row `dst` in the reverse store.
 ///
-/// Hot paths use a **64-byte stack buffer** when `EDGE_BYTES <= 64`; larger widths still work via heap.
+/// Hot paths use a **64-byte stack buffer** when `BYTES <= 64`; larger widths still work via heap.
 pub trait CsrEdge: Copy {
-    const EDGE_BYTES: usize;
+    const BYTES: usize;
     fn read_from(bytes: &[u8]) -> Self;
     fn write_to(self, bytes: &mut [u8]);
 

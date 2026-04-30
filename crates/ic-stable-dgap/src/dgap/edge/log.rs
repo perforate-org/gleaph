@@ -21,26 +21,26 @@
 //! -------------------------------------------------- <- Address 32
 //! Segment log block 0
 //!   I_0                                 ↕ 4 bytes
-//!   L_0_0                               ↕ 8 + E::EDGE_BYTES bytes
-//!   L_0_1                               ↕ 8 + E::EDGE_BYTES bytes
+//!   L_0_0                               ↕ 8 + E::BYTES bytes
+//!   L_0_1                               ↕ 8 + E::BYTES bytes
 //!   ...
-//!   L_0_(max_log_entries-1)             ↕ 8 + E::EDGE_BYTES bytes
+//!   L_0_(max_log_entries-1)             ↕ 8 + E::BYTES bytes
 //! --------------------------------------------------
 //! Segment log block 1
 //!   I_1                                 ↕ 4 bytes
-//!   L_1_0                               ↕ 8 + E::EDGE_BYTES bytes
-//!   L_1_1                               ↕ 8 + E::EDGE_BYTES bytes
+//!   L_1_0                               ↕ 8 + E::BYTES bytes
+//!   L_1_1                               ↕ 8 + E::BYTES bytes
 //!   ...
-//!   L_1_(max_log_entries-1)             ↕ 8 + E::EDGE_BYTES bytes
+//!   L_1_(max_log_entries-1)             ↕ 8 + E::BYTES bytes
 //! --------------------------------------------------
 //! ...
 //! --------------------------------------------------
 //! Segment log block (segment_count-1)
 //!   I_(segment_count-1)                 ↕ 4 bytes
-//!   L_(segment_count-1)_0               ↕ 8 + E::EDGE_BYTES bytes
+//!   L_(segment_count-1)_0               ↕ 8 + E::BYTES bytes
 //!   ...
 //!   L_(segment_count-1)_(max_log_entries-1)
-//!                                       ↕ 8 + E::EDGE_BYTES bytes
+//!                                       ↕ 8 + E::BYTES bytes
 //! --------------------------------------------------
 //! Unallocated space
 //! ```
@@ -196,7 +196,7 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
     ) -> Result<(), GrowFailed> {
         let h = self.header();
         let off = entry_offset::<E>(&h, leaf_segment, entry_idx);
-        debug_assert_eq!(payload.len(), E::EDGE_BYTES);
+        debug_assert_eq!(payload.len(), E::BYTES);
         let entry_len = log_entry_stride::<E>() as usize;
         if entry_len <= INLINE_LOG_ENTRY_BYTES {
             let mut bytes = [0u8; INLINE_LOG_ENTRY_BYTES];
@@ -285,5 +285,5 @@ fn required_bytes<E: CsrEdge>(h: &HeaderV1) -> u64 {
 
 #[inline]
 pub fn log_entry_stride<E: CsrEdge>() -> u64 {
-    8 + E::EDGE_BYTES as u64
+    8 + E::BYTES as u64
 }

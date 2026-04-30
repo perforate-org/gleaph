@@ -24,13 +24,13 @@
 //! --------------------------------------------------
 //! Reserved                              ↕ 20 bytes
 //! -------------------------------------------------- <- Address 64
-//! E_0                                   ↕ E::EDGE_BYTES bytes
+//! E_0                                   ↕ E::BYTES bytes
 //! --------------------------------------------------
-//! E_1                                   ↕ E::EDGE_BYTES bytes
+//! E_1                                   ↕ E::BYTES bytes
 //! --------------------------------------------------
 //! ...
 //! --------------------------------------------------
-//! E_(elem_capacity-1)                   ↕ E::EDGE_BYTES bytes
+//! E_(elem_capacity-1)                   ↕ E::BYTES bytes
 //! --------------------------------------------------
 //! Unallocated space
 //! ```
@@ -149,9 +149,9 @@ impl<E: CsrEdge, M: Memory> EdgeSlabStore<E, M> {
         if header.version != LAYOUT_VERSION {
             return Err(InitError::IncompatibleVersion(header.version));
         }
-        if header.edge_stride as usize != E::EDGE_BYTES {
+        if header.edge_stride as usize != E::BYTES {
             return Err(InitError::EdgeStrideMismatch {
-                expected: E::EDGE_BYTES as u32,
+                expected: E::BYTES as u32,
                 actual: header.edge_stride,
             });
         }
@@ -225,7 +225,7 @@ impl<E: CsrEdge, M: Memory> EdgeSlabStore<E, M> {
     }
 
     pub fn write_slot(&self, slot: u64, bytes: &[u8]) -> Result<(), GrowFailed> {
-        debug_assert_eq!(bytes.len(), E::EDGE_BYTES);
+        debug_assert_eq!(bytes.len(), E::BYTES);
         safe_write(&self.memory, slot_offset::<E>(slot), bytes)
     }
 
@@ -254,7 +254,7 @@ impl<E: CsrEdge, M: Memory> EdgeSlabStore<E, M> {
     }
 
     fn grow_for_header(&self, h: &HeaderV1) -> Result<(), GrowFailed> {
-        let need = HEADER_SIZE + h.elem_capacity.saturating_mul(E::EDGE_BYTES as u64);
+        let need = HEADER_SIZE + h.elem_capacity.saturating_mul(E::BYTES as u64);
         if need == 0 {
             return Ok(());
         }
@@ -264,7 +264,7 @@ impl<E: CsrEdge, M: Memory> EdgeSlabStore<E, M> {
 
 #[inline]
 pub fn slot_offset<E: CsrEdge>(slot: u64) -> u64 {
-    HEADER_SIZE + slot.saturating_mul(E::EDGE_BYTES as u64)
+    HEADER_SIZE + slot.saturating_mul(E::BYTES as u64)
 }
 
 #[inline]
