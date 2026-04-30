@@ -65,17 +65,12 @@ pub struct HeaderV1 {
     pub segment_size: u32,
     pub tree_height: u32,
     pub num_edges: u64,
-    pub edge_stride: u32,
+    pub stride: u32,
     pub slab_occupied_tail: u64,
 }
 
 impl HeaderV1 {
-    pub fn new(
-        elem_capacity: u64,
-        segment_count: u32,
-        segment_size: u32,
-        edge_stride: u32,
-    ) -> Self {
+    pub fn new(elem_capacity: u64, segment_count: u32, segment_size: u32, stride: u32) -> Self {
         Self {
             magic: MAGIC,
             version: LAYOUT_VERSION,
@@ -84,7 +79,7 @@ impl HeaderV1 {
             segment_size,
             tree_height: floor_log2(segment_count.max(1)),
             num_edges: 0,
-            edge_stride,
+            stride,
             slab_occupied_tail: 0,
         }
     }
@@ -96,7 +91,7 @@ pub enum InitError {
     IncompatibleVersion(u8),
     InvalidLayout,
     OutOfMemory,
-    EdgeStrideMismatch { expected: u32, actual: u32 },
+    StrideMismatch { expected: u32, actual: u32 },
 }
 
 impl fmt::Display for InitError {
@@ -106,7 +101,7 @@ impl fmt::Display for InitError {
             Self::IncompatibleVersion(v) => write!(f, "unsupported edge layout version {v}"),
             Self::InvalidLayout => write!(f, "invalid edge slab layout"),
             Self::OutOfMemory => write!(f, "failed to allocate edge slab metadata"),
-            Self::EdgeStrideMismatch { expected, actual } => {
+            Self::StrideMismatch { expected, actual } => {
                 write!(f, "edge stride mismatch: expected {expected}, got {actual}")
             }
         }
@@ -149,10 +144,10 @@ impl<E: CsrEdge, M: Memory> EdgeSlabStore<E, M> {
         if header.version != LAYOUT_VERSION {
             return Err(InitError::IncompatibleVersion(header.version));
         }
-        if header.edge_stride as usize != E::BYTES {
-            return Err(InitError::EdgeStrideMismatch {
+        if header.stride as usize != E::BYTES {
+            return Err(InitError::StrideMismatch {
                 expected: E::BYTES as u32,
-                actual: header.edge_stride,
+                actual: header.stride,
             });
         }
         Ok(store)
@@ -190,11 +185,7 @@ impl<E: CsrEdge, M: Memory> EdgeSlabStore<E, M> {
             h.tree_height,
         );
         write_u64(&self.memory, Address::from(NUM_EDGES_OFFSET), h.num_edges);
-        write_u32(
-            &self.memory,
-            Address::from(EDGE_STRIDE_OFFSET),
-            h.edge_stride,
-        );
+        write_u32(&self.memory, Address::from(EDGE_STRIDE_OFFSET), h.stride);
         write_u64(
             &self.memory,
             Address::from(SLAB_OCCUPIED_TAIL_OFFSET),
@@ -248,7 +239,7 @@ impl<E: CsrEdge, M: Memory> EdgeSlabStore<E, M> {
             segment_size: read_u32(&self.memory, Address::from(SEGMENT_SIZE_OFFSET)),
             tree_height: read_u32(&self.memory, Address::from(TREE_HEIGHT_OFFSET)),
             num_edges: read_u64(&self.memory, Address::from(NUM_EDGES_OFFSET)),
-            edge_stride: read_u32(&self.memory, Address::from(EDGE_STRIDE_OFFSET)),
+            stride: read_u32(&self.memory, Address::from(EDGE_STRIDE_OFFSET)),
             slab_occupied_tail: read_u64(&self.memory, Address::from(SLAB_OCCUPIED_TAIL_OFFSET)),
         })
     }

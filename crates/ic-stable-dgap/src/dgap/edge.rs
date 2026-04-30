@@ -108,7 +108,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, MC: Memory, ME: Memory, ML: Memory>
                 tombstone: 0,
             })?;
         }
-        let log_header = LogHeaderV1::new(header.segment_count, header.edge_stride);
+        let log_header = LogHeaderV1::new(header.segment_count, header.stride);
         let edges = EdgeSlabStore::new(edges, header)?;
         let log = LogStore::new(log, log_header)?;
         Ok(Self { counts, edges, log })

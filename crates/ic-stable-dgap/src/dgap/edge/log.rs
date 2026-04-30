@@ -67,7 +67,7 @@ pub struct HeaderV1 {
     pub version: u8,
     pub segment_count: u32,
     pub max_log_entries: u32,
-    pub log_entry_stride: u32,
+    pub stride: u32,
 }
 
 impl HeaderV1 {
@@ -77,7 +77,7 @@ impl HeaderV1 {
             version: LAYOUT_VERSION,
             segment_count,
             max_log_entries: DEFAULT_MAX_LOG_ENTRIES,
-            log_entry_stride: 8 + edge_stride,
+            stride: 8 + edge_stride,
         }
     }
 }
@@ -87,7 +87,7 @@ pub enum InitError {
     BadMagic { actual: [u8; 3] },
     IncompatibleVersion(u8),
     OutOfMemory,
-    LogEntryStrideMismatch { expected: u32, actual: u32 },
+    StrideMismatch { expected: u32, actual: u32 },
 }
 
 impl fmt::Display for InitError {
@@ -96,7 +96,7 @@ impl fmt::Display for InitError {
             Self::BadMagic { actual } => write!(f, "bad log magic {actual:?}, expected {MAGIC:?}"),
             Self::IncompatibleVersion(v) => write!(f, "unsupported log layout version {v}"),
             Self::OutOfMemory => write!(f, "failed to allocate log metadata"),
-            Self::LogEntryStrideMismatch { expected, actual } => {
+            Self::StrideMismatch { expected, actual } => {
                 write!(
                     f,
                     "log entry stride mismatch: expected {expected}, got {actual}"
@@ -143,10 +143,10 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
             return Err(InitError::IncompatibleVersion(header.version));
         }
         let expected = log_entry_stride::<E>() as u32;
-        if header.log_entry_stride != expected {
-            return Err(InitError::LogEntryStrideMismatch {
+        if header.stride != expected {
+            return Err(InitError::StrideMismatch {
                 expected,
-                actual: header.log_entry_stride,
+                actual: header.stride,
             });
         }
         Ok(store)
@@ -232,7 +232,7 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
         self.memory.write(3, &[h.version]);
         write_u32(&self.memory, Address::from(4), h.segment_count);
         write_u32(&self.memory, Address::from(8), h.max_log_entries);
-        write_u32(&self.memory, Address::from(12), h.log_entry_stride);
+        write_u32(&self.memory, Address::from(12), h.stride);
         self.memory.write(16, &[0u8; 16]);
         Ok(())
     }
@@ -247,7 +247,7 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
             version: version[0],
             segment_count: read_u32(&self.memory, Address::from(4)),
             max_log_entries: read_u32(&self.memory, Address::from(8)),
-            log_entry_stride: read_u32(&self.memory, Address::from(12)),
+            stride: read_u32(&self.memory, Address::from(12)),
         }
     }
 

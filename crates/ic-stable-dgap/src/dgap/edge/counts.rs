@@ -10,7 +10,9 @@
 //! ----------------------------------------
 //! Number of segments = L  ↕ 8 bytes
 //! ----------------------------------------
-//! Reserved space          ↕ 20 bytes
+//! Counts stride           ↕ 4 bytes
+//! ----------------------------------------
+//! Reserved space          ↕ 16 bytes
 //! ---------------------------------------- <- Address 32
 //! C_0                     ↕ 16 or 24 bytes
 //! ----------------------------------------
@@ -18,7 +20,7 @@
 //! ----------------------------------------
 //! ...
 //! ----------------------------------------
-//! C_(L-1)                 ↕ 24 bytes
+//! C_(L-1)                 ↕ 16 or 24 bytes
 //! ----------------------------------------
 //! Unallocated space
 //! ```
@@ -39,22 +41,30 @@ const LAYOUT_VERSION: u8 = 1;
 const DATA_OFFSET: u64 = 32;
 /// The offset where the vector length resides.
 const LEN_OFFSET: u64 = 4;
+const STRIDE_OFFSET: u64 = 12;
 
 #[derive(Debug)]
 struct HeaderV1 {
     magic: [u8; 3],
     version: u8,
     len: u64,
+    stride: u32,
 }
 
 #[derive(PartialEq, Eq, Debug)]
 pub enum InitError {
     /// The memory already contains another data structure.
     /// Use [SegmentEdgeCountsStore::new] to overwrite it.
-    BadMagic { actual: [u8; 3] },
+    BadMagic {
+        actual: [u8; 3],
+    },
     /// The current version of [Vec] does not support the version of the
     /// memory layout.
     IncompatibleVersion(u8),
+    StrideMismatch {
+        expected: u32,
+        actual: u32,
+    },
     /// Failed to allocate memory for the vector.
     OutOfMemory,
 }
@@ -68,6 +78,10 @@ impl fmt::Display for InitError {
             Self::IncompatibleVersion(version) => write!(
                 fmt,
                 "unsupported layout version {version}; supported version numbers are 1..={LAYOUT_VERSION}"
+            ),
+            Self::StrideMismatch { expected, actual } => write!(
+                fmt,
+                "segment counts stride mismatch: expected {expected}, got {actual}"
             ),
             Self::OutOfMemory => write!(fmt, "failed to allocate memory for vector metadata"),
         }
@@ -145,6 +159,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> SegmentEdgeCountsStore<E, M> {
             magic: MAGIC,
             version: LAYOUT_VERSION,
             len: 0,
+            stride: Self::entry_size() as u32,
         };
         Self::write_header(&header, &memory)?;
         Ok(Self {
@@ -172,6 +187,13 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> SegmentEdgeCountsStore<E, M> {
         if header.version != LAYOUT_VERSION {
             return Err(InitError::IncompatibleVersion(header.version));
         }
+        let expected_stride = Self::entry_size() as u32;
+        if header.stride != expected_stride {
+            return Err(InitError::StrideMismatch {
+                expected: expected_stride,
+                actual: header.stride,
+            });
+        }
 
         Ok(Self {
             memory,
@@ -184,6 +206,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> SegmentEdgeCountsStore<E, M> {
         safe_write(memory, 0, &header.magic)?;
         memory.write(3, &[header.version; 1]);
         write_u64(memory, Address::from(4), header.len);
+        crate::write_u32(memory, Address::from(STRIDE_OFFSET), header.stride);
         Ok(())
     }
 
@@ -311,11 +334,13 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> SegmentEdgeCountsStore<E, M> {
         memory.read(0, &mut magic);
         memory.read(3, &mut version);
         let len = read_u64(memory, Address::from(LEN_OFFSET));
+        let stride = crate::read_u32(memory, Address::from(STRIDE_OFFSET));
 
         HeaderV1 {
             magic,
             version: version[0],
             len,
+            stride,
         }
     }
 }
