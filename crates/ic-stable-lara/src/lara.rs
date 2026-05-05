@@ -4,7 +4,7 @@ pub mod vertex;
 
 use crate::{
     GrowFailed, SegmentId, VertexId,
-    dgap::{
+    lara::{
         edge::{
             EdgeHeaderV1, EdgeStore, InsertLocation, VertexAccess,
             counts::{EdgePmaCountsStride, SegmentEdgeCounts},
@@ -26,14 +26,14 @@ struct RebalanceCache<E> {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct DgapLayout {
+struct LaraLayout {
     elem_capacity: u64,
     segment_count: u32,
     segment_size: u32,
     tree_height: u32,
 }
 
-impl From<EdgeHeaderV1> for DgapLayout {
+impl From<EdgeHeaderV1> for LaraLayout {
     fn from(header: EdgeHeaderV1) -> Self {
         Self {
             elem_capacity: header.elem_capacity,
@@ -90,7 +90,7 @@ impl fmt::Display for InitError {
 
 impl std::error::Error for InitError {}
 
-pub struct Dgap<E, V, MV, MC, ME, ML, MS, MF>
+pub struct LaraGraph<E, V, MV, MC, ME, ML, MS, MF>
 where
     E: CsrEdge + EdgePmaCountsStride,
     V: LaraVertex,
@@ -106,7 +106,7 @@ where
     _marker: PhantomData<(E, V)>,
 }
 
-impl<E, V, MV, MC, ME, ML, MS, MF> Dgap<E, V, MV, MC, ME, ML, MS, MF>
+impl<E, V, MV, MC, ME, ML, MS, MF> LaraGraph<E, V, MV, MC, ME, ML, MS, MF>
 where
     E: CsrEdge + EdgePmaCountsStride,
     V: LaraVertex,
@@ -339,7 +339,7 @@ where
 
     fn rebalance_leaf_segment_with_layout(
         &self,
-        layout: &DgapLayout,
+        layout: &LaraLayout,
         segment: SegmentId,
     ) -> Result<(), GrowFailed> {
         let left_vertex =
@@ -450,7 +450,7 @@ where
         }
     }
 
-    fn segment_has_log_with_layout(&self, layout: &DgapLayout, segment: SegmentId) -> bool {
+    fn segment_has_log_with_layout(&self, layout: &LaraLayout, segment: SegmentId) -> bool {
         let start = u64::from(u32::from(segment)).saturating_mul(u64::from(layout.segment_size));
         let end = start
             .saturating_add(u64::from(layout.segment_size))
@@ -460,7 +460,7 @@ where
 
     fn rebalance_weighted_with_layout(
         &self,
-        layout: &DgapLayout,
+        layout: &LaraLayout,
         start_vertex: u64,
         end_vertex: u64,
         counts: SegmentEdgeCounts,
@@ -529,7 +529,7 @@ where
 
     fn local_resize_segment_with_layout(
         &self,
-        layout: &DgapLayout,
+        layout: &LaraLayout,
         segment: u32,
     ) -> Result<(), GrowFailed> {
         if segment >= layout.segment_count {
@@ -613,7 +613,7 @@ where
             let out = self
                 .edges
                 .collect_out_edges(&self.vertices, VertexId::from(vid as u32))
-                .expect("DGAP log chains are valid before rebalance");
+                .expect("LARA log chains are valid before rebalance");
             edges.extend(out);
             offsets.push(edges.len());
         }
@@ -621,16 +621,16 @@ where
         RebalanceCache { edges, offsets }
     }
 
-    fn layout(&self) -> DgapLayout {
+    fn layout(&self) -> LaraLayout {
         self.edges.header().into()
     }
 
-    fn leaf_for_vertex_with_layout(&self, layout: &DgapLayout, vertex: u64) -> u64 {
+    fn leaf_for_vertex_with_layout(&self, layout: &LaraLayout, vertex: u64) -> u64 {
         let leaf = vertex / u64::from(layout.segment_size.max(1));
         leaf.min(u64::from(layout.segment_count.saturating_sub(1)))
     }
 
-    fn leaf_end_for_vertex_with_layout(&self, layout: &DgapLayout, vertex: u64) -> u64 {
+    fn leaf_end_for_vertex_with_layout(&self, layout: &LaraLayout, vertex: u64) -> u64 {
         if vertex >= self.vertices.len() {
             u64::from(layout.segment_count)
         } else {
@@ -640,7 +640,7 @@ where
 
     fn edge_counts_for_leaves_with_layout(
         &self,
-        layout: &DgapLayout,
+        layout: &LaraLayout,
         start_leaf: u64,
         end_leaf: u64,
     ) -> Option<SegmentEdgeCounts> {
@@ -664,12 +664,12 @@ where
         Some(out)
     }
 
-    fn delta_up_with_layout(&self, layout: &DgapLayout) -> f64 {
+    fn delta_up_with_layout(&self, layout: &LaraLayout) -> f64 {
         let tree_height = layout.tree_height.max(1);
         (LEAF_UPPER_DENSITY - ROOT_UPPER_DENSITY) / f64::from(tree_height)
     }
 
-    fn recount_segment_counts_with_layout(&self, layout: &DgapLayout, elem_capacity: u64) {
+    fn recount_segment_counts_with_layout(&self, layout: &LaraLayout, elem_capacity: u64) {
         for i in 0..u64::from(layout.segment_count) * 2 {
             self.edges.set_count(
                 i,
@@ -729,7 +729,7 @@ where
 
     fn recount_segment_counts_range_with_layout(
         &self,
-        layout: &DgapLayout,
+        layout: &LaraLayout,
         start_leaf: u64,
         end_leaf: u64,
         elem_capacity: u64,
@@ -771,7 +771,7 @@ where
 
     fn update_leaf_count_and_ancestors(
         &self,
-        layout: &DgapLayout,
+        layout: &LaraLayout,
         leaf: u32,
         count: SegmentEdgeCounts,
     ) {
@@ -801,7 +801,7 @@ where
 
     fn segment_leaf_count_with_layout(
         &self,
-        layout: &DgapLayout,
+        layout: &LaraLayout,
         leaf: u32,
         elem_capacity: u64,
     ) -> SegmentEdgeCounts {
@@ -835,7 +835,7 @@ where
         }
     }
 
-    fn segment_for_vertex_id_with_layout(&self, layout: &DgapLayout, src: VertexId) -> SegmentId {
+    fn segment_for_vertex_id_with_layout(&self, layout: &LaraLayout, src: VertexId) -> SegmentId {
         let leaf = u32::from(src) / layout.segment_size.max(1);
         SegmentId::from(leaf.min(layout.segment_count.saturating_sub(1)))
     }

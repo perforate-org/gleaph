@@ -8,29 +8,29 @@ use std::{
     fmt::{Display, Formatter},
 };
 
-pub mod dgap;
+pub mod lara;
 mod traits;
 mod types;
 
-pub use dgap::edge::{
-    EdgeHeaderV1, EdgeStore, InitError as EdgeInitError, LogHeaderV1,
-    free_span::{FreeSpan, FreeSpanKey, FreeSpanStore},
-    free_span_array::FreeSpanArrayStore,
-    free_span_dual_index::{
-        FreeSpanDualIndexError, FreeSpanDualIndexStore, LenStartKey, SpanLen, StartKey,
+pub use lara::{
+    LaraGraph,
+    edge::{
+        EdgeHeaderV1, EdgeStore, InitError as EdgeInitError, LogHeaderV1,
+        free_span::{FreeSpan, FreeSpanKey, FreeSpanStore},
+        free_span_array::FreeSpanArrayStore,
+        free_span_dual_index::{
+            FreeSpanDualIndexError, FreeSpanDualIndexStore, LenStartKey, SpanLen, StartKey,
+        },
+        span_meta::{SegmentSpanMeta, SegmentSpanMetaStore},
     },
-    span_meta::{SegmentSpanMeta, SegmentSpanMetaStore},
-};
-pub use dgap::vertex::{InitError as VertexInitError, Vertex, VertexStore};
-pub use dgap::{
-    Dgap,
-    maintenance::{DeferredConfig, DeferredDgap, MaintenanceBudget, MaintenanceReport},
+    maintenance::{DeferredConfig, DeferredLaraGraph, MaintenanceBudget, MaintenanceReport},
+    vertex::{InitError as VertexInitError, Vertex, VertexStore},
 };
 pub use traits::*;
 
-pub type Lara<E, V, MV, MC, ME, ML, MS, MF> = Dgap<E, V, MV, MC, ME, ML, MS, MF>;
+pub type Lara<E, V, MV, MC, ME, ML, MS, MF> = LaraGraph<E, V, MV, MC, ME, ML, MS, MF>;
 pub type DeferredLara<E, V, MV, MC, ME, ML, MS, MF, MMQ, MDS> =
-    DeferredDgap<E, V, MV, MC, ME, ML, MS, MF, MMQ, MDS>;
+    DeferredLaraGraph<E, V, MV, MC, ME, ML, MS, MF, MMQ, MDS>;
 
 pub use ic_stable_structures::vec_mem::VectorMemory;
 use types::Address;
@@ -452,7 +452,7 @@ mod tests {
         segment_count: u32,
         segment_size: u32,
         starts: &[u64],
-    ) -> Dgap<
+    ) -> LaraGraph<
         TestEdge,
         Vertex,
         VectorMemory,
@@ -462,7 +462,7 @@ mod tests {
         VectorMemory,
         VectorMemory,
     > {
-        let graph = Dgap::<TestEdge, Vertex, _, _, _, _, _, _>::new(
+        let graph = LaraGraph::<TestEdge, Vertex, _, _, _, _, _, _>::new(
             vector_memory(),
             vector_memory(),
             vector_memory(),
@@ -488,7 +488,7 @@ mod tests {
     }
 
     fn assert_vertex_capacity_invariants(
-        graph: &Dgap<
+        graph: &LaraGraph<
             TestEdge,
             Vertex,
             VectorMemory,
@@ -543,7 +543,7 @@ mod tests {
         segment_count: u32,
         segment_size: u32,
         starts: &[u64],
-    ) -> DeferredDgap<
+    ) -> DeferredLaraGraph<
         TestEdge,
         Vertex,
         VectorMemory,
@@ -555,7 +555,7 @@ mod tests {
         VectorMemory,
         VectorMemory,
     > {
-        let graph = DeferredDgap::<TestEdge, Vertex, _, _, _, _, _, _, _, _>::new(
+        let graph = DeferredLaraGraph::<TestEdge, Vertex, _, _, _, _, _, _, _, _>::new(
             vector_memory(),
             vector_memory(),
             vector_memory(),
@@ -584,7 +584,7 @@ mod tests {
 
     #[test]
     fn segment_edge_counts_stride_depends_on_edge_tombstone_capability() {
-        use crate::dgap::edge::counts::{SegmentEdgeCounts, SegmentEdgeCountsStore};
+        use crate::lara::edge::counts::{SegmentEdgeCounts, SegmentEdgeCountsStore};
 
         let plain = SegmentEdgeCountsStore::<TestEdge, _>::new(vector_memory()).unwrap();
         let tombstone = SegmentEdgeCountsStore::<TombstoneEdge, _>::new(vector_memory()).unwrap();
@@ -1075,7 +1075,7 @@ mod tests {
     }
 
     #[test]
-    fn dgap_resize_folds_log_edges_back_into_slab() {
+    fn lara_resize_folds_log_edges_back_into_slab() {
         let graph = test_graph(2, 1, 2, &[0, 1]);
 
         graph.insert_edge(VertexId::from(0), TestEdge(10)).unwrap();
@@ -1093,7 +1093,7 @@ mod tests {
     }
 
     #[test]
-    fn dgap_insert_rebalances_parent_window_before_resizing() {
+    fn lara_insert_rebalances_parent_window_before_resizing() {
         let graph = test_graph(8, 2, 2, &[0, 2, 4, 6]);
 
         for dst in 10..14 {
@@ -1112,7 +1112,7 @@ mod tests {
     }
 
     #[test]
-    fn dgap_parent_rebalance_recomputes_reference_segment_counts() {
+    fn lara_parent_rebalance_recomputes_reference_segment_counts() {
         let graph = test_graph(8, 2, 2, &[0, 2, 4, 6]);
 
         for dst in 10..14 {
@@ -1228,7 +1228,7 @@ mod tests {
         }
 
         let memories = graph.into_memories();
-        let reopened = Dgap::<TestEdge, Vertex, _, _, _, _, _, _>::init(
+        let reopened = LaraGraph::<TestEdge, Vertex, _, _, _, _, _, _>::init(
             memories.0, memories.1, memories.2, memories.3, memories.4, memories.5,
         )
         .unwrap();
@@ -1247,7 +1247,7 @@ mod tests {
     }
 
     #[test]
-    fn dgap_reopen_preserves_rebalanced_layout_and_counts() {
+    fn lara_reopen_preserves_rebalanced_layout_and_counts() {
         let graph = test_graph(8, 2, 2, &[0, 2, 4, 6]);
 
         for dst in 10..14 {
@@ -1255,7 +1255,7 @@ mod tests {
         }
 
         let memories = graph.into_memories();
-        let reopened = Dgap::<TestEdge, Vertex, _, _, _, _, _, _>::init(
+        let reopened = LaraGraph::<TestEdge, Vertex, _, _, _, _, _, _>::init(
             memories.0, memories.1, memories.2, memories.3, memories.4, memories.5,
         )
         .unwrap();
@@ -1276,7 +1276,7 @@ mod tests {
     #[test]
     fn maintenance_queue_deduplicates_and_prioritizes_urgent_segments() {
         let mq =
-            dgap::maintenance::MaintenanceQueue::new(vector_memory(), vector_memory()).unwrap();
+            lara::maintenance::MaintenanceQueue::new(vector_memory(), vector_memory()).unwrap();
 
         assert!(mq.mark_dirty(SegmentId::from(2)).unwrap().inserted);
         assert!(!mq.mark_dirty(SegmentId::from(2)).unwrap().inserted);
@@ -1291,12 +1291,12 @@ mod tests {
     #[test]
     fn maintenance_queue_reopens_dirty_membership_and_order() {
         let mq =
-            dgap::maintenance::MaintenanceQueue::new(vector_memory(), vector_memory()).unwrap();
+            lara::maintenance::MaintenanceQueue::new(vector_memory(), vector_memory()).unwrap();
         mq.mark_dirty(SegmentId::from(1)).unwrap();
         mq.mark_dirty(SegmentId::from(3)).unwrap();
 
         let memories = mq.into_memories();
-        let reopened = dgap::maintenance::MaintenanceQueue::init(memories.0, memories.1).unwrap();
+        let reopened = lara::maintenance::MaintenanceQueue::init(memories.0, memories.1).unwrap();
 
         assert!(reopened.is_dirty(SegmentId::from(1)));
         assert!(reopened.is_dirty(SegmentId::from(3)));
@@ -1368,7 +1368,7 @@ mod tests {
     }
 
     #[test]
-    fn deferred_dgap_reopens_maintenance_state() {
+    fn deferred_lara_graph_reopens_maintenance_state() {
         let graph = deferred_test_graph(8, 2, 2, &[0, 2, 4, 6]);
         for dst in 10..13 {
             graph
@@ -1377,7 +1377,7 @@ mod tests {
         }
 
         let memories = graph.into_memories();
-        let reopened = DeferredDgap::<TestEdge, Vertex, _, _, _, _, _, _, _, _>::init(
+        let reopened = DeferredLaraGraph::<TestEdge, Vertex, _, _, _, _, _, _, _, _>::init(
             memories.0, memories.1, memories.2, memories.3, memories.4, memories.5, memories.6,
             memories.7,
         )
@@ -1408,7 +1408,7 @@ mod tests {
 
     #[test]
     fn deferred_config_controls_dirty_threshold() {
-        let graph = DeferredDgap::<TestEdge, Vertex, _, _, _, _, _, _, _, _>::new_with_config(
+        let graph = DeferredLaraGraph::<TestEdge, Vertex, _, _, _, _, _, _, _, _>::new_with_config(
             vector_memory(),
             vector_memory(),
             vector_memory(),
@@ -1447,30 +1447,31 @@ mod tests {
 
     #[test]
     fn deferred_config_rejects_invalid_thresholds() {
-        let err = match DeferredDgap::<TestEdge, Vertex, _, _, _, _, _, _, _, _>::new_with_config(
-            vector_memory(),
-            vector_memory(),
-            vector_memory(),
-            vector_memory(),
-            vector_memory(),
-            vector_memory(),
-            vector_memory(),
-            vector_memory(),
-            16,
-            2,
-            4,
-            DeferredConfig {
-                leaf_dirty_density: f64::NAN,
-                log_urgent_ratio: 0.80,
-            },
-        ) {
-            Ok(_) => panic!("invalid deferred config was accepted"),
-            Err(err) => err,
-        };
+        let err =
+            match DeferredLaraGraph::<TestEdge, Vertex, _, _, _, _, _, _, _, _>::new_with_config(
+                vector_memory(),
+                vector_memory(),
+                vector_memory(),
+                vector_memory(),
+                vector_memory(),
+                vector_memory(),
+                vector_memory(),
+                vector_memory(),
+                16,
+                2,
+                4,
+                DeferredConfig {
+                    leaf_dirty_density: f64::NAN,
+                    log_urgent_ratio: 0.80,
+                },
+            ) {
+                Ok(_) => panic!("invalid deferred config was accepted"),
+                Err(err) => err,
+            };
 
         assert!(matches!(
             err,
-            dgap::maintenance::DeferredError::InvalidConfig(_)
+            lara::maintenance::DeferredError::InvalidConfig(_)
         ));
     }
 }

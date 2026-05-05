@@ -1,4 +1,4 @@
-//! Stable DGAP CSR edge slab (`edges_`) plus graph-wide edge metadata.
+//! Stable LARA CSR edge slab (`edges_`) plus graph-wide edge metadata.
 //!
 //! # V1 layout
 //!

@@ -74,7 +74,7 @@ impl fmt::Display for InitError {
                 )
             }
             Self::VariableWidthVertex => {
-                write!(f, "DGAP vertices must use fixed-width Storable encoding")
+                write!(f, "LARA vertices must use fixed-width Storable encoding")
             }
             Self::OutOfMemory => write!(f, "failed to allocate vertex metadata"),
         }
@@ -174,7 +174,7 @@ pub struct VertexStore<V: CsrVertex, M: Memory> {
 
 impl<V: CsrVertex, M: Memory> VertexStore<V, M> {
     pub fn new(memory: M) -> Result<Self, GrowFailed> {
-        verify_vertex_width::<V>().expect("DGAP vertices must be fixed-width");
+        verify_vertex_width::<V>().expect("LARA vertices must be fixed-width");
         let header = HeaderV1 {
             magic: MAGIC,
             version: LAYOUT_VERSION,

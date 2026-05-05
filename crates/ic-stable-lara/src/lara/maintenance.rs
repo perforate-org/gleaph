@@ -1,11 +1,11 @@
-//! Persistent maintenance worklist for deferred DGAP rebalancing.
+//! Persistent maintenance worklist for deferred LARA rebalancing.
 //!
 //! The deque preserves processing order while the roaring bitmap provides O(1)
 //! duplicate suppression for dirty leaf segments.
 
 use crate::{
     GrowFailed as GraphGrowFailed, SegmentId, VertexId,
-    dgap::{Dgap, InitError as GraphInitError, MarkPriority},
+    lara::{InitError as GraphInitError, LaraGraph, MarkPriority},
     traits::{CsrEdge, LaraVertex},
 };
 use ic_stable_roaring::StableRoaringBitmap;
@@ -154,7 +154,7 @@ pub enum DeferredInitError {
 impl fmt::Display for DeferredInitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Graph(e) => write!(f, "DGAP init failed: {e}"),
+            Self::Graph(e) => write!(f, "LARA init failed: {e}"),
             Self::Maintenance(e) => write!(f, "maintenance init failed: {e}"),
             Self::InvalidConfig(e) => write!(f, "invalid deferred config: {e}"),
         }
@@ -174,8 +174,8 @@ pub enum DeferredError {
 impl fmt::Display for DeferredError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Graph(e) => write!(f, "DGAP operation failed: {e}"),
-            Self::Grow(e) => write!(f, "DGAP memory grow failed: {e}"),
+            Self::Graph(e) => write!(f, "LARA operation failed: {e}"),
+            Self::Grow(e) => write!(f, "LARA memory grow failed: {e}"),
             Self::Maintenance(e) => write!(f, "maintenance operation failed: {e}"),
             Self::InvalidConfig(e) => write!(f, "invalid deferred config: {e}"),
         }
@@ -266,7 +266,7 @@ fn current_instruction_counter() -> u64 {
     }
 }
 
-pub struct DeferredDgap<E, V, MV, MC, ME, ML, MS, MF, MMQ, MDS>
+pub struct DeferredLaraGraph<E, V, MV, MC, ME, ML, MS, MF, MMQ, MDS>
 where
     E: CsrEdge,
     V: LaraVertex,
@@ -279,12 +279,13 @@ where
     MMQ: Memory,
     MDS: Memory,
 {
-    graph: Dgap<E, V, MV, MC, ME, ML, MS, MF>,
+    graph: LaraGraph<E, V, MV, MC, ME, ML, MS, MF>,
     maintenance: MaintenanceQueue<MMQ, MDS>,
     config: DeferredConfig,
 }
 
-impl<E, V, MV, MC, ME, ML, MS, MF, MMQ, MDS> DeferredDgap<E, V, MV, MC, ME, ML, MS, MF, MMQ, MDS>
+impl<E, V, MV, MC, ME, ML, MS, MF, MMQ, MDS>
+    DeferredLaraGraph<E, V, MV, MC, ME, ML, MS, MF, MMQ, MDS>
 where
     E: CsrEdge,
     V: LaraVertex,
@@ -342,7 +343,7 @@ where
     ) -> Result<Self, DeferredError> {
         let config = config.validate().map_err(DeferredError::InvalidConfig)?;
         Ok(Self {
-            graph: Dgap::new(
+            graph: LaraGraph::new(
                 vertices,
                 counts,
                 edges,
@@ -398,7 +399,7 @@ where
             .validate()
             .map_err(DeferredInitError::InvalidConfig)?;
         Ok(Self {
-            graph: Dgap::init(vertices, counts, edges, log, span_meta, free_spans)
+            graph: LaraGraph::init(vertices, counts, edges, log, span_meta, free_spans)
                 .map_err(DeferredInitError::Graph)?,
             maintenance: MaintenanceQueue::init(maintenance_queue, dirty_segments)
                 .map_err(DeferredInitError::Maintenance)?,
@@ -406,7 +407,7 @@ where
         })
     }
 
-    pub fn graph(&self) -> &Dgap<E, V, MV, MC, ME, ML, MS, MF> {
+    pub fn graph(&self) -> &LaraGraph<E, V, MV, MC, ME, ML, MS, MF> {
         &self.graph
     }
 

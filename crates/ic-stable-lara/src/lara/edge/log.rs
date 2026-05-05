@@ -1,4 +1,4 @@
-//! Stable DGAP per-segment overflow log.
+//! Stable LARA per-segment overflow log.
 //!
 //! The index array and entry pool live in this memory. Vertex rows keep only
 //! the head index into their owning segment's chain.

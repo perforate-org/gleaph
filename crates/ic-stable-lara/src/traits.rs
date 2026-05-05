@@ -9,8 +9,8 @@ use crate::VertexId;
 
 /// One vertex row in the CSR vertex column (`M_v`).
 ///
-/// `log_head` is the DGAP per-segment log array index of the head of this vertex's overflow chain,
-/// or `-1` if all neighbors live on the CSR slab (`gleaph-old/reference/DGAP/dgap/src/graph.h` `vertex_element.offset`).
+/// `log_head` is the LARA per-segment log array index of the head of this vertex's overflow chain,
+/// or `-1` if all neighbors live on the CSR slab.
 pub trait CsrVertex: Storable + Copy {
     const BYTES: usize;
     /// Global edge-slot index where this vertex's base neighborhood starts (flat slab model).
@@ -27,7 +27,7 @@ pub trait CsrVertex: Storable + Copy {
 ///
 /// LARA algorithms should use this trait when they need to reason about the
 /// writable capacity owned by a vertex. Keeping it separate from [`CsrVertex`]
-/// lets copied DGAP-style code keep compiling while LARA-specific relocation
+/// lets copied LARA-style code keep compiling while LARA-specific relocation
 /// code opts into the additional contract.
 pub trait LaraVertex: CsrVertex {
     fn span_capacity(&self) -> u32;
