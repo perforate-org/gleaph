@@ -200,7 +200,11 @@ fn write<M: Memory>(memory: &M, offset: u64, bytes: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{cell::RefCell, rc::Rc};
+    use std::{
+        cell::RefCell,
+        rc::Rc,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     struct TestEdge(u32);
@@ -268,6 +272,177 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct PoisonCapacityVertex {
+        base_slot_start: u64,
+        degree: u32,
+        log_head: i32,
+    }
+
+    impl CsrVertex for PoisonCapacityVertex {
+        const BYTES: usize = 16;
+
+        fn base_slot_start(&self) -> u64 {
+            self.base_slot_start
+        }
+
+        fn degree(&self) -> u32 {
+            self.degree
+        }
+
+        fn with_base_slot_start(mut self, start: u64) -> Self {
+            self.base_slot_start = start;
+            self
+        }
+
+        fn with_degree(mut self, degree: u32) -> Self {
+            self.degree = degree;
+            self
+        }
+
+        fn log_head(self) -> i32 {
+            self.log_head
+        }
+
+        fn with_log_head(mut self, idx: i32) -> Self {
+            self.log_head = idx;
+            self
+        }
+    }
+
+    impl LaraVertex for PoisonCapacityVertex {
+        fn span_capacity(&self) -> u32 {
+            panic!("clean scan must not read vertex capacity")
+        }
+
+        fn with_span_capacity(self, _capacity: u32) -> Self {
+            panic!("clean scan must not write vertex capacity")
+        }
+    }
+
+    impl Storable for PoisonCapacityVertex {
+        const BOUND: Bound = Bound::Bounded {
+            max_size: Self::BYTES as u32,
+            is_fixed_size: true,
+        };
+
+        fn to_bytes(&self) -> Cow<'_, [u8]> {
+            let mut b = [0u8; Self::BYTES];
+            b[0..8].copy_from_slice(&self.base_slot_start.to_le_bytes());
+            b[8..12].copy_from_slice(&self.degree.to_le_bytes());
+            b[12..16].copy_from_slice(&self.log_head.to_le_bytes());
+            Cow::Owned(b.to_vec())
+        }
+
+        fn into_bytes(self) -> Vec<u8> {
+            self.to_bytes().into_owned()
+        }
+
+        fn from_bytes(bytes: Cow<[u8]>) -> Self {
+            let mut base = [0u8; 8];
+            let mut degree = [0u8; 4];
+            let mut log_head = [0u8; 4];
+            base.copy_from_slice(&bytes.as_ref()[0..8]);
+            degree.copy_from_slice(&bytes.as_ref()[8..12]);
+            log_head.copy_from_slice(&bytes.as_ref()[12..16]);
+            Self {
+                base_slot_start: u64::from_le_bytes(base),
+                degree: u32::from_le_bytes(degree),
+                log_head: i32::from_le_bytes(log_head),
+            }
+        }
+    }
+
+    static CAPACITY_READS: AtomicUsize = AtomicUsize::new(0);
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct CountingCapacityVertex {
+        base_slot_start: u64,
+        degree: u32,
+        capacity: u32,
+        log_head: i32,
+    }
+
+    impl CsrVertex for CountingCapacityVertex {
+        const BYTES: usize = 20;
+
+        fn base_slot_start(&self) -> u64 {
+            self.base_slot_start
+        }
+
+        fn degree(&self) -> u32 {
+            self.degree
+        }
+
+        fn with_base_slot_start(mut self, start: u64) -> Self {
+            self.base_slot_start = start;
+            self
+        }
+
+        fn with_degree(mut self, degree: u32) -> Self {
+            self.degree = degree;
+            self
+        }
+
+        fn log_head(self) -> i32 {
+            self.log_head
+        }
+
+        fn with_log_head(mut self, idx: i32) -> Self {
+            self.log_head = idx;
+            self
+        }
+    }
+
+    impl LaraVertex for CountingCapacityVertex {
+        fn span_capacity(&self) -> u32 {
+            CAPACITY_READS.fetch_add(1, Ordering::SeqCst);
+            self.capacity
+        }
+
+        fn with_span_capacity(mut self, capacity: u32) -> Self {
+            self.capacity = capacity;
+            self
+        }
+    }
+
+    impl Storable for CountingCapacityVertex {
+        const BOUND: Bound = Bound::Bounded {
+            max_size: Self::BYTES as u32,
+            is_fixed_size: true,
+        };
+
+        fn to_bytes(&self) -> Cow<'_, [u8]> {
+            let mut b = [0u8; Self::BYTES];
+            b[0..8].copy_from_slice(&self.base_slot_start.to_le_bytes());
+            b[8..12].copy_from_slice(&self.degree.to_le_bytes());
+            b[12..16].copy_from_slice(&self.capacity.to_le_bytes());
+            b[16..20].copy_from_slice(&self.log_head.to_le_bytes());
+            Cow::Owned(b.to_vec())
+        }
+
+        fn into_bytes(self) -> Vec<u8> {
+            self.to_bytes().into_owned()
+        }
+
+        fn from_bytes(bytes: Cow<[u8]>) -> Self {
+            let mut base = [0u8; 8];
+            let mut degree = [0u8; 4];
+            let mut capacity = [0u8; 4];
+            let mut log_head = [0u8; 4];
+            base.copy_from_slice(&bytes.as_ref()[0..8]);
+            degree.copy_from_slice(&bytes.as_ref()[8..12]);
+            capacity.copy_from_slice(&bytes.as_ref()[12..16]);
+            log_head.copy_from_slice(&bytes.as_ref()[16..20]);
+            Self {
+                base_slot_start: u64::from_le_bytes(base),
+                degree: u32::from_le_bytes(degree),
+                capacity: u32::from_le_bytes(capacity),
+                log_head: i32::from_le_bytes(log_head),
+            }
+        }
+    }
+
     fn vector_memory() -> VectorMemory {
         Rc::new(RefCell::new(Vec::new()))
     }
@@ -310,6 +485,57 @@ mod tests {
                 .unwrap();
         }
         graph
+    }
+
+    fn assert_vertex_capacity_invariants(
+        graph: &Dgap<
+            TestEdge,
+            Vertex,
+            VectorMemory,
+            VectorMemory,
+            VectorMemory,
+            VectorMemory,
+            VectorMemory,
+            VectorMemory,
+        >,
+    ) {
+        let mut owned_spans = Vec::new();
+        for vidx in 0..graph.vertices().len() {
+            let v = graph.vertices().get(vidx);
+            assert!(
+                v.degree <= v.capacity,
+                "vertex {vidx} has degree {} beyond capacity {}",
+                v.degree,
+                v.capacity
+            );
+            assert!(
+                v.base_slot_start.saturating_add(u64::from(v.degree))
+                    <= v.base_slot_start.saturating_add(u64::from(v.capacity)),
+                "vertex {vidx} live prefix exceeds owned span"
+            );
+            if v.capacity > 0 {
+                owned_spans.push((
+                    vidx,
+                    v.base_slot_start,
+                    v.base_slot_start.saturating_add(u64::from(v.capacity)),
+                ));
+            }
+        }
+
+        for free in graph.edges().free_span_store().spans() {
+            let free_start = free.start_slot;
+            let free_end = free.start_slot.saturating_add(free.len);
+            for &(vidx, owned_start, owned_end) in &owned_spans {
+                assert!(
+                    !spans_overlap(free_start, free_end, owned_start, owned_end),
+                    "free span [{free_start}, {free_end}) overlaps vertex {vidx} owned span [{owned_start}, {owned_end})"
+                );
+            }
+        }
+    }
+
+    fn spans_overlap(a_start: u64, a_end: u64, b_start: u64, b_end: u64) -> bool {
+        a_start < b_end && b_start < a_end
     }
 
     fn deferred_test_graph(
@@ -754,6 +980,101 @@ mod tests {
     }
 
     #[test]
+    fn edge_store_insert_reads_capacity_for_update_boundary() {
+        CAPACITY_READS.store(0, Ordering::SeqCst);
+
+        let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+        let mc: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+        let me: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+        let ml: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+
+        let vertices = VertexStore::<CountingCapacityVertex, _>::new(mv).unwrap();
+        vertices
+            .push(CountingCapacityVertex {
+                base_slot_start: 0,
+                degree: 0,
+                capacity: 2,
+                log_head: -1,
+            })
+            .unwrap();
+        vertices
+            .push(CountingCapacityVertex {
+                base_slot_start: 1,
+                degree: 0,
+                capacity: 1,
+                log_head: -1,
+            })
+            .unwrap();
+
+        let edges = EdgeStore::<TestEdge, _, _, _, _, _>::new(
+            mc,
+            me,
+            ml,
+            vector_memory(),
+            vector_memory(),
+            4,
+            1,
+            2,
+        )
+        .unwrap();
+
+        edges
+            .insert_edge(&vertices, VertexId::from(0), TestEdge(10))
+            .unwrap();
+        edges
+            .insert_edge(&vertices, VertexId::from(0), TestEdge(11))
+            .unwrap();
+
+        assert!(CAPACITY_READS.load(Ordering::SeqCst) >= 2);
+        assert_eq!(vertices.get(0).degree, 2);
+        assert_eq!(vertices.get(0).log_head, -1);
+        assert_eq!(
+            edges
+                .collect_out_edges(&vertices, VertexId::from(0))
+                .unwrap(),
+            vec![TestEdge(10), TestEdge(11)]
+        );
+    }
+
+    #[test]
+    fn edge_store_scan_uses_base_and_degree_not_capacity() {
+        let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+        let mc: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+        let me: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+        let ml: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+
+        let vertices = VertexStore::<PoisonCapacityVertex, _>::new(mv).unwrap();
+        vertices
+            .push(PoisonCapacityVertex {
+                base_slot_start: 0,
+                degree: 2,
+                log_head: -1,
+            })
+            .unwrap();
+
+        let edges = EdgeStore::<TestEdge, _, _, _, _, _>::new(
+            mc,
+            me,
+            ml,
+            vector_memory(),
+            vector_memory(),
+            2,
+            1,
+            1,
+        )
+        .unwrap();
+        edges.write_slot(0, TestEdge(10)).unwrap();
+        edges.write_slot(1, TestEdge(11)).unwrap();
+
+        assert_eq!(
+            edges
+                .collect_out_edges(&vertices, VertexId::from(0))
+                .unwrap(),
+            vec![TestEdge(10), TestEdge(11)]
+        );
+    }
+
+    #[test]
     fn dgap_resize_folds_log_edges_back_into_slab() {
         let graph = test_graph(2, 1, 2, &[0, 1]);
 
@@ -833,6 +1154,7 @@ mod tests {
         assert_eq!(graph.edges().counts_store().get(1).total, 7);
         assert_eq!(graph.edges().counts_store().get(2).actual, 4);
         assert_eq!(graph.edges().counts_store().get(2).total, 6);
+        assert_vertex_capacity_invariants(&graph);
     }
 
     #[test]
@@ -894,6 +1216,7 @@ mod tests {
         assert_eq!(right.actual, 5);
         assert!(left.total >= left.actual);
         assert!(right.total >= right.actual);
+        assert_vertex_capacity_invariants(&graph);
     }
 
     #[test]
@@ -920,6 +1243,7 @@ mod tests {
             vec![TestEdge(10), TestEdge(11), TestEdge(12), TestEdge(13)]
         );
         assert_eq!(reopened.edges().counts_store().get(2).total, 6);
+        assert_vertex_capacity_invariants(&reopened);
     }
 
     #[test]
@@ -946,6 +1270,7 @@ mod tests {
             vec![TestEdge(10), TestEdge(11), TestEdge(12), TestEdge(13)]
         );
         assert_eq!(reopened.edges().counts_store().get(2).total, 6);
+        assert_vertex_capacity_invariants(&reopened);
     }
 
     #[test]

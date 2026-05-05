@@ -90,6 +90,14 @@ impl<M: Memory> FreeSpanStore<M> {
         self.by_len.borrow().is_empty()
     }
 
+    pub fn spans(&self) -> Vec<FreeSpan> {
+        self.by_len
+            .borrow()
+            .range((Unbounded::<FreeSpanKey>, Unbounded::<FreeSpanKey>))
+            .map(|entry| entry.key().span())
+            .collect()
+    }
+
     pub fn release(&self, span: FreeSpan) {
         if span.len == 0 {
             return;
