@@ -700,6 +700,60 @@ mod tests {
     }
 
     #[test]
+    fn edge_store_uses_vertex_capacity_for_slab_space() {
+        let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+        let mc: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+        let me: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+        let ml: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+
+        let vertices = VertexStore::<Vertex, _>::new(mv).unwrap();
+        vertices
+            .push(Vertex {
+                base_slot_start: 0,
+                degree: 0,
+                capacity: 2,
+                log_head: -1,
+            })
+            .unwrap();
+        vertices
+            .push(Vertex {
+                base_slot_start: 1,
+                degree: 0,
+                capacity: 1,
+                log_head: -1,
+            })
+            .unwrap();
+
+        let edges = EdgeStore::<TestEdge, _, _, _, _, _>::new(
+            mc,
+            me,
+            ml,
+            vector_memory(),
+            vector_memory(),
+            4,
+            1,
+            2,
+        )
+        .unwrap();
+
+        edges
+            .insert_edge(&vertices, VertexId::from(0), TestEdge(10))
+            .unwrap();
+        edges
+            .insert_edge(&vertices, VertexId::from(0), TestEdge(11))
+            .unwrap();
+
+        assert_eq!(vertices.get(0).degree, 2);
+        assert_eq!(vertices.get(0).log_head, -1);
+        assert_eq!(
+            edges
+                .collect_out_edges(&vertices, VertexId::from(0))
+                .unwrap(),
+            vec![TestEdge(10), TestEdge(11)]
+        );
+    }
+
+    #[test]
     fn dgap_resize_folds_log_edges_back_into_slab() {
         let graph = test_graph(2, 1, 2, &[0, 1]);
 
@@ -773,11 +827,99 @@ mod tests {
         assert!(released.len > 0);
         assert_eq!(graph.vertices().get(0).base_slot_start, 4);
         assert_eq!(graph.vertices().get(0).degree, 4);
+        assert!(graph.vertices().get(0).capacity >= graph.vertices().get(0).degree);
         assert_eq!(graph.vertices().get(0).log_head, -1);
         assert_eq!(graph.edges().counts_store().get(1).actual, 4);
         assert_eq!(graph.edges().counts_store().get(1).total, 7);
         assert_eq!(graph.edges().counts_store().get(2).actual, 4);
         assert_eq!(graph.edges().counts_store().get(2).total, 6);
+    }
+
+    #[test]
+    fn lara_local_relocation_reuses_prior_free_span() {
+        let graph = test_graph(12, 2, 1, &[0, 10]);
+
+        for dst in 10..20 {
+            graph.insert_edge(VertexId::from(0), TestEdge(dst)).unwrap();
+        }
+        assert_eq!(graph.vertices().get(0).base_slot_start, 12);
+        assert_eq!(
+            graph
+                .edges()
+                .free_span_store()
+                .peek_best_fit(10)
+                .unwrap()
+                .start_slot,
+            0
+        );
+
+        for dst in 20..25 {
+            graph.insert_edge(VertexId::from(1), TestEdge(dst)).unwrap();
+        }
+
+        assert_eq!(
+            graph.collect_out_edges(VertexId::from(0)).unwrap(),
+            vec![
+                TestEdge(10),
+                TestEdge(11),
+                TestEdge(12),
+                TestEdge(13),
+                TestEdge(14),
+                TestEdge(15),
+                TestEdge(16),
+                TestEdge(17),
+                TestEdge(18),
+                TestEdge(19)
+            ]
+        );
+        assert_eq!(
+            graph.collect_out_edges(VertexId::from(1)).unwrap(),
+            vec![
+                TestEdge(20),
+                TestEdge(21),
+                TestEdge(22),
+                TestEdge(23),
+                TestEdge(24)
+            ]
+        );
+        assert_eq!(graph.vertices().get(1).base_slot_start, 0);
+        assert_eq!(graph.edges().span_meta_store().get(0).physical_start, 12);
+        assert_eq!(graph.edges().span_meta_store().get(1).physical_start, 0);
+        let root = graph.edges().counts_store().get(1);
+        let left = graph.edges().counts_store().get(2);
+        let right = graph.edges().counts_store().get(3);
+        assert_eq!(root.actual, left.actual + right.actual);
+        assert_eq!(root.total, left.total + right.total);
+        assert_eq!(left.actual, 10);
+        assert_eq!(right.actual, 5);
+        assert!(left.total >= left.actual);
+        assert!(right.total >= right.actual);
+    }
+
+    #[test]
+    fn lara_local_relocation_metadata_survives_reopen() {
+        let graph = test_graph(4, 2, 1, &[0, 2]);
+
+        for dst in 10..14 {
+            graph.insert_edge(VertexId::from(0), TestEdge(dst)).unwrap();
+        }
+
+        let memories = graph.into_memories();
+        let reopened = Dgap::<TestEdge, Vertex, _, _, _, _, _, _>::init(
+            memories.0, memories.1, memories.2, memories.3, memories.4, memories.5,
+        )
+        .unwrap();
+
+        assert_eq!(reopened.edges().span_meta_store().get(0).physical_start, 4);
+        assert_eq!(reopened.edges().free_span_store().len(), 1);
+        let released = reopened.edges().free_span_store().peek_best_fit(1).unwrap();
+        assert_eq!(released.start_slot, 0);
+        assert!(released.len > 0);
+        assert_eq!(
+            reopened.collect_out_edges(VertexId::from(0)).unwrap(),
+            vec![TestEdge(10), TestEdge(11), TestEdge(12), TestEdge(13)]
+        );
+        assert_eq!(reopened.edges().counts_store().get(2).total, 6);
     }
 
     #[test]
@@ -797,6 +939,7 @@ mod tests {
         assert_eq!(reopened.edges().header().elem_capacity, 8);
         assert_eq!(reopened.edges().span_meta_store().len(), 2);
         assert_eq!(reopened.vertices().get(0).degree, 4);
+        assert!(reopened.vertices().get(0).capacity >= reopened.vertices().get(0).degree);
         assert_eq!(reopened.vertices().get(0).log_head, -1);
         assert_eq!(
             reopened.collect_out_edges(VertexId::from(0)).unwrap(),

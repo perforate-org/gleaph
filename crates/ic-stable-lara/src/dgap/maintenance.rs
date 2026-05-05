@@ -6,7 +6,7 @@
 use crate::{
     GrowFailed as GraphGrowFailed, SegmentId, VertexId,
     dgap::{Dgap, InitError as GraphInitError, MarkPriority},
-    traits::{CsrEdge, CsrVertex},
+    traits::{CsrEdge, LaraVertex},
 };
 use ic_stable_roaring::StableRoaringBitmap;
 use ic_stable_structures::Memory;
@@ -269,7 +269,7 @@ fn current_instruction_counter() -> u64 {
 pub struct DeferredDgap<E, V, MV, MC, ME, ML, MS, MF, MMQ, MDS>
 where
     E: CsrEdge,
-    V: CsrVertex,
+    V: LaraVertex,
     MV: Memory,
     MC: Memory,
     ME: Memory,
@@ -287,7 +287,7 @@ where
 impl<E, V, MV, MC, ME, ML, MS, MF, MMQ, MDS> DeferredDgap<E, V, MV, MC, ME, ML, MS, MF, MMQ, MDS>
 where
     E: CsrEdge,
-    V: CsrVertex,
+    V: LaraVertex,
     MV: Memory,
     MC: Memory,
     ME: Memory,

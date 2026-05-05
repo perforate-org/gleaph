@@ -11,7 +11,7 @@ use crate::{
         },
         vertex::VertexStore,
     },
-    traits::{CsrEdge, CsrVertex},
+    traits::{CsrEdge, CsrVertex, LaraVertex},
 };
 use ic_stable_structures::Memory;
 use std::{fmt, marker::PhantomData};
@@ -93,7 +93,7 @@ impl std::error::Error for InitError {}
 pub struct Dgap<E, V, MV, MC, ME, ML, MS, MF>
 where
     E: CsrEdge + EdgePmaCountsStride,
-    V: CsrVertex,
+    V: LaraVertex,
     MV: Memory,
     MC: Memory,
     ME: Memory,
@@ -109,7 +109,7 @@ where
 impl<E, V, MV, MC, ME, ML, MS, MF> Dgap<E, V, MV, MC, ME, ML, MS, MF>
 where
     E: CsrEdge + EdgePmaCountsStride,
-    V: CsrVertex,
+    V: LaraVertex,
     MV: Memory,
     MC: Memory,
     ME: Memory,
@@ -228,6 +228,12 @@ where
                 vidx as u64,
                 &v.with_base_slot_start(start)
                     .with_degree(neighborhood.len() as u32)
+                    .with_span_capacity(capacity_from_positions(
+                        &positions,
+                        vidx,
+                        vertex_len as usize,
+                        new_capacity,
+                    ))
                     .with_log_head(-1),
             );
         }
@@ -494,6 +500,12 @@ where
                 vid,
                 &v.with_base_slot_start(start)
                     .with_degree(neighborhood.len() as u32)
+                    .with_span_capacity(capacity_from_positions(
+                        &positions,
+                        offset,
+                        (end_vertex - start_vertex) as usize,
+                        from.saturating_add(total_space),
+                    ))
                     .with_log_head(-1),
             );
         }
@@ -561,6 +573,12 @@ where
                 vid,
                 &v.with_base_slot_start(start)
                     .with_degree(neighborhood.len() as u32)
+                    .with_span_capacity(capacity_from_positions(
+                        &positions,
+                        offset,
+                        (end_vertex - start_vertex) as usize,
+                        new_start.saturating_add(new_span),
+                    ))
                     .with_log_head(-1),
             );
         }
@@ -870,6 +888,16 @@ fn density(counts: SegmentEdgeCounts) -> f64 {
     } else {
         counts.actual as f64 / counts.total as f64
     }
+}
+
+fn capacity_from_positions(positions: &[u64], index: usize, len: usize, end_slot: u64) -> u32 {
+    let start = positions[index];
+    let next = if index + 1 < len {
+        positions[index + 1]
+    } else {
+        end_slot
+    };
+    next.saturating_sub(start).min(u64::from(u32::MAX)) as u32
 }
 
 pub(super) enum MarkPriority {

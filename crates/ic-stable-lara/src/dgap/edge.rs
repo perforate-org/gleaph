@@ -8,7 +8,7 @@ pub mod span_meta;
 
 use crate::{
     GrowFailed, SegmentId, VertexId,
-    traits::{CsrEdge, CsrVertex},
+    traits::{CsrEdge, CsrVertex, LaraVertex},
 };
 use counts::{EdgePmaCountsStride, SegmentEdgeCounts, SegmentEdgeCountsStore};
 use edges::EdgeSlabStore;
@@ -272,7 +272,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, MC: Memory, ME: Memory, ML: Memory, MS: M
         vid: VertexId,
     ) -> Result<Vec<E>, &'static str>
     where
-        V: CsrVertex,
+        V: LaraVertex,
         A: VertexAccess<V>,
     {
         let edge_layout = self.edge_layout();
@@ -340,7 +340,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, MC: Memory, ME: Memory, ML: Memory, MS: M
         edge: E,
     ) -> Result<InsertLocation, &'static str>
     where
-        V: CsrVertex,
+        V: LaraVertex,
         A: VertexAccess<V>,
     {
         let edge_layout = self.edge_layout();
@@ -351,15 +351,23 @@ impl<E: CsrEdge + EdgePmaCountsStride, MC: Memory, ME: Memory, ML: Memory, MS: M
         }
         let v = vertices.get(vidx as u64);
         let loc = v.base_slot_start().saturating_add(u64::from(v.degree()));
-        let location = if self.have_space_on_slab(vertices, vidx, loc, edge_layout.elem_capacity) {
-            self.write_slot(loc, edge)
-                .map_err(|_| "write edge slot failed")?;
-            vertices.set(vidx as u64, &v.with_degree(v.degree() + 1));
-            InsertLocation::Slab
-        } else {
-            self.insert_into_log_with_layout(&edge_layout, &log_layout, vertices, vid, v, edge)?;
-            InsertLocation::Log
-        };
+        let location =
+            if self.have_space_on_slab(vertices, vidx, &v, loc, edge_layout.elem_capacity) {
+                self.write_slot(loc, edge)
+                    .map_err(|_| "write edge slot failed")?;
+                vertices.set(vidx as u64, &v.with_degree(v.degree() + 1));
+                InsertLocation::Slab
+            } else {
+                self.insert_into_log_with_layout(
+                    &edge_layout,
+                    &log_layout,
+                    vertices,
+                    vid,
+                    v,
+                    edge,
+                )?;
+                InsertLocation::Log
+            };
         self.edges
             .set_num_edges(edge_layout.num_edges.saturating_add(1));
         self.bump_counts_leaf_with_layout(&edge_layout, vid, 1, 0, 0)?;
@@ -441,13 +449,19 @@ impl<E: CsrEdge + EdgePmaCountsStride, MC: Memory, ME: Memory, ML: Memory, MS: M
         &self,
         vertices: &A,
         vidx: usize,
+        v: &V,
         loc: u64,
         elem_capacity: u64,
     ) -> bool
     where
-        V: CsrVertex,
+        V: LaraVertex,
         A: VertexAccess<V>,
     {
+        if v.span_capacity() > 0 {
+            return loc
+                < v.base_slot_start()
+                    .saturating_add(u64::from(v.span_capacity()));
+        }
         let current_leaf = (vidx as u32) / self.header().segment_size.max(1);
         if vidx + 1 < vertices.len() as usize
             && ((vidx + 1) as u32) / self.header().segment_size.max(1) == current_leaf
