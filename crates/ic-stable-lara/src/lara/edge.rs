@@ -1,3 +1,26 @@
+//! Edge storage for LARA.
+//!
+//! The edge subsystem combines five stable-memory structures:
+//!
+//! - segment edge counts, used by update/maintenance code to decide when a
+//!   segment is dense;
+//! - the contiguous edge slab containing clean adjacency prefixes;
+//! - per-segment overflow logs for inserts that cannot fit immediately on the
+//!   slab;
+//! - segment span metadata for locally relocated physical spans;
+//! - free span metadata for retired physical ranges.
+//!
+//! Clean neighbor scans read only the vertex row's `base_slot_start` and
+//! `degree`, then walk the edge slab. The log, counts, span metadata, and free
+//! span index are update-side structures. They may be read while inserting,
+//! folding logs, resizing, or relocating, but they are not part of the clean
+//! scan contract.
+//!
+//! Insertions first try to append at `base_slot_start + degree`. The append is
+//! allowed only when it fits in the vertex's owned `capacity`; otherwise the
+//! edge is written to the segment log and later folded by maintenance or
+//! relocation.
+
 pub mod counts;
 mod edges;
 pub mod free_span;

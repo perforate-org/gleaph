@@ -3,6 +3,16 @@
 //! This is the low-update-cost production candidate for free span reuse:
 //! `(len, start_slot) -> ()`. It supports best-fit allocation without scanning,
 //! but intentionally does not coalesce on release.
+//!
+//! A free span is a retired physical edge range. It becomes reusable only after
+//! relocation has published the new edge slots, vertex rows, segment span
+//! metadata, and counts. Free spans must not overlap any vertex-owned span
+//! `[base_slot_start, base_slot_start + capacity)`, and clean scans must never
+//! read this index.
+//!
+//! Allocation is best-fit by length. When a free span is larger than requested,
+//! the allocated prefix is returned and the remainder is inserted back into the
+//! index. If no suitable span exists, callers grow the edge slab instead.
 
 use std::{
     borrow::Cow,

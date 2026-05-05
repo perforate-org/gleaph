@@ -2,6 +2,18 @@
 //!
 //! The default row stores a direct edge base, live degree, owned span capacity,
 //! and per-segment log head (`-1` when the whole neighborhood is on the slab).
+//! `base_slot_start` and `degree` are the only fields required by clean scans.
+//! `capacity` is update-side ownership metadata: inserts and relocation use it
+//! to determine whether the current slab span can absorb more edges.
+//!
+//! The default row invariant is:
+//!
+//! ```text
+//! degree <= capacity
+//! [base_slot_start, base_slot_start + degree)
+//!     is contained in
+//! [base_slot_start, base_slot_start + capacity)
+//! ```
 //!
 //! # V1 layout
 //!

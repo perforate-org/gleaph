@@ -1,3 +1,31 @@
+//! Stable-memory implementation of LARA, the Localized Adjacency Relocation
+//! Array.
+//!
+//! LARA stores adjacency lists in a CSR-style slab while allowing local
+//! relocation of dense physical spans. The key design boundary is that clean
+//! scans remain direct:
+//!
+//! ```text
+//! vertex_id -> vertex row -> edge slots [base_slot_start, base_slot_start + degree)
+//! ```
+//!
+//! A clean scan is authoritative only over `base_slot_start` and `degree`.
+//! It must not consult vertex `capacity`, segment span metadata, or the free
+//! span manager. Update and maintenance paths may use all three vertex fields:
+//! `base_slot_start`, `degree`, and `capacity`.
+//!
+//! `capacity` is the number of slab slots owned by a vertex. The live prefix
+//! `[base_slot_start, base_slot_start + degree)` must stay contained in the
+//! owned span `[base_slot_start, base_slot_start + capacity)`. Relocation
+//! rewrites bases and capacities together, publishes segment span metadata, and
+//! releases retired physical spans only after the query-visible state has been
+//! committed.
+//!
+//! The main external reference for the dynamic adjacency idea is
+//! [DGAP](https://github.com/DIR-LAB/DGAP), but this crate owns a separate
+//! persisted layout and public API centered on LARA's explicit capacity and
+//! local relocation contracts.
+
 #![feature(specialization)]
 
 use derive_more::{Display, From, Into};

@@ -1,3 +1,23 @@
+//! Core LARA graph orchestration.
+//!
+//! [`LaraGraph`] owns the vertex column, edge slab, per-segment overflow logs,
+//! segment counts, segment span metadata, and free span manager. The graph is
+//! deliberately split into two contracts:
+//!
+//! - **Scan contract:** read one vertex row, then read edge slots
+//!   `[base_slot_start, base_slot_start + degree)`. Scan code must not branch
+//!   on `capacity` or read relocation/free-span metadata.
+//! - **Update contract:** insert, resize, rebalance, relocate, and maintenance
+//!   code may read and rewrite `base_slot_start`, `degree`, and `capacity`.
+//!   `capacity` is authoritative for whether a write fits inside the currently
+//!   owned slab span.
+//!
+//! Segment relocation moves a physical segment span to a target span, rewrites
+//! all affected vertex bases/capacities, updates segment counts and span
+//! metadata, clears folded logs, and only then releases the old physical span to
+//! the free span manager. This order keeps queries pointed at either the old
+//! committed layout or the new committed layout, never at reusable free space.
+
 pub mod edge;
 pub mod maintenance;
 pub mod vertex;

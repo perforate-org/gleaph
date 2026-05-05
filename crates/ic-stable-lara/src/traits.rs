@@ -25,10 +25,9 @@ pub trait CsrVertex: Storable + Copy {
 
 /// LARA vertex extension for direct span ownership.
 ///
-/// LARA algorithms should use this trait when they need to reason about the
-/// writable capacity owned by a vertex. Keeping it separate from [`CsrVertex`]
-/// lets copied LARA-style code keep compiling while LARA-specific relocation
-/// code opts into the additional contract.
+/// Clean scans should remain valid with only [`CsrVertex::base_slot_start`] and
+/// [`CsrVertex::degree`]. Update and maintenance algorithms use this trait when
+/// they need to reason about the writable slab capacity owned by a vertex.
 pub trait LaraVertex: CsrVertex {
     fn span_capacity(&self) -> u32;
     fn with_span_capacity(self, capacity: u32) -> Self;
