@@ -42,7 +42,11 @@ pub mod lara;
 mod traits;
 mod types;
 
-pub use bidirectional::{BidirectionalLara, BidirectionalLaraError, BidirectionalLaraGraph};
+pub use bidirectional::{
+    BidirectionalLara, BidirectionalLaraError, BidirectionalLaraGraph,
+    BidirectionalMaintenanceReport, DeferredBidirectionalLara, DeferredBidirectionalLaraError,
+    DeferredBidirectionalLaraGraph,
+};
 pub use lara::{
     LaraGraph,
     edge::{
@@ -54,7 +58,10 @@ pub use lara::{
         },
         span_meta::{SegmentSpanMeta, SegmentSpanMetaStore},
     },
-    maintenance::{DeferredConfig, DeferredLaraGraph, MaintenanceBudget, MaintenanceReport},
+    maintenance::{
+        DeferredConfig, DeferredLaraGraph, MaintenanceBudget, MaintenanceReport,
+        MaintenanceWorkReport,
+    },
     vertex::{InitError as VertexInitError, Vertex, VertexStore},
 };
 pub use traits::*;

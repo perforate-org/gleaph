@@ -245,13 +245,18 @@ pub struct MaintenanceBudget {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct MaintenanceReport {
+pub struct MaintenanceWorkReport {
     pub processed_segments: u32,
     pub rebalanced_segments: u32,
     pub resized: bool,
+    pub remaining_queue_len: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MaintenanceReport {
+    pub work: MaintenanceWorkReport,
     pub instructions_used: u64,
     pub instruction_budget_exhausted: bool,
-    pub remaining_queue_len: u64,
 }
 
 #[inline]
@@ -465,6 +470,31 @@ where
         Ok(())
     }
 
+    pub fn maintenance_step(&self) -> Result<Option<MaintenanceWorkReport>, DeferredError> {
+        let Some(segment) = self
+            .maintenance
+            .pop_next()
+            .map_err(DeferredError::Maintenance)?
+        else {
+            return Ok(None);
+        };
+
+        let mut report = MaintenanceWorkReport {
+            processed_segments: 1,
+            ..MaintenanceWorkReport::default()
+        };
+        let before_capacity = self.graph.edges.header().elem_capacity;
+        if self.graph.rebalance_maintenance_segment(segment) {
+            self.graph
+                .rebalance_dirty_segment(segment)
+                .map_err(DeferredError::Grow)?;
+            report.rebalanced_segments = 1;
+            report.resized = self.graph.edges.header().elem_capacity != before_capacity;
+        }
+        report.remaining_queue_len = self.maintenance.len();
+        Ok(Some(report))
+    }
+
     pub fn maintenance(
         &self,
         budget: MaintenanceBudget,
@@ -473,7 +503,7 @@ where
 
         while budget
             .max_segments
-            .is_none_or(|max_segments| report.processed_segments < max_segments)
+            .is_none_or(|max_segments| report.work.processed_segments < max_segments)
         {
             report.instructions_used = current_instruction_counter();
             if budget.max_instructions > 0 && report.instructions_used >= budget.max_instructions {
@@ -481,29 +511,18 @@ where
                 break;
             }
 
-            let Some(segment) = self
-                .maintenance
-                .pop_next()
-                .map_err(DeferredError::Maintenance)?
-            else {
+            let Some(step) = self.maintenance_step()? else {
                 break;
             };
-            report.processed_segments += 1;
-
-            let before_capacity = self.graph.edges.header().elem_capacity;
-            if self.graph.rebalance_maintenance_segment(segment) {
-                self.graph
-                    .rebalance_dirty_segment(segment)
-                    .map_err(DeferredError::Grow)?;
-                report.rebalanced_segments += 1;
-                report.resized |= self.graph.edges.header().elem_capacity != before_capacity;
-            }
+            report.work.processed_segments += step.processed_segments;
+            report.work.rebalanced_segments += step.rebalanced_segments;
+            report.work.resized |= step.resized;
         }
 
         report.instructions_used = current_instruction_counter();
         report.instruction_budget_exhausted =
             budget.max_instructions > 0 && report.instructions_used >= budget.max_instructions;
-        report.remaining_queue_len = self.maintenance.len();
+        report.work.remaining_queue_len = self.maintenance.len();
         Ok(report)
     }
 }
@@ -546,6 +565,58 @@ mod tests {
     }
 
     #[test]
+    fn maintenance_step_returns_none_on_empty_queue() {
+        let graph = deferred_test_graph(8, 2, 2, &[0, 2, 4, 6]);
+
+        assert_eq!(graph.maintenance_step().unwrap(), None);
+    }
+
+    #[test]
+    fn maintenance_step_consumes_exactly_one_queue_item() {
+        let graph = deferred_test_graph(8, 2, 2, &[0, 2, 4, 6]);
+        graph
+            .maintenance_queue()
+            .mark_dirty(SegmentId::from(0))
+            .unwrap();
+        graph
+            .maintenance_queue()
+            .mark_dirty(SegmentId::from(1))
+            .unwrap();
+
+        let report = graph.maintenance_step().unwrap().unwrap();
+
+        assert_eq!(report.processed_segments, 1);
+        assert_eq!(report.remaining_queue_len, 1);
+        assert_eq!(graph.maintenance_queue().len(), 1);
+        assert!(!graph.maintenance_queue().is_dirty(SegmentId::from(0)));
+        assert!(graph.maintenance_queue().is_dirty(SegmentId::from(1)));
+    }
+
+    #[test]
+    fn maintenance_loop_preserves_existing_segment_cap_behavior() {
+        let graph = deferred_test_graph(8, 2, 2, &[0, 2, 4, 6]);
+        graph
+            .maintenance_queue()
+            .mark_dirty(SegmentId::from(0))
+            .unwrap();
+        graph
+            .maintenance_queue()
+            .mark_dirty(SegmentId::from(1))
+            .unwrap();
+
+        let report = graph
+            .maintenance(MaintenanceBudget {
+                max_instructions: 0,
+                max_segments: Some(1),
+            })
+            .unwrap();
+
+        assert_eq!(report.work.processed_segments, 1);
+        assert_eq!(report.work.remaining_queue_len, 1);
+        assert_eq!(graph.maintenance_queue().len(), 1);
+    }
+
+    #[test]
     fn deferred_insert_keeps_reads_correct_until_maintenance_folds_log() {
         let graph = deferred_test_graph(8, 2, 2, &[0, 2, 4, 6]);
 
@@ -569,8 +640,8 @@ mod tests {
             })
             .unwrap();
 
-        assert_eq!(report.processed_segments, 1);
-        assert_eq!(report.rebalanced_segments, 1);
+        assert_eq!(report.work.processed_segments, 1);
+        assert_eq!(report.work.rebalanced_segments, 1);
         assert_eq!(graph.graph().vertices().get(0).log_head, -1);
         assert_eq!(
             graph.collect_out_edges(VertexId::from(0)).unwrap(),
@@ -599,8 +670,8 @@ mod tests {
             })
             .unwrap();
 
-        assert_eq!(report.processed_segments, 1);
-        assert_eq!(report.rebalanced_segments, 1);
+        assert_eq!(report.work.processed_segments, 1);
+        assert_eq!(report.work.rebalanced_segments, 1);
         assert!(!graph.maintenance_queue().is_dirty(SegmentId::from(0)));
         assert!(graph.maintenance_queue().is_dirty(SegmentId::from(1)));
         assert_eq!(graph.maintenance_queue().len(), 1);

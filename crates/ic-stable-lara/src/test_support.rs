@@ -315,6 +315,27 @@ pub(crate) type TestBidirectionalLaraGraph<E> = BidirectionalLaraGraph<
     VectorMemory,
 >;
 
+pub(crate) type TestDeferredBidirectionalLaraGraph<E> = crate::DeferredBidirectionalLaraGraph<
+    E,
+    Vertex,
+    VectorMemory,
+    VectorMemory,
+    VectorMemory,
+    VectorMemory,
+    VectorMemory,
+    VectorMemory,
+    VectorMemory,
+    VectorMemory,
+    VectorMemory,
+    VectorMemory,
+    VectorMemory,
+    VectorMemory,
+    VectorMemory,
+    VectorMemory,
+    VectorMemory,
+    VectorMemory,
+>;
+
 pub(crate) fn test_graph(
     elem_capacity: u64,
     segment_count: u32,
@@ -375,6 +396,73 @@ where
         32,
         4,
         4,
+    )
+    .unwrap();
+    for &base_slot_start in starts {
+        graph
+            .push_vertex(Vertex {
+                base_slot_start,
+                degree: 0,
+                capacity: 0,
+                log_head: -1,
+            })
+            .unwrap();
+    }
+    graph
+}
+
+pub(crate) fn deferred_bidirectional_test_graph<E>(
+    elem_capacity: u64,
+    segment_count: u32,
+    segment_size: u32,
+    starts: &[u64],
+) -> TestDeferredBidirectionalLaraGraph<E>
+where
+    E: CsrEdge + lara::edge::counts::EdgePmaCountsStride,
+{
+    let graph = crate::DeferredBidirectionalLaraGraph::<
+        E,
+        Vertex,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+    >::new_with_config(
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        elem_capacity,
+        segment_count,
+        segment_size,
+        crate::DeferredConfig {
+            leaf_dirty_density: 0.0,
+            log_urgent_ratio: 0.80,
+        },
     )
     .unwrap();
     for &base_slot_start in starts {

@@ -4,6 +4,8 @@
 //! module composes two such indexes: a forward graph for out-neighbors and a
 //! reverse graph for the transpose.
 
+pub mod deferred;
+
 use crate::{
     GrowFailed, LaraGraph, VertexCount, VertexId,
     lara::{InitError, edge::counts::EdgePmaCountsStride},
@@ -12,7 +14,12 @@ use crate::{
 use ic_stable_structures::Memory;
 use std::fmt;
 
-trait UndirectedEdgeFlag {
+pub use deferred::{
+    BidirectionalMaintenanceReport, DeferredBidirectionalLara, DeferredBidirectionalLaraError,
+    DeferredBidirectionalLaraGraph,
+};
+
+pub(crate) trait UndirectedEdgeFlag {
     fn marked_undirected(&self) -> bool;
 }
 
