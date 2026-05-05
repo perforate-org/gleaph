@@ -7,7 +7,7 @@
 //!
 //! ```text
 //! -------------------------------------------------- <- Address 0
-//! Magic "DLG"                           ↕ 3 bytes
+//! Magic "LLG"                           ↕ 3 bytes
 //! --------------------------------------------------
 //! Layout version                        ↕ 1 byte
 //! --------------------------------------------------
@@ -54,7 +54,7 @@ use crate::{
 use ic_stable_structures::Memory;
 use std::{fmt, marker::PhantomData};
 
-pub const MAGIC: [u8; 3] = *b"DLG";
+pub const MAGIC: [u8; 3] = *b"LLG";
 pub const LAYOUT_VERSION: u8 = 1;
 const HEADER_SIZE: u64 = 32;
 const INLINE_LOG_ENTRY_BYTES: usize = 128;

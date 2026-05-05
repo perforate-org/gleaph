@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! ---------------------------------------- <- Address 0
-//! Magic "DSC"             ↕ 3 bytes
+//! Magic "LSC"             ↕ 3 bytes
 //! ----------------------------------------
 //! Layout version          ↕ 1 byte
 //! ----------------------------------------
@@ -34,7 +34,7 @@ use crate::{
 use ic_stable_structures::Memory;
 use std::{convert::TryInto, fmt, marker::PhantomData};
 
-pub const MAGIC: [u8; 3] = *b"DSC";
+pub const MAGIC: [u8; 3] = *b"LSC";
 
 const LAYOUT_VERSION: u8 = 1;
 /// The offset where the user data begins.

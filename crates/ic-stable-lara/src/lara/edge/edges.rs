@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! -------------------------------------------------- <- Address 0
-//! Magic "DEG"                           ↕ 3 bytes
+//! Magic "LEG"                           ↕ 3 bytes
 //! --------------------------------------------------
 //! Layout version                        ↕ 1 byte
 //! --------------------------------------------------
@@ -42,7 +42,7 @@ use crate::{
 use ic_stable_structures::Memory;
 use std::{fmt, marker::PhantomData};
 
-pub const MAGIC: [u8; 3] = *b"DEG";
+pub const MAGIC: [u8; 3] = *b"LEG";
 pub const LAYOUT_VERSION: u8 = 1;
 pub const HEADER_SIZE: u64 = 64;
 

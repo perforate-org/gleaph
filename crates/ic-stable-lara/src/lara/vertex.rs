@@ -19,7 +19,7 @@
 //!
 //! ```text
 //! -------------------------------------------------- <- Address 0
-//! Magic "DVX"                           ↕ 3 bytes
+//! Magic "LVX"                           ↕ 3 bytes
 //! --------------------------------------------------
 //! Layout version                        ↕ 1 byte
 //! --------------------------------------------------
@@ -49,7 +49,7 @@ use crate::{
 use ic_stable_structures::{Memory, Storable, storable::Bound};
 use std::{borrow::Cow, fmt};
 
-pub const MAGIC: [u8; 3] = *b"DVX";
+pub const MAGIC: [u8; 3] = *b"LVX";
 const LAYOUT_VERSION: u8 = 1;
 const DATA_OFFSET: u64 = 64;
 const LEN_OFFSET: u64 = 4;
