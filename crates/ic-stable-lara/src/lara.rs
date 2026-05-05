@@ -137,6 +137,7 @@ where
     MS: Memory,
     MF: Memory,
 {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         vertices: MV,
         counts: MC,

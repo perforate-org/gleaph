@@ -127,6 +127,7 @@ pub struct EdgeStore<E: CsrEdge, MC: Memory, ME: Memory, ML: Memory, MS: Memory,
 impl<E: CsrEdge + EdgePmaCountsStride, MC: Memory, ME: Memory, ML: Memory, MS: Memory, MF: Memory>
     EdgeStore<E, MC, ME, ML, MS, MF>
 {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         counts: MC,
         edges: ME,

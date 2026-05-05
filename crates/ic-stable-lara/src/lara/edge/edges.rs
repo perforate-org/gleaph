@@ -207,10 +207,6 @@ impl<E: CsrEdge, M: Memory> EdgeSlabStore<E, M> {
         write_u64(&self.memory, Address::from(ELEM_CAPACITY_OFFSET), n);
         Ok(())
     }
-    pub fn set_slab_occupied_tail(&self, n: u64) {
-        write_u64(&self.memory, Address::from(SLAB_OCCUPIED_TAIL_OFFSET), n);
-    }
-
     pub fn read_slot(&self, slot: u64, out: &mut [u8]) {
         self.memory.read(slot_offset::<E>(slot), out);
     }

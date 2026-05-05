@@ -1,7 +1,5 @@
 use core::ops::{Add, AddAssign, Div, Mul, Rem, Sub, SubAssign};
 
-pub const NULL: Address = Address(0);
-
 #[repr(C, packed)]
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd, Eq)]
 pub struct Address(u64);
@@ -15,11 +13,6 @@ impl From<u64> for Address {
 impl Address {
     pub fn get(&self) -> u64 {
         self.0
-    }
-
-    pub fn size() -> Bytes {
-        assert_eq!(core::mem::size_of::<Address>(), 8);
-        Bytes::from(8u64)
     }
 }
 
@@ -140,12 +133,3 @@ impl SubAssign<Bytes> for Bytes {
     }
 }
 
-impl Bytes {
-    pub const fn new(val: u64) -> Self {
-        Self(val)
-    }
-
-    pub fn get(&self) -> u64 {
-        self.0
-    }
-}

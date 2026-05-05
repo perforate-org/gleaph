@@ -298,6 +298,7 @@ where
     MMQ: Memory,
     MDS: Memory,
 {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         vertices: MV,
         counts: MC,
@@ -327,6 +328,7 @@ where
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_config(
         vertices: MV,
         counts: MC,
@@ -361,6 +363,7 @@ where
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn init(
         vertices: MV,
         counts: MC,
@@ -384,6 +387,7 @@ where
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn init_with_config(
         vertices: MV,
         counts: MC,

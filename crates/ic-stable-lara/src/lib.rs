@@ -26,6 +26,7 @@
 //! persisted layout and public API centered on LARA's explicit capacity and
 //! local relocation contracts.
 
+#![allow(incomplete_features)]
 #![feature(specialization)]
 
 use derive_more::{Display, From, Into};
@@ -111,23 +112,6 @@ impl Storable for SegmentId {
 pub struct VertexCount(u64);
 
 const WASM_PAGE_SIZE: u64 = 65536;
-
-/// Copies `count` bytes of data starting from `addr` out of the stable memory into `dst`.
-///
-/// Callers are allowed to pass vectors in any state (e.g. empty vectors).
-/// After the method returns, `dst.len() == count`.
-/// This method is an alternative to `read` which does not require initializing a buffer and may
-/// therefore be faster.
-#[inline]
-fn read_to_vec<M: Memory>(m: &M, addr: Address, dst: &mut std::vec::Vec<u8>, count: usize) {
-    dst.clear();
-    dst.reserve_exact(count);
-    unsafe {
-        m.read_unsafe(addr.get(), dst.as_mut_ptr(), count);
-        // SAFETY: read_unsafe guarantees to initialize the first `count` bytes
-        dst.set_len(count);
-    }
-}
 
 /// A helper function that reads a single 32bit integer encoded as
 /// little-endian from the specified memory at the specified offset.
@@ -529,6 +513,23 @@ mod tests {
         Rc::new(RefCell::new(Vec::new()))
     }
 
+    type TestBidirectionalLaraGraph<E> = BidirectionalLaraGraph<
+        E,
+        Vertex,
+        VectorMemory,
+        VectorMemory,
+        VectorMemory,
+        VectorMemory,
+        VectorMemory,
+        VectorMemory,
+        VectorMemory,
+        VectorMemory,
+        VectorMemory,
+        VectorMemory,
+        VectorMemory,
+        VectorMemory,
+    >;
+
     fn test_graph(
         elem_capacity: u64,
         segment_count: u32,
@@ -569,24 +570,7 @@ mod tests {
         graph
     }
 
-    fn bidirectional_test_graph<E>(
-        starts: &[u64],
-    ) -> BidirectionalLaraGraph<
-        E,
-        Vertex,
-        VectorMemory,
-        VectorMemory,
-        VectorMemory,
-        VectorMemory,
-        VectorMemory,
-        VectorMemory,
-        VectorMemory,
-        VectorMemory,
-        VectorMemory,
-        VectorMemory,
-        VectorMemory,
-        VectorMemory,
-    >
+    fn bidirectional_test_graph<E>(starts: &[u64]) -> TestBidirectionalLaraGraph<E>
     where
         E: CsrEdge + lara::edge::counts::EdgePmaCountsStride,
     {

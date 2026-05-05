@@ -33,6 +33,11 @@ impl LenStartKey {
     }
 
     #[inline]
+    pub fn is_empty(self) -> bool {
+        self.len() == 0
+    }
+
+    #[inline]
     pub fn start_slot(self) -> u64 {
         (self.0 & u128::from(u64::MAX)) as u64
     }
