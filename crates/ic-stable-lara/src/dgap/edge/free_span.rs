@@ -1,26 +1,16 @@
-//! Stable LARA free span store.
+//! Stable LARA free span index ordered by span length.
 //!
-//! Free spans are update/maintenance metadata. Clean query scans must not read
-//! this store.
+//! This is the low-update-cost production candidate for free span reuse:
+//! `(len, start_slot) -> ()`. It supports best-fit allocation without scanning,
+//! but intentionally does not coalesce on release.
 
-use crate::{GrowFailed, read_u64, safe_write, types::Address, write_u64};
-use ic_stable_structures::Memory;
-use std::fmt;
+use std::{
+    borrow::Cow,
+    cell::RefCell,
+    ops::Bound::{Included, Unbounded},
+};
 
-pub const MAGIC: [u8; 3] = *b"LFS";
-const LAYOUT_VERSION: u8 = 1;
-const DATA_OFFSET: u64 = 32;
-const LEN_OFFSET: u64 = 4;
-const STRIDE_OFFSET: u64 = 12;
-const ENTRY_SIZE: u64 = 16;
-
-#[derive(Debug)]
-struct HeaderV1 {
-    magic: [u8; 3],
-    version: u8,
-    len: u64,
-    stride: u32,
-}
+use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound as StorableBound};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FreeSpan {
@@ -28,149 +18,123 @@ pub struct FreeSpan {
     pub len: u64,
 }
 
-#[derive(PartialEq, Eq, Debug)]
-pub enum InitError {
-    BadMagic { actual: [u8; 3] },
-    IncompatibleVersion(u8),
-    StrideMismatch { expected: u32, actual: u32 },
-    OutOfMemory,
-}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FreeSpanKey(u128);
 
-impl fmt::Display for InitError {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::BadMagic { actual } => {
-                write!(fmt, "bad free span magic {actual:?}, expected {MAGIC:?}")
-            }
-            Self::IncompatibleVersion(version) => {
-                write!(fmt, "unsupported free span layout version {version}")
-            }
-            Self::StrideMismatch { expected, actual } => {
-                write!(
-                    fmt,
-                    "free span stride mismatch: expected {expected}, got {actual}"
-                )
-            }
-            Self::OutOfMemory => write!(fmt, "failed to allocate free span metadata"),
-        }
-    }
-}
-
-impl std::error::Error for InitError {}
-
-#[derive(Clone, Debug)]
-pub struct FreeSpanStore<M: Memory> {
-    memory: M,
-}
-
-impl<M: Memory> FreeSpanStore<M> {
-    pub fn new(memory: M) -> Result<Self, GrowFailed> {
-        let header = HeaderV1 {
-            magic: MAGIC,
-            version: LAYOUT_VERSION,
-            len: 0,
-            stride: ENTRY_SIZE as u32,
-        };
-        Self::write_header(&header, &memory)?;
-        Ok(Self { memory })
-    }
-
-    pub fn init(memory: M) -> Result<Self, InitError> {
-        if memory.size() == 0 {
-            return Self::new(memory).map_err(|_| InitError::OutOfMemory);
-        }
-        let header = Self::read_header(&memory);
-        if header.magic != MAGIC {
-            return Err(InitError::BadMagic {
-                actual: header.magic,
-            });
-        }
-        if header.version != LAYOUT_VERSION {
-            return Err(InitError::IncompatibleVersion(header.version));
-        }
-        if header.stride != ENTRY_SIZE as u32 {
-            return Err(InitError::StrideMismatch {
-                expected: ENTRY_SIZE as u32,
-                actual: header.stride,
-            });
-        }
-        Ok(Self { memory })
-    }
-
-    pub fn into_memory(self) -> M {
-        self.memory
-    }
-
-    pub fn len(&self) -> u64 {
-        read_u64(&self.memory, Address::from(LEN_OFFSET))
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    pub fn get(&self, index: u64) -> FreeSpan {
-        assert!(index < self.len());
-        Self::read_entry(&self.memory, index)
-    }
-
-    pub fn push(&self, item: FreeSpan) -> Result<(), GrowFailed> {
-        let len = self.len();
-        let new_len = len.checked_add(1).expect("free span length overflow");
-        let mut bytes = [0u8; ENTRY_SIZE as usize];
-        bytes[0..8].copy_from_slice(&item.start_slot.to_le_bytes());
-        bytes[8..16].copy_from_slice(&item.len.to_le_bytes());
-        safe_write(&self.memory, Self::entry_offset(len), &bytes)?;
-        self.set_len(new_len);
-        Ok(())
-    }
-
-    pub fn pop(&self) -> Option<FreeSpan> {
-        let len = self.len();
-        if len == 0 {
-            return None;
-        }
-        let last = len - 1;
-        let item = Self::read_entry(&self.memory, last);
-        self.set_len(last);
-        Some(item)
-    }
-
-    fn set_len(&self, new_len: u64) {
-        write_u64(&self.memory, Address::from(LEN_OFFSET), new_len);
+impl FreeSpanKey {
+    #[inline]
+    pub fn new(len: u64, start_slot: u64) -> Self {
+        Self((u128::from(len) << 64) | u128::from(start_slot))
     }
 
     #[inline]
-    fn entry_offset(index: u64) -> u64 {
-        DATA_OFFSET + ENTRY_SIZE * index
+    pub fn len(self) -> u64 {
+        (self.0 >> 64) as u64
     }
 
-    fn read_entry(memory: &M, index: u64) -> FreeSpan {
-        let offset = Self::entry_offset(index);
+    #[inline]
+    pub fn is_empty(self) -> bool {
+        self.len() == 0
+    }
+
+    #[inline]
+    pub fn start_slot(self) -> u64 {
+        (self.0 & u128::from(u64::MAX)) as u64
+    }
+
+    #[inline]
+    pub fn span(self) -> FreeSpan {
         FreeSpan {
-            start_slot: read_u64(memory, Address::from(offset)),
-            len: read_u64(memory, Address::from(offset + 8)),
+            start_slot: self.start_slot(),
+            len: self.len(),
+        }
+    }
+}
+
+impl Storable for FreeSpanKey {
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        self.0.to_bytes()
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        self.0.into_bytes()
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Self(u128::from_bytes(bytes))
+    }
+
+    const BOUND: StorableBound = u128::BOUND;
+}
+
+pub struct FreeSpanStore<M: Memory> {
+    by_len: RefCell<StableBTreeMap<FreeSpanKey, (), M>>,
+}
+
+impl<M: Memory> FreeSpanStore<M> {
+    pub fn init(memory: M) -> Self {
+        Self {
+            by_len: RefCell::new(StableBTreeMap::init(memory)),
         }
     }
 
-    fn write_header(header: &HeaderV1, memory: &M) -> Result<(), GrowFailed> {
-        safe_write(memory, 0, &header.magic)?;
-        memory.write(3, &[header.version; 1]);
-        write_u64(memory, Address::from(LEN_OFFSET), header.len);
-        crate::write_u32(memory, Address::from(STRIDE_OFFSET), header.stride);
-        Ok(())
+    pub fn into_memory(self) -> M {
+        self.by_len.into_inner().into_memory()
     }
 
-    fn read_header(memory: &M) -> HeaderV1 {
-        let mut magic = [0u8; 3];
-        let mut version = [0u8; 1];
-        memory.read(0, &mut magic);
-        memory.read(3, &mut version);
-        HeaderV1 {
-            magic,
-            version: version[0],
-            len: read_u64(memory, Address::from(LEN_OFFSET)),
-            stride: crate::read_u32(memory, Address::from(STRIDE_OFFSET)),
+    pub fn len(&self) -> u64 {
+        self.by_len.borrow().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.by_len.borrow().is_empty()
+    }
+
+    pub fn release(&self, span: FreeSpan) {
+        if span.len == 0 {
+            return;
         }
+        let previous = self
+            .by_len
+            .borrow_mut()
+            .insert(FreeSpanKey::new(span.len, span.start_slot), ());
+        debug_assert!(previous.is_none());
+    }
+
+    pub fn release_span(&self, start_slot: u64, len: u64) {
+        self.release(FreeSpan { start_slot, len });
+    }
+
+    pub fn take_best_fit(&self, min_len: u64) -> Option<FreeSpan> {
+        let span = self.take_best_fit_whole(min_len)?;
+        let remaining = span.len - min_len;
+        if remaining > 0 {
+            self.release(FreeSpan {
+                start_slot: span.start_slot + min_len,
+                len: remaining,
+            });
+        }
+        Some(FreeSpan {
+            start_slot: span.start_slot,
+            len: min_len,
+        })
+    }
+
+    pub fn take_best_fit_whole(&self, min_len: u64) -> Option<FreeSpan> {
+        let span = self.peek_best_fit(min_len)?;
+        self.by_len
+            .borrow_mut()
+            .remove(&FreeSpanKey::new(span.len, span.start_slot));
+        Some(span)
+    }
+
+    pub fn peek_best_fit(&self, min_len: u64) -> Option<FreeSpan> {
+        if min_len == 0 {
+            return None;
+        }
+        let lower = FreeSpanKey::new(min_len, 0);
+        let by_len = self.by_len.borrow();
+        let entry = by_len.range((Included(lower), Unbounded)).next()?;
+        Some(entry.key().span())
     }
 }

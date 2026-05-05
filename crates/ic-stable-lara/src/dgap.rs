@@ -90,7 +90,6 @@ impl fmt::Display for InitError {
 
 impl std::error::Error for InitError {}
 
-#[derive(Clone, Debug)]
 pub struct Dgap<E, V, MV, MC, ME, ML, MS, MF>
 where
     E: CsrEdge + EdgePmaCountsStride,

@@ -14,7 +14,11 @@ mod types;
 
 pub use dgap::edge::{
     EdgeHeaderV1, EdgeStore, InitError as EdgeInitError, LogHeaderV1,
-    free_span::{FreeSpan, FreeSpanStore},
+    free_span::{FreeSpan, FreeSpanKey, FreeSpanStore},
+    free_span_array::FreeSpanArrayStore,
+    free_span_dual_index::{
+        FreeSpanDualIndexError, FreeSpanDualIndexStore, LenStartKey, SpanLen, StartKey,
+    },
     span_meta::{SegmentSpanMeta, SegmentSpanMetaStore},
 };
 pub use dgap::vertex::{InitError as VertexInitError, Vertex, VertexStore};
@@ -400,9 +404,76 @@ mod tests {
     }
 
     #[test]
-    fn free_span_store_reopens_and_pops_lifo() {
+    fn free_span_array_store_take_best_fit_prefers_smallest_len() {
         let memory = vector_memory();
-        let store = FreeSpanStore::new(memory.clone()).unwrap();
+        let store = FreeSpanArrayStore::new(memory).unwrap();
+        store
+            .push(FreeSpan {
+                start_slot: 0,
+                len: 100,
+            })
+            .unwrap();
+        store
+            .push(FreeSpan {
+                start_slot: 1000,
+                len: 50,
+            })
+            .unwrap();
+        store
+            .push(FreeSpan {
+                start_slot: 2000,
+                len: 80,
+            })
+            .unwrap();
+        let got = store.take_best_fit(45).unwrap().unwrap();
+        assert_eq!(
+            got,
+            FreeSpan {
+                start_slot: 1000,
+                len: 50
+            }
+        );
+        assert_eq!(store.len(), 2);
+    }
+
+    #[test]
+    fn free_span_array_store_release_coalescing_linear_merges_neighbors() {
+        let memory = vector_memory();
+        let store = FreeSpanArrayStore::new(memory).unwrap();
+        store
+            .push(FreeSpan {
+                start_slot: 100,
+                len: 20,
+            })
+            .unwrap();
+        store
+            .push(FreeSpan {
+                start_slot: 140,
+                len: 10,
+            })
+            .unwrap();
+
+        store
+            .release_coalescing_linear(FreeSpan {
+                start_slot: 120,
+                len: 20,
+            })
+            .unwrap();
+
+        assert_eq!(store.len(), 1);
+        assert_eq!(
+            store.get(0),
+            FreeSpan {
+                start_slot: 100,
+                len: 50,
+            }
+        );
+    }
+
+    #[test]
+    fn free_span_array_store_reopens_and_pops_lifo() {
+        let memory = vector_memory();
+        let store = FreeSpanArrayStore::new(memory.clone()).unwrap();
         store
             .push(FreeSpan {
                 start_slot: 16,
@@ -416,7 +487,7 @@ mod tests {
             })
             .unwrap();
 
-        let reopened = FreeSpanStore::init(memory).unwrap();
+        let reopened = FreeSpanArrayStore::init(memory).unwrap();
         assert_eq!(reopened.len(), 2);
         assert_eq!(
             reopened.pop(),
@@ -433,6 +504,144 @@ mod tests {
             })
         );
         assert_eq!(reopened.pop(), None);
+    }
+
+    #[test]
+    fn free_span_dual_index_release_coalesces_neighbors() {
+        let mut store = FreeSpanDualIndexStore::init(vector_memory(), vector_memory());
+
+        store.release_span(100, 20).unwrap();
+        store.release_span(140, 10).unwrap();
+        store.release_span(120, 20).unwrap();
+
+        assert_eq!(store.len(), 1);
+        assert_eq!(
+            store.get_by_start(100),
+            Some(FreeSpan {
+                start_slot: 100,
+                len: 50
+            })
+        );
+    }
+
+    #[test]
+    fn free_span_dual_index_take_best_fit_splits_remainder() {
+        let mut store = FreeSpanDualIndexStore::init(vector_memory(), vector_memory());
+        store.release_span(1000, 80).unwrap();
+        store.release_span(2000, 32).unwrap();
+        store.release_span(3000, 128).unwrap();
+
+        assert_eq!(
+            store.take_best_fit(40).unwrap(),
+            Some(FreeSpan {
+                start_slot: 1000,
+                len: 40
+            })
+        );
+        assert_eq!(
+            store.get_by_start(1040),
+            Some(FreeSpan {
+                start_slot: 1040,
+                len: 40
+            })
+        );
+        assert_eq!(store.get_by_start(1000), None);
+    }
+
+    #[test]
+    fn free_span_store_take_best_fit_splits_remainder() {
+        let store = FreeSpanStore::init(vector_memory());
+        store.release_span(1000, 80);
+        store.release_span(2000, 32);
+        store.release_span(3000, 128);
+
+        assert_eq!(
+            store.take_best_fit(40),
+            Some(FreeSpan {
+                start_slot: 1000,
+                len: 40
+            })
+        );
+        assert_eq!(
+            store.take_best_fit_whole(40),
+            Some(FreeSpan {
+                start_slot: 1040,
+                len: 40
+            })
+        );
+    }
+
+    #[test]
+    fn free_span_dual_index_rejects_overlap() {
+        let mut store = FreeSpanDualIndexStore::init(vector_memory(), vector_memory());
+        store.release_span(100, 20).unwrap();
+
+        let err = store.release_span(110, 20).unwrap_err();
+        assert!(matches!(
+            err,
+            FreeSpanDualIndexError::OverlapPrevious { .. }
+                | FreeSpanDualIndexError::OverlapNext { .. }
+        ));
+    }
+
+    #[test]
+    fn free_span_dual_index_rejects_duplicate_without_mutation() {
+        let mut store = FreeSpanDualIndexStore::init(vector_memory(), vector_memory());
+        store.release_span(100, 20).unwrap();
+
+        let err = store.release_span(100, 8).unwrap_err();
+        assert!(matches!(
+            err,
+            FreeSpanDualIndexError::DuplicateStart { start_slot: 100 }
+        ));
+        assert_eq!(
+            store.get_by_start(100),
+            Some(FreeSpan {
+                start_slot: 100,
+                len: 20
+            })
+        );
+    }
+
+    #[test]
+    fn free_span_dual_index_reopens_both_indexes() {
+        let by_len = vector_memory();
+        let by_start = vector_memory();
+        let mut store = FreeSpanDualIndexStore::init(by_len.clone(), by_start.clone());
+        store.release_span(64, 8).unwrap();
+        store.release_span(128, 32).unwrap();
+        drop(store);
+
+        let mut reopened = FreeSpanDualIndexStore::init(by_len, by_start);
+        assert_eq!(
+            reopened.take_best_fit(16).unwrap(),
+            Some(FreeSpan {
+                start_slot: 128,
+                len: 16
+            })
+        );
+        assert_eq!(
+            reopened.get_by_start(144),
+            Some(FreeSpan {
+                start_slot: 144,
+                len: 16
+            })
+        );
+    }
+
+    #[test]
+    fn free_span_dual_index_inserts_by_len_in_release_builds() {
+        let mut store = FreeSpanDualIndexStore::init(vector_memory(), vector_memory());
+        store.release_span(4096, 128).unwrap();
+
+        assert_eq!(
+            store.take_best_fit_whole(96).unwrap(),
+            Some(FreeSpan {
+                start_slot: 4096,
+                len: 128
+            })
+        );
+        assert!(store.is_empty());
     }
 
     #[test]
@@ -559,8 +768,9 @@ mod tests {
         );
         assert_eq!(graph.edges().span_meta_store().get(0).physical_start, 4);
         assert_eq!(graph.edges().free_span_store().len(), 1);
-        assert_eq!(graph.edges().free_span_store().get(0).start_slot, 0);
-        assert!(graph.edges().free_span_store().get(0).len > 0);
+        let released = graph.edges().free_span_store().peek_best_fit(1).unwrap();
+        assert_eq!(released.start_slot, 0);
+        assert!(released.len > 0);
         assert_eq!(graph.vertices().get(0).base_slot_start, 4);
         assert_eq!(graph.vertices().get(0).degree, 4);
         assert_eq!(graph.vertices().get(0).log_head, -1);
@@ -769,7 +979,7 @@ mod tests {
 
     #[test]
     fn deferred_config_rejects_invalid_thresholds() {
-        let err = DeferredDgap::<TestEdge, Vertex, _, _, _, _, _, _, _, _>::new_with_config(
+        let err = match DeferredDgap::<TestEdge, Vertex, _, _, _, _, _, _, _, _>::new_with_config(
             vector_memory(),
             vector_memory(),
             vector_memory(),
@@ -785,8 +995,10 @@ mod tests {
                 leaf_dirty_density: f64::NAN,
                 log_urgent_ratio: 0.80,
             },
-        )
-        .unwrap_err();
+        ) {
+            Ok(_) => panic!("invalid deferred config was accepted"),
+            Err(err) => err,
+        };
 
         assert!(matches!(
             err,

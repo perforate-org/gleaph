@@ -1,6 +1,8 @@
 pub mod counts;
 mod edges;
 pub mod free_span;
+pub mod free_span_array;
+pub mod free_span_dual_index;
 mod log;
 pub mod span_meta;
 
@@ -64,7 +66,6 @@ pub enum InitError {
     Edges(edges::InitError),
     Log(log::InitError),
     SpanMeta(span_meta::InitError),
-    FreeSpan(free_span::InitError),
     LogLayoutMismatch,
     SpanMetaLayoutMismatch,
 }
@@ -76,7 +77,6 @@ impl fmt::Display for InitError {
             Self::Edges(e) => write!(f, "edge slab init failed: {e}"),
             Self::Log(e) => write!(f, "log init failed: {e}"),
             Self::SpanMeta(e) => write!(f, "segment span metadata init failed: {e}"),
-            Self::FreeSpan(e) => write!(f, "free span metadata init failed: {e}"),
             Self::LogLayoutMismatch => write!(f, "log layout does not match edge store layout"),
             Self::SpanMetaLayoutMismatch => {
                 write!(f, "segment span metadata length does not match edge layout")
@@ -93,7 +93,6 @@ pub(crate) trait VertexAccess<V: CsrVertex> {
     fn set(&self, index: u64, item: &V);
 }
 
-#[derive(Clone, Debug)]
 pub struct EdgeStore<E: CsrEdge, MC: Memory, ME: Memory, ML: Memory, MS: Memory, MF: Memory> {
     counts: SegmentEdgeCountsStore<E, MC>,
     edges: EdgeSlabStore<E, ME>,
@@ -131,7 +130,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, MC: Memory, ME: Memory, ML: Memory, MS: M
         }
         let edges = EdgeSlabStore::new(edges, header)?;
         let log = LogStore::new(log, log_header)?;
-        let free_spans = FreeSpanStore::new(free_spans)?;
+        let free_spans = FreeSpanStore::init(free_spans);
         Ok(Self {
             counts,
             edges,
@@ -153,7 +152,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, MC: Memory, ME: Memory, ML: Memory, MS: M
         let header = edges.header().map_err(InitError::Edges)?;
         let log = LogStore::init(log).map_err(InitError::Log)?;
         let span_meta = SegmentSpanMetaStore::init(span_meta).map_err(InitError::SpanMeta)?;
-        let free_spans = FreeSpanStore::init(free_spans).map_err(InitError::FreeSpan)?;
+        let free_spans = FreeSpanStore::init(free_spans);
         let log_header = log.header();
         if log_header.segment_count != header.segment_count {
             return Err(InitError::LogLayoutMismatch);
@@ -224,18 +223,11 @@ impl<E: CsrEdge + EdgePmaCountsStride, MC: Memory, ME: Memory, ML: Memory, MS: M
     }
 
     pub(crate) fn allocate_span(&self, len: u64) -> Result<u64, GrowFailed> {
-        if let Some(span) = self.free_spans.pop() {
-            if span.len >= len {
-                let leftover = span.len - len;
-                if leftover > 0 {
-                    self.free_spans.push(FreeSpan {
-                        start_slot: span.start_slot + len,
-                        len: leftover,
-                    })?;
-                }
-                return Ok(span.start_slot);
-            }
-            self.free_spans.push(span)?;
+        if len == 0 {
+            return Ok(self.header().elem_capacity);
+        }
+        if let Some(span) = self.free_spans.take_best_fit(len) {
+            return Ok(span.start_slot);
         }
 
         let start = self.header().elem_capacity;
@@ -245,7 +237,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, MC: Memory, ME: Memory, ML: Memory, MS: M
 
     pub(crate) fn release_span(&self, start_slot: u64, len: u64) -> Result<(), GrowFailed> {
         if len > 0 {
-            self.free_spans.push(FreeSpan { start_slot, len })?;
+            self.free_spans.release(FreeSpan { start_slot, len });
         }
         Ok(())
     }

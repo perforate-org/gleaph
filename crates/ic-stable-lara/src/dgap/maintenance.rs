@@ -266,7 +266,6 @@ fn current_instruction_counter() -> u64 {
     }
 }
 
-#[derive(Debug)]
 pub struct DeferredDgap<E, V, MV, MC, ME, ML, MS, MF, MMQ, MDS>
 where
     E: CsrEdge,
