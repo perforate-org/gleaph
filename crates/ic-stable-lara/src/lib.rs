@@ -36,10 +36,12 @@ use std::{
     fmt::{Display, Formatter},
 };
 
+pub mod bidirectional;
 pub mod lara;
 mod traits;
 mod types;
 
+pub use bidirectional::{BidirectionalLara, BidirectionalLaraError, BidirectionalLaraGraph};
 pub use lara::{
     LaraGraph,
     edge::{
@@ -254,6 +256,58 @@ mod tests {
 
         fn with_neighbor_vid(self, vid: VertexId) -> Self {
             Self(u32::from(vid))
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct UndirectedTestEdge {
+        neighbor: u32,
+        undirected: bool,
+    }
+
+    impl UndirectedTestEdge {
+        fn new(neighbor: u32) -> Self {
+            Self {
+                neighbor,
+                undirected: false,
+            }
+        }
+    }
+
+    impl CsrEdge for UndirectedTestEdge {
+        const BYTES: usize = 5;
+
+        fn read_from(bytes: &[u8]) -> Self {
+            Self {
+                neighbor: u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
+                undirected: bytes[4] != 0,
+            }
+        }
+
+        fn write_to(self, bytes: &mut [u8]) {
+            bytes[0..4].copy_from_slice(&self.neighbor.to_le_bytes());
+            bytes[4] = u8::from(self.undirected);
+        }
+
+        fn neighbor_vid(&self) -> VertexId {
+            VertexId::from(self.neighbor)
+        }
+
+        fn with_neighbor_vid(self, vid: VertexId) -> Self {
+            Self {
+                neighbor: u32::from(vid),
+                ..self
+            }
+        }
+    }
+
+    impl CsrEdgeUndirected for UndirectedTestEdge {
+        fn is_undirected(&self) -> bool {
+            self.undirected
+        }
+
+        fn with_undirected(self, undirected: bool) -> Self {
+            Self { undirected, ..self }
         }
     }
 
@@ -515,6 +569,58 @@ mod tests {
         graph
     }
 
+    fn bidirectional_test_graph<E>(
+        starts: &[u64],
+    ) -> BidirectionalLaraGraph<
+        E,
+        Vertex,
+        VectorMemory,
+        VectorMemory,
+        VectorMemory,
+        VectorMemory,
+        VectorMemory,
+        VectorMemory,
+        VectorMemory,
+        VectorMemory,
+        VectorMemory,
+        VectorMemory,
+        VectorMemory,
+        VectorMemory,
+    >
+    where
+        E: CsrEdge + lara::edge::counts::EdgePmaCountsStride,
+    {
+        let graph = BidirectionalLaraGraph::<E, Vertex, _, _, _, _, _, _, _, _, _, _, _, _>::new(
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            32,
+            4,
+            4,
+        )
+        .unwrap();
+        for &base_slot_start in starts {
+            graph
+                .push_vertex(Vertex {
+                    base_slot_start,
+                    degree: 0,
+                    capacity: 0,
+                    log_head: -1,
+                })
+                .unwrap();
+        }
+        graph
+    }
+
     fn assert_vertex_capacity_invariants(
         graph: &LaraGraph<
             TestEdge,
@@ -642,6 +748,148 @@ mod tests {
             }
         );
         assert_eq!(tombstone.get(0), counts);
+    }
+
+    #[test]
+    fn bidirectional_directed_insert_updates_forward_and_reverse() {
+        let graph = bidirectional_test_graph::<TestEdge>(&[0, 4, 8]);
+
+        graph
+            .insert_directed(VertexId::from(0), VertexId::from(2), TestEdge(2))
+            .unwrap();
+
+        assert_eq!(
+            graph.out_edges(VertexId::from(0)).unwrap(),
+            vec![TestEdge(2)]
+        );
+        assert_eq!(graph.out_edges(VertexId::from(2)).unwrap(), Vec::new());
+        assert_eq!(
+            graph.in_edges(VertexId::from(2)).unwrap(),
+            vec![TestEdge(0)]
+        );
+        assert_eq!(graph.in_edges(VertexId::from(0)).unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn bidirectional_directed_insert_rejects_neighbor_mismatch() {
+        let graph = bidirectional_test_graph::<TestEdge>(&[0, 4]);
+
+        let err = graph
+            .insert_directed(VertexId::from(0), VertexId::from(1), TestEdge(0))
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            BidirectionalLaraError::NeighborMismatch {
+                expected,
+                actual
+            } if expected == VertexId::from(1) && actual == VertexId::from(0)
+        ));
+        assert_eq!(graph.out_edges(VertexId::from(0)).unwrap(), Vec::new());
+        assert_eq!(graph.in_edges(VertexId::from(1)).unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn bidirectional_directed_insert_rejects_undirected_edge() {
+        let graph = bidirectional_test_graph::<UndirectedTestEdge>(&[0, 4]);
+        let edge = UndirectedTestEdge::new(1).with_undirected(true);
+
+        let err = graph
+            .insert_directed(VertexId::from(0), VertexId::from(1), edge)
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            BidirectionalLaraError::UndirectedEdgeInDirectedInsert
+        ));
+        assert_eq!(graph.out_edges(VertexId::from(0)).unwrap(), Vec::new());
+        assert_eq!(graph.in_edges(VertexId::from(1)).unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn bidirectional_undirected_insert_materializes_symmetric_adjacency() {
+        let graph = bidirectional_test_graph::<UndirectedTestEdge>(&[0, 4, 8]);
+
+        graph
+            .insert_undirected(
+                VertexId::from(0),
+                VertexId::from(2),
+                UndirectedTestEdge::new(2),
+            )
+            .unwrap();
+
+        assert_eq!(
+            graph.out_edges(VertexId::from(0)).unwrap(),
+            vec![UndirectedTestEdge {
+                neighbor: 2,
+                undirected: true
+            }]
+        );
+        assert_eq!(
+            graph.out_edges(VertexId::from(2)).unwrap(),
+            vec![UndirectedTestEdge {
+                neighbor: 0,
+                undirected: true
+            }]
+        );
+        assert_eq!(
+            graph.in_edges(VertexId::from(0)).unwrap(),
+            vec![UndirectedTestEdge {
+                neighbor: 2,
+                undirected: true
+            }]
+        );
+        assert_eq!(
+            graph.in_edges(VertexId::from(2)).unwrap(),
+            vec![UndirectedTestEdge {
+                neighbor: 0,
+                undirected: true
+            }]
+        );
+    }
+
+    #[test]
+    fn bidirectional_undirected_self_loop_stores_one_loop_per_orientation() {
+        let graph = bidirectional_test_graph::<UndirectedTestEdge>(&[0, 4]);
+
+        graph
+            .insert_undirected(
+                VertexId::from(1),
+                VertexId::from(1),
+                UndirectedTestEdge::new(1),
+            )
+            .unwrap();
+
+        let loop_edge = UndirectedTestEdge {
+            neighbor: 1,
+            undirected: true,
+        };
+        assert_eq!(graph.out_edges(VertexId::from(1)).unwrap(), vec![loop_edge]);
+        assert_eq!(graph.in_edges(VertexId::from(1)).unwrap(), vec![loop_edge]);
+    }
+
+    #[test]
+    fn bidirectional_reopen_preserves_forward_and_reverse_stores() {
+        let graph = bidirectional_test_graph::<TestEdge>(&[0, 4, 8]);
+        graph
+            .insert_directed(VertexId::from(0), VertexId::from(2), TestEdge(2))
+            .unwrap();
+
+        let (fv, fc, fe, fl, fs, ff, rv, rc, re, rl, rs, rf) = graph.into_memories();
+        let reopened =
+            BidirectionalLaraGraph::<TestEdge, Vertex, _, _, _, _, _, _, _, _, _, _, _, _>::init(
+                fv, fc, fe, fl, fs, ff, rv, rc, re, rl, rs, rf,
+            )
+            .unwrap();
+
+        assert_eq!(
+            reopened.out_edges(VertexId::from(0)).unwrap(),
+            vec![TestEdge(2)]
+        );
+        assert_eq!(
+            reopened.in_edges(VertexId::from(2)).unwrap(),
+            vec![TestEdge(0)]
+        );
     }
 
     #[test]
