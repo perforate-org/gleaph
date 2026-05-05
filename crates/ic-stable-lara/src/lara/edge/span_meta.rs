@@ -173,3 +173,21 @@ impl<M: Memory> SegmentSpanMetaStore<M> {
         }
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::vector_memory;
+
+    #[test]
+    fn segment_span_meta_store_reopens_physical_starts() {
+        let memory = vector_memory();
+        let store = SegmentSpanMetaStore::new(memory.clone()).unwrap();
+        store.push(SegmentSpanMeta { physical_start: 12 }).unwrap();
+        store.push(SegmentSpanMeta { physical_start: 48 }).unwrap();
+
+        let reopened = SegmentSpanMetaStore::init(memory).unwrap();
+        assert_eq!(reopened.len(), 2);
+        assert_eq!(reopened.get(0), SegmentSpanMeta { physical_start: 12 });
+        assert_eq!(reopened.get(1), SegmentSpanMeta { physical_start: 48 });
+    }
+}

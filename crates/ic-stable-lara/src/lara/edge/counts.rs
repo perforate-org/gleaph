@@ -423,3 +423,42 @@ impl<'a, E: CsrEdge + EdgePmaCountsStride, M: Memory> DoubleEndedIterator for It
 impl<'a, E: CsrEdge + EdgePmaCountsStride, M: Memory> ExactSizeIterator for Iter<'a, E, M> {}
 
 impl<'a, E: CsrEdge + EdgePmaCountsStride, M: Memory> std::iter::FusedIterator for Iter<'a, E, M> {}
+#[cfg(test)]
+mod tests {
+    use crate::VectorMemory;
+    use crate::test_support::{TestEdge, TombstoneEdge, vector_memory};
+
+    #[test]
+    fn segment_edge_counts_stride_depends_on_edge_tombstone_capability() {
+        use crate::lara::edge::counts::{SegmentEdgeCounts, SegmentEdgeCountsStore};
+
+        let plain = SegmentEdgeCountsStore::<TestEdge, _>::new(vector_memory()).unwrap();
+        let tombstone = SegmentEdgeCountsStore::<TombstoneEdge, _>::new(vector_memory()).unwrap();
+
+        assert_eq!(
+            SegmentEdgeCountsStore::<TestEdge, VectorMemory>::entry_size(),
+            16
+        );
+        assert_eq!(
+            SegmentEdgeCountsStore::<TombstoneEdge, VectorMemory>::entry_size(),
+            24
+        );
+
+        let counts = SegmentEdgeCounts {
+            actual: 1,
+            total: 2,
+            tombstone: 3,
+        };
+        plain.push(counts).unwrap();
+        tombstone.push(counts).unwrap();
+
+        assert_eq!(
+            plain.get(0),
+            SegmentEdgeCounts {
+                tombstone: 0,
+                ..counts
+            }
+        );
+        assert_eq!(tombstone.get(0), counts);
+    }
+}

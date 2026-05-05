@@ -581,3 +581,217 @@ fn vertex_index(vid: VertexId) -> usize {
 fn leaf_segment(vid: VertexId, segment_size: u32) -> u32 {
     u32::from(vid) / segment_size.max(1)
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lara::vertex::{Vertex, VertexStore};
+    use crate::test_support::{
+        CAPACITY_READS, CountingCapacityVertex, PoisonCapacityVertex, TestEdge, vector_memory,
+    };
+    use crate::{VectorMemory, VertexId};
+    use std::{cell::RefCell, rc::Rc, sync::atomic::Ordering};
+
+    #[test]
+    fn edge_store_reads_slab_then_log_neighborhood() {
+        let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+        let mc: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+        let me: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+        let ml: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+
+        let vertices = VertexStore::<Vertex, _>::new(mv).unwrap();
+        vertices
+            .push(Vertex {
+                base_slot_start: 0,
+                degree: 0,
+                capacity: 1,
+                log_head: -1,
+            })
+            .unwrap();
+        vertices
+            .push(Vertex {
+                base_slot_start: 1,
+                degree: 0,
+                capacity: 1,
+                log_head: -1,
+            })
+            .unwrap();
+
+        let edges = EdgeStore::<TestEdge, _, _, _, _, _>::new(
+            mc,
+            me,
+            ml,
+            vector_memory(),
+            vector_memory(),
+            2,
+            1,
+            2,
+        )
+        .unwrap();
+        assert_eq!(edges.span_meta_store().len(), 1);
+
+        edges
+            .insert_edge(&vertices, VertexId::from(0), TestEdge(10))
+            .unwrap();
+        edges
+            .insert_edge(&vertices, VertexId::from(0), TestEdge(11))
+            .unwrap();
+
+        assert_eq!(
+            edges
+                .collect_out_edges(&vertices, VertexId::from(0))
+                .unwrap(),
+            vec![TestEdge(10), TestEdge(11)]
+        );
+        assert_eq!(vertices.get(0).degree, 2);
+        assert!(vertices.get(0).log_head >= 0);
+    }
+
+    #[test]
+    fn edge_store_uses_vertex_capacity_for_slab_space() {
+        let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+        let mc: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+        let me: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+        let ml: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+
+        let vertices = VertexStore::<Vertex, _>::new(mv).unwrap();
+        vertices
+            .push(Vertex {
+                base_slot_start: 0,
+                degree: 0,
+                capacity: 2,
+                log_head: -1,
+            })
+            .unwrap();
+        vertices
+            .push(Vertex {
+                base_slot_start: 1,
+                degree: 0,
+                capacity: 1,
+                log_head: -1,
+            })
+            .unwrap();
+
+        let edges = EdgeStore::<TestEdge, _, _, _, _, _>::new(
+            mc,
+            me,
+            ml,
+            vector_memory(),
+            vector_memory(),
+            4,
+            1,
+            2,
+        )
+        .unwrap();
+
+        edges
+            .insert_edge(&vertices, VertexId::from(0), TestEdge(10))
+            .unwrap();
+        edges
+            .insert_edge(&vertices, VertexId::from(0), TestEdge(11))
+            .unwrap();
+
+        assert_eq!(vertices.get(0).degree, 2);
+        assert_eq!(vertices.get(0).log_head, -1);
+        assert_eq!(
+            edges
+                .collect_out_edges(&vertices, VertexId::from(0))
+                .unwrap(),
+            vec![TestEdge(10), TestEdge(11)]
+        );
+    }
+
+    #[test]
+    fn edge_store_insert_reads_capacity_for_update_boundary() {
+        CAPACITY_READS.store(0, Ordering::SeqCst);
+
+        let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+        let mc: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+        let me: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+        let ml: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+
+        let vertices = VertexStore::<CountingCapacityVertex, _>::new(mv).unwrap();
+        vertices
+            .push(CountingCapacityVertex {
+                base_slot_start: 0,
+                degree: 0,
+                capacity: 2,
+                log_head: -1,
+            })
+            .unwrap();
+        vertices
+            .push(CountingCapacityVertex {
+                base_slot_start: 1,
+                degree: 0,
+                capacity: 1,
+                log_head: -1,
+            })
+            .unwrap();
+
+        let edges = EdgeStore::<TestEdge, _, _, _, _, _>::new(
+            mc,
+            me,
+            ml,
+            vector_memory(),
+            vector_memory(),
+            4,
+            1,
+            2,
+        )
+        .unwrap();
+
+        edges
+            .insert_edge(&vertices, VertexId::from(0), TestEdge(10))
+            .unwrap();
+        edges
+            .insert_edge(&vertices, VertexId::from(0), TestEdge(11))
+            .unwrap();
+
+        assert!(CAPACITY_READS.load(Ordering::SeqCst) >= 2);
+        assert_eq!(vertices.get(0).degree, 2);
+        assert_eq!(vertices.get(0).log_head, -1);
+        assert_eq!(
+            edges
+                .collect_out_edges(&vertices, VertexId::from(0))
+                .unwrap(),
+            vec![TestEdge(10), TestEdge(11)]
+        );
+    }
+
+    #[test]
+    fn edge_store_scan_uses_base_and_degree_not_capacity() {
+        let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+        let mc: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+        let me: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+        let ml: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+
+        let vertices = VertexStore::<PoisonCapacityVertex, _>::new(mv).unwrap();
+        vertices
+            .push(PoisonCapacityVertex {
+                base_slot_start: 0,
+                degree: 2,
+                log_head: -1,
+            })
+            .unwrap();
+
+        let edges = EdgeStore::<TestEdge, _, _, _, _, _>::new(
+            mc,
+            me,
+            ml,
+            vector_memory(),
+            vector_memory(),
+            2,
+            1,
+            1,
+        )
+        .unwrap();
+        edges.write_slot(0, TestEdge(10)).unwrap();
+        edges.write_slot(1, TestEdge(11)).unwrap();
+
+        assert_eq!(
+            edges
+                .collect_out_edges(&vertices, VertexId::from(0))
+                .unwrap(),
+            vec![TestEdge(10), TestEdge(11)]
+        );
+    }
+}

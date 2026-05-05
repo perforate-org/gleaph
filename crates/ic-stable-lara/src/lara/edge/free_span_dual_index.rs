@@ -373,3 +373,124 @@ impl<ML: Memory, MS: Memory> FreeSpanDualIndexStore<ML, MS> {
             })
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lara::edge::free_span::FreeSpan;
+    use crate::test_support::vector_memory;
+
+    #[test]
+    fn free_span_dual_index_release_coalesces_neighbors() {
+        let mut store = FreeSpanDualIndexStore::init(vector_memory(), vector_memory());
+
+        store.release_span(100, 20).unwrap();
+        store.release_span(140, 10).unwrap();
+        store.release_span(120, 20).unwrap();
+
+        assert_eq!(store.len(), 1);
+        assert_eq!(
+            store.get_by_start(100),
+            Some(FreeSpan {
+                start_slot: 100,
+                len: 50
+            })
+        );
+    }
+
+    #[test]
+    fn free_span_dual_index_take_best_fit_splits_remainder() {
+        let mut store = FreeSpanDualIndexStore::init(vector_memory(), vector_memory());
+        store.release_span(1000, 80).unwrap();
+        store.release_span(2000, 32).unwrap();
+        store.release_span(3000, 128).unwrap();
+
+        assert_eq!(
+            store.take_best_fit(40).unwrap(),
+            Some(FreeSpan {
+                start_slot: 1000,
+                len: 40
+            })
+        );
+        assert_eq!(
+            store.get_by_start(1040),
+            Some(FreeSpan {
+                start_slot: 1040,
+                len: 40
+            })
+        );
+        assert_eq!(store.get_by_start(1000), None);
+    }
+
+    #[test]
+    fn free_span_dual_index_rejects_overlap() {
+        let mut store = FreeSpanDualIndexStore::init(vector_memory(), vector_memory());
+        store.release_span(100, 20).unwrap();
+
+        let err = store.release_span(110, 20).unwrap_err();
+        assert!(matches!(
+            err,
+            FreeSpanDualIndexError::OverlapPrevious { .. }
+                | FreeSpanDualIndexError::OverlapNext { .. }
+        ));
+    }
+
+    #[test]
+    fn free_span_dual_index_rejects_duplicate_without_mutation() {
+        let mut store = FreeSpanDualIndexStore::init(vector_memory(), vector_memory());
+        store.release_span(100, 20).unwrap();
+
+        let err = store.release_span(100, 8).unwrap_err();
+        assert!(matches!(
+            err,
+            FreeSpanDualIndexError::DuplicateStart { start_slot: 100 }
+        ));
+        assert_eq!(
+            store.get_by_start(100),
+            Some(FreeSpan {
+                start_slot: 100,
+                len: 20
+            })
+        );
+    }
+
+    #[test]
+    fn free_span_dual_index_reopens_both_indexes() {
+        let by_len = vector_memory();
+        let by_start = vector_memory();
+        let mut store = FreeSpanDualIndexStore::init(by_len.clone(), by_start.clone());
+        store.release_span(64, 8).unwrap();
+        store.release_span(128, 32).unwrap();
+        drop(store);
+
+        let mut reopened = FreeSpanDualIndexStore::init(by_len, by_start);
+        assert_eq!(
+            reopened.take_best_fit(16).unwrap(),
+            Some(FreeSpan {
+                start_slot: 128,
+                len: 16
+            })
+        );
+        assert_eq!(
+            reopened.get_by_start(144),
+            Some(FreeSpan {
+                start_slot: 144,
+                len: 16
+            })
+        );
+    }
+
+    #[test]
+    fn free_span_dual_index_inserts_by_len_in_release_builds() {
+        let mut store = FreeSpanDualIndexStore::init(vector_memory(), vector_memory());
+        store.release_span(4096, 128).unwrap();
+
+        assert_eq!(
+            store.take_best_fit_whole(96).unwrap(),
+            Some(FreeSpan {
+                start_slot: 4096,
+                len: 128
+            })
+        );
+        assert!(store.is_empty());
+    }
+}

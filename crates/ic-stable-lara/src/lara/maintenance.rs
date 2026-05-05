@@ -507,3 +507,207 @@ where
         Ok(report)
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lara::vertex::Vertex;
+    use crate::test_support::{TestEdge, deferred_test_graph, vector_memory};
+    use crate::{SegmentId, VertexId};
+
+    #[test]
+    fn maintenance_queue_deduplicates_and_prioritizes_urgent_segments() {
+        let mq = MaintenanceQueue::new(vector_memory(), vector_memory()).unwrap();
+
+        assert!(mq.mark_dirty(SegmentId::from(2)).unwrap().inserted);
+        assert!(!mq.mark_dirty(SegmentId::from(2)).unwrap().inserted);
+        assert!(mq.mark_urgent(SegmentId::from(7)).unwrap().inserted);
+
+        assert_eq!(mq.len(), 2);
+        assert_eq!(mq.pop_next().unwrap(), Some(SegmentId::from(7)));
+        assert_eq!(mq.pop_next().unwrap(), Some(SegmentId::from(2)));
+        assert_eq!(mq.pop_next().unwrap(), None);
+    }
+
+    #[test]
+    fn maintenance_queue_reopens_dirty_membership_and_order() {
+        let mq = MaintenanceQueue::new(vector_memory(), vector_memory()).unwrap();
+        mq.mark_dirty(SegmentId::from(1)).unwrap();
+        mq.mark_dirty(SegmentId::from(3)).unwrap();
+
+        let memories = mq.into_memories();
+        let reopened = MaintenanceQueue::init(memories.0, memories.1).unwrap();
+
+        assert!(reopened.is_dirty(SegmentId::from(1)));
+        assert!(reopened.is_dirty(SegmentId::from(3)));
+        assert_eq!(reopened.pop_next().unwrap(), Some(SegmentId::from(1)));
+        assert!(!reopened.is_dirty(SegmentId::from(1)));
+        assert_eq!(reopened.pop_next().unwrap(), Some(SegmentId::from(3)));
+        assert_eq!(reopened.pop_next().unwrap(), None);
+    }
+
+    #[test]
+    fn deferred_insert_keeps_reads_correct_until_maintenance_folds_log() {
+        let graph = deferred_test_graph(8, 2, 2, &[0, 2, 4, 6]);
+
+        for dst in 10..13 {
+            graph
+                .insert_edge_deferred(VertexId::from(0), TestEdge(dst))
+                .unwrap();
+        }
+
+        assert_eq!(
+            graph.collect_out_edges(VertexId::from(0)).unwrap(),
+            vec![TestEdge(10), TestEdge(11), TestEdge(12)]
+        );
+        assert!(graph.graph().vertices().get(0).log_head >= 0);
+        assert!(graph.maintenance_queue().is_dirty(SegmentId::from(0)));
+
+        let report = graph
+            .maintenance(MaintenanceBudget {
+                max_instructions: 0,
+                max_segments: Some(1),
+            })
+            .unwrap();
+
+        assert_eq!(report.processed_segments, 1);
+        assert_eq!(report.rebalanced_segments, 1);
+        assert_eq!(graph.graph().vertices().get(0).log_head, -1);
+        assert_eq!(
+            graph.collect_out_edges(VertexId::from(0)).unwrap(),
+            vec![TestEdge(10), TestEdge(11), TestEdge(12)]
+        );
+    }
+
+    #[test]
+    fn deferred_maintenance_segment_cap_leaves_unprocessed_segments_queued() {
+        let graph = deferred_test_graph(8, 2, 2, &[0, 2, 4, 6]);
+
+        for dst in 10..13 {
+            graph
+                .insert_edge_deferred(VertexId::from(0), TestEdge(dst))
+                .unwrap();
+        }
+        graph
+            .maintenance_queue()
+            .mark_dirty(SegmentId::from(1))
+            .unwrap();
+
+        let report = graph
+            .maintenance(MaintenanceBudget {
+                max_instructions: 0,
+                max_segments: Some(1),
+            })
+            .unwrap();
+
+        assert_eq!(report.processed_segments, 1);
+        assert_eq!(report.rebalanced_segments, 1);
+        assert!(!graph.maintenance_queue().is_dirty(SegmentId::from(0)));
+        assert!(graph.maintenance_queue().is_dirty(SegmentId::from(1)));
+        assert_eq!(graph.maintenance_queue().len(), 1);
+    }
+
+    #[test]
+    fn deferred_lara_graph_reopens_maintenance_state() {
+        let graph = deferred_test_graph(8, 2, 2, &[0, 2, 4, 6]);
+        for dst in 10..13 {
+            graph
+                .insert_edge_deferred(VertexId::from(0), TestEdge(dst))
+                .unwrap();
+        }
+
+        let memories = graph.into_memories();
+        let reopened = DeferredLaraGraph::<TestEdge, Vertex, _, _, _, _, _, _, _, _>::init(
+            memories.0, memories.1, memories.2, memories.3, memories.4, memories.5, memories.6,
+            memories.7,
+        )
+        .unwrap();
+
+        assert!(reopened.maintenance_queue().is_dirty(SegmentId::from(0)));
+        assert_eq!(
+            reopened.collect_out_edges(VertexId::from(0)).unwrap(),
+            vec![TestEdge(10), TestEdge(11), TestEdge(12)]
+        );
+    }
+
+    #[test]
+    fn deferred_insert_skips_dirty_when_slab_insert_is_below_soft_threshold() {
+        let graph = deferred_test_graph(16, 2, 4, &[0, 4, 8, 12]);
+
+        graph
+            .insert_edge_deferred(VertexId::from(0), TestEdge(10))
+            .unwrap();
+
+        assert!(!graph.maintenance_queue().is_dirty(SegmentId::from(0)));
+        assert_eq!(graph.maintenance_queue().len(), 0);
+        assert_eq!(
+            graph.collect_out_edges(VertexId::from(0)).unwrap(),
+            vec![TestEdge(10)]
+        );
+    }
+
+    #[test]
+    fn deferred_config_controls_dirty_threshold() {
+        let graph = DeferredLaraGraph::<TestEdge, Vertex, _, _, _, _, _, _, _, _>::new_with_config(
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            16,
+            2,
+            4,
+            DeferredConfig {
+                leaf_dirty_density: 0.05,
+                log_urgent_ratio: 0.80,
+            },
+        )
+        .unwrap();
+        for slot in [0, 4, 8, 12] {
+            graph
+                .push_vertex(Vertex {
+                    base_slot_start: slot,
+                    degree: 0,
+                    capacity: 0,
+                    log_head: -1,
+                })
+                .unwrap();
+        }
+
+        graph
+            .insert_edge_deferred(VertexId::from(0), TestEdge(10))
+            .unwrap();
+
+        assert_eq!(graph.config().leaf_dirty_density, 0.05);
+        assert!(graph.maintenance_queue().is_dirty(SegmentId::from(0)));
+    }
+
+    #[test]
+    fn deferred_config_rejects_invalid_thresholds() {
+        let err =
+            match DeferredLaraGraph::<TestEdge, Vertex, _, _, _, _, _, _, _, _>::new_with_config(
+                vector_memory(),
+                vector_memory(),
+                vector_memory(),
+                vector_memory(),
+                vector_memory(),
+                vector_memory(),
+                vector_memory(),
+                vector_memory(),
+                16,
+                2,
+                4,
+                DeferredConfig {
+                    leaf_dirty_density: f64::NAN,
+                    log_urgent_ratio: 0.80,
+                },
+            ) {
+                Ok(_) => panic!("invalid deferred config was accepted"),
+                Err(err) => err,
+            };
+
+        assert!(matches!(err, DeferredError::InvalidConfig(_)));
+    }
+}

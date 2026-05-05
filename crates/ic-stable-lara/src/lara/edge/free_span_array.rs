@@ -267,3 +267,112 @@ impl<M: Memory> FreeSpanArrayStore<M> {
         }
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lara::edge::free_span::FreeSpan;
+    use crate::test_support::vector_memory;
+
+    #[test]
+    fn free_span_array_store_take_best_fit_prefers_smallest_len() {
+        let memory = vector_memory();
+        let store = FreeSpanArrayStore::new(memory).unwrap();
+        store
+            .push(FreeSpan {
+                start_slot: 0,
+                len: 100,
+            })
+            .unwrap();
+        store
+            .push(FreeSpan {
+                start_slot: 1000,
+                len: 50,
+            })
+            .unwrap();
+        store
+            .push(FreeSpan {
+                start_slot: 2000,
+                len: 80,
+            })
+            .unwrap();
+        let got = store.take_best_fit(45).unwrap().unwrap();
+        assert_eq!(
+            got,
+            FreeSpan {
+                start_slot: 1000,
+                len: 50
+            }
+        );
+        assert_eq!(store.len(), 2);
+    }
+
+    #[test]
+    fn free_span_array_store_release_coalescing_linear_merges_neighbors() {
+        let memory = vector_memory();
+        let store = FreeSpanArrayStore::new(memory).unwrap();
+        store
+            .push(FreeSpan {
+                start_slot: 100,
+                len: 20,
+            })
+            .unwrap();
+        store
+            .push(FreeSpan {
+                start_slot: 140,
+                len: 10,
+            })
+            .unwrap();
+
+        store
+            .release_coalescing_linear(FreeSpan {
+                start_slot: 120,
+                len: 20,
+            })
+            .unwrap();
+
+        assert_eq!(store.len(), 1);
+        assert_eq!(
+            store.get(0),
+            FreeSpan {
+                start_slot: 100,
+                len: 50,
+            }
+        );
+    }
+
+    #[test]
+    fn free_span_array_store_reopens_and_pops_lifo() {
+        let memory = vector_memory();
+        let store = FreeSpanArrayStore::new(memory.clone()).unwrap();
+        store
+            .push(FreeSpan {
+                start_slot: 16,
+                len: 4,
+            })
+            .unwrap();
+        store
+            .push(FreeSpan {
+                start_slot: 64,
+                len: 12,
+            })
+            .unwrap();
+
+        let reopened = FreeSpanArrayStore::init(memory).unwrap();
+        assert_eq!(reopened.len(), 2);
+        assert_eq!(
+            reopened.pop(),
+            Some(FreeSpan {
+                start_slot: 64,
+                len: 12,
+            })
+        );
+        assert_eq!(
+            reopened.pop(),
+            Some(FreeSpan {
+                start_slot: 16,
+                len: 4,
+            })
+        );
+        assert_eq!(reopened.pop(), None);
+    }
+}

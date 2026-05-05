@@ -341,3 +341,208 @@ where
         Ok(())
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::traits::CsrEdgeUndirected;
+    use crate::{
+        Vertex,
+        test_support::{TestEdge, UndirectedTestEdge, bidirectional_test_graph},
+    };
+
+    #[test]
+    fn bidirectional_directed_insert_updates_forward_and_reverse() {
+        let graph = bidirectional_test_graph::<TestEdge>(&[0, 4, 8]);
+
+        graph
+            .insert_directed(VertexId::from(0), VertexId::from(2), TestEdge(2))
+            .unwrap();
+
+        assert_eq!(
+            graph.out_edges(VertexId::from(0)).unwrap(),
+            vec![TestEdge(2)]
+        );
+        assert_eq!(graph.out_edges(VertexId::from(2)).unwrap(), Vec::new());
+        assert_eq!(
+            graph.in_edges(VertexId::from(2)).unwrap(),
+            vec![TestEdge(0)]
+        );
+        assert_eq!(graph.in_edges(VertexId::from(0)).unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn bidirectional_directed_insert_rejects_neighbor_mismatch() {
+        let graph = bidirectional_test_graph::<TestEdge>(&[0, 4]);
+
+        let err = graph
+            .insert_directed(VertexId::from(0), VertexId::from(1), TestEdge(0))
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            BidirectionalLaraError::NeighborMismatch {
+                expected,
+                actual
+            } if expected == VertexId::from(1) && actual == VertexId::from(0)
+        ));
+        assert_eq!(graph.out_edges(VertexId::from(0)).unwrap(), Vec::new());
+        assert_eq!(graph.in_edges(VertexId::from(1)).unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn bidirectional_directed_insert_rejects_undirected_edge() {
+        let graph = bidirectional_test_graph::<UndirectedTestEdge>(&[0, 4]);
+        let edge = UndirectedTestEdge::new(1).with_undirected(true);
+
+        let err = graph
+            .insert_directed(VertexId::from(0), VertexId::from(1), edge)
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            BidirectionalLaraError::UndirectedEdgeInDirectedInsert
+        ));
+        assert_eq!(graph.out_edges(VertexId::from(0)).unwrap(), Vec::new());
+        assert_eq!(graph.in_edges(VertexId::from(1)).unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn bidirectional_undirected_insert_materializes_symmetric_adjacency() {
+        let graph = bidirectional_test_graph::<UndirectedTestEdge>(&[0, 4, 8]);
+
+        graph
+            .insert_undirected(
+                VertexId::from(0),
+                VertexId::from(2),
+                UndirectedTestEdge::new(2),
+            )
+            .unwrap();
+
+        assert_eq!(
+            graph.out_edges(VertexId::from(0)).unwrap(),
+            vec![UndirectedTestEdge {
+                neighbor: 2,
+                undirected: true
+            }]
+        );
+        assert_eq!(
+            graph.out_edges(VertexId::from(2)).unwrap(),
+            vec![UndirectedTestEdge {
+                neighbor: 0,
+                undirected: true
+            }]
+        );
+        assert_eq!(
+            graph.in_edges(VertexId::from(0)).unwrap(),
+            vec![UndirectedTestEdge {
+                neighbor: 2,
+                undirected: true
+            }]
+        );
+        assert_eq!(
+            graph.in_edges(VertexId::from(2)).unwrap(),
+            vec![UndirectedTestEdge {
+                neighbor: 0,
+                undirected: true
+            }]
+        );
+    }
+
+    #[test]
+    fn bidirectional_undirected_self_loop_stores_one_loop_per_orientation() {
+        let graph = bidirectional_test_graph::<UndirectedTestEdge>(&[0, 4]);
+
+        graph
+            .insert_undirected(
+                VertexId::from(1),
+                VertexId::from(1),
+                UndirectedTestEdge::new(1),
+            )
+            .unwrap();
+
+        let loop_edge = UndirectedTestEdge {
+            neighbor: 1,
+            undirected: true,
+        };
+        assert_eq!(graph.out_edges(VertexId::from(1)).unwrap(), vec![loop_edge]);
+        assert_eq!(graph.in_edges(VertexId::from(1)).unwrap(), vec![loop_edge]);
+    }
+
+    #[test]
+    fn bidirectional_reopen_preserves_forward_and_reverse_stores() {
+        let graph = bidirectional_test_graph::<TestEdge>(&[0, 4, 8]);
+        graph
+            .insert_directed(VertexId::from(0), VertexId::from(2), TestEdge(2))
+            .unwrap();
+
+        let (fv, fc, fe, fl, fs, ff, rv, rc, re, rl, rs, rf) = graph.into_memories();
+        let reopened =
+            BidirectionalLaraGraph::<TestEdge, Vertex, _, _, _, _, _, _, _, _, _, _, _, _>::init(
+                fv, fc, fe, fl, fs, ff, rv, rc, re, rl, rs, rf,
+            )
+            .unwrap();
+
+        assert_eq!(
+            reopened.out_edges(VertexId::from(0)).unwrap(),
+            vec![TestEdge(2)]
+        );
+        assert_eq!(
+            reopened.in_edges(VertexId::from(2)).unwrap(),
+            vec![TestEdge(0)]
+        );
+    }
+
+    #[test]
+    fn insert_directed_rejects_out_of_range_src() {
+        let graph = bidirectional_test_graph::<TestEdge>(&[0, 4]);
+
+        let err = graph
+            .insert_directed(VertexId::from(2), VertexId::from(1), TestEdge(1))
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            BidirectionalLaraError::VertexOutOfRange { vid, len }
+                if vid == VertexId::from(2) && len == VertexCount::from(2)
+        ));
+    }
+
+    #[test]
+    fn insert_directed_rejects_out_of_range_dst() {
+        let graph = bidirectional_test_graph::<TestEdge>(&[0, 4]);
+
+        let err = graph
+            .insert_directed(VertexId::from(0), VertexId::from(2), TestEdge(2))
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            BidirectionalLaraError::VertexOutOfRange { vid, len }
+                if vid == VertexId::from(2) && len == VertexCount::from(2)
+        ));
+    }
+
+    #[test]
+    fn display_formats_validation_errors() {
+        assert_eq!(
+            BidirectionalLaraError::NeighborMismatch {
+                expected: VertexId::from(1),
+                actual: VertexId::from(0),
+            }
+            .to_string(),
+            "edge neighbor_vid 0 does not match dst 1"
+        );
+        assert_eq!(
+            BidirectionalLaraError::UndirectedEdgeInDirectedInsert.to_string(),
+            "directed insert: edge is marked undirected; use insert_undirected"
+        );
+        assert_eq!(
+            (BidirectionalLaraError::VertexCountMismatch {
+                forward: VertexCount::from(1),
+                reverse: VertexCount::from(2),
+            })
+            .to_string(),
+            "vertex column length mismatch: forward=1 reverse=2"
+        );
+    }
+}

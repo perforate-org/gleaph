@@ -156,3 +156,31 @@ impl<M: Memory> FreeSpanStore<M> {
         Some(entry.key().span())
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::vector_memory;
+
+    #[test]
+    fn free_span_store_take_best_fit_splits_remainder() {
+        let store = FreeSpanStore::init(vector_memory());
+        store.release_span(1000, 80);
+        store.release_span(2000, 32);
+        store.release_span(3000, 128);
+
+        assert_eq!(
+            store.take_best_fit(40),
+            Some(FreeSpan {
+                start_slot: 1000,
+                len: 40
+            })
+        );
+        assert_eq!(
+            store.take_best_fit_whole(40),
+            Some(FreeSpan {
+                start_slot: 1040,
+                len: 40
+            })
+        );
+    }
+}
