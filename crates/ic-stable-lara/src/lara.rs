@@ -33,7 +33,7 @@ use crate::{
         },
         vertex::VertexStore,
     },
-    traits::{CsrEdge, CsrVertex, LaraVertex},
+    traits::{CsrEdge, CsrVertex, CsrVertexTombstoneScan, LaraVertex},
 };
 use ic_stable_structures::Memory;
 use std::{fmt, marker::PhantomData};
@@ -67,7 +67,7 @@ impl From<EdgeHeaderV1> for LaraLayout {
     }
 }
 
-pub(super) struct InsertOutcome {
+pub(crate) struct InsertOutcome {
     pub segment: SegmentId,
     pub inserted_into_log: bool,
 }
@@ -274,7 +274,11 @@ where
         if src_idx >= self.vertices.len() {
             return Err("vertex out of range");
         }
-        if self.vertices.get(src_idx).log_head() >= 0 {
+        let v = self.vertices.get(src_idx);
+        if V::record_is_vertex_tombstone(&v) {
+            return Err("vertex deleted");
+        }
+        if v.log_head() >= 0 {
             self.rebalance_leaf_for(src)
                 .map_err(|_| "rebalance failed")?;
         }
@@ -332,7 +336,7 @@ where
         Ok(())
     }
 
-    pub(super) fn insert_edge_raw(
+    pub(crate) fn insert_edge_raw(
         &self,
         src: VertexId,
         edge: E,
@@ -356,6 +360,77 @@ where
             segment,
             inserted_into_log: location == InsertLocation::Log,
         })
+    }
+
+    pub(crate) fn vertex_is_deleted(&self, vid: VertexId) -> Result<bool, &'static str> {
+        let vidx = u64::from(u32::from(vid));
+        if vidx >= self.vertices.len() {
+            return Err("vertex out of range");
+        }
+        Ok(V::record_is_vertex_tombstone(&self.vertices.get(vidx)))
+    }
+
+    pub(crate) fn set_vertex_deleted(
+        &self,
+        vid: VertexId,
+        deleted: bool,
+    ) -> Result<(), &'static str> {
+        let vidx = u64::from(u32::from(vid));
+        if vidx >= self.vertices.len() {
+            return Err("vertex out of range");
+        }
+        let v = self.vertices.get(vidx);
+        self.vertices
+            .set(vidx, &V::record_with_vertex_tombstone(v, deleted));
+        Ok(())
+    }
+
+    pub(crate) fn row_edge_at_after_rebalance(
+        &self,
+        vid: VertexId,
+        offset: u32,
+    ) -> Result<Option<E>, &'static str> {
+        let vidx = u64::from(u32::from(vid));
+        if vidx >= self.vertices.len() {
+            return Err("vertex out of range");
+        }
+        if self.vertices.get(vidx).log_head() >= 0 {
+            self.rebalance_leaf_for(vid)
+                .map_err(|_| "rebalance failed")?;
+        }
+        self.edges.row_edge_at_slab(&self.vertices, vid, offset)
+    }
+
+    pub(crate) fn clear_row_after_rebalance(&self, vid: VertexId) -> Result<u32, &'static str> {
+        let vidx = u64::from(u32::from(vid));
+        if vidx >= self.vertices.len() {
+            return Err("vertex out of range");
+        }
+        if self.vertices.get(vidx).log_head() >= 0 {
+            self.rebalance_leaf_for(vid)
+                .map_err(|_| "rebalance failed")?;
+        }
+        self.edges.clear_row_slab(&self.vertices, vid)
+    }
+
+    pub(crate) fn remove_edge_matching_idempotent<F>(
+        &self,
+        src: VertexId,
+        matches: F,
+    ) -> Result<Option<E>, &'static str>
+    where
+        F: FnMut(&E) -> bool,
+    {
+        let src_idx = u64::from(u32::from(src));
+        if src_idx >= self.vertices.len() {
+            return Ok(None);
+        }
+        if self.vertices.get(src_idx).log_head() >= 0 {
+            self.rebalance_leaf_for(src)
+                .map_err(|_| "rebalance failed")?;
+        }
+        self.edges
+            .remove_edge_unordered_matching(&self.vertices, src, matches)
     }
 
     fn rebalance_after_insert(&self, src: VertexId) -> Result<(), &'static str> {
@@ -447,7 +522,7 @@ where
         self.rebalance_weighted_with_layout(layout, left_vertex, right_vertex, counts)
     }
 
-    pub(super) fn rebalance_dirty_segment(&self, segment: SegmentId) -> Result<(), GrowFailed> {
+    pub(crate) fn rebalance_dirty_segment(&self, segment: SegmentId) -> Result<(), GrowFailed> {
         let layout = self.layout();
         let current_leaf = u64::from(u32::from(segment));
         let leaf_counts = self
@@ -498,7 +573,7 @@ where
         }
     }
 
-    pub(super) fn rebalance_maintenance_segment(&self, segment: SegmentId) -> bool {
+    pub(crate) fn rebalance_maintenance_segment(&self, segment: SegmentId) -> bool {
         let layout = self.layout();
         self.segment_has_log_with_layout(&layout, segment)
             || self
@@ -510,7 +585,7 @@ where
                 .is_some_and(|counts| density(counts) >= LEAF_UPPER_DENSITY)
     }
 
-    pub(super) fn deferred_mark_priority(
+    pub(crate) fn deferred_mark_priority(
         &self,
         segment: SegmentId,
         inserted_into_log: bool,
@@ -1061,7 +1136,7 @@ fn capacity_from_positions(positions: &[u64], index: usize, len: usize, end_slot
     next.saturating_sub(start).min(u64::from(u32::MAX)) as u32
 }
 
-pub(super) enum MarkPriority {
+pub(crate) enum MarkPriority {
     Clean,
     Dirty(SegmentId),
     Urgent(SegmentId),
@@ -1414,6 +1489,7 @@ mod tests {
                 degree: 2,
                 capacity: 3,
                 log_head: -1,
+                deleted: false,
             },
         );
         let layout = graph.layout();
@@ -1453,6 +1529,7 @@ mod tests {
                 degree: 1,
                 capacity: 3,
                 log_head: -1,
+                deleted: false,
             },
         );
         let layout = graph.layout();
@@ -1487,6 +1564,7 @@ mod tests {
                 degree: 1,
                 capacity: 3,
                 log_head: 0,
+                deleted: false,
             },
         );
         let layout = graph.layout();
@@ -1514,6 +1592,7 @@ mod tests {
                 degree: 1,
                 capacity: 3,
                 log_head: -1,
+                deleted: false,
             },
         );
         let layout = graph.layout();
@@ -1550,6 +1629,7 @@ mod tests {
                 degree: 1,
                 capacity: 17,
                 log_head: -1,
+                deleted: false,
             },
         );
         let layout = graph.layout();
@@ -1577,6 +1657,7 @@ mod tests {
                 degree: 1,
                 capacity: 3,
                 log_head: -1,
+                deleted: false,
             },
         );
         let layout = graph.layout();
@@ -1610,6 +1691,7 @@ mod tests {
                 degree: 2,
                 capacity: 3,
                 log_head: -1,
+                deleted: false,
             },
         );
         let layout = graph.layout();
@@ -1665,6 +1747,7 @@ mod tests {
                     degree: 0,
                     capacity: 0,
                     log_head: -1,
+                    deleted: false,
                 })
                 .unwrap();
         }
@@ -1680,6 +1763,7 @@ mod tests {
                 degree: 2,
                 capacity: 3,
                 log_head: -1,
+                deleted: false,
             },
         );
         let layout = graph.layout();

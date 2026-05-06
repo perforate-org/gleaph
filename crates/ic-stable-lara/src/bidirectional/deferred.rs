@@ -1,19 +1,19 @@
 //! Deferred-maintenance bidirectional LARA graph wrapper.
 
 use crate::{
-    GrowFailed, VertexCount, VertexId,
+    GrowFailed, SegmentId, VertexCount, VertexId,
     bidirectional::UndirectedEdgeFlag,
     lara::{
+        InitError, LaraGraph, MarkPriority,
         edge::counts::EdgePmaCountsStride,
-        maintenance::{
-            DeferredConfig, DeferredError, DeferredInitError, DeferredLaraGraph, MaintenanceBudget,
-            MaintenanceReport, MaintenanceWorkReport,
-        },
+        maintenance::{DeferredConfig, DeferredError, MaintenanceBudget, MaintenanceWorkReport},
     },
     traits::{CsrEdge, CsrEdgeUndirected, LaraVertex},
 };
-use ic_stable_structures::Memory;
-use std::fmt;
+use ic_stable_roaring::StableRoaringBitmap;
+use ic_stable_structures::{Memory, Storable, storable::Bound};
+use ic_stable_vec_deque::StableVecDeque;
+use std::{borrow::Cow, fmt};
 
 #[cfg(feature = "canbench")]
 mod bench;
@@ -21,10 +21,8 @@ mod bench;
 /// Maintenance report for a deferred bidirectional graph.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BidirectionalMaintenanceReport {
-    /// Work performed on the forward orientation.
-    pub forward: MaintenanceWorkReport,
-    /// Work performed on the reverse orientation.
-    pub reverse: MaintenanceWorkReport,
+    /// Aggregated work performed by the unified queue.
+    pub work: MaintenanceWorkReport,
     /// Instruction-counter value observed at the end of the run.
     pub instructions_used: u64,
     /// Whether the instruction budget stopped the run.
@@ -32,30 +30,16 @@ pub struct BidirectionalMaintenanceReport {
 }
 
 impl BidirectionalMaintenanceReport {
-    /// Returns total processed segments across both orientations.
-    pub fn processed_segments(self) -> u32 {
-        self.forward
-            .processed_segments
-            .saturating_add(self.reverse.processed_segments)
-    }
-
-    /// Returns total remaining queued segments across both orientations.
+    /// Returns total remaining queued work items.
     pub fn remaining_queue_len(self) -> u64 {
-        self.forward
-            .remaining_queue_len
-            .saturating_add(self.reverse.remaining_queue_len)
-    }
-
-    fn add_forward_step(&mut self, step: MaintenanceWorkReport) {
-        add_step_report(&mut self.forward, step);
-    }
-
-    fn add_reverse_step(&mut self, step: MaintenanceWorkReport) {
-        add_step_report(&mut self.reverse, step);
+        self.work.remaining_queue_len
     }
 }
 
 fn add_step_report(total: &mut MaintenanceWorkReport, step: MaintenanceWorkReport) {
+    total.processed_work_items = total
+        .processed_work_items
+        .saturating_add(step.processed_work_items);
     total.processed_segments = total
         .processed_segments
         .saturating_add(step.processed_segments);
@@ -63,7 +47,139 @@ fn add_step_report(total: &mut MaintenanceWorkReport, step: MaintenanceWorkRepor
         .rebalanced_segments
         .saturating_add(step.rebalanced_segments);
     total.resized |= step.resized;
+    total.processed_delete_edge_steps = total
+        .processed_delete_edge_steps
+        .saturating_add(step.processed_delete_edge_steps);
+    total.completed_vertex_deletes = total
+        .completed_vertex_deletes
+        .saturating_add(step.completed_vertex_deletes);
     total.remaining_queue_len = step.remaining_queue_len;
+}
+
+/// Direction of a queued bidirectional maintenance item.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Orientation {
+    /// Forward out-adjacency store.
+    Forward,
+    /// Reverse in-adjacency store.
+    Reverse,
+}
+
+/// Phase of an incremental vertex delete job.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeletePhase {
+    /// Remove reverse counterparts for outgoing forward edges.
+    RemoveOutgoing,
+    /// Clear the deleted vertex's forward row.
+    ClearForwardRow,
+    /// Remove forward counterparts for incoming reverse edges.
+    RemoveIncoming,
+    /// Clear the deleted vertex's reverse row.
+    ClearReverseRow,
+}
+
+/// One item in the unified deferred bidirectional maintenance queue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MaintenanceWorkItem {
+    /// Rebalance one segment in one orientation.
+    Rebalance {
+        /// Store orientation.
+        orientation: Orientation,
+        /// Segment to inspect/rebalance.
+        segment: SegmentId,
+    },
+    /// Incrementally remove all incident edges for a deleted vertex.
+    DeleteVertex {
+        /// Deleted vertex id.
+        vid: VertexId,
+        /// Current delete phase.
+        phase: DeletePhase,
+        /// Edge cursor within the source row for the current phase.
+        cursor: u32,
+        /// Number of incident edge steps already processed.
+        removed_edges: u64,
+    },
+}
+
+impl Storable for MaintenanceWorkItem {
+    const BOUND: Bound = Bound::Bounded {
+        max_size: 24,
+        is_fixed_size: true,
+    };
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        let mut b = [0u8; 24];
+        match *self {
+            Self::Rebalance {
+                orientation,
+                segment,
+            } => {
+                b[0] = 0;
+                b[1] = match orientation {
+                    Orientation::Forward => 0,
+                    Orientation::Reverse => 1,
+                };
+                b[4..8].copy_from_slice(&u32::from(segment).to_le_bytes());
+            }
+            Self::DeleteVertex {
+                vid,
+                phase,
+                cursor,
+                removed_edges,
+            } => {
+                b[0] = 1;
+                b[2] = match phase {
+                    DeletePhase::RemoveOutgoing => 0,
+                    DeletePhase::ClearForwardRow => 1,
+                    DeletePhase::RemoveIncoming => 2,
+                    DeletePhase::ClearReverseRow => 3,
+                };
+                b[4..8].copy_from_slice(&u32::from(vid).to_le_bytes());
+                b[8..12].copy_from_slice(&cursor.to_le_bytes());
+                b[16..24].copy_from_slice(&removed_edges.to_le_bytes());
+            }
+        }
+        Cow::Owned(b.to_vec())
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        self.to_bytes().into_owned()
+    }
+
+    fn from_bytes(bytes: Cow<[u8]>) -> Self {
+        let b = bytes.as_ref();
+        let read_u32 = |start: usize| {
+            let mut out = [0u8; 4];
+            out.copy_from_slice(&b[start..start + 4]);
+            u32::from_le_bytes(out)
+        };
+        let read_u64 = |start: usize| {
+            let mut out = [0u8; 8];
+            out.copy_from_slice(&b[start..start + 8]);
+            u64::from_le_bytes(out)
+        };
+        match b[0] {
+            0 => Self::Rebalance {
+                orientation: if b[1] == 1 {
+                    Orientation::Reverse
+                } else {
+                    Orientation::Forward
+                },
+                segment: SegmentId::from(read_u32(4)),
+            },
+            _ => Self::DeleteVertex {
+                vid: VertexId::from(read_u32(4)),
+                phase: match b[2] {
+                    1 => DeletePhase::ClearForwardRow,
+                    2 => DeletePhase::RemoveIncoming,
+                    3 => DeletePhase::ClearReverseRow,
+                    _ => DeletePhase::RemoveOutgoing,
+                },
+                cursor: read_u32(8),
+                removed_edges: read_u64(16),
+            },
+        }
+    }
 }
 
 #[inline]
@@ -78,6 +194,116 @@ fn current_instruction_counter() -> u64 {
     }
 }
 
+#[derive(Debug)]
+struct BidirectionalMaintenanceQueue<M: Memory> {
+    queue: StableVecDeque<MaintenanceWorkItem, M>,
+    dirty: StableRoaringBitmap<M>,
+}
+
+impl<M: Memory> BidirectionalMaintenanceQueue<M> {
+    fn new(queue_memory: M, dirty_memory: M) -> Result<Self, DeferredBidirectionalLaraError> {
+        Ok(Self {
+            queue: StableVecDeque::new(queue_memory)
+                .map_err(|_| DeferredBidirectionalLaraError::Maintenance("queue grow failed"))?,
+            dirty: StableRoaringBitmap::new(dirty_memory).map_err(|_| {
+                DeferredBidirectionalLaraError::Maintenance("dirty set grow failed")
+            })?,
+        })
+    }
+
+    fn init(queue_memory: M, dirty_memory: M) -> Result<Self, DeferredBidirectionalLaraError> {
+        Ok(Self {
+            queue: StableVecDeque::init(queue_memory)
+                .map_err(|_| DeferredBidirectionalLaraError::Maintenance("queue init failed"))?,
+            dirty: StableRoaringBitmap::init(dirty_memory).map_err(|_| {
+                DeferredBidirectionalLaraError::Maintenance("dirty set init failed")
+            })?,
+        })
+    }
+
+    fn into_memories(self) -> (M, M) {
+        (self.queue.into_memory(), self.dirty.into_memory())
+    }
+
+    fn len(&self) -> u64 {
+        self.queue.len()
+    }
+
+    fn mark_dirty(
+        &self,
+        item: MaintenanceWorkItem,
+    ) -> Result<bool, DeferredBidirectionalLaraError> {
+        let key = work_item_key(item);
+        if self.dirty.contains(key) {
+            return Ok(false);
+        }
+        self.dirty
+            .insert(key)
+            .map_err(|_| DeferredBidirectionalLaraError::Maintenance("dirty set grow failed"))?;
+        self.queue
+            .push_back(&item)
+            .map_err(|_| DeferredBidirectionalLaraError::Maintenance("queue grow failed"))?;
+        Ok(true)
+    }
+
+    fn mark_urgent(
+        &self,
+        item: MaintenanceWorkItem,
+    ) -> Result<bool, DeferredBidirectionalLaraError> {
+        let key = work_item_key(item);
+        if self.dirty.contains(key) {
+            return Ok(false);
+        }
+        self.dirty
+            .insert(key)
+            .map_err(|_| DeferredBidirectionalLaraError::Maintenance("dirty set grow failed"))?;
+        self.queue
+            .push_front(&item)
+            .map_err(|_| DeferredBidirectionalLaraError::Maintenance("queue grow failed"))?;
+        Ok(true)
+    }
+
+    fn pop_next(&self) -> Result<Option<MaintenanceWorkItem>, DeferredBidirectionalLaraError> {
+        while let Some(item) = self.queue.pop_front() {
+            if self.dirty.contains(work_item_key(item)) {
+                return Ok(Some(item));
+            }
+        }
+        Ok(None)
+    }
+
+    fn complete(&self, item: MaintenanceWorkItem) -> Result<(), DeferredBidirectionalLaraError> {
+        self.dirty
+            .clear(work_item_key(item))
+            .map_err(|_| DeferredBidirectionalLaraError::Maintenance("dirty set grow failed"))
+    }
+
+    fn requeue_front(
+        &self,
+        item: MaintenanceWorkItem,
+    ) -> Result<(), DeferredBidirectionalLaraError> {
+        self.queue
+            .push_front(&item)
+            .map_err(|_| DeferredBidirectionalLaraError::Maintenance("queue grow failed"))
+    }
+}
+
+fn work_item_key(item: MaintenanceWorkItem) -> u32 {
+    match item {
+        MaintenanceWorkItem::Rebalance {
+            orientation,
+            segment,
+        } => {
+            let orient = match orientation {
+                Orientation::Forward => 0,
+                Orientation::Reverse => 1,
+            };
+            u32::from(segment).saturating_mul(2).saturating_add(orient)
+        }
+        MaintenanceWorkItem::DeleteVertex { vid, .. } => 0x8000_0000 | u32::from(vid),
+    }
+}
+
 /// Errors returned by deferred bidirectional graph operations.
 #[derive(Debug)]
 pub enum DeferredBidirectionalLaraError {
@@ -89,10 +315,12 @@ pub enum DeferredBidirectionalLaraError {
     ForwardDeferred(DeferredError),
     /// Reverse deferred graph operation failed.
     ReverseDeferred(DeferredError),
+    /// Unified bidirectional maintenance metadata operation failed.
+    Maintenance(&'static str),
     /// Forward graph initialization failed.
-    ForwardInit(DeferredInitError),
+    ForwardInit(InitError),
     /// Reverse graph initialization failed.
-    ReverseInit(DeferredInitError),
+    ReverseInit(InitError),
     /// Forward vertex append failed.
     ForwardGrow(GrowFailed),
     /// Reverse vertex append failed.
@@ -111,6 +339,11 @@ pub enum DeferredBidirectionalLaraError {
         /// Current graph vertex count.
         len: VertexCount,
     },
+    /// A requested vertex has been logically deleted.
+    VertexDeleted {
+        /// Deleted vertex id.
+        vid: VertexId,
+    },
     /// The edge payload neighbor does not match the destination argument.
     NeighborMismatch {
         /// Destination vertex expected by the API call.
@@ -120,6 +353,8 @@ pub enum DeferredBidirectionalLaraError {
     },
     /// A directed insert received an edge payload marked as undirected.
     UndirectedEdgeInDirectedInsert,
+    /// The supplied deferred-maintenance configuration is invalid.
+    InvalidConfig(crate::lara::maintenance::DeferredConfigError),
 }
 
 impl fmt::Display for DeferredBidirectionalLaraError {
@@ -129,6 +364,7 @@ impl fmt::Display for DeferredBidirectionalLaraError {
             Self::Reverse(e) => write!(f, "reverse store: {e}"),
             Self::ForwardDeferred(e) => write!(f, "forward deferred operation failed: {e}"),
             Self::ReverseDeferred(e) => write!(f, "reverse deferred operation failed: {e}"),
+            Self::Maintenance(e) => write!(f, "bidirectional maintenance failed: {e}"),
             Self::ForwardInit(e) => write!(f, "forward init failed: {e}"),
             Self::ReverseInit(e) => write!(f, "reverse init failed: {e}"),
             Self::ForwardGrow(e) => write!(f, "forward vertex append failed: {e}"),
@@ -140,6 +376,7 @@ impl fmt::Display for DeferredBidirectionalLaraError {
             Self::VertexOutOfRange { vid, len } => {
                 write!(f, "vertex {vid} out of range (len={len})")
             }
+            Self::VertexDeleted { vid } => write!(f, "vertex {vid} is deleted"),
             Self::NeighborMismatch { expected, actual } => write!(
                 f,
                 "edge neighbor_vid {actual} does not match dst {expected}"
@@ -148,6 +385,7 @@ impl fmt::Display for DeferredBidirectionalLaraError {
                 f,
                 "directed insert: edge is marked undirected; use insert_undirected_deferred"
             ),
+            Self::InvalidConfig(e) => write!(f, "invalid deferred config: {e}"),
         }
     }
 }
@@ -158,6 +396,7 @@ impl std::error::Error for DeferredBidirectionalLaraError {
             Self::ForwardDeferred(e) | Self::ReverseDeferred(e) => Some(e),
             Self::ForwardInit(e) | Self::ReverseInit(e) => Some(e),
             Self::ForwardGrow(e) | Self::ReverseGrow(e) => Some(e),
+            Self::InvalidConfig(e) => Some(e),
             _ => None,
         }
     }
@@ -170,8 +409,10 @@ where
     V: LaraVertex,
     M: Memory,
 {
-    forward: DeferredLaraGraph<E, V, M>,
-    reverse: DeferredLaraGraph<E, V, M>,
+    forward: LaraGraph<E, V, M>,
+    reverse: LaraGraph<E, V, M>,
+    maintenance: BidirectionalMaintenanceQueue<M>,
+    config: DeferredConfig,
 }
 
 /// Convenience alias for [`DeferredBidirectionalLaraGraph`].
@@ -193,8 +434,6 @@ where
         forward_span_meta: M,
         forward_free_spans: M,
         forward_free_span_by_start: M,
-        forward_maintenance_queue: M,
-        forward_dirty_segments: M,
         reverse_vertices: M,
         reverse_counts: M,
         reverse_edges: M,
@@ -202,8 +441,8 @@ where
         reverse_span_meta: M,
         reverse_free_spans: M,
         reverse_free_span_by_start: M,
-        reverse_maintenance_queue: M,
-        reverse_dirty_segments: M,
+        maintenance_queue: M,
+        dirty_work_items: M,
         elem_capacity: u64,
         segment_count: u32,
         segment_size: u32,
@@ -216,8 +455,6 @@ where
             forward_span_meta,
             forward_free_spans,
             forward_free_span_by_start,
-            forward_maintenance_queue,
-            forward_dirty_segments,
             reverse_vertices,
             reverse_counts,
             reverse_edges,
@@ -225,8 +462,8 @@ where
             reverse_span_meta,
             reverse_free_spans,
             reverse_free_span_by_start,
-            reverse_maintenance_queue,
-            reverse_dirty_segments,
+            maintenance_queue,
+            dirty_work_items,
             elem_capacity,
             segment_count,
             segment_size,
@@ -244,8 +481,6 @@ where
         forward_span_meta: M,
         forward_free_spans: M,
         forward_free_span_by_start: M,
-        forward_maintenance_queue: M,
-        forward_dirty_segments: M,
         reverse_vertices: M,
         reverse_counts: M,
         reverse_edges: M,
@@ -253,14 +488,17 @@ where
         reverse_span_meta: M,
         reverse_free_spans: M,
         reverse_free_span_by_start: M,
-        reverse_maintenance_queue: M,
-        reverse_dirty_segments: M,
+        maintenance_queue: M,
+        dirty_work_items: M,
         elem_capacity: u64,
         segment_count: u32,
         segment_size: u32,
         config: DeferredConfig,
     ) -> Result<Self, DeferredBidirectionalLaraError> {
-        let forward = DeferredLaraGraph::new_with_config(
+        let config = config
+            .validate()
+            .map_err(DeferredBidirectionalLaraError::InvalidConfig)?;
+        let forward = LaraGraph::new(
             forward_vertices,
             forward_counts,
             forward_edges,
@@ -268,15 +506,12 @@ where
             forward_span_meta,
             forward_free_spans,
             forward_free_span_by_start,
-            forward_maintenance_queue,
-            forward_dirty_segments,
             elem_capacity,
             segment_count,
             segment_size,
-            config,
         )
-        .map_err(DeferredBidirectionalLaraError::ForwardDeferred)?;
-        let reverse = DeferredLaraGraph::new_with_config(
+        .map_err(DeferredBidirectionalLaraError::ForwardGrow)?;
+        let reverse = LaraGraph::new(
             reverse_vertices,
             reverse_counts,
             reverse_edges,
@@ -284,15 +519,18 @@ where
             reverse_span_meta,
             reverse_free_spans,
             reverse_free_span_by_start,
-            reverse_maintenance_queue,
-            reverse_dirty_segments,
             elem_capacity,
             segment_count,
             segment_size,
-            config,
         )
-        .map_err(DeferredBidirectionalLaraError::ReverseDeferred)?;
-        Ok(Self { forward, reverse })
+        .map_err(DeferredBidirectionalLaraError::ReverseGrow)?;
+        let maintenance = BidirectionalMaintenanceQueue::new(maintenance_queue, dirty_work_items)?;
+        Ok(Self {
+            forward,
+            reverse,
+            maintenance,
+            config,
+        })
     }
 
     /// Reopens forward and reverse deferred LARA stores.
@@ -305,8 +543,6 @@ where
         forward_span_meta: M,
         forward_free_spans: M,
         forward_free_span_by_start: M,
-        forward_maintenance_queue: M,
-        forward_dirty_segments: M,
         reverse_vertices: M,
         reverse_counts: M,
         reverse_edges: M,
@@ -314,8 +550,8 @@ where
         reverse_span_meta: M,
         reverse_free_spans: M,
         reverse_free_span_by_start: M,
-        reverse_maintenance_queue: M,
-        reverse_dirty_segments: M,
+        maintenance_queue: M,
+        dirty_work_items: M,
     ) -> Result<Self, DeferredBidirectionalLaraError> {
         Self::init_with_config(
             forward_vertices,
@@ -325,8 +561,6 @@ where
             forward_span_meta,
             forward_free_spans,
             forward_free_span_by_start,
-            forward_maintenance_queue,
-            forward_dirty_segments,
             reverse_vertices,
             reverse_counts,
             reverse_edges,
@@ -334,8 +568,8 @@ where
             reverse_span_meta,
             reverse_free_spans,
             reverse_free_span_by_start,
-            reverse_maintenance_queue,
-            reverse_dirty_segments,
+            maintenance_queue,
+            dirty_work_items,
             DeferredConfig::default(),
         )
     }
@@ -350,8 +584,6 @@ where
         forward_span_meta: M,
         forward_free_spans: M,
         forward_free_span_by_start: M,
-        forward_maintenance_queue: M,
-        forward_dirty_segments: M,
         reverse_vertices: M,
         reverse_counts: M,
         reverse_edges: M,
@@ -359,11 +591,14 @@ where
         reverse_span_meta: M,
         reverse_free_spans: M,
         reverse_free_span_by_start: M,
-        reverse_maintenance_queue: M,
-        reverse_dirty_segments: M,
+        maintenance_queue: M,
+        dirty_work_items: M,
         config: DeferredConfig,
     ) -> Result<Self, DeferredBidirectionalLaraError> {
-        let forward = DeferredLaraGraph::init_with_config(
+        let config = config
+            .validate()
+            .map_err(DeferredBidirectionalLaraError::InvalidConfig)?;
+        let forward = LaraGraph::init(
             forward_vertices,
             forward_counts,
             forward_edges,
@@ -371,12 +606,9 @@ where
             forward_span_meta,
             forward_free_spans,
             forward_free_span_by_start,
-            forward_maintenance_queue,
-            forward_dirty_segments,
-            config,
         )
         .map_err(DeferredBidirectionalLaraError::ForwardInit)?;
-        let reverse = DeferredLaraGraph::init_with_config(
+        let reverse = LaraGraph::init(
             reverse_vertices,
             reverse_counts,
             reverse_edges,
@@ -384,39 +616,43 @@ where
             reverse_span_meta,
             reverse_free_spans,
             reverse_free_span_by_start,
-            reverse_maintenance_queue,
-            reverse_dirty_segments,
-            config,
         )
         .map_err(DeferredBidirectionalLaraError::ReverseInit)?;
-        let graph = Self { forward, reverse };
+        let maintenance = BidirectionalMaintenanceQueue::init(maintenance_queue, dirty_work_items)?;
+        let graph = Self {
+            forward,
+            reverse,
+            maintenance,
+            config,
+        };
         graph.ensure_matching_vertex_counts()?;
         Ok(graph)
     }
 
     /// Returns the forward out-adjacency graph.
-    pub fn forward(&self) -> &DeferredLaraGraph<E, V, M> {
+    pub fn forward(&self) -> &LaraGraph<E, V, M> {
         &self.forward
     }
 
     /// Returns the reverse in-adjacency graph.
-    pub fn reverse(&self) -> &DeferredLaraGraph<E, V, M> {
+    pub fn reverse(&self) -> &LaraGraph<E, V, M> {
         &self.reverse
     }
 
     /// Consumes the wrapper and returns all forward memories followed by all reverse memories.
     #[allow(clippy::type_complexity)]
-    pub fn into_memories(self) -> (M, M, M, M, M, M, M, M, M, M, M, M, M, M, M, M, M, M) {
-        let (fv, fc, fe, fl, fs, ff, ffs, fq, fd) = self.forward.into_memories();
-        let (rv, rc, re, rl, rs, rf, rfs, rq, rd) = self.reverse.into_memories();
+    pub fn into_memories(self) -> (M, M, M, M, M, M, M, M, M, M, M, M, M, M, M, M) {
+        let (fv, fc, fe, fl, fs, ff, ffs) = self.forward.into_memories();
+        let (rv, rc, re, rl, rs, rf, rfs) = self.reverse.into_memories();
+        let (mq, md) = self.maintenance.into_memories();
         (
-            fv, fc, fe, fl, fs, ff, ffs, fq, fd, rv, rc, re, rl, rs, rf, rfs, rq, rd,
+            fv, fc, fe, fl, fs, ff, ffs, rv, rc, re, rl, rs, rf, rfs, mq, md,
         )
     }
 
     /// Returns the number of vertices in both orientations.
     pub fn vertex_count(&self) -> VertexCount {
-        VertexCount(self.forward.graph().vertices().len())
+        VertexCount(self.forward.vertices().len())
     }
 
     /// Appends the same vertex row to the forward and reverse stores.
@@ -448,6 +684,35 @@ where
             .map_err(DeferredBidirectionalLaraError::Reverse)
     }
 
+    /// Logically deletes a vertex and queues incremental incident-edge cleanup.
+    pub fn delete_vertex_deferred(
+        &self,
+        vid: VertexId,
+    ) -> Result<bool, DeferredBidirectionalLaraError> {
+        self.ensure_vertex_in_range(vid)?;
+        if self
+            .forward
+            .vertex_is_deleted(vid)
+            .map_err(DeferredBidirectionalLaraError::Forward)?
+        {
+            return Ok(false);
+        }
+        self.forward
+            .set_vertex_deleted(vid, true)
+            .map_err(DeferredBidirectionalLaraError::Forward)?;
+        self.reverse
+            .set_vertex_deleted(vid, true)
+            .map_err(DeferredBidirectionalLaraError::Reverse)?;
+        self.maintenance
+            .mark_urgent(MaintenanceWorkItem::DeleteVertex {
+                vid,
+                phase: DeletePhase::RemoveOutgoing,
+                cursor: 0,
+                removed_edges: 0,
+            })?;
+        Ok(true)
+    }
+
     /// Inserts a directed edge and defers maintenance in each orientation.
     pub fn insert_directed_deferred(
         &self,
@@ -467,12 +732,10 @@ where
             return Err(DeferredBidirectionalLaraError::UndirectedEdgeInDirectedInsert);
         }
 
-        self.forward
-            .insert_edge_deferred(src, edge)
-            .map_err(DeferredBidirectionalLaraError::ForwardDeferred)?;
-        self.reverse
-            .insert_edge_deferred(dst, edge.with_neighbor_vid(src))
-            .map_err(DeferredBidirectionalLaraError::ReverseDeferred)?;
+        self.insert_oriented_deferred(Orientation::Forward, src, edge)
+            .map_err(DeferredBidirectionalLaraError::Forward)?;
+        self.insert_oriented_deferred(Orientation::Reverse, dst, edge.with_neighbor_vid(src))
+            .map_err(DeferredBidirectionalLaraError::Reverse)?;
         Ok(())
     }
 
@@ -550,21 +813,67 @@ where
     {
         let removed_forward = self
             .forward
-            .remove_edge_matching_deferred(src, |edge| edge.neighbor_vid() == dst && matches(edge))
-            .map_err(DeferredBidirectionalLaraError::ForwardDeferred)?;
+            .remove_edge_matching(src, |edge| edge.neighbor_vid() == dst && matches(edge))
+            .map_err(DeferredBidirectionalLaraError::Forward)?;
         let Some(edge) = removed_forward else {
             return Ok(None);
         };
         let removed_reverse = self
             .reverse
-            .remove_edge_deferred(dst, edge.with_neighbor_vid(src))
-            .map_err(DeferredBidirectionalLaraError::ReverseDeferred)?;
+            .remove_edge(dst, edge.with_neighbor_vid(src))
+            .map_err(DeferredBidirectionalLaraError::Reverse)?;
         if !removed_reverse {
             return Err(DeferredBidirectionalLaraError::Reverse(
                 "directed remove orientation mismatch",
             ));
         }
         Ok(Some(edge))
+    }
+
+    fn insert_oriented_deferred(
+        &self,
+        orientation: Orientation,
+        src: VertexId,
+        edge: E,
+    ) -> Result<(), &'static str> {
+        let graph = match orientation {
+            Orientation::Forward => &self.forward,
+            Orientation::Reverse => &self.reverse,
+        };
+        let outcome = graph.insert_edge_raw(src, edge)?;
+        let priority = graph.deferred_mark_priority(
+            outcome.segment,
+            outcome.inserted_into_log,
+            self.config.leaf_dirty_density,
+            self.config.log_urgent_ratio,
+        );
+        self.enqueue_rebalance_priority(orientation, priority)
+            .map_err(|_| "maintenance enqueue failed")
+    }
+
+    fn enqueue_rebalance_priority(
+        &self,
+        orientation: Orientation,
+        priority: MarkPriority,
+    ) -> Result<(), DeferredBidirectionalLaraError> {
+        match priority {
+            MarkPriority::Clean => {}
+            MarkPriority::Dirty(segment) => {
+                self.maintenance
+                    .mark_dirty(MaintenanceWorkItem::Rebalance {
+                        orientation,
+                        segment,
+                    })?;
+            }
+            MarkPriority::Urgent(segment) => {
+                self.maintenance
+                    .mark_urgent(MaintenanceWorkItem::Rebalance {
+                        orientation,
+                        segment,
+                    })?;
+            }
+        }
+        Ok(())
     }
 
     /// Inserts an undirected edge and defers maintenance in each orientation.
@@ -583,27 +892,21 @@ where
 
         if u == v {
             let loop_edge = edge.with_neighbor_vid(u);
-            self.forward
-                .insert_edge_deferred(u, loop_edge)
-                .map_err(DeferredBidirectionalLaraError::ForwardDeferred)?;
-            self.reverse
-                .insert_edge_deferred(u, loop_edge)
-                .map_err(DeferredBidirectionalLaraError::ReverseDeferred)?;
+            self.insert_oriented_deferred(Orientation::Forward, u, loop_edge)
+                .map_err(DeferredBidirectionalLaraError::Forward)?;
+            self.insert_oriented_deferred(Orientation::Reverse, u, loop_edge)
+                .map_err(DeferredBidirectionalLaraError::Reverse)?;
             return Ok(());
         }
 
-        self.forward
-            .insert_edge_deferred(u, edge.with_neighbor_vid(v))
-            .map_err(DeferredBidirectionalLaraError::ForwardDeferred)?;
-        self.forward
-            .insert_edge_deferred(v, edge.with_neighbor_vid(u))
-            .map_err(DeferredBidirectionalLaraError::ForwardDeferred)?;
-        self.reverse
-            .insert_edge_deferred(v, edge.with_neighbor_vid(u))
-            .map_err(DeferredBidirectionalLaraError::ReverseDeferred)?;
-        self.reverse
-            .insert_edge_deferred(u, edge.with_neighbor_vid(v))
-            .map_err(DeferredBidirectionalLaraError::ReverseDeferred)?;
+        self.insert_oriented_deferred(Orientation::Forward, u, edge.with_neighbor_vid(v))
+            .map_err(DeferredBidirectionalLaraError::Forward)?;
+        self.insert_oriented_deferred(Orientation::Forward, v, edge.with_neighbor_vid(u))
+            .map_err(DeferredBidirectionalLaraError::Forward)?;
+        self.insert_oriented_deferred(Orientation::Reverse, v, edge.with_neighbor_vid(u))
+            .map_err(DeferredBidirectionalLaraError::Reverse)?;
+        self.insert_oriented_deferred(Orientation::Reverse, u, edge.with_neighbor_vid(v))
+            .map_err(DeferredBidirectionalLaraError::Reverse)?;
         Ok(())
     }
 
@@ -672,80 +975,219 @@ where
         Ok(Some(edge))
     }
 
-    /// Runs maintenance only for the forward orientation.
-    pub fn maintenance_forward(
-        &self,
-        budget: MaintenanceBudget,
-    ) -> Result<MaintenanceReport, DeferredBidirectionalLaraError> {
-        self.forward
-            .maintenance(budget)
-            .map_err(DeferredBidirectionalLaraError::ForwardDeferred)
+    /// Returns the unified bidirectional maintenance queue length.
+    pub fn maintenance_queue_len(&self) -> u64 {
+        self.maintenance.len()
     }
 
-    /// Runs maintenance only for the reverse orientation.
-    pub fn maintenance_reverse(
-        &self,
-        budget: MaintenanceBudget,
-    ) -> Result<MaintenanceReport, DeferredBidirectionalLaraError> {
-        self.reverse
-            .maintenance(budget)
-            .map_err(DeferredBidirectionalLaraError::ReverseDeferred)
-    }
-
-    /// Runs budgeted maintenance across both orientations.
+    /// Runs budgeted maintenance across both orientations and vertex-delete jobs.
     pub fn maintenance(
         &self,
         budget: MaintenanceBudget,
     ) -> Result<BidirectionalMaintenanceReport, DeferredBidirectionalLaraError> {
         let mut report = BidirectionalMaintenanceReport::default();
-        let mut forward_len = self.forward.maintenance_queue().len();
-        let mut reverse_len = self.reverse.maintenance_queue().len();
+        let baseline = current_instruction_counter();
+        let mut checkpoint_tick = 0u32;
 
-        while budget
-            .max_segments
-            .is_none_or(|max_segments| report.processed_segments() < max_segments)
-        {
-            let instructions_used = current_instruction_counter();
-            if budget.max_instructions > 0 && instructions_used >= budget.max_instructions {
+        loop {
+            if budget
+                .max_work_items
+                .is_some_and(|max| report.work.processed_work_items >= max)
+                || budget
+                    .max_segments
+                    .is_some_and(|max| report.work.processed_segments >= max)
+                || budget
+                    .max_delete_edge_steps
+                    .is_some_and(|max| report.work.processed_delete_edge_steps >= max)
+            {
+                break;
+            }
+
+            checkpoint_tick = checkpoint_tick.wrapping_add(1);
+            let should_check =
+                budget.checkpoint_every <= 1 || checkpoint_tick % budget.checkpoint_every == 0;
+            report.instructions_used = current_instruction_counter().saturating_sub(baseline);
+            if should_check
+                && budget.max_instructions > 0
+                && report
+                    .instructions_used
+                    .saturating_add(budget.reserve_instructions)
+                    >= budget.max_instructions
+            {
                 report.instruction_budget_exhausted = true;
                 break;
             }
 
-            if forward_len == 0 && reverse_len == 0 {
+            let Some(step) = self.maintenance_step()? else {
                 break;
-            }
-
-            if forward_len >= reverse_len {
-                if let Some(step) = self
-                    .forward
-                    .maintenance_step()
-                    .map_err(DeferredBidirectionalLaraError::ForwardDeferred)?
-                {
-                    report.add_forward_step(step);
-                    forward_len = forward_len.saturating_sub(1);
-                }
-            } else if let Some(step) = self
-                .reverse
-                .maintenance_step()
-                .map_err(DeferredBidirectionalLaraError::ReverseDeferred)?
-            {
-                report.add_reverse_step(step);
-                reverse_len = reverse_len.saturating_sub(1);
-            }
+            };
+            add_step_report(&mut report.work, step);
         }
 
-        let instructions_used = current_instruction_counter();
-        let exhausted = budget.max_instructions > 0 && instructions_used >= budget.max_instructions;
-        report.instructions_used = instructions_used;
-        report.instruction_budget_exhausted |= exhausted;
-        report.forward.remaining_queue_len = forward_len;
-        report.reverse.remaining_queue_len = reverse_len;
+        report.instructions_used = current_instruction_counter().saturating_sub(baseline);
+        report.instruction_budget_exhausted |= budget.max_instructions > 0
+            && report
+                .instructions_used
+                .saturating_add(budget.reserve_instructions)
+                >= budget.max_instructions;
+        report.work.remaining_queue_len = self.maintenance.len();
         Ok(report)
     }
 
+    fn maintenance_step(
+        &self,
+    ) -> Result<Option<MaintenanceWorkReport>, DeferredBidirectionalLaraError> {
+        let Some(item) = self.maintenance.pop_next()? else {
+            return Ok(None);
+        };
+        let (step, next) = self.process_work_item(item)?;
+        if let Some(next) = next {
+            self.maintenance.requeue_front(next)?;
+        } else {
+            self.maintenance.complete(item)?;
+        }
+        Ok(Some(step))
+    }
+
+    fn process_work_item(
+        &self,
+        item: MaintenanceWorkItem,
+    ) -> Result<(MaintenanceWorkReport, Option<MaintenanceWorkItem>), DeferredBidirectionalLaraError>
+    {
+        match item {
+            MaintenanceWorkItem::Rebalance {
+                orientation,
+                segment,
+            } => {
+                let graph = match orientation {
+                    Orientation::Forward => &self.forward,
+                    Orientation::Reverse => &self.reverse,
+                };
+                let mut report = MaintenanceWorkReport {
+                    processed_work_items: 1,
+                    processed_segments: 1,
+                    ..MaintenanceWorkReport::default()
+                };
+                let before_capacity = graph.edges().header().elem_capacity;
+                if graph.rebalance_maintenance_segment(segment) {
+                    graph
+                        .rebalance_dirty_segment(segment)
+                        .map_err(|e| match orientation {
+                            Orientation::Forward => DeferredBidirectionalLaraError::ForwardGrow(e),
+                            Orientation::Reverse => DeferredBidirectionalLaraError::ReverseGrow(e),
+                        })?;
+                    report.rebalanced_segments = 1;
+                    report.resized = graph.edges().header().elem_capacity != before_capacity;
+                }
+                report.remaining_queue_len = self.maintenance.len();
+                Ok((report, None))
+            }
+            MaintenanceWorkItem::DeleteVertex {
+                vid,
+                phase,
+                cursor,
+                removed_edges,
+            } => self.process_delete_vertex(vid, phase, cursor, removed_edges),
+        }
+    }
+
+    fn process_delete_vertex(
+        &self,
+        vid: VertexId,
+        phase: DeletePhase,
+        cursor: u32,
+        removed_edges: u64,
+    ) -> Result<(MaintenanceWorkReport, Option<MaintenanceWorkItem>), DeferredBidirectionalLaraError>
+    {
+        let mut report = MaintenanceWorkReport {
+            processed_work_items: 1,
+            ..MaintenanceWorkReport::default()
+        };
+        let next = match phase {
+            DeletePhase::RemoveOutgoing => {
+                if let Some(edge) = self
+                    .forward
+                    .row_edge_at_after_rebalance(vid, cursor)
+                    .map_err(DeferredBidirectionalLaraError::Forward)?
+                {
+                    let dst = edge.neighbor_vid();
+                    let _ = self
+                        .reverse
+                        .remove_edge_matching_idempotent(dst, |candidate| {
+                            candidate.neighbor_vid() == vid
+                        })
+                        .map_err(DeferredBidirectionalLaraError::Reverse)?;
+                    report.processed_delete_edge_steps = 1;
+                    Some(MaintenanceWorkItem::DeleteVertex {
+                        vid,
+                        phase,
+                        cursor: cursor.saturating_add(1),
+                        removed_edges: removed_edges.saturating_add(1),
+                    })
+                } else {
+                    Some(MaintenanceWorkItem::DeleteVertex {
+                        vid,
+                        phase: DeletePhase::ClearForwardRow,
+                        cursor: 0,
+                        removed_edges,
+                    })
+                }
+            }
+            DeletePhase::ClearForwardRow => {
+                self.forward
+                    .clear_row_after_rebalance(vid)
+                    .map_err(DeferredBidirectionalLaraError::Forward)?;
+                Some(MaintenanceWorkItem::DeleteVertex {
+                    vid,
+                    phase: DeletePhase::RemoveIncoming,
+                    cursor: 0,
+                    removed_edges,
+                })
+            }
+            DeletePhase::RemoveIncoming => {
+                if let Some(edge) = self
+                    .reverse
+                    .row_edge_at_after_rebalance(vid, cursor)
+                    .map_err(DeferredBidirectionalLaraError::Reverse)?
+                {
+                    let src = edge.neighbor_vid();
+                    let _ = self
+                        .forward
+                        .remove_edge_matching_idempotent(src, |candidate| {
+                            candidate.neighbor_vid() == vid
+                        })
+                        .map_err(DeferredBidirectionalLaraError::Forward)?;
+                    report.processed_delete_edge_steps = 1;
+                    Some(MaintenanceWorkItem::DeleteVertex {
+                        vid,
+                        phase,
+                        cursor: cursor.saturating_add(1),
+                        removed_edges: removed_edges.saturating_add(1),
+                    })
+                } else {
+                    Some(MaintenanceWorkItem::DeleteVertex {
+                        vid,
+                        phase: DeletePhase::ClearReverseRow,
+                        cursor: 0,
+                        removed_edges,
+                    })
+                }
+            }
+            DeletePhase::ClearReverseRow => {
+                self.reverse
+                    .clear_row_after_rebalance(vid)
+                    .map_err(DeferredBidirectionalLaraError::Reverse)?;
+                report.completed_vertex_deletes = 1;
+                None
+            }
+        };
+        report.remaining_queue_len = self.maintenance.len();
+        Ok((report, next))
+    }
+
     fn ensure_matching_vertex_counts(&self) -> Result<(), DeferredBidirectionalLaraError> {
-        let forward = VertexCount(self.forward.graph().vertices().len());
-        let reverse = VertexCount(self.reverse.graph().vertices().len());
+        let forward = VertexCount(self.forward.vertices().len());
+        let reverse = VertexCount(self.reverse.vertices().len());
         if forward != reverse {
             return Err(DeferredBidirectionalLaraError::VertexCountMismatch { forward, reverse });
         }
@@ -753,6 +1195,18 @@ where
     }
 
     fn ensure_vertex(&self, vid: VertexId) -> Result<(), DeferredBidirectionalLaraError> {
+        self.ensure_vertex_in_range(vid)?;
+        if self
+            .forward
+            .vertex_is_deleted(vid)
+            .map_err(DeferredBidirectionalLaraError::Forward)?
+        {
+            return Err(DeferredBidirectionalLaraError::VertexDeleted { vid });
+        }
+        Ok(())
+    }
+
+    fn ensure_vertex_in_range(&self, vid: VertexId) -> Result<(), DeferredBidirectionalLaraError> {
         let len = self.vertex_count();
         if u64::from(u32::from(vid)) >= u64::from(len) {
             return Err(DeferredBidirectionalLaraError::VertexOutOfRange { vid, len });
@@ -766,7 +1220,7 @@ mod tests {
     use super::*;
     use crate::traits::CsrEdgeUndirected;
     use crate::{
-        SegmentId, Vertex,
+        Vertex,
         test_support::{
             TestEdge, UndirectedTestEdge, deferred_bidirectional_test_graph, vector_memory,
         },
@@ -891,21 +1345,14 @@ mod tests {
     }
 
     #[test]
-    fn deferred_bidirectional_reopen_preserves_stores_and_queues() {
+    fn deferred_bidirectional_reopen_preserves_unified_queue() {
         let graph = deferred_bidirectional_test_graph::<TestEdge>(8, 2, 2, &[0, 2, 4]);
         for _ in 0..3 {
             graph
                 .insert_directed_deferred(VertexId::from(0), VertexId::from(2), TestEdge(2))
                 .unwrap();
         }
-
-        assert!(
-            graph
-                .forward()
-                .maintenance_queue()
-                .is_dirty(SegmentId::from(0))
-        );
-        assert_eq!(graph.reverse().maintenance_queue().len(), 1);
+        assert_eq!(graph.maintenance_queue_len(), 2);
 
         let memories = graph.into_memories();
         let reopened = DeferredBidirectionalLaraGraph::<TestEdge, Vertex, _>::init(
@@ -925,8 +1372,6 @@ mod tests {
             memories.13,
             memories.14,
             memories.15,
-            memories.16,
-            memories.17,
         )
         .unwrap();
 
@@ -934,57 +1379,11 @@ mod tests {
             reopened.out_edges(VertexId::from(0)).unwrap(),
             vec![TestEdge(2), TestEdge(2), TestEdge(2)]
         );
-        assert_eq!(
-            reopened.in_edges(VertexId::from(2)).unwrap(),
-            vec![TestEdge(0), TestEdge(0), TestEdge(0)]
-        );
-        assert!(
-            reopened
-                .forward()
-                .maintenance_queue()
-                .is_dirty(SegmentId::from(0))
-        );
-        assert_eq!(reopened.reverse().maintenance_queue().len(), 1);
+        assert_eq!(reopened.maintenance_queue_len(), 2);
     }
 
     #[test]
-    fn deferred_bidirectional_maintenance_drains_orientations_independently() {
-        let graph = deferred_bidirectional_test_graph::<TestEdge>(8, 2, 2, &[0, 2, 4]);
-        for _ in 0..3 {
-            graph
-                .insert_directed_deferred(VertexId::from(0), VertexId::from(2), TestEdge(2))
-                .unwrap();
-        }
-
-        let forward = graph
-            .maintenance_forward(MaintenanceBudget {
-                max_instructions: 0,
-                max_segments: Some(1),
-            })
-            .unwrap();
-
-        assert_eq!(forward.work.processed_segments, 1);
-        assert!(
-            !graph
-                .forward()
-                .maintenance_queue()
-                .is_dirty(SegmentId::from(0))
-        );
-        assert_eq!(graph.reverse().maintenance_queue().len(), 1);
-
-        let reverse = graph
-            .maintenance_reverse(MaintenanceBudget {
-                max_instructions: 0,
-                max_segments: Some(1),
-            })
-            .unwrap();
-
-        assert_eq!(reverse.work.processed_segments, 1);
-        assert_eq!(graph.reverse().maintenance_queue().len(), 0);
-    }
-
-    #[test]
-    fn deferred_bidirectional_combined_maintenance_respects_segment_cap() {
+    fn deferred_bidirectional_unified_maintenance_respects_segment_cap() {
         let graph = deferred_bidirectional_test_graph::<TestEdge>(8, 2, 2, &[0, 2, 4]);
         for _ in 0..3 {
             graph
@@ -996,116 +1395,57 @@ mod tests {
             .maintenance(MaintenanceBudget {
                 max_instructions: 0,
                 max_segments: Some(1),
+                reserve_instructions: 0,
+                checkpoint_every: 1,
+                max_work_items: None,
+                max_delete_edge_steps: None,
             })
             .unwrap();
 
-        assert_eq!(report.processed_segments(), 1);
-        assert_eq!(report.forward.processed_segments, 1);
-        assert_eq!(report.reverse.processed_segments, 0);
-        assert_eq!(graph.reverse().maintenance_queue().len(), 1);
+        assert_eq!(report.work.processed_segments, 1);
+        assert_eq!(graph.maintenance_queue_len(), 1);
     }
 
     #[test]
-    fn deferred_bidirectional_combined_maintenance_chooses_reverse_when_longer() {
-        let graph = deferred_bidirectional_test_graph::<TestEdge>(16, 4, 2, &[0, 2, 4, 6, 8, 10]);
-        graph
-            .forward()
-            .maintenance_queue()
-            .mark_dirty(SegmentId::from(0))
-            .unwrap();
-        graph
-            .reverse()
-            .maintenance_queue()
-            .mark_dirty(SegmentId::from(1))
-            .unwrap();
-        graph
-            .reverse()
-            .maintenance_queue()
-            .mark_dirty(SegmentId::from(2))
-            .unwrap();
-
-        let report = graph
-            .maintenance(MaintenanceBudget {
-                max_instructions: 0,
-                max_segments: Some(1),
-            })
-            .unwrap();
-
-        assert_eq!(report.forward.processed_segments, 0);
-        assert_eq!(report.reverse.processed_segments, 1);
-        assert_eq!(graph.forward().maintenance_queue().len(), 1);
-        assert_eq!(graph.reverse().maintenance_queue().len(), 1);
-    }
-
-    #[test]
-    fn deferred_bidirectional_combined_maintenance_chooses_forward_on_tie() {
+    fn deferred_vertex_delete_is_incremental_and_removes_incident_edges() {
         let graph = deferred_bidirectional_test_graph::<TestEdge>(16, 4, 2, &[0, 2, 4, 6]);
         graph
-            .forward()
-            .maintenance_queue()
-            .mark_dirty(SegmentId::from(0))
+            .insert_directed_deferred(VertexId::from(0), VertexId::from(1), TestEdge(1))
             .unwrap();
         graph
-            .reverse()
-            .maintenance_queue()
-            .mark_dirty(SegmentId::from(1))
-            .unwrap();
-
-        let report = graph
-            .maintenance(MaintenanceBudget {
-                max_instructions: 0,
-                max_segments: Some(1),
-            })
-            .unwrap();
-
-        assert_eq!(report.forward.processed_segments, 1);
-        assert_eq!(report.reverse.processed_segments, 0);
-        assert_eq!(graph.forward().maintenance_queue().len(), 0);
-        assert_eq!(graph.reverse().maintenance_queue().len(), 1);
-    }
-
-    #[test]
-    fn deferred_bidirectional_combined_maintenance_rechecks_lengths_after_each_step() {
-        let graph = deferred_bidirectional_test_graph::<TestEdge>(16, 4, 2, &[0, 2, 4, 6, 8, 10]);
-        graph
-            .forward()
-            .maintenance_queue()
-            .mark_dirty(SegmentId::from(0))
+            .insert_directed_deferred(VertexId::from(2), VertexId::from(1), TestEdge(1))
             .unwrap();
         graph
-            .forward()
-            .maintenance_queue()
-            .mark_dirty(SegmentId::from(1))
-            .unwrap();
-        graph
-            .reverse()
-            .maintenance_queue()
-            .mark_dirty(SegmentId::from(0))
-            .unwrap();
-        graph
-            .reverse()
-            .maintenance_queue()
-            .mark_dirty(SegmentId::from(2))
+            .insert_directed_deferred(VertexId::from(1), VertexId::from(3), TestEdge(3))
             .unwrap();
 
-        let report = graph
-            .maintenance(MaintenanceBudget {
-                max_instructions: 0,
-                max_segments: Some(2),
-            })
-            .unwrap();
+        assert!(graph.delete_vertex_deferred(VertexId::from(1)).unwrap());
+        assert!(matches!(
+            graph.out_edges(VertexId::from(1)),
+            Err(DeferredBidirectionalLaraError::VertexDeleted { .. })
+        ));
 
-        assert_eq!(report.forward.processed_segments, 1);
-        assert_eq!(report.reverse.processed_segments, 1);
-        assert_eq!(graph.forward().maintenance_queue().len(), 1);
-        assert_eq!(graph.reverse().maintenance_queue().len(), 1);
+        while graph.maintenance_queue_len() > 0 {
+            graph
+                .maintenance(MaintenanceBudget {
+                    max_instructions: 0,
+                    max_segments: None,
+                    reserve_instructions: 0,
+                    checkpoint_every: 1,
+                    max_work_items: Some(1),
+                    max_delete_edge_steps: Some(1),
+                })
+                .unwrap();
+        }
+
+        assert_eq!(graph.out_edges(VertexId::from(0)).unwrap(), Vec::new());
+        assert_eq!(graph.out_edges(VertexId::from(2)).unwrap(), Vec::new());
+        assert_eq!(graph.in_edges(VertexId::from(3)).unwrap(), Vec::new());
     }
 
     #[test]
     fn deferred_bidirectional_init_rejects_vertex_count_mismatch() {
-        let forward = crate::DeferredLaraGraph::<TestEdge, Vertex, _>::new(
-            vector_memory(),
-            vector_memory(),
+        let forward = LaraGraph::<TestEdge, Vertex, _>::new(
             vector_memory(),
             vector_memory(),
             vector_memory(),
@@ -1118,9 +1458,7 @@ mod tests {
             2,
         )
         .unwrap();
-        let reverse = crate::DeferredLaraGraph::<TestEdge, Vertex, _>::new(
-            vector_memory(),
-            vector_memory(),
+        let reverse = LaraGraph::<TestEdge, Vertex, _>::new(
             vector_memory(),
             vector_memory(),
             vector_memory(),
@@ -1139,13 +1477,29 @@ mod tests {
                 degree: 0,
                 capacity: 0,
                 log_head: -1,
+                deleted: false,
             })
             .unwrap();
 
-        let (fv, fc, fe, fl, fs, ff, ffs, fq, fd) = forward.into_memories();
-        let (rv, rc, re, rl, rs, rf, rfs, rq, rd) = reverse.into_memories();
+        let (fv, fc, fe, fl, fs, ff, ffs) = forward.into_memories();
+        let (rv, rc, re, rl, rs, rf, rfs) = reverse.into_memories();
         let err = match DeferredBidirectionalLaraGraph::<TestEdge, Vertex, _>::init(
-            fv, fc, fe, fl, fs, ff, ffs, fq, fd, rv, rc, re, rl, rs, rf, rfs, rq, rd,
+            fv,
+            fc,
+            fe,
+            fl,
+            fs,
+            ff,
+            ffs,
+            rv,
+            rc,
+            re,
+            rl,
+            rs,
+            rf,
+            rfs,
+            vector_memory(),
+            vector_memory(),
         ) {
             Ok(_) => panic!("vertex count mismatch was accepted"),
             Err(err) => err,

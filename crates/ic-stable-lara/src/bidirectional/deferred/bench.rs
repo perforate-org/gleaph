@@ -19,7 +19,7 @@ fn bench_lara_deferred_bidirectional_insert_directed_1024() -> canbench_rs::Benc
                 .insert_directed_deferred(VertexId::from(src), VertexId::from(dst), TestEdge(dst))
                 .expect("insert directed deferred");
         }
-        black_box(graph.forward().maintenance_queue().len());
+        black_box(graph.maintenance_queue_len());
     })
 }
 
@@ -34,8 +34,6 @@ fn bench_lara_deferred_bidirectional_insert_undirected_1024() -> canbench_rs::Be
         crate::Vertex,
         helper::BenchMemory,
     >::new_with_config(
-        memories.memory(),
-        memories.memory(),
         memories.memory(),
         memories.memory(),
         memories.memory(),
@@ -79,7 +77,7 @@ fn bench_lara_deferred_bidirectional_insert_undirected_1024() -> canbench_rs::Be
                 )
                 .expect("insert undirected deferred");
         }
-        black_box(graph.forward().maintenance_queue().len());
+        black_box(graph.maintenance_queue_len());
     })
 }
 
@@ -101,8 +99,12 @@ fn bench_lara_deferred_bidirectional_maintenance_drain_1() -> canbench_rs::Bench
             .maintenance(MaintenanceBudget {
                 max_instructions: 0,
                 max_segments: Some(2),
+                reserve_instructions: 0,
+                checkpoint_every: 1,
+                max_work_items: None,
+                max_delete_edge_steps: None,
             })
             .expect("maintenance");
-        black_box(report.processed_segments());
+        black_box(report.work.processed_segments);
     })
 }

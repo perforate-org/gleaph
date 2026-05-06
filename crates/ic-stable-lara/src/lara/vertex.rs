@@ -42,7 +42,7 @@
 
 use crate::{
     GrowFailed, read_u64, safe_write,
-    traits::{CsrVertex, LaraVertex},
+    traits::{CsrVertex, CsrVertexTombstone, LaraVertex},
     types::Address,
     write_u64,
 };
@@ -121,10 +121,12 @@ pub struct Vertex {
     pub capacity: u32,
     /// Head entry in the per-segment overflow log, or `-1` when no log is present.
     pub log_head: i32,
+    /// Logical deletion marker. Deleted vertex ids are never reused.
+    pub deleted: bool,
 }
 
 impl CsrVertex for Vertex {
-    const BYTES: usize = 20;
+    const BYTES: usize = 24;
 
     fn base_slot_start(&self) -> u64 {
         self.base_slot_start
@@ -160,18 +162,30 @@ impl LaraVertex for Vertex {
     }
 }
 
+impl CsrVertexTombstone for Vertex {
+    fn is_tombstone(&self) -> bool {
+        self.deleted
+    }
+
+    fn with_tombstone(mut self, tomb: bool) -> Self {
+        self.deleted = tomb;
+        self
+    }
+}
+
 impl Storable for Vertex {
     const BOUND: Bound = Bound::Bounded {
-        max_size: 20,
+        max_size: 24,
         is_fixed_size: true,
     };
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        let mut b = [0u8; 20];
+        let mut b = [0u8; 24];
         b[0..8].copy_from_slice(&self.base_slot_start.to_le_bytes());
         b[8..12].copy_from_slice(&self.degree.to_le_bytes());
         b[12..16].copy_from_slice(&self.capacity.to_le_bytes());
         b[16..20].copy_from_slice(&self.log_head.to_le_bytes());
+        b[20] = u8::from(self.deleted);
         Cow::Owned(b.to_vec())
     }
 
@@ -194,6 +208,7 @@ impl Storable for Vertex {
             degree: u32::from_le_bytes(d),
             capacity: u32::from_le_bytes(c),
             log_head: i32::from_le_bytes(l),
+            deleted: b.get(20).copied().unwrap_or(0) != 0,
         }
     }
 }
@@ -357,6 +372,7 @@ mod bench {
                     degree: (i % 8) as u32,
                     capacity: 8,
                     log_head: -1,
+                    deleted: false,
                 })
                 .expect("push vertex");
         }
@@ -378,6 +394,7 @@ mod bench {
                         degree: 0,
                         capacity: 4,
                         log_head: -1,
+                        deleted: false,
                     })
                     .expect("push vertex");
             }

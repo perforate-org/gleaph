@@ -380,6 +380,7 @@ where
                 degree: 0,
                 capacity: 0,
                 log_head: -1,
+                deleted: false,
             })
             .unwrap();
     }
@@ -417,6 +418,7 @@ where
                 degree: 0,
                 capacity: 0,
                 log_head: -1,
+                deleted: false,
             })
             .unwrap();
     }
@@ -449,8 +451,6 @@ where
         vector_memory(),
         vector_memory(),
         vector_memory(),
-        vector_memory(),
-        vector_memory(),
         elem_capacity,
         segment_count,
         segment_size,
@@ -467,6 +467,7 @@ where
                 degree: 0,
                 capacity: 0,
                 log_head: -1,
+                deleted: false,
             })
             .unwrap();
     }
@@ -541,6 +542,7 @@ pub(crate) fn deferred_test_graph(
                 degree: 0,
                 capacity: 0,
                 log_head: -1,
+                deleted: false,
             })
             .unwrap();
     }

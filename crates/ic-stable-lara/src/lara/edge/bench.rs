@@ -25,6 +25,7 @@ fn edge_store_with_vertices(
                 degree: 0,
                 capacity,
                 log_head: -1,
+                deleted: false,
             })
             .expect("push vertex");
     }

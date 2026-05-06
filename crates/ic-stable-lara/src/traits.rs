@@ -49,6 +49,34 @@ pub trait CsrVertexTombstone: CsrVertex {
     fn with_tombstone(self, tomb: bool) -> Self;
 }
 
+/// Tombstone behavior used by generic graph code.
+pub trait CsrVertexTombstoneScan: CsrVertex {
+    /// Returns whether this vertex is logically deleted.
+    fn record_is_vertex_tombstone(vertex: &Self) -> bool;
+    /// Returns a copy with the logical deletion marker changed.
+    fn record_with_vertex_tombstone(vertex: Self, tomb: bool) -> Self;
+}
+
+impl<V: CsrVertex> CsrVertexTombstoneScan for V {
+    default fn record_is_vertex_tombstone(_: &Self) -> bool {
+        false
+    }
+
+    default fn record_with_vertex_tombstone(vertex: Self, _: bool) -> Self {
+        vertex
+    }
+}
+
+impl<V: CsrVertex + CsrVertexTombstone> CsrVertexTombstoneScan for V {
+    fn record_is_vertex_tombstone(vertex: &Self) -> bool {
+        vertex.is_tombstone()
+    }
+
+    fn record_with_vertex_tombstone(vertex: Self, tomb: bool) -> Self {
+        vertex.with_tombstone(tomb)
+    }
+}
+
 /// One fixed-width **edge record** stored in a CSR slab cell (`M_e`).
 ///
 /// In the forward CSR, [`Self::neighbor_vid`](Self::neighbor_vid) is the **other** endpoint (out-neighbor).

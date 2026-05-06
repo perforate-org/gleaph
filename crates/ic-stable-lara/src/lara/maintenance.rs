@@ -232,7 +232,7 @@ impl Default for DeferredConfig {
 }
 
 impl DeferredConfig {
-    fn validate(self) -> Result<Self, DeferredConfigError> {
+    pub(crate) fn validate(self) -> Result<Self, DeferredConfigError> {
         validate_ratio("leaf_dirty_density", self.leaf_dirty_density)?;
         validate_ratio("log_urgent_ratio", self.log_urgent_ratio)?;
         Ok(self)
@@ -265,22 +265,25 @@ fn validate_ratio(field: &'static str, value: f64) -> Result<(), DeferredConfigE
 /// Budget for one deferred maintenance call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MaintenanceBudget {
-    /// Upper instruction-counter value allowed for the current call.
-    ///
-    /// On IC wasm builds this is compared with
-    /// `ic_cdk::api::instruction_counter()`, which is scoped to the current
-    /// message execution. Use `0` to disable instruction-based termination.
+    /// Maximum instructions allowed from this maintenance call's baseline.
     pub max_instructions: u64,
-    /// Optional hard cap on the number of segments processed in one call.
-    ///
-    /// This is useful for deterministic tests or fairness tuning. `None` means
-    /// instruction budget and queue exhaustion are the only maintenance caps.
+    /// Headroom reserved before starting another unit of work.
+    pub reserve_instructions: u64,
+    /// Number of loop iterations between instruction counter checks.
+    pub checkpoint_every: u32,
+    /// Optional hard cap on work items processed in one call.
+    pub max_work_items: Option<u32>,
+    /// Optional hard cap on segment steps processed in one call.
     pub max_segments: Option<u32>,
+    /// Optional hard cap on delete edge steps processed in one call.
+    pub max_delete_edge_steps: Option<u32>,
 }
 
 /// Work performed by one or more deferred maintenance steps.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MaintenanceWorkReport {
+    /// Number of queue work items consumed or advanced.
+    pub processed_work_items: u32,
     /// Number of queue entries consumed.
     pub processed_segments: u32,
     /// Number of segments that actually needed rebalancing.
@@ -289,6 +292,10 @@ pub struct MaintenanceWorkReport {
     pub resized: bool,
     /// Queue length after the reported work.
     pub remaining_queue_len: u64,
+    /// Number of delete edge steps processed.
+    pub processed_delete_edge_steps: u32,
+    /// Number of vertex delete jobs completed.
+    pub completed_vertex_deletes: u32,
 }
 
 /// Result of a budgeted deferred maintenance run.
@@ -509,16 +516,32 @@ where
 
     /// Inserts an edge without immediate rebalancing, enqueueing maintenance if needed.
     pub fn insert_edge_deferred(&self, src: VertexId, edge: E) -> Result<(), DeferredError> {
+        let priority = self.insert_edge_deferred_priority(src, edge)?;
+        self.enqueue_mark_priority(priority)
+    }
+
+    pub(crate) fn insert_edge_deferred_priority(
+        &self,
+        src: VertexId,
+        edge: E,
+    ) -> Result<MarkPriority, DeferredError> {
         let outcome = self
             .graph
             .insert_edge_raw(src, edge)
             .map_err(DeferredError::Graph)?;
-        match self.graph.deferred_mark_priority(
+        Ok(self.graph.deferred_mark_priority(
             outcome.segment,
             outcome.inserted_into_log,
             self.config.leaf_dirty_density,
             self.config.log_urgent_ratio,
-        ) {
+        ))
+    }
+
+    pub(crate) fn enqueue_mark_priority(
+        &self,
+        priority: MarkPriority,
+    ) -> Result<(), DeferredError> {
+        match priority {
             MarkPriority::Clean => {}
             MarkPriority::Dirty(segment) => {
                 self.maintenance
@@ -569,6 +592,7 @@ where
         };
 
         let mut report = MaintenanceWorkReport {
+            processed_work_items: 1,
             processed_segments: 1,
             ..MaintenanceWorkReport::default()
         };
@@ -591,12 +615,26 @@ where
     ) -> Result<MaintenanceReport, DeferredError> {
         let mut report = MaintenanceReport::default();
 
+        let baseline = current_instruction_counter();
+        let mut checkpoint_tick = 0u32;
         while budget
             .max_segments
             .is_none_or(|max_segments| report.work.processed_segments < max_segments)
+            && budget
+                .max_work_items
+                .is_none_or(|max| report.work.processed_work_items < max)
         {
-            report.instructions_used = current_instruction_counter();
-            if budget.max_instructions > 0 && report.instructions_used >= budget.max_instructions {
+            checkpoint_tick = checkpoint_tick.wrapping_add(1);
+            report.instructions_used = current_instruction_counter().saturating_sub(baseline);
+            let should_check = budget.checkpoint_every <= 1
+                || checkpoint_tick.is_multiple_of(budget.checkpoint_every);
+            if should_check
+                && budget.max_instructions > 0
+                && report
+                    .instructions_used
+                    .saturating_add(budget.reserve_instructions)
+                    >= budget.max_instructions
+            {
                 report.instruction_budget_exhausted = true;
                 break;
             }
@@ -604,14 +642,18 @@ where
             let Some(step) = self.maintenance_step()? else {
                 break;
             };
+            report.work.processed_work_items += step.processed_work_items;
             report.work.processed_segments += step.processed_segments;
             report.work.rebalanced_segments += step.rebalanced_segments;
             report.work.resized |= step.resized;
         }
 
-        report.instructions_used = current_instruction_counter();
-        report.instruction_budget_exhausted =
-            budget.max_instructions > 0 && report.instructions_used >= budget.max_instructions;
+        report.instructions_used = current_instruction_counter().saturating_sub(baseline);
+        report.instruction_budget_exhausted = budget.max_instructions > 0
+            && report
+                .instructions_used
+                .saturating_add(budget.reserve_instructions)
+                >= budget.max_instructions;
         report.work.remaining_queue_len = self.maintenance.len();
         Ok(report)
     }
@@ -698,6 +740,10 @@ mod tests {
             .maintenance(MaintenanceBudget {
                 max_instructions: 0,
                 max_segments: Some(1),
+                reserve_instructions: 0,
+                checkpoint_every: 1,
+                max_work_items: None,
+                max_delete_edge_steps: None,
             })
             .unwrap();
 
@@ -727,6 +773,10 @@ mod tests {
             .maintenance(MaintenanceBudget {
                 max_instructions: 0,
                 max_segments: Some(1),
+                reserve_instructions: 0,
+                checkpoint_every: 1,
+                max_work_items: None,
+                max_delete_edge_steps: None,
             })
             .unwrap();
 
@@ -782,6 +832,10 @@ mod tests {
             .maintenance(MaintenanceBudget {
                 max_instructions: 0,
                 max_segments: Some(1),
+                reserve_instructions: 0,
+                checkpoint_every: 1,
+                max_work_items: None,
+                max_delete_edge_steps: None,
             })
             .unwrap();
 
@@ -859,6 +913,7 @@ mod tests {
                     degree: 0,
                     capacity: 0,
                     log_head: -1,
+                    deleted: false,
                 })
                 .unwrap();
         }
@@ -967,6 +1022,10 @@ mod bench {
                 .maintenance(MaintenanceBudget {
                     max_instructions: 0,
                     max_segments: Some(1),
+                    reserve_instructions: 0,
+                    checkpoint_every: 1,
+                    max_work_items: None,
+                    max_delete_edge_steps: None,
                 })
                 .expect("maintenance");
             black_box(report.work.rebalanced_segments);

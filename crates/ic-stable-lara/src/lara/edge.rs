@@ -31,7 +31,7 @@ pub mod span_meta;
 
 use crate::{
     GrowFailed, SegmentId, VertexId,
-    traits::{CsrEdge, CsrVertex, LaraVertex},
+    traits::{CsrEdge, CsrVertex, CsrVertexTombstoneScan, LaraVertex},
 };
 use counts::{EdgePmaCountsStride, SegmentEdgeCounts, SegmentEdgeCountsStore};
 use edges::EdgeSlabStore;
@@ -328,7 +328,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         vid: VertexId,
     ) -> Result<Vec<E>, &'static str>
     where
-        V: LaraVertex,
+        V: LaraVertex + CsrVertexTombstoneScan,
         A: VertexAccess<V>,
     {
         let edge_layout = self.edge_layout();
@@ -337,6 +337,9 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
             return Err("vertex out of range");
         }
         let v = vertices.get(vidx as u64);
+        if V::record_is_vertex_tombstone(&v) {
+            return Err("vertex deleted");
+        }
         let on_slab = self.on_slab_edges_with_layout(&edge_layout, vertices, vidx, &v);
         let degree = v.degree() as usize;
         let slab_count = on_slab.min(v.degree()) as usize;
@@ -396,7 +399,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         edge: E,
     ) -> Result<InsertLocation, &'static str>
     where
-        V: LaraVertex,
+        V: LaraVertex + CsrVertexTombstoneScan,
         A: VertexAccess<V>,
     {
         let edge_layout = self.edge_layout();
@@ -406,6 +409,9 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
             return Err("vertex out of range");
         }
         let v = vertices.get(vidx as u64);
+        if V::record_is_vertex_tombstone(&v) {
+            return Err("vertex deleted");
+        }
         let loc = v.base_slot_start().saturating_add(u64::from(v.degree()));
         let location =
             if self.have_space_on_slab(vertices, vidx, &v, loc, edge_layout.elem_capacity) {
@@ -480,6 +486,61 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
             .set_num_edges(edge_layout.num_edges.saturating_sub(1));
         self.bump_counts_leaf_with_layout(&edge_layout, vid, -1, 0, 0)?;
         Ok(Some(removed))
+    }
+
+    pub(crate) fn row_edge_at_slab<V, A>(
+        &self,
+        vertices: &A,
+        vid: VertexId,
+        offset: u32,
+    ) -> Result<Option<E>, &'static str>
+    where
+        V: LaraVertex,
+        A: VertexAccess<V>,
+    {
+        let vidx = vertex_index(vid);
+        if vidx >= vertices.len() as usize {
+            return Err("vertex out of range");
+        }
+        let v = vertices.get(vidx as u64);
+        if v.log_head() >= 0 {
+            return Err("row edge read requires slab-only row");
+        }
+        if offset >= v.degree() {
+            return Ok(None);
+        }
+        Ok(Some(self.read_slot(
+            v.base_slot_start().saturating_add(u64::from(offset)),
+        )))
+    }
+
+    pub(crate) fn clear_row_slab<V, A>(
+        &self,
+        vertices: &A,
+        vid: VertexId,
+    ) -> Result<u32, &'static str>
+    where
+        V: LaraVertex,
+        A: VertexAccess<V>,
+    {
+        let edge_layout = self.edge_layout();
+        let vidx = vertex_index(vid);
+        if vidx >= vertices.len() as usize {
+            return Err("vertex out of range");
+        }
+        let v = vertices.get(vidx as u64);
+        if v.log_head() >= 0 {
+            return Err("clear row requires slab-only row");
+        }
+        let removed = v.degree();
+        if removed == 0 {
+            return Ok(0);
+        }
+        vertices.set(vidx as u64, &v.with_degree(0).with_log_head(-1));
+        self.edges
+            .set_num_edges(edge_layout.num_edges.saturating_sub(u64::from(removed)));
+        self.bump_counts_leaf_with_layout(&edge_layout, vid, -i64::from(removed), 0, 0)?;
+        Ok(removed)
     }
 
     fn insert_into_log_with_layout<V, A>(
@@ -690,6 +751,7 @@ mod tests {
                 degree: 0,
                 capacity: 1,
                 log_head: -1,
+                deleted: false,
             })
             .unwrap();
         vertices
@@ -698,6 +760,7 @@ mod tests {
                 degree: 0,
                 capacity: 1,
                 log_head: -1,
+                deleted: false,
             })
             .unwrap();
 
@@ -746,6 +809,7 @@ mod tests {
                 degree: 0,
                 capacity: 2,
                 log_head: -1,
+                deleted: false,
             })
             .unwrap();
         vertices
@@ -754,6 +818,7 @@ mod tests {
                 degree: 0,
                 capacity: 1,
                 log_head: -1,
+                deleted: false,
             })
             .unwrap();
 

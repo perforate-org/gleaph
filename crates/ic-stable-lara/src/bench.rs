@@ -59,6 +59,7 @@ pub(crate) fn vertex(base_slot_start: u64, capacity: u32) -> Vertex {
         degree: 0,
         capacity,
         log_head: -1,
+        deleted: false,
     }
 }
 
@@ -186,8 +187,6 @@ pub(crate) fn deferred_bidirectional_graph(
 ) -> DeferredBidirectionalLaraGraph<TestEdge, Vertex, BenchMemory> {
     let mut memories = BenchMemoryFactory::new();
     let graph = DeferredBidirectionalLaraGraph::new_with_config(
-        memories.memory(),
-        memories.memory(),
         memories.memory(),
         memories.memory(),
         memories.memory(),
