@@ -73,7 +73,7 @@ fn bench_lara_edge_store_log_spill_128() -> canbench_rs::BenchResult {
                 .insert_edge(&vertices, VertexId::from(0), helper::test_edge(i))
                 .expect("insert log edge");
         }
-        black_box(vertices.get(0).log_head);
+        black_box(vertices.get(VertexId::from(0)).log_head);
     })
 }
 

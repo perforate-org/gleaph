@@ -766,7 +766,7 @@ mod tests {
             graph.collect_out_edges(VertexId::from(0)).unwrap(),
             vec![TestEdge(10), TestEdge(11), TestEdge(12)]
         );
-        assert!(graph.graph().vertices().get(0).log_head >= 0);
+        assert!(graph.graph().vertices().get(VertexId::from(0)).log_head >= 0);
         assert!(graph.maintenance_queue().is_dirty(SegmentId::from(0)));
 
         let report = graph
@@ -782,7 +782,7 @@ mod tests {
 
         assert_eq!(report.work.processed_segments, 1);
         assert_eq!(report.work.rebalanced_segments, 1);
-        assert_eq!(graph.graph().vertices().get(0).log_head, -1);
+        assert_eq!(graph.graph().vertices().get(VertexId::from(0)).log_head, -1);
         assert_eq!(
             graph.collect_out_edges(VertexId::from(0)).unwrap(),
             vec![TestEdge(10), TestEdge(11), TestEdge(12)]
@@ -798,7 +798,7 @@ mod tests {
                 .insert_edge_deferred(VertexId::from(0), TestEdge(dst))
                 .unwrap();
         }
-        assert!(graph.graph().vertices().get(0).log_head >= 0);
+        assert!(graph.graph().vertices().get(VertexId::from(0)).log_head >= 0);
 
         assert!(
             graph
@@ -810,8 +810,8 @@ mod tests {
             graph.collect_out_edges(VertexId::from(0)).unwrap(),
             vec![TestEdge(10), TestEdge(12)]
         );
-        assert_eq!(graph.graph().vertices().get(0).degree, 2);
-        assert_eq!(graph.graph().vertices().get(0).log_head, -1);
+        assert_eq!(graph.graph().vertices().get(VertexId::from(0)).degree, 2);
+        assert_eq!(graph.graph().vertices().get(VertexId::from(0)).log_head, -1);
     }
 
     #[test]

@@ -477,7 +477,9 @@ where
 pub(crate) fn assert_vertex_capacity_invariants(graph: &LaraGraph<TestEdge, Vertex, VectorMemory>) {
     let mut owned_spans = Vec::new();
     for vidx in 0..graph.vertices().len() {
-        let v = graph.vertices().get(vidx);
+        let v = graph.vertices().get(VertexId::from(
+            u32::try_from(vidx).expect("vertex index exceeds VertexId"),
+        ));
         assert!(
             v.degree <= v.capacity,
             "vertex {vidx} has degree {} beyond capacity {}",

@@ -41,7 +41,7 @@
 //! ```
 
 use crate::{
-    GrowFailed, read_u64, safe_write,
+    GrowFailed, VertexId, read_u64, safe_write,
     traits::{CsrVertex, CsrVertexTombstone, LaraVertex},
     types::Address,
     write_u64,
@@ -278,20 +278,22 @@ impl<V: CsrVertex, M: Memory> VertexStore<V, M> {
         self.memory
     }
 
-    /// Reads the vertex row at `index`.
+    /// Reads the vertex row for `id`.
     ///
-    /// Panics if `index >= self.len()`.
-    pub fn get(&self, index: u64) -> V {
+    /// Panics if `id >= self.len()`.
+    pub fn get(&self, id: VertexId) -> V {
+        let index = u64::from(id);
         assert!(index < self.len());
         let mut buf = vec![0u8; V::BYTES];
         self.memory.read(self.entry_offset(index), &mut buf);
         V::from_bytes(Cow::Owned(buf))
     }
 
-    /// Replaces the vertex row at `index`.
+    /// Replaces the vertex row for `id`.
     ///
-    /// Panics if `index >= self.len()`.
-    pub fn set(&self, index: u64, item: &V) {
+    /// Panics if `id >= self.len()`.
+    pub fn set(&self, id: VertexId, item: &V) {
+        let index = u64::from(id);
         assert!(index < self.len());
         crate::write(
             &self.memory,
@@ -360,7 +362,7 @@ mod bench {
     use canbench_rs::bench;
 
     use super::{Vertex, VertexStore};
-    use crate::{bench as helper, traits::CsrVertex};
+    use crate::{VertexId, bench as helper, traits::CsrVertex};
 
     fn populate_store(n: u64) -> VertexStore<Vertex, helper::BenchMemory> {
         let mut memories = helper::BenchMemoryFactory::new();
@@ -411,8 +413,9 @@ mod bench {
             let _scope = canbench_rs::bench_scope("lara_vertex_get_set");
             for i in 0..helper::MEDIUM_N {
                 let idx = helper::splitmix64(i) % helper::MEDIUM_N;
-                let v = store.get(idx);
-                store.set(idx, &v.with_degree(black_box(v.degree.wrapping_add(1))));
+                let id = VertexId::from(idx as u32);
+                let v = store.get(id);
+                store.set(id, &v.with_degree(black_box(v.degree.wrapping_add(1))));
             }
         })
     }

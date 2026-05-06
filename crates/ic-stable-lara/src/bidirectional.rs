@@ -515,7 +515,7 @@ where
 
     fn ensure_vertex(&self, vid: VertexId) -> Result<(), BidirectionalLaraError> {
         let len = self.vertex_count();
-        if u64::from(u32::from(vid)) >= u64::from(len) {
+        if u64::from(vid) >= u64::from(len) {
             return Err(BidirectionalLaraError::VertexOutOfRange { vid, len });
         }
         Ok(())

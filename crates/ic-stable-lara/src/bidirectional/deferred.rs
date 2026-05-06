@@ -1208,7 +1208,7 @@ where
 
     fn ensure_vertex_in_range(&self, vid: VertexId) -> Result<(), DeferredBidirectionalLaraError> {
         let len = self.vertex_count();
-        if u64::from(u32::from(vid)) >= u64::from(len) {
+        if u64::from(vid) >= u64::from(len) {
             return Err(DeferredBidirectionalLaraError::VertexOutOfRange { vid, len });
         }
         Ok(())

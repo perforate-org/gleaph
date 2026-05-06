@@ -81,6 +81,12 @@ use types::Address;
 )]
 pub struct VertexId(u32);
 
+impl From<VertexId> for u64 {
+    fn from(value: VertexId) -> Self {
+        u64::from(value.0)
+    }
+}
+
 /// Leaf segment identifier in the LARA PMA segment tree.
 #[repr(transparent)]
 #[derive(

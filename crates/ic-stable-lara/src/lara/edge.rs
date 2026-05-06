@@ -119,8 +119,8 @@ impl std::error::Error for InitError {}
 
 pub(crate) trait VertexAccess<V: CsrVertex> {
     fn len(&self) -> u64;
-    fn get(&self, index: u64) -> V;
-    fn set(&self, index: u64, item: &V);
+    fn get(&self, id: VertexId) -> V;
+    fn set(&self, id: VertexId, item: &V);
 }
 
 /// Combined stable edge storage used by [`LaraGraph`](crate::LaraGraph).
@@ -336,7 +336,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         if vidx >= vertices.len() as usize {
             return Err("vertex out of range");
         }
-        let v = vertices.get(vidx as u64);
+        let v = vertices.get(vid);
         if V::record_is_vertex_tombstone(&v) {
             return Err("vertex deleted");
         }
@@ -408,7 +408,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         if vidx >= vertices.len() as usize {
             return Err("vertex out of range");
         }
-        let v = vertices.get(vidx as u64);
+        let v = vertices.get(vid);
         if V::record_is_vertex_tombstone(&v) {
             return Err("vertex deleted");
         }
@@ -417,7 +417,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
             if self.have_space_on_slab(vertices, vidx, &v, loc, edge_layout.elem_capacity) {
                 self.write_slot(loc, edge)
                     .map_err(|_| "write edge slot failed")?;
-                vertices.set(vidx as u64, &v.with_degree(v.degree() + 1));
+                vertices.set(vid, &v.with_degree(v.degree() + 1));
                 InsertLocation::Slab
             } else {
                 self.insert_into_log_with_layout(
@@ -452,7 +452,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         if vidx >= vertices.len() as usize {
             return Err("vertex out of range");
         }
-        let v = vertices.get(vidx as u64);
+        let v = vertices.get(vid);
         if v.log_head() >= 0 {
             return Err("remove requires slab-only row");
         }
@@ -481,7 +481,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
             self.write_slot(base.saturating_add(u64::from(local_index)), last)
                 .map_err(|_| "write edge slot failed")?;
         }
-        vertices.set(vidx as u64, &v.with_degree(last_index));
+        vertices.set(vid, &v.with_degree(last_index));
         self.edges
             .set_num_edges(edge_layout.num_edges.saturating_sub(1));
         self.bump_counts_leaf_with_layout(&edge_layout, vid, -1, 0, 0)?;
@@ -502,7 +502,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         if vidx >= vertices.len() as usize {
             return Err("vertex out of range");
         }
-        let v = vertices.get(vidx as u64);
+        let v = vertices.get(vid);
         if v.log_head() >= 0 {
             return Err("row edge read requires slab-only row");
         }
@@ -528,7 +528,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         if vidx >= vertices.len() as usize {
             return Err("vertex out of range");
         }
-        let v = vertices.get(vidx as u64);
+        let v = vertices.get(vid);
         if v.log_head() >= 0 {
             return Err("clear row requires slab-only row");
         }
@@ -536,7 +536,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         if removed == 0 {
             return Ok(0);
         }
-        vertices.set(vidx as u64, &v.with_degree(0).with_log_head(-1));
+        vertices.set(vid, &v.with_degree(0).with_log_head(-1));
         self.edges
             .set_num_edges(edge_layout.num_edges.saturating_sub(u64::from(removed)));
         self.bump_counts_leaf_with_layout(&edge_layout, vid, -i64::from(removed), 0, 0)?;
@@ -576,10 +576,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
                 .map_err(|_| "write log failed")?;
         }
         self.log.write_idx(leaf, idx + 1);
-        vertices.set(
-            u32::from(vid) as u64,
-            &v.with_log_head(idx).with_degree(v.degree() + 1),
-        );
+        vertices.set(vid, &v.with_log_head(idx).with_degree(v.degree() + 1));
         Ok(())
     }
 
@@ -601,7 +598,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         let next = if vidx + 1 < vertices.len() as usize
             && ((vidx + 1) as u32) / edge_layout.segment_size.max(1) == current_leaf
         {
-            vertices.get((vidx + 1) as u64).base_slot_start()
+            vertices.get(vertex_id(vidx + 1)).base_slot_start()
         } else if current_leaf < edge_layout.segment_count {
             let c = self
                 .counts
@@ -635,13 +632,13 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         if vidx + 1 < vertices.len() as usize
             && ((vidx + 1) as u32) / self.header().segment_size.max(1) == current_leaf
         {
-            vertices.get((vidx + 1) as u64).base_slot_start() > loc
+            vertices.get(vertex_id(vidx + 1)).base_slot_start() > loc
         } else if current_leaf < self.header().segment_count {
             let c = self
                 .counts
                 .get(u64::from(current_leaf + self.header().segment_count));
             loc < vertices
-                .get(vidx as u64)
+                .get(vertex_id(vidx))
                 .base_slot_start()
                 .saturating_add(c.total.max(0) as u64)
         } else {
@@ -724,6 +721,11 @@ fn vertex_index(vid: VertexId) -> usize {
 }
 
 #[inline]
+fn vertex_id(index: usize) -> VertexId {
+    VertexId::from(u32::try_from(index).expect("vertex index exceeds VertexId"))
+}
+
+#[inline]
 fn leaf_segment(vid: VertexId, segment_size: u32) -> u32 {
     u32::from(vid) / segment_size.max(1)
 }
@@ -791,8 +793,8 @@ mod tests {
                 .unwrap(),
             vec![TestEdge(10), TestEdge(11)]
         );
-        assert_eq!(vertices.get(0).degree, 2);
-        assert!(vertices.get(0).log_head >= 0);
+        assert_eq!(vertices.get(VertexId::from(0)).degree, 2);
+        assert!(vertices.get(VertexId::from(0)).log_head >= 0);
     }
 
     #[test]
@@ -842,8 +844,8 @@ mod tests {
             .insert_edge(&vertices, VertexId::from(0), TestEdge(11))
             .unwrap();
 
-        assert_eq!(vertices.get(0).degree, 2);
-        assert_eq!(vertices.get(0).log_head, -1);
+        assert_eq!(vertices.get(VertexId::from(0)).degree, 2);
+        assert_eq!(vertices.get(VertexId::from(0)).log_head, -1);
         assert_eq!(
             edges
                 .collect_out_edges(&vertices, VertexId::from(0))
@@ -900,8 +902,8 @@ mod tests {
             .unwrap();
 
         assert!(CAPACITY_READS.load(Ordering::SeqCst) >= 2);
-        assert_eq!(vertices.get(0).degree, 2);
-        assert_eq!(vertices.get(0).log_head, -1);
+        assert_eq!(vertices.get(VertexId::from(0)).degree, 2);
+        assert_eq!(vertices.get(VertexId::from(0)).log_head, -1);
         assert_eq!(
             edges
                 .collect_out_edges(&vertices, VertexId::from(0))

@@ -87,12 +87,12 @@ impl<V: CsrVertex, M: Memory> VertexAccess<V> for VertexStore<V, M> {
         self.len()
     }
 
-    fn get(&self, index: u64) -> V {
-        self.get(index)
+    fn get(&self, id: VertexId) -> V {
+        self.get(id)
     }
 
-    fn set(&self, index: u64, item: &V) {
-        self.set(index, item);
+    fn set(&self, id: VertexId, item: &V) {
+        self.set(id, item);
     }
 }
 
@@ -270,11 +270,11 @@ where
     where
         F: FnMut(&E) -> bool,
     {
-        let src_idx = u64::from(u32::from(src));
+        let src_idx = u64::from(src);
         if src_idx >= self.vertices.len() {
             return Err("vertex out of range");
         }
-        let v = self.vertices.get(src_idx);
+        let v = self.vertices.get(src);
         if V::record_is_vertex_tombstone(&v) {
             return Err("vertex deleted");
         }
@@ -313,9 +313,10 @@ where
             for (i, edge) in neighborhood.iter().copied().enumerate() {
                 self.edges.write_slot(start + i as u64, edge)?;
             }
-            let v = self.vertices.get(vidx as u64);
+            let vid = vertex_id(vidx as u64);
+            let v = self.vertices.get(vid);
             self.vertices.set(
-                vidx as u64,
+                vid,
                 &v.with_base_slot_start(start)
                     .with_degree(neighborhood.len() as u32)
                     .with_span_capacity(capacity_from_positions(
@@ -363,11 +364,11 @@ where
     }
 
     pub(crate) fn vertex_is_deleted(&self, vid: VertexId) -> Result<bool, &'static str> {
-        let vidx = u64::from(u32::from(vid));
+        let vidx = u64::from(vid);
         if vidx >= self.vertices.len() {
             return Err("vertex out of range");
         }
-        Ok(V::record_is_vertex_tombstone(&self.vertices.get(vidx)))
+        Ok(V::record_is_vertex_tombstone(&self.vertices.get(vid)))
     }
 
     pub(crate) fn set_vertex_deleted(
@@ -375,13 +376,13 @@ where
         vid: VertexId,
         deleted: bool,
     ) -> Result<(), &'static str> {
-        let vidx = u64::from(u32::from(vid));
+        let vidx = u64::from(vid);
         if vidx >= self.vertices.len() {
             return Err("vertex out of range");
         }
-        let v = self.vertices.get(vidx);
+        let v = self.vertices.get(vid);
         self.vertices
-            .set(vidx, &V::record_with_vertex_tombstone(v, deleted));
+            .set(vid, &V::record_with_vertex_tombstone(v, deleted));
         Ok(())
     }
 
@@ -390,11 +391,11 @@ where
         vid: VertexId,
         offset: u32,
     ) -> Result<Option<E>, &'static str> {
-        let vidx = u64::from(u32::from(vid));
+        let vidx = u64::from(vid);
         if vidx >= self.vertices.len() {
             return Err("vertex out of range");
         }
-        if self.vertices.get(vidx).log_head() >= 0 {
+        if self.vertices.get(vid).log_head() >= 0 {
             self.rebalance_leaf_for(vid)
                 .map_err(|_| "rebalance failed")?;
         }
@@ -402,11 +403,11 @@ where
     }
 
     pub(crate) fn clear_row_after_rebalance(&self, vid: VertexId) -> Result<u32, &'static str> {
-        let vidx = u64::from(u32::from(vid));
+        let vidx = u64::from(vid);
         if vidx >= self.vertices.len() {
             return Err("vertex out of range");
         }
-        if self.vertices.get(vidx).log_head() >= 0 {
+        if self.vertices.get(vid).log_head() >= 0 {
             self.rebalance_leaf_for(vid)
                 .map_err(|_| "rebalance failed")?;
         }
@@ -421,11 +422,11 @@ where
     where
         F: FnMut(&E) -> bool,
     {
-        let src_idx = u64::from(u32::from(src));
+        let src_idx = u64::from(src);
         if src_idx >= self.vertices.len() {
             return Ok(None);
         }
-        if self.vertices.get(src_idx).log_head() >= 0 {
+        if self.vertices.get(src).log_head() >= 0 {
             self.rebalance_leaf_for(src)
                 .map_err(|_| "rebalance failed")?;
         }
@@ -435,7 +436,7 @@ where
 
     fn rebalance_after_insert(&self, src: VertexId) -> Result<(), &'static str> {
         let layout = self.layout();
-        let current_leaf = self.leaf_for_vertex_with_layout(&layout, u64::from(u32::from(src)));
+        let current_leaf = self.leaf_for_vertex_with_layout(&layout, u64::from(src));
         let leaf_counts = self
             .edge_counts_for_leaves_with_layout(&layout, current_leaf, current_leaf + 1)
             .ok_or("segment counts out of range")?;
@@ -450,7 +451,7 @@ where
             window /= 2;
             height += 1;
             let window_size = u64::from(layout.segment_size).saturating_mul(1u64 << height);
-            let left_vertex = (u64::from(u32::from(src)) / window_size) * window_size;
+            let left_vertex = (u64::from(src) / window_size) * window_size;
             let right_vertex = left_vertex
                 .saturating_add(window_size)
                 .min(self.vertices.len());
@@ -616,7 +617,7 @@ where
         let end = start
             .saturating_add(u64::from(layout.segment_size))
             .min(self.vertices.len());
-        (start..end).any(|vid| self.vertices.get(vid).log_head() >= 0)
+        (start..end).any(|vid| self.vertices.get(vertex_id(vid)).log_head() >= 0)
     }
 
     fn rebalance_weighted_with_layout(
@@ -629,11 +630,11 @@ where
         if start_vertex >= end_vertex {
             return Ok(());
         }
-        let from = self.vertices.get(start_vertex).base_slot_start();
+        let from = self.vertices.get(vertex_id(start_vertex)).base_slot_start();
         let to = if end_vertex >= self.vertices.len() {
             layout.elem_capacity
         } else {
-            self.vertices.get(end_vertex).base_slot_start()
+            self.vertices.get(vertex_id(end_vertex)).base_slot_start()
         };
         let total_space = if counts.total > 0 {
             counts.total as u64
@@ -656,9 +657,10 @@ where
             for (i, edge) in neighborhood.iter().copied().enumerate() {
                 self.edges.write_slot(start + i as u64, edge)?;
             }
-            let v = self.vertices.get(vid);
+            let id = vertex_id(vid);
+            let v = self.vertices.get(id);
             self.vertices.set(
-                vid,
+                id,
                 &v.with_base_slot_start(start)
                     .with_degree(neighborhood.len() as u32)
                     .with_span_capacity(capacity_from_positions(
@@ -717,7 +719,7 @@ where
             .saturating_mul(2)
             .max(used_space.saturating_add(vertex_count))
             .max(1);
-        let old_start = self.vertices.get(start_vertex).base_slot_start();
+        let old_start = self.vertices.get(vertex_id(start_vertex)).base_slot_start();
         let new_start = self.edges.allocate_span(new_span)?;
 
         let gaps = new_span.saturating_sub(used_space);
@@ -729,9 +731,10 @@ where
             for (i, edge) in neighborhood.iter().copied().enumerate() {
                 self.edges.write_slot(start + i as u64, edge)?;
             }
-            let v = self.vertices.get(vid);
+            let id = vertex_id(vid);
+            let v = self.vertices.get(id);
             self.vertices.set(
-                vid,
+                id,
                 &v.with_base_slot_start(start)
                     .with_degree(neighborhood.len() as u32)
                     .with_span_capacity(capacity_from_positions(
@@ -770,7 +773,8 @@ where
         max_capacity: u32,
     ) -> Result<bool, GrowFailed> {
         for vid in 0..self.vertices.len() {
-            let v = self.vertices.get(vid);
+            let id = vertex_id(vid);
+            let v = self.vertices.get(id);
             let capacity = v.span_capacity();
             if capacity == 0
                 || capacity > max_capacity
@@ -800,7 +804,7 @@ where
             }
 
             self.vertices
-                .set(vid, &v.with_base_slot_start(new_start).with_log_head(-1));
+                .set(id, &v.with_base_slot_start(new_start).with_log_head(-1));
             self.edges
                 .free_span_store()
                 .replace_exact_pair_with(
@@ -839,7 +843,8 @@ where
         let vertex_count = end_vertex.saturating_sub(start_vertex) as usize;
         let mut total_edges = 0usize;
         for vid in start_vertex..end_vertex {
-            total_edges = total_edges.saturating_add(self.vertices.get(vid).degree() as usize);
+            total_edges =
+                total_edges.saturating_add(self.vertices.get(vertex_id(vid)).degree() as usize);
         }
 
         let mut edges = Vec::with_capacity(total_edges);
@@ -922,10 +927,12 @@ where
                 ((leaf + 1).saturating_mul(layout.segment_size)).min(self.vertices.len() as u32);
             let mut actual = 0i64;
             for vid in start_vid..end_vid {
-                actual += i64::from(self.vertices.get(u64::from(vid)).degree());
+                actual += i64::from(self.vertices.get(VertexId::from(vid)).degree());
             }
             let start_slot = if start_vid < self.vertices.len() as u32 {
-                self.vertices.get(u64::from(start_vid)).base_slot_start()
+                self.vertices
+                    .get(VertexId::from(start_vid))
+                    .base_slot_start()
             } else {
                 elem_capacity
             };
@@ -935,7 +942,9 @@ where
                 let next_vid = ((leaf + 1).saturating_mul(layout.segment_size))
                     .min(self.vertices.len() as u32);
                 if next_vid < self.vertices.len() as u32 {
-                    self.vertices.get(u64::from(next_vid)).base_slot_start()
+                    self.vertices
+                        .get(VertexId::from(next_vid))
+                        .base_slot_start()
                 } else {
                     elem_capacity
                 }
@@ -1046,10 +1055,12 @@ where
             ((leaf + 1).saturating_mul(layout.segment_size)).min(self.vertices.len() as u32);
         let mut actual = 0i64;
         for vid in start_vid..end_vid {
-            actual += i64::from(self.vertices.get(u64::from(vid)).degree());
+            actual += i64::from(self.vertices.get(VertexId::from(vid)).degree());
         }
         let start_slot = if start_vid < self.vertices.len() as u32 {
-            self.vertices.get(u64::from(start_vid)).base_slot_start()
+            self.vertices
+                .get(VertexId::from(start_vid))
+                .base_slot_start()
         } else {
             elem_capacity
         };
@@ -1059,7 +1070,9 @@ where
             let next_vid =
                 ((leaf + 1).saturating_mul(layout.segment_size)).min(self.vertices.len() as u32);
             if next_vid < self.vertices.len() as u32 {
-                self.vertices.get(u64::from(next_vid)).base_slot_start()
+                self.vertices
+                    .get(VertexId::from(next_vid))
+                    .base_slot_start()
             } else {
                 elem_capacity
             }
@@ -1077,7 +1090,7 @@ where
     }
 
     fn calculate_positions(&self, start_vertex: u64, end_vertex: u64, gaps: u64) -> Vec<u64> {
-        let start_slot = self.vertices.get(start_vertex).base_slot_start();
+        let start_slot = self.vertices.get(vertex_id(start_vertex)).base_slot_start();
         self.calculate_positions_from(start_vertex, end_vertex, start_slot, gaps)
     }
 
@@ -1091,7 +1104,8 @@ where
         let size = end_vertex.saturating_sub(start_vertex);
         let mut total_degree = size;
         for vid in start_vertex..end_vertex {
-            total_degree = total_degree.saturating_add(u64::from(self.vertices.get(vid).degree()));
+            total_degree =
+                total_degree.saturating_add(u64::from(self.vertices.get(vertex_id(vid)).degree()));
         }
 
         let mut out = Vec::with_capacity(size as usize);
@@ -1111,7 +1125,7 @@ where
         for vid in start_vertex..end_vertex {
             let start = index as u64;
             out.push(start);
-            let degree = f64::from(self.vertices.get(vid).degree());
+            let degree = f64::from(self.vertices.get(vertex_id(vid)).degree());
             index = start as f64 + degree + step * (degree + 1.0);
         }
         out
@@ -1124,6 +1138,11 @@ fn density(counts: SegmentEdgeCounts) -> f64 {
     } else {
         counts.actual as f64 / counts.total as f64
     }
+}
+
+#[inline]
+fn vertex_id(index: u64) -> VertexId {
+    VertexId::from(u32::try_from(index).expect("vertex index exceeds VertexId"))
 }
 
 fn capacity_from_positions(positions: &[u64], index: usize, len: usize, end_slot: u64) -> u32 {
@@ -1222,8 +1241,8 @@ mod tests {
             graph.collect_out_edges(VertexId::from(0)).unwrap(),
             vec![TestEdge(10), TestEdge(11)]
         );
-        assert_eq!(graph.vertices().get(0).degree, 2);
-        assert_eq!(graph.vertices().get(0).log_head, -1);
+        assert_eq!(graph.vertices().get(VertexId::from(0)).degree, 2);
+        assert_eq!(graph.vertices().get(VertexId::from(0)).log_head, -1);
         assert!(graph.edges().header().elem_capacity >= 4);
     }
 
@@ -1241,7 +1260,7 @@ mod tests {
             graph.collect_out_edges(VertexId::from(0)).unwrap(),
             vec![TestEdge(10), TestEdge(12)]
         );
-        assert_eq!(graph.vertices().get(0).degree, 2);
+        assert_eq!(graph.vertices().get(VertexId::from(0)).degree, 2);
         assert_eq!(graph.edges().header().num_edges, 2);
         assert_eq!(graph.edges().counts_store().get(2).actual, 2);
     }
@@ -1259,7 +1278,7 @@ mod tests {
         graph
             .insert_edge_raw(VertexId::from(0), TestEdge(12))
             .unwrap();
-        assert!(graph.vertices().get(0).log_head >= 0);
+        assert!(graph.vertices().get(VertexId::from(0)).log_head >= 0);
 
         assert!(graph.remove_edge(VertexId::from(0), TestEdge(11)).unwrap());
 
@@ -1267,8 +1286,8 @@ mod tests {
             graph.collect_out_edges(VertexId::from(0)).unwrap(),
             vec![TestEdge(10), TestEdge(12)]
         );
-        assert_eq!(graph.vertices().get(0).degree, 2);
-        assert_eq!(graph.vertices().get(0).log_head, -1);
+        assert_eq!(graph.vertices().get(VertexId::from(0)).degree, 2);
+        assert_eq!(graph.vertices().get(VertexId::from(0)).log_head, -1);
         assert_eq!(graph.edges().header().num_edges, 2);
         assert_vertex_capacity_invariants(&graph);
     }
@@ -1332,13 +1351,14 @@ mod tests {
         }
 
         assert_eq!(graph.edges().header().elem_capacity, 8);
-        assert_eq!(graph.vertices().get(0).log_head, -1);
+        assert_eq!(graph.vertices().get(VertexId::from(0)).log_head, -1);
         assert_eq!(
             graph.collect_out_edges(VertexId::from(0)).unwrap(),
             vec![TestEdge(10), TestEdge(11), TestEdge(12), TestEdge(13)]
         );
         assert!(
-            graph.vertices().get(1).base_slot_start > graph.vertices().get(0).base_slot_start + 3
+            graph.vertices().get(VertexId::from(1)).base_slot_start
+                > graph.vertices().get(VertexId::from(0)).base_slot_start + 3
         );
     }
 
@@ -1377,10 +1397,13 @@ mod tests {
         let released = graph.edges().free_span_store().peek_best_fit(1).unwrap();
         assert_eq!(released.start_slot, 0);
         assert!(released.len > 0);
-        assert_eq!(graph.vertices().get(0).base_slot_start, 4);
-        assert_eq!(graph.vertices().get(0).degree, 4);
-        assert!(graph.vertices().get(0).capacity >= graph.vertices().get(0).degree);
-        assert_eq!(graph.vertices().get(0).log_head, -1);
+        assert_eq!(graph.vertices().get(VertexId::from(0)).base_slot_start, 4);
+        assert_eq!(graph.vertices().get(VertexId::from(0)).degree, 4);
+        assert!(
+            graph.vertices().get(VertexId::from(0)).capacity
+                >= graph.vertices().get(VertexId::from(0)).degree
+        );
+        assert_eq!(graph.vertices().get(VertexId::from(0)).log_head, -1);
         assert_eq!(graph.edges().counts_store().get(1).actual, 4);
         assert_eq!(graph.edges().counts_store().get(1).total, 7);
         assert_eq!(graph.edges().counts_store().get(2).actual, 4);
@@ -1395,7 +1418,7 @@ mod tests {
         for dst in 10..20 {
             graph.insert_edge(VertexId::from(0), TestEdge(dst)).unwrap();
         }
-        assert_eq!(graph.vertices().get(0).base_slot_start, 12);
+        assert_eq!(graph.vertices().get(VertexId::from(0)).base_slot_start, 12);
         assert_eq!(
             graph
                 .edges()
@@ -1435,7 +1458,7 @@ mod tests {
                 TestEdge(24)
             ]
         );
-        assert_eq!(graph.vertices().get(1).base_slot_start, 0);
+        assert_eq!(graph.vertices().get(VertexId::from(1)).base_slot_start, 0);
         assert_eq!(graph.edges().span_meta_store().get(0).physical_start, 12);
         assert_eq!(graph.edges().span_meta_store().get(1).physical_start, 0);
         let root = graph.edges().counts_store().get(1);
@@ -1483,7 +1506,7 @@ mod tests {
         graph.edges().write_slot(10, TestEdge(101)).unwrap();
         graph.edges().write_slot(11, TestEdge(102)).unwrap();
         graph.vertices().set(
-            1,
+            VertexId::from(1),
             &Vertex {
                 base_slot_start: 10,
                 degree: 2,
@@ -1503,7 +1526,7 @@ mod tests {
                 .unwrap()
         );
 
-        assert_eq!(graph.vertices().get(1).base_slot_start, 6);
+        assert_eq!(graph.vertices().get(VertexId::from(1)).base_slot_start, 6);
         assert_eq!(
             graph.collect_out_edges(VertexId::from(1)).unwrap(),
             vec![TestEdge(101), TestEdge(102)]
@@ -1523,7 +1546,7 @@ mod tests {
         let graph = test_graph(30, 2, 1, &[10, 20]);
         graph.edges().write_slot(10, TestEdge(201)).unwrap();
         graph.vertices().set(
-            0,
+            VertexId::from(0),
             &Vertex {
                 base_slot_start: 10,
                 degree: 1,
@@ -1544,7 +1567,7 @@ mod tests {
                 .unwrap()
         );
 
-        assert_eq!(graph.vertices().get(0).base_slot_start, 6);
+        assert_eq!(graph.vertices().get(VertexId::from(0)).base_slot_start, 6);
         assert_eq!(graph.edges().counts_store().get(2).total, 14);
         assert_eq!(graph.edges().span_meta_store().get(0).physical_start, 6);
         assert_eq!(
@@ -1558,7 +1581,7 @@ mod tests {
     fn lara_does_not_slide_log_backed_live_span() {
         let graph = test_graph(30, 2, 2, &[0, 10, 20]);
         graph.vertices().set(
-            1,
+            VertexId::from(1),
             &Vertex {
                 base_slot_start: 10,
                 degree: 1,
@@ -1577,7 +1600,7 @@ mod tests {
                 .try_slide_small_live_span_for_gap_coalescing_with_layout(&layout, 16)
                 .unwrap()
         );
-        assert_eq!(graph.vertices().get(1).base_slot_start, 10);
+        assert_eq!(graph.vertices().get(VertexId::from(1)).base_slot_start, 10);
         assert_eq!(graph.edges().free_span_store().len(), 2);
     }
 
@@ -1586,7 +1609,7 @@ mod tests {
         let graph = test_graph(30, 2, 2, &[0, 10, 20]);
         graph.edges().write_slot(10, TestEdge(301)).unwrap();
         graph.vertices().set(
-            1,
+            VertexId::from(1),
             &Vertex {
                 base_slot_start: 10,
                 degree: 1,
@@ -1604,7 +1627,7 @@ mod tests {
                 .try_slide_small_live_span_for_gap_coalescing_with_layout(&layout, 16)
                 .unwrap()
         );
-        assert_eq!(graph.vertices().get(1).base_slot_start, 10);
+        assert_eq!(graph.vertices().get(VertexId::from(1)).base_slot_start, 10);
         assert_eq!(
             graph.collect_out_edges(VertexId::from(1)).unwrap(),
             vec![TestEdge(301)]
@@ -1623,7 +1646,7 @@ mod tests {
         let graph = test_graph(80, 2, 2, &[0, 20, 60]);
         graph.edges().write_slot(20, TestEdge(401)).unwrap();
         graph.vertices().set(
-            1,
+            VertexId::from(1),
             &Vertex {
                 base_slot_start: 20,
                 degree: 1,
@@ -1642,7 +1665,7 @@ mod tests {
                 .try_slide_small_live_span_for_gap_coalescing_with_layout(&layout, 16)
                 .unwrap()
         );
-        assert_eq!(graph.vertices().get(1).base_slot_start, 20);
+        assert_eq!(graph.vertices().get(VertexId::from(1)).base_slot_start, 20);
         assert_eq!(graph.edges().free_span_store().len(), 2);
     }
 
@@ -1651,7 +1674,7 @@ mod tests {
         let graph = test_graph(30, 2, 2, &[0, 10, 20]);
         graph.edges().write_slot(10, TestEdge(501)).unwrap();
         graph.vertices().set(
-            1,
+            VertexId::from(1),
             &Vertex {
                 base_slot_start: 10,
                 degree: 1,
@@ -1685,7 +1708,7 @@ mod tests {
         graph.edges().write_slot(10, TestEdge(601)).unwrap();
         graph.edges().write_slot(11, TestEdge(602)).unwrap();
         graph.vertices().set(
-            1,
+            VertexId::from(1),
             &Vertex {
                 base_slot_start: 10,
                 degree: 2,
@@ -1710,7 +1733,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(reopened.vertices().get(1).base_slot_start, 6);
+        assert_eq!(
+            reopened.vertices().get(VertexId::from(1)).base_slot_start,
+            6
+        );
         assert_eq!(
             reopened.collect_out_edges(VertexId::from(1)).unwrap(),
             vec![TestEdge(601), TestEdge(602)]
@@ -1757,7 +1783,7 @@ mod tests {
             .write_slot(11, LargeTestEdge::new(11))
             .unwrap();
         graph.vertices().set(
-            1,
+            VertexId::from(1),
             &Vertex {
                 base_slot_start: 10,
                 degree: 2,
@@ -1777,7 +1803,7 @@ mod tests {
                 .unwrap()
         );
 
-        assert_eq!(graph.vertices().get(1).base_slot_start, 6);
+        assert_eq!(graph.vertices().get(VertexId::from(1)).base_slot_start, 6);
         assert_eq!(
             graph.collect_out_edges(VertexId::from(1)).unwrap(),
             vec![LargeTestEdge::new(7), LargeTestEdge::new(11)]
@@ -1800,9 +1826,12 @@ mod tests {
 
         assert_eq!(reopened.edges().header().elem_capacity, 8);
         assert_eq!(reopened.edges().span_meta_store().len(), 2);
-        assert_eq!(reopened.vertices().get(0).degree, 4);
-        assert!(reopened.vertices().get(0).capacity >= reopened.vertices().get(0).degree);
-        assert_eq!(reopened.vertices().get(0).log_head, -1);
+        assert_eq!(reopened.vertices().get(VertexId::from(0)).degree, 4);
+        assert!(
+            reopened.vertices().get(VertexId::from(0)).capacity
+                >= reopened.vertices().get(VertexId::from(0)).degree
+        );
+        assert_eq!(reopened.vertices().get(VertexId::from(0)).log_head, -1);
         assert_eq!(
             reopened.collect_out_edges(VertexId::from(0)).unwrap(),
             vec![TestEdge(10), TestEdge(11), TestEdge(12), TestEdge(13)]
