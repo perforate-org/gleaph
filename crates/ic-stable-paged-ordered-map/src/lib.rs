@@ -5,8 +5,7 @@
 //!
 //! - [`StablePagedOrderedMap::init`] — empty memory initializes a fresh map; otherwise the header is
 //!   validated.
-//! - [`StablePagedOrderedMap::new`] — always writes an empty-map header at address 0 for a brand-new region
-//!   (same semantics as [`BTreeMap::new`](ic_stable_structures::BTreeMap::new)).
+//! - [`StablePagedOrderedMap::new`] — writes an empty-map header at address 0 for a brand-new region.
 //!
 //! # Example
 //!
@@ -112,6 +111,8 @@ pub enum InitError {
     IncompatibleVersion(u8),
     /// On-disk directory capacity field does not match the compile-time [`DIR_CAP`] constant.
     DirectoryCapacityMismatch { expected: u64, actual: u64 },
+    /// `len`, page links, directory fields, or allocated memory size are inconsistent.
+    InvalidLayout,
     /// Stable memory grow failed while writing metadata (empty map bootstrap).
     OutOfMemory,
 }
@@ -120,10 +121,7 @@ impl fmt::Display for InitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::BadMagic { actual } => {
-                write!(
-                    f,
-                    "bad paged ordered map magic {actual:?}, expected {MAGIC:?}"
-                )
+                write!(f, "bad magic number {actual:?}, expected {MAGIC:?}")
             }
             Self::IncompatibleVersion(version) => {
                 write!(f, "unsupported paged ordered map layout version {version}")
@@ -132,6 +130,7 @@ impl fmt::Display for InitError {
                 f,
                 "paged ordered map directory capacity mismatch: expected {expected}, got {actual}"
             ),
+            Self::InvalidLayout => write!(f, "invalid paged ordered map layout"),
             Self::OutOfMemory => write!(f, "failed to allocate paged ordered map metadata"),
         }
     }
@@ -162,6 +161,24 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+#[derive(Debug, PartialEq, Eq)]
+pub struct GrowFailed {
+    current_size: u64,
+    delta: u64,
+}
+
+impl fmt::Display for GrowFailed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "failed to grow stable memory from {} pages by {} pages",
+            self.current_size, self.delta
+        )
+    }
+}
+
+impl std::error::Error for GrowFailed {}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct DirEntry {
     min_key: u64,
@@ -175,6 +192,19 @@ struct PageHeader {
     prev: u64,
     next: u64,
     free_next: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HeaderV1 {
+    pub magic: [u8; 3],
+    pub version: u8,
+    pub len: u64,
+    pub page_count: u64,
+    pub free_head: u64,
+    pub first_page: u64,
+    pub last_page: u64,
+    pub dir_len: u64,
+    pub dir_cap: u64,
 }
 
 /// Ordered key/value store in stable memory: unique `u64` keys map to `u64` values with `O(log n)` page
@@ -199,9 +229,23 @@ impl<M: Memory> StablePagedOrderedMap<M> {
     ///
     /// # Errors
     ///
-    /// Returns [`InitError::OutOfMemory`] when growing stable memory for the initial header layout fails.
-    pub fn new(memory: M) -> Result<Self, InitError> {
-        write_fresh_header(&memory)?;
+    /// Returns [`GrowFailed`] when growing stable memory for the initial header layout fails.
+    pub fn new(memory: M) -> Result<Self, GrowFailed> {
+        write_header(
+            &memory,
+            &HeaderV1 {
+                magic: MAGIC,
+                version: LAYOUT_VERSION,
+                len: 0,
+                page_count: 0,
+                free_head: 0,
+                first_page: 0,
+                last_page: 0,
+                dir_len: 0,
+                dir_cap: DIR_CAP,
+            },
+        )?;
+        safe_write(&memory, PAGES_START - 1, &[0])?;
         Ok(Self { memory })
     }
 
@@ -216,10 +260,16 @@ impl<M: Memory> StablePagedOrderedMap<M> {
     /// empty memory hits an out-of-memory grow failure.
     pub fn init(memory: M) -> Result<Self, InitError> {
         if memory.size() == 0 {
-            return Self::new(memory);
+            return Self::new(memory).map_err(|_| InitError::OutOfMemory);
         }
-        verify_header(&memory)?;
+        let h = read_header(&memory);
+        validate_header(&memory, &h)?;
         Ok(Self { memory })
+    }
+
+    /// Returns the stable V1 header fields currently persisted in memory.
+    pub fn header(&self) -> HeaderV1 {
+        read_header(&self.memory)
     }
 
     /// Consumes `self` and returns the underlying [`Memory`] handle (e.g. to persist, wrap, or re-open).
@@ -810,37 +860,76 @@ impl<M: Memory> StablePagedOrderedMap<M> {
     }
 }
 
-fn write_fresh_header<M: Memory>(memory: &M) -> Result<(), InitError> {
-    safe_write(memory, OFFSET_MAGIC, &MAGIC).map_err(|_| InitError::OutOfMemory)?;
-    safe_write(memory, OFFSET_VERSION, &[LAYOUT_VERSION]).map_err(|_| InitError::OutOfMemory)?;
-    safe_write(memory, 4, &[0; 4]).map_err(|_| InitError::OutOfMemory)?;
-    write_u64(memory, OFFSET_LEN, 0);
-    write_u64(memory, OFFSET_PAGE_COUNT, 0);
-    write_u64(memory, OFFSET_FREE_HEAD, 0);
-    write_u64(memory, OFFSET_FIRST_PAGE, 0);
-    write_u64(memory, OFFSET_LAST_PAGE, 0);
-    write_u64(memory, OFFSET_DIR_LEN, 0);
-    write_u64(memory, OFFSET_DIR_CAP, DIR_CAP);
-    safe_write(memory, PAGES_START - 1, &[0]).map_err(|_| InitError::OutOfMemory)?;
+fn write_header<M: Memory>(memory: &M, h: &HeaderV1) -> Result<(), GrowFailed> {
+    safe_write(memory, OFFSET_MAGIC, &h.magic)?;
+    safe_write(memory, OFFSET_VERSION, &[h.version])?;
+    safe_write(memory, 4, &[0; 4])?;
+    write_u64(memory, OFFSET_LEN, h.len);
+    write_u64(memory, OFFSET_PAGE_COUNT, h.page_count);
+    write_u64(memory, OFFSET_FREE_HEAD, h.free_head);
+    write_u64(memory, OFFSET_FIRST_PAGE, h.first_page);
+    write_u64(memory, OFFSET_LAST_PAGE, h.last_page);
+    write_u64(memory, OFFSET_DIR_LEN, h.dir_len);
+    write_u64(memory, OFFSET_DIR_CAP, h.dir_cap);
     Ok(())
 }
 
-fn verify_header<M: Memory>(memory: &M) -> Result<(), InitError> {
+fn read_header<M: Memory>(memory: &M) -> HeaderV1 {
     let mut magic = [0u8; 3];
     memory.read(OFFSET_MAGIC, &mut magic);
-    if magic != MAGIC {
-        return Err(InitError::BadMagic { actual: magic });
-    }
     let version = read_u8(memory, OFFSET_VERSION);
-    if version != LAYOUT_VERSION {
-        return Err(InitError::IncompatibleVersion(version));
+    HeaderV1 {
+        magic,
+        version,
+        len: read_u64(memory, OFFSET_LEN),
+        page_count: read_u64(memory, OFFSET_PAGE_COUNT),
+        free_head: read_u64(memory, OFFSET_FREE_HEAD),
+        first_page: read_u64(memory, OFFSET_FIRST_PAGE),
+        last_page: read_u64(memory, OFFSET_LAST_PAGE),
+        dir_len: read_u64(memory, OFFSET_DIR_LEN),
+        dir_cap: read_u64(memory, OFFSET_DIR_CAP),
     }
-    let dir_cap = read_u64(memory, OFFSET_DIR_CAP);
-    if dir_cap != DIR_CAP {
+}
+
+fn validate_header<M: Memory>(memory: &M, h: &HeaderV1) -> Result<(), InitError> {
+    if h.magic != MAGIC {
+        return Err(InitError::BadMagic { actual: h.magic });
+    }
+    if h.version != LAYOUT_VERSION {
+        return Err(InitError::IncompatibleVersion(h.version));
+    }
+    if h.dir_cap != DIR_CAP {
         return Err(InitError::DirectoryCapacityMismatch {
             expected: DIR_CAP,
-            actual: dir_cap,
+            actual: h.dir_cap,
         });
+    }
+    if h.dir_len > h.dir_cap
+        || h.dir_len > h.page_count
+        || h.len > h.page_count.saturating_mul(PAGE_CAP)
+    {
+        return Err(InitError::InvalidLayout);
+    }
+    if h.page_count == 0 {
+        if h.len != 0 || h.dir_len != 0 || h.first_page != 0 || h.last_page != 0 {
+            return Err(InitError::InvalidLayout);
+        }
+    } else {
+        if h.first_page == 0
+            || h.last_page == 0
+            || h.first_page > h.page_count
+            || h.last_page > h.page_count
+        {
+            return Err(InitError::InvalidLayout);
+        }
+        let bytes = memory.size().saturating_mul(WASM_PAGE_SIZE);
+        let need = PAGES_START.saturating_add(h.page_count.saturating_mul(PAGE_STRIDE));
+        if bytes < need {
+            return Err(InitError::InvalidLayout);
+        }
+    }
+    if h.free_head > h.page_count {
+        return Err(InitError::InvalidLayout);
     }
     Ok(())
 }
@@ -905,7 +994,10 @@ fn safe_write<M: Memory>(memory: &M, offset: u64, bytes: &[u8]) -> Result<(), Gr
             .expect("address overflow")
             / WASM_PAGE_SIZE;
         if memory.grow(diff_pages) == -1 {
-            return Err(GrowFailed);
+            return Err(GrowFailed {
+                current_size: size_pages,
+                delta: diff_pages,
+            });
         }
     }
     memory.write(offset, bytes);
@@ -915,9 +1007,6 @@ fn safe_write<M: Memory>(memory: &M, offset: u64, bytes: &[u8]) -> Result<(), Gr
 fn write<M: Memory>(memory: &M, offset: u64, bytes: &[u8]) {
     safe_write(memory, offset, bytes).expect("failed to grow stable memory");
 }
-
-#[derive(Debug)]
-struct GrowFailed;
 
 #[cfg(test)]
 mod tests {

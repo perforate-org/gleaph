@@ -102,62 +102,40 @@ impl From<GrowFailed> for BidirectionalLaraError {
 }
 
 /// Two synchronized LARA adjacency stores: forward out-adjacency and reverse in-adjacency.
-pub struct BidirectionalLaraGraph<E, V, MVF, MCF, MEF, MLF, MSF, MFF, MVR, MCR, MER, MLR, MSR, MFR>
+pub struct BidirectionalLaraGraph<E, V, M>
 where
     E: CsrEdge + EdgePmaCountsStride,
     V: LaraVertex,
-    MVF: Memory,
-    MCF: Memory,
-    MEF: Memory,
-    MLF: Memory,
-    MSF: Memory,
-    MFF: Memory,
-    MVR: Memory,
-    MCR: Memory,
-    MER: Memory,
-    MLR: Memory,
-    MSR: Memory,
-    MFR: Memory,
+    M: Memory,
 {
-    forward: LaraGraph<E, V, MVF, MCF, MEF, MLF, MSF, MFF>,
-    reverse: LaraGraph<E, V, MVR, MCR, MER, MLR, MSR, MFR>,
+    forward: LaraGraph<E, V, M>,
+    reverse: LaraGraph<E, V, M>,
 }
 
-pub type BidirectionalLara<E, V, MVF, MCF, MEF, MLF, MSF, MFF, MVR, MCR, MER, MLR, MSR, MFR> =
-    BidirectionalLaraGraph<E, V, MVF, MCF, MEF, MLF, MSF, MFF, MVR, MCR, MER, MLR, MSR, MFR>;
+pub type BidirectionalLara<E, V, M> = BidirectionalLaraGraph<E, V, M>;
 
-impl<E, V, MVF, MCF, MEF, MLF, MSF, MFF, MVR, MCR, MER, MLR, MSR, MFR>
-    BidirectionalLaraGraph<E, V, MVF, MCF, MEF, MLF, MSF, MFF, MVR, MCR, MER, MLR, MSR, MFR>
+impl<E, V, M> BidirectionalLaraGraph<E, V, M>
 where
     E: CsrEdge + EdgePmaCountsStride,
     V: LaraVertex,
-    MVF: Memory,
-    MCF: Memory,
-    MEF: Memory,
-    MLF: Memory,
-    MSF: Memory,
-    MFF: Memory,
-    MVR: Memory,
-    MCR: Memory,
-    MER: Memory,
-    MLR: Memory,
-    MSR: Memory,
-    MFR: Memory,
+    M: Memory,
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        forward_vertices: MVF,
-        forward_counts: MCF,
-        forward_edges: MEF,
-        forward_log: MLF,
-        forward_span_meta: MSF,
-        forward_free_spans: MFF,
-        reverse_vertices: MVR,
-        reverse_counts: MCR,
-        reverse_edges: MER,
-        reverse_log: MLR,
-        reverse_span_meta: MSR,
-        reverse_free_spans: MFR,
+        forward_vertices: M,
+        forward_counts: M,
+        forward_edges: M,
+        forward_log: M,
+        forward_span_meta: M,
+        forward_free_spans: M,
+        forward_free_span_by_start: M,
+        reverse_vertices: M,
+        reverse_counts: M,
+        reverse_edges: M,
+        reverse_log: M,
+        reverse_span_meta: M,
+        reverse_free_spans: M,
+        reverse_free_span_by_start: M,
         elem_capacity: u64,
         segment_count: u32,
         segment_size: u32,
@@ -169,6 +147,7 @@ where
             forward_log,
             forward_span_meta,
             forward_free_spans,
+            forward_free_span_by_start,
             elem_capacity,
             segment_count,
             segment_size,
@@ -180,6 +159,7 @@ where
             reverse_log,
             reverse_span_meta,
             reverse_free_spans,
+            reverse_free_span_by_start,
             elem_capacity,
             segment_count,
             segment_size,
@@ -189,18 +169,20 @@ where
 
     #[allow(clippy::too_many_arguments)]
     pub fn init(
-        forward_vertices: MVF,
-        forward_counts: MCF,
-        forward_edges: MEF,
-        forward_log: MLF,
-        forward_span_meta: MSF,
-        forward_free_spans: MFF,
-        reverse_vertices: MVR,
-        reverse_counts: MCR,
-        reverse_edges: MER,
-        reverse_log: MLR,
-        reverse_span_meta: MSR,
-        reverse_free_spans: MFR,
+        forward_vertices: M,
+        forward_counts: M,
+        forward_edges: M,
+        forward_log: M,
+        forward_span_meta: M,
+        forward_free_spans: M,
+        forward_free_span_by_start: M,
+        reverse_vertices: M,
+        reverse_counts: M,
+        reverse_edges: M,
+        reverse_log: M,
+        reverse_span_meta: M,
+        reverse_free_spans: M,
+        reverse_free_span_by_start: M,
     ) -> Result<Self, BidirectionalLaraError> {
         let forward = LaraGraph::init(
             forward_vertices,
@@ -209,6 +191,7 @@ where
             forward_log,
             forward_span_meta,
             forward_free_spans,
+            forward_free_span_by_start,
         )
         .map_err(BidirectionalLaraError::ForwardInit)?;
         let reverse = LaraGraph::init(
@@ -218,6 +201,7 @@ where
             reverse_log,
             reverse_span_meta,
             reverse_free_spans,
+            reverse_free_span_by_start,
         )
         .map_err(BidirectionalLaraError::ReverseInit)?;
         let graph = Self { forward, reverse };
@@ -225,19 +209,19 @@ where
         Ok(graph)
     }
 
-    pub fn forward(&self) -> &LaraGraph<E, V, MVF, MCF, MEF, MLF, MSF, MFF> {
+    pub fn forward(&self) -> &LaraGraph<E, V, M> {
         &self.forward
     }
 
-    pub fn reverse(&self) -> &LaraGraph<E, V, MVR, MCR, MER, MLR, MSR, MFR> {
+    pub fn reverse(&self) -> &LaraGraph<E, V, M> {
         &self.reverse
     }
 
     #[allow(clippy::type_complexity)]
-    pub fn into_memories(self) -> (MVF, MCF, MEF, MLF, MSF, MFF, MVR, MCR, MER, MLR, MSR, MFR) {
-        let (fv, fc, fe, fl, fs, ff) = self.forward.into_memories();
-        let (rv, rc, re, rl, rs, rf) = self.reverse.into_memories();
-        (fv, fc, fe, fl, fs, ff, rv, rc, re, rl, rs, rf)
+    pub fn into_memories(self) -> (M, M, M, M, M, M, M, M, M, M, M, M, M, M) {
+        let (fv, fc, fe, fl, fs, ff, ffs) = self.forward.into_memories();
+        let (rv, rc, re, rl, rs, rf, rfs) = self.reverse.into_memories();
+        (fv, fc, fe, fl, fs, ff, ffs, rv, rc, re, rl, rs, rf, rfs)
     }
 
     pub fn vertex_count(&self) -> VertexCount {
@@ -482,12 +466,11 @@ mod tests {
             .insert_directed(VertexId::from(0), VertexId::from(2), TestEdge(2))
             .unwrap();
 
-        let (fv, fc, fe, fl, fs, ff, rv, rc, re, rl, rs, rf) = graph.into_memories();
-        let reopened =
-            BidirectionalLaraGraph::<TestEdge, Vertex, _, _, _, _, _, _, _, _, _, _, _, _>::init(
-                fv, fc, fe, fl, fs, ff, rv, rc, re, rl, rs, rf,
-            )
-            .unwrap();
+        let (fv, fc, fe, fl, fs, ff, ffs, rv, rc, re, rl, rs, rf, rfs) = graph.into_memories();
+        let reopened = BidirectionalLaraGraph::<TestEdge, Vertex, _>::init(
+            fv, fc, fe, fl, fs, ff, ffs, rv, rc, re, rl, rs, rf, rfs,
+        )
+        .unwrap();
 
         assert_eq!(
             reopened.out_edges(VertexId::from(0)).unwrap(),

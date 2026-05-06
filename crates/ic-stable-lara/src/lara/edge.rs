@@ -114,24 +114,23 @@ pub(crate) trait VertexAccess<V: CsrVertex> {
     fn set(&self, index: u64, item: &V);
 }
 
-pub struct EdgeStore<E: CsrEdge, MC: Memory, ME: Memory, ML: Memory, MS: Memory, MF: Memory> {
-    counts: SegmentEdgeCountsStore<E, MC>,
-    edges: EdgeSlabStore<E, ME>,
-    log: LogStore<E, ML>,
-    span_meta: SegmentSpanMetaStore<MS>,
-    free_spans: FreeSpanStore<MF>,
+pub struct EdgeStore<E: CsrEdge, M: Memory> {
+    counts: SegmentEdgeCountsStore<E, M>,
+    edges: EdgeSlabStore<E, M>,
+    log: LogStore<E, M>,
+    span_meta: SegmentSpanMetaStore<M>,
+    free_spans: FreeSpanStore<M>,
 }
 
-impl<E: CsrEdge + EdgePmaCountsStride, MC: Memory, ME: Memory, ML: Memory, MS: Memory, MF: Memory>
-    EdgeStore<E, MC, ME, ML, MS, MF>
-{
+impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        counts: MC,
-        edges: ME,
-        log: ML,
-        span_meta: MS,
-        free_spans: MF,
+        counts: M,
+        edges: M,
+        log: M,
+        span_meta: M,
+        free_spans: M,
+        free_span_by_start: M,
         elem_capacity: u64,
         segment_count: u32,
         segment_size: u32,
@@ -152,7 +151,11 @@ impl<E: CsrEdge + EdgePmaCountsStride, MC: Memory, ME: Memory, ML: Memory, MS: M
         }
         let edges = EdgeSlabStore::new(edges, header)?;
         let log = LogStore::new(log, log_header)?;
-        let free_spans = FreeSpanStore::init(free_spans);
+        let free_spans =
+            FreeSpanStore::new(free_spans, free_span_by_start).map_err(|_| GrowFailed {
+                current_size: 0,
+                delta: 0,
+            })?;
         Ok(Self {
             counts,
             edges,
@@ -163,18 +166,20 @@ impl<E: CsrEdge + EdgePmaCountsStride, MC: Memory, ME: Memory, ML: Memory, MS: M
     }
 
     pub fn init(
-        counts: MC,
-        edges: ME,
-        log: ML,
-        span_meta: MS,
-        free_spans: MF,
+        counts: M,
+        edges: M,
+        log: M,
+        span_meta: M,
+        free_spans: M,
+        free_span_by_start: M,
     ) -> Result<Self, InitError> {
         let counts = SegmentEdgeCountsStore::init(counts).map_err(InitError::Counts)?;
         let edges = EdgeSlabStore::init(edges).map_err(InitError::Edges)?;
         let header = edges.header().map_err(InitError::Edges)?;
         let log = LogStore::init(log).map_err(InitError::Log)?;
         let span_meta = SegmentSpanMetaStore::init(span_meta).map_err(InitError::SpanMeta)?;
-        let free_spans = FreeSpanStore::init(free_spans);
+        let free_spans = FreeSpanStore::init(free_spans, free_span_by_start)
+            .map_err(|_| InitError::SpanMetaLayoutMismatch)?;
         let log_header = log.header();
         if log_header.segment_count != header.segment_count {
             return Err(InitError::LogLayoutMismatch);
@@ -197,15 +202,15 @@ impl<E: CsrEdge + EdgePmaCountsStride, MC: Memory, ME: Memory, ML: Memory, MS: M
             .expect("edge header is valid after init")
     }
 
-    pub fn counts_store(&self) -> &SegmentEdgeCountsStore<E, MC> {
+    pub fn counts_store(&self) -> &SegmentEdgeCountsStore<E, M> {
         &self.counts
     }
 
-    pub fn span_meta_store(&self) -> &SegmentSpanMetaStore<MS> {
+    pub fn span_meta_store(&self) -> &SegmentSpanMetaStore<M> {
         &self.span_meta
     }
 
-    pub fn free_span_store(&self) -> &FreeSpanStore<MF> {
+    pub fn free_span_store(&self) -> &FreeSpanStore<M> {
         &self.free_spans
     }
 
@@ -234,13 +239,15 @@ impl<E: CsrEdge + EdgePmaCountsStride, MC: Memory, ME: Memory, ML: Memory, MS: M
         self.log.header().into()
     }
 
-    pub fn into_memories(self) -> (MC, ME, ML, MS, MF) {
+    pub fn into_memories(self) -> (M, M, M, M, M, M) {
+        let (free_spans, free_span_by_start) = self.free_spans.into_memories();
         (
             self.counts.into_memory(),
             self.edges.into_memory(),
             self.log.into_memory(),
             self.span_meta.into_memory(),
-            self.free_spans.into_memory(),
+            free_spans,
+            free_span_by_start,
         )
     }
 
@@ -248,7 +255,10 @@ impl<E: CsrEdge + EdgePmaCountsStride, MC: Memory, ME: Memory, ML: Memory, MS: M
         if len == 0 {
             return Ok(self.header().elem_capacity);
         }
-        if let Some(span) = self.free_spans.take_best_fit(len) {
+        if let Some(span) = self.free_spans.take_best_fit(len).map_err(|_| GrowFailed {
+            current_size: 0,
+            delta: 0,
+        })? {
             return Ok(span.start_slot);
         }
 
@@ -259,7 +269,12 @@ impl<E: CsrEdge + EdgePmaCountsStride, MC: Memory, ME: Memory, ML: Memory, MS: M
 
     pub(crate) fn release_span(&self, start_slot: u64, len: u64) -> Result<(), GrowFailed> {
         if len > 0 {
-            self.free_spans.release(FreeSpan { start_slot, len });
+            self.free_spans
+                .release(FreeSpan { start_slot, len })
+                .map_err(|_| GrowFailed {
+                    current_size: 0,
+                    delta: 0,
+                })?;
         }
         Ok(())
     }
@@ -614,10 +629,11 @@ mod tests {
             })
             .unwrap();
 
-        let edges = EdgeStore::<TestEdge, _, _, _, _, _>::new(
+        let edges = EdgeStore::new(
             mc,
             me,
             ml,
+            vector_memory(),
             vector_memory(),
             vector_memory(),
             2,
@@ -669,10 +685,11 @@ mod tests {
             })
             .unwrap();
 
-        let edges = EdgeStore::<TestEdge, _, _, _, _, _>::new(
+        let edges = EdgeStore::new(
             mc,
             me,
             ml,
+            vector_memory(),
             vector_memory(),
             vector_memory(),
             4,
@@ -725,10 +742,11 @@ mod tests {
             })
             .unwrap();
 
-        let edges = EdgeStore::<TestEdge, _, _, _, _, _>::new(
+        let edges = EdgeStore::new(
             mc,
             me,
             ml,
+            vector_memory(),
             vector_memory(),
             vector_memory(),
             4,
@@ -771,10 +789,11 @@ mod tests {
             })
             .unwrap();
 
-        let edges = EdgeStore::<TestEdge, _, _, _, _, _>::new(
+        let edges = EdgeStore::new(
             mc,
             me,
             ml,
+            vector_memory(),
             vector_memory(),
             vector_memory(),
             2,

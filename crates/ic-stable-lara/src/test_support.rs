@@ -298,60 +298,19 @@ pub(crate) fn vector_memory() -> VectorMemory {
     Rc::new(RefCell::new(Vec::new()))
 }
 
-pub(crate) type TestBidirectionalLaraGraph<E> = BidirectionalLaraGraph<
-    E,
-    Vertex,
-    VectorMemory,
-    VectorMemory,
-    VectorMemory,
-    VectorMemory,
-    VectorMemory,
-    VectorMemory,
-    VectorMemory,
-    VectorMemory,
-    VectorMemory,
-    VectorMemory,
-    VectorMemory,
-    VectorMemory,
->;
+pub(crate) type TestBidirectionalLaraGraph<E> = BidirectionalLaraGraph<E, Vertex, VectorMemory>;
 
-pub(crate) type TestDeferredBidirectionalLaraGraph<E> = crate::DeferredBidirectionalLaraGraph<
-    E,
-    Vertex,
-    VectorMemory,
-    VectorMemory,
-    VectorMemory,
-    VectorMemory,
-    VectorMemory,
-    VectorMemory,
-    VectorMemory,
-    VectorMemory,
-    VectorMemory,
-    VectorMemory,
-    VectorMemory,
-    VectorMemory,
-    VectorMemory,
-    VectorMemory,
-    VectorMemory,
-    VectorMemory,
->;
+pub(crate) type TestDeferredBidirectionalLaraGraph<E> =
+    crate::DeferredBidirectionalLaraGraph<E, Vertex, VectorMemory>;
 
 pub(crate) fn test_graph(
     elem_capacity: u64,
     segment_count: u32,
     segment_size: u32,
     starts: &[u64],
-) -> LaraGraph<
-    TestEdge,
-    Vertex,
-    VectorMemory,
-    VectorMemory,
-    VectorMemory,
-    VectorMemory,
-    VectorMemory,
-    VectorMemory,
-> {
-    let graph = LaraGraph::<TestEdge, Vertex, _, _, _, _, _, _>::new(
+) -> LaraGraph<TestEdge, Vertex, VectorMemory> {
+    let graph = LaraGraph::new(
+        vector_memory(),
         vector_memory(),
         vector_memory(),
         vector_memory(),
@@ -380,7 +339,9 @@ pub(crate) fn bidirectional_test_graph<E>(starts: &[u64]) -> TestBidirectionalLa
 where
     E: CsrEdge + lara::edge::counts::EdgePmaCountsStride,
 {
-    let graph = BidirectionalLaraGraph::<E, Vertex, _, _, _, _, _, _, _, _, _, _, _, _>::new(
+    let graph = BidirectionalLaraGraph::new(
+        vector_memory(),
+        vector_memory(),
         vector_memory(),
         vector_memory(),
         vector_memory(),
@@ -420,26 +381,9 @@ pub(crate) fn deferred_bidirectional_test_graph<E>(
 where
     E: CsrEdge + lara::edge::counts::EdgePmaCountsStride,
 {
-    let graph = crate::DeferredBidirectionalLaraGraph::<
-        E,
-        Vertex,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-    >::new_with_config(
+    let graph = crate::DeferredBidirectionalLaraGraph::new_with_config(
+        vector_memory(),
+        vector_memory(),
         vector_memory(),
         vector_memory(),
         vector_memory(),
@@ -478,18 +422,7 @@ where
     graph
 }
 
-pub(crate) fn assert_vertex_capacity_invariants(
-    graph: &LaraGraph<
-        TestEdge,
-        Vertex,
-        VectorMemory,
-        VectorMemory,
-        VectorMemory,
-        VectorMemory,
-        VectorMemory,
-        VectorMemory,
-    >,
-) {
+pub(crate) fn assert_vertex_capacity_invariants(graph: &LaraGraph<TestEdge, Vertex, VectorMemory>) {
     let mut owned_spans = Vec::new();
     for vidx in 0..graph.vertices().len() {
         let v = graph.vertices().get(vidx);
@@ -534,19 +467,9 @@ pub(crate) fn deferred_test_graph(
     segment_count: u32,
     segment_size: u32,
     starts: &[u64],
-) -> DeferredLaraGraph<
-    TestEdge,
-    Vertex,
-    VectorMemory,
-    VectorMemory,
-    VectorMemory,
-    VectorMemory,
-    VectorMemory,
-    VectorMemory,
-    VectorMemory,
-    VectorMemory,
-> {
-    let graph = DeferredLaraGraph::<TestEdge, Vertex, _, _, _, _, _, _, _, _>::new(
+) -> DeferredLaraGraph<TestEdge, Vertex, VectorMemory> {
+    let graph = DeferredLaraGraph::new(
+        vector_memory(),
         vector_memory(),
         vector_memory(),
         vector_memory(),

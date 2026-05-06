@@ -76,7 +76,8 @@ fn journal_offset() -> u64 {
 
 /// Byte offset just past the last journal slot: `64 + JOURNAL_CAP_SLOTS * 5` (not necessarily 8-aligned).
 fn journal_end_bytes() -> u64 {
-    journal_offset().saturating_add((crate::JOURNAL_CAP_SLOTS as u64).saturating_mul(JOURNAL_RECORD_SIZE))
+    journal_offset()
+        .saturating_add((crate::JOURNAL_CAP_SLOTS as u64).saturating_mul(JOURNAL_RECORD_SIZE))
 }
 
 /// Start of the serialized Roaring snapshot; always 8-byte aligned after zero padding.
@@ -93,7 +94,13 @@ fn read_header<M: Memory>(memory: &M) -> ([u8; 3], u8, u64, u64, u64) {
     let len_bits = read_u64(memory, LEN_OFFSET);
     let journal_slots = read_u64(memory, JOURNAL_SLOTS_METADATA_OFFSET);
     let snapshot_len_bytes = read_u64(memory, SNAPSHOT_LEN_OFFSET);
-    (magic, version[0], len_bits, snapshot_len_bytes, journal_slots)
+    (
+        magic,
+        version[0],
+        len_bits,
+        snapshot_len_bytes,
+        journal_slots,
+    )
 }
 
 fn write_header<M: Memory>(
@@ -693,10 +700,7 @@ mod tests {
 
         let bs = RoaringBitmap::new(VectorMemory::default()).unwrap();
         let mem = bs.into_memory();
-        mem.write(
-            JOURNAL_SLOTS_METADATA_OFFSET,
-            &123u64.to_le_bytes(),
-        );
+        mem.write(JOURNAL_SLOTS_METADATA_OFFSET, &123u64.to_le_bytes());
         assert!(matches!(
             RoaringBitmap::init(mem),
             Err(InitError::InvalidLayout)
@@ -704,10 +708,7 @@ mod tests {
 
         let bs = RoaringBitmap::new(VectorMemory::default()).unwrap();
         let mem = bs.into_memory();
-        mem.write(
-            SNAPSHOT_LEN_OFFSET,
-            &10_000_000u64.to_le_bytes(),
-        );
+        mem.write(SNAPSHOT_LEN_OFFSET, &10_000_000u64.to_le_bytes());
         assert!(matches!(
             RoaringBitmap::init(mem),
             Err(InitError::InvalidLayout)

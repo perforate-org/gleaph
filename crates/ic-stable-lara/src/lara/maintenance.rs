@@ -54,27 +54,27 @@ pub struct MarkResult {
 }
 
 #[derive(Debug)]
-pub struct MaintenanceQueue<MQ: Memory, MD: Memory> {
-    queue: StableVecDeque<SegmentId, MQ>,
-    dirty: StableRoaringBitmap<MD>,
+pub struct MaintenanceQueue<M: Memory> {
+    queue: StableVecDeque<SegmentId, M>,
+    dirty: StableRoaringBitmap<M>,
 }
 
-impl<MQ: Memory, MD: Memory> MaintenanceQueue<MQ, MD> {
-    pub fn new(queue_memory: MQ, dirty_memory: MD) -> Result<Self, GrowFailed> {
+impl<M: Memory> MaintenanceQueue<M> {
+    pub fn new(queue_memory: M, dirty_memory: M) -> Result<Self, GrowFailed> {
         Ok(Self {
             queue: StableVecDeque::new(queue_memory).map_err(GrowFailed::Queue)?,
             dirty: StableRoaringBitmap::new(dirty_memory).map_err(GrowFailed::DirtySet)?,
         })
     }
 
-    pub fn init(queue_memory: MQ, dirty_memory: MD) -> Result<Self, InitError> {
+    pub fn init(queue_memory: M, dirty_memory: M) -> Result<Self, InitError> {
         Ok(Self {
             queue: StableVecDeque::init(queue_memory).map_err(InitError::Queue)?,
             dirty: StableRoaringBitmap::init(dirty_memory).map_err(InitError::DirtySet)?,
         })
     }
 
-    pub fn into_memories(self) -> (MQ, MD) {
+    pub fn into_memories(self) -> (M, M) {
         (self.queue.into_memory(), self.dirty.into_memory())
     }
 
@@ -271,48 +271,34 @@ fn current_instruction_counter() -> u64 {
     }
 }
 
-pub struct DeferredLaraGraph<E, V, MV, MC, ME, ML, MS, MF, MMQ, MDS>
+pub struct DeferredLaraGraph<E, V, M>
 where
     E: CsrEdge,
     V: LaraVertex,
-    MV: Memory,
-    MC: Memory,
-    ME: Memory,
-    ML: Memory,
-    MS: Memory,
-    MF: Memory,
-    MMQ: Memory,
-    MDS: Memory,
+    M: Memory,
 {
-    graph: LaraGraph<E, V, MV, MC, ME, ML, MS, MF>,
-    maintenance: MaintenanceQueue<MMQ, MDS>,
+    graph: LaraGraph<E, V, M>,
+    maintenance: MaintenanceQueue<M>,
     config: DeferredConfig,
 }
 
-impl<E, V, MV, MC, ME, ML, MS, MF, MMQ, MDS>
-    DeferredLaraGraph<E, V, MV, MC, ME, ML, MS, MF, MMQ, MDS>
+impl<E, V, M> DeferredLaraGraph<E, V, M>
 where
     E: CsrEdge,
     V: LaraVertex,
-    MV: Memory,
-    MC: Memory,
-    ME: Memory,
-    ML: Memory,
-    MS: Memory,
-    MF: Memory,
-    MMQ: Memory,
-    MDS: Memory,
+    M: Memory,
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        vertices: MV,
-        counts: MC,
-        edges: ME,
-        log: ML,
-        span_meta: MS,
-        free_spans: MF,
-        maintenance_queue: MMQ,
-        dirty_segments: MDS,
+        vertices: M,
+        counts: M,
+        edges: M,
+        log: M,
+        span_meta: M,
+        free_spans: M,
+        free_span_by_start: M,
+        maintenance_queue: M,
+        dirty_segments: M,
         elem_capacity: u64,
         segment_count: u32,
         segment_size: u32,
@@ -324,6 +310,7 @@ where
             log,
             span_meta,
             free_spans,
+            free_span_by_start,
             maintenance_queue,
             dirty_segments,
             elem_capacity,
@@ -335,14 +322,15 @@ where
 
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_config(
-        vertices: MV,
-        counts: MC,
-        edges: ME,
-        log: ML,
-        span_meta: MS,
-        free_spans: MF,
-        maintenance_queue: MMQ,
-        dirty_segments: MDS,
+        vertices: M,
+        counts: M,
+        edges: M,
+        log: M,
+        span_meta: M,
+        free_spans: M,
+        free_span_by_start: M,
+        maintenance_queue: M,
+        dirty_segments: M,
         elem_capacity: u64,
         segment_count: u32,
         segment_size: u32,
@@ -357,6 +345,7 @@ where
                 log,
                 span_meta,
                 free_spans,
+                free_span_by_start,
                 elem_capacity,
                 segment_count,
                 segment_size,
@@ -370,14 +359,15 @@ where
 
     #[allow(clippy::too_many_arguments)]
     pub fn init(
-        vertices: MV,
-        counts: MC,
-        edges: ME,
-        log: ML,
-        span_meta: MS,
-        free_spans: MF,
-        maintenance_queue: MMQ,
-        dirty_segments: MDS,
+        vertices: M,
+        counts: M,
+        edges: M,
+        log: M,
+        span_meta: M,
+        free_spans: M,
+        free_span_by_start: M,
+        maintenance_queue: M,
+        dirty_segments: M,
     ) -> Result<Self, DeferredInitError> {
         Self::init_with_config(
             vertices,
@@ -386,6 +376,7 @@ where
             log,
             span_meta,
             free_spans,
+            free_span_by_start,
             maintenance_queue,
             dirty_segments,
             DeferredConfig::default(),
@@ -394,33 +385,42 @@ where
 
     #[allow(clippy::too_many_arguments)]
     pub fn init_with_config(
-        vertices: MV,
-        counts: MC,
-        edges: ME,
-        log: ML,
-        span_meta: MS,
-        free_spans: MF,
-        maintenance_queue: MMQ,
-        dirty_segments: MDS,
+        vertices: M,
+        counts: M,
+        edges: M,
+        log: M,
+        span_meta: M,
+        free_spans: M,
+        free_span_by_start: M,
+        maintenance_queue: M,
+        dirty_segments: M,
         config: DeferredConfig,
     ) -> Result<Self, DeferredInitError> {
         let config = config
             .validate()
             .map_err(DeferredInitError::InvalidConfig)?;
         Ok(Self {
-            graph: LaraGraph::init(vertices, counts, edges, log, span_meta, free_spans)
-                .map_err(DeferredInitError::Graph)?,
+            graph: LaraGraph::init(
+                vertices,
+                counts,
+                edges,
+                log,
+                span_meta,
+                free_spans,
+                free_span_by_start,
+            )
+            .map_err(DeferredInitError::Graph)?,
             maintenance: MaintenanceQueue::init(maintenance_queue, dirty_segments)
                 .map_err(DeferredInitError::Maintenance)?,
             config,
         })
     }
 
-    pub fn graph(&self) -> &LaraGraph<E, V, MV, MC, ME, ML, MS, MF> {
+    pub fn graph(&self) -> &LaraGraph<E, V, M> {
         &self.graph
     }
 
-    pub fn maintenance_queue(&self) -> &MaintenanceQueue<MMQ, MDS> {
+    pub fn maintenance_queue(&self) -> &MaintenanceQueue<M> {
         &self.maintenance
     }
 
@@ -428,11 +428,20 @@ where
         self.config
     }
 
-    pub fn into_memories(self) -> (MV, MC, ME, ML, MS, MF, MMQ, MDS) {
-        let (vertices, counts, edges, log, span_meta, free_spans) = self.graph.into_memories();
+    pub fn into_memories(self) -> (M, M, M, M, M, M, M, M, M) {
+        let (vertices, counts, edges, log, span_meta, free_spans, free_span_by_start) =
+            self.graph.into_memories();
         let (queue, dirty) = self.maintenance.into_memories();
         (
-            vertices, counts, edges, log, span_meta, free_spans, queue, dirty,
+            vertices,
+            counts,
+            edges,
+            log,
+            span_meta,
+            free_spans,
+            free_span_by_start,
+            queue,
+            dirty,
         )
     }
 
@@ -687,9 +696,9 @@ mod tests {
         }
 
         let memories = graph.into_memories();
-        let reopened = DeferredLaraGraph::<TestEdge, Vertex, _, _, _, _, _, _, _, _>::init(
+        let reopened = DeferredLaraGraph::<TestEdge, Vertex, _>::init(
             memories.0, memories.1, memories.2, memories.3, memories.4, memories.5, memories.6,
-            memories.7,
+            memories.7, memories.8,
         )
         .unwrap();
 
@@ -718,7 +727,8 @@ mod tests {
 
     #[test]
     fn deferred_config_controls_dirty_threshold() {
-        let graph = DeferredLaraGraph::<TestEdge, Vertex, _, _, _, _, _, _, _, _>::new_with_config(
+        let graph = DeferredLaraGraph::<TestEdge, Vertex, _>::new_with_config(
+            vector_memory(),
             vector_memory(),
             vector_memory(),
             vector_memory(),
@@ -757,27 +767,27 @@ mod tests {
 
     #[test]
     fn deferred_config_rejects_invalid_thresholds() {
-        let err =
-            match DeferredLaraGraph::<TestEdge, Vertex, _, _, _, _, _, _, _, _>::new_with_config(
-                vector_memory(),
-                vector_memory(),
-                vector_memory(),
-                vector_memory(),
-                vector_memory(),
-                vector_memory(),
-                vector_memory(),
-                vector_memory(),
-                16,
-                2,
-                4,
-                DeferredConfig {
-                    leaf_dirty_density: f64::NAN,
-                    log_urgent_ratio: 0.80,
-                },
-            ) {
-                Ok(_) => panic!("invalid deferred config was accepted"),
-                Err(err) => err,
-            };
+        let err = match DeferredLaraGraph::<TestEdge, Vertex, _>::new_with_config(
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            16,
+            2,
+            4,
+            DeferredConfig {
+                leaf_dirty_density: f64::NAN,
+                log_urgent_ratio: 0.80,
+            },
+        ) {
+            Ok(_) => panic!("invalid deferred config was accepted"),
+            Err(err) => err,
+        };
 
         assert!(matches!(err, DeferredError::InvalidConfig(_)));
     }

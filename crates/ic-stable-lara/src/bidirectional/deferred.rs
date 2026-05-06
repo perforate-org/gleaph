@@ -134,148 +134,44 @@ impl std::error::Error for DeferredBidirectionalLaraError {
     }
 }
 
-pub struct DeferredBidirectionalLaraGraph<
-    E,
-    V,
-    MVF,
-    MCF,
-    MEF,
-    MLF,
-    MSF,
-    MFF,
-    MQF,
-    MDF,
-    MVR,
-    MCR,
-    MER,
-    MLR,
-    MSR,
-    MFR,
-    MQR,
-    MDR,
-> where
-    E: CsrEdge + EdgePmaCountsStride,
-    V: LaraVertex,
-    MVF: Memory,
-    MCF: Memory,
-    MEF: Memory,
-    MLF: Memory,
-    MSF: Memory,
-    MFF: Memory,
-    MQF: Memory,
-    MDF: Memory,
-    MVR: Memory,
-    MCR: Memory,
-    MER: Memory,
-    MLR: Memory,
-    MSR: Memory,
-    MFR: Memory,
-    MQR: Memory,
-    MDR: Memory,
-{
-    forward: DeferredLaraGraph<E, V, MVF, MCF, MEF, MLF, MSF, MFF, MQF, MDF>,
-    reverse: DeferredLaraGraph<E, V, MVR, MCR, MER, MLR, MSR, MFR, MQR, MDR>,
-}
-
-pub type DeferredBidirectionalLara<
-    E,
-    V,
-    MVF,
-    MCF,
-    MEF,
-    MLF,
-    MSF,
-    MFF,
-    MQF,
-    MDF,
-    MVR,
-    MCR,
-    MER,
-    MLR,
-    MSR,
-    MFR,
-    MQR,
-    MDR,
-> = DeferredBidirectionalLaraGraph<
-    E,
-    V,
-    MVF,
-    MCF,
-    MEF,
-    MLF,
-    MSF,
-    MFF,
-    MQF,
-    MDF,
-    MVR,
-    MCR,
-    MER,
-    MLR,
-    MSR,
-    MFR,
-    MQR,
-    MDR,
->;
-
-impl<E, V, MVF, MCF, MEF, MLF, MSF, MFF, MQF, MDF, MVR, MCR, MER, MLR, MSR, MFR, MQR, MDR>
-    DeferredBidirectionalLaraGraph<
-        E,
-        V,
-        MVF,
-        MCF,
-        MEF,
-        MLF,
-        MSF,
-        MFF,
-        MQF,
-        MDF,
-        MVR,
-        MCR,
-        MER,
-        MLR,
-        MSR,
-        MFR,
-        MQR,
-        MDR,
-    >
+pub struct DeferredBidirectionalLaraGraph<E, V, M>
 where
     E: CsrEdge + EdgePmaCountsStride,
     V: LaraVertex,
-    MVF: Memory,
-    MCF: Memory,
-    MEF: Memory,
-    MLF: Memory,
-    MSF: Memory,
-    MFF: Memory,
-    MQF: Memory,
-    MDF: Memory,
-    MVR: Memory,
-    MCR: Memory,
-    MER: Memory,
-    MLR: Memory,
-    MSR: Memory,
-    MFR: Memory,
-    MQR: Memory,
-    MDR: Memory,
+    M: Memory,
+{
+    forward: DeferredLaraGraph<E, V, M>,
+    reverse: DeferredLaraGraph<E, V, M>,
+}
+
+pub type DeferredBidirectionalLara<E, V, M> = DeferredBidirectionalLaraGraph<E, V, M>;
+
+impl<E, V, M> DeferredBidirectionalLaraGraph<E, V, M>
+where
+    E: CsrEdge + EdgePmaCountsStride,
+    V: LaraVertex,
+    M: Memory,
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        forward_vertices: MVF,
-        forward_counts: MCF,
-        forward_edges: MEF,
-        forward_log: MLF,
-        forward_span_meta: MSF,
-        forward_free_spans: MFF,
-        forward_maintenance_queue: MQF,
-        forward_dirty_segments: MDF,
-        reverse_vertices: MVR,
-        reverse_counts: MCR,
-        reverse_edges: MER,
-        reverse_log: MLR,
-        reverse_span_meta: MSR,
-        reverse_free_spans: MFR,
-        reverse_maintenance_queue: MQR,
-        reverse_dirty_segments: MDR,
+        forward_vertices: M,
+        forward_counts: M,
+        forward_edges: M,
+        forward_log: M,
+        forward_span_meta: M,
+        forward_free_spans: M,
+        forward_free_span_by_start: M,
+        forward_maintenance_queue: M,
+        forward_dirty_segments: M,
+        reverse_vertices: M,
+        reverse_counts: M,
+        reverse_edges: M,
+        reverse_log: M,
+        reverse_span_meta: M,
+        reverse_free_spans: M,
+        reverse_free_span_by_start: M,
+        reverse_maintenance_queue: M,
+        reverse_dirty_segments: M,
         elem_capacity: u64,
         segment_count: u32,
         segment_size: u32,
@@ -287,6 +183,7 @@ where
             forward_log,
             forward_span_meta,
             forward_free_spans,
+            forward_free_span_by_start,
             forward_maintenance_queue,
             forward_dirty_segments,
             reverse_vertices,
@@ -295,6 +192,7 @@ where
             reverse_log,
             reverse_span_meta,
             reverse_free_spans,
+            reverse_free_span_by_start,
             reverse_maintenance_queue,
             reverse_dirty_segments,
             elem_capacity,
@@ -306,22 +204,24 @@ where
 
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_config(
-        forward_vertices: MVF,
-        forward_counts: MCF,
-        forward_edges: MEF,
-        forward_log: MLF,
-        forward_span_meta: MSF,
-        forward_free_spans: MFF,
-        forward_maintenance_queue: MQF,
-        forward_dirty_segments: MDF,
-        reverse_vertices: MVR,
-        reverse_counts: MCR,
-        reverse_edges: MER,
-        reverse_log: MLR,
-        reverse_span_meta: MSR,
-        reverse_free_spans: MFR,
-        reverse_maintenance_queue: MQR,
-        reverse_dirty_segments: MDR,
+        forward_vertices: M,
+        forward_counts: M,
+        forward_edges: M,
+        forward_log: M,
+        forward_span_meta: M,
+        forward_free_spans: M,
+        forward_free_span_by_start: M,
+        forward_maintenance_queue: M,
+        forward_dirty_segments: M,
+        reverse_vertices: M,
+        reverse_counts: M,
+        reverse_edges: M,
+        reverse_log: M,
+        reverse_span_meta: M,
+        reverse_free_spans: M,
+        reverse_free_span_by_start: M,
+        reverse_maintenance_queue: M,
+        reverse_dirty_segments: M,
         elem_capacity: u64,
         segment_count: u32,
         segment_size: u32,
@@ -334,6 +234,7 @@ where
             forward_log,
             forward_span_meta,
             forward_free_spans,
+            forward_free_span_by_start,
             forward_maintenance_queue,
             forward_dirty_segments,
             elem_capacity,
@@ -349,6 +250,7 @@ where
             reverse_log,
             reverse_span_meta,
             reverse_free_spans,
+            reverse_free_span_by_start,
             reverse_maintenance_queue,
             reverse_dirty_segments,
             elem_capacity,
@@ -362,22 +264,24 @@ where
 
     #[allow(clippy::too_many_arguments)]
     pub fn init(
-        forward_vertices: MVF,
-        forward_counts: MCF,
-        forward_edges: MEF,
-        forward_log: MLF,
-        forward_span_meta: MSF,
-        forward_free_spans: MFF,
-        forward_maintenance_queue: MQF,
-        forward_dirty_segments: MDF,
-        reverse_vertices: MVR,
-        reverse_counts: MCR,
-        reverse_edges: MER,
-        reverse_log: MLR,
-        reverse_span_meta: MSR,
-        reverse_free_spans: MFR,
-        reverse_maintenance_queue: MQR,
-        reverse_dirty_segments: MDR,
+        forward_vertices: M,
+        forward_counts: M,
+        forward_edges: M,
+        forward_log: M,
+        forward_span_meta: M,
+        forward_free_spans: M,
+        forward_free_span_by_start: M,
+        forward_maintenance_queue: M,
+        forward_dirty_segments: M,
+        reverse_vertices: M,
+        reverse_counts: M,
+        reverse_edges: M,
+        reverse_log: M,
+        reverse_span_meta: M,
+        reverse_free_spans: M,
+        reverse_free_span_by_start: M,
+        reverse_maintenance_queue: M,
+        reverse_dirty_segments: M,
     ) -> Result<Self, DeferredBidirectionalLaraError> {
         Self::init_with_config(
             forward_vertices,
@@ -386,6 +290,7 @@ where
             forward_log,
             forward_span_meta,
             forward_free_spans,
+            forward_free_span_by_start,
             forward_maintenance_queue,
             forward_dirty_segments,
             reverse_vertices,
@@ -394,6 +299,7 @@ where
             reverse_log,
             reverse_span_meta,
             reverse_free_spans,
+            reverse_free_span_by_start,
             reverse_maintenance_queue,
             reverse_dirty_segments,
             DeferredConfig::default(),
@@ -402,22 +308,24 @@ where
 
     #[allow(clippy::too_many_arguments)]
     pub fn init_with_config(
-        forward_vertices: MVF,
-        forward_counts: MCF,
-        forward_edges: MEF,
-        forward_log: MLF,
-        forward_span_meta: MSF,
-        forward_free_spans: MFF,
-        forward_maintenance_queue: MQF,
-        forward_dirty_segments: MDF,
-        reverse_vertices: MVR,
-        reverse_counts: MCR,
-        reverse_edges: MER,
-        reverse_log: MLR,
-        reverse_span_meta: MSR,
-        reverse_free_spans: MFR,
-        reverse_maintenance_queue: MQR,
-        reverse_dirty_segments: MDR,
+        forward_vertices: M,
+        forward_counts: M,
+        forward_edges: M,
+        forward_log: M,
+        forward_span_meta: M,
+        forward_free_spans: M,
+        forward_free_span_by_start: M,
+        forward_maintenance_queue: M,
+        forward_dirty_segments: M,
+        reverse_vertices: M,
+        reverse_counts: M,
+        reverse_edges: M,
+        reverse_log: M,
+        reverse_span_meta: M,
+        reverse_free_spans: M,
+        reverse_free_span_by_start: M,
+        reverse_maintenance_queue: M,
+        reverse_dirty_segments: M,
         config: DeferredConfig,
     ) -> Result<Self, DeferredBidirectionalLaraError> {
         let forward = DeferredLaraGraph::init_with_config(
@@ -427,6 +335,7 @@ where
             forward_log,
             forward_span_meta,
             forward_free_spans,
+            forward_free_span_by_start,
             forward_maintenance_queue,
             forward_dirty_segments,
             config,
@@ -439,6 +348,7 @@ where
             reverse_log,
             reverse_span_meta,
             reverse_free_spans,
+            reverse_free_span_by_start,
             reverse_maintenance_queue,
             reverse_dirty_segments,
             config,
@@ -449,39 +359,20 @@ where
         Ok(graph)
     }
 
-    pub fn forward(&self) -> &DeferredLaraGraph<E, V, MVF, MCF, MEF, MLF, MSF, MFF, MQF, MDF> {
+    pub fn forward(&self) -> &DeferredLaraGraph<E, V, M> {
         &self.forward
     }
 
-    pub fn reverse(&self) -> &DeferredLaraGraph<E, V, MVR, MCR, MER, MLR, MSR, MFR, MQR, MDR> {
+    pub fn reverse(&self) -> &DeferredLaraGraph<E, V, M> {
         &self.reverse
     }
 
     #[allow(clippy::type_complexity)]
-    pub fn into_memories(
-        self,
-    ) -> (
-        MVF,
-        MCF,
-        MEF,
-        MLF,
-        MSF,
-        MFF,
-        MQF,
-        MDF,
-        MVR,
-        MCR,
-        MER,
-        MLR,
-        MSR,
-        MFR,
-        MQR,
-        MDR,
-    ) {
-        let (fv, fc, fe, fl, fs, ff, fq, fd) = self.forward.into_memories();
-        let (rv, rc, re, rl, rs, rf, rq, rd) = self.reverse.into_memories();
+    pub fn into_memories(self) -> (M, M, M, M, M, M, M, M, M, M, M, M, M, M, M, M, M, M) {
+        let (fv, fc, fe, fl, fs, ff, ffs, fq, fd) = self.forward.into_memories();
+        let (rv, rc, re, rl, rs, rf, rfs, rq, rd) = self.reverse.into_memories();
         (
-            fv, fc, fe, fl, fs, ff, fq, fd, rv, rc, re, rl, rs, rf, rq, rd,
+            fv, fc, fe, fl, fs, ff, ffs, fq, fd, rv, rc, re, rl, rs, rf, rfs, rq, rd,
         )
     }
 
@@ -814,26 +705,7 @@ mod tests {
         assert_eq!(graph.reverse().maintenance_queue().len(), 1);
 
         let memories = graph.into_memories();
-        let reopened = DeferredBidirectionalLaraGraph::<
-            TestEdge,
-            Vertex,
-            _,
-            _,
-            _,
-            _,
-            _,
-            _,
-            _,
-            _,
-            _,
-            _,
-            _,
-            _,
-            _,
-            _,
-            _,
-            _,
-        >::init(
+        let reopened = DeferredBidirectionalLaraGraph::<TestEdge, Vertex, _>::init(
             memories.0,
             memories.1,
             memories.2,
@@ -850,6 +722,8 @@ mod tests {
             memories.13,
             memories.14,
             memories.15,
+            memories.16,
+            memories.17,
         )
         .unwrap();
 
@@ -1026,7 +900,8 @@ mod tests {
 
     #[test]
     fn deferred_bidirectional_init_rejects_vertex_count_mismatch() {
-        let forward = crate::DeferredLaraGraph::<TestEdge, Vertex, _, _, _, _, _, _, _, _>::new(
+        let forward = crate::DeferredLaraGraph::<TestEdge, Vertex, _>::new(
+            vector_memory(),
             vector_memory(),
             vector_memory(),
             vector_memory(),
@@ -1040,7 +915,8 @@ mod tests {
             2,
         )
         .unwrap();
-        let reverse = crate::DeferredLaraGraph::<TestEdge, Vertex, _, _, _, _, _, _, _, _>::new(
+        let reverse = crate::DeferredLaraGraph::<TestEdge, Vertex, _>::new(
+            vector_memory(),
             vector_memory(),
             vector_memory(),
             vector_memory(),
@@ -1063,29 +939,10 @@ mod tests {
             })
             .unwrap();
 
-        let (fv, fc, fe, fl, fs, ff, fq, fd) = forward.into_memories();
-        let (rv, rc, re, rl, rs, rf, rq, rd) = reverse.into_memories();
-        let err = match DeferredBidirectionalLaraGraph::<
-            TestEdge,
-            Vertex,
-            _,
-            _,
-            _,
-            _,
-            _,
-            _,
-            _,
-            _,
-            _,
-            _,
-            _,
-            _,
-            _,
-            _,
-            _,
-            _,
-        >::init(
-            fv, fc, fe, fl, fs, ff, fq, fd, rv, rc, re, rl, rs, rf, rq, rd,
+        let (fv, fc, fe, fl, fs, ff, ffs, fq, fd) = forward.into_memories();
+        let (rv, rc, re, rl, rs, rf, rfs, rq, rd) = reverse.into_memories();
+        let err = match DeferredBidirectionalLaraGraph::<TestEdge, Vertex, _>::init(
+            fv, fc, fe, fl, fs, ff, ffs, fq, fd, rv, rc, re, rl, rs, rf, rfs, rq, rd,
         ) {
             Ok(_) => panic!("vertex count mismatch was accepted"),
             Err(err) => err,

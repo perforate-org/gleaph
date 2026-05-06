@@ -28,6 +28,6 @@ mod storable;
 mod types;
 mod vec_deque;
 
-pub use vec_deque::InitError;
 pub use vec_deque::Iter;
+pub use vec_deque::{HeaderV1, InitError};
 pub use {vec_deque::VecDeque as StableVecDeque, vec_deque::VecDeque};

@@ -52,12 +52,7 @@ pub use lara::{
     LaraGraph,
     edge::{
         EdgeHeaderV1, EdgeStore, InitError as EdgeInitError, LogHeaderV1,
-        free_span::{
-            FreeSpan, FreeSpanArrayStore, FreeSpanBinnedBTreeStore, FreeSpanBinnedError,
-            FreeSpanBinnedInitError, FreeSpanBinnedPagedStore, FreeSpanBinnedStore,
-            FreeSpanDualIndexError, FreeSpanDualIndexStore, FreeSpanKey, FreeSpanStore,
-            LenStartKey, SpanLen, StartKey,
-        },
+        free_span::{FreeSpan, FreeSpanError, FreeSpanStore, InitError as FreeSpanInitError},
         span_meta::{SegmentSpanMeta, SegmentSpanMetaStore},
     },
     maintenance::{
@@ -68,9 +63,8 @@ pub use lara::{
 };
 pub use traits::*;
 
-pub type Lara<E, V, MV, MC, ME, ML, MS, MF> = LaraGraph<E, V, MV, MC, ME, ML, MS, MF>;
-pub type DeferredLara<E, V, MV, MC, ME, ML, MS, MF, MMQ, MDS> =
-    DeferredLaraGraph<E, V, MV, MC, ME, ML, MS, MF, MMQ, MDS>;
+pub type Lara<E, V, M> = LaraGraph<E, V, M>;
+pub type DeferredLara<E, V, M> = DeferredLaraGraph<E, V, M>;
 
 pub use ic_stable_structures::vec_mem::VectorMemory;
 use types::Address;

@@ -111,41 +111,32 @@ impl fmt::Display for InitError {
 
 impl std::error::Error for InitError {}
 
-pub struct LaraGraph<E, V, MV, MC, ME, ML, MS, MF>
+pub struct LaraGraph<E, V, M>
 where
     E: CsrEdge + EdgePmaCountsStride,
     V: LaraVertex,
-    MV: Memory,
-    MC: Memory,
-    ME: Memory,
-    ML: Memory,
-    MS: Memory,
-    MF: Memory,
+    M: Memory,
 {
-    pub(super) vertices: VertexStore<V, MV>,
-    pub(super) edges: EdgeStore<E, MC, ME, ML, MS, MF>,
+    pub(super) vertices: VertexStore<V, M>,
+    pub(super) edges: EdgeStore<E, M>,
     _marker: PhantomData<(E, V)>,
 }
 
-impl<E, V, MV, MC, ME, ML, MS, MF> LaraGraph<E, V, MV, MC, ME, ML, MS, MF>
+impl<E, V, M> LaraGraph<E, V, M>
 where
     E: CsrEdge + EdgePmaCountsStride,
     V: LaraVertex,
-    MV: Memory,
-    MC: Memory,
-    ME: Memory,
-    ML: Memory,
-    MS: Memory,
-    MF: Memory,
+    M: Memory,
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        vertices: MV,
-        counts: MC,
-        edges: ME,
-        log: ML,
-        span_meta: MS,
-        free_spans: MF,
+        vertices: M,
+        counts: M,
+        edges: M,
+        log: M,
+        span_meta: M,
+        free_spans: M,
+        free_span_by_start: M,
         elem_capacity: u64,
         segment_count: u32,
         segment_size: u32,
@@ -158,6 +149,7 @@ where
                 log,
                 span_meta,
                 free_spans,
+                free_span_by_start,
                 elem_capacity,
                 segment_count,
                 segment_size,
@@ -167,31 +159,40 @@ where
     }
 
     pub fn init(
-        vertices: MV,
-        counts: MC,
-        edges: ME,
-        log: ML,
-        span_meta: MS,
-        free_spans: MF,
+        vertices: M,
+        counts: M,
+        edges: M,
+        log: M,
+        span_meta: M,
+        free_spans: M,
+        free_span_by_start: M,
     ) -> Result<Self, InitError> {
         Ok(Self {
             vertices: VertexStore::init(vertices).map_err(InitError::Vertices)?,
-            edges: EdgeStore::init(counts, edges, log, span_meta, free_spans)
-                .map_err(InitError::Edges)?,
+            edges: EdgeStore::init(
+                counts,
+                edges,
+                log,
+                span_meta,
+                free_spans,
+                free_span_by_start,
+            )
+            .map_err(InitError::Edges)?,
             _marker: PhantomData,
         })
     }
 
-    pub fn vertices(&self) -> &VertexStore<V, MV> {
+    pub fn vertices(&self) -> &VertexStore<V, M> {
         &self.vertices
     }
 
-    pub fn edges(&self) -> &EdgeStore<E, MC, ME, ML, MS, MF> {
+    pub fn edges(&self) -> &EdgeStore<E, M> {
         &self.edges
     }
 
-    pub fn into_memories(self) -> (MV, MC, ME, ML, MS, MF) {
-        let (counts, edges, log, span_meta, free_spans) = self.edges.into_memories();
+    pub fn into_memories(self) -> (M, M, M, M, M, M, M) {
+        let (counts, edges, log, span_meta, free_spans, free_span_by_start) =
+            self.edges.into_memories();
         (
             self.vertices.into_memory(),
             counts,
@@ -199,6 +200,7 @@ where
             log,
             span_meta,
             free_spans,
+            free_span_by_start,
         )
     }
 
@@ -662,14 +664,20 @@ where
 
             self.vertices
                 .set(vid, &v.with_base_slot_start(new_start).with_log_head(-1));
-            self.edges.free_span_store().replace_exact_pair_with(
-                left_free,
-                right_free,
-                crate::lara::edge::free_span::FreeSpan {
-                    start_slot: new_start.saturating_add(u64::from(capacity)),
-                    len: left_free.len.saturating_add(right_free.len),
-                },
-            );
+            self.edges
+                .free_span_store()
+                .replace_exact_pair_with(
+                    left_free,
+                    right_free,
+                    crate::lara::edge::free_span::FreeSpan {
+                        start_slot: new_start.saturating_add(u64::from(capacity)),
+                        len: left_free.len.saturating_add(right_free.len),
+                    },
+                )
+                .map_err(|_| GrowFailed {
+                    current_size: 0,
+                    delta: 0,
+                })?;
 
             let leaf = self.leaf_for_vertex_with_layout(layout, vid);
             let first_vid = leaf.saturating_mul(u64::from(layout.segment_size.max(1)));
@@ -1216,8 +1224,8 @@ mod tests {
         }
 
         let memories = graph.into_memories();
-        let reopened = LaraGraph::<TestEdge, Vertex, _, _, _, _, _, _>::init(
-            memories.0, memories.1, memories.2, memories.3, memories.4, memories.5,
+        let reopened = LaraGraph::<TestEdge, Vertex, _>::init(
+            memories.0, memories.1, memories.2, memories.3, memories.4, memories.5, memories.6,
         )
         .unwrap();
 
@@ -1455,8 +1463,8 @@ mod tests {
         );
 
         let memories = graph.into_memories();
-        let reopened = LaraGraph::<TestEdge, Vertex, _, _, _, _, _, _>::init(
-            memories.0, memories.1, memories.2, memories.3, memories.4, memories.5,
+        let reopened = LaraGraph::<TestEdge, Vertex, _>::init(
+            memories.0, memories.1, memories.2, memories.3, memories.4, memories.5, memories.6,
         )
         .unwrap();
 
@@ -1477,7 +1485,8 @@ mod tests {
 
     #[test]
     fn lara_sliding_copies_large_edges() {
-        let graph = LaraGraph::<LargeTestEdge, Vertex, _, _, _, _, _, _>::new(
+        let graph = LaraGraph::new(
+            crate::test_support::vector_memory(),
             crate::test_support::vector_memory(),
             crate::test_support::vector_memory(),
             crate::test_support::vector_memory(),
@@ -1540,8 +1549,8 @@ mod tests {
         }
 
         let memories = graph.into_memories();
-        let reopened = LaraGraph::<TestEdge, Vertex, _, _, _, _, _, _>::init(
-            memories.0, memories.1, memories.2, memories.3, memories.4, memories.5,
+        let reopened = LaraGraph::<TestEdge, Vertex, _>::init(
+            memories.0, memories.1, memories.2, memories.3, memories.4, memories.5, memories.6,
         )
         .unwrap();
 

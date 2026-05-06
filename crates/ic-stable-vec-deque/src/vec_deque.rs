@@ -67,7 +67,7 @@ const CAP_OFFSET: u64 = 25;
 #[derive(PartialEq, Eq, Debug)]
 pub enum InitError {
     /// First three bytes are not magic `SVD`. Use [`VecDeque::new`] to overwrite the region.
-    BadMagic { actual: [u8; 3], expected: [u8; 3] },
+    BadMagic { actual: [u8; 3] },
     /// Persisted layout version is not supported by this crate.
     IncompatibleVersion(u8),
     /// `T`'s [`Storable`](ic_stable_structures::Storable) bounds do not match `max_size` / `is_fixed_size` in the header.
@@ -81,8 +81,8 @@ pub enum InitError {
 impl fmt::Display for InitError {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::BadMagic { actual, expected } => {
-                write!(fmt, "bad magic number {actual:?}, expected {expected:?}")
+            Self::BadMagic { actual } => {
+                write!(fmt, "bad magic number {actual:?}, expected {MAGIC:?}")
             }
             Self::IncompatibleVersion(version) => write!(
                 fmt,
@@ -152,7 +152,7 @@ impl<T: Storable, M: Memory> VecDeque<T, M> {
         let t_bounds = bounds::<T>();
         write_deque_header(
             &memory,
-            &DequeHeaderV1 {
+            &HeaderV1 {
                 magic: MAGIC,
                 version: LAYOUT_VERSION,
                 len: 0,
@@ -195,10 +195,7 @@ impl<T: Storable, M: Memory> VecDeque<T, M> {
         }
         let h = read_deque_header(&memory);
         if h.magic != MAGIC {
-            return Err(InitError::BadMagic {
-                actual: h.magic,
-                expected: MAGIC,
-            });
+            return Err(InitError::BadMagic { actual: h.magic });
         }
         if h.version != LAYOUT_VERSION {
             return Err(InitError::IncompatibleVersion(h.version));
@@ -248,6 +245,11 @@ impl<T: Storable, M: Memory> VecDeque<T, M> {
     /// ```
     pub fn into_memory(self) -> M {
         self.memory
+    }
+
+    /// Returns the stable V1 header fields currently persisted in memory.
+    pub fn header(&self) -> HeaderV1 {
+        read_deque_header(&self.memory)
     }
 
     /// `true` when [`len`](VecDeque::len) is zero.
@@ -560,17 +562,18 @@ impl<T: Storable + fmt::Debug, M: Memory> fmt::Debug for VecDeque<T, M> {
     }
 }
 
-struct DequeHeaderV1 {
-    magic: [u8; 3],
-    version: u8,
-    len: u64,
-    max_size: u32,
-    is_fixed_size: bool,
-    head: u64,
-    capacity: u64,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HeaderV1 {
+    pub magic: [u8; 3],
+    pub version: u8,
+    pub len: u64,
+    pub max_size: u32,
+    pub is_fixed_size: bool,
+    pub head: u64,
+    pub capacity: u64,
 }
 
-fn write_deque_header<M: Memory>(memory: &M, h: &DequeHeaderV1) -> Result<(), GrowFailed> {
+fn write_deque_header<M: Memory>(memory: &M, h: &HeaderV1) -> Result<(), GrowFailed> {
     safe_write(memory, 0, &h.magic)?;
     memory.write(3, &[h.version; 1]);
     write_u64(memory, Address::from(LEN_OFFSET), h.len);
@@ -581,7 +584,7 @@ fn write_deque_header<M: Memory>(memory: &M, h: &DequeHeaderV1) -> Result<(), Gr
     Ok(())
 }
 
-fn read_deque_header<M: Memory>(memory: &M) -> DequeHeaderV1 {
+fn read_deque_header<M: Memory>(memory: &M) -> HeaderV1 {
     let mut magic = [0u8; 3];
     let mut version = [0u8; 1];
     let mut is_fixed_size = [0u8; 1];
@@ -592,7 +595,7 @@ fn read_deque_header<M: Memory>(memory: &M) -> DequeHeaderV1 {
     memory.read(16, &mut is_fixed_size);
     let head = read_u64(memory, Address::from(HEAD_OFFSET));
     let capacity = read_u64(memory, Address::from(CAP_OFFSET));
-    DequeHeaderV1 {
+    HeaderV1 {
         magic,
         version: version[0],
         len,
