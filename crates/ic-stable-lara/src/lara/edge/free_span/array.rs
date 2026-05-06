@@ -7,7 +7,7 @@ use crate::{GrowFailed, read_u64, safe_write, types::Address, write_u64};
 use ic_stable_structures::Memory;
 use std::fmt;
 
-use super::free_span::FreeSpan;
+use super::FreeSpan;
 
 pub const MAGIC: [u8; 3] = *b"LFS";
 const LAYOUT_VERSION: u8 = 1;

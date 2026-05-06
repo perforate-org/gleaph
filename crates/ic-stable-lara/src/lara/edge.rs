@@ -24,8 +24,6 @@
 pub mod counts;
 mod edges;
 pub mod free_span;
-pub mod free_span_array;
-pub mod free_span_dual_index;
 mod log;
 pub mod span_meta;
 

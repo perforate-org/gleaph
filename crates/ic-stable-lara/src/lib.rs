@@ -51,10 +51,9 @@ pub use lara::{
     LaraGraph,
     edge::{
         EdgeHeaderV1, EdgeStore, InitError as EdgeInitError, LogHeaderV1,
-        free_span::{FreeSpan, FreeSpanKey, FreeSpanStore},
-        free_span_array::FreeSpanArrayStore,
-        free_span_dual_index::{
-            FreeSpanDualIndexError, FreeSpanDualIndexStore, LenStartKey, SpanLen, StartKey,
+        free_span::{
+            FreeSpan, FreeSpanArrayStore, FreeSpanDualIndexError, FreeSpanDualIndexStore,
+            FreeSpanKey, FreeSpanStore, LenStartKey, SpanLen, StartKey,
         },
         span_meta::{SegmentSpanMeta, SegmentSpanMetaStore},
     },

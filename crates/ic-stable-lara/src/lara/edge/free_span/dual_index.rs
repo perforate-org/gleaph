@@ -1,6 +1,6 @@
 //! Stable LARA dual-index free span store.
 //!
-//! This is the coalescing BTree-backed alternative to [`super::free_span::FreeSpanStore`].
+//! This is the coalescing BTree-backed alternative to [`super::FreeSpanStore`].
 //! It keeps two indexes for the same logical free spans:
 //!
 //! - `by_len`: `(len, start_slot) -> ()` for best-fit allocation.
@@ -16,7 +16,7 @@ use std::{
 
 use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound as StorableBound};
 
-use super::free_span::FreeSpan;
+use super::FreeSpan;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LenStartKey(u128);
