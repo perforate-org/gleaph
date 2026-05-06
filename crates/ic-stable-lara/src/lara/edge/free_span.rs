@@ -16,12 +16,16 @@ use crate::{GrowFailed, types::Address};
 #[cfg(feature = "canbench")]
 mod bench;
 
+/// Reusable physical edge-slab span.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FreeSpan {
+    /// First edge slot in the free physical range.
     pub start_slot: u64,
+    /// Number of edge slots in the free physical range.
     pub len: u64,
 }
 
+/// Magic bytes that identify LARA free-span metadata.
 pub const MAGIC: [u8; 3] = *b"LFS";
 /// Layout version byte stored immediately after [`MAGIC`] (same pattern as the array-backed free span store).
 const LAYOUT_VERSION: u8 = 1;
@@ -51,27 +55,43 @@ const FLAG_ACTIVE: u8 = 1;
 /// Stable record index; `0` is invalid (sentinel for linked lists).
 pub type SpanId = u64;
 
+/// Errors returned by free-span allocation and release operations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FreeSpanError {
+    /// A zero-length span was supplied where a reusable span is required.
     EmptySpan,
+    /// `start_slot + len` overflowed `u64`.
     SpanOverflow {
+        /// Span whose end could not be represented.
         span: FreeSpan,
     },
+    /// A span already exists with the same start slot.
     DuplicateStart {
+        /// Duplicated start slot.
         start_slot: u64,
     },
+    /// The inserted span overlaps the previous span in start order.
     OverlapPrevious {
+        /// Existing previous span.
         previous: FreeSpan,
+        /// Span being inserted.
         inserted: FreeSpan,
     },
+    /// The inserted span overlaps the next span in start order.
     OverlapNext {
+        /// Span being inserted.
         inserted: FreeSpan,
+        /// Existing next span.
         next: FreeSpan,
     },
+    /// An operation expected this exact span, but it was not present.
     MissingSpan {
+        /// Missing span.
         span: FreeSpan,
     },
+    /// A record free-list pointer was invalid.
     CorruptedFreeList,
+    /// A size-class bin or by-start index invariant was violated.
     BinInvariant,
 }
 
@@ -101,11 +121,19 @@ impl fmt::Display for FreeSpanError {
 
 impl std::error::Error for FreeSpanError {}
 
+/// Errors returned when reopening a persisted free-span store.
 #[derive(Debug)]
 pub enum InitError {
-    BadMagic { actual: [u8; 3] },
+    /// The memory header does not contain the LARA free-span magic bytes.
+    BadMagic {
+        /// Magic bytes read from stable memory.
+        actual: [u8; 3],
+    },
+    /// The stored layout version is not supported by this crate version.
     IncompatibleVersion(u8),
+    /// The memory does not contain a valid free-span layout.
     InvalidLayout,
+    /// The store could not allocate or reopen its metadata.
     OutOfMemory,
 }
 
@@ -156,21 +184,29 @@ struct SpanRecord {
     bin_idx: u8,
 }
 
+/// Persisted V1 free-span store header.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HeaderV1 {
+    /// Magic bytes, always [`MAGIC`] for this layout.
     pub magic: [u8; 3],
+    /// Layout version.
     pub version: u8,
+    /// Number of allocated span-record slots.
     pub record_slots: u64,
+    /// Number of active free spans.
     pub active_count: u64,
+    /// Head of the recycled record free list, or `0` when empty.
     pub free_head: u64,
 }
 
+/// Stable free-span allocator for retired physical edge-slab ranges.
 pub struct FreeSpanStore<M: Memory> {
     store: M,
     by_start: RefCell<StablePagedOrderedMap<M>>,
 }
 
 impl<M: Memory> FreeSpanStore<M> {
+    /// Creates a fresh free-span store and by-start index.
     pub fn new(store: M, by_start_ms: M) -> Result<Self, GrowFailed> {
         write_header(
             &store,
@@ -195,6 +231,7 @@ impl<M: Memory> FreeSpanStore<M> {
         })
     }
 
+    /// Reopens an existing free-span store and by-start index.
     pub fn init(store: M, by_start_ms: M) -> Result<Self, InitError> {
         if store.size() == 0 {
             return Self::new(store, by_start_ms).map_err(|_| InitError::OutOfMemory);
@@ -209,22 +246,27 @@ impl<M: Memory> FreeSpanStore<M> {
         })
     }
 
+    /// Reads the current free-span store header.
     pub fn header(&self) -> HeaderV1 {
         read_header(&self.store)
     }
 
+    /// Consumes the store and returns `(records_memory, by_start_memory)`.
     pub fn into_memories(self) -> (M, M) {
         (self.store, self.by_start.into_inner().into_memory())
     }
 
+    /// Returns the number of active free spans.
     pub fn len(&self) -> u64 {
         crate::read_u64(&self.store, Address::from(OFFSET_ACTIVE_COUNT))
     }
 
+    /// Returns `true` when no free spans are available.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
+    /// Checks internal bin, record, and by-start index invariants.
     pub fn validate(&self) -> Result<(), FreeSpanError> {
         let active = self.read_active_count();
         let mut counted = 0u64;
@@ -272,6 +314,7 @@ impl<M: Memory> FreeSpanStore<M> {
         Ok(())
     }
 
+    /// Releases `span` back to the allocator, coalescing adjacent spans.
     pub fn release(&self, span: FreeSpan) -> Result<(), FreeSpanError> {
         if span.len == 0 {
             return Err(FreeSpanError::EmptySpan);
@@ -341,6 +384,7 @@ impl<M: Memory> FreeSpanStore<M> {
         Ok(())
     }
 
+    /// Releases a span described by start slot and length.
     pub fn release_span(&self, start_slot: u64, len: u64) -> Result<(), FreeSpanError> {
         self.release(FreeSpan { start_slot, len })
     }
@@ -375,6 +419,7 @@ impl<M: Memory> FreeSpanStore<M> {
         }
     }
 
+    /// Takes an entire free span of at least `min_len`, without splitting it.
     pub fn take_best_fit_whole(&self, min_len: u64) -> Result<Option<FreeSpan>, FreeSpanError> {
         if min_len == 0 {
             return Ok(None);
@@ -389,6 +434,7 @@ impl<M: Memory> FreeSpanStore<M> {
         Ok(None)
     }
 
+    /// Returns the current best-fit span without removing it.
     pub fn peek_best_fit(&self, min_len: u64) -> Option<FreeSpan> {
         if min_len == 0 {
             return None;
@@ -402,6 +448,7 @@ impl<M: Memory> FreeSpanStore<M> {
         None
     }
 
+    /// Takes exactly `min_len` slots from a best-fit span, splitting the remainder if needed.
     pub fn take_best_fit(&self, min_len: u64) -> Result<Option<FreeSpan>, FreeSpanError> {
         if min_len == 0 {
             return Ok(None);
@@ -443,6 +490,7 @@ impl<M: Memory> FreeSpanStore<M> {
         Ok(None)
     }
 
+    /// Returns the active free span that starts exactly at `start_slot`.
     pub fn free_span_starting_at(&self, start_slot: u64) -> Option<FreeSpan> {
         let id = self.by_start.borrow().get(start_slot)?;
         let rec = self.read_record(id);
@@ -455,6 +503,7 @@ impl<M: Memory> FreeSpanStore<M> {
         })
     }
 
+    /// Returns the active free span that ends exactly at `end_slot`.
     pub fn free_span_ending_at(&self, end_slot: u64) -> Option<FreeSpan> {
         self.by_start
             .borrow()
@@ -476,6 +525,7 @@ impl<M: Memory> FreeSpanStore<M> {
             })
     }
 
+    /// Returns all active free spans in increasing start-slot order.
     pub fn spans(&self) -> Vec<FreeSpan> {
         let by_start = self.by_start.borrow();
         let mut spans = Vec::new();
@@ -499,6 +549,7 @@ impl<M: Memory> FreeSpanStore<M> {
         spans
     }
 
+    /// Replaces two exact free spans with one replacement span.
     pub fn replace_exact_pair_with(
         &self,
         left: FreeSpan,

@@ -54,23 +54,33 @@ use crate::{
 use ic_stable_structures::Memory;
 use std::{fmt, marker::PhantomData};
 
+/// Magic bytes that identify a LARA overflow-log memory.
 pub const MAGIC: [u8; 3] = *b"LLG";
+/// Current overflow-log layout version.
 pub const LAYOUT_VERSION: u8 = 1;
 const HEADER_SIZE: u64 = 32;
 const INLINE_LOG_ENTRY_BYTES: usize = 128;
 
+/// Default per-segment overflow-log capacity.
 pub const DEFAULT_MAX_LOG_ENTRIES: u32 = 170;
 
+/// Persisted V1 overflow-log header.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HeaderV1 {
+    /// Magic bytes, always `LLG` for this layout.
     pub magic: [u8; 3],
+    /// Layout version for this header.
     pub version: u8,
+    /// Number of leaf segments with a log block.
     pub segment_count: u32,
+    /// Maximum number of log entries in each segment block.
     pub max_log_entries: u32,
+    /// Encoded byte width of one log entry.
     pub stride: u32,
 }
 
 impl HeaderV1 {
+    /// Builds a fresh overflow-log header.
     pub fn new(segment_count: u32, edge_stride: u32) -> Self {
         Self {
             magic: MAGIC,
@@ -82,12 +92,25 @@ impl HeaderV1 {
     }
 }
 
+/// Errors returned when reopening a persisted overflow log.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InitError {
-    BadMagic { actual: [u8; 3] },
+    /// The memory header does not contain the LARA log magic bytes.
+    BadMagic {
+        /// Magic bytes read from stable memory.
+        actual: [u8; 3],
+    },
+    /// The stored layout version is not supported by this crate version.
     IncompatibleVersion(u8),
+    /// The memory is empty or the log metadata could not be allocated.
     OutOfMemory,
-    StrideMismatch { expected: u32, actual: u32 },
+    /// The persisted entry width does not match the edge type `E`.
+    StrideMismatch {
+        /// Expected log-entry width.
+        expected: u32,
+        /// Log-entry width read from stable memory.
+        actual: u32,
+    },
 }
 
 impl fmt::Display for InitError {
@@ -108,6 +131,7 @@ impl fmt::Display for InitError {
 
 impl std::error::Error for InitError {}
 
+/// Stable per-segment overflow log for edges that did not fit on the slab.
 #[derive(Clone, Debug)]
 pub struct LogStore<E: CsrEdge, M: Memory> {
     memory: M,
@@ -115,6 +139,7 @@ pub struct LogStore<E: CsrEdge, M: Memory> {
 }
 
 impl<E: CsrEdge, M: Memory> LogStore<E, M> {
+    /// Creates a fresh overflow log with `header`.
     pub fn new(memory: M, header: HeaderV1) -> Result<Self, GrowFailed> {
         let store = Self {
             memory,
@@ -125,6 +150,7 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
         Ok(store)
     }
 
+    /// Reopens an existing overflow log from stable memory.
     pub fn init(memory: M) -> Result<Self, InitError> {
         if memory.size() == 0 {
             return Err(InitError::OutOfMemory);
@@ -152,14 +178,17 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
         Ok(store)
     }
 
+    /// Consumes the store and returns its underlying memory.
     pub fn into_memory(self) -> M {
         self.memory
     }
 
+    /// Reads the current persisted log header.
     pub fn header(&self) -> HeaderV1 {
         self.read_header()
     }
 
+    /// Reads the next-free entry index for a leaf segment.
     pub fn read_idx(&self, leaf_segment: u32) -> i32 {
         let h = self.header();
         read_i32(
@@ -168,6 +197,7 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
         )
     }
 
+    /// Writes the next-free entry index for a leaf segment.
     pub fn write_idx(&self, leaf_segment: u32, idx: i32) {
         let h = self.header();
         write_i32(
@@ -177,6 +207,7 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
         );
     }
 
+    /// Reads one log entry payload and returns `(previous_entry, source_vertex)`.
     pub fn read_entry(&self, leaf_segment: u32, entry_idx: u32, out: &mut [u8]) -> (i32, i32) {
         let h = self.header();
         let off = entry_offset::<E>(&h, leaf_segment, entry_idx);
@@ -186,6 +217,7 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
         (prev, src)
     }
 
+    /// Writes one log entry in a leaf segment.
     pub fn write_entry(
         &self,
         leaf_segment: u32,
@@ -213,6 +245,7 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
         }
     }
 
+    /// Clears all log entries and resets the segment index to zero.
     pub fn release_segment(&self, leaf_segment: u32) -> Result<(), GrowFailed> {
         let h = self.header();
         let idx = self.read_idx(leaf_segment);
@@ -283,6 +316,7 @@ fn required_bytes<E: CsrEdge>(h: &HeaderV1) -> u64 {
         .saturating_add(u64::from(h.segment_count).saturating_mul(segment_block_size::<E>(h)))
 }
 
+/// Returns the byte width of one log entry for edge type `E`.
 #[inline]
 pub fn log_entry_stride<E: CsrEdge>() -> u64 {
     8 + E::BYTES as u64

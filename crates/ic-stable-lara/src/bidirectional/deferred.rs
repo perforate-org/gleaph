@@ -18,21 +18,28 @@ use std::fmt;
 #[cfg(feature = "canbench")]
 mod bench;
 
+/// Maintenance report for a deferred bidirectional graph.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BidirectionalMaintenanceReport {
+    /// Work performed on the forward orientation.
     pub forward: MaintenanceWorkReport,
+    /// Work performed on the reverse orientation.
     pub reverse: MaintenanceWorkReport,
+    /// Instruction-counter value observed at the end of the run.
     pub instructions_used: u64,
+    /// Whether the instruction budget stopped the run.
     pub instruction_budget_exhausted: bool,
 }
 
 impl BidirectionalMaintenanceReport {
+    /// Returns total processed segments across both orientations.
     pub fn processed_segments(self) -> u32 {
         self.forward
             .processed_segments
             .saturating_add(self.reverse.processed_segments)
     }
 
+    /// Returns total remaining queued segments across both orientations.
     pub fn remaining_queue_len(self) -> u64 {
         self.forward
             .remaining_queue_len
@@ -71,28 +78,47 @@ fn current_instruction_counter() -> u64 {
     }
 }
 
+/// Errors returned by deferred bidirectional graph operations.
 #[derive(Debug)]
 pub enum DeferredBidirectionalLaraError {
+    /// Forward store operation failed.
     Forward(&'static str),
+    /// Reverse store operation failed.
     Reverse(&'static str),
+    /// Forward deferred graph operation failed.
     ForwardDeferred(DeferredError),
+    /// Reverse deferred graph operation failed.
     ReverseDeferred(DeferredError),
+    /// Forward graph initialization failed.
     ForwardInit(DeferredInitError),
+    /// Reverse graph initialization failed.
     ReverseInit(DeferredInitError),
+    /// Forward vertex append failed.
     ForwardGrow(GrowFailed),
+    /// Reverse vertex append failed.
     ReverseGrow(GrowFailed),
+    /// Forward and reverse vertex columns have different lengths.
     VertexCountMismatch {
+        /// Forward vertex count.
         forward: VertexCount,
+        /// Reverse vertex count.
         reverse: VertexCount,
     },
+    /// A requested vertex id is outside the graph.
     VertexOutOfRange {
+        /// Out-of-range vertex id.
         vid: VertexId,
+        /// Current graph vertex count.
         len: VertexCount,
     },
+    /// The edge payload neighbor does not match the destination argument.
     NeighborMismatch {
+        /// Destination vertex expected by the API call.
         expected: VertexId,
+        /// Neighbor id carried by the edge payload.
         actual: VertexId,
     },
+    /// A directed insert received an edge payload marked as undirected.
     UndirectedEdgeInDirectedInsert,
 }
 
@@ -137,6 +163,7 @@ impl std::error::Error for DeferredBidirectionalLaraError {
     }
 }
 
+/// Bidirectional LARA graph whose two orientations use deferred maintenance.
 pub struct DeferredBidirectionalLaraGraph<E, V, M>
 where
     E: CsrEdge + EdgePmaCountsStride,
@@ -147,6 +174,7 @@ where
     reverse: DeferredLaraGraph<E, V, M>,
 }
 
+/// Convenience alias for [`DeferredBidirectionalLaraGraph`].
 pub type DeferredBidirectionalLara<E, V, M> = DeferredBidirectionalLaraGraph<E, V, M>;
 
 impl<E, V, M> DeferredBidirectionalLaraGraph<E, V, M>
@@ -155,6 +183,7 @@ where
     V: LaraVertex,
     M: Memory,
 {
+    /// Creates fresh forward and reverse deferred LARA stores.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         forward_vertices: M,
@@ -205,6 +234,7 @@ where
         )
     }
 
+    /// Creates fresh forward and reverse stores with custom maintenance thresholds.
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_config(
         forward_vertices: M,
@@ -265,6 +295,7 @@ where
         Ok(Self { forward, reverse })
     }
 
+    /// Reopens forward and reverse deferred LARA stores.
     #[allow(clippy::too_many_arguments)]
     pub fn init(
         forward_vertices: M,
@@ -309,6 +340,7 @@ where
         )
     }
 
+    /// Reopens forward and reverse stores with custom maintenance thresholds.
     #[allow(clippy::too_many_arguments)]
     pub fn init_with_config(
         forward_vertices: M,
@@ -362,14 +394,17 @@ where
         Ok(graph)
     }
 
+    /// Returns the forward out-adjacency graph.
     pub fn forward(&self) -> &DeferredLaraGraph<E, V, M> {
         &self.forward
     }
 
+    /// Returns the reverse in-adjacency graph.
     pub fn reverse(&self) -> &DeferredLaraGraph<E, V, M> {
         &self.reverse
     }
 
+    /// Consumes the wrapper and returns all forward memories followed by all reverse memories.
     #[allow(clippy::type_complexity)]
     pub fn into_memories(self) -> (M, M, M, M, M, M, M, M, M, M, M, M, M, M, M, M, M, M) {
         let (fv, fc, fe, fl, fs, ff, ffs, fq, fd) = self.forward.into_memories();
@@ -379,10 +414,12 @@ where
         )
     }
 
+    /// Returns the number of vertices in both orientations.
     pub fn vertex_count(&self) -> VertexCount {
         VertexCount(self.forward.graph().vertices().len())
     }
 
+    /// Appends the same vertex row to the forward and reverse stores.
     pub fn push_vertex(&self, vertex: V) -> Result<VertexId, DeferredBidirectionalLaraError> {
         let id = self
             .forward
@@ -395,6 +432,7 @@ where
         Ok(id)
     }
 
+    /// Collects outgoing edges from the forward store.
     pub fn out_edges(&self, src: VertexId) -> Result<Vec<E>, DeferredBidirectionalLaraError> {
         self.ensure_vertex(src)?;
         self.forward
@@ -402,6 +440,7 @@ where
             .map_err(DeferredBidirectionalLaraError::Forward)
     }
 
+    /// Collects incoming edges from the reverse store.
     pub fn in_edges(&self, dst: VertexId) -> Result<Vec<E>, DeferredBidirectionalLaraError> {
         self.ensure_vertex(dst)?;
         self.reverse
@@ -409,6 +448,7 @@ where
             .map_err(DeferredBidirectionalLaraError::Reverse)
     }
 
+    /// Inserts a directed edge and defers maintenance in each orientation.
     pub fn insert_directed_deferred(
         &self,
         src: VertexId,
@@ -436,6 +476,7 @@ where
         Ok(())
     }
 
+    /// Inserts an undirected edge and defers maintenance in each orientation.
     pub fn insert_undirected_deferred(
         &self,
         u: VertexId,
@@ -475,6 +516,7 @@ where
         Ok(())
     }
 
+    /// Runs maintenance only for the forward orientation.
     pub fn maintenance_forward(
         &self,
         budget: MaintenanceBudget,
@@ -484,6 +526,7 @@ where
             .map_err(DeferredBidirectionalLaraError::ForwardDeferred)
     }
 
+    /// Runs maintenance only for the reverse orientation.
     pub fn maintenance_reverse(
         &self,
         budget: MaintenanceBudget,
@@ -493,6 +536,7 @@ where
             .map_err(DeferredBidirectionalLaraError::ReverseDeferred)
     }
 
+    /// Runs budgeted maintenance across both orientations.
     pub fn maintenance(
         &self,
         budget: MaintenanceBudget,

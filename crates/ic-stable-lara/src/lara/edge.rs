@@ -83,13 +83,20 @@ impl From<LogHeaderV1> for LogLayout {
     }
 }
 
+/// Errors returned when reopening the full edge storage subsystem.
 #[derive(Debug)]
 pub enum InitError {
+    /// The PMA count tree could not be reopened.
     Counts(counts::InitError),
+    /// The edge slab could not be reopened.
     Edges(edges::InitError),
+    /// The overflow log could not be reopened.
     Log(log::InitError),
+    /// Segment span metadata could not be reopened.
     SpanMeta(span_meta::InitError),
+    /// The overflow log was created for a different edge layout.
     LogLayoutMismatch,
+    /// Segment span metadata length does not match the edge layout.
     SpanMetaLayoutMismatch,
 }
 
@@ -116,6 +123,7 @@ pub(crate) trait VertexAccess<V: CsrVertex> {
     fn set(&self, index: u64, item: &V);
 }
 
+/// Combined stable edge storage used by [`LaraGraph`](crate::LaraGraph).
 pub struct EdgeStore<E: CsrEdge, M: Memory> {
     counts: SegmentEdgeCountsStore<E, M>,
     edges: EdgeSlabStore<E, M>,
@@ -125,6 +133,7 @@ pub struct EdgeStore<E: CsrEdge, M: Memory> {
 }
 
 impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
+    /// Creates a fresh edge subsystem over the supplied stable memories.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         counts: M,
@@ -167,6 +176,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         })
     }
 
+    /// Reopens an edge subsystem from previously initialized stable memories.
     pub fn init(
         counts: M,
         edges: M,
@@ -198,20 +208,24 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         })
     }
 
+    /// Returns the current edge slab header.
     pub fn header(&self) -> EdgeHeaderV1 {
         self.edges
             .header()
             .expect("edge header is valid after init")
     }
 
+    /// Returns the PMA segment-count store.
     pub fn counts_store(&self) -> &SegmentEdgeCountsStore<E, M> {
         &self.counts
     }
 
+    /// Returns the segment physical-span metadata store.
     pub fn span_meta_store(&self) -> &SegmentSpanMetaStore<M> {
         &self.span_meta
     }
 
+    /// Returns the free-span manager.
     pub fn free_span_store(&self) -> &FreeSpanStore<M> {
         &self.free_spans
     }
@@ -241,6 +255,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         self.log.header().into()
     }
 
+    /// Consumes the edge subsystem and returns its stable memories in constructor order.
     pub fn into_memories(self) -> (M, M, M, M, M, M) {
         let (free_spans, free_span_by_start) = self.free_spans.into_memories();
         (
@@ -281,6 +296,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         Ok(())
     }
 
+    /// Decodes and returns the edge record stored at `slot`.
     pub fn read_slot(&self, slot: u64) -> E {
         if E::BYTES <= INLINE_EDGE_BYTES {
             let mut buf = [0u8; INLINE_EDGE_BYTES];
@@ -293,6 +309,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         }
     }
 
+    /// Encodes and writes `edge` to `slot`.
     pub fn write_slot(&self, slot: u64, edge: E) -> Result<(), GrowFailed> {
         if E::BYTES <= INLINE_EDGE_BYTES {
             let mut buf = [0u8; INLINE_EDGE_BYTES];
@@ -570,6 +587,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         idx / capacity
     }
 
+    /// Clears all overflow-log entries for `leaf_segment`.
     pub fn release_log_segment(&self, leaf_segment: SegmentId) -> Result<(), GrowFailed> {
         self.log.release_segment(u32::from(leaf_segment))
     }

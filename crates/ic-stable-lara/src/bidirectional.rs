@@ -1,6 +1,6 @@
 //! Bidirectional LARA graph wrapper.
 //!
-//! A [`LaraGraph`](crate::LaraGraph) stores one oriented adjacency index. This
+//! A [`LaraGraph`] stores one oriented adjacency index. This
 //! module composes two such indexes: a forward graph for out-neighbors and a
 //! reverse graph for the transpose.
 
@@ -40,23 +40,38 @@ impl<E: CsrEdge + CsrEdgeUndirected> UndirectedEdgeFlag for E {
 /// Failure from bidirectional LARA graph operations.
 #[derive(Debug)]
 pub enum BidirectionalLaraError {
+    /// Forward store operation failed.
     Forward(&'static str),
+    /// Reverse store operation failed.
     Reverse(&'static str),
+    /// Forward store initialization failed.
     ForwardInit(InitError),
+    /// Reverse store initialization failed.
     ReverseInit(InitError),
+    /// A stable memory grow operation failed.
     Grow(GrowFailed),
+    /// Forward and reverse vertex columns have different lengths.
     VertexCountMismatch {
+        /// Forward vertex count.
         forward: VertexCount,
+        /// Reverse vertex count.
         reverse: VertexCount,
     },
+    /// A requested vertex id is outside the graph.
     VertexOutOfRange {
+        /// Out-of-range vertex id.
         vid: VertexId,
+        /// Current graph vertex count.
         len: VertexCount,
     },
+    /// The edge payload neighbor does not match the destination argument.
     NeighborMismatch {
+        /// Destination vertex expected by the API call.
         expected: VertexId,
+        /// Neighbor id carried by the edge payload.
         actual: VertexId,
     },
+    /// A directed insert received an edge payload marked as undirected.
     UndirectedEdgeInDirectedInsert,
 }
 
@@ -114,6 +129,7 @@ where
     reverse: LaraGraph<E, V, M>,
 }
 
+/// Convenience alias for [`BidirectionalLaraGraph`].
 pub type BidirectionalLara<E, V, M> = BidirectionalLaraGraph<E, V, M>;
 
 impl<E, V, M> BidirectionalLaraGraph<E, V, M>
@@ -122,6 +138,7 @@ where
     V: LaraVertex,
     M: Memory,
 {
+    /// Creates fresh forward and reverse LARA stores.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         forward_vertices: M,
@@ -169,6 +186,7 @@ where
         Ok(Self { forward, reverse })
     }
 
+    /// Reopens forward and reverse LARA stores from stable memories.
     #[allow(clippy::too_many_arguments)]
     pub fn init(
         forward_vertices: M,
@@ -211,14 +229,17 @@ where
         Ok(graph)
     }
 
+    /// Returns the forward out-adjacency graph.
     pub fn forward(&self) -> &LaraGraph<E, V, M> {
         &self.forward
     }
 
+    /// Returns the reverse in-adjacency graph.
     pub fn reverse(&self) -> &LaraGraph<E, V, M> {
         &self.reverse
     }
 
+    /// Consumes the wrapper and returns all forward memories followed by all reverse memories.
     #[allow(clippy::type_complexity)]
     pub fn into_memories(self) -> (M, M, M, M, M, M, M, M, M, M, M, M, M, M) {
         let (fv, fc, fe, fl, fs, ff, ffs) = self.forward.into_memories();
@@ -226,10 +247,12 @@ where
         (fv, fc, fe, fl, fs, ff, ffs, rv, rc, re, rl, rs, rf, rfs)
     }
 
+    /// Returns the number of vertices in both orientations.
     pub fn vertex_count(&self) -> VertexCount {
         VertexCount(self.forward.vertices().len())
     }
 
+    /// Appends the same vertex row to the forward and reverse stores.
     pub fn push_vertex(&self, vertex: V) -> Result<VertexId, BidirectionalLaraError> {
         let id = self.forward.push_vertex(vertex)?;
         self.reverse.push_vertex(vertex)?;
@@ -237,6 +260,7 @@ where
         Ok(id)
     }
 
+    /// Collects outgoing edges from the forward store.
     pub fn out_edges(&self, src: VertexId) -> Result<Vec<E>, BidirectionalLaraError> {
         self.ensure_vertex(src)?;
         self.forward
@@ -244,6 +268,7 @@ where
             .map_err(BidirectionalLaraError::Forward)
     }
 
+    /// Collects incoming edges from the reverse store.
     pub fn in_edges(&self, dst: VertexId) -> Result<Vec<E>, BidirectionalLaraError> {
         self.ensure_vertex(dst)?;
         self.reverse
@@ -251,6 +276,10 @@ where
             .map_err(BidirectionalLaraError::Reverse)
     }
 
+    /// Inserts a directed edge from `src` to `dst`.
+    ///
+    /// `edge.neighbor_vid()` must equal `dst`; the reverse orientation stores a
+    /// copy whose neighbor id is rewritten to `src`.
     pub fn insert_directed(
         &self,
         src: VertexId,
@@ -278,6 +307,7 @@ where
         Ok(())
     }
 
+    /// Inserts an undirected edge by materializing both directions in both orientations.
     pub fn insert_undirected(
         &self,
         u: VertexId,

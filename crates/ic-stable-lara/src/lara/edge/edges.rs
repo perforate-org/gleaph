@@ -42,8 +42,11 @@ use crate::{
 use ic_stable_structures::Memory;
 use std::{fmt, marker::PhantomData};
 
+/// Magic bytes that identify a LARA edge slab memory.
 pub const MAGIC: [u8; 3] = *b"LEG";
+/// Current edge slab layout version.
 pub const LAYOUT_VERSION: u8 = 1;
+/// Size of the persisted edge slab header in bytes.
 pub const HEADER_SIZE: u64 = 64;
 
 const ELEM_CAPACITY_OFFSET: u64 = 4;
@@ -56,20 +59,31 @@ const SLAB_OCCUPIED_TAIL_OFFSET: u64 = 36;
 const RESERVED_OFFSET: u64 = 44;
 const RESERVED_SIZE: usize = 20;
 
+/// Persisted V1 edge slab header.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HeaderV1 {
+    /// Magic bytes, always `LEG` for this layout.
     pub magic: [u8; 3],
+    /// Layout version for this header.
     pub version: u8,
+    /// Number of edge slots allocated in the slab.
     pub elem_capacity: u64,
+    /// Number of leaf segments in the PMA segment tree.
     pub segment_count: u32,
+    /// Number of vertices covered by one leaf segment.
     pub segment_size: u32,
+    /// Height of the PMA segment tree.
     pub tree_height: u32,
+    /// Number of logical edges stored by the graph.
     pub num_edges: u64,
+    /// Encoded byte width of one edge record.
     pub stride: u32,
+    /// Highest occupied slab slot boundary used by tail allocation.
     pub slab_occupied_tail: u64,
 }
 
 impl HeaderV1 {
+    /// Builds a fresh V1 header for a new edge slab.
     pub fn new(elem_capacity: u64, segment_count: u32, segment_size: u32, stride: u32) -> Self {
         Self {
             magic: MAGIC,
@@ -85,13 +99,27 @@ impl HeaderV1 {
     }
 }
 
+/// Errors returned when reopening a persisted edge slab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InitError {
-    BadMagic { actual: [u8; 3] },
+    /// The memory header does not contain the LARA edge magic bytes.
+    BadMagic {
+        /// Magic bytes read from stable memory.
+        actual: [u8; 3],
+    },
+    /// The stored layout version is not supported by this crate version.
     IncompatibleVersion(u8),
+    /// The memory is empty or does not contain a valid slab header.
     InvalidLayout,
+    /// The store could not allocate its metadata.
     OutOfMemory,
-    StrideMismatch { expected: u32, actual: u32 },
+    /// The persisted edge width does not match the edge type `E`.
+    StrideMismatch {
+        /// Expected edge record width.
+        expected: u32,
+        /// Edge record width read from stable memory.
+        actual: u32,
+    },
 }
 
 impl fmt::Display for InitError {
@@ -110,6 +138,7 @@ impl fmt::Display for InitError {
 
 impl std::error::Error for InitError {}
 
+/// Stable storage for raw fixed-width edge slots.
 #[derive(Clone, Debug)]
 pub struct EdgeSlabStore<E: CsrEdge, M: Memory> {
     memory: M,
@@ -117,6 +146,7 @@ pub struct EdgeSlabStore<E: CsrEdge, M: Memory> {
 }
 
 impl<E: CsrEdge, M: Memory> EdgeSlabStore<E, M> {
+    /// Creates a fresh edge slab with `header`.
     pub fn new(memory: M, header: HeaderV1) -> Result<Self, GrowFailed> {
         let store = Self {
             memory,
@@ -127,6 +157,7 @@ impl<E: CsrEdge, M: Memory> EdgeSlabStore<E, M> {
         Ok(store)
     }
 
+    /// Reopens an existing edge slab from stable memory.
     pub fn init(memory: M) -> Result<Self, InitError> {
         if memory.size() == 0 {
             return Err(InitError::InvalidLayout);
@@ -153,14 +184,17 @@ impl<E: CsrEdge, M: Memory> EdgeSlabStore<E, M> {
         Ok(store)
     }
 
+    /// Consumes the store and returns the underlying memory.
     pub fn into_memory(self) -> M {
         self.memory
     }
 
+    /// Reads the current persisted slab header.
     pub fn header(&self) -> Result<HeaderV1, InitError> {
         self.read_header()
     }
 
+    /// Writes the full slab header to stable memory.
     pub fn write_header(&self, h: &HeaderV1) {
         self.memory.write(0, &h.magic);
         self.memory.write(3, &[h.version]);
@@ -194,9 +228,11 @@ impl<E: CsrEdge, M: Memory> EdgeSlabStore<E, M> {
         self.memory.write(RESERVED_OFFSET, &[0u8; RESERVED_SIZE]);
     }
 
+    /// Updates the logical edge count field in the header.
     pub fn set_num_edges(&self, n: u64) {
         write_u64(&self.memory, Address::from(NUM_EDGES_OFFSET), n);
     }
+    /// Updates the slab capacity and grows stable memory if needed.
     pub fn set_elem_capacity(&self, n: u64) -> Result<(), GrowFailed> {
         let mut h = self.header().map_err(|_| GrowFailed {
             current_size: self.memory.size(),
@@ -207,10 +243,12 @@ impl<E: CsrEdge, M: Memory> EdgeSlabStore<E, M> {
         write_u64(&self.memory, Address::from(ELEM_CAPACITY_OFFSET), n);
         Ok(())
     }
+    /// Reads the raw bytes for `slot` into `out`.
     pub fn read_slot(&self, slot: u64, out: &mut [u8]) {
         self.memory.read(slot_offset::<E>(slot), out);
     }
 
+    /// Writes raw encoded edge bytes to `slot`.
     pub fn write_slot(&self, slot: u64, bytes: &[u8]) -> Result<(), GrowFailed> {
         debug_assert_eq!(bytes.len(), E::BYTES);
         safe_write(&self.memory, slot_offset::<E>(slot), bytes)
@@ -249,6 +287,7 @@ impl<E: CsrEdge, M: Memory> EdgeSlabStore<E, M> {
     }
 }
 
+/// Returns the byte offset of `slot` in an edge slab for edge type `E`.
 #[inline]
 pub fn slot_offset<E: CsrEdge>(slot: u64) -> u64 {
     HEADER_SIZE + slot.saturating_mul(E::BYTES as u64)

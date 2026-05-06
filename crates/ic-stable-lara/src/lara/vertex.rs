@@ -49,6 +49,7 @@ use crate::{
 use ic_stable_structures::{Memory, Storable, storable::Bound};
 use std::{borrow::Cow, fmt};
 
+/// Magic bytes that identify a LARA vertex-column memory.
 pub const MAGIC: [u8; 3] = *b"LVX";
 const LAYOUT_VERSION: u8 = 1;
 const DATA_OFFSET: u64 = 64;
@@ -63,12 +64,26 @@ struct HeaderV1 {
     stride: u32,
 }
 
+/// Errors returned when reopening a persisted [`VertexStore`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InitError {
-    BadMagic { actual: [u8; 3] },
+    /// The memory header does not contain the LARA vertex magic bytes.
+    BadMagic {
+        /// Magic bytes read from stable memory.
+        actual: [u8; 3],
+    },
+    /// The stored layout version is not supported by this crate version.
     IncompatibleVersion(u8),
-    StrideMismatch { expected: u32, actual: u32 },
+    /// The persisted row width does not match the vertex type `V`.
+    StrideMismatch {
+        /// Expected row width for `V`.
+        expected: u32,
+        /// Row width read from stable memory.
+        actual: u32,
+    },
+    /// The vertex type does not use a fixed-width [`Storable`] encoding.
     VariableWidthVertex,
+    /// The store could not allocate its header while initializing empty memory.
     OutOfMemory,
 }
 
@@ -95,11 +110,16 @@ impl fmt::Display for InitError {
 
 impl std::error::Error for InitError {}
 
+/// Default fixed-width LARA vertex row.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Vertex {
+    /// First edge slot in this vertex's clean slab prefix.
     pub base_slot_start: u64,
+    /// Number of live outgoing edges visible through clean scans.
     pub degree: u32,
+    /// Number of slab slots owned by this vertex's current span.
     pub capacity: u32,
+    /// Head entry in the per-segment overflow log, or `-1` when no log is present.
     pub log_head: i32,
 }
 
@@ -178,6 +198,7 @@ impl Storable for Vertex {
     }
 }
 
+/// Stable vector storing fixed-width LARA vertex rows.
 #[derive(Clone, Debug)]
 pub struct VertexStore<V: CsrVertex, M: Memory> {
     memory: M,
@@ -185,6 +206,7 @@ pub struct VertexStore<V: CsrVertex, M: Memory> {
 }
 
 impl<V: CsrVertex, M: Memory> VertexStore<V, M> {
+    /// Creates a fresh vertex store, overwriting any existing contents of `memory`.
     pub fn new(memory: M) -> Result<Self, GrowFailed> {
         verify_vertex_width::<V>().expect("LARA vertices must be fixed-width");
         let header = HeaderV1 {
@@ -200,6 +222,7 @@ impl<V: CsrVertex, M: Memory> VertexStore<V, M> {
         })
     }
 
+    /// Reopens an existing vertex store, or creates one if `memory` is empty.
     pub fn init(memory: M) -> Result<Self, InitError> {
         verify_vertex_width::<V>()?;
         if memory.size() == 0 {
@@ -227,16 +250,22 @@ impl<V: CsrVertex, M: Memory> VertexStore<V, M> {
         })
     }
 
+    /// Returns the number of vertex rows in the store.
     pub fn len(&self) -> u64 {
         read_u64(&self.memory, Address::from(LEN_OFFSET))
     }
+    /// Returns `true` when the store contains no vertex rows.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+    /// Consumes the store and returns the underlying stable memory.
     pub fn into_memory(self) -> M {
         self.memory
     }
 
+    /// Reads the vertex row at `index`.
+    ///
+    /// Panics if `index >= self.len()`.
     pub fn get(&self, index: u64) -> V {
         assert!(index < self.len());
         let mut buf = vec![0u8; V::BYTES];
@@ -244,6 +273,9 @@ impl<V: CsrVertex, M: Memory> VertexStore<V, M> {
         V::from_bytes(Cow::Owned(buf))
     }
 
+    /// Replaces the vertex row at `index`.
+    ///
+    /// Panics if `index >= self.len()`.
     pub fn set(&self, index: u64, item: &V) {
         assert!(index < self.len());
         crate::write(
@@ -253,6 +285,7 @@ impl<V: CsrVertex, M: Memory> VertexStore<V, M> {
         );
     }
 
+    /// Appends a vertex row and grows stable memory if necessary.
     pub fn push(&self, item: V) -> Result<(), GrowFailed> {
         let len = self.len();
         safe_write(

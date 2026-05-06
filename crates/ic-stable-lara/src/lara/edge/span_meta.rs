@@ -7,6 +7,7 @@ use crate::{GrowFailed, read_u64, safe_write, types::Address, write_u64};
 use ic_stable_structures::Memory;
 use std::{fmt, marker::PhantomData};
 
+/// Magic bytes that identify LARA segment span metadata.
 pub const MAGIC: [u8; 3] = *b"LSP";
 const LAYOUT_VERSION: u8 = 1;
 const DATA_OFFSET: u64 = 32;
@@ -22,16 +23,31 @@ struct HeaderV1 {
     stride: u32,
 }
 
+/// Placement metadata for one leaf segment.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SegmentSpanMeta {
+    /// Physical edge-slab start slot currently assigned to this segment.
     pub physical_start: u64,
 }
 
+/// Errors returned when reopening segment span metadata.
 #[derive(PartialEq, Eq, Debug)]
 pub enum InitError {
-    BadMagic { actual: [u8; 3] },
+    /// The memory header does not contain the LARA span metadata magic bytes.
+    BadMagic {
+        /// Magic bytes read from stable memory.
+        actual: [u8; 3],
+    },
+    /// The stored layout version is not supported by this crate version.
     IncompatibleVersion(u8),
-    StrideMismatch { expected: u32, actual: u32 },
+    /// The persisted row width does not match [`SegmentSpanMeta`].
+    StrideMismatch {
+        /// Expected row width.
+        expected: u32,
+        /// Row width read from stable memory.
+        actual: u32,
+    },
+    /// The store could not allocate its metadata.
     OutOfMemory,
 }
 
@@ -55,6 +71,7 @@ impl fmt::Display for InitError {
 
 impl std::error::Error for InitError {}
 
+/// Stable vector of per-segment physical span starts.
 #[derive(Clone, Debug)]
 pub struct SegmentSpanMetaStore<M: Memory> {
     memory: M,
@@ -62,6 +79,7 @@ pub struct SegmentSpanMetaStore<M: Memory> {
 }
 
 impl<M: Memory> SegmentSpanMetaStore<M> {
+    /// Creates a fresh empty segment span metadata store.
     pub fn new(memory: M) -> Result<Self, GrowFailed> {
         let header = HeaderV1 {
             magic: MAGIC,
@@ -76,6 +94,7 @@ impl<M: Memory> SegmentSpanMetaStore<M> {
         })
     }
 
+    /// Reopens an existing metadata store, or creates one if memory is empty.
     pub fn init(memory: M) -> Result<Self, InitError> {
         if memory.size() == 0 {
             return Self::new(memory).map_err(|_| InitError::OutOfMemory);
@@ -101,18 +120,24 @@ impl<M: Memory> SegmentSpanMetaStore<M> {
         })
     }
 
+    /// Consumes the store and returns the underlying memory.
     pub fn into_memory(self) -> M {
         self.memory
     }
 
+    /// Returns the number of metadata rows.
     pub fn len(&self) -> u64 {
         read_u64(&self.memory, Address::from(LEN_OFFSET))
     }
 
+    /// Returns `true` when the store contains no rows.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
+    /// Reads the metadata row at `index`.
+    ///
+    /// Panics if `index >= self.len()`.
     pub fn get(&self, index: u64) -> SegmentSpanMeta {
         assert!(index < self.len());
         SegmentSpanMeta {
@@ -120,6 +145,9 @@ impl<M: Memory> SegmentSpanMetaStore<M> {
         }
     }
 
+    /// Replaces the metadata row at `index`.
+    ///
+    /// Panics if `index >= self.len()`.
     pub fn set(&self, index: u64, item: &SegmentSpanMeta) {
         assert!(index < self.len());
         write_u64(
@@ -129,6 +157,7 @@ impl<M: Memory> SegmentSpanMetaStore<M> {
         );
     }
 
+    /// Appends a metadata row and grows stable memory if necessary.
     pub fn push(&self, item: SegmentSpanMeta) -> Result<(), GrowFailed> {
         let len = self.len();
         let new_len = len

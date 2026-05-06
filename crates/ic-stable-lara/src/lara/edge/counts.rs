@@ -34,6 +34,7 @@ use crate::{
 use ic_stable_structures::Memory;
 use std::{convert::TryInto, fmt, marker::PhantomData};
 
+/// Magic bytes that identify a LARA segment-count memory.
 pub const MAGIC: [u8; 3] = *b"LSC";
 
 const LAYOUT_VERSION: u8 = 1;
@@ -51,18 +52,23 @@ struct HeaderV1 {
     stride: u32,
 }
 
+/// Errors returned when reopening a persisted segment-count store.
 #[derive(PartialEq, Eq, Debug)]
 pub enum InitError {
     /// The memory already contains another data structure.
     /// Use [SegmentEdgeCountsStore::new] to overwrite it.
     BadMagic {
+        /// Magic bytes read from stable memory.
         actual: [u8; 3],
     },
-    /// The current version of [Vec] does not support the version of the
+    /// The current version of this store does not support the version of the
     /// memory layout.
     IncompatibleVersion(u8),
+    /// The persisted row width does not match the count stride required by `E`.
     StrideMismatch {
+        /// Expected count row width.
         expected: u32,
+        /// Count row width read from stable memory.
         actual: u32,
     },
     /// Failed to allocate memory for the vector.
@@ -97,13 +103,17 @@ impl std::error::Error for InitError {}
 /// as `0`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SegmentEdgeCounts {
+    /// Number of live edge records in this segment-tree node.
     pub actual: i64,
+    /// Number of occupied physical slab slots in this segment-tree node.
     pub total: i64,
+    /// Number of physical tombstone slots in this segment-tree node.
     pub tombstone: i64,
 }
 
 /// Bytes per PMA tree node in the segment counts store.
 pub trait EdgePmaCountsStride {
+    /// Number of bytes persisted for one count-tree node.
     fn pma_counts_stride_bytes() -> u64;
 }
 
@@ -147,6 +157,7 @@ impl SegmentEdgeCounts {
     }
 }
 
+/// Stable vector storing PMA counts for leaves and internal segment-tree nodes.
 #[derive(Clone, Debug)]
 pub struct SegmentEdgeCountsStore<E: CsrEdge, M: Memory> {
     memory: M,
@@ -154,6 +165,7 @@ pub struct SegmentEdgeCountsStore<E: CsrEdge, M: Memory> {
 }
 
 impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> SegmentEdgeCountsStore<E, M> {
+    /// Creates a fresh empty counts store.
     pub fn new(memory: M) -> Result<Self, GrowFailed> {
         let header = HeaderV1 {
             magic: MAGIC,
@@ -229,6 +241,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> SegmentEdgeCountsStore<E, M> {
         read_u64(&self.memory, Address::from(LEN_OFFSET))
     }
 
+    /// Returns the persisted byte width of one count row for edge type `E`.
     #[inline]
     pub fn entry_size() -> u64 {
         E::pma_counts_stride_bytes()
@@ -287,7 +300,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> SegmentEdgeCountsStore<E, M> {
 
     /// Appends `item` after all existing entries, growing stable memory if necessary.
     ///
-    /// Complexity: one [`safe_write`] of one entry's footprint plus updating length (`O(1)` logical updates).
+    /// Complexity: one stable-memory write of one entry's footprint plus updating length (`O(1)` logical updates).
     pub fn push(&self, item: SegmentEdgeCounts) -> Result<(), GrowFailed> {
         let len = self.len();
         let new_len = len

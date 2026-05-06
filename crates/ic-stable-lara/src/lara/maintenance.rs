@@ -13,9 +13,12 @@ use ic_stable_structures::Memory;
 use ic_stable_vec_deque::StableVecDeque;
 use std::fmt;
 
+/// Errors returned when reopening the persistent maintenance queue.
 #[derive(Debug)]
 pub enum InitError {
+    /// The deque memory could not be reopened.
     Queue(ic_stable_vec_deque::InitError),
+    /// The dirty-set bitmap could not be reopened.
     DirtySet(ic_stable_roaring::InitError),
 }
 
@@ -30,9 +33,12 @@ impl fmt::Display for InitError {
 
 impl std::error::Error for InitError {}
 
+/// Errors returned when maintenance metadata cannot grow.
 #[derive(Debug)]
 pub enum GrowFailed {
+    /// The deque memory could not grow.
     Queue(ic_stable_vec_deque::GrowFailed),
+    /// The dirty-set bitmap memory could not grow.
     DirtySet(ic_stable_roaring::GrowFailed),
 }
 
@@ -47,12 +53,16 @@ impl fmt::Display for GrowFailed {
 
 impl std::error::Error for GrowFailed {}
 
+/// Result of marking one segment for deferred maintenance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MarkResult {
+    /// Segment that was marked.
     pub segment: SegmentId,
+    /// `true` if this call inserted a new queue entry.
     pub inserted: bool,
 }
 
+/// Persistent FIFO worklist with duplicate suppression for dirty segments.
 #[derive(Debug)]
 pub struct MaintenanceQueue<M: Memory> {
     queue: StableVecDeque<SegmentId, M>,
@@ -60,6 +70,7 @@ pub struct MaintenanceQueue<M: Memory> {
 }
 
 impl<M: Memory> MaintenanceQueue<M> {
+    /// Creates a fresh empty maintenance queue.
     pub fn new(queue_memory: M, dirty_memory: M) -> Result<Self, GrowFailed> {
         Ok(Self {
             queue: StableVecDeque::new(queue_memory).map_err(GrowFailed::Queue)?,
@@ -67,6 +78,7 @@ impl<M: Memory> MaintenanceQueue<M> {
         })
     }
 
+    /// Reopens an existing maintenance queue.
     pub fn init(queue_memory: M, dirty_memory: M) -> Result<Self, InitError> {
         Ok(Self {
             queue: StableVecDeque::init(queue_memory).map_err(InitError::Queue)?,
@@ -74,22 +86,27 @@ impl<M: Memory> MaintenanceQueue<M> {
         })
     }
 
+    /// Consumes the queue and returns `(queue_memory, dirty_bitmap_memory)`.
     pub fn into_memories(self) -> (M, M) {
         (self.queue.into_memory(), self.dirty.into_memory())
     }
 
+    /// Returns the number of queued segment ids.
     pub fn len(&self) -> u64 {
         self.queue.len()
     }
 
+    /// Returns `true` when no queued segment ids remain.
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }
 
+    /// Returns whether `segment` is currently marked dirty.
     pub fn is_dirty(&self, segment: SegmentId) -> bool {
         self.dirty.contains(u32::from(segment))
     }
 
+    /// Marks `segment` dirty and appends it to the back of the queue if new.
     pub fn mark_dirty(&self, segment: SegmentId) -> Result<MarkResult, GrowFailed> {
         if self.is_dirty(segment) {
             return Ok(MarkResult {
@@ -107,6 +124,7 @@ impl<M: Memory> MaintenanceQueue<M> {
         })
     }
 
+    /// Marks `segment` urgent and pushes it to the front of the queue if new.
     pub fn mark_urgent(&self, segment: SegmentId) -> Result<MarkResult, GrowFailed> {
         if self.is_dirty(segment) {
             return Ok(MarkResult {
@@ -124,6 +142,7 @@ impl<M: Memory> MaintenanceQueue<M> {
         })
     }
 
+    /// Pops the next still-dirty segment and clears its dirty bit.
     pub fn pop_next(&self) -> Result<Option<SegmentId>, GrowFailed> {
         while let Some(segment) = self.queue.pop_front() {
             if !self.is_dirty(segment) {
@@ -137,6 +156,7 @@ impl<M: Memory> MaintenanceQueue<M> {
         Ok(None)
     }
 
+    /// Clears the dirty bit for `segment` without removing queued duplicates.
     pub fn clear_dirty(&self, segment: SegmentId) -> Result<(), GrowFailed> {
         self.dirty
             .clear(u32::from(segment))
@@ -144,10 +164,14 @@ impl<M: Memory> MaintenanceQueue<M> {
     }
 }
 
+/// Errors returned when reopening a deferred-maintenance graph.
 #[derive(Debug)]
 pub enum DeferredInitError {
+    /// The underlying LARA graph could not be reopened.
     Graph(GraphInitError),
+    /// Maintenance metadata could not be reopened.
     Maintenance(InitError),
+    /// The supplied deferred-maintenance configuration is invalid.
     InvalidConfig(DeferredConfigError),
 }
 
@@ -163,11 +187,16 @@ impl fmt::Display for DeferredInitError {
 
 impl std::error::Error for DeferredInitError {}
 
+/// Errors returned by deferred graph operations.
 #[derive(Debug)]
 pub enum DeferredError {
+    /// The underlying LARA graph operation failed.
     Graph(&'static str),
+    /// The underlying LARA graph could not grow memory.
     Grow(GraphGrowFailed),
+    /// Maintenance metadata operation failed.
     Maintenance(GrowFailed),
+    /// The supplied deferred-maintenance configuration is invalid.
     InvalidConfig(DeferredConfigError),
 }
 
@@ -184,9 +213,12 @@ impl fmt::Display for DeferredError {
 
 impl std::error::Error for DeferredError {}
 
+/// Thresholds that control when deferred inserts enqueue maintenance work.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DeferredConfig {
+    /// Leaf density at or above which a segment is marked dirty after insert.
     pub leaf_dirty_density: f64,
+    /// Per-segment log fill ratio at or above which a segment is marked urgent.
     pub log_urgent_ratio: f64,
 }
 
@@ -207,6 +239,7 @@ impl DeferredConfig {
     }
 }
 
+/// Invalid deferred-maintenance configuration value.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DeferredConfigError {
     field: &'static str,
@@ -229,6 +262,7 @@ fn validate_ratio(field: &'static str, value: f64) -> Result<(), DeferredConfigE
     }
 }
 
+/// Budget for one deferred maintenance call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MaintenanceBudget {
     /// Upper instruction-counter value allowed for the current call.
@@ -244,18 +278,27 @@ pub struct MaintenanceBudget {
     pub max_segments: Option<u32>,
 }
 
+/// Work performed by one or more deferred maintenance steps.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MaintenanceWorkReport {
+    /// Number of queue entries consumed.
     pub processed_segments: u32,
+    /// Number of segments that actually needed rebalancing.
     pub rebalanced_segments: u32,
+    /// Whether any step expanded the edge slab.
     pub resized: bool,
+    /// Queue length after the reported work.
     pub remaining_queue_len: u64,
 }
 
+/// Result of a budgeted deferred maintenance run.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MaintenanceReport {
+    /// Segment work performed by the run.
     pub work: MaintenanceWorkReport,
+    /// Instruction-counter value observed at the end of the run.
     pub instructions_used: u64,
+    /// Whether the instruction budget stopped the run.
     pub instruction_budget_exhausted: bool,
 }
 
@@ -271,6 +314,7 @@ fn current_instruction_counter() -> u64 {
     }
 }
 
+/// Single-orientation LARA graph with deferred maintenance.
 pub struct DeferredLaraGraph<E, V, M>
 where
     E: CsrEdge,
@@ -288,6 +332,7 @@ where
     V: LaraVertex,
     M: Memory,
 {
+    /// Creates a fresh deferred graph with default maintenance thresholds.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         vertices: M,
@@ -320,6 +365,7 @@ where
         )
     }
 
+    /// Creates a fresh deferred graph with custom maintenance thresholds.
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_config(
         vertices: M,
@@ -357,6 +403,7 @@ where
         })
     }
 
+    /// Reopens a deferred graph with default maintenance thresholds.
     #[allow(clippy::too_many_arguments)]
     pub fn init(
         vertices: M,
@@ -383,6 +430,7 @@ where
         )
     }
 
+    /// Reopens a deferred graph with custom maintenance thresholds.
     #[allow(clippy::too_many_arguments)]
     pub fn init_with_config(
         vertices: M,
@@ -416,18 +464,22 @@ where
         })
     }
 
+    /// Returns the underlying LARA graph.
     pub fn graph(&self) -> &LaraGraph<E, V, M> {
         &self.graph
     }
 
+    /// Returns the persistent maintenance queue.
     pub fn maintenance_queue(&self) -> &MaintenanceQueue<M> {
         &self.maintenance
     }
 
+    /// Returns the active deferred-maintenance configuration.
     pub fn config(&self) -> DeferredConfig {
         self.config
     }
 
+    /// Consumes the graph and returns graph memories followed by maintenance memories.
     pub fn into_memories(self) -> (M, M, M, M, M, M, M, M, M) {
         let (vertices, counts, edges, log, span_meta, free_spans, free_span_by_start) =
             self.graph.into_memories();
@@ -445,14 +497,17 @@ where
         )
     }
 
+    /// Appends a vertex row to the underlying graph.
     pub fn push_vertex(&self, vertex: V) -> Result<VertexId, GraphGrowFailed> {
         self.graph.push_vertex(vertex)
     }
 
+    /// Collects outgoing edges, including entries still waiting in overflow logs.
     pub fn collect_out_edges(&self, src: VertexId) -> Result<Vec<E>, &'static str> {
         self.graph.collect_out_edges(src)
     }
 
+    /// Inserts an edge without immediate rebalancing, enqueueing maintenance if needed.
     pub fn insert_edge_deferred(&self, src: VertexId, edge: E) -> Result<(), DeferredError> {
         let outcome = self
             .graph
@@ -479,6 +534,7 @@ where
         Ok(())
     }
 
+    /// Processes at most one queued dirty segment.
     pub fn maintenance_step(&self) -> Result<Option<MaintenanceWorkReport>, DeferredError> {
         let Some(segment) = self
             .maintenance
@@ -504,6 +560,7 @@ where
         Ok(Some(report))
     }
 
+    /// Processes queued dirty segments until the budget or queue is exhausted.
     pub fn maintenance(
         &self,
         budget: MaintenanceBudget,

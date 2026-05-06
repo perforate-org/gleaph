@@ -29,6 +29,7 @@
 #![allow(incomplete_features)]
 #![cfg_attr(all(feature = "canbench", target_arch = "wasm32"), no_main)]
 #![feature(specialization)]
+#![warn(missing_docs)]
 
 use derive_more::{Display, From, Into};
 use ic_stable_structures::{Memory, Storable, storable::Bound};
@@ -65,18 +66,22 @@ pub use lara::{
 };
 pub use traits::*;
 
+/// Convenience alias for the single-orientation LARA graph.
 pub type Lara<E, V, M> = LaraGraph<E, V, M>;
+/// Convenience alias for the deferred-maintenance single-orientation LARA graph.
 pub type DeferredLara<E, V, M> = DeferredLaraGraph<E, V, M>;
 
 pub use ic_stable_structures::vec_mem::VectorMemory;
 use types::Address;
 
+/// Stable vertex identifier used by all LARA graph APIs.
 #[repr(transparent)]
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Display, From, Into,
 )]
 pub struct VertexId(u32);
 
+/// Leaf segment identifier in the LARA PMA segment tree.
 #[repr(transparent)]
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Display, From, Into,
@@ -110,6 +115,7 @@ impl Storable for SegmentId {
     }
 }
 
+/// Number of vertices stored in a graph.
 #[repr(transparent)]
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Display, From, Into,
@@ -154,9 +160,12 @@ fn write_u64<M: Memory>(m: &M, addr: Address, val: u64) {
     write(m, addr.get(), &val.to_le_bytes());
 }
 
+/// Error returned when a stable memory cannot grow far enough for a write.
 #[derive(Debug, PartialEq, Eq)]
 pub struct GrowFailed {
+    /// Current memory size in WebAssembly pages.
     current_size: u64,
+    /// Number of additional WebAssembly pages requested.
     delta: u64,
 }
 

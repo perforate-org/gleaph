@@ -96,9 +96,12 @@ impl<V: CsrVertex, M: Memory> VertexAccess<V> for VertexStore<V, M> {
     }
 }
 
+/// Errors returned when reopening a persisted [`LaraGraph`].
 #[derive(Debug)]
 pub enum InitError {
+    /// The vertex column could not be reopened.
     Vertices(vertex::InitError),
+    /// The edge subsystem could not be reopened.
     Edges(edge::InitError),
 }
 
@@ -113,6 +116,10 @@ impl fmt::Display for InitError {
 
 impl std::error::Error for InitError {}
 
+/// Single-orientation LARA adjacency graph.
+///
+/// This graph stores one CSR orientation: `insert_edge` appends an edge record
+/// to the row identified by `src`, and `collect_out_edges` reads that row.
 pub struct LaraGraph<E, V, M>
 where
     E: CsrEdge + EdgePmaCountsStride,
@@ -130,6 +137,11 @@ where
     V: LaraVertex,
     M: Memory,
 {
+    /// Creates a fresh graph over the supplied stable memories.
+    ///
+    /// The seven memories are, in order: vertex rows, PMA counts, edge slab,
+    /// overflow log, segment span metadata, free span records, and free span
+    /// start index.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         vertices: M,
@@ -160,6 +172,7 @@ where
         })
     }
 
+    /// Reopens a graph from previously initialized stable memories.
     pub fn init(
         vertices: M,
         counts: M,
@@ -184,14 +197,17 @@ where
         })
     }
 
+    /// Returns the stable vertex column.
     pub fn vertices(&self) -> &VertexStore<V, M> {
         &self.vertices
     }
 
+    /// Returns the edge storage subsystem.
     pub fn edges(&self) -> &EdgeStore<E, M> {
         &self.edges
     }
 
+    /// Consumes the graph and returns its stable memories in constructor order.
     pub fn into_memories(self) -> (M, M, M, M, M, M, M) {
         let (counts, edges, log, span_meta, free_spans, free_span_by_start) =
             self.edges.into_memories();
@@ -206,6 +222,7 @@ where
         )
     }
 
+    /// Appends a vertex row and returns its assigned [`VertexId`].
     pub fn push_vertex(&self, vertex: V) -> Result<VertexId, GrowFailed> {
         let id = VertexId::from(u32::try_from(self.vertices.len()).expect("too many vertices"));
         self.vertices.push(vertex)?;
@@ -214,15 +231,18 @@ where
         Ok(id)
     }
 
+    /// Inserts one edge into `src`, running immediate rebalancing when needed.
     pub fn insert_edge(&self, src: VertexId, edge: E) -> Result<(), &'static str> {
         let _ = self.insert_edge_raw(src, edge)?;
         self.rebalance_after_insert(src)
     }
 
+    /// Collects all currently visible outgoing edges for `src`.
     pub fn collect_out_edges(&self, src: VertexId) -> Result<Vec<E>, &'static str> {
         self.edges.collect_out_edges(&self.vertices, src)
     }
 
+    /// Doubles or otherwise expands the edge slab and redistributes all rows.
     pub fn resize(&self) -> Result<(), GrowFailed> {
         let layout = self.layout();
         let vertex_len = self.vertices.len();
