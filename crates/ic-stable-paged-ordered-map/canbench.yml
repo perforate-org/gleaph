@@ -1,0 +1,4 @@
+build_cmd: "CARGO_TARGET_DIR=../../target cargo build -p ic-stable-paged-ordered-map --release --target wasm32-unknown-unknown --features canbench"
+wasm_path: "../../target/wasm32-unknown-unknown/release/ic_stable_paged_ordered_map.wasm"
+init_args:
+  hex: "4449444c0000"

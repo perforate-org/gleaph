@@ -1,0 +1,18 @@
+[package]
+name = "ic-stable-paged-ordered-map"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+canbench = ["dep:canbench-rs", "dep:candid", "dep:ic-cdk"]
+
+[dependencies]
+canbench-rs = { workspace = true, optional = true }
+candid = { workspace = true, optional = true }
+ic-cdk = { workspace = true, optional = true }
+ic-stable-structures.workspace = true
