@@ -21,6 +21,8 @@
 //! edge is written to the segment log and later folded by maintenance or
 //! relocation.
 
+#[cfg(feature = "canbench")]
+mod bench;
 pub mod counts;
 mod edges;
 pub mod free_span;

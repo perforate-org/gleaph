@@ -13,6 +13,9 @@ use ic_stable_structures::Memory;
 
 use crate::{GrowFailed, types::Address};
 
+#[cfg(feature = "canbench")]
+mod bench;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FreeSpan {
     pub start_slot: u64,

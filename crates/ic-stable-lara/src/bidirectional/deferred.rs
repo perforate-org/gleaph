@@ -15,6 +15,9 @@ use crate::{
 use ic_stable_structures::Memory;
 use std::fmt;
 
+#[cfg(feature = "canbench")]
+mod bench;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BidirectionalMaintenanceReport {
     pub forward: MaintenanceWorkReport,

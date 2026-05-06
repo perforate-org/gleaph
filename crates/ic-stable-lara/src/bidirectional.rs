@@ -4,6 +4,8 @@
 //! module composes two such indexes: a forward graph for out-neighbors and a
 //! reverse graph for the transpose.
 
+#[cfg(feature = "canbench")]
+mod bench;
 pub mod deferred;
 
 use crate::{

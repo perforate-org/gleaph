@@ -258,3 +258,43 @@ pub fn slot_offset<E: CsrEdge>(slot: u64) -> u64 {
 fn floor_log2(x: u32) -> u32 {
     31 - x.leading_zeros()
 }
+
+#[cfg(feature = "canbench")]
+mod bench {
+    use std::hint::black_box;
+
+    use canbench_rs::bench;
+
+    use super::{EdgeSlabStore, HeaderV1};
+    use crate::{
+        bench as helper,
+        test_support::{TestEdge, vector_memory},
+        traits::CsrEdge,
+    };
+
+    /// Measures raw slab slot writes followed by raw slot reads. This is the
+    /// lowest-level edge payload I/O baseline, below `EdgeStore` log and count
+    /// bookkeeping.
+    #[bench(raw)]
+    fn bench_lara_edge_slab_write_read_1024() -> canbench_rs::BenchResult {
+        let store = EdgeSlabStore::<TestEdge, _>::new(
+            vector_memory(),
+            HeaderV1::new(helper::MEDIUM_N, 16, 16, TestEdge::BYTES as u32),
+        )
+        .expect("edge slab");
+        canbench_rs::bench_fn(|| {
+            let _scope = canbench_rs::bench_scope("lara_edge_slab_write_read");
+            let mut payload = [0u8; TestEdge::BYTES];
+            for i in 0..helper::MEDIUM_N {
+                helper::test_edge(i).write_to(&mut payload);
+                store.write_slot(i, &payload).expect("write slot");
+            }
+            let mut sum = 0u32;
+            for i in 0..helper::MEDIUM_N {
+                store.read_slot(i, &mut payload);
+                sum ^= TestEdge::read_from(&payload).0;
+            }
+            black_box(sum);
+        })
+    }
+}

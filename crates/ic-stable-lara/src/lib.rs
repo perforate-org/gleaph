@@ -38,6 +38,8 @@ use std::{
     fmt::{Display, Formatter},
 };
 
+#[cfg(feature = "canbench")]
+mod bench;
 pub mod bidirectional;
 pub mod lara;
 mod traits;
@@ -214,7 +216,8 @@ fn write<M: Memory>(memory: &M, offset: u64, bytes: &[u8]) {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "canbench"))]
+#[allow(dead_code)]
 mod test_support;
 
 #[cfg(test)]

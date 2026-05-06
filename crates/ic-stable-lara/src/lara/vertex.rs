@@ -304,3 +304,64 @@ fn verify_vertex_width<V: CsrVertex>() -> Result<(), InitError> {
         _ => Err(InitError::VariableWidthVertex),
     }
 }
+
+#[cfg(feature = "canbench")]
+mod bench {
+    use std::hint::black_box;
+
+    use canbench_rs::bench;
+
+    use super::{Vertex, VertexStore};
+    use crate::{bench as helper, test_support::vector_memory, traits::CsrVertex};
+
+    fn populate_store(n: u64) -> VertexStore<Vertex, crate::VectorMemory> {
+        let store = VertexStore::new(vector_memory()).expect("vertex store");
+        for i in 0..n {
+            store
+                .push(Vertex {
+                    base_slot_start: i * 4,
+                    degree: (i % 8) as u32,
+                    capacity: 8,
+                    log_head: -1,
+                })
+                .expect("push vertex");
+        }
+        store
+    }
+
+    /// Measures appending vertex rows to the stable vertex column. This guards
+    /// the fixed-width row write path and length-header update cost.
+    #[bench(raw)]
+    fn bench_lara_vertex_push_1024() -> canbench_rs::BenchResult {
+        let store = VertexStore::new(vector_memory()).expect("vertex store");
+        canbench_rs::bench_fn(|| {
+            let _scope = canbench_rs::bench_scope("lara_vertex_push");
+            for i in 0..helper::MEDIUM_N {
+                store
+                    .push(Vertex {
+                        base_slot_start: black_box(i * 4),
+                        degree: 0,
+                        capacity: 4,
+                        log_head: -1,
+                    })
+                    .expect("push vertex");
+            }
+        })
+    }
+
+    /// Measures random-ish vertex row reads followed by in-place updates. The
+    /// intent is to catch regressions in row offset calculation and stable
+    /// memory read/write overhead for update-side metadata.
+    #[bench(raw)]
+    fn bench_lara_vertex_get_set_1024() -> canbench_rs::BenchResult {
+        let store = populate_store(helper::MEDIUM_N);
+        canbench_rs::bench_fn(|| {
+            let _scope = canbench_rs::bench_scope("lara_vertex_get_set");
+            for i in 0..helper::MEDIUM_N {
+                let idx = helper::splitmix64(i) % helper::MEDIUM_N;
+                let v = store.get(idx);
+                store.set(idx, &v.with_degree(black_box(v.degree.wrapping_add(1))));
+            }
+        })
+    }
+}

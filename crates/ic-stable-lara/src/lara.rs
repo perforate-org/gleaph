@@ -18,6 +18,8 @@
 //! the free span manager. This order keeps queries pointed at either the old
 //! committed layout or the new committed layout, never at reusable free space.
 
+#[cfg(feature = "canbench")]
+mod bench;
 pub mod edge;
 pub mod maintenance;
 pub mod vertex;

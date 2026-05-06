@@ -191,3 +191,45 @@ mod tests {
         assert_eq!(reopened.get(1), SegmentSpanMeta { physical_start: 48 });
     }
 }
+
+#[cfg(feature = "canbench")]
+mod bench {
+    use std::hint::black_box;
+
+    use canbench_rs::bench;
+
+    use super::{SegmentSpanMeta, SegmentSpanMetaStore};
+    use crate::{bench as helper, test_support::vector_memory};
+
+    /// Measures segment span metadata append, read, update, and reopen. This
+    /// protects the tiny placement-metadata store used by relocation while
+    /// keeping query scans independent of it.
+    #[bench(raw)]
+    fn bench_lara_span_meta_push_get_set_reopen_1024() -> canbench_rs::BenchResult {
+        let memory = vector_memory();
+        let store = SegmentSpanMetaStore::new(memory.clone()).expect("span meta");
+        canbench_rs::bench_fn(|| {
+            let _scope = canbench_rs::bench_scope("lara_span_meta_push_get_set_reopen");
+            for i in 0..helper::MEDIUM_N {
+                store
+                    .push(SegmentSpanMeta {
+                        physical_start: black_box(i * 16),
+                    })
+                    .expect("push span meta");
+            }
+            let mut sum = 0u64;
+            for i in 0..helper::MEDIUM_N {
+                let meta = store.get(i);
+                sum ^= meta.physical_start;
+                store.set(
+                    i,
+                    &SegmentSpanMeta {
+                        physical_start: meta.physical_start + 1,
+                    },
+                );
+            }
+            let reopened = SegmentSpanMetaStore::init(memory.clone()).expect("reopen span meta");
+            black_box(sum ^ reopened.get(helper::MEDIUM_N - 1).physical_start);
+        })
+    }
+}

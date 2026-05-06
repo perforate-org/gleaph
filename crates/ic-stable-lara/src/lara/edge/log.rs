@@ -287,3 +287,48 @@ fn required_bytes<E: CsrEdge>(h: &HeaderV1) -> u64 {
 pub fn log_entry_stride<E: CsrEdge>() -> u64 {
     8 + E::BYTES as u64
 }
+
+#[cfg(feature = "canbench")]
+mod bench {
+    use std::hint::black_box;
+
+    use canbench_rs::bench;
+
+    use super::{HeaderV1, LogStore};
+    use crate::{
+        bench as helper,
+        test_support::{TestEdge, vector_memory},
+        traits::CsrEdge,
+    };
+
+    /// Measures per-segment log entry writes, reads, index updates, and one
+    /// segment release. This is the storage-layer baseline for overflow edges
+    /// before graph maintenance folds them back into the slab.
+    #[bench(raw)]
+    fn bench_lara_edge_log_write_read_release_1024() -> canbench_rs::BenchResult {
+        let store =
+            LogStore::<TestEdge, _>::new(vector_memory(), HeaderV1::new(16, 4)).expect("log store");
+        canbench_rs::bench_fn(|| {
+            let _scope = canbench_rs::bench_scope("lara_edge_log_write_read_release");
+            let mut payload = [0u8; TestEdge::BYTES];
+            for i in 0..helper::MEDIUM_N {
+                let segment = (i % 16) as u32;
+                let entry = (i / 16) as u32;
+                helper::test_edge(i).write_to(&mut payload);
+                store
+                    .write_entry(segment, entry, entry as i32 - 1, i as i32, &payload)
+                    .expect("write log entry");
+                store.write_idx(segment, entry as i32 + 1);
+            }
+            let mut sum = 0i32;
+            for i in 0..helper::MEDIUM_N {
+                let segment = (i % 16) as u32;
+                let entry = (i / 16) as u32;
+                let (prev, src) = store.read_entry(segment, entry, &mut payload);
+                sum ^= prev ^ src ^ TestEdge::read_from(&payload).0 as i32;
+            }
+            store.release_segment(0).expect("release segment");
+            black_box(sum);
+        })
+    }
+}

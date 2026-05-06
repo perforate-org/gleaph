@@ -792,3 +792,77 @@ mod tests {
         assert!(matches!(err, DeferredError::InvalidConfig(_)));
     }
 }
+
+#[cfg(feature = "canbench")]
+mod bench {
+    use std::hint::black_box;
+
+    use canbench_rs::bench;
+
+    use super::{MaintenanceBudget, MaintenanceQueue};
+    use crate::{SegmentId, VertexId, bench as helper, test_support::vector_memory};
+
+    /// Measures persistent maintenance queue admission, duplicate suppression,
+    /// urgent priority insertion, and draining. This isolates queue/bitmap cost
+    /// from graph rebalancing work.
+    #[bench(raw)]
+    fn bench_lara_maintenance_queue_mark_pop_1024() -> canbench_rs::BenchResult {
+        let queue = MaintenanceQueue::new(vector_memory(), vector_memory()).expect("queue");
+        canbench_rs::bench_fn(|| {
+            let _scope = canbench_rs::bench_scope("lara_maintenance_queue_mark_pop");
+            for i in 0..helper::MEDIUM_N {
+                let segment = SegmentId::from((i % 256) as u32);
+                if i % 8 == 0 {
+                    queue.mark_urgent(segment).expect("mark urgent");
+                } else {
+                    queue.mark_dirty(segment).expect("mark dirty");
+                }
+            }
+            let mut count = 0u64;
+            while queue.pop_next().expect("pop").is_some() {
+                count += 1;
+            }
+            black_box(count);
+        })
+    }
+
+    /// Measures deferred edge insertion up to dirty/urgent marking. It excludes
+    /// maintenance folding so changes here indicate admission-path or queue
+    /// bookkeeping regressions.
+    #[bench(raw)]
+    fn bench_lara_deferred_insert_dirty_1024() -> canbench_rs::BenchResult {
+        let graph = helper::deferred_graph(256);
+        canbench_rs::bench_fn(|| {
+            let _scope = canbench_rs::bench_scope("lara_deferred_insert_dirty");
+            for i in 0..helper::MEDIUM_N {
+                graph
+                    .insert_edge_deferred(VertexId::from((i % 256) as u32), helper::test_edge(i))
+                    .expect("insert deferred edge");
+            }
+            black_box(graph.maintenance_queue().len());
+        })
+    }
+
+    /// Measures one deferred maintenance fold for a dirty segment. The target
+    /// is bounded cost for turning log-backed adjacency back into clean slab
+    /// layout under a segment budget.
+    #[bench(raw)]
+    fn bench_lara_deferred_maintenance_fold_1() -> canbench_rs::BenchResult {
+        canbench_rs::bench_fn(|| {
+            let _scope = canbench_rs::bench_scope("lara_deferred_maintenance_fold");
+            let graph = helper::deferred_graph(16);
+            for i in 0..64 {
+                graph
+                    .insert_edge_deferred(VertexId::from(0), helper::test_edge(i))
+                    .expect("insert deferred edge");
+            }
+            let report = graph
+                .maintenance(MaintenanceBudget {
+                    max_instructions: 0,
+                    max_segments: Some(1),
+                })
+                .expect("maintenance");
+            black_box(report.work.rebalanced_segments);
+        })
+    }
+}

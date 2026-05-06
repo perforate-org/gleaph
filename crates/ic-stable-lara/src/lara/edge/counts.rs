@@ -462,3 +462,91 @@ mod tests {
         assert_eq!(tombstone.get(0), counts);
     }
 }
+
+#[cfg(feature = "canbench")]
+mod bench {
+    use std::hint::black_box;
+
+    use canbench_rs::bench;
+
+    use super::{SegmentEdgeCounts, SegmentEdgeCountsStore};
+    use crate::{
+        bench as helper,
+        test_support::{TestEdge, TombstoneEdge, vector_memory},
+    };
+
+    fn populate_plain(n: u64) -> SegmentEdgeCountsStore<TestEdge, crate::VectorMemory> {
+        let store = SegmentEdgeCountsStore::new(vector_memory()).expect("counts store");
+        for i in 0..n {
+            store
+                .push(SegmentEdgeCounts {
+                    actual: i as i64,
+                    total: (i * 2) as i64,
+                    tombstone: i as i64,
+                })
+                .expect("push counts");
+        }
+        store
+    }
+
+    fn bench_counts_push<E>(scope: &'static str) -> canbench_rs::BenchResult
+    where
+        E: crate::traits::CsrEdge + super::EdgePmaCountsStride,
+    {
+        let store = SegmentEdgeCountsStore::<E, _>::new(vector_memory()).expect("counts store");
+        canbench_rs::bench_fn(|| {
+            let _scope = canbench_rs::bench_scope(scope);
+            for i in 0..helper::MEDIUM_N {
+                store
+                    .push(SegmentEdgeCounts {
+                        actual: black_box(i as i64),
+                        total: (i * 2) as i64,
+                        tombstone: i as i64,
+                    })
+                    .expect("push counts");
+            }
+        })
+    }
+
+    /// Measures appending segment counts for a plain edge type. This is the
+    /// 16-byte stride baseline used by non-tombstone PMA count trees.
+    #[bench(raw)]
+    fn bench_lara_counts_push_plain_1024() -> canbench_rs::BenchResult {
+        bench_counts_push::<TestEdge>("lara_counts_push_plain")
+    }
+
+    /// Measures appending segment counts for a tombstone-capable edge type.
+    /// Comparing this with the plain benchmark tracks the 24-byte stride cost
+    /// introduced by persisted tombstone counters.
+    #[bench(raw)]
+    fn bench_lara_counts_push_tombstone_1024() -> canbench_rs::BenchResult {
+        bench_counts_push::<TombstoneEdge>("lara_counts_push_tombstone")
+    }
+
+    /// Measures mixed reads, writes, and iteration over segment counts. This
+    /// protects the common recount path that reads leaves, rewrites ancestors,
+    /// and scans count ranges.
+    #[bench(raw)]
+    fn bench_lara_counts_get_set_iter_1024() -> canbench_rs::BenchResult {
+        let store = populate_plain(helper::MEDIUM_N);
+        canbench_rs::bench_fn(|| {
+            let _scope = canbench_rs::bench_scope("lara_counts_get_set_iter");
+            let mut sum = 0i64;
+            for i in 0..helper::MEDIUM_N {
+                let count = store.get(i);
+                sum = sum.wrapping_add(count.actual);
+                store.set(
+                    i,
+                    &SegmentEdgeCounts {
+                        actual: count.actual + 1,
+                        ..count
+                    },
+                );
+            }
+            for count in store.iter() {
+                sum = sum.wrapping_add(count.total);
+            }
+            black_box(sum);
+        })
+    }
+}
