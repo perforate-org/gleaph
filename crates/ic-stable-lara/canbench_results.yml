@@ -1,0 +1,74 @@
+benches:
+  bench_lara_free_span_binned_take_best_fit_split_1024:
+    total:
+      calls: 1
+      instructions: 295570
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      lara_free_span_binned_take_best_fit_split:
+        calls: 1
+        instructions: 294532
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_lara_free_span_binned_take_best_fit_split_256:
+    total:
+      calls: 1
+      instructions: 406389
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      lara_free_span_binned_take_best_fit_split:
+        calls: 1
+        instructions: 405351
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_lara_free_span_binned_take_best_fit_split_4096:
+    total:
+      calls: 1
+      instructions: 671946
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      lara_free_span_binned_take_best_fit_split:
+        calls: 1
+        instructions: 670908
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_lara_free_span_store_take_best_fit_split_1024:
+    total:
+      calls: 1
+      instructions: 1162291
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      lara_free_span_store_take_best_fit_split:
+        calls: 1
+        instructions: 1161282
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_lara_free_span_store_take_best_fit_split_256:
+    total:
+      calls: 1
+      instructions: 660830
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      lara_free_span_store_take_best_fit_split:
+        calls: 1
+        instructions: 659821
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_lara_free_span_store_take_best_fit_split_4096:
+    total:
+      calls: 1
+      instructions: 4429903
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      lara_free_span_store_take_best_fit_split:
+        calls: 1
+        instructions: 4428894
+        heap_increase: 0
+        stable_memory_increase: 0
+version: 0.4.0

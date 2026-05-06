@@ -27,6 +27,7 @@
 //! local relocation contracts.
 
 #![allow(incomplete_features)]
+#![cfg_attr(all(feature = "canbench", target_arch = "wasm32"), no_main)]
 #![feature(specialization)]
 
 use derive_more::{Display, From, Into};
@@ -52,8 +53,10 @@ pub use lara::{
     edge::{
         EdgeHeaderV1, EdgeStore, InitError as EdgeInitError, LogHeaderV1,
         free_span::{
-            FreeSpan, FreeSpanArrayStore, FreeSpanDualIndexError, FreeSpanDualIndexStore,
-            FreeSpanKey, FreeSpanStore, LenStartKey, SpanLen, StartKey,
+            FreeSpan, FreeSpanArrayStore, FreeSpanBinnedBTreeStore, FreeSpanBinnedError,
+            FreeSpanBinnedInitError, FreeSpanBinnedPagedStore, FreeSpanBinnedStore,
+            FreeSpanDualIndexError, FreeSpanDualIndexStore, FreeSpanKey, FreeSpanStore,
+            LenStartKey, SpanLen, StartKey,
         },
         span_meta::{SegmentSpanMeta, SegmentSpanMetaStore},
     },

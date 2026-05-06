@@ -7,9 +7,16 @@ license.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = []
+canbench = ["dep:canbench-rs", "dep:candid"]
+
 [dependencies]
+canbench-rs = { workspace = true, optional = true }
+candid = { workspace = true, optional = true }
 derive_more = { version = "2", features = ["display", "from", "into"] }
 ic-cdk.workspace = true
+ic-stable-paged-ordered-map.workspace = true
 ic-stable-roaring.workspace = true
 ic-stable-structures.workspace = true
 ic-stable-vec-deque.workspace = true
