@@ -265,4 +265,48 @@ mod tests {
             }]
         );
     }
+
+    #[test]
+    fn free_span_store_release_coalesces_one_sided_neighbors() {
+        let store = FreeSpanStore::init(vector_memory());
+        store.release_span(100, 20);
+        store.release_span(120, 10);
+        store.release_span(80, 20);
+
+        assert_eq!(
+            store.spans(),
+            vec![FreeSpan {
+                start_slot: 80,
+                len: 50
+            }]
+        );
+    }
+
+    #[test]
+    fn free_span_store_take_best_fit_remainder_coalesces_with_neighbor() {
+        let store = FreeSpanStore::init(vector_memory());
+        store.insert_raw(FreeSpan {
+            start_slot: 100,
+            len: 20,
+        });
+        store.insert_raw(FreeSpan {
+            start_slot: 120,
+            len: 30,
+        });
+
+        assert_eq!(
+            store.take_best_fit(10),
+            Some(FreeSpan {
+                start_slot: 100,
+                len: 10
+            })
+        );
+        assert_eq!(
+            store.spans(),
+            vec![FreeSpan {
+                start_slot: 110,
+                len: 40
+            }]
+        );
+    }
 }
