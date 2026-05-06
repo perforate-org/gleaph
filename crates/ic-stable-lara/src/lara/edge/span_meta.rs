@@ -228,14 +228,15 @@ mod bench {
     use canbench_rs::bench;
 
     use super::{SegmentSpanMeta, SegmentSpanMetaStore};
-    use crate::{bench as helper, test_support::vector_memory};
+    use crate::bench as helper;
 
     /// Measures segment span metadata append, read, update, and reopen. This
     /// protects the tiny placement-metadata store used by relocation while
     /// keeping query scans independent of it.
     #[bench(raw)]
     fn bench_lara_span_meta_push_get_set_reopen_1024() -> canbench_rs::BenchResult {
-        let memory = vector_memory();
+        let mut memories = helper::BenchMemoryFactory::new();
+        let memory = memories.memory();
         let store = SegmentSpanMetaStore::new(memory.clone()).expect("span meta");
         canbench_rs::bench_fn(|| {
             let _scope = canbench_rs::bench_scope("lara_span_meta_push_get_set_reopen");

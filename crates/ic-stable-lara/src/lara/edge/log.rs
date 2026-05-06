@@ -329,19 +329,16 @@ mod bench {
     use canbench_rs::bench;
 
     use super::{HeaderV1, LogStore};
-    use crate::{
-        bench as helper,
-        test_support::{TestEdge, vector_memory},
-        traits::CsrEdge,
-    };
+    use crate::{bench as helper, test_support::TestEdge, traits::CsrEdge};
 
     /// Measures per-segment log entry writes, reads, index updates, and one
     /// segment release. This is the storage-layer baseline for overflow edges
     /// before graph maintenance folds them back into the slab.
     #[bench(raw)]
     fn bench_lara_edge_log_write_read_release_1024() -> canbench_rs::BenchResult {
-        let store =
-            LogStore::<TestEdge, _>::new(vector_memory(), HeaderV1::new(16, 4)).expect("log store");
+        let mut memories = helper::BenchMemoryFactory::new();
+        let store = LogStore::<TestEdge, _>::new(memories.memory(), HeaderV1::new(16, 4))
+            .expect("log store");
         canbench_rs::bench_fn(|| {
             let _scope = canbench_rs::bench_scope("lara_edge_log_write_read_release");
             let mut payload = [0u8; TestEdge::BYTES];

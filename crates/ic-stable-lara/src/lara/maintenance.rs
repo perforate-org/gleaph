@@ -857,14 +857,15 @@ mod bench {
     use canbench_rs::bench;
 
     use super::{MaintenanceBudget, MaintenanceQueue};
-    use crate::{SegmentId, VertexId, bench as helper, test_support::vector_memory};
+    use crate::{SegmentId, VertexId, bench as helper};
 
     /// Measures persistent maintenance queue admission, duplicate suppression,
     /// urgent priority insertion, and draining. This isolates queue/bitmap cost
     /// from graph rebalancing work.
     #[bench(raw)]
     fn bench_lara_maintenance_queue_mark_pop_1024() -> canbench_rs::BenchResult {
-        let queue = MaintenanceQueue::new(vector_memory(), vector_memory()).expect("queue");
+        let mut memories = helper::BenchMemoryFactory::new();
+        let queue = MaintenanceQueue::new(memories.memory(), memories.memory()).expect("queue");
         canbench_rs::bench_fn(|| {
             let _scope = canbench_rs::bench_scope("lara_maintenance_queue_mark_pop");
             for i in 0..helper::MEDIUM_N {

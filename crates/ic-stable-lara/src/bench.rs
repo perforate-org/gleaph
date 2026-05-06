@@ -1,13 +1,42 @@
 use crate::{
     BidirectionalLaraGraph, DeferredBidirectionalLaraGraph, DeferredConfig, DeferredLaraGraph,
-    LaraGraph, VectorMemory, VertexId,
+    LaraGraph, VertexId,
     lara::vertex::Vertex,
-    test_support::{TestEdge, UndirectedTestEdge, vector_memory},
+    test_support::{TestEdge, UndirectedTestEdge},
+};
+use ic_stable_structures::{
+    DefaultMemoryImpl,
+    memory_manager::{MemoryId, MemoryManager, VirtualMemory},
 };
 
 pub(crate) const SMALL_N: u64 = 256;
 pub(crate) const MEDIUM_N: u64 = 1024;
 pub(crate) const LARGE_N: u64 = 4096;
+
+pub(crate) type BenchMemory = VirtualMemory<DefaultMemoryImpl>;
+
+pub(crate) struct BenchMemoryFactory {
+    manager: MemoryManager<DefaultMemoryImpl>,
+    next_id: u8,
+}
+
+impl BenchMemoryFactory {
+    pub(crate) fn new() -> Self {
+        Self {
+            manager: MemoryManager::init(DefaultMemoryImpl::default()),
+            next_id: 0,
+        }
+    }
+
+    pub(crate) fn memory(&mut self) -> BenchMemory {
+        let id = self.next_id;
+        self.next_id = self
+            .next_id
+            .checked_add(1)
+            .expect("benchmark memory id overflow");
+        self.manager.get(MemoryId::new(id))
+    }
+}
 
 #[inline]
 pub(crate) fn splitmix64(mut x: u64) -> u64 {
@@ -38,15 +67,16 @@ pub(crate) fn lara_graph(
     segment_count: u32,
     segment_size: u32,
     vertex_count: u32,
-) -> LaraGraph<TestEdge, Vertex, VectorMemory> {
+) -> LaraGraph<TestEdge, Vertex, BenchMemory> {
+    let mut memories = BenchMemoryFactory::new();
     let graph = LaraGraph::new(
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
         elem_capacity,
         segment_count,
         segment_size,
@@ -63,7 +93,7 @@ pub(crate) fn lara_graph(
 pub(crate) fn populated_lara_graph(
     vertex_count: u32,
     edges_per_vertex: u32,
-) -> LaraGraph<TestEdge, Vertex, VectorMemory> {
+) -> LaraGraph<TestEdge, Vertex, BenchMemory> {
     let capacity = u64::from(vertex_count)
         .saturating_mul(u64::from(edges_per_vertex).saturating_add(4))
         .max(16);
@@ -85,19 +115,20 @@ pub(crate) fn populated_lara_graph(
 
 pub(crate) fn deferred_graph(
     vertex_count: u32,
-) -> DeferredLaraGraph<TestEdge, Vertex, VectorMemory> {
+) -> DeferredLaraGraph<TestEdge, Vertex, BenchMemory> {
     let segment_size = 16;
     let segment_count = vertex_count.div_ceil(segment_size).max(1);
+    let mut memories = BenchMemoryFactory::new();
     let graph = DeferredLaraGraph::new_with_config(
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
         u64::from(vertex_count).saturating_mul(4).max(16),
         segment_count,
         segment_size,
@@ -117,25 +148,26 @@ pub(crate) fn deferred_graph(
 
 pub(crate) fn bidirectional_graph<E>(
     vertex_count: u32,
-) -> BidirectionalLaraGraph<E, Vertex, VectorMemory>
+) -> BidirectionalLaraGraph<E, Vertex, BenchMemory>
 where
     E: crate::traits::CsrEdge + crate::lara::edge::counts::EdgePmaCountsStride,
 {
+    let mut memories = BenchMemoryFactory::new();
     let graph = BidirectionalLaraGraph::new(
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
         u64::from(vertex_count).saturating_mul(8).max(16),
         vertex_count.div_ceil(16).max(1),
         16,
@@ -151,26 +183,27 @@ where
 
 pub(crate) fn deferred_bidirectional_graph(
     vertex_count: u32,
-) -> DeferredBidirectionalLaraGraph<TestEdge, Vertex, VectorMemory> {
+) -> DeferredBidirectionalLaraGraph<TestEdge, Vertex, BenchMemory> {
+    let mut memories = BenchMemoryFactory::new();
     let graph = DeferredBidirectionalLaraGraph::new_with_config(
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
         u64::from(vertex_count).saturating_mul(4).max(16),
         vertex_count.div_ceil(16).max(1),
         16,

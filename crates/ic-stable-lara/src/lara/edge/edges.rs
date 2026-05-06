@@ -305,19 +305,16 @@ mod bench {
     use canbench_rs::bench;
 
     use super::{EdgeSlabStore, HeaderV1};
-    use crate::{
-        bench as helper,
-        test_support::{TestEdge, vector_memory},
-        traits::CsrEdge,
-    };
+    use crate::{bench as helper, test_support::TestEdge, traits::CsrEdge};
 
     /// Measures raw slab slot writes followed by raw slot reads. This is the
     /// lowest-level edge payload I/O baseline, below `EdgeStore` log and count
     /// bookkeeping.
     #[bench(raw)]
     fn bench_lara_edge_slab_write_read_1024() -> canbench_rs::BenchResult {
+        let mut memories = helper::BenchMemoryFactory::new();
         let store = EdgeSlabStore::<TestEdge, _>::new(
-            vector_memory(),
+            memories.memory(),
             HeaderV1::new(helper::MEDIUM_N, 16, 16, TestEdge::BYTES as u32),
         )
         .expect("edge slab");

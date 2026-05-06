@@ -3,7 +3,7 @@ use std::hint::black_box;
 use canbench_rs::bench;
 
 use super::{FreeSpan, FreeSpanStore};
-use crate::{bench as helper, test_support::vector_memory};
+use crate::bench as helper;
 
 const MIN_LEN: u64 = 96;
 
@@ -15,8 +15,9 @@ fn random_span(i: u64) -> FreeSpan {
     }
 }
 
-fn populate_store(n: u64) -> FreeSpanStore<crate::VectorMemory> {
-    let store = FreeSpanStore::new(vector_memory(), vector_memory()).expect("free span store");
+fn populate_store(n: u64) -> FreeSpanStore<helper::BenchMemory> {
+    let mut memories = helper::BenchMemoryFactory::new();
+    let store = FreeSpanStore::new(memories.memory(), memories.memory()).expect("free span store");
     for i in 0..n {
         store.release(random_span(i)).expect("release span");
     }

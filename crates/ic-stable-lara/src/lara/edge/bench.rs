@@ -6,17 +6,18 @@ use super::EdgeStore;
 use crate::{
     VertexId, bench as helper,
     lara::vertex::{Vertex, VertexStore},
-    test_support::{TestEdge, vector_memory},
+    test_support::TestEdge,
 };
 
 fn edge_store_with_vertices(
     vertex_count: u32,
     capacity: u32,
 ) -> (
-    VertexStore<Vertex, crate::VectorMemory>,
-    EdgeStore<TestEdge, crate::VectorMemory>,
+    VertexStore<Vertex, helper::BenchMemory>,
+    EdgeStore<TestEdge, helper::BenchMemory>,
 ) {
-    let vertices = VertexStore::new(vector_memory()).expect("vertices");
+    let mut memories = helper::BenchMemoryFactory::new();
+    let vertices = VertexStore::new(memories.memory()).expect("vertices");
     for vid in 0..vertex_count {
         vertices
             .push(Vertex {
@@ -28,12 +29,12 @@ fn edge_store_with_vertices(
             .expect("push vertex");
     }
     let edges = EdgeStore::new(
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
-        vector_memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
         u64::from(vertex_count) * u64::from(capacity),
         vertex_count.div_ceil(16).max(1),
         16,

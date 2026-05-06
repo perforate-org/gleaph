@@ -485,11 +485,12 @@ mod bench {
     use super::{SegmentEdgeCounts, SegmentEdgeCountsStore};
     use crate::{
         bench as helper,
-        test_support::{TestEdge, TombstoneEdge, vector_memory},
+        test_support::{TestEdge, TombstoneEdge},
     };
 
-    fn populate_plain(n: u64) -> SegmentEdgeCountsStore<TestEdge, crate::VectorMemory> {
-        let store = SegmentEdgeCountsStore::new(vector_memory()).expect("counts store");
+    fn populate_plain(n: u64) -> SegmentEdgeCountsStore<TestEdge, helper::BenchMemory> {
+        let mut memories = helper::BenchMemoryFactory::new();
+        let store = SegmentEdgeCountsStore::new(memories.memory()).expect("counts store");
         for i in 0..n {
             store
                 .push(SegmentEdgeCounts {
@@ -506,7 +507,8 @@ mod bench {
     where
         E: crate::traits::CsrEdge + super::EdgePmaCountsStride,
     {
-        let store = SegmentEdgeCountsStore::<E, _>::new(vector_memory()).expect("counts store");
+        let mut memories = helper::BenchMemoryFactory::new();
+        let store = SegmentEdgeCountsStore::<E, _>::new(memories.memory()).expect("counts store");
         canbench_rs::bench_fn(|| {
             let _scope = canbench_rs::bench_scope(scope);
             for i in 0..helper::MEDIUM_N {

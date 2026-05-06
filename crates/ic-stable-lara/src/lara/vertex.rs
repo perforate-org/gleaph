@@ -345,10 +345,11 @@ mod bench {
     use canbench_rs::bench;
 
     use super::{Vertex, VertexStore};
-    use crate::{bench as helper, test_support::vector_memory, traits::CsrVertex};
+    use crate::{bench as helper, traits::CsrVertex};
 
-    fn populate_store(n: u64) -> VertexStore<Vertex, crate::VectorMemory> {
-        let store = VertexStore::new(vector_memory()).expect("vertex store");
+    fn populate_store(n: u64) -> VertexStore<Vertex, helper::BenchMemory> {
+        let mut memories = helper::BenchMemoryFactory::new();
+        let store = VertexStore::new(memories.memory()).expect("vertex store");
         for i in 0..n {
             store
                 .push(Vertex {
@@ -366,7 +367,8 @@ mod bench {
     /// the fixed-width row write path and length-header update cost.
     #[bench(raw)]
     fn bench_lara_vertex_push_1024() -> canbench_rs::BenchResult {
-        let store = VertexStore::new(vector_memory()).expect("vertex store");
+        let mut memories = helper::BenchMemoryFactory::new();
+        let store = VertexStore::new(memories.memory()).expect("vertex store");
         canbench_rs::bench_fn(|| {
             let _scope = canbench_rs::bench_scope("lara_vertex_push");
             for i in 0..helper::MEDIUM_N {
