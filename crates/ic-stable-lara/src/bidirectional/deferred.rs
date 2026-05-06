@@ -476,30 +476,95 @@ where
         Ok(())
     }
 
-    /// Removes a directed edge without preserving adjacency order.
+    /// Removes one directed edge record without preserving adjacency order.
     ///
-    /// Returns `true` when the edge was present. Both orientations are updated.
+    /// `edge.neighbor_vid()` must equal `dst`. When parallel edges connect the
+    /// same vertices, the full edge record selects which one is removed. Both
+    /// orientations are updated.
     pub fn remove_directed_deferred(
         &self,
         src: VertexId,
         dst: VertexId,
-    ) -> Result<bool, DeferredBidirectionalLaraError> {
+        edge: E,
+    ) -> Result<bool, DeferredBidirectionalLaraError>
+    where
+        E: PartialEq,
+    {
         self.ensure_vertex(src)?;
         self.ensure_vertex(dst)?;
+        if edge.neighbor_vid() != dst {
+            return Err(DeferredBidirectionalLaraError::NeighborMismatch {
+                expected: dst,
+                actual: edge.neighbor_vid(),
+            });
+        }
+        if <E as UndirectedEdgeFlag>::marked_undirected(&edge) {
+            return Err(DeferredBidirectionalLaraError::UndirectedEdgeInDirectedInsert);
+        }
+        Ok(self
+            .remove_directed_record_unchecked(src, dst, edge)?
+            .is_some())
+    }
+
+    /// Removes the first directed edge accepted by `matches`.
+    ///
+    /// The predicate is evaluated against the forward `src -> dst` record after
+    /// filtering by `dst`. The returned edge is the forward record that was
+    /// removed.
+    pub fn remove_directed_matching_deferred<F>(
+        &self,
+        src: VertexId,
+        dst: VertexId,
+        matches: F,
+    ) -> Result<Option<E>, DeferredBidirectionalLaraError>
+    where
+        E: PartialEq,
+        F: FnMut(&E) -> bool,
+    {
+        self.ensure_vertex(src)?;
+        self.ensure_vertex(dst)?;
+        self.remove_directed_matching_unchecked(src, dst, matches)
+    }
+
+    fn remove_directed_record_unchecked(
+        &self,
+        src: VertexId,
+        dst: VertexId,
+        edge: E,
+    ) -> Result<Option<E>, DeferredBidirectionalLaraError>
+    where
+        E: PartialEq,
+    {
+        self.remove_directed_matching_unchecked(src, dst, |candidate| *candidate == edge)
+    }
+
+    fn remove_directed_matching_unchecked<F>(
+        &self,
+        src: VertexId,
+        dst: VertexId,
+        mut matches: F,
+    ) -> Result<Option<E>, DeferredBidirectionalLaraError>
+    where
+        E: PartialEq,
+        F: FnMut(&E) -> bool,
+    {
         let removed_forward = self
             .forward
-            .remove_edge_deferred(src, dst)
+            .remove_edge_matching_deferred(src, |edge| edge.neighbor_vid() == dst && matches(edge))
             .map_err(DeferredBidirectionalLaraError::ForwardDeferred)?;
+        let Some(edge) = removed_forward else {
+            return Ok(None);
+        };
         let removed_reverse = self
             .reverse
-            .remove_edge_deferred(dst, src)
+            .remove_edge_deferred(dst, edge.with_neighbor_vid(src))
             .map_err(DeferredBidirectionalLaraError::ReverseDeferred)?;
-        if removed_forward != removed_reverse {
+        if !removed_reverse {
             return Err(DeferredBidirectionalLaraError::Reverse(
                 "directed remove orientation mismatch",
             ));
         }
-        Ok(removed_forward)
+        Ok(Some(edge))
     }
 
     /// Inserts an undirected edge and defers maintenance in each orientation.
@@ -549,20 +614,62 @@ where
         &self,
         u: VertexId,
         v: VertexId,
+        edge: E,
     ) -> Result<bool, DeferredBidirectionalLaraError>
     where
-        E: CsrEdgeUndirected,
+        E: CsrEdgeUndirected + PartialEq,
+    {
+        self.ensure_vertex(u)?;
+        self.ensure_vertex(v)?;
+        let edge = edge.with_undirected(true);
+
+        if u == v {
+            return Ok(self
+                .remove_directed_record_unchecked(u, u, edge.with_neighbor_vid(u))?
+                .is_some());
+        }
+
+        let uv = self.remove_directed_record_unchecked(u, v, edge.with_neighbor_vid(v))?;
+        let vu = self.remove_directed_record_unchecked(v, u, edge.with_neighbor_vid(u))?;
+        Ok(uv.is_some() || vu.is_some())
+    }
+
+    /// Removes the first undirected edge accepted by `matches`.
+    ///
+    /// The predicate is evaluated against the `u -> v` forward record after the
+    /// undirected flag and neighbor id are checked.
+    pub fn remove_undirected_matching_deferred<F>(
+        &self,
+        u: VertexId,
+        v: VertexId,
+        mut matches: F,
+    ) -> Result<Option<E>, DeferredBidirectionalLaraError>
+    where
+        E: CsrEdgeUndirected + PartialEq,
+        F: FnMut(&E) -> bool,
     {
         self.ensure_vertex(u)?;
         self.ensure_vertex(v)?;
 
-        if u == v {
-            return self.remove_directed_deferred(u, u);
-        }
+        let removed = self.remove_directed_matching_unchecked(u, v, |edge| {
+            edge.neighbor_vid() == v
+                && <E as UndirectedEdgeFlag>::marked_undirected(edge)
+                && matches(edge)
+        })?;
+        let Some(edge) = removed else {
+            return Ok(None);
+        };
 
-        let uv = self.remove_directed_deferred(u, v)?;
-        let vu = self.remove_directed_deferred(v, u)?;
-        Ok(uv || vu)
+        if u != v {
+            let opposite =
+                self.remove_directed_record_unchecked(v, u, edge.with_neighbor_vid(u))?;
+            if opposite.is_none() {
+                return Err(DeferredBidirectionalLaraError::Forward(
+                    "undirected remove orientation mismatch",
+                ));
+            }
+        }
+        Ok(Some(edge))
     }
 
     /// Runs maintenance only for the forward orientation.

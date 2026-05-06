@@ -29,6 +29,45 @@ impl CsrEdge for TestEdge {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LabelledTestEdge {
+    pub(crate) neighbor: u32,
+    pub(crate) label: u32,
+}
+
+impl LabelledTestEdge {
+    pub(crate) fn new(neighbor: u32, label: u32) -> Self {
+        Self { neighbor, label }
+    }
+}
+
+impl CsrEdge for LabelledTestEdge {
+    const BYTES: usize = 8;
+
+    fn read_from(bytes: &[u8]) -> Self {
+        Self {
+            neighbor: u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
+            label: u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
+        }
+    }
+
+    fn write_to(self, bytes: &mut [u8]) {
+        bytes[0..4].copy_from_slice(&self.neighbor.to_le_bytes());
+        bytes[4..8].copy_from_slice(&self.label.to_le_bytes());
+    }
+
+    fn neighbor_vid(&self) -> VertexId {
+        VertexId::from(self.neighbor)
+    }
+
+    fn with_neighbor_vid(self, vid: VertexId) -> Self {
+        Self {
+            neighbor: u32::from(vid),
+            ..self
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct UndirectedTestEdge {
     pub(crate) neighbor: u32,
     pub(crate) undirected: bool,
@@ -309,6 +348,18 @@ pub(crate) fn test_graph(
     segment_size: u32,
     starts: &[u64],
 ) -> LaraGraph<TestEdge, Vertex, VectorMemory> {
+    lara_test_graph(elem_capacity, segment_count, segment_size, starts)
+}
+
+pub(crate) fn lara_test_graph<E>(
+    elem_capacity: u64,
+    segment_count: u32,
+    segment_size: u32,
+    starts: &[u64],
+) -> LaraGraph<E, Vertex, VectorMemory>
+where
+    E: CsrEdge + lara::edge::counts::EdgePmaCountsStride,
+{
     let graph = LaraGraph::new(
         vector_memory(),
         vector_memory(),

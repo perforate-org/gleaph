@@ -242,12 +242,34 @@ where
         self.edges.collect_out_edges(&self.vertices, src)
     }
 
-    /// Removes one outgoing edge from `src` to `dst` without preserving adjacency order.
+    /// Removes one outgoing edge whose full edge record matches `edge`.
     ///
     /// When the edge is present, the last edge in `src`'s row may be moved into
     /// the removed slot. Use this API only where adjacency order is not part of
-    /// the caller's contract.
-    pub fn remove_edge(&self, src: VertexId, dst: VertexId) -> Result<bool, &'static str> {
+    /// the caller's contract. When several edges connect the same vertices,
+    /// fields such as labels or properties in `E` decide which single record is
+    /// removed.
+    pub fn remove_edge(&self, src: VertexId, edge: E) -> Result<bool, &'static str>
+    where
+        E: PartialEq,
+    {
+        Ok(self
+            .remove_edge_matching(src, |candidate| *candidate == edge)?
+            .is_some())
+    }
+
+    /// Removes the first outgoing edge accepted by `matches`.
+    ///
+    /// Returns the removed edge record when one was present. This is useful for
+    /// matching on only part of the payload, such as a label or one property.
+    pub fn remove_edge_matching<F>(
+        &self,
+        src: VertexId,
+        matches: F,
+    ) -> Result<Option<E>, &'static str>
+    where
+        F: FnMut(&E) -> bool,
+    {
         let src_idx = u64::from(u32::from(src));
         if src_idx >= self.vertices.len() {
             return Err("vertex out of range");
@@ -256,7 +278,8 @@ where
             self.rebalance_leaf_for(src)
                 .map_err(|_| "rebalance failed")?;
         }
-        self.edges.remove_edge_unordered(&self.vertices, src, dst)
+        self.edges
+            .remove_edge_unordered_matching(&self.vertices, src, matches)
     }
 
     /// Doubles or otherwise expands the edge slab and redistributes all rows.
@@ -1048,7 +1071,9 @@ mod tests {
     use super::*;
     use crate::VertexId;
     use crate::lara::vertex::Vertex;
-    use crate::test_support::{TestEdge, assert_vertex_capacity_invariants, test_graph};
+    use crate::test_support::{
+        LabelledTestEdge, TestEdge, assert_vertex_capacity_invariants, lara_test_graph, test_graph,
+    };
     use ic_stable_structures::{Storable, storable::Bound};
     use std::borrow::Cow;
 
@@ -1135,11 +1160,7 @@ mod tests {
         graph.insert_edge(VertexId::from(0), TestEdge(11)).unwrap();
         graph.insert_edge(VertexId::from(0), TestEdge(12)).unwrap();
 
-        assert!(
-            graph
-                .remove_edge(VertexId::from(0), VertexId::from(11))
-                .unwrap()
-        );
+        assert!(graph.remove_edge(VertexId::from(0), TestEdge(11)).unwrap());
 
         assert_eq!(
             graph.collect_out_edges(VertexId::from(0)).unwrap(),
@@ -1165,11 +1186,7 @@ mod tests {
             .unwrap();
         assert!(graph.vertices().get(0).log_head >= 0);
 
-        assert!(
-            graph
-                .remove_edge(VertexId::from(0), VertexId::from(11))
-                .unwrap()
-        );
+        assert!(graph.remove_edge(VertexId::from(0), TestEdge(11)).unwrap());
 
         assert_eq!(
             graph.collect_out_edges(VertexId::from(0)).unwrap(),
@@ -1187,16 +1204,48 @@ mod tests {
 
         graph.insert_edge(VertexId::from(0), TestEdge(10)).unwrap();
 
-        assert!(
-            !graph
-                .remove_edge(VertexId::from(0), VertexId::from(99))
-                .unwrap()
-        );
+        assert!(!graph.remove_edge(VertexId::from(0), TestEdge(99)).unwrap());
         assert_eq!(
             graph.collect_out_edges(VertexId::from(0)).unwrap(),
             vec![TestEdge(10)]
         );
         assert_eq!(graph.edges().header().num_edges, 1);
+    }
+
+    #[test]
+    fn lara_parallel_edges_remove_by_full_record() {
+        let graph = lara_test_graph::<LabelledTestEdge>(8, 2, 2, &[0, 4]);
+        let red = LabelledTestEdge::new(1, 10);
+        let blue = LabelledTestEdge::new(1, 20);
+
+        graph.insert_edge(VertexId::from(0), red).unwrap();
+        graph.insert_edge(VertexId::from(0), blue).unwrap();
+
+        assert!(graph.remove_edge(VertexId::from(0), blue).unwrap());
+        assert_eq!(
+            graph.collect_out_edges(VertexId::from(0)).unwrap(),
+            vec![red]
+        );
+        assert!(!graph.remove_edge(VertexId::from(0), blue).unwrap());
+    }
+
+    #[test]
+    fn lara_parallel_edges_remove_by_predicate() {
+        let graph = lara_test_graph::<LabelledTestEdge>(8, 2, 2, &[0, 4]);
+        let red = LabelledTestEdge::new(1, 10);
+        let blue = LabelledTestEdge::new(1, 20);
+
+        graph.insert_edge(VertexId::from(0), red).unwrap();
+        graph.insert_edge(VertexId::from(0), blue).unwrap();
+
+        let removed = graph
+            .remove_edge_matching(VertexId::from(0), |edge| edge.label == 10)
+            .unwrap();
+        assert_eq!(removed, Some(red));
+        assert_eq!(
+            graph.collect_out_edges(VertexId::from(0)).unwrap(),
+            vec![blue]
+        );
     }
 
     #[test]

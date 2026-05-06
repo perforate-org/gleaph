@@ -307,31 +307,96 @@ where
         Ok(())
     }
 
-    /// Removes a directed edge from `src` to `dst` without preserving adjacency order.
+    /// Removes one directed edge record from `src` to `dst` without preserving adjacency order.
     ///
-    /// Returns `true` when the edge was present. Both forward and reverse
-    /// orientations are updated; a mismatch is reported as a storage error.
+    /// `edge.neighbor_vid()` must equal `dst`. When parallel edges connect the
+    /// same vertices, the full edge record selects which one is removed. Both
+    /// forward and reverse orientations are updated; a mismatch is reported as
+    /// a storage error.
     pub fn remove_directed(
         &self,
         src: VertexId,
         dst: VertexId,
-    ) -> Result<bool, BidirectionalLaraError> {
+        edge: E,
+    ) -> Result<bool, BidirectionalLaraError>
+    where
+        E: PartialEq,
+    {
         self.ensure_vertex(src)?;
         self.ensure_vertex(dst)?;
+        if edge.neighbor_vid() != dst {
+            return Err(BidirectionalLaraError::NeighborMismatch {
+                expected: dst,
+                actual: edge.neighbor_vid(),
+            });
+        }
+        if <E as UndirectedEdgeFlag>::marked_undirected(&edge) {
+            return Err(BidirectionalLaraError::UndirectedEdgeInDirectedInsert);
+        }
+        Ok(self
+            .remove_directed_record_unchecked(src, dst, edge)?
+            .is_some())
+    }
+
+    /// Removes the first directed edge accepted by `matches`.
+    ///
+    /// The predicate is evaluated against the forward `src -> dst` record after
+    /// filtering by `dst`. The returned edge is the forward record that was
+    /// removed.
+    pub fn remove_directed_matching<F>(
+        &self,
+        src: VertexId,
+        dst: VertexId,
+        matches: F,
+    ) -> Result<Option<E>, BidirectionalLaraError>
+    where
+        E: PartialEq,
+        F: FnMut(&E) -> bool,
+    {
+        self.ensure_vertex(src)?;
+        self.ensure_vertex(dst)?;
+        self.remove_directed_matching_unchecked(src, dst, matches)
+    }
+
+    fn remove_directed_record_unchecked(
+        &self,
+        src: VertexId,
+        dst: VertexId,
+        edge: E,
+    ) -> Result<Option<E>, BidirectionalLaraError>
+    where
+        E: PartialEq,
+    {
+        self.remove_directed_matching_unchecked(src, dst, |candidate| *candidate == edge)
+    }
+
+    fn remove_directed_matching_unchecked<F>(
+        &self,
+        src: VertexId,
+        dst: VertexId,
+        mut matches: F,
+    ) -> Result<Option<E>, BidirectionalLaraError>
+    where
+        E: PartialEq,
+        F: FnMut(&E) -> bool,
+    {
         let removed_forward = self
             .forward
-            .remove_edge(src, dst)
+            .remove_edge_matching(src, |edge| edge.neighbor_vid() == dst && matches(edge))
             .map_err(BidirectionalLaraError::Forward)?;
+        let Some(edge) = removed_forward else {
+            return Ok(None);
+        };
         let removed_reverse = self
             .reverse
-            .remove_edge(dst, src)
+            .remove_edge(dst, edge.with_neighbor_vid(src))
             .map_err(BidirectionalLaraError::Reverse)?;
-        if removed_forward != removed_reverse {
+        if !removed_reverse {
             return Err(BidirectionalLaraError::Reverse(
                 "directed remove orientation mismatch",
             ));
         }
-        Ok(removed_forward)
+        Ok(Some(edge))
     }
 
     /// Inserts an undirected edge by materializing both directions in both orientations.
@@ -374,27 +439,69 @@ where
         Ok(())
     }
 
-    /// Removes an undirected edge without preserving adjacency order.
+    /// Removes one undirected edge record without preserving adjacency order.
     ///
     /// Returns `true` when at least one materialized direction was present.
     pub fn remove_undirected(
         &self,
         u: VertexId,
         v: VertexId,
+        edge: E,
     ) -> Result<bool, BidirectionalLaraError>
     where
-        E: CsrEdgeUndirected,
+        E: CsrEdgeUndirected + PartialEq,
+    {
+        self.ensure_vertex(u)?;
+        self.ensure_vertex(v)?;
+        let edge = edge.with_undirected(true);
+
+        if u == v {
+            return Ok(self
+                .remove_directed_record_unchecked(u, u, edge.with_neighbor_vid(u))?
+                .is_some());
+        }
+
+        let uv = self.remove_directed_record_unchecked(u, v, edge.with_neighbor_vid(v))?;
+        let vu = self.remove_directed_record_unchecked(v, u, edge.with_neighbor_vid(u))?;
+        Ok(uv.is_some() || vu.is_some())
+    }
+
+    /// Removes the first undirected edge accepted by `matches`.
+    ///
+    /// The predicate is evaluated against the `u -> v` forward record after the
+    /// undirected flag and neighbor id are checked.
+    pub fn remove_undirected_matching<F>(
+        &self,
+        u: VertexId,
+        v: VertexId,
+        mut matches: F,
+    ) -> Result<Option<E>, BidirectionalLaraError>
+    where
+        E: CsrEdgeUndirected + PartialEq,
+        F: FnMut(&E) -> bool,
     {
         self.ensure_vertex(u)?;
         self.ensure_vertex(v)?;
 
-        if u == v {
-            return self.remove_directed(u, u);
-        }
+        let removed = self.remove_directed_matching_unchecked(u, v, |edge| {
+            edge.neighbor_vid() == v
+                && <E as UndirectedEdgeFlag>::marked_undirected(edge)
+                && matches(edge)
+        })?;
+        let Some(edge) = removed else {
+            return Ok(None);
+        };
 
-        let uv = self.remove_directed(u, v)?;
-        let vu = self.remove_directed(v, u)?;
-        Ok(uv || vu)
+        if u != v {
+            let opposite =
+                self.remove_directed_record_unchecked(v, u, edge.with_neighbor_vid(u))?;
+            if opposite.is_none() {
+                return Err(BidirectionalLaraError::Forward(
+                    "undirected remove orientation mismatch",
+                ));
+            }
+        }
+        Ok(Some(edge))
     }
 
     fn ensure_matching_vertex_counts(&self) -> Result<(), BidirectionalLaraError> {
@@ -420,7 +527,7 @@ mod tests {
     use crate::traits::CsrEdgeUndirected;
     use crate::{
         Vertex,
-        test_support::{TestEdge, UndirectedTestEdge, bidirectional_test_graph},
+        test_support::{LabelledTestEdge, TestEdge, UndirectedTestEdge, bidirectional_test_graph},
     };
 
     #[test]
@@ -453,7 +560,7 @@ mod tests {
 
         assert!(
             graph
-                .remove_directed(VertexId::from(0), VertexId::from(2))
+                .remove_directed(VertexId::from(0), VertexId::from(2), TestEdge(2))
                 .unwrap()
         );
 
@@ -461,8 +568,59 @@ mod tests {
         assert_eq!(graph.in_edges(VertexId::from(2)).unwrap(), Vec::new());
         assert!(
             !graph
-                .remove_directed(VertexId::from(0), VertexId::from(2))
+                .remove_directed(VertexId::from(0), VertexId::from(2), TestEdge(2))
                 .unwrap()
+        );
+    }
+
+    #[test]
+    fn bidirectional_directed_parallel_edges_remove_by_full_record() {
+        let graph = bidirectional_test_graph::<LabelledTestEdge>(&[0, 4]);
+        let red = LabelledTestEdge::new(1, 10);
+        let blue = LabelledTestEdge::new(1, 20);
+
+        graph
+            .insert_directed(VertexId::from(0), VertexId::from(1), red)
+            .unwrap();
+        graph
+            .insert_directed(VertexId::from(0), VertexId::from(1), blue)
+            .unwrap();
+
+        assert!(
+            graph
+                .remove_directed(VertexId::from(0), VertexId::from(1), blue)
+                .unwrap()
+        );
+        assert_eq!(graph.out_edges(VertexId::from(0)).unwrap(), vec![red]);
+        assert_eq!(
+            graph.in_edges(VertexId::from(1)).unwrap(),
+            vec![red.with_neighbor_vid(VertexId::from(0))]
+        );
+    }
+
+    #[test]
+    fn bidirectional_directed_parallel_edges_remove_by_predicate() {
+        let graph = bidirectional_test_graph::<LabelledTestEdge>(&[0, 4]);
+        let red = LabelledTestEdge::new(1, 10);
+        let blue = LabelledTestEdge::new(1, 20);
+
+        graph
+            .insert_directed(VertexId::from(0), VertexId::from(1), red)
+            .unwrap();
+        graph
+            .insert_directed(VertexId::from(0), VertexId::from(1), blue)
+            .unwrap();
+
+        let removed = graph
+            .remove_directed_matching(VertexId::from(0), VertexId::from(1), |edge| {
+                edge.label == 10
+            })
+            .unwrap();
+        assert_eq!(removed, Some(red));
+        assert_eq!(graph.out_edges(VertexId::from(0)).unwrap(), vec![blue]);
+        assert_eq!(
+            graph.in_edges(VertexId::from(1)).unwrap(),
+            vec![blue.with_neighbor_vid(VertexId::from(0))]
         );
     }
 

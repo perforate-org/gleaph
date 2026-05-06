@@ -535,13 +535,26 @@ where
     }
 
     /// Removes one outgoing edge without preserving adjacency order.
-    pub fn remove_edge_deferred(
+    pub fn remove_edge_deferred(&self, src: VertexId, edge: E) -> Result<bool, DeferredError>
+    where
+        E: PartialEq,
+    {
+        Ok(self
+            .remove_edge_matching_deferred(src, |candidate| *candidate == edge)?
+            .is_some())
+    }
+
+    /// Removes the first outgoing edge accepted by `matches`.
+    pub fn remove_edge_matching_deferred<F>(
         &self,
         src: VertexId,
-        dst: VertexId,
-    ) -> Result<bool, DeferredError> {
+        matches: F,
+    ) -> Result<Option<E>, DeferredError>
+    where
+        F: FnMut(&E) -> bool,
+    {
         self.graph
-            .remove_edge(src, dst)
+            .remove_edge_matching(src, matches)
             .map_err(DeferredError::Graph)
     }
 
@@ -739,7 +752,7 @@ mod tests {
 
         assert!(
             graph
-                .remove_edge_deferred(VertexId::from(0), VertexId::from(11))
+                .remove_edge_deferred(VertexId::from(0), TestEdge(11))
                 .unwrap()
         );
 

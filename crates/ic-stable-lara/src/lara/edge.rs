@@ -430,15 +430,16 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         Ok(location)
     }
 
-    pub(crate) fn remove_edge_unordered<V, A>(
+    pub(crate) fn remove_edge_unordered_matching<V, A, F>(
         &self,
         vertices: &A,
         vid: VertexId,
-        neighbor_vid: VertexId,
-    ) -> Result<bool, &'static str>
+        mut matches: F,
+    ) -> Result<Option<E>, &'static str>
     where
         V: LaraVertex,
         A: VertexAccess<V>,
+        F: FnMut(&E) -> bool,
     {
         let edge_layout = self.edge_layout();
         let vidx = vertex_index(vid);
@@ -451,22 +452,23 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         }
         let degree = v.degree();
         if degree == 0 {
-            return Ok(false);
+            return Ok(None);
         }
 
         let base = v.base_slot_start();
         let mut found = None;
         for i in 0..degree {
             let edge = self.read_slot(base.saturating_add(u64::from(i)));
-            if edge.neighbor_vid() == neighbor_vid {
+            if matches(&edge) {
                 found = Some(i);
                 break;
             }
         }
         let Some(local_index) = found else {
-            return Ok(false);
+            return Ok(None);
         };
 
+        let removed = self.read_slot(base.saturating_add(u64::from(local_index)));
         let last_index = degree - 1;
         if local_index != last_index {
             let last = self.read_slot(base.saturating_add(u64::from(last_index)));
@@ -477,7 +479,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         self.edges
             .set_num_edges(edge_layout.num_edges.saturating_sub(1));
         self.bump_counts_leaf_with_layout(&edge_layout, vid, -1, 0, 0)?;
-        Ok(true)
+        Ok(Some(removed))
     }
 
     fn insert_into_log_with_layout<V, A>(
