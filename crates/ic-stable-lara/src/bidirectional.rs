@@ -307,6 +307,33 @@ where
         Ok(())
     }
 
+    /// Removes a directed edge from `src` to `dst` without preserving adjacency order.
+    ///
+    /// Returns `true` when the edge was present. Both forward and reverse
+    /// orientations are updated; a mismatch is reported as a storage error.
+    pub fn remove_directed(
+        &self,
+        src: VertexId,
+        dst: VertexId,
+    ) -> Result<bool, BidirectionalLaraError> {
+        self.ensure_vertex(src)?;
+        self.ensure_vertex(dst)?;
+        let removed_forward = self
+            .forward
+            .remove_edge(src, dst)
+            .map_err(BidirectionalLaraError::Forward)?;
+        let removed_reverse = self
+            .reverse
+            .remove_edge(dst, src)
+            .map_err(BidirectionalLaraError::Reverse)?;
+        if removed_forward != removed_reverse {
+            return Err(BidirectionalLaraError::Reverse(
+                "directed remove orientation mismatch",
+            ));
+        }
+        Ok(removed_forward)
+    }
+
     /// Inserts an undirected edge by materializing both directions in both orientations.
     pub fn insert_undirected(
         &self,
@@ -345,6 +372,29 @@ where
             .insert_edge(u, edge.with_neighbor_vid(v))
             .map_err(BidirectionalLaraError::Reverse)?;
         Ok(())
+    }
+
+    /// Removes an undirected edge without preserving adjacency order.
+    ///
+    /// Returns `true` when at least one materialized direction was present.
+    pub fn remove_undirected(
+        &self,
+        u: VertexId,
+        v: VertexId,
+    ) -> Result<bool, BidirectionalLaraError>
+    where
+        E: CsrEdgeUndirected,
+    {
+        self.ensure_vertex(u)?;
+        self.ensure_vertex(v)?;
+
+        if u == v {
+            return self.remove_directed(u, u);
+        }
+
+        let uv = self.remove_directed(u, v)?;
+        let vu = self.remove_directed(v, u)?;
+        Ok(uv || vu)
     }
 
     fn ensure_matching_vertex_counts(&self) -> Result<(), BidirectionalLaraError> {
@@ -391,6 +441,29 @@ mod tests {
             vec![TestEdge(0)]
         );
         assert_eq!(graph.in_edges(VertexId::from(0)).unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn bidirectional_directed_remove_updates_forward_and_reverse() {
+        let graph = bidirectional_test_graph::<TestEdge>(&[0, 4, 8]);
+
+        graph
+            .insert_directed(VertexId::from(0), VertexId::from(2), TestEdge(2))
+            .unwrap();
+
+        assert!(
+            graph
+                .remove_directed(VertexId::from(0), VertexId::from(2))
+                .unwrap()
+        );
+
+        assert_eq!(graph.out_edges(VertexId::from(0)).unwrap(), Vec::new());
+        assert_eq!(graph.in_edges(VertexId::from(2)).unwrap(), Vec::new());
+        assert!(
+            !graph
+                .remove_directed(VertexId::from(0), VertexId::from(2))
+                .unwrap()
+        );
     }
 
     #[test]

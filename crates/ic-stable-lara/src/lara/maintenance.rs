@@ -534,6 +534,17 @@ where
         Ok(())
     }
 
+    /// Removes one outgoing edge without preserving adjacency order.
+    pub fn remove_edge_deferred(
+        &self,
+        src: VertexId,
+        dst: VertexId,
+    ) -> Result<bool, DeferredError> {
+        self.graph
+            .remove_edge(src, dst)
+            .map_err(DeferredError::Graph)
+    }
+
     /// Processes at most one queued dirty segment.
     pub fn maintenance_step(&self) -> Result<Option<MaintenanceWorkReport>, DeferredError> {
         let Some(segment) = self
@@ -713,6 +724,31 @@ mod tests {
             graph.collect_out_edges(VertexId::from(0)).unwrap(),
             vec![TestEdge(10), TestEdge(11), TestEdge(12)]
         );
+    }
+
+    #[test]
+    fn deferred_remove_folds_log_and_removes_edge() {
+        let graph = deferred_test_graph(8, 2, 2, &[0, 2, 4, 6]);
+
+        for dst in 10..13 {
+            graph
+                .insert_edge_deferred(VertexId::from(0), TestEdge(dst))
+                .unwrap();
+        }
+        assert!(graph.graph().vertices().get(0).log_head >= 0);
+
+        assert!(
+            graph
+                .remove_edge_deferred(VertexId::from(0), VertexId::from(11))
+                .unwrap()
+        );
+
+        assert_eq!(
+            graph.collect_out_edges(VertexId::from(0)).unwrap(),
+            vec![TestEdge(10), TestEdge(12)]
+        );
+        assert_eq!(graph.graph().vertices().get(0).degree, 2);
+        assert_eq!(graph.graph().vertices().get(0).log_head, -1);
     }
 
     #[test]

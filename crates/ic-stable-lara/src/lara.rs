@@ -242,6 +242,23 @@ where
         self.edges.collect_out_edges(&self.vertices, src)
     }
 
+    /// Removes one outgoing edge from `src` to `dst` without preserving adjacency order.
+    ///
+    /// When the edge is present, the last edge in `src`'s row may be moved into
+    /// the removed slot. Use this API only where adjacency order is not part of
+    /// the caller's contract.
+    pub fn remove_edge(&self, src: VertexId, dst: VertexId) -> Result<bool, &'static str> {
+        let src_idx = u64::from(u32::from(src));
+        if src_idx >= self.vertices.len() {
+            return Err("vertex out of range");
+        }
+        if self.vertices.get(src_idx).log_head() >= 0 {
+            self.rebalance_leaf_for(src)
+                .map_err(|_| "rebalance failed")?;
+        }
+        self.edges.remove_edge_unordered(&self.vertices, src, dst)
+    }
+
     /// Doubles or otherwise expands the edge slab and redistributes all rows.
     pub fn resize(&self) -> Result<(), GrowFailed> {
         let layout = self.layout();
@@ -1108,6 +1125,78 @@ mod tests {
         assert_eq!(graph.vertices().get(0).degree, 2);
         assert_eq!(graph.vertices().get(0).log_head, -1);
         assert!(graph.edges().header().elem_capacity >= 4);
+    }
+
+    #[test]
+    fn lara_remove_edge_uses_unordered_swap_remove() {
+        let graph = test_graph(8, 2, 2, &[0, 4]);
+
+        graph.insert_edge(VertexId::from(0), TestEdge(10)).unwrap();
+        graph.insert_edge(VertexId::from(0), TestEdge(11)).unwrap();
+        graph.insert_edge(VertexId::from(0), TestEdge(12)).unwrap();
+
+        assert!(
+            graph
+                .remove_edge(VertexId::from(0), VertexId::from(11))
+                .unwrap()
+        );
+
+        assert_eq!(
+            graph.collect_out_edges(VertexId::from(0)).unwrap(),
+            vec![TestEdge(10), TestEdge(12)]
+        );
+        assert_eq!(graph.vertices().get(0).degree, 2);
+        assert_eq!(graph.edges().header().num_edges, 2);
+        assert_eq!(graph.edges().counts_store().get(2).actual, 2);
+    }
+
+    #[test]
+    fn lara_remove_edge_folds_log_before_removing() {
+        let graph = test_graph(2, 1, 2, &[0, 1]);
+
+        graph
+            .insert_edge_raw(VertexId::from(0), TestEdge(10))
+            .unwrap();
+        graph
+            .insert_edge_raw(VertexId::from(0), TestEdge(11))
+            .unwrap();
+        graph
+            .insert_edge_raw(VertexId::from(0), TestEdge(12))
+            .unwrap();
+        assert!(graph.vertices().get(0).log_head >= 0);
+
+        assert!(
+            graph
+                .remove_edge(VertexId::from(0), VertexId::from(11))
+                .unwrap()
+        );
+
+        assert_eq!(
+            graph.collect_out_edges(VertexId::from(0)).unwrap(),
+            vec![TestEdge(10), TestEdge(12)]
+        );
+        assert_eq!(graph.vertices().get(0).degree, 2);
+        assert_eq!(graph.vertices().get(0).log_head, -1);
+        assert_eq!(graph.edges().header().num_edges, 2);
+        assert_vertex_capacity_invariants(&graph);
+    }
+
+    #[test]
+    fn lara_remove_edge_returns_false_when_missing() {
+        let graph = test_graph(8, 2, 2, &[0, 4]);
+
+        graph.insert_edge(VertexId::from(0), TestEdge(10)).unwrap();
+
+        assert!(
+            !graph
+                .remove_edge(VertexId::from(0), VertexId::from(99))
+                .unwrap()
+        );
+        assert_eq!(
+            graph.collect_out_edges(VertexId::from(0)).unwrap(),
+            vec![TestEdge(10)]
+        );
+        assert_eq!(graph.edges().header().num_edges, 1);
     }
 
     #[test]

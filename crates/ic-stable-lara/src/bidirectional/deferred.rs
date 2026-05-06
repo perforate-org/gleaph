@@ -476,6 +476,32 @@ where
         Ok(())
     }
 
+    /// Removes a directed edge without preserving adjacency order.
+    ///
+    /// Returns `true` when the edge was present. Both orientations are updated.
+    pub fn remove_directed_deferred(
+        &self,
+        src: VertexId,
+        dst: VertexId,
+    ) -> Result<bool, DeferredBidirectionalLaraError> {
+        self.ensure_vertex(src)?;
+        self.ensure_vertex(dst)?;
+        let removed_forward = self
+            .forward
+            .remove_edge_deferred(src, dst)
+            .map_err(DeferredBidirectionalLaraError::ForwardDeferred)?;
+        let removed_reverse = self
+            .reverse
+            .remove_edge_deferred(dst, src)
+            .map_err(DeferredBidirectionalLaraError::ReverseDeferred)?;
+        if removed_forward != removed_reverse {
+            return Err(DeferredBidirectionalLaraError::Reverse(
+                "directed remove orientation mismatch",
+            ));
+        }
+        Ok(removed_forward)
+    }
+
     /// Inserts an undirected edge and defers maintenance in each orientation.
     pub fn insert_undirected_deferred(
         &self,
@@ -514,6 +540,29 @@ where
             .insert_edge_deferred(u, edge.with_neighbor_vid(v))
             .map_err(DeferredBidirectionalLaraError::ReverseDeferred)?;
         Ok(())
+    }
+
+    /// Removes an undirected edge without preserving adjacency order.
+    ///
+    /// Returns `true` when at least one materialized direction was present.
+    pub fn remove_undirected_deferred(
+        &self,
+        u: VertexId,
+        v: VertexId,
+    ) -> Result<bool, DeferredBidirectionalLaraError>
+    where
+        E: CsrEdgeUndirected,
+    {
+        self.ensure_vertex(u)?;
+        self.ensure_vertex(v)?;
+
+        if u == v {
+            return self.remove_directed_deferred(u, u);
+        }
+
+        let uv = self.remove_directed_deferred(u, v)?;
+        let vu = self.remove_directed_deferred(v, u)?;
+        Ok(uv || vu)
     }
 
     /// Runs maintenance only for the forward orientation.

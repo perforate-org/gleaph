@@ -430,6 +430,56 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         Ok(location)
     }
 
+    pub(crate) fn remove_edge_unordered<V, A>(
+        &self,
+        vertices: &A,
+        vid: VertexId,
+        neighbor_vid: VertexId,
+    ) -> Result<bool, &'static str>
+    where
+        V: LaraVertex,
+        A: VertexAccess<V>,
+    {
+        let edge_layout = self.edge_layout();
+        let vidx = vertex_index(vid);
+        if vidx >= vertices.len() as usize {
+            return Err("vertex out of range");
+        }
+        let v = vertices.get(vidx as u64);
+        if v.log_head() >= 0 {
+            return Err("remove requires slab-only row");
+        }
+        let degree = v.degree();
+        if degree == 0 {
+            return Ok(false);
+        }
+
+        let base = v.base_slot_start();
+        let mut found = None;
+        for i in 0..degree {
+            let edge = self.read_slot(base.saturating_add(u64::from(i)));
+            if edge.neighbor_vid() == neighbor_vid {
+                found = Some(i);
+                break;
+            }
+        }
+        let Some(local_index) = found else {
+            return Ok(false);
+        };
+
+        let last_index = degree - 1;
+        if local_index != last_index {
+            let last = self.read_slot(base.saturating_add(u64::from(last_index)));
+            self.write_slot(base.saturating_add(u64::from(local_index)), last)
+                .map_err(|_| "write edge slot failed")?;
+        }
+        vertices.set(vidx as u64, &v.with_degree(last_index));
+        self.edges
+            .set_num_edges(edge_layout.num_edges.saturating_sub(1));
+        self.bump_counts_leaf_with_layout(&edge_layout, vid, -1, 0, 0)?;
+        Ok(true)
+    }
+
     fn insert_into_log_with_layout<V, A>(
         &self,
         edge_layout: &EdgeLayout,
