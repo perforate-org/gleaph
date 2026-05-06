@@ -1,8 +1,8 @@
 //! Stable LARA BTree-backed free span store ordered by span length.
 //!
 //! This is the low-update-cost production candidate for free span reuse:
-//! `(len, start_slot) -> ()`. It supports best-fit allocation without scanning,
-//! but intentionally does not coalesce on release.
+//! `(len, start_slot) -> ()`. It supports best-fit allocation without scanning
+//! and coalesces immediately-adjacent free spans on release.
 //!
 //! A free span is a retired physical edge range. It becomes reusable only after
 //! relocation has published the new edge slots, vertex rows, segment span
@@ -112,6 +112,72 @@ impl<M: Memory> FreeSpanStore<M> {
         if span.len == 0 {
             return;
         }
+        let mut merged = span;
+        let mut merge_prev = None;
+        let mut merge_next = None;
+
+        for existing in self.spans() {
+            let existing_end = existing.start_slot.saturating_add(existing.len);
+            let span_end = span.start_slot.saturating_add(span.len);
+            debug_assert!(
+                existing_end <= span.start_slot || span_end <= existing.start_slot,
+                "free span {span:?} overlaps existing span {existing:?}"
+            );
+            if existing_end == span.start_slot {
+                merged.start_slot = existing.start_slot;
+                merged.len = merged.len.saturating_add(existing.len);
+                merge_prev = Some(existing);
+            } else if span_end == existing.start_slot {
+                merged.len = merged.len.saturating_add(existing.len);
+                merge_next = Some(existing);
+            }
+        }
+
+        if let Some(prev) = merge_prev {
+            self.remove_exact(prev);
+        }
+        if let Some(next) = merge_next {
+            self.remove_exact(next);
+        }
+        self.insert_raw(merged);
+    }
+
+    pub(crate) fn remove_exact(&self, span: FreeSpan) -> bool {
+        self.by_len
+            .borrow_mut()
+            .remove(&FreeSpanKey::new(span.len, span.start_slot))
+            .is_some()
+    }
+
+    pub(crate) fn free_span_ending_at(&self, end_slot: u64) -> Option<FreeSpan> {
+        self.spans()
+            .into_iter()
+            .find(|span| span.start_slot.saturating_add(span.len) == end_slot)
+    }
+
+    pub(crate) fn free_span_starting_at(&self, start_slot: u64) -> Option<FreeSpan> {
+        self.spans()
+            .into_iter()
+            .find(|span| span.start_slot == start_slot)
+    }
+
+    pub(crate) fn replace_exact_pair_with(
+        &self,
+        first: FreeSpan,
+        second: FreeSpan,
+        replacement: FreeSpan,
+    ) {
+        let removed_first = self.remove_exact(first);
+        debug_assert!(removed_first);
+        let removed_second = self.remove_exact(second);
+        debug_assert!(removed_second);
+        self.insert_raw(replacement);
+    }
+
+    fn insert_raw(&self, span: FreeSpan) {
+        if span.len == 0 {
+            return;
+        }
         let previous = self
             .by_len
             .borrow_mut()
@@ -181,6 +247,22 @@ mod tests {
                 start_slot: 1040,
                 len: 40
             })
+        );
+    }
+
+    #[test]
+    fn free_span_store_release_coalesces_adjacent_spans() {
+        let store = FreeSpanStore::init(vector_memory());
+        store.release_span(100, 20);
+        store.release_span(140, 10);
+        store.release_span(120, 20);
+
+        assert_eq!(
+            store.spans(),
+            vec![FreeSpan {
+                start_slot: 100,
+                len: 50
+            }]
         );
     }
 }
