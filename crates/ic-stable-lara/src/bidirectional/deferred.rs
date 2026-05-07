@@ -1032,8 +1032,8 @@ where
             }
 
             checkpoint_tick = checkpoint_tick.wrapping_add(1);
-            let should_check =
-                budget.checkpoint_every <= 1 || checkpoint_tick % budget.checkpoint_every == 0;
+            let should_check = budget.checkpoint_every <= 1
+                || checkpoint_tick.is_multiple_of(budget.checkpoint_every);
             report.instructions_used = current_instruction_counter().saturating_sub(baseline);
             if should_check
                 && budget.max_instructions > 0
