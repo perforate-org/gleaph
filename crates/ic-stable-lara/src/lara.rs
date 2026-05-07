@@ -807,11 +807,12 @@ where
             };
 
             let new_start = left_free.start_slot;
-            let edges: Vec<E> = (0..u64::from(v.degree()))
-                .map(|offset| self.edges.read_slot(live_start + offset))
-                .collect();
-            for (offset, edge) in edges.into_iter().enumerate() {
-                self.edges.write_slot(new_start + offset as u64, edge)?;
+            for offset in 0..v.degree() {
+                let edge = self
+                    .edges
+                    .read_slot(live_start.saturating_add(u64::from(offset)));
+                self.edges
+                    .write_slot(new_start.saturating_add(u64::from(offset)), edge)?;
             }
 
             self.vertices
@@ -862,11 +863,14 @@ where
         let mut offsets = Vec::with_capacity(vertex_count + 1);
         offsets.push(0);
         for vid in start_vertex..end_vertex {
-            let out = self
-                .edges
-                .collect_out_edges_slot_order(&self.vertices, VertexId::from(vid as u32))
-                .expect("LARA log chains are valid before rebalance");
-            edges.extend(out);
+            let vid32 = VertexId::from(vid as u32);
+            let segment_start = edges.len();
+            edges.extend(
+                self.edges
+                    .iter_out_edges(&self.vertices, vid32)
+                    .expect("LARA log chains are valid before rebalance"),
+            );
+            edges[segment_start..].reverse();
             offsets.push(edges.len());
         }
 
