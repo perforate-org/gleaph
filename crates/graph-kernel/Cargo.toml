@@ -5,5 +5,7 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
-gleaph-gql = { path = "../gql" }
+bitflags.workspace = true
+gleaph-gql.workspace = true
+ic-stable-lara.workspace = true
 thiserror.workspace = true

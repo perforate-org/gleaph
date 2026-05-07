@@ -10,8 +10,8 @@ include = [
     "/src",
     "/Cargo.toml",
     "/README.md",
-    "/LICENSE-APACHE",
-    "/LICENSE-MIT",
+    "../../LICENSE-APACHE",
+    "../../LICENSE-MIT",
 ]
 
 [dependencies]

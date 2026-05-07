@@ -1,19 +1,14 @@
 [workspace]
 members = [
-    "crates/cli",
     "crates/gql",
-    "crates/gql-executor",
     "crates/gql-ic",
     "crates/gql-macros",
-    "crates/graph-catalog",
     "crates/gql-planner",
     "crates/graph",
+    "crates/graph-catalog",
     "crates/graph-kernel",
-    "crates/graph-registry",
-    "crates/graph-store",
-    "crates/ic-stable-csr",
-    "crates/ic-stable-bitset",
-    "crates/ic-stable-bitset/bench",
+    "crates/ic-stable-lara",
+    "crates/ic-stable-paged-ordered-map",
     "crates/ic-stable-roaring",
     "crates/ic-stable-roaring/bench",
     "crates/ic-stable-vec-deque",
@@ -27,9 +22,13 @@ license = "MIT"
 
 [workspace.dependencies]
 gleaph-gql = { path = "crates/gql" }
-ic-stable-bitset = { path = "crates/ic-stable-bitset" }
+gleaph-gql-ic = { path = "crates/gql-ic" }
+gleaph-gql-planner = { path = "crates/gql-planner" }
+gleaph-graph-catalog = { path = "crates/graph-catalog" }
+gleaph-graph-kernel = { path = "crates/graph-kernel" }
+ic-stable-lara = { path = "crates/ic-stable-lara" }
+ic-stable-paged-ordered-map = { path = "crates/ic-stable-paged-ordered-map" }
 ic-stable-roaring = { path = "crates/ic-stable-roaring" }
-ic-stable-csr = { path = "crates/ic-stable-csr" }
 ic-stable-vec-deque = { path = "crates/ic-stable-vec-deque" }
 
 bitflags = "2"
@@ -37,7 +36,7 @@ ic-stable-structures = "0.7.2"
 canbench-rs = "0.4"
 candid = "0.10"
 concat-string = "1"
-ethnum = "1"
+ethnum = "1.5.3"
 ic-cdk = "0.20"
 ic-cdk-macros = "0.20"
 rapidhash = "4"

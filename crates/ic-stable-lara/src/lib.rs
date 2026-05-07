@@ -43,7 +43,7 @@ use std::{
 mod bench;
 pub mod bidirectional;
 pub mod lara;
-mod traits;
+pub mod traits;
 mod types;
 
 pub use bidirectional::{
@@ -80,6 +80,18 @@ use types::Address;
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Display, From, Into,
 )]
 pub struct VertexId(u32);
+
+impl VertexId {
+    /// Constructs a `VertexId` from a little-endian byte array.
+    pub fn from_le_bytes(bytes: [u8; 4]) -> Self {
+        Self(u32::from_le_bytes(bytes))
+    }
+
+    /// Returns the little-endian byte representation of this `VertexId`.
+    pub fn to_le_bytes(&self) -> [u8; 4] {
+        self.0.to_le_bytes()
+    }
+}
 
 impl From<VertexId> for u64 {
     fn from(value: VertexId) -> Self {
