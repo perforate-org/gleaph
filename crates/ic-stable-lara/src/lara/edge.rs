@@ -44,6 +44,12 @@ use span_meta::{SegmentSpanMeta, SegmentSpanMetaStore};
 use std::{fmt, iter::FusedIterator};
 
 const INLINE_EDGE_BYTES: usize = 64;
+/// When a clean slab row is at least this many bytes, [`OutEdgesIter`] reads the
+/// slab in fixed-size slot chunks instead of one stable read per edge.
+const SLAB_ITER_PREFETCH_MIN_BYTES: usize = 64;
+/// Number of consecutive slab slots loaded per chunk for [`OutEdgesIter`] when
+/// chunking is enabled.
+const SLAB_ITER_CHUNK_SLOTS: u32 = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum InsertLocation {
@@ -297,6 +303,13 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         }
     }
 
+    /// Reads contiguous edge-slot bytes starting at `start_slot` into `out`.
+    ///
+    /// `out.len()` must be a multiple of `E::BYTES`.
+    pub(crate) fn read_slots_contiguous(&self, start_slot: u64, out: &mut [u8]) {
+        self.edges.read_slots_contiguous(start_slot, out);
+    }
+
     /// Encodes and writes `edge` to `slot`.
     pub fn write_slot(&self, slot: u64, edge: E) -> Result<(), GrowFailed> {
         if E::BYTES <= 8 {
@@ -323,7 +336,6 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         V: LaraVertex + CsrVertexTombstoneScan,
         A: VertexAccess<V>,
     {
-        let edge_layout = self.edge_layout();
         let vidx = vertex_index(vid);
         if vidx >= vertices.len() as usize {
             return Err("vertex out of range");
@@ -332,6 +344,23 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         if V::record_is_vertex_tombstone(&v) {
             return Err("vertex deleted");
         }
+        if v.log_head() < 0 {
+            let degree = v.degree() as usize;
+            let base = v.base_slot_start();
+            if degree == 0 {
+                return Ok(Vec::new());
+            }
+            let nbytes = degree.checked_mul(E::BYTES).ok_or("collect overflow")?;
+            let mut raw = vec![0u8; nbytes];
+            self.edges.read_slots_contiguous(base, &mut raw);
+            let mut out = Vec::with_capacity(degree);
+            for chunk in raw.chunks_exact(E::BYTES) {
+                out.push(E::read_from(chunk));
+            }
+            return Ok(out);
+        }
+
+        let edge_layout = self.edge_layout();
         let on_slab = self.on_slab_edges_with_layout(&edge_layout, vertices, vidx, &v);
         let degree = v.degree() as usize;
         let slab_count = on_slab.min(v.degree()) as usize;
@@ -404,6 +433,16 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         // log metadata; `leaf` is only read while `remaining_log > 0`.
         if v.log_head() < 0 {
             let degree = v.degree();
+            let nbytes = (degree as usize).saturating_mul(E::BYTES);
+            let slab_chunk = if nbytes >= SLAB_ITER_PREFETCH_MIN_BYTES {
+                Some(SlabChunkCache {
+                    buf: Vec::new(),
+                    chunk_low: 0,
+                    chunk_high: 0,
+                })
+            } else {
+                None
+            };
             return Ok(OutEdgesIter {
                 store: self,
                 leaf: 0,
@@ -412,6 +451,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
                 base_slot_start: v.base_slot_start(),
                 remaining_slab: degree,
                 log_header: None,
+                slab_chunk,
             });
         }
 
@@ -429,15 +469,22 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
             base_slot_start: v.base_slot_start(),
             remaining_slab: slab_count,
             log_header: (log_count > 0).then(|| self.log.header()),
+            slab_chunk: None,
         })
     }
 
     fn read_log_edge_with_header(&self, log_h: &LogHeaderV1, leaf: u32, log_idx: u32) -> (i32, E) {
-        if E::BYTES <= INLINE_EDGE_BYTES {
+        if E::BYTES <= 8 {
+            let mut buf = [0u8; 8];
+            let (prev, _src) =
+                self.log
+                    .read_entry_with_header(log_h, leaf, log_idx, &mut buf[..E::BYTES]);
+            (prev, E::read_from(&buf[..E::BYTES]))
+        } else if E::BYTES <= INLINE_EDGE_BYTES {
             let mut buf = [0u8; INLINE_EDGE_BYTES];
-            let (prev, _src) = self
-                .log
-                .read_entry_with_header(log_h, leaf, log_idx, &mut buf[..E::BYTES]);
+            let (prev, _src) =
+                self.log
+                    .read_entry_with_header(log_h, leaf, log_idx, &mut buf[..E::BYTES]);
             (prev, E::read_from(&buf[..E::BYTES]))
         } else {
             let mut buf = vec![0u8; E::BYTES];
@@ -468,16 +515,15 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
             return Err("vertex deleted");
         }
         let loc = v.base_slot_start().saturating_add(u64::from(v.degree()));
-        let location =
-            if self.have_space_on_slab(vertices, vidx, &v, loc, edge_layout) {
-                self.write_slot(loc, edge)
-                    .map_err(|_| "write edge slot failed")?;
-                vertices.set(vid, &v.with_degree(v.degree() + 1));
-                InsertLocation::Slab
-            } else {
-                self.insert_into_log_with_layout(&edge_layout, vertices, vid, v, edge)?;
-                InsertLocation::Log
-            };
+        let location = if self.have_space_on_slab(vertices, vidx, &v, loc, edge_layout) {
+            self.write_slot(loc, edge)
+                .map_err(|_| "write edge slot failed")?;
+            vertices.set(vid, &v.with_degree(v.degree() + 1));
+            InsertLocation::Slab
+        } else {
+            self.insert_into_log_with_layout(&edge_layout, vertices, vid, v, edge)?;
+            InsertLocation::Log
+        };
         self.edges
             .set_num_edges(edge_layout.num_edges.saturating_add(1));
         self.bump_counts_leaf_with_layout(&edge_layout, vid, 1, 0, 0)?;
@@ -627,14 +673,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
             let mut payload = vec![0u8; E::BYTES];
             edge.write_to(&mut payload);
             self.log
-                .write_entry_with_header(
-                    &log_h,
-                    leaf,
-                    idx as u32,
-                    v.log_head(),
-                    src,
-                    &payload,
-                )
+                .write_entry_with_header(&log_h, leaf, idx as u32, v.log_head(), src, &payload)
                 .map_err(|_| "write log failed")?;
         }
         self.log.write_idx_with_header(&log_h, leaf, idx + 1);
@@ -692,9 +731,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         }
         let seg_sz = edge_layout.segment_size.max(1);
         let current_leaf = (vidx as u32) / seg_sz;
-        if vidx + 1 < vertices.len() as usize
-            && ((vidx + 1) as u32) / seg_sz == current_leaf
-        {
+        if vidx + 1 < vertices.len() as usize && ((vidx + 1) as u32) / seg_sz == current_leaf {
             vertices.get(vertex_id(vidx + 1)).base_slot_start() > loc
         } else if current_leaf < edge_layout.segment_count {
             let c = self
@@ -806,6 +843,10 @@ fn leaf_segment(vid: VertexId, segment_size: u32) -> u32 {
 ///
 /// `leaf` is only consulted while draining the overflow log (`remaining_log >
 /// 0`). For purely slab-backed rows, it is uninitialized and must not be read.
+///
+/// For clean slab-only rows whose encoded row is at least 64 bytes, `slab_chunk`
+/// caches a window of consecutive slab slots so [`Iterator::next`] issues one
+/// stable read per chunk (32 slots) instead of per edge.
 pub struct OutEdgesIter<'a, E: CsrEdge, M: Memory> {
     store: &'a EdgeStore<E, M>,
     leaf: u32,
@@ -814,6 +855,51 @@ pub struct OutEdgesIter<'a, E: CsrEdge, M: Memory> {
     base_slot_start: u64,
     remaining_slab: u32,
     log_header: Option<LogHeaderV1>,
+    slab_chunk: Option<SlabChunkCache>,
+}
+
+/// Contiguous slab bytes for slot indices `[chunk_low, chunk_high]` inclusive.
+struct SlabChunkCache {
+    buf: Vec<u8>,
+    chunk_low: u32,
+    chunk_high: u32,
+}
+
+impl<'a, E, M> OutEdgesIter<'a, E, M>
+where
+    E: CsrEdge + EdgePmaCountsStride,
+    M: Memory,
+{
+    fn fill_slab_chunk(
+        cache: &mut SlabChunkCache,
+        store: &'a EdgeStore<E, M>,
+        base: u64,
+        slot_idx: u32,
+    ) {
+        let high = slot_idx;
+        let span = SLAB_ITER_CHUNK_SLOTS.min(high.saturating_add(1));
+        let low = high.saturating_sub(span - 1);
+        let nbytes = span as usize * E::BYTES;
+        cache.buf.resize(nbytes, 0);
+        cache.chunk_low = low;
+        cache.chunk_high = high;
+        let start = base.saturating_add(u64::from(low));
+        store.read_slots_contiguous(start, &mut cache.buf);
+    }
+
+    fn decode_slab_slot(&mut self, slot_idx: u32) -> E {
+        if let Some(cache) = &mut self.slab_chunk {
+            if cache.buf.is_empty() || slot_idx < cache.chunk_low || slot_idx > cache.chunk_high {
+                Self::fill_slab_chunk(cache, self.store, self.base_slot_start, slot_idx);
+            }
+            let off = (slot_idx - cache.chunk_low) as usize * E::BYTES;
+            debug_assert!(off + E::BYTES <= cache.buf.len());
+            E::read_from(&cache.buf[off..off + E::BYTES])
+        } else {
+            self.store
+                .read_slot(self.base_slot_start + u64::from(slot_idx))
+        }
+    }
 }
 
 impl<E, M> Iterator for OutEdgesIter<'_, E, M>
@@ -831,9 +917,9 @@ where
                 return None;
             }
             let log_h = self.log_header.as_ref()?;
-            let (prev, edge) = self
-                .store
-                .read_log_edge_with_header(log_h, self.leaf, self.next_log as u32);
+            let (prev, edge) =
+                self.store
+                    .read_log_edge_with_header(log_h, self.leaf, self.next_log as u32);
             self.next_log = prev;
             self.remaining_log -= 1;
             return Some(edge);
@@ -843,13 +929,18 @@ where
             return None;
         }
         self.remaining_slab -= 1;
-        Some(
-            self.store
-                .read_slot(self.base_slot_start + u64::from(self.remaining_slab)),
-        )
+        Some(self.decode_slab_slot(self.remaining_slab))
     }
 
     fn nth(&mut self, n: usize) -> Option<Self::Item> {
+        if self.remaining_log == 0 {
+            if n >= self.remaining_slab as usize {
+                self.remaining_slab = 0;
+                return None;
+            }
+            self.remaining_slab -= n as u32;
+            return self.next();
+        }
         for _ in 0..n {
             self.next()?;
         }
@@ -1007,6 +1098,67 @@ mod tests {
                 .unwrap(),
             vec![TestEdge(10), TestEdge(11)]
         );
+    }
+
+    #[test]
+    fn out_edges_iter_nth_pure_slab_matches_scan_order() {
+        let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+        let mc: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+        let me: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+        let ml: VectorMemory = Rc::new(RefCell::new(Vec::new()));
+
+        let vertices = VertexStore::<Vertex, _>::new(mv).unwrap();
+        vertices
+            .push(Vertex {
+                base_slot_start: 0,
+                degree: 0,
+                capacity: 2,
+                log_head: -1,
+                deleted: false,
+            })
+            .unwrap();
+        vertices
+            .push(Vertex {
+                base_slot_start: 2,
+                degree: 0,
+                capacity: 1,
+                log_head: -1,
+                deleted: false,
+            })
+            .unwrap();
+
+        let edges = EdgeStore::new(
+            mc,
+            me,
+            ml,
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            4,
+            1,
+            2,
+        )
+        .unwrap();
+
+        edges
+            .insert_edge(&vertices, VertexId::from(0), TestEdge(10))
+            .unwrap();
+        edges
+            .insert_edge(&vertices, VertexId::from(0), TestEdge(11))
+            .unwrap();
+
+        let scan = edges
+            .iter_out_edges(&vertices, VertexId::from(0))
+            .unwrap()
+            .collect::<Vec<_>>();
+        assert_eq!(scan, vec![TestEdge(11), TestEdge(10)]);
+
+        let mut it = edges.iter_out_edges(&vertices, VertexId::from(0)).unwrap();
+        assert_eq!(it.next(), Some(TestEdge(11)));
+        let mut it = edges.iter_out_edges(&vertices, VertexId::from(0)).unwrap();
+        assert_eq!(it.nth(1), Some(TestEdge(10)));
+        let mut it = edges.iter_out_edges(&vertices, VertexId::from(0)).unwrap();
+        assert_eq!(it.nth(2), None);
     }
 
     #[test]
