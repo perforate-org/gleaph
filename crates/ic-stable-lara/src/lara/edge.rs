@@ -41,7 +41,7 @@ use ic_stable_structures::Memory;
 pub use log::HeaderV1 as LogHeaderV1;
 use log::LogStore;
 use span_meta::{SegmentSpanMeta, SegmentSpanMetaStore};
-use std::fmt;
+use std::{fmt, iter::FusedIterator};
 
 const INLINE_EDGE_BYTES: usize = 64;
 
@@ -370,6 +370,39 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
             log_i = prev;
         }
         Ok(out)
+    }
+
+    pub(crate) fn iter_out_edges_rev<V, A>(
+        &self,
+        vertices: &A,
+        vid: VertexId,
+    ) -> Result<OutEdgesRev<'_, E, M>, &'static str>
+    where
+        V: LaraVertex + CsrVertexTombstoneScan,
+        A: VertexAccess<V>,
+    {
+        let edge_layout = self.edge_layout();
+        let vidx = vertex_index(vid);
+        if vidx >= vertices.len() as usize {
+            return Err("vertex out of range");
+        }
+        let v = vertices.get(vid);
+        if V::record_is_vertex_tombstone(&v) {
+            return Err("vertex deleted");
+        }
+        let on_slab = self.on_slab_edges_with_layout(&edge_layout, vertices, vidx, &v);
+        let degree = v.degree();
+        let slab_count = on_slab.min(degree);
+        let log_count = degree.saturating_sub(slab_count);
+
+        Ok(OutEdgesRev {
+            store: self,
+            leaf: leaf_segment(vid, edge_layout.segment_size),
+            next_log: v.log_head(),
+            remaining_log: log_count,
+            base_slot_start: v.base_slot_start(),
+            remaining_slab: slab_count,
+        })
     }
 
     fn read_log_head_edge(&self, leaf: u32, log_head: i32) -> Result<E, &'static str> {
@@ -729,6 +762,79 @@ fn vertex_id(index: usize) -> VertexId {
 fn leaf_segment(vid: VertexId, segment_size: u32) -> u32 {
     u32::from(vid) / segment_size.max(1)
 }
+
+/// Iterator over outgoing edges in the reverse order of `collect_out_edges`.
+///
+/// The order is not guaranteed to be insertion order. It is the reverse of the
+/// store's current collection order, which may change after unordered removals,
+/// rebalancing, or future layout changes.
+pub struct OutEdgesRev<'a, E: CsrEdge, M: Memory> {
+    store: &'a EdgeStore<E, M>,
+    leaf: u32,
+    next_log: i32,
+    remaining_log: u32,
+    base_slot_start: u64,
+    remaining_slab: u32,
+}
+
+impl<E, M> Iterator for OutEdgesRev<'_, E, M>
+where
+    E: CsrEdge + EdgePmaCountsStride,
+    M: Memory,
+{
+    type Item = E;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining_log > 0 {
+            if self.next_log < 0 {
+                self.remaining_log = 0;
+                self.remaining_slab = 0;
+                return None;
+            }
+            let (prev, edge) = self.store.read_log_edge(self.leaf, self.next_log as u32);
+            self.next_log = prev;
+            self.remaining_log -= 1;
+            return Some(edge);
+        }
+
+        if self.remaining_slab == 0 {
+            return None;
+        }
+        self.remaining_slab -= 1;
+        Some(
+            self.store
+                .read_slot(self.base_slot_start + u64::from(self.remaining_slab)),
+        )
+    }
+
+    fn nth(&mut self, n: usize) -> Option<Self::Item> {
+        for _ in 0..n {
+            self.next()?;
+        }
+        self.next()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = u64::from(self.remaining_log) + u64::from(self.remaining_slab);
+        let n = usize::try_from(remaining).unwrap_or(usize::MAX);
+        (n, Some(n))
+    }
+}
+
+impl<E, M> ExactSizeIterator for OutEdgesRev<'_, E, M>
+where
+    E: CsrEdge + EdgePmaCountsStride,
+    M: Memory,
+{
+}
+
+impl<E, M> FusedIterator for OutEdgesRev<'_, E, M>
+where
+    E: CsrEdge + EdgePmaCountsStride,
+    M: Memory,
+{
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -792,6 +898,13 @@ mod tests {
                 .collect_out_edges(&vertices, VertexId::from(0))
                 .unwrap(),
             vec![TestEdge(10), TestEdge(11)]
+        );
+        assert_eq!(
+            edges
+                .iter_out_edges_rev(&vertices, VertexId::from(0))
+                .unwrap()
+                .collect::<Vec<_>>(),
+            vec![TestEdge(11), TestEdge(10)]
         );
         assert_eq!(vertices.get(VertexId::from(0)).degree, 2);
         assert!(vertices.get(VertexId::from(0)).log_head >= 0);

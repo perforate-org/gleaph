@@ -5,7 +5,7 @@ use crate::{
     bidirectional::UndirectedEdgeFlag,
     lara::{
         InitError, LaraGraph, MarkPriority,
-        edge::counts::EdgePmaCountsStride,
+        edge::{OutEdgesRev, counts::EdgePmaCountsStride},
         maintenance::{DeferredConfig, DeferredError, MaintenanceBudget, MaintenanceWorkReport},
     },
     traits::{CsrEdge, CsrEdgeUndirected, LaraVertex},
@@ -684,6 +684,28 @@ where
             .map_err(DeferredBidirectionalLaraError::Reverse)
     }
 
+    /// Iterates outgoing edges from the forward store in the reverse order of [`out_edges`](Self::out_edges).
+    pub fn iter_out_edges_rev(
+        &self,
+        src: VertexId,
+    ) -> Result<OutEdgesRev<'_, E, M>, DeferredBidirectionalLaraError> {
+        self.ensure_vertex(src)?;
+        self.forward
+            .iter_out_edges_rev(src)
+            .map_err(DeferredBidirectionalLaraError::Forward)
+    }
+
+    /// Iterates incoming edges from the reverse store in the reverse order of [`in_edges`](Self::in_edges).
+    pub fn iter_in_edges_rev(
+        &self,
+        dst: VertexId,
+    ) -> Result<OutEdgesRev<'_, E, M>, DeferredBidirectionalLaraError> {
+        self.ensure_vertex(dst)?;
+        self.reverse
+            .iter_out_edges_rev(dst)
+            .map_err(DeferredBidirectionalLaraError::Reverse)
+    }
+
     /// Logically deletes a vertex and queues incremental incident-edge cleanup.
     pub fn delete_vertex_deferred(
         &self,
@@ -1238,9 +1260,23 @@ mod tests {
             graph.out_edges(VertexId::from(0)).unwrap(),
             vec![TestEdge(2)]
         );
+        assert_eq!(
+            graph
+                .iter_out_edges_rev(VertexId::from(0))
+                .unwrap()
+                .collect::<Vec<_>>(),
+            vec![TestEdge(2)]
+        );
         assert_eq!(graph.out_edges(VertexId::from(2)).unwrap(), Vec::new());
         assert_eq!(
             graph.in_edges(VertexId::from(2)).unwrap(),
+            vec![TestEdge(0)]
+        );
+        assert_eq!(
+            graph
+                .iter_in_edges_rev(VertexId::from(2))
+                .unwrap()
+                .collect::<Vec<_>>(),
             vec![TestEdge(0)]
         );
         assert_eq!(graph.in_edges(VertexId::from(0)).unwrap(), Vec::new());

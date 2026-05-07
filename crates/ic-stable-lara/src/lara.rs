@@ -28,7 +28,7 @@ use crate::{
     GrowFailed, SegmentId, VertexId,
     lara::{
         edge::{
-            EdgeHeaderV1, EdgeStore, InsertLocation, VertexAccess,
+            EdgeHeaderV1, EdgeStore, InsertLocation, OutEdgesRev, VertexAccess,
             counts::{EdgePmaCountsStride, SegmentEdgeCounts},
         },
         vertex::VertexStore,
@@ -240,6 +240,15 @@ where
     /// Collects all currently visible outgoing edges for `src`.
     pub fn collect_out_edges(&self, src: VertexId) -> Result<Vec<E>, &'static str> {
         self.edges.collect_out_edges(&self.vertices, src)
+    }
+
+    /// Iterates outgoing edges in the reverse order of [`collect_out_edges`](Self::collect_out_edges).
+    ///
+    /// This order is not guaranteed to be insertion order. It is the reverse of
+    /// the store's current collection order, which may change after unordered
+    /// removals, rebalancing, or future layout changes.
+    pub fn iter_out_edges_rev(&self, src: VertexId) -> Result<OutEdgesRev<'_, E, M>, &'static str> {
+        self.edges.iter_out_edges_rev(&self.vertices, src)
     }
 
     /// Removes one outgoing edge whose full edge record matches `edge`.
@@ -1244,6 +1253,23 @@ mod tests {
         assert_eq!(graph.vertices().get(VertexId::from(0)).degree, 2);
         assert_eq!(graph.vertices().get(VertexId::from(0)).log_head, -1);
         assert!(graph.edges().header().elem_capacity >= 4);
+    }
+
+    #[test]
+    fn lara_iter_out_edges_rev_matches_reverse_collect_order() {
+        let graph = test_graph(2, 1, 2, &[0, 1]);
+
+        graph.insert_edge(VertexId::from(0), TestEdge(10)).unwrap();
+        graph.insert_edge(VertexId::from(0), TestEdge(11)).unwrap();
+
+        let mut expected = graph.collect_out_edges(VertexId::from(0)).unwrap();
+        expected.reverse();
+        let actual = graph
+            .iter_out_edges_rev(VertexId::from(0))
+            .unwrap()
+            .collect::<Vec<_>>();
+
+        assert_eq!(actual, expected);
     }
 
     #[test]

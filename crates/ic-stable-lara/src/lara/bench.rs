@@ -39,6 +39,27 @@ fn bench_lara_graph_clean_scan_1024() -> canbench_rs::BenchResult {
     })
 }
 
+/// Measures public reverse iteration over already materialized slab edges. This
+/// is the streaming counterpart to `lara_graph_clean_scan`.
+#[bench(raw)]
+fn bench_lara_graph_clean_scan_iter_rev_1024() -> canbench_rs::BenchResult {
+    let graph = helper::populated_lara_graph(256, 4);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("lara_graph_clean_scan_iter_rev");
+        let mut len = 0usize;
+        for src in 0..256 {
+            for edge in graph
+                .iter_out_edges_rev(VertexId::from(src))
+                .expect("iterate out edges")
+            {
+                black_box(edge);
+                len += 1;
+            }
+        }
+        black_box(len);
+    })
+}
+
 /// Measures the root-saturation path that relocates a hot segment to fresh tail
 /// space. This protects the expensive resize/relocation boundary where span
 /// metadata, counts, and free-span release are all updated together.

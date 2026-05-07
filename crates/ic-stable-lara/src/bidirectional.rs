@@ -10,7 +10,10 @@ pub mod deferred;
 
 use crate::{
     GrowFailed, LaraGraph, VertexCount, VertexId,
-    lara::{InitError, edge::counts::EdgePmaCountsStride},
+    lara::{
+        InitError,
+        edge::{OutEdgesRev, counts::EdgePmaCountsStride},
+    },
     traits::{CsrEdge, CsrEdgeUndirected, LaraVertex},
 };
 use ic_stable_structures::Memory;
@@ -273,6 +276,28 @@ where
         self.ensure_vertex(dst)?;
         self.reverse
             .collect_out_edges(dst)
+            .map_err(BidirectionalLaraError::Reverse)
+    }
+
+    /// Iterates outgoing edges from the forward store in the reverse order of [`out_edges`](Self::out_edges).
+    pub fn iter_out_edges_rev(
+        &self,
+        src: VertexId,
+    ) -> Result<OutEdgesRev<'_, E, M>, BidirectionalLaraError> {
+        self.ensure_vertex(src)?;
+        self.forward
+            .iter_out_edges_rev(src)
+            .map_err(BidirectionalLaraError::Forward)
+    }
+
+    /// Iterates incoming edges from the reverse store in the reverse order of [`in_edges`](Self::in_edges).
+    pub fn iter_in_edges_rev(
+        &self,
+        dst: VertexId,
+    ) -> Result<OutEdgesRev<'_, E, M>, BidirectionalLaraError> {
+        self.ensure_vertex(dst)?;
+        self.reverse
+            .iter_out_edges_rev(dst)
             .map_err(BidirectionalLaraError::Reverse)
     }
 

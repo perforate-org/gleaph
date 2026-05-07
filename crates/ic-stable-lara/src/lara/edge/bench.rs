@@ -97,3 +97,52 @@ fn bench_lara_edge_store_collect_out_edges_1024() -> canbench_rs::BenchResult {
         );
     })
 }
+
+/// Measures reverse iteration over one large slab-backed neighborhood without
+/// materializing the whole row into a vector.
+#[bench(raw)]
+fn bench_lara_edge_store_iter_out_edges_rev_1024() -> canbench_rs::BenchResult {
+    let (vertices, edges) = edge_store_with_vertices(1, helper::MEDIUM_N as u32);
+    for i in 0..helper::MEDIUM_N {
+        edges
+            .insert_edge(&vertices, VertexId::from(0), helper::test_edge(i))
+            .expect("insert edge");
+    }
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("lara_edge_store_iter_out_edges_rev");
+        let mut count = 0usize;
+        for edge in edges
+            .iter_out_edges_rev(&vertices, VertexId::from(0))
+            .expect("iterate edges")
+        {
+            black_box(edge);
+            count += 1;
+        }
+        black_box(count);
+    })
+}
+
+/// Measures reverse iteration over a log-backed row. The iterator follows the
+/// overflow chain first, then walks the slab tail, matching the reverse of
+/// `collect_out_edges` without allocating the collected edge vector.
+#[bench(raw)]
+fn bench_lara_edge_store_iter_out_edges_rev_log_backed_128() -> canbench_rs::BenchResult {
+    let (vertices, edges) = edge_store_with_vertices(1, 1);
+    for i in 0..128 {
+        edges
+            .insert_edge(&vertices, VertexId::from(0), helper::test_edge(i))
+            .expect("insert edge");
+    }
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("lara_edge_store_iter_out_edges_rev_log_backed");
+        let mut count = 0usize;
+        for edge in edges
+            .iter_out_edges_rev(&vertices, VertexId::from(0))
+            .expect("iterate edges")
+        {
+            black_box(edge);
+            count += 1;
+        }
+        black_box(count);
+    })
+}
