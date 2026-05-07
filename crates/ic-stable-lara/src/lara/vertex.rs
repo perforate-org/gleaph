@@ -55,6 +55,8 @@ const LAYOUT_VERSION: u8 = 1;
 const DATA_OFFSET: u64 = 64;
 const LEN_OFFSET: u64 = 4;
 const STRIDE_OFFSET: u64 = 12;
+/// Stack buffer width for [`VertexStore::get`] when `V::BYTES` is small enough.
+const INLINE_VERTEX_ROW_BYTES: usize = 64;
 
 #[derive(Debug)]
 struct HeaderV1 {
@@ -173,6 +175,16 @@ impl CsrVertexTombstone for Vertex {
     }
 }
 
+fn vertex_row_bytes(v: &Vertex) -> [u8; 24] {
+    let mut b = [0u8; 24];
+    b[0..8].copy_from_slice(&v.base_slot_start.to_le_bytes());
+    b[8..12].copy_from_slice(&v.degree.to_le_bytes());
+    b[12..16].copy_from_slice(&v.capacity.to_le_bytes());
+    b[16..20].copy_from_slice(&v.log_head.to_le_bytes());
+    b[20] = u8::from(v.deleted);
+    b
+}
+
 impl Storable for Vertex {
     const BOUND: Bound = Bound::Bounded {
         max_size: 24,
@@ -180,17 +192,11 @@ impl Storable for Vertex {
     };
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        let mut b = [0u8; 24];
-        b[0..8].copy_from_slice(&self.base_slot_start.to_le_bytes());
-        b[8..12].copy_from_slice(&self.degree.to_le_bytes());
-        b[12..16].copy_from_slice(&self.capacity.to_le_bytes());
-        b[16..20].copy_from_slice(&self.log_head.to_le_bytes());
-        b[20] = u8::from(self.deleted);
-        Cow::Owned(b.to_vec())
+        Cow::Owned(Vec::from(vertex_row_bytes(self)))
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        self.to_bytes().into_owned()
+        Vec::from(vertex_row_bytes(&self))
     }
 
     fn from_bytes(bytes: Cow<[u8]>) -> Self {
@@ -284,9 +290,16 @@ impl<V: CsrVertex, M: Memory> VertexStore<V, M> {
     pub fn get(&self, id: VertexId) -> V {
         let index = u64::from(id);
         assert!(index < self.len());
-        let mut buf = vec![0u8; V::BYTES];
-        self.memory.read(self.entry_offset(index), &mut buf);
-        V::from_bytes(Cow::Owned(buf))
+        if V::BYTES <= INLINE_VERTEX_ROW_BYTES {
+            let mut buf = [0u8; INLINE_VERTEX_ROW_BYTES];
+            self.memory
+                .read(self.entry_offset(index), &mut buf[..V::BYTES]);
+            V::from_bytes(Cow::Borrowed(&buf[..V::BYTES]))
+        } else {
+            let mut buf = vec![0u8; V::BYTES];
+            self.memory.read(self.entry_offset(index), &mut buf);
+            V::from_bytes(Cow::Owned(buf))
+        }
     }
 
     /// Replaces the vertex row for `id`.

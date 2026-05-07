@@ -107,11 +107,11 @@ impl Storable for SegmentId {
     };
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(self.0.to_le_bytes().to_vec())
+        Cow::Owned(Vec::from(self.0.to_le_bytes()))
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        self.0.to_le_bytes().to_vec()
+        self.0.to_le_bytes().into()
     }
 
     fn from_bytes(bytes: Cow<[u8]>) -> Self {

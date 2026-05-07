@@ -101,6 +101,41 @@ pub enum MaintenanceWorkItem {
     },
 }
 
+fn maintenance_work_item_bytes(item: &MaintenanceWorkItem) -> [u8; 24] {
+    let mut b = [0u8; 24];
+    match *item {
+        MaintenanceWorkItem::Rebalance {
+            orientation,
+            segment,
+        } => {
+            b[0] = 0;
+            b[1] = match orientation {
+                Orientation::Forward => 0,
+                Orientation::Reverse => 1,
+            };
+            b[4..8].copy_from_slice(&u32::from(segment).to_le_bytes());
+        }
+        MaintenanceWorkItem::DeleteVertex {
+            vid,
+            phase,
+            cursor,
+            removed_edges,
+        } => {
+            b[0] = 1;
+            b[2] = match phase {
+                DeletePhase::RemoveOutgoing => 0,
+                DeletePhase::ClearForwardRow => 1,
+                DeletePhase::RemoveIncoming => 2,
+                DeletePhase::ClearReverseRow => 3,
+            };
+            b[4..8].copy_from_slice(&u32::from(vid).to_le_bytes());
+            b[8..12].copy_from_slice(&cursor.to_le_bytes());
+            b[16..24].copy_from_slice(&removed_edges.to_le_bytes());
+        }
+    }
+    b
+}
+
 impl Storable for MaintenanceWorkItem {
     const BOUND: Bound = Bound::Bounded {
         max_size: 24,
@@ -108,42 +143,11 @@ impl Storable for MaintenanceWorkItem {
     };
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        let mut b = [0u8; 24];
-        match *self {
-            Self::Rebalance {
-                orientation,
-                segment,
-            } => {
-                b[0] = 0;
-                b[1] = match orientation {
-                    Orientation::Forward => 0,
-                    Orientation::Reverse => 1,
-                };
-                b[4..8].copy_from_slice(&u32::from(segment).to_le_bytes());
-            }
-            Self::DeleteVertex {
-                vid,
-                phase,
-                cursor,
-                removed_edges,
-            } => {
-                b[0] = 1;
-                b[2] = match phase {
-                    DeletePhase::RemoveOutgoing => 0,
-                    DeletePhase::ClearForwardRow => 1,
-                    DeletePhase::RemoveIncoming => 2,
-                    DeletePhase::ClearReverseRow => 3,
-                };
-                b[4..8].copy_from_slice(&u32::from(vid).to_le_bytes());
-                b[8..12].copy_from_slice(&cursor.to_le_bytes());
-                b[16..24].copy_from_slice(&removed_edges.to_le_bytes());
-            }
-        }
-        Cow::Owned(b.to_vec())
+        Cow::Owned(Vec::from(maintenance_work_item_bytes(self)))
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        self.to_bytes().into_owned()
+        Vec::from(maintenance_work_item_bytes(&self))
     }
 
     fn from_bytes(bytes: Cow<[u8]>) -> Self {

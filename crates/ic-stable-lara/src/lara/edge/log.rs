@@ -249,12 +249,25 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
     pub fn release_segment(&self, leaf_segment: u32) -> Result<(), GrowFailed> {
         let h = self.header();
         let idx = self.read_idx(leaf_segment);
-        for i in 0..idx.max(0) as u32 {
-            safe_write(
-                &self.memory,
-                entry_offset::<E>(&h, leaf_segment, i),
-                &vec![0u8; log_entry_stride::<E>() as usize],
-            )?;
+        let stride = log_entry_stride::<E>() as usize;
+        if stride <= INLINE_LOG_ENTRY_BYTES {
+            let zeros = [0u8; INLINE_LOG_ENTRY_BYTES];
+            for i in 0..idx.max(0) as u32 {
+                safe_write(
+                    &self.memory,
+                    entry_offset::<E>(&h, leaf_segment, i),
+                    &zeros[..stride],
+                )?;
+            }
+        } else {
+            let zeros = vec![0u8; stride];
+            for i in 0..idx.max(0) as u32 {
+                safe_write(
+                    &self.memory,
+                    entry_offset::<E>(&h, leaf_segment, i),
+                    &zeros,
+                )?;
+            }
         }
         self.write_idx(leaf_segment, 0);
         Ok(())
