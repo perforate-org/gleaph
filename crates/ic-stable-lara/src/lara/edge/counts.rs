@@ -10,9 +10,7 @@
 //! ----------------------------------------
 //! Number of segments = L  ↕ 8 bytes
 //! ----------------------------------------
-//! Counts stride           ↕ 4 bytes
-//! ----------------------------------------
-//! Reserved space          ↕ 16 bytes
+//! Reserved space          ↕ 20 bytes
 //! ---------------------------------------- <- Address 32
 //! C_0                     ↕ 16 or 24 bytes
 //! ----------------------------------------
@@ -25,12 +23,7 @@
 //! Unallocated space
 //! ```
 
-use crate::{
-    GrowFailed, read_u64, safe_write,
-    traits::{CsrEdge, CsrEdgeTombstone},
-    types::Address,
-    write, write_u64,
-};
+use crate::{GrowFailed, read_u64, safe_write, traits::CsrEdge, types::Address, write, write_u64};
 use ic_stable_structures::Memory;
 use std::{convert::TryInto, fmt, marker::PhantomData};
 
@@ -42,14 +35,15 @@ const LAYOUT_VERSION: u8 = 1;
 const DATA_OFFSET: u64 = 32;
 /// The offset where the vector length resides.
 const LEN_OFFSET: u64 = 4;
-const STRIDE_OFFSET: u64 = 12;
+
+/// PMA segment-count row width (`actual` + `total`, little-endian `i64` each).
+pub const ENTRY_BYTES: u64 = 16;
 
 #[derive(Debug)]
 struct HeaderV1 {
     magic: [u8; 3],
     version: u8,
     len: u64,
-    stride: u32,
 }
 
 /// Errors returned when reopening a persisted segment-count store.
@@ -64,32 +58,21 @@ pub enum InitError {
     /// The current version of this store does not support the version of the
     /// memory layout.
     IncompatibleVersion(u8),
-    /// The persisted row width does not match the count stride required by `E`.
-    StrideMismatch {
-        /// Expected count row width.
-        expected: u32,
-        /// Count row width read from stable memory.
-        actual: u32,
-    },
     /// Failed to allocate memory for the vector.
     OutOfMemory,
 }
 
 impl fmt::Display for InitError {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::BadMagic { actual } => {
-                write!(fmt, "bad magic number {actual:?}, expected {MAGIC:?}")
+                write!(f, "bad magic number {actual:?}, expected {MAGIC:?}")
             }
             Self::IncompatibleVersion(version) => write!(
-                fmt,
+                f,
                 "unsupported layout version {version}; supported version numbers are 1..={LAYOUT_VERSION}"
             ),
-            Self::StrideMismatch { expected, actual } => write!(
-                fmt,
-                "segment counts stride mismatch: expected {expected}, got {actual}"
-            ),
-            Self::OutOfMemory => write!(fmt, "failed to allocate memory for vector metadata"),
+            Self::OutOfMemory => write!(f, "failed to allocate memory for vector metadata"),
         }
     }
 }
@@ -97,62 +80,28 @@ impl fmt::Display for InitError {
 impl std::error::Error for InitError {}
 
 /// Packed PMA counts for one segment-tree node (leaf = vertex block, internal = sum of children).
-///
-/// `tombstone` is persisted only when `E: CsrEdgeTombstone`. For non-tombstone
-/// edge types the counts store uses a 16-byte stride and reads this field back
-/// as `0`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SegmentEdgeCounts {
     /// Number of live edge records in this segment-tree node.
     pub actual: i64,
     /// Number of occupied physical slab slots in this segment-tree node.
     pub total: i64,
-    /// Number of physical tombstone slots in this segment-tree node.
-    pub tombstone: i64,
-}
-
-/// Bytes per PMA tree node in the segment counts store.
-pub trait EdgePmaCountsStride {
-    /// Number of bytes persisted for one count-tree node.
-    fn pma_counts_stride_bytes() -> u64;
-}
-
-impl<E: CsrEdge> EdgePmaCountsStride for E {
-    default fn pma_counts_stride_bytes() -> u64 {
-        16
-    }
-}
-
-impl<E: CsrEdge + CsrEdgeTombstone> EdgePmaCountsStride for E {
-    fn pma_counts_stride_bytes() -> u64 {
-        24
-    }
 }
 
 impl SegmentEdgeCounts {
     #[inline]
-    fn as_le_bytes(&self, stride: u64) -> [u8; 24] {
-        debug_assert!(matches!(stride, 16 | 24));
-        let mut b = [0u8; 24];
+    fn as_le_bytes(&self) -> [u8; 16] {
+        let mut b = [0u8; 16];
         b[0..8].copy_from_slice(&self.actual.to_le_bytes());
         b[8..16].copy_from_slice(&self.total.to_le_bytes());
-        if stride >= 24 {
-            b[16..24].copy_from_slice(&self.tombstone.to_le_bytes());
-        }
         b
     }
 
     #[inline]
-    fn unpack_le(bs: &[u8; 24], stride: u64) -> Self {
-        debug_assert!(matches!(stride, 16 | 24));
+    fn unpack_le(bs: &[u8; 16]) -> Self {
         Self {
             actual: i64::from_le_bytes(bs[0..8].try_into().unwrap()),
             total: i64::from_le_bytes(bs[8..16].try_into().unwrap()),
-            tombstone: if stride >= 24 {
-                i64::from_le_bytes(bs[16..24].try_into().unwrap())
-            } else {
-                0
-            },
         }
     }
 }
@@ -164,14 +113,13 @@ pub struct SegmentEdgeCountsStore<E: CsrEdge, M: Memory> {
     _marker: PhantomData<E>,
 }
 
-impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> SegmentEdgeCountsStore<E, M> {
+impl<E: CsrEdge, M: Memory> SegmentEdgeCountsStore<E, M> {
     /// Creates a fresh empty counts store.
     pub fn new(memory: M) -> Result<Self, GrowFailed> {
         let header = HeaderV1 {
             magic: MAGIC,
             version: LAYOUT_VERSION,
             len: 0,
-            stride: Self::entry_size() as u32,
         };
         Self::write_header(&header, &memory)?;
         Ok(Self {
@@ -199,13 +147,6 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> SegmentEdgeCountsStore<E, M> {
         if header.version != LAYOUT_VERSION {
             return Err(InitError::IncompatibleVersion(header.version));
         }
-        let expected_stride = Self::entry_size() as u32;
-        if header.stride != expected_stride {
-            return Err(InitError::StrideMismatch {
-                expected: expected_stride,
-                actual: header.stride,
-            });
-        }
 
         Ok(Self {
             memory,
@@ -218,7 +159,6 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> SegmentEdgeCountsStore<E, M> {
         safe_write(memory, 0, &header.magic)?;
         memory.write(3, &[header.version; 1]);
         write_u64(memory, Address::from(4), header.len);
-        crate::write_u32(memory, Address::from(STRIDE_OFFSET), header.stride);
         Ok(())
     }
 
@@ -241,10 +181,10 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> SegmentEdgeCountsStore<E, M> {
         read_u64(&self.memory, Address::from(LEN_OFFSET))
     }
 
-    /// Returns the persisted byte width of one count row for edge type `E`.
+    /// Returns the persisted byte width of one count row (always [`ENTRY_BYTES`]).
     #[inline]
     pub fn entry_size() -> u64 {
-        E::pma_counts_stride_bytes()
+        ENTRY_BYTES
     }
 
     #[inline]
@@ -255,15 +195,14 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> SegmentEdgeCountsStore<E, M> {
     /// Reads `index` without checking logical length (caller must ensure the slot exists).
     #[inline]
     fn read_entry(memory: &M, index: u64) -> SegmentEdgeCounts {
-        let mut buf = [0u8; 24];
-        let stride = Self::entry_size();
-        memory.read(Self::entry_offset(index), &mut buf[..stride as usize]);
-        SegmentEdgeCounts::unpack_le(&buf, stride)
+        let mut buf = [0u8; 16];
+        memory.read(Self::entry_offset(index), &mut buf);
+        SegmentEdgeCounts::unpack_le(&buf)
     }
 
     /// Returns the counts at `index`.
     ///
-    /// Complexity: one 16- or 24-byte stable-memory read.
+    /// Complexity: one 16-byte stable-memory read.
     ///
     /// PRECONDITION: index < self.len()
     pub fn get(&self, index: u64) -> SegmentEdgeCounts {
@@ -284,18 +223,13 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> SegmentEdgeCountsStore<E, M> {
 
     /// Sets the item at the specified index to the specified value.
     ///
-    /// Complexity: O(max_size(T))
+    /// Complexity: O(16) bytes written.
     ///
     /// PRECONDITION: index < self.len()
     pub fn set(&self, index: u64, item: &SegmentEdgeCounts) {
         assert!(index < self.len());
-        let stride = Self::entry_size();
-        let bytes = item.as_le_bytes(stride);
-        write(
-            &self.memory,
-            Self::entry_offset(index),
-            &bytes[..stride as usize],
-        );
+        let bytes = item.as_le_bytes();
+        write(&self.memory, Self::entry_offset(index), &bytes);
     }
 
     /// Appends `item` after all existing entries, growing stable memory if necessary.
@@ -306,13 +240,8 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> SegmentEdgeCountsStore<E, M> {
         let new_len = len
             .checked_add(1)
             .expect("segment counts vector length overflow");
-        let stride = Self::entry_size();
-        let bytes = item.as_le_bytes(stride);
-        safe_write(
-            &self.memory,
-            Self::entry_offset(len),
-            &bytes[..stride as usize],
-        )?;
+        let bytes = item.as_le_bytes();
+        safe_write(&self.memory, Self::entry_offset(len), &bytes)?;
         self.set_len(new_len);
         Ok(())
     }
@@ -347,13 +276,11 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> SegmentEdgeCountsStore<E, M> {
         memory.read(0, &mut magic);
         memory.read(3, &mut version);
         let len = read_u64(memory, Address::from(LEN_OFFSET));
-        let stride = crate::read_u32(memory, Address::from(STRIDE_OFFSET));
 
         HeaderV1 {
             magic,
             version: version[0],
             len,
-            stride,
         }
     }
 }
@@ -368,7 +295,7 @@ pub struct Iter<'a, E: CsrEdge, M: Memory> {
     _marker: PhantomData<E>,
 }
 
-impl<'a, E: CsrEdge + EdgePmaCountsStride, M: Memory> Iterator for Iter<'a, E, M> {
+impl<'a, E: CsrEdge, M: Memory> Iterator for Iter<'a, E, M> {
     type Item = SegmentEdgeCounts;
 
     #[inline]
@@ -407,7 +334,7 @@ impl<'a, E: CsrEdge + EdgePmaCountsStride, M: Memory> Iterator for Iter<'a, E, M
     }
 }
 
-impl<'a, E: CsrEdge + EdgePmaCountsStride, M: Memory> DoubleEndedIterator for Iter<'a, E, M> {
+impl<'a, E: CsrEdge, M: Memory> DoubleEndedIterator for Iter<'a, E, M> {
     #[inline]
     fn nth_back(&mut self, n: usize) -> Option<Self::Item> {
         let skip = n as u64;
@@ -433,46 +360,29 @@ impl<'a, E: CsrEdge + EdgePmaCountsStride, M: Memory> DoubleEndedIterator for It
     }
 }
 
-impl<'a, E: CsrEdge + EdgePmaCountsStride, M: Memory> ExactSizeIterator for Iter<'a, E, M> {}
+impl<'a, E: CsrEdge, M: Memory> ExactSizeIterator for Iter<'a, E, M> {}
 
-impl<'a, E: CsrEdge + EdgePmaCountsStride, M: Memory> std::iter::FusedIterator for Iter<'a, E, M> {}
+impl<'a, E: CsrEdge, M: Memory> std::iter::FusedIterator for Iter<'a, E, M> {}
 #[cfg(test)]
 mod tests {
     use crate::VectorMemory;
-    use crate::test_support::{TestEdge, TombstoneEdge, vector_memory};
+    use crate::test_support::{TestEdge, vector_memory};
 
     #[test]
-    fn segment_edge_counts_stride_depends_on_edge_tombstone_capability() {
-        use crate::lara::edge::counts::{SegmentEdgeCounts, SegmentEdgeCountsStore};
+    fn segment_edge_counts_entry_size_is_fixed() {
+        use crate::lara::edge::counts::{ENTRY_BYTES, SegmentEdgeCounts, SegmentEdgeCountsStore};
 
-        let plain = SegmentEdgeCountsStore::<TestEdge, _>::new(vector_memory()).unwrap();
-        let tombstone = SegmentEdgeCountsStore::<TombstoneEdge, _>::new(vector_memory()).unwrap();
-
+        let store = SegmentEdgeCountsStore::<TestEdge, _>::new(vector_memory()).unwrap();
         assert_eq!(
             SegmentEdgeCountsStore::<TestEdge, VectorMemory>::entry_size(),
-            16
+            ENTRY_BYTES
         );
-        assert_eq!(
-            SegmentEdgeCountsStore::<TombstoneEdge, VectorMemory>::entry_size(),
-            24
-        );
-
         let counts = SegmentEdgeCounts {
             actual: 1,
             total: 2,
-            tombstone: 3,
         };
-        plain.push(counts).unwrap();
-        tombstone.push(counts).unwrap();
-
-        assert_eq!(
-            plain.get(0),
-            SegmentEdgeCounts {
-                tombstone: 0,
-                ..counts
-            }
-        );
-        assert_eq!(tombstone.get(0), counts);
+        store.push(counts).unwrap();
+        assert_eq!(store.get(0), counts);
     }
 }
 
@@ -483,10 +393,7 @@ mod bench {
     use canbench_rs::bench;
 
     use super::{SegmentEdgeCounts, SegmentEdgeCountsStore};
-    use crate::{
-        bench as helper,
-        test_support::{TestEdge, TombstoneEdge},
-    };
+    use crate::{bench as helper, test_support::TestEdge};
 
     fn populate_plain(n: u64) -> SegmentEdgeCountsStore<TestEdge, helper::BenchMemory> {
         let mut memories = helper::BenchMemoryFactory::new();
@@ -496,19 +403,16 @@ mod bench {
                 .push(SegmentEdgeCounts {
                     actual: i as i64,
                     total: (i * 2) as i64,
-                    tombstone: i as i64,
                 })
                 .expect("push counts");
         }
         store
     }
 
-    fn bench_counts_push<E>(scope: &'static str) -> canbench_rs::BenchResult
-    where
-        E: crate::traits::CsrEdge + super::EdgePmaCountsStride,
-    {
+    fn bench_counts_push(scope: &'static str) -> canbench_rs::BenchResult {
         let mut memories = helper::BenchMemoryFactory::new();
-        let store = SegmentEdgeCountsStore::<E, _>::new(memories.memory()).expect("counts store");
+        let store =
+            SegmentEdgeCountsStore::<TestEdge, _>::new(memories.memory()).expect("counts store");
         canbench_rs::bench_fn(|| {
             let _scope = canbench_rs::bench_scope(scope);
             for i in 0..helper::MEDIUM_N {
@@ -516,26 +420,16 @@ mod bench {
                     .push(SegmentEdgeCounts {
                         actual: black_box(i as i64),
                         total: (i * 2) as i64,
-                        tombstone: i as i64,
                     })
                     .expect("push counts");
             }
         })
     }
 
-    /// Measures appending segment counts for a plain edge type. This is the
-    /// 16-byte stride baseline used by non-tombstone PMA count trees.
+    /// Measures appending segment count rows.
     #[bench(raw)]
     fn bench_lara_counts_push_plain_1024() -> canbench_rs::BenchResult {
-        bench_counts_push::<TestEdge>("lara_counts_push_plain")
-    }
-
-    /// Measures appending segment counts for a tombstone-capable edge type.
-    /// Comparing this with the plain benchmark tracks the 24-byte stride cost
-    /// introduced by persisted tombstone counters.
-    #[bench(raw)]
-    fn bench_lara_counts_push_tombstone_1024() -> canbench_rs::BenchResult {
-        bench_counts_push::<TombstoneEdge>("lara_counts_push_tombstone")
+        bench_counts_push("lara_counts_push_plain")
     }
 
     /// Measures mixed reads, writes, and iteration over segment counts. This

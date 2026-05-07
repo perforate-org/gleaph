@@ -31,9 +31,9 @@ pub mod span_meta;
 
 use crate::{
     GrowFailed, SegmentId, VertexId,
-    traits::{CsrEdge, CsrVertex, CsrVertexTombstoneScan, LaraVertex},
+    traits::{CsrEdge, CsrVertex, CsrVertexTombstoneScan},
 };
-use counts::{EdgePmaCountsStride, SegmentEdgeCounts, SegmentEdgeCountsStore};
+use counts::{SegmentEdgeCounts, SegmentEdgeCountsStore};
 use edges::EdgeSlabStore;
 pub use edges::HeaderV1 as EdgeHeaderV1;
 use free_span::{FreeSpan, FreeSpanStore};
@@ -125,7 +125,7 @@ pub struct EdgeStore<E: CsrEdge, M: Memory> {
     free_spans: FreeSpanStore<M>,
 }
 
-impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
+impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     /// Creates a fresh edge subsystem over the supplied stable memories.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -145,7 +145,6 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
             counts.push(SegmentEdgeCounts {
                 actual: 0,
                 total: 0,
-                tombstone: 0,
             })?;
         }
         let log_header = LogHeaderV1::new(header.segment_count, header.stride);
@@ -333,7 +332,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         vid: VertexId,
     ) -> Result<Vec<E>, &'static str>
     where
-        V: LaraVertex + CsrVertexTombstoneScan,
+        V: CsrVertex + CsrVertexTombstoneScan,
         A: VertexAccess<V>,
     {
         let vidx = vertex_index(vid);
@@ -417,7 +416,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         vid: VertexId,
     ) -> Result<OutEdgesIter<'_, E, M>, &'static str>
     where
-        V: LaraVertex + CsrVertexTombstoneScan,
+        V: CsrVertex + CsrVertexTombstoneScan,
         A: VertexAccess<V>,
     {
         let vidx = vertex_index(vid);
@@ -502,7 +501,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         edge: E,
     ) -> Result<InsertLocation, &'static str>
     where
-        V: LaraVertex + CsrVertexTombstoneScan,
+        V: CsrVertex + CsrVertexTombstoneScan,
         A: VertexAccess<V>,
     {
         let edge_layout = self.edge_layout();
@@ -526,7 +525,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         };
         self.edges
             .set_num_edges(edge_layout.num_edges.saturating_add(1));
-        self.bump_counts_leaf_with_layout(&edge_layout, vid, 1, 0, 0)?;
+        self.bump_counts_leaf_with_layout(&edge_layout, vid, 1, 0)?;
         Ok(location)
     }
 
@@ -537,7 +536,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         mut matches: F,
     ) -> Result<Option<E>, &'static str>
     where
-        V: LaraVertex,
+        V: CsrVertex,
         A: VertexAccess<V>,
         F: FnMut(&E) -> bool,
     {
@@ -578,7 +577,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         vertices.set(vid, &v.with_degree(last_index));
         self.edges
             .set_num_edges(edge_layout.num_edges.saturating_sub(1));
-        self.bump_counts_leaf_with_layout(&edge_layout, vid, -1, 0, 0)?;
+        self.bump_counts_leaf_with_layout(&edge_layout, vid, -1, 0)?;
         Ok(Some(removed))
     }
 
@@ -589,7 +588,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         offset: u32,
     ) -> Result<Option<E>, &'static str>
     where
-        V: LaraVertex,
+        V: CsrVertex,
         A: VertexAccess<V>,
     {
         let vidx = vertex_index(vid);
@@ -614,7 +613,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         vid: VertexId,
     ) -> Result<u32, &'static str>
     where
-        V: LaraVertex,
+        V: CsrVertex,
         A: VertexAccess<V>,
     {
         let edge_layout = self.edge_layout();
@@ -633,7 +632,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         vertices.set(vid, &v.with_degree(0).with_log_head(-1));
         self.edges
             .set_num_edges(edge_layout.num_edges.saturating_sub(u64::from(removed)));
-        self.bump_counts_leaf_with_layout(&edge_layout, vid, -i64::from(removed), 0, 0)?;
+        self.bump_counts_leaf_with_layout(&edge_layout, vid, -i64::from(removed), 0)?;
         Ok(removed)
     }
 
@@ -721,7 +720,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         edge_layout: EdgeLayout,
     ) -> bool
     where
-        V: LaraVertex,
+        V: CsrVertex,
         A: VertexAccess<V>,
     {
         if v.span_capacity() > 0 {
@@ -752,7 +751,6 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         vid: VertexId,
         d_actual: i64,
         d_total: i64,
-        d_tombstone: i64,
     ) -> Result<(), &'static str> {
         let mut idx =
             (leaf_segment(vid, edge_layout.segment_size) + edge_layout.segment_count) as usize;
@@ -764,14 +762,12 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
             if idx >= edge_layout.segment_count as usize {
                 c.actual += d_actual;
                 c.total += d_total;
-                c.tombstone += d_tombstone;
             } else {
                 let left = self.counts.get((idx * 2) as u64);
                 let right = self.counts.get((idx * 2 + 1) as u64);
                 c = SegmentEdgeCounts {
                     actual: left.actual + right.actual,
                     total: left.total + right.total,
-                    tombstone: left.tombstone + right.tombstone,
                 };
             }
             self.counts.set(idx as u64, &c);
@@ -867,7 +863,7 @@ struct SlabChunkCache {
 
 impl<'a, E, M> OutEdgesIter<'a, E, M>
 where
-    E: CsrEdge + EdgePmaCountsStride,
+    E: CsrEdge,
     M: Memory,
 {
     fn fill_slab_chunk(
@@ -904,7 +900,7 @@ where
 
 impl<E, M> Iterator for OutEdgesIter<'_, E, M>
 where
-    E: CsrEdge + EdgePmaCountsStride,
+    E: CsrEdge,
     M: Memory,
 {
     type Item = E;
@@ -956,14 +952,14 @@ where
 
 impl<E, M> ExactSizeIterator for OutEdgesIter<'_, E, M>
 where
-    E: CsrEdge + EdgePmaCountsStride,
+    E: CsrEdge,
     M: Memory,
 {
 }
 
 impl<E, M> FusedIterator for OutEdgesIter<'_, E, M>
 where
-    E: CsrEdge + EdgePmaCountsStride,
+    E: CsrEdge,
     M: Memory,
 {
 }

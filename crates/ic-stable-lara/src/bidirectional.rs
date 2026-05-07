@@ -10,11 +10,8 @@ pub mod deferred;
 
 use crate::{
     GrowFailed, LaraGraph, VertexCount, VertexId,
-    lara::{
-        InitError,
-        edge::{OutEdgesIter, counts::EdgePmaCountsStride},
-    },
-    traits::{CsrEdge, CsrEdgeUndirected, LaraVertex},
+    lara::{InitError, edge::OutEdgesIter},
+    traits::{CsrEdge, CsrEdgeUndirected, CsrVertex},
 };
 use ic_stable_structures::Memory;
 use std::fmt;
@@ -124,8 +121,8 @@ impl From<GrowFailed> for BidirectionalLaraError {
 /// Two synchronized LARA adjacency stores: forward out-adjacency and reverse in-adjacency.
 pub struct BidirectionalLaraGraph<E, V, M>
 where
-    E: CsrEdge + EdgePmaCountsStride,
-    V: LaraVertex,
+    E: CsrEdge,
+    V: CsrVertex,
     M: Memory,
 {
     forward: LaraGraph<E, V, M>,
@@ -137,8 +134,8 @@ pub type BidirectionalLara<E, V, M> = BidirectionalLaraGraph<E, V, M>;
 
 impl<E, V, M> BidirectionalLaraGraph<E, V, M>
 where
-    E: CsrEdge + EdgePmaCountsStride,
-    V: LaraVertex,
+    E: CsrEdge,
+    V: CsrVertex,
     M: Memory,
 {
     /// Creates fresh forward and reverse LARA stores.

@@ -6,7 +6,7 @@
 use crate::{
     GrowFailed as GraphGrowFailed, SegmentId, VertexId,
     lara::{InitError as GraphInitError, LaraGraph, MarkPriority, edge::OutEdgesIter},
-    traits::{CsrEdge, LaraVertex},
+    traits::{CsrEdge, CsrVertex},
 };
 use ic_stable_roaring::StableRoaringBitmap;
 use ic_stable_structures::Memory;
@@ -325,7 +325,7 @@ fn current_instruction_counter() -> u64 {
 pub struct DeferredLaraGraph<E, V, M>
 where
     E: CsrEdge,
-    V: LaraVertex,
+    V: CsrVertex,
     M: Memory,
 {
     graph: LaraGraph<E, V, M>,
@@ -336,7 +336,7 @@ where
 impl<E, V, M> DeferredLaraGraph<E, V, M>
 where
     E: CsrEdge,
-    V: LaraVertex,
+    V: CsrVertex,
     M: Memory,
 {
     /// Creates a fresh deferred graph with default maintenance thresholds.

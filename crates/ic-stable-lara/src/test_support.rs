@@ -120,49 +120,6 @@ impl CsrEdgeUndirected for UndirectedTestEdge {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct TombstoneEdge {
-    pub(crate) neighbor: u32,
-    pub(crate) tombstone: bool,
-}
-
-impl CsrEdge for TombstoneEdge {
-    const BYTES: usize = 5;
-
-    fn read_from(bytes: &[u8]) -> Self {
-        Self {
-            neighbor: u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
-            tombstone: bytes[4] != 0,
-        }
-    }
-
-    fn write_to(self, bytes: &mut [u8]) {
-        bytes[0..4].copy_from_slice(&self.neighbor.to_le_bytes());
-        bytes[4] = u8::from(self.tombstone);
-    }
-
-    fn neighbor_vid(&self) -> VertexId {
-        VertexId::from(self.neighbor)
-    }
-
-    fn with_neighbor_vid(self, vid: VertexId) -> Self {
-        Self {
-            neighbor: u32::from(vid),
-            ..self
-        }
-    }
-}
-
-impl CsrEdgeTombstone for TombstoneEdge {
-    fn is_tombstone(&self) -> bool {
-        self.tombstone
-    }
-
-    fn with_tombstone(self, tombstone: bool) -> Self {
-        Self { tombstone, ..self }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PoisonCapacityVertex {
     pub(crate) base_slot_start: u64,
     pub(crate) degree: u32,
@@ -198,9 +155,7 @@ impl CsrVertex for PoisonCapacityVertex {
         self.log_head = idx;
         self
     }
-}
 
-impl LaraVertex for PoisonCapacityVertex {
     fn span_capacity(&self) -> u32 {
         panic!("clean scan must not read vertex capacity")
     }
@@ -286,9 +241,7 @@ impl CsrVertex for CountingCapacityVertex {
         self.log_head = idx;
         self
     }
-}
 
-impl LaraVertex for CountingCapacityVertex {
     fn span_capacity(&self) -> u32 {
         CAPACITY_READS.fetch_add(1, Ordering::SeqCst);
         self.capacity
@@ -367,7 +320,7 @@ pub(crate) fn lara_test_graph<E>(
     starts: &[u64],
 ) -> LaraGraph<E, Vertex, VectorMemory>
 where
-    E: CsrEdge + lara::edge::counts::EdgePmaCountsStride,
+    E: CsrEdge,
 {
     let graph = LaraGraph::new(
         vector_memory(),
@@ -398,7 +351,7 @@ where
 
 pub(crate) fn bidirectional_test_graph<E>(starts: &[u64]) -> TestBidirectionalLaraGraph<E>
 where
-    E: CsrEdge + lara::edge::counts::EdgePmaCountsStride,
+    E: CsrEdge,
 {
     let graph = BidirectionalLaraGraph::new(
         vector_memory(),
@@ -441,7 +394,7 @@ pub(crate) fn deferred_bidirectional_test_graph<E>(
     starts: &[u64],
 ) -> TestDeferredBidirectionalLaraGraph<E>
 where
-    E: CsrEdge + lara::edge::counts::EdgePmaCountsStride,
+    E: CsrEdge,
 {
     let graph = crate::DeferredBidirectionalLaraGraph::new_with_config(
         vector_memory(),

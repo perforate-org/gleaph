@@ -296,11 +296,7 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
         } else {
             let zeros = vec![0u8; stride];
             for i in 0..idx.max(0) as u32 {
-                safe_write(
-                    &self.memory,
-                    entry_offset::<E>(&h, leaf_segment, i),
-                    &zeros,
-                )?;
+                safe_write(&self.memory, entry_offset::<E>(&h, leaf_segment, i), &zeros)?;
             }
         }
         self.write_idx_with_header(&h, leaf_segment, 0);

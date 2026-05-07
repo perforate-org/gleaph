@@ -151,7 +151,7 @@ pub(crate) fn bidirectional_graph<E>(
     vertex_count: u32,
 ) -> BidirectionalLaraGraph<E, Vertex, BenchMemory>
 where
-    E: crate::traits::CsrEdge + crate::lara::edge::counts::EdgePmaCountsStride,
+    E: crate::traits::CsrEdge,
 {
     let mut memories = BenchMemoryFactory::new();
     let graph = BidirectionalLaraGraph::new(

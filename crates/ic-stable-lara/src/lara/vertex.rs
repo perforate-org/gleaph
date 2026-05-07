@@ -42,7 +42,7 @@
 
 use crate::{
     GrowFailed, VertexId, read_u64, safe_write,
-    traits::{CsrVertex, CsrVertexTombstone, LaraVertex},
+    traits::{CsrVertex, CsrVertexTombstone},
     types::Address,
     write_u64,
 };
@@ -151,9 +151,7 @@ impl CsrVertex for Vertex {
         self.log_head = idx;
         self
     }
-}
 
-impl LaraVertex for Vertex {
     fn span_capacity(&self) -> u32 {
         self.capacity
     }

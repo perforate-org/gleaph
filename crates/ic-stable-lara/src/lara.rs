@@ -29,11 +29,11 @@ use crate::{
     lara::{
         edge::{
             EdgeHeaderV1, EdgeStore, InsertLocation, OutEdgesIter, VertexAccess,
-            counts::{EdgePmaCountsStride, SegmentEdgeCounts},
+            counts::SegmentEdgeCounts,
         },
         vertex::VertexStore,
     },
-    traits::{CsrEdge, CsrVertex, CsrVertexTombstoneScan, LaraVertex},
+    traits::{CsrEdge, CsrVertex, CsrVertexTombstoneScan},
 };
 use ic_stable_structures::Memory;
 use std::{fmt, marker::PhantomData};
@@ -122,8 +122,8 @@ impl std::error::Error for InitError {}
 /// to the row identified by `src`, and `iter_out_edges` scans that row.
 pub struct LaraGraph<E, V, M>
 where
-    E: CsrEdge + EdgePmaCountsStride,
-    V: LaraVertex,
+    E: CsrEdge,
+    V: CsrVertex,
     M: Memory,
 {
     pub(super) vertices: VertexStore<V, M>,
@@ -133,8 +133,8 @@ where
 
 impl<E, V, M> LaraGraph<E, V, M>
 where
-    E: CsrEdge + EdgePmaCountsStride,
-    V: LaraVertex,
+    E: CsrEdge,
+    V: CsrVertex,
     M: Memory,
 {
     /// Creates a fresh graph over the supplied stable memories.
@@ -534,7 +534,6 @@ where
             .unwrap_or(SegmentEdgeCounts {
                 actual: 0,
                 total: 0,
-                tombstone: 0,
             });
         self.rebalance_weighted_with_layout(layout, left_vertex, right_vertex, counts)
     }
@@ -547,7 +546,6 @@ where
             .unwrap_or(SegmentEdgeCounts {
                 actual: 0,
                 total: 0,
-                tombstone: 0,
             });
         if density(leaf_counts) < LEAF_UPPER_DENSITY {
             return self.rebalance_leaf_segment_with_layout(&layout, segment);
@@ -773,7 +771,6 @@ where
             SegmentEdgeCounts {
                 actual: used_space as i64,
                 total: new_span as i64,
-                tombstone: 0,
             },
         );
         self.try_slide_small_live_span_for_gap_coalescing_with_layout(
@@ -911,7 +908,6 @@ where
         let mut out = SegmentEdgeCounts {
             actual: 0,
             total: 0,
-            tombstone: 0,
         };
         for leaf in start_leaf..end_leaf {
             let c = self
@@ -920,7 +916,6 @@ where
                 .get(leaf + u64::from(layout.segment_count));
             out.actual += c.actual;
             out.total += c.total;
-            out.tombstone += c.tombstone;
         }
         Some(out)
     }
@@ -937,7 +932,6 @@ where
                 SegmentEdgeCounts {
                     actual: 0,
                     total: 0,
-                    tombstone: 0,
                 },
             );
         }
@@ -974,7 +968,6 @@ where
                 SegmentEdgeCounts {
                     actual,
                     total: next_slot.saturating_sub(start_slot) as i64,
-                    tombstone: 0,
                 },
             );
         }
@@ -986,7 +979,6 @@ where
                 SegmentEdgeCounts {
                     actual: left.actual + right.actual,
                     total: left.total + right.total,
-                    tombstone: left.tombstone + right.tombstone,
                 },
             );
         }
@@ -1023,7 +1015,6 @@ where
                     SegmentEdgeCounts {
                         actual: left.actual + right.actual,
                         total: left.total + right.total,
-                        tombstone: left.tombstone + right.tombstone,
                     },
                 );
                 if idx == 1 {
@@ -1054,7 +1045,6 @@ where
                 SegmentEdgeCounts {
                     actual: left.actual + right.actual,
                     total: left.total + right.total,
-                    tombstone: left.tombstone + right.tombstone,
                 },
             );
             if idx == 1 {
@@ -1100,7 +1090,6 @@ where
         SegmentEdgeCounts {
             actual,
             total: next_slot.saturating_sub(start_slot) as i64,
-            tombstone: 0,
         }
     }
 
@@ -1245,8 +1234,6 @@ mod tests {
             Self::read_from(bytes.as_ref())
         }
     }
-
-    impl EdgePmaCountsStride for LargeTestEdge {}
 
     #[test]
     fn lara_resize_folds_log_edges_back_into_slab() {

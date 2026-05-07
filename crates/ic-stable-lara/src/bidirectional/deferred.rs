@@ -5,10 +5,10 @@ use crate::{
     bidirectional::UndirectedEdgeFlag,
     lara::{
         InitError, LaraGraph, MarkPriority,
-        edge::{OutEdgesIter, counts::EdgePmaCountsStride},
+        edge::OutEdgesIter,
         maintenance::{DeferredConfig, DeferredError, MaintenanceBudget, MaintenanceWorkReport},
     },
-    traits::{CsrEdge, CsrEdgeUndirected, LaraVertex},
+    traits::{CsrEdge, CsrEdgeUndirected, CsrVertex},
 };
 use ic_stable_roaring::StableRoaringBitmap;
 use ic_stable_structures::{Memory, Storable, storable::Bound};
@@ -409,8 +409,8 @@ impl std::error::Error for DeferredBidirectionalLaraError {
 /// Bidirectional LARA graph whose two orientations use deferred maintenance.
 pub struct DeferredBidirectionalLaraGraph<E, V, M>
 where
-    E: CsrEdge + EdgePmaCountsStride,
-    V: LaraVertex,
+    E: CsrEdge,
+    V: CsrVertex,
     M: Memory,
 {
     forward: LaraGraph<E, V, M>,
@@ -424,8 +424,8 @@ pub type DeferredBidirectionalLara<E, V, M> = DeferredBidirectionalLaraGraph<E, 
 
 impl<E, V, M> DeferredBidirectionalLaraGraph<E, V, M>
 where
-    E: CsrEdge + EdgePmaCountsStride,
-    V: LaraVertex,
+    E: CsrEdge,
+    V: CsrVertex,
     M: Memory,
 {
     /// Creates fresh forward and reverse deferred LARA stores.
