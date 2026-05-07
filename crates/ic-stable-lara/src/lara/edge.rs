@@ -282,7 +282,11 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
 
     /// Decodes and returns the edge record stored at `slot`.
     pub fn read_slot(&self, slot: u64) -> E {
-        if E::BYTES <= INLINE_EDGE_BYTES {
+        if E::BYTES <= 8 {
+            let mut buf = [0u8; 8];
+            self.edges.read_slot(slot, &mut buf[..E::BYTES]);
+            E::read_from(&buf[..E::BYTES])
+        } else if E::BYTES <= INLINE_EDGE_BYTES {
             let mut buf = [0u8; INLINE_EDGE_BYTES];
             self.edges.read_slot(slot, &mut buf[..E::BYTES]);
             E::read_from(&buf[..E::BYTES])
@@ -295,7 +299,11 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
 
     /// Encodes and writes `edge` to `slot`.
     pub fn write_slot(&self, slot: u64, edge: E) -> Result<(), GrowFailed> {
-        if E::BYTES <= INLINE_EDGE_BYTES {
+        if E::BYTES <= 8 {
+            let mut buf = [0u8; 8];
+            edge.write_to(&mut buf[..E::BYTES]);
+            self.edges.write_slot(slot, &buf[..E::BYTES])
+        } else if E::BYTES <= INLINE_EDGE_BYTES {
             let mut buf = [0u8; INLINE_EDGE_BYTES];
             edge.write_to(&mut buf[..E::BYTES]);
             self.edges.write_slot(slot, &buf[..E::BYTES])
@@ -383,7 +391,6 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         V: LaraVertex + CsrVertexTombstoneScan,
         A: VertexAccess<V>,
     {
-        let edge_layout = self.edge_layout();
         let vidx = vertex_index(vid);
         if vidx >= vertices.len() as usize {
             return Err("vertex out of range");
@@ -392,6 +399,23 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         if V::record_is_vertex_tombstone(&v) {
             return Err("vertex deleted");
         }
+        // Clean rows: the full neighborhood is on the slab, so the iterator never
+        // walks the overflow log. Skip `edge_layout()` (full slab header read) and
+        // log metadata; `leaf` is only read while `remaining_log > 0`.
+        if v.log_head() < 0 {
+            let degree = v.degree();
+            return Ok(OutEdgesIter {
+                store: self,
+                leaf: 0,
+                next_log: -1,
+                remaining_log: 0,
+                base_slot_start: v.base_slot_start(),
+                remaining_slab: degree,
+                log_header: None,
+            });
+        }
+
+        let edge_layout = self.edge_layout();
         let on_slab = self.on_slab_edges_with_layout(&edge_layout, vertices, vidx, &v);
         let degree = v.degree();
         let slab_count = on_slab.min(degree);
@@ -779,6 +803,9 @@ fn leaf_segment(vid: VertexId, segment_size: u32) -> u32 {
 /// The order is deterministic for the committed store state, but it is not
 /// guaranteed to be insertion order or slab slot order. It may change after
 /// unordered removals, rebalancing, or future layout changes.
+///
+/// `leaf` is only consulted while draining the overflow log (`remaining_log >
+/// 0`). For purely slab-backed rows, it is uninitialized and must not be read.
 pub struct OutEdgesIter<'a, E: CsrEdge, M: Memory> {
     store: &'a EdgeStore<E, M>,
     leaf: u32,
@@ -803,7 +830,7 @@ where
                 self.remaining_slab = 0;
                 return None;
             }
-            let log_h = self.log_header.as_ref().unwrap();
+            let log_h = self.log_header.as_ref()?;
             let (prev, edge) = self
                 .store
                 .read_log_edge_with_header(log_h, self.leaf, self.next_log as u32);

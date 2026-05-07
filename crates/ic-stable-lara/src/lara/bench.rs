@@ -60,6 +60,41 @@ fn bench_lara_graph_clean_scan_iter_1024() -> canbench_rs::BenchResult {
     })
 }
 
+/// Like [`bench_lara_graph_clean_scan_iter_1024`], but all edges live on one
+/// vertex. This stresses `iter_out_edges` and slab decoding without repeatedly
+/// paying per-vertex iterator setup across many small rows.
+#[bench(raw)]
+fn bench_lara_graph_clean_scan_iter_single_row_1024() -> canbench_rs::BenchResult {
+    let graph = helper::populated_lara_graph(1, helper::MEDIUM_N as u32);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("lara_graph_clean_scan_iter_single_row");
+        let mut sum = 0u32;
+        for edge in graph
+            .iter_out_edges(VertexId::from(0))
+            .expect("iterate out edges")
+        {
+            sum ^= black_box(edge).0;
+        }
+        black_box(sum);
+    })
+}
+
+/// Slot-order materialization for a single large slab-backed row (graph API).
+/// Pairs with [`bench_lara_graph_clean_scan_iter_single_row_1024`] to separate
+/// vector growth from streaming iteration.
+#[bench(raw)]
+fn bench_lara_graph_clean_scan_slot_order_single_row_1024() -> canbench_rs::BenchResult {
+    let graph = helper::populated_lara_graph(1, helper::MEDIUM_N as u32);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("lara_graph_clean_scan_slot_order_single_row");
+        black_box(
+            graph
+                .collect_out_edges_slot_order(VertexId::from(0))
+                .expect("collect out edges"),
+        );
+    })
+}
+
 /// Measures the root-saturation path that relocates a hot segment to fresh tail
 /// space. This protects the expensive resize/relocation boundary where span
 /// metadata, counts, and free-span release are all updated together.
