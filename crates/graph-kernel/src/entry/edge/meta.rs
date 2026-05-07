@@ -24,8 +24,9 @@
 //!   placement, and the two-bit sidecar kind.
 //!
 //! Use [`EdgeMeta::to_le_bytes`] and [`EdgeMeta::from_le_bytes`] when crossing
-//! a storage or wire boundary. [`EdgeMeta::raw`] exposes the in-memory packed
-//! value for low-level callers that already know the layout.
+//! a storage or wire boundary. [`EdgeMeta::raw`] and [`EdgeMeta::from_raw`]
+//! round-trip the host-endian packed word for low-level callers that already
+//! know the layout.
 
 use crate::entry::label::LabelId;
 use bitflags::bitflags;
@@ -104,6 +105,16 @@ impl EdgeMeta {
         self.0
     }
 
+    /// Wraps a host-endian packed metadata word as an [`EdgeMeta`].
+    ///
+    /// The value must match the documented bit layout (same integer domain as
+    /// [`Self::raw`]). For portable deserialization from four little-endian
+    /// bytes, use [`Self::from_le_bytes`].
+    #[inline]
+    pub const fn from_raw(word: u32) -> Self {
+        Self(word)
+    }
+
     /// Serializes the packed metadata word as four little-endian bytes.
     ///
     /// This preserves the documented wire layout independent of the host CPU's
@@ -119,7 +130,7 @@ impl EdgeMeta {
     /// through [`Self::flags`] or round-tripped with [`Self::to_le_bytes`].
     #[inline]
     pub const fn from_le_bytes(bytes: [u8; 4]) -> Self {
-        Self(u32::from_le_bytes(bytes))
+        Self::from_raw(u32::from_le_bytes(bytes))
     }
 
     /// Returns `true` when the edge should be interpreted as undirected.
@@ -300,6 +311,14 @@ mod tests {
         assert_eq!(meta.flags().bits(), 0x8D);
         assert_eq!(meta.sidecar_kind(), SideCarKind::RecencyBucket);
         assert_eq!(meta.to_le_bytes(), [0x34, 0x12, 0x56, 0x8D]);
+    }
+
+    #[test]
+    fn from_raw_round_trips_with_raw_and_matches_from_le_bytes() {
+        let word = 0x8D56_1234_u32;
+        let meta = EdgeMeta::from_raw(word);
+        assert_eq!(meta.raw(), word);
+        assert_eq!(meta, EdgeMeta::from_le_bytes(word.to_le_bytes()));
     }
 
     #[test]

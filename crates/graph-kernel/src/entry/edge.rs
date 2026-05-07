@@ -74,13 +74,15 @@ impl CsrEdge for Edge {
     /// `bytes` must contain exactly [`Self::BYTES`] bytes. The first four bytes
     /// are decoded as [`Self::target`], and the final four bytes are decoded as
     /// [`Self::meta`].
+    #[inline]
     fn read_from(bytes: &[u8]) -> Self {
         let chunk: [u8; Self::BYTES] = bytes
             .try_into()
             .expect("CsrEdge::read_from expects exactly 8 bytes");
+        let packed = u64::from_le_bytes(chunk);
         Edge {
-            target: VertexId::from_le_bytes(chunk[0..4].try_into().unwrap()),
-            meta: EdgeMeta::from_le_bytes(chunk[4..8].try_into().unwrap()),
+            target: VertexId::from(packed as u32),
+            meta: EdgeMeta::from_raw((packed >> 32) as u32),
         }
     }
 
@@ -88,18 +90,20 @@ impl CsrEdge for Edge {
     ///
     /// The write preserves the same layout accepted by [`Self::read_from`]:
     /// target vertex id first, then metadata, both in little-endian byte order.
+    #[inline]
     fn write_to(self, bytes: &mut [u8]) {
         debug_assert_eq!(
             bytes.len(),
             Self::BYTES,
             "CsrEdge::write_to expects exactly 8 bytes"
         );
-        let out = &mut bytes[..Self::BYTES];
-        out[..4].copy_from_slice(&self.target.to_le_bytes());
-        out[4..].copy_from_slice(&self.meta.to_le_bytes());
+        let low = u32::from_le_bytes(self.target.to_le_bytes());
+        let packed = (low as u64) | ((self.meta.raw() as u64) << 32);
+        bytes[..Self::BYTES].copy_from_slice(&packed.to_le_bytes());
     }
 
     /// Returns the adjacent vertex id for this edge orientation.
+    #[inline]
     fn neighbor_vid(&self) -> VertexId {
         self.target
     }
@@ -108,6 +112,7 @@ impl CsrEdge for Edge {
     ///
     /// All edge-local metadata is preserved exactly, including reserved flag
     /// bits and the inline sidecar byte.
+    #[inline]
     fn with_neighbor_vid(self, vid: VertexId) -> Self {
         Self {
             target: vid,
@@ -120,6 +125,7 @@ impl CsrEdgeUndirected for Edge {
     /// Returns whether this slot represents an undirected logical edge.
     ///
     /// The value is delegated to [`EdgeMeta::is_undirected`].
+    #[inline]
     fn is_undirected(&self) -> bool {
         self.meta.is_undirected()
     }
@@ -127,6 +133,7 @@ impl CsrEdgeUndirected for Edge {
     /// Returns a copy with the undirected semantic flag set or cleared.
     ///
     /// The target id and all unrelated metadata fields are preserved.
+    #[inline]
     fn with_undirected(self, undirected: bool) -> Self {
         Self {
             target: self.target,
