@@ -28,7 +28,7 @@ use crate::{
     GrowFailed, SegmentId, VertexId,
     lara::{
         edge::{
-            EdgeHeaderV1, EdgeStore, InsertLocation, OutEdgesRev, VertexAccess,
+            EdgeHeaderV1, EdgeStore, InsertLocation, OutEdgesIter, VertexAccess,
             counts::{EdgePmaCountsStride, SegmentEdgeCounts},
         },
         vertex::VertexStore,
@@ -119,7 +119,7 @@ impl std::error::Error for InitError {}
 /// Single-orientation LARA adjacency graph.
 ///
 /// This graph stores one CSR orientation: `insert_edge` appends an edge record
-/// to the row identified by `src`, and `collect_out_edges` reads that row.
+/// to the row identified by `src`, and `iter_out_edges` scans that row.
 pub struct LaraGraph<E, V, M>
 where
     E: CsrEdge + EdgePmaCountsStride,
@@ -237,18 +237,20 @@ where
         self.rebalance_after_insert(src)
     }
 
-    /// Collects all currently visible outgoing edges for `src`.
-    pub fn collect_out_edges(&self, src: VertexId) -> Result<Vec<E>, &'static str> {
-        self.edges.collect_out_edges(&self.vertices, src)
+    /// Collects outgoing edges for `src` in slab slot order.
+    ///
+    /// Use this when the caller needs the legacy slot-order vector, such as
+    /// resize and rebalancing code that rewrites contiguous CSR rows.
+    pub fn collect_out_edges_slot_order(&self, src: VertexId) -> Result<Vec<E>, &'static str> {
+        self.edges.collect_out_edges_slot_order(&self.vertices, src)
     }
 
-    /// Iterates outgoing edges in the reverse order of [`collect_out_edges`](Self::collect_out_edges).
+    /// Iterates outgoing edges in the store's standard scan order.
     ///
-    /// This order is not guaranteed to be insertion order. It is the reverse of
-    /// the store's current collection order, which may change after unordered
-    /// removals, rebalancing, or future layout changes.
-    pub fn iter_out_edges_rev(&self, src: VertexId) -> Result<OutEdgesRev<'_, E, M>, &'static str> {
-        self.edges.iter_out_edges_rev(&self.vertices, src)
+    /// This order is deterministic for the committed store state, but it is not
+    /// guaranteed to be insertion order or slab slot order.
+    pub fn iter_out_edges(&self, src: VertexId) -> Result<OutEdgesIter<'_, E, M>, &'static str> {
+        self.edges.iter_out_edges(&self.vertices, src)
     }
 
     /// Removes one outgoing edge whose full edge record matches `edge`.
@@ -862,7 +864,7 @@ where
         for vid in start_vertex..end_vertex {
             let out = self
                 .edges
-                .collect_out_edges(&self.vertices, VertexId::from(vid as u32))
+                .collect_out_edges_slot_order(&self.vertices, VertexId::from(vid as u32))
                 .expect("LARA log chains are valid before rebalance");
             edges.extend(out);
             offsets.push(edges.len());
@@ -1247,7 +1249,9 @@ mod tests {
         graph.resize().unwrap();
 
         assert_eq!(
-            graph.collect_out_edges(VertexId::from(0)).unwrap(),
+            graph
+                .collect_out_edges_slot_order(VertexId::from(0))
+                .unwrap(),
             vec![TestEdge(10), TestEdge(11)]
         );
         assert_eq!(graph.vertices().get(VertexId::from(0)).degree, 2);
@@ -1256,16 +1260,18 @@ mod tests {
     }
 
     #[test]
-    fn lara_iter_out_edges_rev_matches_reverse_collect_order() {
+    fn lara_iter_out_edges_matches_reverse_slot_order() {
         let graph = test_graph(2, 1, 2, &[0, 1]);
 
         graph.insert_edge(VertexId::from(0), TestEdge(10)).unwrap();
         graph.insert_edge(VertexId::from(0), TestEdge(11)).unwrap();
 
-        let mut expected = graph.collect_out_edges(VertexId::from(0)).unwrap();
+        let mut expected = graph
+            .collect_out_edges_slot_order(VertexId::from(0))
+            .unwrap();
         expected.reverse();
         let actual = graph
-            .iter_out_edges_rev(VertexId::from(0))
+            .iter_out_edges(VertexId::from(0))
             .unwrap()
             .collect::<Vec<_>>();
 
@@ -1283,7 +1289,9 @@ mod tests {
         assert!(graph.remove_edge(VertexId::from(0), TestEdge(11)).unwrap());
 
         assert_eq!(
-            graph.collect_out_edges(VertexId::from(0)).unwrap(),
+            graph
+                .collect_out_edges_slot_order(VertexId::from(0))
+                .unwrap(),
             vec![TestEdge(10), TestEdge(12)]
         );
         assert_eq!(graph.vertices().get(VertexId::from(0)).degree, 2);
@@ -1309,7 +1317,9 @@ mod tests {
         assert!(graph.remove_edge(VertexId::from(0), TestEdge(11)).unwrap());
 
         assert_eq!(
-            graph.collect_out_edges(VertexId::from(0)).unwrap(),
+            graph
+                .collect_out_edges_slot_order(VertexId::from(0))
+                .unwrap(),
             vec![TestEdge(10), TestEdge(12)]
         );
         assert_eq!(graph.vertices().get(VertexId::from(0)).degree, 2);
@@ -1326,7 +1336,9 @@ mod tests {
 
         assert!(!graph.remove_edge(VertexId::from(0), TestEdge(99)).unwrap());
         assert_eq!(
-            graph.collect_out_edges(VertexId::from(0)).unwrap(),
+            graph
+                .collect_out_edges_slot_order(VertexId::from(0))
+                .unwrap(),
             vec![TestEdge(10)]
         );
         assert_eq!(graph.edges().header().num_edges, 1);
@@ -1343,7 +1355,9 @@ mod tests {
 
         assert!(graph.remove_edge(VertexId::from(0), blue).unwrap());
         assert_eq!(
-            graph.collect_out_edges(VertexId::from(0)).unwrap(),
+            graph
+                .collect_out_edges_slot_order(VertexId::from(0))
+                .unwrap(),
             vec![red]
         );
         assert!(!graph.remove_edge(VertexId::from(0), blue).unwrap());
@@ -1363,7 +1377,9 @@ mod tests {
             .unwrap();
         assert_eq!(removed, Some(red));
         assert_eq!(
-            graph.collect_out_edges(VertexId::from(0)).unwrap(),
+            graph
+                .collect_out_edges_slot_order(VertexId::from(0))
+                .unwrap(),
             vec![blue]
         );
     }
@@ -1379,7 +1395,9 @@ mod tests {
         assert_eq!(graph.edges().header().elem_capacity, 8);
         assert_eq!(graph.vertices().get(VertexId::from(0)).log_head, -1);
         assert_eq!(
-            graph.collect_out_edges(VertexId::from(0)).unwrap(),
+            graph
+                .collect_out_edges_slot_order(VertexId::from(0))
+                .unwrap(),
             vec![TestEdge(10), TestEdge(11), TestEdge(12), TestEdge(13)]
         );
         assert!(
@@ -1415,7 +1433,9 @@ mod tests {
 
         assert_eq!(graph.edges().header().elem_capacity, 10);
         assert_eq!(
-            graph.collect_out_edges(VertexId::from(0)).unwrap(),
+            graph
+                .collect_out_edges_slot_order(VertexId::from(0))
+                .unwrap(),
             vec![TestEdge(10), TestEdge(11), TestEdge(12), TestEdge(13)]
         );
         assert_eq!(graph.edges().span_meta_store().get(0).physical_start, 4);
@@ -1460,7 +1480,9 @@ mod tests {
         }
 
         assert_eq!(
-            graph.collect_out_edges(VertexId::from(0)).unwrap(),
+            graph
+                .collect_out_edges_slot_order(VertexId::from(0))
+                .unwrap(),
             vec![
                 TestEdge(10),
                 TestEdge(11),
@@ -1475,7 +1497,9 @@ mod tests {
             ]
         );
         assert_eq!(
-            graph.collect_out_edges(VertexId::from(1)).unwrap(),
+            graph
+                .collect_out_edges_slot_order(VertexId::from(1))
+                .unwrap(),
             vec![
                 TestEdge(20),
                 TestEdge(21),
@@ -1519,7 +1543,9 @@ mod tests {
         assert_eq!(released.start_slot, 0);
         assert!(released.len > 0);
         assert_eq!(
-            reopened.collect_out_edges(VertexId::from(0)).unwrap(),
+            reopened
+                .collect_out_edges_slot_order(VertexId::from(0))
+                .unwrap(),
             vec![TestEdge(10), TestEdge(11), TestEdge(12), TestEdge(13)]
         );
         assert_eq!(reopened.edges().counts_store().get(2).total, 6);
@@ -1554,7 +1580,9 @@ mod tests {
 
         assert_eq!(graph.vertices().get(VertexId::from(1)).base_slot_start, 6);
         assert_eq!(
-            graph.collect_out_edges(VertexId::from(1)).unwrap(),
+            graph
+                .collect_out_edges_slot_order(VertexId::from(1))
+                .unwrap(),
             vec![TestEdge(101), TestEdge(102)]
         );
         assert_eq!(
@@ -1597,7 +1625,9 @@ mod tests {
         assert_eq!(graph.edges().counts_store().get(2).total, 14);
         assert_eq!(graph.edges().span_meta_store().get(0).physical_start, 6);
         assert_eq!(
-            graph.collect_out_edges(VertexId::from(0)).unwrap(),
+            graph
+                .collect_out_edges_slot_order(VertexId::from(0))
+                .unwrap(),
             vec![TestEdge(201)]
         );
         assert_vertex_capacity_invariants(&graph);
@@ -1655,7 +1685,9 @@ mod tests {
         );
         assert_eq!(graph.vertices().get(VertexId::from(1)).base_slot_start, 10);
         assert_eq!(
-            graph.collect_out_edges(VertexId::from(1)).unwrap(),
+            graph
+                .collect_out_edges_slot_order(VertexId::from(1))
+                .unwrap(),
             vec![TestEdge(301)]
         );
         assert_eq!(
@@ -1764,7 +1796,9 @@ mod tests {
             6
         );
         assert_eq!(
-            reopened.collect_out_edges(VertexId::from(1)).unwrap(),
+            reopened
+                .collect_out_edges_slot_order(VertexId::from(1))
+                .unwrap(),
             vec![TestEdge(601), TestEdge(602)]
         );
         assert_eq!(
@@ -1831,7 +1865,9 @@ mod tests {
 
         assert_eq!(graph.vertices().get(VertexId::from(1)).base_slot_start, 6);
         assert_eq!(
-            graph.collect_out_edges(VertexId::from(1)).unwrap(),
+            graph
+                .collect_out_edges_slot_order(VertexId::from(1))
+                .unwrap(),
             vec![LargeTestEdge::new(7), LargeTestEdge::new(11)]
         );
     }
@@ -1859,7 +1895,9 @@ mod tests {
         );
         assert_eq!(reopened.vertices().get(VertexId::from(0)).log_head, -1);
         assert_eq!(
-            reopened.collect_out_edges(VertexId::from(0)).unwrap(),
+            reopened
+                .collect_out_edges_slot_order(VertexId::from(0))
+                .unwrap(),
             vec![TestEdge(10), TestEdge(11), TestEdge(12), TestEdge(13)]
         );
         assert_eq!(reopened.edges().counts_store().get(2).total, 6);

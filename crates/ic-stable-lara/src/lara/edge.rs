@@ -322,7 +322,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         }
     }
 
-    pub(crate) fn collect_out_edges<V, A>(
+    pub(crate) fn collect_out_edges_slot_order<V, A>(
         &self,
         vertices: &A,
         vid: VertexId,
@@ -372,11 +372,11 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         Ok(out)
     }
 
-    pub(crate) fn iter_out_edges_rev<V, A>(
+    pub(crate) fn iter_out_edges<V, A>(
         &self,
         vertices: &A,
         vid: VertexId,
-    ) -> Result<OutEdgesRev<'_, E, M>, &'static str>
+    ) -> Result<OutEdgesIter<'_, E, M>, &'static str>
     where
         V: LaraVertex + CsrVertexTombstoneScan,
         A: VertexAccess<V>,
@@ -395,7 +395,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         let slab_count = on_slab.min(degree);
         let log_count = degree.saturating_sub(slab_count);
 
-        Ok(OutEdgesRev {
+        Ok(OutEdgesIter {
             store: self,
             leaf: leaf_segment(vid, edge_layout.segment_size),
             next_log: v.log_head(),
@@ -763,12 +763,12 @@ fn leaf_segment(vid: VertexId, segment_size: u32) -> u32 {
     u32::from(vid) / segment_size.max(1)
 }
 
-/// Iterator over outgoing edges in the reverse order of `collect_out_edges`.
+/// Iterator over outgoing edges in the store's standard scan order.
 ///
-/// The order is not guaranteed to be insertion order. It is the reverse of the
-/// store's current collection order, which may change after unordered removals,
-/// rebalancing, or future layout changes.
-pub struct OutEdgesRev<'a, E: CsrEdge, M: Memory> {
+/// The order is deterministic for the committed store state, but it is not
+/// guaranteed to be insertion order or slab slot order. It may change after
+/// unordered removals, rebalancing, or future layout changes.
+pub struct OutEdgesIter<'a, E: CsrEdge, M: Memory> {
     store: &'a EdgeStore<E, M>,
     leaf: u32,
     next_log: i32,
@@ -777,7 +777,7 @@ pub struct OutEdgesRev<'a, E: CsrEdge, M: Memory> {
     remaining_slab: u32,
 }
 
-impl<E, M> Iterator for OutEdgesRev<'_, E, M>
+impl<E, M> Iterator for OutEdgesIter<'_, E, M>
 where
     E: CsrEdge + EdgePmaCountsStride,
     M: Memory,
@@ -821,14 +821,14 @@ where
     }
 }
 
-impl<E, M> ExactSizeIterator for OutEdgesRev<'_, E, M>
+impl<E, M> ExactSizeIterator for OutEdgesIter<'_, E, M>
 where
     E: CsrEdge + EdgePmaCountsStride,
     M: Memory,
 {
 }
 
-impl<E, M> FusedIterator for OutEdgesRev<'_, E, M>
+impl<E, M> FusedIterator for OutEdgesIter<'_, E, M>
 where
     E: CsrEdge + EdgePmaCountsStride,
     M: Memory,
@@ -895,13 +895,13 @@ mod tests {
 
         assert_eq!(
             edges
-                .collect_out_edges(&vertices, VertexId::from(0))
+                .collect_out_edges_slot_order(&vertices, VertexId::from(0))
                 .unwrap(),
             vec![TestEdge(10), TestEdge(11)]
         );
         assert_eq!(
             edges
-                .iter_out_edges_rev(&vertices, VertexId::from(0))
+                .iter_out_edges(&vertices, VertexId::from(0))
                 .unwrap()
                 .collect::<Vec<_>>(),
             vec![TestEdge(11), TestEdge(10)]
@@ -961,7 +961,7 @@ mod tests {
         assert_eq!(vertices.get(VertexId::from(0)).log_head, -1);
         assert_eq!(
             edges
-                .collect_out_edges(&vertices, VertexId::from(0))
+                .collect_out_edges_slot_order(&vertices, VertexId::from(0))
                 .unwrap(),
             vec![TestEdge(10), TestEdge(11)]
         );
@@ -1019,7 +1019,7 @@ mod tests {
         assert_eq!(vertices.get(VertexId::from(0)).log_head, -1);
         assert_eq!(
             edges
-                .collect_out_edges(&vertices, VertexId::from(0))
+                .collect_out_edges_slot_order(&vertices, VertexId::from(0))
                 .unwrap(),
             vec![TestEdge(10), TestEdge(11)]
         );
@@ -1058,7 +1058,7 @@ mod tests {
 
         assert_eq!(
             edges
-                .collect_out_edges(&vertices, VertexId::from(0))
+                .collect_out_edges_slot_order(&vertices, VertexId::from(0))
                 .unwrap(),
             vec![TestEdge(10), TestEdge(11)]
         );

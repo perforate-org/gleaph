@@ -64,8 +64,14 @@ fn bench_lara_bidirectional_scan_in_out_1024() -> canbench_rs::BenchResult {
         let _scope = canbench_rs::bench_scope("lara_bidirectional_scan_in_out");
         let mut len = 0usize;
         for vid in 0..256 {
-            len += graph.out_edges(VertexId::from(vid)).expect("out").len();
-            len += graph.in_edges(VertexId::from(vid)).expect("in").len();
+            len += graph
+                .collect_out_edges_slot_order(VertexId::from(vid))
+                .expect("out")
+                .len();
+            len += graph
+                .collect_in_edges_slot_order(VertexId::from(vid))
+                .expect("in")
+                .len();
         }
         black_box(len);
     })

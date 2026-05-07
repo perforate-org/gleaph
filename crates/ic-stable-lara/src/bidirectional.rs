@@ -12,7 +12,7 @@ use crate::{
     GrowFailed, LaraGraph, VertexCount, VertexId,
     lara::{
         InitError,
-        edge::{OutEdgesRev, counts::EdgePmaCountsStride},
+        edge::{OutEdgesIter, counts::EdgePmaCountsStride},
     },
     traits::{CsrEdge, CsrEdgeUndirected, LaraVertex},
 };
@@ -263,41 +263,47 @@ where
         Ok(id)
     }
 
-    /// Collects outgoing edges from the forward store.
-    pub fn out_edges(&self, src: VertexId) -> Result<Vec<E>, BidirectionalLaraError> {
+    /// Collects outgoing edges from the forward store in slab slot order.
+    pub fn collect_out_edges_slot_order(
+        &self,
+        src: VertexId,
+    ) -> Result<Vec<E>, BidirectionalLaraError> {
         self.ensure_vertex(src)?;
         self.forward
-            .collect_out_edges(src)
+            .collect_out_edges_slot_order(src)
             .map_err(BidirectionalLaraError::Forward)
     }
 
-    /// Collects incoming edges from the reverse store.
-    pub fn in_edges(&self, dst: VertexId) -> Result<Vec<E>, BidirectionalLaraError> {
+    /// Collects incoming edges from the reverse store in slab slot order.
+    pub fn collect_in_edges_slot_order(
+        &self,
+        dst: VertexId,
+    ) -> Result<Vec<E>, BidirectionalLaraError> {
         self.ensure_vertex(dst)?;
         self.reverse
-            .collect_out_edges(dst)
+            .collect_out_edges_slot_order(dst)
             .map_err(BidirectionalLaraError::Reverse)
     }
 
-    /// Iterates outgoing edges from the forward store in the reverse order of [`out_edges`](Self::out_edges).
-    pub fn iter_out_edges_rev(
+    /// Iterates outgoing edges from the forward store in standard scan order.
+    pub fn iter_out_edges(
         &self,
         src: VertexId,
-    ) -> Result<OutEdgesRev<'_, E, M>, BidirectionalLaraError> {
+    ) -> Result<OutEdgesIter<'_, E, M>, BidirectionalLaraError> {
         self.ensure_vertex(src)?;
         self.forward
-            .iter_out_edges_rev(src)
+            .iter_out_edges(src)
             .map_err(BidirectionalLaraError::Forward)
     }
 
-    /// Iterates incoming edges from the reverse store in the reverse order of [`in_edges`](Self::in_edges).
-    pub fn iter_in_edges_rev(
+    /// Iterates incoming edges from the reverse store in standard scan order.
+    pub fn iter_in_edges(
         &self,
         dst: VertexId,
-    ) -> Result<OutEdgesRev<'_, E, M>, BidirectionalLaraError> {
+    ) -> Result<OutEdgesIter<'_, E, M>, BidirectionalLaraError> {
         self.ensure_vertex(dst)?;
         self.reverse
-            .iter_out_edges_rev(dst)
+            .iter_out_edges(dst)
             .map_err(BidirectionalLaraError::Reverse)
     }
 
@@ -564,15 +570,29 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            graph.out_edges(VertexId::from(0)).unwrap(),
+            graph
+                .collect_out_edges_slot_order(VertexId::from(0))
+                .unwrap(),
             vec![TestEdge(2)]
         );
-        assert_eq!(graph.out_edges(VertexId::from(2)).unwrap(), Vec::new());
         assert_eq!(
-            graph.in_edges(VertexId::from(2)).unwrap(),
+            graph
+                .collect_out_edges_slot_order(VertexId::from(2))
+                .unwrap(),
+            Vec::new()
+        );
+        assert_eq!(
+            graph
+                .collect_in_edges_slot_order(VertexId::from(2))
+                .unwrap(),
             vec![TestEdge(0)]
         );
-        assert_eq!(graph.in_edges(VertexId::from(0)).unwrap(), Vec::new());
+        assert_eq!(
+            graph
+                .collect_in_edges_slot_order(VertexId::from(0))
+                .unwrap(),
+            Vec::new()
+        );
     }
 
     #[test]
@@ -589,8 +609,18 @@ mod tests {
                 .unwrap()
         );
 
-        assert_eq!(graph.out_edges(VertexId::from(0)).unwrap(), Vec::new());
-        assert_eq!(graph.in_edges(VertexId::from(2)).unwrap(), Vec::new());
+        assert_eq!(
+            graph
+                .collect_out_edges_slot_order(VertexId::from(0))
+                .unwrap(),
+            Vec::new()
+        );
+        assert_eq!(
+            graph
+                .collect_in_edges_slot_order(VertexId::from(2))
+                .unwrap(),
+            Vec::new()
+        );
         assert!(
             !graph
                 .remove_directed(VertexId::from(0), VertexId::from(2), TestEdge(2))
@@ -616,9 +646,16 @@ mod tests {
                 .remove_directed(VertexId::from(0), VertexId::from(1), blue)
                 .unwrap()
         );
-        assert_eq!(graph.out_edges(VertexId::from(0)).unwrap(), vec![red]);
         assert_eq!(
-            graph.in_edges(VertexId::from(1)).unwrap(),
+            graph
+                .collect_out_edges_slot_order(VertexId::from(0))
+                .unwrap(),
+            vec![red]
+        );
+        assert_eq!(
+            graph
+                .collect_in_edges_slot_order(VertexId::from(1))
+                .unwrap(),
             vec![red.with_neighbor_vid(VertexId::from(0))]
         );
     }
@@ -642,9 +679,16 @@ mod tests {
             })
             .unwrap();
         assert_eq!(removed, Some(red));
-        assert_eq!(graph.out_edges(VertexId::from(0)).unwrap(), vec![blue]);
         assert_eq!(
-            graph.in_edges(VertexId::from(1)).unwrap(),
+            graph
+                .collect_out_edges_slot_order(VertexId::from(0))
+                .unwrap(),
+            vec![blue]
+        );
+        assert_eq!(
+            graph
+                .collect_in_edges_slot_order(VertexId::from(1))
+                .unwrap(),
             vec![blue.with_neighbor_vid(VertexId::from(0))]
         );
     }
@@ -664,8 +708,18 @@ mod tests {
                 actual
             } if expected == VertexId::from(1) && actual == VertexId::from(0)
         ));
-        assert_eq!(graph.out_edges(VertexId::from(0)).unwrap(), Vec::new());
-        assert_eq!(graph.in_edges(VertexId::from(1)).unwrap(), Vec::new());
+        assert_eq!(
+            graph
+                .collect_out_edges_slot_order(VertexId::from(0))
+                .unwrap(),
+            Vec::new()
+        );
+        assert_eq!(
+            graph
+                .collect_in_edges_slot_order(VertexId::from(1))
+                .unwrap(),
+            Vec::new()
+        );
     }
 
     #[test]
@@ -681,8 +735,18 @@ mod tests {
             err,
             BidirectionalLaraError::UndirectedEdgeInDirectedInsert
         ));
-        assert_eq!(graph.out_edges(VertexId::from(0)).unwrap(), Vec::new());
-        assert_eq!(graph.in_edges(VertexId::from(1)).unwrap(), Vec::new());
+        assert_eq!(
+            graph
+                .collect_out_edges_slot_order(VertexId::from(0))
+                .unwrap(),
+            Vec::new()
+        );
+        assert_eq!(
+            graph
+                .collect_in_edges_slot_order(VertexId::from(1))
+                .unwrap(),
+            Vec::new()
+        );
     }
 
     #[test]
@@ -698,28 +762,36 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            graph.out_edges(VertexId::from(0)).unwrap(),
+            graph
+                .collect_out_edges_slot_order(VertexId::from(0))
+                .unwrap(),
             vec![UndirectedTestEdge {
                 neighbor: 2,
                 undirected: true
             }]
         );
         assert_eq!(
-            graph.out_edges(VertexId::from(2)).unwrap(),
+            graph
+                .collect_out_edges_slot_order(VertexId::from(2))
+                .unwrap(),
             vec![UndirectedTestEdge {
                 neighbor: 0,
                 undirected: true
             }]
         );
         assert_eq!(
-            graph.in_edges(VertexId::from(0)).unwrap(),
+            graph
+                .collect_in_edges_slot_order(VertexId::from(0))
+                .unwrap(),
             vec![UndirectedTestEdge {
                 neighbor: 2,
                 undirected: true
             }]
         );
         assert_eq!(
-            graph.in_edges(VertexId::from(2)).unwrap(),
+            graph
+                .collect_in_edges_slot_order(VertexId::from(2))
+                .unwrap(),
             vec![UndirectedTestEdge {
                 neighbor: 0,
                 undirected: true
@@ -743,8 +815,18 @@ mod tests {
             neighbor: 1,
             undirected: true,
         };
-        assert_eq!(graph.out_edges(VertexId::from(1)).unwrap(), vec![loop_edge]);
-        assert_eq!(graph.in_edges(VertexId::from(1)).unwrap(), vec![loop_edge]);
+        assert_eq!(
+            graph
+                .collect_out_edges_slot_order(VertexId::from(1))
+                .unwrap(),
+            vec![loop_edge]
+        );
+        assert_eq!(
+            graph
+                .collect_in_edges_slot_order(VertexId::from(1))
+                .unwrap(),
+            vec![loop_edge]
+        );
     }
 
     #[test]
@@ -761,11 +843,15 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            reopened.out_edges(VertexId::from(0)).unwrap(),
+            reopened
+                .collect_out_edges_slot_order(VertexId::from(0))
+                .unwrap(),
             vec![TestEdge(2)]
         );
         assert_eq!(
-            reopened.in_edges(VertexId::from(2)).unwrap(),
+            reopened
+                .collect_in_edges_slot_order(VertexId::from(2))
+                .unwrap(),
             vec![TestEdge(0)]
         );
     }

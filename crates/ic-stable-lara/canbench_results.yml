@@ -119,14 +119,14 @@ benches:
         instructions: 20927753
         heap_increase: 0
         stable_memory_increase: 0
-  bench_lara_deferred_iter_out_edges_rev_log_backed_128:
+  bench_lara_deferred_iter_out_edges_log_backed_128:
     total:
       calls: 1
       instructions: 131890
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      lara_deferred_iter_out_edges_rev_log_backed:
+      lara_deferred_iter_out_edges_log_backed:
         calls: 1
         instructions: 130881
         heap_increase: 0
@@ -167,38 +167,38 @@ benches:
         instructions: 350573
         heap_increase: 0
         stable_memory_increase: 0
-  bench_lara_edge_store_collect_out_edges_1024:
+  bench_lara_edge_store_collect_out_edges_slot_order_1024:
     total:
       calls: 1
       instructions: 195362
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      lara_edge_store_collect_out_edges:
+      lara_edge_store_collect_out_edges_slot_order:
         calls: 1
         instructions: 194353
         heap_increase: 0
         stable_memory_increase: 0
-  bench_lara_edge_store_iter_out_edges_rev_1024:
+  bench_lara_edge_store_iter_out_edges_1024:
     total:
       calls: 1
       instructions: 241228
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      lara_edge_store_iter_out_edges_rev:
+      lara_edge_store_iter_out_edges:
         calls: 1
         instructions: 240219
         heap_increase: 0
         stable_memory_increase: 0
-  bench_lara_edge_store_iter_out_edges_rev_log_backed_128:
+  bench_lara_edge_store_iter_out_edges_log_backed_128:
     total:
       calls: 1
       instructions: 144502
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      lara_edge_store_iter_out_edges_rev_log_backed:
+      lara_edge_store_iter_out_edges_log_backed:
         calls: 1
         instructions: 143493
         heap_increase: 0
@@ -275,28 +275,28 @@ benches:
         instructions: 1790713
         heap_increase: 0
         stable_memory_increase: 0
-  bench_lara_graph_clean_scan_1024:
-    total:
-      calls: 1
-      instructions: 827838
-      heap_increase: 0
-      stable_memory_increase: 0
-    scopes:
-      lara_graph_clean_scan:
-        calls: 1
-        instructions: 826829
-        heap_increase: 0
-        stable_memory_increase: 0
-  bench_lara_graph_clean_scan_iter_rev_1024:
+  bench_lara_graph_clean_scan_iter_1024:
     total:
       calls: 1
       instructions: 751919
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      lara_graph_clean_scan_iter_rev:
+      lara_graph_clean_scan_iter:
         calls: 1
         instructions: 750910
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_lara_graph_clean_scan_slot_order_1024:
+    total:
+      calls: 1
+      instructions: 827838
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      lara_graph_clean_scan_slot_order:
+        calls: 1
+        instructions: 826829
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_graph_insert_append_heavy_1024:

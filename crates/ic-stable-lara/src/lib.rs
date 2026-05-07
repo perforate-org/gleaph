@@ -54,7 +54,7 @@ pub use bidirectional::{
 pub use lara::{
     LaraGraph,
     edge::{
-        EdgeHeaderV1, EdgeStore, InitError as EdgeInitError, LogHeaderV1,
+        EdgeHeaderV1, EdgeStore, InitError as EdgeInitError, LogHeaderV1, OutEdgesIter,
         free_span::{FreeSpan, FreeSpanError, FreeSpanStore, InitError as FreeSpanInitError},
         span_meta::{SegmentSpanMeta, SegmentSpanMetaStore},
     },
