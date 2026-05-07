@@ -221,11 +221,15 @@ impl Storable for PoisonCapacityVertex {
         b[0..8].copy_from_slice(&self.base_slot_start.to_le_bytes());
         b[8..12].copy_from_slice(&self.degree.to_le_bytes());
         b[12..16].copy_from_slice(&self.log_head.to_le_bytes());
-        Cow::Owned(b.to_vec())
+        Cow::Owned(Vec::from(b))
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        self.to_bytes().into_owned()
+        let mut b = [0u8; Self::BYTES];
+        b[0..8].copy_from_slice(&self.base_slot_start.to_le_bytes());
+        b[8..12].copy_from_slice(&self.degree.to_le_bytes());
+        b[12..16].copy_from_slice(&self.log_head.to_le_bytes());
+        Vec::from(b)
     }
 
     fn from_bytes(bytes: Cow<[u8]>) -> Self {
@@ -308,11 +312,16 @@ impl Storable for CountingCapacityVertex {
         b[8..12].copy_from_slice(&self.degree.to_le_bytes());
         b[12..16].copy_from_slice(&self.capacity.to_le_bytes());
         b[16..20].copy_from_slice(&self.log_head.to_le_bytes());
-        Cow::Owned(b.to_vec())
+        Cow::Owned(Vec::from(b))
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        self.to_bytes().into_owned()
+        let mut b = [0u8; Self::BYTES];
+        b[0..8].copy_from_slice(&self.base_slot_start.to_le_bytes());
+        b[8..12].copy_from_slice(&self.degree.to_le_bytes());
+        b[12..16].copy_from_slice(&self.capacity.to_le_bytes());
+        b[16..20].copy_from_slice(&self.log_head.to_le_bytes());
+        Vec::from(b)
     }
 
     fn from_bytes(bytes: Cow<[u8]>) -> Self {

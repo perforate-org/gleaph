@@ -189,28 +189,49 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
     }
 
     /// Reads the next-free entry index for a leaf segment.
+    #[allow(dead_code)] // stable `LogStore` API; in-crate uses `read_idx_with_header`
     pub fn read_idx(&self, leaf_segment: u32) -> i32 {
         let h = self.header();
+        self.read_idx_with_header(&h, leaf_segment)
+    }
+
+    pub(crate) fn read_idx_with_header(&self, h: &HeaderV1, leaf_segment: u32) -> i32 {
         read_i32(
             &self.memory,
-            Address::from(idx_offset::<E>(&h, leaf_segment)),
+            Address::from(idx_offset::<E>(h, leaf_segment)),
         )
     }
 
     /// Writes the next-free entry index for a leaf segment.
+    #[allow(dead_code)] // stable `LogStore` API; in-crate uses `write_idx_with_header`
     pub fn write_idx(&self, leaf_segment: u32, idx: i32) {
         let h = self.header();
+        self.write_idx_with_header(&h, leaf_segment, idx);
+    }
+
+    pub(crate) fn write_idx_with_header(&self, h: &HeaderV1, leaf_segment: u32, idx: i32) {
         write_i32(
             &self.memory,
-            Address::from(idx_offset::<E>(&h, leaf_segment)),
+            Address::from(idx_offset::<E>(h, leaf_segment)),
             idx,
         );
     }
 
     /// Reads one log entry payload and returns `(previous_entry, source_vertex)`.
+    #[allow(dead_code)] // stable `LogStore` API; in-crate uses `read_entry_with_header`
     pub fn read_entry(&self, leaf_segment: u32, entry_idx: u32, out: &mut [u8]) -> (i32, i32) {
         let h = self.header();
-        let off = entry_offset::<E>(&h, leaf_segment, entry_idx);
+        self.read_entry_with_header(&h, leaf_segment, entry_idx, out)
+    }
+
+    pub(crate) fn read_entry_with_header(
+        &self,
+        h: &HeaderV1,
+        leaf_segment: u32,
+        entry_idx: u32,
+        out: &mut [u8],
+    ) -> (i32, i32) {
+        let off = entry_offset::<E>(h, leaf_segment, entry_idx);
         let prev = read_i32(&self.memory, Address::from(off));
         let src = read_i32(&self.memory, Address::from(off + 4));
         self.memory.read(off + 8, out);
@@ -218,6 +239,7 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
     }
 
     /// Writes one log entry in a leaf segment.
+    #[allow(dead_code)] // stable `LogStore` API; in-crate uses `write_entry_with_header`
     pub fn write_entry(
         &self,
         leaf_segment: u32,
@@ -227,7 +249,19 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
         payload: &[u8],
     ) -> Result<(), GrowFailed> {
         let h = self.header();
-        let off = entry_offset::<E>(&h, leaf_segment, entry_idx);
+        self.write_entry_with_header(&h, leaf_segment, entry_idx, prev, src, payload)
+    }
+
+    pub(crate) fn write_entry_with_header(
+        &self,
+        h: &HeaderV1,
+        leaf_segment: u32,
+        entry_idx: u32,
+        prev: i32,
+        src: i32,
+        payload: &[u8],
+    ) -> Result<(), GrowFailed> {
+        let off = entry_offset::<E>(h, leaf_segment, entry_idx);
         debug_assert_eq!(payload.len(), E::BYTES);
         let entry_len = log_entry_stride::<E>() as usize;
         if entry_len <= INLINE_LOG_ENTRY_BYTES {
@@ -248,7 +282,7 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
     /// Clears all log entries and resets the segment index to zero.
     pub fn release_segment(&self, leaf_segment: u32) -> Result<(), GrowFailed> {
         let h = self.header();
-        let idx = self.read_idx(leaf_segment);
+        let idx = self.read_idx_with_header(&h, leaf_segment);
         let stride = log_entry_stride::<E>() as usize;
         if stride <= INLINE_LOG_ENTRY_BYTES {
             let zeros = [0u8; INLINE_LOG_ENTRY_BYTES];
@@ -269,7 +303,7 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
                 )?;
             }
         }
-        self.write_idx(leaf_segment, 0);
+        self.write_idx_with_header(&h, leaf_segment, 0);
         Ok(())
     }
 

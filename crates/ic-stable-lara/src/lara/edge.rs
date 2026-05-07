@@ -70,19 +70,6 @@ impl From<EdgeHeaderV1> for EdgeLayout {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-struct LogLayout {
-    max_log_entries: u32,
-}
-
-impl From<LogHeaderV1> for LogLayout {
-    fn from(header: LogHeaderV1) -> Self {
-        Self {
-            max_log_entries: header.max_log_entries,
-        }
-    }
-}
-
 /// Errors returned when reopening the full edge storage subsystem.
 #[derive(Debug)]
 pub enum InitError {
@@ -251,10 +238,6 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         self.header().into()
     }
 
-    fn log_layout(&self) -> LogLayout {
-        self.log.header().into()
-    }
-
     /// Consumes the edge subsystem and returns its stable memories in constructor order.
     pub fn into_memories(self) -> (M, M, M, M, M, M) {
         let (free_spans, free_span_by_start) = self.free_spans.into_memories();
@@ -360,12 +343,13 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         out.resize(degree, filler);
 
         let leaf = leaf_segment(vid, edge_layout.segment_size);
+        let log_h = self.log.header();
         let mut log_i = v.log_head();
         for offset in (0..log_count).rev() {
             if log_i < 0 {
                 return Err("log chain short");
             }
-            let (prev, edge) = self.read_log_edge(leaf, log_i as u32);
+            let (prev, edge) = self.read_log_edge_with_header(&log_h, leaf, log_i as u32);
             out[slab_count + offset] = edge;
             log_i = prev;
         }
@@ -402,6 +386,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
             remaining_log: log_count,
             base_slot_start: v.base_slot_start(),
             remaining_slab: slab_count,
+            log_header: None,
         })
     }
 
@@ -409,18 +394,23 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         if log_head < 0 {
             return Err("log chain short");
         }
-        let (_prev, edge) = self.read_log_edge(leaf, log_head as u32);
+        let log_h = self.log.header();
+        let (_prev, edge) = self.read_log_edge_with_header(&log_h, leaf, log_head as u32);
         Ok(edge)
     }
 
-    fn read_log_edge(&self, leaf: u32, log_idx: u32) -> (i32, E) {
+    fn read_log_edge_with_header(&self, log_h: &LogHeaderV1, leaf: u32, log_idx: u32) -> (i32, E) {
         if E::BYTES <= INLINE_EDGE_BYTES {
             let mut buf = [0u8; INLINE_EDGE_BYTES];
-            let (prev, _src) = self.log.read_entry(leaf, log_idx, &mut buf[..E::BYTES]);
+            let (prev, _src) = self
+                .log
+                .read_entry_with_header(log_h, leaf, log_idx, &mut buf[..E::BYTES]);
             (prev, E::read_from(&buf[..E::BYTES]))
         } else {
             let mut buf = vec![0u8; E::BYTES];
-            let (prev, _src) = self.log.read_entry(leaf, log_idx, &mut buf);
+            let (prev, _src) = self
+                .log
+                .read_entry_with_header(log_h, leaf, log_idx, &mut buf);
             (prev, E::read_from(&buf))
         }
     }
@@ -436,7 +426,6 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         A: VertexAccess<V>,
     {
         let edge_layout = self.edge_layout();
-        let log_layout = self.log_layout();
         let vidx = vertex_index(vid);
         if vidx >= vertices.len() as usize {
             return Err("vertex out of range");
@@ -453,14 +442,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
                 vertices.set(vid, &v.with_degree(v.degree() + 1));
                 InsertLocation::Slab
             } else {
-                self.insert_into_log_with_layout(
-                    &edge_layout,
-                    &log_layout,
-                    vertices,
-                    vid,
-                    v,
-                    edge,
-                )?;
+                self.insert_into_log_with_layout(&edge_layout, vertices, vid, v, edge)?;
                 InsertLocation::Log
             };
         self.edges
@@ -579,7 +561,6 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
     fn insert_into_log_with_layout<V, A>(
         &self,
         edge_layout: &EdgeLayout,
-        log_layout: &LogLayout,
         vertices: &A,
         vid: VertexId,
         v: V,
@@ -590,8 +571,9 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         A: VertexAccess<V>,
     {
         let leaf = leaf_segment(vid, edge_layout.segment_size);
-        let idx = self.log.read_idx(leaf);
-        if idx < 0 || idx >= log_layout.max_log_entries as i32 {
+        let log_h = self.log.header();
+        let idx = self.log.read_idx_with_header(&log_h, leaf);
+        if idx < 0 || idx >= log_h.max_log_entries as i32 {
             return Err("segment log full");
         }
         let src = i32::try_from(u32::from(vid)).map_err(|_| "vertex id exceeds i32")?;
@@ -599,16 +581,30 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
             let mut payload = [0u8; INLINE_EDGE_BYTES];
             edge.write_to(&mut payload[..E::BYTES]);
             self.log
-                .write_entry(leaf, idx as u32, v.log_head(), src, &payload[..E::BYTES])
+                .write_entry_with_header(
+                    &log_h,
+                    leaf,
+                    idx as u32,
+                    v.log_head(),
+                    src,
+                    &payload[..E::BYTES],
+                )
                 .map_err(|_| "write log failed")?;
         } else {
             let mut payload = vec![0u8; E::BYTES];
             edge.write_to(&mut payload);
             self.log
-                .write_entry(leaf, idx as u32, v.log_head(), src, &payload)
+                .write_entry_with_header(
+                    &log_h,
+                    leaf,
+                    idx as u32,
+                    v.log_head(),
+                    src,
+                    &payload,
+                )
                 .map_err(|_| "write log failed")?;
         }
-        self.log.write_idx(leaf, idx + 1);
+        self.log.write_idx_with_header(&log_h, leaf, idx + 1);
         vertices.set(vid, &v.with_log_head(idx).with_degree(v.degree() + 1));
         Ok(())
     }
@@ -661,15 +657,17 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
                 < v.base_slot_start()
                     .saturating_add(u64::from(v.span_capacity()));
         }
-        let current_leaf = (vidx as u32) / self.header().segment_size.max(1);
+        let h = self.header();
+        let seg_sz = h.segment_size.max(1);
+        let current_leaf = (vidx as u32) / seg_sz;
         if vidx + 1 < vertices.len() as usize
-            && ((vidx + 1) as u32) / self.header().segment_size.max(1) == current_leaf
+            && ((vidx + 1) as u32) / seg_sz == current_leaf
         {
             vertices.get(vertex_id(vidx + 1)).base_slot_start() > loc
-        } else if current_leaf < self.header().segment_count {
+        } else if current_leaf < h.segment_count {
             let c = self
                 .counts
-                .get(u64::from(current_leaf + self.header().segment_count));
+                .get(u64::from(current_leaf + h.segment_count));
             loc < vertices
                 .get(vertex_id(vidx))
                 .base_slot_start()
@@ -718,15 +716,18 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
 
     pub(crate) fn log_is_full(&self, vid: VertexId) -> bool {
         let edge_layout = self.edge_layout();
-        let log_layout = self.log_layout();
+        let log_h = self.log.header();
         let leaf = leaf_segment(vid, edge_layout.segment_size);
-        self.log.read_idx(leaf) >= log_layout.max_log_entries as i32
+        self.log.read_idx_with_header(&log_h, leaf) >= log_h.max_log_entries as i32
     }
 
     pub(crate) fn log_fill_ratio(&self, segment: SegmentId) -> f64 {
-        let log_layout = self.log_layout();
-        let idx = self.log.read_idx(u32::from(segment)).max(0) as f64;
-        let capacity = log_layout.max_log_entries.max(1) as f64;
+        let log_h = self.log.header();
+        let idx = self
+            .log
+            .read_idx_with_header(&log_h, u32::from(segment))
+            .max(0) as f64;
+        let capacity = log_h.max_log_entries.max(1) as f64;
         idx / capacity
     }
 
@@ -775,6 +776,7 @@ pub struct OutEdgesIter<'a, E: CsrEdge, M: Memory> {
     remaining_log: u32,
     base_slot_start: u64,
     remaining_slab: u32,
+    log_header: Option<LogHeaderV1>,
 }
 
 impl<E, M> Iterator for OutEdgesIter<'_, E, M>
@@ -791,7 +793,12 @@ where
                 self.remaining_slab = 0;
                 return None;
             }
-            let (prev, edge) = self.store.read_log_edge(self.leaf, self.next_log as u32);
+            let log_h = self
+                .log_header
+                .get_or_insert_with(|| self.store.log.header());
+            let (prev, edge) = self
+                .store
+                .read_log_edge_with_header(log_h, self.leaf, self.next_log as u32);
             self.next_log = prev;
             self.remaining_log -= 1;
             return Some(edge);

@@ -1229,11 +1229,11 @@ mod tests {
         };
 
         fn to_bytes(&self) -> Cow<'_, [u8]> {
-            Cow::Owned(self.0.to_vec())
+            Cow::Owned(Vec::from(self.0))
         }
 
         fn into_bytes(self) -> Vec<u8> {
-            self.0.to_vec()
+            Vec::from(self.0)
         }
 
         fn from_bytes(bytes: Cow<[u8]>) -> Self {
