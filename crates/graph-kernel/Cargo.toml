@@ -8,4 +8,5 @@ license.workspace = true
 bitflags.workspace = true
 gleaph-gql.workspace = true
 ic-stable-lara.workspace = true
+ic-stable-structures.workspace = true
 thiserror.workspace = true
