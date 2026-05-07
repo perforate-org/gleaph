@@ -252,8 +252,9 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
     }
 
     pub(crate) fn allocate_span(&self, len: u64) -> Result<u64, GrowFailed> {
+        let cap = self.header().elem_capacity;
         if len == 0 {
-            return Ok(self.header().elem_capacity);
+            return Ok(cap);
         }
         if let Some(span) = self.free_spans.take_best_fit(len).map_err(|_| GrowFailed {
             current_size: 0,
@@ -262,7 +263,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
             return Ok(span.start_slot);
         }
 
-        let start = self.header().elem_capacity;
+        let start = cap;
         self.set_elem_capacity(start.saturating_add(len))?;
         Ok(start)
     }
@@ -436,7 +437,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         }
         let loc = v.base_slot_start().saturating_add(u64::from(v.degree()));
         let location =
-            if self.have_space_on_slab(vertices, vidx, &v, loc, edge_layout.elem_capacity) {
+            if self.have_space_on_slab(vertices, vidx, &v, loc, &edge_layout) {
                 self.write_slot(loc, edge)
                     .map_err(|_| "write edge slot failed")?;
                 vertices.set(vid, &v.with_degree(v.degree() + 1));
@@ -640,13 +641,13 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
             .min(u64::from(u32::MAX)) as u32
     }
 
-    pub(crate) fn have_space_on_slab<V, A>(
+    fn have_space_on_slab<V, A>(
         &self,
         vertices: &A,
         vidx: usize,
         v: &V,
         loc: u64,
-        elem_capacity: u64,
+        edge_layout: &EdgeLayout,
     ) -> bool
     where
         V: LaraVertex,
@@ -657,23 +658,22 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
                 < v.base_slot_start()
                     .saturating_add(u64::from(v.span_capacity()));
         }
-        let h = self.header();
-        let seg_sz = h.segment_size.max(1);
+        let seg_sz = edge_layout.segment_size.max(1);
         let current_leaf = (vidx as u32) / seg_sz;
         if vidx + 1 < vertices.len() as usize
             && ((vidx + 1) as u32) / seg_sz == current_leaf
         {
             vertices.get(vertex_id(vidx + 1)).base_slot_start() > loc
-        } else if current_leaf < h.segment_count {
+        } else if current_leaf < edge_layout.segment_count {
             let c = self
                 .counts
-                .get(u64::from(current_leaf + h.segment_count));
+                .get(u64::from(current_leaf + edge_layout.segment_count));
             loc < vertices
                 .get(vertex_id(vidx))
                 .base_slot_start()
                 .saturating_add(c.total.max(0) as u64)
         } else {
-            loc < elem_capacity
+            loc < edge_layout.elem_capacity
         }
     }
 
