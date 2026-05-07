@@ -336,17 +336,26 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         }
 
         let log_count = degree - slab_count;
+        let leaf = leaf_segment(vid, edge_layout.segment_size);
+        let log_h = self.log.header();
+
+        let mut log_i = v.log_head();
         let filler = if slab_count > 0 {
             out[0]
         } else {
-            self.read_log_head_edge(leaf_segment(vid, edge_layout.segment_size), v.log_head())?
+            if log_i < 0 {
+                return Err("log chain short");
+            }
+            let (prev, edge) = self.read_log_edge_with_header(&log_h, leaf, log_i as u32);
+            log_i = prev;
+            edge
         };
         out.resize(degree, filler);
 
-        let leaf = leaf_segment(vid, edge_layout.segment_size);
-        let log_h = self.log.header();
-        let mut log_i = v.log_head();
         for offset in (0..log_count).rev() {
+            if slab_count == 0 && offset == log_count.saturating_sub(1) {
+                continue;
+            }
             if log_i < 0 {
                 return Err("log chain short");
             }
@@ -389,15 +398,6 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
             remaining_slab: slab_count,
             log_header: None,
         })
-    }
-
-    fn read_log_head_edge(&self, leaf: u32, log_head: i32) -> Result<E, &'static str> {
-        if log_head < 0 {
-            return Err("log chain short");
-        }
-        let log_h = self.log.header();
-        let (_prev, edge) = self.read_log_edge_with_header(&log_h, leaf, log_head as u32);
-        Ok(edge)
     }
 
     fn read_log_edge_with_header(&self, log_h: &LogHeaderV1, leaf: u32, log_idx: u32) -> (i32, E) {
@@ -714,10 +714,12 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         Ok(())
     }
 
-    pub(crate) fn log_is_full(&self, vid: VertexId) -> bool {
-        let edge_layout = self.edge_layout();
+    /// Returns whether the overflow log for `vid`'s leaf segment has no free slots.
+    ///
+    /// `segment_size` must match the edge slab header's `segment_size` field.
+    pub(crate) fn log_is_full_with_segment_size(&self, vid: VertexId, segment_size: u32) -> bool {
         let log_h = self.log.header();
-        let leaf = leaf_segment(vid, edge_layout.segment_size);
+        let leaf = leaf_segment(vid, segment_size);
         self.log.read_idx_with_header(&log_h, leaf) >= log_h.max_log_entries as i32
     }
 

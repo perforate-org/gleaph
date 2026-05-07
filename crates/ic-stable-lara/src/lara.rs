@@ -353,11 +353,15 @@ where
         src: VertexId,
         edge: E,
     ) -> Result<InsertOutcome, &'static str> {
-        if self.edges.log_is_full(src) {
+        let mut layout = self.layout();
+        if self
+            .edges
+            .log_is_full_with_segment_size(src, layout.segment_size)
+        {
             self.rebalance_leaf_for(src)
                 .map_err(|_| "rebalance failed")?;
+            layout = self.layout();
         }
-        let layout = self.layout();
         let segment = self.segment_for_vertex_id_with_layout(&layout, src);
         let location = match self.edges.insert_edge(&self.vertices, src, edge) {
             Ok(location) => location,
