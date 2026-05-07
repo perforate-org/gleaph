@@ -90,7 +90,8 @@ fn journal_offset() -> u64 {
 }
 
 fn journal_end_bytes() -> u64 {
-    journal_offset().saturating_add((crate::JOURNAL_CAP_SLOTS as u64).saturating_mul(JOURNAL_RECORD_SIZE))
+    journal_offset()
+        .saturating_add((crate::JOURNAL_CAP_SLOTS as u64).saturating_mul(JOURNAL_RECORD_SIZE))
 }
 
 /// Start of the packed `u64` snapshot; always 8-byte aligned after zero padding.
@@ -135,11 +136,7 @@ fn read_header<M: Memory>(memory: &M) -> ([u8; 3], u8, u64, u64, u64) {
 }
 
 /// Writes the stable header fields.
-fn write_header<M: Memory>(
-    memory: &M,
-    len_bits: u64,
-    word_cap: u64,
-) -> Result<(), GrowFailed> {
+fn write_header<M: Memory>(memory: &M, len_bits: u64, word_cap: u64) -> Result<(), GrowFailed> {
     write(memory, MAGIC_OFFSET, &MAGIC);
     write(memory, VERSION_OFFSET, &[VERSION]);
     write_u64(memory, LEN_OFFSET, len_bits);

@@ -92,8 +92,8 @@ pub const JOURNAL_REGION_BYTES: usize = JOURNAL_CAP_SLOTS * 5;
 /// `Memory::read` chunk size during journal replay (must divide `JOURNAL_REGION_BYTES` and 5).
 pub const JOURNAL_READ_CHUNK_BYTES: usize = 5120;
 
-const _: () = assert!(JOURNAL_REGION_BYTES % JOURNAL_READ_CHUNK_BYTES == 0);
-const _: () = assert!(JOURNAL_READ_CHUNK_BYTES % 5 == 0);
+const _: () = assert!(JOURNAL_REGION_BYTES.is_multiple_of(JOURNAL_READ_CHUNK_BYTES));
+const _: () = assert!(JOURNAL_READ_CHUNK_BYTES.is_multiple_of(5));
 
 /// Bit mask for one on-disk journal record: **40 low bits** of a little-endian 5-byte encoding.
 pub const JOURNAL_RECORD_RAW_MASK: u64 = (1u64 << 40) - 1;

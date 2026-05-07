@@ -97,7 +97,8 @@ static IC_EXTENSION_BINARY_DECODE: IcExtensionBinaryDecode = IcExtensionBinaryDe
 ///
 /// Idempotent for the process: only the first successful [`gleaph_gql::try_install_global_rkyv_extension_binary_decode`] wins. Call during canister or service startup before loading rkyv data that may contain [`Principal`](Principal).
 pub fn install_ic_extension_binary_decode_for_rkyv() {
-    let _ = gleaph_gql::try_install_global_rkyv_extension_binary_decode(&IC_EXTENSION_BINARY_DECODE);
+    let _ =
+        gleaph_gql::try_install_global_rkyv_extension_binary_decode(&IC_EXTENSION_BINARY_DECODE);
 }
 
 #[cfg(test)]
@@ -151,7 +152,8 @@ mod tests {
         let p = Principal::from_text("aaaaa-aa").expect("management id");
         let v: Value = PrincipalValue(p).into();
         let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&v).expect("to_bytes");
-        let back: Value = rkyv::from_bytes::<Value, rkyv::rancor::Error>(&bytes).expect("from_bytes");
+        let back: Value =
+            rkyv::from_bytes::<Value, rkyv::rancor::Error>(&bytes).expect("from_bytes");
         assert_eq!(back, v);
     }
 }

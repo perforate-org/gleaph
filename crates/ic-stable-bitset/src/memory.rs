@@ -1,6 +1,6 @@
 use core::fmt::{Display, Formatter};
-use ic_stable_structures::Memory;
 use core::slice;
+use ic_stable_structures::Memory;
 use std::error;
 use std::sync::OnceLock;
 
@@ -57,7 +57,10 @@ pub(crate) fn read_u64_words_vec<M: Memory>(m: &M, offset: u64, word_count: u64)
         #[cfg(target_endian = "little")]
         {
             let bytes = unsafe {
-                slice::from_raw_parts_mut(spare[filled..filled + take].as_mut_ptr() as *mut u8, take * 8)
+                slice::from_raw_parts_mut(
+                    spare[filled..filled + take].as_mut_ptr() as *mut u8,
+                    take * 8,
+                )
             };
             m.read(base, bytes);
         }
@@ -92,9 +95,8 @@ pub(crate) fn write_u64_words_direct<M: Memory>(m: &M, offset: u64, words: &[u64
         let take = remaining.len().min(BULK_WORDS);
         #[cfg(target_endian = "little")]
         {
-            let bytes = unsafe {
-                slice::from_raw_parts(remaining[..take].as_ptr() as *const u8, take * 8)
-            };
+            let bytes =
+                unsafe { slice::from_raw_parts(remaining[..take].as_ptr() as *const u8, take * 8) };
             write(m, base, bytes);
         }
         #[cfg(not(target_endian = "little"))]

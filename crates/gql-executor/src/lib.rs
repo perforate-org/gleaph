@@ -2440,8 +2440,8 @@ mod tests {
             GraphStoreDiagnosticsView, last_projected_overlay_event, project_overlay_write_history,
         };
 
-        pub(super) fn bootstrap_empty_graph_pma_harness() -> GraphStoreKernelHarness<GraphStoreVecMemory>
-        {
+        pub(super) fn bootstrap_empty_graph_pma_harness()
+        -> GraphStoreKernelHarness<GraphStoreVecMemory> {
             GraphStoreKernelHarness::bootstrap_empty(GraphStoreVecMemory::default())
                 .expect("bootstrap graph-store harness")
         }
@@ -3933,10 +3933,11 @@ mod tests {
 
     #[test]
     fn executes_plan_against_graph_pma_backend() {
-        let mut harness = gleaph_graph_store::integration::GraphStoreKernelHarness::bootstrap_empty(
-            VecMemory::default(),
-        )
-        .expect("bootstrap");
+        let mut harness =
+            gleaph_graph_store::integration::GraphStoreKernelHarness::bootstrap_empty(
+                VecMemory::default(),
+            )
+            .expect("bootstrap");
         let mut graph = harness.bind_overlay();
         let alice = graph
             .insert_node(
@@ -4030,10 +4031,11 @@ mod tests {
 
     #[test]
     fn persistent_graph_debug_report_formats_representative_graph_shape() {
-        let mut harness = gleaph_graph_store::integration::GraphStoreKernelHarness::bootstrap_empty(
-            VecMemory::default(),
-        )
-        .expect("bootstrap");
+        let mut harness =
+            gleaph_graph_store::integration::GraphStoreKernelHarness::bootstrap_empty(
+                VecMemory::default(),
+            )
+            .expect("bootstrap");
         let mut graph = harness.bind_overlay();
         let alice = graph
             .insert_node(
@@ -4088,10 +4090,11 @@ mod tests {
 
     #[test]
     fn executes_dml_against_graph_pma_backend_and_reopens() {
-        let mut harness = gleaph_graph_store::integration::GraphStoreKernelHarness::bootstrap_empty(
-            VecMemory::default(),
-        )
-        .expect("bootstrap");
+        let mut harness =
+            gleaph_graph_store::integration::GraphStoreKernelHarness::bootstrap_empty(
+                VecMemory::default(),
+            )
+            .expect("bootstrap");
         let mut graph = harness.bind_overlay();
         let alice = graph
             .insert_node(
@@ -4310,8 +4313,8 @@ mod tests {
             .try_write_all_to_stable_memory(&mem_clone)
             .expect("flush before reopen");
         let manager = harness.facade().manager.borrow().clone();
-        let mut reopened_facade =
-            GraphStore::hydrate_from_stable_memory(manager, mem_clone).expect("graph should reopen");
+        let mut reopened_facade = GraphStore::hydrate_from_stable_memory(manager, mem_clone)
+            .expect("graph should reopen");
         let mem_rc = Rc::clone(&reopened_facade.memory);
         let reopened = reopened_facade.bind_kernel_overlay(mem_rc.as_ref());
         assert!(reopened.get_node(post_id).expect("get node").is_none());
