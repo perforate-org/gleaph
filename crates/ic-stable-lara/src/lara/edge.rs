@@ -352,16 +352,24 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         };
         out.resize(degree, filler);
 
-        for offset in (0..log_count).rev() {
-            if slab_count == 0 && offset == log_count.saturating_sub(1) {
-                continue;
+        if slab_count == 0 {
+            for offset in (0..log_count.saturating_sub(1)).rev() {
+                if log_i < 0 {
+                    return Err("log chain short");
+                }
+                let (prev, edge) = self.read_log_edge_with_header(&log_h, leaf, log_i as u32);
+                out[slab_count + offset] = edge;
+                log_i = prev;
             }
-            if log_i < 0 {
-                return Err("log chain short");
+        } else {
+            for offset in (0..log_count).rev() {
+                if log_i < 0 {
+                    return Err("log chain short");
+                }
+                let (prev, edge) = self.read_log_edge_with_header(&log_h, leaf, log_i as u32);
+                out[slab_count + offset] = edge;
+                log_i = prev;
             }
-            let (prev, edge) = self.read_log_edge_with_header(&log_h, leaf, log_i as u32);
-            out[slab_count + offset] = edge;
-            log_i = prev;
         }
         Ok(out)
     }
@@ -396,7 +404,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
             remaining_log: log_count,
             base_slot_start: v.base_slot_start(),
             remaining_slab: slab_count,
-            log_header: None,
+            log_header: (log_count > 0).then(|| self.log.header()),
         })
     }
 
@@ -437,7 +445,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         }
         let loc = v.base_slot_start().saturating_add(u64::from(v.degree()));
         let location =
-            if self.have_space_on_slab(vertices, vidx, &v, loc, &edge_layout) {
+            if self.have_space_on_slab(vertices, vidx, &v, loc, edge_layout) {
                 self.write_slot(loc, edge)
                     .map_err(|_| "write edge slot failed")?;
                 vertices.set(vid, &v.with_degree(v.degree() + 1));
@@ -647,7 +655,7 @@ impl<E: CsrEdge + EdgePmaCountsStride, M: Memory> EdgeStore<E, M> {
         vidx: usize,
         v: &V,
         loc: u64,
-        edge_layout: &EdgeLayout,
+        edge_layout: EdgeLayout,
     ) -> bool
     where
         V: LaraVertex,
@@ -795,9 +803,7 @@ where
                 self.remaining_slab = 0;
                 return None;
             }
-            let log_h = self
-                .log_header
-                .get_or_insert_with(|| self.store.log.header());
+            let log_h = self.log_header.as_ref().unwrap();
             let (prev, edge) = self
                 .store
                 .read_log_edge_with_header(log_h, self.leaf, self.next_log as u32);
