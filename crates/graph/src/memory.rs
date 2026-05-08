@@ -1,7 +1,7 @@
 use gleaph_graph_kernel::entry::{Edge, Vertex};
 use ic_stable_lara::{DeferredBidirectionalLaraGraph as Graph, lara::maintenance::DeferredConfig};
+use ic_stable_structures::DefaultMemoryImpl;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
-use ic_stable_structures::{DefaultMemoryImpl, StableBTreeMap};
 use std::cell::RefCell;
 
 // Graph
@@ -21,6 +21,10 @@ const REVERSE_FREE_SPANS: MemoryId = MemoryId::new(12);
 const REVERSE_FREE_SPAN_BY_START: MemoryId = MemoryId::new(13);
 const MAINTENANCE_QUEUE: MemoryId = MemoryId::new(14);
 const DIRTY_WORK_ITEMS: MemoryId = MemoryId::new(15);
+
+const GRAPH_ELEM_CAPACITY: u64 = 0;
+const GRAPH_SEGMENT_SIZE: u32 = 32;
+const GRAPH_INITIAL_VERTEX_EDGE_SLOTS: u32 = 0;
 
 pub(super) type Memory = VirtualMemory<DefaultMemoryImpl>;
 
@@ -47,6 +51,9 @@ pub(super) fn init_graph() -> Graph<Edge, Vertex, Memory> {
         MEMORY_MANAGER.with(|m| m.borrow().get(REVERSE_FREE_SPAN_BY_START)),
         MEMORY_MANAGER.with(|m| m.borrow().get(MAINTENANCE_QUEUE)),
         MEMORY_MANAGER.with(|m| m.borrow().get(DIRTY_WORK_ITEMS)),
+        GRAPH_ELEM_CAPACITY,
+        GRAPH_SEGMENT_SIZE,
+        GRAPH_INITIAL_VERTEX_EDGE_SLOTS,
         DeferredConfig::default(),
     )
     .unwrap()
