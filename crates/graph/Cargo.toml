@@ -16,9 +16,11 @@ bitflags.workspace = true
 canbench-rs = { workspace = true, optional = true }
 candid.workspace = true
 derive_more = { version = "2", features = ["display", "from", "into"] }
+gleaph-gql.workspace = true
+gleaph-gql-ic.workspace = true
+gleaph-gql-planner.workspace = true
 gleaph-graph-catalog.workspace = true
 gleaph-graph-kernel.workspace = true
-gleaph-gql.workspace = true
 ic-cdk.workspace = true
 ic-stable-lara.workspace = true
 ic-stable-structures.workspace = true

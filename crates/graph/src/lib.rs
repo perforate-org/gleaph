@@ -7,12 +7,14 @@ pub mod edge_properties;
 pub mod label_catalog;
 mod memory;
 pub mod mutation_executor;
+pub mod plan_mutation_executor;
 pub mod property_catalog;
 pub mod store;
 pub mod vertex_labels;
 pub mod vertex_properties;
 
 pub use mutation_executor::GraphMutationExecutor;
+pub use plan_mutation_executor::{PlanMutationBindings, PlanMutationError, PlanMutationExecutor};
 pub use store::GraphStore;
 
 thread_local! {
