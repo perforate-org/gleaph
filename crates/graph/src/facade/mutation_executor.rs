@@ -256,7 +256,7 @@ mod tests {
             )
             .expect("insert undirected edge");
 
-        assert_eq!(undirected.owner_vertex_id, source);
+        assert_eq!(undirected.owner_vertex_id, target);
         assert_eq!(
             store.edge_property(
                 undirected.owner_vertex_id,

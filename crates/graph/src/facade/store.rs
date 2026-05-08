@@ -660,8 +660,8 @@ mod tests {
             .insert_undirected_edge(target, source, EdgeMeta::default())
             .expect("insert undirected edge");
 
-        assert_eq!(undirected.owner_vertex_id, source);
-        assert_eq!(undirected.vertex_edge_id, VertexEdgeId::from_raw(2));
+        assert_eq!(undirected.owner_vertex_id, target);
+        assert_eq!(undirected.vertex_edge_id, VertexEdgeId::from_raw(1));
 
         let target_out_edges = store.out_edges(target).expect("read target out edges");
         assert!(target_out_edges.iter().any(|edge| {

@@ -82,8 +82,10 @@ impl<M: Memory> VertexEdgeIdAllocator<M> {
     }
 }
 
+/// Picks the endpoint with the greater numeric key (`VertexId` interpreted as little-endian `u32`)
+/// so undirected edge ids are allocated on the higher-numbered vertex (spreading load when ids grow over time).
 pub fn canonical_undirected_owner(endpoint_a: VertexId, endpoint_b: VertexId) -> VertexId {
-    if owner_key(endpoint_a) <= owner_key(endpoint_b) {
+    if owner_key(endpoint_a) >= owner_key(endpoint_b) {
         endpoint_a
     } else {
         endpoint_b
@@ -143,15 +145,15 @@ mod tests {
     }
 
     #[test]
-    fn undirected_owner_is_lower_endpoint() {
+    fn undirected_owner_is_higher_endpoint() {
         let mut allocator = allocator();
         let high = VertexId::from(10);
         let low = VertexId::from(3);
 
-        assert_eq!(canonical_undirected_owner(high, low), low);
+        assert_eq!(canonical_undirected_owner(high, low), high);
         assert_eq!(
             allocator.allocate_undirected(high, low).unwrap(),
-            (low, VertexEdgeId::from_raw(1))
+            (high, VertexEdgeId::from_raw(1))
         );
     }
 
