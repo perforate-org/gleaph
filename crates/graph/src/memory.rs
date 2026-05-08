@@ -3,9 +3,9 @@ use crate::property_catalog::PropertyCatalog;
 use crate::vertex_labels::VertexLabelStore;
 use crate::vertex_properties::VertexPropertyStore;
 use gleaph_graph_kernel::entry::{Edge, Vertex};
-use ic_stable_lara::{lara::maintenance::DeferredConfig, DeferredBidirectionalLaraGraph as Graph};
-use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
+use ic_stable_lara::{DeferredBidirectionalLaraGraph as Graph, lara::maintenance::DeferredConfig};
 use ic_stable_structures::DefaultMemoryImpl;
+use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use std::cell::RefCell;
 
 // Graph

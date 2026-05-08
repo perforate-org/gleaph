@@ -118,11 +118,7 @@ impl CsrVertex for Vertex {
 
     fn log_head(self) -> i32 {
         let encoded = self.metadata_word() & LOG_HEAD_PLUS_ONE_MASK;
-        if encoded == 0 {
-            -1
-        } else {
-            encoded as i32 - 1
-        }
+        if encoded == 0 { -1 } else { encoded as i32 - 1 }
     }
 
     fn with_log_head(mut self, idx: i32) -> Self {

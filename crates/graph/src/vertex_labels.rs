@@ -1,6 +1,6 @@
 use gleaph_graph_kernel::entry::{LabelId, Vertex};
 use ic_stable_lara::VertexId;
-use ic_stable_structures::{storable::Bound, Memory, StableBTreeMap, Storable};
+use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
 use std::{borrow::Cow, fmt};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
