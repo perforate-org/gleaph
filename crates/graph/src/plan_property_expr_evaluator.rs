@@ -6,7 +6,9 @@
 use crate::plan_mutation_error::PlanMutationError;
 use gleaph_gql::Value;
 use gleaph_gql::ast::{BinaryOp, CmpOp, Expr, ExprKind, TruthValue, UnaryOp};
-use gleaph_gql::numeric_ops::{eval_binary_numeric, eval_unary_numeric};
+use gleaph_gql::numeric_ops::{
+    eval_binary_numeric, eval_unary_numeric, NumericOpError,
+};
 use gleaph_gql::value_cmp::compare_values;
 use gleaph_gql_planner::plan::PropertyAssignment;
 use std::cmp::Ordering;
@@ -206,7 +208,9 @@ fn eval_compare_expr(
     }
 
     let Some(ordering) = compare_property_values(&left, &right) else {
-        return invalid_expr_value(property);
+        return Err(PlanMutationError::ExpressionIncomparableValues {
+            property: property.to_owned(),
+        });
     };
     let matched = match op {
         CmpOp::Eq => ordering == Ordering::Equal,
@@ -236,7 +240,7 @@ fn eval_concat_expr(property: &str, left: Value, right: Value) -> Result<Value, 
 }
 
 fn eval_unary_expr(property: &str, op: UnaryOp, value: Value) -> Result<Value, PlanMutationError> {
-    eval_unary_numeric(op, value).map_err(|_| invalid_expr_value_err(property))
+    eval_unary_numeric(op, value).map_err(|err| map_numeric_op_err(property, err))
 }
 
 fn eval_binary_expr(
@@ -255,7 +259,20 @@ fn eval_binary_expr(
         return Ok(Value::Text(format!("{left}{right}")));
     }
 
-    eval_binary_numeric(left, op, right).map_err(|_| invalid_expr_value_err(property))
+    eval_binary_numeric(left, op, right).map_err(|err| map_numeric_op_err(property, err))
+}
+
+fn map_numeric_op_err(property: &str, err: NumericOpError) -> PlanMutationError {
+    let property = property.to_owned();
+    match err {
+        NumericOpError::DivisionByZero => PlanMutationError::ExpressionDivisionByZero { property },
+        NumericOpError::Overflow => PlanMutationError::ExpressionNumericOverflow { property },
+        NumericOpError::NonFinite => PlanMutationError::ExpressionNonFiniteNumeric { property },
+        NumericOpError::UnsupportedConversion => {
+            PlanMutationError::ExpressionUnsupportedNumericConversion { property }
+        }
+        NumericOpError::InvalidOperand => PlanMutationError::InvalidExpressionValue { property },
+    }
 }
 
 fn invalid_expr_value(property: &str) -> Result<Value, PlanMutationError> {
@@ -410,6 +427,44 @@ mod tests {
             .expect("decimal plus f256"),
             Value::Float256("3.5".parse::<f256::f256>().expect("f256"))
         );
+    }
+
+    #[test]
+    fn division_by_zero_maps_to_distinct_error() {
+        assert!(matches!(
+            eval_binary_expr("x", Value::Int64(1), BinaryOp::Div, Value::Int64(0)),
+            Err(PlanMutationError::ExpressionDivisionByZero { property }) if property == "x"
+        ));
+    }
+
+    #[test]
+    fn incomparable_comparison_maps_to_distinct_error() {
+        let err = eval_compare_expr(
+            "c",
+            Value::Text("a".into()),
+            CmpOp::Lt,
+            Value::Int64(1),
+        )
+        .expect_err("expected incomparable");
+        assert!(matches!(
+            err,
+            PlanMutationError::ExpressionIncomparableValues { property } if property == "c"
+        ));
+    }
+
+    #[test]
+    fn non_finite_float_division_maps_to_distinct_error() {
+        let err = eval_binary_expr(
+            "f",
+            Value::Float32(1.0),
+            BinaryOp::Div,
+            Value::Float32(0.0),
+        )
+        .expect_err("expected non-finite");
+        assert!(matches!(
+            err,
+            PlanMutationError::ExpressionNonFiniteNumeric { property } if property == "f"
+        ));
     }
 
     #[test]

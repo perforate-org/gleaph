@@ -10,6 +10,9 @@ pub enum NumericOpError {
     DivisionByZero,
     Overflow,
     NonFinite,
+    /// Operand is numeric but cannot be represented in the required form (e.g. decimal→float,
+    /// wide int→float, or `f256` string roundtrip).
+    UnsupportedConversion,
 }
 
 pub fn eval_unary_numeric(op: UnaryOp, value: Value) -> Result<Value, NumericOpError> {
@@ -316,30 +319,30 @@ fn eval_u256_binary(left: Value, op: BinaryOp, right: Value) -> Result<Value, Nu
 fn eval_float_binary(left: Value, op: BinaryOp, right: Value) -> Result<Value, NumericOpError> {
     match max_float_rank(&left, &right) {
         Some(FloatRank::F16) => {
-            let left = float16_value(&left).ok_or(NumericOpError::InvalidOperand)?;
-            let right = float16_value(&right).ok_or(NumericOpError::InvalidOperand)?;
+            let left = float16_value(&left).ok_or(NumericOpError::UnsupportedConversion)?;
+            let right = float16_value(&right).ok_or(NumericOpError::UnsupportedConversion)?;
             finite_float16(apply_float_op(left, op, right))
         }
         Some(FloatRank::F32) => {
-            let left = float32_value(&left).ok_or(NumericOpError::InvalidOperand)?;
-            let right = float32_value(&right).ok_or(NumericOpError::InvalidOperand)?;
+            let left = float32_value(&left).ok_or(NumericOpError::UnsupportedConversion)?;
+            let right = float32_value(&right).ok_or(NumericOpError::UnsupportedConversion)?;
             finite_float32(apply_float_op(left, op, right))
         }
         Some(FloatRank::F64) => {
-            let left = left.as_f64().ok_or(NumericOpError::InvalidOperand)?;
-            let right = right.as_f64().ok_or(NumericOpError::InvalidOperand)?;
+            let left = left.as_f64().ok_or(NumericOpError::UnsupportedConversion)?;
+            let right = right.as_f64().ok_or(NumericOpError::UnsupportedConversion)?;
             finite_float64(apply_float_op(left, op, right))
         }
         #[cfg(feature = "f128")]
         Some(FloatRank::F128) => {
-            let left = left.as_f128().ok_or(NumericOpError::InvalidOperand)?;
-            let right = right.as_f128().ok_or(NumericOpError::InvalidOperand)?;
+            let left = left.as_f128().ok_or(NumericOpError::UnsupportedConversion)?;
+            let right = right.as_f128().ok_or(NumericOpError::UnsupportedConversion)?;
             finite_float128(apply_float_op(left, op, right))
         }
         #[cfg(feature = "f256")]
         Some(FloatRank::F256) => {
-            let left = left.as_f256().ok_or(NumericOpError::InvalidOperand)?;
-            let right = right.as_f256().ok_or(NumericOpError::InvalidOperand)?;
+            let left = left.as_f256().ok_or(NumericOpError::UnsupportedConversion)?;
+            let right = right.as_f256().ok_or(NumericOpError::UnsupportedConversion)?;
             finite_float256(apply_float_op(left, op, right))
         }
         None => Err(NumericOpError::InvalidOperand),
@@ -437,7 +440,7 @@ fn i256_to_f256(value: ethnum::I256) -> Result<f256::f256, NumericOpError> {
     value
         .to_string()
         .parse::<f256::f256>()
-        .map_err(|_| NumericOpError::InvalidOperand)
+        .map_err(|_| NumericOpError::UnsupportedConversion)
 }
 
 #[cfg(feature = "f256")]
@@ -445,7 +448,7 @@ fn u256_to_f256(value: ethnum::U256) -> Result<f256::f256, NumericOpError> {
     value
         .to_string()
         .parse::<f256::f256>()
-        .map_err(|_| NumericOpError::InvalidOperand)
+        .map_err(|_| NumericOpError::UnsupportedConversion)
 }
 
 fn finite_float16(value: half::f16) -> Result<Value, NumericOpError> {

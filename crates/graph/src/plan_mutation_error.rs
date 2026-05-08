@@ -10,7 +10,13 @@ pub enum PlanMutationError {
     MissingVertexBinding { variable: String },
     MissingElementBinding { variable: String },
     UnsupportedExpression { property: String },
+    /// Operand type or shape is invalid for the expression (e.g. `NOT` on a string).
     InvalidExpressionValue { property: String },
+    ExpressionDivisionByZero { property: String },
+    ExpressionNumericOverflow { property: String },
+    ExpressionNonFiniteNumeric { property: String },
+    ExpressionIncomparableValues { property: String },
+    ExpressionUnsupportedNumericConversion { property: String },
     UnsupportedSetItem(&'static str),
     UnsupportedRemoveItem(&'static str),
     MissingParameter { name: String },
@@ -35,6 +41,30 @@ impl fmt::Display for PlanMutationError {
             }
             Self::InvalidExpressionValue { property } => {
                 write!(f, "invalid property expression value for '{property}'")
+            }
+            Self::ExpressionDivisionByZero { property } => {
+                write!(f, "division by zero in property expression for '{property}'")
+            }
+            Self::ExpressionNumericOverflow { property } => {
+                write!(f, "numeric overflow in property expression for '{property}'")
+            }
+            Self::ExpressionNonFiniteNumeric { property } => {
+                write!(
+                    f,
+                    "non-finite float result in property expression for '{property}'"
+                )
+            }
+            Self::ExpressionIncomparableValues { property } => {
+                write!(
+                    f,
+                    "incomparable values in property expression comparison for '{property}'"
+                )
+            }
+            Self::ExpressionUnsupportedNumericConversion { property } => {
+                write!(
+                    f,
+                    "unsupported numeric conversion in property expression for '{property}'"
+                )
             }
             Self::UnsupportedSetItem(item) => write!(f, "unsupported SET item: {item}"),
             Self::UnsupportedRemoveItem(item) => write!(f, "unsupported REMOVE item: {item}"),
