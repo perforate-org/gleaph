@@ -3,7 +3,9 @@ use crate::store::{EdgeHandle, GraphStore, GraphStoreError};
 use gleaph_gql::Value;
 use gleaph_gql::ast::{Expr, ExprKind};
 use gleaph_gql::types::EdgeDirection;
-use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, PropertyAssignment, SetPlanItem, Str};
+use gleaph_gql_planner::plan::{
+    PhysicalPlan, PlanOp, PropertyAssignment, RemovePlanItem, SetPlanItem, Str,
+};
 use ic_stable_lara::VertexId;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -30,6 +32,7 @@ pub enum PlanMutationError {
     MissingElementBinding { variable: String },
     UnsupportedExpression { property: String },
     UnsupportedSetItem(&'static str),
+    UnsupportedRemoveItem(&'static str),
     MissingParameter { name: String },
 }
 
@@ -51,6 +54,7 @@ impl fmt::Display for PlanMutationError {
                 write!(f, "unsupported property expression for '{property}'")
             }
             Self::UnsupportedSetItem(item) => write!(f, "unsupported SET item: {item}"),
+            Self::UnsupportedRemoveItem(item) => write!(f, "unsupported REMOVE item: {item}"),
             Self::MissingParameter { name } => write!(f, "missing parameter '{name}'"),
         }
     }
@@ -155,6 +159,11 @@ fn execute_ops_with_bindings(
                     execute_set_item(store, item, parameters, bindings)?;
                 }
             }
+            PlanOp::RemoveProperties { items } => {
+                for item in items {
+                    execute_remove_item(store, item, bindings)?;
+                }
+            }
             PlanOp::Materialize { .. } => {}
             other if !is_mutation_op(other) => {}
             other => return Err(PlanMutationError::UnsupportedOp(plan_op_name(other))),
@@ -207,6 +216,35 @@ fn execute_set_item(
             Err(PlanMutationError::UnsupportedSetItem("AllProperties"))
         }
         SetPlanItem::Label { .. } => Err(PlanMutationError::UnsupportedSetItem("Label")),
+    }
+}
+
+fn execute_remove_item(
+    store: &GraphStore,
+    item: &RemovePlanItem,
+    bindings: &PlanMutationBindings,
+) -> Result<(), PlanMutationError> {
+    match item {
+        RemovePlanItem::Property { variable, property } => {
+            let Some(property_id) = store.property_id(property) else {
+                return Ok(());
+            };
+
+            if let Some(vertex_id) = bindings.vertices.get(variable.as_ref()) {
+                store.remove_vertex_property(*vertex_id, property_id);
+                return Ok(());
+            }
+
+            if let Some(edge) = bindings.edges.get(variable.as_ref()) {
+                store.remove_edge_property(edge.owner_vertex_id, edge.vertex_edge_id, property_id);
+                return Ok(());
+            }
+
+            Err(PlanMutationError::MissingElementBinding {
+                variable: variable.to_string(),
+            })
+        }
+        RemovePlanItem::Label { .. } => Err(PlanMutationError::UnsupportedRemoveItem("Label")),
     }
 }
 
@@ -420,6 +458,70 @@ mod tests {
         assert_eq!(
             store.edge_property(edge.owner_vertex_id, edge.vertex_edge_id, weight),
             Some(Value::Int64(7))
+        );
+    }
+
+    #[test]
+    fn remove_properties_removes_vertex_and_edge_properties() {
+        let store = GraphStore::new();
+        let plan = PhysicalPlan {
+            ops: vec![
+                PlanOp::InsertVertex {
+                    variable: Some("a".into()),
+                    labels: vec![],
+                    properties: vec![PropertyAssignment {
+                        name: "name".into(),
+                        value: Expr::new(ExprKind::Literal(Value::Text("Alice".into()))),
+                    }],
+                },
+                PlanOp::InsertVertex {
+                    variable: Some("b".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertEdge {
+                    variable: Some("e".into()),
+                    src: "a".into(),
+                    dst: "b".into(),
+                    direction: EdgeDirection::PointingRight,
+                    labels: vec![],
+                    properties: vec![PropertyAssignment {
+                        name: "weight".into(),
+                        value: Expr::new(ExprKind::Literal(Value::Int64(7))),
+                    }],
+                },
+                PlanOp::RemoveProperties {
+                    items: vec![
+                        RemovePlanItem::Property {
+                            variable: "a".into(),
+                            property: "name".into(),
+                        },
+                        RemovePlanItem::Property {
+                            variable: "e".into(),
+                            property: "weight".into(),
+                        },
+                        RemovePlanItem::Property {
+                            variable: "a".into(),
+                            property: "missing_property_is_noop".into(),
+                        },
+                    ],
+                },
+            ],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: Default::default(),
+        };
+
+        let bindings = store
+            .execute_plan_mutations(&plan)
+            .expect("execute remove properties");
+        let name = store.property_id("name").expect("name property");
+        let weight = store.property_id("weight").expect("weight property");
+        let edge = bindings.edges["e"];
+
+        assert_eq!(store.vertex_property(bindings.vertices["a"], name), None);
+        assert_eq!(
+            store.edge_property(edge.owner_vertex_id, edge.vertex_edge_id, weight),
+            None
         );
     }
 }
