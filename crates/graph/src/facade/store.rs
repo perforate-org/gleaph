@@ -1,4 +1,4 @@
-use crate::stable::edge_ids::{canonical_undirected_owner, VertexEdgeIdAllocatorError};
+use crate::stable::edge_ids::{VertexEdgeIdAllocatorError, canonical_undirected_owner};
 use crate::stable::label_catalog::LabelCatalogError;
 use crate::stable::property_catalog::PropertyCatalogError;
 use crate::stable::vertex_labels::VertexLabelStoreError;
@@ -11,8 +11,7 @@ use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{Edge, EdgeMeta, LabelId, PropertyId, Vertex, VertexEdgeId};
 use ic_stable_lara::{
     BidirectionalMaintenanceReport, DeferredBidirectionalLaraGraph as Graph, MaintenanceBudget,
-    VertexCount, VertexId,
-    bidirectional::DeferredBidirectionalLaraError,
+    VertexCount, VertexId, bidirectional::DeferredBidirectionalLaraError,
 };
 use std::collections::BTreeSet;
 use std::fmt;
@@ -41,7 +40,9 @@ pub enum GraphStoreError {
     VertexLabel(VertexLabelStoreError),
     PropertyValue(VertexPropertyStoreError),
     /// `DELETE` vertex without `DETACH` while the vertex still has incident edges.
-    VertexNotDetached { vertex_id: VertexId },
+    VertexNotDetached {
+        vertex_id: VertexId,
+    },
     /// No outgoing edge record matches the handle on the owner's forward row.
     EdgeNotFound {
         owner_vertex_id: VertexId,
@@ -381,16 +382,37 @@ impl GraphStore {
     /// heartbeat/timer draining; tests and small graphs typically pass
     /// `MaintenanceBudget { max_instructions: 0, .. }` to disable the instruction cap.
     ///
+    /// For timer-driven draining with a conservative cap under the ICP per-message limit,
+    /// prefer [`Self::run_timer_maintenance_tick`].
+    ///
     /// See `docs/ic-timer-maintenance-strategy.md` for the intended canister maintenance model.
     pub fn run_maintenance_best_effort(
         &self,
         budget: MaintenanceBudget,
     ) -> Result<BidirectionalMaintenanceReport, GraphStoreError> {
-        GRAPH.with(|graph| {
-            let graph = graph.borrow();
-            graph.maintenance(budget)
-        })
-        .map_err(GraphStoreError::from)
+        GRAPH
+            .with(|graph| {
+                let graph = graph.borrow();
+                graph.maintenance(budget)
+            })
+            .map_err(GraphStoreError::from)
+    }
+
+    /// Runs one **budgeted** LARA maintenance pass for timer/heartbeat loops.
+    ///
+    /// Uses [`timer_lara_maintenance_budget`](crate::facade::timer_lara_maintenance_budget),
+    /// aligned with the ICP per-message instruction ceiling documented at
+    /// <https://docs.internetcomputer.org/references/cycles-costs/#resource-limits>.
+    /// Call again on later timer ticks while the returned report's
+    /// `remaining_queue_len()` is non-zero, or when a prior budgeted run set
+    /// `instruction_budget_exhausted` and work may remain.
+    ///
+    /// Mutation paths that must finish deferred work in the same message should
+    /// keep using the internal full drain (`max_instructions: 0`) instead.
+    pub fn run_timer_maintenance_tick(
+        &self,
+    ) -> Result<BidirectionalMaintenanceReport, GraphStoreError> {
+        self.run_maintenance_best_effort(crate::facade::timer_lara_maintenance_budget())
     }
 
     /// `DELETE` semantics: remove the vertex only when it has no incident edges.
@@ -436,19 +458,11 @@ impl GraphStore {
         self.clear_edge_properties_stable(handle.owner_vertex_id, handle.vertex_edge_id);
         let removed = if edge.meta.is_undirected() {
             self.with_graph_mut(|graph| {
-                graph.remove_undirected_deferred(
-                    handle.owner_vertex_id,
-                    edge.target,
-                    edge,
-                )
+                graph.remove_undirected_deferred(handle.owner_vertex_id, edge.target, edge)
             })?
         } else {
             self.with_graph_mut(|graph| {
-                graph.remove_directed_deferred(
-                    handle.owner_vertex_id,
-                    edge.target,
-                    edge,
-                )
+                graph.remove_directed_deferred(handle.owner_vertex_id, edge.target, edge)
             })?
         };
         if !removed {
@@ -517,7 +531,11 @@ impl GraphStore {
         Ok(keys)
     }
 
-    fn clear_edge_properties_stable(&self, owner_vertex_id: VertexId, vertex_edge_id: VertexEdgeId) {
+    fn clear_edge_properties_stable(
+        &self,
+        owner_vertex_id: VertexId,
+        vertex_edge_id: VertexEdgeId,
+    ) {
         let props: Vec<PropertyId> = EDGE_PROPERTIES.with(|store| {
             store
                 .borrow()
@@ -557,19 +575,20 @@ impl GraphStore {
     ) -> Result<(), GraphStoreError> {
         self.clear_vertex_properties_stable_only(vertex_id);
 
-        let vertex = self
-            .vertex(vertex_id)
-            .ok_or_else(|| GraphStoreError::Graph(DeferredBidirectionalLaraError::VertexOutOfRange {
+        let vertex = self.vertex(vertex_id).ok_or_else(|| {
+            GraphStoreError::Graph(DeferredBidirectionalLaraError::VertexOutOfRange {
                 vid: vertex_id,
                 len: self.vertex_count(),
-            }))?;
+            })
+        })?;
         let vertex = VERTEX_LABELS.with(|labels| {
             labels
                 .borrow_mut()
                 .set_labels(vertex_id, vertex, [])
                 .map_err(GraphStoreError::from)
         })?;
-        self.set_vertex(vertex_id, vertex).map_err(GraphStoreError::from)?;
+        self.set_vertex(vertex_id, vertex)
+            .map_err(GraphStoreError::from)?;
         Ok(())
     }
 
@@ -650,5 +669,12 @@ mod tests {
                 && edge.vertex_edge_id == undirected.vertex_edge_id
                 && edge.meta.is_undirected()
         }));
+    }
+
+    #[test]
+    fn timer_maintenance_tick_runs_on_empty_graph() {
+        let store = GraphStore::new();
+        let report = store.run_timer_maintenance_tick().expect("tick");
+        assert_eq!(report.remaining_queue_len(), 0);
     }
 }

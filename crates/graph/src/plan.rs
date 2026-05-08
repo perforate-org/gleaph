@@ -5,5 +5,5 @@ mod mutation_executor;
 mod property_expr_evaluator;
 
 pub use mutation_error::PlanMutationError;
-pub use mutation_executor::{execute_ops, PlanMutationBindings, PlanMutationExecutor};
+pub use mutation_executor::{PlanMutationBindings, PlanMutationExecutor, execute_ops};
 pub use property_expr_evaluator::{PlanPropertyExprEvaluation, PlanPropertyExprEvaluator};

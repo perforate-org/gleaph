@@ -6,9 +6,7 @@
 use super::mutation_error::PlanMutationError;
 use gleaph_gql::Value;
 use gleaph_gql::ast::{BinaryOp, CmpOp, Expr, ExprKind, TruthValue, UnaryOp};
-use gleaph_gql::numeric_ops::{
-    eval_binary_numeric, eval_unary_numeric, NumericOpError,
-};
+use gleaph_gql::numeric_ops::{NumericOpError, eval_binary_numeric, eval_unary_numeric};
 use gleaph_gql::value_cmp::compare_values;
 use gleaph_gql_planner::plan::PropertyAssignment;
 use std::cmp::Ordering;
@@ -439,13 +437,8 @@ mod tests {
 
     #[test]
     fn incomparable_comparison_maps_to_distinct_error() {
-        let err = eval_compare_expr(
-            "c",
-            Value::Text("a".into()),
-            CmpOp::Lt,
-            Value::Int64(1),
-        )
-        .expect_err("expected incomparable");
+        let err = eval_compare_expr("c", Value::Text("a".into()), CmpOp::Lt, Value::Int64(1))
+            .expect_err("expected incomparable");
         assert!(matches!(
             err,
             PlanMutationError::ExpressionIncomparableValues { property } if property == "c"
@@ -454,13 +447,8 @@ mod tests {
 
     #[test]
     fn non_finite_float_division_maps_to_distinct_error() {
-        let err = eval_binary_expr(
-            "f",
-            Value::Float32(1.0),
-            BinaryOp::Div,
-            Value::Float32(0.0),
-        )
-        .expect_err("expected non-finite");
+        let err = eval_binary_expr("f", Value::Float32(1.0), BinaryOp::Div, Value::Float32(0.0))
+            .expect_err("expected non-finite");
         assert!(matches!(
             err,
             PlanMutationError::ExpressionNonFiniteNumeric { property } if property == "f"

@@ -7,19 +7,39 @@ pub enum PlanMutationError {
     Store(GraphStoreError),
     UnsupportedOp(&'static str),
     UnsupportedDirection(EdgeDirection),
-    MissingVertexBinding { variable: String },
-    MissingElementBinding { variable: String },
-    UnsupportedExpression { property: String },
+    MissingVertexBinding {
+        variable: String,
+    },
+    MissingElementBinding {
+        variable: String,
+    },
+    UnsupportedExpression {
+        property: String,
+    },
     /// Operand type or shape is invalid for the expression (e.g. `NOT` on a string).
-    InvalidExpressionValue { property: String },
-    ExpressionDivisionByZero { property: String },
-    ExpressionNumericOverflow { property: String },
-    ExpressionNonFiniteNumeric { property: String },
-    ExpressionIncomparableValues { property: String },
-    ExpressionUnsupportedNumericConversion { property: String },
+    InvalidExpressionValue {
+        property: String,
+    },
+    ExpressionDivisionByZero {
+        property: String,
+    },
+    ExpressionNumericOverflow {
+        property: String,
+    },
+    ExpressionNonFiniteNumeric {
+        property: String,
+    },
+    ExpressionIncomparableValues {
+        property: String,
+    },
+    ExpressionUnsupportedNumericConversion {
+        property: String,
+    },
     UnsupportedSetItem(&'static str),
     UnsupportedRemoveItem(&'static str),
-    MissingParameter { name: String },
+    MissingParameter {
+        name: String,
+    },
 }
 
 impl fmt::Display for PlanMutationError {
@@ -43,10 +63,16 @@ impl fmt::Display for PlanMutationError {
                 write!(f, "invalid property expression value for '{property}'")
             }
             Self::ExpressionDivisionByZero { property } => {
-                write!(f, "division by zero in property expression for '{property}'")
+                write!(
+                    f,
+                    "division by zero in property expression for '{property}'"
+                )
             }
             Self::ExpressionNumericOverflow { property } => {
-                write!(f, "numeric overflow in property expression for '{property}'")
+                write!(
+                    f,
+                    "numeric overflow in property expression for '{property}'"
+                )
             }
             Self::ExpressionNonFiniteNumeric { property } => {
                 write!(

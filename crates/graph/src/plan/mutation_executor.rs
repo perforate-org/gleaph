@@ -1,11 +1,9 @@
-use crate::facade::mutation_executor::GraphMutationExecutor;
-use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
 use super::mutation_error::PlanMutationError;
 use super::property_expr_evaluator::{PlanPropertyExprEvaluation, PlanPropertyExprEvaluator};
-use gleaph_gql_planner::plan::{
-    PhysicalPlan, PlanOp, RemovePlanItem, SetPlanItem, Str,
-};
+use crate::facade::mutation_executor::GraphMutationExecutor;
+use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
 use gleaph_gql::types::EdgeDirection;
+use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, RemovePlanItem, SetPlanItem, Str};
 use ic_stable_lara::VertexId;
 use std::collections::BTreeMap;
 
@@ -990,9 +988,14 @@ mod tests {
             .expect("delete directed edge");
         let a = bindings.vertices["a"];
         let w = store.property_id("w").expect("w property");
-        assert!(bindings.edges.get("e").is_none());
+        assert!(!bindings.edges.contains_key("e"));
 
-        assert!(store.out_edges(a).expect("out edges after delete").is_empty());
+        assert!(
+            store
+                .out_edges(a)
+                .expect("out edges after delete")
+                .is_empty()
+        );
         assert_eq!(store.edge_property(a, VertexEdgeId::from_raw(1), w), None);
     }
 

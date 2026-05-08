@@ -9,7 +9,10 @@ mod stable;
 pub mod facade;
 pub mod plan;
 
-pub use facade::GraphStore;
+pub use facade::{
+    GRAPH_TIMER_LARA_MAX_INSTRUCTIONS, GRAPH_TIMER_LARA_RESERVE_INSTRUCTIONS, GraphStore,
+    IC_CANISTER_MESSAGE_INSTRUCTION_LIMIT, timer_lara_maintenance_budget,
+};
 
 thread_local! {
     static GRAPH: RefCell<Graph<Edge, Vertex, stable::memory::Memory>> = RefCell::new(
