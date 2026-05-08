@@ -142,7 +142,10 @@ impl Storable for Vertex {
         #[cfg(target_endian = "little")]
         {
             Cow::Borrowed(unsafe {
-                slice::from_raw_parts((self as *const Self).cast::<u8>(), <Self as CsrVertex>::BYTES)
+                slice::from_raw_parts(
+                    (self as *const Self).cast::<u8>(),
+                    <Self as CsrVertex>::BYTES,
+                )
             })
         }
         #[cfg(not(target_endian = "little"))]
@@ -155,7 +158,8 @@ impl Storable for Vertex {
         #[cfg(target_endian = "little")]
         {
             // SAFETY: `Vertex` is `repr(C, packed)` with size `BYTES`; on LE this is the on-wire layout.
-            let bytes: [u8; <Self as CsrVertex>::BYTES] = unsafe { std::mem::transmute_copy(&self) };
+            let bytes: [u8; <Self as CsrVertex>::BYTES] =
+                unsafe { std::mem::transmute_copy(&self) };
             Vec::from(bytes)
         }
         #[cfg(not(target_endian = "little"))]
