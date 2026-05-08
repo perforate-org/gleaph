@@ -215,7 +215,34 @@ fn execute_set_item(
         SetPlanItem::AllProperties { .. } => {
             Err(PlanMutationError::UnsupportedSetItem("AllProperties"))
         }
-        SetPlanItem::Label { .. } => Err(PlanMutationError::UnsupportedSetItem("Label")),
+        SetPlanItem::Label { variable, label } => {
+            let label_id = store
+                .get_or_insert_label_id(label)
+                .map_err(GraphStoreError::from)?;
+
+            if let Some(vertex_id) = bindings.vertices.get(variable.as_ref()) {
+                let vertex = store.vertex(*vertex_id).ok_or_else(|| {
+                    PlanMutationError::MissingVertexBinding {
+                        variable: variable.to_string(),
+                    }
+                })?;
+                let vertex = store
+                    .add_vertex_label(*vertex_id, vertex, label_id)
+                    .map_err(GraphStoreError::from)?;
+                store
+                    .set_vertex(*vertex_id, vertex)
+                    .map_err(GraphStoreError::from)?;
+                return Ok(());
+            }
+
+            if bindings.edges.contains_key(variable.as_ref()) {
+                return Err(PlanMutationError::UnsupportedSetItem("EdgeLabel"));
+            }
+
+            Err(PlanMutationError::MissingElementBinding {
+                variable: variable.to_string(),
+            })
+        }
     }
 }
 
@@ -244,7 +271,32 @@ fn execute_remove_item(
                 variable: variable.to_string(),
             })
         }
-        RemovePlanItem::Label { .. } => Err(PlanMutationError::UnsupportedRemoveItem("Label")),
+        RemovePlanItem::Label { variable, label } => {
+            let Some(label_id) = store.label_id(label) else {
+                return Ok(());
+            };
+
+            if let Some(vertex_id) = bindings.vertices.get(variable.as_ref()) {
+                let vertex = store.vertex(*vertex_id).ok_or_else(|| {
+                    PlanMutationError::MissingVertexBinding {
+                        variable: variable.to_string(),
+                    }
+                })?;
+                let vertex = store.remove_vertex_label(*vertex_id, vertex, label_id);
+                store
+                    .set_vertex(*vertex_id, vertex)
+                    .map_err(GraphStoreError::from)?;
+                return Ok(());
+            }
+
+            if bindings.edges.contains_key(variable.as_ref()) {
+                return Err(PlanMutationError::UnsupportedRemoveItem("EdgeLabel"));
+            }
+
+            Err(PlanMutationError::MissingElementBinding {
+                variable: variable.to_string(),
+            })
+        }
     }
 }
 
@@ -523,5 +575,68 @@ mod tests {
             store.edge_property(edge.owner_vertex_id, edge.vertex_edge_id, weight),
             None
         );
+    }
+
+    #[test]
+    fn set_and_remove_vertex_labels() {
+        let store = GraphStore::new();
+        let plan = PhysicalPlan {
+            ops: vec![
+                PlanOp::InsertVertex {
+                    variable: Some("a".into()),
+                    labels: vec!["Person".into()],
+                    properties: vec![],
+                },
+                PlanOp::SetProperties {
+                    items: vec![SetPlanItem::Label {
+                        variable: "a".into(),
+                        label: "Employee".into(),
+                    }],
+                },
+            ],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: Default::default(),
+        };
+
+        let bindings = store
+            .execute_plan_mutations(&plan)
+            .expect("execute set label");
+        let person = store.label_id("Person").expect("person label");
+        let employee = store.label_id("Employee").expect("employee label");
+        let vertex_id = bindings.vertices["a"];
+        let vertex = store.vertex(vertex_id).expect("read vertex");
+
+        assert_eq!(
+            store.vertex_labels(vertex_id, vertex),
+            vec![person, employee]
+        );
+
+        let remove = PhysicalPlan {
+            ops: vec![PlanOp::RemoveProperties {
+                items: vec![
+                    RemovePlanItem::Label {
+                        variable: "a".into(),
+                        label: "Person".into(),
+                    },
+                    RemovePlanItem::Label {
+                        variable: "a".into(),
+                        label: "MissingLabelIsNoop".into(),
+                    },
+                ],
+            }],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: Default::default(),
+        };
+        let mut existing_bindings = bindings;
+        execute_ops_with_bindings(
+            &store,
+            &remove.ops,
+            &BTreeMap::new(),
+            &mut existing_bindings,
+        )
+        .expect("execute remove label");
+        let vertex = store.vertex(vertex_id).expect("read updated vertex");
+
+        assert_eq!(store.vertex_labels(vertex_id, vertex), vec![employee]);
     }
 }
