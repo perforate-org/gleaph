@@ -537,7 +537,7 @@ where
         })
     }
 
-    /// Reopens forward and reverse deferred LARA stores.
+    /// Opens forward and reverse deferred LARA stores, creating them when empty.
     #[allow(clippy::too_many_arguments)]
     pub fn init(
         forward_vertices: M,
@@ -556,6 +556,9 @@ where
         reverse_free_span_by_start: M,
         maintenance_queue: M,
         dirty_work_items: M,
+        elem_capacity: u64,
+        segment_size: u32,
+        initial_vertex_edge_slots: u32,
     ) -> Result<Self, DeferredBidirectionalLaraError> {
         Self::init_with_config(
             forward_vertices,
@@ -574,11 +577,14 @@ where
             reverse_free_span_by_start,
             maintenance_queue,
             dirty_work_items,
+            elem_capacity,
+            segment_size,
+            initial_vertex_edge_slots,
             DeferredConfig::default(),
         )
     }
 
-    /// Reopens forward and reverse stores with custom maintenance thresholds.
+    /// Opens forward and reverse stores with custom maintenance thresholds, creating them when empty.
     #[allow(clippy::too_many_arguments)]
     pub fn init_with_config(
         forward_vertices: M,
@@ -597,6 +603,9 @@ where
         reverse_free_span_by_start: M,
         maintenance_queue: M,
         dirty_work_items: M,
+        elem_capacity: u64,
+        segment_size: u32,
+        initial_vertex_edge_slots: u32,
         config: DeferredConfig,
     ) -> Result<Self, DeferredBidirectionalLaraError> {
         let config = config
@@ -610,6 +619,9 @@ where
             forward_span_meta,
             forward_free_spans,
             forward_free_span_by_start,
+            elem_capacity,
+            segment_size,
+            initial_vertex_edge_slots,
         )
         .map_err(DeferredBidirectionalLaraError::ForwardInit)?;
         let reverse = LaraGraph::init(
@@ -620,6 +632,9 @@ where
             reverse_span_meta,
             reverse_free_spans,
             reverse_free_span_by_start,
+            elem_capacity,
+            segment_size,
+            initial_vertex_edge_slots,
         )
         .map_err(DeferredBidirectionalLaraError::ReverseInit)?;
         let maintenance = BidirectionalMaintenanceQueue::init(maintenance_queue, dirty_work_items)?;
@@ -1307,6 +1322,37 @@ mod tests {
     }
 
     #[test]
+    fn deferred_bidirectional_init_creates_empty_graph_when_memory_is_empty() {
+        let graph = DeferredBidirectionalLaraGraph::<TestEdge, Vertex, _>::init(
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            8,
+            2,
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(graph.vertex_count(), VertexCount(0));
+        assert_eq!(graph.forward().edges().header().elem_capacity, 8);
+        assert_eq!(graph.reverse().edges().header().segment_size, 2);
+        assert_eq!(graph.maintenance_queue_len(), 0);
+    }
+
+    #[test]
     fn deferred_directed_insert_rejects_neighbor_mismatch_before_writes() {
         let graph = deferred_bidirectional_test_graph::<TestEdge>(8, 2, &[0, 2]);
 
@@ -1470,6 +1516,9 @@ mod tests {
             memories.13,
             memories.14,
             memories.15,
+            16,
+            2,
+            0,
         )
         .unwrap();
 
@@ -1615,6 +1664,9 @@ mod tests {
             rfs,
             vector_memory(),
             vector_memory(),
+            8,
+            2,
+            0,
         ) {
             Ok(_) => panic!("vertex count mismatch was accepted"),
             Err(err) => err,

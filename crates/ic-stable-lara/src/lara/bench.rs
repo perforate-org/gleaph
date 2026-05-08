@@ -158,6 +158,9 @@ fn bench_lara_graph_reopen_after_relocation_1() -> canbench_rs::BenchResult {
             memories.4.clone(),
             memories.5.clone(),
             memories.6.clone(),
+            helper::MEDIUM_N,
+            16,
+            0,
         )
         .expect("reopen graph");
         black_box(

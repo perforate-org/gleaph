@@ -178,7 +178,7 @@ where
         })
     }
 
-    /// Reopens a graph from previously initialized stable memories.
+    /// Opens a graph from stable memories, creating it when the edge slab is empty.
     pub fn init(
         vertices: M,
         counts: M,
@@ -187,6 +187,9 @@ where
         span_meta: M,
         free_spans: M,
         free_span_by_start: M,
+        elem_capacity: u64,
+        segment_size: u32,
+        initial_vertex_edge_slots: u32,
     ) -> Result<Self, InitError> {
         Ok(Self {
             vertices: VertexStore::init(vertices).map_err(InitError::Vertices)?,
@@ -197,6 +200,9 @@ where
                 span_meta,
                 free_spans,
                 free_span_by_start,
+                elem_capacity,
+                segment_size,
+                initial_vertex_edge_slots,
             )
             .map_err(InitError::Edges)?,
             _marker: PhantomData,
@@ -1500,6 +1506,27 @@ mod tests {
     }
 
     #[test]
+    fn lara_init_creates_empty_graph_when_memory_is_empty() {
+        let graph = LaraGraph::<TestEdge, Vertex, _>::init(
+            crate::test_support::vector_memory(),
+            crate::test_support::vector_memory(),
+            crate::test_support::vector_memory(),
+            crate::test_support::vector_memory(),
+            crate::test_support::vector_memory(),
+            crate::test_support::vector_memory(),
+            crate::test_support::vector_memory(),
+            8,
+            2,
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(graph.vertices().len(), 0);
+        assert_eq!(graph.edges().header().elem_capacity, 8);
+        assert_eq!(graph.edges().header().segment_size, 2);
+    }
+
+    #[test]
     fn lara_initial_vertex_edge_slots_apply_to_later_vertices_in_leaf() {
         let graph = LaraGraph::<TestEdge, Vertex, _>::new(
             crate::test_support::vector_memory(),
@@ -1853,7 +1880,8 @@ mod tests {
 
         let memories = graph.into_memories();
         let reopened = LaraGraph::<TestEdge, Vertex, _>::init(
-            memories.0, memories.1, memories.2, memories.3, memories.4, memories.5, memories.6,
+            memories.0, memories.1, memories.2, memories.3, memories.4, memories.5, memories.6, 8,
+            2, 0,
         )
         .unwrap();
 
@@ -2236,7 +2264,8 @@ mod tests {
 
         let memories = graph.into_memories();
         let reopened = LaraGraph::<TestEdge, Vertex, _>::init(
-            memories.0, memories.1, memories.2, memories.3, memories.4, memories.5, memories.6,
+            memories.0, memories.1, memories.2, memories.3, memories.4, memories.5, memories.6, 24,
+            2, 0,
         )
         .unwrap();
 
@@ -2362,7 +2391,8 @@ mod tests {
 
         let memories = graph.into_memories();
         let reopened = LaraGraph::<TestEdge, Vertex, _>::init(
-            memories.0, memories.1, memories.2, memories.3, memories.4, memories.5, memories.6,
+            memories.0, memories.1, memories.2, memories.3, memories.4, memories.5, memories.6, 8,
+            2, 0,
         )
         .unwrap();
 

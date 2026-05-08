@@ -89,6 +89,8 @@ impl From<EdgeHeaderV1> for EdgeLayout {
 /// Errors returned when reopening the full edge storage subsystem.
 #[derive(Debug)]
 pub enum InitError {
+    /// The edge subsystem could not allocate its initial metadata.
+    OutOfMemory,
     /// The PMA count tree could not be reopened.
     Counts(counts::InitError),
     /// The edge slab could not be reopened.
@@ -106,6 +108,7 @@ pub enum InitError {
 impl fmt::Display for InitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::OutOfMemory => write!(f, "failed to allocate edge subsystem metadata"),
             Self::Counts(e) => write!(f, "counts init failed: {e}"),
             Self::Edges(e) => write!(f, "edge slab init failed: {e}"),
             Self::Log(e) => write!(f, "log init failed: {e}"),
@@ -187,7 +190,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         })
     }
 
-    /// Reopens an edge subsystem from previously initialized stable memories.
+    /// Opens an edge subsystem from stable memories, creating it when the edge slab is empty.
     pub fn init(
         counts: M,
         edges: M,
@@ -195,7 +198,24 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         span_meta: M,
         free_spans: M,
         free_span_by_start: M,
+        elem_capacity: u64,
+        segment_size: u32,
+        initial_vertex_edge_slots: u32,
     ) -> Result<Self, InitError> {
+        if edges.size() == 0 {
+            return Self::new(
+                counts,
+                edges,
+                log,
+                span_meta,
+                free_spans,
+                free_span_by_start,
+                elem_capacity,
+                segment_size,
+                initial_vertex_edge_slots,
+            )
+            .map_err(|_| InitError::OutOfMemory);
+        }
         let counts = SegmentEdgeCountsStore::init(counts).map_err(InitError::Counts)?;
         let edges = EdgeSlabStore::init(edges).map_err(InitError::Edges)?;
         let header = edges.header().map_err(InitError::Edges)?;

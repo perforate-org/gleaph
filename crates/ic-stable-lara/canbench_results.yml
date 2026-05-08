@@ -338,13 +338,13 @@ benches:
   bench_lara_graph_reopen_after_relocation_1:
     total:
       calls: 1
-      instructions: 13962
+      instructions: 14005
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_graph_reopen_after_relocation:
         calls: 1
-        instructions: 12919
+        instructions: 12962
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_graph_root_relocation_1:

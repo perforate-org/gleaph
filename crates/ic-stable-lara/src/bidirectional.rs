@@ -186,7 +186,7 @@ where
         Ok(Self { forward, reverse })
     }
 
-    /// Reopens forward and reverse LARA stores from stable memories.
+    /// Opens forward and reverse LARA stores from stable memories, creating them when empty.
     #[allow(clippy::too_many_arguments)]
     pub fn init(
         forward_vertices: M,
@@ -203,6 +203,9 @@ where
         reverse_span_meta: M,
         reverse_free_spans: M,
         reverse_free_span_by_start: M,
+        elem_capacity: u64,
+        segment_size: u32,
+        initial_vertex_edge_slots: u32,
     ) -> Result<Self, BidirectionalLaraError> {
         let forward = LaraGraph::init(
             forward_vertices,
@@ -212,6 +215,9 @@ where
             forward_span_meta,
             forward_free_spans,
             forward_free_span_by_start,
+            elem_capacity,
+            segment_size,
+            initial_vertex_edge_slots,
         )
         .map_err(BidirectionalLaraError::ForwardInit)?;
         let reverse = LaraGraph::init(
@@ -222,6 +228,9 @@ where
             reverse_span_meta,
             reverse_free_spans,
             reverse_free_span_by_start,
+            elem_capacity,
+            segment_size,
+            initial_vertex_edge_slots,
         )
         .map_err(BidirectionalLaraError::ReverseInit)?;
         let graph = Self { forward, reverse };
@@ -593,6 +602,34 @@ mod tests {
     }
 
     #[test]
+    fn bidirectional_init_creates_empty_graph_when_memory_is_empty() {
+        let graph = BidirectionalLaraGraph::<TestEdge, Vertex, _>::init(
+            crate::test_support::vector_memory(),
+            crate::test_support::vector_memory(),
+            crate::test_support::vector_memory(),
+            crate::test_support::vector_memory(),
+            crate::test_support::vector_memory(),
+            crate::test_support::vector_memory(),
+            crate::test_support::vector_memory(),
+            crate::test_support::vector_memory(),
+            crate::test_support::vector_memory(),
+            crate::test_support::vector_memory(),
+            crate::test_support::vector_memory(),
+            crate::test_support::vector_memory(),
+            crate::test_support::vector_memory(),
+            crate::test_support::vector_memory(),
+            8,
+            2,
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(graph.vertex_count(), VertexCount(0));
+        assert_eq!(graph.forward().edges().header().elem_capacity, 8);
+        assert_eq!(graph.reverse().edges().header().segment_size, 2);
+    }
+
+    #[test]
     fn bidirectional_directed_remove_updates_forward_and_reverse() {
         let graph = bidirectional_test_graph::<TestEdge>(&[0, 4, 8]);
 
@@ -835,7 +872,7 @@ mod tests {
 
         let (fv, fc, fe, fl, fs, ff, ffs, rv, rc, re, rl, rs, rf, rfs) = graph.into_memories();
         let reopened = BidirectionalLaraGraph::<TestEdge, Vertex, _>::init(
-            fv, fc, fe, fl, fs, ff, ffs, rv, rc, re, rl, rs, rf, rfs,
+            fv, fc, fe, fl, fs, ff, ffs, rv, rc, re, rl, rs, rf, rfs, 16, 2, 0,
         )
         .unwrap();
 

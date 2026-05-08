@@ -410,7 +410,7 @@ where
         })
     }
 
-    /// Reopens a deferred graph with default maintenance thresholds.
+    /// Opens a deferred graph with default maintenance thresholds, creating it when empty.
     #[allow(clippy::too_many_arguments)]
     pub fn init(
         vertices: M,
@@ -422,6 +422,9 @@ where
         free_span_by_start: M,
         maintenance_queue: M,
         dirty_segments: M,
+        elem_capacity: u64,
+        segment_size: u32,
+        initial_vertex_edge_slots: u32,
     ) -> Result<Self, DeferredInitError> {
         Self::init_with_config(
             vertices,
@@ -433,11 +436,14 @@ where
             free_span_by_start,
             maintenance_queue,
             dirty_segments,
+            elem_capacity,
+            segment_size,
+            initial_vertex_edge_slots,
             DeferredConfig::default(),
         )
     }
 
-    /// Reopens a deferred graph with custom maintenance thresholds.
+    /// Opens a deferred graph with custom maintenance thresholds, creating it when empty.
     #[allow(clippy::too_many_arguments)]
     pub fn init_with_config(
         vertices: M,
@@ -449,6 +455,9 @@ where
         free_span_by_start: M,
         maintenance_queue: M,
         dirty_segments: M,
+        elem_capacity: u64,
+        segment_size: u32,
+        initial_vertex_edge_slots: u32,
         config: DeferredConfig,
     ) -> Result<Self, DeferredInitError> {
         let config = config
@@ -463,6 +472,9 @@ where
                 span_meta,
                 free_spans,
                 free_span_by_start,
+                elem_capacity,
+                segment_size,
+                initial_vertex_edge_slots,
             )
             .map_err(DeferredInitError::Graph)?,
             maintenance: MaintenanceQueue::init(maintenance_queue, dirty_segments)
@@ -705,6 +717,29 @@ mod tests {
     }
 
     #[test]
+    fn deferred_lara_init_creates_empty_graph_when_memory_is_empty() {
+        let graph = DeferredLaraGraph::<TestEdge, Vertex, _>::init(
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            8,
+            2,
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(graph.graph().vertices().len(), 0);
+        assert_eq!(graph.graph().edges().header().elem_capacity, 8);
+        assert_eq!(graph.maintenance_queue().len(), 0);
+    }
+
+    #[test]
     fn maintenance_step_returns_none_on_empty_queue() {
         let graph = deferred_test_graph(8, 2, &[0, 2, 4, 6]);
 
@@ -879,7 +914,7 @@ mod tests {
         let memories = graph.into_memories();
         let reopened = DeferredLaraGraph::<TestEdge, Vertex, _>::init(
             memories.0, memories.1, memories.2, memories.3, memories.4, memories.5, memories.6,
-            memories.7, memories.8,
+            memories.7, memories.8, 8, 2, 0,
         )
         .unwrap();
 
