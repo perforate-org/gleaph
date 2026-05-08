@@ -3,7 +3,7 @@ use crate::store::{EdgeHandle, GraphStore, GraphStoreError};
 use gleaph_gql::Value;
 use gleaph_gql::ast::{Expr, ExprKind};
 use gleaph_gql::types::EdgeDirection;
-use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, PropertyAssignment, Str};
+use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, PropertyAssignment, SetPlanItem, Str};
 use ic_stable_lara::VertexId;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -27,7 +27,9 @@ pub enum PlanMutationError {
     UnsupportedOp(&'static str),
     UnsupportedDirection(EdgeDirection),
     MissingVertexBinding { variable: String },
+    MissingElementBinding { variable: String },
     UnsupportedExpression { property: String },
+    UnsupportedSetItem(&'static str),
     MissingParameter { name: String },
 }
 
@@ -42,9 +44,13 @@ impl fmt::Display for PlanMutationError {
             Self::MissingVertexBinding { variable } => {
                 write!(f, "missing vertex binding for '{variable}'")
             }
+            Self::MissingElementBinding { variable } => {
+                write!(f, "missing graph element binding for '{variable}'")
+            }
             Self::UnsupportedExpression { property } => {
                 write!(f, "unsupported property expression for '{property}'")
             }
+            Self::UnsupportedSetItem(item) => write!(f, "unsupported SET item: {item}"),
             Self::MissingParameter { name } => write!(f, "missing parameter '{name}'"),
         }
     }
@@ -144,12 +150,64 @@ fn execute_ops_with_bindings(
                 sub_plan: Some(sub_plan),
                 ..
             } => execute_ops_with_bindings(store, sub_plan, parameters, bindings)?,
+            PlanOp::SetProperties { items } => {
+                for item in items {
+                    execute_set_item(store, item, parameters, bindings)?;
+                }
+            }
             PlanOp::Materialize { .. } => {}
             other if !is_mutation_op(other) => {}
             other => return Err(PlanMutationError::UnsupportedOp(plan_op_name(other))),
         }
     }
     Ok(())
+}
+
+fn execute_set_item(
+    store: &GraphStore,
+    item: &SetPlanItem,
+    parameters: &BTreeMap<String, Value>,
+    bindings: &PlanMutationBindings,
+) -> Result<(), PlanMutationError> {
+    match item {
+        SetPlanItem::Property {
+            variable,
+            property,
+            value,
+        } => {
+            let value = eval_property_expr(property, value, parameters)?;
+            let property_id = store
+                .get_or_insert_property_id(property)
+                .map_err(GraphStoreError::from)?;
+
+            if let Some(vertex_id) = bindings.vertices.get(variable.as_ref()) {
+                store
+                    .set_vertex_property(*vertex_id, property_id, value)
+                    .map_err(GraphStoreError::from)?;
+                return Ok(());
+            }
+
+            if let Some(edge) = bindings.edges.get(variable.as_ref()) {
+                store
+                    .set_edge_property(
+                        edge.owner_vertex_id,
+                        edge.vertex_edge_id,
+                        property_id,
+                        value,
+                    )
+                    .map_err(GraphStoreError::from)?;
+                return Ok(());
+            }
+
+            Err(PlanMutationError::MissingElementBinding {
+                variable: variable.to_string(),
+            })
+        }
+        SetPlanItem::AllProperties { .. } => {
+            Err(PlanMutationError::UnsupportedSetItem("AllProperties"))
+        }
+        SetPlanItem::Label { .. } => Err(PlanMutationError::UnsupportedSetItem("Label")),
+    }
 }
 
 fn resolve_property_assignments<'a>(
@@ -303,6 +361,65 @@ mod tests {
         assert_eq!(
             store.vertex_property(bindings.vertices["n"], property),
             Some(Value::Text("Ada".into()))
+        );
+    }
+
+    #[test]
+    fn set_properties_updates_vertex_and_edge_bindings() {
+        let store = GraphStore::new();
+        let plan = PhysicalPlan {
+            ops: vec![
+                PlanOp::InsertVertex {
+                    variable: Some("a".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertVertex {
+                    variable: Some("b".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertEdge {
+                    variable: Some("e".into()),
+                    src: "a".into(),
+                    dst: "b".into(),
+                    direction: EdgeDirection::PointingRight,
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::SetProperties {
+                    items: vec![
+                        SetPlanItem::Property {
+                            variable: "a".into(),
+                            property: "name".into(),
+                            value: Expr::new(ExprKind::Literal(Value::Text("Alice".into()))),
+                        },
+                        SetPlanItem::Property {
+                            variable: "e".into(),
+                            property: "weight".into(),
+                            value: Expr::new(ExprKind::Literal(Value::Int64(7))),
+                        },
+                    ],
+                },
+            ],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: Default::default(),
+        };
+
+        let bindings = store
+            .execute_plan_mutations(&plan)
+            .expect("execute set properties");
+        let name = store.property_id("name").expect("name property");
+        let weight = store.property_id("weight").expect("weight property");
+        let edge = bindings.edges["e"];
+
+        assert_eq!(
+            store.vertex_property(bindings.vertices["a"], name),
+            Some(Value::Text("Alice".into()))
+        );
+        assert_eq!(
+            store.edge_property(edge.owner_vertex_id, edge.vertex_edge_id, weight),
+            Some(Value::Int64(7))
         );
     }
 }
