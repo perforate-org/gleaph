@@ -1,17 +1,13 @@
 use crate::mutation_executor::GraphMutationExecutor;
+pub use crate::plan_mutation_error::PlanMutationError;
+use crate::plan_property_expr_evaluator::{PlanPropertyExprEvaluation, PlanPropertyExprEvaluator};
 use crate::store::{EdgeHandle, GraphStore, GraphStoreError};
-use gleaph_gql::Value;
-use gleaph_gql::ast::{BinaryOp, CmpOp, Expr, ExprKind, TruthValue, UnaryOp};
-use gleaph_gql::numeric_ops::{eval_binary_numeric, eval_unary_numeric};
-use gleaph_gql::types::EdgeDirection;
-use gleaph_gql::value_cmp::compare_values;
 use gleaph_gql_planner::plan::{
-    PhysicalPlan, PlanOp, PropertyAssignment, RemovePlanItem, SetPlanItem, Str,
+    PhysicalPlan, PlanOp, RemovePlanItem, SetPlanItem, Str,
 };
+use gleaph_gql::types::EdgeDirection;
 use ic_stable_lara::VertexId;
-use std::cmp::Ordering;
 use std::collections::BTreeMap;
-use std::fmt;
 
 pub trait PlanMutationExecutor {
     fn execute_plan_mutations(
@@ -26,62 +22,6 @@ pub struct PlanMutationBindings {
     pub edges: BTreeMap<String, EdgeHandle>,
 }
 
-#[derive(Debug)]
-pub enum PlanMutationError {
-    Store(GraphStoreError),
-    UnsupportedOp(&'static str),
-    UnsupportedDirection(EdgeDirection),
-    MissingVertexBinding { variable: String },
-    MissingElementBinding { variable: String },
-    UnsupportedExpression { property: String },
-    InvalidExpressionValue { property: String },
-    UnsupportedSetItem(&'static str),
-    UnsupportedRemoveItem(&'static str),
-    MissingParameter { name: String },
-}
-
-impl fmt::Display for PlanMutationError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Store(err) => write!(f, "{err}"),
-            Self::UnsupportedOp(op) => write!(f, "unsupported plan mutation operator: {op}"),
-            Self::UnsupportedDirection(direction) => {
-                write!(f, "unsupported insert edge direction: {direction:?}")
-            }
-            Self::MissingVertexBinding { variable } => {
-                write!(f, "missing vertex binding for '{variable}'")
-            }
-            Self::MissingElementBinding { variable } => {
-                write!(f, "missing graph element binding for '{variable}'")
-            }
-            Self::UnsupportedExpression { property } => {
-                write!(f, "unsupported property expression for '{property}'")
-            }
-            Self::InvalidExpressionValue { property } => {
-                write!(f, "invalid property expression value for '{property}'")
-            }
-            Self::UnsupportedSetItem(item) => write!(f, "unsupported SET item: {item}"),
-            Self::UnsupportedRemoveItem(item) => write!(f, "unsupported REMOVE item: {item}"),
-            Self::MissingParameter { name } => write!(f, "missing parameter '{name}'"),
-        }
-    }
-}
-
-impl std::error::Error for PlanMutationError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Store(err) => Some(err),
-            _ => None,
-        }
-    }
-}
-
-impl From<GraphStoreError> for PlanMutationError {
-    fn from(value: GraphStoreError) -> Self {
-        Self::Store(value)
-    }
-}
-
 impl PlanMutationExecutor for GraphStore {
     fn execute_plan_mutations(
         &self,
@@ -94,7 +34,7 @@ impl PlanMutationExecutor for GraphStore {
 pub fn execute_ops(
     store: &GraphStore,
     ops: &[PlanOp],
-    parameters: &BTreeMap<String, Value>,
+    parameters: &BTreeMap<String, gleaph_gql::Value>,
 ) -> Result<PlanMutationBindings, PlanMutationError> {
     let mut bindings = PlanMutationBindings::default();
     execute_ops_with_bindings(store, ops, parameters, &mut bindings)?;
@@ -104,9 +44,10 @@ pub fn execute_ops(
 fn execute_ops_with_bindings(
     store: &GraphStore,
     ops: &[PlanOp],
-    parameters: &BTreeMap<String, Value>,
+    parameters: &BTreeMap<String, gleaph_gql::Value>,
     bindings: &mut PlanMutationBindings,
 ) -> Result<(), PlanMutationError> {
+    let evaluator = PlanPropertyExprEvaluator::new(parameters);
     for op in ops {
         match op {
             PlanOp::InsertVertex {
@@ -114,7 +55,7 @@ fn execute_ops_with_bindings(
                 labels,
                 properties,
             } => {
-                let properties = resolve_property_assignments(properties, parameters)?;
+                let properties = evaluator.resolve_assignments(properties)?;
                 let vertex_id =
                     store.insert_vertex_named(labels.iter().map(Str::as_ref), properties)?;
                 if let Some(variable) = variable {
@@ -140,7 +81,7 @@ fn execute_ops_with_bindings(
                     }
                 })?;
                 let label = labels.first().map(Str::as_ref);
-                let properties = resolve_property_assignments(properties, parameters)?;
+                let properties = evaluator.resolve_assignments(properties)?;
                 let handle = match direction {
                     EdgeDirection::PointingRight => {
                         store.insert_directed_edge_named(src_id, dst_id, label, properties)?
@@ -163,7 +104,7 @@ fn execute_ops_with_bindings(
             } => execute_ops_with_bindings(store, sub_plan, parameters, bindings)?,
             PlanOp::SetProperties { items } => {
                 for item in items {
-                    execute_set_item(store, item, parameters, bindings)?;
+                    execute_set_item(store, item, &evaluator, bindings)?;
                 }
             }
             PlanOp::RemoveProperties { items } => {
@@ -182,7 +123,7 @@ fn execute_ops_with_bindings(
 fn execute_set_item(
     store: &GraphStore,
     item: &SetPlanItem,
-    parameters: &BTreeMap<String, Value>,
+    evaluator: &impl PlanPropertyExprEvaluation,
     bindings: &PlanMutationBindings,
 ) -> Result<(), PlanMutationError> {
     match item {
@@ -191,7 +132,7 @@ fn execute_set_item(
             property,
             value,
         } => {
-            let value = eval_property_expr(property, value, parameters)?;
+            let value = evaluator.eval(property.as_ref(), value)?;
             let property_id = store
                 .get_or_insert_property_id(property)
                 .map_err(GraphStoreError::from)?;
@@ -307,240 +248,6 @@ fn execute_remove_item(
     }
 }
 
-fn resolve_property_assignments<'a>(
-    properties: &'a [PropertyAssignment],
-    parameters: &BTreeMap<String, Value>,
-) -> Result<Vec<(&'a str, Value)>, PlanMutationError> {
-    properties
-        .iter()
-        .map(|assignment| {
-            let value = eval_property_expr(&assignment.name, &assignment.value, parameters)?;
-            Ok((assignment.name.as_ref(), value))
-        })
-        .collect()
-}
-
-fn eval_property_expr(
-    property: &str,
-    expr: &Expr,
-    parameters: &BTreeMap<String, Value>,
-) -> Result<Value, PlanMutationError> {
-    match &expr.kind {
-        ExprKind::Literal(value) => Ok(value.clone()),
-        ExprKind::Paren(inner) => eval_property_expr(property, inner, parameters),
-        ExprKind::Parameter(name) => parameters
-            .get(name)
-            .cloned()
-            .ok_or_else(|| PlanMutationError::MissingParameter { name: name.clone() }),
-        ExprKind::UnaryOp { op, expr } => eval_unary_expr(
-            property,
-            *op,
-            eval_property_expr(property, expr, parameters)?,
-        ),
-        ExprKind::BinaryOp { left, op, right } => {
-            let left = eval_property_expr(property, left, parameters)?;
-            let right = eval_property_expr(property, right, parameters)?;
-            eval_binary_expr(property, left, *op, right)
-        }
-        ExprKind::Not(expr) => {
-            eval_not_expr(property, eval_property_expr(property, expr, parameters)?)
-        }
-        ExprKind::And(left, right) => {
-            let left = eval_property_expr(property, left, parameters)?;
-            let right = eval_property_expr(property, right, parameters)?;
-            eval_and_expr(property, left, right)
-        }
-        ExprKind::Or(left, right) => {
-            let left = eval_property_expr(property, left, parameters)?;
-            let right = eval_property_expr(property, right, parameters)?;
-            eval_or_expr(property, left, right)
-        }
-        ExprKind::Xor(left, right) => {
-            let left = eval_property_expr(property, left, parameters)?;
-            let right = eval_property_expr(property, right, parameters)?;
-            eval_xor_expr(property, left, right)
-        }
-        ExprKind::Compare { left, op, right } => {
-            let left = eval_property_expr(property, left, parameters)?;
-            let right = eval_property_expr(property, right, parameters)?;
-            eval_compare_expr(property, left, *op, right)
-        }
-        ExprKind::IsNull(expr) => Ok(Value::Bool(
-            eval_property_expr(property, expr, parameters)? == Value::Null,
-        )),
-        ExprKind::IsNotNull(expr) => Ok(Value::Bool(
-            eval_property_expr(property, expr, parameters)? != Value::Null,
-        )),
-        ExprKind::IsTruth {
-            expr,
-            value,
-            negated,
-        } => {
-            let evaluated = eval_property_expr(property, expr, parameters)?;
-            let matched = matches!(
-                (evaluated, *value),
-                (Value::Bool(true), TruthValue::True)
-                    | (Value::Bool(false), TruthValue::False)
-                    | (Value::Null, TruthValue::Unknown),
-            );
-            Ok(Value::Bool(if *negated { !matched } else { matched }))
-        }
-        ExprKind::Concat(left, right) => {
-            let left = eval_property_expr(property, left, parameters)?;
-            let right = eval_property_expr(property, right, parameters)?;
-            eval_concat_expr(property, left, right)
-        }
-        ExprKind::Coalesce(exprs) => {
-            for expr in exprs {
-                let value = eval_property_expr(property, expr, parameters)?;
-                if value != Value::Null {
-                    return Ok(value);
-                }
-            }
-            Ok(Value::Null)
-        }
-        ExprKind::NullIf(left, right) => {
-            let left = eval_property_expr(property, left, parameters)?;
-            let right = eval_property_expr(property, right, parameters)?;
-            if left == Value::Null || right == Value::Null {
-                return Ok(left);
-            }
-            if compare_property_values(&left, &right) == Some(Ordering::Equal) {
-                Ok(Value::Null)
-            } else {
-                Ok(left)
-            }
-        }
-        ExprKind::ListLiteral(items) | ExprKind::ListConstructor { items, .. } => items
-            .iter()
-            .map(|expr| eval_property_expr(property, expr, parameters))
-            .collect::<Result<Vec<_>, _>>()
-            .map(Value::List),
-        ExprKind::RecordLiteral(fields) | ExprKind::RecordConstructor(fields) => fields
-            .iter()
-            .map(|(name, expr)| {
-                eval_property_expr(property, expr, parameters).map(|value| (name.clone(), value))
-            })
-            .collect::<Result<Vec<_>, _>>()
-            .map(Value::Record),
-        _ => Err(PlanMutationError::UnsupportedExpression {
-            property: property.to_owned(),
-        }),
-    }
-}
-
-fn eval_not_expr(property: &str, value: Value) -> Result<Value, PlanMutationError> {
-    match value {
-        Value::Bool(value) => Ok(Value::Bool(!value)),
-        Value::Null => Ok(Value::Null),
-        _ => invalid_expr_value(property),
-    }
-}
-
-fn eval_and_expr(property: &str, left: Value, right: Value) -> Result<Value, PlanMutationError> {
-    match (truthy(property, left)?, truthy(property, right)?) {
-        (Some(false), _) | (_, Some(false)) => Ok(Value::Bool(false)),
-        (None, _) | (_, None) => Ok(Value::Null),
-        (Some(true), Some(true)) => Ok(Value::Bool(true)),
-    }
-}
-
-fn eval_or_expr(property: &str, left: Value, right: Value) -> Result<Value, PlanMutationError> {
-    match (truthy(property, left)?, truthy(property, right)?) {
-        (Some(true), _) | (_, Some(true)) => Ok(Value::Bool(true)),
-        (None, _) | (_, None) => Ok(Value::Null),
-        (Some(false), Some(false)) => Ok(Value::Bool(false)),
-    }
-}
-
-fn eval_xor_expr(property: &str, left: Value, right: Value) -> Result<Value, PlanMutationError> {
-    match (truthy(property, left)?, truthy(property, right)?) {
-        (Some(left), Some(right)) => Ok(Value::Bool(left ^ right)),
-        _ => Ok(Value::Null),
-    }
-}
-
-fn truthy(property: &str, value: Value) -> Result<Option<bool>, PlanMutationError> {
-    match value {
-        Value::Bool(value) => Ok(Some(value)),
-        Value::Null => Ok(None),
-        _ => invalid_expr_value(property).map(|_| None),
-    }
-}
-
-fn eval_compare_expr(
-    property: &str,
-    left: Value,
-    op: CmpOp,
-    right: Value,
-) -> Result<Value, PlanMutationError> {
-    if left == Value::Null || right == Value::Null {
-        return Ok(Value::Null);
-    }
-
-    let Some(ordering) = compare_property_values(&left, &right) else {
-        return invalid_expr_value(property);
-    };
-    let matched = match op {
-        CmpOp::Eq => ordering == Ordering::Equal,
-        CmpOp::Ne => ordering != Ordering::Equal,
-        CmpOp::Lt => ordering == Ordering::Less,
-        CmpOp::Le => ordering != Ordering::Greater,
-        CmpOp::Gt => ordering == Ordering::Greater,
-        CmpOp::Ge => ordering != Ordering::Less,
-    };
-    Ok(Value::Bool(matched))
-}
-
-fn compare_property_values(left: &Value, right: &Value) -> Option<Ordering> {
-    compare_values(left, right)
-}
-
-fn eval_concat_expr(property: &str, left: Value, right: Value) -> Result<Value, PlanMutationError> {
-    match (left, right) {
-        (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
-        (Value::Text(left), Value::Text(right)) => Ok(Value::Text(format!("{left}{right}"))),
-        (Value::Bytes(mut left), Value::Bytes(right)) => {
-            left.extend_from_slice(&right);
-            Ok(Value::Bytes(left))
-        }
-        _ => invalid_expr_value(property),
-    }
-}
-
-fn eval_unary_expr(property: &str, op: UnaryOp, value: Value) -> Result<Value, PlanMutationError> {
-    eval_unary_numeric(op, value).map_err(|_| invalid_expr_value_err(property))
-}
-
-fn eval_binary_expr(
-    property: &str,
-    left: Value,
-    op: BinaryOp,
-    right: Value,
-) -> Result<Value, PlanMutationError> {
-    if left == Value::Null || right == Value::Null {
-        return Ok(Value::Null);
-    }
-
-    if let BinaryOp::Add = op
-        && let (Value::Text(left), Value::Text(right)) = (&left, &right)
-    {
-        return Ok(Value::Text(format!("{left}{right}")));
-    }
-
-    eval_binary_numeric(left, op, right).map_err(|_| invalid_expr_value_err(property))
-}
-
-fn invalid_expr_value(property: &str) -> Result<Value, PlanMutationError> {
-    Err(invalid_expr_value_err(property))
-}
-
-fn invalid_expr_value_err(property: &str) -> PlanMutationError {
-    PlanMutationError::InvalidExpressionValue {
-        property: property.to_owned(),
-    }
-}
-
 fn is_mutation_op(op: &PlanOp) -> bool {
     matches!(
         op,
@@ -568,8 +275,9 @@ fn plan_op_name(op: &PlanOp) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gleaph_gql::ast::Expr;
-    use gleaph_gql::types::{Decimal, Int256, Uint256};
+    use gleaph_gql::Value;
+    use gleaph_gql::ast::{BinaryOp, CmpOp, Expr, ExprKind, TruthValue, UnaryOp};
+    use gleaph_gql::types::Decimal;
     use gleaph_gql_planner::plan::{PlanDiagnostics, PropertyAssignment};
 
     #[test]
@@ -975,163 +683,6 @@ mod tests {
         assert_eq!(
             store.vertex_property(vertex, negative),
             Some(Value::Decimal(Decimal::parse("-3.25").expect("decimal")))
-        );
-    }
-
-    #[test]
-    fn preserves_numeric_precision_when_evaluating_arithmetic() {
-        assert_eq!(
-            eval_binary_expr("p", Value::Int8(120), BinaryOp::Add, Value::Int8(10))
-                .expect("signed widening"),
-            Value::Int16(130)
-        );
-        assert_eq!(
-            eval_binary_expr("p", Value::Uint8(250), BinaryOp::Add, Value::Uint8(10))
-                .expect("unsigned widening"),
-            Value::Uint16(260)
-        );
-        assert_eq!(
-            eval_binary_expr("p", Value::Int64(1), BinaryOp::Div, Value::Int64(4))
-                .expect("integer division decimal"),
-            Value::Decimal(Decimal::parse("0.25").expect("decimal"))
-        );
-        assert_eq!(
-            eval_binary_expr("p", Value::Uint8(2), BinaryOp::Sub, Value::Uint8(5))
-                .expect("unsigned subtraction below zero"),
-            Value::Int128(-3)
-        );
-
-        let large = Value::Int256(Int256::new(ethnum::I256::from(i128::MAX)));
-        assert_eq!(
-            eval_binary_expr("p", large, BinaryOp::Add, Value::Int64(1)).expect("i256 add"),
-            Value::Int256(Int256::new(ethnum::I256::from(i128::MAX) + 1))
-        );
-        assert_eq!(
-            eval_binary_expr(
-                "p",
-                Value::Int128(i128::MAX),
-                BinaryOp::Add,
-                Value::Int64(1),
-            )
-            .expect("i128 overflow widens"),
-            Value::Int256(Int256::new(ethnum::I256::from(i128::MAX) + 1))
-        );
-        assert_eq!(
-            eval_binary_expr(
-                "p",
-                Value::Uint128(u128::MAX),
-                BinaryOp::Add,
-                Value::Uint8(1),
-            )
-            .expect("u128 overflow widens"),
-            Value::Uint256(Uint256::new(ethnum::U256::from(u128::MAX) + 1))
-        );
-        assert_eq!(
-            eval_binary_expr(
-                "p",
-                Value::Uint128(u128::MAX),
-                BinaryOp::Sub,
-                Value::Uint256(Uint256::new(ethnum::U256::from(u128::MAX) + 1)),
-            )
-            .expect("large unsigned subtraction below zero"),
-            Value::Int256(Int256::new(ethnum::I256::from(-1)))
-        );
-        assert_eq!(
-            eval_binary_expr(
-                "p",
-                Value::Int256(Int256::new(ethnum::I256::from(1))),
-                BinaryOp::Div,
-                Value::Int256(Int256::new(ethnum::I256::from(4))),
-            )
-            .expect("i256 fractional division"),
-            Value::Float256("0.25".parse::<f256::f256>().expect("f256"))
-        );
-        assert_eq!(
-            eval_binary_expr(
-                "p",
-                Value::Uint256(Uint256::new(ethnum::U256::from(1u8))),
-                BinaryOp::Div,
-                Value::Uint256(Uint256::new(ethnum::U256::from(4u8))),
-            )
-            .expect("u256 fractional division"),
-            Value::Float256("0.25".parse::<f256::f256>().expect("f256"))
-        );
-    }
-
-    #[test]
-    fn preserves_float_width_when_evaluating_arithmetic() {
-        assert_eq!(
-            eval_binary_expr(
-                "p",
-                Value::Float16(half::f16::from_f32(1.5)),
-                BinaryOp::Add,
-                Value::Float16(half::f16::from_f32(2.0)),
-            )
-            .expect("f16 add"),
-            Value::Float16(half::f16::from_f32(3.5))
-        );
-        assert_eq!(
-            eval_binary_expr("p", Value::Float32(1.5), BinaryOp::Add, Value::Int64(2))
-                .expect("f32 plus int"),
-            Value::Float32(3.5)
-        );
-        assert_eq!(
-            eval_binary_expr(
-                "p",
-                Value::Float128(1.5f128),
-                BinaryOp::Add,
-                Value::Float128(2.25f128),
-            )
-            .expect("f128 add"),
-            Value::Float128(3.75f128)
-        );
-        assert_eq!(
-            eval_binary_expr(
-                "p",
-                Value::Float256("1.5".parse::<f256::f256>().expect("f256")),
-                BinaryOp::Add,
-                Value::Int64(2),
-            )
-            .expect("f256 plus int"),
-            Value::Float256("3.5".parse::<f256::f256>().expect("f256"))
-        );
-        assert_eq!(
-            eval_binary_expr(
-                "p",
-                Value::Decimal(Decimal::parse("1.25").expect("decimal")),
-                BinaryOp::Add,
-                Value::Float32(2.25),
-            )
-            .expect("decimal plus f32"),
-            Value::Float64(3.5)
-        );
-        assert_eq!(
-            eval_binary_expr(
-                "p",
-                Value::Decimal(Decimal::parse("1.25").expect("decimal")),
-                BinaryOp::Add,
-                Value::Float256("2.25".parse::<f256::f256>().expect("f256")),
-            )
-            .expect("decimal plus f256"),
-            Value::Float256("3.5".parse::<f256::f256>().expect("f256"))
-        );
-    }
-
-    #[test]
-    fn preserves_numeric_precision_when_comparing_values() {
-        assert_eq!(
-            compare_property_values(
-                &Value::Float128(1.0f128 + f128::EPSILON),
-                &Value::Float128(1.0f128),
-            ),
-            Some(Ordering::Greater)
-        );
-        assert_eq!(
-            compare_property_values(
-                &Value::Float256("1.0000000000000000000000000000000000001".parse().unwrap()),
-                &Value::Float256("1.0000000000000000000000000000000000000".parse().unwrap()),
-            ),
-            Some(Ordering::Greater)
         );
     }
 
