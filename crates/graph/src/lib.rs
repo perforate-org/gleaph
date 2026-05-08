@@ -6,6 +6,7 @@ pub mod label_catalog;
 mod memory;
 pub mod property_catalog;
 pub mod vertex_labels;
+pub mod vertex_properties;
 
 thread_local! {
     static GRAPH: RefCell<Graph<Edge, Vertex, memory::Memory>> = RefCell::new(
@@ -22,5 +23,9 @@ thread_local! {
 
     static PROPERTY_CATALOG: RefCell<memory::StablePropertyCatalog> = RefCell::new(
         memory::init_property_catalog()
+    );
+
+    static VERTEX_PROPERTIES: RefCell<memory::StableVertexPropertyStore> = RefCell::new(
+        memory::init_vertex_property_store()
     );
 }

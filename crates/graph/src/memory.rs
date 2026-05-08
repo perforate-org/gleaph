@@ -1,6 +1,7 @@
 use crate::label_catalog::LabelCatalog;
 use crate::property_catalog::PropertyCatalog;
 use crate::vertex_labels::VertexLabelStore;
+use crate::vertex_properties::VertexPropertyStore;
 use gleaph_graph_kernel::entry::{Edge, Vertex};
 use ic_stable_lara::{lara::maintenance::DeferredConfig, DeferredBidirectionalLaraGraph as Graph};
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
@@ -29,6 +30,7 @@ const LABEL_ID_TO_NAME: MemoryId = MemoryId::new(17);
 const VERTEX_LABEL_SETS: MemoryId = MemoryId::new(18);
 const PROPERTY_NAME_TO_ID: MemoryId = MemoryId::new(19);
 const PROPERTY_ID_TO_NAME: MemoryId = MemoryId::new(20);
+const VERTEX_PROPERTIES: MemoryId = MemoryId::new(21);
 
 const GRAPH_ELEM_CAPACITY: u64 = 0;
 const GRAPH_SEGMENT_SIZE: u32 = 32;
@@ -38,6 +40,7 @@ pub(super) type Memory = VirtualMemory<DefaultMemoryImpl>;
 pub(super) type StableLabelCatalog = LabelCatalog<Memory, Memory>;
 pub(super) type StableVertexLabelStore = VertexLabelStore<Memory>;
 pub(super) type StablePropertyCatalog = PropertyCatalog<Memory, Memory>;
+pub(super) type StableVertexPropertyStore = VertexPropertyStore<Memory>;
 
 thread_local! {
     static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
@@ -86,4 +89,8 @@ pub(super) fn init_property_catalog() -> StablePropertyCatalog {
         MEMORY_MANAGER.with(|m| m.borrow().get(PROPERTY_NAME_TO_ID)),
         MEMORY_MANAGER.with(|m| m.borrow().get(PROPERTY_ID_TO_NAME)),
     )
+}
+
+pub(super) fn init_vertex_property_store() -> StableVertexPropertyStore {
+    VertexPropertyStore::init(MEMORY_MANAGER.with(|m| m.borrow().get(VERTEX_PROPERTIES)))
 }
