@@ -1,11 +1,11 @@
-use crate::edge_ids::VertexEdgeIdAllocatorError;
-use crate::label_catalog::LabelCatalogError;
-use crate::property_catalog::PropertyCatalogError;
-use crate::vertex_labels::VertexLabelStoreError;
-use crate::vertex_properties::VertexPropertyStoreError;
+use crate::stable::edge_ids::VertexEdgeIdAllocatorError;
+use crate::stable::label_catalog::LabelCatalogError;
+use crate::stable::property_catalog::PropertyCatalogError;
+use crate::stable::vertex_labels::VertexLabelStoreError;
+use crate::stable::vertex_properties::VertexPropertyStoreError;
 use crate::{
     EDGE_PROPERTIES, GRAPH, LABEL_CATALOG, PROPERTY_CATALOG, VERTEX_EDGE_IDS, VERTEX_LABELS,
-    VERTEX_PROPERTIES, memory,
+    VERTEX_PROPERTIES,
 };
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{Edge, EdgeMeta, LabelId, PropertyId, Vertex, VertexEdgeId};
@@ -371,7 +371,7 @@ impl GraphStore {
 
     pub(crate) fn with_graph_mut<R>(
         &self,
-        f: impl FnOnce(&mut Graph<Edge, Vertex, memory::Memory>) -> R,
+        f: impl FnOnce(&mut Graph<Edge, Vertex, crate::stable::memory::Memory>) -> R,
     ) -> R {
         GRAPH.with(|graph| f(&mut graph.borrow_mut()))
     }

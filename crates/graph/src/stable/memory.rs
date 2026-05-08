@@ -1,9 +1,9 @@
-use crate::edge_ids::VertexEdgeIdAllocator;
-use crate::edge_properties::EdgePropertyStore;
-use crate::label_catalog::LabelCatalog;
-use crate::property_catalog::PropertyCatalog;
-use crate::vertex_labels::VertexLabelStore;
-use crate::vertex_properties::VertexPropertyStore;
+use super::edge_ids::VertexEdgeIdAllocator;
+use super::edge_properties::EdgePropertyStore;
+use super::label_catalog::LabelCatalog;
+use super::property_catalog::PropertyCatalog;
+use super::vertex_labels::VertexLabelStore;
+use super::vertex_properties::VertexPropertyStore;
 use gleaph_graph_kernel::entry::{Edge, Vertex};
 use ic_stable_lara::{DeferredBidirectionalLaraGraph as Graph, lara::maintenance::DeferredConfig};
 use ic_stable_structures::DefaultMemoryImpl;
@@ -40,20 +40,20 @@ const GRAPH_ELEM_CAPACITY: u64 = 0;
 const GRAPH_SEGMENT_SIZE: u32 = 32;
 const GRAPH_INITIAL_VERTEX_EDGE_SLOTS: u32 = 0;
 
-pub(super) type Memory = VirtualMemory<DefaultMemoryImpl>;
-pub(super) type StableLabelCatalog = LabelCatalog<Memory, Memory>;
-pub(super) type StableVertexLabelStore = VertexLabelStore<Memory>;
-pub(super) type StablePropertyCatalog = PropertyCatalog<Memory, Memory>;
-pub(super) type StableVertexPropertyStore = VertexPropertyStore<Memory>;
-pub(super) type StableEdgePropertyStore = EdgePropertyStore<Memory>;
-pub(super) type StableVertexEdgeIdAllocator = VertexEdgeIdAllocator<Memory>;
+pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
+pub(crate) type StableLabelCatalog = LabelCatalog<Memory, Memory>;
+pub(crate) type StableVertexLabelStore = VertexLabelStore<Memory>;
+pub(crate) type StablePropertyCatalog = PropertyCatalog<Memory, Memory>;
+pub(crate) type StableVertexPropertyStore = VertexPropertyStore<Memory>;
+pub(crate) type StableEdgePropertyStore = EdgePropertyStore<Memory>;
+pub(crate) type StableVertexEdgeIdAllocator = VertexEdgeIdAllocator<Memory>;
 
 thread_local! {
     static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
         RefCell::new(MemoryManager::init(DefaultMemoryImpl::default()));
 }
 
-pub(super) fn init_graph() -> Graph<Edge, Vertex, Memory> {
+pub(crate) fn init_graph() -> Graph<Edge, Vertex, Memory> {
     Graph::init_with_config(
         MEMORY_MANAGER.with(|m| m.borrow().get(FORWARD_VERTICES)),
         MEMORY_MANAGER.with(|m| m.borrow().get(FORWARD_COUNTS)),
@@ -79,32 +79,32 @@ pub(super) fn init_graph() -> Graph<Edge, Vertex, Memory> {
     .unwrap()
 }
 
-pub(super) fn init_label_catalog() -> StableLabelCatalog {
+pub(crate) fn init_label_catalog() -> StableLabelCatalog {
     LabelCatalog::init(
         MEMORY_MANAGER.with(|m| m.borrow().get(LABEL_NAME_TO_ID)),
         MEMORY_MANAGER.with(|m| m.borrow().get(LABEL_ID_TO_NAME)),
     )
 }
 
-pub(super) fn init_vertex_label_store() -> StableVertexLabelStore {
+pub(crate) fn init_vertex_label_store() -> StableVertexLabelStore {
     VertexLabelStore::init(MEMORY_MANAGER.with(|m| m.borrow().get(VERTEX_LABEL_SETS)))
 }
 
-pub(super) fn init_property_catalog() -> StablePropertyCatalog {
+pub(crate) fn init_property_catalog() -> StablePropertyCatalog {
     PropertyCatalog::init(
         MEMORY_MANAGER.with(|m| m.borrow().get(PROPERTY_NAME_TO_ID)),
         MEMORY_MANAGER.with(|m| m.borrow().get(PROPERTY_ID_TO_NAME)),
     )
 }
 
-pub(super) fn init_vertex_property_store() -> StableVertexPropertyStore {
+pub(crate) fn init_vertex_property_store() -> StableVertexPropertyStore {
     VertexPropertyStore::init(MEMORY_MANAGER.with(|m| m.borrow().get(VERTEX_PROPERTIES)))
 }
 
-pub(super) fn init_edge_property_store() -> StableEdgePropertyStore {
+pub(crate) fn init_edge_property_store() -> StableEdgePropertyStore {
     EdgePropertyStore::init(MEMORY_MANAGER.with(|m| m.borrow().get(EDGE_PROPERTIES)))
 }
 
-pub(super) fn init_vertex_edge_id_allocator() -> StableVertexEdgeIdAllocator {
+pub(crate) fn init_vertex_edge_id_allocator() -> StableVertexEdgeIdAllocator {
     VertexEdgeIdAllocator::init(MEMORY_MANAGER.with(|m| m.borrow().get(VERTEX_EDGE_IDS)))
 }

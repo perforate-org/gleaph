@@ -1,4 +1,4 @@
-use crate::store::GraphStoreError;
+use crate::facade::GraphStoreError;
 use gleaph_gql::types::EdgeDirection;
 use std::fmt;
 

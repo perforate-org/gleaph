@@ -1,4 +1,4 @@
-use crate::vertex_properties::{StoredPropertyValue, VertexPropertyStoreError};
+use super::vertex_properties::{StoredPropertyValue, VertexPropertyStoreError};
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{PropertyId, VertexEdgeId};
 use ic_stable_lara::VertexId;

@@ -1,9 +1,9 @@
 //! Evaluation of property expression trees for plan mutations (SET / INSERT properties).
 //!
-//! Kept separate from `plan_mutation_executor` so store operations and expression semantics
+//! Kept separate from `plan::mutation_executor` so store operations and expression semantics
 //! can evolve independently.
 
-use crate::plan_mutation_error::PlanMutationError;
+use super::mutation_error::PlanMutationError;
 use gleaph_gql::Value;
 use gleaph_gql::ast::{BinaryOp, CmpOp, Expr, ExprKind, TruthValue, UnaryOp};
 use gleaph_gql::numeric_ops::{

@@ -1,8 +1,8 @@
-use crate::label_catalog::LabelCatalogError;
-use crate::property_catalog::PropertyCatalogError;
-use crate::store::{EdgeHandle, GraphStore, GraphStoreError};
-use crate::vertex_labels::VertexLabelStoreError;
-use crate::vertex_properties::VertexPropertyStoreError;
+use super::store::{EdgeHandle, GraphStore, GraphStoreError};
+use crate::stable::label_catalog::LabelCatalogError;
+use crate::stable::property_catalog::PropertyCatalogError;
+use crate::stable::vertex_labels::VertexLabelStoreError;
+use crate::stable::vertex_properties::VertexPropertyStoreError;
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{EdgeFlags, EdgeMeta, LabelId, PropertyId};
 use ic_stable_lara::VertexId;
