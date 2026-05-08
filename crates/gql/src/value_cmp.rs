@@ -1,5 +1,5 @@
 //! Value comparison logic supporting cross-width and cross-signedness integer
-//! comparisons, mixed integer/float, and decimal promotions.
+//! comparisons, mixed numeric values, and decimal promotions.
 
 use std::cmp::Ordering;
 
@@ -166,31 +166,102 @@ fn normalize_zoned_time_utc(nanos: u64, tz_seconds: i32) -> i64 {
     utc.rem_euclid(NANOS_PER_DAY)
 }
 
+fn compare_decimal_values(left: &Value, right: &Value) -> Option<Ordering> {
+    let left = value_to_decimal(left)?;
+    let right = value_to_decimal(right)?;
+    Some(left.cmp(&right))
+}
+
+fn value_to_decimal(value: &Value) -> Option<Decimal> {
+    match value {
+        Value::Decimal(value) => Some(*value),
+        value if value.is_signed_int() => value.as_i128().map(Decimal::from_i128),
+        value if value.is_unsigned_int() => value.as_u128().map(Decimal::from_u128),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum FloatRank {
+    F16,
+    F32,
+    F64,
+    #[cfg(feature = "f128")]
+    F128,
+    #[cfg(feature = "f256")]
+    F256,
+}
+
+fn max_float_rank(left: &Value, right: &Value) -> Option<FloatRank> {
+    Some(float_rank(left)?.max(float_rank(right)?))
+}
+
+fn float_rank(value: &Value) -> Option<FloatRank> {
+    match value {
+        Value::Float16(_) => Some(FloatRank::F16),
+        Value::Float32(_) => Some(FloatRank::F32),
+        Value::Float64(_) | Value::Decimal(_) => Some(FloatRank::F64),
+        #[cfg(feature = "f128")]
+        Value::Float128(_) => Some(FloatRank::F128),
+        #[cfg(feature = "f256")]
+        Value::Float256(_) => Some(FloatRank::F256),
+        value if value.is_any_int() => Some(FloatRank::F16),
+        _ => None,
+    }
+}
+
+fn float16_value(value: &Value) -> Option<half::f16> {
+    match value {
+        Value::Float16(value) => Some(*value),
+        value => value.as_f64().map(half::f16::from_f64),
+    }
+}
+
+fn float32_value(value: &Value) -> Option<f32> {
+    match value {
+        Value::Float16(value) => Some(value.to_f32()),
+        Value::Float32(value) => Some(*value),
+        value => value.as_f64().map(|value| value as f32),
+    }
+}
+
+fn compare_float_values(left: &Value, right: &Value) -> Option<Ordering> {
+    match max_float_rank(left, right)? {
+        FloatRank::F16 => float16_value(left)?.partial_cmp(&float16_value(right)?),
+        FloatRank::F32 => float32_value(left)?.partial_cmp(&float32_value(right)?),
+        FloatRank::F64 => left.as_f64()?.partial_cmp(&right.as_f64()?),
+        #[cfg(feature = "f128")]
+        FloatRank::F128 => left.as_f128()?.partial_cmp(&right.as_f128()?),
+        #[cfg(feature = "f256")]
+        FloatRank::F256 => left.as_f256()?.partial_cmp(&right.as_f256()?),
+    }
+}
+
+fn compare_numeric_values(left: &Value, right: &Value) -> Option<Ordering> {
+    if left.is_float() || right.is_float() {
+        return compare_float_values(left, right);
+    }
+    if matches!(left, Value::Decimal(_)) || matches!(right, Value::Decimal(_)) {
+        return compare_decimal_values(left, right);
+    }
+    None
+}
+
 /// Compares two [`Value`]s and returns their ordering, or `None` if the types
 /// are incomparable (e.g. `Text` vs `Int64`).
-///
-/// Supports cross-width integer comparison, mixed integer/float promotion to
-/// `f64`, and integer/decimal promotion.
 pub fn compare_values(left: &Value, right: &Value) -> Option<Ordering> {
     // Integer x Integer (all width/signedness combos).
     if left.is_any_int() && right.is_any_int() {
         return compare_int_values(left, right);
     }
 
+    if left.is_numeric() && right.is_numeric() {
+        return compare_numeric_values(left, right);
+    }
+
     match (left, right) {
         (Value::Null, Value::Null) => Some(Ordering::Equal),
         (Value::Bool(a), Value::Bool(b)) => Some(a.cmp(b)),
-        (Value::Float16(a), Value::Float16(b)) => a.partial_cmp(b),
-        (Value::Float32(a), Value::Float32(b)) => a.partial_cmp(b),
-        (Value::Float64(a), Value::Float64(b)) => a.partial_cmp(b),
-        // Float16 x Float32/Float64: promote to f64
-        (Value::Float16(a), Value::Float32(b)) => a.to_f64().partial_cmp(&(*b as f64)),
-        (Value::Float32(a), Value::Float16(b)) => (*a as f64).partial_cmp(&b.to_f64()),
-        (Value::Float16(a), Value::Float64(b)) => a.to_f64().partial_cmp(b),
-        (Value::Float64(a), Value::Float16(b)) => a.partial_cmp(&b.to_f64()),
-        // Float32 x Float64: promote to f64
-        (Value::Float32(a), Value::Float64(b)) => (*a as f64).partial_cmp(b),
-        (Value::Float64(a), Value::Float32(b)) => a.partial_cmp(&(*b as f64)),
         (Value::Text(a), Value::Text(b)) => Some(a.cmp(b)),
         (Value::Bytes(a), Value::Bytes(b)) => Some(a.cmp(b)),
         (Value::Date(a), Value::Date(b)) => Some(a.cmp(b)),
@@ -213,49 +284,7 @@ pub fn compare_values(left: &Value, right: &Value) -> Option<Ordering> {
         (Value::Duration(m1, n1), Value::Duration(m2, n2)) => Some((m1, n1).cmp(&(m2, n2))),
         (Value::List(a), Value::List(b)) => compare_value_slices(a, b),
         (Value::Path(a), Value::Path(b)) => Some(compare_path_slices(a, b)),
-        (Value::Decimal(a), Value::Decimal(b)) => Some(a.cmp(b)),
         (Value::Extension(a), Value::Extension(b)) => a.cmp_ext(b.as_ref()),
-
-        // Integer x Float: promote both to f64
-        (l, Value::Float16(b)) if l.is_any_int() => l.as_f64()?.partial_cmp(&b.to_f64()),
-        (Value::Float16(a), r) if r.is_any_int() => a.to_f64().partial_cmp(&r.as_f64()?),
-        (l, Value::Float32(b)) if l.is_any_int() => l.as_f64()?.partial_cmp(&(*b as f64)),
-        (Value::Float32(a), r) if r.is_any_int() => (*a as f64).partial_cmp(&r.as_f64()?),
-        (l, Value::Float64(b)) if l.is_any_int() => l.as_f64()?.partial_cmp(b),
-        (Value::Float64(a), r) if r.is_any_int() => a.partial_cmp(&r.as_f64()?),
-
-        // Signed int x Decimal
-        (l, Value::Decimal(b)) if l.is_signed_int() => l
-            .as_i128()
-            .map(|a| Decimal::new(rust_decimal::Decimal::from(a)).cmp(b)),
-        (Value::Decimal(a), r) if r.is_signed_int() => r
-            .as_i128()
-            .map(|b| a.cmp(&Decimal::new(rust_decimal::Decimal::from(b)))),
-
-        // Unsigned int x Decimal
-        (l, Value::Decimal(b)) if l.is_unsigned_int() => l
-            .as_u128()
-            .map(|a| Decimal::new(rust_decimal::Decimal::from(a)).cmp(b)),
-        (Value::Decimal(a), r) if r.is_unsigned_int() => r
-            .as_u128()
-            .map(|b| a.cmp(&Decimal::new(rust_decimal::Decimal::from(b)))),
-
-        // Float x Decimal: promote both to f64
-        (Value::Float16(a), Value::Decimal(b)) => {
-            b.to_f64().and_then(|bf| a.to_f64().partial_cmp(&bf))
-        }
-        (Value::Decimal(a), Value::Float16(b)) => {
-            a.to_f64().and_then(|af| af.partial_cmp(&b.to_f64()))
-        }
-        (Value::Float32(a), Value::Decimal(b)) => {
-            b.to_f64().and_then(|bf| (*a as f64).partial_cmp(&bf))
-        }
-        (Value::Decimal(a), Value::Float32(b)) => {
-            a.to_f64().and_then(|af| af.partial_cmp(&(*b as f64)))
-        }
-        (Value::Float64(a), Value::Decimal(b)) => b.to_f64().and_then(|bf| a.partial_cmp(&bf)),
-        (Value::Decimal(a), Value::Float64(b)) => a.to_f64().and_then(|af| af.partial_cmp(b)),
-
         _ => None,
     }
 }
@@ -273,6 +302,42 @@ mod tests {
         );
         assert_eq!(
             compare_values(&Value::Float64(2.0), &Value::Int64(1)),
+            Some(Ordering::Greater)
+        );
+    }
+
+    #[cfg(feature = "f128")]
+    #[test]
+    fn compares_float128_without_f64_rounding() {
+        assert_eq!(
+            compare_values(
+                &Value::Float128(1.0f128 + f128::EPSILON),
+                &Value::Float128(1.0f128),
+            ),
+            Some(Ordering::Greater)
+        );
+    }
+
+    #[cfg(feature = "f256")]
+    #[test]
+    fn compares_float256_without_f64_rounding() {
+        assert_eq!(
+            compare_values(
+                &Value::Float256("1.0000000000000000000000000000000000001".parse().unwrap()),
+                &Value::Float256("1.0000000000000000000000000000000000000".parse().unwrap()),
+            ),
+            Some(Ordering::Greater)
+        );
+    }
+
+    #[cfg(feature = "f256")]
+    #[test]
+    fn compares_decimal_and_float256_using_float256() {
+        assert_eq!(
+            compare_values(
+                &Value::Decimal(Decimal::parse("1.0000000000000000000000000001").unwrap()),
+                &Value::Float256("1.0000000000000000000000000000".parse().unwrap()),
+            ),
             Some(Ordering::Greater)
         );
     }

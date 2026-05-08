@@ -32,6 +32,7 @@ pub mod extensions;
 pub mod lexer;
 /// Gleaph identifier length limits for properties, labels, and graph-type names.
 pub mod name_limits;
+pub mod numeric_ops;
 pub mod parser;
 #[cfg(feature = "ast-rkyv-no-span")]
 pub(crate) mod rkyv_support;

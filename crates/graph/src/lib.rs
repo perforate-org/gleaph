@@ -1,3 +1,5 @@
+#![cfg_attr(test, feature(f128))]
+
 use gleaph_graph_kernel::entry::{Edge, Vertex};
 use ic_stable_lara::DeferredBidirectionalLaraGraph as Graph;
 use std::cell::RefCell;

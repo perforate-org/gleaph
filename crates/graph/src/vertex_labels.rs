@@ -34,7 +34,7 @@ impl Storable for VertexLabelSetBlob {
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
         assert!(
-            bytes.len() % 2 == 0,
+            bytes.len().is_multiple_of(2),
             "VertexLabelSetBlob expects an even number of bytes"
         );
         let mut labels = Vec::with_capacity(bytes.len() / 2);
@@ -73,10 +73,10 @@ impl<M: Memory> VertexLabelStore<M> {
     }
 
     pub fn labels_for(&self, vertex_id: VertexId, vertex: Vertex) -> Vec<LabelId> {
-        if vertex.has_label_sidecar() {
-            if let Some(blob) = self.sidecars.get(&vertex_key(vertex_id)) {
-                return blob.labels().to_vec();
-            }
+        if vertex.has_label_sidecar()
+            && let Some(blob) = self.sidecars.get(&vertex_key(vertex_id))
+        {
+            return blob.labels().to_vec();
         }
         vertex.primary_label_id().into_iter().collect()
     }

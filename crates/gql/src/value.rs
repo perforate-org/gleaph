@@ -1039,6 +1039,68 @@ impl Value {
         }
     }
 
+    /// Extract an integer value as i256, when the value can be represented as signed 256-bit.
+    pub fn as_i256(&self) -> Option<ethnum::I256> {
+        match self {
+            Self::Int256(v) => Some(v.0),
+            Self::Uint256(v) => ethnum::I256::try_from(v.0).ok(),
+            value => value
+                .as_i128()
+                .map(ethnum::I256::from)
+                .or_else(|| value.as_u128().map(ethnum::I256::from)),
+        }
+    }
+
+    /// Extract an integer value as u256, when the value can be represented as unsigned 256-bit.
+    pub fn as_u256(&self) -> Option<ethnum::U256> {
+        match self {
+            Self::Uint256(v) => Some(v.0),
+            Self::Int256(v) if !v.0.is_negative() => Some(v.0.as_u256()),
+            value => value.as_u128().map(ethnum::U256::from).or_else(|| {
+                value
+                    .as_i128()
+                    .and_then(|value| u128::try_from(value).ok())
+                    .map(ethnum::U256::from)
+            }),
+        }
+    }
+
+    /// Convert numeric values to f128 when the `f128` feature is enabled.
+    #[cfg(feature = "f128")]
+    pub fn as_f128(&self) -> Option<f128> {
+        match self {
+            Self::Float128(v) => Some(*v),
+            #[cfg(feature = "f256")]
+            Self::Float256(_) => None,
+            value if value.is_signed_int() => value.as_i128().map(|value| value as f128),
+            value if value.is_unsigned_int() => value.as_u128().map(|value| value as f128),
+            value => value.as_f64().map(|value| value as f128),
+        }
+    }
+
+    /// Convert numeric values to f256 when the `f256` feature is enabled.
+    #[cfg(feature = "f256")]
+    pub fn as_f256(&self) -> Option<f256::f256> {
+        match self {
+            Self::Float256(v) => Some(*v),
+            #[cfg(feature = "f128")]
+            Self::Float128(_) => self
+                .as_f64()
+                .and_then(|value| value.to_string().parse::<f256::f256>().ok()),
+            Self::Decimal(v) => v.to_string().parse::<f256::f256>().ok(),
+            value if value.is_signed_int() => value
+                .as_i256()
+                .and_then(|value| value.to_string().parse::<f256::f256>().ok()),
+            value if value.is_unsigned_int() => value
+                .as_u256()
+                .and_then(|value| value.to_string().parse::<f256::f256>().ok()),
+            Self::Float16(v) => Some(f256::f256::from(v.to_f64())),
+            Self::Float32(v) => Some(f256::f256::from(*v)),
+            Self::Float64(v) => Some(f256::f256::from(*v)),
+            _ => None,
+        }
+    }
+
     /// Convert any numeric variant to f64.
     pub fn as_f64(&self) -> Option<f64> {
         match self {
