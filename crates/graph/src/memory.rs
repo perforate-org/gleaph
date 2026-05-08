@@ -1,3 +1,4 @@
+use crate::edge_ids::VertexEdgeIdAllocator;
 use crate::edge_properties::EdgePropertyStore;
 use crate::label_catalog::LabelCatalog;
 use crate::property_catalog::PropertyCatalog;
@@ -33,6 +34,7 @@ const PROPERTY_NAME_TO_ID: MemoryId = MemoryId::new(19);
 const PROPERTY_ID_TO_NAME: MemoryId = MemoryId::new(20);
 const VERTEX_PROPERTIES: MemoryId = MemoryId::new(21);
 const EDGE_PROPERTIES: MemoryId = MemoryId::new(22);
+const VERTEX_EDGE_IDS: MemoryId = MemoryId::new(23);
 
 const GRAPH_ELEM_CAPACITY: u64 = 0;
 const GRAPH_SEGMENT_SIZE: u32 = 32;
@@ -44,6 +46,7 @@ pub(super) type StableVertexLabelStore = VertexLabelStore<Memory>;
 pub(super) type StablePropertyCatalog = PropertyCatalog<Memory, Memory>;
 pub(super) type StableVertexPropertyStore = VertexPropertyStore<Memory>;
 pub(super) type StableEdgePropertyStore = EdgePropertyStore<Memory>;
+pub(super) type StableVertexEdgeIdAllocator = VertexEdgeIdAllocator<Memory>;
 
 thread_local! {
     static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
@@ -100,4 +103,8 @@ pub(super) fn init_vertex_property_store() -> StableVertexPropertyStore {
 
 pub(super) fn init_edge_property_store() -> StableEdgePropertyStore {
     EdgePropertyStore::init(MEMORY_MANAGER.with(|m| m.borrow().get(EDGE_PROPERTIES)))
+}
+
+pub(super) fn init_vertex_edge_id_allocator() -> StableVertexEdgeIdAllocator {
+    VertexEdgeIdAllocator::init(MEMORY_MANAGER.with(|m| m.borrow().get(VERTEX_EDGE_IDS)))
 }
