@@ -2,6 +2,7 @@ use gleaph_graph_kernel::entry::{Edge, Vertex};
 use ic_stable_lara::DeferredBidirectionalLaraGraph as Graph;
 use std::cell::RefCell;
 
+pub mod edge_properties;
 pub mod label_catalog;
 mod memory;
 pub mod property_catalog;
@@ -27,5 +28,9 @@ thread_local! {
 
     static VERTEX_PROPERTIES: RefCell<memory::StableVertexPropertyStore> = RefCell::new(
         memory::init_vertex_property_store()
+    );
+
+    static EDGE_PROPERTIES: RefCell<memory::StableEdgePropertyStore> = RefCell::new(
+        memory::init_edge_property_store()
     );
 }
