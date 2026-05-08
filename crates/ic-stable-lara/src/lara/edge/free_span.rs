@@ -490,6 +490,40 @@ impl<M: Memory> FreeSpanStore<M> {
         Ok(None)
     }
 
+    /// Takes `len` slots from the front of the free span starting at `start_slot`.
+    pub fn take_prefix_at(
+        &self,
+        start_slot: u64,
+        len: u64,
+    ) -> Result<Option<FreeSpan>, FreeSpanError> {
+        if len == 0 {
+            return Ok(None);
+        }
+        let Some(whole) = self.free_span_starting_at(start_slot) else {
+            return Ok(None);
+        };
+        if whole.len < len {
+            return Ok(None);
+        }
+
+        let taken = FreeSpan { start_slot, len };
+        if whole.len == len {
+            self.remove_span_exact(whole)?;
+        } else {
+            let remainder_start = start_slot
+                .checked_add(len)
+                .ok_or(FreeSpanError::SpanOverflow { span: taken })?;
+            self.replace_existing_span(
+                whole,
+                FreeSpan {
+                    start_slot: remainder_start,
+                    len: whole.len - len,
+                },
+            )?;
+        }
+        Ok(Some(taken))
+    }
+
     /// Returns the active free span that starts exactly at `start_slot`.
     pub fn free_span_starting_at(&self, start_slot: u64) -> Option<FreeSpan> {
         let id = self.by_start.borrow().get(start_slot)?;
@@ -1117,6 +1151,51 @@ mod tests {
             Some(FreeSpan {
                 start_slot: 1040,
                 len: 40
+            })
+        );
+        s.validate().unwrap();
+    }
+
+    #[test]
+    fn binned_take_prefix_at_splits_exact_start() {
+        let s = test_store();
+        s.release_span(1000, 80).unwrap();
+        s.release_span(2000, 32).unwrap();
+        assert_eq!(
+            s.take_prefix_at(1000, 24).unwrap(),
+            Some(FreeSpan {
+                start_slot: 1000,
+                len: 24
+            })
+        );
+        assert_eq!(
+            s.free_span_starting_at(1024),
+            Some(FreeSpan {
+                start_slot: 1024,
+                len: 56
+            })
+        );
+        assert_eq!(
+            s.free_span_starting_at(2000),
+            Some(FreeSpan {
+                start_slot: 2000,
+                len: 32
+            })
+        );
+        s.validate().unwrap();
+    }
+
+    #[test]
+    fn binned_take_prefix_at_requires_exact_start_and_sufficient_len() {
+        let s = test_store();
+        s.release_span(1000, 80).unwrap();
+        assert_eq!(s.take_prefix_at(1001, 24).unwrap(), None);
+        assert_eq!(s.take_prefix_at(1000, 81).unwrap(), None);
+        assert_eq!(
+            s.free_span_starting_at(1000),
+            Some(FreeSpan {
+                start_slot: 1000,
+                len: 80
             })
         );
         s.validate().unwrap();
