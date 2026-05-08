@@ -998,6 +998,7 @@ mod bench {
         canbench_rs::bench_fn(|| {
             let _scope = canbench_rs::bench_scope("lara_maintenance_queue_mark_pop");
             for i in 0..helper::MEDIUM_N {
+                let i = black_box(i);
                 let segment = SegmentId::from((i % 256) as u32);
                 if i % 8 == 0 {
                     queue.mark_urgent(segment).expect("mark urgent");
@@ -1022,8 +1023,12 @@ mod bench {
         canbench_rs::bench_fn(|| {
             let _scope = canbench_rs::bench_scope("lara_deferred_insert_dirty");
             for i in 0..helper::MEDIUM_N {
+                let i = black_box(i);
                 graph
-                    .insert_edge_deferred(VertexId::from((i % 256) as u32), helper::test_edge(i))
+                    .insert_edge_deferred(
+                        VertexId::from(black_box((i % 256) as u32)),
+                        helper::test_edge(i),
+                    )
                     .expect("insert deferred edge");
             }
             black_box(graph.maintenance_queue().len());
@@ -1044,7 +1049,7 @@ mod bench {
             let _scope = canbench_rs::bench_scope("lara_deferred_iter_out_edges_log_backed");
             let mut count = 0usize;
             for edge in graph
-                .iter_out_edges(VertexId::from(0))
+                .iter_out_edges(VertexId::from(black_box(0u32)))
                 .expect("iterate deferred edges")
             {
                 black_box(edge);
@@ -1063,8 +1068,9 @@ mod bench {
             let _scope = canbench_rs::bench_scope("lara_deferred_maintenance_fold");
             let graph = helper::deferred_graph(16);
             for i in 0..64 {
+                let i = black_box(i);
                 graph
-                    .insert_edge_deferred(VertexId::from(0), helper::test_edge(i))
+                    .insert_edge_deferred(VertexId::from(black_box(0u32)), helper::test_edge(i))
                     .expect("insert deferred edge");
             }
             let report = graph

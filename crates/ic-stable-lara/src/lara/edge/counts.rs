@@ -419,7 +419,7 @@ mod bench {
                 store
                     .push(SegmentEdgeCounts {
                         actual: black_box(i as i64),
-                        total: (i * 2) as i64,
+                        total: black_box((i * 2) as i64),
                     })
                     .expect("push counts");
             }
@@ -442,6 +442,7 @@ mod bench {
             let _scope = canbench_rs::bench_scope("lara_counts_get_set_iter");
             let mut sum = 0i64;
             for i in 0..helper::MEDIUM_N {
+                let i = black_box(i);
                 let count = store.get(i);
                 sum = sum.wrapping_add(count.actual);
                 store.set(

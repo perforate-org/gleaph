@@ -402,19 +402,28 @@ mod bench {
             let _scope = canbench_rs::bench_scope("lara_edge_log_write_read_release");
             let mut payload = [0u8; TestEdge::BYTES];
             for i in 0..helper::MEDIUM_N {
+                let i = black_box(i);
                 let segment = (i % 16) as u32;
                 let entry = (i / 16) as u32;
                 helper::test_edge(i).write_to(&mut payload);
                 store
-                    .write_entry(segment, entry, entry as i32 - 1, i as i32, &payload)
+                    .write_entry(
+                        black_box(segment),
+                        black_box(entry),
+                        entry as i32 - 1,
+                        i as i32,
+                        &payload,
+                    )
                     .expect("write log entry");
-                store.write_idx(segment, entry as i32 + 1);
+                store.write_idx(black_box(segment), entry as i32 + 1);
             }
             let mut sum = 0i32;
             for i in 0..helper::MEDIUM_N {
+                let i = black_box(i);
                 let segment = (i % 16) as u32;
                 let entry = (i / 16) as u32;
-                let (prev, src) = store.read_entry(segment, entry, &mut payload);
+                let (prev, src) =
+                    store.read_entry(black_box(segment), black_box(entry), &mut payload);
                 sum ^= prev ^ src ^ TestEdge::read_from(&payload).0 as i32;
             }
             store.release_segment(0).expect("release segment");

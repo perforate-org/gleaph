@@ -13,10 +13,15 @@ fn bench_lara_deferred_bidirectional_insert_directed_1024() -> canbench_rs::Benc
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("lara_deferred_bidirectional_insert_directed");
         for i in 0..helper::MEDIUM_N {
+            let i = black_box(i);
             let src = (i % 256) as u32;
             let dst = ((i + 1) % 256) as u32;
             graph
-                .insert_directed_deferred(VertexId::from(src), VertexId::from(dst), TestEdge(dst))
+                .insert_directed_deferred(
+                    VertexId::from(black_box(src)),
+                    VertexId::from(black_box(dst)),
+                    TestEdge(black_box(dst)),
+                )
                 .expect("insert directed deferred");
         }
         black_box(graph.maintenance_queue_len());
@@ -67,13 +72,14 @@ fn bench_lara_deferred_bidirectional_insert_undirected_1024() -> canbench_rs::Be
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("lara_deferred_bidirectional_insert_undirected");
         for i in 0..helper::MEDIUM_N {
+            let i = black_box(i);
             let src = (i % 256) as u32;
             let dst = ((i + 1) % 256) as u32;
             graph
                 .insert_undirected_deferred(
-                    VertexId::from(src),
-                    VertexId::from(dst),
-                    helper::undirected_edge(dst),
+                    VertexId::from(black_box(src)),
+                    VertexId::from(black_box(dst)),
+                    helper::undirected_edge(black_box(dst)),
                 )
                 .expect("insert undirected deferred");
         }
@@ -90,9 +96,14 @@ fn bench_lara_deferred_bidirectional_maintenance_drain_1() -> canbench_rs::Bench
         let _scope = canbench_rs::bench_scope("lara_deferred_bidirectional_maintenance_drain");
         let graph = helper::deferred_bidirectional_graph(16);
         for i in 0..64 {
+            let i = black_box(i);
             let dst = ((i + 1) % 16) as u32;
             graph
-                .insert_directed_deferred(VertexId::from(0), VertexId::from(dst), TestEdge(dst))
+                .insert_directed_deferred(
+                    VertexId::from(black_box(0u32)),
+                    VertexId::from(black_box(dst)),
+                    TestEdge(black_box(dst)),
+                )
                 .expect("insert directed deferred");
         }
         let report = graph

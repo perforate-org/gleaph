@@ -29,6 +29,7 @@ fn bench_take_best_fit_split(n: u64) -> canbench_rs::BenchResult {
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("lara_free_span_store_take_best_fit_split");
         for i in 0..16 {
+            let i = black_box(i);
             let min_len = black_box(MIN_LEN + i);
             let span = store
                 .take_best_fit(min_len)
@@ -77,11 +78,11 @@ fn bench_lara_free_span_release_coalesce_1024() -> canbench_rs::BenchResult {
         store.release_span(base, 64).expect("left span");
         store.release_span(base + 128, 64).expect("right span");
         let taken = store
-            .take_best_fit(192)
+            .take_best_fit(black_box(192))
             .expect("take merged")
             .expect("merged span");
         store
-            .restore_allocated_prefix(taken)
+            .restore_allocated_prefix(black_box(taken))
             .expect("restore merged");
     })
 }

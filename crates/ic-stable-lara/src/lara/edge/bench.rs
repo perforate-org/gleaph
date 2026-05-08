@@ -56,10 +56,12 @@ fn bench_lara_edge_store_slab_insert_1024() -> canbench_rs::BenchResult {
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("lara_edge_store_slab_insert");
         for i in 0..helper::MEDIUM_N {
+            let i = black_box(i);
             edges
                 .insert_edge(&vertices, VertexId::from(i as u32), helper::test_edge(i))
                 .expect("insert slab edge");
         }
+        black_box(vertices.len());
     })
 }
 
@@ -72,8 +74,13 @@ fn bench_lara_edge_store_log_spill_128() -> canbench_rs::BenchResult {
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("lara_edge_store_log_spill");
         for i in 0..128 {
+            let i = black_box(i);
             edges
-                .insert_edge(&vertices, VertexId::from(0), helper::test_edge(i))
+                .insert_edge(
+                    &vertices,
+                    VertexId::from(black_box(0u32)),
+                    helper::test_edge(i),
+                )
                 .expect("insert log edge");
         }
         black_box(vertices.get(VertexId::from(0)).log_head);
@@ -95,7 +102,7 @@ fn bench_lara_edge_store_collect_out_edges_slot_order_1024() -> canbench_rs::Ben
         let _scope = canbench_rs::bench_scope("lara_edge_store_collect_out_edges_slot_order");
         black_box(
             edges
-                .collect_out_edges_slot_order(&vertices, VertexId::from(0))
+                .collect_out_edges_slot_order(&vertices, VertexId::from(black_box(0u32)))
                 .expect("collect edges"),
         );
     })
@@ -115,7 +122,7 @@ fn bench_lara_edge_store_iter_out_edges_1024() -> canbench_rs::BenchResult {
         let _scope = canbench_rs::bench_scope("lara_edge_store_iter_out_edges");
         let mut count = 0usize;
         for edge in edges
-            .iter_out_edges(&vertices, VertexId::from(0))
+            .iter_out_edges(&vertices, VertexId::from(black_box(0u32)))
             .expect("iterate edges")
         {
             black_box(edge);
@@ -140,7 +147,7 @@ fn bench_lara_edge_store_iter_out_edges_log_backed_128() -> canbench_rs::BenchRe
         let _scope = canbench_rs::bench_scope("lara_edge_store_iter_out_edges_log_backed");
         let mut count = 0usize;
         for edge in edges
-            .iter_out_edges(&vertices, VertexId::from(0))
+            .iter_out_edges(&vertices, VertexId::from(black_box(0u32)))
             .expect("iterate edges")
         {
             black_box(edge);

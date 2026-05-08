@@ -249,6 +249,7 @@ mod bench {
             }
             let mut sum = 0u64;
             for i in 0..helper::MEDIUM_N {
+                let i = black_box(i);
                 let meta = store.get(i);
                 sum ^= meta.physical_start;
                 store.set(
