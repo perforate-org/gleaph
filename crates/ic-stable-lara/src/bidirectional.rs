@@ -156,8 +156,8 @@ where
         reverse_free_spans: M,
         reverse_free_span_by_start: M,
         elem_capacity: u64,
-        segment_count: u32,
         segment_size: u32,
+        initial_vertex_edge_slots: u32,
     ) -> Result<Self, BidirectionalLaraError> {
         let forward = LaraGraph::new(
             forward_vertices,
@@ -168,8 +168,8 @@ where
             forward_free_spans,
             forward_free_span_by_start,
             elem_capacity,
-            segment_count,
             segment_size,
+            initial_vertex_edge_slots,
         )?;
         let reverse = LaraGraph::new(
             reverse_vertices,
@@ -180,8 +180,8 @@ where
             reverse_free_spans,
             reverse_free_span_by_start,
             elem_capacity,
-            segment_count,
             segment_size,
+            initial_vertex_edge_slots,
         )?;
         Ok(Self { forward, reverse })
     }

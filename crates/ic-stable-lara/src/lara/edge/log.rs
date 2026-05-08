@@ -334,6 +334,22 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
         }
         safe_write(&self.memory, need - 1, &[0])
     }
+
+    /// Extends the log layout so `segment_count` becomes `new_count`, resetting new segment indexes.
+    pub(crate) fn grow_segment_count_to(&self, new_count: u32) -> Result<(), GrowFailed> {
+        let mut h = self.header();
+        let old = h.segment_count;
+        if new_count <= old {
+            return Ok(());
+        }
+        h.segment_count = new_count;
+        self.grow_for_header(&h)?;
+        self.write_header(&h)?;
+        for leaf in old..new_count {
+            self.write_idx_with_header(&h, leaf, 0);
+        }
+        Ok(())
+    }
 }
 
 #[inline]

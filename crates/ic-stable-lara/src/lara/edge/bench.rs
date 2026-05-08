@@ -2,7 +2,7 @@ use std::hint::black_box;
 
 use canbench_rs::bench;
 
-use super::EdgeStore;
+use super::{EdgeStore, segment_tree_leaf_count};
 use crate::{
     VertexId, bench as helper,
     lara::vertex::{Vertex, VertexStore},
@@ -37,10 +37,13 @@ fn edge_store_with_vertices(
         memories.memory(),
         memories.memory(),
         u64::from(vertex_count) * u64::from(capacity),
-        vertex_count.div_ceil(16).max(1),
         16,
+        0,
     )
     .expect("edge store");
+    edges
+        .grow_segment_tree_to(segment_tree_leaf_count(u64::from(vertex_count), 16))
+        .expect("grow edge segments");
     (vertices, edges)
 }
 

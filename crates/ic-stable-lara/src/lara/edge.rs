@@ -20,6 +20,16 @@
 //! allowed only when it fits in the vertex's owned `capacity`; otherwise the
 //! edge is written to the segment log and later folded by maintenance or
 //! relocation.
+//!
+//! ## Layout assumptions (update paths)
+//!
+//! When a vertex row uses `capacity == 0` (no explicit owned span), slab vs
+//! log splitting uses the **next vertex row’s** `base_slot_start` as the
+//! exclusive end of the current row’s slab window. This matches compact CSR
+//! layouts where `VertexId` order and slab bases are non-decreasing. If that
+//! invariant is violated, behavior is undefined; **debug builds** assert it on
+//! the hot paths below. Prefer [`crate::LaraGraph`] orchestration over ad-hoc
+//! [`EdgeStore`] mutation so geometry and PMA counts stay aligned.
 
 #[cfg(feature = "canbench")]
 mod bench;
@@ -34,14 +44,14 @@ use crate::{
     traits::{CsrEdge, CsrVertex, CsrVertexTombstoneScan},
 };
 use counts::{SegmentEdgeCounts, SegmentEdgeCountsStore};
-use edges::EdgeSlabStore;
-pub use edges::HeaderV1 as EdgeHeaderV1;
+use edges::{EdgeSlabStore, tree_height_for_segment_count};
+pub use edges::{HeaderV1 as EdgeHeaderV1, segment_tree_leaf_count};
 use free_span::{FreeSpan, FreeSpanStore};
 use ic_stable_structures::Memory;
 pub use log::HeaderV1 as LogHeaderV1;
 use log::LogStore;
 use span_meta::{SegmentSpanMeta, SegmentSpanMetaStore};
-use std::{fmt, iter::FusedIterator};
+use std::{cell::Cell, fmt, iter::FusedIterator};
 
 const INLINE_EDGE_BYTES: usize = 64;
 /// When a clean slab row is at least this many bytes, [`OutEdgesIter`] reads the
@@ -120,6 +130,7 @@ pub(crate) trait VertexAccess<V: CsrVertex> {
 pub struct EdgeStore<E: CsrEdge, M: Memory> {
     counts: SegmentEdgeCountsStore<E, M>,
     edges: EdgeSlabStore<E, M>,
+    header: Cell<EdgeHeaderV1>,
     log: LogStore<E, M>,
     span_meta: SegmentSpanMetaStore<M>,
     free_spans: FreeSpanStore<M>,
@@ -136,10 +147,17 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         free_spans: M,
         free_span_by_start: M,
         elem_capacity: u64,
-        segment_count: u32,
         segment_size: u32,
+        initial_vertex_edge_slots: u32,
     ) -> Result<Self, GrowFailed> {
-        let header = EdgeHeaderV1::new(elem_capacity, segment_count, segment_size, E::BYTES as u32);
+        let segment_count = segment_tree_leaf_count(0, segment_size);
+        let header = EdgeHeaderV1::new(
+            elem_capacity,
+            segment_count,
+            segment_size,
+            E::BYTES as u32,
+            initial_vertex_edge_slots,
+        );
         let counts = SegmentEdgeCountsStore::new(counts)?;
         for _ in 0..u64::from(header.segment_count).saturating_mul(2) {
             counts.push(SegmentEdgeCounts {
@@ -162,6 +180,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         Ok(Self {
             counts,
             edges,
+            header: Cell::new(header),
             log,
             span_meta,
             free_spans,
@@ -191,20 +210,93 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         if span_meta.len() != u64::from(header.segment_count) {
             return Err(InitError::SpanMetaLayoutMismatch);
         }
+        if counts.len() != u64::from(header.segment_count).saturating_mul(2) {
+            return Err(InitError::SpanMetaLayoutMismatch);
+        }
         Ok(Self {
             counts,
             edges,
+            header: Cell::new(header),
             log,
             span_meta,
             free_spans,
         })
     }
 
+    /// Grows the PMA/log/span metadata to `new_segment_count` (power-of-two leaves, ≥ current).
+    pub(crate) fn grow_segment_tree_to(&self, new_segment_count: u32) -> Result<(), GrowFailed> {
+        let h = self.header();
+        let old = h.segment_count;
+        if new_segment_count <= old {
+            return Ok(());
+        }
+        self.migrate_counts_for_segment_grow(old, new_segment_count)?;
+        for _ in old..new_segment_count {
+            self.span_meta.push(SegmentSpanMeta { physical_start: 0 })?;
+        }
+        self.log.grow_segment_count_to(new_segment_count)?;
+        let mut nh = h;
+        nh.segment_count = new_segment_count;
+        nh.tree_height = tree_height_for_segment_count(new_segment_count);
+        self.write_header(&nh);
+        Ok(())
+    }
+
+    fn migrate_counts_for_segment_grow(&self, old_l: u32, new_l: u32) -> Result<(), GrowFailed> {
+        let mut leaf_vals: Vec<SegmentEdgeCounts> = Vec::with_capacity(old_l as usize);
+        for leaf in 0..old_l {
+            let idx = u64::from(old_l + leaf);
+            leaf_vals.push(self.counts.get(idx));
+        }
+        let target_len = u64::from(new_l).saturating_mul(2);
+        while self.counts.len() < target_len {
+            self.counts.push(SegmentEdgeCounts {
+                actual: 0,
+                total: 0,
+            })?;
+        }
+        for leaf in 0..old_l {
+            self.counts
+                .set(u64::from(new_l + leaf), &leaf_vals[leaf as usize]);
+        }
+        for leaf in old_l..new_l {
+            self.counts.set(
+                u64::from(new_l + leaf),
+                &SegmentEdgeCounts {
+                    actual: 0,
+                    total: 0,
+                },
+            );
+        }
+        for idx in (1..new_l).rev() {
+            let left = self.counts.get(u64::from(idx * 2));
+            let right = self.counts.get(u64::from(idx * 2 + 1));
+            self.counts.set(
+                u64::from(idx),
+                &SegmentEdgeCounts {
+                    actual: left.actual + right.actual,
+                    total: left.total + right.total,
+                },
+            );
+        }
+        self.counts.set(
+            0,
+            &SegmentEdgeCounts {
+                actual: 0,
+                total: 0,
+            },
+        );
+        Ok(())
+    }
+
     /// Returns the current edge slab header.
     pub fn header(&self) -> EdgeHeaderV1 {
-        self.edges
-            .header()
-            .expect("edge header is valid after init")
+        self.header.get()
+    }
+
+    fn write_header(&self, header: &EdgeHeaderV1) {
+        self.edges.write_header(header);
+        self.header.set(*header);
     }
 
     /// Returns the PMA segment-count store.
@@ -523,8 +615,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             self.insert_into_log_with_layout(&edge_layout, vertices, vid, v, edge)?;
             InsertLocation::Log
         };
-        self.edges
-            .set_num_edges(edge_layout.num_edges.saturating_add(1));
+        self.set_num_edges(edge_layout.num_edges.saturating_add(1));
         self.bump_counts_leaf_with_layout(&edge_layout, vid, 1, 0)?;
         Ok(location)
     }
@@ -575,8 +666,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 .map_err(|_| "write edge slot failed")?;
         }
         vertices.set(vid, &v.with_degree(last_index));
-        self.edges
-            .set_num_edges(edge_layout.num_edges.saturating_sub(1));
+        self.set_num_edges(edge_layout.num_edges.saturating_sub(1));
         self.bump_counts_leaf_with_layout(&edge_layout, vid, -1, 0)?;
         Ok(Some(removed))
     }
@@ -630,8 +720,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             return Ok(0);
         }
         vertices.set(vid, &v.with_degree(0).with_log_head(-1));
-        self.edges
-            .set_num_edges(edge_layout.num_edges.saturating_sub(u64::from(removed)));
+        self.set_num_edges(edge_layout.num_edges.saturating_sub(u64::from(removed)));
         self.bump_counts_leaf_with_layout(&edge_layout, vid, -i64::from(removed), 0)?;
         Ok(removed)
     }
@@ -694,11 +783,17 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         if v.log_head() < 0 {
             return v.degree();
         }
+        if v.span_capacity() > 0 {
+            return v.degree().min(v.span_capacity());
+        }
         let current_leaf = (vidx as u32) / edge_layout.segment_size.max(1);
-        let next = if vidx + 1 < vertices.len() as usize
-            && ((vidx + 1) as u32) / edge_layout.segment_size.max(1) == current_leaf
-        {
-            vertices.get(vertex_id(vidx + 1)).base_slot_start()
+        let next = if vidx + 1 < vertices.len() as usize {
+            let next_base = vertices.get(vertex_id(vidx + 1)).base_slot_start();
+            debug_assert!(
+                next_base >= v.base_slot_start(),
+                "LARA CSR invariant: base_slot_start must be non-decreasing in VertexId order"
+            );
+            next_base
         } else if current_leaf < edge_layout.segment_count {
             let c = self
                 .counts
@@ -730,9 +825,15 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         }
         let seg_sz = edge_layout.segment_size.max(1);
         let current_leaf = (vidx as u32) / seg_sz;
-        if vidx + 1 < vertices.len() as usize && ((vidx + 1) as u32) / seg_sz == current_leaf {
-            vertices.get(vertex_id(vidx + 1)).base_slot_start() > loc
-        } else if current_leaf < edge_layout.segment_count {
+        if vidx + 1 < vertices.len() as usize {
+            let next_base = vertices.get(vertex_id(vidx + 1)).base_slot_start();
+            debug_assert!(
+                next_base >= v.base_slot_start(),
+                "LARA CSR invariant: base_slot_start must be non-decreasing in VertexId order"
+            );
+            return loc < next_base;
+        }
+        if current_leaf < edge_layout.segment_count {
             let c = self
                 .counts
                 .get(u64::from(current_leaf + edge_layout.segment_count));
@@ -805,10 +906,17 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
 
     pub(crate) fn set_num_edges(&self, n: u64) {
         self.edges.set_num_edges(n);
+        let mut header = self.header();
+        header.num_edges = n;
+        self.header.set(header);
     }
 
     pub(crate) fn set_elem_capacity(&self, n: u64) -> Result<(), GrowFailed> {
-        self.edges.set_elem_capacity(n)
+        self.edges.set_elem_capacity(n)?;
+        let mut header = self.header();
+        header.elem_capacity = n;
+        self.header.set(header);
+        Ok(())
     }
 
     pub(crate) fn set_count(&self, index: u64, count: SegmentEdgeCounts) {
@@ -1008,12 +1116,15 @@ mod tests {
             vector_memory(),
             vector_memory(),
             vector_memory(),
-            2,
+            8,
             1,
-            2,
+            0,
         )
         .unwrap();
-        assert_eq!(edges.span_meta_store().len(), 1);
+        edges
+            .grow_segment_tree_to(segment_tree_leaf_count(2, 1))
+            .unwrap();
+        assert_eq!(edges.span_meta_store().len(), 2);
 
         edges
             .insert_edge(&vertices, VertexId::from(0), TestEdge(10))
@@ -1075,9 +1186,12 @@ mod tests {
             vector_memory(),
             4,
             1,
-            2,
+            0,
         )
         .unwrap();
+        edges
+            .grow_segment_tree_to(segment_tree_leaf_count(2, 1))
+            .unwrap();
 
         edges
             .insert_edge(&vertices, VertexId::from(0), TestEdge(10))
@@ -1132,9 +1246,12 @@ mod tests {
             vector_memory(),
             4,
             1,
-            2,
+            0,
         )
         .unwrap();
+        edges
+            .grow_segment_tree_to(segment_tree_leaf_count(2, 1))
+            .unwrap();
 
         edges
             .insert_edge(&vertices, VertexId::from(0), TestEdge(10))
@@ -1193,9 +1310,12 @@ mod tests {
             vector_memory(),
             4,
             1,
-            2,
+            0,
         )
         .unwrap();
+        edges
+            .grow_segment_tree_to(segment_tree_leaf_count(2, 1))
+            .unwrap();
 
         edges
             .insert_edge(&vertices, VertexId::from(0), TestEdge(10))
@@ -1240,7 +1360,7 @@ mod tests {
             vector_memory(),
             2,
             1,
-            1,
+            0,
         )
         .unwrap();
         edges.write_slot(0, TestEdge(10)).unwrap();

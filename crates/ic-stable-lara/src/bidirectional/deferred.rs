@@ -448,8 +448,8 @@ where
         maintenance_queue: M,
         dirty_work_items: M,
         elem_capacity: u64,
-        segment_count: u32,
         segment_size: u32,
+        initial_vertex_edge_slots: u32,
     ) -> Result<Self, DeferredBidirectionalLaraError> {
         Self::new_with_config(
             forward_vertices,
@@ -469,8 +469,8 @@ where
             maintenance_queue,
             dirty_work_items,
             elem_capacity,
-            segment_count,
             segment_size,
+            initial_vertex_edge_slots,
             DeferredConfig::default(),
         )
     }
@@ -495,8 +495,8 @@ where
         maintenance_queue: M,
         dirty_work_items: M,
         elem_capacity: u64,
-        segment_count: u32,
         segment_size: u32,
+        initial_vertex_edge_slots: u32,
         config: DeferredConfig,
     ) -> Result<Self, DeferredBidirectionalLaraError> {
         let config = config
@@ -511,8 +511,8 @@ where
             forward_free_spans,
             forward_free_span_by_start,
             elem_capacity,
-            segment_count,
             segment_size,
+            initial_vertex_edge_slots,
         )
         .map_err(DeferredBidirectionalLaraError::ForwardGrow)?;
         let reverse = LaraGraph::new(
@@ -524,8 +524,8 @@ where
             reverse_free_spans,
             reverse_free_span_by_start,
             elem_capacity,
-            segment_count,
             segment_size,
+            initial_vertex_edge_slots,
         )
         .map_err(DeferredBidirectionalLaraError::ReverseGrow)?;
         let maintenance = BidirectionalMaintenanceQueue::new(maintenance_queue, dirty_work_items)?;
@@ -1260,7 +1260,7 @@ mod tests {
 
     #[test]
     fn deferred_directed_insert_updates_forward_and_reverse() {
-        let graph = deferred_bidirectional_test_graph::<TestEdge>(8, 2, 2, &[0, 2, 4]);
+        let graph = deferred_bidirectional_test_graph::<TestEdge>(8, 2, &[0, 2, 4]);
 
         graph
             .insert_directed_deferred(VertexId::from(0), VertexId::from(2), TestEdge(2))
@@ -1308,7 +1308,7 @@ mod tests {
 
     #[test]
     fn deferred_directed_insert_rejects_neighbor_mismatch_before_writes() {
-        let graph = deferred_bidirectional_test_graph::<TestEdge>(8, 2, 2, &[0, 2]);
+        let graph = deferred_bidirectional_test_graph::<TestEdge>(8, 2, &[0, 2]);
 
         let err = graph
             .insert_directed_deferred(VertexId::from(0), VertexId::from(1), TestEdge(0))
@@ -1337,7 +1337,7 @@ mod tests {
 
     #[test]
     fn deferred_directed_insert_rejects_undirected_edge() {
-        let graph = deferred_bidirectional_test_graph::<UndirectedTestEdge>(8, 2, 2, &[0, 2]);
+        let graph = deferred_bidirectional_test_graph::<UndirectedTestEdge>(8, 2, &[0, 2]);
         let edge = UndirectedTestEdge::new(1).with_undirected(true);
 
         let err = graph
@@ -1364,7 +1364,7 @@ mod tests {
 
     #[test]
     fn deferred_undirected_insert_materializes_symmetric_adjacency() {
-        let graph = deferred_bidirectional_test_graph::<UndirectedTestEdge>(8, 2, 2, &[0, 2, 4]);
+        let graph = deferred_bidirectional_test_graph::<UndirectedTestEdge>(8, 2, &[0, 2, 4]);
 
         graph
             .insert_undirected_deferred(
@@ -1414,7 +1414,7 @@ mod tests {
 
     #[test]
     fn deferred_undirected_self_loop_stores_one_loop_per_orientation() {
-        let graph = deferred_bidirectional_test_graph::<UndirectedTestEdge>(8, 2, 2, &[0, 2]);
+        let graph = deferred_bidirectional_test_graph::<UndirectedTestEdge>(8, 2, &[0, 2]);
 
         graph
             .insert_undirected_deferred(
@@ -1444,7 +1444,7 @@ mod tests {
 
     #[test]
     fn deferred_bidirectional_reopen_preserves_unified_queue() {
-        let graph = deferred_bidirectional_test_graph::<TestEdge>(8, 2, 2, &[0, 2, 4]);
+        let graph = deferred_bidirectional_test_graph::<TestEdge>(8, 2, &[0, 2, 4]);
         for _ in 0..3 {
             graph
                 .insert_directed_deferred(VertexId::from(0), VertexId::from(2), TestEdge(2))
@@ -1484,7 +1484,7 @@ mod tests {
 
     #[test]
     fn deferred_bidirectional_unified_maintenance_respects_segment_cap() {
-        let graph = deferred_bidirectional_test_graph::<TestEdge>(8, 2, 2, &[0, 2, 4]);
+        let graph = deferred_bidirectional_test_graph::<TestEdge>(8, 2, &[0, 2, 4]);
         for _ in 0..3 {
             graph
                 .insert_directed_deferred(VertexId::from(0), VertexId::from(2), TestEdge(2))
@@ -1508,7 +1508,7 @@ mod tests {
 
     #[test]
     fn deferred_vertex_delete_is_incremental_and_removes_incident_edges() {
-        let graph = deferred_bidirectional_test_graph::<TestEdge>(16, 4, 2, &[0, 2, 4, 6]);
+        let graph = deferred_bidirectional_test_graph::<TestEdge>(16, 4, &[0, 2, 4, 6]);
         graph
             .insert_directed_deferred(VertexId::from(0), VertexId::from(1), TestEdge(1))
             .unwrap();

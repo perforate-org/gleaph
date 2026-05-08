@@ -306,16 +306,14 @@ pub(crate) type TestDeferredBidirectionalLaraGraph<E> =
 
 pub(crate) fn test_graph(
     elem_capacity: u64,
-    segment_count: u32,
     segment_size: u32,
     starts: &[u64],
 ) -> LaraGraph<TestEdge, Vertex, VectorMemory> {
-    lara_test_graph(elem_capacity, segment_count, segment_size, starts)
+    lara_test_graph(elem_capacity, segment_size, starts)
 }
 
 pub(crate) fn lara_test_graph<E>(
     elem_capacity: u64,
-    segment_count: u32,
     segment_size: u32,
     starts: &[u64],
 ) -> LaraGraph<E, Vertex, VectorMemory>
@@ -331,8 +329,8 @@ where
         vector_memory(),
         vector_memory(),
         elem_capacity,
-        segment_count,
         segment_size,
+        0,
     )
     .unwrap();
     for &base_slot_start in starts {
@@ -370,7 +368,7 @@ where
         vector_memory(),
         32,
         4,
-        4,
+        0,
     )
     .unwrap();
     for &base_slot_start in starts {
@@ -389,7 +387,6 @@ where
 
 pub(crate) fn deferred_bidirectional_test_graph<E>(
     elem_capacity: u64,
-    segment_count: u32,
     segment_size: u32,
     starts: &[u64],
 ) -> TestDeferredBidirectionalLaraGraph<E>
@@ -414,8 +411,8 @@ where
         vector_memory(),
         vector_memory(),
         elem_capacity,
-        segment_count,
         segment_size,
+        0,
         crate::DeferredConfig {
             leaf_dirty_density: 0.0,
             log_urgent_ratio: 0.80,
@@ -480,7 +477,6 @@ fn spans_overlap(a_start: u64, a_end: u64, b_start: u64, b_end: u64) -> bool {
 
 pub(crate) fn deferred_test_graph(
     elem_capacity: u64,
-    segment_count: u32,
     segment_size: u32,
     starts: &[u64],
 ) -> DeferredLaraGraph<TestEdge, Vertex, VectorMemory> {
@@ -495,8 +491,8 @@ pub(crate) fn deferred_test_graph(
         vector_memory(),
         vector_memory(),
         elem_capacity,
-        segment_count,
         segment_size,
+        0,
     )
     .unwrap();
     for &base_slot_start in starts {

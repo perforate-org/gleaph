@@ -25,6 +25,13 @@
 //! [DGAP](https://github.com/DIR-LAB/DGAP), but this crate owns a separate
 //! persisted layout and public API centered on LARA's explicit capacity and
 //! local relocation contracts.
+//!
+//! **Segment tree (PMA):** the number of segment-tree leaves is the smallest
+//! power of two that covers `vertex_count / segment_size` (rounded up), or `1`
+//! when the graph is empty. `push_vertex` grows this tree when needed,
+//! migrating segment-edge counts and extending segment log/span metadata. The
+//! optional `initial_vertex_edge_slots` parameter reserves `n_L × w` slab slots
+//! per leaf when opening new segments (default `0`).
 
 #![allow(incomplete_features)]
 #![cfg_attr(all(feature = "canbench", target_arch = "wasm32"), no_main)]

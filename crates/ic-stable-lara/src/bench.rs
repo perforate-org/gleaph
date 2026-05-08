@@ -1,6 +1,7 @@
 use crate::{
     BidirectionalLaraGraph, DeferredBidirectionalLaraGraph, DeferredConfig, DeferredLaraGraph,
     LaraGraph, VertexId,
+    lara::edge::segment_tree_leaf_count,
     lara::vertex::Vertex,
     test_support::{TestEdge, UndirectedTestEdge},
 };
@@ -65,7 +66,6 @@ pub(crate) fn vertex(base_slot_start: u64, capacity: u32) -> Vertex {
 
 pub(crate) fn lara_graph(
     elem_capacity: u64,
-    segment_count: u32,
     segment_size: u32,
     vertex_count: u32,
 ) -> LaraGraph<TestEdge, Vertex, BenchMemory> {
@@ -79,10 +79,17 @@ pub(crate) fn lara_graph(
         memories.memory(),
         memories.memory(),
         elem_capacity,
-        segment_count,
         segment_size,
+        0,
     )
     .expect("lara graph");
+    graph
+        .edges()
+        .grow_segment_tree_to(segment_tree_leaf_count(
+            u64::from(vertex_count),
+            segment_size,
+        ))
+        .expect("grow lara graph segments");
     for vid in 0..vertex_count {
         graph
             .push_vertex(vertex(u64::from(vid) * u64::from(segment_size), 0))
@@ -99,8 +106,7 @@ pub(crate) fn populated_lara_graph(
         .saturating_mul(u64::from(edges_per_vertex).saturating_add(4))
         .max(16);
     let segment_size = 16;
-    let segment_count = vertex_count.div_ceil(segment_size).max(1);
-    let graph = lara_graph(capacity, segment_count, segment_size, vertex_count);
+    let graph = lara_graph(capacity, segment_size, vertex_count);
     for src in 0..vertex_count {
         for i in 0..edges_per_vertex {
             graph
@@ -118,7 +124,6 @@ pub(crate) fn deferred_graph(
     vertex_count: u32,
 ) -> DeferredLaraGraph<TestEdge, Vertex, BenchMemory> {
     let segment_size = 16;
-    let segment_count = vertex_count.div_ceil(segment_size).max(1);
     let mut memories = BenchMemoryFactory::new();
     let graph = DeferredLaraGraph::new_with_config(
         memories.memory(),
@@ -131,14 +136,22 @@ pub(crate) fn deferred_graph(
         memories.memory(),
         memories.memory(),
         u64::from(vertex_count).saturating_mul(4).max(16),
-        segment_count,
         segment_size,
+        0,
         DeferredConfig {
             leaf_dirty_density: 0.0,
             log_urgent_ratio: 0.80,
         },
     )
     .expect("deferred graph");
+    graph
+        .graph()
+        .edges()
+        .grow_segment_tree_to(segment_tree_leaf_count(
+            u64::from(vertex_count),
+            segment_size,
+        ))
+        .expect("grow deferred graph segments");
     for vid in 0..vertex_count {
         graph
             .push_vertex(vertex(u64::from(vid) * u64::from(segment_size), 0))
@@ -170,10 +183,21 @@ where
         memories.memory(),
         memories.memory(),
         u64::from(vertex_count).saturating_mul(8).max(16),
-        vertex_count.div_ceil(16).max(1),
         16,
+        0,
     )
     .expect("bidirectional graph");
+    let target_segments = segment_tree_leaf_count(u64::from(vertex_count), 16);
+    graph
+        .forward()
+        .edges()
+        .grow_segment_tree_to(target_segments)
+        .expect("grow forward graph segments");
+    graph
+        .reverse()
+        .edges()
+        .grow_segment_tree_to(target_segments)
+        .expect("grow reverse graph segments");
     for vid in 0..vertex_count {
         graph
             .push_vertex(vertex(u64::from(vid) * 16, 0))
@@ -204,14 +228,25 @@ pub(crate) fn deferred_bidirectional_graph(
         memories.memory(),
         memories.memory(),
         u64::from(vertex_count).saturating_mul(4).max(16),
-        vertex_count.div_ceil(16).max(1),
         16,
+        0,
         DeferredConfig {
             leaf_dirty_density: 0.0,
             log_urgent_ratio: 0.80,
         },
     )
     .expect("deferred bidirectional graph");
+    let target_segments = segment_tree_leaf_count(u64::from(vertex_count), 16);
+    graph
+        .forward()
+        .edges()
+        .grow_segment_tree_to(target_segments)
+        .expect("grow deferred forward graph segments");
+    graph
+        .reverse()
+        .edges()
+        .grow_segment_tree_to(target_segments)
+        .expect("grow deferred reverse graph segments");
     for vid in 0..vertex_count {
         graph
             .push_vertex(vertex(u64::from(vid) * 16, 0))

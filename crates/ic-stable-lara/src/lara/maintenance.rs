@@ -352,8 +352,8 @@ where
         maintenance_queue: M,
         dirty_segments: M,
         elem_capacity: u64,
-        segment_count: u32,
         segment_size: u32,
+        initial_vertex_edge_slots: u32,
     ) -> Result<Self, DeferredError> {
         Self::new_with_config(
             vertices,
@@ -366,8 +366,8 @@ where
             maintenance_queue,
             dirty_segments,
             elem_capacity,
-            segment_count,
             segment_size,
+            initial_vertex_edge_slots,
             DeferredConfig::default(),
         )
     }
@@ -385,8 +385,8 @@ where
         maintenance_queue: M,
         dirty_segments: M,
         elem_capacity: u64,
-        segment_count: u32,
         segment_size: u32,
+        initial_vertex_edge_slots: u32,
         config: DeferredConfig,
     ) -> Result<Self, DeferredError> {
         let config = config.validate().map_err(DeferredError::InvalidConfig)?;
@@ -400,8 +400,8 @@ where
                 free_spans,
                 free_span_by_start,
                 elem_capacity,
-                segment_count,
                 segment_size,
+                initial_vertex_edge_slots,
             )
             .map_err(DeferredError::Grow)?,
             maintenance: MaintenanceQueue::new(maintenance_queue, dirty_segments)
@@ -706,14 +706,14 @@ mod tests {
 
     #[test]
     fn maintenance_step_returns_none_on_empty_queue() {
-        let graph = deferred_test_graph(8, 2, 2, &[0, 2, 4, 6]);
+        let graph = deferred_test_graph(8, 2, &[0, 2, 4, 6]);
 
         assert_eq!(graph.maintenance_step().unwrap(), None);
     }
 
     #[test]
     fn maintenance_step_consumes_exactly_one_queue_item() {
-        let graph = deferred_test_graph(8, 2, 2, &[0, 2, 4, 6]);
+        let graph = deferred_test_graph(8, 2, &[0, 2, 4, 6]);
         graph
             .maintenance_queue()
             .mark_dirty(SegmentId::from(0))
@@ -734,7 +734,7 @@ mod tests {
 
     #[test]
     fn maintenance_loop_preserves_existing_segment_cap_behavior() {
-        let graph = deferred_test_graph(8, 2, 2, &[0, 2, 4, 6]);
+        let graph = deferred_test_graph(8, 2, &[0, 2, 4, 6]);
         graph
             .maintenance_queue()
             .mark_dirty(SegmentId::from(0))
@@ -762,7 +762,7 @@ mod tests {
 
     #[test]
     fn deferred_insert_keeps_reads_correct_until_maintenance_folds_log() {
-        let graph = deferred_test_graph(8, 2, 2, &[0, 2, 4, 6]);
+        let graph = deferred_test_graph(8, 2, &[0, 2, 4, 6]);
 
         for dst in 10..13 {
             graph
@@ -810,7 +810,7 @@ mod tests {
 
     #[test]
     fn deferred_remove_folds_log_and_removes_edge() {
-        let graph = deferred_test_graph(8, 2, 2, &[0, 2, 4, 6]);
+        let graph = deferred_test_graph(8, 2, &[0, 2, 4, 6]);
 
         for dst in 10..13 {
             graph
@@ -837,7 +837,7 @@ mod tests {
 
     #[test]
     fn deferred_maintenance_segment_cap_leaves_unprocessed_segments_queued() {
-        let graph = deferred_test_graph(8, 2, 2, &[0, 2, 4, 6]);
+        let graph = deferred_test_graph(8, 2, &[0, 2, 4, 6]);
 
         for dst in 10..13 {
             graph
@@ -869,7 +869,7 @@ mod tests {
 
     #[test]
     fn deferred_lara_graph_reopens_maintenance_state() {
-        let graph = deferred_test_graph(8, 2, 2, &[0, 2, 4, 6]);
+        let graph = deferred_test_graph(8, 2, &[0, 2, 4, 6]);
         for dst in 10..13 {
             graph
                 .insert_edge_deferred(VertexId::from(0), TestEdge(dst))
@@ -894,7 +894,7 @@ mod tests {
 
     #[test]
     fn deferred_insert_skips_dirty_when_slab_insert_is_below_soft_threshold() {
-        let graph = deferred_test_graph(16, 2, 4, &[0, 4, 8, 12]);
+        let graph = deferred_test_graph(16, 4, &[0, 4, 8, 12]);
 
         graph
             .insert_edge_deferred(VertexId::from(0), TestEdge(10))
@@ -924,7 +924,7 @@ mod tests {
             vector_memory(),
             16,
             2,
-            4,
+            0,
             DeferredConfig {
                 leaf_dirty_density: 0.05,
                 log_urgent_ratio: 0.80,
@@ -965,7 +965,7 @@ mod tests {
             vector_memory(),
             16,
             2,
-            4,
+            0,
             DeferredConfig {
                 leaf_dirty_density: f64::NAN,
                 log_urgent_ratio: 0.80,

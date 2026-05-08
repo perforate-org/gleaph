@@ -17,6 +17,11 @@
 //! metadata, clears folded logs, and only then releases the old physical span to
 //! the free span manager. This order keeps queries pointed at either the old
 //! committed layout or the new committed layout, never at reusable free space.
+//!
+//! Segment identity for a vertex follows the PMA leaf layout (power-of-two leaf
+//! count, grown only when `push_vertex` crosses a boundary). Production paths
+//! update per-leaf and ancestor counts incrementally; full recounts exist only
+//! under `cfg(test)`.
 
 #[cfg(feature = "canbench")]
 mod bench;
@@ -29,7 +34,7 @@ use crate::{
     lara::{
         edge::{
             EdgeHeaderV1, EdgeStore, InsertLocation, OutEdgesIter, VertexAccess,
-            counts::SegmentEdgeCounts,
+            counts::SegmentEdgeCounts, segment_tree_leaf_count,
         },
         vertex::VertexStore,
     },
@@ -54,6 +59,7 @@ struct LaraLayout {
     segment_count: u32,
     segment_size: u32,
     tree_height: u32,
+    initial_vertex_edge_slots: u32,
 }
 
 impl From<EdgeHeaderV1> for LaraLayout {
@@ -63,6 +69,7 @@ impl From<EdgeHeaderV1> for LaraLayout {
             segment_count: header.segment_count,
             segment_size: header.segment_size,
             tree_height: header.tree_height,
+            initial_vertex_edge_slots: header.initial_vertex_edge_slots,
         }
     }
 }
@@ -152,8 +159,8 @@ where
         free_spans: M,
         free_span_by_start: M,
         elem_capacity: u64,
-        segment_count: u32,
         segment_size: u32,
+        initial_vertex_edge_slots: u32,
     ) -> Result<Self, GrowFailed> {
         Ok(Self {
             vertices: VertexStore::new(vertices)?,
@@ -165,8 +172,8 @@ where
                 free_spans,
                 free_span_by_start,
                 elem_capacity,
-                segment_count,
                 segment_size,
+                initial_vertex_edge_slots,
             )?,
             _marker: PhantomData,
         })
@@ -227,11 +234,33 @@ where
         let id = VertexId::from(u32::try_from(self.vertices.len()).expect("too many vertices"));
         self.vertices.push(vertex)?;
         let layout = self.layout();
-        self.recount_segment_counts_with_layout(&layout, layout.elem_capacity);
+        let target = segment_tree_leaf_count(self.vertices.len(), layout.segment_size);
+        let did_grow = target > layout.segment_count;
+        if did_grow {
+            self.edges.grow_segment_tree_to(target)?;
+            let layout = self.layout();
+            self.sync_all_leaf_counts_after_pma_grow(&layout);
+        }
+        let layout = self.layout();
+        if layout.initial_vertex_edge_slots > 0 {
+            self.try_materialize_leaf_slab(id)?;
+        }
+        let layout = self.layout();
+        let leaf = u32::from(id) / layout.segment_size.max(1);
+        if layout.initial_vertex_edge_slots > 0 || !did_grow {
+            self.refresh_leaf_segment_counts(&layout, leaf);
+        }
         Ok(id)
     }
 
     /// Inserts one edge into `src`, running immediate rebalancing when needed.
+    ///
+    /// Rebalance uses PMA leaf totals from the last geometry sync (vertex growth,
+    /// relocation, resize) plus incremental `actual` updates on the insert path.
+    /// PMA growth refreshes all leaf totals in one pass and rebuilds internal nodes,
+    /// without per-leaf ancestor walks. Avoid mutating `EdgeStore` directly beside
+    /// this graph; mismatched `total` fields can skew density until the next
+    /// full leaf refresh (e.g. after PMA grow or rebalance).
     pub fn insert_edge(&self, src: VertexId, edge: E) -> Result<(), &'static str> {
         let _ = self.insert_edge_raw(src, edge)?;
         self.rebalance_after_insert(src)
@@ -341,8 +370,12 @@ where
         }
 
         self.edges.set_num_edges(total_edges);
-        self.recount_segment_counts_with_layout(&layout, new_capacity);
-        for leaf in 0..layout.segment_count {
+        let post_layout = self.layout();
+        for leaf in 0..post_layout.segment_count {
+            let count = self.segment_leaf_count_with_layout(&post_layout, leaf, new_capacity);
+            self.update_leaf_count_and_ancestors(&post_layout, leaf, count);
+        }
+        for leaf in 0..post_layout.segment_count {
             self.edges.release_log_segment(SegmentId::from(leaf))?;
         }
         Ok(())
@@ -883,9 +916,110 @@ where
         self.edges.header().into()
     }
 
+    fn try_materialize_leaf_slab(&self, vid: VertexId) -> Result<(), GrowFailed> {
+        let layout = self.layout();
+        let w = layout.initial_vertex_edge_slots;
+        if w == 0 {
+            return Ok(());
+        }
+        let leaf = u32::from(vid) / layout.segment_size.max(1);
+        let seg_size = u64::from(layout.segment_size.max(1));
+        let start_vid = u64::from(leaf).saturating_mul(seg_size);
+        if start_vid >= self.vertices.len() {
+            return Ok(());
+        }
+        let row = self.vertices.get(vid);
+        if row.base_slot_start() != 0 || row.span_capacity() != 0 || row.degree() != 0 {
+            return Ok(());
+        }
+
+        let end_vid = start_vid.saturating_add(seg_size).min(self.vertices.len());
+        let mut leaf_base = self
+            .edges
+            .span_meta_store()
+            .get(u64::from(leaf))
+            .physical_start;
+        let has_recorded_base = leaf_base != 0;
+        let mut has_materialized_row = false;
+        for v in start_vid..end_vid {
+            let row = self.vertices.get(vertex_id(v));
+            if row.span_capacity() > 0 {
+                has_materialized_row = true;
+                if !has_recorded_base {
+                    let offset = v.saturating_sub(start_vid).saturating_mul(u64::from(w));
+                    leaf_base = row.base_slot_start().saturating_sub(offset);
+                }
+                break;
+            }
+            if row.base_slot_start() != 0 || row.degree() != 0 {
+                return Ok(());
+            }
+        }
+
+        if !has_recorded_base && !has_materialized_row {
+            let span_len = seg_size.saturating_mul(u64::from(w));
+            leaf_base = self.edges.allocate_span(span_len)?;
+            self.edges
+                .set_segment_physical_start(SegmentId::from(leaf), leaf_base)?;
+        } else if !has_recorded_base {
+            self.edges
+                .set_segment_physical_start(SegmentId::from(leaf), leaf_base)?;
+        }
+
+        let offset =
+            u64::from(u32::from(vid) % layout.segment_size.max(1)).saturating_mul(u64::from(w));
+        self.vertices.set(
+            vid,
+            &row.with_base_slot_start(leaf_base.saturating_add(offset))
+                .with_span_capacity(w)
+                .with_log_head(-1),
+        );
+        Ok(())
+    }
+
+    fn refresh_leaf_segment_counts(&self, layout: &LaraLayout, leaf: u32) {
+        if leaf >= layout.segment_count {
+            return;
+        }
+        let count = self.segment_leaf_count_with_layout(layout, leaf, layout.elem_capacity);
+        self.update_leaf_count_and_ancestors(layout, leaf, count);
+    }
+
+    /// Recomputes every PMA leaf from vertex/slab geometry, then rebuilds internal
+    /// count nodes in one bottom-up pass (`O(L)` store updates vs `O(L log L)` when
+    /// calling [`Self::update_leaf_count_and_ancestors`] per leaf).
+    fn sync_all_leaf_counts_after_pma_grow(&self, layout: &LaraLayout) {
+        if layout.segment_count == 0 {
+            return;
+        }
+        let cap = layout.elem_capacity;
+        for leaf in 0..layout.segment_count {
+            let count = self.segment_leaf_count_with_layout(layout, leaf, cap);
+            self.edges
+                .set_count(u64::from(leaf + layout.segment_count), count);
+        }
+        self.edges.set_count(
+            0,
+            SegmentEdgeCounts {
+                actual: 0,
+                total: 0,
+            },
+        );
+        for idx in (1..layout.segment_count).rev() {
+            let left = self.edges.counts_store().get(u64::from(idx * 2));
+            let right = self.edges.counts_store().get(u64::from(idx * 2 + 1));
+            self.edges.set_count(
+                u64::from(idx),
+                SegmentEdgeCounts {
+                    actual: left.actual + right.actual,
+                    total: left.total + right.total,
+                },
+            );
+        }
+    }
+
     fn leaf_for_vertex_with_layout(&self, layout: &LaraLayout, vertex: u64) -> u64 {
-        let leaf = vertex / u64::from(layout.segment_size.max(1));
-        leaf.min(u64::from(layout.segment_count.saturating_sub(1)))
+        vertex / u64::from(layout.segment_size.max(1))
     }
 
     fn leaf_end_for_vertex_with_layout(&self, layout: &LaraLayout, vertex: u64) -> u64 {
@@ -925,6 +1059,7 @@ where
         (LEAF_UPPER_DENSITY - ROOT_UPPER_DENSITY) / f64::from(tree_height)
     }
 
+    #[cfg(test)]
     fn recount_segment_counts_with_layout(&self, layout: &LaraLayout, elem_capacity: u64) {
         for i in 0..u64::from(layout.segment_count) * 2 {
             self.edges.set_count(
@@ -1002,26 +1137,7 @@ where
 
         for leaf in start..end {
             let count = self.segment_leaf_count_with_layout(layout, leaf as u32, elem_capacity);
-            self.edges
-                .set_count(leaf + u64::from(layout.segment_count), count);
-        }
-        for leaf in start..end {
-            let mut idx = (leaf + u64::from(layout.segment_count)) / 2;
-            while idx >= 1 {
-                let left = self.edges.counts_store().get(idx * 2);
-                let right = self.edges.counts_store().get(idx * 2 + 1);
-                self.edges.set_count(
-                    idx,
-                    SegmentEdgeCounts {
-                        actual: left.actual + right.actual,
-                        total: left.total + right.total,
-                    },
-                );
-                if idx == 1 {
-                    break;
-                }
-                idx /= 2;
-            }
+            self.update_leaf_count_and_ancestors(layout, leaf as u32, count);
         }
     }
 
@@ -1061,6 +1177,12 @@ where
         elem_capacity: u64,
     ) -> SegmentEdgeCounts {
         let start_vid = leaf.saturating_mul(layout.segment_size);
+        if u64::from(start_vid) >= self.vertices.len() {
+            return SegmentEdgeCounts {
+                actual: 0,
+                total: 0,
+            };
+        }
         let end_vid =
             ((leaf + 1).saturating_mul(layout.segment_size)).min(self.vertices.len() as u32);
         let mut actual = 0i64;
@@ -1095,7 +1217,7 @@ where
 
     fn segment_for_vertex_id_with_layout(&self, layout: &LaraLayout, src: VertexId) -> SegmentId {
         let leaf = u32::from(src) / layout.segment_size.max(1);
-        SegmentId::from(leaf.min(layout.segment_count.saturating_sub(1)))
+        SegmentId::from(leaf)
     }
 
     fn calculate_positions(&self, start_vertex: u64, end_vertex: u64, gaps: u64) -> Vec<u64> {
@@ -1236,8 +1358,61 @@ mod tests {
     }
 
     #[test]
+    fn lara_initial_vertex_edge_slots_apply_to_later_vertices_in_leaf() {
+        let graph = LaraGraph::<TestEdge, Vertex, _>::new(
+            crate::test_support::vector_memory(),
+            crate::test_support::vector_memory(),
+            crate::test_support::vector_memory(),
+            crate::test_support::vector_memory(),
+            crate::test_support::vector_memory(),
+            crate::test_support::vector_memory(),
+            crate::test_support::vector_memory(),
+            0,
+            4,
+            2,
+        )
+        .unwrap();
+
+        graph
+            .push_vertex(Vertex {
+                base_slot_start: 0,
+                degree: 0,
+                capacity: 0,
+                log_head: -1,
+                deleted: false,
+            })
+            .unwrap();
+        graph
+            .push_vertex(Vertex {
+                base_slot_start: 0,
+                degree: 0,
+                capacity: 0,
+                log_head: -1,
+                deleted: false,
+            })
+            .unwrap();
+
+        assert_eq!(graph.vertices().get(VertexId::from(0)).base_slot_start, 0);
+        assert_eq!(graph.vertices().get(VertexId::from(0)).capacity, 2);
+        assert_eq!(graph.vertices().get(VertexId::from(1)).base_slot_start, 2);
+        assert_eq!(graph.vertices().get(VertexId::from(1)).capacity, 2);
+
+        graph.insert_edge(VertexId::from(1), TestEdge(10)).unwrap();
+        graph.insert_edge(VertexId::from(1), TestEdge(11)).unwrap();
+
+        assert_eq!(graph.vertices().get(VertexId::from(1)).degree, 2);
+        assert_eq!(graph.vertices().get(VertexId::from(1)).log_head, -1);
+        assert_eq!(
+            graph
+                .collect_out_edges_slot_order(VertexId::from(1))
+                .unwrap(),
+            vec![TestEdge(10), TestEdge(11)]
+        );
+    }
+
+    #[test]
     fn lara_resize_folds_log_edges_back_into_slab() {
-        let graph = test_graph(2, 1, 2, &[0, 1]);
+        let graph = test_graph(2, 2, &[0, 1]);
 
         graph.insert_edge(VertexId::from(0), TestEdge(10)).unwrap();
         graph.insert_edge(VertexId::from(0), TestEdge(11)).unwrap();
@@ -1257,7 +1432,7 @@ mod tests {
 
     #[test]
     fn lara_iter_out_edges_matches_reverse_slot_order() {
-        let graph = test_graph(2, 1, 2, &[0, 1]);
+        let graph = test_graph(2, 2, &[0, 1]);
 
         graph.insert_edge(VertexId::from(0), TestEdge(10)).unwrap();
         graph.insert_edge(VertexId::from(0), TestEdge(11)).unwrap();
@@ -1276,7 +1451,7 @@ mod tests {
 
     #[test]
     fn lara_remove_edge_uses_unordered_swap_remove() {
-        let graph = test_graph(8, 2, 2, &[0, 4]);
+        let graph = test_graph(8, 2, &[0, 4]);
 
         graph.insert_edge(VertexId::from(0), TestEdge(10)).unwrap();
         graph.insert_edge(VertexId::from(0), TestEdge(11)).unwrap();
@@ -1292,12 +1467,19 @@ mod tests {
         );
         assert_eq!(graph.vertices().get(VertexId::from(0)).degree, 2);
         assert_eq!(graph.edges().header().num_edges, 2);
-        assert_eq!(graph.edges().counts_store().get(2).actual, 2);
+        assert_eq!(
+            graph
+                .edges()
+                .counts_store()
+                .get(u64::from(graph.layout().segment_count))
+                .actual,
+            2
+        );
     }
 
     #[test]
     fn lara_remove_edge_folds_log_before_removing() {
-        let graph = test_graph(2, 1, 2, &[0, 1]);
+        let graph = test_graph(2, 2, &[0, 1]);
 
         graph
             .insert_edge_raw(VertexId::from(0), TestEdge(10))
@@ -1326,7 +1508,7 @@ mod tests {
 
     #[test]
     fn lara_remove_edge_returns_false_when_missing() {
-        let graph = test_graph(8, 2, 2, &[0, 4]);
+        let graph = test_graph(8, 2, &[0, 4]);
 
         graph.insert_edge(VertexId::from(0), TestEdge(10)).unwrap();
 
@@ -1342,7 +1524,7 @@ mod tests {
 
     #[test]
     fn lara_parallel_edges_remove_by_full_record() {
-        let graph = lara_test_graph::<LabelledTestEdge>(8, 2, 2, &[0, 4]);
+        let graph = lara_test_graph::<LabelledTestEdge>(8, 2, &[0, 4]);
         let red = LabelledTestEdge::new(1, 10);
         let blue = LabelledTestEdge::new(1, 20);
 
@@ -1361,7 +1543,7 @@ mod tests {
 
     #[test]
     fn lara_parallel_edges_remove_by_predicate() {
-        let graph = lara_test_graph::<LabelledTestEdge>(8, 2, 2, &[0, 4]);
+        let graph = lara_test_graph::<LabelledTestEdge>(8, 2, &[0, 4]);
         let red = LabelledTestEdge::new(1, 10);
         let blue = LabelledTestEdge::new(1, 20);
 
@@ -1382,7 +1564,7 @@ mod tests {
 
     #[test]
     fn lara_insert_rebalances_parent_window_before_resizing() {
-        let graph = test_graph(8, 2, 2, &[0, 2, 4, 6]);
+        let graph = test_graph(8, 2, &[0, 2, 4, 6]);
 
         for dst in 10..14 {
             graph.insert_edge(VertexId::from(0), TestEdge(dst)).unwrap();
@@ -1404,7 +1586,7 @@ mod tests {
 
     #[test]
     fn lara_parent_rebalance_recomputes_reference_segment_counts() {
-        let graph = test_graph(8, 2, 2, &[0, 2, 4, 6]);
+        let graph = test_graph(8, 2, &[0, 2, 4, 6]);
 
         for dst in 10..14 {
             graph.insert_edge(VertexId::from(0), TestEdge(dst)).unwrap();
@@ -1421,7 +1603,7 @@ mod tests {
 
     #[test]
     fn lara_root_saturation_relocates_hot_segment_to_tail() {
-        let graph = test_graph(4, 2, 1, &[0, 2]);
+        let graph = test_graph(4, 1, &[0, 2]);
 
         for dst in 10..14 {
             graph.insert_edge(VertexId::from(0), TestEdge(dst)).unwrap();
@@ -1455,7 +1637,7 @@ mod tests {
 
     #[test]
     fn lara_local_relocation_reuses_prior_free_span() {
-        let graph = test_graph(12, 2, 1, &[0, 10]);
+        let graph = test_graph(12, 1, &[0, 10]);
 
         for dst in 10..20 {
             graph.insert_edge(VertexId::from(0), TestEdge(dst)).unwrap();
@@ -1521,7 +1703,7 @@ mod tests {
 
     #[test]
     fn lara_local_relocation_metadata_survives_reopen() {
-        let graph = test_graph(4, 2, 1, &[0, 2]);
+        let graph = test_graph(4, 1, &[0, 2]);
 
         for dst in 10..14 {
             graph.insert_edge(VertexId::from(0), TestEdge(dst)).unwrap();
@@ -1550,7 +1732,7 @@ mod tests {
 
     #[test]
     fn lara_slides_small_live_span_between_free_spans() {
-        let graph = test_graph(30, 2, 2, &[0, 10, 20]);
+        let graph = test_graph(30, 2, &[0, 10, 20]);
         graph.edges().write_slot(10, TestEdge(101)).unwrap();
         graph.edges().write_slot(11, TestEdge(102)).unwrap();
         graph.vertices().set(
@@ -1593,7 +1775,7 @@ mod tests {
 
     #[test]
     fn lara_sliding_first_leaf_vertex_recounts_boundary_total() {
-        let graph = test_graph(30, 2, 1, &[10, 20]);
+        let graph = test_graph(30, 1, &[10, 20]);
         graph.edges().write_slot(10, TestEdge(201)).unwrap();
         graph.vertices().set(
             VertexId::from(0),
@@ -1631,7 +1813,7 @@ mod tests {
 
     #[test]
     fn lara_does_not_slide_log_backed_live_span() {
-        let graph = test_graph(30, 2, 2, &[0, 10, 20]);
+        let graph = test_graph(30, 2, &[0, 10, 20]);
         graph.vertices().set(
             VertexId::from(1),
             &Vertex {
@@ -1658,7 +1840,7 @@ mod tests {
 
     #[test]
     fn lara_does_not_slide_without_both_free_neighbors() {
-        let graph = test_graph(30, 2, 2, &[0, 10, 20]);
+        let graph = test_graph(30, 2, &[0, 10, 20]);
         graph.edges().write_slot(10, TestEdge(301)).unwrap();
         graph.vertices().set(
             VertexId::from(1),
@@ -1697,7 +1879,7 @@ mod tests {
 
     #[test]
     fn lara_does_not_slide_live_span_over_threshold() {
-        let graph = test_graph(80, 2, 2, &[0, 20, 60]);
+        let graph = test_graph(80, 2, &[0, 20, 60]);
         graph.edges().write_slot(20, TestEdge(401)).unwrap();
         graph.vertices().set(
             VertexId::from(1),
@@ -1725,7 +1907,7 @@ mod tests {
 
     #[test]
     fn lara_sliding_non_boundary_vertex_preserves_counts_and_span_meta() {
-        let graph = test_graph(30, 2, 2, &[0, 10, 20]);
+        let graph = test_graph(30, 2, &[0, 10, 20]);
         graph.edges().write_slot(10, TestEdge(501)).unwrap();
         graph.vertices().set(
             VertexId::from(1),
@@ -1758,7 +1940,7 @@ mod tests {
 
     #[test]
     fn lara_sliding_persists_after_reopen() {
-        let graph = test_graph(30, 2, 2, &[0, 10, 20]);
+        let graph = test_graph(30, 2, &[0, 10, 20]);
         graph.edges().write_slot(10, TestEdge(601)).unwrap();
         graph.edges().write_slot(11, TestEdge(602)).unwrap();
         graph.vertices().set(
@@ -1819,7 +2001,7 @@ mod tests {
             crate::test_support::vector_memory(),
             30,
             2,
-            2,
+            0,
         )
         .unwrap();
         for base_slot_start in [0, 10, 20] {
@@ -1870,7 +2052,7 @@ mod tests {
 
     #[test]
     fn lara_reopen_preserves_rebalanced_layout_and_counts() {
-        let graph = test_graph(8, 2, 2, &[0, 2, 4, 6]);
+        let graph = test_graph(8, 2, &[0, 2, 4, 6]);
 
         for dst in 10..14 {
             graph.insert_edge(VertexId::from(0), TestEdge(dst)).unwrap();

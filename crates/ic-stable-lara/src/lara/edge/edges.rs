@@ -56,8 +56,9 @@ const TREE_HEIGHT_OFFSET: u64 = 20;
 const NUM_EDGES_OFFSET: u64 = 24;
 const EDGE_STRIDE_OFFSET: u64 = 32;
 const SLAB_OCCUPIED_TAIL_OFFSET: u64 = 36;
-const RESERVED_OFFSET: u64 = 44;
-const RESERVED_SIZE: usize = 20;
+const INITIAL_VERTEX_EDGE_SLOTS_OFFSET: u64 = 44;
+const RESERVED_OFFSET: u64 = 48;
+const RESERVED_SIZE: usize = 16;
 
 /// Persisted V1 edge slab header.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,21 +81,31 @@ pub struct HeaderV1 {
     pub stride: u32,
     /// Highest occupied slab slot boundary used by tail allocation.
     pub slab_occupied_tail: u64,
+    /// When non-zero, new vertex batches in a leaf may allocate `n_L * this`
+    /// slab slots eagerly. Zero preserves legacy implicit packing.
+    pub initial_vertex_edge_slots: u32,
 }
 
 impl HeaderV1 {
     /// Builds a fresh V1 header for a new edge slab.
-    pub fn new(elem_capacity: u64, segment_count: u32, segment_size: u32, stride: u32) -> Self {
+    pub fn new(
+        elem_capacity: u64,
+        segment_count: u32,
+        segment_size: u32,
+        stride: u32,
+        initial_vertex_edge_slots: u32,
+    ) -> Self {
         Self {
             magic: MAGIC,
             version: LAYOUT_VERSION,
             elem_capacity,
             segment_count,
             segment_size,
-            tree_height: floor_log2(segment_count.max(1)),
+            tree_height: tree_height_for_segment_count(segment_count),
             num_edges: 0,
             stride,
             slab_occupied_tail: 0,
+            initial_vertex_edge_slots,
         }
     }
 }
@@ -225,6 +236,11 @@ impl<E: CsrEdge, M: Memory> EdgeSlabStore<E, M> {
             Address::from(SLAB_OCCUPIED_TAIL_OFFSET),
             h.slab_occupied_tail,
         );
+        write_u32(
+            &self.memory,
+            Address::from(INITIAL_VERTEX_EDGE_SLOTS_OFFSET),
+            h.initial_vertex_edge_slots,
+        );
         self.memory.write(RESERVED_OFFSET, &[0u8; RESERVED_SIZE]);
     }
 
@@ -286,6 +302,10 @@ impl<E: CsrEdge, M: Memory> EdgeSlabStore<E, M> {
             num_edges: read_u64(&self.memory, Address::from(NUM_EDGES_OFFSET)),
             stride: read_u32(&self.memory, Address::from(EDGE_STRIDE_OFFSET)),
             slab_occupied_tail: read_u64(&self.memory, Address::from(SLAB_OCCUPIED_TAIL_OFFSET)),
+            initial_vertex_edge_slots: read_u32(
+                &self.memory,
+                Address::from(INITIAL_VERTEX_EDGE_SLOTS_OFFSET),
+            ),
         })
     }
 
@@ -309,6 +329,28 @@ fn floor_log2(x: u32) -> u32 {
     31 - x.leading_zeros()
 }
 
+/// PMA [`HeaderV1::tree_height`] for a given leaf segment count (at least one leaf).
+#[inline]
+pub(crate) fn tree_height_for_segment_count(segment_count: u32) -> u32 {
+    floor_log2(segment_count.max(1))
+}
+
+/// Minimum power-of-two leaf count for a vertex column (`0` vertices ⇒ one leaf).
+///
+/// Saturates to `u32::MAX` if the logical leaf need does not fit in a power of two
+/// (extreme inputs only); callers such as [`crate::LaraGraph`] tie `vertex_len` to
+/// the real vertex column length.
+#[inline]
+pub fn segment_tree_leaf_count(vertex_len: u64, segment_size: u32) -> u32 {
+    let sz = u64::from(segment_size.max(1));
+    let need = if vertex_len == 0 {
+        1u32
+    } else {
+        u32::try_from(vertex_len.div_ceil(sz)).unwrap_or(u32::MAX)
+    };
+    need.max(1).checked_next_power_of_two().unwrap_or(u32::MAX)
+}
+
 #[cfg(feature = "canbench")]
 mod bench {
     use std::hint::black_box;
@@ -326,7 +368,7 @@ mod bench {
         let mut memories = helper::BenchMemoryFactory::new();
         let store = EdgeSlabStore::<TestEdge, _>::new(
             memories.memory(),
-            HeaderV1::new(helper::MEDIUM_N, 16, 16, TestEdge::BYTES as u32),
+            HeaderV1::new(helper::MEDIUM_N, 16, 16, TestEdge::BYTES as u32, 0),
         )
         .expect("edge slab");
         canbench_rs::bench_fn(|| {

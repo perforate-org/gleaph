@@ -9,7 +9,7 @@ use crate::{LaraGraph, VertexId, bench as helper, lara::vertex::Vertex, test_sup
 /// for regressions in insert accounting, segment counts, and light rebalancing.
 #[bench(raw)]
 fn bench_lara_graph_insert_append_heavy_1024() -> canbench_rs::BenchResult {
-    let graph = helper::lara_graph(4096, 16, 16, 256);
+    let graph = helper::lara_graph(4096, 16, 256);
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("lara_graph_insert_append_heavy");
         for i in 0..helper::MEDIUM_N {
@@ -102,7 +102,7 @@ fn bench_lara_graph_clean_scan_slot_order_single_row_1024() -> canbench_rs::Benc
 fn bench_lara_graph_root_relocation_1() -> canbench_rs::BenchResult {
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("lara_graph_root_relocation");
-        let graph = helper::lara_graph(4, 2, 1, 2);
+        let graph = helper::lara_graph(4, 1, 2);
         for dst in 10..14 {
             graph
                 .insert_edge(VertexId::from(0), TestEdge(dst))
@@ -119,7 +119,7 @@ fn bench_lara_graph_root_relocation_1() -> canbench_rs::BenchResult {
 fn bench_lara_graph_local_relocation_1() -> canbench_rs::BenchResult {
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("lara_graph_local_relocation");
-        let graph = helper::lara_graph(12, 2, 1, 2);
+        let graph = helper::lara_graph(12, 1, 2);
         for dst in 10..20 {
             graph
                 .insert_edge(VertexId::from(0), TestEdge(dst))
@@ -139,7 +139,7 @@ fn bench_lara_graph_local_relocation_1() -> canbench_rs::BenchResult {
 /// scans from the stored layout.
 #[bench(raw)]
 fn bench_lara_graph_reopen_after_relocation_1() -> canbench_rs::BenchResult {
-    let graph = helper::lara_graph(4, 2, 1, 2);
+    let graph = helper::lara_graph(4, 1, 2);
     for dst in 10..14 {
         graph
             .insert_edge(VertexId::from(0), TestEdge(dst))
