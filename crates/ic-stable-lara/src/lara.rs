@@ -45,7 +45,6 @@ use std::{fmt, marker::PhantomData};
 
 const ROOT_UPPER_DENSITY: f64 = 0.75;
 const LEAF_UPPER_DENSITY: f64 = 1.0;
-const LOCAL_GAP_SLIDE_MAX_CAPACITY: u32 = 16;
 
 #[derive(Debug)]
 struct RebalanceCache<E> {
@@ -806,59 +805,80 @@ where
                 total: new_span as i64,
             },
         );
-        self.try_slide_small_live_span_for_gap_coalescing_with_layout(
-            layout,
-            LOCAL_GAP_SLIDE_MAX_CAPACITY,
-        )?;
+        self.try_slide_segment_for_adjacent_buffer_with_layout(layout)?;
         Ok(())
     }
 
-    fn try_slide_small_live_span_for_gap_coalescing_with_layout(
+    fn try_slide_segment_for_adjacent_buffer_with_layout(
         &self,
         layout: &LaraLayout,
-        max_capacity: u32,
     ) -> Result<bool, GrowFailed> {
-        for vid in 0..self.vertices.len() {
-            let id = vertex_id(vid);
-            let v = self.vertices.get(id);
-            let capacity = v.span_capacity();
-            if capacity == 0
-                || capacity > max_capacity
-                || v.degree() > capacity
-                || v.log_head() >= 0
-            {
-                continue;
-            }
-
-            let live_start = v.base_slot_start();
-            let live_end = live_start.saturating_add(u64::from(capacity));
-            let Some(left_free) = self.edges.free_span_store().free_span_ending_at(live_start)
+        for segment in 0..layout.segment_count {
+            let Some((start_vertex, end_vertex)) =
+                self.segment_vertex_range_with_layout(layout, segment)
             else {
                 continue;
             };
-            let Some(right_free) = self.edges.free_span_store().free_span_starting_at(live_end)
+            let leaf_count = self
+                .edges
+                .counts_store()
+                .get(u64::from(segment + layout.segment_count));
+            let segment_len = leaf_count.total.max(0) as u64;
+            if segment_len == 0 || leaf_count.actual < 0 || leaf_count.actual as u64 > segment_len {
+                continue;
+            }
+
+            let segment_start = self.vertices.get(vertex_id(start_vertex)).base_slot_start();
+            let segment_end = segment_start.saturating_add(segment_len);
+            let Some(left_free) = self
+                .edges
+                .free_span_store()
+                .free_span_ending_at(segment_start)
+            else {
+                continue;
+            };
+            let Some(right_free) = self
+                .edges
+                .free_span_store()
+                .free_span_starting_at(segment_end)
+            else {
+                continue;
+            };
+            let Some(previous_segment_len) =
+                self.segment_len_ending_at_with_layout(layout, left_free.start_slot, segment)
             else {
                 continue;
             };
 
-            let new_start = left_free.start_slot;
-            for offset in 0..v.degree() {
-                let edge = self
-                    .edges
-                    .read_slot(live_start.saturating_add(u64::from(offset)));
-                self.edges
-                    .write_slot(new_start.saturating_add(u64::from(offset)), edge)?;
+            let slide_right = previous_segment_len > segment_len;
+            let new_start = if slide_right {
+                segment_start.saturating_add(right_free.len)
+            } else {
+                left_free.start_slot
+            };
+            if !self.slide_segment_to_with_layout(
+                layout,
+                segment,
+                start_vertex,
+                end_vertex,
+                new_start,
+                segment_len,
+            )? {
+                continue;
             }
 
-            self.vertices
-                .set(id, &v.with_base_slot_start(new_start).with_log_head(-1));
+            let replacement_start = if slide_right {
+                left_free.start_slot
+            } else {
+                new_start.saturating_add(segment_len)
+            };
             self.edges
                 .free_span_store()
                 .replace_exact_pair_with(
                     left_free,
                     right_free,
                     crate::lara::edge::free_span::FreeSpan {
-                        start_slot: new_start.saturating_add(u64::from(capacity)),
+                        start_slot: replacement_start,
                         len: left_free.len.saturating_add(right_free.len),
                     },
                 )
@@ -867,23 +887,112 @@ where
                     delta: 0,
                 })?;
 
-            let leaf = self.leaf_for_vertex_with_layout(layout, vid);
-            let first_vid = leaf.saturating_mul(u64::from(layout.segment_size.max(1)));
-            if vid == first_vid {
-                self.recount_segment_counts_range_with_layout(
-                    layout,
-                    leaf,
-                    leaf.saturating_add(1),
-                    layout.elem_capacity,
-                );
-                self.edges
-                    .set_segment_physical_start(SegmentId::from(leaf as u32), new_start)?;
-            }
-
             return Ok(true);
         }
 
         Ok(false)
+    }
+
+    fn segment_vertex_range_with_layout(
+        &self,
+        layout: &LaraLayout,
+        segment: u32,
+    ) -> Option<(u64, u64)> {
+        if segment >= layout.segment_count {
+            return None;
+        }
+        let start_vertex = u64::from(segment).saturating_mul(u64::from(layout.segment_size.max(1)));
+        if start_vertex >= self.vertices.len() {
+            return None;
+        }
+        let end_vertex = start_vertex
+            .saturating_add(u64::from(layout.segment_size.max(1)))
+            .min(self.vertices.len());
+        Some((start_vertex, end_vertex))
+    }
+
+    fn segment_len_ending_at_with_layout(
+        &self,
+        layout: &LaraLayout,
+        end_slot: u64,
+        excluded_segment: u32,
+    ) -> Option<u64> {
+        for segment in 0..layout.segment_count {
+            if segment == excluded_segment {
+                continue;
+            }
+            let Some((start_vertex, _)) = self.segment_vertex_range_with_layout(layout, segment)
+            else {
+                continue;
+            };
+            let count = self
+                .edges
+                .counts_store()
+                .get(u64::from(segment + layout.segment_count));
+            let len = count.total.max(0) as u64;
+            if len == 0 {
+                continue;
+            }
+            let start = self.vertices.get(vertex_id(start_vertex)).base_slot_start();
+            if start.saturating_add(len) == end_slot {
+                return Some(len);
+            }
+        }
+        None
+    }
+
+    fn slide_segment_to_with_layout(
+        &self,
+        layout: &LaraLayout,
+        segment: u32,
+        start_vertex: u64,
+        end_vertex: u64,
+        new_start: u64,
+        segment_len: u64,
+    ) -> Result<bool, GrowFailed> {
+        let cache = self.collect_rebalance_cache(start_vertex, end_vertex);
+        let used_space = cache.total_edges();
+        if used_space > segment_len {
+            return Ok(false);
+        }
+
+        let gaps = segment_len.saturating_sub(used_space);
+        let positions = self.calculate_positions_from(start_vertex, end_vertex, new_start, gaps);
+        for offset in 0..(end_vertex - start_vertex) as usize {
+            let neighborhood = cache.vertex_edges(offset);
+            let vid = start_vertex + offset as u64;
+            let start = positions[offset];
+            for (i, edge) in neighborhood.iter().copied().enumerate() {
+                self.edges.write_slot(start + i as u64, edge)?;
+            }
+            let id = vertex_id(vid);
+            let v = self.vertices.get(id);
+            self.vertices.set(
+                id,
+                &v.with_base_slot_start(start)
+                    .with_degree(neighborhood.len() as u32)
+                    .with_span_capacity(capacity_from_positions(
+                        &positions,
+                        offset,
+                        (end_vertex - start_vertex) as usize,
+                        new_start.saturating_add(segment_len),
+                    ))
+                    .with_log_head(-1),
+            );
+        }
+
+        self.edges
+            .set_segment_physical_start(SegmentId::from(segment), new_start)?;
+        self.edges.release_log_segment(SegmentId::from(segment))?;
+        self.update_leaf_count_and_ancestors(
+            layout,
+            segment,
+            SegmentEdgeCounts {
+                actual: used_space as i64,
+                total: segment_len as i64,
+            },
+        );
+        Ok(true)
     }
 
     fn collect_rebalance_cache(&self, start_vertex: u64, end_vertex: u64) -> RebalanceCache<E> {
@@ -1057,66 +1166,6 @@ where
     fn delta_up_with_layout(&self, layout: &LaraLayout) -> f64 {
         let tree_height = layout.tree_height.max(1);
         (LEAF_UPPER_DENSITY - ROOT_UPPER_DENSITY) / f64::from(tree_height)
-    }
-
-    #[cfg(test)]
-    fn recount_segment_counts_with_layout(&self, layout: &LaraLayout, elem_capacity: u64) {
-        for i in 0..u64::from(layout.segment_count) * 2 {
-            self.edges.set_count(
-                i,
-                SegmentEdgeCounts {
-                    actual: 0,
-                    total: 0,
-                },
-            );
-        }
-        for leaf in 0..layout.segment_count {
-            let start_vid = leaf.saturating_mul(layout.segment_size);
-            let end_vid =
-                ((leaf + 1).saturating_mul(layout.segment_size)).min(self.vertices.len() as u32);
-            let mut actual = 0i64;
-            for vid in start_vid..end_vid {
-                actual += i64::from(self.vertices.get(VertexId::from(vid)).degree());
-            }
-            let start_slot = if start_vid < self.vertices.len() as u32 {
-                self.vertices
-                    .get(VertexId::from(start_vid))
-                    .base_slot_start()
-            } else {
-                elem_capacity
-            };
-            let next_slot = if leaf + 1 >= layout.segment_count {
-                elem_capacity
-            } else {
-                let next_vid = ((leaf + 1).saturating_mul(layout.segment_size))
-                    .min(self.vertices.len() as u32);
-                if next_vid < self.vertices.len() as u32 {
-                    self.vertices
-                        .get(VertexId::from(next_vid))
-                        .base_slot_start()
-                } else {
-                    elem_capacity
-                }
-            };
-            self.edges.set_count(
-                u64::from(leaf + layout.segment_count),
-                SegmentEdgeCounts {
-                    actual,
-                    total: next_slot.saturating_sub(start_slot) as i64,
-                },
-            );
-        }
-        for idx in (1..layout.segment_count).rev() {
-            let left = self.edges.counts_store().get(u64::from(idx * 2));
-            let right = self.edges.counts_store().get(u64::from(idx * 2 + 1));
-            self.edges.set_count(
-                u64::from(idx),
-                SegmentEdgeCounts {
-                    actual: left.actual + right.actual,
-                    total: left.total + right.total,
-                },
-            );
-        }
     }
 
     fn recount_segment_counts_range_with_layout(
@@ -1731,14 +1780,25 @@ mod tests {
     }
 
     #[test]
-    fn lara_slides_small_live_span_between_free_spans() {
-        let graph = test_graph(30, 2, &[0, 10, 20]);
+    fn lara_segment_slide_moves_target_left_when_target_segment_is_larger() {
+        let graph = test_graph(40, 2, &[0, 2, 10, 13]);
         graph.edges().write_slot(10, TestEdge(101)).unwrap();
-        graph.edges().write_slot(11, TestEdge(102)).unwrap();
+        graph.edges().write_slot(13, TestEdge(201)).unwrap();
+        graph.edges().write_slot(14, TestEdge(202)).unwrap();
         graph.vertices().set(
-            VertexId::from(1),
+            VertexId::from(2),
             &Vertex {
                 base_slot_start: 10,
+                degree: 1,
+                capacity: 3,
+                log_head: -1,
+                deleted: false,
+            },
+        );
+        graph.vertices().set(
+            VertexId::from(3),
+            &Vertex {
+                base_slot_start: 13,
                 degree: 2,
                 capacity: 3,
                 log_head: -1,
@@ -1746,220 +1806,219 @@ mod tests {
             },
         );
         let layout = graph.layout();
-        graph.recount_segment_counts_with_layout(&layout, layout.elem_capacity);
-        graph.edges().release_span(6, 4).unwrap();
-        graph.edges().release_span(13, 5).unwrap();
+        graph.update_leaf_count_and_ancestors(
+            &layout,
+            0,
+            SegmentEdgeCounts {
+                actual: 0,
+                total: 4,
+            },
+        );
+        graph.update_leaf_count_and_ancestors(
+            &layout,
+            1,
+            SegmentEdgeCounts {
+                actual: 3,
+                total: 6,
+            },
+        );
+        graph.edges().release_span(4, 6).unwrap();
+        graph.edges().release_span(16, 5).unwrap();
 
         assert!(
             graph
-                .try_slide_small_live_span_for_gap_coalescing_with_layout(&layout, 16)
+                .try_slide_segment_for_adjacent_buffer_with_layout(&layout)
                 .unwrap()
         );
 
-        assert_eq!(graph.vertices().get(VertexId::from(1)).base_slot_start, 6);
+        assert_eq!(graph.vertices().get(VertexId::from(2)).base_slot_start, 4);
         assert_eq!(
             graph
-                .collect_out_edges_slot_order(VertexId::from(1))
+                .collect_out_edges_slot_order(VertexId::from(2))
                 .unwrap(),
-            vec![TestEdge(101), TestEdge(102)]
+            vec![TestEdge(101)]
+        );
+        assert_eq!(
+            graph
+                .collect_out_edges_slot_order(VertexId::from(3))
+                .unwrap(),
+            vec![TestEdge(201), TestEdge(202)]
         );
         assert_eq!(
             graph.edges().free_span_store().spans(),
             vec![crate::lara::edge::free_span::FreeSpan {
-                start_slot: 9,
-                len: 9
+                start_slot: 10,
+                len: 11
             }]
         );
+        assert_eq!(graph.edges().span_meta_store().get(1).physical_start, 4);
+        assert_eq!(graph.edges().counts_store().get(3).total, 6);
         assert_vertex_capacity_invariants(&graph);
     }
 
     #[test]
-    fn lara_sliding_first_leaf_vertex_recounts_boundary_total() {
-        let graph = test_graph(30, 1, &[10, 20]);
-        graph.edges().write_slot(10, TestEdge(201)).unwrap();
-        graph.vertices().set(
-            VertexId::from(0),
-            &Vertex {
-                base_slot_start: 10,
-                degree: 1,
-                capacity: 3,
-                log_head: -1,
-                deleted: false,
-            },
-        );
-        let layout = graph.layout();
-        graph.recount_segment_counts_with_layout(&layout, layout.elem_capacity);
-        assert_eq!(graph.edges().counts_store().get(2).total, 10);
-        graph.edges().release_span(6, 4).unwrap();
-        graph.edges().release_span(13, 5).unwrap();
-
-        assert!(
-            graph
-                .try_slide_small_live_span_for_gap_coalescing_with_layout(&layout, 16)
-                .unwrap()
-        );
-
-        assert_eq!(graph.vertices().get(VertexId::from(0)).base_slot_start, 6);
-        assert_eq!(graph.edges().counts_store().get(2).total, 14);
-        assert_eq!(graph.edges().span_meta_store().get(0).physical_start, 6);
-        assert_eq!(
-            graph
-                .collect_out_edges_slot_order(VertexId::from(0))
-                .unwrap(),
-            vec![TestEdge(201)]
-        );
-        assert_vertex_capacity_invariants(&graph);
-    }
-
-    #[test]
-    fn lara_does_not_slide_log_backed_live_span() {
-        let graph = test_graph(30, 2, &[0, 10, 20]);
-        graph.vertices().set(
-            VertexId::from(1),
-            &Vertex {
-                base_slot_start: 10,
-                degree: 1,
-                capacity: 3,
-                log_head: 0,
-                deleted: false,
-            },
-        );
-        let layout = graph.layout();
-        graph.recount_segment_counts_with_layout(&layout, layout.elem_capacity);
-        graph.edges().release_span(6, 4).unwrap();
-        graph.edges().release_span(13, 5).unwrap();
-
-        assert!(
-            !graph
-                .try_slide_small_live_span_for_gap_coalescing_with_layout(&layout, 16)
-                .unwrap()
-        );
-        assert_eq!(graph.vertices().get(VertexId::from(1)).base_slot_start, 10);
-        assert_eq!(graph.edges().free_span_store().len(), 2);
-    }
-
-    #[test]
-    fn lara_does_not_slide_without_both_free_neighbors() {
-        let graph = test_graph(30, 2, &[0, 10, 20]);
+    fn lara_segment_slide_moves_target_right_when_previous_segment_is_larger() {
+        let graph = test_graph(40, 2, &[0, 3, 10, 12]);
         graph.edges().write_slot(10, TestEdge(301)).unwrap();
+        graph.edges().write_slot(12, TestEdge(401)).unwrap();
         graph.vertices().set(
-            VertexId::from(1),
+            VertexId::from(2),
             &Vertex {
                 base_slot_start: 10,
                 degree: 1,
-                capacity: 3,
+                capacity: 2,
+                log_head: -1,
+                deleted: false,
+            },
+        );
+        graph.vertices().set(
+            VertexId::from(3),
+            &Vertex {
+                base_slot_start: 12,
+                degree: 1,
+                capacity: 2,
                 log_head: -1,
                 deleted: false,
             },
         );
         let layout = graph.layout();
-        graph.recount_segment_counts_with_layout(&layout, layout.elem_capacity);
-        graph.edges().release_span(6, 4).unwrap();
+        graph.update_leaf_count_and_ancestors(
+            &layout,
+            0,
+            SegmentEdgeCounts {
+                actual: 0,
+                total: 8,
+            },
+        );
+        graph.update_leaf_count_and_ancestors(
+            &layout,
+            1,
+            SegmentEdgeCounts {
+                actual: 2,
+                total: 4,
+            },
+        );
+        graph.edges().release_span(8, 2).unwrap();
+        graph.edges().release_span(14, 5).unwrap();
 
         assert!(
-            !graph
-                .try_slide_small_live_span_for_gap_coalescing_with_layout(&layout, 16)
+            graph
+                .try_slide_segment_for_adjacent_buffer_with_layout(&layout)
                 .unwrap()
         );
-        assert_eq!(graph.vertices().get(VertexId::from(1)).base_slot_start, 10);
+
+        assert_eq!(graph.vertices().get(VertexId::from(2)).base_slot_start, 15);
         assert_eq!(
             graph
-                .collect_out_edges_slot_order(VertexId::from(1))
+                .collect_out_edges_slot_order(VertexId::from(2))
                 .unwrap(),
             vec![TestEdge(301)]
         );
         assert_eq!(
+            graph
+                .collect_out_edges_slot_order(VertexId::from(3))
+                .unwrap(),
+            vec![TestEdge(401)]
+        );
+        assert_eq!(
             graph.edges().free_span_store().spans(),
             vec![crate::lara::edge::free_span::FreeSpan {
-                start_slot: 6,
-                len: 4
+                start_slot: 8,
+                len: 7
+            }]
+        );
+        assert_eq!(graph.edges().span_meta_store().get(1).physical_start, 15);
+        assert_eq!(graph.edges().counts_store().get(3).total, 4);
+        assert_vertex_capacity_invariants(&graph);
+    }
+
+    #[test]
+    fn lara_segment_slide_requires_both_free_neighbors_and_previous_segment() {
+        let graph = test_graph(40, 2, &[0, 2, 10, 13]);
+        graph.edges().write_slot(10, TestEdge(501)).unwrap();
+        graph.vertices().set(
+            VertexId::from(2),
+            &Vertex {
+                base_slot_start: 10,
+                degree: 1,
+                capacity: 3,
+                log_head: -1,
+                deleted: false,
+            },
+        );
+        let layout = graph.layout();
+        graph.update_leaf_count_and_ancestors(
+            &layout,
+            1,
+            SegmentEdgeCounts {
+                actual: 1,
+                total: 6,
+            },
+        );
+        graph.edges().release_span(4, 6).unwrap();
+
+        assert!(
+            !graph
+                .try_slide_segment_for_adjacent_buffer_with_layout(&layout)
+                .unwrap()
+        );
+        assert_eq!(graph.vertices().get(VertexId::from(2)).base_slot_start, 10);
+        assert_eq!(
+            graph.edges().free_span_store().spans(),
+            vec![crate::lara::edge::free_span::FreeSpan {
+                start_slot: 4,
+                len: 6
             }]
         );
     }
 
     #[test]
-    fn lara_does_not_slide_live_span_over_threshold() {
-        let graph = test_graph(80, 2, &[0, 20, 60]);
-        graph.edges().write_slot(20, TestEdge(401)).unwrap();
-        graph.vertices().set(
-            VertexId::from(1),
-            &Vertex {
-                base_slot_start: 20,
-                degree: 1,
-                capacity: 17,
-                log_head: -1,
-                deleted: false,
-            },
-        );
-        let layout = graph.layout();
-        graph.recount_segment_counts_with_layout(&layout, layout.elem_capacity);
-        graph.edges().release_span(10, 10).unwrap();
-        graph.edges().release_span(37, 5).unwrap();
-
-        assert!(
-            !graph
-                .try_slide_small_live_span_for_gap_coalescing_with_layout(&layout, 16)
-                .unwrap()
-        );
-        assert_eq!(graph.vertices().get(VertexId::from(1)).base_slot_start, 20);
-        assert_eq!(graph.edges().free_span_store().len(), 2);
-    }
-
-    #[test]
-    fn lara_sliding_non_boundary_vertex_preserves_counts_and_span_meta() {
-        let graph = test_graph(30, 2, &[0, 10, 20]);
-        graph.edges().write_slot(10, TestEdge(501)).unwrap();
-        graph.vertices().set(
-            VertexId::from(1),
-            &Vertex {
-                base_slot_start: 10,
-                degree: 1,
-                capacity: 3,
-                log_head: -1,
-                deleted: false,
-            },
-        );
-        let layout = graph.layout();
-        graph.recount_segment_counts_with_layout(&layout, layout.elem_capacity);
-        let before_left = graph.edges().counts_store().get(2);
-        let before_right = graph.edges().counts_store().get(3);
-        let before_meta = graph.edges().span_meta_store().get(0);
-        graph.edges().release_span(6, 4).unwrap();
-        graph.edges().release_span(13, 5).unwrap();
-
-        assert!(
-            graph
-                .try_slide_small_live_span_for_gap_coalescing_with_layout(&layout, 16)
-                .unwrap()
-        );
-
-        assert_eq!(graph.edges().counts_store().get(2), before_left);
-        assert_eq!(graph.edges().counts_store().get(3), before_right);
-        assert_eq!(graph.edges().span_meta_store().get(0), before_meta);
-    }
-
-    #[test]
-    fn lara_sliding_persists_after_reopen() {
-        let graph = test_graph(30, 2, &[0, 10, 20]);
+    fn lara_segment_sliding_persists_after_reopen() {
+        let graph = test_graph(40, 2, &[0, 2, 10, 13]);
         graph.edges().write_slot(10, TestEdge(601)).unwrap();
-        graph.edges().write_slot(11, TestEdge(602)).unwrap();
+        graph.edges().write_slot(13, TestEdge(701)).unwrap();
         graph.vertices().set(
-            VertexId::from(1),
+            VertexId::from(2),
             &Vertex {
                 base_slot_start: 10,
-                degree: 2,
+                degree: 1,
+                capacity: 3,
+                log_head: -1,
+                deleted: false,
+            },
+        );
+        graph.vertices().set(
+            VertexId::from(3),
+            &Vertex {
+                base_slot_start: 13,
+                degree: 1,
                 capacity: 3,
                 log_head: -1,
                 deleted: false,
             },
         );
         let layout = graph.layout();
-        graph.recount_segment_counts_with_layout(&layout, layout.elem_capacity);
-        graph.edges().release_span(6, 4).unwrap();
-        graph.edges().release_span(13, 5).unwrap();
+        graph.update_leaf_count_and_ancestors(
+            &layout,
+            0,
+            SegmentEdgeCounts {
+                actual: 0,
+                total: 4,
+            },
+        );
+        graph.update_leaf_count_and_ancestors(
+            &layout,
+            1,
+            SegmentEdgeCounts {
+                actual: 2,
+                total: 6,
+            },
+        );
+        graph.edges().release_span(4, 6).unwrap();
+        graph.edges().release_span(16, 5).unwrap();
         assert!(
             graph
-                .try_slide_small_live_span_for_gap_coalescing_with_layout(&layout, 16)
+                .try_slide_segment_for_adjacent_buffer_with_layout(&layout)
                 .unwrap()
         );
 
@@ -1970,27 +2029,27 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            reopened.vertices().get(VertexId::from(1)).base_slot_start,
-            6
+            reopened.vertices().get(VertexId::from(2)).base_slot_start,
+            4
         );
         assert_eq!(
             reopened
-                .collect_out_edges_slot_order(VertexId::from(1))
+                .collect_out_edges_slot_order(VertexId::from(2))
                 .unwrap(),
-            vec![TestEdge(601), TestEdge(602)]
+            vec![TestEdge(601)]
         );
         assert_eq!(
             reopened.edges().free_span_store().spans(),
             vec![crate::lara::edge::free_span::FreeSpan {
-                start_slot: 9,
-                len: 9
+                start_slot: 10,
+                len: 11
             }]
         );
         assert_vertex_capacity_invariants(&reopened);
     }
 
     #[test]
-    fn lara_sliding_copies_large_edges() {
+    fn lara_segment_sliding_copies_large_edges() {
         let graph = LaraGraph::new(
             crate::test_support::vector_memory(),
             crate::test_support::vector_memory(),
@@ -1999,12 +2058,12 @@ mod tests {
             crate::test_support::vector_memory(),
             crate::test_support::vector_memory(),
             crate::test_support::vector_memory(),
-            30,
+            40,
             2,
             0,
         )
         .unwrap();
-        for base_slot_start in [0, 10, 20] {
+        for base_slot_start in [0, 2, 10, 13] {
             graph
                 .push_vertex(Vertex {
                     base_slot_start,
@@ -2018,35 +2077,66 @@ mod tests {
         graph.edges().write_slot(10, LargeTestEdge::new(7)).unwrap();
         graph
             .edges()
-            .write_slot(11, LargeTestEdge::new(11))
+            .write_slot(13, LargeTestEdge::new(11))
             .unwrap();
         graph.vertices().set(
-            VertexId::from(1),
+            VertexId::from(2),
             &Vertex {
                 base_slot_start: 10,
-                degree: 2,
+                degree: 1,
+                capacity: 3,
+                log_head: -1,
+                deleted: false,
+            },
+        );
+        graph.vertices().set(
+            VertexId::from(3),
+            &Vertex {
+                base_slot_start: 13,
+                degree: 1,
                 capacity: 3,
                 log_head: -1,
                 deleted: false,
             },
         );
         let layout = graph.layout();
-        graph.recount_segment_counts_with_layout(&layout, layout.elem_capacity);
-        graph.edges().release_span(6, 4).unwrap();
-        graph.edges().release_span(13, 5).unwrap();
+        graph.update_leaf_count_and_ancestors(
+            &layout,
+            0,
+            SegmentEdgeCounts {
+                actual: 0,
+                total: 4,
+            },
+        );
+        graph.update_leaf_count_and_ancestors(
+            &layout,
+            1,
+            SegmentEdgeCounts {
+                actual: 2,
+                total: 6,
+            },
+        );
+        graph.edges().release_span(4, 6).unwrap();
+        graph.edges().release_span(16, 5).unwrap();
 
         assert!(
             graph
-                .try_slide_small_live_span_for_gap_coalescing_with_layout(&layout, 16)
+                .try_slide_segment_for_adjacent_buffer_with_layout(&layout)
                 .unwrap()
         );
 
-        assert_eq!(graph.vertices().get(VertexId::from(1)).base_slot_start, 6);
+        assert_eq!(graph.vertices().get(VertexId::from(2)).base_slot_start, 4);
         assert_eq!(
             graph
-                .collect_out_edges_slot_order(VertexId::from(1))
+                .collect_out_edges_slot_order(VertexId::from(2))
                 .unwrap(),
-            vec![LargeTestEdge::new(7), LargeTestEdge::new(11)]
+            vec![LargeTestEdge::new(7)]
+        );
+        assert_eq!(
+            graph
+                .collect_out_edges_slot_order(VertexId::from(3))
+                .unwrap(),
+            vec![LargeTestEdge::new(11)]
         );
     }
 
