@@ -12,6 +12,7 @@ pub struct LabelCatalog<MNameToId: Memory, MIdToName: Memory> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LabelCatalogError {
+    ReservedLabelId(LabelId),
     LabelIdExhausted,
     NameAlreadyMapped { name: String, existing: LabelId },
     IdAlreadyMapped { id: LabelId, existing: String },
@@ -20,6 +21,7 @@ pub enum LabelCatalogError {
 impl fmt::Display for LabelCatalogError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ReservedLabelId(id) => write!(f, "label id {} is reserved", id.raw()),
             Self::LabelIdExhausted => write!(f, "label id space exhausted"),
             Self::NameAlreadyMapped { name, existing } => {
                 write!(
@@ -71,6 +73,9 @@ impl<MNameToId: Memory, MIdToName: Memory> LabelCatalog<MNameToId, MIdToName> {
     }
 
     pub fn insert_with_id(&mut self, name: &str, id: LabelId) -> Result<(), LabelCatalogError> {
+        if id.raw() == 0 {
+            return Err(LabelCatalogError::ReservedLabelId(id));
+        }
         if let Some(existing) = self.get_id(name) {
             return Err(LabelCatalogError::NameAlreadyMapped {
                 name: name.to_owned(),
@@ -90,11 +95,19 @@ impl<MNameToId: Memory, MIdToName: Memory> LabelCatalog<MNameToId, MIdToName> {
     }
 
     fn next_id(&self) -> Result<LabelId, LabelCatalogError> {
-        let next = self
-            .len()
-            .checked_add(1)
-            .and_then(|value| u16::try_from(value).ok())
-            .ok_or(LabelCatalogError::LabelIdExhausted)?;
+        let mut next = 1u16;
+        for entry in self.id_to_name.iter() {
+            let raw = entry.key().raw();
+            if raw < next {
+                continue;
+            }
+            if raw > next {
+                break;
+            }
+            next = next
+                .checked_add(1)
+                .ok_or(LabelCatalogError::LabelIdExhausted)?;
+        }
         Ok(LabelId::from_raw(next))
     }
 }
@@ -147,6 +160,28 @@ mod tests {
         assert!(matches!(
             catalog.insert_with_id("Post", person),
             Err(LabelCatalogError::IdAlreadyMapped { .. })
+        ));
+    }
+
+    #[test]
+    fn skips_manual_sparse_ids_when_allocating() {
+        let mut catalog = catalog();
+        catalog
+            .insert_with_id("ReservedLater", LabelId::from_raw(3))
+            .unwrap();
+
+        assert_eq!(catalog.get_or_insert("A").unwrap().raw(), 1);
+        assert_eq!(catalog.get_or_insert("B").unwrap().raw(), 2);
+        assert_eq!(catalog.get_or_insert("C").unwrap().raw(), 4);
+    }
+
+    #[test]
+    fn rejects_zero_label_id() {
+        let mut catalog = catalog();
+
+        assert!(matches!(
+            catalog.insert_with_id("None", LabelId::default()),
+            Err(LabelCatalogError::ReservedLabelId(id)) if id.raw() == 0
         ));
     }
 }

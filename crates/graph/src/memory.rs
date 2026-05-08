@@ -1,7 +1,8 @@
+use crate::label_catalog::LabelCatalog;
 use gleaph_graph_kernel::entry::{Edge, Vertex};
-use ic_stable_lara::{DeferredBidirectionalLaraGraph as Graph, lara::maintenance::DeferredConfig};
-use ic_stable_structures::DefaultMemoryImpl;
+use ic_stable_lara::{lara::maintenance::DeferredConfig, DeferredBidirectionalLaraGraph as Graph};
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
+use ic_stable_structures::DefaultMemoryImpl;
 use std::cell::RefCell;
 
 // Graph
@@ -21,12 +22,15 @@ const REVERSE_FREE_SPANS: MemoryId = MemoryId::new(12);
 const REVERSE_FREE_SPAN_BY_START: MemoryId = MemoryId::new(13);
 const MAINTENANCE_QUEUE: MemoryId = MemoryId::new(14);
 const DIRTY_WORK_ITEMS: MemoryId = MemoryId::new(15);
+const LABEL_NAME_TO_ID: MemoryId = MemoryId::new(16);
+const LABEL_ID_TO_NAME: MemoryId = MemoryId::new(17);
 
 const GRAPH_ELEM_CAPACITY: u64 = 0;
 const GRAPH_SEGMENT_SIZE: u32 = 32;
 const GRAPH_INITIAL_VERTEX_EDGE_SLOTS: u32 = 0;
 
 pub(super) type Memory = VirtualMemory<DefaultMemoryImpl>;
+pub(super) type StableLabelCatalog = LabelCatalog<Memory, Memory>;
 
 thread_local! {
     static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
@@ -57,4 +61,11 @@ pub(super) fn init_graph() -> Graph<Edge, Vertex, Memory> {
         DeferredConfig::default(),
     )
     .unwrap()
+}
+
+pub(super) fn init_label_catalog() -> StableLabelCatalog {
+    LabelCatalog::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(LABEL_NAME_TO_ID)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(LABEL_ID_TO_NAME)),
+    )
 }
