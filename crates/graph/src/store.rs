@@ -34,6 +34,8 @@ pub struct EdgeHandle {
 pub enum GraphStoreError {
     Graph(DeferredBidirectionalLaraError),
     VertexEdgeId(VertexEdgeIdAllocatorError),
+    LabelCatalog(LabelCatalogError),
+    PropertyCatalog(PropertyCatalogError),
     VertexLabel(VertexLabelStoreError),
     PropertyValue(VertexPropertyStoreError),
 }
@@ -43,6 +45,8 @@ impl fmt::Display for GraphStoreError {
         match self {
             Self::Graph(err) => write!(f, "{err}"),
             Self::VertexEdgeId(err) => write!(f, "{err}"),
+            Self::LabelCatalog(err) => write!(f, "{err}"),
+            Self::PropertyCatalog(err) => write!(f, "{err}"),
             Self::VertexLabel(err) => write!(f, "{err}"),
             Self::PropertyValue(err) => write!(f, "{err}"),
         }
@@ -54,6 +58,8 @@ impl std::error::Error for GraphStoreError {
         match self {
             Self::Graph(err) => Some(err),
             Self::VertexEdgeId(err) => Some(err),
+            Self::LabelCatalog(err) => Some(err),
+            Self::PropertyCatalog(err) => Some(err),
             Self::VertexLabel(err) => Some(err),
             Self::PropertyValue(err) => Some(err),
         }
