@@ -1677,4 +1677,66 @@ mod tests {
             DeferredBidirectionalLaraError::VertexCountMismatch { .. }
         ));
     }
+
+    /// Regression for tombstoned rows that still hold slab/log material during
+    /// incremental `DeleteVertex`: leaf rebalance must enumerate those edges.
+    /// Uses the same `segment_size` / `initial_vertex_edge_slots` defaults as
+    /// `gleaph-graph` stable init (`32` / `0`).
+    #[test]
+    fn deferred_vertex_delete_wide_segment_rebalance_drains_without_panic() {
+        let graph = crate::DeferredBidirectionalLaraGraph::<TestEdge, Vertex, _>::new_with_config(
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            0,
+            32,
+            0,
+            crate::DeferredConfig {
+                leaf_dirty_density: 0.0,
+                log_urgent_ratio: 0.80,
+            },
+        )
+        .unwrap();
+
+        graph.push_vertex(Vertex::default()).unwrap();
+        graph.push_vertex(Vertex::default()).unwrap();
+
+        graph
+            .insert_directed_deferred(VertexId::from(0), VertexId::from(1), TestEdge(1))
+            .unwrap();
+
+        assert!(graph.delete_vertex_deferred(VertexId::from(0)).unwrap());
+
+        let budget = crate::MaintenanceBudget {
+            max_instructions: 0,
+            reserve_instructions: 0,
+            checkpoint_every: 1,
+            max_work_items: None,
+            max_segments: None,
+            max_delete_edge_steps: None,
+        };
+        while graph.maintenance_queue_len() > 0 {
+            graph.maintenance(budget).unwrap();
+        }
+
+        assert!(
+            graph
+                .collect_out_edges_slot_order(VertexId::from(1))
+                .unwrap()
+                .is_empty()
+        );
+    }
 }

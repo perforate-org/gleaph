@@ -30,6 +30,16 @@
 //! invariant is violated, behavior is undefined; **debug builds** assert it on
 //! the hot paths below. Prefer [`crate::LaraGraph`] orchestration over ad-hoc
 //! [`EdgeStore`] mutation so geometry and PMA counts stay aligned.
+//!
+//! ## Vertex tombstones and read paths
+//!
+//! When [`crate::traits::CsrVertexTombstoneScan::record_is_vertex_tombstone`]
+//! is true, mutating APIs still reject the row. Read-only enumeration
+//! (`iter_out_edges`, `collect_out_edges_slot_order`) treats **tombstone + zero
+//! degree + no log** (`log_head < 0`) as fully evacuated and returns an empty
+//! neighborhood; otherwise enumeration proceeds so incremental `DeleteVertex`
+//! maintenance and leaf rebalance can snapshot pending slab/log material until
+//! rows clear.
 
 #[cfg(feature = "canbench")]
 mod bench;
@@ -452,8 +462,10 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             return Err("vertex out of range");
         }
         let v = vertices.get(vid);
-        if V::record_is_vertex_tombstone(&v) {
-            return Err("vertex deleted");
+        // Tombstone rows may still hold slab/log material while incremental
+        // `DeleteVertex` maintenance runs; only fully evacuated rows reject reads.
+        if V::record_is_vertex_tombstone(&v) && v.degree() == 0 && v.log_head() < 0 {
+            return Ok(Vec::new());
         }
         if v.log_head() < 0 {
             let degree = v.degree() as usize;
@@ -536,8 +548,19 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             return Err("vertex out of range");
         }
         let v = vertices.get(vid);
-        if V::record_is_vertex_tombstone(&v) {
-            return Err("vertex deleted");
+        // See `collect_out_edges_slot_order`: allow enumeration for tombstones that
+        // still have pending edge material (rebalance during vertex delete).
+        if V::record_is_vertex_tombstone(&v) && v.degree() == 0 && v.log_head() < 0 {
+            return Ok(OutEdgesIter {
+                store: self,
+                leaf: 0,
+                next_log: -1,
+                remaining_log: 0,
+                base_slot_start: v.base_slot_start(),
+                remaining_slab: 0,
+                log_header: None,
+                slab_chunk: None,
+            });
         }
         // Clean rows: the full neighborhood is on the slab, so the iterator never
         // walks the overflow log. Skip `edge_layout()` (full slab header read) and
