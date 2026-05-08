@@ -18,7 +18,7 @@ use std::slice;
 /// - [`Self::base_slot_start`] is the start of that interval in `Edge` slot units.
 /// - Overflow neighbors are not counted in [`Self::live_edge_count`] for clean scans.
 #[repr(C, packed)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Vertex {
     /// First edge slot in this vertex's clean slab prefix.
     pub base_slot_start: u64,

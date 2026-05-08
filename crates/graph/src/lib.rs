@@ -7,8 +7,11 @@ pub mod edge_properties;
 pub mod label_catalog;
 mod memory;
 pub mod property_catalog;
+pub mod store;
 pub mod vertex_labels;
 pub mod vertex_properties;
+
+pub use store::GraphStore;
 
 thread_local! {
     static GRAPH: RefCell<Graph<Edge, Vertex, memory::Memory>> = RefCell::new(
