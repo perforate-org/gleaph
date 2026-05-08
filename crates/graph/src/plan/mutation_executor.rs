@@ -112,6 +112,33 @@ fn execute_ops_with_bindings(
                     execute_remove_item(store, item, bindings)?;
                 }
             }
+            PlanOp::DeleteVertex { variable } => {
+                let vertex_id = *bindings.vertices.get(variable.as_ref()).ok_or_else(|| {
+                    PlanMutationError::MissingVertexBinding {
+                        variable: variable.to_string(),
+                    }
+                })?;
+                store.delete_vertex(vertex_id)?;
+                bindings.vertices.remove(variable.as_ref());
+            }
+            PlanOp::DetachDeleteVertex { variable } => {
+                let vertex_id = *bindings.vertices.get(variable.as_ref()).ok_or_else(|| {
+                    PlanMutationError::MissingVertexBinding {
+                        variable: variable.to_string(),
+                    }
+                })?;
+                store.detach_delete_vertex(vertex_id)?;
+                bindings.vertices.remove(variable.as_ref());
+            }
+            PlanOp::DeleteEdge { variable } => {
+                let handle = *bindings.edges.get(variable.as_ref()).ok_or_else(|| {
+                    PlanMutationError::MissingElementBinding {
+                        variable: variable.to_string(),
+                    }
+                })?;
+                store.delete_edge_by_handle(handle)?;
+                bindings.edges.remove(variable.as_ref());
+            }
             PlanOp::Materialize { .. } => {}
             other if !is_mutation_op(other) => {}
             other => return Err(PlanMutationError::UnsupportedOp(plan_op_name(other))),
@@ -275,10 +302,13 @@ fn plan_op_name(op: &PlanOp) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stable::edge_ids::canonical_undirected_owner;
     use gleaph_gql::Value;
     use gleaph_gql::ast::{BinaryOp, CmpOp, Expr, ExprKind, TruthValue, UnaryOp};
     use gleaph_gql::types::Decimal;
     use gleaph_gql_planner::plan::{PlanDiagnostics, PropertyAssignment};
+    use gleaph_graph_kernel::entry::VertexEdgeId;
+    use ic_stable_lara::bidirectional::DeferredBidirectionalLaraError;
 
     #[test]
     fn executes_insert_vertex_and_edge_ops() {
@@ -788,5 +818,229 @@ mod tests {
             store.vertex_property(vertex, bytes),
             Some(Value::Bytes(vec![1, 2, 3]))
         );
+    }
+
+    #[test]
+    fn delete_vertex_fails_when_vertex_has_incident_edges() {
+        let store = GraphStore::new();
+        let plan = PhysicalPlan {
+            ops: vec![
+                PlanOp::InsertVertex {
+                    variable: Some("a".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertVertex {
+                    variable: Some("b".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertEdge {
+                    variable: None,
+                    src: "a".into(),
+                    dst: "b".into(),
+                    direction: EdgeDirection::PointingRight,
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::DeleteVertex {
+                    variable: "a".into(),
+                },
+            ],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: Default::default(),
+        };
+
+        let err = store
+            .execute_plan_mutations(&plan)
+            .expect_err("delete vertex with edges should fail");
+        assert!(matches!(
+            err,
+            PlanMutationError::Store(GraphStoreError::VertexNotDetached { .. })
+        ));
+    }
+
+    #[test]
+    fn delete_vertex_succeeds_for_isolated_vertex() {
+        let store = GraphStore::new();
+        let before = store.vertex_count();
+        let plan = PhysicalPlan {
+            ops: vec![
+                PlanOp::InsertVertex {
+                    variable: Some("a".into()),
+                    labels: vec![],
+                    properties: vec![PropertyAssignment {
+                        name: "k".into(),
+                        value: Expr::new(ExprKind::Literal(Value::Int64(1))),
+                    }],
+                },
+                PlanOp::DeleteVertex {
+                    variable: "a".into(),
+                },
+            ],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: Default::default(),
+        };
+
+        store
+            .execute_plan_mutations(&plan)
+            .expect("delete isolated vertex");
+        let before_u64: u64 = before.into();
+        let vid = VertexId::from(before_u64 as u32);
+        let k = store.property_id("k").expect("k property");
+        assert_eq!(store.vertex_property(vid, k), None);
+    }
+
+    #[test]
+    fn detach_delete_vertex_clears_incident_edge_sidecars() {
+        let store = GraphStore::new();
+        let before_a = store.vertex_count();
+        let plan = PhysicalPlan {
+            ops: vec![
+                PlanOp::InsertVertex {
+                    variable: Some("a".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertVertex {
+                    variable: Some("b".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertEdge {
+                    variable: Some("e".into()),
+                    src: "a".into(),
+                    dst: "b".into(),
+                    direction: EdgeDirection::PointingRight,
+                    labels: vec![],
+                    properties: vec![PropertyAssignment {
+                        name: "w".into(),
+                        value: Expr::new(ExprKind::Literal(Value::Int64(2))),
+                    }],
+                },
+                PlanOp::DetachDeleteVertex {
+                    variable: "a".into(),
+                },
+            ],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: Default::default(),
+        };
+
+        let bindings = store
+            .execute_plan_mutations(&plan)
+            .expect("detach delete vertex");
+        let b = bindings.vertices["b"];
+        let w = store.property_id("w").expect("w property");
+        let e = bindings.edges["e"];
+
+        assert_eq!(
+            store.edge_property(e.owner_vertex_id, e.vertex_edge_id, w),
+            None
+        );
+        assert!(store.in_edges(b).expect("in edges").is_empty());
+        assert!(store.out_edges(b).expect("out edges").is_empty());
+
+        let before_a_u64: u64 = before_a.into();
+        let deleted = VertexId::from(before_a_u64 as u32);
+        assert!(
+            matches!(
+                store.out_edges(deleted),
+                Err(DeferredBidirectionalLaraError::VertexDeleted { .. })
+            ) || store.out_edges(deleted).unwrap().is_empty(),
+            "deleted vertex should not expose outgoing edges"
+        );
+    }
+
+    #[test]
+    fn delete_edge_removes_directed_edge_and_properties() {
+        let store = GraphStore::new();
+        let plan = PhysicalPlan {
+            ops: vec![
+                PlanOp::InsertVertex {
+                    variable: Some("a".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertVertex {
+                    variable: Some("b".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertEdge {
+                    variable: Some("e".into()),
+                    src: "a".into(),
+                    dst: "b".into(),
+                    direction: EdgeDirection::PointingRight,
+                    labels: vec![],
+                    properties: vec![PropertyAssignment {
+                        name: "w".into(),
+                        value: Expr::new(ExprKind::Literal(Value::Int64(5))),
+                    }],
+                },
+                PlanOp::DeleteEdge {
+                    variable: "e".into(),
+                },
+            ],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: Default::default(),
+        };
+
+        let bindings = store
+            .execute_plan_mutations(&plan)
+            .expect("delete directed edge");
+        let a = bindings.vertices["a"];
+        let w = store.property_id("w").expect("w property");
+        assert!(bindings.edges.get("e").is_none());
+
+        assert!(store.out_edges(a).expect("out edges after delete").is_empty());
+        assert_eq!(store.edge_property(a, VertexEdgeId::from_raw(1), w), None);
+    }
+
+    #[test]
+    fn delete_edge_removes_undirected_edge_and_properties() {
+        let store = GraphStore::new();
+        let plan = PhysicalPlan {
+            ops: vec![
+                PlanOp::InsertVertex {
+                    variable: Some("a".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertVertex {
+                    variable: Some("b".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertEdge {
+                    variable: Some("e".into()),
+                    src: "a".into(),
+                    dst: "b".into(),
+                    direction: EdgeDirection::Undirected,
+                    labels: vec![],
+                    properties: vec![PropertyAssignment {
+                        name: "w".into(),
+                        value: Expr::new(ExprKind::Literal(Value::Int64(9))),
+                    }],
+                },
+                PlanOp::DeleteEdge {
+                    variable: "e".into(),
+                },
+            ],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: Default::default(),
+        };
+
+        let bindings = store
+            .execute_plan_mutations(&plan)
+            .expect("delete undirected edge");
+        let low = bindings.vertices["a"];
+        let high = bindings.vertices["b"];
+        let w = store.property_id("w").expect("w property");
+        let owner = canonical_undirected_owner(low, high);
+        let edge_id = VertexEdgeId::from_raw(1);
+
+        assert!(store.out_edges(low).unwrap().is_empty());
+        assert!(store.out_edges(high).unwrap().is_empty());
+        assert_eq!(store.edge_property(owner, edge_id, w), None);
     }
 }

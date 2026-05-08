@@ -1,4 +1,4 @@
-use crate::stable::edge_ids::VertexEdgeIdAllocatorError;
+use crate::stable::edge_ids::{canonical_undirected_owner, VertexEdgeIdAllocatorError};
 use crate::stable::label_catalog::LabelCatalogError;
 use crate::stable::property_catalog::PropertyCatalogError;
 use crate::stable::vertex_labels::VertexLabelStoreError;
@@ -10,9 +10,11 @@ use crate::{
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{Edge, EdgeMeta, LabelId, PropertyId, Vertex, VertexEdgeId};
 use ic_stable_lara::{
-    DeferredBidirectionalLaraGraph as Graph, VertexCount, VertexId,
+    BidirectionalMaintenanceReport, DeferredBidirectionalLaraGraph as Graph, MaintenanceBudget,
+    VertexCount, VertexId,
     bidirectional::DeferredBidirectionalLaraError,
 };
+use std::collections::BTreeSet;
 use std::fmt;
 
 /// Stateless facade over graph storage thread-locals.
@@ -38,6 +40,13 @@ pub enum GraphStoreError {
     PropertyCatalog(PropertyCatalogError),
     VertexLabel(VertexLabelStoreError),
     PropertyValue(VertexPropertyStoreError),
+    /// `DELETE` vertex without `DETACH` while the vertex still has incident edges.
+    VertexNotDetached { vertex_id: VertexId },
+    /// No outgoing edge record matches the handle on the owner's forward row.
+    EdgeNotFound {
+        owner_vertex_id: VertexId,
+        vertex_edge_id: VertexEdgeId,
+    },
 }
 
 impl fmt::Display for GraphStoreError {
@@ -49,6 +58,17 @@ impl fmt::Display for GraphStoreError {
             Self::PropertyCatalog(err) => write!(f, "{err}"),
             Self::VertexLabel(err) => write!(f, "{err}"),
             Self::PropertyValue(err) => write!(f, "{err}"),
+            Self::VertexNotDetached { vertex_id } => write!(
+                f,
+                "cannot delete vertex {vertex_id:?} without DETACH while it still has incident edges"
+            ),
+            Self::EdgeNotFound {
+                owner_vertex_id,
+                vertex_edge_id,
+            } => write!(
+                f,
+                "no edge record for owner {owner_vertex_id:?} and local edge id {vertex_edge_id:?}"
+            ),
         }
     }
 }
@@ -62,6 +82,7 @@ impl std::error::Error for GraphStoreError {
             Self::PropertyCatalog(err) => Some(err),
             Self::VertexLabel(err) => Some(err),
             Self::PropertyValue(err) => Some(err),
+            Self::VertexNotDetached { .. } | Self::EdgeNotFound { .. } => None,
         }
     }
 }
@@ -352,6 +373,217 @@ impl GraphStore {
         vertex_id: VertexId,
     ) -> Result<Vec<Edge>, DeferredBidirectionalLaraError> {
         GRAPH.with(|graph| graph.borrow().collect_in_edges_slot_order(vertex_id))
+    }
+
+    /// Runs deferred LARA maintenance until the queue is empty or the budget is exhausted.
+    ///
+    /// Production canisters should use a tight instruction budget and rely on
+    /// heartbeat/timer draining; tests and small graphs typically pass
+    /// `MaintenanceBudget { max_instructions: 0, .. }` to disable the instruction cap.
+    ///
+    /// See `docs/ic-timer-maintenance-strategy.md` for the intended canister maintenance model.
+    pub fn run_maintenance_best_effort(
+        &self,
+        budget: MaintenanceBudget,
+    ) -> Result<BidirectionalMaintenanceReport, GraphStoreError> {
+        GRAPH.with(|graph| {
+            let graph = graph.borrow();
+            graph.maintenance(budget)
+        })
+        .map_err(GraphStoreError::from)
+    }
+
+    /// `DELETE` semantics: remove the vertex only when it has no incident edges.
+    pub fn delete_vertex(&self, vertex_id: VertexId) -> Result<(), GraphStoreError> {
+        self.ensure_vertex_id(vertex_id)
+            .map_err(GraphStoreError::from)?;
+        if self.vertex_has_incident_edges(vertex_id)? {
+            return Err(GraphStoreError::VertexNotDetached { vertex_id });
+        }
+        self.clear_vertex_stable_payloads_before_graph_delete(vertex_id)?;
+        self.with_graph_mut(|graph| graph.delete_vertex_deferred(vertex_id))?;
+        self.drain_deferred_maintenance()?;
+        Ok(())
+    }
+
+    /// `DETACH DELETE` semantics: remove all incident edges, then delete the vertex.
+    ///
+    /// Incident edges are cleared via LARA's queued incremental `delete_vertex_deferred`
+    /// maintenance; stable edge property sidecars are cleared first so handles are not orphaned.
+    pub fn detach_delete_vertex(&self, vertex_id: VertexId) -> Result<(), GraphStoreError> {
+        self.ensure_vertex_id(vertex_id)
+            .map_err(GraphStoreError::from)?;
+        let sidecar_keys = self.collect_incident_edge_property_handles(vertex_id)?;
+        for (owner, edge_id) in sidecar_keys {
+            self.clear_edge_properties_stable(owner, edge_id);
+        }
+        self.clear_vertex_stable_payloads_before_graph_delete(vertex_id)?;
+        self.with_graph_mut(|graph| graph.delete_vertex_deferred(vertex_id))?;
+        self.drain_deferred_maintenance()?;
+        Ok(())
+    }
+
+    /// Removes one logical edge (and its stable properties) identified by `handle`.
+    pub fn delete_edge_by_handle(&self, handle: EdgeHandle) -> Result<(), GraphStoreError> {
+        self.ensure_vertex_id(handle.owner_vertex_id)
+            .map_err(GraphStoreError::from)?;
+        let edge = self
+            .find_outgoing_edge_record(handle.owner_vertex_id, handle.vertex_edge_id)?
+            .ok_or(GraphStoreError::EdgeNotFound {
+                owner_vertex_id: handle.owner_vertex_id,
+                vertex_edge_id: handle.vertex_edge_id,
+            })?;
+        self.clear_edge_properties_stable(handle.owner_vertex_id, handle.vertex_edge_id);
+        let removed = if edge.meta.is_undirected() {
+            self.with_graph_mut(|graph| {
+                graph.remove_undirected_deferred(
+                    handle.owner_vertex_id,
+                    edge.target,
+                    edge,
+                )
+            })?
+        } else {
+            self.with_graph_mut(|graph| {
+                graph.remove_directed_deferred(
+                    handle.owner_vertex_id,
+                    edge.target,
+                    edge,
+                )
+            })?
+        };
+        if !removed {
+            return Err(GraphStoreError::EdgeNotFound {
+                owner_vertex_id: handle.owner_vertex_id,
+                vertex_edge_id: handle.vertex_edge_id,
+            });
+        }
+        self.drain_deferred_maintenance()?;
+        Ok(())
+    }
+
+    fn drain_deferred_maintenance(&self) -> Result<(), GraphStoreError> {
+        let budget = MaintenanceBudget {
+            max_instructions: 0,
+            reserve_instructions: 0,
+            checkpoint_every: 1,
+            max_work_items: None,
+            max_segments: None,
+            max_delete_edge_steps: None,
+        };
+        self.run_maintenance_best_effort(budget)?;
+        Ok(())
+    }
+
+    fn vertex_has_incident_edges(
+        &self,
+        vertex_id: VertexId,
+    ) -> Result<bool, DeferredBidirectionalLaraError> {
+        Ok(!self.out_edges(vertex_id)?.is_empty() || !self.in_edges(vertex_id)?.is_empty())
+    }
+
+    fn edge_sidecar_owner_from_out_row(endpoint: VertexId, edge: &Edge) -> VertexId {
+        if edge.meta.is_undirected() {
+            canonical_undirected_owner(endpoint, edge.target)
+        } else {
+            endpoint
+        }
+    }
+
+    fn edge_sidecar_owner_from_in_row(dst: VertexId, edge: &Edge) -> VertexId {
+        if edge.meta.is_undirected() {
+            canonical_undirected_owner(dst, edge.target)
+        } else {
+            edge.target
+        }
+    }
+
+    fn collect_incident_edge_property_handles(
+        &self,
+        vertex_id: VertexId,
+    ) -> Result<BTreeSet<(VertexId, VertexEdgeId)>, GraphStoreError> {
+        let mut keys = BTreeSet::new();
+        for edge in self.out_edges(vertex_id).map_err(GraphStoreError::from)? {
+            keys.insert((
+                Self::edge_sidecar_owner_from_out_row(vertex_id, &edge),
+                edge.vertex_edge_id,
+            ));
+        }
+        for edge in self.in_edges(vertex_id).map_err(GraphStoreError::from)? {
+            keys.insert((
+                Self::edge_sidecar_owner_from_in_row(vertex_id, &edge),
+                edge.vertex_edge_id,
+            ));
+        }
+        Ok(keys)
+    }
+
+    fn clear_edge_properties_stable(&self, owner_vertex_id: VertexId, vertex_edge_id: VertexEdgeId) {
+        let props: Vec<PropertyId> = EDGE_PROPERTIES.with(|store| {
+            store
+                .borrow()
+                .properties_for_edge(owner_vertex_id, vertex_edge_id)
+                .into_iter()
+                .map(|(pid, _)| pid)
+                .collect()
+        });
+        for pid in props {
+            EDGE_PROPERTIES.with(|store| {
+                store
+                    .borrow_mut()
+                    .remove(owner_vertex_id, vertex_edge_id, pid);
+            });
+        }
+    }
+
+    fn clear_vertex_properties_stable_only(&self, vertex_id: VertexId) {
+        let props: Vec<PropertyId> = VERTEX_PROPERTIES.with(|store| {
+            store
+                .borrow()
+                .properties_for(vertex_id)
+                .into_iter()
+                .map(|(pid, _)| pid)
+                .collect()
+        });
+        for pid in props {
+            VERTEX_PROPERTIES.with(|store| {
+                store.borrow_mut().remove(vertex_id, pid);
+            });
+        }
+    }
+
+    fn clear_vertex_stable_payloads_before_graph_delete(
+        &self,
+        vertex_id: VertexId,
+    ) -> Result<(), GraphStoreError> {
+        self.clear_vertex_properties_stable_only(vertex_id);
+
+        let vertex = self
+            .vertex(vertex_id)
+            .ok_or_else(|| GraphStoreError::Graph(DeferredBidirectionalLaraError::VertexOutOfRange {
+                vid: vertex_id,
+                len: self.vertex_count(),
+            }))?;
+        let vertex = VERTEX_LABELS.with(|labels| {
+            labels
+                .borrow_mut()
+                .set_labels(vertex_id, vertex, [])
+                .map_err(GraphStoreError::from)
+        })?;
+        self.set_vertex(vertex_id, vertex).map_err(GraphStoreError::from)?;
+        Ok(())
+    }
+
+    fn find_outgoing_edge_record(
+        &self,
+        owner_vertex_id: VertexId,
+        vertex_edge_id: VertexEdgeId,
+    ) -> Result<Option<Edge>, GraphStoreError> {
+        let edges = self
+            .out_edges(owner_vertex_id)
+            .map_err(GraphStoreError::from)?;
+        Ok(edges
+            .into_iter()
+            .find(|candidate| candidate.vertex_edge_id == vertex_edge_id))
     }
 
     fn contains_vertex(&self, vertex_id: VertexId) -> bool {
