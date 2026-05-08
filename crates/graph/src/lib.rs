@@ -4,6 +4,7 @@ use std::cell::RefCell;
 
 pub mod label_catalog;
 mod memory;
+pub mod property_catalog;
 pub mod vertex_labels;
 
 thread_local! {
@@ -17,5 +18,9 @@ thread_local! {
 
     static VERTEX_LABELS: RefCell<memory::StableVertexLabelStore> = RefCell::new(
         memory::init_vertex_label_store()
+    );
+
+    static PROPERTY_CATALOG: RefCell<memory::StablePropertyCatalog> = RefCell::new(
+        memory::init_property_catalog()
     );
 }

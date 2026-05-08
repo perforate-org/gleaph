@@ -28,8 +28,8 @@
 //! bytes and round-trippable through the same little-endian layout.
 
 use ic_stable_lara::{
-    VertexId,
     traits::{CsrEdge, CsrEdgeUndirected},
+    VertexId,
 };
 
 mod meta;
