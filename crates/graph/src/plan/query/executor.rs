@@ -213,6 +213,9 @@ fn execute_ops_from(
                 // Same single-store v1 behavior: a bare USE marker is metadata.
                 rows
             }
+            PlanOp::CartesianProduct { left, right } => {
+                execute_cartesian_product(store, parameters, rows, left, right)?
+            }
             other if other.is_dml() => {
                 return Err(PlanQueryError::UnsupportedOp(plan_op_name(other)));
             }
@@ -221,6 +224,42 @@ fn execute_ops_from(
     }
 
     Ok(rows)
+}
+
+fn execute_cartesian_product(
+    store: &GraphStore,
+    parameters: &BTreeMap<String, Value>,
+    rows: Vec<PlanRow>,
+    left: &[PlanOp],
+    right: &[PlanOp],
+) -> Result<Vec<PlanRow>, PlanQueryError> {
+    let mut out = Vec::new();
+    for row in rows {
+        let left_rows = execute_ops_from(store, left, parameters, vec![row.clone()])?;
+        let right_rows = execute_ops_from(store, right, parameters, vec![row])?;
+        for left_row in &left_rows {
+            for right_row in &right_rows {
+                if let Some(merged) = merge_rows(left_row, right_row) {
+                    out.push(merged);
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn merge_rows(left: &PlanRow, right: &PlanRow) -> Option<PlanRow> {
+    let mut merged = left.clone();
+    for (name, right_binding) in right {
+        match merged.get(name) {
+            Some(left_binding) if left_binding != right_binding => return None,
+            Some(_) => {}
+            None => {
+                merged.insert(name.clone(), right_binding.clone());
+            }
+        }
+    }
+    Some(merged)
 }
 
 fn execute_node_scan(
@@ -1288,6 +1327,50 @@ mod tests {
     }
 
     #[test]
+    fn executes_planner_cartesian_product_for_independent_matches() {
+        let store = GraphStore::new();
+        for name in ["Planner CP Alice", "Planner CP Bob"] {
+            store
+                .insert_vertex_named(
+                    ["PlannerQueryCartesianPerson"],
+                    [("name", Value::Text(name.into()))],
+                )
+                .expect("insert person");
+        }
+        for city in ["Planner CP Tokyo", "Planner CP Paris"] {
+            store
+                .insert_vertex_named(
+                    ["PlannerQueryCartesianCity"],
+                    [("name", Value::Text(city.into()))],
+                )
+                .expect("insert city");
+        }
+        let plan = plan_gql(
+            "MATCH (a:PlannerQueryCartesianPerson) MATCH (b:PlannerQueryCartesianCity) \
+             RETURN a.name AS person, b.name AS city",
+        );
+        assert!(
+            plan.ops
+                .iter()
+                .any(|op| matches!(op, PlanOp::CartesianProduct { .. }))
+        );
+
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("execute planned query");
+
+        assert_eq!(result.rows.len(), 4);
+        assert!(result.rows.iter().any(|row| {
+            row.get("person") == Some(&Value::Text("Planner CP Alice".into()))
+                && row.get("city") == Some(&Value::Text("Planner CP Tokyo".into()))
+        }));
+        assert!(result.rows.iter().any(|row| {
+            row.get("person") == Some(&Value::Text("Planner CP Bob".into()))
+                && row.get("city") == Some(&Value::Text("Planner CP Paris".into()))
+        }));
+    }
+
+    #[test]
     fn node_scan_projects_vertex_property() {
         let store = GraphStore::new();
         store
@@ -1596,6 +1679,72 @@ mod tests {
     }
 
     #[test]
+    fn cartesian_product_combines_independent_subplans() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(
+                ["QueryCartesianLeft"],
+                [("name", Value::Text("Left A".into()))],
+            )
+            .expect("insert left a");
+        store
+            .insert_vertex_named(
+                ["QueryCartesianLeft"],
+                [("name", Value::Text("Left B".into()))],
+            )
+            .expect("insert left b");
+        store
+            .insert_vertex_named(
+                ["QueryCartesianRight"],
+                [("name", Value::Text("Right A".into()))],
+            )
+            .expect("insert right a");
+        store
+            .insert_vertex_named(
+                ["QueryCartesianRight"],
+                [("name", Value::Text("Right B".into()))],
+            )
+            .expect("insert right b");
+        let plan = plan(vec![
+            PlanOp::CartesianProduct {
+                left: vec![PlanOp::NodeScan {
+                    variable: "a".into(),
+                    label: Some("QueryCartesianLeft".into()),
+                    property_projection: None,
+                }],
+                right: vec![PlanOp::NodeScan {
+                    variable: "b".into(),
+                    label: Some("QueryCartesianRight".into()),
+                    property_projection: None,
+                }],
+            },
+            PlanOp::Project {
+                columns: vec![
+                    project(prop("a", "name"), "left"),
+                    project(prop("b", "name"), "right"),
+                ],
+                distinct: false,
+            },
+        ]);
+
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("execute cartesian product");
+
+        assert_eq!(result.rows.len(), 4);
+    }
+
+    #[test]
+    fn cartesian_product_drops_conflicting_bindings() {
+        let left = PlanRow::from([("x".to_owned(), PlanBinding::Value(Value::Int64(1)))]);
+        let same = PlanRow::from([("x".to_owned(), PlanBinding::Value(Value::Int64(1)))]);
+        let different = PlanRow::from([("x".to_owned(), PlanBinding::Value(Value::Int64(2)))]);
+
+        assert_eq!(merge_rows(&left, &same), Some(left.clone()));
+        assert_eq!(merge_rows(&left, &different), None);
+    }
+
+    #[test]
     fn directed_expand_projects_endpoint_and_edge_properties() {
         let store = GraphStore::new();
         let a = store
@@ -1849,13 +1998,6 @@ mod tests {
                     join_keys: vec!["n".into()],
                 },
                 "HashJoin",
-            ),
-            (
-                PlanOp::CartesianProduct {
-                    left: Vec::new(),
-                    right: Vec::new(),
-                },
-                "CartesianProduct",
             ),
             (
                 PlanOp::Aggregate {
