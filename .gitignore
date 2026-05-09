@@ -4,12 +4,15 @@ target/
 .claude/
 .cursor/
 .zed/
-# Restored nested crate repos: rename ._git_bak back to .git
-gleaph-old/._git_bak/
-# Nested repo backups under gleaph-old/reference (see find .git)
-gleaph-old/reference/**/._git_bak/
 
 node_modules/
 .pnpm-store/
 
 .canbench/
+
+docs/
+gleaph-old/
+old_crates/
+escape_crates/
+
+crates/gql/reference/
