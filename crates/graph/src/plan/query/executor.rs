@@ -771,7 +771,9 @@ fn plan_op_name(op: &PlanOp) -> &'static str {
 mod tests {
     use super::*;
     use crate::facade::mutation_executor::GraphMutationExecutor;
-    use gleaph_gql::ast::{CmpOp, Expr, ExprKind};
+    use gleaph_gql::ast::{CmpOp, Expr, ExprKind, Statement};
+    use gleaph_gql::parser;
+    use gleaph_gql_planner::build_plan;
     use gleaph_gql_planner::plan::{PlanAnnotations, PlanDiagnostics, ScanValue};
 
     fn plan(ops: Vec<PlanOp>) -> PhysicalPlan {
@@ -780,6 +782,18 @@ mod tests {
             diagnostics: PlanDiagnostics::default(),
             annotations: PlanAnnotations::default(),
         }
+    }
+
+    fn plan_gql(input: &str) -> PhysicalPlan {
+        let program = parser::parse(input).unwrap_or_else(|err| panic!("parse error: {err}"));
+        let tx = program
+            .transaction_activity
+            .expect("expected transaction activity");
+        let block = tx.body.expect("expected statement block");
+        let Statement::Query(composite) = &block.first else {
+            panic!("expected query statement");
+        };
+        build_plan(&composite.left, None).expect("plan should build")
     }
 
     fn prop(variable: &str, property: &str) -> Expr {
@@ -798,6 +812,127 @@ mod tests {
 
     fn params() -> BTreeMap<String, Value> {
         BTreeMap::new()
+    }
+
+    #[test]
+    fn executes_planner_match_return_property() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(
+                ["PlannerQueryPersonReturn"],
+                [("name", Value::Text("Planner Alice".into()))],
+            )
+            .expect("insert matching vertex");
+        store
+            .insert_vertex_named(
+                ["PlannerQueryOtherReturn"],
+                [("name", Value::Text("Planner Bob".into()))],
+            )
+            .expect("insert non-matching vertex");
+        let plan = plan_gql("MATCH (n:PlannerQueryPersonReturn) RETURN n.name AS name");
+
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("execute planned query");
+
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(
+            result.rows[0].get("name"),
+            Some(&Value::Text("Planner Alice".into()))
+        );
+    }
+
+    #[test]
+    fn executes_planner_property_filter() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(
+                ["PlannerQueryPersonFilter"],
+                [
+                    ("name", Value::Text("Planner Filter Ada".into())),
+                    ("age", Value::Int64(37)),
+                ],
+            )
+            .expect("insert matching vertex");
+        store
+            .insert_vertex_named(
+                ["PlannerQueryPersonFilter"],
+                [
+                    ("name", Value::Text("Planner Filter Bob".into())),
+                    ("age", Value::Int64(12)),
+                ],
+            )
+            .expect("insert non-matching vertex");
+        let plan =
+            plan_gql("MATCH (n:PlannerQueryPersonFilter) WHERE n.age > 18 RETURN n.name AS name");
+
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("execute planned query");
+
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(
+            result.rows[0].get("name"),
+            Some(&Value::Text("Planner Filter Ada".into()))
+        );
+    }
+
+    #[test]
+    fn executes_planner_one_hop_expand() {
+        let store = GraphStore::new();
+        let a = store
+            .insert_vertex_named(
+                ["PlannerQueryExpandSource"],
+                [("name", Value::Text("Planner Expand Alice".into()))],
+            )
+            .expect("insert source");
+        let b = store
+            .insert_vertex_named(
+                ["PlannerQueryExpandTarget"],
+                [("name", Value::Text("Planner Expand Bob".into()))],
+            )
+            .expect("insert target");
+        let unrelated = store
+            .insert_vertex_named(
+                ["PlannerQueryExpandTarget"],
+                [("name", Value::Text("Planner Expand Carol".into()))],
+            )
+            .expect("insert unrelated target");
+        store
+            .insert_directed_edge_named(
+                a,
+                b,
+                Some("PlannerQueryKnows"),
+                [("since", Value::Int64(2026))],
+            )
+            .expect("insert matching edge");
+        store
+            .insert_directed_edge_named(
+                a,
+                unrelated,
+                Some("PlannerQueryIgnores"),
+                [("since", Value::Int64(2025))],
+            )
+            .expect("insert non-matching edge");
+        let plan = plan_gql(
+            "MATCH (a:PlannerQueryExpandSource)-[e:PlannerQueryKnows]->(b:PlannerQueryExpandTarget) \
+             RETURN a.name AS a_name, b.name AS b_name, e.since AS since",
+        );
+
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("execute planned query");
+
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(
+            result.rows[0].get("a_name"),
+            Some(&Value::Text("Planner Expand Alice".into()))
+        );
+        assert_eq!(
+            result.rows[0].get("b_name"),
+            Some(&Value::Text("Planner Expand Bob".into()))
+        );
+        assert_eq!(result.rows[0].get("since"), Some(&Value::Int64(2026)));
     }
 
     #[test]
