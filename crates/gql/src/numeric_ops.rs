@@ -330,19 +330,29 @@ fn eval_float_binary(left: Value, op: BinaryOp, right: Value) -> Result<Value, N
         }
         Some(FloatRank::F64) => {
             let left = left.as_f64().ok_or(NumericOpError::UnsupportedConversion)?;
-            let right = right.as_f64().ok_or(NumericOpError::UnsupportedConversion)?;
+            let right = right
+                .as_f64()
+                .ok_or(NumericOpError::UnsupportedConversion)?;
             finite_float64(apply_float_op(left, op, right))
         }
         #[cfg(feature = "f128")]
         Some(FloatRank::F128) => {
-            let left = left.as_f128().ok_or(NumericOpError::UnsupportedConversion)?;
-            let right = right.as_f128().ok_or(NumericOpError::UnsupportedConversion)?;
+            let left = left
+                .as_f128()
+                .ok_or(NumericOpError::UnsupportedConversion)?;
+            let right = right
+                .as_f128()
+                .ok_or(NumericOpError::UnsupportedConversion)?;
             finite_float128(apply_float_op(left, op, right))
         }
         #[cfg(feature = "f256")]
         Some(FloatRank::F256) => {
-            let left = left.as_f256().ok_or(NumericOpError::UnsupportedConversion)?;
-            let right = right.as_f256().ok_or(NumericOpError::UnsupportedConversion)?;
+            let left = left
+                .as_f256()
+                .ok_or(NumericOpError::UnsupportedConversion)?;
+            let right = right
+                .as_f256()
+                .ok_or(NumericOpError::UnsupportedConversion)?;
             finite_float256(apply_float_op(left, op, right))
         }
         None => Err(NumericOpError::InvalidOperand),

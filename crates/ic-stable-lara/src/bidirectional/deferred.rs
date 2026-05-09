@@ -1,17 +1,17 @@
 //! Deferred-maintenance bidirectional LARA graph wrapper.
 
 use crate::{
+    GrowFailed, SegmentId, VertexCount, VertexId,
     bidirectional::UndirectedEdgeFlag,
     lara::{
+        InitError, LaraGraph, MarkPriority,
         edge::OutEdgesIter,
         maintenance::{DeferredConfig, DeferredError, MaintenanceBudget, MaintenanceWorkReport},
-        InitError, LaraGraph, MarkPriority,
     },
     traits::{CsrEdge, CsrEdgeUndirected, CsrVertex},
-    GrowFailed, SegmentId, VertexCount, VertexId,
 };
 use ic_stable_roaring::StableRoaringBitmap;
-use ic_stable_structures::{storable::Bound, Memory, Storable};
+use ic_stable_structures::{Memory, Storable, storable::Bound};
 use ic_stable_vec_deque::StableVecDeque;
 use std::{borrow::Cow, fmt};
 
@@ -1305,10 +1305,10 @@ mod tests {
     use super::*;
     use crate::traits::CsrEdgeUndirected;
     use crate::{
-        test_support::{
-            deferred_bidirectional_test_graph, vector_memory, TestEdge, UndirectedTestEdge,
-        },
         Vertex,
+        test_support::{
+            TestEdge, UndirectedTestEdge, deferred_bidirectional_test_graph, vector_memory,
+        },
     };
 
     #[test]
@@ -1828,9 +1828,11 @@ mod tests {
             graph.maintenance(budget).unwrap();
         }
 
-        assert!(graph
-            .collect_out_edges_slot_order(VertexId::from(1))
-            .unwrap()
-            .is_empty());
+        assert!(
+            graph
+                .collect_out_edges_slot_order(VertexId::from(1))
+                .unwrap()
+                .is_empty()
+        );
     }
 }
