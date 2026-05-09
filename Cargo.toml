@@ -31,9 +31,9 @@ ic-stable-paged-ordered-map = { path = "crates/ic-stable-paged-ordered-map" }
 ic-stable-roaring = { path = "crates/ic-stable-roaring" }
 ic-stable-vec-deque = { path = "crates/ic-stable-vec-deque" }
 
-bitflags = "2"
+bitflags = "2.11.1"
 ic-stable-structures = "0.7.2"
-canbench-rs = "0.4"
+canbench-rs = "0.5"
 candid = "0.10"
 concat-string = "1"
 ethnum = "1.5.3"
@@ -42,8 +42,8 @@ half = "2"
 ic-cdk = "0.20"
 ic-cdk-macros = "0.20"
 rapidhash = "4"
-rkyv = "0.8"
-roaring = "0.11"
-rust_decimal = "1"
+rkyv = "0.8.16"
+roaring = "0.11.4"
+rust_decimal = "1.42"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
