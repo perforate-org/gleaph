@@ -6,12 +6,14 @@ use crate::plan::expr_evaluator::{
 };
 use crate::stable::edge_ids::canonical_undirected_owner;
 use gleaph_gql::Value;
-use gleaph_gql::ast::{Expr, ExprKind, TruthValue};
+use gleaph_gql::ast::{Expr, ExprKind, NullOrder, OrderByClause, SortDirection, TruthValue};
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
+use gleaph_gql::value_cmp::compare_values;
 use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, ProjectColumn, Str};
 use gleaph_graph_kernel::entry::{Edge, LabelId};
 use ic_stable_lara::VertexId;
 use ic_stable_lara::traits::CsrVertexTombstone;
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 pub trait PlanQueryExecutor {
@@ -169,6 +171,23 @@ fn execute_ops_from(
                     .take(count.unwrap_or(usize::MAX))
                     .collect()
             }
+            PlanOp::Sort { order_by } => sort_rows(&evaluator, rows, order_by)?,
+            PlanOp::TopK {
+                order_by,
+                k,
+                offset,
+            } => {
+                let offset = match offset {
+                    Some(expr) => limit_value(&evaluator.eval_expr(&PlanRow::new(), expr)?)?,
+                    None => 0,
+                };
+                let k = limit_value(&evaluator.eval_expr(&PlanRow::new(), k)?)?;
+                sort_rows(&evaluator, rows, order_by)?
+                    .into_iter()
+                    .skip(offset)
+                    .take(k)
+                    .collect()
+            }
             PlanOp::Materialize { columns, distinct } => {
                 let mut materialized = rows
                     .iter()
@@ -182,11 +201,18 @@ fn execute_ops_from(
             PlanOp::UseGraph {
                 graph_name: _,
                 sub_plan: Some(sub_plan),
-            } => execute_ops_from(store, sub_plan, parameters, rows)?,
+            } => {
+                // v1 has a single physical GraphStore; USE scopes its sub-plan
+                // but does not route to a separate graph store yet.
+                execute_ops_from(store, sub_plan, parameters, rows)?
+            }
             PlanOp::UseGraph {
                 graph_name: _,
                 sub_plan: None,
-            } => rows,
+            } => {
+                // Same single-store v1 behavior: a bare USE marker is metadata.
+                rows
+            }
             other if other.is_dml() => {
                 return Err(PlanQueryError::UnsupportedOp(plan_op_name(other)));
             }
@@ -372,6 +398,123 @@ fn row_matches_all(
         }
     }
     Ok(true)
+}
+
+fn sort_rows(
+    evaluator: &QueryExprEvaluator<'_>,
+    rows: Vec<PlanRow>,
+    order_by: &OrderByClause,
+) -> Result<Vec<PlanRow>, PlanQueryError> {
+    let mut keyed_rows = rows
+        .into_iter()
+        .map(|row| {
+            let keys = order_by
+                .items
+                .iter()
+                .map(|item| eval_sort_expr(evaluator, &row, &item.expr))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok((keys, row))
+        })
+        .collect::<Result<Vec<_>, PlanQueryError>>()?;
+
+    for left_idx in 0..keyed_rows.len() {
+        for right_idx in (left_idx + 1)..keyed_rows.len() {
+            compare_sort_keys(&keyed_rows[left_idx].0, &keyed_rows[right_idx].0, order_by)?;
+        }
+    }
+
+    keyed_rows.sort_by(|(left_keys, _), (right_keys, _)| {
+        compare_sort_keys(left_keys, right_keys, order_by)
+            .expect("sort keys are pre-validated before sorting")
+    });
+
+    Ok(keyed_rows.into_iter().map(|(_, row)| row).collect())
+}
+
+fn eval_sort_expr(
+    evaluator: &QueryExprEvaluator<'_>,
+    row: &PlanRow,
+    expr: &Expr,
+) -> Result<Value, PlanQueryError> {
+    match evaluator.eval_expr(row, expr) {
+        Ok(value) => Ok(value),
+        Err(PlanQueryError::MissingBinding { .. }) => {
+            let projected_name = expression_name(expr);
+            match row.get(&projected_name) {
+                Some(PlanBinding::Value(value)) => Ok(value.clone()),
+                Some(binding) => binding_to_value(evaluator.store, binding),
+                None => Err(PlanQueryError::MissingBinding {
+                    variable: projected_name,
+                }),
+            }
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn compare_sort_keys(
+    left_keys: &[Value],
+    right_keys: &[Value],
+    order_by: &OrderByClause,
+) -> Result<Ordering, PlanQueryError> {
+    for ((left, right), item) in left_keys
+        .iter()
+        .zip(right_keys.iter())
+        .zip(order_by.items.iter())
+    {
+        let ordering = compare_sort_values(left, right, item.direction, item.null_order)?;
+        if ordering != Ordering::Equal {
+            return Ok(ordering);
+        }
+    }
+    Ok(Ordering::Equal)
+}
+
+fn compare_sort_values(
+    left: &Value,
+    right: &Value,
+    direction: Option<SortDirection>,
+    null_order: Option<NullOrder>,
+) -> Result<Ordering, PlanQueryError> {
+    let descending = matches!(
+        direction,
+        Some(SortDirection::Desc | SortDirection::Descending)
+    );
+    let nulls_first = match null_order {
+        Some(NullOrder::First) => true,
+        Some(NullOrder::Last) => false,
+        None => descending,
+    };
+
+    match (left == &Value::Null, right == &Value::Null) {
+        (true, true) => return Ok(Ordering::Equal),
+        (true, false) => {
+            return Ok(if nulls_first {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            });
+        }
+        (false, true) => {
+            return Ok(if nulls_first {
+                Ordering::Greater
+            } else {
+                Ordering::Less
+            });
+        }
+        (false, false) => {}
+    }
+
+    let ordering =
+        compare_values(left, right).ok_or_else(|| PlanQueryError::IncomparableSortValues {
+            left: left.clone(),
+            right: right.clone(),
+        })?;
+    Ok(if descending {
+        ordering.reverse()
+    } else {
+        ordering
+    })
 }
 
 struct QueryExprEvaluator<'a> {
@@ -771,10 +914,15 @@ fn plan_op_name(op: &PlanOp) -> &'static str {
 mod tests {
     use super::*;
     use crate::facade::mutation_executor::GraphMutationExecutor;
-    use gleaph_gql::ast::{CmpOp, Expr, ExprKind, Statement};
+    use gleaph_gql::ast::{
+        CmpOp, Expr, ExprKind, NullOrder, OrderByClause, SetOp, SortDirection, SortItem, Statement,
+    };
     use gleaph_gql::parser;
+    use gleaph_gql::token::Span;
     use gleaph_gql_planner::build_plan;
-    use gleaph_gql_planner::plan::{PlanAnnotations, PlanDiagnostics, ScanValue};
+    use gleaph_gql_planner::plan::{
+        PlanAnnotations, PlanDiagnostics, ScanValue, ShortestMode, WcojEdge,
+    };
 
     fn plan(ops: Vec<PlanOp>) -> PhysicalPlan {
         PhysicalPlan {
@@ -803,6 +951,30 @@ mod tests {
         })
     }
 
+    fn var(variable: &str) -> Expr {
+        Expr::new(ExprKind::Variable(variable.to_owned()))
+    }
+
+    fn order_by(items: Vec<SortItem>) -> OrderByClause {
+        OrderByClause {
+            span: Span::DUMMY,
+            items,
+        }
+    }
+
+    fn sort_item(
+        expr: Expr,
+        direction: Option<SortDirection>,
+        null_order: Option<NullOrder>,
+    ) -> SortItem {
+        SortItem {
+            span: Span::DUMMY,
+            expr,
+            direction,
+            null_order,
+        }
+    }
+
     fn project(expr: Expr, alias: &str) -> ProjectColumn {
         ProjectColumn {
             expr,
@@ -812,6 +984,17 @@ mod tests {
 
     fn params() -> BTreeMap<String, Value> {
         BTreeMap::new()
+    }
+
+    fn text_column(result: &PlanQueryResult, column: &str) -> Vec<String> {
+        result
+            .rows
+            .iter()
+            .map(|row| match row.get(column) {
+                Some(Value::Text(value)) => value.clone(),
+                other => panic!("expected text column {column}, got {other:?}"),
+            })
+            .collect()
     }
 
     #[test]
@@ -936,6 +1119,175 @@ mod tests {
     }
 
     #[test]
+    fn executes_planner_order_by() {
+        let store = GraphStore::new();
+        for name in ["Planner Sort C", "Planner Sort A", "Planner Sort B"] {
+            store
+                .insert_vertex_named(["PlannerQuerySort"], [("name", Value::Text(name.into()))])
+                .expect("insert vertex");
+        }
+        let plan = plan_gql("MATCH (n:PlannerQuerySort) RETURN n.name ORDER BY n.name");
+
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("execute planned query");
+
+        assert_eq!(
+            text_column(&result, "n.name"),
+            vec!["Planner Sort A", "Planner Sort B", "Planner Sort C"]
+        );
+    }
+
+    #[test]
+    fn executes_planner_order_by_limit_topk() {
+        let store = GraphStore::new();
+        for name in [
+            "Planner TopK D",
+            "Planner TopK A",
+            "Planner TopK C",
+            "Planner TopK B",
+        ] {
+            store
+                .insert_vertex_named(["PlannerQueryTopK"], [("name", Value::Text(name.into()))])
+                .expect("insert vertex");
+        }
+        let plan = plan_gql("MATCH (n:PlannerQueryTopK) RETURN n.name ORDER BY n.name LIMIT 2");
+        assert!(plan.ops.iter().any(|op| matches!(op, PlanOp::TopK { .. })));
+
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("execute planned query");
+
+        assert_eq!(
+            text_column(&result, "n.name"),
+            vec!["Planner TopK A", "Planner TopK B"]
+        );
+    }
+
+    #[test]
+    fn executes_planner_return_star() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(
+                ["PlannerQueryReturnStar"],
+                [("name", Value::Text("Planner Star".into()))],
+            )
+            .expect("insert vertex");
+        let plan = plan_gql("MATCH (n:PlannerQueryReturnStar) RETURN *");
+
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("execute planned query");
+
+        assert_eq!(result.rows.len(), 1);
+        assert!(matches!(result.rows[0].get("n"), Some(Value::Record(_))));
+    }
+
+    #[test]
+    fn executes_planner_limit() {
+        let store = GraphStore::new();
+        for name in ["Planner Limit A", "Planner Limit B"] {
+            store
+                .insert_vertex_named(["PlannerQueryLimit"], [("name", Value::Text(name.into()))])
+                .expect("insert vertex");
+        }
+        let plan = plan_gql("MATCH (n:PlannerQueryLimit) RETURN n.name LIMIT 1");
+
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("execute planned query");
+
+        assert_eq!(result.rows.len(), 1);
+    }
+
+    #[test]
+    fn executes_planner_expand_filter() {
+        let store = GraphStore::new();
+        let a = store
+            .insert_vertex_named(
+                ["PlannerQueryExpandFilterSource"],
+                [("name", Value::Text("Planner EF A".into()))],
+            )
+            .expect("insert source");
+        let keep = store
+            .insert_vertex_named(
+                ["PlannerQueryExpandFilterTarget"],
+                [
+                    ("name", Value::Text("Planner EF Keep".into())),
+                    ("age", Value::Int64(30)),
+                ],
+            )
+            .expect("insert keep target");
+        let drop = store
+            .insert_vertex_named(
+                ["PlannerQueryExpandFilterTarget"],
+                [
+                    ("name", Value::Text("Planner EF Drop".into())),
+                    ("age", Value::Int64(12)),
+                ],
+            )
+            .expect("insert drop target");
+        store
+            .insert_directed_edge_named(
+                a,
+                keep,
+                Some("PlannerQueryExpandFilterRel"),
+                Vec::<(&str, Value)>::new(),
+            )
+            .expect("insert keep edge");
+        store
+            .insert_directed_edge_named(
+                a,
+                drop,
+                Some("PlannerQueryExpandFilterRel"),
+                Vec::<(&str, Value)>::new(),
+            )
+            .expect("insert drop edge");
+        let plan = plan_gql(
+            "MATCH (a:PlannerQueryExpandFilterSource)-[e:PlannerQueryExpandFilterRel]->\
+             (b:PlannerQueryExpandFilterTarget) WHERE b.age > 18 \
+             RETURN a.name AS a_name, b.name AS b_name",
+        );
+        assert!(
+            plan.ops
+                .iter()
+                .any(|op| matches!(op, PlanOp::ExpandFilter { .. }))
+        );
+
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("execute planned query");
+
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(
+            result.rows[0].get("b_name"),
+            Some(&Value::Text("Planner EF Keep".into()))
+        );
+    }
+
+    #[test]
+    fn executes_planner_use_graph_as_single_store_pass_through() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(
+                ["PlannerQueryUseGraph"],
+                [("name", Value::Text("Planner UseGraph".into()))],
+            )
+            .expect("insert vertex");
+        let plan = plan_gql("USE myGraph MATCH (n:PlannerQueryUseGraph) RETURN n.name AS name");
+
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("execute planned query");
+
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(
+            result.rows[0].get("name"),
+            Some(&Value::Text("Planner UseGraph".into()))
+        );
+    }
+
+    #[test]
     fn node_scan_projects_vertex_property() {
         let store = GraphStore::new();
         store
@@ -1017,6 +1369,230 @@ mod tests {
             result.rows[0].get("name"),
             Some(&Value::Text("Filter Ada".into()))
         );
+    }
+
+    #[test]
+    fn sort_orders_projected_scalars_ascending_and_descending() {
+        let store = GraphStore::new();
+        for name in ["Sort Scalar C", "Sort Scalar A", "Sort Scalar B"] {
+            store
+                .insert_vertex_named(["QuerySortScalar"], [("name", Value::Text(name.into()))])
+                .expect("insert vertex");
+        }
+        let scan_project = || {
+            vec![
+                PlanOp::NodeScan {
+                    variable: "n".into(),
+                    label: Some("QuerySortScalar".into()),
+                    property_projection: None,
+                },
+                PlanOp::Project {
+                    columns: vec![project(prop("n", "name"), "name")],
+                    distinct: false,
+                },
+            ]
+        };
+        let asc = plan(
+            scan_project()
+                .into_iter()
+                .chain([PlanOp::Sort {
+                    order_by: order_by(vec![sort_item(var("name"), None, None)]),
+                }])
+                .collect(),
+        );
+        let desc = plan(
+            scan_project()
+                .into_iter()
+                .chain([PlanOp::Sort {
+                    order_by: order_by(vec![sort_item(
+                        var("name"),
+                        Some(SortDirection::Desc),
+                        None,
+                    )]),
+                }])
+                .collect(),
+        );
+
+        let asc_result = store
+            .execute_plan_query(&asc, &params())
+            .expect("execute ascending sort");
+        let desc_result = store
+            .execute_plan_query(&desc, &params())
+            .expect("execute descending sort");
+
+        assert_eq!(
+            text_column(&asc_result, "name"),
+            vec!["Sort Scalar A", "Sort Scalar B", "Sort Scalar C"]
+        );
+        assert_eq!(
+            text_column(&desc_result, "name"),
+            vec!["Sort Scalar C", "Sort Scalar B", "Sort Scalar A"]
+        );
+    }
+
+    #[test]
+    fn sort_orders_multiple_keys() {
+        let store = GraphStore::new();
+        for (group, name) in [
+            (Value::Int64(2), "Multi B"),
+            (Value::Int64(1), "Multi B"),
+            (Value::Int64(1), "Multi A"),
+            (Value::Int64(2), "Multi A"),
+        ] {
+            store
+                .insert_vertex_named(
+                    ["QuerySortMulti"],
+                    [("group", group), ("name", Value::Text(name.into()))],
+                )
+                .expect("insert vertex");
+        }
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "n".into(),
+                label: Some("QuerySortMulti".into()),
+                property_projection: None,
+            },
+            PlanOp::Project {
+                columns: vec![
+                    project(prop("n", "group"), "group"),
+                    project(prop("n", "name"), "name"),
+                ],
+                distinct: false,
+            },
+            PlanOp::Sort {
+                order_by: order_by(vec![
+                    sort_item(var("group"), None, None),
+                    sort_item(var("name"), Some(SortDirection::Desc), None),
+                ]),
+            },
+        ]);
+
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("execute multi-key sort");
+
+        assert_eq!(
+            text_column(&result, "name"),
+            vec!["Multi B", "Multi A", "Multi B", "Multi A"]
+        );
+    }
+
+    #[test]
+    fn sort_honors_explicit_null_ordering() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["QuerySortNulls"], Vec::<(&str, Value)>::new())
+            .expect("insert null vertex");
+        for name in ["Null Ada", "Null Bob"] {
+            store
+                .insert_vertex_named(["QuerySortNulls"], [("name", Value::Text(name.into()))])
+                .expect("insert named vertex");
+        }
+        let base_ops = || {
+            vec![
+                PlanOp::NodeScan {
+                    variable: "n".into(),
+                    label: Some("QuerySortNulls".into()),
+                    property_projection: None,
+                },
+                PlanOp::Project {
+                    columns: vec![project(prop("n", "name"), "name")],
+                    distinct: false,
+                },
+            ]
+        };
+        let nulls_first = plan(
+            base_ops()
+                .into_iter()
+                .chain([PlanOp::Sort {
+                    order_by: order_by(vec![sort_item(var("name"), None, Some(NullOrder::First))]),
+                }])
+                .collect(),
+        );
+        let nulls_last = plan(
+            base_ops()
+                .into_iter()
+                .chain([PlanOp::Sort {
+                    order_by: order_by(vec![sort_item(var("name"), None, Some(NullOrder::Last))]),
+                }])
+                .collect(),
+        );
+
+        let first = store
+            .execute_plan_query(&nulls_first, &params())
+            .expect("execute nulls first sort");
+        let last = store
+            .execute_plan_query(&nulls_last, &params())
+            .expect("execute nulls last sort");
+
+        assert_eq!(first.rows[0].get("name"), Some(&Value::Null));
+        assert_eq!(last.rows[2].get("name"), Some(&Value::Null));
+    }
+
+    #[test]
+    fn sort_rejects_incomparable_keys() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(
+                ["QuerySortIncomparable"],
+                [("key", Value::Text("x".into()))],
+            )
+            .expect("insert text vertex");
+        store
+            .insert_vertex_named(["QuerySortIncomparable"], [("key", Value::Int64(1))])
+            .expect("insert int vertex");
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "n".into(),
+                label: Some("QuerySortIncomparable".into()),
+                property_projection: None,
+            },
+            PlanOp::Project {
+                columns: vec![project(prop("n", "key"), "key")],
+                distinct: false,
+            },
+            PlanOp::Sort {
+                order_by: order_by(vec![sort_item(var("key"), None, None)]),
+            },
+        ]);
+
+        let err = store
+            .execute_plan_query(&plan, &params())
+            .expect_err("incomparable keys should fail");
+
+        assert!(matches!(err, PlanQueryError::IncomparableSortValues { .. }));
+    }
+
+    #[test]
+    fn topk_sorts_then_applies_offset_and_k() {
+        let store = GraphStore::new();
+        for name in ["TopK D", "TopK A", "TopK C", "TopK B"] {
+            store
+                .insert_vertex_named(["QueryTopK"], [("name", Value::Text(name.into()))])
+                .expect("insert vertex");
+        }
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "n".into(),
+                label: Some("QueryTopK".into()),
+                property_projection: None,
+            },
+            PlanOp::Project {
+                columns: vec![project(prop("n", "name"), "name")],
+                distinct: false,
+            },
+            PlanOp::TopK {
+                order_by: order_by(vec![sort_item(var("name"), None, None)]),
+                k: Expr::new(ExprKind::Literal(Value::Int64(2))),
+                offset: Some(Expr::new(ExprKind::Literal(Value::Int64(1)))),
+            },
+        ]);
+
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("execute topk");
+
+        assert_eq!(text_column(&result, "name"), vec!["TopK B", "TopK C"]);
     }
 
     #[test]
@@ -1255,18 +1831,94 @@ mod tests {
     #[test]
     fn unsupported_operator_returns_stable_error() {
         let store = GraphStore::new();
-        let plan = plan(vec![PlanOp::IndexScan {
-            variable: "n".into(),
-            property: "uid".into(),
-            value: ScanValue::Literal(Value::Text("alice".into())),
-            cmp: CmpOp::Eq,
-            property_projection: None,
-        }]);
+        let cases = vec![
+            (
+                PlanOp::IndexScan {
+                    variable: "n".into(),
+                    property: "uid".into(),
+                    value: ScanValue::Literal(Value::Text("alice".into())),
+                    cmp: CmpOp::Eq,
+                    property_projection: None,
+                },
+                "IndexScan",
+            ),
+            (
+                PlanOp::HashJoin {
+                    left: Vec::new(),
+                    right: Vec::new(),
+                    join_keys: vec!["n".into()],
+                },
+                "HashJoin",
+            ),
+            (
+                PlanOp::CartesianProduct {
+                    left: Vec::new(),
+                    right: Vec::new(),
+                },
+                "CartesianProduct",
+            ),
+            (
+                PlanOp::Aggregate {
+                    group_by: Vec::new(),
+                    aggregates: Vec::new(),
+                },
+                "Aggregate",
+            ),
+            (
+                PlanOp::SetOperation {
+                    op: SetOp::Union,
+                    right: Box::new(plan(Vec::new())),
+                },
+                "SetOperation",
+            ),
+            (
+                PlanOp::OptionalMatch {
+                    sub_plan: Vec::new(),
+                },
+                "OptionalMatch",
+            ),
+            (
+                PlanOp::ShortestPath {
+                    src: "a".into(),
+                    dst: "b".into(),
+                    edge: "e".into(),
+                    path_var: None,
+                    mode: ShortestMode::AnyShortest,
+                    direction: EdgeDirection::PointingRight,
+                    label: None,
+                    label_expr: None,
+                    var_len: None,
+                },
+                "ShortestPath",
+            ),
+            (
+                PlanOp::CallProcedure {
+                    name: vec!["db".into(), "labels".into()],
+                    args: Vec::new(),
+                    yield_columns: None,
+                    optional: false,
+                },
+                "CallProcedure",
+            ),
+            (
+                PlanOp::WorstCaseOptimalJoin {
+                    variables: Vec::new(),
+                    edges: Vec::<WcojEdge>::new(),
+                },
+                "WorstCaseOptimalJoin",
+            ),
+        ];
 
-        let err = store
-            .execute_plan_query(&plan, &params())
-            .expect_err("index scan unsupported in v1");
+        for (op, expected_name) in cases {
+            let plan = plan(vec![op]);
+            let err = store
+                .execute_plan_query(&plan, &params())
+                .expect_err("operator should be unsupported in v1");
 
-        assert!(matches!(err, PlanQueryError::UnsupportedOp("IndexScan")));
+            assert!(
+                matches!(err, PlanQueryError::UnsupportedOp(name) if name == expected_name),
+                "expected UnsupportedOp({expected_name}), got {err:?}"
+            );
+        }
     }
 }

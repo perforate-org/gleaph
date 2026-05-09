@@ -8,16 +8,40 @@ pub enum PlanQueryError {
     Store(GraphStoreError),
     UnsupportedOp(&'static str),
     UnsupportedDirection(EdgeDirection),
-    UnsupportedExpression { expression: String },
-    MissingBinding { variable: String },
-    MissingParameter { name: String },
-    InvalidExpressionValue { expression: String },
-    ExpressionDivisionByZero { expression: String },
-    ExpressionNumericOverflow { expression: String },
-    ExpressionNonFiniteNumeric { expression: String },
-    ExpressionIncomparableValues { expression: String },
-    ExpressionUnsupportedNumericConversion { expression: String },
-    InvalidLimit { value: gleaph_gql::Value },
+    UnsupportedExpression {
+        expression: String,
+    },
+    MissingBinding {
+        variable: String,
+    },
+    MissingParameter {
+        name: String,
+    },
+    InvalidExpressionValue {
+        expression: String,
+    },
+    ExpressionDivisionByZero {
+        expression: String,
+    },
+    ExpressionNumericOverflow {
+        expression: String,
+    },
+    ExpressionNonFiniteNumeric {
+        expression: String,
+    },
+    ExpressionIncomparableValues {
+        expression: String,
+    },
+    ExpressionUnsupportedNumericConversion {
+        expression: String,
+    },
+    InvalidLimit {
+        value: gleaph_gql::Value,
+    },
+    IncomparableSortValues {
+        left: gleaph_gql::Value,
+        right: gleaph_gql::Value,
+    },
 }
 
 impl fmt::Display for PlanQueryError {
@@ -61,6 +85,9 @@ impl fmt::Display for PlanQueryError {
                 )
             }
             Self::InvalidLimit { value } => write!(f, "invalid LIMIT/OFFSET value: {value:?}"),
+            Self::IncomparableSortValues { left, right } => {
+                write!(f, "incomparable ORDER BY values: {left:?} and {right:?}")
+            }
         }
     }
 }
