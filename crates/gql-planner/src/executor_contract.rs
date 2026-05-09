@@ -4,6 +4,7 @@
 //! validation path before graph access. Must stay in sync with
 //! `gleaph_gql_executor::execute_ops` match arms.
 
+use gleaph_gql::ast::AggregateFunc;
 use gleaph_gql::types::EdgeDirection;
 
 use crate::plan::{AggregateSpec, PhysicalPlan, PlanOp, SetPlanItem};
@@ -72,31 +73,98 @@ fn check_op(op: &PlanOp) -> Option<&'static str> {
     }
 }
 
-/// Static check mirroring [`gleaph_gql_executor::update_aggregate_state`].
+/// Static check mirroring aggregate validation in `gleaph-graph`.
 fn check_aggregate_specs(aggregates: &[AggregateSpec]) -> Option<&'static str> {
     for spec in aggregates {
-        let f = spec.func.as_ref();
-        match f {
-            "Count" | "CountStar" => {}
-            "Sum" | "Min" | "Max" => {
-                if spec.expr.is_none() {
-                    return Some(if f == "Sum" {
-                        "Aggregate.sum_without_expr"
-                    } else if f == "Min" {
-                        "Aggregate.min_without_expr"
-                    } else {
-                        "Aggregate.max_without_expr"
-                    });
-                }
-            }
-            "Avg" => {
-                if spec.expr.is_none() {
-                    return Some("Aggregate.avg_without_expr");
-                }
-            }
-            _ => return Some("Aggregate.func"),
+        if let Some(err) = check_one_aggregate(spec) {
+            return Some(err);
         }
     }
+    None
+}
+
+fn check_one_aggregate(spec: &AggregateSpec) -> Option<&'static str> {
+    match spec.func {
+        AggregateFunc::CountStar => {
+            if spec.expr.is_some() {
+                return Some("Aggregate.count_star_with_expr");
+            }
+            if spec.expr2.is_some() {
+                return Some("Aggregate.expr2");
+            }
+        }
+        AggregateFunc::Count => {
+            if spec.expr.is_none() {
+                return Some("Aggregate.count_without_expr");
+            }
+            if spec.expr2.is_some() {
+                return Some("Aggregate.expr2");
+            }
+        }
+        AggregateFunc::Sum => {
+            if spec.expr.is_none() {
+                return Some("Aggregate.sum_without_expr");
+            }
+            if spec.expr2.is_some() {
+                return Some("Aggregate.expr2");
+            }
+        }
+        AggregateFunc::Min => {
+            if spec.expr.is_none() {
+                return Some("Aggregate.min_without_expr");
+            }
+            if spec.expr2.is_some() {
+                return Some("Aggregate.expr2");
+            }
+        }
+        AggregateFunc::Max => {
+            if spec.expr.is_none() {
+                return Some("Aggregate.max_without_expr");
+            }
+            if spec.expr2.is_some() {
+                return Some("Aggregate.expr2");
+            }
+        }
+        AggregateFunc::Avg => {
+            if spec.expr.is_none() {
+                return Some("Aggregate.avg_without_expr");
+            }
+            if spec.expr2.is_some() {
+                return Some("Aggregate.expr2");
+            }
+        }
+        AggregateFunc::Collect => {
+            if spec.expr.is_none() {
+                return Some("Aggregate.collect_without_expr");
+            }
+            if spec.expr2.is_some() {
+                return Some("Aggregate.expr2");
+            }
+        }
+        AggregateFunc::StddevSamp | AggregateFunc::StddevPop => {
+            if spec.expr.is_none() {
+                return Some("Aggregate.stddev_without_expr");
+            }
+            if spec.expr2.is_some() {
+                return Some("Aggregate.expr2");
+            }
+        }
+        AggregateFunc::PercentileCont | AggregateFunc::PercentileDisc => {
+            if spec.expr.is_none() || spec.expr2.is_none() {
+                return Some("Aggregate.percentile_requires_two_args");
+            }
+        }
+    }
+
+    if spec.order_by.is_some() {
+        match spec.func {
+            AggregateFunc::Collect
+            | AggregateFunc::PercentileCont
+            | AggregateFunc::PercentileDisc => {}
+            _ => return Some("Aggregate.order_by"),
+        }
+    }
+
     None
 }
 
@@ -192,11 +260,14 @@ mod tests {
             ops: vec![PlanOp::Aggregate {
                 group_by: vec![],
                 aggregates: vec![AggregateSpec {
-                    func: "Avg".into(),
+                    func: AggregateFunc::Avg,
                     expr: Some(gleaph_gql::ast::Expr::new(
                         gleaph_gql::ast::ExprKind::Literal(gleaph_gql::Value::Int64(1)),
                     )),
+                    expr2: None,
                     distinct: false,
+                    filter: None,
+                    order_by: None,
                     alias: Some("m".into()),
                 }],
             }],
@@ -207,24 +278,32 @@ mod tests {
     }
 
     #[test]
-    fn collect_aggregate_reported_unsupported() {
+    fn sum_with_expr2_reported_unsupported_in_contract() {
         use crate::plan::AggregateSpec;
         let plan = PhysicalPlan {
             ops: vec![PlanOp::Aggregate {
                 group_by: vec![],
                 aggregates: vec![AggregateSpec {
-                    func: "Collect".into(),
+                    func: AggregateFunc::Sum,
                     expr: Some(gleaph_gql::ast::Expr::new(
                         gleaph_gql::ast::ExprKind::Literal(gleaph_gql::Value::Int64(1)),
                     )),
+                    expr2: Some(gleaph_gql::ast::Expr::new(
+                        gleaph_gql::ast::ExprKind::Literal(gleaph_gql::Value::Int64(2)),
+                    )),
                     distinct: false,
+                    filter: None,
+                    order_by: None,
                     alias: None,
                 }],
             }],
             diagnostics: PlanDiagnostics::default(),
             annotations: PlanAnnotations::default(),
         };
-        assert_eq!(first_executor_unsupported_op(&plan), Some("Aggregate.func"));
+        assert_eq!(
+            first_executor_unsupported_op(&plan),
+            Some("Aggregate.expr2")
+        );
     }
 
     #[test]

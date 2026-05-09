@@ -718,6 +718,17 @@ fn push_aggregate_exprs<'a>(a: &'a AggregateSpec, out: &mut Vec<&'a Expr>) {
     if let Some(e) = &a.expr {
         out.push(e);
     }
+    if let Some(e) = &a.expr2 {
+        out.push(e);
+    }
+    if let Some(e) = &a.filter {
+        out.push(e);
+    }
+    if let Some(ob) = &a.order_by {
+        for item in &ob.items {
+            out.push(&item.expr);
+        }
+    }
 }
 
 fn push_let_binding_exprs<'a>(b: &'a LetBinding, out: &mut Vec<&'a Expr>) {

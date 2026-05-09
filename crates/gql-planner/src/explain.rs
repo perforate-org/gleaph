@@ -536,9 +536,9 @@ fn format_op(op: &PlanOp) -> String {
                 .iter()
                 .map(|a| {
                     if a.distinct {
-                        format!("{}(DISTINCT)", a.func)
+                        format!("{:?}(DISTINCT)", a.func)
                     } else {
-                        format!("{}()", a.func)
+                        format!("{:?}()", a.func)
                     }
                 })
                 .collect();

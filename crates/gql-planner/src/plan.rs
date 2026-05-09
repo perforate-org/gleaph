@@ -17,7 +17,7 @@
 use std::rc::Rc;
 
 pub use gleaph_gql::ast::CmpOp;
-use gleaph_gql::ast::{Expr, LetBinding, OrderByClause};
+use gleaph_gql::ast::{AggregateFunc, Expr, LetBinding, OrderByClause};
 pub use gleaph_gql::type_check::DmlDiagnostic as PlannerDiagnostic;
 pub use gleaph_gql::type_check::TypeDiagnostic;
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
@@ -483,14 +483,20 @@ pub struct ConditionalScanCandidate {
 }
 
 /// An aggregate specification within an Aggregate op.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct AggregateSpec {
-    /// The aggregate function name (COUNT, SUM, AVG, MIN, MAX, COLLECT, etc.).
-    pub func: Str,
-    /// The expression being aggregated (None for COUNT(*)).
+    /// Aggregate function (typed; mirrors [`gleaph_gql::ast::ExprKind::Aggregate`]).
+    pub func: AggregateFunc,
+    /// Primary aggregated expression (`None` for `COUNT(*)` / [`AggregateFunc::CountStar`]).
     pub expr: Option<Expr>,
-    /// Whether DISTINCT is applied.
+    /// Second argument (e.g. percentile fraction for `PERCENTILE_CONT` / `PERCENTILE_DISC`).
+    pub expr2: Option<Expr>,
+    /// Whether `DISTINCT` is applied.
     pub distinct: bool,
+    /// Optional `FILTER (WHERE ...)` predicate.
+    pub filter: Option<Expr>,
+    /// Optional aggregate-local `ORDER BY` (e.g. `COLLECT_LIST` ordering).
+    pub order_by: Option<OrderByClause>,
     /// Output alias.
     pub alias: Option<Str>,
 }

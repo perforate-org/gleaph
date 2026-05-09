@@ -1,14 +1,14 @@
 use super::aggregate;
 use super::error::PlanQueryError;
+use super::sort_keys::compare_sort_keys;
 use crate::facade::{EdgeHandle, GraphStore};
 use crate::plan::expr_evaluator::{
     eval_and_expr, eval_binary_expr, eval_compare_expr, eval_concat_expr, eval_not_expr,
     eval_or_expr, eval_unary_expr, eval_xor_expr, truthy,
 };
 use crate::stable::edge_ids::canonical_undirected_owner;
-use gleaph_gql::ast::{Expr, ExprKind, NullOrder, OrderByClause, SortDirection, TruthValue};
+use gleaph_gql::ast::{Expr, ExprKind, OrderByClause, TruthValue};
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
-use gleaph_gql::value_cmp::compare_values;
 use gleaph_gql::{Value, hash_value_for_join};
 use gleaph_gql_planner::plan::{AggregateSpec, PhysicalPlan, PlanOp, ProjectColumn, Str};
 use gleaph_graph_kernel::entry::{Edge, LabelId};
@@ -16,7 +16,6 @@ use ic_stable_lara::VertexId;
 use ic_stable_lara::traits::CsrVertexTombstone;
 use nohash_hasher::IntMap;
 use rapidhash::fast::RapidHasher;
-use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::Hasher;
 
@@ -364,12 +363,10 @@ fn execute_ops_from(
                 aggregate::execute_aggregate(rows, group_by, aggregates, &agg_evaluator)?
             }
             PlanOp::Project { columns, distinct } => {
-                let aggregate_specs = op_idx
-                    .checked_sub(1)
-                    .and_then(|j| match &ops[j] {
-                        PlanOp::Aggregate { aggregates, .. } => Some(aggregates.as_slice()),
-                        _ => None,
-                    });
+                let aggregate_specs = op_idx.checked_sub(1).and_then(|j| match &ops[j] {
+                    PlanOp::Aggregate { aggregates, .. } => Some(aggregates.as_slice()),
+                    _ => None,
+                });
                 let proj_evaluator = QueryExprEvaluator {
                     store,
                     parameters,
@@ -826,71 +823,6 @@ fn eval_sort_expr(
     }
 }
 
-fn compare_sort_keys(
-    left_keys: &[Value],
-    right_keys: &[Value],
-    order_by: &OrderByClause,
-) -> Result<Ordering, PlanQueryError> {
-    for ((left, right), item) in left_keys
-        .iter()
-        .zip(right_keys.iter())
-        .zip(order_by.items.iter())
-    {
-        let ordering = compare_sort_values(left, right, item.direction, item.null_order)?;
-        if ordering != Ordering::Equal {
-            return Ok(ordering);
-        }
-    }
-    Ok(Ordering::Equal)
-}
-
-fn compare_sort_values(
-    left: &Value,
-    right: &Value,
-    direction: Option<SortDirection>,
-    null_order: Option<NullOrder>,
-) -> Result<Ordering, PlanQueryError> {
-    let descending = matches!(
-        direction,
-        Some(SortDirection::Desc | SortDirection::Descending)
-    );
-    let nulls_first = match null_order {
-        Some(NullOrder::First) => true,
-        Some(NullOrder::Last) => false,
-        None => descending,
-    };
-
-    match (left == &Value::Null, right == &Value::Null) {
-        (true, true) => return Ok(Ordering::Equal),
-        (true, false) => {
-            return Ok(if nulls_first {
-                Ordering::Less
-            } else {
-                Ordering::Greater
-            });
-        }
-        (false, true) => {
-            return Ok(if nulls_first {
-                Ordering::Greater
-            } else {
-                Ordering::Less
-            });
-        }
-        (false, false) => {}
-    }
-
-    let ordering =
-        compare_values(left, right).ok_or_else(|| PlanQueryError::IncomparableSortValues {
-            left: left.clone(),
-            right: right.clone(),
-        })?;
-    Ok(if descending {
-        ordering.reverse()
-    } else {
-        ordering
-    })
-}
-
 struct QueryExprEvaluator<'a> {
     store: &'a GraphStore,
     parameters: &'a BTreeMap<String, Value>,
@@ -1004,21 +936,7 @@ impl QueryExprEvaluator<'_> {
                 .map(|(name, expr)| self.eval_expr(row, expr).map(|value| (name.clone(), value)))
                 .collect::<Result<Vec<_>, _>>()
                 .map(Value::Record),
-            ExprKind::Aggregate {
-                expr2,
-                order_by,
-                filter,
-                ..
-            } => {
-                if expr2.is_some() {
-                    return Err(PlanQueryError::UnsupportedOp("Aggregate.expr2"));
-                }
-                if filter.is_some() {
-                    return Err(PlanQueryError::UnsupportedOp("Aggregate.filter"));
-                }
-                if order_by.is_some() {
-                    return Err(PlanQueryError::UnsupportedOp("Aggregate.order_by"));
-                }
+            ExprKind::Aggregate { .. } => {
                 let Some(specs) = self.aggregate_specs else {
                     return Err(PlanQueryError::UnsupportedExpression {
                         expression: "aggregate".to_owned(),
@@ -1071,6 +989,10 @@ impl QueryExprEvaluator<'_> {
 impl aggregate::PlanRowExprEval for QueryExprEvaluator<'_> {
     fn eval_expr_for_row(&self, row: &PlanRow, expr: &Expr) -> Result<Value, PlanQueryError> {
         QueryExprEvaluator::eval_expr(self, row, expr)
+    }
+
+    fn eval_sort_key_for_row(&self, row: &PlanRow, expr: &Expr) -> Result<Value, PlanQueryError> {
+        eval_sort_expr(self, row, expr)
     }
 }
 
@@ -1390,6 +1312,24 @@ mod tests {
 
     fn params() -> BTreeMap<String, Value> {
         BTreeMap::new()
+    }
+
+    /// Minimal [`AggregateSpec`] for tests (no `expr2` / `filter` / `order_by`).
+    fn agg_spec(
+        func: AggregateFunc,
+        expr: Option<Expr>,
+        distinct: bool,
+        alias: Option<&str>,
+    ) -> AggregateSpec {
+        AggregateSpec {
+            func,
+            expr,
+            expr2: None,
+            distinct,
+            filter: None,
+            order_by: None,
+            alias: alias.map(|a| a.into()),
+        }
     }
 
     fn text_column(result: &PlanQueryResult, column: &str) -> Vec<String> {
@@ -3021,12 +2961,7 @@ mod tests {
             },
             PlanOp::Aggregate {
                 group_by: Vec::new(),
-                aggregates: vec![AggregateSpec {
-                    func: "CountStar".into(),
-                    expr: None,
-                    distinct: false,
-                    alias: Some("cnt".into()),
-                }],
+                aggregates: vec![agg_spec(AggregateFunc::CountStar, None, false, Some("cnt"))],
             },
             PlanOp::Project {
                 columns: vec![project(agg_count_star(), "cnt")],
@@ -3057,12 +2992,7 @@ mod tests {
             },
             PlanOp::Aggregate {
                 group_by: Vec::new(),
-                aggregates: vec![AggregateSpec {
-                    func: "CountStar".into(),
-                    expr: None,
-                    distinct: false,
-                    alias: Some("cnt".into()),
-                }],
+                aggregates: vec![agg_spec(AggregateFunc::CountStar, None, false, Some("cnt"))],
             },
             PlanOp::Project {
                 columns: vec![project(agg_count_star(), "cnt")],
@@ -3078,16 +3008,10 @@ mod tests {
     fn aggregate_groups_by_property_and_counts_rows() {
         let store = GraphStore::new();
         store
-            .insert_vertex_named(
-                ["AggGrpLbl"],
-                [("dept", Value::Text("S".into()))],
-            )
+            .insert_vertex_named(["AggGrpLbl"], [("dept", Value::Text("S".into()))])
             .expect("a");
         store
-            .insert_vertex_named(
-                ["AggGrpLbl"],
-                [("dept", Value::Text("S".into()))],
-            )
+            .insert_vertex_named(["AggGrpLbl"], [("dept", Value::Text("S".into()))])
             .expect("b");
         let plan = plan(vec![
             PlanOp::NodeScan {
@@ -3097,12 +3021,7 @@ mod tests {
             },
             PlanOp::Aggregate {
                 group_by: vec![prop("n", "dept")],
-                aggregates: vec![AggregateSpec {
-                    func: "CountStar".into(),
-                    expr: None,
-                    distinct: false,
-                    alias: Some("c".into()),
-                }],
+                aggregates: vec![agg_spec(AggregateFunc::CountStar, None, false, Some("c"))],
             },
             PlanOp::Project {
                 columns: vec![
@@ -3114,10 +3033,7 @@ mod tests {
         ]);
         let result = store.execute_plan_query(&plan, &params()).expect("grouped");
         assert_eq!(result.rows.len(), 1);
-        assert_eq!(
-            result.rows[0].get("d"),
-            Some(&Value::Text("S".into()))
-        );
+        assert_eq!(result.rows[0].get("d"), Some(&Value::Text("S".into())));
         assert_eq!(result.rows[0].get("c"), Some(&Value::Int64(2)));
     }
 
@@ -3139,30 +3055,10 @@ mod tests {
             PlanOp::Aggregate {
                 group_by: Vec::new(),
                 aggregates: vec![
-                    AggregateSpec {
-                        func: "Sum".into(),
-                        expr: Some(prop("n", "v")),
-                        distinct: false,
-                        alias: Some("s".into()),
-                    },
-                    AggregateSpec {
-                        func: "Min".into(),
-                        expr: Some(prop("n", "v")),
-                        distinct: false,
-                        alias: Some("mn".into()),
-                    },
-                    AggregateSpec {
-                        func: "Max".into(),
-                        expr: Some(prop("n", "v")),
-                        distinct: false,
-                        alias: Some("mx".into()),
-                    },
-                    AggregateSpec {
-                        func: "Avg".into(),
-                        expr: Some(prop("n", "v")),
-                        distinct: false,
-                        alias: Some("a".into()),
-                    },
+                    agg_spec(AggregateFunc::Sum, Some(prop("n", "v")), false, Some("s")),
+                    agg_spec(AggregateFunc::Min, Some(prop("n", "v")), false, Some("mn")),
+                    agg_spec(AggregateFunc::Max, Some(prop("n", "v")), false, Some("mx")),
+                    agg_spec(AggregateFunc::Avg, Some(prop("n", "v")), false, Some("a")),
                 ],
             },
             PlanOp::Project {
@@ -3208,19 +3104,21 @@ mod tests {
             },
             PlanOp::Aggregate {
                 group_by: Vec::new(),
-                aggregates: vec![AggregateSpec {
-                    func: "Count".into(),
-                    expr: Some(prop("n", "k")),
-                    distinct: true,
-                    alias: Some("c".into()),
-                }],
+                aggregates: vec![agg_spec(
+                    AggregateFunc::Count,
+                    Some(prop("n", "k")),
+                    true,
+                    Some("c"),
+                )],
             },
             PlanOp::Project {
                 columns: vec![project(count_distinct, "c")],
                 distinct: false,
             },
         ]);
-        let result = store.execute_plan_query(&plan, &params()).expect("distinct");
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("distinct");
         assert_eq!(result.rows[0].get("c"), Some(&Value::Int64(1)));
     }
 
@@ -3235,12 +3133,7 @@ mod tests {
             },
             PlanOp::Aggregate {
                 group_by: vec![prop("n", "dept")],
-                aggregates: vec![AggregateSpec {
-                    func: "CountStar".into(),
-                    expr: None,
-                    distinct: false,
-                    alias: Some("c".into()),
-                }],
+                aggregates: vec![agg_spec(AggregateFunc::CountStar, None, false, Some("c"))],
             },
             PlanOp::Project {
                 columns: vec![
@@ -3250,27 +3143,182 @@ mod tests {
                 distinct: false,
             },
         ]);
-        let result = store.execute_plan_query(&plan, &params()).expect("empty groups");
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("empty groups");
         assert!(result.rows.is_empty());
     }
 
     #[test]
-    fn aggregate_unsupported_collect_returns_stable_error() {
+    fn aggregate_count_star_with_filter_manual_plan() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["FiltAggLbl"], [("ok", Value::Bool(false))])
+            .expect("v0");
+        store
+            .insert_vertex_named(["FiltAggLbl"], [("ok", Value::Bool(true))])
+            .expect("v1");
+        let filter = Expr::new(ExprKind::Compare {
+            left: Box::new(prop("n", "ok")),
+            op: CmpOp::Eq,
+            right: Box::new(Expr::new(ExprKind::Literal(Value::Bool(true)))),
+        });
+        let count_star_filtered = Expr::new(ExprKind::Aggregate {
+            func: AggregateFunc::CountStar,
+            expr: None,
+            expr2: None,
+            distinct: false,
+            order_by: None,
+            filter: Some(Box::new(filter.clone())),
+        });
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "n".into(),
+                label: Some("FiltAggLbl".into()),
+                property_projection: None,
+            },
+            PlanOp::Aggregate {
+                group_by: vec![],
+                aggregates: vec![AggregateSpec {
+                    func: AggregateFunc::CountStar,
+                    expr: None,
+                    expr2: None,
+                    distinct: false,
+                    filter: Some(filter),
+                    order_by: None,
+                    alias: Some("c".into()),
+                }],
+            },
+            PlanOp::Project {
+                columns: vec![project(count_star_filtered, "c")],
+                distinct: false,
+            },
+        ]);
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("filtered");
+        assert_eq!(result.rows[0].get("c"), Some(&Value::Int64(1)));
+    }
+
+    #[test]
+    fn aggregate_collect_list_manual_plan() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["CollLbl"], [("v", Value::Int64(3))])
+            .expect("a");
+        store
+            .insert_vertex_named(["CollLbl"], [("v", Value::Int64(1))])
+            .expect("b");
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "n".into(),
+                label: Some("CollLbl".into()),
+                property_projection: None,
+            },
+            PlanOp::Aggregate {
+                group_by: vec![],
+                aggregates: vec![AggregateSpec {
+                    func: AggregateFunc::Collect,
+                    expr: Some(prop("n", "v")),
+                    expr2: None,
+                    distinct: false,
+                    filter: None,
+                    order_by: None,
+                    alias: Some("xs".into()),
+                }],
+            },
+            PlanOp::Project {
+                columns: vec![project(
+                    Expr::new(ExprKind::Aggregate {
+                        func: AggregateFunc::Collect,
+                        expr: Some(Box::new(prop("n", "v"))),
+                        expr2: None,
+                        distinct: false,
+                        order_by: None,
+                        filter: None,
+                    }),
+                    "xs",
+                )],
+                distinct: false,
+            },
+        ]);
+        let result = store.execute_plan_query(&plan, &params()).expect("collect");
+        match result.rows[0].get("xs") {
+            Some(Value::List(xs)) => {
+                assert_eq!(xs.len(), 2);
+            }
+            other => panic!("expected list: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn aggregate_percentile_cont_manual_plan() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["PctLbl"], [("v", Value::Int64(10))])
+            .expect("a");
+        store
+            .insert_vertex_named(["PctLbl"], [("v", Value::Int64(30))])
+            .expect("b");
+        let p = Expr::new(ExprKind::Literal(Value::Float64(0.5)));
+        let agg = Expr::new(ExprKind::Aggregate {
+            func: AggregateFunc::PercentileCont,
+            expr: Some(Box::new(prop("n", "v"))),
+            expr2: Some(Box::new(p.clone())),
+            distinct: false,
+            order_by: None,
+            filter: None,
+        });
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "n".into(),
+                label: Some("PctLbl".into()),
+                property_projection: None,
+            },
+            PlanOp::Aggregate {
+                group_by: vec![],
+                aggregates: vec![AggregateSpec {
+                    func: AggregateFunc::PercentileCont,
+                    expr: Some(prop("n", "v")),
+                    expr2: Some(p),
+                    distinct: false,
+                    filter: None,
+                    order_by: None,
+                    alias: Some("m".into()),
+                }],
+            },
+            PlanOp::Project {
+                columns: vec![project(agg, "m")],
+                distinct: false,
+            },
+        ]);
+        let result = store.execute_plan_query(&plan, &params()).expect("pct");
+        match result.rows[0].get("m") {
+            Some(Value::Float64(f)) => assert!((f - 20.0).abs() < 1e-9),
+            other => panic!("expected float median: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn aggregate_sum_with_expr2_is_rejected() {
         let store = GraphStore::new();
         let plan = plan(vec![PlanOp::Aggregate {
             group_by: Vec::new(),
             aggregates: vec![AggregateSpec {
-                func: "Collect".into(),
+                func: AggregateFunc::Sum,
                 expr: Some(Expr::new(ExprKind::Literal(Value::Int64(1)))),
+                expr2: Some(Expr::new(ExprKind::Literal(Value::Int64(2)))),
                 distinct: false,
+                filter: None,
+                order_by: None,
                 alias: None,
             }],
         }]);
         let err = store
             .execute_plan_query(&plan, &params())
-            .expect_err("collect unsupported");
+            .expect_err("sum with expr2");
         assert!(
-            matches!(err, PlanQueryError::UnsupportedOp(name) if name == "Aggregate.func"),
+            matches!(err, PlanQueryError::UnsupportedOp(name) if name == "Aggregate.expr2"),
             "{err:?}"
         );
     }

@@ -2387,13 +2387,9 @@ fn extract_aggregates(items: &[ReturnItem]) -> (Vec<AggregateSpec>, Vec<ProjectC
     let mut proj_cols = Vec::new();
 
     for item in items {
-        if let Some(agg) = try_extract_aggregate(&item.expr) {
-            agg_specs.push(AggregateSpec {
-                func: Str::from(agg.0),
-                expr: agg.1,
-                distinct: agg.2,
-                alias: item.alias.as_ref().map(|a| Str::from(a.as_str())),
-            });
+        if let Some(mut agg) = try_extract_aggregate(&item.expr) {
+            agg.alias = item.alias.as_ref().map(|a| Str::from(a.as_str()));
+            agg_specs.push(agg);
         }
         proj_cols.push(ProjectColumn {
             expr: item.expr.clone(),
@@ -2405,18 +2401,27 @@ fn extract_aggregates(items: &[ReturnItem]) -> (Vec<AggregateSpec>, Vec<ProjectC
 }
 
 /// Try to extract an aggregate function from an expression.
-fn try_extract_aggregate(expr: &Expr) -> Option<(String, Option<Expr>, bool)> {
-    if let ExprKind::Aggregate {
+fn try_extract_aggregate(expr: &Expr) -> Option<AggregateSpec> {
+    let ExprKind::Aggregate {
         func,
         expr: agg_expr,
+        expr2,
         distinct,
-        ..
+        order_by,
+        filter,
     } = &expr.kind
-    {
-        let func_name = format!("{:?}", func);
-        return Some((func_name, agg_expr.as_deref().cloned(), *distinct));
-    }
-    None
+    else {
+        return None;
+    };
+    Some(AggregateSpec {
+        func: *func,
+        expr: agg_expr.as_deref().cloned(),
+        expr2: expr2.as_deref().cloned(),
+        distinct: *distinct,
+        filter: filter.as_deref().cloned(),
+        order_by: order_by.clone(),
+        alias: None,
+    })
 }
 
 /// Flatten AND chains into individual predicates.
