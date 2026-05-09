@@ -19,9 +19,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::anchor::{self, extract_simple_label};
 use crate::cost;
 use crate::cse;
+use crate::expr_alias::substitute_return_aliases_in_expr;
 use crate::explain::explain_plan;
 use crate::join_order;
 use crate::plan::*;
+use crate::property_projection::for_each_immediate_child_expr;
 use crate::pushdown;
 use crate::semantic::{self, SemanticAnalysis, SemanticConstraint};
 use crate::stats::GraphStats;
@@ -2245,33 +2247,47 @@ fn plan_return(ret: &ReturnStatement, ops: &mut Vec<PlanOp>) {
         ReturnBody::Items {
             items,
             group_by,
-            having: _,
+            having,
             order_by,
             limit,
             offset,
         } => {
+            let having_rw = rewrite_having_with_return_aliases(items, having.as_ref());
             // Aggregation.
             if let Some(gb) = group_by {
-                let (agg_specs, proj_cols) = extract_aggregates(items);
+                let (agg_specs, proj_cols) = extract_aggregates(items, having_rw.as_ref());
                 ops.push(PlanOp::Aggregate {
                     group_by: gb.items.clone(),
                     aggregates: agg_specs,
                 });
+                if let Some(h) = having_rw {
+                    ops.push(PlanOp::Filter {
+                        condition: h,
+                    });
+                }
                 ops.push(PlanOp::Project {
                     columns: proj_cols,
                     distinct,
                 });
             } else if items
                 .iter()
-                .any(|item| try_extract_aggregate(&item.expr).is_some())
+                .any(|item| expr_contains_aggregate(&item.expr))
+                || having_rw
+                    .as_ref()
+                    .is_some_and(|h| expr_contains_aggregate(h))
             {
                 // Implicit whole-result aggregation (no GROUP BY): executor needs `Aggregate`
                 // before `Project`; bare `Aggregate` exprs in `Project` are not evaluable.
-                let (agg_specs, proj_cols) = extract_aggregates(items);
+                let (agg_specs, proj_cols) = extract_aggregates(items, having_rw.as_ref());
                 ops.push(PlanOp::Aggregate {
                     group_by: Vec::new(),
                     aggregates: agg_specs,
                 });
+                if let Some(h) = having_rw {
+                    ops.push(PlanOp::Filter {
+                        condition: h,
+                    });
+                }
                 ops.push(PlanOp::Project {
                     columns: proj_cols,
                     distinct,
@@ -2306,46 +2322,61 @@ fn plan_return(ret: &ReturnStatement, ops: &mut Vec<PlanOp>) {
 fn plan_select(sel: &SelectStatement, ops: &mut Vec<PlanOp>) {
     let distinct = sel.set_quantifier == SetQuantifier::Distinct;
 
-    let (items, group_by, order_by, limit, offset) = match &sel.body {
+    let (items, group_by, having, order_by, limit, offset) = match &sel.body {
         SelectBody::Star {
             group_by,
-            having: _,
+            having,
             order_by,
             limit,
             offset,
-        } => (None, group_by, order_by, limit, offset),
+        } => (None, group_by, having, order_by, limit, offset),
         SelectBody::Items {
             items,
             group_by,
-            having: _,
+            having,
             order_by,
             limit,
             offset,
-        } => (Some(items), group_by, order_by, limit, offset),
+        } => (Some(items), group_by, having, order_by, limit, offset),
     };
 
     if let Some(gb) = group_by {
         if let Some(items) = items {
-            let (agg_specs, proj_cols) = extract_aggregates(items);
+            let having_rw = rewrite_having_with_return_aliases(items, having.as_ref());
+            let (agg_specs, proj_cols) = extract_aggregates(items, having_rw.as_ref());
             ops.push(PlanOp::Aggregate {
                 group_by: gb.items.clone(),
                 aggregates: agg_specs,
             });
+            if let Some(h) = having_rw {
+                ops.push(PlanOp::Filter {
+                    condition: h,
+                });
+            }
             ops.push(PlanOp::Project {
                 columns: proj_cols,
                 distinct,
             });
         }
     } else if let Some(items) = items {
+        let having_rw = rewrite_having_with_return_aliases(items, having.as_ref());
         if items
             .iter()
-            .any(|item| try_extract_aggregate(&item.expr).is_some())
+            .any(|item| expr_contains_aggregate(&item.expr))
+            || having_rw
+                .as_ref()
+                .is_some_and(|h| expr_contains_aggregate(h))
         {
-            let (agg_specs, proj_cols) = extract_aggregates(items);
+            let (agg_specs, proj_cols) = extract_aggregates(items, having_rw.as_ref());
             ops.push(PlanOp::Aggregate {
                 group_by: Vec::new(),
                 aggregates: agg_specs,
             });
+            if let Some(h) = having_rw {
+                ops.push(PlanOp::Filter {
+                    condition: h,
+                });
+            }
             ops.push(PlanOp::Project {
                 columns: proj_cols,
                 distinct,
@@ -2381,21 +2412,74 @@ fn plan_select(sel: &SelectStatement, ops: &mut Vec<PlanOp>) {
     }
 }
 
-/// Extract aggregate functions from return items.
-fn extract_aggregates(items: &[ReturnItem]) -> (Vec<AggregateSpec>, Vec<ProjectColumn>) {
-    let mut agg_specs = Vec::new();
-    let mut proj_cols = Vec::new();
+/// Expand `RETURN`/`SELECT` column aliases inside `HAVING` so post-aggregate filtering runs on
+/// expressions that are actually bound on aggregate rows (aggregates and grouping keys).
+fn rewrite_having_with_return_aliases(items: &[ReturnItem], having: Option<&Expr>) -> Option<Expr> {
+    let aliases: BTreeMap<String, Expr> = items
+        .iter()
+        .filter_map(|item| {
+            let alias = item.alias.as_ref()?;
+            Some((alias.clone(), item.expr.clone()))
+        })
+        .collect();
+    having.map(|h| substitute_return_aliases_in_expr(h, &aliases))
+}
 
-    for item in items {
-        if let Some(mut agg) = try_extract_aggregate(&item.expr) {
-            agg.alias = item.alias.as_ref().map(|a| Str::from(a.as_str()));
-            agg_specs.push(agg);
+/// True when `expr` contains any [`ExprKind::Aggregate`] (including nested).
+fn expr_contains_aggregate(expr: &Expr) -> bool {
+    if matches!(&expr.kind, ExprKind::Aggregate { .. }) {
+        return true;
+    }
+    let mut found = false;
+    for_each_immediate_child_expr(expr, |child| {
+        found |= expr_contains_aggregate(child);
+    });
+    found
+}
+
+/// Compare aggregate specs ignoring output alias (used for deduplication).
+fn aggregate_spec_body_eq(a: &AggregateSpec, b: &AggregateSpec) -> bool {
+    a.func == b.func
+        && a.distinct == b.distinct
+        && a.expr == b.expr
+        && a.expr2 == b.expr2
+        && a.filter == b.filter
+        && a.order_by == b.order_by
+}
+
+/// DFS collect unique [`AggregateSpec`] bodies from `expr` in stable pre-order.
+fn collect_unique_aggregate_specs_from_expr(expr: &Expr, out: &mut Vec<AggregateSpec>) {
+    if let ExprKind::Aggregate { .. } = &expr.kind {
+        if let Some(spec) = try_extract_aggregate(expr) {
+            if !out.iter().any(|s| aggregate_spec_body_eq(s, &spec)) {
+                out.push(spec);
+            }
         }
-        proj_cols.push(ProjectColumn {
+    }
+    for_each_immediate_child_expr(expr, |child| {
+        collect_unique_aggregate_specs_from_expr(child, out);
+    });
+}
+
+/// Extract aggregate functions from return items and optional `HAVING`.
+fn extract_aggregates(
+    items: &[ReturnItem],
+    having: Option<&Expr>,
+) -> (Vec<AggregateSpec>, Vec<ProjectColumn>) {
+    let mut agg_specs = Vec::new();
+    for item in items {
+        collect_unique_aggregate_specs_from_expr(&item.expr, &mut agg_specs);
+    }
+    if let Some(h) = having {
+        collect_unique_aggregate_specs_from_expr(h, &mut agg_specs);
+    }
+    let proj_cols = items
+        .iter()
+        .map(|item| ProjectColumn {
             expr: item.expr.clone(),
             alias: item.alias.as_ref().map(|a| Str::from(a.as_str())),
-        });
-    }
+        })
+        .collect();
 
     (agg_specs, proj_cols)
 }

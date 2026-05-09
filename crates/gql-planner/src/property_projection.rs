@@ -391,7 +391,7 @@ fn collect_property_names_on_var(expr: &Expr, var: &str, out: &mut BTreeSet<Stri
     }
 }
 
-fn for_each_immediate_child_expr(expr: &Expr, mut visit: impl FnMut(&Expr)) {
+pub(crate) fn for_each_immediate_child_expr(expr: &Expr, mut visit: impl FnMut(&Expr)) {
     match &expr.kind {
         ExprKind::Paren(e)
         | ExprKind::UnaryOp { expr: e, .. }

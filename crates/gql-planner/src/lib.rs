@@ -25,6 +25,7 @@ pub mod explain;
 pub mod join_order;
 pub mod plan;
 pub mod planner;
+mod expr_alias;
 pub mod property_projection;
 pub mod pushdown;
 pub mod semantic;

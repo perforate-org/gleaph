@@ -257,12 +257,19 @@ fn execute_ops_from(
     initial_rows: Vec<PlanRow>,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
     let mut rows = initial_rows;
+    // Index of the nearest preceding `PlanOp::Aggregate` for resolving
+    // `ExprKind::Aggregate` in post-aggregate ops (e.g. HAVING).
+    let mut active_aggregate_op_idx: Option<usize> = None;
 
     for (op_idx, op) in ops.iter().enumerate() {
+        let aggregate_specs = active_aggregate_op_idx.and_then(|idx| match &ops[idx] {
+            PlanOp::Aggregate { aggregates, .. } => Some(aggregates.as_slice()),
+            _ => None,
+        });
         let evaluator = QueryExprEvaluator {
             store,
             parameters,
-            aggregate_specs: None,
+            aggregate_specs,
         };
         rows = match op {
             PlanOp::NodeScan {
@@ -360,13 +367,12 @@ fn execute_ops_from(
                     parameters,
                     aggregate_specs: None,
                 };
-                aggregate::execute_aggregate(rows, group_by, aggregates, &agg_evaluator)?
+                let out =
+                    aggregate::execute_aggregate(rows, group_by, aggregates, &agg_evaluator)?;
+                active_aggregate_op_idx = Some(op_idx);
+                out
             }
             PlanOp::Project { columns, distinct } => {
-                let aggregate_specs = op_idx.checked_sub(1).and_then(|j| match &ops[j] {
-                    PlanOp::Aggregate { aggregates, .. } => Some(aggregates.as_slice()),
-                    _ => None,
-                });
                 let proj_evaluator = QueryExprEvaluator {
                     store,
                     parameters,
@@ -379,6 +385,7 @@ fn execute_ops_from(
                 if *distinct {
                     dedup_rows(&mut projected);
                 }
+                active_aggregate_op_idx = None;
                 projected
             }
             PlanOp::Limit { count, offset } => {
@@ -827,7 +834,9 @@ struct QueryExprEvaluator<'a> {
     store: &'a GraphStore,
     parameters: &'a BTreeMap<String, Value>,
     /// When set, `ExprKind::Aggregate` reads precomputed results from the row
-    /// (see [`aggregate_slot_key`]).
+    /// (see [`aggregate_slot_key`]). Sourced from the active preceding
+    /// [`PlanOp::Aggregate`] (not necessarily `ops[op_idx - 1]`, e.g. when `HAVING`
+    /// inserts a [`PlanOp::Filter`] between aggregate and project).
     aggregate_specs: Option<&'a [AggregateSpec]>,
 }
 
@@ -3335,6 +3344,139 @@ mod tests {
             .expect("planner aggregate");
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0].get("c"), Some(&Value::Int64(1)));
+    }
+
+    #[test]
+    fn executes_planner_match_return_count_star_plus_literal() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["PlannerAggPlus"], Vec::<(&str, Value)>::new())
+            .expect("v1");
+        store
+            .insert_vertex_named(["PlannerAggPlus"], Vec::<(&str, Value)>::new())
+            .expect("v2");
+        let plan = plan_gql("MATCH (n:PlannerAggPlus) RETURN count(*) + 1 AS c");
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("nested aggregate expr");
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0].get("c"), Some(&Value::Int64(3)));
+    }
+
+    #[test]
+    fn executes_planner_avg_nested_in_arithmetic() {
+        let store = GraphStore::new();
+        let _ = store.insert_vertex_named(["PlannerAggAvgArith"], [("x", Value::Int64(10))]);
+        let _ = store.insert_vertex_named(["PlannerAggAvgArith"], [("x", Value::Int64(30))]);
+        let plan = plan_gql("MATCH (n:PlannerAggAvgArith) RETURN avg(n.x) * 2 AS doubled");
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("avg * 2");
+        assert_eq!(result.rows.len(), 1);
+        match result.rows[0].get("doubled") {
+            Some(Value::Float64(f)) => assert!((f - 40.0).abs() < 1e-6),
+            Some(Value::Int64(i)) => assert_eq!(*i, 40),
+            other => panic!("expected numeric doubled: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn executes_planner_group_by_having_count_filter() {
+        let store = GraphStore::new();
+        let _ = store.insert_vertex_named(["PlannerHavingK"], [("k", Value::Int64(1))]);
+        let _ = store.insert_vertex_named(["PlannerHavingK"], [("k", Value::Int64(1))]);
+        let _ = store.insert_vertex_named(["PlannerHavingK"], [("k", Value::Int64(2))]);
+        let plan = plan_gql(
+            "MATCH (n:PlannerHavingK) RETURN n.k, count(*) AS cnt GROUP BY n.k HAVING count(*) > 1",
+        );
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("having");
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0].get("n.k"), Some(&Value::Int64(1)));
+        assert_eq!(result.rows[0].get("cnt"), Some(&Value::Int64(2)));
+    }
+
+    #[test]
+    fn executes_planner_group_by_having_count_return_alias() {
+        let store = GraphStore::new();
+        let _ = store.insert_vertex_named(["PlannerHavingK"], [("k", Value::Int64(1))]);
+        let _ = store.insert_vertex_named(["PlannerHavingK"], [("k", Value::Int64(1))]);
+        let _ = store.insert_vertex_named(["PlannerHavingK"], [("k", Value::Int64(2))]);
+        let plan = plan_gql(
+            "MATCH (n:PlannerHavingK) RETURN n.k, count(*) AS cnt GROUP BY n.k HAVING cnt > 1",
+        );
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("having with return alias");
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0].get("n.k"), Some(&Value::Int64(1)));
+        assert_eq!(result.rows[0].get("cnt"), Some(&Value::Int64(2)));
+    }
+
+    #[test]
+    fn executes_planner_collect_list_names() {
+        let store = GraphStore::new();
+        let _ = store.insert_vertex_named(
+            ["PlannerAggCollect"],
+            [("name", Value::Text("a".into()))],
+        );
+        let _ = store.insert_vertex_named(
+            ["PlannerAggCollect"],
+            [("name", Value::Text("b".into()))],
+        );
+        let plan = plan_gql("MATCH (n:PlannerAggCollect) RETURN COLLECT_LIST(n.name) AS names");
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("collect_list");
+        assert_eq!(result.rows.len(), 1);
+        let list = result.rows[0].get("names").expect("names column");
+        let Value::List(items) = list else {
+            panic!("expected list, got {list:?}");
+        };
+        assert_eq!(items.len(), 2);
+        let mut texts: Vec<String> = items
+            .iter()
+            .map(|v| match v {
+                Value::Text(t) => t.clone(),
+                _ => panic!("expected text in list: {v:?}"),
+            })
+            .collect();
+        texts.sort();
+        assert_eq!(texts, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn executes_planner_stddev_pop_two_values() {
+        let store = GraphStore::new();
+        let _ = store.insert_vertex_named(["PlannerAggStd"], [("v", Value::Int64(1))]);
+        let _ = store.insert_vertex_named(["PlannerAggStd"], [("v", Value::Int64(3))]);
+        let plan = plan_gql("MATCH (n:PlannerAggStd) RETURN STDDEV_POP(n.v) AS s");
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("stddev_pop");
+        assert_eq!(result.rows.len(), 1);
+        match result.rows[0].get("s") {
+            Some(Value::Float64(f)) => assert!((f - 1.0).abs() < 1e-6),
+            other => panic!("expected float stddev: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn executes_planner_percentile_cont_planned() {
+        let store = GraphStore::new();
+        let _ = store.insert_vertex_named(["PlannerAggPct"], [("v", Value::Int64(10))]);
+        let _ = store.insert_vertex_named(["PlannerAggPct"], [("v", Value::Int64(20))]);
+        let _ = store.insert_vertex_named(["PlannerAggPct"], [("v", Value::Int64(30))]);
+        let plan = plan_gql("MATCH (n:PlannerAggPct) RETURN PERCENTILE_CONT(n.v, 0.5) AS m");
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("percentile");
+        assert_eq!(result.rows.len(), 1);
+        match result.rows[0].get("m") {
+            Some(Value::Float64(f)) => assert!((f - 20.0).abs() < 1e-6),
+            other => panic!("expected float median: {other:?}"),
+        }
     }
 
     #[test]

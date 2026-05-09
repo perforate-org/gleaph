@@ -3279,3 +3279,92 @@ fn expand_full_edge_when_return_whole_edge_var() {
         Some(&["uid".to_string()][..])
     );
 }
+
+// ════════════════════════════════════════════════════════════════════════════════
+// Aggregate query surface (recursive specs, HAVING, typed aggregates)
+// ════════════════════════════════════════════════════════════════════════════════
+
+fn first_aggregate_specs(plan: &PhysicalPlan) -> &[AggregateSpec] {
+    plan.ops
+        .iter()
+        .find_map(|op| match op {
+            PlanOp::Aggregate { aggregates, .. } => Some(aggregates.as_slice()),
+            _ => None,
+        })
+        .expect("expected PlanOp::Aggregate")
+}
+
+#[test]
+fn planner_aggregate_nested_in_arithmetic() {
+    let plan = plan_query("MATCH (n:User) RETURN count(*) + 1 AS c");
+    let aggs = first_aggregate_specs(&plan);
+    assert_eq!(aggs.len(), 1);
+    assert_eq!(aggs[0].func, AggregateFunc::CountStar);
+}
+
+#[test]
+fn planner_duplicate_aggregate_exprs_dedup_in_aggregate_op() {
+    let plan = plan_query("MATCH (n:User) RETURN count(*) + count(*) AS c");
+    let aggs = first_aggregate_specs(&plan);
+    assert_eq!(aggs.len(), 1);
+    assert_eq!(aggs[0].func, AggregateFunc::CountStar);
+}
+
+#[test]
+fn planner_collect_list_stddev_percentile_aggregate_specs() {
+    let plan_collect = plan_query("MATCH (n:User) RETURN COLLECT_LIST(n.name)");
+    assert_eq!(
+        first_aggregate_specs(&plan_collect)[0].func,
+        AggregateFunc::Collect
+    );
+
+    let plan_pop = plan_query("MATCH (n:User) RETURN STDDEV_POP(n.age)");
+    assert_eq!(
+        first_aggregate_specs(&plan_pop)[0].func,
+        AggregateFunc::StddevPop
+    );
+
+    let plan_samp = plan_query("MATCH (n:User) RETURN STDDEV_SAMP(n.age)");
+    assert_eq!(
+        first_aggregate_specs(&plan_samp)[0].func,
+        AggregateFunc::StddevSamp
+    );
+
+    let plan_pc = plan_query("MATCH (n:User) RETURN PERCENTILE_CONT(n.score, 0.5)");
+    let pc = first_aggregate_specs(&plan_pc);
+    assert_eq!(pc[0].func, AggregateFunc::PercentileCont);
+    assert!(pc[0].expr2.is_some());
+
+    let plan_pd = plan_query("MATCH (n:User) RETURN PERCENTILE_DISC(n.score, 0.5)");
+    assert_eq!(
+        first_aggregate_specs(&plan_pd)[0].func,
+        AggregateFunc::PercentileDisc
+    );
+}
+
+#[test]
+fn planner_having_emits_post_aggregate_filter() {
+    let plan = plan_query(
+        "MATCH (n:User) RETURN n.region, count(*) AS cnt GROUP BY n.region HAVING count(*) > 1",
+    );
+    let idx_agg = plan
+        .ops
+        .iter()
+        .position(|op| matches!(op, PlanOp::Aggregate { .. }))
+        .expect("Aggregate");
+    let idx_fil = plan
+        .ops
+        .iter()
+        .position(|op| matches!(op, PlanOp::Filter { .. }))
+        .expect("Filter (HAVING)");
+    let idx_proj = plan
+        .ops
+        .iter()
+        .position(|op| matches!(op, PlanOp::Project { .. }))
+        .expect("Project");
+    assert!(
+        idx_agg < idx_fil && idx_fil < idx_proj,
+        "expected Aggregate -> Filter -> Project, got ops: {:?}",
+        plan.ops
+    );
+}
