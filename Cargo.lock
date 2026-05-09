@@ -688,6 +688,7 @@ dependencies = [
  "ic-cdk",
  "ic-stable-lara",
  "ic-stable-structures",
+ "rapidhash",
 ]
 
 [[package]]

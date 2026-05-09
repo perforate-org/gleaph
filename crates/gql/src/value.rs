@@ -18,6 +18,7 @@ use std::any::Any;
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::fmt;
+use std::hash::Hasher;
 use std::str;
 
 use crate::types::{Decimal, Int256, PathElement, Uint256};
@@ -102,6 +103,36 @@ pub trait ExtensionValue: fmt::Debug + fmt::Display + Send + Sync {
     /// Checked before [`Self::compact_kind`]. See **`gleaph-gql-ic`** for `Principal`.
     fn short_blob(&self) -> Option<Cow<'_, [u8]>> {
         None
+    }
+
+    /// Mix bytes into `hasher` for join-key bucketing ([`crate::value_join_hash::hash_value_for_join`];
+    /// runs after the outer discriminant tag `53` for [`Value::Extension`]).
+    ///
+    /// **Contract:** If [`Self::eq_ext`] returns `true` for two extensions, this method must produce
+    /// identical writes (including [`Self::type_name`] when included by this implementation).
+    ///
+    /// Default: [`Self::type_name`] length + UTF-8 bytes, then [`Self::short_blob`] if present, otherwise
+    /// [`Self::binary_payload`], otherwise an empty marker byte — aligned with wire preference for short blob.
+    fn hash_join_key(&self, hasher: &mut dyn Hasher) {
+        let tn = self.type_name();
+        hasher.write_u64(tn.len() as u64);
+        hasher.write(tn.as_bytes());
+        if let Some(blob) = self.short_blob() {
+            hasher.write_u8(1);
+            let b = blob.as_ref();
+            hasher.write_u64(b.len() as u64);
+            hasher.write(b);
+        } else {
+            match self.binary_payload() {
+                Ok(cow) => {
+                    hasher.write_u8(1);
+                    let bytes = cow.as_ref();
+                    hasher.write_u64(bytes.len() as u64);
+                    hasher.write(bytes);
+                }
+                Err(_) => hasher.write_u8(0),
+            }
+        }
     }
 }
 
@@ -1928,6 +1959,22 @@ mod tests {
         let ext = Value::Extension(Box::new(MockExt("hello".into())));
         assert_ne!(ext, Value::Null);
         assert_ne!(ext, Value::Int64(42));
+    }
+
+    #[test]
+    fn extension_hash_join_key_aligns_with_eq_for_short_blob_type() {
+        use crate::value_join_hash::hash_value_for_join;
+        use rapidhash::fast::RapidHasher;
+        use std::hash::Hasher;
+
+        let a = Value::Extension(Box::new(MockShortBlob(vec![1, 2, 3])));
+        let b = Value::Extension(Box::new(MockShortBlob(vec![1, 2, 3])));
+        assert_eq!(a, b);
+        let mut ha = RapidHasher::default();
+        let mut hb = RapidHasher::default();
+        hash_value_for_join(&a, &mut ha);
+        hash_value_for_join(&b, &mut hb);
+        assert_eq!(ha.finish(), hb.finish());
     }
 
     #[test]

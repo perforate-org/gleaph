@@ -6,6 +6,7 @@
 //! - An ISO-8601 temporal parser/formatter ([`temporal`]).
 //! - Core types ([`types`]) including [`LabelExpr`], [`Int256`], [`Uint256`], [`Decimal`].
 //! - Value comparison ([`value_cmp::compare_values`]) supporting cross-width integers.
+//! - [`ExtensionValue::hash_join_key`](value::ExtensionValue::hash_join_key) for join-bucket / DISTINCT-style hashing (not `std::hash::Hash` on [`Value`]).
 //!
 //! # Feature flags
 //!
@@ -43,12 +44,14 @@ pub mod types;
 pub mod validate;
 pub mod value;
 pub mod value_cmp;
+pub mod value_join_hash;
 
 pub use error::{GqlError, GqlResult};
 pub use parser::ParseResult;
 pub use value::{
     DenyExtensionBinaryDecode, ExtensionBinaryDecode, ExtensionValue, Value, ValueBinaryError,
 };
+pub use value_join_hash::{hash_path_element_for_join, hash_value_for_join};
 
 #[cfg(feature = "ast-rkyv-no-span")]
 pub use rkyv_support::{

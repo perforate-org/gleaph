@@ -5,7 +5,7 @@ use crate::plan::expr_evaluator::{
     eval_or_expr, eval_unary_expr, eval_xor_expr, truthy,
 };
 use crate::stable::edge_ids::canonical_undirected_owner;
-use gleaph_gql::Value;
+use gleaph_gql::{hash_value_for_join, Value};
 use gleaph_gql::ast::{Expr, ExprKind, NullOrder, OrderByClause, SortDirection, TruthValue};
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql::value_cmp::compare_values;
@@ -13,8 +13,10 @@ use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, ProjectColumn, Str};
 use gleaph_graph_kernel::entry::{Edge, LabelId};
 use ic_stable_lara::VertexId;
 use ic_stable_lara::traits::CsrVertexTombstone;
+use rapidhash::fast::RapidHasher;
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::hash::Hasher;
 
 pub trait PlanQueryExecutor {
     fn execute_plan_query(
@@ -216,6 +218,11 @@ fn execute_ops_from(
             PlanOp::CartesianProduct { left, right } => {
                 execute_cartesian_product(store, parameters, rows, left, right)?
             }
+            PlanOp::HashJoin {
+                left,
+                right,
+                join_keys,
+            } => execute_hash_join(store, parameters, rows, left, right, join_keys)?,
             other if other.is_dml() => {
                 return Err(PlanQueryError::UnsupportedOp(plan_op_name(other)));
             }
@@ -260,6 +267,103 @@ fn merge_rows(left: &PlanRow, right: &PlanRow) -> Option<PlanRow> {
         }
     }
     Some(merged)
+}
+
+fn execute_hash_join(
+    store: &GraphStore,
+    parameters: &BTreeMap<String, Value>,
+    rows: Vec<PlanRow>,
+    left: &[PlanOp],
+    right: &[PlanOp],
+    join_keys: &[Str],
+) -> Result<Vec<PlanRow>, PlanQueryError> {
+    if join_keys.is_empty() {
+        return Err(PlanQueryError::UnsupportedOp("HashJoin(empty join_keys)"));
+    }
+
+    let mut out = Vec::new();
+    for row in rows {
+        let left_rows = execute_ops_from(store, left, parameters, vec![row.clone()])?;
+        let right_rows = execute_ops_from(store, right, parameters, vec![row])?;
+
+        let mut buckets: HashMap<u64, Vec<(Vec<PlanBinding>, Vec<PlanRow>)>> = HashMap::new();
+        for lr in left_rows {
+            let key = extract_join_key(&lr, join_keys)?;
+            insert_join_bucket(&mut buckets, key, lr);
+        }
+
+        for rr in right_rows {
+            let key = extract_join_key(&rr, join_keys)?;
+            let h = hash_join_mix(&key);
+            let Some(bucket) = buckets.get(&h) else {
+                continue;
+            };
+            for (left_key, left_matches) in bucket {
+                if left_key == &key {
+                    for lr in left_matches {
+                        if let Some(merged) = merge_rows(lr, &rr) {
+                            out.push(merged);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn extract_join_key(row: &PlanRow, join_keys: &[Str]) -> Result<Vec<PlanBinding>, PlanQueryError> {
+    join_keys
+        .iter()
+        .map(|k| {
+            row.get(k.as_ref())
+                .cloned()
+                .ok_or_else(|| PlanQueryError::MissingBinding {
+                    variable: k.as_ref().to_owned(),
+                })
+        })
+        .collect()
+}
+
+fn insert_join_bucket(
+    buckets: &mut HashMap<u64, Vec<(Vec<PlanBinding>, Vec<PlanRow>)>>,
+    key: Vec<PlanBinding>,
+    row: PlanRow,
+) {
+    let h = hash_join_mix(&key);
+    let bucket = buckets.entry(h).or_default();
+    if let Some((_, rows)) = bucket.iter_mut().find(|(k, _)| k == &key) {
+        rows.push(row);
+    } else {
+        bucket.push((key, vec![row]));
+    }
+}
+
+/// Mix join-key bindings for hash buckets; must satisfy `a == b ⇒ mix(a) == mix(b)` for [`PlanBinding`].
+fn hash_join_mix(bindings: &[PlanBinding]) -> u64 {
+    let mut hasher = RapidHasher::default();
+    for b in bindings {
+        hash_plan_binding_for_join(b, &mut hasher);
+    }
+    hasher.finish()
+}
+
+fn hash_plan_binding_for_join(binding: &PlanBinding, hasher: &mut RapidHasher<'_>) {
+    match binding {
+        PlanBinding::Vertex(v) => {
+            hasher.write_u8(1);
+            hasher.write_u32(u32::try_from(u64::from(*v)).expect("vertex id fits u32"));
+        }
+        PlanBinding::Edge(e) => {
+            hasher.write_u8(2);
+            hasher.write_u32(u32::try_from(u64::from(e.owner_vertex_id)).expect("vertex id fits u32"));
+            hasher.write_u32(e.vertex_edge_id.raw());
+        }
+        PlanBinding::Value(v) => {
+            hasher.write_u8(3);
+            hash_value_for_join(v, hasher);
+        }
+    }
 }
 
 fn execute_node_scan(
@@ -1745,6 +1849,141 @@ mod tests {
     }
 
     #[test]
+    fn hash_join_matches_planned_two_match() {
+        let store = GraphStore::new();
+        let alice = store
+            .insert_vertex_named(
+                ["QueryHashJoinUser"],
+                [("name", Value::Text("HJ Alice".into()))],
+            )
+            .expect("insert alice");
+        let bob = store
+            .insert_vertex_named(
+                ["QueryHashJoinTarget"],
+                [("name", Value::Text("HJ Bob".into()))],
+            )
+            .expect("insert bob");
+        store
+            .insert_directed_edge_named(
+                alice,
+                bob,
+                Some("QueryHashJoinKnows"),
+                Vec::<(&str, Value)>::new(),
+            )
+            .expect("insert edge");
+
+        let gql = "MATCH (a:QueryHashJoinUser) MATCH (a)-[r:QueryHashJoinKnows]->(b:QueryHashJoinTarget) \
+                   RETURN a.name AS an, b.name AS bn";
+        let sequential = plan_gql(gql);
+        let seq_result = store
+            .execute_plan_query(&sequential, &params())
+            .expect("sequential two-match");
+
+        let hash_plan = plan(vec![
+            PlanOp::HashJoin {
+                left: vec![PlanOp::NodeScan {
+                    variable: "a".into(),
+                    label: Some("QueryHashJoinUser".into()),
+                    property_projection: None,
+                }],
+                right: vec![
+                    PlanOp::NodeScan {
+                        variable: "a".into(),
+                        label: Some("QueryHashJoinUser".into()),
+                        property_projection: None,
+                    },
+                    PlanOp::Expand {
+                        src: "a".into(),
+                        edge: "r".into(),
+                        dst: "b".into(),
+                        direction: EdgeDirection::PointingRight,
+                        label: Some("QueryHashJoinKnows".into()),
+                        label_expr: None,
+                        var_len: None,
+                        indexed_edge_equality: None,
+                        edge_property_projection: None,
+                        dst_property_projection: None,
+                        hop_aux_binding: None,
+                    },
+                ],
+                join_keys: vec!["a".into()],
+            },
+            PlanOp::Project {
+                columns: vec![
+                    project(prop("a", "name"), "an"),
+                    project(prop("b", "name"), "bn"),
+                ],
+                distinct: false,
+            },
+        ]);
+
+        let hj_result = store
+            .execute_plan_query(&hash_plan, &params())
+            .expect("hash join");
+
+        assert_eq!(hj_result.rows.len(), seq_result.rows.len());
+        assert_eq!(hj_result.rows, seq_result.rows);
+    }
+
+    #[test]
+    fn hash_join_joins_equivalent_decimal_scales() {
+        use gleaph_gql::types::Decimal;
+
+        let lit_decimal = |s: &str| {
+            Expr::new(ExprKind::Literal(Value::Decimal(
+                Decimal::parse(s).expect("decimal literal"),
+            )))
+        };
+        let lit_text = |t: &str| Expr::new(ExprKind::Literal(Value::Text(t.into())));
+
+        let plan = plan(vec![
+            PlanOp::HashJoin {
+                left: vec![PlanOp::Project {
+                    columns: vec![
+                        ProjectColumn {
+                            expr: lit_decimal("1.0"),
+                            alias: Some("k".into()),
+                        },
+                        ProjectColumn {
+                            expr: lit_text("L"),
+                            alias: Some("left_tag".into()),
+                        },
+                    ],
+                    distinct: false,
+                }],
+                right: vec![PlanOp::Project {
+                    columns: vec![
+                        ProjectColumn {
+                            expr: lit_decimal("1.00"),
+                            alias: Some("k".into()),
+                        },
+                        ProjectColumn {
+                            expr: lit_text("R"),
+                            alias: Some("right_tag".into()),
+                        },
+                    ],
+                    distinct: false,
+                }],
+                join_keys: vec!["k".into()],
+            },
+        ]);
+
+        let store = GraphStore::new();
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("decimal hash join");
+
+        assert_eq!(result.rows.len(), 1);
+        let row = &result.rows[0];
+        assert_eq!(row.get("left_tag"), Some(&Value::Text("L".into())));
+        assert_eq!(row.get("right_tag"), Some(&Value::Text("R".into())));
+        assert_eq!(
+            row.get("k"),
+            Some(&Value::Decimal(Decimal::parse("1.0").expect("k")))
+        );
+    }
+
+    #[test]
     fn directed_expand_projects_endpoint_and_edge_properties() {
         let store = GraphStore::new();
         let a = store
@@ -1990,14 +2229,6 @@ mod tests {
                     property_projection: None,
                 },
                 "IndexScan",
-            ),
-            (
-                PlanOp::HashJoin {
-                    left: Vec::new(),
-                    right: Vec::new(),
-                    join_keys: vec!["n".into()],
-                },
-                "HashJoin",
             ),
             (
                 PlanOp::Aggregate {
