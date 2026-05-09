@@ -33,6 +33,7 @@ ic-stable-vec-deque = { path = "crates/ic-stable-vec-deque" }
 
 bitflags = "2.11.1"
 ic-stable-structures = "0.7.2"
+nohash-hasher = "0.2"
 canbench-rs = "0.5"
 candid = "0.10"
 concat-string = "1"

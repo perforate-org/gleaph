@@ -5,17 +5,18 @@ use crate::plan::expr_evaluator::{
     eval_or_expr, eval_unary_expr, eval_xor_expr, truthy,
 };
 use crate::stable::edge_ids::canonical_undirected_owner;
-use gleaph_gql::{hash_value_for_join, Value};
 use gleaph_gql::ast::{Expr, ExprKind, NullOrder, OrderByClause, SortDirection, TruthValue};
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql::value_cmp::compare_values;
+use gleaph_gql::{Value, hash_value_for_join};
 use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, ProjectColumn, Str};
 use gleaph_graph_kernel::entry::{Edge, LabelId};
 use ic_stable_lara::VertexId;
 use ic_stable_lara::traits::CsrVertexTombstone;
+use nohash_hasher::IntMap;
 use rapidhash::fast::RapidHasher;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::hash::Hasher;
 
 pub trait PlanQueryExecutor {
@@ -39,6 +40,14 @@ pub enum PlanBinding {
 }
 
 type PlanRow = BTreeMap<String, PlanBinding>;
+
+/// Bindings for each hash-join key column (planner order), used for equality and hashing.
+type HashJoinKey = Vec<PlanBinding>;
+
+/// Left subplan rows that share the same exact [`HashJoinKey`] within one hash bucket.
+type HashJoinBucketEntry = (HashJoinKey, Vec<PlanRow>);
+
+type HashJoinBuckets = IntMap<u64, Vec<HashJoinBucketEntry>>;
 
 impl PlanQueryExecutor for GraphStore {
     fn execute_plan_query(
@@ -135,11 +144,7 @@ fn extend_subplan_written_vars_from_op(op: &PlanOp, out: &mut BTreeSet<String>) 
                 out.insert(h.to_string());
             }
         }
-        PlanOp::ShortestPath {
-            edge,
-            path_var,
-            ..
-        } => {
+        PlanOp::ShortestPath { edge, path_var, .. } => {
             out.insert(edge.to_string());
             if let Some(p) = path_var {
                 out.insert(p.to_string());
@@ -165,7 +170,8 @@ fn extend_subplan_written_vars_from_op(op: &PlanOp, out: &mut BTreeSet<String>) 
                 out.insert(v.to_string());
             }
         }
-        PlanOp::OptionalMatch { sub_plan } | PlanOp::UseGraph {
+        PlanOp::OptionalMatch { sub_plan }
+        | PlanOp::UseGraph {
             sub_plan: Some(sub_plan),
             ..
         } => {
@@ -482,7 +488,7 @@ fn execute_hash_join(
         let left_rows = execute_ops_from(store, left, parameters, vec![row.clone()])?;
         let right_rows = execute_ops_from(store, right, parameters, vec![row])?;
 
-        let mut buckets: HashMap<u64, Vec<(Vec<PlanBinding>, Vec<PlanRow>)>> = HashMap::new();
+        let mut buckets: HashJoinBuckets = IntMap::default();
         for lr in left_rows {
             let key = extract_join_key(&lr, join_keys)?;
             insert_join_bucket(&mut buckets, key, lr);
@@ -508,7 +514,7 @@ fn execute_hash_join(
     Ok(out)
 }
 
-fn extract_join_key(row: &PlanRow, join_keys: &[Str]) -> Result<Vec<PlanBinding>, PlanQueryError> {
+fn extract_join_key(row: &PlanRow, join_keys: &[Str]) -> Result<HashJoinKey, PlanQueryError> {
     join_keys
         .iter()
         .map(|k| {
@@ -521,11 +527,7 @@ fn extract_join_key(row: &PlanRow, join_keys: &[Str]) -> Result<Vec<PlanBinding>
         .collect()
 }
 
-fn insert_join_bucket(
-    buckets: &mut HashMap<u64, Vec<(Vec<PlanBinding>, Vec<PlanRow>)>>,
-    key: Vec<PlanBinding>,
-    row: PlanRow,
-) {
+fn insert_join_bucket(buckets: &mut HashJoinBuckets, key: HashJoinKey, row: PlanRow) {
     let h = hash_join_mix(&key);
     let bucket = buckets.entry(h).or_default();
     if let Some((_, rows)) = bucket.iter_mut().find(|(k, _)| k == &key) {
@@ -552,7 +554,9 @@ fn hash_plan_binding_for_join(binding: &PlanBinding, hasher: &mut RapidHasher<'_
         }
         PlanBinding::Edge(e) => {
             hasher.write_u8(2);
-            hasher.write_u32(u32::try_from(u64::from(e.owner_vertex_id)).expect("vertex id fits u32"));
+            hasher.write_u32(
+                u32::try_from(u64::from(e.owner_vertex_id)).expect("vertex id fits u32"),
+            );
             hasher.write_u32(e.vertex_edge_id.raw());
         }
         PlanBinding::Value(v) => {
@@ -1403,10 +1407,7 @@ mod tests {
     fn executes_planner_let_binding() {
         let store = GraphStore::new();
         store
-            .insert_vertex_named(
-                ["PlannerQueryLetAge"],
-                [("age", Value::Int64(36))],
-            )
+            .insert_vertex_named(["PlannerQueryLetAge"], [("age", Value::Int64(36))])
             .expect("insert vertex");
         let plan = plan_gql("MATCH (n:PlannerQueryLetAge) LET x = n.age + 1 RETURN x");
 
@@ -1424,9 +1425,7 @@ mod tests {
         store
             .insert_vertex_named(["PlannerQueryLetChain"], [("k", Value::Int64(10))])
             .expect("insert vertex");
-        let plan = plan_gql(
-            "MATCH (n:PlannerQueryLetChain) LET x = n.k + 1, y = x * 2 RETURN y",
-        );
+        let plan = plan_gql("MATCH (n:PlannerQueryLetChain) LET x = n.k + 1, y = x * 2 RETURN y");
 
         let result = store
             .execute_plan_query(&plan, &params())
@@ -2205,37 +2204,35 @@ mod tests {
         };
         let lit_text = |t: &str| Expr::new(ExprKind::Literal(Value::Text(t.into())));
 
-        let plan = plan(vec![
-            PlanOp::HashJoin {
-                left: vec![PlanOp::Project {
-                    columns: vec![
-                        ProjectColumn {
-                            expr: lit_decimal("1.0"),
-                            alias: Some("k".into()),
-                        },
-                        ProjectColumn {
-                            expr: lit_text("L"),
-                            alias: Some("left_tag".into()),
-                        },
-                    ],
-                    distinct: false,
-                }],
-                right: vec![PlanOp::Project {
-                    columns: vec![
-                        ProjectColumn {
-                            expr: lit_decimal("1.00"),
-                            alias: Some("k".into()),
-                        },
-                        ProjectColumn {
-                            expr: lit_text("R"),
-                            alias: Some("right_tag".into()),
-                        },
-                    ],
-                    distinct: false,
-                }],
-                join_keys: vec!["k".into()],
-            },
-        ]);
+        let plan = plan(vec![PlanOp::HashJoin {
+            left: vec![PlanOp::Project {
+                columns: vec![
+                    ProjectColumn {
+                        expr: lit_decimal("1.0"),
+                        alias: Some("k".into()),
+                    },
+                    ProjectColumn {
+                        expr: lit_text("L"),
+                        alias: Some("left_tag".into()),
+                    },
+                ],
+                distinct: false,
+            }],
+            right: vec![PlanOp::Project {
+                columns: vec![
+                    ProjectColumn {
+                        expr: lit_decimal("1.00"),
+                        alias: Some("k".into()),
+                    },
+                    ProjectColumn {
+                        expr: lit_text("R"),
+                        alias: Some("right_tag".into()),
+                    },
+                ],
+                distinct: false,
+            }],
+            join_keys: vec!["k".into()],
+        }]);
 
         let store = GraphStore::new();
         let result = store
@@ -2344,17 +2341,7 @@ mod tests {
             })
             .collect();
         pairs.sort();
-        assert_eq!(
-            pairs,
-            vec![
-                (0, 0),
-                (0, 1),
-                (0, 2),
-                (1, 0),
-                (1, 1),
-                (1, 2),
-            ]
-        );
+        assert_eq!(pairs, vec![(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2),]);
         for row in &result.rows {
             assert_eq!(row.get("jk"), Some(&Value::Int64(7)));
             assert!(row.get("left_tag").is_some());
@@ -2795,16 +2782,15 @@ mod tests {
     fn optional_match_planner_null_padding_when_no_edge() {
         let store = GraphStore::new();
         store
-            .insert_vertex_named(
-                ["OptMatchA"],
-                [("name", Value::Text("solo".into()))],
-            )
+            .insert_vertex_named(["OptMatchA"], [("name", Value::Text("solo".into()))])
             .expect("insert vertex");
         let gql = "MATCH (n:OptMatchA) OPTIONAL MATCH (n)-[e:OptMatchRel]->(m:OptMatchB) \
                    RETURN n.name AS nn, m.name AS mn";
         let plan = plan_gql(gql);
         assert!(
-            plan.ops.iter().any(|op| matches!(op, PlanOp::OptionalMatch { .. })),
+            plan.ops
+                .iter()
+                .any(|op| matches!(op, PlanOp::OptionalMatch { .. })),
             "expected OptionalMatch in plan: {:?}",
             plan.ops
         );
@@ -2813,10 +2799,7 @@ mod tests {
             .expect("execute optional match");
 
         assert_eq!(result.rows.len(), 1);
-        assert_eq!(
-            result.rows[0].get("nn"),
-            Some(&Value::Text("solo".into()))
-        );
+        assert_eq!(result.rows[0].get("nn"), Some(&Value::Text("solo".into())));
         assert_eq!(result.rows[0].get("mn"), Some(&Value::Null));
     }
 
@@ -2824,24 +2807,13 @@ mod tests {
     fn optional_match_planner_returns_m_when_edge_exists() {
         let store = GraphStore::new();
         let n = store
-            .insert_vertex_named(
-                ["OptMatchA2"],
-                [("name", Value::Text("a".into()))],
-            )
+            .insert_vertex_named(["OptMatchA2"], [("name", Value::Text("a".into()))])
             .expect("insert n");
         let m = store
-            .insert_vertex_named(
-                ["OptMatchB2"],
-                [("name", Value::Text("buddy".into()))],
-            )
+            .insert_vertex_named(["OptMatchB2"], [("name", Value::Text("buddy".into()))])
             .expect("insert m");
         store
-            .insert_directed_edge_named(
-                n,
-                m,
-                Some("OptMatchRel2"),
-                Vec::<(&str, Value)>::new(),
-            )
+            .insert_directed_edge_named(n, m, Some("OptMatchRel2"), Vec::<(&str, Value)>::new())
             .expect("insert edge");
         let gql = "MATCH (n:OptMatchA2) OPTIONAL MATCH (n)-[e:OptMatchRel2]->(m:OptMatchB2) \
                    RETURN m.name AS mn";
@@ -2851,10 +2823,7 @@ mod tests {
             .expect("execute optional match");
 
         assert_eq!(result.rows.len(), 1);
-        assert_eq!(
-            result.rows[0].get("mn"),
-            Some(&Value::Text("buddy".into()))
-        );
+        assert_eq!(result.rows[0].get("mn"), Some(&Value::Text("buddy".into())));
     }
 
     #[test]
@@ -2863,7 +2832,9 @@ mod tests {
         let gql = "OPTIONAL MATCH (n:OptMatchLeading) RETURN n IS NULL AS is_n_null";
         let plan = plan_gql(gql);
         assert!(
-            plan.ops.iter().any(|op| matches!(op, PlanOp::OptionalMatch { .. })),
+            plan.ops
+                .iter()
+                .any(|op| matches!(op, PlanOp::OptionalMatch { .. })),
             "expected OptionalMatch: {:?}",
             plan.ops
         );
@@ -2905,14 +2876,8 @@ mod tests {
             },
             PlanOp::Project {
                 columns: vec![
-                    project(
-                        Expr::new(ExprKind::IsNull(Box::new(var("e")))),
-                        "e_null",
-                    ),
-                    project(
-                        Expr::new(ExprKind::IsNull(Box::new(var("m")))),
-                        "m_null",
-                    ),
+                    project(Expr::new(ExprKind::IsNull(Box::new(var("e")))), "e_null"),
+                    project(Expr::new(ExprKind::IsNull(Box::new(var("m")))), "m_null"),
                 ],
                 distinct: false,
             },

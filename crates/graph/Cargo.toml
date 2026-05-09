@@ -9,11 +9,9 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = []
-canbench = ["dep:canbench-rs"]
 
 [dependencies]
 bitflags.workspace = true
-canbench-rs = { workspace = true, optional = true }
 candid.workspace = true
 derive_more = { version = "2", features = ["display", "from", "into"] }
 gleaph-gql = { workspace = true, features = ["f128", "f256"] }
@@ -24,6 +22,7 @@ gleaph-graph-kernel.workspace = true
 ic-cdk.workspace = true
 ic-stable-lara.workspace = true
 ic-stable-structures.workspace = true
+nohash-hasher.workspace = true
 rapidhash.workspace = true
 
 [dev-dependencies]
