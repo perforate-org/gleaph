@@ -367,8 +367,7 @@ fn execute_ops_from(
                     parameters,
                     aggregate_specs: None,
                 };
-                let out =
-                    aggregate::execute_aggregate(rows, group_by, aggregates, &agg_evaluator)?;
+                let out = aggregate::execute_aggregate(rows, group_by, aggregates, &agg_evaluator)?;
                 active_aggregate_op_idx = Some(op_idx);
                 out
             }
@@ -631,6 +630,7 @@ fn execute_node_scan(
     Ok(out)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_expand(
     store: &GraphStore,
     rows: Vec<PlanRow>,
@@ -3369,9 +3369,7 @@ mod tests {
         let _ = store.insert_vertex_named(["PlannerAggAvgArith"], [("x", Value::Int64(10))]);
         let _ = store.insert_vertex_named(["PlannerAggAvgArith"], [("x", Value::Int64(30))]);
         let plan = plan_gql("MATCH (n:PlannerAggAvgArith) RETURN avg(n.x) * 2 AS doubled");
-        let result = store
-            .execute_plan_query(&plan, &params())
-            .expect("avg * 2");
+        let result = store.execute_plan_query(&plan, &params()).expect("avg * 2");
         assert_eq!(result.rows.len(), 1);
         match result.rows[0].get("doubled") {
             Some(Value::Float64(f)) => assert!((f - 40.0).abs() < 1e-6),
@@ -3389,9 +3387,7 @@ mod tests {
         let plan = plan_gql(
             "MATCH (n:PlannerHavingK) RETURN n.k, count(*) AS cnt GROUP BY n.k HAVING count(*) > 1",
         );
-        let result = store
-            .execute_plan_query(&plan, &params())
-            .expect("having");
+        let result = store.execute_plan_query(&plan, &params()).expect("having");
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0].get("n.k"), Some(&Value::Int64(1)));
         assert_eq!(result.rows[0].get("cnt"), Some(&Value::Int64(2)));
@@ -3417,14 +3413,10 @@ mod tests {
     #[test]
     fn executes_planner_collect_list_names() {
         let store = GraphStore::new();
-        let _ = store.insert_vertex_named(
-            ["PlannerAggCollect"],
-            [("name", Value::Text("a".into()))],
-        );
-        let _ = store.insert_vertex_named(
-            ["PlannerAggCollect"],
-            [("name", Value::Text("b".into()))],
-        );
+        let _ =
+            store.insert_vertex_named(["PlannerAggCollect"], [("name", Value::Text("a".into()))]);
+        let _ =
+            store.insert_vertex_named(["PlannerAggCollect"], [("name", Value::Text("b".into()))]);
         let plan = plan_gql("MATCH (n:PlannerAggCollect) RETURN COLLECT_LIST(n.name) AS names");
         let result = store
             .execute_plan_query(&plan, &params())

@@ -179,6 +179,7 @@ where
     }
 
     /// Opens a graph from stable memories, creating it when the edge slab is empty.
+    #[allow(clippy::too_many_arguments)]
     pub fn init(
         vertices: M,
         counts: M,

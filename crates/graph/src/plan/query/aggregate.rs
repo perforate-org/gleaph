@@ -209,7 +209,8 @@ fn percentile_fraction_from_value(v: &Value) -> Result<f64, PlanQueryError> {
             expression: "aggregate: percentile fraction must be finite".to_owned(),
         });
     }
-    if p < 0.0 - P_FRAC_EPSILON || p > 1.0 + P_FRAC_EPSILON {
+    let allowed = (0.0 - P_FRAC_EPSILON)..=(1.0 + P_FRAC_EPSILON);
+    if !allowed.contains(&p) {
         return Err(PlanQueryError::InvalidExpressionValue {
             expression: "aggregate: percentile fraction must be in [0, 1]".to_owned(),
         });

@@ -19,8 +19,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::anchor::{self, extract_simple_label};
 use crate::cost;
 use crate::cse;
-use crate::expr_alias::substitute_return_aliases_in_expr;
 use crate::explain::explain_plan;
+use crate::expr_alias::substitute_return_aliases_in_expr;
 use crate::join_order;
 use crate::plan::*;
 use crate::property_projection::for_each_immediate_child_expr;
@@ -529,13 +529,13 @@ fn consume_simple_expand_chain(
                             .to_owned(),
                     );
                 }
-                if let Some(vl) = var_len {
-                    if vl.min != 1 || vl.max != Some(1) {
-                        return Err(
+                if let Some(vl) = var_len
+                    && (vl.min != 1 || vl.max != Some(1))
+                {
+                    return Err(
                             "remote USE GRAPH expand chain supports only fixed 1-hop expansions without label expressions or indexed edge equality"
                                 .to_owned(),
                         );
-                    }
                 }
                 current_src = dst.as_ref().to_owned();
                 index += 1;
@@ -781,6 +781,7 @@ fn detect_conditional_candidates(
     candidates
 }
 
+#[allow(clippy::too_many_arguments)]
 fn plan_simple_statement(
     stmt: &SimpleQueryStatement,
     stage: usize,
@@ -1042,6 +1043,7 @@ fn plan_path_pattern(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn plan_path_expr(
     expr: &PathPatternExpr,
     shortest_mode: Option<ShortestMode>,
@@ -1570,6 +1572,7 @@ fn hop_aux_binding_for_edge_if_referenced(
     referenced.contains(&name).then_some(name.into())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn plan_path_term(
     term: &PathTerm,
     shortest_mode: Option<ShortestMode>,
@@ -2261,20 +2264,14 @@ fn plan_return(ret: &ReturnStatement, ops: &mut Vec<PlanOp>) {
                     aggregates: agg_specs,
                 });
                 if let Some(h) = having_rw {
-                    ops.push(PlanOp::Filter {
-                        condition: h,
-                    });
+                    ops.push(PlanOp::Filter { condition: h });
                 }
                 ops.push(PlanOp::Project {
                     columns: proj_cols,
                     distinct,
                 });
-            } else if items
-                .iter()
-                .any(|item| expr_contains_aggregate(&item.expr))
-                || having_rw
-                    .as_ref()
-                    .is_some_and(|h| expr_contains_aggregate(h))
+            } else if items.iter().any(|item| expr_contains_aggregate(&item.expr))
+                || having_rw.as_ref().is_some_and(expr_contains_aggregate)
             {
                 // Implicit whole-result aggregation (no GROUP BY): executor needs `Aggregate`
                 // before `Project`; bare `Aggregate` exprs in `Project` are not evaluable.
@@ -2284,9 +2281,7 @@ fn plan_return(ret: &ReturnStatement, ops: &mut Vec<PlanOp>) {
                     aggregates: agg_specs,
                 });
                 if let Some(h) = having_rw {
-                    ops.push(PlanOp::Filter {
-                        condition: h,
-                    });
+                    ops.push(PlanOp::Filter { condition: h });
                 }
                 ops.push(PlanOp::Project {
                     columns: proj_cols,
@@ -2349,9 +2344,7 @@ fn plan_select(sel: &SelectStatement, ops: &mut Vec<PlanOp>) {
                 aggregates: agg_specs,
             });
             if let Some(h) = having_rw {
-                ops.push(PlanOp::Filter {
-                    condition: h,
-                });
+                ops.push(PlanOp::Filter { condition: h });
             }
             ops.push(PlanOp::Project {
                 columns: proj_cols,
@@ -2360,12 +2353,8 @@ fn plan_select(sel: &SelectStatement, ops: &mut Vec<PlanOp>) {
         }
     } else if let Some(items) = items {
         let having_rw = rewrite_having_with_return_aliases(items, having.as_ref());
-        if items
-            .iter()
-            .any(|item| expr_contains_aggregate(&item.expr))
-            || having_rw
-                .as_ref()
-                .is_some_and(|h| expr_contains_aggregate(h))
+        if items.iter().any(|item| expr_contains_aggregate(&item.expr))
+            || having_rw.as_ref().is_some_and(expr_contains_aggregate)
         {
             let (agg_specs, proj_cols) = extract_aggregates(items, having_rw.as_ref());
             ops.push(PlanOp::Aggregate {
@@ -2373,9 +2362,7 @@ fn plan_select(sel: &SelectStatement, ops: &mut Vec<PlanOp>) {
                 aggregates: agg_specs,
             });
             if let Some(h) = having_rw {
-                ops.push(PlanOp::Filter {
-                    condition: h,
-                });
+                ops.push(PlanOp::Filter { condition: h });
             }
             ops.push(PlanOp::Project {
                 columns: proj_cols,
@@ -2449,12 +2436,11 @@ fn aggregate_spec_body_eq(a: &AggregateSpec, b: &AggregateSpec) -> bool {
 
 /// DFS collect unique [`AggregateSpec`] bodies from `expr` in stable pre-order.
 fn collect_unique_aggregate_specs_from_expr(expr: &Expr, out: &mut Vec<AggregateSpec>) {
-    if let ExprKind::Aggregate { .. } = &expr.kind {
-        if let Some(spec) = try_extract_aggregate(expr) {
-            if !out.iter().any(|s| aggregate_spec_body_eq(s, &spec)) {
-                out.push(spec);
-            }
-        }
+    if let ExprKind::Aggregate { .. } = &expr.kind
+        && let Some(spec) = try_extract_aggregate(expr)
+        && !out.iter().any(|s| aggregate_spec_body_eq(s, &spec))
+    {
+        out.push(spec);
     }
     for_each_immediate_child_expr(expr, |child| {
         collect_unique_aggregate_specs_from_expr(child, out);
@@ -2679,6 +2665,7 @@ fn collect_path_expr_variables(
 }
 
 /// Build bushy join plan for independent MATCH groups.
+#[allow(clippy::too_many_arguments)]
 fn plan_bushy_join(
     groups: &[Vec<usize>],
     parts: &[SimpleQueryStatement],

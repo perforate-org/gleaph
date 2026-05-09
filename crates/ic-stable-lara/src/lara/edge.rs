@@ -201,6 +201,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     }
 
     /// Opens an edge subsystem from stable memories, creating it when the edge slab is empty.
+    #[allow(clippy::too_many_arguments)]
     pub fn init(
         counts: M,
         edges: M,

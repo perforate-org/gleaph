@@ -358,10 +358,7 @@ fn expand_hop_aux_binding_none_when_not_referenced() {
     let expand = plan
         .ops
         .iter()
-        .find_map(|op| match op {
-            PlanOp::Expand { .. } => Some(op),
-            _ => None,
-        })
+        .find(|op| matches!(op, PlanOp::Expand { .. }))
         .expect("Expand");
     let PlanOp::Expand {
         edge,
@@ -384,10 +381,7 @@ fn expand_hop_aux_binding_some_when_return_references_named_edge() {
     let expand = plan
         .ops
         .iter()
-        .find_map(|op| match op {
-            PlanOp::Expand { .. } => Some(op),
-            _ => None,
-        })
+        .find(|op| matches!(op, PlanOp::Expand { .. }))
         .expect("Expand");
     let PlanOp::Expand {
         edge,
@@ -407,10 +401,7 @@ fn expand_hop_aux_binding_none_when_anonymous_edge_not_referenced() {
     let expand = plan
         .ops
         .iter()
-        .find_map(|op| match op {
-            PlanOp::Expand { .. } => Some(op),
-            _ => None,
-        })
+        .find(|op| matches!(op, PlanOp::Expand { .. }))
         .expect("Expand");
     let PlanOp::Expand {
         hop_aux_binding, ..
@@ -431,10 +422,7 @@ fn expand_hop_aux_binding_some_when_return_references_anonymous_edge_hop_aux() {
     let PlanOp::Expand { edge, .. } = plan0
         .ops
         .iter()
-        .find_map(|op| match op {
-            PlanOp::Expand { .. } => Some(op),
-            _ => None,
-        })
+        .find(|op| matches!(op, PlanOp::Expand { .. }))
         .expect("Expand")
     else {
         unreachable!()
@@ -444,10 +432,7 @@ fn expand_hop_aux_binding_some_when_return_references_anonymous_edge_hop_aux() {
     let expand = plan
         .ops
         .iter()
-        .find_map(|op| match op {
-            PlanOp::Expand { .. } => Some(op),
-            _ => None,
-        })
+        .find(|op| matches!(op, PlanOp::Expand { .. }))
         .expect("Expand");
     let PlanOp::Expand {
         edge: edge2,
@@ -3176,9 +3161,11 @@ fn test_cartesian_product_cost() {
 // Expand property projection (apply_node_property_projections)
 // ════════════════════════════════════════════════════════════════════════════════
 
-fn expand_projection_pairs(plan: &PhysicalPlan) -> Vec<(Option<Vec<String>>, Option<Vec<String>>)> {
+type ExpandProjectionPair = (Option<Vec<String>>, Option<Vec<String>>);
+
+fn expand_projection_pairs(plan: &PhysicalPlan) -> Vec<ExpandProjectionPair> {
     let mut out = Vec::new();
-    fn walk(ops: &[PlanOp], out: &mut Vec<(Option<Vec<String>>, Option<Vec<String>>)>) {
+    fn walk(ops: &[PlanOp], out: &mut Vec<ExpandProjectionPair>) {
         for op in ops {
             match op {
                 PlanOp::Expand {

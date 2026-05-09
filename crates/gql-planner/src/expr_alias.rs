@@ -5,9 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use gleaph_gql::ast::{
-    Expr, ExprKind, LetBinding, OrderByClause, SortItem, WhenClause,
-};
+use gleaph_gql::ast::{Expr, ExprKind, LetBinding, OrderByClause, SortItem, WhenClause};
 
 /// Maps each immediate child [`Expr`] and rebuilds `expr`. Leaf nodes (no child expressions)
 /// are returned unchanged.
@@ -123,27 +121,25 @@ pub(crate) fn map_immediate_children_expr(
             pattern: Box::new(map_child(pattern)),
             negated: *negated,
         },
-        ExprKind::ListLiteral(elems) => ExprKind::ListLiteral(
-            elems.iter().map(|e| map_child(e)).collect(),
-        ),
+        ExprKind::ListLiteral(elems) => {
+            ExprKind::ListLiteral(elems.iter().map(&mut map_child).collect())
+        }
         ExprKind::ListConstructor { keyword, items } => ExprKind::ListConstructor {
             keyword: keyword.clone(),
-            items: items.iter().map(|e| map_child(e)).collect(),
+            items: items.iter().map(&mut map_child).collect(),
         },
         ExprKind::AllDifferent(elems) => {
-            ExprKind::AllDifferent(elems.iter().map(|e| map_child(e)).collect())
+            ExprKind::AllDifferent(elems.iter().map(&mut map_child).collect())
         }
-        ExprKind::Same(elems) => ExprKind::Same(elems.iter().map(|e| map_child(e)).collect()),
-        ExprKind::Coalesce(elems) => {
-            ExprKind::Coalesce(elems.iter().map(|e| map_child(e)).collect())
-        }
+        ExprKind::Same(elems) => ExprKind::Same(elems.iter().map(&mut map_child).collect()),
+        ExprKind::Coalesce(elems) => ExprKind::Coalesce(elems.iter().map(&mut map_child).collect()),
         ExprKind::FunctionCall {
             name,
             args,
             distinct,
         } => ExprKind::FunctionCall {
             name: name.clone(),
-            args: args.iter().map(|a| map_child(a)).collect(),
+            args: args.iter().map(&mut map_child).collect(),
             distinct: *distinct,
         },
         ExprKind::Aggregate {
@@ -155,12 +151,8 @@ pub(crate) fn map_immediate_children_expr(
             filter,
         } => ExprKind::Aggregate {
             func: *func,
-            expr: expr
-                .as_ref()
-                .map(|e| Box::new(map_child(e.as_ref()))),
-            expr2: expr2
-                .as_ref()
-                .map(|e| Box::new(map_child(e.as_ref()))),
+            expr: expr.as_ref().map(|e| Box::new(map_child(e.as_ref()))),
+            expr2: expr2.as_ref().map(|e| Box::new(map_child(e.as_ref()))),
             distinct: *distinct,
             order_by: order_by.as_ref().map(|ob| OrderByClause {
                 span: ob.span,
@@ -175,9 +167,7 @@ pub(crate) fn map_immediate_children_expr(
                     })
                     .collect(),
             }),
-            filter: filter
-                .as_ref()
-                .map(|e| Box::new(map_child(e.as_ref()))),
+            filter: filter.as_ref().map(|e| Box::new(map_child(e.as_ref()))),
         },
         ExprKind::CaseSimple {
             operand,
@@ -213,7 +203,10 @@ pub(crate) fn map_immediate_children_expr(
                 .as_ref()
                 .map(|e| Box::new(map_child(e.as_ref()))),
         },
-        ExprKind::LetIn { bindings, expr: body } => ExprKind::LetIn {
+        ExprKind::LetIn {
+            bindings,
+            expr: body,
+        } => ExprKind::LetIn {
             bindings: bindings
                 .iter()
                 .map(|b| LetBinding {
@@ -237,7 +230,7 @@ pub(crate) fn map_immediate_children_expr(
                 .collect(),
         ),
         ExprKind::PathConstructor { elements } => ExprKind::PathConstructor {
-            elements: elements.iter().map(|e| map_child(e)).collect(),
+            elements: elements.iter().map(&mut map_child).collect(),
         },
         ExprKind::PathLength(e) => ExprKind::PathLength(Box::new(map_child(e))),
         ExprKind::ElementId(e) => ExprKind::ElementId(Box::new(map_child(e))),
@@ -246,37 +239,37 @@ pub(crate) fn map_immediate_children_expr(
             target: target.clone(),
         },
         ExprKind::DateLiteral(args) => {
-            ExprKind::DateLiteral(args.iter().map(|a| map_child(a)).collect())
+            ExprKind::DateLiteral(args.iter().map(&mut map_child).collect())
         }
         ExprKind::DateFunction(args) => {
-            ExprKind::DateFunction(args.iter().map(|a| map_child(a)).collect())
+            ExprKind::DateFunction(args.iter().map(&mut map_child).collect())
         }
         ExprKind::TimeLiteral(args) => {
-            ExprKind::TimeLiteral(args.iter().map(|a| map_child(a)).collect())
+            ExprKind::TimeLiteral(args.iter().map(&mut map_child).collect())
         }
         ExprKind::DatetimeLiteral(args) => {
-            ExprKind::DatetimeLiteral(args.iter().map(|a| map_child(a)).collect())
+            ExprKind::DatetimeLiteral(args.iter().map(&mut map_child).collect())
         }
         ExprKind::TimestampLiteral(args) => {
-            ExprKind::TimestampLiteral(args.iter().map(|a| map_child(a)).collect())
+            ExprKind::TimestampLiteral(args.iter().map(&mut map_child).collect())
         }
         ExprKind::ZonedTimeFunction(args) => {
-            ExprKind::ZonedTimeFunction(args.iter().map(|a| map_child(a)).collect())
+            ExprKind::ZonedTimeFunction(args.iter().map(&mut map_child).collect())
         }
         ExprKind::ZonedDatetimeFunction(args) => {
-            ExprKind::ZonedDatetimeFunction(args.iter().map(|a| map_child(a)).collect())
+            ExprKind::ZonedDatetimeFunction(args.iter().map(&mut map_child).collect())
         }
         ExprKind::LocalTimeFunction(args) => {
-            ExprKind::LocalTimeFunction(args.iter().map(|a| map_child(a)).collect())
+            ExprKind::LocalTimeFunction(args.iter().map(&mut map_child).collect())
         }
         ExprKind::LocalDatetimeFunction(args) => {
-            ExprKind::LocalDatetimeFunction(args.iter().map(|a| map_child(a)).collect())
+            ExprKind::LocalDatetimeFunction(args.iter().map(&mut map_child).collect())
         }
         ExprKind::DurationLiteral(args) => {
-            ExprKind::DurationLiteral(args.iter().map(|a| map_child(a)).collect())
+            ExprKind::DurationLiteral(args.iter().map(&mut map_child).collect())
         }
         ExprKind::DurationFunction(args) => {
-            ExprKind::DurationFunction(args.iter().map(|a| map_child(a)).collect())
+            ExprKind::DurationFunction(args.iter().map(&mut map_child).collect())
         }
         ExprKind::PropertyExists { expr: e, property } => ExprKind::PropertyExists {
             expr: Box::new(map_child(e)),
