@@ -1983,6 +1983,312 @@ mod tests {
         );
     }
 
+    /// Two left + three right rows share the same join key → six merged rows (L×R multiplicity).
+    /// Also checks `right_id` survives `merge_rows` (right-only binding) alongside `left_id`.
+    #[test]
+    fn hash_join_same_key_row_multiplicity_2x3() {
+        let store = GraphStore::new();
+        for (left_id, tag) in [(0i64, "L0"), (1, "L1")] {
+            store
+                .insert_vertex_named(
+                    ["QueryHashJoinDupL"],
+                    [
+                        ("jk", Value::Int64(7)),
+                        ("left_id", Value::Int64(left_id)),
+                        ("left_tag", Value::Text(tag.into())),
+                    ],
+                )
+                .expect("insert left");
+        }
+        for (right_id, tag) in [(0i64, "R0"), (1, "R1"), (2, "R2")] {
+            store
+                .insert_vertex_named(
+                    ["QueryHashJoinDupR"],
+                    [
+                        ("jk", Value::Int64(7)),
+                        ("right_id", Value::Int64(right_id)),
+                        ("right_tag", Value::Text(tag.into())),
+                    ],
+                )
+                .expect("insert right");
+        }
+
+        let scan_project_l = || {
+            vec![
+                PlanOp::NodeScan {
+                    variable: "nl".into(),
+                    label: Some("QueryHashJoinDupL".into()),
+                    property_projection: None,
+                },
+                PlanOp::Project {
+                    columns: vec![
+                        project(prop("nl", "jk"), "jk"),
+                        project(prop("nl", "left_id"), "left_id"),
+                        project(prop("nl", "left_tag"), "left_tag"),
+                    ],
+                    distinct: false,
+                },
+            ]
+        };
+        let scan_project_r = || {
+            vec![
+                PlanOp::NodeScan {
+                    variable: "nr".into(),
+                    label: Some("QueryHashJoinDupR".into()),
+                    property_projection: None,
+                },
+                PlanOp::Project {
+                    columns: vec![
+                        project(prop("nr", "jk"), "jk"),
+                        project(prop("nr", "right_id"), "right_id"),
+                        project(prop("nr", "right_tag"), "right_tag"),
+                    ],
+                    distinct: false,
+                },
+            ]
+        };
+
+        let plan = plan(vec![PlanOp::HashJoin {
+            left: scan_project_l(),
+            right: scan_project_r(),
+            join_keys: vec!["jk".into()],
+        }]);
+
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("hash join multiplicity");
+
+        assert_eq!(result.rows.len(), 6);
+        let mut pairs: Vec<(i64, i64)> = result
+            .rows
+            .iter()
+            .map(|row| {
+                let li = match row.get("left_id") {
+                    Some(Value::Int64(x)) => *x,
+                    other => panic!("expected int left_id, got {other:?}"),
+                };
+                let ri = match row.get("right_id") {
+                    Some(Value::Int64(x)) => *x,
+                    other => panic!("expected int right_id, got {other:?}"),
+                };
+                (li, ri)
+            })
+            .collect();
+        pairs.sort();
+        assert_eq!(
+            pairs,
+            vec![
+                (0, 0),
+                (0, 1),
+                (0, 2),
+                (1, 0),
+                (1, 1),
+                (1, 2),
+            ]
+        );
+        for row in &result.rows {
+            assert_eq!(row.get("jk"), Some(&Value::Int64(7)));
+            assert!(row.get("left_tag").is_some());
+            assert!(row.get("right_tag").is_some());
+        }
+    }
+
+    #[test]
+    fn hash_join_two_join_keys_excludes_partial_match() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(
+                ["QueryHashJoin2KeyL"],
+                [
+                    ("ka", Value::Int64(1)),
+                    ("kb", Value::Int64(2)),
+                    ("lt", Value::Text("L12".into())),
+                ],
+            )
+            .expect("insert L12");
+        store
+            .insert_vertex_named(
+                ["QueryHashJoin2KeyL"],
+                [
+                    ("ka", Value::Int64(1)),
+                    ("kb", Value::Int64(3)),
+                    ("lt", Value::Text("L13".into())),
+                ],
+            )
+            .expect("insert L13");
+        store
+            .insert_vertex_named(
+                ["QueryHashJoin2KeyR"],
+                [
+                    ("ka", Value::Int64(1)),
+                    ("kb", Value::Int64(2)),
+                    ("rt", Value::Text("R12".into())),
+                ],
+            )
+            .expect("insert R12");
+        store
+            .insert_vertex_named(
+                ["QueryHashJoin2KeyR"],
+                [
+                    ("ka", Value::Int64(1)),
+                    ("kb", Value::Int64(99)),
+                    ("rt", Value::Text("R199".into())),
+                ],
+            )
+            .expect("insert R199");
+
+        let plan = plan(vec![PlanOp::HashJoin {
+            left: vec![
+                PlanOp::NodeScan {
+                    variable: "l".into(),
+                    label: Some("QueryHashJoin2KeyL".into()),
+                    property_projection: None,
+                },
+                PlanOp::Project {
+                    columns: vec![
+                        project(prop("l", "ka"), "ka"),
+                        project(prop("l", "kb"), "kb"),
+                        project(prop("l", "lt"), "lt"),
+                    ],
+                    distinct: false,
+                },
+            ],
+            right: vec![
+                PlanOp::NodeScan {
+                    variable: "r".into(),
+                    label: Some("QueryHashJoin2KeyR".into()),
+                    property_projection: None,
+                },
+                PlanOp::Project {
+                    columns: vec![
+                        project(prop("r", "ka"), "ka"),
+                        project(prop("r", "kb"), "kb"),
+                        project(prop("r", "rt"), "rt"),
+                    ],
+                    distinct: false,
+                },
+            ],
+            join_keys: vec!["ka".into(), "kb".into()],
+        }]);
+
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("two-key hash join");
+
+        assert_eq!(result.rows.len(), 1);
+        let row = &result.rows[0];
+        assert_eq!(row.get("ka"), Some(&Value::Int64(1)));
+        assert_eq!(row.get("kb"), Some(&Value::Int64(2)));
+        assert_eq!(row.get("lt"), Some(&Value::Text("L12".into())));
+        assert_eq!(row.get("rt"), Some(&Value::Text("R12".into())));
+    }
+
+    #[test]
+    fn hash_join_matches_sequential_on_branching_graph() {
+        let store = GraphStore::new();
+        let alice = store
+            .insert_vertex_named(
+                ["QueryHashJoinBranchUser"],
+                [("name", Value::Text("Branch Alice".into()))],
+            )
+            .expect("insert user");
+        let bob = store
+            .insert_vertex_named(
+                ["QueryHashJoinBranchTarget"],
+                [("name", Value::Text("Branch Bob".into()))],
+            )
+            .expect("insert bob");
+        let carol = store
+            .insert_vertex_named(
+                ["QueryHashJoinBranchTarget"],
+                [("name", Value::Text("Branch Carol".into()))],
+            )
+            .expect("insert carol");
+        store
+            .insert_directed_edge_named(
+                alice,
+                bob,
+                Some("QueryHashJoinBranchRel"),
+                Vec::<(&str, Value)>::new(),
+            )
+            .expect("edge to bob");
+        store
+            .insert_directed_edge_named(
+                alice,
+                carol,
+                Some("QueryHashJoinBranchRel"),
+                Vec::<(&str, Value)>::new(),
+            )
+            .expect("edge to carol");
+
+        let gql = "MATCH (a:QueryHashJoinBranchUser) MATCH (a)-[r:QueryHashJoinBranchRel]->(b:QueryHashJoinBranchTarget) \
+                   RETURN a.name AS an, b.name AS bn";
+        let sequential = plan_gql(gql);
+        let seq_result = store
+            .execute_plan_query(&sequential, &params())
+            .expect("sequential two-match branching");
+
+        let hash_plan = plan(vec![
+            PlanOp::HashJoin {
+                left: vec![PlanOp::NodeScan {
+                    variable: "a".into(),
+                    label: Some("QueryHashJoinBranchUser".into()),
+                    property_projection: None,
+                }],
+                right: vec![
+                    PlanOp::NodeScan {
+                        variable: "a".into(),
+                        label: Some("QueryHashJoinBranchUser".into()),
+                        property_projection: None,
+                    },
+                    PlanOp::Expand {
+                        src: "a".into(),
+                        edge: "r".into(),
+                        dst: "b".into(),
+                        direction: EdgeDirection::PointingRight,
+                        label: Some("QueryHashJoinBranchRel".into()),
+                        label_expr: None,
+                        var_len: None,
+                        indexed_edge_equality: None,
+                        edge_property_projection: None,
+                        dst_property_projection: None,
+                        hop_aux_binding: None,
+                    },
+                ],
+                join_keys: vec!["a".into()],
+            },
+            PlanOp::Project {
+                columns: vec![
+                    project(prop("a", "name"), "an"),
+                    project(prop("b", "name"), "bn"),
+                ],
+                distinct: false,
+            },
+        ]);
+
+        let hj_result = store
+            .execute_plan_query(&hash_plan, &params())
+            .expect("hash join branching");
+
+        assert_eq!(hj_result.rows.len(), seq_result.rows.len());
+        fn pair_key(row: &std::collections::BTreeMap<String, Value>) -> (String, String) {
+            let an = match row.get("an") {
+                Some(Value::Text(s)) => s.clone(),
+                other => panic!("expected text an, got {other:?}"),
+            };
+            let bn = match row.get("bn") {
+                Some(Value::Text(s)) => s.clone(),
+                other => panic!("expected text bn, got {other:?}"),
+            };
+            (an, bn)
+        }
+        let mut hj_keys: Vec<_> = hj_result.rows.iter().map(pair_key).collect();
+        hj_keys.sort();
+        let mut seq_keys: Vec<_> = seq_result.rows.iter().map(pair_key).collect();
+        seq_keys.sort();
+        assert_eq!(hj_keys, seq_keys);
+    }
+
     #[test]
     fn directed_expand_projects_endpoint_and_edge_properties() {
         let store = GraphStore::new();

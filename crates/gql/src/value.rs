@@ -1978,6 +1978,22 @@ mod tests {
     }
 
     #[test]
+    fn extension_hash_join_key_aligns_with_eq_for_mock_ext_binary_payload() {
+        use crate::value_join_hash::hash_value_for_join;
+        use rapidhash::fast::RapidHasher;
+        use std::hash::Hasher;
+
+        let a = Value::Extension(Box::new(MockExt("same".into())));
+        let b = Value::Extension(Box::new(MockExt("same".into())));
+        assert_eq!(a, b);
+        let mut ha = RapidHasher::default();
+        let mut hb = RapidHasher::default();
+        hash_value_for_join(&a, &mut ha);
+        hash_value_for_join(&b, &mut hb);
+        assert_eq!(ha.finish(), hb.finish());
+    }
+
+    #[test]
     fn binary_value_round_trips_nested_record() {
         let value = Value::Record(vec![
             ("uid".to_owned(), Value::Text("u1".to_owned())),
