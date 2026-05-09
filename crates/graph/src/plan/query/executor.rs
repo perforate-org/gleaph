@@ -15,7 +15,7 @@ use ic_stable_lara::VertexId;
 use ic_stable_lara::traits::CsrVertexTombstone;
 use rapidhash::fast::RapidHasher;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::Hasher;
 
 pub trait PlanQueryExecutor {
@@ -70,6 +70,178 @@ fn execute_ops(
     parameters: &BTreeMap<String, Value>,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
     execute_ops_from(store, ops, parameters, vec![PlanRow::new()])
+}
+
+/// Variables that operators in `ops` may bind (used to NULL-pad `OptionalMatch` miss rows).
+///
+/// Downstream note: padded graph variables use [`PlanBinding::Value`]`(Value::Null)`; mandatory
+/// [`Expand`] on such a variable still fails in [`vertex_binding`] until semantics define row drop
+/// or optional chaining.
+fn subplan_written_vars(ops: &[PlanOp]) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for op in ops {
+        extend_subplan_written_vars_from_op(op, &mut out);
+    }
+    out
+}
+
+fn extend_subplan_written_vars_from_op(op: &PlanOp, out: &mut BTreeSet<String>) {
+    match op {
+        PlanOp::NodeScan { variable, .. }
+        | PlanOp::IndexScan { variable, .. }
+        | PlanOp::EdgeIndexScan { variable, .. }
+        | PlanOp::IndexIntersection { variable, .. } => {
+            out.insert(variable.to_string());
+        }
+        PlanOp::ConditionalIndexScan {
+            candidates,
+            fallback_variable,
+            ..
+        } => {
+            out.insert(fallback_variable.to_string());
+            for c in candidates {
+                out.insert(c.variable.to_string());
+            }
+        }
+        PlanOp::EdgeBindEndpoints {
+            edge,
+            near,
+            far,
+            hop_aux_binding,
+            ..
+        } => {
+            out.insert(edge.to_string());
+            out.insert(near.to_string());
+            out.insert(far.to_string());
+            if let Some(h) = hop_aux_binding {
+                out.insert(h.to_string());
+            }
+        }
+        PlanOp::Expand {
+            edge,
+            dst,
+            hop_aux_binding,
+            ..
+        }
+        | PlanOp::ExpandFilter {
+            edge,
+            dst,
+            hop_aux_binding,
+            ..
+        } => {
+            out.insert(edge.to_string());
+            out.insert(dst.to_string());
+            if let Some(h) = hop_aux_binding {
+                out.insert(h.to_string());
+            }
+        }
+        PlanOp::ShortestPath {
+            edge,
+            path_var,
+            ..
+        } => {
+            out.insert(edge.to_string());
+            if let Some(p) = path_var {
+                out.insert(p.to_string());
+            }
+        }
+        PlanOp::Let { bindings } => {
+            for b in bindings {
+                out.insert(b.variable.clone());
+            }
+        }
+        PlanOp::For {
+            variable,
+            ordinality,
+            ..
+        } => {
+            out.insert(variable.to_string());
+            if let Some(o) = ordinality {
+                out.insert(o.to_string());
+            }
+        }
+        PlanOp::WorstCaseOptimalJoin { variables, .. } => {
+            for v in variables {
+                out.insert(v.to_string());
+            }
+        }
+        PlanOp::OptionalMatch { sub_plan } | PlanOp::UseGraph {
+            sub_plan: Some(sub_plan),
+            ..
+        } => {
+            for child in sub_plan {
+                extend_subplan_written_vars_from_op(child, out);
+            }
+        }
+        PlanOp::UseGraph { sub_plan: None, .. } => {}
+        PlanOp::HashJoin { left, right, .. } | PlanOp::CartesianProduct { left, right } => {
+            for child in left {
+                extend_subplan_written_vars_from_op(child, out);
+            }
+            for child in right {
+                extend_subplan_written_vars_from_op(child, out);
+            }
+        }
+        PlanOp::InlineProcedureCall { sub_plan, .. } => {
+            for child in &sub_plan.ops {
+                extend_subplan_written_vars_from_op(child, out);
+            }
+        }
+        PlanOp::SetOperation { right, .. } => {
+            for child in &right.ops {
+                extend_subplan_written_vars_from_op(child, out);
+            }
+        }
+        PlanOp::InsertVertex { variable, .. } => {
+            if let Some(v) = variable {
+                out.insert(v.to_string());
+            }
+        }
+        PlanOp::InsertEdge { variable, .. } => {
+            if let Some(v) = variable {
+                out.insert(v.to_string());
+            }
+        }
+        PlanOp::PropertyFilter { .. }
+        | PlanOp::Filter { .. }
+        | PlanOp::CallProcedure { .. }
+        | PlanOp::Aggregate { .. }
+        | PlanOp::Project { .. }
+        | PlanOp::Sort { .. }
+        | PlanOp::Limit { .. }
+        | PlanOp::TopK { .. }
+        | PlanOp::Materialize { .. }
+        | PlanOp::SetProperties { .. }
+        | PlanOp::RemoveProperties { .. }
+        | PlanOp::DeleteVertex { .. }
+        | PlanOp::DetachDeleteVertex { .. }
+        | PlanOp::DeleteEdge { .. } => {}
+    }
+}
+
+fn execute_optional_match(
+    store: &GraphStore,
+    parameters: &BTreeMap<String, Value>,
+    rows: Vec<PlanRow>,
+    sub_plan: &[PlanOp],
+    written: &BTreeSet<String>,
+) -> Result<Vec<PlanRow>, PlanQueryError> {
+    let mut out = Vec::new();
+    for row in rows {
+        let extended = execute_ops_from(store, sub_plan, parameters, vec![row.clone()])?;
+        if extended.is_empty() {
+            let mut padded = row;
+            for v in written {
+                if !padded.contains_key(v) {
+                    padded.insert(v.clone(), PlanBinding::Value(Value::Null));
+                }
+            }
+            out.push(padded);
+        } else {
+            out.extend(extended);
+        }
+    }
+    Ok(out)
 }
 
 fn execute_ops_from(
@@ -243,6 +415,10 @@ fn execute_ops_from(
                 right,
                 join_keys,
             } => execute_hash_join(store, parameters, rows, left, right, join_keys)?,
+            PlanOp::OptionalMatch { sub_plan } => {
+                let written = subplan_written_vars(sub_plan);
+                execute_optional_match(store, parameters, rows, sub_plan, &written)?
+            }
             other if other.is_dml() => {
                 return Err(PlanQueryError::UnsupportedOp(plan_op_name(other)));
             }
@@ -2616,6 +2792,142 @@ mod tests {
     }
 
     #[test]
+    fn optional_match_planner_null_padding_when_no_edge() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(
+                ["OptMatchA"],
+                [("name", Value::Text("solo".into()))],
+            )
+            .expect("insert vertex");
+        let gql = "MATCH (n:OptMatchA) OPTIONAL MATCH (n)-[e:OptMatchRel]->(m:OptMatchB) \
+                   RETURN n.name AS nn, m.name AS mn";
+        let plan = plan_gql(gql);
+        assert!(
+            plan.ops.iter().any(|op| matches!(op, PlanOp::OptionalMatch { .. })),
+            "expected OptionalMatch in plan: {:?}",
+            plan.ops
+        );
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("execute optional match");
+
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(
+            result.rows[0].get("nn"),
+            Some(&Value::Text("solo".into()))
+        );
+        assert_eq!(result.rows[0].get("mn"), Some(&Value::Null));
+    }
+
+    #[test]
+    fn optional_match_planner_returns_m_when_edge_exists() {
+        let store = GraphStore::new();
+        let n = store
+            .insert_vertex_named(
+                ["OptMatchA2"],
+                [("name", Value::Text("a".into()))],
+            )
+            .expect("insert n");
+        let m = store
+            .insert_vertex_named(
+                ["OptMatchB2"],
+                [("name", Value::Text("buddy".into()))],
+            )
+            .expect("insert m");
+        store
+            .insert_directed_edge_named(
+                n,
+                m,
+                Some("OptMatchRel2"),
+                Vec::<(&str, Value)>::new(),
+            )
+            .expect("insert edge");
+        let gql = "MATCH (n:OptMatchA2) OPTIONAL MATCH (n)-[e:OptMatchRel2]->(m:OptMatchB2) \
+                   RETURN m.name AS mn";
+        let plan = plan_gql(gql);
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("execute optional match");
+
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(
+            result.rows[0].get("mn"),
+            Some(&Value::Text("buddy".into()))
+        );
+    }
+
+    #[test]
+    fn optional_match_leading_empty_graph_null_binds_pattern_var() {
+        let store = GraphStore::new();
+        let gql = "OPTIONAL MATCH (n:OptMatchLeading) RETURN n IS NULL AS is_n_null";
+        let plan = plan_gql(gql);
+        assert!(
+            plan.ops.iter().any(|op| matches!(op, PlanOp::OptionalMatch { .. })),
+            "expected OptionalMatch: {:?}",
+            plan.ops
+        );
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("execute leading optional");
+
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0].get("is_n_null"), Some(&Value::Bool(true)));
+    }
+
+    #[test]
+    fn optional_match_manual_null_padding_edge_and_dst() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["OptManualN"], Vec::<(&str, Value)>::new())
+            .expect("insert n");
+        let expand = PlanOp::Expand {
+            src: "n".into(),
+            edge: "e".into(),
+            dst: "m".into(),
+            direction: EdgeDirection::PointingRight,
+            label: Some("OptManualRel".into()),
+            label_expr: None,
+            var_len: None,
+            indexed_edge_equality: None,
+            edge_property_projection: None,
+            dst_property_projection: None,
+            hop_aux_binding: None,
+        };
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "n".into(),
+                label: Some("OptManualN".into()),
+                property_projection: None,
+            },
+            PlanOp::OptionalMatch {
+                sub_plan: vec![expand],
+            },
+            PlanOp::Project {
+                columns: vec![
+                    project(
+                        Expr::new(ExprKind::IsNull(Box::new(var("e")))),
+                        "e_null",
+                    ),
+                    project(
+                        Expr::new(ExprKind::IsNull(Box::new(var("m")))),
+                        "m_null",
+                    ),
+                ],
+                distinct: false,
+            },
+        ]);
+
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("execute manual optional");
+
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0].get("e_null"), Some(&Value::Bool(true)));
+        assert_eq!(result.rows[0].get("m_null"), Some(&Value::Bool(true)));
+    }
+
+    #[test]
     fn unsupported_operator_returns_stable_error() {
         let store = GraphStore::new();
         let cases = vec![
@@ -2642,12 +2954,6 @@ mod tests {
                     right: Box::new(plan(Vec::new())),
                 },
                 "SetOperation",
-            ),
-            (
-                PlanOp::OptionalMatch {
-                    sub_plan: Vec::new(),
-                },
-                "OptionalMatch",
             ),
             (
                 PlanOp::ShortestPath {
