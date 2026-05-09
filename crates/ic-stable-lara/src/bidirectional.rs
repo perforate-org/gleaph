@@ -18,7 +18,7 @@ use std::fmt;
 
 pub use deferred::{
     BidirectionalMaintenanceReport, DeferredBidirectionalLara, DeferredBidirectionalLaraError,
-    DeferredBidirectionalLaraGraph,
+    DeferredBidirectionalLaraGraph, DeleteEdgeObserver,
 };
 
 pub(crate) trait UndirectedEdgeFlag {

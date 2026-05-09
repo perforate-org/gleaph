@@ -56,7 +56,7 @@ mod types;
 pub use bidirectional::{
     BidirectionalLara, BidirectionalLaraError, BidirectionalLaraGraph,
     BidirectionalMaintenanceReport, DeferredBidirectionalLara, DeferredBidirectionalLaraError,
-    DeferredBidirectionalLaraGraph,
+    DeferredBidirectionalLaraGraph, DeleteEdgeObserver,
 };
 pub use lara::{
     LaraGraph,

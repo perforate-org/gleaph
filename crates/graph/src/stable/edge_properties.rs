@@ -5,6 +5,29 @@ use ic_stable_lara::VertexId;
 use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
 use std::{borrow::Cow, ops::Bound as RangeBound};
 
+fn edge_property_key_range(
+    owner_vertex_id: VertexId,
+    vertex_edge_id: VertexEdgeId,
+) -> (RangeBound<EdgePropertyKey>, RangeBound<EdgePropertyKey>) {
+    let owner_vertex_id = u32::from_le_bytes(owner_vertex_id.to_le_bytes());
+    let start = EdgePropertyKey {
+        owner_vertex_id,
+        vertex_edge_id,
+        property_id: PropertyId::from_raw(0),
+    };
+    let upper = vertex_edge_id.raw().checked_add(1).map(|next_edge_id| {
+        RangeBound::Excluded(EdgePropertyKey {
+            owner_vertex_id,
+            vertex_edge_id: VertexEdgeId::from_raw(next_edge_id),
+            property_id: PropertyId::from_raw(0),
+        })
+    });
+    match upper {
+        Some(upper) => (RangeBound::Included(start), upper),
+        None => (RangeBound::Included(start), RangeBound::Unbounded),
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EdgePropertyKey {
     owner_vertex_id: u32,
@@ -147,24 +170,8 @@ impl<M: Memory> EdgePropertyStore<M> {
         owner_vertex_id: VertexId,
         vertex_edge_id: VertexEdgeId,
     ) -> Vec<(PropertyId, Value)> {
-        let owner_vertex_id = u32::from_le_bytes(owner_vertex_id.to_le_bytes());
-        let start = EdgePropertyKey {
-            owner_vertex_id,
-            vertex_edge_id,
-            property_id: PropertyId::from_raw(0),
-        };
-        let upper = vertex_edge_id.raw().checked_add(1).map(|next_edge_id| {
-            RangeBound::Excluded(EdgePropertyKey {
-                owner_vertex_id,
-                vertex_edge_id: VertexEdgeId::from_raw(next_edge_id),
-                property_id: PropertyId::from_raw(0),
-            })
-        });
-        let range = match upper {
-            Some(upper) => (RangeBound::Included(start), upper),
-            None => (RangeBound::Included(start), RangeBound::Unbounded),
-        };
-        let owner = VertexId::from(owner_vertex_id);
+        let range = edge_property_key_range(owner_vertex_id, vertex_edge_id);
+        let owner = owner_vertex_id;
         self.properties
             .range(range)
             .take_while(|entry| {
@@ -176,6 +183,29 @@ impl<M: Memory> EdgePropertyStore<M> {
                 (key.property_id(), value.0)
             })
             .collect()
+    }
+
+    /// Removes every property entry for one logical edge and returns the removed count.
+    pub fn remove_all_for_edge(
+        &mut self,
+        owner_vertex_id: VertexId,
+        vertex_edge_id: VertexEdgeId,
+    ) -> u32 {
+        let range = edge_property_key_range(owner_vertex_id, vertex_edge_id);
+        let owner = owner_vertex_id;
+        let mut removed = 0u32;
+
+        loop {
+            let Some(entry) = self.properties.range(range.clone()).next() else {
+                return removed;
+            };
+            let key = *entry.key();
+            if key.owner_vertex_id() != owner || key.vertex_edge_id() != vertex_edge_id {
+                return removed;
+            }
+            self.properties.remove(&key);
+            removed = removed.saturating_add(1);
+        }
     }
 
     pub fn into_memory(self) -> M {
@@ -269,6 +299,33 @@ mod tests {
         assert_eq!(
             store.properties_for_edge(owner, edge),
             vec![(weight, Value::Int64(10))]
+        );
+    }
+
+    #[test]
+    fn remove_all_for_edge_removes_only_one_owner_edge_pair() {
+        let mut store = store();
+        let alice = VertexId::from(7);
+        let bob = VertexId::from(8);
+        let first = VertexEdgeId::from_raw(3);
+        let second = VertexEdgeId::from_raw(4);
+        let weight = PropertyId::from_raw(1);
+        let since = PropertyId::from_raw(2);
+
+        store.set(alice, first, weight, Value::Int64(10)).unwrap();
+        store.set(alice, first, since, Value::Int64(2026)).unwrap();
+        store.set(alice, second, weight, Value::Int64(11)).unwrap();
+        store.set(bob, first, weight, Value::Int64(12)).unwrap();
+
+        assert_eq!(store.remove_all_for_edge(alice, first), 2);
+        assert!(store.properties_for_edge(alice, first).is_empty());
+        assert_eq!(
+            store.properties_for_edge(alice, second),
+            vec![(weight, Value::Int64(11))]
+        );
+        assert_eq!(
+            store.properties_for_edge(bob, first),
+            vec![(weight, Value::Int64(12))]
         );
     }
 

@@ -1,17 +1,17 @@
 //! Deferred-maintenance bidirectional LARA graph wrapper.
 
 use crate::{
-    GrowFailed, SegmentId, VertexCount, VertexId,
     bidirectional::UndirectedEdgeFlag,
     lara::{
-        InitError, LaraGraph, MarkPriority,
         edge::OutEdgesIter,
         maintenance::{DeferredConfig, DeferredError, MaintenanceBudget, MaintenanceWorkReport},
+        InitError, LaraGraph, MarkPriority,
     },
     traits::{CsrEdge, CsrEdgeUndirected, CsrVertex},
+    GrowFailed, SegmentId, VertexCount, VertexId,
 };
 use ic_stable_roaring::StableRoaringBitmap;
-use ic_stable_structures::{Memory, Storable, storable::Bound};
+use ic_stable_structures::{storable::Bound, Memory, Storable};
 use ic_stable_vec_deque::StableVecDeque;
 use std::{borrow::Cow, fmt};
 
@@ -35,6 +35,20 @@ impl BidirectionalMaintenanceReport {
         self.work.remaining_queue_len
     }
 }
+
+/// Observer for edge records removed by incremental vertex-delete maintenance.
+pub trait DeleteEdgeObserver<E> {
+    /// Called when deleting a vertex removes one outgoing edge from the forward row.
+    fn on_delete_outgoing_edge(&mut self, _source: VertexId, _edge: E) {}
+
+    /// Called when deleting a vertex removes one incoming edge from the reverse row.
+    fn on_delete_incoming_edge(&mut self, _destination: VertexId, _edge: E) {}
+}
+
+#[derive(Default)]
+struct NoopDeleteEdgeObserver;
+
+impl<E> DeleteEdgeObserver<E> for NoopDeleteEdgeObserver {}
 
 fn add_step_report(total: &mut MaintenanceWorkReport, step: MaintenanceWorkReport) {
     total.processed_work_items = total
@@ -1032,6 +1046,18 @@ where
         &self,
         budget: MaintenanceBudget,
     ) -> Result<BidirectionalMaintenanceReport, DeferredBidirectionalLaraError> {
+        self.maintenance_with_delete_observer(budget, &mut NoopDeleteEdgeObserver)
+    }
+
+    /// Runs budgeted maintenance and notifies `observer` as vertex-delete work removes edges.
+    pub fn maintenance_with_delete_observer<O>(
+        &self,
+        budget: MaintenanceBudget,
+        observer: &mut O,
+    ) -> Result<BidirectionalMaintenanceReport, DeferredBidirectionalLaraError>
+    where
+        O: DeleteEdgeObserver<E>,
+    {
         let mut report = BidirectionalMaintenanceReport::default();
         let baseline = current_instruction_counter();
         let mut checkpoint_tick = 0u32;
@@ -1065,7 +1091,7 @@ where
                 break;
             }
 
-            let Some(step) = self.maintenance_step()? else {
+            let Some(step) = self.maintenance_step_with_delete_observer(observer)? else {
                 break;
             };
             add_step_report(&mut report.work, step);
@@ -1081,13 +1107,17 @@ where
         Ok(report)
     }
 
-    fn maintenance_step(
+    fn maintenance_step_with_delete_observer<O>(
         &self,
-    ) -> Result<Option<MaintenanceWorkReport>, DeferredBidirectionalLaraError> {
+        observer: &mut O,
+    ) -> Result<Option<MaintenanceWorkReport>, DeferredBidirectionalLaraError>
+    where
+        O: DeleteEdgeObserver<E>,
+    {
         let Some(item) = self.maintenance.pop_next()? else {
             return Ok(None);
         };
-        let (step, next) = self.process_work_item(item)?;
+        let (step, next) = self.process_work_item_with_delete_observer(item, observer)?;
         if let Some(next) = next {
             self.maintenance.requeue_front(next)?;
         } else {
@@ -1096,10 +1126,13 @@ where
         Ok(Some(step))
     }
 
-    fn process_work_item(
+    fn process_work_item_with_delete_observer<O>(
         &self,
         item: MaintenanceWorkItem,
+        observer: &mut O,
     ) -> Result<(MaintenanceWorkReport, Option<MaintenanceWorkItem>), DeferredBidirectionalLaraError>
+    where
+        O: DeleteEdgeObserver<E>,
     {
         match item {
             MaintenanceWorkItem::Rebalance {
@@ -1134,17 +1167,20 @@ where
                 phase,
                 cursor,
                 removed_edges,
-            } => self.process_delete_vertex(vid, phase, cursor, removed_edges),
+            } => self.process_delete_vertex(vid, phase, cursor, removed_edges, observer),
         }
     }
 
-    fn process_delete_vertex(
+    fn process_delete_vertex<O>(
         &self,
         vid: VertexId,
         phase: DeletePhase,
         cursor: u32,
         removed_edges: u64,
+        observer: &mut O,
     ) -> Result<(MaintenanceWorkReport, Option<MaintenanceWorkItem>), DeferredBidirectionalLaraError>
+    where
+        O: DeleteEdgeObserver<E>,
     {
         let mut report = MaintenanceWorkReport {
             processed_work_items: 1,
@@ -1164,6 +1200,7 @@ where
                             candidate.neighbor_vid() == vid
                         })
                         .map_err(DeferredBidirectionalLaraError::Reverse)?;
+                    observer.on_delete_outgoing_edge(vid, edge);
                     report.processed_delete_edge_steps = 1;
                     Some(MaintenanceWorkItem::DeleteVertex {
                         vid,
@@ -1204,6 +1241,7 @@ where
                             candidate.neighbor_vid() == vid
                         })
                         .map_err(DeferredBidirectionalLaraError::Forward)?;
+                    observer.on_delete_incoming_edge(vid, edge);
                     report.processed_delete_edge_steps = 1;
                     Some(MaintenanceWorkItem::DeleteVertex {
                         vid,
@@ -1267,10 +1305,10 @@ mod tests {
     use super::*;
     use crate::traits::CsrEdgeUndirected;
     use crate::{
-        Vertex,
         test_support::{
-            TestEdge, UndirectedTestEdge, deferred_bidirectional_test_graph, vector_memory,
+            deferred_bidirectional_test_graph, vector_memory, TestEdge, UndirectedTestEdge,
         },
+        Vertex,
     };
 
     #[test]
@@ -1608,6 +1646,64 @@ mod tests {
     }
 
     #[test]
+    fn vertex_delete_observer_sees_removed_edges() {
+        #[derive(Default)]
+        struct Observer {
+            outgoing: Vec<(VertexId, TestEdge)>,
+            incoming: Vec<(VertexId, TestEdge)>,
+        }
+
+        impl DeleteEdgeObserver<TestEdge> for Observer {
+            fn on_delete_outgoing_edge(&mut self, source: VertexId, edge: TestEdge) {
+                self.outgoing.push((source, edge));
+            }
+
+            fn on_delete_incoming_edge(&mut self, destination: VertexId, edge: TestEdge) {
+                self.incoming.push((destination, edge));
+            }
+        }
+
+        let graph = deferred_bidirectional_test_graph::<TestEdge>(16, 4, &[0, 2, 4, 6]);
+        graph
+            .insert_directed_deferred(VertexId::from(0), VertexId::from(1), TestEdge(1))
+            .unwrap();
+        graph
+            .insert_directed_deferred(VertexId::from(2), VertexId::from(1), TestEdge(1))
+            .unwrap();
+        graph
+            .insert_directed_deferred(VertexId::from(1), VertexId::from(3), TestEdge(3))
+            .unwrap();
+        assert!(graph.delete_vertex_deferred(VertexId::from(1)).unwrap());
+
+        let mut observer = Observer::default();
+        while graph.maintenance_queue_len() > 0 {
+            graph
+                .maintenance_with_delete_observer(
+                    MaintenanceBudget {
+                        max_instructions: 0,
+                        max_segments: None,
+                        reserve_instructions: 0,
+                        checkpoint_every: 1,
+                        max_work_items: Some(1),
+                        max_delete_edge_steps: Some(1),
+                    },
+                    &mut observer,
+                )
+                .unwrap();
+        }
+
+        assert_eq!(observer.outgoing, vec![(VertexId::from(1), TestEdge(3))]);
+        observer.incoming.sort_by_key(|(_, edge)| edge.0);
+        assert_eq!(
+            observer.incoming,
+            vec![
+                (VertexId::from(1), TestEdge(0)),
+                (VertexId::from(1), TestEdge(2))
+            ]
+        );
+    }
+
+    #[test]
     fn deferred_bidirectional_init_rejects_vertex_count_mismatch() {
         let forward = LaraGraph::<TestEdge, Vertex, _>::new(
             vector_memory(),
@@ -1732,11 +1828,9 @@ mod tests {
             graph.maintenance(budget).unwrap();
         }
 
-        assert!(
-            graph
-                .collect_out_edges_slot_order(VertexId::from(1))
-                .unwrap()
-                .is_empty()
-        );
+        assert!(graph
+            .collect_out_edges_slot_order(VertexId::from(1))
+            .unwrap()
+            .is_empty());
     }
 }

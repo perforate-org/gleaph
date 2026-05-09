@@ -10,10 +10,9 @@ use crate::{
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{Edge, EdgeMeta, LabelId, PropertyId, Vertex, VertexEdgeId};
 use ic_stable_lara::{
-    BidirectionalMaintenanceReport, DeferredBidirectionalLaraGraph as Graph, MaintenanceBudget,
-    VertexCount, VertexId, bidirectional::DeferredBidirectionalLaraError,
+    BidirectionalMaintenanceReport, DeferredBidirectionalLaraGraph as Graph, DeleteEdgeObserver,
+    MaintenanceBudget, VertexCount, VertexId, bidirectional::DeferredBidirectionalLaraError,
 };
-use std::collections::BTreeSet;
 use std::fmt;
 
 /// Stateless facade over graph storage thread-locals.
@@ -24,6 +23,21 @@ use std::fmt;
 /// initialized in `lib.rs`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct GraphStore;
+
+#[derive(Clone, Copy, Debug, Default)]
+struct EdgePropertyDeleteObserver;
+
+impl DeleteEdgeObserver<Edge> for EdgePropertyDeleteObserver {
+    fn on_delete_outgoing_edge(&mut self, source: VertexId, edge: Edge) {
+        let owner = GraphStore::edge_sidecar_owner_from_out_row(source, &edge);
+        GraphStore::clear_edge_properties_stable(owner, edge.vertex_edge_id);
+    }
+
+    fn on_delete_incoming_edge(&mut self, destination: VertexId, edge: Edge) {
+        let owner = GraphStore::edge_sidecar_owner_from_in_row(destination, &edge);
+        GraphStore::clear_edge_properties_stable(owner, edge.vertex_edge_id);
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EdgeHandle {
@@ -393,7 +407,8 @@ impl GraphStore {
         GRAPH
             .with(|graph| {
                 let graph = graph.borrow();
-                graph.maintenance(budget)
+                let mut observer = EdgePropertyDeleteObserver;
+                graph.maintenance_with_delete_observer(budget, &mut observer)
             })
             .map_err(GraphStoreError::from)
     }
@@ -431,14 +446,10 @@ impl GraphStore {
     /// `DETACH DELETE` semantics: remove all incident edges, then delete the vertex.
     ///
     /// Incident edges are cleared via LARA's queued incremental `delete_vertex_deferred`
-    /// maintenance; stable edge property sidecars are cleared first so handles are not orphaned.
+    /// maintenance; stable edge property sidecars are cleared as each edge is removed.
     pub fn detach_delete_vertex(&self, vertex_id: VertexId) -> Result<(), GraphStoreError> {
         self.ensure_vertex_id(vertex_id)
             .map_err(GraphStoreError::from)?;
-        let sidecar_keys = self.collect_incident_edge_property_handles(vertex_id)?;
-        for (owner, edge_id) in sidecar_keys {
-            self.clear_edge_properties_stable(owner, edge_id);
-        }
         self.clear_vertex_stable_payloads_before_graph_delete(vertex_id)?;
         self.with_graph_mut(|graph| graph.delete_vertex_deferred(vertex_id))?;
         self.drain_deferred_maintenance()?;
@@ -455,7 +466,7 @@ impl GraphStore {
                 owner_vertex_id: handle.owner_vertex_id,
                 vertex_edge_id: handle.vertex_edge_id,
             })?;
-        self.clear_edge_properties_stable(handle.owner_vertex_id, handle.vertex_edge_id);
+        Self::clear_edge_properties_stable(handle.owner_vertex_id, handle.vertex_edge_id);
         let removed = if edge.meta.is_undirected() {
             self.with_graph_mut(|graph| {
                 graph.remove_undirected_deferred(handle.owner_vertex_id, edge.target, edge)
@@ -511,46 +522,12 @@ impl GraphStore {
         }
     }
 
-    fn collect_incident_edge_property_handles(
-        &self,
-        vertex_id: VertexId,
-    ) -> Result<BTreeSet<(VertexId, VertexEdgeId)>, GraphStoreError> {
-        let mut keys = BTreeSet::new();
-        for edge in self.out_edges(vertex_id).map_err(GraphStoreError::from)? {
-            keys.insert((
-                Self::edge_sidecar_owner_from_out_row(vertex_id, &edge),
-                edge.vertex_edge_id,
-            ));
-        }
-        for edge in self.in_edges(vertex_id).map_err(GraphStoreError::from)? {
-            keys.insert((
-                Self::edge_sidecar_owner_from_in_row(vertex_id, &edge),
-                edge.vertex_edge_id,
-            ));
-        }
-        Ok(keys)
-    }
-
-    fn clear_edge_properties_stable(
-        &self,
-        owner_vertex_id: VertexId,
-        vertex_edge_id: VertexEdgeId,
-    ) {
-        let props: Vec<PropertyId> = EDGE_PROPERTIES.with(|store| {
+    fn clear_edge_properties_stable(owner_vertex_id: VertexId, vertex_edge_id: VertexEdgeId) {
+        EDGE_PROPERTIES.with(|store| {
             store
-                .borrow()
-                .properties_for_edge(owner_vertex_id, vertex_edge_id)
-                .into_iter()
-                .map(|(pid, _)| pid)
-                .collect()
+                .borrow_mut()
+                .remove_all_for_edge(owner_vertex_id, vertex_edge_id);
         });
-        for pid in props {
-            EDGE_PROPERTIES.with(|store| {
-                store
-                    .borrow_mut()
-                    .remove(owner_vertex_id, vertex_edge_id, pid);
-            });
-        }
     }
 
     fn clear_vertex_properties_stable_only(&self, vertex_id: VertexId) {
