@@ -1,5 +1,5 @@
-use super::mutation_error::PlanMutationError;
-use super::property_expr_evaluator::{PlanPropertyExprEvaluation, PlanPropertyExprEvaluator};
+use super::error::PlanMutationError;
+use super::expr_evaluator::{MutationPropertyExprEvaluation, MutationPropertyExprEvaluator};
 use crate::facade::mutation_executor::GraphMutationExecutor;
 use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
 use gleaph_gql::types::EdgeDirection;
@@ -45,7 +45,7 @@ fn execute_ops_with_bindings(
     parameters: &BTreeMap<String, gleaph_gql::Value>,
     bindings: &mut PlanMutationBindings,
 ) -> Result<(), PlanMutationError> {
-    let evaluator = PlanPropertyExprEvaluator::new(parameters);
+    let evaluator = MutationPropertyExprEvaluator::new(parameters);
     for op in ops {
         match op {
             PlanOp::InsertVertex {
@@ -148,7 +148,7 @@ fn execute_ops_with_bindings(
 fn execute_set_item(
     store: &GraphStore,
     item: &SetPlanItem,
-    evaluator: &impl PlanPropertyExprEvaluation,
+    evaluator: &impl MutationPropertyExprEvaluation,
     bindings: &PlanMutationBindings,
 ) -> Result<(), PlanMutationError> {
     match item {
