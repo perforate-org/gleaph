@@ -96,6 +96,26 @@ fn execute_ops_from(
                     Err(err) => Some(Err(err)),
                 })
                 .collect::<Result<Vec<_>, _>>()?,
+            PlanOp::Let { bindings } => rows
+                .into_iter()
+                .map(|mut row| -> Result<PlanRow, PlanQueryError> {
+                    for binding in bindings {
+                        let value = evaluator.eval_expr(&row, &binding.value)?;
+                        row.insert(binding.variable.clone(), PlanBinding::Value(value));
+                    }
+                    Ok(row)
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            PlanOp::Filter { condition } => rows
+                .into_iter()
+                .filter_map(|row| {
+                    match row_matches_all(&evaluator, &row, std::slice::from_ref(condition)) {
+                        Ok(true) => Some(Ok(row)),
+                        Ok(false) => None,
+                        Err(err) => Some(Err(err)),
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()?,
             PlanOp::Expand {
                 src,
                 edge,
@@ -1200,6 +1220,79 @@ mod tests {
         assert_eq!(
             result.rows[0].get("name"),
             Some(&Value::Text("Planner Filter Ada".into()))
+        );
+    }
+
+    #[test]
+    fn executes_planner_let_binding() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(
+                ["PlannerQueryLetAge"],
+                [("age", Value::Int64(36))],
+            )
+            .expect("insert vertex");
+        let plan = plan_gql("MATCH (n:PlannerQueryLetAge) LET x = n.age + 1 RETURN x");
+
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("execute planned query");
+
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0].get("x"), Some(&Value::Int64(37)));
+    }
+
+    #[test]
+    fn executes_planner_let_binding_dependency_order() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["PlannerQueryLetChain"], [("k", Value::Int64(10))])
+            .expect("insert vertex");
+        let plan = plan_gql(
+            "MATCH (n:PlannerQueryLetChain) LET x = n.k + 1, y = x * 2 RETURN y",
+        );
+
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("execute planned query");
+
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0].get("y"), Some(&Value::Int64(22)));
+    }
+
+    #[test]
+    fn executes_planner_standalone_filter() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(
+                ["PlannerQueryStandaloneFilter"],
+                [
+                    ("name", Value::Text("Active Ada".into())),
+                    ("active", Value::Bool(true)),
+                ],
+            )
+            .expect("insert matching vertex");
+        store
+            .insert_vertex_named(
+                ["PlannerQueryStandaloneFilter"],
+                [
+                    ("name", Value::Text("Inactive Bob".into())),
+                    ("active", Value::Bool(false)),
+                ],
+            )
+            .expect("insert non-matching vertex");
+        let plan = plan_gql(
+            "MATCH (n:PlannerQueryStandaloneFilter) FILTER n.active RETURN n.name AS name",
+        );
+
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("execute planned query");
+
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(
+            result.rows[0].get("name"),
+            Some(&Value::Text("Active Ada".into()))
         );
     }
 
