@@ -883,8 +883,8 @@ mod tests {
         store
             .execute_plan_mutations(&plan)
             .expect("delete isolated vertex");
-        let before_u64: u64 = before.into();
-        let vid = VertexId::from(before_u64 as u32);
+        let before_u32: u32 = before.into();
+        let vid = VertexId::from(before_u32);
         let k = store.property_id("k").expect("k property");
         assert_eq!(store.vertex_property(vid, k), None);
     }
@@ -938,8 +938,8 @@ mod tests {
         assert!(store.in_edges(b).expect("in edges").is_empty());
         assert!(store.out_edges(b).expect("out edges").is_empty());
 
-        let before_a_u64: u64 = before_a.into();
-        let deleted = VertexId::from(before_a_u64 as u32);
+        let before_a_u32: u32 = before_a.into();
+        let deleted = VertexId::from(before_a_u32);
         assert!(
             matches!(
                 store.out_edges(deleted),

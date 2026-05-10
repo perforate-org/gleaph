@@ -49,9 +49,9 @@ pub mod free_span;
 mod log;
 pub mod span_meta;
 
-use super::operation_error::{LaraOperationError, VertexAccess, vertex_id, vertex_index};
+use super::operation_error::{LaraOperationError, VertexAccess};
 use crate::{
-    GrowFailed, SegmentId, VertexId,
+    GrowFailed, SegmentId, VertexCount, VertexId,
     traits::{CsrEdge, CsrVertex, CsrVertexTombstoneScan},
 };
 use counts::{SegmentEdgeCounts, SegmentEdgeCountsStore};
@@ -158,7 +158,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         segment_size: u32,
         initial_vertex_edge_slots: u32,
     ) -> Result<Self, GrowFailed> {
-        let segment_count = segment_tree_leaf_count(0, segment_size);
+        let segment_count = segment_tree_leaf_count(VertexCount::default(), segment_size);
         let header = EdgeHeaderV1::new(
             elem_capacity,
             segment_count,
@@ -345,7 +345,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         segment: SegmentId,
         physical_start: u64,
     ) -> Result<(), GrowFailed> {
-        let idx = u64::from(u32::from(segment));
+        let idx = u64::from(segment);
         if idx < self.span_meta.len() {
             self.span_meta.set(idx, &SegmentSpanMeta { physical_start });
         } else {
@@ -454,7 +454,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         A: VertexAccess<V>,
     {
         let v = vertices.get_in_range(vid)?;
-        let vidx = vertex_index(vid);
+        let v_ord = u32::from(vid);
         // Tombstone rows may still hold slab/log material while incremental
         // `DeleteVertex` maintenance runs; only fully evacuated rows reject reads.
         if V::record_is_vertex_tombstone(&v) && v.degree() == 0 && v.log_head() < 0 {
@@ -479,7 +479,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         }
 
         let edge_layout = self.edge_layout();
-        let on_slab = self.on_slab_edges_with_layout(&edge_layout, vertices, vidx, &v);
+        let on_slab = self.on_slab_edges_with_layout(&edge_layout, vertices, v_ord, &v);
         let degree = v.degree() as usize;
         let slab_count = on_slab.min(v.degree()) as usize;
         let mut out = Vec::with_capacity(degree);
@@ -557,7 +557,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         A: VertexAccess<V>,
     {
         let v = vertices.get_in_range(vid)?;
-        let vidx = vertex_index(vid);
+        let v_ord = u32::from(vid);
         // See `collect_out_edges_slot_order`: allow enumeration for tombstones that
         // still have pending edge material (rebalance during vertex delete).
         if V::record_is_vertex_tombstone(&v) && v.degree() == 0 && v.log_head() < 0 {
@@ -600,7 +600,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         }
 
         let edge_layout = self.edge_layout();
-        let on_slab = self.on_slab_edges_with_layout(&edge_layout, vertices, vidx, &v);
+        let on_slab = self.on_slab_edges_with_layout(&edge_layout, vertices, v_ord, &v);
         let degree = v.degree();
         let slab_count = on_slab.min(degree);
         let log_count = degree.saturating_sub(slab_count);
@@ -651,12 +651,12 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     {
         let edge_layout = self.edge_layout();
         let v = vertices.get_in_range(vid)?;
-        let vidx = vertex_index(vid);
+        let v_ord = u32::from(vid);
         if V::record_is_vertex_tombstone(&v) {
             return Err(LaraOperationError::VertexDeleted);
         }
         let loc = v.base_slot_start().saturating_add(u64::from(v.degree()));
-        let location = if self.have_space_on_slab(vertices, vidx, &v, loc, edge_layout) {
+        let location = if self.have_space_on_slab(vertices, v_ord, &v, loc, edge_layout) {
             self.write_slot(loc, edge)
                 .map_err(LaraOperationError::WriteEdgeSlotFailed)?;
             vertices.set(vid, &v.with_degree(v.degree() + 1));
@@ -812,7 +812,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         &self,
         edge_layout: &EdgeLayout,
         vertices: &A,
-        vidx: usize,
+        v_ord: u32,
         v: &V,
     ) -> u32
     where
@@ -825,9 +825,12 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         if v.span_capacity() > 0 {
             return v.degree().min(v.span_capacity());
         }
-        let current_leaf = (vidx as u32) / edge_layout.segment_size.max(1);
-        let next = if vidx + 1 < vertices.len() as usize {
-            let next_base = vertices.get(vertex_id(vidx + 1)).base_slot_start();
+        let len = vertices.len();
+        let current_leaf = v_ord / edge_layout.segment_size.max(1);
+        let next = if v_ord < len.saturating_sub(1) {
+            let next_base = vertices
+                .get(VertexId::from(v_ord.saturating_add(1)))
+                .base_slot_start();
             debug_assert!(
                 next_base >= v.base_slot_start(),
                 "LARA CSR invariant: base_slot_start must be non-decreasing in VertexId order"
@@ -848,7 +851,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     fn have_space_on_slab<V, A>(
         &self,
         vertices: &A,
-        vidx: usize,
+        v_ord: u32,
         v: &V,
         loc: u64,
         edge_layout: EdgeLayout,
@@ -862,10 +865,13 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 < v.base_slot_start()
                     .saturating_add(u64::from(v.span_capacity()));
         }
+        let len = vertices.len();
         let seg_sz = edge_layout.segment_size.max(1);
-        let current_leaf = (vidx as u32) / seg_sz;
-        if vidx + 1 < vertices.len() as usize {
-            let next_base = vertices.get(vertex_id(vidx + 1)).base_slot_start();
+        let current_leaf = v_ord / seg_sz;
+        if v_ord < len.saturating_sub(1) {
+            let next_base = vertices
+                .get(VertexId::from(v_ord.saturating_add(1)))
+                .base_slot_start();
             debug_assert!(
                 next_base >= v.base_slot_start(),
                 "LARA CSR invariant: base_slot_start must be non-decreasing in VertexId order"
@@ -877,7 +883,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 .counts
                 .get(u64::from(current_leaf + edge_layout.segment_count));
             loc < vertices
-                .get(vertex_id(vidx))
+                .get(VertexId::from(v_ord))
                 .base_slot_start()
                 .saturating_add(c.total.max(0) as u64)
         } else {
@@ -1151,7 +1157,7 @@ mod tests {
         )
         .unwrap();
         edges
-            .grow_segment_tree_to(segment_tree_leaf_count(2, 1))
+            .grow_segment_tree_to(segment_tree_leaf_count(VertexCount::from(2u32), 1))
             .unwrap();
         assert_eq!(edges.span_meta_store().len(), 2);
 
@@ -1219,7 +1225,7 @@ mod tests {
         )
         .unwrap();
         edges
-            .grow_segment_tree_to(segment_tree_leaf_count(2, 1))
+            .grow_segment_tree_to(segment_tree_leaf_count(VertexCount::from(2u32), 1))
             .unwrap();
 
         edges
@@ -1279,7 +1285,7 @@ mod tests {
         )
         .unwrap();
         edges
-            .grow_segment_tree_to(segment_tree_leaf_count(2, 1))
+            .grow_segment_tree_to(segment_tree_leaf_count(VertexCount::from(2u32), 1))
             .unwrap();
 
         edges
@@ -1343,7 +1349,7 @@ mod tests {
         )
         .unwrap();
         edges
-            .grow_segment_tree_to(segment_tree_leaf_count(2, 1))
+            .grow_segment_tree_to(segment_tree_leaf_count(VertexCount::from(2u32), 1))
             .unwrap();
 
         edges

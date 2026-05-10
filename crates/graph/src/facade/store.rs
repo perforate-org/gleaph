@@ -583,7 +583,7 @@ impl GraphStore {
     }
 
     fn contains_vertex(&self, vertex_id: VertexId) -> bool {
-        u64::from(vertex_id) < u64::from(self.vertex_count())
+        u32::from(vertex_id) < u32::from(self.vertex_count())
     }
 
     fn ensure_vertex_id(&self, vertex_id: VertexId) -> Result<(), DeferredBidirectionalLaraError> {
@@ -612,12 +612,12 @@ mod tests {
     #[test]
     fn inserts_vertices_and_edges_through_facade() {
         let store = GraphStore::new();
-        let start: u64 = store.vertex_count().into();
+        let start: u32 = store.vertex_count().into();
         let source = store.insert_vertex().expect("insert source vertex");
         let target = store.insert_vertex().expect("insert target vertex");
 
-        assert_eq!(source, VertexId::from(start as u32));
-        assert_eq!(target, VertexId::from(start as u32 + 1));
+        assert_eq!(source, VertexId::from(start));
+        assert_eq!(target, VertexId::from(start + 1));
 
         let directed = store
             .insert_directed_edge(source, target, EdgeMeta::default())

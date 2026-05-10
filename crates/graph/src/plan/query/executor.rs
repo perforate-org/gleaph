@@ -580,13 +580,11 @@ fn hash_plan_binding_for_join(binding: &PlanBinding, hasher: &mut RapidHasher<'_
     match binding {
         PlanBinding::Vertex(v) => {
             hasher.write_u8(1);
-            hasher.write_u32(u32::try_from(u64::from(*v)).expect("vertex id fits u32"));
+            hasher.write_u32(u32::from(*v));
         }
         PlanBinding::Edge(e) => {
             hasher.write_u8(2);
-            hasher.write_u32(
-                u32::try_from(u64::from(e.owner_vertex_id)).expect("vertex id fits u32"),
-            );
+            hasher.write_u32(u32::from(e.owner_vertex_id));
             hasher.write_u32(e.vertex_edge_id.raw());
         }
         PlanBinding::Value(v) => {
@@ -609,8 +607,8 @@ fn execute_node_scan(
 
     let mut out = Vec::new();
     for row in rows {
-        for raw in 0..u64::from(store.vertex_count()) {
-            let vertex_id = VertexId::from(u32::try_from(raw).expect("vertex count exceeds u32"));
+        for raw in 0..u32::from(store.vertex_count()) {
+            let vertex_id = VertexId::from(raw);
             let Some(vertex) = store.vertex(vertex_id) else {
                 continue;
             };

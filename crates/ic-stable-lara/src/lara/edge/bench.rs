@@ -42,7 +42,7 @@ fn edge_store_with_vertices(
     )
     .expect("edge store");
     edges
-        .grow_segment_tree_to(segment_tree_leaf_count(u64::from(vertex_count), 16))
+        .grow_segment_tree_to(segment_tree_leaf_count(vertex_count.into(), 16))
         .expect("grow edge segments");
     (vertices, edges)
 }

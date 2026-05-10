@@ -36,8 +36,8 @@
 //! ```
 
 use crate::{
-    GrowFailed, read_u32, read_u64, safe_write, traits::CsrEdge, types::Address, write_u32,
-    write_u64,
+    GrowFailed, VertexCount, read_u32, read_u64, safe_write, traits::CsrEdge, types::Address,
+    write_u32, write_u64,
 };
 use ic_stable_structures::Memory;
 use std::{fmt, marker::PhantomData};
@@ -338,15 +338,16 @@ pub(crate) fn tree_height_for_segment_count(segment_count: u32) -> u32 {
 /// Minimum power-of-two leaf count for a vertex column (`0` vertices ⇒ one leaf).
 ///
 /// Saturates to `u32::MAX` if the logical leaf need does not fit in a power of two
-/// (extreme inputs only); callers such as [`crate::LaraGraph`] tie `vertex_len` to
-/// the real vertex column length.
+/// (extreme inputs only). `vertex_len` is the vertex column row count (for example
+/// from [`VertexCount`] or [`crate::lara::vertex::VertexStore::len`]).
 #[inline]
-pub fn segment_tree_leaf_count(vertex_len: u64, segment_size: u32) -> u32 {
-    let sz = u64::from(segment_size.max(1));
+pub fn segment_tree_leaf_count(vertex_len: VertexCount, segment_size: u32) -> u32 {
+    let vertex_len = u32::from(vertex_len);
+    let sz = segment_size.max(1);
     let need = if vertex_len == 0 {
         1u32
     } else {
-        u32::try_from(vertex_len.div_ceil(sz)).unwrap_or(u32::MAX)
+        vertex_len.div_ceil(sz)
     };
     need.max(1).checked_next_power_of_two().unwrap_or(u32::MAX)
 }

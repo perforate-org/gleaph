@@ -23,11 +23,11 @@
 //! --------------------------------------------------
 //! Layout version                        ↕ 1 byte
 //! --------------------------------------------------
-//! Number of vertices                    ↕ 8 bytes
+//! Number of vertices                    ↕ 4 bytes
 //! --------------------------------------------------
 //! Vertex row stride                     ↕ 4 bytes
 //! --------------------------------------------------
-//! Reserved                              ↕ 48 bytes
+//! Reserved                              ↕ 52 bytes
 //! -------------------------------------------------- <- Address 64
 //! V_0                                   ↕ V::BYTES bytes
 //! --------------------------------------------------
@@ -41,10 +41,10 @@
 //! ```
 
 use crate::{
-    GrowFailed, VertexId, read_u64, safe_write,
+    GrowFailed, VertexId, read_u32, safe_write,
     traits::{CsrVertex, CsrVertexTombstone},
     types::Address,
-    write_u64,
+    write_u32,
 };
 use ic_stable_structures::{Memory, Storable, storable::Bound};
 use std::{borrow::Cow, fmt};
@@ -54,7 +54,7 @@ pub const MAGIC: [u8; 3] = *b"LVX";
 const LAYOUT_VERSION: u8 = 1;
 const DATA_OFFSET: u64 = 64;
 const LEN_OFFSET: u64 = 4;
-const STRIDE_OFFSET: u64 = 12;
+const STRIDE_OFFSET: u64 = 8;
 /// Stack buffer width for [`VertexStore::get`] when `V::BYTES` is small enough.
 const INLINE_VERTEX_ROW_BYTES: usize = 64;
 
@@ -62,7 +62,7 @@ const INLINE_VERTEX_ROW_BYTES: usize = 64;
 struct HeaderV1 {
     magic: [u8; 3],
     version: u8,
-    len: u64,
+    len: u32,
     stride: u32,
 }
 
@@ -270,8 +270,8 @@ impl<V: CsrVertex, M: Memory> VertexStore<V, M> {
     }
 
     /// Returns the number of vertex rows in the store.
-    pub fn len(&self) -> u64 {
-        read_u64(&self.memory, Address::from(LEN_OFFSET))
+    pub fn len(&self) -> u32 {
+        read_u32(&self.memory, Address::from(LEN_OFFSET))
     }
     /// Returns `true` when the store contains no vertex rows.
     pub fn is_empty(&self) -> bool {
@@ -287,7 +287,7 @@ impl<V: CsrVertex, M: Memory> VertexStore<V, M> {
     /// Panics if `id >= self.len()`.
     pub fn get(&self, id: VertexId) -> V {
         let index = u64::from(id);
-        assert!(index < self.len());
+        assert!(index < u64::from(self.len()));
         if V::BYTES <= INLINE_VERTEX_ROW_BYTES {
             let mut buf = [0u8; INLINE_VERTEX_ROW_BYTES];
             self.memory
@@ -305,7 +305,7 @@ impl<V: CsrVertex, M: Memory> VertexStore<V, M> {
     /// Panics if `id >= self.len()`.
     pub fn set(&self, id: VertexId, item: &V) {
         let index = u64::from(id);
-        assert!(index < self.len());
+        assert!(index < u64::from(self.len()));
         crate::write(
             &self.memory,
             self.entry_offset(index),
@@ -316,12 +316,15 @@ impl<V: CsrVertex, M: Memory> VertexStore<V, M> {
     /// Appends a vertex row and grows stable memory if necessary.
     pub fn push(&self, item: V) -> Result<(), GrowFailed> {
         let len = self.len();
+        let new_len = len
+            .checked_add(1)
+            .expect("vertex store length exceeds u32::MAX");
         safe_write(
             &self.memory,
-            self.entry_offset(len),
+            self.entry_offset(u64::from(len)),
             &item.to_bytes_checked(),
         )?;
-        write_u64(&self.memory, Address::from(LEN_OFFSET), len + 1);
+        write_u32(&self.memory, Address::from(LEN_OFFSET), new_len);
         Ok(())
     }
 
@@ -332,8 +335,8 @@ impl<V: CsrVertex, M: Memory> VertexStore<V, M> {
     fn write_header(header: &HeaderV1, memory: &M) -> Result<(), GrowFailed> {
         safe_write(memory, 0, &header.magic)?;
         memory.write(3, &[header.version]);
-        write_u64(memory, Address::from(LEN_OFFSET), header.len);
-        crate::write_u32(memory, Address::from(STRIDE_OFFSET), header.stride);
+        write_u32(memory, Address::from(LEN_OFFSET), header.len);
+        write_u32(memory, Address::from(STRIDE_OFFSET), header.stride);
         Ok(())
     }
 
@@ -344,8 +347,8 @@ impl<V: CsrVertex, M: Memory> VertexStore<V, M> {
         let mut version = [0u8; 1];
         memory.read(0, &mut magic);
         memory.read(3, &mut version);
-        let len = read_u64(memory, Address::from(LEN_OFFSET));
-        let stride = crate::read_u32(memory, Address::from(STRIDE_OFFSET));
+        let len = read_u32(memory, Address::from(LEN_OFFSET));
+        let stride = read_u32(memory, Address::from(STRIDE_OFFSET));
 
         HeaderV1 {
             magic,

@@ -82,7 +82,7 @@ pub type DeferredLara<E, V, M> = DeferredLaraGraph<E, V, M>;
 pub use ic_stable_structures::vec_mem::VectorMemory;
 use types::Address;
 
-/// Stable vertex identifier used by all LARA graph APIs.
+/// Stable vertex identifier used by all LARA graph APIs (dense `u32` index into the vertex column).
 #[repr(transparent)]
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Display, From, Into,
@@ -101,6 +101,7 @@ impl VertexId {
     }
 }
 
+/// Widens a [`VertexId`] to `u64` for APIs outside LARA that use 64-bit scalars (for example hashing or GQL values).
 impl From<VertexId> for u64 {
     fn from(value: VertexId) -> Self {
         u64::from(value.0)
@@ -117,6 +118,13 @@ pub struct SegmentId(u32);
 impl From<SegmentId> for usize {
     fn from(value: SegmentId) -> Self {
         value.0 as usize
+    }
+}
+
+/// Widens a [`SegmentId`] to `u64` for PMA / counts store indices and slab geometry.
+impl From<SegmentId> for u64 {
+    fn from(value: SegmentId) -> Self {
+        u64::from(value.0)
     }
 }
 
@@ -141,12 +149,12 @@ impl Storable for SegmentId {
     }
 }
 
-/// Number of vertices stored in a graph.
+/// Number of vertices in the graph, matching the vertex column length field (little-endian `u32` in the V1 header) and the range of valid [`VertexId`] values (`0 .. len`).
 #[repr(transparent)]
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Display, From, Into,
 )]
-pub struct VertexCount(u64);
+pub struct VertexCount(u32);
 
 const WASM_PAGE_SIZE: u64 = 65536;
 

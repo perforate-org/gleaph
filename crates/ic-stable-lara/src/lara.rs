@@ -91,7 +91,7 @@ impl<E> RebalanceCache<E> {
 }
 
 impl<V: CsrVertex, M: Memory> VertexAccess<V> for VertexStore<V, M> {
-    fn len(&self) -> u64 {
+    fn len(&self) -> u32 {
         self.len()
     }
 
@@ -239,10 +239,10 @@ where
 
     /// Appends a vertex row and returns its assigned [`VertexId`].
     pub fn push_vertex(&self, vertex: V) -> Result<VertexId, GrowFailed> {
-        let id = VertexId::from(u32::try_from(self.vertices.len()).expect("too many vertices"));
+        let id = VertexId::from(self.vertices.len());
         self.vertices.push(vertex)?;
         let layout = self.layout();
-        let target = segment_tree_leaf_count(self.vertices.len(), layout.segment_size);
+        let target = segment_tree_leaf_count(self.vertices.len().into(), layout.segment_size);
         let did_grow = target > layout.segment_count;
         if did_grow {
             self.edges.grow_segment_tree_to(target)?;
@@ -332,8 +332,7 @@ where
     where
         F: FnMut(&E) -> bool,
     {
-        let src_idx = u64::from(src);
-        if src_idx >= self.vertices.len() {
+        if u32::from(src) >= self.vertices.len() {
             return Err(LaraOperationError::VertexAccess(
                 VertexAccessError::OutOfRange,
             ));
@@ -366,18 +365,18 @@ where
         let new_capacity = layout
             .elem_capacity
             .saturating_mul(2)
-            .max(total_edges.saturating_add(vertex_len));
+            .max(total_edges.saturating_add(u64::from(vertex_len)));
         self.edges.set_elem_capacity(new_capacity)?;
 
         let positions =
             self.calculate_positions(0, vertex_len, new_capacity.saturating_sub(total_edges));
-        for vidx in 0..vertex_len as usize {
-            let neighborhood = cache.vertex_edges(vidx);
-            let start = positions[vidx];
+        for vidx in 0..vertex_len {
+            let neighborhood = cache.vertex_edges(vidx as usize);
+            let start = positions[vidx as usize];
             for (i, edge) in neighborhood.iter().copied().enumerate() {
                 self.edges.write_slot(start + i as u64, edge)?;
             }
-            let vid = vertex_id(vidx as u64);
+            let vid = VertexId::from(vidx);
             let v = self.vertices.get(vid);
             self.vertices.set(
                 vid,
@@ -385,7 +384,7 @@ where
                     .with_degree(neighborhood.len() as u32)
                     .with_span_capacity(capacity_from_positions(
                         &positions,
-                        vidx,
+                        vidx as usize,
                         vertex_len as usize,
                         new_capacity,
                     ))
@@ -437,8 +436,7 @@ where
     }
 
     pub(crate) fn vertex_is_deleted(&self, vid: VertexId) -> Result<bool, LaraOperationError> {
-        let vidx = u64::from(vid);
-        if vidx >= self.vertices.len() {
+        if u32::from(vid) >= self.vertices.len() {
             return Err(LaraOperationError::VertexAccess(
                 VertexAccessError::OutOfRange,
             ));
@@ -451,8 +449,7 @@ where
         vid: VertexId,
         deleted: bool,
     ) -> Result<(), LaraOperationError> {
-        let vidx = u64::from(vid);
-        if vidx >= self.vertices.len() {
+        if u32::from(vid) >= self.vertices.len() {
             return Err(LaraOperationError::VertexAccess(
                 VertexAccessError::OutOfRange,
             ));
@@ -468,8 +465,7 @@ where
         vid: VertexId,
         offset: u32,
     ) -> Result<Option<E>, LaraOperationError> {
-        let vidx = u64::from(vid);
-        if vidx >= self.vertices.len() {
+        if u32::from(vid) >= self.vertices.len() {
             return Err(LaraOperationError::VertexAccess(
                 VertexAccessError::OutOfRange,
             ));
@@ -485,8 +481,7 @@ where
         &self,
         vid: VertexId,
     ) -> Result<u32, LaraOperationError> {
-        let vidx = u64::from(vid);
-        if vidx >= self.vertices.len() {
+        if u32::from(vid) >= self.vertices.len() {
             return Err(LaraOperationError::VertexAccess(
                 VertexAccessError::OutOfRange,
             ));
@@ -506,8 +501,7 @@ where
     where
         F: FnMut(&E) -> bool,
     {
-        let src_idx = u64::from(src);
-        if src_idx >= self.vertices.len() {
+        if u32::from(src) >= self.vertices.len() {
             return Ok(None);
         }
         if self.vertices.get(src).log_head() >= 0 {
@@ -520,7 +514,7 @@ where
 
     fn rebalance_after_insert(&self, src: VertexId) -> Result<(), LaraOperationError> {
         let layout = self.layout();
-        let current_leaf = self.leaf_for_vertex_with_layout(&layout, u64::from(src));
+        let current_leaf = self.leaf_for_vertex_with_layout(&layout, src);
         let leaf_counts = self
             .edge_counts_for_leaves_with_layout(&layout, current_leaf, current_leaf + 1)
             .ok_or(LaraOperationError::SegmentCountsOutOfRange)?;
@@ -528,18 +522,21 @@ where
             return Ok(());
         }
 
-        let mut window = current_leaf + u64::from(layout.segment_count);
+        let mut window = u64::from(current_leaf) + u64::from(layout.segment_count);
         let mut height = 0u32;
-        let mut chosen: Option<(u64, u64, SegmentEdgeCounts)> = None;
+        let mut chosen: Option<(u32, u32, SegmentEdgeCounts)> = None;
         while window > 0 {
             window /= 2;
             height += 1;
             let window_size = u64::from(layout.segment_size).saturating_mul(1u64 << height);
-            let left_vertex = (u64::from(src) / window_size) * window_size;
-            let right_vertex = left_vertex
+            let src_u = u64::from(src);
+            let left_u = (src_u / window_size) * window_size;
+            let right_u = left_u
                 .saturating_add(window_size)
-                .min(self.vertices.len());
-            let left_leaf = self.leaf_for_vertex_with_layout(&layout, left_vertex);
+                .min(u64::from(self.vertices.len()));
+            let left_vertex = u32::try_from(left_u).expect("window left fits VertexId");
+            let right_vertex = u32::try_from(right_u).expect("window right fits VertexId");
+            let left_leaf = self.leaf_for_vertex_with_layout(&layout, VertexId::from(left_vertex));
             let right_leaf = self
                 .leaf_end_for_vertex_with_layout(&layout, right_vertex)
                 .max(left_leaf + 1);
@@ -568,7 +565,7 @@ where
                 .ok_or(LaraOperationError::SegmentCountsOutOfRange)?,
         ) >= LEAF_UPPER_DENSITY
         {
-            self.local_resize_segment_with_layout(&layout, current_leaf as u32)
+            self.local_resize_segment_with_layout(&layout, current_leaf)
                 .map_err(LaraOperationError::ResizeFailed)?;
         }
 
@@ -588,12 +585,11 @@ where
         layout: &LaraLayout,
         segment: SegmentId,
     ) -> Result<(), GrowFailed> {
-        let left_vertex =
-            u64::from(u32::from(segment)).saturating_mul(u64::from(layout.segment_size));
+        let left_vertex = u32::from(segment).saturating_mul(layout.segment_size.max(1));
         let right_vertex = left_vertex
-            .saturating_add(u64::from(layout.segment_size))
+            .saturating_add(layout.segment_size.max(1))
             .min(self.vertices.len());
-        let left_leaf = self.leaf_for_vertex_with_layout(layout, left_vertex);
+        let left_leaf = self.leaf_for_vertex_with_layout(layout, VertexId::from(left_vertex));
         let right_leaf = self
             .leaf_end_for_vertex_with_layout(layout, right_vertex)
             .max(left_leaf + 1);
@@ -608,9 +604,13 @@ where
 
     pub(crate) fn rebalance_dirty_segment(&self, segment: SegmentId) -> Result<(), GrowFailed> {
         let layout = self.layout();
-        let current_leaf = u64::from(u32::from(segment));
+        let current_leaf = u32::from(segment);
         let leaf_counts = self
-            .edge_counts_for_leaves_with_layout(&layout, current_leaf, current_leaf + 1)
+            .edge_counts_for_leaves_with_layout(
+                &layout,
+                current_leaf,
+                current_leaf.saturating_add(1),
+            )
             .unwrap_or(SegmentEdgeCounts {
                 actual: 0,
                 total: 0,
@@ -619,20 +619,21 @@ where
             return self.rebalance_leaf_segment_with_layout(&layout, segment);
         }
 
-        let src_vertex =
-            u64::from(u32::from(segment)).saturating_mul(u64::from(layout.segment_size));
-        let mut window = current_leaf + u64::from(layout.segment_count);
+        let src_vertex = u32::from(segment).saturating_mul(layout.segment_size.max(1));
+        let mut window = u64::from(current_leaf) + u64::from(layout.segment_count);
         let mut height = 0u32;
-        let mut chosen: Option<(u64, u64, SegmentEdgeCounts)> = None;
+        let mut chosen: Option<(u32, u32, SegmentEdgeCounts)> = None;
         while window > 0 {
             window /= 2;
             height += 1;
             let window_size = u64::from(layout.segment_size).saturating_mul(1u64 << height);
-            let left_vertex = (src_vertex / window_size) * window_size;
-            let right_vertex = left_vertex
+            let left_u = (u64::from(src_vertex) / window_size) * window_size;
+            let right_u = left_u
                 .saturating_add(window_size)
-                .min(self.vertices.len());
-            let left_leaf = self.leaf_for_vertex_with_layout(&layout, left_vertex);
+                .min(u64::from(self.vertices.len()));
+            let left_vertex = u32::try_from(left_u).expect("window left fits VertexId");
+            let right_vertex = u32::try_from(right_u).expect("window right fits VertexId");
+            let left_leaf = self.leaf_for_vertex_with_layout(&layout, VertexId::from(left_vertex));
             let right_leaf = self
                 .leaf_end_for_vertex_with_layout(&layout, right_vertex)
                 .max(left_leaf + 1);
@@ -662,8 +663,8 @@ where
             || self
                 .edge_counts_for_leaves_with_layout(
                     &layout,
-                    u64::from(u32::from(segment)),
-                    u64::from(u32::from(segment)) + 1,
+                    u32::from(segment),
+                    u32::from(segment).saturating_add(1),
                 )
                 .is_some_and(|counts| density(counts) >= LEAF_UPPER_DENSITY)
     }
@@ -679,8 +680,8 @@ where
         let density = self
             .edge_counts_for_leaves_with_layout(
                 &layout,
-                u64::from(u32::from(segment)),
-                u64::from(u32::from(segment)) + 1,
+                u32::from(segment),
+                u32::from(segment).saturating_add(1),
             )
             .map(density)
             .unwrap_or(0.0);
@@ -695,28 +696,32 @@ where
     }
 
     fn segment_has_log_with_layout(&self, layout: &LaraLayout, segment: SegmentId) -> bool {
-        let start = u64::from(u32::from(segment)).saturating_mul(u64::from(layout.segment_size));
-        let end = start
-            .saturating_add(u64::from(layout.segment_size))
-            .min(self.vertices.len());
-        (start..end).any(|vid| self.vertices.get(vertex_id(vid)).log_head() >= 0)
+        let seg = layout.segment_size.max(1);
+        let start_v = u32::from(segment).saturating_mul(seg);
+        let end_v = start_v.saturating_add(seg).min(self.vertices.len());
+        (start_v..end_v).any(|vid| self.vertices.get(VertexId::from(vid)).log_head() >= 0)
     }
 
     fn rebalance_weighted_with_layout(
         &self,
         layout: &LaraLayout,
-        start_vertex: u64,
-        end_vertex: u64,
+        start_vertex: u32,
+        end_vertex: u32,
         counts: SegmentEdgeCounts,
     ) -> Result<(), GrowFailed> {
         if start_vertex >= end_vertex {
             return Ok(());
         }
-        let from = self.vertices.get(vertex_id(start_vertex)).base_slot_start();
+        let from = self
+            .vertices
+            .get(VertexId::from(start_vertex))
+            .base_slot_start();
         let to = if end_vertex >= self.vertices.len() {
             layout.elem_capacity
         } else {
-            self.vertices.get(vertex_id(end_vertex)).base_slot_start()
+            self.vertices
+                .get(VertexId::from(end_vertex))
+                .base_slot_start()
         };
         let total_space = if counts.total > 0 {
             counts.total as u64
@@ -734,12 +739,12 @@ where
         let cache = self.collect_rebalance_cache(start_vertex, end_vertex);
         for offset in 0..(end_vertex - start_vertex) as usize {
             let neighborhood = cache.vertex_edges(offset);
-            let vid = start_vertex + offset as u64;
+            let vid_u32 = start_vertex + offset as u32;
             let start = positions[offset];
             for (i, edge) in neighborhood.iter().copied().enumerate() {
                 self.edges.write_slot(start + i as u64, edge)?;
             }
-            let id = vertex_id(vid);
+            let id = VertexId::from(vid_u32);
             let v = self.vertices.get(id);
             self.vertices.set(
                 id,
@@ -755,13 +760,12 @@ where
             );
         }
 
-        let start_leaf = self.leaf_for_vertex_with_layout(layout, start_vertex);
+        let start_leaf = self.leaf_for_vertex_with_layout(layout, VertexId::from(start_vertex));
         let end_leaf = self
             .leaf_end_for_vertex_with_layout(layout, end_vertex)
             .max(start_leaf + 1);
-        for leaf in start_leaf..end_leaf.min(u64::from(layout.segment_count)) {
-            self.edges
-                .release_log_segment(SegmentId::from(leaf as u32))?;
+        for leaf in start_leaf..end_leaf.min(layout.segment_count) {
+            self.edges.release_log_segment(SegmentId::from(leaf))?;
         }
         self.recount_segment_counts_range_with_layout(
             layout,
@@ -781,9 +785,9 @@ where
             return Ok(());
         }
 
-        let start_vertex = u64::from(segment).saturating_mul(u64::from(layout.segment_size.max(1)));
+        let start_vertex = segment.saturating_mul(layout.segment_size.max(1));
         let end_vertex = start_vertex
-            .saturating_add(u64::from(layout.segment_size.max(1)))
+            .saturating_add(layout.segment_size.max(1))
             .min(self.vertices.len());
         if start_vertex >= end_vertex {
             return Ok(());
@@ -796,12 +800,15 @@ where
             .counts_store()
             .get(u64::from(segment + layout.segment_count));
         let old_span = old_leaf.total.max(0) as u64;
-        let vertex_count = end_vertex.saturating_sub(start_vertex);
+        let vertex_count = u64::from(end_vertex.saturating_sub(start_vertex));
         let new_span = old_span
             .saturating_mul(2)
             .max(used_space.saturating_add(vertex_count))
             .max(1);
-        let old_start = self.vertices.get(vertex_id(start_vertex)).base_slot_start();
+        let old_start = self
+            .vertices
+            .get(VertexId::from(start_vertex))
+            .base_slot_start();
         if self.try_expand_segment_in_place_with_layout(
             layout,
             segment,
@@ -822,12 +829,12 @@ where
         let positions = self.calculate_positions_from(start_vertex, end_vertex, new_start, gaps);
         for offset in 0..(end_vertex - start_vertex) as usize {
             let neighborhood = cache.vertex_edges(offset);
-            let vid = start_vertex + offset as u64;
+            let vid_u32 = start_vertex.saturating_add(offset as u32);
             let start = positions[offset];
             for (i, edge) in neighborhood.iter().copied().enumerate() {
                 self.edges.write_slot(start + i as u64, edge)?;
             }
-            let id = vertex_id(vid);
+            let id = VertexId::from(vid_u32);
             let v = self.vertices.get(id);
             self.vertices.set(
                 id,
@@ -864,8 +871,8 @@ where
         &self,
         layout: &LaraLayout,
         segment: u32,
-        start_vertex: u64,
-        end_vertex: u64,
+        start_vertex: u32,
+        end_vertex: u32,
         cache: &RebalanceCache<E>,
         old_start: u64,
         old_span: u64,
@@ -903,12 +910,12 @@ where
         let positions = self.calculate_positions_from(start_vertex, end_vertex, old_start, gaps);
         for offset in 0..(end_vertex - start_vertex) as usize {
             let neighborhood = cache.vertex_edges(offset);
-            let vid = start_vertex + offset as u64;
+            let vid_u32 = start_vertex.saturating_add(offset as u32);
             let start = positions[offset];
             for (i, edge) in neighborhood.iter().copied().enumerate() {
                 self.edges.write_slot(start + i as u64, edge)?;
             }
-            let id = vertex_id(vid);
+            let id = VertexId::from(vid_u32);
             let v = self.vertices.get(id);
             self.vertices.set(
                 id,
@@ -957,7 +964,10 @@ where
                 continue;
             }
 
-            let segment_start = self.vertices.get(vertex_id(start_vertex)).base_slot_start();
+            let segment_start = self
+                .vertices
+                .get(VertexId::from(start_vertex))
+                .base_slot_start();
             let segment_end = segment_start.saturating_add(segment_len);
             let Some(left_free) = self
                 .edges
@@ -1026,17 +1036,16 @@ where
         &self,
         layout: &LaraLayout,
         segment: u32,
-    ) -> Option<(u64, u64)> {
+    ) -> Option<(u32, u32)> {
         if segment >= layout.segment_count {
             return None;
         }
-        let start_vertex = u64::from(segment).saturating_mul(u64::from(layout.segment_size.max(1)));
+        let seg = layout.segment_size.max(1);
+        let start_vertex = segment.saturating_mul(seg);
         if start_vertex >= self.vertices.len() {
             return None;
         }
-        let end_vertex = start_vertex
-            .saturating_add(u64::from(layout.segment_size.max(1)))
-            .min(self.vertices.len());
+        let end_vertex = start_vertex.saturating_add(seg).min(self.vertices.len());
         Some((start_vertex, end_vertex))
     }
 
@@ -1062,7 +1071,10 @@ where
             if len == 0 {
                 continue;
             }
-            let start = self.vertices.get(vertex_id(start_vertex)).base_slot_start();
+            let start = self
+                .vertices
+                .get(VertexId::from(start_vertex))
+                .base_slot_start();
             if start.saturating_add(len) == end_slot {
                 return Some(len);
             }
@@ -1074,8 +1086,8 @@ where
         &self,
         layout: &LaraLayout,
         segment: u32,
-        start_vertex: u64,
-        end_vertex: u64,
+        start_vertex: u32,
+        end_vertex: u32,
         new_start: u64,
         segment_len: u64,
     ) -> Result<bool, GrowFailed> {
@@ -1089,12 +1101,12 @@ where
         let positions = self.calculate_positions_from(start_vertex, end_vertex, new_start, gaps);
         for offset in 0..(end_vertex - start_vertex) as usize {
             let neighborhood = cache.vertex_edges(offset);
-            let vid = start_vertex + offset as u64;
+            let vid_u32 = start_vertex.saturating_add(offset as u32);
             let start = positions[offset];
             for (i, edge) in neighborhood.iter().copied().enumerate() {
                 self.edges.write_slot(start + i as u64, edge)?;
             }
-            let id = vertex_id(vid);
+            let id = VertexId::from(vid_u32);
             let v = self.vertices.get(id);
             self.vertices.set(
                 id,
@@ -1124,23 +1136,22 @@ where
         Ok(true)
     }
 
-    fn collect_rebalance_cache(&self, start_vertex: u64, end_vertex: u64) -> RebalanceCache<E> {
-        let vertex_count = end_vertex.saturating_sub(start_vertex) as usize;
+    fn collect_rebalance_cache(&self, start_vertex: u32, end_vertex: u32) -> RebalanceCache<E> {
+        let vertex_count = (end_vertex - start_vertex) as usize;
         let mut total_edges = 0usize;
         for vid in start_vertex..end_vertex {
-            total_edges =
-                total_edges.saturating_add(self.vertices.get(vertex_id(vid)).degree() as usize);
+            total_edges = total_edges
+                .saturating_add(self.vertices.get(VertexId::from(vid)).degree() as usize);
         }
 
         let mut edges = Vec::with_capacity(total_edges);
         let mut offsets = Vec::with_capacity(vertex_count + 1);
         offsets.push(0);
         for vid in start_vertex..end_vertex {
-            let vid32 = VertexId::from(vid as u32);
             let segment_start = edges.len();
             edges.extend(
                 self.edges
-                    .iter_out_edges(&self.vertices, vid32)
+                    .iter_out_edges(&self.vertices, VertexId::from(vid))
                     .expect("LARA log chains are valid before rebalance"),
             );
             edges[segment_start..].reverse();
@@ -1161,8 +1172,8 @@ where
             return Ok(());
         }
         let leaf = u32::from(vid) / layout.segment_size.max(1);
-        let seg_size = u64::from(layout.segment_size.max(1));
-        let start_vid = u64::from(leaf).saturating_mul(seg_size);
+        let seg = layout.segment_size.max(1);
+        let start_vid = leaf.saturating_mul(seg);
         if start_vid >= self.vertices.len() {
             return Ok(());
         }
@@ -1171,7 +1182,7 @@ where
             return Ok(());
         }
 
-        let end_vid = start_vid.saturating_add(seg_size).min(self.vertices.len());
+        let end_vid = start_vid.saturating_add(seg).min(self.vertices.len());
         let mut leaf_base = self
             .edges
             .span_meta_store()
@@ -1180,11 +1191,11 @@ where
         let has_recorded_base = leaf_base != 0;
         let mut has_materialized_row = false;
         for v in start_vid..end_vid {
-            let row = self.vertices.get(vertex_id(v));
+            let row = self.vertices.get(VertexId::from(v));
             if row.span_capacity() > 0 {
                 has_materialized_row = true;
                 if !has_recorded_base {
-                    let offset = v.saturating_sub(start_vid).saturating_mul(u64::from(w));
+                    let offset = u64::from(v.saturating_sub(start_vid).saturating_mul(w));
                     leaf_base = row.base_slot_start().saturating_sub(offset);
                 }
                 break;
@@ -1195,7 +1206,7 @@ where
         }
 
         if !has_recorded_base && !has_materialized_row {
-            let span_len = seg_size.saturating_mul(u64::from(w));
+            let span_len = u64::from(seg.saturating_mul(w));
             leaf_base = self.edges.allocate_span(span_len)?;
             self.edges
                 .set_segment_physical_start(SegmentId::from(leaf), leaf_base)?;
@@ -1205,7 +1216,7 @@ where
         }
 
         let offset =
-            u64::from(u32::from(vid) % layout.segment_size.max(1)).saturating_mul(u64::from(w));
+            (u64::from(vid) % u64::from(layout.segment_size.max(1))).saturating_mul(u64::from(w));
         self.vertices.set(
             vid,
             &row.with_base_slot_start(leaf_base.saturating_add(offset))
@@ -1256,25 +1267,26 @@ where
         }
     }
 
-    fn leaf_for_vertex_with_layout(&self, layout: &LaraLayout, vertex: u64) -> u64 {
-        vertex / u64::from(layout.segment_size.max(1))
+    fn leaf_for_vertex_with_layout(&self, layout: &LaraLayout, vertex: VertexId) -> u32 {
+        u32::from(vertex) / layout.segment_size.max(1)
     }
 
-    fn leaf_end_for_vertex_with_layout(&self, layout: &LaraLayout, vertex: u64) -> u64 {
+    /// `vertex` is a vertex ordinal; use `vertices.len()` for the exclusive end of the segment range.
+    fn leaf_end_for_vertex_with_layout(&self, layout: &LaraLayout, vertex: u32) -> u32 {
         if vertex >= self.vertices.len() {
-            u64::from(layout.segment_count)
+            layout.segment_count
         } else {
-            vertex / u64::from(layout.segment_size.max(1))
+            vertex / layout.segment_size.max(1)
         }
     }
 
     fn edge_counts_for_leaves_with_layout(
         &self,
         layout: &LaraLayout,
-        start_leaf: u64,
-        end_leaf: u64,
+        start_leaf: u32,
+        end_leaf: u32,
     ) -> Option<SegmentEdgeCounts> {
-        if start_leaf >= end_leaf || end_leaf > u64::from(layout.segment_count) {
+        if start_leaf >= end_leaf || end_leaf > layout.segment_count {
             return None;
         }
         let mut out = SegmentEdgeCounts {
@@ -1285,7 +1297,7 @@ where
             let c = self
                 .edges
                 .counts_store()
-                .get(leaf + u64::from(layout.segment_count));
+                .get(u64::from(leaf) + u64::from(layout.segment_count));
             out.actual += c.actual;
             out.total += c.total;
         }
@@ -1300,22 +1312,22 @@ where
     fn recount_segment_counts_range_with_layout(
         &self,
         layout: &LaraLayout,
-        start_leaf: u64,
-        end_leaf: u64,
+        start_leaf: u32,
+        end_leaf: u32,
         elem_capacity: u64,
     ) {
         if layout.segment_count == 0 {
             return;
         }
-        let start = start_leaf.min(u64::from(layout.segment_count));
-        let end = end_leaf.min(u64::from(layout.segment_count));
+        let start = start_leaf.min(layout.segment_count);
+        let end = end_leaf.min(layout.segment_count);
         if start >= end {
             return;
         }
 
         for leaf in start..end {
-            let count = self.segment_leaf_count_with_layout(layout, leaf as u32, elem_capacity);
-            self.update_leaf_count_and_ancestors(layout, leaf as u32, count);
+            let count = self.segment_leaf_count_with_layout(layout, leaf, elem_capacity);
+            self.update_leaf_count_and_ancestors(layout, leaf, count);
         }
     }
 
@@ -1355,19 +1367,18 @@ where
         elem_capacity: u64,
     ) -> SegmentEdgeCounts {
         let start_vid = leaf.saturating_mul(layout.segment_size);
-        if u64::from(start_vid) >= self.vertices.len() {
+        if start_vid >= self.vertices.len() {
             return SegmentEdgeCounts {
                 actual: 0,
                 total: 0,
             };
         }
-        let end_vid =
-            ((leaf + 1).saturating_mul(layout.segment_size)).min(self.vertices.len() as u32);
+        let end_vid = ((leaf + 1).saturating_mul(layout.segment_size)).min(self.vertices.len());
         let mut actual = 0i64;
         for vid in start_vid..end_vid {
             actual += i64::from(self.vertices.get(VertexId::from(vid)).degree());
         }
-        let start_slot = if start_vid < self.vertices.len() as u32 {
+        let start_slot = if start_vid < self.vertices.len() {
             self.vertices
                 .get(VertexId::from(start_vid))
                 .base_slot_start()
@@ -1378,8 +1389,8 @@ where
             elem_capacity
         } else {
             let next_vid =
-                ((leaf + 1).saturating_mul(layout.segment_size)).min(self.vertices.len() as u32);
-            if next_vid < self.vertices.len() as u32 {
+                ((leaf + 1).saturating_mul(layout.segment_size)).min(self.vertices.len());
+            if next_vid < self.vertices.len() {
                 self.vertices
                     .get(VertexId::from(next_vid))
                     .base_slot_start()
@@ -1398,23 +1409,26 @@ where
         SegmentId::from(leaf)
     }
 
-    fn calculate_positions(&self, start_vertex: u64, end_vertex: u64, gaps: u64) -> Vec<u64> {
-        let start_slot = self.vertices.get(vertex_id(start_vertex)).base_slot_start();
+    fn calculate_positions(&self, start_vertex: u32, end_vertex: u32, gaps: u64) -> Vec<u64> {
+        let start_slot = self
+            .vertices
+            .get(VertexId::from(start_vertex))
+            .base_slot_start();
         self.calculate_positions_from(start_vertex, end_vertex, start_slot, gaps)
     }
 
     fn calculate_positions_from(
         &self,
-        start_vertex: u64,
-        end_vertex: u64,
+        start_vertex: u32,
+        end_vertex: u32,
         start_slot: u64,
         gaps: u64,
     ) -> Vec<u64> {
-        let size = end_vertex.saturating_sub(start_vertex);
+        let size = u64::from(end_vertex.saturating_sub(start_vertex));
         let mut total_degree = size;
         for vid in start_vertex..end_vertex {
-            total_degree =
-                total_degree.saturating_add(u64::from(self.vertices.get(vertex_id(vid)).degree()));
+            total_degree = total_degree
+                .saturating_add(u64::from(self.vertices.get(VertexId::from(vid)).degree()));
         }
 
         let mut out = Vec::with_capacity(size as usize);
@@ -1434,7 +1448,7 @@ where
         for vid in start_vertex..end_vertex {
             let start = index as u64;
             out.push(start);
-            let degree = f64::from(self.vertices.get(vertex_id(vid)).degree());
+            let degree = f64::from(self.vertices.get(VertexId::from(vid)).degree());
             index = start as f64 + degree + step * (degree + 1.0);
         }
         out
@@ -1447,11 +1461,6 @@ fn density(counts: SegmentEdgeCounts) -> f64 {
     } else {
         counts.actual as f64 / counts.total as f64
     }
-}
-
-#[inline]
-fn vertex_id(index: u64) -> VertexId {
-    VertexId::from(u32::try_from(index).expect("vertex index exceeds VertexId"))
 }
 
 fn capacity_from_positions(positions: &[u64], index: usize, len: usize, end_slot: u64) -> u32 {

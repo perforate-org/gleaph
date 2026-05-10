@@ -109,32 +109,16 @@ impl From<VertexAccessError> for LaraOperationError {
     }
 }
 
-#[inline]
-pub(crate) fn vertex_index(vid: VertexId) -> usize {
-    u32::from(vid) as usize
-}
-
-#[inline]
-pub(crate) fn vertex_id(index: usize) -> VertexId {
-    VertexId::from(u32::try_from(index).expect("vertex index exceeds VertexId"))
-}
-
 /// Vertex column access for [`super::edge::EdgeStore`].
 pub(crate) trait VertexAccess<V: CsrVertex> {
-    fn len(&self) -> u64;
+    fn len(&self) -> u32;
     fn get(&self, id: VertexId) -> V;
     fn set(&self, id: VertexId, item: &V);
 
-    fn try_vertex_index(&self, id: VertexId) -> Result<usize, VertexAccessError> {
-        let vidx = vertex_index(id);
-        if (vidx as u64) >= self.len() {
+    fn get_in_range(&self, id: VertexId) -> Result<V, VertexAccessError> {
+        if u32::from(id) >= self.len() {
             return Err(VertexAccessError::OutOfRange);
         }
-        Ok(vidx)
-    }
-
-    fn get_in_range(&self, id: VertexId) -> Result<V, VertexAccessError> {
-        self.try_vertex_index(id)?;
         Ok(self.get(id))
     }
 }

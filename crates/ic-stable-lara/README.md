@@ -15,6 +15,8 @@ The design keeps the read path direct and predictable:
 
 ## Storage Model
 
+Vertices are dense `u32` indices (`VertexId`); the vertex column header stores the row count as a little-endian `u32` (see the `vertex` module layout diagram).
+
 Each default vertex row stores:
 
 - `base_slot_start`: first edge slot owned by the vertex.

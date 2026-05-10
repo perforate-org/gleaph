@@ -85,10 +85,7 @@ pub(crate) fn lara_graph(
     .expect("lara graph");
     graph
         .edges()
-        .grow_segment_tree_to(segment_tree_leaf_count(
-            u64::from(vertex_count),
-            segment_size,
-        ))
+        .grow_segment_tree_to(segment_tree_leaf_count(vertex_count.into(), segment_size))
         .expect("grow lara graph segments");
     for vid in 0..vertex_count {
         graph
@@ -147,10 +144,7 @@ pub(crate) fn deferred_graph(
     graph
         .graph()
         .edges()
-        .grow_segment_tree_to(segment_tree_leaf_count(
-            u64::from(vertex_count),
-            segment_size,
-        ))
+        .grow_segment_tree_to(segment_tree_leaf_count(vertex_count.into(), segment_size))
         .expect("grow deferred graph segments");
     for vid in 0..vertex_count {
         graph
@@ -187,7 +181,7 @@ where
         0,
     )
     .expect("bidirectional graph");
-    let target_segments = segment_tree_leaf_count(u64::from(vertex_count), 16);
+    let target_segments = segment_tree_leaf_count(vertex_count.into(), 16);
     graph
         .forward()
         .edges()
@@ -236,7 +230,7 @@ pub(crate) fn deferred_bidirectional_graph(
         },
     )
     .expect("deferred bidirectional graph");
-    let target_segments = segment_tree_leaf_count(u64::from(vertex_count), 16);
+    let target_segments = segment_tree_leaf_count(vertex_count.into(), 16);
     graph
         .forward()
         .edges()
