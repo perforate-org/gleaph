@@ -10,7 +10,7 @@ use crate::{
     },
     traits::{CsrEdge, CsrEdgeUndirected, CsrVertex},
 };
-use ic_stable_roaring::StableRoaringBitmap;
+use ic_stable_roaring::{BitmapError, InitError as RoaringInitError, StableRoaringBitmap};
 use ic_stable_structures::{Memory, Storable, storable::Bound};
 use ic_stable_vec_deque::StableVecDeque;
 use std::{borrow::Cow, fmt};
@@ -223,9 +223,8 @@ impl<M: Memory> BidirectionalMaintenanceQueue<M> {
         Ok(Self {
             queue: StableVecDeque::new(queue_memory)
                 .map_err(|_| DeferredBidirectionalLaraError::Maintenance("queue grow failed"))?,
-            dirty: StableRoaringBitmap::new(dirty_memory).map_err(|_| {
-                DeferredBidirectionalLaraError::Maintenance("dirty set grow failed")
-            })?,
+            dirty: StableRoaringBitmap::new(dirty_memory)
+                .map_err(DeferredBidirectionalLaraError::MaintenanceDirtyBitmap)?,
         })
     }
 
@@ -233,9 +232,8 @@ impl<M: Memory> BidirectionalMaintenanceQueue<M> {
         Ok(Self {
             queue: StableVecDeque::init(queue_memory)
                 .map_err(|_| DeferredBidirectionalLaraError::Maintenance("queue init failed"))?,
-            dirty: StableRoaringBitmap::init(dirty_memory).map_err(|_| {
-                DeferredBidirectionalLaraError::Maintenance("dirty set init failed")
-            })?,
+            dirty: StableRoaringBitmap::init(dirty_memory)
+                .map_err(DeferredBidirectionalLaraError::MaintenanceDirtyInit)?,
         })
     }
 
@@ -257,7 +255,7 @@ impl<M: Memory> BidirectionalMaintenanceQueue<M> {
         }
         self.dirty
             .insert(key)
-            .map_err(|_| DeferredBidirectionalLaraError::Maintenance("dirty set grow failed"))?;
+            .map_err(DeferredBidirectionalLaraError::MaintenanceDirtyBitmap)?;
         self.queue
             .push_back(&item)
             .map_err(|_| DeferredBidirectionalLaraError::Maintenance("queue grow failed"))?;
@@ -274,7 +272,7 @@ impl<M: Memory> BidirectionalMaintenanceQueue<M> {
         }
         self.dirty
             .insert(key)
-            .map_err(|_| DeferredBidirectionalLaraError::Maintenance("dirty set grow failed"))?;
+            .map_err(DeferredBidirectionalLaraError::MaintenanceDirtyBitmap)?;
         self.queue
             .push_front(&item)
             .map_err(|_| DeferredBidirectionalLaraError::Maintenance("queue grow failed"))?;
@@ -293,7 +291,7 @@ impl<M: Memory> BidirectionalMaintenanceQueue<M> {
     fn complete(&self, item: MaintenanceWorkItem) -> Result<(), DeferredBidirectionalLaraError> {
         self.dirty
             .clear(work_item_key(item))
-            .map_err(|_| DeferredBidirectionalLaraError::Maintenance("dirty set grow failed"))
+            .map_err(DeferredBidirectionalLaraError::MaintenanceDirtyBitmap)
     }
 
     fn requeue_front(
@@ -335,6 +333,10 @@ pub enum DeferredBidirectionalLaraError {
     ReverseDeferred(DeferredError),
     /// Unified bidirectional maintenance metadata operation failed.
     Maintenance(&'static str),
+    /// Dirty-work-item roaring bitmap reopen failed.
+    MaintenanceDirtyInit(RoaringInitError),
+    /// Dirty-work-item roaring bitmap operation failed (`new`, mutations, checkpoints).
+    MaintenanceDirtyBitmap(BitmapError),
     /// Forward graph initialization failed.
     ForwardInit(InitError),
     /// Reverse graph initialization failed.
@@ -383,6 +385,12 @@ impl fmt::Display for DeferredBidirectionalLaraError {
             Self::ForwardDeferred(e) => write!(f, "forward deferred operation failed: {e}"),
             Self::ReverseDeferred(e) => write!(f, "reverse deferred operation failed: {e}"),
             Self::Maintenance(e) => write!(f, "bidirectional maintenance failed: {e}"),
+            Self::MaintenanceDirtyInit(e) => {
+                write!(f, "bidirectional maintenance dirty bitmap init failed: {e}")
+            }
+            Self::MaintenanceDirtyBitmap(e) => {
+                write!(f, "bidirectional maintenance dirty bitmap failed: {e}")
+            }
             Self::ForwardInit(e) => write!(f, "forward init failed: {e}"),
             Self::ReverseInit(e) => write!(f, "reverse init failed: {e}"),
             Self::ForwardGrow(e) => write!(f, "forward vertex append failed: {e}"),
@@ -414,6 +422,8 @@ impl std::error::Error for DeferredBidirectionalLaraError {
             Self::ForwardDeferred(e) | Self::ReverseDeferred(e) => Some(e),
             Self::ForwardInit(e) | Self::ReverseInit(e) => Some(e),
             Self::ForwardGrow(e) | Self::ReverseGrow(e) => Some(e),
+            Self::MaintenanceDirtyInit(e) => Some(e),
+            Self::MaintenanceDirtyBitmap(e) => Some(e),
             Self::InvalidConfig(e) => Some(e),
             _ => None,
         }

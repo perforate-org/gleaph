@@ -66,7 +66,7 @@ pub use lara::{
         span_meta::{SegmentSpanMeta, SegmentSpanMetaStore},
     },
     maintenance::{
-        DeferredConfig, DeferredLaraGraph, MaintenanceBudget, MaintenanceReport,
+        DeferredConfig, DeferredLaraGraph, MaintenanceBudget, MaintenanceError, MaintenanceReport,
         MaintenanceWorkReport,
     },
     vertex::{InitError as VertexInitError, Vertex, VertexStore},

@@ -8,7 +8,7 @@ use crate::{
     lara::{InitError as GraphInitError, LaraGraph, MarkPriority, edge::OutEdgesIter},
     traits::{CsrEdge, CsrVertex},
 };
-use ic_stable_roaring::StableRoaringBitmap;
+use ic_stable_roaring::{BitmapError, StableRoaringBitmap};
 use ic_stable_structures::Memory;
 use ic_stable_vec_deque::StableVecDeque;
 use std::fmt;
@@ -31,27 +31,41 @@ impl fmt::Display for InitError {
     }
 }
 
-impl std::error::Error for InitError {}
-
-/// Errors returned when maintenance metadata cannot grow.
-#[derive(Debug)]
-pub enum GrowFailed {
-    /// The deque memory could not grow.
-    Queue(ic_stable_vec_deque::GrowFailed),
-    /// The dirty-set bitmap memory could not grow.
-    DirtySet(ic_stable_roaring::GrowFailed),
-}
-
-impl fmt::Display for GrowFailed {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::error::Error for InitError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Queue(e) => write!(f, "maintenance queue grow failed: {e}"),
-            Self::DirtySet(e) => write!(f, "dirty segment set grow failed: {e}"),
+            Self::Queue(e) => Some(e),
+            Self::DirtySet(e) => Some(e),
         }
     }
 }
 
-impl std::error::Error for GrowFailed {}
+/// Errors returned when the persistent maintenance queue or dirty bitmap fails.
+#[derive(Debug)]
+pub enum MaintenanceError {
+    /// The deque memory could not grow.
+    Queue(ic_stable_vec_deque::GrowFailed),
+    /// The dirty-set bitmap operation failed (allocation, journal, checkpoint I/O, …).
+    DirtySet(BitmapError),
+}
+
+impl fmt::Display for MaintenanceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Queue(e) => write!(f, "maintenance queue grow failed: {e}"),
+            Self::DirtySet(e) => write!(f, "dirty segment set failed: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for MaintenanceError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Queue(e) => Some(e),
+            Self::DirtySet(e) => Some(e),
+        }
+    }
+}
 
 /// Result of marking one segment for deferred maintenance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,10 +85,10 @@ pub struct MaintenanceQueue<M: Memory> {
 
 impl<M: Memory> MaintenanceQueue<M> {
     /// Creates a fresh empty maintenance queue.
-    pub fn new(queue_memory: M, dirty_memory: M) -> Result<Self, GrowFailed> {
+    pub fn new(queue_memory: M, dirty_memory: M) -> Result<Self, MaintenanceError> {
         Ok(Self {
-            queue: StableVecDeque::new(queue_memory).map_err(GrowFailed::Queue)?,
-            dirty: StableRoaringBitmap::new(dirty_memory).map_err(GrowFailed::DirtySet)?,
+            queue: StableVecDeque::new(queue_memory).map_err(MaintenanceError::Queue)?,
+            dirty: StableRoaringBitmap::new(dirty_memory).map_err(MaintenanceError::DirtySet)?,
         })
     }
 
@@ -107,7 +121,7 @@ impl<M: Memory> MaintenanceQueue<M> {
     }
 
     /// Marks `segment` dirty and appends it to the back of the queue if new.
-    pub fn mark_dirty(&self, segment: SegmentId) -> Result<MarkResult, GrowFailed> {
+    pub fn mark_dirty(&self, segment: SegmentId) -> Result<MarkResult, MaintenanceError> {
         if self.is_dirty(segment) {
             return Ok(MarkResult {
                 segment,
@@ -116,8 +130,10 @@ impl<M: Memory> MaintenanceQueue<M> {
         }
         self.dirty
             .insert(u32::from(segment))
-            .map_err(GrowFailed::DirtySet)?;
-        self.queue.push_back(&segment).map_err(GrowFailed::Queue)?;
+            .map_err(MaintenanceError::DirtySet)?;
+        self.queue
+            .push_back(&segment)
+            .map_err(MaintenanceError::Queue)?;
         Ok(MarkResult {
             segment,
             inserted: true,
@@ -125,7 +141,7 @@ impl<M: Memory> MaintenanceQueue<M> {
     }
 
     /// Marks `segment` urgent and pushes it to the front of the queue if new.
-    pub fn mark_urgent(&self, segment: SegmentId) -> Result<MarkResult, GrowFailed> {
+    pub fn mark_urgent(&self, segment: SegmentId) -> Result<MarkResult, MaintenanceError> {
         if self.is_dirty(segment) {
             return Ok(MarkResult {
                 segment,
@@ -134,8 +150,10 @@ impl<M: Memory> MaintenanceQueue<M> {
         }
         self.dirty
             .insert(u32::from(segment))
-            .map_err(GrowFailed::DirtySet)?;
-        self.queue.push_front(&segment).map_err(GrowFailed::Queue)?;
+            .map_err(MaintenanceError::DirtySet)?;
+        self.queue
+            .push_front(&segment)
+            .map_err(MaintenanceError::Queue)?;
         Ok(MarkResult {
             segment,
             inserted: true,
@@ -143,24 +161,24 @@ impl<M: Memory> MaintenanceQueue<M> {
     }
 
     /// Pops the next still-dirty segment and clears its dirty bit.
-    pub fn pop_next(&self) -> Result<Option<SegmentId>, GrowFailed> {
+    pub fn pop_next(&self) -> Result<Option<SegmentId>, MaintenanceError> {
         while let Some(segment) = self.queue.pop_front() {
             if !self.is_dirty(segment) {
                 continue;
             }
             self.dirty
                 .clear(u32::from(segment))
-                .map_err(GrowFailed::DirtySet)?;
+                .map_err(MaintenanceError::DirtySet)?;
             return Ok(Some(segment));
         }
         Ok(None)
     }
 
     /// Clears the dirty bit for `segment` without removing queued duplicates.
-    pub fn clear_dirty(&self, segment: SegmentId) -> Result<(), GrowFailed> {
+    pub fn clear_dirty(&self, segment: SegmentId) -> Result<(), MaintenanceError> {
         self.dirty
             .clear(u32::from(segment))
-            .map_err(GrowFailed::DirtySet)
+            .map_err(MaintenanceError::DirtySet)
     }
 }
 
@@ -195,7 +213,7 @@ pub enum DeferredError {
     /// The underlying LARA graph could not grow memory.
     Grow(GraphGrowFailed),
     /// Maintenance metadata operation failed.
-    Maintenance(GrowFailed),
+    Maintenance(MaintenanceError),
     /// The supplied deferred-maintenance configuration is invalid.
     InvalidConfig(DeferredConfigError),
 }
@@ -211,7 +229,15 @@ impl fmt::Display for DeferredError {
     }
 }
 
-impl std::error::Error for DeferredError {}
+impl std::error::Error for DeferredError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Grow(e) => Some(e),
+            Self::Maintenance(e) => Some(e),
+            _ => None,
+        }
+    }
+}
 
 /// Thresholds that control when deferred inserts enqueue maintenance work.
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -9,8 +9,6 @@ members = [
     "crates/graph-kernel",
     "crates/ic-stable-lara",
     "crates/ic-stable-paged-ordered-map",
-    "crates/ic-stable-roaring",
-    "crates/ic-stable-roaring/bench",
     "crates/ic-stable-vec-deque",
 ]
 resolver = "2"
@@ -28,7 +26,6 @@ gleaph-graph-catalog = { path = "crates/graph-catalog" }
 gleaph-graph-kernel = { path = "crates/graph-kernel" }
 ic-stable-lara = { path = "crates/ic-stable-lara" }
 ic-stable-paged-ordered-map = { path = "crates/ic-stable-paged-ordered-map" }
-ic-stable-roaring = { path = "crates/ic-stable-roaring" }
 ic-stable-vec-deque = { path = "crates/ic-stable-vec-deque" }
 
 bitflags = "2.11.1"
@@ -42,6 +39,7 @@ f256 = "0.11"
 half = "2"
 ic-cdk = "0.20"
 ic-cdk-macros = "0.20"
+ic-stable-roaring = { path = "../ic-stable-roaring" }
 rapidhash = "4"
 rkyv = "0.8.16"
 roaring = "0.11.4"
