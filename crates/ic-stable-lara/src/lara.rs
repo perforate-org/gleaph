@@ -27,15 +27,17 @@
 mod bench;
 pub mod edge;
 pub mod maintenance;
+pub mod operation_error;
 pub mod vertex;
 
 use crate::{
     GrowFailed, SegmentId, VertexId,
     lara::{
         edge::{
-            EdgeHeaderV1, EdgeStore, InsertLocation, OutEdgesIter, VertexAccess,
-            counts::SegmentEdgeCounts, segment_tree_leaf_count,
+            EdgeHeaderV1, EdgeStore, InsertLocation, OutEdgesIter, counts::SegmentEdgeCounts,
+            segment_tree_leaf_count,
         },
+        operation_error::{LaraOperationError, VertexAccess, VertexAccessError},
         vertex::VertexStore,
     },
     traits::{CsrEdge, CsrVertex, CsrVertexTombstoneScan},
@@ -267,7 +269,7 @@ where
     /// without per-leaf ancestor walks. Avoid mutating `EdgeStore` directly beside
     /// this graph; mismatched `total` fields can skew density until the next
     /// full leaf refresh (e.g. after PMA grow or rebalance).
-    pub fn insert_edge(&self, src: VertexId, edge: E) -> Result<(), &'static str> {
+    pub fn insert_edge(&self, src: VertexId, edge: E) -> Result<(), LaraOperationError> {
         let _ = self.insert_edge_raw(src, edge)?;
         self.rebalance_after_insert(src)
     }
@@ -276,7 +278,7 @@ where
     ///
     /// Equivalent to `!collect_out_edges_slot_order(src)?.is_empty()` on success, without reading
     /// the edge slab or overflow log when `degree` is zero.
-    pub fn has_out_edges(&self, src: VertexId) -> Result<bool, &'static str> {
+    pub fn has_out_edges(&self, src: VertexId) -> Result<bool, LaraOperationError> {
         self.edges.has_out_edges(&self.vertices, src)
     }
 
@@ -284,7 +286,10 @@ where
     ///
     /// Use this when the caller needs the legacy slot-order vector, such as
     /// resize and rebalancing code that rewrites contiguous CSR rows.
-    pub fn collect_out_edges_slot_order(&self, src: VertexId) -> Result<Vec<E>, &'static str> {
+    pub fn collect_out_edges_slot_order(
+        &self,
+        src: VertexId,
+    ) -> Result<Vec<E>, LaraOperationError> {
         self.edges.collect_out_edges_slot_order(&self.vertices, src)
     }
 
@@ -292,7 +297,10 @@ where
     ///
     /// This order is deterministic for the committed store state, but it is not
     /// guaranteed to be insertion order or slab slot order.
-    pub fn iter_out_edges(&self, src: VertexId) -> Result<OutEdgesIter<'_, E, M>, &'static str> {
+    pub fn iter_out_edges(
+        &self,
+        src: VertexId,
+    ) -> Result<OutEdgesIter<'_, E, M>, LaraOperationError> {
         self.edges.iter_out_edges(&self.vertices, src)
     }
 
@@ -303,7 +311,7 @@ where
     /// the caller's contract. When several edges connect the same vertices,
     /// fields such as labels or properties in `E` decide which single record is
     /// removed.
-    pub fn remove_edge(&self, src: VertexId, edge: E) -> Result<bool, &'static str>
+    pub fn remove_edge(&self, src: VertexId, edge: E) -> Result<bool, LaraOperationError>
     where
         E: PartialEq,
     {
@@ -320,21 +328,23 @@ where
         &self,
         src: VertexId,
         matches: F,
-    ) -> Result<Option<E>, &'static str>
+    ) -> Result<Option<E>, LaraOperationError>
     where
         F: FnMut(&E) -> bool,
     {
         let src_idx = u64::from(src);
         if src_idx >= self.vertices.len() {
-            return Err("vertex out of range");
+            return Err(LaraOperationError::VertexAccess(
+                VertexAccessError::OutOfRange,
+            ));
         }
         let v = self.vertices.get(src);
         if V::record_is_vertex_tombstone(&v) {
-            return Err("vertex deleted");
+            return Err(LaraOperationError::VertexDeleted);
         }
         if v.log_head() >= 0 {
             self.rebalance_leaf_for(src)
-                .map_err(|_| "rebalance failed")?;
+                .map_err(LaraOperationError::RebalanceFailed)?;
         }
         self.edges
             .remove_edge_unordered_matching(&self.vertices, src, matches)
@@ -399,7 +409,7 @@ where
         &self,
         src: VertexId,
         edge: E,
-    ) -> Result<InsertOutcome, &'static str> {
+    ) -> Result<InsertOutcome, LaraOperationError> {
         let mut layout = self.layout();
         let mut segment = self.segment_for_vertex_id_with_layout(&layout, src);
         if self
@@ -407,15 +417,15 @@ where
             .log_is_full_with_segment_size(src, layout.segment_size)
         {
             self.rebalance_leaf_segment_with_layout(&layout, segment)
-                .map_err(|_| "rebalance failed")?;
+                .map_err(LaraOperationError::RebalanceFailed)?;
             layout = self.layout();
             segment = self.segment_for_vertex_id_with_layout(&layout, src);
         }
         let location = match self.edges.insert_edge(&self.vertices, src, edge) {
             Ok(location) => location,
-            Err("segment log full") => {
+            Err(LaraOperationError::SegmentLogFull) => {
                 self.rebalance_leaf_segment_with_layout(&layout, segment)
-                    .map_err(|_| "rebalance failed")?;
+                    .map_err(LaraOperationError::RebalanceFailed)?;
                 self.edges.insert_edge(&self.vertices, src, edge)?
             }
             Err(e) => return Err(e),
@@ -426,10 +436,12 @@ where
         })
     }
 
-    pub(crate) fn vertex_is_deleted(&self, vid: VertexId) -> Result<bool, &'static str> {
+    pub(crate) fn vertex_is_deleted(&self, vid: VertexId) -> Result<bool, LaraOperationError> {
         let vidx = u64::from(vid);
         if vidx >= self.vertices.len() {
-            return Err("vertex out of range");
+            return Err(LaraOperationError::VertexAccess(
+                VertexAccessError::OutOfRange,
+            ));
         }
         Ok(V::record_is_vertex_tombstone(&self.vertices.get(vid)))
     }
@@ -438,10 +450,12 @@ where
         &self,
         vid: VertexId,
         deleted: bool,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), LaraOperationError> {
         let vidx = u64::from(vid);
         if vidx >= self.vertices.len() {
-            return Err("vertex out of range");
+            return Err(LaraOperationError::VertexAccess(
+                VertexAccessError::OutOfRange,
+            ));
         }
         let v = self.vertices.get(vid);
         self.vertices
@@ -453,26 +467,33 @@ where
         &self,
         vid: VertexId,
         offset: u32,
-    ) -> Result<Option<E>, &'static str> {
+    ) -> Result<Option<E>, LaraOperationError> {
         let vidx = u64::from(vid);
         if vidx >= self.vertices.len() {
-            return Err("vertex out of range");
+            return Err(LaraOperationError::VertexAccess(
+                VertexAccessError::OutOfRange,
+            ));
         }
         if self.vertices.get(vid).log_head() >= 0 {
             self.rebalance_leaf_for(vid)
-                .map_err(|_| "rebalance failed")?;
+                .map_err(LaraOperationError::RebalanceFailed)?;
         }
         self.edges.row_edge_at_slab(&self.vertices, vid, offset)
     }
 
-    pub(crate) fn clear_row_after_rebalance(&self, vid: VertexId) -> Result<u32, &'static str> {
+    pub(crate) fn clear_row_after_rebalance(
+        &self,
+        vid: VertexId,
+    ) -> Result<u32, LaraOperationError> {
         let vidx = u64::from(vid);
         if vidx >= self.vertices.len() {
-            return Err("vertex out of range");
+            return Err(LaraOperationError::VertexAccess(
+                VertexAccessError::OutOfRange,
+            ));
         }
         if self.vertices.get(vid).log_head() >= 0 {
             self.rebalance_leaf_for(vid)
-                .map_err(|_| "rebalance failed")?;
+                .map_err(LaraOperationError::RebalanceFailed)?;
         }
         self.edges.clear_row_slab(&self.vertices, vid)
     }
@@ -481,7 +502,7 @@ where
         &self,
         src: VertexId,
         matches: F,
-    ) -> Result<Option<E>, &'static str>
+    ) -> Result<Option<E>, LaraOperationError>
     where
         F: FnMut(&E) -> bool,
     {
@@ -491,18 +512,18 @@ where
         }
         if self.vertices.get(src).log_head() >= 0 {
             self.rebalance_leaf_for(src)
-                .map_err(|_| "rebalance failed")?;
+                .map_err(LaraOperationError::RebalanceFailed)?;
         }
         self.edges
             .remove_edge_unordered_matching(&self.vertices, src, matches)
     }
 
-    fn rebalance_after_insert(&self, src: VertexId) -> Result<(), &'static str> {
+    fn rebalance_after_insert(&self, src: VertexId) -> Result<(), LaraOperationError> {
         let layout = self.layout();
         let current_leaf = self.leaf_for_vertex_with_layout(&layout, u64::from(src));
         let leaf_counts = self
             .edge_counts_for_leaves_with_layout(&layout, current_leaf, current_leaf + 1)
-            .ok_or("segment counts out of range")?;
+            .ok_or(LaraOperationError::SegmentCountsOutOfRange)?;
         if density(leaf_counts) < LEAF_UPPER_DENSITY {
             return Ok(());
         }
@@ -524,7 +545,7 @@ where
                 .max(left_leaf + 1);
             let counts = self
                 .edge_counts_for_leaves_with_layout(&layout, left_leaf, right_leaf)
-                .ok_or("segment counts out of range")?;
+                .ok_or(LaraOperationError::SegmentCountsOutOfRange)?;
             let up_height =
                 LEAF_UPPER_DENSITY - f64::from(height) * self.delta_up_with_layout(&layout);
             if density(counts) < up_height {
@@ -536,19 +557,19 @@ where
         if let Some((left_vertex, right_vertex, counts)) = chosen {
             let leaf_density = density(
                 self.edge_counts_for_leaves_with_layout(&layout, current_leaf, current_leaf + 1)
-                    .ok_or("segment counts out of range")?,
+                    .ok_or(LaraOperationError::SegmentCountsOutOfRange)?,
             );
             if leaf_density >= LEAF_UPPER_DENSITY {
                 self.rebalance_weighted_with_layout(&layout, left_vertex, right_vertex, counts)
-                    .map_err(|_| "rebalance failed")?;
+                    .map_err(LaraOperationError::RebalanceFailed)?;
             }
         } else if density(
             self.edge_counts_for_leaves_with_layout(&layout, current_leaf, current_leaf + 1)
-                .ok_or("segment counts out of range")?,
+                .ok_or(LaraOperationError::SegmentCountsOutOfRange)?,
         ) >= LEAF_UPPER_DENSITY
         {
             self.local_resize_segment_with_layout(&layout, current_leaf as u32)
-                .map_err(|_| "resize failed")?;
+                .map_err(LaraOperationError::ResizeFailed)?;
         }
 
         Ok(())

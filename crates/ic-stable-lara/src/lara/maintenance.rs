@@ -5,7 +5,10 @@
 
 use crate::{
     GrowFailed as GraphGrowFailed, SegmentId, VertexId,
-    lara::{InitError as GraphInitError, LaraGraph, MarkPriority, edge::OutEdgesIter},
+    lara::{
+        InitError as GraphInitError, LaraGraph, MarkPriority, edge::OutEdgesIter,
+        operation_error::LaraOperationError,
+    },
     traits::{CsrEdge, CsrVertex},
 };
 use ic_stable_roaring::{BitmapError, StableRoaringBitmap};
@@ -209,7 +212,7 @@ impl std::error::Error for DeferredInitError {}
 #[derive(Debug)]
 pub enum DeferredError {
     /// The underlying LARA graph operation failed.
-    Graph(&'static str),
+    Graph(LaraOperationError),
     /// The underlying LARA graph could not grow memory.
     Grow(GraphGrowFailed),
     /// Maintenance metadata operation failed.
@@ -232,6 +235,7 @@ impl fmt::Display for DeferredError {
 impl std::error::Error for DeferredError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Graph(e) => Some(e),
             Self::Grow(e) => Some(e),
             Self::Maintenance(e) => Some(e),
             _ => None,
@@ -548,12 +552,15 @@ where
     }
 
     /// Returns `true` if `src` has at least one outgoing edge visible to clean scans.
-    pub fn has_out_edges(&self, src: VertexId) -> Result<bool, &'static str> {
+    pub fn has_out_edges(&self, src: VertexId) -> Result<bool, LaraOperationError> {
         self.graph.has_out_edges(src)
     }
 
     /// Collects outgoing edges in slab slot order.
-    pub fn collect_out_edges_slot_order(&self, src: VertexId) -> Result<Vec<E>, &'static str> {
+    pub fn collect_out_edges_slot_order(
+        &self,
+        src: VertexId,
+    ) -> Result<Vec<E>, LaraOperationError> {
         self.graph.collect_out_edges_slot_order(src)
     }
 
@@ -561,7 +568,10 @@ where
     ///
     /// This order is deterministic for the committed store state, but it is not
     /// guaranteed to be insertion order or slab slot order.
-    pub fn iter_out_edges(&self, src: VertexId) -> Result<OutEdgesIter<'_, E, M>, &'static str> {
+    pub fn iter_out_edges(
+        &self,
+        src: VertexId,
+    ) -> Result<OutEdgesIter<'_, E, M>, LaraOperationError> {
         self.graph.iter_out_edges(src)
     }
 

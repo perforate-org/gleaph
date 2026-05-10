@@ -49,6 +49,7 @@ pub mod free_span;
 mod log;
 pub mod span_meta;
 
+use super::operation_error::{LaraOperationError, VertexAccess, vertex_id, vertex_index};
 use crate::{
     GrowFailed, SegmentId, VertexId,
     traits::{CsrEdge, CsrVertex, CsrVertexTombstoneScan},
@@ -132,12 +133,6 @@ impl fmt::Display for InitError {
 }
 
 impl std::error::Error for InitError {}
-
-pub(crate) trait VertexAccess<V: CsrVertex> {
-    fn len(&self) -> u64;
-    fn get(&self, id: VertexId) -> V;
-    fn set(&self, id: VertexId, item: &V);
-}
 
 /// Combined stable edge storage used by [`LaraGraph`](crate::LaraGraph).
 pub struct EdgeStore<E: CsrEdge, M: Memory> {
@@ -453,16 +448,13 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         &self,
         vertices: &A,
         vid: VertexId,
-    ) -> Result<Vec<E>, &'static str>
+    ) -> Result<Vec<E>, LaraOperationError>
     where
         V: CsrVertex + CsrVertexTombstoneScan,
         A: VertexAccess<V>,
     {
+        let v = vertices.get_in_range(vid)?;
         let vidx = vertex_index(vid);
-        if vidx >= vertices.len() as usize {
-            return Err("vertex out of range");
-        }
-        let v = vertices.get(vid);
         // Tombstone rows may still hold slab/log material while incremental
         // `DeleteVertex` maintenance runs; only fully evacuated rows reject reads.
         if V::record_is_vertex_tombstone(&v) && v.degree() == 0 && v.log_head() < 0 {
@@ -474,7 +466,9 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             if degree == 0 {
                 return Ok(Vec::new());
             }
-            let nbytes = degree.checked_mul(E::BYTES).ok_or("collect overflow")?;
+            let nbytes = degree
+                .checked_mul(E::BYTES)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             let mut raw = vec![0u8; nbytes];
             self.edges.read_slots_contiguous(base, &mut raw);
             let mut out = Vec::with_capacity(degree);
@@ -505,7 +499,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             out[0]
         } else {
             if log_i < 0 {
-                return Err("log chain short");
+                return Err(LaraOperationError::LogChainShort);
             }
             let (prev, edge) = self.read_log_edge_with_header(&log_h, leaf, log_i as u32);
             log_i = prev;
@@ -516,7 +510,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         if slab_count == 0 {
             for offset in (0..log_count.saturating_sub(1)).rev() {
                 if log_i < 0 {
-                    return Err("log chain short");
+                    return Err(LaraOperationError::LogChainShort);
                 }
                 let (prev, edge) = self.read_log_edge_with_header(&log_h, leaf, log_i as u32);
                 out[slab_count + offset] = edge;
@@ -525,7 +519,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         } else {
             for offset in (0..log_count).rev() {
                 if log_i < 0 {
-                    return Err("log chain short");
+                    return Err(LaraOperationError::LogChainShort);
                 }
                 let (prev, edge) = self.read_log_edge_with_header(&log_h, leaf, log_i as u32);
                 out[slab_count + offset] = edge;
@@ -544,16 +538,12 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         &self,
         vertices: &A,
         vid: VertexId,
-    ) -> Result<bool, &'static str>
+    ) -> Result<bool, LaraOperationError>
     where
         V: CsrVertex,
         A: VertexAccess<V>,
     {
-        let vidx = vertex_index(vid);
-        if vidx >= vertices.len() as usize {
-            return Err("vertex out of range");
-        }
-        let v = vertices.get(vid);
+        let v = vertices.get_in_range(vid)?;
         Ok(v.degree() > 0)
     }
 
@@ -561,16 +551,13 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         &self,
         vertices: &A,
         vid: VertexId,
-    ) -> Result<OutEdgesIter<'_, E, M>, &'static str>
+    ) -> Result<OutEdgesIter<'_, E, M>, LaraOperationError>
     where
         V: CsrVertex + CsrVertexTombstoneScan,
         A: VertexAccess<V>,
     {
+        let v = vertices.get_in_range(vid)?;
         let vidx = vertex_index(vid);
-        if vidx >= vertices.len() as usize {
-            return Err("vertex out of range");
-        }
-        let v = vertices.get(vid);
         // See `collect_out_edges_slot_order`: allow enumeration for tombstones that
         // still have pending edge material (rebalance during vertex delete).
         if V::record_is_vertex_tombstone(&v) && v.degree() == 0 && v.log_head() < 0 {
@@ -657,24 +644,21 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         vertices: &A,
         vid: VertexId,
         edge: E,
-    ) -> Result<InsertLocation, &'static str>
+    ) -> Result<InsertLocation, LaraOperationError>
     where
         V: CsrVertex + CsrVertexTombstoneScan,
         A: VertexAccess<V>,
     {
         let edge_layout = self.edge_layout();
+        let v = vertices.get_in_range(vid)?;
         let vidx = vertex_index(vid);
-        if vidx >= vertices.len() as usize {
-            return Err("vertex out of range");
-        }
-        let v = vertices.get(vid);
         if V::record_is_vertex_tombstone(&v) {
-            return Err("vertex deleted");
+            return Err(LaraOperationError::VertexDeleted);
         }
         let loc = v.base_slot_start().saturating_add(u64::from(v.degree()));
         let location = if self.have_space_on_slab(vertices, vidx, &v, loc, edge_layout) {
             self.write_slot(loc, edge)
-                .map_err(|_| "write edge slot failed")?;
+                .map_err(LaraOperationError::WriteEdgeSlotFailed)?;
             vertices.set(vid, &v.with_degree(v.degree() + 1));
             InsertLocation::Slab
         } else {
@@ -691,20 +675,16 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         vertices: &A,
         vid: VertexId,
         mut matches: F,
-    ) -> Result<Option<E>, &'static str>
+    ) -> Result<Option<E>, LaraOperationError>
     where
         V: CsrVertex,
         A: VertexAccess<V>,
         F: FnMut(&E) -> bool,
     {
         let edge_layout = self.edge_layout();
-        let vidx = vertex_index(vid);
-        if vidx >= vertices.len() as usize {
-            return Err("vertex out of range");
-        }
-        let v = vertices.get(vid);
+        let v = vertices.get_in_range(vid)?;
         if v.log_head() >= 0 {
-            return Err("remove requires slab-only row");
+            return Err(LaraOperationError::RemoveRequiresSlabOnlyRow);
         }
         let degree = v.degree();
         if degree == 0 {
@@ -729,7 +709,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         if local_index != last_index {
             let last = self.read_slot(base.saturating_add(u64::from(last_index)));
             self.write_slot(base.saturating_add(u64::from(local_index)), last)
-                .map_err(|_| "write edge slot failed")?;
+                .map_err(LaraOperationError::WriteEdgeSlotFailed)?;
         }
         vertices.set(vid, &v.with_degree(last_index));
         self.set_num_edges(edge_layout.num_edges.saturating_sub(1));
@@ -742,18 +722,14 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         vertices: &A,
         vid: VertexId,
         offset: u32,
-    ) -> Result<Option<E>, &'static str>
+    ) -> Result<Option<E>, LaraOperationError>
     where
         V: CsrVertex,
         A: VertexAccess<V>,
     {
-        let vidx = vertex_index(vid);
-        if vidx >= vertices.len() as usize {
-            return Err("vertex out of range");
-        }
-        let v = vertices.get(vid);
+        let v = vertices.get_in_range(vid)?;
         if v.log_head() >= 0 {
-            return Err("row edge read requires slab-only row");
+            return Err(LaraOperationError::RowEdgeReadRequiresSlabOnlyRow);
         }
         if offset >= v.degree() {
             return Ok(None);
@@ -767,19 +743,15 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         &self,
         vertices: &A,
         vid: VertexId,
-    ) -> Result<u32, &'static str>
+    ) -> Result<u32, LaraOperationError>
     where
         V: CsrVertex,
         A: VertexAccess<V>,
     {
         let edge_layout = self.edge_layout();
-        let vidx = vertex_index(vid);
-        if vidx >= vertices.len() as usize {
-            return Err("vertex out of range");
-        }
-        let v = vertices.get(vid);
+        let v = vertices.get_in_range(vid)?;
         if v.log_head() >= 0 {
-            return Err("clear row requires slab-only row");
+            return Err(LaraOperationError::ClearRowRequiresSlabOnlyRow);
         }
         let removed = v.degree();
         if removed == 0 {
@@ -798,7 +770,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         vid: VertexId,
         v: V,
         edge: E,
-    ) -> Result<(), &'static str>
+    ) -> Result<(), LaraOperationError>
     where
         V: CsrVertex,
         A: VertexAccess<V>,
@@ -807,9 +779,10 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let log_h = self.log.header();
         let idx = self.log.read_idx_with_header(&log_h, leaf);
         if idx < 0 || idx >= log_h.max_log_entries as i32 {
-            return Err("segment log full");
+            return Err(LaraOperationError::SegmentLogFull);
         }
-        let src = i32::try_from(u32::from(vid)).map_err(|_| "vertex id exceeds i32")?;
+        let src =
+            i32::try_from(u32::from(vid)).map_err(|_| LaraOperationError::VertexIdExceedsI32)?;
         if E::BYTES <= INLINE_EDGE_BYTES {
             let mut payload = [0u8; INLINE_EDGE_BYTES];
             edge.write_to(&mut payload[..E::BYTES]);
@@ -822,13 +795,13 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                     src,
                     &payload[..E::BYTES],
                 )
-                .map_err(|_| "write log failed")?;
+                .map_err(LaraOperationError::WriteLogFailed)?;
         } else {
             let mut payload = vec![0u8; E::BYTES];
             edge.write_to(&mut payload);
             self.log
                 .write_entry_with_header(&log_h, leaf, idx as u32, v.log_head(), src, &payload)
-                .map_err(|_| "write log failed")?;
+                .map_err(LaraOperationError::WriteLogFailed)?;
         }
         self.log.write_idx_with_header(&log_h, leaf, idx + 1);
         vertices.set(vid, &v.with_log_head(idx).with_degree(v.degree() + 1));
@@ -918,11 +891,11 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         vid: VertexId,
         d_actual: i64,
         d_total: i64,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), LaraOperationError> {
         let mut idx =
             (leaf_segment(vid, edge_layout.segment_size) + edge_layout.segment_count) as usize;
         if idx as u64 >= self.counts.len() {
-            return Err("segment counts tree too small");
+            return Err(LaraOperationError::SegmentCountsTreeTooSmall);
         }
         loop {
             let mut c = self.counts.get(idx as u64);
@@ -988,16 +961,6 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     pub(crate) fn set_count(&self, index: u64, count: SegmentEdgeCounts) {
         self.counts.set(index, &count);
     }
-}
-
-#[inline]
-fn vertex_index(vid: VertexId) -> usize {
-    u32::from(vid) as usize
-}
-
-#[inline]
-fn vertex_id(index: usize) -> VertexId {
-    VertexId::from(u32::try_from(index).expect("vertex index exceeds VertexId"))
 }
 
 #[inline]

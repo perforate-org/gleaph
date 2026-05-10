@@ -10,7 +10,7 @@ pub mod deferred;
 
 use crate::{
     GrowFailed, LaraGraph, VertexCount, VertexId,
-    lara::{InitError, edge::OutEdgesIter},
+    lara::{InitError, edge::OutEdgesIter, operation_error::LaraOperationError},
     traits::{CsrEdge, CsrEdgeUndirected, CsrVertex},
 };
 use ic_stable_structures::Memory;
@@ -41,9 +41,9 @@ impl<E: CsrEdge + CsrEdgeUndirected> UndirectedEdgeFlag for E {
 #[derive(Debug)]
 pub enum BidirectionalLaraError {
     /// Forward store operation failed.
-    Forward(&'static str),
+    Forward(LaraOperationError),
     /// Reverse store operation failed.
-    Reverse(&'static str),
+    Reverse(LaraOperationError),
     /// Forward store initialization failed.
     ForwardInit(InitError),
     /// Reverse store initialization failed.
@@ -105,6 +105,7 @@ impl fmt::Display for BidirectionalLaraError {
 impl std::error::Error for BidirectionalLaraError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Forward(e) | Self::Reverse(e) => Some(e),
             Self::ForwardInit(e) | Self::ReverseInit(e) => Some(e),
             Self::Grow(e) => Some(e),
             _ => None,
@@ -430,7 +431,7 @@ where
             .map_err(BidirectionalLaraError::Reverse)?;
         if !removed_reverse {
             return Err(BidirectionalLaraError::Reverse(
-                "directed remove orientation mismatch",
+                LaraOperationError::DirectedRemoveOrientationMismatch,
             ));
         }
         Ok(Some(edge))
@@ -534,7 +535,7 @@ where
                 self.remove_directed_record_unchecked(v, u, edge.with_neighbor_vid(u))?;
             if opposite.is_none() {
                 return Err(BidirectionalLaraError::Forward(
-                    "undirected remove orientation mismatch",
+                    LaraOperationError::UndirectedRemoveOrientationMismatch,
                 ));
             }
         }

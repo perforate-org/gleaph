@@ -7,12 +7,15 @@ use crate::{
         InitError, LaraGraph, MarkPriority,
         edge::OutEdgesIter,
         maintenance::{DeferredConfig, DeferredError, MaintenanceBudget, MaintenanceWorkReport},
+        operation_error::LaraOperationError,
     },
     traits::{CsrEdge, CsrEdgeUndirected, CsrVertex},
 };
 use ic_stable_roaring::{BitmapError, InitError as RoaringInitError, StableRoaringBitmap};
 use ic_stable_structures::{Memory, Storable, storable::Bound};
-use ic_stable_vec_deque::StableVecDeque;
+use ic_stable_vec_deque::{
+    GrowFailed as QueueGrowFailed, InitError as QueueInitError, StableVecDeque,
+};
 use std::{borrow::Cow, fmt};
 
 #[cfg(feature = "canbench")]
@@ -222,7 +225,7 @@ impl<M: Memory> BidirectionalMaintenanceQueue<M> {
     fn new(queue_memory: M, dirty_memory: M) -> Result<Self, DeferredBidirectionalLaraError> {
         Ok(Self {
             queue: StableVecDeque::new(queue_memory)
-                .map_err(|_| DeferredBidirectionalLaraError::Maintenance("queue grow failed"))?,
+                .map_err(DeferredBidirectionalLaraError::MaintenanceQueue)?,
             dirty: StableRoaringBitmap::new(dirty_memory)
                 .map_err(DeferredBidirectionalLaraError::MaintenanceDirtyBitmap)?,
         })
@@ -231,7 +234,7 @@ impl<M: Memory> BidirectionalMaintenanceQueue<M> {
     fn init(queue_memory: M, dirty_memory: M) -> Result<Self, DeferredBidirectionalLaraError> {
         Ok(Self {
             queue: StableVecDeque::init(queue_memory)
-                .map_err(|_| DeferredBidirectionalLaraError::Maintenance("queue init failed"))?,
+                .map_err(DeferredBidirectionalLaraError::MaintenanceQueueInit)?,
             dirty: StableRoaringBitmap::init(dirty_memory)
                 .map_err(DeferredBidirectionalLaraError::MaintenanceDirtyInit)?,
         })
@@ -258,7 +261,7 @@ impl<M: Memory> BidirectionalMaintenanceQueue<M> {
             .map_err(DeferredBidirectionalLaraError::MaintenanceDirtyBitmap)?;
         self.queue
             .push_back(&item)
-            .map_err(|_| DeferredBidirectionalLaraError::Maintenance("queue grow failed"))?;
+            .map_err(DeferredBidirectionalLaraError::MaintenanceQueue)?;
         Ok(true)
     }
 
@@ -275,7 +278,7 @@ impl<M: Memory> BidirectionalMaintenanceQueue<M> {
             .map_err(DeferredBidirectionalLaraError::MaintenanceDirtyBitmap)?;
         self.queue
             .push_front(&item)
-            .map_err(|_| DeferredBidirectionalLaraError::Maintenance("queue grow failed"))?;
+            .map_err(DeferredBidirectionalLaraError::MaintenanceQueue)?;
         Ok(true)
     }
 
@@ -300,7 +303,7 @@ impl<M: Memory> BidirectionalMaintenanceQueue<M> {
     ) -> Result<(), DeferredBidirectionalLaraError> {
         self.queue
             .push_front(&item)
-            .map_err(|_| DeferredBidirectionalLaraError::Maintenance("queue grow failed"))
+            .map_err(DeferredBidirectionalLaraError::MaintenanceQueue)
     }
 }
 
@@ -324,15 +327,17 @@ fn work_item_key(item: MaintenanceWorkItem) -> u32 {
 #[derive(Debug)]
 pub enum DeferredBidirectionalLaraError {
     /// Forward store operation failed.
-    Forward(&'static str),
+    Forward(LaraOperationError),
     /// Reverse store operation failed.
-    Reverse(&'static str),
+    Reverse(LaraOperationError),
     /// Forward deferred graph operation failed.
     ForwardDeferred(DeferredError),
     /// Reverse deferred graph operation failed.
     ReverseDeferred(DeferredError),
-    /// Unified bidirectional maintenance metadata operation failed.
-    Maintenance(&'static str),
+    /// Unified bidirectional maintenance deque grow or enqueue failed.
+    MaintenanceQueue(QueueGrowFailed),
+    /// Unified bidirectional maintenance deque could not be reopened.
+    MaintenanceQueueInit(QueueInitError),
     /// Dirty-work-item roaring bitmap reopen failed.
     MaintenanceDirtyInit(RoaringInitError),
     /// Dirty-work-item roaring bitmap operation failed (`new`, mutations, checkpoints).
@@ -384,7 +389,12 @@ impl fmt::Display for DeferredBidirectionalLaraError {
             Self::Reverse(e) => write!(f, "reverse store: {e}"),
             Self::ForwardDeferred(e) => write!(f, "forward deferred operation failed: {e}"),
             Self::ReverseDeferred(e) => write!(f, "reverse deferred operation failed: {e}"),
-            Self::Maintenance(e) => write!(f, "bidirectional maintenance failed: {e}"),
+            Self::MaintenanceQueue(e) => {
+                write!(f, "bidirectional maintenance queue failed: {e}")
+            }
+            Self::MaintenanceQueueInit(e) => {
+                write!(f, "bidirectional maintenance queue init failed: {e}")
+            }
             Self::MaintenanceDirtyInit(e) => {
                 write!(f, "bidirectional maintenance dirty bitmap init failed: {e}")
             }
@@ -420,10 +430,13 @@ impl std::error::Error for DeferredBidirectionalLaraError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::ForwardDeferred(e) | Self::ReverseDeferred(e) => Some(e),
-            Self::ForwardInit(e) | Self::ReverseInit(e) => Some(e),
-            Self::ForwardGrow(e) | Self::ReverseGrow(e) => Some(e),
+            Self::MaintenanceQueue(e) => Some(e),
+            Self::MaintenanceQueueInit(e) => Some(e),
             Self::MaintenanceDirtyInit(e) => Some(e),
             Self::MaintenanceDirtyBitmap(e) => Some(e),
+            Self::ForwardInit(e) | Self::ReverseInit(e) => Some(e),
+            Self::ForwardGrow(e) | Self::ReverseGrow(e) => Some(e),
+            Self::Forward(e) | Self::Reverse(e) => Some(e),
             Self::InvalidConfig(e) => Some(e),
             _ => None,
         }
@@ -824,10 +837,8 @@ where
             return Err(DeferredBidirectionalLaraError::UndirectedEdgeInDirectedInsert);
         }
 
-        self.insert_oriented_deferred(Orientation::Forward, src, edge)
-            .map_err(DeferredBidirectionalLaraError::Forward)?;
-        self.insert_oriented_deferred(Orientation::Reverse, dst, edge.with_neighbor_vid(src))
-            .map_err(DeferredBidirectionalLaraError::Reverse)?;
+        self.insert_oriented_deferred(Orientation::Forward, src, edge)?;
+        self.insert_oriented_deferred(Orientation::Reverse, dst, edge.with_neighbor_vid(src))?;
         Ok(())
     }
 
@@ -916,7 +927,7 @@ where
             .map_err(DeferredBidirectionalLaraError::Reverse)?;
         if !removed_reverse {
             return Err(DeferredBidirectionalLaraError::Reverse(
-                "directed remove orientation mismatch",
+                LaraOperationError::DirectedRemoveOrientationMismatch,
             ));
         }
         Ok(Some(edge))
@@ -927,12 +938,17 @@ where
         orientation: Orientation,
         src: VertexId,
         edge: E,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), DeferredBidirectionalLaraError> {
         let graph = match orientation {
             Orientation::Forward => &self.forward,
             Orientation::Reverse => &self.reverse,
         };
-        let outcome = graph.insert_edge_raw(src, edge)?;
+        let outcome = graph
+            .insert_edge_raw(src, edge)
+            .map_err(|e| match orientation {
+                Orientation::Forward => DeferredBidirectionalLaraError::Forward(e),
+                Orientation::Reverse => DeferredBidirectionalLaraError::Reverse(e),
+            })?;
         let priority = graph.deferred_mark_priority(
             outcome.segment,
             outcome.inserted_into_log,
@@ -940,7 +956,6 @@ where
             self.config.log_urgent_ratio,
         );
         self.enqueue_rebalance_priority(orientation, priority)
-            .map_err(|_| "maintenance enqueue failed")
     }
 
     fn enqueue_rebalance_priority(
@@ -984,21 +999,15 @@ where
 
         if u == v {
             let loop_edge = edge.with_neighbor_vid(u);
-            self.insert_oriented_deferred(Orientation::Forward, u, loop_edge)
-                .map_err(DeferredBidirectionalLaraError::Forward)?;
-            self.insert_oriented_deferred(Orientation::Reverse, u, loop_edge)
-                .map_err(DeferredBidirectionalLaraError::Reverse)?;
+            self.insert_oriented_deferred(Orientation::Forward, u, loop_edge)?;
+            self.insert_oriented_deferred(Orientation::Reverse, u, loop_edge)?;
             return Ok(());
         }
 
-        self.insert_oriented_deferred(Orientation::Forward, u, edge.with_neighbor_vid(v))
-            .map_err(DeferredBidirectionalLaraError::Forward)?;
-        self.insert_oriented_deferred(Orientation::Forward, v, edge.with_neighbor_vid(u))
-            .map_err(DeferredBidirectionalLaraError::Forward)?;
-        self.insert_oriented_deferred(Orientation::Reverse, v, edge.with_neighbor_vid(u))
-            .map_err(DeferredBidirectionalLaraError::Reverse)?;
-        self.insert_oriented_deferred(Orientation::Reverse, u, edge.with_neighbor_vid(v))
-            .map_err(DeferredBidirectionalLaraError::Reverse)?;
+        self.insert_oriented_deferred(Orientation::Forward, u, edge.with_neighbor_vid(v))?;
+        self.insert_oriented_deferred(Orientation::Forward, v, edge.with_neighbor_vid(u))?;
+        self.insert_oriented_deferred(Orientation::Reverse, v, edge.with_neighbor_vid(u))?;
+        self.insert_oriented_deferred(Orientation::Reverse, u, edge.with_neighbor_vid(v))?;
         Ok(())
     }
 
@@ -1060,7 +1069,7 @@ where
                 self.remove_directed_record_unchecked(v, u, edge.with_neighbor_vid(u))?;
             if opposite.is_none() {
                 return Err(DeferredBidirectionalLaraError::Forward(
-                    "undirected remove orientation mismatch",
+                    LaraOperationError::UndirectedRemoveOrientationMismatch,
                 ));
             }
         }

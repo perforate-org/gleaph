@@ -69,6 +69,7 @@ pub use lara::{
         DeferredConfig, DeferredLaraGraph, MaintenanceBudget, MaintenanceError, MaintenanceReport,
         MaintenanceWorkReport,
     },
+    operation_error::{LaraOperationError, VertexAccessError},
     vertex::{InitError as VertexInitError, Vertex, VertexStore},
 };
 pub use traits::*;
