@@ -711,6 +711,27 @@ where
         Ok(id)
     }
 
+    /// Returns `true` if `vid` has any incident edge (forward out-adjacency or reverse out-adjacency).
+    ///
+    /// Equivalent to treating [`Self::collect_out_edges_slot_order`] and
+    /// [`Self::collect_in_edges_slot_order`] as non-empty OR, without allocating edge vectors.
+    pub fn has_incident_edges(
+        &self,
+        vid: VertexId,
+    ) -> Result<bool, DeferredBidirectionalLaraError> {
+        self.ensure_vertex(vid)?;
+        if self
+            .forward
+            .has_out_edges(vid)
+            .map_err(DeferredBidirectionalLaraError::Forward)?
+        {
+            return Ok(true);
+        }
+        self.reverse
+            .has_out_edges(vid)
+            .map_err(DeferredBidirectionalLaraError::Reverse)
+    }
+
     /// Collects outgoing edges from the forward store in slab slot order.
     pub fn collect_out_edges_slot_order(
         &self,
@@ -1367,6 +1388,24 @@ mod tests {
                 .unwrap(),
             Vec::new()
         );
+    }
+
+    #[test]
+    fn has_incident_edges_matches_collect_emptiness() {
+        let graph = deferred_bidirectional_test_graph::<TestEdge>(8, 2, &[0, 2, 4]);
+        graph
+            .insert_directed_deferred(VertexId::from(0), VertexId::from(2), TestEdge(2))
+            .unwrap();
+
+        let expect = |vid: u32| {
+            let vid = VertexId::from(vid);
+            let legacy = !graph.collect_out_edges_slot_order(vid).unwrap().is_empty()
+                || !graph.collect_in_edges_slot_order(vid).unwrap().is_empty();
+            assert_eq!(graph.has_incident_edges(vid).unwrap(), legacy);
+        };
+        expect(0);
+        expect(2);
+        expect(1);
     }
 
     #[test]

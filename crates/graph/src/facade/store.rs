@@ -503,7 +503,7 @@ impl GraphStore {
         &self,
         vertex_id: VertexId,
     ) -> Result<bool, DeferredBidirectionalLaraError> {
-        Ok(!self.out_edges(vertex_id)?.is_empty() || !self.in_edges(vertex_id)?.is_empty())
+        GRAPH.with(|graph| graph.borrow().has_incident_edges(vertex_id))
     }
 
     fn edge_sidecar_owner_from_out_row(endpoint: VertexId, edge: &Edge) -> VertexId {

@@ -547,6 +547,11 @@ where
         self.graph.push_vertex(vertex)
     }
 
+    /// Returns `true` if `src` has at least one outgoing edge visible to clean scans.
+    pub fn has_out_edges(&self, src: VertexId) -> Result<bool, &'static str> {
+        self.graph.has_out_edges(src)
+    }
+
     /// Collects outgoing edges in slab slot order.
     pub fn collect_out_edges_slot_order(&self, src: VertexId) -> Result<Vec<E>, &'static str> {
         self.graph.collect_out_edges_slot_order(src)

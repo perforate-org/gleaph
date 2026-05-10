@@ -272,6 +272,14 @@ where
         self.rebalance_after_insert(src)
     }
 
+    /// Returns `true` if `src` has at least one outgoing edge visible to clean scans.
+    ///
+    /// Equivalent to `!collect_out_edges_slot_order(src)?.is_empty()` on success, without reading
+    /// the edge slab or overflow log when `degree` is zero.
+    pub fn has_out_edges(&self, src: VertexId) -> Result<bool, &'static str> {
+        self.edges.has_out_edges(&self.vertices, src)
+    }
+
     /// Collects outgoing edges for `src` in slab slot order.
     ///
     /// Use this when the caller needs the legacy slot-order vector, such as

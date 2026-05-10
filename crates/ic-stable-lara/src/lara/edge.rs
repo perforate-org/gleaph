@@ -535,6 +535,28 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         Ok(out)
     }
 
+    /// Returns `true` when [`Self::collect_out_edges_slot_order`] would yield a non-empty vector.
+    ///
+    /// For in-range vertices this is exactly [`CsrVertex::degree`] `> 0`: a zero-degree row has no
+    /// material in the slab or overflow log that clean enumeration would surface (including fully
+    /// evacuated tombstone rows).
+    pub(crate) fn has_out_edges<V, A>(
+        &self,
+        vertices: &A,
+        vid: VertexId,
+    ) -> Result<bool, &'static str>
+    where
+        V: CsrVertex,
+        A: VertexAccess<V>,
+    {
+        let vidx = vertex_index(vid);
+        if vidx >= vertices.len() as usize {
+            return Err("vertex out of range");
+        }
+        let v = vertices.get(vid);
+        Ok(v.degree() > 0)
+    }
+
     pub(crate) fn iter_out_edges<V, A>(
         &self,
         vertices: &A,
