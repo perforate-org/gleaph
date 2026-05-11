@@ -146,7 +146,7 @@ impl Storable for SegmentId {
     }
 }
 
-/// Number of vertices in the graph, matching the vertex column length field (little-endian `u32` in the V1 header) and the range of valid [`VertexId`] values (`0 .. len`).
+/// Number of vertices in the graph, matching the vertex column length field and the range of valid [`VertexId`] values (`0 .. len`).
 #[repr(transparent)]
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Display, From, Into,
