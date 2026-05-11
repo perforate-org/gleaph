@@ -6,5 +6,3 @@ pub mod plan;
 mod stable;
 
 pub use facade::GraphStore;
-
-

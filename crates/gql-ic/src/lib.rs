@@ -7,6 +7,13 @@
 //! **Encode:** **tag 34** — `u8` length + principal bytes ([`Principal::as_slice`], max 29).
 //!
 //! **Decode:** tag **34** only (short blob).
+//!
+//! ## Candid / canister boundary
+//!
+//! Use [`wire::IcWireValue`] for lossless conversion to and from [`gleaph_gql::Value`]
+//! (including Principals and opaque extension leaves).
+
+#![cfg_attr(test, feature(f128))]
 
 use std::any::Any;
 use std::borrow::Cow;
@@ -15,7 +22,14 @@ use std::fmt;
 
 pub use candid::Principal;
 pub mod graph_registry;
+pub mod wire;
+
+pub use wire::{IcWirePathElement, IcWireValue, WireError, principal_to_value, value_as_principal};
+
 use gleaph_gql::value::{ExtensionValue, Value, ValueBinaryError};
+
+/// Global decoder instance (zero-sized): use with [`Value::from_binary_bytes_with_extensions`].
+pub const IC_EXTENSION_BINARY_DECODER: IcExtensionBinaryDecode = IcExtensionBinaryDecode;
 
 /// Name for logs / APIs (not written on the wire).
 pub const PRINCIPAL_EXTENSION_TYPE_NAME: &str = "ic.Principal";
@@ -90,15 +104,12 @@ gleaph_gql::extensions::declare_extension_types! {
     short_blob: decode_principal_payload;
 }
 
-/// Process-wide [`IcExtensionBinaryDecode`] for rkyv [`Value::Extension`](Value) payloads.
-static IC_EXTENSION_BINARY_DECODE: IcExtensionBinaryDecode = IcExtensionBinaryDecode;
-
 /// Registers [`IcExtensionBinaryDecode`] for deserializing extension values embedded in rkyv archives (e.g. AST or property [`Value`](Value) blobs).
 ///
 /// Idempotent for the process: only the first successful [`gleaph_gql::try_install_global_rkyv_extension_binary_decode`] wins. Call during canister or service startup before loading rkyv data that may contain [`Principal`](Principal).
 pub fn install_ic_extension_binary_decode_for_rkyv() {
     let _ =
-        gleaph_gql::try_install_global_rkyv_extension_binary_decode(&IC_EXTENSION_BINARY_DECODE);
+        gleaph_gql::try_install_global_rkyv_extension_binary_decode(&IC_EXTENSION_BINARY_DECODER);
 }
 
 #[cfg(test)]
@@ -112,7 +123,7 @@ mod tests {
         let v: Value = PrincipalValue(p).into();
         let bytes = v.to_binary_bytes().expect("encode");
         assert_eq!(bytes.first().copied(), Some(34));
-        let back = Value::from_binary_bytes_with_extensions(&bytes, &IcExtensionBinaryDecode)
+        let back = Value::from_binary_bytes_with_extensions(&bytes, &IC_EXTENSION_BINARY_DECODER)
             .expect("decode");
         assert_eq!(back, v);
 
@@ -141,7 +152,7 @@ mod tests {
         let mut legacy = vec![33u8, 1u8];
         legacy.extend_from_slice(&(pl.len() as u32).to_le_bytes());
         legacy.extend_from_slice(pl);
-        let err = Value::from_binary_bytes_with_extensions(&legacy, &IcExtensionBinaryDecode)
+        let err = Value::from_binary_bytes_with_extensions(&legacy, &IC_EXTENSION_BINARY_DECODER)
             .expect_err("tag33 should be rejected");
         assert_eq!(err, ValueBinaryError::UnknownEncodedExtension);
     }

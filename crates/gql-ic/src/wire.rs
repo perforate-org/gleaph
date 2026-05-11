@@ -1,0 +1,372 @@
+//! Candid-oriented wire values: lossless bridge to [`gleaph_gql::Value`].
+//!
+//! Unlike ad-hoc conversion that maps unknown [`Value::Extension`] to text, this module
+//! preserves extension payloads using the same compact binary leaf encoding the graph
+//! runtime uses (tags **33** / **34**), and falls back to a full compact value blob when
+//! no structured Candid projection exists (e.g. `Float128`).
+
+use candid::{CandidType, Principal};
+use gleaph_gql::value::ValueBinaryError;
+use gleaph_gql::{ExtensionValue, Value};
+use serde::{Deserialize, Serialize};
+
+use crate::{IcExtensionBinaryDecode, PrincipalValue};
+
+/// Structured path element on the API wire (same shape as the historical graph canister DTO).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, CandidType)]
+pub enum IcWirePathElement {
+    Vertex(u64),
+    Edge {
+        src: u64,
+        dst: u64,
+        label: Option<String>,
+    },
+}
+
+/// Internet-Computer–friendly wire representation of a [`Value`].
+///
+/// # Design
+///
+/// - Scalars follow the historical widening rules (`Int8`…`Int32` → `Int64`, etc.) for stable Candid.
+/// - [`Principal`] uses a dedicated variant backed by [`PrincipalValue`] on the GQL side.
+/// - Other extensions use [`Self::ExtensionLeaf`], wrapping the **compact binary leaf** for
+///   `Value::Extension` (starting with byte `33` or `34`).
+/// - Values with no dedicated Candid tuple use [`Self::ValueBinary`], a full [`Value::encode_binary_into`]
+///   payload (still decoded with [`IcExtensionBinaryDecode`] where extensions appear).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, CandidType)]
+pub enum IcWireValue {
+    Null,
+    Bool(bool),
+    Int64(i64),
+    Uint64(u64),
+    Int128(i128),
+    Uint128(u128),
+    Int256(String),
+    Uint256(String),
+    Float64(f64),
+    Decimal(String),
+    Text(String),
+    Bytes(Vec<u8>),
+    Date(i32),
+    Time(u64),
+    LocalTime(u64),
+    DateTime {
+        seconds: i64,
+        nanos: u32,
+    },
+    LocalDateTime {
+        seconds: i64,
+        nanos: u32,
+    },
+    ZonedDateTime {
+        seconds: i64,
+        nanos: u32,
+        offset_seconds: i32,
+    },
+    ZonedTime {
+        nanos: u64,
+        offset_seconds: i32,
+    },
+    Duration {
+        months: i32,
+        nanos: i64,
+    },
+    Principal(Principal),
+    /// Compact binary for a **single** [`Value::Extension`] (tag 33 / 34 + payload).
+    ///
+    /// `type_name` duplicates [`ExtensionValue::type_name`] for Candid readability; decoders
+    /// authoritative content is always `payload`.
+    ExtensionLeaf {
+        type_name: String,
+        payload: Vec<u8>,
+    },
+    /// Lossless encoding of an arbitrary [`Value`] (full compact binary tree).
+    ValueBinary(Vec<u8>),
+    List(Vec<IcWireValue>),
+    Path(Vec<IcWirePathElement>),
+    /// String-keyed records; order matches [`Value::Record`] field order (significant for Gleaph).
+    Record(Vec<(String, IcWireValue)>),
+}
+
+/// Failed to project between [`Value`] and [`IcWireValue`].
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum WireError {
+    #[error("gleaph_gql binary codec: {0:?}")]
+    Binary(#[from] ValueBinaryError),
+    #[error("IcWireValue::ValueBinary payload could not be decoded: {0:?}")]
+    OpaqueDecode(ValueBinaryError),
+    #[error("IcWireValue::ExtensionLeaf payload could not be decoded ({type_name}): {source:?}")]
+    ExtensionLeafDecode {
+        type_name: String,
+        source: ValueBinaryError,
+    },
+    #[error("invalid numeric string for wire conversion: {kind}")]
+    InvalidNumericString { kind: &'static str },
+}
+
+/// Decode extension / value compact blobs using the default IC decoder (Principal, …).
+#[inline]
+pub fn ic_extension_decode() -> &'static IcExtensionBinaryDecode {
+    &crate::IC_EXTENSION_BINARY_DECODER
+}
+
+impl From<&gleaph_gql::types::PathElement> for IcWirePathElement {
+    fn from(value: &gleaph_gql::types::PathElement) -> Self {
+        match value {
+            gleaph_gql::types::PathElement::Vertex(id) => Self::Vertex(*id),
+            gleaph_gql::types::PathElement::Edge { src, dst, label } => Self::Edge {
+                src: *src,
+                dst: *dst,
+                label: label.clone(),
+            },
+        }
+    }
+}
+
+impl From<&IcWirePathElement> for gleaph_gql::types::PathElement {
+    fn from(value: &IcWirePathElement) -> Self {
+        match value {
+            IcWirePathElement::Vertex(id) => gleaph_gql::types::PathElement::Vertex(*id),
+            IcWirePathElement::Edge { src, dst, label } => gleaph_gql::types::PathElement::Edge {
+                src: *src,
+                dst: *dst,
+                label: label.clone(),
+            },
+        }
+    }
+}
+
+impl IcWireValue {
+    /// Project a GQL runtime value into an IC-stable wire value (lossless).
+    pub fn try_from_value(value: &Value) -> Result<Self, WireError> {
+        Ok(match value {
+            Value::Null => Self::Null,
+            Value::Bool(v) => Self::Bool(*v),
+            Value::Int8(v) => Self::Int64((*v).into()),
+            Value::Int16(v) => Self::Int64((*v).into()),
+            Value::Int32(v) => Self::Int64((*v).into()),
+            Value::Int64(v) => Self::Int64(*v),
+            Value::Int128(v) => Self::Int128(*v),
+            Value::Int256(v) => Self::Int256(v.to_string()),
+            Value::Uint8(v) => Self::Uint64((*v).into()),
+            Value::Uint16(v) => Self::Uint64((*v).into()),
+            Value::Uint32(v) => Self::Uint64((*v).into()),
+            Value::Uint64(v) => Self::Uint64(*v),
+            Value::Uint128(v) => Self::Uint128(*v),
+            Value::Uint256(v) => Self::Uint256(v.to_string()),
+            Value::Float16(v) => Self::Float64(f32::from(*v).into()),
+            Value::Float32(v) => Self::Float64((*v).into()),
+            Value::Float64(v) => Self::Float64(*v),
+            Value::Float128(_) => Self::ValueBinary(value.to_binary_bytes()?),
+            Value::Float256(_) => Self::ValueBinary(value.to_binary_bytes()?),
+            Value::Decimal(v) => Self::Decimal(v.to_string()),
+            Value::Text(v) => Self::Text(v.clone()),
+            Value::Bytes(v) => Self::Bytes(v.clone()),
+            Value::Date(v) => Self::Date(*v),
+            Value::Time(v) => Self::Time(*v),
+            Value::LocalTime(v) => Self::LocalTime(*v),
+            Value::DateTime(seconds, nanos) => Self::DateTime {
+                seconds: *seconds,
+                nanos: *nanos,
+            },
+            Value::LocalDateTime(seconds, nanos) => Self::LocalDateTime {
+                seconds: *seconds,
+                nanos: *nanos,
+            },
+            Value::ZonedDateTime(seconds, nanos, offset_seconds) => Self::ZonedDateTime {
+                seconds: *seconds,
+                nanos: *nanos,
+                offset_seconds: *offset_seconds,
+            },
+            Value::ZonedTime(nanos, offset_seconds) => Self::ZonedTime {
+                nanos: *nanos,
+                offset_seconds: *offset_seconds,
+            },
+            Value::Duration(months, nanos) => Self::Duration {
+                months: *months,
+                nanos: *nanos,
+            },
+            Value::Extension(ext) => {
+                if let Some(p) = ext.as_any().downcast_ref::<PrincipalValue>() {
+                    Self::Principal(p.0)
+                } else {
+                    Self::extension_leaf(ext.as_ref())?
+                }
+            }
+            Value::List(values) => Self::List(
+                values
+                    .iter()
+                    .map(Self::try_from_value)
+                    .collect::<Result<_, _>>()?,
+            ),
+            Value::Path(elements) => {
+                Self::Path(elements.iter().map(IcWirePathElement::from).collect())
+            }
+            Value::Record(fields) => Self::Record(
+                fields
+                    .iter()
+                    .map(|(k, v)| Ok((k.clone(), Self::try_from_value(v)?)))
+                    .collect::<Result<Vec<_>, WireError>>()?,
+            ),
+        })
+    }
+
+    fn extension_leaf(ext: &dyn ExtensionValue) -> Result<Self, WireError> {
+        let wrapped = Value::Extension(ext.clone_box());
+        let payload = wrapped.to_binary_bytes()?;
+        Ok(Self::ExtensionLeaf {
+            type_name: ext.type_name().to_owned(),
+            payload,
+        })
+    }
+
+    /// Convert wire data into a GQL [`Value`] using [`ic_extension_decode`].
+    pub fn try_into_value(&self) -> Result<Value, WireError> {
+        Ok(match self {
+            Self::Null => Value::Null,
+            Self::Bool(v) => Value::Bool(*v),
+            Self::Int64(v) => Value::Int64(*v),
+            Self::Uint64(v) => Value::Uint64(*v),
+            Self::Int128(v) => Value::Int128(*v),
+            Self::Uint128(v) => Value::Uint128(*v),
+            Self::Int256(s) => gleaph_gql::types::Int256::parse(s)
+                .map(Value::Int256)
+                .ok_or(WireError::InvalidNumericString { kind: "Int256" })?,
+            Self::Uint256(s) => gleaph_gql::types::Uint256::parse(s)
+                .map(Value::Uint256)
+                .ok_or(WireError::InvalidNumericString { kind: "Uint256" })?,
+            Self::Float64(v) => Value::Float64(*v),
+            Self::Decimal(s) => gleaph_gql::types::Decimal::parse(s)
+                .map(Value::Decimal)
+                .ok_or(WireError::InvalidNumericString { kind: "Decimal" })?,
+            Self::Text(v) => Value::Text(v.clone()),
+            Self::Bytes(v) => Value::Bytes(v.clone()),
+            Self::Date(v) => Value::Date(*v),
+            Self::Time(v) => Value::Time(*v),
+            Self::LocalTime(v) => Value::LocalTime(*v),
+            Self::DateTime { seconds, nanos } => Value::DateTime(*seconds, *nanos),
+            Self::LocalDateTime { seconds, nanos } => Value::LocalDateTime(*seconds, *nanos),
+            Self::ZonedDateTime {
+                seconds,
+                nanos,
+                offset_seconds,
+            } => Value::ZonedDateTime(*seconds, *nanos, *offset_seconds),
+            Self::ZonedTime {
+                nanos,
+                offset_seconds,
+            } => Value::ZonedTime(*nanos, *offset_seconds),
+            Self::Duration { months, nanos } => Value::Duration(*months, *nanos),
+            Self::Principal(p) => Value::Extension(Box::new(PrincipalValue(*p))),
+            Self::ExtensionLeaf { type_name, payload } => {
+                Value::from_binary_bytes_with_extensions(payload, ic_extension_decode()).map_err(
+                    |e| WireError::ExtensionLeafDecode {
+                        type_name: type_name.clone(),
+                        source: e,
+                    },
+                )?
+            }
+            Self::ValueBinary(bytes) => {
+                Value::from_binary_bytes_with_extensions(bytes, ic_extension_decode())
+                    .map_err(WireError::OpaqueDecode)?
+            }
+            Self::List(items) => Value::List(
+                items
+                    .iter()
+                    .map(|i| i.try_into_value())
+                    .collect::<Result<_, _>>()?,
+            ),
+            Self::Path(elements) => Value::Path(
+                elements
+                    .iter()
+                    .map(gleaph_gql::types::PathElement::from)
+                    .collect(),
+            ),
+            Self::Record(fields) => Value::Record(
+                fields
+                    .iter()
+                    .map(|(k, v)| Ok((k.clone(), v.try_into_value()?)))
+                    .collect::<Result<Vec<_>, WireError>>()?,
+            ),
+        })
+    }
+}
+
+impl TryFrom<&Value> for IcWireValue {
+    type Error = WireError;
+
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        Self::try_from_value(value)
+    }
+}
+
+impl TryFrom<Value> for IcWireValue {
+    type Error = WireError;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        Self::try_from_value(&value)
+    }
+}
+
+/// Extract a [`Principal`] if this value is a [`PrincipalValue`] extension.
+pub fn value_as_principal(value: &Value) -> Option<Principal> {
+    match value {
+        Value::Extension(ext) => ext.as_any().downcast_ref::<PrincipalValue>().map(|p| p.0),
+        _ => None,
+    }
+}
+
+/// Wrap a [`Principal`] as [`Value::Extension`].
+#[inline]
+pub fn principal_to_value(p: Principal) -> Value {
+    Value::Extension(Box::new(PrincipalValue(p)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn principal_round_trips() {
+        let p = Principal::from_text("aaaaa-aa").expect("mgmt");
+        let v = principal_to_value(p);
+        let w = IcWireValue::try_from_value(&v).expect("to wire");
+        assert_eq!(w, IcWireValue::Principal(p));
+        let back = w.try_into_value().expect("from wire");
+        assert_eq!(back, v);
+    }
+
+    #[test]
+    fn extension_leaf_round_trips_unknown_shape_via_payload() {
+        let p = Principal::from_text("2vxsx-fae").expect("user");
+        let v = principal_to_value(p);
+        let w = IcWireValue::try_from_value(&v).expect("wire");
+        match &w {
+            IcWireValue::Principal(_) => {}
+            other => panic!("expected Principal variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn nested_record_with_principal() {
+        let p = Principal::from_text("aaaaa-aa").expect("mgmt");
+        let v = Value::Record(vec![
+            ("who".to_owned(), principal_to_value(p)),
+            ("n".to_owned(), Value::Int64(7)),
+        ]);
+        let w = IcWireValue::try_from_value(&v).expect("wire");
+        let back = w.try_into_value().expect("back");
+        assert_eq!(back, v);
+    }
+
+    #[test]
+    fn value_binary_carrier_round_trips_for_f128() {
+        let v = Value::Float128(1.25f128);
+        let w = IcWireValue::try_from_value(&v).expect("to wire");
+        let IcWireValue::ValueBinary(blob) = &w else {
+            panic!("expected ValueBinary");
+        };
+        assert!(!blob.is_empty());
+        let back = w.try_into_value().expect("from wire");
+        assert_eq!(back, v);
+    }
+}

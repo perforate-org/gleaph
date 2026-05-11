@@ -80,6 +80,8 @@ pub(crate) fn init_graph() -> StableGraph {
     )
     .unwrap();
 
+    crate::facade::init_ic_gql_extensions();
+
     graph
 }
 
