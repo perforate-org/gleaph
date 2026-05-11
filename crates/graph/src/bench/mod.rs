@@ -106,7 +106,9 @@ fn execute_gql_query_prepared(
     prepared_name: &str,
     parameters: &BTreeMap<String, Value>,
 ) -> crate::plan::PlanQueryResult {
-    let program = store.prepared_query_get(prepared_name).expect("missing prepared query");
+    let program = store
+        .prepared_query_get(prepared_name)
+        .expect("missing prepared query");
     gql_run::run_prepared_gql(store, &program, parameters).expect("run prepared gql")
 }
 

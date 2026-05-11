@@ -672,8 +672,7 @@ pub fn build_composite_plan_with_schema(
         infer_composite_query_binding_kinds_and_warnings_with_schema(composite, schema);
     debug_assert_eq!(branch_kinds.len(), 1 + composite.rest.len());
 
-    let mut plan =
-        build_composite_plan_from_branch_kinds(composite, stats, &branch_kinds, schema)?;
+    let mut plan = build_composite_plan_from_branch_kinds(composite, stats, &branch_kinds, schema)?;
     apply_type_checker_dml_diagnostics(&mut plan.diagnostics, &type_warnings);
     validate_plan(plan)
 }

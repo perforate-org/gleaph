@@ -129,10 +129,7 @@ pub fn infer_composite_query_binding_kinds_and_warnings_with_schema(
     let mut env = TypeEnv::new(schema);
     let mut kinds_acc = Some(Vec::new());
     walk_composite_query_for_type_check(&mut env, cq, &mut kinds_acc);
-    (
-        kinds_acc.unwrap_or_default(),
-        env.warnings,
-    )
+    (kinds_acc.unwrap_or_default(), env.warnings)
 }
 
 /// Strict-mode: returns `GqlError::TypeError` on first warning.
