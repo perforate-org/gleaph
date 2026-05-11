@@ -241,9 +241,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                     let c = self.counts.get(u64::from(leaf + edge_layout.segment_count));
                     let total_u = c.total.max(0) as u64;
                     if total_u > 0 {
-                        let head = vertices
-                            .get(VertexId::from(leaf_start))
-                            .base_slot_start();
+                        let head = vertices.get(VertexId::from(leaf_start)).base_slot_start();
                         let cap = head.saturating_add(total_u);
                         return next_base.min(cap);
                     }

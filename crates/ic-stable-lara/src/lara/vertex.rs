@@ -10,6 +10,9 @@
 //!
 //! # V1 layout
 //!
+//! For [`Vertex`], each row is 16 bytes: the last `u32` (LE) stores `(log_head + 1)` in the low 31
+//! bits (`0` means no overflow log) and bit `31` for the vertex tombstone.
+//!
 //! ```text
 //! -------------------------------------------------- <- Address 0
 //! Magic "LVX"                           ↕ 3 bytes
@@ -47,6 +50,10 @@ const LAYOUT_VERSION: u8 = 1;
 const DATA_OFFSET: u64 = 64;
 const LEN_OFFSET: u64 = 4;
 const STRIDE_OFFSET: u64 = 8;
+/// Bit 31 of the packed tail word: logical vertex deletion (tombstone).
+const VERTEX_TOMBSTONE_BIT: u32 = 1 << 31;
+/// Low 31 bits: `(log_head + 1)` when `log_head >= 0`, else `0` (no overflow log).
+const LOG_HEAD_PAYLOAD_MASK: u32 = VERTEX_TOMBSTONE_BIT - 1;
 /// Stack buffer width for [`VertexStore::get`] when `V::BYTES` is small enough.
 const INLINE_VERTEX_ROW_BYTES: usize = 64;
 
@@ -113,12 +120,13 @@ pub struct Vertex {
     pub degree: u32,
     /// Head entry in the per-segment overflow log, or `-1` when no log is present.
     pub log_head: i32,
-    /// Logical deletion marker. Deleted vertex ids are never reused.
+    /// Logical deletion marker (serialized as bit 31 of the packed tail word).
+    /// Deleted vertex ids are never reused.
     pub deleted: bool,
 }
 
 impl CsrVertex for Vertex {
-    const BYTES: usize = 17;
+    const BYTES: usize = 16;
 
     fn base_slot_start(&self) -> u64 {
         self.base_slot_start
@@ -138,6 +146,12 @@ impl CsrVertex for Vertex {
         self.log_head
     }
     fn with_log_head(mut self, idx: i32) -> Self {
+        if idx >= 0 {
+            assert!(
+                idx <= (LOG_HEAD_PAYLOAD_MASK - 1) as i32,
+                "vertex log head does not fit in packed LARA row"
+            );
+        }
         self.log_head = idx;
         self
     }
@@ -154,18 +168,44 @@ impl CsrVertexTombstone for Vertex {
     }
 }
 
-fn vertex_row_bytes(v: &Vertex) -> [u8; 17] {
-    let mut b = [0u8; 17];
+#[inline]
+fn pack_vertex_tail(log_head: i32, deleted: bool) -> u32 {
+    let mut w = if log_head < 0 {
+        0u32
+    } else {
+        let enc = (log_head as u32).wrapping_add(1);
+        assert!(
+            enc & VERTEX_TOMBSTONE_BIT == 0,
+            "vertex log head encoding must not use tombstone bit"
+        );
+        enc
+    };
+    if deleted {
+        w |= VERTEX_TOMBSTONE_BIT;
+    }
+    w
+}
+
+#[inline]
+fn unpack_vertex_tail(word: u32) -> (i32, bool) {
+    let deleted = (word & VERTEX_TOMBSTONE_BIT) != 0;
+    let enc = word & LOG_HEAD_PAYLOAD_MASK;
+    let log_head = if enc == 0 { -1 } else { (enc - 1) as i32 };
+    (log_head, deleted)
+}
+
+fn vertex_row_bytes(v: &Vertex) -> [u8; Vertex::BYTES] {
+    let mut b = [0u8; Vertex::BYTES];
     b[0..8].copy_from_slice(&v.base_slot_start.to_le_bytes());
     b[8..12].copy_from_slice(&v.degree.to_le_bytes());
-    b[12..16].copy_from_slice(&v.log_head.to_le_bytes());
-    b[16] = u8::from(v.deleted);
+    let tail = pack_vertex_tail(v.log_head, v.deleted);
+    b[12..16].copy_from_slice(&tail.to_le_bytes());
     b
 }
 
 impl Storable for Vertex {
     const BOUND: Bound = Bound::Bounded {
-        max_size: 17,
+        max_size: Vertex::BYTES as u32,
         is_fixed_size: true,
     };
 
@@ -180,21 +220,23 @@ impl Storable for Vertex {
     fn from_bytes(bytes: Cow<[u8]>) -> Self {
         let b = bytes.as_ref();
         assert!(
-            b.len() >= 17,
+            b.len() >= Vertex::BYTES,
             "Vertex::from_bytes expects at least {}",
             Vertex::BYTES
         );
         let mut u = [0u8; 8];
         let mut d = [0u8; 4];
-        let mut l = [0u8; 4];
+        let mut t = [0u8; 4];
         u.copy_from_slice(&b[0..8]);
         d.copy_from_slice(&b[8..12]);
-        l.copy_from_slice(&b[12..16]);
+        t.copy_from_slice(&b[12..16]);
+        let tail = u32::from_le_bytes(t);
+        let (log_head, deleted) = unpack_vertex_tail(tail);
         Self {
             base_slot_start: u64::from_le_bytes(u),
             degree: u32::from_le_bytes(d),
-            log_head: i32::from_le_bytes(l),
-            deleted: b[16] != 0,
+            log_head,
+            deleted,
         }
     }
 }
@@ -348,6 +390,49 @@ fn verify_vertex_width<V: CsrVertex>() -> Result<(), InitError> {
             is_fixed_size: true,
         } if max_size as usize == V::BYTES => Ok(()),
         _ => Err(InitError::VariableWidthVertex),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Vertex;
+    use crate::traits::{CsrVertex, CsrVertexTombstone};
+    use ic_stable_structures::Storable;
+    use std::borrow::Cow;
+
+    #[test]
+    fn vertex_storable_roundtrip_default_tail() {
+        let v = Vertex {
+            base_slot_start: 0x0102_0304_0506_0708,
+            degree: 0x090a_0b0c,
+            log_head: -1,
+            deleted: false,
+        };
+        assert_eq!(Vertex::from_bytes(v.to_bytes()), v);
+        assert_eq!(Vertex::from_bytes(Cow::Owned(v.into_bytes())), v);
+    }
+
+    #[test]
+    fn tombstone_bit_preserves_log_head() {
+        let v = Vertex {
+            base_slot_start: 1,
+            degree: 2,
+            log_head: 42,
+            deleted: false,
+        }
+        .with_tombstone(true);
+        assert!(v.is_tombstone());
+        assert_eq!(v.log_head(), 42);
+        let back = Vertex::from_bytes(v.to_bytes());
+        assert!(back.deleted);
+        assert_eq!(back.log_head, 42);
+    }
+
+    #[test]
+    #[should_panic(expected = "vertex log head does not fit in packed LARA row")]
+    fn oversized_log_head_panics() {
+        let v = Vertex::default();
+        let _ = v.with_log_head(super::LOG_HEAD_PAYLOAD_MASK as i32);
     }
 }
 
