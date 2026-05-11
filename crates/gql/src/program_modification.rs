@@ -28,13 +28,19 @@ impl ProgramModificationFlags {
 
 /// Inspect a parsed program (after successful parse).
 pub fn classify_program(program: &GqlProgram) -> ProgramModificationFlags {
-    let mut flags = ProgramModificationFlags::default();
     let _ = &program.session_activity;
-    if let Some(tx) = &program.transaction_activity
-        && let Some(body) = &tx.body
-    {
-        walk_statement_block(body, &mut flags);
+    if let Some(tx) = &program.transaction_activity {
+        if let Some(body) = &tx.body {
+            return classify_statement_block(body);
+        }
     }
+    ProgramModificationFlags::default()
+}
+
+/// Classify only a transaction [`StatementBlock`] (same rules as [`classify_program`] for typical TX bodies).
+pub fn classify_statement_block(block: &StatementBlock) -> ProgramModificationFlags {
+    let mut flags = ProgramModificationFlags::default();
+    walk_statement_block(block, &mut flags);
     flags
 }
 
@@ -128,6 +134,19 @@ mod tests {
         let f = classify_program(&p);
         assert!(f.has_data_modification);
         assert!(f.requires_write_path());
+    }
+
+    #[test]
+    fn classify_statement_block_matches_program_tx_body() {
+        let p = parser::parse("MATCH (n) RETURN n UNION MATCH (m) RETURN m").expect("parse");
+        let body = p
+            .transaction_activity
+            .as_ref()
+            .expect("tx")
+            .body
+            .as_ref()
+            .expect("body");
+        assert_eq!(classify_program(&p), classify_statement_block(body));
     }
 
     #[test]

@@ -2,97 +2,97 @@ benches:
   bench_graph_gql_parse_plan_execute_match_return:
     total:
       calls: 1
-      instructions: 124472
+      instructions: 125495
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       gql_parse_plan_execute:
         calls: 1
-        instructions: 123382
+        instructions: 124405
         heap_increase: 0
         stable_memory_increase: 0
   bench_graph_gql_parse_plan_execute_match_return_noisy:
     total:
       calls: 1
-      instructions: 291896
+      instructions: 292876
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       gql_parse_plan_execute_noisy_scan:
         calls: 1
-        instructions: 290645
+        instructions: 291625
         heap_increase: 0
         stable_memory_increase: 0
   bench_graph_gql_parse_plan_execute_match_return_noisy_multilabel:
     total:
       calls: 1
-      instructions: 6953292
+      instructions: 6953588
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       gql_parse_plan_execute_noisy_scan_multilabel:
         calls: 1
-        instructions: 6952001
+        instructions: 6952297
         heap_increase: 0
         stable_memory_increase: 0
   bench_graph_gql_parse_plan_execute_two_hop_chain:
     total:
       calls: 1
-      instructions: 503554
+      instructions: 505274
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       gql_parse_plan_execute_two_hop:
         calls: 1
-        instructions: 502459
+        instructions: 504179
         heap_increase: 0
         stable_memory_increase: 0
   bench_graph_gql_parse_plan_execute_two_hop_chain_mid_junk_out:
     total:
       calls: 1
-      instructions: 708516
+      instructions: 709811
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       gql_parse_plan_execute_two_hop_mid_junk_out:
         calls: 1
-        instructions: 707510
+        instructions: 708805
         heap_increase: 0
         stable_memory_increase: 0
   bench_graph_gql_parse_plan_execute_two_hop_chain_noisy:
     total:
       calls: 1
-      instructions: 1807429
+      instructions: 1807552
       heap_increase: 1
       stable_memory_increase: 0
     scopes:
       gql_parse_plan_execute_two_hop_noisy:
         calls: 1
-        instructions: 1806423
+        instructions: 1806546
         heap_increase: 1
         stable_memory_increase: 0
   bench_graph_gql_parse_plan_execute_where_filter:
     total:
       calls: 1
-      instructions: 188353
+      instructions: 189423
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       gql_parse_plan_execute_where:
         calls: 1
-        instructions: 187263
+        instructions: 188333
         heap_increase: 0
         stable_memory_increase: 0
   bench_graph_gql_parse_plan_execute_where_filter_noisy:
     total:
       calls: 1
-      instructions: 393597
+      instructions: 394677
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       gql_parse_plan_execute_where_noisy:
         calls: 1
-        instructions: 392306
+        instructions: 393386
         heap_increase: 0
         stable_memory_increase: 0
 version: 0.4.0

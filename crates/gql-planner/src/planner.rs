@@ -7,11 +7,11 @@
 use gleaph_gql::ast::*;
 use gleaph_gql::type_check::{
     BindingKind, DmlDiagnosticSeverity, NoSchema, PropertySchema, TypeWarning,
-    dml_diagnostic_from_warning, infer_linear_query_binding_kinds_and_warnings_with_schema,
+    dml_diagnostic_from_warning, infer_composite_query_binding_kinds_and_warnings_with_schema,
+    infer_linear_query_binding_kinds_and_warnings_with_schema,
     infer_linear_query_binding_kinds_with_schema, infer_linear_query_binding_kinds_with_seed,
-    infer_statement_block_binding_kinds_with_schema, type_check_composite_query_with_schema,
-    type_check_statement_block_with_schema, type_check_statement_with_schema,
-    type_diagnostic_from_warning,
+    infer_statement_block_binding_kinds_with_schema, type_check_statement_block_with_schema,
+    type_check_statement_with_schema, type_diagnostic_from_warning,
 };
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use std::collections::{BTreeMap, BTreeSet};
@@ -95,6 +95,10 @@ pub fn build_statement_plan_with_schema(
     stats: Option<&dyn GraphStats>,
     schema: &dyn PropertySchema,
 ) -> Result<PhysicalPlan, PlannerError> {
+    if let Statement::Query(composite) = stmt {
+        return build_composite_plan_with_schema(composite, stats, schema);
+    }
+
     let mut plan = build_statement_plan_with_binding_kinds(stmt, stats, None, schema)?;
     apply_type_checker_dml_diagnostics(
         &mut plan.diagnostics,
@@ -660,11 +664,17 @@ pub fn build_composite_plan_with_schema(
     stats: Option<&dyn GraphStats>,
     schema: &dyn PropertySchema,
 ) -> Result<PhysicalPlan, PlannerError> {
-    let mut plan = build_composite_plan_with_binding_kinds(composite, stats, None, schema)?;
-    apply_type_checker_dml_diagnostics(
-        &mut plan.diagnostics,
-        &type_check_composite_query_with_schema(composite, schema),
-    );
+    if composite.rest.is_empty() {
+        return build_plan_with_schema(&composite.left, stats, schema);
+    }
+
+    let (branch_kinds, type_warnings) =
+        infer_composite_query_binding_kinds_and_warnings_with_schema(composite, schema);
+    debug_assert_eq!(branch_kinds.len(), 1 + composite.rest.len());
+
+    let mut plan =
+        build_composite_plan_from_branch_kinds(composite, stats, &branch_kinds, schema)?;
+    apply_type_checker_dml_diagnostics(&mut plan.diagnostics, &type_warnings);
     validate_plan(plan)
 }
 
@@ -681,6 +691,27 @@ pub fn build_composite_plan_output_with_schema(
     schema: &dyn PropertySchema,
 ) -> Result<PlanBuildOutput, PlannerError> {
     build_composite_plan_with_schema(composite, stats, schema).map(PlanBuildOutput::from_plan)
+}
+
+fn build_composite_plan_from_branch_kinds(
+    composite: &CompositeQueryExpr,
+    stats: Option<&dyn GraphStats>,
+    branch_kinds: &[BTreeMap<String, BindingKind>],
+    schema: &dyn PropertySchema,
+) -> Result<PhysicalPlan, PlannerError> {
+    debug_assert_eq!(branch_kinds.len(), 1 + composite.rest.len());
+
+    let mut plan = build_plan_core(&composite.left, stats, &branch_kinds[0], schema)?;
+
+    for (i, (set_op, right_query)) in composite.rest.iter().enumerate() {
+        let right_plan = build_plan_core(right_query, stats, &branch_kinds[1 + i], schema)?;
+        plan.ops.push(PlanOp::SetOperation {
+            op: *set_op,
+            right: Box::new(right_plan),
+        });
+    }
+
+    Ok(plan)
 }
 
 fn build_composite_plan_with_binding_kinds(

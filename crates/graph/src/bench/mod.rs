@@ -1,4 +1,5 @@
-//! PocketIC / `canbench` targets for end-to-end GQL query handling (parse, plan, execute).
+//! PocketIC / `canbench` targets for end-to-end GQL query handling via [`crate::gql_run`] (same stack as
+//! `gql_execute` in `lib.rs`: parse, auth gate, `build_statement_plan`, execute).
 //!
 //! Run from `crates/graph`: `canbench` (see `canbench.yml`).
 //!
@@ -9,12 +10,10 @@
 
 use crate::facade::GraphStore;
 use crate::facade::mutation_executor::GraphMutationExecutor;
-use crate::plan::PlanQueryExecutor;
+use crate::gql_run;
 use canbench_rs::bench;
+use gleaph_auth::Role;
 use gleaph_gql::Value;
-use gleaph_gql::ast::Statement;
-use gleaph_gql::parser;
-use gleaph_gql_planner::build_plan;
 use std::collections::BTreeMap;
 use std::hint::black_box;
 
@@ -82,22 +81,14 @@ fn insert_two_hop_decoys(store: GraphStore, count: u32) {
     }
 }
 
-/// Full path used by the canister: parse GQL text, build a physical plan, run it on stable storage.
+/// Same entry as canister [`crate::canister::handlers::gql_execute`]: parse, classify, plan via
+/// [`build_statement_plan`](gleaph_gql_planner::build_statement_plan), execute on stable storage.
 fn execute_gql_query(
     store: GraphStore,
     gql: &str,
     parameters: &BTreeMap<String, Value>,
 ) -> crate::plan::PlanQueryResult {
-    let program = parser::parse(gql).expect("parse GQL");
-    let tx = program.transaction_activity.expect("transaction activity");
-    let block = tx.body.expect("statement block");
-    let Statement::Query(composite) = &block.first else {
-        panic!("expected query statement");
-    };
-    let plan = build_plan(&composite.left, None).expect("build plan");
-    store
-        .execute_plan_query(&plan, parameters)
-        .expect("execute plan query")
+    gql_run::run_adhoc_gql(store, gql, parameters, Role::Read).expect("run adhoc gql")
 }
 
 /// Simple `MATCH` / `RETURN` (label filter + property read).

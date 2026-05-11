@@ -40,6 +40,7 @@ use crate::ast::*;
 use crate::error::GqlError;
 use crate::token::Span;
 use rapidhash::RapidHashMap;
+use std::collections::BTreeMap;
 
 use env::TypeEnv;
 use infer::{
@@ -117,6 +118,21 @@ pub fn type_check_composite_query_with_schema(
     let mut env = TypeEnv::new(schema);
     check_composite_query(&mut env, query);
     env.warnings
+}
+
+/// Same type-check traversal as [`type_check_composite_query_with_schema`], plus one [`BindingKind`]
+/// map per composite branch (left query, then each right operand in order).
+pub fn infer_composite_query_binding_kinds_and_warnings_with_schema(
+    cq: &CompositeQueryExpr,
+    schema: &dyn PropertySchema,
+) -> (Vec<BTreeMap<String, BindingKind>>, Vec<TypeWarning>) {
+    let mut env = TypeEnv::new(schema);
+    let mut kinds_acc = Some(Vec::new());
+    walk_composite_query_for_type_check(&mut env, cq, &mut kinds_acc);
+    (
+        kinds_acc.unwrap_or_default(),
+        env.warnings,
+    )
 }
 
 /// Strict-mode: returns `GqlError::TypeError` on first warning.
@@ -292,21 +308,27 @@ fn check_statement(env: &mut TypeEnv<'_>, stmt: &Statement) {
     }
 }
 
-fn check_composite_query(env: &mut TypeEnv<'_>, cq: &CompositeQueryExpr) {
+fn walk_composite_query_for_type_check(
+    env: &mut TypeEnv<'_>,
+    cq: &CompositeQueryExpr,
+    kinds_acc: &mut Option<Vec<BTreeMap<String, BindingKind>>>,
+) {
     check_linear_query(env, &cq.left);
+    if let Some(kinds) = kinds_acc {
+        kinds.push(phase_b::binding_kinds_from_env(env));
+    }
     if cq.rest.is_empty() {
         return;
     }
-    // Collect column types from the left branch.
     let left_types = infer_return_column_types(env, &cq.left);
     for (op, lq) in &cq.rest {
-        // Fork env so each branch gets independent bindings.
         let mut branch_env = env.fork();
         check_linear_query(&mut branch_env, lq);
+        if let Some(kinds) = kinds_acc {
+            kinds.push(phase_b::binding_kinds_from_env(&branch_env));
+        }
         let right_types = infer_return_column_types(&branch_env, lq);
-        // Merge warnings from branch.
         env.warnings.extend(branch_env.warnings);
-        // Compare column types.
         if left_types.len() != right_types.len() {
             env.warn_at(
                 WarningKind::SetOpColumnMismatch,
@@ -334,6 +356,10 @@ fn check_composite_query(env: &mut TypeEnv<'_>, cq: &CompositeQueryExpr) {
             }
         }
     }
+}
+
+fn check_composite_query(env: &mut TypeEnv<'_>, cq: &CompositeQueryExpr) {
+    walk_composite_query_for_type_check(env, cq, &mut None);
 }
 
 /// Extract inferred types for each RETURN column in a linear query.

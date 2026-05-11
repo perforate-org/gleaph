@@ -6,7 +6,7 @@ use gleaph_auth::Role;
 use gleaph_gql::Value;
 use gleaph_gql::ast::{GqlProgram, Statement};
 use gleaph_gql::parser;
-use gleaph_gql::program_modification::classify_program;
+use gleaph_gql::program_modification::classify_statement_block;
 use gleaph_gql_planner::build_statement_plan;
 use std::collections::BTreeMap;
 
@@ -58,12 +58,6 @@ pub fn run_adhoc_gql(
         ));
     }
     let program = parser::parse(gql).map_err(|e| GqlRunError::Parse(e.to_string()))?;
-    let flags = classify_program(&program);
-    if flags.requires_write_path() && !caller_role.satisfies_at_least(Role::Write) {
-        return Err(GqlRunError::Auth(
-            "this GQL program requires Write role or higher".into(),
-        ));
-    }
 
     let tx = program
         .transaction_activity
@@ -71,6 +65,13 @@ pub fn run_adhoc_gql(
     let block = tx
         .body
         .ok_or_else(|| GqlRunError::Parse("missing statement block".into()))?;
+
+    let flags = classify_statement_block(&block);
+    if flags.requires_write_path() && !caller_role.satisfies_at_least(Role::Write) {
+        return Err(GqlRunError::Auth(
+            "this GQL program requires Write role or higher".into(),
+        ));
+    }
 
     let mut last: PlanQueryResult = PlanQueryResult::default();
     for stmt in block.iter_statements() {
