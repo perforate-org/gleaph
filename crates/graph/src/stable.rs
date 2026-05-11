@@ -1,5 +1,7 @@
 //! Stable-memory-backed graph fragments (catalogs, property stores, id allocator, init).
 
+use std::cell::RefCell;
+
 pub(crate) mod memory;
 
 pub(crate) mod edge_ids;
@@ -8,3 +10,33 @@ pub(crate) mod label_catalog;
 pub(crate) mod property_catalog;
 pub(crate) mod vertex_labels;
 pub(crate) mod vertex_properties;
+
+thread_local! {
+    pub(crate) static GRAPH: RefCell<memory::StableGraph> = RefCell::new(
+        memory::init_graph()
+    );
+
+    pub(crate) static LABEL_CATALOG: RefCell<memory::StableLabelCatalog> = RefCell::new(
+        memory::init_label_catalog()
+    );
+
+    pub(crate) static VERTEX_LABELS: RefCell<memory::StableVertexLabelStore> = RefCell::new(
+        memory::init_vertex_label_store()
+    );
+
+    pub(crate) static PROPERTY_CATALOG: RefCell<memory::StablePropertyCatalog> = RefCell::new(
+        memory::init_property_catalog()
+    );
+
+    pub(crate) static VERTEX_PROPERTIES: RefCell<memory::StableVertexPropertyStore> = RefCell::new(
+        memory::init_vertex_property_store()
+    );
+
+    pub(crate) static EDGE_PROPERTIES: RefCell<memory::StableEdgePropertyStore> = RefCell::new(
+        memory::init_edge_property_store()
+    );
+
+    pub(crate) static VERTEX_EDGE_IDS: RefCell<memory::StableVertexEdgeIdAllocator> = RefCell::new(
+        memory::init_vertex_edge_id_allocator()
+    );
+}

@@ -5,7 +5,7 @@ use super::property_catalog::PropertyCatalog;
 use super::vertex_labels::VertexLabelStore;
 use super::vertex_properties::VertexPropertyStore;
 use gleaph_graph_kernel::entry::{Edge, Vertex};
-use ic_stable_lara::{DeferredBidirectionalLaraGraph as Graph, lara::maintenance::DeferredConfig};
+use ic_stable_lara::{DeferredBidirectionalLaraGraph, lara::maintenance::DeferredConfig};
 use ic_stable_structures::DefaultMemoryImpl;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use std::cell::RefCell;
@@ -41,6 +41,8 @@ const GRAPH_SEGMENT_SIZE: u32 = 32;
 const GRAPH_INITIAL_VERTEX_EDGE_SLOTS: u32 = 0;
 
 pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
+
+pub(crate) type StableGraph = DeferredBidirectionalLaraGraph<Edge, Vertex, Memory>;
 pub(crate) type StableLabelCatalog = LabelCatalog<Memory, Memory>;
 pub(crate) type StableVertexLabelStore = VertexLabelStore<Memory>;
 pub(crate) type StablePropertyCatalog = PropertyCatalog<Memory, Memory>;
@@ -53,8 +55,8 @@ thread_local! {
         RefCell::new(MemoryManager::init(DefaultMemoryImpl::default()));
 }
 
-pub(crate) fn init_graph() -> Graph<Edge, Vertex, Memory> {
-    Graph::init_with_config(
+pub(crate) fn init_graph() -> StableGraph {
+    let graph = DeferredBidirectionalLaraGraph::init_with_config(
         MEMORY_MANAGER.with(|m| m.borrow().get(FORWARD_VERTICES)),
         MEMORY_MANAGER.with(|m| m.borrow().get(FORWARD_COUNTS)),
         MEMORY_MANAGER.with(|m| m.borrow().get(FORWARD_EDGES)),
@@ -76,7 +78,9 @@ pub(crate) fn init_graph() -> Graph<Edge, Vertex, Memory> {
         GRAPH_INITIAL_VERTEX_EDGE_SLOTS,
         DeferredConfig::default(),
     )
-    .unwrap()
+    .unwrap();
+
+    graph
 }
 
 pub(crate) fn init_label_catalog() -> StableLabelCatalog {

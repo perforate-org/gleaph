@@ -3,7 +3,7 @@ use crate::stable::label_catalog::LabelCatalogError;
 use crate::stable::property_catalog::PropertyCatalogError;
 use crate::stable::vertex_labels::VertexLabelStoreError;
 use crate::stable::vertex_properties::VertexPropertyStoreError;
-use crate::{
+use crate::stable::{
     EDGE_PROPERTIES, GRAPH, LABEL_CATALOG, PROPERTY_CATALOG, VERTEX_EDGE_IDS, VERTEX_LABELS,
     VERTEX_PROPERTIES,
 };
