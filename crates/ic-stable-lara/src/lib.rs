@@ -18,7 +18,7 @@
 //! vertex row's [`traits::CsrVertex::base_slot_start`] inside a PMA leaf, monotone
 //! successors across leaves, PMA totals, and slab `elem_capacity`), not by a stored
 //! per-row capacity field.
-
+//!
 //! The main external reference for the dynamic adjacency idea is
 //! [DGAP](https://github.com/DIR-LAB/DGAP), but this crate owns a separate
 //! persisted layout and API centered on LARA CSR rows and local relocation contracts.
