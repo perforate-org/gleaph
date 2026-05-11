@@ -300,7 +300,7 @@ fn plan_op_name(op: &PlanOp) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stable::edge_ids::canonical_undirected_owner;
+    use crate::facade::canonical_undirected_owner;
     use gleaph_gql::Value;
     use gleaph_gql::ast::{BinaryOp, CmpOp, Expr, ExprKind, TruthValue, UnaryOp};
     use gleaph_gql::types::Decimal;

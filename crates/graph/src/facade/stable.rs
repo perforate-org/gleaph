@@ -1,4 +1,8 @@
 //! Stable-memory-backed graph fragments (catalogs, property stores, id allocator, init).
+//!
+//! Module visibility is `pub(in crate::facade)` (see `facade.rs`): only code under `facade`
+//! (notably [`super::store`] and [`super::auth`]) may reference this module directly. Stable-backed
+//! error types are re-exported at the `facade` root for public `GraphStore` signatures.
 
 use std::cell::RefCell;
 

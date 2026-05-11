@@ -1,16 +1,13 @@
 #![cfg_attr(test, feature(f128))]
 
-pub mod auth;
 #[cfg(feature = "canbench")]
 mod bench;
-pub mod facade;
-pub mod gql_run;
-pub mod plan;
-mod stable;
+mod facade;
+use facade::auth;
+mod gql_run;
+mod plan;
 
 mod canister;
-
-pub use facade::GraphStore;
 
 // --- Canister surface (ic-cdk macros stay here; logic lives in `canister::`) ---
 

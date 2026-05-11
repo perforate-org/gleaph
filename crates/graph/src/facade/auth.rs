@@ -3,7 +3,7 @@
 use candid::Principal;
 use gleaph_auth::{AuthRecord, ManagerCapability, Role};
 
-use crate::stable::AUTH_STATE;
+use super::stable::AUTH_STATE;
 
 /// Bootstrap admins after canister `init` (idempotent merge of issuing principal + list).
 pub fn bootstrap_canister_auth(issuing_principal: Principal, initial_admins: &[Principal]) {

@@ -1,11 +1,11 @@
-use crate::stable::edge_ids::{VertexEdgeIdAllocatorError, canonical_undirected_owner};
-use crate::stable::label_catalog::LabelCatalogError;
-use crate::stable::property_catalog::PropertyCatalogError;
-use crate::stable::vertex_labels::VertexLabelStoreError;
-use crate::stable::vertex_properties::VertexPropertyStoreError;
-use crate::stable::{
+use super::stable::edge_ids::canonical_undirected_owner;
+use super::stable::{
     EDGE_PROPERTIES, GRAPH, LABEL_CATALOG, PREPARED_QUERY_CATALOG, PROPERTY_CATALOG,
     VERTEX_EDGE_IDS, VERTEX_LABELS, VERTEX_PROPERTIES,
+};
+use super::{
+    LabelCatalogError, PropertyCatalogError, VertexEdgeIdAllocatorError, VertexLabelStoreError,
+    VertexPropertyStoreError,
 };
 use gleaph_gql::Value;
 use gleaph_gql::ast::GqlProgram;
@@ -22,7 +22,7 @@ use std::fmt;
 /// `GraphStore` is the public coordination point for operations that need to
 /// touch multiple stable structures in a consistent order. It intentionally
 /// carries no fields; all state lives in the canister-local stable structures
-/// initialized in `lib.rs`.
+/// initialized in [`super::stable`].
 #[derive(Clone, Copy, Debug, Default)]
 pub struct GraphStore;
 
@@ -113,6 +113,30 @@ impl From<DeferredBidirectionalLaraError> for GraphStoreError {
 impl From<VertexEdgeIdAllocatorError> for GraphStoreError {
     fn from(value: VertexEdgeIdAllocatorError) -> Self {
         Self::VertexEdgeId(value)
+    }
+}
+
+impl From<LabelCatalogError> for GraphStoreError {
+    fn from(value: LabelCatalogError) -> Self {
+        Self::LabelCatalog(value)
+    }
+}
+
+impl From<PropertyCatalogError> for GraphStoreError {
+    fn from(value: PropertyCatalogError) -> Self {
+        Self::PropertyCatalog(value)
+    }
+}
+
+impl From<VertexLabelStoreError> for GraphStoreError {
+    fn from(value: VertexLabelStoreError) -> Self {
+        Self::VertexLabel(value)
+    }
+}
+
+impl From<VertexPropertyStoreError> for GraphStoreError {
+    fn from(value: VertexPropertyStoreError) -> Self {
+        Self::PropertyValue(value)
     }
 }
 
@@ -610,7 +634,7 @@ impl GraphStore {
 
     pub(crate) fn with_graph_mut<R>(
         &self,
-        f: impl FnOnce(&mut Graph<Edge, Vertex, crate::stable::memory::Memory>) -> R,
+        f: impl FnOnce(&mut Graph<Edge, Vertex, super::stable::memory::Memory>) -> R,
     ) -> R {
         GRAPH.with_borrow_mut(f)
     }

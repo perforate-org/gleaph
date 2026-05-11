@@ -1,8 +1,4 @@
 use super::store::{EdgeHandle, GraphStore, GraphStoreError};
-use crate::stable::label_catalog::LabelCatalogError;
-use crate::stable::property_catalog::PropertyCatalogError;
-use crate::stable::vertex_labels::VertexLabelStoreError;
-use crate::stable::vertex_properties::VertexPropertyStoreError;
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{EdgeFlags, EdgeMeta, LabelId, PropertyId};
 use ic_stable_lara::VertexId;
@@ -171,30 +167,6 @@ fn resolve_properties(
                 .map_err(GraphStoreError::from)
         })
         .collect()
-}
-
-impl From<LabelCatalogError> for GraphStoreError {
-    fn from(value: LabelCatalogError) -> Self {
-        Self::LabelCatalog(value)
-    }
-}
-
-impl From<PropertyCatalogError> for GraphStoreError {
-    fn from(value: PropertyCatalogError) -> Self {
-        Self::PropertyCatalog(value)
-    }
-}
-
-impl From<VertexLabelStoreError> for GraphStoreError {
-    fn from(value: VertexLabelStoreError) -> Self {
-        Self::VertexLabel(value)
-    }
-}
-
-impl From<VertexPropertyStoreError> for GraphStoreError {
-    fn from(value: VertexPropertyStoreError) -> Self {
-        Self::PropertyValue(value)
-    }
 }
 
 #[cfg(test)]

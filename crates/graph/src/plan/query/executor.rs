@@ -1,12 +1,11 @@
 use super::aggregate;
 use super::error::PlanQueryError;
 use super::sort_keys::compare_sort_keys;
-use crate::facade::{EdgeHandle, GraphStore};
+use crate::facade::{EdgeHandle, GraphStore, canonical_undirected_owner};
 use crate::plan::expr_evaluator::{
     eval_and_expr, eval_binary_expr, eval_compare_expr, eval_concat_expr, eval_not_expr,
     eval_or_expr, eval_unary_expr, eval_xor_expr, truthy,
 };
-use crate::stable::edge_ids::canonical_undirected_owner;
 use gleaph_gql::ast::{Expr, ExprKind, OrderByClause, TruthValue};
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql::{Value, hash_value_for_join};
