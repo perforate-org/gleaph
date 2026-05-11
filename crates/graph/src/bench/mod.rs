@@ -7,6 +7,12 @@
 //! size, but multilabel noise forces the label sidecar path on almost every scan.
 //! `two_hop_chain` vs `two_hop_chain_mid_junk_out` — same query/plan, but `Mid` has many extra
 //! outgoing edges with a different rel label; edge expansion drops them by `LabelId` before row assembly.
+//!
+//! **Ad-hoc vs prepared:** `bench_graph_gql_parse_plan_execute_*` uses [`gql_run::run_adhoc_gql`] — parse,
+//! classify, plan, and execute on every iteration. Companion `bench_graph_gql_prepared_*` registers the same
+//! GQL source once ([`GraphStore::prepared_query_register`]), then each iteration loads the catalog entry and
+//! runs [`gql_run::run_prepared_gql`] (no parser pass; still `build_statement_plan` + execute). Compare CPU to
+//! see parse/plan split for the same graph and logical query.
 
 use crate::facade::GraphStore;
 use crate::facade::mutation_executor::GraphMutationExecutor;
@@ -31,6 +37,10 @@ const BENCH_TWO_HOP_DECOY_SOURCES: u32 = 96;
 /// Outgoing edges from `Mid` with label `BenchGqlMidJunkRel` (not `BenchGqlTwoHopRel2`), to stress
 /// expand-side `LabelId` filtering on the second hop.
 const BENCH_TWO_HOP_MID_JUNK_OUT_EDGES: u32 = 192;
+
+const BENCH_PREPARED_NAME_MATCH_RETURN: &str = "__bench_gql_prep_match_return";
+const BENCH_PREPARED_NAME_MATCH_RETURN_NOISY: &str = "__bench_gql_prep_match_return_noisy";
+const BENCH_PREPARED_NAME_TWO_HOP_CHAIN: &str = "__bench_gql_prep_two_hop_chain";
 
 fn insert_noise_blob_vertices(store: GraphStore, count: u32) {
     for i in 0..count {
@@ -89,6 +99,15 @@ fn execute_gql_query(
     parameters: &BTreeMap<String, Value>,
 ) -> crate::plan::PlanQueryResult {
     gql_run::run_adhoc_gql(store, gql, parameters, Role::Read).expect("run adhoc gql")
+}
+
+fn execute_gql_query_prepared(
+    store: GraphStore,
+    prepared_name: &str,
+    parameters: &BTreeMap<String, Value>,
+) -> crate::plan::PlanQueryResult {
+    let program = store.prepared_query_get(prepared_name).expect("missing prepared query");
+    gql_run::run_prepared_gql(store, &program, parameters).expect("run prepared gql")
 }
 
 /// Simple `MATCH` / `RETURN` (label filter + property read).
@@ -384,6 +403,114 @@ fn bench_graph_gql_parse_plan_execute_two_hop_chain_noisy() -> canbench_rs::Benc
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("gql_parse_plan_execute_two_hop_noisy");
         let result = execute_gql_query(store, black_box(gql), &params);
+        black_box(result.rows.len())
+    })
+}
+
+/// Same graph and logical query as [`bench_graph_gql_parse_plan_execute_match_return`], but the program is
+/// registered once and executed via [`gql_run::run_prepared_gql`] (compare to the ad-hoc bench for parse cost).
+#[bench(raw)]
+fn bench_graph_gql_prepared_match_return() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    store
+        .insert_vertex_named(
+            ["BenchGqlMatchReturnPerson"],
+            [("name", Value::Text("Bench Alice".into()))],
+        )
+        .expect("insert matching vertex");
+    store
+        .insert_vertex_named(
+            ["BenchGqlMatchReturnOther"],
+            [("name", Value::Text("Bench Bob".into()))],
+        )
+        .expect("insert non-matching vertex");
+
+    let gql = "MATCH (n:BenchGqlMatchReturnPerson) RETURN n.name AS name";
+    store
+        .prepared_query_register(BENCH_PREPARED_NAME_MATCH_RETURN.into(), gql)
+        .expect("register prepared match_return");
+    let params = empty_params();
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("gql_plan_execute_prepared_match_return");
+        let result = execute_gql_query_prepared(store, BENCH_PREPARED_NAME_MATCH_RETURN, &params);
+        black_box(result.rows.len())
+    })
+}
+
+/// Prepared counterpart to [`bench_graph_gql_parse_plan_execute_match_return_noisy`] (same GQL text and noise).
+#[bench(raw)]
+fn bench_graph_gql_prepared_match_return_noisy() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    insert_noise_blob_vertices(store, BENCH_NOISE_STANDALONE_VERTICES);
+
+    store
+        .insert_vertex_named(
+            ["BenchGqlMatchReturnPerson"],
+            [("name", Value::Text("Bench Alice".into()))],
+        )
+        .expect("insert matching vertex");
+    store
+        .insert_vertex_named(
+            ["BenchGqlMatchReturnOther"],
+            [("name", Value::Text("Bench Bob".into()))],
+        )
+        .expect("insert non-matching vertex");
+
+    let gql = "MATCH (n:BenchGqlMatchReturnPerson) RETURN n.name AS name";
+    store
+        .prepared_query_register(BENCH_PREPARED_NAME_MATCH_RETURN_NOISY.into(), gql)
+        .expect("register prepared match_return_noisy");
+    let params = empty_params();
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("gql_plan_execute_prepared_match_return_noisy");
+        let result =
+            execute_gql_query_prepared(store, BENCH_PREPARED_NAME_MATCH_RETURN_NOISY, &params);
+        black_box(result.rows.len())
+    })
+}
+
+/// Prepared counterpart to [`bench_graph_gql_parse_plan_execute_two_hop_chain`] (same GQL text and graph).
+#[bench(raw)]
+fn bench_graph_gql_prepared_two_hop_chain() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    let a = store
+        .insert_vertex_named(
+            ["BenchGqlTwoHopSource"],
+            [("name", Value::Text("TwoHop Alice".into()))],
+        )
+        .expect("insert source");
+    let b = store
+        .insert_vertex_named(
+            ["BenchGqlTwoHopMid"],
+            [("name", Value::Text("TwoHop Bob".into()))],
+        )
+        .expect("insert mid");
+    let c = store
+        .insert_vertex_named(
+            ["BenchGqlTwoHopDest"],
+            [("name", Value::Text("TwoHop Carol".into()))],
+        )
+        .expect("insert dest");
+    store
+        .insert_directed_edge_named(a, b, Some("BenchGqlTwoHopRel1"), [("hop", Value::Int64(1))])
+        .expect("insert first hop edge");
+    store
+        .insert_directed_edge_named(b, c, Some("BenchGqlTwoHopRel2"), [("hop", Value::Int64(2))])
+        .expect("insert second hop edge");
+
+    let gql = "MATCH (src:BenchGqlTwoHopSource)-[e1:BenchGqlTwoHopRel1]->(mid:BenchGqlTwoHopMid)-\
+               [e2:BenchGqlTwoHopRel2]->(dst:BenchGqlTwoHopDest) \
+               RETURN src.name AS s, mid.name AS m, dst.name AS d, e1.hop AS h1, e2.hop AS h2";
+    store
+        .prepared_query_register(BENCH_PREPARED_NAME_TWO_HOP_CHAIN.into(), gql)
+        .expect("register prepared two_hop_chain");
+    let params = empty_params();
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("gql_plan_execute_prepared_two_hop");
+        let result = execute_gql_query_prepared(store, BENCH_PREPARED_NAME_TWO_HOP_CHAIN, &params);
         black_box(result.rows.len())
     })
 }
