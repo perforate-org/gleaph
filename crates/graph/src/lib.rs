@@ -24,7 +24,7 @@ use crate::canister::{
 };
 
 #[init]
-fn canister_init(args: GraphInitArgs) {
+fn init(args: GraphInitArgs) {
     canister::handlers::init(args);
 }
 
