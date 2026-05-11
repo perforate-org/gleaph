@@ -171,6 +171,39 @@ impl<M: Memory> SegmentSpanMetaStore<M> {
         );
     }
 
+    /// Reads `physical_start` at `index`, stores `new_start`, and returns the previous value.
+    ///
+    /// Panics if `index >= self.len()`.
+    ///
+    /// Prefer [`update_physical_start`](Self::update_physical_start) when the new value is derived
+    /// from the old one so the row is read only once.
+    #[inline]
+    pub fn replace_physical_start(&self, index: u64, new_start: u64) -> u64 {
+        assert!(index < self.len());
+        let addr = Address::from(Self::entry_offset(index));
+        let old = read_u64(&self.memory, addr);
+        write_u64(&self.memory, addr, new_start);
+        old
+    }
+
+    /// Reads `physical_start` at `index`, replaces it with `f(old)`, and returns `old`.
+    ///
+    /// Panics if `index >= self.len()`.
+    ///
+    /// This performs one length check and one stable-memory read of the row; prefer it over
+    /// [`get`](Self::get) followed by [`set`](Self::set) when updates depend on the prior value.
+    #[inline]
+    pub fn update_physical_start<F>(&self, index: u64, f: F) -> u64
+    where
+        F: FnOnce(u64) -> u64,
+    {
+        assert!(index < self.len());
+        let addr = Address::from(Self::entry_offset(index));
+        let old = read_u64(&self.memory, addr);
+        write_u64(&self.memory, addr, f(old));
+        old
+    }
+
     /// Appends a metadata row and grows stable memory if necessary.
     pub fn push(&self, item: SegmentSpanMeta) -> Result<(), GrowFailed> {
         let len = self.len();
@@ -233,6 +266,35 @@ mod tests {
         assert_eq!(reopened.get(0), SegmentSpanMeta { physical_start: 12 });
         assert_eq!(reopened.get(1), SegmentSpanMeta { physical_start: 48 });
     }
+
+    #[test]
+    fn replace_physical_start_returns_old_and_writes_new() {
+        let memory = vector_memory();
+        let store = SegmentSpanMetaStore::new(memory).unwrap();
+        store
+            .push(SegmentSpanMeta {
+                physical_start: 100,
+            })
+            .unwrap();
+        assert_eq!(store.replace_physical_start(0, 101), 100);
+        assert_eq!(store.get(0).physical_start, 101);
+    }
+
+    #[test]
+    fn update_physical_start_transforms_row_once() {
+        let memory = vector_memory();
+        let store = SegmentSpanMetaStore::new(memory).unwrap();
+        store
+            .push(SegmentSpanMeta {
+                physical_start: 200,
+            })
+            .unwrap();
+        assert_eq!(
+            store.update_physical_start(0, |p| p.wrapping_add(7)),
+            200
+        );
+        assert_eq!(store.get(0).physical_start, 207);
+    }
 }
 
 #[cfg(feature = "canbench")]
@@ -264,14 +326,8 @@ mod bench {
             let mut sum = 0u64;
             for i in 0..helper::MEDIUM_N {
                 let i = black_box(i);
-                let meta = store.get(i);
-                sum ^= meta.physical_start;
-                store.set(
-                    i,
-                    &SegmentSpanMeta {
-                        physical_start: meta.physical_start + 1,
-                    },
-                );
+                let old = store.update_physical_start(i, |p| p.wrapping_add(1));
+                sum ^= old;
             }
             let reopened = SegmentSpanMetaStore::init(memory.clone()).expect("reopen span meta");
             black_box(sum ^ reopened.get(helper::MEDIUM_N - 1).physical_start);
