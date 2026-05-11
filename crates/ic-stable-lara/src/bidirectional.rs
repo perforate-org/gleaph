@@ -270,6 +270,25 @@ where
         Ok(id)
     }
 
+    /// Copies the vertex row from the forward store.
+    ///
+    /// Forward and reverse vertex tables stay aligned for all supported mutation
+    /// paths; callers must update both together via [`Self::set_vertex_row`].
+    pub fn vertex_row(&self, vid: VertexId) -> Result<V, BidirectionalLaraError> {
+        self.ensure_vertex(vid)?;
+        Ok(self.forward.vertices().get(vid))
+    }
+
+    /// Overwrites the vertex payload in **both** forward and reverse stores.
+    ///
+    /// This keeps the invariant established by [`Self::push_vertex`].
+    pub fn set_vertex_row(&self, vid: VertexId, row: &V) -> Result<(), BidirectionalLaraError> {
+        self.ensure_vertex(vid)?;
+        self.forward.vertices().set(vid, row);
+        self.reverse.vertices().set(vid, row);
+        Ok(())
+    }
+
     /// Collects outgoing edges from the forward store in slab slot order.
     pub fn collect_out_edges_slot_order(
         &self,

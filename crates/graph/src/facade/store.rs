@@ -174,10 +174,7 @@ impl GraphStore {
     }
 
     pub fn vertex(&self, vertex_id: VertexId) -> Option<Vertex> {
-        if !self.contains_vertex(vertex_id) {
-            return None;
-        }
-        GRAPH.with_borrow(|graph| Some(graph.forward().vertices().get(vertex_id)))
+        GRAPH.with_borrow(|graph| graph.vertex_row(vertex_id).ok())
     }
 
     pub fn set_vertex(
@@ -185,12 +182,7 @@ impl GraphStore {
         vertex_id: VertexId,
         vertex: Vertex,
     ) -> Result<(), DeferredBidirectionalLaraError> {
-        self.ensure_vertex_id(vertex_id)?;
-        GRAPH.with_borrow(|graph| {
-            graph.forward().vertices().set(vertex_id, &vertex);
-            graph.reverse().vertices().set(vertex_id, &vertex);
-        });
-        Ok(())
+        GRAPH.with_borrow(|graph| graph.set_vertex_row(vertex_id, &vertex))
     }
 
     pub fn vertex_labels(&self, vertex_id: VertexId, vertex: Vertex) -> Vec<LabelId> {

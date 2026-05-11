@@ -724,6 +724,29 @@ where
         Ok(id)
     }
 
+    /// Copies the vertex row from the forward store.
+    ///
+    /// Forward and reverse vertex tables stay aligned for all supported mutation
+    /// paths; callers must update both together via [`Self::set_vertex_row`].
+    pub fn vertex_row(&self, vid: VertexId) -> Result<V, DeferredBidirectionalLaraError> {
+        self.ensure_vertex_in_range(vid)?;
+        Ok(self.forward.vertices().get(vid))
+    }
+
+    /// Overwrites the vertex payload in **both** forward and reverse stores.
+    ///
+    /// This keeps the invariant established by [`Self::push_vertex`].
+    pub fn set_vertex_row(
+        &self,
+        vid: VertexId,
+        row: &V,
+    ) -> Result<(), DeferredBidirectionalLaraError> {
+        self.ensure_vertex_in_range(vid)?;
+        self.forward.vertices().set(vid, row);
+        self.reverse.vertices().set(vid, row);
+        Ok(())
+    }
+
     /// Returns `true` if `vid` has any incident edge (forward out-adjacency or reverse out-adjacency).
     ///
     /// Equivalent to treating [`Self::collect_out_edges_slot_order`] and

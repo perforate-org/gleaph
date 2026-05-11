@@ -289,10 +289,7 @@ mod tests {
                 physical_start: 200,
             })
             .unwrap();
-        assert_eq!(
-            store.update_physical_start(0, |p| p.wrapping_add(7)),
-            200
-        );
+        assert_eq!(store.update_physical_start(0, |p| p.wrapping_add(7)), 200);
         assert_eq!(store.get(0).physical_start, 207);
     }
 }
