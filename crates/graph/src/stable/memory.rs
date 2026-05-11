@@ -4,7 +4,9 @@ use super::label_catalog::LabelCatalog;
 use super::property_catalog::PropertyCatalog;
 use super::vertex_labels::VertexLabelStore;
 use super::vertex_properties::VertexPropertyStore;
+use gleaph_auth::AuthState;
 use gleaph_graph_kernel::entry::{Edge, Vertex};
+use gleaph_graph_prepared::PreparedQueryCatalog;
 use ic_stable_lara::{DeferredBidirectionalLaraGraph, lara::maintenance::DeferredConfig};
 use ic_stable_structures::DefaultMemoryImpl;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
@@ -35,6 +37,8 @@ const PROPERTY_ID_TO_NAME: MemoryId = MemoryId::new(20);
 const VERTEX_PROPERTIES: MemoryId = MemoryId::new(21);
 const EDGE_PROPERTIES: MemoryId = MemoryId::new(22);
 const VERTEX_EDGE_IDS: MemoryId = MemoryId::new(23);
+const AUTH_PRINCIPAL_RECORDS: MemoryId = MemoryId::new(24);
+const PREPARED_QUERY_CATALOG: MemoryId = MemoryId::new(25);
 
 const GRAPH_ELEM_CAPACITY: u64 = 0;
 const GRAPH_SEGMENT_SIZE: u32 = 32;
@@ -49,6 +53,8 @@ pub(crate) type StablePropertyCatalog = PropertyCatalog<Memory, Memory>;
 pub(crate) type StableVertexPropertyStore = VertexPropertyStore<Memory>;
 pub(crate) type StableEdgePropertyStore = EdgePropertyStore<Memory>;
 pub(crate) type StableVertexEdgeIdAllocator = VertexEdgeIdAllocator<Memory>;
+pub(crate) type StableAuthState = AuthState<Memory>;
+pub(crate) type StablePreparedQueryCatalog = PreparedQueryCatalog<Memory>;
 
 thread_local! {
     static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
@@ -111,6 +117,14 @@ pub(crate) fn init_edge_property_store() -> StableEdgePropertyStore {
     EdgePropertyStore::init(MEMORY_MANAGER.with(|m| m.borrow().get(EDGE_PROPERTIES)))
 }
 
+pub(crate) fn init_auth_state() -> StableAuthState {
+    AuthState::init(MEMORY_MANAGER.with(|m| m.borrow().get(AUTH_PRINCIPAL_RECORDS)))
+}
+
 pub(crate) fn init_vertex_edge_id_allocator() -> StableVertexEdgeIdAllocator {
     VertexEdgeIdAllocator::init(MEMORY_MANAGER.with(|m| m.borrow().get(VERTEX_EDGE_IDS)))
+}
+
+pub(crate) fn init_prepared_query_catalog() -> StablePreparedQueryCatalog {
+    PreparedQueryCatalog::init(MEMORY_MANAGER.with(|m| m.borrow().get(PREPARED_QUERY_CATALOG)))
 }

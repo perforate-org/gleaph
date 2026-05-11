@@ -35,6 +35,8 @@ pub mod lexer;
 pub mod name_limits;
 pub mod numeric_ops;
 pub mod parser;
+/// Static classification of programs for authorization (data vs catalog modification).
+pub mod program_modification;
 #[cfg(feature = "ast-rkyv-no-span")]
 pub(crate) mod rkyv_support;
 pub mod temporal;

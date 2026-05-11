@@ -26,6 +26,26 @@ This makes it possible for frontend applications to send queries directly to Gle
 
 In combination with `msg_caller()`, Prepared Queries can also be used to implement access control patterns where users are only allowed to access data related to themselves.
 
+## Access control (roles)
+
+Gleaph graph canisters use a five-level role hierarchy (each level includes all lower levels): **Executor**, **Read**, **Write**, **Manager**, **Admin**.
+
+Every **caller** is treated as **Executor** until a row exists in stable auth for that principal (for example after `admin_grant_role`). Administrators from `init` (`issuing_principal` / `initial_admins`) are stored as **Admin**.
+
+- **Executor**: may execute **prepared** GQL only (including prepared updates).
+- **Read**: may execute arbitrary **read-only** GQL programs (and prepared execution).
+- **Write**: may execute programs that perform **data modification**, **catalog DDL** (`CREATE`/`DROP` graph and related statements), or contain a named `CALL` (treated conservatively as requiring write access until procedure semantics are modeled).
+- **Manager**: same as Write, plus optional **capability bits** (for example `PREPARE_REGISTER`, future index DDL bits). Only **Admin** or a **Manager** with `PREPARE_REGISTER` may register or drop prepared queries; **Write** and below cannot.
+- **Admin**: full access, including assigning roles via `admin_grant_role`.
+
+Implementation overview:
+
+- Crate [`crates/gleaph-auth`](crates/gleaph-auth): stable RBAC types and [`AuthState`](crates/gleaph-auth/src/lib.rs).
+- [`gleaph_gql::program_modification`](crates/gql/src/program_modification.rs): static classification of a parsed program for read vs write paths.
+- [`gleaph-graph`](crates/graph): stable maps for principals and prepared sources; on **wasm**, ic-cdk `#[init]` / `#[query]` / `#[update]` entrypoints live in [`lib.rs`](crates/graph/src/lib.rs), with handlers and types under [`canister/`](crates/graph/src/canister/).
+
+**Internet Computer controllers** can still upgrade code or replace canister state; they are separate from in-canister roles.
+
 ## License
 
 This project is licensed under either of [Apache License, Version 2.0](./LICENSE-APACHE) or [MIT License](./LICENSE-MIT) at your option.

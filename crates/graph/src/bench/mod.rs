@@ -3,17 +3,17 @@
 //! Run from `crates/graph`: `canbench` (see `canbench.yml`).
 //!
 //! **LabelId pruning checks:** `match_return_noisy` vs `match_return_noisy_multilabel` — same graph
-//! size, but multilabel noise forces the label sidecar path on almost every scan.  
+//! size, but multilabel noise forces the label sidecar path on almost every scan.
 //! `two_hop_chain` vs `two_hop_chain_mid_junk_out` — same query/plan, but `Mid` has many extra
 //! outgoing edges with a different rel label; edge expansion drops them by `LabelId` before row assembly.
 
-use crate::facade::mutation_executor::GraphMutationExecutor;
 use crate::facade::GraphStore;
+use crate::facade::mutation_executor::GraphMutationExecutor;
 use crate::plan::PlanQueryExecutor;
 use canbench_rs::bench;
+use gleaph_gql::Value;
 use gleaph_gql::ast::Statement;
 use gleaph_gql::parser;
-use gleaph_gql::Value;
 use gleaph_gql_planner::build_plan;
 use std::collections::BTreeMap;
 use std::hint::black_box;
@@ -62,10 +62,7 @@ fn insert_two_hop_decoys(store: GraphStore, count: u32) {
         let decoy = store
             .insert_vertex_named(
                 ["BenchGqlTwoHopSource"],
-                [(
-                    "name",
-                    Value::Text(format!("BenchGqlTwoHopDecoy {i}").into()),
-                )],
+                [("name", Value::Text(format!("BenchGqlTwoHopDecoy {i}")))],
             )
             .expect("insert decoy source");
         let sink = store
@@ -92,9 +89,7 @@ fn execute_gql_query(
     parameters: &BTreeMap<String, Value>,
 ) -> crate::plan::PlanQueryResult {
     let program = parser::parse(gql).expect("parse GQL");
-    let tx = program
-        .transaction_activity
-        .expect("transaction activity");
+    let tx = program.transaction_activity.expect("transaction activity");
     let block = tx.body.expect("statement block");
     let Statement::Query(composite) = &block.first else {
         panic!("expected query statement");
@@ -214,8 +209,7 @@ fn bench_graph_gql_parse_plan_execute_where_filter() -> canbench_rs::BenchResult
         )
         .expect("insert non-matching vertex");
 
-    let gql =
-        "MATCH (n:BenchGqlWherePerson) WHERE n.age > 18 RETURN n.name AS name";
+    let gql = "MATCH (n:BenchGqlWherePerson) WHERE n.age > 18 RETURN n.name AS name";
     let params = empty_params();
 
     canbench_rs::bench_fn(|| {
@@ -250,8 +244,7 @@ fn bench_graph_gql_parse_plan_execute_where_filter_noisy() -> canbench_rs::Bench
         )
         .expect("insert non-matching vertex");
 
-    let gql =
-        "MATCH (n:BenchGqlWherePerson) WHERE n.age > 18 RETURN n.name AS name";
+    let gql = "MATCH (n:BenchGqlWherePerson) WHERE n.age > 18 RETURN n.name AS name";
     let params = empty_params();
 
     canbench_rs::bench_fn(|| {
@@ -284,20 +277,10 @@ fn bench_graph_gql_parse_plan_execute_two_hop_chain() -> canbench_rs::BenchResul
         )
         .expect("insert dest");
     store
-        .insert_directed_edge_named(
-            a,
-            b,
-            Some("BenchGqlTwoHopRel1"),
-            [("hop", Value::Int64(1))],
-        )
+        .insert_directed_edge_named(a, b, Some("BenchGqlTwoHopRel1"), [("hop", Value::Int64(1))])
         .expect("insert first hop edge");
     store
-        .insert_directed_edge_named(
-            b,
-            c,
-            Some("BenchGqlTwoHopRel2"),
-            [("hop", Value::Int64(2))],
-        )
+        .insert_directed_edge_named(b, c, Some("BenchGqlTwoHopRel2"), [("hop", Value::Int64(2))])
         .expect("insert second hop edge");
 
     let gql = "MATCH (src:BenchGqlTwoHopSource)-[e1:BenchGqlTwoHopRel1]->(mid:BenchGqlTwoHopMid)-\
@@ -316,8 +299,7 @@ fn bench_graph_gql_parse_plan_execute_two_hop_chain() -> canbench_rs::BenchResul
 /// `BenchGqlMidJunkRel` edges into noise — only `BenchGqlTwoHopRel2` to `Dest` should survive the
 /// expand’s label filter.
 #[bench(raw)]
-fn bench_graph_gql_parse_plan_execute_two_hop_chain_mid_junk_out(
-) -> canbench_rs::BenchResult {
+fn bench_graph_gql_parse_plan_execute_two_hop_chain_mid_junk_out() -> canbench_rs::BenchResult {
     let store = GraphStore::new();
     let a = store
         .insert_vertex_named(
@@ -338,28 +320,15 @@ fn bench_graph_gql_parse_plan_execute_two_hop_chain_mid_junk_out(
         )
         .expect("insert dest");
     store
-        .insert_directed_edge_named(
-            a,
-            b,
-            Some("BenchGqlTwoHopRel1"),
-            [("hop", Value::Int64(1))],
-        )
+        .insert_directed_edge_named(a, b, Some("BenchGqlTwoHopRel1"), [("hop", Value::Int64(1))])
         .expect("insert first hop edge");
     store
-        .insert_directed_edge_named(
-            b,
-            c,
-            Some("BenchGqlTwoHopRel2"),
-            [("hop", Value::Int64(2))],
-        )
+        .insert_directed_edge_named(b, c, Some("BenchGqlTwoHopRel2"), [("hop", Value::Int64(2))])
         .expect("insert second hop edge");
 
     for i in 0..BENCH_TWO_HOP_MID_JUNK_OUT_EDGES {
         let junk = store
-            .insert_vertex_named(
-                ["BenchGqlNoiseBlob"],
-                [("junk", Value::Int64(i as i64))],
-            )
+            .insert_vertex_named(["BenchGqlNoiseBlob"], [("junk", Value::Int64(i as i64))])
             .expect("junk target");
         store
             .insert_directed_edge_named(
@@ -410,20 +379,10 @@ fn bench_graph_gql_parse_plan_execute_two_hop_chain_noisy() -> canbench_rs::Benc
         )
         .expect("insert dest");
     store
-        .insert_directed_edge_named(
-            a,
-            b,
-            Some("BenchGqlTwoHopRel1"),
-            [("hop", Value::Int64(1))],
-        )
+        .insert_directed_edge_named(a, b, Some("BenchGqlTwoHopRel1"), [("hop", Value::Int64(1))])
         .expect("insert first hop edge");
     store
-        .insert_directed_edge_named(
-            b,
-            c,
-            Some("BenchGqlTwoHopRel2"),
-            [("hop", Value::Int64(2))],
-        )
+        .insert_directed_edge_named(b, c, Some("BenchGqlTwoHopRel2"), [("hop", Value::Int64(2))])
         .expect("insert second hop edge");
 
     let gql = "MATCH (src:BenchGqlTwoHopSource)-[e1:BenchGqlTwoHopRel1]->(mid:BenchGqlTwoHopMid)-\

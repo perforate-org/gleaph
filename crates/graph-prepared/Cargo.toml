@@ -1,0 +1,16 @@
+[package]
+name = "gleaph-graph-prepared"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+derive_more = { version = "2", features = ["from", "into"] }
+gleaph-gql = { workspace = true, features = [
+    "ast-rkyv-no-span",
+    "f128",
+    "f256",
+] }
+ic-stable-structures.workspace = true
+rkyv.workspace = true
+thiserror.workspace = true

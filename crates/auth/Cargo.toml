@@ -1,0 +1,11 @@
+[package]
+name = "gleaph-auth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Role-based access control for Gleaph graph canisters"
+
+[dependencies]
+bitflags.workspace = true
+candid.workspace = true
+ic-stable-structures.workspace = true

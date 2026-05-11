@@ -627,6 +627,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "gleaph-auth"
+version = "0.1.0"
+dependencies = [
+ "bitflags",
+ "candid",
+ "ic-stable-structures",
+]
+
+[[package]]
 name = "gleaph-gql"
 version = "0.0.1"
 dependencies = [
@@ -679,17 +688,20 @@ dependencies = [
  "derive_more",
  "ethnum",
  "f256",
+ "gleaph-auth",
  "gleaph-gql",
  "gleaph-gql-ic",
  "gleaph-gql-planner",
- "gleaph-graph-catalog",
  "gleaph-graph-kernel",
+ "gleaph-graph-prepared",
  "half",
  "ic-cdk",
+ "ic-cdk-macros",
  "ic-stable-lara",
  "ic-stable-structures",
  "nohash-hasher",
  "rapidhash",
+ "serde",
 ]
 
 [[package]]
@@ -715,6 +727,17 @@ dependencies = [
  "gleaph-gql",
  "ic-stable-lara",
  "ic-stable-structures",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "gleaph-graph-prepared"
+version = "0.1.0"
+dependencies = [
+ "derive_more",
+ "gleaph-gql",
+ "ic-stable-structures",
+ "rkyv 0.8.16",
  "thiserror 2.0.18",
 ]
 

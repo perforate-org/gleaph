@@ -39,4 +39,11 @@ thread_local! {
     pub(crate) static VERTEX_EDGE_IDS: RefCell<memory::StableVertexEdgeIdAllocator> = RefCell::new(
         memory::init_vertex_edge_id_allocator()
     );
+
+    pub(crate) static AUTH_STATE: RefCell<memory::StableAuthState> =
+        RefCell::new(memory::init_auth_state());
+
+    pub(crate) static PREPARED_QUERY_CATALOG: RefCell<memory::StablePreparedQueryCatalog> = RefCell::new(
+        memory::init_prepared_query_catalog()
+    );
 }

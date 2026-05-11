@@ -4,11 +4,13 @@ use crate::stable::property_catalog::PropertyCatalogError;
 use crate::stable::vertex_labels::VertexLabelStoreError;
 use crate::stable::vertex_properties::VertexPropertyStoreError;
 use crate::stable::{
-    EDGE_PROPERTIES, GRAPH, LABEL_CATALOG, PROPERTY_CATALOG, VERTEX_EDGE_IDS, VERTEX_LABELS,
-    VERTEX_PROPERTIES,
+    EDGE_PROPERTIES, GRAPH, LABEL_CATALOG, PREPARED_QUERY_CATALOG, PROPERTY_CATALOG,
+    VERTEX_EDGE_IDS, VERTEX_LABELS, VERTEX_PROPERTIES,
 };
 use gleaph_gql::Value;
+use gleaph_gql::ast::GqlProgram;
 use gleaph_graph_kernel::entry::{Edge, EdgeMeta, LabelId, PropertyId, Vertex, VertexEdgeId};
+use gleaph_graph_prepared::PreparedQueryError;
 use ic_stable_lara::{
     BidirectionalMaintenanceReport, DeferredBidirectionalLaraGraph as Graph, DeleteEdgeObserver,
     MaintenanceBudget, VertexCount, VertexId, bidirectional::DeferredBidirectionalLaraError,
@@ -156,6 +158,28 @@ impl GraphStore {
         id: PropertyId,
     ) -> Result<(), PropertyCatalogError> {
         PROPERTY_CATALOG.with_borrow_mut(|catalog| catalog.insert_with_id(name, id))
+    }
+
+    pub fn prepared_query_register(
+        &self,
+        name: String,
+        source: &str,
+    ) -> Result<(), PreparedQueryError> {
+        PREPARED_QUERY_CATALOG.with_borrow_mut(|c| c.register(name, source))
+    }
+
+    pub fn prepared_query_drop(&self, name: &str) {
+        PREPARED_QUERY_CATALOG.with_borrow_mut(|c| {
+            c.remove(name);
+        });
+    }
+
+    pub fn prepared_query_get(&self, name: &str) -> Option<GqlProgram> {
+        PREPARED_QUERY_CATALOG.with_borrow(|c| c.get(name))
+    }
+
+    pub fn prepared_query_contains(&self, name: &str) -> bool {
+        PREPARED_QUERY_CATALOG.with_borrow(|c| c.contains_key(name))
     }
 
     pub fn vertex_count(&self) -> VertexCount {

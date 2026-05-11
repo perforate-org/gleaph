@@ -1,11 +1,13 @@
 [workspace]
 members = [
+    "crates/auth",
     "crates/gql",
     "crates/gql-ic",
     "crates/gql-macros",
     "crates/gql-planner",
     "crates/graph",
     "crates/graph-catalog",
+    "crates/graph-prepared",
     "crates/graph-kernel",
     "crates/ic-stable-lara",
     "crates/ic-stable-paged-ordered-map",
@@ -19,10 +21,12 @@ version = "0.1.0"
 license = "MIT or Apache-2.0"
 
 [workspace.dependencies]
+gleaph-auth = { path = "crates/auth" }
 gleaph-gql = { path = "crates/gql" }
 gleaph-gql-ic = { path = "crates/gql-ic" }
 gleaph-gql-planner = { path = "crates/gql-planner" }
 gleaph-graph-catalog = { path = "crates/graph-catalog" }
+gleaph-graph-prepared = { path = "crates/graph-prepared" }
 gleaph-graph-kernel = { path = "crates/graph-kernel" }
 ic-stable-lara = { path = "crates/ic-stable-lara" }
 ic-stable-paged-ordered-map = { path = "crates/ic-stable-paged-ordered-map" }
