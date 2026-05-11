@@ -674,6 +674,7 @@ name = "gleaph-graph"
 version = "0.1.0"
 dependencies = [
  "bitflags",
+ "canbench-rs",
  "candid",
  "derive_more",
  "ethnum",

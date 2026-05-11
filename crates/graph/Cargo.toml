@@ -9,6 +9,7 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = []
+canbench = ["dep:canbench-rs"]
 
 [dependencies]
 bitflags.workspace = true
@@ -24,6 +25,9 @@ ic-stable-lara.workspace = true
 ic-stable-structures.workspace = true
 nohash-hasher.workspace = true
 rapidhash.workspace = true
+
+## canbench
+canbench-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
 ethnum.workspace = true
