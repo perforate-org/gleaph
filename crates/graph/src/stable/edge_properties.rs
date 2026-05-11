@@ -196,7 +196,7 @@ impl<M: Memory> EdgePropertyStore<M> {
         let mut removed = 0u32;
 
         loop {
-            let Some(entry) = self.properties.range(range.clone()).next() else {
+            let Some(entry) = self.properties.range(range).next() else {
                 return removed;
             };
             let key = *entry.key();
