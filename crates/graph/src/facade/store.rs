@@ -189,6 +189,16 @@ impl GraphStore {
         VERTEX_LABELS.with_borrow(|labels| labels.labels_for(vertex_id, vertex))
     }
 
+    /// Whether `vertex` has `label_id`, using an inline primary-label check when there is no
+    /// multi-label sidecar (avoids an allocation per lookup).
+    #[inline]
+    pub fn vertex_has_label(&self, vertex_id: VertexId, vertex: Vertex, label_id: LabelId) -> bool {
+        if !vertex.has_label_sidecar() {
+            return vertex.primary_label_id() == Some(label_id);
+        }
+        self.vertex_labels(vertex_id, vertex).contains(&label_id)
+    }
+
     pub fn set_vertex_labels(
         &self,
         vertex_id: VertexId,

@@ -615,8 +615,8 @@ fn execute_node_scan(
             if vertex.is_tombstone() {
                 continue;
             }
-            if let Some(label_id) = label_id
-                && !store.vertex_labels(vertex_id, vertex).contains(&label_id)
+            if let Some(filter) = label_id
+                && !store.vertex_has_label(vertex_id, vertex, filter)
             {
                 continue;
             }
@@ -653,14 +653,8 @@ fn execute_expand(
     let mut out = Vec::new();
     for row in rows {
         let src_id = vertex_binding(&row, src)?;
-        let candidates = expand_candidates(store, src_id, direction)?;
-        for (dst_id, handle, edge_record) in candidates {
-            if let Some(label_id) = label_id
-                && edge_record.meta.label_id() != label_id.raw()
-            {
-                continue;
-            }
-
+        let candidates = expand_candidates(store, src_id, direction, label_id)?;
+        for (dst_id, handle, _edge_record) in candidates {
             let mut expanded = row.clone();
             expanded.insert(edge.to_string(), PlanBinding::Edge(handle));
             expanded.insert(dst.to_string(), PlanBinding::Vertex(dst_id));
@@ -677,6 +671,7 @@ fn expand_candidates(
     store: &GraphStore,
     src_id: VertexId,
     direction: EdgeDirection,
+    edge_label_id: Option<LabelId>,
 ) -> Result<Vec<(VertexId, EdgeHandle, Edge)>, PlanQueryError> {
     let mut out = Vec::new();
     match direction {
@@ -686,6 +681,11 @@ fn expand_candidates(
                 .map_err(crate::facade::GraphStoreError::from)?
             {
                 if edge.meta.is_undirected() {
+                    continue;
+                }
+                if let Some(expected) = edge_label_id
+                    && edge.meta.label_id() != expected.raw()
+                {
                     continue;
                 }
                 out.push((
@@ -706,6 +706,11 @@ fn expand_candidates(
                 if edge.meta.is_undirected() {
                     continue;
                 }
+                if let Some(expected) = edge_label_id
+                    && edge.meta.label_id() != expected.raw()
+                {
+                    continue;
+                }
                 out.push((
                     edge.target,
                     EdgeHandle {
@@ -722,6 +727,11 @@ fn expand_candidates(
                 .map_err(crate::facade::GraphStoreError::from)?
             {
                 if !edge.meta.is_undirected() {
+                    continue;
+                }
+                if let Some(expected) = edge_label_id
+                    && edge.meta.label_id() != expected.raw()
+                {
                     continue;
                 }
                 out.push((
