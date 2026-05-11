@@ -17,17 +17,20 @@
 //! scan contract.
 //!
 //! Insertions first try to append at `base_slot_start + degree`. The append is
-//! allowed only when it fits in the vertex's owned `capacity`; otherwise the
-//! edge is written to the segment log and later folded by maintenance or
-//! relocation.
+//! allowed only when it stays before this row’s CSR slab boundary (the next
+//! vertex's `base_slot_start`, PMA leaf total, or `elem_capacity`);
+//! otherwise the edge is written to the segment log and later folded by
+//! maintenance or relocation.
 //!
 //! ## Layout assumptions (update paths)
 //!
-//! When a vertex row uses `capacity == 0` (no explicit owned span), slab vs
-//! log splitting uses the **next vertex row’s** `base_slot_start` as the
-//! exclusive end of the current row’s slab window. This matches compact CSR
-//! layouts where `VertexId` order and slab bases are non-decreasing. If that
-//! invariant is violated, behavior is undefined; **debug builds** assert it on
+//! Slab span geometry uses the successor vertex row’s `base_slot_start` inside a
+//! PMA leaf, plus (when slabs are monotone across leaves) caps from later
+//! leaves. A materialized segment also clamps the slab window using
+//! `span_meta.physical_start + counts.total`. When monotone ordering breaks due
+//! to local relocation packing a leaf into earlier slab slots, successors with
+//! lower bases are ignored and PMA span metadata determines the slab tail instead.
+//! If that invariant is violated, behavior is undefined; **debug builds** assert it on
 //! the hot paths below. Prefer [`crate::LaraGraph`] orchestration over ad-hoc
 //! [`EdgeStore`] mutation so geometry and PMA counts stay aligned.
 //!
@@ -61,7 +64,7 @@ use free_span::{FreeSpan, FreeSpanStore};
 use ic_stable_structures::Memory;
 pub use log::HeaderV1 as LogHeaderV1;
 use log::LogStore;
-use span_meta::{SegmentSpanMeta, SegmentSpanMetaStore};
+use span_meta::{SPAN_PHYSICAL_UNASSIGNED, SegmentSpanMeta, SegmentSpanMetaStore};
 use std::{cell::Cell, fmt, iter::FusedIterator};
 
 const INLINE_EDGE_BYTES: usize = 64;
@@ -79,11 +82,12 @@ pub(crate) enum InsertLocation {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct EdgeLayout {
+pub(crate) struct EdgeLayout {
     elem_capacity: u64,
     segment_count: u32,
     segment_size: u32,
     num_edges: u64,
+    initial_vertex_edge_slots: u32,
 }
 
 impl From<EdgeHeaderV1> for EdgeLayout {
@@ -93,6 +97,7 @@ impl From<EdgeHeaderV1> for EdgeLayout {
             segment_count: header.segment_count,
             segment_size: header.segment_size,
             num_edges: header.num_edges,
+            initial_vertex_edge_slots: header.initial_vertex_edge_slots,
         }
     }
 }
@@ -145,6 +150,124 @@ pub struct EdgeStore<E: CsrEdge, M: Memory> {
 }
 
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
+    /// Exclusive slab slot boundary for vertex ordinal `v_ord`.
+    ///
+    /// Within one PMA leaf, the successor vertex row defines the CSR prefix end.
+    /// When the next [`VertexId`] lives in another leaf, its `base_slot_start`
+    /// still caps the slab window only if it is **monotone** (`>=` this row's
+    /// base); otherwise local relocation may have packed a later leaf below the
+    /// previous one and the slab tail must come from PMA span metadata.
+    ///
+    /// When [`SegmentSpanMeta::physical_start`] is set, PMA tail boundaries from
+    /// counts apply both within a leaf (clipping the CSR stripe to the relocated
+    /// physical span) and across leaves. Without materialized span rows, PMA width
+    /// from counts is anchored at this leaf's first vertex ordinal (`head +
+    /// total`) and is consulted only once a vertex row has no same-leaf CSR
+    /// successor (cross-leaf or sparse tail)—not between adjacent vertices in one
+    /// leaf, since that count may reflect slab-wide bookkeeping rather than a
+    /// per-neighbor stripe.
+    ///
+    /// When [`EdgeLayout::initial_vertex_edge_slots`] is non-empty and ids remain
+    /// empty past `v_ord` inside the logical leaf range, the implicit stripe width
+    /// still follows `initial_vertex_edge_slots`.
+    pub(crate) fn slab_window_exclusive_end<V, A>(
+        &self,
+        edge_layout: &EdgeLayout,
+        vertices: &A,
+        v_ord: u32,
+        v: &V,
+    ) -> u64
+    where
+        V: CsrVertex,
+        A: VertexAccess<V>,
+    {
+        let len = vertices.len();
+        let base = v.base_slot_start();
+        let seg = edge_layout.segment_size.max(1);
+        let leaf = v_ord / seg;
+        let leaf_start = leaf.saturating_mul(seg);
+        let leaf_logical_end_exclusive = leaf_start.saturating_add(seg);
+        let occupied_leaf_end_exclusive = leaf_logical_end_exclusive.min(len);
+
+        // Hot path for inserts: successive vertex ids inside one PMA leaf. Only touch
+        // span metadata (+ counts when the leaf is PMA-pinned) after the CSR neighbor read.
+        if v_ord.saturating_add(1) < occupied_leaf_end_exclusive {
+            let next_base = vertices
+                .get(VertexId::from(v_ord.saturating_add(1)))
+                .base_slot_start();
+            debug_assert!(
+                next_base >= base,
+                "LARA CSR invariant: base_slot_start must be non-decreasing in VertexId order"
+            );
+            let span_rec = self.span_meta_store().get(u64::from(leaf));
+            if span_rec.physical_start == SPAN_PHYSICAL_UNASSIGNED {
+                return next_base;
+            }
+            let c = self.counts.get(u64::from(leaf + edge_layout.segment_count));
+            let cap = span_rec
+                .physical_start
+                .saturating_add(c.total.max(0) as u64);
+            return next_base.min(cap);
+        }
+
+        let w = edge_layout.initial_vertex_edge_slots;
+        if w > 0 && v_ord.saturating_add(1) < leaf_logical_end_exclusive {
+            let tail = base.saturating_add(u64::from(w));
+            let span_rec = self.span_meta_store().get(u64::from(leaf));
+            if span_rec.physical_start == SPAN_PHYSICAL_UNASSIGNED {
+                return tail;
+            }
+            let c = self.counts.get(u64::from(leaf + edge_layout.segment_count));
+            let cap = span_rec
+                .physical_start
+                .saturating_add(c.total.max(0) as u64);
+            return tail.min(cap);
+        }
+
+        if v_ord.saturating_add(1) < len {
+            let next_base = vertices
+                .get(VertexId::from(v_ord.saturating_add(1)))
+                .base_slot_start();
+            if next_base >= base {
+                let span_rec = self.span_meta_store().get(u64::from(leaf));
+                if span_rec.physical_start != SPAN_PHYSICAL_UNASSIGNED {
+                    let c = self.counts.get(u64::from(leaf + edge_layout.segment_count));
+                    let cap = span_rec
+                        .physical_start
+                        .saturating_add(c.total.max(0) as u64);
+                    return next_base.min(cap);
+                }
+                if leaf < edge_layout.segment_count {
+                    let c = self.counts.get(u64::from(leaf + edge_layout.segment_count));
+                    let total_u = c.total.max(0) as u64;
+                    if total_u > 0 {
+                        let head = vertices
+                            .get(VertexId::from(leaf_start))
+                            .base_slot_start();
+                        let cap = head.saturating_add(total_u);
+                        return next_base.min(cap);
+                    }
+                }
+                return next_base;
+            }
+        }
+
+        let span_rec = self.span_meta_store().get(u64::from(leaf));
+        if span_rec.physical_start != SPAN_PHYSICAL_UNASSIGNED {
+            let c = self.counts.get(u64::from(leaf + edge_layout.segment_count));
+            return span_rec
+                .physical_start
+                .saturating_add(c.total.max(0) as u64);
+        }
+
+        if leaf < edge_layout.segment_count {
+            let c = self.counts.get(u64::from(leaf + edge_layout.segment_count));
+            base.saturating_add(c.total.max(0) as u64)
+        } else {
+            edge_layout.elem_capacity
+        }
+    }
+
     /// Creates a fresh edge subsystem over the supplied stable memories.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -176,7 +299,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let log_header = LogHeaderV1::new(header.segment_count, header.stride);
         let span_meta = SegmentSpanMetaStore::new(span_meta)?;
         for _ in 0..u64::from(header.segment_count) {
-            span_meta.push(SegmentSpanMeta { physical_start: 0 })?;
+            span_meta.push(SegmentSpanMeta::default())?;
         }
         let edges = EdgeSlabStore::new(edges, header)?;
         let log = LogStore::new(log, log_header)?;
@@ -258,7 +381,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         }
         self.migrate_counts_for_segment_grow(old, new_segment_count)?;
         for _ in old..new_segment_count {
-            self.span_meta.push(SegmentSpanMeta { physical_start: 0 })?;
+            self.span_meta.push(SegmentSpanMeta::default())?;
         }
         self.log.grow_segment_count_to(new_segment_count)?;
         let mut nh = h;
@@ -350,7 +473,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             self.span_meta.set(idx, &SegmentSpanMeta { physical_start });
         } else {
             while self.span_meta.len() < idx {
-                self.span_meta.push(SegmentSpanMeta { physical_start: 0 })?;
+                self.span_meta.push(SegmentSpanMeta::default())?;
             }
             self.span_meta.push(SegmentSpanMeta { physical_start })?;
         }
@@ -656,7 +779,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             return Err(LaraOperationError::VertexDeleted);
         }
         let loc = v.base_slot_start().saturating_add(u64::from(v.degree()));
-        let location = if self.have_space_on_slab(vertices, v_ord, &v, loc, edge_layout) {
+        let location = if self.have_space_on_slab(vertices, v_ord, &v, loc, &edge_layout) {
             self.write_slot(loc, edge)
                 .map_err(LaraOperationError::WriteEdgeSlotFailed)?;
             vertices.set(vid, &v.with_degree(v.degree() + 1));
@@ -822,30 +945,10 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         if v.log_head() < 0 {
             return v.degree();
         }
-        if v.span_capacity() > 0 {
-            return v.degree().min(v.span_capacity());
-        }
-        let len = vertices.len();
-        let current_leaf = v_ord / edge_layout.segment_size.max(1);
-        let next = if v_ord < len.saturating_sub(1) {
-            let next_base = vertices
-                .get(VertexId::from(v_ord.saturating_add(1)))
-                .base_slot_start();
-            debug_assert!(
-                next_base >= v.base_slot_start(),
-                "LARA CSR invariant: base_slot_start must be non-decreasing in VertexId order"
-            );
-            next_base
-        } else if current_leaf < edge_layout.segment_count {
-            let c = self
-                .counts
-                .get(u64::from(current_leaf + edge_layout.segment_count));
-            v.base_slot_start().saturating_add(c.total.max(0) as u64)
-        } else {
-            edge_layout.elem_capacity
-        };
-        next.saturating_sub(v.base_slot_start())
-            .min(u64::from(u32::MAX)) as u32
+        let next_exclusive = self.slab_window_exclusive_end(edge_layout, vertices, v_ord, v);
+        let span_slots = next_exclusive.saturating_sub(v.base_slot_start());
+        let span_u32 = span_slots.min(u64::from(u32::MAX)) as u32;
+        span_u32.min(v.degree())
     }
 
     fn have_space_on_slab<V, A>(
@@ -854,41 +957,13 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         v_ord: u32,
         v: &V,
         loc: u64,
-        edge_layout: EdgeLayout,
+        edge_layout: &EdgeLayout,
     ) -> bool
     where
         V: CsrVertex,
         A: VertexAccess<V>,
     {
-        if v.span_capacity() > 0 {
-            return loc
-                < v.base_slot_start()
-                    .saturating_add(u64::from(v.span_capacity()));
-        }
-        let len = vertices.len();
-        let seg_sz = edge_layout.segment_size.max(1);
-        let current_leaf = v_ord / seg_sz;
-        if v_ord < len.saturating_sub(1) {
-            let next_base = vertices
-                .get(VertexId::from(v_ord.saturating_add(1)))
-                .base_slot_start();
-            debug_assert!(
-                next_base >= v.base_slot_start(),
-                "LARA CSR invariant: base_slot_start must be non-decreasing in VertexId order"
-            );
-            return loc < next_base;
-        }
-        if current_leaf < edge_layout.segment_count {
-            let c = self
-                .counts
-                .get(u64::from(current_leaf + edge_layout.segment_count));
-            loc < vertices
-                .get(VertexId::from(v_ord))
-                .base_slot_start()
-                .saturating_add(c.total.max(0) as u64)
-        } else {
-            loc < edge_layout.elem_capacity
-        }
+        loc < self.slab_window_exclusive_end(edge_layout, vertices, v_ord, v)
     }
 
     fn bump_counts_leaf_with_layout(
@@ -902,6 +977,22 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             (leaf_segment(vid, edge_layout.segment_size) + edge_layout.segment_count) as usize;
         if idx as u64 >= self.counts.len() {
             return Err(LaraOperationError::SegmentCountsTreeTooSmall);
+        }
+        // Inserts/removes only ever adjust `actual` (live edge records). `total` is owned by
+        // explicit recount/rebalance paths (`LaraGraph::update_leaf_count_and_ancestors`).
+        // Propagate the same delta up the tree with one read + write per level instead of
+        // re-summing both children at every internal node (two reads + write per level).
+        if d_total == 0 {
+            loop {
+                let mut c = self.counts.get(idx as u64);
+                c.actual += d_actual;
+                self.counts.set(idx as u64, &c);
+                if idx == 1 {
+                    break;
+                }
+                idx /= 2;
+            }
+            return Ok(());
         }
         loop {
             let mut c = self.counts.get(idx as u64);
@@ -1111,11 +1202,9 @@ where
 mod tests {
     use super::*;
     use crate::lara::vertex::{Vertex, VertexStore};
-    use crate::test_support::{
-        CAPACITY_READS, CountingCapacityVertex, PoisonCapacityVertex, TestEdge, vector_memory,
-    };
+    use crate::test_support::{PoisonCapacityVertex, TestEdge, vector_memory};
     use crate::{VectorMemory, VertexId};
-    use std::{cell::RefCell, rc::Rc, sync::atomic::Ordering};
+    use std::{cell::RefCell, rc::Rc};
 
     #[test]
     fn edge_store_reads_slab_then_log_neighborhood() {
@@ -1129,7 +1218,6 @@ mod tests {
             .push(Vertex {
                 base_slot_start: 0,
                 degree: 0,
-                capacity: 1,
                 log_head: -1,
                 deleted: false,
             })
@@ -1138,7 +1226,6 @@ mod tests {
             .push(Vertex {
                 base_slot_start: 1,
                 degree: 0,
-                capacity: 1,
                 log_head: -1,
                 deleted: false,
             })
@@ -1186,7 +1273,7 @@ mod tests {
     }
 
     #[test]
-    fn edge_store_uses_vertex_capacity_for_slab_space() {
+    fn edge_store_uses_csr_neighbor_bases_for_slab_space() {
         let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
         let mc: VectorMemory = Rc::new(RefCell::new(Vec::new()));
         let me: VectorMemory = Rc::new(RefCell::new(Vec::new()));
@@ -1197,16 +1284,14 @@ mod tests {
             .push(Vertex {
                 base_slot_start: 0,
                 degree: 0,
-                capacity: 2,
                 log_head: -1,
                 deleted: false,
             })
             .unwrap();
         vertices
             .push(Vertex {
-                base_slot_start: 1,
+                base_slot_start: 2,
                 degree: 0,
-                capacity: 1,
                 log_head: -1,
                 deleted: false,
             })
@@ -1257,7 +1342,6 @@ mod tests {
             .push(Vertex {
                 base_slot_start: 0,
                 degree: 0,
-                capacity: 2,
                 log_head: -1,
                 deleted: false,
             })
@@ -1266,7 +1350,6 @@ mod tests {
             .push(Vertex {
                 base_slot_start: 2,
                 degree: 0,
-                capacity: 1,
                 log_head: -1,
                 deleted: false,
             })
@@ -1310,68 +1393,7 @@ mod tests {
     }
 
     #[test]
-    fn edge_store_insert_reads_capacity_for_update_boundary() {
-        CAPACITY_READS.store(0, Ordering::SeqCst);
-
-        let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
-        let mc: VectorMemory = Rc::new(RefCell::new(Vec::new()));
-        let me: VectorMemory = Rc::new(RefCell::new(Vec::new()));
-        let ml: VectorMemory = Rc::new(RefCell::new(Vec::new()));
-
-        let vertices = VertexStore::<CountingCapacityVertex, _>::new(mv).unwrap();
-        vertices
-            .push(CountingCapacityVertex {
-                base_slot_start: 0,
-                degree: 0,
-                capacity: 2,
-                log_head: -1,
-            })
-            .unwrap();
-        vertices
-            .push(CountingCapacityVertex {
-                base_slot_start: 1,
-                degree: 0,
-                capacity: 1,
-                log_head: -1,
-            })
-            .unwrap();
-
-        let edges = EdgeStore::new(
-            mc,
-            me,
-            ml,
-            vector_memory(),
-            vector_memory(),
-            vector_memory(),
-            4,
-            1,
-            0,
-        )
-        .unwrap();
-        edges
-            .grow_segment_tree_to(segment_tree_leaf_count(VertexCount::from(2u32), 1))
-            .unwrap();
-
-        edges
-            .insert_edge(&vertices, VertexId::from(0), TestEdge(10))
-            .unwrap();
-        edges
-            .insert_edge(&vertices, VertexId::from(0), TestEdge(11))
-            .unwrap();
-
-        assert!(CAPACITY_READS.load(Ordering::SeqCst) >= 2);
-        assert_eq!(vertices.get(VertexId::from(0)).degree, 2);
-        assert_eq!(vertices.get(VertexId::from(0)).log_head, -1);
-        assert_eq!(
-            edges
-                .collect_out_edges_slot_order(&vertices, VertexId::from(0))
-                .unwrap(),
-            vec![TestEdge(10), TestEdge(11)]
-        );
-    }
-
-    #[test]
-    fn edge_store_scan_uses_base_and_degree_not_capacity() {
+    fn edge_store_scan_uses_base_and_degree_only() {
         let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
         let mc: VectorMemory = Rc::new(RefCell::new(Vec::new()));
         let me: VectorMemory = Rc::new(RefCell::new(Vec::new()));

@@ -54,11 +54,10 @@ pub(crate) fn test_edge(seed: u64) -> TestEdge {
 }
 
 #[inline]
-pub(crate) fn vertex(base_slot_start: u64, capacity: u32) -> Vertex {
+pub(crate) fn vertex(base_slot_start: u64) -> Vertex {
     Vertex {
         base_slot_start,
         degree: 0,
-        capacity,
         log_head: -1,
         deleted: false,
     }
@@ -89,7 +88,7 @@ pub(crate) fn lara_graph(
         .expect("grow lara graph segments");
     for vid in 0..vertex_count {
         graph
-            .push_vertex(vertex(u64::from(vid) * u64::from(segment_size), 0))
+            .push_vertex(vertex(u64::from(vid) * u64::from(segment_size)))
             .expect("push vertex");
     }
     graph
@@ -148,7 +147,7 @@ pub(crate) fn deferred_graph(
         .expect("grow deferred graph segments");
     for vid in 0..vertex_count {
         graph
-            .push_vertex(vertex(u64::from(vid) * u64::from(segment_size), 0))
+            .push_vertex(vertex(u64::from(vid) * u64::from(segment_size)))
             .expect("push vertex");
     }
     graph
@@ -194,7 +193,7 @@ where
         .expect("grow reverse graph segments");
     for vid in 0..vertex_count {
         graph
-            .push_vertex(vertex(u64::from(vid) * 16, 0))
+            .push_vertex(vertex(u64::from(vid) * 16))
             .expect("push vertex");
     }
     graph
@@ -243,7 +242,7 @@ pub(crate) fn deferred_bidirectional_graph(
         .expect("grow deferred reverse graph segments");
     for vid in 0..vertex_count {
         graph
-            .push_vertex(vertex(u64::from(vid) * 16, 0))
+            .push_vertex(vertex(u64::from(vid) * 16))
             .expect("push vertex");
     }
     graph

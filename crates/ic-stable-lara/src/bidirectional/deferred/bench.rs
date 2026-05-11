@@ -66,7 +66,7 @@ fn bench_lara_deferred_bidirectional_insert_undirected_1024() -> canbench_rs::Be
     .expect("deferred bidirectional graph");
     for vid in 0..256u32 {
         graph
-            .push_vertex(helper::vertex(u64::from(vid) * 16, 0))
+            .push_vertex(helper::vertex(u64::from(vid) * 16))
             .expect("push vertex");
     }
     canbench_rs::bench_fn(|| {

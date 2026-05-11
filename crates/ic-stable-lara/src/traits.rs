@@ -13,8 +13,8 @@ use crate::VertexId;
 /// or `-1` if all neighbors live on the CSR slab.
 ///
 /// Clean scans should remain valid with only [`Self::base_slot_start`] and [`Self::degree`].
-/// [`Self::span_capacity`] / [`Self::with_span_capacity`] describe owned slab slots for inserts,
-/// relocation, and maintenance.
+/// Owned slab spans for inserts and relocation follow CSR geometry:
+/// adjacent [`Self::base_slot_start`] values and PMA leaf totals (plus `elem_capacity`).
 pub trait CsrVertex: Storable + Copy {
     /// Fixed byte width of one encoded vertex row.
     const BYTES: usize;
@@ -31,11 +31,6 @@ pub trait CsrVertex: Storable + Copy {
     fn log_head(self) -> i32;
     /// Returns a copy with a new overflow log head.
     fn with_log_head(self, idx: i32) -> Self;
-
-    /// Number of slab slots currently owned by this vertex's direct span.
-    fn span_capacity(&self) -> u32;
-    /// Returns a copy with a new owned span capacity.
-    fn with_span_capacity(self, capacity: u32) -> Self;
 }
 
 /// Optional marker support for vertex rows that can represent deleted vertices.

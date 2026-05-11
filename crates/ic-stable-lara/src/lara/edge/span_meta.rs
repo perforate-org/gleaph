@@ -24,10 +24,24 @@ struct HeaderV1 {
 }
 
 /// Placement metadata for one leaf segment.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SegmentSpanMeta {
-    /// Physical edge-slab start slot currently assigned to this segment.
+    /// Physical edge-slab start slot assigned to this segment, or [`SPAN_PHYSICAL_UNASSIGNED`]
+    /// until the segment obtains a contiguous slab reservation.
     pub physical_start: u64,
+}
+
+/// Sentinel stored in [`SegmentSpanMeta::physical_start`] before a segment slab is pinned.
+///
+/// Actual slab spans may legally start at slot `0`, so **`0` is never used** as “unassigned”.
+pub(crate) const SPAN_PHYSICAL_UNASSIGNED: u64 = u64::MAX;
+
+impl Default for SegmentSpanMeta {
+    fn default() -> Self {
+        Self {
+            physical_start: SPAN_PHYSICAL_UNASSIGNED,
+        }
+    }
 }
 
 /// Errors returned when reopening segment span metadata.

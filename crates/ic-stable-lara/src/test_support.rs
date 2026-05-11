@@ -1,9 +1,6 @@
+use crate::lara::edge::EdgeLayout;
 use crate::*;
-use std::{
-    cell::RefCell,
-    rc::Rc,
-    sync::atomic::{AtomicUsize, Ordering},
-};
+use std::{cell::RefCell, rc::Rc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct TestEdge(pub(crate) u32);
@@ -155,14 +152,6 @@ impl CsrVertex for PoisonCapacityVertex {
         self.log_head = idx;
         self
     }
-
-    fn span_capacity(&self) -> u32 {
-        panic!("clean scan must not read vertex capacity")
-    }
-
-    fn with_span_capacity(self, _capacity: u32) -> Self {
-        panic!("clean scan must not write vertex capacity")
-    }
 }
 
 impl Storable for PoisonCapacityVertex {
@@ -197,99 +186,6 @@ impl Storable for PoisonCapacityVertex {
         Self {
             base_slot_start: u64::from_le_bytes(base),
             degree: u32::from_le_bytes(degree),
-            log_head: i32::from_le_bytes(log_head),
-        }
-    }
-}
-
-pub(crate) static CAPACITY_READS: AtomicUsize = AtomicUsize::new(0);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct CountingCapacityVertex {
-    pub(crate) base_slot_start: u64,
-    pub(crate) degree: u32,
-    pub(crate) capacity: u32,
-    pub(crate) log_head: i32,
-}
-
-impl CsrVertex for CountingCapacityVertex {
-    const BYTES: usize = 20;
-
-    fn base_slot_start(&self) -> u64 {
-        self.base_slot_start
-    }
-
-    fn degree(&self) -> u32 {
-        self.degree
-    }
-
-    fn with_base_slot_start(mut self, start: u64) -> Self {
-        self.base_slot_start = start;
-        self
-    }
-
-    fn with_degree(mut self, degree: u32) -> Self {
-        self.degree = degree;
-        self
-    }
-
-    fn log_head(self) -> i32 {
-        self.log_head
-    }
-
-    fn with_log_head(mut self, idx: i32) -> Self {
-        self.log_head = idx;
-        self
-    }
-
-    fn span_capacity(&self) -> u32 {
-        CAPACITY_READS.fetch_add(1, Ordering::SeqCst);
-        self.capacity
-    }
-
-    fn with_span_capacity(mut self, capacity: u32) -> Self {
-        self.capacity = capacity;
-        self
-    }
-}
-
-impl Storable for CountingCapacityVertex {
-    const BOUND: Bound = Bound::Bounded {
-        max_size: Self::BYTES as u32,
-        is_fixed_size: true,
-    };
-
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        let mut b = [0u8; Self::BYTES];
-        b[0..8].copy_from_slice(&self.base_slot_start.to_le_bytes());
-        b[8..12].copy_from_slice(&self.degree.to_le_bytes());
-        b[12..16].copy_from_slice(&self.capacity.to_le_bytes());
-        b[16..20].copy_from_slice(&self.log_head.to_le_bytes());
-        Cow::Owned(Vec::from(b))
-    }
-
-    fn into_bytes(self) -> Vec<u8> {
-        let mut b = [0u8; Self::BYTES];
-        b[0..8].copy_from_slice(&self.base_slot_start.to_le_bytes());
-        b[8..12].copy_from_slice(&self.degree.to_le_bytes());
-        b[12..16].copy_from_slice(&self.capacity.to_le_bytes());
-        b[16..20].copy_from_slice(&self.log_head.to_le_bytes());
-        Vec::from(b)
-    }
-
-    fn from_bytes(bytes: Cow<[u8]>) -> Self {
-        let mut base = [0u8; 8];
-        let mut degree = [0u8; 4];
-        let mut capacity = [0u8; 4];
-        let mut log_head = [0u8; 4];
-        base.copy_from_slice(&bytes.as_ref()[0..8]);
-        degree.copy_from_slice(&bytes.as_ref()[8..12]);
-        capacity.copy_from_slice(&bytes.as_ref()[12..16]);
-        log_head.copy_from_slice(&bytes.as_ref()[16..20]);
-        Self {
-            base_slot_start: u64::from_le_bytes(base),
-            degree: u32::from_le_bytes(degree),
-            capacity: u32::from_le_bytes(capacity),
             log_head: i32::from_le_bytes(log_head),
         }
     }
@@ -338,7 +234,6 @@ where
             .push_vertex(Vertex {
                 base_slot_start,
                 degree: 0,
-                capacity: 0,
                 log_head: -1,
                 deleted: false,
             })
@@ -376,7 +271,6 @@ where
             .push_vertex(Vertex {
                 base_slot_start,
                 degree: 0,
-                capacity: 0,
                 log_head: -1,
                 deleted: false,
             })
@@ -424,7 +318,6 @@ where
             .push_vertex(Vertex {
                 base_slot_start,
                 degree: 0,
-                capacity: 0,
                 log_head: -1,
                 deleted: false,
             })
@@ -434,26 +327,26 @@ where
 }
 
 pub(crate) fn assert_vertex_capacity_invariants(graph: &LaraGraph<TestEdge, Vertex, VectorMemory>) {
+    let layout: EdgeLayout = graph.edges().header().into();
     let mut owned_spans = Vec::new();
     for vidx in 0..graph.vertices().len() {
         let v = graph.vertices().get(VertexId::from(vidx));
+        let end = graph
+            .edges()
+            .slab_window_exclusive_end(&layout, graph.vertices(), vidx, &v);
         assert!(
-            v.degree <= v.capacity,
-            "vertex {vidx} has degree {} beyond capacity {}",
-            v.degree,
-            v.capacity
+            end >= v.base_slot_start,
+            "vertex {vidx}: csr window end {end} before base {}",
+            v.base_slot_start
         );
-        assert!(
-            v.base_slot_start.saturating_add(u64::from(v.degree))
-                <= v.base_slot_start.saturating_add(u64::from(v.capacity)),
-            "vertex {vidx} live prefix exceeds owned span"
-        );
-        if v.capacity > 0 {
-            owned_spans.push((
-                vidx,
-                v.base_slot_start,
-                v.base_slot_start.saturating_add(u64::from(v.capacity)),
-            ));
+        if v.log_head < 0 {
+            assert!(
+                v.base_slot_start.saturating_add(u64::from(v.degree)) <= end,
+                "vertex {vidx}: live slab prefix extends past csr window end {end}"
+            );
+        }
+        if end > v.base_slot_start {
+            owned_spans.push((vidx, v.base_slot_start, end));
         }
     }
 
@@ -463,7 +356,7 @@ pub(crate) fn assert_vertex_capacity_invariants(graph: &LaraGraph<TestEdge, Vert
         for &(vidx, owned_start, owned_end) in &owned_spans {
             assert!(
                 !spans_overlap(free_start, free_end, owned_start, owned_end),
-                "free span [{free_start}, {free_end}) overlaps vertex {vidx} owned span [{owned_start}, {owned_end})"
+                "free span [{free_start}, {free_end}) overlaps vertex {vidx} csr window [{owned_start}, {owned_end})"
             );
         }
     }
@@ -498,7 +391,6 @@ pub(crate) fn deferred_test_graph(
             .push_vertex(Vertex {
                 base_slot_start,
                 degree: 0,
-                capacity: 0,
                 log_head: -1,
                 deleted: false,
             })

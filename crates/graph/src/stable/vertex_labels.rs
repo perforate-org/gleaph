@@ -164,7 +164,6 @@ mod tests {
         Vertex {
             base_slot_start: 1,
             live_edge_count: 2,
-            span_capacity: 3,
             metadata: 0,
         }
     }

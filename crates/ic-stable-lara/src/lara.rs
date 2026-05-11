@@ -6,17 +6,18 @@
 //!
 //! - **Scan contract:** read one vertex row, then read edge slots
 //!   `[base_slot_start, base_slot_start + degree)`. Scan code must not branch
-//!   on `capacity` or read relocation/free-span metadata.
+//!   on segment span metadata or read relocation/free-span metadata beyond the
+//!   vertex row fields used for visibility.
 //! - **Update contract:** insert, resize, rebalance, relocate, and maintenance
-//!   code may read and rewrite `base_slot_start`, `degree`, and `capacity`.
-//!   `capacity` is authoritative for whether a write fits inside the currently
-//!   owned slab span.
+//!   code may read and rewrite `base_slot_start` and `degree`. Owned slab span
+//!   for writes is derived from CSR successor bases, PMA counts, and slab
+//!   `elem_capacity`.
 //!
 //! Segment relocation moves a physical segment span to a target span, rewrites
-//! all affected vertex bases/capacities, updates segment counts and span
-//! metadata, clears folded logs, and only then releases the old physical span to
-//! the free span manager. This order keeps queries pointed at either the old
-//! committed layout or the new committed layout, never at reusable free space.
+//! all affected vertex bases, updates segment counts and span metadata, clears
+//! folded logs, and only then releases the old physical span to the free span
+//! manager. This order keeps queries pointed at either the old committed layout
+//! or the new committed layout, never at reusable free space.
 //!
 //! Segment identity for a vertex follows the PMA leaf layout (power-of-two leaf
 //! count, grown only when `push_vertex` crosses a boundary). Production paths
@@ -30,6 +31,7 @@ pub mod maintenance;
 pub mod operation_error;
 pub mod vertex;
 
+use crate::lara::edge::span_meta::SPAN_PHYSICAL_UNASSIGNED;
 use crate::{
     GrowFailed, SegmentId, VertexId,
     lara::{
@@ -382,12 +384,6 @@ where
                 vid,
                 &v.with_base_slot_start(start)
                     .with_degree(neighborhood.len() as u32)
-                    .with_span_capacity(capacity_from_positions(
-                        &positions,
-                        vidx as usize,
-                        vertex_len as usize,
-                        new_capacity,
-                    ))
                     .with_log_head(-1),
             );
         }
@@ -737,10 +733,9 @@ where
         let positions = self.calculate_positions(start_vertex, end_vertex, gaps);
 
         let cache = self.collect_rebalance_cache(start_vertex, end_vertex);
-        for offset in 0..(end_vertex - start_vertex) as usize {
+        for (offset, &start) in positions.iter().enumerate() {
             let neighborhood = cache.vertex_edges(offset);
             let vid_u32 = start_vertex + offset as u32;
-            let start = positions[offset];
             for (i, edge) in neighborhood.iter().copied().enumerate() {
                 self.edges.write_slot(start + i as u64, edge)?;
             }
@@ -750,12 +745,6 @@ where
                 id,
                 &v.with_base_slot_start(start)
                     .with_degree(neighborhood.len() as u32)
-                    .with_span_capacity(capacity_from_positions(
-                        &positions,
-                        offset,
-                        (end_vertex - start_vertex) as usize,
-                        from.saturating_add(total_space),
-                    ))
                     .with_log_head(-1),
             );
         }
@@ -827,10 +816,9 @@ where
 
         let gaps = new_span.saturating_sub(used_space);
         let positions = self.calculate_positions_from(start_vertex, end_vertex, new_start, gaps);
-        for offset in 0..(end_vertex - start_vertex) as usize {
+        for (offset, &start) in positions.iter().enumerate() {
             let neighborhood = cache.vertex_edges(offset);
             let vid_u32 = start_vertex.saturating_add(offset as u32);
-            let start = positions[offset];
             for (i, edge) in neighborhood.iter().copied().enumerate() {
                 self.edges.write_slot(start + i as u64, edge)?;
             }
@@ -840,12 +828,6 @@ where
                 id,
                 &v.with_base_slot_start(start)
                     .with_degree(neighborhood.len() as u32)
-                    .with_span_capacity(capacity_from_positions(
-                        &positions,
-                        offset,
-                        (end_vertex - start_vertex) as usize,
-                        new_start.saturating_add(new_span),
-                    ))
                     .with_log_head(-1),
             );
         }
@@ -908,10 +890,9 @@ where
 
         let gaps = new_span.saturating_sub(used_space);
         let positions = self.calculate_positions_from(start_vertex, end_vertex, old_start, gaps);
-        for offset in 0..(end_vertex - start_vertex) as usize {
+        for (offset, &start) in positions.iter().enumerate() {
             let neighborhood = cache.vertex_edges(offset);
             let vid_u32 = start_vertex.saturating_add(offset as u32);
-            let start = positions[offset];
             for (i, edge) in neighborhood.iter().copied().enumerate() {
                 self.edges.write_slot(start + i as u64, edge)?;
             }
@@ -921,12 +902,6 @@ where
                 id,
                 &v.with_base_slot_start(start)
                     .with_degree(neighborhood.len() as u32)
-                    .with_span_capacity(capacity_from_positions(
-                        &positions,
-                        offset,
-                        (end_vertex - start_vertex) as usize,
-                        old_start.saturating_add(new_span),
-                    ))
                     .with_log_head(-1),
             );
         }
@@ -1099,10 +1074,9 @@ where
 
         let gaps = segment_len.saturating_sub(used_space);
         let positions = self.calculate_positions_from(start_vertex, end_vertex, new_start, gaps);
-        for offset in 0..(end_vertex - start_vertex) as usize {
+        for (offset, &start) in positions.iter().enumerate() {
             let neighborhood = cache.vertex_edges(offset);
             let vid_u32 = start_vertex.saturating_add(offset as u32);
-            let start = positions[offset];
             for (i, edge) in neighborhood.iter().copied().enumerate() {
                 self.edges.write_slot(start + i as u64, edge)?;
             }
@@ -1112,12 +1086,6 @@ where
                 id,
                 &v.with_base_slot_start(start)
                     .with_degree(neighborhood.len() as u32)
-                    .with_span_capacity(capacity_from_positions(
-                        &positions,
-                        offset,
-                        (end_vertex - start_vertex) as usize,
-                        new_start.saturating_add(segment_len),
-                    ))
                     .with_log_head(-1),
             );
         }
@@ -1178,21 +1146,18 @@ where
             return Ok(());
         }
         let row = self.vertices.get(vid);
-        if row.base_slot_start() != 0 || row.span_capacity() != 0 || row.degree() != 0 {
+        if row.base_slot_start() != 0 || row.degree() != 0 {
             return Ok(());
         }
 
         let end_vid = start_vid.saturating_add(seg).min(self.vertices.len());
-        let mut leaf_base = self
-            .edges
-            .span_meta_store()
-            .get(u64::from(leaf))
-            .physical_start;
-        let has_recorded_base = leaf_base != 0;
+        let span_rec = self.edges.span_meta_store().get(u64::from(leaf));
+        let mut leaf_base = span_rec.physical_start;
+        let has_recorded_base = span_rec.physical_start != SPAN_PHYSICAL_UNASSIGNED;
         let mut has_materialized_row = false;
         for v in start_vid..end_vid {
             let row = self.vertices.get(VertexId::from(v));
-            if row.span_capacity() > 0 {
+            if row.base_slot_start() != 0 {
                 has_materialized_row = true;
                 if !has_recorded_base {
                     let offset = u64::from(v.saturating_sub(start_vid).saturating_mul(w));
@@ -1200,7 +1165,7 @@ where
                 }
                 break;
             }
-            if row.base_slot_start() != 0 || row.degree() != 0 {
+            if row.degree() != 0 || row.log_head() >= 0 {
                 return Ok(());
             }
         }
@@ -1220,7 +1185,6 @@ where
         self.vertices.set(
             vid,
             &row.with_base_slot_start(leaf_base.saturating_add(offset))
-                .with_span_capacity(w)
                 .with_log_head(-1),
         );
         Ok(())
@@ -1463,16 +1427,6 @@ fn density(counts: SegmentEdgeCounts) -> f64 {
     }
 }
 
-fn capacity_from_positions(positions: &[u64], index: usize, len: usize, end_slot: u64) -> u32 {
-    let start = positions[index];
-    let next = if index + 1 < len {
-        positions[index + 1]
-    } else {
-        end_slot
-    };
-    next.saturating_sub(start).min(u64::from(u32::MAX)) as u32
-}
-
 pub(crate) enum MarkPriority {
     Clean,
     Dirty(SegmentId),
@@ -1482,6 +1436,7 @@ pub(crate) enum MarkPriority {
 mod tests {
     use super::*;
     use crate::VertexId;
+    use crate::lara::edge::EdgeLayout;
     use crate::lara::vertex::Vertex;
     use crate::test_support::{
         LabelledTestEdge, TestEdge, assert_vertex_capacity_invariants, lara_test_graph, test_graph,
@@ -1585,7 +1540,6 @@ mod tests {
             .push_vertex(Vertex {
                 base_slot_start: 0,
                 degree: 0,
-                capacity: 0,
                 log_head: -1,
                 deleted: false,
             })
@@ -1594,16 +1548,24 @@ mod tests {
             .push_vertex(Vertex {
                 base_slot_start: 0,
                 degree: 0,
-                capacity: 0,
                 log_head: -1,
                 deleted: false,
             })
             .unwrap();
 
         assert_eq!(graph.vertices().get(VertexId::from(0)).base_slot_start, 0);
-        assert_eq!(graph.vertices().get(VertexId::from(0)).capacity, 2);
+        let layout: EdgeLayout = graph.edges().header().into();
+        let v0 = graph.vertices().get(VertexId::from(0));
+        let end0 = graph
+            .edges()
+            .slab_window_exclusive_end(&layout, graph.vertices(), 0, &v0);
+        assert_eq!(end0.saturating_sub(v0.base_slot_start), 2);
         assert_eq!(graph.vertices().get(VertexId::from(1)).base_slot_start, 2);
-        assert_eq!(graph.vertices().get(VertexId::from(1)).capacity, 2);
+        let v1 = graph.vertices().get(VertexId::from(1));
+        let end1 = graph
+            .edges()
+            .slab_window_exclusive_end(&layout, graph.vertices(), 1, &v1);
+        assert_eq!(end1.saturating_sub(v1.base_slot_start), 2);
 
         graph.insert_edge(VertexId::from(1), TestEdge(10)).unwrap();
         graph.insert_edge(VertexId::from(1), TestEdge(11)).unwrap();
@@ -1831,9 +1793,14 @@ mod tests {
         assert!(released.len > 0);
         assert_eq!(graph.vertices().get(VertexId::from(0)).base_slot_start, 4);
         assert_eq!(graph.vertices().get(VertexId::from(0)).degree, 4);
+        let layout: EdgeLayout = graph.edges().header().into();
+        let v = graph.vertices().get(VertexId::from(0));
+        let end = graph
+            .edges()
+            .slab_window_exclusive_end(&layout, graph.vertices(), 0, &v);
         assert!(
-            graph.vertices().get(VertexId::from(0)).capacity
-                >= graph.vertices().get(VertexId::from(0)).degree
+            v.base_slot_start.saturating_add(u64::from(v.degree)) <= end,
+            "slab neighborhood must fit csr window",
         );
         assert_eq!(graph.vertices().get(VertexId::from(0)).log_head, -1);
         assert_eq!(graph.edges().counts_store().get(1).actual, 4);
@@ -1949,7 +1916,6 @@ mod tests {
             &Vertex {
                 base_slot_start: 0,
                 degree: 1,
-                capacity: 2,
                 log_head: -1,
                 deleted: false,
             },
@@ -1959,7 +1925,6 @@ mod tests {
             &Vertex {
                 base_slot_start: 2,
                 degree: 1,
-                capacity: 2,
                 log_head: -1,
                 deleted: false,
             },
@@ -2006,7 +1971,6 @@ mod tests {
             &Vertex {
                 base_slot_start: 0,
                 degree: 1,
-                capacity: 2,
                 log_head: -1,
                 deleted: false,
             },
@@ -2016,7 +1980,6 @@ mod tests {
             &Vertex {
                 base_slot_start: 2,
                 degree: 1,
-                capacity: 2,
                 log_head: -1,
                 deleted: false,
             },
@@ -2069,7 +2032,6 @@ mod tests {
             &Vertex {
                 base_slot_start: 10,
                 degree: 1,
-                capacity: 3,
                 log_head: -1,
                 deleted: false,
             },
@@ -2079,7 +2041,6 @@ mod tests {
             &Vertex {
                 base_slot_start: 13,
                 degree: 2,
-                capacity: 3,
                 log_head: -1,
                 deleted: false,
             },
@@ -2145,7 +2106,6 @@ mod tests {
             &Vertex {
                 base_slot_start: 10,
                 degree: 1,
-                capacity: 2,
                 log_head: -1,
                 deleted: false,
             },
@@ -2155,7 +2115,6 @@ mod tests {
             &Vertex {
                 base_slot_start: 12,
                 degree: 1,
-                capacity: 2,
                 log_head: -1,
                 deleted: false,
             },
@@ -2220,7 +2179,6 @@ mod tests {
             &Vertex {
                 base_slot_start: 10,
                 degree: 1,
-                capacity: 3,
                 log_head: -1,
                 deleted: false,
             },
@@ -2261,7 +2219,6 @@ mod tests {
             &Vertex {
                 base_slot_start: 10,
                 degree: 1,
-                capacity: 3,
                 log_head: -1,
                 deleted: false,
             },
@@ -2271,7 +2228,6 @@ mod tests {
             &Vertex {
                 base_slot_start: 13,
                 degree: 1,
-                capacity: 3,
                 log_head: -1,
                 deleted: false,
             },
@@ -2348,7 +2304,6 @@ mod tests {
                 .push_vertex(Vertex {
                     base_slot_start,
                     degree: 0,
-                    capacity: 0,
                     log_head: -1,
                     deleted: false,
                 })
@@ -2364,7 +2319,6 @@ mod tests {
             &Vertex {
                 base_slot_start: 10,
                 degree: 1,
-                capacity: 3,
                 log_head: -1,
                 deleted: false,
             },
@@ -2374,7 +2328,6 @@ mod tests {
             &Vertex {
                 base_slot_start: 13,
                 degree: 1,
-                capacity: 3,
                 log_head: -1,
                 deleted: false,
             },
@@ -2438,9 +2391,14 @@ mod tests {
         assert_eq!(reopened.edges().header().elem_capacity, 8);
         assert_eq!(reopened.edges().span_meta_store().len(), 2);
         assert_eq!(reopened.vertices().get(VertexId::from(0)).degree, 4);
+        let layout: EdgeLayout = reopened.edges().header().into();
+        let v = reopened.vertices().get(VertexId::from(0));
+        let end = reopened
+            .edges()
+            .slab_window_exclusive_end(&layout, reopened.vertices(), 0, &v);
         assert!(
-            reopened.vertices().get(VertexId::from(0)).capacity
-                >= reopened.vertices().get(VertexId::from(0)).degree
+            v.base_slot_start.saturating_add(u64::from(v.degree)) <= end,
+            "slab neighborhood must fit csr window",
         );
         assert_eq!(reopened.vertices().get(VertexId::from(0)).log_head, -1);
         assert_eq!(

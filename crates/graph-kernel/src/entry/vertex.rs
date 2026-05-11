@@ -24,8 +24,6 @@ pub struct Vertex {
     pub base_slot_start: u64,
     /// Number of live outgoing edges visible through clean scans.
     pub live_edge_count: u32,
-    /// Number of slab slots owned by this vertex's current span.
-    pub span_capacity: u32,
     /// Packed metadata:
     /// - bits 0..=7: overflow head plus one (`0` means no overflow)
     /// - bits 8..=23: primary inline label id (`0` means no inline label)
@@ -96,7 +94,7 @@ impl Vertex {
 }
 
 impl CsrVertex for Vertex {
-    const BYTES: usize = 20;
+    const BYTES: usize = 16;
 
     fn base_slot_start(&self) -> u64 {
         self.base_slot_start
@@ -133,15 +131,6 @@ impl CsrVertex for Vertex {
         self.metadata = raw as i32;
         self
     }
-
-    fn span_capacity(&self) -> u32 {
-        self.span_capacity
-    }
-
-    fn with_span_capacity(mut self, capacity: u32) -> Self {
-        self.span_capacity = capacity;
-        self
-    }
 }
 
 impl CsrVertexTombstone for Vertex {
@@ -165,8 +154,7 @@ fn vertex_row_bytes(v: &Vertex) -> [u8; Vertex::BYTES] {
     let mut b = [0u8; Vertex::BYTES];
     b[0..8].copy_from_slice(&v.base_slot_start.to_le_bytes());
     b[8..12].copy_from_slice(&v.live_edge_count.to_le_bytes());
-    b[12..16].copy_from_slice(&v.span_capacity.to_le_bytes());
-    b[16..20].copy_from_slice(&v.metadata.to_le_bytes());
+    b[12..16].copy_from_slice(&v.metadata.to_le_bytes());
     b
 }
 
@@ -175,14 +163,13 @@ fn vertex_from_row(chunk: &[u8; Vertex::BYTES]) -> Vertex {
     Vertex {
         base_slot_start: u64::from_le_bytes(chunk[0..8].try_into().unwrap()),
         live_edge_count: u32::from_le_bytes(chunk[8..12].try_into().unwrap()),
-        span_capacity: u32::from_le_bytes(chunk[12..16].try_into().unwrap()),
-        metadata: i32::from_le_bytes(chunk[16..20].try_into().unwrap()),
+        metadata: i32::from_le_bytes(chunk[12..16].try_into().unwrap()),
     }
 }
 
 impl Storable for Vertex {
     const BOUND: Bound = Bound::Bounded {
-        max_size: 20,
+        max_size: 16,
         is_fixed_size: true,
     };
 
@@ -223,7 +210,7 @@ impl Storable for Vertex {
         let chunk: &[u8; Vertex::BYTES] = bytes
             .as_ref()
             .try_into()
-            .expect("Vertex::from_bytes expects exactly 20 bytes");
+            .expect("Vertex::from_bytes expects exactly 16 bytes");
         #[cfg(target_endian = "little")]
         {
             // SAFETY: `Vertex` is `repr(C, packed)` (align 1); on LE, disk/wire layout matches memory.
@@ -248,7 +235,6 @@ mod tests {
         let v = Vertex {
             base_slot_start: 0x0102_0304_0506_0708,
             live_edge_count: 0x090a_0b0c,
-            span_capacity: 0x0d0e_0f10,
             metadata: i32::from_le_bytes([0x11, 0x12, 0x13, 0x14]),
         };
         let cow = v.to_bytes();
@@ -262,7 +248,6 @@ mod tests {
         let v = Vertex {
             base_slot_start: 0x0102_0304_0506_0708,
             live_edge_count: 0x090a_0b0c,
-            span_capacity: 0x0d0e_0f10,
             metadata: i32::from_le_bytes([0x11, 0x12, 0x13, 0x14]),
         };
         let row = vertex_row_bytes(&v);
@@ -274,7 +259,6 @@ mod tests {
         let v = Vertex {
             base_slot_start: 1,
             live_edge_count: 2,
-            span_capacity: 3,
             metadata: 0,
         };
         assert_eq!(Vertex::from_bytes(v.to_bytes()), v);
@@ -286,7 +270,6 @@ mod tests {
         let labelled = Vertex {
             base_slot_start: 1,
             live_edge_count: 2,
-            span_capacity: 3,
             metadata: 0,
         }
         .with_primary_label_id(Some(LabelId::from_raw(42)))
@@ -308,7 +291,6 @@ mod tests {
         let v = Vertex {
             base_slot_start: 1,
             live_edge_count: 2,
-            span_capacity: 3,
             metadata: 0,
         }
         .with_log_head(7)
@@ -331,7 +313,6 @@ mod tests {
         let v = Vertex {
             base_slot_start: 1,
             live_edge_count: 2,
-            span_capacity: 3,
             metadata: 0,
         };
 

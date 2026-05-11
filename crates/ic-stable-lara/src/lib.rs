@@ -10,21 +10,18 @@
 //! ```
 //!
 //! A clean scan is authoritative only over `base_slot_start` and `degree`.
-//! It must not consult vertex `capacity`, segment span metadata, or the free
-//! span manager. Update and maintenance paths may use all three vertex fields:
-//! `base_slot_start`, `degree`, and `capacity`.
+//! It must not consult PMA segment counts, PMA span-metadata stores, or the
+//! free-span index. Update paths use CSR neighbor bases alongside those PMA
+//! structures to decide slab insert windows and relocation.
 //!
-//! `capacity` is the number of slab slots owned by a vertex. The live prefix
-//! `[base_slot_start, base_slot_start + degree)` must stay contained in the
-//! owned span `[base_slot_start, base_slot_start + capacity)`. Relocation
-//! rewrites bases and capacities together, publishes segment span metadata, and
-//! releases retired physical spans only after the query-visible state has been
-//! committed.
-//!
+//! The exclusive slab boundary for inserts is driven by CSR geometry (the next
+//! vertex row's [`traits::CsrVertex::base_slot_start`] inside a PMA leaf, monotone
+//! successors across leaves, PMA totals, and slab `elem_capacity`), not by a stored
+//! per-row capacity field.
+
 //! The main external reference for the dynamic adjacency idea is
 //! [DGAP](https://github.com/DIR-LAB/DGAP), but this crate owns a separate
-//! persisted layout and public API centered on LARA's explicit capacity and
-//! local relocation contracts.
+//! persisted layout and API centered on LARA CSR rows and local relocation contracts.
 //!
 //! **Segment tree (PMA):** the number of segment-tree leaves is the smallest
 //! power of two that covers `vertex_count / segment_size` (rounded up), or `1`

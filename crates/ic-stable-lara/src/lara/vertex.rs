@@ -1,19 +1,12 @@
 //! Stable LARA vertex column.
 //!
-//! The default row stores a direct edge base, live degree, owned span capacity,
+//! The default row stores a direct edge base, live degree,
 //! and per-segment log head (`-1` when the whole neighborhood is on the slab).
 //! `base_slot_start` and `degree` are the only fields required by clean scans.
-//! `capacity` is update-side ownership metadata: inserts and relocation use it
-//! to determine whether the current slab span can absorb more edges.
 //!
-//! The default row invariant is:
-//!
-//! ```text
-//! degree <= capacity
-//! [base_slot_start, base_slot_start + degree)
-//!     is contained in
-//! [base_slot_start, base_slot_start + capacity)
-//! ```
+//! Owned slab spans for inserts and relocation use CSR geometry:
+//! `[base_slot_start, slab_window_exclusive_end)` derives from the next vertex's
+//! `base_slot_start`, PMA leaf totals, or `elem_capacity`.
 //!
 //! # V1 layout
 //!
@@ -37,7 +30,6 @@
 //! --------------------------------------------------
 //! V_(len-1)                             ↕ V::BYTES bytes
 //! --------------------------------------------------
-//! Unallocated space
 //! ```
 
 use crate::{
@@ -119,8 +111,6 @@ pub struct Vertex {
     pub base_slot_start: u64,
     /// Number of live outgoing edges visible through clean scans.
     pub degree: u32,
-    /// Number of slab slots owned by this vertex's current span.
-    pub capacity: u32,
     /// Head entry in the per-segment overflow log, or `-1` when no log is present.
     pub log_head: i32,
     /// Logical deletion marker. Deleted vertex ids are never reused.
@@ -128,7 +118,7 @@ pub struct Vertex {
 }
 
 impl CsrVertex for Vertex {
-    const BYTES: usize = 24;
+    const BYTES: usize = 17;
 
     fn base_slot_start(&self) -> u64 {
         self.base_slot_start
@@ -151,15 +141,6 @@ impl CsrVertex for Vertex {
         self.log_head = idx;
         self
     }
-
-    fn span_capacity(&self) -> u32 {
-        self.capacity
-    }
-
-    fn with_span_capacity(mut self, capacity: u32) -> Self {
-        self.capacity = capacity;
-        self
-    }
 }
 
 impl CsrVertexTombstone for Vertex {
@@ -173,19 +154,18 @@ impl CsrVertexTombstone for Vertex {
     }
 }
 
-fn vertex_row_bytes(v: &Vertex) -> [u8; 24] {
-    let mut b = [0u8; 24];
+fn vertex_row_bytes(v: &Vertex) -> [u8; 17] {
+    let mut b = [0u8; 17];
     b[0..8].copy_from_slice(&v.base_slot_start.to_le_bytes());
     b[8..12].copy_from_slice(&v.degree.to_le_bytes());
-    b[12..16].copy_from_slice(&v.capacity.to_le_bytes());
-    b[16..20].copy_from_slice(&v.log_head.to_le_bytes());
-    b[20] = u8::from(v.deleted);
+    b[12..16].copy_from_slice(&v.log_head.to_le_bytes());
+    b[16] = u8::from(v.deleted);
     b
 }
 
 impl Storable for Vertex {
     const BOUND: Bound = Bound::Bounded {
-        max_size: 24,
+        max_size: 17,
         is_fixed_size: true,
     };
 
@@ -199,20 +179,22 @@ impl Storable for Vertex {
 
     fn from_bytes(bytes: Cow<[u8]>) -> Self {
         let b = bytes.as_ref();
+        assert!(
+            b.len() >= 17,
+            "Vertex::from_bytes expects at least {}",
+            Vertex::BYTES
+        );
         let mut u = [0u8; 8];
         let mut d = [0u8; 4];
-        let mut c = [0u8; 4];
         let mut l = [0u8; 4];
         u.copy_from_slice(&b[0..8]);
         d.copy_from_slice(&b[8..12]);
-        c.copy_from_slice(&b[12..16]);
-        l.copy_from_slice(&b[16..20]);
+        l.copy_from_slice(&b[12..16]);
         Self {
             base_slot_start: u64::from_le_bytes(u),
             degree: u32::from_le_bytes(d),
-            capacity: u32::from_le_bytes(c),
             log_head: i32::from_le_bytes(l),
-            deleted: b.get(20).copied().unwrap_or(0) != 0,
+            deleted: b[16] != 0,
         }
     }
 }
@@ -386,7 +368,6 @@ mod bench {
                 .push(Vertex {
                     base_slot_start: i * 4,
                     degree: (i % 8) as u32,
-                    capacity: 8,
                     log_head: -1,
                     deleted: false,
                 })
@@ -408,7 +389,6 @@ mod bench {
                     .push(Vertex {
                         base_slot_start: black_box(i * 4),
                         degree: 0,
-                        capacity: 4,
                         log_head: -1,
                         deleted: false,
                     })

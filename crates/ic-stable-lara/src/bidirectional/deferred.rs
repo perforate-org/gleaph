@@ -1796,7 +1796,6 @@ mod tests {
             .push_vertex(Vertex {
                 base_slot_start: 0,
                 degree: 0,
-                capacity: 0,
                 log_head: -1,
                 deleted: false,
             })

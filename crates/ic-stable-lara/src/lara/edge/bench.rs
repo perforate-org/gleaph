@@ -2,16 +2,19 @@ use std::hint::black_box;
 
 use canbench_rs::bench;
 
-use super::{EdgeStore, segment_tree_leaf_count};
+use super::{EdgeStore, counts::SegmentEdgeCounts, segment_tree_leaf_count};
 use crate::{
     VertexId, bench as helper,
     lara::vertex::{Vertex, VertexStore},
     test_support::TestEdge,
 };
 
+/// Matches [`EdgeStore::new`] / [`EdgeStore::grow_segment_tree_to`] in this module.
+const BENCH_EDGE_SEGMENT_SIZE: u32 = 16;
+
 fn edge_store_with_vertices(
     vertex_count: u32,
-    capacity: u32,
+    slot_stride: u32,
 ) -> (
     VertexStore<Vertex, helper::BenchMemory>,
     EdgeStore<TestEdge, helper::BenchMemory>,
@@ -21,9 +24,8 @@ fn edge_store_with_vertices(
     for vid in 0..vertex_count {
         vertices
             .push(Vertex {
-                base_slot_start: u64::from(vid) * u64::from(capacity),
+                base_slot_start: u64::from(vid) * u64::from(slot_stride),
                 degree: 0,
-                capacity,
                 log_head: -1,
                 deleted: false,
             })
@@ -36,14 +38,32 @@ fn edge_store_with_vertices(
         memories.memory(),
         memories.memory(),
         memories.memory(),
-        u64::from(vertex_count) * u64::from(capacity),
-        16,
+        u64::from(vertex_count) * u64::from(slot_stride),
+        BENCH_EDGE_SEGMENT_SIZE,
         0,
     )
     .expect("edge store");
+    let seg_count = segment_tree_leaf_count(vertex_count.into(), BENCH_EDGE_SEGMENT_SIZE);
     edges
-        .grow_segment_tree_to(segment_tree_leaf_count(vertex_count.into(), 16))
+        .grow_segment_tree_to(seg_count)
         .expect("grow edge segments");
+    // With a single vertex row but a wide slab (`slot_stride > 1`), PMA leaf totals stay
+    // zero unless a graph initializer runs — `slab_window_exclusive_end` then reports a
+    // zero-width CSR window and every insert overflows into the segment log (`SegmentLogFull`).
+    // Real graphs set leaf totals via `LaraGraph::update_leaf_count_and_ancestors`; mirror
+    // that here for multi-slot single-vertex workloads (log-spill benches keep stride `1`).
+    if vertex_count == 1 && slot_stride > 1 {
+        let elem_cap = u64::from(vertex_count).saturating_mul(u64::from(slot_stride));
+        let total_i64 = i64::try_from(elem_cap).unwrap_or(i64::MAX);
+        let idx = u64::from(seg_count);
+        edges.counts_store().set(
+            idx,
+            &SegmentEdgeCounts {
+                actual: 0,
+                total: total_i64,
+            },
+        );
+    }
     (vertices, edges)
 }
 
