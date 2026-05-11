@@ -31,7 +31,7 @@
 //! per leaf when opening new segments (default `0`).
 
 #![allow(incomplete_features)]
-#![cfg_attr(all(feature = "canbench", target_arch = "wasm32"), no_main)]
+#![cfg_attr(all(feature = "canbench", target_family = "wasm"), no_main)]
 #![feature(specialization)]
 #![warn(missing_docs)]
 

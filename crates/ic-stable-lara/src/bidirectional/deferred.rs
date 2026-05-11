@@ -205,11 +205,11 @@ impl Storable for MaintenanceWorkItem {
 
 #[inline]
 fn current_instruction_counter() -> u64 {
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(target_family = "wasm")]
     {
         ic_cdk::api::instruction_counter()
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     {
         0
     }
