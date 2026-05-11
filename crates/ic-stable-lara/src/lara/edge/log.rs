@@ -52,7 +52,7 @@ use crate::{
     write_u32,
 };
 use ic_stable_structures::Memory;
-use std::{fmt, marker::PhantomData};
+use std::{cell::Cell, fmt, marker::PhantomData};
 
 /// Magic bytes that identify a LARA overflow-log memory.
 pub const MAGIC: [u8; 3] = *b"LLG";
@@ -135,6 +135,9 @@ impl std::error::Error for InitError {}
 #[derive(Clone, Debug)]
 pub struct LogStore<E: CsrEdge, M: Memory> {
     memory: M,
+    /// Mirrors the persisted overflow-log header; hot paths consult this instead of
+    /// rereading stable memory whenever [`LogStore::header`] layout fields are needed.
+    header_mirror: Cell<HeaderV1>,
     _marker: PhantomData<E>,
 }
 
@@ -143,6 +146,7 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
     pub fn new(memory: M, header: HeaderV1) -> Result<Self, GrowFailed> {
         let store = Self {
             memory,
+            header_mirror: Cell::new(header),
             _marker: PhantomData,
         };
         store.grow_for_header(&header)?;
@@ -155,11 +159,12 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
         if memory.size() == 0 {
             return Err(InitError::OutOfMemory);
         }
+        let header = Self::read_header_from_memory(&memory);
         let store = Self {
             memory,
+            header_mirror: Cell::new(header),
             _marker: PhantomData,
         };
-        let header = store.read_header();
         if header.magic != MAGIC {
             return Err(InitError::BadMagic {
                 actual: header.magic,
@@ -183,9 +188,10 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
         self.memory
     }
 
-    /// Reads the current persisted log header.
+    /// Returns the mirrored overflow-log header (kept in sync with stable storage on writes).
+    #[inline]
     pub fn header(&self) -> HeaderV1 {
-        self.read_header()
+        self.header_mirror.get()
     }
 
     /// Reads the next-free entry index for a leaf segment.
@@ -310,20 +316,21 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
         write_u32(&self.memory, Address::from(8), h.max_log_entries);
         write_u32(&self.memory, Address::from(12), h.stride);
         self.memory.write(16, &[0u8; 16]);
+        self.header_mirror.set(*h);
         Ok(())
     }
 
-    fn read_header(&self) -> HeaderV1 {
+    fn read_header_from_memory(memory: &M) -> HeaderV1 {
         let mut magic = [0u8; 3];
         let mut version = [0u8; 1];
-        self.memory.read(0, &mut magic);
-        self.memory.read(3, &mut version);
+        memory.read(0, &mut magic);
+        memory.read(3, &mut version);
         HeaderV1 {
             magic,
             version: version[0],
-            segment_count: read_u32(&self.memory, Address::from(4)),
-            max_log_entries: read_u32(&self.memory, Address::from(8)),
-            stride: read_u32(&self.memory, Address::from(12)),
+            segment_count: read_u32(memory, Address::from(4)),
+            max_log_entries: read_u32(memory, Address::from(8)),
+            stride: read_u32(memory, Address::from(12)),
         }
     }
 

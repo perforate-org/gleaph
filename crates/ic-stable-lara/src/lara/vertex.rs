@@ -42,7 +42,7 @@ use crate::{
     write_u32,
 };
 use ic_stable_structures::{Memory, Storable, storable::Bound};
-use std::{borrow::Cow, fmt};
+use std::{borrow::Cow, cell::Cell, fmt};
 
 /// Magic bytes that identify a LARA vertex-column memory.
 pub const MAGIC: [u8; 3] = *b"LVX";
@@ -57,7 +57,7 @@ const LOG_HEAD_PAYLOAD_MASK: u32 = VERTEX_TOMBSTONE_BIT - 1;
 /// Stack buffer width for [`VertexStore::get`] when `V::BYTES` is small enough.
 const INLINE_VERTEX_ROW_BYTES: usize = 64;
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 struct HeaderV1 {
     magic: [u8; 3],
     version: u8,
@@ -245,6 +245,8 @@ impl Storable for Vertex {
 #[derive(Clone, Debug)]
 pub struct VertexStore<V: CsrVertex, M: Memory> {
     memory: M,
+    /// Mirrors the persisted header; [`Self::len`] hot path reads this instead of stable memory.
+    header_mirror: Cell<HeaderV1>,
     _marker: std::marker::PhantomData<V>,
 }
 
@@ -261,6 +263,7 @@ impl<V: CsrVertex, M: Memory> VertexStore<V, M> {
         Self::write_header(&header, &memory)?;
         Ok(Self {
             memory,
+            header_mirror: Cell::new(header),
             _marker: std::marker::PhantomData,
         })
     }
@@ -289,13 +292,15 @@ impl<V: CsrVertex, M: Memory> VertexStore<V, M> {
         }
         Ok(Self {
             memory,
+            header_mirror: Cell::new(header),
             _marker: std::marker::PhantomData,
         })
     }
 
     /// Returns the number of vertex rows in the store.
+    #[inline]
     pub fn len(&self) -> u32 {
-        read_u32(&self.memory, Address::from(LEN_OFFSET))
+        self.header_mirror.get().len
     }
     /// Returns `true` when the store contains no vertex rows.
     pub fn is_empty(&self) -> bool {
@@ -349,6 +354,9 @@ impl<V: CsrVertex, M: Memory> VertexStore<V, M> {
             &item.to_bytes_checked(),
         )?;
         write_u32(&self.memory, Address::from(LEN_OFFSET), new_len);
+        let mut hdr = self.header_mirror.get();
+        hdr.len = new_len;
+        self.header_mirror.set(hdr);
         Ok(())
     }
 

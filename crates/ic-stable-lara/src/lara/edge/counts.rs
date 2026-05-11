@@ -25,7 +25,7 @@
 
 use crate::{GrowFailed, read_u64, safe_write, traits::CsrEdge, types::Address, write, write_u64};
 use ic_stable_structures::Memory;
-use std::{convert::TryInto, fmt, marker::PhantomData};
+use std::{cell::Cell, convert::TryInto, fmt, marker::PhantomData};
 
 /// Magic bytes that identify a LARA segment-count memory.
 pub const MAGIC: [u8; 3] = *b"LSC";
@@ -110,6 +110,8 @@ impl SegmentEdgeCounts {
 #[derive(Clone, Debug)]
 pub struct SegmentEdgeCountsStore<E: CsrEdge, M: Memory> {
     memory: M,
+    /// Mirrors the persisted row count in the stable layout header; hot paths consult this instead of stable reads.
+    header_len_mirror: Cell<u64>,
     _marker: PhantomData<E>,
 }
 
@@ -124,6 +126,7 @@ impl<E: CsrEdge, M: Memory> SegmentEdgeCountsStore<E, M> {
         Self::write_header(&header, &memory)?;
         Ok(Self {
             memory,
+            header_len_mirror: Cell::new(header.len),
             _marker: PhantomData,
         })
     }
@@ -150,6 +153,7 @@ impl<E: CsrEdge, M: Memory> SegmentEdgeCountsStore<E, M> {
 
         Ok(Self {
             memory,
+            header_len_mirror: Cell::new(header.len),
             _marker: PhantomData,
         })
     }
@@ -177,8 +181,9 @@ impl<E: CsrEdge, M: Memory> SegmentEdgeCountsStore<E, M> {
     /// Returns the number of items in the vector.
     ///
     /// Complexity: O(1)
+    #[inline]
     pub fn len(&self) -> u64 {
-        read_u64(&self.memory, Address::from(LEN_OFFSET))
+        self.header_len_mirror.get()
     }
 
     /// Returns the persisted byte width of one count row (always [`ENTRY_BYTES`]).
@@ -263,6 +268,7 @@ impl<E: CsrEdge, M: Memory> SegmentEdgeCountsStore<E, M> {
     /// Sets the vector's length.
     fn set_len(&self, new_len: u64) {
         write_u64(&self.memory, Address::from(LEN_OFFSET), new_len);
+        self.header_len_mirror.set(new_len);
     }
 
     /// Reads the header from the specified memory.

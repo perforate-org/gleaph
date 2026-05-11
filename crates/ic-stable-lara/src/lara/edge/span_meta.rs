@@ -5,7 +5,7 @@
 
 use crate::{GrowFailed, read_u64, safe_write, types::Address, write_u64};
 use ic_stable_structures::Memory;
-use std::{fmt, marker::PhantomData};
+use std::{cell::Cell, fmt, marker::PhantomData};
 
 /// Magic bytes that identify LARA segment span metadata.
 pub const MAGIC: [u8; 3] = *b"LSP";
@@ -89,6 +89,8 @@ impl std::error::Error for InitError {}
 #[derive(Clone, Debug)]
 pub struct SegmentSpanMetaStore<M: Memory> {
     memory: M,
+    /// Mirrors the persisted row count in the stable layout header; [`Self::len`]/`get` consult this first.
+    header_len_mirror: Cell<u64>,
     _marker: PhantomData<SegmentSpanMeta>,
 }
 
@@ -104,6 +106,7 @@ impl<M: Memory> SegmentSpanMetaStore<M> {
         Self::write_header(&header, &memory)?;
         Ok(Self {
             memory,
+            header_len_mirror: Cell::new(header.len),
             _marker: PhantomData,
         })
     }
@@ -130,6 +133,7 @@ impl<M: Memory> SegmentSpanMetaStore<M> {
         }
         Ok(Self {
             memory,
+            header_len_mirror: Cell::new(header.len),
             _marker: PhantomData,
         })
     }
@@ -140,8 +144,9 @@ impl<M: Memory> SegmentSpanMetaStore<M> {
     }
 
     /// Returns the number of metadata rows.
+    #[inline]
     pub fn len(&self) -> u64 {
-        read_u64(&self.memory, Address::from(LEN_OFFSET))
+        self.header_len_mirror.get()
     }
 
     /// Returns `true` when the store contains no rows.
@@ -221,6 +226,7 @@ impl<M: Memory> SegmentSpanMetaStore<M> {
 
     fn set_len(&self, new_len: u64) {
         write_u64(&self.memory, Address::from(LEN_OFFSET), new_len);
+        self.header_len_mirror.set(new_len);
     }
 
     #[inline]
