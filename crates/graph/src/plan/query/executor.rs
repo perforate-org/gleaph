@@ -1875,6 +1875,148 @@ mod tests {
     }
 
     #[test]
+    fn equality_index_scan_matches_list_valued_posting() {
+        let store = GraphStore::new();
+        configure_test_index(&store);
+        let stored = Value::List(vec![Value::Uint8(1), Value::Text("a".into())]);
+        let bound = Value::List(vec![Value::Int64(1), Value::Text("a".into())]);
+        let vid = store
+            .insert_vertex_named(["IndexScanListEq"], [("tags", stored.clone())])
+            .expect("insert vertex");
+        let pid = store.property_id("tags").expect("tags property").raw();
+        let index = MockPropertyIndex::default();
+        index.equal_hits.borrow_mut().push(PostingHit {
+            shard_id: 7,
+            vertex_id: u32::try_from(u64::from(vid)).unwrap(),
+        });
+        let plan = plan(vec![
+            PlanOp::IndexScan {
+                variable: "n".into(),
+                property: "tags".into(),
+                value: ScanValue::Literal(bound.clone()),
+                cmp: CmpOp::Eq,
+                property_projection: None,
+            },
+            PlanOp::PropertyFilter {
+                predicates: vec![Expr::new(ExprKind::Compare {
+                    left: Box::new(prop("n", "tags")),
+                    op: CmpOp::Eq,
+                    right: Box::new(Expr::new(ExprKind::Literal(bound))),
+                })],
+                stage: 0,
+            },
+        ]);
+
+        let result = pollster::block_on(execute_plan_query(&store, &plan, &params(), Some(&index)))
+            .expect("execute list equality index scan");
+
+        assert_eq!(result.rows.len(), 1);
+        let calls = index.equal_calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, pid);
+        assert_eq!(
+            calls[0].1,
+            value_to_index_key_bytes(&stored).unwrap().unwrap()
+        );
+    }
+
+    #[test]
+    fn equality_index_scan_matches_record_valued_posting_independent_of_field_order() {
+        let store = GraphStore::new();
+        configure_test_index(&store);
+        let stored = Value::Record(vec![
+            ("b".into(), Value::Int64(2)),
+            ("a".into(), Value::Int64(1)),
+        ]);
+        let bound = Value::Record(vec![
+            ("a".into(), Value::Int64(1)),
+            ("b".into(), Value::Int64(2)),
+        ]);
+        let vid = store
+            .insert_vertex_named(["IndexScanRecordEq"], [("profile", stored.clone())])
+            .expect("insert vertex");
+        let pid = store
+            .property_id("profile")
+            .expect("profile property")
+            .raw();
+        let index = MockPropertyIndex::default();
+        index.equal_hits.borrow_mut().push(PostingHit {
+            shard_id: 7,
+            vertex_id: u32::try_from(u64::from(vid)).unwrap(),
+        });
+        let plan = plan(vec![
+            PlanOp::IndexScan {
+                variable: "n".into(),
+                property: "profile".into(),
+                value: ScanValue::Literal(bound.clone()),
+                cmp: CmpOp::Eq,
+                property_projection: None,
+            },
+            PlanOp::PropertyFilter {
+                predicates: vec![Expr::new(ExprKind::Compare {
+                    left: Box::new(prop("n", "profile")),
+                    op: CmpOp::Eq,
+                    right: Box::new(Expr::new(ExprKind::Literal(bound))),
+                })],
+                stage: 0,
+            },
+        ]);
+
+        let result = pollster::block_on(execute_plan_query(&store, &plan, &params(), Some(&index)))
+            .expect("execute record equality index scan");
+
+        assert_eq!(result.rows.len(), 1);
+        let calls = index.equal_calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, pid);
+        assert_eq!(
+            calls[0].1,
+            value_to_index_key_bytes(&stored).unwrap().unwrap()
+        );
+    }
+
+    #[test]
+    fn equality_index_scan_final_filter_drops_inexact_nested_numeric_candidate() {
+        let store = GraphStore::new();
+        configure_test_index(&store);
+        let stored = Value::Record(vec![("score".into(), Value::Float64(0.1))]);
+        let bound = Value::Record(vec![(
+            "score".into(),
+            Value::Decimal(gleaph_gql::types::Decimal::parse("0.1").expect("decimal")),
+        )]);
+        let vid = store
+            .insert_vertex_named(["IndexScanRecordInexact"], [("profile", stored)])
+            .expect("insert vertex");
+        let index = MockPropertyIndex::default();
+        index.equal_hits.borrow_mut().push(PostingHit {
+            shard_id: 7,
+            vertex_id: u32::try_from(u64::from(vid)).unwrap(),
+        });
+        let plan = plan(vec![
+            PlanOp::IndexScan {
+                variable: "n".into(),
+                property: "profile".into(),
+                value: ScanValue::Literal(bound.clone()),
+                cmp: CmpOp::Eq,
+                property_projection: None,
+            },
+            PlanOp::PropertyFilter {
+                predicates: vec![Expr::new(ExprKind::Compare {
+                    left: Box::new(prop("n", "profile")),
+                    op: CmpOp::Eq,
+                    right: Box::new(Expr::new(ExprKind::Literal(bound))),
+                })],
+                stage: 0,
+            },
+        ]);
+
+        let result = pollster::block_on(execute_plan_query(&store, &plan, &params(), Some(&index)))
+            .expect("execute record inexact equality index scan");
+
+        assert!(result.rows.is_empty());
+    }
+
+    #[test]
     fn executes_range_index_scan_with_lookup_range() {
         let store = GraphStore::new();
         configure_test_index(&store);
@@ -1928,7 +2070,7 @@ mod tests {
             .expect("insert vertex");
         let index = MockPropertyIndex::default();
         let mut parameters = params();
-        parameters.insert("tags".into(), Value::List(vec![]));
+        parameters.insert("tags".into(), Value::List(vec![Value::Path(vec![])]));
         let plan = plan(vec![PlanOp::IndexScan {
             variable: "n".into(),
             property: "tags".into(),
@@ -1979,7 +2121,7 @@ mod tests {
             .expect("insert vertex");
         let index = MockPropertyIndex::default();
         let mut parameters = params();
-        parameters.insert("tags".into(), Value::List(vec![]));
+        parameters.insert("tags".into(), Value::List(vec![Value::Path(vec![])]));
         let plan = plan(vec![PlanOp::ConditionalIndexScan {
             candidates: vec![ConditionalScanCandidate {
                 param_name: "tags".into(),

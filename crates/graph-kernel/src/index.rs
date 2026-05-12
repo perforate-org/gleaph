@@ -48,11 +48,23 @@ const INDEX_KEY_NUMERIC: u8 = 2;
 const INDEX_KEY_TEXT: u8 = 6;
 const INDEX_KEY_BYTES: u8 = 7;
 const INDEX_KEY_TEMPORAL: u8 = 8;
+const INDEX_KEY_LIST: u8 = 9;
+const INDEX_KEY_RECORD: u8 = 10;
+const ITEM_MARKER: u8 = 1;
+const END_MARKER: u8 = 0;
 
 pub fn value_to_index_key_bytes(value: &Value) -> Result<Option<Vec<u8>>, ValueIndexKeyError> {
+    if matches!(value, Value::Null) {
+        return Ok(None);
+    }
     let mut out = Vec::new();
+    encode_value_key(value, &mut out)?;
+    Ok(Some(out))
+}
+
+fn encode_value_key(value: &Value, out: &mut Vec<u8>) -> Result<(), ValueIndexKeyError> {
     match value {
-        Value::Null => return Ok(None),
+        Value::Null => out.push(END_MARKER),
         Value::Bool(value) => {
             out.push(INDEX_KEY_BOOL);
             out.push(u8::from(*value));
@@ -74,19 +86,19 @@ pub fn value_to_index_key_bytes(value: &Value) -> Result<Option<Vec<u8>>, ValueI
         | Value::Float32(_)
         | Value::Float64(_)) => {
             out.push(INDEX_KEY_NUMERIC);
-            encode_numeric_key(value, &mut out)?;
+            encode_numeric_key(value, out)?;
         }
         Value::Text(value) => {
             out.push(INDEX_KEY_TEXT);
-            push_escaped_index_bytes(&mut out, value.as_bytes());
+            push_escaped_index_bytes(out, value.as_bytes());
         }
         Value::Bytes(value) => {
             out.push(INDEX_KEY_BYTES);
-            push_escaped_index_bytes(&mut out, value);
+            push_escaped_index_bytes(out, value);
         }
         Value::Date(value) => {
             out.extend_from_slice(&[INDEX_KEY_TEMPORAL, 1]);
-            encode_signed_order_i64(&mut out, i64::from(*value));
+            encode_signed_order_i64(out, i64::from(*value));
         }
         Value::Time(value) => {
             out.extend_from_slice(&[INDEX_KEY_TEMPORAL, 2]);
@@ -98,17 +110,17 @@ pub fn value_to_index_key_bytes(value: &Value) -> Result<Option<Vec<u8>>, ValueI
         }
         Value::DateTime(seconds, nanos) => {
             out.extend_from_slice(&[INDEX_KEY_TEMPORAL, 4]);
-            encode_signed_order_i64(&mut out, *seconds);
+            encode_signed_order_i64(out, *seconds);
             out.extend_from_slice(&nanos.to_be_bytes());
         }
         Value::LocalDateTime(seconds, nanos) => {
             out.extend_from_slice(&[INDEX_KEY_TEMPORAL, 5]);
-            encode_signed_order_i64(&mut out, *seconds);
+            encode_signed_order_i64(out, *seconds);
             out.extend_from_slice(&nanos.to_be_bytes());
         }
         Value::ZonedDateTime(seconds, nanos, _) => {
             out.extend_from_slice(&[INDEX_KEY_TEMPORAL, 6]);
-            encode_signed_order_i64(&mut out, *seconds);
+            encode_signed_order_i64(out, *seconds);
             out.extend_from_slice(&nanos.to_be_bytes());
         }
         Value::ZonedTime(nanos, tz_seconds) => {
@@ -119,24 +131,24 @@ pub fn value_to_index_key_bytes(value: &Value) -> Result<Option<Vec<u8>>, ValueI
         }
         Value::Duration(months, nanos) => {
             out.extend_from_slice(&[INDEX_KEY_TEMPORAL, 8]);
-            encode_signed_order_i64(&mut out, i64::from(*months));
-            encode_signed_order_i64(&mut out, *nanos);
+            encode_signed_order_i64(out, i64::from(*months));
+            encode_signed_order_i64(out, *nanos);
         }
-        Value::List(_) | Value::Record(_) | Value::Path(_) | Value::Extension(_) => {
-            return Err(ValueIndexKeyError::UnsupportedValue);
-        }
+        Value::List(values) => encode_list_key(values, out)?,
+        Value::Record(fields) => encode_record_key(fields, out)?,
+        Value::Path(_) | Value::Extension(_) => return Err(ValueIndexKeyError::UnsupportedValue),
         #[cfg(feature = "f128")]
         Value::Float128(_) => {
             out.push(INDEX_KEY_NUMERIC);
-            encode_numeric_key(value, &mut out)?;
+            encode_numeric_key(value, out)?;
         }
         #[cfg(feature = "f256")]
         Value::Float256(_) => {
             out.push(INDEX_KEY_NUMERIC);
-            encode_numeric_key(value, &mut out)?;
+            encode_numeric_key(value, out)?;
         }
     }
-    Ok(Some(out))
+    Ok(())
 }
 
 fn push_escaped_index_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
@@ -172,6 +184,32 @@ fn encode_numeric_key(value: &Value, out: &mut Vec<u8>) -> Result<(), ValueIndex
         out.push(2);
         out.extend(magnitude);
     }
+    Ok(())
+}
+
+fn encode_list_key(values: &[Value], out: &mut Vec<u8>) -> Result<(), ValueIndexKeyError> {
+    out.push(INDEX_KEY_LIST);
+    for value in values {
+        out.push(ITEM_MARKER);
+        encode_value_key(value, out)?;
+    }
+    out.push(END_MARKER);
+    Ok(())
+}
+
+fn encode_record_key(
+    fields: &[(String, Value)],
+    out: &mut Vec<u8>,
+) -> Result<(), ValueIndexKeyError> {
+    out.push(INDEX_KEY_RECORD);
+    let mut sorted_fields: Vec<_> = fields.iter().collect();
+    sorted_fields.sort_by(|a, b| a.0.cmp(&b.0));
+    for (name, value) in sorted_fields {
+        out.push(ITEM_MARKER);
+        push_escaped_index_bytes(out, name.as_bytes());
+        encode_value_key(value, out)?;
+    }
+    out.push(END_MARKER);
     Ok(())
 }
 
@@ -328,6 +366,92 @@ mod tests {
     }
 
     #[test]
+    fn index_key_unifies_equal_list_values() {
+        let left = key(Value::List(vec![Value::Int64(1), Value::Text("a".into())]));
+        let right = key(Value::List(vec![Value::Uint8(1), Value::Text("a".into())]));
+        assert_eq!(left, right);
+    }
+
+    #[test]
+    fn index_key_orders_lists_lexicographically() {
+        let ordered = [
+            Value::List(vec![]),
+            Value::List(vec![Value::Int64(1)]),
+            Value::List(vec![Value::Int64(1), Value::Int64(2)]),
+            Value::List(vec![Value::Int64(2)]),
+        ]
+        .map(key);
+        for pair in ordered.windows(2) {
+            assert!(pair[0] < pair[1], "list keys out of order: {pair:?}");
+        }
+    }
+
+    #[test]
+    fn index_key_orders_nested_list_record_values() {
+        let left = key(Value::List(vec![Value::Record(vec![(
+            "a".into(),
+            Value::Int64(1),
+        )])]));
+        let right = key(Value::List(vec![Value::Record(vec![(
+            "a".into(),
+            Value::Int64(2),
+        )])]));
+        assert!(left < right);
+    }
+
+    #[test]
+    fn index_key_unifies_records_independent_of_field_order() {
+        let left = key(Value::Record(vec![
+            ("a".into(), Value::Int64(1)),
+            ("b".into(), Value::Int64(2)),
+        ]));
+        let right = key(Value::Record(vec![
+            ("b".into(), Value::Int64(2)),
+            ("a".into(), Value::Int64(1)),
+        ]));
+        assert_eq!(left, right);
+    }
+
+    #[test]
+    fn index_key_orders_records_by_field_name_and_value() {
+        let ordered = [
+            Value::Record(vec![("a".into(), Value::Int64(1))]),
+            Value::Record(vec![("a".into(), Value::Int64(2))]),
+            Value::Record(vec![("b".into(), Value::Int64(1))]),
+            Value::Record(vec![
+                ("b".into(), Value::Int64(1)),
+                ("c".into(), Value::Int64(2)),
+            ]),
+        ]
+        .map(key);
+        for pair in ordered.windows(2) {
+            assert!(pair[0] < pair[1], "record keys out of order: {pair:?}");
+        }
+
+        assert!(
+            key(Value::Record(vec![("a".into(), Value::Int64(1))]))
+                < key(Value::Record(vec![
+                    ("a".into(), Value::Int64(1)),
+                    ("b".into(), Value::Int64(2)),
+                ]))
+        );
+    }
+
+    #[test]
+    fn index_key_encodes_nested_null_values() {
+        assert!(
+            value_to_index_key_bytes(&Value::List(vec![Value::Null]))
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            value_to_index_key_bytes(&Value::Record(vec![("a".into(), Value::Null)]))
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
     fn index_key_reports_null_and_unsupported_values() {
         assert_eq!(value_to_index_key_bytes(&Value::Null).unwrap(), None);
         assert_eq!(
@@ -339,7 +463,15 @@ mod tests {
             Err(ValueIndexKeyError::NonFiniteFloat)
         );
         assert_eq!(
-            value_to_index_key_bytes(&Value::List(vec![])),
+            value_to_index_key_bytes(&Value::List(vec![Value::Float64(f64::NAN)])),
+            Err(ValueIndexKeyError::NonFiniteFloat)
+        );
+        assert_eq!(
+            value_to_index_key_bytes(&Value::List(vec![Value::Path(vec![])])),
+            Err(ValueIndexKeyError::UnsupportedValue)
+        );
+        assert_eq!(
+            value_to_index_key_bytes(&Value::Record(vec![("a".into(), Value::Path(vec![]))])),
             Err(ValueIndexKeyError::UnsupportedValue)
         );
     }
