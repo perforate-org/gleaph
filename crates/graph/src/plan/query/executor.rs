@@ -322,7 +322,7 @@ fn execute_ops_from<'a>(
                         index,
                         candidates,
                         fallback_label.as_ref(),
-                        &fallback_variable,
+                        fallback_variable,
                     )
                     .await?
                 }
@@ -2268,6 +2268,56 @@ mod tests {
             text_column(&result, "n.name"),
             vec!["Planner TopK A", "Planner TopK B"]
         );
+    }
+
+    #[test]
+    fn executes_planner_order_by_record_value() {
+        let store = GraphStore::new();
+        for (name, rank) in [("Planner Record B", 2), ("Planner Record A", 1)] {
+            store
+                .insert_vertex_named(
+                    ["PlannerQueryRecordSort"],
+                    [
+                        ("name", Value::Text(name.into())),
+                        ("rank", Value::Int64(rank)),
+                    ],
+                )
+                .expect("insert vertex");
+        }
+        let plan = plan_gql(
+            "MATCH (n:PlannerQueryRecordSort) RETURN n.name AS name, {rank: n.rank} AS sort_key ORDER BY sort_key",
+        );
+
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("execute planned query");
+
+        assert_eq!(
+            text_column(&result, "name"),
+            vec!["Planner Record A", "Planner Record B"]
+        );
+    }
+
+    #[test]
+    fn executes_planner_record_equality_independent_of_field_order() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(
+                ["PlannerQueryRecordEq"],
+                [("a", Value::Int64(1)), ("b", Value::Int64(2))],
+            )
+            .expect("insert vertex");
+        let plan = plan_gql(
+            "MATCH (n:PlannerQueryRecordEq) \
+             RETURN {b: n.b, a: n.a} = {a: n.a, b: n.b} AS same",
+        );
+
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("execute planned query");
+
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0].get("same"), Some(&Value::Bool(true)));
     }
 
     #[test]

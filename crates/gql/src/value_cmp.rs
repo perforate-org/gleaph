@@ -18,6 +18,27 @@ fn compare_value_slices(left: &[Value], right: &[Value]) -> Option<Ordering> {
     Some(left.len().cmp(&right.len()))
 }
 
+fn compare_record_fields(left: &[(String, Value)], right: &[(String, Value)]) -> Option<Ordering> {
+    let mut left_fields: Vec<_> = left.iter().collect();
+    let mut right_fields: Vec<_> = right.iter().collect();
+    left_fields.sort_by(|a, b| a.0.cmp(&b.0));
+    right_fields.sort_by(|a, b| a.0.cmp(&b.0));
+
+    for ((left_name, left_value), (right_name, right_value)) in
+        left_fields.iter().zip(right_fields.iter())
+    {
+        match left_name.cmp(right_name) {
+            Ordering::Equal => {}
+            ordering => return Some(ordering),
+        }
+        let value_ordering = compare_values(left_value, right_value)?;
+        if value_ordering != Ordering::Equal {
+            return Some(value_ordering);
+        }
+    }
+    Some(left_fields.len().cmp(&right_fields.len()))
+}
+
 fn compare_path_elements(
     left: &crate::types::PathElement,
     right: &crate::types::PathElement,
@@ -92,6 +113,7 @@ pub fn compare_values(left: &Value, right: &Value) -> Option<Ordering> {
         }
         (Value::Duration(m1, n1), Value::Duration(m2, n2)) => Some((m1, n1).cmp(&(m2, n2))),
         (Value::List(a), Value::List(b)) => compare_value_slices(a, b),
+        (Value::Record(a), Value::Record(b)) => compare_record_fields(a, b),
         (Value::Path(a), Value::Path(b)) => Some(compare_path_slices(a, b)),
         (Value::Extension(a), Value::Extension(b)) => a.cmp_ext(b.as_ref()),
         _ => None,
@@ -762,5 +784,78 @@ mod tests {
         let f = Value::Float32(10.0);
         assert_eq!(compare_values(&i, &f), Some(Ordering::Less));
         assert_eq!(compare_values(&f, &i), Some(Ordering::Greater));
+    }
+
+    #[test]
+    fn compares_records_by_field_name_and_value() {
+        let left = Value::Record(vec![
+            ("b".into(), Value::Int64(2)),
+            ("a".into(), Value::Int64(1)),
+        ]);
+        let right = Value::Record(vec![
+            ("a".into(), Value::Int64(1)),
+            ("b".into(), Value::Int64(2)),
+        ]);
+        assert_eq!(compare_values(&left, &right), Some(Ordering::Equal));
+
+        assert_eq!(
+            compare_values(
+                &Value::Record(vec![("a".into(), Value::Int64(1))]),
+                &Value::Record(vec![("a".into(), Value::Int64(2))]),
+            ),
+            Some(Ordering::Less)
+        );
+        assert_eq!(
+            compare_values(
+                &Value::Record(vec![("a".into(), Value::Int64(1))]),
+                &Value::Record(vec![("b".into(), Value::Int64(1))]),
+            ),
+            Some(Ordering::Less)
+        );
+        assert_eq!(
+            compare_values(
+                &Value::Record(vec![("a".into(), Value::Int64(1))]),
+                &Value::Record(vec![
+                    ("a".into(), Value::Int64(1)),
+                    ("b".into(), Value::Int64(2)),
+                ]),
+            ),
+            Some(Ordering::Less)
+        );
+    }
+
+    #[test]
+    fn compares_nested_records_and_lists() {
+        assert_eq!(
+            compare_values(
+                &Value::Record(vec![(
+                    "a".into(),
+                    Value::List(vec![Value::Int64(1), Value::Int64(2)]),
+                )]),
+                &Value::Record(vec![(
+                    "a".into(),
+                    Value::List(vec![Value::Int64(1), Value::Int64(3)]),
+                )]),
+            ),
+            Some(Ordering::Less)
+        );
+    }
+
+    #[test]
+    fn record_comparison_returns_none_for_incomparable_inner_values() {
+        assert_eq!(
+            compare_values(
+                &Value::Record(vec![("a".into(), Value::Int64(1))]),
+                &Value::Record(vec![("a".into(), Value::Text("x".into()))]),
+            ),
+            None
+        );
+        assert_eq!(
+            compare_values(
+                &Value::Record(vec![("a".into(), Value::Float64(f64::NAN))]),
+                &Value::Record(vec![("a".into(), Value::Float64(f64::NAN))]),
+            ),
+            None
+        );
     }
 }
