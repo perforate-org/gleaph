@@ -3,3 +3,5 @@ packages:
   - "frontend/design"
   - "frontend/product"
   - "frontend/dashboard"
+
+minimumReleaseAge: 10080 # 1 week
