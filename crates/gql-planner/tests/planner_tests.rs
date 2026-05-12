@@ -2850,6 +2850,29 @@ fn compat_range_index_scan_decimal_literal_bound() {
 }
 
 #[test]
+fn compat_range_index_scan_float_literal_bound() {
+    let mut stats = TableStats::default();
+    stats.label_cardinality.insert("Player".to_string(), 500);
+    stats
+        .range_indexed_vertex_properties
+        .insert("score".to_string());
+    let plan = plan_query_with_stats("MATCH (n:Player) WHERE n.score >= 1.5 RETURN n", &stats);
+    assert!(
+        matches!(
+            plan.ops.first(),
+            Some(PlanOp::IndexScan {
+                property,
+                value: ScanValue::Literal(Value::Float64(value)),
+                cmp: CmpOp::Ge,
+                ..
+            }) if &**property == "score" && *value == 1.5
+        ),
+        "should emit float range IndexScan: {:?}",
+        plan.ops.first()
+    );
+}
+
+#[test]
 fn compat_range_index_scan_rejects_unsupported_literal_bound() {
     let mut stats = TableStats::default();
     stats.label_cardinality.insert("User".to_string(), 500);

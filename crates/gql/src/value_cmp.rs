@@ -1,117 +1,12 @@
-//! Value comparison logic supporting cross-width and cross-signedness integer
-//! comparisons, mixed numeric values, and decimal promotions.
+//! Value comparison logic supporting cross-width values and exact mixed numeric
+//! comparisons.
 
 use std::cmp::Ordering;
 
 use crate::Value;
-use crate::types::Decimal;
+use crate::numeric_order::compare_normalized_numeric;
 
 const NANOS_PER_DAY: i64 = 86_400_000_000_000;
-
-/// Compare two integer [`Value`]s of any width/signedness and return their
-/// ordering. Returns `None` if either operand is not an integer variant.
-fn compare_int_values(left: &Value, right: &Value) -> Option<Ordering> {
-    // Fast path: same discriminant.
-    if std::mem::discriminant(left) == std::mem::discriminant(right) {
-        return match (left, right) {
-            (Value::Int8(a), Value::Int8(b)) => Some(a.cmp(b)),
-            (Value::Int16(a), Value::Int16(b)) => Some(a.cmp(b)),
-            (Value::Int32(a), Value::Int32(b)) => Some(a.cmp(b)),
-            (Value::Int64(a), Value::Int64(b)) => Some(a.cmp(b)),
-            (Value::Int128(a), Value::Int128(b)) => Some(a.cmp(b)),
-            (Value::Int256(a), Value::Int256(b)) => Some(a.0.cmp(&b.0)),
-            (Value::Uint8(a), Value::Uint8(b)) => Some(a.cmp(b)),
-            (Value::Uint16(a), Value::Uint16(b)) => Some(a.cmp(b)),
-            (Value::Uint32(a), Value::Uint32(b)) => Some(a.cmp(b)),
-            (Value::Uint64(a), Value::Uint64(b)) => Some(a.cmp(b)),
-            (Value::Uint128(a), Value::Uint128(b)) => Some(a.cmp(b)),
-            (Value::Uint256(a), Value::Uint256(b)) => Some(a.0.cmp(&b.0)),
-            _ => None,
-        };
-    }
-
-    // Both signed (different widths) — promote to i128 or I256.
-    if left.is_signed_int() && right.is_signed_int() {
-        if let Value::Int256(a) = left {
-            let b256 = int_to_i256(right)?;
-            return Some(a.0.cmp(&b256));
-        }
-        if let Value::Int256(b) = right {
-            let a256 = int_to_i256(left)?;
-            return Some(a256.cmp(&b.0));
-        }
-        return Some(left.as_i128()?.cmp(&right.as_i128()?));
-    }
-
-    // Both unsigned (different widths) — promote to u128 or U256.
-    if left.is_unsigned_int() && right.is_unsigned_int() {
-        if let Value::Uint256(a) = left {
-            let b256 = uint_to_u256(right)?;
-            return Some(a.0.cmp(&b256));
-        }
-        if let Value::Uint256(b) = right {
-            let a256 = uint_to_u256(left)?;
-            return Some(a256.cmp(&b.0));
-        }
-        return Some(left.as_u128()?.cmp(&right.as_u128()?));
-    }
-
-    // Mixed signed x unsigned.
-    compare_signed_unsigned(left, right)
-}
-
-fn compare_signed_unsigned(left: &Value, right: &Value) -> Option<Ordering> {
-    if left.is_signed_int() && right.is_unsigned_int() {
-        return Some(cmp_signed_vs_unsigned(left, right));
-    }
-    if left.is_unsigned_int() && right.is_signed_int() {
-        return Some(cmp_signed_vs_unsigned(right, left).reverse());
-    }
-    None
-}
-
-/// Order a signed `s` vs unsigned `u`. Caller guarantees types.
-fn cmp_signed_vs_unsigned(s: &Value, u: &Value) -> Ordering {
-    // 256-bit cases.
-    if let Value::Int256(sv) = s {
-        if sv.0.is_negative() {
-            return Ordering::Less;
-        }
-        let u256 = uint_to_u256(u).unwrap_or(ethnum::U256::ZERO);
-        return sv.0.as_u256().cmp(&u256);
-    }
-    if let Value::Uint256(uv) = u {
-        let sv128 = s.as_i128().unwrap_or(0);
-        if sv128 < 0 {
-            return Ordering::Less;
-        }
-        let sv_u256 = ethnum::U256::from(sv128 as u128);
-        return sv_u256.cmp(&uv.0);
-    }
-
-    // Both fit in 128-bit.
-    let sv = s.as_i128().unwrap_or(0);
-    let uv = u.as_u128().unwrap_or(0);
-    if sv < 0 {
-        Ordering::Less
-    } else {
-        (sv as u128).cmp(&uv)
-    }
-}
-
-fn int_to_i256(v: &Value) -> Option<ethnum::I256> {
-    match v {
-        Value::Int256(i) => Some(i.0),
-        _ => v.as_i128().map(ethnum::I256::from),
-    }
-}
-
-fn uint_to_u256(v: &Value) -> Option<ethnum::U256> {
-    match v {
-        Value::Uint256(u) => Some(u.0),
-        _ => v.as_u128().map(ethnum::U256::from),
-    }
-}
 
 fn compare_value_slices(left: &[Value], right: &[Value]) -> Option<Ordering> {
     for (l, r) in left.iter().zip(right) {
@@ -166,97 +61,11 @@ fn normalize_zoned_time_utc(nanos: u64, tz_seconds: i32) -> i64 {
     utc.rem_euclid(NANOS_PER_DAY)
 }
 
-fn compare_decimal_values(left: &Value, right: &Value) -> Option<Ordering> {
-    let left = value_to_decimal(left)?;
-    let right = value_to_decimal(right)?;
-    Some(left.cmp(&right))
-}
-
-fn value_to_decimal(value: &Value) -> Option<Decimal> {
-    match value {
-        Value::Decimal(value) => Some(*value),
-        value if value.is_signed_int() => value.as_i128().map(Decimal::from_i128),
-        value if value.is_unsigned_int() => value.as_u128().map(Decimal::from_u128),
-        _ => None,
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum FloatRank {
-    F16,
-    F32,
-    F64,
-    #[cfg(feature = "f128")]
-    F128,
-    #[cfg(feature = "f256")]
-    F256,
-}
-
-fn max_float_rank(left: &Value, right: &Value) -> Option<FloatRank> {
-    Some(float_rank(left)?.max(float_rank(right)?))
-}
-
-fn float_rank(value: &Value) -> Option<FloatRank> {
-    match value {
-        Value::Float16(_) => Some(FloatRank::F16),
-        Value::Float32(_) => Some(FloatRank::F32),
-        Value::Float64(_) | Value::Decimal(_) => Some(FloatRank::F64),
-        #[cfg(feature = "f128")]
-        Value::Float128(_) => Some(FloatRank::F128),
-        #[cfg(feature = "f256")]
-        Value::Float256(_) => Some(FloatRank::F256),
-        value if value.is_any_int() => Some(FloatRank::F16),
-        _ => None,
-    }
-}
-
-fn float16_value(value: &Value) -> Option<half::f16> {
-    match value {
-        Value::Float16(value) => Some(*value),
-        value => value.as_f64().map(half::f16::from_f64),
-    }
-}
-
-fn float32_value(value: &Value) -> Option<f32> {
-    match value {
-        Value::Float16(value) => Some(value.to_f32()),
-        Value::Float32(value) => Some(*value),
-        value => value.as_f64().map(|value| value as f32),
-    }
-}
-
-fn compare_float_values(left: &Value, right: &Value) -> Option<Ordering> {
-    match max_float_rank(left, right)? {
-        FloatRank::F16 => float16_value(left)?.partial_cmp(&float16_value(right)?),
-        FloatRank::F32 => float32_value(left)?.partial_cmp(&float32_value(right)?),
-        FloatRank::F64 => left.as_f64()?.partial_cmp(&right.as_f64()?),
-        #[cfg(feature = "f128")]
-        FloatRank::F128 => left.as_f128()?.partial_cmp(&right.as_f128()?),
-        #[cfg(feature = "f256")]
-        FloatRank::F256 => left.as_f256()?.partial_cmp(&right.as_f256()?),
-    }
-}
-
-fn compare_numeric_values(left: &Value, right: &Value) -> Option<Ordering> {
-    if left.is_float() || right.is_float() {
-        return compare_float_values(left, right);
-    }
-    if matches!(left, Value::Decimal(_)) || matches!(right, Value::Decimal(_)) {
-        return compare_decimal_values(left, right);
-    }
-    None
-}
-
 /// Compares two [`Value`]s and returns their ordering, or `None` if the types
 /// are incomparable (e.g. `Text` vs `Int64`).
 pub fn compare_values(left: &Value, right: &Value) -> Option<Ordering> {
-    // Integer x Integer (all width/signedness combos).
-    if left.is_any_int() && right.is_any_int() {
-        return compare_int_values(left, right);
-    }
-
     if left.is_numeric() && right.is_numeric() {
-        return compare_numeric_values(left, right);
+        return compare_normalized_numeric(left, right);
     }
 
     match (left, right) {
@@ -292,7 +101,7 @@ pub fn compare_values(left: &Value, right: &Value) -> Option<Ordering> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Int256, Uint256};
+    use crate::types::{Decimal, Int256, Uint256};
 
     #[test]
     fn compares_mixed_numeric_values() {

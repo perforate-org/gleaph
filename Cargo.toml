@@ -46,6 +46,8 @@ ic-cdk-macros = "0.20"
 ic-stable-roaring = { path = "../ic-stable-roaring" }
 ic-stable-structures = "0.7.2"
 nohash-hasher = "0.2"
+num-bigint = "0.4"
+num-traits = "0.2"
 rapidhash = "4"
 rkyv = "0.8.16"
 roaring = "0.11.4"

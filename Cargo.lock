@@ -654,6 +654,8 @@ dependencies = [
  "f256",
  "gleaph-gql-macros",
  "half",
+ "num-bigint",
+ "num-traits",
  "rapidhash",
  "rkyv 0.8.16",
  "rust_decimal",

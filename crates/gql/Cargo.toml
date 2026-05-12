@@ -19,6 +19,8 @@ gleaph-gql-macros = { path = "../gql-macros" }
 ethnum = "1"
 f256 = { workspace = true, optional = true }
 half.workspace = true
+num-bigint.workspace = true
+num-traits.workspace = true
 rapidhash = "4"
 rust_decimal = "1"
 thiserror = "2"

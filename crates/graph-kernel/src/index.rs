@@ -1,6 +1,7 @@
 //! Shared property-index API types and sortable value-key encoding.
 
 use gleaph_gql::Value;
+use gleaph_gql::numeric_order::{NumericOrderError, normalized_numeric_parts};
 use std::fmt;
 
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
@@ -43,10 +44,7 @@ impl fmt::Display for ValueIndexKeyError {
 impl std::error::Error for ValueIndexKeyError {}
 
 const INDEX_KEY_BOOL: u8 = 1;
-const INDEX_KEY_EXACT_NUMERIC: u8 = 2;
-const INDEX_KEY_FLOAT16: u8 = 3;
-const INDEX_KEY_FLOAT32: u8 = 4;
-const INDEX_KEY_FLOAT64: u8 = 5;
+const INDEX_KEY_NUMERIC: u8 = 2;
 const INDEX_KEY_TEXT: u8 = 6;
 const INDEX_KEY_BYTES: u8 = 7;
 const INDEX_KEY_TEMPORAL: u8 = 8;
@@ -71,30 +69,12 @@ pub fn value_to_index_key_bytes(value: &Value) -> Result<Option<Vec<u8>>, ValueI
         | Value::Uint64(_)
         | Value::Uint128(_)
         | Value::Uint256(_)
-        | Value::Decimal(_)) => {
-            out.push(INDEX_KEY_EXACT_NUMERIC);
-            encode_exact_numeric_key(value, &mut out)?;
-        }
-        Value::Float16(value) => {
-            if !value.is_finite() {
-                return Err(ValueIndexKeyError::NonFiniteFloat);
-            }
-            out.push(INDEX_KEY_FLOAT16);
-            out.extend_from_slice(&encode_float_order_u16(value.to_bits()));
-        }
-        Value::Float32(value) => {
-            if !value.is_finite() {
-                return Err(ValueIndexKeyError::NonFiniteFloat);
-            }
-            out.push(INDEX_KEY_FLOAT32);
-            out.extend_from_slice(&encode_float_order_u32(value.to_bits()));
-        }
-        Value::Float64(value) => {
-            if !value.is_finite() {
-                return Err(ValueIndexKeyError::NonFiniteFloat);
-            }
-            out.push(INDEX_KEY_FLOAT64);
-            out.extend_from_slice(&encode_float_order_u64(value.to_bits()));
+        | Value::Decimal(_)
+        | Value::Float16(_)
+        | Value::Float32(_)
+        | Value::Float64(_)) => {
+            out.push(INDEX_KEY_NUMERIC);
+            encode_numeric_key(value, &mut out)?;
         }
         Value::Text(value) => {
             out.push(INDEX_KEY_TEXT);
@@ -146,9 +126,15 @@ pub fn value_to_index_key_bytes(value: &Value) -> Result<Option<Vec<u8>>, ValueI
             return Err(ValueIndexKeyError::UnsupportedValue);
         }
         #[cfg(feature = "f128")]
-        Value::Float128(_) => return Err(ValueIndexKeyError::UnsupportedValue),
+        Value::Float128(_) => {
+            out.push(INDEX_KEY_NUMERIC);
+            encode_numeric_key(value, &mut out)?;
+        }
         #[cfg(feature = "f256")]
-        Value::Float256(_) => return Err(ValueIndexKeyError::UnsupportedValue),
+        Value::Float256(_) => {
+            out.push(INDEX_KEY_NUMERIC);
+            encode_numeric_key(value, &mut out)?;
+        }
     }
     Ok(Some(out))
 }
@@ -168,42 +154,8 @@ fn encode_signed_order_i64(out: &mut Vec<u8>, value: i64) {
     out.extend_from_slice(&(value ^ i64::MIN).to_be_bytes());
 }
 
-fn encode_float_order_u16(bits: u16) -> [u8; 2] {
-    let key = if bits & 0x8000 == 0 {
-        bits ^ 0x8000
-    } else {
-        !bits
-    };
-    key.to_be_bytes()
-}
-
-fn encode_float_order_u32(bits: u32) -> [u8; 4] {
-    let key = if bits & 0x8000_0000 == 0 {
-        bits ^ 0x8000_0000
-    } else {
-        !bits
-    };
-    key.to_be_bytes()
-}
-
-fn encode_float_order_u64(bits: u64) -> [u8; 8] {
-    let key = if bits & 0x8000_0000_0000_0000 == 0 {
-        bits ^ 0x8000_0000_0000_0000
-    } else {
-        !bits
-    };
-    key.to_be_bytes()
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct ExactNumericParts {
-    negative: bool,
-    digits: String,
-    point_pos: i32,
-}
-
-fn encode_exact_numeric_key(value: &Value, out: &mut Vec<u8>) -> Result<(), ValueIndexKeyError> {
-    let Some(parts) = exact_numeric_parts(value)? else {
+fn encode_numeric_key(value: &Value, out: &mut Vec<u8>) -> Result<(), ValueIndexKeyError> {
+    let Some(parts) = normalized_numeric_parts(value).map_err(index_key_error_from_numeric)? else {
         out.push(1);
         return Ok(());
     };
@@ -223,50 +175,11 @@ fn encode_exact_numeric_key(value: &Value, out: &mut Vec<u8>) -> Result<(), Valu
     Ok(())
 }
 
-fn exact_numeric_parts(value: &Value) -> Result<Option<ExactNumericParts>, ValueIndexKeyError> {
-    let (negative, digits, scale) = match value {
-        Value::Decimal(value) => {
-            let decimal = value.normalize().0;
-            let mantissa = decimal.mantissa();
-            if mantissa == 0 {
-                return Ok(None);
-            }
-            (
-                mantissa < 0,
-                mantissa.unsigned_abs().to_string(),
-                decimal.scale(),
-            )
-        }
-        value if value.is_signed_int() => {
-            let signed = value
-                .as_i256()
-                .ok_or(ValueIndexKeyError::UnsupportedValue)?;
-            if signed == ethnum::I256::ZERO {
-                return Ok(None);
-            }
-            (signed.is_negative(), signed.unsigned_abs().to_string(), 0)
-        }
-        value if value.is_unsigned_int() => {
-            let unsigned = value
-                .as_u256()
-                .ok_or(ValueIndexKeyError::UnsupportedValue)?;
-            if unsigned == ethnum::U256::ZERO {
-                return Ok(None);
-            }
-            (false, unsigned.to_string(), 0)
-        }
-        _ => return Err(ValueIndexKeyError::UnsupportedValue),
-    };
-
-    let point_pos = i32::try_from(digits.len())
-        .ok()
-        .and_then(|len| len.checked_sub(i32::try_from(scale).ok()?))
-        .ok_or(ValueIndexKeyError::UnsupportedValue)?;
-    Ok(Some(ExactNumericParts {
-        negative,
-        digits,
-        point_pos,
-    }))
+fn index_key_error_from_numeric(error: NumericOrderError) -> ValueIndexKeyError {
+    match error {
+        NumericOrderError::NonFiniteFloat => ValueIndexKeyError::NonFiniteFloat,
+        NumericOrderError::UnsupportedValue => ValueIndexKeyError::UnsupportedValue,
+    }
 }
 
 #[cfg(test)]
@@ -314,6 +227,51 @@ mod tests {
         ]
         .map(key);
         assert!(keys.windows(2).all(|pair| pair[0] == pair[1]));
+    }
+
+    #[test]
+    fn index_key_unifies_equal_float_decimal_values() {
+        let keys = [Value::Float64(1.5), Value::Float32(1.5), decimal("1.5")].map(key);
+        assert!(keys.windows(2).all(|pair| pair[0] == pair[1]));
+    }
+
+    #[test]
+    fn index_key_unifies_numeric_zero_values() {
+        let keys = [
+            Value::Float64(-0.0),
+            Value::Float64(0.0),
+            Value::Int64(0),
+            decimal("0.00"),
+        ]
+        .map(key);
+        assert!(keys.windows(2).all(|pair| pair[0] == pair[1]));
+    }
+
+    #[test]
+    fn index_key_distinguishes_exact_binary_and_decimal_tenths() {
+        let float_key = key(Value::Float64(0.1));
+        let decimal_key = key(decimal("0.1"));
+        assert_ne!(float_key, decimal_key);
+        assert!(decimal_key < float_key);
+    }
+
+    #[test]
+    fn index_key_order_matches_mixed_numeric_comparison() {
+        use gleaph_gql::value_cmp::compare_values;
+        use std::cmp::Ordering;
+
+        let ordered = [
+            Value::Float64(-1.5),
+            Value::Int64(-1),
+            Value::Float64(-0.0),
+            decimal("0.5"),
+            Value::Int64(1),
+            Value::Float32(1.5),
+        ];
+        for pair in ordered.windows(2) {
+            assert_eq!(compare_values(&pair[0], &pair[1]), Some(Ordering::Less));
+            assert!(key(pair[0].clone()) < key(pair[1].clone()));
+        }
     }
 
     #[test]
@@ -374,6 +332,10 @@ mod tests {
         assert_eq!(value_to_index_key_bytes(&Value::Null).unwrap(), None);
         assert_eq!(
             value_to_index_key_bytes(&Value::Float64(f64::NAN)),
+            Err(ValueIndexKeyError::NonFiniteFloat)
+        );
+        assert_eq!(
+            value_to_index_key_bytes(&Value::Float64(f64::INFINITY)),
             Err(ValueIndexKeyError::NonFiniteFloat)
         );
         assert_eq!(

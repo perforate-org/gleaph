@@ -34,6 +34,7 @@ pub mod lexer;
 /// Gleaph identifier length limits for properties, labels, and graph-type names.
 pub mod name_limits;
 pub mod numeric_ops;
+pub mod numeric_order;
 pub mod parser;
 /// Static classification of programs for authorization (data vs catalog modification).
 pub mod program_modification;

@@ -1791,6 +1791,90 @@ mod tests {
     }
 
     #[test]
+    fn equality_index_scan_unifies_float_and_decimal_key_with_final_filter() {
+        let store = GraphStore::new();
+        configure_test_index(&store);
+        let bound = gleaph_gql::types::Decimal::parse("1.5").expect("decimal");
+        let vid = store
+            .insert_vertex_named(["IndexScanFloatEq"], [("score", Value::Float64(1.5))])
+            .expect("insert vertex");
+        let pid = store.property_id("score").expect("score property").raw();
+        let index = MockPropertyIndex::default();
+        index.equal_hits.borrow_mut().push(PostingHit {
+            shard_id: 7,
+            vertex_id: u32::try_from(u64::from(vid)).unwrap(),
+        });
+        let plan = plan(vec![
+            PlanOp::IndexScan {
+                variable: "n".into(),
+                property: "score".into(),
+                value: ScanValue::Literal(Value::Decimal(bound)),
+                cmp: CmpOp::Eq,
+                property_projection: None,
+            },
+            PlanOp::PropertyFilter {
+                predicates: vec![Expr::new(ExprKind::Compare {
+                    left: Box::new(prop("n", "score")),
+                    op: CmpOp::Eq,
+                    right: Box::new(Expr::new(ExprKind::Literal(Value::Decimal(bound)))),
+                })],
+                stage: 0,
+            },
+        ]);
+
+        let result = pollster::block_on(execute_plan_query(&store, &plan, &params(), Some(&index)))
+            .expect("execute float equality index scan");
+
+        assert_eq!(result.rows.len(), 1);
+        let calls = index.equal_calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, pid);
+        assert_eq!(
+            calls[0].1,
+            value_to_index_key_bytes(&Value::Float64(1.5))
+                .unwrap()
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn equality_index_scan_final_filter_drops_inexact_float_decimal_candidate() {
+        let store = GraphStore::new();
+        configure_test_index(&store);
+        let bound = gleaph_gql::types::Decimal::parse("0.1").expect("decimal");
+        let vid = store
+            .insert_vertex_named(["IndexScanFloatInexact"], [("score", Value::Float64(0.1))])
+            .expect("insert vertex");
+        let index = MockPropertyIndex::default();
+        index.equal_hits.borrow_mut().push(PostingHit {
+            shard_id: 7,
+            vertex_id: u32::try_from(u64::from(vid)).unwrap(),
+        });
+        let plan = plan(vec![
+            PlanOp::IndexScan {
+                variable: "n".into(),
+                property: "score".into(),
+                value: ScanValue::Literal(Value::Decimal(bound)),
+                cmp: CmpOp::Eq,
+                property_projection: None,
+            },
+            PlanOp::PropertyFilter {
+                predicates: vec![Expr::new(ExprKind::Compare {
+                    left: Box::new(prop("n", "score")),
+                    op: CmpOp::Eq,
+                    right: Box::new(Expr::new(ExprKind::Literal(Value::Decimal(bound)))),
+                })],
+                stage: 0,
+            },
+        ]);
+
+        let result = pollster::block_on(execute_plan_query(&store, &plan, &params(), Some(&index)))
+            .expect("execute inexact float equality index scan");
+
+        assert!(result.rows.is_empty());
+    }
+
+    #[test]
     fn executes_range_index_scan_with_lookup_range() {
         let store = GraphStore::new();
         configure_test_index(&store);
@@ -1860,6 +1944,30 @@ mod tests {
     }
 
     #[test]
+    fn index_scan_rejects_non_finite_float_parameter_value() {
+        let store = GraphStore::new();
+        configure_test_index(&store);
+        store
+            .insert_vertex_named(["IndexScanBadFloatParam"], [("score", Value::Float64(1.0))])
+            .expect("insert vertex");
+        let index = MockPropertyIndex::default();
+        let mut parameters = params();
+        parameters.insert("score".into(), Value::Float64(f64::INFINITY));
+        let plan = plan(vec![PlanOp::IndexScan {
+            variable: "n".into(),
+            property: "score".into(),
+            value: ScanValue::Parameter("score".into()),
+            cmp: CmpOp::Eq,
+            property_projection: None,
+        }]);
+
+        let err = pollster::block_on(execute_plan_query(&store, &plan, &parameters, Some(&index)))
+            .expect_err("non-finite parameter should fail");
+
+        assert!(matches!(err, PlanQueryError::InvalidExpressionValue { .. }));
+    }
+
+    #[test]
     fn conditional_index_scan_falls_back_for_null_or_unsupported_parameter() {
         let store = GraphStore::new();
         configure_test_index(&store);
@@ -1880,6 +1988,40 @@ mod tests {
                 cmp: CmpOp::Eq,
             }],
             fallback_label: Some("IndexScanConditionalFallback".into()),
+            fallback_variable: "n".into(),
+            property_projection: None,
+        }]);
+
+        let result =
+            pollster::block_on(execute_plan_query(&store, &plan, &parameters, Some(&index)))
+                .expect("conditional fallback");
+
+        assert_eq!(result.rows.len(), 1);
+        assert!(index.equal_calls.borrow().is_empty());
+        assert!(index.range_calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn conditional_index_scan_falls_back_for_non_finite_float_parameter() {
+        let store = GraphStore::new();
+        configure_test_index(&store);
+        store
+            .insert_vertex_named(
+                ["IndexScanConditionalFloatFallback"],
+                [("score", Value::Float64(1.0))],
+            )
+            .expect("insert vertex");
+        let index = MockPropertyIndex::default();
+        let mut parameters = params();
+        parameters.insert("score".into(), Value::Float64(f64::NAN));
+        let plan = plan(vec![PlanOp::ConditionalIndexScan {
+            candidates: vec![ConditionalScanCandidate {
+                param_name: "score".into(),
+                property: "score".into(),
+                variable: "n".into(),
+                cmp: CmpOp::Eq,
+            }],
+            fallback_label: Some("IndexScanConditionalFloatFallback".into()),
             fallback_variable: "n".into(),
             property_projection: None,
         }]);
