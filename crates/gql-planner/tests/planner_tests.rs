@@ -1077,6 +1077,30 @@ fn test_explain_indexable_properties() {
 }
 
 #[test]
+fn test_index_scan_keeps_property_filter_for_exact_numeric_correctness() {
+    let mut stats = TableStats::default();
+    stats.label_cardinality.insert("Product".to_string(), 10000);
+    stats.indexed_vertex_properties.insert("price".to_string());
+
+    let plan = plan_query_with_stats("MATCH (p:Product) WHERE p.price = 5 RETURN p", &stats);
+
+    assert!(
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::IndexScan { property, .. } if &**property == "price")),
+        "expected IndexScan on price, got: {:?}",
+        plan.ops
+    );
+    assert!(
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::PropertyFilter { .. })),
+        "index scan must keep final PropertyFilter, got: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
 fn test_explain_inline_anchor() {
     let plan = plan_query("MATCH (n:User {uid: 'alice'}) RETURN n");
     let output = explain_plan(&plan);
@@ -2798,6 +2822,29 @@ fn compat_range_index_scan_reverses_left_literal_predicate() {
             }) if &**property == "age"
         ),
         "should emit reversed range IndexScan: {:?}",
+        plan.ops.first()
+    );
+}
+
+#[test]
+fn compat_range_index_scan_decimal_literal_bound() {
+    let mut stats = TableStats::default();
+    stats.label_cardinality.insert("Product".to_string(), 500);
+    stats
+        .range_indexed_vertex_properties
+        .insert("price".to_string());
+    let plan = plan_query_with_stats("MATCH (p:Product) WHERE p.price >= 1.20M RETURN p", &stats);
+    assert!(
+        matches!(
+            plan.ops.first(),
+            Some(PlanOp::IndexScan {
+                property,
+                value: ScanValue::Literal(Value::Decimal(value)),
+                cmp: CmpOp::Ge,
+                ..
+            }) if &**property == "price" && *value == gleaph_gql::types::Decimal::parse("1.20").unwrap()
+        ),
+        "should emit decimal range IndexScan: {:?}",
         plan.ops.first()
     );
 }

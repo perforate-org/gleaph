@@ -1744,6 +1744,53 @@ mod tests {
     }
 
     #[test]
+    fn equality_index_scan_unifies_decimal_and_integer_key_with_final_filter() {
+        let store = GraphStore::new();
+        configure_test_index(&store);
+        let price = gleaph_gql::types::Decimal::parse("5.00").expect("decimal");
+        let vid = store
+            .insert_vertex_named(["IndexScanDecimalEq"], [("price", Value::Decimal(price))])
+            .expect("insert vertex");
+        let pid = store.property_id("price").expect("price property").raw();
+        let index = MockPropertyIndex::default();
+        index.equal_hits.borrow_mut().push(PostingHit {
+            shard_id: 7,
+            vertex_id: u32::try_from(u64::from(vid)).unwrap(),
+        });
+        let plan = plan(vec![
+            PlanOp::IndexScan {
+                variable: "n".into(),
+                property: "price".into(),
+                value: ScanValue::Literal(Value::Int64(5)),
+                cmp: CmpOp::Eq,
+                property_projection: None,
+            },
+            PlanOp::PropertyFilter {
+                predicates: vec![Expr::new(ExprKind::Compare {
+                    left: Box::new(prop("n", "price")),
+                    op: CmpOp::Eq,
+                    right: Box::new(Expr::new(ExprKind::Literal(Value::Int64(5)))),
+                })],
+                stage: 0,
+            },
+        ]);
+
+        let result = pollster::block_on(execute_plan_query(&store, &plan, &params(), Some(&index)))
+            .expect("execute decimal equality index scan");
+
+        assert_eq!(result.rows.len(), 1);
+        let calls = index.equal_calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, pid);
+        assert_eq!(
+            calls[0].1,
+            value_to_index_key_bytes(&Value::Decimal(price))
+                .unwrap()
+                .unwrap()
+        );
+    }
+
+    #[test]
     fn executes_range_index_scan_with_lookup_range() {
         let store = GraphStore::new();
         configure_test_index(&store);
