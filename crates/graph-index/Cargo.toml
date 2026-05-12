@@ -1,0 +1,19 @@
+[package]
+name = "gleaph-graph-index"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+candid.workspace = true
+gleaph-graph-kernel.workspace = true
+ic-cdk.workspace = true
+ic-cdk-macros.workspace = true
+ic-stable-structures.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+gleaph-gql.workspace = true

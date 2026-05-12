@@ -8,6 +8,6 @@ pub use mutation::{
     MutationPropertyExprEvaluation, MutationPropertyExprEvaluator, PlanMutationBindings,
     PlanMutationError, PlanMutationExecutor, execute_ops,
 };
-pub use query::{
-    PlanBinding, PlanQueryError, PlanQueryExecutor, PlanQueryResult, execute_plan_query,
-};
+#[cfg(not(target_family = "wasm"))]
+pub use query::PlanQueryExecutor;
+pub use query::{PlanBinding, PlanQueryError, PlanQueryResult, execute_plan_query};

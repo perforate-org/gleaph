@@ -9,6 +9,12 @@ pub struct GraphInitArgs {
     #[serde(default)]
     pub initial_admins: Vec<Principal>,
     pub logical_graph_name: Option<String>,
+    /// Optional `gleaph-graph-index` canister principal for federated property indexing.
+    #[serde(default)]
+    pub index_canister: Option<Principal>,
+    /// Shard id registered on the index canister for this graph replica (required together with `index_canister`).
+    #[serde(default)]
+    pub graph_shard_id: Option<u64>,
 }
 
 #[derive(CandidType, Deserialize)]

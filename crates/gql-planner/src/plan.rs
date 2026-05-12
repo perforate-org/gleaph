@@ -441,7 +441,7 @@ pub enum RemovePlanItem {
 }
 
 /// A value used in index scan predicates.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ScanValue {
     /// A literal constant.
     Literal(gleaph_gql::Value),
@@ -639,7 +639,11 @@ pub enum AnchorSource {
     /// Inline property from pattern: `(n:Label {prop: value})` or `(n WHERE n.prop = value)`.
     InlinePropertyEquality { property: Str },
     /// Range predicate on an indexed property.
-    PropertyRange { property: Str },
+    PropertyRange {
+        property: Str,
+        value: ScanValue,
+        cmp: CmpOp,
+    },
     /// Lowest-cardinality label.
     LabelCardinality { label: Str },
     /// Schema-inferred endpoint.

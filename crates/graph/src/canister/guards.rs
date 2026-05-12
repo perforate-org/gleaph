@@ -10,6 +10,10 @@ pub fn guard_read() -> Result<(), String> {
     require_at_least(&msg_caller(), Role::Read)
 }
 
+pub fn guard_write() -> Result<(), String> {
+    require_at_least(&msg_caller(), Role::Write)
+}
+
 pub fn guard_prepare_register() -> Result<(), String> {
     let p: Principal = msg_caller();
     if can_prepare_register(&p) {

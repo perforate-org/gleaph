@@ -1,0 +1,148 @@
+use candid::{CandidType, Decode, Encode, Principal};
+use ic_stable_structures::{
+    Memory, StableCell,
+    storable::{Bound, Storable},
+};
+use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
+use std::fmt;
+
+/// Maximum UTF-8 byte length persisted for [`GraphBootstrapConfigV1::logical_graph_name`].
+pub const MAX_LOGICAL_GRAPH_NAME_BYTES: usize = 256;
+
+pub struct StableGraphMetadata<M: Memory>(StableCell<GraphMetadata, M>);
+
+impl<M: Memory> StableGraphMetadata<M> {
+    pub fn new(memory: M) -> Self {
+        Self(StableCell::new(memory, GraphMetadata::default()))
+    }
+
+    pub fn init(memory: M, metadata: GraphMetadata) -> StableGraphMetadata<M> {
+        Self(StableCell::init(memory, metadata))
+    }
+
+    pub fn get(&self) -> &GraphMetadata {
+        self.0.get()
+    }
+
+    pub fn set(&mut self, metadata: GraphMetadata) -> Result<(), GraphMetadataError> {
+        metadata.validate_for_store()?;
+        self.0.set(metadata);
+        Ok(())
+    }
+}
+
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct IndexRouting {
+    pub index_canister: Principal,
+    pub shard_id: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GraphMetadataError {
+    InvalidLogicalGraphName(String),
+}
+
+impl fmt::Display for GraphMetadataError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GraphMetadataError::InvalidLogicalGraphName(error) => write!(f, "{}", error),
+        }
+    }
+}
+
+impl std::error::Error for GraphMetadataError {}
+
+/// Bootstrap payload layout **revision 1** (logical graph label + optional index routing).
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+pub struct GraphMetadataV1 {
+    logical_graph_name: Option<String>,
+    index_routing: Option<IndexRouting>,
+}
+
+impl GraphMetadataV1 {
+    pub(crate) fn validate_for_store(&self) -> Result<(), GraphMetadataError> {
+        if let Some(name) = &self.logical_graph_name {
+            GraphMetadataV1::validate_name(name)?;
+        }
+        Ok(())
+    }
+
+    pub fn validate_name(name: &str) -> Result<(), GraphMetadataError> {
+        if name.len() > MAX_LOGICAL_GRAPH_NAME_BYTES {
+            return Err(GraphMetadataError::InvalidLogicalGraphName(format!(
+                "logical_graph_name exceeds {MAX_LOGICAL_GRAPH_NAME_BYTES} UTF-8 bytes"
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug)]
+pub enum GraphMetadata {
+    V1(GraphMetadataV1),
+}
+
+impl GraphMetadata {
+    pub fn validate_for_store(&self) -> Result<(), GraphMetadataError> {
+        match self {
+            GraphMetadata::V1(v) => v.validate_for_store(),
+        }
+    }
+
+    pub fn validate_name(name: &str) -> Result<(), GraphMetadataError> {
+        GraphMetadataV1::validate_name(name)
+    }
+
+    pub fn logical_graph_name(&self) -> Option<String> {
+        match self {
+            GraphMetadata::V1(v) => v.logical_graph_name.clone(),
+        }
+    }
+
+    pub fn set_logical_graph_name(&mut self, name: Option<String>) {
+        match self {
+            GraphMetadata::V1(v) => v.logical_graph_name = name,
+        }
+    }
+
+    pub fn index_routing(&self) -> Option<IndexRouting> {
+        match self {
+            GraphMetadata::V1(v) => v.index_routing.clone(),
+        }
+    }
+
+    pub fn set_index_routing(&mut self, index_routing: Option<IndexRouting>) {
+        match self {
+            GraphMetadata::V1(v) => v.index_routing = index_routing,
+        }
+    }
+
+    pub fn index_configured(&self) -> bool {
+        match self {
+            GraphMetadata::V1(v) => v.index_routing.is_some(),
+        }
+    }
+}
+
+impl Default for GraphMetadata {
+    fn default() -> Self {
+        Self::V1(GraphMetadataV1::default())
+    }
+}
+
+impl Storable for GraphMetadata {
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("failed to encode StoredMetadata"))
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("failed to encode StoredMetadata")
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(bytes.as_ref(), GraphMetadata).expect("failed to decode StoredMetadata")
+    }
+
+    const BOUND: Bound = Bound::Unbounded;
+}

@@ -8,6 +8,7 @@ rust-version = "1.88"
 
 [dependencies]
 gleaph-gql = { path = "../gql" }
+gleaph-graph-kernel.workspace = true
 rapidhash = "4"
 
 [features]

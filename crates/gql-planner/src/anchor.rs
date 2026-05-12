@@ -14,8 +14,9 @@
 
 use gleaph_gql::ast::*;
 use gleaph_gql::types::LabelExpr;
+use gleaph_graph_kernel::index::value_to_index_key_bytes;
 
-use crate::plan::{AnchorInfo, AnchorSource};
+use crate::plan::{AnchorInfo, AnchorSource, ScanValue};
 use crate::stats::{self, GraphStats};
 
 /// Choose the best anchor variable for a match statement.
@@ -283,7 +284,7 @@ fn find_range_anchor(
 ) -> Option<AnchorInfo> {
     let predicates = flatten_conjunction(where_expr);
     for pred in &predicates {
-        if let Some((var, prop)) = extract_range_predicate(pred)
+        if let Some((var, prop, value, cmp)) = extract_range_predicate(pred)
             && candidates.iter().any(|c| c.variable == var)
             && let Some(stats) = stats
             && stats.is_vertex_property_range_indexed(&prop)
@@ -292,6 +293,8 @@ fn find_range_anchor(
                 variable: var.into(),
                 source: AnchorSource::PropertyRange {
                     property: prop.into(),
+                    value,
+                    cmp,
                 },
             });
         }
@@ -333,22 +336,43 @@ fn extract_equality_predicate(expr: &Expr) -> Option<(String, String)> {
     None
 }
 
-/// Extract (variable, property) from range predicates (`<`, `<=`, `>`, `>=`).
-fn extract_range_predicate(expr: &Expr) -> Option<(String, String)> {
+fn reverse_cmp(op: CmpOp) -> CmpOp {
+    match op {
+        CmpOp::Lt => CmpOp::Gt,
+        CmpOp::Le => CmpOp::Ge,
+        CmpOp::Gt => CmpOp::Lt,
+        CmpOp::Ge => CmpOp::Le,
+        other => other,
+    }
+}
+
+fn range_scan_value_from_expr(expr: &Expr) -> Option<ScanValue> {
+    match &expr.kind {
+        ExprKind::Literal(value) => value_to_index_key_bytes(value)
+            .ok()
+            .flatten()
+            .map(|_| ScanValue::Literal(value.clone())),
+        ExprKind::Parameter(parameter) => Some(ScanValue::Parameter(parameter.clone().into())),
+        _ => None,
+    }
+}
+
+/// Extract (variable, property, bound value, cmp) from range predicates (`<`, `<=`, `>`, `>=`).
+fn extract_range_predicate(expr: &Expr) -> Option<(String, String, ScanValue, CmpOp)> {
     if let ExprKind::Compare { left, op, right } = &expr.kind {
         match op {
             CmpOp::Lt | CmpOp::Le | CmpOp::Gt | CmpOp::Ge => {}
             _ => return None,
         }
         if let Some((var, prop)) = extract_property_access(left)
-            && is_scannable_value(right)
+            && let Some(value) = range_scan_value_from_expr(right)
         {
-            return Some((var, prop));
+            return Some((var, prop, value, *op));
         }
         if let Some((var, prop)) = extract_property_access(right)
-            && is_scannable_value(left)
+            && let Some(value) = range_scan_value_from_expr(left)
         {
-            return Some((var, prop));
+            return Some((var, prop, value, reverse_cmp(*op)));
         }
     }
     None

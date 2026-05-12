@@ -2,28 +2,46 @@ use super::aggregate;
 use super::error::PlanQueryError;
 use super::sort_keys::compare_sort_keys;
 use crate::facade::{EdgeHandle, GraphStore, canonical_undirected_owner};
+use crate::index::lookup::PropertyIndexLookup;
 use crate::plan::expr_evaluator::{
     eval_and_expr, eval_binary_expr, eval_compare_expr, eval_concat_expr, eval_not_expr,
     eval_or_expr, eval_unary_expr, eval_xor_expr, truthy,
 };
-use gleaph_gql::ast::{Expr, ExprKind, OrderByClause, TruthValue};
+use gleaph_gql::ast::{CmpOp, Expr, ExprKind, OrderByClause, TruthValue};
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql::{Value, hash_value_for_join};
-use gleaph_gql_planner::plan::{AggregateSpec, PhysicalPlan, PlanOp, ProjectColumn, Str};
+use gleaph_gql_planner::plan::{
+    AggregateSpec, ConditionalScanCandidate, IndexScanSpec, PhysicalPlan, PlanOp, ProjectColumn,
+    ScanValue, Str,
+};
 use gleaph_graph_kernel::entry::{Edge, LabelId};
+use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest, value_to_index_key_bytes};
 use ic_stable_lara::VertexId;
 use ic_stable_lara::traits::CsrVertexTombstone;
 use nohash_hasher::IntMap;
 use rapidhash::fast::RapidHasher;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::hash::Hasher;
+use std::pin::Pin;
 
+#[cfg(not(target_family = "wasm"))]
 pub trait PlanQueryExecutor {
     fn execute_plan_query(
         &self,
         plan: &PhysicalPlan,
         parameters: &BTreeMap<String, Value>,
     ) -> Result<PlanQueryResult, PlanQueryError>;
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl PlanQueryExecutor for GraphStore {
+    fn execute_plan_query(
+        &self,
+        plan: &PhysicalPlan,
+        parameters: &BTreeMap<String, Value>,
+    ) -> Result<PlanQueryResult, PlanQueryError> {
+        pollster::block_on(execute_plan_query(self, plan, parameters, None))
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -48,22 +66,13 @@ type HashJoinBucketEntry = (HashJoinKey, Vec<PlanRow>);
 
 type HashJoinBuckets = IntMap<u64, Vec<HashJoinBucketEntry>>;
 
-impl PlanQueryExecutor for GraphStore {
-    fn execute_plan_query(
-        &self,
-        plan: &PhysicalPlan,
-        parameters: &BTreeMap<String, Value>,
-    ) -> Result<PlanQueryResult, PlanQueryError> {
-        execute_plan_query(self, plan, parameters)
-    }
-}
-
-pub fn execute_plan_query(
+pub async fn execute_plan_query(
     store: &GraphStore,
     plan: &PhysicalPlan,
     parameters: &BTreeMap<String, Value>,
+    index: Option<&dyn PropertyIndexLookup>,
 ) -> Result<PlanQueryResult, PlanQueryError> {
-    let rows = execute_ops(store, &plan.ops, parameters)?;
+    let rows = execute_ops(store, &plan.ops, parameters, index).await?;
     Ok(PlanQueryResult {
         rows: rows
             .iter()
@@ -72,12 +81,13 @@ pub fn execute_plan_query(
     })
 }
 
-fn execute_ops(
+async fn execute_ops(
     store: &GraphStore,
     ops: &[PlanOp],
     parameters: &BTreeMap<String, Value>,
+    index: Option<&dyn PropertyIndexLookup>,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
-    execute_ops_from(store, ops, parameters, vec![PlanRow::new()])
+    execute_ops_from(store, ops, parameters, vec![PlanRow::new()], index).await
 }
 
 /// Variables that operators in `ops` may bind (used to NULL-pad `OptionalMatch` miss rows).
@@ -224,16 +234,18 @@ fn extend_subplan_written_vars_from_op(op: &PlanOp, out: &mut BTreeSet<String>) 
     }
 }
 
-fn execute_optional_match(
+async fn execute_optional_match(
     store: &GraphStore,
     parameters: &BTreeMap<String, Value>,
     rows: Vec<PlanRow>,
     sub_plan: &[PlanOp],
     written: &BTreeSet<String>,
+    index: Option<&dyn PropertyIndexLookup>,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
     let mut out = Vec::new();
     for row in rows {
-        let extended = execute_ops_from(store, sub_plan, parameters, vec![row.clone()])?;
+        let extended =
+            execute_ops_from(store, sub_plan, parameters, vec![row.clone()], index).await?;
         if extended.is_empty() {
             let mut padded = row;
             for v in written {
@@ -249,232 +261,304 @@ fn execute_optional_match(
     Ok(out)
 }
 
-fn execute_ops_from(
-    store: &GraphStore,
-    ops: &[PlanOp],
-    parameters: &BTreeMap<String, Value>,
+fn execute_ops_from<'a>(
+    store: &'a GraphStore,
+    ops: &'a [PlanOp],
+    parameters: &'a BTreeMap<String, Value>,
     initial_rows: Vec<PlanRow>,
-) -> Result<Vec<PlanRow>, PlanQueryError> {
-    let mut rows = initial_rows;
-    // Index of the nearest preceding `PlanOp::Aggregate` for resolving
-    // `ExprKind::Aggregate` in post-aggregate ops (e.g. HAVING).
-    let mut active_aggregate_op_idx: Option<usize> = None;
+    index: Option<&'a dyn PropertyIndexLookup>,
+) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<PlanRow>, PlanQueryError>> + 'a>> {
+    Box::pin(async move {
+        let mut rows = initial_rows;
+        // Index of the nearest preceding `PlanOp::Aggregate` for resolving
+        // `ExprKind::Aggregate` in post-aggregate ops (e.g. `HAVING`).
+        let mut active_aggregate_op_idx: Option<usize> = None;
 
-    for (op_idx, op) in ops.iter().enumerate() {
-        let aggregate_specs = active_aggregate_op_idx.and_then(|idx| match &ops[idx] {
-            PlanOp::Aggregate { aggregates, .. } => Some(aggregates.as_slice()),
-            _ => None,
-        });
-        let evaluator = QueryExprEvaluator {
-            store,
-            parameters,
-            aggregate_specs,
-        };
-        rows = match op {
-            PlanOp::NodeScan {
-                variable,
-                label,
-                property_projection: _,
-            } => execute_node_scan(store, rows, variable, label.as_ref())?,
-            PlanOp::PropertyFilter { predicates, .. } => rows
-                .into_iter()
-                .filter_map(|row| match row_matches_all(&evaluator, &row, predicates) {
-                    Ok(true) => Some(Ok(row)),
-                    Ok(false) => None,
-                    Err(err) => Some(Err(err)),
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-            PlanOp::Let { bindings } => rows
-                .into_iter()
-                .map(|mut row| -> Result<PlanRow, PlanQueryError> {
-                    for binding in bindings {
-                        let value = evaluator.eval_expr(&row, &binding.value)?;
-                        row.insert(binding.variable.clone(), PlanBinding::Value(value));
-                    }
-                    Ok(row)
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-            PlanOp::Filter { condition } => rows
-                .into_iter()
-                .filter_map(|row| {
-                    match row_matches_all(&evaluator, &row, std::slice::from_ref(condition)) {
+        for (op_idx, op) in ops.iter().enumerate() {
+            let aggregate_specs = active_aggregate_op_idx.and_then(|idx| match &ops[idx] {
+                PlanOp::Aggregate { aggregates, .. } => Some(aggregates.as_slice()),
+                _ => None,
+            });
+            let evaluator = QueryExprEvaluator {
+                store,
+                parameters,
+                aggregate_specs,
+            };
+            rows = match op {
+                PlanOp::NodeScan {
+                    variable,
+                    label,
+                    property_projection: _,
+                } => execute_node_scan(store, rows, variable, label.as_ref())?,
+                PlanOp::IndexScan {
+                    variable,
+                    property,
+                    value,
+                    cmp,
+                    property_projection: _,
+                } => {
+                    execute_index_scan(
+                        store,
+                        rows,
+                        parameters,
+                        index,
+                        variable.as_ref(),
+                        property.as_ref(),
+                        value,
+                        *cmp,
+                    )
+                    .await?
+                }
+                PlanOp::ConditionalIndexScan {
+                    candidates,
+                    fallback_label,
+                    fallback_variable,
+                    property_projection: _,
+                } => {
+                    execute_conditional_index_scan(
+                        store,
+                        rows,
+                        parameters,
+                        index,
+                        candidates,
+                        fallback_label.as_ref(),
+                        &fallback_variable,
+                    )
+                    .await?
+                }
+                PlanOp::IndexIntersection {
+                    variable,
+                    scans,
+                    property_projection: _,
+                } => {
+                    execute_index_intersection(
+                        store,
+                        rows,
+                        parameters,
+                        index,
+                        variable.as_ref(),
+                        scans,
+                    )
+                    .await?
+                }
+                PlanOp::PropertyFilter { predicates, .. } => rows
+                    .into_iter()
+                    .filter_map(|row| match row_matches_all(&evaluator, &row, predicates) {
                         Ok(true) => Some(Ok(row)),
                         Ok(false) => None,
                         Err(err) => Some(Err(err)),
-                    }
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-            PlanOp::Expand {
-                src,
-                edge,
-                dst,
-                direction,
-                label,
-                label_expr,
-                var_len,
-                indexed_edge_equality,
-                edge_property_projection: _,
-                dst_property_projection: _,
-                hop_aux_binding,
-            } => {
-                ensure_simple_expand(label_expr, var_len, indexed_edge_equality, hop_aux_binding)?;
-                execute_expand(
-                    store,
-                    rows,
-                    parameters,
-                    src,
-                    edge,
-                    dst,
-                    *direction,
-                    label.as_ref(),
-                    &[],
-                )?
-            }
-            PlanOp::ExpandFilter {
-                src,
-                edge,
-                dst,
-                direction,
-                label,
-                label_expr,
-                var_len,
-                indexed_edge_equality,
-                dst_filter,
-                edge_property_projection: _,
-                dst_property_projection: _,
-                hop_aux_binding,
-            } => {
-                ensure_simple_expand(label_expr, var_len, indexed_edge_equality, hop_aux_binding)?;
-                execute_expand(
-                    store,
-                    rows,
-                    parameters,
-                    src,
-                    edge,
-                    dst,
-                    *direction,
-                    label.as_ref(),
-                    dst_filter,
-                )?
-            }
-            PlanOp::Aggregate {
-                group_by,
-                aggregates,
-            } => {
-                let agg_evaluator = QueryExprEvaluator {
-                    store,
-                    parameters,
-                    aggregate_specs: None,
-                };
-                let out = aggregate::execute_aggregate(rows, group_by, aggregates, &agg_evaluator)?;
-                active_aggregate_op_idx = Some(op_idx);
-                out
-            }
-            PlanOp::Project { columns, distinct } => {
-                let proj_evaluator = QueryExprEvaluator {
-                    store,
-                    parameters,
-                    aggregate_specs,
-                };
-                let mut projected = rows
-                    .iter()
-                    .map(|row| project_row(&proj_evaluator, row, columns))
-                    .collect::<Result<Vec<_>, _>>()?;
-                if *distinct {
-                    dedup_rows(&mut projected);
-                }
-                active_aggregate_op_idx = None;
-                projected
-            }
-            PlanOp::Limit { count, offset } => {
-                let offset = match offset {
-                    Some(expr) => limit_value(&evaluator.eval_expr(&PlanRow::new(), expr)?)?,
-                    None => 0,
-                };
-                let count = match count {
-                    Some(expr) => Some(limit_value(&evaluator.eval_expr(&PlanRow::new(), expr)?)?),
-                    None => None,
-                };
-                rows.into_iter()
-                    .skip(offset)
-                    .take(count.unwrap_or(usize::MAX))
-                    .collect()
-            }
-            PlanOp::Sort { order_by } => sort_rows(&evaluator, rows, order_by)?,
-            PlanOp::TopK {
-                order_by,
-                k,
-                offset,
-            } => {
-                let offset = match offset {
-                    Some(expr) => limit_value(&evaluator.eval_expr(&PlanRow::new(), expr)?)?,
-                    None => 0,
-                };
-                let k = limit_value(&evaluator.eval_expr(&PlanRow::new(), k)?)?;
-                sort_rows(&evaluator, rows, order_by)?
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+                PlanOp::Let { bindings } => rows
                     .into_iter()
-                    .skip(offset)
-                    .take(k)
-                    .collect()
-            }
-            PlanOp::Materialize { columns, distinct } => {
-                let mut materialized = rows
-                    .iter()
-                    .map(|row| project_row(&evaluator, row, columns))
-                    .collect::<Result<Vec<_>, _>>()?;
-                if *distinct {
-                    dedup_rows(&mut materialized);
+                    .map(|mut row| -> Result<PlanRow, PlanQueryError> {
+                        for binding in bindings {
+                            let value = evaluator.eval_expr(&row, &binding.value)?;
+                            row.insert(binding.variable.clone(), PlanBinding::Value(value));
+                        }
+                        Ok(row)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+                PlanOp::Filter { condition } => rows
+                    .into_iter()
+                    .filter_map(|row| {
+                        match row_matches_all(&evaluator, &row, std::slice::from_ref(condition)) {
+                            Ok(true) => Some(Ok(row)),
+                            Ok(false) => None,
+                            Err(err) => Some(Err(err)),
+                        }
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+                PlanOp::Expand {
+                    src,
+                    edge,
+                    dst,
+                    direction,
+                    label,
+                    label_expr,
+                    var_len,
+                    indexed_edge_equality,
+                    edge_property_projection: _,
+                    dst_property_projection: _,
+                    hop_aux_binding,
+                } => {
+                    ensure_simple_expand(
+                        label_expr,
+                        var_len,
+                        indexed_edge_equality,
+                        hop_aux_binding,
+                    )?;
+                    execute_expand(
+                        store,
+                        rows,
+                        parameters,
+                        src,
+                        edge,
+                        dst,
+                        *direction,
+                        label.as_ref(),
+                        &[],
+                    )?
                 }
-                materialized
-            }
-            PlanOp::UseGraph {
-                graph_name: _,
-                sub_plan: Some(sub_plan),
-            } => {
-                // v1 has a single physical GraphStore; USE scopes its sub-plan
-                // but does not route to a separate graph store yet.
-                execute_ops_from(store, sub_plan, parameters, rows)?
-            }
-            PlanOp::UseGraph {
-                graph_name: _,
-                sub_plan: None,
-            } => {
-                // Same single-store v1 behavior: a bare USE marker is metadata.
-                rows
-            }
-            PlanOp::CartesianProduct { left, right } => {
-                execute_cartesian_product(store, parameters, rows, left, right)?
-            }
-            PlanOp::HashJoin {
-                left,
-                right,
-                join_keys,
-            } => execute_hash_join(store, parameters, rows, left, right, join_keys)?,
-            PlanOp::OptionalMatch { sub_plan } => {
-                let written = subplan_written_vars(sub_plan);
-                execute_optional_match(store, parameters, rows, sub_plan, &written)?
-            }
-            other if other.is_dml() => {
-                return Err(PlanQueryError::UnsupportedOp(plan_op_name(other)));
-            }
-            other => return Err(PlanQueryError::UnsupportedOp(plan_op_name(other))),
-        };
-    }
+                PlanOp::ExpandFilter {
+                    src,
+                    edge,
+                    dst,
+                    direction,
+                    label,
+                    label_expr,
+                    var_len,
+                    indexed_edge_equality,
+                    dst_filter,
+                    edge_property_projection: _,
+                    dst_property_projection: _,
+                    hop_aux_binding,
+                } => {
+                    ensure_simple_expand(
+                        label_expr,
+                        var_len,
+                        indexed_edge_equality,
+                        hop_aux_binding,
+                    )?;
+                    execute_expand(
+                        store,
+                        rows,
+                        parameters,
+                        src,
+                        edge,
+                        dst,
+                        *direction,
+                        label.as_ref(),
+                        dst_filter,
+                    )?
+                }
+                PlanOp::Aggregate {
+                    group_by,
+                    aggregates,
+                } => {
+                    let agg_evaluator = QueryExprEvaluator {
+                        store,
+                        parameters,
+                        aggregate_specs: None,
+                    };
+                    let out =
+                        aggregate::execute_aggregate(rows, group_by, aggregates, &agg_evaluator)?;
+                    active_aggregate_op_idx = Some(op_idx);
+                    out
+                }
+                PlanOp::Project { columns, distinct } => {
+                    let proj_evaluator = QueryExprEvaluator {
+                        store,
+                        parameters,
+                        aggregate_specs,
+                    };
+                    let mut projected = rows
+                        .iter()
+                        .map(|row| project_row(&proj_evaluator, row, columns))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    if *distinct {
+                        dedup_rows(&mut projected);
+                    }
+                    active_aggregate_op_idx = None;
+                    projected
+                }
+                PlanOp::Limit { count, offset } => {
+                    let offset = match offset {
+                        Some(expr) => limit_value(&evaluator.eval_expr(&PlanRow::new(), expr)?)?,
+                        None => 0,
+                    };
+                    let count = match count {
+                        Some(expr) => {
+                            Some(limit_value(&evaluator.eval_expr(&PlanRow::new(), expr)?)?)
+                        }
+                        None => None,
+                    };
+                    rows.into_iter()
+                        .skip(offset)
+                        .take(count.unwrap_or(usize::MAX))
+                        .collect()
+                }
+                PlanOp::Sort { order_by } => sort_rows(&evaluator, rows, order_by)?,
+                PlanOp::TopK {
+                    order_by,
+                    k,
+                    offset,
+                } => {
+                    let offset = match offset {
+                        Some(expr) => limit_value(&evaluator.eval_expr(&PlanRow::new(), expr)?)?,
+                        None => 0,
+                    };
+                    let k = limit_value(&evaluator.eval_expr(&PlanRow::new(), k)?)?;
+                    sort_rows(&evaluator, rows, order_by)?
+                        .into_iter()
+                        .skip(offset)
+                        .take(k)
+                        .collect()
+                }
+                PlanOp::Materialize { columns, distinct } => {
+                    let mut materialized = rows
+                        .iter()
+                        .map(|row| project_row(&evaluator, row, columns))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    if *distinct {
+                        dedup_rows(&mut materialized);
+                    }
+                    materialized
+                }
+                PlanOp::UseGraph {
+                    graph_name: _,
+                    sub_plan: Some(sub_plan),
+                } => {
+                    // v1 has a single physical GraphStore; USE scopes its sub-plan
+                    // but does not route to a separate graph store yet.
+                    execute_ops_from(store, sub_plan, parameters, rows, index).await?
+                }
+                PlanOp::UseGraph {
+                    graph_name: _,
+                    sub_plan: None,
+                } => {
+                    // Same single-store v1 behavior: a bare USE marker is metadata.
+                    rows
+                }
+                PlanOp::CartesianProduct { left, right } => {
+                    execute_cartesian_product(store, parameters, rows, left, right, index).await?
+                }
+                PlanOp::HashJoin {
+                    left,
+                    right,
+                    join_keys,
+                } => {
+                    execute_hash_join(store, parameters, rows, left, right, join_keys, index)
+                        .await?
+                }
+                PlanOp::OptionalMatch { sub_plan } => {
+                    let written = subplan_written_vars(sub_plan);
+                    execute_optional_match(store, parameters, rows, sub_plan, &written, index)
+                        .await?
+                }
+                other if other.is_dml() => {
+                    return Err(PlanQueryError::UnsupportedOp(plan_op_name(other)));
+                }
+                other => return Err(PlanQueryError::UnsupportedOp(plan_op_name(other))),
+            };
+        }
 
-    Ok(rows)
+        Ok(rows)
+    })
 }
 
-fn execute_cartesian_product(
+async fn execute_cartesian_product(
     store: &GraphStore,
     parameters: &BTreeMap<String, Value>,
     rows: Vec<PlanRow>,
     left: &[PlanOp],
     right: &[PlanOp],
+    index: Option<&dyn PropertyIndexLookup>,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
     let mut out = Vec::new();
     for row in rows {
-        let left_rows = execute_ops_from(store, left, parameters, vec![row.clone()])?;
-        let right_rows = execute_ops_from(store, right, parameters, vec![row])?;
+        let left_rows = execute_ops_from(store, left, parameters, vec![row.clone()], index).await?;
+        let right_rows = execute_ops_from(store, right, parameters, vec![row], index).await?;
         for left_row in &left_rows {
             for right_row in &right_rows {
                 if let Some(merged) = merge_rows(left_row, right_row) {
@@ -500,13 +584,14 @@ fn merge_rows(left: &PlanRow, right: &PlanRow) -> Option<PlanRow> {
     Some(merged)
 }
 
-fn execute_hash_join(
+async fn execute_hash_join(
     store: &GraphStore,
     parameters: &BTreeMap<String, Value>,
     rows: Vec<PlanRow>,
     left: &[PlanOp],
     right: &[PlanOp],
     join_keys: &[Str],
+    index: Option<&dyn PropertyIndexLookup>,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
     if join_keys.is_empty() {
         return Err(PlanQueryError::UnsupportedOp("HashJoin(empty join_keys)"));
@@ -514,8 +599,8 @@ fn execute_hash_join(
 
     let mut out = Vec::new();
     for row in rows {
-        let left_rows = execute_ops_from(store, left, parameters, vec![row.clone()])?;
-        let right_rows = execute_ops_from(store, right, parameters, vec![row])?;
+        let left_rows = execute_ops_from(store, left, parameters, vec![row.clone()], index).await?;
+        let right_rows = execute_ops_from(store, right, parameters, vec![row], index).await?;
 
         let mut buckets: HashJoinBuckets = IntMap::default();
         for lr in left_rows {
@@ -591,6 +676,206 @@ fn hash_plan_binding_for_join(binding: &PlanBinding, hasher: &mut RapidHasher<'_
             hash_value_for_join(v, hasher);
         }
     }
+}
+
+fn property_id_for_scan(store: &GraphStore, property_name: &str) -> Result<u32, PlanQueryError> {
+    store
+        .property_id(property_name)
+        .map(|p| p.raw())
+        .ok_or(PlanQueryError::UnsupportedOp("IndexScan.unknown_property"))
+}
+
+fn resolve_scan_value_bytes(
+    sv: &ScanValue,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<Option<Vec<u8>>, PlanQueryError> {
+    let v = match sv {
+        ScanValue::Literal(val) => val.clone(),
+        ScanValue::Parameter(name) => parameters.get(name.as_ref()).cloned().ok_or_else(|| {
+            PlanQueryError::MissingParameter {
+                name: name.to_string(),
+            }
+        })?,
+    };
+    value_to_index_key_bytes(&v).map_err(|_| PlanQueryError::InvalidExpressionValue {
+        expression: "index scan value encoding".to_owned(),
+    })
+}
+
+fn cmp_to_posting_range_request(
+    cmp: CmpOp,
+    bound_bytes: Vec<u8>,
+) -> Result<PostingRangeRequest, PlanQueryError> {
+    Ok(match cmp {
+        CmpOp::Lt => PostingRangeRequest::Lt(bound_bytes),
+        CmpOp::Le => PostingRangeRequest::Le(bound_bytes),
+        CmpOp::Gt => PostingRangeRequest::Gt(bound_bytes),
+        CmpOp::Ge => PostingRangeRequest::Ge(bound_bytes),
+        CmpOp::Eq | CmpOp::Ne => {
+            return Err(PlanQueryError::UnsupportedOp(
+                "IndexScan.range(internal CmpOp)",
+            ));
+        }
+    })
+}
+
+fn local_shard_filter_id() -> Result<u64, PlanQueryError> {
+    GraphStore::new()
+        .index_routing()
+        .map(|r| r.shard_id)
+        .ok_or(PlanQueryError::UnsupportedOp("IndexScan(no shard routing)"))
+}
+
+fn filter_hits_for_local_shard(
+    store: &GraphStore,
+    rows: Vec<PlanRow>,
+    variable: &str,
+    hits: &[PostingHit],
+    shard: u64,
+) -> Result<Vec<PlanRow>, PlanQueryError> {
+    let mut out = Vec::new();
+    for row in rows {
+        for h in hits {
+            if h.shard_id != shard {
+                continue;
+            }
+            let vid = VertexId::from_le_bytes(h.vertex_id.to_le_bytes());
+            let Some(vertex) = store.vertex(vid) else {
+                continue;
+            };
+            if vertex.is_tombstone() {
+                continue;
+            }
+            let mut r = row.clone();
+            r.insert(variable.to_string(), PlanBinding::Vertex(vid));
+            out.push(r);
+        }
+    }
+    Ok(out)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_index_scan(
+    store: &GraphStore,
+    rows: Vec<PlanRow>,
+    parameters: &BTreeMap<String, Value>,
+    index: Option<&dyn PropertyIndexLookup>,
+    variable: &str,
+    property_name: &str,
+    scan_value: &ScanValue,
+    cmp: CmpOp,
+) -> Result<Vec<PlanRow>, PlanQueryError> {
+    let Some(ix) = index else {
+        return Err(PlanQueryError::UnsupportedOp("IndexScan(no index client)"));
+    };
+    let shard = local_shard_filter_id()?;
+    let pid = property_id_for_scan(store, property_name)?;
+    let Some(bytes) = resolve_scan_value_bytes(scan_value, parameters)? else {
+        return Ok(Vec::new());
+    };
+    let hits = if cmp == CmpOp::Eq {
+        ix.lookup_equal(pid, bytes).await?
+    } else {
+        let req = cmp_to_posting_range_request(cmp, bytes)?;
+        ix.lookup_range(pid, &req).await?
+    };
+    filter_hits_for_local_shard(store, rows, variable, &hits, shard)
+}
+
+async fn execute_conditional_index_scan(
+    store: &GraphStore,
+    rows: Vec<PlanRow>,
+    parameters: &BTreeMap<String, Value>,
+    index: Option<&dyn PropertyIndexLookup>,
+    candidates: &[ConditionalScanCandidate],
+    fallback_label: Option<&Str>,
+    fallback_variable: &Str,
+) -> Result<Vec<PlanRow>, PlanQueryError> {
+    for c in candidates {
+        let pv = parameters
+            .get(c.param_name.as_ref())
+            .cloned()
+            .unwrap_or(Value::Null);
+        if pv != Value::Null {
+            let Some(bytes) = value_to_index_key_bytes(&pv).ok().flatten() else {
+                break;
+            };
+            let Some(ix) = index else {
+                return Err(PlanQueryError::UnsupportedOp(
+                    "ConditionalIndexScan(no index client)",
+                ));
+            };
+            let shard = local_shard_filter_id()?;
+            let pid = property_id_for_scan(store, c.property.as_ref())?;
+            let hits = if c.cmp == CmpOp::Eq {
+                ix.lookup_equal(pid, bytes).await?
+            } else {
+                let req = cmp_to_posting_range_request(c.cmp, bytes)?;
+                ix.lookup_range(pid, &req).await?
+            };
+            return filter_hits_for_local_shard(store, rows, c.variable.as_ref(), &hits, shard);
+        }
+    }
+    execute_node_scan(store, rows, fallback_variable, fallback_label)
+}
+
+async fn execute_index_intersection(
+    store: &GraphStore,
+    rows: Vec<PlanRow>,
+    parameters: &BTreeMap<String, Value>,
+    index: Option<&dyn PropertyIndexLookup>,
+    variable: &str,
+    scans: &[IndexScanSpec],
+) -> Result<Vec<PlanRow>, PlanQueryError> {
+    let Some(ix) = index else {
+        return Err(PlanQueryError::UnsupportedOp(
+            "IndexIntersection(no index client)",
+        ));
+    };
+    let shard = local_shard_filter_id()?;
+    let mut sets: Vec<HashSet<VertexId>> = Vec::with_capacity(scans.len());
+    for spec in scans {
+        if spec.cmp != CmpOp::Eq {
+            return Err(PlanQueryError::UnsupportedOp("IndexIntersection.cmp"));
+        }
+        let pid = property_id_for_scan(store, spec.property.as_ref())?;
+        let Some(bytes) = resolve_scan_value_bytes(&spec.value, parameters)? else {
+            return Ok(Vec::new());
+        };
+        let hits = ix.lookup_equal(pid, bytes).await?;
+        let mut hs = HashSet::new();
+        for h in hits {
+            if h.shard_id != shard {
+                continue;
+            }
+            let vid = VertexId::from_le_bytes(h.vertex_id.to_le_bytes());
+            if let Some(vertex) = store.vertex(vid)
+                && !vertex.is_tombstone()
+            {
+                hs.insert(vid);
+            }
+        }
+        sets.push(hs);
+    }
+    let mut intersection: Option<HashSet<VertexId>> = None;
+    for s in sets {
+        intersection = Some(match intersection {
+            None => s,
+            Some(prev) => prev.intersection(&s).copied().collect(),
+        });
+    }
+    let Some(ids) = intersection else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for row in rows {
+        for vid in &ids {
+            let mut r = row.clone();
+            r.insert(variable.to_string(), PlanBinding::Vertex(*vid));
+            out.push(r);
+        }
+    }
+    Ok(out)
 }
 
 fn execute_node_scan(
@@ -1256,7 +1541,11 @@ fn plan_op_name(op: &PlanOp) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::facade::IndexRouting;
     use crate::facade::mutation_executor::GraphMutationExecutor;
+    use crate::index::lookup::PropertyIndexLookup;
+    use async_trait::async_trait;
+    use candid::Principal;
     use gleaph_gql::ast::{
         AggregateFunc, CmpOp, Expr, ExprKind, NullOrder, OrderByClause, SetOp, SortDirection,
         SortItem, Statement,
@@ -1265,8 +1554,59 @@ mod tests {
     use gleaph_gql::token::Span;
     use gleaph_gql_planner::build_plan;
     use gleaph_gql_planner::plan::{
-        AggregateSpec, PlanAnnotations, PlanDiagnostics, ScanValue, ShortestMode, WcojEdge,
+        AggregateSpec, ConditionalScanCandidate, PlanAnnotations, PlanDiagnostics, ScanValue,
+        ShortestMode, WcojEdge,
     };
+    use std::cell::RefCell;
+
+    #[derive(Default)]
+    struct MockPropertyIndex {
+        equal_hits: RefCell<Vec<PostingHit>>,
+        range_hits: RefCell<Vec<PostingHit>>,
+        equal_calls: RefCell<Vec<(u32, Vec<u8>)>>,
+        range_calls: RefCell<Vec<(u32, PostingRangeRequest)>>,
+    }
+
+    #[async_trait(?Send)]
+    impl PropertyIndexLookup for MockPropertyIndex {
+        async fn lookup_equal(
+            &self,
+            property_id: u32,
+            value: Vec<u8>,
+        ) -> Result<Vec<PostingHit>, PlanQueryError> {
+            self.equal_calls.borrow_mut().push((property_id, value));
+            Ok(self.equal_hits.borrow().clone())
+        }
+
+        async fn lookup_range(
+            &self,
+            property_id: u32,
+            req: &PostingRangeRequest,
+        ) -> Result<Vec<PostingHit>, PlanQueryError> {
+            self.range_calls
+                .borrow_mut()
+                .push((property_id, req.clone()));
+            Ok(self.range_hits.borrow().clone())
+        }
+
+        async fn posting_insert(
+            &self,
+            _property_id: u32,
+            _value: Vec<u8>,
+            _vertex_id: u32,
+        ) -> Result<(), PlanQueryError> {
+            Ok(())
+        }
+
+        async fn posting_remove(
+            &self,
+            _property_id: u32,
+            _value: Vec<u8>,
+            _vertex_id: u32,
+        ) -> Result<(), PlanQueryError> {
+            Ok(())
+        }
+    }
 
     fn plan(ops: Vec<PlanOp>) -> PhysicalPlan {
         PhysicalPlan {
@@ -1357,6 +1697,153 @@ mod tests {
                 other => panic!("expected text column {column}, got {other:?}"),
             })
             .collect()
+    }
+
+    fn configure_test_index(store: &GraphStore) {
+        store
+            .set_index_routing(Some(IndexRouting {
+                index_canister: Principal::management_canister(),
+                shard_id: 7,
+            }))
+            .expect("set index routing");
+    }
+
+    #[test]
+    fn executes_equality_index_scan_with_sortable_key() {
+        let store = GraphStore::new();
+        configure_test_index(&store);
+        let vid = store
+            .insert_vertex_named(["IndexScanEq"], [("age", Value::Uint8(5))])
+            .expect("insert vertex");
+        let pid = store.property_id("age").expect("age property").raw();
+        let index = MockPropertyIndex::default();
+        index.equal_hits.borrow_mut().push(PostingHit {
+            shard_id: 7,
+            vertex_id: u32::try_from(u64::from(vid)).unwrap(),
+        });
+        let plan = plan(vec![PlanOp::IndexScan {
+            variable: "n".into(),
+            property: "age".into(),
+            value: ScanValue::Literal(Value::Int64(5)),
+            cmp: CmpOp::Eq,
+            property_projection: None,
+        }]);
+
+        let result = pollster::block_on(execute_plan_query(&store, &plan, &params(), Some(&index)))
+            .expect("execute index scan");
+
+        assert_eq!(result.rows.len(), 1);
+        let calls = index.equal_calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, pid);
+        assert_eq!(
+            calls[0].1,
+            value_to_index_key_bytes(&Value::Uint8(5)).unwrap().unwrap()
+        );
+        assert!(index.range_calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn executes_range_index_scan_with_lookup_range() {
+        let store = GraphStore::new();
+        configure_test_index(&store);
+        let low = store
+            .insert_vertex_named(["IndexScanRange"], [("age", Value::Int64(1))])
+            .expect("insert low");
+        let high = store
+            .insert_vertex_named(["IndexScanRange"], [("age", Value::Int64(9))])
+            .expect("insert high");
+        let pid = store.property_id("age").expect("age property").raw();
+        let index = MockPropertyIndex::default();
+        index.range_hits.borrow_mut().extend([
+            PostingHit {
+                shard_id: 7,
+                vertex_id: u32::try_from(u64::from(low)).unwrap(),
+            },
+            PostingHit {
+                shard_id: 7,
+                vertex_id: u32::try_from(u64::from(high)).unwrap(),
+            },
+        ]);
+        let plan = plan(vec![PlanOp::IndexScan {
+            variable: "n".into(),
+            property: "age".into(),
+            value: ScanValue::Literal(Value::Int64(5)),
+            cmp: CmpOp::Ge,
+            property_projection: None,
+        }]);
+
+        let result = pollster::block_on(execute_plan_query(&store, &plan, &params(), Some(&index)))
+            .expect("execute range index scan");
+
+        assert_eq!(result.rows.len(), 2);
+        assert!(index.equal_calls.borrow().is_empty());
+        let calls = index.range_calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, pid);
+        assert!(matches!(
+            &calls[0].1,
+            PostingRangeRequest::Ge(bytes)
+                if bytes == &value_to_index_key_bytes(&Value::Int64(5)).unwrap().unwrap()
+        ));
+    }
+
+    #[test]
+    fn index_scan_rejects_unsupported_parameter_value() {
+        let store = GraphStore::new();
+        configure_test_index(&store);
+        store
+            .insert_vertex_named(["IndexScanBadParam"], [("tags", Value::List(vec![]))])
+            .expect("insert vertex");
+        let index = MockPropertyIndex::default();
+        let mut parameters = params();
+        parameters.insert("tags".into(), Value::List(vec![]));
+        let plan = plan(vec![PlanOp::IndexScan {
+            variable: "n".into(),
+            property: "tags".into(),
+            value: ScanValue::Parameter("tags".into()),
+            cmp: CmpOp::Eq,
+            property_projection: None,
+        }]);
+
+        let err = pollster::block_on(execute_plan_query(&store, &plan, &parameters, Some(&index)))
+            .expect_err("unsupported parameter should fail");
+
+        assert!(matches!(err, PlanQueryError::InvalidExpressionValue { .. }));
+    }
+
+    #[test]
+    fn conditional_index_scan_falls_back_for_null_or_unsupported_parameter() {
+        let store = GraphStore::new();
+        configure_test_index(&store);
+        store
+            .insert_vertex_named(
+                ["IndexScanConditionalFallback"],
+                [("tags", Value::List(vec![]))],
+            )
+            .expect("insert vertex");
+        let index = MockPropertyIndex::default();
+        let mut parameters = params();
+        parameters.insert("tags".into(), Value::List(vec![]));
+        let plan = plan(vec![PlanOp::ConditionalIndexScan {
+            candidates: vec![ConditionalScanCandidate {
+                param_name: "tags".into(),
+                property: "tags".into(),
+                variable: "n".into(),
+                cmp: CmpOp::Eq,
+            }],
+            fallback_label: Some("IndexScanConditionalFallback".into()),
+            fallback_variable: "n".into(),
+            property_projection: None,
+        }]);
+
+        let result =
+            pollster::block_on(execute_plan_query(&store, &plan, &parameters, Some(&index)))
+                .expect("conditional fallback");
+
+        assert_eq!(result.rows.len(), 1);
+        assert!(index.equal_calls.borrow().is_empty());
+        assert!(index.range_calls.borrow().is_empty());
     }
 
     #[test]
@@ -3483,14 +3970,13 @@ mod tests {
         let store = GraphStore::new();
         let cases = vec![
             (
-                PlanOp::IndexScan {
-                    variable: "n".into(),
-                    property: "uid".into(),
-                    value: ScanValue::Literal(Value::Text("alice".into())),
-                    cmp: CmpOp::Eq,
+                PlanOp::EdgeIndexScan {
+                    variable: "e".into(),
+                    property: "w".into(),
+                    value: ScanValue::Literal(Value::Int64(1)),
                     property_projection: None,
                 },
-                "IndexScan",
+                "EdgeIndexScan",
             ),
             (
                 PlanOp::SetOperation {

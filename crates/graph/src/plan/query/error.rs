@@ -6,6 +6,11 @@ use std::fmt;
 #[derive(Debug)]
 pub enum PlanQueryError {
     Store(GraphStoreError),
+    /// Inter-canister call to `gleaph-graph-index` failed (includes `detail` for operators).
+    FederatedIndexCall {
+        op: &'static str,
+        detail: String,
+    },
     UnsupportedOp(&'static str),
     UnsupportedDirection(EdgeDirection),
     UnsupportedExpression {
@@ -48,6 +53,9 @@ impl fmt::Display for PlanQueryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Store(err) => write!(f, "{err}"),
+            Self::FederatedIndexCall { op, detail } => {
+                write!(f, "federated index {op} failed: {detail}")
+            }
             Self::UnsupportedOp(op) => write!(f, "unsupported plan query operator: {op}"),
             Self::UnsupportedDirection(direction) => {
                 write!(f, "unsupported query edge direction: {direction:?}")

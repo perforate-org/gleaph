@@ -11,6 +11,7 @@ pub(crate) mod memory;
 pub(crate) mod edge_ids;
 pub(crate) mod edge_properties;
 pub(crate) mod label_catalog;
+pub(crate) mod metadata;
 pub(crate) mod property_catalog;
 pub(crate) mod vertex_labels;
 pub(crate) mod vertex_properties;
@@ -49,5 +50,9 @@ thread_local! {
 
     pub(crate) static PREPARED_QUERY_CATALOG: RefCell<memory::StablePreparedQueryCatalog> = RefCell::new(
         memory::init_prepared_query_catalog()
+    );
+
+    pub(crate) static METADATA: RefCell<memory::StableMetadata> = RefCell::new(
+        memory::init_metadata()
     );
 }

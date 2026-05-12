@@ -7,8 +7,9 @@ members = [
     "crates/gql-planner",
     "crates/graph",
     "crates/graph-catalog",
-    "crates/graph-prepared",
+    "crates/graph-index",
     "crates/graph-kernel",
+    "crates/graph-prepared",
     "crates/ic-stable-lara",
     "crates/ic-stable-paged-ordered-map",
     "crates/ic-stable-vec-deque",
@@ -26,15 +27,14 @@ gleaph-gql = { path = "crates/gql" }
 gleaph-gql-ic = { path = "crates/gql-ic" }
 gleaph-gql-planner = { path = "crates/gql-planner" }
 gleaph-graph-catalog = { path = "crates/graph-catalog" }
-gleaph-graph-prepared = { path = "crates/graph-prepared" }
+gleaph-graph-index = { path = "crates/graph-index" }
 gleaph-graph-kernel = { path = "crates/graph-kernel" }
+gleaph-graph-prepared = { path = "crates/graph-prepared" }
 ic-stable-lara = { path = "crates/ic-stable-lara" }
 ic-stable-paged-ordered-map = { path = "crates/ic-stable-paged-ordered-map" }
 ic-stable-vec-deque = { path = "crates/ic-stable-vec-deque" }
 
 bitflags = "2.11.1"
-ic-stable-structures = "0.7.2"
-nohash-hasher = "0.2"
 canbench-rs = "0.5"
 candid = "0.10"
 concat-string = "1"
@@ -44,6 +44,8 @@ half = "2"
 ic-cdk = "0.20"
 ic-cdk-macros = "0.20"
 ic-stable-roaring = { path = "../ic-stable-roaring" }
+ic-stable-structures = "0.7.2"
+nohash-hasher = "0.2"
 rapidhash = "4"
 rkyv = "0.8.16"
 roaring = "0.11.4"

@@ -4,11 +4,11 @@
 //!
 //! `Executor < Read < Write < Manager < Admin` (higher implies all lower capabilities).
 //!
-//! Principals with **no row in stable storage** are treated as [`Role::Executor`] (every caller
-//! can use prepared-query execution until an admin assigns a higher role).
+//! Principals with **no row in stable storage** are treated as [`Role::Executor`].
 //!
 //! Prepared-query **registration** requires [`Role::Admin`] or [`Role::Manager`] with
-//! [`ManagerCapability::PREPARE_REGISTER`]. **Execution** requires at least [`Role::Executor`].
+//! [`ManagerCapability::PREPARE_REGISTER`]. Prepared-query **execution** does not consult this
+//! RBAC table (graph canisters separate read vs write by composite query vs update entrypoints).
 
 use candid::Principal;
 use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};

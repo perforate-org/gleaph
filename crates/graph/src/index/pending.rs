@@ -1,0 +1,322 @@
+//! Record vertex property changes for the federated index canister.
+//!
+//! ## Posting payload encoding
+//!
+//! Only property values for which [`gleaph_gql::Value::to_binary_bytes`] succeeds produce index
+//! postings. Values that cannot be encoded (or use unsupported representations) are **omitted**
+//! from the index: equality scans on those values may return fewer rows than a full graph scan.
+//!
+//! ## Sync failure semantics
+//!
+//! [`flush_pending`] applies postings in order. If an inter-canister call fails after earlier
+//! calls succeeded, successful prefix operations are **compensated** (inverse postings) so the
+//! index matches its pre-flush state for this batch, then the full batch is re-queued for a later
+//! retry. If compensation itself fails, the canister **traps** on Wasm (there is no safe automatic
+//! recovery across two canisters).
+
+use crate::facade::GraphStore;
+use crate::index::lookup::PropertyIndexLookup;
+use crate::plan::PlanQueryError;
+use gleaph_gql::Value;
+use gleaph_graph_kernel::entry::PropertyId;
+use gleaph_graph_kernel::index::value_to_index_key_bytes;
+use ic_stable_lara::VertexId;
+use std::cell::RefCell;
+
+#[derive(Clone, Debug)]
+pub(crate) enum PendingPostingOp {
+    Insert {
+        property_id: u32,
+        value_bytes: Vec<u8>,
+        vertex_id: u32,
+    },
+    Remove {
+        property_id: u32,
+        value_bytes: Vec<u8>,
+        vertex_id: u32,
+    },
+}
+
+thread_local! {
+    static PENDING: RefCell<Vec<PendingPostingOp>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Clears the posting queue (e.g. when disabling the index). Not invoked at the start of each GQL
+/// run: [`flush_pending`] may re-queue work after a partial failure so a later update can retry.
+pub(crate) fn clear_pending() {
+    PENDING.with(|p| p.borrow_mut().clear());
+}
+
+fn push(op: PendingPostingOp) {
+    if !GraphStore::new().index_configured() {
+        return;
+    }
+    PENDING.with(|p| p.borrow_mut().push(op));
+}
+
+fn encode_value(value: &Value) -> Option<Vec<u8>> {
+    value_to_index_key_bytes(value).ok().flatten()
+}
+
+pub(crate) fn record_vertex_property_change(
+    vertex_id: VertexId,
+    property_id: PropertyId,
+    prev: Option<&Value>,
+    new: Option<&Value>,
+) {
+    let vid = u32::try_from(u64::from(vertex_id)).unwrap_or(0);
+    let pid = property_id.raw();
+
+    match (prev, new) {
+        (None, Some(n)) => {
+            if let Some(bytes) = encode_value(n) {
+                push(PendingPostingOp::Insert {
+                    property_id: pid,
+                    value_bytes: bytes,
+                    vertex_id: vid,
+                });
+            }
+        }
+        (Some(p), Some(n)) if p != n => {
+            if let Some(old_bytes) = encode_value(p) {
+                push(PendingPostingOp::Remove {
+                    property_id: pid,
+                    value_bytes: old_bytes,
+                    vertex_id: vid,
+                });
+            }
+            if let Some(new_bytes) = encode_value(n) {
+                push(PendingPostingOp::Insert {
+                    property_id: pid,
+                    value_bytes: new_bytes,
+                    vertex_id: vid,
+                });
+            }
+        }
+        (Some(p), None) => {
+            if let Some(bytes) = encode_value(p) {
+                push(PendingPostingOp::Remove {
+                    property_id: pid,
+                    value_bytes: bytes,
+                    vertex_id: vid,
+                });
+            }
+        }
+        _ => {}
+    }
+}
+
+async fn compensate_index_ops(
+    ix: &dyn PropertyIndexLookup,
+    applied: &[PendingPostingOp],
+) -> Result<(), PlanQueryError> {
+    for op in applied.iter().rev() {
+        match op {
+            PendingPostingOp::Insert {
+                property_id,
+                value_bytes,
+                vertex_id,
+            } => {
+                ix.posting_remove(*property_id, value_bytes.clone(), *vertex_id)
+                    .await?;
+            }
+            PendingPostingOp::Remove {
+                property_id,
+                value_bytes,
+                vertex_id,
+            } => {
+                ix.posting_insert(*property_id, value_bytes.clone(), *vertex_id)
+                    .await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) async fn flush_pending(
+    index: Option<&dyn PropertyIndexLookup>,
+) -> Result<(), PlanQueryError> {
+    if !GraphStore::new().index_configured() {
+        clear_pending();
+        return Ok(());
+    }
+    let Some(ix) = index else {
+        clear_pending();
+        return Err(PlanQueryError::UnsupportedOp(
+            "index mutations dropped (no index client)",
+        ));
+    };
+    let ops: Vec<PendingPostingOp> = PENDING.with(|p| std::mem::take(&mut *p.borrow_mut()));
+    if ops.is_empty() {
+        return Ok(());
+    }
+
+    let mut applied: Vec<PendingPostingOp> = Vec::with_capacity(ops.len());
+    for op in &ops {
+        let result = match op {
+            PendingPostingOp::Insert {
+                property_id,
+                value_bytes,
+                vertex_id,
+            } => {
+                ix.posting_insert(*property_id, value_bytes.clone(), *vertex_id)
+                    .await
+            }
+            PendingPostingOp::Remove {
+                property_id,
+                value_bytes,
+                vertex_id,
+            } => {
+                ix.posting_remove(*property_id, value_bytes.clone(), *vertex_id)
+                    .await
+            }
+        };
+
+        if let Err(primary) = result {
+            match compensate_index_ops(ix, &applied).await {
+                Ok(()) => {
+                    PENDING.with(|p| p.borrow_mut().extend(ops.iter().cloned()));
+                    return Err(primary);
+                }
+                Err(rollback_err) => {
+                    #[cfg(target_family = "wasm")]
+                    ic_cdk::trap(&format!(
+                        "gleaph-graph: federated index sync failed and rollback failed (op error: {primary}; rollback: {rollback_err})"
+                    ));
+                    #[cfg(not(target_family = "wasm"))]
+                    {
+                        return Err(PlanQueryError::FederatedIndexCall {
+                            op: "compensate",
+                            detail: format!("primary: {primary}; rollback: {rollback_err}"),
+                        });
+                    }
+                }
+            }
+        }
+        applied.push(op.clone());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::facade::IndexRouting;
+    use async_trait::async_trait;
+    use candid::Principal;
+    use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct FlakyIndex {
+        fail_after: usize,
+        insert_calls: AtomicUsize,
+        remove_calls: AtomicUsize,
+    }
+
+    impl FlakyIndex {
+        fn new(fail_after: usize) -> Self {
+            Self {
+                fail_after,
+                insert_calls: AtomicUsize::new(0),
+                remove_calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait(?Send)]
+    impl PropertyIndexLookup for FlakyIndex {
+        async fn lookup_equal(
+            &self,
+            _property_id: u32,
+            _value: Vec<u8>,
+        ) -> Result<Vec<PostingHit>, PlanQueryError> {
+            Ok(vec![])
+        }
+
+        async fn lookup_range(
+            &self,
+            _property_id: u32,
+            _req: &PostingRangeRequest,
+        ) -> Result<Vec<PostingHit>, PlanQueryError> {
+            Ok(vec![])
+        }
+
+        async fn posting_insert(
+            &self,
+            _property_id: u32,
+            _value: Vec<u8>,
+            _vertex_id: u32,
+        ) -> Result<(), PlanQueryError> {
+            let n = self.insert_calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if n == self.fail_after {
+                return Err(PlanQueryError::UnsupportedOp("test_insert_fail"));
+            }
+            Ok(())
+        }
+
+        async fn posting_remove(
+            &self,
+            _property_id: u32,
+            _value: Vec<u8>,
+            _vertex_id: u32,
+        ) -> Result<(), PlanQueryError> {
+            self.remove_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn flush_requeues_full_batch_after_partial_insert_failure() {
+        let index = FlakyIndex::new(2);
+        let graph = GraphStore::new();
+        graph
+            .set_index_routing(Some(IndexRouting {
+                index_canister: Principal::management_canister(),
+                shard_id: 0,
+            }))
+            .expect("set routing");
+
+        PENDING.with(|p| {
+            p.borrow_mut().extend([
+                PendingPostingOp::Insert {
+                    property_id: 1,
+                    value_bytes: vec![10],
+                    vertex_id: 1,
+                },
+                PendingPostingOp::Insert {
+                    property_id: 1,
+                    value_bytes: vec![11],
+                    vertex_id: 2,
+                },
+            ]);
+        });
+
+        let err = pollster::block_on(flush_pending(Some(&index))).expect_err("second insert fails");
+        assert!(err.to_string().contains("test_insert_fail"));
+
+        assert_eq!(index.insert_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(index.remove_calls.load(Ordering::SeqCst), 1);
+
+        let restored = PENDING.with(|p| p.borrow().clone());
+        assert_eq!(restored.len(), 2);
+        assert!(matches!(
+            &restored[0],
+            PendingPostingOp::Insert {
+                property_id: 1,
+                value_bytes,
+                vertex_id: 1
+            } if value_bytes == &[10]
+        ));
+        assert!(matches!(
+            &restored[1],
+            PendingPostingOp::Insert {
+                property_id: 1,
+                value_bytes,
+                vertex_id: 2
+            } if value_bytes == &[11]
+        ));
+
+        graph.set_index_routing(None).expect("clear routing");
+        clear_pending();
+    }
+}

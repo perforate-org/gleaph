@@ -853,8 +853,8 @@ fn format_anchor_source(source: &AnchorSource) -> String {
         AnchorSource::InlinePropertyEquality { property } => {
             format!("inline-property-equality on {}", property)
         }
-        AnchorSource::PropertyRange { property } => {
-            format!("property-range on {}", property)
+        AnchorSource::PropertyRange { property, cmp, .. } => {
+            format!("property-range on {} {:?}", property, cmp)
         }
         AnchorSource::LabelCardinality { label } => {
             format!("label-cardinality: {}", label)

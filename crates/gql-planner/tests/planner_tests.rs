@@ -1,3 +1,4 @@
+use gleaph_gql::Value;
 use gleaph_gql::ast::*;
 use gleaph_gql::parser;
 use gleaph_gql::type_check::{
@@ -2741,7 +2742,15 @@ fn compat_range_index_scan_ge() {
         .insert("age".to_string());
     let plan = plan_query_with_stats("MATCH (u:User) WHERE u.age >= 30 RETURN u", &stats);
     assert!(
-        matches!(plan.ops.first(), Some(PlanOp::IndexScan { cmp, .. }) if *cmp != CmpOp::Eq),
+        matches!(
+            plan.ops.first(),
+            Some(PlanOp::IndexScan {
+                property,
+                value: ScanValue::Literal(Value::Int64(30)),
+                cmp: CmpOp::Ge,
+                ..
+            }) if &**property == "age"
+        ),
         "should emit range IndexScan: {:?}",
         plan.ops.first()
     );
@@ -2756,8 +2765,54 @@ fn compat_range_index_scan_lt() {
         .insert("age".to_string());
     let plan = plan_query_with_stats("MATCH (u:User) WHERE u.age < 18 RETURN u", &stats);
     assert!(
-        matches!(plan.ops.first(), Some(PlanOp::IndexScan { cmp, .. }) if *cmp != CmpOp::Eq),
+        matches!(
+            plan.ops.first(),
+            Some(PlanOp::IndexScan {
+                property,
+                value: ScanValue::Literal(Value::Int64(18)),
+                cmp: CmpOp::Lt,
+                ..
+            }) if &**property == "age"
+        ),
         "should emit range IndexScan: {:?}",
+        plan.ops.first()
+    );
+}
+
+#[test]
+fn compat_range_index_scan_reverses_left_literal_predicate() {
+    let mut stats = TableStats::default();
+    stats.label_cardinality.insert("User".to_string(), 500);
+    stats
+        .range_indexed_vertex_properties
+        .insert("age".to_string());
+    let plan = plan_query_with_stats("MATCH (u:User) WHERE 30 <= u.age RETURN u", &stats);
+    assert!(
+        matches!(
+            plan.ops.first(),
+            Some(PlanOp::IndexScan {
+                property,
+                value: ScanValue::Literal(Value::Int64(30)),
+                cmp: CmpOp::Ge,
+                ..
+            }) if &**property == "age"
+        ),
+        "should emit reversed range IndexScan: {:?}",
+        plan.ops.first()
+    );
+}
+
+#[test]
+fn compat_range_index_scan_rejects_unsupported_literal_bound() {
+    let mut stats = TableStats::default();
+    stats.label_cardinality.insert("User".to_string(), 500);
+    stats
+        .range_indexed_vertex_properties
+        .insert("tags".to_string());
+    let plan = plan_query_with_stats("MATCH (u:User) WHERE u.tags >= [1, 2] RETURN u", &stats);
+    assert!(
+        !matches!(plan.ops.first(), Some(PlanOp::IndexScan { cmp, .. }) if *cmp != CmpOp::Eq),
+        "unsupported range literal should not use range IndexScan: {:?}",
         plan.ops.first()
     );
 }
@@ -2801,7 +2856,14 @@ fn compat_range_index_scan_for_parameter_range() {
         .insert("age".to_string());
     let plan = plan_query_with_stats("MATCH (u:User) WHERE u.age >= $min RETURN u", &stats);
     assert!(
-        matches!(plan.ops.first(), Some(PlanOp::IndexScan { .. })),
+        matches!(
+            plan.ops.first(),
+            Some(PlanOp::IndexScan {
+                value: ScanValue::Parameter(parameter),
+                cmp: CmpOp::Ge,
+                ..
+            }) if &**parameter == "$min"
+        ),
         "should use IndexScan for parameter range: {:?}",
         plan.ops.first()
     );

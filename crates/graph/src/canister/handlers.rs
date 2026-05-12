@@ -7,8 +7,10 @@ use candid::Principal;
 use ic_cdk::api::msg_caller;
 
 use crate::auth::{admin_upsert_principal, bootstrap_canister_auth, caller_role};
-use crate::facade::GraphStore;
-use crate::gql_run::{run_adhoc_gql, run_prepared_gql};
+use crate::facade::{GraphMetadata, GraphStore, IndexRouting};
+use crate::gql_run::{GqlCanisterExecutionMode, run_adhoc_gql, run_prepared_gql};
+use crate::index::ic::IcPropertyIndexClient;
+use crate::index::lookup::PropertyIndexLookup;
 use gleaph_auth::Role;
 use gleaph_gql::Value;
 use gleaph_gql_ic::IcWireValue;
@@ -17,7 +19,25 @@ use super::types::{GrantRoleArgs, GraphInitArgs};
 
 pub fn init(args: GraphInitArgs) {
     bootstrap_canister_auth(args.issuing_principal, &args.initial_admins);
-    let _ = args.logical_graph_name;
+
+    let fed_routing = match (args.index_canister, args.graph_shard_id) {
+        (Some(index_canister), Some(shard_id)) => Some(IndexRouting {
+            index_canister,
+            shard_id,
+        }),
+        (None, None) => None,
+        _ => ic_cdk::trap(
+            "GraphInitArgs: index_canister and graph_shard_id must both be set or both omitted",
+        ),
+    };
+
+    let mut metadata = GraphMetadata::default();
+    metadata.set_logical_graph_name(args.logical_graph_name);
+    metadata.set_index_routing(fed_routing);
+
+    if let Err(err) = GraphStore::new().set_metadata(metadata) {
+        ic_cdk::trap(err.to_string());
+    }
 }
 
 fn wire_to_values(params: Vec<(String, IcWireValue)>) -> Result<BTreeMap<String, Value>, String> {
@@ -29,11 +49,60 @@ fn wire_to_values(params: Vec<(String, IcWireValue)>) -> Result<BTreeMap<String,
     Ok(m)
 }
 
-pub fn gql_execute(query: String, params: Vec<(String, IcWireValue)>) -> Result<u64, String> {
+fn wasm_index_client_holder() -> Option<IcPropertyIndexClient> {
+    GraphStore::new()
+        .index_routing()
+        .map(|r| IcPropertyIndexClient {
+            index_principal: r.index_canister,
+            shard_id: r.shard_id,
+        })
+}
+
+pub async fn gql_query(query: String, params: Vec<(String, IcWireValue)>) -> Result<u64, String> {
     let p = msg_caller();
     let role = caller_role(&p);
     let pmap = wire_to_values(params)?;
-    let out = run_adhoc_gql(GraphStore::new(), &query, &pmap, role).map_err(|e| e.to_string())?;
+    #[cfg(target_family = "wasm")]
+    let index_holder = wasm_index_client_holder();
+    #[cfg(target_family = "wasm")]
+    let ix = index_holder.as_ref().map(|c| c as &dyn PropertyIndexLookup);
+    #[cfg(not(target_family = "wasm"))]
+    let ix: Option<&dyn PropertyIndexLookup> = None;
+
+    let out = run_adhoc_gql(
+        GraphStore::new(),
+        &query,
+        &pmap,
+        role,
+        ix,
+        GqlCanisterExecutionMode::CompositeQuery,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(out.rows.len() as u64)
+}
+
+pub async fn gql_execute(query: String, params: Vec<(String, IcWireValue)>) -> Result<u64, String> {
+    let p = msg_caller();
+    let role = caller_role(&p);
+    let pmap = wire_to_values(params)?;
+    #[cfg(target_family = "wasm")]
+    let index_holder = wasm_index_client_holder();
+    #[cfg(target_family = "wasm")]
+    let ix = index_holder.as_ref().map(|c| c as &dyn PropertyIndexLookup);
+    #[cfg(not(target_family = "wasm"))]
+    let ix: Option<&dyn PropertyIndexLookup> = None;
+
+    let out = run_adhoc_gql(
+        GraphStore::new(),
+        &query,
+        &pmap,
+        role,
+        ix,
+        GqlCanisterExecutionMode::Update,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
     Ok(out.rows.len() as u64)
 }
 
@@ -49,13 +118,53 @@ pub fn prepared_drop(name: String) -> Result<(), String> {
     Ok(())
 }
 
-pub fn prepared_execute(name: String, params: Vec<(String, IcWireValue)>) -> Result<u64, String> {
+pub async fn prepared_execute_query(
+    name: String,
+    params: Vec<(String, IcWireValue)>,
+) -> Result<u64, String> {
     let store = GraphStore::new();
-    let program = store
+    let record = store
         .prepared_query_get(&name)
         .ok_or_else(|| format!("unknown prepared query {name:?}"))?;
     let pmap = wire_to_values(params)?;
-    let out = run_prepared_gql(store, &program, &pmap).map_err(|e| e.to_string())?;
+    #[cfg(target_family = "wasm")]
+    let index_holder = wasm_index_client_holder();
+    #[cfg(target_family = "wasm")]
+    let ix = index_holder.as_ref().map(|c| c as &dyn PropertyIndexLookup);
+    #[cfg(not(target_family = "wasm"))]
+    let ix: Option<&dyn PropertyIndexLookup> = None;
+
+    let out = run_prepared_gql(
+        store,
+        &record,
+        &pmap,
+        ix,
+        GqlCanisterExecutionMode::CompositeQuery,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(out.rows.len() as u64)
+}
+
+pub async fn prepared_execute_update(
+    name: String,
+    params: Vec<(String, IcWireValue)>,
+) -> Result<u64, String> {
+    let store = GraphStore::new();
+    let record = store
+        .prepared_query_get(&name)
+        .ok_or_else(|| format!("unknown prepared query {name:?}"))?;
+    let pmap = wire_to_values(params)?;
+    #[cfg(target_family = "wasm")]
+    let index_holder = wasm_index_client_holder();
+    #[cfg(target_family = "wasm")]
+    let ix = index_holder.as_ref().map(|c| c as &dyn PropertyIndexLookup);
+    #[cfg(not(target_family = "wasm"))]
+    let ix: Option<&dyn PropertyIndexLookup> = None;
+
+    let out = run_prepared_gql(store, &record, &pmap, ix, GqlCanisterExecutionMode::Update)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(out.rows.len() as u64)
 }
 

@@ -6,7 +6,15 @@ license.workspace = true
 
 [dependencies]
 bitflags.workspace = true
+candid.workspace = true
+ethnum.workspace = true
 gleaph-gql.workspace = true
 ic-stable-lara.workspace = true
 ic-stable-structures.workspace = true
+serde.workspace = true
 thiserror.workspace = true
+
+[features]
+default = []
+f128 = ["gleaph-gql/f128"]
+f256 = ["gleaph-gql/f256"]

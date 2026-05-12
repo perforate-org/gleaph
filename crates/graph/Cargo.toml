@@ -12,6 +12,7 @@ default = []
 canbench = ["dep:canbench-rs"]
 
 [dependencies]
+async-trait = "0.1"
 bitflags.workspace = true
 candid.workspace = true
 derive_more = { version = "2", features = ["display", "from", "into"] }
@@ -20,12 +21,13 @@ gleaph-gql = { workspace = true, features = ["f128", "f256"] }
 gleaph-gql-ic.workspace = true
 gleaph-gql-planner.workspace = true
 gleaph-graph-prepared.workspace = true
-gleaph-graph-kernel.workspace = true
+gleaph-graph-kernel = { workspace = true, features = ["f128", "f256"] }
 ic-cdk.workspace = true
 ic-cdk-macros.workspace = true
 ic-stable-lara.workspace = true
 ic-stable-structures.workspace = true
 nohash-hasher.workspace = true
+pollster = "0.4"
 rapidhash.workspace = true
 serde = { workspace = true, features = ["derive"] }
 

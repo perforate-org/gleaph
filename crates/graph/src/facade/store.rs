@@ -1,16 +1,16 @@
 use super::stable::edge_ids::canonical_undirected_owner;
 use super::stable::{
-    EDGE_PROPERTIES, GRAPH, LABEL_CATALOG, PREPARED_QUERY_CATALOG, PROPERTY_CATALOG,
+    EDGE_PROPERTIES, GRAPH, LABEL_CATALOG, METADATA, PREPARED_QUERY_CATALOG, PROPERTY_CATALOG,
     VERTEX_EDGE_IDS, VERTEX_LABELS, VERTEX_PROPERTIES,
 };
 use super::{
-    LabelCatalogError, PropertyCatalogError, VertexEdgeIdAllocatorError, VertexLabelStoreError,
-    VertexPropertyStoreError,
+    GraphMetadata, GraphMetadataError, IndexRouting, LabelCatalogError, PropertyCatalogError,
+    VertexEdgeIdAllocatorError, VertexLabelStoreError, VertexPropertyStoreError,
 };
+use crate::index::pending;
 use gleaph_gql::Value;
-use gleaph_gql::ast::GqlProgram;
 use gleaph_graph_kernel::entry::{Edge, EdgeMeta, LabelId, PropertyId, Vertex, VertexEdgeId};
-use gleaph_graph_prepared::PreparedQueryError;
+use gleaph_graph_prepared::{PreparedQueryError, PreparedQueryRecord};
 use ic_stable_lara::{
     BidirectionalMaintenanceReport, DeferredBidirectionalLaraGraph as Graph, DeleteEdgeObserver,
     MaintenanceBudget, VertexCount, VertexId, bidirectional::DeferredBidirectionalLaraError,
@@ -145,6 +145,44 @@ impl GraphStore {
         Self
     }
 
+    pub fn set_metadata(&self, metadata: GraphMetadata) -> Result<(), GraphMetadataError> {
+        METADATA.with_borrow_mut(|m| m.set(metadata))
+    }
+
+    pub fn logical_graph_name(&self) -> Option<String> {
+        METADATA.with_borrow(|m| m.get().logical_graph_name())
+    }
+
+    pub fn set_logical_graph_name(&self, name: Option<String>) -> Result<(), GraphMetadataError> {
+        if let Some(name) = &name {
+            GraphMetadata::validate_name(name)?;
+        }
+        METADATA.with_borrow_mut(|m| {
+            let mut metadata = m.get().clone();
+            metadata.set_logical_graph_name(name);
+            m.set(metadata)
+        })
+    }
+
+    pub fn index_routing(&self) -> Option<IndexRouting> {
+        METADATA.with_borrow(|m| m.get().index_routing())
+    }
+
+    pub fn set_index_routing(
+        &self,
+        index_routing: Option<IndexRouting>,
+    ) -> Result<(), GraphMetadataError> {
+        METADATA.with_borrow_mut(|m| {
+            let mut metadata = m.get().clone();
+            metadata.set_index_routing(index_routing);
+            m.set(metadata)
+        })
+    }
+
+    pub fn index_configured(&self) -> bool {
+        METADATA.with_borrow(|m| m.get().index_configured())
+    }
+
     pub fn label_id(&self, name: &str) -> Option<LabelId> {
         LABEL_CATALOG.with_borrow(|catalog| catalog.get_id(name))
     }
@@ -198,7 +236,7 @@ impl GraphStore {
         });
     }
 
-    pub fn prepared_query_get(&self, name: &str) -> Option<GqlProgram> {
+    pub fn prepared_query_get(&self, name: &str) -> Option<PreparedQueryRecord> {
         PREPARED_QUERY_CATALOG.with_borrow(|c| c.get(name))
     }
 
@@ -284,8 +322,12 @@ impl GraphStore {
         property_id: PropertyId,
         value: Value,
     ) -> Result<Option<Value>, VertexPropertyStoreError> {
-        VERTEX_PROPERTIES
-            .with_borrow_mut(|properties| properties.set(vertex_id, property_id, value))
+        let prev =
+            VERTEX_PROPERTIES.with_borrow(|properties| properties.get(vertex_id, property_id));
+        let out = VERTEX_PROPERTIES
+            .with_borrow_mut(|properties| properties.set(vertex_id, property_id, value.clone()))?;
+        pending::record_vertex_property_change(vertex_id, property_id, prev.as_ref(), Some(&value));
+        Ok(out)
     }
 
     pub fn remove_vertex_property(
@@ -293,7 +335,12 @@ impl GraphStore {
         vertex_id: VertexId,
         property_id: PropertyId,
     ) -> Option<Value> {
-        VERTEX_PROPERTIES.with_borrow_mut(|properties| properties.remove(vertex_id, property_id))
+        let removed = VERTEX_PROPERTIES
+            .with_borrow_mut(|properties| properties.remove(vertex_id, property_id));
+        if let Some(ref old) = removed {
+            pending::record_vertex_property_change(vertex_id, property_id, Some(old), None);
+        }
+        removed
     }
 
     pub fn vertex_properties(&self, vertex_id: VertexId) -> Vec<(PropertyId, Value)> {
@@ -576,9 +623,7 @@ impl GraphStore {
                 .collect()
         });
         for pid in props {
-            VERTEX_PROPERTIES.with_borrow_mut(|store| {
-                store.remove(vertex_id, pid);
-            });
+            let _ = self.remove_vertex_property(vertex_id, pid);
         }
     }
 

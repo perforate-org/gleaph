@@ -3,6 +3,7 @@
 
 use gleaph_gql::ast::GqlProgram;
 use gleaph_gql::parser;
+use gleaph_gql::program_modification::classify_program;
 use ic_stable_structures::{
     Memory, StableBTreeMap,
     storable::{Bound, Storable},
@@ -16,6 +17,13 @@ pub enum PreparedQueryError {
     Parse(String),
     #[error("prepared GQL must be a transaction with a statement body")]
     MissingStatementBlock,
+}
+
+/// Parsed prepared program plus whether it requires the update (write) canister path.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PreparedQueryRecord {
+    pub program: GqlProgram,
+    pub requires_write_path: bool,
 }
 
 /// Parse `source` and ensure it has the shape expected for prepared execution (non-empty transaction body).
@@ -37,28 +45,30 @@ fn rkyv_from_bytes_aligned_program(bytes: &[u8]) -> Result<GqlProgram, rkyv::ran
     rkyv::from_bytes::<GqlProgram, rkyv::rancor::Error>(&aligned)
 }
 
-/// rkyv-encoded [`GqlProgram`] for [`StableBTreeMap`] (spans omitted from archive).
-#[derive(Clone, Debug, PartialEq, derive_more::From, derive_more::Into)]
-pub struct StorablePreparedGqlProgram(GqlProgram);
-
-impl Storable for StorablePreparedGqlProgram {
+impl Storable for PreparedQueryRecord {
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&self.0)
-            .expect("prepared GQL program rkyv encode should not fail");
-        Cow::Owned(bytes.to_vec())
+        let prog_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&self.program)
+            .expect("prepared GQL program rkyv encode should not fail")
+            .into_vec();
+        let mut v = Vec::with_capacity(1 + prog_bytes.len());
+        v.push(u8::from(self.requires_write_path));
+        v.extend_from_slice(&prog_bytes);
+        Cow::Owned(v)
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        rkyv::to_bytes::<rkyv::rancor::Error>(&self.0)
-            .expect("prepared GQL program rkyv encode should not fail")
-            .to_vec()
+        self.to_bytes().into_owned()
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Self(
-            rkyv_from_bytes_aligned_program(&bytes[..])
-                .expect("prepared GQL program rkyv decode should not fail"),
-        )
+        let b = bytes.as_ref();
+        let requires_write_path = b[0] != 0;
+        let program = rkyv_from_bytes_aligned_program(&b[1..])
+            .expect("prepared GQL program rkyv decode should not fail");
+        Self {
+            requires_write_path,
+            program,
+        }
     }
 
     const BOUND: Bound = Bound::Unbounded;
@@ -66,7 +76,7 @@ impl Storable for StorablePreparedGqlProgram {
 
 /// Keyed store of prepared programs (parsed AST), using stable memory region `M`.
 pub struct PreparedQueryCatalog<M: Memory> {
-    map: StableBTreeMap<String, StorablePreparedGqlProgram, M>,
+    map: StableBTreeMap<String, PreparedQueryRecord, M>,
 }
 
 impl<M: Memory> std::fmt::Debug for PreparedQueryCatalog<M> {
@@ -84,10 +94,17 @@ impl<M: Memory> PreparedQueryCatalog<M> {
         }
     }
 
-    /// Parse `source`, validate shape, and insert or replace under `name`.
+    /// Parse `source`, classify write requirements, validate shape, and insert or replace under `name`.
     pub fn register(&mut self, name: String, source: &str) -> Result<(), PreparedQueryError> {
         let program = compile_prepared_source(source)?;
-        self.map.insert(name, program.into());
+        let requires_write_path = classify_program(&program).requires_write_path();
+        self.map.insert(
+            name,
+            PreparedQueryRecord {
+                program,
+                requires_write_path,
+            },
+        );
         Ok(())
     }
 
@@ -95,8 +112,8 @@ impl<M: Memory> PreparedQueryCatalog<M> {
         self.map.remove(&name.into());
     }
 
-    pub fn get(&self, name: &str) -> Option<GqlProgram> {
-        self.map.get(&name.into()).map(Into::into)
+    pub fn get(&self, name: &str) -> Option<PreparedQueryRecord> {
+        self.map.get(&name.into())
     }
 
     pub fn contains_key(&self, name: &str) -> bool {
@@ -107,7 +124,6 @@ impl<M: Memory> PreparedQueryCatalog<M> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ic_stable_structures::VectorMemory;
 
     #[test]
     fn compile_rejects_program_without_body() {
@@ -120,16 +136,27 @@ mod tests {
 
     #[test]
     fn roundtrip_register_and_get() {
-        let mut c = PreparedQueryCatalog::init(VectorMemory::default());
+        let mut c = PreparedQueryCatalog::init(ic_stable_structures::VectorMemory::default());
         let gql = "MATCH (n:PrepRoundtrip) RETURN n NEXT INSERT (m:PrepRoundtrip {k: 1})";
         c.register("q".into(), gql).expect("register");
         let got = c.get("q").expect("get");
+        assert!(got.requires_write_path);
         assert_eq!(
-            got.transaction_activity
+            got.program
+                .transaction_activity
                 .as_ref()
                 .and_then(|t| t.body.as_ref())
                 .map(|b| b.iter_statements().count()),
             Some(2)
         );
+    }
+
+    #[test]
+    fn read_only_prepared_has_false_requires_write() {
+        let mut c = PreparedQueryCatalog::init(ic_stable_structures::VectorMemory::default());
+        c.register("ro".into(), "MATCH (n:Roprep) RETURN n")
+            .expect("register");
+        let got = c.get("ro").expect("get");
+        assert!(!got.requires_write_path);
     }
 }

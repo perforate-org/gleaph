@@ -790,7 +790,13 @@ fn detect_conditional_candidates(
         {
             // Only consider if the property is indexed.
             let indexed = stats
-                .map(|s| s.is_vertex_property_indexed(property))
+                .map(|s| {
+                    if *op == CmpOp::Eq {
+                        s.is_vertex_property_indexed(property)
+                    } else {
+                        s.is_vertex_property_range_indexed(property)
+                    }
+                })
                 .unwrap_or(false);
             if indexed {
                 candidates.push(ConditionalScanCandidate {
@@ -2173,12 +2179,16 @@ fn emit_scan_for_node(
                 });
                 return;
             }
-            AnchorSource::PropertyRange { property } => {
+            AnchorSource::PropertyRange {
+                property,
+                value,
+                cmp,
+            } => {
                 ops.push(PlanOp::IndexScan {
                     variable: Str::from(var),
                     property: property.clone(),
-                    value: ScanValue::Parameter(format!("${}", property).into()),
-                    cmp: CmpOp::Ge,
+                    value: value.clone(),
+                    cmp: *cmp,
                     property_projection: None,
                 });
                 return;

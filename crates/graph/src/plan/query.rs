@@ -4,4 +4,6 @@ mod executor;
 mod sort_keys;
 
 pub use error::PlanQueryError;
-pub use executor::{PlanBinding, PlanQueryExecutor, PlanQueryResult, execute_plan_query};
+#[cfg(not(target_family = "wasm"))]
+pub use executor::PlanQueryExecutor;
+pub use executor::{PlanBinding, PlanQueryResult, execute_plan_query};

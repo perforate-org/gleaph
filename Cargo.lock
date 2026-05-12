@@ -71,6 +71,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
 
 [[package]]
+name = "async-trait"
+version = "0.1.89"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9035ad2d096bed7955a320ee7e2230574d28fd3c3a0f186cbea1ff3c7eed5dbb"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -675,6 +686,7 @@ version = "0.0.1"
 dependencies = [
  "criterion",
  "gleaph-gql",
+ "gleaph-graph-kernel",
  "rapidhash",
 ]
 
@@ -682,6 +694,7 @@ dependencies = [
 name = "gleaph-graph"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bitflags",
  "canbench-rs",
  "candid",
@@ -700,6 +713,7 @@ dependencies = [
  "ic-stable-lara",
  "ic-stable-structures",
  "nohash-hasher",
+ "pollster",
  "rapidhash",
  "serde",
 ]
@@ -720,13 +734,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "gleaph-graph-index"
+version = "0.1.0"
+dependencies = [
+ "candid",
+ "gleaph-gql",
+ "gleaph-graph-kernel",
+ "ic-cdk",
+ "ic-cdk-macros",
+ "ic-stable-structures",
+ "serde",
+]
+
+[[package]]
 name = "gleaph-graph-kernel"
 version = "0.1.0"
 dependencies = [
  "bitflags",
+ "candid",
+ "ethnum",
  "gleaph-gql",
  "ic-stable-lara",
  "ic-stable-structures",
+ "serde",
  "thiserror 2.0.18",
 ]
 
@@ -1087,6 +1117,12 @@ checksum = "51bae2ac328883f7acdfea3d66a7c35751187f870bc81f94563733a154d7a670"
 dependencies = [
  "plotters-backend",
 ]
+
+[[package]]
+name = "pollster"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f3a9f18d041e6d0e102a0a46750538147e5e8992d3b4873aaafee2520b00ce3"
 
 [[package]]
 name = "ppv-lite86"
