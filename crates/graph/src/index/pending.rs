@@ -5,6 +5,8 @@
 //! Only property values for which [`gleaph_gql::Value::to_binary_bytes`] succeeds produce index
 //! postings. Values that cannot be encoded (or use unsupported representations) are **omitted**
 //! from the index: equality scans on those values may return fewer rows than a full graph scan.
+//! Values stored as [`gleaph_gql_ic::PrincipalValue`] (`ic.Principal`) include a sortable index key
+//! and participate in the property index when [`value_to_index_key_bytes`] succeeds.
 //!
 //! ## Sync failure semantics
 //!

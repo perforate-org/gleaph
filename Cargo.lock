@@ -741,6 +741,7 @@ version = "0.1.0"
 dependencies = [
  "candid",
  "gleaph-gql",
+ "gleaph-gql-ic",
  "gleaph-graph-kernel",
  "ic-cdk",
  "ic-cdk-macros",

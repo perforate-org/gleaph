@@ -17,3 +17,4 @@ serde.workspace = true
 
 [dev-dependencies]
 gleaph-gql.workspace = true
+gleaph-gql-ic.workspace = true

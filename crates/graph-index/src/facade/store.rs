@@ -163,7 +163,8 @@ mod tests {
     use super::*;
     use crate::state::IndexError;
     use candid::Principal;
-    use gleaph_gql::value_to_index_key_bytes;
+    use gleaph_gql::{Value, value_to_index_key_bytes};
+    use gleaph_gql_ic::PrincipalValue;
 
     fn index_key(value: gleaph_gql::Value) -> Vec<u8> {
         value_to_index_key_bytes(&value).unwrap().unwrap()
@@ -187,6 +188,36 @@ mod tests {
             .expect("insert");
 
         let hits = store.lookup_equal(42, b"v");
+        assert_eq!(
+            hits,
+            vec![PostingHit {
+                shard_id: 7,
+                vertex_id: 100
+            }]
+        );
+    }
+
+    #[test]
+    fn insert_and_lookup_equal_principal_value_index_key() {
+        let store = IndexStore::new();
+        store.init_from_args(&IndexInitArgs {
+            controllers: vec![],
+        });
+        let admin = Principal::anonymous();
+        store.bootstrap_admins(&[admin]);
+        let shard_principal = Principal::from_slice(&[1]);
+        store
+            .admin_register_shard(admin, 7, shard_principal)
+            .expect("register shard");
+
+        let p = Principal::from_text("aaaaa-aa").expect("management id");
+        let key = index_key(Value::from(PrincipalValue(p)));
+
+        store
+            .posting_insert(shard_principal, 7, 42, key.clone(), 100)
+            .expect("insert");
+
+        let hits = store.lookup_equal(42, &key);
         assert_eq!(
             hits,
             vec![PostingHit {

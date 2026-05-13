@@ -1,4 +1,5 @@
 use gleaph_gql::{Value, ValueBinaryError};
+use gleaph_gql_ic::IC_EXTENSION_BINARY_DECODER;
 use gleaph_graph_kernel::entry::PropertyId;
 use ic_stable_lara::VertexId;
 use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
@@ -79,7 +80,10 @@ impl Storable for StoredPropertyValue {
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Self(Value::from_binary_bytes(bytes.as_ref()).expect("Value bytes must decode"))
+        Self(
+            Value::from_binary_bytes_with_extensions(bytes.as_ref(), &IC_EXTENSION_BINARY_DECODER)
+                .expect("Value bytes must decode"),
+        )
     }
 }
 
@@ -195,6 +199,7 @@ fn validate_property_id(property_id: PropertyId) -> Result<(), VertexPropertySto
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gleaph_gql_ic::{Principal, PrincipalValue};
     use ic_stable_structures::VectorMemory;
 
     fn store() -> VertexPropertyStore<VectorMemory> {
@@ -285,6 +290,21 @@ mod tests {
         let reopened = VertexPropertyStore::init(memory);
 
         assert_eq!(reopened.get(vid, name), Some(Value::Text("Alice".into())));
+    }
+
+    #[test]
+    fn persists_principal_value_across_reopen() {
+        let mut store = store();
+        let vid = VertexId::from(7);
+        let prop = PropertyId::from_raw(1);
+        let p = Principal::from_text("aaaaa-aa").expect("management id");
+        let value: Value = PrincipalValue(p).into();
+
+        store.set(vid, prop, value.clone()).unwrap();
+        let memory = store.into_memory();
+        let reopened = VertexPropertyStore::init(memory);
+
+        assert_eq!(reopened.get(vid, prop), Some(value));
     }
 
     #[test]
