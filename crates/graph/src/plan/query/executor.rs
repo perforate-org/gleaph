@@ -1399,8 +1399,6 @@ fn weighted_shortest_paths_between(
 
     let mut heap = Vec::new();
     let mut tie = 0u64;
-    let mut best_cost: BTreeMap<VertexId, WeightedCost> = BTreeMap::new();
-    best_cost.insert(src, WeightedCost::zero());
     heap.push(WeightedQueueEntry {
         cost: WeightedCost::zero(),
         tie,
@@ -1415,11 +1413,6 @@ fn weighted_shortest_paths_between(
     let mut found = Vec::new();
 
     while let Some(entry) = pop_min_weighted_entry(&mut heap)? {
-        if let Some(best) = best_cost.get(&entry.state.current) {
-            if matches!(entry.cost.cmp(best), Ok(Ordering::Greater)) {
-                continue;
-            }
-        }
         if let Some(ref min) = found_min_cost {
             if matches!(entry.cost.cmp(min), Ok(Ordering::Greater)) {
                 continue;
@@ -1473,18 +1466,6 @@ fn weighted_shortest_paths_between(
             if let Some(ref min) = found_min_cost {
                 if matches!(next_cost.cmp(min), Ok(Ordering::Greater)) {
                     continue;
-                }
-            }
-            match best_cost.get(&next) {
-                Some(best) => match next_cost.cmp(best)? {
-                    Ordering::Greater => continue,
-                    Ordering::Less => {
-                        best_cost.insert(next, next_cost.clone());
-                    }
-                    Ordering::Equal => {}
-                },
-                None => {
-                    best_cost.insert(next, next_cost.clone());
                 }
             }
             tie += 1;
@@ -2509,7 +2490,7 @@ mod tests {
         ShortestMode, ShortestPathCost, WcojEdge,
     };
     use gleaph_gql_planner::{PlanBuildOptions, build_plan_with_schema_and_options};
-    use gleaph_graph_kernel::entry::{Edge, EdgeMeta};
+    use gleaph_graph_kernel::entry::EdgeMeta;
     use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
     use std::any::Any;
     use std::borrow::Cow;
@@ -7478,8 +7459,98 @@ mod tests {
         assert_eq!(vertex_path_id(&elements[4]).vertex_id, c);
     }
 
+    /// Graph where a cheaper arrival at `x` exhausts the hop bound while a higher-cost arrival
+    /// can still reach `dst` (s->x cost 2 depth 1, s->a->x cost 1 depth 2, x->dst cost 1, max=2).
+    fn setup_hop_bound_cheaper_vertex_unusable_graph(store: &GraphStore) -> (VertexId, VertexId) {
+        use gleaph_graph_kernel::entry::{EdgeWeightProfile, WeightEncoding};
+        let s = store
+            .insert_vertex_named(["WgtA"], Vec::<(&str, Value)>::new())
+            .expect("insert s");
+        let a = store
+            .insert_vertex_named(["WgtB"], Vec::<(&str, Value)>::new())
+            .expect("insert a");
+        let x = store
+            .insert_vertex_named(["WgtHub"], Vec::<(&str, Value)>::new())
+            .expect("insert x");
+        let dst = store
+            .insert_vertex_named(["WgtC"], Vec::<(&str, Value)>::new())
+            .expect("insert dst");
+        let label_id = store
+            .get_or_insert_edge_label_id("WgtRoad")
+            .expect("road label");
+        store
+            .set_edge_label_weight_profile(
+                label_id,
+                EdgeWeightProfile {
+                    encoding: WeightEncoding::RawU16,
+                },
+            )
+            .expect("weight profile");
+        let meta = edge_meta_for_label(store, "WgtRoad");
+        store
+            .insert_directed_edge_with_inline_value(s, x, meta, 2)
+            .expect("s->x");
+        store
+            .insert_directed_edge_with_inline_value(s, a, meta, 0)
+            .expect("s->a");
+        store
+            .insert_directed_edge_with_inline_value(a, x, meta, 1)
+            .expect("a->x");
+        store
+            .insert_directed_edge_with_inline_value(x, dst, meta, 1)
+            .expect("x->dst");
+        (s, dst)
+    }
+
+    #[test]
+    fn weighted_shortest_higher_cost_vertex_state_can_still_reach_dst_under_hop_bound() {
+        let store = GraphStore::new();
+        let (s, dst) = setup_hop_bound_cheaper_vertex_unusable_graph(&store);
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "a".into(),
+                label: Some("WgtA".into()),
+                property_projection: None,
+            },
+            PlanOp::NodeScan {
+                variable: "c".into(),
+                label: Some("WgtC".into()),
+                property_projection: None,
+            },
+            PlanOp::ShortestPath {
+                src: "a".into(),
+                dst: "c".into(),
+                edge: "e".into(),
+                path_var: Some("p".into()),
+                mode: ShortestMode::AnyShortest,
+                direction: EdgeDirection::PointingRight,
+                label: Some("WgtRoad".into()),
+                label_expr: None,
+                var_len: Some(VarLenSpec {
+                    min: 1,
+                    max: Some(2),
+                }),
+                cost: ShortestPathCost::EdgeCostExpr {
+                    edge_var: "e".into(),
+                    expr: gleaph_weight_call("e"),
+                },
+            },
+            PlanOp::Project {
+                columns: vec![project(var("p"), "p")],
+                distinct: false,
+            },
+        ]);
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("hop-bound weighted shortest path");
+        let elements = path_column(&result, "p");
+        assert_eq!(elements.len(), 5, "expected s->x->dst (2 edges)");
+        assert_eq!(vertex_path_id(&elements[0]).vertex_id, s);
+        assert_eq!(vertex_path_id(&elements[4]).vertex_id, dst);
+    }
+
     /// Graph where a longer prefix reaches `mid` with lower total cost after a stale higher-cost
-    /// entry is already in the heap; per-vertex `best_cost` must skip the stale pop.
+    /// entry is already in the heap; min-queue ordering and `found_min_cost` skip the stale pop.
     fn setup_stale_mid_diamond_graph(store: &GraphStore) -> (VertexId, VertexId) {
         use gleaph_graph_kernel::entry::{EdgeWeightProfile, WeightEncoding};
         let s = store
