@@ -1008,7 +1008,7 @@ fn execute_shortest_path(
         return Ok(Vec::new());
     }
 
-    let shard_id = store.index_routing().map(|r| r.shard_id).unwrap_or(0);
+    let shard_id = local_shard_id(store);
     let mut out = Vec::new();
     for row in rows {
         let src_id = vertex_binding(&row, src)?;
@@ -1104,21 +1104,33 @@ fn path_state_to_value(shard_id: u64, path: &ShortestPathState) -> Value {
     Value::Path(elements)
 }
 
+fn local_shard_id(store: &GraphStore) -> u64 {
+    store.index_routing().map(|r| r.shard_id).unwrap_or(0)
+}
+
+fn vertex_element_id_bytes(shard_id: u64, vertex_id: VertexId) -> Vec<u8> {
+    GraphPathVertexId::new(shard_id, vertex_id)
+        .to_bytes()
+        .to_vec()
+}
+
+fn edge_element_id_bytes(
+    shard_id: u64,
+    owner_vertex_id: VertexId,
+    vertex_edge_id: gleaph_graph_kernel::entry::VertexEdgeId,
+) -> Vec<u8> {
+    GraphPathEdgeId::new(shard_id, owner_vertex_id, vertex_edge_id)
+        .to_bytes()
+        .to_vec()
+}
+
 fn vertex_path_element(shard_id: u64, vertex_id: VertexId) -> PathElement {
-    PathElement::Vertex(
-        GraphPathVertexId::new(shard_id, vertex_id)
-            .to_bytes()
-            .to_vec()
-            .into(),
-    )
+    PathElement::Vertex(vertex_element_id_bytes(shard_id, vertex_id).into())
 }
 
 fn edge_path_element(shard_id: u64, handle: EdgeHandle) -> PathElement {
     PathElement::Edge(
-        GraphPathEdgeId::new(shard_id, handle.owner_vertex_id, handle.vertex_edge_id)
-            .to_bytes()
-            .to_vec()
-            .into(),
+        edge_element_id_bytes(shard_id, handle.owner_vertex_id, handle.vertex_edge_id).into(),
     )
 }
 
@@ -1315,6 +1327,7 @@ impl QueryExprEvaluator<'_> {
                         variable: name.clone(),
                     })?,
             ),
+            ExprKind::ElementId(expr) => self.eval_element_id(row, expr),
             ExprKind::Parameter(name) => self
                 .parameters
                 .get(name)
@@ -1455,6 +1468,38 @@ impl QueryExprEvaluator<'_> {
 
         let value = self.eval_expr(row, expr)?;
         Ok(record_property(&value, property))
+    }
+
+    fn eval_element_id(&self, row: &PlanRow, expr: &Expr) -> Result<Value, PlanQueryError> {
+        if let ExprKind::Variable(name) = &expr.kind {
+            let shard_id = local_shard_id(self.store);
+            return match row.get(name) {
+                Some(PlanBinding::Vertex(vertex_id)) => {
+                    Ok(Value::Bytes(vertex_element_id_bytes(shard_id, *vertex_id)))
+                }
+                Some(PlanBinding::Edge(edge)) => Ok(Value::Bytes(edge_element_id_bytes(
+                    shard_id,
+                    edge.owner_vertex_id,
+                    edge.vertex_edge_id,
+                ))),
+                Some(PlanBinding::Value(Value::Null)) => Ok(Value::Null),
+                Some(binding) => Err(PlanQueryError::InvalidExpressionValue {
+                    expression: format!("ELEMENT_ID({name}) for {binding:?}"),
+                }),
+                None => Err(PlanQueryError::MissingBinding {
+                    variable: name.clone(),
+                }),
+            };
+        }
+
+        let value = self.eval_expr(row, expr)?;
+        if value == Value::Null {
+            Ok(Value::Null)
+        } else {
+            Err(PlanQueryError::InvalidExpressionValue {
+                expression: format!("ELEMENT_ID({:?})", expr.kind),
+            })
+        }
     }
 }
 
@@ -1962,6 +2007,13 @@ mod tests {
                 other => panic!("expected text column {column}, got {other:?}"),
             })
             .collect()
+    }
+
+    fn bytes_column<'a>(result: &'a PlanQueryResult, column: &str) -> &'a [u8] {
+        match result.rows.first().and_then(|row| row.get(column)) {
+            Some(Value::Bytes(value)) => value,
+            other => panic!("expected bytes column {column}, got {other:?}"),
+        }
     }
 
     fn configure_test_index(store: &GraphStore) {
@@ -4954,6 +5006,60 @@ mod tests {
             Some(Value::Float64(f)) => assert!((f - 20.0).abs() < 1e-6),
             other => panic!("expected float median: {other:?}"),
         }
+    }
+
+    #[test]
+    fn element_id_returns_graph_kernel_bytes_for_vertices_and_edges() {
+        let store = GraphStore::new();
+        configure_test_index(&store);
+        let a = store
+            .insert_vertex_named(["ElementIdSource"], [("name", Value::Text("a".into()))])
+            .expect("insert a");
+        let b = store
+            .insert_vertex_named(["ElementIdTarget"], [("name", Value::Text("b".into()))])
+            .expect("insert b");
+        let edge = store
+            .insert_directed_edge_named(a, b, Some("ElementIdRel"), Vec::<(&str, Value)>::new())
+            .expect("insert edge");
+        let plan = plan_gql(
+            "MATCH (a:ElementIdSource)-[e:ElementIdRel]->(b:ElementIdTarget) \
+             RETURN ELEMENT_ID(a) AS aid, ELEMENT_ID(e) AS eid",
+        );
+
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("element ids");
+
+        assert_eq!(result.rows.len(), 1);
+        let vertex_id = GraphPathVertexId::try_from_slice(bytes_column(&result, "aid"))
+            .expect("vertex element id");
+        assert_eq!(vertex_id.shard_id, 7);
+        assert_eq!(vertex_id.vertex_id, a);
+        let edge_id =
+            GraphPathEdgeId::try_from_slice(bytes_column(&result, "eid")).expect("edge element id");
+        assert_eq!(edge_id.shard_id, 7);
+        assert_eq!(edge_id.owner_vertex_id, edge.owner_vertex_id);
+        assert_eq!(edge_id.vertex_edge_id, edge.vertex_edge_id);
+    }
+
+    #[test]
+    fn element_id_of_null_optional_binding_returns_null() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["ElementIdOptional"], Vec::<(&str, Value)>::new())
+            .expect("insert vertex");
+        let plan = plan_gql(
+            "MATCH (n:ElementIdOptional) \
+             OPTIONAL MATCH (n)-[e:ElementIdMissing]->(m:ElementIdMissingTarget) \
+             RETURN ELEMENT_ID(e) AS eid",
+        );
+
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("optional element id");
+
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0].get("eid"), Some(&Value::Null));
     }
 
     #[test]

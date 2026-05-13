@@ -170,9 +170,7 @@ pub(crate) fn infer_expr(env: &TypeEnv<'_>, expr: &Expr) -> Type {
         }),
 
         // Element ID
-        ExprKind::ElementId(_) => Type::Scalar(ValueType::Int64 {
-            keyword: Keyword::new("INT64"),
-        }),
+        ExprKind::ElementId(_) => Type::Scalar(ValueType::Bytes { max_length: None }),
 
         // Datetime constructors
         ExprKind::DateLiteral(_) | ExprKind::DateFunction(_) => Type::Scalar(ValueType::Date),
@@ -986,5 +984,25 @@ fn check_cypher_function_args(env: &mut TypeEnv<'_>, name: &str, args: &[Expr], 
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::ValueType;
+    use crate::type_check::schema::NoSchema;
+
+    #[test]
+    fn element_id_infers_bytes() {
+        let env = TypeEnv::new(&NoSchema);
+        let expr = Expr::new(ExprKind::ElementId(Box::new(Expr::new(
+            ExprKind::Variable("n".to_owned()),
+        ))));
+
+        assert_eq!(
+            infer_expr(&env, &expr),
+            Type::Scalar(ValueType::Bytes { max_length: None })
+        );
     }
 }
