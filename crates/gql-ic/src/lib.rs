@@ -26,13 +26,14 @@ pub mod wire;
 
 pub use wire::{IcWirePathElement, IcWireValue, WireError, principal_to_value, value_as_principal};
 
-use gleaph_gql::value::{ExtensionValue, Value, ValueBinaryError};
+use gleaph_gql::value::{ExtensionSortableKey, ExtensionValue, Value, ValueBinaryError};
 
 /// Global decoder instance (zero-sized): use with [`Value::from_binary_bytes_with_extensions`].
 pub const IC_EXTENSION_BINARY_DECODER: IcExtensionBinaryDecode = IcExtensionBinaryDecode;
 
 /// Name for logs / APIs (not written on the wire).
 pub const PRINCIPAL_EXTENSION_TYPE_NAME: &str = "ic.Principal";
+pub const PRINCIPAL_EXTENSION_SORTABLE_DOMAIN: &str = "ic.Principal/v1";
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct PrincipalValue(pub Principal);
@@ -64,6 +65,13 @@ impl ExtensionValue for PrincipalValue {
             .as_any()
             .downcast_ref::<PrincipalValue>()
             .map(|o| self.0.cmp(&o.0))
+    }
+
+    fn sortable_index_key(&self) -> Option<ExtensionSortableKey<'_>> {
+        Some(ExtensionSortableKey {
+            domain: Cow::Borrowed(PRINCIPAL_EXTENSION_SORTABLE_DOMAIN),
+            bytes: Cow::Borrowed(self.0.as_slice()),
+        })
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -116,6 +124,8 @@ pub fn install_ic_extension_binary_decode_for_rkyv() {
 mod tests {
     use super::*;
     use gleaph_gql::ExtensionBinaryDecode;
+    use gleaph_gql::value_cmp::compare_values;
+    use gleaph_graph_kernel::index::value_to_index_key_bytes;
 
     #[test]
     fn principal_binary_roundtrip() {
@@ -155,6 +165,38 @@ mod tests {
         let err = Value::from_binary_bytes_with_extensions(&legacy, &IC_EXTENSION_BINARY_DECODER)
             .expect_err("tag33 should be rejected");
         assert_eq!(err, ValueBinaryError::UnknownEncodedExtension);
+    }
+
+    #[test]
+    fn principal_compare_values_uses_principal_ordering() {
+        let left = Principal::self_authenticating([1u8; 32]);
+        let right = Principal::self_authenticating([2u8; 32]);
+        let expected = left.cmp(&right);
+
+        assert_eq!(
+            compare_values(
+                &Value::from(PrincipalValue(left)),
+                &Value::from(PrincipalValue(right))
+            ),
+            Some(expected)
+        );
+    }
+
+    #[test]
+    fn principal_sortable_index_key_order_matches_compare_values() {
+        let left = Principal::self_authenticating([1u8; 32]);
+        let right = Principal::self_authenticating([2u8; 32]);
+        let left_value = Value::from(PrincipalValue(left));
+        let right_value = Value::from(PrincipalValue(right));
+        let left_key = value_to_index_key_bytes(&left_value).unwrap().unwrap();
+        let right_key = value_to_index_key_bytes(&right_value).unwrap().unwrap();
+
+        assert_eq!(left.as_slice().cmp(right.as_slice()), left.cmp(&right));
+        assert_eq!(left_key.cmp(&right_key), left.cmp(&right));
+        assert_eq!(
+            compare_values(&left_value, &right_value),
+            Some(left.cmp(&right))
+        );
     }
 
     #[test]

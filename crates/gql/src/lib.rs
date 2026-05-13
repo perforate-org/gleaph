@@ -52,7 +52,8 @@ pub mod value_join_hash;
 pub use error::{GqlError, GqlResult};
 pub use parser::ParseResult;
 pub use value::{
-    DenyExtensionBinaryDecode, ExtensionBinaryDecode, ExtensionValue, Value, ValueBinaryError,
+    DenyExtensionBinaryDecode, ExtensionBinaryDecode, ExtensionSortableKey, ExtensionValue, Value,
+    ValueBinaryError,
 };
 pub use value_join_hash::{hash_path_element_for_join, hash_value_for_join};
 

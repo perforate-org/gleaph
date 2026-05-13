@@ -50,6 +50,7 @@ const INDEX_KEY_BYTES: u8 = 7;
 const INDEX_KEY_TEMPORAL: u8 = 8;
 const INDEX_KEY_LIST: u8 = 9;
 const INDEX_KEY_RECORD: u8 = 10;
+const INDEX_KEY_EXTENSION: u8 = 11;
 const ITEM_MARKER: u8 = 1;
 const END_MARKER: u8 = 0;
 
@@ -136,7 +137,15 @@ fn encode_value_key(value: &Value, out: &mut Vec<u8>) -> Result<(), ValueIndexKe
         }
         Value::List(values) => encode_list_key(values, out)?,
         Value::Record(fields) => encode_record_key(fields, out)?,
-        Value::Path(_) | Value::Extension(_) => return Err(ValueIndexKeyError::UnsupportedValue),
+        Value::Path(_) => return Err(ValueIndexKeyError::UnsupportedValue),
+        Value::Extension(ext) => {
+            let Some(key) = ext.sortable_index_key() else {
+                return Err(ValueIndexKeyError::UnsupportedValue);
+            };
+            out.push(INDEX_KEY_EXTENSION);
+            push_escaped_index_bytes(out, key.domain.as_bytes());
+            push_escaped_index_bytes(out, key.bytes.as_ref());
+        }
         #[cfg(feature = "f128")]
         Value::Float128(_) => {
             out.push(INDEX_KEY_NUMERIC);
@@ -224,6 +233,11 @@ fn index_key_error_from_numeric(error: NumericOrderError) -> ValueIndexKeyError 
 mod tests {
     use super::*;
     use gleaph_gql::types::{Decimal, Int256, Uint256};
+    use gleaph_gql::value::{ExtensionSortableKey, ExtensionValue};
+    use std::any::Any;
+    use std::borrow::Cow;
+    use std::cmp::Ordering;
+    use std::fmt;
 
     fn key(value: Value) -> Vec<u8> {
         value_to_index_key_bytes(&value).unwrap().unwrap()
@@ -231,6 +245,87 @@ mod tests {
 
     fn decimal(value: &str) -> Value {
         Value::Decimal(Decimal::parse(value).expect("decimal"))
+    }
+
+    #[derive(Clone, Debug)]
+    struct NonOrderableExt;
+
+    impl fmt::Display for NonOrderableExt {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "NonOrderableExt")
+        }
+    }
+
+    impl ExtensionValue for NonOrderableExt {
+        fn type_name(&self) -> &str {
+            "NonOrderableExt"
+        }
+
+        fn clone_box(&self) -> Box<dyn ExtensionValue> {
+            Box::new(self.clone())
+        }
+
+        fn eq_ext(&self, other: &dyn ExtensionValue) -> bool {
+            other.as_any().downcast_ref::<Self>().is_some()
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    struct OrderableExt {
+        domain: &'static str,
+        bytes: Vec<u8>,
+    }
+
+    impl fmt::Display for OrderableExt {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "OrderableExt({})", self.domain)
+        }
+    }
+
+    impl ExtensionValue for OrderableExt {
+        fn type_name(&self) -> &str {
+            "OrderableExt"
+        }
+
+        fn clone_box(&self) -> Box<dyn ExtensionValue> {
+            Box::new(self.clone())
+        }
+
+        fn eq_ext(&self, other: &dyn ExtensionValue) -> bool {
+            other
+                .as_any()
+                .downcast_ref::<Self>()
+                .is_some_and(|o| self.domain == o.domain && self.bytes == o.bytes)
+        }
+
+        fn cmp_ext(&self, other: &dyn ExtensionValue) -> Option<Ordering> {
+            other
+                .as_any()
+                .downcast_ref::<Self>()
+                .and_then(|o| (self.domain == o.domain).then(|| self.bytes.cmp(&o.bytes)))
+        }
+
+        fn sortable_index_key(&self) -> Option<ExtensionSortableKey<'_>> {
+            Some(ExtensionSortableKey {
+                domain: Cow::Borrowed(self.domain),
+                bytes: Cow::Borrowed(self.bytes.as_slice()),
+            })
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    fn extension(domain: &'static str, bytes: &[u8]) -> Value {
+        Value::Extension(Box::new(OrderableExt {
+            domain,
+            bytes: bytes.to_vec(),
+        }))
     }
 
     #[test]
@@ -474,5 +569,59 @@ mod tests {
             value_to_index_key_bytes(&Value::Record(vec![("a".into(), Value::Path(vec![]))])),
             Err(ValueIndexKeyError::UnsupportedValue)
         );
+    }
+
+    #[test]
+    fn index_key_rejects_non_orderable_extensions() {
+        assert_eq!(
+            value_to_index_key_bytes(&Value::Extension(Box::new(NonOrderableExt))),
+            Err(ValueIndexKeyError::UnsupportedValue)
+        );
+        assert_eq!(
+            value_to_index_key_bytes(&Value::List(vec![Value::Extension(Box::new(
+                NonOrderableExt
+            ))])),
+            Err(ValueIndexKeyError::UnsupportedValue)
+        );
+        assert_eq!(
+            value_to_index_key_bytes(&Value::Record(vec![(
+                "a".into(),
+                Value::Extension(Box::new(NonOrderableExt))
+            )])),
+            Err(ValueIndexKeyError::UnsupportedValue)
+        );
+    }
+
+    #[test]
+    fn index_key_orders_orderable_extensions_by_domain_and_bytes() {
+        let ordered = [
+            extension("domain-a/v1", b"z"),
+            extension("domain-b/v1", b"a"),
+            extension("domain-b/v1", b"a\0"),
+            extension("domain-b/v1", b"b"),
+        ]
+        .map(key);
+        for pair in ordered.windows(2) {
+            assert!(pair[0] < pair[1], "extension keys out of order: {pair:?}");
+        }
+    }
+
+    #[test]
+    fn index_key_order_matches_extension_cmp_within_domain() {
+        let left = extension("domain/v1", b"a");
+        let right = extension("domain/v1", b"b");
+        assert_eq!(
+            gleaph_gql::value_cmp::compare_values(&left, &right),
+            Some(Ordering::Less)
+        );
+        assert!(key(left) < key(right));
+
+        let cross_left = extension("a/v1", b"z");
+        let cross_right = extension("b/v1", b"a");
+        assert_eq!(
+            gleaph_gql::value_cmp::compare_values(&cross_left, &cross_right),
+            None
+        );
+        assert!(key(cross_left) < key(cross_right));
     }
 }

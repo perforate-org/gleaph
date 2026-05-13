@@ -1552,12 +1552,17 @@ mod tests {
     };
     use gleaph_gql::parser;
     use gleaph_gql::token::Span;
+    use gleaph_gql::value::{ExtensionSortableKey, ExtensionValue};
     use gleaph_gql_planner::build_plan;
     use gleaph_gql_planner::plan::{
         AggregateSpec, ConditionalScanCandidate, PlanAnnotations, PlanDiagnostics, ScanValue,
         ShortestMode, WcojEdge,
     };
+    use std::any::Any;
+    use std::borrow::Cow;
     use std::cell::RefCell;
+    use std::cmp::Ordering;
+    use std::fmt;
 
     #[derive(Default)]
     struct MockPropertyIndex {
@@ -1668,6 +1673,93 @@ mod tests {
 
     fn params() -> BTreeMap<String, Value> {
         BTreeMap::new()
+    }
+
+    #[derive(Clone, Debug)]
+    struct TestOrderableExt(u8);
+
+    impl fmt::Display for TestOrderableExt {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "TestOrderableExt({})", self.0)
+        }
+    }
+
+    impl ExtensionValue for TestOrderableExt {
+        fn type_name(&self) -> &str {
+            "TestOrderableExt"
+        }
+
+        fn clone_box(&self) -> Box<dyn ExtensionValue> {
+            Box::new(self.clone())
+        }
+
+        fn eq_ext(&self, other: &dyn ExtensionValue) -> bool {
+            other
+                .as_any()
+                .downcast_ref::<Self>()
+                .is_some_and(|o| self.0 == o.0)
+        }
+
+        fn cmp_ext(&self, other: &dyn ExtensionValue) -> Option<Ordering> {
+            other
+                .as_any()
+                .downcast_ref::<Self>()
+                .map(|o| self.0.cmp(&o.0))
+        }
+
+        fn sortable_index_key(&self) -> Option<ExtensionSortableKey<'_>> {
+            Some(ExtensionSortableKey {
+                domain: Cow::Borrowed("test.orderable/v1"),
+                bytes: Cow::Owned(vec![self.0]),
+            })
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+
+        fn short_blob(&self) -> Option<Cow<'_, [u8]>> {
+            Some(Cow::Owned(vec![self.0]))
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    struct TestNonOrderableExt;
+
+    impl fmt::Display for TestNonOrderableExt {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "TestNonOrderableExt")
+        }
+    }
+
+    impl ExtensionValue for TestNonOrderableExt {
+        fn type_name(&self) -> &str {
+            "TestNonOrderableExt"
+        }
+
+        fn clone_box(&self) -> Box<dyn ExtensionValue> {
+            Box::new(self.clone())
+        }
+
+        fn eq_ext(&self, other: &dyn ExtensionValue) -> bool {
+            other.as_any().downcast_ref::<Self>().is_some()
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+
+        fn short_blob(&self) -> Option<Cow<'_, [u8]>> {
+            Some(Cow::Borrowed(&[0]))
+        }
+    }
+
+    fn orderable_ext(value: u8) -> Value {
+        Value::Extension(Box::new(TestOrderableExt(value)))
+    }
+
+    fn non_orderable_ext() -> Value {
+        Value::Extension(Box::new(TestNonOrderableExt))
     }
 
     /// Minimal [`AggregateSpec`] for tests (no `expr2` / `filter` / `order_by`).
@@ -2180,6 +2272,91 @@ mod tests {
     }
 
     #[test]
+    fn executes_orderable_extension_equality_index_scan() {
+        let store = GraphStore::new();
+        configure_test_index(&store);
+        let value = orderable_ext(7);
+        store
+            .insert_vertex_named(
+                ["IndexScanExtensionEqCatalog"],
+                [("principal", Value::Text("catalog".into()))],
+            )
+            .expect("insert catalog vertex");
+        let vid = store
+            .insert_vertex_named(["IndexScanExtensionEq"], Vec::<(&str, Value)>::new())
+            .expect("insert vertex");
+        let pid = store.property_id("principal").expect("property").raw();
+        let index = MockPropertyIndex::default();
+        index.equal_hits.borrow_mut().push(PostingHit {
+            shard_id: 7,
+            vertex_id: u32::try_from(u64::from(vid)).unwrap(),
+        });
+        let plan = plan(vec![PlanOp::IndexScan {
+            variable: "n".into(),
+            property: "principal".into(),
+            value: ScanValue::Literal(value.clone()),
+            cmp: CmpOp::Eq,
+            property_projection: None,
+        }]);
+
+        let result = pollster::block_on(execute_plan_query(&store, &plan, &params(), Some(&index)))
+            .expect("execute extension equality index scan");
+
+        assert_eq!(result.rows.len(), 1);
+        let calls = index.equal_calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, pid);
+        assert_eq!(
+            calls[0].1,
+            value_to_index_key_bytes(&value).unwrap().unwrap()
+        );
+        assert!(index.range_calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn executes_orderable_extension_range_index_scan() {
+        let store = GraphStore::new();
+        configure_test_index(&store);
+        let bound = orderable_ext(7);
+        store
+            .insert_vertex_named(
+                ["IndexScanExtensionRangeCatalog"],
+                [("principal", Value::Text("catalog".into()))],
+            )
+            .expect("insert catalog vertex");
+        let vid = store
+            .insert_vertex_named(["IndexScanExtensionRange"], Vec::<(&str, Value)>::new())
+            .expect("insert vertex");
+        let pid = store.property_id("principal").expect("property").raw();
+        let index = MockPropertyIndex::default();
+        index.range_hits.borrow_mut().push(PostingHit {
+            shard_id: 7,
+            vertex_id: u32::try_from(u64::from(vid)).unwrap(),
+        });
+        let plan = plan(vec![PlanOp::IndexScan {
+            variable: "n".into(),
+            property: "principal".into(),
+            value: ScanValue::Literal(bound.clone()),
+            cmp: CmpOp::Ge,
+            property_projection: None,
+        }]);
+
+        let result = pollster::block_on(execute_plan_query(&store, &plan, &params(), Some(&index)))
+            .expect("execute extension range index scan");
+
+        assert_eq!(result.rows.len(), 1);
+        let calls = index.range_calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, pid);
+        assert!(matches!(
+            &calls[0].1,
+            PostingRangeRequest::Ge(bytes)
+                if bytes == &value_to_index_key_bytes(&bound).unwrap().unwrap()
+        ));
+        assert!(index.equal_calls.borrow().is_empty());
+    }
+
+    #[test]
     fn index_scan_rejects_unsupported_parameter_value() {
         let store = GraphStore::new();
         configure_test_index(&store);
@@ -2199,6 +2376,33 @@ mod tests {
 
         let err = pollster::block_on(execute_plan_query(&store, &plan, &parameters, Some(&index)))
             .expect_err("unsupported parameter should fail");
+
+        assert!(matches!(err, PlanQueryError::InvalidExpressionValue { .. }));
+    }
+
+    #[test]
+    fn index_scan_rejects_non_orderable_extension_parameter_value() {
+        let store = GraphStore::new();
+        configure_test_index(&store);
+        store
+            .insert_vertex_named(
+                ["IndexScanBadExtensionParam"],
+                [("principal", Value::Text("catalog".into()))],
+            )
+            .expect("insert catalog vertex");
+        let index = MockPropertyIndex::default();
+        let mut parameters = params();
+        parameters.insert("principal".into(), non_orderable_ext());
+        let plan = plan(vec![PlanOp::IndexScan {
+            variable: "n".into(),
+            property: "principal".into(),
+            value: ScanValue::Parameter("principal".into()),
+            cmp: CmpOp::Eq,
+            property_projection: None,
+        }]);
+
+        let err = pollster::block_on(execute_plan_query(&store, &plan, &parameters, Some(&index)))
+            .expect_err("non-orderable extension parameter should fail");
 
         assert!(matches!(err, PlanQueryError::InvalidExpressionValue { .. }));
     }
@@ -2272,6 +2476,40 @@ mod tests {
                 cmp: CmpOp::Eq,
             }],
             fallback_label: Some("IndexScanConditionalFallback".into()),
+            fallback_variable: "n".into(),
+            property_projection: None,
+        }]);
+
+        let result =
+            pollster::block_on(execute_plan_query(&store, &plan, &parameters, Some(&index)))
+                .expect("conditional fallback");
+
+        assert_eq!(result.rows.len(), 1);
+        assert!(index.equal_calls.borrow().is_empty());
+        assert!(index.range_calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn conditional_index_scan_falls_back_for_non_orderable_extension_parameter() {
+        let store = GraphStore::new();
+        configure_test_index(&store);
+        store
+            .insert_vertex_named(
+                ["IndexScanConditionalExtensionFallback"],
+                Vec::<(&str, Value)>::new(),
+            )
+            .expect("insert vertex");
+        let index = MockPropertyIndex::default();
+        let mut parameters = params();
+        parameters.insert("principal".into(), non_orderable_ext());
+        let plan = plan(vec![PlanOp::ConditionalIndexScan {
+            candidates: vec![ConditionalScanCandidate {
+                param_name: "principal".into(),
+                property: "principal".into(),
+                variable: "n".into(),
+                cmp: CmpOp::Eq,
+            }],
+            fallback_label: Some("IndexScanConditionalExtensionFallback".into()),
             fallback_variable: "n".into(),
             property_projection: None,
         }]);

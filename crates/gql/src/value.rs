@@ -63,9 +63,20 @@ impl std::error::Error for ValueBinaryError {}
 
 // ──── ExtensionValue trait ────
 
+/// Order-preserving key bytes for extension values that opt in to property-index ordering.
+///
+/// Within one `domain`, the lexicographic order of `bytes` must match [`ExtensionValue::cmp_ext`]
+/// for all extension values that return that same domain.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExtensionSortableKey<'a> {
+    pub domain: Cow<'a, str>,
+    pub bytes: Cow<'a, [u8]>,
+}
+
 /// Trait for user-defined value types that can be plugged into [`Value::Extension`].
 ///
-/// Implementors must be `Clone`-able (via `clone_box`), comparable, and displayable.
+/// Implementors must be `Clone`-able (via `clone_box`), equality comparable, and displayable.
+/// Ordering and property-index keys are opt-in.
 pub trait ExtensionValue: fmt::Debug + fmt::Display + Send + Sync {
     /// A short name identifying this extension type (e.g. `"Principal"`).
     fn type_name(&self) -> &str;
@@ -77,7 +88,18 @@ pub trait ExtensionValue: fmt::Debug + fmt::Display + Send + Sync {
     fn eq_ext(&self, other: &dyn ExtensionValue) -> bool;
 
     /// Ordering comparison with another extension value.
-    fn cmp_ext(&self, other: &dyn ExtensionValue) -> Option<Ordering>;
+    ///
+    /// Default: `None`, meaning this extension is not orderable for GQL comparisons.
+    fn cmp_ext(&self, _other: &dyn ExtensionValue) -> Option<Ordering> {
+        None
+    }
+
+    /// Order-preserving property-index key for extensions that opt in to sortable indexing.
+    ///
+    /// Default: `None`, meaning this extension is not supported by sortable property indexes.
+    fn sortable_index_key(&self) -> Option<ExtensionSortableKey<'_>> {
+        None
+    }
 
     /// Downcast to concrete type.
     fn as_any(&self) -> &dyn Any;
@@ -1938,6 +1960,73 @@ mod tests {
         ) -> Result<Box<dyn ExtensionValue>, ValueBinaryError> {
             Ok(Box::new(MockShortBlob(payload.to_vec())))
         }
+    }
+
+    #[derive(Debug, Clone)]
+    struct NonOrderableExtension(&'static str);
+
+    impl fmt::Display for NonOrderableExtension {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "NonOrderableExtension({})", self.0)
+        }
+    }
+
+    impl ExtensionValue for NonOrderableExtension {
+        fn type_name(&self) -> &str {
+            "NonOrderableExtension"
+        }
+        fn clone_box(&self) -> Box<dyn ExtensionValue> {
+            Box::new(self.clone())
+        }
+        fn eq_ext(&self, other: &dyn ExtensionValue) -> bool {
+            other
+                .as_any()
+                .downcast_ref::<Self>()
+                .is_some_and(|o| self.0 == o.0)
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    #[test]
+    fn extension_ordering_and_sortable_key_are_opt_in() {
+        let left = NonOrderableExtension("a");
+        let right = NonOrderableExtension("b");
+        assert_eq!(left.cmp_ext(&right), None);
+        assert_eq!(left.sortable_index_key(), None);
+        assert_eq!(
+            crate::value_cmp::compare_values(
+                &Value::Extension(Box::new(left)),
+                &Value::Extension(Box::new(right)),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn orderable_extension_controls_compare_values() {
+        assert_eq!(
+            crate::value_cmp::compare_values(
+                &Value::Extension(Box::new(MockExt("a".into()))),
+                &Value::Extension(Box::new(MockExt("b".into()))),
+            ),
+            Some(Ordering::Less)
+        );
+        assert_eq!(
+            crate::value_cmp::compare_values(
+                &Value::Extension(Box::new(MockExt("b".into()))),
+                &Value::Extension(Box::new(MockExt("b".into()))),
+            ),
+            Some(Ordering::Equal)
+        );
+        assert_eq!(
+            crate::value_cmp::compare_values(
+                &Value::Extension(Box::new(MockExt("c".into()))),
+                &Value::Extension(Box::new(MockExt("b".into()))),
+            ),
+            Some(Ordering::Greater)
+        );
     }
 
     #[test]
