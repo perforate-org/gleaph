@@ -33,7 +33,7 @@ use ic_stable_lara::traits::CsrVertexTombstone;
 use nohash_hasher::IntMap;
 use rapidhash::fast::RapidHasher;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::hash::Hasher;
 use std::pin::Pin;
 
@@ -1322,13 +1322,6 @@ impl WeightedCost {
             message: "shortest-path edge cost is incomparable".into(),
         })
     }
-
-    fn cmp_infallible(&self, other: &Self) -> Ordering {
-        self.cmp(other).unwrap_or_else(|_| {
-            debug_assert!(false, "incomparable weighted shortest-path costs");
-            Ordering::Equal
-        })
-    }
 }
 
 fn map_weighted_cost_add_err(err: ExprEvaluationError) -> PlanQueryError {
@@ -1357,27 +1350,31 @@ struct WeightedQueueEntry {
     state: ShortestPathState,
 }
 
-impl PartialEq for WeightedQueueEntry {
-    fn eq(&self, other: &Self) -> bool {
-        self.cost.0 == other.cost.0 && self.tie == other.tie
+/// Whether `candidate` should be popped before `current_best` in the weighted min-queue.
+fn weighted_queue_entry_precedes(
+    candidate: &WeightedQueueEntry,
+    current_best: &WeightedQueueEntry,
+) -> Result<bool, PlanQueryError> {
+    match candidate.cost.cmp(&current_best.cost)? {
+        Ordering::Less => Ok(true),
+        Ordering::Greater => Ok(false),
+        Ordering::Equal => Ok(candidate.tie < current_best.tie),
     }
 }
 
-impl Eq for WeightedQueueEntry {}
-
-impl PartialOrd for WeightedQueueEntry {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
+fn pop_min_weighted_entry(
+    heap: &mut Vec<WeightedQueueEntry>,
+) -> Result<Option<WeightedQueueEntry>, PlanQueryError> {
+    if heap.is_empty() {
+        return Ok(None);
     }
-}
-
-impl Ord for WeightedQueueEntry {
-    fn cmp(&self, other: &Self) -> Ordering {
-        other
-            .cost
-            .cmp_infallible(&self.cost)
-            .then_with(|| other.tie.cmp(&self.tie))
+    let mut best = 0usize;
+    for i in 1..heap.len() {
+        if weighted_queue_entry_precedes(&heap[i], &heap[best])? {
+            best = i;
+        }
     }
+    Ok(Some(heap.swap_remove(best)))
 }
 
 fn weighted_shortest_paths_between(
@@ -1400,8 +1397,10 @@ fn weighted_shortest_paths_between(
     let vertex_count = u64::from(u32::from(store.vertex_count()));
     let max_hops = bounds.max.unwrap_or_else(|| vertex_count.saturating_sub(1));
 
-    let mut heap = BinaryHeap::new();
+    let mut heap = Vec::new();
     let mut tie = 0u64;
+    let mut best_cost: BTreeMap<VertexId, WeightedCost> = BTreeMap::new();
+    best_cost.insert(src, WeightedCost::zero());
     heap.push(WeightedQueueEntry {
         cost: WeightedCost::zero(),
         tie,
@@ -1415,7 +1414,12 @@ fn weighted_shortest_paths_between(
     let mut found_min_cost: Option<WeightedCost> = None;
     let mut found = Vec::new();
 
-    while let Some(entry) = heap.pop() {
+    while let Some(entry) = pop_min_weighted_entry(&mut heap)? {
+        if let Some(best) = best_cost.get(&entry.state.current) {
+            if matches!(entry.cost.cmp(best), Ok(Ordering::Greater)) {
+                continue;
+            }
+        }
         if let Some(ref min) = found_min_cost {
             if matches!(entry.cost.cmp(min), Ok(Ordering::Greater)) {
                 continue;
@@ -1469,6 +1473,18 @@ fn weighted_shortest_paths_between(
             if let Some(ref min) = found_min_cost {
                 if matches!(next_cost.cmp(min), Ok(Ordering::Greater)) {
                     continue;
+                }
+            }
+            match best_cost.get(&next) {
+                Some(best) => match next_cost.cmp(best)? {
+                    Ordering::Greater => continue,
+                    Ordering::Less => {
+                        best_cost.insert(next, next_cost.clone());
+                    }
+                    Ordering::Equal => {}
+                },
+                None => {
+                    best_cost.insert(next, next_cost.clone());
                 }
             }
             tie += 1;
@@ -1753,6 +1769,7 @@ fn try_eval_gleaph_weight(
     if !last.eq_ignore_ascii_case("gleaph_weight") || name.parts.len() != 1 {
         return Ok(None);
     }
+    // Inline edge weights decode to FLOAT32; cost expressions may widen via casts or arithmetic.
     if distinct {
         return Err(PlanQueryError::GleaphWeight {
             message: "GLEAPH_WEIGHT does not support DISTINCT".into(),
@@ -7459,6 +7476,188 @@ mod tests {
         let elements = path_column(&result, "p");
         assert_eq!(elements.len(), 5, "expected 2-hop weighted shortest path");
         assert_eq!(vertex_path_id(&elements[4]).vertex_id, c);
+    }
+
+    /// Graph where a longer prefix reaches `mid` with lower total cost after a stale higher-cost
+    /// entry is already in the heap; per-vertex `best_cost` must skip the stale pop.
+    fn setup_stale_mid_diamond_graph(store: &GraphStore) -> (VertexId, VertexId) {
+        use gleaph_graph_kernel::entry::{EdgeWeightProfile, WeightEncoding};
+        let s = store
+            .insert_vertex_named(["WgtA"], Vec::<(&str, Value)>::new())
+            .expect("insert s");
+        let a = store
+            .insert_vertex_named(["WgtB"], Vec::<(&str, Value)>::new())
+            .expect("insert a");
+        let mid = store
+            .insert_vertex_named(["WgtHub"], Vec::<(&str, Value)>::new())
+            .expect("insert mid");
+        let dst = store
+            .insert_vertex_named(["WgtC"], Vec::<(&str, Value)>::new())
+            .expect("insert dst");
+        let label_id = store
+            .get_or_insert_edge_label_id("WgtRoad")
+            .expect("road label");
+        store
+            .set_edge_label_weight_profile(
+                label_id,
+                EdgeWeightProfile {
+                    encoding: WeightEncoding::RawU16,
+                },
+            )
+            .expect("weight profile");
+        let meta = edge_meta_for_label(store, "WgtRoad");
+        store
+            .insert_directed_edge_with_inline_value(s, mid, meta, 10)
+            .expect("s->mid");
+        store
+            .insert_directed_edge_with_inline_value(s, a, meta, 5)
+            .expect("s->a");
+        store
+            .insert_directed_edge_with_inline_value(a, mid, meta, 1)
+            .expect("a->mid");
+        store
+            .insert_directed_edge_with_inline_value(mid, dst, meta, 0)
+            .expect("mid->dst");
+        (s, dst)
+    }
+
+    #[test]
+    fn weighted_shortest_skips_stale_higher_cost_vertex_entries() {
+        let store = GraphStore::new();
+        let (s, dst) = setup_stale_mid_diamond_graph(&store);
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "a".into(),
+                label: Some("WgtA".into()),
+                property_projection: None,
+            },
+            PlanOp::NodeScan {
+                variable: "c".into(),
+                label: Some("WgtC".into()),
+                property_projection: None,
+            },
+            PlanOp::ShortestPath {
+                src: "a".into(),
+                dst: "c".into(),
+                edge: "e".into(),
+                path_var: Some("p".into()),
+                mode: ShortestMode::AnyShortest,
+                direction: EdgeDirection::PointingRight,
+                label: Some("WgtRoad".into()),
+                label_expr: None,
+                var_len: Some(VarLenSpec {
+                    min: 1,
+                    max: Some(5),
+                }),
+                cost: ShortestPathCost::EdgeCostExpr {
+                    edge_var: "e".into(),
+                    expr: gleaph_weight_call("e"),
+                },
+            },
+            PlanOp::Project {
+                columns: vec![project(var("p"), "p")],
+                distinct: false,
+            },
+        ]);
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("stale-entry weighted shortest path");
+        let elements = path_column(&result, "p");
+        assert_eq!(elements.len(), 7, "expected s->a->mid->dst (3 edges)");
+        assert_eq!(vertex_path_id(&elements[6]).vertex_id, dst);
+        assert_eq!(vertex_path_id(&elements[0]).vertex_id, s);
+    }
+
+    #[test]
+    fn weighted_shortest_prefers_zero_weight_detour_over_direct_edge() {
+        use gleaph_graph_kernel::entry::{EdgeWeightProfile, WeightEncoding};
+        let store = GraphStore::new();
+        let a = store
+            .insert_vertex_named(["WgtA"], Vec::<(&str, Value)>::new())
+            .expect("insert a");
+        let c = store
+            .insert_vertex_named(["WgtC"], Vec::<(&str, Value)>::new())
+            .expect("insert c");
+        let d1 = store
+            .insert_vertex_named(["WgtD1"], Vec::<(&str, Value)>::new())
+            .expect("insert d1");
+        let d2 = store
+            .insert_vertex_named(["WgtD2"], Vec::<(&str, Value)>::new())
+            .expect("insert d2");
+        let label_id = store
+            .get_or_insert_edge_label_id("WgtRoad")
+            .expect("road label");
+        store
+            .set_edge_label_weight_profile(
+                label_id,
+                EdgeWeightProfile {
+                    encoding: WeightEncoding::RawU16,
+                },
+            )
+            .expect("weight profile");
+        let meta = edge_meta_for_label(&store, "WgtRoad");
+        store
+            .insert_directed_edge_with_inline_value(a, d1, meta, 0)
+            .expect("a->d1");
+        store
+            .insert_directed_edge_with_inline_value(a, d2, meta, 0)
+            .expect("a->d2");
+        store
+            .insert_directed_edge_with_inline_value(d1, d2, meta, 0)
+            .expect("d1->d2");
+        store
+            .insert_directed_edge_with_inline_value(d1, c, meta, 0)
+            .expect("d1->c");
+        store
+            .insert_directed_edge_with_inline_value(d2, c, meta, 0)
+            .expect("d2->c");
+        store
+            .insert_directed_edge_with_inline_value(a, c, meta, 50)
+            .expect("a->c direct");
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "a".into(),
+                label: Some("WgtA".into()),
+                property_projection: None,
+            },
+            PlanOp::NodeScan {
+                variable: "c".into(),
+                label: Some("WgtC".into()),
+                property_projection: None,
+            },
+            PlanOp::ShortestPath {
+                src: "a".into(),
+                dst: "c".into(),
+                edge: "e".into(),
+                path_var: Some("p".into()),
+                mode: ShortestMode::AnyShortest,
+                direction: EdgeDirection::PointingRight,
+                label: Some("WgtRoad".into()),
+                label_expr: None,
+                var_len: Some(VarLenSpec {
+                    min: 1,
+                    max: Some(5),
+                }),
+                cost: ShortestPathCost::EdgeCostExpr {
+                    edge_var: "e".into(),
+                    expr: gleaph_weight_call("e"),
+                },
+            },
+            PlanOp::Project {
+                columns: vec![project(var("p"), "p")],
+                distinct: false,
+            },
+        ]);
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("zero-weight detour weighted shortest path");
+        let elements = path_column(&result, "p");
+        assert_eq!(
+            elements.len(),
+            5,
+            "expected 2-hop zero-cost detour a->d1->c, not 1-hop direct edge"
+        );
+        assert_eq!(vertex_path_id(&elements[elements.len() - 1]).vertex_id, c);
     }
 
     #[test]

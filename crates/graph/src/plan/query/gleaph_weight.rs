@@ -1,4 +1,7 @@
 //! Preparation for `GLEAPH_WEIGHT(edgeVar)` traversal intrinsic.
+//!
+//! Decoded inline weights are returned as `FLOAT32` at execution time; cost expressions may widen
+//! the value via casts or arithmetic.
 
 use std::collections::{BTreeMap, BTreeSet};
 
