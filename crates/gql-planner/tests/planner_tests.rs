@@ -36,6 +36,11 @@ fn plan_query(input: &str) -> PhysicalPlan {
     build_plan(&query, None).expect("plan should build")
 }
 
+fn plan_query_err(input: &str) -> PlannerError {
+    let query = parse_query(input);
+    build_plan(&query, None).expect_err("plan should fail")
+}
+
 /// Helper: build a plan with stats.
 fn plan_query_with_stats(input: &str, stats: &TableStats) -> PhysicalPlan {
     let query = parse_query(input);
@@ -2314,6 +2319,30 @@ fn compat_shortest_path_operator() {
             .iter()
             .any(|op| matches!(op, PlanOp::ShortestPath { .. }))
     );
+}
+
+#[test]
+fn shortest_path_pattern_variable_is_planned() {
+    let plan = plan_query("MATCH p = ANY SHORTEST (a)-[e]->{1,3}(b) RETURN p");
+    let path_var = plan
+        .ops
+        .iter()
+        .find_map(|op| match op {
+            PlanOp::ShortestPath { path_var, .. } => path_var.clone(),
+            _ => None,
+        })
+        .expect("ShortestPath path_var");
+    assert_eq!(&*path_var, "p");
+}
+
+#[test]
+fn non_shortest_path_variable_is_rejected() {
+    let err = plan_query_err("MATCH p = (a)-[e]->(b) RETURN p");
+    assert!(matches!(
+        err,
+        PlannerError::UnsupportedPattern(message)
+            if message.contains("path variables are only supported for shortest-path patterns")
+    ));
 }
 
 #[test]

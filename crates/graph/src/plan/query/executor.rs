@@ -8,19 +8,20 @@ use crate::plan::expr_evaluator::{
     eval_or_expr, eval_unary_expr, eval_xor_expr, truthy,
 };
 use gleaph_gql::ast::{CmpOp, Expr, ExprKind, OrderByClause, TruthValue};
-use gleaph_gql::types::{EdgeDirection, LabelExpr};
+use gleaph_gql::types::{EdgeDirection, LabelExpr, PathElement};
 use gleaph_gql::{Value, hash_value_for_join, value_to_index_key_bytes};
 use gleaph_gql_planner::plan::{
     AggregateSpec, ConditionalScanCandidate, IndexScanSpec, PhysicalPlan, PlanOp, ProjectColumn,
-    ScanValue, Str,
+    ScanValue, ShortestMode, Str, VarLenSpec,
 };
 use gleaph_graph_kernel::entry::{Edge, LabelId};
 use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest};
+use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
 use ic_stable_lara::VertexId;
 use ic_stable_lara::traits::CsrVertexTombstone;
 use nohash_hasher::IntMap;
 use rapidhash::fast::RapidHasher;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::hash::Hasher;
 use std::pin::Pin;
 
@@ -432,6 +433,29 @@ fn execute_ops_from<'a>(
                         dst_filter,
                     )?
                 }
+                PlanOp::ShortestPath {
+                    src,
+                    dst,
+                    edge,
+                    path_var,
+                    mode,
+                    direction,
+                    label,
+                    label_expr,
+                    var_len,
+                } => execute_shortest_path(
+                    store,
+                    rows,
+                    src,
+                    dst,
+                    edge,
+                    path_var.as_ref(),
+                    *mode,
+                    *direction,
+                    label.as_ref(),
+                    label_expr,
+                    var_len,
+                )?,
                 PlanOp::Aggregate {
                     group_by,
                     aggregates,
@@ -949,6 +973,153 @@ fn execute_expand(
         }
     }
     Ok(out)
+}
+
+#[derive(Clone, Debug)]
+struct ShortestPathState {
+    current: VertexId,
+    vertices: Vec<VertexId>,
+    edges: Vec<EdgeHandle>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_shortest_path(
+    store: &GraphStore,
+    rows: Vec<PlanRow>,
+    src: &Str,
+    dst: &Str,
+    edge: &Str,
+    path_var: Option<&Str>,
+    mode: ShortestMode,
+    direction: EdgeDirection,
+    label: Option<&Str>,
+    label_expr: &Option<LabelExpr>,
+    var_len: &Option<VarLenSpec>,
+) -> Result<Vec<PlanRow>, PlanQueryError> {
+    if matches!(mode, ShortestMode::ShortestK(_)) {
+        return Err(PlanQueryError::UnsupportedOp("ShortestPath.ShortestK"));
+    }
+    if label_expr.is_some() {
+        return Err(PlanQueryError::UnsupportedOp("ShortestPath.label_expr"));
+    }
+
+    let label_id = label.and_then(|label| store.label_id(label.as_ref()));
+    if label.is_some() && label_id.is_none() {
+        return Ok(Vec::new());
+    }
+
+    let shard_id = store.index_routing().map(|r| r.shard_id).unwrap_or(0);
+    let mut out = Vec::new();
+    for row in rows {
+        let src_id = vertex_binding(&row, src)?;
+        let dst_id = vertex_binding(&row, dst)?;
+        let paths = shortest_paths_between(store, src_id, dst_id, direction, label_id, var_len)?;
+        for path in paths {
+            let mut row = row.clone();
+            match path.edges.last().copied() {
+                Some(handle) => {
+                    row.insert(edge.to_string(), PlanBinding::Edge(handle));
+                }
+                None => {
+                    row.insert(edge.to_string(), PlanBinding::Value(Value::Null));
+                }
+            }
+            if let Some(path_var) = path_var {
+                row.insert(
+                    path_var.to_string(),
+                    PlanBinding::Value(path_state_to_value(shard_id, &path)),
+                );
+            }
+            out.push(row);
+            if matches!(mode, ShortestMode::AnyShortest) {
+                break;
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn shortest_paths_between(
+    store: &GraphStore,
+    src: VertexId,
+    dst: VertexId,
+    direction: EdgeDirection,
+    label_id: Option<LabelId>,
+    var_len: &Option<VarLenSpec>,
+) -> Result<Vec<ShortestPathState>, PlanQueryError> {
+    let bounds = var_len.unwrap_or(VarLenSpec {
+        min: 1,
+        max: Some(1),
+    });
+    let vertex_count = u64::from(u32::from(store.vertex_count()));
+    let max_hops = bounds.max.unwrap_or_else(|| vertex_count.saturating_sub(1));
+
+    let mut found_depth = None;
+    let mut found = Vec::new();
+    let mut queue = VecDeque::from([ShortestPathState {
+        current: src,
+        vertices: vec![src],
+        edges: Vec::new(),
+    }]);
+
+    while let Some(state) = queue.pop_front() {
+        let depth = state.edges.len() as u64;
+        if found_depth.is_some_and(|d| depth > d) {
+            break;
+        }
+        if depth >= bounds.min && state.current == dst {
+            found_depth = Some(depth);
+            found.push(state);
+            continue;
+        }
+        if depth >= max_hops {
+            continue;
+        }
+
+        for (next, handle, _edge_record) in
+            expand_candidates(store, state.current, direction, label_id)?
+        {
+            if state.vertices.contains(&next) {
+                continue;
+            }
+            let mut next_state = state.clone();
+            next_state.current = next;
+            next_state.vertices.push(next);
+            next_state.edges.push(handle);
+            queue.push_back(next_state);
+        }
+    }
+
+    Ok(found)
+}
+
+fn path_state_to_value(shard_id: u64, path: &ShortestPathState) -> Value {
+    let mut elements = Vec::with_capacity(path.vertices.len() + path.edges.len());
+    for (idx, vertex_id) in path.vertices.iter().copied().enumerate() {
+        elements.push(vertex_path_element(shard_id, vertex_id));
+        if let Some(edge) = path.edges.get(idx).copied() {
+            elements.push(edge_path_element(shard_id, edge));
+        }
+    }
+    Value::Path(elements)
+}
+
+fn vertex_path_element(shard_id: u64, vertex_id: VertexId) -> PathElement {
+    PathElement::Vertex(
+        GraphPathVertexId::new(shard_id, vertex_id)
+            .to_bytes()
+            .to_vec()
+            .into(),
+    )
+}
+
+fn edge_path_element(shard_id: u64, handle: EdgeHandle) -> PathElement {
+    PathElement::Edge(
+        GraphPathEdgeId::new(shard_id, handle.owner_vertex_id, handle.vertex_edge_id)
+            .to_bytes()
+            .to_vec()
+            .into(),
+    )
 }
 
 fn expand_candidates(
@@ -1552,12 +1723,14 @@ mod tests {
     };
     use gleaph_gql::parser;
     use gleaph_gql::token::Span;
+    use gleaph_gql::types::PathElement;
     use gleaph_gql::value::{ExtensionSortableKey, ExtensionValue};
     use gleaph_gql_planner::build_plan;
     use gleaph_gql_planner::plan::{
         AggregateSpec, ConditionalScanCandidate, PlanAnnotations, PlanDiagnostics, ScanValue,
         ShortestMode, WcojEdge,
     };
+    use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
     use std::any::Any;
     use std::borrow::Cow;
     use std::cell::RefCell;
@@ -1798,6 +1971,29 @@ mod tests {
                 shard_id: 7,
             }))
             .expect("set index routing");
+    }
+
+    fn path_column<'a>(result: &'a PlanQueryResult, column: &str) -> &'a [PathElement] {
+        match result.rows.first().and_then(|row| row.get(column)) {
+            Some(Value::Path(elements)) => elements,
+            other => panic!("expected path column {column}, got {other:?}"),
+        }
+    }
+
+    fn vertex_path_id(element: &PathElement) -> GraphPathVertexId {
+        match element {
+            PathElement::Vertex(id) => {
+                GraphPathVertexId::try_from_slice(id.as_ref()).expect("vertex path id")
+            }
+            other => panic!("expected vertex path element, got {other:?}"),
+        }
+    }
+
+    fn edge_path_id(element: &PathElement) -> GraphPathEdgeId {
+        match element {
+            PathElement::Edge(id) => GraphPathEdgeId::try_from_slice(id.as_ref()).expect("edge id"),
+            other => panic!("expected edge path element, got {other:?}"),
+        }
     }
 
     #[test]
@@ -2365,7 +2561,7 @@ mod tests {
             .expect("insert vertex");
         let index = MockPropertyIndex::default();
         let mut parameters = params();
-        parameters.insert("tags".into(), Value::List(vec![Value::Path(vec![])]));
+        parameters.insert("tags".into(), Value::List(vec![non_orderable_ext()]));
         let plan = plan(vec![PlanOp::IndexScan {
             variable: "n".into(),
             property: "tags".into(),
@@ -2416,7 +2612,7 @@ mod tests {
             .expect("insert vertex");
         let index = MockPropertyIndex::default();
         let mut parameters = params();
-        parameters.insert("tags".into(), Value::List(vec![Value::Path(vec![])]));
+        parameters.insert("tags".into(), Value::List(vec![non_orderable_ext()]));
         let plan = plan(vec![PlanOp::IndexScan {
             variable: "n".into(),
             property: "tags".into(),
@@ -2467,7 +2663,7 @@ mod tests {
             .expect("insert vertex");
         let index = MockPropertyIndex::default();
         let mut parameters = params();
-        parameters.insert("tags".into(), Value::List(vec![Value::Path(vec![])]));
+        parameters.insert("tags".into(), Value::List(vec![non_orderable_ext()]));
         let plan = plan(vec![PlanOp::ConditionalIndexScan {
             candidates: vec![ConditionalScanCandidate {
                 param_name: "tags".into(),
@@ -2535,7 +2731,7 @@ mod tests {
             .expect("insert vertex");
         let index = MockPropertyIndex::default();
         let mut parameters = params();
-        parameters.insert("tags".into(), Value::List(vec![Value::Path(vec![])]));
+        parameters.insert("tags".into(), Value::List(vec![non_orderable_ext()]));
         let plan = plan(vec![PlanOp::ConditionalIndexScan {
             candidates: vec![ConditionalScanCandidate {
                 param_name: "tags".into(),
@@ -4761,6 +4957,242 @@ mod tests {
     }
 
     #[test]
+    fn shortest_path_binds_opaque_path_ids() {
+        let store = GraphStore::new();
+        configure_test_index(&store);
+        let a = store
+            .insert_vertex_named(["ShortestPathSource"], [("name", Value::Text("a".into()))])
+            .expect("insert a");
+        let b = store
+            .insert_vertex_named(["ShortestPathMid"], [("name", Value::Text("b".into()))])
+            .expect("insert b");
+        let c = store
+            .insert_vertex_named(["ShortestPathTarget"], [("name", Value::Text("c".into()))])
+            .expect("insert c");
+        let ab = store
+            .insert_directed_edge_named(a, b, Some("ShortestPathRel"), Vec::<(&str, Value)>::new())
+            .expect("insert ab");
+        let bc = store
+            .insert_directed_edge_named(b, c, Some("ShortestPathRel"), Vec::<(&str, Value)>::new())
+            .expect("insert bc");
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "a".into(),
+                label: Some("ShortestPathSource".into()),
+                property_projection: None,
+            },
+            PlanOp::NodeScan {
+                variable: "c".into(),
+                label: Some("ShortestPathTarget".into()),
+                property_projection: None,
+            },
+            PlanOp::ShortestPath {
+                src: "a".into(),
+                dst: "c".into(),
+                edge: "e".into(),
+                path_var: Some("p".into()),
+                mode: ShortestMode::AnyShortest,
+                direction: EdgeDirection::PointingRight,
+                label: Some("ShortestPathRel".into()),
+                label_expr: None,
+                var_len: Some(VarLenSpec {
+                    min: 1,
+                    max: Some(3),
+                }),
+            },
+            PlanOp::Project {
+                columns: vec![project(var("p"), "p")],
+                distinct: false,
+            },
+        ]);
+
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("execute shortest path");
+
+        assert_eq!(result.rows.len(), 1);
+        let elements = path_column(&result, "p");
+        assert_eq!(elements.len(), 5);
+        assert_eq!(vertex_path_id(&elements[0]).shard_id, 7);
+        assert_eq!(vertex_path_id(&elements[0]).vertex_id, a);
+        assert_eq!(
+            edge_path_id(&elements[1]).owner_vertex_id,
+            ab.owner_vertex_id
+        );
+        assert_eq!(edge_path_id(&elements[1]).vertex_edge_id, ab.vertex_edge_id);
+        assert_eq!(vertex_path_id(&elements[2]).vertex_id, b);
+        assert_eq!(
+            edge_path_id(&elements[3]).owner_vertex_id,
+            bc.owner_vertex_id
+        );
+        assert_eq!(edge_path_id(&elements[3]).vertex_edge_id, bc.vertex_edge_id);
+        assert_eq!(vertex_path_id(&elements[4]).vertex_id, c);
+    }
+
+    #[test]
+    fn shortest_path_zero_hop_binds_null_edge_and_single_vertex_path() {
+        let store = GraphStore::new();
+        let a = store
+            .insert_vertex_named(["ShortestPathZero"], [("name", Value::Text("a".into()))])
+            .expect("insert a");
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "a".into(),
+                label: Some("ShortestPathZero".into()),
+                property_projection: None,
+            },
+            PlanOp::ShortestPath {
+                src: "a".into(),
+                dst: "a".into(),
+                edge: "e".into(),
+                path_var: Some("p".into()),
+                mode: ShortestMode::AnyShortest,
+                direction: EdgeDirection::PointingRight,
+                label: None,
+                label_expr: None,
+                var_len: Some(VarLenSpec {
+                    min: 0,
+                    max: Some(3),
+                }),
+            },
+            PlanOp::Project {
+                columns: vec![project(var("p"), "p"), project(var("e"), "e")],
+                distinct: false,
+            },
+        ]);
+
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("execute zero-hop shortest path");
+
+        let elements = path_column(&result, "p");
+        assert_eq!(elements.len(), 1);
+        assert_eq!(vertex_path_id(&elements[0]).shard_id, 0);
+        assert_eq!(vertex_path_id(&elements[0]).vertex_id, a);
+        assert_eq!(result.rows[0].get("e"), Some(&Value::Null));
+    }
+
+    #[test]
+    fn all_shortest_path_returns_all_equal_depth_paths() {
+        let store = GraphStore::new();
+        let a = store
+            .insert_vertex_named(["AllShortestSource"], [("name", Value::Text("a".into()))])
+            .expect("insert a");
+        let b1 = store
+            .insert_vertex_named(["AllShortestMid"], [("name", Value::Text("b1".into()))])
+            .expect("insert b1");
+        let b2 = store
+            .insert_vertex_named(["AllShortestMid"], [("name", Value::Text("b2".into()))])
+            .expect("insert b2");
+        let c = store
+            .insert_vertex_named(["AllShortestTarget"], [("name", Value::Text("c".into()))])
+            .expect("insert c");
+        store
+            .insert_directed_edge_named(a, b1, Some("AllShortestRel"), Vec::<(&str, Value)>::new())
+            .expect("insert a-b1");
+        store
+            .insert_directed_edge_named(b1, c, Some("AllShortestRel"), Vec::<(&str, Value)>::new())
+            .expect("insert b1-c");
+        store
+            .insert_directed_edge_named(a, b2, Some("AllShortestRel"), Vec::<(&str, Value)>::new())
+            .expect("insert a-b2");
+        store
+            .insert_directed_edge_named(b2, c, Some("AllShortestRel"), Vec::<(&str, Value)>::new())
+            .expect("insert b2-c");
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "a".into(),
+                label: Some("AllShortestSource".into()),
+                property_projection: None,
+            },
+            PlanOp::NodeScan {
+                variable: "c".into(),
+                label: Some("AllShortestTarget".into()),
+                property_projection: None,
+            },
+            PlanOp::ShortestPath {
+                src: "a".into(),
+                dst: "c".into(),
+                edge: "e".into(),
+                path_var: Some("p".into()),
+                mode: ShortestMode::AllShortest,
+                direction: EdgeDirection::PointingRight,
+                label: Some("AllShortestRel".into()),
+                label_expr: None,
+                var_len: Some(VarLenSpec {
+                    min: 1,
+                    max: Some(3),
+                }),
+            },
+            PlanOp::Project {
+                columns: vec![project(var("p"), "p")],
+                distinct: false,
+            },
+        ]);
+
+        let result = store
+            .execute_plan_query(&plan, &params())
+            .expect("execute all shortest paths");
+
+        assert_eq!(result.rows.len(), 2);
+        let middle_vertices: BTreeSet<VertexId> = result
+            .rows
+            .iter()
+            .map(|row| match row.get("p") {
+                Some(Value::Path(elements)) => vertex_path_id(&elements[2]).vertex_id,
+                other => panic!("expected path, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(middle_vertices, BTreeSet::from([b1, b2]));
+    }
+
+    #[test]
+    fn shortest_path_rejects_unsupported_mode_and_label_expr() {
+        let store = GraphStore::new();
+        let k_err = store
+            .execute_plan_query(
+                &plan(vec![PlanOp::ShortestPath {
+                    src: "a".into(),
+                    dst: "b".into(),
+                    edge: "e".into(),
+                    path_var: Some("p".into()),
+                    mode: ShortestMode::ShortestK(2),
+                    direction: EdgeDirection::PointingRight,
+                    label: None,
+                    label_expr: None,
+                    var_len: None,
+                }]),
+                &params(),
+            )
+            .expect_err("ShortestK should be unsupported");
+        assert!(matches!(
+            k_err,
+            PlanQueryError::UnsupportedOp("ShortestPath.ShortestK")
+        ));
+
+        let label_expr_err = store
+            .execute_plan_query(
+                &plan(vec![PlanOp::ShortestPath {
+                    src: "a".into(),
+                    dst: "b".into(),
+                    edge: "e".into(),
+                    path_var: Some("p".into()),
+                    mode: ShortestMode::AnyShortest,
+                    direction: EdgeDirection::PointingRight,
+                    label: None,
+                    label_expr: Some(LabelExpr::Name("Rel".into())),
+                    var_len: None,
+                }]),
+                &params(),
+            )
+            .expect_err("label_expr should be unsupported");
+        assert!(matches!(
+            label_expr_err,
+            PlanQueryError::UnsupportedOp("ShortestPath.label_expr")
+        ));
+    }
+
+    #[test]
     fn unsupported_operator_returns_stable_error() {
         let store = GraphStore::new();
         let cases = vec![
@@ -4779,20 +5211,6 @@ mod tests {
                     right: Box::new(plan(Vec::new())),
                 },
                 "SetOperation",
-            ),
-            (
-                PlanOp::ShortestPath {
-                    src: "a".into(),
-                    dst: "b".into(),
-                    edge: "e".into(),
-                    path_var: None,
-                    mode: ShortestMode::AnyShortest,
-                    direction: EdgeDirection::PointingRight,
-                    label: None,
-                    label_expr: None,
-                    var_len: None,
-                },
-                "ShortestPath",
             ),
             (
                 PlanOp::CallProcedure {

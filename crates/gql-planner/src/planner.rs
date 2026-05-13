@@ -1064,11 +1064,17 @@ fn plan_path_pattern(
         },
         _ => None,
     });
+    if path.variable.is_some() && shortest_mode.is_none() {
+        return Err(PlannerError::UnsupportedPattern(
+            "path variables are only supported for shortest-path patterns".into(),
+        ));
+    }
 
     // Walk the path expression to emit scan/expand ops.
     plan_path_expr(
         &path.expr,
         shortest_mode,
+        path.variable.as_deref(),
         stats,
         conditional_candidates,
         referenced_vars,
@@ -1083,6 +1089,7 @@ fn plan_path_pattern(
 fn plan_path_expr(
     expr: &PathPatternExpr,
     shortest_mode: Option<ShortestMode>,
+    path_var: Option<&str>,
     stats: Option<&dyn GraphStats>,
     conditional_candidates: &[ConditionalScanCandidate],
     referenced_vars: &BTreeSet<String>,
@@ -1095,6 +1102,7 @@ fn plan_path_expr(
             plan_path_term(
                 term,
                 shortest_mode,
+                path_var,
                 stats,
                 conditional_candidates,
                 referenced_vars,
@@ -1108,6 +1116,7 @@ fn plan_path_expr(
                 plan_path_term(
                     term,
                     shortest_mode,
+                    path_var,
                     stats,
                     conditional_candidates,
                     referenced_vars,
@@ -1612,6 +1621,7 @@ fn hop_aux_binding_for_edge_if_referenced(
 fn plan_path_term(
     term: &PathTerm,
     shortest_mode: Option<ShortestMode>,
+    path_var: Option<&str>,
     stats: Option<&dyn GraphStats>,
     conditional_candidates: &[ConditionalScanCandidate],
     referenced_vars: &BTreeSet<String>,
@@ -1826,7 +1836,7 @@ fn plan_path_term(
                                 src: src_str,
                                 dst: dst_str.clone(),
                                 edge: edge_str,
-                                path_var: None,
+                                path_var: path_var.map(Into::into),
                                 mode,
                                 direction: edge.direction,
                                 label: label_str.clone(),
@@ -1886,6 +1896,7 @@ fn plan_path_term(
                 plan_path_expr(
                     expr,
                     shortest_mode,
+                    path_var,
                     stats,
                     conditional_candidates,
                     referenced_vars,
