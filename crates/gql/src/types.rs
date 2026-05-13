@@ -2,7 +2,7 @@
 //!
 //! These are GQL-centric types, independent of any specific platform (IC, etc.).
 
-use std::fmt;
+use std::{fmt, ops::Deref};
 
 // ──── 256-bit integer wrappers ────
 
@@ -185,19 +185,55 @@ pub enum EntityType {
 
 // ──── Path element ────
 
+/// Opaque runtime-owned identifier for an element in a path result.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+pub struct PathElementId(Box<[u8]>);
+
+impl PathElementId {
+    pub fn into_vec(self) -> Vec<u8> {
+        self.0.into_vec()
+    }
+}
+
+impl From<Vec<u8>> for PathElementId {
+    fn from(value: Vec<u8>) -> Self {
+        Self(value.into_boxed_slice())
+    }
+}
+
+impl From<Box<[u8]>> for PathElementId {
+    fn from(value: Box<[u8]>) -> Self {
+        Self(value)
+    }
+}
+
+impl AsRef<[u8]> for PathElementId {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl Deref for PathElementId {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 /// An element along a path result: alternating vertices and edges.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(
     feature = "ast-rkyv-no-span",
     derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
 )]
 pub enum PathElement {
-    Vertex(u64),
-    Edge {
-        src: u64,
-        dst: u64,
-        label: Option<String>,
-    },
+    Vertex(PathElementId),
+    Edge(PathElementId),
 }
 
 // ──── Edge direction ────

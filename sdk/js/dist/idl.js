@@ -1,11 +1,7 @@
 import { IDL } from "@icp-sdk/core/candid";
 const ApiPathElement = IDL.Variant({
-    Vertex: IDL.Nat64,
-    Edge: IDL.Record({
-        src: IDL.Nat64,
-        dst: IDL.Nat64,
-        label: IDL.Opt(IDL.Text),
-    }),
+    Vertex: IDL.Vec(IDL.Nat8),
+    Edge: IDL.Vec(IDL.Nat8),
 });
 const ApiValue = IDL.Rec();
 const ApiValueVariant = IDL.Variant({

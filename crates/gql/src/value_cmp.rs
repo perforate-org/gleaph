@@ -47,20 +47,9 @@ fn compare_path_elements(
 
     match (left, right) {
         (PathElement::Vertex(a), PathElement::Vertex(b)) => a.cmp(b),
-        (
-            PathElement::Edge {
-                src: src_a,
-                dst: dst_a,
-                label: label_a,
-            },
-            PathElement::Edge {
-                src: src_b,
-                dst: dst_b,
-                label: label_b,
-            },
-        ) => (src_a, dst_a, label_a).cmp(&(src_b, dst_b, label_b)),
-        (PathElement::Vertex(_), PathElement::Edge { .. }) => Ordering::Less,
-        (PathElement::Edge { .. }, PathElement::Vertex(_)) => Ordering::Greater,
+        (PathElement::Edge(a), PathElement::Edge(b)) => a.cmp(b),
+        (PathElement::Vertex(_), PathElement::Edge(_)) => Ordering::Less,
+        (PathElement::Edge(_), PathElement::Vertex(_)) => Ordering::Greater,
     }
 }
 
@@ -496,19 +485,17 @@ mod tests {
 
     #[test]
     fn path_comparisons_are_lexicographic() {
-        let a = Value::Path(vec![crate::types::PathElement::Vertex(1)]);
-        let b = Value::Path(vec![crate::types::PathElement::Vertex(2)]);
+        let a = Value::Path(vec![crate::types::PathElement::Vertex(vec![1].into())]);
+        let b = Value::Path(vec![crate::types::PathElement::Vertex(vec![2].into())]);
         let c = Value::Path(vec![
-            crate::types::PathElement::Vertex(1),
-            crate::types::PathElement::Edge {
-                src: 1,
-                dst: 2,
-                label: Some("KNOWS".into()),
-            },
+            crate::types::PathElement::Vertex(vec![1].into()),
+            crate::types::PathElement::Edge(vec![1, 2].into()),
         ]);
+        let d = Value::Path(vec![crate::types::PathElement::Edge(vec![1].into())]);
         assert_eq!(compare_values(&a, &b), Some(Ordering::Less));
         assert_eq!(compare_values(&b, &a), Some(Ordering::Greater));
         assert_eq!(compare_values(&a, &c), Some(Ordering::Less));
+        assert_eq!(compare_values(&a, &d), Some(Ordering::Less));
     }
 
     #[test]

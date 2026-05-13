@@ -45,8 +45,6 @@ const INDEX_KEY_PATH: u8 = 12;
 /// Path element discriminant: [`PathElement::Vertex`] sorts before [`PathElement::Edge`].
 const PATH_KEY_VERTEX: u8 = 1;
 const PATH_KEY_EDGE: u8 = 2;
-const PATH_KEY_LABEL_NONE: u8 = 0;
-const PATH_KEY_LABEL_SOME: u8 = 1;
 const ITEM_MARKER: u8 = 1;
 const END_MARKER: u8 = 0;
 
@@ -198,19 +196,11 @@ fn encode_path_key(elements: &[PathElement], out: &mut Vec<u8>) -> Result<(), Va
         match element {
             PathElement::Vertex(id) => {
                 out.push(PATH_KEY_VERTEX);
-                out.extend_from_slice(&id.to_be_bytes());
+                push_escaped_index_bytes(out, id.as_ref());
             }
-            PathElement::Edge { src, dst, label } => {
+            PathElement::Edge(id) => {
                 out.push(PATH_KEY_EDGE);
-                out.extend_from_slice(&src.to_be_bytes());
-                out.extend_from_slice(&dst.to_be_bytes());
-                match label {
-                    None => out.push(PATH_KEY_LABEL_NONE),
-                    Some(text) => {
-                        out.push(PATH_KEY_LABEL_SOME);
-                        push_escaped_index_bytes(out, text.as_bytes());
-                    }
-                }
+                push_escaped_index_bytes(out, id.as_ref());
             }
         }
     }
@@ -608,12 +598,8 @@ mod tests {
                 .is_some()
         );
         let p = Value::Path(vec![
-            PathElement::Vertex(1),
-            PathElement::Edge {
-                src: 2,
-                dst: 3,
-                label: Some("e".into()),
-            },
+            PathElement::Vertex(vec![1].into()),
+            PathElement::Edge(vec![2, 3, b'e'].into()),
         ]);
         assert_eq!(
             value_to_index_key_bytes(&p).unwrap().unwrap(),
@@ -628,32 +614,24 @@ mod tests {
 
         let ordered = [
             Value::Path(vec![]),
-            Value::Path(vec![PathElement::Vertex(0)]),
-            Value::Path(vec![PathElement::Vertex(1)]),
-            Value::Path(vec![PathElement::Vertex(1), PathElement::Vertex(2)]),
+            Value::Path(vec![PathElement::Vertex(Vec::<u8>::new().into())]),
+            Value::Path(vec![PathElement::Vertex(vec![0].into())]),
+            Value::Path(vec![PathElement::Vertex(vec![0, 0].into())]),
             Value::Path(vec![
-                PathElement::Vertex(1),
-                PathElement::Edge {
-                    src: 1,
-                    dst: 1,
-                    label: None,
-                },
+                PathElement::Vertex(vec![0, 0].into()),
+                PathElement::Vertex(vec![0].into()),
             ]),
             Value::Path(vec![
-                PathElement::Vertex(1),
-                PathElement::Edge {
-                    src: 1,
-                    dst: 1,
-                    label: Some(String::new()),
-                },
+                PathElement::Vertex(vec![0, 0].into()),
+                PathElement::Edge(Vec::<u8>::new().into()),
             ]),
             Value::Path(vec![
-                PathElement::Vertex(1),
-                PathElement::Edge {
-                    src: 1,
-                    dst: 1,
-                    label: Some("a".into()),
-                },
+                PathElement::Vertex(vec![0, 0].into()),
+                PathElement::Edge(vec![0].into()),
+            ]),
+            Value::Path(vec![
+                PathElement::Vertex(vec![0, 0].into()),
+                PathElement::Edge(vec![0, 0].into()),
             ]),
         ];
         for pair in ordered.windows(2) {

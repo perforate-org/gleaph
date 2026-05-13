@@ -64,20 +64,13 @@ pub fn hash_path_element_for_join<H: Hasher>(pe: &PathElement, hasher: &mut H) {
     match pe {
         PathElement::Vertex(id) => {
             hasher.write_u8(10);
-            hasher.write_u64(*id);
+            hasher.write_u64(id.len() as u64);
+            hasher.write(id.as_ref());
         }
-        PathElement::Edge { src, dst, label } => {
+        PathElement::Edge(id) => {
             hasher.write_u8(11);
-            hasher.write_u64(*src);
-            hasher.write_u64(*dst);
-            match label {
-                Some(s) => {
-                    hasher.write_u8(1);
-                    hasher.write_u64(s.len() as u64);
-                    hasher.write(s.as_bytes());
-                }
-                None => hasher.write_u8(0),
-            }
+            hasher.write_u64(id.len() as u64);
+            hasher.write(id.as_ref());
         }
     }
 }
@@ -304,5 +297,13 @@ mod tests {
         let b = Value::Decimal(Decimal::parse("1.00").expect("parse"));
         assert_eq!(a, b);
         assert_eq!(hash64(&a), hash64(&b));
+    }
+
+    #[test]
+    fn path_join_hash_distinguishes_vertex_and_edge_with_same_id() {
+        let vertex = Value::Path(vec![crate::types::PathElement::Vertex(vec![1, 2].into())]);
+        let edge = Value::Path(vec![crate::types::PathElement::Edge(vec![1, 2].into())]);
+        assert_ne!(vertex, edge);
+        assert_ne!(hash64(&vertex), hash64(&edge));
     }
 }

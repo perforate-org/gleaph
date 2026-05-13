@@ -27,8 +27,8 @@ export type ApiValue =
   | { Record: Record<string, ApiValue> };
 
 export type ApiPathElement =
-  | { Vertex: bigint | number }
-  | { Edge: { src: bigint | number; dst: bigint | number; label?: string | null } };
+  | { Vertex: Uint8Array }
+  | { Edge: Uint8Array };
 
 export interface ApiQueryRequest {
   query: string;

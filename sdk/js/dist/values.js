@@ -38,10 +38,10 @@ export function isApiValue(value) {
     return keys.length === 1 && API_VALUE_TAGS.has(keys[0] ?? "");
 }
 export function toApiPathElement(value) {
-    if (isPlainObject(value) && "Vertex" in value) {
+    if (isPlainObject(value) && value.Vertex instanceof Uint8Array) {
         return value;
     }
-    if (isPlainObject(value) && "Edge" in value) {
+    if (isPlainObject(value) && value.Edge instanceof Uint8Array) {
         return value;
     }
     throw new Error("Cannot convert value to ApiPathElement");

@@ -53,10 +53,10 @@ export function isApiValue(value: unknown): value is ApiValue {
 }
 
 export function toApiPathElement(value: unknown): ApiPathElement {
-  if (isPlainObject(value) && "Vertex" in value) {
+  if (isPlainObject(value) && value.Vertex instanceof Uint8Array) {
     return value as ApiPathElement;
   }
-  if (isPlainObject(value) && "Edge" in value) {
+  if (isPlainObject(value) && value.Edge instanceof Uint8Array) {
     return value as ApiPathElement;
   }
   throw new Error("Cannot convert value to ApiPathElement");

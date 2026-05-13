@@ -863,19 +863,11 @@ impl Value {
                     match item {
                         PathElement::Vertex(id) => {
                             out.push(0);
-                            out.extend_from_slice(&id.to_le_bytes());
+                            write_len_prefixed_bytes(out, id.as_ref());
                         }
-                        PathElement::Edge { src, dst, label } => {
+                        PathElement::Edge(id) => {
                             out.push(1);
-                            out.extend_from_slice(&src.to_le_bytes());
-                            out.extend_from_slice(&dst.to_le_bytes());
-                            match label {
-                                Some(label) => {
-                                    out.push(1);
-                                    write_len_prefixed_bytes(out, label.as_bytes());
-                                }
-                                None => out.push(0),
-                            }
+                            write_len_prefixed_bytes(out, id.as_ref());
                         }
                     }
                 }
@@ -1001,17 +993,8 @@ impl Value {
                 for _ in 0..len {
                     let tag = cursor.read_u8()?;
                     let item = match tag {
-                        0 => PathElement::Vertex(u64::from_le_bytes(cursor.read_array()?)),
-                        1 => {
-                            let src = u64::from_le_bytes(cursor.read_array()?);
-                            let dst = u64::from_le_bytes(cursor.read_array()?);
-                            let label = if cursor.read_u8()? == 0 {
-                                None
-                            } else {
-                                Some(cursor.read_string()?)
-                            };
-                            PathElement::Edge { src, dst, label }
-                        }
+                        0 => PathElement::Vertex(cursor.read_len_prefixed_bytes()?.to_vec().into()),
+                        1 => PathElement::Edge(cursor.read_len_prefixed_bytes()?.to_vec().into()),
                         other => return Err(ValueBinaryError::InvalidTag(other)),
                     };
                     items.push(item);
@@ -1715,12 +1698,12 @@ mod tests {
         );
         use crate::types::PathElement;
         assert_eq!(
-            Value::Path(vec![PathElement::Vertex(1)]),
-            Value::Path(vec![PathElement::Vertex(1)])
+            Value::Path(vec![PathElement::Vertex(vec![1].into())]),
+            Value::Path(vec![PathElement::Vertex(vec![1].into())])
         );
         assert_ne!(
-            Value::Path(vec![PathElement::Vertex(1)]),
-            Value::Path(vec![PathElement::Vertex(2)])
+            Value::Path(vec![PathElement::Vertex(vec![1].into())]),
+            Value::Path(vec![PathElement::Vertex(vec![2].into())])
         );
     }
 
@@ -1788,13 +1771,9 @@ mod tests {
     fn display_path_with_elements() {
         use crate::types::PathElement;
         let p = Value::Path(vec![
-            PathElement::Vertex(1),
-            PathElement::Edge {
-                src: 1,
-                dst: 2,
-                label: Some("knows".into()),
-            },
-            PathElement::Vertex(2),
+            PathElement::Vertex(vec![1].into()),
+            PathElement::Edge(vec![1, 2].into()),
+            PathElement::Vertex(vec![2].into()),
         ]);
         let s = format!("{}", p);
         assert!(s.contains("path"));
@@ -2226,6 +2205,28 @@ mod tests {
         let restored =
             Value::from_binary_bytes(&value.to_binary_bytes().expect("encode")).expect("decode");
         assert_eq!(restored, value);
+    }
+
+    #[test]
+    fn binary_value_round_trips_path_values() {
+        use crate::types::PathElement;
+
+        let values = [
+            Value::Path(vec![]),
+            Value::Path(vec![PathElement::Vertex(Vec::<u8>::new().into())]),
+            Value::Path(vec![PathElement::Edge(vec![0, 1, 2].into())]),
+            Value::Path(vec![
+                PathElement::Vertex(vec![1].into()),
+                PathElement::Edge(vec![2, 3].into()),
+                PathElement::Vertex(vec![4, 5, 6].into()),
+            ]),
+        ];
+
+        for value in values {
+            let restored = Value::from_binary_bytes(&value.to_binary_bytes().expect("encode"))
+                .expect("decode");
+            assert_eq!(restored, value);
+        }
     }
 
     #[test]

@@ -12,15 +12,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{IcExtensionBinaryDecode, PrincipalValue};
 
-/// Structured path element on the API wire (same shape as the historical graph canister DTO).
+/// Structured path element on the API wire.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, CandidType)]
 pub enum IcWirePathElement {
-    Vertex(u64),
-    Edge {
-        src: u64,
-        dst: u64,
-        label: Option<String>,
-    },
+    Vertex(Vec<u8>),
+    Edge(Vec<u8>),
 }
 
 /// Internet-Computer–friendly wire representation of a [`Value`].
@@ -113,12 +109,8 @@ pub fn ic_extension_decode() -> &'static IcExtensionBinaryDecode {
 impl From<&gleaph_gql::types::PathElement> for IcWirePathElement {
     fn from(value: &gleaph_gql::types::PathElement) -> Self {
         match value {
-            gleaph_gql::types::PathElement::Vertex(id) => Self::Vertex(*id),
-            gleaph_gql::types::PathElement::Edge { src, dst, label } => Self::Edge {
-                src: *src,
-                dst: *dst,
-                label: label.clone(),
-            },
+            gleaph_gql::types::PathElement::Vertex(id) => Self::Vertex(id.as_ref().to_vec()),
+            gleaph_gql::types::PathElement::Edge(id) => Self::Edge(id.as_ref().to_vec()),
         }
     }
 }
@@ -126,12 +118,10 @@ impl From<&gleaph_gql::types::PathElement> for IcWirePathElement {
 impl From<&IcWirePathElement> for gleaph_gql::types::PathElement {
     fn from(value: &IcWirePathElement) -> Self {
         match value {
-            IcWirePathElement::Vertex(id) => gleaph_gql::types::PathElement::Vertex(*id),
-            IcWirePathElement::Edge { src, dst, label } => gleaph_gql::types::PathElement::Edge {
-                src: *src,
-                dst: *dst,
-                label: label.clone(),
-            },
+            IcWirePathElement::Vertex(id) => {
+                gleaph_gql::types::PathElement::Vertex(id.clone().into())
+            }
+            IcWirePathElement::Edge(id) => gleaph_gql::types::PathElement::Edge(id.clone().into()),
         }
     }
 }
@@ -354,6 +344,24 @@ mod tests {
             ("n".to_owned(), Value::Int64(7)),
         ]);
         let w = IcWireValue::try_from_value(&v).expect("wire");
+        let back = w.try_into_value().expect("back");
+        assert_eq!(back, v);
+    }
+
+    #[test]
+    fn path_elements_round_trip_as_opaque_bytes() {
+        let v = Value::Path(vec![
+            gleaph_gql::types::PathElement::Vertex(vec![1, 2, 3].into()),
+            gleaph_gql::types::PathElement::Edge(vec![4, 5, 6, 7].into()),
+        ]);
+        let w = IcWireValue::try_from_value(&v).expect("wire");
+        assert_eq!(
+            w,
+            IcWireValue::Path(vec![
+                IcWirePathElement::Vertex(vec![1, 2, 3]),
+                IcWirePathElement::Edge(vec![4, 5, 6, 7]),
+            ])
+        );
         let back = w.try_into_value().expect("back");
         assert_eq!(back, v);
     }
