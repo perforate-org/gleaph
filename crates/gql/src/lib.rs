@@ -21,8 +21,8 @@
 //!   rkyv-deserialized [`Value::Extension`](value::Value::Extension) wire bytes need a registered
 //!   [`ExtensionBinaryDecode`](value::ExtensionBinaryDecode) — see [`try_install_global_rkyv_extension_binary_decode`].
 //!
-//! Internet Computer `Principal` as [`Value::Extension`](value::Value::Extension) lives in the
-//! sibling crate **`gleaph-gql-ic`** (adds a `candid` dependency only there; **tag 34** short blob).
+//! Internet Computer `Principal` as [`Value::Extension`](value::Value::Extension) is provided by a
+//! platform-specific extension crate (adds a `candid` dependency only there; **tag 34** short blob).
 
 #![cfg_attr(feature = "f128", feature(f128))]
 #![cfg_attr(feature = "ast-rkyv-no-span", feature(trivial_bounds))]
@@ -33,7 +33,7 @@ pub mod ast;
 pub mod error;
 pub mod extensions;
 pub mod lexer;
-/// Gleaph identifier length limits for properties, labels, and graph-type names.
+/// Identifier length limits for properties, labels, and graph-type names.
 pub mod name_limits;
 pub mod numeric_ops;
 pub mod numeric_order;

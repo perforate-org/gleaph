@@ -293,7 +293,7 @@ pub fn narrow_unsigned(v: u128, width: u16) -> Option<crate::Value> {
     }
 }
 
-// ──── rkyv remote defs (gleaph-gql `ast-rkyv-no-span`) ────
+// ──── rkyv remote defs (`ast-rkyv-no-span` feature) ────
 
 #[cfg(feature = "ast-rkyv-no-span")]
 #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]

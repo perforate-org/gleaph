@@ -1,7 +1,7 @@
 //! rkyv helpers for [`crate::Value::Extension`] (wire bytes) and related `with` types.
 //!
 //! Deserializing [`Value::Extension`] through rkyv requires a registered
-//! [`crate::ExtensionBinaryDecode`] implementation (e.g. IC `Principal` via **`gleaph-gql-ic`**):
+//! [`crate::ExtensionBinaryDecode`] implementation (e.g. IC `Principal` via a platform extension crate):
 //! call [`try_install_global_rkyv_extension_binary_decode`] at process startup, or
 //! [`RkyvExtensionDecodeScopeGuard`] for thread-local overrides in tests.
 

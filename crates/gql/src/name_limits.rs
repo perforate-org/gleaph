@@ -1,4 +1,4 @@
-//! Gleaph identifier length limits (UTF-8 byte length after encoding).
+//! Identifier length limits for catalog names (UTF-8 byte length after encoding).
 //!
 //! These bounds keep stable structures and on-disk encodings predictable and
 //! make prefix-range scans (`StableBTreeMap::range`) workable when paired with

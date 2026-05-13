@@ -5,7 +5,7 @@
 //!
 //! Extension binary encoding: **tag 33** (`u8` kind + `u32`-length payload), **tag 34**
 //! (`u8` length + ≤255 bytes, no kind) when [`ExtensionValue::short_blob`] is set
-//! (e.g. Internet Computer `Principal` in **`gleaph-gql-ic`**).
+//! (e.g. Internet Computer `Principal` via a platform extension crate).
 //!
 //! Fixed-size binary wire payloads (no backward compatibility):
 //! - tag 7: `Int256` = `ethnum::I256` little-endian bytes (32 bytes)
@@ -122,7 +122,7 @@ pub trait ExtensionValue: fmt::Debug + fmt::Display + Send + Sync {
 
     /// When [`Some`], binary encoding uses **tag 34**: `u8` byte length (≤255) + raw bytes (no kind).
     ///
-    /// Checked before [`Self::compact_kind`]. See **`gleaph-gql-ic`** for `Principal`.
+    /// Checked before [`Self::compact_kind`]. Platform extension crates may use this for `Principal`.
     fn short_blob(&self) -> Option<Cow<'_, [u8]>> {
         None
     }
