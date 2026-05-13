@@ -1,7 +1,11 @@
 //! Sortable property-index key encoding for [`Value`](crate::Value).
+//!
+//! [`Value::Path`] keys use [`INDEX_KEY_PATH`] and order consistently with
+//! [`crate::value_cmp::compare_values`] (same rules as [`PathElement`](crate::types::PathElement) comparison).
 
 use crate::Value;
 use crate::numeric_order::{NumericOrderError, normalized_numeric_parts};
+use crate::types::PathElement;
 use std::fmt;
 
 /// Error returned when a [`Value`] cannot be encoded as an order-preserving
@@ -36,6 +40,13 @@ const INDEX_KEY_TEMPORAL: u8 = 8;
 const INDEX_KEY_LIST: u8 = 9;
 const INDEX_KEY_RECORD: u8 = 10;
 const INDEX_KEY_EXTENSION: u8 = 11;
+/// Path values; element order matches [`crate::value_cmp::compare_path_slices`].
+const INDEX_KEY_PATH: u8 = 12;
+/// Path element discriminant: [`PathElement::Vertex`] sorts before [`PathElement::Edge`].
+const PATH_KEY_VERTEX: u8 = 1;
+const PATH_KEY_EDGE: u8 = 2;
+const PATH_KEY_LABEL_NONE: u8 = 0;
+const PATH_KEY_LABEL_SOME: u8 = 1;
 const ITEM_MARKER: u8 = 1;
 const END_MARKER: u8 = 0;
 
@@ -122,7 +133,7 @@ fn encode_value_key(value: &Value, out: &mut Vec<u8>) -> Result<(), ValueIndexKe
         }
         Value::List(values) => encode_list_key(values, out)?,
         Value::Record(fields) => encode_record_key(fields, out)?,
-        Value::Path(_) => return Err(ValueIndexKeyError::UnsupportedValue),
+        Value::Path(elements) => encode_path_key(elements, out)?,
         Value::Extension(ext) => {
             let Some(key) = ext.sortable_index_key() else {
                 return Err(ValueIndexKeyError::UnsupportedValue);
@@ -178,6 +189,32 @@ fn encode_numeric_key(value: &Value, out: &mut Vec<u8>) -> Result<(), ValueIndex
         out.push(2);
         out.extend(magnitude);
     }
+    Ok(())
+}
+
+fn encode_path_key(elements: &[PathElement], out: &mut Vec<u8>) -> Result<(), ValueIndexKeyError> {
+    out.push(INDEX_KEY_PATH);
+    for element in elements {
+        match element {
+            PathElement::Vertex(id) => {
+                out.push(PATH_KEY_VERTEX);
+                out.extend_from_slice(&id.to_be_bytes());
+            }
+            PathElement::Edge { src, dst, label } => {
+                out.push(PATH_KEY_EDGE);
+                out.extend_from_slice(&src.to_be_bytes());
+                out.extend_from_slice(&dst.to_be_bytes());
+                match label {
+                    None => out.push(PATH_KEY_LABEL_NONE),
+                    Some(text) => {
+                        out.push(PATH_KEY_LABEL_SOME);
+                        push_escaped_index_bytes(out, text.as_bytes());
+                    }
+                }
+            }
+        }
+    }
+    out.push(END_MARKER);
     Ok(())
 }
 
@@ -554,14 +591,86 @@ mod tests {
             value_to_index_key_bytes(&Value::List(vec![Value::Float64(f64::NAN)])),
             Err(ValueIndexKeyError::NonFiniteFloat)
         );
-        assert_eq!(
-            value_to_index_key_bytes(&Value::List(vec![Value::Path(vec![])])),
-            Err(ValueIndexKeyError::UnsupportedValue)
+    }
+
+    #[test]
+    fn index_key_encodes_path_values() {
+        use crate::types::PathElement;
+
+        assert!(
+            value_to_index_key_bytes(&Value::List(vec![Value::Path(vec![])]))
+                .unwrap()
+                .is_some()
         );
-        assert_eq!(
-            value_to_index_key_bytes(&Value::Record(vec![("a".into(), Value::Path(vec![]))])),
-            Err(ValueIndexKeyError::UnsupportedValue)
+        assert!(
+            value_to_index_key_bytes(&Value::Record(vec![("a".into(), Value::Path(vec![]))]))
+                .unwrap()
+                .is_some()
         );
+        let p = Value::Path(vec![
+            PathElement::Vertex(1),
+            PathElement::Edge {
+                src: 2,
+                dst: 3,
+                label: Some("e".into()),
+            },
+        ]);
+        assert_eq!(
+            value_to_index_key_bytes(&p).unwrap().unwrap(),
+            value_to_index_key_bytes(&p).unwrap().unwrap()
+        );
+    }
+
+    #[test]
+    fn index_key_order_matches_path_comparison() {
+        use crate::types::PathElement;
+        use crate::value_cmp::compare_values;
+
+        let ordered = [
+            Value::Path(vec![]),
+            Value::Path(vec![PathElement::Vertex(0)]),
+            Value::Path(vec![PathElement::Vertex(1)]),
+            Value::Path(vec![PathElement::Vertex(1), PathElement::Vertex(2)]),
+            Value::Path(vec![
+                PathElement::Vertex(1),
+                PathElement::Edge {
+                    src: 1,
+                    dst: 1,
+                    label: None,
+                },
+            ]),
+            Value::Path(vec![
+                PathElement::Vertex(1),
+                PathElement::Edge {
+                    src: 1,
+                    dst: 1,
+                    label: Some(String::new()),
+                },
+            ]),
+            Value::Path(vec![
+                PathElement::Vertex(1),
+                PathElement::Edge {
+                    src: 1,
+                    dst: 1,
+                    label: Some("a".into()),
+                },
+            ]),
+        ];
+        for pair in ordered.windows(2) {
+            assert_eq!(
+                compare_values(&pair[0], &pair[1]),
+                Some(Ordering::Less),
+                "compare_values: {:?} <? {:?}",
+                pair[0],
+                pair[1]
+            );
+            assert!(
+                key(pair[0].clone()) < key(pair[1].clone()),
+                "path keys: {:?} <? {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
     }
 
     #[test]
