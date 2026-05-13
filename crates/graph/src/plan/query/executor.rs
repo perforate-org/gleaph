@@ -2062,6 +2062,124 @@ mod tests {
     }
 
     #[test]
+    fn executes_list_range_index_scan_with_lookup_range() {
+        let store = GraphStore::new();
+        configure_test_index(&store);
+        let hit = store
+            .insert_vertex_named(
+                ["IndexScanListRange"],
+                [("tags", Value::List(vec![Value::Int64(2)]))],
+            )
+            .expect("insert hit");
+        let miss = store
+            .insert_vertex_named(
+                ["IndexScanListRange"],
+                [("tags", Value::List(vec![Value::Int64(0)]))],
+            )
+            .expect("insert miss");
+        let pid = store.property_id("tags").expect("tags property").raw();
+        let index = MockPropertyIndex::default();
+        index.range_hits.borrow_mut().extend([
+            PostingHit {
+                shard_id: 7,
+                vertex_id: u32::try_from(u64::from(hit)).unwrap(),
+            },
+            PostingHit {
+                shard_id: 7,
+                vertex_id: u32::try_from(u64::from(miss)).unwrap(),
+            },
+        ]);
+        let bound = Value::List(vec![Value::Int64(1)]);
+        let plan = plan(vec![
+            PlanOp::IndexScan {
+                variable: "n".into(),
+                property: "tags".into(),
+                value: ScanValue::Literal(bound.clone()),
+                cmp: CmpOp::Ge,
+                property_projection: None,
+            },
+            PlanOp::PropertyFilter {
+                predicates: vec![Expr::new(ExprKind::Compare {
+                    left: Box::new(prop("n", "tags")),
+                    op: CmpOp::Ge,
+                    right: Box::new(Expr::new(ExprKind::Literal(bound.clone()))),
+                })],
+                stage: 0,
+            },
+        ]);
+
+        let result = pollster::block_on(execute_plan_query(&store, &plan, &params(), Some(&index)))
+            .expect("execute list range index scan");
+
+        assert_eq!(result.rows.len(), 1);
+        let calls = index.range_calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, pid);
+        assert!(matches!(
+            &calls[0].1,
+            PostingRangeRequest::Ge(bytes)
+                if bytes == &value_to_index_key_bytes(&bound).unwrap().unwrap()
+        ));
+        assert!(index.equal_calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn executes_record_range_index_scan_with_lookup_range() {
+        let store = GraphStore::new();
+        configure_test_index(&store);
+        let hit = store
+            .insert_vertex_named(
+                ["IndexScanRecordRange"],
+                [(
+                    "profile",
+                    Value::Record(vec![
+                        ("a".into(), Value::Int64(1)),
+                        ("b".into(), Value::Int64(1)),
+                    ]),
+                )],
+            )
+            .expect("insert hit");
+        let pid = store
+            .property_id("profile")
+            .expect("profile property")
+            .raw();
+        let index = MockPropertyIndex::default();
+        index.range_hits.borrow_mut().push(PostingHit {
+            shard_id: 7,
+            vertex_id: u32::try_from(u64::from(hit)).unwrap(),
+        });
+        let bound = Value::Record(vec![
+            ("b".into(), Value::Int64(2)),
+            ("a".into(), Value::Int64(1)),
+        ]);
+        let canonical_bound = Value::Record(vec![
+            ("a".into(), Value::Int64(1)),
+            ("b".into(), Value::Int64(2)),
+        ]);
+        let plan = plan(vec![PlanOp::IndexScan {
+            variable: "n".into(),
+            property: "profile".into(),
+            value: ScanValue::Literal(bound),
+            cmp: CmpOp::Lt,
+            property_projection: None,
+        }]);
+
+        let result = pollster::block_on(execute_plan_query(&store, &plan, &params(), Some(&index)))
+            .expect("execute record range index scan");
+
+        assert_eq!(result.rows.len(), 1);
+        let calls = index.range_calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, pid);
+        assert!(matches!(
+            &calls[0].1,
+            PostingRangeRequest::Lt(bytes)
+                if bytes == &value_to_index_key_bytes(&canonical_bound).unwrap().unwrap()
+        ));
+        assert!(index.equal_calls.borrow().is_empty());
+    }
+
+    #[test]
     fn index_scan_rejects_unsupported_parameter_value() {
         let store = GraphStore::new();
         configure_test_index(&store);
@@ -2081,6 +2199,30 @@ mod tests {
 
         let err = pollster::block_on(execute_plan_query(&store, &plan, &parameters, Some(&index)))
             .expect_err("unsupported parameter should fail");
+
+        assert!(matches!(err, PlanQueryError::InvalidExpressionValue { .. }));
+    }
+
+    #[test]
+    fn range_index_scan_rejects_unsupported_nested_parameter_value() {
+        let store = GraphStore::new();
+        configure_test_index(&store);
+        store
+            .insert_vertex_named(["IndexScanBadRangeParam"], [("tags", Value::List(vec![]))])
+            .expect("insert vertex");
+        let index = MockPropertyIndex::default();
+        let mut parameters = params();
+        parameters.insert("tags".into(), Value::List(vec![Value::Path(vec![])]));
+        let plan = plan(vec![PlanOp::IndexScan {
+            variable: "n".into(),
+            property: "tags".into(),
+            value: ScanValue::Parameter("tags".into()),
+            cmp: CmpOp::Ge,
+            property_projection: None,
+        }]);
+
+        let err = pollster::block_on(execute_plan_query(&store, &plan, &parameters, Some(&index)))
+            .expect_err("unsupported range parameter should fail");
 
         assert!(matches!(err, PlanQueryError::InvalidExpressionValue { .. }));
     }
@@ -2130,6 +2272,40 @@ mod tests {
                 cmp: CmpOp::Eq,
             }],
             fallback_label: Some("IndexScanConditionalFallback".into()),
+            fallback_variable: "n".into(),
+            property_projection: None,
+        }]);
+
+        let result =
+            pollster::block_on(execute_plan_query(&store, &plan, &parameters, Some(&index)))
+                .expect("conditional fallback");
+
+        assert_eq!(result.rows.len(), 1);
+        assert!(index.equal_calls.borrow().is_empty());
+        assert!(index.range_calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn conditional_range_index_scan_falls_back_for_unsupported_nested_parameter() {
+        let store = GraphStore::new();
+        configure_test_index(&store);
+        store
+            .insert_vertex_named(
+                ["IndexScanConditionalRangeFallback"],
+                [("tags", Value::List(vec![]))],
+            )
+            .expect("insert vertex");
+        let index = MockPropertyIndex::default();
+        let mut parameters = params();
+        parameters.insert("tags".into(), Value::List(vec![Value::Path(vec![])]));
+        let plan = plan(vec![PlanOp::ConditionalIndexScan {
+            candidates: vec![ConditionalScanCandidate {
+                param_name: "tags".into(),
+                property: "tags".into(),
+                variable: "n".into(),
+                cmp: CmpOp::Ge,
+            }],
+            fallback_label: Some("IndexScanConditionalRangeFallback".into()),
             fallback_variable: "n".into(),
             property_projection: None,
         }]);

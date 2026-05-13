@@ -2873,7 +2873,7 @@ fn compat_range_index_scan_float_literal_bound() {
 }
 
 #[test]
-fn compat_range_index_scan_rejects_unsupported_literal_bound() {
+fn compat_range_index_scan_list_literal_bound() {
     let mut stats = TableStats::default();
     stats.label_cardinality.insert("User".to_string(), 500);
     stats
@@ -2881,8 +2881,67 @@ fn compat_range_index_scan_rejects_unsupported_literal_bound() {
         .insert("tags".to_string());
     let plan = plan_query_with_stats("MATCH (u:User) WHERE u.tags >= [1, 2] RETURN u", &stats);
     assert!(
-        !matches!(plan.ops.first(), Some(PlanOp::IndexScan { cmp, .. }) if *cmp != CmpOp::Eq),
-        "unsupported range literal should not use range IndexScan: {:?}",
+        matches!(
+            plan.ops.first(),
+            Some(PlanOp::IndexScan {
+                property,
+                value: ScanValue::Literal(Value::List(values)),
+                cmp: CmpOp::Ge,
+                ..
+            }) if &**property == "tags" && values == &vec![Value::Int64(1), Value::Int64(2)]
+        ),
+        "should emit list range IndexScan: {:?}",
+        plan.ops.first()
+    );
+}
+
+#[test]
+fn compat_range_index_scan_record_literal_bound() {
+    let mut stats = TableStats::default();
+    stats.label_cardinality.insert("User".to_string(), 500);
+    stats
+        .range_indexed_vertex_properties
+        .insert("profile".to_string());
+    let plan = plan_query_with_stats("MATCH (u:User) WHERE u.profile < {a: 2} RETURN u", &stats);
+    assert!(
+        matches!(
+            plan.ops.first(),
+            Some(PlanOp::IndexScan {
+                property,
+                value: ScanValue::Literal(Value::Record(fields)),
+                cmp: CmpOp::Lt,
+                ..
+            }) if &**property == "profile"
+                && fields == &vec![("a".to_string(), Value::Int64(2))]
+        ),
+        "should emit record range IndexScan: {:?}",
+        plan.ops.first()
+    );
+}
+
+#[test]
+fn compat_range_index_scan_reverses_left_list_literal_predicate() {
+    let mut stats = TableStats::default();
+    stats.label_cardinality.insert("User".to_string(), 500);
+    stats
+        .range_indexed_vertex_properties
+        .insert("tags".to_string());
+    let plan = plan_query_with_stats("MATCH (u:User) WHERE [{a: 1}] <= u.tags RETURN u", &stats);
+    assert!(
+        matches!(
+            plan.ops.first(),
+            Some(PlanOp::IndexScan {
+                property,
+                value: ScanValue::Literal(Value::List(values)),
+                cmp: CmpOp::Ge,
+                ..
+            }) if &**property == "tags"
+                && matches!(
+                    values.as_slice(),
+                    [Value::Record(fields)] if fields == &vec![("a".to_string(), Value::Int64(1))]
+                )
+        ),
+        "should emit reversed list range IndexScan: {:?}",
         plan.ops.first()
     );
 }

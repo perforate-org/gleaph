@@ -314,6 +314,120 @@ mod tests {
     }
 
     #[test]
+    fn lookup_range_respects_list_value_key_boundaries() {
+        let store = IndexStore::new();
+        store.init_from_args(&IndexInitArgs {
+            controllers: vec![],
+        });
+        let admin = Principal::anonymous();
+        store.bootstrap_admins(&[admin]);
+        let shard_principal = Principal::from_slice(&[1]);
+        store
+            .admin_register_shard(admin, 7, shard_principal)
+            .expect("register shard");
+
+        let values = [
+            (10u32, gleaph_gql::Value::List(vec![])),
+            (
+                20u32,
+                gleaph_gql::Value::List(vec![gleaph_gql::Value::Int64(1)]),
+            ),
+            (
+                30u32,
+                gleaph_gql::Value::List(vec![
+                    gleaph_gql::Value::Int64(1),
+                    gleaph_gql::Value::Int64(2),
+                ]),
+            ),
+            (
+                40u32,
+                gleaph_gql::Value::List(vec![gleaph_gql::Value::Int64(2)]),
+            ),
+        ];
+        for (vid, value) in values {
+            store
+                .posting_insert(shard_principal, 7, 88, index_key(value), vid)
+                .expect("insert");
+        }
+
+        let one = index_key(gleaph_gql::Value::List(vec![gleaph_gql::Value::Int64(1)]));
+        let two = index_key(gleaph_gql::Value::List(vec![gleaph_gql::Value::Int64(2)]));
+
+        let mut ge_one: Vec<u32> = store
+            .lookup_range(88, &PostingRangeRequest::Ge(one))
+            .into_iter()
+            .map(|h| h.vertex_id)
+            .collect();
+        ge_one.sort_unstable();
+        assert_eq!(ge_one, vec![20, 30, 40]);
+
+        let mut lt_two: Vec<u32> = store
+            .lookup_range(88, &PostingRangeRequest::Lt(two))
+            .into_iter()
+            .map(|h| h.vertex_id)
+            .collect();
+        lt_two.sort_unstable();
+        assert_eq!(lt_two, vec![10, 20, 30]);
+    }
+
+    #[test]
+    fn lookup_range_respects_record_value_key_boundaries() {
+        let store = IndexStore::new();
+        store.init_from_args(&IndexInitArgs {
+            controllers: vec![],
+        });
+        let admin = Principal::anonymous();
+        store.bootstrap_admins(&[admin]);
+        let shard_principal = Principal::from_slice(&[1]);
+        store
+            .admin_register_shard(admin, 7, shard_principal)
+            .expect("register shard");
+
+        for (vid, value) in [
+            (
+                10u32,
+                gleaph_gql::Value::Record(vec![("a".into(), gleaph_gql::Value::Int64(1))]),
+            ),
+            (
+                20u32,
+                gleaph_gql::Value::Record(vec![("a".into(), gleaph_gql::Value::Int64(2))]),
+            ),
+            (
+                30u32,
+                gleaph_gql::Value::Record(vec![("b".into(), gleaph_gql::Value::Int64(1))]),
+            ),
+        ] {
+            store
+                .posting_insert(shard_principal, 7, 99, index_key(value), vid)
+                .expect("insert");
+        }
+
+        let same_key = index_key(gleaph_gql::Value::Record(vec![
+            ("b".into(), gleaph_gql::Value::Int64(2)),
+            ("a".into(), gleaph_gql::Value::Int64(1)),
+        ]));
+        assert_eq!(
+            same_key,
+            index_key(gleaph_gql::Value::Record(vec![
+                ("a".into(), gleaph_gql::Value::Int64(1)),
+                ("b".into(), gleaph_gql::Value::Int64(2)),
+            ]))
+        );
+
+        let bound = index_key(gleaph_gql::Value::Record(vec![(
+            "a".into(),
+            gleaph_gql::Value::Int64(2),
+        )]));
+        let mut ge_bound: Vec<u32> = store
+            .lookup_range(99, &PostingRangeRequest::Ge(bound))
+            .into_iter()
+            .map(|h| h.vertex_id)
+            .collect();
+        ge_bound.sort_unstable();
+        assert_eq!(ge_bound, vec![20, 30]);
+    }
+
+    #[test]
     fn admin_register_shard_idempotent_same_principal() {
         let store = IndexStore::new();
         store.init_from_args(&IndexInitArgs {

@@ -12,6 +12,7 @@
 //! 4. Lowest-cardinality label
 //! 5. Full scan (fallback)
 
+use gleaph_gql::Value;
 use gleaph_gql::ast::*;
 use gleaph_gql::types::LabelExpr;
 use gleaph_graph_kernel::index::value_to_index_key_bytes;
@@ -348,10 +349,14 @@ fn reverse_cmp(op: CmpOp) -> CmpOp {
 
 fn range_scan_value_from_expr(expr: &Expr) -> Option<ScanValue> {
     match &expr.kind {
-        ExprKind::Literal(value) => value_to_index_key_bytes(value)
-            .ok()
-            .flatten()
-            .map(|_| ScanValue::Literal(value.clone())),
+        ExprKind::Literal(value) => scan_value_from_literal_value(value),
+        ExprKind::ListLiteral(_)
+        | ExprKind::ListConstructor { .. }
+        | ExprKind::RecordLiteral(_)
+        | ExprKind::RecordConstructor(_) => {
+            let value = const_value_from_expr(expr)?;
+            scan_value_from_literal_value(&value)
+        }
         ExprKind::Parameter(parameter) => Some(ScanValue::Parameter(parameter.clone().into())),
         _ => None,
     }
@@ -427,13 +432,43 @@ pub fn find_index_intersection(
 pub(crate) fn scan_value_from_expr(expr: &Expr) -> Option<crate::plan::ScanValue> {
     match &expr.kind {
         ExprKind::Literal(v) => Some(crate::plan::ScanValue::Literal(v.clone())),
+        ExprKind::ListLiteral(_)
+        | ExprKind::ListConstructor { .. }
+        | ExprKind::RecordLiteral(_)
+        | ExprKind::RecordConstructor(_) => {
+            const_value_from_expr(expr).map(crate::plan::ScanValue::Literal)
+        }
         ExprKind::Parameter(p) => Some(crate::plan::ScanValue::Parameter(p.clone().into())),
         _ => None,
     }
 }
 
 fn is_scannable_value(expr: &Expr) -> bool {
-    matches!(&expr.kind, ExprKind::Literal(_) | ExprKind::Parameter(_))
+    matches!(&expr.kind, ExprKind::Parameter(_)) || scan_value_from_expr(expr).is_some()
+}
+
+fn scan_value_from_literal_value(value: &Value) -> Option<ScanValue> {
+    value_to_index_key_bytes(value)
+        .ok()
+        .flatten()
+        .map(|_| ScanValue::Literal(value.clone()))
+}
+
+fn const_value_from_expr(expr: &Expr) -> Option<Value> {
+    match &expr.kind {
+        ExprKind::Literal(value) => Some(value.clone()),
+        ExprKind::ListLiteral(items) | ExprKind::ListConstructor { items, .. } => items
+            .iter()
+            .map(const_value_from_expr)
+            .collect::<Option<Vec<_>>>()
+            .map(Value::List),
+        ExprKind::RecordLiteral(fields) | ExprKind::RecordConstructor(fields) => fields
+            .iter()
+            .map(|(name, expr)| const_value_from_expr(expr).map(|value| (name.clone(), value)))
+            .collect::<Option<Vec<_>>>()
+            .map(Value::Record),
+        _ => None,
+    }
 }
 
 /// Infer a node label from connected edges using schema endpoint information.
