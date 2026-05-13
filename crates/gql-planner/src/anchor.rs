@@ -15,7 +15,7 @@
 use gleaph_gql::Value;
 use gleaph_gql::ast::*;
 use gleaph_gql::types::LabelExpr;
-use gleaph_graph_kernel::index::value_to_index_key_bytes;
+use gleaph_gql::value_to_index_key_bytes;
 
 use crate::plan::{AnchorInfo, AnchorSource, ScanValue};
 use crate::stats::{self, GraphStats};

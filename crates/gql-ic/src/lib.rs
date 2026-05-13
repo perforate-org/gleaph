@@ -95,7 +95,7 @@ mod tests {
     use super::*;
     use gleaph_gql::ExtensionBinaryDecode;
     use gleaph_gql::value_cmp::compare_values;
-    use gleaph_graph_kernel::index::value_to_index_key_bytes;
+    use gleaph_gql::value_to_index_key_bytes;
 
     #[test]
     fn principal_binary_roundtrip() {

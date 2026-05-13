@@ -18,8 +18,8 @@ use crate::facade::GraphStore;
 use crate::index::lookup::PropertyIndexLookup;
 use crate::plan::PlanQueryError;
 use gleaph_gql::Value;
+use gleaph_gql::value_to_index_key_bytes;
 use gleaph_graph_kernel::entry::PropertyId;
-use gleaph_graph_kernel::index::value_to_index_key_bytes;
 use ic_stable_lara::VertexId;
 use std::cell::RefCell;
 

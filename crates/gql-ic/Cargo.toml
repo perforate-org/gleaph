@@ -6,11 +6,14 @@ license.workspace = true
 description = "Internet Computer types as gleaph-gql Value::Extension (Candid Principal, etc.)"
 
 [dependencies]
-gleaph-gql = { path = "../gql", features = ["ast-rkyv-no-span", "f128", "f256"] }
+gleaph-gql = { path = "../gql", features = [
+    "ast-rkyv-no-span",
+    "f128",
+    "f256",
+] }
 candid.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 
 [dev-dependencies]
-gleaph-graph-kernel = { path = "../graph-kernel", features = ["f128", "f256"] }
 rkyv.workspace = true

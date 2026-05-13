@@ -49,6 +49,7 @@ pub mod types;
 pub mod validate;
 pub mod value;
 pub mod value_cmp;
+pub mod value_index_key;
 pub mod value_join_hash;
 
 pub use error::{GqlError, GqlResult};
@@ -57,6 +58,7 @@ pub use value::{
     DenyExtensionBinaryDecode, ExtensionBinaryDecode, ExtensionSortableKey, ExtensionValue, Value,
     ValueBinaryError,
 };
+pub use value_index_key::{ValueIndexKeyError, value_to_index_key_bytes};
 pub use value_join_hash::{hash_path_element_for_join, hash_value_for_join};
 
 #[cfg(feature = "ast-rkyv-no-span")]

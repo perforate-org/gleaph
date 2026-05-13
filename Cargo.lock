@@ -668,7 +668,6 @@ version = "0.1.0"
 dependencies = [
  "candid",
  "gleaph-gql",
- "gleaph-graph-kernel",
  "rkyv 0.8.16",
  "serde",
  "thiserror 2.0.18",
@@ -756,7 +755,6 @@ dependencies = [
  "bitflags",
  "candid",
  "ethnum",
- "gleaph-gql",
  "ic-stable-lara",
  "ic-stable-structures",
  "serde",

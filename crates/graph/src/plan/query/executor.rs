@@ -9,13 +9,13 @@ use crate::plan::expr_evaluator::{
 };
 use gleaph_gql::ast::{CmpOp, Expr, ExprKind, OrderByClause, TruthValue};
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
-use gleaph_gql::{Value, hash_value_for_join};
+use gleaph_gql::{Value, hash_value_for_join, value_to_index_key_bytes};
 use gleaph_gql_planner::plan::{
     AggregateSpec, ConditionalScanCandidate, IndexScanSpec, PhysicalPlan, PlanOp, ProjectColumn,
     ScanValue, Str,
 };
 use gleaph_graph_kernel::entry::{Edge, LabelId};
-use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest, value_to_index_key_bytes};
+use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest};
 use ic_stable_lara::VertexId;
 use ic_stable_lara::traits::CsrVertexTombstone;
 use nohash_hasher::IntMap;

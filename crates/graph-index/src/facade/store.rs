@@ -163,7 +163,7 @@ mod tests {
     use super::*;
     use crate::state::IndexError;
     use candid::Principal;
-    use gleaph_graph_kernel::index::value_to_index_key_bytes;
+    use gleaph_gql::value_to_index_key_bytes;
 
     fn index_key(value: gleaph_gql::Value) -> Vec<u8> {
         value_to_index_key_bytes(&value).unwrap().unwrap()
