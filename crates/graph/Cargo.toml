@@ -10,6 +10,7 @@ crate-type = ["cdylib", "rlib"]
 [features]
 default = []
 canbench = ["dep:canbench-rs"]
+sql-compat = ["gleaph-gql/sql-compat", "gleaph-gql-planner/sql-compat"]
 
 [dependencies]
 async-trait = "0.1"
@@ -22,6 +23,7 @@ gleaph-gql-ic.workspace = true
 gleaph-gql-planner.workspace = true
 gleaph-graph-prepared.workspace = true
 gleaph-graph-kernel.workspace = true
+half.workspace = true
 ic-cdk.workspace = true
 ic-cdk-macros.workspace = true
 ic-stable-lara.workspace = true

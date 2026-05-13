@@ -7,6 +7,7 @@ use rapidhash::RapidHashSet;
 
 use gleaph_gql::ast::ExprKind;
 
+use crate::expr_children::for_each_immediate_child_expr;
 use crate::plan::{PlanAnnotations, PlanOp};
 
 /// Apply filter pushdown: move PropertyFilter ops to the earliest stage where
@@ -494,45 +495,20 @@ pub fn apply_late_project(ops: &mut Vec<PlanOp>, annotations: &mut PlanAnnotatio
 }
 
 /// Collect all variable references in an expression (cloning variant).
-pub(crate) fn collect_variables(expr: &gleaph_gql::ast::Expr) -> Vec<String> {
+pub fn collect_variables(expr: &gleaph_gql::ast::Expr) -> Vec<String> {
     let mut vars = Vec::new();
     collect_variables_ref(expr, &mut |v| vars.push(v.to_string()));
+    vars.sort();
+    vars.dedup();
     vars
 }
 
 /// Walk expression tree and call `f` with each variable reference (zero-copy).
-pub(crate) fn collect_variables_ref<'a>(
-    expr: &'a gleaph_gql::ast::Expr,
-    f: &mut impl FnMut(&'a str),
-) {
-    match &expr.kind {
-        ExprKind::Variable(v) => f(v),
-        ExprKind::PropertyAccess { expr, .. } => collect_variables_ref(expr, f),
-        ExprKind::BinaryOp { left, right, .. }
-        | ExprKind::And(left, right)
-        | ExprKind::Or(left, right)
-        | ExprKind::Xor(left, right)
-        | ExprKind::Compare { left, right, .. }
-        | ExprKind::Concat(left, right)
-        | ExprKind::NullIf(left, right) => {
-            collect_variables_ref(left, f);
-            collect_variables_ref(right, f);
-        }
-        ExprKind::Not(inner)
-        | ExprKind::UnaryOp { expr: inner, .. }
-        | ExprKind::IsNull(inner)
-        | ExprKind::IsNotNull(inner)
-        | ExprKind::Paren(inner) => {
-            collect_variables_ref(inner, f);
-        }
-        ExprKind::FunctionCall { args, .. } => {
-            for arg in args {
-                collect_variables_ref(arg, f);
-            }
-        }
-        ExprKind::Aggregate { expr: Some(e), .. } => collect_variables_ref(e, f),
-        _ => {}
+pub fn collect_variables_ref(expr: &gleaph_gql::ast::Expr, f: &mut impl FnMut(&str)) {
+    if let ExprKind::Variable(v) = &expr.kind {
+        f(v);
     }
+    for_each_immediate_child_expr(expr, |child| collect_variables_ref(child, f));
 }
 
 /// Check if all variables in an expression equal a specific variable.

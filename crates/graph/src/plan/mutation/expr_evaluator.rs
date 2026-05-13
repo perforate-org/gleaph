@@ -183,6 +183,9 @@ fn map_expr_eval_err(property: &str, err: ExprEvaluationError) -> PlanMutationEr
         ExprEvaluationError::NumericOverflow => {
             PlanMutationError::ExpressionNumericOverflow { property }
         }
+        ExprEvaluationError::NumericPrecisionOverflow => {
+            PlanMutationError::ExpressionNumericPrecisionOverflow { property }
+        }
         ExprEvaluationError::NonFiniteNumeric => {
             PlanMutationError::ExpressionNonFiniteNumeric { property }
         }

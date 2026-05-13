@@ -10,9 +10,25 @@ use gleaph_gql::Value;
 use gleaph_gql::ast::Statement;
 use gleaph_gql::parser;
 use gleaph_gql::program_modification::classify_program;
-use gleaph_gql_planner::build_statement_plan;
+use gleaph_gql::type_check::NoSchema;
+use gleaph_gql_planner::{PlanBuildOptions, build_statement_plan_with_options};
 use gleaph_graph_prepared::PreparedQueryRecord;
+
+use crate::plan::query::GLEAPH_PATH_EXTENSION_HANDLER;
 use std::collections::BTreeMap;
+
+fn gleaph_plan_options() -> PlanBuildOptions<'static> {
+    PlanBuildOptions {
+        stats: None,
+        path_extensions: &GLEAPH_PATH_EXTENSION_HANDLER,
+    }
+}
+
+fn plan_statement(
+    stmt: &Statement,
+) -> Result<gleaph_gql_planner::PhysicalPlan, gleaph_gql_planner::PlannerError> {
+    build_statement_plan_with_options(stmt, gleaph_plan_options(), &NoSchema)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GqlCanisterExecutionMode {
@@ -115,8 +131,7 @@ pub async fn run_adhoc_gql(
         if matches!(stmt, Statement::Session(_)) {
             continue;
         }
-        let plan =
-            build_statement_plan(stmt, None).map_err(|e| GqlRunError::Plan(e.to_string()))?;
+        let plan = plan_statement(stmt).map_err(|e| GqlRunError::Plan(e.to_string()))?;
         if plan.has_dml() {
             store.execute_plan_mutations(&plan, execution)?;
             pending::flush_pending(index).await?;
@@ -165,8 +180,7 @@ pub async fn run_prepared_gql(
         if matches!(stmt, Statement::Session(_)) {
             continue;
         }
-        let plan =
-            build_statement_plan(stmt, None).map_err(|e| GqlRunError::Plan(e.to_string()))?;
+        let plan = plan_statement(stmt).map_err(|e| GqlRunError::Plan(e.to_string()))?;
         if plan.has_dml() {
             store.execute_plan_mutations(&plan, execution)?;
             pending::flush_pending(index).await?;
@@ -465,5 +479,431 @@ mod tests {
                 .contains("requires a canister caller context"),
             "{err}"
         );
+    }
+
+    fn setup_gql_weighted_graph(store: &GraphStore) {
+        use crate::facade::mutation_executor::GraphMutationExecutor;
+        use gleaph_graph_kernel::entry::{
+            EdgeMeta, EdgeWeightProfile, InlineEdgeLabelId, WeightEncoding,
+        };
+        let a = store
+            .insert_vertex_named(["WgtGqlA"], Vec::<(&str, Value)>::new())
+            .expect("a");
+        let b = store
+            .insert_vertex_named(["WgtGqlB"], Vec::<(&str, Value)>::new())
+            .expect("b");
+        let c = store
+            .insert_vertex_named(["WgtGqlC"], Vec::<(&str, Value)>::new())
+            .expect("c");
+        let label_id = store
+            .get_or_insert_edge_label_id("WgtGqlRoad")
+            .expect("label");
+        store
+            .set_edge_label_weight_profile(
+                label_id,
+                EdgeWeightProfile {
+                    encoding: WeightEncoding::RawU16,
+                },
+            )
+            .expect("profile");
+        let inline = InlineEdgeLabelId::from_label_id(label_id).expect("inline");
+        let meta = EdgeMeta::new(false, false, Some(inline));
+        store
+            .insert_directed_edge_with_inline_value(a, b, meta, 1)
+            .expect("a->b");
+        store
+            .insert_directed_edge_with_inline_value(b, c, meta, 1)
+            .expect("b->c");
+        store
+            .insert_directed_edge_with_inline_value(a, c, meta, 100)
+            .expect("a->c");
+    }
+
+    fn path_len(value: Option<&Value>) -> usize {
+        match value {
+            Some(Value::Path(elements)) => elements.len(),
+            other => panic!("expected path value, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn adhoc_gleaph_cost_selects_weighted_shortest_path() {
+        let store = GraphStore::new();
+        setup_gql_weighted_graph(&store);
+        let params = BTreeMap::new();
+        let out = pollster::block_on(run_adhoc_gql(
+            store,
+            "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH_COST BY GLEAPH_WEIGHT(e) RETURN p",
+            &params,
+            Role::Read,
+            None,
+            GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext::default(),
+        ))
+        .expect("weighted adhoc gql");
+        assert_eq!(out.rows.len(), 1);
+        assert_eq!(path_len(out.rows[0].get("p")), 5);
+    }
+
+    #[test]
+    fn prepared_gleaph_cost_selects_weighted_shortest_path() {
+        let store = GraphStore::new();
+        setup_gql_weighted_graph(&store);
+        store
+            .prepared_query_register(
+                "wgt_shortest".into(),
+                "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH_COST BY GLEAPH_WEIGHT(e) RETURN p",
+            )
+            .expect("register");
+        let record = store.prepared_query_get("wgt_shortest").expect("get");
+        let params = BTreeMap::new();
+        let out = pollster::block_on(run_prepared_gql(
+            store,
+            &record,
+            &params,
+            None,
+            GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext::default(),
+        ))
+        .expect("prepared weighted gql");
+        assert_eq!(out.rows.len(), 1);
+        assert_eq!(path_len(out.rows[0].get("p")), 5);
+    }
+
+    #[test]
+    fn adhoc_gleaph_cost_rejects_shortest_k() {
+        let store = GraphStore::new();
+        setup_gql_weighted_graph(&store);
+        let params = BTreeMap::new();
+        let err = pollster::block_on(run_adhoc_gql(
+            store,
+            "MATCH SHORTEST 2 (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH_COST BY GLEAPH_WEIGHT(e) RETURN a",
+            &params,
+            Role::Read,
+            None,
+            GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext::default(),
+        ))
+        .expect_err("weighted shortest k");
+        assert!(err.to_string().contains("weighted SHORTEST k"), "{err}");
+    }
+
+    #[test]
+    fn adhoc_gleaph_cost_rejects_bare_edge_variable() {
+        let store = GraphStore::new();
+        setup_gql_weighted_graph(&store);
+        let params = BTreeMap::new();
+        let err = pollster::block_on(run_adhoc_gql(
+            store,
+            "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH_COST BY e RETURN p",
+            &params,
+            Role::Read,
+            None,
+            GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext::default(),
+        ))
+        .expect_err("bare edge variable cost");
+        match &err {
+            GqlRunError::Plan(msg) => {
+                assert!(
+                    msg.contains("bare edge variable"),
+                    "expected plan rejection, got: {err}"
+                );
+            }
+            other => panic!("expected plan error, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn adhoc_gleaph_cost_rejects_binary_edge_var_misuse() {
+        let store = GraphStore::new();
+        setup_gql_weighted_graph(&store);
+        let params = BTreeMap::new();
+        let err = pollster::block_on(run_adhoc_gql(
+            store,
+            "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH_COST BY e * 2 RETURN p",
+            &params,
+            Role::Read,
+            None,
+            GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext::default(),
+        ))
+        .expect_err("binary edge variable cost");
+        match &err {
+            GqlRunError::Plan(msg) => {
+                assert!(
+                    msg.contains("inside GLEAPH_WEIGHT"),
+                    "expected plan rejection, got: {err}"
+                );
+            }
+            other => panic!("expected plan error, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn adhoc_gleaph_cost_rejects_case_operand_edge_var_misuse() {
+        let store = GraphStore::new();
+        setup_gql_weighted_graph(&store);
+        let params = BTreeMap::new();
+        let err = pollster::block_on(run_adhoc_gql(
+            store,
+            "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) \
+             GLEAPH_COST BY CASE e WHEN NULL THEN GLEAPH_WEIGHT(e) ELSE GLEAPH_WEIGHT(e) END RETURN p",
+            &params,
+            Role::Read,
+            None,
+            GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext::default(),
+        ))
+        .expect_err("case operand edge variable cost");
+        match &err {
+            GqlRunError::Plan(msg) => {
+                assert!(
+                    msg.contains("inside GLEAPH_WEIGHT"),
+                    "expected plan rejection, got: {err}"
+                );
+            }
+            other => panic!("expected plan error, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn adhoc_gleaph_cost_rejects_case_when_condition_edge_var_misuse() {
+        let store = GraphStore::new();
+        setup_gql_weighted_graph(&store);
+        let params = BTreeMap::new();
+        let err = pollster::block_on(run_adhoc_gql(
+            store,
+            "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) \
+             GLEAPH_COST BY CASE WHEN e THEN GLEAPH_WEIGHT(e) ELSE GLEAPH_WEIGHT(e) END RETURN p",
+            &params,
+            Role::Read,
+            None,
+            GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext::default(),
+        ))
+        .expect_err("case when condition edge variable cost");
+        match &err {
+            GqlRunError::Plan(msg) => {
+                assert!(
+                    msg.contains("inside GLEAPH_WEIGHT"),
+                    "expected plan rejection, got: {err}"
+                );
+            }
+            other => panic!("expected plan error, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn adhoc_gleaph_cost_abs_wrapped_weight_plans_and_runs() {
+        let store = GraphStore::new();
+        setup_gql_weighted_graph(&store);
+        let params = BTreeMap::new();
+        let out = pollster::block_on(run_adhoc_gql(
+            store,
+            "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH_COST BY ABS(GLEAPH_WEIGHT(e)) RETURN p",
+            &params,
+            Role::Read,
+            None,
+            GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext::default(),
+        ))
+        .expect("abs-wrapped weighted adhoc gql");
+        assert_eq!(out.rows.len(), 1);
+        assert_eq!(path_len(out.rows[0].get("p")), 5);
+    }
+
+    #[test]
+    fn prepared_gleaph_cost_parameterized_scale_plans_and_runs() {
+        let store = GraphStore::new();
+        setup_gql_weighted_graph(&store);
+        store
+            .prepared_query_register(
+                "wgt_scaled".into(),
+                "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH_COST BY GLEAPH_WEIGHT(e) * $scale RETURN p",
+            )
+            .expect("register");
+        let record = store.prepared_query_get("wgt_scaled").expect("get");
+        let mut params = BTreeMap::new();
+        params.insert("$scale".into(), Value::Float64(1.0));
+        let out = pollster::block_on(run_prepared_gql(
+            store,
+            &record,
+            &params,
+            None,
+            GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext::default(),
+        ))
+        .expect("parameterized weighted gql");
+        assert_eq!(out.rows.len(), 1);
+        assert_eq!(path_len(out.rows[0].get("p")), 5);
+    }
+
+    #[test]
+    fn adhoc_gleaph_cost_floor_wrapped_weight_plans_and_runs() {
+        let store = GraphStore::new();
+        setup_gql_weighted_graph(&store);
+        let params = BTreeMap::new();
+        let out = pollster::block_on(run_adhoc_gql(
+            store,
+            "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH_COST BY FLOOR(GLEAPH_WEIGHT(e)) RETURN p",
+            &params,
+            Role::Read,
+            None,
+            GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext::default(),
+        ))
+        .expect("floor-wrapped weighted adhoc gql");
+        assert_eq!(out.rows.len(), 1);
+        assert_eq!(path_len(out.rows[0].get("p")), 5);
+    }
+
+    #[test]
+    fn adhoc_gleaph_cost_coalesce_wrapped_weight_plans_and_runs() {
+        let store = GraphStore::new();
+        setup_gql_weighted_graph(&store);
+        let params = BTreeMap::new();
+        let out = pollster::block_on(run_adhoc_gql(
+            store,
+            "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH_COST BY COALESCE(GLEAPH_WEIGHT(e), 1.0) RETURN p",
+            &params,
+            Role::Read,
+            None,
+            GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext::default(),
+        ))
+        .expect("coalesce-wrapped weighted adhoc gql");
+        assert_eq!(out.rows.len(), 1);
+        assert_eq!(path_len(out.rows[0].get("p")), 5);
+    }
+
+    #[test]
+    fn adhoc_gleaph_cost_cast_wrapped_weight_plans_and_runs() {
+        let store = GraphStore::new();
+        setup_gql_weighted_graph(&store);
+        let params = BTreeMap::new();
+        let out = pollster::block_on(run_adhoc_gql(
+            store,
+            "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH_COST BY CAST(GLEAPH_WEIGHT(e) AS FLOAT32) RETURN p",
+            &params,
+            Role::Read,
+            None,
+            GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext::default(),
+        ))
+        .expect("cast-wrapped weighted adhoc gql");
+        assert_eq!(out.rows.len(), 1);
+        assert_eq!(path_len(out.rows[0].get("p")), 5);
+    }
+
+    #[test]
+    fn adhoc_gleaph_cost_parenthesized_weight_plans_and_runs() {
+        let store = GraphStore::new();
+        setup_gql_weighted_graph(&store);
+        let params = BTreeMap::new();
+        let out = pollster::block_on(run_adhoc_gql(
+            store,
+            "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH_COST BY GLEAPH_WEIGHT((e)) RETURN p",
+            &params,
+            Role::Read,
+            None,
+            GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext::default(),
+        ))
+        .expect("parenthesized weighted adhoc gql");
+        assert_eq!(out.rows.len(), 1);
+        assert_eq!(path_len(out.rows[0].get("p")), 5);
+    }
+
+    #[test]
+    fn adhoc_gleaph_cost_triple_parenthesized_weight_plans_and_runs() {
+        let store = GraphStore::new();
+        setup_gql_weighted_graph(&store);
+        let params = BTreeMap::new();
+        let out = pollster::block_on(run_adhoc_gql(
+            store,
+            "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH_COST BY GLEAPH_WEIGHT(((e))) RETURN p",
+            &params,
+            Role::Read,
+            None,
+            GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext::default(),
+        ))
+        .expect("triple-parenthesized weighted adhoc gql");
+        assert_eq!(out.rows.len(), 1);
+        assert_eq!(path_len(out.rows[0].get("p")), 5);
+    }
+
+    fn setup_gql_reused_dst_graph(store: &GraphStore) {
+        use crate::facade::mutation_executor::GraphMutationExecutor;
+        let a = store
+            .insert_vertex_named(["ReuseGqlA"], [("name", Value::Text("anchor".into()))])
+            .expect("anchor");
+        let b = store
+            .insert_vertex_named(["ReuseGqlB"], [("name", Value::Text("other".into()))])
+            .expect("neighbor");
+        store
+            .insert_directed_edge_named(a, a, Some("ReuseGqlRel"), Vec::<(&str, Value)>::new())
+            .expect("self-loop");
+        store
+            .insert_directed_edge_named(a, b, Some("ReuseGqlRel"), Vec::<(&str, Value)>::new())
+            .expect("out-edge");
+    }
+
+    #[test]
+    fn adhoc_reused_dst_expand_only_keeps_self_loop() {
+        let store = GraphStore::new();
+        setup_gql_reused_dst_graph(&store);
+        let params = BTreeMap::new();
+        let out = pollster::block_on(run_adhoc_gql(
+            store,
+            "MATCH (a:ReuseGqlA)-[:ReuseGqlRel]->(a) RETURN a.name AS name",
+            &params,
+            Role::Read,
+            None,
+            GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext::default(),
+        ))
+        .expect("reused dst adhoc gql");
+        assert_eq!(out.rows.len(), 1);
+        assert_eq!(out.rows[0].get("name"), Some(&Value::Text("anchor".into())));
+    }
+
+    fn setup_gql_reused_dst_relabeled_graph(store: &GraphStore) {
+        use crate::facade::mutation_executor::GraphMutationExecutor;
+        let a = store
+            .insert_vertex_named(
+                ["ReuseGqlPerson", "ReuseGqlUser"],
+                [("name", Value::Text("anchor".into()))],
+            )
+            .expect("anchor");
+        let b = store
+            .insert_vertex_named(["ReuseGqlPerson"], [("name", Value::Text("other".into()))])
+            .expect("neighbor");
+        store
+            .insert_directed_edge_named(a, a, Some("ReuseGqlRel"), Vec::<(&str, Value)>::new())
+            .expect("self-loop");
+        store
+            .insert_directed_edge_named(a, b, Some("ReuseGqlRel"), Vec::<(&str, Value)>::new())
+            .expect("out-edge");
+    }
+
+    #[test]
+    fn adhoc_reused_dst_relabeled_endpoints_keep_self_loop() {
+        let store = GraphStore::new();
+        setup_gql_reused_dst_relabeled_graph(&store);
+        let params = BTreeMap::new();
+        let out = pollster::block_on(run_adhoc_gql(
+            store,
+            "MATCH (a:ReuseGqlPerson)-[:ReuseGqlRel]->(a:ReuseGqlUser) RETURN a.name AS name",
+            &params,
+            Role::Read,
+            None,
+            GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext::default(),
+        ))
+        .expect("reused relabeled dst adhoc gql");
+        assert_eq!(out.rows.len(), 1);
+        assert_eq!(out.rows[0].get("name"), Some(&Value::Text("anchor".into())));
     }
 }

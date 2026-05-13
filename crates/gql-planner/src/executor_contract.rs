@@ -188,7 +188,7 @@ mod tests {
 
     #[test]
     fn shortest_path_supported_without_path_var() {
-        use crate::plan::{ShortestMode, VarLenSpec};
+        use crate::plan::{ShortestMode, ShortestPathCost, VarLenSpec};
         use gleaph_gql::types::EdgeDirection;
 
         let plan = PhysicalPlan {
@@ -205,6 +205,7 @@ mod tests {
                     min: 1,
                     max: Some(3),
                 }),
+                cost: ShortestPathCost::HopCount,
             }],
             diagnostics: PlanDiagnostics::default(),
             annotations: PlanAnnotations::default(),
@@ -214,6 +215,7 @@ mod tests {
 
     #[test]
     fn shortest_path_with_path_var_is_supported() {
+        use crate::plan::ShortestPathCost;
         let plan = PhysicalPlan {
             ops: vec![PlanOp::ShortestPath {
                 src: "a".into(),
@@ -225,6 +227,7 @@ mod tests {
                 label: None,
                 label_expr: None,
                 var_len: None,
+                cost: ShortestPathCost::HopCount,
             }],
             diagnostics: PlanDiagnostics::default(),
             annotations: PlanAnnotations::default(),
@@ -308,7 +311,7 @@ mod tests {
 
     #[test]
     fn nested_subplan_checked() {
-        use crate::plan::{ShortestMode, VarLenSpec};
+        use crate::plan::{ShortestMode, ShortestPathCost, VarLenSpec};
         use gleaph_gql::types::EdgeDirection;
 
         let plan = PhysicalPlan {
@@ -326,6 +329,7 @@ mod tests {
                         min: 1,
                         max: Some(1),
                     }),
+                    cost: ShortestPathCost::HopCount,
                 }],
             }],
             diagnostics: PlanDiagnostics::default(),

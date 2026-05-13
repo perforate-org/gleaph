@@ -700,6 +700,22 @@ impl<T: Into<Value>> From<Option<T>> for Value {
 
 // ──── Value helper methods ────
 
+/// Returns whether an `f128` is finite, using IEEE 754 binary128 exponent bits.
+#[cfg(feature = "f128")]
+pub fn f128_is_finite(v: f128) -> bool {
+    const EXPONENT_MASK: u128 = 0x7FFF << 112;
+    (v.to_bits() & EXPONENT_MASK) != EXPONENT_MASK
+}
+
+#[cfg(feature = "f128")]
+fn finite_f64_to_f128(f: f64) -> Option<f128> {
+    if !f.is_finite() {
+        return None;
+    }
+    let narrowed = f as f128;
+    f128_is_finite(narrowed).then_some(narrowed)
+}
+
 impl Value {
     /// Encodes this value to the rewrite-side binary byte format.
     pub fn to_binary_bytes(&self) -> Result<Vec<u8>, ValueBinaryError> {
@@ -1102,14 +1118,78 @@ impl Value {
     }
 
     /// Convert numeric values to f128 when the `f128` feature is enabled.
+    #[cfg(all(feature = "f128", feature = "f256"))]
+    fn finite_f256_to_f128(v: f256::f256) -> Option<f128> {
+        if !v.is_finite() {
+            return None;
+        }
+        i128::try_from(&v)
+            .ok()
+            .map(|i| i as f128)
+            .or_else(|| u128::try_from(&v).ok().map(|u| u as f128))
+            // Last resort when not extractable as i128/u128; full significand narrowing is out of scope.
+            .or_else(|| v.to_string().parse::<f64>().ok().map(|x| x as f128))
+    }
+
+    #[cfg(feature = "f128")]
+    fn i256_to_f128(v: ethnum::I256) -> Option<f128> {
+        i128::try_from(v)
+            .ok()
+            .map(|i| i as f128)
+            .or_else(|| {
+                #[cfg(feature = "f256")]
+                {
+                    // Stable Rust has no f128::FromStr; decimal f256 parse preserves integers
+                    // beyond f64 mantissa before narrowing to f128.
+                    v.to_string()
+                        .parse::<f256::f256>()
+                        .ok()
+                        .and_then(Self::finite_f256_to_f128)
+                }
+                #[cfg(not(feature = "f256"))]
+                {
+                    None
+                }
+            })
+            .or_else(|| finite_f64_to_f128(v.as_f64()))
+    }
+
+    #[cfg(feature = "f128")]
+    fn u256_to_f128(v: ethnum::U256) -> Option<f128> {
+        u128::try_from(v)
+            .ok()
+            .map(|u| u as f128)
+            .or_else(|| {
+                #[cfg(feature = "f256")]
+                {
+                    v.to_string()
+                        .parse::<f256::f256>()
+                        .ok()
+                        .and_then(Self::finite_f256_to_f128)
+                }
+                #[cfg(not(feature = "f256"))]
+                {
+                    None
+                }
+            })
+            .or_else(|| finite_f64_to_f128(v.as_f64()))
+    }
+
+    /// Convert numeric values to f128 when the `f128` feature is enabled.
     #[cfg(feature = "f128")]
     pub fn as_f128(&self) -> Option<f128> {
         match self {
             Self::Float128(v) => Some(*v),
             #[cfg(feature = "f256")]
             Self::Float256(_) => None,
-            value if value.is_signed_int() => value.as_i128().map(|value| value as f128),
-            value if value.is_unsigned_int() => value.as_u128().map(|value| value as f128),
+            value if value.is_signed_int() => value
+                .as_i128()
+                .map(|value| value as f128)
+                .or_else(|| value.as_i256().and_then(Self::i256_to_f128)),
+            value if value.is_unsigned_int() => value
+                .as_u128()
+                .map(|value| value as f128)
+                .or_else(|| value.as_u256().and_then(Self::u256_to_f128)),
             value => value.as_f64().map(|value| value as f128),
         }
     }
@@ -1339,6 +1419,64 @@ mod tests {
         assert_eq!(Value::Float64(3.5).as_f64(), Some(3.5));
         assert!(Value::Decimal(Decimal::from_i64(7)).as_f64().is_some());
         assert_eq!(Value::Null.as_f64(), None);
+    }
+
+    #[cfg(feature = "f128")]
+    #[test]
+    fn f128_is_finite_distinguishes_inf_from_large_finite() {
+        let inf = f128::from_bits(0x7FFFu128 << 112);
+        assert!(!f128_is_finite(inf));
+        let nan = f128::from_bits((0x7FFFu128 << 112) | 1);
+        assert!(!f128_is_finite(nan));
+        let large = f128::from(f64::MAX) * 2.0f128;
+        assert!(f128_is_finite(large));
+    }
+
+    #[cfg(feature = "f128")]
+    #[test]
+    fn as_f128_int256() {
+        use crate::types::Int256;
+        let v = Value::Int256(Int256::parse("1000000000000000").expect("int256"));
+        assert_eq!(v.as_f128(), Some(1_000_000_000_000_000.0f128));
+    }
+
+    #[cfg(all(feature = "f128", feature = "f256"))]
+    #[test]
+    fn as_f128_int256_beyond_f64_mantissa() {
+        use crate::types::Int256;
+        // i128 tier: 2^53 + 1 is not exactly representable in f64.
+        let int256 = Int256::new(ethnum::I256::from(9_007_199_254_740_993i128));
+        let v = Value::Int256(int256);
+        let via_f128 = v.as_f128().expect("as_f128");
+        let via_f64 = (v.as_f64().expect("as_f64") as f128);
+        assert_ne!(via_f128, via_f64);
+        assert_eq!(via_f128, 9_007_199_254_740_993.0f128);
+    }
+
+    #[cfg(all(feature = "f128", feature = "f256"))]
+    #[test]
+    fn as_f128_int256_via_f256_tier() {
+        use crate::types::Int256;
+        // Outside i128 range; low bits beyond f64 mantissa (2^53).
+        let int256 = Int256::new(
+            ethnum::I256::from(i128::MAX) + ethnum::I256::from(1i128 << 53) + ethnum::I256::from(1),
+        );
+        let v = Value::Int256(int256);
+        let via_f128 = v.as_f128().expect("as_f128 via f256 tier");
+        let via_f64 = v.as_f64().expect("as_f64") as f128;
+        assert_ne!(via_f128, via_f64);
+    }
+
+    #[cfg(all(feature = "f128", feature = "f256"))]
+    #[test]
+    fn as_f128_uint256_via_f256_tier() {
+        use crate::types::Uint256;
+        // Outside u128 range; must route through u256_to_f128 (f256 decimal parse tier).
+        let uint256 = Uint256::new(ethnum::U256::from(u128::MAX) + ethnum::U256::from(1u8));
+        let v = Value::Uint256(uint256);
+        assert!(v.as_u128().is_none());
+        let via_f128 = v.as_f128().expect("as_f128 via f256 tier");
+        assert!(f128_is_finite(via_f128));
     }
 
     #[test]

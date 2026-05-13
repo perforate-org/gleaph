@@ -27,6 +27,9 @@ pub enum PlanMutationError {
     ExpressionNumericOverflow {
         property: String,
     },
+    ExpressionNumericPrecisionOverflow {
+        property: String,
+    },
     ExpressionNonFiniteNumeric {
         property: String,
     },
@@ -74,6 +77,12 @@ impl fmt::Display for PlanMutationError {
                 write!(
                     f,
                     "numeric overflow in property expression for '{property}'"
+                )
+            }
+            Self::ExpressionNumericPrecisionOverflow { property } => {
+                write!(
+                    f,
+                    "numeric precision overflow in property expression for '{property}'"
                 )
             }
             Self::ExpressionNonFiniteNumeric { property } => {

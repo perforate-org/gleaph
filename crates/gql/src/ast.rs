@@ -1426,7 +1426,35 @@ pub struct KeepClause {
 
 // ──── Path pattern (§16.3) ────
 
-/// A path pattern: [<var> =] [<prefix>] <path-expr>
+/// Vendor extension clause attached to a path pattern: `<name> BY <expr>`.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    rkyv(
+        serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+        ),
+        deserialize_bounds(__D::Error: rkyv::rancor::Source),
+        bytecheck(bounds(
+            __C: rkyv::validation::ArchiveContext,
+            __C::Error: rkyv::rancor::Source,
+        )),
+    )
+)]
+pub struct PathPatternExtension {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
+    pub span: Span,
+    pub name: ObjectName,
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
+    pub expr: Expr,
+}
+
+/// A path pattern: [<var> =] [<prefix>] <path-expr> [<extension>]*
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
     feature = "ast-rkyv-no-span",
@@ -1456,6 +1484,9 @@ pub struct PathPattern {
     /// The path expression itself.
     #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
     pub expr: PathPatternExpr,
+    /// Optional vendor extension clauses following the path expression.
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
+    pub extensions: Vec<PathPatternExtension>,
 }
 
 /// A path pattern prefix — either a path mode or a search prefix.
@@ -3664,5 +3695,26 @@ mod rkyv_roundtrip_tests {
         let bytes = to_bytes::<Error>(&v).unwrap();
         let back = unsafe { from_bytes_unchecked::<TruthValue, Error>(&bytes).unwrap() };
         assert_eq!(back, v);
+    }
+
+    #[test]
+    fn path_pattern_extension_roundtrip() {
+        let pattern = PathPattern {
+            span: Span::DUMMY,
+            variable: None,
+            prefix: None,
+            expr: PathPatternExpr::Term(PathTerm {
+                span: Span::DUMMY,
+                factors: vec![],
+            }),
+            extensions: vec![PathPatternExtension {
+                span: Span::DUMMY,
+                name: ObjectName::simple("VENDOR_COST"),
+                expr: Expr::var("e"),
+            }],
+        };
+        let bytes = to_bytes::<Error>(&pattern).unwrap();
+        let back = unsafe { from_bytes_unchecked::<PathPattern, Error>(&bytes).unwrap() };
+        assert_eq!(back, pattern);
     }
 }

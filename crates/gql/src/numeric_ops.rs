@@ -28,6 +28,44 @@ pub fn eval_unary_numeric(op: UnaryOp, value: Value) -> Result<Value, NumericOpE
     }
 }
 
+pub fn eval_abs_numeric(value: Value) -> Result<Value, NumericOpError> {
+    if value == Value::Null {
+        return Ok(Value::Null);
+    }
+    match value {
+        Value::Decimal(value) => {
+            if value.0.is_sign_negative() {
+                Ok(Value::Decimal(Decimal::new(-value.0)))
+            } else {
+                Ok(Value::Decimal(value))
+            }
+        }
+        Value::Float16(value) => finite_float16(half::f16::from_f32(value.to_f32().abs())),
+        Value::Float32(value) => finite_float32(value.abs()),
+        Value::Float64(value) => finite_float64(value.abs()),
+        #[cfg(feature = "f128")]
+        Value::Float128(value) => finite_float128(value.abs()),
+        #[cfg(feature = "f256")]
+        Value::Float256(value) => finite_float256(value.abs()),
+        Value::Int256(value) => value
+            .0
+            .checked_abs()
+            .map(|value| Value::Int256(Int256::new(value)))
+            .ok_or(NumericOpError::Overflow),
+        value if value.is_signed_int() => {
+            let width = value.int_width().unwrap_or(128);
+            value
+                .as_i128()
+                .and_then(i128::checked_abs)
+                .and_then(|value| narrow_signed_min_width(value, width))
+                .ok_or(NumericOpError::Overflow)
+        }
+        Value::Uint256(value) => Ok(Value::Uint256(value)),
+        value if value.is_unsigned_int() => Ok(value),
+        _ => Err(NumericOpError::InvalidOperand),
+    }
+}
+
 pub fn eval_binary_numeric(
     left: Value,
     op: BinaryOp,
@@ -430,18 +468,37 @@ fn float_rank(value: &Value) -> Option<FloatRank> {
     }
 }
 
+fn finite_f32_from_f64(v: f64) -> Option<f32> {
+    if !v.is_finite() {
+        return None;
+    }
+    let narrowed = v as f32;
+    narrowed.is_finite().then_some(narrowed)
+}
+
+fn finite_f16_from_f64(v: f64) -> Option<half::f16> {
+    if !v.is_finite() {
+        return None;
+    }
+    let narrowed = half::f16::from_f64(v);
+    narrowed.is_finite().then_some(narrowed)
+}
+
 fn float16_value(value: &Value) -> Option<half::f16> {
     match value {
-        Value::Float16(value) => Some(*value),
-        value => value.as_f64().map(half::f16::from_f64),
+        Value::Float16(value) => value.is_finite().then_some(*value),
+        value => value.as_f64().and_then(finite_f16_from_f64),
     }
 }
 
 fn float32_value(value: &Value) -> Option<f32> {
     match value {
-        Value::Float16(value) => Some(value.to_f32()),
-        Value::Float32(value) => Some(*value),
-        value => value.as_f64().map(|value| value as f32),
+        Value::Float16(value) => {
+            let narrowed = value.to_f32();
+            narrowed.is_finite().then_some(narrowed)
+        }
+        Value::Float32(value) => value.is_finite().then_some(*value),
+        value => value.as_f64().and_then(finite_f32_from_f64),
     }
 }
 
@@ -571,5 +628,20 @@ mod tests {
             .unwrap(),
             Value::Float256("3.5".parse::<f256::f256>().unwrap())
         );
+    }
+
+    #[test]
+    fn float32_value_rejects_f64_overflow() {
+        assert!(float32_value(&Value::Float64(1e40)).is_none());
+    }
+
+    #[test]
+    fn float16_value_rejects_f64_overflow() {
+        assert!(float16_value(&Value::Float64(1e40)).is_none());
+    }
+
+    #[test]
+    fn float32_value_rejects_non_finite_float32() {
+        assert!(float32_value(&Value::Float32(f32::INFINITY)).is_none());
     }
 }

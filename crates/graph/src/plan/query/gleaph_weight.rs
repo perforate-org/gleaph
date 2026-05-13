@@ -2,9 +2,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use gleaph_gql::ast::{Expr, ExprKind, LetBinding};
+use gleaph_gql::ast::{Expr, ExprKind, LetBinding, ObjectName};
 use gleaph_gql::types::LabelExpr;
-use gleaph_gql_planner::plan::{PlanOp, ProjectColumn, ScanValue, Str, VarLenSpec};
+use gleaph_gql_planner::plan::{
+    PlanOp, ProjectColumn, ScanValue, ShortestPathCost, Str, VarLenSpec,
+};
 use gleaph_graph_kernel::entry::{PreparedWeightDecoder, WeightProfilePrepareError};
 
 use crate::facade::GraphStore;
@@ -37,6 +39,26 @@ pub(crate) fn prepare_gleaph_weight_decoders(
     Ok(Some(out))
 }
 
+pub(crate) fn is_gleaph_weight_call(name: &ObjectName, distinct: bool) -> bool {
+    !distinct && name.parts.len() == 1 && name.parts[0].eq_ignore_ascii_case(GLEAPH_WEIGHT)
+}
+
+pub(crate) fn gleaph_weight_single_arg<'a>(args: &'a [Expr]) -> Option<&'a Expr> {
+    if args.len() == 1 {
+        Some(&args[0])
+    } else {
+        None
+    }
+}
+
+pub(crate) fn gleaph_weight_arg_edge_var(expr: &Expr) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Paren(inner) => gleaph_weight_arg_edge_var(inner),
+        ExprKind::Variable(v) => Some(v.clone()),
+        _ => None,
+    }
+}
+
 fn gleaph_weight_edge_var(expr: &Expr) -> Option<String> {
     let ExprKind::FunctionCall {
         name,
@@ -46,22 +68,11 @@ fn gleaph_weight_edge_var(expr: &Expr) -> Option<String> {
     else {
         return None;
     };
-    if *distinct {
+    if !is_gleaph_weight_call(name, *distinct) {
         return None;
     }
-    let Some(last) = name.parts.last().map(|s| s.as_str()) else {
-        return None;
-    };
-    if !last.eq_ignore_ascii_case(GLEAPH_WEIGHT) || name.parts.len() != 1 {
-        return None;
-    }
-    if args.len() != 1 {
-        return None;
-    }
-    let ExprKind::Variable(v) = &args[0].kind else {
-        return None;
-    };
-    Some(v.clone())
+    let arg = gleaph_weight_single_arg(args)?;
+    gleaph_weight_arg_edge_var(arg)
 }
 
 fn decoder_for_gleaph_weight_edge(
@@ -128,19 +139,12 @@ fn decoder_for_gleaph_weight_edge(
         EdgeProducer::ShortestPath {
             label,
             label_expr,
-            var_len,
+            var_len: _,
         } => {
             if label_expr.is_some() {
                 return Err(PlanQueryError::GleaphWeight {
                     message: format!(
                         "GLEAPH_WEIGHT({edge_var}): shortest-path edge pattern must use a single fixed label"
-                    ),
-                });
-            }
-            if var_len.is_some() {
-                return Err(PlanQueryError::GleaphWeight {
-                    message: format!(
-                        "GLEAPH_WEIGHT({edge_var}): variable-length bounds on shortest-path are not supported for GLEAPH_WEIGHT"
                     ),
                 });
             }
@@ -366,6 +370,11 @@ fn for_each_expr_in_op(op: &PlanOp, f: &mut impl FnMut(&Expr)) {
                 visit_expr(a, f);
             }
         }
+        PlanOp::ShortestPath { cost, .. } => {
+            if let ShortestPathCost::EdgeCostExpr { expr, .. } = cost {
+                visit_expr(expr, f);
+            }
+        }
         PlanOp::HashJoin { left, right, .. } => {
             for_each_expr_in_ops(left, f);
             for_each_expr_in_ops(right, f);
@@ -387,90 +396,28 @@ fn for_each_expr_in_op(op: &PlanOp, f: &mut impl FnMut(&Expr)) {
 
 fn visit_expr(expr: &Expr, f: &mut impl FnMut(&Expr)) {
     f(expr);
-    match &expr.kind {
-        ExprKind::Literal(_)
-        | ExprKind::Variable(_)
-        | ExprKind::Parameter(_)
-        | ExprKind::SessionUser
-        | ExprKind::CurrentDate
-        | ExprKind::CurrentTime
-        | ExprKind::CurrentTimestamp
-        | ExprKind::CurrentLocalTime
-        | ExprKind::CurrentLocalTimestamp => {}
-        ExprKind::Paren(inner)
-        | ExprKind::Not(inner)
-        | ExprKind::IsNull(inner)
-        | ExprKind::IsNotNull(inner) => {
-            visit_expr(inner, f);
-        }
-        ExprKind::UnaryOp { expr: inner, .. } => visit_expr(inner, f),
-        ExprKind::BinaryOp { left, right, .. }
-        | ExprKind::And(left, right)
-        | ExprKind::Or(left, right)
-        | ExprKind::Xor(left, right)
-        | ExprKind::Concat(left, right)
-        | ExprKind::NullIf(left, right) => {
-            visit_expr(left, f);
-            visit_expr(right, f);
-        }
-        ExprKind::Compare { left, right, .. } => {
-            visit_expr(left, f);
-            visit_expr(right, f);
-        }
-        ExprKind::PropertyAccess { expr, .. } | ExprKind::ElementId(expr) => visit_expr(expr, f),
-        ExprKind::FunctionCall { args, .. } => {
-            for a in args {
-                visit_expr(a, f);
-            }
-        }
-        ExprKind::Coalesce(exprs)
-        | ExprKind::ListLiteral(exprs)
-        | ExprKind::ListConstructor { items: exprs, .. } => {
-            for e in exprs {
-                visit_expr(e, f);
-            }
-        }
-        ExprKind::RecordLiteral(fields) | ExprKind::RecordConstructor(fields) => {
-            for (_, e) in fields {
-                visit_expr(e, f);
-            }
-        }
-        ExprKind::CaseSimple {
-            operand,
-            when_clauses,
-            else_clause,
-        } => {
-            visit_expr(operand, f);
-            for wc in when_clauses {
-                visit_expr(&wc.condition, f);
-                visit_expr(&wc.result, f);
-            }
-            if let Some(e) = else_clause {
-                visit_expr(e, f);
-            }
-        }
-        ExprKind::CaseSearched {
-            when_clauses,
-            else_clause,
-        } => {
-            for wc in when_clauses {
-                visit_expr(&wc.condition, f);
-                visit_expr(&wc.result, f);
-            }
-            if let Some(e) = else_clause {
-                visit_expr(e, f);
-            }
-        }
-        ExprKind::IsTruth { expr, .. } => visit_expr(expr, f),
-        ExprKind::Cast { expr, .. } => visit_expr(expr, f),
-        ExprKind::Aggregate { expr, expr2, .. } => {
-            if let Some(e) = expr {
-                visit_expr(e, f);
-            }
-            if let Some(e2) = expr2 {
-                visit_expr(e2, f);
-            }
-        }
-        _ => {}
+    gleaph_gql_planner::for_each_immediate_child_expr(expr, |child| visit_expr(child, f));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gleaph_gql::ast::ExprKind;
+
+    fn paren(expr: Expr) -> Expr {
+        Expr::new(ExprKind::Paren(Box::new(expr)))
+    }
+
+    #[test]
+    fn gleaph_weight_arg_edge_var_unwraps_nested_parens() {
+        let expr = paren(paren(paren(Expr::var("e"))));
+        assert_eq!(gleaph_weight_arg_edge_var(&expr), Some("e".into()));
+    }
+
+    #[test]
+    fn gleaph_weight_arg_edge_var_rejects_non_variable() {
+        use gleaph_gql::value::Value;
+        let expr = paren(Expr::new(ExprKind::Literal(Value::Float32(1.0))));
+        assert_eq!(gleaph_weight_arg_edge_var(&expr), None);
     }
 }

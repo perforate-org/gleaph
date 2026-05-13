@@ -27,7 +27,7 @@ thiserror = "2"
 rkyv = { workspace = true, optional = true }
 
 [features]
-default = []
+default = ["f128", "f256"]
 ast-rkyv-no-span = ["dep:rkyv"]
 cypher = []
 sql-compat = []

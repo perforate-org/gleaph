@@ -14,6 +14,7 @@ rapidhash = "4"
 [features]
 default = []
 cypher = ["gleaph-gql/cypher"]
+sql-compat = ["gleaph-gql/sql-compat"]
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }

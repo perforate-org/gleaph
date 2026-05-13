@@ -6,6 +6,18 @@ use std::{fmt, ops::Deref};
 
 // ──── 256-bit integer wrappers ────
 
+fn u256_decimal_digit_count(n: ethnum::U256) -> u64 {
+    let ten = ethnum::U256::from(10u8);
+    let zero = ethnum::U256::ZERO;
+    let mut n = n;
+    let mut digits = 0;
+    while n > zero {
+        digits += 1;
+        n /= ten;
+    }
+    digits
+}
+
 /// 256-bit signed integer wrapping [`ethnum::I256`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Int256(pub ethnum::I256);
@@ -13,6 +25,18 @@ pub struct Int256(pub ethnum::I256);
 impl Int256 {
     pub fn new(v: ethnum::I256) -> Self {
         Self(v)
+    }
+
+    pub fn is_zero(self) -> bool {
+        self.0 == ethnum::I256::ZERO
+    }
+
+    pub fn unsigned_decimal_digit_count(self) -> u64 {
+        if self.is_zero() {
+            return 1;
+        }
+        // unsigned_abs() is panic-safe on I256::MIN (magnitude 2^255).
+        u256_decimal_digit_count(self.0.unsigned_abs())
     }
 
     pub fn parse(s: &str) -> Option<Self> {
@@ -41,6 +65,17 @@ pub struct Uint256(pub ethnum::U256);
 impl Uint256 {
     pub fn new(v: ethnum::U256) -> Self {
         Self(v)
+    }
+
+    pub fn is_zero(self) -> bool {
+        self.0 == ethnum::U256::ZERO
+    }
+
+    pub fn unsigned_decimal_digit_count(self) -> u64 {
+        if self.is_zero() {
+            return 1;
+        }
+        u256_decimal_digit_count(self.0)
     }
 
     pub fn parse(s: &str) -> Option<Self> {
@@ -98,9 +133,69 @@ impl Decimal {
         Self(rust_decimal::Decimal::from(v))
     }
 
+    pub fn from_f64(v: f64) -> Option<Self> {
+        use rust_decimal::prelude::FromPrimitive;
+        if !v.is_finite() {
+            return None;
+        }
+        rust_decimal::Decimal::from_f64(v).map(Decimal)
+    }
+
+    pub fn trunc_to_i128(self) -> Option<i128> {
+        use rust_decimal::prelude::ToPrimitive;
+        self.0.trunc().to_i128()
+    }
+
+    pub fn trunc_to_u128(self) -> Option<u128> {
+        use rust_decimal::prelude::ToPrimitive;
+        let truncated = self.0.trunc();
+        if truncated.is_sign_negative() {
+            return None;
+        }
+        truncated.to_u128()
+    }
+
     pub fn normalize(&self) -> Self {
         Self(self.0.normalize())
     }
+
+    pub fn round_to_scale(self, scale: u32) -> Self {
+        Self(self.0.round_dp(scale))
+    }
+
+    /// Whether this value fits `DECIMAL(precision, scale)` / `FLOAT(precision, scale)` digit rules.
+    pub fn fits_sql_precision_scale(self, precision: u64, scale: u64) -> bool {
+        if precision == 0 {
+            return self.0.is_zero();
+        }
+        if scale > precision {
+            return false;
+        }
+        let rounded = self.0.round_dp(scale as u32);
+        if rounded.scale() > scale as u32 {
+            return false;
+        }
+        if sql_mantissa_digit_count(&rounded) as u64 > precision {
+            return false;
+        }
+        sql_integer_mantissa_digit_count(&rounded) as u64 <= precision - scale
+    }
+}
+
+fn sql_mantissa_digit_count(decimal: &rust_decimal::Decimal) -> usize {
+    if decimal.is_zero() {
+        return 1;
+    }
+    let mantissa = decimal.mantissa().unsigned_abs();
+    (mantissa.ilog10() as usize) + 1
+}
+
+fn sql_integer_mantissa_digit_count(decimal: &rust_decimal::Decimal) -> usize {
+    let truncated = decimal.trunc().abs();
+    if truncated.is_zero() {
+        return 0;
+    }
+    sql_mantissa_digit_count(&truncated)
 }
 
 impl fmt::Display for Decimal {
@@ -461,6 +556,72 @@ mod tests {
     fn decimal_parse_invalid() {
         assert!(Decimal::parse("not_decimal").is_none());
     }
+
+    #[test]
+    fn decimal_from_f64_rejects_non_finite() {
+        assert!(Decimal::from_f64(f64::NAN).is_none());
+        assert!(Decimal::from_f64(f64::INFINITY).is_none());
+    }
+
+    #[test]
+    fn decimal_from_f64_round_trips_simple_values() {
+        let d = Decimal::from_f64(2.5).expect("finite float");
+        assert_eq!(d.to_f64(), Some(2.5));
+    }
+
+    #[test]
+    fn decimal_fits_sql_precision_scale() {
+        let d = Decimal::parse("12.34").expect("decimal");
+        assert!(d.fits_sql_precision_scale(4, 2));
+        assert!(d.fits_sql_precision_scale(4, 1));
+        assert!(!d.fits_sql_precision_scale(3, 2));
+    }
+
+    #[test]
+    fn decimal_round_to_scale() {
+        let d = Decimal::parse("12.345").expect("decimal");
+        assert_eq!(d.round_to_scale(2).to_string(), "12.34");
+    }
+
+    #[test]
+    fn decimal_fits_sql_precision_scale_rejects_large_integer_part() {
+        let d = Decimal::from_f64(999.9).expect("decimal");
+        assert!(!d.fits_sql_precision_scale(4, 2));
+        let d = Decimal::from_f64(99.99).expect("decimal");
+        assert!(d.fits_sql_precision_scale(4, 2));
+    }
+
+    #[test]
+    fn int256_unsigned_decimal_digit_count() {
+        let v = Int256::parse("1000000000000000").expect("int256");
+        assert_eq!(v.unsigned_decimal_digit_count(), 16);
+    }
+
+    #[test]
+    fn int256_wrong_literal_is_not_min() {
+        let wrong = Int256::parse("-170141183460469231731687303715884105728");
+        assert_ne!(wrong, Some(Int256::new(ethnum::I256::MIN)));
+        assert_eq!(wrong.map(|v| v.unsigned_decimal_digit_count()), Some(39));
+    }
+
+    #[test]
+    fn int256_min_unsigned_decimal_digit_count_does_not_panic() {
+        let v = Int256::new(ethnum::I256::MIN);
+        assert_eq!(v.unsigned_decimal_digit_count(), 77);
+    }
+
+    #[test]
+    fn int256_negative_unsigned_decimal_digit_count() {
+        let v = Int256::new(ethnum::I256::from(-42));
+        assert_eq!(v.unsigned_decimal_digit_count(), 2);
+    }
+
+    #[test]
+    fn int256_is_zero() {
+        assert!(Int256::new(ethnum::I256::ZERO).is_zero());
+        assert!(!Int256::new(ethnum::I256::from(1)).is_zero());
+    }
+
     #[test]
     fn narrow_signed_all_widths() {
         use crate::Value;

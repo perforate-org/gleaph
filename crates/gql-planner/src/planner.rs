@@ -21,9 +21,13 @@ use crate::cost;
 use crate::cse;
 use crate::explain::explain_plan;
 use crate::expr_alias::substitute_return_aliases_in_expr;
+use crate::expr_children::for_each_immediate_child_expr;
 use crate::join_order;
+use crate::path_extensions::{
+    PathPatternExtensionContext, PlanBuildOptions, REJECTING_PATH_EXTENSION_HANDLER,
+    SingleEdgePathInfo,
+};
 use crate::plan::*;
-use crate::property_projection::for_each_immediate_child_expr;
 use crate::pushdown;
 use crate::semantic::{self, SemanticAnalysis, SemanticConstraint};
 use crate::stats::GraphStats;
@@ -32,6 +36,7 @@ use crate::stats::GraphStats;
 pub enum PlannerError {
     FatalDml(PlannerDiagnostic),
     UnsupportedPattern(String),
+    UnsupportedExtension(String),
 }
 
 impl std::fmt::Display for PlannerError {
@@ -43,6 +48,9 @@ impl std::fmt::Display for PlannerError {
                 diagnostic.code, diagnostic.span.start, diagnostic.span.end, diagnostic.message
             ),
             Self::UnsupportedPattern(msg) => write!(f, "unsupported graph pattern: {msg}"),
+            Self::UnsupportedExtension(msg) => {
+                write!(f, "unsupported path pattern extension: {msg}")
+            }
         }
     }
 }
@@ -76,6 +84,25 @@ impl PlanBuildOutput {
             explain,
         }
     }
+}
+
+/// Build a physical plan from a top-level statement with extension-aware options.
+pub fn build_statement_plan_with_options(
+    stmt: &Statement,
+    options: PlanBuildOptions<'_>,
+    schema: &dyn PropertySchema,
+) -> Result<PhysicalPlan, PlannerError> {
+    if let Statement::Query(composite) = stmt {
+        return build_composite_plan_with_schema_and_options(composite, options, schema);
+    }
+
+    let mut plan =
+        build_statement_plan_with_binding_kinds_and_options(stmt, options, None, schema)?;
+    apply_type_checker_dml_diagnostics(
+        &mut plan.diagnostics,
+        &type_check_statement_with_schema(stmt, schema),
+    );
+    validate_plan(plan)
 }
 
 /// Build a physical plan from a top-level statement.
@@ -120,6 +147,32 @@ pub fn build_statement_plan_output_with_schema(
     schema: &dyn PropertySchema,
 ) -> Result<PlanBuildOutput, PlannerError> {
     build_statement_plan_with_schema(stmt, stats, schema).map(PlanBuildOutput::from_plan)
+}
+
+fn build_statement_plan_with_binding_kinds_and_options(
+    stmt: &Statement,
+    options: PlanBuildOptions<'_>,
+    binding_kinds: Option<&std::collections::BTreeMap<String, BindingKind>>,
+    schema: &dyn PropertySchema,
+) -> Result<PhysicalPlan, PlannerError> {
+    match stmt {
+        Statement::Query(composite) => build_composite_plan_with_binding_kinds_and_options(
+            composite,
+            options,
+            binding_kinds,
+            schema,
+        ),
+        Statement::Insert(insert_stmt) => {
+            let mut plan = PhysicalPlan::default();
+            plan_insert(insert_stmt, &mut plan.ops, &mut plan.annotations);
+            plan.annotations.optimizer.estimated_cost =
+                Some(cost::estimate_cost(&plan.ops, options.stats));
+            plan.annotations.optimizer.estimated_rows =
+                Some(cost::estimate_rows(&plan.ops, options.stats));
+            Ok(plan)
+        }
+        _ => Ok(PhysicalPlan::default()), // TODO: DDL, Session
+    }
 }
 
 fn build_statement_plan_with_binding_kinds(
@@ -242,6 +295,18 @@ pub fn build_plan(
 }
 
 /// Like [`build_plan`], but uses `schema` for binding inference and DML/type diagnostics.
+pub fn build_plan_with_schema_and_options(
+    query: &LinearQueryStatement,
+    options: PlanBuildOptions<'_>,
+    schema: &dyn PropertySchema,
+) -> Result<PhysicalPlan, PlannerError> {
+    let (binding_kinds, type_warnings) =
+        infer_linear_query_binding_kinds_and_warnings_with_schema(query, schema);
+    let mut plan = build_plan_core(query, &binding_kinds, schema, options)?;
+    apply_type_checker_dml_diagnostics(&mut plan.diagnostics, &type_warnings);
+    validate_plan(plan)
+}
+
 pub fn build_plan_with_schema(
     query: &LinearQueryStatement,
     stats: Option<&dyn GraphStats>,
@@ -249,7 +314,15 @@ pub fn build_plan_with_schema(
 ) -> Result<PhysicalPlan, PlannerError> {
     let (binding_kinds, type_warnings) =
         infer_linear_query_binding_kinds_and_warnings_with_schema(query, schema);
-    let mut plan = build_plan_core(query, stats, &binding_kinds, schema)?;
+    let mut plan = build_plan_core(
+        query,
+        &binding_kinds,
+        schema,
+        PlanBuildOptions {
+            stats,
+            path_extensions: &REJECTING_PATH_EXTENSION_HANDLER,
+        },
+    )?;
     apply_type_checker_dml_diagnostics(&mut plan.diagnostics, &type_warnings);
     validate_plan(plan)
 }
@@ -304,6 +377,19 @@ pub fn build_block_plan_output_for_execute_with_schema(
         .map(|p| PlanBuildOutput::from_plan_with_explain(p, false))
 }
 
+fn build_plan_with_binding_kinds_and_options(
+    query: &LinearQueryStatement,
+    options: PlanBuildOptions<'_>,
+    seed_binding_kinds: Option<&BTreeMap<String, BindingKind>>,
+    schema: &dyn PropertySchema,
+) -> Result<PhysicalPlan, PlannerError> {
+    let binding_kinds = match seed_binding_kinds {
+        Some(seed) => infer_linear_query_binding_kinds_with_seed(query, schema, seed),
+        None => infer_linear_query_binding_kinds_with_schema(query, schema),
+    };
+    build_plan_core(query, &binding_kinds, schema, options)
+}
+
 fn build_plan_with_binding_kinds(
     query: &LinearQueryStatement,
     stats: Option<&dyn GraphStats>,
@@ -314,15 +400,24 @@ fn build_plan_with_binding_kinds(
         Some(seed) => infer_linear_query_binding_kinds_with_seed(query, schema, seed),
         None => infer_linear_query_binding_kinds_with_schema(query, schema),
     };
-    build_plan_core(query, stats, &binding_kinds, schema)
+    build_plan_core(
+        query,
+        &binding_kinds,
+        schema,
+        PlanBuildOptions {
+            stats,
+            path_extensions: &REJECTING_PATH_EXTENSION_HANDLER,
+        },
+    )
 }
 
 fn build_plan_core(
     query: &LinearQueryStatement,
-    stats: Option<&dyn GraphStats>,
     binding_kinds: &BTreeMap<String, BindingKind>,
     schema: &dyn PropertySchema,
+    options: PlanBuildOptions<'_>,
 ) -> Result<PhysicalPlan, PlannerError> {
+    let stats = options.stats;
     // Phase 1: Semantic analysis.
     let semantic = semantic::analyze(query);
     let referenced_vars = crate::variable_refs::linear_query_referenced_variables(query);
@@ -349,11 +444,14 @@ fn build_plan_core(
             binding_kinds,
             &referenced_vars,
             schema,
+            options,
             &mut ops,
             &mut annotations,
         )?;
     } else {
         // Sequential: process all parts in order (default behavior).
+        let mut bound_node_vars = BTreeSet::new();
+        let mut optional_node_vars = BTreeSet::new();
         for (stage, part) in query.parts.iter().enumerate() {
             plan_simple_statement(
                 part,
@@ -363,6 +461,9 @@ fn build_plan_core(
                 binding_kinds,
                 &referenced_vars,
                 schema,
+                options,
+                &mut bound_node_vars,
+                &mut optional_node_vars,
                 &mut ops,
                 &mut annotations,
             )?;
@@ -659,6 +760,29 @@ pub fn build_composite_plan(
     build_composite_plan_with_schema(composite, stats, &NoSchema)
 }
 
+pub fn build_composite_plan_with_schema_and_options(
+    composite: &CompositeQueryExpr,
+    options: PlanBuildOptions<'_>,
+    schema: &dyn PropertySchema,
+) -> Result<PhysicalPlan, PlannerError> {
+    if composite.rest.is_empty() {
+        return build_plan_with_schema_and_options(&composite.left, options, schema);
+    }
+
+    let (branch_kinds, type_warnings) =
+        infer_composite_query_binding_kinds_and_warnings_with_schema(composite, schema);
+    debug_assert_eq!(branch_kinds.len(), 1 + composite.rest.len());
+
+    let mut plan = build_composite_plan_from_branch_kinds_and_options(
+        composite,
+        options,
+        &branch_kinds,
+        schema,
+    )?;
+    apply_type_checker_dml_diagnostics(&mut plan.diagnostics, &type_warnings);
+    validate_plan(plan)
+}
+
 pub fn build_composite_plan_with_schema(
     composite: &CompositeQueryExpr,
     stats: Option<&dyn GraphStats>,
@@ -692,6 +816,27 @@ pub fn build_composite_plan_output_with_schema(
     build_composite_plan_with_schema(composite, stats, schema).map(PlanBuildOutput::from_plan)
 }
 
+fn build_composite_plan_from_branch_kinds_and_options(
+    composite: &CompositeQueryExpr,
+    options: PlanBuildOptions<'_>,
+    branch_kinds: &[BTreeMap<String, BindingKind>],
+    schema: &dyn PropertySchema,
+) -> Result<PhysicalPlan, PlannerError> {
+    debug_assert_eq!(branch_kinds.len(), 1 + composite.rest.len());
+
+    let mut plan = build_plan_core(&composite.left, &branch_kinds[0], schema, options)?;
+
+    for (i, (set_op, right_query)) in composite.rest.iter().enumerate() {
+        let right_plan = build_plan_core(right_query, &branch_kinds[1 + i], schema, options)?;
+        plan.ops.push(PlanOp::SetOperation {
+            op: *set_op,
+            right: Box::new(right_plan),
+        });
+    }
+
+    Ok(plan)
+}
+
 fn build_composite_plan_from_branch_kinds(
     composite: &CompositeQueryExpr,
     stats: Option<&dyn GraphStats>,
@@ -700,10 +845,55 @@ fn build_composite_plan_from_branch_kinds(
 ) -> Result<PhysicalPlan, PlannerError> {
     debug_assert_eq!(branch_kinds.len(), 1 + composite.rest.len());
 
-    let mut plan = build_plan_core(&composite.left, stats, &branch_kinds[0], schema)?;
+    let mut plan = build_plan_core(
+        &composite.left,
+        &branch_kinds[0],
+        schema,
+        PlanBuildOptions {
+            stats,
+            path_extensions: &REJECTING_PATH_EXTENSION_HANDLER,
+        },
+    )?;
 
     for (i, (set_op, right_query)) in composite.rest.iter().enumerate() {
-        let right_plan = build_plan_core(right_query, stats, &branch_kinds[1 + i], schema)?;
+        let right_plan = build_plan_core(
+            right_query,
+            &branch_kinds[1 + i],
+            schema,
+            PlanBuildOptions {
+                stats,
+                path_extensions: &REJECTING_PATH_EXTENSION_HANDLER,
+            },
+        )?;
+        plan.ops.push(PlanOp::SetOperation {
+            op: *set_op,
+            right: Box::new(right_plan),
+        });
+    }
+
+    Ok(plan)
+}
+
+fn build_composite_plan_with_binding_kinds_and_options(
+    composite: &CompositeQueryExpr,
+    options: PlanBuildOptions<'_>,
+    seed_binding_kinds: Option<&BTreeMap<String, BindingKind>>,
+    schema: &dyn PropertySchema,
+) -> Result<PhysicalPlan, PlannerError> {
+    let mut plan = build_plan_with_binding_kinds_and_options(
+        &composite.left,
+        options,
+        seed_binding_kinds,
+        schema,
+    )?;
+
+    for (set_op, right_query) in &composite.rest {
+        let right_plan = build_plan_with_binding_kinds_and_options(
+            right_query,
+            options,
+            seed_binding_kinds,
+            schema,
+        )?;
         plan.ops.push(PlanOp::SetOperation {
             op: *set_op,
             right: Box::new(right_plan),
@@ -826,6 +1016,9 @@ fn plan_simple_statement(
     binding_kinds: &std::collections::BTreeMap<String, BindingKind>,
     referenced_vars: &BTreeSet<String>,
     schema: &dyn PropertySchema,
+    options: PlanBuildOptions<'_>,
+    bound_node_vars: &mut BTreeSet<String>,
+    optional_node_vars: &mut BTreeSet<String>,
     ops: &mut Vec<PlanOp>,
     annotations: &mut PlanAnnotations,
 ) -> Result<(), PlannerError> {
@@ -837,6 +1030,9 @@ fn plan_simple_statement(
                 stats,
                 conditional_candidates,
                 referenced_vars,
+                options,
+                bound_node_vars,
+                optional_node_vars,
                 ops,
                 annotations,
             )?;
@@ -927,8 +1123,12 @@ fn plan_simple_statement(
             Ok(())
         }
         SimpleQueryStatement::InlineProcedureCall(inline) => {
-            let mut sub_plan =
-                build_composite_plan_with_binding_kinds(&inline.body, stats, None, schema)?;
+            let mut sub_plan = build_composite_plan_with_binding_kinds_and_options(
+                &inline.body,
+                options,
+                None,
+                schema,
+            )?;
             if let Some(graph) = &inline.use_graph {
                 let wrapped_ops = std::mem::take(&mut sub_plan.ops);
                 sub_plan.ops = vec![PlanOp::UseGraph {
@@ -950,6 +1150,8 @@ fn plan_simple_statement(
         SimpleQueryStatement::Focused { graph, body } => {
             if let Some(inner) = body {
                 let mut sub_ops = Vec::new();
+                let mut sub_bound_node_vars = BTreeSet::new();
+                let mut sub_optional_node_vars = BTreeSet::new();
                 plan_simple_statement(
                     inner,
                     stage,
@@ -958,6 +1160,9 @@ fn plan_simple_statement(
                     binding_kinds,
                     referenced_vars,
                     schema,
+                    options,
+                    &mut sub_bound_node_vars,
+                    &mut sub_optional_node_vars,
                     &mut sub_ops,
                     annotations,
                 )?;
@@ -982,6 +1187,9 @@ fn plan_match(
     stats: Option<&dyn GraphStats>,
     conditional_candidates: &[ConditionalScanCandidate],
     referenced_vars: &BTreeSet<String>,
+    options: PlanBuildOptions<'_>,
+    bound_node_vars: &mut BTreeSet<String>,
+    optional_node_vars: &mut BTreeSet<String>,
     ops: &mut Vec<PlanOp>,
     annotations: &mut PlanAnnotations,
 ) -> Result<(), PlannerError> {
@@ -995,6 +1203,9 @@ fn plan_match(
     if match_stmt.optional {
         // OPTIONAL MATCH: build sub-plan and wrap in OptionalMatch.
         let mut sub_ops = Vec::new();
+        let prior_bound = bound_node_vars.clone();
+        let mut sub_bound_node_vars = bound_node_vars.clone();
+        let mut sub_optional_node_vars = BTreeSet::new();
         for path_pattern in &pattern.paths {
             plan_path_pattern(
                 path_pattern,
@@ -1002,6 +1213,9 @@ fn plan_match(
                 conditional_candidates,
                 referenced_vars,
                 &mut where_conjuncts,
+                options,
+                &mut sub_bound_node_vars,
+                &mut sub_optional_node_vars,
                 &mut sub_ops,
                 annotations,
             )?;
@@ -1013,6 +1227,9 @@ fn plan_match(
             });
         }
         ops.push(PlanOp::OptionalMatch { sub_plan: sub_ops });
+        for v in sub_bound_node_vars.difference(&prior_bound) {
+            optional_node_vars.insert(v.clone());
+        }
         return Ok(());
     }
 
@@ -1031,6 +1248,9 @@ fn plan_match(
             conditional_candidates,
             referenced_vars,
             &mut where_conjuncts,
+            options,
+            bound_node_vars,
+            optional_node_vars,
             ops,
             annotations,
         )?;
@@ -1051,6 +1271,9 @@ fn plan_path_pattern(
     conditional_candidates: &[ConditionalScanCandidate],
     referenced_vars: &BTreeSet<String>,
     where_conjuncts: &mut Vec<Expr>,
+    options: PlanBuildOptions<'_>,
+    bound_node_vars: &mut BTreeSet<String>,
+    optional_node_vars: &mut BTreeSet<String>,
     ops: &mut Vec<PlanOp>,
     annotations: &mut PlanAnnotations,
 ) -> Result<(), PlannerError> {
@@ -1070,30 +1293,80 @@ fn plan_path_pattern(
         ));
     }
 
+    let shortest_path_cost = if path.extensions.is_empty() {
+        ShortestPathCost::HopCount
+    } else {
+        let single_edge = match &path.expr {
+            PathPatternExpr::Term(term) => extract_single_edge_path_info(term),
+            _ => None,
+        };
+        let ctx = PathPatternExtensionContext {
+            prefix: path.prefix.as_ref(),
+            extensions: &path.extensions,
+            shortest_mode,
+            single_edge,
+        };
+        options.path_extensions.plan_shortest_path_cost(&ctx)?
+    };
+
     // Walk the path expression to emit scan/expand ops.
     plan_path_expr(
         &path.expr,
         shortest_mode,
+        shortest_path_cost,
         path.variable.as_deref(),
         stats,
         conditional_candidates,
         referenced_vars,
         where_conjuncts,
+        bound_node_vars,
+        optional_node_vars,
         ops,
         annotations,
     )?;
     Ok(())
 }
 
+fn extract_single_edge_path_info(term: &PathTerm) -> Option<SingleEdgePathInfo> {
+    let term = normalize_path_term(term).ok()?;
+    if term.factors.len() != 3 {
+        return None;
+    }
+    let PathPrimary::Node(_) = &term.factors[0].primary else {
+        return None;
+    };
+    let PathPrimary::Edge(edge) = &term.factors[1].primary else {
+        return None;
+    };
+    let PathPrimary::Node(_) = &term.factors[2].primary else {
+        return None;
+    };
+    let (label, label_expr) = plan_edge_expand_labels(edge);
+    let var_len = term.factors[1]
+        .quantifier
+        .as_ref()
+        .and_then(quantifier_to_var_len);
+    Some(SingleEdgePathInfo {
+        edge_var: edge.variable.clone(),
+        direction: edge.direction,
+        label: label.map(|s| s.to_string()),
+        label_expr,
+        var_len,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn plan_path_expr(
     expr: &PathPatternExpr,
     shortest_mode: Option<ShortestMode>,
+    shortest_path_cost: ShortestPathCost,
     path_var: Option<&str>,
     stats: Option<&dyn GraphStats>,
     conditional_candidates: &[ConditionalScanCandidate],
     referenced_vars: &BTreeSet<String>,
     where_conjuncts: &mut Vec<Expr>,
+    bound_node_vars: &mut BTreeSet<String>,
+    optional_node_vars: &mut BTreeSet<String>,
     ops: &mut Vec<PlanOp>,
     annotations: &mut PlanAnnotations,
 ) -> Result<(), PlannerError> {
@@ -1102,11 +1375,14 @@ fn plan_path_expr(
             plan_path_term(
                 term,
                 shortest_mode,
+                shortest_path_cost.clone(),
                 path_var,
                 stats,
                 conditional_candidates,
                 referenced_vars,
                 where_conjuncts,
+                bound_node_vars,
+                optional_node_vars,
                 ops,
                 annotations,
             )?;
@@ -1116,11 +1392,14 @@ fn plan_path_expr(
                 plan_path_term(
                     term,
                     shortest_mode,
+                    shortest_path_cost.clone(),
                     path_var,
                     stats,
                     conditional_candidates,
                     referenced_vars,
                     where_conjuncts,
+                    bound_node_vars,
+                    optional_node_vars,
                     ops,
                     annotations,
                 )?;
@@ -1621,11 +1900,14 @@ fn hop_aux_binding_for_edge_if_referenced(
 fn plan_path_term(
     term: &PathTerm,
     shortest_mode: Option<ShortestMode>,
+    shortest_path_cost: ShortestPathCost,
     path_var: Option<&str>,
     stats: Option<&dyn GraphStats>,
     conditional_candidates: &[ConditionalScanCandidate],
     referenced_vars: &BTreeSet<String>,
     where_conjuncts: &mut Vec<Expr>,
+    bound_node_vars: &mut BTreeSet<String>,
+    optional_node_vars: &mut BTreeSet<String>,
     ops: &mut Vec<PlanOp>,
     annotations: &mut PlanAnnotations,
 ) -> Result<(), PlannerError> {
@@ -1699,18 +1981,41 @@ fn plan_path_term(
         shortest_mode,
     );
 
+    let entry_bound_node_vars = bound_node_vars.clone();
+    let entry_optional_node_vars = optional_node_vars.clone();
+
     let mut prev_node_var: Option<String> = None;
     let mut pending_deferred_first_scan: Option<(String, Option<String>, NodePattern)> = None;
     // Track nodes whose inline filters were fused into ExpandFilter.
     let mut fused_nodes: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut enforced_reuse_nodes: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
+    let mut seen_path_node_vars: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
+    let mut path_bound_node_vars: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
 
     for (idx, elem) in elements.iter().enumerate() {
         match elem {
             PathElement::Node { var, node } => {
                 let label = extract_simple_label(&node.label);
 
-                // First node: emit a scan (unless deferred for leading EdgeIndexScan).
-                if prev_node_var.is_none() && !has_scan(ops) {
+                let reuse_from_prior_match =
+                    entry_bound_node_vars.contains(var) || entry_optional_node_vars.contains(var);
+                let reuse_within_path = seen_path_node_vars.contains(var);
+                seen_path_node_vars.insert(var.clone());
+
+                if reuse_from_prior_match || reuse_within_path {
+                    if !enforced_reuse_nodes.contains(var) {
+                        emit_bound_node_pattern_checks(
+                            var,
+                            node,
+                            optional_node_vars.contains(var),
+                            ops,
+                        );
+                        enforced_reuse_nodes.insert(var.clone());
+                    }
+                } else if prev_node_var.is_none() && !path_bound_node_vars.contains(var) {
                     if leading_first_hop_eligible {
                         pending_deferred_first_scan =
                             Some((var.clone(), label.clone(), node.clone()));
@@ -1724,6 +2029,8 @@ fn plan_path_term(
                             ops,
                             annotations,
                         );
+                        bound_node_vars.insert(var.clone());
+                        path_bound_node_vars.insert(var.clone());
                     }
                 }
 
@@ -1803,6 +2110,10 @@ fn plan_path_term(
                             ),
                         });
                         emit_edge_inline_filters(edge_var, edge, &fusion_on_clone, ops);
+                        bound_node_vars.insert(src_var.clone());
+                        bound_node_vars.insert(dst_var.clone());
+                        path_bound_node_vars.insert(src_var.clone());
+                        path_bound_node_vars.insert(dst_var.clone());
                         if !dst_filters.is_empty() {
                             ops.push(PlanOp::PropertyFilter {
                                 predicates: dst_filters,
@@ -1822,6 +2133,8 @@ fn plan_path_term(
                                 ops,
                                 annotations,
                             );
+                            bound_node_vars.insert(v.clone());
+                            path_bound_node_vars.insert(v);
                         }
 
                         let edge_fusion = if shortest_mode.is_some() {
@@ -1832,6 +2145,34 @@ fn plan_path_term(
                         let indexed_edge_equality = edge_fusion.indexed_equality.clone();
 
                         if let Some(mode) = shortest_mode {
+                            if let Some(dst_node) = dst_node.as_ref() {
+                                if !entry_bound_node_vars.contains(&dst_var)
+                                    && !entry_optional_node_vars.contains(&dst_var)
+                                    && !bound_node_vars.contains(&dst_var)
+                                    && !optional_node_vars.contains(&dst_var)
+                                {
+                                    let dst_label = extract_simple_label(&dst_node.label);
+                                    emit_scan_for_node(
+                                        &dst_var,
+                                        &dst_label,
+                                        dst_node,
+                                        stats,
+                                        conditional_candidates,
+                                        ops,
+                                        annotations,
+                                    );
+                                    bound_node_vars.insert(dst_var.clone());
+                                    path_bound_node_vars.insert(dst_var.clone());
+                                } else if !enforced_reuse_nodes.contains(&dst_var) {
+                                    emit_bound_node_pattern_checks(
+                                        &dst_var,
+                                        dst_node,
+                                        optional_node_vars.contains(&dst_var),
+                                        ops,
+                                    );
+                                    enforced_reuse_nodes.insert(dst_var.clone());
+                                }
+                            }
                             ops.push(PlanOp::ShortestPath {
                                 src: src_str,
                                 dst: dst_str.clone(),
@@ -1842,6 +2183,7 @@ fn plan_path_term(
                                 label: label_str.clone(),
                                 label_expr,
                                 var_len,
+                                cost: shortest_path_cost.clone(),
                             });
                             if !dst_filters.is_empty() {
                                 ops.push(PlanOp::PropertyFilter {
@@ -1867,6 +2209,8 @@ fn plan_path_term(
                                     referenced_vars,
                                 ),
                             });
+                            bound_node_vars.insert(dst_var.clone());
+                            path_bound_node_vars.insert(dst_var.clone());
                             fused_nodes.insert(dst_var.clone());
                         } else {
                             ops.push(PlanOp::Expand {
@@ -1885,6 +2229,8 @@ fn plan_path_term(
                                     referenced_vars,
                                 ),
                             });
+                            bound_node_vars.insert(dst_var.clone());
+                            path_bound_node_vars.insert(dst_var.clone());
                         }
 
                         emit_edge_inline_filters(edge_var, edge, &edge_fusion, ops);
@@ -1896,11 +2242,14 @@ fn plan_path_term(
                 plan_path_expr(
                     expr,
                     shortest_mode,
+                    shortest_path_cost.clone(),
                     path_var,
                     stats,
                     conditional_candidates,
                     referenced_vars,
                     where_conjuncts,
+                    bound_node_vars,
+                    optional_node_vars,
                     ops,
                     annotations,
                 )?;
@@ -1949,6 +2298,31 @@ fn quantifier_to_var_len(q: &PathQuantifier) -> Option<VarLenSpec> {
             min: *lower,
             max: *upper,
         }),
+    }
+}
+
+fn emit_bound_node_pattern_checks(
+    var: &str,
+    node: &NodePattern,
+    require_non_null: bool,
+    ops: &mut Vec<PlanOp>,
+) {
+    let mut predicates = Vec::new();
+    if require_non_null {
+        predicates.push(Expr::new(ExprKind::IsNotNull(Box::new(Expr::var(var)))));
+    }
+    if let Some(label) = &node.label {
+        predicates.push(Expr::new(ExprKind::IsLabeled {
+            expr: Box::new(Expr::var(var)),
+            label: label.clone(),
+            negated: false,
+        }));
+    }
+    if !predicates.is_empty() {
+        ops.push(PlanOp::PropertyFilter {
+            predicates,
+            stage: 0,
+        });
     }
 }
 
@@ -2258,18 +2632,6 @@ fn find_equality_value_in_where(var: &str, property: &str, where_expr: &Expr) ->
         }
     }
     None
-}
-
-fn has_scan(ops: &[PlanOp]) -> bool {
-    ops.iter().any(|op| {
-        matches!(
-            op,
-            PlanOp::NodeScan { .. }
-                | PlanOp::IndexScan { .. }
-                | PlanOp::EdgeIndexScan { .. }
-                | PlanOp::ConditionalIndexScan { .. }
-        )
-    })
 }
 
 fn plan_result_statement(result: &ResultStatement, ops: &mut Vec<PlanOp>) {
@@ -2725,6 +3087,7 @@ fn plan_bushy_join(
     binding_kinds: &std::collections::BTreeMap<String, BindingKind>,
     referenced_vars: &BTreeSet<String>,
     schema: &dyn PropertySchema,
+    options: PlanBuildOptions<'_>,
     ops: &mut Vec<PlanOp>,
     annotations: &mut PlanAnnotations,
 ) -> Result<(), PlannerError> {
@@ -2734,6 +3097,8 @@ fn plan_bushy_join(
     for group in groups {
         let mut group_ops = Vec::new();
         let mut group_vars = std::collections::BTreeSet::new();
+        let mut bound_node_vars = BTreeSet::new();
+        let mut optional_node_vars = BTreeSet::new();
 
         for &idx in group {
             plan_simple_statement(
@@ -2744,6 +3109,9 @@ fn plan_bushy_join(
                 binding_kinds,
                 referenced_vars,
                 schema,
+                options,
+                &mut bound_node_vars,
+                &mut optional_node_vars,
                 &mut group_ops,
                 annotations,
             )?;

@@ -5,11 +5,13 @@ use gleaph_gql::type_check::{
     DiagnosticSeverity, DmlDiagnosticSeverity, PropertySchema, TypeDiagnostic,
     dml_target_unknown_message, dml_target_value_message,
 };
+use gleaph_gql::types::LabelExpr;
 use gleaph_gql_planner::plan::*;
 use gleaph_gql_planner::semantic;
 use gleaph_gql_planner::stats::{GraphStats, TableStats};
 use gleaph_gql_planner::{
-    PlannerError, analyze_remote_use_graph_pushdown, build_block_plan, build_block_plan_output,
+    PathPatternExtensionContext, PathPatternExtensionHandler, PlanBuildOptions, PlannerError,
+    ShortestPathCost, analyze_remote_use_graph_pushdown, build_block_plan, build_block_plan_output,
     build_composite_plan, build_plan, build_plan_output, build_plan_output_for_execute,
     build_plan_with_schema, build_statement_plan, build_statement_plan_with_schema, explain_plan,
 };
@@ -2369,6 +2371,430 @@ fn shortest_path_plans_compound_simplified_edge_labels() {
         }
         other => panic!("expected Or(KNOWS, LIKES) in label_expr, got {:?}", other),
     }
+}
+
+struct FakeCostExtensionHandler;
+
+impl PathPatternExtensionHandler for FakeCostExtensionHandler {
+    fn plan_shortest_path_cost(
+        &self,
+        ctx: &PathPatternExtensionContext<'_>,
+    ) -> Result<ShortestPathCost, PlannerError> {
+        let ext = ctx
+            .extensions
+            .first()
+            .ok_or_else(|| PlannerError::UnsupportedExtension("missing extension".into()))?;
+        if ext.name.parts != ["FAKE_COST"] {
+            return Err(PlannerError::UnsupportedExtension(format!(
+                "unsupported extension '{}'",
+                ext.name.parts.join(".")
+            )));
+        }
+        let edge = ctx
+            .single_edge
+            .as_ref()
+            .and_then(|s| s.edge_var.clone())
+            .ok_or_else(|| {
+                PlannerError::UnsupportedExtension(
+                    "FAKE_COST requires a single-edge shortest path".into(),
+                )
+            })?;
+        Ok(ShortestPathCost::EdgeCostExpr {
+            edge_var: edge.into(),
+            expr: ext.expr.clone(),
+        })
+    }
+}
+
+#[test]
+fn default_planner_rejects_path_extension_clauses() {
+    let query = parse_query("MATCH ANY SHORTEST (a)-[e:L]->{1,3}(b) FAKE_COST BY x(e) RETURN a, b");
+    let err = build_plan(&query, None).expect_err("expected unsupported extension");
+    assert!(matches!(err, PlannerError::UnsupportedExtension(_)));
+}
+
+#[test]
+fn extension_aware_planner_maps_fake_cost_to_edge_cost_expr() {
+    let query = parse_query("MATCH ANY SHORTEST (a)-[e:L]->{1,3}(b) FAKE_COST BY x(e) RETURN a, b");
+    let handler = FakeCostExtensionHandler;
+    let plan = build_plan_with_options(
+        &query,
+        PlanBuildOptions {
+            stats: None,
+            path_extensions: &handler,
+        },
+        &gleaph_gql::type_check::NoSchema,
+    )
+    .expect("plan with fake extension handler");
+    let cost = plan
+        .ops
+        .iter()
+        .find_map(|op| match op {
+            PlanOp::ShortestPath { cost, .. } => Some(cost.clone()),
+            _ => None,
+        })
+        .expect("ShortestPath cost");
+    match cost {
+        ShortestPathCost::EdgeCostExpr { edge_var, .. } => assert_eq!(&*edge_var, "e"),
+        ShortestPathCost::HopCount => panic!("expected EdgeCostExpr"),
+    }
+}
+
+fn build_plan_with_options(
+    query: &LinearQueryStatement,
+    options: PlanBuildOptions<'_>,
+    schema: &dyn PropertySchema,
+) -> Result<PhysicalPlan, PlannerError> {
+    gleaph_gql_planner::build_plan_with_schema_and_options(query, options, schema)
+}
+
+#[test]
+fn shortest_path_without_extensions_uses_hop_count_cost() {
+    let plan = plan_query("MATCH ANY SHORTEST (a)-[:KNOWS]->{1,3}(b) RETURN a, b");
+    let cost = plan
+        .ops
+        .iter()
+        .find_map(|op| match op {
+            PlanOp::ShortestPath { cost, .. } => Some(cost.clone()),
+            _ => None,
+        })
+        .expect("ShortestPath cost");
+    assert!(matches!(cost, ShortestPathCost::HopCount));
+}
+
+#[test]
+fn shortest_path_self_referential_destination_does_not_rescan() {
+    let plan = plan_query("MATCH ANY SHORTEST (a)-[:KNOWS]->{0,0}(a) RETURN a");
+    let a_scans = plan
+        .ops
+        .iter()
+        .filter(|op| matches!(op, PlanOp::NodeScan { variable, .. } if &**variable == "a"))
+        .count();
+    assert_eq!(
+        a_scans, 1,
+        "self-referential shortest path must not rescan the destination: {:?}",
+        plan.ops
+    );
+    assert!(plan.ops.iter().any(
+        |op| matches!(op, PlanOp::ShortestPath { src, dst, .. } if &**src == "a" && &**dst == "a")
+    ));
+}
+
+#[test]
+fn shortest_path_destination_already_bound_in_match_is_not_rescanned() {
+    let plan = plan_query("MATCH (a:Person), (b:Person), ANY SHORTEST (a)-[:KNOWS]->(b) RETURN b");
+    let b_scans = plan
+        .ops
+        .iter()
+        .filter(|op| matches!(op, PlanOp::NodeScan { variable, .. } if &**variable == "b"))
+        .count();
+    assert_eq!(
+        b_scans, 1,
+        "destination already bound by an earlier pattern must not be rescanned: {:?}",
+        plan.ops
+    );
+    assert!(plan.ops.iter().any(
+        |op| matches!(op, PlanOp::ShortestPath { src, dst, .. } if &**src == "a" && &**dst == "b")
+    ));
+}
+
+fn count_node_scans(plan: &PhysicalPlan, variable: &str) -> usize {
+    fn walk(ops: &[PlanOp], variable: &str, count: &mut usize) {
+        for op in ops {
+            match op {
+                PlanOp::NodeScan { variable: var, .. } if var.as_ref() == variable => {
+                    *count += 1;
+                }
+                PlanOp::OptionalMatch { sub_plan } => walk(sub_plan, variable, count),
+                PlanOp::HashJoin { left, right, .. } => {
+                    walk(left, variable, count);
+                    walk(right, variable, count);
+                }
+                PlanOp::CartesianProduct { left, right } => {
+                    walk(left, variable, count);
+                    walk(right, variable, count);
+                }
+                PlanOp::InlineProcedureCall { sub_plan, .. } => {
+                    walk(&sub_plan.ops, variable, count)
+                }
+                PlanOp::SetOperation { right, .. } => walk(&right.ops, variable, count),
+                PlanOp::UseGraph {
+                    sub_plan: Some(sp), ..
+                } => walk(sp, variable, count),
+                _ => {}
+            }
+        }
+    }
+    let mut count = 0;
+    walk(&plan.ops, variable, &mut count);
+    count
+}
+
+#[test]
+fn reused_node_variable_across_match_clauses_is_not_rescanned() {
+    let plan = plan_query("MATCH (a:Person) MATCH (a)-[:KNOWS]->(b:Person) RETURN a, b");
+    assert_eq!(
+        count_node_scans(&plan, "a"),
+        1,
+        "reused anchor variable must not be rescanned in a later MATCH: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn reused_node_variable_in_optional_match_is_not_rescanned() {
+    let plan = plan_query("MATCH (a:Person) OPTIONAL MATCH (a)-[:KNOWS]->(b:Person) RETURN a, b");
+    assert_eq!(
+        count_node_scans(&plan, "a"),
+        1,
+        "reused anchor variable must not be rescanned inside OPTIONAL MATCH: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn optional_match_introduced_variable_is_not_rescanned_in_later_match() {
+    let plan = plan_query(
+        "MATCH (a:Person) OPTIONAL MATCH (a)-[:KNOWS]->(b:Person) MATCH (b)-[:KNOWS]->(c:Person) RETURN a, b, c",
+    );
+    assert_eq!(
+        count_node_scans(&plan, "b"),
+        0,
+        "variable introduced by OPTIONAL MATCH must not be rescanned in a later MATCH: {:?}",
+        plan.ops
+    );
+    assert_eq!(
+        count_node_scans(&plan, "a"),
+        1,
+        "anchor variable must still be scanned once: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn shortest_path_optional_destination_is_not_rescanned() {
+    let plan = plan_query(
+        "MATCH (a:Person) OPTIONAL MATCH (a)-[:KNOWS]->(b:Person) \
+         MATCH ANY SHORTEST (a)-[:KNOWS]->(b) RETURN b",
+    );
+    assert_eq!(
+        count_node_scans(&plan, "b"),
+        0,
+        "optional destination must not be rescanned before ShortestPath: {:?}",
+        plan.ops
+    );
+}
+
+fn plan_has_predicate<F>(plan: &PhysicalPlan, predicate: F) -> bool
+where
+    F: Fn(&Expr) -> bool,
+{
+    fn walk(ops: &[PlanOp], predicate: &dyn Fn(&Expr) -> bool) -> bool {
+        for op in ops {
+            match op {
+                PlanOp::PropertyFilter { predicates, .. } => {
+                    if predicates.iter().any(predicate) {
+                        return true;
+                    }
+                }
+                PlanOp::ExpandFilter { dst_filter, .. } => {
+                    if dst_filter.iter().any(predicate) {
+                        return true;
+                    }
+                }
+                PlanOp::Filter { condition } => {
+                    if predicate(condition) {
+                        return true;
+                    }
+                }
+                PlanOp::OptionalMatch { sub_plan } => {
+                    if walk(sub_plan, predicate) {
+                        return true;
+                    }
+                }
+                PlanOp::HashJoin { left, right, .. } => {
+                    if walk(left, predicate) || walk(right, predicate) {
+                        return true;
+                    }
+                }
+                PlanOp::CartesianProduct { left, right } => {
+                    if walk(left, predicate) || walk(right, predicate) {
+                        return true;
+                    }
+                }
+                PlanOp::InlineProcedureCall { sub_plan, .. } => {
+                    if walk(&sub_plan.ops, predicate) {
+                        return true;
+                    }
+                }
+                PlanOp::SetOperation { right, .. } => {
+                    if walk(&right.ops, predicate) {
+                        return true;
+                    }
+                }
+                PlanOp::UseGraph {
+                    sub_plan: Some(sp), ..
+                } => {
+                    if walk(sp, predicate) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+    walk(&plan.ops, &predicate)
+}
+
+#[test]
+fn bound_optional_node_only_match_emits_non_null_check() {
+    let plan = plan_query(
+        "MATCH (a:Person) OPTIONAL MATCH (a)-[:KNOWS]->(b:Person) MATCH (b:Person) RETURN b",
+    );
+    assert!(
+        plan_has_predicate(&plan, |expr| {
+            matches!(&expr.kind, ExprKind::IsNotNull(inner) if matches!(&inner.kind, ExprKind::Variable(v) if v == "b"))
+        }),
+        "mandatory node-only reuse of optional variable must enforce non-null: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn rebound_node_label_is_checked_without_rescan() {
+    let plan = plan_query("MATCH (a:Person) MATCH (a:User) RETURN a");
+    assert_eq!(
+        count_node_scans(&plan, "a"),
+        1,
+        "anchor variable should still be scanned once: {:?}",
+        plan.ops
+    );
+    assert!(
+        plan_has_predicate(&plan, |expr| {
+            matches!(
+                &expr.kind,
+                ExprKind::IsLabeled { expr: inner, label, negated: false }
+                if matches!(&inner.kind, ExprKind::Variable(v) if v == "a")
+                    && matches!(label, LabelExpr::Name(name) if name == "User")
+            )
+        }),
+        "rebound label constraint must be enforced without rescanning: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn shortest_path_dst_label_narrowing_without_rescan() {
+    let plan = plan_query("MATCH (b:Person), ANY SHORTEST (a)-[:KNOWS]->(b:User) RETURN b");
+    assert_eq!(
+        count_node_scans(&plan, "b"),
+        1,
+        "destination bound earlier must not be rescanned: {:?}",
+        plan.ops
+    );
+    assert!(
+        plan_has_predicate(&plan, |expr| {
+            matches!(
+                &expr.kind,
+                ExprKind::IsLabeled { expr: inner, label, negated: false }
+                if matches!(&inner.kind, ExprKind::Variable(v) if v == "b")
+                    && matches!(label, LabelExpr::Name(name) if name == "User")
+            )
+        }),
+        "shortest-path dst label narrowing must be enforced without rescan: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn reused_mid_path_node_emits_label_check() {
+    let plan = plan_query("MATCH (a:Person)-[:KNOWS]->(a:User) RETURN a");
+    assert_eq!(
+        count_node_scans(&plan, "a"),
+        1,
+        "self-loop reuse must not rescan anchor: {:?}",
+        plan.ops
+    );
+    assert!(
+        plan_has_predicate(&plan, |expr| {
+            matches!(
+                &expr.kind,
+                ExprKind::IsLabeled { expr: inner, label, negated: false }
+                if matches!(&inner.kind, ExprKind::Variable(v) if v == "a")
+                    && matches!(label, LabelExpr::Name(name) if name == "User")
+            )
+        }),
+        "mid-path relabeled reuse must emit IsLabeled: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn optional_dst_label_rechecked_in_later_node_only_match() {
+    let plan = plan_query(
+        "MATCH (a:Person) OPTIONAL MATCH (a)-[:KNOWS]->(b:Person) MATCH (b:User) RETURN b",
+    );
+    assert_eq!(
+        count_node_scans(&plan, "b"),
+        0,
+        "optional-introduced variable must not be rescanned: {:?}",
+        plan.ops
+    );
+    assert!(
+        plan_has_predicate(&plan, |expr| {
+            matches!(&expr.kind, ExprKind::IsNotNull(inner) if matches!(&inner.kind, ExprKind::Variable(v) if v == "b"))
+        }),
+        "optional reuse must enforce non-null: {:?}",
+        plan.ops
+    );
+    assert!(
+        plan_has_predicate(&plan, |expr| {
+            matches!(
+                &expr.kind,
+                ExprKind::IsLabeled { expr: inner, label, negated: false }
+                if matches!(&inner.kind, ExprKind::Variable(v) if v == "b")
+                    && matches!(label, LabelExpr::Name(name) if name == "User")
+            )
+        }),
+        "optional reuse must enforce narrowed label: {:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn rebound_inline_property_is_enforced_without_rescan() {
+    let plan = plan_query(
+        "MATCH (a:PropRebindInline {nick: 'x'}) MATCH (a:PropRebindInline {nick: 'y'}) RETURN a",
+    );
+    let anchor_scans = count_node_scans(&plan, "a")
+        + plan
+            .ops
+            .iter()
+            .filter(|op| {
+                matches!(
+                    op,
+                    PlanOp::IndexScan { variable, .. } if &**variable == "a"
+                )
+            })
+            .count();
+    assert_eq!(
+        anchor_scans, 1,
+        "anchor variable must be accessed once across rebound matches: {:?}",
+        plan.ops
+    );
+    assert!(
+        plan_has_predicate(&plan, |expr| {
+            matches!(
+                &expr.kind,
+                ExprKind::Compare { left, op: CmpOp::Eq, right, .. }
+                if matches!(&left.kind, ExprKind::PropertyAccess { expr: inner, property } if property == "nick" && matches!(&inner.kind, ExprKind::Variable(v) if v == "a"))
+                    && matches!(&right.kind, ExprKind::Literal(Value::Text(t)) if t == "y")
+            )
+        }),
+        "rebound inline property must be enforced without rescanning: {:?}",
+        plan.ops
+    );
 }
 
 #[test]

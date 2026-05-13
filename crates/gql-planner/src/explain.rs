@@ -467,6 +467,7 @@ fn format_op(op: &PlanOp) -> String {
             label_expr,
             var_len,
             edge,
+            cost,
             ..
         } => {
             let arrow = format_direction(direction);
@@ -490,18 +491,24 @@ fn format_op(op: &PlanOp) -> String {
                     }
                 })
                 .unwrap_or_default();
+            let cost_str = match cost {
+                ShortestPathCost::HopCount => String::new(),
+                ShortestPathCost::EdgeCostExpr { edge_var, .. } => {
+                    format!(", cost=edge({edge_var})")
+                }
+            };
             let mode_str = match mode {
                 ShortestMode::AnyShortest => "ANY SHORTEST",
                 ShortestMode::AllShortest => "ALL SHORTEST",
                 ShortestMode::ShortestK(k) => {
                     return format!(
-                        "ShortestPath({} {}[{}{}{}]{} {}{}, SHORTEST {})",
+                        "ShortestPath({} {}[{}{}{}]{} {}{}, SHORTEST {}{cost_str})",
                         src, arrow.0, edge, label_str, label_expr_str, bounds, arrow.1, dst, k
                     );
                 }
             };
             format!(
-                "ShortestPath({} {}[{}{}{}]{} {}{}, {})",
+                "ShortestPath({} {}[{}{}{}]{} {}{}, {}{cost_str})",
                 src, arrow.0, edge, label_str, label_expr_str, bounds, arrow.1, dst, mode_str
             )
         }

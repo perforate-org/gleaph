@@ -11,6 +11,8 @@
 use gleaph_gql::ast::*;
 use gleaph_gql::types::LabelExpr;
 
+use crate::expr_children::for_each_immediate_child_expr;
+
 // ════════════════════════════════════════════════════════════════════════════════
 // Core types
 // ════════════════════════════════════════════════════════════════════════════════
@@ -397,7 +399,7 @@ fn collect_aggregate_calls(expr: &Expr, analysis: &mut SemanticAnalysis) {
                     func: format!("{:?}", func),
                 });
         }
-        _ => walk_expr_children(expr, &mut |child| collect_aggregate_calls(child, analysis)),
+        _ => for_each_immediate_child_expr(expr, |child| collect_aggregate_calls(child, analysis)),
     }
 }
 
@@ -455,7 +457,7 @@ fn collect_expr_property_accesses(expr: &Expr, in_where: bool, analysis: &mut Se
             }
             collect_expr_property_accesses(inner, in_where, analysis);
         }
-        _ => walk_expr_children(expr, &mut |child| {
+        _ => for_each_immediate_child_expr(expr, |child| {
             collect_expr_property_accesses(child, in_where, analysis)
         }),
     }
@@ -512,113 +514,5 @@ fn reverse_cmp(op: CmpOp) -> CmpOp {
         CmpOp::Le => CmpOp::Ge,
         CmpOp::Gt => CmpOp::Lt,
         CmpOp::Ge => CmpOp::Le,
-    }
-}
-
-/// Walk direct children of an expression, calling `f` on each.
-fn walk_expr_children(expr: &Expr, f: &mut dyn FnMut(&Expr)) {
-    match &expr.kind {
-        ExprKind::Paren(e)
-        | ExprKind::UnaryOp { expr: e, .. }
-        | ExprKind::Not(e)
-        | ExprKind::IsNull(e)
-        | ExprKind::IsNotNull(e) => f(e),
-
-        ExprKind::BinaryOp { left, right, .. }
-        | ExprKind::And(left, right)
-        | ExprKind::Or(left, right)
-        | ExprKind::Xor(left, right)
-        | ExprKind::Compare { left, right, .. }
-        | ExprKind::Concat(left, right)
-        | ExprKind::NullIf(left, right) => {
-            f(left);
-            f(right);
-        }
-
-        ExprKind::PropertyAccess { expr: e, .. } | ExprKind::Cast { expr: e, .. } => f(e),
-
-        ExprKind::FunctionCall { args, .. } => {
-            for arg in args {
-                f(arg);
-            }
-        }
-
-        ExprKind::Aggregate {
-            expr: agg_expr,
-            expr2,
-            ..
-        } => {
-            if let Some(e) = agg_expr {
-                f(e);
-            }
-            if let Some(e) = expr2 {
-                f(e);
-            }
-        }
-
-        ExprKind::CaseSimple {
-            operand,
-            when_clauses,
-            else_clause,
-        } => {
-            f(operand);
-            for wc in when_clauses {
-                f(&wc.condition);
-                f(&wc.result);
-            }
-            if let Some(e) = else_clause {
-                f(e);
-            }
-        }
-
-        ExprKind::CaseSearched {
-            when_clauses,
-            else_clause,
-        } => {
-            for wc in when_clauses {
-                f(&wc.condition);
-                f(&wc.result);
-            }
-            if let Some(e) = else_clause {
-                f(e);
-            }
-        }
-
-        ExprKind::Coalesce(exprs) | ExprKind::ListLiteral(exprs) => {
-            for e in exprs {
-                f(e);
-            }
-        }
-
-        ExprKind::StringPredicate {
-            expr: e, pattern, ..
-        } => {
-            f(e);
-            f(pattern);
-        }
-
-        ExprKind::IsLabeled { expr: e, .. }
-        | ExprKind::IsSourceOf { node: e, .. }
-        | ExprKind::IsDestOf { node: e, .. }
-        | ExprKind::IsTyped { expr: e, .. }
-        | ExprKind::IsDirected { expr: e, .. }
-        | ExprKind::IsNormalized { expr: e, .. }
-        | ExprKind::IsTruth { expr: e, .. } => f(e),
-
-        ExprKind::LetIn { bindings, expr: e } => {
-            for b in bindings {
-                f(&b.value);
-            }
-            f(e);
-        }
-
-        ExprKind::ListConstructor { items, .. } => {
-            for item in items {
-                f(item);
-            }
-        }
-
-        // Terminals and unsupported.
-        _ => {}
     }
 }

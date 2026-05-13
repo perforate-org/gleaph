@@ -492,6 +492,35 @@ impl GraphStore {
         })
     }
 
+    /// Test-only helper to insert a directed edge with a specific `inline_value`.
+    #[cfg(test)]
+    pub fn insert_directed_edge_with_inline_value(
+        &self,
+        source_vertex_id: VertexId,
+        target_vertex_id: VertexId,
+        meta: EdgeMeta,
+        inline_value: u16,
+    ) -> Result<EdgeHandle, GraphStoreError> {
+        self.ensure_vertex_id(source_vertex_id)?;
+        self.ensure_vertex_id(target_vertex_id)?;
+
+        let (owner_vertex_id, vertex_edge_id) = self.allocate_directed_edge_id(source_vertex_id)?;
+        let edge = Edge {
+            target: target_vertex_id,
+            vertex_edge_id,
+            inline_value,
+            meta: meta.with_undirected(false),
+        };
+        self.with_graph_mut(|graph| {
+            graph.insert_directed_deferred(source_vertex_id, target_vertex_id, edge)
+        })?;
+
+        Ok(EdgeHandle {
+            owner_vertex_id,
+            vertex_edge_id,
+        })
+    }
+
     pub fn insert_undirected_edge(
         &self,
         endpoint_a: VertexId,

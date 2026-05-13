@@ -197,7 +197,7 @@ pub enum PlanOp {
         hop_aux_binding: Option<Str>,
     },
 
-    /// Shortest-path search (unweighted hop count) between already-bound `src` and bound `dst`.
+    /// Shortest-path search between already-bound `src` and bound `dst`.
     ///
     /// `edge` is set to the **last** hop’s edge along each emitted shortest path (or
     /// [`Value::Null`] scalar binding when the path has length zero and `min_hops == 0`).
@@ -212,6 +212,7 @@ pub enum PlanOp {
         /// General edge label predicate (same convention as [`PlanOp::Expand`]). When set, `label` is `None`.
         label_expr: Option<LabelExpr>,
         var_len: Option<VarLenSpec>,
+        cost: ShortestPathCost,
     },
 
     // ──── GQL-specific (not in gleaph-old) ────
@@ -456,6 +457,15 @@ pub enum ScanValue {
 pub struct VarLenSpec {
     pub min: u64,
     pub max: Option<u64>,
+}
+
+/// Cost model for shortest-path search.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ShortestPathCost {
+    /// Unweighted hop count (breadth-first).
+    HopCount,
+    /// Per-hop edge cost from an extension expression; total path cost is the sum.
+    EdgeCostExpr { edge_var: Str, expr: Expr },
 }
 
 /// Shortest-path mode.

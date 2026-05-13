@@ -5,25 +5,35 @@ use crate::facade::{EdgeHandle, GraphStore, canonical_undirected_owner};
 use crate::gql_execution_context::{GqlExecutionContext, try_eval_runtime_function_call};
 use crate::index::lookup::PropertyIndexLookup;
 use crate::plan::expr_evaluator::{
-    eval_and_expr, eval_binary_expr, eval_compare_expr, eval_concat_expr, eval_not_expr,
-    eval_or_expr, eval_unary_expr, eval_xor_expr, truthy,
+    ExprEvaluationError, SearchedCaseWhenOutcome, eval_abs_expr, eval_acos_expr, eval_and_expr,
+    eval_asin_expr, eval_atan_expr, eval_binary_expr, eval_cast_expr, eval_ceil_expr,
+    eval_compare_expr, eval_concat_expr, eval_cos_expr, eval_cosh_expr, eval_cot_expr,
+    eval_degrees_expr, eval_exp_expr, eval_floor_expr, eval_ln_expr, eval_log_expr,
+    eval_log10_expr, eval_mod_expr, eval_not_expr, eval_or_expr, eval_power_expr,
+    eval_radians_expr, eval_sin_expr, eval_sinh_expr, eval_sqrt_expr, eval_tan_expr,
+    eval_tanh_expr, eval_unary_expr, eval_xor_expr, searched_case_when_outcome, truthy,
 };
 use candid::Principal;
-use gleaph_gql::ast::{CmpOp, Expr, ExprKind, ObjectName, OrderByClause, TruthValue};
+use gleaph_gql::ast::{BinaryOp, CmpOp, Expr, ExprKind, ObjectName, OrderByClause, TruthValue};
+use gleaph_gql::numeric_order::{NumericOrderError, normalized_numeric_parts};
 use gleaph_gql::types::{EdgeDirection, LabelExpr, PathElement};
+use gleaph_gql::value_cmp::compare_values;
 use gleaph_gql::{Value, hash_value_for_join, value_to_index_key_bytes};
 use gleaph_gql_planner::plan::{
     AggregateSpec, ConditionalScanCandidate, IndexScanSpec, PhysicalPlan, PlanOp, ProjectColumn,
-    ScanValue, ShortestMode, Str, VarLenSpec,
+    ScanValue, ShortestMode, ShortestPathCost, Str, VarLenSpec,
 };
-use gleaph_graph_kernel::entry::{Edge, LabelId, PreparedWeightDecoder, decode_inline_weight};
+use gleaph_graph_kernel::entry::{
+    Edge, LabelId, PreparedWeightDecoder, Vertex, decode_inline_weight,
+};
 use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest};
 use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
 use ic_stable_lara::VertexId;
 use ic_stable_lara::traits::CsrVertexTombstone;
 use nohash_hasher::IntMap;
 use rapidhash::fast::RapidHasher;
-use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashSet, VecDeque};
 use std::hash::Hasher;
 use std::pin::Pin;
 
@@ -126,9 +136,8 @@ async fn execute_ops(
 
 /// Variables that operators in `ops` may bind (used to NULL-pad `OptionalMatch` miss rows).
 ///
-/// Downstream note: padded graph variables use [`PlanBinding::Value`]`(Value::Null)`; mandatory
-/// [`Expand`] on such a variable still fails in [`vertex_binding`] until semantics define row drop
-/// or optional chaining.
+/// Downstream mandatory [`Expand`] / [`ShortestPath`] ops skip rows whose traversal
+/// endpoints are null-padded optional bindings instead of failing in [`vertex_binding`].
 fn subplan_written_vars(ops: &[PlanOp]) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     for op in ops {
@@ -168,6 +177,8 @@ fn extend_subplan_written_vars_from_op(op: &PlanOp, out: &mut BTreeSet<String>) 
             if let Some(h) = hop_aux_binding {
                 out.insert(h.to_string());
             }
+            // When EdgeBindEndpoints execution is implemented, `far` must honor
+            // `expand_dst_matches_prebound_vertex` if `far` is already vertex-bound.
         }
         PlanOp::Expand {
             edge,
@@ -496,6 +507,7 @@ fn execute_ops_from<'a>(
                     label,
                     label_expr,
                     var_len,
+                    cost,
                 } => execute_shortest_path(
                     store,
                     rows,
@@ -508,6 +520,8 @@ fn execute_ops_from<'a>(
                     label.as_ref(),
                     label_expr,
                     var_len,
+                    cost,
+                    parameters,
                     gwd,
                 )?,
                 PlanOp::Aggregate {
@@ -1071,9 +1085,14 @@ fn execute_expand(
     };
     let mut out = Vec::new();
     for row in rows {
-        let src_id = vertex_binding(&row, src)?;
+        let Some(src_id) = vertex_binding_for_traversal(&row, src)? else {
+            continue;
+        };
         let candidates = expand_candidates(store, src_id, direction, label_id)?;
         for (dst_id, handle, edge_record) in candidates {
+            if !expand_dst_matches_prebound_vertex(&row, dst, dst_id) {
+                continue;
+            }
             let mut expanded = row.clone();
             expanded.insert(
                 edge.to_string(),
@@ -1090,6 +1109,13 @@ fn execute_expand(
         }
     }
     Ok(out)
+}
+
+fn expand_dst_matches_prebound_vertex(row: &PlanRow, dst: &Str, dst_id: VertexId) -> bool {
+    match row.get(dst.as_ref()) {
+        Some(PlanBinding::Vertex(id)) => dst_id == *id,
+        _ => true,
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1112,7 +1138,9 @@ fn execute_shortest_path(
     label: Option<&Str>,
     label_expr: &Option<LabelExpr>,
     var_len: &Option<VarLenSpec>,
-    _gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
+    cost: &ShortestPathCost,
+    parameters: &BTreeMap<String, Value>,
+    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
     if matches!(mode, ShortestMode::ShortestK(_)) {
         return Err(PlanQueryError::UnsupportedOp("ShortestPath.ShortestK"));
@@ -1129,9 +1157,30 @@ fn execute_shortest_path(
     let shard_id = local_shard_id(store);
     let mut out = Vec::new();
     for row in rows {
-        let src_id = vertex_binding(&row, src)?;
-        let dst_id = vertex_binding(&row, dst)?;
-        let paths = shortest_paths_between(store, src_id, dst_id, direction, label_id, var_len)?;
+        let Some(src_id) = vertex_binding_for_traversal(&row, src)? else {
+            continue;
+        };
+        let Some(dst_id) = vertex_binding_for_traversal(&row, dst)? else {
+            continue;
+        };
+        let paths = match cost {
+            ShortestPathCost::HopCount => {
+                shortest_paths_between(store, src_id, dst_id, direction, label_id, var_len)?
+            }
+            ShortestPathCost::EdgeCostExpr { edge_var, expr } => weighted_shortest_paths_between(
+                store,
+                src_id,
+                dst_id,
+                direction,
+                label_id,
+                var_len,
+                edge_var.as_ref(),
+                expr,
+                mode,
+                parameters,
+                gleaph_weight_decoders,
+            )?,
+        };
         for path in paths {
             let mut row = row.clone();
             match path.edges.last().copied() {
@@ -1212,6 +1261,251 @@ fn shortest_paths_between(
     }
 
     Ok(found)
+}
+
+#[derive(Clone, Debug)]
+struct WeightedCost(Value);
+
+impl WeightedCost {
+    fn zero() -> Self {
+        Self(Value::Int32(0))
+    }
+
+    fn from_value(value: Value) -> Result<Self, PlanQueryError> {
+        if matches!(value, Value::Null) {
+            return Err(PlanQueryError::GleaphCost {
+                message: "shortest-path edge cost must not be NULL".into(),
+            });
+        }
+        if !value.is_numeric() {
+            return Err(PlanQueryError::GleaphCost {
+                message: format!("shortest-path edge cost must be numeric, got {value:?}"),
+            });
+        }
+        match normalized_numeric_parts(&value) {
+            Err(NumericOrderError::NonFiniteFloat) => {
+                return Err(PlanQueryError::GleaphCost {
+                    message: "shortest-path edge cost must be finite".into(),
+                });
+            }
+            Err(NumericOrderError::UnsupportedValue) => {
+                return Err(PlanQueryError::GleaphCost {
+                    message: "shortest-path edge cost uses unsupported numeric value".into(),
+                });
+            }
+            Ok(_) => {}
+        }
+        match compare_values(&value, &Value::Int32(0)) {
+            None => {
+                return Err(PlanQueryError::GleaphCost {
+                    message: "shortest-path edge cost is incomparable".into(),
+                });
+            }
+            Some(Ordering::Less) => {
+                return Err(PlanQueryError::GleaphCost {
+                    message: "shortest-path edge cost must be non-negative".into(),
+                });
+            }
+            Some(_) => {}
+        }
+        Ok(Self(value))
+    }
+
+    fn checked_add(&self, hop: &Self) -> Result<Self, PlanQueryError> {
+        let sum = eval_binary_expr(self.0.clone(), BinaryOp::Add, hop.0.clone())
+            .map_err(map_weighted_cost_add_err)?;
+        Self::from_value(sum)
+    }
+
+    fn cmp(&self, other: &Self) -> Result<Ordering, PlanQueryError> {
+        compare_values(&self.0, &other.0).ok_or_else(|| PlanQueryError::GleaphCost {
+            message: "shortest-path edge cost is incomparable".into(),
+        })
+    }
+
+    fn cmp_infallible(&self, other: &Self) -> Ordering {
+        self.cmp(other).unwrap_or_else(|_| {
+            debug_assert!(false, "incomparable weighted shortest-path costs");
+            Ordering::Equal
+        })
+    }
+}
+
+fn map_weighted_cost_add_err(err: ExprEvaluationError) -> PlanQueryError {
+    match err {
+        ExprEvaluationError::NumericOverflow | ExprEvaluationError::NumericPrecisionOverflow => {
+            PlanQueryError::GleaphCost {
+                message: "shortest-path edge cost overflowed or became non-finite".into(),
+            }
+        }
+        ExprEvaluationError::NonFiniteNumeric => PlanQueryError::GleaphCost {
+            message: "shortest-path edge cost must be finite".into(),
+        },
+        ExprEvaluationError::UnsupportedNumericConversion => PlanQueryError::GleaphCost {
+            message: "shortest-path edge cost uses unsupported numeric conversion".into(),
+        },
+        _ => PlanQueryError::GleaphCost {
+            message: format!("shortest-path edge cost evaluation failed: {err:?}"),
+        },
+    }
+}
+
+#[derive(Clone)]
+struct WeightedQueueEntry {
+    cost: WeightedCost,
+    tie: u64,
+    state: ShortestPathState,
+}
+
+impl PartialEq for WeightedQueueEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.cost.0 == other.cost.0 && self.tie == other.tie
+    }
+}
+
+impl Eq for WeightedQueueEntry {}
+
+impl PartialOrd for WeightedQueueEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for WeightedQueueEntry {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other
+            .cost
+            .cmp_infallible(&self.cost)
+            .then_with(|| other.tie.cmp(&self.tie))
+    }
+}
+
+fn weighted_shortest_paths_between(
+    store: &GraphStore,
+    src: VertexId,
+    dst: VertexId,
+    direction: EdgeDirection,
+    label_id: Option<LabelId>,
+    var_len: &Option<VarLenSpec>,
+    edge_var: &str,
+    cost_expr: &Expr,
+    mode: ShortestMode,
+    parameters: &BTreeMap<String, Value>,
+    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
+) -> Result<Vec<ShortestPathState>, PlanQueryError> {
+    let bounds = var_len.unwrap_or(VarLenSpec {
+        min: 1,
+        max: Some(1),
+    });
+    let vertex_count = u64::from(u32::from(store.vertex_count()));
+    let max_hops = bounds.max.unwrap_or_else(|| vertex_count.saturating_sub(1));
+
+    let mut heap = BinaryHeap::new();
+    let mut tie = 0u64;
+    heap.push(WeightedQueueEntry {
+        cost: WeightedCost::zero(),
+        tie,
+        state: ShortestPathState {
+            current: src,
+            vertices: vec![src],
+            edges: Vec::new(),
+        },
+    });
+
+    let mut found_min_cost: Option<WeightedCost> = None;
+    let mut found = Vec::new();
+
+    while let Some(entry) = heap.pop() {
+        if let Some(ref min) = found_min_cost {
+            if matches!(entry.cost.cmp(min), Ok(Ordering::Greater)) {
+                continue;
+            }
+        }
+        let depth = entry.state.edges.len() as u64;
+        if depth >= bounds.min && entry.state.current == dst {
+            match &found_min_cost {
+                None => {
+                    found_min_cost = Some(entry.cost.clone());
+                    found.push(entry.state);
+                }
+                Some(min) => match entry.cost.cmp(min)? {
+                    Ordering::Equal => found.push(entry.state),
+                    Ordering::Less => {
+                        found_min_cost = Some(entry.cost.clone());
+                        found.clear();
+                        found.push(entry.state);
+                    }
+                    Ordering::Greater => {}
+                },
+            }
+            if matches!(mode, ShortestMode::AnyShortest) {
+                break;
+            }
+            continue;
+        }
+        if depth >= max_hops {
+            continue;
+        }
+
+        for (next, handle, edge_record) in
+            expand_candidates(store, entry.state.current, direction, label_id)?
+        {
+            if entry.state.vertices.contains(&next) {
+                continue;
+            }
+            let edge_binding = EdgeBinding {
+                handle,
+                inline_value: edge_record.inline_value,
+            };
+            let hop_cost = eval_shortest_hop_cost(
+                store,
+                cost_expr,
+                edge_var,
+                edge_binding,
+                parameters,
+                gleaph_weight_decoders,
+            )?;
+            let next_cost = entry.cost.checked_add(&hop_cost)?;
+            if let Some(ref min) = found_min_cost {
+                if matches!(next_cost.cmp(min), Ok(Ordering::Greater)) {
+                    continue;
+                }
+            }
+            tie += 1;
+            let mut next_state = entry.state.clone();
+            next_state.current = next;
+            next_state.vertices.push(next);
+            next_state.edges.push(edge_binding);
+            heap.push(WeightedQueueEntry {
+                cost: next_cost,
+                tie,
+                state: next_state,
+            });
+        }
+    }
+
+    Ok(found)
+}
+
+fn eval_shortest_hop_cost(
+    store: &GraphStore,
+    expr: &Expr,
+    edge_var: &str,
+    edge_binding: EdgeBinding,
+    parameters: &BTreeMap<String, Value>,
+    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
+) -> Result<WeightedCost, PlanQueryError> {
+    let mut row = PlanRow::new();
+    row.insert(edge_var.to_string(), PlanBinding::Edge(edge_binding));
+    let evaluator = QueryExprEvaluator {
+        store,
+        parameters,
+        aggregate_specs: None,
+        caller: None,
+        gleaph_weight_decoders,
+    };
+    let value = evaluator.eval_expr(&row, expr)?;
+    WeightedCost::from_value(value)
 }
 
 fn path_state_to_value(shard_id: u64, path: &ShortestPathState) -> Value {
@@ -1472,34 +1766,37 @@ fn try_eval_gleaph_weight(
             message: format!("GLEAPH_WEIGHT expects 1 argument, got {}", args.len()),
         });
     }
-    let ExprKind::Variable(edge_var) = &args[0].kind else {
+    let Some(edge_var) = super::gleaph_weight::gleaph_weight_arg_edge_var(&args[0]) else {
         return Err(PlanQueryError::GleaphWeight {
             message: "GLEAPH_WEIGHT argument must be an edge variable".into(),
         });
     };
     let decoder = map
-        .get(edge_var)
+        .get(&edge_var)
         .ok_or_else(|| PlanQueryError::GleaphWeight {
             message: format!(
                 "GLEAPH_WEIGHT({edge_var}): no prepared decoder for this edge variable"
             ),
         })?;
     let binding = row
-        .get(edge_var)
+        .get(edge_var.as_str())
         .ok_or_else(|| PlanQueryError::MissingBinding {
             variable: edge_var.clone(),
         })?;
-    let PlanBinding::Edge(edge) = binding else {
-        return Err(PlanQueryError::GleaphWeight {
-            message: format!("GLEAPH_WEIGHT({edge_var}): binding is not an edge"),
-        });
-    };
-    let w = decode_inline_weight(decoder, edge.inline_value).map_err(|e| {
-        PlanQueryError::GleaphWeight {
-            message: format!("GLEAPH_WEIGHT decode failed: {e}"),
+    match binding {
+        PlanBinding::Value(Value::Null) => return Ok(Some(Value::Null)),
+        PlanBinding::Edge(edge) => {
+            let w = decode_inline_weight(decoder, edge.inline_value).map_err(|e| {
+                PlanQueryError::GleaphWeight {
+                    message: format!("GLEAPH_WEIGHT decode failed: {e}"),
+                }
+            })?;
+            Ok(Some(Value::Float32(w)))
         }
-    })?;
-    Ok(Some(Value::Float32(w)))
+        _ => Err(PlanQueryError::GleaphWeight {
+            message: format!("GLEAPH_WEIGHT({edge_var}): binding is not an edge"),
+        }),
+    }
 }
 
 impl QueryExprEvaluator<'_> {
@@ -1556,6 +1853,14 @@ impl QueryExprEvaluator<'_> {
             }
             ExprKind::IsNull(expr) => Ok(Value::Bool(self.eval_expr(row, expr)? == Value::Null)),
             ExprKind::IsNotNull(expr) => Ok(Value::Bool(self.eval_expr(row, expr)? != Value::Null)),
+            ExprKind::IsLabeled {
+                expr,
+                label,
+                negated,
+            } => {
+                let matched = self.eval_is_labeled(row, expr, label)?;
+                Ok(Value::Bool(if *negated { !matched } else { matched }))
+            }
             ExprKind::IsTruth {
                 expr,
                 value,
@@ -1583,6 +1888,140 @@ impl QueryExprEvaluator<'_> {
                     }
                 }
                 Ok(Value::Null)
+            }
+            ExprKind::Abs(inner) => {
+                let value = self.eval_expr(row, inner)?;
+                eval_abs_expr(value).map_err(PlanQueryError::from)
+            }
+            ExprKind::Floor(inner) => {
+                let value = self.eval_expr(row, inner)?;
+                eval_floor_expr(value).map_err(PlanQueryError::from)
+            }
+            ExprKind::Ceil(inner) => {
+                let value = self.eval_expr(row, inner)?;
+                eval_ceil_expr(value).map_err(PlanQueryError::from)
+            }
+            ExprKind::Sqrt(inner) => {
+                let value = self.eval_expr(row, inner)?;
+                eval_sqrt_expr(value).map_err(PlanQueryError::from)
+            }
+            ExprKind::Exp(inner) => {
+                let value = self.eval_expr(row, inner)?;
+                eval_exp_expr(value).map_err(PlanQueryError::from)
+            }
+            ExprKind::Ln(inner) => {
+                let value = self.eval_expr(row, inner)?;
+                eval_ln_expr(value).map_err(PlanQueryError::from)
+            }
+            ExprKind::Log10(inner) => {
+                let value = self.eval_expr(row, inner)?;
+                eval_log10_expr(value).map_err(PlanQueryError::from)
+            }
+            ExprKind::Sin(inner) => {
+                let value = self.eval_expr(row, inner)?;
+                eval_sin_expr(value).map_err(PlanQueryError::from)
+            }
+            ExprKind::Cos(inner) => {
+                let value = self.eval_expr(row, inner)?;
+                eval_cos_expr(value).map_err(PlanQueryError::from)
+            }
+            ExprKind::Tan(inner) => {
+                let value = self.eval_expr(row, inner)?;
+                eval_tan_expr(value).map_err(PlanQueryError::from)
+            }
+            ExprKind::Asin(inner) => {
+                let value = self.eval_expr(row, inner)?;
+                eval_asin_expr(value).map_err(PlanQueryError::from)
+            }
+            ExprKind::Acos(inner) => {
+                let value = self.eval_expr(row, inner)?;
+                eval_acos_expr(value).map_err(PlanQueryError::from)
+            }
+            ExprKind::Atan(inner) => {
+                let value = self.eval_expr(row, inner)?;
+                eval_atan_expr(value).map_err(PlanQueryError::from)
+            }
+            ExprKind::Degrees(inner) => {
+                let value = self.eval_expr(row, inner)?;
+                eval_degrees_expr(value).map_err(PlanQueryError::from)
+            }
+            ExprKind::Radians(inner) => {
+                let value = self.eval_expr(row, inner)?;
+                eval_radians_expr(value).map_err(PlanQueryError::from)
+            }
+            ExprKind::Cot(inner) => {
+                let value = self.eval_expr(row, inner)?;
+                eval_cot_expr(value).map_err(PlanQueryError::from)
+            }
+            ExprKind::Sinh(inner) => {
+                let value = self.eval_expr(row, inner)?;
+                eval_sinh_expr(value).map_err(PlanQueryError::from)
+            }
+            ExprKind::Cosh(inner) => {
+                let value = self.eval_expr(row, inner)?;
+                eval_cosh_expr(value).map_err(PlanQueryError::from)
+            }
+            ExprKind::Tanh(inner) => {
+                let value = self.eval_expr(row, inner)?;
+                eval_tanh_expr(value).map_err(PlanQueryError::from)
+            }
+            ExprKind::Cast { expr, target } => {
+                let value = self.eval_expr(row, expr)?;
+                eval_cast_expr(value, target).map_err(PlanQueryError::from)
+            }
+            ExprKind::Mod(left, right) => {
+                let left = self.eval_expr(row, left)?;
+                let right = self.eval_expr(row, right)?;
+                eval_mod_expr(left, right).map_err(PlanQueryError::from)
+            }
+            ExprKind::Log(left, right) => {
+                let left = self.eval_expr(row, left)?;
+                let right = self.eval_expr(row, right)?;
+                eval_log_expr(left, right).map_err(PlanQueryError::from)
+            }
+            ExprKind::Power(left, right) => {
+                let left = self.eval_expr(row, left)?;
+                let right = self.eval_expr(row, right)?;
+                eval_power_expr(left, right).map_err(PlanQueryError::from)
+            }
+            ExprKind::CaseSimple {
+                operand,
+                when_clauses,
+                else_clause,
+            } => {
+                let operand = self.eval_expr(row, operand)?;
+                for clause in when_clauses {
+                    let condition = self.eval_expr(row, &clause.condition)?;
+                    if operand == Value::Null || condition == Value::Null {
+                        continue;
+                    }
+                    if eval_compare_expr(operand.clone(), CmpOp::Eq, condition).ok()
+                        == Some(Value::Bool(true))
+                    {
+                        return self.eval_expr(row, &clause.result);
+                    }
+                }
+                match else_clause {
+                    Some(expr) => self.eval_expr(row, expr),
+                    None => Ok(Value::Null),
+                }
+            }
+            ExprKind::CaseSearched {
+                when_clauses,
+                else_clause,
+            } => {
+                for clause in when_clauses {
+                    let condition = self.eval_expr(row, &clause.condition)?;
+                    if searched_case_when_outcome(condition).map_err(PlanQueryError::from)?
+                        == SearchedCaseWhenOutcome::Match
+                    {
+                        return self.eval_expr(row, &clause.result);
+                    }
+                }
+                match else_clause {
+                    Some(expr) => self.eval_expr(row, expr),
+                    None => Ok(Value::Null),
+                }
             }
             ExprKind::NullIf(left, right) => {
                 let left = self.eval_expr(row, left)?;
@@ -1636,6 +2075,37 @@ impl QueryExprEvaluator<'_> {
             }
             _ => Err(PlanQueryError::UnsupportedExpression {
                 expression: format!("{:?}", expr.kind),
+            }),
+        }
+    }
+
+    fn eval_is_labeled(
+        &self,
+        row: &PlanRow,
+        expr: &Expr,
+        label: &LabelExpr,
+    ) -> Result<bool, PlanQueryError> {
+        let ExprKind::Variable(name) = &expr.kind else {
+            return Err(PlanQueryError::UnsupportedExpression {
+                expression: format!(
+                    "IS LABELED requires a variable expression, got {:?}",
+                    expr.kind
+                ),
+            });
+        };
+        match row.get(name.as_str()) {
+            Some(PlanBinding::Vertex(vertex_id)) => {
+                let Some(vertex) = self.store.vertex(*vertex_id) else {
+                    return Ok(false);
+                };
+                Ok(vertex_matches_label_expr(
+                    self.store, *vertex_id, vertex, label,
+                ))
+            }
+            Some(PlanBinding::Value(Value::Null)) => Ok(false),
+            Some(PlanBinding::Value(_) | PlanBinding::Edge(_)) => Ok(false),
+            None => Err(PlanQueryError::MissingBinding {
+                variable: name.clone(),
             }),
         }
     }
@@ -1884,12 +2354,46 @@ fn record_property(value: &Value, property: &str) -> Value {
     }
 }
 
+fn vertex_matches_label_expr(
+    store: &GraphStore,
+    vertex_id: VertexId,
+    vertex: Vertex,
+    expr: &LabelExpr,
+) -> bool {
+    match expr {
+        LabelExpr::Name(name) => store
+            .label_id(name)
+            .is_some_and(|label_id| store.vertex_has_label(vertex_id, vertex, label_id)),
+        LabelExpr::Wildcard => !store.vertex_labels(vertex_id, vertex).is_empty(),
+        LabelExpr::And(left, right) => {
+            vertex_matches_label_expr(store, vertex_id, vertex, left)
+                && vertex_matches_label_expr(store, vertex_id, vertex, right)
+        }
+        LabelExpr::Or(left, right) => {
+            vertex_matches_label_expr(store, vertex_id, vertex, left)
+                || vertex_matches_label_expr(store, vertex_id, vertex, right)
+        }
+        LabelExpr::Not(inner) => !vertex_matches_label_expr(store, vertex_id, vertex, inner),
+    }
+}
+
 fn vertex_binding(row: &PlanRow, variable: &str) -> Result<VertexId, PlanQueryError> {
     match row.get(variable) {
         Some(PlanBinding::Vertex(vertex_id)) => Ok(*vertex_id),
         Some(_) | None => Err(PlanQueryError::MissingBinding {
             variable: variable.to_owned(),
         }),
+    }
+}
+
+/// Resolve a graph traversal source when the variable may be null-padded after an optional miss.
+fn vertex_binding_for_traversal(
+    row: &PlanRow,
+    variable: &str,
+) -> Result<Option<VertexId>, PlanQueryError> {
+    match row.get(variable) {
+        Some(PlanBinding::Value(Value::Null)) => Ok(None),
+        _ => vertex_binding(row, variable).map(Some),
     }
 }
 
@@ -1971,21 +2475,24 @@ mod tests {
     use crate::facade::mutation_executor::GraphMutationExecutor;
     use crate::gql_execution_context::GqlExecutionContext;
     use crate::index::lookup::PropertyIndexLookup;
+    use crate::plan::query::GLEAPH_PATH_EXTENSION_HANDLER;
     use async_trait::async_trait;
     use candid::Principal;
     use gleaph_gql::ast::{
-        AggregateFunc, CmpOp, Expr, ExprKind, NullOrder, OrderByClause, SetOp, SortDirection,
-        SortItem, Statement,
+        AggregateFunc, BinaryOp, CmpOp, Expr, ExprKind, NullOrder, ObjectName, OrderByClause,
+        SetOp, SortDirection, SortItem, Statement,
     };
     use gleaph_gql::parser;
     use gleaph_gql::token::Span;
+    use gleaph_gql::type_check::NoSchema;
     use gleaph_gql::types::PathElement;
     use gleaph_gql::value::{ExtensionSortableKey, ExtensionValue};
-    use gleaph_gql_planner::build_plan;
     use gleaph_gql_planner::plan::{
         AggregateSpec, ConditionalScanCandidate, PlanAnnotations, PlanDiagnostics, ScanValue,
-        ShortestMode, WcojEdge,
+        ShortestMode, ShortestPathCost, WcojEdge,
     };
+    use gleaph_gql_planner::{PlanBuildOptions, build_plan_with_schema_and_options};
+    use gleaph_graph_kernel::entry::{Edge, EdgeMeta};
     use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
     use std::any::Any;
     use std::borrow::Cow;
@@ -2059,7 +2566,15 @@ mod tests {
         let Statement::Query(composite) = &block.first else {
             panic!("expected query statement");
         };
-        build_plan(&composite.left, None).expect("plan should build")
+        build_plan_with_schema_and_options(
+            &composite.left,
+            PlanBuildOptions {
+                stats: None,
+                path_extensions: &GLEAPH_PATH_EXTENSION_HANDLER,
+            },
+            &NoSchema,
+        )
+        .expect("plan should build")
     }
 
     fn prop(variable: &str, property: &str) -> Expr {
@@ -4484,6 +4999,121 @@ mod tests {
         assert_eq!(result.rows[0].get("since"), Some(&Value::Int64(2026)));
     }
 
+    fn setup_reused_dst_expand_graph(store: &GraphStore) -> VertexId {
+        let a = store
+            .insert_vertex_named(["ReuseExpandA"], [("name", Value::Text("anchor".into()))])
+            .expect("insert anchor");
+        let b = store
+            .insert_vertex_named(["ReuseExpandB"], [("name", Value::Text("other".into()))])
+            .expect("insert neighbor");
+        store
+            .insert_directed_edge_named(a, a, Some("ReuseExpandRel"), Vec::<(&str, Value)>::new())
+            .expect("self-loop");
+        store
+            .insert_directed_edge_named(a, b, Some("ReuseExpandRel"), Vec::<(&str, Value)>::new())
+            .expect("out-edge");
+        a
+    }
+
+    #[test]
+    fn expand_reused_dst_only_keeps_self_loop_edges() {
+        let store = GraphStore::new();
+        let anchor = setup_reused_dst_expand_graph(&store);
+        let plan =
+            plan_gql("MATCH (a:ReuseExpandA)-[:ReuseExpandRel]->(a) RETURN ELEMENT_ID(a) AS a_id");
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("reused dst expand");
+        assert_eq!(
+            result.rows.len(),
+            1,
+            "only self-loop may satisfy reused dst: {:?}",
+            result.rows
+        );
+        let Value::Bytes(id_bytes) = result.rows[0].get("a_id").expect("a_id column") else {
+            panic!(
+                "expected ELEMENT_ID bytes, got {:?}",
+                result.rows[0].get("a_id")
+            );
+        };
+        assert_eq!(
+            GraphPathVertexId::try_from_slice(id_bytes.as_ref())
+                .expect("decode vertex id")
+                .vertex_id,
+            anchor,
+        );
+    }
+
+    #[test]
+    fn expand_reused_dst_rejects_neighbor_mismatch() {
+        let store = GraphStore::new();
+        setup_reused_dst_expand_graph(&store);
+        let plan = plan_gql("MATCH (a:ReuseExpandA)-[:ReuseExpandRel]->(a) RETURN a.name AS name");
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("reused dst expand");
+        assert!(
+            !result
+                .rows
+                .iter()
+                .any(|row| row.get("name") == Some(&Value::Text("other".into()))),
+            "reused dst must not adopt neighbor vertex binding: {:?}",
+            result.rows
+        );
+    }
+
+    fn setup_reused_dst_relabeled_graph(store: &GraphStore) -> VertexId {
+        let a = store
+            .insert_vertex_named(
+                ["ReuseRelabelPerson", "ReuseRelabelUser"],
+                [("name", Value::Text("anchor".into()))],
+            )
+            .expect("insert anchor");
+        let b = store
+            .insert_vertex_named(
+                ["ReuseRelabelPerson"],
+                [("name", Value::Text("other".into()))],
+            )
+            .expect("insert neighbor");
+        store
+            .insert_directed_edge_named(a, a, Some("ReuseRelabelRel"), Vec::<(&str, Value)>::new())
+            .expect("self-loop");
+        store
+            .insert_directed_edge_named(a, b, Some("ReuseRelabelRel"), Vec::<(&str, Value)>::new())
+            .expect("out-edge");
+        a
+    }
+
+    #[test]
+    fn expand_reused_dst_relabeled_endpoints_keep_self_loop() {
+        let store = GraphStore::new();
+        let anchor = setup_reused_dst_relabeled_graph(&store);
+        let plan = plan_gql(
+            "MATCH (a:ReuseRelabelPerson)-[:ReuseRelabelRel]->(a:ReuseRelabelUser) RETURN ELEMENT_ID(a) AS a_id",
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("reused relabeled dst expand");
+        assert_eq!(
+            result.rows.len(),
+            1,
+            "self-loop with relabeled reuse must keep anchor: {:?}",
+            result.rows
+        );
+        let Value::Bytes(id_bytes) = result.rows[0].get("a_id").expect("a_id column") else {
+            panic!(
+                "expected ELEMENT_ID bytes, got {:?}",
+                result.rows[0].get("a_id")
+            );
+        };
+        assert_eq!(
+            GraphPathVertexId::try_from_slice(id_bytes.as_ref())
+                .expect("decode vertex id")
+                .vertex_id,
+            anchor,
+        );
+    }
+
     #[test]
     fn expand_filter_applies_destination_predicate() {
         let store = GraphStore::new();
@@ -4723,6 +5353,313 @@ mod tests {
     }
 
     #[test]
+    fn mandatory_match_after_optional_miss_drops_null_bound_rows() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["OptChainA"], Vec::<(&str, Value)>::new())
+            .expect("insert a");
+        store
+            .insert_vertex_named(["OptChainB"], Vec::<(&str, Value)>::new())
+            .expect("insert b");
+        store
+            .get_or_insert_edge_label_id("OptChainRel")
+            .expect("edge label");
+        let gql = "MATCH (a:OptChainA) OPTIONAL MATCH (a)-[e:OptChainRel]->(b:OptChainB) \
+                   MATCH (b)-[e2:OptChainRel]->(c:OptChainB) RETURN a, b, c";
+        let plan = plan_gql(gql);
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("mandatory match after optional miss should not error");
+        assert!(
+            result.rows.is_empty(),
+            "optional miss leaves b null; mandatory follow-on match should drop the row: {:?}",
+            result.rows
+        );
+    }
+
+    #[test]
+    fn mandatory_match_after_optional_hit_continues_chain() {
+        let store = GraphStore::new();
+        let a = store
+            .insert_vertex_named(["OptChainA2"], Vec::<(&str, Value)>::new())
+            .expect("insert a");
+        let b = store
+            .insert_vertex_named(["OptChainB2"], Vec::<(&str, Value)>::new())
+            .expect("insert b");
+        let c = store
+            .insert_vertex_named(["OptChainC2"], Vec::<(&str, Value)>::new())
+            .expect("insert c");
+        store
+            .insert_directed_edge_named(a, b, Some("OptChainRel2"), Vec::<(&str, Value)>::new())
+            .expect("a->b");
+        store
+            .insert_directed_edge_named(b, c, Some("OptChainRel2"), Vec::<(&str, Value)>::new())
+            .expect("b->c");
+        let gql = "MATCH (a:OptChainA2) OPTIONAL MATCH (a)-[e:OptChainRel2]->(b:OptChainB2) \
+                   MATCH (b)-[e2:OptChainRel2]->(c:OptChainC2) RETURN a, b, c";
+        let plan = plan_gql(gql);
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("mandatory match after optional hit");
+        assert_eq!(result.rows.len(), 1);
+    }
+
+    #[test]
+    fn mandatory_node_only_match_after_optional_miss_drops_null_rows() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["OptLabelA"], Vec::<(&str, Value)>::new())
+            .expect("insert a");
+        store
+            .insert_vertex_named(["OptLabelB"], Vec::<(&str, Value)>::new())
+            .expect("insert b");
+        let gql = "MATCH (a:OptLabelA) OPTIONAL MATCH (a)-[e:OptLabelRel]->(b:OptLabelB) \
+                   MATCH (b:OptLabelB) RETURN b";
+        let plan = plan_gql(gql);
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("mandatory node-only match after optional miss");
+        assert!(
+            result.rows.is_empty(),
+            "null optional binding must fail mandatory labeled node match: {:?}",
+            result.rows
+        );
+    }
+
+    #[test]
+    fn rebound_node_label_is_enforced_without_rescan() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["RebindA"], Vec::<(&str, Value)>::new())
+            .expect("insert a");
+        let gql = "MATCH (a:RebindA) MATCH (a:RebindB) RETURN a";
+        let plan = plan_gql(gql);
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("rebound label check");
+        assert!(
+            result.rows.is_empty(),
+            "vertex labeled RebindA must not satisfy rebound RebindB match: {:?}",
+            result.rows
+        );
+    }
+
+    #[test]
+    fn rebound_label_succeeds_when_vertex_has_both_labels() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["DualA", "DualB"], Vec::<(&str, Value)>::new())
+            .expect("insert dual-label vertex");
+        let gql = "MATCH (a:DualA) MATCH (a:DualB) RETURN a";
+        let plan = plan_gql(gql);
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("dual-label rebound");
+        assert_eq!(
+            result.rows.len(),
+            1,
+            "vertex with both labels must satisfy sequential label matches: {:?}",
+            result.rows
+        );
+    }
+
+    // Manual NodeScan + PropertyFilter plans: `plan_gql` may emit IndexScan for inline
+    // label properties, which fails in tests without an index client.
+    #[test]
+    fn rebound_inline_property_fails_when_value_mismatches() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["PropRebindA"], [("nick", Value::Text("x".into()))])
+            .expect("insert a");
+        let nick_eq = |value: &str| {
+            Expr::new(ExprKind::Compare {
+                left: Box::new(Expr::new(ExprKind::PropertyAccess {
+                    expr: Box::new(Expr::var("a")),
+                    property: "nick".into(),
+                })),
+                op: gleaph_gql::ast::CmpOp::Eq,
+                right: Box::new(Expr::new(ExprKind::Literal(Value::Text(value.into())))),
+            })
+        };
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "a".into(),
+                label: Some("PropRebindA".into()),
+                property_projection: None,
+            },
+            PlanOp::PropertyFilter {
+                predicates: vec![nick_eq("x")],
+                stage: 0,
+            },
+            PlanOp::PropertyFilter {
+                predicates: vec![nick_eq("y")],
+                stage: 0,
+            },
+            PlanOp::Project {
+                columns: vec![project(var("a"), "a")],
+                distinct: false,
+            },
+        ]);
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("rebound inline property mismatch");
+        assert!(
+            result.rows.is_empty(),
+            "stricter rebound property must filter mismatched rows: {:?}",
+            result.rows
+        );
+    }
+
+    #[test]
+    fn rebound_inline_property_succeeds_when_value_matches() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["PropRebindB"], [("nick", Value::Text("same".into()))])
+            .expect("insert a");
+        let nick_eq = Expr::new(ExprKind::Compare {
+            left: Box::new(Expr::new(ExprKind::PropertyAccess {
+                expr: Box::new(Expr::var("a")),
+                property: "nick".into(),
+            })),
+            op: gleaph_gql::ast::CmpOp::Eq,
+            right: Box::new(Expr::new(ExprKind::Literal(Value::Text("same".into())))),
+        });
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "a".into(),
+                label: Some("PropRebindB".into()),
+                property_projection: None,
+            },
+            PlanOp::PropertyFilter {
+                predicates: vec![nick_eq.clone()],
+                stage: 0,
+            },
+            PlanOp::PropertyFilter {
+                predicates: vec![nick_eq],
+                stage: 0,
+            },
+            PlanOp::Project {
+                columns: vec![project(var("a"), "a")],
+                distinct: false,
+            },
+        ]);
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("rebound inline property match");
+        assert_eq!(result.rows.len(), 1);
+    }
+
+    #[test]
+    fn optional_miss_fails_labeled_node_only_match() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["OptMissA"], Vec::<(&str, Value)>::new())
+            .expect("insert a");
+        store
+            .get_or_insert_edge_label_id("OptMissRel")
+            .expect("edge label");
+        let gql = "MATCH (a:OptMissA) OPTIONAL MATCH (a)-[e:OptMissRel]->(b:OptMissB) \
+                   MATCH (b:OptMissB) RETURN b";
+        let plan = plan_gql(gql);
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("optional miss labeled match");
+        assert!(
+            result.rows.is_empty(),
+            "optional miss must drop rows on mandatory labeled node-only match: {:?}",
+            result.rows
+        );
+    }
+
+    #[test]
+    fn shortest_path_optional_hit_with_dst_label_narrowing() {
+        let store = GraphStore::new();
+        let a = store
+            .insert_vertex_named(["OptSpHitA"], Vec::<(&str, Value)>::new())
+            .expect("insert a");
+        let b = store
+            .insert_vertex_named(["OptSpHitB", "OptSpHitC"], Vec::<(&str, Value)>::new())
+            .expect("insert b");
+        store
+            .insert_directed_edge_named(a, b, Some("OptSpHitRel"), Vec::<(&str, Value)>::new())
+            .expect("a->b");
+        let gql = "MATCH (a:OptSpHitA) OPTIONAL MATCH (a)-[e:OptSpHitRel]->(b:OptSpHitB) \
+                   MATCH ANY SHORTEST (a)-[e2:OptSpHitRel]->(b:OptSpHitC) RETURN a, b";
+        let plan = plan_gql(gql);
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("shortest path after optional hit with label narrowing");
+        assert_eq!(
+            result.rows.len(),
+            1,
+            "optional hit with stricter shortest-path dst label must return one row: {:?}",
+            result.rows
+        );
+    }
+
+    #[test]
+    fn return_abs_gleaph_weight_does_not_break_decoder_prep() {
+        let store = GraphStore::new();
+        use gleaph_graph_kernel::entry::{
+            EdgeMeta, EdgeWeightProfile, InlineEdgeLabelId, WeightEncoding,
+        };
+        let a = store
+            .insert_vertex_named(["AbsWgtA"], Vec::<(&str, Value)>::new())
+            .expect("a");
+        let b = store
+            .insert_vertex_named(["AbsWgtB"], Vec::<(&str, Value)>::new())
+            .expect("b");
+        let label_id = store
+            .get_or_insert_edge_label_id("AbsWgtRoad")
+            .expect("label");
+        store
+            .set_edge_label_weight_profile(
+                label_id,
+                EdgeWeightProfile {
+                    encoding: WeightEncoding::RawU16,
+                },
+            )
+            .expect("profile");
+        let inline = InlineEdgeLabelId::from_label_id(label_id).expect("inline");
+        let meta = EdgeMeta::new(false, false, Some(inline));
+        store
+            .insert_directed_edge_with_inline_value(a, b, meta, 3)
+            .expect("edge");
+        let gql = "MATCH (a:AbsWgtA)-[e:AbsWgtRoad]->(b:AbsWgtB) RETURN ABS(GLEAPH_WEIGHT(e)) AS w";
+        let plan = plan_gql(gql);
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("abs gleaph weight return");
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0].get("w"), Some(&Value::Float32(3.0)));
+    }
+
+    #[test]
+    fn shortest_path_after_optional_miss_drops_null_destination_rows() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["OptSpA"], Vec::<(&str, Value)>::new())
+            .expect("insert a");
+        store
+            .insert_vertex_named(["OptSpB"], Vec::<(&str, Value)>::new())
+            .expect("insert b");
+        store
+            .get_or_insert_edge_label_id("OptSpRel")
+            .expect("edge label");
+        let gql = "MATCH (a:OptSpA) OPTIONAL MATCH (a)-[e:OptSpRel]->(b:OptSpB) \
+                   MATCH ANY SHORTEST (a)-[e2:OptSpRel]->(b) RETURN a, b";
+        let plan = plan_gql(gql);
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("shortest path after optional miss should not error");
+        assert!(
+            result.rows.is_empty(),
+            "optional miss leaves b null; shortest path should drop the row: {:?}",
+            result.rows
+        );
+    }
+
+    #[test]
     fn optional_match_manual_null_padding_edge_and_dst() {
         let store = GraphStore::new();
         store
@@ -4766,6 +5703,209 @@ mod tests {
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0].get("e_null"), Some(&Value::Bool(true)));
         assert_eq!(result.rows[0].get("m_null"), Some(&Value::Bool(true)));
+    }
+
+    #[test]
+    fn optional_match_gleaph_weight_on_null_edge_returns_null() {
+        let store = GraphStore::new();
+        store
+            .get_or_insert_edge_label_id("NullWgtRel")
+            .expect("edge label");
+        store
+            .set_edge_label_weight_profile(
+                store
+                    .get_or_insert_edge_label_id("NullWgtRel")
+                    .expect("label"),
+                gleaph_graph_kernel::entry::EdgeWeightProfile {
+                    encoding: gleaph_graph_kernel::entry::WeightEncoding::RawU16,
+                },
+            )
+            .expect("profile");
+        store
+            .insert_vertex_named(["NullWgtN"], Vec::<(&str, Value)>::new())
+            .expect("insert n");
+        let gql = "MATCH (n:NullWgtN) OPTIONAL MATCH (n)-[e:NullWgtRel]->(m) \
+                   RETURN GLEAPH_WEIGHT(e) AS w";
+        let plan = plan_gql(gql);
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("gleaph weight on optional miss should return null");
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0].get("w"), Some(&Value::Null));
+    }
+
+    fn eval_test_expr(expr: Expr) -> Value {
+        let store = GraphStore::new();
+        let params = params();
+        let evaluator = QueryExprEvaluator {
+            store: &store,
+            parameters: &params,
+            aggregate_specs: None,
+            caller: None,
+            gleaph_weight_decoders: None,
+        };
+        evaluator
+            .eval_expr(&PlanRow::new(), &expr)
+            .expect("eval test expr")
+    }
+
+    #[test]
+    fn case_searched_skips_untaken_invalid_result() {
+        use gleaph_gql::ast::WhenClause;
+        let expr = Expr::new(ExprKind::CaseSearched {
+            when_clauses: vec![WhenClause {
+                span: Span::DUMMY,
+                condition: Expr::new(ExprKind::Literal(Value::Bool(false))),
+                result: Expr::new(ExprKind::Sqrt(Box::new(Expr::new(ExprKind::Literal(
+                    Value::Float32(-1.0),
+                ))))),
+            }],
+            else_clause: Some(Box::new(Expr::new(ExprKind::Literal(Value::Float32(1.0))))),
+        });
+        assert_eq!(eval_test_expr(expr), Value::Float32(1.0));
+    }
+
+    #[test]
+    fn case_searched_unknown_skips_invalid_then() {
+        use gleaph_gql::ast::WhenClause;
+        let expr = Expr::new(ExprKind::CaseSearched {
+            when_clauses: vec![
+                WhenClause {
+                    span: Span::DUMMY,
+                    condition: Expr::new(ExprKind::Literal(Value::Null)),
+                    result: Expr::new(ExprKind::Sqrt(Box::new(Expr::new(ExprKind::Literal(
+                        Value::Float32(-1.0),
+                    ))))),
+                },
+                WhenClause {
+                    span: Span::DUMMY,
+                    condition: Expr::new(ExprKind::Literal(Value::Bool(true))),
+                    result: Expr::new(ExprKind::Literal(Value::Int32(2))),
+                },
+            ],
+            else_clause: Some(Box::new(Expr::new(ExprKind::Literal(Value::Int32(3))))),
+        });
+        assert_eq!(eval_test_expr(expr), Value::Int32(2));
+    }
+
+    #[test]
+    fn hop_cost_admits_large_finite_float64() {
+        let cost = WeightedCost::from_value(Value::Float64(1e40)).expect("large finite hop cost");
+        assert!(matches!(cost.0, Value::Float64(v) if v == 1e40));
+    }
+
+    #[test]
+    fn hop_cost_rejects_null() {
+        let err = WeightedCost::from_value(Value::Null).expect_err("null hop cost");
+        assert!(matches!(
+            err,
+            PlanQueryError::GleaphCost {
+                message: msg
+            } if msg == "shortest-path edge cost must not be NULL"
+        ));
+    }
+
+    #[test]
+    fn hop_cost_rejects_nan() {
+        let err = WeightedCost::from_value(Value::Float64(f64::NAN)).expect_err("nan hop cost");
+        assert!(matches!(
+            err,
+            PlanQueryError::GleaphCost {
+                message: msg
+            } if msg == "shortest-path edge cost must be finite"
+        ));
+    }
+
+    #[test]
+    fn hop_cost_rejects_negative() {
+        let err = WeightedCost::from_value(Value::Int32(-1)).expect_err("negative hop cost");
+        assert!(matches!(
+            err,
+            PlanQueryError::GleaphCost {
+                message: msg
+            } if msg == "shortest-path edge cost must be non-negative"
+        ));
+    }
+
+    #[test]
+    fn weighted_cost_add_overflow_errors() {
+        let left = WeightedCost::from_value(Value::Float64(f64::MAX)).expect("left");
+        let right = WeightedCost::from_value(Value::Float64(f64::MAX)).expect("right");
+        let err = left.checked_add(&right).expect_err("overflow add");
+        assert!(matches!(
+            err,
+            PlanQueryError::GleaphCost {
+                message: msg
+            } if msg == "shortest-path edge cost overflowed or became non-finite"
+                || msg == "shortest-path edge cost must be finite"
+        ));
+    }
+
+    #[test]
+    fn case_simple_skips_untaken_invalid_result() {
+        use gleaph_gql::ast::WhenClause;
+        let expr = Expr::new(ExprKind::CaseSimple {
+            operand: Box::new(Expr::new(ExprKind::Literal(Value::Int32(0)))),
+            when_clauses: vec![WhenClause {
+                span: Span::DUMMY,
+                condition: Expr::new(ExprKind::Literal(Value::Int32(1))),
+                result: Expr::new(ExprKind::Sqrt(Box::new(Expr::new(ExprKind::Literal(
+                    Value::Float32(-1.0),
+                ))))),
+            }],
+            else_clause: Some(Box::new(Expr::new(ExprKind::Literal(Value::Int32(2))))),
+        });
+        assert_eq!(eval_test_expr(expr), Value::Int32(2));
+    }
+
+    #[test]
+    fn case_searched_unknown_condition_falls_through() {
+        use gleaph_gql::ast::WhenClause;
+        let expr = Expr::new(ExprKind::CaseSearched {
+            when_clauses: vec![
+                WhenClause {
+                    span: Span::DUMMY,
+                    condition: Expr::new(ExprKind::Literal(Value::Null)),
+                    result: Expr::new(ExprKind::Literal(Value::Int32(1))),
+                },
+                WhenClause {
+                    span: Span::DUMMY,
+                    condition: Expr::new(ExprKind::Literal(Value::Bool(true))),
+                    result: Expr::new(ExprKind::Literal(Value::Int32(2))),
+                },
+            ],
+            else_clause: Some(Box::new(Expr::new(ExprKind::Literal(Value::Int32(3))))),
+        });
+        assert_eq!(eval_test_expr(expr), Value::Int32(2));
+    }
+
+    #[test]
+    fn case_searched_all_unknown_uses_else() {
+        use gleaph_gql::ast::WhenClause;
+        let expr = Expr::new(ExprKind::CaseSearched {
+            when_clauses: vec![WhenClause {
+                span: Span::DUMMY,
+                condition: Expr::new(ExprKind::Literal(Value::Null)),
+                result: Expr::new(ExprKind::Literal(Value::Int32(1))),
+            }],
+            else_clause: Some(Box::new(Expr::new(ExprKind::Literal(Value::Int32(3))))),
+        });
+        assert_eq!(eval_test_expr(expr), Value::Int32(3));
+    }
+
+    #[test]
+    fn case_simple_skips_incomparable_when_and_uses_else() {
+        use gleaph_gql::ast::WhenClause;
+        let expr = Expr::new(ExprKind::CaseSimple {
+            operand: Box::new(Expr::new(ExprKind::Literal(Value::Int32(1)))),
+            when_clauses: vec![WhenClause {
+                span: Span::DUMMY,
+                condition: Expr::new(ExprKind::Literal(Value::Text("a".into()))),
+                result: Expr::new(ExprKind::Literal(Value::Int32(99))),
+            }],
+            else_clause: Some(Box::new(Expr::new(ExprKind::Literal(Value::Int32(3))))),
+        });
+        assert_eq!(eval_test_expr(expr), Value::Int32(3));
     }
 
     fn agg_count_star() -> Expr {
@@ -5446,6 +6586,7 @@ mod tests {
                     min: 1,
                     max: Some(3),
                 }),
+                cost: ShortestPathCost::HopCount,
             },
             PlanOp::Project {
                 columns: vec![project(var("p"), "p")],
@@ -5501,6 +6642,7 @@ mod tests {
                     min: 0,
                     max: Some(3),
                 }),
+                cost: ShortestPathCost::HopCount,
             },
             PlanOp::Project {
                 columns: vec![project(var("p"), "p"), project(var("e"), "e")],
@@ -5570,6 +6712,7 @@ mod tests {
                     min: 1,
                     max: Some(3),
                 }),
+                cost: ShortestPathCost::HopCount,
             },
             PlanOp::Project {
                 columns: vec![project(var("p"), "p")],
@@ -5608,6 +6751,7 @@ mod tests {
                     label: None,
                     label_expr: None,
                     var_len: None,
+                    cost: ShortestPathCost::HopCount,
                 }]),
                 &params(),
                 GqlExecutionContext::default(),
@@ -5630,6 +6774,7 @@ mod tests {
                     label: None,
                     label_expr: Some(LabelExpr::Name("Rel".into())),
                     var_len: None,
+                    cost: ShortestPathCost::HopCount,
                 }]),
                 &params(),
                 GqlExecutionContext::default(),
@@ -5690,5 +6835,793 @@ mod tests {
                 "expected UnsupportedOp({expected_name}), got {err:?}"
             );
         }
+    }
+
+    fn edge_meta_for_label(store: &GraphStore, label_name: &str) -> EdgeMeta {
+        use gleaph_graph_kernel::entry::InlineEdgeLabelId;
+        let lid = store.label_id(label_name).expect("label");
+        let inline = InlineEdgeLabelId::from_label_id(lid).expect("inline edge label");
+        EdgeMeta::new(false, false, Some(inline))
+    }
+
+    fn setup_weighted_road_graph(store: &GraphStore) -> (VertexId, VertexId, VertexId) {
+        use gleaph_graph_kernel::entry::{EdgeWeightProfile, WeightEncoding};
+        let a = store
+            .insert_vertex_named(["WgtA"], Vec::<(&str, Value)>::new())
+            .expect("insert a");
+        let b = store
+            .insert_vertex_named(["WgtB"], Vec::<(&str, Value)>::new())
+            .expect("insert b");
+        let c = store
+            .insert_vertex_named(["WgtC"], Vec::<(&str, Value)>::new())
+            .expect("insert c");
+        let label_id = store
+            .get_or_insert_edge_label_id("WgtRoad")
+            .expect("road label");
+        store
+            .set_edge_label_weight_profile(
+                label_id,
+                EdgeWeightProfile {
+                    encoding: WeightEncoding::RawU16,
+                },
+            )
+            .expect("weight profile");
+        let meta = edge_meta_for_label(store, "WgtRoad");
+        store
+            .insert_directed_edge_with_inline_value(a, b, meta, 1)
+            .expect("a->b");
+        store
+            .insert_directed_edge_with_inline_value(b, c, meta, 1)
+            .expect("b->c");
+        store
+            .insert_directed_edge_with_inline_value(a, c, meta, 100)
+            .expect("a->c");
+        (a, b, c)
+    }
+
+    fn gleaph_weight_call(edge_var: &str) -> Expr {
+        Expr::new(ExprKind::FunctionCall {
+            name: ObjectName::simple("GLEAPH_WEIGHT"),
+            args: vec![Expr::var(edge_var)],
+            distinct: false,
+        })
+    }
+
+    fn scaled_gleaph_weight_cost(edge_var: &str, scale_param: &str) -> Expr {
+        Expr::new(ExprKind::BinaryOp {
+            left: Box::new(gleaph_weight_call(edge_var)),
+            op: BinaryOp::Mul,
+            right: Box::new(Expr::new(ExprKind::Parameter(scale_param.to_owned()))),
+        })
+    }
+
+    #[test]
+    fn weighted_shortest_path_cost_expr_uses_query_parameters() {
+        let store = GraphStore::new();
+        let (_a, _b, c) = setup_weighted_road_graph(&store);
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "a".into(),
+                label: Some("WgtA".into()),
+                property_projection: None,
+            },
+            PlanOp::NodeScan {
+                variable: "c".into(),
+                label: Some("WgtC".into()),
+                property_projection: None,
+            },
+            PlanOp::ShortestPath {
+                src: "a".into(),
+                dst: "c".into(),
+                edge: "e".into(),
+                path_var: Some("p".into()),
+                mode: ShortestMode::AnyShortest,
+                direction: EdgeDirection::PointingRight,
+                label: Some("WgtRoad".into()),
+                label_expr: None,
+                var_len: Some(VarLenSpec {
+                    min: 1,
+                    max: Some(5),
+                }),
+                cost: ShortestPathCost::EdgeCostExpr {
+                    edge_var: "e".into(),
+                    expr: scaled_gleaph_weight_cost("e", "scale"),
+                },
+            },
+            PlanOp::Project {
+                columns: vec![project(var("p"), "p")],
+                distinct: false,
+            },
+        ]);
+
+        let mut parameters = params();
+        parameters.insert("scale".into(), Value::Float32(1.0));
+        let result = store
+            .execute_plan_query(&plan, &parameters, GqlExecutionContext::default())
+            .expect("parameterized weighted shortest path");
+        let elements = path_column(&result, "p");
+        assert_eq!(
+            elements.len(),
+            5,
+            "GLEAPH_WEIGHT(e) * $scale with scale=1 should match unscaled weighted shortest path"
+        );
+        assert_eq!(vertex_path_id(&elements[4]).vertex_id, c);
+    }
+
+    fn weighted_shortest_plan_with_cost(cost: Expr) -> PhysicalPlan {
+        weighted_shortest_plan_with_cost_mode(cost, ShortestMode::AnyShortest)
+    }
+
+    fn weighted_shortest_plan_with_cost_mode(cost: Expr, mode: ShortestMode) -> PhysicalPlan {
+        plan(vec![
+            PlanOp::NodeScan {
+                variable: "a".into(),
+                label: Some("WgtA".into()),
+                property_projection: None,
+            },
+            PlanOp::NodeScan {
+                variable: "c".into(),
+                label: Some("WgtC".into()),
+                property_projection: None,
+            },
+            PlanOp::ShortestPath {
+                src: "a".into(),
+                dst: "c".into(),
+                edge: "e".into(),
+                path_var: Some("p".into()),
+                mode,
+                direction: EdgeDirection::PointingRight,
+                label: Some("WgtRoad".into()),
+                label_expr: None,
+                var_len: Some(VarLenSpec {
+                    min: 1,
+                    max: Some(5),
+                }),
+                cost: ShortestPathCost::EdgeCostExpr {
+                    edge_var: "e".into(),
+                    expr: cost,
+                },
+            },
+            PlanOp::Project {
+                columns: vec![project(var("p"), "p")],
+                distinct: false,
+            },
+        ])
+    }
+
+    fn weighted_2_24_precision_cost_expr() -> Expr {
+        use gleaph_gql::ast::WhenClause;
+        use gleaph_gql::token::Span;
+        Expr::new(ExprKind::CaseSimple {
+            operand: Box::new(gleaph_weight_call("e")),
+            when_clauses: vec![
+                WhenClause {
+                    span: Span::DUMMY,
+                    condition: Expr::new(ExprKind::Literal(Value::Float32(1.0))),
+                    result: Expr::new(ExprKind::Literal(Value::Float64(8_388_608.0))),
+                },
+                WhenClause {
+                    span: Span::DUMMY,
+                    condition: Expr::new(ExprKind::Literal(Value::Float32(100.0))),
+                    result: Expr::new(ExprKind::Literal(Value::Float64(16_777_217.0))),
+                },
+            ],
+            else_clause: Some(Box::new(Expr::new(ExprKind::Literal(Value::Float64(0.0))))),
+        })
+    }
+
+    fn cast_expr_to_float32(expr: Expr) -> Expr {
+        Expr::new(ExprKind::Cast {
+            expr: Box::new(expr),
+            target: gleaph_gql::ast::ValueType::Float32 {
+                keyword: gleaph_gql::ast::Keyword::new("FLOAT32"),
+            },
+        })
+    }
+
+    fn weighted_2_24_precision_cost_expr_float32() -> Expr {
+        use gleaph_gql::ast::WhenClause;
+        use gleaph_gql::token::Span;
+        Expr::new(ExprKind::CaseSimple {
+            operand: Box::new(gleaph_weight_call("e")),
+            when_clauses: vec![
+                WhenClause {
+                    span: Span::DUMMY,
+                    condition: Expr::new(ExprKind::Literal(Value::Float32(1.0))),
+                    result: cast_expr_to_float32(Expr::new(ExprKind::Literal(Value::Float64(
+                        8_388_608.0,
+                    )))),
+                },
+                WhenClause {
+                    span: Span::DUMMY,
+                    condition: Expr::new(ExprKind::Literal(Value::Float32(100.0))),
+                    result: cast_expr_to_float32(Expr::new(ExprKind::Literal(Value::Float64(
+                        16_777_217.0,
+                    )))),
+                },
+            ],
+            else_clause: Some(Box::new(cast_expr_to_float32(Expr::new(
+                ExprKind::Literal(Value::Float64(0.0)),
+            )))),
+        })
+    }
+
+    fn weighted_decimal_precision_cost_expr() -> Expr {
+        use gleaph_gql::ast::WhenClause;
+        use gleaph_gql::token::Span;
+        use gleaph_gql::types::Decimal;
+        Expr::new(ExprKind::CaseSimple {
+            operand: Box::new(gleaph_weight_call("e")),
+            when_clauses: vec![
+                WhenClause {
+                    span: Span::DUMMY,
+                    condition: Expr::new(ExprKind::Literal(Value::Float32(1.0))),
+                    result: Expr::new(ExprKind::Literal(Value::Decimal(
+                        Decimal::parse("0.10").expect("decimal"),
+                    ))),
+                },
+                WhenClause {
+                    span: Span::DUMMY,
+                    condition: Expr::new(ExprKind::Literal(Value::Float32(100.0))),
+                    result: Expr::new(ExprKind::Literal(Value::Decimal(
+                        Decimal::parse("0.21").expect("decimal"),
+                    ))),
+                },
+            ],
+            else_clause: Some(Box::new(Expr::new(ExprKind::Literal(Value::Decimal(
+                Decimal::from_i64(0),
+            ))))),
+        })
+    }
+
+    fn weighted_wide_integer_precision_cost_expr() -> Expr {
+        use gleaph_gql::ast::WhenClause;
+        use gleaph_gql::token::Span;
+        Expr::new(ExprKind::CaseSimple {
+            operand: Box::new(gleaph_weight_call("e")),
+            when_clauses: vec![
+                WhenClause {
+                    span: Span::DUMMY,
+                    condition: Expr::new(ExprKind::Literal(Value::Float32(1.0))),
+                    result: Expr::new(ExprKind::Literal(Value::Int64(1_000_000))),
+                },
+                WhenClause {
+                    span: Span::DUMMY,
+                    condition: Expr::new(ExprKind::Literal(Value::Float32(100.0))),
+                    result: Expr::new(ExprKind::Literal(Value::Int64(2_000_001))),
+                },
+            ],
+            else_clause: Some(Box::new(Expr::new(ExprKind::Literal(Value::Int64(0))))),
+        })
+    }
+
+    #[test]
+    fn weighted_shortest_any_prefers_exact_float64_cost_at_2_24() {
+        let store = GraphStore::new();
+        let (_a, _b, c) = setup_weighted_road_graph(&store);
+        let result = store
+            .execute_plan_query(
+                &weighted_shortest_plan_with_cost(weighted_2_24_precision_cost_expr()),
+                &params(),
+                GqlExecutionContext::default(),
+            )
+            .expect("float64 precision weighted shortest path");
+        assert_eq!(path_column(&result, "p").len(), 5);
+        assert_eq!(vertex_path_id(&path_column(&result, "p")[4]).vertex_id, c);
+    }
+
+    #[test]
+    fn weighted_shortest_all_shortest_does_not_epsilon_tie_distinct_costs() {
+        let store = GraphStore::new();
+        setup_weighted_road_graph(&store);
+        let result = store
+            .execute_plan_query(
+                &weighted_shortest_plan_with_cost_mode(
+                    weighted_2_24_precision_cost_expr(),
+                    ShortestMode::AllShortest,
+                ),
+                &params(),
+                GqlExecutionContext::default(),
+            )
+            .expect("all-shortest with distinct float64 costs");
+        assert_eq!(
+            result.rows.len(),
+            1,
+            "distinct float64 costs must not be epsilon-tied"
+        );
+        assert_eq!(path_column(&result, "p").len(), 5);
+    }
+
+    #[test]
+    fn weighted_shortest_cast_float32_restores_f32_precision_limits() {
+        let store = GraphStore::new();
+        setup_weighted_road_graph(&store);
+        let result = store
+            .execute_plan_query(
+                &weighted_shortest_plan_with_cost_mode(
+                    weighted_2_24_precision_cost_expr_float32(),
+                    ShortestMode::AllShortest,
+                ),
+                &params(),
+                GqlExecutionContext::default(),
+            )
+            .expect("float32-cast weighted shortest path");
+        assert_eq!(
+            result.rows.len(),
+            2,
+            "float32-cast costs should tie at 2^24 precision"
+        );
+    }
+
+    #[test]
+    fn weighted_shortest_decimal_cost_accumulates_exactly() {
+        let store = GraphStore::new();
+        let (_a, _b, c) = setup_weighted_road_graph(&store);
+        let result = store
+            .execute_plan_query(
+                &weighted_shortest_plan_with_cost(weighted_decimal_precision_cost_expr()),
+                &params(),
+                GqlExecutionContext::default(),
+            )
+            .expect("decimal precision weighted shortest path");
+        assert_eq!(path_column(&result, "p").len(), 5);
+        assert_eq!(vertex_path_id(&path_column(&result, "p")[4]).vertex_id, c);
+    }
+
+    #[test]
+    fn weighted_shortest_wide_integer_cost_accumulates() {
+        let store = GraphStore::new();
+        let (_a, _b, c) = setup_weighted_road_graph(&store);
+        let result = store
+            .execute_plan_query(
+                &weighted_shortest_plan_with_cost(weighted_wide_integer_precision_cost_expr()),
+                &params(),
+                GqlExecutionContext::default(),
+            )
+            .expect("wide-integer precision weighted shortest path");
+        assert_eq!(path_column(&result, "p").len(), 5);
+        assert_eq!(vertex_path_id(&path_column(&result, "p")[4]).vertex_id, c);
+    }
+
+    #[test]
+    fn weighted_shortest_path_floor_wrapped_cost_runs() {
+        let store = GraphStore::new();
+        let (_a, _b, c) = setup_weighted_road_graph(&store);
+        let cost = Expr::new(ExprKind::Floor(Box::new(gleaph_weight_call("e"))));
+        let result = store
+            .execute_plan_query(
+                &weighted_shortest_plan_with_cost(cost),
+                &params(),
+                GqlExecutionContext::default(),
+            )
+            .expect("floor-wrapped weighted shortest path");
+        assert_eq!(path_column(&result, "p").len(), 5);
+        assert_eq!(vertex_path_id(&path_column(&result, "p")[4]).vertex_id, c);
+    }
+
+    #[test]
+    fn weighted_shortest_path_cast_wrapped_cost_runs() {
+        let store = GraphStore::new();
+        let (_a, _b, c) = setup_weighted_road_graph(&store);
+        let cost = Expr::new(ExprKind::Cast {
+            expr: Box::new(gleaph_weight_call("e")),
+            target: gleaph_gql::ast::ValueType::Float32 {
+                keyword: gleaph_gql::ast::Keyword::new("FLOAT32"),
+            },
+        });
+        let result = store
+            .execute_plan_query(
+                &weighted_shortest_plan_with_cost(cost),
+                &params(),
+                GqlExecutionContext::default(),
+            )
+            .expect("cast-wrapped weighted shortest path");
+        assert_eq!(path_column(&result, "p").len(), 5);
+        assert_eq!(vertex_path_id(&path_column(&result, "p")[4]).vertex_id, c);
+    }
+
+    #[test]
+    fn weighted_shortest_path_float128_cast_wrapped_cost_runs() {
+        let store = GraphStore::new();
+        let (_a, _b, c) = setup_weighted_road_graph(&store);
+        let cost = Expr::new(ExprKind::Cast {
+            expr: Box::new(gleaph_weight_call("e")),
+            target: gleaph_gql::ast::ValueType::Float128,
+        });
+        let result = store
+            .execute_plan_query(
+                &weighted_shortest_plan_with_cost(cost),
+                &params(),
+                GqlExecutionContext::default(),
+            )
+            .expect("float128-cast weighted shortest path");
+        assert_eq!(path_column(&result, "p").len(), 5);
+        assert_eq!(vertex_path_id(&path_column(&result, "p")[4]).vertex_id, c);
+    }
+
+    #[test]
+    fn weighted_shortest_path_float256_cast_wrapped_cost_runs() {
+        let store = GraphStore::new();
+        let (_a, _b, c) = setup_weighted_road_graph(&store);
+        let cost = Expr::new(ExprKind::Cast {
+            expr: Box::new(gleaph_weight_call("e")),
+            target: gleaph_gql::ast::ValueType::Float256,
+        });
+        let result = store
+            .execute_plan_query(
+                &weighted_shortest_plan_with_cost(cost),
+                &params(),
+                GqlExecutionContext::default(),
+            )
+            .expect("float256-cast weighted shortest path");
+        assert_eq!(path_column(&result, "p").len(), 5);
+        assert_eq!(vertex_path_id(&path_column(&result, "p")[4]).vertex_id, c);
+    }
+
+    #[test]
+    fn weighted_shortest_path_int_precision_cast_wrapped_cost_runs() {
+        let store = GraphStore::new();
+        let (_a, _b, c) = setup_weighted_road_graph(&store);
+        let cost = Expr::new(ExprKind::Cast {
+            expr: Box::new(gleaph_weight_call("e")),
+            target: gleaph_gql::ast::ValueType::IntPrecision {
+                keyword: gleaph_gql::ast::Keyword::new("INT"),
+                precision: 10,
+            },
+        });
+        let result = store
+            .execute_plan_query(
+                &weighted_shortest_plan_with_cost(cost),
+                &params(),
+                GqlExecutionContext::default(),
+            )
+            .expect("int-precision-cast weighted shortest path");
+        assert_eq!(path_column(&result, "p").len(), 5);
+        assert_eq!(vertex_path_id(&path_column(&result, "p")[4]).vertex_id, c);
+    }
+
+    #[test]
+    fn weighted_shortest_path_float_precision_cast_wrapped_cost_runs() {
+        let store = GraphStore::new();
+        let (_a, _b, c) = setup_weighted_road_graph(&store);
+        let cost = Expr::new(ExprKind::Cast {
+            expr: Box::new(gleaph_weight_call("e")),
+            target: gleaph_gql::ast::ValueType::FloatPrecision {
+                precision: 24,
+                scale: None,
+            },
+        });
+        let result = store
+            .execute_plan_query(
+                &weighted_shortest_plan_with_cost(cost),
+                &params(),
+                GqlExecutionContext::default(),
+            )
+            .expect("float-precision-cast weighted shortest path");
+        assert_eq!(path_column(&result, "p").len(), 5);
+        assert_eq!(vertex_path_id(&path_column(&result, "p")[4]).vertex_id, c);
+    }
+
+    #[test]
+    fn weighted_shortest_path_int8_cast_wrapped_cost_runs() {
+        let store = GraphStore::new();
+        let (_a, _b, c) = setup_weighted_road_graph(&store);
+        let cost = Expr::new(ExprKind::Cast {
+            expr: Box::new(gleaph_weight_call("e")),
+            target: gleaph_gql::ast::ValueType::Int8 {
+                keyword: gleaph_gql::ast::Keyword::new("INT8"),
+            },
+        });
+        let result = store
+            .execute_plan_query(
+                &weighted_shortest_plan_with_cost(cost),
+                &params(),
+                GqlExecutionContext::default(),
+            )
+            .expect("int8-cast-wrapped weighted shortest path");
+        assert_eq!(path_column(&result, "p").len(), 5);
+        assert_eq!(vertex_path_id(&path_column(&result, "p")[4]).vertex_id, c);
+    }
+
+    #[test]
+    fn weighted_shortest_path_decimal_cast_wrapped_cost_runs() {
+        let store = GraphStore::new();
+        let (_a, _b, c) = setup_weighted_road_graph(&store);
+        let cost = Expr::new(ExprKind::Cast {
+            expr: Box::new(gleaph_weight_call("e")),
+            target: gleaph_gql::ast::ValueType::Decimal {
+                keyword: gleaph_gql::ast::Keyword::new("DECIMAL"),
+                precision: None,
+                scale: None,
+            },
+        });
+        let result = store
+            .execute_plan_query(
+                &weighted_shortest_plan_with_cost(cost),
+                &params(),
+                GqlExecutionContext::default(),
+            )
+            .expect("decimal-cast-wrapped weighted shortest path");
+        assert_eq!(path_column(&result, "p").len(), 5);
+        assert_eq!(vertex_path_id(&path_column(&result, "p")[4]).vertex_id, c);
+    }
+
+    #[test]
+    fn weighted_shortest_path_decimal_precision_cast_wrapped_cost_runs() {
+        let store = GraphStore::new();
+        let (_a, _b, c) = setup_weighted_road_graph(&store);
+        let cost = Expr::new(ExprKind::Cast {
+            expr: Box::new(gleaph_weight_call("e")),
+            target: gleaph_gql::ast::ValueType::Decimal {
+                keyword: gleaph_gql::ast::Keyword::new("DECIMAL"),
+                precision: Some(10),
+                scale: Some(2),
+            },
+        });
+        let result = store
+            .execute_plan_query(
+                &weighted_shortest_plan_with_cost(cost),
+                &params(),
+                GqlExecutionContext::default(),
+            )
+            .expect("decimal-precision-cast weighted shortest path");
+        assert_eq!(path_column(&result, "p").len(), 5);
+        assert_eq!(vertex_path_id(&path_column(&result, "p")[4]).vertex_id, c);
+    }
+
+    #[test]
+    fn weighted_shortest_path_coalesce_wrapped_cost_runs() {
+        let store = GraphStore::new();
+        let (_a, _b, c) = setup_weighted_road_graph(&store);
+        let cost = Expr::new(ExprKind::Coalesce(vec![
+            gleaph_weight_call("e"),
+            Expr::new(ExprKind::Literal(Value::Float32(1.0))),
+        ]));
+        let result = store
+            .execute_plan_query(
+                &weighted_shortest_plan_with_cost(cost),
+                &params(),
+                GqlExecutionContext::default(),
+            )
+            .expect("coalesce-wrapped weighted shortest path");
+        assert_eq!(path_column(&result, "p").len(), 5);
+        assert_eq!(vertex_path_id(&path_column(&result, "p")[4]).vertex_id, c);
+    }
+
+    #[test]
+    fn weighted_shortest_path_case_wrapped_cost_runs() {
+        use gleaph_gql::ast::WhenClause;
+        use gleaph_gql::token::Span;
+        let store = GraphStore::new();
+        let (_a, _b, c) = setup_weighted_road_graph(&store);
+        let cost = Expr::new(ExprKind::CaseSimple {
+            operand: Box::new(Expr::var("e")),
+            when_clauses: vec![WhenClause {
+                span: Span::DUMMY,
+                condition: Expr::new(ExprKind::Literal(Value::Null)),
+                result: gleaph_weight_call("e"),
+            }],
+            else_clause: Some(Box::new(gleaph_weight_call("e"))),
+        });
+        let result = store
+            .execute_plan_query(
+                &weighted_shortest_plan_with_cost(cost),
+                &params(),
+                GqlExecutionContext::default(),
+            )
+            .expect("case-wrapped weighted shortest path");
+        assert_eq!(path_column(&result, "p").len(), 5);
+        assert_eq!(vertex_path_id(&path_column(&result, "p")[4]).vertex_id, c);
+    }
+
+    #[test]
+    fn weighted_shortest_path_prefers_lower_total_cost_over_fewer_hops() {
+        let store = GraphStore::new();
+        let (_a, _b, c) = setup_weighted_road_graph(&store);
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "a".into(),
+                label: Some("WgtA".into()),
+                property_projection: None,
+            },
+            PlanOp::NodeScan {
+                variable: "c".into(),
+                label: Some("WgtC".into()),
+                property_projection: None,
+            },
+            PlanOp::ShortestPath {
+                src: "a".into(),
+                dst: "c".into(),
+                edge: "e".into(),
+                path_var: Some("p".into()),
+                mode: ShortestMode::AnyShortest,
+                direction: EdgeDirection::PointingRight,
+                label: Some("WgtRoad".into()),
+                label_expr: None,
+                var_len: Some(VarLenSpec {
+                    min: 1,
+                    max: Some(5),
+                }),
+                cost: ShortestPathCost::EdgeCostExpr {
+                    edge_var: "e".into(),
+                    expr: gleaph_weight_call("e"),
+                },
+            },
+            PlanOp::Project {
+                columns: vec![project(var("p"), "p")],
+                distinct: false,
+            },
+        ]);
+
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("weighted shortest path");
+        let elements = path_column(&result, "p");
+        assert_eq!(elements.len(), 5, "expected 2-hop weighted shortest path");
+        assert_eq!(vertex_path_id(&elements[4]).vertex_id, c);
+    }
+
+    #[test]
+    fn hop_count_shortest_path_ignores_edge_weights() {
+        let store = GraphStore::new();
+        let (_a, _b, c) = setup_weighted_road_graph(&store);
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "a".into(),
+                label: Some("WgtA".into()),
+                property_projection: None,
+            },
+            PlanOp::NodeScan {
+                variable: "c".into(),
+                label: Some("WgtC".into()),
+                property_projection: None,
+            },
+            PlanOp::ShortestPath {
+                src: "a".into(),
+                dst: "c".into(),
+                edge: "e".into(),
+                path_var: Some("p".into()),
+                mode: ShortestMode::AnyShortest,
+                direction: EdgeDirection::PointingRight,
+                label: Some("WgtRoad".into()),
+                label_expr: None,
+                var_len: Some(VarLenSpec {
+                    min: 1,
+                    max: Some(5),
+                }),
+                cost: ShortestPathCost::HopCount,
+            },
+            PlanOp::Project {
+                columns: vec![project(var("p"), "p")],
+                distinct: false,
+            },
+        ]);
+
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("hop-count shortest path");
+        let elements = path_column(&result, "p");
+        assert_eq!(elements.len(), 3, "expected 1-hop unweighted shortest path");
+        assert_eq!(vertex_path_id(&elements[2]).vertex_id, c);
+    }
+
+    #[test]
+    fn gleaph_weight_in_return_does_not_change_shortest_path_search() {
+        let store = GraphStore::new();
+        setup_weighted_road_graph(&store);
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "a".into(),
+                label: Some("WgtA".into()),
+                property_projection: None,
+            },
+            PlanOp::NodeScan {
+                variable: "c".into(),
+                label: Some("WgtC".into()),
+                property_projection: None,
+            },
+            PlanOp::ShortestPath {
+                src: "a".into(),
+                dst: "c".into(),
+                edge: "e".into(),
+                path_var: Some("p".into()),
+                mode: ShortestMode::AnyShortest,
+                direction: EdgeDirection::PointingRight,
+                label: Some("WgtRoad".into()),
+                label_expr: None,
+                var_len: Some(VarLenSpec {
+                    min: 1,
+                    max: Some(5),
+                }),
+                cost: ShortestPathCost::HopCount,
+            },
+            PlanOp::Project {
+                columns: vec![
+                    project(var("p"), "p"),
+                    project(gleaph_weight_call("e"), "w"),
+                ],
+                distinct: false,
+            },
+        ]);
+
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("shortest path with gleaph_weight in return");
+        let elements = path_column(&result, "p");
+        assert_eq!(
+            elements.len(),
+            3,
+            "RETURN GLEAPH_WEIGHT must not affect hop-count search"
+        );
+        assert!(matches!(result.rows[0].get("w"), Some(Value::Float32(_))));
+    }
+
+    #[test]
+    fn weighted_shortest_path_literal_overflow_cost_errors() {
+        let store = GraphStore::new();
+        setup_weighted_road_graph(&store);
+        let cost = Expr::new(ExprKind::Literal(Value::Float64(f64::NAN)));
+        let err = store
+            .execute_plan_query(
+                &weighted_shortest_plan_with_cost(cost),
+                &params(),
+                GqlExecutionContext::default(),
+            )
+            .expect_err("non-finite literal cost");
+        assert!(matches!(
+            err,
+            PlanQueryError::GleaphCost {
+                message: msg
+            } if msg == "shortest-path edge cost must be finite"
+        ));
+    }
+
+    #[test]
+    fn weighted_shortest_path_rejects_missing_weight_profile() {
+        let store = GraphStore::new();
+        let a = store
+            .insert_vertex_named(["WgtNoProfileA"], Vec::<(&str, Value)>::new())
+            .expect("a");
+        let c = store
+            .insert_vertex_named(["WgtNoProfileC"], Vec::<(&str, Value)>::new())
+            .expect("c");
+        store
+            .get_or_insert_edge_label_id("WgtNoProfileRoad")
+            .expect("road label");
+        let meta = edge_meta_for_label(&store, "WgtNoProfileRoad");
+        store
+            .insert_directed_edge_with_inline_value(a, c, meta, 1)
+            .expect("edge");
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "a".into(),
+                label: Some("WgtNoProfileA".into()),
+                property_projection: None,
+            },
+            PlanOp::NodeScan {
+                variable: "c".into(),
+                label: Some("WgtNoProfileC".into()),
+                property_projection: None,
+            },
+            PlanOp::ShortestPath {
+                src: "a".into(),
+                dst: "c".into(),
+                edge: "e".into(),
+                path_var: None,
+                mode: ShortestMode::AnyShortest,
+                direction: EdgeDirection::PointingRight,
+                label: Some("WgtNoProfileRoad".into()),
+                label_expr: None,
+                var_len: None,
+                cost: ShortestPathCost::EdgeCostExpr {
+                    edge_var: "e".into(),
+                    expr: gleaph_weight_call("e"),
+                },
+            },
+        ]);
+        let err = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect_err("missing profile");
+        assert!(matches!(err, PlanQueryError::GleaphWeight { .. }));
     }
 }

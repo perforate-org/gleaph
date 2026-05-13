@@ -32,6 +32,9 @@ pub enum PlanQueryError {
     ExpressionNumericOverflow {
         expression: String,
     },
+    ExpressionNumericPrecisionOverflow {
+        expression: String,
+    },
     ExpressionNonFiniteNumeric {
         expression: String,
     },
@@ -51,6 +54,10 @@ pub enum PlanQueryError {
     RuntimeFunction(RuntimeFunctionError),
     /// `GLEAPH_WEIGHT` preparation or evaluation failed (message is user-facing).
     GleaphWeight {
+        message: String,
+    },
+    /// `GLEAPH_COST` shortest-path edge cost evaluation failed (message is user-facing).
+    GleaphCost {
         message: String,
     },
 }
@@ -80,6 +87,12 @@ impl fmt::Display for PlanQueryError {
             Self::ExpressionNumericOverflow { expression } => {
                 write!(f, "numeric overflow in query expression for '{expression}'")
             }
+            Self::ExpressionNumericPrecisionOverflow { expression } => {
+                write!(
+                    f,
+                    "numeric precision overflow in query expression for '{expression}'"
+                )
+            }
             Self::ExpressionNonFiniteNumeric { expression } => {
                 write!(
                     f,
@@ -104,6 +117,7 @@ impl fmt::Display for PlanQueryError {
             }
             Self::RuntimeFunction(err) => write!(f, "{err}"),
             Self::GleaphWeight { message } => write!(f, "{message}"),
+            Self::GleaphCost { message } => write!(f, "{message}"),
         }
     }
 }
@@ -141,6 +155,11 @@ impl From<ExprEvaluationError> for PlanQueryError {
             ExprEvaluationError::NumericOverflow => Self::ExpressionNumericOverflow {
                 expression: "query".to_owned(),
             },
+            ExprEvaluationError::NumericPrecisionOverflow => {
+                Self::ExpressionNumericPrecisionOverflow {
+                    expression: "query".to_owned(),
+                }
+            }
             ExprEvaluationError::NonFiniteNumeric => Self::ExpressionNonFiniteNumeric {
                 expression: "query".to_owned(),
             },
@@ -153,5 +172,29 @@ impl From<ExprEvaluationError> for PlanQueryError {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plan::expr_evaluator::ExprEvaluationError;
+
+    #[test]
+    fn expr_precision_overflow_maps_to_plan_query_error() {
+        let err: PlanQueryError = ExprEvaluationError::NumericPrecisionOverflow.into();
+        assert!(matches!(
+            err,
+            PlanQueryError::ExpressionNumericPrecisionOverflow { .. }
+        ));
+    }
+
+    #[test]
+    fn expr_numeric_overflow_maps_to_plan_query_error() {
+        let err: PlanQueryError = ExprEvaluationError::NumericOverflow.into();
+        assert!(matches!(
+            err,
+            PlanQueryError::ExpressionNumericOverflow { .. }
+        ));
     }
 }

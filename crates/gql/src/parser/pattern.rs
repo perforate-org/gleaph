@@ -8,8 +8,9 @@ use crate::ast::{
     EdgePattern, GraphPattern, GroupOrGroups, InsertEdgePattern, InsertElement, InsertNodePattern,
     InsertPathPattern, IsOrColon, KeepClause, MatchMode, MatchModeEdgeKeyword,
     MatchModeElementKeyword, NodePattern, PathFactor, PathMode, PathOrPaths, PathPattern,
-    PathPatternExpr, PathPatternPrefix, PathPrimary, PathQuantifier, PathTerm, PropertySetting,
-    SearchPrefix, SimplifiedContents, SimplifiedElement, SimplifiedPathPattern,
+    PathPatternExpr, PathPatternExtension, PathPatternPrefix, PathPrimary, PathQuantifier,
+    PathTerm, PropertySetting, SearchPrefix, SimplifiedContents, SimplifiedElement,
+    SimplifiedPathPattern,
 };
 use crate::error::GqlError;
 use crate::token::Token;
@@ -113,7 +114,7 @@ impl Parser<'_> {
     // ════════════════════════════════════════════════════════════════════════
 
     /// Parses a path pattern:
-    ///   `[pathVariable '='] [pathPatternPrefix] pathPatternExpression`
+    ///   `[pathVariable '='] [pathPatternPrefix] pathPatternExpression { extensionClause }*`
     pub fn parse_path_pattern(&mut self) -> Result<PathPattern, GqlError> {
         let start = self.save();
         // Optional path variable declaration: `var =`
@@ -125,10 +126,47 @@ impl Parser<'_> {
         // The path pattern expression itself.
         let expr = self.parse_path_pattern_expr()?;
 
+        let mut extensions = Vec::new();
+        loop {
+            let save = self.save();
+            if !self.try_parse_path_pattern_extension_start() {
+                break;
+            }
+            self.restore(save);
+            extensions.push(self.parse_path_pattern_extension()?);
+        }
+
         Ok(PathPattern {
             span: self.span_since(start),
             variable,
             prefix,
+            expr,
+            extensions,
+        })
+    }
+
+    fn try_parse_path_pattern_extension_start(&mut self) -> bool {
+        let save = self.save();
+        if self.parse_object_name().is_err() {
+            self.restore(save);
+            return false;
+        }
+        if self.at_keyword("BY") {
+            self.restore(save);
+            return true;
+        }
+        self.restore(save);
+        false
+    }
+
+    fn parse_path_pattern_extension(&mut self) -> Result<PathPatternExtension, GqlError> {
+        let start = self.save();
+        let name = self.parse_object_name()?;
+        self.expect_keyword("BY")?;
+        let expr = self.parse_expr()?;
+        Ok(PathPatternExtension {
+            span: self.span_since(start),
+            name,
             expr,
         })
     }

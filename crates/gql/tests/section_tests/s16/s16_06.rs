@@ -301,3 +301,47 @@ mod path_search_prefix {
         );
     }
 }
+
+// ── path pattern extension clauses ──────────────────────────────────────
+
+mod path_pattern_extensions {
+    use super::*;
+    use gleaph_gql::ast::ExprKind;
+
+    #[test]
+    fn single_extension_clause() {
+        let pp = first_path("MATCH (a)-[e:L]->(b) VENDOR_COST BY f(e) RETURN a");
+        assert_eq!(pp.extensions.len(), 1);
+        assert_eq!(pp.extensions[0].name.parts, ["VENDOR_COST"]);
+        let ExprKind::FunctionCall { name, args, .. } = &pp.extensions[0].expr.kind else {
+            panic!("expected function call");
+        };
+        assert_eq!(name.parts, ["f"]);
+        assert_eq!(args.len(), 1);
+    }
+
+    #[test]
+    fn multiple_extension_clauses() {
+        let pp = first_path("MATCH (a)-[e:L]->(b) VENDOR_COST BY f(e) OTHER_EXT BY g(e) RETURN a");
+        assert_eq!(pp.extensions.len(), 2);
+        assert_eq!(pp.extensions[0].name.parts, ["VENDOR_COST"]);
+        assert_eq!(pp.extensions[1].name.parts, ["OTHER_EXT"]);
+    }
+
+    #[test]
+    fn shortest_path_with_extension() {
+        let pp = first_path("MATCH ANY SHORTEST (a)-[e:L]->{1,5}(b) VENDOR_COST BY f(e) RETURN a");
+        assert_eq!(pp.extensions.len(), 1);
+        assert!(matches!(
+            pp.prefix,
+            Some(PathPatternPrefix::Search(SearchPrefix::AnyShortest { .. }))
+        ));
+    }
+
+    #[test]
+    fn dotted_extension_name() {
+        let pp = first_path("MATCH (a)-[e:L]->(b) VENDOR.COST BY f(e) RETURN a");
+        assert_eq!(pp.extensions.len(), 1);
+        assert_eq!(pp.extensions[0].name.parts, ["VENDOR", "COST"]);
+    }
+}

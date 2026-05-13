@@ -23,7 +23,9 @@ pub mod cse;
 pub mod executor_contract;
 pub mod explain;
 mod expr_alias;
+pub mod expr_children;
 pub mod join_order;
+pub mod path_extensions;
 pub mod plan;
 pub mod planner;
 pub mod property_projection;
@@ -36,8 +38,14 @@ mod variable_refs;
 // Re-export key types and functions.
 pub use executor_contract::first_executor_unsupported_op;
 pub use explain::explain_plan;
+pub use expr_children::for_each_immediate_child_expr;
+pub use path_extensions::{
+    PathPatternExtensionContext, PathPatternExtensionHandler, PlanBuildOptions,
+    RejectingPathExtensionHandler, SingleEdgePathInfo,
+};
 pub use plan::{
-    PhysicalPlan, PlanAnnotations, PlanDiagnostics, PlanOp, PlanSummary, UseGraphPushdownInfo,
+    PhysicalPlan, PlanAnnotations, PlanDiagnostics, PlanOp, PlanSummary, ShortestPathCost,
+    UseGraphPushdownInfo,
 };
 pub use planner::{
     PlanBuildOutput, PlannerError, analyze_remote_use_graph_pushdown, build_block_plan,
@@ -46,8 +54,9 @@ pub use planner::{
     build_block_plan_with_schema, build_composite_plan, build_composite_plan_output,
     build_composite_plan_output_with_schema, build_composite_plan_with_schema, build_plan,
     build_plan_output, build_plan_output_for_execute, build_plan_output_for_execute_with_schema,
-    build_plan_output_with_schema, build_plan_with_schema, build_statement_plan,
-    build_statement_plan_output, build_statement_plan_output_with_schema,
-    build_statement_plan_with_schema,
+    build_plan_output_with_schema, build_plan_with_schema, build_plan_with_schema_and_options,
+    build_statement_plan, build_statement_plan_output, build_statement_plan_output_with_schema,
+    build_statement_plan_with_options, build_statement_plan_with_schema,
 };
+pub use pushdown::collect_variables as collect_expr_variables;
 pub use stats::{GraphStats, NoStats, TableStats};
