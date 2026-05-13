@@ -2,6 +2,7 @@ use super::error::PlanMutationError;
 use super::expr_evaluator::{MutationPropertyExprEvaluation, MutationPropertyExprEvaluator};
 use crate::facade::mutation_executor::GraphMutationExecutor;
 use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
+use crate::gql_execution_context::GqlExecutionContext;
 use gleaph_gql::types::EdgeDirection;
 use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, RemovePlanItem, SetPlanItem, Str};
 use ic_stable_lara::VertexId;
@@ -11,6 +12,7 @@ pub trait PlanMutationExecutor {
     fn execute_plan_mutations(
         &self,
         plan: &PhysicalPlan,
+        execution: GqlExecutionContext,
     ) -> Result<PlanMutationBindings, PlanMutationError>;
 }
 
@@ -24,8 +26,9 @@ impl PlanMutationExecutor for GraphStore {
     fn execute_plan_mutations(
         &self,
         plan: &PhysicalPlan,
+        execution: GqlExecutionContext,
     ) -> Result<PlanMutationBindings, PlanMutationError> {
-        execute_ops(self, &plan.ops, &BTreeMap::new())
+        execute_ops(self, &plan.ops, &BTreeMap::new(), execution)
     }
 }
 
@@ -33,9 +36,10 @@ pub fn execute_ops(
     store: &GraphStore,
     ops: &[PlanOp],
     parameters: &BTreeMap<String, gleaph_gql::Value>,
+    execution: GqlExecutionContext,
 ) -> Result<PlanMutationBindings, PlanMutationError> {
     let mut bindings = PlanMutationBindings::default();
-    execute_ops_with_bindings(store, ops, parameters, &mut bindings)?;
+    execute_ops_with_bindings(store, ops, parameters, execution, &mut bindings)?;
     Ok(bindings)
 }
 
@@ -43,9 +47,10 @@ fn execute_ops_with_bindings(
     store: &GraphStore,
     ops: &[PlanOp],
     parameters: &BTreeMap<String, gleaph_gql::Value>,
+    execution: GqlExecutionContext,
     bindings: &mut PlanMutationBindings,
 ) -> Result<(), PlanMutationError> {
-    let evaluator = MutationPropertyExprEvaluator::new(parameters);
+    let evaluator = MutationPropertyExprEvaluator::new(parameters, execution.caller);
     for op in ops {
         match op {
             PlanOp::InsertVertex {
@@ -99,7 +104,7 @@ fn execute_ops_with_bindings(
             PlanOp::UseGraph {
                 sub_plan: Some(sub_plan),
                 ..
-            } => execute_ops_with_bindings(store, sub_plan, parameters, bindings)?,
+            } => execute_ops_with_bindings(store, sub_plan, parameters, execution, bindings)?,
             PlanOp::SetProperties { items } => {
                 for item in items {
                     execute_set_item(store, item, &evaluator, bindings)?;
@@ -301,6 +306,7 @@ fn plan_op_name(op: &PlanOp) -> &'static str {
 mod tests {
     use super::*;
     use crate::facade::canonical_undirected_owner;
+    use crate::gql_execution_context::GqlExecutionContext;
     use gleaph_gql::Value;
     use gleaph_gql::ast::{BinaryOp, CmpOp, Expr, ExprKind, TruthValue, UnaryOp};
     use gleaph_gql::types::Decimal;
@@ -346,7 +352,7 @@ mod tests {
         };
 
         let bindings = store
-            .execute_plan_mutations(&plan)
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
             .expect("execute plan mutations");
 
         let a = bindings.vertices["a"];
@@ -392,7 +398,13 @@ mod tests {
         let mut parameters = BTreeMap::new();
         parameters.insert("name".to_owned(), Value::Text("Ada".into()));
 
-        let bindings = execute_ops(&store, &plan.ops, &parameters).expect("execute with params");
+        let bindings = execute_ops(
+            &store,
+            &plan.ops,
+            &parameters,
+            GqlExecutionContext::default(),
+        )
+        .expect("execute with params");
         let property = store.property_id("name").expect("name property");
 
         assert_eq!(
@@ -444,7 +456,7 @@ mod tests {
         };
 
         let bindings = store
-            .execute_plan_mutations(&plan)
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
             .expect("execute set properties");
         let name = store.property_id("name").expect("name property");
         let weight = store.property_id("weight").expect("weight property");
@@ -511,7 +523,7 @@ mod tests {
         };
 
         let bindings = store
-            .execute_plan_mutations(&plan)
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
             .expect("execute remove properties");
         let name = store.property_id("name").expect("name property");
         let weight = store.property_id("weight").expect("weight property");
@@ -546,7 +558,7 @@ mod tests {
         };
 
         let bindings = store
-            .execute_plan_mutations(&plan)
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
             .expect("execute set label");
         let person = store.label_id("Person").expect("person label");
         let employee = store.label_id("Employee").expect("employee label");
@@ -579,6 +591,7 @@ mod tests {
             &store,
             &remove.ops,
             &BTreeMap::new(),
+            GqlExecutionContext::default(),
             &mut existing_bindings,
         )
         .expect("execute remove label");
@@ -632,7 +645,13 @@ mod tests {
         let mut parameters = BTreeMap::new();
         parameters.insert("base".to_owned(), Value::Int64(2));
 
-        let bindings = execute_ops(&store, &plan.ops, &parameters).expect("execute arithmetic");
+        let bindings = execute_ops(
+            &store,
+            &plan.ops,
+            &parameters,
+            GqlExecutionContext::default(),
+        )
+        .expect("execute arithmetic");
         let vertex = bindings.vertices["n"];
         let score = store.property_id("score").expect("score property");
         let name = store.property_id("name").expect("name property");
@@ -693,7 +712,7 @@ mod tests {
         };
 
         let bindings = store
-            .execute_plan_mutations(&plan)
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
             .expect("execute decimal arithmetic");
         let vertex = bindings.vertices["n"];
         let price = store.property_id("price").expect("price property");
@@ -779,7 +798,7 @@ mod tests {
         };
 
         let bindings = store
-            .execute_plan_mutations(&plan)
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
             .expect("execute constructed values");
         let vertex = bindings.vertices["n"];
         let logic = store.property_id("logic").expect("logic property");
@@ -850,7 +869,7 @@ mod tests {
         };
 
         let err = store
-            .execute_plan_mutations(&plan)
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
             .expect_err("delete vertex with edges should fail");
         assert!(matches!(
             err,
@@ -881,7 +900,7 @@ mod tests {
         };
 
         store
-            .execute_plan_mutations(&plan)
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
             .expect("delete isolated vertex");
         let before_u32: u32 = before.into();
         let vid = VertexId::from(before_u32);
@@ -925,7 +944,7 @@ mod tests {
         };
 
         let bindings = store
-            .execute_plan_mutations(&plan)
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
             .expect("detach delete vertex");
         let b = bindings.vertices["b"];
         let w = store.property_id("w").expect("w property");
@@ -984,7 +1003,7 @@ mod tests {
         };
 
         let bindings = store
-            .execute_plan_mutations(&plan)
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
             .expect("delete directed edge");
         let a = bindings.vertices["a"];
         let w = store.property_id("w").expect("w property");
@@ -1034,7 +1053,7 @@ mod tests {
         };
 
         let bindings = store
-            .execute_plan_mutations(&plan)
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
             .expect("delete undirected edge");
         let low = bindings.vertices["a"];
         let high = bindings.vertices["b"];

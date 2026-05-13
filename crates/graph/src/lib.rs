@@ -4,11 +4,14 @@
 mod bench;
 mod facade;
 use facade::auth;
+mod gql_execution_context;
 mod gql_run;
 mod index;
 mod plan;
 
 mod canister;
+
+use gql_execution_context::GqlExecutionContext;
 
 // --- Canister surface (ic-cdk macros stay here; logic lives in `canister::`) ---
 

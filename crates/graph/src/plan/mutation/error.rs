@@ -1,4 +1,5 @@
 use crate::facade::GraphStoreError;
+use crate::gql_execution_context::RuntimeFunctionError;
 use gleaph_gql::types::EdgeDirection;
 use std::fmt;
 
@@ -40,6 +41,7 @@ pub enum PlanMutationError {
     MissingParameter {
         name: String,
     },
+    RuntimeFunction(RuntimeFunctionError),
 }
 
 impl fmt::Display for PlanMutationError {
@@ -95,6 +97,7 @@ impl fmt::Display for PlanMutationError {
             Self::UnsupportedSetItem(item) => write!(f, "unsupported SET item: {item}"),
             Self::UnsupportedRemoveItem(item) => write!(f, "unsupported REMOVE item: {item}"),
             Self::MissingParameter { name } => write!(f, "missing parameter '{name}'"),
+            Self::RuntimeFunction(err) => write!(f, "{err}"),
         }
     }
 }
@@ -105,6 +108,12 @@ impl std::error::Error for PlanMutationError {
             Self::Store(err) => Some(err),
             _ => None,
         }
+    }
+}
+
+impl From<RuntimeFunctionError> for PlanMutationError {
+    fn from(value: RuntimeFunctionError) -> Self {
+        Self::RuntimeFunction(value)
     }
 }
 

@@ -1,4 +1,5 @@
 use crate::facade::GraphStoreError;
+use crate::gql_execution_context::RuntimeFunctionError;
 use crate::plan::expr_evaluator::ExprEvaluationError;
 use gleaph_gql::types::EdgeDirection;
 use std::fmt;
@@ -47,6 +48,7 @@ pub enum PlanQueryError {
         left: gleaph_gql::Value,
         right: gleaph_gql::Value,
     },
+    RuntimeFunction(RuntimeFunctionError),
 }
 
 impl fmt::Display for PlanQueryError {
@@ -96,6 +98,7 @@ impl fmt::Display for PlanQueryError {
             Self::IncomparableSortValues { left, right } => {
                 write!(f, "incomparable ORDER BY values: {left:?} and {right:?}")
             }
+            Self::RuntimeFunction(err) => write!(f, "{err}"),
         }
     }
 }
@@ -112,6 +115,12 @@ impl std::error::Error for PlanQueryError {
 impl From<GraphStoreError> for PlanQueryError {
     fn from(value: GraphStoreError) -> Self {
         Self::Store(value)
+    }
+}
+
+impl From<RuntimeFunctionError> for PlanQueryError {
+    fn from(value: RuntimeFunctionError) -> Self {
+        Self::RuntimeFunction(value)
     }
 }
 

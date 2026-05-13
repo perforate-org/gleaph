@@ -2,11 +2,13 @@ use super::aggregate;
 use super::error::PlanQueryError;
 use super::sort_keys::compare_sort_keys;
 use crate::facade::{EdgeHandle, GraphStore, canonical_undirected_owner};
+use crate::gql_execution_context::{GqlExecutionContext, try_eval_runtime_function_call};
 use crate::index::lookup::PropertyIndexLookup;
 use crate::plan::expr_evaluator::{
     eval_and_expr, eval_binary_expr, eval_compare_expr, eval_concat_expr, eval_not_expr,
     eval_or_expr, eval_unary_expr, eval_xor_expr, truthy,
 };
+use candid::Principal;
 use gleaph_gql::ast::{CmpOp, Expr, ExprKind, OrderByClause, TruthValue};
 use gleaph_gql::types::{EdgeDirection, LabelExpr, PathElement};
 use gleaph_gql::{Value, hash_value_for_join, value_to_index_key_bytes};
@@ -31,6 +33,7 @@ pub trait PlanQueryExecutor {
         &self,
         plan: &PhysicalPlan,
         parameters: &BTreeMap<String, Value>,
+        execution: GqlExecutionContext,
     ) -> Result<PlanQueryResult, PlanQueryError>;
 }
 
@@ -40,8 +43,9 @@ impl PlanQueryExecutor for GraphStore {
         &self,
         plan: &PhysicalPlan,
         parameters: &BTreeMap<String, Value>,
+        execution: GqlExecutionContext,
     ) -> Result<PlanQueryResult, PlanQueryError> {
-        pollster::block_on(execute_plan_query(self, plan, parameters, None))
+        pollster::block_on(execute_plan_query(self, plan, parameters, None, execution))
     }
 }
 
@@ -72,8 +76,9 @@ pub async fn execute_plan_query(
     plan: &PhysicalPlan,
     parameters: &BTreeMap<String, Value>,
     index: Option<&dyn PropertyIndexLookup>,
+    execution: GqlExecutionContext,
 ) -> Result<PlanQueryResult, PlanQueryError> {
-    let rows = execute_ops(store, &plan.ops, parameters, index).await?;
+    let rows = execute_ops(store, &plan.ops, parameters, index, execution).await?;
     Ok(PlanQueryResult {
         rows: rows
             .iter()
@@ -87,8 +92,17 @@ async fn execute_ops(
     ops: &[PlanOp],
     parameters: &BTreeMap<String, Value>,
     index: Option<&dyn PropertyIndexLookup>,
+    execution: GqlExecutionContext,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
-    execute_ops_from(store, ops, parameters, vec![PlanRow::new()], index).await
+    execute_ops_from(
+        store,
+        ops,
+        parameters,
+        vec![PlanRow::new()],
+        index,
+        execution,
+    )
+    .await
 }
 
 /// Variables that operators in `ops` may bind (used to NULL-pad `OptionalMatch` miss rows).
@@ -242,11 +256,19 @@ async fn execute_optional_match(
     sub_plan: &[PlanOp],
     written: &BTreeSet<String>,
     index: Option<&dyn PropertyIndexLookup>,
+    execution: GqlExecutionContext,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
     let mut out = Vec::new();
     for row in rows {
-        let extended =
-            execute_ops_from(store, sub_plan, parameters, vec![row.clone()], index).await?;
+        let extended = execute_ops_from(
+            store,
+            sub_plan,
+            parameters,
+            vec![row.clone()],
+            index,
+            execution,
+        )
+        .await?;
         if extended.is_empty() {
             let mut padded = row;
             for v in written {
@@ -268,9 +290,11 @@ fn execute_ops_from<'a>(
     parameters: &'a BTreeMap<String, Value>,
     initial_rows: Vec<PlanRow>,
     index: Option<&'a dyn PropertyIndexLookup>,
+    execution: GqlExecutionContext,
 ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<PlanRow>, PlanQueryError>> + 'a>> {
     Box::pin(async move {
         let mut rows = initial_rows;
+        let caller = execution.caller;
         // Index of the nearest preceding `PlanOp::Aggregate` for resolving
         // `ExprKind::Aggregate` in post-aggregate ops (e.g. `HAVING`).
         let mut active_aggregate_op_idx: Option<usize> = None;
@@ -284,6 +308,7 @@ fn execute_ops_from<'a>(
                 store,
                 parameters,
                 aggregate_specs,
+                caller,
             };
             rows = match op {
                 PlanOp::NodeScan {
@@ -399,6 +424,7 @@ fn execute_ops_from<'a>(
                         *direction,
                         label.as_ref(),
                         &[],
+                        caller,
                     )?
                 }
                 PlanOp::ExpandFilter {
@@ -431,6 +457,7 @@ fn execute_ops_from<'a>(
                         *direction,
                         label.as_ref(),
                         dst_filter,
+                        caller,
                     )?
                 }
                 PlanOp::ShortestPath {
@@ -464,6 +491,7 @@ fn execute_ops_from<'a>(
                         store,
                         parameters,
                         aggregate_specs: None,
+                        caller,
                     };
                     let out =
                         aggregate::execute_aggregate(rows, group_by, aggregates, &agg_evaluator)?;
@@ -475,6 +503,7 @@ fn execute_ops_from<'a>(
                         store,
                         parameters,
                         aggregate_specs,
+                        caller,
                     };
                     let mut projected = rows
                         .iter()
@@ -535,7 +564,7 @@ fn execute_ops_from<'a>(
                 } => {
                     // v1 has a single physical GraphStore; USE scopes its sub-plan
                     // but does not route to a separate graph store yet.
-                    execute_ops_from(store, sub_plan, parameters, rows, index).await?
+                    execute_ops_from(store, sub_plan, parameters, rows, index, execution).await?
                 }
                 PlanOp::UseGraph {
                     graph_name: _,
@@ -545,20 +574,27 @@ fn execute_ops_from<'a>(
                     rows
                 }
                 PlanOp::CartesianProduct { left, right } => {
-                    execute_cartesian_product(store, parameters, rows, left, right, index).await?
+                    execute_cartesian_product(
+                        store, parameters, rows, left, right, index, execution,
+                    )
+                    .await?
                 }
                 PlanOp::HashJoin {
                     left,
                     right,
                     join_keys,
                 } => {
-                    execute_hash_join(store, parameters, rows, left, right, join_keys, index)
-                        .await?
+                    execute_hash_join(
+                        store, parameters, rows, left, right, join_keys, index, execution,
+                    )
+                    .await?
                 }
                 PlanOp::OptionalMatch { sub_plan } => {
                     let written = subplan_written_vars(sub_plan);
-                    execute_optional_match(store, parameters, rows, sub_plan, &written, index)
-                        .await?
+                    execute_optional_match(
+                        store, parameters, rows, sub_plan, &written, index, execution,
+                    )
+                    .await?
                 }
                 other if other.is_dml() => {
                     return Err(PlanQueryError::UnsupportedOp(plan_op_name(other)));
@@ -578,11 +614,14 @@ async fn execute_cartesian_product(
     left: &[PlanOp],
     right: &[PlanOp],
     index: Option<&dyn PropertyIndexLookup>,
+    execution: GqlExecutionContext,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
     let mut out = Vec::new();
     for row in rows {
-        let left_rows = execute_ops_from(store, left, parameters, vec![row.clone()], index).await?;
-        let right_rows = execute_ops_from(store, right, parameters, vec![row], index).await?;
+        let left_rows =
+            execute_ops_from(store, left, parameters, vec![row.clone()], index, execution).await?;
+        let right_rows =
+            execute_ops_from(store, right, parameters, vec![row], index, execution).await?;
         for left_row in &left_rows {
             for right_row in &right_rows {
                 if let Some(merged) = merge_rows(left_row, right_row) {
@@ -616,6 +655,7 @@ async fn execute_hash_join(
     right: &[PlanOp],
     join_keys: &[Str],
     index: Option<&dyn PropertyIndexLookup>,
+    execution: GqlExecutionContext,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
     if join_keys.is_empty() {
         return Err(PlanQueryError::UnsupportedOp("HashJoin(empty join_keys)"));
@@ -623,8 +663,10 @@ async fn execute_hash_join(
 
     let mut out = Vec::new();
     for row in rows {
-        let left_rows = execute_ops_from(store, left, parameters, vec![row.clone()], index).await?;
-        let right_rows = execute_ops_from(store, right, parameters, vec![row], index).await?;
+        let left_rows =
+            execute_ops_from(store, left, parameters, vec![row.clone()], index, execution).await?;
+        let right_rows =
+            execute_ops_from(store, right, parameters, vec![row], index, execution).await?;
 
         let mut buckets: HashJoinBuckets = IntMap::default();
         for lr in left_rows {
@@ -947,6 +989,7 @@ fn execute_expand(
     direction: EdgeDirection,
     label: Option<&Str>,
     dst_filter: &[Expr],
+    caller: Option<Principal>,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
     let label_id = label.and_then(|label| store.label_id(label.as_ref()));
     if label.is_some() && label_id.is_none() {
@@ -957,6 +1000,7 @@ fn execute_expand(
         store,
         parameters,
         aggregate_specs: None,
+        caller,
     };
     let mut out = Vec::new();
     for row in rows {
@@ -1313,6 +1357,8 @@ struct QueryExprEvaluator<'a> {
     /// [`PlanOp::Aggregate`] (not necessarily `ops[op_idx - 1]`, e.g. when `HAVING`
     /// inserts a [`PlanOp::Filter`] between aggregate and project).
     aggregate_specs: Option<&'a [AggregateSpec]>,
+    /// IC caller for runtime functions such as `MSG_CALLER()`.
+    caller: Option<Principal>,
 }
 
 impl QueryExprEvaluator<'_> {
@@ -1429,6 +1475,17 @@ impl QueryExprEvaluator<'_> {
                 };
                 aggregate::resolve_aggregate_from_row(row, expr, specs)
             }
+            ExprKind::FunctionCall {
+                name,
+                args,
+                distinct,
+            } => match try_eval_runtime_function_call(self.caller, name, args, *distinct) {
+                Ok(Some(value)) => Ok(value),
+                Ok(None) => Err(PlanQueryError::UnsupportedExpression {
+                    expression: format!("{:?}", expr.kind),
+                }),
+                Err(e) => Err(e.into()),
+            },
             _ => Err(PlanQueryError::UnsupportedExpression {
                 expression: format!("{:?}", expr.kind),
             }),
@@ -1759,6 +1816,7 @@ mod tests {
     use super::*;
     use crate::facade::IndexRouting;
     use crate::facade::mutation_executor::GraphMutationExecutor;
+    use crate::gql_execution_context::GqlExecutionContext;
     use crate::index::lookup::PropertyIndexLookup;
     use async_trait::async_trait;
     use candid::Principal;
@@ -2069,8 +2127,14 @@ mod tests {
             property_projection: None,
         }]);
 
-        let result = pollster::block_on(execute_plan_query(&store, &plan, &params(), Some(&index)))
-            .expect("execute index scan");
+        let result = pollster::block_on(execute_plan_query(
+            &store,
+            &plan,
+            &params(),
+            Some(&index),
+            GqlExecutionContext::default(),
+        ))
+        .expect("execute index scan");
 
         assert_eq!(result.rows.len(), 1);
         let calls = index.equal_calls.borrow();
@@ -2115,8 +2179,14 @@ mod tests {
             },
         ]);
 
-        let result = pollster::block_on(execute_plan_query(&store, &plan, &params(), Some(&index)))
-            .expect("execute decimal equality index scan");
+        let result = pollster::block_on(execute_plan_query(
+            &store,
+            &plan,
+            &params(),
+            Some(&index),
+            GqlExecutionContext::default(),
+        ))
+        .expect("execute decimal equality index scan");
 
         assert_eq!(result.rows.len(), 1);
         let calls = index.equal_calls.borrow();
@@ -2162,8 +2232,14 @@ mod tests {
             },
         ]);
 
-        let result = pollster::block_on(execute_plan_query(&store, &plan, &params(), Some(&index)))
-            .expect("execute float equality index scan");
+        let result = pollster::block_on(execute_plan_query(
+            &store,
+            &plan,
+            &params(),
+            Some(&index),
+            GqlExecutionContext::default(),
+        ))
+        .expect("execute float equality index scan");
 
         assert_eq!(result.rows.len(), 1);
         let calls = index.equal_calls.borrow();
@@ -2208,8 +2284,14 @@ mod tests {
             },
         ]);
 
-        let result = pollster::block_on(execute_plan_query(&store, &plan, &params(), Some(&index)))
-            .expect("execute inexact float equality index scan");
+        let result = pollster::block_on(execute_plan_query(
+            &store,
+            &plan,
+            &params(),
+            Some(&index),
+            GqlExecutionContext::default(),
+        ))
+        .expect("execute inexact float equality index scan");
 
         assert!(result.rows.is_empty());
     }
@@ -2247,8 +2329,14 @@ mod tests {
             },
         ]);
 
-        let result = pollster::block_on(execute_plan_query(&store, &plan, &params(), Some(&index)))
-            .expect("execute list equality index scan");
+        let result = pollster::block_on(execute_plan_query(
+            &store,
+            &plan,
+            &params(),
+            Some(&index),
+            GqlExecutionContext::default(),
+        ))
+        .expect("execute list equality index scan");
 
         assert_eq!(result.rows.len(), 1);
         let calls = index.equal_calls.borrow();
@@ -2302,8 +2390,14 @@ mod tests {
             },
         ]);
 
-        let result = pollster::block_on(execute_plan_query(&store, &plan, &params(), Some(&index)))
-            .expect("execute record equality index scan");
+        let result = pollster::block_on(execute_plan_query(
+            &store,
+            &plan,
+            &params(),
+            Some(&index),
+            GqlExecutionContext::default(),
+        ))
+        .expect("execute record equality index scan");
 
         assert_eq!(result.rows.len(), 1);
         let calls = index.equal_calls.borrow();
@@ -2350,8 +2444,14 @@ mod tests {
             },
         ]);
 
-        let result = pollster::block_on(execute_plan_query(&store, &plan, &params(), Some(&index)))
-            .expect("execute record inexact equality index scan");
+        let result = pollster::block_on(execute_plan_query(
+            &store,
+            &plan,
+            &params(),
+            Some(&index),
+            GqlExecutionContext::default(),
+        ))
+        .expect("execute record inexact equality index scan");
 
         assert!(result.rows.is_empty());
     }
@@ -2386,8 +2486,14 @@ mod tests {
             property_projection: None,
         }]);
 
-        let result = pollster::block_on(execute_plan_query(&store, &plan, &params(), Some(&index)))
-            .expect("execute range index scan");
+        let result = pollster::block_on(execute_plan_query(
+            &store,
+            &plan,
+            &params(),
+            Some(&index),
+            GqlExecutionContext::default(),
+        ))
+        .expect("execute range index scan");
 
         assert_eq!(result.rows.len(), 2);
         assert!(index.equal_calls.borrow().is_empty());
@@ -2448,8 +2554,14 @@ mod tests {
             },
         ]);
 
-        let result = pollster::block_on(execute_plan_query(&store, &plan, &params(), Some(&index)))
-            .expect("execute list range index scan");
+        let result = pollster::block_on(execute_plan_query(
+            &store,
+            &plan,
+            &params(),
+            Some(&index),
+            GqlExecutionContext::default(),
+        ))
+        .expect("execute list range index scan");
 
         assert_eq!(result.rows.len(), 1);
         let calls = index.range_calls.borrow();
@@ -2504,8 +2616,14 @@ mod tests {
             property_projection: None,
         }]);
 
-        let result = pollster::block_on(execute_plan_query(&store, &plan, &params(), Some(&index)))
-            .expect("execute record range index scan");
+        let result = pollster::block_on(execute_plan_query(
+            &store,
+            &plan,
+            &params(),
+            Some(&index),
+            GqlExecutionContext::default(),
+        ))
+        .expect("execute record range index scan");
 
         assert_eq!(result.rows.len(), 1);
         let calls = index.range_calls.borrow();
@@ -2547,8 +2665,14 @@ mod tests {
             property_projection: None,
         }]);
 
-        let result = pollster::block_on(execute_plan_query(&store, &plan, &params(), Some(&index)))
-            .expect("execute extension equality index scan");
+        let result = pollster::block_on(execute_plan_query(
+            &store,
+            &plan,
+            &params(),
+            Some(&index),
+            GqlExecutionContext::default(),
+        ))
+        .expect("execute extension equality index scan");
 
         assert_eq!(result.rows.len(), 1);
         let calls = index.equal_calls.borrow();
@@ -2589,8 +2713,14 @@ mod tests {
             property_projection: None,
         }]);
 
-        let result = pollster::block_on(execute_plan_query(&store, &plan, &params(), Some(&index)))
-            .expect("execute extension range index scan");
+        let result = pollster::block_on(execute_plan_query(
+            &store,
+            &plan,
+            &params(),
+            Some(&index),
+            GqlExecutionContext::default(),
+        ))
+        .expect("execute extension range index scan");
 
         assert_eq!(result.rows.len(), 1);
         let calls = index.range_calls.borrow();
@@ -2622,8 +2752,14 @@ mod tests {
             property_projection: None,
         }]);
 
-        let err = pollster::block_on(execute_plan_query(&store, &plan, &parameters, Some(&index)))
-            .expect_err("unsupported parameter should fail");
+        let err = pollster::block_on(execute_plan_query(
+            &store,
+            &plan,
+            &parameters,
+            Some(&index),
+            GqlExecutionContext::default(),
+        ))
+        .expect_err("unsupported parameter should fail");
 
         assert!(matches!(err, PlanQueryError::InvalidExpressionValue { .. }));
     }
@@ -2649,8 +2785,14 @@ mod tests {
             property_projection: None,
         }]);
 
-        let err = pollster::block_on(execute_plan_query(&store, &plan, &parameters, Some(&index)))
-            .expect_err("non-orderable extension parameter should fail");
+        let err = pollster::block_on(execute_plan_query(
+            &store,
+            &plan,
+            &parameters,
+            Some(&index),
+            GqlExecutionContext::default(),
+        ))
+        .expect_err("non-orderable extension parameter should fail");
 
         assert!(matches!(err, PlanQueryError::InvalidExpressionValue { .. }));
     }
@@ -2673,8 +2815,14 @@ mod tests {
             property_projection: None,
         }]);
 
-        let err = pollster::block_on(execute_plan_query(&store, &plan, &parameters, Some(&index)))
-            .expect_err("unsupported range parameter should fail");
+        let err = pollster::block_on(execute_plan_query(
+            &store,
+            &plan,
+            &parameters,
+            Some(&index),
+            GqlExecutionContext::default(),
+        ))
+        .expect_err("unsupported range parameter should fail");
 
         assert!(matches!(err, PlanQueryError::InvalidExpressionValue { .. }));
     }
@@ -2697,8 +2845,14 @@ mod tests {
             property_projection: None,
         }]);
 
-        let err = pollster::block_on(execute_plan_query(&store, &plan, &parameters, Some(&index)))
-            .expect_err("non-finite parameter should fail");
+        let err = pollster::block_on(execute_plan_query(
+            &store,
+            &plan,
+            &parameters,
+            Some(&index),
+            GqlExecutionContext::default(),
+        ))
+        .expect_err("non-finite parameter should fail");
 
         assert!(matches!(err, PlanQueryError::InvalidExpressionValue { .. }));
     }
@@ -2728,9 +2882,14 @@ mod tests {
             property_projection: None,
         }]);
 
-        let result =
-            pollster::block_on(execute_plan_query(&store, &plan, &parameters, Some(&index)))
-                .expect("conditional fallback");
+        let result = pollster::block_on(execute_plan_query(
+            &store,
+            &plan,
+            &parameters,
+            Some(&index),
+            GqlExecutionContext::default(),
+        ))
+        .expect("conditional fallback");
 
         assert_eq!(result.rows.len(), 1);
         assert!(index.equal_calls.borrow().is_empty());
@@ -2762,9 +2921,14 @@ mod tests {
             property_projection: None,
         }]);
 
-        let result =
-            pollster::block_on(execute_plan_query(&store, &plan, &parameters, Some(&index)))
-                .expect("conditional fallback");
+        let result = pollster::block_on(execute_plan_query(
+            &store,
+            &plan,
+            &parameters,
+            Some(&index),
+            GqlExecutionContext::default(),
+        ))
+        .expect("conditional fallback");
 
         assert_eq!(result.rows.len(), 1);
         assert!(index.equal_calls.borrow().is_empty());
@@ -2796,9 +2960,14 @@ mod tests {
             property_projection: None,
         }]);
 
-        let result =
-            pollster::block_on(execute_plan_query(&store, &plan, &parameters, Some(&index)))
-                .expect("conditional fallback");
+        let result = pollster::block_on(execute_plan_query(
+            &store,
+            &plan,
+            &parameters,
+            Some(&index),
+            GqlExecutionContext::default(),
+        ))
+        .expect("conditional fallback");
 
         assert_eq!(result.rows.len(), 1);
         assert!(index.equal_calls.borrow().is_empty());
@@ -2830,9 +2999,14 @@ mod tests {
             property_projection: None,
         }]);
 
-        let result =
-            pollster::block_on(execute_plan_query(&store, &plan, &parameters, Some(&index)))
-                .expect("conditional fallback");
+        let result = pollster::block_on(execute_plan_query(
+            &store,
+            &plan,
+            &parameters,
+            Some(&index),
+            GqlExecutionContext::default(),
+        ))
+        .expect("conditional fallback");
 
         assert_eq!(result.rows.len(), 1);
         assert!(index.equal_calls.borrow().is_empty());
@@ -2857,7 +3031,7 @@ mod tests {
         let plan = plan_gql("MATCH (n:PlannerQueryPersonReturn) RETURN n.name AS name");
 
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("execute planned query");
 
         assert_eq!(result.rows.len(), 1);
@@ -2892,7 +3066,7 @@ mod tests {
             plan_gql("MATCH (n:PlannerQueryPersonFilter) WHERE n.age > 18 RETURN n.name AS name");
 
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("execute planned query");
 
         assert_eq!(result.rows.len(), 1);
@@ -2911,7 +3085,7 @@ mod tests {
         let plan = plan_gql("MATCH (n:PlannerQueryLetAge) LET x = n.age + 1 RETURN x");
 
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("execute planned query");
 
         assert_eq!(result.rows.len(), 1);
@@ -2927,7 +3101,7 @@ mod tests {
         let plan = plan_gql("MATCH (n:PlannerQueryLetChain) LET x = n.k + 1, y = x * 2 RETURN y");
 
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("execute planned query");
 
         assert_eq!(result.rows.len(), 1);
@@ -2960,7 +3134,7 @@ mod tests {
         );
 
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("execute planned query");
 
         assert_eq!(result.rows.len(), 1);
@@ -3013,7 +3187,7 @@ mod tests {
         );
 
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("execute planned query");
 
         assert_eq!(result.rows.len(), 1);
@@ -3039,7 +3213,7 @@ mod tests {
         let plan = plan_gql("MATCH (n:PlannerQuerySort) RETURN n.name ORDER BY n.name");
 
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("execute planned query");
 
         assert_eq!(
@@ -3065,7 +3239,7 @@ mod tests {
         assert!(plan.ops.iter().any(|op| matches!(op, PlanOp::TopK { .. })));
 
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("execute planned query");
 
         assert_eq!(
@@ -3093,7 +3267,7 @@ mod tests {
         );
 
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("execute planned query");
 
         assert_eq!(
@@ -3117,7 +3291,7 @@ mod tests {
         );
 
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("execute planned query");
 
         assert_eq!(result.rows.len(), 1);
@@ -3136,7 +3310,7 @@ mod tests {
         let plan = plan_gql("MATCH (n:PlannerQueryReturnStar) RETURN *");
 
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("execute planned query");
 
         assert_eq!(result.rows.len(), 1);
@@ -3154,7 +3328,7 @@ mod tests {
         let plan = plan_gql("MATCH (n:PlannerQueryLimit) RETURN n.name LIMIT 1");
 
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("execute planned query");
 
         assert_eq!(result.rows.len(), 1);
@@ -3215,7 +3389,7 @@ mod tests {
         );
 
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("execute planned query");
 
         assert_eq!(result.rows.len(), 1);
@@ -3237,7 +3411,7 @@ mod tests {
         let plan = plan_gql("USE myGraph MATCH (n:PlannerQueryUseGraph) RETURN n.name AS name");
 
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("execute planned query");
 
         assert_eq!(result.rows.len(), 1);
@@ -3277,7 +3451,7 @@ mod tests {
         );
 
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("execute planned query");
 
         assert_eq!(result.rows.len(), 4);
@@ -3313,7 +3487,7 @@ mod tests {
         ]);
 
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("execute query");
 
         assert_eq!(result.rows.len(), 1);
@@ -3365,7 +3539,7 @@ mod tests {
         ]);
 
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("execute query");
 
         assert_eq!(result.rows.len(), 1);
@@ -3418,10 +3592,10 @@ mod tests {
         );
 
         let asc_result = store
-            .execute_plan_query(&asc, &params())
+            .execute_plan_query(&asc, &params(), GqlExecutionContext::default())
             .expect("execute ascending sort");
         let desc_result = store
-            .execute_plan_query(&desc, &params())
+            .execute_plan_query(&desc, &params(), GqlExecutionContext::default())
             .expect("execute descending sort");
 
         assert_eq!(
@@ -3472,7 +3646,7 @@ mod tests {
         ]);
 
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("execute multi-key sort");
 
         assert_eq!(
@@ -3523,10 +3697,10 @@ mod tests {
         );
 
         let first = store
-            .execute_plan_query(&nulls_first, &params())
+            .execute_plan_query(&nulls_first, &params(), GqlExecutionContext::default())
             .expect("execute nulls first sort");
         let last = store
-            .execute_plan_query(&nulls_last, &params())
+            .execute_plan_query(&nulls_last, &params(), GqlExecutionContext::default())
             .expect("execute nulls last sort");
 
         assert_eq!(first.rows[0].get("name"), Some(&Value::Null));
@@ -3561,7 +3735,7 @@ mod tests {
         ]);
 
         let err = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect_err("incomparable keys should fail");
 
         assert!(matches!(err, PlanQueryError::IncomparableSortValues { .. }));
@@ -3593,7 +3767,7 @@ mod tests {
         ]);
 
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("execute topk");
 
         assert_eq!(text_column(&result, "name"), vec!["TopK B", "TopK C"]);
@@ -3649,7 +3823,7 @@ mod tests {
         ]);
 
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("execute cartesian product");
 
         assert_eq!(result.rows.len(), 4);
@@ -3693,7 +3867,7 @@ mod tests {
                    RETURN a.name AS an, b.name AS bn";
         let sequential = plan_gql(gql);
         let seq_result = store
-            .execute_plan_query(&sequential, &params())
+            .execute_plan_query(&sequential, &params(), GqlExecutionContext::default())
             .expect("sequential two-match");
 
         let hash_plan = plan(vec![
@@ -3735,7 +3909,7 @@ mod tests {
         ]);
 
         let hj_result = store
-            .execute_plan_query(&hash_plan, &params())
+            .execute_plan_query(&hash_plan, &params(), GqlExecutionContext::default())
             .expect("hash join");
 
         assert_eq!(hj_result.rows.len(), seq_result.rows.len());
@@ -3785,7 +3959,7 @@ mod tests {
 
         let store = GraphStore::new();
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("decimal hash join");
 
         assert_eq!(result.rows.len(), 1);
@@ -3870,7 +4044,7 @@ mod tests {
         }]);
 
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("hash join multiplicity");
 
         assert_eq!(result.rows.len(), 6);
@@ -3977,7 +4151,7 @@ mod tests {
         }]);
 
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("two-key hash join");
 
         assert_eq!(result.rows.len(), 1);
@@ -4030,7 +4204,7 @@ mod tests {
                    RETURN a.name AS an, b.name AS bn";
         let sequential = plan_gql(gql);
         let seq_result = store
-            .execute_plan_query(&sequential, &params())
+            .execute_plan_query(&sequential, &params(), GqlExecutionContext::default())
             .expect("sequential two-match branching");
 
         let hash_plan = plan(vec![
@@ -4072,7 +4246,7 @@ mod tests {
         ]);
 
         let hj_result = store
-            .execute_plan_query(&hash_plan, &params())
+            .execute_plan_query(&hash_plan, &params(), GqlExecutionContext::default())
             .expect("hash join branching");
 
         assert_eq!(hj_result.rows.len(), seq_result.rows.len());
@@ -4142,7 +4316,7 @@ mod tests {
         ]);
 
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("execute query");
 
         assert_eq!(result.rows.len(), 1);
@@ -4216,7 +4390,7 @@ mod tests {
         ]);
 
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("execute query");
 
         assert_eq!(result.rows.len(), 1);
@@ -4272,7 +4446,7 @@ mod tests {
         ]);
 
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("execute query");
 
         assert_eq!(result.rows.len(), 1);
@@ -4317,7 +4491,7 @@ mod tests {
         ]);
 
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("execute query");
 
         assert_eq!(result.rows.len(), 1);
@@ -4344,7 +4518,7 @@ mod tests {
             plan.ops
         );
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("execute optional match");
 
         assert_eq!(result.rows.len(), 1);
@@ -4368,7 +4542,7 @@ mod tests {
                    RETURN m.name AS mn";
         let plan = plan_gql(gql);
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("execute optional match");
 
         assert_eq!(result.rows.len(), 1);
@@ -4388,7 +4562,7 @@ mod tests {
             plan.ops
         );
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("execute leading optional");
 
         assert_eq!(result.rows.len(), 1);
@@ -4433,7 +4607,7 @@ mod tests {
         ]);
 
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("execute manual optional");
 
         assert_eq!(result.rows.len(), 1);
@@ -4515,7 +4689,7 @@ mod tests {
             },
         ]);
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("global aggregate on empty match");
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0].get("cnt"), Some(&Value::Int64(0)));
@@ -4545,7 +4719,9 @@ mod tests {
                 distinct: false,
             },
         ]);
-        let result = store.execute_plan_query(&plan, &params()).expect("count");
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("count");
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0].get("cnt"), Some(&Value::Int64(2)));
     }
@@ -4577,7 +4753,9 @@ mod tests {
                 distinct: false,
             },
         ]);
-        let result = store.execute_plan_query(&plan, &params()).expect("grouped");
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("grouped");
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0].get("d"), Some(&Value::Text("S".into())));
         assert_eq!(result.rows[0].get("c"), Some(&Value::Int64(2)));
@@ -4617,7 +4795,9 @@ mod tests {
                 distinct: false,
             },
         ]);
-        let result = store.execute_plan_query(&plan, &params()).expect("agg");
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("agg");
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0].get("s"), Some(&Value::Int64(30)));
         assert_eq!(result.rows[0].get("mn"), Some(&Value::Int64(10)));
@@ -4663,7 +4843,7 @@ mod tests {
             },
         ]);
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("distinct");
         assert_eq!(result.rows[0].get("c"), Some(&Value::Int64(1)));
     }
@@ -4690,7 +4870,7 @@ mod tests {
             },
         ]);
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("empty groups");
         assert!(result.rows.is_empty());
     }
@@ -4741,7 +4921,7 @@ mod tests {
             },
         ]);
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("filtered");
         assert_eq!(result.rows[0].get("c"), Some(&Value::Int64(1)));
     }
@@ -4788,7 +4968,9 @@ mod tests {
                 distinct: false,
             },
         ]);
-        let result = store.execute_plan_query(&plan, &params()).expect("collect");
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("collect");
         match result.rows[0].get("xs") {
             Some(Value::List(xs)) => {
                 assert_eq!(xs.len(), 2);
@@ -4838,7 +5020,9 @@ mod tests {
                 distinct: false,
             },
         ]);
-        let result = store.execute_plan_query(&plan, &params()).expect("pct");
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("pct");
         match result.rows[0].get("m") {
             Some(Value::Float64(f)) => assert!((f - 20.0).abs() < 1e-9),
             other => panic!("expected float median: {other:?}"),
@@ -4861,7 +5045,7 @@ mod tests {
             }],
         }]);
         let err = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect_err("sum with expr2");
         assert!(
             matches!(err, PlanQueryError::UnsupportedOp(name) if name == "Aggregate.expr2"),
@@ -4877,7 +5061,7 @@ mod tests {
             .expect("vertex");
         let plan = plan_gql("MATCH (n:PlannerAggCntLbl) RETURN count(*) AS c");
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("planner aggregate");
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0].get("c"), Some(&Value::Int64(1)));
@@ -4894,7 +5078,7 @@ mod tests {
             .expect("v2");
         let plan = plan_gql("MATCH (n:PlannerAggPlus) RETURN count(*) + 1 AS c");
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("nested aggregate expr");
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0].get("c"), Some(&Value::Int64(3)));
@@ -4906,7 +5090,9 @@ mod tests {
         let _ = store.insert_vertex_named(["PlannerAggAvgArith"], [("x", Value::Int64(10))]);
         let _ = store.insert_vertex_named(["PlannerAggAvgArith"], [("x", Value::Int64(30))]);
         let plan = plan_gql("MATCH (n:PlannerAggAvgArith) RETURN avg(n.x) * 2 AS doubled");
-        let result = store.execute_plan_query(&plan, &params()).expect("avg * 2");
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("avg * 2");
         assert_eq!(result.rows.len(), 1);
         match result.rows[0].get("doubled") {
             Some(Value::Float64(f)) => assert!((f - 40.0).abs() < 1e-6),
@@ -4924,7 +5110,9 @@ mod tests {
         let plan = plan_gql(
             "MATCH (n:PlannerHavingK) RETURN n.k, count(*) AS cnt GROUP BY n.k HAVING count(*) > 1",
         );
-        let result = store.execute_plan_query(&plan, &params()).expect("having");
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("having");
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0].get("n.k"), Some(&Value::Int64(1)));
         assert_eq!(result.rows[0].get("cnt"), Some(&Value::Int64(2)));
@@ -4940,7 +5128,7 @@ mod tests {
             "MATCH (n:PlannerHavingK) RETURN n.k, count(*) AS cnt GROUP BY n.k HAVING cnt > 1",
         );
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("having with return alias");
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0].get("n.k"), Some(&Value::Int64(1)));
@@ -4956,7 +5144,7 @@ mod tests {
             store.insert_vertex_named(["PlannerAggCollect"], [("name", Value::Text("b".into()))]);
         let plan = plan_gql("MATCH (n:PlannerAggCollect) RETURN COLLECT_LIST(n.name) AS names");
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("collect_list");
         assert_eq!(result.rows.len(), 1);
         let list = result.rows[0].get("names").expect("names column");
@@ -4982,7 +5170,7 @@ mod tests {
         let _ = store.insert_vertex_named(["PlannerAggStd"], [("v", Value::Int64(3))]);
         let plan = plan_gql("MATCH (n:PlannerAggStd) RETURN STDDEV_POP(n.v) AS s");
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("stddev_pop");
         assert_eq!(result.rows.len(), 1);
         match result.rows[0].get("s") {
@@ -4999,7 +5187,7 @@ mod tests {
         let _ = store.insert_vertex_named(["PlannerAggPct"], [("v", Value::Int64(30))]);
         let plan = plan_gql("MATCH (n:PlannerAggPct) RETURN PERCENTILE_CONT(n.v, 0.5) AS m");
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("percentile");
         assert_eq!(result.rows.len(), 1);
         match result.rows[0].get("m") {
@@ -5027,7 +5215,7 @@ mod tests {
         );
 
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("element ids");
 
         assert_eq!(result.rows.len(), 1);
@@ -5055,7 +5243,7 @@ mod tests {
         );
 
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("optional element id");
 
         assert_eq!(result.rows.len(), 1);
@@ -5113,7 +5301,7 @@ mod tests {
         ]);
 
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("execute shortest path");
 
         assert_eq!(result.rows.len(), 1);
@@ -5168,7 +5356,7 @@ mod tests {
         ]);
 
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("execute zero-hop shortest path");
 
         let elements = path_column(&result, "p");
@@ -5237,7 +5425,7 @@ mod tests {
         ]);
 
         let result = store
-            .execute_plan_query(&plan, &params())
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("execute all shortest paths");
 
         assert_eq!(result.rows.len(), 2);
@@ -5269,6 +5457,7 @@ mod tests {
                     var_len: None,
                 }]),
                 &params(),
+                GqlExecutionContext::default(),
             )
             .expect_err("ShortestK should be unsupported");
         assert!(matches!(
@@ -5290,6 +5479,7 @@ mod tests {
                     var_len: None,
                 }]),
                 &params(),
+                GqlExecutionContext::default(),
             )
             .expect_err("label_expr should be unsupported");
         assert!(matches!(
@@ -5339,7 +5529,7 @@ mod tests {
         for (op, expected_name) in cases {
             let plan = plan(vec![op]);
             let err = store
-                .execute_plan_query(&plan, &params())
+                .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
                 .expect_err("operator should be unsupported in v1");
 
             assert!(

@@ -1,6 +1,7 @@
 //! Parse, authorize (by caller role), plan, and execute GQL against [`GraphStore`].
 
 use crate::facade::GraphStore;
+use crate::gql_execution_context::GqlExecutionContext;
 use crate::index::lookup::PropertyIndexLookup;
 use crate::index::pending;
 use crate::plan::{PlanMutationExecutor, PlanQueryResult, execute_plan_query};
@@ -81,6 +82,7 @@ pub async fn run_adhoc_gql(
     caller_role: Role,
     index: Option<&dyn PropertyIndexLookup>,
     mode: GqlCanisterExecutionMode,
+    execution: GqlExecutionContext,
 ) -> Result<PlanQueryResult, GqlRunError> {
     if !caller_role.satisfies_at_least(Role::Read) {
         return Err(GqlRunError::Auth(
@@ -116,10 +118,10 @@ pub async fn run_adhoc_gql(
         let plan =
             build_statement_plan(stmt, None).map_err(|e| GqlRunError::Plan(e.to_string()))?;
         if plan.has_dml() {
-            store.execute_plan_mutations(&plan)?;
+            store.execute_plan_mutations(&plan, execution)?;
             pending::flush_pending(index).await?;
         } else {
-            last = execute_plan_query(&store, &plan, parameters, index).await?;
+            last = execute_plan_query(&store, &plan, parameters, index, execution).await?;
         }
     }
     Ok(last)
@@ -135,6 +137,7 @@ pub async fn run_prepared_gql(
     parameters: &BTreeMap<String, Value>,
     index: Option<&dyn PropertyIndexLookup>,
     mode: GqlCanisterExecutionMode,
+    execution: GqlExecutionContext,
 ) -> Result<PlanQueryResult, GqlRunError> {
     let program = &record.program;
     let flags = classify_program(program);
@@ -165,10 +168,10 @@ pub async fn run_prepared_gql(
         let plan =
             build_statement_plan(stmt, None).map_err(|e| GqlRunError::Plan(e.to_string()))?;
         if plan.has_dml() {
-            store.execute_plan_mutations(&plan)?;
+            store.execute_plan_mutations(&plan, execution)?;
             pending::flush_pending(index).await?;
         } else {
-            last = execute_plan_query(&store, &plan, parameters, index).await?;
+            last = execute_plan_query(&store, &plan, parameters, index, execution).await?;
         }
     }
     Ok(last)
@@ -177,6 +180,7 @@ pub async fn run_prepared_gql(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::GqlExecutionContext;
     use gleaph_gql::Value;
 
     #[test]
@@ -190,6 +194,7 @@ mod tests {
             Role::Read,
             None,
             GqlCanisterExecutionMode::Update,
+            GqlExecutionContext::default(),
         ))
         .expect_err("expected plan error");
         assert!(
@@ -209,6 +214,7 @@ mod tests {
             Role::Write,
             None,
             GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext::default(),
         ))
         .expect_err("expected plan error");
         assert!(
@@ -228,6 +234,7 @@ mod tests {
             Role::Read,
             None,
             GqlCanisterExecutionMode::Update,
+            GqlExecutionContext::default(),
         ))
         .expect_err("expected auth error");
         assert!(err.to_string().contains("Write"), "unexpected error: {err}");
@@ -244,6 +251,7 @@ mod tests {
             Role::Write,
             None,
             GqlCanisterExecutionMode::Update,
+            GqlExecutionContext::default(),
         ))
         .expect("insert");
         let q = pollster::block_on(run_adhoc_gql(
@@ -253,6 +261,7 @@ mod tests {
             Role::Read,
             None,
             GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext::default(),
         ))
         .expect("match");
         assert_eq!(q.rows.len(), 1);
@@ -273,6 +282,7 @@ mod tests {
             &params,
             None,
             GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext::default(),
         ))
         .expect_err("expected plan error");
         assert!(
@@ -295,11 +305,165 @@ mod tests {
             &params,
             None,
             GqlCanisterExecutionMode::Update,
+            GqlExecutionContext::default(),
         ))
         .expect_err("expected plan error");
         assert!(
             err.to_string().contains("gql_query"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn msg_caller_return_with_execution_context() {
+        use gleaph_gql_ic::{PrincipalValue, value_as_principal};
+
+        let p = candid::Principal::from_text("2vxsx-fae").expect("principal");
+        let store = GraphStore::new();
+        let params = BTreeMap::new();
+        let q = pollster::block_on(run_adhoc_gql(
+            store,
+            "RETURN MSG_CALLER() AS c",
+            &params,
+            Role::Read,
+            None,
+            GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext { caller: Some(p) },
+        ))
+        .expect("query");
+        assert_eq!(q.rows.len(), 1);
+        let cell = q.rows[0].get("c").expect("column c");
+        let Value::Extension(ext) = cell else {
+            panic!("expected extension, got {cell:?}");
+        };
+        let pv = ext.as_any().downcast_ref::<PrincipalValue>().expect("pv");
+        assert_eq!(pv.0, p);
+        assert_eq!(value_as_principal(cell), Some(p));
+    }
+
+    #[test]
+    fn msg_caller_insert_mutation_stores_principal() {
+        use gleaph_gql_ic::{PrincipalValue, value_as_principal};
+
+        let p = candid::Principal::from_text("2vxsx-fae").expect("principal");
+        let store = GraphStore::new();
+        let params = BTreeMap::new();
+        pollster::block_on(run_adhoc_gql(
+            store,
+            "INSERT (n:MsgCallerOwner {owner: MSG_CALLER()})",
+            &params,
+            Role::Write,
+            None,
+            GqlCanisterExecutionMode::Update,
+            GqlExecutionContext { caller: Some(p) },
+        ))
+        .expect("insert");
+        let q = pollster::block_on(run_adhoc_gql(
+            store,
+            "MATCH (n:MsgCallerOwner) RETURN n.owner AS o",
+            &params,
+            Role::Read,
+            None,
+            GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext { caller: Some(p) },
+        ))
+        .expect("read back");
+        assert_eq!(q.rows.len(), 1);
+        let o = q.rows[0].get("o").expect("o");
+        let Value::Extension(ext) = o else {
+            panic!("expected extension");
+        };
+        ext.as_any().downcast_ref::<PrincipalValue>().expect("pv");
+        assert_eq!(value_as_principal(o), Some(p));
+    }
+
+    #[test]
+    fn msg_caller_prepared_uses_execute_caller_not_registration() {
+        use gleaph_gql_ic::value_as_principal;
+
+        let exec = candid::Principal::from_text("2vxsx-fae").expect("exec");
+        let store = GraphStore::new();
+        store
+            .prepared_query_register("prep_mc".into(), "RETURN MSG_CALLER() AS c")
+            .expect("register");
+        let record = store.prepared_query_get("prep_mc").expect("get");
+        let params = BTreeMap::new();
+        let q = pollster::block_on(run_prepared_gql(
+            store,
+            &record,
+            &params,
+            None,
+            GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext { caller: Some(exec) },
+        ))
+        .expect("exec prepared");
+        assert_eq!(
+            value_as_principal(q.rows[0].get("c").expect("c")),
+            Some(exec)
+        );
+    }
+
+    #[test]
+    fn msg_caller_rejects_wrong_arity_at_execution() {
+        let p = candid::Principal::from_text("2vxsx-fae").expect("principal");
+        let store = GraphStore::new();
+        let params = BTreeMap::new();
+        let err = pollster::block_on(run_adhoc_gql(
+            store,
+            "RETURN MSG_CALLER(1) AS c",
+            &params,
+            Role::Read,
+            None,
+            GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext { caller: Some(p) },
+        ))
+        .expect_err("arity");
+        let s = err.to_string();
+        assert!(
+            s.contains("expects 0 argument") && s.contains("got 1"),
+            "{s}"
+        );
+    }
+
+    #[test]
+    fn msg_caller_rejects_distinct() {
+        let p = candid::Principal::from_text("2vxsx-fae").expect("principal");
+        let store = GraphStore::new();
+        let params = BTreeMap::new();
+        let err = pollster::block_on(run_adhoc_gql(
+            store,
+            "RETURN MSG_CALLER(DISTINCT) AS c",
+            &params,
+            Role::Read,
+            None,
+            GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext { caller: Some(p) },
+        ))
+        .expect_err("distinct");
+        assert!(
+            err.to_string().contains("does not support DISTINCT"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn msg_caller_requires_caller_without_execution_context() {
+        let store = GraphStore::new();
+        let params = BTreeMap::new();
+        let err = pollster::block_on(run_adhoc_gql(
+            store,
+            "RETURN MSG_CALLER() AS c",
+            &params,
+            Role::Read,
+            None,
+            GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext::default(),
+        ))
+        .expect_err("no caller");
+        assert!(
+            err.to_string()
+                .contains("requires a canister caller context"),
+            "{err}"
         );
     }
 }

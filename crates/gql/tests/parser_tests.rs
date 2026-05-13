@@ -84,6 +84,40 @@ fn return_with_alias() {
 }
 
 #[test]
+fn return_zero_arg_generic_function_call_parses() {
+    let program = parse_program_ok("MATCH (n) RETURN zero_arg_runtime_fn()");
+    let statement = &program
+        .transaction_activity
+        .as_ref()
+        .expect("transaction")
+        .body
+        .as_ref()
+        .unwrap()
+        .first;
+    let Statement::Query(query) = statement else {
+        panic!("expected query");
+    };
+    let Some(ResultStatement::Return(ret)) = &query.left.result else {
+        panic!("expected RETURN");
+    };
+    let gleaph_gql::ast::ReturnBody::Items { items, .. } = &ret.body else {
+        panic!("expected items");
+    };
+    match &items[0].expr.kind {
+        ExprKind::FunctionCall {
+            name,
+            args,
+            distinct,
+        } => {
+            assert_eq!(name.parts, vec!["zero_arg_runtime_fn".to_owned()]);
+            assert!(args.is_empty());
+            assert!(!*distinct);
+        }
+        other => panic!("expected FunctionCall, got {other:?}"),
+    }
+}
+
+#[test]
 #[cfg(feature = "cypher")]
 fn return_no_bindings() {
     parse_ok("MATCH (n) RETURN NO BINDINGS");

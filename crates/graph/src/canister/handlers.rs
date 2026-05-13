@@ -6,6 +6,7 @@ use std::str::FromStr;
 use candid::Principal;
 use ic_cdk::api::msg_caller;
 
+use crate::GqlExecutionContext;
 use crate::auth::{admin_upsert_principal, bootstrap_canister_auth, caller_role};
 use crate::facade::{GraphMetadata, GraphStore, IndexRouting};
 use crate::gql_run::{GqlCanisterExecutionMode, run_adhoc_gql, run_prepared_gql};
@@ -76,6 +77,7 @@ pub async fn gql_query(query: String, params: Vec<(String, IcWireValue)>) -> Res
         role,
         ix,
         GqlCanisterExecutionMode::CompositeQuery,
+        GqlExecutionContext { caller: Some(p) },
     )
     .await
     .map_err(|e| e.to_string())?;
@@ -100,6 +102,7 @@ pub async fn gql_execute(query: String, params: Vec<(String, IcWireValue)>) -> R
         role,
         ix,
         GqlCanisterExecutionMode::Update,
+        GqlExecutionContext { caller: Some(p) },
     )
     .await
     .map_err(|e| e.to_string())?;
@@ -122,6 +125,7 @@ pub async fn prepared_execute_query(
     name: String,
     params: Vec<(String, IcWireValue)>,
 ) -> Result<u64, String> {
+    let p = msg_caller();
     let store = GraphStore::new();
     let record = store
         .prepared_query_get(&name)
@@ -140,6 +144,7 @@ pub async fn prepared_execute_query(
         &pmap,
         ix,
         GqlCanisterExecutionMode::CompositeQuery,
+        GqlExecutionContext { caller: Some(p) },
     )
     .await
     .map_err(|e| e.to_string())?;
@@ -150,6 +155,7 @@ pub async fn prepared_execute_update(
     name: String,
     params: Vec<(String, IcWireValue)>,
 ) -> Result<u64, String> {
+    let p = msg_caller();
     let store = GraphStore::new();
     let record = store
         .prepared_query_get(&name)
@@ -162,9 +168,16 @@ pub async fn prepared_execute_update(
     #[cfg(not(target_family = "wasm"))]
     let ix: Option<&dyn PropertyIndexLookup> = None;
 
-    let out = run_prepared_gql(store, &record, &pmap, ix, GqlCanisterExecutionMode::Update)
-        .await
-        .map_err(|e| e.to_string())?;
+    let out = run_prepared_gql(
+        store,
+        &record,
+        &pmap,
+        ix,
+        GqlCanisterExecutionMode::Update,
+        GqlExecutionContext { caller: Some(p) },
+    )
+    .await
+    .map_err(|e| e.to_string())?;
     Ok(out.rows.len() as u64)
 }
 

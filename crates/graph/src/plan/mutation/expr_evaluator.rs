@@ -4,11 +4,13 @@
 //! mutation assignment resolution, parameter lookup, and mutation-specific error context.
 
 use super::error::PlanMutationError;
+use crate::gql_execution_context::try_eval_runtime_function_call;
 use crate::plan::expr_evaluator::{
     ExprEvaluationError, compare_property_values, eval_and_expr, eval_binary_expr,
     eval_compare_expr, eval_concat_expr, eval_not_expr, eval_or_expr, eval_unary_expr,
     eval_xor_expr,
 };
+use candid::Principal;
 use gleaph_gql::Value;
 use gleaph_gql::ast::{Expr, ExprKind, TruthValue};
 use gleaph_gql_planner::plan::PropertyAssignment;
@@ -29,11 +31,12 @@ pub trait MutationPropertyExprEvaluation {
 #[derive(Clone, Copy, Debug)]
 pub struct MutationPropertyExprEvaluator<'a> {
     parameters: &'a BTreeMap<String, Value>,
+    caller: Option<Principal>,
 }
 
 impl<'a> MutationPropertyExprEvaluator<'a> {
-    pub fn new(parameters: &'a BTreeMap<String, Value>) -> Self {
-        Self { parameters }
+    pub fn new(parameters: &'a BTreeMap<String, Value>, caller: Option<Principal>) -> Self {
+        Self { parameters, caller }
     }
 
     pub fn resolve_assignments<'b>(
@@ -139,6 +142,17 @@ impl<'a> MutationPropertyExprEvaluator<'a> {
                 .map(|(name, expr)| self.eval(property, expr).map(|value| (name.clone(), value)))
                 .collect::<Result<Vec<_>, _>>()
                 .map(Value::Record),
+            ExprKind::FunctionCall {
+                name,
+                args,
+                distinct,
+            } => match try_eval_runtime_function_call(self.caller, name, args, *distinct) {
+                Ok(Some(value)) => Ok(value),
+                Ok(None) => Err(PlanMutationError::UnsupportedExpression {
+                    property: property.to_owned(),
+                }),
+                Err(e) => Err(e.into()),
+            },
             _ => Err(PlanMutationError::UnsupportedExpression {
                 property: property.to_owned(),
             }),

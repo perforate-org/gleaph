@@ -10,9 +10,9 @@ Gleaph uses [GQL](https://www.gqlstandards.org/) (Graph Query Language, [ISO/IEC
 
 GQL is a standardized graph query language, comparable to SQL in relational databases, designed for querying, traversing, and analyzing graph data.
 
-### `Principal` and `msg_caller()`
+### `PRINCIPAL` and `MSG_CALLER()`
 
-Gleaph extends GQL for Internet Computer by providing the `Principal` type and the `msg_caller()` function.
+Gleaph extends GQL for Internet Computer by providing the `PRINCIPAL` type and the `MSG_CALLER()` function.
 
 These extensions allow queries to directly access the caller’s Principal, making it easier to work with authentication and caller identity within Internet Computer applications.
 
@@ -24,7 +24,7 @@ It allows database administrators to pre-register queries that can be executed b
 
 This makes it possible for frontend applications to send queries directly to Gleaph safely, without requiring intermediary canisters or backend servers.
 
-In combination with `msg_caller()`, Prepared Queries can also be used to implement access control patterns where users are only allowed to access data related to themselves.
+In combination with `MSG_CALLER()`, Prepared Queries can also be used to implement access control patterns where users are only allowed to access data related to themselves.
 
 ## Access control (roles)
 
