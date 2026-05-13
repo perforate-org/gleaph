@@ -1,12 +1,29 @@
 //! Record vertex property changes for the federated index canister.
 //!
-//! ## Posting payload encoding
+//! ## Index posting keys (`value_bytes`)
 //!
-//! Only property values for which [`gleaph_gql::Value::to_binary_bytes`] succeeds produce index
-//! postings. Values that cannot be encoded (or use unsupported representations) are **omitted**
-//! from the index: equality scans on those values may return fewer rows than a full graph scan.
-//! Values stored as [`gleaph_gql_ic::PrincipalValue`] (`ic.Principal`) include a sortable index key
-//! and participate in the property index when [`value_to_index_key_bytes`] succeeds.
+//! Each [`PendingPostingOp`] carries a `value_bytes` field: the **sortable property-index key** for
+//! that snapshot of the property value, from [`gleaph_gql::value_to_index_key_bytes`]. The federated
+//! index uses these bytes (with `property_id`) for equality and range lookups.
+//!
+//! [`record_vertex_property_change`] queues postings only when
+//! [`gleaph_gql::value_to_index_key_bytes`] returns `Ok(Some(key))`. For `Ok(None)` or `Err`, no
+//! insert/remove is queued for that snapshot:
+//!
+//! - `Ok(None)` is produced only for [`gleaph_gql::Value::Null`] (nulls are absent from the index).
+//! - `Err` covers non-finite floats, values with no index-key encoding, extensions without
+//!   [`gleaph_gql::ExtensionValue::sortable_index_key`], and similar cases.
+//!
+//! Vertices in those situations remain in the primary property store but can be missed by
+//! index-only equality or range scans.
+//!
+//! ## Persistence vs index
+//!
+//! Stable vertex storage serializes [`gleaph_gql::Value`] with [`gleaph_gql::Value::to_binary_bytes`].
+//! That encoding is **not** what appears in `value_bytes` here. A value can be persisted on the graph
+//! while producing no postings when [`gleaph_gql::value_to_index_key_bytes`] returns `None` or `Err`.
+//! Extensions such as [`gleaph_gql_ic::PrincipalValue`] participate in the index when they supply a
+//! sortable key so [`gleaph_gql::value_to_index_key_bytes`] succeeds.
 //!
 //! ## Sync failure semantics
 //!
@@ -56,6 +73,7 @@ fn push(op: PendingPostingOp) {
     PENDING.with(|p| p.borrow_mut().push(op));
 }
 
+/// Maps [`gleaph_gql::value_to_index_key_bytes`] to the posting key: `Some` only on `Ok(Some(_))`.
 fn encode_value(value: &Value) -> Option<Vec<u8>> {
     value_to_index_key_bytes(value).ok().flatten()
 }
