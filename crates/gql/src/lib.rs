@@ -27,6 +27,8 @@
 #![cfg_attr(feature = "f128", feature(f128))]
 #![cfg_attr(feature = "ast-rkyv-no-span", feature(trivial_bounds))]
 
+extern crate self as gleaph_gql;
+
 pub mod ast;
 pub mod error;
 pub mod extensions;

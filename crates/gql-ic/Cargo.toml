@@ -12,5 +12,5 @@ thiserror.workspace = true
 serde.workspace = true
 
 [dev-dependencies]
-gleaph-graph-kernel = { path = "../graph-kernel" }
+gleaph-graph-kernel = { path = "../graph-kernel", features = ["f128", "f256"] }
 rkyv.workspace = true

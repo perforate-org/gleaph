@@ -15,9 +15,7 @@
 
 #![cfg_attr(test, feature(f128))]
 
-use std::any::Any;
 use std::borrow::Cow;
-use std::cmp::Ordering;
 use std::fmt;
 
 pub use candid::Principal;
@@ -26,7 +24,8 @@ pub mod wire;
 
 pub use wire::{IcWirePathElement, IcWireValue, WireError, principal_to_value, value_as_principal};
 
-use gleaph_gql::value::{ExtensionSortableKey, ExtensionValue, Value, ValueBinaryError};
+use gleaph_gql::extensions::impl_extension_value;
+use gleaph_gql::value::{ExtensionValue, Value, ValueBinaryError};
 
 /// Global decoder instance (zero-sized): use with [`Value::from_binary_bytes_with_extensions`].
 pub const IC_EXTENSION_BINARY_DECODER: IcExtensionBinaryDecode = IcExtensionBinaryDecode;
@@ -44,46 +43,17 @@ impl fmt::Display for PrincipalValue {
     }
 }
 
-impl ExtensionValue for PrincipalValue {
-    fn type_name(&self) -> &str {
-        PRINCIPAL_EXTENSION_TYPE_NAME
-    }
-
-    fn clone_box(&self) -> Box<dyn ExtensionValue> {
-        Box::new(self.clone())
-    }
-
-    fn eq_ext(&self, other: &dyn ExtensionValue) -> bool {
-        other
-            .as_any()
-            .downcast_ref::<PrincipalValue>()
-            .is_some_and(|o| self.0 == o.0)
-    }
-
-    fn cmp_ext(&self, other: &dyn ExtensionValue) -> Option<Ordering> {
-        other
-            .as_any()
-            .downcast_ref::<PrincipalValue>()
-            .map(|o| self.0.cmp(&o.0))
-    }
-
-    fn sortable_index_key(&self) -> Option<ExtensionSortableKey<'_>> {
-        Some(ExtensionSortableKey {
-            domain: Cow::Borrowed(PRINCIPAL_EXTENSION_SORTABLE_DOMAIN),
-            bytes: Cow::Borrowed(self.0.as_slice()),
-        })
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn binary_payload(&self) -> Result<Cow<'_, [u8]>, ValueBinaryError> {
-        Ok(Cow::Borrowed(self.0.as_slice()))
-    }
-
-    fn short_blob(&self) -> Option<Cow<'_, [u8]>> {
-        Some(Cow::Borrowed(self.0.as_slice()))
+impl_extension_value! {
+    impl ExtensionValue for PrincipalValue {
+        type_name: PRINCIPAL_EXTENSION_TYPE_NAME;
+        eq: |this, other| this.0 == other.0;
+        cmp: |this, other| this.0.cmp(&other.0);
+        sortable_index_key: {
+            domain: PRINCIPAL_EXTENSION_SORTABLE_DOMAIN,
+            bytes: |this| Cow::Borrowed(this.0.as_slice()),
+        };
+        binary_payload: |this| Cow::Borrowed(this.0.as_slice());
+        short_blob: |this| Cow::Borrowed(this.0.as_slice());
     }
 }
 
