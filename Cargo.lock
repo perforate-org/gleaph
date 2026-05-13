@@ -756,6 +756,7 @@ dependencies = [
  "bitflags",
  "candid",
  "ethnum",
+ "half",
  "ic-stable-lara",
  "ic-stable-structures",
  "serde",

@@ -1,0 +1,160 @@
+//! Edge-label weight profiles and prepared decoders for traversal-time `inline_value`.
+//!
+//! [`EdgeWeightProfile`] is catalog metadata attached to an edge-capable label. At query preparation
+//! time it is compiled into a [`PreparedWeightDecoder`] so the traversal hot path only reads
+//! [`crate::entry::edge::Edge::inline_value`] and applies the decoder.
+
+use half::f16;
+use thiserror::Error;
+
+/// Label-level configuration for interpreting [`crate::entry::edge::Edge::inline_value`] as a
+/// traversal weight.
+#[derive(Clone, Debug, PartialEq, candid::CandidType, serde::Serialize, serde::Deserialize)]
+pub struct EdgeWeightProfile {
+    pub encoding: WeightEncoding,
+}
+
+#[derive(Clone, Debug, PartialEq, candid::CandidType, serde::Serialize, serde::Deserialize)]
+pub enum WeightEncoding {
+    /// Raw `u16` promoted to `f32` (always finite, non-negative).
+    RawU16,
+    /// Map `u16` linearly across `[min, max]` inclusive endpoints.
+    Linear { min: f32, max: f32 },
+    /// Map `u16` linearly in log-space from `ln(min)` to `ln(max)`.
+    Log { min: f32, max: f32 },
+    /// Interpret `inline_value` as IEEE 754 binary16 bits, then widen to `f32`.
+    Binary16,
+}
+
+/// Prepared decoder kept on the query execution hot path (no catalog lookup per edge).
+#[derive(Clone, Debug, PartialEq)]
+pub enum PreparedWeightDecoder {
+    RawU16,
+    Linear { min: f32, scale: f32 },
+    Log { min_ln: f32, scale: f32 },
+    Binary16,
+}
+
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum WeightProfilePrepareError {
+    #[error("linear weight encoding requires finite min/max with min <= max")]
+    InvalidLinearRange,
+    #[error("log weight encoding requires finite strictly-positive min/max with min <= max")]
+    InvalidLogRange,
+}
+
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum WeightDecodeError {
+    #[error("decoded weight is not finite")]
+    NonFinite,
+    #[error("decoded weight is negative")]
+    Negative,
+}
+
+impl EdgeWeightProfile {
+    /// Validates profile invariants needed before compilation.
+    pub fn validate(&self) -> Result<(), WeightProfilePrepareError> {
+        match &self.encoding {
+            WeightEncoding::RawU16 | WeightEncoding::Binary16 => Ok(()),
+            WeightEncoding::Linear { min, max } => {
+                if !min.is_finite() || !max.is_finite() || min > max {
+                    return Err(WeightProfilePrepareError::InvalidLinearRange);
+                }
+                Ok(())
+            }
+            WeightEncoding::Log { min, max } => {
+                if !min.is_finite() || !max.is_finite() || *min <= 0.0 || *max <= 0.0 || min > max {
+                    return Err(WeightProfilePrepareError::InvalidLogRange);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Compiles this profile into a [`PreparedWeightDecoder`].
+    pub fn prepare(&self) -> Result<PreparedWeightDecoder, WeightProfilePrepareError> {
+        self.validate()?;
+        Ok(match &self.encoding {
+            WeightEncoding::RawU16 => PreparedWeightDecoder::RawU16,
+            WeightEncoding::Linear { min, max } => {
+                let scale = if max > min {
+                    (max - min) / u16::MAX as f32
+                } else {
+                    0.0
+                };
+                PreparedWeightDecoder::Linear { min: *min, scale }
+            }
+            WeightEncoding::Log { min, max } => {
+                let min_ln = min.ln();
+                let max_ln = max.ln();
+                let scale = if max_ln > min_ln {
+                    (max_ln - min_ln) / u16::MAX as f32
+                } else {
+                    0.0
+                };
+                PreparedWeightDecoder::Log { min_ln, scale }
+            }
+            WeightEncoding::Binary16 => PreparedWeightDecoder::Binary16,
+        })
+    }
+}
+
+/// Decodes a stored `inline_value` using a prepared decoder; enforces finite, non-negative `f32`.
+pub fn decode_inline_weight(
+    decoder: &PreparedWeightDecoder,
+    inline_value: u16,
+) -> Result<f32, WeightDecodeError> {
+    let v = match decoder {
+        PreparedWeightDecoder::RawU16 => inline_value as f32,
+        PreparedWeightDecoder::Linear { min, scale } => min + scale * (inline_value as f32),
+        PreparedWeightDecoder::Log { min_ln, scale } => {
+            (min_ln + scale * (inline_value as f32)).exp()
+        }
+        PreparedWeightDecoder::Binary16 => f16::from_bits(inline_value).to_f32(),
+    };
+    if !v.is_finite() {
+        return Err(WeightDecodeError::NonFinite);
+    }
+    if v < 0.0 {
+        return Err(WeightDecodeError::Negative);
+    }
+    Ok(v)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raw_u16_round_trip() {
+        let p = EdgeWeightProfile {
+            encoding: WeightEncoding::RawU16,
+        };
+        let d = p.prepare().unwrap();
+        assert_eq!(decode_inline_weight(&d, 0).unwrap(), 0.0);
+        assert_eq!(decode_inline_weight(&d, 65535).unwrap(), 65535.0);
+    }
+
+    #[test]
+    fn linear_endpoints() {
+        let p = EdgeWeightProfile {
+            encoding: WeightEncoding::Linear {
+                min: 10.0,
+                max: 20.0,
+            },
+        };
+        let d = p.prepare().unwrap();
+        assert!((decode_inline_weight(&d, 0).unwrap() - 10.0).abs() < 1e-4);
+        assert!((decode_inline_weight(&d, u16::MAX).unwrap() - 20.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn binary16_positive() {
+        let p = EdgeWeightProfile {
+            encoding: WeightEncoding::Binary16,
+        };
+        let d = p.prepare().unwrap();
+        let bits = f16::from_f32(1.5).to_bits();
+        assert!((decode_inline_weight(&d, bits).unwrap() - 1.5).abs() < 1e-3);
+    }
+}

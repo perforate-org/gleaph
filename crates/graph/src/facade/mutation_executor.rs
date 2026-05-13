@@ -1,6 +1,6 @@
 use super::store::{EdgeHandle, GraphStore, GraphStoreError};
 use gleaph_gql::Value;
-use gleaph_graph_kernel::entry::{EdgeFlags, EdgeMeta, LabelId, PropertyId};
+use gleaph_graph_kernel::entry::{EdgeMeta, InlineEdgeLabelId, LabelId, PropertyId};
 use ic_stable_lara::VertexId;
 
 pub trait GraphMutationExecutor {
@@ -77,7 +77,7 @@ impl GraphMutationExecutor for GraphStore {
         properties: impl IntoIterator<Item = (PropertyId, Value)>,
     ) -> Result<EdgeHandle, GraphStoreError> {
         let handle =
-            self.insert_directed_edge(source_vertex_id, target_vertex_id, edge_meta(label))?;
+            self.insert_directed_edge(source_vertex_id, target_vertex_id, edge_meta(label)?)?;
         for (property_id, value) in properties {
             self.set_edge_property(
                 handle.owner_vertex_id,
@@ -96,7 +96,7 @@ impl GraphMutationExecutor for GraphStore {
         label: Option<LabelId>,
         properties: impl IntoIterator<Item = (PropertyId, Value)>,
     ) -> Result<EdgeHandle, GraphStoreError> {
-        let handle = self.insert_undirected_edge(endpoint_a, endpoint_b, edge_meta(label))?;
+        let handle = self.insert_undirected_edge(endpoint_a, endpoint_b, edge_meta(label)?)?;
         for (property_id, value) in properties {
             self.set_edge_property(
                 handle.owner_vertex_id,
@@ -115,7 +115,7 @@ impl GraphMutationExecutor for GraphStore {
     ) -> Result<VertexId, GraphStoreError> {
         let labels = labels
             .into_iter()
-            .map(|label| self.get_or_insert_label_id(label.as_ref()))
+            .map(|label| self.get_or_insert_vertex_label_id(label.as_ref()))
             .collect::<Result<Vec<_>, _>>()?;
         let properties = resolve_properties(self, properties)?;
         self.insert_vertex_with(labels, properties)
@@ -129,7 +129,7 @@ impl GraphMutationExecutor for GraphStore {
         properties: impl IntoIterator<Item = (impl AsRef<str>, Value)>,
     ) -> Result<EdgeHandle, GraphStoreError> {
         let label = label
-            .map(|label| self.get_or_insert_label_id(label.as_ref()))
+            .map(|label| self.get_or_insert_edge_label_id(label.as_ref()))
             .transpose()?;
         let properties = resolve_properties(self, properties)?;
         self.insert_directed_edge_with(source_vertex_id, target_vertex_id, label, properties)
@@ -143,15 +143,22 @@ impl GraphMutationExecutor for GraphStore {
         properties: impl IntoIterator<Item = (impl AsRef<str>, Value)>,
     ) -> Result<EdgeHandle, GraphStoreError> {
         let label = label
-            .map(|label| self.get_or_insert_label_id(label.as_ref()))
+            .map(|label| self.get_or_insert_edge_label_id(label.as_ref()))
             .transpose()?;
         let properties = resolve_properties(self, properties)?;
         self.insert_undirected_edge_with(endpoint_a, endpoint_b, label, properties)
     }
 }
 
-fn edge_meta(label: Option<LabelId>) -> EdgeMeta {
-    EdgeMeta::new(EdgeFlags::empty(), 0, label.unwrap_or_default())
+fn edge_meta(label: Option<LabelId>) -> Result<EdgeMeta, GraphStoreError> {
+    let inline = match label {
+        None => None,
+        Some(l) if l.raw() == 0 => None,
+        Some(l) => Some(
+            InlineEdgeLabelId::from_label_id(l).ok_or(GraphStoreError::InvalidEdgeLabelId(l))?,
+        ),
+    };
+    Ok(EdgeMeta::new(false, false, inline))
 }
 
 fn resolve_properties(
@@ -176,7 +183,7 @@ mod tests {
     #[test]
     fn inserts_vertex_with_labels_and_properties() {
         let store = GraphStore::new();
-        let label = LabelId::from_raw(111);
+        let label = LabelId::from_raw(0x4000 + 111);
         let property = PropertyId::from_raw(222);
 
         let vertex_id = store
@@ -216,7 +223,7 @@ mod tests {
         assert!(store.out_edges(source).unwrap().iter().any(|edge| {
             edge.target == target
                 && edge.vertex_edge_id == directed.vertex_edge_id
-                && edge.meta.label_id() == label.raw()
+                && edge.meta.inline_label_bits() == label.raw()
         }));
 
         let undirected = store
@@ -240,7 +247,7 @@ mod tests {
         assert!(store.out_edges(target).unwrap().iter().any(|edge| {
             edge.target == source
                 && edge.vertex_edge_id == undirected.vertex_edge_id
-                && edge.meta.label_id() == label.raw()
+                && edge.meta.inline_label_bits() == label.raw()
                 && edge.meta.is_undirected()
         }));
     }
@@ -287,7 +294,7 @@ mod tests {
         assert!(store.out_edges(source).unwrap().iter().any(|edge| {
             edge.target == target
                 && edge.vertex_edge_id == handle.vertex_edge_id
-                && edge.meta.label_id() == label.raw()
+                && edge.meta.inline_label_bits() == label.raw()
         }));
     }
 }

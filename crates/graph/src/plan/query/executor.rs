@@ -9,14 +9,14 @@ use crate::plan::expr_evaluator::{
     eval_or_expr, eval_unary_expr, eval_xor_expr, truthy,
 };
 use candid::Principal;
-use gleaph_gql::ast::{CmpOp, Expr, ExprKind, OrderByClause, TruthValue};
+use gleaph_gql::ast::{CmpOp, Expr, ExprKind, ObjectName, OrderByClause, TruthValue};
 use gleaph_gql::types::{EdgeDirection, LabelExpr, PathElement};
 use gleaph_gql::{Value, hash_value_for_join, value_to_index_key_bytes};
 use gleaph_gql_planner::plan::{
     AggregateSpec, ConditionalScanCandidate, IndexScanSpec, PhysicalPlan, PlanOp, ProjectColumn,
     ScanValue, ShortestMode, Str, VarLenSpec,
 };
-use gleaph_graph_kernel::entry::{Edge, LabelId};
+use gleaph_graph_kernel::entry::{Edge, LabelId, PreparedWeightDecoder, decode_inline_weight};
 use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest};
 use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
 use ic_stable_lara::VertexId;
@@ -54,10 +54,17 @@ pub struct PlanQueryResult {
     pub rows: Vec<BTreeMap<String, Value>>,
 }
 
+/// Edge variable binding for one traversal hop: stable handle plus CSR `inline_value`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EdgeBinding {
+    pub handle: EdgeHandle,
+    pub inline_value: u16,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlanBinding {
     Vertex(VertexId),
-    Edge(EdgeHandle),
+    Edge(EdgeBinding),
     Value(Value),
 }
 
@@ -78,7 +85,17 @@ pub async fn execute_plan_query(
     index: Option<&dyn PropertyIndexLookup>,
     execution: GqlExecutionContext,
 ) -> Result<PlanQueryResult, PlanQueryError> {
-    let rows = execute_ops(store, &plan.ops, parameters, index, execution).await?;
+    let gleaph_weight_decoders =
+        super::gleaph_weight::prepare_gleaph_weight_decoders(store, &plan.ops)?;
+    let rows = execute_ops(
+        store,
+        &plan.ops,
+        parameters,
+        index,
+        execution,
+        gleaph_weight_decoders.as_ref(),
+    )
+    .await?;
     Ok(PlanQueryResult {
         rows: rows
             .iter()
@@ -93,6 +110,7 @@ async fn execute_ops(
     parameters: &BTreeMap<String, Value>,
     index: Option<&dyn PropertyIndexLookup>,
     execution: GqlExecutionContext,
+    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
     execute_ops_from(
         store,
@@ -101,6 +119,7 @@ async fn execute_ops(
         vec![PlanRow::new()],
         index,
         execution,
+        gleaph_weight_decoders,
     )
     .await
 }
@@ -257,6 +276,7 @@ async fn execute_optional_match(
     written: &BTreeSet<String>,
     index: Option<&dyn PropertyIndexLookup>,
     execution: GqlExecutionContext,
+    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
     let mut out = Vec::new();
     for row in rows {
@@ -267,6 +287,7 @@ async fn execute_optional_match(
             vec![row.clone()],
             index,
             execution,
+            gleaph_weight_decoders,
         )
         .await?;
         if extended.is_empty() {
@@ -291,10 +312,12 @@ fn execute_ops_from<'a>(
     initial_rows: Vec<PlanRow>,
     index: Option<&'a dyn PropertyIndexLookup>,
     execution: GqlExecutionContext,
+    gleaph_weight_decoders: Option<&'a BTreeMap<String, PreparedWeightDecoder>>,
 ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<PlanRow>, PlanQueryError>> + 'a>> {
     Box::pin(async move {
         let mut rows = initial_rows;
         let caller = execution.caller;
+        let gwd = gleaph_weight_decoders;
         // Index of the nearest preceding `PlanOp::Aggregate` for resolving
         // `ExprKind::Aggregate` in post-aggregate ops (e.g. `HAVING`).
         let mut active_aggregate_op_idx: Option<usize> = None;
@@ -309,6 +332,7 @@ fn execute_ops_from<'a>(
                 parameters,
                 aggregate_specs,
                 caller,
+                gleaph_weight_decoders: gwd,
             };
             rows = match op {
                 PlanOp::NodeScan {
@@ -425,6 +449,7 @@ fn execute_ops_from<'a>(
                         label.as_ref(),
                         &[],
                         caller,
+                        gwd,
                     )?
                 }
                 PlanOp::ExpandFilter {
@@ -458,6 +483,7 @@ fn execute_ops_from<'a>(
                         label.as_ref(),
                         dst_filter,
                         caller,
+                        gwd,
                     )?
                 }
                 PlanOp::ShortestPath {
@@ -482,6 +508,7 @@ fn execute_ops_from<'a>(
                     label.as_ref(),
                     label_expr,
                     var_len,
+                    gwd,
                 )?,
                 PlanOp::Aggregate {
                     group_by,
@@ -492,6 +519,7 @@ fn execute_ops_from<'a>(
                         parameters,
                         aggregate_specs: None,
                         caller,
+                        gleaph_weight_decoders: gwd,
                     };
                     let out =
                         aggregate::execute_aggregate(rows, group_by, aggregates, &agg_evaluator)?;
@@ -504,6 +532,7 @@ fn execute_ops_from<'a>(
                         parameters,
                         aggregate_specs,
                         caller,
+                        gleaph_weight_decoders: gwd,
                     };
                     let mut projected = rows
                         .iter()
@@ -564,7 +593,8 @@ fn execute_ops_from<'a>(
                 } => {
                     // v1 has a single physical GraphStore; USE scopes its sub-plan
                     // but does not route to a separate graph store yet.
-                    execute_ops_from(store, sub_plan, parameters, rows, index, execution).await?
+                    execute_ops_from(store, sub_plan, parameters, rows, index, execution, gwd)
+                        .await?
                 }
                 PlanOp::UseGraph {
                     graph_name: _,
@@ -575,7 +605,7 @@ fn execute_ops_from<'a>(
                 }
                 PlanOp::CartesianProduct { left, right } => {
                     execute_cartesian_product(
-                        store, parameters, rows, left, right, index, execution,
+                        store, parameters, rows, left, right, index, execution, gwd,
                     )
                     .await?
                 }
@@ -585,14 +615,14 @@ fn execute_ops_from<'a>(
                     join_keys,
                 } => {
                     execute_hash_join(
-                        store, parameters, rows, left, right, join_keys, index, execution,
+                        store, parameters, rows, left, right, join_keys, index, execution, gwd,
                     )
                     .await?
                 }
                 PlanOp::OptionalMatch { sub_plan } => {
                     let written = subplan_written_vars(sub_plan);
                     execute_optional_match(
-                        store, parameters, rows, sub_plan, &written, index, execution,
+                        store, parameters, rows, sub_plan, &written, index, execution, gwd,
                     )
                     .await?
                 }
@@ -615,13 +645,30 @@ async fn execute_cartesian_product(
     right: &[PlanOp],
     index: Option<&dyn PropertyIndexLookup>,
     execution: GqlExecutionContext,
+    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
     let mut out = Vec::new();
     for row in rows {
-        let left_rows =
-            execute_ops_from(store, left, parameters, vec![row.clone()], index, execution).await?;
-        let right_rows =
-            execute_ops_from(store, right, parameters, vec![row], index, execution).await?;
+        let left_rows = execute_ops_from(
+            store,
+            left,
+            parameters,
+            vec![row.clone()],
+            index,
+            execution,
+            gleaph_weight_decoders,
+        )
+        .await?;
+        let right_rows = execute_ops_from(
+            store,
+            right,
+            parameters,
+            vec![row],
+            index,
+            execution,
+            gleaph_weight_decoders,
+        )
+        .await?;
         for left_row in &left_rows {
             for right_row in &right_rows {
                 if let Some(merged) = merge_rows(left_row, right_row) {
@@ -656,6 +703,7 @@ async fn execute_hash_join(
     join_keys: &[Str],
     index: Option<&dyn PropertyIndexLookup>,
     execution: GqlExecutionContext,
+    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
     if join_keys.is_empty() {
         return Err(PlanQueryError::UnsupportedOp("HashJoin(empty join_keys)"));
@@ -663,10 +711,26 @@ async fn execute_hash_join(
 
     let mut out = Vec::new();
     for row in rows {
-        let left_rows =
-            execute_ops_from(store, left, parameters, vec![row.clone()], index, execution).await?;
-        let right_rows =
-            execute_ops_from(store, right, parameters, vec![row], index, execution).await?;
+        let left_rows = execute_ops_from(
+            store,
+            left,
+            parameters,
+            vec![row.clone()],
+            index,
+            execution,
+            gleaph_weight_decoders,
+        )
+        .await?;
+        let right_rows = execute_ops_from(
+            store,
+            right,
+            parameters,
+            vec![row],
+            index,
+            execution,
+            gleaph_weight_decoders,
+        )
+        .await?;
 
         let mut buckets: HashJoinBuckets = IntMap::default();
         for lr in left_rows {
@@ -734,8 +798,9 @@ fn hash_plan_binding_for_join(binding: &PlanBinding, hasher: &mut RapidHasher<'_
         }
         PlanBinding::Edge(e) => {
             hasher.write_u8(2);
-            hasher.write_u32(u32::from(e.owner_vertex_id));
-            hasher.write_u32(e.vertex_edge_id.raw());
+            hasher.write_u32(u32::from(e.handle.owner_vertex_id));
+            hasher.write_u32(e.handle.vertex_edge_id.raw());
+            hasher.write_u16(e.inline_value);
         }
         PlanBinding::Value(v) => {
             hasher.write_u8(3);
@@ -990,6 +1055,7 @@ fn execute_expand(
     label: Option<&Str>,
     dst_filter: &[Expr],
     caller: Option<Principal>,
+    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
     let label_id = label.and_then(|label| store.label_id(label.as_ref()));
     if label.is_some() && label_id.is_none() {
@@ -1001,14 +1067,21 @@ fn execute_expand(
         parameters,
         aggregate_specs: None,
         caller,
+        gleaph_weight_decoders,
     };
     let mut out = Vec::new();
     for row in rows {
         let src_id = vertex_binding(&row, src)?;
         let candidates = expand_candidates(store, src_id, direction, label_id)?;
-        for (dst_id, handle, _edge_record) in candidates {
+        for (dst_id, handle, edge_record) in candidates {
             let mut expanded = row.clone();
-            expanded.insert(edge.to_string(), PlanBinding::Edge(handle));
+            expanded.insert(
+                edge.to_string(),
+                PlanBinding::Edge(EdgeBinding {
+                    handle,
+                    inline_value: edge_record.inline_value,
+                }),
+            );
             expanded.insert(dst.to_string(), PlanBinding::Vertex(dst_id));
             if !row_matches_all(&evaluator, &expanded, dst_filter)? {
                 continue;
@@ -1023,7 +1096,7 @@ fn execute_expand(
 struct ShortestPathState {
     current: VertexId,
     vertices: Vec<VertexId>,
-    edges: Vec<EdgeHandle>,
+    edges: Vec<EdgeBinding>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1039,6 +1112,7 @@ fn execute_shortest_path(
     label: Option<&Str>,
     label_expr: &Option<LabelExpr>,
     var_len: &Option<VarLenSpec>,
+    _gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
     if matches!(mode, ShortestMode::ShortestK(_)) {
         return Err(PlanQueryError::UnsupportedOp("ShortestPath.ShortestK"));
@@ -1061,8 +1135,8 @@ fn execute_shortest_path(
         for path in paths {
             let mut row = row.clone();
             match path.edges.last().copied() {
-                Some(handle) => {
-                    row.insert(edge.to_string(), PlanBinding::Edge(handle));
+                Some(edge_binding) => {
+                    row.insert(edge.to_string(), PlanBinding::Edge(edge_binding));
                 }
                 None => {
                     row.insert(edge.to_string(), PlanBinding::Value(Value::Null));
@@ -1120,7 +1194,7 @@ fn shortest_paths_between(
             continue;
         }
 
-        for (next, handle, _edge_record) in
+        for (next, handle, edge_record) in
             expand_candidates(store, state.current, direction, label_id)?
         {
             if state.vertices.contains(&next) {
@@ -1129,7 +1203,10 @@ fn shortest_paths_between(
             let mut next_state = state.clone();
             next_state.current = next;
             next_state.vertices.push(next);
-            next_state.edges.push(handle);
+            next_state.edges.push(EdgeBinding {
+                handle,
+                inline_value: edge_record.inline_value,
+            });
             queue.push_back(next_state);
         }
     }
@@ -1141,8 +1218,8 @@ fn path_state_to_value(shard_id: u64, path: &ShortestPathState) -> Value {
     let mut elements = Vec::with_capacity(path.vertices.len() + path.edges.len());
     for (idx, vertex_id) in path.vertices.iter().copied().enumerate() {
         elements.push(vertex_path_element(shard_id, vertex_id));
-        if let Some(edge) = path.edges.get(idx).copied() {
-            elements.push(edge_path_element(shard_id, edge));
+        if let Some(edge_binding) = path.edges.get(idx).copied() {
+            elements.push(edge_path_element(shard_id, edge_binding.handle));
         }
     }
     Value::Path(elements)
@@ -1194,10 +1271,12 @@ fn expand_candidates(
                 if edge.meta.is_undirected() {
                     continue;
                 }
-                if let Some(expected) = edge_label_id
-                    && edge.meta.label_id() != expected.raw()
-                {
-                    continue;
+                if let Some(expected) = edge_label_id {
+                    if !expected.is_edge_inline_capable()
+                        || edge.meta.inline_label_bits() != expected.raw()
+                    {
+                        continue;
+                    }
                 }
                 out.push((
                     edge.target,
@@ -1217,10 +1296,12 @@ fn expand_candidates(
                 if edge.meta.is_undirected() {
                     continue;
                 }
-                if let Some(expected) = edge_label_id
-                    && edge.meta.label_id() != expected.raw()
-                {
-                    continue;
+                if let Some(expected) = edge_label_id {
+                    if !expected.is_edge_inline_capable()
+                        || edge.meta.inline_label_bits() != expected.raw()
+                    {
+                        continue;
+                    }
                 }
                 out.push((
                     edge.target,
@@ -1240,10 +1321,12 @@ fn expand_candidates(
                 if !edge.meta.is_undirected() {
                     continue;
                 }
-                if let Some(expected) = edge_label_id
-                    && edge.meta.label_id() != expected.raw()
-                {
-                    continue;
+                if let Some(expected) = edge_label_id {
+                    if !expected.is_edge_inline_capable()
+                        || edge.meta.inline_label_bits() != expected.raw()
+                    {
+                        continue;
+                    }
                 }
                 out.push((
                     edge.target,
@@ -1359,6 +1442,64 @@ struct QueryExprEvaluator<'a> {
     aggregate_specs: Option<&'a [AggregateSpec]>,
     /// IC caller for runtime functions such as `MSG_CALLER()`.
     caller: Option<Principal>,
+    /// Prepared decoders for `GLEAPH_WEIGHT(edgeVar)` (when the query uses it).
+    gleaph_weight_decoders: Option<&'a BTreeMap<String, PreparedWeightDecoder>>,
+}
+
+fn try_eval_gleaph_weight(
+    decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
+    name: &ObjectName,
+    args: &[Expr],
+    distinct: bool,
+    row: &PlanRow,
+) -> Result<Option<Value>, PlanQueryError> {
+    let Some(last) = name.parts.last().map(|s| s.as_str()) else {
+        return Ok(None);
+    };
+    if !last.eq_ignore_ascii_case("gleaph_weight") || name.parts.len() != 1 {
+        return Ok(None);
+    }
+    if distinct {
+        return Err(PlanQueryError::GleaphWeight {
+            message: "GLEAPH_WEIGHT does not support DISTINCT".into(),
+        });
+    }
+    let map = decoders.ok_or_else(|| PlanQueryError::GleaphWeight {
+        message: "GLEAPH_WEIGHT requires query preparation (no decoder table)".into(),
+    })?;
+    if args.len() != 1 {
+        return Err(PlanQueryError::GleaphWeight {
+            message: format!("GLEAPH_WEIGHT expects 1 argument, got {}", args.len()),
+        });
+    }
+    let ExprKind::Variable(edge_var) = &args[0].kind else {
+        return Err(PlanQueryError::GleaphWeight {
+            message: "GLEAPH_WEIGHT argument must be an edge variable".into(),
+        });
+    };
+    let decoder = map
+        .get(edge_var)
+        .ok_or_else(|| PlanQueryError::GleaphWeight {
+            message: format!(
+                "GLEAPH_WEIGHT({edge_var}): no prepared decoder for this edge variable"
+            ),
+        })?;
+    let binding = row
+        .get(edge_var)
+        .ok_or_else(|| PlanQueryError::MissingBinding {
+            variable: edge_var.clone(),
+        })?;
+    let PlanBinding::Edge(edge) = binding else {
+        return Err(PlanQueryError::GleaphWeight {
+            message: format!("GLEAPH_WEIGHT({edge_var}): binding is not an edge"),
+        });
+    };
+    let w = decode_inline_weight(decoder, edge.inline_value).map_err(|e| {
+        PlanQueryError::GleaphWeight {
+            message: format!("GLEAPH_WEIGHT decode failed: {e}"),
+        }
+    })?;
+    Ok(Some(Value::Float32(w)))
 }
 
 impl QueryExprEvaluator<'_> {
@@ -1479,13 +1620,20 @@ impl QueryExprEvaluator<'_> {
                 name,
                 args,
                 distinct,
-            } => match try_eval_runtime_function_call(self.caller, name, args, *distinct) {
-                Ok(Some(value)) => Ok(value),
-                Ok(None) => Err(PlanQueryError::UnsupportedExpression {
-                    expression: format!("{:?}", expr.kind),
-                }),
-                Err(e) => Err(e.into()),
-            },
+            } => {
+                if let Some(v) =
+                    try_eval_gleaph_weight(self.gleaph_weight_decoders, name, args, *distinct, row)?
+                {
+                    return Ok(v);
+                }
+                match try_eval_runtime_function_call(self.caller, name, args, *distinct) {
+                    Ok(Some(value)) => Ok(value),
+                    Ok(None) => Err(PlanQueryError::UnsupportedExpression {
+                        expression: format!("{:?}", expr.kind),
+                    }),
+                    Err(e) => Err(e.into()),
+                }
+            }
             _ => Err(PlanQueryError::UnsupportedExpression {
                 expression: format!("{:?}", expr.kind),
             }),
@@ -1510,8 +1658,8 @@ impl QueryExprEvaluator<'_> {
                     .property_id(property)
                     .and_then(|property_id| {
                         self.store.edge_property(
-                            edge.owner_vertex_id,
-                            edge.vertex_edge_id,
+                            edge.handle.owner_vertex_id,
+                            edge.handle.vertex_edge_id,
                             property_id,
                         )
                     })
@@ -1536,8 +1684,8 @@ impl QueryExprEvaluator<'_> {
                 }
                 Some(PlanBinding::Edge(edge)) => Ok(Value::Bytes(edge_element_id_bytes(
                     shard_id,
-                    edge.owner_vertex_id,
-                    edge.vertex_edge_id,
+                    edge.handle.owner_vertex_id,
+                    edge.handle.vertex_edge_id,
                 ))),
                 Some(PlanBinding::Value(Value::Null)) => Ok(Value::Null),
                 Some(binding) => Err(PlanQueryError::InvalidExpressionValue {
@@ -1661,7 +1809,8 @@ fn vertex_to_value(store: &GraphStore, vertex_id: VertexId) -> Result<Value, Pla
     ]))
 }
 
-fn edge_to_value(store: &GraphStore, handle: EdgeHandle) -> Result<Value, PlanQueryError> {
+fn edge_to_value(store: &GraphStore, binding: EdgeBinding) -> Result<Value, PlanQueryError> {
+    let handle = binding.handle;
     let edge = store
         .out_edges(handle.owner_vertex_id)
         .map_err(crate::facade::GraphStoreError::from)?
@@ -1670,7 +1819,7 @@ fn edge_to_value(store: &GraphStore, handle: EdgeHandle) -> Result<Value, PlanQu
         .ok_or_else(|| PlanQueryError::MissingBinding {
             variable: format!("edge {:?}", handle),
         })?;
-    let label = LabelId::from_raw(edge.meta.label_id());
+    let label = LabelId::from_raw(edge.meta.inline_label_bits());
     Ok(Value::Record(vec![
         (
             "owner_vertex_id".to_owned(),
@@ -1679,6 +1828,10 @@ fn edge_to_value(store: &GraphStore, handle: EdgeHandle) -> Result<Value, PlanQu
         (
             "vertex_edge_id".to_owned(),
             Value::Uint64(u64::from(handle.vertex_edge_id.raw())),
+        ),
+        (
+            "inline_value".to_owned(),
+            Value::Uint64(u64::from(binding.inline_value)),
         ),
         (
             "label".to_owned(),

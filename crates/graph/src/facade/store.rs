@@ -1,7 +1,8 @@
 use super::stable::edge_ids::canonical_undirected_owner;
+use super::stable::edge_weight_profiles::EdgeWeightProfileStoreError;
 use super::stable::{
-    EDGE_PROPERTIES, GRAPH, LABEL_CATALOG, METADATA, PREPARED_QUERY_CATALOG, PROPERTY_CATALOG,
-    VERTEX_EDGE_IDS, VERTEX_LABELS, VERTEX_PROPERTIES,
+    EDGE_PROPERTIES, EDGE_WEIGHT_PROFILES, GRAPH, LABEL_CATALOG, METADATA, PREPARED_QUERY_CATALOG,
+    PROPERTY_CATALOG, VERTEX_EDGE_IDS, VERTEX_LABELS, VERTEX_PROPERTIES,
 };
 use super::{
     GraphMetadata, GraphMetadataError, IndexRouting, LabelCatalogError, PropertyCatalogError,
@@ -9,7 +10,9 @@ use super::{
 };
 use crate::index::pending;
 use gleaph_gql::Value;
-use gleaph_graph_kernel::entry::{Edge, EdgeMeta, LabelId, PropertyId, Vertex, VertexEdgeId};
+use gleaph_graph_kernel::entry::{
+    Edge, EdgeMeta, EdgeWeightProfile, LabelId, PropertyId, Vertex, VertexEdgeId,
+};
 use gleaph_graph_prepared::{PreparedQueryError, PreparedQueryRecord};
 use ic_stable_lara::{
     BidirectionalMaintenanceReport, DeferredBidirectionalLaraGraph as Graph, DeleteEdgeObserver,
@@ -52,6 +55,7 @@ pub enum GraphStoreError {
     Graph(DeferredBidirectionalLaraError),
     VertexEdgeId(VertexEdgeIdAllocatorError),
     LabelCatalog(LabelCatalogError),
+    EdgeWeightProfile(EdgeWeightProfileStoreError),
     PropertyCatalog(PropertyCatalogError),
     VertexLabel(VertexLabelStoreError),
     PropertyValue(VertexPropertyStoreError),
@@ -64,6 +68,8 @@ pub enum GraphStoreError {
         owner_vertex_id: VertexId,
         vertex_edge_id: VertexEdgeId,
     },
+    /// Edge label id is outside the inline edge band `0x0001..=0x3FFF`.
+    InvalidEdgeLabelId(LabelId),
 }
 
 impl fmt::Display for GraphStoreError {
@@ -72,6 +78,7 @@ impl fmt::Display for GraphStoreError {
             Self::Graph(err) => write!(f, "{err}"),
             Self::VertexEdgeId(err) => write!(f, "{err}"),
             Self::LabelCatalog(err) => write!(f, "{err}"),
+            Self::EdgeWeightProfile(err) => write!(f, "{err}"),
             Self::PropertyCatalog(err) => write!(f, "{err}"),
             Self::VertexLabel(err) => write!(f, "{err}"),
             Self::PropertyValue(err) => write!(f, "{err}"),
@@ -86,6 +93,11 @@ impl fmt::Display for GraphStoreError {
                 f,
                 "no edge record for owner {owner_vertex_id:?} and local edge id {vertex_edge_id:?}"
             ),
+            Self::InvalidEdgeLabelId(id) => write!(
+                f,
+                "edge label id {} is outside the inline edge range 0x0001..=0x3FFF",
+                id.raw()
+            ),
         }
     }
 }
@@ -96,10 +108,13 @@ impl std::error::Error for GraphStoreError {
             Self::Graph(err) => Some(err),
             Self::VertexEdgeId(err) => Some(err),
             Self::LabelCatalog(err) => Some(err),
+            Self::EdgeWeightProfile(err) => Some(err),
             Self::PropertyCatalog(err) => Some(err),
             Self::VertexLabel(err) => Some(err),
             Self::PropertyValue(err) => Some(err),
-            Self::VertexNotDetached { .. } | Self::EdgeNotFound { .. } => None,
+            Self::VertexNotDetached { .. }
+            | Self::EdgeNotFound { .. }
+            | Self::InvalidEdgeLabelId(_) => None,
         }
     }
 }
@@ -119,6 +134,12 @@ impl From<VertexEdgeIdAllocatorError> for GraphStoreError {
 impl From<LabelCatalogError> for GraphStoreError {
     fn from(value: LabelCatalogError) -> Self {
         Self::LabelCatalog(value)
+    }
+}
+
+impl From<EdgeWeightProfileStoreError> for GraphStoreError {
+    fn from(value: EdgeWeightProfileStoreError) -> Self {
+        Self::EdgeWeightProfile(value)
     }
 }
 
@@ -191,12 +212,45 @@ impl GraphStore {
         LABEL_CATALOG.with_borrow(|catalog| catalog.get_name(id))
     }
 
-    pub fn get_or_insert_label_id(&self, name: &str) -> Result<LabelId, LabelCatalogError> {
-        LABEL_CATALOG.with_borrow_mut(|catalog| catalog.get_or_insert(name))
+    pub fn get_or_insert_vertex_label_id(&self, name: &str) -> Result<LabelId, LabelCatalogError> {
+        LABEL_CATALOG.with_borrow_mut(|catalog| catalog.get_or_insert_vertex_label(name))
     }
 
-    pub fn insert_label_with_id(&self, name: &str, id: LabelId) -> Result<(), LabelCatalogError> {
-        LABEL_CATALOG.with_borrow_mut(|catalog| catalog.insert_with_id(name, id))
+    pub fn get_or_insert_edge_label_id(&self, name: &str) -> Result<LabelId, LabelCatalogError> {
+        LABEL_CATALOG.with_borrow_mut(|catalog| catalog.get_or_insert_edge_label(name))
+    }
+
+    pub fn insert_vertex_label_with_id(
+        &self,
+        name: &str,
+        id: LabelId,
+    ) -> Result<(), LabelCatalogError> {
+        LABEL_CATALOG.with_borrow_mut(|catalog| catalog.insert_vertex_label_with_id(name, id))
+    }
+
+    pub fn insert_edge_label_with_id(
+        &self,
+        name: &str,
+        id: LabelId,
+    ) -> Result<(), LabelCatalogError> {
+        LABEL_CATALOG.with_borrow_mut(|catalog| catalog.insert_edge_label_with_id(name, id))
+    }
+
+    pub fn set_edge_label_weight_profile(
+        &self,
+        label: LabelId,
+        profile: EdgeWeightProfile,
+    ) -> Result<(), GraphStoreError> {
+        EDGE_WEIGHT_PROFILES.with_borrow_mut(|store| store.insert(label, profile))?;
+        Ok(())
+    }
+
+    pub fn edge_label_weight_profile(&self, label: LabelId) -> Option<EdgeWeightProfile> {
+        EDGE_WEIGHT_PROFILES.with_borrow(|store| store.get(label))
+    }
+
+    pub fn remove_edge_label_weight_profile(&self, label: LabelId) {
+        EDGE_WEIGHT_PROFILES.with_borrow_mut(|store| store.remove(label));
     }
 
     pub fn property_id(&self, name: &str) -> Option<PropertyId> {
@@ -425,6 +479,7 @@ impl GraphStore {
         let edge = Edge {
             target: target_vertex_id,
             vertex_edge_id,
+            inline_value: 0,
             meta: meta.with_undirected(false),
         };
         self.with_graph_mut(|graph| {
@@ -451,6 +506,7 @@ impl GraphStore {
         let edge = Edge {
             target: endpoint_b,
             vertex_edge_id,
+            inline_value: 0,
             meta: meta.with_undirected(true),
         };
         self.with_graph_mut(|graph| {

@@ -49,6 +49,10 @@ pub enum PlanQueryError {
         right: gleaph_gql::Value,
     },
     RuntimeFunction(RuntimeFunctionError),
+    /// `GLEAPH_WEIGHT` preparation or evaluation failed (message is user-facing).
+    GleaphWeight {
+        message: String,
+    },
 }
 
 impl fmt::Display for PlanQueryError {
@@ -99,6 +103,7 @@ impl fmt::Display for PlanQueryError {
                 write!(f, "incomparable ORDER BY values: {left:?} and {right:?}")
             }
             Self::RuntimeFunction(err) => write!(f, "{err}"),
+            Self::GleaphWeight { message } => write!(f, "{message}"),
         }
     }
 }

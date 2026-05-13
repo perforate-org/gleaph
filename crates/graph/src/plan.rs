@@ -10,4 +10,4 @@ pub use mutation::{
 };
 #[cfg(not(target_family = "wasm"))]
 pub use query::PlanQueryExecutor;
-pub use query::{PlanBinding, PlanQueryError, PlanQueryResult, execute_plan_query};
+pub use query::{EdgeBinding, PlanBinding, PlanQueryError, PlanQueryResult, execute_plan_query};

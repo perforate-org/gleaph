@@ -1,5 +1,6 @@
 use super::edge_ids::VertexEdgeIdAllocator;
 use super::edge_properties::EdgePropertyStore;
+use super::edge_weight_profiles::EdgeWeightProfileStore;
 use super::label_catalog::LabelCatalog;
 use super::metadata::{GraphMetadata, StableGraphMetadata};
 use super::property_catalog::PropertyCatalog;
@@ -41,6 +42,7 @@ const VERTEX_EDGE_IDS: MemoryId = MemoryId::new(23);
 const AUTH_PRINCIPAL_RECORDS: MemoryId = MemoryId::new(24);
 const PREPARED_QUERY_CATALOG: MemoryId = MemoryId::new(25);
 const GRAPH_METADATA: MemoryId = MemoryId::new(26);
+const EDGE_WEIGHT_PROFILES: MemoryId = MemoryId::new(27);
 
 const GRAPH_ELEM_CAPACITY: u64 = 0;
 const GRAPH_SEGMENT_SIZE: u32 = 32;
@@ -58,6 +60,7 @@ pub(crate) type StableVertexEdgeIdAllocator = VertexEdgeIdAllocator<Memory>;
 pub(crate) type StableAuthState = AuthState<Memory>;
 pub(crate) type StablePreparedQueryCatalog = PreparedQueryCatalog<Memory>;
 pub(crate) type StableMetadata = StableGraphMetadata<Memory>;
+pub(crate) type StableEdgeWeightProfileStore = EdgeWeightProfileStore<Memory>;
 
 thread_local! {
     static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
@@ -130,6 +133,10 @@ pub(crate) fn init_vertex_edge_id_allocator() -> StableVertexEdgeIdAllocator {
 
 pub(crate) fn init_prepared_query_catalog() -> StablePreparedQueryCatalog {
     PreparedQueryCatalog::init(MEMORY_MANAGER.with(|m| m.borrow().get(PREPARED_QUERY_CATALOG)))
+}
+
+pub(crate) fn init_edge_weight_profiles() -> StableEdgeWeightProfileStore {
+    EdgeWeightProfileStore::init(MEMORY_MANAGER.with(|m| m.borrow().get(EDGE_WEIGHT_PROFILES)))
 }
 
 pub(crate) fn init_metadata() -> StableMetadata {

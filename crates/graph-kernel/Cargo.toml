@@ -8,6 +8,7 @@ license.workspace = true
 bitflags.workspace = true
 candid.workspace = true
 ethnum.workspace = true
+half.workspace = true
 ic-stable-lara.workspace = true
 ic-stable-structures.workspace = true
 serde.workspace = true

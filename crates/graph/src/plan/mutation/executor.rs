@@ -195,7 +195,7 @@ fn execute_set_item(
         }
         SetPlanItem::Label { variable, label } => {
             let label_id = store
-                .get_or_insert_label_id(label)
+                .get_or_insert_vertex_label_id(label)
                 .map_err(GraphStoreError::from)?;
 
             if let Some(vertex_id) = bindings.vertices.get(variable.as_ref()) {

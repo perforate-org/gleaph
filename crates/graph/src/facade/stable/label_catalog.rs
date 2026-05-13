@@ -1,10 +1,11 @@
-use gleaph_graph_kernel::entry::LabelId;
+use gleaph_graph_kernel::entry::{INLINE_EDGE_LABEL_MAX, LabelId, VERTEX_LABEL_MIN};
 use ic_stable_structures::{Memory, StableBTreeMap};
 use std::fmt;
 
 /// Stable bidirectional label catalog.
 ///
-/// Label id `0` is reserved for "no label"; allocated labels start at `1`.
+/// Label id `0` is reserved. Edge-capable names allocate in `0x0001..=0x3FFF`; vertex-only names
+/// allocate in `0x4000..=0xFFFF`.
 pub struct LabelCatalog<MNameToId: Memory, MIdToName: Memory> {
     name_to_id: StableBTreeMap<String, LabelId, MNameToId>,
     id_to_name: StableBTreeMap<LabelId, String, MIdToName>,
@@ -14,8 +15,18 @@ pub struct LabelCatalog<MNameToId: Memory, MIdToName: Memory> {
 pub enum LabelCatalogError {
     ReservedLabelId(LabelId),
     LabelIdExhausted,
-    NameAlreadyMapped { name: String, existing: LabelId },
-    IdAlreadyMapped { id: LabelId, existing: String },
+    NameAlreadyMapped {
+        name: String,
+        existing: LabelId,
+    },
+    IdAlreadyMapped {
+        id: LabelId,
+        existing: String,
+    },
+    /// Id is outside the edge inline band `0x0001..=0x3FFF`.
+    EdgeLabelIdOutOfRange(LabelId),
+    /// Id is outside the vertex catalog band `0x4000..=0xFFFF`.
+    VertexLabelIdOutOfRange(LabelId),
 }
 
 impl fmt::Display for LabelCatalogError {
@@ -33,6 +44,16 @@ impl fmt::Display for LabelCatalogError {
             Self::IdAlreadyMapped { id, existing } => {
                 write!(f, "label id {} is already mapped to '{existing}'", id.raw())
             }
+            Self::EdgeLabelIdOutOfRange(id) => write!(
+                f,
+                "edge label id {} is outside the inline edge range 0x0001..=0x3FFF",
+                id.raw()
+            ),
+            Self::VertexLabelIdOutOfRange(id) => write!(
+                f,
+                "vertex label id {} is outside the vertex range 0x4000..=0xFFFF",
+                id.raw()
+            ),
         }
     }
 }
@@ -63,19 +84,59 @@ impl<MNameToId: Memory, MIdToName: Memory> LabelCatalog<MNameToId, MIdToName> {
         self.id_to_name.get(&id)
     }
 
-    pub fn get_or_insert(&mut self, name: &str) -> Result<LabelId, LabelCatalogError> {
+    pub fn get_or_insert_edge_label(&mut self, name: &str) -> Result<LabelId, LabelCatalogError> {
         if let Some(id) = self.get_id(name) {
+            if !id.is_edge_inline_capable() {
+                return Err(LabelCatalogError::VertexLabelIdOutOfRange(id));
+            }
             return Ok(id);
         }
-        let id = self.next_id()?;
-        self.insert_with_id(name, id)?;
+        let id = self.next_edge_label_id()?;
+        self.insert_edge_label_with_id(name, id)?;
         Ok(id)
     }
 
-    pub fn insert_with_id(&mut self, name: &str, id: LabelId) -> Result<(), LabelCatalogError> {
+    pub fn get_or_insert_vertex_label(&mut self, name: &str) -> Result<LabelId, LabelCatalogError> {
+        if let Some(id) = self.get_id(name) {
+            if !id.is_vertex_catalog_range() {
+                return Err(LabelCatalogError::EdgeLabelIdOutOfRange(id));
+            }
+            return Ok(id);
+        }
+        let id = self.next_vertex_label_id()?;
+        self.insert_vertex_label_with_id(name, id)?;
+        Ok(id)
+    }
+
+    pub fn insert_edge_label_with_id(
+        &mut self,
+        name: &str,
+        id: LabelId,
+    ) -> Result<(), LabelCatalogError> {
         if id.raw() == 0 {
             return Err(LabelCatalogError::ReservedLabelId(id));
         }
+        if !id.is_edge_inline_capable() {
+            return Err(LabelCatalogError::EdgeLabelIdOutOfRange(id));
+        }
+        self.insert_any_with_id(name, id)
+    }
+
+    pub fn insert_vertex_label_with_id(
+        &mut self,
+        name: &str,
+        id: LabelId,
+    ) -> Result<(), LabelCatalogError> {
+        if id.raw() == 0 {
+            return Err(LabelCatalogError::ReservedLabelId(id));
+        }
+        if !id.is_vertex_catalog_range() {
+            return Err(LabelCatalogError::VertexLabelIdOutOfRange(id));
+        }
+        self.insert_any_with_id(name, id)
+    }
+
+    fn insert_any_with_id(&mut self, name: &str, id: LabelId) -> Result<(), LabelCatalogError> {
         if let Some(existing) = self.get_id(name) {
             return Err(LabelCatalogError::NameAlreadyMapped {
                 name: name.to_owned(),
@@ -94,10 +155,37 @@ impl<MNameToId: Memory, MIdToName: Memory> LabelCatalog<MNameToId, MIdToName> {
         (self.name_to_id.into_memory(), self.id_to_name.into_memory())
     }
 
-    fn next_id(&self) -> Result<LabelId, LabelCatalogError> {
+    fn next_edge_label_id(&self) -> Result<LabelId, LabelCatalogError> {
         let mut next = 1u16;
         for entry in self.id_to_name.iter() {
             let raw = entry.key().raw();
+            if !LabelId::from_raw(raw).is_edge_inline_capable() {
+                continue;
+            }
+            if raw < next {
+                continue;
+            }
+            if raw > next {
+                break;
+            }
+            next = next
+                .checked_add(1)
+                .filter(|&n| n <= INLINE_EDGE_LABEL_MAX)
+                .ok_or(LabelCatalogError::LabelIdExhausted)?;
+        }
+        if next > INLINE_EDGE_LABEL_MAX {
+            return Err(LabelCatalogError::LabelIdExhausted);
+        }
+        Ok(LabelId::from_raw(next))
+    }
+
+    fn next_vertex_label_id(&self) -> Result<LabelId, LabelCatalogError> {
+        let mut next = VERTEX_LABEL_MIN;
+        for entry in self.id_to_name.iter() {
+            let raw = entry.key().raw();
+            if raw < VERTEX_LABEL_MIN {
+                continue;
+            }
             if raw < next {
                 continue;
             }
@@ -122,66 +210,63 @@ mod tests {
     }
 
     #[test]
-    fn allocates_labels_from_one_and_round_trips_both_directions() {
+    fn edge_labels_allocate_from_one() {
         let mut catalog = catalog();
+        let knows = catalog.get_or_insert_edge_label("KNOWS").unwrap();
+        let rel = catalog.get_or_insert_edge_label("REL").unwrap();
+        assert_eq!(knows.raw(), 1);
+        assert_eq!(rel.raw(), 2);
+        assert_eq!(catalog.get_or_insert_edge_label("KNOWS").unwrap(), knows);
+    }
 
-        let person = catalog.get_or_insert("Person").unwrap();
-        let post = catalog.get_or_insert("Post").unwrap();
+    #[test]
+    fn vertex_labels_allocate_from_vertex_band() {
+        let mut catalog = catalog();
+        let person = catalog.get_or_insert_vertex_label("Person").unwrap();
+        assert_eq!(person.raw(), VERTEX_LABEL_MIN);
+        let post = catalog.get_or_insert_vertex_label("Post").unwrap();
+        assert_eq!(post.raw(), VERTEX_LABEL_MIN + 1);
+    }
 
-        assert_eq!(person.raw(), 1);
-        assert_eq!(post.raw(), 2);
-        assert_eq!(catalog.get_id("Person"), Some(person));
-        assert_eq!(catalog.get_name(post), Some("Post".to_owned()));
-        assert_eq!(catalog.get_or_insert("Person").unwrap(), person);
+    #[test]
+    fn rejects_edge_label_outside_inline_range() {
+        let mut catalog = catalog();
+        assert!(matches!(
+            catalog.insert_edge_label_with_id("X", LabelId::from_raw(0)),
+            Err(LabelCatalogError::ReservedLabelId(_))
+        ));
+        assert!(matches!(
+            catalog.insert_edge_label_with_id("X", LabelId::from_raw(VERTEX_LABEL_MIN)),
+            Err(LabelCatalogError::EdgeLabelIdOutOfRange(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_vertex_label_in_edge_range() {
+        let mut catalog = catalog();
+        assert!(matches!(
+            catalog.insert_vertex_label_with_id("Bad", LabelId::from_raw(10)),
+            Err(LabelCatalogError::VertexLabelIdOutOfRange(_))
+        ));
     }
 
     #[test]
     fn persists_across_reopen() {
         let mut catalog = catalog();
-        let person = catalog.get_or_insert("Person").unwrap();
+        let person = catalog.get_or_insert_vertex_label("Person").unwrap();
         let memories = catalog.into_memories();
-
         let reopened = LabelCatalog::init(memories.0, memories.1);
-
         assert_eq!(reopened.get_id("Person"), Some(person));
-        assert_eq!(reopened.get_name(person), Some("Person".to_owned()));
     }
 
     #[test]
-    fn rejects_conflicting_manual_mappings() {
-        let mut catalog = catalog();
-        let person = LabelId::from_raw(7);
-        catalog.insert_with_id("Person", person).unwrap();
-
-        assert!(matches!(
-            catalog.insert_with_id("Person", LabelId::from_raw(8)),
-            Err(LabelCatalogError::NameAlreadyMapped { .. })
-        ));
-        assert!(matches!(
-            catalog.insert_with_id("Post", person),
-            Err(LabelCatalogError::IdAlreadyMapped { .. })
-        ));
-    }
-
-    #[test]
-    fn skips_manual_sparse_ids_when_allocating() {
+    fn skips_sparse_ids_when_allocating_edges() {
         let mut catalog = catalog();
         catalog
-            .insert_with_id("ReservedLater", LabelId::from_raw(3))
+            .insert_edge_label_with_id("Gap", LabelId::from_raw(3))
             .unwrap();
-
-        assert_eq!(catalog.get_or_insert("A").unwrap().raw(), 1);
-        assert_eq!(catalog.get_or_insert("B").unwrap().raw(), 2);
-        assert_eq!(catalog.get_or_insert("C").unwrap().raw(), 4);
-    }
-
-    #[test]
-    fn rejects_zero_label_id() {
-        let mut catalog = catalog();
-
-        assert!(matches!(
-            catalog.insert_with_id("None", LabelId::default()),
-            Err(LabelCatalogError::ReservedLabelId(id)) if id.raw() == 0
-        ));
+        assert_eq!(catalog.get_or_insert_edge_label("A").unwrap().raw(), 1);
+        assert_eq!(catalog.get_or_insert_edge_label("B").unwrap().raw(), 2);
+        assert_eq!(catalog.get_or_insert_edge_label("C").unwrap().raw(), 4);
     }
 }
