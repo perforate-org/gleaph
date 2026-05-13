@@ -32,7 +32,7 @@ pub const IC_EXTENSION_BINARY_DECODER: IcExtensionBinaryDecode = IcExtensionBina
 
 /// Name for logs / APIs (not written on the wire).
 pub const PRINCIPAL_EXTENSION_TYPE_NAME: &str = "ic.Principal";
-pub const PRINCIPAL_EXTENSION_SORTABLE_DOMAIN: &str = "ic.Principal/v1";
+pub const PRINCIPAL_EXTENSION_SORTABLE_DOMAIN: &str = "Pr";
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct PrincipalValue(pub Principal);
