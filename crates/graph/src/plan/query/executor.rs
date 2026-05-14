@@ -1334,6 +1334,17 @@ impl WeightedCost {
         }
     }
 
+    fn from_validated_non_negative_float32(value: f32) -> Self {
+        Self {
+            value: Value::Float32(value),
+            order_key: if value == 0.0 {
+                WeightedCostOrderKey::Zero
+            } else {
+                WeightedCostOrderKey::Float64(f64::from(value))
+            },
+        }
+    }
+
     fn from_value(value: Value) -> Result<Self, PlanQueryError> {
         if matches!(value, Value::Null) {
             return Err(PlanQueryError::GleaphCost {
@@ -1799,7 +1810,9 @@ fn eval_direct_gleaph_weight_hop_cost(
             message: format!("GLEAPH_WEIGHT decode failed: {e}"),
         }
     })?;
-    Ok(Some(WeightedCost::from_value(Value::Float32(weight))?))
+    Ok(Some(WeightedCost::from_validated_non_negative_float32(
+        weight,
+    )))
 }
 
 fn path_state_to_value(shard_id: u64, path: &ShortestPathState) -> Value {
