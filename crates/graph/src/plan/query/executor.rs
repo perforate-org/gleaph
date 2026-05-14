@@ -1245,6 +1245,7 @@ fn shortest_paths_between(
         depth: 0,
     }];
     let mut queue = VecDeque::from([0usize]);
+    let mut candidates = Vec::new();
 
     while let Some(state_idx) = queue.pop_front() {
         let current = states[state_idx].current;
@@ -1267,7 +1268,9 @@ fn shortest_paths_between(
             continue;
         }
 
-        for (next, handle, edge_record) in expand_candidates(store, current, direction, label_id)? {
+        candidates.clear();
+        expand_candidates_into(store, current, direction, label_id, &mut candidates)?;
+        for (next, handle, edge_record) in candidates.iter().copied() {
             if let Some(visited) = any_visited.as_mut() {
                 if !visited.insert(u32::from(next)) {
                     continue;
@@ -1591,6 +1594,7 @@ fn weighted_shortest_paths_between(
     } else {
         None
     };
+    let mut candidates = Vec::new();
 
     while let Some(entry) = heap.pop() {
         if let Some(ref min) = found_min_cost {
@@ -1626,7 +1630,9 @@ fn weighted_shortest_paths_between(
             continue;
         }
 
-        for (next, handle, edge_record) in expand_candidates(store, current, direction, label_id)? {
+        candidates.clear();
+        expand_candidates_into(store, current, direction, label_id, &mut candidates)?;
+        for (next, handle, edge_record) in candidates.iter().copied() {
             if path_search_contains_vertex(&states, state_idx, next) {
                 continue;
             }
@@ -1789,13 +1795,26 @@ fn edge_path_element(shard_id: u64, handle: EdgeHandle) -> PathElement {
     )
 }
 
+type ExpandCandidate = (VertexId, EdgeHandle, Edge);
+
 fn expand_candidates(
     store: &GraphStore,
     src_id: VertexId,
     direction: EdgeDirection,
     edge_label_id: Option<LabelId>,
-) -> Result<Vec<(VertexId, EdgeHandle, Edge)>, PlanQueryError> {
+) -> Result<Vec<ExpandCandidate>, PlanQueryError> {
     let mut out = Vec::new();
+    expand_candidates_into(store, src_id, direction, edge_label_id, &mut out)?;
+    Ok(out)
+}
+
+fn expand_candidates_into(
+    store: &GraphStore,
+    src_id: VertexId,
+    direction: EdgeDirection,
+    edge_label_id: Option<LabelId>,
+    out: &mut Vec<ExpandCandidate>,
+) -> Result<(), PlanQueryError> {
     match direction {
         EdgeDirection::PointingRight => {
             for edge in store
@@ -1874,7 +1893,7 @@ fn expand_candidates(
         }
         other => return Err(PlanQueryError::UnsupportedDirection(other)),
     }
-    Ok(out)
+    Ok(())
 }
 
 fn ensure_simple_expand(
