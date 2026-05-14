@@ -5,16 +5,17 @@ use crate::facade::{EdgeHandle, GraphStore, canonical_undirected_owner};
 use crate::gql_execution_context::{GqlExecutionContext, try_eval_runtime_function_call};
 use crate::index::lookup::PropertyIndexLookup;
 use crate::plan::expr_evaluator::{
-    ExprEvaluationError, SearchedCaseWhenOutcome, eval_abs_expr, eval_acos_expr, eval_and_expr,
-    eval_asin_expr, eval_atan_expr, eval_binary_expr, eval_cast_expr, eval_ceil_expr,
-    eval_compare_expr, eval_concat_expr, eval_cos_expr, eval_cosh_expr, eval_cot_expr,
-    eval_degrees_expr, eval_exp_expr, eval_floor_expr, eval_ln_expr, eval_log_expr,
-    eval_log10_expr, eval_mod_expr, eval_not_expr, eval_or_expr, eval_power_expr,
-    eval_radians_expr, eval_sin_expr, eval_sinh_expr, eval_sqrt_expr, eval_tan_expr,
-    eval_tanh_expr, eval_unary_expr, eval_xor_expr, searched_case_when_outcome, truthy,
+    SearchedCaseWhenOutcome, eval_abs_expr, eval_acos_expr, eval_and_expr, eval_asin_expr,
+    eval_atan_expr, eval_binary_expr, eval_cast_expr, eval_ceil_expr, eval_compare_expr,
+    eval_concat_expr, eval_cos_expr, eval_cosh_expr, eval_cot_expr, eval_degrees_expr,
+    eval_exp_expr, eval_floor_expr, eval_ln_expr, eval_log_expr, eval_log10_expr, eval_mod_expr,
+    eval_not_expr, eval_or_expr, eval_power_expr, eval_radians_expr, eval_sin_expr, eval_sinh_expr,
+    eval_sqrt_expr, eval_tan_expr, eval_tanh_expr, eval_unary_expr, eval_xor_expr,
+    searched_case_when_outcome, truthy,
 };
 use candid::Principal;
 use gleaph_gql::ast::{BinaryOp, CmpOp, Expr, ExprKind, ObjectName, OrderByClause, TruthValue};
+use gleaph_gql::numeric_ops::{NumericOpError, eval_binary_numeric};
 use gleaph_gql::numeric_order::{NumericOrderError, normalized_numeric_parts};
 use gleaph_gql::types::{EdgeDirection, LabelExpr, PathElement};
 use gleaph_gql::value_cmp::compare_values;
@@ -1312,7 +1313,7 @@ impl WeightedCost {
     }
 
     fn checked_add(&self, hop: &Self) -> Result<Self, PlanQueryError> {
-        let sum = eval_binary_expr(self.0.clone(), BinaryOp::Add, hop.0.clone())
+        let sum = eval_binary_numeric(self.0.clone(), BinaryOp::Add, hop.0.clone())
             .map_err(map_weighted_cost_add_err)?;
         Self::from_value(sum)
     }
@@ -1347,18 +1348,19 @@ impl WeightedHopCostKey {
     }
 }
 
-fn map_weighted_cost_add_err(err: ExprEvaluationError) -> PlanQueryError {
+fn map_weighted_cost_add_err(err: NumericOpError) -> PlanQueryError {
     match err {
-        ExprEvaluationError::NumericOverflow | ExprEvaluationError::NumericPrecisionOverflow => {
-            PlanQueryError::GleaphCost {
-                message: "shortest-path edge cost overflowed or became non-finite".into(),
-            }
-        }
-        ExprEvaluationError::NonFiniteNumeric => PlanQueryError::GleaphCost {
+        NumericOpError::Overflow => PlanQueryError::GleaphCost {
+            message: "shortest-path edge cost overflowed or became non-finite".into(),
+        },
+        NumericOpError::NonFinite => PlanQueryError::GleaphCost {
             message: "shortest-path edge cost must be finite".into(),
         },
-        ExprEvaluationError::UnsupportedNumericConversion => PlanQueryError::GleaphCost {
+        NumericOpError::UnsupportedConversion => PlanQueryError::GleaphCost {
             message: "shortest-path edge cost uses unsupported numeric conversion".into(),
+        },
+        NumericOpError::DivisionByZero => PlanQueryError::GleaphCost {
+            message: "shortest-path edge cost evaluation failed: DivisionByZero".into(),
         },
         _ => PlanQueryError::GleaphCost {
             message: format!("shortest-path edge cost evaluation failed: {err:?}"),
@@ -1366,11 +1368,17 @@ fn map_weighted_cost_add_err(err: ExprEvaluationError) -> PlanQueryError {
     }
 }
 
-#[derive(Clone)]
+struct WeightedPathNode {
+    current: VertexId,
+    previous: Option<usize>,
+    edge: Option<EdgeBinding>,
+    depth: u64,
+}
+
 struct WeightedQueueEntry {
     cost: WeightedCost,
     tie: u64,
-    state: ShortestPathState,
+    state_idx: usize,
 }
 
 impl Eq for WeightedQueueEntry {}
@@ -1418,14 +1426,16 @@ fn weighted_shortest_paths_between(
 
     let mut heap = BinaryHeap::new();
     let mut tie = 0u64;
+    let mut states = vec![WeightedPathNode {
+        current: src,
+        previous: None,
+        edge: None,
+        depth: 0,
+    }];
     heap.push(WeightedQueueEntry {
         cost: WeightedCost::zero(),
         tie,
-        state: ShortestPathState {
-            current: src,
-            vertices: vec![src],
-            edges: Vec::new(),
-        },
+        state_idx: 0,
     });
 
     let mut found_min_cost: Option<WeightedCost> = None;
@@ -1438,19 +1448,21 @@ fn weighted_shortest_paths_between(
                 continue;
             }
         }
-        let depth = entry.state.edges.len() as u64;
-        if depth >= bounds.min && entry.state.current == dst {
+        let state_idx = entry.state_idx;
+        let current = states[state_idx].current;
+        let depth = states[state_idx].depth;
+        if depth >= bounds.min && current == dst {
             match &found_min_cost {
                 None => {
                     found_min_cost = Some(entry.cost.clone());
-                    found.push(entry.state);
+                    found.push(state_idx);
                 }
                 Some(min) => match entry.cost.cmp(min)? {
-                    Ordering::Equal => found.push(entry.state),
+                    Ordering::Equal => found.push(state_idx),
                     Ordering::Less => {
                         found_min_cost = Some(entry.cost.clone());
                         found.clear();
-                        found.push(entry.state);
+                        found.push(state_idx);
                     }
                     Ordering::Greater => {}
                 },
@@ -1464,10 +1476,8 @@ fn weighted_shortest_paths_between(
             continue;
         }
 
-        for (next, handle, edge_record) in
-            expand_candidates(store, entry.state.current, direction, label_id)?
-        {
-            if entry.state.vertices.contains(&next) {
+        for (next, handle, edge_record) in expand_candidates(store, current, direction, label_id)? {
+            if weighted_path_contains_vertex(&states, state_idx, next) {
                 continue;
             }
             let edge_binding = EdgeBinding {
@@ -1497,19 +1507,70 @@ fn weighted_shortest_paths_between(
                 }
             }
             tie += 1;
-            let mut next_state = entry.state.clone();
-            next_state.current = next;
-            next_state.vertices.push(next);
-            next_state.edges.push(edge_binding);
+            let next_state_idx = states.len();
+            states.push(WeightedPathNode {
+                current: next,
+                previous: Some(state_idx),
+                edge: Some(edge_binding),
+                depth: depth + 1,
+            });
             heap.push(WeightedQueueEntry {
                 cost: next_cost,
                 tie,
-                state: next_state,
+                state_idx: next_state_idx,
             });
         }
     }
 
-    Ok(found)
+    Ok(found
+        .into_iter()
+        .map(|state_idx| weighted_path_to_shortest_path_state(&states, state_idx))
+        .collect())
+}
+
+fn weighted_path_contains_vertex(
+    states: &[WeightedPathNode],
+    mut state_idx: usize,
+    vertex: VertexId,
+) -> bool {
+    loop {
+        let state = &states[state_idx];
+        if state.current == vertex {
+            return true;
+        }
+        let Some(previous) = state.previous else {
+            return false;
+        };
+        state_idx = previous;
+    }
+}
+
+fn weighted_path_to_shortest_path_state(
+    states: &[WeightedPathNode],
+    mut state_idx: usize,
+) -> ShortestPathState {
+    let mut vertices = Vec::with_capacity(states[state_idx].depth as usize + 1);
+    let mut edges = Vec::with_capacity(states[state_idx].depth as usize);
+    loop {
+        let state = &states[state_idx];
+        vertices.push(state.current);
+        if let Some(edge) = state.edge {
+            edges.push(edge);
+        }
+        let Some(previous) = state.previous else {
+            break;
+        };
+        state_idx = previous;
+    }
+    vertices.reverse();
+    edges.reverse();
+    ShortestPathState {
+        current: *vertices
+            .last()
+            .expect("weighted path reconstruction always includes the root vertex"),
+        vertices,
+        edges,
+    }
 }
 
 fn eval_shortest_hop_cost(
