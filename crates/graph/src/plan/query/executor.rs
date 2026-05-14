@@ -1384,6 +1384,21 @@ impl WeightedCost {
     }
 
     fn checked_add(&self, hop: &Self) -> Result<Self, PlanQueryError> {
+        if matches!(self.order_key, WeightedCostOrderKey::Zero) {
+            return Ok(hop.clone());
+        }
+        if matches!(hop.order_key, WeightedCostOrderKey::Zero) {
+            return Ok(self.clone());
+        }
+        if let (Value::Float32(left), Value::Float32(right)) = (&self.value, &hop.value) {
+            let sum = left + right;
+            if !sum.is_finite() {
+                return Err(PlanQueryError::GleaphCost {
+                    message: "shortest-path edge cost must be finite".into(),
+                });
+            }
+            return Ok(Self::from_validated_non_negative_float32(sum));
+        }
         let sum = eval_binary_numeric(self.value.clone(), BinaryOp::Add, hop.value.clone())
             .map_err(map_weighted_cost_add_err)?;
         Self::from_value(sum)
