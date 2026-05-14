@@ -20,6 +20,7 @@ use gleaph_gql::numeric_order::{NormalizedNumeric, NumericOrderError, normalized
 use gleaph_gql::types::{EdgeDirection, LabelExpr, PathElement, PathElementId};
 use gleaph_gql::value_cmp::compare_values;
 use gleaph_gql::{Value, hash_value_for_join, value_to_index_key_bytes};
+use gleaph_gql_planner::collect_expr_variables;
 use gleaph_gql_planner::plan::{
     AggregateSpec, ConditionalScanCandidate, IndexScanSpec, PhysicalPlan, PlanOp, ProjectColumn,
     ScanValue, ShortestMode, ShortestPathCost, Str, VarLenSpec,
@@ -440,17 +441,12 @@ fn execute_ops_from<'a>(
                     label_expr,
                     var_len,
                     indexed_edge_equality,
-                    edge_property_projection: _,
-                    dst_property_projection: _,
+                    edge_property_projection,
+                    dst_property_projection,
                     hop_aux_binding,
                     emit_edge_binding,
                 } => {
-                    ensure_simple_expand(
-                        label_expr,
-                        var_len,
-                        indexed_edge_equality,
-                        hop_aux_binding,
-                    )?;
+                    ensure_simple_expand(label_expr, var_len, hop_aux_binding)?;
                     execute_expand(
                         store,
                         rows,
@@ -462,6 +458,9 @@ fn execute_ops_from<'a>(
                         label.as_ref(),
                         &[],
                         *emit_edge_binding,
+                        indexed_edge_equality.as_ref(),
+                        edge_property_projection.as_deref(),
+                        dst_property_projection.as_deref(),
                         caller,
                         gwd,
                     )?
@@ -476,17 +475,12 @@ fn execute_ops_from<'a>(
                     var_len,
                     indexed_edge_equality,
                     dst_filter,
-                    edge_property_projection: _,
-                    dst_property_projection: _,
+                    edge_property_projection,
+                    dst_property_projection,
                     hop_aux_binding,
                     emit_edge_binding,
                 } => {
-                    ensure_simple_expand(
-                        label_expr,
-                        var_len,
-                        indexed_edge_equality,
-                        hop_aux_binding,
-                    )?;
+                    ensure_simple_expand(label_expr, var_len, hop_aux_binding)?;
                     execute_expand(
                         store,
                         rows,
@@ -498,6 +492,9 @@ fn execute_ops_from<'a>(
                         label.as_ref(),
                         dst_filter,
                         *emit_edge_binding,
+                        indexed_edge_equality.as_ref(),
+                        edge_property_projection.as_deref(),
+                        dst_property_projection.as_deref(),
                         caller,
                         gwd,
                     )?
@@ -1066,6 +1063,115 @@ fn execute_node_scan(
     Ok(out)
 }
 
+fn vertex_binding_for_projection(
+    store: &GraphStore,
+    vertex_id: VertexId,
+    property_projection: Option<&[Str]>,
+) -> Result<PlanBinding, PlanQueryError> {
+    match property_projection {
+        None | Some([]) => Ok(PlanBinding::Vertex(vertex_id)),
+        Some(props) => Ok(PlanBinding::Value(vertex_to_projected_record(
+            store, vertex_id, props,
+        )?)),
+    }
+}
+
+fn vertex_to_projected_record(
+    store: &GraphStore,
+    vertex_id: VertexId,
+    properties: &[Str],
+) -> Result<Value, PlanQueryError> {
+    let mut fields = Vec::with_capacity(properties.len());
+    for property in properties {
+        let value = store
+            .property_id(property.as_ref())
+            .and_then(|property_id| store.vertex_property(vertex_id, property_id))
+            .unwrap_or(Value::Null);
+        fields.push((property.to_string(), value));
+    }
+    Ok(Value::Record(fields))
+}
+
+fn edge_to_projected_record(
+    store: &GraphStore,
+    binding: EdgeBinding,
+    properties: &[Str],
+) -> Result<Value, PlanQueryError> {
+    let mut fields = Vec::with_capacity(properties.len());
+    for property in properties {
+        let value = store
+            .property_id(property.as_ref())
+            .and_then(|property_id| {
+                store.edge_property(
+                    binding.handle.owner_vertex_id,
+                    binding.handle.vertex_edge_id,
+                    property_id,
+                )
+            })
+            .unwrap_or(Value::Null);
+        fields.push((property.to_string(), value));
+    }
+    Ok(Value::Record(fields))
+}
+
+fn dst_filter_is_dst_vertex_only(dst_filter: &[Expr], dst: &str) -> bool {
+    !dst_filter.is_empty()
+        && dst_filter
+            .iter()
+            .all(|predicate| expr_variables_subset_of_dst(predicate, dst))
+}
+
+fn expr_variables_subset_of_dst(expr: &Expr, dst: &str) -> bool {
+    collect_expr_variables(expr)
+        .iter()
+        .all(|variable| variable == dst)
+}
+
+fn vertex_row_matches_dst_filters(
+    store: &GraphStore,
+    parameters: &BTreeMap<String, Value>,
+    dst: &Str,
+    dst_id: VertexId,
+    dst_filter: &[Expr],
+    caller: Option<Principal>,
+    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
+) -> Result<bool, PlanQueryError> {
+    let mut stub = PlanRow::new();
+    stub.insert(dst.to_string(), PlanBinding::Vertex(dst_id));
+    let evaluator = QueryExprEvaluator {
+        store,
+        parameters,
+        aggregate_specs: None,
+        caller,
+        gleaph_weight_decoders,
+    };
+    row_matches_all(&evaluator, &stub, dst_filter)
+}
+
+fn edge_matches_indexed_equality(
+    store: &GraphStore,
+    owner_vertex_id: VertexId,
+    vertex_edge_id: VertexEdgeId,
+    property: &str,
+    scan_value: &ScanValue,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<bool, PlanQueryError> {
+    let Some(property_id) = store.property_id(property) else {
+        return Ok(false);
+    };
+    let Some(expected) = resolve_scan_value_bytes(scan_value, parameters)? else {
+        return Ok(false);
+    };
+    let Some(actual) = store.edge_property(owner_vertex_id, vertex_edge_id, property_id) else {
+        return Ok(false);
+    };
+    let actual_bytes =
+        value_to_index_key_bytes(&actual).map_err(|_| PlanQueryError::InvalidExpressionValue {
+            expression: "indexed edge equality value encoding".to_owned(),
+        })?;
+    Ok(actual_bytes == Some(expected))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn execute_expand(
     store: &GraphStore,
@@ -1078,6 +1184,9 @@ fn execute_expand(
     label: Option<&Str>,
     dst_filter: &[Expr],
     emit_edge_binding: bool,
+    indexed_edge_equality: Option<&(Str, ScanValue)>,
+    edge_property_projection: Option<&[Str]>,
+    dst_property_projection: Option<&[Str]>,
     caller: Option<Principal>,
     gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
@@ -1093,6 +1202,7 @@ fn execute_expand(
         caller,
         gleaph_weight_decoders,
     };
+    let dst_only_prefilter = dst_filter_is_dst_vertex_only(dst_filter, dst.as_ref());
     let mut out = Vec::new();
     let edge_key = emit_edge_binding.then(|| edge.to_string());
     let dst_key = dst.to_string();
@@ -1102,17 +1212,51 @@ fn execute_expand(
             continue;
         };
         candidates.clear();
-        expand_candidates_into(store, src_id, direction, label_id, &mut candidates)?;
+        expand_candidates_into(
+            store,
+            src_id,
+            direction,
+            label_id,
+            indexed_edge_equality,
+            parameters,
+            &mut candidates,
+        )?;
         for (dst_id, edge_binding) in candidates.iter().copied() {
             if !expand_dst_matches_prebound_vertex(&row, dst, dst_id) {
                 continue;
             }
+            if dst_only_prefilter {
+                if !vertex_row_matches_dst_filters(
+                    store,
+                    parameters,
+                    dst,
+                    dst_id,
+                    dst_filter,
+                    caller,
+                    gleaph_weight_decoders,
+                )? {
+                    continue;
+                }
+            }
             let mut expanded = row.clone();
             if let Some(edge_key) = &edge_key {
-                expanded.insert(edge_key.clone(), PlanBinding::Edge(edge_binding));
+                let edge_binding =
+                    if edge_property_projection.is_some_and(|props| !props.is_empty()) {
+                        PlanBinding::Value(edge_to_projected_record(
+                            store,
+                            edge_binding,
+                            edge_property_projection.unwrap(),
+                        )?)
+                    } else {
+                        PlanBinding::Edge(edge_binding)
+                    };
+                expanded.insert(edge_key.clone(), edge_binding);
             }
-            expanded.insert(dst_key.clone(), PlanBinding::Vertex(dst_id));
-            if !row_matches_all(&evaluator, &expanded, dst_filter)? {
+            expanded.insert(
+                dst_key.clone(),
+                vertex_binding_for_projection(store, dst_id, dst_property_projection)?,
+            );
+            if !dst_only_prefilter && !row_matches_all(&evaluator, &expanded, dst_filter)? {
                 continue;
             }
             out.push(expanded);
@@ -1172,6 +1316,7 @@ fn execute_shortest_path(
     }
 
     let shard_id = local_shard_id(store);
+    let store_hop_edges = emit_edge_binding || emit_path_binding;
     let mut out = Vec::new();
     for row in rows {
         let Some(src_id) = vertex_binding_for_traversal(&row, src)? else {
@@ -1181,13 +1326,29 @@ fn execute_shortest_path(
             continue;
         };
         let paths = match cost {
-            ShortestPathCost::HopCount => {
-                shortest_paths_between(store, src_id, dst_id, direction, label_id, var_len, mode)?
-            }
+            ShortestPathCost::HopCount => shortest_paths_between(
+                store,
+                src_id,
+                dst_id,
+                direction,
+                label_id,
+                var_len,
+                mode,
+                store_hop_edges,
+            )?,
             ShortestPathCost::EdgeCostExpr { edge_var, expr }
                 if weighted_shortest_can_use_hop_count(mode, expr) =>
             {
-                shortest_paths_between(store, src_id, dst_id, direction, label_id, var_len, mode)?
+                shortest_paths_between(
+                    store,
+                    src_id,
+                    dst_id,
+                    direction,
+                    label_id,
+                    var_len,
+                    mode,
+                    store_hop_edges,
+                )?
             }
             ShortestPathCost::EdgeCostExpr { edge_var, expr } => weighted_shortest_paths_between(
                 store,
@@ -1201,6 +1362,7 @@ fn execute_shortest_path(
                 mode,
                 parameters,
                 gleaph_weight_decoders,
+                store_hop_edges,
             )?,
         };
         out.reserve(paths.found.len());
@@ -1243,6 +1405,7 @@ fn shortest_paths_between(
     label_id: Option<LabelId>,
     var_len: &Option<VarLenSpec>,
     mode: ShortestMode,
+    store_hop_edges: bool,
 ) -> Result<ShortestPathSearchResult, PlanQueryError> {
     let bounds = var_len.unwrap_or(VarLenSpec {
         min: 1,
@@ -1291,7 +1454,15 @@ fn shortest_paths_between(
         }
 
         candidates.clear();
-        expand_candidates_into(store, current, direction, label_id, &mut candidates)?;
+        expand_candidates_into(
+            store,
+            current,
+            direction,
+            label_id,
+            None,
+            &BTreeMap::new(),
+            &mut candidates,
+        )?;
         for (next, edge_binding) in candidates.iter().copied() {
             let next_depth = depth + 1;
             if let Some(visited) = any_visited.as_mut() {
@@ -1305,7 +1476,7 @@ fn shortest_paths_between(
             states.push(PathSearchNode {
                 current: next,
                 previous: Some(state_idx),
-                edge: Some(edge_binding),
+                edge: store_hop_edges.then_some(edge_binding),
                 depth: next_depth,
             });
             if next == dst && next_depth >= bounds.min {
@@ -1619,6 +1790,7 @@ fn weighted_shortest_paths_between(
     mode: ShortestMode,
     parameters: &BTreeMap<String, Value>,
     gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
+    store_hop_edges: bool,
 ) -> Result<ShortestPathSearchResult, PlanQueryError> {
     let bounds = var_len.unwrap_or(VarLenSpec {
         min: 1,
@@ -1694,7 +1866,15 @@ fn weighted_shortest_paths_between(
         }
 
         candidates.clear();
-        expand_candidates_into(store, current, direction, label_id, &mut candidates)?;
+        expand_candidates_into(
+            store,
+            current,
+            direction,
+            label_id,
+            None,
+            &BTreeMap::new(),
+            &mut candidates,
+        )?;
         for (next, edge_binding) in candidates.iter().copied() {
             if any_best_cost.is_none() && path_search_contains_vertex(&states, state_idx, next) {
                 continue;
@@ -1744,7 +1924,7 @@ fn weighted_shortest_paths_between(
             states.push(PathSearchNode {
                 current: next,
                 previous: Some(state_idx),
-                edge: Some(edge_binding),
+                edge: store_hop_edges.then_some(edge_binding),
                 depth: depth + 1,
             });
             heap.push(WeightedQueueEntry {
@@ -1920,7 +2100,15 @@ fn expand_candidates(
     edge_label_id: Option<LabelId>,
 ) -> Result<Vec<ExpandCandidate>, PlanQueryError> {
     let mut out = Vec::new();
-    expand_candidates_into(store, src_id, direction, edge_label_id, &mut out)?;
+    expand_candidates_into(
+        store,
+        src_id,
+        direction,
+        edge_label_id,
+        None,
+        &BTreeMap::new(),
+        &mut out,
+    )?;
     Ok(out)
 }
 
@@ -1929,8 +2117,11 @@ fn expand_candidates_into(
     src_id: VertexId,
     direction: EdgeDirection,
     edge_label_id: Option<LabelId>,
+    indexed_edge_equality: Option<&(Str, ScanValue)>,
+    parameters: &BTreeMap<String, Value>,
     out: &mut Vec<ExpandCandidate>,
 ) -> Result<(), PlanQueryError> {
+    let indexed = indexed_edge_equality.map(|(property, value)| (property.as_ref(), value));
     match direction {
         EdgeDirection::PointingRight => {
             for edge in store
@@ -1946,6 +2137,18 @@ fn expand_candidates_into(
                     {
                         continue;
                     }
+                }
+                if let Some((property, scan_value)) = indexed
+                    && !edge_matches_indexed_equality(
+                        store,
+                        src_id,
+                        edge.vertex_edge_id,
+                        property,
+                        scan_value,
+                        parameters,
+                    )?
+                {
+                    continue;
                 }
                 out.push((
                     edge.target,
@@ -1974,6 +2177,18 @@ fn expand_candidates_into(
                         continue;
                     }
                 }
+                if let Some((property, scan_value)) = indexed
+                    && !edge_matches_indexed_equality(
+                        store,
+                        edge.target,
+                        edge.vertex_edge_id,
+                        property,
+                        scan_value,
+                        parameters,
+                    )?
+                {
+                    continue;
+                }
                 out.push((
                     edge.target,
                     EdgeBinding {
@@ -2001,11 +2216,24 @@ fn expand_candidates_into(
                         continue;
                     }
                 }
+                let owner = canonical_undirected_owner(src_id, edge.target);
+                if let Some((property, scan_value)) = indexed
+                    && !edge_matches_indexed_equality(
+                        store,
+                        owner,
+                        edge.vertex_edge_id,
+                        property,
+                        scan_value,
+                        parameters,
+                    )?
+                {
+                    continue;
+                }
                 out.push((
                     edge.target,
                     EdgeBinding {
                         handle: EdgeHandle {
-                            owner_vertex_id: canonical_undirected_owner(src_id, edge.target),
+                            owner_vertex_id: owner,
                             vertex_edge_id: edge.vertex_edge_id,
                         },
                         inline_value: edge.inline_value,
@@ -2021,7 +2249,6 @@ fn expand_candidates_into(
 fn ensure_simple_expand(
     label_expr: &Option<LabelExpr>,
     var_len: &Option<gleaph_gql_planner::plan::VarLenSpec>,
-    indexed_edge_equality: &Option<(Str, gleaph_gql_planner::plan::ScanValue)>,
     hop_aux_binding: &Option<Str>,
 ) -> Result<(), PlanQueryError> {
     if label_expr.is_some() {
@@ -2029,11 +2256,6 @@ fn ensure_simple_expand(
     }
     if var_len.is_some() {
         return Err(PlanQueryError::UnsupportedOp("Expand.var_len"));
-    }
-    if indexed_edge_equality.is_some() {
-        return Err(PlanQueryError::UnsupportedOp(
-            "Expand.indexed_edge_equality",
-        ));
     }
     if hop_aux_binding.is_some() {
         return Err(PlanQueryError::UnsupportedOp("Expand.hop_aux_binding"));
@@ -2871,7 +3093,7 @@ mod tests {
     use gleaph_gql::value::{ExtensionSortableKey, ExtensionValue};
     use gleaph_gql_planner::plan::{
         AggregateSpec, ConditionalScanCandidate, PlanAnnotations, PlanDiagnostics, ScanValue,
-        ShortestMode, ShortestPathCost, WcojEdge,
+        ShortestMode, ShortestPathCost, Str, WcojEdge,
     };
     use gleaph_gql_planner::{PlanBuildOptions, build_plan_with_schema_and_options};
     use gleaph_graph_kernel::entry::EdgeMeta;
@@ -2881,6 +3103,7 @@ mod tests {
     use std::cell::RefCell;
     use std::cmp::Ordering;
     use std::fmt;
+    use std::rc::Rc;
 
     #[derive(Default)]
     struct MockPropertyIndex {
@@ -5564,6 +5787,103 @@ mod tests {
 
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0].get("age"), Some(&Value::Int64(44)));
+    }
+
+    #[test]
+    fn expand_indexed_edge_equality_filters_candidates() {
+        let store = GraphStore::new();
+        let a = store
+            .insert_vertex_named(["IdxEqA"], Vec::<(&str, Value)>::new())
+            .expect("a");
+        let b_match = store
+            .insert_vertex_named(["IdxEqB"], Vec::<(&str, Value)>::new())
+            .expect("b match");
+        let b_miss = store
+            .insert_vertex_named(["IdxEqB"], Vec::<(&str, Value)>::new())
+            .expect("b miss");
+        store
+            .insert_directed_edge_named(a, b_match, Some("IdxEqRel"), [("weight", Value::Int64(5))])
+            .expect("match edge");
+        store
+            .insert_directed_edge_named(a, b_miss, Some("IdxEqRel"), [("weight", Value::Int64(9))])
+            .expect("miss edge");
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "a".into(),
+                label: Some("IdxEqA".into()),
+                property_projection: None,
+            },
+            PlanOp::Expand {
+                src: "a".into(),
+                edge: "e".into(),
+                dst: "b".into(),
+                direction: EdgeDirection::PointingRight,
+                label: Some("IdxEqRel".into()),
+                label_expr: None,
+                var_len: None,
+                indexed_edge_equality: Some(("weight".into(), ScanValue::Literal(Value::Int64(5)))),
+                edge_property_projection: None,
+                dst_property_projection: None,
+                hop_aux_binding: None,
+                emit_edge_binding: true,
+            },
+            PlanOp::Project {
+                columns: vec![project(var("b"), "b")],
+                distinct: false,
+            },
+        ]);
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("indexed expand");
+        assert_eq!(result.rows.len(), 1);
+    }
+
+    #[test]
+    fn expand_applies_dst_property_projection_for_property_return() {
+        let store = GraphStore::new();
+        let a = store
+            .insert_vertex_named(["ProjA"], [("uid", Value::Text("a1".into()))])
+            .expect("a");
+        let b = store
+            .insert_vertex_named(["ProjB"], [("uid", Value::Text("b1".into()))])
+            .expect("b");
+        store
+            .insert_directed_edge_named(a, b, Some("ProjRel"), Vec::<(&str, Value)>::new())
+            .expect("edge");
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "a".into(),
+                label: Some("ProjA".into()),
+                property_projection: None,
+            },
+            PlanOp::Expand {
+                src: "a".into(),
+                edge: "e".into(),
+                dst: "b".into(),
+                direction: EdgeDirection::PointingRight,
+                label: Some("ProjRel".into()),
+                label_expr: None,
+                var_len: None,
+                indexed_edge_equality: None,
+                edge_property_projection: Some(Rc::from([])),
+                dst_property_projection: Some(Rc::from([Str::from("uid")])),
+                hop_aux_binding: None,
+                emit_edge_binding: false,
+            },
+            PlanOp::Project {
+                columns: vec![
+                    project(prop("a", "uid"), "a_uid"),
+                    project(prop("b", "uid"), "b_uid"),
+                ],
+                distinct: false,
+            },
+        ]);
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("projection expand");
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0].get("a_uid"), Some(&Value::Text("a1".into())));
+        assert_eq!(result.rows[0].get("b_uid"), Some(&Value::Text("b1".into())));
     }
 
     #[test]

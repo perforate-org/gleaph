@@ -1,4 +1,4 @@
-//! PocketIC / `canbench` targets for shortest-path execution (`PhysicalPlan` replay).
+//! PocketIC / `canbench` targets for graph plan execution (`PhysicalPlan` replay).
 //!
 //! Run from `crates/graph`: `canbench` (see `canbench.yml`).
 
@@ -511,6 +511,142 @@ fn bench_graph_expand_hub_return_edge() -> canbench_rs::BenchResult {
         let _scope = canbench_rs::bench_scope("expand_hub_return_edge");
         let result = execute_expand_plan(black_box(&store), black_box(&plan));
         assert_eq!(result.rows.len(), EXPAND_HUB_OUT as usize);
+        black_box(result.rows.len())
+    })
+}
+
+fn expand_filter_plan() -> PhysicalPlan {
+    plan(vec![
+        PlanOp::NodeScan {
+            variable: "h".into(),
+            label: Some("BenchExpandHub".into()),
+            property_projection: None,
+        },
+        PlanOp::ExpandFilter {
+            src: "h".into(),
+            edge: "e".into(),
+            dst: "b".into(),
+            direction: EdgeDirection::PointingRight,
+            label: Some("BenchExpandEdge".into()),
+            label_expr: None,
+            var_len: None,
+            indexed_edge_equality: None,
+            dst_filter: vec![Expr::new(ExprKind::Compare {
+                left: Box::new(Expr::new(ExprKind::PropertyAccess {
+                    expr: Box::new(Expr::new(ExprKind::Variable("b".to_owned()))),
+                    property: "tag".to_owned(),
+                })),
+                op: gleaph_gql::ast::CmpOp::Eq,
+                right: Box::new(Expr::new(ExprKind::Literal(Value::Int64(1)))),
+            })],
+            edge_property_projection: None,
+            dst_property_projection: None,
+            hop_aux_binding: None,
+            emit_edge_binding: false,
+        },
+        PlanOp::Project {
+            columns: vec![project(var("b"), "b")],
+            distinct: false,
+        },
+    ])
+}
+
+fn setup_expand_filter_hub_graph(store: &GraphStore) {
+    let hub = store
+        .insert_vertex_named(["BenchExpandHub"], Vec::<(&str, Value)>::new())
+        .expect("hub");
+    for i in 0..EXPAND_HUB_OUT {
+        let keep = i % 2 == 0;
+        let tag = if keep { 1i64 } else { 0i64 };
+        let dst = store
+            .insert_vertex_named(
+                [format!("BenchExpandFilterDst{i}")],
+                [("tag", Value::Int64(tag))],
+            )
+            .expect("dst");
+        store
+            .insert_directed_edge_named(
+                hub,
+                dst,
+                Some("BenchExpandEdge"),
+                Vec::<(&str, Value)>::new(),
+            )
+            .expect("edge");
+    }
+}
+
+/// Hub fanout with destination predicate evaluated before row clone.
+#[bench(raw)]
+fn bench_graph_expand_filter_hub_return_dst_tag_eq() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    setup_expand_filter_hub_graph(&store);
+    let plan = expand_filter_plan();
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("expand_filter_hub_return_dst");
+        let result = execute_expand_plan(black_box(&store), black_box(&plan));
+        assert_eq!(result.rows.len(), EXPAND_HUB_OUT as usize / 2);
+        black_box(result.rows.len())
+    })
+}
+
+fn hop_count_shortest_endpoints_plan(
+    src_label: &str,
+    dst_label: &str,
+    edge_label: &str,
+    max_hops: u64,
+) -> PhysicalPlan {
+    plan(vec![
+        PlanOp::NodeScan {
+            variable: "a".into(),
+            label: Some(src_label.into()),
+            property_projection: None,
+        },
+        PlanOp::NodeScan {
+            variable: "c".into(),
+            label: Some(dst_label.into()),
+            property_projection: None,
+        },
+        PlanOp::ShortestPath {
+            src: "a".into(),
+            dst: "c".into(),
+            edge: "e".into(),
+            path_var: Some("p".into()),
+            emit_edge_binding: false,
+            emit_path_binding: false,
+            mode: ShortestMode::AnyShortest,
+            direction: EdgeDirection::PointingRight,
+            label: Some(edge_label.into()),
+            label_expr: None,
+            var_len: Some(VarLenSpec {
+                min: 1,
+                max: Some(max_hops),
+            }),
+            cost: ShortestPathCost::HopCount,
+        },
+        PlanOp::Project {
+            columns: vec![project(var("a"), "a"), project(var("c"), "c")],
+            distinct: false,
+        },
+    ])
+}
+
+/// Shortest path returning endpoints only; no edge/path materialization.
+#[bench(raw)]
+fn bench_graph_hop_shortest_return_endpoints_branch4_depth4() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    setup_frontier_heap_graph(&store);
+    let plan = hop_count_shortest_endpoints_plan(
+        "BenchWspSrc",
+        "BenchWspDst",
+        "BenchWspEdge",
+        FRONTIER_DEPTH,
+    );
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("hop_shortest_return_endpoints");
+        let result = execute_shortest_plan(black_box(&store), black_box(&plan));
+        assert_eq!(result.rows.len(), 1);
         black_box(result.rows.len())
     })
 }
