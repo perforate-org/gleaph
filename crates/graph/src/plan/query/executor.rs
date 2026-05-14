@@ -1121,9 +1121,15 @@ fn expand_dst_matches_prebound_vertex(row: &PlanRow, dst: &Str, dst_id: VertexId
 
 #[derive(Clone, Debug)]
 struct ShortestPathState {
-    current: VertexId,
     vertices: Vec<VertexId>,
     edges: Vec<EdgeBinding>,
+}
+
+struct PathSearchNode {
+    current: VertexId,
+    previous: Option<usize>,
+    edge: Option<EdgeBinding>,
+    depth: u64,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1224,44 +1230,51 @@ fn shortest_paths_between(
 
     let mut found_depth = None;
     let mut found = Vec::new();
-    let mut queue = VecDeque::from([ShortestPathState {
+    let mut states = vec![PathSearchNode {
         current: src,
-        vertices: vec![src],
-        edges: Vec::new(),
-    }]);
+        previous: None,
+        edge: None,
+        depth: 0,
+    }];
+    let mut queue = VecDeque::from([0usize]);
 
-    while let Some(state) = queue.pop_front() {
-        let depth = state.edges.len() as u64;
+    while let Some(state_idx) = queue.pop_front() {
+        let current = states[state_idx].current;
+        let depth = states[state_idx].depth;
         if found_depth.is_some_and(|d| depth > d) {
             break;
         }
-        if depth >= bounds.min && state.current == dst {
+        if depth >= bounds.min && current == dst {
             found_depth = Some(depth);
-            found.push(state);
+            found.push(state_idx);
             continue;
         }
         if depth >= max_hops {
             continue;
         }
 
-        for (next, handle, edge_record) in
-            expand_candidates(store, state.current, direction, label_id)?
-        {
-            if state.vertices.contains(&next) {
+        for (next, handle, edge_record) in expand_candidates(store, current, direction, label_id)? {
+            if path_search_contains_vertex(&states, state_idx, next) {
                 continue;
             }
-            let mut next_state = state.clone();
-            next_state.current = next;
-            next_state.vertices.push(next);
-            next_state.edges.push(EdgeBinding {
-                handle,
-                inline_value: edge_record.inline_value,
+            let next_state_idx = states.len();
+            states.push(PathSearchNode {
+                current: next,
+                previous: Some(state_idx),
+                edge: Some(EdgeBinding {
+                    handle,
+                    inline_value: edge_record.inline_value,
+                }),
+                depth: depth + 1,
             });
-            queue.push_back(next_state);
+            queue.push_back(next_state_idx);
         }
     }
 
-    Ok(found)
+    Ok(found
+        .into_iter()
+        .map(|state_idx| path_search_to_shortest_path_state(&states, state_idx))
+        .collect())
 }
 
 #[derive(Clone, Debug)]
@@ -1476,13 +1489,6 @@ fn map_weighted_cost_add_err(err: NumericOpError) -> PlanQueryError {
     }
 }
 
-struct WeightedPathNode {
-    current: VertexId,
-    previous: Option<usize>,
-    edge: Option<EdgeBinding>,
-    depth: u64,
-}
-
 struct WeightedQueueEntry {
     cost: WeightedCost,
     tie: u64,
@@ -1534,7 +1540,7 @@ fn weighted_shortest_paths_between(
 
     let mut heap = BinaryHeap::new();
     let mut tie = 0u64;
-    let mut states = vec![WeightedPathNode {
+    let mut states = vec![PathSearchNode {
         current: src,
         previous: None,
         edge: None,
@@ -1585,7 +1591,7 @@ fn weighted_shortest_paths_between(
         }
 
         for (next, handle, edge_record) in expand_candidates(store, current, direction, label_id)? {
-            if weighted_path_contains_vertex(&states, state_idx, next) {
+            if path_search_contains_vertex(&states, state_idx, next) {
                 continue;
             }
             let edge_binding = EdgeBinding {
@@ -1616,7 +1622,7 @@ fn weighted_shortest_paths_between(
             }
             tie += 1;
             let next_state_idx = states.len();
-            states.push(WeightedPathNode {
+            states.push(PathSearchNode {
                 current: next,
                 previous: Some(state_idx),
                 edge: Some(edge_binding),
@@ -1632,12 +1638,12 @@ fn weighted_shortest_paths_between(
 
     Ok(found
         .into_iter()
-        .map(|state_idx| weighted_path_to_shortest_path_state(&states, state_idx))
+        .map(|state_idx| path_search_to_shortest_path_state(&states, state_idx))
         .collect())
 }
 
-fn weighted_path_contains_vertex(
-    states: &[WeightedPathNode],
+fn path_search_contains_vertex(
+    states: &[PathSearchNode],
     mut state_idx: usize,
     vertex: VertexId,
 ) -> bool {
@@ -1653,8 +1659,8 @@ fn weighted_path_contains_vertex(
     }
 }
 
-fn weighted_path_to_shortest_path_state(
-    states: &[WeightedPathNode],
+fn path_search_to_shortest_path_state(
+    states: &[PathSearchNode],
     mut state_idx: usize,
 ) -> ShortestPathState {
     let mut vertices = Vec::with_capacity(states[state_idx].depth as usize + 1);
@@ -1672,13 +1678,7 @@ fn weighted_path_to_shortest_path_state(
     }
     vertices.reverse();
     edges.reverse();
-    ShortestPathState {
-        current: *vertices
-            .last()
-            .expect("weighted path reconstruction always includes the root vertex"),
-        vertices,
-        edges,
-    }
+    ShortestPathState { vertices, edges }
 }
 
 fn eval_shortest_hop_cost(

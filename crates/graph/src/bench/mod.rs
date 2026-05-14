@@ -1,4 +1,4 @@
-//! PocketIC / `canbench` targets for weighted shortest-path execution (`PhysicalPlan` replay).
+//! PocketIC / `canbench` targets for shortest-path execution (`PhysicalPlan` replay).
 //!
 //! Run from `crates/graph`: `canbench` (see `canbench.yml`).
 
@@ -101,7 +101,46 @@ fn weighted_shortest_plan(
     ])
 }
 
-fn execute_weighted_shortest(store: &GraphStore, plan: &PhysicalPlan) -> PlanQueryResult {
+fn hop_count_shortest_plan(
+    src_label: &str,
+    dst_label: &str,
+    edge_label: &str,
+    max_hops: u64,
+) -> PhysicalPlan {
+    plan(vec![
+        PlanOp::NodeScan {
+            variable: "a".into(),
+            label: Some(src_label.into()),
+            property_projection: None,
+        },
+        PlanOp::NodeScan {
+            variable: "c".into(),
+            label: Some(dst_label.into()),
+            property_projection: None,
+        },
+        PlanOp::ShortestPath {
+            src: "a".into(),
+            dst: "c".into(),
+            edge: "e".into(),
+            path_var: Some("p".into()),
+            mode: ShortestMode::AnyShortest,
+            direction: EdgeDirection::PointingRight,
+            label: Some(edge_label.into()),
+            label_expr: None,
+            var_len: Some(VarLenSpec {
+                min: 1,
+                max: Some(max_hops),
+            }),
+            cost: ShortestPathCost::HopCount,
+        },
+        PlanOp::Project {
+            columns: vec![project(var("p"), "p")],
+            distinct: false,
+        },
+    ])
+}
+
+fn execute_shortest_plan(store: &GraphStore, plan: &PhysicalPlan) -> PlanQueryResult {
     pollster::block_on(execute_plan_query(
         store,
         plan,
@@ -109,7 +148,7 @@ fn execute_weighted_shortest(store: &GraphStore, plan: &PhysicalPlan) -> PlanQue
         None,
         GqlExecutionContext::default(),
     ))
-    .expect("weighted shortest path plan")
+    .expect("shortest path plan")
 }
 
 const FRONTIER_BRANCH: usize = 4;
@@ -215,6 +254,27 @@ fn setup_repeated_edge_cost_cache_graph(store: &GraphStore) -> (VertexId, Vertex
 
 // --- benchmarks ---
 
+/// Stresses hop-count shortest-path frontier size on a layered branching DAG.
+/// Intended to surface regressions in BFS queue management and path-state reconstruction.
+#[bench(raw)]
+fn bench_graph_hop_count_shortest_frontier_queue_branch4_depth4() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    setup_frontier_heap_graph(&store);
+    let plan =
+        hop_count_shortest_plan("BenchWspSrc", "BenchWspDst", "BenchWspEdge", FRONTIER_DEPTH);
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("hop_count_shortest_frontier_queue");
+        let result = execute_shortest_plan(black_box(&store), black_box(&plan));
+        assert_eq!(
+            result.rows.len(),
+            1,
+            "hop-count frontier benchmark should find one path"
+        );
+        black_box(result.rows.len())
+    })
+}
+
 /// Stresses weighted shortest-path frontier size on a layered branching DAG with uniform
 /// per-hop cost. Intended to surface regressions in `BinaryHeap` queue management when many
 /// equal-cost partial paths are alive before the destination is reached.
@@ -232,7 +292,7 @@ fn bench_graph_weighted_shortest_frontier_heap_branch4_depth4() -> canbench_rs::
 
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("weighted_shortest_frontier_heap");
-        let result = execute_weighted_shortest(black_box(&store), black_box(&plan));
+        let result = execute_shortest_plan(black_box(&store), black_box(&plan));
         assert_eq!(
             result.rows.len(),
             1,
@@ -260,7 +320,7 @@ fn bench_graph_weighted_shortest_repeated_edge_cost_cache_48prefix_24hub_out()
 
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("weighted_shortest_edge_cost_cache");
-        let result = execute_weighted_shortest(black_box(&store), black_box(&plan));
+        let result = execute_shortest_plan(black_box(&store), black_box(&plan));
         assert_eq!(
             result.rows.len(),
             1,
