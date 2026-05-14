@@ -1581,6 +1581,16 @@ fn weighted_shortest_paths_between(
     let mut found_min_cost: Option<WeightedCost> = None;
     let mut found = Vec::new();
     let mut hop_cost_cache: BTreeMap<WeightedHopCostKey, WeightedCost> = BTreeMap::new();
+    let mut any_best_cost = if matches!(mode, ShortestMode::AnyShortest)
+        && bounds.min <= 1
+        && !matches!(cost_expr.kind, ExprKind::Literal(_))
+    {
+        let mut best = IntMap::default();
+        best.insert(u32::from(src), WeightedCost::zero());
+        Some(best)
+    } else {
+        None
+    };
 
     while let Some(entry) = heap.pop() {
         if let Some(ref min) = found_min_cost {
@@ -1645,6 +1655,16 @@ fn weighted_shortest_paths_between(
                 if matches!(next_cost.cmp(min), Ordering::Greater) {
                     continue;
                 }
+            }
+            if let Some(best_cost) = any_best_cost.as_mut() {
+                let next_vertex = u32::from(next);
+                if best_cost
+                    .get(&next_vertex)
+                    .is_some_and(|best| !matches!(next_cost.cmp(best), Ordering::Less))
+                {
+                    continue;
+                }
+                best_cost.insert(next_vertex, next_cost.clone());
             }
             tie += 1;
             let next_state_idx = states.len();
