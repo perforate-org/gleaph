@@ -175,6 +175,8 @@ pub enum PlanOp {
         /// (`Value::Bytes`, `Value::Null`, etc.). Semantics are executor/backend-defined (opaque to the planner).
         /// When [`None`], the executor uses its default auxiliary binding name.
         hop_aux_binding: Option<Str>,
+        /// When false, the executor skips binding the traversed `edge` variable.
+        emit_edge_binding: bool,
     },
 
     /// Fused Expand + property filter on the destination node (EVFusion).
@@ -195,6 +197,8 @@ pub enum PlanOp {
         dst_property_projection: Option<Rc<[Str]>>,
         /// Same semantics as [`PlanOp::Expand::hop_aux_binding`].
         hop_aux_binding: Option<Str>,
+        /// When false, the executor skips binding the traversed `edge` variable.
+        emit_edge_binding: bool,
     },
 
     /// Shortest-path search between already-bound `src` and bound `dst`.

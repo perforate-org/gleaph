@@ -436,6 +436,7 @@ pub fn apply_ev_fusion(ops: &mut Vec<PlanOp>, annotations: &mut PlanAnnotations)
                     edge_property_projection,
                     dst_property_projection,
                     hop_aux_binding,
+                    emit_edge_binding,
                 },
                 PlanOp::PropertyFilter { predicates, .. },
             ) = (expand_op, filter_op)
@@ -455,6 +456,7 @@ pub fn apply_ev_fusion(ops: &mut Vec<PlanOp>, annotations: &mut PlanAnnotations)
                         edge_property_projection,
                         dst_property_projection,
                         hop_aux_binding,
+                        emit_edge_binding,
                     },
                 );
                 annotations.optimizer.ev_fusion_applied = true;
@@ -638,6 +640,22 @@ fn prune_shortest_path_bindings_in_ops(ops: &mut [PlanOp], live: &mut LiveBindin
                     .as_ref()
                     .is_some_and(|path_var| live.contains(path_var.as_ref()));
             }
+            PlanOp::ExpandFilter {
+                edge,
+                dst_filter,
+                emit_edge_binding,
+                ..
+            } => {
+                *emit_edge_binding =
+                    live.contains(edge.as_ref()) || exprs_reference_var(dst_filter, edge.as_ref());
+            }
+            PlanOp::Expand {
+                edge,
+                emit_edge_binding,
+                ..
+            } => {
+                *emit_edge_binding = live.contains(edge.as_ref());
+            }
             _ => {}
         }
         update_live_before_op(op, live);
@@ -720,14 +738,25 @@ fn update_live_before_op(op: &PlanOp, live: &mut LiveBindings) {
             dst,
             hop_aux_binding,
             ..
+        } => {
+            live.remove(edge.as_ref());
+            live.remove(dst.as_ref());
+            if let Some(hop_aux_binding) = hop_aux_binding {
+                live.remove(hop_aux_binding.as_ref());
+            }
+            live.insert(src.to_string());
         }
-        | PlanOp::ExpandFilter {
+        PlanOp::ExpandFilter {
             src,
             edge,
             dst,
+            dst_filter,
             hop_aux_binding,
             ..
         } => {
+            for pred in dst_filter {
+                add_expr_vars_to_live(pred, live);
+            }
             live.remove(edge.as_ref());
             live.remove(dst.as_ref());
             if let Some(hop_aux_binding) = hop_aux_binding {
@@ -862,9 +891,24 @@ fn update_live_before_op(op: &PlanOp, live: &mut LiveBindings) {
 }
 
 fn add_expr_vars_to_live(expr: &gleaph_gql::ast::Expr, live: &mut LiveBindings) {
+    if live.all {
+        return;
+    }
     collect_variables_ref(expr, &mut |v| {
         live.insert(v.to_string());
     });
+}
+
+fn exprs_reference_var(exprs: &[gleaph_gql::ast::Expr], var: &str) -> bool {
+    exprs.iter().any(|expr| {
+        let mut found = false;
+        collect_variables_ref(expr, &mut |v| {
+            if v == var {
+                found = true;
+            }
+        });
+        found
+    })
 }
 
 #[cfg(test)]
@@ -981,5 +1025,87 @@ mod tests {
             panic!("expected HashJoin");
         };
         assert_eq!(shortest_path_flags(&left[0]), (true, false));
+    }
+
+    fn expand(edge: &str) -> PlanOp {
+        PlanOp::Expand {
+            src: "a".into(),
+            edge: edge.into(),
+            dst: "b".into(),
+            direction: EdgeDirection::PointingRight,
+            label: None,
+            label_expr: None,
+            var_len: None,
+            indexed_edge_equality: None,
+            edge_property_projection: None,
+            dst_property_projection: None,
+            hop_aux_binding: None,
+            emit_edge_binding: true,
+        }
+    }
+
+    fn expand_filter(edge: &str, dst_filter: Vec<Expr>) -> PlanOp {
+        PlanOp::ExpandFilter {
+            src: "a".into(),
+            edge: edge.into(),
+            dst: "b".into(),
+            direction: EdgeDirection::PointingRight,
+            label: None,
+            label_expr: None,
+            var_len: None,
+            indexed_edge_equality: None,
+            dst_filter,
+            edge_property_projection: None,
+            dst_property_projection: None,
+            hop_aux_binding: None,
+            emit_edge_binding: true,
+        }
+    }
+
+    fn expand_emit_flag(op: &PlanOp) -> bool {
+        match op {
+            PlanOp::Expand {
+                emit_edge_binding, ..
+            }
+            | PlanOp::ExpandFilter {
+                emit_edge_binding, ..
+            } => *emit_edge_binding,
+            _ => panic!("expected Expand op"),
+        }
+    }
+
+    #[test]
+    fn expand_pruning_return_dst_only() {
+        let mut ops = vec![
+            expand("e"),
+            PlanOp::Project {
+                columns: vec![ProjectColumn {
+                    expr: var("b"),
+                    alias: None,
+                }],
+                distinct: false,
+            },
+        ];
+        apply_shortest_path_binding_pruning(&mut ops, &mut PlanAnnotations::default());
+        assert!(!expand_emit_flag(&ops[0]));
+    }
+
+    #[test]
+    fn expand_filter_pruning_keeps_edge_when_dst_filter_reads_edge() {
+        let mut ops = vec![
+            expand_filter(
+                "e",
+                vec![Expr::new(ExprKind::IsNotNull(Box::new(var("e"))))],
+            ),
+            PlanOp::Project {
+                columns: vec![ProjectColumn {
+                    expr: var("b"),
+                    alias: None,
+                }],
+                distinct: false,
+            },
+        ];
+        apply_shortest_path_binding_pruning(&mut ops, &mut PlanAnnotations::default());
+        assert!(expand_emit_flag(&ops[0]));
     }
 }

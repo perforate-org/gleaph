@@ -2376,6 +2376,45 @@ fn shortest_path_filter_on_edge_keeps_edge_binding() {
     assert_eq!(shortest_path_emit_flags(&plan), (true, false));
 }
 
+fn expand_emit_flag(plan: &PhysicalPlan) -> bool {
+    plan.ops
+        .iter()
+        .find_map(|op| match op {
+            PlanOp::Expand {
+                emit_edge_binding, ..
+            }
+            | PlanOp::ExpandFilter {
+                emit_edge_binding, ..
+            } => Some(*emit_edge_binding),
+            _ => None,
+        })
+        .expect("Expand op")
+}
+
+#[test]
+fn expand_return_dst_only_prunes_edge_binding() {
+    let plan = plan_query("MATCH (a)-[e]->(b) RETURN b");
+    assert!(!expand_emit_flag(&plan));
+}
+
+#[test]
+fn expand_return_edge_keeps_edge_binding() {
+    let plan = plan_query("MATCH (a)-[e]->(b) RETURN e");
+    assert!(expand_emit_flag(&plan));
+}
+
+#[test]
+fn expand_filter_on_dst_keeps_edge_binding_pruned() {
+    let plan = plan_query("MATCH (a)-[e]->(b) WHERE b IS NOT NULL RETURN b");
+    assert!(!expand_emit_flag(&plan));
+}
+
+#[test]
+fn expand_filter_on_edge_keeps_edge_binding() {
+    let plan = plan_query("MATCH (a)-[e]->(b) WHERE e IS NOT NULL RETURN b");
+    assert!(expand_emit_flag(&plan));
+}
+
 #[test]
 fn non_shortest_path_variable_is_rejected() {
     let err = plan_query_err("MATCH p = (a)-[e]->(b) RETURN p");

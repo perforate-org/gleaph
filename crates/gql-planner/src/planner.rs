@@ -2211,6 +2211,7 @@ fn plan_path_term(
                                     edge_var,
                                     referenced_vars,
                                 ),
+                                emit_edge_binding: true,
                             });
                             bound_node_vars.insert(dst_var.clone());
                             path_bound_node_vars.insert(dst_var.clone());
@@ -2231,6 +2232,7 @@ fn plan_path_term(
                                     edge_var,
                                     referenced_vars,
                                 ),
+                                emit_edge_binding: true,
                             });
                             bound_node_vars.insert(dst_var.clone());
                             path_bound_node_vars.insert(dst_var.clone());

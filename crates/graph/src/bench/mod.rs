@@ -400,3 +400,117 @@ fn bench_graph_weighted_shortest_repeated_edge_cost_cache_48prefix_24hub_out()
         black_box(result.rows.len())
     })
 }
+
+const EXPAND_HUB_OUT: u32 = 24;
+const EXPAND_PREFIXES: u32 = 48;
+
+fn setup_expand_hub_graph(store: &GraphStore) {
+    let _src = store
+        .insert_vertex_named(["BenchExpandSrc"], Vec::<(&str, Value)>::new())
+        .expect("src");
+    let hub = store
+        .insert_vertex_named(["BenchExpandHub"], Vec::<(&str, Value)>::new())
+        .expect("hub");
+    for i in 0..EXPAND_PREFIXES {
+        let prefix = store
+            .insert_vertex_named(
+                [format!("BenchExpandPrefix{i}")],
+                Vec::<(&str, Value)>::new(),
+            )
+            .expect("prefix");
+        store
+            .insert_directed_edge_named(
+                prefix,
+                hub,
+                Some("BenchExpandEdge"),
+                Vec::<(&str, Value)>::new(),
+            )
+            .expect("prefix->hub");
+    }
+    for i in 0..EXPAND_HUB_OUT {
+        let dst = store
+            .insert_vertex_named([format!("BenchExpandDst{i}")], Vec::<(&str, Value)>::new())
+            .expect("dst");
+        store
+            .insert_directed_edge_named(
+                hub,
+                dst,
+                Some("BenchExpandEdge"),
+                Vec::<(&str, Value)>::new(),
+            )
+            .expect("hub->dst");
+    }
+}
+
+fn expand_plan(emit_edge_binding: bool) -> PhysicalPlan {
+    plan(vec![
+        PlanOp::NodeScan {
+            variable: "h".into(),
+            label: Some("BenchExpandHub".into()),
+            property_projection: None,
+        },
+        PlanOp::Expand {
+            src: "h".into(),
+            edge: "e".into(),
+            dst: "b".into(),
+            direction: EdgeDirection::PointingRight,
+            label: Some("BenchExpandEdge".into()),
+            label_expr: None,
+            var_len: None,
+            indexed_edge_equality: None,
+            edge_property_projection: None,
+            dst_property_projection: None,
+            hop_aux_binding: None,
+            emit_edge_binding,
+        },
+        PlanOp::Project {
+            columns: vec![project(var("b"), "b")],
+            distinct: false,
+        },
+    ])
+}
+
+fn execute_expand_plan(store: &GraphStore, plan: &PhysicalPlan) -> PlanQueryResult {
+    pollster::block_on(execute_plan_query(
+        store,
+        plan,
+        &params(),
+        None,
+        GqlExecutionContext::default(),
+    ))
+    .expect("execute expand plan")
+}
+
+/// Hub fanout expand returning only destination vertices; edge binding is pruned.
+#[bench(raw)]
+fn bench_graph_expand_hub_return_dst_only() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    setup_expand_hub_graph(&store);
+    let plan = expand_plan(false);
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("expand_hub_return_dst");
+        let result = execute_expand_plan(black_box(&store), black_box(&plan));
+        assert_eq!(
+            result.rows.len(),
+            EXPAND_HUB_OUT as usize,
+            "expand benchmark should emit one row per hub outgoing edge"
+        );
+        black_box(result.rows.len())
+    })
+}
+
+/// Same hub fanout expand but materializes edge bindings on every output row.
+#[bench(raw)]
+fn bench_graph_expand_hub_return_edge() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    setup_expand_hub_graph(&store);
+    let plan = expand_plan(true);
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("expand_hub_return_edge");
+        let result = execute_expand_plan(black_box(&store), black_box(&plan));
+        assert_eq!(result.rows.len(), EXPAND_HUB_OUT as usize);
+        black_box(result.rows.len())
+    })
+}

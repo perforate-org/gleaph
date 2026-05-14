@@ -625,6 +625,7 @@ mod tests {
                 edge_property_projection: None,
                 dst_property_projection: None,
                 hop_aux_binding: None,
+                emit_edge_binding: true,
             },
         ];
         apply_node_property_projections(&mut ops);

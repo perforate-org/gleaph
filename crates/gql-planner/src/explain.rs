@@ -352,6 +352,7 @@ fn format_op(op: &PlanOp) -> String {
             edge_property_projection,
             dst_property_projection,
             hop_aux_binding,
+            ..
         } => {
             let arrow = format_direction(direction);
             let label_str = label
@@ -410,6 +411,7 @@ fn format_op(op: &PlanOp) -> String {
             edge_property_projection,
             dst_property_projection,
             hop_aux_binding,
+            ..
         } => {
             let arrow = format_direction(direction);
             let label_str = label

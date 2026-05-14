@@ -443,6 +443,7 @@ fn execute_ops_from<'a>(
                     edge_property_projection: _,
                     dst_property_projection: _,
                     hop_aux_binding,
+                    emit_edge_binding,
                 } => {
                     ensure_simple_expand(
                         label_expr,
@@ -460,6 +461,7 @@ fn execute_ops_from<'a>(
                         *direction,
                         label.as_ref(),
                         &[],
+                        *emit_edge_binding,
                         caller,
                         gwd,
                     )?
@@ -477,6 +479,7 @@ fn execute_ops_from<'a>(
                     edge_property_projection: _,
                     dst_property_projection: _,
                     hop_aux_binding,
+                    emit_edge_binding,
                 } => {
                     ensure_simple_expand(
                         label_expr,
@@ -494,6 +497,7 @@ fn execute_ops_from<'a>(
                         *direction,
                         label.as_ref(),
                         dst_filter,
+                        *emit_edge_binding,
                         caller,
                         gwd,
                     )?
@@ -1073,6 +1077,7 @@ fn execute_expand(
     direction: EdgeDirection,
     label: Option<&Str>,
     dst_filter: &[Expr],
+    emit_edge_binding: bool,
     caller: Option<Principal>,
     gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
@@ -1089,18 +1094,24 @@ fn execute_expand(
         gleaph_weight_decoders,
     };
     let mut out = Vec::new();
+    let edge_key = emit_edge_binding.then(|| edge.to_string());
+    let dst_key = dst.to_string();
+    let mut candidates = Vec::new();
     for row in rows {
         let Some(src_id) = vertex_binding_for_traversal(&row, src)? else {
             continue;
         };
-        let candidates = expand_candidates(store, src_id, direction, label_id)?;
-        for (dst_id, edge_binding) in candidates {
+        candidates.clear();
+        expand_candidates_into(store, src_id, direction, label_id, &mut candidates)?;
+        for (dst_id, edge_binding) in candidates.iter().copied() {
             if !expand_dst_matches_prebound_vertex(&row, dst, dst_id) {
                 continue;
             }
             let mut expanded = row.clone();
-            expanded.insert(edge.to_string(), PlanBinding::Edge(edge_binding));
-            expanded.insert(dst.to_string(), PlanBinding::Vertex(dst_id));
+            if let Some(edge_key) = &edge_key {
+                expanded.insert(edge_key.clone(), PlanBinding::Edge(edge_binding));
+            }
+            expanded.insert(dst_key.clone(), PlanBinding::Vertex(dst_id));
             if !row_matches_all(&evaluator, &expanded, dst_filter)? {
                 continue;
             }
@@ -4934,6 +4945,7 @@ mod tests {
                         edge_property_projection: None,
                         dst_property_projection: None,
                         hop_aux_binding: None,
+                        emit_edge_binding: true,
                     },
                 ],
                 join_keys: vec!["a".into()],
@@ -5271,6 +5283,7 @@ mod tests {
                         edge_property_projection: None,
                         dst_property_projection: None,
                         hop_aux_binding: None,
+                        emit_edge_binding: true,
                     },
                 ],
                 join_keys: vec!["a".into()],
@@ -5343,6 +5356,7 @@ mod tests {
                 edge_property_projection: None,
                 dst_property_projection: None,
                 hop_aux_binding: None,
+                emit_edge_binding: true,
             },
             PlanOp::Project {
                 columns: vec![
@@ -5536,6 +5550,7 @@ mod tests {
                 edge_property_projection: None,
                 dst_property_projection: None,
                 hop_aux_binding: None,
+                emit_edge_binding: true,
             },
             PlanOp::Project {
                 columns: vec![project(prop("b", "age"), "age")],
@@ -5592,6 +5607,7 @@ mod tests {
                 edge_property_projection: None,
                 dst_property_projection: None,
                 hop_aux_binding: None,
+                emit_edge_binding: true,
             },
             PlanOp::Project {
                 columns: vec![],
@@ -6048,6 +6064,7 @@ mod tests {
             edge_property_projection: None,
             dst_property_projection: None,
             hop_aux_binding: None,
+            emit_edge_binding: true,
         };
         let plan = plan(vec![
             PlanOp::NodeScan {
