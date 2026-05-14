@@ -46,6 +46,7 @@ use std::{
 #[cfg(feature = "canbench")]
 mod bench;
 pub mod bidirectional;
+pub mod labeled;
 pub mod lara;
 pub mod traits;
 mod types;
@@ -54,6 +55,12 @@ pub use bidirectional::{
     BidirectionalLara, BidirectionalLaraError, BidirectionalLaraGraph,
     BidirectionalMaintenanceReport, DeferredBidirectionalLara, DeferredBidirectionalLaraError,
     DeferredBidirectionalLaraGraph, DeleteEdgeObserver,
+};
+pub use labeled::{
+    BidirectionalLabeledError, BidirectionalLabeledLara, BidirectionalLabeledLaraGraph,
+    DeferredBidirectionalLabeledLara, DeferredBidirectionalLabeledLaraGraph, DeferredLabeledLara,
+    DeferredLabeledLaraGraph, LabelBucket, LabelId, LabeledCsrVertex, LabeledLara,
+    LabeledLaraGraph, LabeledVertex,
 };
 pub use lara::{
     LaraGraph,

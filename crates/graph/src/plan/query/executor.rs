@@ -2286,6 +2286,9 @@ fn csr_expand_edge_matches(
 }
 
 /// Slab rows can reject non-matching slots from the packed `meta` word alone.
+///
+/// Labeled multi-level CSR stores should use [`super::labeled_csr::for_each_labeled_out_expand_edge`]
+/// instead, because label and direction semantics are resolved before traversal.
 fn csr_expand_supports_raw_prefilter(edge_label_id: Option<LabelId>) -> bool {
     edge_label_id.is_none_or(|id| id.is_edge_inline_capable())
 }
