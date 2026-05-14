@@ -1616,6 +1616,9 @@ fn weighted_shortest_paths_between(
     let mut found_min_cost: Option<WeightedCost> = None;
     let mut found = Vec::new();
     let mut hop_cost_cache: BTreeMap<WeightedHopCostKey, WeightedCost> = BTreeMap::new();
+    let direct_gleaph_weight_decoder =
+        direct_gleaph_weight_hop_cost_decoder(cost_expr, edge_var, gleaph_weight_decoders)?;
+    let use_hop_cost_cache = direct_gleaph_weight_decoder.is_none();
     let mut any_best_cost = if matches!(mode, ShortestMode::AnyShortest)
         && bounds.min <= 1
         && !matches!(cost_expr.kind, ExprKind::Literal(_))
@@ -1665,24 +1668,32 @@ fn weighted_shortest_paths_between(
         candidates.clear();
         expand_candidates_into(store, current, direction, label_id, &mut candidates)?;
         for (next, edge_binding) in candidates.iter().copied() {
-            if path_search_contains_vertex(&states, state_idx, next) {
+            if any_best_cost.is_none() && path_search_contains_vertex(&states, state_idx, next) {
                 continue;
             }
-            let cost_key = WeightedHopCostKey::from_edge_binding(edge_binding);
-            let hop_cost = match hop_cost_cache.get(&cost_key) {
-                Some(cost) => cost.clone(),
-                None => {
-                    let cost = eval_shortest_hop_cost(
-                        store,
-                        cost_expr,
-                        edge_var,
-                        edge_binding,
-                        parameters,
-                        gleaph_weight_decoders,
-                    )?;
-                    hop_cost_cache.insert(cost_key, cost.clone());
-                    cost
+            let hop_cost = if use_hop_cost_cache {
+                let cost_key = WeightedHopCostKey::from_edge_binding(edge_binding);
+                match hop_cost_cache.get(&cost_key) {
+                    Some(cost) => cost.clone(),
+                    None => {
+                        let cost = eval_shortest_hop_cost(
+                            store,
+                            cost_expr,
+                            edge_var,
+                            edge_binding,
+                            parameters,
+                            gleaph_weight_decoders,
+                        )?;
+                        hop_cost_cache.insert(cost_key, cost.clone());
+                        cost
+                    }
                 }
+            } else {
+                decode_direct_gleaph_weight_hop_cost(
+                    direct_gleaph_weight_decoder
+                        .expect("direct GLEAPH_WEIGHT decoder must be present"),
+                    edge_binding,
+                )?
             };
             let next_cost = entry.cost.checked_add(&hop_cost)?;
             if let Some(ref min) = found_min_cost {
@@ -1793,6 +1804,19 @@ fn eval_direct_gleaph_weight_hop_cost(
     edge_binding: EdgeBinding,
     gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
 ) -> Result<Option<WeightedCost>, PlanQueryError> {
+    let Some(decoder) =
+        direct_gleaph_weight_hop_cost_decoder(expr, edge_var, gleaph_weight_decoders)?
+    else {
+        return Ok(None);
+    };
+    decode_direct_gleaph_weight_hop_cost(decoder, edge_binding).map(Some)
+}
+
+fn direct_gleaph_weight_hop_cost_decoder<'a>(
+    expr: &Expr,
+    edge_var: &str,
+    gleaph_weight_decoders: Option<&'a BTreeMap<String, PreparedWeightDecoder>>,
+) -> Result<Option<&'a PreparedWeightDecoder>, PlanQueryError> {
     let ExprKind::FunctionCall {
         name,
         args,
@@ -1813,21 +1837,26 @@ fn eval_direct_gleaph_weight_hop_cost(
     if arg_edge_var != edge_var {
         return Ok(None);
     }
-    let decoder = gleaph_weight_decoders
+    gleaph_weight_decoders
         .and_then(|decoders| decoders.get(edge_var))
         .ok_or_else(|| PlanQueryError::GleaphWeight {
             message: format!(
                 "GLEAPH_WEIGHT({edge_var}): no prepared decoder for this edge variable"
             ),
-        })?;
+        })
+        .map(Some)
+}
+
+fn decode_direct_gleaph_weight_hop_cost(
+    decoder: &PreparedWeightDecoder,
+    edge_binding: EdgeBinding,
+) -> Result<WeightedCost, PlanQueryError> {
     let weight = decode_inline_weight(decoder, edge_binding.inline_value).map_err(|e| {
         PlanQueryError::GleaphWeight {
             message: format!("GLEAPH_WEIGHT decode failed: {e}"),
         }
     })?;
-    Ok(Some(WeightedCost::from_validated_non_negative_float32(
-        weight,
-    )))
+    Ok(WeightedCost::from_validated_non_negative_float32(weight))
 }
 
 fn path_state_to_value(shard_id: u64, path: &ShortestPathState) -> Value {
