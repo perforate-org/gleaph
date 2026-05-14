@@ -1169,7 +1169,7 @@ fn execute_shortest_path(
                 shortest_paths_between(store, src_id, dst_id, direction, label_id, var_len, mode)?
             }
             ShortestPathCost::EdgeCostExpr { edge_var, expr }
-                if weighted_any_shortest_can_use_hop_count(mode, expr) =>
+                if weighted_shortest_can_use_hop_count(mode, expr) =>
             {
                 shortest_paths_between(store, src_id, dst_id, direction, label_id, var_len, mode)?
             }
@@ -1302,14 +1302,18 @@ fn shortest_paths_between(
         .collect())
 }
 
-fn weighted_any_shortest_can_use_hop_count(mode: ShortestMode, cost_expr: &Expr) -> bool {
-    if !matches!(mode, ShortestMode::AnyShortest) {
-        return false;
-    }
+fn weighted_shortest_can_use_hop_count(mode: ShortestMode, cost_expr: &Expr) -> bool {
     let ExprKind::Literal(value) = &cost_expr.kind else {
         return false;
     };
-    WeightedCost::from_value(value.clone()).is_ok()
+    let Ok(cost) = WeightedCost::from_value(value.clone()) else {
+        return false;
+    };
+    match mode {
+        ShortestMode::AnyShortest => true,
+        ShortestMode::AllShortest => matches!(cost.cmp(&WeightedCost::zero()), Ordering::Greater),
+        ShortestMode::ShortestK(_) => false,
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -6195,6 +6199,30 @@ mod tests {
             PlanQueryError::GleaphCost {
                 message: msg
             } if msg == "shortest-path edge cost must be non-negative"
+        ));
+    }
+
+    #[test]
+    fn weighted_literal_cost_uses_hop_count_when_equivalent() {
+        let positive = Expr::new(ExprKind::Literal(Value::Int32(1)));
+        let zero = Expr::new(ExprKind::Literal(Value::Int32(0)));
+        let negative = Expr::new(ExprKind::Literal(Value::Int32(-1)));
+
+        assert!(weighted_shortest_can_use_hop_count(
+            ShortestMode::AnyShortest,
+            &zero
+        ));
+        assert!(weighted_shortest_can_use_hop_count(
+            ShortestMode::AllShortest,
+            &positive
+        ));
+        assert!(!weighted_shortest_can_use_hop_count(
+            ShortestMode::AllShortest,
+            &zero
+        ));
+        assert!(!weighted_shortest_can_use_hop_count(
+            ShortestMode::AnyShortest,
+            &negative
         ));
     }
 

@@ -65,6 +65,24 @@ fn weighted_shortest_plan(
     cost_expr: Expr,
     max_hops: u64,
 ) -> PhysicalPlan {
+    weighted_shortest_plan_with_mode(
+        src_label,
+        dst_label,
+        edge_label,
+        cost_expr,
+        max_hops,
+        ShortestMode::AnyShortest,
+    )
+}
+
+fn weighted_shortest_plan_with_mode(
+    src_label: &str,
+    dst_label: &str,
+    edge_label: &str,
+    cost_expr: Expr,
+    max_hops: u64,
+    mode: ShortestMode,
+) -> PhysicalPlan {
     plan(vec![
         PlanOp::NodeScan {
             variable: "a".into(),
@@ -81,7 +99,7 @@ fn weighted_shortest_plan(
             dst: "c".into(),
             edge: "e".into(),
             path_var: Some("p".into()),
-            mode: ShortestMode::AnyShortest,
+            mode,
             direction: EdgeDirection::PointingRight,
             label: Some(edge_label.into()),
             label_expr: None,
@@ -318,6 +336,34 @@ fn bench_graph_weighted_shortest_frontier_heap_branch4_depth4() -> canbench_rs::
             result.rows.len(),
             1,
             "frontier benchmark should find one path"
+        );
+        black_box(result.rows.len())
+    })
+}
+
+/// Same layered DAG as the weighted frontier benchmark, but requests all equal-depth shortest
+/// paths. With a positive literal cost, weighted `AllShortest` is equivalent to hop-count shortest.
+#[bench(raw)]
+fn bench_graph_weighted_all_shortest_literal_frontier_branch4_depth4() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    setup_frontier_heap_graph(&store);
+    let plan = weighted_shortest_plan_with_mode(
+        "BenchWspSrc",
+        "BenchWspDst",
+        "BenchWspEdge",
+        Expr::new(ExprKind::Literal(Value::Int32(1))),
+        FRONTIER_DEPTH,
+        ShortestMode::AllShortest,
+    );
+    let expected_paths = FRONTIER_BRANCH.pow((FRONTIER_DEPTH - 1) as u32);
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("weighted_all_shortest_literal_frontier");
+        let result = execute_shortest_plan(black_box(&store), black_box(&plan));
+        assert_eq!(
+            result.rows.len(),
+            expected_paths,
+            "weighted all-shortest frontier benchmark should find every shortest path"
         );
         black_box(result.rows.len())
     })
