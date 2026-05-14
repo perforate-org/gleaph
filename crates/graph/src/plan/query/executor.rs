@@ -1,7 +1,7 @@
 use super::aggregate;
 use super::error::PlanQueryError;
 use super::sort_keys::compare_sort_keys;
-use crate::facade::{EdgeHandle, GraphStore, canonical_undirected_owner};
+use crate::facade::{EdgeHandle, GraphStore, GraphStoreError, canonical_undirected_owner};
 use crate::gql_execution_context::{GqlExecutionContext, try_eval_runtime_function_call};
 use crate::index::edge_equal;
 use crate::index::lookup::PropertyIndexLookup;
@@ -27,12 +27,12 @@ use gleaph_gql_planner::plan::{
     ScanValue, ShortestMode, ShortestPathCost, Str, VarLenSpec,
 };
 use gleaph_graph_kernel::entry::{
-    LabelId, PreparedWeightDecoder, Vertex, VertexEdgeId, decode_inline_weight,
+    Edge, LabelId, PreparedWeightDecoder, Vertex, VertexEdgeId, decode_inline_weight,
 };
 use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest};
 use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
 use ic_stable_lara::VertexId;
-use ic_stable_lara::traits::CsrVertexTombstone;
+use ic_stable_lara::traits::{CsrEdge, CsrVertexTombstone};
 use nohash_hasher::{IntMap, IntSet};
 use rapidhash::fast::RapidHasher;
 use std::cmp::Ordering;
@@ -2140,31 +2140,27 @@ fn expand_candidates_into(
 
     match direction {
         EdgeDirection::PointingRight => {
-            for edge in store
-                .out_edges(src_id)
-                .map_err(crate::facade::GraphStoreError::from)?
-            {
-                if edge.meta.is_undirected() {
-                    continue;
+            let mut error = None;
+            for_each_csr_expand_edge(store, src_id, direction, edge_label_id, |edge| {
+                if error.is_some() {
+                    return;
                 }
-                if let Some(expected) = edge_label_id {
-                    if !expected.is_edge_inline_capable()
-                        || edge.meta.inline_label_bits() != expected.raw()
-                    {
-                        continue;
-                    }
-                }
-                if let Some((property, scan_value)) = indexed
-                    && !edge_matches_indexed_equality(
+                if let Some((property, scan_value)) = indexed {
+                    match edge_matches_indexed_equality(
                         store,
                         src_id,
                         edge.vertex_edge_id,
                         property,
                         scan_value,
                         parameters,
-                    )?
-                {
-                    continue;
+                    ) {
+                        Ok(false) => return,
+                        Ok(true) => {}
+                        Err(err) => {
+                            error = Some(err);
+                            return;
+                        }
+                    }
                 }
                 out.push((
                     edge.target,
@@ -2176,34 +2172,33 @@ fn expand_candidates_into(
                         inline_value: edge.inline_value,
                     },
                 ));
+            })?;
+            if let Some(err) = error {
+                return Err(err);
             }
         }
         EdgeDirection::PointingLeft => {
-            for edge in store
-                .in_edges(src_id)
-                .map_err(crate::facade::GraphStoreError::from)?
-            {
-                if edge.meta.is_undirected() {
-                    continue;
+            let mut error = None;
+            for_each_csr_expand_edge(store, src_id, direction, edge_label_id, |edge| {
+                if error.is_some() {
+                    return;
                 }
-                if let Some(expected) = edge_label_id {
-                    if !expected.is_edge_inline_capable()
-                        || edge.meta.inline_label_bits() != expected.raw()
-                    {
-                        continue;
-                    }
-                }
-                if let Some((property, scan_value)) = indexed
-                    && !edge_matches_indexed_equality(
+                if let Some((property, scan_value)) = indexed {
+                    match edge_matches_indexed_equality(
                         store,
                         edge.target,
                         edge.vertex_edge_id,
                         property,
                         scan_value,
                         parameters,
-                    )?
-                {
-                    continue;
+                    ) {
+                        Ok(false) => return,
+                        Ok(true) => {}
+                        Err(err) => {
+                            error = Some(err);
+                            return;
+                        }
+                    }
                 }
                 out.push((
                     edge.target,
@@ -2215,35 +2210,34 @@ fn expand_candidates_into(
                         inline_value: edge.inline_value,
                     },
                 ));
+            })?;
+            if let Some(err) = error {
+                return Err(err);
             }
         }
         EdgeDirection::Undirected => {
-            for edge in store
-                .out_edges(src_id)
-                .map_err(crate::facade::GraphStoreError::from)?
-            {
-                if !edge.meta.is_undirected() {
-                    continue;
-                }
-                if let Some(expected) = edge_label_id {
-                    if !expected.is_edge_inline_capable()
-                        || edge.meta.inline_label_bits() != expected.raw()
-                    {
-                        continue;
-                    }
+            let mut error = None;
+            for_each_csr_expand_edge(store, src_id, direction, edge_label_id, |edge| {
+                if error.is_some() {
+                    return;
                 }
                 let owner = canonical_undirected_owner(src_id, edge.target);
-                if let Some((property, scan_value)) = indexed
-                    && !edge_matches_indexed_equality(
+                if let Some((property, scan_value)) = indexed {
+                    match edge_matches_indexed_equality(
                         store,
                         owner,
                         edge.vertex_edge_id,
                         property,
                         scan_value,
                         parameters,
-                    )?
-                {
-                    continue;
+                    ) {
+                        Ok(false) => return,
+                        Ok(true) => {}
+                        Err(err) => {
+                            error = Some(err);
+                            return;
+                        }
+                    }
                 }
                 out.push((
                     edge.target,
@@ -2255,6 +2249,9 @@ fn expand_candidates_into(
                         inline_value: edge.inline_value,
                     },
                 ));
+            })?;
+            if let Some(err) = error {
+                return Err(err);
             }
         }
         other => return Err(PlanQueryError::UnsupportedDirection(other)),
@@ -2272,6 +2269,94 @@ fn edge_label_matches(
         }
         None => true,
     }
+}
+
+fn csr_expand_edge_matches(
+    edge: &Edge,
+    direction: EdgeDirection,
+    edge_label_id: Option<LabelId>,
+) -> bool {
+    match direction {
+        EdgeDirection::PointingRight | EdgeDirection::PointingLeft if edge.meta.is_undirected() => {
+            false
+        }
+        EdgeDirection::Undirected if !edge.meta.is_undirected() => false,
+        _ => edge_label_matches(edge_label_id, &edge.meta),
+    }
+}
+
+/// Slab rows can reject non-matching slots from the packed `meta` word alone.
+fn csr_expand_supports_raw_prefilter(edge_label_id: Option<LabelId>) -> bool {
+    edge_label_id.is_none_or(|id| id.is_edge_inline_capable())
+}
+
+fn csr_expand_raw_slot_matches(
+    chunk: &[u8],
+    direction: EdgeDirection,
+    edge_label_id: Option<LabelId>,
+) -> bool {
+    debug_assert_eq!(chunk.len(), Edge::BYTES);
+    const INLINE_MASK: u16 = 0x3FFF;
+    const UNDIRECTED_BIT: u16 = 1 << 15;
+    let meta = u16::from_le_bytes([chunk[10], chunk[11]]);
+    if let Some(expected) = edge_label_id.filter(|id| id.is_edge_inline_capable()) {
+        if meta & INLINE_MASK != expected.raw() {
+            return false;
+        }
+    }
+    match direction {
+        EdgeDirection::PointingRight | EdgeDirection::PointingLeft => meta & UNDIRECTED_BIT == 0,
+        EdgeDirection::Undirected => meta & UNDIRECTED_BIT != 0,
+        _ => false,
+    }
+}
+
+fn for_each_csr_expand_edge<F>(
+    store: &GraphStore,
+    src_id: VertexId,
+    direction: EdgeDirection,
+    edge_label_id: Option<LabelId>,
+    visit: F,
+) -> Result<(), PlanQueryError>
+where
+    F: FnMut(Edge),
+{
+    if csr_expand_supports_raw_prefilter(edge_label_id) {
+        let mut raw_matches =
+            |chunk: &[u8]| csr_expand_raw_slot_matches(chunk, direction, edge_label_id);
+        let mut log_matches = |edge: &Edge| csr_expand_edge_matches(edge, direction, edge_label_id);
+        match direction {
+            EdgeDirection::PointingRight | EdgeDirection::Undirected => store
+                .for_each_out_edge_matching_with_raw(
+                    src_id,
+                    Some(&mut raw_matches),
+                    &mut log_matches,
+                    visit,
+                )
+                .map_err(GraphStoreError::from)?,
+            EdgeDirection::PointingLeft => store
+                .for_each_in_edge_matching_with_raw(
+                    src_id,
+                    Some(&mut raw_matches),
+                    &mut log_matches,
+                    visit,
+                )
+                .map_err(GraphStoreError::from)?,
+            other => return Err(PlanQueryError::UnsupportedDirection(other)),
+        }
+    } else {
+        let mut matches = |edge: &Edge| csr_expand_edge_matches(edge, direction, edge_label_id);
+        match direction {
+            EdgeDirection::PointingRight | EdgeDirection::Undirected => store
+                .for_each_out_edge_matching(src_id, &mut matches, visit)
+                .map_err(GraphStoreError::from)?,
+            EdgeDirection::PointingLeft => store
+                .for_each_in_edge_matching(src_id, &mut matches, visit)
+                .map_err(GraphStoreError::from)?,
+            other => return Err(PlanQueryError::UnsupportedDirection(other)),
+        }
+    }
+    Ok(())
 }
 
 /// Probes the in-process edge equality index and, on hit, enumerates only matching slots.
@@ -2308,18 +2393,9 @@ fn expand_candidates_via_equality_index(
 
     match direction {
         EdgeDirection::PointingRight => {
-            for edge in store
-                .out_edges(src_id)
-                .map_err(crate::facade::GraphStoreError::from)?
-            {
-                if edge.meta.is_undirected() {
-                    continue;
-                }
-                if !edge_label_matches(edge_label_id, &edge.meta) {
-                    continue;
-                }
+            for_each_csr_expand_edge(store, src_id, direction, edge_label_id, |edge| {
                 if !out_slots.contains(&edge.vertex_edge_id) {
-                    continue;
+                    return;
                 }
                 out.push((
                     edge.target,
@@ -2331,21 +2407,12 @@ fn expand_candidates_via_equality_index(
                         inline_value: edge.inline_value,
                     },
                 ));
-            }
+            })?;
         }
         EdgeDirection::PointingLeft => {
-            for edge in store
-                .in_edges(src_id)
-                .map_err(crate::facade::GraphStoreError::from)?
-            {
-                if edge.meta.is_undirected() {
-                    continue;
-                }
-                if !edge_label_matches(edge_label_id, &edge.meta) {
-                    continue;
-                }
+            for_each_csr_expand_edge(store, src_id, direction, edge_label_id, |edge| {
                 if !in_slots.contains(&(edge.target, edge.vertex_edge_id)) {
-                    continue;
+                    return;
                 }
                 out.push((
                     edge.target,
@@ -2357,22 +2424,13 @@ fn expand_candidates_via_equality_index(
                         inline_value: edge.inline_value,
                     },
                 ));
-            }
+            })?;
         }
         EdgeDirection::Undirected => {
-            for edge in store
-                .out_edges(src_id)
-                .map_err(crate::facade::GraphStoreError::from)?
-            {
-                if !edge.meta.is_undirected() {
-                    continue;
-                }
-                if !edge_label_matches(edge_label_id, &edge.meta) {
-                    continue;
-                }
+            for_each_csr_expand_edge(store, src_id, direction, edge_label_id, |edge| {
                 let owner = canonical_undirected_owner(src_id, edge.target);
                 if !in_slots.contains(&(owner, edge.vertex_edge_id)) {
-                    continue;
+                    return;
                 }
                 out.push((
                     edge.target,
@@ -2384,7 +2442,7 @@ fn expand_candidates_via_equality_index(
                         inline_value: edge.inline_value,
                     },
                 ));
-            }
+            })?;
         }
         other => return Err(PlanQueryError::UnsupportedDirection(other)),
     }

@@ -295,6 +295,41 @@ where
         self.edges.collect_out_edges_slot_order(&self.vertices, src)
     }
 
+    /// Walks outgoing edges without building a full adjacency vector.
+    pub fn for_each_out_edge_matching<Match, Visit>(
+        &self,
+        src: VertexId,
+        matches: Match,
+        visit: Visit,
+    ) -> Result<(), LaraOperationError>
+    where
+        Match: FnMut(&E) -> bool,
+        Visit: FnMut(E),
+    {
+        self.for_each_out_edge_matching_with_raw(
+            src,
+            None::<&mut dyn FnMut(&[u8]) -> bool>,
+            matches,
+            visit,
+        )
+    }
+
+    /// Like [`Self::for_each_out_edge_matching`] with an optional slab raw-byte prefilter.
+    pub fn for_each_out_edge_matching_with_raw<Match, Visit>(
+        &self,
+        src: VertexId,
+        raw_matches: Option<&mut dyn FnMut(&[u8]) -> bool>,
+        matches: Match,
+        visit: Visit,
+    ) -> Result<(), LaraOperationError>
+    where
+        Match: FnMut(&E) -> bool,
+        Visit: FnMut(E),
+    {
+        self.edges
+            .for_each_out_edge_matching(&self.vertices, src, raw_matches, matches, visit)
+    }
+
     /// Iterates outgoing edges in the store's standard scan order.
     ///
     /// This order is deterministic for the committed store state, but it is not

@@ -812,6 +812,80 @@ where
             .map_err(DeferredBidirectionalLaraError::Reverse)
     }
 
+    /// Walks outgoing edges on the forward store without materializing a row vector.
+    pub fn for_each_out_edge_matching<Match, Visit>(
+        &self,
+        src: VertexId,
+        matches: Match,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLaraError>
+    where
+        Match: FnMut(&E) -> bool,
+        Visit: FnMut(E),
+    {
+        self.for_each_out_edge_matching_with_raw(
+            src,
+            None::<&mut dyn FnMut(&[u8]) -> bool>,
+            matches,
+            visit,
+        )
+    }
+
+    /// Like [`Self::for_each_out_edge_matching`] with an optional slab raw-byte prefilter.
+    pub fn for_each_out_edge_matching_with_raw<Match, Visit>(
+        &self,
+        src: VertexId,
+        raw_matches: Option<&mut dyn FnMut(&[u8]) -> bool>,
+        matches: Match,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLaraError>
+    where
+        Match: FnMut(&E) -> bool,
+        Visit: FnMut(E),
+    {
+        self.ensure_vertex(src)?;
+        self.forward
+            .for_each_out_edge_matching_with_raw(src, raw_matches, matches, visit)
+            .map_err(DeferredBidirectionalLaraError::Forward)
+    }
+
+    /// Walks incoming edges on the reverse store without materializing a row vector.
+    pub fn for_each_in_edge_matching<Match, Visit>(
+        &self,
+        dst: VertexId,
+        matches: Match,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLaraError>
+    where
+        Match: FnMut(&E) -> bool,
+        Visit: FnMut(E),
+    {
+        self.for_each_in_edge_matching_with_raw(
+            dst,
+            None::<&mut dyn FnMut(&[u8]) -> bool>,
+            matches,
+            visit,
+        )
+    }
+
+    /// Like [`Self::for_each_in_edge_matching`] with an optional slab raw-byte prefilter.
+    pub fn for_each_in_edge_matching_with_raw<Match, Visit>(
+        &self,
+        dst: VertexId,
+        raw_matches: Option<&mut dyn FnMut(&[u8]) -> bool>,
+        matches: Match,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLaraError>
+    where
+        Match: FnMut(&E) -> bool,
+        Visit: FnMut(E),
+    {
+        self.ensure_vertex(dst)?;
+        self.reverse
+            .for_each_out_edge_matching_with_raw(dst, raw_matches, matches, visit)
+            .map_err(DeferredBidirectionalLaraError::Reverse)
+    }
+
     /// Logically deletes a vertex and queues incremental incident-edge cleanup.
     pub fn delete_vertex_deferred(
         &self,

@@ -507,7 +507,6 @@ impl GraphStore {
         self.with_graph_mut(|graph| {
             graph.insert_directed_deferred(source_vertex_id, target_vertex_id, edge)
         })?;
-
         Ok(EdgeHandle {
             owner_vertex_id,
             vertex_edge_id,
@@ -536,7 +535,6 @@ impl GraphStore {
         self.with_graph_mut(|graph| {
             graph.insert_directed_deferred(source_vertex_id, target_vertex_id, edge)
         })?;
-
         Ok(EdgeHandle {
             owner_vertex_id,
             vertex_edge_id,
@@ -563,7 +561,6 @@ impl GraphStore {
         self.with_graph_mut(|graph| {
             graph.insert_undirected_deferred(endpoint_a, endpoint_b, edge)
         })?;
-
         Ok(EdgeHandle {
             owner_vertex_id,
             vertex_edge_id,
@@ -582,6 +579,78 @@ impl GraphStore {
         vertex_id: VertexId,
     ) -> Result<Vec<Edge>, DeferredBidirectionalLaraError> {
         GRAPH.with_borrow(|graph| graph.collect_in_edges_slot_order(vertex_id))
+    }
+
+    /// Scans outgoing edges without materializing the full CSR row.
+    pub fn for_each_out_edge_matching<Match, Visit>(
+        &self,
+        vertex_id: VertexId,
+        matches: Match,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLaraError>
+    where
+        Match: FnMut(&Edge) -> bool,
+        Visit: FnMut(Edge),
+    {
+        self.for_each_out_edge_matching_with_raw(
+            vertex_id,
+            None::<&mut dyn FnMut(&[u8]) -> bool>,
+            matches,
+            visit,
+        )
+    }
+
+    /// Like [`Self::for_each_out_edge_matching`] with an optional slab raw-byte prefilter.
+    pub fn for_each_out_edge_matching_with_raw<Match, Visit>(
+        &self,
+        vertex_id: VertexId,
+        raw_matches: Option<&mut dyn FnMut(&[u8]) -> bool>,
+        matches: Match,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLaraError>
+    where
+        Match: FnMut(&Edge) -> bool,
+        Visit: FnMut(Edge),
+    {
+        GRAPH.with_borrow(|graph| {
+            graph.for_each_out_edge_matching_with_raw(vertex_id, raw_matches, matches, visit)
+        })
+    }
+
+    /// Scans incoming edges without materializing the full CSR row.
+    pub fn for_each_in_edge_matching<Match, Visit>(
+        &self,
+        vertex_id: VertexId,
+        matches: Match,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLaraError>
+    where
+        Match: FnMut(&Edge) -> bool,
+        Visit: FnMut(Edge),
+    {
+        self.for_each_in_edge_matching_with_raw(
+            vertex_id,
+            None::<&mut dyn FnMut(&[u8]) -> bool>,
+            matches,
+            visit,
+        )
+    }
+
+    /// Like [`Self::for_each_in_edge_matching`] with an optional slab raw-byte prefilter.
+    pub fn for_each_in_edge_matching_with_raw<Match, Visit>(
+        &self,
+        vertex_id: VertexId,
+        raw_matches: Option<&mut dyn FnMut(&[u8]) -> bool>,
+        matches: Match,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLaraError>
+    where
+        Match: FnMut(&Edge) -> bool,
+        Visit: FnMut(Edge),
+    {
+        GRAPH.with_borrow(|graph| {
+            graph.for_each_in_edge_matching_with_raw(vertex_id, raw_matches, matches, visit)
+        })
     }
 
     /// Runs deferred LARA maintenance until the queue is empty or the budget is exhausted.

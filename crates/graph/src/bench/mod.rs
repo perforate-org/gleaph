@@ -1,15 +1,6 @@
 //! PocketIC / `canbench` targets for graph plan execution (`PhysicalPlan` replay).
 //!
 //! Run from `crates/graph`: `canbench` (see `canbench.yml`).
-//!
-//! Priority-5 signal benches (compare paired workloads, not absolute instruction counts):
-//!
-//! - **5a label scan**: `expand_mixed_label_hub_240scan_24match` vs `expand_hub_return_dst_only`;
-//!   `expand_skewed_noise_200a_24b` for skewed noise.
-//! - **5b row clone**: `expand_deep_row_hub_24out` vs `expand_hub_return_dst_only`;
-//!   `expand_hash_join_then_expand_48x24` for join-inflated rows.
-//! - **P1 / P4 cross-check**: `expand_filter_10pct_pass` (reject clone); `expand_indexed_eq_selective_24match`
-//!   vs mixed-label scan.
 
 use crate::facade::GraphStore;
 use crate::facade::mutation_executor::GraphMutationExecutor;
@@ -677,20 +668,73 @@ const EXPAND_FILTER_TOTAL: u32 = 240;
 const EXPAND_FILTER_PASS: u32 = 24;
 const EXPAND_HJ_PREFIXES: u32 = 48;
 
-fn setup_expand_mixed_label_hub_graph(store: &GraphStore) -> String {
+fn setup_expand_single_label_hub(store: &GraphStore, hub_out: u32, edge_label: &str) {
     let hub = store
         .insert_vertex_named(["BenchExpandHub"], Vec::<(&str, Value)>::new())
         .expect("hub");
+    let dst = store
+        .insert_vertex_named(["BenchScaleDst"], Vec::<(&str, Value)>::new())
+        .expect("dst");
+    for i in 0..hub_out {
+        let _ = i;
+        store
+            .insert_directed_edge_named(hub, dst, Some(edge_label), Vec::<(&str, Value)>::new())
+            .expect("hub->dst");
+    }
+}
+
+/// Parallel edges on a low-vertex skewed hub (shared noise/target dst); paired indexed vs CSR benches.
+fn setup_expand_skewed_noise_graph_scaled(store: &GraphStore, noise: u32, match_out: u32) {
+    let hub = store
+        .insert_vertex_named(["BenchExpandHub"], Vec::<(&str, Value)>::new())
+        .expect("hub");
+    let noise_dst = store
+        .insert_vertex_named(["BenchSkewNoiseDst"], Vec::<(&str, Value)>::new())
+        .expect("noise dst");
+    for i in 0..noise {
+        let _ = i;
+        store
+            .insert_directed_edge_named(
+                hub,
+                noise_dst,
+                Some("BenchExpandNoise"),
+                Vec::<(&str, Value)>::new(),
+            )
+            .expect("noise edge");
+    }
+    let target_dst = store
+        .insert_vertex_named(["BenchSkewTargetDst"], Vec::<(&str, Value)>::new())
+        .expect("target dst");
+    for i in 0..match_out {
+        let _ = i;
+        store
+            .insert_directed_edge_named(
+                hub,
+                target_dst,
+                Some("BenchExpandTarget"),
+                Vec::<(&str, Value)>::new(),
+            )
+            .expect("target edge");
+    }
+}
+
+/// Parallel edges per label on a shared dst; paired indexed vs CSR benches.
+fn setup_expand_mixed_label_hub_graph_scaled(
+    store: &GraphStore,
+    label_count: u32,
+    edges_per_label: u32,
+) -> String {
+    let hub = store
+        .insert_vertex_named(["BenchExpandHub"], Vec::<(&str, Value)>::new())
+        .expect("hub");
+    let dst = store
+        .insert_vertex_named(["BenchMixedDst"], Vec::<(&str, Value)>::new())
+        .expect("dst");
     let target_label = "BenchExpandLbl0".to_owned();
-    for label_idx in 0..EXPAND_MIXED_LABEL_COUNT {
+    for label_idx in 0..label_count {
         let label = format!("BenchExpandLbl{label_idx}");
-        for i in 0..EXPAND_HUB_OUT {
-            let dst = store
-                .insert_vertex_named(
-                    [format!("BenchMixedDst{label_idx}_{i}")],
-                    Vec::<(&str, Value)>::new(),
-                )
-                .expect("dst");
+        for i in 0..edges_per_label {
+            let _ = i;
             store
                 .insert_directed_edge_named(hub, dst, Some(&label), Vec::<(&str, Value)>::new())
                 .expect("edge");
@@ -702,69 +746,21 @@ fn setup_expand_mixed_label_hub_graph(store: &GraphStore) -> String {
 /// Hub with 10 labels × 24 edges; expand one label only (24 rows). Control: `expand_hub_return_dst_only`.
 #[bench(raw)]
 fn bench_graph_expand_mixed_label_hub_240scan_24match() -> canbench_rs::BenchResult {
-    let store = GraphStore::new();
-    let target_label = setup_expand_mixed_label_hub_graph(&store);
-    let plan = expand_plan_for_label(&target_label, false, None);
-
-    canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("expand_mixed_label_hub_240scan_24match");
-        let result = execute_expand_plan(black_box(&store), black_box(&plan));
-        assert_eq!(result.rows.len(), EXPAND_HUB_OUT as usize);
-        black_box(result.rows.len())
-    })
-}
-
-fn setup_expand_skewed_noise_graph(store: &GraphStore) {
-    let hub = store
-        .insert_vertex_named(["BenchExpandHub"], Vec::<(&str, Value)>::new())
-        .expect("hub");
-    for i in 0..EXPAND_SKEW_NOISE {
-        let dst = store
-            .insert_vertex_named(
-                [format!("BenchSkewNoiseDst{i}")],
-                Vec::<(&str, Value)>::new(),
-            )
-            .expect("noise dst");
-        store
-            .insert_directed_edge_named(
-                hub,
-                dst,
-                Some("BenchExpandNoise"),
-                Vec::<(&str, Value)>::new(),
-            )
-            .expect("noise edge");
-    }
-    for i in 0..EXPAND_HUB_OUT {
-        let dst = store
-            .insert_vertex_named(
-                [format!("BenchSkewTargetDst{i}")],
-                Vec::<(&str, Value)>::new(),
-            )
-            .expect("target dst");
-        store
-            .insert_directed_edge_named(
-                hub,
-                dst,
-                Some("BenchExpandTarget"),
-                Vec::<(&str, Value)>::new(),
-            )
-            .expect("target edge");
-    }
+    bench_expand_mixed_label_hub(
+        EXPAND_MIXED_LABEL_COUNT,
+        EXPAND_HUB_OUT,
+        "expand_mixed_label_hub_240scan_24match",
+    )
 }
 
 /// 200 noise edges + 24 target-label edges; expand target label only.
 #[bench(raw)]
 fn bench_graph_expand_skewed_noise_200a_24b() -> canbench_rs::BenchResult {
-    let store = GraphStore::new();
-    setup_expand_skewed_noise_graph(&store);
-    let plan = expand_plan_for_label("BenchExpandTarget", false, None);
-
-    canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("expand_skewed_noise_200a_24b");
-        let result = execute_expand_plan(black_box(&store), black_box(&plan));
-        assert_eq!(result.rows.len(), EXPAND_HUB_OUT as usize);
-        black_box(result.rows.len())
-    })
+    bench_expand_skewed_noise(
+        EXPAND_SKEW_NOISE,
+        EXPAND_HUB_OUT,
+        "expand_skewed_noise_200a_24b",
+    )
 }
 
 fn setup_expand_deep_row_graph(store: &GraphStore) {
@@ -948,7 +944,7 @@ fn setup_expand_hash_join_graph(store: &GraphStore) {
     let hub = store
         .insert_vertex_named(["BenchExpandHub"], Vec::<(&str, Value)>::new())
         .expect("hub");
-    for i in 0..EXPAND_HJ_PREFIXES {
+    for _ in 0..EXPAND_HJ_PREFIXES {
         let prefix = store
             .insert_vertex_named(["BenchHjPrefix"], Vec::<(&str, Value)>::new())
             .expect("prefix");
@@ -1065,6 +1061,152 @@ fn setup_expand_indexed_eq_graph(store: &GraphStore) {
             )
             .expect("edge");
     }
+}
+
+// --- Large-hub label-adjacency benches (paired single-label controls) ---
+
+const EXPAND_HUB_OUT_M: u32 = 100;
+const EXPAND_SKEW_NOISE_M: u32 = 2_000;
+const EXPAND_MIXED_LABEL_COUNT_M: u32 = 20;
+const EXPAND_EDGES_PER_LABEL_M: u32 = 100;
+
+const EXPAND_HUB_OUT_L: u32 = 500;
+const EXPAND_SKEW_NOISE_L: u32 = 9_500;
+const EXPAND_MIXED_LABEL_COUNT_L: u32 = 20;
+const EXPAND_EDGES_PER_LABEL_L: u32 = 500;
+
+const EXPAND_HUB_OUT_XL: u32 = 1_000;
+const EXPAND_SKEW_NOISE_XL: u32 = 49_000;
+const EXPAND_MIXED_LABEL_COUNT_XL: u32 = 50;
+const EXPAND_EDGES_PER_LABEL_XL: u32 = 1_000;
+
+fn bench_expand_hub_control(hub_out: u32, scope: &'static str) -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    setup_expand_single_label_hub(&store, hub_out, "BenchExpandEdge");
+    let plan = expand_plan(false);
+    let expected = hub_out as usize;
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope(scope);
+        let result = execute_expand_plan(black_box(&store), black_box(&plan));
+        assert_eq!(result.rows.len(), expected);
+        black_box(result.rows.len())
+    })
+}
+
+fn bench_expand_skewed_noise(
+    noise: u32,
+    match_out: u32,
+    scope: &'static str,
+) -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    setup_expand_skewed_noise_graph_scaled(&store, noise, match_out);
+    let plan = expand_plan_for_label("BenchExpandTarget", false, None);
+    let expected = match_out as usize;
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope(scope);
+        let result = execute_expand_plan(black_box(&store), black_box(&plan));
+        assert_eq!(result.rows.len(), expected);
+        black_box(result.rows.len())
+    })
+}
+
+fn bench_expand_mixed_label_hub(
+    label_count: u32,
+    edges_per_label: u32,
+    scope: &'static str,
+) -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    let target_label =
+        setup_expand_mixed_label_hub_graph_scaled(&store, label_count, edges_per_label);
+    let plan = expand_plan_for_label(&target_label, false, None);
+    let expected = edges_per_label as usize;
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope(scope);
+        let result = execute_expand_plan(black_box(&store), black_box(&plan));
+        assert_eq!(result.rows.len(), expected);
+        black_box(result.rows.len())
+    })
+}
+
+/// Single-label hub, 100 out-edges (control for scaled 5a benches).
+#[bench(raw)]
+fn bench_graph_expand_hub_return_dst_100_only() -> canbench_rs::BenchResult {
+    bench_expand_hub_control(EXPAND_HUB_OUT_M, "expand_hub_return_dst_100")
+}
+
+/// 2_000 noise + 100 target-label edges; expand target label only.
+#[bench(raw)]
+fn bench_graph_expand_skewed_noise_2k_a_100b() -> canbench_rs::BenchResult {
+    bench_expand_skewed_noise(
+        EXPAND_SKEW_NOISE_M,
+        EXPAND_HUB_OUT_M,
+        "expand_skewed_noise_2k_a_100b",
+    )
+}
+
+/// 20 labels × 100 edges; expand one label (100 rows). Control: `expand_hub_return_dst_100_only`.
+#[bench(raw)]
+fn bench_graph_expand_mixed_label_hub_2kscan_100match() -> canbench_rs::BenchResult {
+    bench_expand_mixed_label_hub(
+        EXPAND_MIXED_LABEL_COUNT_M,
+        EXPAND_EDGES_PER_LABEL_M,
+        "expand_mixed_label_hub_2kscan_100match",
+    )
+}
+
+/// Single-label hub, 500 out-edges (control for scaled 5a benches).
+#[bench(raw)]
+fn bench_graph_expand_hub_return_dst_500_only() -> canbench_rs::BenchResult {
+    bench_expand_hub_control(EXPAND_HUB_OUT_L, "expand_hub_return_dst_500")
+}
+
+/// 9_500 noise + 500 target-label edges (10_500 incident); expand target label only.
+#[bench(raw)]
+fn bench_graph_expand_skewed_noise_10k_a_500b() -> canbench_rs::BenchResult {
+    bench_expand_skewed_noise(
+        EXPAND_SKEW_NOISE_L,
+        EXPAND_HUB_OUT_L,
+        "expand_skewed_noise_10k_a_500b",
+    )
+}
+
+/// 20 labels × 500 edges (10_000 incident); expand one label (500 rows).
+#[bench(raw)]
+fn bench_graph_expand_mixed_label_hub_10kscan_500match() -> canbench_rs::BenchResult {
+    bench_expand_mixed_label_hub(
+        EXPAND_MIXED_LABEL_COUNT_L,
+        EXPAND_EDGES_PER_LABEL_L,
+        "expand_mixed_label_hub_10kscan_500match",
+    )
+}
+
+/// Single-label hub, 1_000 out-edges (control for scaled 5a benches).
+#[bench(raw)]
+fn bench_graph_expand_hub_return_dst_1k_only() -> canbench_rs::BenchResult {
+    bench_expand_hub_control(EXPAND_HUB_OUT_XL, "expand_hub_return_dst_1k")
+}
+
+/// 49_000 noise + 1_000 target-label edges (50_000 incident); expand target label only.
+#[bench(raw)]
+fn bench_graph_expand_skewed_noise_50k_a_1k_b() -> canbench_rs::BenchResult {
+    bench_expand_skewed_noise(
+        EXPAND_SKEW_NOISE_XL,
+        EXPAND_HUB_OUT_XL,
+        "expand_skewed_noise_50k_a_1k_b",
+    )
+}
+
+/// 50 labels × 1_000 edges (50_000 incident); expand one label (1_000 rows).
+#[bench(raw)]
+fn bench_graph_expand_mixed_label_hub_50kscan_1kmatch() -> canbench_rs::BenchResult {
+    bench_expand_mixed_label_hub(
+        EXPAND_MIXED_LABEL_COUNT_XL,
+        EXPAND_EDGES_PER_LABEL_XL,
+        "expand_mixed_label_hub_50kscan_1kmatch",
+    )
 }
 
 /// 240 incident edges; indexed equality selects 24. Compare against mixed-label scan for P4 vs 5a priority.

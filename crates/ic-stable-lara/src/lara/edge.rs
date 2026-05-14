@@ -650,6 +650,67 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         Ok(out)
     }
 
+    /// Walks outgoing edges without materializing the full row vector.
+    ///
+    /// Invokes `visit` for each edge that satisfies `matches` (same contract as
+    /// [`LaraGraph::remove_edge_matching`](super::LaraGraph::remove_edge_matching)).
+    ///
+    /// On slab-only rows, when `raw_matches` is `Some`, it is consulted on each
+    /// encoded record **before** decoding; a `false` result skips the slot with no
+    /// [`CsrEdge::read_from`]. Log-backed rows still use `matches` only.
+    pub(crate) fn for_each_out_edge_matching<V, A, Match, Visit>(
+        &self,
+        vertices: &A,
+        vid: VertexId,
+        mut raw_matches: Option<&mut dyn FnMut(&[u8]) -> bool>,
+        mut matches: Match,
+        mut visit: Visit,
+    ) -> Result<(), LaraOperationError>
+    where
+        V: CsrVertex + CsrVertexTombstoneScan,
+        A: VertexAccess<V>,
+        Match: FnMut(&E) -> bool,
+        Visit: FnMut(E),
+    {
+        let v = vertices.get_in_range(vid)?;
+        if V::record_is_vertex_tombstone(&v) && v.degree() == 0 && v.log_head() < 0 {
+            return Ok(());
+        }
+        if v.log_head() < 0 {
+            let degree = v.degree() as usize;
+            if degree == 0 {
+                return Ok(());
+            }
+            let nbytes = degree
+                .checked_mul(E::BYTES)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let mut raw = vec![0u8; nbytes];
+            self.read_slots_contiguous(v.base_slot_start(), &mut raw);
+            for chunk in raw.chunks_exact(E::BYTES) {
+                if let Some(raw_m) = raw_matches.as_mut() {
+                    if !raw_m(chunk) {
+                        continue;
+                    }
+                    visit(E::read_from(chunk));
+                } else {
+                    let edge = E::read_from(chunk);
+                    if matches(&edge) {
+                        visit(edge);
+                    }
+                }
+            }
+            return Ok(());
+        }
+
+        let mut iter = self.iter_out_edges(vertices, vid)?;
+        while let Some(edge) = iter.next() {
+            if matches(&edge) {
+                visit(edge);
+            }
+        }
+        Ok(())
+    }
+
     /// Returns `true` when [`Self::collect_out_edges_slot_order`] would yield a non-empty vector.
     ///
     /// For in-range vertices this is exactly [`CsrVertex::degree`] `> 0`: a zero-degree row has no
