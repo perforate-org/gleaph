@@ -492,8 +492,8 @@ impl GraphStore {
         })
     }
 
-    /// Test-only helper to insert a directed edge with a specific `inline_value`.
-    #[cfg(test)]
+    /// Test/canbench helper to insert a directed edge with a specific `inline_value`.
+    #[cfg(any(test, feature = "canbench"))]
     pub fn insert_directed_edge_with_inline_value(
         &self,
         source_vertex_id: VertexId,

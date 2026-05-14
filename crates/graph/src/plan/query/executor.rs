@@ -33,7 +33,7 @@ use ic_stable_lara::traits::CsrVertexTombstone;
 use nohash_hasher::IntMap;
 use rapidhash::fast::RapidHasher;
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashSet, VecDeque};
 use std::hash::Hasher;
 use std::pin::Pin;
 
