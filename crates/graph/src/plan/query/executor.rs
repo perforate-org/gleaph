@@ -16,7 +16,7 @@ use crate::plan::expr_evaluator::{
 use candid::Principal;
 use gleaph_gql::ast::{BinaryOp, CmpOp, Expr, ExprKind, ObjectName, OrderByClause, TruthValue};
 use gleaph_gql::numeric_ops::{NumericOpError, eval_binary_numeric};
-use gleaph_gql::numeric_order::{NumericOrderError, normalized_numeric_parts};
+use gleaph_gql::numeric_order::{NormalizedNumeric, NumericOrderError, normalized_numeric_parts};
 use gleaph_gql::types::{EdgeDirection, LabelExpr, PathElement};
 use gleaph_gql::value_cmp::compare_values;
 use gleaph_gql::{Value, hash_value_for_join, value_to_index_key_bytes};
@@ -1265,11 +1265,25 @@ fn shortest_paths_between(
 }
 
 #[derive(Clone, Debug)]
-struct WeightedCost(Value);
+struct WeightedCost {
+    value: Value,
+    order_key: WeightedCostOrderKey,
+}
+
+#[derive(Clone, Debug)]
+enum WeightedCostOrderKey {
+    Zero,
+    Uint128(u128),
+    Float64(f64),
+    Normalized(Box<Option<NormalizedNumeric>>),
+}
 
 impl WeightedCost {
     fn zero() -> Self {
-        Self(Value::Int32(0))
+        Self {
+            value: Value::Int32(0),
+            order_key: WeightedCostOrderKey::Zero,
+        }
     }
 
     fn from_value(value: Value) -> Result<Self, PlanQueryError> {
@@ -1283,7 +1297,10 @@ impl WeightedCost {
                 message: format!("shortest-path edge cost must be numeric, got {value:?}"),
             });
         }
-        match normalized_numeric_parts(&value) {
+        if let Some(order_key) = compact_weighted_cost_order_key(&value)? {
+            return Ok(Self { value, order_key });
+        }
+        let numeric = match normalized_numeric_parts(&value) {
             Err(NumericOrderError::NonFiniteFloat) => {
                 return Err(PlanQueryError::GleaphCost {
                     message: "shortest-path edge cost must be finite".into(),
@@ -1294,39 +1311,130 @@ impl WeightedCost {
                     message: "shortest-path edge cost uses unsupported numeric value".into(),
                 });
             }
-            Ok(_) => {}
+            Ok(numeric) => numeric,
+        };
+        if numeric.as_ref().is_some_and(|numeric| numeric.negative) {
+            return Err(PlanQueryError::GleaphCost {
+                message: "shortest-path edge cost must be non-negative".into(),
+            });
         }
-        match compare_values(&value, &Value::Int32(0)) {
-            None => {
-                return Err(PlanQueryError::GleaphCost {
-                    message: "shortest-path edge cost is incomparable".into(),
-                });
-            }
-            Some(Ordering::Less) => {
-                return Err(PlanQueryError::GleaphCost {
-                    message: "shortest-path edge cost must be non-negative".into(),
-                });
-            }
-            Some(_) => {}
-        }
-        Ok(Self(value))
+        Ok(Self {
+            value,
+            order_key: WeightedCostOrderKey::Normalized(Box::new(numeric)),
+        })
     }
 
     fn checked_add(&self, hop: &Self) -> Result<Self, PlanQueryError> {
-        let sum = eval_binary_numeric(self.0.clone(), BinaryOp::Add, hop.0.clone())
+        let sum = eval_binary_numeric(self.value.clone(), BinaryOp::Add, hop.value.clone())
             .map_err(map_weighted_cost_add_err)?;
         Self::from_value(sum)
     }
 
-    fn cmp(&self, other: &Self) -> Result<Ordering, PlanQueryError> {
-        compare_values(&self.0, &other.0).ok_or_else(|| PlanQueryError::GleaphCost {
-            message: "shortest-path edge cost is incomparable".into(),
-        })
+    fn cmp(&self, other: &Self) -> Ordering {
+        compare_weighted_cost_order_key(self, other)
     }
 
     fn cmp_infallible(&self, other: &Self) -> Ordering {
         self.cmp(other)
-            .expect("validated weighted shortest-path costs must be mutually comparable")
+    }
+}
+
+fn compact_weighted_cost_order_key(
+    value: &Value,
+) -> Result<Option<WeightedCostOrderKey>, PlanQueryError> {
+    if value.is_signed_int() {
+        let Some(value) = value.as_i128() else {
+            return Ok(None);
+        };
+        if value < 0 {
+            return Err(PlanQueryError::GleaphCost {
+                message: "shortest-path edge cost must be non-negative".into(),
+            });
+        }
+        return Ok(if value == 0 {
+            Some(WeightedCostOrderKey::Zero)
+        } else {
+            Some(WeightedCostOrderKey::Uint128(value as u128))
+        });
+    }
+    if value.is_unsigned_int() {
+        let Some(value) = value.as_u128() else {
+            return Ok(None);
+        };
+        return Ok(if value == 0 {
+            Some(WeightedCostOrderKey::Zero)
+        } else {
+            Some(WeightedCostOrderKey::Uint128(value))
+        });
+    }
+    let float = match value {
+        Value::Float16(value) => Some(value.to_f64()),
+        Value::Float32(value) => Some(f64::from(*value)),
+        Value::Float64(value) => Some(*value),
+        _ => None,
+    };
+    let Some(float) = float else {
+        return Ok(None);
+    };
+    if !float.is_finite() {
+        return Err(PlanQueryError::GleaphCost {
+            message: "shortest-path edge cost must be finite".into(),
+        });
+    }
+    if float < 0.0 {
+        return Err(PlanQueryError::GleaphCost {
+            message: "shortest-path edge cost must be non-negative".into(),
+        });
+    }
+    Ok(if float == 0.0 {
+        Some(WeightedCostOrderKey::Zero)
+    } else {
+        Some(WeightedCostOrderKey::Float64(float))
+    })
+}
+
+fn compare_weighted_cost_order_key(left: &WeightedCost, right: &WeightedCost) -> Ordering {
+    match (&left.order_key, &right.order_key) {
+        (WeightedCostOrderKey::Zero, WeightedCostOrderKey::Zero) => Ordering::Equal,
+        (WeightedCostOrderKey::Zero, WeightedCostOrderKey::Uint128(_))
+        | (WeightedCostOrderKey::Zero, WeightedCostOrderKey::Float64(_)) => Ordering::Less,
+        (WeightedCostOrderKey::Uint128(_), WeightedCostOrderKey::Zero)
+        | (WeightedCostOrderKey::Float64(_), WeightedCostOrderKey::Zero) => Ordering::Greater,
+        (WeightedCostOrderKey::Uint128(left), WeightedCostOrderKey::Uint128(right)) => {
+            left.cmp(right)
+        }
+        (WeightedCostOrderKey::Float64(left), WeightedCostOrderKey::Float64(right)) => left
+            .partial_cmp(right)
+            .expect("validated weighted shortest-path float costs must be finite"),
+        (WeightedCostOrderKey::Normalized(left), WeightedCostOrderKey::Normalized(right)) => {
+            compare_weighted_numeric(left.as_ref(), right.as_ref())
+        }
+        _ => compare_values(&left.value, &right.value)
+            .expect("validated weighted shortest-path costs must be mutually comparable"),
+    }
+}
+
+fn compare_weighted_numeric(
+    left: &Option<NormalizedNumeric>,
+    right: &Option<NormalizedNumeric>,
+) -> Ordering {
+    match (left, right) {
+        (None, None) => Ordering::Equal,
+        (None, Some(right)) => {
+            if right.negative {
+                Ordering::Greater
+            } else {
+                Ordering::Less
+            }
+        }
+        (Some(left), None) => {
+            if left.negative {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            }
+        }
+        (Some(left), Some(right)) => left.cmp_numeric(right),
     }
 }
 
@@ -1444,7 +1552,7 @@ fn weighted_shortest_paths_between(
 
     while let Some(entry) = heap.pop() {
         if let Some(ref min) = found_min_cost {
-            if matches!(entry.cost.cmp(min), Ok(Ordering::Greater)) {
+            if matches!(entry.cost.cmp(min), Ordering::Greater) {
                 continue;
             }
         }
@@ -1457,7 +1565,7 @@ fn weighted_shortest_paths_between(
                     found_min_cost = Some(entry.cost.clone());
                     found.push(state_idx);
                 }
-                Some(min) => match entry.cost.cmp(min)? {
+                Some(min) => match entry.cost.cmp(min) {
                     Ordering::Equal => found.push(state_idx),
                     Ordering::Less => {
                         found_min_cost = Some(entry.cost.clone());
@@ -1502,7 +1610,7 @@ fn weighted_shortest_paths_between(
             };
             let next_cost = entry.cost.checked_add(&hop_cost)?;
             if let Some(ref min) = found_min_cost {
-                if matches!(next_cost.cmp(min), Ok(Ordering::Greater)) {
+                if matches!(next_cost.cmp(min), Ordering::Greater) {
                     continue;
                 }
             }
@@ -5878,7 +5986,7 @@ mod tests {
     #[test]
     fn hop_cost_admits_large_finite_float64() {
         let cost = WeightedCost::from_value(Value::Float64(1e40)).expect("large finite hop cost");
-        assert!(matches!(cost.0, Value::Float64(v) if v == 1e40));
+        assert!(matches!(cost.value, Value::Float64(v) if v == 1e40));
     }
 
     #[test]
