@@ -1168,6 +1168,11 @@ fn execute_shortest_path(
             ShortestPathCost::HopCount => {
                 shortest_paths_between(store, src_id, dst_id, direction, label_id, var_len, mode)?
             }
+            ShortestPathCost::EdgeCostExpr { edge_var, expr }
+                if weighted_any_shortest_can_use_hop_count(mode, expr) =>
+            {
+                shortest_paths_between(store, src_id, dst_id, direction, label_id, var_len, mode)?
+            }
             ShortestPathCost::EdgeCostExpr { edge_var, expr } => weighted_shortest_paths_between(
                 store,
                 src_id,
@@ -1295,6 +1300,16 @@ fn shortest_paths_between(
         .into_iter()
         .map(|state_idx| path_search_to_shortest_path_state(&states, state_idx))
         .collect())
+}
+
+fn weighted_any_shortest_can_use_hop_count(mode: ShortestMode, cost_expr: &Expr) -> bool {
+    if !matches!(mode, ShortestMode::AnyShortest) {
+        return false;
+    }
+    let ExprKind::Literal(value) = &cost_expr.kind else {
+        return false;
+    };
+    WeightedCost::from_value(value.clone()).is_ok()
 }
 
 #[derive(Clone, Debug)]
