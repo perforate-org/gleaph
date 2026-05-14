@@ -25,7 +25,7 @@ use gleaph_gql_planner::plan::{
     ScanValue, ShortestMode, ShortestPathCost, Str, VarLenSpec,
 };
 use gleaph_graph_kernel::entry::{
-    Edge, LabelId, PreparedWeightDecoder, Vertex, VertexEdgeId, decode_inline_weight,
+    LabelId, PreparedWeightDecoder, Vertex, VertexEdgeId, decode_inline_weight,
 };
 use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest};
 use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
@@ -1090,18 +1090,12 @@ fn execute_expand(
             continue;
         };
         let candidates = expand_candidates(store, src_id, direction, label_id)?;
-        for (dst_id, handle, edge_record) in candidates {
+        for (dst_id, edge_binding) in candidates {
             if !expand_dst_matches_prebound_vertex(&row, dst, dst_id) {
                 continue;
             }
             let mut expanded = row.clone();
-            expanded.insert(
-                edge.to_string(),
-                PlanBinding::Edge(EdgeBinding {
-                    handle,
-                    inline_value: edge_record.inline_value,
-                }),
-            );
+            expanded.insert(edge.to_string(), PlanBinding::Edge(edge_binding));
             expanded.insert(dst.to_string(), PlanBinding::Vertex(dst_id));
             if !row_matches_all(&evaluator, &expanded, dst_filter)? {
                 continue;
@@ -1270,7 +1264,7 @@ fn shortest_paths_between(
 
         candidates.clear();
         expand_candidates_into(store, current, direction, label_id, &mut candidates)?;
-        for (next, handle, edge_record) in candidates.iter().copied() {
+        for (next, edge_binding) in candidates.iter().copied() {
             if let Some(visited) = any_visited.as_mut() {
                 if !visited.insert(u32::from(next)) {
                     continue;
@@ -1283,10 +1277,7 @@ fn shortest_paths_between(
             states.push(PathSearchNode {
                 current: next,
                 previous: Some(state_idx),
-                edge: Some(EdgeBinding {
-                    handle,
-                    inline_value: edge_record.inline_value,
-                }),
+                edge: Some(edge_binding),
                 depth: next_depth,
             });
             if matches!(mode, ShortestMode::AnyShortest) && next == dst && next_depth >= bounds.min
@@ -1632,14 +1623,10 @@ fn weighted_shortest_paths_between(
 
         candidates.clear();
         expand_candidates_into(store, current, direction, label_id, &mut candidates)?;
-        for (next, handle, edge_record) in candidates.iter().copied() {
+        for (next, edge_binding) in candidates.iter().copied() {
             if path_search_contains_vertex(&states, state_idx, next) {
                 continue;
             }
-            let edge_binding = EdgeBinding {
-                handle,
-                inline_value: edge_record.inline_value,
-            };
             let cost_key = WeightedHopCostKey::from_edge_binding(edge_binding);
             let hop_cost = match hop_cost_cache.get(&cost_key) {
                 Some(cost) => cost.clone(),
@@ -1795,7 +1782,7 @@ fn edge_path_element(shard_id: u64, handle: EdgeHandle) -> PathElement {
     )
 }
 
-type ExpandCandidate = (VertexId, EdgeHandle, Edge);
+type ExpandCandidate = (VertexId, EdgeBinding);
 
 fn expand_candidates(
     store: &GraphStore,
@@ -1833,11 +1820,13 @@ fn expand_candidates_into(
                 }
                 out.push((
                     edge.target,
-                    EdgeHandle {
-                        owner_vertex_id: src_id,
-                        vertex_edge_id: edge.vertex_edge_id,
+                    EdgeBinding {
+                        handle: EdgeHandle {
+                            owner_vertex_id: src_id,
+                            vertex_edge_id: edge.vertex_edge_id,
+                        },
+                        inline_value: edge.inline_value,
                     },
-                    edge,
                 ));
             }
         }
@@ -1858,11 +1847,13 @@ fn expand_candidates_into(
                 }
                 out.push((
                     edge.target,
-                    EdgeHandle {
-                        owner_vertex_id: edge.target,
-                        vertex_edge_id: edge.vertex_edge_id,
+                    EdgeBinding {
+                        handle: EdgeHandle {
+                            owner_vertex_id: edge.target,
+                            vertex_edge_id: edge.vertex_edge_id,
+                        },
+                        inline_value: edge.inline_value,
                     },
-                    edge,
                 ));
             }
         }
@@ -1883,11 +1874,13 @@ fn expand_candidates_into(
                 }
                 out.push((
                     edge.target,
-                    EdgeHandle {
-                        owner_vertex_id: canonical_undirected_owner(src_id, edge.target),
-                        vertex_edge_id: edge.vertex_edge_id,
+                    EdgeBinding {
+                        handle: EdgeHandle {
+                            owner_vertex_id: canonical_undirected_owner(src_id, edge.target),
+                            vertex_edge_id: edge.vertex_edge_id,
+                        },
+                        inline_value: edge.inline_value,
                     },
-                    edge,
                 ));
             }
         }
