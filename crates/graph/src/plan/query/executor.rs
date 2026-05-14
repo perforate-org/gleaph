@@ -24,7 +24,7 @@ use gleaph_gql_planner::plan::{
     ScanValue, ShortestMode, ShortestPathCost, Str, VarLenSpec,
 };
 use gleaph_graph_kernel::entry::{
-    Edge, LabelId, PreparedWeightDecoder, Vertex, decode_inline_weight,
+    Edge, LabelId, PreparedWeightDecoder, Vertex, VertexEdgeId, decode_inline_weight,
 };
 use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest};
 use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
@@ -33,7 +33,7 @@ use ic_stable_lara::traits::CsrVertexTombstone;
 use nohash_hasher::IntMap;
 use rapidhash::fast::RapidHasher;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::collections::{BinaryHeap, BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::hash::Hasher;
 use std::pin::Pin;
 
@@ -1322,6 +1322,29 @@ impl WeightedCost {
             message: "shortest-path edge cost is incomparable".into(),
         })
     }
+
+    fn cmp_infallible(&self, other: &Self) -> Ordering {
+        self.cmp(other)
+            .expect("validated weighted shortest-path costs must be mutually comparable")
+    }
+}
+
+/// Cache key for cost expressions evaluated with only the edge variable bound.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct WeightedHopCostKey {
+    owner_vertex_id: VertexId,
+    vertex_edge_id: VertexEdgeId,
+    inline_value: u16,
+}
+
+impl WeightedHopCostKey {
+    fn from_edge_binding(edge: EdgeBinding) -> Self {
+        Self {
+            owner_vertex_id: edge.handle.owner_vertex_id,
+            vertex_edge_id: edge.handle.vertex_edge_id,
+            inline_value: edge.inline_value,
+        }
+    }
 }
 
 fn map_weighted_cost_add_err(err: ExprEvaluationError) -> PlanQueryError {
@@ -1350,31 +1373,27 @@ struct WeightedQueueEntry {
     state: ShortestPathState,
 }
 
-/// Whether `candidate` should be popped before `current_best` in the weighted min-queue.
-fn weighted_queue_entry_precedes(
-    candidate: &WeightedQueueEntry,
-    current_best: &WeightedQueueEntry,
-) -> Result<bool, PlanQueryError> {
-    match candidate.cost.cmp(&current_best.cost)? {
-        Ordering::Less => Ok(true),
-        Ordering::Greater => Ok(false),
-        Ordering::Equal => Ok(candidate.tie < current_best.tie),
+impl Eq for WeightedQueueEntry {}
+
+impl PartialEq for WeightedQueueEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.cost.cmp_infallible(&other.cost) == Ordering::Equal && self.tie == other.tie
     }
 }
 
-fn pop_min_weighted_entry(
-    heap: &mut Vec<WeightedQueueEntry>,
-) -> Result<Option<WeightedQueueEntry>, PlanQueryError> {
-    if heap.is_empty() {
-        return Ok(None);
-    }
-    let mut best = 0usize;
-    for i in 1..heap.len() {
-        if weighted_queue_entry_precedes(&heap[i], &heap[best])? {
-            best = i;
+impl Ord for WeightedQueueEntry {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match self.cost.cmp_infallible(&other.cost).reverse() {
+            Ordering::Equal => other.tie.cmp(&self.tie),
+            non_eq => non_eq,
         }
     }
-    Ok(Some(heap.swap_remove(best)))
+}
+
+impl PartialOrd for WeightedQueueEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 fn weighted_shortest_paths_between(
@@ -1397,7 +1416,7 @@ fn weighted_shortest_paths_between(
     let vertex_count = u64::from(u32::from(store.vertex_count()));
     let max_hops = bounds.max.unwrap_or_else(|| vertex_count.saturating_sub(1));
 
-    let mut heap = Vec::new();
+    let mut heap = BinaryHeap::new();
     let mut tie = 0u64;
     heap.push(WeightedQueueEntry {
         cost: WeightedCost::zero(),
@@ -1411,8 +1430,9 @@ fn weighted_shortest_paths_between(
 
     let mut found_min_cost: Option<WeightedCost> = None;
     let mut found = Vec::new();
+    let mut hop_cost_cache: BTreeMap<WeightedHopCostKey, WeightedCost> = BTreeMap::new();
 
-    while let Some(entry) = pop_min_weighted_entry(&mut heap)? {
+    while let Some(entry) = heap.pop() {
         if let Some(ref min) = found_min_cost {
             if matches!(entry.cost.cmp(min), Ok(Ordering::Greater)) {
                 continue;
@@ -1454,14 +1474,22 @@ fn weighted_shortest_paths_between(
                 handle,
                 inline_value: edge_record.inline_value,
             };
-            let hop_cost = eval_shortest_hop_cost(
-                store,
-                cost_expr,
-                edge_var,
-                edge_binding,
-                parameters,
-                gleaph_weight_decoders,
-            )?;
+            let cost_key = WeightedHopCostKey::from_edge_binding(edge_binding);
+            let hop_cost = match hop_cost_cache.get(&cost_key) {
+                Some(cost) => cost.clone(),
+                None => {
+                    let cost = eval_shortest_hop_cost(
+                        store,
+                        cost_expr,
+                        edge_var,
+                        edge_binding,
+                        parameters,
+                        gleaph_weight_decoders,
+                    )?;
+                    hop_cost_cache.insert(cost_key, cost.clone());
+                    cost
+                }
+            };
             let next_cost = entry.cost.checked_add(&hop_cost)?;
             if let Some(ref min) = found_min_cost {
                 if matches!(next_cost.cmp(min), Ok(Ordering::Greater)) {
@@ -7128,6 +7156,85 @@ mod tests {
             "distinct float64 costs must not be epsilon-tied"
         );
         assert_eq!(path_column(&result, "p").len(), 5);
+    }
+
+    #[test]
+    fn weighted_shortest_all_returns_all_equal_cost_paths() {
+        let store = GraphStore::new();
+        let a = store
+            .insert_vertex_named(["WgtAllSrc"], [("name", Value::Text("a".into()))])
+            .expect("insert a");
+        let b1 = store
+            .insert_vertex_named(["WgtAllMid"], [("name", Value::Text("b1".into()))])
+            .expect("insert b1");
+        let b2 = store
+            .insert_vertex_named(["WgtAllMid"], [("name", Value::Text("b2".into()))])
+            .expect("insert b2");
+        let c = store
+            .insert_vertex_named(["WgtAllDst"], [("name", Value::Text("c".into()))])
+            .expect("insert c");
+        store
+            .insert_directed_edge_named(a, b1, Some("WgtAllRel"), Vec::<(&str, Value)>::new())
+            .expect("insert a-b1");
+        store
+            .insert_directed_edge_named(b1, c, Some("WgtAllRel"), Vec::<(&str, Value)>::new())
+            .expect("insert b1-c");
+        store
+            .insert_directed_edge_named(a, b2, Some("WgtAllRel"), Vec::<(&str, Value)>::new())
+            .expect("insert a-b2");
+        store
+            .insert_directed_edge_named(b2, c, Some("WgtAllRel"), Vec::<(&str, Value)>::new())
+            .expect("insert b2-c");
+        let zero_cost = Expr::new(ExprKind::Literal(Value::Int32(0)));
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "a".into(),
+                label: Some("WgtAllSrc".into()),
+                property_projection: None,
+            },
+            PlanOp::NodeScan {
+                variable: "c".into(),
+                label: Some("WgtAllDst".into()),
+                property_projection: None,
+            },
+            PlanOp::ShortestPath {
+                src: "a".into(),
+                dst: "c".into(),
+                edge: "e".into(),
+                path_var: Some("p".into()),
+                mode: ShortestMode::AllShortest,
+                direction: EdgeDirection::PointingRight,
+                label: Some("WgtAllRel".into()),
+                label_expr: None,
+                var_len: Some(VarLenSpec {
+                    min: 1,
+                    max: Some(3),
+                }),
+                cost: ShortestPathCost::EdgeCostExpr {
+                    edge_var: "e".into(),
+                    expr: zero_cost,
+                },
+            },
+            PlanOp::Project {
+                columns: vec![project(var("p"), "p")],
+                distinct: false,
+            },
+        ]);
+
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("weighted all-shortest with equal zero costs");
+
+        assert_eq!(result.rows.len(), 2);
+        let middle_vertices: BTreeSet<VertexId> = result
+            .rows
+            .iter()
+            .map(|row| match row.get("p") {
+                Some(Value::Path(elements)) => vertex_path_id(&elements[2]).vertex_id,
+                other => panic!("expected path, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(middle_vertices, BTreeSet::from([b1, b2]));
     }
 
     #[test]
