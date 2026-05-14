@@ -1113,17 +1113,16 @@ fn expand_dst_matches_prebound_vertex(row: &PlanRow, dst: &Str, dst_id: VertexId
     }
 }
 
-#[derive(Clone, Debug)]
-struct ShortestPathState {
-    vertices: Vec<VertexId>,
-    edges: Vec<EdgeBinding>,
-}
-
 struct PathSearchNode {
     current: VertexId,
     previous: Option<usize>,
     edge: Option<EdgeBinding>,
     depth: u64,
+}
+
+struct ShortestPathSearchResult {
+    states: Vec<PathSearchNode>,
+    found: Vec<usize>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1187,9 +1186,9 @@ fn execute_shortest_path(
                 gleaph_weight_decoders,
             )?,
         };
-        for path in paths {
+        for state_idx in paths.found {
             let mut row = row.clone();
-            match path.edges.last().copied() {
+            match paths.states[state_idx].edge {
                 Some(edge_binding) => {
                     row.insert(edge.to_string(), PlanBinding::Edge(edge_binding));
                 }
@@ -1200,7 +1199,7 @@ fn execute_shortest_path(
             if let Some(path_var) = path_var {
                 row.insert(
                     path_var.to_string(),
-                    PlanBinding::Value(path_state_to_value(shard_id, &path)),
+                    PlanBinding::Value(path_search_to_value(shard_id, &paths.states, state_idx)),
                 );
             }
             out.push(row);
@@ -1220,7 +1219,7 @@ fn shortest_paths_between(
     label_id: Option<LabelId>,
     var_len: &Option<VarLenSpec>,
     mode: ShortestMode,
-) -> Result<Vec<ShortestPathState>, PlanQueryError> {
+) -> Result<ShortestPathSearchResult, PlanQueryError> {
     let bounds = var_len.unwrap_or(VarLenSpec {
         min: 1,
         max: Some(1),
@@ -1285,21 +1284,22 @@ fn shortest_paths_between(
                 edge: Some(edge_binding),
                 depth: next_depth,
             });
-            if matches!(mode, ShortestMode::AnyShortest) && next == dst && next_depth >= bounds.min
-            {
-                return Ok(vec![path_search_to_shortest_path_state(
-                    &states,
-                    next_state_idx,
-                )]);
+            if next == dst && next_depth >= bounds.min {
+                if matches!(mode, ShortestMode::AnyShortest) {
+                    return Ok(ShortestPathSearchResult {
+                        states,
+                        found: vec![next_state_idx],
+                    });
+                }
+                found_depth = Some(next_depth);
+                found.push(next_state_idx);
+                continue;
             }
             queue.push_back(next_state_idx);
         }
     }
 
-    Ok(found
-        .into_iter()
-        .map(|state_idx| path_search_to_shortest_path_state(&states, state_idx))
-        .collect())
+    Ok(ShortestPathSearchResult { states, found })
 }
 
 fn weighted_shortest_can_use_hop_count(mode: ShortestMode, cost_expr: &Expr) -> bool {
@@ -1595,7 +1595,7 @@ fn weighted_shortest_paths_between(
     mode: ShortestMode,
     parameters: &BTreeMap<String, Value>,
     gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
-) -> Result<Vec<ShortestPathState>, PlanQueryError> {
+) -> Result<ShortestPathSearchResult, PlanQueryError> {
     let bounds = var_len.unwrap_or(VarLenSpec {
         min: 1,
         max: Some(1),
@@ -1731,10 +1731,7 @@ fn weighted_shortest_paths_between(
         }
     }
 
-    Ok(found
-        .into_iter()
-        .map(|state_idx| path_search_to_shortest_path_state(&states, state_idx))
-        .collect())
+    Ok(ShortestPathSearchResult { states, found })
 }
 
 fn path_search_contains_vertex(
@@ -1752,28 +1749,6 @@ fn path_search_contains_vertex(
         };
         state_idx = previous;
     }
-}
-
-fn path_search_to_shortest_path_state(
-    states: &[PathSearchNode],
-    mut state_idx: usize,
-) -> ShortestPathState {
-    let mut vertices = Vec::with_capacity(states[state_idx].depth as usize + 1);
-    let mut edges = Vec::with_capacity(states[state_idx].depth as usize);
-    loop {
-        let state = &states[state_idx];
-        vertices.push(state.current);
-        if let Some(edge) = state.edge {
-            edges.push(edge);
-        }
-        let Some(previous) = state.previous else {
-            break;
-        };
-        state_idx = previous;
-    }
-    vertices.reverse();
-    edges.reverse();
-    ShortestPathState { vertices, edges }
 }
 
 fn eval_shortest_hop_cost(
@@ -1863,14 +1838,20 @@ fn decode_direct_gleaph_weight_hop_cost(
     Ok(WeightedCost::from_validated_non_negative_float32(weight))
 }
 
-fn path_state_to_value(shard_id: u64, path: &ShortestPathState) -> Value {
-    let mut elements = Vec::with_capacity(path.vertices.len() + path.edges.len());
-    for (idx, vertex_id) in path.vertices.iter().copied().enumerate() {
-        elements.push(vertex_path_element(shard_id, vertex_id));
-        if let Some(edge_binding) = path.edges.get(idx).copied() {
-            elements.push(edge_path_element(shard_id, edge_binding.handle));
+fn path_search_to_value(shard_id: u64, states: &[PathSearchNode], mut state_idx: usize) -> Value {
+    let mut elements = Vec::with_capacity(states[state_idx].depth as usize * 2 + 1);
+    loop {
+        let state = &states[state_idx];
+        elements.push(vertex_path_element(shard_id, state.current));
+        if let Some(edge) = state.edge {
+            elements.push(edge_path_element(shard_id, edge.handle));
         }
+        let Some(previous) = state.previous else {
+            break;
+        };
+        state_idx = previous;
     }
+    elements.reverse();
     Value::Path(elements)
 }
 
