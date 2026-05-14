@@ -1595,7 +1595,7 @@ fn weighted_shortest_paths_between(
     while let Some(entry) = heap.pop() {
         if let Some(ref min) = found_min_cost {
             if matches!(entry.cost.cmp(min), Ordering::Greater) {
-                continue;
+                break;
             }
         }
         let state_idx = entry.state_idx;

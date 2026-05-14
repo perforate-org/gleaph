@@ -26,25 +26,25 @@ benches:
   bench_graph_weighted_shortest_frontier_heap_branch4_depth4:
     total:
       calls: 1
-      instructions: 1725042
+      instructions: 1725044
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       weighted_shortest_frontier_heap:
         calls: 1
-        instructions: 1723981
+        instructions: 1723983
         heap_increase: 0
         stable_memory_increase: 0
   bench_graph_weighted_shortest_repeated_edge_cost_cache_48prefix_24hub_out:
     total:
       calls: 1
-      instructions: 1415517
+      instructions: 1415519
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       weighted_shortest_edge_cost_cache:
         calls: 1
-        instructions: 1414456
+        instructions: 1414458
         heap_increase: 0
         stable_memory_increase: 0
 version: 0.4.0
