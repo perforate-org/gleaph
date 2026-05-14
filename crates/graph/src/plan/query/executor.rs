@@ -1743,6 +1743,11 @@ fn eval_shortest_hop_cost(
     parameters: &BTreeMap<String, Value>,
     gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
 ) -> Result<WeightedCost, PlanQueryError> {
+    if let Some(cost) =
+        eval_direct_gleaph_weight_hop_cost(expr, edge_var, edge_binding, gleaph_weight_decoders)?
+    {
+        return Ok(cost);
+    }
     let mut row = PlanRow::new();
     row.insert(edge_var.to_string(), PlanBinding::Edge(edge_binding));
     let evaluator = QueryExprEvaluator {
@@ -1754,6 +1759,47 @@ fn eval_shortest_hop_cost(
     };
     let value = evaluator.eval_expr(&row, expr)?;
     WeightedCost::from_value(value)
+}
+
+fn eval_direct_gleaph_weight_hop_cost(
+    expr: &Expr,
+    edge_var: &str,
+    edge_binding: EdgeBinding,
+    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
+) -> Result<Option<WeightedCost>, PlanQueryError> {
+    let ExprKind::FunctionCall {
+        name,
+        args,
+        distinct,
+    } = &expr.kind
+    else {
+        return Ok(None);
+    };
+    if !super::gleaph_weight::is_gleaph_weight_call(name, *distinct) {
+        return Ok(None);
+    }
+    let Some(arg) = super::gleaph_weight::gleaph_weight_single_arg(args) else {
+        return Ok(None);
+    };
+    let Some(arg_edge_var) = super::gleaph_weight::gleaph_weight_arg_edge_var(arg) else {
+        return Ok(None);
+    };
+    if arg_edge_var != edge_var {
+        return Ok(None);
+    }
+    let decoder = gleaph_weight_decoders
+        .and_then(|decoders| decoders.get(edge_var))
+        .ok_or_else(|| PlanQueryError::GleaphWeight {
+            message: format!(
+                "GLEAPH_WEIGHT({edge_var}): no prepared decoder for this edge variable"
+            ),
+        })?;
+    let weight = decode_inline_weight(decoder, edge_binding.inline_value).map_err(|e| {
+        PlanQueryError::GleaphWeight {
+            message: format!("GLEAPH_WEIGHT decode failed: {e}"),
+        }
+    })?;
+    Ok(Some(WeightedCost::from_value(Value::Float32(weight))?))
 }
 
 fn path_state_to_value(shard_id: u64, path: &ShortestPathState) -> Value {
