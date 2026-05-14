@@ -31,7 +31,7 @@ use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest};
 use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
 use ic_stable_lara::VertexId;
 use ic_stable_lara::traits::CsrVertexTombstone;
-use nohash_hasher::IntMap;
+use nohash_hasher::{IntMap, IntSet};
 use rapidhash::fast::RapidHasher;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashSet, VecDeque};
@@ -1231,6 +1231,13 @@ fn shortest_paths_between(
 
     let mut found_depth = None;
     let mut found = Vec::new();
+    let mut any_visited = if matches!(mode, ShortestMode::AnyShortest) && bounds.min <= 1 {
+        let mut visited = IntSet::default();
+        visited.insert(u32::from(src));
+        Some(visited)
+    } else {
+        None
+    };
     let mut states = vec![PathSearchNode {
         current: src,
         previous: None,
@@ -1261,9 +1268,14 @@ fn shortest_paths_between(
         }
 
         for (next, handle, edge_record) in expand_candidates(store, current, direction, label_id)? {
-            if path_search_contains_vertex(&states, state_idx, next) {
+            if let Some(visited) = any_visited.as_mut() {
+                if !visited.insert(u32::from(next)) {
+                    continue;
+                }
+            } else if path_search_contains_vertex(&states, state_idx, next) {
                 continue;
             }
+            let next_depth = depth + 1;
             let next_state_idx = states.len();
             states.push(PathSearchNode {
                 current: next,
@@ -1272,8 +1284,15 @@ fn shortest_paths_between(
                     handle,
                     inline_value: edge_record.inline_value,
                 }),
-                depth: depth + 1,
+                depth: next_depth,
             });
+            if matches!(mode, ShortestMode::AnyShortest) && next == dst && next_depth >= bounds.min
+            {
+                return Ok(vec![path_search_to_shortest_path_state(
+                    &states,
+                    next_state_idx,
+                )]);
+            }
             queue.push_back(next_state_idx);
         }
     }

@@ -275,6 +275,27 @@ fn bench_graph_hop_count_shortest_frontier_queue_branch4_depth4() -> canbench_rs
     })
 }
 
+/// Converging DAG workload where many prefixes reach the same hub. Intended to measure
+/// `AnyShortest` duplicate-vertex pruning for hop-count BFS.
+#[bench(raw)]
+fn bench_graph_hop_count_shortest_converging_hub_48prefix_24hub_out() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    setup_repeated_edge_cost_cache_graph(&store);
+    let plan =
+        hop_count_shortest_plan("BenchWspCacheSrc", "BenchWspCacheDst", "BenchWspWgtEdge", 5);
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("hop_count_shortest_converging_hub");
+        let result = execute_shortest_plan(black_box(&store), black_box(&plan));
+        assert_eq!(
+            result.rows.len(),
+            1,
+            "hop-count convergence benchmark should find one path"
+        );
+        black_box(result.rows.len())
+    })
+}
+
 /// Stresses weighted shortest-path frontier size on a layered branching DAG with uniform
 /// per-hop cost. Intended to surface regressions in `BinaryHeap` queue management when many
 /// equal-cost partial paths are alive before the destination is reached.
