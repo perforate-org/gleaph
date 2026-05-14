@@ -1,6 +1,15 @@
 //! PocketIC / `canbench` targets for graph plan execution (`PhysicalPlan` replay).
 //!
 //! Run from `crates/graph`: `canbench` (see `canbench.yml`).
+//!
+//! Priority-5 signal benches (compare paired workloads, not absolute instruction counts):
+//!
+//! - **5a label scan**: `expand_mixed_label_hub_240scan_24match` vs `expand_hub_return_dst_only`;
+//!   `expand_skewed_noise_200a_24b` for skewed noise.
+//! - **5b row clone**: `expand_deep_row_hub_24out` vs `expand_hub_return_dst_only`;
+//!   `expand_hash_join_then_expand_48x24` for join-inflated rows.
+//! - **P1 / P4 cross-check**: `expand_filter_10pct_pass` (reject clone); `expand_indexed_eq_selective_24match`
+//!   vs mixed-label scan.
 
 use crate::facade::GraphStore;
 use crate::facade::mutation_executor::GraphMutationExecutor;
@@ -11,7 +20,7 @@ use gleaph_gql::Value;
 use gleaph_gql::ast::{Expr, ExprKind, ObjectName};
 use gleaph_gql::types::EdgeDirection;
 use gleaph_gql_planner::plan::{
-    PhysicalPlan, PlanAnnotations, PlanDiagnostics, PlanOp, ProjectColumn, ShortestMode,
+    PhysicalPlan, PlanAnnotations, PlanDiagnostics, PlanOp, ProjectColumn, ScanValue, ShortestMode,
     ShortestPathCost, VarLenSpec,
 };
 use gleaph_graph_kernel::entry::{EdgeMeta, EdgeWeightProfile, InlineEdgeLabelId, WeightEncoding};
@@ -443,6 +452,14 @@ fn setup_expand_hub_graph(store: &GraphStore) {
 }
 
 fn expand_plan(emit_edge_binding: bool) -> PhysicalPlan {
+    expand_plan_for_label("BenchExpandEdge", emit_edge_binding, None)
+}
+
+fn expand_plan_for_label(
+    edge_label: &str,
+    emit_edge_binding: bool,
+    indexed_edge_equality: Option<(&str, ScanValue)>,
+) -> PhysicalPlan {
     plan(vec![
         PlanOp::NodeScan {
             variable: "h".into(),
@@ -454,10 +471,11 @@ fn expand_plan(emit_edge_binding: bool) -> PhysicalPlan {
             edge: "e".into(),
             dst: "b".into(),
             direction: EdgeDirection::PointingRight,
-            label: Some("BenchExpandEdge".into()),
+            label: Some(edge_label.into()),
             label_expr: None,
             var_len: None,
-            indexed_edge_equality: None,
+            indexed_edge_equality: indexed_edge_equality
+                .map(|(property, value)| (property.into(), value)),
             edge_property_projection: None,
             dst_property_projection: None,
             hop_aux_binding: None,
@@ -647,6 +665,423 @@ fn bench_graph_hop_shortest_return_endpoints_branch4_depth4() -> canbench_rs::Be
         let _scope = canbench_rs::bench_scope("hop_shortest_return_endpoints");
         let result = execute_shortest_plan(black_box(&store), black_box(&plan));
         assert_eq!(result.rows.len(), 1);
+        black_box(result.rows.len())
+    })
+}
+
+// --- Priority 5 signal benches (paired with existing expand_hub_return_dst_only) ---
+
+const EXPAND_MIXED_LABEL_COUNT: u32 = 10;
+const EXPAND_SKEW_NOISE: u32 = 200;
+const EXPAND_FILTER_TOTAL: u32 = 240;
+const EXPAND_FILTER_PASS: u32 = 24;
+const EXPAND_HJ_PREFIXES: u32 = 48;
+
+fn setup_expand_mixed_label_hub_graph(store: &GraphStore) -> String {
+    let hub = store
+        .insert_vertex_named(["BenchExpandHub"], Vec::<(&str, Value)>::new())
+        .expect("hub");
+    let target_label = "BenchExpandLbl0".to_owned();
+    for label_idx in 0..EXPAND_MIXED_LABEL_COUNT {
+        let label = format!("BenchExpandLbl{label_idx}");
+        for i in 0..EXPAND_HUB_OUT {
+            let dst = store
+                .insert_vertex_named(
+                    [format!("BenchMixedDst{label_idx}_{i}")],
+                    Vec::<(&str, Value)>::new(),
+                )
+                .expect("dst");
+            store
+                .insert_directed_edge_named(hub, dst, Some(&label), Vec::<(&str, Value)>::new())
+                .expect("edge");
+        }
+    }
+    target_label
+}
+
+/// Hub with 10 labels × 24 edges; expand one label only (24 rows). Control: `expand_hub_return_dst_only`.
+#[bench(raw)]
+fn bench_graph_expand_mixed_label_hub_240scan_24match() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    let target_label = setup_expand_mixed_label_hub_graph(&store);
+    let plan = expand_plan_for_label(&target_label, false, None);
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("expand_mixed_label_hub_240scan_24match");
+        let result = execute_expand_plan(black_box(&store), black_box(&plan));
+        assert_eq!(result.rows.len(), EXPAND_HUB_OUT as usize);
+        black_box(result.rows.len())
+    })
+}
+
+fn setup_expand_skewed_noise_graph(store: &GraphStore) {
+    let hub = store
+        .insert_vertex_named(["BenchExpandHub"], Vec::<(&str, Value)>::new())
+        .expect("hub");
+    for i in 0..EXPAND_SKEW_NOISE {
+        let dst = store
+            .insert_vertex_named(
+                [format!("BenchSkewNoiseDst{i}")],
+                Vec::<(&str, Value)>::new(),
+            )
+            .expect("noise dst");
+        store
+            .insert_directed_edge_named(
+                hub,
+                dst,
+                Some("BenchExpandNoise"),
+                Vec::<(&str, Value)>::new(),
+            )
+            .expect("noise edge");
+    }
+    for i in 0..EXPAND_HUB_OUT {
+        let dst = store
+            .insert_vertex_named(
+                [format!("BenchSkewTargetDst{i}")],
+                Vec::<(&str, Value)>::new(),
+            )
+            .expect("target dst");
+        store
+            .insert_directed_edge_named(
+                hub,
+                dst,
+                Some("BenchExpandTarget"),
+                Vec::<(&str, Value)>::new(),
+            )
+            .expect("target edge");
+    }
+}
+
+/// 200 noise edges + 24 target-label edges; expand target label only.
+#[bench(raw)]
+fn bench_graph_expand_skewed_noise_200a_24b() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    setup_expand_skewed_noise_graph(&store);
+    let plan = expand_plan_for_label("BenchExpandTarget", false, None);
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("expand_skewed_noise_200a_24b");
+        let result = execute_expand_plan(black_box(&store), black_box(&plan));
+        assert_eq!(result.rows.len(), EXPAND_HUB_OUT as usize);
+        black_box(result.rows.len())
+    })
+}
+
+fn setup_expand_deep_row_graph(store: &GraphStore) {
+    let src = store
+        .insert_vertex_named(["BenchDeepSrc"], Vec::<(&str, Value)>::new())
+        .expect("src");
+    let mid = store
+        .insert_vertex_named(["BenchDeepMid"], Vec::<(&str, Value)>::new())
+        .expect("mid");
+    let hub = store
+        .insert_vertex_named(["BenchExpandHub"], Vec::<(&str, Value)>::new())
+        .expect("hub");
+    store
+        .insert_directed_edge_named(src, mid, Some("BenchDeepEdge"), Vec::<(&str, Value)>::new())
+        .expect("src->mid");
+    store
+        .insert_directed_edge_named(mid, hub, Some("BenchDeepEdge"), Vec::<(&str, Value)>::new())
+        .expect("mid->hub");
+    for i in 0..EXPAND_HUB_OUT {
+        let dst = store
+            .insert_vertex_named([format!("BenchDeepDst{i}")], Vec::<(&str, Value)>::new())
+            .expect("dst");
+        store
+            .insert_directed_edge_named(
+                hub,
+                dst,
+                Some("BenchExpandEdge"),
+                Vec::<(&str, Value)>::new(),
+            )
+            .expect("hub->dst");
+    }
+}
+
+fn expand_deep_row_plan() -> PhysicalPlan {
+    plan(vec![
+        PlanOp::NodeScan {
+            variable: "a".into(),
+            label: Some("BenchDeepSrc".into()),
+            property_projection: None,
+        },
+        PlanOp::Expand {
+            src: "a".into(),
+            edge: "e1".into(),
+            dst: "mid".into(),
+            direction: EdgeDirection::PointingRight,
+            label: Some("BenchDeepEdge".into()),
+            label_expr: None,
+            var_len: None,
+            indexed_edge_equality: None,
+            edge_property_projection: None,
+            dst_property_projection: None,
+            hop_aux_binding: None,
+            emit_edge_binding: false,
+        },
+        PlanOp::Expand {
+            src: "mid".into(),
+            edge: "e2".into(),
+            dst: "h".into(),
+            direction: EdgeDirection::PointingRight,
+            label: Some("BenchDeepEdge".into()),
+            label_expr: None,
+            var_len: None,
+            indexed_edge_equality: None,
+            edge_property_projection: None,
+            dst_property_projection: None,
+            hop_aux_binding: None,
+            emit_edge_binding: false,
+        },
+        PlanOp::Expand {
+            src: "h".into(),
+            edge: "e".into(),
+            dst: "b".into(),
+            direction: EdgeDirection::PointingRight,
+            label: Some("BenchExpandEdge".into()),
+            label_expr: None,
+            var_len: None,
+            indexed_edge_equality: None,
+            edge_property_projection: None,
+            dst_property_projection: None,
+            hop_aux_binding: None,
+            emit_edge_binding: false,
+        },
+        PlanOp::Project {
+            columns: vec![project(var("b"), "b")],
+            distinct: false,
+        },
+    ])
+}
+
+/// Two-hop prefix chain before hub fanout; row carries prior bindings at final expand. Control: `expand_hub_return_dst_only`.
+#[bench(raw)]
+fn bench_graph_expand_deep_row_hub_24out() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    setup_expand_deep_row_graph(&store);
+    let plan = expand_deep_row_plan();
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("expand_deep_row_hub_24out");
+        let result = execute_expand_plan(black_box(&store), black_box(&plan));
+        assert_eq!(result.rows.len(), EXPAND_HUB_OUT as usize);
+        black_box(result.rows.len())
+    })
+}
+
+fn setup_expand_filter_10pct_graph(store: &GraphStore) {
+    let hub = store
+        .insert_vertex_named(["BenchExpandHub"], Vec::<(&str, Value)>::new())
+        .expect("hub");
+    for i in 0..EXPAND_FILTER_TOTAL {
+        let pass = i < EXPAND_FILTER_PASS;
+        let tag = if pass { 1i64 } else { 0i64 };
+        let dst = store
+            .insert_vertex_named(
+                [format!("BenchFilter10Dst{i}")],
+                [("tag", Value::Int64(tag))],
+            )
+            .expect("dst");
+        store
+            .insert_directed_edge_named(
+                hub,
+                dst,
+                Some("BenchExpandEdge"),
+                Vec::<(&str, Value)>::new(),
+            )
+            .expect("edge");
+    }
+}
+
+fn expand_filter_10pct_plan() -> PhysicalPlan {
+    plan(vec![
+        PlanOp::NodeScan {
+            variable: "h".into(),
+            label: Some("BenchExpandHub".into()),
+            property_projection: None,
+        },
+        PlanOp::ExpandFilter {
+            src: "h".into(),
+            edge: "e".into(),
+            dst: "b".into(),
+            direction: EdgeDirection::PointingRight,
+            label: Some("BenchExpandEdge".into()),
+            label_expr: None,
+            var_len: None,
+            indexed_edge_equality: None,
+            dst_filter: vec![Expr::new(ExprKind::Compare {
+                left: Box::new(Expr::new(ExprKind::PropertyAccess {
+                    expr: Box::new(Expr::new(ExprKind::Variable("b".to_owned()))),
+                    property: "tag".to_owned(),
+                })),
+                op: gleaph_gql::ast::CmpOp::Eq,
+                right: Box::new(Expr::new(ExprKind::Literal(Value::Int64(1)))),
+            })],
+            edge_property_projection: None,
+            dst_property_projection: None,
+            hop_aux_binding: None,
+            emit_edge_binding: false,
+        },
+        PlanOp::Project {
+            columns: vec![project(var("b"), "b")],
+            distinct: false,
+        },
+    ])
+}
+
+/// 240 incident edges, 10% pass dst filter (24 rows). Pair with `expand_filter_hub_return_dst_tag_eq` (50%).
+#[bench(raw)]
+fn bench_graph_expand_filter_10pct_pass() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    setup_expand_filter_10pct_graph(&store);
+    let plan = expand_filter_10pct_plan();
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("expand_filter_10pct_pass");
+        let result = execute_expand_plan(black_box(&store), black_box(&plan));
+        assert_eq!(result.rows.len(), EXPAND_FILTER_PASS as usize);
+        black_box(result.rows.len())
+    })
+}
+
+fn setup_expand_hash_join_graph(store: &GraphStore) {
+    let hub = store
+        .insert_vertex_named(["BenchExpandHub"], Vec::<(&str, Value)>::new())
+        .expect("hub");
+    for i in 0..EXPAND_HJ_PREFIXES {
+        let prefix = store
+            .insert_vertex_named(["BenchHjPrefix"], Vec::<(&str, Value)>::new())
+            .expect("prefix");
+        store
+            .insert_directed_edge_named(
+                prefix,
+                hub,
+                Some("BenchHjToHub"),
+                Vec::<(&str, Value)>::new(),
+            )
+            .expect("prefix->hub");
+    }
+    for i in 0..EXPAND_HUB_OUT {
+        let dst = store
+            .insert_vertex_named([format!("BenchHjDst{i}")], Vec::<(&str, Value)>::new())
+            .expect("dst");
+        store
+            .insert_directed_edge_named(
+                hub,
+                dst,
+                Some("BenchExpandEdge"),
+                Vec::<(&str, Value)>::new(),
+            )
+            .expect("hub->dst");
+    }
+}
+
+fn expand_hash_join_then_expand_plan() -> PhysicalPlan {
+    plan(vec![
+        PlanOp::HashJoin {
+            left: vec![
+                PlanOp::NodeScan {
+                    variable: "p".into(),
+                    label: Some("BenchHjPrefix".into()),
+                    property_projection: None,
+                },
+                PlanOp::Expand {
+                    src: "p".into(),
+                    edge: "e0".into(),
+                    dst: "h".into(),
+                    direction: EdgeDirection::PointingRight,
+                    label: Some("BenchHjToHub".into()),
+                    label_expr: None,
+                    var_len: None,
+                    indexed_edge_equality: None,
+                    edge_property_projection: None,
+                    dst_property_projection: None,
+                    hop_aux_binding: None,
+                    emit_edge_binding: false,
+                },
+            ],
+            right: vec![
+                PlanOp::NodeScan {
+                    variable: "h".into(),
+                    label: Some("BenchExpandHub".into()),
+                    property_projection: None,
+                },
+                PlanOp::Expand {
+                    src: "h".into(),
+                    edge: "e".into(),
+                    dst: "b".into(),
+                    direction: EdgeDirection::PointingRight,
+                    label: Some("BenchExpandEdge".into()),
+                    label_expr: None,
+                    var_len: None,
+                    indexed_edge_equality: None,
+                    edge_property_projection: None,
+                    dst_property_projection: None,
+                    hop_aux_binding: None,
+                    emit_edge_binding: false,
+                },
+            ],
+            join_keys: vec!["h".into()],
+        },
+        PlanOp::Project {
+            columns: vec![project(var("b"), "b")],
+            distinct: false,
+        },
+    ])
+}
+
+/// HashJoin inflates row width before hub fanout expand (48×24 rows).
+#[bench(raw)]
+fn bench_graph_expand_hash_join_then_expand_48x24() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    setup_expand_hash_join_graph(&store);
+    let plan = expand_hash_join_then_expand_plan();
+    let expected = (EXPAND_HJ_PREFIXES * EXPAND_HUB_OUT) as usize;
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("expand_hash_join_then_expand_48x24");
+        let result = execute_expand_plan(black_box(&store), black_box(&plan));
+        assert_eq!(result.rows.len(), expected);
+        black_box(result.rows.len())
+    })
+}
+
+fn setup_expand_indexed_eq_graph(store: &GraphStore) {
+    let hub = store
+        .insert_vertex_named(["BenchExpandHub"], Vec::<(&str, Value)>::new())
+        .expect("hub");
+    for i in 0..EXPAND_FILTER_TOTAL {
+        let match_weight = i < EXPAND_FILTER_PASS;
+        let weight = if match_weight { 5i64 } else { 9i64 };
+        let dst = store
+            .insert_vertex_named([format!("BenchIdxEqDst{i}")], Vec::<(&str, Value)>::new())
+            .expect("dst");
+        store
+            .insert_directed_edge_named(
+                hub,
+                dst,
+                Some("BenchExpandEdge"),
+                [("weight", Value::Int64(weight))],
+            )
+            .expect("edge");
+    }
+}
+
+/// 240 incident edges; indexed equality selects 24. Compare against mixed-label scan for P4 vs 5a priority.
+#[bench(raw)]
+fn bench_graph_expand_indexed_eq_selective_24match() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    setup_expand_indexed_eq_graph(&store);
+    let plan = expand_plan_for_label(
+        "BenchExpandEdge",
+        false,
+        Some(("weight", ScanValue::Literal(Value::Int64(5)))),
+    );
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("expand_indexed_eq_selective_24match");
+        let result = execute_expand_plan(black_box(&store), black_box(&plan));
+        assert_eq!(result.rows.len(), EXPAND_FILTER_PASS as usize);
         black_box(result.rows.len())
     })
 }
