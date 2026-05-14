@@ -2,61 +2,61 @@ benches:
   bench_graph_hop_count_shortest_converging_hub_48prefix_24hub_out:
     total:
       calls: 1
-      instructions: 332612
+      instructions: 330746
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       hop_count_shortest_converging_hub:
         calls: 1
-        instructions: 331551
+        instructions: 329685
         heap_increase: 0
         stable_memory_increase: 0
   bench_graph_hop_count_shortest_frontier_queue_branch4_depth4:
     total:
       calls: 1
-      instructions: 256181
+      instructions: 254245
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       hop_count_shortest_frontier_queue:
         calls: 1
-        instructions: 255120
+        instructions: 253184
         heap_increase: 0
         stable_memory_increase: 0
   bench_graph_weighted_all_shortest_literal_frontier_branch4_depth4:
     total:
       calls: 1
-      instructions: 2093592
+      instructions: 2013742
       heap_increase: 2
       stable_memory_increase: 0
     scopes:
       weighted_all_shortest_literal_frontier:
         calls: 1
-        instructions: 2092526
+        instructions: 2012676
         heap_increase: 2
         stable_memory_increase: 0
   bench_graph_weighted_shortest_frontier_heap_branch4_depth4:
     total:
       calls: 1
-      instructions: 256593
+      instructions: 254657
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       weighted_shortest_frontier_heap:
         calls: 1
-        instructions: 255532
+        instructions: 253596
         heap_increase: 0
         stable_memory_increase: 0
   bench_graph_weighted_shortest_repeated_edge_cost_cache_48prefix_24hub_out:
     total:
       calls: 1
-      instructions: 665344
+      instructions: 663452
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       weighted_shortest_edge_cost_cache:
         calls: 1
-        instructions: 664283
+        instructions: 662391
         heap_increase: 0
         stable_memory_increase: 0
 version: 0.4.0

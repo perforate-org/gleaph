@@ -503,6 +503,8 @@ fn execute_ops_from<'a>(
                     dst,
                     edge,
                     path_var,
+                    emit_edge_binding,
+                    emit_path_binding,
                     mode,
                     direction,
                     label,
@@ -516,6 +518,8 @@ fn execute_ops_from<'a>(
                     dst,
                     edge,
                     path_var.as_ref(),
+                    *emit_edge_binding,
+                    *emit_path_binding,
                     *mode,
                     *direction,
                     label.as_ref(),
@@ -1133,6 +1137,8 @@ fn execute_shortest_path(
     dst: &Str,
     edge: &Str,
     path_var: Option<&Str>,
+    emit_edge_binding: bool,
+    emit_path_binding: bool,
     mode: ShortestMode,
     direction: EdgeDirection,
     label: Option<&Str>,
@@ -1187,16 +1193,20 @@ fn execute_shortest_path(
             )?,
         };
         out.reserve(paths.found.len());
-        let edge_key = edge.to_string();
-        let path_key = path_var.map(|path_var| path_var.to_string());
+        let edge_key = emit_edge_binding.then(|| edge.to_string());
+        let path_key = emit_path_binding
+            .then(|| path_var.map(|path_var| path_var.to_string()))
+            .flatten();
         for state_idx in paths.found {
             let mut row = row.clone();
-            match paths.states[state_idx].edge {
-                Some(edge_binding) => {
-                    row.insert(edge_key.clone(), PlanBinding::Edge(edge_binding));
-                }
-                None => {
-                    row.insert(edge_key.clone(), PlanBinding::Value(Value::Null));
+            if let Some(edge_key) = &edge_key {
+                match paths.states[state_idx].edge {
+                    Some(edge_binding) => {
+                        row.insert(edge_key.clone(), PlanBinding::Edge(edge_binding));
+                    }
+                    None => {
+                        row.insert(edge_key.clone(), PlanBinding::Value(Value::Null));
+                    }
                 }
             }
             if let Some(path_key) = &path_key {
@@ -1272,6 +1282,7 @@ fn shortest_paths_between(
         candidates.clear();
         expand_candidates_into(store, current, direction, label_id, &mut candidates)?;
         for (next, edge_binding) in candidates.iter().copied() {
+            let next_depth = depth + 1;
             if let Some(visited) = any_visited.as_mut() {
                 if !visited.insert(u32::from(next)) {
                     continue;
@@ -1279,7 +1290,6 @@ fn shortest_paths_between(
             } else if path_search_contains_vertex(&states, state_idx, next) {
                 continue;
             }
-            let next_depth = depth + 1;
             let next_state_idx = states.len();
             states.push(PathSearchNode {
                 current: next,
@@ -6963,6 +6973,8 @@ mod tests {
                 dst: "c".into(),
                 edge: "e".into(),
                 path_var: Some("p".into()),
+                emit_edge_binding: true,
+                emit_path_binding: true,
                 mode: ShortestMode::AnyShortest,
                 direction: EdgeDirection::PointingRight,
                 label: Some("ShortestPathRel".into()),
@@ -7019,6 +7031,8 @@ mod tests {
                 dst: "a".into(),
                 edge: "e".into(),
                 path_var: Some("p".into()),
+                emit_edge_binding: true,
+                emit_path_binding: true,
                 mode: ShortestMode::AnyShortest,
                 direction: EdgeDirection::PointingRight,
                 label: None,
@@ -7089,6 +7103,8 @@ mod tests {
                 dst: "c".into(),
                 edge: "e".into(),
                 path_var: Some("p".into()),
+                emit_edge_binding: true,
+                emit_path_binding: true,
                 mode: ShortestMode::AllShortest,
                 direction: EdgeDirection::PointingRight,
                 label: Some("AllShortestRel".into()),
@@ -7131,6 +7147,8 @@ mod tests {
                     dst: "b".into(),
                     edge: "e".into(),
                     path_var: Some("p".into()),
+                    emit_edge_binding: true,
+                    emit_path_binding: true,
                     mode: ShortestMode::ShortestK(2),
                     direction: EdgeDirection::PointingRight,
                     label: None,
@@ -7154,6 +7172,8 @@ mod tests {
                     dst: "b".into(),
                     edge: "e".into(),
                     path_var: Some("p".into()),
+                    emit_edge_binding: true,
+                    emit_path_binding: true,
                     mode: ShortestMode::AnyShortest,
                     direction: EdgeDirection::PointingRight,
                     label: None,
@@ -7300,6 +7320,8 @@ mod tests {
                 dst: "c".into(),
                 edge: "e".into(),
                 path_var: Some("p".into()),
+                emit_edge_binding: true,
+                emit_path_binding: true,
                 mode: ShortestMode::AnyShortest,
                 direction: EdgeDirection::PointingRight,
                 label: Some("WgtRoad".into()),
@@ -7354,6 +7376,8 @@ mod tests {
                 dst: "c".into(),
                 edge: "e".into(),
                 path_var: Some("p".into()),
+                emit_edge_binding: true,
+                emit_path_binding: true,
                 mode,
                 direction: EdgeDirection::PointingRight,
                 label: Some("WgtRoad".into()),
@@ -7561,6 +7585,8 @@ mod tests {
                 dst: "c".into(),
                 edge: "e".into(),
                 path_var: Some("p".into()),
+                emit_edge_binding: true,
+                emit_path_binding: true,
                 mode: ShortestMode::AllShortest,
                 direction: EdgeDirection::PointingRight,
                 label: Some("WgtAllRel".into()),
@@ -7898,6 +7924,8 @@ mod tests {
                 dst: "c".into(),
                 edge: "e".into(),
                 path_var: Some("p".into()),
+                emit_edge_binding: true,
+                emit_path_binding: true,
                 mode: ShortestMode::AnyShortest,
                 direction: EdgeDirection::PointingRight,
                 label: Some("WgtRoad".into()),
@@ -7988,6 +8016,8 @@ mod tests {
                 dst: "c".into(),
                 edge: "e".into(),
                 path_var: Some("p".into()),
+                emit_edge_binding: true,
+                emit_path_binding: true,
                 mode: ShortestMode::AnyShortest,
                 direction: EdgeDirection::PointingRight,
                 label: Some("WgtRoad".into()),
@@ -8078,6 +8108,8 @@ mod tests {
                 dst: "c".into(),
                 edge: "e".into(),
                 path_var: Some("p".into()),
+                emit_edge_binding: true,
+                emit_path_binding: true,
                 mode: ShortestMode::AnyShortest,
                 direction: EdgeDirection::PointingRight,
                 label: Some("WgtRoad".into()),
@@ -8167,6 +8199,8 @@ mod tests {
                 dst: "c".into(),
                 edge: "e".into(),
                 path_var: Some("p".into()),
+                emit_edge_binding: true,
+                emit_path_binding: true,
                 mode: ShortestMode::AnyShortest,
                 direction: EdgeDirection::PointingRight,
                 label: Some("WgtRoad".into()),
@@ -8217,6 +8251,8 @@ mod tests {
                 dst: "c".into(),
                 edge: "e".into(),
                 path_var: Some("p".into()),
+                emit_edge_binding: true,
+                emit_path_binding: true,
                 mode: ShortestMode::AnyShortest,
                 direction: EdgeDirection::PointingRight,
                 label: Some("WgtRoad".into()),
@@ -8261,6 +8297,8 @@ mod tests {
                 dst: "c".into(),
                 edge: "e".into(),
                 path_var: Some("p".into()),
+                emit_edge_binding: true,
+                emit_path_binding: true,
                 mode: ShortestMode::AnyShortest,
                 direction: EdgeDirection::PointingRight,
                 label: Some("WgtRoad".into()),
@@ -8344,6 +8382,8 @@ mod tests {
                 dst: "c".into(),
                 edge: "e".into(),
                 path_var: None,
+                emit_edge_binding: true,
+                emit_path_binding: true,
                 mode: ShortestMode::AnyShortest,
                 direction: EdgeDirection::PointingRight,
                 label: Some("WgtNoProfileRoad".into()),

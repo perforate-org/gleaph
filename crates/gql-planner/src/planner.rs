@@ -482,6 +482,7 @@ fn build_plan_core(
     pushdown::apply_late_project(&mut ops, &mut annotations);
     pushdown::apply_limit_pushdown(&mut ops, &mut annotations);
     pushdown::apply_topk_fusion(&mut ops, &mut annotations);
+    pushdown::apply_shortest_path_binding_pruning(&mut ops, &mut annotations);
     // Replace simple `Expand` cycles with a single `WorstCaseOptimalJoin` when safe.
     apply_wcoj_replacement(&mut ops, &mut annotations);
     crate::property_projection::apply_node_property_projections(&mut ops);
@@ -2178,6 +2179,8 @@ fn plan_path_term(
                                 dst: dst_str.clone(),
                                 edge: edge_str,
                                 path_var: path_var.map(Into::into),
+                                emit_edge_binding: true,
+                                emit_path_binding: true,
                                 mode,
                                 direction: edge.direction,
                                 label: label_str.clone(),

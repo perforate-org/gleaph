@@ -2337,6 +2337,45 @@ fn shortest_path_pattern_variable_is_planned() {
     assert_eq!(&*path_var, "p");
 }
 
+fn shortest_path_emit_flags(plan: &PhysicalPlan) -> (bool, bool) {
+    plan.ops
+        .iter()
+        .find_map(|op| match op {
+            PlanOp::ShortestPath {
+                emit_edge_binding,
+                emit_path_binding,
+                ..
+            } => Some((*emit_edge_binding, *emit_path_binding)),
+            _ => None,
+        })
+        .expect("ShortestPath op")
+}
+
+#[test]
+fn shortest_path_return_path_only_prunes_edge_binding() {
+    let plan = plan_query("MATCH p = ANY SHORTEST (a)-[e]->{1,3}(b) RETURN p");
+    assert_eq!(shortest_path_emit_flags(&plan), (false, true));
+}
+
+#[test]
+fn shortest_path_return_edge_only_prunes_path_binding() {
+    let plan = plan_query("MATCH ANY SHORTEST (a)-[e]->{1,3}(b) RETURN e");
+    assert_eq!(shortest_path_emit_flags(&plan), (true, false));
+}
+
+#[test]
+fn shortest_path_return_endpoints_prunes_both_bindings() {
+    let plan = plan_query("MATCH ANY SHORTEST (a)-[e]->{1,3}(b) RETURN a, b");
+    assert_eq!(shortest_path_emit_flags(&plan), (false, false));
+}
+
+#[test]
+fn shortest_path_filter_on_edge_keeps_edge_binding() {
+    let plan =
+        plan_query("MATCH ANY SHORTEST (a)-[e:KNOWS]->{1,3}(b) WHERE e IS NOT NULL RETURN a");
+    assert_eq!(shortest_path_emit_flags(&plan), (true, false));
+}
+
 #[test]
 fn non_shortest_path_variable_is_rejected() {
     let err = plan_query_err("MATCH p = (a)-[e]->(b) RETURN p");

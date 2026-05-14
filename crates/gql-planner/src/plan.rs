@@ -206,6 +206,10 @@ pub enum PlanOp {
         dst: Str,
         edge: Str,
         path_var: Option<Str>,
+        /// When false, the executor skips binding the final-hop `edge` variable.
+        emit_edge_binding: bool,
+        /// When false, the executor skips materializing `path_var` (if present).
+        emit_path_binding: bool,
         mode: ShortestMode,
         direction: EdgeDirection,
         label: Option<Str>,
