@@ -17,7 +17,7 @@ use candid::Principal;
 use gleaph_gql::ast::{BinaryOp, CmpOp, Expr, ExprKind, ObjectName, OrderByClause, TruthValue};
 use gleaph_gql::numeric_ops::{NumericOpError, eval_binary_numeric};
 use gleaph_gql::numeric_order::{NormalizedNumeric, NumericOrderError, normalized_numeric_parts};
-use gleaph_gql::types::{EdgeDirection, LabelExpr, PathElement};
+use gleaph_gql::types::{EdgeDirection, LabelExpr, PathElement, PathElementId};
 use gleaph_gql::value_cmp::compare_values;
 use gleaph_gql::{Value, hash_value_for_join, value_to_index_key_bytes};
 use gleaph_gql_planner::plan::{
@@ -1186,19 +1186,22 @@ fn execute_shortest_path(
                 gleaph_weight_decoders,
             )?,
         };
+        out.reserve(paths.found.len());
+        let edge_key = edge.to_string();
+        let path_key = path_var.map(|path_var| path_var.to_string());
         for state_idx in paths.found {
             let mut row = row.clone();
             match paths.states[state_idx].edge {
                 Some(edge_binding) => {
-                    row.insert(edge.to_string(), PlanBinding::Edge(edge_binding));
+                    row.insert(edge_key.clone(), PlanBinding::Edge(edge_binding));
                 }
                 None => {
-                    row.insert(edge.to_string(), PlanBinding::Value(Value::Null));
+                    row.insert(edge_key.clone(), PlanBinding::Value(Value::Null));
                 }
             }
-            if let Some(path_var) = path_var {
+            if let Some(path_key) = &path_key {
                 row.insert(
-                    path_var.to_string(),
+                    path_key.clone(),
                     PlanBinding::Value(path_search_to_value(shard_id, &paths.states, state_idx)),
                 );
             }
@@ -1876,13 +1879,15 @@ fn edge_element_id_bytes(
 }
 
 fn vertex_path_element(shard_id: u64, vertex_id: VertexId) -> PathElement {
-    PathElement::Vertex(vertex_element_id_bytes(shard_id, vertex_id).into())
+    PathElement::Vertex(PathElementId::from(Box::<[u8]>::from(
+        GraphPathVertexId::new(shard_id, vertex_id).to_bytes(),
+    )))
 }
 
 fn edge_path_element(shard_id: u64, handle: EdgeHandle) -> PathElement {
-    PathElement::Edge(
-        edge_element_id_bytes(shard_id, handle.owner_vertex_id, handle.vertex_edge_id).into(),
-    )
+    PathElement::Edge(PathElementId::from(Box::<[u8]>::from(
+        GraphPathEdgeId::new(shard_id, handle.owner_vertex_id, handle.vertex_edge_id).to_bytes(),
+    )))
 }
 
 type ExpandCandidate = (VertexId, EdgeBinding);
