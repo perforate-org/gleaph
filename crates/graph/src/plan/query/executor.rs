@@ -1172,7 +1172,7 @@ fn execute_shortest_path(
         };
         let paths = match cost {
             ShortestPathCost::HopCount => {
-                shortest_paths_between(store, src_id, dst_id, direction, label_id, var_len)?
+                shortest_paths_between(store, src_id, dst_id, direction, label_id, var_len, mode)?
             }
             ShortestPathCost::EdgeCostExpr { edge_var, expr } => weighted_shortest_paths_between(
                 store,
@@ -1220,6 +1220,7 @@ fn shortest_paths_between(
     direction: EdgeDirection,
     label_id: Option<LabelId>,
     var_len: &Option<VarLenSpec>,
+    mode: ShortestMode,
 ) -> Result<Vec<ShortestPathState>, PlanQueryError> {
     let bounds = var_len.unwrap_or(VarLenSpec {
         min: 1,
@@ -1247,6 +1248,12 @@ fn shortest_paths_between(
         if depth >= bounds.min && current == dst {
             found_depth = Some(depth);
             found.push(state_idx);
+            if matches!(mode, ShortestMode::AnyShortest) {
+                break;
+            }
+            continue;
+        }
+        if found_depth.is_some_and(|d| depth >= d) {
             continue;
         }
         if depth >= max_hops {
