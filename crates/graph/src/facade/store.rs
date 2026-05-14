@@ -8,7 +8,7 @@ use super::{
     GraphMetadata, GraphMetadataError, IndexRouting, LabelCatalogError, PropertyCatalogError,
     VertexEdgeIdAllocatorError, VertexLabelStoreError, VertexPropertyStoreError,
 };
-use crate::index::pending;
+use crate::index::{edge_equal, pending};
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{
     Edge, EdgeMeta, EdgeWeightProfile, LabelId, PropertyId, Vertex, VertexEdgeId,
@@ -418,9 +418,19 @@ impl GraphStore {
         property_id: PropertyId,
         value: Value,
     ) -> Result<Option<Value>, VertexPropertyStoreError> {
-        EDGE_PROPERTIES.with_borrow_mut(|properties| {
-            properties.set(owner_vertex_id, vertex_edge_id, property_id, value)
-        })
+        let prev = EDGE_PROPERTIES
+            .with_borrow(|properties| properties.get(owner_vertex_id, vertex_edge_id, property_id));
+        let old = EDGE_PROPERTIES.with_borrow_mut(|properties| {
+            properties.set(owner_vertex_id, vertex_edge_id, property_id, value.clone())
+        })?;
+        edge_equal::record_edge_property_change(
+            owner_vertex_id,
+            vertex_edge_id,
+            property_id,
+            prev.as_ref(),
+            Some(&value),
+        );
+        Ok(old)
     }
 
     pub fn remove_edge_property(
@@ -429,9 +439,21 @@ impl GraphStore {
         vertex_edge_id: VertexEdgeId,
         property_id: PropertyId,
     ) -> Option<Value> {
-        EDGE_PROPERTIES.with_borrow_mut(|properties| {
+        let prev = EDGE_PROPERTIES
+            .with_borrow(|properties| properties.get(owner_vertex_id, vertex_edge_id, property_id));
+        let removed = EDGE_PROPERTIES.with_borrow_mut(|properties| {
             properties.remove(owner_vertex_id, vertex_edge_id, property_id)
-        })
+        });
+        if let Some(ref old) = prev {
+            edge_equal::record_edge_property_change(
+                owner_vertex_id,
+                vertex_edge_id,
+                property_id,
+                Some(old),
+                None,
+            );
+        }
+        removed
     }
 
     pub fn edge_properties(
@@ -694,6 +716,7 @@ impl GraphStore {
     }
 
     fn clear_edge_properties_stable(owner_vertex_id: VertexId, vertex_edge_id: VertexEdgeId) {
+        edge_equal::remove_all_for_edge(owner_vertex_id, vertex_edge_id);
         EDGE_PROPERTIES.with_borrow_mut(|store| {
             store.remove_all_for_edge(owner_vertex_id, vertex_edge_id);
         });
