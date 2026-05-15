@@ -181,6 +181,9 @@ impl CsrEdge for LabelBucket {
 
 /// Bit 0 of [`LabeledVertex::metadata`]: vertex points directly into the edge CSR.
 const DEFAULT_EDGE_LABELED_BIT: u32 = 1;
+const BUCKET_ALLOC_SHIFT: u32 = 1;
+const BUCKET_ALLOC_BITS: u32 = 15;
+const BUCKET_ALLOC_MASK: u32 = ((1 << BUCKET_ALLOC_BITS) - 1) << BUCKET_ALLOC_SHIFT;
 /// Bit 31 of [`LabeledVertex::metadata`]: logical vertex deletion marker.
 const VERTEX_TOMBSTONE_BIT: u32 = 1 << 31;
 
@@ -266,6 +269,25 @@ impl LabeledVertex {
         self.with_metadata_word(raw)
     }
 
+    /// Returns the physical LabelBucket slots reserved for this vertex row.
+    ///
+    /// This may be larger than [`Self::row_count`] so inserting new labels can
+    /// shift bucket descriptors in place instead of relocating the whole
+    /// LabelBucketStore vertex segment on every label.
+    #[inline]
+    pub fn bucket_alloc_slots(self) -> u32 {
+        (self.metadata_word() & BUCKET_ALLOC_MASK) >> BUCKET_ALLOC_SHIFT
+    }
+
+    /// Returns a copy with the LabelBucket row reservation width changed.
+    #[inline]
+    pub fn with_bucket_alloc_slots(self, slots: u32) -> Self {
+        let clamped = slots.min((1 << BUCKET_ALLOC_BITS) - 1);
+        let mut raw = self.metadata_word() & !BUCKET_ALLOC_MASK;
+        raw |= clamped << BUCKET_ALLOC_SHIFT;
+        self.with_metadata_word(raw)
+    }
+
     /// Returns the physical width of this vertex's VertexEdgeSpan.
     ///
     /// This value is meaningful only in normal labeled mode. It is not the live
@@ -288,6 +310,18 @@ impl LabeledVertex {
     pub fn with_bucket_row(self, base_slot_start: u64, row_count: u32) -> Self {
         self.with_base_slot_start(base_slot_start)
             .with_degree(row_count)
+    }
+
+    /// Returns a copy with bucket locator and reservation fields updated together.
+    #[inline]
+    pub fn with_bucket_row_and_alloc(
+        self,
+        base_slot_start: u64,
+        row_count: u32,
+        bucket_alloc_slots: u32,
+    ) -> Self {
+        self.with_bucket_row(base_slot_start, row_count)
+            .with_bucket_alloc_slots(bucket_alloc_slots)
     }
 
     /// Encodes this vertex row into exactly [`Self::BYTES`] bytes.
@@ -443,5 +477,9 @@ mod tests {
         assert!(decoded.is_default_edge_labeled());
         assert!(decoded.is_tombstone());
         assert_eq!(decoded.vertex_edge_alloc_slots(), 0x1234);
+        let with_bucket_alloc = decoded.with_bucket_alloc_slots(37);
+        assert_eq!(with_bucket_alloc.bucket_alloc_slots(), 37);
+        assert!(with_bucket_alloc.is_default_edge_labeled());
+        assert!(with_bucket_alloc.is_tombstone());
     }
 }

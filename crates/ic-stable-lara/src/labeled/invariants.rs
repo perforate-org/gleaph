@@ -35,12 +35,13 @@ pub fn assert_labeled_layout_invariants<E, M>(
             );
             continue;
         }
+        let bucket_alloc = vertex.bucket_alloc_slots().max(vertex.degree());
         let bucket_end = vertex
             .base_slot_start()
-            .saturating_add(u64::from(vertex.degree()));
+            .saturating_add(u64::from(bucket_alloc));
         assert!(
             bucket_end <= bucket_cap,
-            "vertex {vidx}: bucket range [{}, {bucket_end}) exceeds bucket capacity {bucket_cap}",
+            "vertex {vidx}: bucket allocation [{}, {bucket_end}) exceeds bucket capacity {bucket_cap}",
             vertex.base_slot_start()
         );
         let mut previous_label: Option<LabelId> = None;

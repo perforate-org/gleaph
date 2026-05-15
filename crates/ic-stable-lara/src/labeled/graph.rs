@@ -968,12 +968,77 @@ where
             .map_err(LabeledOperationError::from)?;
         let vertex = self.vertices.get(src);
         let bucket_index = slot.saturating_sub(vertex.base_slot_start()) as u32;
-        self.rewrite_vertex_edge_span(src, Some(bucket_index), 1, false, false)?;
+        if !self.try_place_new_bucket_edge_span(src, &vertex, slot, bucket_index)? {
+            self.rewrite_vertex_edge_span(src, Some(bucket_index), 1, false, false)?;
+        }
         let bucket = self
             .buckets
             .read_label_bucket_slot(slot)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         Ok((slot, bucket))
+    }
+
+    fn try_place_new_bucket_edge_span(
+        &self,
+        src: VertexId,
+        vertex: &LabeledVertex,
+        slot: u64,
+        bucket_index: u32,
+    ) -> Result<bool, LabeledOperationError> {
+        if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
+            return Ok(false);
+        }
+        if vertex.degree() == 1 {
+            let new_alloc = DEFAULT_SEGMENT_SIZE;
+            let edge_start = self.edges.allocate_span(u64::from(new_alloc))?;
+            let bucket = self
+                .buckets
+                .read_label_bucket_slot(slot)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?
+                .with_edge_range(edge_start, 0)
+                .with_overflow_log_head(-1);
+            self.buckets.write_label_bucket_slot(slot, bucket)?;
+            self.vertices
+                .set(src, &vertex.with_vertex_edge_alloc_slots(new_alloc));
+            self.edges
+                .bump_vertex_segment_counts(src, 0, i64::from(new_alloc))
+                .map_err(LabeledOperationError::from)?;
+            return Ok(true);
+        }
+
+        if bucket_index + 1 != vertex.degree() {
+            return Ok(false);
+        }
+        let prev_slot = slot.saturating_sub(1);
+        let prev = self
+            .buckets
+            .read_label_bucket_slot(prev_slot)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        if prev.overflow_log_head >= 0 {
+            return Ok(false);
+        }
+        if prev.edge_len > DEFAULT_SEGMENT_SIZE {
+            return Ok(false);
+        }
+        let first = self
+            .buckets
+            .read_label_bucket_slot(vertex.base_slot_start())
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let span_end = first
+            .edge_start
+            .saturating_add(u64::from(vertex.vertex_edge_alloc_slots()));
+        let edge_start = prev.edge_start.saturating_add(u64::from(prev.edge_len));
+        if span_end.saturating_sub(edge_start) == 0 {
+            return Ok(false);
+        }
+        let bucket = self
+            .buckets
+            .read_label_bucket_slot(slot)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?
+            .with_edge_range(edge_start, 0)
+            .with_overflow_log_head(-1);
+        self.buckets.write_label_bucket_slot(slot, bucket)?;
+        Ok(true)
     }
 
     /// Enables default-label bypass for `src` when it has exactly one default label.
@@ -1529,7 +1594,12 @@ mod tests {
         let last = graph.vertices().get(VertexId::from(31));
         assert_eq!(first.degree(), 2);
         assert_eq!(last.degree(), 1);
-        assert_eq!(last.base_slot_start(), first.base_slot_start() + 2);
+        assert!(
+            last.base_slot_start()
+                >= first
+                    .base_slot_start()
+                    .saturating_add(u64::from(first.bucket_alloc_slots()))
+        );
         assert_eq!(
             graph.iter_out_edges(VertexId::from(0)).unwrap(),
             vec![TestEdge { target: 10 }, TestEdge { target: 30 }]

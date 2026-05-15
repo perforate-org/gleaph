@@ -52,6 +52,8 @@ pub struct LabelBucketStore<M: Memory> {
     free_spans: FreeSpanStore<M>,
 }
 
+const MIN_BUCKET_ROW_ALLOC: u32 = 4;
+
 impl<M: Memory> LabelBucketStore<M> {
     /// Opens a fresh LabelBucketStore over three stable memories.
     pub fn new(
@@ -232,11 +234,22 @@ impl<M: Memory> LabelBucketStore<M> {
         (start, end)
     }
 
+    fn bucket_row_alloc(vertex: LabeledVertex) -> u32 {
+        vertex.bucket_alloc_slots().max(vertex.degree())
+    }
+
+    fn grow_bucket_row_alloc(current: u32, needed: u32) -> u32 {
+        current
+            .max(MIN_BUCKET_ROW_ALLOC)
+            .saturating_mul(2)
+            .max(needed)
+    }
+
     fn collect_segment_bucket_rows<V>(
         &self,
         vertices: &V,
         vid: VertexId,
-    ) -> Result<Vec<(u32, LabeledVertex, Vec<LabelBucket>)>, LaraOperationError>
+    ) -> Result<Vec<(u32, LabeledVertex, Vec<LabelBucket>, u32)>, LaraOperationError>
     where
         V: VertexAccess<LabeledVertex>,
     {
@@ -247,6 +260,7 @@ impl<M: Memory> LabelBucketStore<M> {
             if v.is_default_edge_labeled() {
                 continue;
             }
+            let alloc = Self::bucket_row_alloc(v);
             let mut buckets = Vec::with_capacity(v.degree() as usize);
             for offset in 0..u64::from(v.degree()) {
                 buckets.push(
@@ -254,7 +268,9 @@ impl<M: Memory> LabelBucketStore<M> {
                         .ok_or(LaraOperationError::CollectAllocationOverflow)?,
                 );
             }
-            rows.push((v_ord, v, buckets));
+            if alloc > 0 || !buckets.is_empty() || v_ord == u32::from(vid) {
+                rows.push((v_ord, v, buckets, alloc));
+            }
         }
         Ok(rows)
     }
@@ -262,19 +278,17 @@ impl<M: Memory> LabelBucketStore<M> {
     fn rewrite_segment_bucket_rows<V>(
         &self,
         vertices: &V,
-        rows: Vec<(u32, LabeledVertex, Vec<LabelBucket>)>,
+        rows: Vec<(u32, LabeledVertex, Vec<LabelBucket>, u32)>,
     ) -> Result<(), LaraOperationError>
     where
         V: VertexAccess<LabeledVertex>,
     {
-        let total: u64 = rows
-            .iter()
-            .map(|(_, _, buckets)| buckets.len() as u64)
-            .sum();
+        let total: u64 = rows.iter().map(|(_, _, _, alloc)| u64::from(*alloc)).sum();
         let mut old_spans: Vec<(u64, u64)> = rows
             .iter()
-            .filter_map(|(_, v, _)| {
-                (v.degree() > 0).then_some((v.base_slot_start(), u64::from(v.degree())))
+            .filter_map(|(_, v, _, _)| {
+                let alloc = Self::bucket_row_alloc(*v);
+                (alloc > 0).then_some((v.base_slot_start(), u64::from(alloc)))
             })
             .collect();
         old_spans.sort_unstable_by_key(|(start, _)| *start);
@@ -285,15 +299,16 @@ impl<M: Memory> LabelBucketStore<M> {
             self.allocate_span(total)?
         };
         let mut cursor = new_base;
-        for (v_ord, v, buckets) in rows {
+        for (v_ord, v, buckets, alloc) in rows {
             let row_base = cursor;
             for bucket in &buckets {
                 self.write_label_bucket_slot(cursor, *bucket)?;
                 cursor = cursor.saturating_add(1);
             }
+            cursor = row_base.saturating_add(u64::from(alloc));
             vertices.set(
                 VertexId::from(v_ord),
-                &v.with_bucket_row(row_base, buckets.len() as u32),
+                &v.with_bucket_row_and_alloc(row_base, buckets.len() as u32, alloc),
             );
         }
 
@@ -315,7 +330,10 @@ impl<M: Memory> LabelBucketStore<M> {
     where
         V: VertexAccess<LabeledVertex>,
     {
-        let rows = self.collect_segment_bucket_rows(vertices, vid)?;
+        let mut rows = self.collect_segment_bucket_rows(vertices, vid)?;
+        for (_, _, buckets, alloc) in &mut rows {
+            *alloc = buckets.len() as u32;
+        }
         self.rewrite_segment_bucket_rows(vertices, rows)
     }
 
@@ -329,9 +347,10 @@ impl<M: Memory> LabelBucketStore<M> {
         V: VertexAccess<LabeledVertex>,
     {
         let mut rows = self.collect_segment_bucket_rows(vertices, vid)?;
-        for (v_ord, _, buckets) in &mut rows {
+        for (v_ord, _, buckets, alloc) in &mut rows {
             if *v_ord == u32::from(vid) {
                 buckets.clear();
+                *alloc = 0;
                 break;
             }
         }
@@ -352,15 +371,35 @@ impl<M: Memory> LabelBucketStore<M> {
     where
         V: VertexAccess<LabeledVertex>,
     {
+        let v = vertices.get_in_range(vid)?;
+        if !v.is_default_edge_labeled() && Self::bucket_row_alloc(v) > v.degree() {
+            let buckets = self.read_label_bucket_slots_contiguous(v.base_slot_start(), v.degree());
+            let buckets = buckets.ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let index = buckets
+                .binary_search_by_key(&bucket.label_id, |candidate| candidate.label_id)
+                .unwrap_or_else(|index| index);
+            for offset in (index..buckets.len()).rev() {
+                self.write_label_bucket_slot(
+                    v.base_slot_start().saturating_add(offset as u64 + 1),
+                    buckets[offset],
+                )?;
+            }
+            self.write_label_bucket_slot(v.base_slot_start().saturating_add(index as u64), bucket)?;
+            vertices.set(vid, &v.with_degree(v.degree().saturating_add(1)));
+            return Ok(v.base_slot_start().saturating_add(index as u64));
+        }
+
         let mut rows = self.collect_segment_bucket_rows(vertices, vid)?;
         let mut inserted_index = None;
-        for (v_ord, _, buckets) in &mut rows {
+        for (v_ord, v, buckets, alloc) in &mut rows {
             if *v_ord == u32::from(vid) {
                 let index = buckets
                     .binary_search_by_key(&bucket.label_id, |candidate| candidate.label_id)
                     .unwrap_or_else(|index| index);
                 inserted_index = Some(index as u64);
                 buckets.insert(index, bucket);
+                *alloc =
+                    Self::grow_bucket_row_alloc(Self::bucket_row_alloc(*v), buckets.len() as u32);
                 break;
             }
         }
