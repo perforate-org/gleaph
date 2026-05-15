@@ -275,6 +275,21 @@ impl<E: CsrEdge, M: Memory> EdgeSlabStore<E, M> {
         self.memory.read(slot_offset::<E>(start_slot), out);
     }
 
+    /// Writes raw bytes for contiguous slots starting at `start_slot`.
+    ///
+    /// `bytes.len()` must be a multiple of `E::BYTES`.
+    pub(crate) fn write_slots_contiguous(
+        &self,
+        start_slot: u64,
+        bytes: &[u8],
+    ) -> Result<(), GrowFailed> {
+        debug_assert_eq!(bytes.len() % E::BYTES, 0);
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        safe_write(&self.memory, slot_offset::<E>(start_slot), bytes)
+    }
+
     /// Writes raw encoded edge bytes to `slot`.
     pub fn write_slot(&self, slot: u64, bytes: &[u8]) -> Result<(), GrowFailed> {
         debug_assert_eq!(bytes.len(), E::BYTES);

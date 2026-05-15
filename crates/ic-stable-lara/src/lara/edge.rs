@@ -549,6 +549,17 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         self.edges.read_slots_contiguous(start_slot, out);
     }
 
+    /// Writes contiguous edge-slot bytes starting at `start_slot`.
+    ///
+    /// `bytes.len()` must be a multiple of `E::BYTES`.
+    pub(crate) fn write_slots_contiguous(
+        &self,
+        start_slot: u64,
+        bytes: &[u8],
+    ) -> Result<(), GrowFailed> {
+        self.edges.write_slots_contiguous(start_slot, bytes)
+    }
+
     /// Encodes and writes `edge` to `slot`.
     pub fn write_slot(&self, slot: u64, edge: E) -> Result<(), GrowFailed> {
         if E::BYTES <= 8 {

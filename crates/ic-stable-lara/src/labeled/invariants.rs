@@ -104,10 +104,7 @@ where
             .expect("bucket slot must exist");
         live += i64::from(bucket.edge_len);
     }
-    (
-        live,
-        i64::from(vertex.vertex_edge_alloc_slots()),
-    )
+    (live, i64::from(vertex.vertex_edge_alloc_slots()))
 }
 
 /// Asserts incremental PMA leaf [`crate::lara::edge::counts::SegmentEdgeCounts`] match
@@ -138,8 +135,7 @@ pub fn assert_labeled_edge_store_pma_counts<E, M>(
         let idx = u64::from(leaf + header.segment_count);
         let got = edges.counts_store().get(idx);
         assert_eq!(
-            got.actual,
-            per_leaf_actual[leaf as usize],
+            got.actual, per_leaf_actual[leaf as usize],
             "leaf {leaf}: PMA actual mismatch (store vs labeled geometry)"
         );
 
@@ -152,8 +148,7 @@ pub fn assert_labeled_edge_store_pma_counts<E, M>(
         });
         if !leaf_has_bypass {
             assert_eq!(
-                got.total,
-                per_leaf_total[leaf as usize],
+                got.total, per_leaf_total[leaf as usize],
                 "leaf {leaf}: PMA total mismatch (store vs labeled geometry)"
             );
         }
