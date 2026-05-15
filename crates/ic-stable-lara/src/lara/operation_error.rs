@@ -32,6 +32,8 @@ pub enum LaraOperationError {
     LogChainShort,
     /// `degree * E::BYTES` overflowed when sizing a collect buffer.
     CollectAllocationOverflow,
+    /// A CSR row degree reached the representable `u32` limit.
+    RowDegreeOverflow,
     /// Unordered edge removal needs a slab-only row.
     RemoveRequiresSlabOnlyRow,
     /// Direct slab edge reads need a slab-only row.
@@ -67,6 +69,7 @@ impl fmt::Display for LaraOperationError {
             Self::VertexDeleted => write!(f, "vertex deleted"),
             Self::LogChainShort => write!(f, "log chain short"),
             Self::CollectAllocationOverflow => write!(f, "collect overflow"),
+            Self::RowDegreeOverflow => write!(f, "row degree overflow"),
             Self::RemoveRequiresSlabOnlyRow => write!(f, "remove requires slab-only row"),
             Self::RowEdgeReadRequiresSlabOnlyRow => {
                 write!(f, "row edge read requires slab-only row")

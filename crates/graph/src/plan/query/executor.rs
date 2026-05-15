@@ -27,8 +27,7 @@ use gleaph_gql_planner::plan::{
     ScanValue, ShortestMode, ShortestPathCost, Str, VarLenSpec,
 };
 use gleaph_graph_kernel::entry::{
-    Edge, EdgeLabelId, PreparedWeightDecoder, Vertex, VertexEdgeId, VertexLabelId,
-    decode_inline_weight,
+    Edge, EdgeLabelId, PreparedWeightDecoder, Vertex, VertexEdgeId, decode_inline_weight,
 };
 use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest};
 use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
@@ -2426,7 +2425,6 @@ fn for_each_csr_expand_edge<F>(
 where
     F: FnMut(Edge),
 {
-    let mut visit = visit;
     let mut matches = |edge: &Edge| {
         csr_expand_edge_matches(store, src_id, edge, direction, edge_label_id).unwrap_or(false)
     };
@@ -3415,7 +3413,6 @@ mod tests {
         ShortestMode, ShortestPathCost, Str, WcojEdge,
     };
     use gleaph_gql_planner::{PlanBuildOptions, build_plan_with_schema_and_options};
-    use gleaph_graph_kernel::entry::EdgeMeta;
     use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
     use std::any::Any;
     use std::borrow::Cow;
