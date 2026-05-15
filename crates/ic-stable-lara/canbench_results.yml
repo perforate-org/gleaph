@@ -16,324 +16,319 @@ benches:
   bench_labeled_deferred_inserts_only_1024:
     total:
       calls: 1
-      instructions: 15534349
-      heap_increase: 18
+      instructions: 14612543
+      heap_increase: 19
       stable_memory_increase: 0
     scopes:
       labeled_deferred_dense_enqueue:
-        calls: 6
-        instructions: 22365
+        calls: 174
+        instructions: 649188
         heap_increase: 0
         stable_memory_increase: 0
       labeled_insert_new_label_bucket:
         calls: 1
-        instructions: 76593
+        instructions: 76748
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_copy_disjoint:
-        calls: 5
-        instructions: 38480
+        calls: 4
+        instructions: 327496
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_finalize:
-        calls: 6
-        instructions: 91804
+        calls: 5
+        instructions: 72289
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_metadata_only:
         calls: 1
-        instructions: 753
+        instructions: 757
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_read_and_plan:
-        calls: 6
-        instructions: 119008
+        calls: 5
+        instructions: 99646
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_deferred_maintenance_compact_vertex_span_1:
     total:
       calls: 1
-      instructions: 3965724
-      heap_increase: 18
+      instructions: 3958247
+      heap_increase: 19
       stable_memory_increase: 0
     scopes:
       labeled_compact_label_bucket_vertex_segment:
         calls: 1
-        instructions: 55618
+        instructions: 55683
         heap_increase: 0
         stable_memory_increase: 0
       labeled_deferred_dense_enqueue:
-        calls: 2
-        instructions: 6117
+        calls: 49
+        instructions: 175480
         heap_increase: 0
         stable_memory_increase: 0
       labeled_deferred_maintenance_item:
         calls: 1
-        instructions: 123332
+        instructions: 123425
         heap_increase: 0
         stable_memory_increase: 0
       labeled_insert_new_label_bucket:
         calls: 1
-        instructions: 76593
+        instructions: 76748
         heap_increase: 0
         stable_memory_increase: 0
       labeled_remove_edge_skip_leaf:
         calls: 72
-        instructions: 956884
+        instructions: 891658
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_copy_disjoint:
-        calls: 3
-        instructions: 8364
+        calls: 2
+        instructions: 62115
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_finalize:
-        calls: 4
-        instructions: 51993
+        calls: 3
+        instructions: 32287
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_metadata_only:
         calls: 1
-        instructions: 753
+        instructions: 757
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_read_and_plan:
-        calls: 4
-        instructions: 97396
+        calls: 3
+        instructions: 72067
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_insert_existing_bucket_128:
     total:
       calls: 1
-      instructions: 14777303
+      instructions: 13010775
       heap_increase: 3
       stable_memory_increase: 0
     scopes:
       labeled_insert_new_label_bucket:
         calls: 1
-        instructions: 76593
+        instructions: 76748
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rebalance_leaf_cascade:
         calls: 6
-        instructions: 818942
+        instructions: 1251818
         heap_increase: 3
         stable_memory_increase: 0
       labeled_rewrite_copy_disjoint:
         calls: 12
-        instructions: 142300
+        instructions: 573536
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_finalize:
         calls: 13
-        instructions: 212628
+        instructions: 213304
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_metadata_only:
         calls: 1
-        instructions: 753
+        instructions: 757
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_read_and_plan:
         calls: 13
-        instructions: 384935
+        instructions: 385869
         heap_increase: 3
         stable_memory_increase: 0
   bench_labeled_insert_fresh_label_each_edge_256:
     total:
       calls: 1
-      instructions: 164086590
-      heap_increase: 28
+      instructions: 424108358
+      heap_increase: 30
       stable_memory_increase: 0
     scopes:
       labeled_find_bucket_slot:
         calls: 253
-        instructions: 3405542
+        instructions: 3416350
         heap_increase: 0
         stable_memory_increase: 0
       labeled_insert_new_label_bucket:
         calls: 256
-        instructions: 153340161
+        instructions: 406174995
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rebalance_leaf_cascade:
         calls: 4
-        instructions: 1823787
+        instructions: 9187009
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_copy_disjoint:
         calls: 8
-        instructions: 986520
+        instructions: 8342672
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_copy_inplace_vec:
         calls: 255
-        instructions: 35646752
+        instructions: 287257290
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_finalize:
         calls: 264
-        instructions: 364814
+        instructions: 378541
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_metadata_only:
         calls: 1
-        instructions: 753
+        instructions: 757
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_read_and_plan:
         calls: 264
-        instructions: 18457571
+        instructions: 18742911
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_insert_last_of_many_buckets_1024:
     total:
       calls: 1
-      instructions: 31028413
+      instructions: 37106270
       heap_increase: 7
       stable_memory_increase: 0
     scopes:
       labeled_find_bucket_slot:
         calls: 1024
-        instructions: 15738880
+        instructions: 15789056
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rebalance_leaf_cascade:
         calls: 3
-        instructions: 1777276
+        instructions: 7986861
         heap_increase: 7
         stable_memory_increase: 0
       labeled_rewrite_copy_disjoint:
         calls: 6
-        instructions: 874156
+        instructions: 7081145
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_copy_inplace_vec:
-        calls: 3
-        instructions: 448382
+        calls: 2
+        instructions: 2433228
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_finalize:
-        calls: 9
-        instructions: 111468
+        calls: 8
+        instructions: 111003
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_read_and_plan:
-        calls: 9
-        instructions: 945018
+        calls: 8
+        instructions: 883788
         heap_increase: 7
         stable_memory_increase: 0
   bench_labeled_insert_multi_vertex_leaf32_2048:
     total:
       calls: 1
-      instructions: 33792446
+      instructions: 30745074
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_rebalance_leaf_cascade:
         calls: 2
-        instructions: 6042594
+        instructions: 7394326
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_copy_disjoint:
         calls: 128
-        instructions: 462428
+        instructions: 1796944
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_finalize:
         calls: 128
-        instructions: 2295834
+        instructions: 2302490
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_read_and_plan:
         calls: 128
-        instructions: 2447590
+        instructions: 2456742
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_insert_round_robin_64_labels_1024:
     total:
       calls: 1
-      instructions: 42792431
+      instructions: 30780458
       heap_increase: 7
       stable_memory_increase: 0
     scopes:
       labeled_find_bucket_slot:
         calls: 1024
-        instructions: 11616640
+        instructions: 11653376
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rebalance_leaf_cascade:
         calls: 4
-        instructions: 1464655
+        instructions: 6287686
         heap_increase: 7
         stable_memory_increase: 0
       labeled_rewrite_copy_disjoint:
         calls: 8
-        instructions: 596192
-        heap_increase: 0
-        stable_memory_increase: 0
-      labeled_rewrite_copy_inplace_vec:
-        calls: 126
-        instructions: 10880686
+        instructions: 5417284
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_finalize:
-        calls: 134
-        instructions: 255990
+        calls: 8
+        instructions: 145400
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_read_and_plan:
-        calls: 134
-        instructions: 5297439
+        calls: 8
+        instructions: 657839
         heap_increase: 7
         stable_memory_increase: 0
   bench_labeled_insert_single_bucket_1024:
     total:
       calls: 1
-      instructions: 14777311
+      instructions: 13010783
       heap_increase: 3
       stable_memory_increase: 0
     scopes:
       labeled_insert_new_label_bucket:
         calls: 1
-        instructions: 76593
+        instructions: 76748
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rebalance_leaf_cascade:
         calls: 6
-        instructions: 818942
+        instructions: 1251818
         heap_increase: 3
         stable_memory_increase: 0
       labeled_rewrite_copy_disjoint:
         calls: 12
-        instructions: 142300
+        instructions: 573536
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_finalize:
         calls: 13
-        instructions: 212628
+        instructions: 213304
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_metadata_only:
         calls: 1
-        instructions: 753
+        instructions: 757
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_read_and_plan:
         calls: 13
-        instructions: 384935
+        instructions: 385869
         heap_increase: 3
         stable_memory_increase: 0
   bench_labeled_iter_edges_for_label_128:
     total:
       calls: 1
-      instructions: 18001
+      instructions: 18118
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_iter_edges_for_label_collect:
         calls: 1
-        instructions: 12878
+        instructions: 12988
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_bidirectional_insert_directed_1024:

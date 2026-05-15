@@ -53,19 +53,38 @@ impl LabelId {
 /// `edge_start` and `edge_len` play the same scan role for one label's edge
 /// range that [`LabeledVertex::base_slot_start`] / [`LabeledVertex::row_count`]
 /// play for LabelBucket ranges.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+///
+/// When the slab window up to the next bucket boundary is full, additional live
+/// edges for this label are stored in the shared [`crate::lara::edge::EdgeStore`]
+/// per-segment overflow log; [`Self::overflow_log_head`] is the head index in
+/// that log (same contract as [`crate::lara::vertex::Vertex::log_head`]), or
+/// `-1` when every live edge sits contiguously on the slab.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LabelBucket {
     /// Relationship type for this contiguous edge range.
     pub label_id: LabelId,
-    /// Global edge-slot index where this bucket's clean edge prefix starts.
+    /// Global edge-slot index where this bucket's on-slab edge prefix starts.
     pub edge_start: u64,
-    /// Number of live edges visible through clean scans of this bucket.
+    /// Number of live edges (on-slab prefix plus overflow log chain).
     pub edge_len: u32,
+    /// Head index in the per-leaf segment overflow log, or `-1` if slab-only.
+    pub overflow_log_head: i32,
+}
+
+impl Default for LabelBucket {
+    fn default() -> Self {
+        Self {
+            label_id: LabelId::default(),
+            edge_start: 0,
+            edge_len: 0,
+            overflow_log_head: -1,
+        }
+    }
 }
 
 impl LabelBucket {
     /// Fixed byte width of one encoded LabelBucket.
-    pub const BYTES: usize = 14;
+    pub const BYTES: usize = 18;
 
     /// Encodes this LabelBucket into exactly [`Self::BYTES`] bytes.
     pub fn write_to(self, bytes: &mut [u8]) {
@@ -73,6 +92,7 @@ impl LabelBucket {
         bytes[0..2].copy_from_slice(&self.label_id.to_le_bytes());
         bytes[2..10].copy_from_slice(&self.edge_start.to_le_bytes());
         bytes[10..14].copy_from_slice(&self.edge_len.to_le_bytes());
+        bytes[14..18].copy_from_slice(&self.overflow_log_head.to_le_bytes());
     }
 
     /// Returns a copy with `edge_start` / `edge_len` updated.
@@ -85,15 +105,25 @@ impl LabelBucket {
         }
     }
 
+    /// Returns a copy with [`Self::overflow_log_head`] updated.
+    #[inline]
+    pub fn with_overflow_log_head(self, head: i32) -> Self {
+        Self {
+            overflow_log_head: head,
+            ..self
+        }
+    }
+
     /// Decodes a LabelBucket from exactly [`Self::BYTES`] bytes.
     pub fn read_from(bytes: &[u8]) -> Self {
         let chunk: [u8; Self::BYTES] = bytes
             .try_into()
-            .expect("LabelBucket::read_from expects exactly 14 bytes");
+            .expect("LabelBucket::read_from expects exactly Self::BYTES bytes");
         Self {
             label_id: LabelId::from_le_bytes([chunk[0], chunk[1]]),
             edge_start: u64::from_le_bytes(chunk[2..10].try_into().unwrap()),
             edge_len: u32::from_le_bytes(chunk[10..14].try_into().unwrap()),
+            overflow_log_head: i32::from_le_bytes(chunk[14..18].try_into().unwrap()),
         }
     }
 }
@@ -120,10 +150,11 @@ impl CsrVertex for LabelBucket {
     }
 
     fn log_head(self) -> i32 {
-        -1
+        self.overflow_log_head
     }
 
-    fn with_log_head(self, _idx: i32) -> Self {
+    fn with_log_head(mut self, idx: i32) -> Self {
+        self.overflow_log_head = idx;
         self
     }
 }
@@ -378,6 +409,7 @@ mod tests {
             label_id: LabelId::from_raw(0x1234),
             edge_start: 0x1122_3344_5566_7788,
             edge_len: 0xAABB_CCDD,
+            overflow_log_head: -0x0102_0304,
         };
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
@@ -385,6 +417,7 @@ mod tests {
             bytes,
             [
                 0x34, 0x12, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0xDD, 0xCC, 0xBB, 0xAA,
+                0xFC, 0xFC, 0xFD, 0xFE,
             ]
         );
         assert_eq!(LabelBucket::read_from(&bytes), bucket);

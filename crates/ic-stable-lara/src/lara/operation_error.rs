@@ -115,6 +115,16 @@ pub(crate) trait VertexAccess<V: CsrVertex> {
     fn get(&self, id: VertexId) -> V;
     fn set(&self, id: VertexId, item: &V);
 
+    /// Graph vertex used for per-leaf overflow log addressing and PMA bumps.
+    ///
+    /// Synthetic accessors (for example [`crate::labeled::access::LabelEdgeSpanAccess`])
+    /// return the real source [`VertexId`] here while [`Self::get`] / [`Self::set`]
+    /// continue to use their logical row id (often `VertexId::from(0)`).
+    #[inline]
+    fn log_leaf_vertex(&self, id: VertexId) -> VertexId {
+        id
+    }
+
     fn get_in_range(&self, id: VertexId) -> Result<V, VertexAccessError> {
         if u32::from(id) >= self.len() {
             return Err(VertexAccessError::OutOfRange);

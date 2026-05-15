@@ -13,12 +13,17 @@
 //! - **Update contract:** LabelBucket inserts and maintenance rewrite the
 //!   owning LabelBucketStore VertexSegment, updating each affected
 //!   [`LabeledVertex::base_slot_start`] and [`LabeledVertex::row_count`]. Edge
-//!   inserts under a label rewrite the **VertexEdgeSpan** only when
-//!   the target LabelEdgeSpan has no spare slot. The edge bytes still live in the
+//!   inserts under a label append through [`crate::lara::edge::EdgeStore`] using
+//!   the same slab vs per-segment overflow log split as core LARA rows; when the
+//!   slab window up to the next bucket boundary is full, new edges for that label
+//!   go to the segment log (see [`crate::labeled::record::LabelBucket::overflow_log_head`]).
+//!   A full segment log triggers a VertexEdgeSpan rewrite that folds overflow back
+//!   onto the slab and may widen the [`LabeledVertex::vertex_edge_alloc_slots`]
+//!   reservation. The edge bytes still live in the
 //!   regular [`crate::lara::edge::EdgeStore`] slab, so allocation and free-span
 //!   reuse stay centralized in the existing LARA implementation.
 //!
-//! The LabelBucketStore deliberately does **not** have an overflow log or PMA segment
+//! The LabelBucketStore deliberately does **not** have its own overflow log or PMA segment
 //! metadata. A physical VertexSegment's length is exactly the number of live
 //! LabelBuckets in that 32-vertex segment; old spans are released only after the
 //! rewritten vertex rows point at the new committed layout.

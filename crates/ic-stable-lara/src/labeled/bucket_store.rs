@@ -1,9 +1,11 @@
 //! Dedicated stable storage for LabelBucket rows.
 //!
-//! LabelBuckets are grouped by VertexSegment (32 vertices by default), but the
-//! LabelBucketStore deliberately has no overflow log. When a vertex gains a new
-//! LabelBucket, the owning VertexSegment is rewritten immediately into a
-//! physical span whose length is exactly the segment's live bucket count.
+//! LabelBuckets are grouped by VertexSegment (32 vertices by default). The
+//! bucket store has no separate overflow log; per-label overflow into the shared
+//! edge [`EdgeSlabStore`] segment log is recorded on each [`LabelBucket`]. When a
+//! vertex gains a new [`LabelBucket`], the owning VertexSegment is rewritten
+//! immediately into a physical span whose length is exactly the segment's live
+//! bucket count.
 //!
 //! This store owns only bucket descriptors. It does not know or reserve edge
 //! capacity. Edge capacity belongs to [`LabeledVertex::vertex_edge_alloc_slots`]
@@ -414,8 +416,7 @@ mod tests {
                     VertexId::from(0),
                     LabelBucket {
                         label_id: crate::labeled::record::LabelId::from_raw(label),
-                        edge_start: 0,
-                        edge_len: 0,
+                        ..Default::default()
                     },
                 )
                 .unwrap();
@@ -447,8 +448,7 @@ mod tests {
                     VertexId::from(0),
                     LabelBucket {
                         label_id: crate::labeled::record::LabelId::from_raw(label),
-                        edge_start: 0,
-                        edge_len: 0,
+                        ..Default::default()
                     },
                 )
                 .unwrap();

@@ -588,6 +588,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     {
         let v = vertices.get_in_range(vid)?;
         let v_ord = u32::from(vid);
+        let log_owner = vertices.log_leaf_vertex(vid);
         // Tombstone rows may still hold slab/log material while incremental
         // `DeleteVertex` maintenance runs; only fully evacuated rows reject reads.
         if V::record_is_vertex_tombstone(&v) && v.degree() == 0 && v.log_head() < 0 {
@@ -624,7 +625,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         }
 
         let log_count = degree - slab_count;
-        let leaf = leaf_segment(vid, edge_layout.segment_size);
+        let leaf = leaf_segment(log_owner, edge_layout.segment_size);
         let log_h = self.log.header();
 
         let mut log_i = v.log_head();
@@ -752,6 +753,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     {
         let v = vertices.get_in_range(vid)?;
         let v_ord = u32::from(vid);
+        let log_owner = vertices.log_leaf_vertex(vid);
         // See `collect_out_edges_slot_order`: allow enumeration for tombstones that
         // still have pending edge material (rebalance during vertex delete).
         if V::record_is_vertex_tombstone(&v) && v.degree() == 0 && v.log_head() < 0 {
@@ -801,7 +803,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
 
         Ok(OutEdgesIter {
             store: self,
-            leaf: leaf_segment(vid, edge_layout.segment_size),
+            leaf: leaf_segment(log_owner, edge_layout.segment_size),
             next_log: v.log_head(),
             remaining_log: log_count,
             base_slot_start: v.base_slot_start(),
@@ -849,6 +851,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         if V::record_is_vertex_tombstone(&v) {
             return Err(LaraOperationError::VertexDeleted);
         }
+        let log_owner = vertices.log_leaf_vertex(vid);
         let loc = v.base_slot_start().saturating_add(u64::from(v.degree()));
         let location = if self.have_space_on_slab(vertices, v_ord, &v, loc, &edge_layout) {
             self.write_slot(loc, edge)
@@ -856,11 +859,11 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             vertices.set(vid, &v.with_degree(v.degree() + 1));
             InsertLocation::Slab
         } else {
-            self.insert_into_log_with_layout(&edge_layout, vertices, vid, v, edge)?;
+            self.insert_into_log_with_layout(&edge_layout, vertices, vid, log_owner, v, edge)?;
             InsertLocation::Log
         };
         self.set_num_edges(edge_layout.num_edges.saturating_add(1));
-        self.bump_counts_leaf_with_layout(&edge_layout, vid, 1, 0)?;
+        self.bump_counts_leaf_with_layout(&edge_layout, log_owner, 1, 0)?;
         Ok(location)
     }
 
@@ -962,6 +965,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         edge_layout: &EdgeLayout,
         vertices: &A,
         vid: VertexId,
+        log_owner: VertexId,
         v: V,
         edge: E,
     ) -> Result<(), LaraOperationError>
@@ -969,14 +973,14 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         V: CsrVertex,
         A: VertexAccess<V>,
     {
-        let leaf = leaf_segment(vid, edge_layout.segment_size);
+        let leaf = leaf_segment(log_owner, edge_layout.segment_size);
         let log_h = self.log.header();
         let idx = self.log.read_idx_with_header(&log_h, leaf);
         if idx < 0 || idx >= log_h.max_log_entries as i32 {
             return Err(LaraOperationError::SegmentLogFull);
         }
-        let src =
-            i32::try_from(u32::from(vid)).map_err(|_| LaraOperationError::VertexIdExceedsI32)?;
+        let src = i32::try_from(u32::from(log_owner))
+            .map_err(|_| LaraOperationError::VertexIdExceedsI32)?;
         if E::BYTES <= INLINE_EDGE_BYTES {
             let mut payload = [0u8; INLINE_EDGE_BYTES];
             edge.write_to(&mut payload[..E::BYTES]);
