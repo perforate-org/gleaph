@@ -10,6 +10,10 @@ crate-type = ["cdylib", "rlib"]
 [features]
 default = []
 canbench = ["dep:canbench-rs"]
+# Enables `bench_scope` inside `ic-stable-lara` (labeled CSR). Do not use for native
+# `cargo test`: `ic-stable-lara/canbench` pulls `candid` and triggers `ic0` in unit tests.
+# Use only for WASM canprof / canbench runs: `--features canbench,canbench_lara`.
+canbench_lara = ["canbench", "ic-stable-lara/canbench"]
 sql-compat = ["gleaph-gql/sql-compat", "gleaph-gql-planner/sql-compat"]
 
 [dependencies]

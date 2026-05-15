@@ -657,6 +657,11 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let leaf = leaf_segment(log_owner, edge_layout.segment_size);
         let log_h = self.log.header();
 
+        let mut log_table_buf = Vec::new();
+        self.log
+            .read_segment_entry_table_into(&log_h, leaf, &mut log_table_buf);
+        let log_table = (!log_table_buf.is_empty()).then_some(log_table_buf.as_slice());
+
         let mut log_i = v.log_head();
         let filler = if slab_count > 0 {
             out[0]
@@ -664,7 +669,8 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             if log_i < 0 {
                 return Err(LaraOperationError::LogChainShort);
             }
-            let (prev, edge) = self.read_log_edge_with_header(&log_h, leaf, log_i as u32);
+            let (prev, edge) =
+                self.read_log_edge_from_table_or_store(&log_h, leaf, log_i as u32, log_table);
             log_i = prev;
             edge
         };
@@ -675,7 +681,8 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 if log_i < 0 {
                     return Err(LaraOperationError::LogChainShort);
                 }
-                let (prev, edge) = self.read_log_edge_with_header(&log_h, leaf, log_i as u32);
+                let (prev, edge) =
+                    self.read_log_edge_from_table_or_store(&log_h, leaf, log_i as u32, log_table);
                 out[slab_count + offset] = edge;
                 log_i = prev;
             }
@@ -684,7 +691,8 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 if log_i < 0 {
                     return Err(LaraOperationError::LogChainShort);
                 }
-                let (prev, edge) = self.read_log_edge_with_header(&log_h, leaf, log_i as u32);
+                let (prev, edge) =
+                    self.read_log_edge_from_table_or_store(&log_h, leaf, log_i as u32, log_table);
                 out[slab_count + offset] = edge;
                 log_i = prev;
             }
@@ -794,6 +802,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 base_slot_start: v.base_slot_start(),
                 remaining_slab: 0,
                 log_header: None,
+                log_table: None,
                 slab_chunk: None,
             });
         }
@@ -820,6 +829,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 base_slot_start: v.base_slot_start(),
                 remaining_slab: degree,
                 log_header: None,
+                log_table: None,
                 slab_chunk,
             });
         }
@@ -838,11 +848,30 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             base_slot_start: v.base_slot_start(),
             remaining_slab: slab_count,
             log_header: (log_count > 0).then(|| self.log.header()),
+            log_table: None,
             slab_chunk: None,
         })
     }
 
-    fn read_log_edge_with_header(&self, log_h: &LogHeaderV1, leaf: u32, log_idx: u32) -> (i32, E) {
+    fn read_log_edge_from_table_or_store(
+        &self,
+        log_h: &LogHeaderV1,
+        leaf: u32,
+        log_idx: u32,
+        table: Option<&[u8]>,
+    ) -> (i32, E) {
+        if let Some(buf) = table {
+            let stride = log_h.stride as usize;
+            if stride > 0 {
+                let off = log_idx as usize * stride;
+                if off + stride <= buf.len() && off + 8 + E::BYTES <= buf.len() {
+                    let prev = i32::from_le_bytes(buf[off..off + 4].try_into().unwrap());
+                    let _src = i32::from_le_bytes(buf[off + 4..off + 8].try_into().unwrap());
+                    let edge = E::read_from(&buf[off + 8..off + 8 + E::BYTES]);
+                    return (prev, edge);
+                }
+            }
+        }
         if E::BYTES <= 8 {
             let mut buf = [0u8; 8];
             let (prev, _src) =
@@ -1210,6 +1239,8 @@ pub struct OutEdgesIter<'a, E: CsrEdge, M: Memory> {
     base_slot_start: u64,
     remaining_slab: u32,
     log_header: Option<LogHeaderV1>,
+    /// Prefetched [`LogStore::read_segment_entry_table_into`] bytes; filled on first log step.
+    log_table: Option<Vec<u8>>,
     slab_chunk: Option<SlabChunkCache>,
 }
 
@@ -1272,9 +1303,20 @@ where
                 return None;
             }
             let log_h = self.log_header.as_ref()?;
-            let (prev, edge) =
+            if self.log_table.is_none() {
+                let mut buf = Vec::new();
                 self.store
-                    .read_log_edge_with_header(log_h, self.leaf, self.next_log as u32);
+                    .log
+                    .read_segment_entry_table_into(log_h, self.leaf, &mut buf);
+                self.log_table = Some(buf);
+            }
+            let table = self.log_table.as_ref().map(|b| b.as_slice());
+            let (prev, edge) = self.store.read_log_edge_from_table_or_store(
+                log_h,
+                self.leaf,
+                self.next_log as u32,
+                table,
+            );
             self.next_log = prev;
             self.remaining_log -= 1;
             return Some(edge);

@@ -663,6 +663,22 @@ impl GraphStore {
         GRAPH.with_borrow(|graph| graph.for_each_out_edges_for_label(vertex_id, label, visit))
     }
 
+    pub(crate) fn for_each_out_edges_for_label_unchecked<Visit>(
+        &self,
+        vertex_id: VertexId,
+        label: LaraLabelId,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLabeledError>
+    where
+        Visit: FnMut(Edge),
+    {
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _scope = canbench_rs::bench_scope("graph_store_tls_out_label_unchecked");
+        GRAPH.with_borrow(|graph| {
+            graph.for_each_out_edges_for_label_unchecked(vertex_id, label, visit)
+        })
+    }
+
     pub(crate) fn in_edges_for_label(
         &self,
         vertex_id: VertexId,
@@ -681,6 +697,22 @@ impl GraphStore {
         Visit: FnMut(Edge),
     {
         GRAPH.with_borrow(|graph| graph.for_each_in_edges_for_label(vertex_id, label, visit))
+    }
+
+    pub(crate) fn for_each_in_edges_for_label_unchecked<Visit>(
+        &self,
+        vertex_id: VertexId,
+        label: LaraLabelId,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLabeledError>
+    where
+        Visit: FnMut(Edge),
+    {
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _scope = canbench_rs::bench_scope("graph_store_tls_in_label_unchecked");
+        GRAPH.with_borrow(|graph| {
+            graph.for_each_in_edges_for_label_unchecked(vertex_id, label, visit)
+        })
     }
 
     pub(crate) fn find_forward_edge_bucket_label(

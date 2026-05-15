@@ -69,7 +69,10 @@ pub use bidirectional::{
 };
 pub use bucket_store::LabelBucketStore;
 pub use deferred::{DeferredError, DeferredLabeledLaraGraph, MaintenanceWorkItem};
-pub use graph::{InitError as LabeledGraphInitError, LabeledLaraGraph, LabeledOperationError};
+pub use graph::{
+    InitError as LabeledGraphInitError, LabeledLaraGraph, LabeledOperationError,
+    LabeledOutEdgesIter,
+};
 pub use record::{LabelBucket, LabelId, LabeledVertex};
 pub use traits::LabeledCsrVertex;
 

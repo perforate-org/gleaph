@@ -19,7 +19,7 @@ use crate::{
     },
     lara::{
         edge::{
-            EdgeStore, InitError as EdgeInitError,
+            EdgeStore, InitError as EdgeInitError, OutEdgesIter,
             counts::{SegmentEdgeCounts, segment_span_density},
             segment_tree_leaf_count,
         },
@@ -31,7 +31,7 @@ use crate::{
 #[cfg(feature = "canbench")]
 use canbench_rs::bench_scope;
 use ic_stable_structures::Memory;
-use std::{cell::Cell, cmp::Ordering, fmt, marker::PhantomData, ops::Range};
+use std::{cell::Cell, cmp::Ordering, fmt, iter::FusedIterator, marker::PhantomData};
 
 const DEFAULT_SEGMENT_SIZE: u32 = 32;
 const BULK_BUCKET_SEARCH_MIN_DEGREE: u32 = 16;
@@ -142,6 +142,140 @@ where
     last_bucket_lookup: Cell<Option<BucketLookupCache>>,
     bucket_lookup_cache: [Cell<Option<BucketLookupCache>>; BUCKET_LOOKUP_CACHE_ENTRIES],
     _marker: PhantomData<E>,
+}
+
+/// Iterator over every outgoing edge at `src` across all labels in the **fast scan order** used by
+/// [`EdgeStore::iter_out_edges`] on each [`LabelEdgeSpanAccess`]: **label buckets from high sort
+/// order to low** (reverse of ascending [`LabelId`] bucket slots), and within each bucket
+/// **overflow log chain first**, then **slab slots from high index to low**.
+///
+/// This order matches [`LabeledLaraGraph::out_edges_iter`], [`LabeledLaraGraph::iter_out_edges`],
+/// and [`LabeledLaraGraph::for_each_out_edge_matching_with_raw`].
+pub struct LabeledOutEdgesIter<'a, E: CsrEdge, M: Memory> {
+    phase: LabeledOutEdgesIterPhase<'a, E, M>,
+}
+
+enum LabeledOutEdgesIterPhase<'a, E: CsrEdge, M: Memory> {
+    Bypass(OutEdgesIter<'a, E, M>),
+    BulkTiledSlabOnly {
+        raw: Vec<u8>,
+        base: u64,
+        buckets: Vec<LabelBucket>,
+        bucket_rev_idx: isize,
+        slot_rev: Option<u32>,
+    },
+    PerBucket {
+        graph: &'a LabeledLaraGraph<E, M>,
+        src: VertexId,
+        vertex: LabeledVertex,
+        buckets: Vec<LabelBucket>,
+        bucket_rev_idx: isize,
+        inner: Option<OutEdgesIter<'a, E, M>>,
+    },
+    Done,
+}
+
+impl<'a, E, M> Iterator for LabeledOutEdgesIter<'a, E, M>
+where
+    E: CsrEdge,
+    M: Memory,
+{
+    type Item = E;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match &mut self.phase {
+            LabeledOutEdgesIterPhase::Done => None,
+            LabeledOutEdgesIterPhase::Bypass(it) => {
+                let e = it.next();
+                if e.is_none() {
+                    self.phase = LabeledOutEdgesIterPhase::Done;
+                }
+                e
+            }
+            LabeledOutEdgesIterPhase::BulkTiledSlabOnly {
+                raw,
+                base,
+                buckets,
+                bucket_rev_idx,
+                slot_rev,
+            } => loop {
+                if *bucket_rev_idx < 0 {
+                    self.phase = LabeledOutEdgesIterPhase::Done;
+                    return None;
+                }
+                let bidx = *bucket_rev_idx as usize;
+                let bucket = &buckets[bidx];
+                if bucket.edge_len == 0 {
+                    *bucket_rev_idx -= 1;
+                    *slot_rev = None;
+                    continue;
+                }
+                let slot = slot_rev.unwrap_or(bucket.edge_len - 1);
+                let rel = bucket
+                    .edge_start
+                    .saturating_sub(*base)
+                    .saturating_add(u64::from(slot));
+                let byte_off = usize::try_from(rel)
+                    .expect("bulk tiled slot offset")
+                    .saturating_mul(E::BYTES);
+                if byte_off + E::BYTES > raw.len() {
+                    self.phase = LabeledOutEdgesIterPhase::Done;
+                    return None;
+                }
+                let e = E::read_from(&raw[byte_off..byte_off + E::BYTES]);
+                if slot == 0 {
+                    *bucket_rev_idx -= 1;
+                    *slot_rev = None;
+                } else {
+                    *slot_rev = Some(slot - 1);
+                }
+                return Some(e);
+            },
+            LabeledOutEdgesIterPhase::PerBucket {
+                graph,
+                src,
+                vertex,
+                buckets,
+                bucket_rev_idx,
+                inner,
+            } => loop {
+                if let Some(it) = inner {
+                    if let Some(e) = it.next() {
+                        return Some(e);
+                    }
+                    *inner = None;
+                    *bucket_rev_idx -= 1;
+                }
+                if *bucket_rev_idx < 0 {
+                    self.phase = LabeledOutEdgesIterPhase::Done;
+                    return None;
+                }
+                let bidx = *bucket_rev_idx as usize;
+                let bucket_index = bidx as u32;
+                let bucket = &buckets[bidx];
+                let slot = vertex
+                    .base_slot_start()
+                    .saturating_add(u64::from(bucket_index));
+                let successor = graph
+                    .bucket_successor_start_after_bucket(vertex, bucket_index, bucket)
+                    .expect("bucket successor for out-edges iter");
+                let acc = LabelEdgeSpanAccess::new(&graph.buckets, slot, successor, *src);
+                *inner = Some(
+                    graph
+                        .edges
+                        .iter_out_edges(&acc, VertexId::from(0))
+                        .expect("labeled bucket iter_out_edges"),
+                );
+            },
+        }
+    }
+}
+
+impl<'a, E, M> FusedIterator for LabeledOutEdgesIter<'a, E, M>
+where
+    E: CsrEdge,
+    M: Memory,
+{
 }
 
 impl<E, M> LabeledLaraGraph<E, M>
@@ -592,11 +726,6 @@ where
         Ok(())
     }
 
-    fn bucket_range(vertex: &LabeledVertex) -> Range<u64> {
-        let start = vertex.base_slot_start();
-        start..start.saturating_add(u64::from(vertex.degree()))
-    }
-
     fn find_bucket(
         &self,
         src: VertexId,
@@ -898,6 +1027,38 @@ where
             }
         }
         true
+    }
+
+    /// When every bucket is overflow-free and on-slab edges tile contiguously in the
+    /// edge store (`bucket[i].edge_start + edge_len` meets `bucket[i+1].edge_start`),
+    /// returns `(first_edge_slot, total_live_edges)` so one `read_slots_contiguous` can
+    /// replace per-bucket slab walks.
+    fn try_contiguous_tiled_labeled_out_edges(
+        vertex: &LabeledVertex,
+        buckets: &[LabelBucket],
+    ) -> Option<(u64, u32)> {
+        let deg = vertex.degree() as usize;
+        if deg == 0 || buckets.len() != deg {
+            return None;
+        }
+        if buckets.iter().any(|b| b.overflow_log_head >= 0) {
+            return None;
+        }
+        let base = buckets.first()?.edge_start;
+        let mut pos = base;
+        let mut total_edges: u32 = 0;
+        for b in buckets {
+            if b.edge_start != pos {
+                return None;
+            }
+            total_edges = total_edges.checked_add(b.edge_len)?;
+            pos = pos.checked_add(u64::from(b.edge_len))?;
+        }
+        let span_end = base.saturating_add(u64::from(vertex.vertex_edge_alloc_slots()));
+        if pos > span_end {
+            return None;
+        }
+        Some((base, total_edges))
     }
 
     /// Returns freed slab slots from a relocated [`LabeledVertex`] edge span.
@@ -1651,10 +1812,66 @@ where
         }
     }
 
+    /// Like [`Self::for_each_edges_for_label`], but skips [`Self::ensure_vertex`].
+    ///
+    /// Caller must guarantee `src` is in range: `u32::from(src) < self.vertices.len()`. Correct
+    /// shortest-path / BFS traversals satisfy this when `src` is only taken from graph neighbors.
+    pub fn for_each_edges_for_label_unchecked<Visit>(
+        &self,
+        src: VertexId,
+        label_id: LabelId,
+        visit: Visit,
+    ) -> Result<(), LabeledOperationError>
+    where
+        Visit: FnMut(E),
+    {
+        debug_assert!(u32::from(src) < self.vertices.len());
+        let vertex = self.vertices.get(src);
+        if vertex.is_default_edge_labeled() {
+            if label_id != self.bypass_storage_label_for(&vertex) {
+                return Ok(());
+            }
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _bench_scope = bench_scope("labeled_unchecked_bypass_slab");
+            return self
+                .edges
+                .for_each_out_edge_matching(
+                    &self.vertices,
+                    src,
+                    None::<&mut dyn FnMut(&[u8]) -> bool>,
+                    |_| true,
+                    visit,
+                )
+                .map_err(Into::into);
+        }
+        match self.find_bucket(src, &vertex, label_id)? {
+            BucketSearch::Found { slot, bucket } => {
+                #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                let _bench_scope = bench_scope("labeled_unchecked_find_bucket");
+                let bucket_index = slot.saturating_sub(vertex.base_slot_start()) as u32;
+                let successor_start =
+                    self.bucket_successor_start_after_bucket(&vertex, bucket_index, &bucket)?;
+                #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                let _walk = bench_scope("labeled_unchecked_bucket_slab_walk");
+                self.edges
+                    .for_each_out_edge_matching(
+                        &LabelEdgeSpanAccess::new(&self.buckets, slot, successor_start, src),
+                        VertexId::from(0),
+                        None::<&mut dyn FnMut(&[u8]) -> bool>,
+                        |_| true,
+                        visit,
+                    )
+                    .map_err(Into::into)
+            }
+            BucketSearch::Missing { .. } => Ok(()),
+        }
+    }
+
     /// Like [`EdgeStore::for_each_out_edge_matching`], but spans every forward label bucket at
     /// `src` (or the homogeneous bypass slab when in default-label mode).
     ///
-    /// Avoids [`Self::iter_out_edges`]'s full-row allocation; used by query expansion with optional
+    /// Visitation follows [`Self::out_edges_iter`] order (reverse label-bucket walk with
+    /// [`EdgeStore::iter_out_edges`] semantics per span). Used by query expansion with optional
     /// slab-byte prefiltering.
     pub fn for_each_out_edge_matching_with_raw<Match, Visit>(
         &self,
@@ -1679,9 +1896,65 @@ where
                 .for_each_out_edge_matching(&self.vertices, src, raw_arg, matches, visit)
                 .map_err(Into::into);
         }
-        for slot in Self::bucket_range(&vertex) {
-            let bucket_index = slot.saturating_sub(vertex.base_slot_start()) as u32;
-            let successor_start = self.bucket_successor_start(&vertex, bucket_index)?;
+        let buckets = self.read_vertex_label_buckets(&vertex)?;
+        if let Some((base, total_edges)) =
+            Self::try_contiguous_tiled_labeled_out_edges(&vertex, &buckets)
+        {
+            if total_edges == 0 {
+                return Ok(());
+            }
+            let degree = total_edges as usize;
+            let nbytes = degree
+                .checked_mul(E::BYTES)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let mut raw = vec![0u8; nbytes];
+            self.edges.read_slots_contiguous(base, &mut raw);
+            let mut bucket_rev_idx = buckets.len() as isize - 1;
+            let mut slot_rev: Option<u32> = None;
+            while bucket_rev_idx >= 0 {
+                let bidx = bucket_rev_idx as usize;
+                let bucket = &buckets[bidx];
+                if bucket.edge_len == 0 {
+                    bucket_rev_idx -= 1;
+                    slot_rev = None;
+                    continue;
+                }
+                let slot = slot_rev.unwrap_or(bucket.edge_len - 1);
+                let rel = bucket
+                    .edge_start
+                    .saturating_sub(base)
+                    .saturating_add(u64::from(slot));
+                let byte_off = usize::try_from(rel)
+                    .map_err(|_| LaraOperationError::CollectAllocationOverflow)?
+                    .saturating_mul(E::BYTES);
+                let chunk = &raw[byte_off..byte_off + E::BYTES];
+                if let Some(raw_m) = raw_matches.as_mut() {
+                    if raw_m(chunk) {
+                        visit(E::read_from(chunk));
+                    }
+                } else {
+                    let edge = E::read_from(chunk);
+                    if matches(&edge) {
+                        visit(edge);
+                    }
+                }
+                if slot == 0 {
+                    bucket_rev_idx -= 1;
+                    slot_rev = None;
+                } else {
+                    slot_rev = Some(slot - 1);
+                }
+            }
+            return Ok(());
+        }
+        for bucket_index in (0..buckets.len()).rev() {
+            let bucket_index = bucket_index as u32;
+            let bucket = &buckets[bucket_index as usize];
+            let slot = vertex
+                .base_slot_start()
+                .saturating_add(u64::from(bucket_index));
+            let successor_start =
+                self.bucket_successor_start_after_bucket(&vertex, bucket_index, bucket)?;
             let acc = LabelEdgeSpanAccess::new(&self.buckets, slot, successor_start, src);
             let raw_arg: Option<&mut dyn FnMut(&[u8]) -> bool> = match &mut raw_matches {
                 Some(r) => Some(&mut **r),
@@ -1709,27 +1982,86 @@ where
         Ok(out)
     }
 
-    /// Iterates all outgoing edges across every label bucket.
+    /// All outgoing edges across every label bucket (same order as [`Self::out_edges_iter`]:
+    /// reverse label-bucket walk, [`EdgeStore::iter_out_edges`] per span).
     pub fn iter_out_edges(&self, src: VertexId) -> Result<Vec<E>, LabeledOperationError> {
+        self.out_edges_iter(src).map(|iter| iter.collect())
+    }
+
+    /// Lazy iterator: reverse label-bucket walk; within each bucket, log chain then slab
+    /// high-to-low ([`EdgeStore::iter_out_edges`] on [`LabelEdgeSpanAccess`]).
+    pub fn out_edges_iter(
+        &self,
+        src: VertexId,
+    ) -> Result<LabeledOutEdgesIter<'_, E, M>, LabeledOperationError> {
         self.ensure_vertex(src)?;
         let vertex = self.vertices.get(src);
         if vertex.is_default_edge_labeled() {
-            return Ok(self
-                .edges
-                .collect_out_edges_slot_order(&self.vertices, src)?);
+            if vertex.degree() == 0 {
+                return Ok(LabeledOutEdgesIter {
+                    phase: LabeledOutEdgesIterPhase::Done,
+                });
+            }
+            return Ok(LabeledOutEdgesIter {
+                phase: LabeledOutEdgesIterPhase::Bypass(
+                    self.edges
+                        .iter_out_edges(&self.vertices, src)
+                        .map_err(LabeledOperationError::from)?,
+                ),
+            });
         }
-        let mut out = Vec::new();
-        #[cfg(feature = "canbench")]
-        let _bench_scope = bench_scope("labeled_iter_out_edges_collect");
-        for slot in Self::bucket_range(&vertex) {
-            let bucket_index = slot.saturating_sub(vertex.base_slot_start()) as u32;
-            let successor_start = self.bucket_successor_start(&vertex, bucket_index)?;
-            out.extend(self.edges.collect_out_edges_slot_order(
-                &LabelEdgeSpanAccess::new(&self.buckets, slot, successor_start, src),
-                VertexId::from(0),
-            )?);
+        let buckets = self.read_vertex_label_buckets(&vertex)?;
+        if buckets.is_empty() {
+            return Ok(LabeledOutEdgesIter {
+                phase: LabeledOutEdgesIterPhase::Done,
+            });
         }
-        Ok(out)
+        if let Some((base, total_edges)) =
+            Self::try_contiguous_tiled_labeled_out_edges(&vertex, &buckets)
+        {
+            #[cfg(feature = "canbench")]
+            let _bench_scope = bench_scope("labeled_out_edges_iter_bulk_tiled");
+            if total_edges == 0 {
+                return Ok(LabeledOutEdgesIter {
+                    phase: LabeledOutEdgesIterPhase::Done,
+                });
+            }
+            let degree = total_edges as usize;
+            let nbytes = degree
+                .checked_mul(E::BYTES)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let mut raw = vec![0u8; nbytes];
+            self.edges.read_slots_contiguous(base, &mut raw);
+            let bucket_rev_idx = buckets.len() as isize - 1;
+            return Ok(LabeledOutEdgesIter {
+                phase: LabeledOutEdgesIterPhase::BulkTiledSlabOnly {
+                    raw,
+                    base,
+                    buckets,
+                    bucket_rev_idx,
+                    slot_rev: None,
+                },
+            });
+        }
+        let bucket_rev_idx = buckets.len() as isize - 1;
+        Ok(LabeledOutEdgesIter {
+            phase: LabeledOutEdgesIterPhase::PerBucket {
+                graph: self,
+                src,
+                vertex,
+                buckets,
+                bucket_rev_idx,
+                inner: None,
+            },
+        })
+    }
+
+    /// Explicit alias for [`Self::out_edges_iter`].
+    pub fn out_edges_rev_iter(
+        &self,
+        src: VertexId,
+    ) -> Result<LabeledOutEdgesIter<'_, E, M>, LabeledOperationError> {
+        self.out_edges_iter(src)
     }
 
     /// Returns the label id of the bucket that contains `needle`, if any.
@@ -2144,9 +2476,9 @@ mod tests {
         assert_eq!(
             graph.iter_out_edges(VertexId::from(0)).unwrap(),
             vec![
-                TestEdge { target: 10 },
-                TestEdge { target: 11 },
                 TestEdge { target: 20 },
+                TestEdge { target: 11 },
+                TestEdge { target: 10 },
             ]
         );
         crate::labeled::invariants::assert_labeled_layout_invariants(
@@ -2159,6 +2491,26 @@ mod tests {
             graph.buckets(),
             graph.edges(),
         );
+    }
+
+    #[test]
+    fn out_edges_iter_matches_iter_out_edges() {
+        let graph = test_graph();
+        let road = LabelId::from_raw(2);
+        graph
+            .insert_edge(VertexId::from(0), road, TestEdge { target: 10 })
+            .unwrap();
+        graph
+            .insert_edge(VertexId::from(0), road, TestEdge { target: 11 })
+            .unwrap();
+        let walk = LabelId::from_raw(3);
+        graph
+            .insert_edge(VertexId::from(0), walk, TestEdge { target: 20 })
+            .unwrap();
+
+        let expected = graph.iter_out_edges(VertexId::from(0)).unwrap();
+        let lazy: Vec<_> = graph.out_edges_iter(VertexId::from(0)).unwrap().collect();
+        assert_eq!(lazy, expected);
     }
 
     #[test]
@@ -2283,10 +2635,10 @@ mod tests {
         assert_eq!(
             graph.iter_out_edges(VertexId::from(0)).unwrap(),
             vec![
-                TestEdge { target: 20 },
-                TestEdge { target: 21 },
-                TestEdge { target: 70 },
                 TestEdge { target: 100 },
+                TestEdge { target: 70 },
+                TestEdge { target: 21 },
+                TestEdge { target: 20 },
             ]
         );
         crate::labeled::invariants::assert_labeled_layout_invariants(
@@ -2655,7 +3007,7 @@ mod tests {
         );
         assert_eq!(
             graph.iter_out_edges(VertexId::from(0)).unwrap(),
-            vec![TestEdge { target: 10 }, TestEdge { target: 30 }]
+            vec![TestEdge { target: 30 }, TestEdge { target: 10 }]
         );
         assert_eq!(
             graph.iter_out_edges(VertexId::from(31)).unwrap(),

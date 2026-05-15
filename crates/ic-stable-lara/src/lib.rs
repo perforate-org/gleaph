@@ -60,7 +60,8 @@ pub use labeled::{
     BidirectionalLabeledError, BidirectionalLabeledLara, BidirectionalLabeledLaraGraph,
     DeferredBidirectionalLabeledError, DeferredBidirectionalLabeledLara,
     DeferredBidirectionalLabeledLaraGraph, DeferredLabeledLara, DeferredLabeledLaraGraph,
-    LabelBucket, LabelId, LabeledCsrVertex, LabeledLara, LabeledLaraGraph, LabeledVertex,
+    LabelBucket, LabelId, LabeledCsrVertex, LabeledLara, LabeledLaraGraph, LabeledOutEdgesIter,
+    LabeledVertex,
 };
 pub use lara::{
     LaraGraph,

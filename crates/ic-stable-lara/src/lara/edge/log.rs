@@ -208,6 +208,37 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
         )
     }
 
+    /// Copies every allocated log entry slot for `leaf_segment` (`0..read_idx`) in
+    /// one stable-memory read. `out` is cleared when the segment has no entries yet.
+    ///
+    /// Chain walks can index this buffer instead of [`Self::read_entry_with_header`]
+    /// per hop; indices beyond the copied prefix fall back to per-entry reads.
+    pub(crate) fn read_segment_entry_table_into(
+        &self,
+        h: &HeaderV1,
+        leaf_segment: u32,
+        out: &mut Vec<u8>,
+    ) {
+        let stride = h.stride as usize;
+        if stride == 0 {
+            out.clear();
+            return;
+        }
+        let next_idx = self.read_idx_with_header(h, leaf_segment);
+        if next_idx <= 0 {
+            out.clear();
+            return;
+        }
+        let capped = (next_idx as u32).min(h.max_log_entries) as usize;
+        let Some(nbytes) = capped.checked_mul(stride) else {
+            out.clear();
+            return;
+        };
+        out.resize(nbytes, 0);
+        let start = entry_offset::<E>(h, leaf_segment, 0);
+        self.memory.read(start, out.as_mut_slice());
+    }
+
     /// Writes the next-free entry index for a leaf segment.
     #[allow(dead_code)] // stable `LogStore` API; in-crate uses `write_idx_with_header`
     pub fn write_idx(&self, leaf_segment: u32, idx: i32) {

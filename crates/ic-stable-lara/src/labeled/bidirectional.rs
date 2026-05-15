@@ -206,4 +206,26 @@ where
             .iter_edges_for_label(src, label_id)
             .map_err(BidirectionalLabeledError::Forward)
     }
+
+    /// Lazy iterator over all forward out-edges (every label). See [`LabeledLaraGraph::out_edges_iter`].
+    pub fn forward_out_edges_iter(
+        &self,
+        src: VertexId,
+    ) -> Result<crate::labeled::graph::LabeledOutEdgesIter<'_, E, M>, BidirectionalLabeledError>
+    {
+        self.forward
+            .out_edges_iter(src)
+            .map_err(BidirectionalLabeledError::Forward)
+    }
+
+    /// Lazy iterator over all reverse out-edges at `dst` (incoming in forward orientation).
+    pub fn reverse_out_edges_iter(
+        &self,
+        dst: VertexId,
+    ) -> Result<crate::labeled::graph::LabeledOutEdgesIter<'_, E, M>, BidirectionalLabeledError>
+    {
+        self.reverse
+            .out_edges_iter(dst)
+            .map_err(BidirectionalLabeledError::Reverse)
+    }
 }

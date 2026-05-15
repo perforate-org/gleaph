@@ -42,6 +42,9 @@ use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashSet, VecDeque};
 use std::hash::Hasher;
 use std::pin::Pin;
 
+#[cfg(all(feature = "canbench", target_family = "wasm"))]
+use canbench_rs::bench_scope;
+
 pub trait PlanQueryExecutor {
     fn execute_plan_query(
         &self,
@@ -1398,6 +1401,99 @@ fn execute_shortest_path(
     Ok(out)
 }
 
+/// Pre-resolves catalog edge label → Lara storage key once per shortest-path search, then expands
+/// with [`GraphStore::for_each_out_edges_for_label_unchecked`] to avoid repeated `ensure_vertex` and
+/// `expand_candidates_into` plumbing per hop.
+#[derive(Clone, Copy)]
+enum ShortestFixedLabelExpand {
+    Forward { storage: LaraLabelId },
+    Reverse { storage: LaraLabelId },
+    Undirected { storage: LaraLabelId },
+}
+
+impl ShortestFixedLabelExpand {
+    fn new(direction: EdgeDirection, catalog: EdgeLabelId) -> Result<Self, PlanQueryError> {
+        match direction {
+            EdgeDirection::PointingRight => Ok(Self::Forward {
+                storage: LaraLabelId::from_raw(EdgeLabelId::from_catalog(catalog, false).raw()),
+            }),
+            EdgeDirection::PointingLeft => Ok(Self::Reverse {
+                storage: LaraLabelId::from_raw(EdgeLabelId::from_catalog(catalog, false).raw()),
+            }),
+            EdgeDirection::Undirected => Ok(Self::Undirected {
+                storage: LaraLabelId::from_raw(EdgeLabelId::from_catalog(catalog, true).raw()),
+            }),
+            other => Err(PlanQueryError::UnsupportedDirection(other)),
+        }
+    }
+
+    fn expand_into(
+        self,
+        store: &GraphStore,
+        current: VertexId,
+        out: &mut Vec<ExpandCandidate>,
+    ) -> Result<(), PlanQueryError> {
+        match self {
+            Self::Forward { storage } => {
+                #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                let _scope = bench_scope("shortest_fixed_expand_forward");
+                store
+                    .for_each_out_edges_for_label_unchecked(current, storage, |edge| {
+                        out.push((
+                            edge.neighbor_vid(),
+                            EdgeBinding {
+                                handle: EdgeHandle {
+                                    owner_vertex_id: current,
+                                    vertex_edge_id: edge.vertex_edge_id,
+                                },
+                                inline_value: edge.inline_value,
+                            },
+                        ));
+                    })
+                    .map_err(GraphStoreError::from)?;
+            }
+            Self::Reverse { storage } => {
+                #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                let _scope = bench_scope("shortest_fixed_expand_reverse");
+                store
+                    .for_each_in_edges_for_label_unchecked(current, storage, |edge| {
+                        out.push((
+                            edge.neighbor_vid(),
+                            EdgeBinding {
+                                handle: EdgeHandle {
+                                    owner_vertex_id: edge.neighbor_vid(),
+                                    vertex_edge_id: edge.vertex_edge_id,
+                                },
+                                inline_value: edge.inline_value,
+                            },
+                        ));
+                    })
+                    .map_err(GraphStoreError::from)?;
+            }
+            Self::Undirected { storage } => {
+                #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                let _scope = bench_scope("shortest_fixed_expand_undirected");
+                store
+                    .for_each_out_edges_for_label_unchecked(current, storage, |edge| {
+                        let owner = canonical_undirected_owner(current, edge.neighbor_vid());
+                        out.push((
+                            edge.neighbor_vid(),
+                            EdgeBinding {
+                                handle: EdgeHandle {
+                                    owner_vertex_id: owner,
+                                    vertex_edge_id: edge.vertex_edge_id,
+                                },
+                                inline_value: edge.inline_value,
+                            },
+                        ));
+                    })
+                    .map_err(GraphStoreError::from)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 fn shortest_paths_between(
     store: &GraphStore,
     src: VertexId,
@@ -1432,6 +1528,10 @@ fn shortest_paths_between(
     }];
     let mut queue = VecDeque::from([0usize]);
     let mut candidates = Vec::new();
+    let fixed_label_expand = match label_id {
+        Some(lid) => Some(ShortestFixedLabelExpand::new(direction, lid)?),
+        None => None,
+    };
 
     while let Some(state_idx) = queue.pop_front() {
         let current = states[state_idx].current;
@@ -1454,16 +1554,28 @@ fn shortest_paths_between(
             continue;
         }
 
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _expand_scope = bench_scope("shortest_bfs_expand");
         candidates.clear();
-        expand_candidates_into(
-            store,
-            current,
-            direction,
-            label_id,
-            None,
-            &BTreeMap::new(),
-            &mut candidates,
-        )?;
+        match fixed_label_expand {
+            Some(prep) => prep.expand_into(store, current, &mut candidates)?,
+            None => {
+                #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                let _generic_scope = bench_scope("shortest_bfs_expand_generic");
+                expand_candidates_into(
+                    store,
+                    current,
+                    direction,
+                    label_id,
+                    None,
+                    &BTreeMap::new(),
+                    &mut candidates,
+                )?;
+            }
+        }
+
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _relax_scope = bench_scope("shortest_bfs_relax_neighbors");
         for (next, edge_binding) in candidates.iter().copied() {
             let next_depth = depth + 1;
             if let Some(visited) = any_visited.as_mut() {
@@ -1831,6 +1943,10 @@ fn weighted_shortest_paths_between(
         None
     };
     let mut candidates = Vec::new();
+    let fixed_label_expand = match label_id {
+        Some(lid) => Some(ShortestFixedLabelExpand::new(direction, lid)?),
+        None => None,
+    };
 
     while let Some(entry) = heap.pop() {
         if let Some(ref min) = found_min_cost {
@@ -1866,16 +1982,27 @@ fn weighted_shortest_paths_between(
             continue;
         }
 
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _expand_scope = bench_scope("weighted_shortest_expand");
         candidates.clear();
-        expand_candidates_into(
-            store,
-            current,
-            direction,
-            label_id,
-            None,
-            &BTreeMap::new(),
-            &mut candidates,
-        )?;
+        match fixed_label_expand {
+            Some(prep) => prep.expand_into(store, current, &mut candidates)?,
+            None => {
+                #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                let _generic_scope = bench_scope("weighted_shortest_expand_generic");
+                expand_candidates_into(
+                    store,
+                    current,
+                    direction,
+                    label_id,
+                    None,
+                    &BTreeMap::new(),
+                    &mut candidates,
+                )?;
+            }
+        }
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _relax_scope = bench_scope("weighted_shortest_relax");
         for (next, edge_binding) in candidates.iter().copied() {
             if any_best_cost.is_none() && path_search_contains_vertex(&states, state_idx, next) {
                 continue;

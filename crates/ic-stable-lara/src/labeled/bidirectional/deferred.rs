@@ -725,6 +725,38 @@ where
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
 
+    /// Like [`Self::for_each_out_edges_for_label`], but skips vertex range validation on `src`.
+    ///
+    /// See [`LabeledLaraGraph::for_each_edges_for_label_unchecked`].
+    pub fn for_each_out_edges_for_label_unchecked<Visit>(
+        &self,
+        src: VertexId,
+        label_id: LabelId,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLabeledError>
+    where
+        Visit: FnMut(E),
+    {
+        self.forward
+            .for_each_edges_for_label_unchecked(src, label_id, visit)
+            .map_err(DeferredBidirectionalLabeledError::Forward)
+    }
+
+    /// Like [`Self::for_each_in_edges_for_label`], but skips vertex range validation on `dst`.
+    pub fn for_each_in_edges_for_label_unchecked<Visit>(
+        &self,
+        dst: VertexId,
+        label_id: LabelId,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLabeledError>
+    where
+        Visit: FnMut(E),
+    {
+        self.reverse
+            .for_each_edges_for_label_unchecked(dst, label_id, visit)
+            .map_err(DeferredBidirectionalLabeledError::Reverse)
+    }
+
     /// Iterates forward outgoing edges for one label.
     pub fn iter_out_edges_for_label(
         &self,
@@ -901,6 +933,32 @@ where
     ) -> Result<Vec<E>, DeferredBidirectionalLabeledError> {
         self.reverse
             .iter_out_edges(dst)
+            .map_err(DeferredBidirectionalLabeledError::Reverse)
+    }
+
+    /// Lazy forward out-edges iterator; see [`LabeledLaraGraph::out_edges_iter`].
+    pub fn forward_out_edges_iter(
+        &self,
+        src: VertexId,
+    ) -> Result<
+        crate::labeled::graph::LabeledOutEdgesIter<'_, E, M>,
+        DeferredBidirectionalLabeledError,
+    > {
+        self.forward
+            .out_edges_iter(src)
+            .map_err(DeferredBidirectionalLabeledError::Forward)
+    }
+
+    /// Lazy reverse out-edges iterator (incoming in forward orientation).
+    pub fn reverse_out_edges_iter(
+        &self,
+        dst: VertexId,
+    ) -> Result<
+        crate::labeled::graph::LabeledOutEdgesIter<'_, E, M>,
+        DeferredBidirectionalLabeledError,
+    > {
+        self.reverse
+            .out_edges_iter(dst)
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
 
