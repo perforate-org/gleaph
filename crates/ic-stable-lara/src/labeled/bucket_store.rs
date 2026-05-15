@@ -124,6 +124,33 @@ impl<M: Memory> LabelBucketStore<M> {
         Some(LabelBucket::read_from(&bytes))
     }
 
+    /// Reads `count` consecutive bucket slots starting at `start_slot`.
+    pub(crate) fn read_label_bucket_slots_contiguous(
+        &self,
+        start_slot: u64,
+        count: u32,
+    ) -> Option<Vec<LabelBucket>> {
+        if count == 0 {
+            return Some(Vec::new());
+        }
+        let cap = self.header().elem_capacity;
+        let last = start_slot.saturating_add(u64::from(count.saturating_sub(1)));
+        if last >= cap {
+            return None;
+        }
+        let nbytes = usize::try_from(count)
+            .ok()?
+            .checked_mul(LabelBucket::BYTES)?;
+        let mut raw = vec![0u8; nbytes];
+        self.slab.read_slots_contiguous(start_slot, &mut raw);
+        let mut out = Vec::with_capacity(count as usize);
+        for chunk in raw.chunks_exact(LabelBucket::BYTES) {
+            out.push(LabelBucket::read_from(chunk));
+        }
+        debug_assert_eq!(out.len(), count as usize);
+        Some(out)
+    }
+
     /// Writes one bucket slab slot.
     pub fn write_label_bucket_slot(
         &self,

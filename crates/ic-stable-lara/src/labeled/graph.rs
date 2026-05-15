@@ -388,15 +388,15 @@ where
         &self,
         vertex: &LabeledVertex,
     ) -> Result<Vec<LabelBucket>, LabeledOperationError> {
-        let mut buckets = Vec::with_capacity(vertex.degree() as usize);
-        for slot in Self::bucket_range(vertex) {
-            buckets.push(
-                self.buckets
-                    .read_label_bucket_slot(slot)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?,
-            );
+        let deg = vertex.degree();
+        if deg == 0 {
+            return Ok(Vec::new());
         }
-        Ok(buckets)
+        let start = vertex.base_slot_start();
+        Ok(self
+            .buckets
+            .read_label_bucket_slots_contiguous(start, deg)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?)
     }
 
     fn bucket_successor_start(
@@ -659,23 +659,29 @@ where
         }
         let gaps = u64::from(span_slots).saturating_sub(effective_live);
 
-        let precision = 100_000_000.0;
-        let mut step = if total_weight == 0 {
-            0.0
+        // Same layout as the historical `f64` implementation: one fixed-point step
+        // `floor((gaps/total_weight) * 1e8) / 1e8` per bucket weight `(deg+1)`.
+        const P: u128 = 100_000_000;
+        let gaps_u = u128::from(gaps);
+        let tw = total_weight as u128;
+        let step_fp = if tw == 0 {
+            0u128
         } else {
-            gaps as f64 / total_weight as f64
+            gaps_u.saturating_mul(P) / tw
         };
-        step = (step * precision).floor() / precision;
 
-        let mut cursor = start_slot as f64;
+        let mut cursor_fp = u128::from(start_slot).saturating_mul(P);
         for (index, bucket) in buckets.iter().enumerate() {
-            let start = cursor as u64;
+            let start = (cursor_fp / P) as u64;
             out.push(start);
             let extra = (preferred == Some(index))
                 .then_some(preferred_extra)
                 .unwrap_or(0);
-            let degree = f64::from(bucket.edge_len.saturating_add(extra));
-            cursor = start as f64 + degree + step * (degree + 1.0);
+            let deg = u128::from(bucket.edge_len.saturating_add(extra));
+            let start_fp = u128::from(start).saturating_mul(P);
+            cursor_fp = start_fp
+                .saturating_add(deg.saturating_mul(P))
+                .saturating_add(step_fp.saturating_mul(deg.saturating_add(1)));
         }
         out
     }
