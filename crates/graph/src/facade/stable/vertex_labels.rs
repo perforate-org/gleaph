@@ -1,18 +1,20 @@
-use gleaph_graph_kernel::entry::{LabelId, Vertex};
+use gleaph_graph_kernel::entry::{Vertex, VertexLabelId};
 use ic_stable_lara::VertexId;
 use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
 use std::{borrow::Cow, fmt};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct VertexLabelSetBlob(Vec<LabelId>);
+pub struct VertexLabelSetBlob(Vec<VertexLabelId>);
 
 impl VertexLabelSetBlob {
-    pub fn new(labels: impl IntoIterator<Item = LabelId>) -> Result<Self, VertexLabelStoreError> {
+    pub fn new(
+        labels: impl IntoIterator<Item = VertexLabelId>,
+    ) -> Result<Self, VertexLabelStoreError> {
         let labels = normalize_labels(labels)?;
         Ok(Self(labels))
     }
 
-    pub fn labels(&self) -> &[LabelId] {
+    pub fn labels(&self) -> &[VertexLabelId] {
         &self.0
     }
 }
@@ -39,7 +41,7 @@ impl Storable for VertexLabelSetBlob {
         );
         let mut labels = Vec::with_capacity(bytes.len() / 2);
         for chunk in bytes.chunks_exact(2) {
-            labels.push(LabelId::from_le_bytes([chunk[0], chunk[1]]));
+            labels.push(VertexLabelId::from_le_bytes([chunk[0], chunk[1]]));
         }
         let labels = normalize_labels(labels).expect("VertexLabelSetBlob contains label id 0");
         Self(labels)
@@ -52,20 +54,13 @@ pub struct VertexLabelStore<M: Memory> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VertexLabelStoreError {
-    ReservedLabelId(LabelId),
-    /// Vertex labels must use catalog ids in `0x4000..=0xFFFF`.
-    VertexLabelIdOutOfRange(LabelId),
+    ReservedLabelId(VertexLabelId),
 }
 
 impl fmt::Display for VertexLabelStoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ReservedLabelId(id) => write!(f, "label id {} is reserved", id.raw()),
-            Self::VertexLabelIdOutOfRange(id) => write!(
-                f,
-                "vertex label id {} is outside the vertex range 0x4000..=0xFFFF",
-                id.raw()
-            ),
         }
     }
 }
@@ -79,10 +74,8 @@ impl<M: Memory> VertexLabelStore<M> {
         }
     }
 
-    pub fn labels_for(&self, vertex_id: VertexId, vertex: Vertex) -> Vec<LabelId> {
-        if vertex.has_label_sidecar()
-            && let Some(blob) = self.sidecars.get(&vertex_key(vertex_id))
-        {
+    pub fn labels_for(&self, vertex_id: VertexId, vertex: Vertex) -> Vec<VertexLabelId> {
+        if let Some(blob) = self.sidecars.get(&vertex_key(vertex_id)) {
             return blob.labels().to_vec();
         }
         vertex.primary_label_id().into_iter().collect()
@@ -92,7 +85,7 @@ impl<M: Memory> VertexLabelStore<M> {
         &mut self,
         vertex_id: VertexId,
         vertex: Vertex,
-        labels: impl IntoIterator<Item = LabelId>,
+        labels: impl IntoIterator<Item = VertexLabelId>,
     ) -> Result<Vertex, VertexLabelStoreError> {
         let labels = normalize_labels(labels)?;
         let key = vertex_key(vertex_id);
@@ -101,15 +94,10 @@ impl<M: Memory> VertexLabelStore<M> {
                 self.sidecars.remove(&key);
                 Ok(vertex.with_primary_label_id(None).with_label_sidecar(false))
             }
-            [label] => {
-                self.sidecars.remove(&key);
-                Ok(vertex
-                    .with_primary_label_id(Some(*label))
-                    .with_label_sidecar(false))
-            }
-            [primary, ..] => {
-                let primary = *primary;
-                self.sidecars.insert(key, VertexLabelSetBlob(labels));
+            slice => {
+                let primary = slice[0];
+                self.sidecars
+                    .insert(key, VertexLabelSetBlob::new(slice.iter().copied())?);
                 Ok(vertex
                     .with_primary_label_id(Some(primary))
                     .with_label_sidecar(true))
@@ -121,14 +109,19 @@ impl<M: Memory> VertexLabelStore<M> {
         &mut self,
         vertex_id: VertexId,
         vertex: Vertex,
-        label: LabelId,
+        label: VertexLabelId,
     ) -> Result<Vertex, VertexLabelStoreError> {
         let mut labels = self.labels_for(vertex_id, vertex);
         labels.push(label);
         self.set_labels(vertex_id, vertex, labels)
     }
 
-    pub fn remove_label(&mut self, vertex_id: VertexId, vertex: Vertex, label: LabelId) -> Vertex {
+    pub fn remove_label(
+        &mut self,
+        vertex_id: VertexId,
+        vertex: Vertex,
+        label: VertexLabelId,
+    ) -> Vertex {
         let labels = self
             .labels_for(vertex_id, vertex)
             .into_iter()
@@ -147,18 +140,11 @@ fn vertex_key(vertex_id: VertexId) -> u32 {
 }
 
 fn normalize_labels(
-    labels: impl IntoIterator<Item = LabelId>,
-) -> Result<Vec<LabelId>, VertexLabelStoreError> {
+    labels: impl IntoIterator<Item = VertexLabelId>,
+) -> Result<Vec<VertexLabelId>, VertexLabelStoreError> {
     let mut labels: Vec<_> = labels.into_iter().collect();
-    if let Some(id) = labels.iter().copied().find(|id| id.raw() == 0) {
+    if let Some(id) = labels.iter().copied().find(|id| id.is_reserved()) {
         return Err(VertexLabelStoreError::ReservedLabelId(id));
-    }
-    if let Some(id) = labels
-        .iter()
-        .copied()
-        .find(|id| !id.is_vertex_catalog_range())
-    {
-        return Err(VertexLabelStoreError::VertexLabelIdOutOfRange(id));
     }
     labels.sort_unstable();
     labels.dedup();
@@ -168,7 +154,6 @@ fn normalize_labels(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gleaph_graph_kernel::entry::VERTEX_LABEL_MIN;
     use ic_stable_structures::VectorMemory;
 
     fn store() -> VertexLabelStore<VectorMemory> {
@@ -176,11 +161,7 @@ mod tests {
     }
 
     fn vertex() -> Vertex {
-        Vertex {
-            base_slot_start: 1,
-            live_edge_count: 2,
-            metadata: 0,
-        }
+        Vertex::default()
     }
 
     #[test]
@@ -192,8 +173,8 @@ mod tests {
                 vid,
                 vertex(),
                 [
-                    LabelId::from_raw(VERTEX_LABEL_MIN + 2),
-                    LabelId::from_raw(VERTEX_LABEL_MIN + 3),
+                    VertexLabelId::from_raw(1 + 2),
+                    VertexLabelId::from_raw(1 + 3),
                 ],
             )
             .unwrap();
@@ -206,22 +187,17 @@ mod tests {
     }
 
     #[test]
-    fn one_label_stays_inline_only() {
+    fn one_label_persists_in_sidecar() {
         let mut store = store();
         let vid = VertexId::from(7);
 
         let v = store
-            .set_labels(vid, vertex(), [LabelId::from_raw(VERTEX_LABEL_MIN + 12)])
+            .set_labels(vid, vertex(), [VertexLabelId::from_raw(1 + 12)])
             .unwrap();
 
         assert_eq!(
-            v.primary_label_id(),
-            Some(LabelId::from_raw(VERTEX_LABEL_MIN + 12))
-        );
-        assert!(!v.has_label_sidecar());
-        assert_eq!(
             store.labels_for(vid, v),
-            vec![LabelId::from_raw(VERTEX_LABEL_MIN + 12)]
+            vec![VertexLabelId::from_raw(1 + 12)]
         );
     }
 
@@ -235,25 +211,20 @@ mod tests {
                 vid,
                 vertex(),
                 [
-                    LabelId::from_raw(VERTEX_LABEL_MIN + 30),
-                    LabelId::from_raw(VERTEX_LABEL_MIN + 10),
-                    LabelId::from_raw(VERTEX_LABEL_MIN + 30),
-                    LabelId::from_raw(VERTEX_LABEL_MIN + 20),
+                    VertexLabelId::from_raw(1 + 30),
+                    VertexLabelId::from_raw(1 + 10),
+                    VertexLabelId::from_raw(1 + 30),
+                    VertexLabelId::from_raw(1 + 20),
                 ],
             )
             .unwrap();
 
         assert_eq!(
-            v.primary_label_id(),
-            Some(LabelId::from_raw(VERTEX_LABEL_MIN + 10))
-        );
-        assert!(v.has_label_sidecar());
-        assert_eq!(
             store.labels_for(vid, v),
             vec![
-                LabelId::from_raw(VERTEX_LABEL_MIN + 10),
-                LabelId::from_raw(VERTEX_LABEL_MIN + 20),
-                LabelId::from_raw(VERTEX_LABEL_MIN + 30)
+                VertexLabelId::from_raw(1 + 10),
+                VertexLabelId::from_raw(1 + 20),
+                VertexLabelId::from_raw(1 + 30)
             ]
         );
     }
@@ -264,31 +235,28 @@ mod tests {
         let vid = VertexId::from(7);
 
         let v = store
-            .add_label(vid, vertex(), LabelId::from_raw(VERTEX_LABEL_MIN + 2))
+            .add_label(vid, vertex(), VertexLabelId::from_raw(1 + 2))
             .unwrap();
-        assert!(!v.has_label_sidecar());
+        assert_eq!(
+            store.labels_for(vid, v),
+            vec![VertexLabelId::from_raw(1 + 2)]
+        );
 
         let v = store
-            .add_label(vid, v, LabelId::from_raw(VERTEX_LABEL_MIN + 1))
+            .add_label(vid, v, VertexLabelId::from_raw(1 + 1))
             .unwrap();
-        assert!(v.has_label_sidecar());
         assert_eq!(
             store.labels_for(vid, v),
             vec![
-                LabelId::from_raw(VERTEX_LABEL_MIN + 1),
-                LabelId::from_raw(VERTEX_LABEL_MIN + 2)
+                VertexLabelId::from_raw(1 + 1),
+                VertexLabelId::from_raw(1 + 2)
             ]
         );
 
-        let v = store.remove_label(vid, v, LabelId::from_raw(VERTEX_LABEL_MIN + 1));
-        assert_eq!(
-            v.primary_label_id(),
-            Some(LabelId::from_raw(VERTEX_LABEL_MIN + 2))
-        );
-        assert!(!v.has_label_sidecar());
+        let v = store.remove_label(vid, v, VertexLabelId::from_raw(1 + 1));
         assert_eq!(
             store.labels_for(vid, v),
-            vec![LabelId::from_raw(VERTEX_LABEL_MIN + 2)]
+            vec![VertexLabelId::from_raw(1 + 2)]
         );
     }
 
@@ -301,8 +269,8 @@ mod tests {
                 vid,
                 vertex(),
                 [
-                    LabelId::from_raw(VERTEX_LABEL_MIN + 1),
-                    LabelId::from_raw(VERTEX_LABEL_MIN + 2),
+                    VertexLabelId::from_raw(1 + 1),
+                    VertexLabelId::from_raw(1 + 2),
                 ],
             )
             .unwrap();
@@ -313,8 +281,8 @@ mod tests {
         assert_eq!(
             reopened.labels_for(vid, v),
             vec![
-                LabelId::from_raw(VERTEX_LABEL_MIN + 1),
-                LabelId::from_raw(VERTEX_LABEL_MIN + 2)
+                VertexLabelId::from_raw(1 + 1),
+                VertexLabelId::from_raw(1 + 2)
             ]
         );
     }
@@ -324,7 +292,7 @@ mod tests {
         let mut store = store();
 
         assert!(matches!(
-            store.set_labels(VertexId::from(7), vertex(), [LabelId::default()]),
+            store.set_labels(VertexId::from(7), vertex(), [VertexLabelId::default()]),
             Err(VertexLabelStoreError::ReservedLabelId(id)) if id.raw() == 0
         ));
     }

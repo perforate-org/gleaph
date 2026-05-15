@@ -27,10 +27,12 @@ use gleaph_gql_planner::plan::{
     ScanValue, ShortestMode, ShortestPathCost, Str, VarLenSpec,
 };
 use gleaph_graph_kernel::entry::{
-    Edge, LabelId, PreparedWeightDecoder, Vertex, VertexEdgeId, decode_inline_weight,
+    Edge, EdgeLabelId, PreparedWeightDecoder, Vertex, VertexEdgeId, VertexLabelId,
+    decode_inline_weight,
 };
 use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest};
 use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
+use ic_stable_lara::LabelId as LaraLabelId;
 use ic_stable_lara::VertexId;
 use ic_stable_lara::traits::{CsrEdge, CsrVertexTombstone};
 use nohash_hasher::{IntMap, IntSet};
@@ -40,7 +42,6 @@ use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashSet, VecDeque};
 use std::hash::Hasher;
 use std::pin::Pin;
 
-#[cfg(not(target_family = "wasm"))]
 pub trait PlanQueryExecutor {
     fn execute_plan_query(
         &self,
@@ -50,7 +51,6 @@ pub trait PlanQueryExecutor {
     ) -> Result<PlanQueryResult, PlanQueryError>;
 }
 
-#[cfg(not(target_family = "wasm"))]
 impl PlanQueryExecutor for GraphStore {
     fn execute_plan_query(
         &self,
@@ -1036,7 +1036,7 @@ fn execute_node_scan(
     variable: &Str,
     label: Option<&Str>,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
-    let label_id = label.and_then(|label| store.label_id(label.as_ref()));
+    let label_id = label.and_then(|label| store.vertex_label_id(label.as_ref()));
     if label.is_some() && label_id.is_none() {
         return Ok(Vec::new());
     }
@@ -1191,7 +1191,7 @@ fn execute_expand(
     caller: Option<Principal>,
     gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
-    let label_id = label.and_then(|label| store.label_id(label.as_ref()));
+    let label_id = label.and_then(|label| store.edge_label_id(label.as_ref()));
     if label.is_some() && label_id.is_none() {
         return Ok(Vec::new());
     }
@@ -1311,7 +1311,7 @@ fn execute_shortest_path(
         return Err(PlanQueryError::UnsupportedOp("ShortestPath.label_expr"));
     }
 
-    let label_id = label.and_then(|label| store.label_id(label.as_ref()));
+    let label_id = label.and_then(|label| store.edge_label_id(label.as_ref()));
     if label.is_some() && label_id.is_none() {
         return Ok(Vec::new());
     }
@@ -1403,7 +1403,7 @@ fn shortest_paths_between(
     src: VertexId,
     dst: VertexId,
     direction: EdgeDirection,
-    label_id: Option<LabelId>,
+    label_id: Option<EdgeLabelId>,
     var_len: &Option<VarLenSpec>,
     mode: ShortestMode,
     store_hop_edges: bool,
@@ -1784,7 +1784,7 @@ fn weighted_shortest_paths_between(
     src: VertexId,
     dst: VertexId,
     direction: EdgeDirection,
-    label_id: Option<LabelId>,
+    label_id: Option<EdgeLabelId>,
     var_len: &Option<VarLenSpec>,
     edge_var: &str,
     cost_expr: &Expr,
@@ -2098,7 +2098,7 @@ fn expand_candidates(
     store: &GraphStore,
     src_id: VertexId,
     direction: EdgeDirection,
-    edge_label_id: Option<LabelId>,
+    edge_label_id: Option<EdgeLabelId>,
 ) -> Result<Vec<ExpandCandidate>, PlanQueryError> {
     let mut out = Vec::new();
     expand_candidates_into(
@@ -2117,7 +2117,7 @@ fn expand_candidates_into(
     store: &GraphStore,
     src_id: VertexId,
     direction: EdgeDirection,
-    edge_label_id: Option<LabelId>,
+    edge_label_id: Option<EdgeLabelId>,
     indexed_edge_equality: Option<&(Str, ScanValue)>,
     parameters: &BTreeMap<String, Value>,
     out: &mut Vec<ExpandCandidate>,
@@ -2163,7 +2163,7 @@ fn expand_candidates_into(
                     }
                 }
                 out.push((
-                    edge.target,
+                    edge.neighbor_vid(),
                     EdgeBinding {
                         handle: EdgeHandle {
                             owner_vertex_id: src_id,
@@ -2186,7 +2186,7 @@ fn expand_candidates_into(
                 if let Some((property, scan_value)) = indexed {
                     match edge_matches_indexed_equality(
                         store,
-                        edge.target,
+                        edge.neighbor_vid(),
                         edge.vertex_edge_id,
                         property,
                         scan_value,
@@ -2201,10 +2201,10 @@ fn expand_candidates_into(
                     }
                 }
                 out.push((
-                    edge.target,
+                    edge.neighbor_vid(),
                     EdgeBinding {
                         handle: EdgeHandle {
-                            owner_vertex_id: edge.target,
+                            owner_vertex_id: edge.neighbor_vid(),
                             vertex_edge_id: edge.vertex_edge_id,
                         },
                         inline_value: edge.inline_value,
@@ -2221,7 +2221,7 @@ fn expand_candidates_into(
                 if error.is_some() {
                     return;
                 }
-                let owner = canonical_undirected_owner(src_id, edge.target);
+                let owner = canonical_undirected_owner(src_id, edge.neighbor_vid());
                 if let Some((property, scan_value)) = indexed {
                     match edge_matches_indexed_equality(
                         store,
@@ -2240,7 +2240,7 @@ fn expand_candidates_into(
                     }
                 }
                 out.push((
-                    edge.target,
+                    edge.neighbor_vid(),
                     EdgeBinding {
                         handle: EdgeHandle {
                             owner_vertex_id: owner,
@@ -2259,107 +2259,89 @@ fn expand_candidates_into(
     Ok(())
 }
 
-fn edge_label_matches(
-    edge_label_id: Option<LabelId>,
-    meta: &gleaph_graph_kernel::entry::EdgeMeta,
-) -> bool {
-    match edge_label_id {
-        Some(expected) => {
-            expected.is_edge_inline_capable() && meta.inline_label_bits() == expected.raw()
-        }
-        None => true,
-    }
-}
-
 fn csr_expand_edge_matches(
+    store: &GraphStore,
+    owner: VertexId,
     edge: &Edge,
     direction: EdgeDirection,
-    edge_label_id: Option<LabelId>,
-) -> bool {
-    match direction {
-        EdgeDirection::PointingRight | EdgeDirection::PointingLeft if edge.meta.is_undirected() => {
-            false
-        }
-        EdgeDirection::Undirected if !edge.meta.is_undirected() => false,
-        _ => edge_label_matches(edge_label_id, &edge.meta),
+    edge_label_id: Option<EdgeLabelId>,
+) -> Result<bool, PlanQueryError> {
+    if let Some(expected) = edge_label_id {
+        // `for_each_csr_expand_edge` already enumerated a single label bucket; only
+        // verify directionality encoded in the storage label key.
+        let storage =
+            EdgeLabelId::from_catalog(expected, matches!(direction, EdgeDirection::Undirected));
+        return Ok(match direction {
+            EdgeDirection::PointingRight | EdgeDirection::PointingLeft => !storage.is_undirected(),
+            EdgeDirection::Undirected => storage.is_undirected(),
+            _ => false,
+        });
     }
-}
-
-/// Slab rows can reject non-matching slots from the packed `meta` word alone.
-///
-/// Labeled multi-level CSR stores should use [`super::labeled_csr::for_each_labeled_out_expand_edge`]
-/// instead, because label and direction semantics are resolved before traversal.
-fn csr_expand_supports_raw_prefilter(edge_label_id: Option<LabelId>) -> bool {
-    edge_label_id.is_none_or(|id| id.is_edge_inline_capable())
-}
-
-fn csr_expand_raw_slot_matches(
-    chunk: &[u8],
-    direction: EdgeDirection,
-    edge_label_id: Option<LabelId>,
-) -> bool {
-    debug_assert_eq!(chunk.len(), Edge::BYTES);
-    const INLINE_MASK: u16 = 0x3FFF;
-    const UNDIRECTED_BIT: u16 = 1 << 15;
-    let meta = u16::from_le_bytes([chunk[10], chunk[11]]);
-    if let Some(expected) = edge_label_id.filter(|id| id.is_edge_inline_capable()) {
-        if meta & INLINE_MASK != expected.raw() {
-            return false;
-        }
-    }
-    match direction {
-        EdgeDirection::PointingRight | EdgeDirection::PointingLeft => meta & UNDIRECTED_BIT == 0,
-        EdgeDirection::Undirected => meta & UNDIRECTED_BIT != 0,
+    let bucket = store
+        .find_forward_edge_bucket_label(owner, edge)
+        .map_err(GraphStoreError::from)?
+        .unwrap_or(LaraLabelId::from_raw(0));
+    let storage = EdgeLabelId::from_raw(bucket.raw());
+    Ok(match direction {
+        EdgeDirection::PointingRight | EdgeDirection::PointingLeft => !storage.is_undirected(),
+        EdgeDirection::Undirected => storage.is_undirected(),
         _ => false,
-    }
+    })
 }
 
 fn for_each_csr_expand_edge<F>(
     store: &GraphStore,
     src_id: VertexId,
     direction: EdgeDirection,
-    edge_label_id: Option<LabelId>,
+    edge_label_id: Option<EdgeLabelId>,
     visit: F,
 ) -> Result<(), PlanQueryError>
 where
     F: FnMut(Edge),
 {
-    if csr_expand_supports_raw_prefilter(edge_label_id) {
-        let mut raw_matches =
-            |chunk: &[u8]| csr_expand_raw_slot_matches(chunk, direction, edge_label_id);
-        let mut log_matches = |edge: &Edge| csr_expand_edge_matches(edge, direction, edge_label_id);
-        match direction {
-            EdgeDirection::PointingRight | EdgeDirection::Undirected => store
-                .for_each_out_edge_matching_with_raw(
-                    src_id,
-                    Some(&mut raw_matches),
-                    &mut log_matches,
-                    visit,
-                )
-                .map_err(GraphStoreError::from)?,
-            EdgeDirection::PointingLeft => store
-                .for_each_in_edge_matching_with_raw(
-                    src_id,
-                    Some(&mut raw_matches),
-                    &mut log_matches,
-                    visit,
-                )
-                .map_err(GraphStoreError::from)?,
-            other => return Err(PlanQueryError::UnsupportedDirection(other)),
+    let mut visit = visit;
+    let mut matches = |edge: &Edge| {
+        csr_expand_edge_matches(store, src_id, edge, direction, edge_label_id).unwrap_or(false)
+    };
+
+    match direction {
+        EdgeDirection::PointingRight | EdgeDirection::Undirected => {
+            if let Some(lid) = edge_label_id {
+                let storage =
+                    EdgeLabelId::from_catalog(lid, matches!(direction, EdgeDirection::Undirected));
+                store
+                    .for_each_out_edges_for_label(
+                        src_id,
+                        LaraLabelId::from_raw(storage.raw()),
+                        visit,
+                    )
+                    .map_err(GraphStoreError::from)?;
+            } else {
+                store
+                    .for_each_out_edge_matching(src_id, &mut matches, visit)
+                    .map_err(GraphStoreError::from)?;
+            }
+            Ok(())
         }
-    } else {
-        let mut matches = |edge: &Edge| csr_expand_edge_matches(edge, direction, edge_label_id);
-        match direction {
-            EdgeDirection::PointingRight | EdgeDirection::Undirected => store
-                .for_each_out_edge_matching(src_id, &mut matches, visit)
-                .map_err(GraphStoreError::from)?,
-            EdgeDirection::PointingLeft => store
-                .for_each_in_edge_matching(src_id, &mut matches, visit)
-                .map_err(GraphStoreError::from)?,
-            other => return Err(PlanQueryError::UnsupportedDirection(other)),
+        EdgeDirection::PointingLeft => {
+            if let Some(lid) = edge_label_id {
+                let storage = EdgeLabelId::from_catalog(lid, false);
+                store
+                    .for_each_in_edges_for_label(
+                        src_id,
+                        LaraLabelId::from_raw(storage.raw()),
+                        visit,
+                    )
+                    .map_err(GraphStoreError::from)?;
+            } else {
+                store
+                    .for_each_in_edge_matching(src_id, &mut matches, visit)
+                    .map_err(GraphStoreError::from)?;
+            }
+            Ok(())
         }
+        other => Err(PlanQueryError::UnsupportedDirection(other)),
     }
-    Ok(())
 }
 
 /// Probes the in-process edge equality index and, on hit, enumerates only matching slots.
@@ -2368,7 +2350,7 @@ fn expand_candidates_via_equality_index(
     store: &GraphStore,
     src_id: VertexId,
     direction: EdgeDirection,
-    edge_label_id: Option<LabelId>,
+    edge_label_id: Option<EdgeLabelId>,
     property: &str,
     scan_value: &ScanValue,
     parameters: &BTreeMap<String, Value>,
@@ -2401,7 +2383,7 @@ fn expand_candidates_via_equality_index(
                     return;
                 }
                 out.push((
-                    edge.target,
+                    edge.neighbor_vid(),
                     EdgeBinding {
                         handle: EdgeHandle {
                             owner_vertex_id: src_id,
@@ -2414,14 +2396,14 @@ fn expand_candidates_via_equality_index(
         }
         EdgeDirection::PointingLeft => {
             for_each_csr_expand_edge(store, src_id, direction, edge_label_id, |edge| {
-                if !in_slots.contains(&(edge.target, edge.vertex_edge_id)) {
+                if !in_slots.contains(&(edge.neighbor_vid(), edge.vertex_edge_id)) {
                     return;
                 }
                 out.push((
-                    edge.target,
+                    edge.neighbor_vid(),
                     EdgeBinding {
                         handle: EdgeHandle {
-                            owner_vertex_id: edge.target,
+                            owner_vertex_id: edge.neighbor_vid(),
                             vertex_edge_id: edge.vertex_edge_id,
                         },
                         inline_value: edge.inline_value,
@@ -2431,12 +2413,12 @@ fn expand_candidates_via_equality_index(
         }
         EdgeDirection::Undirected => {
             for_each_csr_expand_edge(store, src_id, direction, edge_label_id, |edge| {
-                let owner = canonical_undirected_owner(src_id, edge.target);
+                let owner = canonical_undirected_owner(src_id, edge.neighbor_vid());
                 if !in_slots.contains(&(owner, edge.vertex_edge_id)) {
                     return;
                 }
                 out.push((
-                    edge.target,
+                    edge.neighbor_vid(),
                     EdgeBinding {
                         handle: EdgeHandle {
                             owner_vertex_id: owner,
@@ -3068,7 +3050,7 @@ fn vertex_to_value(store: &GraphStore, vertex_id: VertexId) -> Result<Value, Pla
                     .into_iter()
                     .map(|label| {
                         store
-                            .label_name(label)
+                            .vertex_label_name(label)
                             .map(Value::Text)
                             .unwrap_or_else(|| Value::Uint64(u64::from(label.raw())))
                     })
@@ -3099,7 +3081,11 @@ fn edge_to_value(store: &GraphStore, binding: EdgeBinding) -> Result<Value, Plan
         .ok_or_else(|| PlanQueryError::MissingBinding {
             variable: format!("edge {:?}", handle),
         })?;
-    let label = LabelId::from_raw(edge.meta.inline_label_bits());
+    let bucket_label = store
+        .find_forward_edge_bucket_label(handle.owner_vertex_id, &edge)
+        .map_err(crate::facade::GraphStoreError::from)?;
+    let storage = EdgeLabelId::from_raw(bucket_label.unwrap_or(LaraLabelId::from_raw(0)).raw());
+    let catalog_id = EdgeLabelId::from_raw(storage.catalog_id());
     Ok(Value::Record(vec![
         (
             "owner_vertex_id".to_owned(),
@@ -3115,18 +3101,18 @@ fn edge_to_value(store: &GraphStore, binding: EdgeBinding) -> Result<Value, Plan
         ),
         (
             "label".to_owned(),
-            if label.raw() == 0 {
+            if catalog_id.raw() == 0 {
                 Value::Null
             } else {
                 store
-                    .label_name(label)
+                    .edge_label_name(catalog_id)
                     .map(Value::Text)
                     .unwrap_or(Value::Null)
             },
         ),
         (
             "undirected".to_owned(),
-            Value::Bool(edge.meta.is_undirected()),
+            Value::Bool(storage.is_undirected()),
         ),
         (
             "properties".to_owned(),
@@ -3172,7 +3158,7 @@ fn vertex_matches_label_expr(
 ) -> bool {
     match expr {
         LabelExpr::Name(name) => store
-            .label_id(name)
+            .vertex_label_id(name)
             .is_some_and(|label_id| store.vertex_has_label(vertex_id, vertex, label_id)),
         LabelExpr::Wildcard => !store.vertex_labels(vertex_id, vertex).is_empty(),
         LabelExpr::And(left, right) => {
@@ -6513,9 +6499,7 @@ mod tests {
     #[test]
     fn return_abs_gleaph_weight_does_not_break_decoder_prep() {
         let store = GraphStore::new();
-        use gleaph_graph_kernel::entry::{
-            EdgeMeta, EdgeWeightProfile, InlineEdgeLabelId, WeightEncoding,
-        };
+        use gleaph_graph_kernel::entry::{EdgeWeightProfile, WeightEncoding};
         let a = store
             .insert_vertex_named(["AbsWgtA"], Vec::<(&str, Value)>::new())
             .expect("a");
@@ -6533,10 +6517,8 @@ mod tests {
                 },
             )
             .expect("profile");
-        let inline = InlineEdgeLabelId::from_label_id(label_id).expect("inline");
-        let meta = EdgeMeta::new(false, false, Some(inline));
         store
-            .insert_directed_edge_with_inline_value(a, b, meta, 3)
+            .insert_directed_edge_with_inline_value(a, b, Some(label_id), 3)
             .expect("edge");
         let gql = "MATCH (a:AbsWgtA)-[e:AbsWgtRoad]->(b:AbsWgtB) RETURN ABS(GLEAPH_WEIGHT(e)) AS w";
         let plan = plan_gql(gql);
@@ -7785,11 +7767,8 @@ mod tests {
         }
     }
 
-    fn edge_meta_for_label(store: &GraphStore, label_name: &str) -> EdgeMeta {
-        use gleaph_graph_kernel::entry::InlineEdgeLabelId;
-        let lid = store.label_id(label_name).expect("label");
-        let inline = InlineEdgeLabelId::from_label_id(lid).expect("inline edge label");
-        EdgeMeta::new(false, false, Some(inline))
+    fn catalog_edge_label(store: &GraphStore, label_name: &str) -> EdgeLabelId {
+        store.edge_label_id(label_name).expect("edge label")
     }
 
     fn setup_weighted_road_graph(store: &GraphStore) -> (VertexId, VertexId, VertexId) {
@@ -7814,15 +7793,15 @@ mod tests {
                 },
             )
             .expect("weight profile");
-        let meta = edge_meta_for_label(store, "WgtRoad");
+        let road = catalog_edge_label(store, "WgtRoad");
         store
-            .insert_directed_edge_with_inline_value(a, b, meta, 1)
+            .insert_directed_edge_with_inline_value(a, b, Some(road), 1)
             .expect("a->b");
         store
-            .insert_directed_edge_with_inline_value(b, c, meta, 1)
+            .insert_directed_edge_with_inline_value(b, c, Some(road), 1)
             .expect("b->c");
         store
-            .insert_directed_edge_with_inline_value(a, c, meta, 100)
+            .insert_directed_edge_with_inline_value(a, c, Some(road), 100)
             .expect("a->c");
         (a, b, c)
     }
@@ -8523,18 +8502,18 @@ mod tests {
                 },
             )
             .expect("weight profile");
-        let meta = edge_meta_for_label(store, "WgtRoad");
+        let road = catalog_edge_label(store, "WgtRoad");
         store
-            .insert_directed_edge_with_inline_value(s, x, meta, 2)
+            .insert_directed_edge_with_inline_value(s, x, Some(road), 2)
             .expect("s->x");
         store
-            .insert_directed_edge_with_inline_value(s, a, meta, 0)
+            .insert_directed_edge_with_inline_value(s, a, Some(road), 0)
             .expect("s->a");
         store
-            .insert_directed_edge_with_inline_value(a, x, meta, 1)
+            .insert_directed_edge_with_inline_value(a, x, Some(road), 1)
             .expect("a->x");
         store
-            .insert_directed_edge_with_inline_value(x, dst, meta, 1)
+            .insert_directed_edge_with_inline_value(x, dst, Some(road), 1)
             .expect("x->dst");
         (s, dst)
     }
@@ -8615,18 +8594,18 @@ mod tests {
                 },
             )
             .expect("weight profile");
-        let meta = edge_meta_for_label(store, "WgtRoad");
+        let road = catalog_edge_label(store, "WgtRoad");
         store
-            .insert_directed_edge_with_inline_value(s, mid, meta, 10)
+            .insert_directed_edge_with_inline_value(s, mid, Some(road), 10)
             .expect("s->mid");
         store
-            .insert_directed_edge_with_inline_value(s, a, meta, 5)
+            .insert_directed_edge_with_inline_value(s, a, Some(road), 5)
             .expect("s->a");
         store
-            .insert_directed_edge_with_inline_value(a, mid, meta, 1)
+            .insert_directed_edge_with_inline_value(a, mid, Some(road), 1)
             .expect("a->mid");
         store
-            .insert_directed_edge_with_inline_value(mid, dst, meta, 0)
+            .insert_directed_edge_with_inline_value(mid, dst, Some(road), 0)
             .expect("mid->dst");
         (s, dst)
     }
@@ -8707,24 +8686,24 @@ mod tests {
                 },
             )
             .expect("weight profile");
-        let meta = edge_meta_for_label(&store, "WgtRoad");
+        let road = catalog_edge_label(&store, "WgtRoad");
         store
-            .insert_directed_edge_with_inline_value(a, d1, meta, 0)
+            .insert_directed_edge_with_inline_value(a, d1, Some(road), 0)
             .expect("a->d1");
         store
-            .insert_directed_edge_with_inline_value(a, d2, meta, 0)
+            .insert_directed_edge_with_inline_value(a, d2, Some(road), 0)
             .expect("a->d2");
         store
-            .insert_directed_edge_with_inline_value(d1, d2, meta, 0)
+            .insert_directed_edge_with_inline_value(d1, d2, Some(road), 0)
             .expect("d1->d2");
         store
-            .insert_directed_edge_with_inline_value(d1, c, meta, 0)
+            .insert_directed_edge_with_inline_value(d1, c, Some(road), 0)
             .expect("d1->c");
         store
-            .insert_directed_edge_with_inline_value(d2, c, meta, 0)
+            .insert_directed_edge_with_inline_value(d2, c, Some(road), 0)
             .expect("d2->c");
         store
-            .insert_directed_edge_with_inline_value(a, c, meta, 50)
+            .insert_directed_edge_with_inline_value(a, c, Some(road), 50)
             .expect("a->c direct");
         let plan = plan(vec![
             PlanOp::NodeScan {
@@ -8905,9 +8884,9 @@ mod tests {
         store
             .get_or_insert_edge_label_id("WgtNoProfileRoad")
             .expect("road label");
-        let meta = edge_meta_for_label(&store, "WgtNoProfileRoad");
+        let road = catalog_edge_label(&store, "WgtNoProfileRoad");
         store
-            .insert_directed_edge_with_inline_value(a, c, meta, 1)
+            .insert_directed_edge_with_inline_value(a, c, Some(road), 1)
             .expect("edge");
         let plan = plan(vec![
             PlanOp::NodeScan {

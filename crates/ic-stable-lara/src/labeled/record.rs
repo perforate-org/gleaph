@@ -181,6 +181,16 @@ impl CsrEdge for LabelBucket {
 
 /// Bit 0 of [`LabeledVertex::metadata`]: vertex points directly into the edge CSR.
 const DEFAULT_EDGE_LABELED_BIT: u32 = 1;
+/// Bit 1 while bypass is active: homogeneous unlabeled edges use `default_label | 0x8000`.
+///
+/// In normal labeled mode this bit is the LSB of the packed bucket-row reservation
+/// ([`LabeledVertex::bucket_alloc_slots`]); it is not interpreted as an undirected flag.
+const BYPASS_UNDIRECTED_BIT: u32 = 1 << 1;
+/// Bit 16 of [`LabeledVertex::metadata`]: [`Self::vertex_edge_alloc_slots`] holds a
+/// catalog [`LabelId`] wire value (homogeneous bypass), not a VertexEdgeSpan width.
+const BYPASS_LABEL_RAW_IN_SLOTS_BIT: u32 = 1 << 16;
+/// Storage MSB on [`LabelId`] for undirected homogeneous bypass / buckets.
+pub const LABEL_UNDIRECTED_BIT: u16 = 0x8000;
 const BUCKET_ALLOC_SHIFT: u32 = 1;
 const BUCKET_ALLOC_BITS: u32 = 15;
 const BUCKET_ALLOC_MASK: u32 = ((1 << BUCKET_ALLOC_BITS) - 1) << BUCKET_ALLOC_SHIFT;
@@ -191,10 +201,12 @@ const VERTEX_TOMBSTONE_BIT: u32 = 1 << 31;
 ///
 /// The locator has two modes:
 ///
-/// - **Default-label bypass:** [`Self::is_default_edge_labeled`] is true.
+/// - **Homogeneous / default-label bypass:** [`Self::is_default_edge_labeled`] is true.
 ///   [`Self::base_slot_start`] points directly into [`crate::lara::edge::EdgeStore`],
-///   and [`Self::row_count`] is the number of default-label edges. No LabelBucket rows
-///   are read and [`Self::vertex_edge_alloc_slots`] is ignored.
+///   and [`Self::row_count`] is the live edge count. No LabelBucket rows are read.
+///   When [`Self::bypass_label_raw_in_slots`] is set, [`Self::vertex_edge_alloc_slots`]
+///   stores the catalog [`LabelId`] wire value; otherwise legacy default-label bypass
+///   uses `default_label` plus [`Self::is_bypass_undirected`].
 /// - **Normal labeled row:** [`Self::is_default_edge_labeled`] is false.
 ///   [`Self::base_slot_start`] points into [`crate::labeled::LabelBucketStore`],
 ///   [`Self::row_count`] is the number of [`LabelBucket`] rows, and
@@ -247,8 +259,64 @@ impl LabeledVertex {
             raw |= DEFAULT_EDGE_LABELED_BIT;
         } else {
             raw &= !DEFAULT_EDGE_LABELED_BIT;
+            raw &= !BYPASS_UNDIRECTED_BIT;
+            raw &= !BYPASS_LABEL_RAW_IN_SLOTS_BIT;
         }
         self.with_metadata_word(raw)
+    }
+
+    /// Returns `true` when bypass mode stores the catalog label in
+    /// [`Self::vertex_edge_alloc_slots`].
+    #[inline]
+    pub fn bypass_label_raw_in_slots(self) -> bool {
+        self.is_default_edge_labeled()
+            && (self.metadata_word() & BYPASS_LABEL_RAW_IN_SLOTS_BIT) != 0
+    }
+
+    /// Returns `true` when bypass mode stores undirected homogeneous edges (`label | 0x8000`).
+    #[inline]
+    pub fn is_bypass_undirected(self) -> bool {
+        self.is_default_edge_labeled() && (self.metadata_word() & BYPASS_UNDIRECTED_BIT) != 0
+    }
+
+    /// Returns a copy with the bypass undirected flag changed (only meaningful in bypass mode).
+    #[inline]
+    pub fn with_bypass_undirected(self, undirected: bool) -> Self {
+        let mut raw = self.metadata_word();
+        if undirected {
+            raw |= BYPASS_UNDIRECTED_BIT;
+        } else {
+            raw &= !BYPASS_UNDIRECTED_BIT;
+        }
+        self.with_metadata_word(raw)
+    }
+
+    /// Returns the storage label id for a homogeneous bypass row.
+    ///
+    /// When [`Self::bypass_label_raw_in_slots`] is set, [`Self::vertex_edge_alloc_slots`]
+    /// stores the full [`LabelId`] wire value (including the undirected MSB). Otherwise
+    /// the row uses `default_label` plus [`Self::is_bypass_undirected`] (legacy enable path).
+    #[inline]
+    pub fn bypass_storage_label(self, default_label: LabelId) -> LabelId {
+        debug_assert!(self.is_default_edge_labeled());
+        if self.bypass_label_raw_in_slots() {
+            return LabelId::from_raw(self.vertex_edge_alloc_slots as u16);
+        }
+        if self.is_bypass_undirected() {
+            LabelId::from_raw(default_label.raw() | LABEL_UNDIRECTED_BIT)
+        } else {
+            default_label
+        }
+    }
+
+    /// Returns a bypass row tagged with homogeneous storage label `label_id`.
+    #[inline]
+    pub fn with_homogeneous_bypass_label(self, label_id: LabelId) -> Self {
+        let vertex = self
+            .with_default_edge_labeled(true)
+            .with_bypass_undirected(label_id.raw() & LABEL_UNDIRECTED_BIT != 0)
+            .with_vertex_edge_alloc_slots(u32::from(label_id.raw()));
+        vertex.with_metadata_word(vertex.metadata_word() | BYPASS_LABEL_RAW_IN_SLOTS_BIT)
     }
 
     /// Returns `true` when the vertex row is a tombstone.
@@ -468,6 +536,7 @@ mod tests {
             vertex_edge_alloc_slots: 0,
         }
         .with_default_edge_labeled(true)
+        .with_bypass_undirected(true)
         .with_tombstone(true)
         .with_vertex_edge_alloc_slots(0x1234);
         let mut bytes = [0u8; LabeledVertex::BYTES];
@@ -475,6 +544,11 @@ mod tests {
         let decoded = LabeledVertex::read_from(&bytes);
         assert_eq!(decoded, vertex);
         assert!(decoded.is_default_edge_labeled());
+        assert!(decoded.is_bypass_undirected());
+        assert_eq!(
+            decoded.bypass_storage_label(LabelId::from_raw(0)),
+            LabelId::from_raw(LABEL_UNDIRECTED_BIT)
+        );
         assert!(decoded.is_tombstone());
         assert_eq!(decoded.vertex_edge_alloc_slots(), 0x1234);
         let with_bucket_alloc = decoded.with_bucket_alloc_slots(37);

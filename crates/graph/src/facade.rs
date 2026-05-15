@@ -11,8 +11,9 @@ mod store;
 pub mod mutation_executor;
 
 pub use stable::edge_ids::{VertexEdgeIdAllocatorError, canonical_undirected_owner};
-pub use stable::label_catalog::LabelCatalogError;
+pub use stable::edge_label_catalog::EdgeLabelCatalogError;
 pub use stable::property_catalog::PropertyCatalogError;
+pub use stable::vertex_label_catalog::VertexLabelCatalogError;
 pub use stable::vertex_labels::VertexLabelStoreError;
 pub use stable::vertex_properties::VertexPropertyStoreError;
 

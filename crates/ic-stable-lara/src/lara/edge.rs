@@ -496,16 +496,45 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         )
     }
 
+    fn spans_overlap(a_start: u64, a_len: u64, b_start: u64, b_len: u64) -> bool {
+        let a_end = a_start.saturating_add(a_len);
+        let b_end = b_start.saturating_add(b_len);
+        a_start < b_end && b_start < a_end
+    }
+
     pub(crate) fn allocate_span(&self, len: u64) -> Result<u64, GrowFailed> {
+        self.allocate_span_avoiding(len, None)
+    }
+
+    /// Allocates `len` contiguous slots, optionally refusing spans that overlap `avoid`.
+    pub(crate) fn allocate_span_avoiding(
+        &self,
+        len: u64,
+        avoid: Option<(u64, u64)>,
+    ) -> Result<u64, GrowFailed> {
         let cap = self.header().elem_capacity;
         if len == 0 {
             return Ok(cap);
         }
-        if let Some(span) = self.free_spans.take_best_fit(len).map_err(|_| GrowFailed {
+        let map_err = |_| GrowFailed {
             current_size: 0,
             delta: 0,
-        })? {
-            return Ok(span.start_slot);
+        };
+        if let Some(span) = self.free_spans.take_best_fit(len).map_err(map_err)? {
+            if let Some((avoid_start, avoid_len)) = avoid {
+                if Self::spans_overlap(span.start_slot, len, avoid_start, avoid_len) {
+                    self.free_spans
+                        .release(FreeSpan {
+                            start_slot: span.start_slot,
+                            len,
+                        })
+                        .map_err(map_err)?;
+                } else {
+                    return Ok(span.start_slot);
+                }
+            } else {
+                return Ok(span.start_slot);
+            }
         }
 
         let start = cap;
@@ -1023,7 +1052,13 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let next_exclusive = self.slab_window_exclusive_end(edge_layout, vertices, v_ord, v);
         let span_slots = next_exclusive.saturating_sub(v.base_slot_start());
         let span_u32 = span_slots.min(u64::from(u32::MAX)) as u32;
-        span_u32.min(v.degree())
+        // Once the overflow log is active, the slab prefix is at most the CSR window
+        // width; additional live edges are chained through `log_head`.
+        if v.degree() > span_u32 {
+            span_u32
+        } else {
+            v.degree()
+        }
     }
 
     fn have_space_on_slab<V, A>(

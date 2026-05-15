@@ -483,9 +483,7 @@ mod tests {
 
     fn setup_gql_weighted_graph(store: &GraphStore) {
         use crate::facade::mutation_executor::GraphMutationExecutor;
-        use gleaph_graph_kernel::entry::{
-            EdgeMeta, EdgeWeightProfile, InlineEdgeLabelId, WeightEncoding,
-        };
+        use gleaph_graph_kernel::entry::{EdgeWeightProfile, WeightEncoding};
         let a = store
             .insert_vertex_named(["WgtGqlA"], Vec::<(&str, Value)>::new())
             .expect("a");
@@ -506,16 +504,14 @@ mod tests {
                 },
             )
             .expect("profile");
-        let inline = InlineEdgeLabelId::from_label_id(label_id).expect("inline");
-        let meta = EdgeMeta::new(false, false, Some(inline));
         store
-            .insert_directed_edge_with_inline_value(a, b, meta, 1)
+            .insert_directed_edge_with_inline_value(a, b, Some(label_id), 1)
             .expect("a->b");
         store
-            .insert_directed_edge_with_inline_value(b, c, meta, 1)
+            .insert_directed_edge_with_inline_value(b, c, Some(label_id), 1)
             .expect("b->c");
         store
-            .insert_directed_edge_with_inline_value(a, c, meta, 100)
+            .insert_directed_edge_with_inline_value(a, c, Some(label_id), 100)
             .expect("a->c");
     }
 

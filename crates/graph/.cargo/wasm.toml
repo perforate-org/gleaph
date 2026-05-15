@@ -1,0 +1,7 @@
+# Canister / wasm64 builds from this crate directory:
+#   cargo build --release --config .cargo/wasm.toml
+[build]
+target = "wasm64-unknown-unknown"
+
+[unstable]
+build-std = ["core", "alloc", "std", "panic_abort"]

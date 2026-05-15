@@ -1,57 +1,75 @@
 use super::edge_ids::VertexEdgeIdAllocator;
+use super::edge_label_catalog::EdgeLabelCatalog;
 use super::edge_properties::EdgePropertyStore;
 use super::edge_weight_profiles::EdgeWeightProfileStore;
-use super::label_catalog::LabelCatalog;
 use super::metadata::{GraphMetadata, StableGraphMetadata};
 use super::property_catalog::PropertyCatalog;
+use super::vertex_label_catalog::VertexLabelCatalog;
 use super::vertex_labels::VertexLabelStore;
 use super::vertex_properties::VertexPropertyStore;
 use gleaph_auth::AuthState;
-use gleaph_graph_kernel::entry::{Edge, Vertex};
+use gleaph_graph_kernel::entry::Edge;
 use gleaph_graph_prepared::PreparedQueryCatalog;
-use ic_stable_lara::{DeferredBidirectionalLaraGraph, lara::maintenance::DeferredConfig};
+use ic_stable_lara::{
+    DeferredBidirectionalLabeledLaraGraph, labeled::record::LabelId as LaraLabelId,
+    lara::maintenance::DeferredConfig,
+};
 use ic_stable_structures::DefaultMemoryImpl;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use std::cell::RefCell;
 
-// Graph
-const FORWARD_VERTICES: MemoryId = MemoryId::new(0);
-const FORWARD_COUNTS: MemoryId = MemoryId::new(1);
-const FORWARD_EDGES: MemoryId = MemoryId::new(2);
-const FORWARD_LOG: MemoryId = MemoryId::new(3);
-const FORWARD_SPAN_META: MemoryId = MemoryId::new(4);
-const FORWARD_FREE_SPANS: MemoryId = MemoryId::new(5);
-const FORWARD_FREE_SPAN_BY_START: MemoryId = MemoryId::new(6);
-const REVERSE_VERTICES: MemoryId = MemoryId::new(7);
-const REVERSE_COUNTS: MemoryId = MemoryId::new(8);
-const REVERSE_EDGES: MemoryId = MemoryId::new(9);
-const REVERSE_LOG: MemoryId = MemoryId::new(10);
-const REVERSE_SPAN_META: MemoryId = MemoryId::new(11);
-const REVERSE_FREE_SPANS: MemoryId = MemoryId::new(12);
-const REVERSE_FREE_SPAN_BY_START: MemoryId = MemoryId::new(13);
-const MAINTENANCE_QUEUE: MemoryId = MemoryId::new(14);
-const DIRTY_WORK_ITEMS: MemoryId = MemoryId::new(15);
-const LABEL_NAME_TO_ID: MemoryId = MemoryId::new(16);
-const LABEL_ID_TO_NAME: MemoryId = MemoryId::new(17);
-const VERTEX_LABEL_SETS: MemoryId = MemoryId::new(18);
-const PROPERTY_NAME_TO_ID: MemoryId = MemoryId::new(19);
-const PROPERTY_ID_TO_NAME: MemoryId = MemoryId::new(20);
-const VERTEX_PROPERTIES: MemoryId = MemoryId::new(21);
-const EDGE_PROPERTIES: MemoryId = MemoryId::new(22);
-const VERTEX_EDGE_IDS: MemoryId = MemoryId::new(23);
-const AUTH_PRINCIPAL_RECORDS: MemoryId = MemoryId::new(24);
-const PREPARED_QUERY_CATALOG: MemoryId = MemoryId::new(25);
-const GRAPH_METADATA: MemoryId = MemoryId::new(26);
-const EDGE_WEIGHT_PROFILES: MemoryId = MemoryId::new(27);
+// --- Labeled graph: forward orientation (10 memories) ---
+const FWD_VERTICES: MemoryId = MemoryId::new(0);
+const FWD_BUCKETS: MemoryId = MemoryId::new(1);
+const FWD_BUCKET_FREE_SPANS: MemoryId = MemoryId::new(2);
+const FWD_BUCKET_FREE_SPAN_BY_START: MemoryId = MemoryId::new(3);
+const FWD_EDGE_COUNTS: MemoryId = MemoryId::new(4);
+const FWD_EDGES: MemoryId = MemoryId::new(5);
+const FWD_EDGE_LOG: MemoryId = MemoryId::new(6);
+const FWD_EDGE_SPAN_META: MemoryId = MemoryId::new(7);
+const FWD_EDGE_FREE_SPANS: MemoryId = MemoryId::new(8);
+const FWD_EDGE_FREE_SPAN_BY_START: MemoryId = MemoryId::new(9);
 
-const GRAPH_ELEM_CAPACITY: u64 = 0;
-const GRAPH_SEGMENT_SIZE: u32 = 32;
-const GRAPH_INITIAL_VERTEX_EDGE_SLOTS: u32 = 0;
+// --- Labeled graph: reverse orientation (10 memories) ---
+const REV_VERTICES: MemoryId = MemoryId::new(10);
+const REV_BUCKETS: MemoryId = MemoryId::new(11);
+const REV_BUCKET_FREE_SPANS: MemoryId = MemoryId::new(12);
+const REV_BUCKET_FREE_SPAN_BY_START: MemoryId = MemoryId::new(13);
+const REV_EDGE_COUNTS: MemoryId = MemoryId::new(14);
+const REV_EDGES: MemoryId = MemoryId::new(15);
+const REV_EDGE_LOG: MemoryId = MemoryId::new(16);
+const REV_EDGE_SPAN_META: MemoryId = MemoryId::new(17);
+const REV_EDGE_FREE_SPANS: MemoryId = MemoryId::new(18);
+const REV_EDGE_FREE_SPAN_BY_START: MemoryId = MemoryId::new(19);
+
+const MAINTENANCE_QUEUE: MemoryId = MemoryId::new(20);
+const DIRTY_WORK_ITEMS: MemoryId = MemoryId::new(21);
+
+const VERTEX_LABEL_NAME_TO_ID: MemoryId = MemoryId::new(22);
+const VERTEX_LABEL_ID_TO_NAME: MemoryId = MemoryId::new(23);
+const EDGE_LABEL_NAME_TO_ID: MemoryId = MemoryId::new(34);
+const EDGE_LABEL_ID_TO_NAME: MemoryId = MemoryId::new(35);
+const VERTEX_LABEL_SETS: MemoryId = MemoryId::new(24);
+const PROPERTY_NAME_TO_ID: MemoryId = MemoryId::new(25);
+const PROPERTY_ID_TO_NAME: MemoryId = MemoryId::new(26);
+const VERTEX_PROPERTIES: MemoryId = MemoryId::new(27);
+const EDGE_PROPERTIES: MemoryId = MemoryId::new(28);
+const VERTEX_EDGE_IDS: MemoryId = MemoryId::new(29);
+const AUTH_PRINCIPAL_RECORDS: MemoryId = MemoryId::new(30);
+const PREPARED_QUERY_CATALOG: MemoryId = MemoryId::new(31);
+const GRAPH_METADATA: MemoryId = MemoryId::new(32);
+const EDGE_WEIGHT_PROFILES: MemoryId = MemoryId::new(33);
+
+pub(crate) const GRAPH_DEFAULT_EDGE_LABEL: LaraLabelId = LaraLabelId::from_raw(0);
+
+/// Initial slab capacity for both labeled orientations (grows as needed).
+const GRAPH_ELEM_CAPACITY: u64 = 1 << 20;
 
 pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
 
-pub(crate) type StableGraph = DeferredBidirectionalLaraGraph<Edge, Vertex, Memory>;
-pub(crate) type StableLabelCatalog = LabelCatalog<Memory, Memory>;
+pub(crate) type StableGraph = DeferredBidirectionalLabeledLaraGraph<Edge, Memory>;
+pub(crate) type StableVertexLabelCatalog = VertexLabelCatalog<Memory, Memory>;
+pub(crate) type StableEdgeLabelCatalog = EdgeLabelCatalog<Memory, Memory>;
 pub(crate) type StableVertexLabelStore = VertexLabelStore<Memory>;
 pub(crate) type StablePropertyCatalog = PropertyCatalog<Memory, Memory>;
 pub(crate) type StableVertexPropertyStore = VertexPropertyStore<Memory>;
@@ -68,26 +86,31 @@ thread_local! {
 }
 
 pub(crate) fn init_graph() -> StableGraph {
-    let graph = DeferredBidirectionalLaraGraph::init_with_config(
-        MEMORY_MANAGER.with(|m| m.borrow().get(FORWARD_VERTICES)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(FORWARD_COUNTS)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(FORWARD_EDGES)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(FORWARD_LOG)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(FORWARD_SPAN_META)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(FORWARD_FREE_SPANS)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(FORWARD_FREE_SPAN_BY_START)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(REVERSE_VERTICES)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(REVERSE_COUNTS)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(REVERSE_EDGES)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(REVERSE_LOG)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(REVERSE_SPAN_META)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(REVERSE_FREE_SPANS)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(REVERSE_FREE_SPAN_BY_START)),
+    let graph = DeferredBidirectionalLabeledLaraGraph::init_with_config(
+        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_VERTICES)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_BUCKETS)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_BUCKET_FREE_SPANS)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_BUCKET_FREE_SPAN_BY_START)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGE_COUNTS)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGES)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGE_LOG)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGE_SPAN_META)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGE_FREE_SPANS)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGE_FREE_SPAN_BY_START)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(REV_VERTICES)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(REV_BUCKETS)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(REV_BUCKET_FREE_SPANS)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(REV_BUCKET_FREE_SPAN_BY_START)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGE_COUNTS)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGES)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGE_LOG)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGE_SPAN_META)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGE_FREE_SPANS)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGE_FREE_SPAN_BY_START)),
         MEMORY_MANAGER.with(|m| m.borrow().get(MAINTENANCE_QUEUE)),
         MEMORY_MANAGER.with(|m| m.borrow().get(DIRTY_WORK_ITEMS)),
         GRAPH_ELEM_CAPACITY,
-        GRAPH_SEGMENT_SIZE,
-        GRAPH_INITIAL_VERTEX_EDGE_SLOTS,
+        GRAPH_DEFAULT_EDGE_LABEL,
         DeferredConfig::default(),
     )
     .unwrap();
@@ -97,10 +120,17 @@ pub(crate) fn init_graph() -> StableGraph {
     graph
 }
 
-pub(crate) fn init_label_catalog() -> StableLabelCatalog {
-    LabelCatalog::init(
-        MEMORY_MANAGER.with(|m| m.borrow().get(LABEL_NAME_TO_ID)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(LABEL_ID_TO_NAME)),
+pub(crate) fn init_vertex_label_catalog() -> StableVertexLabelCatalog {
+    VertexLabelCatalog::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(VERTEX_LABEL_NAME_TO_ID)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(VERTEX_LABEL_ID_TO_NAME)),
+    )
+}
+
+pub(crate) fn init_edge_label_catalog() -> StableEdgeLabelCatalog {
+    EdgeLabelCatalog::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(EDGE_LABEL_NAME_TO_ID)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(EDGE_LABEL_ID_TO_NAME)),
     )
 }
 

@@ -167,14 +167,14 @@ fn finish_decoder_from_label_name(
     label_name: &str,
 ) -> Result<PreparedWeightDecoder, PlanQueryError> {
     let label_id = store
-        .label_id(label_name)
+        .edge_label_id(label_name)
         .ok_or_else(|| PlanQueryError::GleaphWeight {
             message: format!("GLEAPH_WEIGHT({edge_var}): unknown edge label '{label_name}'"),
         })?;
-    if !label_id.is_edge_inline_capable() {
+    if !label_id.is_catalog_allocatable() {
         return Err(PlanQueryError::GleaphWeight {
             message: format!(
-                "GLEAPH_WEIGHT({edge_var}): label '{label_name}' is not an edge-inline label id"
+                "GLEAPH_WEIGHT({edge_var}): label '{label_name}' is not a catalog edge label id"
             ),
         });
     }

@@ -250,7 +250,7 @@ fn execute_remove_item(
             })
         }
         RemovePlanItem::Label { variable, label } => {
-            let Some(label_id) = store.label_id(label) else {
+            let Some(label_id) = store.vertex_label_id(label) else {
                 return Ok(());
             };
 
@@ -312,7 +312,8 @@ mod tests {
     use gleaph_gql::types::Decimal;
     use gleaph_gql_planner::plan::{PlanDiagnostics, PropertyAssignment};
     use gleaph_graph_kernel::entry::VertexEdgeId;
-    use ic_stable_lara::bidirectional::DeferredBidirectionalLaraError;
+    use ic_stable_lara::DeferredBidirectionalLabeledError;
+    use ic_stable_lara::traits::CsrEdge;
 
     #[test]
     fn executes_insert_vertex_and_edge_ops() {
@@ -370,14 +371,9 @@ mod tests {
             store.edge_property(edge.owner_vertex_id, edge.vertex_edge_id, since),
             Some(Value::Int64(2026))
         );
-        assert!(
-            store
-                .out_edges(a)
-                .unwrap()
-                .iter()
-                .any(|candidate| candidate.target == b
-                    && candidate.vertex_edge_id == edge.vertex_edge_id)
-        );
+        assert!(store.out_edges(a).unwrap().iter().any(|candidate| {
+            candidate.neighbor_vid() == b && candidate.vertex_edge_id == edge.vertex_edge_id
+        }));
     }
 
     #[test]
@@ -560,8 +556,8 @@ mod tests {
         let bindings = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
             .expect("execute set label");
-        let person = store.label_id("Person").expect("person label");
-        let employee = store.label_id("Employee").expect("employee label");
+        let person = store.vertex_label_id("Person").expect("person label");
+        let employee = store.vertex_label_id("Employee").expect("employee label");
         let vertex_id = bindings.vertices["a"];
         let vertex = store.vertex(vertex_id).expect("read vertex");
 
@@ -962,7 +958,8 @@ mod tests {
         assert!(
             matches!(
                 store.out_edges(deleted),
-                Err(DeferredBidirectionalLaraError::VertexDeleted { .. })
+                Err(DeferredBidirectionalLabeledError::VertexOutOfRange { vid, .. })
+                    if vid == deleted
             ) || store.out_edges(deleted).unwrap().is_empty(),
             "deleted vertex should not expose outgoing edges"
         );

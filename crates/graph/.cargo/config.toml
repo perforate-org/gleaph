@@ -1,5 +1,2 @@
-[build]
-target = "wasm64-unknown-unknown"
-
-[unstable]
-build-std = ["core", "alloc", "std", "panic_abort"]
+# Default toolchain target is the host so `cargo test` runs natively.
+# For wasm64 canister artifacts, pass `--config .cargo/wasm.toml` (see wasm.toml).

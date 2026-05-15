@@ -14,8 +14,8 @@ use gleaph_gql_planner::plan::{
     PhysicalPlan, PlanAnnotations, PlanDiagnostics, PlanOp, ProjectColumn, ScanValue, ShortestMode,
     ShortestPathCost, VarLenSpec,
 };
-use gleaph_graph_kernel::entry::{EdgeMeta, EdgeWeightProfile, InlineEdgeLabelId, WeightEncoding};
-use ic_stable_lara::VertexId;
+use gleaph_graph_kernel::entry::{EdgeLabelId, EdgeWeightProfile, WeightEncoding};
+use ic_stable_lara::{MaintenanceBudget, VertexId};
 use std::collections::BTreeMap;
 use std::hint::black_box;
 
@@ -52,10 +52,8 @@ fn gleaph_weight_call(edge_var: &str) -> Expr {
     })
 }
 
-fn edge_meta_for_label(store: &GraphStore, label_name: &str) -> EdgeMeta {
-    let lid = store.label_id(label_name).expect("label");
-    let inline = InlineEdgeLabelId::from_label_id(lid).expect("inline edge label");
-    EdgeMeta::new(false, false, Some(inline))
+fn catalog_edge_label(store: &GraphStore, label_name: &str) -> EdgeLabelId {
+    store.edge_label_id(label_name).expect("edge label")
 }
 
 fn weighted_shortest_plan(
@@ -245,29 +243,46 @@ fn setup_repeated_edge_cost_cache_graph(store: &GraphStore) -> (VertexId, Vertex
             },
         )
         .expect("weight profile");
-    let meta = edge_meta_for_label(store, "BenchWspWgtEdge");
+    let road = catalog_edge_label(store, "BenchWspWgtEdge");
 
-    for i in 0..CACHE_PREFIX_COUNT {
-        let prefix = store
-            .insert_vertex_named(["BenchWspPrefix"], Vec::<(&str, Value)>::new())
-            .expect("insert prefix");
-        store
-            .insert_directed_edge_with_inline_value(src, prefix, meta, (i % 10) as u16 + 1)
-            .expect("src->prefix");
-        store
-            .insert_directed_edge_with_inline_value(prefix, hub, meta, 1)
-            .expect("prefix->hub");
+    let mut prefixes = Vec::with_capacity(CACHE_PREFIX_COUNT);
+    for _ in 0..CACHE_PREFIX_COUNT {
+        prefixes.push(
+            store
+                .insert_vertex_named(["BenchWspPrefix"], Vec::<(&str, Value)>::new())
+                .expect("insert prefix"),
+        );
     }
+    for (i, &prefix) in prefixes.iter().enumerate() {
+        store
+            .insert_directed_edge_with_inline_value(prefix, hub, Some(road), 1)
+            .unwrap_or_else(|e| panic!("prefix->hub i={i}: {e:?}"));
+    }
+    for (i, &prefix) in prefixes.iter().enumerate() {
+        store
+            .insert_directed_edge_with_inline_value(src, prefix, Some(road), (i % 10) as u16 + 1)
+            .unwrap_or_else(|e| panic!("src->prefix i={i}: {e:?}"));
+    }
+    store
+        .run_maintenance_best_effort(MaintenanceBudget {
+            max_instructions: 0,
+            reserve_instructions: 0,
+            checkpoint_every: 1,
+            max_work_items: None,
+            max_segments: None,
+            max_delete_edge_steps: None,
+        })
+        .expect("drain maintenance after prefix setup");
 
     for j in 0..CACHE_HUB_OUT_DEGREE {
         let spoke = store
             .insert_vertex_named(["BenchWspSpoke"], Vec::<(&str, Value)>::new())
             .expect("insert spoke");
         store
-            .insert_directed_edge_with_inline_value(hub, spoke, meta, (j % 5) as u16 + 1)
+            .insert_directed_edge_with_inline_value(hub, spoke, Some(road), (j % 5) as u16 + 1)
             .expect("hub->spoke");
         store
-            .insert_directed_edge_with_inline_value(spoke, dst, meta, 1)
+            .insert_directed_edge_with_inline_value(spoke, dst, Some(road), 1)
             .expect("spoke->dst");
     }
 
@@ -669,12 +684,12 @@ const EXPAND_FILTER_PASS: u32 = 24;
 const EXPAND_HJ_PREFIXES: u32 = 48;
 
 fn setup_expand_single_label_hub(store: &GraphStore, hub_out: u32, edge_label: &str) {
-    let hub = store
-        .insert_vertex_named(["BenchExpandHub"], Vec::<(&str, Value)>::new())
-        .expect("hub");
     let dst = store
         .insert_vertex_named(["BenchScaleDst"], Vec::<(&str, Value)>::new())
         .expect("dst");
+    let hub = store
+        .insert_vertex_named(["BenchExpandHub"], Vec::<(&str, Value)>::new())
+        .expect("hub");
     for i in 0..hub_out {
         let _ = i;
         store
@@ -685,12 +700,15 @@ fn setup_expand_single_label_hub(store: &GraphStore, hub_out: u32, edge_label: &
 
 /// Parallel edges on a low-vertex skewed hub (shared noise/target dst); paired indexed vs CSR benches.
 fn setup_expand_skewed_noise_graph_scaled(store: &GraphStore, noise: u32, match_out: u32) {
-    let hub = store
-        .insert_vertex_named(["BenchExpandHub"], Vec::<(&str, Value)>::new())
-        .expect("hub");
     let noise_dst = store
         .insert_vertex_named(["BenchSkewNoiseDst"], Vec::<(&str, Value)>::new())
         .expect("noise dst");
+    let target_dst = store
+        .insert_vertex_named(["BenchSkewTargetDst"], Vec::<(&str, Value)>::new())
+        .expect("target dst");
+    let hub = store
+        .insert_vertex_named(["BenchExpandHub"], Vec::<(&str, Value)>::new())
+        .expect("hub");
     for i in 0..noise {
         let _ = i;
         store
@@ -702,9 +720,6 @@ fn setup_expand_skewed_noise_graph_scaled(store: &GraphStore, noise: u32, match_
             )
             .expect("noise edge");
     }
-    let target_dst = store
-        .insert_vertex_named(["BenchSkewTargetDst"], Vec::<(&str, Value)>::new())
-        .expect("target dst");
     for i in 0..match_out {
         let _ = i;
         store
@@ -866,18 +881,23 @@ fn bench_graph_expand_deep_row_hub_24out() -> canbench_rs::BenchResult {
 }
 
 fn setup_expand_filter_10pct_graph(store: &GraphStore) {
-    let hub = store
-        .insert_vertex_named(["BenchExpandHub"], Vec::<(&str, Value)>::new())
-        .expect("hub");
+    let mut dsts = Vec::with_capacity(EXPAND_FILTER_TOTAL as usize);
     for i in 0..EXPAND_FILTER_TOTAL {
         let pass = i < EXPAND_FILTER_PASS;
         let tag = if pass { 1i64 } else { 0i64 };
-        let dst = store
-            .insert_vertex_named(
-                [format!("BenchFilter10Dst{i}")],
-                [("tag", Value::Int64(tag))],
-            )
-            .expect("dst");
+        dsts.push(
+            store
+                .insert_vertex_named(
+                    [format!("BenchFilter10Dst{i}")],
+                    [("tag", Value::Int64(tag))],
+                )
+                .expect("dst"),
+        );
+    }
+    let hub = store
+        .insert_vertex_named(["BenchExpandHub"], Vec::<(&str, Value)>::new())
+        .expect("hub");
+    for dst in dsts {
         store
             .insert_directed_edge_named(
                 hub,
@@ -941,13 +961,26 @@ fn bench_graph_expand_filter_10pct_pass() -> canbench_rs::BenchResult {
 }
 
 fn setup_expand_hash_join_graph(store: &GraphStore) {
+    let mut prefixes = Vec::with_capacity(EXPAND_HJ_PREFIXES as usize);
+    for _ in 0..EXPAND_HJ_PREFIXES {
+        prefixes.push(
+            store
+                .insert_vertex_named(["BenchHjPrefix"], Vec::<(&str, Value)>::new())
+                .expect("prefix"),
+        );
+    }
+    let mut dsts = Vec::with_capacity(EXPAND_HUB_OUT as usize);
+    for i in 0..EXPAND_HUB_OUT {
+        dsts.push(
+            store
+                .insert_vertex_named([format!("BenchHjDst{i}")], Vec::<(&str, Value)>::new())
+                .expect("dst"),
+        );
+    }
     let hub = store
         .insert_vertex_named(["BenchExpandHub"], Vec::<(&str, Value)>::new())
         .expect("hub");
-    for _ in 0..EXPAND_HJ_PREFIXES {
-        let prefix = store
-            .insert_vertex_named(["BenchHjPrefix"], Vec::<(&str, Value)>::new())
-            .expect("prefix");
+    for prefix in prefixes {
         store
             .insert_directed_edge_named(
                 prefix,
@@ -957,10 +990,7 @@ fn setup_expand_hash_join_graph(store: &GraphStore) {
             )
             .expect("prefix->hub");
     }
-    for i in 0..EXPAND_HUB_OUT {
-        let dst = store
-            .insert_vertex_named([format!("BenchHjDst{i}")], Vec::<(&str, Value)>::new())
-            .expect("dst");
+    for dst in dsts {
         store
             .insert_directed_edge_named(
                 hub,
@@ -1226,4 +1256,155 @@ fn bench_graph_expand_indexed_eq_selective_24match() -> canbench_rs::BenchResult
         assert_eq!(result.rows.len(), EXPAND_FILTER_PASS as usize);
         black_box(result.rows.len())
     })
+}
+
+#[cfg(test)]
+mod bench_setup_tests {
+    use super::*;
+
+    #[test]
+    fn expand_filter_10pct_pass_setup_and_execute() {
+        let store = GraphStore::new();
+        setup_expand_filter_10pct_graph(&store);
+        let result = execute_expand_plan(&store, &expand_filter_10pct_plan());
+        assert_eq!(result.rows.len(), EXPAND_FILTER_PASS as usize);
+    }
+
+    #[test]
+    fn expand_hash_join_then_expand_48x24_setup_and_execute() {
+        let store = GraphStore::new();
+        setup_expand_hash_join_graph(&store);
+        let expected = (EXPAND_HJ_PREFIXES * EXPAND_HUB_OUT) as usize;
+        let result = execute_expand_plan(&store, &expand_hash_join_then_expand_plan());
+        assert_eq!(result.rows.len(), expected);
+    }
+
+    #[test]
+    fn expand_mixed_label_hub_10kscan_500match_setup() {
+        setup_expand_mixed_label_hub_graph_scaled(
+            &GraphStore::new(),
+            EXPAND_MIXED_LABEL_COUNT_L,
+            EXPAND_EDGES_PER_LABEL_L,
+        );
+    }
+
+    #[test]
+    fn hop_count_shortest_converging_hub_setup() {
+        setup_repeated_edge_cost_cache_graph(&GraphStore::new());
+    }
+
+    #[test]
+    fn converging_hub_prefixes_then_one_spoke() {
+        let store = GraphStore::new();
+        let src = store
+            .insert_vertex_named(["BenchWspCacheSrc"], Vec::<(&str, Value)>::new())
+            .expect("src");
+        let hub = store
+            .insert_vertex_named(["BenchWspHub"], Vec::<(&str, Value)>::new())
+            .expect("hub");
+        let dst = store
+            .insert_vertex_named(["BenchWspCacheDst"], Vec::<(&str, Value)>::new())
+            .expect("dst");
+        store
+            .get_or_insert_edge_label_id("BenchWspWgtEdge")
+            .expect("label");
+        let road = catalog_edge_label(&store, "BenchWspWgtEdge");
+        let mut prefixes = Vec::new();
+        for _ in 0..CACHE_PREFIX_COUNT {
+            prefixes.push(
+                store
+                    .insert_vertex_named(["BenchWspPrefix"], Vec::<(&str, Value)>::new())
+                    .expect("prefix"),
+            );
+        }
+        for &prefix in &prefixes {
+            store
+                .insert_directed_edge_with_inline_value(prefix, hub, Some(road), 1)
+                .expect("prefix->hub");
+        }
+        for (i, &prefix) in prefixes.iter().enumerate() {
+            store
+                .insert_directed_edge_with_inline_value(
+                    src,
+                    prefix,
+                    Some(road),
+                    (i % 10) as u16 + 1,
+                )
+                .expect("src->prefix");
+        }
+        let spoke = store
+            .insert_vertex_named(["BenchWspSpoke"], Vec::<(&str, Value)>::new())
+            .expect("spoke");
+        store
+            .insert_directed_edge_with_inline_value(hub, spoke, Some(road), 1)
+            .expect("hub->spoke");
+        let _ = dst;
+    }
+
+    #[test]
+    fn converging_hub_three_prefix_with_hub_edges() {
+        let store = GraphStore::new();
+        let src = store
+            .insert_vertex_named(["BenchWspCacheSrc"], Vec::<(&str, Value)>::new())
+            .expect("src");
+        let hub = store
+            .insert_vertex_named(["BenchWspHub"], Vec::<(&str, Value)>::new())
+            .expect("hub");
+        store
+            .get_or_insert_edge_label_id("BenchWspWgtEdge")
+            .expect("edge label");
+        let road = catalog_edge_label(&store, "BenchWspWgtEdge");
+        for i in 0..3usize {
+            let prefix = store
+                .insert_vertex_named(["BenchWspPrefix"], Vec::<(&str, Value)>::new())
+                .expect("prefix");
+            store
+                .insert_directed_edge_with_inline_value(
+                    src,
+                    prefix,
+                    Some(road),
+                    (i % 10) as u16 + 1,
+                )
+                .unwrap_or_else(|e| panic!("src->prefix i={i}: {e:?}"));
+            store
+                .insert_directed_edge_with_inline_value(prefix, hub, Some(road), 1)
+                .unwrap_or_else(|e| panic!("prefix->hub i={i}: {e:?}"));
+        }
+    }
+
+    #[test]
+    fn converging_hub_src_prefix_only_three() {
+        let store = GraphStore::new();
+        let src = store
+            .insert_vertex_named(["BenchWspCacheSrc"], Vec::<(&str, Value)>::new())
+            .expect("src");
+        store
+            .get_or_insert_edge_label_id("BenchWspWgtEdge")
+            .expect("edge label");
+        let road = catalog_edge_label(&store, "BenchWspWgtEdge");
+        for i in 0..3usize {
+            let prefix = store
+                .insert_vertex_named(["BenchWspPrefix"], Vec::<(&str, Value)>::new())
+                .expect("prefix");
+            store
+                .insert_directed_edge_with_inline_value(
+                    src,
+                    prefix,
+                    Some(road),
+                    (i % 10) as u16 + 1,
+                )
+                .unwrap_or_else(|e| panic!("src->prefix i={i}: {e:?}"));
+        }
+    }
+
+    #[test]
+    fn expand_single_label_hub_1k_setup_and_execute() {
+        let store = GraphStore::new();
+        setup_expand_single_label_hub(&store, EXPAND_HUB_OUT_XL, "BenchExpandEdge");
+        let result = execute_expand_plan(
+            &store,
+            &expand_plan_for_label("BenchExpandEdge", false, None),
+        );
+        assert_eq!(result.rows.len(), EXPAND_HUB_OUT_XL as usize);
+    }
 }

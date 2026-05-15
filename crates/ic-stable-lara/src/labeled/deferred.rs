@@ -100,6 +100,9 @@ mod tests {
             .push_vertex(crate::labeled::record::LabeledVertex::default())
             .unwrap();
         let label = LabelId::from_raw(2);
+        graph
+            .insert_edge(VertexId::from(0), LabelId::from_raw(99), TestEdge(999))
+            .unwrap();
         for target in 0..80u32 {
             graph
                 .insert_edge(VertexId::from(0), label, TestEdge(target))
@@ -128,7 +131,7 @@ mod tests {
 
         assert_eq!(report.processed_work_items, 1);
         let after = graph.inner().vertices().get(VertexId::from(0));
-        assert_eq!(after.vertex_edge_alloc_slots(), 8);
+        assert_eq!(after.vertex_edge_alloc_slots(), 9);
     }
 
     #[test]
@@ -139,6 +142,9 @@ mod tests {
             .push_vertex(crate::labeled::record::LabeledVertex::default())
             .unwrap();
         let label = LabelId::from_raw(2);
+        graph
+            .insert_edge(VertexId::from(0), LabelId::from_raw(99), TestEdge(999))
+            .unwrap();
         for target in 0..130u32 {
             graph
                 .insert_edge(VertexId::from(0), label, TestEdge(target))
