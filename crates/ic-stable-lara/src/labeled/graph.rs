@@ -33,6 +33,7 @@ use ic_stable_structures::Memory;
 use std::{cell::Cell, cmp::Ordering, fmt, marker::PhantomData, ops::Range};
 
 const DEFAULT_SEGMENT_SIZE: u32 = 32;
+const BULK_BUCKET_SEARCH_MIN_DEGREE: u32 = 16;
 
 /// Same threshold as core LARA leaf density (`actual/total` on one PMA leaf).
 const LEAF_VERTEX_EDGE_SEGMENT_DENSITY: f64 = 1.0;
@@ -352,13 +353,9 @@ where
         }
         let start = vertex.base_slot_start();
         if let Some(cache) = self.last_bucket_lookup.get() {
-            if cache.vid == src
-                && cache.label_id == label_id
-                && cache.base_slot_start == start
-                && cache.degree == deg
-            {
+            if cache.vid == src && cache.base_slot_start == start && cache.degree == deg {
                 let range_end = start.saturating_add(u64::from(deg));
-                if (start..range_end).contains(&cache.slot) {
+                if cache.label_id == label_id && (start..range_end).contains(&cache.slot) {
                     let bucket = self
                         .buckets
                         .read_label_bucket_slot(cache.slot)
@@ -369,6 +366,9 @@ where
                             bucket,
                         });
                     }
+                }
+                if cache.slot.saturating_add(1) == range_end && cache.label_id < label_id {
+                    return Ok(BucketSearch::Missing { insert_index: deg });
                 }
             }
         }
@@ -427,6 +427,26 @@ where
 
         #[cfg(feature = "canbench")]
         let _bench_scope = bench_scope("labeled_find_bucket_slot");
+
+        if deg >= BULK_BUCKET_SEARCH_MIN_DEGREE {
+            let buckets = self
+                .buckets
+                .read_label_bucket_slots_contiguous(start, deg)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            return Ok(
+                match buckets.binary_search_by_key(&label_id, |bucket| bucket.label_id) {
+                    Ok(index) => {
+                        let slot = start.saturating_add(index as u64);
+                        let bucket = buckets[index];
+                        self.cache_bucket_lookup(src, label_id, vertex, slot);
+                        BucketSearch::Found { slot, bucket }
+                    }
+                    Err(index) => BucketSearch::Missing {
+                        insert_index: index as u32,
+                    },
+                },
+            );
+        }
 
         let mut lo = 0u32;
         let mut hi = deg;
@@ -1064,6 +1084,7 @@ where
             .buckets
             .read_label_bucket_slot(slot)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        self.cache_bucket_lookup(src, label_id, &vertex, slot);
         Ok((slot, bucket))
     }
 
