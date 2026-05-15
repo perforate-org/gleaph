@@ -1,31 +1,42 @@
 //! Bidirectional labeled LARA graph wrappers.
 
+pub mod deferred;
+
 use crate::{
     VertexCount, VertexId,
-    labeled::{
-        deferred::{DeferredError, DeferredLabeledLaraGraph},
-        graph::{InitError, LabeledLaraGraph, LabeledOperationError},
-        record::LabelId,
-    },
-    lara::maintenance::MaintenanceBudget,
+    labeled::{graph::LabeledLaraGraph, record::LabelId},
     traits::CsrEdge,
 };
 use ic_stable_structures::Memory;
 use std::fmt;
 
+pub use deferred::{
+    BidirectionalMaintenanceReport as LabeledBidirectionalMaintenanceReport,
+    DeferredBidirectionalLabeledError, DeferredBidirectionalLabeledLaraGraph,
+    MaintenanceWorkItem as BidirectionalLabeledMaintenanceWorkItem, Orientation,
+};
+
 /// Errors returned by bidirectional labeled graph operations.
 #[derive(Debug)]
 pub enum BidirectionalLabeledError {
-    Forward(LabeledOperationError),
-    Reverse(LabeledOperationError),
-    ForwardInit(InitError),
-    ReverseInit(InitError),
+    /// Forward orientation failed.
+    Forward(crate::labeled::graph::LabeledOperationError),
+    /// Reverse orientation failed.
+    Reverse(crate::labeled::graph::LabeledOperationError),
+    /// Stable memory grow or format initialization failed.
+    Grow(crate::GrowFailed),
+    /// The two orientations do not contain the same number of vertex rows.
     VertexCountMismatch {
+        /// Forward vertex count.
         forward: VertexCount,
+        /// Reverse vertex count.
         reverse: VertexCount,
     },
+    /// Addressing a vertex outside `0..vertex_count`.
     VertexOutOfRange {
+        /// Requested vertex id.
         vid: VertexId,
+        /// Current vertex column length.
         len: VertexCount,
     },
 }
@@ -35,8 +46,7 @@ impl fmt::Display for BidirectionalLabeledError {
         match self {
             Self::Forward(err) => write!(f, "forward store: {err}"),
             Self::Reverse(err) => write!(f, "reverse store: {err}"),
-            Self::ForwardInit(err) => write!(f, "forward init failed: {err}"),
-            Self::ReverseInit(err) => write!(f, "reverse init failed: {err}"),
+            Self::Grow(err) => write!(f, "format / grow: {err}"),
             Self::VertexCountMismatch { forward, reverse } => write!(
                 f,
                 "vertex column length mismatch: forward={forward} reverse={reverse}"
@@ -48,7 +58,21 @@ impl fmt::Display for BidirectionalLabeledError {
     }
 }
 
-impl std::error::Error for BidirectionalLabeledError {}
+impl std::error::Error for BidirectionalLabeledError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Forward(err) | Self::Reverse(err) => Some(err),
+            Self::Grow(err) => Some(err),
+            Self::VertexCountMismatch { .. } | Self::VertexOutOfRange { .. } => None,
+        }
+    }
+}
+
+impl From<crate::GrowFailed> for BidirectionalLabeledError {
+    fn from(value: crate::GrowFailed) -> Self {
+        Self::Grow(value)
+    }
+}
 
 /// Two synchronized labeled CSR stores: forward out-adjacency and reverse in-adjacency.
 pub struct BidirectionalLabeledLaraGraph<E, M>
@@ -65,43 +89,74 @@ where
     E: CsrEdge,
     M: Memory,
 {
+    /// Creates fresh forward and reverse labeled stores over the supplied memories.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         forward_vertices: M,
         forward_buckets: M,
+        forward_bucket_free_spans: M,
+        forward_bucket_free_span_by_start: M,
+        forward_edge_counts: M,
         forward_edges: M,
+        forward_edge_log: M,
+        forward_edge_span_meta: M,
+        forward_edge_free_spans: M,
+        forward_edge_free_span_by_start: M,
         reverse_vertices: M,
         reverse_buckets: M,
+        reverse_bucket_free_spans: M,
+        reverse_bucket_free_span_by_start: M,
+        reverse_edge_counts: M,
         reverse_edges: M,
+        reverse_edge_log: M,
+        reverse_edge_span_meta: M,
+        reverse_edge_free_spans: M,
+        reverse_edge_free_span_by_start: M,
         elem_capacity: u64,
         default_label: LabelId,
     ) -> Result<Self, BidirectionalLabeledError> {
         let forward = LabeledLaraGraph::new(
             forward_vertices,
             forward_buckets,
+            forward_bucket_free_spans,
+            forward_bucket_free_span_by_start,
+            forward_edge_counts,
             forward_edges,
+            forward_edge_log,
+            forward_edge_span_meta,
+            forward_edge_free_spans,
+            forward_edge_free_span_by_start,
             elem_capacity,
             default_label,
-        )
-        .map_err(|_| BidirectionalLabeledError::Forward(LabeledOperationError::EdgeSlabFull))?;
+        )?;
         let reverse = LabeledLaraGraph::new(
             reverse_vertices,
             reverse_buckets,
+            reverse_bucket_free_spans,
+            reverse_bucket_free_span_by_start,
+            reverse_edge_counts,
             reverse_edges,
+            reverse_edge_log,
+            reverse_edge_span_meta,
+            reverse_edge_free_spans,
+            reverse_edge_free_span_by_start,
             elem_capacity,
             default_label,
-        )
-        .map_err(|_| BidirectionalLabeledError::Reverse(LabeledOperationError::EdgeSlabFull))?;
+        )?;
         Ok(Self { forward, reverse })
     }
 
+    /// Returns the forward out-adjacency orientation.
     pub fn forward(&self) -> &LabeledLaraGraph<E, M> {
         &self.forward
     }
 
+    /// Returns the reverse in-adjacency orientation.
     pub fn reverse(&self) -> &LabeledLaraGraph<E, M> {
         &self.reverse
     }
 
+    /// Returns the shared vertex count after checking both orientations agree.
     pub fn vertex_count(&self) -> Result<VertexCount, BidirectionalLabeledError> {
         let forward = self.forward.vertex_count();
         let reverse = self.reverse.vertex_count();
@@ -111,19 +166,19 @@ where
         Ok(forward)
     }
 
+    /// Appends one vertex row to both orientations.
     pub fn push_vertex(&self) -> Result<VertexId, BidirectionalLabeledError> {
         let _ = self.vertex_count()?;
         self.forward
-            .push_vertex(crate::labeled::record::LabeledVertex::default())
-            .map_err(|_| BidirectionalLabeledError::Forward(LabeledOperationError::EdgeSlabFull))?;
+            .push_vertex(crate::labeled::record::LabeledVertex::default())?;
         self.reverse
-            .push_vertex(crate::labeled::record::LabeledVertex::default())
-            .map_err(|_| BidirectionalLabeledError::Reverse(LabeledOperationError::EdgeSlabFull))?;
+            .push_vertex(crate::labeled::record::LabeledVertex::default())?;
         Ok(VertexId::from(
             self.forward.vertex_count().0.saturating_sub(1),
         ))
     }
 
+    /// Inserts one directed edge, writing `forward_edge` and `reverse_edge` into opposite orientations.
     pub fn insert_directed_edge(
         &self,
         src: VertexId,
@@ -141,87 +196,14 @@ where
         Ok(())
     }
 
+    /// Iterates forward outgoing edges for one label.
     pub fn iter_out_edges_for_label(
         &self,
         src: VertexId,
         label_id: LabelId,
-    ) -> Result<impl Iterator<Item = E> + '_, BidirectionalLabeledError> {
+    ) -> Result<Vec<E>, BidirectionalLabeledError> {
         self.forward
             .iter_edges_for_label(src, label_id)
             .map_err(BidirectionalLabeledError::Forward)
-    }
-}
-
-/// Deferred-maintenance bidirectional labeled LARA graph wrapper.
-pub struct DeferredBidirectionalLabeledLaraGraph<E, M>
-where
-    E: CsrEdge,
-    M: Memory,
-{
-    forward: DeferredLabeledLaraGraph<E, M>,
-    reverse: DeferredLabeledLaraGraph<E, M>,
-}
-
-impl<E, M> DeferredBidirectionalLabeledLaraGraph<E, M>
-where
-    E: CsrEdge,
-    M: Memory,
-{
-    pub fn new(
-        forward_vertices: M,
-        forward_buckets: M,
-        forward_edges: M,
-        forward_queue: M,
-        reverse_vertices: M,
-        reverse_buckets: M,
-        reverse_edges: M,
-        reverse_queue: M,
-        elem_capacity: u64,
-        default_label: LabelId,
-    ) -> Result<Self, DeferredError> {
-        let forward = DeferredLabeledLaraGraph::new(
-            LabeledLaraGraph::new(
-                forward_vertices,
-                forward_buckets,
-                forward_edges,
-                elem_capacity,
-                default_label,
-            )
-            .map_err(|_| DeferredError::Inner(LabeledOperationError::EdgeSlabFull))?,
-            forward_queue,
-        )?;
-        let reverse = DeferredLabeledLaraGraph::new(
-            LabeledLaraGraph::new(
-                reverse_vertices,
-                reverse_buckets,
-                reverse_edges,
-                elem_capacity,
-                default_label,
-            )
-            .map_err(|_| DeferredError::Inner(LabeledOperationError::EdgeSlabFull))?,
-            reverse_queue,
-        )?;
-        Ok(Self { forward, reverse })
-    }
-
-    pub fn forward(&self) -> &DeferredLabeledLaraGraph<E, M> {
-        &self.forward
-    }
-
-    pub fn reverse(&self) -> &DeferredLabeledLaraGraph<E, M> {
-        &self.reverse
-    }
-
-    pub fn maintenance(
-        &self,
-        budget: MaintenanceBudget,
-    ) -> (
-        crate::lara::maintenance::MaintenanceWorkReport,
-        crate::lara::maintenance::MaintenanceWorkReport,
-    ) {
-        (
-            self.forward.maintenance(budget),
-            self.reverse.maintenance(budget),
-        )
     }
 }

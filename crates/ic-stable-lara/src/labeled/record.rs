@@ -1,6 +1,7 @@
 //! Fixed-width records for the multi-level labeled CSR layout.
 
-use crate::traits::CsrVertex;
+use crate::VertexId;
+use crate::traits::{CsrEdge, CsrVertex, CsrVertexTombstone};
 use ic_stable_structures::{Storable, storable::Bound};
 use std::borrow::Cow;
 
@@ -35,50 +36,64 @@ impl LabelId {
     }
 }
 
-/// One label bucket row in the intermediate CSR layer.
+/// One LabelBucket descriptor in the intermediate CSR layer.
 ///
-/// `edge_start` and `edge_len` play the same role for an edge range that
-/// [`LabeledVertex::base_slot_start`] / [`LabeledVertex::row_count`] play for
-/// bucket rows.
-#[repr(C)]
+/// A bucket describes one label's live edge prefix. It intentionally does **not**
+/// store an allocation width. Physical edge capacity is owned by the containing
+/// [`LabeledVertex`] through [`LabeledVertex::vertex_edge_alloc_slots`].
+///
+/// Within one non-default vertex, buckets are stored in strictly ascending
+/// [`LabelId`] order. Edge rows are stored in the same order. A bucket's physical
+/// successor boundary is therefore:
+///
+/// - the next bucket's [`Self::edge_start`], or
+/// - for the last bucket, the first bucket's `edge_start` plus the vertex's
+///   [`LabeledVertex::vertex_edge_alloc_slots`].
+///
+/// `edge_start` and `edge_len` play the same scan role for one label's edge
+/// range that [`LabeledVertex::base_slot_start`] / [`LabeledVertex::row_count`]
+/// play for LabelBucket ranges.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LabelBucket {
     /// Relationship type for this contiguous edge range.
     pub label_id: LabelId,
-    /// Reserved for alignment / future bucket flags.
-    pub reserved: u16,
     /// Global edge-slot index where this bucket's clean edge prefix starts.
     pub edge_start: u64,
     /// Number of live edges visible through clean scans of this bucket.
     pub edge_len: u32,
-    /// Reserved padding to keep the row width stable.
-    pub _pad: u32,
 }
 
 impl LabelBucket {
-    /// Fixed byte width of one encoded bucket row.
-    pub const BYTES: usize = 16;
+    /// Fixed byte width of one encoded LabelBucket.
+    pub const BYTES: usize = 14;
 
-    /// Encodes this bucket row into exactly [`Self::BYTES`] bytes.
+    /// Encodes this LabelBucket into exactly [`Self::BYTES`] bytes.
     pub fn write_to(self, bytes: &mut [u8]) {
         debug_assert_eq!(bytes.len(), Self::BYTES);
         bytes[0..2].copy_from_slice(&self.label_id.to_le_bytes());
-        bytes[2..4].copy_from_slice(&self.reserved.to_le_bytes());
-        bytes[4..12].copy_from_slice(&self.edge_start.to_le_bytes());
-        bytes[12..16].copy_from_slice(&self.edge_len.to_le_bytes());
+        bytes[2..10].copy_from_slice(&self.edge_start.to_le_bytes());
+        bytes[10..14].copy_from_slice(&self.edge_len.to_le_bytes());
     }
 
-    /// Decodes a bucket row from exactly [`Self::BYTES`] bytes.
+    /// Returns a copy with `edge_start` / `edge_len` updated.
+    #[inline]
+    pub fn with_edge_range(self, edge_start: u64, edge_len: u32) -> Self {
+        Self {
+            edge_start,
+            edge_len,
+            ..self
+        }
+    }
+
+    /// Decodes a LabelBucket from exactly [`Self::BYTES`] bytes.
     pub fn read_from(bytes: &[u8]) -> Self {
         let chunk: [u8; Self::BYTES] = bytes
             .try_into()
-            .expect("LabelBucket::read_from expects exactly 16 bytes");
+            .expect("LabelBucket::read_from expects exactly 14 bytes");
         Self {
             label_id: LabelId::from_le_bytes([chunk[0], chunk[1]]),
-            reserved: u16::from_le_bytes([chunk[2], chunk[3]]),
-            edge_start: u64::from_le_bytes(chunk[4..12].try_into().unwrap()),
-            edge_len: u32::from_le_bytes(chunk[12..16].try_into().unwrap()),
-            _pad: 0,
+            edge_start: u64::from_le_bytes(chunk[2..10].try_into().unwrap()),
+            edge_len: u32::from_le_bytes(chunk[10..14].try_into().unwrap()),
         }
     }
 }
@@ -113,26 +128,65 @@ impl CsrVertex for LabelBucket {
     }
 }
 
+impl CsrEdge for LabelBucket {
+    const BYTES: usize = LabelBucket::BYTES;
+
+    fn read_from(bytes: &[u8]) -> Self {
+        LabelBucket::read_from(bytes)
+    }
+
+    fn write_to(self, bytes: &mut [u8]) {
+        self.write_to(bytes);
+    }
+
+    fn neighbor_vid(&self) -> VertexId {
+        VertexId::from(u32::from(self.label_id.raw()))
+    }
+
+    fn with_neighbor_vid(self, _vid: VertexId) -> Self {
+        self
+    }
+}
+
 /// Bit 0 of [`LabeledVertex::metadata`]: vertex points directly into the edge CSR.
 const DEFAULT_EDGE_LABELED_BIT: u32 = 1;
 /// Bit 31 of [`LabeledVertex::metadata`]: logical vertex deletion marker.
 const VERTEX_TOMBSTONE_BIT: u32 = 1 << 31;
 
 /// Per-vertex locator for one labeled CSR orientation.
+///
+/// The locator has two modes:
+///
+/// - **Default-label bypass:** [`Self::is_default_edge_labeled`] is true.
+///   [`Self::base_slot_start`] points directly into [`crate::lara::edge::EdgeStore`],
+///   and [`Self::row_count`] is the number of default-label edges. No LabelBucket rows
+///   are read and [`Self::vertex_edge_alloc_slots`] is ignored.
+/// - **Normal labeled row:** [`Self::is_default_edge_labeled`] is false.
+///   [`Self::base_slot_start`] points into [`crate::labeled::LabelBucketStore`],
+///   [`Self::row_count`] is the number of [`LabelBucket`] rows, and
+///   [`Self::vertex_edge_alloc_slots`] is the physical width of this vertex's
+///   contiguous VertexEdgeSpan.
+///
+/// Keeping `row_count` as `u32` preserves the default-bypass fast path for high
+/// degree vertices. Keeping `metadata` as a full word leaves room for future
+/// flags while the edge-span allocation gets its own `u32`, making the encoded
+/// row 20 bytes.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LabeledVertex {
-    /// Global bucket-slot or edge-slot index where this vertex's clean prefix starts.
+    /// Bucket-slot start in normal mode, or edge-slot start in default-bypass mode.
     pub base_slot_start: u64,
-    /// Number of live buckets or edges visible through clean scans.
+    /// LabelBucket count in normal mode, or edge count in default-bypass mode.
     pub row_count: u32,
-    /// Packed metadata: default-label bypass and tombstone flags.
+    /// Packed metadata: default-label bypass and tombstone bits.
     pub metadata: i32,
+    /// Physical edge slots reserved for this vertex's normal-mode VertexEdgeSpan.
+    pub vertex_edge_alloc_slots: u32,
 }
 
 impl LabeledVertex {
     /// Fixed byte width of one encoded vertex row.
-    pub const BYTES: usize = 16;
+    pub const BYTES: usize = 20;
 
     #[inline]
     fn metadata_word(self) -> u32 {
@@ -181,23 +235,49 @@ impl LabeledVertex {
         self.with_metadata_word(raw)
     }
 
+    /// Returns the physical width of this vertex's VertexEdgeSpan.
+    ///
+    /// This value is meaningful only in normal labeled mode. It is not the live
+    /// edge count; the live edge count is the sum of all bucket `edge_len`
+    /// values. The difference is slack distributed between LabelEdgeSpans.
+    #[inline]
+    pub fn vertex_edge_alloc_slots(self) -> u32 {
+        self.vertex_edge_alloc_slots
+    }
+
+    /// Returns a copy with the VertexEdgeSpan reservation width changed.
+    #[inline]
+    pub fn with_vertex_edge_alloc_slots(mut self, slots: u32) -> Self {
+        self.vertex_edge_alloc_slots = slots;
+        self
+    }
+
+    /// Returns a copy with bucket locator fields updated together.
+    #[inline]
+    pub fn with_bucket_row(self, base_slot_start: u64, row_count: u32) -> Self {
+        self.with_base_slot_start(base_slot_start)
+            .with_degree(row_count)
+    }
+
     /// Encodes this vertex row into exactly [`Self::BYTES`] bytes.
     pub fn write_to(self, bytes: &mut [u8]) {
         debug_assert_eq!(bytes.len(), Self::BYTES);
         bytes[0..8].copy_from_slice(&self.base_slot_start.to_le_bytes());
         bytes[8..12].copy_from_slice(&self.row_count.to_le_bytes());
         bytes[12..16].copy_from_slice(&self.metadata.to_le_bytes());
+        bytes[16..20].copy_from_slice(&self.vertex_edge_alloc_slots.to_le_bytes());
     }
 
     /// Decodes a vertex row from exactly [`Self::BYTES`] bytes.
     pub fn read_from(bytes: &[u8]) -> Self {
         let chunk: [u8; Self::BYTES] = bytes
             .try_into()
-            .expect("LabeledVertex::read_from expects exactly 16 bytes");
+            .expect("LabeledVertex::read_from expects exactly 20 bytes");
         Self {
             base_slot_start: u64::from_le_bytes(chunk[0..8].try_into().unwrap()),
             row_count: u32::from_le_bytes(chunk[8..12].try_into().unwrap()),
             metadata: i32::from_le_bytes(chunk[12..16].try_into().unwrap()),
+            vertex_edge_alloc_slots: u32::from_le_bytes(chunk[16..20].try_into().unwrap()),
         }
     }
 }
@@ -229,6 +309,16 @@ impl CsrVertex for LabeledVertex {
 
     fn with_log_head(self, _idx: i32) -> Self {
         self
+    }
+}
+
+impl CsrVertexTombstone for LabeledVertex {
+    fn is_tombstone(&self) -> bool {
+        (*self).is_tombstone()
+    }
+
+    fn with_tombstone(self, tomb: bool) -> Self {
+        LabeledVertex::with_tombstone(self, tomb)
     }
 }
 
@@ -286,18 +376,15 @@ mod tests {
     fn label_bucket_round_trips_exact_layout() {
         let bucket = LabelBucket {
             label_id: LabelId::from_raw(0x1234),
-            reserved: 0x5678,
             edge_start: 0x1122_3344_5566_7788,
             edge_len: 0xAABB_CCDD,
-            _pad: 0,
         };
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
         assert_eq!(
             bytes,
             [
-                0x34, 0x12, 0x78, 0x56, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0xDD, 0xCC,
-                0xBB, 0xAA,
+                0x34, 0x12, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0xDD, 0xCC, 0xBB, 0xAA,
             ]
         );
         assert_eq!(LabelBucket::read_from(&bytes), bucket);
@@ -311,14 +398,17 @@ mod tests {
             base_slot_start: 42,
             row_count: 3,
             metadata: 0,
+            vertex_edge_alloc_slots: 0,
         }
         .with_default_edge_labeled(true)
-        .with_tombstone(true);
+        .with_tombstone(true)
+        .with_vertex_edge_alloc_slots(0x1234);
         let mut bytes = [0u8; LabeledVertex::BYTES];
         vertex.write_to(&mut bytes);
         let decoded = LabeledVertex::read_from(&bytes);
         assert_eq!(decoded, vertex);
         assert!(decoded.is_default_edge_labeled());
         assert!(decoded.is_tombstone());
+        assert_eq!(decoded.vertex_edge_alloc_slots(), 0x1234);
     }
 }

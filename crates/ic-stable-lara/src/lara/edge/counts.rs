@@ -106,6 +106,16 @@ impl SegmentEdgeCounts {
     }
 }
 
+/// Returns `actual / total` for PMA segment density, or `0.0` when `total <= 0`.
+#[inline]
+pub(crate) fn segment_span_density(counts: SegmentEdgeCounts) -> f64 {
+    if counts.total <= 0 {
+        0.0
+    } else {
+        counts.actual as f64 / counts.total as f64
+    }
+}
+
 /// Stable vector storing PMA counts for leaves and internal segment-tree nodes.
 #[derive(Clone, Debug)]
 pub struct SegmentEdgeCountsStore<E: CsrEdge, M: Memory> {

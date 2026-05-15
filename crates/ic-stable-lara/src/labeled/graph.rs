@@ -1,27 +1,55 @@
-//! Single-orientation labeled LARA graph without edge overflow logs.
+//! Single-orientation labeled LARA graph orchestration.
+//!
+//! [`LabeledLaraGraph`] mirrors [`crate::LaraGraph`]: it owns the vertex column
+//! plus the storage layers required to mutate one CSR orientation. The extra
+//! bucket layer is kept small and relocatable. Normal labeled edge bytes live in
+//! the regular [`EdgeStore`] slab/free-span store and participate in the same
+//! PMA segment [`crate::lara::edge::counts::SegmentEdgeCounts`] accounting as
+//! core LARA: each [`LabeledVertex`]'s [`LabeledVertex::vertex_edge_alloc_slots`]
+//! contributes `total` while live edges contribute `actual`. A **cascade** from
+//! per-label edge span grow/shrink propagates through the owning **VertexEdgeSpan**
+//! into per-leaf density checks (compaction then optional slack growth).
 
 use crate::{
     VertexCount, VertexId,
     labeled::{
-        edge_slab::{EdgeSlabStore, InitError as EdgeInitError},
+        access::LabelEdgeSpanAccess,
+        bucket_store::LabelBucketStore,
         record::{LabelBucket, LabelId, LabeledVertex},
-        row_store::{InitError as RowInitError, RowStore},
-        traits::LabeledCsrVertex,
+    },
+    lara::{
+        edge::{
+            counts::{segment_span_density, SegmentEdgeCounts},
+            EdgeStore, InitError as EdgeInitError,
+        },
+        operation_error::LaraOperationError,
+        vertex::{InitError as VertexInitError, VertexStore},
     },
     traits::{CsrEdge, CsrVertex},
 };
+#[cfg(feature = "canbench")]
+use canbench_rs::bench_scope;
 use ic_stable_structures::Memory;
-use std::{fmt, marker::PhantomData};
+use std::{cmp::Ordering, fmt, marker::PhantomData, ops::Range};
 
-const VERTEX_MAGIC: [u8; 3] = *b"LLV";
-const BUCKET_MAGIC: [u8; 3] = *b"LLB";
+const DEFAULT_SEGMENT_SIZE: u32 = 32;
+
+/// Same threshold as core LARA leaf density (`actual/total` on one PMA leaf).
+const LEAF_VERTEX_EDGE_SEGMENT_DENSITY: f64 = 1.0;
 
 /// Errors returned by labeled graph operations.
 #[derive(Debug)]
 pub enum LabeledOperationError {
-    VertexOutOfRange { vid: VertexId, len: VertexCount },
-    EdgeSlabFull,
-    BucketSlabFull,
+    /// Addressing a vertex outside `0..vertex_count`.
+    VertexOutOfRange {
+        /// Requested vertex id.
+        vid: VertexId,
+        /// Current vertex column length.
+        len: VertexCount,
+    },
+    /// Underlying LARA store operation failed.
+    Store(LaraOperationError),
+    /// A default-label bypass was requested for a row that cannot use it.
     InvalidDefaultBypass,
 }
 
@@ -31,8 +59,7 @@ impl fmt::Display for LabeledOperationError {
             Self::VertexOutOfRange { vid, len } => {
                 write!(f, "vertex {vid} out of range (len={len})")
             }
-            Self::EdgeSlabFull => write!(f, "labeled edge slab is full"),
-            Self::BucketSlabFull => write!(f, "labeled bucket slab is full"),
+            Self::Store(err) => write!(f, "{err}"),
             Self::InvalidDefaultBypass => write!(
                 f,
                 "default-label bypass requires exactly one default adjacency label"
@@ -41,13 +68,35 @@ impl fmt::Display for LabeledOperationError {
     }
 }
 
-impl std::error::Error for LabeledOperationError {}
+impl std::error::Error for LabeledOperationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Store(err) => Some(err),
+            Self::VertexOutOfRange { .. } | Self::InvalidDefaultBypass => None,
+        }
+    }
+}
+
+impl From<LaraOperationError> for LabeledOperationError {
+    fn from(value: LaraOperationError) -> Self {
+        Self::Store(value)
+    }
+}
+
+impl From<crate::GrowFailed> for LabeledOperationError {
+    fn from(value: crate::GrowFailed) -> Self {
+        Self::Store(LaraOperationError::RebalanceFailed(value))
+    }
+}
 
 /// Errors returned when reopening a labeled graph.
 #[derive(Debug)]
 pub enum InitError {
-    Vertices(RowInitError),
-    Buckets(RowInitError),
+    /// The vertex column could not be reopened.
+    Vertices(VertexInitError),
+    /// The label-bucket subsystem could not be reopened.
+    Buckets(crate::labeled::bucket_store::InitError),
+    /// The edge subsystem could not be reopened.
     Edges(EdgeInitError),
 }
 
@@ -69,9 +118,9 @@ where
     E: CsrEdge,
     M: Memory,
 {
-    vertices: RowStore<LabeledVertex, M>,
-    buckets: RowStore<LabelBucket, M>,
-    edges: EdgeSlabStore<E, M>,
+    vertices: VertexStore<LabeledVertex, M>,
+    buckets: LabelBucketStore<M>,
+    edges: EdgeStore<E, M>,
     default_label: LabelId,
     _marker: PhantomData<E>,
 }
@@ -82,61 +131,110 @@ where
     M: Memory,
 {
     /// Creates a fresh labeled graph over the supplied stable memories.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         vertices: M,
         buckets: M,
+        bucket_free_spans: M,
+        bucket_free_span_by_start: M,
+        edge_counts: M,
         edges: M,
+        edge_log: M,
+        edge_span_meta: M,
+        edge_free_spans: M,
+        edge_free_span_by_start: M,
         elem_capacity: u64,
         default_label: LabelId,
     ) -> Result<Self, crate::GrowFailed> {
         Ok(Self {
-            vertices: RowStore::new(vertices, VERTEX_MAGIC)?,
-            buckets: RowStore::new(buckets, BUCKET_MAGIC)?,
-            edges: EdgeSlabStore::new(edges, elem_capacity)?,
+            vertices: VertexStore::new(vertices)?,
+            buckets: LabelBucketStore::new(
+                buckets,
+                bucket_free_spans,
+                bucket_free_span_by_start,
+                elem_capacity,
+                DEFAULT_SEGMENT_SIZE,
+            )?,
+            edges: EdgeStore::new(
+                edge_counts,
+                edges,
+                edge_log,
+                edge_span_meta,
+                edge_free_spans,
+                edge_free_span_by_start,
+                elem_capacity,
+                DEFAULT_SEGMENT_SIZE,
+                DEFAULT_SEGMENT_SIZE,
+            )?,
             default_label,
             _marker: PhantomData,
         })
     }
 
-    /// Opens a labeled graph from stable memories, creating it when the edge slab is empty.
+    /// Opens a labeled graph from stable memories, creating stores when empty.
+    #[allow(clippy::too_many_arguments)]
     pub fn init(
         vertices: M,
         buckets: M,
+        bucket_free_spans: M,
+        bucket_free_span_by_start: M,
+        edge_counts: M,
         edges: M,
+        edge_log: M,
+        edge_span_meta: M,
+        edge_free_spans: M,
+        edge_free_span_by_start: M,
         elem_capacity: u64,
         default_label: LabelId,
     ) -> Result<Self, InitError> {
-        let edge_store = if edges.size() == 0 {
-            EdgeSlabStore::new(edges, elem_capacity)
-                .map_err(|_| InitError::Edges(EdgeInitError::OutOfMemory))?
-        } else {
-            EdgeSlabStore::init(edges).map_err(InitError::Edges)?
-        };
         Ok(Self {
-            vertices: RowStore::init(vertices, VERTEX_MAGIC).map_err(InitError::Vertices)?,
-            buckets: RowStore::init(buckets, BUCKET_MAGIC).map_err(InitError::Buckets)?,
-            edges: edge_store,
+            vertices: VertexStore::init(vertices).map_err(InitError::Vertices)?,
+            buckets: LabelBucketStore::init(
+                buckets,
+                bucket_free_spans,
+                bucket_free_span_by_start,
+                elem_capacity,
+                DEFAULT_SEGMENT_SIZE,
+            )
+            .map_err(InitError::Buckets)?,
+            edges: EdgeStore::init(
+                edge_counts,
+                edges,
+                edge_log,
+                edge_span_meta,
+                edge_free_spans,
+                edge_free_span_by_start,
+                elem_capacity,
+                DEFAULT_SEGMENT_SIZE,
+                DEFAULT_SEGMENT_SIZE,
+            )
+            .map_err(InitError::Edges)?,
             default_label,
             _marker: PhantomData,
         })
     }
 
-    pub fn vertices(&self) -> &RowStore<LabeledVertex, M> {
+    /// Returns the stable vertex column.
+    pub fn vertices(&self) -> &VertexStore<LabeledVertex, M> {
         &self.vertices
     }
 
-    pub fn buckets(&self) -> &RowStore<LabelBucket, M> {
+    /// Returns the LabelBucketStore.
+    pub fn buckets(&self) -> &LabelBucketStore<M> {
         &self.buckets
     }
 
-    pub fn edges(&self) -> &EdgeSlabStore<E, M> {
+    /// Returns the edge storage used by every label bucket.
+    pub fn edges(&self) -> &EdgeStore<E, M> {
         &self.edges
     }
 
+    /// Returns the label used by default-label bypass rows.
     pub fn default_label(&self) -> LabelId {
         self.default_label
     }
 
+    /// Returns the number of vertex rows.
     pub fn vertex_count(&self) -> VertexCount {
         VertexCount::from(self.vertices.len())
     }
@@ -151,103 +249,565 @@ where
         Ok(())
     }
 
+    #[inline]
+    fn leaf_index_for_vid(vid: VertexId, segment_size: u32) -> u32 {
+        u32::from(vid) / segment_size.max(1)
+    }
+
+    fn leaf_segment_counts_for_vid(&self, vid: VertexId) -> SegmentEdgeCounts {
+        let header = self.edges.header();
+        let leaf = Self::leaf_index_for_vid(vid, header.segment_size);
+        self.edges
+            .counts_store()
+            .get(u64::from(leaf.saturating_add(header.segment_count)))
+    }
+
+    /// `true` when `vid`'s PMA leaf has `actual/total >= 1.0` under incremental labeled accounting.
+    pub(crate) fn labeled_leaf_segment_is_dense(&self, vid: VertexId) -> bool {
+        segment_span_density(self.leaf_segment_counts_for_vid(vid))
+            >= LEAF_VERTEX_EDGE_SEGMENT_DENSITY
+    }
+
+    /// Compacts then optionally grows slack for every normal labeled vertex in `src`'s PMA leaf.
+    fn rebalance_cascade_after_labeled_mutation(
+        &self,
+        src: VertexId,
+    ) -> Result<(), LabeledOperationError> {
+        let header = self.edges.header();
+        let seg = header.segment_size.max(1);
+        let leaf = Self::leaf_index_for_vid(src, header.segment_size);
+        let idx = u64::from(leaf.saturating_add(header.segment_count));
+        if segment_span_density(self.edges.counts_store().get(idx))
+            < LEAF_VERTEX_EDGE_SEGMENT_DENSITY
+        {
+            return Ok(());
+        }
+
+        #[cfg(feature = "canbench")]
+        let _bench_scope = bench_scope("labeled_rebalance_leaf_cascade");
+
+        let start_vid = leaf.saturating_mul(seg);
+        let end_vid = (start_vid + seg).min(self.vertices.len());
+        for vid_u in start_vid..end_vid {
+            let vid = VertexId::from(vid_u);
+            let v = self.vertices.get(vid);
+            if v.is_default_edge_labeled() {
+                continue;
+            }
+            if v.degree() > 0 {
+                self.rewrite_vertex_edge_span(vid, None, 0, true, false)?;
+            }
+        }
+
+        if segment_span_density(self.edges.counts_store().get(idx))
+            < LEAF_VERTEX_EDGE_SEGMENT_DENSITY
+        {
+            return Ok(());
+        }
+
+        for vid_u in start_vid..end_vid {
+            let vid = VertexId::from(vid_u);
+            let v = self.vertices.get(vid);
+            if v.is_default_edge_labeled() {
+                continue;
+            }
+            if v.degree() > 0 {
+                self.rewrite_vertex_edge_span(vid, None, 0, false, true)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn bucket_range(vertex: &LabeledVertex) -> Range<u64> {
+        let start = vertex.base_slot_start();
+        start..start.saturating_add(u64::from(vertex.degree()))
+    }
+
+    fn find_bucket_slot(
+        &self,
+        vertex: &LabeledVertex,
+        label_id: LabelId,
+    ) -> Result<Option<u64>, LabeledOperationError> {
+        let deg = vertex.degree();
+        if deg == 0 {
+            return Ok(None);
+        }
+        let start = vertex.base_slot_start();
+        // Fast paths: avoid binary search + canbench scope overhead on tiny degree.
+        if deg == 1 {
+            let bucket = self
+                .buckets
+                .read_label_bucket_slot(start)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            return Ok((bucket.label_id == label_id).then_some(start));
+        }
+        if deg == 2 {
+            let b0 = self
+                .buckets
+                .read_label_bucket_slot(start)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            match label_id.cmp(&b0.label_id) {
+                Ordering::Less => return Ok(None),
+                Ordering::Equal => return Ok(Some(start)),
+                Ordering::Greater => {
+                    let slot1 = start.saturating_add(1);
+                    let b1 = self
+                        .buckets
+                        .read_label_bucket_slot(slot1)
+                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    return Ok((label_id == b1.label_id).then_some(slot1));
+                }
+            }
+        }
+
+        #[cfg(feature = "canbench")]
+        let _bench_scope = bench_scope("labeled_find_bucket_slot");
+
+        let mut lo = 0u32;
+        let mut hi = deg;
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let slot = start.saturating_add(u64::from(mid));
+            let bucket = self
+                .buckets
+                .read_label_bucket_slot(slot)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            if bucket.label_id == label_id {
+                return Ok(Some(slot));
+            }
+            if bucket.label_id < label_id {
+                lo = mid.saturating_add(1);
+            } else {
+                hi = mid;
+            }
+        }
+        Ok(None)
+    }
+
+    fn read_vertex_label_buckets(
+        &self,
+        vertex: &LabeledVertex,
+    ) -> Result<Vec<LabelBucket>, LabeledOperationError> {
+        let mut buckets = Vec::with_capacity(vertex.degree() as usize);
+        for slot in Self::bucket_range(vertex) {
+            buckets.push(
+                self.buckets
+                    .read_label_bucket_slot(slot)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?,
+            );
+        }
+        Ok(buckets)
+    }
+
+    fn bucket_successor_start(
+        &self,
+        vertex: &LabeledVertex,
+        bucket_index: u32,
+    ) -> Result<u64, LabeledOperationError> {
+        if bucket_index + 1 < vertex.degree() {
+            let next_slot = vertex
+                .base_slot_start()
+                .saturating_add(u64::from(bucket_index + 1));
+            return Ok(self
+                .buckets
+                .read_label_bucket_slot(next_slot)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?
+                .edge_start);
+        }
+
+        if vertex.degree() == 0 {
+            return Ok(0);
+        }
+
+        let first = self
+            .buckets
+            .read_label_bucket_slot(vertex.base_slot_start())
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        Ok(first
+            .edge_start
+            .saturating_add(u64::from(vertex.vertex_edge_alloc_slots())))
+    }
+
+    fn ensure_label_edge_span_capacity(
+        &self,
+        src: VertexId,
+        bucket_slot: u64,
+    ) -> Result<(), LabeledOperationError> {
+        let vertex = self.vertices.get(src);
+        let bucket_index = bucket_slot.saturating_sub(vertex.base_slot_start()) as u32;
+        let bucket = self
+            .buckets
+            .read_label_bucket_slot(bucket_slot)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let successor = self.bucket_successor_start(&vertex, bucket_index)?;
+        if successor.saturating_sub(bucket.edge_start) > u64::from(bucket.edge_len) {
+            return Ok(());
+        }
+        self.rewrite_vertex_edge_span(src, Some(bucket_index), 1, false, false)
+    }
+
+    fn rewrite_vertex_edge_span_read_and_plan(
+        &self,
+        vertex: &LabeledVertex,
+        preferred_bucket: Option<u32>,
+        preferred_extra: u32,
+        compact: bool,
+        force_slack_grow: bool,
+    ) -> Result<
+        (
+            Vec<LabelBucket>,
+            u32,
+            u64,
+            u32,
+            u32,
+            bool,
+            Vec<u64>,
+        ),
+        LabeledOperationError,
+    > {
+        #[cfg(feature = "canbench")]
+        let _bench_scope = bench_scope("labeled_rewrite_read_and_plan");
+        let buckets = self.read_vertex_label_buckets(vertex)?;
+        let old_alloc = vertex.vertex_edge_alloc_slots();
+        let old_base = buckets.first().map(|bucket| bucket.edge_start).unwrap_or(0);
+        let mut total_live = 0u32;
+        for bucket in &buckets {
+            total_live = total_live.saturating_add(bucket.edge_len);
+        }
+
+        let min_required = total_live.saturating_add(preferred_extra);
+        let new_alloc = if compact {
+            total_live
+        } else if force_slack_grow && old_alloc >= min_required && old_alloc > 0 {
+            old_alloc
+                .saturating_mul(2)
+                .max(old_alloc.saturating_add(DEFAULT_SEGMENT_SIZE))
+                .max(min_required)
+        } else if old_alloc >= min_required && old_alloc > 0 {
+            old_alloc
+        } else {
+            min_required
+                .max(DEFAULT_SEGMENT_SIZE)
+                .max(old_alloc.saturating_mul(2))
+        };
+
+        let moved = old_alloc == 0 || new_alloc > old_alloc || compact;
+        let new_base = if new_alloc == 0 {
+            0
+        } else if moved {
+            self.edges.allocate_span(u64::from(new_alloc))?
+        } else {
+            old_base
+        };
+
+        let preferred = preferred_bucket.map(|index| index as usize);
+        let positions = Self::calculate_label_edge_span_positions(
+            new_base,
+            new_alloc,
+            buckets.as_slice(),
+            preferred,
+            preferred_extra,
+        );
+        Ok((
+            buckets,
+            old_alloc,
+            old_base,
+            total_live,
+            new_alloc,
+            moved,
+            positions,
+        ))
+    }
+
+    fn rewrite_vertex_edge_span(
+        &self,
+        src: VertexId,
+        preferred_bucket: Option<u32>,
+        preferred_extra: u32,
+        compact: bool,
+        force_slack_grow: bool,
+    ) -> Result<(), LabeledOperationError> {
+        // Rebuild the VertexEdgeSpan from LabelEdgeSpan live prefixes.
+        //
+        // The bucket layer is exact-fit, so a new label can appear anywhere in
+        // LabelId order without reserving space in the bucket descriptor. Edge
+        // slack is instead distributed inside this VertexEdgeSpan. As in the
+        // regular LARA PMA rebalance, row gaps are weighted by `degree + 1`, so a
+        // high-degree label receives more spare room than a cold label. The
+        // preferred bucket receives `preferred_extra` before proportional gap
+        // placement because the caller is about to insert there.
+        //
+        // Copy strategy: when relocating to a fresh slab span (`moved` with a prior
+        // allocation), source and destination are disjoint—stream bucket-by-bucket
+        // without staging all edges. In-place layout changes can overlap; then use
+        // one scratch [`Vec`] sized to `total_live` instead of per-bucket edge vectors.
+        let vertex = self.vertices.get(src);
+        if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
+            return Ok(());
+        }
+
+        let (buckets, old_alloc, old_base, total_live, new_alloc, moved, positions) =
+            self.rewrite_vertex_edge_span_read_and_plan(
+                &vertex,
+                preferred_bucket,
+                preferred_extra,
+                compact,
+                force_slack_grow,
+            )?;
+
+        let disjoint_copy = moved && old_alloc > 0;
+        if disjoint_copy {
+            #[cfg(feature = "canbench")]
+            let _bench_scope = bench_scope("labeled_rewrite_copy_disjoint");
+            for (index, bucket) in buckets.iter().enumerate() {
+                let row_start = positions[index];
+                let mut w = row_start;
+                for j in 0..bucket.edge_len {
+                    let e = self.edges.read_slot(
+                        bucket
+                            .edge_start
+                            .saturating_add(u64::from(j)),
+                    );
+                    self.edges.write_slot(w, e)?;
+                    w = w.saturating_add(1);
+                }
+                let slot = vertex.base_slot_start().saturating_add(index as u64);
+                self.buckets.write_label_bucket_slot(
+                    slot,
+                    bucket.with_edge_range(row_start, bucket.edge_len),
+                )?;
+            }
+        } else if total_live > 0 {
+            #[cfg(feature = "canbench")]
+            let _bench_scope = bench_scope("labeled_rewrite_copy_inplace_vec");
+            let mut tmp: Vec<E> = Vec::new();
+            tmp.reserve(total_live as usize);
+            for bucket in &buckets {
+                for j in 0..bucket.edge_len {
+                    tmp.push(
+                        self.edges
+                            .read_slot(bucket.edge_start.saturating_add(u64::from(j))),
+                    );
+                }
+            }
+            let mut cursor = 0usize;
+            for (index, bucket) in buckets.iter().enumerate() {
+                let row_start = positions[index];
+                let mut w = row_start;
+                for _ in 0..bucket.edge_len {
+                    self.edges.write_slot(w, tmp[cursor])?;
+                    cursor = cursor.saturating_add(1);
+                    w = w.saturating_add(1);
+                }
+                let slot = vertex.base_slot_start().saturating_add(index as u64);
+                self.buckets.write_label_bucket_slot(
+                    slot,
+                    bucket.with_edge_range(row_start, bucket.edge_len),
+                )?;
+            }
+        } else {
+            #[cfg(feature = "canbench")]
+            let _bench_scope = bench_scope("labeled_rewrite_metadata_only");
+            for (index, bucket) in buckets.iter().enumerate() {
+                let row_start = positions[index];
+                let slot = vertex.base_slot_start().saturating_add(index as u64);
+                self.buckets.write_label_bucket_slot(
+                    slot,
+                    bucket.with_edge_range(row_start, bucket.edge_len),
+                )?;
+            }
+        }
+
+        #[cfg(feature = "canbench")]
+        let _bench_scope = bench_scope("labeled_rewrite_finalize");
+        if moved && old_alloc > 0 {
+            self.edges.release_span(old_base, u64::from(old_alloc))?;
+        }
+        self.vertices
+            .set(src, &vertex.with_vertex_edge_alloc_slots(new_alloc));
+
+        let d_total = i64::from(new_alloc).saturating_sub(i64::from(old_alloc));
+        if d_total != 0 {
+            self.edges
+                .bump_vertex_segment_counts(src, 0, d_total)
+                .map_err(LabeledOperationError::from)?;
+        }
+        Ok(())
+    }
+
+    fn calculate_label_edge_span_positions(
+        start_slot: u64,
+        span_slots: u32,
+        buckets: &[LabelBucket],
+        preferred: Option<usize>,
+        preferred_extra: u32,
+    ) -> Vec<u64> {
+        let mut out = Vec::with_capacity(buckets.len());
+        if buckets.is_empty() {
+            return out;
+        }
+
+        let mut effective_live = 0u64;
+        let mut total_weight = buckets.len() as u64;
+        for (index, bucket) in buckets.iter().enumerate() {
+            let extra = (preferred == Some(index))
+                .then_some(preferred_extra)
+                .unwrap_or(0);
+            let degree = u64::from(bucket.edge_len.saturating_add(extra));
+            effective_live = effective_live.saturating_add(degree);
+            total_weight = total_weight.saturating_add(degree);
+        }
+        let gaps = u64::from(span_slots).saturating_sub(effective_live);
+
+        let precision = 100_000_000.0;
+        let mut step = if total_weight == 0 {
+            0.0
+        } else {
+            gaps as f64 / total_weight as f64
+        };
+        step = (step * precision).floor() / precision;
+
+        let mut cursor = start_slot as f64;
+        for (index, bucket) in buckets.iter().enumerate() {
+            let start = cursor as u64;
+            out.push(start);
+            let extra = (preferred == Some(index))
+                .then_some(preferred_extra)
+                .unwrap_or(0);
+            let degree = f64::from(bucket.edge_len.saturating_add(extra));
+            cursor = start as f64 + degree + step * (degree + 1.0);
+        }
+        out
+    }
+
     /// Appends a new vertex row.
     pub fn push_vertex(&self, vertex: LabeledVertex) -> Result<VertexId, crate::GrowFailed> {
-        self.vertices.push(vertex)
+        let id = self.vertices.len();
+        self.vertices.push(vertex)?;
+        Ok(VertexId::from(id))
+    }
+
+    /// Compacts the LabelBucketStore VertexSegment containing `vid`.
+    pub fn compact_label_bucket_vertex_segment(
+        &self,
+        vid: VertexId,
+    ) -> Result<(), LabeledOperationError> {
+        self.ensure_vertex(vid)?;
+        #[cfg(feature = "canbench")]
+        let _bench_scope = bench_scope("labeled_compact_label_bucket_vertex_segment");
+        self.buckets
+            .compact_vertex_segment_for_vertex(&self.vertices, vid)
+            .map_err(Into::into)
+    }
+
+    /// Compacts the VertexEdgeSpan that contains `bucket_index`.
+    ///
+    /// This rewrites all LabelEdgeSpans owned by `vid`, not only the selected
+    /// one. `bucket_index` is used only to validate that the queued work still
+    /// refers to an existing LabelEdgeSpan.
+    pub fn compact_vertex_edge_span(
+        &self,
+        vid: VertexId,
+        bucket_index: u32,
+    ) -> Result<(), LabeledOperationError> {
+        self.ensure_vertex(vid)?;
+        let vertex = self.vertices.get(vid);
+        if vertex.is_default_edge_labeled() {
+            return Ok(());
+        }
+        if bucket_index >= vertex.degree() {
+            return Ok(());
+        }
+        self.rewrite_vertex_edge_span(vid, None, 0, true, false)
     }
 
     /// Inserts one edge under `label_id` at `src`.
+    ///
+    /// After a successful normal labeled insert, runs an immediate **cascade**
+    /// pass only when the owning PMA leaf is already dense (`actual/total ≥ 1`);
+    /// sparse leaves skip the leaf-wide compaction / slack-grow scan.
     pub fn insert_edge(
         &self,
         src: VertexId,
         label_id: LabelId,
         edge: E,
     ) -> Result<(), LabeledOperationError> {
+        self.insert_edge_skip_leaf_cascade(src, label_id, edge)?;
+        if self.labeled_leaf_segment_is_dense(src) {
+            self.rebalance_cascade_after_labeled_mutation(src)?;
+        }
+        Ok(())
+    }
+
+    /// Like [`Self::insert_edge`], but skips the post-insert leaf cascade (used
+    /// by deferred wrappers that enqueue maintenance instead).
+    pub(crate) fn insert_edge_skip_leaf_cascade(
+        &self,
+        src: VertexId,
+        label_id: LabelId,
+        edge: E,
+    ) -> Result<(), LabeledOperationError> {
         self.ensure_vertex(src)?;
-        let mut vertex = self.vertices.get(src);
+        let vertex = self.vertices.get(src);
         if vertex.is_default_edge_labeled() {
             if label_id != self.default_label {
                 return Err(LabeledOperationError::InvalidDefaultBypass);
             }
-            let slot = self
-                .edges
-                .allocate_slot()
-                .map_err(|_| LabeledOperationError::EdgeSlabFull)?;
-            self.edges
-                .write_slot(slot, edge)
-                .map_err(|_| LabeledOperationError::EdgeSlabFull)?;
-            if vertex.row_count == 0 {
-                vertex.base_slot_start = slot;
-            }
-            vertex.row_count = vertex.row_count.saturating_add(1);
-            self.vertices.set(src, &vertex);
+            self.edges.insert_edge(&self.vertices, src, edge)?;
             return Ok(());
         }
 
-        let bucket_idx = self.find_or_create_bucket(src, &mut vertex, label_id)?;
-        let bucket = self.buckets.get(VertexId::from(bucket_idx as u32));
-        let slot = if bucket.edge_len == 0 {
-            self.edges
-                .allocate_slot()
-                .map_err(|_| LabeledOperationError::EdgeSlabFull)?
-        } else {
-            bucket.edge_start.saturating_add(u64::from(bucket.edge_len))
-        };
-        if slot >= self.edges.header().elem_capacity {
-            return Err(LabeledOperationError::EdgeSlabFull);
-        }
+        let bucket_slot = self.find_or_create_bucket(src, &vertex, label_id)?;
+        self.ensure_label_edge_span_capacity(src, bucket_slot)?;
+        let vertex = self.vertices.get(src);
+        let bucket_index = bucket_slot.saturating_sub(vertex.base_slot_start()) as u32;
+        let successor_start = self.bucket_successor_start(&vertex, bucket_index)?;
+        let bucket = self
+            .buckets
+            .read_label_bucket_slot(bucket_slot)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let write_slot = bucket.edge_start.saturating_add(u64::from(bucket.edge_len));
+        debug_assert!(write_slot < successor_start);
+        self.edges.write_slot(write_slot, edge)?;
+        self.buckets.write_label_bucket_slot(
+            bucket_slot,
+            bucket.with_edge_range(bucket.edge_start, bucket.edge_len.saturating_add(1)),
+        )?;
         self.edges
-            .write_slot(slot, edge)
-            .map_err(|_| LabeledOperationError::EdgeSlabFull)?;
-        let updated_bucket = LabelBucket {
-            edge_start: if bucket.edge_len == 0 {
-                slot
-            } else {
-                bucket.edge_start
-            },
-            edge_len: bucket.edge_len.saturating_add(1),
-            ..bucket
-        };
-        self.buckets
-            .set(VertexId::from(bucket_idx as u32), &updated_bucket);
-        self.vertices.set(src, &vertex);
+            .set_num_edges(self.edges.header().num_edges.saturating_add(1));
+        self.edges
+            .bump_vertex_segment_counts(src, 1, 0)
+            .map_err(LabeledOperationError::from)?;
         Ok(())
     }
 
     fn find_or_create_bucket(
         &self,
         src: VertexId,
-        vertex: &mut LabeledVertex,
+        vertex: &LabeledVertex,
         label_id: LabelId,
     ) -> Result<u64, LabeledOperationError> {
-        let start = vertex.base_slot_start;
-        let end = start.saturating_add(u64::from(vertex.row_count));
-        for idx in start..end {
-            let bucket = self.buckets.get(VertexId::from(idx as u32));
-            if bucket.label_id == label_id {
-                return Ok(idx);
-            }
-            if bucket.label_id > label_id {
-                break;
-            }
+        if let Some(slot) = self.find_bucket_slot(vertex, label_id)? {
+            return Ok(slot);
         }
-        let new_bucket = LabelBucket {
-            label_id,
-            reserved: 0,
-            edge_start: 0,
-            edge_len: 0,
-            _pad: 0,
-        };
-        let new_idx = self
+        #[cfg(feature = "canbench")]
+        let _bench_scope = bench_scope("labeled_insert_new_label_bucket");
+        let slot = self
             .buckets
-            .push(new_bucket)
-            .map_err(|_| LabeledOperationError::BucketSlabFull)?;
-        if vertex.row_count == 0 {
-            vertex.base_slot_start = u64::from(u32::from(new_idx));
-        }
-        vertex.row_count = vertex.row_count.saturating_add(1);
-        self.vertices.set(src, vertex);
-        Ok(u64::from(u32::from(new_idx)))
+            .insert_label_bucket(
+                &self.vertices,
+                src,
+                LabelBucket {
+                    label_id,
+                    edge_start: 0,
+                    edge_len: 0,
+                },
+            )
+            .map_err(LabeledOperationError::from)?;
+        let vertex = self.vertices.get(src);
+        let bucket_index = slot.saturating_sub(vertex.base_slot_start()) as u32;
+        self.rewrite_vertex_edge_span(src, Some(bucket_index), 1, false, false)?;
+        Ok(slot)
     }
 
     /// Enables default-label bypass for `src` when it has exactly one default label.
@@ -257,21 +817,32 @@ where
         if vertex.is_default_edge_labeled() {
             return Ok(());
         }
-        if vertex.row_count > 1 {
+        if vertex.degree() > 1 {
             return Err(LabeledOperationError::InvalidDefaultBypass);
         }
-        if vertex.row_count == 1 {
+        if vertex.degree() == 1 {
             let bucket = self
                 .buckets
-                .get(VertexId::from(vertex.base_slot_start as u32));
+                .read_label_bucket_slot(vertex.base_slot_start())
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             if bucket.label_id != self.default_label {
                 return Err(LabeledOperationError::InvalidDefaultBypass);
             }
+            let old_alloc = vertex.vertex_edge_alloc_slots();
+            let live_edges = i64::from(bucket.edge_len);
             let updated = vertex
                 .with_default_edge_labeled(true)
                 .with_base_slot_start(bucket.edge_start)
-                .with_degree(bucket.edge_len);
+                .with_degree(bucket.edge_len)
+                .with_vertex_edge_alloc_slots(0);
+            self.buckets
+                .clear_vertex_label_buckets(&self.vertices, src)?;
             self.vertices.set(src, &updated);
+            self.edges.bump_vertex_segment_counts(
+                src,
+                0,
+                live_edges.saturating_sub(i64::from(old_alloc)),
+            )?;
         } else {
             self.vertices
                 .set(src, &vertex.with_default_edge_labeled(true));
@@ -284,65 +855,72 @@ where
         &self,
         src: VertexId,
         label_id: LabelId,
-    ) -> Result<impl Iterator<Item = E> + '_, LabeledOperationError> {
+    ) -> Result<Vec<E>, LabeledOperationError> {
         self.ensure_vertex(src)?;
         let vertex = self.vertices.get(src);
         if vertex.is_default_edge_labeled() {
             if label_id != self.default_label {
-                return Ok(Vec::new().into_iter());
+                return Ok(Vec::new());
             }
-            let start = vertex.base_slot_start;
-            let end = start.saturating_add(u64::from(vertex.row_count));
-            let edges = (start..end)
-                .map(|slot| self.edges.read_slot(slot))
-                .collect::<Vec<_>>();
-            return Ok(edges.into_iter());
+            return Ok(self
+                .edges
+                .collect_out_edges_slot_order(&self.vertices, src)?);
         }
-        let start = vertex.base_slot_start;
-        let end = start.saturating_add(u64::from(vertex.row_count));
-        for idx in start..end {
-            let bucket = self.buckets.get(VertexId::from(idx as u32));
-            if bucket.label_id == label_id {
-                let edge_start = bucket.edge_start;
-                let edge_end = edge_start.saturating_add(u64::from(bucket.edge_len));
-                let edges = (edge_start..edge_end)
-                    .map(|slot| self.edges.read_slot(slot))
-                    .collect::<Vec<_>>();
-                return Ok(edges.into_iter());
-            }
+        if let Some(slot) = self.find_bucket_slot(&vertex, label_id)? {
+            #[cfg(feature = "canbench")]
+            let _bench_scope = bench_scope("labeled_iter_edges_for_label_collect");
+            let bucket_index = slot.saturating_sub(vertex.base_slot_start()) as u32;
+            let successor_start = self.bucket_successor_start(&vertex, bucket_index)?;
+            return Ok(self.edges.collect_out_edges_slot_order(
+                &LabelEdgeSpanAccess::new(&self.buckets, slot, successor_start),
+                VertexId::from(0),
+            )?);
         }
-        Ok(Vec::new().into_iter())
+        Ok(Vec::new())
     }
 
     /// Iterates all outgoing edges across every label bucket.
-    pub fn iter_out_edges(
-        &self,
-        src: VertexId,
-    ) -> Result<impl Iterator<Item = E> + '_, LabeledOperationError> {
+    pub fn iter_out_edges(&self, src: VertexId) -> Result<Vec<E>, LabeledOperationError> {
         self.ensure_vertex(src)?;
         let vertex = self.vertices.get(src);
         if vertex.is_default_edge_labeled() {
-            let start = vertex.base_slot_start;
-            let end = start.saturating_add(u64::from(vertex.row_count));
-            let edges = (start..end)
-                .map(|slot| self.edges.read_slot(slot))
-                .collect::<Vec<_>>();
-            return Ok(edges.into_iter());
+            return Ok(self
+                .edges
+                .collect_out_edges_slot_order(&self.vertices, src)?);
         }
-        let start = vertex.base_slot_start;
-        let end = start.saturating_add(u64::from(vertex.row_count));
         let mut out = Vec::new();
-        for idx in start..end {
-            let bucket = self.buckets.get(VertexId::from(idx as u32));
-            let edge_start = bucket.edge_start;
-            let edge_end = edge_start.saturating_add(u64::from(bucket.edge_len));
-            out.extend((edge_start..edge_end).map(|slot| self.edges.read_slot(slot)));
+        #[cfg(feature = "canbench")]
+        let _bench_scope = bench_scope("labeled_iter_out_edges_collect");
+        for slot in Self::bucket_range(&vertex) {
+            let bucket_index = slot.saturating_sub(vertex.base_slot_start()) as u32;
+            let successor_start = self.bucket_successor_start(&vertex, bucket_index)?;
+            out.extend(self.edges.collect_out_edges_slot_order(
+                &LabelEdgeSpanAccess::new(&self.buckets, slot, successor_start),
+                VertexId::from(0),
+            )?);
         }
-        Ok(out.into_iter())
+        Ok(out)
     }
 
     /// Removes the first edge that satisfies `matches`.
     pub fn remove_edge_matching<F>(
+        &self,
+        src: VertexId,
+        label_id: LabelId,
+        matches: F,
+    ) -> Result<Option<E>, LabeledOperationError>
+    where
+        F: FnMut(&E) -> bool,
+    {
+        let removed = self.remove_edge_matching_skip_leaf_cascade(src, label_id, matches)?;
+        if removed.is_some() && self.labeled_leaf_segment_is_dense(src) {
+            self.rebalance_cascade_after_labeled_mutation(src)?;
+        }
+        Ok(removed)
+    }
+
+    /// Like [`Self::remove_edge_matching`], but skips the post-remove leaf cascade.
+    pub(crate) fn remove_edge_matching_skip_leaf_cascade<F>(
         &self,
         src: VertexId,
         label_id: LabelId,
@@ -357,62 +935,56 @@ where
             if label_id != self.default_label {
                 return Ok(None);
             }
-            return self.remove_from_edge_range(
-                src,
-                vertex.base_slot_start,
-                vertex.row_count,
-                &mut matches,
-            );
+            return self
+                .edges
+                .remove_edge_unordered_matching(&self.vertices, src, matches)
+                .map_err(Into::into);
         }
-        let start = vertex.base_slot_start;
-        let end = start.saturating_add(u64::from(vertex.row_count));
-        for idx in start..end {
-            let bucket_idx = idx as u32;
-            let bucket = self.buckets.get(VertexId::from(bucket_idx));
-            if bucket.label_id != label_id {
-                continue;
+        if let Some(slot) = self.find_bucket_slot(&vertex, label_id)? {
+            #[cfg(feature = "canbench")]
+            let _bench_scope = bench_scope("labeled_remove_edge_skip_leaf");
+            let bucket_index = slot.saturating_sub(vertex.base_slot_start()) as u32;
+            let _successor_start = self.bucket_successor_start(&vertex, bucket_index)?;
+            let bucket = self
+                .buckets
+                .read_label_bucket_slot(slot)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            if bucket.edge_len == 0 {
+                return Ok(None);
             }
-            if let Some(removed) =
-                self.remove_from_edge_range(src, bucket.edge_start, bucket.edge_len, &mut matches)?
-            {
-                let new_len = bucket.edge_len.saturating_sub(1);
-                self.buckets
-                    .set(VertexId::from(bucket_idx), &bucket.with_degree(new_len));
-                return Ok(Some(removed));
-            }
-            return Ok(None);
-        }
-        Ok(None)
-    }
-
-    fn remove_from_edge_range<F>(
-        &self,
-        src: VertexId,
-        start: u64,
-        len: u32,
-        matches: &mut F,
-    ) -> Result<Option<E>, LabeledOperationError>
-    where
-        F: FnMut(&E) -> bool,
-    {
-        if len == 0 {
-            return Ok(None);
-        }
-        let end = start.saturating_add(u64::from(len));
-        for slot in start..end {
-            let edge = self.edges.read_slot(slot);
-            if matches(&edge) {
-                let last_slot = end - 1;
-                if slot != last_slot {
-                    let last = self.edges.read_slot(last_slot);
-                    self.edges
-                        .write_slot(slot, last)
-                        .map_err(|_| LabeledOperationError::EdgeSlabFull)?;
+            let mut found = None;
+            for offset in 0..bucket.edge_len {
+                let edge = self
+                    .edges
+                    .read_slot(bucket.edge_start.saturating_add(u64::from(offset)));
+                if matches(&edge) {
+                    found = Some((offset, edge));
+                    break;
                 }
-                let vertex = self.vertices.get(src).with_degree(len.saturating_sub(1));
-                self.vertices.set(src, &vertex);
-                return Ok(Some(edge));
             }
+            let Some((local_index, removed)) = found else {
+                return Ok(None);
+            };
+            let last_index = bucket.edge_len - 1;
+            if local_index != last_index {
+                let last = self
+                    .edges
+                    .read_slot(bucket.edge_start.saturating_add(u64::from(last_index)));
+                self.edges.write_slot(
+                    bucket.edge_start.saturating_add(u64::from(local_index)),
+                    last,
+                )?;
+            }
+            self.buckets.write_label_bucket_slot(
+                slot,
+                bucket.with_edge_range(bucket.edge_start, last_index),
+            )?;
+            self.edges
+                .set_num_edges(self.edges.header().num_edges.saturating_sub(1));
+            self.edges
+                .bump_vertex_segment_counts(src, -1, 0)
+                .map_err(LabeledOperationError::from)?;
+            return Ok(Some(removed));
         }
         Ok(None)
     }
@@ -422,8 +994,6 @@ where
 mod tests {
     use super::*;
     use crate::{VertexId, test_support::vector_memory, traits::CsrEdge};
-    use std::cell::RefCell;
-    use std::rc::Rc;
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     struct TestEdge {
@@ -454,13 +1024,24 @@ mod tests {
         }
     }
 
-    fn test_graph() -> LabeledLaraGraph<TestEdge, Rc<RefCell<Vec<u8>>>> {
+    fn mem() -> crate::VectorMemory {
+        vector_memory()
+    }
+
+    fn test_graph() -> LabeledLaraGraph<TestEdge, crate::VectorMemory> {
         let default_label = LabelId::from_raw(1);
         let graph = LabeledLaraGraph::new(
-            vector_memory(),
-            vector_memory(),
-            vector_memory(),
-            128,
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            256,
             default_label,
         )
         .unwrap();
@@ -483,23 +1064,146 @@ mod tests {
             .insert_edge(VertexId::from(0), walk, TestEdge { target: 20 })
             .unwrap();
 
-        let road_edges = graph
-            .iter_edges_for_label(VertexId::from(0), road)
-            .unwrap()
-            .collect::<Vec<_>>();
         assert_eq!(
-            road_edges,
+            graph.iter_edges_for_label(VertexId::from(0), road).unwrap(),
             vec![TestEdge { target: 10 }, TestEdge { target: 11 }]
         );
         assert_eq!(
-            graph
-                .iter_out_edges(VertexId::from(0))
-                .unwrap()
-                .collect::<Vec<_>>(),
+            graph.iter_out_edges(VertexId::from(0)).unwrap(),
             vec![
                 TestEdge { target: 10 },
                 TestEdge { target: 11 },
                 TestEdge { target: 20 },
+            ]
+        );
+        crate::labeled::invariants::assert_labeled_layout_invariants(
+            graph.vertices(),
+            graph.buckets(),
+            graph.edges(),
+        );
+        crate::labeled::invariants::assert_labeled_edge_store_pma_counts(
+            graph.vertices(),
+            graph.buckets(),
+            graph.edges(),
+        );
+    }
+
+    #[test]
+    fn normal_labeled_edges_update_pma_leaf_segment_counts() {
+        let graph = test_graph();
+        graph
+            .insert_edge(
+                VertexId::from(0),
+                LabelId::from_raw(2),
+                TestEdge { target: 10 },
+            )
+            .unwrap();
+
+        let header = graph.edges().header();
+        let first_leaf = graph
+            .edges()
+            .counts_store()
+            .get(u64::from(header.segment_count));
+        assert_eq!(first_leaf.actual, 1);
+        assert!(first_leaf.total > 0);
+        crate::labeled::invariants::assert_labeled_edge_store_pma_counts(
+            graph.vertices(),
+            graph.buckets(),
+            graph.edges(),
+        );
+    }
+
+    #[test]
+    fn mixed_default_bypass_and_normal_labeled_pma_counts_stay_consistent() {
+        let graph = test_graph();
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        graph
+            .insert_edge(
+                VertexId::from(0),
+                LabelId::from_raw(2),
+                TestEdge { target: 1 },
+            )
+            .unwrap();
+        graph
+            .insert_edge(
+                VertexId::from(1),
+                graph.default_label(),
+                TestEdge { target: 2 },
+            )
+            .unwrap();
+        graph.enable_default_edge_bypass(VertexId::from(1)).unwrap();
+        graph
+            .insert_edge(
+                VertexId::from(1),
+                graph.default_label(),
+                TestEdge { target: 3 },
+            )
+            .unwrap();
+        crate::labeled::invariants::assert_labeled_edge_store_pma_counts(
+            graph.vertices(),
+            graph.buckets(),
+            graph.edges(),
+        );
+    }
+
+    #[test]
+    fn labeled_dense_leaf_triggers_slack_growth_cascade() {
+        let graph = test_graph();
+        let label = LabelId::from_raw(2);
+        for target in 0..127u32 {
+            graph
+                .insert_edge(VertexId::from(0), label, TestEdge { target })
+                .unwrap();
+        }
+        let alloc_before = graph
+            .vertices()
+            .get(VertexId::from(0))
+            .vertex_edge_alloc_slots();
+        graph
+            .insert_edge(VertexId::from(0), label, TestEdge { target: 127 })
+            .unwrap();
+        let alloc_after = graph
+            .vertices()
+            .get(VertexId::from(0))
+            .vertex_edge_alloc_slots();
+        assert!(
+            alloc_after > alloc_before,
+            "expected post-insert cascade to expand VertexEdgeSpan reservation (before={alloc_before}, after={alloc_after})"
+        );
+    }
+
+    #[test]
+    fn label_buckets_and_edges_follow_label_order() {
+        let graph = test_graph();
+        for (label, target) in [(10, 100), (2, 20), (7, 70), (2, 21)] {
+            graph
+                .insert_edge(
+                    VertexId::from(0),
+                    LabelId::from_raw(label),
+                    TestEdge { target },
+                )
+                .unwrap();
+        }
+
+        let vertex = graph.vertices().get(VertexId::from(0));
+        let labels: Vec<_> = (0..vertex.degree())
+            .map(|offset| {
+                graph
+                    .buckets()
+                    .read_label_bucket_slot(vertex.base_slot_start() + u64::from(offset))
+                    .unwrap()
+                    .label_id
+                    .raw()
+            })
+            .collect();
+        assert_eq!(labels, vec![2, 7, 10]);
+        assert_eq!(
+            graph.iter_out_edges(VertexId::from(0)).unwrap(),
+            vec![
+                TestEdge { target: 20 },
+                TestEdge { target: 21 },
+                TestEdge { target: 70 },
+                TestEdge { target: 100 },
             ]
         );
         crate::labeled::invariants::assert_labeled_layout_invariants(
@@ -522,12 +1226,11 @@ mod tests {
             .unwrap();
         let vertex = graph.vertices().get(VertexId::from(0));
         assert!(vertex.is_default_edge_labeled());
-        assert_eq!(vertex.row_count, 1);
+        assert_eq!(vertex.degree(), 1);
         assert_eq!(
             graph
                 .iter_edges_for_label(VertexId::from(0), graph.default_label())
-                .unwrap()
-                .collect::<Vec<_>>(),
+                .unwrap(),
             vec![TestEdge { target: 7 }]
         );
     }
@@ -552,11 +1255,274 @@ mod tests {
                 .is_some()
         );
         assert_eq!(
+            graph.iter_edges_for_label(VertexId::from(0), road).unwrap(),
+            vec![TestEdge { target: 10 }, TestEdge { target: 12 }]
+        );
+    }
+
+    #[test]
+    fn remove_edge_from_one_label_keeps_next_label_isolated() {
+        let graph = test_graph();
+        let road = LabelId::from_raw(2);
+        let walk = LabelId::from_raw(3);
+        for target in [10, 11] {
+            graph
+                .insert_edge(VertexId::from(0), road, TestEdge { target })
+                .unwrap();
+        }
+        for target in [20, 21] {
+            graph
+                .insert_edge(VertexId::from(0), walk, TestEdge { target })
+                .unwrap();
+        }
+
+        graph
+            .remove_edge_matching(VertexId::from(0), road, |edge| edge.target == 10)
+            .unwrap();
+
+        assert_eq!(
+            graph.iter_edges_for_label(VertexId::from(0), road).unwrap(),
+            vec![TestEdge { target: 11 }]
+        );
+        assert_eq!(
+            graph.iter_edges_for_label(VertexId::from(0), walk).unwrap(),
+            vec![TestEdge { target: 20 }, TestEdge { target: 21 }]
+        );
+        crate::labeled::invariants::assert_labeled_layout_invariants(
+            graph.vertices(),
+            graph.buckets(),
+            graph.edges(),
+        );
+    }
+
+    #[test]
+    fn insert_beyond_initial_label_bucket_store_vertex_segment_relocates_buckets() {
+        let graph = test_graph();
+        for label in 1..=33u16 {
+            graph
+                .insert_edge(
+                    VertexId::from(0),
+                    LabelId::from_raw(label),
+                    TestEdge {
+                        target: label as u32,
+                    },
+                )
+                .unwrap();
+        }
+        let vertex = graph.vertices().get(VertexId::from(0));
+        assert_eq!(vertex.degree(), 33);
+        assert_eq!(graph.iter_out_edges(VertexId::from(0)).unwrap().len(), 33);
+        crate::labeled::invariants::assert_labeled_layout_invariants(
+            graph.vertices(),
+            graph.buckets(),
+            graph.edges(),
+        );
+    }
+
+    #[test]
+    fn label_bucket_store_vertex_segment_compacts_across_thirty_two_vertices() {
+        let graph = test_graph();
+        for _ in 1..32 {
+            graph.push_vertex(LabeledVertex::default()).unwrap();
+        }
+        graph
+            .insert_edge(
+                VertexId::from(0),
+                LabelId::from_raw(2),
+                TestEdge { target: 10 },
+            )
+            .unwrap();
+        graph
+            .insert_edge(
+                VertexId::from(31),
+                LabelId::from_raw(3),
+                TestEdge { target: 20 },
+            )
+            .unwrap();
+        graph
+            .insert_edge(
+                VertexId::from(0),
+                LabelId::from_raw(4),
+                TestEdge { target: 30 },
+            )
+            .unwrap();
+
+        let first = graph.vertices().get(VertexId::from(0));
+        let last = graph.vertices().get(VertexId::from(31));
+        assert_eq!(first.degree(), 2);
+        assert_eq!(last.degree(), 1);
+        assert_eq!(last.base_slot_start(), first.base_slot_start() + 2);
+        assert_eq!(
+            graph.iter_out_edges(VertexId::from(0)).unwrap(),
+            vec![TestEdge { target: 10 }, TestEdge { target: 30 }]
+        );
+        assert_eq!(
+            graph.iter_out_edges(VertexId::from(31)).unwrap(),
+            vec![TestEdge { target: 20 }]
+        );
+    }
+
+    #[test]
+    fn insert_beyond_initial_label_edge_span_capacity_relocates_vertex_edge_span() {
+        let graph = test_graph();
+        let road = LabelId::from_raw(2);
+        for target in 0..128u32 {
+            graph
+                .insert_edge(VertexId::from(0), road, TestEdge { target })
+                .unwrap();
+        }
+        let edges = graph.iter_edges_for_label(VertexId::from(0), road).unwrap();
+        assert_eq!(edges.len(), 128);
+        assert_eq!(edges[0], TestEdge { target: 0 });
+        assert_eq!(edges[127], TestEdge { target: 127 });
+        let vertex = graph.vertices().get(VertexId::from(0));
+        let bucket = graph
+            .buckets()
+            .read_label_bucket_slot(vertex.base_slot_start())
+            .unwrap();
+        assert_eq!(bucket.edge_len, 128);
+        assert!(vertex.vertex_edge_alloc_slots() >= 128);
+    }
+
+    #[test]
+    fn vertex_edge_span_rewrite_weights_slack_by_label_degree() {
+        let graph = test_graph();
+        let hot = LabelId::from_raw(2);
+        let cold = LabelId::from_raw(3);
+        for target in 0..64u32 {
+            graph
+                .insert_edge(VertexId::from(0), hot, TestEdge { target })
+                .unwrap();
+        }
+        graph
+            .insert_edge(VertexId::from(0), cold, TestEdge { target: 900 })
+            .unwrap();
+
+        let vertex = graph.vertices().get(VertexId::from(0));
+        let hot_slot = graph.find_bucket_slot(&vertex, hot).unwrap().unwrap();
+        let cold_slot = graph.find_bucket_slot(&vertex, cold).unwrap().unwrap();
+        let hot_index = hot_slot.saturating_sub(vertex.base_slot_start()) as u32;
+        let cold_index = cold_slot.saturating_sub(vertex.base_slot_start()) as u32;
+        let hot_bucket = graph.buckets().read_label_bucket_slot(hot_slot).unwrap();
+        let cold_bucket = graph.buckets().read_label_bucket_slot(cold_slot).unwrap();
+        let hot_capacity = graph
+            .bucket_successor_start(&vertex, hot_index)
+            .unwrap()
+            .saturating_sub(hot_bucket.edge_start);
+        let cold_capacity = graph
+            .bucket_successor_start(&vertex, cold_index)
+            .unwrap()
+            .saturating_sub(cold_bucket.edge_start);
+
+        assert!(hot_capacity > cold_capacity);
+        assert!(hot_capacity > u64::from(hot_bucket.edge_len));
+        assert!(cold_capacity >= u64::from(cold_bucket.edge_len));
+        crate::labeled::invariants::assert_labeled_layout_invariants(
+            graph.vertices(),
+            graph.buckets(),
+            graph.edges(),
+        );
+    }
+
+    #[test]
+    fn compact_vertex_edge_span_shrinks_vertex_edge_span() {
+        let graph = test_graph();
+        let road = LabelId::from_raw(2);
+        for target in 0..80u32 {
+            graph
+                .insert_edge(VertexId::from(0), road, TestEdge { target })
+                .unwrap();
+        }
+        for target in 0..72u32 {
+            graph
+                .remove_edge_matching(VertexId::from(0), road, |edge| edge.target == target)
+                .unwrap();
+        }
+
+        let before = graph.vertices().get(VertexId::from(0));
+        assert_eq!(
             graph
                 .iter_edges_for_label(VertexId::from(0), road)
                 .unwrap()
-                .collect::<Vec<_>>(),
-            vec![TestEdge { target: 10 }, TestEdge { target: 12 }]
+                .len(),
+            8
         );
+        assert!(before.vertex_edge_alloc_slots() > 8);
+
+        graph
+            .compact_vertex_edge_span(VertexId::from(0), 0)
+            .unwrap();
+
+        let after = graph.vertices().get(VertexId::from(0));
+        assert_eq!(after.vertex_edge_alloc_slots(), 8);
+        assert_eq!(
+            graph
+                .iter_edges_for_label(VertexId::from(0), road)
+                .unwrap()
+                .len(),
+            8
+        );
+        crate::labeled::invariants::assert_labeled_layout_invariants(
+            graph.vertices(),
+            graph.buckets(),
+            graph.edges(),
+        );
+        crate::labeled::invariants::assert_labeled_edge_store_pma_counts(
+            graph.vertices(),
+            graph.buckets(),
+            graph.edges(),
+        );
+    }
+
+    #[test]
+    fn default_bypass_conversion_clears_vertex_edge_span_allocation() {
+        let graph = test_graph();
+        graph
+            .insert_edge(
+                VertexId::from(0),
+                graph.default_label(),
+                TestEdge { target: 7 },
+            )
+            .unwrap();
+
+        let before = graph.vertices().get(VertexId::from(0));
+        assert!(!before.is_default_edge_labeled());
+        assert!(before.vertex_edge_alloc_slots() > 0);
+
+        graph.enable_default_edge_bypass(VertexId::from(0)).unwrap();
+
+        let after = graph.vertices().get(VertexId::from(0));
+        assert!(after.is_default_edge_labeled());
+        assert_eq!(after.degree(), 1);
+        assert_eq!(after.vertex_edge_alloc_slots(), 0);
+        assert_eq!(
+            graph
+                .iter_edges_for_label(VertexId::from(0), graph.default_label())
+                .unwrap(),
+            vec![TestEdge { target: 7 }]
+        );
+    }
+
+    #[test]
+    fn compact_label_bucket_vertex_segment_preserves_rows() {
+        let graph = test_graph();
+        for label in 1..=6u16 {
+            graph
+                .insert_edge(
+                    VertexId::from(0),
+                    LabelId::from_raw(label),
+                    TestEdge {
+                        target: label as u32,
+                    },
+                )
+                .unwrap();
+        }
+        let before = graph.vertices().get(VertexId::from(0));
+        graph
+            .compact_label_bucket_vertex_segment(VertexId::from(0))
+            .unwrap();
+        let after = graph.vertices().get(VertexId::from(0));
+        assert_eq!(after.degree(), before.degree());
+        assert_eq!(graph.iter_out_edges(VertexId::from(0)).unwrap().len(), 6);
     }
 }

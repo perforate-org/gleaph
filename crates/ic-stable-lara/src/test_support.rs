@@ -195,6 +195,33 @@ pub(crate) fn vector_memory() -> VectorMemory {
     Rc::new(RefCell::new(Vec::new()))
 }
 
+#[allow(clippy::type_complexity)]
+pub(crate) fn labeled_lara_memories() -> (
+    VectorMemory,
+    VectorMemory,
+    VectorMemory,
+    VectorMemory,
+    VectorMemory,
+    VectorMemory,
+    VectorMemory,
+    VectorMemory,
+    VectorMemory,
+    VectorMemory,
+) {
+    (
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+    )
+}
+
 pub(crate) type TestBidirectionalLaraGraph<E> = BidirectionalLaraGraph<E, Vertex, VectorMemory>;
 
 pub(crate) type TestDeferredBidirectionalLaraGraph<E> =

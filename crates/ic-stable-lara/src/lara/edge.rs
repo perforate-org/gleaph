@@ -58,8 +58,9 @@ use crate::{
     traits::{CsrEdge, CsrVertex, CsrVertexTombstoneScan},
 };
 use counts::{SegmentEdgeCounts, SegmentEdgeCountsStore};
-use edges::{EdgeSlabStore, tree_height_for_segment_count};
-pub use edges::{HeaderV1 as EdgeHeaderV1, segment_tree_leaf_count};
+pub(crate) use edges::EdgeSlabStore;
+use edges::tree_height_for_segment_count;
+pub use edges::{HeaderV1 as EdgeHeaderV1, InitError as SlabInitError, segment_tree_leaf_count};
 use free_span::{FreeSpan, FreeSpanStore};
 use ic_stable_structures::Memory;
 pub use log::HeaderV1 as LogHeaderV1;
@@ -1023,6 +1024,21 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         A: VertexAccess<V>,
     {
         loc < self.slab_window_exclusive_end(edge_layout, vertices, v_ord, v)
+    }
+
+    /// Incremental update of the PMA leaf row for `vid` (and internal ancestors).
+    ///
+    /// Core inserts/removes typically adjust only [`SegmentEdgeCounts::actual`] (`d_total = 0`).
+    /// Labeled vertex-edge-span growth/shrink may also adjust [`SegmentEdgeCounts::total`] when
+    /// physical slab reservation changes.
+    pub(crate) fn bump_vertex_segment_counts(
+        &self,
+        vid: VertexId,
+        d_actual: i64,
+        d_total: i64,
+    ) -> Result<(), LaraOperationError> {
+        let edge_layout = self.edge_layout();
+        self.bump_counts_leaf_with_layout(&edge_layout, vid, d_actual, d_total)
     }
 
     fn bump_counts_leaf_with_layout(

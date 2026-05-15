@@ -1,0 +1,78 @@
+//! Multi-level labeled CSR variant of LARA.
+//!
+//! This module keeps the same scan/update split as [`crate::LaraGraph`], but
+//! inserts LabelBuckets between vertices and edge rows:
+//!
+//! - **Scan contract:** read one [`LabeledVertex`]. If it uses the default-label
+//!   bypass, scan the edge row directly. Otherwise read LabelBucket slots
+//!   `[base_slot_start, base_slot_start + degree)`, choose the matching
+//!   [`LabelBucket`], then scan that bucket's LabelEdgeSpan. Scan code never reads the
+//!   LabelBucketStore free-span index. For a LabelEdgeSpan it only needs the bucket
+//!   itself plus the next bucket's `edge_start`; for the last bucket, the
+//!   successor boundary is the VertexEdgeSpan end.
+//! - **Update contract:** LabelBucket inserts and maintenance rewrite the
+//!   owning LabelBucketStore VertexSegment, updating each affected
+//!   [`LabeledVertex::base_slot_start`] and [`LabeledVertex::row_count`]. Edge
+//!   inserts under a label rewrite the **VertexEdgeSpan** only when
+//!   the target LabelEdgeSpan has no spare slot. The edge bytes still live in the
+//!   regular [`crate::lara::edge::EdgeStore`] slab, so allocation and free-span
+//!   reuse stay centralized in the existing LARA implementation.
+//!
+//! The LabelBucketStore deliberately does **not** have an overflow log or PMA segment
+//! metadata. A physical VertexSegment's length is exactly the number of live
+//! LabelBuckets in that 32-vertex segment; old spans are released only after the
+//! rewritten vertex rows point at the new committed layout.
+//!
+//! The edge layer has one additional labeled-specific rule. For a non-default
+//! vertex, [`LabeledVertex::vertex_edge_alloc_slots`] reserves one contiguous
+//! physical VertexEdgeSpan for all labels on that vertex. The [`LabelBucket`] rows are
+//! kept strictly sorted by [`LabelId`], and their LabelEdgeSpans are laid out in
+//! that same order inside the VertexEdgeSpan:
+//!
+//! ```text
+//! LabeledVertex
+//!   base_slot_start -> [ LabelBucket(label=2), LabelBucket(label=7), ... ]
+//!   row_count       -> number of LabelBuckets
+//!   vertex_edge_alloc_slots -> physical edge slots reserved for all labels below
+//!
+//! EdgeStore slab
+//!   LabelEdgeSpan(label=2) | slack | LabelEdgeSpan(label=7) | slack | ...
+//! ```
+//!
+//! This keeps the bucket descriptors exact-fit while allowing edge-heavy labels
+//! to grow without adding allocation fields to every [`LabelBucket`].
+//! Normal labeled rows use [`crate::lara::edge::EdgeStore`] as a slab allocator
+//! and byte store, but they do not participate in the core LARA PMA leaf-density
+//! accounting; their density/rewrite unit is the VertexEdgeSpan.
+//! Default-label bypass rows still use the regular edge row path.
+
+pub mod access;
+#[cfg(feature = "canbench")]
+mod bench;
+pub mod bidirectional;
+pub mod bucket_store;
+pub mod deferred;
+pub mod graph;
+pub mod invariants;
+pub mod record;
+pub mod traits;
+
+pub use bidirectional::{
+    BidirectionalLabeledError, BidirectionalLabeledLaraGraph, DeferredBidirectionalLabeledError,
+    DeferredBidirectionalLabeledLaraGraph, LabeledBidirectionalMaintenanceReport,
+    Orientation as LabeledOrientation,
+};
+pub use bucket_store::LabelBucketStore;
+pub use deferred::{DeferredError, DeferredLabeledLaraGraph, MaintenanceWorkItem};
+pub use graph::{InitError as LabeledGraphInitError, LabeledLaraGraph, LabeledOperationError};
+pub use record::{LabelBucket, LabelId, LabeledVertex};
+pub use traits::LabeledCsrVertex;
+
+/// Convenience alias for the single-orientation labeled LARA graph.
+pub type LabeledLara<E, M> = LabeledLaraGraph<E, M>;
+/// Convenience alias for the deferred-maintenance labeled LARA graph.
+pub type DeferredLabeledLara<E, M> = DeferredLabeledLaraGraph<E, M>;
+/// Convenience alias for the bidirectional labeled LARA graph.
+pub type BidirectionalLabeledLara<E, M> = BidirectionalLabeledLaraGraph<E, M>;
+/// Convenience alias for the deferred bidirectional labeled LARA graph.
+pub type DeferredBidirectionalLabeledLara<E, M> = DeferredBidirectionalLabeledLaraGraph<E, M>;

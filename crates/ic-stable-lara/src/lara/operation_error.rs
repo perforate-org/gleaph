@@ -7,7 +7,7 @@ use std::fmt;
 /// Addressing a [`VertexId`] outside the vertex column length (`0 .. len`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VertexAccessError {
-    /// `vertex_index(id) >= len` (see [`VertexAccess::try_vertex_index`]).
+    /// The requested `VertexId` is outside `0 .. len`.
     OutOfRange,
 }
 
@@ -32,11 +32,11 @@ pub enum LaraOperationError {
     LogChainShort,
     /// `degree * E::BYTES` overflowed when sizing a collect buffer.
     CollectAllocationOverflow,
-    /// [`super::edge::EdgeStore::remove_edge_unordered_matching`] needs a slab-only row.
+    /// Unordered edge removal needs a slab-only row.
     RemoveRequiresSlabOnlyRow,
-    /// [`super::edge::EdgeStore::row_edge_at_slab`] needs a slab-only row.
+    /// Direct slab edge reads need a slab-only row.
     RowEdgeReadRequiresSlabOnlyRow,
-    /// [`super::edge::EdgeStore::clear_row_slab`] needs a slab-only row.
+    /// Clearing a row slab needs a slab-only row.
     ClearRowRequiresSlabOnlyRow,
     /// Overflow log has no free slot for another entry.
     SegmentLogFull,

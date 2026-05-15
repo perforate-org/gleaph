@@ -58,9 +58,9 @@ pub use bidirectional::{
 };
 pub use labeled::{
     BidirectionalLabeledError, BidirectionalLabeledLara, BidirectionalLabeledLaraGraph,
-    DeferredBidirectionalLabeledLara, DeferredBidirectionalLabeledLaraGraph, DeferredLabeledLara,
-    DeferredLabeledLaraGraph, LabelBucket, LabelId, LabeledCsrVertex, LabeledLara,
-    LabeledLaraGraph, LabeledVertex,
+    DeferredBidirectionalLabeledError, DeferredBidirectionalLabeledLara,
+    DeferredBidirectionalLabeledLaraGraph, DeferredLabeledLara, DeferredLabeledLaraGraph,
+    LabelBucket, LabelId, LabeledCsrVertex, LabeledLara, LabeledLaraGraph, LabeledVertex,
 };
 pub use lara::{
     LaraGraph,

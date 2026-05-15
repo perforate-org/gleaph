@@ -26,8 +26,8 @@ struct HeaderV1 {
 /// Placement metadata for one leaf segment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SegmentSpanMeta {
-    /// Physical edge-slab start slot assigned to this segment, or [`SPAN_PHYSICAL_UNASSIGNED`]
-    /// until the segment obtains a contiguous slab reservation.
+    /// Physical edge-slab start slot assigned to this segment, or the internal
+    /// unassigned sentinel until the segment obtains a contiguous slab reservation.
     pub physical_start: u64,
 }
 
