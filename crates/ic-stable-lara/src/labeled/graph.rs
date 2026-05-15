@@ -350,8 +350,8 @@ where
     ///
     /// Invariant: parallel edges under one catalog label must not accumulate in a
     /// [`LabelBucket`] VertexEdgeSpan (slab + segment log). The first edge may use a
-    /// bucket; from the second edge onward the row is stored like default-label bypass
-    /// with the label id tagged in [`LabeledVertex::vertex_edge_alloc_slots`].
+    /// bucket; from the second edge onward a tail row can be stored like default-label
+    /// bypass with the label id tagged in [`LabeledVertex::vertex_edge_alloc_slots`].
     fn try_promote_single_label_bucket_to_bypass(
         &self,
         src: VertexId,
@@ -362,6 +362,9 @@ where
         }
         let vertex = self.vertices.get(src);
         if vertex.is_default_edge_labeled() || vertex.degree() != 1 {
+            return Ok(());
+        }
+        if !self.may_use_homogeneous_bypass(src) {
             return Ok(());
         }
         let bucket_slot = vertex.base_slot_start();
@@ -2829,6 +2832,45 @@ mod tests {
         );
         let earlier = graph.vertices().get(VertexId::from(0));
         assert!(!earlier.is_default_edge_labeled());
+    }
+
+    #[test]
+    fn non_tail_single_label_insert_does_not_rebase_successor_bypass_edges() {
+        let graph = test_graph();
+        let successor = graph.push_vertex(LabeledVertex::default()).unwrap();
+        graph
+            .insert_edge(successor, graph.default_label(), TestEdge { target: 900 })
+            .unwrap();
+
+        let road = LabelId::from_raw(2);
+        graph
+            .insert_edge(VertexId::from(0), road, TestEdge { target: 10 })
+            .unwrap();
+        graph
+            .insert_edge(VertexId::from(0), road, TestEdge { target: 11 })
+            .unwrap();
+
+        assert!(
+            !graph
+                .vertices()
+                .get(VertexId::from(0))
+                .is_default_edge_labeled()
+        );
+        assert_eq!(
+            graph
+                .iter_edges_for_label(successor, graph.default_label())
+                .unwrap(),
+            vec![TestEdge { target: 900 }]
+        );
+        assert_eq!(
+            graph.iter_edges_for_label(VertexId::from(0), road).unwrap(),
+            vec![TestEdge { target: 10 }, TestEdge { target: 11 }]
+        );
+        crate::labeled::invariants::assert_labeled_layout_invariants(
+            graph.vertices(),
+            graph.buckets(),
+            graph.edges(),
+        );
     }
 
     #[test]
