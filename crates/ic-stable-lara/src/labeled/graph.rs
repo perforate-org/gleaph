@@ -2874,6 +2874,59 @@ mod tests {
     }
 
     #[test]
+    fn unchecked_label_iteration_matches_checked_for_valid_vertices() {
+        let graph = test_graph();
+        let bypass_tail = graph.push_vertex(LabeledVertex::default()).unwrap();
+        let catalog_tail = graph.push_vertex(LabeledVertex::default()).unwrap();
+
+        let road = LabelId::from_raw(2);
+        let walk = LabelId::from_raw(3);
+        for target in [10, 11] {
+            graph
+                .insert_edge(VertexId::from(0), road, TestEdge { target })
+                .unwrap();
+        }
+        graph
+            .insert_edge(VertexId::from(0), walk, TestEdge { target: 20 })
+            .unwrap();
+
+        for target in [100, 101] {
+            graph
+                .insert_edge(bypass_tail, graph.default_label(), TestEdge { target })
+                .unwrap();
+        }
+
+        let catalog = LabelId::from_raw(42);
+        for target in [200, 201] {
+            graph
+                .insert_edge(catalog_tail, catalog, TestEdge { target })
+                .unwrap();
+        }
+
+        for (src, label) in [
+            (VertexId::from(0), road),
+            (VertexId::from(0), walk),
+            (VertexId::from(0), LabelId::from_raw(999)),
+            (bypass_tail, graph.default_label()),
+            (bypass_tail, road),
+            (catalog_tail, catalog),
+            (catalog_tail, graph.default_label()),
+        ] {
+            let mut checked = Vec::new();
+            graph
+                .for_each_edges_for_label(src, label, |edge| checked.push(edge))
+                .unwrap();
+
+            let mut unchecked = Vec::new();
+            graph
+                .for_each_edges_for_label_unchecked(src, label, |edge| unchecked.push(edge))
+                .unwrap();
+
+            assert_eq!(unchecked, checked, "src={src:?} label={label:?}");
+        }
+    }
+
+    #[test]
     fn homogeneous_undirected_bypass_and_promotion_on_named_label() {
         let graph = test_graph_with_default(LabelId::from_raw(0));
         let undirected = LabelId::from_raw(LABEL_UNDIRECTED_BIT);
