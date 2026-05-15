@@ -3030,6 +3030,70 @@ mod tests {
     }
 
     #[test]
+    fn empty_middle_label_bucket_does_not_expose_neighbor_edges() {
+        let graph = test_graph();
+        let low = LabelId::from_raw(2);
+        let middle = LabelId::from_raw(3);
+        let high = LabelId::from_raw(4);
+
+        graph
+            .insert_edge(VertexId::from(0), low, TestEdge { target: 10 })
+            .unwrap();
+        graph
+            .insert_edge(VertexId::from(0), middle, TestEdge { target: 20 })
+            .unwrap();
+        graph
+            .insert_edge(VertexId::from(0), high, TestEdge { target: 30 })
+            .unwrap();
+
+        assert!(
+            graph
+                .remove_edge_matching(VertexId::from(0), middle, |edge| edge.target == 20)
+                .unwrap()
+                .is_some()
+        );
+
+        assert_eq!(
+            graph
+                .iter_edges_for_label(VertexId::from(0), middle)
+                .unwrap(),
+            Vec::<TestEdge>::new()
+        );
+        assert_eq!(
+            graph.iter_out_edges(VertexId::from(0)).unwrap(),
+            vec![TestEdge { target: 30 }, TestEdge { target: 10 }]
+        );
+
+        let mut raw_scanned = Vec::new();
+        graph
+            .for_each_out_edge_matching_with_raw(
+                VertexId::from(0),
+                None,
+                |_| true,
+                |edge| raw_scanned.push(edge),
+            )
+            .unwrap();
+        assert_eq!(
+            raw_scanned,
+            vec![TestEdge { target: 30 }, TestEdge { target: 10 }]
+        );
+
+        let vertex = graph.vertices().get(VertexId::from(0));
+        let middle_slot = graph.find_bucket_slot(&vertex, middle).unwrap().unwrap();
+        let middle_bucket = graph.buckets().read_label_bucket_slot(middle_slot).unwrap();
+        let middle_index = middle_slot.saturating_sub(vertex.base_slot_start()) as u32;
+        let successor = graph.bucket_successor_start(&vertex, middle_index).unwrap();
+        assert_eq!(middle_bucket.edge_len, 0);
+        assert!(successor >= middle_bucket.edge_start);
+
+        crate::labeled::invariants::assert_labeled_layout_invariants(
+            graph.vertices(),
+            graph.buckets(),
+            graph.edges(),
+        );
+    }
+
+    #[test]
     fn insert_beyond_initial_label_bucket_store_vertex_segment_relocates_buckets() {
         let graph = test_graph();
         for label in 1..=33u16 {
