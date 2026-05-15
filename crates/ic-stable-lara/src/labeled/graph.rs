@@ -438,6 +438,27 @@ where
             .saturating_add(u64::from(vertex.vertex_edge_alloc_slots())))
     }
 
+    /// True when every bucket is slab-only and its live edges occupy a contiguous
+    /// prefix `[edge_start, edge_start + edge_len)`, so bulk slab memcpy is sound.
+    fn label_buckets_allow_contiguous_slab_copy(
+        &self,
+        vertex: &LabeledVertex,
+        buckets: &[LabelBucket],
+    ) -> bool {
+        if buckets.iter().any(|b| b.overflow_log_head >= 0) {
+            return false;
+        }
+        for (index, bucket) in buckets.iter().enumerate() {
+            let Ok(successor) = self.bucket_successor_start(vertex, index as u32) else {
+                return false;
+            };
+            if successor.saturating_sub(bucket.edge_start) < u64::from(bucket.edge_len) {
+                return false;
+            }
+        }
+        true
+    }
+
     fn rewrite_vertex_edge_span_read_and_plan(
         &self,
         vertex: &LabeledVertex,
@@ -513,10 +534,11 @@ where
         // placement because the caller is about to insert there.
         //
         // Copy strategy: when relocating to a fresh slab span (`moved` with a prior
-        // allocation), source and destination are disjoint—collect every bucket's
-        // edges first (while the old layout is still consistent), then write into the
-        // new span. In-place layout changes can overlap; then use one scratch [`Vec`]
-        // sized to `total_live` instead of per-bucket edge vectors.
+        // allocation), source and destination are disjoint. If every bucket is
+        // slab-only (`overflow_log_head < 0`) and each label's live edges sit in a
+        // contiguous slab prefix, use cheap `read_slots_contiguous` / `write_slots_contiguous`.
+        // Otherwise collect through `EdgeStore` (slab + overflow log) before writing.
+        // In-place layout changes can overlap; the same fast vs full split applies.
         let vertex = self.vertices.get(src);
         if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
             return Ok(());
@@ -531,94 +553,170 @@ where
                 force_slack_grow,
             )?;
 
+        let slab_only_bulk = self.label_buckets_allow_contiguous_slab_copy(&vertex, &buckets);
+
         let disjoint_copy = moved && old_alloc > 0;
         if disjoint_copy {
             #[cfg(feature = "canbench")]
             let _bench_scope = bench_scope("labeled_rewrite_copy_disjoint");
-            let mut per_bucket: Vec<Vec<E>> = Vec::with_capacity(buckets.len());
-            for (index, _) in buckets.iter().enumerate() {
-                let slot = vertex.base_slot_start().saturating_add(index as u64);
-                let bucket_index = index as u32;
-                let successor = self.bucket_successor_start(&vertex, bucket_index)?;
-                let acc = LabelEdgeSpanAccess::new(&self.buckets, slot, successor, src);
-                per_bucket.push(
-                    self.edges
-                        .collect_out_edges_slot_order(&acc, VertexId::from(0))
-                        .map_err(LabeledOperationError::from)?,
-                );
-            }
-            let max_run = per_bucket
-                .iter()
-                .map(|edges| edges.len().saturating_mul(E::BYTES))
-                .max()
-                .unwrap_or(0);
-            let mut buf = vec![0u8; max_run];
-            for (index, bucket) in buckets.iter().enumerate() {
-                let row_start = positions[index];
-                let slot = vertex.base_slot_start().saturating_add(index as u64);
-                let edges = &per_bucket[index];
-                let el = edges.len() as u32;
-                if !edges.is_empty() {
-                    let run = edges.len().saturating_mul(E::BYTES);
-                    debug_assert!(run <= buf.len());
-                    let mut o = 0usize;
-                    for e in edges {
-                        e.write_to(&mut buf[o..o + E::BYTES]);
-                        o += E::BYTES;
+            if slab_only_bulk {
+                let max_run = buckets
+                    .iter()
+                    .map(|b| {
+                        usize::try_from(b.edge_len)
+                            .unwrap_or(usize::MAX)
+                            .saturating_mul(E::BYTES)
+                    })
+                    .max()
+                    .unwrap_or(0);
+                let mut buf = vec![0u8; max_run];
+                for (index, bucket) in buckets.iter().enumerate() {
+                    let row_start = positions[index];
+                    let run = usize::try_from(bucket.edge_len)
+                        .unwrap_or(usize::MAX)
+                        .saturating_mul(E::BYTES);
+                    if run > 0 {
+                        self.edges
+                            .read_slots_contiguous(bucket.edge_start, &mut buf[..run]);
+                        self.edges.write_slots_contiguous(row_start, &buf[..run])?;
                     }
-                    self.edges.write_slots_contiguous(row_start, &buf[..run])?;
+                    let slot = vertex.base_slot_start().saturating_add(index as u64);
+                    self.buckets.write_label_bucket_slot(
+                        slot,
+                        bucket
+                            .with_edge_range(row_start, bucket.edge_len)
+                            .with_overflow_log_head(-1),
+                    )?;
                 }
-                self.buckets.write_label_bucket_slot(
-                    slot,
-                    bucket
-                        .with_edge_range(row_start, el)
-                        .with_overflow_log_head(-1),
-                )?;
+            } else {
+                let mut per_bucket: Vec<Vec<E>> = Vec::with_capacity(buckets.len());
+                for (index, _) in buckets.iter().enumerate() {
+                    let slot = vertex.base_slot_start().saturating_add(index as u64);
+                    let bucket_index = index as u32;
+                    let successor = self.bucket_successor_start(&vertex, bucket_index)?;
+                    let acc = LabelEdgeSpanAccess::new(&self.buckets, slot, successor, src);
+                    per_bucket.push(
+                        self.edges
+                            .collect_out_edges_slot_order(&acc, VertexId::from(0))
+                            .map_err(LabeledOperationError::from)?,
+                    );
+                }
+                let max_run = per_bucket
+                    .iter()
+                    .map(|edges| edges.len().saturating_mul(E::BYTES))
+                    .max()
+                    .unwrap_or(0);
+                let mut buf = vec![0u8; max_run];
+                for (index, bucket) in buckets.iter().enumerate() {
+                    let row_start = positions[index];
+                    let slot = vertex.base_slot_start().saturating_add(index as u64);
+                    let edges = &per_bucket[index];
+                    let el = edges.len() as u32;
+                    if !edges.is_empty() {
+                        let run = edges.len().saturating_mul(E::BYTES);
+                        debug_assert!(run <= buf.len());
+                        let mut o = 0usize;
+                        for e in edges {
+                            e.write_to(&mut buf[o..o + E::BYTES]);
+                            o += E::BYTES;
+                        }
+                        self.edges.write_slots_contiguous(row_start, &buf[..run])?;
+                    }
+                    self.buckets.write_label_bucket_slot(
+                        slot,
+                        bucket
+                            .with_edge_range(row_start, el)
+                            .with_overflow_log_head(-1),
+                    )?;
+                }
             }
         } else if total_live > 0 {
             #[cfg(feature = "canbench")]
             let _bench_scope = bench_scope("labeled_rewrite_copy_inplace_vec");
-            let mut per_bucket: Vec<Vec<E>> = Vec::with_capacity(buckets.len());
-            for (index, _) in buckets.iter().enumerate() {
-                let slot = vertex.base_slot_start().saturating_add(index as u64);
-                let bucket_index = index as u32;
-                let successor = self.bucket_successor_start(&vertex, bucket_index)?;
-                let acc = LabelEdgeSpanAccess::new(&self.buckets, slot, successor, src);
-                per_bucket.push(
-                    self.edges
-                        .collect_out_edges_slot_order(&acc, VertexId::from(0))
-                        .map_err(LabeledOperationError::from)?,
-                );
-            }
-            let run_total: usize = per_bucket
-                .iter()
-                .map(|v| v.len().saturating_mul(E::BYTES))
-                .sum();
-            let mut raw = vec![0u8; run_total];
-            let mut pack = 0usize;
-            for edges in &per_bucket {
-                for e in edges {
-                    e.write_to(&mut raw[pack..pack + E::BYTES]);
-                    pack += E::BYTES;
+            if slab_only_bulk {
+                let run_total = usize::try_from(total_live)
+                    .unwrap_or(usize::MAX)
+                    .saturating_mul(E::BYTES);
+                let mut raw = vec![0u8; run_total];
+                let mut off = 0usize;
+                for bucket in &buckets {
+                    let run = usize::try_from(bucket.edge_len)
+                        .unwrap_or(usize::MAX)
+                        .saturating_mul(E::BYTES);
+                    if run > 0 {
+                        self.edges.read_slots_contiguous(
+                            bucket.edge_start,
+                            &mut raw[off..off.saturating_add(run)],
+                        );
+                        off = off.saturating_add(run);
+                    }
                 }
-            }
-            pack = 0;
-            for (index, bucket) in buckets.iter().enumerate() {
-                let row_start = positions[index];
-                let edges = &per_bucket[index];
-                let run = edges.len().saturating_mul(E::BYTES);
-                if run > 0 {
-                    self.edges
-                        .write_slots_contiguous(row_start, &raw[pack..pack.saturating_add(run)])?;
-                    pack = pack.saturating_add(run);
+                off = 0;
+                for (index, bucket) in buckets.iter().enumerate() {
+                    let row_start = positions[index];
+                    let run = usize::try_from(bucket.edge_len)
+                        .unwrap_or(usize::MAX)
+                        .saturating_mul(E::BYTES);
+                    if run > 0 {
+                        self.edges.write_slots_contiguous(
+                            row_start,
+                            &raw[off..off.saturating_add(run)],
+                        )?;
+                        off = off.saturating_add(run);
+                    }
+                    let slot = vertex.base_slot_start().saturating_add(index as u64);
+                    self.buckets.write_label_bucket_slot(
+                        slot,
+                        bucket
+                            .with_edge_range(row_start, bucket.edge_len)
+                            .with_overflow_log_head(-1),
+                    )?;
                 }
-                let slot = vertex.base_slot_start().saturating_add(index as u64);
-                self.buckets.write_label_bucket_slot(
-                    slot,
-                    bucket
-                        .with_edge_range(row_start, edges.len() as u32)
-                        .with_overflow_log_head(-1),
-                )?;
+            } else {
+                let mut per_bucket: Vec<Vec<E>> = Vec::with_capacity(buckets.len());
+                for (index, _) in buckets.iter().enumerate() {
+                    let slot = vertex.base_slot_start().saturating_add(index as u64);
+                    let bucket_index = index as u32;
+                    let successor = self.bucket_successor_start(&vertex, bucket_index)?;
+                    let acc = LabelEdgeSpanAccess::new(&self.buckets, slot, successor, src);
+                    per_bucket.push(
+                        self.edges
+                            .collect_out_edges_slot_order(&acc, VertexId::from(0))
+                            .map_err(LabeledOperationError::from)?,
+                    );
+                }
+                let run_total: usize = per_bucket
+                    .iter()
+                    .map(|v| v.len().saturating_mul(E::BYTES))
+                    .sum();
+                let mut raw = vec![0u8; run_total];
+                let mut pack = 0usize;
+                for edges in &per_bucket {
+                    for e in edges {
+                        e.write_to(&mut raw[pack..pack + E::BYTES]);
+                        pack += E::BYTES;
+                    }
+                }
+                pack = 0;
+                for (index, bucket) in buckets.iter().enumerate() {
+                    let row_start = positions[index];
+                    let edges = &per_bucket[index];
+                    let run = edges.len().saturating_mul(E::BYTES);
+                    if run > 0 {
+                        self.edges.write_slots_contiguous(
+                            row_start,
+                            &raw[pack..pack.saturating_add(run)],
+                        )?;
+                        pack = pack.saturating_add(run);
+                    }
+                    let slot = vertex.base_slot_start().saturating_add(index as u64);
+                    self.buckets.write_label_bucket_slot(
+                        slot,
+                        bucket
+                            .with_edge_range(row_start, edges.len() as u32)
+                            .with_overflow_log_head(-1),
+                    )?;
+                }
             }
         } else {
             #[cfg(feature = "canbench")]
@@ -783,6 +881,27 @@ where
         for _attempt in 0..64u32 {
             let vertex = self.vertices.get(src);
             let successor_start = self.bucket_successor_start(&vertex, bucket_index)?;
+            let bucket = self
+                .buckets
+                .read_label_bucket_slot(bucket_slot)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            if bucket.overflow_log_head < 0
+                && successor_start.saturating_sub(bucket.edge_start) > u64::from(bucket.edge_len)
+            {
+                let write_slot = bucket.edge_start.saturating_add(u64::from(bucket.edge_len));
+                debug_assert!(write_slot < successor_start);
+                self.edges.write_slot(write_slot, edge)?;
+                self.buckets.write_label_bucket_slot(
+                    bucket_slot,
+                    bucket.with_edge_range(bucket.edge_start, bucket.edge_len.saturating_add(1)),
+                )?;
+                self.edges
+                    .set_num_edges(self.edges.header().num_edges.saturating_add(1));
+                self.edges
+                    .bump_vertex_segment_counts(src, 1, 0)
+                    .map_err(LabeledOperationError::from)?;
+                return Ok(());
+            }
             let access = LabelEdgeSpanAccess::new(&self.buckets, bucket_slot, successor_start, src);
             match self.edges.insert_edge(&access, VertexId::from(0), edge) {
                 Ok(_) => {
