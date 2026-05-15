@@ -1261,6 +1261,7 @@ fn bench_graph_expand_indexed_eq_selective_24match() -> canbench_rs::BenchResult
 #[cfg(test)]
 mod bench_setup_tests {
     use super::*;
+    use ic_stable_lara::CsrEdge;
 
     #[test]
     fn expand_filter_10pct_pass_setup_and_execute() {
@@ -1291,6 +1292,58 @@ mod bench_setup_tests {
     #[test]
     fn hop_count_shortest_converging_hub_setup() {
         setup_repeated_edge_cost_cache_graph(&GraphStore::new());
+    }
+
+    #[test]
+    fn repeated_edge_cost_cache_setup_preserves_full_topology() {
+        let store = GraphStore::new();
+        let start = u32::from(store.vertex_count());
+        let (src, dst) = setup_repeated_edge_cost_cache_graph(&store);
+        let end = u32::from(store.vertex_count());
+
+        assert_eq!(u32::from(src), start);
+        assert_eq!(u32::from(dst), start + 2);
+
+        let prefix_label = store
+            .vertex_label_id("BenchWspPrefix")
+            .expect("prefix label");
+        let hub_label = store.vertex_label_id("BenchWspHub").expect("hub label");
+        let spoke_label = store.vertex_label_id("BenchWspSpoke").expect("spoke label");
+
+        let mut hub = None;
+        let mut prefixes = Vec::new();
+        let mut spokes = Vec::new();
+        for raw in start..end {
+            let vid = VertexId::from(raw);
+            let vertex = store.vertex(vid).expect("vertex");
+            if store.vertex_has_label(vid, vertex, prefix_label) {
+                prefixes.push(vid);
+            } else if store.vertex_has_label(vid, vertex, hub_label) {
+                hub = Some(vid);
+            } else if store.vertex_has_label(vid, vertex, spoke_label) {
+                spokes.push(vid);
+            }
+        }
+        let hub = hub.expect("hub");
+
+        assert_eq!(prefixes.len(), CACHE_PREFIX_COUNT);
+        assert_eq!(spokes.len(), CACHE_HUB_OUT_DEGREE);
+        assert_eq!(
+            store.out_edges(src).expect("src out").len(),
+            CACHE_PREFIX_COUNT
+        );
+        assert_eq!(
+            store.out_edges(hub).expect("hub out").len(),
+            CACHE_HUB_OUT_DEGREE
+        );
+        for prefix in prefixes {
+            assert_eq!(store.out_edges(prefix).expect("prefix out").len(), 1);
+        }
+        for spoke in spokes {
+            let out = store.out_edges(spoke).expect("spoke out");
+            assert_eq!(out.len(), 1);
+            assert_eq!(out[0].neighbor_vid(), dst);
+        }
     }
 
     #[test]
