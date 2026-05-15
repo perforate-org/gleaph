@@ -34,6 +34,7 @@ use std::{cell::Cell, cmp::Ordering, fmt, marker::PhantomData, ops::Range};
 
 const DEFAULT_SEGMENT_SIZE: u32 = 32;
 const BULK_BUCKET_SEARCH_MIN_DEGREE: u32 = 16;
+const BUCKET_LOOKUP_CACHE_ENTRIES: usize = 64;
 
 /// Same threshold as core LARA leaf density (`actual/total` on one PMA leaf).
 const LEAF_VERTEX_EDGE_SEGMENT_DENSITY: f64 = 1.0;
@@ -138,6 +139,7 @@ where
     edges: EdgeStore<E, M>,
     default_label: LabelId,
     last_bucket_lookup: Cell<Option<BucketLookupCache>>,
+    bucket_lookup_cache: [Cell<Option<BucketLookupCache>>; BUCKET_LOOKUP_CACHE_ENTRIES],
     _marker: PhantomData<E>,
 }
 
@@ -184,6 +186,7 @@ where
             )?,
             default_label,
             last_bucket_lookup: Cell::new(None),
+            bucket_lookup_cache: std::array::from_fn(|_| Cell::new(None)),
             _marker: PhantomData,
         })
     }
@@ -228,6 +231,7 @@ where
             .map_err(InitError::Edges)?,
             default_label,
             last_bucket_lookup: Cell::new(None),
+            bucket_lookup_cache: std::array::from_fn(|_| Cell::new(None)),
             _marker: PhantomData,
         })
     }
@@ -372,6 +376,29 @@ where
                 }
             }
         }
+        let cache_index = Self::bucket_lookup_cache_index(src, label_id);
+        if let Some(cache) = self.bucket_lookup_cache[cache_index].get() {
+            if cache.vid == src
+                && cache.label_id == label_id
+                && cache.base_slot_start == start
+                && cache.degree == deg
+            {
+                let range_end = start.saturating_add(u64::from(deg));
+                if (start..range_end).contains(&cache.slot) {
+                    let bucket = self
+                        .buckets
+                        .read_label_bucket_slot(cache.slot)
+                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    if bucket.label_id == label_id {
+                        self.last_bucket_lookup.set(Some(cache));
+                        return Ok(BucketSearch::Found {
+                            slot: cache.slot,
+                            bucket,
+                        });
+                    }
+                }
+            }
+        }
         // Fast paths: avoid binary search + canbench scope overhead on tiny degree.
         if deg == 1 {
             let bucket = self
@@ -477,13 +504,22 @@ where
         vertex: &LabeledVertex,
         slot: u64,
     ) {
-        self.last_bucket_lookup.set(Some(BucketLookupCache {
+        let cache = BucketLookupCache {
             vid: src,
             label_id,
             base_slot_start: vertex.base_slot_start(),
             degree: vertex.degree(),
             slot,
-        }));
+        };
+        self.last_bucket_lookup.set(Some(cache));
+        self.bucket_lookup_cache[Self::bucket_lookup_cache_index(src, label_id)].set(Some(cache));
+    }
+
+    fn bucket_lookup_cache_index(src: VertexId, label_id: LabelId) -> usize {
+        let mixed = u32::from(src)
+            .wrapping_mul(0x9E37_79B1)
+            .wrapping_add(u32::from(label_id.raw()));
+        (mixed as usize) & (BUCKET_LOOKUP_CACHE_ENTRIES - 1)
     }
 
     #[cfg(test)]
