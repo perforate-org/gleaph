@@ -308,10 +308,23 @@ where
         #[cfg(feature = "canbench")]
         let _bench_scope = bench_scope("labeled_rebalance_leaf_cascade");
 
+        let src_vertex = self.vertices.get(src);
+        if !src_vertex.is_default_edge_labeled() && src_vertex.degree() > 0 {
+            self.rewrite_vertex_edge_span(src, None, 0, false, true)?;
+            if segment_span_density(self.edges.counts_store().get(idx))
+                < LEAF_VERTEX_EDGE_SEGMENT_DENSITY
+            {
+                return Ok(());
+            }
+        }
+
         let start_vid = leaf.saturating_mul(seg);
         let end_vid = (start_vid + seg).min(self.vertices.len());
         for vid_u in start_vid..end_vid {
             let vid = VertexId::from(vid_u);
+            if vid == src {
+                continue;
+            }
             let v = self.vertices.get(vid);
             if v.is_default_edge_labeled() {
                 continue;
@@ -329,6 +342,9 @@ where
 
         for vid_u in start_vid..end_vid {
             let vid = VertexId::from(vid_u);
+            if vid == src {
+                continue;
+            }
             let v = self.vertices.get(vid);
             if v.is_default_edge_labeled() {
                 continue;
