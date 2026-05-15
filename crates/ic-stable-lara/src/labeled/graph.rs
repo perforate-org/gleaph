@@ -30,12 +30,26 @@ use crate::{
 #[cfg(feature = "canbench")]
 use canbench_rs::bench_scope;
 use ic_stable_structures::Memory;
-use std::{cmp::Ordering, fmt, marker::PhantomData, ops::Range};
+use std::{cell::Cell, cmp::Ordering, fmt, marker::PhantomData, ops::Range};
 
 const DEFAULT_SEGMENT_SIZE: u32 = 32;
 
 /// Same threshold as core LARA leaf density (`actual/total` on one PMA leaf).
 const LEAF_VERTEX_EDGE_SEGMENT_DENSITY: f64 = 1.0;
+
+enum BucketSearch {
+    Found { slot: u64, bucket: LabelBucket },
+    Missing { insert_index: u32 },
+}
+
+#[derive(Clone, Copy)]
+struct BucketLookupCache {
+    vid: VertexId,
+    label_id: LabelId,
+    base_slot_start: u64,
+    degree: u32,
+    slot: u64,
+}
 
 /// Errors returned by labeled graph operations.
 #[derive(Debug)]
@@ -122,6 +136,7 @@ where
     buckets: LabelBucketStore<M>,
     edges: EdgeStore<E, M>,
     default_label: LabelId,
+    last_bucket_lookup: Cell<Option<BucketLookupCache>>,
     _marker: PhantomData<E>,
 }
 
@@ -167,6 +182,7 @@ where
                 DEFAULT_SEGMENT_SIZE,
             )?,
             default_label,
+            last_bucket_lookup: Cell::new(None),
             _marker: PhantomData,
         })
     }
@@ -210,6 +226,7 @@ where
             )
             .map_err(InitError::Edges)?,
             default_label,
+            last_bucket_lookup: Cell::new(None),
             _marker: PhantomData,
         })
     }
@@ -325,21 +342,53 @@ where
 
     fn find_bucket(
         &self,
+        src: VertexId,
         vertex: &LabeledVertex,
         label_id: LabelId,
-    ) -> Result<Option<(u64, LabelBucket)>, LabeledOperationError> {
+    ) -> Result<BucketSearch, LabeledOperationError> {
         let deg = vertex.degree();
         if deg == 0 {
-            return Ok(None);
+            return Ok(BucketSearch::Missing { insert_index: 0 });
         }
         let start = vertex.base_slot_start();
+        if let Some(cache) = self.last_bucket_lookup.get() {
+            if cache.vid == src
+                && cache.label_id == label_id
+                && cache.base_slot_start == start
+                && cache.degree == deg
+            {
+                let range_end = start.saturating_add(u64::from(deg));
+                if (start..range_end).contains(&cache.slot) {
+                    let bucket = self
+                        .buckets
+                        .read_label_bucket_slot(cache.slot)
+                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    if bucket.label_id == label_id {
+                        return Ok(BucketSearch::Found {
+                            slot: cache.slot,
+                            bucket,
+                        });
+                    }
+                }
+            }
+        }
         // Fast paths: avoid binary search + canbench scope overhead on tiny degree.
         if deg == 1 {
             let bucket = self
                 .buckets
                 .read_label_bucket_slot(start)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            return Ok((bucket.label_id == label_id).then_some((start, bucket)));
+            return Ok(match label_id.cmp(&bucket.label_id) {
+                Ordering::Less => BucketSearch::Missing { insert_index: 0 },
+                Ordering::Equal => {
+                    self.cache_bucket_lookup(src, label_id, vertex, start);
+                    BucketSearch::Found {
+                        slot: start,
+                        bucket,
+                    }
+                }
+                Ordering::Greater => BucketSearch::Missing { insert_index: 1 },
+            });
         }
         if deg == 2 {
             let b0 = self
@@ -347,15 +396,31 @@ where
                 .read_label_bucket_slot(start)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             match label_id.cmp(&b0.label_id) {
-                Ordering::Less => return Ok(None),
-                Ordering::Equal => return Ok(Some((start, b0))),
+                Ordering::Less => return Ok(BucketSearch::Missing { insert_index: 0 }),
+                Ordering::Equal => {
+                    self.cache_bucket_lookup(src, label_id, vertex, start);
+                    return Ok(BucketSearch::Found {
+                        slot: start,
+                        bucket: b0,
+                    });
+                }
                 Ordering::Greater => {
                     let slot1 = start.saturating_add(1);
                     let b1 = self
                         .buckets
                         .read_label_bucket_slot(slot1)
                         .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                    return Ok((label_id == b1.label_id).then_some((slot1, b1)));
+                    return Ok(match label_id.cmp(&b1.label_id) {
+                        Ordering::Less => BucketSearch::Missing { insert_index: 1 },
+                        Ordering::Equal => {
+                            self.cache_bucket_lookup(src, label_id, vertex, slot1);
+                            BucketSearch::Found {
+                                slot: slot1,
+                                bucket: b1,
+                            }
+                        }
+                        Ordering::Greater => BucketSearch::Missing { insert_index: 2 },
+                    });
                 }
             }
         }
@@ -373,7 +438,8 @@ where
                 .read_label_bucket_slot(slot)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             if bucket.label_id == label_id {
-                return Ok(Some((slot, bucket)));
+                self.cache_bucket_lookup(src, label_id, vertex, slot);
+                return Ok(BucketSearch::Found { slot, bucket });
             }
             if bucket.label_id < label_id {
                 lo = mid.saturating_add(1);
@@ -381,7 +447,23 @@ where
                 hi = mid;
             }
         }
-        Ok(None)
+        Ok(BucketSearch::Missing { insert_index: lo })
+    }
+
+    fn cache_bucket_lookup(
+        &self,
+        src: VertexId,
+        label_id: LabelId,
+        vertex: &LabeledVertex,
+        slot: u64,
+    ) {
+        self.last_bucket_lookup.set(Some(BucketLookupCache {
+            vid: src,
+            label_id,
+            base_slot_start: vertex.base_slot_start(),
+            degree: vertex.degree(),
+            slot,
+        }));
     }
 
     #[cfg(test)]
@@ -390,7 +472,12 @@ where
         vertex: &LabeledVertex,
         label_id: LabelId,
     ) -> Result<Option<u64>, LabeledOperationError> {
-        Ok(self.find_bucket(vertex, label_id)?.map(|(slot, _)| slot))
+        Ok(
+            match self.find_bucket(VertexId::from(0), vertex, label_id)? {
+                BucketSearch::Found { slot, .. } => Some(slot),
+                BucketSearch::Missing { .. } => None,
+            },
+        )
     }
 
     fn read_vertex_label_buckets(
@@ -950,20 +1037,22 @@ where
         vertex: &LabeledVertex,
         label_id: LabelId,
     ) -> Result<(u64, LabelBucket), LabeledOperationError> {
-        if let Some(found) = self.find_bucket(vertex, label_id)? {
-            return Ok(found);
-        }
+        let insert_index = match self.find_bucket(src, vertex, label_id)? {
+            BucketSearch::Found { slot, bucket } => return Ok((slot, bucket)),
+            BucketSearch::Missing { insert_index } => insert_index,
+        };
         #[cfg(feature = "canbench")]
         let _bench_scope = bench_scope("labeled_insert_new_label_bucket");
         let slot = self
             .buckets
-            .insert_label_bucket(
+            .insert_label_bucket_at(
                 &self.vertices,
                 src,
                 LabelBucket {
                     label_id,
                     ..LabelBucket::default()
                 },
+                insert_index,
             )
             .map_err(LabeledOperationError::from)?;
         let vertex = self.vertices.get(src);
@@ -1104,16 +1193,19 @@ where
                 .edges
                 .collect_out_edges_slot_order(&self.vertices, src)?);
         }
-        if let Some((slot, bucket)) = self.find_bucket(&vertex, label_id)? {
-            #[cfg(feature = "canbench")]
-            let _bench_scope = bench_scope("labeled_iter_edges_for_label_collect");
-            let bucket_index = slot.saturating_sub(vertex.base_slot_start()) as u32;
-            let successor_start =
-                self.bucket_successor_start_after_bucket(&vertex, bucket_index, &bucket)?;
-            return Ok(self.edges.collect_out_edges_slot_order(
-                &LabelEdgeSpanAccess::new(&self.buckets, slot, successor_start, src),
-                VertexId::from(0),
-            )?);
+        match self.find_bucket(src, &vertex, label_id)? {
+            BucketSearch::Found { slot, bucket } => {
+                #[cfg(feature = "canbench")]
+                let _bench_scope = bench_scope("labeled_iter_edges_for_label_collect");
+                let bucket_index = slot.saturating_sub(vertex.base_slot_start()) as u32;
+                let successor_start =
+                    self.bucket_successor_start_after_bucket(&vertex, bucket_index, &bucket)?;
+                return Ok(self.edges.collect_out_edges_slot_order(
+                    &LabelEdgeSpanAccess::new(&self.buckets, slot, successor_start, src),
+                    VertexId::from(0),
+                )?);
+            }
+            BucketSearch::Missing { .. } => {}
         }
         Ok(Vec::new())
     }
@@ -1179,7 +1271,9 @@ where
                 .remove_edge_unordered_matching(&self.vertices, src, matches)
                 .map_err(Into::into);
         }
-        if let Some((slot, mut bucket)) = self.find_bucket(&vertex, label_id)? {
+        if let BucketSearch::Found { slot, mut bucket } =
+            self.find_bucket(src, &vertex, label_id)?
+        {
             #[cfg(feature = "canbench")]
             let _bench_scope = bench_scope("labeled_remove_edge_skip_leaf");
             let bucket_index = slot.saturating_sub(vertex.base_slot_start()) as u32;

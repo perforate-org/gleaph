@@ -362,6 +362,7 @@ impl<M: Memory> LabelBucketStore<M> {
     /// The returned slot is stable only until the next rewrite of the same
     /// LabelBucketStore VertexSegment. Callers should use it immediately, then derive
     /// future bucket positions from the owning [`LabeledVertex`] again.
+    #[cfg(test)]
     pub(crate) fn insert_label_bucket<V>(
         &self,
         vertices: &V,
@@ -372,31 +373,53 @@ impl<M: Memory> LabelBucketStore<M> {
         V: VertexAccess<LabeledVertex>,
     {
         let v = vertices.get_in_range(vid)?;
+        let buckets = self.read_label_bucket_slots_contiguous(v.base_slot_start(), v.degree());
+        let buckets = buckets.ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let index = buckets
+            .binary_search_by_key(&bucket.label_id, |candidate| candidate.label_id)
+            .unwrap_or_else(|index| index);
+        self.insert_label_bucket_at(vertices, vid, bucket, index as u32)
+    }
+
+    pub(crate) fn insert_label_bucket_at<V>(
+        &self,
+        vertices: &V,
+        vid: VertexId,
+        bucket: LabelBucket,
+        insert_index: u32,
+    ) -> Result<u64, LaraOperationError>
+    where
+        V: VertexAccess<LabeledVertex>,
+    {
+        let v = vertices.get_in_range(vid)?;
+        if insert_index > v.degree() {
+            return Err(LaraOperationError::CollectAllocationOverflow);
+        }
         if !v.is_default_edge_labeled() && Self::bucket_row_alloc(v) > v.degree() {
-            let buckets = self.read_label_bucket_slots_contiguous(v.base_slot_start(), v.degree());
-            let buckets = buckets.ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            let index = buckets
-                .binary_search_by_key(&bucket.label_id, |candidate| candidate.label_id)
-                .unwrap_or_else(|index| index);
-            for offset in (index..buckets.len()).rev() {
+            let base = v.base_slot_start();
+            for offset in (insert_index..v.degree()).rev() {
+                let existing = self
+                    .read_label_bucket_slot(base.saturating_add(u64::from(offset)))
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
                 self.write_label_bucket_slot(
-                    v.base_slot_start().saturating_add(offset as u64 + 1),
-                    buckets[offset],
+                    base.saturating_add(u64::from(offset).saturating_add(1)),
+                    existing,
                 )?;
             }
-            self.write_label_bucket_slot(v.base_slot_start().saturating_add(index as u64), bucket)?;
+            self.write_label_bucket_slot(base.saturating_add(u64::from(insert_index)), bucket)?;
             vertices.set(vid, &v.with_degree(v.degree().saturating_add(1)));
-            return Ok(v.base_slot_start().saturating_add(index as u64));
+            return Ok(base.saturating_add(u64::from(insert_index)));
         }
 
         let mut rows = self.collect_segment_bucket_rows(vertices, vid)?;
         let mut inserted_index = None;
         for (v_ord, v, buckets, alloc) in &mut rows {
             if *v_ord == u32::from(vid) {
-                let index = buckets
-                    .binary_search_by_key(&bucket.label_id, |candidate| candidate.label_id)
-                    .unwrap_or_else(|index| index);
-                inserted_index = Some(index as u64);
+                let index = insert_index as usize;
+                if index > buckets.len() {
+                    return Err(LaraOperationError::CollectAllocationOverflow);
+                }
+                inserted_index = Some(u64::from(insert_index));
                 buckets.insert(index, bucket);
                 *alloc =
                     Self::grow_bucket_row_alloc(Self::bucket_row_alloc(*v), buckets.len() as u32);
