@@ -2322,6 +2322,41 @@ mod tests {
     }
 
     #[test]
+    fn normal_label_bucket_insert_rejects_edge_len_overflow() {
+        let graph = test_graph();
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let hub = VertexId::from(0);
+        let label = LabelId::from_raw(42);
+        graph
+            .buckets()
+            .insert_label_bucket(
+                graph.vertices(),
+                hub,
+                LabelBucket {
+                    label_id: label,
+                    edge_len: u32::MAX,
+                    ..LabelBucket::default()
+                },
+            )
+            .unwrap();
+
+        let err = graph
+            .insert_edge(hub, label, TestEdge { target: 1 })
+            .expect_err("max bucket edge_len must be rejected");
+
+        assert!(matches!(
+            err,
+            LabeledOperationError::Store(LaraOperationError::RowDegreeOverflow)
+        ));
+        let vertex = graph.vertices().get(hub);
+        let bucket = graph
+            .buckets()
+            .read_label_bucket_slot(vertex.base_slot_start())
+            .unwrap();
+        assert_eq!(bucket.edge_len, u32::MAX);
+    }
+
+    #[test]
     fn two_label_hub_500_then_173_parallel_edges() {
         let graph = LabeledLaraGraph::new(
             mem(),

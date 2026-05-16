@@ -910,17 +910,33 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             return Err(LaraOperationError::VertexDeleted);
         }
         let log_owner = vertices.log_leaf_vertex(vid);
+        let next_degree = v
+            .degree()
+            .checked_add(1)
+            .ok_or(LaraOperationError::RowDegreeOverflow)?;
+        let next_num_edges = edge_layout
+            .num_edges
+            .checked_add(1)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         let loc = v.base_slot_start().saturating_add(u64::from(v.degree()));
         let location = if self.have_space_on_slab(vertices, v_ord, &v, loc, &edge_layout) {
             self.write_slot(loc, edge)
                 .map_err(LaraOperationError::WriteEdgeSlotFailed)?;
-            vertices.set(vid, &v.with_degree(v.degree() + 1));
+            vertices.set(vid, &v.with_degree(next_degree));
             InsertLocation::Slab
         } else {
-            self.insert_into_log_with_layout(&edge_layout, vertices, vid, log_owner, v, edge)?;
+            self.insert_into_log_with_layout(
+                &edge_layout,
+                vertices,
+                vid,
+                log_owner,
+                v,
+                next_degree,
+                edge,
+            )?;
             InsertLocation::Log
         };
-        self.set_num_edges(edge_layout.num_edges.saturating_add(1));
+        self.set_num_edges(next_num_edges);
         self.bump_counts_leaf_with_layout(&edge_layout, log_owner, 1, 0)?;
         Ok(location)
     }
@@ -1025,6 +1041,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         vid: VertexId,
         log_owner: VertexId,
         v: V,
+        next_degree: u32,
         edge: E,
     ) -> Result<(), LaraOperationError>
     where
@@ -1060,7 +1077,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 .map_err(LaraOperationError::WriteLogFailed)?;
         }
         self.log.write_idx_with_header(&log_h, leaf, idx + 1);
-        vertices.set(vid, &v.with_log_head(idx).with_degree(v.degree() + 1));
+        vertices.set(vid, &v.with_log_head(idx).with_degree(next_degree));
         Ok(())
     }
 
