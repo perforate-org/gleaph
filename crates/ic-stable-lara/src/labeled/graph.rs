@@ -1721,6 +1721,7 @@ where
             .buckets
             .read_label_bucket_slot(slot)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let vertex = self.vertices.get(src);
         self.cache_bucket_lookup(src, label_id, &vertex, slot);
         Ok((slot, bucket))
     }
