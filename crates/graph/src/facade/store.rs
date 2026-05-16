@@ -1057,17 +1057,17 @@ impl GraphStore {
         Ok(())
     }
 
-    fn find_outgoing_edge_record(
+    pub(crate) fn find_outgoing_edge_record(
         &self,
         owner_vertex_id: VertexId,
         vertex_edge_id: VertexEdgeId,
     ) -> Result<Option<Edge>, GraphStoreError> {
-        let edges = self
-            .out_edges(owner_vertex_id)
-            .map_err(GraphStoreError::from)?;
-        Ok(edges
-            .into_iter()
-            .find(|candidate| candidate.vertex_edge_id == vertex_edge_id))
+        GRAPH.with_borrow(|graph| {
+            let mut iter = graph
+                .forward_out_edges_iter(owner_vertex_id)
+                .map_err(GraphStoreError::from)?;
+            Ok(iter.find(|candidate| candidate.vertex_edge_id == vertex_edge_id))
+        })
     }
 
     fn contains_vertex(&self, vertex_id: VertexId) -> bool {

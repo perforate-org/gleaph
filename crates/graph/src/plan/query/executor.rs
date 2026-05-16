@@ -3308,10 +3308,7 @@ fn vertex_to_value(store: &GraphStore, vertex_id: VertexId) -> Result<Value, Pla
 fn edge_to_value(store: &GraphStore, binding: EdgeBinding) -> Result<Value, PlanQueryError> {
     let handle = binding.handle;
     let edge = store
-        .out_edges(handle.owner_vertex_id)
-        .map_err(crate::facade::GraphStoreError::from)?
-        .into_iter()
-        .find(|edge| edge.vertex_edge_id == handle.vertex_edge_id)
+        .find_outgoing_edge_record(handle.owner_vertex_id, handle.vertex_edge_id)?
         .ok_or_else(|| PlanQueryError::MissingBinding {
             variable: format!("edge {:?}", handle),
         })?;
