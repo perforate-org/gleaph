@@ -97,6 +97,46 @@ type HashJoinBucketEntry = (HashJoinKey, Vec<PlanRow>);
 
 type HashJoinBuckets = IntMap<u64, Vec<HashJoinBucketEntry>>;
 
+/// Execute a read plan through [`execute_ops`] and return [`PlanRow`] bindings (paths stay
+/// [`PlanBinding::Path`] until [`materialize_plan_rows`] / [`PlanQueryResult::materialize_rows`]).
+pub(crate) async fn execute_plan_query_bindings(
+    store: &GraphStore,
+    plan: &PhysicalPlan,
+    parameters: &BTreeMap<String, Value>,
+    index: Option<&dyn PropertyIndexLookup>,
+    execution: GqlExecutionContext,
+) -> Result<Vec<PlanRow>, PlanQueryError> {
+    let gleaph_weight_decoders = {
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _scope = bench_scope("plan_query_prepare_gleaph_weight");
+        super::gleaph_weight::prepare_gleaph_weight_decoders(store, &plan.ops)?
+    };
+    #[cfg(all(feature = "canbench", target_family = "wasm"))]
+    let _scope = bench_scope("plan_query_execute_ops");
+    execute_ops(
+        store,
+        &plan.ops,
+        parameters,
+        index,
+        execution,
+        gleaph_weight_decoders.as_ref(),
+    )
+    .await
+}
+
+pub(crate) fn materialize_plan_rows(
+    store: &GraphStore,
+    rows: &[PlanRow],
+) -> Result<Vec<BTreeMap<String, Value>>, PlanQueryError> {
+    #[cfg(all(feature = "canbench", target_family = "wasm"))]
+    let _scope = bench_scope("plan_query_materialize_value_rows");
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        out.push(value_row(store, row)?);
+    }
+    Ok(out)
+}
+
 pub async fn execute_plan_query(
     store: &GraphStore,
     plan: &PhysicalPlan,
@@ -104,34 +144,10 @@ pub async fn execute_plan_query(
     index: Option<&dyn PropertyIndexLookup>,
     execution: GqlExecutionContext,
 ) -> Result<PlanQueryResult, PlanQueryError> {
-    let gleaph_weight_decoders = {
-        #[cfg(all(feature = "canbench", target_family = "wasm"))]
-        let _scope = bench_scope("plan_query_prepare_gleaph_weight");
-        super::gleaph_weight::prepare_gleaph_weight_decoders(store, &plan.ops)?
-    };
-    let rows = {
-        #[cfg(all(feature = "canbench", target_family = "wasm"))]
-        let _scope = bench_scope("plan_query_execute_ops");
-        execute_ops(
-            store,
-            &plan.ops,
-            parameters,
-            index,
-            execution,
-            gleaph_weight_decoders.as_ref(),
-        )
-        .await?
-    };
-    let rows = {
-        #[cfg(all(feature = "canbench", target_family = "wasm"))]
-        let _scope = bench_scope("plan_query_materialize_value_rows");
-        let mut out = Vec::with_capacity(rows.len());
-        for row in &rows {
-            out.push(value_row(store, row)?);
-        }
-        out
-    };
-    Ok(PlanQueryResult { rows })
+    let rows = execute_plan_query_bindings(store, plan, parameters, index, execution).await?;
+    Ok(PlanQueryResult {
+        rows: materialize_plan_rows(store, &rows)?,
+    })
 }
 
 async fn execute_ops(

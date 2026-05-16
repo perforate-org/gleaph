@@ -4,10 +4,11 @@ use crate::facade::GraphStore;
 use crate::gql_execution_context::GqlExecutionContext;
 use crate::index::lookup::PropertyIndexLookup;
 use crate::index::pending;
+use crate::plan::query::execute_plan_query_bindings;
 use crate::plan::{PlanMutationExecutor, PlanQueryResult, execute_plan_query};
 use gleaph_auth::Role;
 use gleaph_gql::Value;
-use gleaph_gql::ast::Statement;
+use gleaph_gql::ast::{Statement, StatementBlock};
 use gleaph_gql::parser;
 use gleaph_gql::program_modification::classify_program;
 use gleaph_gql::type_check::NoSchema;
@@ -90,8 +91,61 @@ fn enforce_execution_mode(
     }
 }
 
-/// Ad-hoc GQL text (not prepared). Caller supplies [`GqlCanisterExecutionMode`] matching the canister entrypoint.
-pub async fn run_adhoc_gql(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TransactionReadMaterialize {
+    /// Existing behavior: last read statement returns fully materialized [`Value`] rows.
+    Full,
+    /// Skip per-row [`Value`] construction (paths, vertex records, …) when only a row count is needed.
+    LastReadRowCountOnly,
+}
+
+struct TransactionBlockRun {
+    last_query_rows: PlanQueryResult,
+    last_read_row_count: usize,
+}
+
+/// Walk `block` in program order: run DML + flush pending; for read plans either materialize rows
+/// or only refresh `last_read_row_count` from binding rows.
+async fn run_transaction_block(
+    store: &GraphStore,
+    block: &StatementBlock,
+    parameters: &BTreeMap<String, Value>,
+    index: Option<&dyn PropertyIndexLookup>,
+    execution: GqlExecutionContext,
+    materialize: TransactionReadMaterialize,
+) -> Result<TransactionBlockRun, GqlRunError> {
+    let mut last_query_rows = PlanQueryResult::default();
+    let mut last_read_row_count: usize = 0;
+    for stmt in block.iter_statements() {
+        if matches!(stmt, Statement::Session(_)) {
+            continue;
+        }
+        let plan = plan_statement(stmt).map_err(|e| GqlRunError::Plan(e.to_string()))?;
+        if plan.has_dml() {
+            store.execute_plan_mutations(&plan, execution)?;
+            pending::flush_pending(index).await?;
+        } else {
+            match materialize {
+                TransactionReadMaterialize::Full => {
+                    last_query_rows =
+                        execute_plan_query(store, &plan, parameters, index, execution).await?;
+                }
+                TransactionReadMaterialize::LastReadRowCountOnly => {
+                    let rows =
+                        execute_plan_query_bindings(store, &plan, parameters, index, execution)
+                            .await?;
+                    last_read_row_count = rows.len();
+                }
+            }
+        }
+    }
+    Ok(TransactionBlockRun {
+        last_query_rows,
+        last_read_row_count,
+    })
+}
+
+async fn run_adhoc_gql_transaction(
     store: GraphStore,
     gql: &str,
     parameters: &BTreeMap<String, Value>,
@@ -99,7 +153,8 @@ pub async fn run_adhoc_gql(
     index: Option<&dyn PropertyIndexLookup>,
     mode: GqlCanisterExecutionMode,
     execution: GqlExecutionContext,
-) -> Result<PlanQueryResult, GqlRunError> {
+    materialize: TransactionReadMaterialize,
+) -> Result<TransactionBlockRun, GqlRunError> {
     if !caller_role.satisfies_at_least(Role::Read) {
         return Err(GqlRunError::Auth(
             "GQL execution requires Read role or higher".into(),
@@ -121,39 +176,76 @@ pub async fn run_adhoc_gql(
         .ok_or_else(|| GqlRunError::Parse("missing transaction".into()))?;
     let block = tx
         .body
+        .as_ref()
         .ok_or_else(|| GqlRunError::Parse("missing statement block".into()))?;
 
     // Do not clear `pending` here: a failed `flush_pending` may re-queue postings for retry, and
     // the next update call must be able to flush them.
 
-    let mut last: PlanQueryResult = PlanQueryResult::default();
-    for stmt in block.iter_statements() {
-        if matches!(stmt, Statement::Session(_)) {
-            continue;
-        }
-        let plan = plan_statement(stmt).map_err(|e| GqlRunError::Plan(e.to_string()))?;
-        if plan.has_dml() {
-            store.execute_plan_mutations(&plan, execution)?;
-            pending::flush_pending(index).await?;
-        } else {
-            last = execute_plan_query(&store, &plan, parameters, index, execution).await?;
-        }
-    }
-    Ok(last)
+    run_transaction_block(&store, block, parameters, index, execution, materialize).await
 }
 
-/// Run a prepared program from [`GraphStore::prepared_query_get`].
-///
-/// Does not inspect caller RBAC: restrict access by routing callers to the composite-query vs update
-/// canister methods (`prepared_execute_query` vs `prepared_execute_update`) only.
-pub async fn run_prepared_gql(
+/// Ad-hoc GQL text (not prepared). Caller supplies [`GqlCanisterExecutionMode`] matching the canister entrypoint.
+pub async fn run_adhoc_gql(
+    store: GraphStore,
+    gql: &str,
+    parameters: &BTreeMap<String, Value>,
+    caller_role: Role,
+    index: Option<&dyn PropertyIndexLookup>,
+    mode: GqlCanisterExecutionMode,
+    execution: GqlExecutionContext,
+) -> Result<PlanQueryResult, GqlRunError> {
+    Ok(run_adhoc_gql_transaction(
+        store,
+        gql,
+        parameters,
+        caller_role,
+        index,
+        mode,
+        execution,
+        TransactionReadMaterialize::Full,
+    )
+    .await?
+    .last_query_rows)
+}
+
+/// Same as [`run_adhoc_gql`] for auth / parse / execution, but returns only the **row count** of the
+/// last read statement and **does not** run [`crate::plan::query::materialize_plan_rows`] (no
+/// `Value::Path` / full vertex hydration). Intended for callers that discard row payloads (e.g.
+/// current IC canister `gql_query` / `gql_execute` stubs that only return `len`).
+pub(crate) async fn run_adhoc_gql_last_read_row_count(
+    store: GraphStore,
+    gql: &str,
+    parameters: &BTreeMap<String, Value>,
+    caller_role: Role,
+    index: Option<&dyn PropertyIndexLookup>,
+    mode: GqlCanisterExecutionMode,
+    execution: GqlExecutionContext,
+) -> Result<usize, GqlRunError> {
+    Ok(run_adhoc_gql_transaction(
+        store,
+        gql,
+        parameters,
+        caller_role,
+        index,
+        mode,
+        execution,
+        TransactionReadMaterialize::LastReadRowCountOnly,
+    )
+    .await?
+    .last_read_row_count)
+}
+
+/// Prepared statement block runner for [`run_prepared_gql`] / [`run_prepared_gql_last_read_row_count`].
+async fn run_prepared_gql_transaction(
     store: GraphStore,
     record: &PreparedQueryRecord,
     parameters: &BTreeMap<String, Value>,
     index: Option<&dyn PropertyIndexLookup>,
     mode: GqlCanisterExecutionMode,
     execution: GqlExecutionContext,
-) -> Result<PlanQueryResult, GqlRunError> {
+    materialize: TransactionReadMaterialize,
+) -> Result<TransactionBlockRun, GqlRunError> {
     let program = &record.program;
     let flags = classify_program(program);
     if flags.requires_write_path() != record.requires_write_path {
@@ -175,20 +267,54 @@ pub async fn run_prepared_gql(
     // Do not clear `pending` here: a failed `flush_pending` may re-queue postings for retry, and
     // the next update call must be able to flush them.
 
-    let mut last: PlanQueryResult = PlanQueryResult::default();
-    for stmt in block.iter_statements() {
-        if matches!(stmt, Statement::Session(_)) {
-            continue;
-        }
-        let plan = plan_statement(stmt).map_err(|e| GqlRunError::Plan(e.to_string()))?;
-        if plan.has_dml() {
-            store.execute_plan_mutations(&plan, execution)?;
-            pending::flush_pending(index).await?;
-        } else {
-            last = execute_plan_query(&store, &plan, parameters, index, execution).await?;
-        }
-    }
-    Ok(last)
+    run_transaction_block(&store, block, parameters, index, execution, materialize).await
+}
+
+/// Run a prepared program from [`GraphStore::prepared_query_get`].
+///
+/// Does not inspect caller RBAC: restrict access by routing callers to the composite-query vs update
+/// canister methods (`prepared_execute_query` vs `prepared_execute_update`) only.
+pub async fn run_prepared_gql(
+    store: GraphStore,
+    record: &PreparedQueryRecord,
+    parameters: &BTreeMap<String, Value>,
+    index: Option<&dyn PropertyIndexLookup>,
+    mode: GqlCanisterExecutionMode,
+    execution: GqlExecutionContext,
+) -> Result<PlanQueryResult, GqlRunError> {
+    Ok(run_prepared_gql_transaction(
+        store,
+        record,
+        parameters,
+        index,
+        mode,
+        execution,
+        TransactionReadMaterialize::Full,
+    )
+    .await?
+    .last_query_rows)
+}
+
+/// Prepared counterpart to [`run_adhoc_gql_last_read_row_count`].
+pub(crate) async fn run_prepared_gql_last_read_row_count(
+    store: GraphStore,
+    record: &PreparedQueryRecord,
+    parameters: &BTreeMap<String, Value>,
+    index: Option<&dyn PropertyIndexLookup>,
+    mode: GqlCanisterExecutionMode,
+    execution: GqlExecutionContext,
+) -> Result<usize, GqlRunError> {
+    Ok(run_prepared_gql_transaction(
+        store,
+        record,
+        parameters,
+        index,
+        mode,
+        execution,
+        TransactionReadMaterialize::LastReadRowCountOnly,
+    )
+    .await?
+    .last_read_row_count)
 }
 
 #[cfg(test)]
@@ -415,6 +541,33 @@ mod tests {
             value_as_principal(q.rows[0].get("c").expect("c")),
             Some(exec)
         );
+    }
+
+    #[test]
+    fn last_read_row_count_matches_materialized_row_count() {
+        let params = BTreeMap::new();
+        let gql = "RETURN 1 AS x";
+        let count = pollster::block_on(run_adhoc_gql_last_read_row_count(
+            GraphStore::new(),
+            gql,
+            &params,
+            Role::Read,
+            None,
+            GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext::default(),
+        ))
+        .expect("row count");
+        let full = pollster::block_on(run_adhoc_gql(
+            GraphStore::new(),
+            gql,
+            &params,
+            Role::Read,
+            None,
+            GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext::default(),
+        ))
+        .expect("materialized");
+        assert_eq!(count, full.rows.len());
     }
 
     #[test]

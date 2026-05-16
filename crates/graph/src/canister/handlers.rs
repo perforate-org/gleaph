@@ -9,7 +9,10 @@ use ic_cdk::api::msg_caller;
 use crate::GqlExecutionContext;
 use crate::auth::{admin_upsert_principal, bootstrap_canister_auth, caller_role};
 use crate::facade::{GraphMetadata, GraphStore, IndexRouting};
-use crate::gql_run::{GqlCanisterExecutionMode, run_adhoc_gql, run_prepared_gql};
+use crate::gql_run::{
+    GqlCanisterExecutionMode, run_adhoc_gql_last_read_row_count,
+    run_prepared_gql_last_read_row_count,
+};
 use crate::index::ic::IcPropertyIndexClient;
 use crate::index::lookup::PropertyIndexLookup;
 use gleaph_auth::Role;
@@ -67,7 +70,7 @@ pub async fn gql_query(query: String, params: Vec<u8>) -> Result<u64, String> {
     #[cfg(not(target_family = "wasm"))]
     let ix: Option<&dyn PropertyIndexLookup> = None;
 
-    let out = run_adhoc_gql(
+    let row_count = run_adhoc_gql_last_read_row_count(
         GraphStore::new(),
         &query,
         &pmap,
@@ -78,7 +81,7 @@ pub async fn gql_query(query: String, params: Vec<u8>) -> Result<u64, String> {
     )
     .await
     .map_err(|e| e.to_string())?;
-    Ok(out.rows.len() as u64)
+    Ok(row_count as u64)
 }
 
 pub async fn gql_execute(query: String, params: Vec<u8>) -> Result<u64, String> {
@@ -92,7 +95,7 @@ pub async fn gql_execute(query: String, params: Vec<u8>) -> Result<u64, String> 
     #[cfg(not(target_family = "wasm"))]
     let ix: Option<&dyn PropertyIndexLookup> = None;
 
-    let out = run_adhoc_gql(
+    let row_count = run_adhoc_gql_last_read_row_count(
         GraphStore::new(),
         &query,
         &pmap,
@@ -103,7 +106,7 @@ pub async fn gql_execute(query: String, params: Vec<u8>) -> Result<u64, String> 
     )
     .await
     .map_err(|e| e.to_string())?;
-    Ok(out.rows.len() as u64)
+    Ok(row_count as u64)
 }
 
 pub fn prepared_register(name: String, query: String) -> Result<(), String> {
@@ -132,7 +135,7 @@ pub async fn prepared_execute_query(name: String, params: Vec<u8>) -> Result<u64
     #[cfg(not(target_family = "wasm"))]
     let ix: Option<&dyn PropertyIndexLookup> = None;
 
-    let out = run_prepared_gql(
+    let row_count = run_prepared_gql_last_read_row_count(
         store,
         &record,
         &pmap,
@@ -142,7 +145,7 @@ pub async fn prepared_execute_query(name: String, params: Vec<u8>) -> Result<u64
     )
     .await
     .map_err(|e| e.to_string())?;
-    Ok(out.rows.len() as u64)
+    Ok(row_count as u64)
 }
 
 pub async fn prepared_execute_update(name: String, params: Vec<u8>) -> Result<u64, String> {
@@ -159,7 +162,7 @@ pub async fn prepared_execute_update(name: String, params: Vec<u8>) -> Result<u6
     #[cfg(not(target_family = "wasm"))]
     let ix: Option<&dyn PropertyIndexLookup> = None;
 
-    let out = run_prepared_gql(
+    let row_count = run_prepared_gql_last_read_row_count(
         store,
         &record,
         &pmap,
@@ -169,7 +172,7 @@ pub async fn prepared_execute_update(name: String, params: Vec<u8>) -> Result<u6
     )
     .await
     .map_err(|e| e.to_string())?;
-    Ok(out.rows.len() as u64)
+    Ok(row_count as u64)
 }
 
 pub fn admin_grant_role(args: GrantRoleArgs) -> Result<(), String> {
