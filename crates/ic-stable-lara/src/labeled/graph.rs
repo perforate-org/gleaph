@@ -673,7 +673,13 @@ where
                     }
                 }
                 if cache.slot.saturating_add(1) == range_end && cache.label_id < label_id {
-                    return Ok(BucketSearch::Missing { insert_index: deg });
+                    let bucket = self
+                        .buckets
+                        .read_label_bucket_slot(cache.slot)
+                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    if bucket.label_id == cache.label_id {
+                        return Ok(BucketSearch::Missing { insert_index: deg });
+                    }
                 }
             }
         }
@@ -2924,6 +2930,53 @@ mod tests {
 
             assert_eq!(unchecked, checked, "src={src:?} label={label:?}");
         }
+    }
+
+    #[test]
+    fn bucket_tail_missing_cache_revalidates_cached_slot_label() {
+        let graph = test_graph();
+        let low = LabelId::from_raw(10);
+        let old_tail = LabelId::from_raw(20);
+        let inserted = LabelId::from_raw(30);
+        let new_tail = LabelId::from_raw(40);
+
+        graph
+            .insert_edge(VertexId::from(0), low, TestEdge { target: 10 })
+            .unwrap();
+        graph
+            .insert_edge(VertexId::from(0), old_tail, TestEdge { target: 20 })
+            .unwrap();
+
+        // Populate `last_bucket_lookup` with the old tail label.
+        assert_eq!(
+            graph
+                .iter_edges_for_label(VertexId::from(0), old_tail)
+                .unwrap(),
+            vec![TestEdge { target: 20 }]
+        );
+
+        let vertex = graph.vertices().get(VertexId::from(0));
+        let tail_slot = graph.find_bucket_slot(&vertex, old_tail).unwrap().unwrap();
+        let tail_bucket = graph.buckets().read_label_bucket_slot(tail_slot).unwrap();
+        graph
+            .buckets()
+            .write_label_bucket_slot(
+                tail_slot,
+                LabelBucket {
+                    label_id: new_tail,
+                    ..tail_bucket
+                },
+            )
+            .unwrap();
+
+        graph
+            .insert_edge(VertexId::from(0), inserted, TestEdge { target: 30 })
+            .unwrap();
+
+        let vertex = graph.vertices().get(VertexId::from(0));
+        let buckets = graph.read_vertex_label_buckets(&vertex).unwrap();
+        let labels: Vec<_> = buckets.iter().map(|bucket| bucket.label_id).collect();
+        assert_eq!(labels, vec![low, inserted, new_tail]);
     }
 
     #[test]
