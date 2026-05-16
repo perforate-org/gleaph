@@ -378,6 +378,23 @@ impl GraphStore {
         VERTEX_LABELS.with_borrow(|labels| labels.labels_for(vertex_id, vertex))
     }
 
+    /// GQL `labels` list values without allocating an intermediate `Vec<VertexLabelId>`.
+    pub(crate) fn vertex_label_gql_list(&self, vertex_id: VertexId, vertex: Vertex) -> Vec<Value> {
+        VERTEX_LABELS.with_borrow(|labels| {
+            labels.with_label_ids(vertex_id, vertex, |slice| {
+                let mut out = Vec::with_capacity(slice.len());
+                for &label in slice {
+                    out.push(
+                        self.vertex_label_name(label)
+                            .map(Value::Text)
+                            .unwrap_or_else(|| Value::Uint64(u64::from(label.raw()))),
+                    );
+                }
+                out
+            })
+        })
+    }
+
     /// Whether `vertex` has `label_id`, using an inline primary-label check when there is no
     /// multi-label sidecar (avoids an allocation per lookup).
     #[inline]
@@ -387,7 +404,9 @@ impl GraphStore {
         vertex: Vertex,
         label_id: VertexLabelId,
     ) -> bool {
-        self.vertex_labels(vertex_id, vertex).contains(&label_id)
+        VERTEX_LABELS.with_borrow(|labels| {
+            labels.with_label_ids(vertex_id, vertex, |slice| slice.contains(&label_id))
+        })
     }
 
     pub fn set_vertex_labels(

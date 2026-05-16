@@ -81,6 +81,27 @@ impl<M: Memory> VertexLabelStore<M> {
         vertex.primary_label_id().into_iter().collect()
     }
 
+    /// Runs `f` on the resolved label-id slice without allocating a `Vec<VertexLabelId>` for the
+    /// common sidecar path.
+    pub(crate) fn with_label_ids<R>(
+        &self,
+        vertex_id: VertexId,
+        vertex: Vertex,
+        f: impl FnOnce(&[VertexLabelId]) -> R,
+    ) -> R {
+        if let Some(blob) = self.sidecars.get(&vertex_key(vertex_id)) {
+            f(blob.labels())
+        } else {
+            match vertex.primary_label_id() {
+                Some(id) => {
+                    let buf = [id];
+                    f(&buf)
+                }
+                None => f(&[]),
+            }
+        }
+    }
+
     pub fn set_labels(
         &mut self,
         vertex_id: VertexId,

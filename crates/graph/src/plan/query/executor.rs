@@ -3287,16 +3287,7 @@ fn vertex_to_value(store: &GraphStore, vertex_id: VertexId) -> Result<Value, Pla
             variable: format!("vertex {vertex_id:?}"),
         })?;
 
-    let label_ids = store.vertex_labels(vertex_id, vertex);
-    let mut labels = Vec::with_capacity(label_ids.len());
-    for label in label_ids {
-        labels.push(
-            store
-                .vertex_label_name(label)
-                .map(Value::Text)
-                .unwrap_or_else(|| Value::Uint64(u64::from(label.raw()))),
-        );
-    }
+    let labels = store.vertex_label_gql_list(vertex_id, vertex);
 
     let props_vec = store.vertex_properties(vertex_id);
     let properties_value = if props_vec.is_empty() {
