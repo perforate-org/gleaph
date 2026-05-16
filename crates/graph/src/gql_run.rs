@@ -4,8 +4,10 @@ use crate::facade::GraphStore;
 use crate::gql_execution_context::GqlExecutionContext;
 use crate::index::lookup::PropertyIndexLookup;
 use crate::index::pending;
-use crate::plan::query::execute_plan_query_bindings;
-use crate::plan::{PlanMutationExecutor, PlanQueryResult, execute_plan_query};
+use crate::plan::{
+    PlanMutationExecutor, PlanQueryResult, PlanQueryRow, execute_plan_query,
+    execute_plan_query_bindings,
+};
 use gleaph_auth::Role;
 use gleaph_gql::Value;
 use gleaph_gql::ast::{Statement, StatementBlock};
@@ -97,15 +99,18 @@ enum TransactionReadMaterialize {
     Full,
     /// Skip per-row [`Value`] construction (paths, vertex records, …) when only a row count is needed.
     LastReadRowCountOnly,
+    /// Keep last read statement as [`PlanQueryRow`] bindings (paths stay lazy until the caller materializes).
+    LastReadBindingsOnly,
 }
 
 struct TransactionBlockRun {
     last_query_rows: PlanQueryResult,
     last_read_row_count: usize,
+    last_read_plan_rows: Vec<PlanQueryRow>,
 }
 
-/// Walk `block` in program order: run DML + flush pending; for read plans either materialize rows
-/// or only refresh `last_read_row_count` from binding rows.
+/// Walk `block` in program order: run DML + flush pending; for read plans materialize [`Value`]
+/// rows, only count rows, or retain binding rows for the last read statement.
 async fn run_transaction_block(
     store: &GraphStore,
     block: &StatementBlock,
@@ -116,6 +121,7 @@ async fn run_transaction_block(
 ) -> Result<TransactionBlockRun, GqlRunError> {
     let mut last_query_rows = PlanQueryResult::default();
     let mut last_read_row_count: usize = 0;
+    let mut last_read_plan_rows: Vec<PlanQueryRow> = Vec::new();
     for stmt in block.iter_statements() {
         if matches!(stmt, Statement::Session(_)) {
             continue;
@@ -136,12 +142,19 @@ async fn run_transaction_block(
                             .await?;
                     last_read_row_count = rows.len();
                 }
+                TransactionReadMaterialize::LastReadBindingsOnly => {
+                    last_read_plan_rows =
+                        execute_plan_query_bindings(store, &plan, parameters, index, execution)
+                            .await?;
+                    last_read_row_count = last_read_plan_rows.len();
+                }
             }
         }
     }
     Ok(TransactionBlockRun {
         last_query_rows,
         last_read_row_count,
+        last_read_plan_rows,
     })
 }
 
@@ -236,6 +249,31 @@ pub(crate) async fn run_adhoc_gql_last_read_row_count(
     .last_read_row_count)
 }
 
+/// Last read statement as binding rows (paths remain [`crate::plan::PlanBinding::Path`] until
+/// [`crate::plan::materialize_plan_rows`] or [`PlanQueryResult::try_from_plan_rows`]).
+pub async fn run_adhoc_gql_last_read_plan_rows(
+    store: GraphStore,
+    gql: &str,
+    parameters: &BTreeMap<String, Value>,
+    caller_role: Role,
+    index: Option<&dyn PropertyIndexLookup>,
+    mode: GqlCanisterExecutionMode,
+    execution: GqlExecutionContext,
+) -> Result<Vec<PlanQueryRow>, GqlRunError> {
+    Ok(run_adhoc_gql_transaction(
+        store,
+        gql,
+        parameters,
+        caller_role,
+        index,
+        mode,
+        execution,
+        TransactionReadMaterialize::LastReadBindingsOnly,
+    )
+    .await?
+    .last_read_plan_rows)
+}
+
 /// Prepared statement block runner for [`run_prepared_gql`] / [`run_prepared_gql_last_read_row_count`].
 async fn run_prepared_gql_transaction(
     store: GraphStore,
@@ -315,6 +353,28 @@ pub(crate) async fn run_prepared_gql_last_read_row_count(
     )
     .await?
     .last_read_row_count)
+}
+
+/// Prepared counterpart to [`run_adhoc_gql_last_read_plan_rows`].
+pub async fn run_prepared_gql_last_read_plan_rows(
+    store: GraphStore,
+    record: &PreparedQueryRecord,
+    parameters: &BTreeMap<String, Value>,
+    index: Option<&dyn PropertyIndexLookup>,
+    mode: GqlCanisterExecutionMode,
+    execution: GqlExecutionContext,
+) -> Result<Vec<PlanQueryRow>, GqlRunError> {
+    Ok(run_prepared_gql_transaction(
+        store,
+        record,
+        parameters,
+        index,
+        mode,
+        execution,
+        TransactionReadMaterialize::LastReadBindingsOnly,
+    )
+    .await?
+    .last_read_plan_rows)
 }
 
 #[cfg(test)]
@@ -568,6 +628,38 @@ mod tests {
         ))
         .expect("materialized");
         assert_eq!(count, full.rows.len());
+    }
+
+    #[test]
+    fn last_read_plan_rows_materialize_same_as_run_adhoc_gql() {
+        use crate::plan::PlanQueryResult;
+
+        let store = GraphStore::new();
+        let params = BTreeMap::new();
+        let gql = "RETURN 1 AS x";
+        let binding_rows = pollster::block_on(run_adhoc_gql_last_read_plan_rows(
+            GraphStore::new(),
+            gql,
+            &params,
+            Role::Read,
+            None,
+            GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext::default(),
+        ))
+        .expect("bindings");
+        let from_rows =
+            PlanQueryResult::try_from_plan_rows(&store, &binding_rows).expect("materialize");
+        let direct = pollster::block_on(run_adhoc_gql(
+            GraphStore::new(),
+            gql,
+            &params,
+            Role::Read,
+            None,
+            GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext::default(),
+        ))
+        .expect("direct");
+        assert_eq!(from_rows, direct);
     }
 
     #[test]

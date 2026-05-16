@@ -2,12 +2,12 @@
 
 #[cfg(feature = "canbench")]
 mod bench;
-mod facade;
+pub mod facade;
 use facade::auth;
-mod gql_execution_context;
-mod gql_run;
+pub mod gql_execution_context;
+pub mod gql_run;
 mod index;
-mod plan;
+pub mod plan;
 
 mod canister;
 

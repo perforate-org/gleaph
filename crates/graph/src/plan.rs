@@ -10,5 +10,6 @@ pub use mutation::{
 };
 pub use query::PlanQueryExecutor;
 pub use query::{
-    EdgeBinding, PathBinding, PlanBinding, PlanQueryError, PlanQueryResult, execute_plan_query,
+    EdgeBinding, PathBinding, PlanBinding, PlanQueryError, PlanQueryResult, PlanQueryRow,
+    execute_plan_query, execute_plan_query_bindings, materialize_plan_rows,
 };

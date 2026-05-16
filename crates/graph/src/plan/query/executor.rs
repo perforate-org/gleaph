@@ -71,6 +71,20 @@ pub struct PlanQueryResult {
     pub rows: Vec<BTreeMap<String, Value>>,
 }
 
+impl PlanQueryResult {
+    /// Hydrate binding rows into GQL [`Value`] rows (paths become [`Value::Path`], vertices full
+    /// records, etc.). Inverse of [`execute_plan_query_bindings`] + this constructor is
+    /// [`execute_plan_query`].
+    pub fn try_from_plan_rows(
+        store: &GraphStore,
+        rows: &[PlanQueryRow],
+    ) -> Result<Self, PlanQueryError> {
+        Ok(Self {
+            rows: materialize_plan_rows(store, rows)?,
+        })
+    }
+}
+
 /// Edge variable binding for one traversal hop: stable handle plus CSR `inline_value`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EdgeBinding {
@@ -87,7 +101,14 @@ pub enum PlanBinding {
     Path(PathBinding),
 }
 
-pub(crate) type PlanRow = BTreeMap<String, PlanBinding>;
+/// One query result row before GQL [`Value`] materialization: column name → [`PlanBinding`].
+///
+/// Shortest-path columns stay as [`PlanBinding::Path`] until [`materialize_plan_rows`] or
+/// [`PlanQueryResult::try_from_plan_rows`].
+pub type PlanQueryRow = BTreeMap<String, PlanBinding>;
+
+/// Alias used throughout the executor implementation.
+pub(crate) type PlanRow = PlanQueryRow;
 
 /// Bindings for each hash-join key column (planner order), used for equality and hashing.
 type HashJoinKey = Vec<PlanBinding>;
@@ -97,9 +118,9 @@ type HashJoinBucketEntry = (HashJoinKey, Vec<PlanRow>);
 
 type HashJoinBuckets = IntMap<u64, Vec<HashJoinBucketEntry>>;
 
-/// Execute a read plan through [`execute_ops`] and return [`PlanRow`] bindings (paths stay
-/// [`PlanBinding::Path`] until [`materialize_plan_rows`] / [`PlanQueryResult::materialize_rows`]).
-pub(crate) async fn execute_plan_query_bindings(
+/// Execute a read plan through [`execute_ops`] and return binding rows (paths stay
+/// [`PlanBinding::Path`] until [`materialize_plan_rows`] or [`PlanQueryResult::try_from_plan_rows`]).
+pub async fn execute_plan_query_bindings(
     store: &GraphStore,
     plan: &PhysicalPlan,
     parameters: &BTreeMap<String, Value>,
@@ -124,7 +145,7 @@ pub(crate) async fn execute_plan_query_bindings(
     .await
 }
 
-pub(crate) fn materialize_plan_rows(
+pub fn materialize_plan_rows(
     store: &GraphStore,
     rows: &[PlanRow],
 ) -> Result<Vec<BTreeMap<String, Value>>, PlanQueryError> {
