@@ -850,7 +850,7 @@ where
     }
 
     /// Clears lookup caches touched by descriptor relocations inside `vid`'s LabelBucket PMA segment.
-    fn invalidate_bucket_lookup_caches_for_bucket_segment(
+    pub(crate) fn invalidate_bucket_lookup_caches_for_bucket_segment(
         &self,
         vid: VertexId,
     ) -> Result<(), LabeledOperationError> {
@@ -1859,6 +1859,7 @@ where
                 .with_vertex_edge_alloc_slots(0);
             self.buckets
                 .clear_vertex_label_buckets(&self.vertices, src)?;
+            self.invalidate_bucket_lookup_caches_for_bucket_segment(src)?;
             self.vertices.set(src, &updated);
             self.edges
                 .bump_vertex_segment_counts(src, 0, -i64::from(old_alloc))?;

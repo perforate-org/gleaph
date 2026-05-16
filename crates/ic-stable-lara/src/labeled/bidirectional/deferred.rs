@@ -1086,6 +1086,9 @@ where
                 .map_err(|e| {
                     DeferredBidirectionalLabeledError::Forward(LabeledOperationError::from(e))
                 })?;
+            self.forward
+                .invalidate_bucket_lookup_caches_for_bucket_segment(vid)
+                .map_err(DeferredBidirectionalLabeledError::Forward)?;
         }
         let reverse_row = self.reverse.vertices().get(vid);
         if !reverse_row.is_default_edge_labeled() {
@@ -1095,6 +1098,9 @@ where
                 .map_err(|e| {
                     DeferredBidirectionalLabeledError::Reverse(LabeledOperationError::from(e))
                 })?;
+            self.reverse
+                .invalidate_bucket_lookup_caches_for_bucket_segment(vid)
+                .map_err(DeferredBidirectionalLabeledError::Reverse)?;
         }
         let len = self.forward.vertex_count();
         if u32::from(vid) < len.0 {
