@@ -2247,9 +2247,11 @@ where
             }
             let mut found = None;
             for offset in 0..bucket.edge_len {
-                let edge = self
-                    .edges
-                    .read_slot(bucket.edge_start.saturating_add(u64::from(offset)));
+                let edge_slot = bucket
+                    .edge_start
+                    .checked_add(u64::from(offset))
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                let edge = self.edges.read_slot(edge_slot);
                 if matches(&edge) {
                     found = Some((offset, edge));
                     break;
@@ -2260,13 +2262,16 @@ where
             };
             let last_index = bucket.edge_len - 1;
             if local_index != last_index {
-                let last = self
-                    .edges
-                    .read_slot(bucket.edge_start.saturating_add(u64::from(last_index)));
-                self.edges.write_slot(
-                    bucket.edge_start.saturating_add(u64::from(local_index)),
-                    last,
-                )?;
+                let last_slot = bucket
+                    .edge_start
+                    .checked_add(u64::from(last_index))
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                let rm_slot = bucket
+                    .edge_start
+                    .checked_add(u64::from(local_index))
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                let last = self.edges.read_slot(last_slot);
+                self.edges.write_slot(rm_slot, last)?;
             }
             self.buckets.write_label_bucket_slot(
                 slot,
@@ -2274,8 +2279,12 @@ where
                     .with_edge_range(bucket.edge_start, last_index)
                     .with_overflow_log_head(-1),
             )?;
-            self.edges
-                .set_num_edges(self.edges.header().num_edges.saturating_sub(1));
+            let hdr = self.edges.header();
+            let next_global = hdr
+                .num_edges
+                .checked_sub(1)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            self.edges.set_num_edges(next_global);
             self.edges
                 .bump_vertex_segment_counts(src, -1, 0)
                 .map_err(LabeledOperationError::from)?;

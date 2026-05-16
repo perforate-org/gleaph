@@ -811,7 +811,9 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         // log metadata; `leaf` is only read while `remaining_log > 0`.
         if v.log_head() < 0 {
             let degree = v.degree();
-            let nbytes = (degree as usize).saturating_mul(E::BYTES);
+            let nbytes = (degree as usize)
+                .checked_mul(E::BYTES)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             let slab_chunk = if nbytes >= SLAB_ITER_PREFETCH_MIN_BYTES {
                 Some(SlabChunkCache {
                     buf: Vec::new(),
@@ -838,7 +840,9 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let on_slab = self.on_slab_edges_with_layout(&edge_layout, vertices, v_ord, &v);
         let degree = v.degree();
         let slab_count = on_slab.min(degree);
-        let log_count = degree.saturating_sub(slab_count);
+        let log_count = degree
+            .checked_sub(slab_count)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
 
         Ok(OutEdgesIter {
             store: self,
@@ -918,7 +922,10 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             .num_edges
             .checked_add(1)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        let loc = v.base_slot_start().saturating_add(u64::from(v.degree()));
+        let loc = v
+            .base_slot_start()
+            .checked_add(u64::from(v.degree()))
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         let location = if self.have_space_on_slab(vertices, v_ord, &v, loc, &edge_layout) {
             self.write_slot(loc, edge)
                 .map_err(LaraOperationError::WriteEdgeSlotFailed)?;
@@ -965,7 +972,10 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let base = v.base_slot_start();
         let mut found = None;
         for i in 0..degree {
-            let edge = self.read_slot(base.saturating_add(u64::from(i)));
+            let slot = base
+                .checked_add(u64::from(i))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let edge = self.read_slot(slot);
             if matches(&edge) {
                 found = Some(i);
                 break;
@@ -975,15 +985,25 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             return Ok(None);
         };
 
-        let removed = self.read_slot(base.saturating_add(u64::from(local_index)));
+        let rm_slot = base
+            .checked_add(u64::from(local_index))
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let removed = self.read_slot(rm_slot);
         let last_index = degree - 1;
         if local_index != last_index {
-            let last = self.read_slot(base.saturating_add(u64::from(last_index)));
-            self.write_slot(base.saturating_add(u64::from(local_index)), last)
+            let last_slot = base
+                .checked_add(u64::from(last_index))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let last = self.read_slot(last_slot);
+            self.write_slot(rm_slot, last)
                 .map_err(LaraOperationError::WriteEdgeSlotFailed)?;
         }
         vertices.set(vid, &v.with_degree(last_index));
-        self.set_num_edges(edge_layout.num_edges.saturating_sub(1));
+        let next_global = edge_layout
+            .num_edges
+            .checked_sub(1)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        self.set_num_edges(next_global);
         self.bump_counts_leaf_with_layout(&edge_layout, vid, -1, 0)?;
         Ok(Some(removed))
     }
@@ -1005,9 +1025,11 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         if offset >= v.degree() {
             return Ok(None);
         }
-        Ok(Some(self.read_slot(
-            v.base_slot_start().saturating_add(u64::from(offset)),
-        )))
+        let slot = v
+            .base_slot_start()
+            .checked_add(u64::from(offset))
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        Ok(Some(self.read_slot(slot)))
     }
 
     pub(crate) fn clear_row_slab<V, A>(
@@ -1029,7 +1051,11 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             return Ok(0);
         }
         vertices.set(vid, &v.with_degree(0).with_log_head(-1));
-        self.set_num_edges(edge_layout.num_edges.saturating_sub(u64::from(removed)));
+        let next_global = edge_layout
+            .num_edges
+            .checked_sub(u64::from(removed))
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        self.set_num_edges(next_global);
         self.bump_counts_leaf_with_layout(&edge_layout, vid, -i64::from(removed), 0)?;
         Ok(removed)
     }
