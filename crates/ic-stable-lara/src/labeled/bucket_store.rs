@@ -185,6 +185,34 @@ impl<M: Memory> LabelBucketStore<M> {
             .map_err(LaraOperationError::WriteEdgeSlotFailed)
     }
 
+    /// Writes `buckets.len()` descriptors starting at `start_slot` in one slab write.
+    pub(crate) fn write_label_bucket_slots_contiguous(
+        &self,
+        start_slot: u64,
+        buckets: &[LabelBucket],
+    ) -> Result<(), LaraOperationError> {
+        if buckets.is_empty() {
+            return Ok(());
+        }
+        let nbytes = buckets
+            .len()
+            .checked_mul(LabelBucket::BYTES)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let mut raw = vec![0u8; nbytes];
+        for (i, bucket) in buckets.iter().enumerate() {
+            let lo = i
+                .checked_mul(LabelBucket::BYTES)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let hi = lo
+                .checked_add(LabelBucket::BYTES)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            bucket.write_to(&mut raw[lo..hi]);
+        }
+        self.slab
+            .write_slots_contiguous(start_slot, &raw)
+            .map_err(LaraOperationError::WriteEdgeSlotFailed)
+    }
+
     fn grow_capacity_to_fit(&self, slot: u64) -> Result<(), LaraOperationError> {
         let cap = self.header().elem_capacity;
         if slot < cap {
@@ -297,17 +325,13 @@ impl<M: Memory> LabelBucketStore<M> {
                 continue;
             }
             let alloc = Self::bucket_row_alloc(v);
-            let mut buckets = Vec::with_capacity(v.degree() as usize);
-            for offset in 0..u64::from(v.degree()) {
-                let slot = v
-                    .base_slot_start()
-                    .checked_add(offset)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                buckets.push(
-                    self.read_label_bucket_slot(slot)
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?,
-                );
-            }
+            let deg = v.degree();
+            let buckets = if deg == 0 {
+                Vec::new()
+            } else {
+                self.read_label_bucket_slots_contiguous(v.base_slot_start(), deg)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?
+            };
             if alloc > 0 || !buckets.is_empty() || v_ord == u32::from(vid) {
                 rows.push((v_ord, v, buckets, alloc));
             }
@@ -341,12 +365,7 @@ impl<M: Memory> LabelBucketStore<M> {
         let mut cursor = new_base;
         for (v_ord, v, buckets, alloc) in rows {
             let row_base = cursor;
-            for bucket in &buckets {
-                self.write_label_bucket_slot(cursor, *bucket)?;
-                cursor = cursor
-                    .checked_add(1)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            }
+            self.write_label_bucket_slots_contiguous(cursor, &buckets)?;
             cursor = row_base
                 .checked_add(u64::from(alloc))
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
@@ -448,23 +467,18 @@ impl<M: Memory> LabelBucketStore<M> {
         }
         if !v.is_default_edge_labeled() && Self::bucket_row_alloc(v) > v.degree() {
             let base = v.base_slot_start();
-            for offset in (insert_index..v.degree()).rev() {
-                let from_slot = base
-                    .checked_add(u64::from(offset))
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                let existing = self
-                    .read_label_bucket_slot(from_slot)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                let to_slot = base
-                    .checked_add(u64::from(offset))
-                    .and_then(|s| s.checked_add(1))
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                self.write_label_bucket_slot(to_slot, existing)?;
-            }
+            let deg = v.degree();
+            let mut row = if deg == 0 {
+                Vec::new()
+            } else {
+                self.read_label_bucket_slots_contiguous(base, deg)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?
+            };
+            row.insert(insert_index as usize, bucket);
+            self.write_label_bucket_slots_contiguous(base, &row)?;
             let insert_at = base
                 .checked_add(u64::from(insert_index))
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            self.write_label_bucket_slot(insert_at, bucket)?;
             let next_degree = v
                 .degree()
                 .checked_add(1)

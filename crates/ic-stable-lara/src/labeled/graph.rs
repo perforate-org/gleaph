@@ -974,15 +974,8 @@ where
         if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
             return Ok(false);
         }
-        for offset in 0..vertex.degree() {
-            let slot = Self::labeled_vertex_bucket_slot(vertex, offset)?;
-            if let Some(bucket) = self.buckets.read_label_bucket_slot(slot)
-                && bucket.overflow_log_head >= 0
-            {
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        let buckets = self.read_vertex_label_buckets(vertex)?;
+        Ok(buckets.iter().any(|b| b.overflow_log_head >= 0))
     }
 
     fn bucket_successor_start(
