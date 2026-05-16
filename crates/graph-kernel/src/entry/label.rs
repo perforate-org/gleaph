@@ -1,25 +1,36 @@
+use ic_stable_lara::labeled::{BUCKET_LABEL_DIRECTED_BIT, BucketDirectedness, BucketLabelKey};
 use ic_stable_structures::{Storable, storable::Bound};
 use std::borrow::Cow;
 use std::fmt;
 
-/// Bit 15 of [`EdgeLabelId`]: undirected bucket / storage key.
-pub const EDGE_LABEL_UNDIRECTED_BIT: u16 = 0x8000;
+/// Same value as [`BUCKET_LABEL_DIRECTED_BIT`]: directed bit on LARA bucket wire keys.
+pub const EDGE_LABEL_DIRECTED_BIT: u16 = BUCKET_LABEL_DIRECTED_BIT;
 
 /// Maximum catalog edge label id (MSB clear).
 pub const EDGE_LABEL_CATALOG_MAX: u16 = 0x7FFF;
+
+/// LARA labeled CSR bucket wire key (re-exported from `ic-stable-lara`).
+pub type TaggedEdgeLabelId = BucketLabelKey;
 
 /// Vertex label identifier (`0` reserved; catalog allocates `1..=0xFFFF`).
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct VertexLabelId(u16);
 
-/// Edge label identifier for Lara buckets (`bit15` = undirected).
+/// Catalog edge label id: lower 15 bits only (MSB must stay clear).
 ///
-/// Catalog names allocate in the directed half (`0x0001..=0x7FFF`, MSB clear).
-/// Storage keys set bit15 for undirected edges (`0x8000..=0xFFFF`).
+/// Stable name maps and weight profiles use this type. Storage / LARA bucket keys use
+/// [`TaggedEdgeLabelId`], which adds the directed MSB.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct EdgeLabelId(u16);
+
+/// Directed vs undirected interpretation for [`EdgeLabelId::pack`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum EdgeDirectedness {
+    Directed,
+    Undirected,
+}
 
 impl VertexLabelId {
     #[inline]
@@ -49,9 +60,6 @@ impl VertexLabelId {
 }
 
 impl EdgeLabelId {
-    pub const UNLABELED_DIRECTED: Self = Self(0);
-    pub const UNLABELED_UNDIRECTED: Self = Self(EDGE_LABEL_UNDIRECTED_BIT);
-
     #[inline]
     pub const fn from_raw(raw: u16) -> Self {
         Self(raw)
@@ -62,32 +70,22 @@ impl EdgeLabelId {
         self.0
     }
 
+    /// Packs this catalog id with a directedness bit into a LARA / bucket wire key.
     #[inline]
-    pub const fn is_undirected(self) -> bool {
-        self.0 & EDGE_LABEL_UNDIRECTED_BIT != 0
-    }
-
-    /// Lower 15 bits: catalog id (`0` = unlabeled).
-    #[inline]
-    pub const fn catalog_id(self) -> u16 {
-        self.0 & EDGE_LABEL_CATALOG_MAX
-    }
-
-    /// Builds a storage/bucket key from a catalog id (MSB clear) and direction.
-    #[inline]
-    pub const fn from_catalog(catalog: Self, undirected: bool) -> Self {
-        let id = catalog.0 & EDGE_LABEL_CATALOG_MAX;
-        if undirected {
-            Self(id | EDGE_LABEL_UNDIRECTED_BIT)
-        } else {
-            Self(id)
-        }
+    pub const fn pack(self, directedness: EdgeDirectedness) -> TaggedEdgeLabelId {
+        TaggedEdgeLabelId::new_from_index(
+            self.raw(),
+            match directedness {
+                EdgeDirectedness::Directed => BucketDirectedness::Directed,
+                EdgeDirectedness::Undirected => BucketDirectedness::Undirected,
+            },
+        )
     }
 
     /// `true` when this id may be stored in the edge label catalog (MSB clear, non-zero).
     #[inline]
     pub const fn is_catalog_allocatable(self) -> bool {
-        !self.is_undirected() && self.0 != 0 && self.0 <= EDGE_LABEL_CATALOG_MAX
+        self.0 != 0 && (self.0 & EDGE_LABEL_DIRECTED_BIT) == 0 && self.0 <= EDGE_LABEL_CATALOG_MAX
     }
 
     #[inline]
@@ -160,16 +158,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn edge_label_msb_encodes_undirected() {
+    fn edge_label_msb_encodes_directed() {
         let catalog = EdgeLabelId::from_raw(5);
-        assert!(!EdgeLabelId::from_catalog(catalog, false).is_undirected());
-        assert!(EdgeLabelId::from_catalog(catalog, true).is_undirected());
-        assert_eq!(EdgeLabelId::from_catalog(catalog, true).raw(), 0x8005);
+        let d = catalog.pack(EdgeDirectedness::Directed);
+        let u = catalog.pack(EdgeDirectedness::Undirected);
+        assert!(d.is_directed());
+        assert!(u.is_undirected());
+        assert_eq!(d.raw(), 0x8005);
+        assert_eq!(u.raw(), 5);
     }
 
     #[test]
     fn unlabeled_storage_ids() {
-        assert_eq!(EdgeLabelId::UNLABELED_DIRECTED.raw(), 0);
-        assert_eq!(EdgeLabelId::UNLABELED_UNDIRECTED.raw(), 0x8000);
+        assert_eq!(TaggedEdgeLabelId::UNLABELED_DIRECTED.raw(), 0x8000);
+        assert_eq!(TaggedEdgeLabelId::UNLABELED_UNDIRECTED.raw(), 0);
+    }
+
+    #[test]
+    fn ord_groups_undirected_before_directed() {
+        let hi = EdgeLabelId::from_raw(1).pack(EdgeDirectedness::Directed);
+        let lo = EdgeLabelId::from_raw(EDGE_LABEL_CATALOG_MAX).pack(EdgeDirectedness::Undirected);
+        assert!(lo < hi);
     }
 }

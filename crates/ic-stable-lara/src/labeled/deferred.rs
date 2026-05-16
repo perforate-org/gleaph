@@ -45,7 +45,7 @@ pub enum MaintenanceWorkItem {
 mod tests {
     use super::*;
     use crate::{
-        labeled::{graph::LabeledLaraGraph, record::LabelId},
+        labeled::{BucketLabelKey, graph::LabeledLaraGraph},
         test_support::{labeled_lara_memories, vector_memory},
     };
 
@@ -86,7 +86,7 @@ mod tests {
             efs,
             efsbs,
             1024,
-            LabelId::from_raw(1),
+            BucketLabelKey::from_raw(1),
         )
         .expect("inner graph");
         DeferredLabeledLaraGraph::new(inner, vector_memory()).expect("deferred graph")
@@ -99,9 +99,13 @@ mod tests {
             .inner()
             .push_vertex(crate::labeled::record::LabeledVertex::default())
             .unwrap();
-        let label = LabelId::from_raw(2);
+        let label = BucketLabelKey::from_raw(2);
         graph
-            .insert_edge(VertexId::from(0), LabelId::from_raw(99), TestEdge(999))
+            .insert_edge(
+                VertexId::from(0),
+                BucketLabelKey::from_raw(99),
+                TestEdge(999),
+            )
             .unwrap();
         for target in 0..80u32 {
             graph
@@ -141,9 +145,13 @@ mod tests {
             .inner()
             .push_vertex(crate::labeled::record::LabeledVertex::default())
             .unwrap();
-        let label = LabelId::from_raw(2);
+        let label = BucketLabelKey::from_raw(2);
         graph
-            .insert_edge(VertexId::from(0), LabelId::from_raw(99), TestEdge(999))
+            .insert_edge(
+                VertexId::from(0),
+                BucketLabelKey::from_raw(99),
+                TestEdge(999),
+            )
             .unwrap();
         for target in 0..130u32 {
             graph
@@ -270,7 +278,7 @@ where
         edge_free_span_by_start: M,
         queue_memory: M,
         elem_capacity: u64,
-        default_label: crate::labeled::record::LabelId,
+        default_label: crate::labeled::BucketLabelKey,
     ) -> Result<Self, InitError> {
         let inner = LabeledLaraGraph::init(
             vertices,
@@ -314,7 +322,7 @@ where
     pub fn insert_edge(
         &self,
         src: VertexId,
-        label_id: crate::labeled::record::LabelId,
+        label_id: crate::labeled::BucketLabelKey,
         edge: E,
     ) -> Result<(), DeferredError> {
         self.inner
@@ -332,7 +340,7 @@ where
     pub fn remove_edge_matching<F>(
         &self,
         src: VertexId,
-        label_id: crate::labeled::record::LabelId,
+        label_id: crate::labeled::BucketLabelKey,
         matches: F,
     ) -> Result<Option<E>, DeferredError>
     where

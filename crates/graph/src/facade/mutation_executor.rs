@@ -167,8 +167,8 @@ fn resolve_properties(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gleaph_graph_kernel::entry::EdgeLabelId;
-    use ic_stable_lara::{CsrEdge, LabelId as LaraLabelId};
+    use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeLabelId, TaggedEdgeLabelId};
+    use ic_stable_lara::{BucketLabelKey as LaraLabelId, CsrEdge};
 
     #[test]
     fn inserts_edges_with_labels_and_properties() {
@@ -197,7 +197,9 @@ mod tests {
             edge.neighbor_vid() == target
                 && edge.vertex_edge_id == directed.vertex_edge_id
                 && store.find_forward_edge_bucket_label(source, edge).unwrap()
-                    == Some(LaraLabelId::from_raw(directed_label.raw()))
+                    == Some(LaraLabelId::from_raw(
+                        directed_label.pack(EdgeDirectedness::Directed).raw(),
+                    ))
         }));
 
         let undirected = store
@@ -215,7 +217,7 @@ mod tests {
                 && edge.vertex_edge_id == undirected.vertex_edge_id
                 && store
                     .find_forward_edge_bucket_label(target, edge)
-                    .map(|l| l.map(|id| EdgeLabelId::from_raw(id.raw())))
+                    .map(|l| l.map(|id| TaggedEdgeLabelId::from_raw(id.raw())))
                     .ok()
                     .flatten()
                     .is_some_and(|id| id.is_undirected())

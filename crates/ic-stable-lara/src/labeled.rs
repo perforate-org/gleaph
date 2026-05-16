@@ -31,7 +31,7 @@
 //! The edge layer has one additional labeled-specific rule. For a non-default
 //! vertex, [`LabeledVertex::vertex_edge_alloc_slots`] reserves one contiguous
 //! physical VertexEdgeSpan for all labels on that vertex. The [`LabelBucket`] rows are
-//! kept strictly sorted by [`LabelId`], and their LabelEdgeSpans are laid out in
+//! kept strictly sorted by [`BucketLabelKey`], and their LabelEdgeSpans are laid out in
 //! that same order inside the VertexEdgeSpan:
 //!
 //! ```text
@@ -55,6 +55,7 @@ pub(crate) mod access;
 #[cfg(feature = "canbench")]
 mod bench;
 pub(crate) mod bidirectional;
+pub mod bucket_label_key;
 mod bucket_store;
 pub(crate) mod deferred;
 pub(crate) mod graph;
@@ -67,13 +68,16 @@ pub use bidirectional::{
     DeferredBidirectionalLabeledLaraGraph, LabeledBidirectionalMaintenanceReport,
     Orientation as LabeledOrientation,
 };
+pub use bucket_label_key::{
+    BUCKET_LABEL_DIRECTED_BIT, BUCKET_LABEL_INDEX_MASK, BucketDirectedness, BucketLabelKey,
+};
 pub use bucket_store::InitError as LabelBucketStoreInitError;
 pub use deferred::{DeferredError, DeferredLabeledLaraGraph, MaintenanceWorkItem};
 pub use graph::{
     InitError as LabeledGraphInitError, LabeledLaraGraph, LabeledOperationError,
-    LabeledOutEdgesIter,
+    LabeledOutEdgesIter, OutEdgeBucketWalk,
 };
-pub use record::{LabelBucket, LabelId, LabeledVertex};
+pub use record::{LabelBucket, LabeledVertex};
 pub use traits::LabeledCsrVertex;
 
 /// Convenience alias for the single-orientation labeled LARA graph.

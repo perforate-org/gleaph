@@ -8,7 +8,10 @@ pub mod weight;
 
 pub use compact_edge::CompactEdge;
 pub use edge::{Edge, EdgeMeta, VertexEdgeId};
-pub use label::{EDGE_LABEL_CATALOG_MAX, EDGE_LABEL_UNDIRECTED_BIT, EdgeLabelId, VertexLabelId};
+pub use label::{
+    EDGE_LABEL_CATALOG_MAX, EDGE_LABEL_DIRECTED_BIT, EdgeDirectedness, EdgeLabelId,
+    TaggedEdgeLabelId, VertexLabelId,
+};
 pub use property::PropertyId;
 pub use vertex::Vertex;
 pub use vertex_ref::VertexRef;

@@ -4,7 +4,7 @@ pub(crate) mod deferred;
 
 use crate::{
     VertexCount, VertexId,
-    labeled::{graph::LabeledLaraGraph, record::LabelId},
+    labeled::{BucketLabelKey, graph::LabeledLaraGraph},
     traits::CsrEdge,
 };
 use ic_stable_structures::Memory;
@@ -112,7 +112,7 @@ where
         reverse_edge_free_spans: M,
         reverse_edge_free_span_by_start: M,
         elem_capacity: u64,
-        default_label: LabelId,
+        default_label: BucketLabelKey,
     ) -> Result<Self, BidirectionalLabeledError> {
         let forward = LabeledLaraGraph::new(
             forward_vertices,
@@ -182,7 +182,7 @@ where
         &self,
         src: VertexId,
         dst: VertexId,
-        label_id: LabelId,
+        label_id: BucketLabelKey,
         forward_edge: E,
         reverse_edge: E,
     ) -> Result<(), BidirectionalLabeledError> {
@@ -199,7 +199,7 @@ where
     pub fn iter_out_edges_for_label(
         &self,
         src: VertexId,
-        label_id: LabelId,
+        label_id: BucketLabelKey,
     ) -> Result<Vec<E>, BidirectionalLabeledError> {
         self.forward
             .iter_edges_for_label(src, label_id)

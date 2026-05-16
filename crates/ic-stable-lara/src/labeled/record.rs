@@ -1,40 +1,10 @@
 //! Fixed-width records for the multi-level labeled CSR layout.
 
 use crate::VertexId;
+use crate::labeled::bucket_label_key::{BUCKET_LABEL_INDEX_MASK, BucketLabelKey};
 use crate::traits::{CsrEdge, CsrVertex, CsrVertexTombstone};
 use ic_stable_structures::{Storable, storable::Bound};
 use std::borrow::Cow;
-
-/// Edge-label identifier used by the labeled CSR layer.
-#[repr(transparent)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub struct LabelId(u16);
-
-impl LabelId {
-    /// Constructs a label id from its raw numeric value.
-    #[inline]
-    pub const fn from_raw(raw: u16) -> Self {
-        Self(raw)
-    }
-
-    /// Returns the raw numeric value.
-    #[inline]
-    pub const fn raw(self) -> u16 {
-        self.0
-    }
-
-    /// Returns the little-endian wire encoding.
-    #[inline]
-    pub const fn to_le_bytes(self) -> [u8; 2] {
-        self.0.to_le_bytes()
-    }
-
-    /// Decodes a little-endian wire value.
-    #[inline]
-    pub const fn from_le_bytes(bytes: [u8; 2]) -> Self {
-        Self(u16::from_le_bytes(bytes))
-    }
-}
 
 /// One LabelBucket descriptor in the intermediate CSR layer.
 ///
@@ -43,7 +13,7 @@ impl LabelId {
 /// [`LabeledVertex`] through [`LabeledVertex::vertex_edge_alloc_slots`].
 ///
 /// Within one non-default vertex, buckets are stored in strictly ascending
-/// [`LabelId`] order. Edge rows are stored in the same order. A bucket's physical
+/// [`BucketLabelKey`] order. Edge rows are stored in the same order. A bucket's physical
 /// successor boundary is therefore:
 ///
 /// - the next bucket's [`Self::edge_start`], or
@@ -61,8 +31,8 @@ impl LabelId {
 /// `-1` when every live edge sits contiguously on the slab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LabelBucket {
-    /// Relationship type for this contiguous edge range.
-    pub label_id: LabelId,
+    /// Packed label index + directedness for this contiguous edge range.
+    pub bucket_label_key: BucketLabelKey,
     /// Global edge-slot index where this bucket's on-slab edge prefix starts.
     pub edge_start: u64,
     /// Number of live edges (on-slab prefix plus overflow log chain).
@@ -74,7 +44,7 @@ pub struct LabelBucket {
 impl Default for LabelBucket {
     fn default() -> Self {
         Self {
-            label_id: LabelId::default(),
+            bucket_label_key: BucketLabelKey::default(),
             edge_start: 0,
             edge_len: 0,
             overflow_log_head: -1,
@@ -89,7 +59,7 @@ impl LabelBucket {
     /// Encodes this LabelBucket into exactly [`Self::BYTES`] bytes.
     pub fn write_to(self, bytes: &mut [u8]) {
         debug_assert_eq!(bytes.len(), Self::BYTES);
-        bytes[0..2].copy_from_slice(&self.label_id.to_le_bytes());
+        bytes[0..2].copy_from_slice(&self.bucket_label_key.to_le_bytes());
         bytes[2..10].copy_from_slice(&self.edge_start.to_le_bytes());
         bytes[10..14].copy_from_slice(&self.edge_len.to_le_bytes());
         bytes[14..18].copy_from_slice(&self.overflow_log_head.to_le_bytes());
@@ -120,7 +90,7 @@ impl LabelBucket {
             .try_into()
             .expect("LabelBucket::read_from expects exactly Self::BYTES bytes");
         Self {
-            label_id: LabelId::from_le_bytes([chunk[0], chunk[1]]),
+            bucket_label_key: BucketLabelKey::from_le_bytes([chunk[0], chunk[1]]),
             edge_start: u64::from_le_bytes(chunk[2..10].try_into().unwrap()),
             edge_len: u32::from_le_bytes(chunk[10..14].try_into().unwrap()),
             overflow_log_head: i32::from_le_bytes(chunk[14..18].try_into().unwrap()),
@@ -171,7 +141,7 @@ impl CsrEdge for LabelBucket {
     }
 
     fn neighbor_vid(&self) -> VertexId {
-        VertexId::from(u32::from(self.label_id.raw()))
+        VertexId::from(u32::from(self.bucket_label_key.raw()))
     }
 
     fn with_neighbor_vid(self, _vid: VertexId) -> Self {
@@ -181,16 +151,15 @@ impl CsrEdge for LabelBucket {
 
 /// Bit 0 of [`LabeledVertex::metadata`]: vertex points directly into the edge CSR.
 const DEFAULT_EDGE_LABELED_BIT: u32 = 1;
-/// Bit 1 while bypass is active: homogeneous unlabeled edges use `default_label | 0x8000`.
+/// Bit 1 while bypass is active: homogeneous edges use undirected wire
+/// (`default_label` with the directed MSB cleared).
 ///
 /// In normal labeled mode this bit is the LSB of the packed bucket-row reservation
 /// ([`LabeledVertex::bucket_alloc_slots`]); it is not interpreted as an undirected flag.
 const BYPASS_UNDIRECTED_BIT: u32 = 1 << 1;
 /// Bit 16 of [`LabeledVertex::metadata`]: [`Self::vertex_edge_alloc_slots`] holds a
-/// catalog [`LabelId`] wire value (homogeneous bypass), not a VertexEdgeSpan width.
+/// full [`BucketLabelKey`] wire value (homogeneous bypass), not a VertexEdgeSpan width.
 const BYPASS_LABEL_RAW_IN_SLOTS_BIT: u32 = 1 << 16;
-/// Storage MSB on [`LabelId`] for undirected homogeneous bypass / buckets.
-pub const LABEL_UNDIRECTED_BIT: u16 = 0x8000;
 const BUCKET_ALLOC_SHIFT: u32 = 1;
 const BUCKET_ALLOC_BITS: u32 = 15;
 const BUCKET_ALLOC_MASK: u32 = ((1 << BUCKET_ALLOC_BITS) - 1) << BUCKET_ALLOC_SHIFT;
@@ -205,7 +174,7 @@ const VERTEX_TOMBSTONE_BIT: u32 = 1 << 31;
 ///   [`Self::base_slot_start`] points directly into [`crate::lara::edge::EdgeStore`],
 ///   and [`Self::row_count`] is the live edge count. No LabelBucket rows are read.
 ///   When [`Self::bypass_label_raw_in_slots`] is set, [`Self::vertex_edge_alloc_slots`]
-///   stores the catalog [`LabelId`] wire value; otherwise legacy default-label bypass
+///   stores the full [`BucketLabelKey`] wire value; otherwise legacy default-label bypass
 ///   uses `default_label` plus [`Self::is_bypass_undirected`].
 /// - **Normal labeled row:** [`Self::is_default_edge_labeled`] is false.
 ///   [`Self::base_slot_start`] points into [`crate::labeled::LabelBucketStore`],
@@ -294,28 +263,28 @@ impl LabeledVertex {
     /// Returns the storage label id for a homogeneous bypass row.
     ///
     /// When [`Self::bypass_label_raw_in_slots`] is set, [`Self::vertex_edge_alloc_slots`]
-    /// stores the full [`LabelId`] wire value (including the undirected MSB). Otherwise
+    /// stores the full [`BucketLabelKey`] wire value (including the directed MSB). Otherwise
     /// the row uses `default_label` plus [`Self::is_bypass_undirected`] (legacy enable path).
     #[inline]
-    pub fn bypass_storage_label(self, default_label: LabelId) -> LabelId {
+    pub fn bypass_storage_label(self, default_label: BucketLabelKey) -> BucketLabelKey {
         debug_assert!(self.is_default_edge_labeled());
         if self.bypass_label_raw_in_slots() {
-            return LabelId::from_raw(self.vertex_edge_alloc_slots as u16);
+            return BucketLabelKey::from_raw(self.vertex_edge_alloc_slots as u16);
         }
         if self.is_bypass_undirected() {
-            LabelId::from_raw(default_label.raw() | LABEL_UNDIRECTED_BIT)
+            BucketLabelKey::from_raw(default_label.raw() & BUCKET_LABEL_INDEX_MASK)
         } else {
             default_label
         }
     }
 
-    /// Returns a bypass row tagged with homogeneous storage label `label_id`.
+    /// Returns a bypass row tagged with homogeneous storage label `label_key`.
     #[inline]
-    pub fn with_homogeneous_bypass_label(self, label_id: LabelId) -> Self {
+    pub fn with_homogeneous_bypass_label(self, label_key: BucketLabelKey) -> Self {
         let vertex = self
             .with_default_edge_labeled(true)
-            .with_bypass_undirected(label_id.raw() & LABEL_UNDIRECTED_BIT != 0)
-            .with_vertex_edge_alloc_slots(u32::from(label_id.raw()));
+            .with_bypass_undirected(label_key.is_undirected())
+            .with_vertex_edge_alloc_slots(u32::from(label_key.raw()));
         vertex.with_metadata_word(vertex.metadata_word() | BYPASS_LABEL_RAW_IN_SLOTS_BIT)
     }
 
@@ -508,7 +477,7 @@ mod tests {
     #[test]
     fn label_bucket_round_trips_exact_layout() {
         let bucket = LabelBucket {
-            label_id: LabelId::from_raw(0x1234),
+            bucket_label_key: BucketLabelKey::from_raw(0x1234),
             edge_start: 0x1122_3344_5566_7788,
             edge_len: 0xAABB_CCDD,
             overflow_log_head: -0x0102_0304,
@@ -546,8 +515,8 @@ mod tests {
         assert!(decoded.is_default_edge_labeled());
         assert!(decoded.is_bypass_undirected());
         assert_eq!(
-            decoded.bypass_storage_label(LabelId::from_raw(0)),
-            LabelId::from_raw(LABEL_UNDIRECTED_BIT)
+            decoded.bypass_storage_label(BucketLabelKey::UNLABELED_DIRECTED),
+            BucketLabelKey::UNLABELED_UNDIRECTED
         );
         assert!(decoded.is_tombstone());
         assert_eq!(decoded.vertex_edge_alloc_slots(), 0x1234);

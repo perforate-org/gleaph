@@ -1,4 +1,6 @@
-use gleaph_graph_kernel::entry::{EDGE_LABEL_CATALOG_MAX, EdgeLabelId};
+use gleaph_graph_kernel::entry::{
+    EDGE_LABEL_CATALOG_MAX, EdgeDirectedness, EdgeLabelId, TaggedEdgeLabelId,
+};
 use ic_stable_structures::{Memory, StableBTreeMap};
 use std::fmt;
 
@@ -59,10 +61,17 @@ impl<MNameToId: Memory, MIdToName: Memory> EdgeLabelCatalog<MNameToId, MIdToName
         self.name_to_id.get(&name.to_owned())
     }
 
+    pub fn get_tagged_directed(&self, name: &str) -> Option<TaggedEdgeLabelId> {
+        self.get_id(name)
+            .map(|id| id.pack(EdgeDirectedness::Directed))
+    }
+
+    pub fn get_tagged_undirected(&self, name: &str) -> Option<TaggedEdgeLabelId> {
+        self.get_id(name)
+            .map(|id| id.pack(EdgeDirectedness::Undirected))
+    }
+
     pub fn get_name(&self, id: EdgeLabelId) -> Option<String> {
-        if id.is_undirected() {
-            return self.id_to_name.get(&EdgeLabelId::from_raw(id.catalog_id()));
-        }
         self.id_to_name.get(&id)
     }
 
@@ -140,6 +149,13 @@ mod tests {
         let rel = catalog.get_or_insert("REL").unwrap();
         assert_eq!(knows.raw(), 1);
         assert_eq!(rel.raw(), 2);
-        assert!(!knows.is_undirected());
+        assert_eq!(
+            catalog.get_tagged_directed("KNOWS"),
+            Some(knows.pack(EdgeDirectedness::Directed))
+        );
+        assert_eq!(
+            catalog.get_tagged_undirected("KNOWS"),
+            Some(knows.pack(EdgeDirectedness::Undirected))
+        );
     }
 }

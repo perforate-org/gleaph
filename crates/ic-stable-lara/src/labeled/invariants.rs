@@ -3,7 +3,7 @@
 use super::bucket_store::LabelBucketStore;
 use crate::{
     VertexId,
-    labeled::record::{LabelId, LabeledVertex},
+    labeled::{BucketLabelKey, LabeledVertex},
     lara::{edge::EdgeStore, vertex::VertexStore},
     traits::{CsrEdge, CsrVertex},
 };
@@ -42,7 +42,7 @@ pub(crate) fn assert_labeled_layout_invariants<E, M>(
             "vertex {vidx}: bucket allocation [{}, {bucket_end}) exceeds bucket capacity {bucket_cap}",
             vertex.base_slot_start()
         );
-        let mut previous_label: Option<LabelId> = None;
+        let mut previous_label: Option<BucketLabelKey> = None;
         let mut span_base = None;
         let base_start = vertex.base_slot_start();
         let deg = vertex.degree() as u64;
@@ -53,11 +53,11 @@ pub(crate) fn assert_labeled_layout_invariants<E, M>(
                 .expect("bucket slot must exist");
             if let Some(previous) = previous_label {
                 assert!(
-                    previous < bucket.label_id,
-                    "vertex {vidx}: label buckets must be strictly sorted by LabelId"
+                    previous < bucket.bucket_label_key,
+                    "vertex {vidx}: label buckets must be strictly sorted by BucketLabelKey"
                 );
             }
-            previous_label = Some(bucket.label_id);
+            previous_label = Some(bucket.bucket_label_key);
             span_base.get_or_insert(bucket.edge_start);
             let mut successor_start = if offset.saturating_add(1) < deg {
                 buckets

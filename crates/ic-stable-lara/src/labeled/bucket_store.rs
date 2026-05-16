@@ -10,10 +10,14 @@
 //! This store owns only bucket descriptors. It does not know or reserve edge
 //! capacity. Edge capacity belongs to [`LabeledVertex::vertex_edge_alloc_slots`]
 //! and is managed by `LabeledLaraGraph` when it rewrites a VertexEdgeSpan.
+//!
+//! Bucket rows for one vertex are strictly sorted by [`crate::labeled::BucketLabelKey`], so
+//! undirected keys (MSB clear) and directed keys (MSB set) occupy **contiguous index ranges**;
+//! see [`LabelBucketStore::directedness_bucket_index_range`].
 
 use crate::{
     VertexId,
-    labeled::{record::LabelBucket, record::LabeledVertex},
+    labeled::{bucket_label_key::BucketDirectedness, record::LabelBucket, record::LabeledVertex},
     lara::{
         edge::{
             EdgeHeaderV1 as SlabHeaderV1, EdgeSlabStore,
@@ -53,6 +57,24 @@ pub(crate) struct LabelBucketStore<M: Memory> {
 }
 
 const MIN_BUCKET_ROW_ALLOC: u32 = 4;
+
+/// When the binary-search interval shrinks to this many bucket indices or fewer, finish the
+/// partition with a linear scan (same result as pure binary lower-bound on the directed MSB).
+const PARTITION_BINARY_TO_LINEAR_REM: u32 = 16;
+
+/// How to locate the first **directed** bucket index `p` (half-open undirected prefix `[0, p)`).
+///
+/// LARA keeps buckets strictly sorted by [`crate::labeled::BucketLabelKey`], so `p` is unique.
+/// Different strategies match how callers walk edges (ascending vs descending) for probe locality.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DirectednessPartitionStrategy {
+    /// Binary search on the MSB, then linear over the final ≤[`PARTITION_BINARY_TO_LINEAR_REM`] candidates.
+    HybridBinary,
+    /// Scan ascending from index `0` until a directed bucket (early exit on undirected-only prefixes).
+    LinearFromStart,
+    /// Scan descending from index `degree - 1` until an undirected bucket (early exit when the tail is undirected-only).
+    LinearFromEnd,
+}
 
 /// Numerator/denominator for multiplicative growth of `bucket_alloc_slots` on segment rewrite:
 /// `new = max(ceil(max(current, MIN_BUCKET_ROW_ALLOC) * NUM / DEN), needed)`.
@@ -170,6 +192,123 @@ impl<M: Memory> LabelBucketStore<M> {
         }
         debug_assert_eq!(out.len(), count as usize);
         Some(out)
+    }
+
+    /// Smallest `i in [0, degree]` such that bucket `i` is **directed** (MSB set), or `degree` if all undirected.
+    ///
+    /// Hybrid: binary search while `hi - lo` > [`PARTITION_BINARY_TO_LINEAR_REM`], then linear scan.
+    pub(crate) fn partition_first_directed_hybrid(
+        &self,
+        base_slot_start: u64,
+        degree: u32,
+    ) -> Result<u32, LaraOperationError> {
+        if degree == 0 {
+            return Ok(0);
+        }
+        let mut lo = 0u32;
+        let mut hi = degree;
+        while hi - lo > PARTITION_BINARY_TO_LINEAR_REM {
+            let mid = lo + (hi - lo) / 2;
+            let slot = base_slot_start
+                .checked_add(u64::from(mid))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let bucket = self
+                .read_label_bucket_slot(slot)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            if bucket.bucket_label_key.is_undirected() {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        for i in lo..hi {
+            let slot = base_slot_start
+                .checked_add(u64::from(i))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let bucket = self
+                .read_label_bucket_slot(slot)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            if bucket.bucket_label_key.is_directed() {
+                return Ok(i);
+            }
+        }
+        Ok(hi)
+    }
+
+    /// Same partition as [`Self::partition_first_directed_hybrid`], but scan `0..degree` in order
+    /// (stops at the first directed bucket).
+    pub(crate) fn partition_first_directed_linear_from_start(
+        &self,
+        base_slot_start: u64,
+        degree: u32,
+    ) -> Result<u32, LaraOperationError> {
+        for i in 0..degree {
+            let slot = base_slot_start
+                .checked_add(u64::from(i))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let bucket = self
+                .read_label_bucket_slot(slot)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            if bucket.bucket_label_key.is_directed() {
+                return Ok(i);
+            }
+        }
+        Ok(degree)
+    }
+
+    /// Same partition as [`Self::partition_first_directed_hybrid`], but scan from the last bucket
+    /// backward until an undirected bucket (or the scan exhausts the row).
+    pub(crate) fn partition_first_directed_linear_from_end(
+        &self,
+        base_slot_start: u64,
+        degree: u32,
+    ) -> Result<u32, LaraOperationError> {
+        if degree == 0 {
+            return Ok(0);
+        }
+        for i in (0..degree).rev() {
+            let slot = base_slot_start
+                .checked_add(u64::from(i))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let bucket = self
+                .read_label_bucket_slot(slot)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            if bucket.bucket_label_key.is_undirected() {
+                return Ok(i.saturating_add(1));
+            }
+        }
+        Ok(0)
+    }
+
+    /// Half-open `[lo, hi)` bucket indices (within `0..degree`) whose wire keys match `want`.
+    ///
+    /// `strategy` selects how the directed/undirected partition `p` is found (all strategies return
+    /// the same `p` under LARA invariants; they differ in read order and early-exit behavior).
+    pub(crate) fn directedness_bucket_index_range(
+        &self,
+        base_slot_start: u64,
+        degree: u32,
+        want: BucketDirectedness,
+        strategy: DirectednessPartitionStrategy,
+    ) -> Result<(u32, u32), LaraOperationError> {
+        if degree == 0 {
+            return Ok((0, 0));
+        }
+        let p = match strategy {
+            DirectednessPartitionStrategy::HybridBinary => {
+                self.partition_first_directed_hybrid(base_slot_start, degree)?
+            }
+            DirectednessPartitionStrategy::LinearFromStart => {
+                self.partition_first_directed_linear_from_start(base_slot_start, degree)?
+            }
+            DirectednessPartitionStrategy::LinearFromEnd => {
+                self.partition_first_directed_linear_from_end(base_slot_start, degree)?
+            }
+        };
+        Ok(match want {
+            BucketDirectedness::Undirected => (0, p),
+            BucketDirectedness::Directed => (p, degree),
+        })
     }
 
     /// Writes one bucket slab slot.
@@ -464,7 +603,9 @@ impl<M: Memory> LabelBucketStore<M> {
         let buckets = self.read_label_bucket_slots_contiguous(v.base_slot_start(), v.degree());
         let buckets = buckets.ok_or(LaraOperationError::CollectAllocationOverflow)?;
         let index = buckets
-            .binary_search_by_key(&bucket.label_id, |candidate| candidate.label_id)
+            .binary_search_by_key(&bucket.bucket_label_key, |candidate| {
+                candidate.bucket_label_key
+            })
             .unwrap_or_else(|index| index);
         self.insert_label_bucket_at(vertices, vid, bucket, index as u32)
             .map(|(slot, _)| slot)
@@ -578,7 +719,7 @@ mod tests {
                     &vertices,
                     VertexId::from(0),
                     LabelBucket {
-                        label_id: crate::labeled::record::LabelId::from_raw(label),
+                        bucket_label_key: crate::labeled::BucketLabelKey::from_raw(label),
                         ..Default::default()
                     },
                 )
@@ -592,8 +733,8 @@ mod tests {
                 .read_label_bucket_slot(vertex.base_slot_start() + offset)
                 .unwrap();
             assert_eq!(
-                bucket.label_id,
-                crate::labeled::record::LabelId::from_raw(offset as u16)
+                bucket.bucket_label_key,
+                crate::labeled::BucketLabelKey::from_raw(offset as u16)
             );
         }
     }
@@ -610,7 +751,7 @@ mod tests {
                     &vertices,
                     VertexId::from(0),
                     LabelBucket {
-                        label_id: crate::labeled::record::LabelId::from_raw(label),
+                        bucket_label_key: crate::labeled::BucketLabelKey::from_raw(label),
                         ..Default::default()
                     },
                 )

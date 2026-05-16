@@ -11,7 +11,7 @@ use gleaph_auth::AuthState;
 use gleaph_graph_kernel::entry::Edge;
 use gleaph_graph_prepared::PreparedQueryCatalog;
 use ic_stable_lara::{
-    DeferredBidirectionalLabeledLaraGraph, labeled::record::LabelId as LaraLabelId,
+    BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledLaraGraph,
     lara::maintenance::DeferredConfig,
 };
 use ic_stable_structures::DefaultMemoryImpl;
@@ -60,7 +60,7 @@ const PREPARED_QUERY_CATALOG: MemoryId = MemoryId::new(31);
 const GRAPH_METADATA: MemoryId = MemoryId::new(32);
 const EDGE_WEIGHT_PROFILES: MemoryId = MemoryId::new(33);
 
-pub(crate) const GRAPH_DEFAULT_EDGE_LABEL: LaraLabelId = LaraLabelId::from_raw(0);
+pub(crate) const GRAPH_DEFAULT_EDGE_LABEL: LaraLabelId = LaraLabelId::UNLABELED_DIRECTED;
 
 /// Initial slab capacity for both labeled orientations (grows as needed).
 const GRAPH_ELEM_CAPACITY: u64 = 1 << 20;

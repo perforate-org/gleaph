@@ -8,8 +8,12 @@
 //! |UNDIRECTED|REMOTE|  reserved    |
 //! +---------+-------+--------------+
 //! ```
+//!
+//! Bit 15 here means **undirected** for this compact metadata word. This is independent
+//! of the LARA [`crate::entry::label::TaggedEdgeLabelId`] wire encoding (where bit 15 marks **directed**).
 
-use crate::entry::label::EDGE_LABEL_UNDIRECTED_BIT;
+/// Undirected flag for [`EdgeMeta`] only (same bit position as historical layout).
+const EDGE_META_UNDIRECTED_BIT: u16 = 1 << 15;
 
 const REMOTE_BIT: u16 = 1 << 14;
 
@@ -26,7 +30,7 @@ impl EdgeMeta {
             v |= REMOTE_BIT;
         }
         if undirected {
-            v |= EDGE_LABEL_UNDIRECTED_BIT;
+            v |= EDGE_META_UNDIRECTED_BIT;
         }
         Self(v)
     }
@@ -53,15 +57,15 @@ impl EdgeMeta {
 
     #[inline]
     pub const fn is_undirected(self) -> bool {
-        self.0 & EDGE_LABEL_UNDIRECTED_BIT != 0
+        self.0 & EDGE_META_UNDIRECTED_BIT != 0
     }
 
     #[inline]
     pub const fn with_undirected(self, undirected: bool) -> Self {
         if undirected {
-            Self(self.0 | EDGE_LABEL_UNDIRECTED_BIT)
+            Self(self.0 | EDGE_META_UNDIRECTED_BIT)
         } else {
-            Self(self.0 & !EDGE_LABEL_UNDIRECTED_BIT)
+            Self(self.0 & !EDGE_META_UNDIRECTED_BIT)
         }
     }
 

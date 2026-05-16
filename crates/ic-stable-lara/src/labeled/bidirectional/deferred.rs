@@ -3,8 +3,9 @@
 use crate::{
     VertexCount, VertexId,
     labeled::{
-        graph::{InitError, LabeledLaraGraph, LabeledOperationError},
-        record::LabelId,
+        BucketLabelKey,
+        bucket_label_key::BucketDirectedness,
+        graph::{InitError, LabeledLaraGraph, LabeledOperationError, OutEdgeBucketWalk},
     },
     lara::maintenance::{
         DeferredConfig, DeferredConfigError, MaintenanceBudget, MaintenanceWorkReport,
@@ -363,7 +364,7 @@ where
         maintenance_queue: M,
         dirty_work_items: M,
         elem_capacity: u64,
-        default_label: LabelId,
+        default_label: BucketLabelKey,
     ) -> Result<Self, DeferredBidirectionalLabeledError> {
         Self::new_with_config(
             forward_vertices,
@@ -420,7 +421,7 @@ where
         maintenance_queue: M,
         dirty_work_items: M,
         elem_capacity: u64,
-        default_label: LabelId,
+        default_label: BucketLabelKey,
         config: DeferredConfig,
     ) -> Result<Self, DeferredBidirectionalLabeledError> {
         let config = config
@@ -489,7 +490,7 @@ where
         maintenance_queue: M,
         dirty_work_items: M,
         elem_capacity: u64,
-        default_label: LabelId,
+        default_label: BucketLabelKey,
     ) -> Result<Self, DeferredBidirectionalLabeledError> {
         Self::init_with_config(
             forward_vertices,
@@ -546,7 +547,7 @@ where
         maintenance_queue: M,
         dirty_work_items: M,
         elem_capacity: u64,
-        default_label: LabelId,
+        default_label: BucketLabelKey,
         config: DeferredConfig,
     ) -> Result<Self, DeferredBidirectionalLabeledError> {
         let config = config
@@ -676,7 +677,7 @@ where
         &self,
         src: VertexId,
         dst: VertexId,
-        label_id: LabelId,
+        label_id: BucketLabelKey,
         forward_edge: E,
         reverse_edge: E,
     ) -> Result<(), DeferredBidirectionalLabeledError> {
@@ -699,7 +700,7 @@ where
     pub fn for_each_out_edges_for_label<Visit>(
         &self,
         src: VertexId,
-        label_id: LabelId,
+        label_id: BucketLabelKey,
         visit: Visit,
     ) -> Result<(), DeferredBidirectionalLabeledError>
     where
@@ -710,11 +711,77 @@ where
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
+    /// Forward outgoing edges filtered by label-bucket directedness, in [`OutEdgeBucketWalk`] order.
+    ///
+    /// See [`LabeledLaraGraph::for_each_out_edges_by_directedness`].
+    pub fn for_each_out_edges_by_directedness<Visit>(
+        &self,
+        src: VertexId,
+        directedness: BucketDirectedness,
+        walk: OutEdgeBucketWalk,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLabeledError>
+    where
+        Visit: FnMut(E),
+    {
+        self.forward
+            .for_each_out_edges_by_directedness(src, directedness, walk, visit)
+            .map_err(DeferredBidirectionalLabeledError::Forward)
+    }
+
+    /// Like [`Self::for_each_out_edges_by_directedness`], but skips forward vertex range validation.
+    pub fn for_each_out_edges_by_directedness_unchecked<Visit>(
+        &self,
+        src: VertexId,
+        directedness: BucketDirectedness,
+        walk: OutEdgeBucketWalk,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLabeledError>
+    where
+        Visit: FnMut(E),
+    {
+        self.forward
+            .for_each_out_edges_by_directedness_unchecked(src, directedness, walk, visit)
+            .map_err(DeferredBidirectionalLabeledError::Forward)
+    }
+
+    /// Reverse orientation: visits edges at `dst` filtered by directedness (incoming to `dst` forward).
+    pub fn for_each_in_edges_by_directedness<Visit>(
+        &self,
+        dst: VertexId,
+        directedness: BucketDirectedness,
+        walk: OutEdgeBucketWalk,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLabeledError>
+    where
+        Visit: FnMut(E),
+    {
+        self.reverse
+            .for_each_out_edges_by_directedness(dst, directedness, walk, visit)
+            .map_err(DeferredBidirectionalLabeledError::Reverse)
+    }
+
+    /// Like [`Self::for_each_in_edges_by_directedness`], but skips reverse vertex range validation.
+    pub fn for_each_in_edges_by_directedness_unchecked<Visit>(
+        &self,
+        dst: VertexId,
+        directedness: BucketDirectedness,
+        walk: OutEdgeBucketWalk,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLabeledError>
+    where
+        Visit: FnMut(E),
+    {
+        self.reverse
+            .for_each_out_edges_by_directedness_unchecked(dst, directedness, walk, visit)
+            .map_err(DeferredBidirectionalLabeledError::Reverse)
+    }
+
     /// Visits reverse outgoing edges at `dst` (incoming to `dst` in forward orientation).
     pub fn for_each_in_edges_for_label<Visit>(
         &self,
         dst: VertexId,
-        label_id: LabelId,
+        label_id: BucketLabelKey,
         visit: Visit,
     ) -> Result<(), DeferredBidirectionalLabeledError>
     where
@@ -731,7 +798,7 @@ where
     pub fn for_each_out_edges_for_label_unchecked<Visit>(
         &self,
         src: VertexId,
-        label_id: LabelId,
+        label_id: BucketLabelKey,
         visit: Visit,
     ) -> Result<(), DeferredBidirectionalLabeledError>
     where
@@ -746,7 +813,7 @@ where
     pub fn for_each_in_edges_for_label_unchecked<Visit>(
         &self,
         dst: VertexId,
-        label_id: LabelId,
+        label_id: BucketLabelKey,
         visit: Visit,
     ) -> Result<(), DeferredBidirectionalLabeledError>
     where
@@ -761,7 +828,7 @@ where
     pub fn iter_out_edges_for_label(
         &self,
         src: VertexId,
-        label_id: LabelId,
+        label_id: BucketLabelKey,
     ) -> Result<Vec<E>, DeferredBidirectionalLabeledError> {
         self.forward
             .iter_edges_for_label(src, label_id)
@@ -772,7 +839,7 @@ where
     pub fn iter_in_edges_for_label(
         &self,
         dst: VertexId,
-        label_id: LabelId,
+        label_id: BucketLabelKey,
     ) -> Result<Vec<E>, DeferredBidirectionalLabeledError> {
         self.reverse
             .iter_edges_for_label(dst, label_id)
@@ -784,7 +851,7 @@ where
         &self,
         src: VertexId,
         needle: &E,
-    ) -> Result<Option<LabelId>, DeferredBidirectionalLabeledError>
+    ) -> Result<Option<BucketLabelKey>, DeferredBidirectionalLabeledError>
     where
         E: PartialEq,
     {
@@ -799,7 +866,7 @@ where
         &self,
         src: VertexId,
         pred: F,
-    ) -> Result<Option<(E, Option<LabelId>)>, DeferredBidirectionalLabeledError>
+    ) -> Result<Option<(E, Option<BucketLabelKey>)>, DeferredBidirectionalLabeledError>
     where
         F: FnMut(&E) -> bool,
     {
@@ -1118,7 +1185,7 @@ where
         &self,
         u: VertexId,
         v: VertexId,
-        label_id: LabelId,
+        label_id: BucketLabelKey,
         edge_uv: E,
         edge_vu: E,
     ) -> Result<(), DeferredBidirectionalLabeledError> {
@@ -1188,7 +1255,7 @@ mod tests {
             vector_memory(),
             vector_memory(),
             128,
-            LabelId::from_raw(1),
+            BucketLabelKey::from_raw(1),
         )
         .expect("graph")
     }
@@ -1221,7 +1288,7 @@ mod tests {
             vector_memory(),
             vector_memory(),
             128,
-            LabelId::from_raw(0),
+            BucketLabelKey::UNLABELED_DIRECTED,
         )
         .expect("graph");
         graph.push_vertex().expect("a");
@@ -1230,7 +1297,7 @@ mod tests {
             .insert_directed_edge(
                 VertexId::from(0),
                 VertexId::from(1),
-                LabelId::from_raw(0),
+                BucketLabelKey::UNLABELED_DIRECTED,
                 TestEdge(1),
                 TestEdge(0),
             )
@@ -1286,8 +1353,8 @@ mod tests {
         graph.push_vertex().expect("a");
         graph.push_vertex().expect("b");
         graph.push_vertex().expect("c");
-        let label_lo = LabelId::from_raw(10);
-        let label_hi = LabelId::from_raw(20);
+        let label_lo = BucketLabelKey::from_raw(10);
+        let label_hi = BucketLabelKey::from_raw(20);
         graph
             .insert_directed_edge(
                 VertexId::from(0),
@@ -1328,9 +1395,15 @@ mod tests {
         graph.push_vertex().expect("src");
         let hub = VertexId::from(1);
         let dst = VertexId::from(0);
-        let label = LabelId::from_raw(2);
+        let label = BucketLabelKey::from_raw(2);
         graph
-            .insert_directed_edge(hub, dst, LabelId::from_raw(99), TestEdge(0), TestEdge(0))
+            .insert_directed_edge(
+                hub,
+                dst,
+                BucketLabelKey::from_raw(99),
+                TestEdge(0),
+                TestEdge(0),
+            )
             .unwrap();
         for _ in 0..80 {
             graph

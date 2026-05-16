@@ -27,12 +27,15 @@ use gleaph_gql_planner::plan::{
     ScanValue, ShortestMode, ShortestPathCost, Str, VarLenSpec,
 };
 use gleaph_graph_kernel::entry::{
-    Edge, EdgeLabelId, PreparedWeightDecoder, Vertex, VertexEdgeId, decode_inline_weight,
+    Edge, EdgeDirectedness, EdgeLabelId, PreparedWeightDecoder, Vertex, VertexEdgeId,
+    decode_inline_weight,
 };
 use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest};
 use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
-use ic_stable_lara::LabelId as LaraLabelId;
+use ic_stable_lara::BucketLabelKey as LaraLabelId;
+use ic_stable_lara::OutEdgeBucketWalk;
 use ic_stable_lara::VertexId;
+use ic_stable_lara::labeled::BucketDirectedness;
 use ic_stable_lara::traits::{CsrEdge, CsrVertexTombstone};
 use nohash_hasher::{IntMap, IntSet};
 use rapidhash::fast::RapidHasher;
@@ -1589,13 +1592,13 @@ impl ShortestFixedLabelExpand {
     fn new(direction: EdgeDirection, catalog: EdgeLabelId) -> Result<Self, PlanQueryError> {
         match direction {
             EdgeDirection::PointingRight => Ok(Self::Forward {
-                storage: LaraLabelId::from_raw(EdgeLabelId::from_catalog(catalog, false).raw()),
+                storage: catalog.pack(EdgeDirectedness::Directed),
             }),
             EdgeDirection::PointingLeft => Ok(Self::Reverse {
-                storage: LaraLabelId::from_raw(EdgeLabelId::from_catalog(catalog, false).raw()),
+                storage: catalog.pack(EdgeDirectedness::Directed),
             }),
             EdgeDirection::Undirected => Ok(Self::Undirected {
-                storage: LaraLabelId::from_raw(EdgeLabelId::from_catalog(catalog, true).raw()),
+                storage: catalog.pack(EdgeDirectedness::Undirected),
             }),
             other => Err(PlanQueryError::UnsupportedDirection(other)),
         }
@@ -2605,36 +2608,6 @@ fn expand_candidates_into(
     Ok(())
 }
 
-fn csr_expand_edge_matches(
-    store: &GraphStore,
-    owner: VertexId,
-    edge: &Edge,
-    direction: EdgeDirection,
-    edge_label_id: Option<EdgeLabelId>,
-) -> Result<bool, PlanQueryError> {
-    if let Some(expected) = edge_label_id {
-        // `for_each_csr_expand_edge` already enumerated a single label bucket; only
-        // verify directionality encoded in the storage label key.
-        let storage =
-            EdgeLabelId::from_catalog(expected, matches!(direction, EdgeDirection::Undirected));
-        return Ok(match direction {
-            EdgeDirection::PointingRight | EdgeDirection::PointingLeft => !storage.is_undirected(),
-            EdgeDirection::Undirected => storage.is_undirected(),
-            _ => false,
-        });
-    }
-    let bucket = store
-        .find_forward_edge_bucket_label(owner, edge)
-        .map_err(GraphStoreError::from)?
-        .unwrap_or(LaraLabelId::from_raw(0));
-    let storage = EdgeLabelId::from_raw(bucket.raw());
-    Ok(match direction {
-        EdgeDirection::PointingRight | EdgeDirection::PointingLeft => !storage.is_undirected(),
-        EdgeDirection::Undirected => storage.is_undirected(),
-        _ => false,
-    })
-}
-
 fn for_each_csr_expand_edge<F>(
     store: &GraphStore,
     src_id: VertexId,
@@ -2645,15 +2618,16 @@ fn for_each_csr_expand_edge<F>(
 where
     F: FnMut(Edge),
 {
-    let mut matches = |edge: &Edge| {
-        csr_expand_edge_matches(store, src_id, edge, direction, edge_label_id).unwrap_or(false)
-    };
-
+    let expand_walk = OutEdgeBucketWalk::Descending;
+    let visit = visit;
     match direction {
         EdgeDirection::PointingRight | EdgeDirection::Undirected => {
             if let Some(lid) = edge_label_id {
-                let storage =
-                    EdgeLabelId::from_catalog(lid, matches!(direction, EdgeDirection::Undirected));
+                let storage = lid.pack(if matches!(direction, EdgeDirection::Undirected) {
+                    EdgeDirectedness::Undirected
+                } else {
+                    EdgeDirectedness::Directed
+                });
                 store
                     .for_each_out_edges_for_label(
                         src_id,
@@ -2662,15 +2636,25 @@ where
                     )
                     .map_err(GraphStoreError::from)?;
             } else {
+                let directedness = match direction {
+                    EdgeDirection::PointingRight => BucketDirectedness::Directed,
+                    EdgeDirection::Undirected => BucketDirectedness::Undirected,
+                    _ => unreachable!(),
+                };
                 store
-                    .for_each_out_edge_matching(src_id, &mut matches, visit)
+                    .for_each_out_edges_by_directedness_unchecked(
+                        src_id,
+                        directedness,
+                        expand_walk,
+                        visit,
+                    )
                     .map_err(GraphStoreError::from)?;
             }
             Ok(())
         }
         EdgeDirection::PointingLeft => {
             if let Some(lid) = edge_label_id {
-                let storage = EdgeLabelId::from_catalog(lid, false);
+                let storage = lid.pack(EdgeDirectedness::Directed);
                 store
                     .for_each_in_edges_for_label(
                         src_id,
@@ -2680,7 +2664,12 @@ where
                     .map_err(GraphStoreError::from)?;
             } else {
                 store
-                    .for_each_in_edge_matching(src_id, &mut matches, visit)
+                    .for_each_in_edges_by_directedness_unchecked(
+                        src_id,
+                        BucketDirectedness::Directed,
+                        expand_walk,
+                        visit,
+                    )
                     .map_err(GraphStoreError::from)?;
             }
             Ok(())
@@ -3446,8 +3435,8 @@ fn edge_to_value(store: &GraphStore, binding: EdgeBinding) -> Result<Value, Plan
         .ok_or_else(|| PlanQueryError::MissingBinding {
             variable: format!("edge {:?}", handle),
         })?;
-    let storage = EdgeLabelId::from_raw(bucket_label.unwrap_or(LaraLabelId::from_raw(0)).raw());
-    let catalog_id = EdgeLabelId::from_raw(storage.catalog_id());
+    let storage = LaraLabelId::from_raw(bucket_label.unwrap_or(LaraLabelId::from_raw(0)).raw());
+    let catalog_id = EdgeLabelId::from_raw(storage.label_index());
     Ok(Value::Record(vec![
         (
             "owner_vertex_id".to_owned(),

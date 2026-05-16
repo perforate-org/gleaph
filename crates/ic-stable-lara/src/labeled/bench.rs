@@ -5,7 +5,7 @@
 
 use crate::bench as helper;
 use crate::labeled::{
-    DeferredLabeledLaraGraph, LabeledVertex, graph::LabeledLaraGraph, record::LabelId,
+    BucketLabelKey, DeferredLabeledLaraGraph, LabeledVertex, graph::LabeledLaraGraph,
 };
 use crate::{
     VertexId,
@@ -65,7 +65,7 @@ fn bench_graph(elem_capacity: u64) -> LabeledLaraGraph<BenchEdge, crate::VectorM
         edge_free_spans,
         edge_free_span_by_start,
         elem_capacity,
-        LabelId::from_raw(1),
+        BucketLabelKey::from_raw(1),
     )
     .expect("graph")
 }
@@ -83,7 +83,7 @@ fn bench_labeled_iter_edges_for_label_128() -> canbench_rs::BenchResult {
     graph
         .push_vertex(crate::labeled::record::LabeledVertex::default())
         .expect("vertex");
-    let label = LabelId::from_raw(2);
+    let label = BucketLabelKey::from_raw(2);
     for i in 0..128u32 {
         graph
             .insert_edge(VertexId::from(0), label, BenchEdge(i))
@@ -130,7 +130,7 @@ fn bench_labeled_insert_existing_bucket_128() -> canbench_rs::BenchResult {
     graph
         .push_vertex(crate::labeled::record::LabeledVertex::default())
         .expect("vertex");
-    let label = LabelId::from_raw(2);
+    let label = BucketLabelKey::from_raw(2);
     bench_fn(|| {
         for i in 0..helper::MEDIUM_N as u32 {
             let i = black_box(i);
@@ -145,7 +145,7 @@ fn bench_labeled_insert_existing_bucket_128() -> canbench_rs::BenchResult {
 fn bench_labeled_insert_single_bucket_1024() -> canbench_rs::BenchResult {
     let graph = bench_graph(4096);
     graph.push_vertex(LabeledVertex::default()).expect("vertex");
-    let label = LabelId::from_raw(2);
+    let label = BucketLabelKey::from_raw(2);
     bench_fn(|| {
         for i in 0..helper::MEDIUM_N as u32 {
             let i = black_box(i);
@@ -166,12 +166,12 @@ fn bench_labeled_insert_last_of_many_buckets_1024() -> canbench_rs::BenchResult 
     graph.push_vertex(LabeledVertex::default()).expect("vertex");
     let vid = VertexId::from(0);
     for k in 0..N_BUCKETS {
-        let label = LabelId::from_raw(2 + k);
+        let label = BucketLabelKey::from_raw(2 + k);
         graph
             .insert_edge(vid, label, BenchEdge(u32::from(k)))
             .expect("seed insert");
     }
-    let target = LabelId::from_raw(2 + N_BUCKETS - 1);
+    let target = BucketLabelKey::from_raw(2 + N_BUCKETS - 1);
     bench_fn(|| {
         for i in 0..helper::MEDIUM_N as u32 {
             let i = black_box(i);
@@ -191,7 +191,7 @@ fn bench_labeled_insert_round_robin_64_labels_1024() -> canbench_rs::BenchResult
     graph.push_vertex(LabeledVertex::default()).expect("vertex");
     let vid = VertexId::from(0);
     for k in 0..N_LABELS {
-        let label = LabelId::from_raw(10 + k);
+        let label = BucketLabelKey::from_raw(10 + k);
         graph
             .insert_edge(vid, label, BenchEdge(u32::from(k)))
             .expect("seed insert");
@@ -199,7 +199,7 @@ fn bench_labeled_insert_round_robin_64_labels_1024() -> canbench_rs::BenchResult
     bench_fn(|| {
         for i in 0..helper::MEDIUM_N as u32 {
             let i = black_box(i);
-            let label = LabelId::from_raw(10 + (i % u32::from(N_LABELS)) as u16);
+            let label = BucketLabelKey::from_raw(10 + (i % u32::from(N_LABELS)) as u16);
             graph.insert_edge(vid, label, BenchEdge(i)).expect("insert");
         }
         black_box(N_LABELS);
@@ -214,7 +214,7 @@ fn bench_labeled_insert_fresh_label_each_edge_256() -> canbench_rs::BenchResult 
         graph.push_vertex(LabeledVertex::default()).expect("vertex");
         let vid = VertexId::from(0);
         for i in 0u16..256 {
-            let label = LabelId::from_raw(3000 + i);
+            let label = BucketLabelKey::from_raw(3000 + i);
             graph
                 .insert_edge(vid, label, BenchEdge(u32::from(i)))
                 .expect("insert");
@@ -233,7 +233,7 @@ fn bench_labeled_insert_multi_vertex_leaf32_2048() -> canbench_rs::BenchResult {
     for _ in 0..LEAF {
         graph.push_vertex(LabeledVertex::default()).expect("vertex");
     }
-    let label = LabelId::from_raw(5);
+    let label = BucketLabelKey::from_raw(5);
     for v in 0..LEAF {
         for e in 0..SEED_PER_VERTEX {
             graph
@@ -279,7 +279,7 @@ fn bench_labeled_deferred_inserts_only_1024() -> canbench_rs::BenchResult {
             .push_vertex(LabeledVertex::default())
             .expect("vertex");
         let vid = VertexId::from(0);
-        let label = LabelId::from_raw(2);
+        let label = BucketLabelKey::from_raw(2);
         for i in 0..helper::MEDIUM_N as u32 {
             let i = black_box(i);
             graph.insert_edge(vid, label, BenchEdge(i)).expect("insert");
@@ -294,7 +294,7 @@ fn bench_labeled_deferred_maintenance_compact_vertex_span_1() -> canbench_rs::Be
     bench_fn(|| {
         let graph = deferred_bench_graph(8192);
         let vid = VertexId::from(0);
-        let label = LabelId::from_raw(2);
+        let label = BucketLabelKey::from_raw(2);
         graph
             .inner()
             .push_vertex(LabeledVertex::default())
