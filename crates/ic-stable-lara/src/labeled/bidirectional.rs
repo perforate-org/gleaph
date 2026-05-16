@@ -1,6 +1,6 @@
 //! Bidirectional labeled LARA graph wrappers.
 
-pub mod deferred;
+pub(crate) mod deferred;
 
 use crate::{
     VertexCount, VertexId,
@@ -12,8 +12,7 @@ use std::fmt;
 
 pub use deferred::{
     BidirectionalMaintenanceReport as LabeledBidirectionalMaintenanceReport,
-    DeferredBidirectionalLabeledError, DeferredBidirectionalLabeledLaraGraph,
-    MaintenanceWorkItem as BidirectionalLabeledMaintenanceWorkItem, Orientation,
+    DeferredBidirectionalLabeledError, DeferredBidirectionalLabeledLaraGraph, Orientation,
 };
 
 /// Errors returned by bidirectional labeled graph operations.

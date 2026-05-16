@@ -16,7 +16,7 @@ use ic_stable_structures::Memory;
 /// either the next bucket's `edge_start`, or the containing VertexEdgeSpan
 /// end for the last bucket. Pass `log_vertex` as the graph source [`VertexId`]
 /// so overflow log entries and PMA bumps use the correct PMA leaf.
-pub struct LabelEdgeSpanAccess<'a, M: Memory> {
+pub(crate) struct LabelEdgeSpanAccess<'a, M: Memory> {
     buckets: &'a LabelBucketStore<M>,
     slot: u64,
     successor_start: u64,

@@ -51,16 +51,16 @@
 //! accounting; their density/rewrite unit is the VertexEdgeSpan.
 //! Default-label bypass rows still use the regular edge row path.
 
-pub mod access;
+pub(crate) mod access;
 #[cfg(feature = "canbench")]
 mod bench;
-pub mod bidirectional;
+pub(crate) mod bidirectional;
 mod bucket_store;
-pub mod deferred;
-pub mod graph;
-pub mod invariants;
+pub(crate) mod deferred;
+pub(crate) mod graph;
+pub(crate) mod invariants;
 pub mod record;
-pub mod traits;
+pub(crate) mod traits;
 
 pub use bidirectional::{
     BidirectionalLabeledError, BidirectionalLabeledLaraGraph, DeferredBidirectionalLabeledError,
