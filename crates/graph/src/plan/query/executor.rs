@@ -36,6 +36,7 @@ use ic_stable_lara::VertexId;
 use ic_stable_lara::traits::{CsrEdge, CsrVertexTombstone};
 use nohash_hasher::{IntMap, IntSet};
 use rapidhash::fast::RapidHasher;
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::hash::Hasher;
@@ -2302,6 +2303,16 @@ fn decode_direct_gleaph_weight_hop_cost(
     Ok(WeightedCost::from_validated_non_negative_float32(weight))
 }
 
+thread_local! {
+    /// Reuses capacity when materializing many shortest-path rows on one thread (e.g. `AllShortest`).
+    static PATH_MATERIALIZE_SCRATCH: RefCell<Vec<PathElement>> = RefCell::new(Vec::new());
+}
+
+/// Below this estimated element count (`depth * 2 + 1`), allocate a fresh `Vec` only: `thread_local`
+/// lookup + `RefCell` borrow win nothing on tiny paths and showed up as instruction regressions in
+/// `plan_query_materialize_value_rows` benches.
+const PATH_MATERIALIZE_SCRATCH_MIN_ELEMENTS: usize = 16;
+
 fn path_binding_to_value(pb: &PathBinding) -> Value {
     materialize_path_from_search_states(pb.shard_id, pb.states.as_ref(), pb.leaf_state_idx)
 }
@@ -2309,9 +2320,37 @@ fn path_binding_to_value(pb: &PathBinding) -> Value {
 fn materialize_path_from_search_states(
     shard_id: u64,
     states: &[PathSearchNode],
-    mut state_idx: usize,
+    state_idx: usize,
 ) -> Value {
-    let mut elements = Vec::with_capacity(states[state_idx].depth as usize * 2 + 1);
+    let depth = states[state_idx].depth as usize;
+    let min_cap = depth.saturating_mul(2).saturating_add(1);
+    if min_cap < PATH_MATERIALIZE_SCRATCH_MIN_ELEMENTS {
+        let mut elements = Vec::with_capacity(min_cap);
+        fill_path_elements_leaf_to_root(shard_id, states, state_idx, &mut elements);
+        return Value::Path(elements);
+    }
+    PATH_MATERIALIZE_SCRATCH.with(|scratch| {
+        if let Ok(mut elements) = scratch.try_borrow_mut() {
+            fill_path_elements_leaf_to_root(shard_id, states, state_idx, &mut elements);
+            return Value::Path(std::mem::take(&mut *elements));
+        }
+        let mut elements = Vec::with_capacity(min_cap);
+        fill_path_elements_leaf_to_root(shard_id, states, state_idx, &mut elements);
+        Value::Path(elements)
+    })
+}
+
+fn fill_path_elements_leaf_to_root(
+    shard_id: u64,
+    states: &[PathSearchNode],
+    mut state_idx: usize,
+    elements: &mut Vec<PathElement>,
+) {
+    elements.clear();
+    let cap = states[state_idx].depth as usize * 2 + 1;
+    if elements.capacity() < cap {
+        elements.reserve(cap.saturating_sub(elements.capacity()));
+    }
     loop {
         let state = &states[state_idx];
         elements.push(vertex_path_element(shard_id, state.current));
@@ -2324,7 +2363,6 @@ fn materialize_path_from_search_states(
         state_idx = previous;
     }
     elements.reverse();
-    Value::Path(elements)
 }
 
 fn local_shard_id(store: &GraphStore) -> u64 {
