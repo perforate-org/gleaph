@@ -348,69 +348,6 @@ where
         Ok(())
     }
 
-    /// Consolidates a logged label bucket back onto its slab span when needed for promotion.
-    fn consolidate_single_label_bucket_for_promotion(
-        &self,
-        src: VertexId,
-        bucket: &LabelBucket,
-    ) -> Result<LabelBucket, LabeledOperationError> {
-        if bucket.overflow_log_head < 0 {
-            return Ok(*bucket);
-        }
-        self.rewrite_vertex_edge_span(src, Some(0), 0, false, false)?;
-        self.buckets
-            .read_label_bucket_slot(self.vertices.get(src).base_slot_start())
-            .ok_or(LabeledOperationError::from(
-                LaraOperationError::CollectAllocationOverflow,
-            ))
-    }
-
-    /// Promotes a **single-label** vertex row into homogeneous bypass (core CSR).
-    ///
-    /// Invariant: parallel edges under one catalog label must not accumulate in a
-    /// [`LabelBucket`] VertexEdgeSpan (slab + segment log). The first edge may use a
-    /// bucket; from the second edge onward a tail row can be stored like default-label
-    /// bypass with the label id tagged in [`LabeledVertex::vertex_edge_alloc_slots`].
-    fn try_promote_single_label_bucket_to_bypass(
-        &self,
-        src: VertexId,
-        label_id: BucketLabelKey,
-    ) -> Result<(), LabeledOperationError> {
-        if self.is_homogeneous_bypass_label(label_id) {
-            return Ok(());
-        }
-        let vertex = self.vertices.get(src);
-        if vertex.is_default_edge_labeled() || vertex.degree() != 1 {
-            return Ok(());
-        }
-        if !self.may_use_homogeneous_bypass(src) {
-            return Ok(());
-        }
-        let bucket_slot = vertex.base_slot_start();
-        let bucket = self
-            .buckets
-            .read_label_bucket_slot(bucket_slot)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        if bucket.bucket_label_key != label_id || bucket.edge_len < 1 {
-            return Ok(());
-        }
-        let bucket = self.consolidate_single_label_bucket_for_promotion(src, &bucket)?;
-        let old_alloc = vertex.vertex_edge_alloc_slots();
-        let region_end = bucket
-            .edge_start
-            .checked_add(u64::from(bucket.edge_len))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        let updated = vertex
-            .with_homogeneous_bypass_label(bucket.bucket_label_key)
-            .with_base_slot_start(bucket.edge_start)
-            .with_degree(bucket.edge_len);
-        self.clear_vertex_label_buckets_for_segment(src)?;
-        self.vertices.set(src, &updated);
-        self.edges
-            .bump_vertex_segment_counts(src, 0, -i64::from(old_alloc))?;
-        self.bump_successor_origins_after_bypass_end(src, region_end)
-    }
-
     /// Appends one edge on a homogeneous bypass row using direct slab slots.
     ///
     /// Core [`EdgeStore::insert_edge`] caps the CSR window at `initial_vertex_edge_slots`
@@ -1714,7 +1651,6 @@ where
         edge: E,
     ) -> Result<(), LabeledOperationError> {
         self.ensure_vertex(src)?;
-        self.try_promote_single_label_bucket_to_bypass(src, label_id)?;
         let mut vertex = self.vertices.get(src);
         if vertex.is_default_edge_labeled() {
             if label_id == self.bypass_storage_label_for(&vertex) {
@@ -1769,7 +1705,6 @@ where
                     return Ok(());
                 }
                 Err(LaraOperationError::SegmentLogFull) => {
-                    self.try_promote_single_label_bucket_to_bypass(src, label_id)?;
                     let vertex = self.vertices.get(src);
                     if vertex.is_default_edge_labeled()
                         && label_id == self.bypass_storage_label_for(&vertex)
@@ -3768,7 +3703,7 @@ mod tests {
     }
 
     #[test]
-    fn find_bucket_on_homogeneous_bypass_vertex_does_not_touch_bucket_store() {
+    fn find_bucket_resolves_non_default_label_after_parallel_inserts() {
         let graph = test_graph();
         let label = BucketLabelKey::from_raw(42);
         for target in 0..8u32 {
@@ -3777,16 +3712,13 @@ mod tests {
                 .unwrap();
         }
         let vertex = graph.vertices().get(VertexId::from(0));
-        assert!(vertex.is_default_edge_labeled());
-        assert_eq!(
+        assert!(!vertex.is_default_edge_labeled());
+        assert_eq!(vertex.degree(), 1);
+        assert!(
             graph
                 .find_bucket_slot(&vertex, label)
                 .unwrap()
-                .ok_or(LabeledOperationError::Store(
-                    LaraOperationError::CollectAllocationOverflow
-                ))
-                .ok(),
-            None
+                .is_some()
         );
     }
 
@@ -3802,13 +3734,13 @@ mod tests {
             graph.insert_edge(hub, label, TestEdge { target }).unwrap();
         }
         let vertex = graph.vertices().get(hub);
-        assert!(vertex.is_default_edge_labeled());
-        assert_eq!(vertex.degree(), 240);
+        assert!(!vertex.is_default_edge_labeled());
+        assert_eq!(vertex.degree(), 1);
         assert_eq!(graph.iter_edges_for_label(hub, label).unwrap().len(), 240);
     }
 
     #[test]
-    fn catalog_label_parallel_inserts_promote_to_bypass_on_second_edge() {
+    fn catalog_label_parallel_inserts_use_single_bucket_row() {
         let graph = test_graph();
         let road = BucketLabelKey::from_raw(42);
         graph
@@ -3822,8 +3754,8 @@ mod tests {
                 .unwrap();
         }
         let vertex = graph.vertices().get(VertexId::from(0));
-        assert!(vertex.is_default_edge_labeled());
-        assert_eq!(vertex.degree(), 24);
+        assert!(!vertex.is_default_edge_labeled());
+        assert_eq!(vertex.degree(), 1);
         assert_eq!(
             graph
                 .iter_edges_for_label(VertexId::from(0), road)
