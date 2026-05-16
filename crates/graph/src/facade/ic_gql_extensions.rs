@@ -28,8 +28,9 @@ pub fn init_ic_gql_extensions() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gleaph_gql_ic::Principal;
-    use gleaph_gql_ic::{IcWireValue, principal_to_value};
+    use gleaph_gql_ic::{
+        Principal, decode_gql_params_blob, encode_gql_params_blob, principal_to_value,
+    };
 
     #[test]
     fn exposes_ic_principal_extension_names() {
@@ -39,11 +40,12 @@ mod tests {
     }
 
     #[test]
-    fn wire_principal_round_trips_after_extension_init() {
+    fn params_blob_principal_round_trips_after_extension_init() {
         init_ic_gql_extensions();
         let p = Principal::from_text("aaaaa-aa").expect("principal");
         let v = principal_to_value(p);
-        let wire = IcWireValue::try_from_value(&v).expect("to wire");
-        assert_eq!(wire.try_into_value().expect("from wire"), v);
+        let bytes = encode_gql_params_blob(vec![("who".into(), v.clone())]).expect("encode");
+        let map = decode_gql_params_blob(&bytes).expect("decode");
+        assert_eq!(map.get("who"), Some(&v));
     }
 }

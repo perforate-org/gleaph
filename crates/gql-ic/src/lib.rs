@@ -10,8 +10,9 @@
 //!
 //! ## Candid / canister boundary
 //!
-//! Use [`wire::IcWireValue`] for lossless conversion to and from [`gleaph_gql::Value`]
-//! (including Principals and opaque extension leaves).
+//! Graph canisters take GQL parameters as a single **compact-binary blob**
+//! ([`encode_gql_params_blob`] / [`decode_gql_params_blob`]): one [`Value::Record`] on the wire.
+//! [`wire::IcWireValue`] remains for Candid-structured tooling and tests where needed.
 
 #![cfg_attr(test, feature(f128))]
 
@@ -23,7 +24,10 @@ pub use candid::Principal;
 pub mod graph_registry;
 pub mod wire;
 
-pub use wire::{IcWirePathElement, IcWireValue, WireError, principal_to_value, value_as_principal};
+pub use wire::{
+    IcWirePathElement, IcWireValue, WireError, decode_gql_params_blob, encode_gql_params_blob,
+    principal_to_value, value_as_principal,
+};
 
 use gleaph_gql::extensions::gql_extension;
 use gleaph_gql::value::{ExtensionValue, Value, ValueBinaryError};

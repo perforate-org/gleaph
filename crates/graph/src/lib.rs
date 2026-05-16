@@ -16,7 +16,6 @@ use gql_execution_context::GqlExecutionContext;
 // --- Canister surface (ic-cdk macros stay here; logic lives in `canister::`) ---
 
 use candid::Principal;
-use gleaph_gql_ic::IcWireValue;
 use ic_cdk_macros::{init, query, update};
 
 use crate::canister::{
@@ -30,12 +29,12 @@ fn init(args: GraphInitArgs) {
 }
 
 #[query(composite = true, guard = "guard_read")]
-async fn gql_query(query: String, params: Vec<(String, IcWireValue)>) -> Result<u64, String> {
+async fn gql_query(query: String, params: Vec<u8>) -> Result<u64, String> {
     canister::handlers::gql_query(query, params).await
 }
 
 #[update(guard = "guard_write")]
-async fn gql_execute(query: String, params: Vec<(String, IcWireValue)>) -> Result<u64, String> {
+async fn gql_execute(query: String, params: Vec<u8>) -> Result<u64, String> {
     canister::handlers::gql_execute(query, params).await
 }
 
@@ -50,18 +49,12 @@ fn prepared_drop(name: String) -> Result<(), String> {
 }
 
 #[query(composite = true)]
-async fn prepared_execute_query(
-    name: String,
-    params: Vec<(String, IcWireValue)>,
-) -> Result<u64, String> {
+async fn prepared_execute_query(name: String, params: Vec<u8>) -> Result<u64, String> {
     canister::handlers::prepared_execute_query(name, params).await
 }
 
 #[update]
-async fn prepared_execute_update(
-    name: String,
-    params: Vec<(String, IcWireValue)>,
-) -> Result<u64, String> {
+async fn prepared_execute_update(name: String, params: Vec<u8>) -> Result<u64, String> {
     canister::handlers::prepared_execute_update(name, params).await
 }
 

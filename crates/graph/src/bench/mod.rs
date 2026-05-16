@@ -1258,6 +1258,31 @@ fn bench_graph_expand_indexed_eq_selective_24match() -> canbench_rs::BenchResult
     })
 }
 
+/// Exercises [`gleaph_gql_ic::decode_gql_params_blob`] (graph canister param path) for canbench.
+#[bench(raw)]
+fn bench_graph_gql_ic_params_blob_decode() -> canbench_rs::BenchResult {
+    use candid::Principal;
+    use gleaph_gql_ic::{encode_gql_params_blob, principal_to_value};
+
+    let p = Principal::from_text("aaaaa-aa").expect("management id");
+    let blob = encode_gql_params_blob(vec![
+        ("limit".into(), Value::Int64(100)),
+        ("name".into(), Value::Text("neo".into())),
+        ("who".into(), principal_to_value(p)),
+        (
+            "meta".into(),
+            Value::Record(vec![("k".into(), Value::Null)]),
+        ),
+    ])
+    .expect("encode");
+
+    canbench_rs::bench_fn(|| {
+        let pmap = crate::canister::handlers::decode_gql_param_map(black_box(blob.clone()))
+            .expect("decode");
+        black_box(pmap.len())
+    })
+}
+
 #[cfg(test)]
 mod bench_setup_tests {
     use super::*;

@@ -14,7 +14,7 @@ use crate::index::ic::IcPropertyIndexClient;
 use crate::index::lookup::PropertyIndexLookup;
 use gleaph_auth::Role;
 use gleaph_gql::Value;
-use gleaph_gql_ic::IcWireValue;
+use gleaph_gql_ic::decode_gql_params_blob;
 
 use super::types::{GrantRoleArgs, GraphInitArgs};
 
@@ -41,13 +41,10 @@ pub fn init(args: GraphInitArgs) {
     }
 }
 
-fn wire_to_values(params: Vec<(String, IcWireValue)>) -> Result<BTreeMap<String, Value>, String> {
-    let mut m = BTreeMap::new();
-    for (k, w) in params {
-        let v = w.try_into_value().map_err(|e| e.to_string())?;
-        m.insert(k, v);
-    }
-    Ok(m)
+pub(crate) fn decode_gql_param_map(params: Vec<u8>) -> Result<BTreeMap<String, Value>, String> {
+    #[cfg(all(feature = "canbench", target_family = "wasm"))]
+    let _scope = canbench_rs::bench_scope("gql_ic_params_blob_decode");
+    decode_gql_params_blob(&params).map_err(|e| e.to_string())
 }
 
 fn wasm_index_client_holder() -> Option<IcPropertyIndexClient> {
@@ -59,10 +56,10 @@ fn wasm_index_client_holder() -> Option<IcPropertyIndexClient> {
         })
 }
 
-pub async fn gql_query(query: String, params: Vec<(String, IcWireValue)>) -> Result<u64, String> {
+pub async fn gql_query(query: String, params: Vec<u8>) -> Result<u64, String> {
     let p = msg_caller();
     let role = caller_role(&p);
-    let pmap = wire_to_values(params)?;
+    let pmap = decode_gql_param_map(params)?;
     #[cfg(target_family = "wasm")]
     let index_holder = wasm_index_client_holder();
     #[cfg(target_family = "wasm")]
@@ -84,10 +81,10 @@ pub async fn gql_query(query: String, params: Vec<(String, IcWireValue)>) -> Res
     Ok(out.rows.len() as u64)
 }
 
-pub async fn gql_execute(query: String, params: Vec<(String, IcWireValue)>) -> Result<u64, String> {
+pub async fn gql_execute(query: String, params: Vec<u8>) -> Result<u64, String> {
     let p = msg_caller();
     let role = caller_role(&p);
-    let pmap = wire_to_values(params)?;
+    let pmap = decode_gql_param_map(params)?;
     #[cfg(target_family = "wasm")]
     let index_holder = wasm_index_client_holder();
     #[cfg(target_family = "wasm")]
@@ -121,16 +118,13 @@ pub fn prepared_drop(name: String) -> Result<(), String> {
     Ok(())
 }
 
-pub async fn prepared_execute_query(
-    name: String,
-    params: Vec<(String, IcWireValue)>,
-) -> Result<u64, String> {
+pub async fn prepared_execute_query(name: String, params: Vec<u8>) -> Result<u64, String> {
     let p = msg_caller();
     let store = GraphStore::new();
     let record = store
         .prepared_query_get(&name)
         .ok_or_else(|| format!("unknown prepared query {name:?}"))?;
-    let pmap = wire_to_values(params)?;
+    let pmap = decode_gql_param_map(params)?;
     #[cfg(target_family = "wasm")]
     let index_holder = wasm_index_client_holder();
     #[cfg(target_family = "wasm")]
@@ -151,16 +145,13 @@ pub async fn prepared_execute_query(
     Ok(out.rows.len() as u64)
 }
 
-pub async fn prepared_execute_update(
-    name: String,
-    params: Vec<(String, IcWireValue)>,
-) -> Result<u64, String> {
+pub async fn prepared_execute_update(name: String, params: Vec<u8>) -> Result<u64, String> {
     let p = msg_caller();
     let store = GraphStore::new();
     let record = store
         .prepared_query_get(&name)
         .ok_or_else(|| format!("unknown prepared query {name:?}"))?;
-    let pmap = wire_to_values(params)?;
+    let pmap = decode_gql_param_map(params)?;
     #[cfg(target_family = "wasm")]
     let index_holder = wasm_index_client_holder();
     #[cfg(target_family = "wasm")]

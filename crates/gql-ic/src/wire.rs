@@ -4,6 +4,14 @@
 //! preserves extension payloads using the same compact binary leaf encoding the graph
 //! runtime uses (tags **33** / **34**), and falls back to a full compact value blob when
 //! no structured Candid projection exists (e.g. `Float128`).
+//!
+//! ## Canister GQL parameters (preferred)
+//!
+//! Pass a single [`Vec<u8>`] at the IC boundary: [`encode_gql_params_blob`] /
+//! [`decode_gql_params_blob`] — one compact-binary [`Value::Record`] (same codec as
+//! [`Value::to_binary_bytes`]), not a Candid-deep [`IcWireValue`] tree.
+
+use std::collections::BTreeMap;
 
 use candid::{CandidType, Principal};
 use gleaph_gql::value::ValueBinaryError;
@@ -99,6 +107,26 @@ pub enum WireError {
     },
     #[error("invalid numeric string for wire conversion: {kind}")]
     InvalidNumericString { kind: &'static str },
+    #[error("GQL params blob must decode to a Record at top level")]
+    ParamsTopLevelNotRecord,
+}
+
+/// Encode GQL named parameters for the graph canister: one compact-binary [`Value::Record`].
+#[inline]
+pub fn encode_gql_params_blob(fields: Vec<(String, Value)>) -> Result<Vec<u8>, WireError> {
+    Value::Record(fields).to_binary_bytes().map_err(Into::into)
+}
+
+/// Decode [`encode_gql_params_blob`] output into a parameter map. Empty input yields an empty map.
+pub fn decode_gql_params_blob(bytes: &[u8]) -> Result<BTreeMap<String, Value>, WireError> {
+    if bytes.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let v = Value::from_binary_bytes_with_extensions(bytes, ic_extension_decode())?;
+    match v {
+        Value::Record(fields) => Ok(fields.into_iter().collect()),
+        _ => Err(WireError::ParamsTopLevelNotRecord),
+    }
 }
 
 /// Decode extension / value compact blobs using the default IC decoder (Principal, …).
@@ -377,5 +405,34 @@ mod tests {
         assert!(!blob.is_empty());
         let back = w.try_into_value().expect("from wire");
         assert_eq!(back, v);
+    }
+
+    #[test]
+    fn gql_params_blob_empty_round_trip() {
+        assert!(decode_gql_params_blob(&[]).expect("decode").is_empty());
+        let enc = encode_gql_params_blob(vec![]).expect("encode");
+        assert!(!enc.is_empty());
+        assert!(decode_gql_params_blob(&enc).expect("decode").is_empty());
+    }
+
+    #[test]
+    fn gql_params_blob_round_trip_with_principal() {
+        let p = Principal::from_text("aaaaa-aa").expect("mgmt");
+        let original = vec![
+            ("n".into(), Value::Int64(7)),
+            ("who".into(), principal_to_value(p)),
+        ];
+        let bytes = encode_gql_params_blob(original.clone()).expect("encode");
+        let map = decode_gql_params_blob(&bytes).expect("decode");
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get("n"), Some(&Value::Int64(7)));
+        assert_eq!(map.get("who"), Some(&principal_to_value(p)));
+    }
+
+    #[test]
+    fn gql_params_blob_rejects_non_record_top_level() {
+        let bytes = Value::Int64(1).to_binary_bytes().expect("encode scalar");
+        let err = decode_gql_params_blob(&bytes).expect_err("expected error");
+        assert_eq!(err, WireError::ParamsTopLevelNotRecord);
     }
 }
