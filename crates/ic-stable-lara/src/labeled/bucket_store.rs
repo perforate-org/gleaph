@@ -138,7 +138,7 @@ impl<M: Memory> LabelBucketStore<M> {
             return Some(Vec::new());
         }
         let cap = self.header().elem_capacity;
-        let last = start_slot.saturating_add(u64::from(count.saturating_sub(1)));
+        let last = start_slot.checked_add(u64::from(count - 1))?;
         if last >= cap {
             return None;
         }
@@ -181,9 +181,11 @@ impl<M: Memory> LabelBucketStore<M> {
             .map_err(LaraOperationError::ResizeFailed)
     }
 
-    fn record_allocation(&self, last_slot: u64) {
+    fn record_allocation(&self, last_slot: u64) -> Result<(), LaraOperationError> {
         let mut header = self.header();
-        let tail = last_slot.saturating_add(1);
+        let tail = last_slot
+            .checked_add(1)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         if tail > header.slab_occupied_tail {
             header.slab_occupied_tail = tail;
         }
@@ -191,6 +193,7 @@ impl<M: Memory> LabelBucketStore<M> {
             header.num_edges = tail;
         }
         self.slab.write_header(&header);
+        Ok(())
     }
 
     fn map_free_span_err(&self) -> LaraOperationError {
@@ -217,7 +220,7 @@ impl<M: Memory> LabelBucketStore<M> {
             .and_then(|end| end.checked_sub(1))
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         self.grow_capacity_to_fit(last_in_span)?;
-        self.record_allocation(last_in_span);
+        self.record_allocation(last_in_span)?;
         Ok(start)
     }
 
@@ -330,7 +333,7 @@ impl<M: Memory> LabelBucketStore<M> {
                 .checked_add(total)
                 .and_then(|end| end.checked_sub(1))
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            self.record_allocation(last);
+            self.record_allocation(last)?;
         }
         Ok(())
     }

@@ -642,18 +642,24 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         }
 
         let edge_layout = self.edge_layout();
-        let on_slab = self.on_slab_edges_with_layout(&edge_layout, vertices, v_ord, &v);
+        let on_slab = self.on_slab_edges_with_layout(&edge_layout, vertices, v_ord, &v)?;
         let degree = v.degree() as usize;
         let slab_count = on_slab.min(v.degree()) as usize;
         let mut out = Vec::with_capacity(degree);
         for i in 0..slab_count {
-            out.push(self.read_slot(v.base_slot_start() + i as u64));
+            let slot = v
+                .base_slot_start()
+                .checked_add(i as u64)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            out.push(self.read_slot(slot));
         }
         if slab_count == degree {
             return Ok(out);
         }
 
-        let log_count = degree - slab_count;
+        let log_count = degree
+            .checked_sub(slab_count)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         let leaf = leaf_segment(log_owner, edge_layout.segment_size);
         let log_h = self.log.header();
 
@@ -837,7 +843,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         }
 
         let edge_layout = self.edge_layout();
-        let on_slab = self.on_slab_edges_with_layout(&edge_layout, vertices, v_ord, &v);
+        let on_slab = self.on_slab_edges_with_layout(&edge_layout, vertices, v_ord, &v)?;
         let degree = v.degree();
         let slab_count = on_slab.min(degree);
         let log_count = degree
@@ -1113,24 +1119,26 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         vertices: &A,
         v_ord: u32,
         v: &V,
-    ) -> u32
+    ) -> Result<u32, LaraOperationError>
     where
         V: CsrVertex,
         A: VertexAccess<V>,
     {
         if v.log_head() < 0 {
-            return v.degree();
+            return Ok(v.degree());
         }
         let next_exclusive = self.slab_window_exclusive_end(edge_layout, vertices, v_ord, v);
-        let span_slots = next_exclusive.saturating_sub(v.base_slot_start());
+        let span_slots = next_exclusive
+            .checked_sub(v.base_slot_start())
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         let span_u32 = span_slots.min(u64::from(u32::MAX)) as u32;
         // Once the overflow log is active, the slab prefix is at most the CSR window
         // width; additional live edges are chained through `log_head`.
-        if v.degree() > span_u32 {
+        Ok(if v.degree() > span_u32 {
             span_u32
         } else {
             v.degree()
-        }
+        })
     }
 
     fn have_space_on_slab<V, A>(
