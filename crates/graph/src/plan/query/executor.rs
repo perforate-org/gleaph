@@ -100,23 +100,33 @@ pub async fn execute_plan_query(
     index: Option<&dyn PropertyIndexLookup>,
     execution: GqlExecutionContext,
 ) -> Result<PlanQueryResult, PlanQueryError> {
-    let gleaph_weight_decoders =
-        super::gleaph_weight::prepare_gleaph_weight_decoders(store, &plan.ops)?;
-    let rows = execute_ops(
-        store,
-        &plan.ops,
-        parameters,
-        index,
-        execution,
-        gleaph_weight_decoders.as_ref(),
-    )
-    .await?;
-    Ok(PlanQueryResult {
-        rows: rows
+    let gleaph_weight_decoders = {
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _scope = bench_scope("plan_query_prepare_gleaph_weight");
+        super::gleaph_weight::prepare_gleaph_weight_decoders(store, &plan.ops)?
+    };
+    let rows = {
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _scope = bench_scope("plan_query_execute_ops");
+        execute_ops(
+            store,
+            &plan.ops,
+            parameters,
+            index,
+            execution,
+            gleaph_weight_decoders.as_ref(),
+        )
+        .await?
+    };
+    let rows = {
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _scope = bench_scope("plan_query_materialize_value_rows");
+        rows
             .iter()
             .map(|row| value_row(store, row))
-            .collect::<Result<Vec<_>, _>>()?,
-    })
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    Ok(PlanQueryResult { rows })
 }
 
 async fn execute_ops(
@@ -550,6 +560,8 @@ fn execute_ops_from<'a>(
                     out
                 }
                 PlanOp::Project { columns, distinct } => {
+                    #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                    let _scope = bench_scope("plan_op_project");
                     let proj_evaluator = QueryExprEvaluator {
                         store,
                         parameters,
@@ -717,6 +729,34 @@ fn merge_rows(left: &PlanRow, right: &PlanRow) -> Option<PlanRow> {
     Some(merged)
 }
 
+/// Like [`merge_rows`], but caller guarantees join-key columns already match between `left` and `right`.
+/// Skips re-checking join-key bindings (hot path for [`execute_hash_join`] after key equality).
+fn merge_rows_with_known_join_keys(
+    left: &PlanRow,
+    right: &PlanRow,
+    join_keys: &[Str],
+) -> Option<PlanRow> {
+    let mut merged = left.clone();
+    for (name, right_binding) in right {
+        let name_str = name.as_str();
+        let skip_join_col = match join_keys {
+            [only] => name_str == only.as_ref(),
+            keys => keys.iter().any(|k| k.as_ref() == name_str),
+        };
+        if skip_join_col {
+            continue;
+        }
+        match merged.get(name_str) {
+            Some(existing) if existing != right_binding => return None,
+            Some(_) => {}
+            None => {
+                merged.insert(name.clone(), right_binding.clone());
+            }
+        }
+    }
+    Some(merged)
+}
+
 async fn execute_hash_join(
     store: &GraphStore,
     parameters: &BTreeMap<String, Value>,
@@ -734,44 +774,102 @@ async fn execute_hash_join(
 
     let mut out = Vec::new();
     for row in rows {
-        let left_rows = execute_ops_from(
-            store,
-            left,
-            parameters,
-            vec![row.clone()],
-            index,
-            execution,
-            gleaph_weight_decoders,
-        )
-        .await?;
-        let right_rows = execute_ops_from(
-            store,
-            right,
-            parameters,
-            vec![row],
-            index,
-            execution,
-            gleaph_weight_decoders,
-        )
-        .await?;
+        let left_rows = {
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _scope = bench_scope("hash_join_left_subplan");
+            execute_ops_from(
+                store,
+                left,
+                parameters,
+                vec![row.clone()],
+                index,
+                execution,
+                gleaph_weight_decoders,
+            )
+            .await?
+        };
+        let right_rows = {
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _scope = bench_scope("hash_join_right_subplan");
+            execute_ops_from(
+                store,
+                right,
+                parameters,
+                vec![row],
+                index,
+                execution,
+                gleaph_weight_decoders,
+            )
+            .await?
+        };
 
-        let mut buckets: HashJoinBuckets = IntMap::default();
-        for lr in left_rows {
-            let key = extract_join_key(&lr, join_keys)?;
-            insert_join_bucket(&mut buckets, key, lr);
-        }
+        let join_key_fast_vertex = join_keys.len() == 1 && {
+            let jk = join_keys[0].as_ref();
+            left_rows
+                .iter()
+                .all(|r| matches!(r.get(jk), Some(PlanBinding::Vertex(_))))
+                && right_rows
+                    .iter()
+                    .all(|r| matches!(r.get(jk), Some(PlanBinding::Vertex(_))))
+        };
 
-        for rr in right_rows {
-            let key = extract_join_key(&rr, join_keys)?;
-            let h = hash_join_mix(&key);
-            let Some(bucket) = buckets.get(&h) else {
-                continue;
+        if join_key_fast_vertex {
+            let jk = join_keys[0].as_ref();
+            let left_by_vertex = {
+                #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                let _scope = bench_scope("hash_join_vertex_partition");
+                let mut left_by_vertex: IntMap<u32, Vec<PlanRow>> = IntMap::default();
+                for lr in left_rows {
+                    let PlanBinding::Vertex(vid) = lr.get(jk).expect("join key binding") else {
+                        unreachable!("join_key_fast_vertex pre-scan should guarantee Vertex");
+                    };
+                    left_by_vertex.entry(u32::from(*vid)).or_default().push(lr);
+                }
+                left_by_vertex
             };
-            for (left_key, left_matches) in bucket {
-                if left_key == &key {
-                    for lr in left_matches {
-                        if let Some(merged) = merge_rows(lr, &rr) {
-                            out.push(merged);
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _scope = bench_scope("hash_join_vertex_probe_merge");
+            for rr in right_rows {
+                let Some(PlanBinding::Vertex(vid)) = rr.get(jk) else {
+                    continue;
+                };
+                let Some(left_matches) = left_by_vertex.get(&u32::from(*vid)) else {
+                    continue;
+                };
+                for lr in left_matches {
+                    if let Some(merged) = merge_rows_with_known_join_keys(lr, &rr, join_keys) {
+                        out.push(merged);
+                    }
+                }
+            }
+        } else {
+            let buckets = {
+                #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                let _scope = bench_scope("hash_join_bucket_partition");
+                let mut buckets: HashJoinBuckets = IntMap::default();
+                for lr in left_rows {
+                    let key = extract_join_key(&lr, join_keys)?;
+                    insert_join_bucket(&mut buckets, key, lr);
+                }
+                buckets
+            };
+
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _scope = bench_scope("hash_join_bucket_probe_merge");
+            for rr in right_rows {
+                let key = extract_join_key(&rr, join_keys)?;
+                let h = hash_join_mix(&key);
+                let Some(bucket) = buckets.get(&h) else {
+                    continue;
+                };
+                for (left_key, left_matches) in bucket {
+                    if left_key == &key {
+                        for lr in left_matches {
+                            if let Some(merged) =
+                                merge_rows_with_known_join_keys(lr, &rr, join_keys)
+                            {
+                                out.push(merged);
+                            }
                         }
                     }
                 }
@@ -3118,6 +3216,28 @@ fn project_row(
                     .map(|value| (name.clone(), PlanBinding::Value(value)))
             })
             .collect();
+    }
+
+    // Fast path: `RETURN v` / `RETURN v AS alias` — keep graph bindings so later
+    // `value_row` does a single `binding_to_value` (avoids materializing a large
+    // `Value::Record` in Project then cloning it again in `execute_plan_query`).
+    if columns.len() == 1 {
+        let column = &columns[0];
+        if let ExprKind::Variable(var_name) = &column.expr.kind {
+            let binding = row.get(var_name.as_str()).ok_or_else(|| {
+                PlanQueryError::MissingBinding {
+                    variable: var_name.clone(),
+                }
+            })?;
+            let name = column
+                .alias
+                .as_ref()
+                .map(Str::to_string)
+                .unwrap_or_else(|| var_name.clone());
+            let mut out = PlanRow::new();
+            out.insert(name, binding.clone());
+            return Ok(out);
+        }
     }
 
     columns
