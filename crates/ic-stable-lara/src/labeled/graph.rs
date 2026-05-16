@@ -299,7 +299,10 @@ where
     /// [`Self::ensure_bypass_edge_origin`] has already assigned a distinct origin.
     #[inline]
     fn may_use_homogeneous_bypass(&self, src: VertexId) -> bool {
-        u32::from(src).saturating_add(1) >= self.vertices.len()
+        match u32::from(src).checked_add(1) {
+            Some(next) => next >= self.vertices.len(),
+            None => false,
+        }
     }
 
     #[inline]
@@ -317,7 +320,9 @@ where
         src: VertexId,
         region_end: u64,
     ) -> Result<(), LabeledOperationError> {
-        let first = u32::from(src).saturating_add(1);
+        let first = u32::from(src)
+            .checked_add(1)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         for idx in first..self.vertices.len() as u32 {
             let vid = VertexId::from(idx);
             let successor = self.vertices.get(vid);
@@ -487,7 +492,8 @@ where
         let edge_base = if u32::from(src) == 0 {
             0
         } else {
-            self.vertex_prefix_end(VertexId::from(u32::from(src).saturating_sub(1)))?
+            let pred_idx = u32::from(src) - 1;
+            self.vertex_prefix_end(VertexId::from(pred_idx))?
         };
         if edge_base != vertex.base_slot_start() {
             self.vertices
@@ -1026,23 +1032,15 @@ where
         if self.edges.release_span(base, len).is_ok() {
             return Ok(());
         }
-        if self
-            .edges
-            .free_span_store()
-            .free_span_starting_at(base)
-            .is_some()
-        {
-            let skip = self
-                .edges
-                .free_span_store()
-                .free_span_starting_at(base)
-                .expect("checked")
-                .len
-                .min(len);
-            return self.release_vertex_edge_span_slab(
-                base.saturating_add(skip),
-                len.saturating_sub(skip),
-            );
+        if let Some(free_at_base) = self.edges.free_span_store().free_span_starting_at(base) {
+            let skip = free_at_base.len.min(len);
+            let new_base = base
+                .checked_add(skip)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let new_len = len
+                .checked_sub(skip)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            return self.release_vertex_edge_span_slab(new_base, new_len);
         }
         let mut lo = 1u64;
         let mut hi = len;
@@ -1051,17 +1049,33 @@ where
             let mid = lo + (hi - lo) / 2;
             if self.edges.release_span(base, mid).is_ok() {
                 best = mid;
-                lo = mid.saturating_add(1);
+                lo = mid
+                    .checked_add(1)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             } else if mid == 0 {
                 break;
             } else {
-                hi = mid.saturating_sub(1);
+                hi = mid
+                    .checked_sub(1)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             }
         }
         if best > 0 {
-            self.release_vertex_edge_span_slab(base.saturating_add(best), len.saturating_sub(best))
+            let tail_base = base
+                .checked_add(best)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let tail_len = len
+                .checked_sub(best)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            self.release_vertex_edge_span_slab(tail_base, tail_len)
         } else {
-            self.release_vertex_edge_span_slab(base.saturating_add(1), len.saturating_sub(1))
+            let tail_base = base
+                .checked_add(1)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let tail_len = len
+                .checked_sub(1)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            self.release_vertex_edge_span_slab(tail_base, tail_len)
         }
     }
 

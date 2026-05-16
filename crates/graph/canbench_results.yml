@@ -110,13 +110,13 @@ benches:
   bench_graph_expand_indexed_eq_selective_24match:
     total:
       calls: 1
-      instructions: 4981991
+      instructions: 4980571
       heap_increase: 1
       stable_memory_increase: 128
     scopes:
       expand_indexed_eq_selective_24match:
         calls: 1
-        instructions: 4980833
+        instructions: 4979413
         heap_increase: 1
         stable_memory_increase: 128
   bench_graph_expand_mixed_label_hub_10kscan_500match:
@@ -218,7 +218,7 @@ benches:
   bench_graph_hop_count_shortest_converging_hub_48prefix_24hub_out:
     total:
       calls: 1
-      instructions: 2708078
+      instructions: 2708090
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -229,17 +229,17 @@ benches:
         stable_memory_increase: 0
       hop_count_shortest_converging_hub:
         calls: 1
-        instructions: 2706555
+        instructions: 2706567
         heap_increase: 0
         stable_memory_increase: 0
       shortest_bfs_expand:
         calls: 51
-        instructions: 681172
+        instructions: 681182
         heap_increase: 0
         stable_memory_increase: 0
       shortest_bfs_relax_neighbors:
         calls: 51
-        instructions: 80808
+        instructions: 80818
         heap_increase: 0
         stable_memory_increase: 0
       shortest_fixed_expand_forward:
@@ -250,7 +250,7 @@ benches:
   bench_graph_hop_count_shortest_frontier_queue_branch4_depth4:
     total:
       calls: 1
-      instructions: 2665018
+      instructions: 2665030
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -261,17 +261,17 @@ benches:
         stable_memory_increase: 0
       hop_count_shortest_frontier_queue:
         calls: 1
-        instructions: 2663495
+        instructions: 2663507
         heap_increase: 0
         stable_memory_increase: 0
       shortest_bfs_expand:
         calls: 22
-        instructions: 317786
+        instructions: 317796
         heap_increase: 0
         stable_memory_increase: 0
       shortest_bfs_relax_neighbors:
         calls: 22
-        instructions: 60395
+        instructions: 60405
         heap_increase: 0
         stable_memory_increase: 0
       shortest_fixed_expand_forward:
@@ -282,7 +282,7 @@ benches:
   bench_graph_hop_shortest_return_endpoints_branch4_depth4:
     total:
       calls: 1
-      instructions: 2708187
+      instructions: 2708199
       heap_increase: 0
       stable_memory_increase: 128
     scopes:
@@ -293,17 +293,17 @@ benches:
         stable_memory_increase: 0
       hop_shortest_return_endpoints:
         calls: 1
-        instructions: 2706664
+        instructions: 2706676
         heap_increase: 0
         stable_memory_increase: 128
       shortest_bfs_expand:
         calls: 22
-        instructions: 316936
+        instructions: 316946
         heap_increase: 0
         stable_memory_increase: 0
       shortest_bfs_relax_neighbors:
         calls: 22
-        instructions: 59545
+        instructions: 59555
         heap_increase: 0
         stable_memory_increase: 0
       shortest_fixed_expand_forward:
@@ -346,7 +346,7 @@ benches:
   bench_graph_weighted_shortest_frontier_heap_branch4_depth4:
     total:
       calls: 1
-      instructions: 2665293
+      instructions: 2665305
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -357,12 +357,12 @@ benches:
         stable_memory_increase: 0
       shortest_bfs_expand:
         calls: 22
-        instructions: 317786
+        instructions: 317796
         heap_increase: 0
         stable_memory_increase: 0
       shortest_bfs_relax_neighbors:
         calls: 22
-        instructions: 60395
+        instructions: 60405
         heap_increase: 0
         stable_memory_increase: 0
       shortest_fixed_expand_forward:
@@ -372,13 +372,13 @@ benches:
         stable_memory_increase: 0
       weighted_shortest_frontier_heap:
         calls: 1
-        instructions: 2663907
+        instructions: 2663919
         heap_increase: 0
         stable_memory_increase: 0
   bench_graph_weighted_shortest_repeated_edge_cost_cache_48prefix_24hub_out:
     total:
       calls: 1
-      instructions: 2823686
+      instructions: 2823698
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -394,17 +394,17 @@ benches:
         stable_memory_increase: 0
       weighted_shortest_edge_cost_cache:
         calls: 1
-        instructions: 2821611
+        instructions: 2821623
         heap_increase: 0
         stable_memory_increase: 0
       weighted_shortest_expand:
         calls: 32
-        instructions: 647220
+        instructions: 647230
         heap_increase: 0
         stable_memory_increase: 0
       weighted_shortest_relax:
         calls: 32
-        instructions: 276984
+        instructions: 276994
         heap_increase: 0
         stable_memory_increase: 0
 version: 0.4.0

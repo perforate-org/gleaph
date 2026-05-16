@@ -233,14 +233,20 @@ impl<M: Memory> LabelBucketStore<M> {
         Ok(())
     }
 
-    fn segment_vertex_bounds<V>(&self, vertices: &V, vid: VertexId) -> (u32, u32)
+    fn segment_vertex_bounds<V>(
+        &self,
+        vertices: &V,
+        vid: VertexId,
+    ) -> Result<(u32, u32), LaraOperationError>
     where
         V: VertexAccess<LabeledVertex>,
     {
         let segment_size = self.header().segment_size.max(1);
         let start = (u32::from(vid) / segment_size) * segment_size;
-        let end = start.saturating_add(segment_size).min(vertices.len());
-        (start, end)
+        let raw_end = start
+            .checked_add(segment_size)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        Ok((start, raw_end.min(vertices.len())))
     }
 
     fn bucket_row_alloc(vertex: LabeledVertex) -> u32 {
@@ -263,7 +269,7 @@ impl<M: Memory> LabelBucketStore<M> {
     where
         V: VertexAccess<LabeledVertex>,
     {
-        let (start, end) = self.segment_vertex_bounds(vertices, vid);
+        let (start, end) = self.segment_vertex_bounds(vertices, vid)?;
         let mut rows = Vec::new();
         for v_ord in start..end {
             let v = vertices.get(VertexId::from(v_ord));
