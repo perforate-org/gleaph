@@ -15,6 +15,7 @@ include = [
 ]
 
 [dependencies]
+gleaph-gql-keywords = { path = "../gql-keywords" }
 gleaph-gql-macros = { path = "../gql-macros" }
 ethnum = "1"
 f256 = { workspace = true, optional = true }

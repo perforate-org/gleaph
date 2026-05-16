@@ -652,6 +652,7 @@ version = "0.0.1"
 dependencies = [
  "ethnum",
  "f256",
+ "gleaph-gql-keywords",
  "gleaph-gql-macros",
  "half",
  "num-bigint",
@@ -674,9 +675,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "gleaph-gql-keywords"
+version = "0.0.1"
+
+[[package]]
 name = "gleaph-gql-macros"
 version = "0.0.1"
 dependencies = [
+ "gleaph-gql-keywords",
  "proc-macro2",
  "quote",
  "syn 2.0.117",

@@ -20,7 +20,7 @@ use crate::ast::GqlProgram;
 use crate::error::GqlError;
 use crate::lexer;
 use crate::token::Comment;
-pub use helpers::{Parser, is_reserved_keyword};
+pub use helpers::{Parser, is_prereserved_keyword, is_reserved_keyword};
 
 /// The result of parsing with comment preservation.
 #[derive(Debug)]

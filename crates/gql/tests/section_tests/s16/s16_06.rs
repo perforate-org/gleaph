@@ -340,8 +340,15 @@ mod path_pattern_extensions {
 
     #[test]
     fn dotted_extension_name() {
-        let pp = first_path("MATCH (a)-[e:L]->(b) VENDOR.COST BY f(e) RETURN a");
+        let pp = first_path(
+            "MATCH ANY SHORTEST (a)-[e:L]->{1,5}(b) VENDOR.COST BY VENDOR.WEIGHT(e) RETURN a",
+        );
         assert_eq!(pp.extensions.len(), 1);
         assert_eq!(pp.extensions[0].name.parts, ["VENDOR", "COST"]);
+        let ExprKind::FunctionCall { name, args, .. } = &pp.extensions[0].expr.kind else {
+            panic!("expected function call");
+        };
+        assert_eq!(name.parts, ["VENDOR", "WEIGHT"]);
+        assert_eq!(args.len(), 1);
     }
 }

@@ -52,11 +52,11 @@ pub enum PlanQueryError {
         right: gleaph_gql::Value,
     },
     RuntimeFunction(RuntimeFunctionError),
-    /// `GLEAPH_WEIGHT` preparation or evaluation failed (message is user-facing).
+    /// `GLEAPH.WEIGHT` preparation or evaluation failed (message is user-facing).
     GleaphWeight {
         message: String,
     },
-    /// `GLEAPH_COST` shortest-path edge cost evaluation failed (message is user-facing).
+    /// `GLEAPH.COST` shortest-path edge cost evaluation failed (message is user-facing).
     GleaphCost {
         message: String,
     },

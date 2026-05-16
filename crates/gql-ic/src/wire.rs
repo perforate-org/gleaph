@@ -24,7 +24,8 @@ pub enum IcWirePathElement {
 /// # Design
 ///
 /// - Scalars follow the historical widening rules (`Int8`…`Int32` → `Int64`, etc.) for stable Candid.
-/// - [`Principal`] uses a dedicated variant backed by [`PrincipalValue`] on the GQL side.
+/// - [`Principal`] uses a dedicated variant backed by [`PrincipalValue`] on the GQL side
+///   ([`ExtensionValue::type_name`](gleaph_gql::value::ExtensionValue::type_name) is `IC.PRINCIPAL`).
 /// - Other extensions use [`Self::ExtensionLeaf`], wrapping the **compact binary leaf** for
 ///   `Value::Extension` (starting with byte `33` or `34`).
 /// - Values with no dedicated Candid tuple use [`Self::ValueBinary`], a full [`Value::encode_binary_into`]
@@ -103,7 +104,7 @@ pub enum WireError {
 /// Decode extension / value compact blobs using the default IC decoder (Principal, …).
 #[inline]
 pub fn ic_extension_decode() -> &'static IcExtensionBinaryDecode {
-    &crate::IC_EXTENSION_BINARY_DECODER
+    &IcExtensionBinaryDecode::INSTANCE
 }
 
 impl From<&gleaph_gql::types::PathElement> for IcWirePathElement {

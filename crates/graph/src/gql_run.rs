@@ -529,7 +529,7 @@ mod tests {
         let params = BTreeMap::new();
         let out = pollster::block_on(run_adhoc_gql(
             store,
-            "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH_COST BY GLEAPH_WEIGHT(e) RETURN p",
+            "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH.COST BY GLEAPH.WEIGHT(e) RETURN p",
             &params,
             Role::Read,
             None,
@@ -548,7 +548,7 @@ mod tests {
         store
             .prepared_query_register(
                 "wgt_shortest".into(),
-                "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH_COST BY GLEAPH_WEIGHT(e) RETURN p",
+                "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH.COST BY GLEAPH.WEIGHT(e) RETURN p",
             )
             .expect("register");
         let record = store.prepared_query_get("wgt_shortest").expect("get");
@@ -573,7 +573,7 @@ mod tests {
         let params = BTreeMap::new();
         let err = pollster::block_on(run_adhoc_gql(
             store,
-            "MATCH SHORTEST 2 (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH_COST BY GLEAPH_WEIGHT(e) RETURN a",
+            "MATCH SHORTEST 2 (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH.COST BY GLEAPH.WEIGHT(e) RETURN a",
             &params,
             Role::Read,
             None,
@@ -591,7 +591,7 @@ mod tests {
         let params = BTreeMap::new();
         let err = pollster::block_on(run_adhoc_gql(
             store,
-            "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH_COST BY e RETURN p",
+            "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH.COST BY e RETURN p",
             &params,
             Role::Read,
             None,
@@ -617,7 +617,7 @@ mod tests {
         let params = BTreeMap::new();
         let err = pollster::block_on(run_adhoc_gql(
             store,
-            "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH_COST BY e * 2 RETURN p",
+            "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH.COST BY e * 2 RETURN p",
             &params,
             Role::Read,
             None,
@@ -628,7 +628,7 @@ mod tests {
         match &err {
             GqlRunError::Plan(msg) => {
                 assert!(
-                    msg.contains("inside GLEAPH_WEIGHT"),
+                    msg.contains("inside GLEAPH.WEIGHT"),
                     "expected plan rejection, got: {err}"
                 );
             }
@@ -644,7 +644,7 @@ mod tests {
         let err = pollster::block_on(run_adhoc_gql(
             store,
             "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) \
-             GLEAPH_COST BY CASE e WHEN NULL THEN GLEAPH_WEIGHT(e) ELSE GLEAPH_WEIGHT(e) END RETURN p",
+             GLEAPH.COST BY CASE e WHEN NULL THEN GLEAPH.WEIGHT(e) ELSE GLEAPH.WEIGHT(e) END RETURN p",
             &params,
             Role::Read,
             None,
@@ -655,7 +655,7 @@ mod tests {
         match &err {
             GqlRunError::Plan(msg) => {
                 assert!(
-                    msg.contains("inside GLEAPH_WEIGHT"),
+                    msg.contains("inside GLEAPH.WEIGHT"),
                     "expected plan rejection, got: {err}"
                 );
             }
@@ -671,7 +671,7 @@ mod tests {
         let err = pollster::block_on(run_adhoc_gql(
             store,
             "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) \
-             GLEAPH_COST BY CASE WHEN e THEN GLEAPH_WEIGHT(e) ELSE GLEAPH_WEIGHT(e) END RETURN p",
+             GLEAPH.COST BY CASE WHEN e THEN GLEAPH.WEIGHT(e) ELSE GLEAPH.WEIGHT(e) END RETURN p",
             &params,
             Role::Read,
             None,
@@ -682,7 +682,7 @@ mod tests {
         match &err {
             GqlRunError::Plan(msg) => {
                 assert!(
-                    msg.contains("inside GLEAPH_WEIGHT"),
+                    msg.contains("inside GLEAPH.WEIGHT"),
                     "expected plan rejection, got: {err}"
                 );
             }
@@ -697,7 +697,7 @@ mod tests {
         let params = BTreeMap::new();
         let out = pollster::block_on(run_adhoc_gql(
             store,
-            "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH_COST BY ABS(GLEAPH_WEIGHT(e)) RETURN p",
+            "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH.COST BY ABS(GLEAPH.WEIGHT(e)) RETURN p",
             &params,
             Role::Read,
             None,
@@ -716,7 +716,7 @@ mod tests {
         store
             .prepared_query_register(
                 "wgt_scaled".into(),
-                "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH_COST BY GLEAPH_WEIGHT(e) * $scale RETURN p",
+                "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH.COST BY GLEAPH.WEIGHT(e) * $scale RETURN p",
             )
             .expect("register");
         let record = store.prepared_query_get("wgt_scaled").expect("get");
@@ -742,7 +742,7 @@ mod tests {
         let params = BTreeMap::new();
         let out = pollster::block_on(run_adhoc_gql(
             store,
-            "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH_COST BY FLOOR(GLEAPH_WEIGHT(e)) RETURN p",
+            "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH.COST BY FLOOR(GLEAPH.WEIGHT(e)) RETURN p",
             &params,
             Role::Read,
             None,
@@ -761,7 +761,7 @@ mod tests {
         let params = BTreeMap::new();
         let out = pollster::block_on(run_adhoc_gql(
             store,
-            "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH_COST BY COALESCE(GLEAPH_WEIGHT(e), 1.0) RETURN p",
+            "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH.COST BY COALESCE(GLEAPH.WEIGHT(e), 1.0) RETURN p",
             &params,
             Role::Read,
             None,
@@ -780,7 +780,7 @@ mod tests {
         let params = BTreeMap::new();
         let out = pollster::block_on(run_adhoc_gql(
             store,
-            "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH_COST BY CAST(GLEAPH_WEIGHT(e) AS FLOAT32) RETURN p",
+            "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH.COST BY CAST(GLEAPH.WEIGHT(e) AS FLOAT32) RETURN p",
             &params,
             Role::Read,
             None,
@@ -799,7 +799,7 @@ mod tests {
         let params = BTreeMap::new();
         let out = pollster::block_on(run_adhoc_gql(
             store,
-            "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH_COST BY GLEAPH_WEIGHT((e)) RETURN p",
+            "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH.COST BY GLEAPH.WEIGHT((e)) RETURN p",
             &params,
             Role::Read,
             None,
@@ -818,7 +818,7 @@ mod tests {
         let params = BTreeMap::new();
         let out = pollster::block_on(run_adhoc_gql(
             store,
-            "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH_COST BY GLEAPH_WEIGHT(((e))) RETURN p",
+            "MATCH p = ANY SHORTEST (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH.COST BY GLEAPH.WEIGHT(((e))) RETURN p",
             &params,
             Role::Read,
             None,

@@ -1,0 +1,11 @@
+[package]
+name = "gleaph-gql-keywords"
+edition = "2024"
+version = "0.0.1"
+authors = ["Inomoto Yota <yota@perforate.org>"]
+license = "MIT OR Apache-2.0"
+rust-version = "1.88"
+description = "GQL reserved and prereserved keywords (ISO/IEC 39075) for parser and proc macros"
+
+[lib]
+path = "src/lib.rs"

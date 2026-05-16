@@ -1,5 +1,5 @@
 use gleaph_gql::{Value, ValueBinaryError};
-use gleaph_gql_ic::IC_EXTENSION_BINARY_DECODER;
+use gleaph_gql_ic::IcExtensionBinaryDecode;
 use gleaph_graph_kernel::entry::PropertyId;
 use ic_stable_lara::VertexId;
 use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
@@ -81,8 +81,11 @@ impl Storable for StoredPropertyValue {
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
         Self(
-            Value::from_binary_bytes_with_extensions(bytes.as_ref(), &IC_EXTENSION_BINARY_DECODER)
-                .expect("Value bytes must decode"),
+            Value::from_binary_bytes_with_extensions(
+                bytes.as_ref(),
+                &IcExtensionBinaryDecode::INSTANCE,
+            )
+            .expect("Value bytes must decode"),
         )
     }
 }

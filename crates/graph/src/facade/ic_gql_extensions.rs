@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 
 static IC_EXTENSION_TYPE_NAMES: OnceLock<Vec<String>> = OnceLock::new();
 
-/// Type names declared by [`gleaph_gql_ic::IcExtensionBinaryDecode`] (e.g. `ic.Principal`), computed once.
+/// Type names declared by [`gleaph_gql_ic::IcExtensionBinaryDecode`] (e.g. `IC.PRINCIPAL`), computed once.
 pub fn ic_extension_type_names() -> &'static [String] {
     IC_EXTENSION_TYPE_NAMES.get_or_init(|| {
         let mut out = Vec::new();
@@ -35,12 +35,7 @@ mod tests {
     fn exposes_ic_principal_extension_names() {
         init_ic_gql_extensions();
         let names = ic_extension_type_names();
-        assert!(
-            names
-                .iter()
-                .any(|n| n == "ic.Principal" || n == "PRINCIPAL"),
-            "{names:?}"
-        );
+        assert!(names.iter().any(|n| n == "IC.PRINCIPAL"), "{names:?}");
     }
 
     #[test]

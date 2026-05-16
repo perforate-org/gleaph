@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/auth",
+    "crates/gql-keywords",
     "crates/gql",
     "crates/gql-ic",
     "crates/gql-macros",
@@ -24,6 +25,7 @@ license = "MIT or Apache-2.0"
 [workspace.dependencies]
 gleaph-auth = { path = "crates/auth" }
 gleaph-gql = { path = "crates/gql" }
+gleaph-gql-keywords = { path = "crates/gql-keywords" }
 gleaph-gql-ic = { path = "crates/gql-ic" }
 gleaph-gql-planner = { path = "crates/gql-planner" }
 gleaph-graph-catalog = { path = "crates/graph-catalog" }

@@ -1,73 +1,60 @@
-//! Helpers for implementing and registering host extension values.
+//! Host extension values and the `gql_extension!` registration macro.
 //!
-//! Typical extension setup has two steps:
-//! 1. Implement the concrete value with [`impl_extension_value`].
-//! 2. Register binary decode paths with [`declare_extension_types`].
-//!
-//! `impl_extension_value!` generates:
-//! - An [`crate::value::ExtensionValue`] implementation for a concrete type
-//! - Type-safe downcast handling for equality and ordering
-//! - Optional binary, short-blob, compact-kind, hash, and sortable-index hooks
-//!
-//! `declare_extension_types!` is for the decode/registration half. It generates:
-//! - A decoder struct implementing [`crate::value::ExtensionBinaryDecode`]
-//! - A `EXTENSION_TYPE_NAMES` constant for host-side allowlist registration
-//! - A `for_each_extension_type` helper
-//!
-//! # Example: value implementation
+//! Typical setup in a vendor integration crate:
 //!
 //! ```ignore
 //! use std::borrow::Cow;
-//! use gleaph_gql::extensions::impl_extension_value;
-//! use gleaph_gql::ExtensionValue;
+//! use gleaph_gql::extensions::gql_extension;
 //!
-//! #[derive(Clone, Debug)]
-//! struct SessionTokenValue(Vec<u8>);
-//!
-//! impl std::fmt::Display for SessionTokenValue {
-//!     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//!         write!(f, "SessionToken")
-//!     }
-//! }
-//!
-//! impl_extension_value! {
-//!     impl ExtensionValue for SessionTokenValue {
-//!         type_name: "auth.SessionToken";
-//!         eq: |this, other| this.0 == other.0;
-//!         binary_payload: |this| Cow::Borrowed(this.0.as_slice());
-//!     }
+//! gql_extension! {
+//!     prefix: "IC",
+//!     types: [
+//!         {
+//!             rust_type: PrincipalValue,
+//!             type_name: "PRINCIPAL",
+//!             decoder: IcExtensionBinaryDecode,
+//!             eq: |this, other| this.0 == other.0,
+//!             cmp: |this, other| this.0.cmp(&other.0),
+//!             sortable_index_key: {
+//!                 domain: PRINCIPAL_EXTENSION_SORTABLE_DOMAIN,
+//!                 bytes: |this| Cow::Borrowed(this.0.as_slice()),
+//!             },
+//!             binary_payload: |this| Cow::Borrowed(this.0.as_slice()),
+//!             short_blob: |this| Cow::Borrowed(this.0.as_slice()),
+//!             short_blob_decode: decode_principal_payload,
+//!         },
+//!     ],
+//!     functions: [
+//!         {
+//!             name: "MSG_CALLER",
+//!             alias: ["msg_caller"],
+//!             function: || principal_to_value(ic_cdk::api::msg_caller()),
+//!         },
+//!     ],
+//!     path_extensions: [
+//!         {
+//!             name: "COST",
+//!             alias: ["LEGACY_COST"],
+//!             validate_plan: crate::plan::gleaph_cost_by,
+//!         },
+//!     ],
 //! }
 //! ```
 //!
-//! # Example: decoder registration
-//!
-//! ```ignore
-//! use gleaph_gql::extensions::declare_extension_types;
-//! use gleaph_gql::{ExtensionValue, ValueBinaryError};
-//!
-//! const SESSION_TOKEN_TYPE_NAME: &str = "auth.SessionToken";
-//! const SESSION_TOKEN_KIND: u8 = 7;
-//!
-//! fn decode_session_token(
-//!     payload: &[u8],
-//! ) -> Result<Box<dyn ExtensionValue>, ValueBinaryError> {
-//!     Ok(Box::new(SessionTokenValue(payload.to_vec())))
-//! }
-//!
-//! declare_extension_types! {
-//!     decoder: AppExtensionDecode;
-//!     type_names: [SESSION_TOKEN_TYPE_NAME, "SESSION_TOKEN"];
-//!     compact: { SESSION_TOKEN_KIND => decode_session_token };
-//! }
-//!
-//! let value = gleaph_gql::Value::from_binary_bytes_with_extensions(
-//!     bytes,
-//!     &AppExtensionDecode,
-//! )?;
-//! ```
+//! - In `types`, a **string literal** `type_name` is always canonicalized to `{prefix}.{type_name}`
+//!   for [`ExtensionValue::type_name`](crate::value::ExtensionValue::type_name) and the decoder's
+//!   `EXTENSION_TYPE_NAMES` list (plus any `alias` entries). Extra `.` segments in the literal are
+//!   treated as part of the vendor-chosen name (the GQL parser does not assign special meaning to
+//!   dots after the first). Use a non-literal `type_name` expression (e.g. a `const` path) to supply
+//!   a fixed spelling without macro concatenation.
+//! - `prefix` must not equal a GQL **reserved** or **prereserved** keyword (case-insensitive); the macro reports which category matched.
+//! - `alias` is optional in `types`, `functions`, and `path_extensions` (omit the field or use `alias: []`).
+//! - `function` and `eval` are synonyms for the callable in `functions`.
+//! - `types` items declare [`ExtensionValue`](crate::value::ExtensionValue) plus an
+//!   [`ExtensionBinaryDecode`](crate::value::ExtensionBinaryDecode) decoder struct.
+//!   Each decoder exposes `pub const INSTANCE: Self = Self` (use `&MyDecoder::INSTANCE` where a `&dyn ExtensionBinaryDecode` is required).
+//! - `functions` / `path_extensions` emit [`crate::vendor_extension::GqlVendorMemberNames`] constants
+//!   (and `functions` may emit zero-argument eval wrappers). Wire decode is only from `types`.
 
 #[doc(inline)]
-pub use gleaph_gql_macros::declare_extension_types;
-
-#[doc(inline)]
-pub use gleaph_gql_macros::impl_extension_value;
+pub use gleaph_gql_macros::define_gql_extension as gql_extension;

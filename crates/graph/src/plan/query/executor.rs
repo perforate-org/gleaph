@@ -2125,7 +2125,7 @@ fn weighted_shortest_paths_between(
             } else {
                 decode_direct_gleaph_weight_hop_cost(
                     direct_gleaph_weight_decoder
-                        .expect("direct GLEAPH_WEIGHT decoder must be present"),
+                        .expect("direct GLEAPH.WEIGHT decoder must be present"),
                     edge_binding,
                 )?
             };
@@ -2250,7 +2250,7 @@ fn direct_gleaph_weight_hop_cost_decoder<'a>(
         .and_then(|decoders| decoders.get(edge_var))
         .ok_or_else(|| PlanQueryError::GleaphWeight {
             message: format!(
-                "GLEAPH_WEIGHT({edge_var}): no prepared decoder for this edge variable"
+                "GLEAPH.WEIGHT({edge_var}): no prepared decoder for this edge variable"
             ),
         })
         .map(Some)
@@ -2262,7 +2262,7 @@ fn decode_direct_gleaph_weight_hop_cost(
 ) -> Result<WeightedCost, PlanQueryError> {
     let weight = decode_inline_weight(decoder, edge_binding.inline_value).map_err(|e| {
         PlanQueryError::GleaphWeight {
-            message: format!("GLEAPH_WEIGHT decode failed: {e}"),
+            message: format!("GLEAPH.WEIGHT decode failed: {e}"),
         }
     })?;
     Ok(WeightedCost::from_validated_non_negative_float32(weight))
@@ -2751,7 +2751,7 @@ struct QueryExprEvaluator<'a> {
     aggregate_specs: Option<&'a [AggregateSpec]>,
     /// IC caller for runtime functions such as `MSG_CALLER()`.
     caller: Option<Principal>,
-    /// Prepared decoders for `GLEAPH_WEIGHT(edgeVar)` (when the query uses it).
+    /// Prepared decoders for `GLEAPH.WEIGHT(edgeVar)` (when the query uses it).
     gleaph_weight_decoders: Option<&'a BTreeMap<String, PreparedWeightDecoder>>,
 }
 
@@ -2762,36 +2762,33 @@ fn try_eval_gleaph_weight(
     distinct: bool,
     row: &PlanRow,
 ) -> Result<Option<Value>, PlanQueryError> {
-    let Some(last) = name.parts.last().map(|s| s.as_str()) else {
-        return Ok(None);
-    };
-    if !last.eq_ignore_ascii_case("gleaph_weight") || name.parts.len() != 1 {
+    if !super::gleaph_weight::is_gleaph_weight_call(name, distinct) {
         return Ok(None);
     }
     // Inline edge weights decode to FLOAT32; cost expressions may widen via casts or arithmetic.
     if distinct {
         return Err(PlanQueryError::GleaphWeight {
-            message: "GLEAPH_WEIGHT does not support DISTINCT".into(),
+            message: "GLEAPH.WEIGHT does not support DISTINCT".into(),
         });
     }
     let map = decoders.ok_or_else(|| PlanQueryError::GleaphWeight {
-        message: "GLEAPH_WEIGHT requires query preparation (no decoder table)".into(),
+        message: "GLEAPH.WEIGHT requires query preparation (no decoder table)".into(),
     })?;
     if args.len() != 1 {
         return Err(PlanQueryError::GleaphWeight {
-            message: format!("GLEAPH_WEIGHT expects 1 argument, got {}", args.len()),
+            message: format!("GLEAPH.WEIGHT expects 1 argument, got {}", args.len()),
         });
     }
     let Some(edge_var) = super::gleaph_weight::gleaph_weight_arg_edge_var(&args[0]) else {
         return Err(PlanQueryError::GleaphWeight {
-            message: "GLEAPH_WEIGHT argument must be an edge variable".into(),
+            message: "GLEAPH.WEIGHT argument must be an edge variable".into(),
         });
     };
     let decoder = map
         .get(&edge_var)
         .ok_or_else(|| PlanQueryError::GleaphWeight {
             message: format!(
-                "GLEAPH_WEIGHT({edge_var}): no prepared decoder for this edge variable"
+                "GLEAPH.WEIGHT({edge_var}): no prepared decoder for this edge variable"
             ),
         })?;
     let binding = row
@@ -2804,13 +2801,13 @@ fn try_eval_gleaph_weight(
         PlanBinding::Edge(edge) => {
             let w = decode_inline_weight(decoder, edge.inline_value).map_err(|e| {
                 PlanQueryError::GleaphWeight {
-                    message: format!("GLEAPH_WEIGHT decode failed: {e}"),
+                    message: format!("GLEAPH.WEIGHT decode failed: {e}"),
                 }
             })?;
             Ok(Some(Value::Float32(w)))
         }
         _ => Err(PlanQueryError::GleaphWeight {
-            message: format!("GLEAPH_WEIGHT({edge_var}): binding is not an edge"),
+            message: format!("GLEAPH.WEIGHT({edge_var}): binding is not an edge"),
         }),
     }
 }
@@ -6728,7 +6725,7 @@ mod tests {
         store
             .insert_directed_edge_with_inline_value(a, b, Some(label_id), 3)
             .expect("edge");
-        let gql = "MATCH (a:AbsWgtA)-[e:AbsWgtRoad]->(b:AbsWgtB) RETURN ABS(GLEAPH_WEIGHT(e)) AS w";
+        let gql = "MATCH (a:AbsWgtA)-[e:AbsWgtRoad]->(b:AbsWgtB) RETURN ABS(GLEAPH.WEIGHT(e)) AS w";
         let plan = plan_gql(gql);
         let result = store
             .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
@@ -6829,7 +6826,7 @@ mod tests {
             .insert_vertex_named(["NullWgtN"], Vec::<(&str, Value)>::new())
             .expect("insert n");
         let gql = "MATCH (n:NullWgtN) OPTIONAL MATCH (n)-[e:NullWgtRel]->(m) \
-                   RETURN GLEAPH_WEIGHT(e) AS w";
+                   RETURN GLEAPH.WEIGHT(e) AS w";
         let plan = plan_gql(gql);
         let result = store
             .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
@@ -8016,7 +8013,7 @@ mod tests {
 
     fn gleaph_weight_call(edge_var: &str) -> Expr {
         Expr::new(ExprKind::FunctionCall {
-            name: ObjectName::simple("GLEAPH_WEIGHT"),
+            name: ObjectName::qualified(vec!["GLEAPH".into(), "WEIGHT".into()]),
             args: vec![Expr::var(edge_var)],
             distinct: false,
         })
@@ -8080,7 +8077,7 @@ mod tests {
         assert_eq!(
             elements.len(),
             5,
-            "GLEAPH_WEIGHT(e) * $scale with scale=1 should match unscaled weighted shortest path"
+            "GLEAPH.WEIGHT(e) * $scale with scale=1 should match unscaled weighted shortest path"
         );
         assert_eq!(vertex_path_id(&elements[4]).vertex_id, c);
     }
@@ -9055,7 +9052,7 @@ mod tests {
         assert_eq!(
             elements.len(),
             3,
-            "RETURN GLEAPH_WEIGHT must not affect hop-count search"
+            "RETURN GLEAPH.WEIGHT must not affect hop-count search"
         );
         assert!(matches!(result.rows[0].get("w"), Some(Value::Float32(_))));
     }

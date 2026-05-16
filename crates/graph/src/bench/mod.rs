@@ -46,7 +46,7 @@ fn plan(ops: Vec<PlanOp>) -> PhysicalPlan {
 
 fn gleaph_weight_call(edge_var: &str) -> Expr {
     Expr::new(ExprKind::FunctionCall {
-        name: ObjectName::simple("GLEAPH_WEIGHT"),
+        name: ObjectName::qualified(vec!["GLEAPH".into(), "WEIGHT".into()]),
         args: vec![Expr::var(edge_var)],
         distinct: false,
     })
@@ -389,7 +389,7 @@ fn bench_graph_weighted_all_shortest_literal_frontier_branch4_depth4() -> canben
 }
 
 /// Hub convergence workload where many prefixes reach the same vertex and re-expand identical
-/// outgoing edges. Intended to measure hop-cost cache reuse for `GLEAPH_WEIGHT` decode plus
+/// outgoing edges. Intended to measure hop-cost cache reuse for `GLEAPH.WEIGHT` decode plus
 /// expression evaluation.
 #[bench(raw)]
 fn bench_graph_weighted_shortest_repeated_edge_cost_cache_48prefix_24hub_out()

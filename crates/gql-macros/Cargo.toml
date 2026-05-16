@@ -10,6 +10,7 @@ rust-version = "1.88"
 proc-macro = true
 
 [dependencies]
+gleaph-gql-keywords = { path = "../gql-keywords" }
 proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full"] }

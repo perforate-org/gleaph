@@ -29,6 +29,9 @@
 
 extern crate self as gleaph_gql;
 
+#[doc(inline)]
+pub use gleaph_gql_macros::define_gql_extension as gql_extension;
+
 pub mod ast;
 pub mod error;
 pub mod extensions;
@@ -51,6 +54,7 @@ pub mod value;
 pub mod value_cmp;
 pub mod value_index_key;
 pub mod value_join_hash;
+pub mod vendor_extension;
 
 pub use error::{GqlError, GqlResult};
 pub use parser::ParseResult;

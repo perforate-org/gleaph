@@ -13,8 +13,6 @@ use super::gleaph_weight::{
     gleaph_weight_arg_edge_var, gleaph_weight_single_arg, is_gleaph_weight_call,
 };
 
-const GLEAPH_COST: &str = "gleaph_cost";
-
 pub struct GleaphPathExtensionHandler;
 
 impl PathPatternExtensionHandler for GleaphPathExtensionHandler {
@@ -24,7 +22,7 @@ impl PathPatternExtensionHandler for GleaphPathExtensionHandler {
     ) -> Result<ShortestPathCost, PlannerError> {
         let Some(shortest_mode) = ctx.shortest_mode else {
             return Err(PlannerError::UnsupportedExtension(
-                "GLEAPH_COST is only supported on shortest-path patterns".into(),
+                "GLEAPH.COST is only supported on shortest-path patterns".into(),
             ));
         };
         if matches!(shortest_mode, ShortestMode::ShortestK(_)) {
@@ -34,11 +32,11 @@ impl PathPatternExtensionHandler for GleaphPathExtensionHandler {
         }
         if ctx.extensions.len() != 1 {
             return Err(PlannerError::UnsupportedExtension(
-                "GLEAPH_COST requires exactly one extension clause".into(),
+                "GLEAPH.COST requires exactly one extension clause".into(),
             ));
         }
         let ext = &ctx.extensions[0];
-        if !extension_name_eq(&ext.name.parts, GLEAPH_COST) {
+        if !is_gleaph_cost_extension_name(&ext.name.parts) {
             return Err(PlannerError::UnsupportedExtension(format!(
                 "unsupported path pattern extension '{}'",
                 ext.name.parts.join(".")
@@ -47,28 +45,28 @@ impl PathPatternExtensionHandler for GleaphPathExtensionHandler {
 
         let single = ctx.single_edge.as_ref().ok_or_else(|| {
             PlannerError::UnsupportedExtension(
-                "GLEAPH_COST requires a single-edge shortest-path pattern".into(),
+                "GLEAPH.COST requires a single-edge shortest-path pattern".into(),
             )
         })?;
         if single.label_expr.is_some() {
             return Err(PlannerError::UnsupportedExtension(
-                "GLEAPH_COST does not support label expressions on the edge pattern".into(),
+                "GLEAPH.COST does not support label expressions on the edge pattern".into(),
             ));
         }
         if single.label.is_none() {
             return Err(PlannerError::UnsupportedExtension(
-                "GLEAPH_COST requires a single fixed edge label".into(),
+                "GLEAPH.COST requires a single fixed edge label".into(),
             ));
         }
         let edge_var = single.edge_var.as_deref().ok_or_else(|| {
             PlannerError::UnsupportedExtension(
-                "GLEAPH_COST requires the shortest-path edge pattern to declare a variable".into(),
+                "GLEAPH.COST requires the shortest-path edge pattern to declare a variable".into(),
             )
         })?;
         validate_cost_expr_references_edge(&ext.expr, edge_var)?;
         if matches!(&ext.expr.kind, ExprKind::Variable(_)) {
             return Err(PlannerError::UnsupportedExtension(
-                "GLEAPH_COST expression must use GLEAPH_WEIGHT(edgeVar) or a numeric expression, not a bare edge variable".into(),
+                "GLEAPH.COST expression must use GLEAPH.WEIGHT(edgeVar) or a numeric expression, not a bare edge variable".into(),
             ));
         }
         validate_cost_expr_shape(&ext.expr)?;
@@ -81,20 +79,22 @@ impl PathPatternExtensionHandler for GleaphPathExtensionHandler {
     }
 }
 
-fn extension_name_eq(parts: &[String], expected: &str) -> bool {
-    parts.len() == 1 && parts[0].eq_ignore_ascii_case(expected)
+fn is_gleaph_cost_extension_name(parts: &[String]) -> bool {
+    parts.len() == 2
+        && parts[0].eq_ignore_ascii_case("gleaph")
+        && parts[1].eq_ignore_ascii_case("cost")
 }
 
 fn validate_cost_expr_references_edge(expr: &Expr, edge_var: &str) -> Result<(), PlannerError> {
     let vars = collect_expr_variables(expr);
     if vars.len() != 1 {
         return Err(PlannerError::UnsupportedExtension(format!(
-            "GLEAPH_COST expression must reference exactly the shortest-path edge variable '{edge_var}'"
+            "GLEAPH.COST expression must reference exactly the shortest-path edge variable '{edge_var}'"
         )));
     }
     if vars[0] != edge_var {
         return Err(PlannerError::UnsupportedExtension(format!(
-            "GLEAPH_COST expression must reference exactly the shortest-path edge variable '{edge_var}'"
+            "GLEAPH.COST expression must reference exactly the shortest-path edge variable '{edge_var}'"
         )));
     }
     Ok(())
@@ -150,7 +150,7 @@ fn validate_cost_expr_gleaph_weight_usage_inner(
         if context == GleaphWeightVarContext::Normal {
             return if v == edge_var {
                 Err(cost_shape_err(
-                    "GLEAPH_COST expression may only reference the edge variable inside GLEAPH_WEIGHT(edgeVar)",
+                    "GLEAPH.COST expression may only reference the edge variable inside GLEAPH.WEIGHT(edgeVar)",
                 ))
             } else {
                 Ok(())
@@ -161,7 +161,7 @@ fn validate_cost_expr_gleaph_weight_usage_inner(
         return match gleaph_weight_arg_edge_var(expr) {
             Some(v) if v == edge_var => Ok(()),
             Some(_) | None => Err(cost_shape_err(format!(
-                "GLEAPH_WEIGHT argument must be the shortest-path edge variable '{edge_var}'"
+                "GLEAPH.WEIGHT argument must be the shortest-path edge variable '{edge_var}'"
             ))),
         };
     }
@@ -174,7 +174,7 @@ fn validate_cost_expr_gleaph_weight_usage_inner(
         if is_gleaph_weight_call(name, *distinct) {
             let arg = gleaph_weight_single_arg(args).ok_or_else(|| {
                 cost_shape_err(format!(
-                    "GLEAPH_WEIGHT expects 1 argument in GLEAPH_COST expression, got {}",
+                    "GLEAPH.WEIGHT expects 1 argument in GLEAPH.COST expression, got {}",
                     args.len()
                 ))
             })?;
@@ -201,30 +201,30 @@ fn validate_function_call_cost_shape(
 ) -> Result<(), PlannerError> {
     if distinct {
         return Err(cost_shape_err(
-            "GLEAPH_COST expression does not support DISTINCT function calls",
+            "GLEAPH.COST expression does not support DISTINCT function calls",
         ));
-    }
-    let Some(last) = name.parts.last().map(|s| s.as_str()) else {
-        return Err(cost_shape_err(
-            "GLEAPH_COST expression has an empty function name",
-        ));
-    };
-    if name.parts.len() != 1 {
-        return Err(cost_shape_err(format!(
-            "GLEAPH_COST expression does not support qualified function '{last}'"
-        )));
     }
     if is_gleaph_weight_call(name, distinct) {
         gleaph_weight_single_arg(args).ok_or_else(|| {
             cost_shape_err(format!(
-                "GLEAPH_WEIGHT expects 1 argument in GLEAPH_COST expression, got {}",
+                "GLEAPH.WEIGHT expects 1 argument in GLEAPH.COST expression, got {}",
                 args.len()
             ))
         })?;
         return Ok(());
     }
+    let Some(last) = name.parts.last().map(|s| s.as_str()) else {
+        return Err(cost_shape_err(
+            "GLEAPH.COST expression has an empty function name",
+        ));
+    };
+    if name.parts.len() != 1 {
+        return Err(cost_shape_err(format!(
+            "GLEAPH.COST expression does not support qualified function '{last}'"
+        )));
+    }
     Err(cost_shape_err(format!(
-        "GLEAPH_COST expression does not support function '{last}'"
+        "GLEAPH.COST expression does not support function '{last}'"
     )))
 }
 
@@ -241,7 +241,7 @@ fn try_for_each_immediate_child_expr(
     err
 }
 
-/// Per-node rules for GLEAPH_COST expression shapes (child recursion is handled separately).
+/// Per-node rules for `GLEAPH.COST` expression shapes (child recursion is handled separately).
 fn validate_cost_expr_node(expr: &Expr) -> Result<(), PlannerError> {
     match &expr.kind {
         ExprKind::Literal(value) => {
@@ -249,7 +249,7 @@ fn validate_cost_expr_node(expr: &Expr) -> Result<(), PlannerError> {
                 Ok(())
             } else {
                 Err(cost_shape_err(
-                    "GLEAPH_COST expression literals must be numeric",
+                    "GLEAPH.COST expression literals must be numeric",
                 ))
             }
         }
@@ -288,7 +288,7 @@ fn validate_cost_expr_node(expr: &Expr) -> Result<(), PlannerError> {
                 Ok(())
             } else {
                 Err(cost_shape_err(
-                    "GLEAPH_COST CAST target must be a numeric type",
+                    "GLEAPH.COST CAST target must be a numeric type",
                 ))
             }
         }
@@ -298,13 +298,13 @@ fn validate_cost_expr_node(expr: &Expr) -> Result<(), PlannerError> {
             distinct,
         } => validate_function_call_cost_shape(name, args, *distinct),
         _ => Err(cost_shape_err(format!(
-            "GLEAPH_COST expression does not support expression kind {:?}",
+            "GLEAPH.COST expression does not support expression kind {:?}",
             expr.kind
         ))),
     }
 }
 
-/// Ensures a GLEAPH_COST expression only uses numeric-cost shapes supported at execution time.
+/// Ensures a `GLEAPH.COST` expression only uses numeric-cost shapes supported at execution time.
 fn validate_cost_expr_shape(expr: &Expr) -> Result<(), PlannerError> {
     validate_cost_expr_node(expr)?;
     try_for_each_immediate_child_expr(expr, validate_cost_expr_shape)
@@ -313,7 +313,7 @@ fn validate_cost_expr_shape(expr: &Expr) -> Result<(), PlannerError> {
 pub(crate) static GLEAPH_PATH_EXTENSION_HANDLER: GleaphPathExtensionHandler =
     GleaphPathExtensionHandler;
 
-// Full GLEAPH_COST coverage including sql-compat builtins:
+// Full GLEAPH.COST coverage including sql-compat builtins:
 // cargo test -p gleaph-graph --features sql-compat gleaph_cost
 #[cfg(test)]
 mod tests {
@@ -327,9 +327,13 @@ mod tests {
     use gleaph_gql_planner::SingleEdgePathInfo;
     use gleaph_gql_planner::plan::VarLenSpec;
 
+    fn gleaph_cost_extension() -> ObjectName {
+        ObjectName::qualified(vec!["GLEAPH".into(), "COST".into()])
+    }
+
     fn gleaph_weight(edge_var: &str) -> Expr {
         Expr::new(ExprKind::FunctionCall {
-            name: ObjectName::simple("GLEAPH_WEIGHT"),
+            name: ObjectName::qualified(vec!["GLEAPH".into(), "WEIGHT".into()]),
             args: vec![Expr::var(edge_var)],
             distinct: false,
         })
@@ -348,10 +352,10 @@ mod tests {
         }
     }
 
-    fn plan_cost(expr: Expr) -> ShortestPathCost {
+    fn plan_cost_with_extension(expr: Expr, extension_name: ObjectName) -> ShortestPathCost {
         let ext = PathPatternExtension {
             span: Span::DUMMY,
-            name: ObjectName::simple("GLEAPH_COST"),
+            name: extension_name,
             expr,
         };
         GleaphPathExtensionHandler
@@ -360,22 +364,30 @@ mod tests {
                 Some(ShortestMode::AnyShortest),
                 Some(single_edge()),
             ))
-            .expect("GLEAPH_COST should plan")
+            .expect("GLEAPH.COST should plan")
+    }
+
+    fn plan_cost(expr: Expr) -> ShortestPathCost {
+        plan_cost_with_extension(expr, gleaph_cost_extension())
+    }
+
+    fn plan_cost_with_extension_err(expr: Expr, extension_name: ObjectName) -> PlannerError {
+        let ext = PathPatternExtension {
+            span: Span::DUMMY,
+            name: extension_name,
+            expr,
+        };
+        GleaphPathExtensionHandler
+            .plan_shortest_path_cost(&ctx(
+                &[ext],
+                Some(ShortestMode::AnyShortest),
+                Some(single_edge()),
+            ))
+            .expect_err("GLEAPH.COST should be rejected")
     }
 
     fn plan_cost_err(expr: Expr) -> PlannerError {
-        let ext = PathPatternExtension {
-            span: Span::DUMMY,
-            name: ObjectName::simple("GLEAPH_COST"),
-            expr,
-        };
-        GleaphPathExtensionHandler
-            .plan_shortest_path_cost(&ctx(
-                &[ext],
-                Some(ShortestMode::AnyShortest),
-                Some(single_edge()),
-            ))
-            .expect_err("GLEAPH_COST should be rejected")
+        plan_cost_with_extension_err(expr, gleaph_cost_extension())
     }
 
     fn ctx<'a>(
@@ -392,6 +404,17 @@ mod tests {
             shortest_mode,
             single_edge,
         }
+    }
+
+    #[test]
+    fn gleaph_cost_rejects_underscored_cost_extension_name() {
+        let err =
+            plan_cost_with_extension_err(gleaph_weight("e"), ObjectName::simple("GLEAPH_COST"));
+        assert!(
+            err.to_string()
+                .contains("unsupported path pattern extension"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -434,7 +457,7 @@ mod tests {
     #[test]
     fn gleaph_cost_accepts_gleaph_weight_parenthesized_arg() {
         let expr = Expr::new(ExprKind::FunctionCall {
-            name: ObjectName::simple("GLEAPH_WEIGHT"),
+            name: ObjectName::qualified(vec!["GLEAPH".into(), "WEIGHT".into()]),
             args: vec![Expr::new(ExprKind::Paren(Box::new(Expr::var("e"))))],
             distinct: false,
         });
@@ -450,7 +473,7 @@ mod tests {
             Expr::new(ExprKind::Paren(Box::new(expr)))
         }
         let expr = Expr::new(ExprKind::FunctionCall {
-            name: ObjectName::simple("GLEAPH_WEIGHT"),
+            name: ObjectName::qualified(vec!["GLEAPH".into(), "WEIGHT".into()]),
             args: vec![paren(paren(paren(Expr::var("e"))))],
             distinct: false,
         });
@@ -577,7 +600,7 @@ mod tests {
             ))),
         });
         let err = plan_cost_err(expr);
-        assert!(err.to_string().contains("inside GLEAPH_WEIGHT"), "{err}");
+        assert!(err.to_string().contains("inside GLEAPH.WEIGHT"), "{err}");
     }
 
     #[test]
@@ -592,7 +615,7 @@ mod tests {
             else_clause: Some(Box::new(gleaph_weight("e"))),
         });
         let err = plan_cost_err(expr);
-        assert!(err.to_string().contains("inside GLEAPH_WEIGHT"), "{err}");
+        assert!(err.to_string().contains("inside GLEAPH.WEIGHT"), "{err}");
     }
 
     #[test]
@@ -607,7 +630,7 @@ mod tests {
             else_clause: Some(Box::new(gleaph_weight("e"))),
         });
         let err = plan_cost_err(expr);
-        assert!(err.to_string().contains("inside GLEAPH_WEIGHT"), "{err}");
+        assert!(err.to_string().contains("inside GLEAPH.WEIGHT"), "{err}");
     }
 
     #[test]
@@ -616,7 +639,7 @@ mod tests {
             left: Box::new(gleaph_weight("e")),
             op: BinaryOp::Add,
             right: Box::new(Expr::new(ExprKind::FunctionCall {
-                name: ObjectName::simple("GLEAPH_WEIGHT"),
+                name: ObjectName::qualified(vec!["GLEAPH".into(), "WEIGHT".into()]),
                 args: vec![Expr::new(ExprKind::Literal(
                     gleaph_gql::value::Value::Float32(1.0),
                 ))],
@@ -625,7 +648,8 @@ mod tests {
         });
         let err = plan_cost_err(expr);
         assert!(
-            err.to_string().contains("GLEAPH_WEIGHT argument must be"),
+            err.to_string()
+                .contains("argument must be the shortest-path edge variable"),
             "{err}"
         );
     }
@@ -633,7 +657,7 @@ mod tests {
     #[test]
     fn gleaph_cost_rejects_gleaph_weight_expression_arg() {
         let expr = Expr::new(ExprKind::FunctionCall {
-            name: ObjectName::simple("GLEAPH_WEIGHT"),
+            name: ObjectName::qualified(vec!["GLEAPH".into(), "WEIGHT".into()]),
             args: vec![Expr::new(ExprKind::BinaryOp {
                 left: Box::new(Expr::var("e")),
                 op: BinaryOp::Add,
@@ -645,7 +669,8 @@ mod tests {
         });
         let err = plan_cost_err(expr);
         assert!(
-            err.to_string().contains("GLEAPH_WEIGHT argument must be"),
+            err.to_string()
+                .contains("argument must be the shortest-path edge variable"),
             "{err}"
         );
     }

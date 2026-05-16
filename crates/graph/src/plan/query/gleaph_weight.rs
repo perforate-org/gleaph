@@ -1,4 +1,4 @@
-//! Preparation for `GLEAPH_WEIGHT(edgeVar)` traversal intrinsic.
+//! Preparation for `GLEAPH.WEIGHT` traversal intrinsics.
 //!
 //! Decoded inline weights are returned as `FLOAT32` at execution time; cost expressions may widen
 //! the value via casts or arithmetic.
@@ -16,9 +16,7 @@ use crate::facade::GraphStore;
 
 use super::error::PlanQueryError;
 
-const GLEAPH_WEIGHT: &str = "gleaph_weight";
-
-/// Per-edge-variable prepared decoders for `GLEAPH_WEIGHT`.
+/// Per-edge-variable prepared decoders for `GLEAPH.WEIGHT`.
 pub(crate) fn prepare_gleaph_weight_decoders(
     store: &GraphStore,
     ops: &[PlanOp],
@@ -43,7 +41,12 @@ pub(crate) fn prepare_gleaph_weight_decoders(
 }
 
 pub(crate) fn is_gleaph_weight_call(name: &ObjectName, distinct: bool) -> bool {
-    !distinct && name.parts.len() == 1 && name.parts[0].eq_ignore_ascii_case(GLEAPH_WEIGHT)
+    if distinct {
+        return false;
+    }
+    name.parts.len() == 2
+        && name.parts[0].eq_ignore_ascii_case("gleaph")
+        && name.parts[1].eq_ignore_ascii_case("weight")
 }
 
 pub(crate) fn gleaph_weight_single_arg<'a>(args: &'a [Expr]) -> Option<&'a Expr> {
@@ -85,7 +88,7 @@ fn decoder_for_gleaph_weight_edge(
 ) -> Result<PreparedWeightDecoder, PlanQueryError> {
     let producer = first_edge_producer_for_var(ops, edge_var).ok_or_else(|| PlanQueryError::GleaphWeight {
         message: format!(
-            "GLEAPH_WEIGHT({edge_var}): no Expand/ExpandFilter/ShortestPath binds variable '{edge_var}'"
+            "GLEAPH.WEIGHT({edge_var}): no Expand/ExpandFilter/ShortestPath binds variable '{edge_var}'"
         ),
     })?;
 
@@ -107,34 +110,34 @@ fn decoder_for_gleaph_weight_edge(
             if label_expr.is_some() {
                 return Err(PlanQueryError::GleaphWeight {
                     message: format!(
-                        "GLEAPH_WEIGHT({edge_var}): edge pattern must use a single fixed label, not a label expression"
+                        "GLEAPH.WEIGHT({edge_var}): edge pattern must use a single fixed label, not a label expression"
                     ),
                 });
             }
             if var_len.is_some() {
                 return Err(PlanQueryError::GleaphWeight {
                     message: format!(
-                        "GLEAPH_WEIGHT({edge_var}): variable-length edge patterns are not supported"
+                        "GLEAPH.WEIGHT({edge_var}): variable-length edge patterns are not supported"
                     ),
                 });
             }
             if indexed_edge_equality.is_some() {
                 return Err(PlanQueryError::GleaphWeight {
                     message: format!(
-                        "GLEAPH_WEIGHT({edge_var}): indexed edge equality expansion is not supported"
+                        "GLEAPH.WEIGHT({edge_var}): indexed edge equality expansion is not supported"
                     ),
                 });
             }
             if hop_aux_binding.is_some() {
                 return Err(PlanQueryError::GleaphWeight {
                     message: format!(
-                        "GLEAPH_WEIGHT({edge_var}): hop auxiliary bindings are not supported"
+                        "GLEAPH.WEIGHT({edge_var}): hop auxiliary bindings are not supported"
                     ),
                 });
             }
             let label_name = label.ok_or_else(|| PlanQueryError::GleaphWeight {
                 message: format!(
-                    "GLEAPH_WEIGHT({edge_var}): edge pattern must have exactly one fixed edge label"
+                    "GLEAPH.WEIGHT({edge_var}): edge pattern must have exactly one fixed edge label"
                 ),
             })?;
             finish_decoder_from_label_name(store, edge_var, label_name.as_ref())
@@ -147,13 +150,13 @@ fn decoder_for_gleaph_weight_edge(
             if label_expr.is_some() {
                 return Err(PlanQueryError::GleaphWeight {
                     message: format!(
-                        "GLEAPH_WEIGHT({edge_var}): shortest-path edge pattern must use a single fixed label"
+                        "GLEAPH.WEIGHT({edge_var}): shortest-path edge pattern must use a single fixed label"
                     ),
                 });
             }
             let label_name = label.ok_or_else(|| PlanQueryError::GleaphWeight {
                 message: format!(
-                    "GLEAPH_WEIGHT({edge_var}): shortest-path must have exactly one fixed edge label"
+                    "GLEAPH.WEIGHT({edge_var}): shortest-path must have exactly one fixed edge label"
                 ),
             })?;
             finish_decoder_from_label_name(store, edge_var, label_name.as_ref())
@@ -169,25 +172,25 @@ fn finish_decoder_from_label_name(
     let label_id = store
         .edge_label_id(label_name)
         .ok_or_else(|| PlanQueryError::GleaphWeight {
-            message: format!("GLEAPH_WEIGHT({edge_var}): unknown edge label '{label_name}'"),
+            message: format!("GLEAPH.WEIGHT({edge_var}): unknown edge label '{label_name}'"),
         })?;
     if !label_id.is_catalog_allocatable() {
         return Err(PlanQueryError::GleaphWeight {
             message: format!(
-                "GLEAPH_WEIGHT({edge_var}): label '{label_name}' is not a catalog edge label id"
+                "GLEAPH.WEIGHT({edge_var}): label '{label_name}' is not a catalog edge label id"
             ),
         });
     }
     let profile = store.edge_label_weight_profile(label_id).ok_or_else(|| {
         PlanQueryError::GleaphWeight {
             message: format!(
-                "GLEAPH_WEIGHT({edge_var}): edge label '{label_name}' has no weight profile configured"
+                "GLEAPH.WEIGHT({edge_var}): edge label '{label_name}' has no weight profile configured"
             ),
         }
     })?;
     profile.prepare().map_err(
         |e: WeightProfilePrepareError| PlanQueryError::GleaphWeight {
-            message: format!("GLEAPH_WEIGHT({edge_var}): invalid weight profile: {e}"),
+            message: format!("GLEAPH.WEIGHT({edge_var}): invalid weight profile: {e}"),
         },
     )
 }
@@ -405,7 +408,7 @@ fn visit_expr(expr: &Expr, f: &mut impl FnMut(&Expr)) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gleaph_gql::ast::ExprKind;
+    use gleaph_gql::ast::{ExprKind, ObjectName};
 
     fn paren(expr: Expr) -> Expr {
         Expr::new(ExprKind::Paren(Box::new(expr)))
@@ -422,5 +425,16 @@ mod tests {
         use gleaph_gql::value::Value;
         let expr = paren(Expr::new(ExprKind::Literal(Value::Float32(1.0))));
         assert_eq!(gleaph_weight_arg_edge_var(&expr), None);
+    }
+
+    #[test]
+    fn recognizes_only_dotted_gleaph_weight_name() {
+        let dotted = ObjectName::qualified(vec!["GLEAPH".into(), "WEIGHT".into()]);
+        assert!(is_gleaph_weight_call(&dotted, false));
+        assert!(!is_gleaph_weight_call(
+            &ObjectName::simple("gleaph_weight"),
+            false
+        ));
+        assert!(!is_gleaph_weight_call(&ObjectName::simple("other"), false));
     }
 }

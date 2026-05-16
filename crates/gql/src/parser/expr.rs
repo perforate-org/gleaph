@@ -934,12 +934,17 @@ impl Parser<'_> {
             });
         }
 
-        // ── Variable reference (identifier) ──────────────────────────────
+        // ── Variable reference (identifier) or dotted generic call `a.b(...)` ──
         // This is the catch-all — any unquoted identifier that doesn't match
         // a keyword above, or any quoted identifier.
         if self.at_ident() {
+            let save = self.save();
+            let fname = self.parse_object_name()?;
+            if self.at_token(&Token::LParen) {
+                return self.parse_generic_function_call_named(start, fname);
+            }
+            self.restore(save);
             let name = self.expect_ident()?;
-            // Check for generic function call: name(args...)
             if self.at_token(&Token::LParen) {
                 return self.parse_generic_function_call(start, name);
             }
@@ -1215,11 +1220,19 @@ impl Parser<'_> {
         self.parse_expr_prec(Prec::Concat)
     }
 
-    /// Parse a generic function call: name(args...).
+    /// Parse a generic function call: `name(args...)` or `schema.fn(args...)`.
     fn parse_generic_function_call(
         &mut self,
         start: usize,
         name: String,
+    ) -> Result<Expr, GqlError> {
+        self.parse_generic_function_call_named(start, ObjectName::simple(name))
+    }
+
+    fn parse_generic_function_call_named(
+        &mut self,
+        start: usize,
+        name: ObjectName,
     ) -> Result<Expr, GqlError> {
         self.expect_token(&Token::LParen)?;
         let distinct = self.eat_keyword("DISTINCT");
@@ -1232,7 +1245,7 @@ impl Parser<'_> {
         Ok(Expr {
             span: self.span_since(start),
             kind: ExprKind::FunctionCall {
-                name: ObjectName::simple(name),
+                name,
                 args,
                 distinct,
             },
