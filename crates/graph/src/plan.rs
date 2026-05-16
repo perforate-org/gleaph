@@ -9,4 +9,6 @@ pub use mutation::{
     PlanMutationError, PlanMutationExecutor, execute_ops,
 };
 pub use query::PlanQueryExecutor;
-pub use query::{EdgeBinding, PlanBinding, PlanQueryError, PlanQueryResult, execute_plan_query};
+pub use query::{
+    EdgeBinding, PathBinding, PlanBinding, PlanQueryError, PlanQueryResult, execute_plan_query,
+};

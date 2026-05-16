@@ -40,6 +40,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::hash::Hasher;
 use std::pin::Pin;
+use std::sync::Arc;
 
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
 use canbench_rs::bench_scope;
@@ -81,6 +82,8 @@ pub enum PlanBinding {
     Vertex(VertexId),
     Edge(EdgeBinding),
     Value(Value),
+    /// Shortest-path walk materialized to [`Value::Path`] only in [`binding_to_value`] / expression eval.
+    Path(PathBinding),
 }
 
 pub(crate) type PlanRow = BTreeMap<String, PlanBinding>;
@@ -928,6 +931,13 @@ fn hash_plan_binding_for_join(binding: &PlanBinding, hasher: &mut RapidHasher<'_
             hasher.write_u8(3);
             hash_value_for_join(v, hasher);
         }
+        PlanBinding::Path(pb) => {
+            hasher.write_u8(4);
+            hasher.write_u64(pb.shard_id);
+            hasher.write_usize(pb.leaf_state_idx);
+            hasher.write_usize(Arc::as_ptr(&pb.states) as usize);
+            hasher.write_usize(pb.states.len());
+        }
     }
 }
 
@@ -1377,12 +1387,31 @@ fn expand_dst_matches_prebound_vertex(row: &PlanRow, dst: &Str, dst_id: VertexId
     }
 }
 
+#[derive(Clone, Debug)]
 struct PathSearchNode {
     current: VertexId,
     previous: Option<usize>,
     edge: Option<EdgeBinding>,
     depth: u64,
 }
+
+/// Lazy path result from [`execute_shortest_path`]: shares [`Arc`] search state across many rows.
+#[derive(Clone, Debug)]
+pub struct PathBinding {
+    shard_id: u64,
+    states: Arc<Vec<PathSearchNode>>,
+    leaf_state_idx: usize,
+}
+
+impl PartialEq for PathBinding {
+    fn eq(&self, other: &Self) -> bool {
+        self.shard_id == other.shard_id
+            && self.leaf_state_idx == other.leaf_state_idx
+            && Arc::ptr_eq(&self.states, &other.states)
+    }
+}
+
+impl Eq for PathBinding {}
 
 struct ShortestPathSearchResult {
     states: Vec<PathSearchNode>,
@@ -1423,8 +1452,6 @@ fn execute_shortest_path(
     let shard_id = local_shard_id(store);
     let store_hop_edges = emit_edge_binding || emit_path_binding;
     let mut out = Vec::new();
-    let mut path_chain_scratch = Vec::new();
-    let mut path_elements_scratch = Vec::new();
     for row in rows {
         let Some(src_id) = vertex_binding_for_traversal(&row, src)? else {
             continue;
@@ -1472,16 +1499,17 @@ fn execute_shortest_path(
                 store_hop_edges,
             )?,
         };
-        out.reserve(paths.found.len());
+        let ShortestPathSearchResult { states, found } = paths;
+        out.reserve(found.len());
         let edge_key = emit_edge_binding.then(|| edge.to_string());
         let path_key = emit_path_binding
             .then(|| path_var.map(|path_var| path_var.to_string()))
             .flatten();
-        let path_rows_use_shared_buffers = path_key.is_some() && paths.found.len() > 1;
-        for state_idx in paths.found {
+        let path_states = Arc::new(states);
+        for state_idx in found {
             let mut row = row.clone();
             if let Some(edge_key) = &edge_key {
-                match paths.states[state_idx].edge {
+                match path_states[state_idx].edge {
                     Some(edge_binding) => {
                         row.insert(edge_key.clone(), PlanBinding::Edge(edge_binding));
                     }
@@ -1491,19 +1519,14 @@ fn execute_shortest_path(
                 }
             }
             if let Some(path_key) = &path_key {
-                let path_value = if path_rows_use_shared_buffers {
-                    path_search_to_value_into(
+                row.insert(
+                    path_key.clone(),
+                    PlanBinding::Path(PathBinding {
                         shard_id,
-                        &paths.states,
-                        state_idx,
-                        &mut path_chain_scratch,
-                        &mut path_elements_scratch,
-                    );
-                    Value::Path(std::mem::take(&mut path_elements_scratch))
-                } else {
-                    path_search_to_value_single(shard_id, &paths.states, state_idx)
-                };
-                row.insert(path_key.clone(), PlanBinding::Value(path_value));
+                        states: Arc::clone(&path_states),
+                        leaf_state_idx: state_idx,
+                    }),
+                );
             }
             out.push(row);
             if matches!(mode, ShortestMode::AnyShortest) {
@@ -2279,9 +2302,11 @@ fn decode_direct_gleaph_weight_hop_cost(
     Ok(WeightedCost::from_validated_non_negative_float32(weight))
 }
 
-/// Builds a path `Value` for a **single** result state (typical `AnyShortest` / one row).
-/// Leaf-to-root walk plus one `reverse` on path elements — cheaper than the multi-path scratch path.
-fn path_search_to_value_single(
+fn path_binding_to_value(pb: &PathBinding) -> Value {
+    materialize_path_from_search_states(pb.shard_id, pb.states.as_ref(), pb.leaf_state_idx)
+}
+
+fn materialize_path_from_search_states(
     shard_id: u64,
     states: &[PathSearchNode],
     mut state_idx: usize,
@@ -2300,36 +2325,6 @@ fn path_search_to_value_single(
     }
     elements.reverse();
     Value::Path(elements)
-}
-
-fn path_search_to_value_into(
-    shard_id: u64,
-    states: &[PathSearchNode],
-    mut state_idx: usize,
-    chain: &mut Vec<usize>,
-    out: &mut Vec<PathElement>,
-) {
-    chain.clear();
-    loop {
-        chain.push(state_idx);
-        let Some(previous) = states[state_idx].previous else {
-            break;
-        };
-        state_idx = previous;
-    }
-    chain.reverse();
-
-    out.clear();
-    out.reserve(chain.len().saturating_mul(2).saturating_sub(1));
-    for (i, &idx) in chain.iter().enumerate() {
-        let state = &states[idx];
-        if i > 0 {
-            if let Some(edge_binding) = state.edge {
-                out.push(edge_path_element(shard_id, edge_binding.handle));
-            }
-        }
-        out.push(vertex_path_element(shard_id, state.current));
-    }
 }
 
 fn local_shard_id(store: &GraphStore) -> u64 {
@@ -3179,7 +3174,7 @@ impl QueryExprEvaluator<'_> {
                 ))
             }
             Some(PlanBinding::Value(Value::Null)) => Ok(false),
-            Some(PlanBinding::Value(_) | PlanBinding::Edge(_)) => Ok(false),
+            Some(PlanBinding::Value(_) | PlanBinding::Edge(_) | PlanBinding::Path(_)) => Ok(false),
             None => Err(PlanQueryError::MissingBinding {
                 variable: name.clone(),
             }),
@@ -3211,6 +3206,9 @@ impl QueryExprEvaluator<'_> {
                     })
                     .map_or(Ok(Value::Null), Ok),
                 Some(PlanBinding::Value(value)) => Ok(record_property(value, property)),
+                Some(PlanBinding::Path(pb)) => {
+                    Ok(record_property(&path_binding_to_value(pb), property))
+                }
                 None => Err(PlanQueryError::MissingBinding {
                     variable: name.clone(),
                 }),
@@ -3344,6 +3342,7 @@ fn binding_to_value(store: &GraphStore, binding: &PlanBinding) -> Result<Value, 
         PlanBinding::Vertex(vertex_id) => vertex_to_value(store, *vertex_id),
         PlanBinding::Edge(edge) => edge_to_value(store, *edge),
         PlanBinding::Value(value) => Ok(value.clone()),
+        PlanBinding::Path(pb) => Ok(path_binding_to_value(pb)),
     }
 }
 
