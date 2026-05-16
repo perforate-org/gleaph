@@ -233,7 +233,7 @@ impl<M: Memory> LabelBucketStore<M> {
         Ok(())
     }
 
-    fn segment_vertex_bounds<V>(
+    pub(crate) fn segment_vertex_bounds<V>(
         &self,
         vertices: &V,
         vid: VertexId,
@@ -407,15 +407,18 @@ impl<M: Memory> LabelBucketStore<M> {
             .binary_search_by_key(&bucket.label_id, |candidate| candidate.label_id)
             .unwrap_or_else(|index| index);
         self.insert_label_bucket_at(vertices, vid, bucket, index as u32)
+            .map(|(slot, _)| slot)
     }
 
+    /// Insert a label bucket; the `bool` is `true` when the owning [`LabelBucketStore`]
+    /// vertex segment was physically rewritten (relocating descriptors for peers in that segment).
     pub(crate) fn insert_label_bucket_at<V>(
         &self,
         vertices: &V,
         vid: VertexId,
         bucket: LabelBucket,
         insert_index: u32,
-    ) -> Result<u64, LaraOperationError>
+    ) -> Result<(u64, bool), LaraOperationError>
     where
         V: VertexAccess<LabeledVertex>,
     {
@@ -447,7 +450,7 @@ impl<M: Memory> LabelBucketStore<M> {
                 .checked_add(1)
                 .ok_or(LaraOperationError::RowDegreeOverflow)?;
             vertices.set(vid, &v.with_degree(next_degree));
-            return Ok(insert_at);
+            return Ok((insert_at, false));
         }
 
         let mut rows = self.collect_segment_bucket_rows(vertices, vid)?;
@@ -474,7 +477,7 @@ impl<M: Memory> LabelBucketStore<M> {
             .base_slot_start()
             .checked_add(inserted_index)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        Ok(out_slot)
+        Ok((out_slot, true))
     }
 }
 

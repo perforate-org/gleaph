@@ -392,6 +392,7 @@ where
             .with_degree(bucket.edge_len);
         self.buckets
             .clear_vertex_label_buckets(&self.vertices, src)?;
+        self.invalidate_bucket_lookup_caches_for_bucket_segment(src)?;
         self.vertices.set(src, &updated);
         self.edges
             .bump_vertex_segment_counts(src, 0, -i64::from(old_alloc))?;
@@ -539,7 +540,7 @@ where
         self.vertices.set(src, &LabeledVertex::default());
 
         let new_alloc = DEFAULT_SEGMENT_SIZE.max(edge_len);
-        let _slot = self.buckets.insert_label_bucket_at(
+        let (_, rewrote_bucket_segment) = self.buckets.insert_label_bucket_at(
             &self.vertices,
             src,
             LabelBucket {
@@ -550,6 +551,9 @@ where
             },
             0,
         )?;
+        if rewrote_bucket_segment {
+            self.invalidate_bucket_lookup_caches_for_bucket_segment(src)?;
+        }
         let updated = self
             .vertices
             .get(src)
@@ -843,6 +847,29 @@ where
             }
         }
         Ok(BucketSearch::Missing { insert_index: lo })
+    }
+
+    /// Clears lookup caches touched by descriptor relocations inside `vid`'s LabelBucket PMA segment.
+    fn invalidate_bucket_lookup_caches_for_bucket_segment(
+        &self,
+        vid: VertexId,
+    ) -> Result<(), LabeledOperationError> {
+        let (start, end) = self.buckets.segment_vertex_bounds(&self.vertices, vid)?;
+        if let Some(cache) = self.last_bucket_lookup.get() {
+            let v_ord = u32::from(cache.vid);
+            if (start..end).contains(&v_ord) {
+                self.last_bucket_lookup.set(None);
+            }
+        }
+        for cell in &self.bucket_lookup_cache {
+            if let Some(cache) = cell.get() {
+                let v_ord = u32::from(cache.vid);
+                if (start..end).contains(&v_ord) {
+                    cell.set(None);
+                }
+            }
+        }
+        Ok(())
     }
 
     fn cache_bucket_lookup(
@@ -1549,7 +1576,9 @@ where
         let _bench_scope = bench_scope("labeled_compact_label_bucket_vertex_segment");
         self.buckets
             .compact_vertex_segment_for_vertex(&self.vertices, vid)
-            .map_err(Into::into)
+            .map_err(LabeledOperationError::from)?;
+        self.invalidate_bucket_lookup_caches_for_bucket_segment(vid)?;
+        Ok(())
     }
 
     /// Compacts the VertexEdgeSpan that contains `bucket_index`.
@@ -1691,7 +1720,7 @@ where
         }
         #[cfg(feature = "canbench")]
         let _bench_scope = bench_scope("labeled_insert_new_label_bucket");
-        let slot = self
+        let (slot, rewrote_bucket_segment) = self
             .buckets
             .insert_label_bucket_at(
                 &self.vertices,
@@ -1703,6 +1732,9 @@ where
                 insert_index,
             )
             .map_err(LabeledOperationError::from)?;
+        if rewrote_bucket_segment {
+            self.invalidate_bucket_lookup_caches_for_bucket_segment(src)?;
+        }
         let vertex = self.vertices.get(src);
         let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
         if !self.try_place_new_bucket_edge_span(src, &vertex, slot, bucket_index)? {
