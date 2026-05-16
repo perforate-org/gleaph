@@ -1054,23 +1054,36 @@ where
         let old_base = buckets.first().map(|bucket| bucket.edge_start).unwrap_or(0);
         let mut total_live = 0u32;
         for bucket in &buckets {
-            total_live = total_live.saturating_add(bucket.edge_len);
+            total_live = total_live
+                .checked_add(bucket.edge_len)
+                .ok_or(LaraOperationError::RowDegreeOverflow)?;
         }
 
-        let min_required = total_live.saturating_add(preferred_extra);
+        let min_required = total_live
+            .checked_add(preferred_extra)
+            .ok_or(LaraOperationError::RowDegreeOverflow)?;
         let new_alloc = if compact {
             total_live
         } else if force_slack_grow && old_alloc >= min_required && old_alloc > 0 {
+            let doubled_old_alloc = old_alloc
+                .checked_mul(2)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let old_plus_segment = old_alloc
+                .checked_add(DEFAULT_SEGMENT_SIZE)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             old_alloc
-                .saturating_mul(2)
-                .max(old_alloc.saturating_add(DEFAULT_SEGMENT_SIZE))
+                .max(doubled_old_alloc)
+                .max(old_plus_segment)
                 .max(min_required)
         } else if old_alloc >= min_required && old_alloc > 0 {
             old_alloc
         } else {
+            let doubled_old_alloc = old_alloc
+                .checked_mul(2)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             min_required
                 .max(DEFAULT_SEGMENT_SIZE)
-                .max(old_alloc.saturating_mul(2))
+                .max(doubled_old_alloc)
         };
 
         let moved = old_alloc == 0 || new_alloc > old_alloc || compact;
@@ -1081,8 +1094,11 @@ where
             // span can overlap the live slab we are about to release and corrupt the
             // allocator (DuplicateStart on release).
             let start = self.edges.header().elem_capacity;
+            let end = start
+                .checked_add(u64::from(new_alloc))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             self.edges
-                .set_elem_capacity(start.saturating_add(u64::from(new_alloc)))
+                .set_elem_capacity(end)
                 .map_err(LabeledOperationError::from)?;
             start
         } else {
@@ -2354,6 +2370,45 @@ mod tests {
             .read_label_bucket_slot(vertex.base_slot_start())
             .unwrap();
         assert_eq!(bucket.edge_len, u32::MAX);
+    }
+
+    #[test]
+    fn vertex_edge_span_rewrite_rejects_total_live_overflow() {
+        let graph = test_graph();
+        let hub = VertexId::from(0);
+        graph
+            .buckets()
+            .insert_label_bucket(
+                graph.vertices(),
+                hub,
+                LabelBucket {
+                    label_id: LabelId::from_raw(10),
+                    edge_len: u32::MAX,
+                    ..LabelBucket::default()
+                },
+            )
+            .unwrap();
+        graph
+            .buckets()
+            .insert_label_bucket(
+                graph.vertices(),
+                hub,
+                LabelBucket {
+                    label_id: LabelId::from_raw(20),
+                    edge_len: 1,
+                    ..LabelBucket::default()
+                },
+            )
+            .unwrap();
+
+        let err = graph
+            .compact_vertex_edge_span(hub, 0)
+            .expect_err("bucket edge_len sum overflow must be rejected");
+
+        assert!(matches!(
+            err,
+            LabeledOperationError::Store(LaraOperationError::RowDegreeOverflow)
+        ));
     }
 
     #[test]
