@@ -18,7 +18,7 @@ use candid::Principal;
 use gleaph_gql::ast::{BinaryOp, CmpOp, Expr, ExprKind, ObjectName, OrderByClause, TruthValue};
 use gleaph_gql::numeric_ops::{NumericOpError, eval_binary_numeric};
 use gleaph_gql::numeric_order::{NormalizedNumeric, NumericOrderError, normalized_numeric_parts};
-use gleaph_gql::types::{EdgeDirection, LabelExpr, PathElement, PathElementId};
+use gleaph_gql::types::{EdgeDirection, LabelExpr, PathElement};
 use gleaph_gql::value_cmp::compare_values;
 use gleaph_gql::{Value, hash_value_for_join, value_to_index_key_bytes};
 use gleaph_gql_planner::collect_expr_variables;
@@ -37,7 +37,7 @@ use ic_stable_lara::traits::{CsrEdge, CsrVertexTombstone};
 use nohash_hasher::{IntMap, IntSet};
 use rapidhash::fast::RapidHasher;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::hash::Hasher;
 use std::pin::Pin;
 
@@ -1086,7 +1086,7 @@ async fn execute_index_intersection(
         ));
     };
     let shard = local_shard_filter_id()?;
-    let mut sets: Vec<HashSet<VertexId>> = Vec::with_capacity(scans.len());
+    let mut sets: Vec<IntSet<u32>> = Vec::with_capacity(scans.len());
     for spec in scans {
         if spec.cmp != CmpOp::Eq {
             return Err(PlanQueryError::UnsupportedOp("IndexIntersection.cmp"));
@@ -1096,7 +1096,7 @@ async fn execute_index_intersection(
             return Ok(Vec::new());
         };
         let hits = ix.lookup_equal(pid, bytes).await?;
-        let mut hs = HashSet::new();
+        let mut hs = IntSet::default();
         for h in hits {
             if h.shard_id != shard {
                 continue;
@@ -1105,16 +1105,16 @@ async fn execute_index_intersection(
             if let Some(vertex) = store.vertex(vid)
                 && !vertex.is_tombstone()
             {
-                hs.insert(vid);
+                hs.insert(u32::from(vid));
             }
         }
         sets.push(hs);
     }
-    let mut intersection: Option<HashSet<VertexId>> = None;
+    let mut intersection: Option<IntSet<u32>> = None;
     for s in sets {
         intersection = Some(match intersection {
             None => s,
-            Some(prev) => prev.intersection(&s).copied().collect(),
+            Some(prev) => prev.intersection(&s).copied().collect::<IntSet<_>>(),
         });
     }
     let Some(ids) = intersection else {
@@ -1124,7 +1124,10 @@ async fn execute_index_intersection(
     for row in rows {
         for vid in &ids {
             let mut r = row.clone();
-            r.insert(variable.to_string(), PlanBinding::Vertex(*vid));
+            r.insert(
+                variable.to_string(),
+                PlanBinding::Vertex(VertexId::from(*vid)),
+            );
             out.push(r);
         }
     }
@@ -1624,14 +1627,17 @@ fn shortest_paths_between(
         edge: None,
         depth: 0,
     }];
-    let mut queue = VecDeque::from([0usize]);
+    let mut queue = vec![0usize];
+    let mut queue_head = 0usize;
     let mut candidates = Vec::new();
     let fixed_label_expand = match label_id {
         Some(lid) => Some(ShortestFixedLabelExpand::new(direction, lid)?),
         None => None,
     };
 
-    while let Some(state_idx) = queue.pop_front() {
+    while queue_head < queue.len() {
+        let state_idx = queue[queue_head];
+        queue_head += 1;
         let current = states[state_idx].current;
         let depth = states[state_idx].depth;
         if found_depth.is_some_and(|d| depth > d) {
@@ -1701,7 +1707,7 @@ fn shortest_paths_between(
                 found.push(next_state_idx);
                 continue;
             }
-            queue.push_back(next_state_idx);
+            queue.push(next_state_idx);
         }
     }
 
@@ -1922,22 +1928,12 @@ fn compare_weighted_numeric(
     }
 }
 
-/// Cache key for cost expressions evaluated with only the edge variable bound.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct WeightedHopCostKey {
-    owner_vertex_id: VertexId,
-    vertex_edge_id: VertexEdgeId,
-    inline_value: u16,
-}
+type WeightedHopCostCache = IntMap<u64, IntMap<u16, WeightedCost>>;
 
-impl WeightedHopCostKey {
-    fn from_edge_binding(edge: EdgeBinding) -> Self {
-        Self {
-            owner_vertex_id: edge.handle.owner_vertex_id,
-            vertex_edge_id: edge.handle.vertex_edge_id,
-            inline_value: edge.inline_value,
-        }
-    }
+#[inline]
+fn weighted_hop_cache_outer_key(edge: EdgeBinding) -> u64 {
+    u64::from(u32::from(edge.handle.owner_vertex_id)) << 32
+        | u64::from(edge.handle.vertex_edge_id.raw())
 }
 
 fn map_weighted_cost_add_err(err: NumericOpError) -> PlanQueryError {
@@ -2026,7 +2022,7 @@ fn weighted_shortest_paths_between(
 
     let mut found_min_cost: Option<WeightedCost> = None;
     let mut found = Vec::new();
-    let mut hop_cost_cache: BTreeMap<WeightedHopCostKey, WeightedCost> = BTreeMap::new();
+    let mut hop_cost_cache: WeightedHopCostCache = IntMap::default();
     let direct_gleaph_weight_decoder =
         direct_gleaph_weight_hop_cost_decoder(cost_expr, edge_var, gleaph_weight_decoders)?;
     let use_hop_cost_cache = direct_gleaph_weight_decoder.is_none();
@@ -2106,21 +2102,24 @@ fn weighted_shortest_paths_between(
                 continue;
             }
             let hop_cost = if use_hop_cost_cache {
-                let cost_key = WeightedHopCostKey::from_edge_binding(edge_binding);
-                match hop_cost_cache.get(&cost_key) {
-                    Some(cost) => cost.clone(),
-                    None => {
-                        let cost = eval_shortest_hop_cost(
-                            store,
-                            cost_expr,
-                            edge_var,
-                            edge_binding,
-                            parameters,
-                            gleaph_weight_decoders,
-                        )?;
-                        hop_cost_cache.insert(cost_key, cost.clone());
-                        cost
-                    }
+                let outer = weighted_hop_cache_outer_key(edge_binding);
+                let inline = edge_binding.inline_value;
+                if let Some(cost) = hop_cost_cache.get(&outer).and_then(|m| m.get(&inline)) {
+                    cost.clone()
+                } else {
+                    let cost = eval_shortest_hop_cost(
+                        store,
+                        cost_expr,
+                        edge_var,
+                        edge_binding,
+                        parameters,
+                        gleaph_weight_decoders,
+                    )?;
+                    hop_cost_cache
+                        .entry(outer)
+                        .or_default()
+                        .insert(inline, cost.clone());
+                    cost
                 }
             } else {
                 decode_direct_gleaph_weight_hop_cost(
@@ -2306,15 +2305,19 @@ fn edge_element_id_bytes(
 }
 
 fn vertex_path_element(shard_id: u64, vertex_id: VertexId) -> PathElement {
-    PathElement::Vertex(PathElementId::from(Box::<[u8]>::from(
-        GraphPathVertexId::new(shard_id, vertex_id).to_bytes(),
-    )))
+    PathElement::Vertex(
+        GraphPathVertexId::new(shard_id, vertex_id)
+            .to_bytes()
+            .into(),
+    )
 }
 
 fn edge_path_element(shard_id: u64, handle: EdgeHandle) -> PathElement {
-    PathElement::Edge(PathElementId::from(Box::<[u8]>::from(
-        GraphPathEdgeId::new(shard_id, handle.owner_vertex_id, handle.vertex_edge_id).to_bytes(),
-    )))
+    PathElement::Edge(
+        GraphPathEdgeId::new(shard_id, handle.owner_vertex_id, handle.vertex_edge_id)
+            .to_bytes()
+            .into(),
+    )
 }
 
 type ExpandCandidate = (VertexId, EdgeBinding);
@@ -2568,6 +2571,12 @@ where
     }
 }
 
+/// Packs `(owner_vertex_id, vertex_edge_id)` for [`IntSet`] membership in the edge equality index.
+#[inline]
+fn equality_index_in_slot_key(owner: VertexId, edge_id: VertexEdgeId) -> u64 {
+    u64::from(u32::from(owner)) << 32 | u64::from(edge_id.raw())
+}
+
 /// Probes the in-process edge equality index and, on hit, enumerates only matching slots.
 /// Returns `Ok(true)` when the index owned the lookup (including zero matches).
 fn expand_candidates_via_equality_index(
@@ -2591,19 +2600,22 @@ fn expand_candidates_via_equality_index(
         return Ok(false);
     };
 
-    let mut out_slots: HashSet<VertexEdgeId> = HashSet::new();
-    let mut in_slots: HashSet<(VertexId, VertexEdgeId)> = HashSet::new();
+    let mut out_slots: IntSet<u32> = IntSet::default();
+    let mut in_slots: IntSet<u64> = IntSet::default();
     for posting in &postings {
         if posting.owner_vertex_id == src_id {
-            out_slots.insert(posting.vertex_edge_id);
+            out_slots.insert(posting.vertex_edge_id.raw());
         }
-        in_slots.insert((posting.owner_vertex_id, posting.vertex_edge_id));
+        in_slots.insert(equality_index_in_slot_key(
+            posting.owner_vertex_id,
+            posting.vertex_edge_id,
+        ));
     }
 
     match direction {
         EdgeDirection::PointingRight => {
             for_each_csr_expand_edge(store, src_id, direction, edge_label_id, |edge| {
-                if !out_slots.contains(&edge.vertex_edge_id) {
+                if !out_slots.contains(&edge.vertex_edge_id.raw()) {
                     return;
                 }
                 out.push((
@@ -2620,7 +2632,10 @@ fn expand_candidates_via_equality_index(
         }
         EdgeDirection::PointingLeft => {
             for_each_csr_expand_edge(store, src_id, direction, edge_label_id, |edge| {
-                if !in_slots.contains(&(edge.neighbor_vid(), edge.vertex_edge_id)) {
+                if !in_slots.contains(&equality_index_in_slot_key(
+                    edge.neighbor_vid(),
+                    edge.vertex_edge_id,
+                )) {
                     return;
                 }
                 out.push((
@@ -2638,7 +2653,7 @@ fn expand_candidates_via_equality_index(
         EdgeDirection::Undirected => {
             for_each_csr_expand_edge(store, src_id, direction, edge_label_id, |edge| {
                 let owner = canonical_undirected_owner(src_id, edge.neighbor_vid());
-                if !in_slots.contains(&(owner, edge.vertex_edge_id)) {
+                if !in_slots.contains(&equality_index_in_slot_key(owner, edge.vertex_edge_id)) {
                     return;
                 }
                 out.push((

@@ -306,6 +306,12 @@ impl From<Box<[u8]>> for PathElementId {
     }
 }
 
+impl<const N: usize> From<[u8; N]> for PathElementId {
+    fn from(value: [u8; N]) -> Self {
+        Self(Box::from(value))
+    }
+}
+
 impl AsRef<[u8]> for PathElementId {
     fn as_ref(&self) -> &[u8] {
         &self.0
