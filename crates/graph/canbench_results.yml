@@ -38,13 +38,13 @@ benches:
   bench_graph_expand_hash_join_then_expand_48x24:
     total:
       calls: 1
-      instructions: 48552225
+      instructions: 48537249
       heap_increase: 37
       stable_memory_increase: 128
     scopes:
       expand_hash_join_then_expand_48x24:
         calls: 1
-        instructions: 48551065
+        instructions: 48536089
         heap_increase: 37
         stable_memory_increase: 128
   bench_graph_expand_hub_return_dst_100_only:
@@ -110,13 +110,13 @@ benches:
   bench_graph_expand_indexed_eq_selective_24match:
     total:
       calls: 1
-      instructions: 4982466
+      instructions: 4982429
       heap_increase: 1
       stable_memory_increase: 128
     scopes:
       expand_indexed_eq_selective_24match:
         calls: 1
-        instructions: 4981308
+        instructions: 4981271
         heap_increase: 1
         stable_memory_increase: 128
   bench_graph_expand_mixed_label_hub_10kscan_500match:
@@ -378,7 +378,7 @@ benches:
   bench_graph_weighted_shortest_repeated_edge_cost_cache_48prefix_24hub_out:
     total:
       calls: 1
-      instructions: 2824241
+      instructions: 2824211
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -394,7 +394,7 @@ benches:
         stable_memory_increase: 0
       weighted_shortest_edge_cost_cache:
         calls: 1
-        instructions: 2822166
+        instructions: 2822136
         heap_increase: 0
         stable_memory_increase: 0
       weighted_shortest_expand:

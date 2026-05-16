@@ -1112,7 +1112,7 @@ where
             buckets.as_slice(),
             preferred,
             preferred_extra,
-        );
+        )?;
         Ok((
             buckets, old_alloc, old_base, total_live, new_alloc, moved, positions,
         ))
@@ -1365,10 +1365,10 @@ where
         buckets: &[LabelBucket],
         preferred: Option<usize>,
         preferred_extra: u32,
-    ) -> Vec<u64> {
+    ) -> Result<Vec<u64>, LabeledOperationError> {
         let mut out = Vec::with_capacity(buckets.len());
         if buckets.is_empty() {
-            return out;
+            return Ok(out);
         }
 
         let mut effective_live = 0u64;
@@ -1377,11 +1377,22 @@ where
             let extra = (preferred == Some(index))
                 .then_some(preferred_extra)
                 .unwrap_or(0);
-            let degree = u64::from(bucket.edge_len.saturating_add(extra));
-            effective_live = effective_live.saturating_add(degree);
-            total_weight = total_weight.saturating_add(degree);
+            let degree = u64::from(
+                bucket
+                    .edge_len
+                    .checked_add(extra)
+                    .ok_or(LaraOperationError::RowDegreeOverflow)?,
+            );
+            effective_live = effective_live
+                .checked_add(degree)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            total_weight = total_weight
+                .checked_add(degree)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         }
-        let gaps = u64::from(span_slots).saturating_sub(effective_live);
+        let gaps = u64::from(span_slots)
+            .checked_sub(effective_live)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
 
         // Same layout as the historical `f64` implementation: one fixed-point step
         // `floor((gaps/total_weight) * 1e8) / 1e8` per bucket weight `(deg+1)`.
@@ -1391,23 +1402,44 @@ where
         let step_fp = if tw == 0 {
             0u128
         } else {
-            gaps_u.saturating_mul(P) / tw
+            gaps_u
+                .checked_mul(P)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?
+                / tw
         };
 
-        let mut cursor_fp = u128::from(start_slot).saturating_mul(P);
+        let mut cursor_fp = u128::from(start_slot)
+            .checked_mul(P)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         for (index, bucket) in buckets.iter().enumerate() {
-            let start = (cursor_fp / P) as u64;
+            let start = u64::try_from(cursor_fp / P)
+                .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
             out.push(start);
             let extra = (preferred == Some(index))
                 .then_some(preferred_extra)
                 .unwrap_or(0);
-            let deg = u128::from(bucket.edge_len.saturating_add(extra));
-            let start_fp = u128::from(start).saturating_mul(P);
+            let deg = u128::from(
+                bucket
+                    .edge_len
+                    .checked_add(extra)
+                    .ok_or(LaraOperationError::RowDegreeOverflow)?,
+            );
+            let start_fp = u128::from(start)
+                .checked_mul(P)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             cursor_fp = start_fp
-                .saturating_add(deg.saturating_mul(P))
-                .saturating_add(step_fp.saturating_mul(deg.saturating_add(1)));
+                .checked_add(
+                    deg.checked_mul(P)
+                        .ok_or(LaraOperationError::CollectAllocationOverflow)?,
+                )
+                .and_then(|cursor| {
+                    let weight = deg.checked_add(1)?;
+                    let gap = step_fp.checked_mul(weight)?;
+                    cursor.checked_add(gap)
+                })
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         }
-        out
+        Ok(out)
     }
 
     /// Appends a new vertex row.
@@ -2424,6 +2456,28 @@ mod tests {
         let oversized = usize::MAX / TestEdge::BYTES + 1;
         let err = LabeledLaraGraph::<TestEdge, crate::VectorMemory>::edge_bytes_for_len(oversized)
             .expect_err("edge byte length overflow must be rejected");
+
+        assert!(matches!(
+            err,
+            LabeledOperationError::Store(LaraOperationError::CollectAllocationOverflow)
+        ));
+    }
+
+    #[test]
+    fn label_edge_span_positioning_rejects_impossible_live_width() {
+        let err =
+            LabeledLaraGraph::<TestEdge, crate::VectorMemory>::calculate_label_edge_span_positions(
+                0,
+                1,
+                &[LabelBucket {
+                    label_id: LabelId::from_raw(10),
+                    edge_len: 2,
+                    ..LabelBucket::default()
+                }],
+                None,
+                0,
+            )
+            .expect_err("live edges wider than span must be rejected");
 
         assert!(matches!(
             err,
