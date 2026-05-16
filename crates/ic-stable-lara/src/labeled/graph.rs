@@ -1561,15 +1561,26 @@ where
             if bucket.overflow_log_head < 0
                 && successor_start.saturating_sub(bucket.edge_start) > u64::from(bucket.edge_len)
             {
-                let write_slot = bucket.edge_start.saturating_add(u64::from(bucket.edge_len));
+                let new_bucket_len = bucket
+                    .edge_len
+                    .checked_add(1)
+                    .ok_or(LaraOperationError::RowDegreeOverflow)?;
+                let write_slot = bucket
+                    .edge_start
+                    .checked_add(u64::from(bucket.edge_len))
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
                 debug_assert!(write_slot < successor_start);
                 self.edges.write_slot(write_slot, edge)?;
                 self.buckets.write_label_bucket_slot(
                     bucket_slot,
-                    bucket.with_edge_range(bucket.edge_start, bucket.edge_len.saturating_add(1)),
+                    bucket.with_edge_range(bucket.edge_start, new_bucket_len),
                 )?;
-                self.edges
-                    .set_num_edges(self.edges.header().num_edges.saturating_add(1));
+                let hdr = self.edges.header();
+                let next_num_edges = hdr
+                    .num_edges
+                    .checked_add(1)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                self.edges.set_num_edges(next_num_edges);
                 self.edges
                     .bump_vertex_segment_counts(src, 1, 0)
                     .map_err(LabeledOperationError::from)?;

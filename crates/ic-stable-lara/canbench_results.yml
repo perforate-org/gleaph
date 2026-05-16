@@ -16,19 +16,19 @@ benches:
   bench_labeled_deferred_inserts_only_1024:
     total:
       calls: 1
-      instructions: 7352881
+      instructions: 7352883
       heap_increase: 19
       stable_memory_increase: 0
     scopes:
       labeled_insert_new_label_bucket:
         calls: 1
-        instructions: 70722
+        instructions: 70725
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_deferred_maintenance_compact_vertex_span_1:
     total:
       calls: 1
-      instructions: 2554081
+      instructions: 2554083
       heap_increase: 19
       stable_memory_increase: 0
     scopes:
@@ -39,31 +39,31 @@ benches:
         stable_memory_increase: 0
       labeled_insert_new_label_bucket:
         calls: 1
-        instructions: 70722
+        instructions: 70725
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_insert_existing_bucket_128:
     total:
       calls: 1
-      instructions: 6019973
+      instructions: 6019975
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_insert_new_label_bucket:
         calls: 1
-        instructions: 70722
+        instructions: 70725
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_insert_fresh_label_each_edge_256:
     total:
       calls: 1
-      instructions: 81473519
+      instructions: 81473302
       heap_increase: 30
       stable_memory_increase: 0
     scopes:
       labeled_insert_new_label_bucket:
         calls: 256
-        instructions: 6452284
+        instructions: 6451555
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rebalance_leaf_cascade:
@@ -94,7 +94,7 @@ benches:
   bench_labeled_insert_last_of_many_buckets_1024:
     total:
       calls: 1
-      instructions: 11556836
+      instructions: 11558544
       heap_increase: 7
       stable_memory_increase: 0
     scopes:
@@ -121,7 +121,7 @@ benches:
   bench_labeled_insert_multi_vertex_leaf32_2048:
     total:
       calls: 1
-      instructions: 16229368
+      instructions: 16233336
       heap_increase: 23
       stable_memory_increase: 0
     scopes:
@@ -148,7 +148,7 @@ benches:
   bench_labeled_insert_round_robin_64_labels_1024:
     total:
       calls: 1
-      instructions: 11884728
+      instructions: 11886524
       heap_increase: 7
       stable_memory_increase: 0
     scopes:
@@ -180,13 +180,13 @@ benches:
   bench_labeled_insert_single_bucket_1024:
     total:
       calls: 1
-      instructions: 6019981
+      instructions: 6019983
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_insert_new_label_bucket:
         calls: 1
-        instructions: 70722
+        instructions: 70725
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_iter_edges_for_label_128:

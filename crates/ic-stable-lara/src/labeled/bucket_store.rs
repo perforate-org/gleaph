@@ -173,7 +173,9 @@ impl<M: Memory> LabelBucketStore<M> {
         if slot < cap {
             return Ok(());
         }
-        let next = slot.saturating_add(1);
+        let next = slot
+            .checked_add(1)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         self.slab
             .set_elem_capacity(next)
             .map_err(LaraOperationError::ResizeFailed)
@@ -210,8 +212,12 @@ impl<M: Memory> LabelBucketStore<M> {
             return Ok(span.start_slot);
         }
         let start = self.header().elem_capacity;
-        self.grow_capacity_to_fit(start.saturating_add(len).saturating_sub(1))?;
-        self.record_allocation(start.saturating_add(len).saturating_sub(1));
+        let last_in_span = start
+            .checked_add(len)
+            .and_then(|end| end.checked_sub(1))
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        self.grow_capacity_to_fit(last_in_span)?;
+        self.record_allocation(last_in_span);
         Ok(start)
     }
 
@@ -303,9 +309,13 @@ impl<M: Memory> LabelBucketStore<M> {
             let row_base = cursor;
             for bucket in &buckets {
                 self.write_label_bucket_slot(cursor, *bucket)?;
-                cursor = cursor.saturating_add(1);
+                cursor = cursor
+                    .checked_add(1)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             }
-            cursor = row_base.saturating_add(u64::from(alloc));
+            cursor = row_base
+                .checked_add(u64::from(alloc))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             vertices.set(
                 VertexId::from(v_ord),
                 &v.with_bucket_row_and_alloc(row_base, buckets.len() as u32, alloc),
@@ -316,7 +326,11 @@ impl<M: Memory> LabelBucketStore<M> {
             self.release_span(start, len)?;
         }
         if total > 0 {
-            self.record_allocation(new_base.saturating_add(total).saturating_sub(1));
+            let last = new_base
+                .checked_add(total)
+                .and_then(|end| end.checked_sub(1))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            self.record_allocation(last);
         }
         Ok(())
     }
@@ -407,7 +421,11 @@ impl<M: Memory> LabelBucketStore<M> {
                 )?;
             }
             self.write_label_bucket_slot(base.saturating_add(u64::from(insert_index)), bucket)?;
-            vertices.set(vid, &v.with_degree(v.degree().saturating_add(1)));
+            let next_degree = v
+                .degree()
+                .checked_add(1)
+                .ok_or(LaraOperationError::RowDegreeOverflow)?;
+            vertices.set(vid, &v.with_degree(next_degree));
             return Ok(base.saturating_add(u64::from(insert_index)));
         }
 
