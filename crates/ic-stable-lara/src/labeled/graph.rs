@@ -112,7 +112,7 @@ pub enum InitError {
     /// The vertex column could not be reopened.
     Vertices(VertexInitError),
     /// The label-bucket subsystem could not be reopened.
-    Buckets(crate::labeled::bucket_store::InitError),
+    Buckets(crate::labeled::LabelBucketStoreInitError),
     /// The edge subsystem could not be reopened.
     Edges(EdgeInitError),
 }
@@ -273,8 +273,9 @@ where
         &self.vertices
     }
 
-    /// Returns the LabelBucketStore.
-    pub fn buckets(&self) -> &LabelBucketStore<M> {
+    /// Returns the LabelBucketStore (crate-internal; mutating slab slots without
+    /// coordinating [`LabeledLaraGraph`] invariants corrupts the layout).
+    pub(crate) fn buckets(&self) -> &LabelBucketStore<M> {
         &self.buckets
     }
 
@@ -390,9 +391,7 @@ where
             .with_homogeneous_bypass_label(bucket.label_id)
             .with_base_slot_start(bucket.edge_start)
             .with_degree(bucket.edge_len);
-        self.buckets
-            .clear_vertex_label_buckets(&self.vertices, src)?;
-        self.invalidate_bucket_lookup_caches_for_bucket_segment(src)?;
+        self.clear_vertex_label_buckets_for_segment(src)?;
         self.vertices.set(src, &updated);
         self.edges
             .bump_vertex_segment_counts(src, 0, -i64::from(old_alloc))?;
@@ -869,6 +868,21 @@ where
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Clears all label buckets for `vid`, then drops bucket lookup caches for its LabelBucket PMA segment.
+    ///
+    /// Callers must use this instead of [`LabelBucketStore::clear_vertex_label_buckets`] alone:
+    /// segment rewrites relocate descriptor slabs for peer vertices in the same segment, which
+    /// invalidates [`Self::find_bucket`] fast-path caches.
+    pub(crate) fn clear_vertex_label_buckets_for_segment(
+        &self,
+        vid: VertexId,
+    ) -> Result<(), LabeledOperationError> {
+        self.buckets
+            .clear_vertex_label_buckets(&self.vertices, vid)?;
+        self.invalidate_bucket_lookup_caches_for_bucket_segment(vid)?;
         Ok(())
     }
 
@@ -1857,9 +1871,7 @@ where
                 .with_base_slot_start(bucket.edge_start)
                 .with_degree(bucket.edge_len)
                 .with_vertex_edge_alloc_slots(0);
-            self.buckets
-                .clear_vertex_label_buckets(&self.vertices, src)?;
-            self.invalidate_bucket_lookup_caches_for_bucket_segment(src)?;
+            self.clear_vertex_label_buckets_for_segment(src)?;
             self.vertices.set(src, &updated);
             self.edges
                 .bump_vertex_segment_counts(src, 0, -i64::from(old_alloc))?;

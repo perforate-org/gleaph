@@ -1,18 +1,16 @@
 //! Debug invariant helpers for labeled CSR layouts.
 
+use super::bucket_store::LabelBucketStore;
 use crate::{
     VertexId,
-    labeled::{
-        bucket_store::LabelBucketStore,
-        record::{LabelId, LabeledVertex},
-    },
+    labeled::record::{LabelId, LabeledVertex},
     lara::{edge::EdgeStore, vertex::VertexStore},
     traits::{CsrEdge, CsrVertex},
 };
 use ic_stable_structures::Memory;
 
 /// Asserts that every vertex row and LabelBucket exposes valid clean-scan ranges.
-pub fn assert_labeled_layout_invariants<E, M>(
+pub(crate) fn assert_labeled_layout_invariants<E, M>(
     vertices: &VertexStore<LabeledVertex, M>,
     buckets: &LabelBucketStore<M>,
     edges: &EdgeStore<E, M>,
@@ -133,7 +131,7 @@ where
 
 /// Asserts incremental PMA leaf [`crate::lara::edge::counts::SegmentEdgeCounts`] match
 /// per-vertex labeled/default-bypass expectations (no double-counting between modes).
-pub fn assert_labeled_edge_store_pma_counts<E, M>(
+pub(crate) fn assert_labeled_edge_store_pma_counts<E, M>(
     vertices: &VertexStore<LabeledVertex, M>,
     buckets: &LabelBucketStore<M>,
     edges: &EdgeStore<E, M>,

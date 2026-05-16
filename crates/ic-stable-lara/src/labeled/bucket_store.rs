@@ -47,7 +47,7 @@ impl fmt::Display for InitError {
 impl std::error::Error for InitError {}
 
 /// Stable LabelBucket slab plus free-span metadata.
-pub struct LabelBucketStore<M: Memory> {
+pub(crate) struct LabelBucketStore<M: Memory> {
     slab: EdgeSlabStore<LabelBucket, M>,
     free_spans: FreeSpanStore<M>,
 }
@@ -56,7 +56,7 @@ const MIN_BUCKET_ROW_ALLOC: u32 = 4;
 
 impl<M: Memory> LabelBucketStore<M> {
     /// Opens a fresh LabelBucketStore over three stable memories.
-    pub fn new(
+    pub(crate) fn new(
         slab: M,
         free_spans: M,
         free_span_by_start: M,
@@ -80,7 +80,7 @@ impl<M: Memory> LabelBucketStore<M> {
     }
 
     /// Reopens a LabelBucketStore, or creates one when the slab memory is empty.
-    pub fn init(
+    pub(crate) fn init(
         slab: M,
         free_spans: M,
         free_span_by_start: M,
@@ -104,22 +104,12 @@ impl<M: Memory> LabelBucketStore<M> {
     }
 
     /// Returns the bucket slab header (shared on-disk layout with edge slabs).
-    pub fn header(&self) -> SlabHeaderV1 {
+    pub(crate) fn header(&self) -> SlabHeaderV1 {
         self.slab.header().expect("bucket slab header")
     }
 
-    /// Number of bucket cells ever allocated in the slab tail.
-    pub fn len(&self) -> u64 {
-        self.header().slab_occupied_tail
-    }
-
-    /// Returns whether the bucket store is empty.
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
     /// Reads one bucket slab slot.
-    pub fn read_label_bucket_slot(&self, slot: u64) -> Option<LabelBucket> {
+    pub(crate) fn read_label_bucket_slot(&self, slot: u64) -> Option<LabelBucket> {
         if slot >= self.header().elem_capacity {
             return None;
         }
@@ -156,7 +146,7 @@ impl<M: Memory> LabelBucketStore<M> {
     }
 
     /// Writes one bucket slab slot.
-    pub fn write_label_bucket_slot(
+    pub(crate) fn write_label_bucket_slot(
         &self,
         slot: u64,
         bucket: LabelBucket,

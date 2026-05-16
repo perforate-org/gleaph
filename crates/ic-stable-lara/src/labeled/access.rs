@@ -1,10 +1,7 @@
 //! Vertex-column accessors for labeled CSR stores.
 
-use crate::{
-    VertexId,
-    labeled::{bucket_store::LabelBucketStore, record::LabelBucket},
-    lara::operation_error::VertexAccess,
-};
+use super::bucket_store::LabelBucketStore;
+use crate::{VertexId, labeled::record::LabelBucket, lara::operation_error::VertexAccess};
 use ic_stable_structures::Memory;
 
 /// Presents one global bucket slab slot as a tiny vertex column for
@@ -28,7 +25,7 @@ pub struct LabelEdgeSpanAccess<'a, M: Memory> {
 
 impl<'a, M: Memory> LabelEdgeSpanAccess<'a, M> {
     /// Binds EdgeStore scan helpers to the LabelEdgeSpan described by the bucket at `slot`.
-    pub fn new(
+    pub(crate) fn new(
         buckets: &'a LabelBucketStore<M>,
         slot: u64,
         successor_start: u64,

@@ -55,7 +55,7 @@ pub mod access;
 #[cfg(feature = "canbench")]
 mod bench;
 pub mod bidirectional;
-pub mod bucket_store;
+mod bucket_store;
 pub mod deferred;
 pub mod graph;
 pub mod invariants;
@@ -67,7 +67,7 @@ pub use bidirectional::{
     DeferredBidirectionalLabeledLaraGraph, LabeledBidirectionalMaintenanceReport,
     Orientation as LabeledOrientation,
 };
-pub use bucket_store::LabelBucketStore;
+pub use bucket_store::InitError as LabelBucketStoreInitError;
 pub use deferred::{DeferredError, DeferredLabeledLaraGraph, MaintenanceWorkItem};
 pub use graph::{
     InitError as LabeledGraphInitError, LabeledLaraGraph, LabeledOperationError,
