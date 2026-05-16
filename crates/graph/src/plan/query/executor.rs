@@ -1423,6 +1423,8 @@ fn execute_shortest_path(
     let shard_id = local_shard_id(store);
     let store_hop_edges = emit_edge_binding || emit_path_binding;
     let mut out = Vec::new();
+    let mut path_chain_scratch = Vec::new();
+    let mut path_elements_scratch = Vec::new();
     for row in rows {
         let Some(src_id) = vertex_binding_for_traversal(&row, src)? else {
             continue;
@@ -1475,6 +1477,7 @@ fn execute_shortest_path(
         let path_key = emit_path_binding
             .then(|| path_var.map(|path_var| path_var.to_string()))
             .flatten();
+        let path_rows_use_shared_buffers = path_key.is_some() && paths.found.len() > 1;
         for state_idx in paths.found {
             let mut row = row.clone();
             if let Some(edge_key) = &edge_key {
@@ -1488,10 +1491,19 @@ fn execute_shortest_path(
                 }
             }
             if let Some(path_key) = &path_key {
-                row.insert(
-                    path_key.clone(),
-                    PlanBinding::Value(path_search_to_value(shard_id, &paths.states, state_idx)),
-                );
+                let path_value = if path_rows_use_shared_buffers {
+                    path_search_to_value_into(
+                        shard_id,
+                        &paths.states,
+                        state_idx,
+                        &mut path_chain_scratch,
+                        &mut path_elements_scratch,
+                    );
+                    Value::Path(std::mem::take(&mut path_elements_scratch))
+                } else {
+                    path_search_to_value_single(shard_id, &paths.states, state_idx)
+                };
+                row.insert(path_key.clone(), PlanBinding::Value(path_value));
             }
             out.push(row);
             if matches!(mode, ShortestMode::AnyShortest) {
@@ -2267,13 +2279,19 @@ fn decode_direct_gleaph_weight_hop_cost(
     Ok(WeightedCost::from_validated_non_negative_float32(weight))
 }
 
-fn path_search_to_value(shard_id: u64, states: &[PathSearchNode], mut state_idx: usize) -> Value {
+/// Builds a path `Value` for a **single** result state (typical `AnyShortest` / one row).
+/// Leaf-to-root walk plus one `reverse` on path elements — cheaper than the multi-path scratch path.
+fn path_search_to_value_single(
+    shard_id: u64,
+    states: &[PathSearchNode],
+    mut state_idx: usize,
+) -> Value {
     let mut elements = Vec::with_capacity(states[state_idx].depth as usize * 2 + 1);
     loop {
         let state = &states[state_idx];
         elements.push(vertex_path_element(shard_id, state.current));
-        if let Some(edge) = state.edge {
-            elements.push(edge_path_element(shard_id, edge.handle));
+        if let Some(edge_binding) = state.edge {
+            elements.push(edge_path_element(shard_id, edge_binding.handle));
         }
         let Some(previous) = state.previous else {
             break;
@@ -2282,6 +2300,36 @@ fn path_search_to_value(shard_id: u64, states: &[PathSearchNode], mut state_idx:
     }
     elements.reverse();
     Value::Path(elements)
+}
+
+fn path_search_to_value_into(
+    shard_id: u64,
+    states: &[PathSearchNode],
+    mut state_idx: usize,
+    chain: &mut Vec<usize>,
+    out: &mut Vec<PathElement>,
+) {
+    chain.clear();
+    loop {
+        chain.push(state_idx);
+        let Some(previous) = states[state_idx].previous else {
+            break;
+        };
+        state_idx = previous;
+    }
+    chain.reverse();
+
+    out.clear();
+    out.reserve(chain.len().saturating_mul(2).saturating_sub(1));
+    for (i, &idx) in chain.iter().enumerate() {
+        let state = &states[idx];
+        if i > 0 {
+            if let Some(edge_binding) = state.edge {
+                out.push(edge_path_element(shard_id, edge_binding.handle));
+            }
+        }
+        out.push(vertex_path_element(shard_id, state.current));
+    }
 }
 
 fn local_shard_id(store: &GraphStore) -> u64 {
