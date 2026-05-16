@@ -247,11 +247,12 @@ impl<M: Memory> LabelBucketStore<M> {
         vertex.bucket_alloc_slots().max(vertex.degree())
     }
 
-    fn grow_bucket_row_alloc(current: u32, needed: u32) -> u32 {
-        current
+    fn grow_bucket_row_alloc(current: u32, needed: u32) -> Result<u32, LaraOperationError> {
+        let doubled = current
             .max(MIN_BUCKET_ROW_ALLOC)
-            .saturating_mul(2)
-            .max(needed)
+            .checked_mul(2)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        Ok(doubled.max(needed))
     }
 
     fn collect_segment_bucket_rows<V>(
@@ -272,8 +273,12 @@ impl<M: Memory> LabelBucketStore<M> {
             let alloc = Self::bucket_row_alloc(v);
             let mut buckets = Vec::with_capacity(v.degree() as usize);
             for offset in 0..u64::from(v.degree()) {
+                let slot = v
+                    .base_slot_start()
+                    .checked_add(offset)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
                 buckets.push(
-                    self.read_label_bucket_slot(v.base_slot_start().saturating_add(offset))
+                    self.read_label_bucket_slot(slot)
                         .ok_or(LaraOperationError::CollectAllocationOverflow)?,
                 );
             }
@@ -415,21 +420,28 @@ impl<M: Memory> LabelBucketStore<M> {
         if !v.is_default_edge_labeled() && Self::bucket_row_alloc(v) > v.degree() {
             let base = v.base_slot_start();
             for offset in (insert_index..v.degree()).rev() {
-                let existing = self
-                    .read_label_bucket_slot(base.saturating_add(u64::from(offset)))
+                let from_slot = base
+                    .checked_add(u64::from(offset))
                     .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                self.write_label_bucket_slot(
-                    base.saturating_add(u64::from(offset).saturating_add(1)),
-                    existing,
-                )?;
+                let existing = self
+                    .read_label_bucket_slot(from_slot)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                let to_slot = base
+                    .checked_add(u64::from(offset))
+                    .and_then(|s| s.checked_add(1))
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                self.write_label_bucket_slot(to_slot, existing)?;
             }
-            self.write_label_bucket_slot(base.saturating_add(u64::from(insert_index)), bucket)?;
+            let insert_at = base
+                .checked_add(u64::from(insert_index))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            self.write_label_bucket_slot(insert_at, bucket)?;
             let next_degree = v
                 .degree()
                 .checked_add(1)
                 .ok_or(LaraOperationError::RowDegreeOverflow)?;
             vertices.set(vid, &v.with_degree(next_degree));
-            return Ok(base.saturating_add(u64::from(insert_index)));
+            return Ok(insert_at);
         }
 
         let mut rows = self.collect_segment_bucket_rows(vertices, vid)?;
@@ -443,7 +455,7 @@ impl<M: Memory> LabelBucketStore<M> {
                 inserted_index = Some(u64::from(insert_index));
                 buckets.insert(index, bucket);
                 *alloc =
-                    Self::grow_bucket_row_alloc(Self::bucket_row_alloc(*v), buckets.len() as u32);
+                    Self::grow_bucket_row_alloc(Self::bucket_row_alloc(*v), buckets.len() as u32)?;
                 break;
             }
         }
@@ -452,7 +464,11 @@ impl<M: Memory> LabelBucketStore<M> {
         ))?;
         self.rewrite_segment_bucket_rows(vertices, rows)?;
         let v = vertices.get_in_range(vid)?;
-        Ok(v.base_slot_start().saturating_add(inserted_index))
+        let out_slot = v
+            .base_slot_start()
+            .checked_add(inserted_index)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        Ok(out_slot)
     }
 }
 

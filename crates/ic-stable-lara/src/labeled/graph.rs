@@ -663,9 +663,12 @@ where
             return Ok(BucketSearch::Missing { insert_index: 0 });
         }
         let start = vertex.base_slot_start();
+        let range_end = start
+            .checked_add(u64::from(deg))
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+
         if let Some(cache) = self.last_bucket_lookup.get() {
             if cache.vid == src && cache.base_slot_start == start && cache.degree == deg {
-                let range_end = start.saturating_add(u64::from(deg));
                 if cache.label_id == label_id && (start..range_end).contains(&cache.slot) {
                     let bucket = self
                         .buckets
@@ -678,13 +681,15 @@ where
                         });
                     }
                 }
-                if cache.slot.saturating_add(1) == range_end && cache.label_id < label_id {
-                    let bucket = self
-                        .buckets
-                        .read_label_bucket_slot(cache.slot)
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                    if bucket.label_id == cache.label_id {
-                        return Ok(BucketSearch::Missing { insert_index: deg });
+                if let Some(slot_after_cache) = cache.slot.checked_add(1) {
+                    if slot_after_cache == range_end && cache.label_id < label_id {
+                        let bucket = self
+                            .buckets
+                            .read_label_bucket_slot(cache.slot)
+                            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                        if bucket.label_id == cache.label_id {
+                            return Ok(BucketSearch::Missing { insert_index: deg });
+                        }
                     }
                 }
             }
@@ -696,7 +701,6 @@ where
                 && cache.base_slot_start == start
                 && cache.degree == deg
             {
-                let range_end = start.saturating_add(u64::from(deg));
                 if (start..range_end).contains(&cache.slot) {
                     let bucket = self
                         .buckets
@@ -745,7 +749,9 @@ where
                     });
                 }
                 Ordering::Greater => {
-                    let slot1 = start.saturating_add(1);
+                    let slot1 = start
+                        .checked_add(1)
+                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
                     let b1 = self
                         .buckets
                         .read_label_bucket_slot(slot1)
@@ -776,7 +782,9 @@ where
             return Ok(
                 match buckets.binary_search_by_key(&label_id, |bucket| bucket.label_id) {
                     Ok(index) => {
-                        let slot = start.saturating_add(index as u64);
+                        let slot = start
+                            .checked_add(index as u64)
+                            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
                         let bucket = buckets[index];
                         self.cache_bucket_lookup(src, label_id, vertex, slot);
                         BucketSearch::Found { slot, bucket }
@@ -792,7 +800,9 @@ where
         let mut hi = deg;
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
-            let slot = start.saturating_add(u64::from(mid));
+            let slot = start
+                .checked_add(u64::from(mid))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             let bucket = self
                 .buckets
                 .read_label_bucket_slot(slot)
@@ -802,7 +812,9 @@ where
                 return Ok(BucketSearch::Found { slot, bucket });
             }
             if bucket.label_id < label_id {
-                lo = mid.saturating_add(1);
+                lo = mid
+                    .checked_add(1)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             } else {
                 hi = mid;
             }
