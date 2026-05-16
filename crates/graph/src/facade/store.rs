@@ -1057,17 +1057,36 @@ impl GraphStore {
         Ok(())
     }
 
+    fn lookup_forward_out_edge(
+        &self,
+        owner_vertex_id: VertexId,
+        vertex_edge_id: VertexEdgeId,
+    ) -> Result<Option<(Edge, Option<LaraLabelId>)>, GraphStoreError> {
+        GRAPH.with_borrow(|graph| {
+            graph
+                .find_forward_out_edge_with_label_by_predicate(owner_vertex_id, |candidate| {
+                    candidate.vertex_edge_id == vertex_edge_id
+                })
+                .map_err(GraphStoreError::from)
+        })
+    }
+
+    pub(crate) fn find_outgoing_edge_with_bucket_label(
+        &self,
+        owner_vertex_id: VertexId,
+        vertex_edge_id: VertexEdgeId,
+    ) -> Result<Option<(Edge, Option<LaraLabelId>)>, GraphStoreError> {
+        self.lookup_forward_out_edge(owner_vertex_id, vertex_edge_id)
+    }
+
     pub(crate) fn find_outgoing_edge_record(
         &self,
         owner_vertex_id: VertexId,
         vertex_edge_id: VertexEdgeId,
     ) -> Result<Option<Edge>, GraphStoreError> {
-        GRAPH.with_borrow(|graph| {
-            let mut iter = graph
-                .forward_out_edges_iter(owner_vertex_id)
-                .map_err(GraphStoreError::from)?;
-            Ok(iter.find(|candidate| candidate.vertex_edge_id == vertex_edge_id))
-        })
+        Ok(self
+            .lookup_forward_out_edge(owner_vertex_id, vertex_edge_id)?
+            .map(|(edge, _)| edge))
     }
 
     fn contains_vertex(&self, vertex_id: VertexId) -> bool {

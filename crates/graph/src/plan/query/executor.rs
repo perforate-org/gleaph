@@ -3307,14 +3307,11 @@ fn vertex_to_value(store: &GraphStore, vertex_id: VertexId) -> Result<Value, Pla
 
 fn edge_to_value(store: &GraphStore, binding: EdgeBinding) -> Result<Value, PlanQueryError> {
     let handle = binding.handle;
-    let edge = store
-        .find_outgoing_edge_record(handle.owner_vertex_id, handle.vertex_edge_id)?
+    let (_edge, bucket_label) = store
+        .find_outgoing_edge_with_bucket_label(handle.owner_vertex_id, handle.vertex_edge_id)?
         .ok_or_else(|| PlanQueryError::MissingBinding {
             variable: format!("edge {:?}", handle),
         })?;
-    let bucket_label = store
-        .find_forward_edge_bucket_label(handle.owner_vertex_id, &edge)
-        .map_err(crate::facade::GraphStoreError::from)?;
     let storage = EdgeLabelId::from_raw(bucket_label.unwrap_or(LaraLabelId::from_raw(0)).raw());
     let catalog_id = EdgeLabelId::from_raw(storage.catalog_id());
     Ok(Value::Record(vec![

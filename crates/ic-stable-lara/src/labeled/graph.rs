@@ -2093,6 +2093,107 @@ where
         Ok(())
     }
 
+    /// Scans outgoing edges in [`Self::out_edges_iter`] order and returns the first edge accepted by
+    /// `pred`, together with its label bucket id.
+    ///
+    /// In default-label bypass mode the label is the vertex bypass storage label when a match
+    /// exists.
+    pub fn find_out_edge_with_label_by_predicate<F>(
+        &self,
+        src: VertexId,
+        mut pred: F,
+    ) -> Result<Option<(E, Option<LabelId>)>, LabeledOperationError>
+    where
+        F: FnMut(&E) -> bool,
+    {
+        self.ensure_vertex(src)?;
+        let vertex = self.vertices.get(src);
+        if vertex.is_default_edge_labeled() {
+            if vertex.degree() == 0 {
+                return Ok(None);
+            }
+            let label = self.bypass_storage_label_for(&vertex);
+            let found = self.edges.find_first_out_edge_matching(
+                &self.vertices,
+                src,
+                None::<&mut dyn FnMut(&[u8]) -> bool>,
+                &mut pred,
+            )?;
+            return Ok(found.map(|e| (e, Some(label))));
+        }
+        let buckets = self.read_vertex_label_buckets(&vertex)?;
+        if let Some((base, total_edges)) =
+            Self::try_contiguous_tiled_labeled_out_edges(&vertex, &buckets)
+        {
+            #[cfg(feature = "canbench")]
+            let _bench_scope = bench_scope("labeled_find_out_edge_with_label_tiled");
+            if total_edges == 0 {
+                return Ok(None);
+            }
+            let degree = total_edges as usize;
+            let nbytes = degree
+                .checked_mul(E::BYTES)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let mut raw = vec![0u8; nbytes];
+            self.edges.read_slots_contiguous(base, &mut raw);
+            let mut bucket_rev_idx = buckets.len() as isize - 1;
+            let mut slot_rev: Option<u32> = None;
+            while bucket_rev_idx >= 0 {
+                let bidx = bucket_rev_idx as usize;
+                let bucket = &buckets[bidx];
+                if bucket.edge_len == 0 {
+                    bucket_rev_idx -= 1;
+                    slot_rev = None;
+                    continue;
+                }
+                let slot = slot_rev.unwrap_or(bucket.edge_len - 1);
+                let rel = bucket
+                    .edge_start
+                    .saturating_sub(base)
+                    .checked_add(u64::from(slot))
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                let byte_off = usize::try_from(rel)
+                    .map_err(|_| LaraOperationError::CollectAllocationOverflow)?
+                    .checked_mul(E::BYTES)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                let byte_end = byte_off
+                    .checked_add(E::BYTES)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                if byte_end > raw.len() {
+                    return Err(LaraOperationError::CollectAllocationOverflow.into());
+                }
+                let edge = E::read_from(&raw[byte_off..byte_end]);
+                if pred(&edge) {
+                    return Ok(Some((edge, Some(bucket.label_id))));
+                }
+                if slot == 0 {
+                    bucket_rev_idx -= 1;
+                    slot_rev = None;
+                } else {
+                    slot_rev = Some(slot - 1);
+                }
+            }
+            return Ok(None);
+        }
+        for bucket_index in (0..buckets.len()).rev() {
+            let bucket_index = bucket_index as u32;
+            let bucket = &buckets[bucket_index as usize];
+            let slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
+            let successor_start =
+                self.bucket_successor_start_after_bucket(&vertex, bucket_index, bucket)?;
+            let acc = LabelEdgeSpanAccess::new(&self.buckets, slot, successor_start, src);
+            if let Some(edge) = self.edges.find_first_out_edge_matching(
+                &acc,
+                VertexId::from(0),
+                None::<&mut dyn FnMut(&[u8]) -> bool>,
+                &mut pred,
+            )? {
+                return Ok(Some((edge, Some(bucket.label_id))));
+            }
+        }
+        Ok(None)
+    }
+
     /// Iterates all outgoing edges for one label without per-edge label checks.
     pub fn iter_edges_for_label(
         &self,

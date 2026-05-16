@@ -793,6 +793,21 @@ where
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
+    /// Finds the first forward outgoing edge accepted by `pred` in [`Self::collect_out_edges_slot_order`]
+    /// order, together with its label bucket id when applicable.
+    pub fn find_forward_out_edge_with_label_by_predicate<F>(
+        &self,
+        src: VertexId,
+        pred: F,
+    ) -> Result<Option<(E, Option<LabelId>)>, DeferredBidirectionalLabeledError>
+    where
+        F: FnMut(&E) -> bool,
+    {
+        self.forward
+            .find_out_edge_with_label_by_predicate(src, pred)
+            .map_err(DeferredBidirectionalLabeledError::Forward)
+    }
+
     /// Processes queued maintenance work up to `budget`.
     pub fn maintenance(
         &self,
