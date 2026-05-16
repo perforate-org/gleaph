@@ -3267,6 +3267,13 @@ fn expression_name(expr: &Expr) -> String {
 }
 
 fn value_row(store: &GraphStore, row: &PlanRow) -> Result<BTreeMap<String, Value>, PlanQueryError> {
+    if row.len() == 1 {
+        let (name, binding) = row.iter().next().expect("len==1 guarantees one entry");
+        let value = binding_to_value(store, binding)?;
+        let mut out = BTreeMap::new();
+        out.insert(name.clone(), value);
+        return Ok(out);
+    }
     row.iter()
         .map(|(name, binding)| binding_to_value(store, binding).map(|value| (name.clone(), value)))
         .collect()
@@ -3342,19 +3349,7 @@ fn edge_to_value(store: &GraphStore, binding: EdgeBinding) -> Result<Value, Plan
             Value::Bool(storage.is_undirected()),
         ),
         ("properties".to_owned(), {
-            let props_vec = store.edge_properties(handle.owner_vertex_id, handle.vertex_edge_id);
-            if props_vec.is_empty() {
-                Value::Record(Vec::new())
-            } else {
-                let mut fields = Vec::with_capacity(props_vec.len());
-                for (property, value) in props_vec {
-                    let name = store
-                        .property_name(property)
-                        .unwrap_or_else(|| property.raw().to_string());
-                    fields.push((name, value));
-                }
-                Value::Record(fields)
-            }
+            store.edge_properties_gql_record(handle.owner_vertex_id, handle.vertex_edge_id)
         }),
     ]))
 }
@@ -3380,7 +3375,7 @@ fn vertex_matches_label_expr(
         LabelExpr::Name(name) => store
             .vertex_label_id(name)
             .is_some_and(|label_id| store.vertex_has_label(vertex_id, vertex, label_id)),
-        LabelExpr::Wildcard => !store.vertex_labels(vertex_id, vertex).is_empty(),
+        LabelExpr::Wildcard => store.vertex_has_any_label(vertex_id, vertex),
         LabelExpr::And(left, right) => {
             vertex_matches_label_expr(store, vertex_id, vertex, left)
                 && vertex_matches_label_expr(store, vertex_id, vertex, right)

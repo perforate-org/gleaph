@@ -395,6 +395,13 @@ impl GraphStore {
         })
     }
 
+    #[inline]
+    pub(crate) fn vertex_has_any_label(&self, vertex_id: VertexId, vertex: Vertex) -> bool {
+        VERTEX_LABELS.with_borrow(|labels| {
+            labels.with_label_ids(vertex_id, vertex, |slice| !slice.is_empty())
+        })
+    }
+
     /// Whether `vertex` has `label_id`, using an inline primary-label check when there is no
     /// multi-label sidecar (avoids an allocation per lookup).
     #[inline]
@@ -552,6 +559,31 @@ impl GraphStore {
     ) -> Vec<(PropertyId, Value)> {
         EDGE_PROPERTIES.with_borrow(|properties| {
             properties.properties_for_edge(owner_vertex_id, vertex_edge_id)
+        })
+    }
+
+    pub(crate) fn edge_properties_gql_record(
+        &self,
+        owner_vertex_id: VertexId,
+        vertex_edge_id: VertexEdgeId,
+    ) -> Value {
+        EDGE_PROPERTIES.with_borrow(|properties| {
+            let mut fields: Vec<(String, Value)> = Vec::new();
+            properties.for_each_property_for_edge(
+                owner_vertex_id,
+                vertex_edge_id,
+                |property_id, value| {
+                    let name = self
+                        .property_name(property_id)
+                        .unwrap_or_else(|| property_id.raw().to_string());
+                    fields.push((name, value));
+                },
+            );
+            if fields.is_empty() {
+                Value::Record(Vec::new())
+            } else {
+                Value::Record(fields)
+            }
         })
     }
 

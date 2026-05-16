@@ -170,19 +170,30 @@ impl<M: Memory> EdgePropertyStore<M> {
         owner_vertex_id: VertexId,
         vertex_edge_id: VertexEdgeId,
     ) -> Vec<(PropertyId, Value)> {
+        let mut out = Vec::new();
+        self.for_each_property_for_edge(owner_vertex_id, vertex_edge_id, |pid, v| {
+            out.push((pid, v));
+        });
+        out
+    }
+
+    pub(crate) fn for_each_property_for_edge<F>(
+        &self,
+        owner_vertex_id: VertexId,
+        vertex_edge_id: VertexEdgeId,
+        mut f: F,
+    ) where
+        F: FnMut(PropertyId, Value),
+    {
         let range = edge_property_key_range(owner_vertex_id, vertex_edge_id);
         let owner = owner_vertex_id;
-        self.properties
-            .range(range)
-            .take_while(|entry| {
-                let key = entry.key();
-                key.owner_vertex_id() == owner && key.vertex_edge_id() == vertex_edge_id
-            })
-            .map(|entry| {
-                let (key, value) = entry.into_pair();
-                (key.property_id(), value.0)
-            })
-            .collect()
+        for entry in self.properties.range(range).take_while(|entry| {
+            let key = entry.key();
+            key.owner_vertex_id() == owner && key.vertex_edge_id() == vertex_edge_id
+        }) {
+            let (key, value) = entry.into_pair();
+            f(key.property_id(), value.0);
+        }
     }
 
     /// Removes every property entry for one logical edge and returns the removed count.
