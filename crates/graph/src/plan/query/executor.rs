@@ -121,10 +121,11 @@ pub async fn execute_plan_query(
     let rows = {
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _scope = bench_scope("plan_query_materialize_value_rows");
-        rows
-            .iter()
-            .map(|row| value_row(store, row))
-            .collect::<Result<Vec<_>, _>>()?
+        let mut out = Vec::with_capacity(rows.len());
+        for row in &rows {
+            out.push(value_row(store, row)?);
+        }
+        out
     };
     Ok(PlanQueryResult { rows })
 }
@@ -3224,11 +3225,11 @@ fn project_row(
     if columns.len() == 1 {
         let column = &columns[0];
         if let ExprKind::Variable(var_name) = &column.expr.kind {
-            let binding = row.get(var_name.as_str()).ok_or_else(|| {
-                PlanQueryError::MissingBinding {
-                    variable: var_name.clone(),
-                }
-            })?;
+            let binding =
+                row.get(var_name.as_str())
+                    .ok_or_else(|| PlanQueryError::MissingBinding {
+                        variable: var_name.clone(),
+                    })?;
             let name = column
                 .alias
                 .as_ref()
@@ -3285,34 +3286,36 @@ fn vertex_to_value(store: &GraphStore, vertex_id: VertexId) -> Result<Value, Pla
         .ok_or_else(|| PlanQueryError::MissingBinding {
             variable: format!("vertex {vertex_id:?}"),
         })?;
+
+    let label_ids = store.vertex_labels(vertex_id, vertex);
+    let mut labels = Vec::with_capacity(label_ids.len());
+    for label in label_ids {
+        labels.push(
+            store
+                .vertex_label_name(label)
+                .map(Value::Text)
+                .unwrap_or_else(|| Value::Uint64(u64::from(label.raw()))),
+        );
+    }
+
+    let props_vec = store.vertex_properties(vertex_id);
+    let properties_value = if props_vec.is_empty() {
+        Value::Record(Vec::new())
+    } else {
+        let mut fields = Vec::with_capacity(props_vec.len());
+        for (property, value) in props_vec {
+            let name = store
+                .property_name(property)
+                .unwrap_or_else(|| property.raw().to_string());
+            fields.push((name, value));
+        }
+        Value::Record(fields)
+    };
+
     Ok(Value::Record(vec![
         ("id".to_owned(), Value::Uint64(u64::from(vertex_id))),
-        (
-            "labels".to_owned(),
-            Value::List(
-                store
-                    .vertex_labels(vertex_id, vertex)
-                    .into_iter()
-                    .map(|label| {
-                        store
-                            .vertex_label_name(label)
-                            .map(Value::Text)
-                            .unwrap_or_else(|| Value::Uint64(u64::from(label.raw())))
-                    })
-                    .collect(),
-            ),
-        ),
-        (
-            "properties".to_owned(),
-            properties_to_record(
-                store
-                    .vertex_properties(vertex_id)
-                    .into_iter()
-                    .map(|(property, value)| {
-                        (store.property_name(property), property.raw(), value)
-                    }),
-            ),
-        ),
+        ("labels".to_owned(), Value::List(labels)),
+        ("properties".to_owned(), properties_value),
     ]))
 }
 
@@ -3359,29 +3362,22 @@ fn edge_to_value(store: &GraphStore, binding: EdgeBinding) -> Result<Value, Plan
             "undirected".to_owned(),
             Value::Bool(storage.is_undirected()),
         ),
-        (
-            "properties".to_owned(),
-            properties_to_record(
-                store
-                    .edge_properties(handle.owner_vertex_id, handle.vertex_edge_id)
-                    .into_iter()
-                    .map(|(property, value)| {
-                        (store.property_name(property), property.raw(), value)
-                    }),
-            ),
-        ),
+        ("properties".to_owned(), {
+            let props_vec = store.edge_properties(handle.owner_vertex_id, handle.vertex_edge_id);
+            if props_vec.is_empty() {
+                Value::Record(Vec::new())
+            } else {
+                let mut fields = Vec::with_capacity(props_vec.len());
+                for (property, value) in props_vec {
+                    let name = store
+                        .property_name(property)
+                        .unwrap_or_else(|| property.raw().to_string());
+                    fields.push((name, value));
+                }
+                Value::Record(fields)
+            }
+        }),
     ]))
-}
-
-fn properties_to_record(
-    properties: impl IntoIterator<Item = (Option<String>, u32, Value)>,
-) -> Value {
-    Value::Record(
-        properties
-            .into_iter()
-            .map(|(name, id, value)| (name.unwrap_or_else(|| id.to_string()), value))
-            .collect(),
-    )
 }
 
 fn record_property(value: &Value, property: &str) -> Value {
