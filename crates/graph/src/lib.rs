@@ -72,3 +72,5 @@ fn whoami() -> Principal {
 fn my_role() -> Result<String, String> {
     canister::handlers::my_role()
 }
+
+ic_cdk::export_candid!();
