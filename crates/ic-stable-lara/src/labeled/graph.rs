@@ -1292,6 +1292,7 @@ where
                     )
                 })?;
                 let mut buf = vec![0u8; max_run];
+                let mut row_buckets = Vec::with_capacity(buckets.len());
                 for (index, bucket) in buckets.iter().enumerate() {
                     let row_start = positions[index];
                     let run = Self::edge_bytes_for_bucket(bucket)?;
@@ -1300,14 +1301,14 @@ where
                             .read_slots_contiguous(bucket.edge_start, &mut buf[..run]);
                         self.edges.write_slots_contiguous(row_start, &buf[..run])?;
                     }
-                    let slot = Self::labeled_vertex_bucket_slot(&vertex, index as u32)?;
-                    self.buckets.write_label_bucket_slot(
-                        slot,
+                    row_buckets.push(
                         bucket
                             .with_edge_range(row_start, bucket.edge_len)
                             .with_overflow_log_head(-1),
-                    )?;
+                    );
                 }
+                self.buckets
+                    .write_label_bucket_row_adaptive(vertex.base_slot_start(), &row_buckets)?;
             } else {
                 let mut per_bucket: Vec<Vec<E>> = Vec::with_capacity(buckets.len());
                 for (index, _) in buckets.iter().enumerate() {
@@ -1327,9 +1328,9 @@ where
                     )
                 })?;
                 let mut buf = vec![0u8; max_run];
+                let mut row_buckets = Vec::with_capacity(buckets.len());
                 for (index, bucket) in buckets.iter().enumerate() {
                     let row_start = positions[index];
-                    let slot = Self::labeled_vertex_bucket_slot(&vertex, index as u32)?;
                     let edges = &per_bucket[index];
                     let el = edges.len() as u32;
                     if !edges.is_empty() {
@@ -1342,13 +1343,14 @@ where
                         }
                         self.edges.write_slots_contiguous(row_start, &buf[..run])?;
                     }
-                    self.buckets.write_label_bucket_slot(
-                        slot,
+                    row_buckets.push(
                         bucket
                             .with_edge_range(row_start, el)
                             .with_overflow_log_head(-1),
-                    )?;
+                    );
                 }
+                self.buckets
+                    .write_label_bucket_row_adaptive(vertex.base_slot_start(), &row_buckets)?;
             }
         } else if total_live > 0 {
             #[cfg(feature = "canbench")]
@@ -1372,6 +1374,7 @@ where
                     }
                 }
                 off = 0;
+                let mut row_buckets = Vec::with_capacity(buckets.len());
                 for (index, bucket) in buckets.iter().enumerate() {
                     let row_start = positions[index];
                     let run = Self::edge_bytes_for_bucket(bucket)?;
@@ -1383,14 +1386,14 @@ where
                             .write_slots_contiguous(row_start, &raw[off..end])?;
                         off = end;
                     }
-                    let slot = Self::labeled_vertex_bucket_slot(&vertex, index as u32)?;
-                    self.buckets.write_label_bucket_slot(
-                        slot,
+                    row_buckets.push(
                         bucket
                             .with_edge_range(row_start, bucket.edge_len)
                             .with_overflow_log_head(-1),
-                    )?;
+                    );
                 }
+                self.buckets
+                    .write_label_bucket_row_adaptive(vertex.base_slot_start(), &row_buckets)?;
             } else {
                 let mut per_bucket: Vec<Vec<E>> = Vec::with_capacity(buckets.len());
                 for (index, _) in buckets.iter().enumerate() {
@@ -1419,6 +1422,7 @@ where
                     }
                 }
                 pack = 0;
+                let mut row_buckets = Vec::with_capacity(buckets.len());
                 for (index, bucket) in buckets.iter().enumerate() {
                     let row_start = positions[index];
                     let edges = &per_bucket[index];
@@ -1431,26 +1435,25 @@ where
                             .write_slots_contiguous(row_start, &raw[pack..end])?;
                         pack = end;
                     }
-                    let slot = Self::labeled_vertex_bucket_slot(&vertex, index as u32)?;
-                    self.buckets.write_label_bucket_slot(
-                        slot,
+                    row_buckets.push(
                         bucket
                             .with_edge_range(row_start, edges.len() as u32)
                             .with_overflow_log_head(-1),
-                    )?;
+                    );
                 }
+                self.buckets
+                    .write_label_bucket_row_adaptive(vertex.base_slot_start(), &row_buckets)?;
             }
         } else {
             #[cfg(feature = "canbench")]
             let _bench_scope = bench_scope("labeled_rewrite_metadata_only");
+            let mut row_buckets = Vec::with_capacity(buckets.len());
             for (index, bucket) in buckets.iter().enumerate() {
                 let row_start = positions[index];
-                let slot = Self::labeled_vertex_bucket_slot(&vertex, index as u32)?;
-                self.buckets.write_label_bucket_slot(
-                    slot,
-                    bucket.with_edge_range(row_start, bucket.edge_len),
-                )?;
+                row_buckets.push(bucket.with_edge_range(row_start, bucket.edge_len));
             }
+            self.buckets
+                .write_label_bucket_row_adaptive(vertex.base_slot_start(), &row_buckets)?;
         }
 
         #[cfg(feature = "canbench")]

@@ -213,6 +213,27 @@ impl<M: Memory> LabelBucketStore<M> {
             .map_err(LaraOperationError::WriteEdgeSlotFailed)
     }
 
+    /// Writes a label-bucket descriptor row, using per-slot writes for tiny rows (avoids a
+    /// temporary encode buffer) and a single contiguous slab write for larger rows.
+    pub(crate) fn write_label_bucket_row_adaptive(
+        &self,
+        start_slot: u64,
+        row: &[LabelBucket],
+    ) -> Result<(), LaraOperationError> {
+        const CONTIGUOUS_WRITE_AT: usize = 8;
+        if row.len() < CONTIGUOUS_WRITE_AT {
+            for (i, bucket) in row.iter().enumerate() {
+                let slot = start_slot
+                    .checked_add(i as u64)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                self.write_label_bucket_slot(slot, *bucket)?;
+            }
+            Ok(())
+        } else {
+            self.write_label_bucket_slots_contiguous(start_slot, row)
+        }
+    }
+
     fn grow_capacity_to_fit(&self, slot: u64) -> Result<(), LaraOperationError> {
         let cap = self.header().elem_capacity;
         if slot < cap {
