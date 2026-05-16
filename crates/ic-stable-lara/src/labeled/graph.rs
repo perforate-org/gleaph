@@ -929,7 +929,9 @@ where
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?
                 .edge_start
         };
-        Ok(first_edge_start.saturating_add(u64::from(vertex.vertex_edge_alloc_slots())))
+        first_edge_start
+            .checked_add(u64::from(vertex.vertex_edge_alloc_slots()))
+            .ok_or(LaraOperationError::CollectAllocationOverflow.into())
     }
 
     /// True when every bucket is slab-only and its live edges occupy a contiguous
@@ -938,24 +940,30 @@ where
         &self,
         vertex: &LabeledVertex,
         buckets: &[LabelBucket],
-    ) -> bool {
+    ) -> Result<bool, LabeledOperationError> {
         if buckets.iter().any(|b| b.overflow_log_head >= 0) {
-            return false;
+            return Ok(false);
         }
         for (index, bucket) in buckets.iter().enumerate() {
             let successor = buckets
                 .get(index.saturating_add(1))
                 .map(|next| next.edge_start.max(bucket.edge_start))
+                .map(Ok)
                 .unwrap_or_else(|| {
                     buckets[0]
                         .edge_start
-                        .saturating_add(u64::from(vertex.vertex_edge_alloc_slots()))
-                });
+                        .checked_add(u64::from(vertex.vertex_edge_alloc_slots()))
+                        .ok_or_else(|| {
+                            LabeledOperationError::from(
+                                LaraOperationError::CollectAllocationOverflow,
+                            )
+                        })
+                })?;
             if successor.saturating_sub(bucket.edge_start) < u64::from(bucket.edge_len) {
-                return false;
+                return Ok(false);
             }
         }
-        true
+        Ok(true)
     }
 
     /// When every bucket is overflow-free and on-slab edges tile contiguously in the
@@ -983,7 +991,7 @@ where
             total_edges = total_edges.checked_add(b.edge_len)?;
             pos = pos.checked_add(u64::from(b.edge_len))?;
         }
-        let span_end = base.saturating_add(u64::from(vertex.vertex_edge_alloc_slots()));
+        let span_end = base.checked_add(u64::from(vertex.vertex_edge_alloc_slots()))?;
         if pos > span_end {
             return None;
         }
@@ -1174,7 +1182,7 @@ where
                 force_slack_grow,
             )?;
 
-        let slab_only_bulk = self.label_buckets_allow_contiguous_slab_copy(&vertex, &buckets);
+        let slab_only_bulk = self.label_buckets_allow_contiguous_slab_copy(&vertex, &buckets)?;
 
         let disjoint_copy = moved && old_alloc > 0;
         if disjoint_copy {
@@ -2436,6 +2444,64 @@ mod tests {
             err,
             LabeledOperationError::Store(LaraOperationError::CollectAllocationOverflow)
         ));
+    }
+
+    #[test]
+    fn last_bucket_successor_rejects_span_end_overflow() {
+        let graph = test_graph();
+        let hub = VertexId::from(0);
+        let label = LabelId::from_raw(42);
+        graph
+            .buckets()
+            .insert_label_bucket(
+                graph.vertices(),
+                hub,
+                LabelBucket {
+                    label_id: label,
+                    edge_start: u64::MAX,
+                    ..LabelBucket::default()
+                },
+            )
+            .unwrap();
+        graph.vertices().set(
+            hub,
+            &graph.vertices().get(hub).with_vertex_edge_alloc_slots(1),
+        );
+
+        let vertex = graph.vertices().get(hub);
+        let bucket = graph
+            .buckets()
+            .read_label_bucket_slot(vertex.base_slot_start())
+            .unwrap();
+        let err = graph
+            .bucket_successor_start_after_bucket(&vertex, 0, &bucket)
+            .expect_err("last bucket successor overflow must be rejected");
+
+        assert!(matches!(
+            err,
+            LabeledOperationError::Store(LaraOperationError::CollectAllocationOverflow)
+        ));
+    }
+
+    #[test]
+    fn contiguous_tiled_out_edges_rejects_span_end_overflow() {
+        let vertex = LabeledVertex::default()
+            .with_bucket_row(0, 1)
+            .with_vertex_edge_alloc_slots(1);
+        let buckets = [LabelBucket {
+            label_id: LabelId::from_raw(42),
+            edge_start: u64::MAX,
+            edge_len: 0,
+            ..LabelBucket::default()
+        }];
+
+        assert_eq!(
+            LabeledLaraGraph::<TestEdge, crate::VectorMemory>::try_contiguous_tiled_labeled_out_edges(
+                &vertex,
+                &buckets,
+            ),
+            None
+        );
     }
 
     #[test]
