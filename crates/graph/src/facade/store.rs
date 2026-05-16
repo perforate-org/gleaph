@@ -471,6 +471,25 @@ impl GraphStore {
         VERTEX_PROPERTIES.with_borrow(|properties| properties.properties_for(vertex_id))
     }
 
+    /// GQL vertex `properties` field as a `Value::Record` without allocating an intermediate
+    /// `Vec<(PropertyId, Value)>`.
+    pub(crate) fn vertex_properties_gql_record(&self, vertex_id: VertexId) -> Value {
+        VERTEX_PROPERTIES.with_borrow(|properties| {
+            let mut fields: Vec<(String, Value)> = Vec::new();
+            properties.for_each_property_for(vertex_id, |property_id, value| {
+                let name = self
+                    .property_name(property_id)
+                    .unwrap_or_else(|| property_id.raw().to_string());
+                fields.push((name, value));
+            });
+            if fields.is_empty() {
+                Value::Record(Vec::new())
+            } else {
+                Value::Record(fields)
+            }
+        })
+    }
+
     pub fn edge_property(
         &self,
         owner_vertex_id: VertexId,

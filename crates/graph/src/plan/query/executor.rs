@@ -3289,19 +3289,7 @@ fn vertex_to_value(store: &GraphStore, vertex_id: VertexId) -> Result<Value, Pla
 
     let labels = store.vertex_label_gql_list(vertex_id, vertex);
 
-    let props_vec = store.vertex_properties(vertex_id);
-    let properties_value = if props_vec.is_empty() {
-        Value::Record(Vec::new())
-    } else {
-        let mut fields = Vec::with_capacity(props_vec.len());
-        for (property, value) in props_vec {
-            let name = store
-                .property_name(property)
-                .unwrap_or_else(|| property.raw().to_string());
-            fields.push((name, value));
-        }
-        Value::Record(fields)
-    };
+    let properties_value = store.vertex_properties_gql_record(vertex_id);
 
     Ok(Value::Record(vec![
         ("id".to_owned(), Value::Uint64(u64::from(vertex_id))),

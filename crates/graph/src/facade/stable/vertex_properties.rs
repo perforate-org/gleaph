@@ -157,12 +157,23 @@ impl<M: Memory> VertexPropertyStore<M> {
     }
 
     pub fn properties_for(&self, vertex_id: VertexId) -> Vec<(PropertyId, Value)> {
-        let vertex_id = u32::from_le_bytes(vertex_id.to_le_bytes());
+        let mut out = Vec::new();
+        self.for_each_property_for(vertex_id, |pid, v| out.push((pid, v)));
+        out
+    }
+
+    /// Visits `(property_id, value)` pairs for `vertex_id` in key order without building an
+    /// intermediate [`Vec`].
+    pub(crate) fn for_each_property_for<F>(&self, vertex_id: VertexId, mut f: F)
+    where
+        F: FnMut(PropertyId, Value),
+    {
+        let vertex_id_raw = u32::from_le_bytes(vertex_id.to_le_bytes());
         let start = VertexPropertyKey {
-            vertex_id,
+            vertex_id: vertex_id_raw,
             property_id: PropertyId::from_raw(0),
         };
-        let upper = vertex_id.checked_add(1).map(|next_vertex_id| {
+        let upper = vertex_id_raw.checked_add(1).map(|next_vertex_id| {
             RangeBound::Excluded(VertexPropertyKey {
                 vertex_id: next_vertex_id,
                 property_id: PropertyId::from_raw(0),
@@ -172,15 +183,15 @@ impl<M: Memory> VertexPropertyStore<M> {
             Some(upper) => (RangeBound::Included(start), upper),
             None => (RangeBound::Included(start), RangeBound::Unbounded),
         };
-        let vertex_id = VertexId::from(vertex_id);
-        self.properties
+        let vid = VertexId::from(vertex_id_raw);
+        for entry in self
+            .properties
             .range(range)
-            .take_while(|entry| entry.key().vertex_id() == vertex_id)
-            .map(|entry| {
-                let (key, value) = entry.into_pair();
-                (key.property_id(), value.0)
-            })
-            .collect()
+            .take_while(|entry| entry.key().vertex_id() == vid)
+        {
+            let (key, value) = entry.into_pair();
+            f(key.property_id(), value.0);
+        }
     }
 
     pub fn into_memory(self) -> M {
