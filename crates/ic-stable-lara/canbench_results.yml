@@ -16,7 +16,7 @@ benches:
   bench_labeled_deferred_inserts_only_1024:
     total:
       calls: 1
-      instructions: 7340611
+      instructions: 7352885
       heap_increase: 19
       stable_memory_increase: 0
     scopes:
@@ -28,7 +28,7 @@ benches:
   bench_labeled_deferred_maintenance_compact_vertex_span_1:
     total:
       calls: 1
-      instructions: 2553139
+      instructions: 2554085
       heap_increase: 19
       stable_memory_increase: 0
     scopes:
@@ -45,7 +45,7 @@ benches:
   bench_labeled_insert_existing_bucket_128:
     total:
       calls: 1
-      instructions: 6007703
+      instructions: 6019977
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -57,7 +57,7 @@ benches:
   bench_labeled_insert_fresh_label_each_edge_256:
     total:
       calls: 1
-      instructions: 81476658
+      instructions: 81476660
       heap_increase: 30
       stable_memory_increase: 0
     scopes:
@@ -121,7 +121,7 @@ benches:
   bench_labeled_insert_multi_vertex_leaf32_2048:
     total:
       calls: 1
-      instructions: 16236786
+      instructions: 16237554
       heap_increase: 23
       stable_memory_increase: 0
     scopes:
@@ -180,7 +180,7 @@ benches:
   bench_labeled_insert_single_bucket_1024:
     total:
       calls: 1
-      instructions: 6007711
+      instructions: 6019985
       heap_increase: 0
       stable_memory_increase: 0
     scopes:

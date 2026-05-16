@@ -377,7 +377,10 @@ where
         }
         let bucket = self.consolidate_single_label_bucket_for_promotion(src, &bucket)?;
         let old_alloc = vertex.vertex_edge_alloc_slots();
-        let region_end = bucket.edge_start.saturating_add(u64::from(bucket.edge_len));
+        let region_end = bucket
+            .edge_start
+            .checked_add(u64::from(bucket.edge_len))
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         let updated = vertex
             .with_homogeneous_bypass_label(bucket.label_id)
             .with_base_slot_start(bucket.edge_start)
@@ -435,26 +438,28 @@ where
         self.edges
             .bump_vertex_segment_counts(src, 1, 0)
             .map_err(LabeledOperationError::from)?;
-        let region_end = self.bypass_region_end(src);
+        let region_end = self.bypass_region_end(src)?;
         self.bump_successor_origins_after_bypass_end(src, region_end)
     }
 
     #[inline]
-    fn bypass_region_end(&self, src: VertexId) -> u64 {
+    fn bypass_region_end(&self, src: VertexId) -> Result<u64, LabeledOperationError> {
         let vertex = self.vertices.get(src);
         debug_assert!(vertex.is_default_edge_labeled());
         vertex
             .base_slot_start()
-            .saturating_add(u64::from(vertex.degree()))
+            .checked_add(u64::from(vertex.degree()))
+            .ok_or(LaraOperationError::CollectAllocationOverflow.into())
     }
 
     /// Exclusive end of the global edge-slot prefix owned by `vid` (bypass or bucket span).
     fn vertex_prefix_end(&self, vid: VertexId) -> Result<u64, LabeledOperationError> {
         let vertex = self.vertices.get(vid);
         if vertex.is_default_edge_labeled() {
-            Ok(vertex
+            vertex
                 .base_slot_start()
-                .saturating_add(u64::from(vertex.degree())))
+                .checked_add(u64::from(vertex.degree()))
+                .ok_or(LaraOperationError::CollectAllocationOverflow.into())
         } else if vertex.degree() == 0 {
             Ok(vertex.base_slot_start())
         } else {
@@ -462,9 +467,10 @@ where
                 .buckets
                 .read_label_bucket_slot(vertex.base_slot_start())
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            Ok(first
+            first
                 .edge_start
-                .saturating_add(u64::from(vertex.vertex_edge_alloc_slots())))
+                .checked_add(u64::from(vertex.vertex_edge_alloc_slots()))
+                .ok_or(LaraOperationError::CollectAllocationOverflow.into())
         }
     }
 
@@ -2375,6 +2381,61 @@ mod tests {
             LabeledOperationError::Store(LaraOperationError::RowDegreeOverflow)
         ));
         assert_eq!(graph.vertices().get(hub).degree(), u32::MAX);
+    }
+
+    #[test]
+    fn homogeneous_bypass_region_end_rejects_slot_overflow() {
+        let default = LabelId::from_raw(7);
+        let graph = test_graph_with_default(default);
+        let hub = VertexId::from(0);
+        graph.vertices().set(
+            hub,
+            &LabeledVertex::default()
+                .with_homogeneous_bypass_label(default)
+                .with_base_slot_start(u64::MAX)
+                .with_degree(1),
+        );
+
+        let err = graph
+            .bypass_region_end(hub)
+            .expect_err("bypass end overflow must be rejected");
+
+        assert!(matches!(
+            err,
+            LabeledOperationError::Store(LaraOperationError::CollectAllocationOverflow)
+        ));
+    }
+
+    #[test]
+    fn bucket_vertex_prefix_end_rejects_slot_overflow() {
+        let graph = test_graph();
+        let hub = VertexId::from(0);
+        graph
+            .buckets()
+            .insert_label_bucket(
+                graph.vertices(),
+                hub,
+                LabelBucket {
+                    label_id: LabelId::from_raw(42),
+                    edge_start: u64::MAX,
+                    edge_len: 1,
+                    ..LabelBucket::default()
+                },
+            )
+            .unwrap();
+        graph.vertices().set(
+            hub,
+            &graph.vertices().get(hub).with_vertex_edge_alloc_slots(1),
+        );
+
+        let err = graph
+            .vertex_prefix_end(hub)
+            .expect_err("bucket prefix end overflow must be rejected");
+
+        assert!(matches!(
+            err,
+            LabeledOperationError::Store(LaraOperationError::CollectAllocationOverflow)
+        ));
     }
 
     #[test]
