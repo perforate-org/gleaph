@@ -147,16 +147,28 @@ impl Parser<'_> {
 
     fn try_parse_path_pattern_extension_start(&mut self) -> bool {
         let save = self.save();
-        if self.parse_object_name().is_err() {
+        let name = match self.parse_object_name() {
+            Ok(n) => n,
+            Err(_) => {
+                self.restore(save);
+                return false;
+            }
+        };
+        if !self.at_keyword("BY") {
             self.restore(save);
             return false;
         }
-        if self.at_keyword("BY") {
-            self.restore(save);
-            return true;
+        // Avoid swallowing `ORDER BY` / `GROUP BY` from the surrounding linear query
+        // (e.g. `SELECT ... MATCH (n) ORDER BY x`): those are not path extensions.
+        if name.parts.len() == 1 {
+            let head = name.parts[0].to_ascii_uppercase();
+            if head == "ORDER" || head == "GROUP" {
+                self.restore(save);
+                return false;
+            }
         }
         self.restore(save);
-        false
+        true
     }
 
     fn parse_path_pattern_extension(&mut self) -> Result<PathPatternExtension, GqlError> {
