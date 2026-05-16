@@ -768,6 +768,10 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     }
 
     /// Like [`Self::for_each_out_edge_matching`], but stops at the first edge that satisfies `matches`.
+    ///
+    /// For purely slab-backed rows (`log_head < 0`), when `raw_matches` is `None`, this uses
+    /// [`Self::iter_out_edges`] (chunked slab reads, same scan order as that iterator) instead of
+    /// allocating a full contiguous decode buffer for the entire neighborhood.
     pub(crate) fn find_first_out_edge_matching<V, A, Match>(
         &self,
         vertices: &A,
@@ -785,6 +789,15 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             return Ok(None);
         }
         if v.log_head() < 0 {
+            if raw_matches.is_none() {
+                let mut iter = self.iter_out_edges(vertices, vid)?;
+                while let Some(edge) = iter.next() {
+                    if matches(&edge) {
+                        return Ok(Some(edge));
+                    }
+                }
+                return Ok(None);
+            }
             let degree = v.degree() as usize;
             if degree == 0 {
                 return Ok(None);
@@ -799,11 +812,6 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                     if !raw_m(chunk) {
                         continue;
                     }
-                    let edge = E::read_from(chunk);
-                    if matches(&edge) {
-                        return Ok(Some(edge));
-                    }
-                } else {
                     let edge = E::read_from(chunk);
                     if matches(&edge) {
                         return Ok(Some(edge));
