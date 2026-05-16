@@ -1118,6 +1118,18 @@ where
         ))
     }
 
+    fn edge_bytes_for_len(edge_count: usize) -> Result<usize, LabeledOperationError> {
+        edge_count
+            .checked_mul(E::BYTES)
+            .ok_or(LaraOperationError::CollectAllocationOverflow.into())
+    }
+
+    fn edge_bytes_for_bucket(bucket: &LabelBucket) -> Result<usize, LabeledOperationError> {
+        let edge_count = usize::try_from(bucket.edge_len)
+            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+        Self::edge_bytes_for_len(edge_count)
+    }
+
     fn rewrite_vertex_edge_span(
         &self,
         src: VertexId,
@@ -1163,21 +1175,15 @@ where
             #[cfg(feature = "canbench")]
             let _bench_scope = bench_scope("labeled_rewrite_copy_disjoint");
             if slab_only_bulk {
-                let max_run = buckets
-                    .iter()
-                    .map(|b| {
-                        usize::try_from(b.edge_len)
-                            .unwrap_or(usize::MAX)
-                            .saturating_mul(E::BYTES)
-                    })
-                    .max()
-                    .unwrap_or(0);
+                let max_run = buckets.iter().try_fold(0usize, |max_run, bucket| {
+                    Ok::<usize, LabeledOperationError>(
+                        max_run.max(Self::edge_bytes_for_bucket(bucket)?),
+                    )
+                })?;
                 let mut buf = vec![0u8; max_run];
                 for (index, bucket) in buckets.iter().enumerate() {
                     let row_start = positions[index];
-                    let run = usize::try_from(bucket.edge_len)
-                        .unwrap_or(usize::MAX)
-                        .saturating_mul(E::BYTES);
+                    let run = Self::edge_bytes_for_bucket(bucket)?;
                     if run > 0 {
                         self.edges
                             .read_slots_contiguous(bucket.edge_start, &mut buf[..run]);
@@ -1204,11 +1210,11 @@ where
                             .map_err(LabeledOperationError::from)?,
                     );
                 }
-                let max_run = per_bucket
-                    .iter()
-                    .map(|edges| edges.len().saturating_mul(E::BYTES))
-                    .max()
-                    .unwrap_or(0);
+                let max_run = per_bucket.iter().try_fold(0usize, |max_run, edges| {
+                    Ok::<usize, LabeledOperationError>(
+                        max_run.max(Self::edge_bytes_for_len(edges.len())?),
+                    )
+                })?;
                 let mut buf = vec![0u8; max_run];
                 for (index, bucket) in buckets.iter().enumerate() {
                     let row_start = positions[index];
@@ -1216,7 +1222,7 @@ where
                     let edges = &per_bucket[index];
                     let el = edges.len() as u32;
                     if !edges.is_empty() {
-                        let run = edges.len().saturating_mul(E::BYTES);
+                        let run = Self::edge_bytes_for_len(edges.len())?;
                         debug_assert!(run <= buf.len());
                         let mut o = 0usize;
                         for e in edges {
@@ -1237,35 +1243,34 @@ where
             #[cfg(feature = "canbench")]
             let _bench_scope = bench_scope("labeled_rewrite_copy_inplace_vec");
             if slab_only_bulk {
-                let run_total = usize::try_from(total_live)
-                    .unwrap_or(usize::MAX)
-                    .saturating_mul(E::BYTES);
+                let run_total = Self::edge_bytes_for_len(
+                    usize::try_from(total_live)
+                        .map_err(|_| LaraOperationError::CollectAllocationOverflow)?,
+                )?;
                 let mut raw = vec![0u8; run_total];
                 let mut off = 0usize;
                 for bucket in &buckets {
-                    let run = usize::try_from(bucket.edge_len)
-                        .unwrap_or(usize::MAX)
-                        .saturating_mul(E::BYTES);
+                    let run = Self::edge_bytes_for_bucket(bucket)?;
                     if run > 0 {
-                        self.edges.read_slots_contiguous(
-                            bucket.edge_start,
-                            &mut raw[off..off.saturating_add(run)],
-                        );
-                        off = off.saturating_add(run);
+                        let end = off
+                            .checked_add(run)
+                            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                        self.edges
+                            .read_slots_contiguous(bucket.edge_start, &mut raw[off..end]);
+                        off = end;
                     }
                 }
                 off = 0;
                 for (index, bucket) in buckets.iter().enumerate() {
                     let row_start = positions[index];
-                    let run = usize::try_from(bucket.edge_len)
-                        .unwrap_or(usize::MAX)
-                        .saturating_mul(E::BYTES);
+                    let run = Self::edge_bytes_for_bucket(bucket)?;
                     if run > 0 {
-                        self.edges.write_slots_contiguous(
-                            row_start,
-                            &raw[off..off.saturating_add(run)],
-                        )?;
-                        off = off.saturating_add(run);
+                        let end = off
+                            .checked_add(run)
+                            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                        self.edges
+                            .write_slots_contiguous(row_start, &raw[off..end])?;
+                        off = end;
                     }
                     let slot = vertex.base_slot_start().saturating_add(index as u64);
                     self.buckets.write_label_bucket_slot(
@@ -1288,10 +1293,12 @@ where
                             .map_err(LabeledOperationError::from)?,
                     );
                 }
-                let run_total: usize = per_bucket
-                    .iter()
-                    .map(|v| v.len().saturating_mul(E::BYTES))
-                    .sum();
+                let run_total: usize = per_bucket.iter().try_fold(0usize, |total, edges| {
+                    let run = Self::edge_bytes_for_len(edges.len())?;
+                    total.checked_add(run).ok_or_else(|| {
+                        LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow)
+                    })
+                })?;
                 let mut raw = vec![0u8; run_total];
                 let mut pack = 0usize;
                 for edges in &per_bucket {
@@ -1304,13 +1311,14 @@ where
                 for (index, bucket) in buckets.iter().enumerate() {
                     let row_start = positions[index];
                     let edges = &per_bucket[index];
-                    let run = edges.len().saturating_mul(E::BYTES);
+                    let run = Self::edge_bytes_for_len(edges.len())?;
                     if run > 0 {
-                        self.edges.write_slots_contiguous(
-                            row_start,
-                            &raw[pack..pack.saturating_add(run)],
-                        )?;
-                        pack = pack.saturating_add(run);
+                        let end = pack
+                            .checked_add(run)
+                            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                        self.edges
+                            .write_slots_contiguous(row_start, &raw[pack..end])?;
+                        pack = end;
                     }
                     let slot = vertex.base_slot_start().saturating_add(index as u64);
                     self.buckets.write_label_bucket_slot(
@@ -2408,6 +2416,18 @@ mod tests {
         assert!(matches!(
             err,
             LabeledOperationError::Store(LaraOperationError::RowDegreeOverflow)
+        ));
+    }
+
+    #[test]
+    fn rewrite_copy_byte_len_rejects_usize_overflow() {
+        let oversized = usize::MAX / TestEdge::BYTES + 1;
+        let err = LabeledLaraGraph::<TestEdge, crate::VectorMemory>::edge_bytes_for_len(oversized)
+            .expect_err("edge byte length overflow must be rejected");
+
+        assert!(matches!(
+            err,
+            LabeledOperationError::Store(LaraOperationError::CollectAllocationOverflow)
         ));
     }
 
