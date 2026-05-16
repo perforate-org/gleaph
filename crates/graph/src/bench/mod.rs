@@ -440,7 +440,7 @@ fn setup_expand_hub_graph(store: &GraphStore) {
                 Some("BenchExpandEdge"),
                 Vec::<(&str, Value)>::new(),
             )
-            .expect("prefix->hub");
+            .unwrap_or_else(|e| panic!("prefix->hub i={i}: {e:?}"));
     }
     for i in 0..EXPAND_HUB_OUT {
         let dst = store
@@ -1262,6 +1262,30 @@ fn bench_graph_expand_indexed_eq_selective_24match() -> canbench_rs::BenchResult
 mod bench_setup_tests {
     use super::*;
     use ic_stable_lara::CsrEdge;
+
+    #[test]
+    fn expand_hub_graph_two_prefix_named_edges_native() {
+        let store = GraphStore::new();
+        let hub = store
+            .insert_vertex_named(["BenchExpandHub"], Vec::<(&str, Value)>::new())
+            .expect("hub");
+        for i in 0..2u32 {
+            let prefix = store
+                .insert_vertex_named(
+                    [format!("BenchExpandPrefix{i}")],
+                    Vec::<(&str, Value)>::new(),
+                )
+                .expect("prefix");
+            store
+                .insert_directed_edge_named(
+                    prefix,
+                    hub,
+                    Some("BenchExpandEdge"),
+                    Vec::<(&str, Value)>::new(),
+                )
+                .unwrap_or_else(|e| panic!("prefix->hub i={i}: {e:?}"));
+        }
+    }
 
     #[test]
     fn expand_filter_10pct_pass_setup_and_execute() {
