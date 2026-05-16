@@ -10,6 +10,11 @@ crate-type = ["cdylib", "rlib"]
 [features]
 default = []
 canbench = ["dep:canbench-rs", "dep:candid"]
+# Optional multiplicative headroom when growing `bucket_alloc_slots` on segment rewrite.
+# Default is 1.25× (ceil). `bucket_row_grow_150` selects 1.5×; `bucket_row_grow_double` selects
+# historical 2×. If both optional features are enabled, `bucket_row_grow_double` wins.
+bucket_row_grow_150 = []
+bucket_row_grow_double = []
 
 [dependencies]
 canbench-rs = { workspace = true, optional = true }

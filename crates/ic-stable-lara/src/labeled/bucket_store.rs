@@ -54,6 +54,33 @@ pub(crate) struct LabelBucketStore<M: Memory> {
 
 const MIN_BUCKET_ROW_ALLOC: u32 = 4;
 
+/// Numerator/denominator for multiplicative growth of `bucket_alloc_slots` on segment rewrite:
+/// `new = max(ceil(max(current, MIN_BUCKET_ROW_ALLOC) * NUM / DEN), needed)`.
+///
+/// Default `5 / 4` (~1.25×, ceiling). Enable `bucket_row_grow_150` for `3 / 2`, or
+/// `bucket_row_grow_double` for historical `2 / 1`. If both optional features are enabled,
+/// `bucket_row_grow_double` wins.
+#[cfg(feature = "bucket_row_grow_double")]
+const BUCKET_ROW_GROW_NUM: u32 = 2;
+#[cfg(feature = "bucket_row_grow_double")]
+const BUCKET_ROW_GROW_DEN: u32 = 1;
+
+#[cfg(all(
+    feature = "bucket_row_grow_150",
+    not(feature = "bucket_row_grow_double")
+))]
+const BUCKET_ROW_GROW_NUM: u32 = 3;
+#[cfg(all(
+    feature = "bucket_row_grow_150",
+    not(feature = "bucket_row_grow_double")
+))]
+const BUCKET_ROW_GROW_DEN: u32 = 2;
+
+#[cfg(not(any(feature = "bucket_row_grow_150", feature = "bucket_row_grow_double")))]
+const BUCKET_ROW_GROW_NUM: u32 = 5;
+#[cfg(not(any(feature = "bucket_row_grow_150", feature = "bucket_row_grow_double")))]
+const BUCKET_ROW_GROW_DEN: u32 = 4;
+
 impl<M: Memory> LabelBucketStore<M> {
     /// Opens a fresh LabelBucketStore over three stable memories.
     pub(crate) fn new(
@@ -244,11 +271,14 @@ impl<M: Memory> LabelBucketStore<M> {
     }
 
     fn grow_bucket_row_alloc(current: u32, needed: u32) -> Result<u32, LaraOperationError> {
-        let doubled = current
-            .max(MIN_BUCKET_ROW_ALLOC)
-            .checked_mul(2)
+        let base = current.max(MIN_BUCKET_ROW_ALLOC);
+        let prod = u64::from(base)
+            .checked_mul(u64::from(BUCKET_ROW_GROW_NUM))
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        Ok(doubled.max(needed))
+        let grown_u64 = prod.div_ceil(u64::from(BUCKET_ROW_GROW_DEN));
+        let grown =
+            u32::try_from(grown_u64).map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+        Ok(grown.max(needed))
     }
 
     fn collect_segment_bucket_rows<V>(
