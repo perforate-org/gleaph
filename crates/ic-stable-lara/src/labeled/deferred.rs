@@ -7,7 +7,7 @@ use crate::{
         maintenance::{MaintenanceBudget, MaintenanceWorkReport},
         vertex::InitError as VertexInitError,
     },
-    traits::CsrEdge,
+    traits::{CsrEdge, CsrEdgeSlabVacancy},
 };
 use ic_stable_structures::{Memory, Storable, storable::Bound};
 use ic_stable_vec_deque::{
@@ -69,6 +69,12 @@ mod tests {
 
         fn with_neighbor_vid(self, vid: VertexId) -> Self {
             Self(u32::from(vid))
+        }
+    }
+
+    impl CsrEdgeSlabVacancy for TestEdge {
+        fn slab_vacant_edge() -> Self {
+            Self(u32::from(crate::VertexId::SLAB_VACANT))
         }
     }
 
@@ -344,6 +350,7 @@ where
         matches: F,
     ) -> Result<Option<E>, DeferredError>
     where
+        E: CsrEdgeSlabVacancy,
         F: FnMut(&E) -> bool,
     {
         let removed = self

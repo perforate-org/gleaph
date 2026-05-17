@@ -25,7 +25,8 @@ fn edge_store_with_vertices(
         vertices
             .push(Vertex {
                 base_slot_start: u64::from(vid) * u64::from(slot_stride),
-                degree: 0,
+                live_edges: 0,
+                slab_slots: 0,
                 log_head: -1,
                 deleted: false,
             })

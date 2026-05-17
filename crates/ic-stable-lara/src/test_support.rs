@@ -1,4 +1,5 @@
 use crate::lara::edge::EdgeLayout;
+use crate::traits::CsrEdgeSlabVacancy;
 use crate::*;
 use std::{cell::RefCell, rc::Rc};
 
@@ -22,6 +23,12 @@ impl CsrEdge for TestEdge {
 
     fn with_neighbor_vid(self, vid: VertexId) -> Self {
         Self(u32::from(vid))
+    }
+}
+
+impl CsrEdgeSlabVacancy for TestEdge {
+    fn slab_vacant_edge() -> Self {
+        Self(u32::from(VertexId::SLAB_VACANT))
     }
 }
 
@@ -60,6 +67,15 @@ impl CsrEdge for LabelledTestEdge {
         Self {
             neighbor: u32::from(vid),
             ..self
+        }
+    }
+}
+
+impl CsrEdgeSlabVacancy for LabelledTestEdge {
+    fn slab_vacant_edge() -> Self {
+        Self {
+            neighbor: u32::from(VertexId::SLAB_VACANT),
+            label: 0,
         }
     }
 }
@@ -106,6 +122,15 @@ impl CsrEdge for UndirectedTestEdge {
     }
 }
 
+impl CsrEdgeSlabVacancy for UndirectedTestEdge {
+    fn slab_vacant_edge() -> Self {
+        Self {
+            neighbor: u32::from(VertexId::SLAB_VACANT),
+            undirected: false,
+        }
+    }
+}
+
 impl CsrEdgeUndirected for UndirectedTestEdge {
     fn is_undirected(&self) -> bool {
         self.undirected
@@ -113,81 +138,6 @@ impl CsrEdgeUndirected for UndirectedTestEdge {
 
     fn with_undirected(self, undirected: bool) -> Self {
         Self { undirected, ..self }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct PoisonCapacityVertex {
-    pub(crate) base_slot_start: u64,
-    pub(crate) degree: u32,
-    pub(crate) log_head: i32,
-}
-
-impl CsrVertex for PoisonCapacityVertex {
-    const BYTES: usize = 16;
-
-    fn base_slot_start(&self) -> u64 {
-        self.base_slot_start
-    }
-
-    fn degree(&self) -> u32 {
-        self.degree
-    }
-
-    fn with_base_slot_start(mut self, start: u64) -> Self {
-        self.base_slot_start = start;
-        self
-    }
-
-    fn with_degree(mut self, degree: u32) -> Self {
-        self.degree = degree;
-        self
-    }
-
-    fn log_head(self) -> i32 {
-        self.log_head
-    }
-
-    fn with_log_head(mut self, idx: i32) -> Self {
-        self.log_head = idx;
-        self
-    }
-}
-
-impl Storable for PoisonCapacityVertex {
-    const BOUND: Bound = Bound::Bounded {
-        max_size: Self::BYTES as u32,
-        is_fixed_size: true,
-    };
-
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        let mut b = [0u8; Self::BYTES];
-        b[0..8].copy_from_slice(&self.base_slot_start.to_le_bytes());
-        b[8..12].copy_from_slice(&self.degree.to_le_bytes());
-        b[12..16].copy_from_slice(&self.log_head.to_le_bytes());
-        Cow::Owned(Vec::from(b))
-    }
-
-    fn into_bytes(self) -> Vec<u8> {
-        let mut b = [0u8; Self::BYTES];
-        b[0..8].copy_from_slice(&self.base_slot_start.to_le_bytes());
-        b[8..12].copy_from_slice(&self.degree.to_le_bytes());
-        b[12..16].copy_from_slice(&self.log_head.to_le_bytes());
-        Vec::from(b)
-    }
-
-    fn from_bytes(bytes: Cow<[u8]>) -> Self {
-        let mut base = [0u8; 8];
-        let mut degree = [0u8; 4];
-        let mut log_head = [0u8; 4];
-        base.copy_from_slice(&bytes.as_ref()[0..8]);
-        degree.copy_from_slice(&bytes.as_ref()[8..12]);
-        log_head.copy_from_slice(&bytes.as_ref()[12..16]);
-        Self {
-            base_slot_start: u64::from_le_bytes(base),
-            degree: u32::from_le_bytes(degree),
-            log_head: i32::from_le_bytes(log_head),
-        }
     }
 }
 
@@ -260,7 +210,8 @@ where
         graph
             .push_vertex(Vertex {
                 base_slot_start,
-                degree: 0,
+                live_edges: 0,
+                slab_slots: 0,
                 log_head: -1,
                 deleted: false,
             })
@@ -297,7 +248,8 @@ where
         graph
             .push_vertex(Vertex {
                 base_slot_start,
-                degree: 0,
+                live_edges: 0,
+                slab_slots: 0,
                 log_head: -1,
                 deleted: false,
             })
@@ -312,7 +264,7 @@ pub(crate) fn deferred_bidirectional_test_graph<E>(
     starts: &[u64],
 ) -> TestDeferredBidirectionalLaraGraph<E>
 where
-    E: CsrEdge,
+    E: CsrEdge + CsrEdgeSlabVacancy,
 {
     let graph = crate::DeferredBidirectionalLaraGraph::new_with_config(
         vector_memory(),
@@ -344,7 +296,8 @@ where
         graph
             .push_vertex(Vertex {
                 base_slot_start,
-                degree: 0,
+                live_edges: 0,
+                slab_slots: 0,
                 log_head: -1,
                 deleted: false,
             })
@@ -354,6 +307,7 @@ where
 }
 
 pub(crate) fn assert_vertex_capacity_invariants(graph: &LaraGraph<TestEdge, Vertex, VectorMemory>) {
+    use crate::traits::CsrVertex;
     let layout: EdgeLayout = graph.edges().header().into();
     let mut owned_spans = Vec::new();
     for vidx in 0..graph.vertices().len() {
@@ -368,7 +322,7 @@ pub(crate) fn assert_vertex_capacity_invariants(graph: &LaraGraph<TestEdge, Vert
         );
         if v.log_head < 0 {
             assert!(
-                v.base_slot_start.saturating_add(u64::from(v.degree)) <= end,
+                v.base_slot_start.saturating_add(u64::from(v.degree())) <= end,
                 "vertex {vidx}: live slab prefix extends past csr window end {end}"
             );
         }
@@ -417,7 +371,8 @@ pub(crate) fn deferred_test_graph(
         graph
             .push_vertex(Vertex {
                 base_slot_start,
-                degree: 0,
+                live_edges: 0,
+                slab_slots: 0,
                 log_head: -1,
                 deleted: false,
             })

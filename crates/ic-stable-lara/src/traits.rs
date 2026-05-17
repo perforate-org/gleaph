@@ -12,7 +12,10 @@ use crate::VertexId;
 /// `log_head` is the LARA per-segment log array index of the head of this vertex's overflow chain,
 /// or `-1` if all neighbors live on the CSR slab.
 ///
-/// Clean scans should remain valid with only [`Self::base_slot_start`] and [`Self::degree`].
+/// [`Self::degree`] is the **logical** neighborhood width (what callers should treat as
+/// out-degree). [`Self::stored_degree`] is the backing width used for slab / overflow layout
+/// and may be larger while deferred deletes have not been folded.
+///
 /// Owned slab spans for inserts and relocation follow CSR geometry:
 /// adjacent [`Self::base_slot_start`] values and PMA leaf totals (plus `elem_capacity`).
 pub trait CsrVertex: Storable + Copy {
@@ -20,12 +23,33 @@ pub trait CsrVertex: Storable + Copy {
     const BYTES: usize;
     /// Global edge-slot index where this vertex's base neighborhood starts (flat slab model).
     fn base_slot_start(&self) -> u64;
-    /// Number of live neighbors currently visible to clean scans.
+    /// Logical out-degree (or label-bucket row count) visible through graph APIs.
     fn degree(&self) -> u32;
+    /// Physical width backing this row in slab / log storage (never less than [`Self::degree`]).
+    fn stored_degree(&self) -> u32 {
+        self.degree()
+    }
     /// Returns a copy with a new slab base slot.
     fn with_base_slot_start(self, start: u64) -> Self;
-    /// Returns a copy with a new visible degree.
+    /// Returns a copy after updating the **stored** neighborhood width used for layout.
     fn with_degree(self, degree: u32) -> Self;
+
+    /// Updates this row after [`crate::lara::edge::EdgeStore::remove_edge_slab_placeholder_matching`]
+    /// logically removed one on-slab edge by writing a vacant placeholder (no swap).
+    fn after_slab_placeholder_delete(self) -> Self;
+
+    /// Grows the packed slab row by one live edge (append path when no vacant reuse).
+    fn grow_packed_slab_by_one(self) -> Self;
+
+    /// After writing into the first vacant slab slot at `base + degree()` (see
+    /// [`Self::after_slab_placeholder_delete`]), adjusts counters so [`Self::degree`] grows by one
+    /// without growing [`Self::stored_degree`].
+    ///
+    /// Default: no-op (rows without deferred tail tombstones).
+    #[inline]
+    fn after_slab_insert_reuse_tail_tombstone(self) -> Self {
+        self
+    }
 
     /// Head index of this vertex's overflow log chain, or `-1` when absent.
     fn log_head(self) -> i32;
@@ -88,6 +112,18 @@ pub trait CsrEdge: Copy {
     fn neighbor_vid(&self) -> VertexId;
     /// Returns a copy with the adjacent vertex id changed.
     fn with_neighbor_vid(self, vid: VertexId) -> Self;
+}
+
+/// Edge records that support **logical slab deletion** without swap-remove:
+/// [`VertexId::SLAB_VACANT`] marks a cell deleted until a leaf rebalance packs the row.
+pub trait CsrEdgeSlabVacancy: CsrEdge {
+    /// Encoded edge payload for a vacant slab slot (must satisfy [`Self::is_slab_vacant_edge`]).
+    fn slab_vacant_edge() -> Self;
+    /// Returns `true` when this slot holds a logical-delete placeholder.
+    #[inline]
+    fn is_slab_vacant_edge(&self) -> bool {
+        self.neighbor_vid().is_slab_vacant_neighbor()
+    }
 }
 
 /// Extension of [`CsrEdge`] for edges that carry an **undirected** semantic flag in the slot payload.

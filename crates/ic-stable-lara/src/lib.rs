@@ -6,10 +6,13 @@
 //! scans remain direct:
 //!
 //! ```text
-//! vertex_id -> vertex row -> edge slots [base_slot_start, base_slot_start + degree)
+//! vertex_id -> vertex row -> live edges from slab + overflow log
+//!              (slab may hold [base_slot_start, base_slot_start + stored_degree) cells)
 //! ```
 //!
-//! A clean scan is authoritative only over `base_slot_start` and `degree`.
+//! A clean scan is authoritative over `base_slot_start` and **logical**
+//! [`traits::CsrVertex::degree`], walking only **live** slab records (skipping
+//! [`VertexId::SLAB_VACANT`] placeholders) plus the overflow log when `log_head >= 0`.
 //! It must not consult PMA segment counts, PMA span-metadata stores, or the
 //! free-span index. Update paths use CSR neighbor bases alongside those PMA
 //! structures to decide slab insert windows and relocation.
@@ -95,6 +98,15 @@ use types::Address;
 pub struct VertexId(u32);
 
 impl VertexId {
+    /// Neighbor id reserved for an edge slab cell that is logically deleted until compaction.
+    pub const SLAB_VACANT: Self = Self(u32::MAX);
+
+    /// Returns `true` when this id is the reserved slab-vacancy sentinel ([`Self::SLAB_VACANT`]).
+    #[inline]
+    pub const fn is_slab_vacant_neighbor(self) -> bool {
+        self.0 == u32::MAX
+    }
+
     /// Constructs a `VertexId` from a little-endian byte array.
     pub fn from_le_bytes(bytes: [u8; 4]) -> Self {
         Self(u32::from_le_bytes(bytes))

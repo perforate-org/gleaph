@@ -11,7 +11,7 @@ use crate::{
     VertexId,
     lara::maintenance::MaintenanceBudget,
     test_support::{labeled_lara_memories, vector_memory},
-    traits::CsrEdge,
+    traits::{CsrEdge, CsrEdgeSlabVacancy},
 };
 use canbench_rs::{bench, bench_fn};
 use std::hint::black_box;
@@ -37,6 +37,12 @@ impl CsrEdge for BenchEdge {
 
     fn with_neighbor_vid(self, vid: VertexId) -> Self {
         Self(u32::from(vid))
+    }
+}
+
+impl CsrEdgeSlabVacancy for BenchEdge {
+    fn slab_vacant_edge() -> Self {
+        Self(u32::from(VertexId::SLAB_VACANT))
     }
 }
 

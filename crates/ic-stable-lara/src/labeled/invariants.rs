@@ -25,7 +25,7 @@ pub(crate) fn assert_labeled_layout_invariants<E, M>(
         if vertex.is_default_edge_labeled() {
             let end = vertex
                 .base_slot_start()
-                .saturating_add(u64::from(vertex.degree()));
+                .saturating_add(u64::from(vertex.stored_degree()));
             assert!(
                 end <= edge_cap,
                 "vertex {vidx}: default edge range [{}, {end}) exceeds edge capacity {edge_cap}",
@@ -124,7 +124,7 @@ where
         let bucket = buckets
             .read_label_bucket_slot(start.saturating_add(u64::from(i)))
             .expect("bucket slot must exist");
-        live += i64::from(bucket.edge_len);
+        live += i64::from(bucket.degree());
     }
     (live, i64::from(vertex.vertex_edge_alloc_slots()))
 }

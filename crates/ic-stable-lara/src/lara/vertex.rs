@@ -1,8 +1,10 @@
 //! Stable LARA vertex column.
 //!
-//! The default row stores a direct edge base, live degree,
+//! The default row stores a direct edge base, live edge count, slab slot count,
 //! and per-segment log head (`-1` when the whole neighborhood is on the slab).
-//! `base_slot_start` and `degree` are the only fields required by clean scans.
+//! Clean scans use `base_slot_start` plus logical degree ([`Vertex::live_edges`] /
+//! [`CsrVertex::degree`]); slab iteration may span [`Vertex::slab_slots`] until
+//! rebalance packs vacant placeholders away.
 //!
 //! Owned slab spans for inserts and relocation use CSR geometry:
 //! `[base_slot_start, slab_window_exclusive_end)` derives from the next vertex's
@@ -10,8 +12,9 @@
 //!
 //! # V1 layout
 //!
-//! For [`Vertex`], each row is 16 bytes: the last `u32` (LE) stores `(log_head + 1)` in the low 31
-//! bits (`0` means no overflow log) and bit `31` for the vertex tombstone.
+//! For [`Vertex`], each row is 20 bytes: bytes `0..8` are `base_slot_start` (LE),
+//! `8..12` are `live_edges`, `12..16` are `slab_slots`, and the last `u32` (LE) stores
+//! `(log_head + 1)` in the low 31 bits (`0` means no overflow log) and bit `31` for the vertex tombstone.
 //!
 //! ```text
 //! -------------------------------------------------- <- Address 0
@@ -111,13 +114,19 @@ impl fmt::Display for InitError {
 
 impl std::error::Error for InitError {}
 
-/// Default fixed-width LARA vertex row.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// Default fixed-width LARA vertex row (20 bytes on wire).
+///
+/// `live_edges` is the logical out-degree (clean scans, rebalance packing).
+/// `slab_slots` is the physical slab prefix width; it may be larger while vacant
+/// placeholders from logical deletes await compaction on leaf rebalance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Vertex {
     /// First edge slot in this vertex's clean slab prefix.
     pub base_slot_start: u64,
-    /// Number of live outgoing edges visible through clean scans.
-    pub degree: u32,
+    /// Live edges counted by graph APIs ([`CsrVertex::degree`]).
+    pub live_edges: u32,
+    /// Physical slab cells reserved for this row ([`CsrVertex::stored_degree`]).
+    pub slab_slots: u32,
     /// Head entry in the per-segment overflow log, or `-1` when no log is present.
     pub log_head: i32,
     /// Logical deletion marker (serialized as bit 31 of the packed tail word).
@@ -125,23 +134,57 @@ pub struct Vertex {
     pub deleted: bool,
 }
 
+impl Default for Vertex {
+    fn default() -> Self {
+        Self {
+            base_slot_start: 0,
+            live_edges: 0,
+            slab_slots: 0,
+            log_head: -1,
+            deleted: false,
+        }
+    }
+}
+
 impl CsrVertex for Vertex {
-    const BYTES: usize = 16;
+    const BYTES: usize = 20;
 
     fn base_slot_start(&self) -> u64 {
         self.base_slot_start
     }
     fn degree(&self) -> u32 {
-        self.degree
+        self.live_edges
+    }
+    fn stored_degree(&self) -> u32 {
+        self.slab_slots
     }
     fn with_base_slot_start(mut self, start: u64) -> Self {
         self.base_slot_start = start;
         self
     }
-    fn with_degree(mut self, degree: u32) -> Self {
-        self.degree = degree;
+    /// Sets both live and slab to `n` (packed row after rebalance or fresh materialization).
+    fn with_degree(mut self, n: u32) -> Self {
+        self.live_edges = n;
+        self.slab_slots = n;
         self
     }
+    fn after_slab_placeholder_delete(mut self) -> Self {
+        self.live_edges = self.live_edges.saturating_sub(1);
+        self
+    }
+
+    fn grow_packed_slab_by_one(mut self) -> Self {
+        self.live_edges = self.live_edges.saturating_add(1);
+        self.slab_slots = self.slab_slots.saturating_add(1);
+        self
+    }
+
+    fn after_slab_insert_reuse_tail_tombstone(mut self) -> Self {
+        debug_assert!(self.live_edges < self.slab_slots);
+        self.live_edges = self.live_edges.saturating_add(1);
+        self
+    }
+
     fn log_head(self) -> i32 {
         self.log_head
     }
@@ -197,9 +240,10 @@ fn unpack_vertex_tail(word: u32) -> (i32, bool) {
 fn vertex_row_bytes(v: &Vertex) -> [u8; Vertex::BYTES] {
     let mut b = [0u8; Vertex::BYTES];
     b[0..8].copy_from_slice(&v.base_slot_start.to_le_bytes());
-    b[8..12].copy_from_slice(&v.degree.to_le_bytes());
+    b[8..12].copy_from_slice(&v.live_edges.to_le_bytes());
+    b[12..16].copy_from_slice(&v.slab_slots.to_le_bytes());
     let tail = pack_vertex_tail(v.log_head, v.deleted);
-    b[12..16].copy_from_slice(&tail.to_le_bytes());
+    b[16..20].copy_from_slice(&tail.to_le_bytes());
     b
 }
 
@@ -219,22 +263,26 @@ impl Storable for Vertex {
 
     fn from_bytes(bytes: Cow<[u8]>) -> Self {
         let b = bytes.as_ref();
-        assert!(
-            b.len() >= Vertex::BYTES,
-            "Vertex::from_bytes expects at least {}",
+        assert_eq!(
+            b.len(),
+            Vertex::BYTES,
+            "Vertex::from_bytes expects exactly {} bytes",
             Vertex::BYTES
         );
         let mut u = [0u8; 8];
-        let mut d = [0u8; 4];
+        let mut live = [0u8; 4];
+        let mut slab = [0u8; 4];
         let mut t = [0u8; 4];
         u.copy_from_slice(&b[0..8]);
-        d.copy_from_slice(&b[8..12]);
-        t.copy_from_slice(&b[12..16]);
+        live.copy_from_slice(&b[8..12]);
+        slab.copy_from_slice(&b[12..16]);
+        t.copy_from_slice(&b[16..20]);
         let tail = u32::from_le_bytes(t);
         let (log_head, deleted) = unpack_vertex_tail(tail);
         Self {
             base_slot_start: u64::from_le_bytes(u),
-            degree: u32::from_le_bytes(d),
+            live_edges: u32::from_le_bytes(live),
+            slab_slots: u32::from_le_bytes(slab),
             log_head,
             deleted,
         }
@@ -409,10 +457,16 @@ mod tests {
     use std::borrow::Cow;
 
     #[test]
+    fn vertex_default_has_no_overflow_log() {
+        assert_eq!(Vertex::default().log_head(), -1);
+    }
+
+    #[test]
     fn vertex_storable_roundtrip_default_tail() {
         let v = Vertex {
             base_slot_start: 0x0102_0304_0506_0708,
-            degree: 0x090a_0b0c,
+            live_edges: 0x090a_0b0c,
+            slab_slots: 0x090a_0b0c,
             log_head: -1,
             deleted: false,
         };
@@ -424,7 +478,8 @@ mod tests {
     fn tombstone_bit_preserves_log_head() {
         let v = Vertex {
             base_slot_start: 1,
-            degree: 2,
+            live_edges: 2,
+            slab_slots: 2,
             log_head: 42,
             deleted: false,
         }
@@ -460,7 +515,8 @@ mod bench {
             store
                 .push(Vertex {
                     base_slot_start: i * 4,
-                    degree: (i % 8) as u32,
+                    live_edges: (i % 8) as u32,
+                    slab_slots: (i % 8) as u32,
                     log_head: -1,
                     deleted: false,
                 })
@@ -481,7 +537,8 @@ mod bench {
                 store
                     .push(Vertex {
                         base_slot_start: black_box(i * 4),
-                        degree: 0,
+                        live_edges: 0,
+                        slab_slots: 0,
                         log_head: -1,
                         deleted: false,
                     })
@@ -502,7 +559,7 @@ mod bench {
                 let idx = helper::splitmix64(i) % helper::MEDIUM_N;
                 let id = VertexId::from(idx as u32);
                 let v = store.get(id);
-                store.set(id, &v.with_degree(black_box(v.degree.wrapping_add(1))));
+                store.set(id, &v.with_degree(black_box(v.live_edges.wrapping_add(1))));
             }
         })
     }

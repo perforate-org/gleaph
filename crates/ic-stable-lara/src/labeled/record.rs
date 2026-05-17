@@ -2,9 +2,12 @@
 
 use crate::VertexId;
 use crate::labeled::bucket_label_key::{BUCKET_LABEL_INDEX_MASK, BucketLabelKey};
+use crate::lara::edge::DEFAULT_MAX_LOG_ENTRIES;
 use crate::traits::{CsrEdge, CsrVertex, CsrVertexTombstone};
 use ic_stable_structures::{Storable, storable::Bound};
 use std::borrow::Cow;
+
+const _: () = assert!(DEFAULT_MAX_LOG_ENTRIES <= u8::MAX as u32);
 
 /// One LabelBucket descriptor in the intermediate CSR layer.
 ///
@@ -20,9 +23,9 @@ use std::borrow::Cow;
 /// - for the last bucket, the first bucket's `edge_start` plus the vertex's
 ///   [`LabeledVertex::vertex_edge_alloc_slots`].
 ///
-/// `edge_start` and `edge_len` play the same scan role for one label's edge
-/// range that [`LabeledVertex::base_slot_start`] / [`LabeledVertex::row_count`]
-/// play for LabelBucket ranges.
+/// `edge_start` and stored occupancy [`Self::edge_len`] play the same scan role for
+/// one label's edge range that [`LabeledVertex::base_slot_start`] /
+/// [`LabeledVertex::row_count`] play for LabelBucket ranges.
 ///
 /// When the slab window up to the next bucket boundary is full, additional live
 /// edges for this label are stored in the shared [`crate::lara::edge::EdgeStore`]
@@ -35,10 +38,17 @@ pub struct LabelBucket {
     pub bucket_label_key: BucketLabelKey,
     /// Global edge-slot index where this bucket's on-slab edge prefix starts.
     pub edge_start: u64,
-    /// Number of live edges (on-slab prefix plus overflow log chain).
+    /// Stored edge slots (on-slab prefix plus overflow log chain entries).
     pub edge_len: u32,
     /// Head index in the per-leaf segment overflow log, or `-1` if slab-only.
     pub overflow_log_head: i32,
+    /// Deferred deletes not yet folded; logical live edges are
+    /// `edge_len - unmaintained_deletes`.
+    ///
+    /// This fits in `u8` because deferred placeholders are bounded by the per-segment
+    /// overflow log capacity (`DEFAULT_MAX_LOG_ENTRIES`, currently 170), and insertion
+    /// reuses or rebalances before a bucket can accumulate more pending holes.
+    pub unmaintained_deletes: u8,
 }
 
 impl Default for LabelBucket {
@@ -48,13 +58,14 @@ impl Default for LabelBucket {
             edge_start: 0,
             edge_len: 0,
             overflow_log_head: -1,
+            unmaintained_deletes: 0,
         }
     }
 }
 
 impl LabelBucket {
     /// Fixed byte width of one encoded LabelBucket.
-    pub const BYTES: usize = 18;
+    pub const BYTES: usize = 19;
 
     /// Encodes this LabelBucket into exactly [`Self::BYTES`] bytes.
     pub fn write_to(self, bytes: &mut [u8]) {
@@ -63,6 +74,7 @@ impl LabelBucket {
         bytes[2..10].copy_from_slice(&self.edge_start.to_le_bytes());
         bytes[10..14].copy_from_slice(&self.edge_len.to_le_bytes());
         bytes[14..18].copy_from_slice(&self.overflow_log_head.to_le_bytes());
+        bytes[18] = self.unmaintained_deletes;
     }
 
     /// Returns a copy with `edge_start` / `edge_len` updated.
@@ -84,6 +96,15 @@ impl LabelBucket {
         }
     }
 
+    /// Returns a copy with [`Self::unmaintained_deletes`] set to `n`.
+    #[inline]
+    pub fn with_unmaintained_deletes(self, n: u8) -> Self {
+        Self {
+            unmaintained_deletes: n,
+            ..self
+        }
+    }
+
     /// Decodes a LabelBucket from exactly [`Self::BYTES`] bytes.
     pub fn read_from(bytes: &[u8]) -> Self {
         let chunk: [u8; Self::BYTES] = bytes
@@ -94,6 +115,7 @@ impl LabelBucket {
             edge_start: u64::from_le_bytes(chunk[2..10].try_into().unwrap()),
             edge_len: u32::from_le_bytes(chunk[10..14].try_into().unwrap()),
             overflow_log_head: i32::from_le_bytes(chunk[14..18].try_into().unwrap()),
+            unmaintained_deletes: chunk[18],
         }
     }
 }
@@ -106,6 +128,11 @@ impl CsrVertex for LabelBucket {
     }
 
     fn degree(&self) -> u32 {
+        self.edge_len
+            .saturating_sub(u32::from(self.unmaintained_deletes))
+    }
+
+    fn stored_degree(&self) -> u32 {
         self.edge_len
     }
 
@@ -126,6 +153,19 @@ impl CsrVertex for LabelBucket {
     fn with_log_head(mut self, idx: i32) -> Self {
         self.overflow_log_head = idx;
         self
+    }
+
+    fn after_slab_placeholder_delete(self) -> Self {
+        debug_assert!(self.unmaintained_deletes < u8::MAX);
+        self.with_unmaintained_deletes(self.unmaintained_deletes.saturating_add(1))
+    }
+
+    fn grow_packed_slab_by_one(self) -> Self {
+        self.with_degree(self.edge_len.saturating_add(1))
+    }
+
+    fn after_slab_insert_reuse_tail_tombstone(self) -> Self {
+        self.with_unmaintained_deletes(self.unmaintained_deletes.saturating_sub(1))
     }
 }
 
@@ -162,6 +202,9 @@ const BUCKET_ALLOC_BITS: u32 = 15;
 const BUCKET_ALLOC_MASK: u32 = ((1 << BUCKET_ALLOC_BITS) - 1) << BUCKET_ALLOC_SHIFT;
 /// Bit 31 of [`LabeledVertex::metadata`]: logical vertex deletion marker.
 const VERTEX_TOMBSTONE_BIT: u32 = 1 << 31;
+/// Bits 16–23 of [`LabeledVertex::metadata`]: unmaintained logical deletes on a bypass row.
+const UNMAINTAINED_BYPASS_DELETE_SHIFT: u32 = 16;
+const UNMAINTAINED_BYPASS_DELETE_MASK: u32 = 0xFF << UNMAINTAINED_BYPASS_DELETE_SHIFT;
 
 /// Per-vertex locator for one labeled CSR orientation.
 ///
@@ -169,7 +212,8 @@ const VERTEX_TOMBSTONE_BIT: u32 = 1 << 31;
 ///
 /// - **Homogeneous / default-label bypass:** [`Self::is_default_edge_labeled`] is true.
 ///   [`Self::base_slot_start`] points directly into [`crate::lara::edge::EdgeStore`],
-///   and [`Self::row_count`] is the live edge count. No LabelBucket rows are read.
+///   and [`Self::row_count`] is the **stored** out-edge slot count. The logical out-degree
+///   is [`CsrVertex::degree`]. No LabelBucket rows are read.
 ///   The storage label is always the graph's `default_label` plus [`Self::is_bypass_undirected`].
 /// - **Normal labeled row:** [`Self::is_default_edge_labeled`] is false.
 ///   [`Self::base_slot_start`] points into [`crate::labeled::LabelBucketStore`],
@@ -186,7 +230,7 @@ const VERTEX_TOMBSTONE_BIT: u32 = 1 << 31;
 pub struct LabeledVertex {
     /// Bucket-slot start in normal mode, or edge-slot start in default-bypass mode.
     pub base_slot_start: u64,
-    /// LabelBucket count in normal mode, or edge count in default-bypass mode.
+    /// LabelBucket count in normal mode, or stored out-edge slot count in default-bypass mode.
     pub row_count: u32,
     /// Packed metadata: default-label bypass and tombstone bits.
     pub metadata: i32,
@@ -221,9 +265,11 @@ impl LabeledVertex {
         let mut raw = self.metadata_word();
         if enabled {
             raw |= DEFAULT_EDGE_LABELED_BIT;
+            raw &= !UNMAINTAINED_BYPASS_DELETE_MASK;
         } else {
             raw &= !DEFAULT_EDGE_LABELED_BIT;
             raw &= !BYPASS_UNDIRECTED_BIT;
+            raw &= !UNMAINTAINED_BYPASS_DELETE_MASK;
         }
         self.with_metadata_word(raw)
     }
@@ -243,6 +289,22 @@ impl LabeledVertex {
         } else {
             raw &= !BYPASS_UNDIRECTED_BIT;
         }
+        self.with_metadata_word(raw)
+    }
+
+    /// Unmaintained logical deletes on a default-label bypass row (metadata bits 16–23).
+    #[inline]
+    pub fn unmaintained_bypass_delete_count(self) -> u8 {
+        ((self.metadata_word() & UNMAINTAINED_BYPASS_DELETE_MASK)
+            >> UNMAINTAINED_BYPASS_DELETE_SHIFT) as u8
+    }
+
+    /// Returns a copy with the bypass unmaintained-delete counter set to `n`.
+    #[inline]
+    pub fn with_unmaintained_bypass_delete_count(self, n: u8) -> Self {
+        let mut raw = self.metadata_word();
+        raw &= !UNMAINTAINED_BYPASS_DELETE_MASK;
+        raw |= u32::from(n) << UNMAINTAINED_BYPASS_DELETE_SHIFT;
         self.with_metadata_word(raw)
     }
 
@@ -372,6 +434,15 @@ impl CsrVertex for LabeledVertex {
     }
 
     fn degree(&self) -> u32 {
+        if self.is_default_edge_labeled() {
+            self.row_count
+                .saturating_sub(u32::from(self.unmaintained_bypass_delete_count()))
+        } else {
+            self.row_count
+        }
+    }
+
+    fn stored_degree(&self) -> u32 {
         self.row_count
     }
 
@@ -390,6 +461,29 @@ impl CsrVertex for LabeledVertex {
     }
 
     fn with_log_head(self, _idx: i32) -> Self {
+        self
+    }
+
+    fn after_slab_placeholder_delete(self) -> Self {
+        if self.is_default_edge_labeled() {
+            debug_assert!(self.unmaintained_bypass_delete_count() < u8::MAX);
+            return self.with_unmaintained_bypass_delete_count(
+                self.unmaintained_bypass_delete_count().saturating_add(1),
+            );
+        }
+        self.with_degree(self.row_count.saturating_sub(1))
+    }
+
+    fn grow_packed_slab_by_one(self) -> Self {
+        self.with_degree(self.row_count.saturating_add(1))
+    }
+
+    fn after_slab_insert_reuse_tail_tombstone(self) -> Self {
+        if self.is_default_edge_labeled() {
+            return self.with_unmaintained_bypass_delete_count(
+                self.unmaintained_bypass_delete_count().saturating_sub(1),
+            );
+        }
         self
     }
 }
@@ -461,6 +555,7 @@ mod tests {
             edge_start: 0x1122_3344_5566_7788,
             edge_len: 0xAABB_CCDD,
             overflow_log_head: -0x0102_0304,
+            unmaintained_deletes: 0,
         };
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
@@ -468,12 +563,17 @@ mod tests {
             bytes,
             [
                 0x34, 0x12, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0xDD, 0xCC, 0xBB, 0xAA,
-                0xFC, 0xFC, 0xFD, 0xFE,
+                0xFC, 0xFC, 0xFD, 0xFE, 0x00,
             ]
         );
         assert_eq!(LabelBucket::read_from(&bytes), bucket);
         assert_eq!(bucket.base_slot_start(), bucket.edge_start);
-        assert_eq!(bucket.degree(), bucket.edge_len);
+        assert_eq!(
+            bucket.degree(),
+            bucket
+                .edge_len
+                .saturating_sub(u32::from(bucket.unmaintained_deletes))
+        );
     }
 
     #[test]

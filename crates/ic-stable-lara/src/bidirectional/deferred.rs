@@ -9,7 +9,7 @@ use crate::{
         maintenance::{DeferredConfig, DeferredError, MaintenanceBudget, MaintenanceWorkReport},
         operation_error::LaraOperationError,
     },
-    traits::{CsrEdge, CsrEdgeUndirected, CsrVertex},
+    traits::{CsrEdge, CsrEdgeSlabVacancy, CsrEdgeUndirected, CsrVertex},
 };
 use ic_stable_roaring::{BitmapError, InitError as RoaringInitError, StableRoaringBitmap};
 use ic_stable_structures::{Memory, Storable, storable::Bound};
@@ -446,7 +446,7 @@ impl std::error::Error for DeferredBidirectionalLaraError {
 /// Bidirectional LARA graph whose two orientations use deferred maintenance.
 pub struct DeferredBidirectionalLaraGraph<E, V, M>
 where
-    E: CsrEdge,
+    E: CsrEdge + CsrEdgeSlabVacancy,
     V: CsrVertex,
     M: Memory,
 {
@@ -461,7 +461,7 @@ pub type DeferredBidirectionalLara<E, V, M> = DeferredBidirectionalLaraGraph<E, 
 
 impl<E, V, M> DeferredBidirectionalLaraGraph<E, V, M>
 where
-    E: CsrEdge,
+    E: CsrEdge + CsrEdgeSlabVacancy,
     V: CsrVertex,
     M: Memory,
 {
@@ -1892,7 +1892,8 @@ mod tests {
         forward
             .push_vertex(Vertex {
                 base_slot_start: 0,
-                degree: 0,
+                live_edges: 0,
+                slab_slots: 0,
                 log_head: -1,
                 deleted: false,
             })

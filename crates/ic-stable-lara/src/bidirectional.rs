@@ -11,7 +11,7 @@ pub mod deferred;
 use crate::{
     GrowFailed, LaraGraph, VertexCount, VertexId,
     lara::{InitError, edge::OutEdgesIter, operation_error::LaraOperationError},
-    traits::{CsrEdge, CsrEdgeUndirected, CsrVertex},
+    traits::{CsrEdge, CsrEdgeSlabVacancy, CsrEdgeUndirected, CsrVertex},
 };
 use ic_stable_structures::Memory;
 use std::fmt;
@@ -377,7 +377,7 @@ where
         edge: E,
     ) -> Result<bool, BidirectionalLaraError>
     where
-        E: PartialEq,
+        E: PartialEq + CsrEdgeSlabVacancy,
     {
         self.ensure_vertex(src)?;
         self.ensure_vertex(dst)?;
@@ -407,7 +407,7 @@ where
         matches: F,
     ) -> Result<Option<E>, BidirectionalLaraError>
     where
-        E: PartialEq,
+        E: PartialEq + CsrEdgeSlabVacancy,
         F: FnMut(&E) -> bool,
     {
         self.ensure_vertex(src)?;
@@ -422,7 +422,7 @@ where
         edge: E,
     ) -> Result<Option<E>, BidirectionalLaraError>
     where
-        E: PartialEq,
+        E: PartialEq + CsrEdgeSlabVacancy,
     {
         self.remove_directed_matching_unchecked(src, dst, |candidate| *candidate == edge)
     }
@@ -434,7 +434,7 @@ where
         mut matches: F,
     ) -> Result<Option<E>, BidirectionalLaraError>
     where
-        E: PartialEq,
+        E: PartialEq + CsrEdgeSlabVacancy,
         F: FnMut(&E) -> bool,
     {
         let removed_forward = self
@@ -506,7 +506,7 @@ where
         edge: E,
     ) -> Result<bool, BidirectionalLaraError>
     where
-        E: CsrEdgeUndirected + PartialEq,
+        E: CsrEdgeUndirected + PartialEq + CsrEdgeSlabVacancy,
     {
         self.ensure_vertex(u)?;
         self.ensure_vertex(v)?;
@@ -534,7 +534,7 @@ where
         mut matches: F,
     ) -> Result<Option<E>, BidirectionalLaraError>
     where
-        E: CsrEdgeUndirected + PartialEq,
+        E: CsrEdgeUndirected + PartialEq + CsrEdgeSlabVacancy,
         F: FnMut(&E) -> bool,
     {
         self.ensure_vertex(u)?;

@@ -14,7 +14,10 @@
 //! type and directionality are carried by the labeled bucket layer, not this row.
 
 use super::vertex_ref::VertexRef;
-use ic_stable_lara::{VertexId, traits::CsrEdge};
+use ic_stable_lara::{
+    VertexId,
+    traits::{CsrEdge, CsrEdgeSlabVacancy},
+};
 
 mod id;
 mod meta;
@@ -75,6 +78,16 @@ impl CsrEdge for Edge {
             target,
             vertex_edge_id: self.vertex_edge_id,
             inline_value: self.inline_value,
+        }
+    }
+}
+
+impl CsrEdgeSlabVacancy for Edge {
+    fn slab_vacant_edge() -> Self {
+        Self {
+            target: VertexRef::local(VertexId::SLAB_VACANT),
+            vertex_edge_id: VertexEdgeId::from_raw(0),
+            inline_value: 0,
         }
     }
 }

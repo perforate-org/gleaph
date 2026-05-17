@@ -4,12 +4,14 @@
 //! segment counts, segment span metadata, and free span manager. The graph is
 //! deliberately split into two contracts:
 //!
-//! - **Scan contract:** read one vertex row, then read edge slots
-//!   `[base_slot_start, base_slot_start + degree)`. Scan code must not branch
-//!   on segment span metadata or read relocation/free-span metadata beyond the
-//!   vertex row fields used for visibility.
+//! - **Scan contract:** read one vertex row, then enumerate **logical** out-edges.
+//!   For [`crate::lara::vertex::Vertex`] rows this means [`crate::traits::CsrVertex::degree`]
+//!   (live count); the slab may reserve [`crate::traits::CsrVertex::stored_degree`] cells with
+//!   [`crate::VertexId::SLAB_VACANT`] placeholders until a rebalance packs the row. Iteration APIs
+//!   skip vacant cells. Scan code must not branch on segment span metadata or read relocation /
+//!   free-span metadata beyond the vertex row fields used for visibility.
 //! - **Update contract:** insert, resize, rebalance, relocate, and maintenance
-//!   code may read and rewrite `base_slot_start` and `degree`. Owned slab span
+//!   code may read and rewrite `base_slot_start`, live/stored widths, and log metadata. Owned slab span
 //!   for writes is derived from CSR successor bases, PMA counts, and slab
 //!   `elem_capacity`.
 //!
@@ -42,7 +44,7 @@ use crate::{
         operation_error::{LaraOperationError, VertexAccess, VertexAccessError},
         vertex::VertexStore,
     },
-    traits::{CsrEdge, CsrVertex, CsrVertexTombstoneScan},
+    traits::{CsrEdge, CsrEdgeSlabVacancy, CsrVertex, CsrVertexTombstoneScan},
 };
 use ic_stable_structures::Memory;
 use std::{fmt, marker::PhantomData};
@@ -129,7 +131,9 @@ impl std::error::Error for InitError {}
 /// Single-orientation LARA adjacency graph.
 ///
 /// This graph stores one CSR orientation: `insert_edge` appends an edge record
-/// to the row identified by `src`, and `iter_out_edges` scans that row.
+/// to the row identified by `src`. [`LaraGraph::iter_out_edges`] scans that row in
+/// [`EdgeStore`]'s default **descending** contiguous order (log head first, then slab high→low);
+/// use [`LaraGraph::collect_out_edges_slot_order`] for slot/materialization order.
 pub struct LaraGraph<E, V, M>
 where
     E: CsrEdge,
@@ -330,10 +334,9 @@ where
             .for_each_out_edge_matching(&self.vertices, src, raw_matches, matches, visit)
     }
 
-    /// Iterates outgoing edges in the store's standard scan order.
-    ///
-    /// This order is deterministic for the committed store state, but it is not
-    /// guaranteed to be insertion order or slab slot order.
+    /// Iterates outgoing edges in [`EdgeStore`]'s default **descending** contiguous order (overflow
+    /// log from the chain head, then slab slots high→low). Prefer this on hot paths; use
+    /// [`Self::collect_out_edges_slot_order`] when you need ascending slot / materialization order.
     pub fn iter_out_edges(
         &self,
         src: VertexId,
@@ -343,14 +346,15 @@ where
 
     /// Removes one outgoing edge whose full edge record matches `edge`.
     ///
-    /// When the edge is present, the last edge in `src`'s row may be moved into
-    /// the removed slot. Use this API only where adjacency order is not part of
-    /// the caller's contract. When several edges connect the same vertices,
-    /// fields such as labels or properties in `E` decide which single record is
-    /// removed.
+    /// On slab-only rows (`log_head < 0`), the matching cell becomes a
+    /// [`CsrEdgeSlabVacancy::slab_vacant_edge`] placeholder and the vertex's logical
+    /// degree drops; physical slab width may stay larger until rebalance compacts the row.
+    /// Use this API only where adjacency order is not part of the caller's contract.
+    /// When several edges connect the same vertices, fields such as labels or properties
+    /// in `E` decide which single record is removed.
     pub fn remove_edge(&self, src: VertexId, edge: E) -> Result<bool, LaraOperationError>
     where
-        E: PartialEq,
+        E: PartialEq + CsrEdgeSlabVacancy,
     {
         Ok(self
             .remove_edge_matching(src, |candidate| *candidate == edge)?
@@ -359,7 +363,8 @@ where
 
     /// Removes the first outgoing edge accepted by `matches`.
     ///
-    /// Returns the removed edge record when one was present. This is useful for
+    /// On slab-only rows, removal uses a vacant placeholder ([`CsrEdgeSlabVacancy`]) rather than
+    /// swap-remove. Returns the removed edge record when one was present. This is useful for
     /// matching on only part of the payload, such as a label or one property.
     pub fn remove_edge_matching<F>(
         &self,
@@ -367,6 +372,7 @@ where
         matches: F,
     ) -> Result<Option<E>, LaraOperationError>
     where
+        E: CsrEdgeSlabVacancy,
         F: FnMut(&E) -> bool,
     {
         if u32::from(src) >= self.vertices.len() {
@@ -378,12 +384,8 @@ where
         if V::record_is_vertex_tombstone(&v) {
             return Err(LaraOperationError::VertexDeleted);
         }
-        if v.log_head() >= 0 {
-            self.rebalance_leaf_for(src)
-                .map_err(LaraOperationError::RebalanceFailed)?;
-        }
         self.edges
-            .remove_edge_unordered_matching(&self.vertices, src, matches)
+            .remove_edge_slab_placeholder_matching(&self.vertices, src, matches)
     }
 
     /// Doubles or otherwise expands the edge slab and redistributes all rows.
@@ -530,6 +532,7 @@ where
         matches: F,
     ) -> Result<Option<E>, LaraOperationError>
     where
+        E: CsrEdgeSlabVacancy,
         F: FnMut(&E) -> bool,
     {
         if u32::from(src) >= self.vertices.len() {
@@ -540,7 +543,7 @@ where
                 .map_err(LaraOperationError::RebalanceFailed)?;
         }
         self.edges
-            .remove_edge_unordered_matching(&self.vertices, src, matches)
+            .remove_edge_slab_placeholder_matching(&self.vertices, src, matches)
     }
 
     fn rebalance_after_insert(&self, src: VertexId) -> Result<(), LaraOperationError> {
@@ -1151,13 +1154,11 @@ where
         let mut offsets = Vec::with_capacity(vertex_count + 1);
         offsets.push(0);
         for vid in start_vertex..end_vertex {
-            let segment_start = edges.len();
             edges.extend(
                 self.edges
-                    .iter_out_edges(&self.vertices, VertexId::from(vid))
+                    .collect_out_edges_slot_order(&self.vertices, VertexId::from(vid))
                     .expect("LARA log chains are valid before rebalance"),
             );
-            edges[segment_start..].reverse();
             offsets.push(edges.len());
         }
 
@@ -1574,7 +1575,8 @@ mod tests {
         graph
             .push_vertex(Vertex {
                 base_slot_start: 0,
-                degree: 0,
+                live_edges: 0,
+                slab_slots: 0,
                 log_head: -1,
                 deleted: false,
             })
@@ -1582,7 +1584,8 @@ mod tests {
         graph
             .push_vertex(Vertex {
                 base_slot_start: 0,
-                degree: 0,
+                live_edges: 0,
+                slab_slots: 0,
                 log_head: -1,
                 deleted: false,
             })
@@ -1605,7 +1608,7 @@ mod tests {
         graph.insert_edge(VertexId::from(1), TestEdge(10)).unwrap();
         graph.insert_edge(VertexId::from(1), TestEdge(11)).unwrap();
 
-        assert_eq!(graph.vertices().get(VertexId::from(1)).degree, 2);
+        assert_eq!(graph.vertices().get(VertexId::from(1)).degree(), 2);
         assert_eq!(graph.vertices().get(VertexId::from(1)).log_head, -1);
         assert_eq!(
             graph
@@ -1630,32 +1633,34 @@ mod tests {
                 .unwrap(),
             vec![TestEdge(10), TestEdge(11)]
         );
-        assert_eq!(graph.vertices().get(VertexId::from(0)).degree, 2);
+        assert_eq!(graph.vertices().get(VertexId::from(0)).degree(), 2);
         assert_eq!(graph.vertices().get(VertexId::from(0)).log_head, -1);
         assert!(graph.edges().header().elem_capacity >= 4);
     }
 
     #[test]
-    fn lara_iter_out_edges_matches_reverse_slot_order() {
+    fn lara_iter_out_edges_is_descending_scan() {
         let graph = test_graph(2, 2, &[0, 1]);
 
         graph.insert_edge(VertexId::from(0), TestEdge(10)).unwrap();
         graph.insert_edge(VertexId::from(0), TestEdge(11)).unwrap();
 
-        let mut expected = graph
+        let slot_order = graph
             .collect_out_edges_slot_order(VertexId::from(0))
             .unwrap();
-        expected.reverse();
         let actual = graph
             .iter_out_edges(VertexId::from(0))
             .unwrap()
             .collect::<Vec<_>>();
 
+        let mut expected = slot_order.clone();
+        expected.reverse();
         assert_eq!(actual, expected);
+        assert_eq!(slot_order, vec![TestEdge(10), TestEdge(11)]);
     }
 
     #[test]
-    fn lara_remove_edge_uses_unordered_swap_remove() {
+    fn lara_remove_edge_uses_slab_placeholder_delete() {
         let graph = test_graph(8, 2, &[0, 4]);
 
         graph.insert_edge(VertexId::from(0), TestEdge(10)).unwrap();
@@ -1670,7 +1675,14 @@ mod tests {
                 .unwrap(),
             vec![TestEdge(10), TestEdge(12)]
         );
-        assert_eq!(graph.vertices().get(VertexId::from(0)).degree, 2);
+        assert_eq!(
+            graph
+                .iter_out_edges(VertexId::from(0))
+                .unwrap()
+                .collect::<Vec<_>>(),
+            vec![TestEdge(12), TestEdge(10)]
+        );
+        assert_eq!(graph.vertices().get(VertexId::from(0)).degree(), 2);
         assert_eq!(graph.edges().header().num_edges, 2);
         assert_eq!(
             graph
@@ -1680,10 +1692,51 @@ mod tests {
                 .actual,
             2
         );
+
+        graph.insert_edge(VertexId::from(0), TestEdge(13)).unwrap();
+
+        assert_eq!(
+            graph
+                .collect_out_edges_slot_order(VertexId::from(0))
+                .unwrap(),
+            vec![TestEdge(10), TestEdge(12), TestEdge(13)]
+        );
+        assert_eq!(graph.vertices().get(VertexId::from(0)).degree(), 3);
+        assert_eq!(graph.vertices().get(VertexId::from(0)).stored_degree(), 4);
+        assert_eq!(graph.edges().header().num_edges, 3);
     }
 
     #[test]
-    fn lara_remove_edge_folds_log_before_removing() {
+    fn lara_clear_row_after_placeholder_delete_counts_only_live_edges() {
+        let graph = test_graph(8, 2, &[0, 4]);
+
+        graph.insert_edge(VertexId::from(0), TestEdge(10)).unwrap();
+        graph.insert_edge(VertexId::from(0), TestEdge(11)).unwrap();
+        graph.insert_edge(VertexId::from(0), TestEdge(12)).unwrap();
+        assert!(graph.remove_edge(VertexId::from(0), TestEdge(11)).unwrap());
+
+        assert_eq!(graph.vertices().get(VertexId::from(0)).degree(), 2);
+        assert_eq!(graph.vertices().get(VertexId::from(0)).stored_degree(), 3);
+        assert_eq!(graph.edges().header().num_edges, 2);
+
+        let removed = graph.clear_row_after_rebalance(VertexId::from(0)).unwrap();
+
+        assert_eq!(removed, 2);
+        assert_eq!(graph.vertices().get(VertexId::from(0)).degree(), 0);
+        assert_eq!(graph.vertices().get(VertexId::from(0)).stored_degree(), 0);
+        assert_eq!(graph.edges().header().num_edges, 0);
+        assert_eq!(
+            graph
+                .edges()
+                .counts_store()
+                .get(u64::from(graph.layout().segment_count))
+                .actual,
+            0
+        );
+    }
+
+    #[test]
+    fn lara_remove_edge_appends_delete_log_without_reordering() {
         let graph = test_graph(2, 2, &[0, 1]);
 
         graph
@@ -1705,10 +1758,55 @@ mod tests {
                 .unwrap(),
             vec![TestEdge(10), TestEdge(12)]
         );
-        assert_eq!(graph.vertices().get(VertexId::from(0)).degree, 2);
-        assert_eq!(graph.vertices().get(VertexId::from(0)).log_head, -1);
+        assert_eq!(graph.vertices().get(VertexId::from(0)).degree(), 2);
+        assert!(graph.vertices().get(VertexId::from(0)).log_head >= 0);
         assert_eq!(graph.edges().header().num_edges, 2);
         assert_vertex_capacity_invariants(&graph);
+    }
+
+    #[test]
+    fn lara_delete_log_targets_exact_duplicate_occurrence() {
+        let graph = test_graph(2, 2, &[0, 1]);
+
+        graph
+            .insert_edge_raw(VertexId::from(0), TestEdge(10))
+            .unwrap();
+        graph
+            .insert_edge_raw(VertexId::from(0), TestEdge(11))
+            .unwrap();
+        graph
+            .insert_edge_raw(VertexId::from(0), TestEdge(10))
+            .unwrap();
+        graph
+            .insert_edge_raw(VertexId::from(0), TestEdge(12))
+            .unwrap();
+        assert!(graph.vertices().get(VertexId::from(0)).log_head >= 0);
+
+        let mut seen_tens = 0u32;
+        let removed = graph
+            .remove_edge_matching(VertexId::from(0), |edge| {
+                if *edge != TestEdge(10) {
+                    return false;
+                }
+                seen_tens += 1;
+                seen_tens == 2
+            })
+            .unwrap();
+
+        assert_eq!(removed, Some(TestEdge(10)));
+        assert_eq!(
+            graph
+                .collect_out_edges_slot_order(VertexId::from(0))
+                .unwrap(),
+            vec![TestEdge(10), TestEdge(11), TestEdge(12)]
+        );
+        assert_eq!(
+            graph
+                .iter_out_edges(VertexId::from(0))
+                .unwrap()
+                .collect::<Vec<_>>(),
+            vec![TestEdge(12), TestEdge(11), TestEdge(10)]
+        );
     }
 
     #[test]
@@ -1827,14 +1925,14 @@ mod tests {
         assert_eq!(released.start_slot, 0);
         assert!(released.len > 0);
         assert_eq!(graph.vertices().get(VertexId::from(0)).base_slot_start, 4);
-        assert_eq!(graph.vertices().get(VertexId::from(0)).degree, 4);
+        assert_eq!(graph.vertices().get(VertexId::from(0)).degree(), 4);
         let layout: EdgeLayout = graph.edges().header().into();
         let v = graph.vertices().get(VertexId::from(0));
         let end = graph
             .edges()
             .slab_window_exclusive_end(&layout, graph.vertices(), 0, &v);
         assert!(
-            v.base_slot_start.saturating_add(u64::from(v.degree)) <= end,
+            v.base_slot_start.saturating_add(u64::from(v.degree())) <= end,
             "slab neighborhood must fit csr window",
         );
         assert_eq!(graph.vertices().get(VertexId::from(0)).log_head, -1);
@@ -1950,7 +2048,8 @@ mod tests {
             VertexId::from(0),
             &Vertex {
                 base_slot_start: 0,
-                degree: 1,
+                live_edges: 1,
+                slab_slots: 1,
                 log_head: -1,
                 deleted: false,
             },
@@ -1959,7 +2058,8 @@ mod tests {
             VertexId::from(1),
             &Vertex {
                 base_slot_start: 2,
-                degree: 1,
+                live_edges: 1,
+                slab_slots: 1,
                 log_head: -1,
                 deleted: false,
             },
@@ -2005,7 +2105,8 @@ mod tests {
             VertexId::from(0),
             &Vertex {
                 base_slot_start: 0,
-                degree: 1,
+                live_edges: 1,
+                slab_slots: 1,
                 log_head: -1,
                 deleted: false,
             },
@@ -2014,7 +2115,8 @@ mod tests {
             VertexId::from(1),
             &Vertex {
                 base_slot_start: 2,
-                degree: 1,
+                live_edges: 1,
+                slab_slots: 1,
                 log_head: -1,
                 deleted: false,
             },
@@ -2066,7 +2168,8 @@ mod tests {
             VertexId::from(2),
             &Vertex {
                 base_slot_start: 10,
-                degree: 1,
+                live_edges: 1,
+                slab_slots: 1,
                 log_head: -1,
                 deleted: false,
             },
@@ -2075,7 +2178,8 @@ mod tests {
             VertexId::from(3),
             &Vertex {
                 base_slot_start: 13,
-                degree: 2,
+                live_edges: 2,
+                slab_slots: 2,
                 log_head: -1,
                 deleted: false,
             },
@@ -2140,7 +2244,8 @@ mod tests {
             VertexId::from(2),
             &Vertex {
                 base_slot_start: 10,
-                degree: 1,
+                live_edges: 1,
+                slab_slots: 1,
                 log_head: -1,
                 deleted: false,
             },
@@ -2149,7 +2254,8 @@ mod tests {
             VertexId::from(3),
             &Vertex {
                 base_slot_start: 12,
-                degree: 1,
+                live_edges: 1,
+                slab_slots: 1,
                 log_head: -1,
                 deleted: false,
             },
@@ -2213,7 +2319,8 @@ mod tests {
             VertexId::from(2),
             &Vertex {
                 base_slot_start: 10,
-                degree: 1,
+                live_edges: 1,
+                slab_slots: 1,
                 log_head: -1,
                 deleted: false,
             },
@@ -2253,7 +2360,8 @@ mod tests {
             VertexId::from(2),
             &Vertex {
                 base_slot_start: 10,
-                degree: 1,
+                live_edges: 1,
+                slab_slots: 1,
                 log_head: -1,
                 deleted: false,
             },
@@ -2262,7 +2370,8 @@ mod tests {
             VertexId::from(3),
             &Vertex {
                 base_slot_start: 13,
-                degree: 1,
+                live_edges: 1,
+                slab_slots: 1,
                 log_head: -1,
                 deleted: false,
             },
@@ -2338,7 +2447,8 @@ mod tests {
             graph
                 .push_vertex(Vertex {
                     base_slot_start,
-                    degree: 0,
+                    live_edges: 0,
+                    slab_slots: 0,
                     log_head: -1,
                     deleted: false,
                 })
@@ -2353,7 +2463,8 @@ mod tests {
             VertexId::from(2),
             &Vertex {
                 base_slot_start: 10,
-                degree: 1,
+                live_edges: 1,
+                slab_slots: 1,
                 log_head: -1,
                 deleted: false,
             },
@@ -2362,7 +2473,8 @@ mod tests {
             VertexId::from(3),
             &Vertex {
                 base_slot_start: 13,
-                degree: 1,
+                live_edges: 1,
+                slab_slots: 1,
                 log_head: -1,
                 deleted: false,
             },
@@ -2425,14 +2537,14 @@ mod tests {
 
         assert_eq!(reopened.edges().header().elem_capacity, 8);
         assert_eq!(reopened.edges().span_meta_store().len(), 2);
-        assert_eq!(reopened.vertices().get(VertexId::from(0)).degree, 4);
+        assert_eq!(reopened.vertices().get(VertexId::from(0)).degree(), 4);
         let layout: EdgeLayout = reopened.edges().header().into();
         let v = reopened.vertices().get(VertexId::from(0));
         let end = reopened
             .edges()
             .slab_window_exclusive_end(&layout, reopened.vertices(), 0, &v);
         assert!(
-            v.base_slot_start.saturating_add(u64::from(v.degree)) <= end,
+            v.base_slot_start.saturating_add(u64::from(v.degree())) <= end,
             "slab neighborhood must fit csr window",
         );
         assert_eq!(reopened.vertices().get(VertexId::from(0)).log_head, -1);

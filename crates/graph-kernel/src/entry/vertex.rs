@@ -95,6 +95,10 @@ impl CsrVertex for Vertex {
         self.0.degree()
     }
 
+    fn stored_degree(&self) -> u32 {
+        self.0.stored_degree()
+    }
+
     fn with_base_slot_start(self, start: u64) -> Self {
         Self(self.0.with_base_slot_start(start))
     }
@@ -109,6 +113,18 @@ impl CsrVertex for Vertex {
 
     fn with_log_head(self, idx: i32) -> Self {
         Self(self.0.with_log_head(idx))
+    }
+
+    fn after_slab_placeholder_delete(self) -> Self {
+        Self(self.0.after_slab_placeholder_delete())
+    }
+
+    fn grow_packed_slab_by_one(self) -> Self {
+        Self(self.0.grow_packed_slab_by_one())
+    }
+
+    fn after_slab_insert_reuse_tail_tombstone(self) -> Self {
+        Self(self.0.after_slab_insert_reuse_tail_tombstone())
     }
 }
 

@@ -10,13 +10,23 @@
 //! - segment span metadata for locally relocated physical spans;
 //! - free span metadata for retired physical ranges.
 //!
-//! Clean neighbor scans read only the vertex row's `base_slot_start` and
-//! `degree`, then walk the edge slab. The log, counts, span metadata, and free
-//! span index are update-side structures. They may be read while inserting,
-//! folding logs, resizing, or relocating, but they are not part of the clean
-//! scan contract.
+//! [`EdgeStore::collect_out_edges_slot_order`] materializes the row in **slot order**
+//! (ascending slab indices, skipping [`crate::VertexId::SLAB_VACANT`] placeholders,
+//! then overflow-log edges oldest-to-newest). Use this when you need the exact CSR
+//! / insertion layout.
 //!
-//! Insertions first try to append at `base_slot_start + degree`. The append is
+//! **Default contiguous read contract:** [`EdgeStore::iter_out_edges`] (see [`OutEdgesIter`])
+//! walks the overflow log from the chain head first, then live slab slots **high index to low**
+//! (still skipping vacant placeholders). That descending scan is the preferred hot path (cache- and
+//! prefetch-friendly, newest log entries first). Callers that need slot order should use
+//! `collect_out_edges_slot_order` instead, or reverse the vector produced by `iter_out_edges` when
+//! packing rows contiguously (e.g. segment rebalance snapshots).
+//! The log, counts, span metadata, and free span index are update-side structures.
+//! They may be read while inserting, folding logs, resizing, or relocating, but they
+//! are not part of the clean scan contract.
+//!
+//! Insertions first try to append at `base_slot_start + stored_degree`, or reuse
+//! the first tail tombstone at `base_slot_start + degree` when `stored_degree > degree`.
 //! allowed only when it stays before this row’s CSR slab boundary (the next
 //! vertex's `base_slot_start`, PMA leaf total, or `elem_capacity`);
 //! otherwise the edge is written to the segment log and later folded by
@@ -55,7 +65,7 @@ pub mod span_meta;
 use super::operation_error::{LaraOperationError, VertexAccess};
 use crate::{
     GrowFailed, SegmentId, VertexCount, VertexId,
-    traits::{CsrEdge, CsrVertex, CsrVertexTombstoneScan},
+    traits::{CsrEdge, CsrEdgeSlabVacancy, CsrVertex, CsrVertexTombstoneScan},
 };
 use counts::{SegmentEdgeCounts, SegmentEdgeCountsStore};
 pub(crate) use edges::EdgeSlabStore;
@@ -63,6 +73,7 @@ use edges::tree_height_for_segment_count;
 pub use edges::{HeaderV1 as EdgeHeaderV1, InitError as SlabInitError, segment_tree_leaf_count};
 use free_span::{FreeSpan, FreeSpanStore};
 use ic_stable_structures::Memory;
+pub(crate) use log::DEFAULT_MAX_LOG_ENTRIES;
 pub use log::HeaderV1 as LogHeaderV1;
 use log::LogStore;
 use span_meta::{SPAN_PHYSICAL_UNASSIGNED, SegmentSpanMeta, SegmentSpanMetaStore};
@@ -70,11 +81,43 @@ use std::{cell::Cell, fmt, iter::FusedIterator};
 
 const INLINE_EDGE_BYTES: usize = 64;
 /// When a clean slab row is at least this many bytes, [`OutEdgesIter`] reads the
-/// slab in fixed-size slot chunks instead of one stable read per edge.
+/// slab in fixed-size **descending** slot chunks instead of one stable read per edge.
 const SLAB_ITER_PREFETCH_MIN_BYTES: usize = 64;
 /// Number of consecutive slab slots loaded per chunk for [`OutEdgesIter`] when
 /// chunking is enabled.
 const SLAB_ITER_CHUNK_SLOTS: u32 = 32;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DeleteTarget {
+    Slab(u32),
+    Log(u32),
+}
+
+fn encode_delete_target(target: DeleteTarget) -> Result<i32, LaraOperationError> {
+    let tag = match target {
+        DeleteTarget::Slab(offset) => offset
+            .checked_mul(2)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?,
+        DeleteTarget::Log(index) => index
+            .checked_mul(2)
+            .and_then(|n| n.checked_add(1))
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?,
+    };
+    let encoded = -1i64 - i64::from(tag);
+    i32::try_from(encoded).map_err(|_| LaraOperationError::CollectAllocationOverflow)
+}
+
+fn decode_delete_target(src: i32) -> Option<DeleteTarget> {
+    if src >= 0 {
+        return None;
+    }
+    let tag = (-1i64 - i64::from(src)) as u32;
+    if tag % 2 == 0 {
+        Some(DeleteTarget::Slab(tag / 2))
+    } else {
+        Some(DeleteTarget::Log(tag / 2))
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum InsertLocation {
@@ -606,11 +649,11 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         }
     }
 
-    pub(crate) fn collect_out_edges_slot_order<V, A>(
+    fn collect_out_edge_refs_slot_order<V, A>(
         &self,
         vertices: &A,
         vid: VertexId,
-    ) -> Result<Vec<E>, LaraOperationError>
+    ) -> Result<Vec<(DeleteTarget, E)>, LaraOperationError>
     where
         V: CsrVertex + CsrVertexTombstoneScan,
         A: VertexAccess<V>,
@@ -620,46 +663,55 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let log_owner = vertices.log_leaf_vertex(vid);
         // Tombstone rows may still hold slab/log material while incremental
         // `DeleteVertex` maintenance runs; only fully evacuated rows reject reads.
-        if V::record_is_vertex_tombstone(&v) && v.degree() == 0 && v.log_head() < 0 {
+        if V::record_is_vertex_tombstone(&v) && v.stored_degree() == 0 && v.log_head() < 0 {
             return Ok(Vec::new());
         }
         if v.log_head() < 0 {
-            let degree = v.degree() as usize;
+            let stored = v.stored_degree() as usize;
+            let live = v.degree() as usize;
             let base = v.base_slot_start();
-            if degree == 0 {
+            if live == 0 {
                 return Ok(Vec::new());
             }
-            let nbytes = degree
+            let nbytes = stored
                 .checked_mul(E::BYTES)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             let mut raw = vec![0u8; nbytes];
             self.edges.read_slots_contiguous(base, &mut raw);
-            let mut out = Vec::with_capacity(degree);
-            for chunk in raw.chunks_exact(E::BYTES) {
-                out.push(E::read_from(chunk));
+            let mut out = Vec::with_capacity(live);
+            for (offset, chunk) in raw.chunks_exact(E::BYTES).enumerate() {
+                let edge = E::read_from(chunk);
+                if edge.neighbor_vid().is_slab_vacant_neighbor() {
+                    continue;
+                }
+                out.push((DeleteTarget::Slab(offset as u32), edge));
             }
+            debug_assert_eq!(
+                out.len(),
+                live,
+                "slab row must have exactly `degree` live edges among stored slots"
+            );
             return Ok(out);
         }
 
         let edge_layout = self.edge_layout();
         let on_slab = self.on_slab_edges_with_layout(&edge_layout, vertices, v_ord, &v)?;
-        let degree = v.degree() as usize;
-        let slab_count = on_slab.min(v.degree()) as usize;
-        let mut out = Vec::with_capacity(degree);
+        let slab_count = on_slab.min(v.stored_degree()) as usize;
+        let mut out = Vec::with_capacity(v.degree() as usize);
         for i in 0..slab_count {
             let slot = v
                 .base_slot_start()
                 .checked_add(i as u64)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            out.push(self.read_slot(slot));
+            let edge = self.read_slot(slot);
+            if !edge.neighbor_vid().is_slab_vacant_neighbor() {
+                out.push((DeleteTarget::Slab(i as u32), edge));
+            }
         }
-        if slab_count == degree {
+        if v.log_head() < 0 {
             return Ok(out);
         }
 
-        let log_count = degree
-            .checked_sub(slab_count)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         let leaf = leaf_segment(log_owner, edge_layout.segment_size);
         let log_h = self.log.header();
 
@@ -668,42 +720,59 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             .read_segment_entry_table_into(&log_h, leaf, &mut log_table_buf);
         let log_table = (!log_table_buf.is_empty()).then_some(log_table_buf.as_slice());
 
+        let mut entries = Vec::new();
         let mut log_i = v.log_head();
-        let filler = if slab_count > 0 {
-            out[0]
-        } else {
-            if log_i < 0 {
+        let mut steps = 0u32;
+        while log_i >= 0 {
+            if steps >= log_h.max_log_entries {
                 return Err(LaraOperationError::LogChainShort);
             }
-            let (prev, edge) =
+            let (prev, src, edge) =
                 self.read_log_edge_from_table_or_store(&log_h, leaf, log_i as u32, log_table);
+            entries.push((log_i as u32, src, edge));
             log_i = prev;
-            edge
-        };
-        out.resize(degree, filler);
+            steps = steps
+                .checked_add(1)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        }
+        entries.reverse();
 
-        if slab_count == 0 {
-            for offset in (0..log_count.saturating_sub(1)).rev() {
-                if log_i < 0 {
-                    return Err(LaraOperationError::LogChainShort);
+        for (log_idx, src, edge) in entries {
+            if let Some(target) = decode_delete_target(src) {
+                if let Some(index) = out.iter().position(|(candidate, _)| *candidate == target) {
+                    out.remove(index);
                 }
-                let (prev, edge) =
-                    self.read_log_edge_from_table_or_store(&log_h, leaf, log_i as u32, log_table);
-                out[slab_count + offset] = edge;
-                log_i = prev;
-            }
-        } else {
-            for offset in (0..log_count).rev() {
-                if log_i < 0 {
-                    return Err(LaraOperationError::LogChainShort);
-                }
-                let (prev, edge) =
-                    self.read_log_edge_from_table_or_store(&log_h, leaf, log_i as u32, log_table);
-                out[slab_count + offset] = edge;
-                log_i = prev;
+            } else {
+                out.push((DeleteTarget::Log(log_idx), edge));
             }
         }
+        debug_assert_eq!(
+            out.len(),
+            v.degree() as usize,
+            "logical log replay must yield exactly `degree` live edges"
+        );
+        if out.len() != v.degree() as usize {
+            // The log chain may be truncated/corrupt; preserve the old error shape rather than
+            // silently returning a count that violates the vertex row.
+            return Err(LaraOperationError::LogChainShort);
+        }
         Ok(out)
+    }
+
+    pub(crate) fn collect_out_edges_slot_order<V, A>(
+        &self,
+        vertices: &A,
+        vid: VertexId,
+    ) -> Result<Vec<E>, LaraOperationError>
+    where
+        V: CsrVertex + CsrVertexTombstoneScan,
+        A: VertexAccess<V>,
+    {
+        Ok(self
+            .collect_out_edge_refs_slot_order(vertices, vid)?
+            .into_iter()
+            .map(|(_, edge)| edge)
+            .collect())
     }
 
     /// Walks outgoing edges without materializing the full row vector.
@@ -729,15 +798,16 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         Visit: FnMut(E),
     {
         let v = vertices.get_in_range(vid)?;
-        if V::record_is_vertex_tombstone(&v) && v.degree() == 0 && v.log_head() < 0 {
+        if V::record_is_vertex_tombstone(&v) && v.stored_degree() == 0 && v.log_head() < 0 {
             return Ok(());
         }
         if v.log_head() < 0 {
-            let degree = v.degree() as usize;
-            if degree == 0 {
+            let stored = v.stored_degree() as usize;
+            let live = v.degree() as usize;
+            if live == 0 {
                 return Ok(());
             }
-            let nbytes = degree
+            let nbytes = stored
                 .checked_mul(E::BYTES)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             let mut raw = vec![0u8; nbytes];
@@ -747,9 +817,16 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                     if !raw_m(chunk) {
                         continue;
                     }
-                    visit(E::read_from(chunk));
+                    let edge = E::read_from(chunk);
+                    if edge.neighbor_vid().is_slab_vacant_neighbor() {
+                        continue;
+                    }
+                    visit(edge);
                 } else {
                     let edge = E::read_from(chunk);
+                    if edge.neighbor_vid().is_slab_vacant_neighbor() {
+                        continue;
+                    }
                     if matches(&edge) {
                         visit(edge);
                     }
@@ -785,7 +862,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         Match: FnMut(&E) -> bool,
     {
         let v = vertices.get_in_range(vid)?;
-        if V::record_is_vertex_tombstone(&v) && v.degree() == 0 && v.log_head() < 0 {
+        if V::record_is_vertex_tombstone(&v) && v.stored_degree() == 0 && v.log_head() < 0 {
             return Ok(None);
         }
         if v.log_head() < 0 {
@@ -798,11 +875,12 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 }
                 return Ok(None);
             }
-            let degree = v.degree() as usize;
-            if degree == 0 {
+            let stored = v.stored_degree() as usize;
+            let live = v.degree() as usize;
+            if live == 0 {
                 return Ok(None);
             }
-            let nbytes = degree
+            let nbytes = stored
                 .checked_mul(E::BYTES)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             let mut raw = vec![0u8; nbytes];
@@ -813,6 +891,9 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                         continue;
                     }
                     let edge = E::read_from(chunk);
+                    if edge.neighbor_vid().is_slab_vacant_neighbor() {
+                        continue;
+                    }
                     if matches(&edge) {
                         return Ok(Some(edge));
                     }
@@ -848,6 +929,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         Ok(v.degree() > 0)
     }
 
+    /// Default **descending** contiguous scan over one vertex row (see [`OutEdgesIter`]).
     pub(crate) fn iter_out_edges<V, A>(
         &self,
         vertices: &A,
@@ -858,11 +940,9 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         A: VertexAccess<V>,
     {
         let v = vertices.get_in_range(vid)?;
-        let v_ord = u32::from(vid);
-        let log_owner = vertices.log_leaf_vertex(vid);
         // See `collect_out_edges_slot_order`: allow enumeration for tombstones that
         // still have pending edge material (rebalance during vertex delete).
-        if V::record_is_vertex_tombstone(&v) && v.degree() == 0 && v.log_head() < 0 {
+        if V::record_is_vertex_tombstone(&v) && v.stored_degree() == 0 && v.log_head() < 0 {
             return Ok(OutEdgesIter {
                 store: self,
                 leaf: 0,
@@ -870,17 +950,21 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 remaining_log: 0,
                 base_slot_start: v.base_slot_start(),
                 remaining_slab: 0,
+                yield_remaining: 0,
                 log_header: None,
                 log_table: None,
                 slab_chunk: None,
+                deleted_log_indices: Vec::new(),
+                deleted_slab_offsets: Vec::new(),
             });
         }
         // Clean rows: the full neighborhood is on the slab, so the iterator never
         // walks the overflow log. Skip `edge_layout()` (full slab header read) and
         // log metadata; `leaf` is only read while `remaining_log > 0`.
         if v.log_head() < 0 {
-            let degree = v.degree();
-            let nbytes = (degree as usize)
+            let stored = v.stored_degree();
+            let live = v.degree();
+            let nbytes = (stored as usize)
                 .checked_mul(E::BYTES)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             let slab_chunk = if nbytes >= SLAB_ITER_PREFETCH_MIN_BYTES {
@@ -898,31 +982,49 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 next_log: -1,
                 remaining_log: 0,
                 base_slot_start: v.base_slot_start(),
-                remaining_slab: degree,
+                remaining_slab: stored,
+                yield_remaining: live,
                 log_header: None,
                 log_table: None,
                 slab_chunk,
+                deleted_log_indices: Vec::new(),
+                deleted_slab_offsets: Vec::new(),
             });
         }
 
         let edge_layout = self.edge_layout();
+        let v_ord = u32::from(vid);
+        let log_owner = vertices.log_leaf_vertex(vid);
         let on_slab = self.on_slab_edges_with_layout(&edge_layout, vertices, v_ord, &v)?;
-        let degree = v.degree();
-        let slab_count = on_slab.min(degree);
-        let log_count = degree
-            .checked_sub(slab_count)
+        let stored = v.stored_degree();
+        let slab_count = on_slab.min(stored);
+        let nbytes_slab = (slab_count as usize)
+            .checked_mul(E::BYTES)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let slab_chunk = if nbytes_slab >= SLAB_ITER_PREFETCH_MIN_BYTES {
+            Some(SlabChunkCache {
+                buf: Vec::new(),
+                chunk_low: 0,
+                chunk_high: 0,
+            })
+        } else {
+            None
+        };
 
+        let log_header = self.log.header();
         Ok(OutEdgesIter {
             store: self,
             leaf: leaf_segment(log_owner, edge_layout.segment_size),
             next_log: v.log_head(),
-            remaining_log: log_count,
+            remaining_log: log_header.max_log_entries,
             base_slot_start: v.base_slot_start(),
             remaining_slab: slab_count,
-            log_header: (log_count > 0).then(|| self.log.header()),
+            yield_remaining: v.degree(),
+            log_header: Some(log_header),
             log_table: None,
-            slab_chunk: None,
+            slab_chunk,
+            deleted_log_indices: Vec::new(),
+            deleted_slab_offsets: Vec::new(),
         })
     }
 
@@ -932,16 +1034,16 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         leaf: u32,
         log_idx: u32,
         table: Option<&[u8]>,
-    ) -> (i32, E) {
+    ) -> (i32, i32, E) {
         if let Some(buf) = table {
             let stride = log_h.stride as usize;
             if stride > 0 {
                 let off = log_idx as usize * stride;
                 if off + stride <= buf.len() && off + 8 + E::BYTES <= buf.len() {
                     let prev = i32::from_le_bytes(buf[off..off + 4].try_into().unwrap());
-                    let _src = i32::from_le_bytes(buf[off + 4..off + 8].try_into().unwrap());
+                    let src = i32::from_le_bytes(buf[off + 4..off + 8].try_into().unwrap());
                     let edge = E::read_from(&buf[off + 8..off + 8 + E::BYTES]);
-                    return (prev, edge);
+                    return (prev, src, edge);
                 }
             }
         }
@@ -950,19 +1052,19 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             let (prev, _src) =
                 self.log
                     .read_entry_with_header(log_h, leaf, log_idx, &mut buf[..E::BYTES]);
-            (prev, E::read_from(&buf[..E::BYTES]))
+            (prev, _src, E::read_from(&buf[..E::BYTES]))
         } else if E::BYTES <= INLINE_EDGE_BYTES {
             let mut buf = [0u8; INLINE_EDGE_BYTES];
             let (prev, _src) =
                 self.log
                     .read_entry_with_header(log_h, leaf, log_idx, &mut buf[..E::BYTES]);
-            (prev, E::read_from(&buf[..E::BYTES]))
+            (prev, _src, E::read_from(&buf[..E::BYTES]))
         } else {
             let mut buf = vec![0u8; E::BYTES];
             let (prev, _src) = self
                 .log
                 .read_entry_with_header(log_h, leaf, log_idx, &mut buf);
-            (prev, E::read_from(&buf))
+            (prev, _src, E::read_from(&buf))
         }
     }
 
@@ -983,8 +1085,9 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             return Err(LaraOperationError::VertexDeleted);
         }
         let log_owner = vertices.log_leaf_vertex(vid);
-        let next_degree = v
-            .degree()
+
+        let next_stored = v
+            .stored_degree()
             .checked_add(1)
             .ok_or(LaraOperationError::RowDegreeOverflow)?;
         let next_num_edges = edge_layout
@@ -993,12 +1096,12 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         let loc = v
             .base_slot_start()
-            .checked_add(u64::from(v.degree()))
+            .checked_add(u64::from(v.stored_degree()))
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         let location = if self.have_space_on_slab(vertices, v_ord, &v, loc, &edge_layout) {
             self.write_slot(loc, edge)
                 .map_err(LaraOperationError::WriteEdgeSlotFailed)?;
-            vertices.set(vid, &v.with_degree(next_degree));
+            vertices.set(vid, &v.grow_packed_slab_by_one());
             InsertLocation::Slab
         } else {
             self.insert_into_log_with_layout(
@@ -1007,7 +1110,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 vid,
                 log_owner,
                 v,
-                next_degree,
+                next_stored,
                 edge,
             )?;
             InsertLocation::Log
@@ -1017,7 +1120,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         Ok(location)
     }
 
-    pub(crate) fn remove_edge_unordered_matching<V, A, F>(
+    pub(crate) fn remove_edge_slab_placeholder_matching<V, A, F>(
         &self,
         vertices: &A,
         vid: VertexId,
@@ -1026,31 +1129,58 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     where
         V: CsrVertex,
         A: VertexAccess<V>,
+        E: CsrEdgeSlabVacancy,
         F: FnMut(&E) -> bool,
     {
         let edge_layout = self.edge_layout();
         let v = vertices.get_in_range(vid)?;
+        let log_owner = vertices.log_leaf_vertex(vid);
         if v.log_head() >= 0 {
-            return Err(LaraOperationError::RemoveRequiresSlabOnlyRow);
+            let removed = self
+                .collect_out_edge_refs_slot_order(vertices, vid)?
+                .into_iter()
+                .find(|(_, edge)| matches(edge));
+            let Some((target, removed)) = removed else {
+                return Ok(None);
+            };
+            self.insert_delete_into_log_with_layout(
+                &edge_layout,
+                vertices,
+                vid,
+                v,
+                target,
+                removed,
+            )?;
+            let next_global = edge_layout
+                .num_edges
+                .checked_sub(1)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            self.set_num_edges(next_global);
+            self.bump_counts_leaf_with_layout(&edge_layout, log_owner, -1, 0)?;
+            return Ok(Some(removed));
         }
-        let degree = v.degree();
-        if degree == 0 {
+        let live = v.degree();
+        if live == 0 {
             return Ok(None);
         }
 
         let base = v.base_slot_start();
-        let mut found = None;
-        for i in 0..degree {
+        let stored = v.stored_degree();
+        let mut found_index: Option<u32> = None;
+        for i in 0..stored {
             let slot = base
                 .checked_add(u64::from(i))
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             let edge = self.read_slot(slot);
+            if edge.is_slab_vacant_edge() {
+                continue;
+            }
             if matches(&edge) {
-                found = Some(i);
+                found_index = Some(i);
                 break;
             }
         }
-        let Some(local_index) = found else {
+        let Some(local_index) = found_index else {
             return Ok(None);
         };
 
@@ -1058,23 +1188,61 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             .checked_add(u64::from(local_index))
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         let removed = self.read_slot(rm_slot);
-        let last_index = degree - 1;
-        if local_index != last_index {
-            let last_slot = base
-                .checked_add(u64::from(last_index))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            let last = self.read_slot(last_slot);
-            self.write_slot(rm_slot, last)
-                .map_err(LaraOperationError::WriteEdgeSlotFailed)?;
-        }
-        vertices.set(vid, &v.with_degree(last_index));
+        self.write_slot(rm_slot, E::slab_vacant_edge())
+            .map_err(LaraOperationError::WriteEdgeSlotFailed)?;
+        vertices.set(vid, &v.after_slab_placeholder_delete());
         let next_global = edge_layout
             .num_edges
             .checked_sub(1)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         self.set_num_edges(next_global);
-        self.bump_counts_leaf_with_layout(&edge_layout, vid, -1, 0)?;
+        self.bump_counts_leaf_with_layout(&edge_layout, log_owner, -1, 0)?;
         Ok(Some(removed))
+    }
+
+    fn insert_delete_into_log_with_layout<V, A>(
+        &self,
+        edge_layout: &EdgeLayout,
+        vertices: &A,
+        vid: VertexId,
+        v: V,
+        target: DeleteTarget,
+        edge: E,
+    ) -> Result<(), LaraOperationError>
+    where
+        V: CsrVertex,
+        A: VertexAccess<V>,
+    {
+        let leaf = leaf_segment(vertices.log_leaf_vertex(vid), edge_layout.segment_size);
+        let log_h = self.log.header();
+        let idx = self.log.read_idx_with_header(&log_h, leaf);
+        if idx < 0 || idx >= log_h.max_log_entries as i32 {
+            return Err(LaraOperationError::SegmentLogFull);
+        }
+        let src = encode_delete_target(target)?;
+        if E::BYTES <= INLINE_EDGE_BYTES {
+            let mut payload = [0u8; INLINE_EDGE_BYTES];
+            edge.write_to(&mut payload[..E::BYTES]);
+            self.log
+                .write_entry_with_header(
+                    &log_h,
+                    leaf,
+                    idx as u32,
+                    v.log_head(),
+                    src,
+                    &payload[..E::BYTES],
+                )
+                .map_err(LaraOperationError::WriteLogFailed)?;
+        } else {
+            let mut payload = vec![0u8; E::BYTES];
+            edge.write_to(&mut payload);
+            self.log
+                .write_entry_with_header(&log_h, leaf, idx as u32, v.log_head(), src, &payload)
+                .map_err(LaraOperationError::WriteLogFailed)?;
+        }
+        self.log.write_idx_with_header(&log_h, leaf, idx + 1);
+        vertices.set(vid, &v.with_log_head(idx).after_slab_placeholder_delete());
+        Ok(())
     }
 
     pub(crate) fn row_edge_at_slab<V, A>(
@@ -1094,11 +1262,24 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         if offset >= v.degree() {
             return Ok(None);
         }
-        let slot = v
-            .base_slot_start()
-            .checked_add(u64::from(offset))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        Ok(Some(self.read_slot(slot)))
+        let mut seen = 0u32;
+        for stored_offset in 0..v.stored_degree() {
+            let slot = v
+                .base_slot_start()
+                .checked_add(u64::from(stored_offset))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let edge = self.read_slot(slot);
+            if edge.neighbor_vid().is_slab_vacant_neighbor() {
+                continue;
+            }
+            if seen == offset {
+                return Ok(Some(edge));
+            }
+            seen = seen
+                .checked_add(1)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        }
+        Ok(None)
     }
 
     pub(crate) fn clear_row_slab<V, A>(
@@ -1112,6 +1293,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     {
         let edge_layout = self.edge_layout();
         let v = vertices.get_in_range(vid)?;
+        let log_owner = vertices.log_leaf_vertex(vid);
         if v.log_head() >= 0 {
             return Err(LaraOperationError::ClearRowRequiresSlabOnlyRow);
         }
@@ -1125,7 +1307,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             .checked_sub(u64::from(removed))
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         self.set_num_edges(next_global);
-        self.bump_counts_leaf_with_layout(&edge_layout, vid, -i64::from(removed), 0)?;
+        self.bump_counts_leaf_with_layout(&edge_layout, log_owner, -i64::from(removed), 0)?;
         Ok(removed)
     }
 
@@ -1188,7 +1370,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         A: VertexAccess<V>,
     {
         if v.log_head() < 0 {
-            return Ok(v.degree());
+            return Ok(v.stored_degree());
         }
         let next_exclusive = self.slab_window_exclusive_end(edge_layout, vertices, v_ord, v);
         let span_slots = next_exclusive
@@ -1197,10 +1379,10 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let span_u32 = span_slots.min(u64::from(u32::MAX)) as u32;
         // Once the overflow log is active, the slab prefix is at most the CSR window
         // width; additional live edges are chained through `log_head`.
-        Ok(if v.degree() > span_u32 {
+        Ok(if v.stored_degree() > span_u32 {
             span_u32
         } else {
-            v.degree()
+            v.stored_degree()
         })
     }
 
@@ -1333,29 +1515,35 @@ fn leaf_segment(vid: VertexId, segment_size: u32) -> u32 {
     u32::from(vid) / segment_size.max(1)
 }
 
-/// Iterator over outgoing edges in the store's standard scan order.
+/// Iterator over outgoing edges in [`EdgeStore`]'s **default descending scan order**:
+/// overflow log from the chain head first (each step follows the `prev` link), then live slab
+/// slots **high index to low** (skipping [`VertexId::SLAB_VACANT`] placeholders).
 ///
-/// The order is deterministic for the committed store state, but it is not
-/// guaranteed to be insertion order or slab slot order. It may change after
-/// unordered removals, rebalancing, or future layout changes.
+/// This is **not** the same order as [`EdgeStore::collect_out_edges_slot_order`] (slot /
+/// materialization order). Prefer this iterator for hot contiguous reads; use `collect_out_edges_slot_order`
+/// or reverse the collected vector when you need ascending slot layout (e.g. rebalance packing).
 ///
-/// `leaf` is only consulted while draining the overflow log (`remaining_log >
-/// 0`). For purely slab-backed rows, it is uninitialized and must not be read.
+/// For slab-only rows (`log_head < 0`), only the descending slab phase runs.
 ///
-/// For clean slab-only rows whose encoded row is at least 64 bytes, `slab_chunk`
-/// caches a window of consecutive slab slots so [`Iterator::next`] issues one
-/// stable read per chunk (32 slots) instead of per edge.
+/// For clean slab-only rows whose stored slab is at least 64 bytes, `slab_chunk` caches a backward
+/// window of consecutive slab slots so [`Iterator::next`] can issue one stable read per chunk (32
+/// slots) instead of per edge.
 pub struct OutEdgesIter<'a, E: CsrEdge, M: Memory> {
     store: &'a EdgeStore<E, M>,
     leaf: u32,
     next_log: i32,
     remaining_log: u32,
     base_slot_start: u64,
+    /// Count of slab prefix slots still to scan; slots are visited `remaining_slab - 1` down to `0`.
     remaining_slab: u32,
+    /// Live edges not yet yielded (matches [`ExactSizeIterator`] contract).
+    yield_remaining: u32,
     log_header: Option<LogHeaderV1>,
     /// Prefetched [`LogStore::read_segment_entry_table_into`] bytes; filled on first log step.
     log_table: Option<Vec<u8>>,
     slab_chunk: Option<SlabChunkCache>,
+    deleted_log_indices: Vec<u32>,
+    deleted_slab_offsets: Vec<u32>,
 }
 
 /// Contiguous slab bytes for slot indices `[chunk_low, chunk_high]` inclusive.
@@ -1400,6 +1588,32 @@ where
                 .read_slot(self.base_slot_start + u64::from(slot_idx))
         }
     }
+
+    fn consume_deleted_log_index(&mut self, log_idx: u32) -> bool {
+        if let Some(index) = self
+            .deleted_log_indices
+            .iter()
+            .position(|deleted| *deleted == log_idx)
+        {
+            self.deleted_log_indices.swap_remove(index);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn consume_deleted_slab_offset(&mut self, offset: u32) -> bool {
+        if let Some(index) = self
+            .deleted_slab_offsets
+            .iter()
+            .position(|deleted| *deleted == offset)
+        {
+            self.deleted_slab_offsets.swap_remove(index);
+            true
+        } else {
+            false
+        }
+    }
 }
 
 impl<E, M> Iterator for OutEdgesIter<'_, E, M>
@@ -1410,11 +1624,13 @@ where
     type Item = E;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.remaining_log > 0 {
+        if self.yield_remaining == 0 {
+            return None;
+        }
+        while self.remaining_log > 0 {
             if self.next_log < 0 {
                 self.remaining_log = 0;
-                self.remaining_slab = 0;
-                return None;
+                break;
             }
             let log_h = self.log_header.as_ref()?;
             if self.log_table.is_none() {
@@ -1425,33 +1641,48 @@ where
                 self.log_table = Some(buf);
             }
             let table = self.log_table.as_ref().map(|b| b.as_slice());
-            let (prev, edge) = self.store.read_log_edge_from_table_or_store(
-                log_h,
-                self.leaf,
-                self.next_log as u32,
-                table,
-            );
+            let log_idx = self.next_log as u32;
+            let (prev, src, edge) = self
+                .store
+                .read_log_edge_from_table_or_store(log_h, self.leaf, log_idx, table);
             self.next_log = prev;
             self.remaining_log -= 1;
+            if let Some(target) = decode_delete_target(src) {
+                match target {
+                    DeleteTarget::Slab(offset) => self.deleted_slab_offsets.push(offset),
+                    DeleteTarget::Log(index) => self.deleted_log_indices.push(index),
+                }
+                continue;
+            }
+            if self.consume_deleted_log_index(log_idx) {
+                continue;
+            }
+            self.yield_remaining -= 1;
             return Some(edge);
         }
 
-        if self.remaining_slab == 0 {
-            return None;
+        while self.remaining_slab > 0 {
+            self.remaining_slab -= 1;
+            let slot_idx = self.remaining_slab;
+            let edge = self.decode_slab_slot(slot_idx);
+            if edge.neighbor_vid().is_slab_vacant_neighbor() {
+                continue;
+            }
+            if self.consume_deleted_slab_offset(slot_idx) {
+                continue;
+            }
+            self.yield_remaining -= 1;
+            return Some(edge);
         }
-        self.remaining_slab -= 1;
-        Some(self.decode_slab_slot(self.remaining_slab))
+        debug_assert_eq!(
+            self.yield_remaining, 0,
+            "slab scan ended before yielding all logical edges"
+        );
+        self.yield_remaining = 0;
+        None
     }
 
     fn nth(&mut self, n: usize) -> Option<Self::Item> {
-        if self.remaining_log == 0 {
-            if n >= self.remaining_slab as usize {
-                self.remaining_slab = 0;
-                return None;
-            }
-            self.remaining_slab -= n as u32;
-            return self.next();
-        }
         for _ in 0..n {
             self.next()?;
         }
@@ -1459,8 +1690,7 @@ where
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = u64::from(self.remaining_log) + u64::from(self.remaining_slab);
-        let n = usize::try_from(remaining).unwrap_or(usize::MAX);
+        let n = usize::try_from(self.yield_remaining).unwrap_or(usize::MAX);
         (n, Some(n))
     }
 }
@@ -1483,7 +1713,7 @@ where
 mod tests {
     use super::*;
     use crate::lara::vertex::{Vertex, VertexStore};
-    use crate::test_support::{PoisonCapacityVertex, TestEdge, vector_memory};
+    use crate::test_support::{TestEdge, vector_memory};
     use crate::{VectorMemory, VertexId};
     use std::{cell::RefCell, rc::Rc};
 
@@ -1498,7 +1728,8 @@ mod tests {
         vertices
             .push(Vertex {
                 base_slot_start: 0,
-                degree: 0,
+                live_edges: 0,
+                slab_slots: 0,
                 log_head: -1,
                 deleted: false,
             })
@@ -1506,7 +1737,8 @@ mod tests {
         vertices
             .push(Vertex {
                 base_slot_start: 1,
-                degree: 0,
+                live_edges: 0,
+                slab_slots: 0,
                 log_head: -1,
                 deleted: false,
             })
@@ -1549,7 +1781,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![TestEdge(11), TestEdge(10)]
         );
-        assert_eq!(vertices.get(VertexId::from(0)).degree, 2);
+        assert_eq!(vertices.get(VertexId::from(0)).live_edges, 2);
         assert!(vertices.get(VertexId::from(0)).log_head >= 0);
     }
 
@@ -1564,7 +1796,8 @@ mod tests {
         vertices
             .push(Vertex {
                 base_slot_start: 0,
-                degree: 0,
+                live_edges: 0,
+                slab_slots: 0,
                 log_head: -1,
                 deleted: false,
             })
@@ -1572,7 +1805,8 @@ mod tests {
         vertices
             .push(Vertex {
                 base_slot_start: 2,
-                degree: 0,
+                live_edges: 0,
+                slab_slots: 0,
                 log_head: -1,
                 deleted: false,
             })
@@ -1601,7 +1835,7 @@ mod tests {
             .insert_edge(&vertices, VertexId::from(0), TestEdge(11))
             .unwrap();
 
-        assert_eq!(vertices.get(VertexId::from(0)).degree, 2);
+        assert_eq!(vertices.get(VertexId::from(0)).live_edges, 2);
         assert_eq!(vertices.get(VertexId::from(0)).log_head, -1);
         assert_eq!(
             edges
@@ -1622,7 +1856,8 @@ mod tests {
         vertices
             .push(Vertex {
                 base_slot_start: 0,
-                degree: 0,
+                live_edges: 0,
+                slab_slots: 0,
                 log_head: -1,
                 deleted: false,
             })
@@ -1630,7 +1865,8 @@ mod tests {
         vertices
             .push(Vertex {
                 base_slot_start: 2,
-                degree: 0,
+                live_edges: 0,
+                slab_slots: 0,
                 log_head: -1,
                 deleted: false,
             })
@@ -1680,12 +1916,14 @@ mod tests {
         let me: VectorMemory = Rc::new(RefCell::new(Vec::new()));
         let ml: VectorMemory = Rc::new(RefCell::new(Vec::new()));
 
-        let vertices = VertexStore::<PoisonCapacityVertex, _>::new(mv).unwrap();
+        let vertices = VertexStore::<Vertex, _>::new(mv).unwrap();
         vertices
-            .push(PoisonCapacityVertex {
+            .push(Vertex {
                 base_slot_start: 0,
-                degree: 2,
+                live_edges: 2,
+                slab_slots: 2,
                 log_head: -1,
+                deleted: false,
             })
             .unwrap();
 

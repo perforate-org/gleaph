@@ -10,7 +10,7 @@ use crate::{
     lara::maintenance::{
         DeferredConfig, DeferredConfigError, MaintenanceBudget, MaintenanceWorkReport,
     },
-    traits::CsrEdge,
+    traits::{CsrEdge, CsrEdgeSlabVacancy},
 };
 use ic_stable_roaring::{BitmapError, InitError as RoaringInitError, StableRoaringBitmap};
 use ic_stable_structures::{Memory, Storable, storable::Bound};
@@ -324,7 +324,7 @@ impl From<crate::GrowFailed> for DeferredBidirectionalLabeledError {
 /// Bidirectional labeled LARA graph whose two orientations share one deferred queue.
 pub struct DeferredBidirectionalLabeledLaraGraph<E, M>
 where
-    E: CsrEdge,
+    E: CsrEdge + CsrEdgeSlabVacancy,
     M: Memory,
 {
     forward: LabeledLaraGraph<E, M>,
@@ -335,7 +335,7 @@ where
 
 impl<E, M> DeferredBidirectionalLabeledLaraGraph<E, M>
 where
-    E: CsrEdge,
+    E: CsrEdge + CsrEdgeSlabVacancy,
     M: Memory,
 {
     /// Creates fresh bidirectional labeled stores with a shared deferred queue.
@@ -1004,7 +1004,7 @@ where
         src: VertexId,
     ) -> Result<Vec<E>, DeferredBidirectionalLabeledError> {
         self.forward
-            .iter_out_edges(src)
+            .collect_out_edges_slot_order(src)
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
@@ -1014,7 +1014,7 @@ where
         dst: VertexId,
     ) -> Result<Vec<E>, DeferredBidirectionalLabeledError> {
         self.reverse
-            .iter_out_edges(dst)
+            .collect_out_edges_slot_order(dst)
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
 
@@ -1200,7 +1200,7 @@ mod tests {
     use super::*;
     use crate::{
         test_support::{labeled_lara_memories, vector_memory},
-        traits::CsrEdge,
+        traits::{CsrEdge, CsrEdgeSlabVacancy},
     };
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1223,6 +1223,12 @@ mod tests {
 
         fn with_neighbor_vid(self, vid: VertexId) -> Self {
             Self(u32::from(vid))
+        }
+    }
+
+    impl CsrEdgeSlabVacancy for TestEdge {
+        fn slab_vacant_edge() -> Self {
+            Self(u32::from(crate::VertexId::SLAB_VACANT))
         }
     }
 
@@ -1348,7 +1354,7 @@ mod tests {
     }
 
     #[test]
-    fn for_each_out_edge_matching_with_raw_streams_like_collect() {
+    fn for_each_out_edge_matching_with_raw_matches_forward_iter_out_edges() {
         let graph = graph();
         graph.push_vertex().expect("a");
         graph.push_vertex().expect("b");
@@ -1385,7 +1391,12 @@ mod tests {
                 |e| streamed.push(e),
             )
             .unwrap();
-        assert_eq!(streamed, collected);
+        assert_eq!(collected, vec![TestEdge(1), TestEdge(2)]);
+        assert_eq!(
+            streamed,
+            graph.forward.iter_out_edges(VertexId::from(0)).unwrap(),
+            "raw for_each follows out_edges_iter / descending scan per span"
+        );
     }
 
     #[test]

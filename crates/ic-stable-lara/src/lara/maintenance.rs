@@ -9,7 +9,7 @@ use crate::{
         InitError as GraphInitError, LaraGraph, MarkPriority, edge::OutEdgesIter,
         operation_error::LaraOperationError,
     },
-    traits::{CsrEdge, CsrVertex},
+    traits::{CsrEdge, CsrEdgeSlabVacancy, CsrVertex},
 };
 use ic_stable_roaring::{BitmapError, StableRoaringBitmap};
 use ic_stable_structures::Memory;
@@ -621,7 +621,7 @@ where
     /// Removes one outgoing edge without preserving adjacency order.
     pub fn remove_edge_deferred(&self, src: VertexId, edge: E) -> Result<bool, DeferredError>
     where
-        E: PartialEq,
+        E: PartialEq + CsrEdgeSlabVacancy,
     {
         Ok(self
             .remove_edge_matching_deferred(src, |candidate| *candidate == edge)?
@@ -635,6 +635,7 @@ where
         matches: F,
     ) -> Result<Option<E>, DeferredError>
     where
+        E: CsrEdgeSlabVacancy,
         F: FnMut(&E) -> bool,
     {
         self.graph
@@ -885,7 +886,7 @@ mod tests {
     }
 
     #[test]
-    fn deferred_remove_folds_log_and_removes_edge() {
+    fn deferred_remove_appends_delete_log_and_removes_edge() {
         let graph = deferred_test_graph(8, 2, &[0, 2, 4, 6]);
 
         for dst in 10..13 {
@@ -907,8 +908,8 @@ mod tests {
                 .unwrap(),
             vec![TestEdge(10), TestEdge(12)]
         );
-        assert_eq!(graph.graph().vertices().get(VertexId::from(0)).degree, 2);
-        assert_eq!(graph.graph().vertices().get(VertexId::from(0)).log_head, -1);
+        assert_eq!(graph.graph().vertices().get(VertexId::from(0)).degree(), 2);
+        assert!(graph.graph().vertices().get(VertexId::from(0)).log_head >= 0);
     }
 
     #[test]
@@ -1011,7 +1012,8 @@ mod tests {
             graph
                 .push_vertex(Vertex {
                     base_slot_start: slot,
-                    degree: 0,
+                    live_edges: 0,
+                    slab_slots: 0,
                     log_head: -1,
                     deleted: false,
                 })

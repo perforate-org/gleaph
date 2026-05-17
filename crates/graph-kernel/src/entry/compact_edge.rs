@@ -1,7 +1,10 @@
 //! Ten-byte compact edge records for the labeled multi-level CSR layout.
 
 use super::{VertexEdgeId, vertex_ref::VertexRef};
-use ic_stable_lara::{VertexId, traits::CsrEdge};
+use ic_stable_lara::{
+    VertexId,
+    traits::{CsrEdge, CsrEdgeSlabVacancy},
+};
 
 /// Fixed-size adjacency entry stored in one labeled edge CSR slot.
 ///
@@ -80,6 +83,16 @@ impl CsrEdge for CompactEdge {
             target,
             vertex_edge_id: self.vertex_edge_id,
             inline_value: self.inline_value,
+        }
+    }
+}
+
+impl CsrEdgeSlabVacancy for CompactEdge {
+    fn slab_vacant_edge() -> Self {
+        Self {
+            target: VertexRef::local(VertexId::SLAB_VACANT),
+            vertex_edge_id: VertexEdgeId::from_raw(0),
+            inline_value: 0,
         }
     }
 }
