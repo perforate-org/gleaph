@@ -39,6 +39,8 @@ use ic_stable_lara::labeled::BucketDirectedness;
 use ic_stable_lara::traits::{CsrEdge, CsrVertexTombstone};
 use nohash_hasher::{IntMap, IntSet};
 use rapidhash::fast::RapidHasher;
+#[cfg(test)]
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
@@ -120,6 +122,11 @@ type HashJoinKey = Vec<PlanBinding>;
 type HashJoinBucketEntry = (HashJoinKey, Vec<PlanRow>);
 
 type HashJoinBuckets = IntMap<u64, Vec<HashJoinBucketEntry>>;
+
+#[cfg(test)]
+thread_local! {
+    static NODE_SCAN_VISITS: Cell<usize> = const { Cell::new(0) };
+}
 
 /// Execute a read plan through [`execute_ops`] and return binding rows (paths stay
 /// [`PlanBinding::Path`] until [`materialize_plan_rows`] or [`PlanQueryResult::try_from_plan_rows`]).
@@ -393,7 +400,9 @@ fn execute_ops_from<'a>(
         // `ExprKind::Aggregate` in post-aggregate ops (e.g. `HAVING`).
         let mut active_aggregate_op_idx: Option<usize> = None;
 
-        for (op_idx, op) in ops.iter().enumerate() {
+        let mut op_idx = 0;
+        while op_idx < ops.len() {
+            let op = &ops[op_idx];
             let aggregate_specs = active_aggregate_op_idx.and_then(|idx| match &ops[idx] {
                 PlanOp::Aggregate { aggregates, .. } => Some(aggregates.as_slice()),
                 _ => None,
@@ -405,6 +414,23 @@ fn execute_ops_from<'a>(
                 caller,
                 gleaph_weight_decoders: gwd,
             };
+            if let Some(limit_idx) = limited_streaming_prefix_limit_idx(ops, op_idx) {
+                let result = execute_limited_streaming_prefix(
+                    store,
+                    &ops[op_idx..=limit_idx],
+                    rows,
+                    parameters,
+                    caller,
+                    gwd,
+                    aggregate_specs,
+                )?;
+                rows = result.rows;
+                if result.clears_active_aggregate {
+                    active_aggregate_op_idx = None;
+                }
+                op_idx = limit_idx + 1;
+                continue;
+            }
             rows = match op {
                 PlanOp::NodeScan {
                     variable,
@@ -711,10 +737,484 @@ fn execute_ops_from<'a>(
                 }
                 other => return Err(PlanQueryError::UnsupportedOp(plan_op_name(other))),
             };
+            op_idx += 1;
         }
 
         Ok(rows)
     })
+}
+
+struct LimitedStreamingPrefixResult {
+    rows: Vec<PlanRow>,
+    clears_active_aggregate: bool,
+}
+
+struct LimitedRows {
+    offset_remaining: usize,
+    take_remaining: usize,
+    rows: Vec<PlanRow>,
+}
+
+impl LimitedRows {
+    fn new(offset: usize, count: usize) -> Self {
+        Self {
+            offset_remaining: offset,
+            take_remaining: count,
+            rows: Vec::new(),
+        }
+    }
+
+    fn is_done(&self) -> bool {
+        self.take_remaining == 0
+    }
+
+    fn push(&mut self, row: PlanRow) -> bool {
+        if self.offset_remaining > 0 {
+            self.offset_remaining -= 1;
+            return false;
+        }
+        if self.take_remaining == 0 {
+            return true;
+        }
+        self.rows.push(row);
+        self.take_remaining -= 1;
+        self.take_remaining == 0
+    }
+}
+
+fn limited_streaming_prefix_limit_idx(ops: &[PlanOp], start_idx: usize) -> Option<usize> {
+    for (idx, op) in ops.iter().enumerate().skip(start_idx) {
+        match op {
+            PlanOp::Limit { count: Some(_), .. } => return Some(idx),
+            PlanOp::Limit { count: None, .. } => return None,
+            op if streaming_prefix_op_supported(op) => {}
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn streaming_prefix_op_supported(op: &PlanOp) -> bool {
+    match op {
+        PlanOp::NodeScan { .. }
+        | PlanOp::PropertyFilter { .. }
+        | PlanOp::Let { .. }
+        | PlanOp::Filter { .. }
+        | PlanOp::Expand { .. }
+        | PlanOp::ExpandFilter { .. } => true,
+        PlanOp::Project { distinct, .. } => !distinct,
+        _ => false,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_limited_streaming_prefix(
+    store: &GraphStore,
+    ops: &[PlanOp],
+    initial_rows: Vec<PlanRow>,
+    parameters: &BTreeMap<String, Value>,
+    caller: Option<Principal>,
+    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
+    aggregate_specs: Option<&[AggregateSpec]>,
+) -> Result<LimitedStreamingPrefixResult, PlanQueryError> {
+    let Some((PlanOp::Limit { count, offset }, streaming_ops)) = ops.split_last() else {
+        return Ok(LimitedStreamingPrefixResult {
+            rows: initial_rows,
+            clears_active_aggregate: false,
+        });
+    };
+    let evaluator = QueryExprEvaluator {
+        store,
+        parameters,
+        aggregate_specs,
+        caller,
+        gleaph_weight_decoders,
+    };
+    let offset = match offset {
+        Some(expr) => limit_value(&evaluator.eval_expr(&PlanRow::new(), expr)?)?,
+        None => 0,
+    };
+    let count = match count {
+        Some(expr) => limit_value(&evaluator.eval_expr(&PlanRow::new(), expr)?)?,
+        None => {
+            return Ok(LimitedStreamingPrefixResult {
+                rows: initial_rows,
+                clears_active_aggregate: false,
+            });
+        }
+    };
+    let mut sink = LimitedRows::new(offset, count);
+    let mut clears_active_aggregate = false;
+    if sink.is_done() {
+        return Ok(LimitedStreamingPrefixResult {
+            rows: sink.rows,
+            clears_active_aggregate,
+        });
+    }
+
+    for row in initial_rows {
+        if stream_row_through_ops(
+            store,
+            streaming_ops,
+            0,
+            row,
+            parameters,
+            caller,
+            gleaph_weight_decoders,
+            &evaluator,
+            &mut sink,
+            &mut clears_active_aggregate,
+        )? {
+            break;
+        }
+    }
+
+    Ok(LimitedStreamingPrefixResult {
+        rows: sink.rows,
+        clears_active_aggregate,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stream_row_through_ops(
+    store: &GraphStore,
+    ops: &[PlanOp],
+    op_idx: usize,
+    row: PlanRow,
+    parameters: &BTreeMap<String, Value>,
+    caller: Option<Principal>,
+    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
+    evaluator: &QueryExprEvaluator<'_>,
+    sink: &mut LimitedRows,
+    clears_active_aggregate: &mut bool,
+) -> Result<bool, PlanQueryError> {
+    let Some(op) = ops.get(op_idx) else {
+        return Ok(sink.push(row));
+    };
+    match op {
+        PlanOp::NodeScan {
+            variable,
+            label,
+            property_projection: _,
+        } => stream_node_scan(
+            store,
+            ops,
+            op_idx,
+            row,
+            variable,
+            label.as_ref(),
+            parameters,
+            caller,
+            gleaph_weight_decoders,
+            evaluator,
+            sink,
+            clears_active_aggregate,
+        ),
+        PlanOp::PropertyFilter { predicates, .. } => {
+            if row_matches_all(evaluator, &row, predicates)? {
+                stream_row_through_ops(
+                    store,
+                    ops,
+                    op_idx + 1,
+                    row,
+                    parameters,
+                    caller,
+                    gleaph_weight_decoders,
+                    evaluator,
+                    sink,
+                    clears_active_aggregate,
+                )
+            } else {
+                Ok(false)
+            }
+        }
+        PlanOp::Let { bindings } => {
+            let mut row = row;
+            for binding in bindings {
+                let value = evaluator.eval_expr(&row, &binding.value)?;
+                row.insert(binding.variable.clone(), PlanBinding::Value(value));
+            }
+            stream_row_through_ops(
+                store,
+                ops,
+                op_idx + 1,
+                row,
+                parameters,
+                caller,
+                gleaph_weight_decoders,
+                evaluator,
+                sink,
+                clears_active_aggregate,
+            )
+        }
+        PlanOp::Filter { condition } => {
+            if row_matches_all(evaluator, &row, std::slice::from_ref(condition))? {
+                stream_row_through_ops(
+                    store,
+                    ops,
+                    op_idx + 1,
+                    row,
+                    parameters,
+                    caller,
+                    gleaph_weight_decoders,
+                    evaluator,
+                    sink,
+                    clears_active_aggregate,
+                )
+            } else {
+                Ok(false)
+            }
+        }
+        PlanOp::Project { columns, distinct } => {
+            debug_assert!(!distinct);
+            let projected = project_row(evaluator, &row, columns)?;
+            *clears_active_aggregate = true;
+            stream_row_through_ops(
+                store,
+                ops,
+                op_idx + 1,
+                projected,
+                parameters,
+                caller,
+                gleaph_weight_decoders,
+                evaluator,
+                sink,
+                clears_active_aggregate,
+            )
+        }
+        PlanOp::Expand {
+            src,
+            edge,
+            dst,
+            direction,
+            label,
+            label_expr,
+            var_len,
+            indexed_edge_equality,
+            edge_property_projection,
+            dst_property_projection,
+            hop_aux_binding,
+            emit_edge_binding,
+        } => {
+            ensure_simple_expand(label_expr, var_len, hop_aux_binding)?;
+            stream_expand(
+                store,
+                ops,
+                op_idx,
+                row,
+                parameters,
+                src,
+                edge,
+                dst,
+                *direction,
+                label.as_ref(),
+                &[],
+                *emit_edge_binding,
+                indexed_edge_equality.as_ref(),
+                edge_property_projection.as_deref(),
+                dst_property_projection.as_deref(),
+                caller,
+                gleaph_weight_decoders,
+                evaluator,
+                sink,
+                clears_active_aggregate,
+            )
+        }
+        PlanOp::ExpandFilter {
+            src,
+            edge,
+            dst,
+            direction,
+            label,
+            label_expr,
+            var_len,
+            indexed_edge_equality,
+            dst_filter,
+            edge_property_projection,
+            dst_property_projection,
+            hop_aux_binding,
+            emit_edge_binding,
+        } => {
+            ensure_simple_expand(label_expr, var_len, hop_aux_binding)?;
+            stream_expand(
+                store,
+                ops,
+                op_idx,
+                row,
+                parameters,
+                src,
+                edge,
+                dst,
+                *direction,
+                label.as_ref(),
+                dst_filter,
+                *emit_edge_binding,
+                indexed_edge_equality.as_ref(),
+                edge_property_projection.as_deref(),
+                dst_property_projection.as_deref(),
+                caller,
+                gleaph_weight_decoders,
+                evaluator,
+                sink,
+                clears_active_aggregate,
+            )
+        }
+        _ => unreachable!("limited streaming prefix only contains supported operators"),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stream_node_scan(
+    store: &GraphStore,
+    ops: &[PlanOp],
+    op_idx: usize,
+    row: PlanRow,
+    variable: &Str,
+    label: Option<&Str>,
+    parameters: &BTreeMap<String, Value>,
+    caller: Option<Principal>,
+    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
+    evaluator: &QueryExprEvaluator<'_>,
+    sink: &mut LimitedRows,
+    clears_active_aggregate: &mut bool,
+) -> Result<bool, PlanQueryError> {
+    let label_id = label.and_then(|label| store.vertex_label_id(label.as_ref()));
+    if label.is_some() && label_id.is_none() {
+        return Ok(false);
+    }
+
+    for raw in 0..u32::from(store.vertex_count()) {
+        #[cfg(test)]
+        NODE_SCAN_VISITS.with(|visits| visits.set(visits.get() + 1));
+        let vertex_id = VertexId::from(raw);
+        let Some(vertex) = store.vertex(vertex_id) else {
+            continue;
+        };
+        if vertex.is_tombstone() {
+            continue;
+        }
+        if let Some(filter) = label_id
+            && !store.vertex_has_label(vertex_id, vertex, filter)
+        {
+            continue;
+        }
+        let mut scanned = row.clone();
+        scanned.insert(variable.to_string(), PlanBinding::Vertex(vertex_id));
+        if stream_row_through_ops(
+            store,
+            ops,
+            op_idx + 1,
+            scanned,
+            parameters,
+            caller,
+            gleaph_weight_decoders,
+            evaluator,
+            sink,
+            clears_active_aggregate,
+        )? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stream_expand(
+    store: &GraphStore,
+    ops: &[PlanOp],
+    op_idx: usize,
+    row: PlanRow,
+    parameters: &BTreeMap<String, Value>,
+    src: &Str,
+    edge: &Str,
+    dst: &Str,
+    direction: EdgeDirection,
+    label: Option<&Str>,
+    dst_filter: &[Expr],
+    emit_edge_binding: bool,
+    indexed_edge_equality: Option<&(Str, ScanValue)>,
+    edge_property_projection: Option<&[Str]>,
+    dst_property_projection: Option<&[Str]>,
+    caller: Option<Principal>,
+    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
+    evaluator: &QueryExprEvaluator<'_>,
+    sink: &mut LimitedRows,
+    clears_active_aggregate: &mut bool,
+) -> Result<bool, PlanQueryError> {
+    let label_id = label.and_then(|label| store.edge_label_id(label.as_ref()));
+    if label.is_some() && label_id.is_none() {
+        return Ok(false);
+    }
+
+    let Some(src_id) = vertex_binding_for_traversal(&row, src)? else {
+        return Ok(false);
+    };
+    let dst_only_prefilter = dst_filter_is_dst_vertex_only(dst_filter, dst.as_ref());
+    let edge_key = emit_edge_binding.then(|| edge.to_string());
+    let dst_key = dst.to_string();
+    let mut candidates = Vec::new();
+    expand_candidates_into(
+        store,
+        src_id,
+        direction,
+        label_id,
+        indexed_edge_equality,
+        parameters,
+        &mut candidates,
+    )?;
+    for (dst_id, edge_binding) in candidates.iter().copied() {
+        if !expand_dst_matches_prebound_vertex(&row, dst, dst_id) {
+            continue;
+        }
+        if dst_only_prefilter
+            && !vertex_row_matches_dst_filters(
+                store,
+                parameters,
+                dst,
+                dst_id,
+                dst_filter,
+                caller,
+                gleaph_weight_decoders,
+            )?
+        {
+            continue;
+        }
+        let mut expanded = row.clone();
+        if let Some(edge_key) = &edge_key {
+            let edge_binding = if edge_property_projection.is_some_and(|props| !props.is_empty()) {
+                PlanBinding::Value(edge_to_projected_record(
+                    store,
+                    edge_binding,
+                    edge_property_projection.unwrap(),
+                )?)
+            } else {
+                PlanBinding::Edge(edge_binding)
+            };
+            expanded.insert(edge_key.clone(), edge_binding);
+        }
+        expanded.insert(
+            dst_key.clone(),
+            vertex_binding_for_projection(store, dst_id, dst_property_projection)?,
+        );
+        if !dst_only_prefilter && !row_matches_all(evaluator, &expanded, dst_filter)? {
+            continue;
+        }
+        if stream_row_through_ops(
+            store,
+            ops,
+            op_idx + 1,
+            expanded,
+            parameters,
+            caller,
+            gleaph_weight_decoders,
+            evaluator,
+            sink,
+            clears_active_aggregate,
+        )? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 async fn execute_cartesian_product(
@@ -1199,6 +1699,8 @@ fn execute_node_scan(
     let mut out = Vec::new();
     for row in rows {
         for raw in 0..u32::from(store.vertex_count()) {
+            #[cfg(test)]
+            NODE_SCAN_VISITS.with(|visits| visits.set(visits.get() + 1));
             let vertex_id = VertexId::from(raw);
             let Some(vertex) = store.vertex(vertex_id) else {
                 continue;
@@ -3747,6 +4249,14 @@ mod tests {
         BTreeMap::new()
     }
 
+    fn reset_node_scan_visits() {
+        NODE_SCAN_VISITS.with(|visits| visits.set(0));
+    }
+
+    fn node_scan_visits() -> usize {
+        NODE_SCAN_VISITS.with(|visits| visits.get())
+    }
+
     #[derive(Clone, Debug)]
     struct TestOrderableExt(u8);
 
@@ -5128,6 +5638,126 @@ mod tests {
             .expect("execute planned query");
 
         assert_eq!(result.rows.len(), 1);
+    }
+
+    #[test]
+    fn planner_limit_stops_node_scan_after_enough_rows() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(
+                ["PlannerQueryLazyLimit"],
+                [("name", Value::Text("first".into()))],
+            )
+            .expect("insert first");
+        for i in 0..64 {
+            store
+                .insert_vertex_named(
+                    ["PlannerQueryLazyLimit"],
+                    [("name", Value::Text(format!("tail {i}")))],
+                )
+                .expect("insert tail");
+        }
+        let plan = plan_gql("MATCH (n:PlannerQueryLazyLimit) RETURN n.name LIMIT 1");
+
+        reset_node_scan_visits();
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute planned query");
+
+        assert_eq!(text_column(&result, "n.name"), vec!["first"]);
+        assert_eq!(node_scan_visits(), 1);
+    }
+
+    #[test]
+    fn planner_limit_stops_after_filter_accepts_enough_rows() {
+        let store = GraphStore::new();
+        for i in 0..10 {
+            store
+                .insert_vertex_named(
+                    ["PlannerQueryLazyFilterLimit"],
+                    [
+                        ("name", Value::Text(format!("drop {i}"))),
+                        ("keep", Value::Bool(false)),
+                    ],
+                )
+                .expect("insert dropped");
+        }
+        for name in ["keep a", "keep b"] {
+            store
+                .insert_vertex_named(
+                    ["PlannerQueryLazyFilterLimit"],
+                    [
+                        ("name", Value::Text(name.into())),
+                        ("keep", Value::Bool(true)),
+                    ],
+                )
+                .expect("insert kept");
+        }
+        for i in 0..32 {
+            store
+                .insert_vertex_named(
+                    ["PlannerQueryLazyFilterLimit"],
+                    [
+                        ("name", Value::Text(format!("unvisited {i}"))),
+                        ("keep", Value::Bool(true)),
+                    ],
+                )
+                .expect("insert tail");
+        }
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "n".into(),
+                label: Some("PlannerQueryLazyFilterLimit".into()),
+                property_projection: None,
+            },
+            PlanOp::PropertyFilter {
+                predicates: vec![Expr::new(ExprKind::Compare {
+                    left: Box::new(prop("n", "keep")),
+                    op: CmpOp::Eq,
+                    right: Box::new(Expr::new(ExprKind::Literal(Value::Bool(true)))),
+                })],
+                stage: 0,
+            },
+            PlanOp::Limit {
+                count: Some(Expr::new(ExprKind::Literal(Value::Int64(2)))),
+                offset: None,
+            },
+            PlanOp::Project {
+                columns: vec![project(prop("n", "name"), "n.name")],
+                distinct: false,
+            },
+        ]);
+
+        reset_node_scan_visits();
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute planned query");
+
+        assert_eq!(text_column(&result, "n.name"), vec!["keep a", "keep b"]);
+        assert_eq!(node_scan_visits(), 12);
+    }
+
+    #[test]
+    fn order_by_limit_remains_a_materializing_barrier() {
+        let store = GraphStore::new();
+        for name in ["c", "a", "b"] {
+            store
+                .insert_vertex_named(
+                    ["PlannerQueryLazyLimitSort"],
+                    [("name", Value::Text(name.into()))],
+                )
+                .expect("insert vertex");
+        }
+        let plan =
+            plan_gql("MATCH (n:PlannerQueryLazyLimitSort) RETURN n.name ORDER BY n.name LIMIT 1");
+
+        reset_node_scan_visits();
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute planned query");
+
+        assert_eq!(text_column(&result, "n.name"), vec!["a"]);
+        assert_eq!(node_scan_visits(), 3);
     }
 
     #[test]
