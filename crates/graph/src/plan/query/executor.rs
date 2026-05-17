@@ -33,9 +33,8 @@ use gleaph_graph_kernel::entry::{
 use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest};
 use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
-use ic_stable_lara::OutEdgeBucketWalk;
 use ic_stable_lara::VertexId;
-use ic_stable_lara::labeled::BucketDirectedness;
+use ic_stable_lara::labeled::{BucketDirectedness, OutEdgeOrder};
 use ic_stable_lara::traits::{CsrEdge, CsrVertexTombstone};
 use nohash_hasher::{IntMap, IntSet};
 use rapidhash::fast::RapidHasher;
@@ -3120,8 +3119,6 @@ fn for_each_csr_expand_edge<F>(
 where
     F: FnMut(Edge),
 {
-    let expand_walk = OutEdgeBucketWalk::Descending;
-    let visit = visit;
     match direction {
         EdgeDirection::PointingRight | EdgeDirection::Undirected => {
             if let Some(lid) = edge_label_id {
@@ -3147,7 +3144,7 @@ where
                     .for_each_out_edges_by_directedness_unchecked(
                         src_id,
                         directedness,
-                        expand_walk,
+                        OutEdgeOrder::Descending,
                         visit,
                     )
                     .map_err(GraphStoreError::from)?;
@@ -3169,7 +3166,7 @@ where
                     .for_each_in_edges_by_directedness_unchecked(
                         src_id,
                         BucketDirectedness::Directed,
-                        expand_walk,
+                        OutEdgeOrder::Descending,
                         visit,
                     )
                     .map_err(GraphStoreError::from)?;

@@ -123,7 +123,7 @@ fn bench_labeled_default_bypass_iter_128() -> canbench_rs::BenchResult {
     }
     bench_fn(|| {
         let mut count = 0usize;
-        for edge in graph.iter_out_edges(VertexId::from(0)).expect("iter") {
+        for edge in graph.out_edges(VertexId::from(0)).expect("iter") {
             count += usize::from(edge.neighbor_vid().0 > 0);
         }
         black_box(count);

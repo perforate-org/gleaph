@@ -112,7 +112,7 @@ fn bench_lara_edge_store_log_spill_128() -> canbench_rs::BenchResult {
 /// This protects the clean scan contract at the `EdgeStore` layer, including
 /// decoding fixed-width edge records into a caller-owned vector.
 #[bench(raw)]
-fn bench_lara_edge_store_collect_out_edges_slot_order_1024() -> canbench_rs::BenchResult {
+fn bench_lara_edge_store_asc_out_edges_1024() -> canbench_rs::BenchResult {
     let (vertices, edges) = edge_store_with_vertices(1, helper::MEDIUM_N as u32);
     for i in 0..helper::MEDIUM_N {
         edges
@@ -120,10 +120,10 @@ fn bench_lara_edge_store_collect_out_edges_slot_order_1024() -> canbench_rs::Ben
             .expect("insert edge");
     }
     canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("lara_edge_store_collect_out_edges_slot_order");
+        let _scope = canbench_rs::bench_scope("lara_edge_store_asc_out_edges");
         black_box(
             edges
-                .collect_out_edges_slot_order(&vertices, VertexId::from(black_box(0u32)))
+                .asc_out_edges(&vertices, VertexId::from(black_box(0u32)))
                 .expect("collect edges"),
         );
     })
@@ -132,7 +132,7 @@ fn bench_lara_edge_store_collect_out_edges_slot_order_1024() -> canbench_rs::Ben
 /// Measures iteration over one large slab-backed neighborhood without
 /// materializing the whole row into a vector.
 #[bench(raw)]
-fn bench_lara_edge_store_iter_out_edges_1024() -> canbench_rs::BenchResult {
+fn bench_lara_edge_store_out_edges_iter_1024() -> canbench_rs::BenchResult {
     let (vertices, edges) = edge_store_with_vertices(1, helper::MEDIUM_N as u32);
     for i in 0..helper::MEDIUM_N {
         edges
@@ -140,10 +140,10 @@ fn bench_lara_edge_store_iter_out_edges_1024() -> canbench_rs::BenchResult {
             .expect("insert edge");
     }
     canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("lara_edge_store_iter_out_edges");
+        let _scope = canbench_rs::bench_scope("lara_edge_store_out_edges_iter");
         let mut count = 0usize;
         for edge in edges
-            .iter_out_edges(&vertices, VertexId::from(black_box(0u32)))
+            .out_edges_iter(&vertices, VertexId::from(black_box(0u32)))
             .expect("iterate edges")
         {
             black_box(edge);
@@ -157,7 +157,7 @@ fn bench_lara_edge_store_iter_out_edges_1024() -> canbench_rs::BenchResult {
 /// chain first, then walks the slab tail without allocating the collected edge
 /// vector.
 #[bench(raw)]
-fn bench_lara_edge_store_iter_out_edges_log_backed_128() -> canbench_rs::BenchResult {
+fn bench_lara_edge_store_out_edges_iter_log_backed_128() -> canbench_rs::BenchResult {
     let (vertices, edges) = edge_store_with_vertices(1, 1);
     for i in 0..128 {
         edges
@@ -165,10 +165,10 @@ fn bench_lara_edge_store_iter_out_edges_log_backed_128() -> canbench_rs::BenchRe
             .expect("insert edge");
     }
     canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("lara_edge_store_iter_out_edges_log_backed");
+        let _scope = canbench_rs::bench_scope("lara_edge_store_out_edges_iter_log_backed");
         let mut count = 0usize;
         for edge in edges
-            .iter_out_edges(&vertices, VertexId::from(black_box(0u32)))
+            .out_edges_iter(&vertices, VertexId::from(black_box(0u32)))
             .expect("iterate edges")
         {
             black_box(edge);

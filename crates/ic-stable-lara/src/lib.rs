@@ -64,12 +64,13 @@ pub use labeled::{
     BucketLabelKey, DeferredBidirectionalLabeledError, DeferredBidirectionalLabeledLara,
     DeferredBidirectionalLabeledLaraGraph, DeferredLabeledLara, DeferredLabeledLaraGraph,
     LabelBucket, LabeledCsrVertex, LabeledLara, LabeledLaraGraph, LabeledOutEdgesIter,
-    LabeledVertex, OutEdgeBucketWalk,
+    LabeledVertex, OutEdgeOrder,
 };
 pub use lara::{
     LaraGraph,
     edge::{
-        EdgeHeaderV1, EdgeStore, InitError as EdgeInitError, LogHeaderV1, OutEdgesIter,
+        AscOutEdgesIter, EdgeHeaderV1, EdgeStore, InitError as EdgeInitError, LogHeaderV1,
+        OutEdgesIter,
         free_span::{FreeSpan, FreeSpanError, FreeSpanStore, InitError as FreeSpanInitError},
         span_meta::{SegmentSpanMeta, SegmentSpanMetaStore},
     },

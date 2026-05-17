@@ -749,8 +749,8 @@ where
 
     /// Returns `true` if `vid` has any incident edge (forward out-adjacency or reverse out-adjacency).
     ///
-    /// Equivalent to treating [`Self::collect_out_edges_slot_order`] and
-    /// [`Self::collect_in_edges_slot_order`] as non-empty OR, without allocating edge vectors.
+    /// Equivalent to treating [`Self::asc_out_edges`] and
+    /// [`Self::asc_in_edges`] as non-empty OR, without allocating edge vectors.
     pub fn has_incident_edges(
         &self,
         vid: VertexId,
@@ -769,72 +769,49 @@ where
     }
 
     /// Collects outgoing edges from the forward store in slab slot order.
-    pub fn collect_out_edges_slot_order(
-        &self,
-        src: VertexId,
-    ) -> Result<Vec<E>, DeferredBidirectionalLaraError> {
+    pub fn asc_out_edges(&self, src: VertexId) -> Result<Vec<E>, DeferredBidirectionalLaraError> {
         self.ensure_vertex(src)?;
         self.forward
-            .collect_out_edges_slot_order(src)
+            .asc_out_edges(src)
             .map_err(DeferredBidirectionalLaraError::Forward)
     }
 
     /// Collects incoming edges from the reverse store in slab slot order.
-    pub fn collect_in_edges_slot_order(
-        &self,
-        dst: VertexId,
-    ) -> Result<Vec<E>, DeferredBidirectionalLaraError> {
+    pub fn asc_in_edges(&self, dst: VertexId) -> Result<Vec<E>, DeferredBidirectionalLaraError> {
         self.ensure_vertex(dst)?;
         self.reverse
-            .collect_out_edges_slot_order(dst)
+            .asc_out_edges(dst)
             .map_err(DeferredBidirectionalLaraError::Reverse)
     }
 
     /// Iterates outgoing edges from the forward store in standard scan order.
-    pub fn iter_out_edges(
+    pub fn out_edges_iter(
         &self,
         src: VertexId,
     ) -> Result<OutEdgesIter<'_, E, M>, DeferredBidirectionalLaraError> {
         self.ensure_vertex(src)?;
         self.forward
-            .iter_out_edges(src)
+            .out_edges_iter(src)
             .map_err(DeferredBidirectionalLaraError::Forward)
     }
 
     /// Iterates incoming edges from the reverse store in standard scan order.
-    pub fn iter_in_edges(
+    pub fn in_edges_iter(
         &self,
         dst: VertexId,
     ) -> Result<OutEdgesIter<'_, E, M>, DeferredBidirectionalLaraError> {
         self.ensure_vertex(dst)?;
         self.reverse
-            .iter_out_edges(dst)
+            .out_edges_iter(dst)
             .map_err(DeferredBidirectionalLaraError::Reverse)
     }
 
     /// Walks outgoing edges on the forward store without materializing a row vector.
-    pub fn for_each_out_edge_matching<Match, Visit>(
+    pub fn visit_out_edges<Match, Visit>(
         &self,
         src: VertexId,
-        matches: Match,
-        visit: Visit,
-    ) -> Result<(), DeferredBidirectionalLaraError>
-    where
-        Match: FnMut(&E) -> bool,
-        Visit: FnMut(E),
-    {
-        self.for_each_out_edge_matching_with_raw(
-            src,
-            None::<&mut dyn FnMut(&[u8]) -> bool>,
-            matches,
-            visit,
-        )
-    }
-
-    /// Like [`Self::for_each_out_edge_matching`] with an optional slab raw-byte prefilter.
-    pub fn for_each_out_edge_matching_with_raw<Match, Visit>(
-        &self,
-        src: VertexId,
+        offset: Option<usize>,
+        limit: Option<usize>,
         raw_matches: Option<&mut dyn FnMut(&[u8]) -> bool>,
         matches: Match,
         visit: Visit,
@@ -845,33 +822,16 @@ where
     {
         self.ensure_vertex(src)?;
         self.forward
-            .for_each_out_edge_matching_with_raw(src, raw_matches, matches, visit)
+            .visit_out_edges(src, offset, limit, raw_matches, matches, visit)
             .map_err(DeferredBidirectionalLaraError::Forward)
     }
 
     /// Walks incoming edges on the reverse store without materializing a row vector.
-    pub fn for_each_in_edge_matching<Match, Visit>(
+    pub fn visit_in_edges<Match, Visit>(
         &self,
         dst: VertexId,
-        matches: Match,
-        visit: Visit,
-    ) -> Result<(), DeferredBidirectionalLaraError>
-    where
-        Match: FnMut(&E) -> bool,
-        Visit: FnMut(E),
-    {
-        self.for_each_in_edge_matching_with_raw(
-            dst,
-            None::<&mut dyn FnMut(&[u8]) -> bool>,
-            matches,
-            visit,
-        )
-    }
-
-    /// Like [`Self::for_each_in_edge_matching`] with an optional slab raw-byte prefilter.
-    pub fn for_each_in_edge_matching_with_raw<Match, Visit>(
-        &self,
-        dst: VertexId,
+        offset: Option<usize>,
+        limit: Option<usize>,
         raw_matches: Option<&mut dyn FnMut(&[u8]) -> bool>,
         matches: Match,
         visit: Visit,
@@ -882,7 +842,7 @@ where
     {
         self.ensure_vertex(dst)?;
         self.reverse
-            .for_each_out_edge_matching_with_raw(dst, raw_matches, matches, visit)
+            .visit_out_edges(dst, offset, limit, raw_matches, matches, visit)
             .map_err(DeferredBidirectionalLaraError::Reverse)
     }
 
@@ -1460,43 +1420,29 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            graph
-                .collect_out_edges_slot_order(VertexId::from(0))
-                .unwrap(),
+            graph.asc_out_edges(VertexId::from(0)).unwrap(),
             vec![TestEdge(2)]
         );
         assert_eq!(
             graph
-                .iter_out_edges(VertexId::from(0))
+                .out_edges_iter(VertexId::from(0))
                 .unwrap()
                 .collect::<Vec<_>>(),
             vec![TestEdge(2)]
         );
+        assert_eq!(graph.asc_out_edges(VertexId::from(2)).unwrap(), Vec::new());
         assert_eq!(
-            graph
-                .collect_out_edges_slot_order(VertexId::from(2))
-                .unwrap(),
-            Vec::new()
-        );
-        assert_eq!(
-            graph
-                .collect_in_edges_slot_order(VertexId::from(2))
-                .unwrap(),
+            graph.asc_in_edges(VertexId::from(2)).unwrap(),
             vec![TestEdge(0)]
         );
         assert_eq!(
             graph
-                .iter_in_edges(VertexId::from(2))
+                .in_edges_iter(VertexId::from(2))
                 .unwrap()
                 .collect::<Vec<_>>(),
             vec![TestEdge(0)]
         );
-        assert_eq!(
-            graph
-                .collect_in_edges_slot_order(VertexId::from(0))
-                .unwrap(),
-            Vec::new()
-        );
+        assert_eq!(graph.asc_in_edges(VertexId::from(0)).unwrap(), Vec::new());
     }
 
     #[test]
@@ -1508,8 +1454,8 @@ mod tests {
 
         let expect = |vid: u32| {
             let vid = VertexId::from(vid);
-            let legacy = !graph.collect_out_edges_slot_order(vid).unwrap().is_empty()
-                || !graph.collect_in_edges_slot_order(vid).unwrap().is_empty();
+            let legacy = !graph.asc_out_edges(vid).unwrap().is_empty()
+                || !graph.asc_in_edges(vid).unwrap().is_empty();
             assert_eq!(graph.has_incident_edges(vid).unwrap(), legacy);
         };
         expect(0);
@@ -1563,18 +1509,8 @@ mod tests {
                 actual
             } if expected == VertexId::from(1) && actual == VertexId::from(0)
         ));
-        assert_eq!(
-            graph
-                .collect_out_edges_slot_order(VertexId::from(0))
-                .unwrap(),
-            Vec::new()
-        );
-        assert_eq!(
-            graph
-                .collect_in_edges_slot_order(VertexId::from(1))
-                .unwrap(),
-            Vec::new()
-        );
+        assert_eq!(graph.asc_out_edges(VertexId::from(0)).unwrap(), Vec::new());
+        assert_eq!(graph.asc_in_edges(VertexId::from(1)).unwrap(), Vec::new());
     }
 
     #[test]
@@ -1590,18 +1526,8 @@ mod tests {
             err,
             DeferredBidirectionalLaraError::UndirectedEdgeInDirectedInsert
         ));
-        assert_eq!(
-            graph
-                .collect_out_edges_slot_order(VertexId::from(0))
-                .unwrap(),
-            Vec::new()
-        );
-        assert_eq!(
-            graph
-                .collect_in_edges_slot_order(VertexId::from(1))
-                .unwrap(),
-            Vec::new()
-        );
+        assert_eq!(graph.asc_out_edges(VertexId::from(0)).unwrap(), Vec::new());
+        assert_eq!(graph.asc_in_edges(VertexId::from(1)).unwrap(), Vec::new());
     }
 
     #[test]
@@ -1617,36 +1543,28 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            graph
-                .collect_out_edges_slot_order(VertexId::from(0))
-                .unwrap(),
+            graph.asc_out_edges(VertexId::from(0)).unwrap(),
             vec![UndirectedTestEdge {
                 neighbor: 2,
                 undirected: true
             }]
         );
         assert_eq!(
-            graph
-                .collect_out_edges_slot_order(VertexId::from(2))
-                .unwrap(),
+            graph.asc_out_edges(VertexId::from(2)).unwrap(),
             vec![UndirectedTestEdge {
                 neighbor: 0,
                 undirected: true
             }]
         );
         assert_eq!(
-            graph
-                .collect_in_edges_slot_order(VertexId::from(0))
-                .unwrap(),
+            graph.asc_in_edges(VertexId::from(0)).unwrap(),
             vec![UndirectedTestEdge {
                 neighbor: 2,
                 undirected: true
             }]
         );
         assert_eq!(
-            graph
-                .collect_in_edges_slot_order(VertexId::from(2))
-                .unwrap(),
+            graph.asc_in_edges(VertexId::from(2)).unwrap(),
             vec![UndirectedTestEdge {
                 neighbor: 0,
                 undirected: true
@@ -1671,15 +1589,11 @@ mod tests {
             undirected: true,
         };
         assert_eq!(
-            graph
-                .collect_out_edges_slot_order(VertexId::from(1))
-                .unwrap(),
+            graph.asc_out_edges(VertexId::from(1)).unwrap(),
             vec![loop_edge]
         );
         assert_eq!(
-            graph
-                .collect_in_edges_slot_order(VertexId::from(1))
-                .unwrap(),
+            graph.asc_in_edges(VertexId::from(1)).unwrap(),
             vec![loop_edge]
         );
     }
@@ -1719,9 +1633,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            reopened
-                .collect_out_edges_slot_order(VertexId::from(0))
-                .unwrap(),
+            reopened.asc_out_edges(VertexId::from(0)).unwrap(),
             vec![TestEdge(2), TestEdge(2), TestEdge(2)]
         );
         assert_eq!(reopened.maintenance_queue_len(), 2);
@@ -1766,7 +1678,7 @@ mod tests {
 
         assert!(graph.delete_vertex_deferred(VertexId::from(1)).unwrap());
         assert!(matches!(
-            graph.collect_out_edges_slot_order(VertexId::from(1)),
+            graph.asc_out_edges(VertexId::from(1)),
             Err(DeferredBidirectionalLaraError::VertexDeleted { .. })
         ));
 
@@ -1783,24 +1695,9 @@ mod tests {
                 .unwrap();
         }
 
-        assert_eq!(
-            graph
-                .collect_out_edges_slot_order(VertexId::from(0))
-                .unwrap(),
-            Vec::new()
-        );
-        assert_eq!(
-            graph
-                .collect_out_edges_slot_order(VertexId::from(2))
-                .unwrap(),
-            Vec::new()
-        );
-        assert_eq!(
-            graph
-                .collect_in_edges_slot_order(VertexId::from(3))
-                .unwrap(),
-            Vec::new()
-        );
+        assert_eq!(graph.asc_out_edges(VertexId::from(0)).unwrap(), Vec::new());
+        assert_eq!(graph.asc_out_edges(VertexId::from(2)).unwrap(), Vec::new());
+        assert_eq!(graph.asc_in_edges(VertexId::from(3)).unwrap(), Vec::new());
     }
 
     #[test]
@@ -1986,11 +1883,6 @@ mod tests {
             graph.maintenance(budget).unwrap();
         }
 
-        assert!(
-            graph
-                .collect_out_edges_slot_order(VertexId::from(1))
-                .unwrap()
-                .is_empty()
-        );
+        assert!(graph.asc_out_edges(VertexId::from(1)).unwrap().is_empty());
     }
 }

@@ -6,7 +6,8 @@
 use crate::{
     GrowFailed as GraphGrowFailed, SegmentId, VertexId,
     lara::{
-        InitError as GraphInitError, LaraGraph, MarkPriority, edge::OutEdgesIter,
+        InitError as GraphInitError, LaraGraph, MarkPriority,
+        edge::{AscOutEdgesIter, OutEdgesIter},
         operation_error::LaraOperationError,
     },
     traits::{CsrEdge, CsrEdgeSlabVacancy, CsrVertex},
@@ -557,22 +558,35 @@ where
     }
 
     /// Collects outgoing edges in slab slot order.
-    pub fn collect_out_edges_slot_order(
-        &self,
-        src: VertexId,
-    ) -> Result<Vec<E>, LaraOperationError> {
-        self.graph.collect_out_edges_slot_order(src)
+    pub fn asc_out_edges(&self, src: VertexId) -> Result<Vec<E>, LaraOperationError> {
+        self.graph.asc_out_edges(src)
     }
 
     /// Iterates outgoing edges in the store's standard scan order.
     ///
     /// This order is deterministic for the committed store state, but it is not
     /// guaranteed to be insertion order or slab slot order.
-    pub fn iter_out_edges(
+    pub fn out_edges_iter(
         &self,
         src: VertexId,
     ) -> Result<OutEdgesIter<'_, E, M>, LaraOperationError> {
-        self.graph.iter_out_edges(src)
+        self.graph.out_edges_iter(src)
+    }
+
+    /// Descending-scan iterator (same as [`Self::out_edges_iter`]).
+    pub fn desc_out_edges_iter(
+        &self,
+        src: VertexId,
+    ) -> Result<OutEdgesIter<'_, E, M>, LaraOperationError> {
+        self.graph.desc_out_edges_iter(src)
+    }
+
+    /// Ascending CSR slot / materialization iterator (same sequence as [`Self::asc_out_edges`]).
+    pub fn asc_out_edges_iter(
+        &self,
+        src: VertexId,
+    ) -> Result<AscOutEdgesIter<'_, E, M>, LaraOperationError> {
+        self.graph.asc_out_edges_iter(src)
     }
 
     /// Inserts an edge without immediate rebalancing, enqueueing maintenance if needed.
@@ -848,14 +862,12 @@ mod tests {
         }
 
         assert_eq!(
-            graph
-                .collect_out_edges_slot_order(VertexId::from(0))
-                .unwrap(),
+            graph.asc_out_edges(VertexId::from(0)).unwrap(),
             vec![TestEdge(10), TestEdge(11), TestEdge(12)]
         );
         assert_eq!(
             graph
-                .iter_out_edges(VertexId::from(0))
+                .out_edges_iter(VertexId::from(0))
                 .unwrap()
                 .collect::<Vec<_>>(),
             vec![TestEdge(12), TestEdge(11), TestEdge(10)]
@@ -878,9 +890,7 @@ mod tests {
         assert_eq!(report.work.rebalanced_segments, 1);
         assert_eq!(graph.graph().vertices().get(VertexId::from(0)).log_head, -1);
         assert_eq!(
-            graph
-                .collect_out_edges_slot_order(VertexId::from(0))
-                .unwrap(),
+            graph.asc_out_edges(VertexId::from(0)).unwrap(),
             vec![TestEdge(10), TestEdge(11), TestEdge(12)]
         );
     }
@@ -903,9 +913,7 @@ mod tests {
         );
 
         assert_eq!(
-            graph
-                .collect_out_edges_slot_order(VertexId::from(0))
-                .unwrap(),
+            graph.asc_out_edges(VertexId::from(0)).unwrap(),
             vec![TestEdge(10), TestEdge(12)]
         );
         assert_eq!(graph.graph().vertices().get(VertexId::from(0)).degree(), 2);
@@ -962,9 +970,7 @@ mod tests {
 
         assert!(reopened.maintenance_queue().is_dirty(SegmentId::from(0)));
         assert_eq!(
-            reopened
-                .collect_out_edges_slot_order(VertexId::from(0))
-                .unwrap(),
+            reopened.asc_out_edges(VertexId::from(0)).unwrap(),
             vec![TestEdge(10), TestEdge(11), TestEdge(12)]
         );
     }
@@ -980,9 +986,7 @@ mod tests {
         assert!(!graph.maintenance_queue().is_dirty(SegmentId::from(0)));
         assert_eq!(graph.maintenance_queue().len(), 0);
         assert_eq!(
-            graph
-                .collect_out_edges_slot_order(VertexId::from(0))
-                .unwrap(),
+            graph.asc_out_edges(VertexId::from(0)).unwrap(),
             vec![TestEdge(10)]
         );
     }
@@ -1115,7 +1119,7 @@ mod bench {
     /// Measures read-side reverse iteration while deferred inserts are still
     /// waiting in the overflow log.
     #[bench(raw)]
-    fn bench_lara_deferred_iter_out_edges_log_backed_128() -> canbench_rs::BenchResult {
+    fn bench_lara_deferred_out_edges_iter_log_backed_128() -> canbench_rs::BenchResult {
         let graph = helper::deferred_graph(1);
         for i in 0..128 {
             graph
@@ -1123,10 +1127,10 @@ mod bench {
                 .expect("insert deferred edge");
         }
         canbench_rs::bench_fn(|| {
-            let _scope = canbench_rs::bench_scope("lara_deferred_iter_out_edges_log_backed");
+            let _scope = canbench_rs::bench_scope("lara_deferred_out_edges_iter_log_backed");
             let mut count = 0usize;
             for edge in graph
-                .iter_out_edges(VertexId::from(black_box(0u32)))
+                .out_edges_iter(VertexId::from(black_box(0u32)))
                 .expect("iterate deferred edges")
             {
                 black_box(edge);

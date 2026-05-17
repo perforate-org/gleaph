@@ -9,20 +9,20 @@ benches:
   bench_labeled_default_bypass_iter_128:
     total:
       calls: 1
-      instructions: 25902
+      instructions: 32050
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_labeled_deferred_inserts_only_1024:
     total:
       calls: 1
-      instructions: 8808970
+      instructions: 8798150
       heap_increase: 19
       stable_memory_increase: 0
     scopes:
       labeled_deferred_dense_enqueue:
         calls: 174
-        instructions: 648678
+        instructions: 649188
         heap_increase: 0
         stable_memory_increase: 0
       labeled_insert_new_label_bucket:
@@ -32,7 +32,7 @@ benches:
         stable_memory_increase: 0
       labeled_rewrite_copy_disjoint:
         calls: 4
-        instructions: 136054
+        instructions: 136046
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_finalize:
@@ -42,29 +42,29 @@ benches:
         stable_memory_increase: 0
       labeled_rewrite_read_and_plan:
         calls: 4
-        instructions: 25572
+        instructions: 25640
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_deferred_maintenance_compact_vertex_span_1:
     total:
       calls: 1
-      instructions: 3817427
+      instructions: 3814382
       heap_increase: 19
       stable_memory_increase: 0
     scopes:
       labeled_compact_label_bucket_vertex_segment:
         calls: 1
-        instructions: 59902
+        instructions: 59919
         heap_increase: 0
         stable_memory_increase: 0
       labeled_deferred_dense_enqueue:
         calls: 49
-        instructions: 175354
+        instructions: 175480
         heap_increase: 0
         stable_memory_increase: 0
       labeled_deferred_maintenance_item:
         calls: 1
-        instructions: 109588
+        instructions: 109622
         heap_increase: 0
         stable_memory_increase: 0
       labeled_insert_new_label_bucket:
@@ -74,12 +74,12 @@ benches:
         stable_memory_increase: 0
       labeled_remove_edge_skip_leaf:
         calls: 72
-        instructions: 1017429
+        instructions: 1017438
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_copy_disjoint:
         calls: 2
-        instructions: 54757
+        instructions: 54749
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_finalize:
@@ -89,13 +89,13 @@ benches:
         stable_memory_increase: 0
       labeled_rewrite_read_and_plan:
         calls: 2
-        instructions: 12700
+        instructions: 12734
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_insert_existing_bucket_128:
     total:
       calls: 1
-      instructions: 5814146
+      instructions: 5814248
       heap_increase: 3
       stable_memory_increase: 0
     scopes:
@@ -106,7 +106,7 @@ benches:
         stable_memory_increase: 0
       labeled_rebalance_leaf_cascade:
         calls: 6
-        instructions: 407600
+        instructions: 407702
         heap_increase: 3
         stable_memory_increase: 0
       labeled_rewrite_copy_disjoint:
@@ -121,24 +121,24 @@ benches:
         stable_memory_increase: 0
       labeled_rewrite_read_and_plan:
         calls: 6
-        instructions: 170544
+        instructions: 170646
         heap_increase: 3
         stable_memory_increase: 0
   bench_labeled_insert_fresh_label_each_edge_256:
     total:
       calls: 1
-      instructions: 24435789
+      instructions: 24576029
       heap_increase: 29
       stable_memory_increase: 0
     scopes:
       labeled_insert_new_label_bucket:
         calls: 256
-        instructions: 14210409
+        instructions: 14280524
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rebalance_leaf_cascade:
         calls: 4
-        instructions: 872230
+        instructions: 873250
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_copy_disjoint:
@@ -158,24 +158,24 @@ benches:
         stable_memory_increase: 0
       labeled_rewrite_read_and_plan:
         calls: 7
-        instructions: 441503
+        instructions: 443028
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_insert_last_of_many_buckets_1024:
     total:
       calls: 1
-      instructions: 11578727
+      instructions: 11568134
       heap_increase: 7
       stable_memory_increase: 0
     scopes:
       labeled_rebalance_leaf_cascade:
         calls: 1
-        instructions: 1263233
+        instructions: 1263496
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_copy_disjoint:
         calls: 3
-        instructions: 2526822
+        instructions: 2526806
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_finalize:
@@ -185,24 +185,24 @@ benches:
         stable_memory_increase: 0
       labeled_rewrite_read_and_plan:
         calls: 3
-        instructions: 505396
+        instructions: 506209
         heap_increase: 7
         stable_memory_increase: 0
   bench_labeled_insert_multi_vertex_leaf32_2048:
     total:
       calls: 1
-      instructions: 16482407
+      instructions: 16471874
       heap_increase: 23
       stable_memory_increase: 0
     scopes:
       labeled_rebalance_leaf_cascade:
         calls: 3
-        instructions: 100999
+        instructions: 101050
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_copy_disjoint:
         calls: 65
-        instructions: 1196596
+        instructions: 1196348
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_finalize:
@@ -212,29 +212,29 @@ benches:
         stable_memory_increase: 0
       labeled_rewrite_read_and_plan:
         calls: 65
-        instructions: 1203214
+        instructions: 1204319
         heap_increase: 23
         stable_memory_increase: 0
   bench_labeled_insert_round_robin_64_labels_1024:
     total:
       calls: 1
-      instructions: 11970576
+      instructions: 11970707
       heap_increase: 7
       stable_memory_increase: 0
     scopes:
       labeled_find_bucket_slot:
         calls: 63
-        instructions: 683865
+        instructions: 692874
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rebalance_leaf_cascade:
         calls: 4
-        instructions: 3119094
+        instructions: 3118658
         heap_increase: 7
         stable_memory_increase: 0
       labeled_rewrite_copy_disjoint:
         calls: 4
-        instructions: 2560139
+        instructions: 2559131
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_finalize:
@@ -244,13 +244,13 @@ benches:
         stable_memory_increase: 0
       labeled_rewrite_read_and_plan:
         calls: 4
-        instructions: 432069
+        instructions: 432641
         heap_increase: 7
         stable_memory_increase: 0
   bench_labeled_insert_single_bucket_1024:
     total:
       calls: 1
-      instructions: 5814154
+      instructions: 5814256
       heap_increase: 3
       stable_memory_increase: 0
     scopes:
@@ -261,7 +261,7 @@ benches:
         stable_memory_increase: 0
       labeled_rebalance_leaf_cascade:
         calls: 6
-        instructions: 407600
+        instructions: 407702
         heap_increase: 3
         stable_memory_increase: 0
       labeled_rewrite_copy_disjoint:
@@ -276,19 +276,19 @@ benches:
         stable_memory_increase: 0
       labeled_rewrite_read_and_plan:
         calls: 6
-        instructions: 170544
+        instructions: 170646
         heap_increase: 3
         stable_memory_increase: 0
   bench_labeled_iter_edges_for_label_128:
     total:
       calls: 1
-      instructions: 29518
+      instructions: 39065
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_for_each_edges_for_label:
         calls: 1
-        instructions: 24246
+        instructions: 33793
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_bidirectional_insert_directed_1024:
@@ -318,13 +318,13 @@ benches:
   bench_lara_bidirectional_scan_in_out_1024:
     total:
       calls: 1
-      instructions: 766774
+      instructions: 766758
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_bidirectional_scan_in_out:
         calls: 1
-        instructions: 765731
+        instructions: 765715
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_counts_get_set_iter_1024:
@@ -378,13 +378,13 @@ benches:
   bench_lara_deferred_bidirectional_maintenance_drain_1:
     total:
       calls: 1
-      instructions: 962184
+      instructions: 961474
       heap_increase: 0
       stable_memory_increase: 2049
     scopes:
       lara_deferred_bidirectional_maintenance_drain:
         calls: 1
-        instructions: 961146
+        instructions: 960436
         heap_increase: 0
         stable_memory_increase: 2049
   bench_lara_deferred_insert_dirty_1024:
@@ -399,30 +399,30 @@ benches:
         instructions: 4821667
         heap_increase: 0
         stable_memory_increase: 0
-  bench_lara_deferred_iter_out_edges_log_backed_128:
-    total:
-      calls: 1
-      instructions: 37208
-      heap_increase: 0
-      stable_memory_increase: 0
-    scopes:
-      lara_deferred_iter_out_edges_log_backed:
-        calls: 1
-        instructions: 36150
-        heap_increase: 0
-        stable_memory_increase: 0
   bench_lara_deferred_maintenance_fold_1:
     total:
       calls: 1
-      instructions: 518287
+      instructions: 517633
       heap_increase: 0
       stable_memory_increase: 1153
     scopes:
       lara_deferred_maintenance_fold:
         calls: 1
-        instructions: 517251
+        instructions: 516597
         heap_increase: 0
         stable_memory_increase: 1153
+  bench_lara_deferred_out_edges_iter_log_backed_128:
+    total:
+      calls: 1
+      instructions: 37192
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      lara_deferred_out_edges_iter_log_backed:
+        calls: 1
+        instructions: 36134
+        heap_increase: 0
+        stable_memory_increase: 0
   bench_lara_edge_log_write_read_release_1024:
     total:
       calls: 1
@@ -447,40 +447,16 @@ benches:
         instructions: 350573
         heap_increase: 0
         stable_memory_increase: 0
-  bench_lara_edge_store_collect_out_edges_slot_order_1024:
+  bench_lara_edge_store_asc_out_edges_1024:
     total:
       calls: 1
       instructions: 77160
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      lara_edge_store_collect_out_edges_slot_order:
+      lara_edge_store_asc_out_edges:
         calls: 1
         instructions: 76151
-        heap_increase: 0
-        stable_memory_increase: 0
-  bench_lara_edge_store_iter_out_edges_1024:
-    total:
-      calls: 1
-      instructions: 163690
-      heap_increase: 0
-      stable_memory_increase: 0
-    scopes:
-      lara_edge_store_iter_out_edges:
-        calls: 1
-        instructions: 162636
-        heap_increase: 0
-        stable_memory_increase: 0
-  bench_lara_edge_store_iter_out_edges_log_backed_128:
-    total:
-      calls: 1
-      instructions: 38151
-      heap_increase: 0
-      stable_memory_increase: 0
-    scopes:
-      lara_edge_store_iter_out_edges_log_backed:
-        calls: 1
-        instructions: 37097
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_edge_store_log_spill_128:
@@ -493,6 +469,30 @@ benches:
       lara_edge_store_log_spill:
         calls: 1
         instructions: 353547
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_lara_edge_store_out_edges_iter_1024:
+    total:
+      calls: 1
+      instructions: 163682
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      lara_edge_store_out_edges_iter:
+        calls: 1
+        instructions: 162628
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_lara_edge_store_out_edges_iter_log_backed_128:
+    total:
+      calls: 1
+      instructions: 38143
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      lara_edge_store_out_edges_iter_log_backed:
+        calls: 1
+        instructions: 37089
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_edge_store_slab_insert_1024:
@@ -558,37 +558,37 @@ benches:
   bench_lara_graph_clean_scan_iter_1024:
     total:
       calls: 1
-      instructions: 406586
+      instructions: 406578
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_graph_clean_scan_iter:
         calls: 1
-        instructions: 405551
+        instructions: 405543
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_graph_clean_scan_iter_single_row_1024:
     total:
       calls: 1
-      instructions: 164716
+      instructions: 164708
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_graph_clean_scan_iter_single_row:
         calls: 1
-        instructions: 163660
+        instructions: 163652
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_graph_clean_scan_slot_order_1024:
     total:
       calls: 1
-      instructions: 383066
+      instructions: 383058
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lara_graph_clean_scan_slot_order:
         calls: 1
-        instructions: 382031
+        instructions: 382023
         heap_increase: 0
         stable_memory_increase: 0
   bench_lara_graph_clean_scan_slot_order_single_row_1024:
@@ -618,13 +618,13 @@ benches:
   bench_lara_graph_local_relocation_1:
     total:
       calls: 1
-      instructions: 195993
+      instructions: 195363
       heap_increase: 0
       stable_memory_increase: 897
     scopes:
       lara_graph_local_relocation:
         calls: 1
-        instructions: 194922
+        instructions: 194292
         heap_increase: 0
         stable_memory_increase: 897
   bench_lara_graph_reopen_after_relocation_1:
@@ -642,13 +642,13 @@ benches:
   bench_lara_graph_root_relocation_1:
     total:
       calls: 1
-      instructions: 171683
+      instructions: 171045
       heap_increase: 0
       stable_memory_increase: 897
     scopes:
       lara_graph_root_relocation:
         calls: 1
-        instructions: 170612
+        instructions: 169974
         heap_increase: 0
         stable_memory_increase: 897
   bench_lara_maintenance_queue_mark_pop_1024:

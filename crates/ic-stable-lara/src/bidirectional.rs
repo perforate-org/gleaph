@@ -290,46 +290,40 @@ where
     }
 
     /// Collects outgoing edges from the forward store in slab slot order.
-    pub fn collect_out_edges_slot_order(
-        &self,
-        src: VertexId,
-    ) -> Result<Vec<E>, BidirectionalLaraError> {
+    pub fn asc_out_edges(&self, src: VertexId) -> Result<Vec<E>, BidirectionalLaraError> {
         self.ensure_vertex(src)?;
         self.forward
-            .collect_out_edges_slot_order(src)
+            .asc_out_edges(src)
             .map_err(BidirectionalLaraError::Forward)
     }
 
     /// Collects incoming edges from the reverse store in slab slot order.
-    pub fn collect_in_edges_slot_order(
-        &self,
-        dst: VertexId,
-    ) -> Result<Vec<E>, BidirectionalLaraError> {
+    pub fn asc_in_edges(&self, dst: VertexId) -> Result<Vec<E>, BidirectionalLaraError> {
         self.ensure_vertex(dst)?;
         self.reverse
-            .collect_out_edges_slot_order(dst)
+            .asc_out_edges(dst)
             .map_err(BidirectionalLaraError::Reverse)
     }
 
     /// Iterates outgoing edges from the forward store in standard scan order.
-    pub fn iter_out_edges(
+    pub fn out_edges_iter(
         &self,
         src: VertexId,
     ) -> Result<OutEdgesIter<'_, E, M>, BidirectionalLaraError> {
         self.ensure_vertex(src)?;
         self.forward
-            .iter_out_edges(src)
+            .out_edges_iter(src)
             .map_err(BidirectionalLaraError::Forward)
     }
 
     /// Iterates incoming edges from the reverse store in standard scan order.
-    pub fn iter_in_edges(
+    pub fn in_edges_iter(
         &self,
         dst: VertexId,
     ) -> Result<OutEdgesIter<'_, E, M>, BidirectionalLaraError> {
         self.ensure_vertex(dst)?;
         self.reverse
-            .iter_out_edges(dst)
+            .out_edges_iter(dst)
             .map_err(BidirectionalLaraError::Reverse)
     }
 
@@ -599,29 +593,15 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            graph
-                .collect_out_edges_slot_order(VertexId::from(0))
-                .unwrap(),
+            graph.asc_out_edges(VertexId::from(0)).unwrap(),
             vec![TestEdge(2)]
         );
+        assert_eq!(graph.asc_out_edges(VertexId::from(2)).unwrap(), Vec::new());
         assert_eq!(
-            graph
-                .collect_out_edges_slot_order(VertexId::from(2))
-                .unwrap(),
-            Vec::new()
-        );
-        assert_eq!(
-            graph
-                .collect_in_edges_slot_order(VertexId::from(2))
-                .unwrap(),
+            graph.asc_in_edges(VertexId::from(2)).unwrap(),
             vec![TestEdge(0)]
         );
-        assert_eq!(
-            graph
-                .collect_in_edges_slot_order(VertexId::from(0))
-                .unwrap(),
-            Vec::new()
-        );
+        assert_eq!(graph.asc_in_edges(VertexId::from(0)).unwrap(), Vec::new());
     }
 
     #[test]
@@ -666,18 +646,8 @@ mod tests {
                 .unwrap()
         );
 
-        assert_eq!(
-            graph
-                .collect_out_edges_slot_order(VertexId::from(0))
-                .unwrap(),
-            Vec::new()
-        );
-        assert_eq!(
-            graph
-                .collect_in_edges_slot_order(VertexId::from(2))
-                .unwrap(),
-            Vec::new()
-        );
+        assert_eq!(graph.asc_out_edges(VertexId::from(0)).unwrap(), Vec::new());
+        assert_eq!(graph.asc_in_edges(VertexId::from(2)).unwrap(), Vec::new());
         assert!(
             !graph
                 .remove_directed(VertexId::from(0), VertexId::from(2), TestEdge(2))
@@ -703,16 +673,9 @@ mod tests {
                 .remove_directed(VertexId::from(0), VertexId::from(1), blue)
                 .unwrap()
         );
+        assert_eq!(graph.asc_out_edges(VertexId::from(0)).unwrap(), vec![red]);
         assert_eq!(
-            graph
-                .collect_out_edges_slot_order(VertexId::from(0))
-                .unwrap(),
-            vec![red]
-        );
-        assert_eq!(
-            graph
-                .collect_in_edges_slot_order(VertexId::from(1))
-                .unwrap(),
+            graph.asc_in_edges(VertexId::from(1)).unwrap(),
             vec![red.with_neighbor_vid(VertexId::from(0))]
         );
     }
@@ -736,16 +699,9 @@ mod tests {
             })
             .unwrap();
         assert_eq!(removed, Some(red));
+        assert_eq!(graph.asc_out_edges(VertexId::from(0)).unwrap(), vec![blue]);
         assert_eq!(
-            graph
-                .collect_out_edges_slot_order(VertexId::from(0))
-                .unwrap(),
-            vec![blue]
-        );
-        assert_eq!(
-            graph
-                .collect_in_edges_slot_order(VertexId::from(1))
-                .unwrap(),
+            graph.asc_in_edges(VertexId::from(1)).unwrap(),
             vec![blue.with_neighbor_vid(VertexId::from(0))]
         );
     }
@@ -765,18 +721,8 @@ mod tests {
                 actual
             } if expected == VertexId::from(1) && actual == VertexId::from(0)
         ));
-        assert_eq!(
-            graph
-                .collect_out_edges_slot_order(VertexId::from(0))
-                .unwrap(),
-            Vec::new()
-        );
-        assert_eq!(
-            graph
-                .collect_in_edges_slot_order(VertexId::from(1))
-                .unwrap(),
-            Vec::new()
-        );
+        assert_eq!(graph.asc_out_edges(VertexId::from(0)).unwrap(), Vec::new());
+        assert_eq!(graph.asc_in_edges(VertexId::from(1)).unwrap(), Vec::new());
     }
 
     #[test]
@@ -792,18 +738,8 @@ mod tests {
             err,
             BidirectionalLaraError::UndirectedEdgeInDirectedInsert
         ));
-        assert_eq!(
-            graph
-                .collect_out_edges_slot_order(VertexId::from(0))
-                .unwrap(),
-            Vec::new()
-        );
-        assert_eq!(
-            graph
-                .collect_in_edges_slot_order(VertexId::from(1))
-                .unwrap(),
-            Vec::new()
-        );
+        assert_eq!(graph.asc_out_edges(VertexId::from(0)).unwrap(), Vec::new());
+        assert_eq!(graph.asc_in_edges(VertexId::from(1)).unwrap(), Vec::new());
     }
 
     #[test]
@@ -819,36 +755,28 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            graph
-                .collect_out_edges_slot_order(VertexId::from(0))
-                .unwrap(),
+            graph.asc_out_edges(VertexId::from(0)).unwrap(),
             vec![UndirectedTestEdge {
                 neighbor: 2,
                 undirected: true
             }]
         );
         assert_eq!(
-            graph
-                .collect_out_edges_slot_order(VertexId::from(2))
-                .unwrap(),
+            graph.asc_out_edges(VertexId::from(2)).unwrap(),
             vec![UndirectedTestEdge {
                 neighbor: 0,
                 undirected: true
             }]
         );
         assert_eq!(
-            graph
-                .collect_in_edges_slot_order(VertexId::from(0))
-                .unwrap(),
+            graph.asc_in_edges(VertexId::from(0)).unwrap(),
             vec![UndirectedTestEdge {
                 neighbor: 2,
                 undirected: true
             }]
         );
         assert_eq!(
-            graph
-                .collect_in_edges_slot_order(VertexId::from(2))
-                .unwrap(),
+            graph.asc_in_edges(VertexId::from(2)).unwrap(),
             vec![UndirectedTestEdge {
                 neighbor: 0,
                 undirected: true
@@ -873,15 +801,11 @@ mod tests {
             undirected: true,
         };
         assert_eq!(
-            graph
-                .collect_out_edges_slot_order(VertexId::from(1))
-                .unwrap(),
+            graph.asc_out_edges(VertexId::from(1)).unwrap(),
             vec![loop_edge]
         );
         assert_eq!(
-            graph
-                .collect_in_edges_slot_order(VertexId::from(1))
-                .unwrap(),
+            graph.asc_in_edges(VertexId::from(1)).unwrap(),
             vec![loop_edge]
         );
     }
@@ -900,15 +824,11 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            reopened
-                .collect_out_edges_slot_order(VertexId::from(0))
-                .unwrap(),
+            reopened.asc_out_edges(VertexId::from(0)).unwrap(),
             vec![TestEdge(2)]
         );
         assert_eq!(
-            reopened
-                .collect_in_edges_slot_order(VertexId::from(2))
-                .unwrap(),
+            reopened.asc_in_edges(VertexId::from(2)).unwrap(),
             vec![TestEdge(0)]
         );
     }

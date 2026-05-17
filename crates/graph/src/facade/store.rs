@@ -21,8 +21,8 @@ use gleaph_graph_kernel::entry::{
 use gleaph_graph_prepared::{PreparedQueryError, PreparedQueryRecord};
 use ic_stable_lara::{
     BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledError, MaintenanceBudget,
-    OutEdgeBucketWalk, VertexCount, VertexId,
-    labeled::{BucketDirectedness, LabeledBidirectionalMaintenanceReport},
+    VertexCount, VertexId,
+    labeled::{BucketDirectedness, LabeledBidirectionalMaintenanceReport, OutEdgeOrder},
     traits::CsrEdge,
 };
 use std::fmt;
@@ -721,14 +721,28 @@ impl GraphStore {
         &self,
         vertex_id: VertexId,
     ) -> Result<Vec<Edge>, DeferredBidirectionalLabeledError> {
-        GRAPH.with_borrow(|graph| graph.collect_out_edges_slot_order(vertex_id))
+        GRAPH.with_borrow(|graph| graph.out_edges(vertex_id))
     }
 
     pub fn in_edges(
         &self,
         vertex_id: VertexId,
     ) -> Result<Vec<Edge>, DeferredBidirectionalLabeledError> {
-        GRAPH.with_borrow(|graph| graph.collect_in_edges_slot_order(vertex_id))
+        GRAPH.with_borrow(|graph| graph.in_edges(vertex_id))
+    }
+
+    pub fn asc_out_edges(
+        &self,
+        vertex_id: VertexId,
+    ) -> Result<Vec<Edge>, DeferredBidirectionalLabeledError> {
+        GRAPH.with_borrow(|graph| graph.asc_out_edges(vertex_id))
+    }
+
+    pub fn asc_in_edges(
+        &self,
+        vertex_id: VertexId,
+    ) -> Result<Vec<Edge>, DeferredBidirectionalLabeledError> {
+        GRAPH.with_borrow(|graph| graph.asc_in_edges(vertex_id))
     }
 
     pub(crate) fn out_edges_for_label(
@@ -736,7 +750,7 @@ impl GraphStore {
         vertex_id: VertexId,
         label: LaraLabelId,
     ) -> Result<Vec<Edge>, DeferredBidirectionalLabeledError> {
-        GRAPH.with_borrow(|graph| graph.iter_out_edges_for_label(vertex_id, label))
+        GRAPH.with_borrow(|graph| graph.out_edges_for_label(vertex_id, label))
     }
 
     pub(crate) fn for_each_out_edges_for_label<Visit>(
@@ -767,13 +781,13 @@ impl GraphStore {
         })
     }
 
-    /// Outgoing edges whose bucket label matches `directedness`, in `walk` order (see
-    /// [`ic_stable_lara::LabeledLaraGraph::for_each_out_edges_by_directedness`]).
+    /// Outgoing edges whose bucket label matches `directedness`, in `order`
+    /// (see [`ic_stable_lara::LabeledLaraGraph::for_each_out_edges_by_directedness`]).
     pub fn for_each_out_edges_by_directedness<Visit>(
         &self,
         vertex_id: VertexId,
         directedness: BucketDirectedness,
-        walk: OutEdgeBucketWalk,
+        order: OutEdgeOrder,
         visit: Visit,
     ) -> Result<(), GraphStoreError>
     where
@@ -781,7 +795,7 @@ impl GraphStore {
     {
         GRAPH
             .with_borrow(|graph| {
-                graph.for_each_out_edges_by_directedness(vertex_id, directedness, walk, visit)
+                graph.for_each_out_edges_by_directedness(vertex_id, directedness, order, visit)
             })
             .map_err(GraphStoreError::from)
     }
@@ -791,7 +805,7 @@ impl GraphStore {
         &self,
         vertex_id: VertexId,
         directedness: BucketDirectedness,
-        walk: OutEdgeBucketWalk,
+        order: OutEdgeOrder,
         visit: Visit,
     ) -> Result<(), GraphStoreError>
     where
@@ -802,19 +816,19 @@ impl GraphStore {
                 graph.for_each_out_edges_by_directedness_unchecked(
                     vertex_id,
                     directedness,
-                    walk,
+                    order,
                     visit,
                 )
             })
             .map_err(GraphStoreError::from)
     }
 
-    /// Incoming edges (reverse CSR at `vertex_id`) filtered by bucket directedness and `walk` order.
+    /// Incoming edges (reverse CSR at `vertex_id`) filtered by bucket directedness in `order`.
     pub fn for_each_in_edges_by_directedness<Visit>(
         &self,
         vertex_id: VertexId,
         directedness: BucketDirectedness,
-        walk: OutEdgeBucketWalk,
+        order: OutEdgeOrder,
         visit: Visit,
     ) -> Result<(), GraphStoreError>
     where
@@ -822,7 +836,7 @@ impl GraphStore {
     {
         GRAPH
             .with_borrow(|graph| {
-                graph.for_each_in_edges_by_directedness(vertex_id, directedness, walk, visit)
+                graph.for_each_in_edges_by_directedness(vertex_id, directedness, order, visit)
             })
             .map_err(GraphStoreError::from)
     }
@@ -832,7 +846,7 @@ impl GraphStore {
         &self,
         vertex_id: VertexId,
         directedness: BucketDirectedness,
-        walk: OutEdgeBucketWalk,
+        order: OutEdgeOrder,
         visit: Visit,
     ) -> Result<(), GraphStoreError>
     where
@@ -843,7 +857,7 @@ impl GraphStore {
                 graph.for_each_in_edges_by_directedness_unchecked(
                     vertex_id,
                     directedness,
-                    walk,
+                    order,
                     visit,
                 )
             })
@@ -855,7 +869,7 @@ impl GraphStore {
         vertex_id: VertexId,
         label: LaraLabelId,
     ) -> Result<Vec<Edge>, DeferredBidirectionalLabeledError> {
-        GRAPH.with_borrow(|graph| graph.iter_in_edges_for_label(vertex_id, label))
+        GRAPH.with_borrow(|graph| graph.in_edges_for_label(vertex_id, label))
     }
 
     pub(crate) fn for_each_in_edges_for_label<Visit>(
@@ -905,18 +919,24 @@ impl GraphStore {
         Match: FnMut(&Edge) -> bool,
         Visit: FnMut(Edge),
     {
-        self.for_each_out_edge_matching_with_raw(
-            vertex_id,
-            None::<&mut dyn FnMut(&[u8]) -> bool>,
-            matches,
-            visit,
-        )
+        GRAPH.with_borrow(|graph| {
+            graph.visit_out_edges(
+                vertex_id,
+                None,
+                None,
+                None::<&mut dyn FnMut(&[u8]) -> bool>,
+                matches,
+                visit,
+            )
+        })
     }
 
-    /// Like [`Self::for_each_out_edge_matching`] with an optional slab raw-byte prefilter.
-    pub fn for_each_out_edge_matching_with_raw<Match, Visit>(
+    /// Visits outgoing edges with optional `offset` / `limit`, slab raw-byte prefilter, and match predicate.
+    pub fn visit_out_edges<Match, Visit>(
         &self,
         vertex_id: VertexId,
+        offset: Option<usize>,
+        limit: Option<usize>,
         raw_matches: Option<&mut dyn FnMut(&[u8]) -> bool>,
         matches: Match,
         visit: Visit,
@@ -926,7 +946,7 @@ impl GraphStore {
         Visit: FnMut(Edge),
     {
         GRAPH.with_borrow(|graph| {
-            graph.for_each_out_edge_matching_with_raw(vertex_id, raw_matches, matches, visit)
+            graph.visit_out_edges(vertex_id, offset, limit, raw_matches, matches, visit)
         })
     }
 
@@ -941,18 +961,22 @@ impl GraphStore {
         Match: FnMut(&Edge) -> bool,
         Visit: FnMut(Edge),
     {
-        self.for_each_in_edge_matching_with_raw(
+        self.visit_in_edges(
             vertex_id,
+            None,
+            None,
             None::<&mut dyn FnMut(&[u8]) -> bool>,
             matches,
             visit,
         )
     }
 
-    /// Like [`Self::for_each_in_edge_matching`] with an optional slab raw-byte prefilter.
-    pub fn for_each_in_edge_matching_with_raw<Match, Visit>(
+    /// Visits incoming edges with optional `offset` / `limit`, slab raw-byte prefilter, and match predicate.
+    pub fn visit_in_edges<Match, Visit>(
         &self,
         vertex_id: VertexId,
+        offset: Option<usize>,
+        limit: Option<usize>,
         raw_matches: Option<&mut dyn FnMut(&[u8]) -> bool>,
         matches: Match,
         visit: Visit,
@@ -962,7 +986,7 @@ impl GraphStore {
         Visit: FnMut(Edge),
     {
         GRAPH.with_borrow(|graph| {
-            graph.for_each_in_edge_matching_with_raw(vertex_id, raw_matches, matches, visit)
+            graph.visit_in_edges(vertex_id, offset, limit, raw_matches, matches, visit)
         })
     }
 

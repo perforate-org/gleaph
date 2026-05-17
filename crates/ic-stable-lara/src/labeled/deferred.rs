@@ -310,14 +310,6 @@ where
         &self.inner
     }
 
-    /// See [`LabeledLaraGraph::out_edges_iter`].
-    pub fn out_edges_iter(
-        &self,
-        src: VertexId,
-    ) -> Result<crate::labeled::graph::LabeledOutEdgesIter<'_, E, M>, LabeledOperationError> {
-        self.inner.out_edges_iter(src)
-    }
-
     /// Returns the number of pending deferred maintenance items.
     pub fn maintenance_queue_len(&self) -> u64 {
         self.queue.len()

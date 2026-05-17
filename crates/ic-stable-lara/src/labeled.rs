@@ -75,7 +75,7 @@ pub use bucket_store::InitError as LabelBucketStoreInitError;
 pub use deferred::{DeferredError, DeferredLabeledLaraGraph, MaintenanceWorkItem};
 pub use graph::{
     InitError as LabeledGraphInitError, LabeledLaraGraph, LabeledOperationError,
-    LabeledOutEdgesIter, OutEdgeBucketWalk,
+    LabeledOutEdgesIter, OutEdgeOrder,
 };
 pub use record::{LabelBucket, LabeledVertex};
 pub use traits::LabeledCsrVertex;

@@ -33,7 +33,7 @@ fn bench_lara_graph_clean_scan_slot_order_1024() -> canbench_rs::BenchResult {
         let mut len = 0usize;
         for src in 0..256 {
             len += graph
-                .collect_out_edges_slot_order(VertexId::from(black_box(src as u32)))
+                .asc_out_edges(VertexId::from(black_box(src as u32)))
                 .expect("collect out edges")
                 .len();
         }
@@ -51,7 +51,7 @@ fn bench_lara_graph_clean_scan_iter_1024() -> canbench_rs::BenchResult {
         let mut len = 0usize;
         for src in 0..256 {
             for edge in graph
-                .iter_out_edges(VertexId::from(black_box(src as u32)))
+                .out_edges_iter(VertexId::from(black_box(src as u32)))
                 .expect("iterate out edges")
             {
                 black_box(edge);
@@ -63,7 +63,7 @@ fn bench_lara_graph_clean_scan_iter_1024() -> canbench_rs::BenchResult {
 }
 
 /// Like [`bench_lara_graph_clean_scan_iter_1024`], but all edges live on one
-/// vertex. This stresses `iter_out_edges` and slab decoding without repeatedly
+/// vertex. This stresses `out_edges_iter` and slab decoding without repeatedly
 /// paying per-vertex iterator setup across many small rows.
 #[bench(raw)]
 fn bench_lara_graph_clean_scan_iter_single_row_1024() -> canbench_rs::BenchResult {
@@ -72,7 +72,7 @@ fn bench_lara_graph_clean_scan_iter_single_row_1024() -> canbench_rs::BenchResul
         let _scope = canbench_rs::bench_scope("lara_graph_clean_scan_iter_single_row");
         let mut sum = 0u32;
         for edge in graph
-            .iter_out_edges(VertexId::from(black_box(0u32)))
+            .out_edges_iter(VertexId::from(black_box(0u32)))
             .expect("iterate out edges")
         {
             sum ^= black_box(edge).0;
@@ -91,7 +91,7 @@ fn bench_lara_graph_clean_scan_slot_order_single_row_1024() -> canbench_rs::Benc
         let _scope = canbench_rs::bench_scope("lara_graph_clean_scan_slot_order_single_row");
         black_box(
             graph
-                .collect_out_edges_slot_order(VertexId::from(black_box(0u32)))
+                .asc_out_edges(VertexId::from(black_box(0u32)))
                 .expect("collect out edges"),
         );
     })
@@ -165,7 +165,7 @@ fn bench_lara_graph_reopen_after_relocation_1() -> canbench_rs::BenchResult {
         .expect("reopen graph");
         black_box(
             reopened
-                .collect_out_edges_slot_order(VertexId::from(black_box(0u32)))
+                .asc_out_edges(VertexId::from(black_box(0u32)))
                 .expect("scan"),
         );
     })

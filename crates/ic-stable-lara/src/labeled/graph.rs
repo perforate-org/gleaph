@@ -20,7 +20,8 @@ use crate::{
     },
     lara::{
         edge::{
-            DEFAULT_MAX_LOG_ENTRIES, EdgeStore, InitError as EdgeInitError, OutEdgeSlabIter,
+            AscOutEdgesIter, DEFAULT_MAX_LOG_ENTRIES, EdgeStore, InitError as EdgeInitError,
+            OutEdgeSlabIter, OutEdgeVisitWindow, OutEdgesIter,
             counts::{SegmentEdgeCounts, segment_span_density},
             segment_tree_leaf_count,
         },
@@ -132,17 +133,22 @@ impl fmt::Display for InitError {
 
 impl std::error::Error for InitError {}
 
-/// Label-bucket walk order for [`LabeledLaraGraph::iter_out_edges_by_directedness`] and related APIs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum OutEdgeBucketWalk {
-    /// Ascending [`BucketLabelKey`] (buckets low → high). Within each span, CSR **slot order**
-    /// (slab indices increasing), matching [`EdgeStore::collect_out_edges_slot_order`].
-    Ascending,
-    /// Descending [`BucketLabelKey`] (buckets high → low). Within each span,
-    /// [`EdgeStore::iter_out_edges`] (overflow log from head, then slab high → low).
-    /// Matches [`LabeledLaraGraph::out_edges_iter`] and is the **preferred hot path** when overflow
-    /// logs may be present.
+/// Outgoing-edge scan order for APIs that expose both the hot descending walk and the stable
+/// ascending materialization order.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum OutEdgeOrder {
+    /// Default hot-path order: label buckets high→low; within each span, overflow log head first
+    /// and then slab slots high→low.
+    #[default]
     Descending,
+    /// Stable materialization order: label buckets low→high; within each span, CSR slots low→high.
+    Ascending,
+}
+
+impl OutEdgeOrder {
+    fn ascending(self) -> bool {
+        matches!(self, Self::Ascending)
+    }
 }
 
 /// Single-orientation multi-level labeled CSR graph.
@@ -160,16 +166,33 @@ where
     _marker: PhantomData<E>,
 }
 
-/// Iterator over every outgoing edge at `src` across all labels in the **fast scan order** used by
-/// [`EdgeStore::iter_out_edges`] on each [`LabelEdgeSpanAccess`]: **label buckets from high sort
-/// order to low** (reverse of ascending [`BucketLabelKey`] bucket slots), and within each bucket
-/// **overflow log from the chain head first**, then **slab slots high index to low**.
-///
-/// This order matches [`LabeledLaraGraph::out_edges_iter`], [`LabeledLaraGraph::iter_out_edges`],
-/// and [`LabeledLaraGraph::for_each_out_edge_matching_with_raw`].
+/// Streaming iterator over outgoing edges in a fixed scan order (see
+/// [`LabeledLaraGraph::desc_out_edges_iter`], [`LabeledLaraGraph::asc_out_edges_iter`], and
+/// [`LabeledLaraGraph::out_edges_by_directedness_iter`]).
 pub struct LabeledOutEdgesIter<'a, E: CsrEdge, M: Memory> {
-    inner: std::vec::IntoIter<E>,
-    _marker: PhantomData<&'a M>,
+    graph: &'a LabeledLaraGraph<E, M>,
+    src: VertexId,
+    order: OutEdgeOrder,
+    kind: LabeledOutEdgesIterKind<'a, E, M>,
+}
+
+enum LabeledOutEdgesIterKind<'a, E: CsrEdge, M: Memory> {
+    Empty,
+    BypassDesc(OutEdgeSlabIter<'a, E, M>),
+    BypassAsc(AscOutEdgesIter<'a, E, M>),
+    Buckets {
+        vertex: LabeledVertex,
+        buckets: Vec<LabelBucket>,
+        base_bucket_index: u32,
+        next_bucket: Option<usize>,
+        current: LabeledSpanIter<'a, E, M>,
+    },
+}
+
+enum LabeledSpanIter<'a, E: CsrEdge, M: Memory> {
+    Empty,
+    Desc(OutEdgesIter<'a, E, M>),
+    Asc(AscOutEdgesIter<'a, E, M>),
 }
 
 impl<'a, E, M> Iterator for LabeledOutEdgesIter<'a, E, M>
@@ -180,11 +203,90 @@ where
     type Item = E;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next()
+        loop {
+            match &mut self.kind {
+                LabeledOutEdgesIterKind::Empty => return None,
+                LabeledOutEdgesIterKind::BypassDesc(it) => return it.next(),
+                LabeledOutEdgesIterKind::BypassAsc(it) => return it.next(),
+                LabeledOutEdgesIterKind::Buckets {
+                    vertex,
+                    buckets,
+                    base_bucket_index,
+                    next_bucket,
+                    current,
+                } => {
+                    if let Some(edge) = current.next() {
+                        return Some(edge);
+                    }
+                    let local = next_bucket.take()?;
+                    if self.order == OutEdgeOrder::Descending {
+                        *next_bucket = local.checked_sub(1);
+                    } else {
+                        let next = local + 1;
+                        if next < buckets.len() {
+                            *next_bucket = Some(next);
+                        }
+                    }
+                    if buckets[local].degree() == 0 {
+                        continue;
+                    }
+                    let bucket_index = base_bucket_index.checked_add(local as u32)?;
+                    *current = self
+                        .graph
+                        .labeled_bucket_span_iter(
+                            self.src,
+                            self.order,
+                            vertex,
+                            buckets,
+                            local,
+                            bucket_index,
+                        )
+                        .ok()?;
+                }
+            }
+        }
     }
 }
 
 impl<'a, E, M> FusedIterator for LabeledOutEdgesIter<'a, E, M>
+where
+    E: CsrEdge,
+    M: Memory,
+{
+}
+
+impl<'a, E, M> LabeledOutEdgesIter<'a, E, M>
+where
+    E: CsrEdge,
+    M: Memory,
+{
+    fn empty(graph: &'a LabeledLaraGraph<E, M>, src: VertexId, order: OutEdgeOrder) -> Self {
+        Self {
+            graph,
+            src,
+            order,
+            kind: LabeledOutEdgesIterKind::Empty,
+        }
+    }
+}
+
+impl<E, M> Iterator for LabeledSpanIter<'_, E, M>
+where
+    E: CsrEdge,
+    M: Memory,
+{
+    type Item = E;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Empty => None,
+            Self::Desc(it) => it.next(),
+            Self::Asc(it) => it.next(),
+        }
+    }
+}
+
+impl<E, M> FusedIterator for LabeledSpanIter<'_, E, M>
 where
     E: CsrEdge,
     M: Memory,
@@ -1337,7 +1439,7 @@ where
                     let acc = LabelEdgeSpanAccess::new(&self.buckets, slot, successor, src);
                     per_bucket.push(
                         self.edges
-                            .collect_out_edges_slot_order(&acc, VertexId::from(0))
+                            .asc_out_edges(&acc, VertexId::from(0))
                             .map_err(LabeledOperationError::from)?,
                     );
                 }
@@ -1424,7 +1526,7 @@ where
                     let acc = LabelEdgeSpanAccess::new(&self.buckets, slot, successor, src);
                     per_bucket.push(
                         self.edges
-                            .collect_out_edges_slot_order(&acc, VertexId::from(0))
+                            .asc_out_edges(&acc, VertexId::from(0))
                             .map_err(LabeledOperationError::from)?,
                     );
                 }
@@ -1923,9 +2025,11 @@ where
             }
             return self
                 .edges
-                .for_each_out_edge_matching(
+                .visit_out_edges(
                     &self.vertices,
                     src,
+                    None,
+                    None,
                     None::<&mut dyn FnMut(&[u8]) -> bool>,
                     |_| true,
                     visit,
@@ -1940,9 +2044,11 @@ where
                 let successor_start =
                     self.bucket_successor_start_after_bucket(&vertex, bucket_index, &bucket)?;
                 self.edges
-                    .for_each_out_edge_matching(
+                    .visit_out_edges(
                         &LabelEdgeSpanAccess::new(&self.buckets, slot, successor_start, src),
                         VertexId::from(0),
+                        None,
+                        None,
                         None::<&mut dyn FnMut(&[u8]) -> bool>,
                         |_| true,
                         visit,
@@ -1976,9 +2082,11 @@ where
             let _bench_scope = bench_scope("labeled_unchecked_bypass_slab");
             return self
                 .edges
-                .for_each_out_edge_matching(
+                .visit_out_edges(
                     &self.vertices,
                     src,
+                    None,
+                    None,
                     None::<&mut dyn FnMut(&[u8]) -> bool>,
                     |_| true,
                     visit,
@@ -1995,9 +2103,11 @@ where
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _walk = bench_scope("labeled_unchecked_bucket_slab_walk");
                 self.edges
-                    .for_each_out_edge_matching(
+                    .visit_out_edges(
                         &LabelEdgeSpanAccess::new(&self.buckets, slot, successor_start, src),
                         VertexId::from(0),
+                        None,
+                        None,
                         None::<&mut dyn FnMut(&[u8]) -> bool>,
                         |_| true,
                         visit,
@@ -2008,16 +2118,373 @@ where
         }
     }
 
-    /// Like [`EdgeStore::for_each_out_edge_matching`], but spans every forward label bucket at
-    /// `src` (or the homogeneous bypass slab when in default-label mode).
-    ///
-    /// Visitation follows [`Self::out_edges_iter`] order (reverse label-bucket walk with
-    /// [`EdgeStore::iter_out_edges`] semantics per span). Used by query expansion with optional
-    /// slab-byte prefiltering.
-    pub fn for_each_out_edge_matching_with_raw<Match, Visit>(
+    fn visit_label_out_edges_inner<Match, Visit>(
         &self,
         src: VertexId,
+        vertex: &LabeledVertex,
+        ascending: bool,
+        offset: Option<usize>,
+        limit: Option<usize>,
         mut raw_matches: Option<&mut dyn FnMut(&[u8]) -> bool>,
+        matches: &mut Match,
+        visit: &mut Visit,
+    ) -> Result<(), LabeledOperationError>
+    where
+        Match: FnMut(&E) -> bool,
+        Visit: FnMut(E),
+    {
+        let mut window = OutEdgeVisitWindow::new(offset, limit);
+        if vertex.is_default_edge_labeled() {
+            if vertex.degree() == 0 {
+                return Ok(());
+            }
+            if !ascending {
+                let mut it = OutEdgeSlabIter::try_new(
+                    &self.edges,
+                    vertex.base_slot_start(),
+                    vertex.stored_degree(),
+                    vertex.degree(),
+                )?;
+                let has_raw = raw_matches.is_some();
+                while let Some(edge) = it.next_live_edge_filtered(&mut raw_matches) {
+                    if has_raw {
+                        if matches(&edge) && !window.emit_edge(edge, visit) {
+                            return Ok(());
+                        }
+                    } else if matches(&edge) && !window.emit_edge(edge, visit) {
+                        return Ok(());
+                    }
+                }
+                return Ok(());
+            }
+            for edge in self.edges.asc_out_edges(&self.vertices, src)? {
+                let passes = if let Some(raw_m) = raw_matches.as_mut() {
+                    let mut buf = vec![0u8; E::BYTES];
+                    edge.write_to(&mut buf);
+                    raw_m(&buf) && matches(&edge)
+                } else {
+                    matches(&edge)
+                };
+                if passes && !window.emit_edge(edge, visit) {
+                    return Ok(());
+                }
+            }
+            return Ok(());
+        }
+
+        let buckets = self.read_vertex_label_buckets(&vertex)?;
+        if let Some((base, total_edges)) =
+            Self::try_contiguous_tiled_labeled_out_edges(&vertex, &buckets)
+        {
+            if total_edges == 0 {
+                return Ok(());
+            }
+            let nbytes = (total_edges as usize)
+                .checked_mul(E::BYTES)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let mut raw = vec![0u8; nbytes];
+            self.edges.read_slots_contiguous(base, &mut raw);
+            if !ascending {
+                let mut bucket_rev_idx = buckets.len() as isize - 1;
+                let mut slot_rev: Option<u32> = None;
+                while bucket_rev_idx >= 0 {
+                    let bidx = bucket_rev_idx as usize;
+                    let bucket = &buckets[bidx];
+                    if bucket.degree() == 0 {
+                        bucket_rev_idx -= 1;
+                        slot_rev = None;
+                        continue;
+                    }
+                    let slot = slot_rev.unwrap_or(bucket.degree().saturating_sub(1));
+                    let rel = bucket
+                        .edge_start
+                        .saturating_sub(base)
+                        .checked_add(u64::from(slot))
+                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    let byte_off = usize::try_from(rel)
+                        .map_err(|_| LaraOperationError::CollectAllocationOverflow)?
+                        .checked_mul(E::BYTES)
+                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    let byte_end = byte_off
+                        .checked_add(E::BYTES)
+                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    if byte_end > raw.len() {
+                        return Err(LaraOperationError::CollectAllocationOverflow.into());
+                    }
+                    let chunk = &raw[byte_off..byte_end];
+                    let cont = if let Some(raw_m) = raw_matches.as_mut() {
+                        let edge = E::read_from(chunk);
+                        if raw_m(chunk) {
+                            if matches(&edge) {
+                                window.emit_edge(edge, visit)
+                            } else {
+                                true
+                            }
+                        } else {
+                            true
+                        }
+                    } else {
+                        let edge = E::read_from(chunk);
+                        if matches(&edge) {
+                            window.emit_edge(edge, visit)
+                        } else {
+                            true
+                        }
+                    };
+                    if !cont {
+                        return Ok(());
+                    }
+                    if slot == 0 {
+                        bucket_rev_idx -= 1;
+                        slot_rev = None;
+                    } else {
+                        slot_rev = Some(slot - 1);
+                    }
+                }
+            } else {
+                for bucket in &buckets {
+                    if bucket.degree() == 0 {
+                        continue;
+                    }
+                    for slot in 0..bucket.degree() {
+                        let rel = bucket
+                            .edge_start
+                            .saturating_sub(base)
+                            .checked_add(u64::from(slot))
+                            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                        let byte_off = usize::try_from(rel)
+                            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?
+                            .checked_mul(E::BYTES)
+                            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                        let byte_end = byte_off
+                            .checked_add(E::BYTES)
+                            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                        if byte_end > raw.len() {
+                            return Err(LaraOperationError::CollectAllocationOverflow.into());
+                        }
+                        let chunk = &raw[byte_off..byte_end];
+                        let edge = E::read_from(chunk);
+                        let passes = if let Some(raw_m) = raw_matches.as_mut() {
+                            raw_m(chunk) && matches(&edge)
+                        } else {
+                            matches(&edge)
+                        };
+                        if passes && !window.emit_edge(edge, visit) {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+            return Ok(());
+        }
+
+        if !ascending {
+            for bucket_index in (0..buckets.len()).rev() {
+                let bucket_index = bucket_index as u32;
+                let bucket = &buckets[bucket_index as usize];
+                if bucket.degree() == 0 {
+                    continue;
+                }
+                let slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
+                let successor_start =
+                    self.bucket_successor_start_after_bucket(&vertex, bucket_index, bucket)?;
+                let acc = LabelEdgeSpanAccess::new(&self.buckets, slot, successor_start, src);
+                if bucket.overflow_log_head < 0 {
+                    let mut it = OutEdgeSlabIter::try_new(
+                        &self.edges,
+                        bucket.edge_start,
+                        bucket.edge_len,
+                        bucket.degree(),
+                    )?;
+                    let has_raw = raw_matches.is_some();
+                    while let Some(edge) = it.next_live_edge_filtered(&mut raw_matches) {
+                        if has_raw {
+                            if matches(&edge) && !window.emit_edge(edge, visit) {
+                                return Ok(());
+                            }
+                        } else if matches(&edge) && !window.emit_edge(edge, visit) {
+                            return Ok(());
+                        }
+                    }
+                } else {
+                    for edge in self.edges.out_edges_iter(&acc, VertexId::from(0))? {
+                        let passes = if let Some(raw_m) = raw_matches.as_mut() {
+                            let mut buf = vec![0u8; E::BYTES];
+                            edge.write_to(&mut buf);
+                            raw_m(&buf) && matches(&edge)
+                        } else {
+                            matches(&edge)
+                        };
+                        if passes && !window.emit_edge(edge, visit) {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        } else {
+            for bucket_index in 0..buckets.len() as u32 {
+                let bucket = &buckets[bucket_index as usize];
+                if bucket.degree() == 0 {
+                    continue;
+                }
+                let slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
+                let successor_start =
+                    self.bucket_successor_start_after_bucket(&vertex, bucket_index, bucket)?;
+                let acc = LabelEdgeSpanAccess::new(&self.buckets, slot, successor_start, src);
+                if bucket.overflow_log_head < 0 {
+                    for slot_idx in 0..bucket.degree() {
+                        let at = bucket
+                            .edge_start
+                            .checked_add(u64::from(slot_idx))
+                            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                        let edge = self.edges.read_slot(at);
+                        if edge.neighbor_vid().is_slab_vacant_neighbor() {
+                            continue;
+                        }
+                        let passes = if let Some(raw_m) = raw_matches.as_mut() {
+                            let mut buf = vec![0u8; E::BYTES];
+                            edge.write_to(&mut buf);
+                            raw_m(&buf) && matches(&edge)
+                        } else {
+                            matches(&edge)
+                        };
+                        if passes && !window.emit_edge(edge, visit) {
+                            return Ok(());
+                        }
+                    }
+                } else {
+                    for edge in self.edges.asc_out_edges(&acc, VertexId::from(0))? {
+                        let passes = if let Some(raw_m) = raw_matches.as_mut() {
+                            let mut buf = vec![0u8; E::BYTES];
+                            edge.write_to(&mut buf);
+                            raw_m(&buf) && matches(&edge)
+                        } else {
+                            matches(&edge)
+                        };
+                        if passes && !window.emit_edge(edge, visit) {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn labeled_out_edges_iter(
+        &self,
+        src: VertexId,
+        order: OutEdgeOrder,
+        directedness: Option<BucketDirectedness>,
+    ) -> Result<LabeledOutEdgesIter<'_, E, M>, LabeledOperationError> {
+        self.ensure_vertex(src)?;
+        let vertex = self.vertices.get(src);
+        if vertex.degree() == 0 {
+            return Ok(LabeledOutEdgesIter::empty(self, src, order));
+        }
+        if vertex.is_default_edge_labeled() {
+            if let Some(directedness) = directedness {
+                if self.bypass_storage_label_for(&vertex).directedness() != directedness {
+                    return Ok(LabeledOutEdgesIter::empty(self, src, order));
+                }
+            }
+            return match order {
+                OutEdgeOrder::Descending => Ok(LabeledOutEdgesIter {
+                    graph: self,
+                    src,
+                    order,
+                    kind: LabeledOutEdgesIterKind::BypassDesc(OutEdgeSlabIter::try_new(
+                        &self.edges,
+                        vertex.base_slot_start(),
+                        vertex.stored_degree(),
+                        vertex.degree(),
+                    )?),
+                }),
+                OutEdgeOrder::Ascending => Ok(LabeledOutEdgesIter {
+                    graph: self,
+                    src,
+                    order,
+                    kind: LabeledOutEdgesIterKind::BypassAsc(
+                        self.edges.asc_out_edges_iter(&self.vertices, src)?,
+                    ),
+                }),
+            };
+        }
+
+        let (base_bucket_index, buckets) = if let Some(directedness) = directedness {
+            let strategy = Self::directedness_partition_strategy(directedness, order.ascending());
+            let (lo, hi) = self.buckets.directedness_bucket_index_range(
+                vertex.base_slot_start(),
+                vertex.degree(),
+                directedness,
+                strategy,
+            )?;
+            if lo >= hi {
+                return Ok(LabeledOutEdgesIter::empty(self, src, order));
+            }
+            (lo, self.read_vertex_label_buckets_range(&vertex, lo, hi)?)
+        } else {
+            (0, self.read_vertex_label_buckets(&vertex)?)
+        };
+        let next_bucket = match order {
+            OutEdgeOrder::Descending => buckets.len().checked_sub(1),
+            OutEdgeOrder::Ascending => (!buckets.is_empty()).then_some(0),
+        };
+        Ok(LabeledOutEdgesIter {
+            graph: self,
+            src,
+            order,
+            kind: LabeledOutEdgesIterKind::Buckets {
+                vertex,
+                buckets,
+                base_bucket_index,
+                next_bucket,
+                current: LabeledSpanIter::Empty,
+            },
+        })
+    }
+
+    fn labeled_bucket_span_iter<'a>(
+        &'a self,
+        src: VertexId,
+        order: OutEdgeOrder,
+        vertex: &LabeledVertex,
+        buckets: &[LabelBucket],
+        local_bucket_index: usize,
+        bucket_index: u32,
+    ) -> Result<LabeledSpanIter<'a, E, M>, LabeledOperationError> {
+        let bucket = buckets[local_bucket_index];
+        if bucket.degree() == 0 {
+            return Ok(LabeledSpanIter::Empty);
+        }
+        let slot = Self::labeled_vertex_bucket_slot(vertex, bucket_index)?;
+        let successor_start =
+            self.bucket_successor_start_after_bucket(vertex, bucket_index, &bucket)?;
+        let acc = LabelEdgeSpanAccess::new(&self.buckets, slot, successor_start, src);
+        match order {
+            OutEdgeOrder::Descending => Ok(LabeledSpanIter::Desc(
+                self.edges.out_edges_iter(&acc, VertexId::from(0))?,
+            )),
+            OutEdgeOrder::Ascending => Ok(LabeledSpanIter::Asc(
+                self.edges.asc_out_edges_iter(&acc, VertexId::from(0))?,
+            )),
+        }
+    }
+
+    /// Visits outgoing edges in **descending** scan order (reverse label-bucket walk; within each
+    /// span, overflow log head first then slab high→low when a log exists, otherwise a lightweight
+    /// slab walk).
+    ///
+    /// `offset` / `limit` apply to the stream of edges **accepted** by `raw_matches` (when
+    /// present) and `matches`, matching [`EdgeStore::visit_out_edges`]: when
+    /// `raw_matches` is `Some`, slab slots consult raw bytes **before** decode and `matches` still
+    /// gates every decoded edge.
+    pub fn visit_out_edges<Match, Visit>(
+        &self,
+        src: VertexId,
+        offset: Option<usize>,
+        limit: Option<usize>,
+        raw_matches: Option<&mut dyn FnMut(&[u8]) -> bool>,
         mut matches: Match,
         mut visit: Visit,
     ) -> Result<(), LabeledOperationError>
@@ -2027,98 +2494,130 @@ where
     {
         self.ensure_vertex(src)?;
         let vertex = self.vertices.get(src);
-        if vertex.is_default_edge_labeled() {
-            let raw_arg: Option<&mut dyn FnMut(&[u8]) -> bool> = match &mut raw_matches {
-                Some(r) => Some(&mut **r),
-                None => None,
-            };
-            return self
-                .edges
-                .for_each_out_edge_matching(&self.vertices, src, raw_arg, matches, visit)
-                .map_err(Into::into);
-        }
-        let buckets = self.read_vertex_label_buckets(&vertex)?;
-        if let Some((base, total_edges)) =
-            Self::try_contiguous_tiled_labeled_out_edges(&vertex, &buckets)
-        {
-            if total_edges == 0 {
-                return Ok(());
-            }
-            let degree = total_edges as usize;
-            let nbytes = degree
-                .checked_mul(E::BYTES)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            let mut raw = vec![0u8; nbytes];
-            self.edges.read_slots_contiguous(base, &mut raw);
-            let mut bucket_rev_idx = buckets.len() as isize - 1;
-            let mut slot_rev: Option<u32> = None;
-            while bucket_rev_idx >= 0 {
-                let bidx = bucket_rev_idx as usize;
-                let bucket = &buckets[bidx];
-                if bucket.degree() == 0 {
-                    bucket_rev_idx -= 1;
-                    slot_rev = None;
-                    continue;
-                }
-                let slot = slot_rev.unwrap_or(bucket.degree().saturating_sub(1));
-                let rel = bucket
-                    .edge_start
-                    .saturating_sub(base)
-                    .checked_add(u64::from(slot))
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                let byte_off = usize::try_from(rel)
-                    .map_err(|_| LaraOperationError::CollectAllocationOverflow)?
-                    .checked_mul(E::BYTES)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                let byte_end = byte_off
-                    .checked_add(E::BYTES)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                if byte_end > raw.len() {
-                    return Err(LaraOperationError::CollectAllocationOverflow.into());
-                }
-                let chunk = &raw[byte_off..byte_end];
-                if let Some(raw_m) = raw_matches.as_mut() {
-                    if raw_m(chunk) {
-                        visit(E::read_from(chunk));
-                    }
-                } else {
-                    let edge = E::read_from(chunk);
-                    if matches(&edge) {
-                        visit(edge);
-                    }
-                }
-                if slot == 0 {
-                    bucket_rev_idx -= 1;
-                    slot_rev = None;
-                } else {
-                    slot_rev = Some(slot - 1);
-                }
-            }
-            return Ok(());
-        }
-        for bucket_index in (0..buckets.len()).rev() {
-            let bucket_index = bucket_index as u32;
-            let bucket = &buckets[bucket_index as usize];
-            let slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
-            let successor_start =
-                self.bucket_successor_start_after_bucket(&vertex, bucket_index, bucket)?;
-            let acc = LabelEdgeSpanAccess::new(&self.buckets, slot, successor_start, src);
-            let raw_arg: Option<&mut dyn FnMut(&[u8]) -> bool> = match &mut raw_matches {
-                Some(r) => Some(&mut **r),
-                None => None,
-            };
-            self.edges.for_each_out_edge_matching(
-                &acc,
-                VertexId::from(0),
-                raw_arg,
-                |edge| matches(edge),
-                |edge| visit(edge),
-            )?;
-        }
-        Ok(())
+        self.visit_label_out_edges_inner(
+            src,
+            &vertex,
+            false,
+            offset,
+            limit,
+            raw_matches,
+            &mut matches,
+            &mut visit,
+        )
     }
 
-    /// Scans outgoing edges in [`Self::out_edges_iter`] order and returns the first edge accepted by
+    /// [`Self::visit_out_edges`] with a trivial `matches` predicate (`|_| true`).
+    pub fn visit_out_edges_unfiltered<Visit>(
+        &self,
+        src: VertexId,
+        offset: Option<usize>,
+        limit: Option<usize>,
+        raw_matches: Option<&mut dyn FnMut(&[u8]) -> bool>,
+        visit: Visit,
+    ) -> Result<(), LabeledOperationError>
+    where
+        Visit: FnMut(E),
+    {
+        self.visit_out_edges(src, offset, limit, raw_matches, |_| true, visit)
+    }
+
+    /// Like [`Self::visit_out_edges`], but **ascending** materialization order (ascending bucket index,
+    /// and within each span [`EdgeStore::asc_out_edges`]).
+    pub fn visit_asc_out_edges<Match, Visit>(
+        &self,
+        src: VertexId,
+        offset: Option<usize>,
+        limit: Option<usize>,
+        raw_matches: Option<&mut dyn FnMut(&[u8]) -> bool>,
+        mut matches: Match,
+        mut visit: Visit,
+    ) -> Result<(), LabeledOperationError>
+    where
+        Match: FnMut(&E) -> bool,
+        Visit: FnMut(E),
+    {
+        self.ensure_vertex(src)?;
+        let vertex = self.vertices.get(src);
+        self.visit_label_out_edges_inner(
+            src,
+            &vertex,
+            true,
+            offset,
+            limit,
+            raw_matches,
+            &mut matches,
+            &mut visit,
+        )
+    }
+
+    /// [`Self::visit_asc_out_edges`] with a trivial `matches` predicate (`|_| true`).
+    pub fn visit_asc_out_edges_unfiltered<Visit>(
+        &self,
+        src: VertexId,
+        offset: Option<usize>,
+        limit: Option<usize>,
+        raw_matches: Option<&mut dyn FnMut(&[u8]) -> bool>,
+        visit: Visit,
+    ) -> Result<(), LabeledOperationError>
+    where
+        Visit: FnMut(E),
+    {
+        self.visit_asc_out_edges(src, offset, limit, raw_matches, |_| true, visit)
+    }
+
+    /// All outgoing edges in descending scan order (see [`Self::visit_out_edges`]).
+    pub fn out_edges(&self, src: VertexId) -> Result<Vec<E>, LabeledOperationError> {
+        self.ensure_vertex(src)?;
+        let vertex = self.vertices.get(src);
+        let mut out = Vec::new();
+        self.visit_label_out_edges_inner(
+            src,
+            &vertex,
+            false,
+            None,
+            None,
+            None,
+            &mut |_| true,
+            &mut |e| out.push(e),
+        )?;
+        Ok(out)
+    }
+
+    /// All outgoing edges in ascending slot/materialization order (see [`Self::visit_asc_out_edges`]).
+    pub fn asc_out_edges(&self, src: VertexId) -> Result<Vec<E>, LabeledOperationError> {
+        self.ensure_vertex(src)?;
+        let vertex = self.vertices.get(src);
+        let mut out = Vec::new();
+        self.visit_label_out_edges_inner(
+            src,
+            &vertex,
+            true,
+            None,
+            None,
+            None,
+            &mut |_| true,
+            &mut |e| out.push(e),
+        )?;
+        Ok(out)
+    }
+
+    /// Descending-scan iterator (same order as [`Self::out_edges`]; see [`LabeledOutEdgesIter`]).
+    pub fn desc_out_edges_iter(
+        &self,
+        src: VertexId,
+    ) -> Result<LabeledOutEdgesIter<'_, E, M>, LabeledOperationError> {
+        self.labeled_out_edges_iter(src, OutEdgeOrder::Descending, None)
+    }
+
+    /// Ascending slot/materialization iterator (same order as [`Self::asc_out_edges`]).
+    pub fn asc_out_edges_iter(
+        &self,
+        src: VertexId,
+    ) -> Result<LabeledOutEdgesIter<'_, E, M>, LabeledOperationError> {
+        self.labeled_out_edges_iter(src, OutEdgeOrder::Ascending, None)
+    }
+
+    /// Scans outgoing edges in [`Self::out_edges`] order and returns the first edge accepted by
     /// `pred`, together with its label bucket id.
     ///
     /// In default-label bypass mode the label is the vertex bypass storage label when a match
@@ -2230,193 +2729,16 @@ where
         Ok(out)
     }
 
-    /// All outgoing edges across every label bucket (same order as [`Self::out_edges_iter`]:
-    /// reverse label-bucket walk, [`EdgeStore::iter_out_edges`] per span).
-    pub fn iter_out_edges(&self, src: VertexId) -> Result<Vec<E>, LabeledOperationError> {
-        self.out_edges_iter(src).map(|iter| iter.collect())
-    }
-
-    /// All outgoing edges in **slot / materialization order** across label buckets: ascending bucket
-    /// index, and within each span the same order as [`EdgeStore::collect_out_edges_slot_order`].
-    ///
-    /// This differs from [`Self::iter_out_edges`], which uses [`EdgeStore::iter_out_edges`]
-    /// (descending scan per span).
-    pub fn collect_out_edges_slot_order(
-        &self,
-        src: VertexId,
-    ) -> Result<Vec<E>, LabeledOperationError> {
-        self.ensure_vertex(src)?;
-        let vertex = self.vertices.get(src);
-        let mut edges = Vec::new();
-        if vertex.is_default_edge_labeled() {
-            edges.extend(
-                self.edges
-                    .collect_out_edges_slot_order(&self.vertices, src)?,
-            );
-            return Ok(edges);
-        }
-        let buckets = self.read_vertex_label_buckets(&vertex)?;
-        if let Some((base, total_edges)) =
-            Self::try_contiguous_tiled_labeled_out_edges(&vertex, &buckets)
-        {
-            #[cfg(feature = "canbench")]
-            let _bench_scope = bench_scope("labeled_collect_out_edges_slot_order_tiled");
-            if total_edges > 0 {
-                let nbytes = (total_edges as usize)
-                    .checked_mul(E::BYTES)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                let mut raw = vec![0u8; nbytes];
-                self.edges.read_slots_contiguous(base, &mut raw);
-                for bucket in &buckets {
-                    if bucket.degree() == 0 {
-                        continue;
-                    }
-                    for slot in 0..bucket.degree() {
-                        let rel = bucket
-                            .edge_start
-                            .saturating_sub(base)
-                            .checked_add(u64::from(slot))
-                            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                        let byte_off = usize::try_from(rel)
-                            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?
-                            .checked_mul(E::BYTES)
-                            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                        let byte_end = byte_off
-                            .checked_add(E::BYTES)
-                            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                        if byte_end > raw.len() {
-                            return Err(LaraOperationError::CollectAllocationOverflow.into());
-                        }
-                        edges.push(E::read_from(&raw[byte_off..byte_end]));
-                    }
-                }
-            }
-            return Ok(edges);
-        }
-        for bucket_index in 0..buckets.len() as u32 {
-            let bucket = &buckets[bucket_index as usize];
-            if bucket.degree() == 0 {
-                continue;
-            }
-            let slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
-            let successor =
-                self.bucket_successor_start_after_bucket(&vertex, bucket_index, bucket)?;
-            let acc = LabelEdgeSpanAccess::new(&self.buckets, slot, successor, src);
-            edges.extend(
-                self.edges
-                    .collect_out_edges_slot_order(&acc, VertexId::from(0))?,
-            );
-        }
-        Ok(edges)
-    }
-
-    /// Iterator over a checked snapshot: reverse label-bucket walk; within each bucket,
-    /// overflow log from the chain head first, then slab slots **high index to low**
-    /// ([`EdgeStore::iter_out_edges`] on [`LabelEdgeSpanAccess`]).
-    pub fn out_edges_iter(
-        &self,
-        src: VertexId,
-    ) -> Result<LabeledOutEdgesIter<'_, E, M>, LabeledOperationError> {
-        self.ensure_vertex(src)?;
-        let vertex = self.vertices.get(src);
-        let mut edges = Vec::new();
-        if vertex.is_default_edge_labeled() {
-            // [`LabeledVertex::log_head`] is always `-1` in bypass mode; use [`OutEdgeSlabIter`]
-            // (same descending slab walk as [`EdgeStore::iter_out_edges`] without building [`OutEdgesIter`]).
-            edges.extend(OutEdgeSlabIter::try_new(
-                &self.edges,
-                vertex.base_slot_start(),
-                vertex.stored_degree(),
-                vertex.degree(),
-            )?);
-            return Ok(LabeledOutEdgesIter {
-                inner: edges.into_iter(),
-                _marker: PhantomData,
-            });
-        }
-        let buckets = self.read_vertex_label_buckets(&vertex)?;
-        if let Some((base, total_edges)) =
-            Self::try_contiguous_tiled_labeled_out_edges(&vertex, &buckets)
-        {
-            #[cfg(feature = "canbench")]
-            let _bench_scope = bench_scope("labeled_out_edges_iter_bulk_tiled");
-            if total_edges > 0 {
-                let nbytes = (total_edges as usize)
-                    .checked_mul(E::BYTES)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                let mut raw = vec![0u8; nbytes];
-                self.edges.read_slots_contiguous(base, &mut raw);
-                let mut bucket_rev_idx = buckets.len() as isize - 1;
-                let mut slot_rev: Option<u32> = None;
-                while bucket_rev_idx >= 0 {
-                    let bidx = bucket_rev_idx as usize;
-                    let bucket = &buckets[bidx];
-                    if bucket.degree() == 0 {
-                        bucket_rev_idx -= 1;
-                        slot_rev = None;
-                        continue;
-                    }
-                    let slot = slot_rev.unwrap_or(bucket.degree().saturating_sub(1));
-                    let rel = bucket
-                        .edge_start
-                        .saturating_sub(base)
-                        .checked_add(u64::from(slot))
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                    let byte_off = usize::try_from(rel)
-                        .map_err(|_| LaraOperationError::CollectAllocationOverflow)?
-                        .checked_mul(E::BYTES)
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                    let byte_end = byte_off
-                        .checked_add(E::BYTES)
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                    if byte_end > raw.len() {
-                        return Err(LaraOperationError::CollectAllocationOverflow.into());
-                    }
-                    edges.push(E::read_from(&raw[byte_off..byte_end]));
-                    if slot == 0 {
-                        bucket_rev_idx -= 1;
-                        slot_rev = None;
-                    } else {
-                        slot_rev = Some(slot - 1);
-                    }
-                }
-            }
-            return Ok(LabeledOutEdgesIter {
-                inner: edges.into_iter(),
-                _marker: PhantomData,
-            });
-        }
-        for bucket_index in (0..buckets.len()).rev() {
-            let bucket_index = bucket_index as u32;
-            let bucket = &buckets[bucket_index as usize];
-            let slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
-            let successor =
-                self.bucket_successor_start_after_bucket(&vertex, bucket_index, bucket)?;
-            let acc = LabelEdgeSpanAccess::new(&self.buckets, slot, successor, src);
-            edges.extend(self.edges.iter_out_edges(&acc, VertexId::from(0))?);
-        }
-        Ok(LabeledOutEdgesIter {
-            inner: edges.into_iter(),
-            _marker: PhantomData,
-        })
-    }
-
     #[inline]
     fn directedness_partition_strategy(
         directedness: BucketDirectedness,
-        walk: OutEdgeBucketWalk,
+        ascending: bool,
     ) -> DirectednessPartitionStrategy {
-        match (directedness, walk) {
-            (BucketDirectedness::Directed, OutEdgeBucketWalk::Descending) => {
-                DirectednessPartitionStrategy::LinearFromEnd
-            }
-            (BucketDirectedness::Directed, OutEdgeBucketWalk::Ascending) => {
-                DirectednessPartitionStrategy::HybridBinary
-            }
-            (BucketDirectedness::Undirected, OutEdgeBucketWalk::Descending) => {
-                DirectednessPartitionStrategy::HybridBinary
-            }
-            (BucketDirectedness::Undirected, OutEdgeBucketWalk::Ascending) => {
+        match (directedness, ascending) {
+            (BucketDirectedness::Directed, false) => DirectednessPartitionStrategy::LinearFromEnd,
+            (BucketDirectedness::Directed, true) => DirectednessPartitionStrategy::HybridBinary,
+            (BucketDirectedness::Undirected, false) => DirectednessPartitionStrategy::HybridBinary,
+            (BucketDirectedness::Undirected, true) => {
                 DirectednessPartitionStrategy::LinearFromStart
             }
         }
@@ -2426,20 +2748,20 @@ where
     /// matches `directedness`.
     ///
     /// Under LARA's ascending-key invariant, undirected (MSB clear) and directed (MSB set) buckets
-    /// occupy contiguous runs; the partition is found using a strategy derived from `walk`
+    /// occupy contiguous runs; the partition is found using a strategy derived from `ascending`
     /// (see [`DirectednessPartitionStrategy`]).
     ///
     /// Homogeneous bypass vertices have no bucket slab row: returns `(0, 0)` — use
     /// [`LabeledVertex::is_default_edge_labeled`] and [`LabeledVertex::bypass_storage_label`] for edge bytes.
     ///
-    /// `walk` selects the same partition probe strategy as [`Self::out_edges_by_directedness_iter`]
+    /// `order` selects the same partition probe strategy as [`Self::out_edges_by_directedness_iter`]
     /// (directed + descending probes from the tail; undirected + ascending from the head; the other
     /// two quadrants use hybrid binary→linear).
     pub fn out_edge_bucket_index_range_for_directedness(
         &self,
         src: VertexId,
         directedness: BucketDirectedness,
-        walk: OutEdgeBucketWalk,
+        order: OutEdgeOrder,
     ) -> Result<(u32, u32), LabeledOperationError> {
         self.ensure_vertex(src)?;
         let vertex = self.vertices.get(src);
@@ -2447,7 +2769,7 @@ where
             return Ok((0, 0));
         }
         let deg = vertex.degree();
-        let strategy = Self::directedness_partition_strategy(directedness, walk);
+        let strategy = Self::directedness_partition_strategy(directedness, order.ascending());
         Ok(self.buckets.directedness_bucket_index_range(
             vertex.base_slot_start(),
             deg,
@@ -2456,25 +2778,25 @@ where
         )?)
     }
 
-    /// Outgoing edges whose [`BucketLabelKey`] matches `directedness`, in `walk` bucket order.
+    /// Outgoing edges whose [`BucketLabelKey`] matches `directedness`, in `order`.
     ///
     /// Homogeneous bypass rows contribute edges only when
     /// [`LabeledVertex::bypass_storage_label`] matches `directedness`; otherwise the result is empty.
     ///
     /// Label-bucket mode uses [`LabelBucketStore::directedness_bucket_index_range`] with a probe
-    /// strategy derived from `walk`: directed + descending scans from the tail; undirected +
+    /// strategy derived from `order`: directed + descending scans from the tail; undirected +
     /// ascending from the head; the other two quadrants use hybrid binary search then a short linear
     /// finish ([`DirectednessPartitionStrategy`]).
     ///
-    /// Prefer [`OutEdgeBucketWalk::Descending`] on hot paths: it aligns with [`Self::out_edges_iter`].
+    /// Prefer [`OutEdgeOrder::Descending`] on hot paths: it aligns with [`Self::out_edges`].
     /// Default-label bypass rows use [`OutEdgeSlabIter`] for descending walks.
     pub fn iter_out_edges_by_directedness(
         &self,
         src: VertexId,
         directedness: BucketDirectedness,
-        walk: OutEdgeBucketWalk,
+        order: OutEdgeOrder,
     ) -> Result<Vec<E>, LabeledOperationError> {
-        self.out_edges_by_directedness_iter(src, directedness, walk)
+        self.out_edges_by_directedness_iter(src, directedness, order)
             .map(|iter| iter.collect())
     }
 
@@ -2483,7 +2805,7 @@ where
         src: VertexId,
         vertex: &LabeledVertex,
         directedness: BucketDirectedness,
-        walk: OutEdgeBucketWalk,
+        ascending: bool,
         visit: &mut Visit,
     ) -> Result<(), LabeledOperationError>
     where
@@ -2493,8 +2815,8 @@ where
             if self.bypass_storage_label_for(vertex).directedness() != directedness {
                 return Ok(());
             }
-            match walk {
-                OutEdgeBucketWalk::Descending => {
+            match ascending {
+                false => {
                     let slab_iter = OutEdgeSlabIter::try_new(
                         &self.edges,
                         vertex.base_slot_start(),
@@ -2505,11 +2827,8 @@ where
                         visit(edge);
                     }
                 }
-                OutEdgeBucketWalk::Ascending => {
-                    for edge in self
-                        .edges
-                        .collect_out_edges_slot_order(&self.vertices, src)?
-                    {
+                true => {
+                    for edge in self.edges.asc_out_edges(&self.vertices, src)? {
                         visit(edge);
                     }
                 }
@@ -2517,7 +2836,7 @@ where
             return Ok(());
         }
         let deg = vertex.degree();
-        let strategy = Self::directedness_partition_strategy(directedness, walk);
+        let strategy = Self::directedness_partition_strategy(directedness, ascending);
         let (lo, hi) = self.buckets.directedness_bucket_index_range(
             vertex.base_slot_start(),
             deg,
@@ -2544,8 +2863,8 @@ where
                     .ok_or(LaraOperationError::CollectAllocationOverflow)?;
                 let mut raw = vec![0u8; nbytes];
                 self.edges.read_slots_contiguous(base, &mut raw);
-                match walk {
-                    OutEdgeBucketWalk::Descending => {
+                match ascending {
+                    false => {
                         let mut bucket_rev_idx = buckets.len() as isize - 1;
                         let mut slot_rev: Option<u32> = None;
                         while bucket_rev_idx >= 0 {
@@ -2581,7 +2900,7 @@ where
                             }
                         }
                     }
-                    OutEdgeBucketWalk::Ascending => {
+                    true => {
                         for bucket in &buckets {
                             if bucket.degree() == 0 {
                                 continue;
@@ -2612,8 +2931,8 @@ where
             }
             return Ok(());
         }
-        match walk {
-            OutEdgeBucketWalk::Descending => {
+        match ascending {
+            false => {
                 for local_rev in (0..buckets.len()).rev() {
                     let bucket_index = lo + local_rev as u32;
                     let bucket = &buckets[local_rev];
@@ -2624,12 +2943,24 @@ where
                     let successor =
                         self.bucket_successor_start_after_bucket(vertex, bucket_index, bucket)?;
                     let acc = LabelEdgeSpanAccess::new(&self.buckets, slot, successor, src);
-                    for edge in self.edges.iter_out_edges(&acc, VertexId::from(0))? {
-                        visit(edge);
+                    if bucket.overflow_log_head < 0 {
+                        let it = OutEdgeSlabIter::try_new(
+                            &self.edges,
+                            bucket.edge_start,
+                            bucket.edge_len,
+                            bucket.degree(),
+                        )?;
+                        for edge in it {
+                            visit(edge);
+                        }
+                    } else {
+                        for edge in self.edges.out_edges_iter(&acc, VertexId::from(0))? {
+                            visit(edge);
+                        }
                     }
                 }
             }
-            OutEdgeBucketWalk::Ascending => {
+            true => {
                 for local in 0..buckets.len() {
                     let bucket_index = lo + local as u32;
                     let bucket = &buckets[local];
@@ -2640,10 +2971,7 @@ where
                     let successor =
                         self.bucket_successor_start_after_bucket(vertex, bucket_index, bucket)?;
                     let acc = LabelEdgeSpanAccess::new(&self.buckets, slot, successor, src);
-                    for edge in self
-                        .edges
-                        .collect_out_edges_slot_order(&acc, VertexId::from(0))?
-                    {
+                    for edge in self.edges.asc_out_edges(&acc, VertexId::from(0))? {
                         visit(edge);
                     }
                 }
@@ -2652,7 +2980,7 @@ where
         Ok(())
     }
 
-    /// Visits outgoing edges whose [`BucketLabelKey`] matches `directedness`, in `walk` bucket order.
+    /// Visits outgoing edges whose [`BucketLabelKey`] matches `directedness`, in `order`.
     ///
     /// Same visitation contract as [`Self::out_edges_by_directedness_iter`] without materializing
     /// the full adjacency list.
@@ -2660,7 +2988,7 @@ where
         &self,
         src: VertexId,
         directedness: BucketDirectedness,
-        walk: OutEdgeBucketWalk,
+        order: OutEdgeOrder,
         mut visit: Visit,
     ) -> Result<(), LabeledOperationError>
     where
@@ -2668,7 +2996,13 @@ where
     {
         self.ensure_vertex(src)?;
         let vertex = self.vertices.get(src);
-        self.for_each_out_edges_by_directedness_impl(src, &vertex, directedness, walk, &mut visit)
+        self.for_each_out_edges_by_directedness_impl(
+            src,
+            &vertex,
+            directedness,
+            order.ascending(),
+            &mut visit,
+        )
     }
 
     /// Like [`Self::for_each_out_edges_by_directedness`], but skips [`Self::ensure_vertex`].
@@ -2676,7 +3010,7 @@ where
         &self,
         src: VertexId,
         directedness: BucketDirectedness,
-        walk: OutEdgeBucketWalk,
+        order: OutEdgeOrder,
         mut visit: Visit,
     ) -> Result<(), LabeledOperationError>
     where
@@ -2684,7 +3018,13 @@ where
     {
         debug_assert!(u32::from(src) < self.vertices.len());
         let vertex = self.vertices.get(src);
-        self.for_each_out_edges_by_directedness_impl(src, &vertex, directedness, walk, &mut visit)
+        self.for_each_out_edges_by_directedness_impl(
+            src,
+            &vertex,
+            directedness,
+            order.ascending(),
+            &mut visit,
+        )
     }
 
     /// Iterator form of [`Self::iter_out_edges_by_directedness`].
@@ -2692,22 +3032,9 @@ where
         &self,
         src: VertexId,
         directedness: BucketDirectedness,
-        walk: OutEdgeBucketWalk,
+        order: OutEdgeOrder,
     ) -> Result<LabeledOutEdgesIter<'_, E, M>, LabeledOperationError> {
-        self.ensure_vertex(src)?;
-        let vertex = self.vertices.get(src);
-        let mut edges = Vec::new();
-        self.for_each_out_edges_by_directedness_impl(
-            src,
-            &vertex,
-            directedness,
-            walk,
-            &mut |edge| edges.push(edge),
-        )?;
-        Ok(LabeledOutEdgesIter {
-            inner: edges.into_iter(),
-            _marker: PhantomData,
-        })
+        self.labeled_out_edges_iter(src, order, Some(directedness))
     }
 
     /// Directed buckets only: [`Self::iter_out_edges_by_directedness`] with [`BucketDirectedness::Directed`].
@@ -2715,9 +3042,9 @@ where
     pub fn iter_out_edges_directed_only(
         &self,
         src: VertexId,
-        walk: OutEdgeBucketWalk,
+        order: OutEdgeOrder,
     ) -> Result<Vec<E>, LabeledOperationError> {
-        self.iter_out_edges_by_directedness(src, BucketDirectedness::Directed, walk)
+        self.iter_out_edges_by_directedness(src, BucketDirectedness::Directed, order)
     }
 
     /// Undirected buckets only: [`Self::iter_out_edges_by_directedness`] with [`BucketDirectedness::Undirected`].
@@ -2725,17 +3052,9 @@ where
     pub fn iter_out_edges_undirected_only(
         &self,
         src: VertexId,
-        walk: OutEdgeBucketWalk,
+        order: OutEdgeOrder,
     ) -> Result<Vec<E>, LabeledOperationError> {
-        self.iter_out_edges_by_directedness(src, BucketDirectedness::Undirected, walk)
-    }
-
-    /// Explicit alias for [`Self::out_edges_iter`].
-    pub fn out_edges_rev_iter(
-        &self,
-        src: VertexId,
-    ) -> Result<LabeledOutEdgesIter<'_, E, M>, LabeledOperationError> {
-        self.out_edges_iter(src)
+        self.iter_out_edges_by_directedness(src, BucketDirectedness::Undirected, order)
     }
 
     /// Returns the label id of the bucket that contains `needle`, if any.
@@ -2757,9 +3076,11 @@ where
                 return Ok(None);
             }
             let mut found = false;
-            self.edges.for_each_out_edge_matching(
+            self.edges.visit_out_edges(
                 &self.vertices,
                 src,
+                None,
+                None,
                 None::<&mut dyn FnMut(&[u8]) -> bool>,
                 |_| true,
                 |edge| {
@@ -2788,9 +3109,11 @@ where
             let successor =
                 self.bucket_successor_start_after_bucket(&vertex, bucket_index, &bucket)?;
             let found_label = Cell::new(None);
-            self.edges.for_each_out_edge_matching(
+            self.edges.visit_out_edges(
                 &LabelEdgeSpanAccess::new(&self.buckets, slot, successor, src),
                 VertexId::from(0),
+                None,
+                None,
                 None::<&mut dyn FnMut(&[u8]) -> bool>,
                 |_| found_label.get().is_none(),
                 |edge| {
@@ -3461,7 +3784,7 @@ mod tests {
             vec![TestEdge { target: 11 }, TestEdge { target: 10 }]
         );
         assert_eq!(
-            graph.iter_out_edges(VertexId::from(0)).unwrap(),
+            graph.out_edges(VertexId::from(0)).unwrap(),
             vec![
                 TestEdge { target: 20 },
                 TestEdge { target: 11 },
@@ -3481,7 +3804,7 @@ mod tests {
     }
 
     #[test]
-    fn out_edges_iter_matches_iter_out_edges() {
+    fn out_edges_iterator_streams_desc_order() {
         let graph = test_graph();
         let road = BucketLabelKey::from_raw(2);
         graph
@@ -3495,9 +3818,81 @@ mod tests {
             .insert_edge(VertexId::from(0), walk, TestEdge { target: 20 })
             .unwrap();
 
-        let expected = graph.iter_out_edges(VertexId::from(0)).unwrap();
-        let lazy: Vec<_> = graph.out_edges_iter(VertexId::from(0)).unwrap().collect();
+        let expected = graph.out_edges(VertexId::from(0)).unwrap();
+        let lazy: Vec<_> = graph
+            .desc_out_edges_iter(VertexId::from(0))
+            .unwrap()
+            .collect();
         assert_eq!(lazy, expected);
+    }
+
+    #[test]
+    fn labeled_desc_and_asc_out_edges_iters_match_materialized_rows() {
+        let graph = test_graph();
+        let road = BucketLabelKey::from_raw(2);
+        graph
+            .insert_edge(VertexId::from(0), road, TestEdge { target: 10 })
+            .unwrap();
+        graph
+            .insert_edge(VertexId::from(0), road, TestEdge { target: 11 })
+            .unwrap();
+
+        let desc = graph.out_edges(VertexId::from(0)).unwrap();
+        let asc = graph.asc_out_edges(VertexId::from(0)).unwrap();
+        assert_eq!(
+            graph
+                .desc_out_edges_iter(VertexId::from(0))
+                .unwrap()
+                .collect::<Vec<_>>(),
+            desc
+        );
+        assert_eq!(
+            graph
+                .asc_out_edges_iter(VertexId::from(0))
+                .unwrap()
+                .collect::<Vec<_>>(),
+            asc
+        );
+    }
+
+    #[test]
+    fn visit_out_edges_with_raw_still_applies_matches_on_log_backed_bucket() {
+        let graph = test_graph();
+        let road = BucketLabelKey::from_raw(2);
+        let walk = BucketLabelKey::from_raw(3);
+        for target in 1..=32 {
+            graph
+                .insert_edge(VertexId::from(0), road, TestEdge { target })
+                .unwrap();
+        }
+        graph
+            .insert_edge(VertexId::from(0), walk, TestEdge { target: 101 })
+            .unwrap();
+        graph
+            .insert_edge(VertexId::from(0), road, TestEdge { target: 33 })
+            .unwrap();
+        let vertex = graph.vertices().get(VertexId::from(0));
+        let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
+        let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
+        assert!(bucket.overflow_log_head >= 0);
+
+        let mut visited = Vec::new();
+        let mut raw_all = |_bytes: &[u8]| true;
+        graph
+            .visit_out_edges(
+                VertexId::from(0),
+                None,
+                Some(2),
+                Some(&mut raw_all),
+                |edge| edge.target < 100 && edge.target % 2 == 0,
+                |edge| visited.push(edge),
+            )
+            .unwrap();
+
+        assert_eq!(
+            visited,
+            vec![TestEdge { target: 32 }, TestEdge { target: 30 }]
+        );
     }
 
     #[test]
@@ -3532,7 +3927,7 @@ mod tests {
                 .iter_out_edges_by_directedness(
                     VertexId::from(0),
                     BucketDirectedness::Directed,
-                    OutEdgeBucketWalk::Descending,
+                    OutEdgeOrder::Descending,
                 )
                 .unwrap(),
             vec![TestEdge { target: 40 }, TestEdge { target: 10 }]
@@ -3542,20 +3937,20 @@ mod tests {
                 .iter_out_edges_by_directedness(
                     VertexId::from(0),
                     BucketDirectedness::Directed,
-                    OutEdgeBucketWalk::Ascending,
+                    OutEdgeOrder::Ascending,
                 )
                 .unwrap(),
             vec![TestEdge { target: 10 }, TestEdge { target: 40 }]
         );
         assert_eq!(
             graph
-                .iter_out_edges_undirected_only(VertexId::from(0), OutEdgeBucketWalk::Descending)
+                .iter_out_edges_undirected_only(VertexId::from(0), OutEdgeOrder::Descending)
                 .unwrap(),
             vec![TestEdge { target: 30 }]
         );
         assert_eq!(
             graph
-                .iter_out_edges_undirected_only(VertexId::from(0), OutEdgeBucketWalk::Ascending)
+                .iter_out_edges_undirected_only(VertexId::from(0), OutEdgeOrder::Ascending)
                 .unwrap(),
             vec![TestEdge { target: 30 }]
         );
@@ -3602,7 +3997,7 @@ mod tests {
                 .out_edge_bucket_index_range_for_directedness(
                     VertexId::from(0),
                     BucketDirectedness::Undirected,
-                    OutEdgeBucketWalk::Ascending,
+                    OutEdgeOrder::Ascending,
                 )
                 .unwrap(),
             (0, p as u32)
@@ -3612,7 +4007,7 @@ mod tests {
                 .out_edge_bucket_index_range_for_directedness(
                     VertexId::from(0),
                     BucketDirectedness::Directed,
-                    OutEdgeBucketWalk::Descending,
+                    OutEdgeOrder::Descending,
                 )
                 .unwrap(),
             (p as u32, deg)
@@ -3659,7 +4054,7 @@ mod tests {
                 .iter_out_edges_by_directedness(
                     VertexId::from(1),
                     BucketDirectedness::Undirected,
-                    OutEdgeBucketWalk::Descending,
+                    OutEdgeOrder::Descending,
                 )
                 .unwrap()
                 .is_empty()
@@ -3669,7 +4064,7 @@ mod tests {
                 .iter_out_edges_by_directedness(
                     VertexId::from(1),
                     BucketDirectedness::Directed,
-                    OutEdgeBucketWalk::Descending,
+                    OutEdgeOrder::Descending,
                 )
                 .unwrap(),
             vec![TestEdge { target: 9 }]
@@ -3796,7 +4191,7 @@ mod tests {
             .collect();
         assert_eq!(labels, vec![2, 7, 10]);
         assert_eq!(
-            graph.iter_out_edges(VertexId::from(0)).unwrap(),
+            graph.out_edges(VertexId::from(0)).unwrap(),
             vec![
                 TestEdge { target: 100 },
                 TestEdge { target: 70 },
@@ -4434,14 +4829,16 @@ mod tests {
             Vec::<TestEdge>::new()
         );
         assert_eq!(
-            graph.iter_out_edges(VertexId::from(0)).unwrap(),
+            graph.out_edges(VertexId::from(0)).unwrap(),
             vec![TestEdge { target: 30 }, TestEdge { target: 10 }]
         );
 
         let mut raw_scanned = Vec::new();
         graph
-            .for_each_out_edge_matching_with_raw(
+            .visit_out_edges(
                 VertexId::from(0),
+                None,
+                None,
                 None,
                 |_| true,
                 |edge| raw_scanned.push(edge),
@@ -4483,7 +4880,7 @@ mod tests {
         }
         let vertex = graph.vertices().get(VertexId::from(0));
         assert_eq!(vertex.degree(), 33);
-        assert_eq!(graph.iter_out_edges(VertexId::from(0)).unwrap().len(), 33);
+        assert_eq!(graph.out_edges(VertexId::from(0)).unwrap().len(), 33);
         crate::labeled::invariants::assert_labeled_layout_invariants(
             graph.vertices(),
             graph.buckets(),
@@ -4530,11 +4927,11 @@ mod tests {
                     .saturating_add(u64::from(first.bucket_alloc_slots()))
         );
         assert_eq!(
-            graph.iter_out_edges(VertexId::from(0)).unwrap(),
+            graph.out_edges(VertexId::from(0)).unwrap(),
             vec![TestEdge { target: 30 }, TestEdge { target: 10 }]
         );
         assert_eq!(
-            graph.iter_out_edges(VertexId::from(31)).unwrap(),
+            graph.out_edges(VertexId::from(31)).unwrap(),
             vec![TestEdge { target: 20 }]
         );
     }
@@ -4727,6 +5124,6 @@ mod tests {
             .unwrap();
         let after = graph.vertices().get(VertexId::from(0));
         assert_eq!(after.degree(), before.degree());
-        assert_eq!(graph.iter_out_edges(VertexId::from(0)).unwrap().len(), 6);
+        assert_eq!(graph.out_edges(VertexId::from(0)).unwrap().len(), 6);
     }
 }

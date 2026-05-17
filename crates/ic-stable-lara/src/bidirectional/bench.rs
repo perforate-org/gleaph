@@ -74,11 +74,11 @@ fn bench_lara_bidirectional_scan_in_out_1024() -> canbench_rs::BenchResult {
         for vid in 0..256 {
             let vid_u32 = black_box(vid as u32);
             len += graph
-                .collect_out_edges_slot_order(VertexId::from(vid_u32))
+                .asc_out_edges(VertexId::from(vid_u32))
                 .expect("out")
                 .len();
             len += graph
-                .collect_in_edges_slot_order(VertexId::from(vid_u32))
+                .asc_in_edges(VertexId::from(vid_u32))
                 .expect("in")
                 .len();
         }
