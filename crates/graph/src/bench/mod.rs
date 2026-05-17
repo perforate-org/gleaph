@@ -2,6 +2,9 @@
 //!
 //! Run from `crates/graph`: `canbench` (see `canbench.yml`).
 
+#[cfg(feature = "canbench_large")]
+mod large;
+
 use crate::facade::GraphStore;
 use crate::facade::mutation_executor::GraphMutationExecutor;
 use crate::gql_execution_context::GqlExecutionContext;

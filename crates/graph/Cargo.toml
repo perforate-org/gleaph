@@ -10,6 +10,9 @@ crate-type = ["cdylib", "rlib"]
 [features]
 default = []
 canbench = ["dep:canbench-rs"]
+# Extra-large query-call benchmarks. These build larger synthetic graphs before each
+# benchmark, so keep them out of the default canbench set.
+canbench_large = ["canbench"]
 # Enables `bench_scope` inside `ic-stable-lara` (labeled CSR). Do not use for native
 # `cargo test`: `ic-stable-lara/canbench` pulls `candid` and triggers `ic0` in unit tests.
 # Use only for WASM canprof / canbench runs: `--features canbench,canbench_lara`.
