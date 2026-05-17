@@ -7,6 +7,7 @@ use crate::traits::{CsrEdge, CsrVertex, CsrVertexTombstone};
 use ic_stable_structures::{Storable, storable::Bound};
 use std::borrow::Cow;
 
+const _: () = assert!(DEFAULT_MAX_LOG_ENTRIES <= i16::MAX as u32);
 const _: () = assert!(DEFAULT_MAX_LOG_ENTRIES <= u8::MAX as u32);
 
 /// One LabelBucket descriptor in the intermediate CSR layer.
@@ -41,7 +42,7 @@ pub struct LabelBucket {
     /// Stored edge slots (on-slab prefix plus overflow log chain entries).
     pub edge_len: u32,
     /// Head index in the per-leaf segment overflow log, or `-1` if slab-only.
-    pub overflow_log_head: i32,
+    pub overflow_log_head: i16,
     /// Deferred deletes not yet folded; logical live edges are
     /// `edge_len - unmaintained_deletes`.
     ///
@@ -65,7 +66,7 @@ impl Default for LabelBucket {
 
 impl LabelBucket {
     /// Fixed byte width of one encoded LabelBucket.
-    pub const BYTES: usize = 19;
+    pub const BYTES: usize = 17;
 
     /// Encodes this LabelBucket into exactly [`Self::BYTES`] bytes.
     pub fn write_to(self, bytes: &mut [u8]) {
@@ -73,8 +74,8 @@ impl LabelBucket {
         bytes[0..2].copy_from_slice(&self.bucket_label_key.to_le_bytes());
         bytes[2..10].copy_from_slice(&self.edge_start.to_le_bytes());
         bytes[10..14].copy_from_slice(&self.edge_len.to_le_bytes());
-        bytes[14..18].copy_from_slice(&self.overflow_log_head.to_le_bytes());
-        bytes[18] = self.unmaintained_deletes;
+        bytes[14..16].copy_from_slice(&self.overflow_log_head.to_le_bytes());
+        bytes[16] = self.unmaintained_deletes;
     }
 
     /// Returns a copy with `edge_start` / `edge_len` updated.
@@ -90,8 +91,12 @@ impl LabelBucket {
     /// Returns a copy with [`Self::overflow_log_head`] updated.
     #[inline]
     pub fn with_overflow_log_head(self, head: i32) -> Self {
+        debug_assert!(
+            i16::try_from(head).is_ok(),
+            "LabelBucket overflow log head must fit in i16"
+        );
         Self {
-            overflow_log_head: head,
+            overflow_log_head: head as i16,
             ..self
         }
     }
@@ -114,8 +119,8 @@ impl LabelBucket {
             bucket_label_key: BucketLabelKey::from_le_bytes([chunk[0], chunk[1]]),
             edge_start: u64::from_le_bytes(chunk[2..10].try_into().unwrap()),
             edge_len: u32::from_le_bytes(chunk[10..14].try_into().unwrap()),
-            overflow_log_head: i32::from_le_bytes(chunk[14..18].try_into().unwrap()),
-            unmaintained_deletes: chunk[18],
+            overflow_log_head: i16::from_le_bytes(chunk[14..16].try_into().unwrap()),
+            unmaintained_deletes: chunk[16],
         }
     }
 }
@@ -147,11 +152,15 @@ impl CsrVertex for LabelBucket {
     }
 
     fn log_head(self) -> i32 {
-        self.overflow_log_head
+        i32::from(self.overflow_log_head)
     }
 
     fn with_log_head(mut self, idx: i32) -> Self {
-        self.overflow_log_head = idx;
+        debug_assert!(
+            i16::try_from(idx).is_ok(),
+            "LabelBucket overflow log head must fit in i16"
+        );
+        self.overflow_log_head = idx as i16;
         self
     }
 
@@ -554,7 +563,7 @@ mod tests {
             bucket_label_key: BucketLabelKey::from_raw(0x1234),
             edge_start: 0x1122_3344_5566_7788,
             edge_len: 0xAABB_CCDD,
-            overflow_log_head: -0x0102_0304,
+            overflow_log_head: -0x0102,
             unmaintained_deletes: 0,
         };
         let mut bytes = [0u8; LabelBucket::BYTES];
@@ -563,7 +572,7 @@ mod tests {
             bytes,
             [
                 0x34, 0x12, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0xDD, 0xCC, 0xBB, 0xAA,
-                0xFC, 0xFC, 0xFD, 0xFE, 0x00,
+                0xFE, 0xFE, 0x00,
             ]
         );
         assert_eq!(LabelBucket::read_from(&bytes), bucket);
