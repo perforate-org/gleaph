@@ -80,12 +80,11 @@ use span_meta::{SPAN_PHYSICAL_UNASSIGNED, SegmentSpanMeta, SegmentSpanMetaStore}
 use std::{cell::Cell, fmt, iter::FusedIterator};
 
 const INLINE_EDGE_BYTES: usize = 64;
-/// When a clean slab row is at least this many bytes, [`OutEdgesIter`] reads the
-/// slab in fixed-size **descending** slot chunks instead of one stable read per edge.
-const SLAB_ITER_PREFETCH_MIN_BYTES: usize = 64;
-/// Number of consecutive slab slots loaded per chunk for [`OutEdgesIter`] when
-/// chunking is enabled.
-const SLAB_ITER_CHUNK_SLOTS: u32 = 32;
+/// When a clean slab row is at least this many bytes, [`OutEdgesIter`] and [`OutEdgeSlabIter`]
+/// read the slab in fixed-size **descending** slot chunks instead of one stable read per edge.
+const OUT_EDGE_SLAB_PREFETCH_MIN_BYTES: usize = 64;
+/// Number of consecutive slab slots loaded per chunk when prefetch chunking is enabled.
+const OUT_EDGE_SLAB_CHUNK_SLOTS: u32 = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DeleteTarget {
@@ -801,6 +800,16 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         if V::record_is_vertex_tombstone(&v) && v.stored_degree() == 0 && v.log_head() < 0 {
             return Ok(());
         }
+        if v.log_head() < 0 && raw_matches.is_none() {
+            let mut slab_iter =
+                OutEdgeSlabIter::try_new(self, v.base_slot_start(), v.stored_degree(), v.degree())?;
+            while let Some(edge) = slab_iter.next() {
+                if matches(&edge) {
+                    visit(edge);
+                }
+            }
+            return Ok(());
+        }
         if v.log_head() < 0 {
             let stored = v.stored_degree() as usize;
             let live = v.degree() as usize;
@@ -847,8 +856,8 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     /// Like [`Self::for_each_out_edge_matching`], but stops at the first edge that satisfies `matches`.
     ///
     /// For purely slab-backed rows (`log_head < 0`), when `raw_matches` is `None`, this uses
-    /// [`Self::iter_out_edges`] (chunked slab reads, same scan order as that iterator) instead of
-    /// allocating a full contiguous decode buffer for the entire neighborhood.
+    /// [`OutEdgeSlabIter`] (chunked descending slab reads, same order as [`Self::iter_out_edges`])
+    /// instead of allocating a full contiguous decode buffer for the entire neighborhood.
     pub(crate) fn find_first_out_edge_matching<V, A, Match>(
         &self,
         vertices: &A,
@@ -867,8 +876,13 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         }
         if v.log_head() < 0 {
             if raw_matches.is_none() {
-                let mut iter = self.iter_out_edges(vertices, vid)?;
-                while let Some(edge) = iter.next() {
+                let mut slab_iter = OutEdgeSlabIter::try_new(
+                    self,
+                    v.base_slot_start(),
+                    v.stored_degree(),
+                    v.degree(),
+                )?;
+                while let Some(edge) = slab_iter.next() {
                     if matches(&edge) {
                         return Ok(Some(edge));
                     }
@@ -967,8 +981,8 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             let nbytes = (stored as usize)
                 .checked_mul(E::BYTES)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            let slab_chunk = if nbytes >= SLAB_ITER_PREFETCH_MIN_BYTES {
-                Some(SlabChunkCache {
+            let slab_chunk = if nbytes >= OUT_EDGE_SLAB_PREFETCH_MIN_BYTES {
+                Some(OutEdgeSlabChunk {
                     buf: Vec::new(),
                     chunk_low: 0,
                     chunk_high: 0,
@@ -1001,8 +1015,8 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let nbytes_slab = (slab_count as usize)
             .checked_mul(E::BYTES)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        let slab_chunk = if nbytes_slab >= SLAB_ITER_PREFETCH_MIN_BYTES {
-            Some(SlabChunkCache {
+        let slab_chunk = if nbytes_slab >= OUT_EDGE_SLAB_PREFETCH_MIN_BYTES {
+            Some(OutEdgeSlabChunk {
                 buf: Vec::new(),
                 chunk_low: 0,
                 chunk_high: 0,
@@ -1515,6 +1529,138 @@ fn leaf_segment(vid: VertexId, segment_size: u32) -> u32 {
     u32::from(vid) / segment_size.max(1)
 }
 
+/// Contiguous byte window for one prefetch of the out-edge slab (slot indices `[chunk_low, chunk_high]`).
+struct OutEdgeSlabChunk {
+    buf: Vec<u8>,
+    chunk_low: u32,
+    chunk_high: u32,
+}
+
+#[inline]
+fn out_edge_slab_prefetch_chunk<E: CsrEdge, M: Memory>(
+    cache: &mut OutEdgeSlabChunk,
+    store: &EdgeStore<E, M>,
+    base: u64,
+    slot_idx: u32,
+) {
+    let high = slot_idx;
+    let span = OUT_EDGE_SLAB_CHUNK_SLOTS.min(high.saturating_add(1));
+    let low = high.saturating_sub(span - 1);
+    let nbytes = span as usize * E::BYTES;
+    cache.buf.resize(nbytes, 0);
+    cache.chunk_low = low;
+    cache.chunk_high = high;
+    let start = base.saturating_add(u64::from(low));
+    store.read_slots_contiguous(start, &mut cache.buf);
+}
+
+#[inline]
+fn out_edge_slab_decode_slot<E: CsrEdge, M: Memory>(
+    store: &EdgeStore<E, M>,
+    base_slot_start: u64,
+    slab_chunk: &mut Option<OutEdgeSlabChunk>,
+    slot_idx: u32,
+) -> E {
+    if let Some(cache) = slab_chunk {
+        if cache.buf.is_empty() || slot_idx < cache.chunk_low || slot_idx > cache.chunk_high {
+            out_edge_slab_prefetch_chunk(cache, store, base_slot_start, slot_idx);
+        }
+        let off = (slot_idx - cache.chunk_low) as usize * E::BYTES;
+        debug_assert!(off + E::BYTES <= cache.buf.len());
+        E::read_from(&cache.buf[off..off + E::BYTES])
+    } else {
+        store.read_slot(base_slot_start + u64::from(slot_idx))
+    }
+}
+
+/// Iterator over **slab-resident** outgoing edges in [`EdgeStore`]'s default **descending** slot
+/// order (high index → low, skipping vacant placeholders). For rows with no overflow log
+/// (`log_head < 0`) and no log-replay delete markers; same sequence as the slab phase of
+/// [`OutEdgesIter`].
+pub(crate) struct OutEdgeSlabIter<'a, E: CsrEdge, M: Memory> {
+    store: &'a EdgeStore<E, M>,
+    base_slot_start: u64,
+    remaining_slab: u32,
+    yield_remaining: u32,
+    slab_chunk: Option<OutEdgeSlabChunk>,
+}
+
+impl<'a, E: CsrEdge, M: Memory> OutEdgeSlabIter<'a, E, M> {
+    pub(crate) fn try_new(
+        store: &'a EdgeStore<E, M>,
+        base_slot_start: u64,
+        stored: u32,
+        live: u32,
+    ) -> Result<Self, LaraOperationError> {
+        let nbytes = (stored as usize)
+            .checked_mul(E::BYTES)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let slab_chunk = if nbytes >= OUT_EDGE_SLAB_PREFETCH_MIN_BYTES {
+            Some(OutEdgeSlabChunk {
+                buf: Vec::new(),
+                chunk_low: 0,
+                chunk_high: 0,
+            })
+        } else {
+            None
+        };
+        Ok(Self {
+            store,
+            base_slot_start,
+            remaining_slab: stored,
+            yield_remaining: live,
+            slab_chunk,
+        })
+    }
+}
+
+impl<E: CsrEdge, M: Memory> Iterator for OutEdgeSlabIter<'_, E, M> {
+    type Item = E;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.yield_remaining == 0 {
+            return None;
+        }
+        while self.remaining_slab > 0 {
+            self.remaining_slab -= 1;
+            let slot_idx = self.remaining_slab;
+            let edge = out_edge_slab_decode_slot(
+                self.store,
+                self.base_slot_start,
+                &mut self.slab_chunk,
+                slot_idx,
+            );
+            if edge.neighbor_vid().is_slab_vacant_neighbor() {
+                continue;
+            }
+            self.yield_remaining -= 1;
+            return Some(edge);
+        }
+        debug_assert_eq!(
+            self.yield_remaining, 0,
+            "slab scan ended before yielding all logical edges"
+        );
+        self.yield_remaining = 0;
+        None
+    }
+
+    fn nth(&mut self, n: usize) -> Option<Self::Item> {
+        for _ in 0..n {
+            self.next()?;
+        }
+        self.next()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let n = usize::try_from(self.yield_remaining).unwrap_or(usize::MAX);
+        (n, Some(n))
+    }
+}
+
+impl<E: CsrEdge, M: Memory> ExactSizeIterator for OutEdgeSlabIter<'_, E, M> {}
+
+impl<E: CsrEdge, M: Memory> FusedIterator for OutEdgeSlabIter<'_, E, M> {}
+
 /// Iterator over outgoing edges in [`EdgeStore`]'s **default descending scan order**:
 /// overflow log from the chain head first (each step follows the `prev` link), then live slab
 /// slots **high index to low** (skipping [`VertexId::SLAB_VACANT`] placeholders).
@@ -1525,9 +1671,10 @@ fn leaf_segment(vid: VertexId, segment_size: u32) -> u32 {
 ///
 /// For slab-only rows (`log_head < 0`), only the descending slab phase runs.
 ///
-/// For clean slab-only rows whose stored slab is at least 64 bytes, `slab_chunk` caches a backward
-/// window of consecutive slab slots so [`Iterator::next`] can issue one stable read per chunk (32
-/// slots) instead of per edge.
+/// For clean slab-only rows whose stored slab is at least `OUT_EDGE_SLAB_PREFETCH_MIN_BYTES`,
+/// `slab_chunk` prefetches a backward window of up to `OUT_EDGE_SLAB_CHUNK_SLOTS` consecutive slab
+/// slots so [`Iterator::next`] can issue one stable read per chunk instead of per edge. Decode
+/// logic is shared with [`OutEdgeSlabIter`].
 pub struct OutEdgesIter<'a, E: CsrEdge, M: Memory> {
     store: &'a EdgeStore<E, M>,
     leaf: u32,
@@ -1541,16 +1688,9 @@ pub struct OutEdgesIter<'a, E: CsrEdge, M: Memory> {
     log_header: Option<LogHeaderV1>,
     /// Prefetched [`LogStore::read_segment_entry_table_into`] bytes; filled on first log step.
     log_table: Option<Vec<u8>>,
-    slab_chunk: Option<SlabChunkCache>,
+    slab_chunk: Option<OutEdgeSlabChunk>,
     deleted_log_indices: Vec<u32>,
     deleted_slab_offsets: Vec<u32>,
-}
-
-/// Contiguous slab bytes for slot indices `[chunk_low, chunk_high]` inclusive.
-struct SlabChunkCache {
-    buf: Vec<u8>,
-    chunk_low: u32,
-    chunk_high: u32,
 }
 
 impl<'a, E, M> OutEdgesIter<'a, E, M>
@@ -1558,37 +1698,6 @@ where
     E: CsrEdge,
     M: Memory,
 {
-    fn fill_slab_chunk(
-        cache: &mut SlabChunkCache,
-        store: &'a EdgeStore<E, M>,
-        base: u64,
-        slot_idx: u32,
-    ) {
-        let high = slot_idx;
-        let span = SLAB_ITER_CHUNK_SLOTS.min(high.saturating_add(1));
-        let low = high.saturating_sub(span - 1);
-        let nbytes = span as usize * E::BYTES;
-        cache.buf.resize(nbytes, 0);
-        cache.chunk_low = low;
-        cache.chunk_high = high;
-        let start = base.saturating_add(u64::from(low));
-        store.read_slots_contiguous(start, &mut cache.buf);
-    }
-
-    fn decode_slab_slot(&mut self, slot_idx: u32) -> E {
-        if let Some(cache) = &mut self.slab_chunk {
-            if cache.buf.is_empty() || slot_idx < cache.chunk_low || slot_idx > cache.chunk_high {
-                Self::fill_slab_chunk(cache, self.store, self.base_slot_start, slot_idx);
-            }
-            let off = (slot_idx - cache.chunk_low) as usize * E::BYTES;
-            debug_assert!(off + E::BYTES <= cache.buf.len());
-            E::read_from(&cache.buf[off..off + E::BYTES])
-        } else {
-            self.store
-                .read_slot(self.base_slot_start + u64::from(slot_idx))
-        }
-    }
-
     fn consume_deleted_log_index(&mut self, log_idx: u32) -> bool {
         if let Some(index) = self
             .deleted_log_indices
@@ -1613,6 +1722,15 @@ where
         } else {
             false
         }
+    }
+
+    fn decode_slab_slot(&mut self, slot_idx: u32) -> E {
+        out_edge_slab_decode_slot(
+            self.store,
+            self.base_slot_start,
+            &mut self.slab_chunk,
+            slot_idx,
+        )
     }
 }
 

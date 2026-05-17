@@ -5761,6 +5761,47 @@ mod tests {
     }
 
     #[test]
+    fn labeled_expand_limit_offset_pages_latest_edges() {
+        let store = GraphStore::new();
+        let src = store
+            .insert_vertex_named(["LazyEdgePageSource"], Vec::<(&str, Value)>::new())
+            .expect("insert source");
+        for i in 0..5 {
+            let dst = store
+                .insert_vertex_named(
+                    ["LazyEdgePageTarget"],
+                    [("name", Value::Text(format!("edge {i}")))],
+                )
+                .expect("insert target");
+            store
+                .insert_directed_edge_named(
+                    src,
+                    dst,
+                    Some("LazyEdgePageRel"),
+                    Vec::<(&str, Value)>::new(),
+                )
+                .expect("insert edge");
+        }
+
+        let first_page = plan_gql(
+            "MATCH (a:LazyEdgePageSource)-[:LazyEdgePageRel]->(b) RETURN b.name LIMIT 2 OFFSET 0",
+        );
+        let second_page = plan_gql(
+            "MATCH (a:LazyEdgePageSource)-[:LazyEdgePageRel]->(b) RETURN b.name LIMIT 2 OFFSET 2",
+        );
+
+        let first = store
+            .execute_plan_query(&first_page, &params(), GqlExecutionContext::default())
+            .expect("execute first page");
+        let second = store
+            .execute_plan_query(&second_page, &params(), GqlExecutionContext::default())
+            .expect("execute second page");
+
+        assert_eq!(text_column(&first, "b.name"), vec!["edge 4", "edge 3"]);
+        assert_eq!(text_column(&second, "b.name"), vec!["edge 2", "edge 1"]);
+    }
+
+    #[test]
     fn executes_planner_expand_filter() {
         let store = GraphStore::new();
         let a = store

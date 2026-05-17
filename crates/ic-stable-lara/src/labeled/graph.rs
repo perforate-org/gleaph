@@ -20,7 +20,7 @@ use crate::{
     },
     lara::{
         edge::{
-            DEFAULT_MAX_LOG_ENTRIES, EdgeStore, InitError as EdgeInitError,
+            DEFAULT_MAX_LOG_ENTRIES, EdgeStore, InitError as EdgeInitError, OutEdgeSlabIter,
             counts::{SegmentEdgeCounts, segment_span_density},
             segment_tree_leaf_count,
         },
@@ -2321,7 +2321,14 @@ where
         let vertex = self.vertices.get(src);
         let mut edges = Vec::new();
         if vertex.is_default_edge_labeled() {
-            edges.extend(self.edges.iter_out_edges(&self.vertices, src)?);
+            // [`LabeledVertex::log_head`] is always `-1` in bypass mode; use [`OutEdgeSlabIter`]
+            // (same descending slab walk as [`EdgeStore::iter_out_edges`] without building [`OutEdgesIter`]).
+            edges.extend(OutEdgeSlabIter::try_new(
+                &self.edges,
+                vertex.base_slot_start(),
+                vertex.stored_degree(),
+                vertex.degree(),
+            )?);
             return Ok(LabeledOutEdgesIter {
                 inner: edges.into_iter(),
                 _marker: PhantomData,
@@ -2459,8 +2466,8 @@ where
     /// ascending from the head; the other two quadrants use hybrid binary search then a short linear
     /// finish ([`DirectednessPartitionStrategy`]).
     ///
-    /// Prefer [`OutEdgeBucketWalk::Descending`] on hot paths: it aligns with [`Self::out_edges_iter`]
-    /// and uses [`EdgeStore::iter_out_edges`] without per-bucket slot-order materialization.
+    /// Prefer [`OutEdgeBucketWalk::Descending`] on hot paths: it aligns with [`Self::out_edges_iter`].
+    /// Default-label bypass rows use [`OutEdgeSlabIter`] for descending walks.
     pub fn iter_out_edges_by_directedness(
         &self,
         src: VertexId,
@@ -2488,7 +2495,13 @@ where
             }
             match walk {
                 OutEdgeBucketWalk::Descending => {
-                    for edge in self.edges.iter_out_edges(&self.vertices, src)? {
+                    let slab_iter = OutEdgeSlabIter::try_new(
+                        &self.edges,
+                        vertex.base_slot_start(),
+                        vertex.stored_degree(),
+                        vertex.degree(),
+                    )?;
+                    for edge in slab_iter {
                         visit(edge);
                     }
                 }
@@ -3445,7 +3458,7 @@ mod tests {
 
         assert_eq!(
             graph.iter_edges_for_label(VertexId::from(0), road).unwrap(),
-            vec![TestEdge { target: 10 }, TestEdge { target: 11 }]
+            vec![TestEdge { target: 11 }, TestEdge { target: 10 }]
         );
         assert_eq!(
             graph.iter_out_edges(VertexId::from(0)).unwrap(),
@@ -4012,7 +4025,7 @@ mod tests {
         );
         assert_eq!(
             graph.iter_edges_for_label(VertexId::from(0), road).unwrap(),
-            vec![TestEdge { target: 10 }, TestEdge { target: 11 }]
+            vec![TestEdge { target: 11 }, TestEdge { target: 10 }]
         );
         crate::labeled::invariants::assert_labeled_layout_invariants(
             graph.vertices(),
@@ -4141,7 +4154,7 @@ mod tests {
             graph
                 .iter_edges_for_label(VertexId::from(0), undirected)
                 .unwrap(),
-            vec![TestEdge { target: 1 }, TestEdge { target: 2 }]
+            vec![TestEdge { target: 2 }, TestEdge { target: 1 }]
         );
 
         let road = BucketLabelKey::from_raw(2);
@@ -4154,7 +4167,7 @@ mod tests {
             graph
                 .iter_edges_for_label(VertexId::from(0), undirected)
                 .unwrap(),
-            vec![TestEdge { target: 1 }, TestEdge { target: 2 }]
+            vec![TestEdge { target: 2 }, TestEdge { target: 1 }]
         );
         assert_eq!(
             graph.iter_edges_for_label(VertexId::from(0), road).unwrap(),
@@ -4188,7 +4201,7 @@ mod tests {
         );
         assert_eq!(
             graph.iter_edges_for_label(VertexId::from(0), road).unwrap(),
-            vec![TestEdge { target: 10 }, TestEdge { target: 12 }]
+            vec![TestEdge { target: 12 }, TestEdge { target: 10 }]
         );
         let vertex = graph.vertices().get(VertexId::from(0));
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
@@ -4203,9 +4216,9 @@ mod tests {
         assert_eq!(
             graph.iter_edges_for_label(VertexId::from(0), road).unwrap(),
             vec![
-                TestEdge { target: 10 },
-                TestEdge { target: 12 },
                 TestEdge { target: 13 },
+                TestEdge { target: 12 },
+                TestEdge { target: 10 },
             ]
         );
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
@@ -4381,7 +4394,7 @@ mod tests {
         );
         assert_eq!(
             graph.iter_edges_for_label(VertexId::from(0), walk).unwrap(),
-            vec![TestEdge { target: 20 }, TestEdge { target: 21 }]
+            vec![TestEdge { target: 21 }, TestEdge { target: 20 }]
         );
         crate::labeled::invariants::assert_labeled_layout_invariants(
             graph.vertices(),
@@ -4544,8 +4557,8 @@ mod tests {
         }
         let edges = graph.iter_edges_for_label(VertexId::from(0), road).unwrap();
         assert_eq!(edges.len(), 128);
-        assert_eq!(edges[0], TestEdge { target: 0 });
-        assert_eq!(edges[127], TestEdge { target: 127 });
+        assert_eq!(edges[0], TestEdge { target: 127 });
+        assert_eq!(edges[127], TestEdge { target: 0 });
         let vertex = graph.vertices().get(VertexId::from(0));
         let bucket = graph
             .buckets()
@@ -4690,7 +4703,7 @@ mod tests {
             graph
                 .iter_edges_for_label(VertexId::from(0), graph.default_label())
                 .unwrap(),
-            vec![TestEdge { target: 7 }, TestEdge { target: 8 }]
+            vec![TestEdge { target: 8 }, TestEdge { target: 7 }]
         );
     }
 
