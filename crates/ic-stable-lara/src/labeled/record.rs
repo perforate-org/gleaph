@@ -46,9 +46,9 @@ pub struct LabelBucket {
     /// Deferred deletes not yet folded; logical live edges are
     /// `edge_len - unmaintained_deletes`.
     ///
-    /// This fits in `u8` because deferred placeholders are bounded by the per-segment
-    /// overflow log capacity (`DEFAULT_MAX_LOG_ENTRIES`, currently 170), and insertion
-    /// reuses or rebalances before a bucket can accumulate more pending holes.
+    /// This fits in `u8` because labeled graph mutators compact the bucket before
+    /// allowing this count to reach the per-segment overflow log capacity
+    /// (`DEFAULT_MAX_LOG_ENTRIES`, currently 170).
     pub unmaintained_deletes: u8,
 }
 
@@ -165,8 +165,11 @@ impl CsrVertex for LabelBucket {
     }
 
     fn after_slab_placeholder_delete(self) -> Self {
-        debug_assert!(self.unmaintained_deletes < u8::MAX);
-        self.with_unmaintained_deletes(self.unmaintained_deletes.saturating_add(1))
+        self.with_unmaintained_deletes(
+            self.unmaintained_deletes
+                .checked_add(1)
+                .expect("LabelBucket delete placeholders are compacted before u8 overflow"),
+        )
     }
 
     fn grow_packed_slab_by_one(self) -> Self {
@@ -475,9 +478,10 @@ impl CsrVertex for LabeledVertex {
 
     fn after_slab_placeholder_delete(self) -> Self {
         if self.is_default_edge_labeled() {
-            debug_assert!(self.unmaintained_bypass_delete_count() < u8::MAX);
             return self.with_unmaintained_bypass_delete_count(
-                self.unmaintained_bypass_delete_count().saturating_add(1),
+                self.unmaintained_bypass_delete_count()
+                    .checked_add(1)
+                    .expect("bypass delete placeholders are compacted before u8 overflow"),
             );
         }
         self.with_degree(self.row_count.saturating_sub(1))

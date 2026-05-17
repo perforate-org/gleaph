@@ -20,7 +20,7 @@ use crate::{
     },
     lara::{
         edge::{
-            EdgeStore, InitError as EdgeInitError,
+            DEFAULT_MAX_LOG_ENTRIES, EdgeStore, InitError as EdgeInitError,
             counts::{SegmentEdgeCounts, segment_span_density},
             segment_tree_leaf_count,
         },
@@ -37,6 +37,8 @@ use std::{cell::Cell, cmp::Ordering, fmt, iter::FusedIterator, marker::PhantomDa
 const DEFAULT_SEGMENT_SIZE: u32 = 32;
 const BULK_BUCKET_SEARCH_MIN_DEGREE: u32 = 16;
 const BUCKET_LOOKUP_CACHE_ENTRIES: usize = 64;
+const MAX_UNMAINTAINED_DELETE_PLACEHOLDERS: u8 = DEFAULT_MAX_LOG_ENTRIES as u8;
+const _: () = assert!(DEFAULT_MAX_LOG_ENTRIES <= u8::MAX as u32);
 
 /// Same threshold as core LARA leaf density (`actual/total` on one PMA leaf).
 const LEAF_VERTEX_EDGE_SEGMENT_DENSITY: f64 = 1.0;
@@ -2853,15 +2855,22 @@ where
         F: FnMut(&E) -> bool,
     {
         self.ensure_vertex(src)?;
-        let vertex = self.vertices.get(src);
+        let mut vertex = self.vertices.get(src);
         if vertex.is_default_edge_labeled() {
             if label_id != self.bypass_storage_label_for(&vertex) {
                 return Ok(None);
             }
-            return self
-                .edges
-                .remove_edge_slab_placeholder_matching(&self.vertices, src, matches)
-                .map_err(Into::into);
+            if vertex.degree() == 0 {
+                return Ok(None);
+            }
+            if vertex.unmaintained_bypass_delete_count() < MAX_UNMAINTAINED_DELETE_PLACEHOLDERS {
+                return self
+                    .edges
+                    .remove_edge_slab_placeholder_matching(&self.vertices, src, matches)
+                    .map_err(Into::into);
+            }
+            self.promote_bypass_to_bucket_mode(src)?;
+            vertex = self.vertices.get(src);
         }
         if let BucketSearch::Found { slot, mut bucket } =
             self.find_bucket(src, &vertex, label_id)?
@@ -2872,12 +2881,17 @@ where
             if bucket.degree() == 0 {
                 return Ok(None);
             }
-            if bucket.overflow_log_head >= 0 {
+            if bucket.overflow_log_head >= 0
+                || bucket.unmaintained_deletes >= MAX_UNMAINTAINED_DELETE_PLACEHOLDERS
+            {
                 self.rewrite_vertex_edge_span(src, Some(bucket_index), 0, false, false)?;
                 bucket = self
                     .buckets
                     .read_label_bucket_slot(slot)
                     .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                if bucket.degree() == 0 {
+                    return Ok(None);
+                }
             }
             let stored = bucket.edge_len;
             let mut found = None;
@@ -4198,6 +4212,106 @@ mod tests {
         assert_eq!(bucket.edge_len, 4);
         assert_eq!(bucket.unmaintained_deletes, 1);
         assert_eq!(bucket.degree(), 3);
+    }
+
+    #[test]
+    fn label_bucket_delete_placeholders_compact_at_log_capacity() {
+        let graph = test_graph();
+        let road = BucketLabelKey::from_raw(2);
+        let total = MAX_UNMAINTAINED_DELETE_PLACEHOLDERS as u32 + 2;
+        for target in 1..=total {
+            graph
+                .insert_edge(VertexId::from(0), road, TestEdge { target })
+                .unwrap();
+        }
+
+        for target in 1..=u32::from(MAX_UNMAINTAINED_DELETE_PLACEHOLDERS) {
+            assert!(
+                graph
+                    .remove_edge_matching(VertexId::from(0), road, |edge| edge.target == target)
+                    .unwrap()
+                    .is_some()
+            );
+        }
+
+        let vertex = graph.vertices().get(VertexId::from(0));
+        let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
+        let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
+        assert_eq!(
+            bucket.unmaintained_deletes,
+            MAX_UNMAINTAINED_DELETE_PLACEHOLDERS
+        );
+        assert_eq!(bucket.degree(), 2);
+
+        assert!(
+            graph
+                .remove_edge_matching(VertexId::from(0), road, |edge| edge.target
+                    == u32::from(MAX_UNMAINTAINED_DELETE_PLACEHOLDERS) + 1,)
+                .unwrap()
+                .is_some()
+        );
+
+        let vertex = graph.vertices().get(VertexId::from(0));
+        let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
+        let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
+        assert_eq!(bucket.edge_len, 2);
+        assert_eq!(bucket.unmaintained_deletes, 1);
+        assert_eq!(bucket.degree(), 1);
+        assert_eq!(
+            graph.iter_edges_for_label(VertexId::from(0), road).unwrap(),
+            vec![TestEdge { target: total }]
+        );
+    }
+
+    #[test]
+    fn bypass_delete_placeholders_promote_and_compact_at_log_capacity() {
+        let graph = test_graph();
+        let default = graph.default_label();
+        let total = MAX_UNMAINTAINED_DELETE_PLACEHOLDERS as u32 + 2;
+        for target in 1..=total {
+            graph
+                .insert_edge(VertexId::from(0), default, TestEdge { target })
+                .unwrap();
+        }
+
+        for target in 1..=u32::from(MAX_UNMAINTAINED_DELETE_PLACEHOLDERS) {
+            assert!(
+                graph
+                    .remove_edge_matching(VertexId::from(0), default, |edge| edge.target == target)
+                    .unwrap()
+                    .is_some()
+            );
+        }
+
+        let vertex = graph.vertices().get(VertexId::from(0));
+        assert!(vertex.is_default_edge_labeled());
+        assert_eq!(
+            vertex.unmaintained_bypass_delete_count(),
+            MAX_UNMAINTAINED_DELETE_PLACEHOLDERS
+        );
+        assert_eq!(vertex.degree(), 2);
+
+        assert!(
+            graph
+                .remove_edge_matching(VertexId::from(0), default, |edge| edge.target
+                    == u32::from(MAX_UNMAINTAINED_DELETE_PLACEHOLDERS) + 1,)
+                .unwrap()
+                .is_some()
+        );
+
+        let vertex = graph.vertices().get(VertexId::from(0));
+        assert!(!vertex.is_default_edge_labeled());
+        let slot = graph.find_bucket_slot(&vertex, default).unwrap().unwrap();
+        let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
+        assert_eq!(bucket.edge_len, 2);
+        assert_eq!(bucket.unmaintained_deletes, 1);
+        assert_eq!(bucket.degree(), 1);
+        assert_eq!(
+            graph
+                .iter_edges_for_label(VertexId::from(0), default)
+                .unwrap(),
+            vec![TestEdge { target: total }]
+        );
     }
 
     #[test]
