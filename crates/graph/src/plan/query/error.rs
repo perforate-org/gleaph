@@ -60,6 +60,10 @@ pub enum PlanQueryError {
     GleaphCost {
         message: String,
     },
+    /// `GLEAPH.SEQUENCE` order preparation failed (message is user-facing).
+    GleaphSequence {
+        message: String,
+    },
 }
 
 impl fmt::Display for PlanQueryError {
@@ -118,6 +122,7 @@ impl fmt::Display for PlanQueryError {
             Self::RuntimeFunction(err) => write!(f, "{err}"),
             Self::GleaphWeight { message } => write!(f, "{message}"),
             Self::GleaphCost { message } => write!(f, "{message}"),
+            Self::GleaphSequence { message } => write!(f, "{message}"),
         }
     }
 }

@@ -15,7 +15,9 @@ use crate::plan::expr_evaluator::{
     searched_case_when_outcome, truthy,
 };
 use candid::Principal;
-use gleaph_gql::ast::{BinaryOp, CmpOp, Expr, ExprKind, ObjectName, OrderByClause, TruthValue};
+use gleaph_gql::ast::{
+    BinaryOp, CmpOp, Expr, ExprKind, ObjectName, OrderByClause, SortDirection, TruthValue,
+};
 use gleaph_gql::numeric_ops::{NumericOpError, eval_binary_numeric};
 use gleaph_gql::numeric_order::{NormalizedNumeric, NumericOrderError, normalized_numeric_parts};
 use gleaph_gql::types::{EdgeDirection, LabelExpr, PathElement};
@@ -530,6 +532,12 @@ fn execute_ops_from<'a>(
                     emit_edge_binding,
                 } => {
                     ensure_simple_expand(label_expr, var_len, hop_aux_binding)?;
+                    let sequence_order = gleaph_sequence_order_after_expand(
+                        ops,
+                        op_idx,
+                        edge.as_ref(),
+                        label.is_some() && label_expr.is_none(),
+                    )?;
                     execute_expand(
                         store,
                         rows,
@@ -539,6 +547,7 @@ fn execute_ops_from<'a>(
                         dst,
                         *direction,
                         label.as_ref(),
+                        sequence_order,
                         &[],
                         *emit_edge_binding,
                         indexed_edge_equality.as_ref(),
@@ -564,6 +573,12 @@ fn execute_ops_from<'a>(
                     emit_edge_binding,
                 } => {
                     ensure_simple_expand(label_expr, var_len, hop_aux_binding)?;
+                    let sequence_order = gleaph_sequence_order_after_expand(
+                        ops,
+                        op_idx,
+                        edge.as_ref(),
+                        label.is_some() && label_expr.is_none(),
+                    )?;
                     execute_expand(
                         store,
                         rows,
@@ -573,6 +588,7 @@ fn execute_ops_from<'a>(
                         dst,
                         *direction,
                         label.as_ref(),
+                        sequence_order,
                         dst_filter,
                         *emit_edge_binding,
                         indexed_edge_equality.as_ref(),
@@ -665,7 +681,29 @@ fn execute_ops_from<'a>(
                         .take(count.unwrap_or(usize::MAX))
                         .collect()
                 }
+                PlanOp::Sort { order_by }
+                    if gleaph_sequence_sort(order_by).is_some_and(|(edge_var, _)| {
+                        previous_op_binds_edge(ops, op_idx, edge_var.as_str())
+                    }) =>
+                {
+                    rows
+                }
                 PlanOp::Sort { order_by } => sort_rows(&evaluator, rows, order_by)?,
+                PlanOp::TopK {
+                    order_by,
+                    k,
+                    offset,
+                } if gleaph_sequence_sort(order_by).is_some_and(|(edge_var, _)| {
+                    previous_op_binds_edge(ops, op_idx, edge_var.as_str())
+                }) =>
+                {
+                    let offset = match offset {
+                        Some(expr) => limit_value(&evaluator.eval_expr(&PlanRow::new(), expr)?)?,
+                        None => 0,
+                    };
+                    let k = limit_value(&evaluator.eval_expr(&PlanRow::new(), k)?)?;
+                    rows.into_iter().skip(offset).take(k).collect()
+                }
                 PlanOp::TopK {
                     order_by,
                     k,
@@ -754,6 +792,22 @@ struct LimitedRows {
     rows: Vec<PlanRow>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum EdgeSequenceOrder {
+    Ascending,
+    #[default]
+    Descending,
+}
+
+impl From<EdgeSequenceOrder> for OutEdgeOrder {
+    fn from(value: EdgeSequenceOrder) -> Self {
+        match value {
+            EdgeSequenceOrder::Ascending => Self::Ascending,
+            EdgeSequenceOrder::Descending => Self::Descending,
+        }
+    }
+}
+
 impl LimitedRows {
     fn new(offset: usize, count: usize) -> Self {
         Self {
@@ -792,7 +846,11 @@ enum CsrOffsetFastPath {
 fn csr_offset_fast_path_for_expand(
     direction: EdgeDirection,
     label_id: Option<EdgeLabelId>,
+    sequence_order: EdgeSequenceOrder,
 ) -> Option<CsrOffsetFastPath> {
+    if sequence_order != EdgeSequenceOrder::Descending {
+        return None;
+    }
     match direction {
         EdgeDirection::PointingRight => Some(match label_id {
             Some(lid) => {
@@ -1137,6 +1195,7 @@ fn stream_row_through_ops(
                 dst,
                 *direction,
                 label.as_ref(),
+                EdgeSequenceOrder::Descending,
                 &[],
                 *emit_edge_binding,
                 indexed_edge_equality.as_ref(),
@@ -1176,6 +1235,7 @@ fn stream_row_through_ops(
                 dst,
                 *direction,
                 label.as_ref(),
+                EdgeSequenceOrder::Descending,
                 dst_filter,
                 *emit_edge_binding,
                 indexed_edge_equality.as_ref(),
@@ -1259,6 +1319,7 @@ fn stream_expand(
     dst: &Str,
     direction: EdgeDirection,
     label: Option<&Str>,
+    sequence_order: EdgeSequenceOrder,
     dst_filter: &[Expr],
     emit_edge_binding: bool,
     indexed_edge_equality: Option<&(Str, ScanValue)>,
@@ -1281,7 +1342,7 @@ fn stream_expand(
     let dst_only_prefilter = dst_filter_is_dst_vertex_only(dst_filter, dst.as_ref());
     let edge_key = emit_edge_binding.then(|| edge.to_string());
     let dst_key = dst.to_string();
-    let csr_expand_fast_path = csr_offset_fast_path_for_expand(direction, label_id);
+    let csr_expand_fast_path = csr_offset_fast_path_for_expand(direction, label_id, sequence_order);
 
     let csr_offset_fast_path = (indexed_edge_equality.is_none()
         && dst_filter.is_empty()
@@ -1422,6 +1483,7 @@ fn stream_expand(
         src_id,
         direction,
         label_id,
+        EdgeSequenceOrder::Descending,
         indexed_edge_equality,
         parameters,
         &mut candidates,
@@ -2168,6 +2230,7 @@ fn execute_expand(
     dst: &Str,
     direction: EdgeDirection,
     label: Option<&Str>,
+    sequence_order: EdgeSequenceOrder,
     dst_filter: &[Expr],
     emit_edge_binding: bool,
     indexed_edge_equality: Option<&(Str, ScanValue)>,
@@ -2192,7 +2255,7 @@ fn execute_expand(
     let mut out = Vec::new();
     let edge_key = emit_edge_binding.then(|| edge.to_string());
     let dst_key = dst.to_string();
-    let csr_expand_fast_path = csr_offset_fast_path_for_expand(direction, label_id);
+    let csr_expand_fast_path = csr_offset_fast_path_for_expand(direction, label_id, sequence_order);
     let edge_equality_filter = if csr_expand_fast_path.is_some() {
         let filter = edge_equality_stream_filter(store, indexed_edge_equality, parameters)?;
         if matches!(filter, EdgeEqualityStreamFilter::NoMatches) {
@@ -2278,6 +2341,7 @@ fn execute_expand(
             src_id,
             direction,
             label_id,
+            sequence_order,
             indexed_edge_equality,
             parameters,
             &mut candidates,
@@ -2645,6 +2709,7 @@ fn shortest_paths_between(
                     current,
                     direction,
                     label_id,
+                    EdgeSequenceOrder::Descending,
                     None,
                     &BTreeMap::new(),
                     &mut candidates,
@@ -3063,6 +3128,7 @@ fn weighted_shortest_paths_between(
                     current,
                     direction,
                     label_id,
+                    EdgeSequenceOrder::Descending,
                     None,
                     &BTreeMap::new(),
                     &mut candidates,
@@ -3346,6 +3412,7 @@ fn expand_candidates_into(
     src_id: VertexId,
     direction: EdgeDirection,
     edge_label_id: Option<EdgeLabelId>,
+    sequence_order: EdgeSequenceOrder,
     indexed_edge_equality: Option<&(Str, ScanValue)>,
     parameters: &BTreeMap<String, Value>,
     out: &mut Vec<ExpandCandidate>,
@@ -3369,115 +3436,136 @@ fn expand_candidates_into(
     match direction {
         EdgeDirection::PointingRight => {
             let mut error = None;
-            for_each_csr_expand_edge(store, src_id, direction, edge_label_id, |edge| {
-                if error.is_some() {
-                    return;
-                }
-                if let Some((property, scan_value)) = indexed {
-                    match edge_matches_indexed_equality(
-                        store,
-                        src_id,
-                        edge.vertex_edge_id,
-                        property,
-                        scan_value,
-                        parameters,
-                    ) {
-                        Ok(false) => return,
-                        Ok(true) => {}
-                        Err(err) => {
-                            error = Some(err);
-                            return;
+            for_each_csr_expand_edge(
+                store,
+                src_id,
+                direction,
+                edge_label_id,
+                sequence_order,
+                |edge| {
+                    if error.is_some() {
+                        return;
+                    }
+                    if let Some((property, scan_value)) = indexed {
+                        match edge_matches_indexed_equality(
+                            store,
+                            src_id,
+                            edge.vertex_edge_id,
+                            property,
+                            scan_value,
+                            parameters,
+                        ) {
+                            Ok(false) => return,
+                            Ok(true) => {}
+                            Err(err) => {
+                                error = Some(err);
+                                return;
+                            }
                         }
                     }
-                }
-                out.push((
-                    edge.neighbor_vid(),
-                    EdgeBinding {
-                        handle: EdgeHandle {
-                            owner_vertex_id: src_id,
-                            vertex_edge_id: edge.vertex_edge_id,
+                    out.push((
+                        edge.neighbor_vid(),
+                        EdgeBinding {
+                            handle: EdgeHandle {
+                                owner_vertex_id: src_id,
+                                vertex_edge_id: edge.vertex_edge_id,
+                            },
+                            inline_value: edge.inline_value,
                         },
-                        inline_value: edge.inline_value,
-                    },
-                ));
-            })?;
+                    ));
+                },
+            )?;
             if let Some(err) = error {
                 return Err(err);
             }
         }
         EdgeDirection::PointingLeft => {
             let mut error = None;
-            for_each_csr_expand_edge(store, src_id, direction, edge_label_id, |edge| {
-                if error.is_some() {
-                    return;
-                }
-                if let Some((property, scan_value)) = indexed {
-                    match edge_matches_indexed_equality(
-                        store,
-                        edge.neighbor_vid(),
-                        edge.vertex_edge_id,
-                        property,
-                        scan_value,
-                        parameters,
-                    ) {
-                        Ok(false) => return,
-                        Ok(true) => {}
-                        Err(err) => {
-                            error = Some(err);
-                            return;
+            for_each_csr_expand_edge(
+                store,
+                src_id,
+                direction,
+                edge_label_id,
+                sequence_order,
+                |edge| {
+                    if error.is_some() {
+                        return;
+                    }
+                    if let Some((property, scan_value)) = indexed {
+                        match edge_matches_indexed_equality(
+                            store,
+                            edge.neighbor_vid(),
+                            edge.vertex_edge_id,
+                            property,
+                            scan_value,
+                            parameters,
+                        ) {
+                            Ok(false) => return,
+                            Ok(true) => {}
+                            Err(err) => {
+                                error = Some(err);
+                                return;
+                            }
                         }
                     }
-                }
-                out.push((
-                    edge.neighbor_vid(),
-                    EdgeBinding {
-                        handle: EdgeHandle {
-                            owner_vertex_id: edge.neighbor_vid(),
-                            vertex_edge_id: edge.vertex_edge_id,
+                    out.push((
+                        edge.neighbor_vid(),
+                        EdgeBinding {
+                            handle: EdgeHandle {
+                                owner_vertex_id: edge.neighbor_vid(),
+                                vertex_edge_id: edge.vertex_edge_id,
+                            },
+                            inline_value: edge.inline_value,
                         },
-                        inline_value: edge.inline_value,
-                    },
-                ));
-            })?;
+                    ));
+                },
+            )?;
             if let Some(err) = error {
                 return Err(err);
             }
         }
         EdgeDirection::Undirected => {
             let mut error = None;
-            for_each_csr_expand_edge(store, src_id, direction, edge_label_id, |edge| {
-                if error.is_some() {
-                    return;
-                }
-                let owner = canonical_undirected_owner(src_id, edge.neighbor_vid());
-                if let Some((property, scan_value)) = indexed {
-                    match edge_matches_indexed_equality(
-                        store,
-                        owner,
-                        edge.vertex_edge_id,
-                        property,
-                        scan_value,
-                        parameters,
-                    ) {
-                        Ok(false) => return,
-                        Ok(true) => {}
-                        Err(err) => {
-                            error = Some(err);
-                            return;
+            for_each_csr_expand_edge(
+                store,
+                src_id,
+                direction,
+                edge_label_id,
+                sequence_order,
+                |edge| {
+                    if error.is_some() {
+                        return;
+                    }
+                    let owner = canonical_undirected_owner(src_id, edge.neighbor_vid());
+                    if let Some((property, scan_value)) = indexed {
+                        match edge_matches_indexed_equality(
+                            store,
+                            owner,
+                            edge.vertex_edge_id,
+                            property,
+                            scan_value,
+                            parameters,
+                        ) {
+                            Ok(false) => return,
+                            Ok(true) => {}
+                            Err(err) => {
+                                error = Some(err);
+                                return;
+                            }
                         }
                     }
-                }
-                out.push((
-                    edge.neighbor_vid(),
-                    EdgeBinding {
-                        handle: EdgeHandle {
-                            owner_vertex_id: owner,
-                            vertex_edge_id: edge.vertex_edge_id,
+                    out.push((
+                        edge.neighbor_vid(),
+                        EdgeBinding {
+                            handle: EdgeHandle {
+                                owner_vertex_id: owner,
+                                vertex_edge_id: edge.vertex_edge_id,
+                            },
+                            inline_value: edge.inline_value,
                         },
-                        inline_value: edge.inline_value,
-                    },
-                ));
-            })?;
+                    ));
+                },
+            )?;
             if let Some(err) = error {
                 return Err(err);
             }
@@ -3492,6 +3580,7 @@ fn for_each_csr_expand_edge<F>(
     src_id: VertexId,
     direction: EdgeDirection,
     edge_label_id: Option<EdgeLabelId>,
+    sequence_order: EdgeSequenceOrder,
     visit: F,
 ) -> Result<(), PlanQueryError>
 where
@@ -3506,9 +3595,10 @@ where
                     EdgeDirectedness::Directed
                 });
                 store
-                    .for_each_out_edges_for_label(
+                    .for_each_out_edges_for_label_ordered(
                         src_id,
                         LaraLabelId::from_raw(storage.raw()),
+                        sequence_order.into(),
                         visit,
                     )
                     .map_err(GraphStoreError::from)?;
@@ -3522,7 +3612,7 @@ where
                     .for_each_out_edges_by_directedness_unchecked(
                         src_id,
                         directedness,
-                        OutEdgeOrder::Descending,
+                        sequence_order.into(),
                         visit,
                     )
                     .map_err(GraphStoreError::from)?;
@@ -3533,9 +3623,10 @@ where
             if let Some(lid) = edge_label_id {
                 let storage = lid.pack(EdgeDirectedness::Directed);
                 store
-                    .for_each_in_edges_for_label(
+                    .for_each_in_edges_for_label_ordered(
                         src_id,
                         LaraLabelId::from_raw(storage.raw()),
+                        sequence_order.into(),
                         visit,
                     )
                     .map_err(GraphStoreError::from)?;
@@ -3544,7 +3635,7 @@ where
                     .for_each_in_edges_by_directedness_unchecked(
                         src_id,
                         BucketDirectedness::Directed,
-                        OutEdgeOrder::Descending,
+                        sequence_order.into(),
                         visit,
                     )
                     .map_err(GraphStoreError::from)?;
@@ -3598,59 +3689,80 @@ fn expand_candidates_via_equality_index(
 
     match direction {
         EdgeDirection::PointingRight => {
-            for_each_csr_expand_edge(store, src_id, direction, edge_label_id, |edge| {
-                if !out_slots.contains(&edge.vertex_edge_id.raw()) {
-                    return;
-                }
-                out.push((
-                    edge.neighbor_vid(),
-                    EdgeBinding {
-                        handle: EdgeHandle {
-                            owner_vertex_id: src_id,
-                            vertex_edge_id: edge.vertex_edge_id,
+            for_each_csr_expand_edge(
+                store,
+                src_id,
+                direction,
+                edge_label_id,
+                EdgeSequenceOrder::Descending,
+                |edge| {
+                    if !out_slots.contains(&edge.vertex_edge_id.raw()) {
+                        return;
+                    }
+                    out.push((
+                        edge.neighbor_vid(),
+                        EdgeBinding {
+                            handle: EdgeHandle {
+                                owner_vertex_id: src_id,
+                                vertex_edge_id: edge.vertex_edge_id,
+                            },
+                            inline_value: edge.inline_value,
                         },
-                        inline_value: edge.inline_value,
-                    },
-                ));
-            })?;
+                    ));
+                },
+            )?;
         }
         EdgeDirection::PointingLeft => {
-            for_each_csr_expand_edge(store, src_id, direction, edge_label_id, |edge| {
-                if !in_slots.contains(&equality_index_in_slot_key(
-                    edge.neighbor_vid(),
-                    edge.vertex_edge_id,
-                )) {
-                    return;
-                }
-                out.push((
-                    edge.neighbor_vid(),
-                    EdgeBinding {
-                        handle: EdgeHandle {
-                            owner_vertex_id: edge.neighbor_vid(),
-                            vertex_edge_id: edge.vertex_edge_id,
+            for_each_csr_expand_edge(
+                store,
+                src_id,
+                direction,
+                edge_label_id,
+                EdgeSequenceOrder::Descending,
+                |edge| {
+                    if !in_slots.contains(&equality_index_in_slot_key(
+                        edge.neighbor_vid(),
+                        edge.vertex_edge_id,
+                    )) {
+                        return;
+                    }
+                    out.push((
+                        edge.neighbor_vid(),
+                        EdgeBinding {
+                            handle: EdgeHandle {
+                                owner_vertex_id: edge.neighbor_vid(),
+                                vertex_edge_id: edge.vertex_edge_id,
+                            },
+                            inline_value: edge.inline_value,
                         },
-                        inline_value: edge.inline_value,
-                    },
-                ));
-            })?;
+                    ));
+                },
+            )?;
         }
         EdgeDirection::Undirected => {
-            for_each_csr_expand_edge(store, src_id, direction, edge_label_id, |edge| {
-                let owner = canonical_undirected_owner(src_id, edge.neighbor_vid());
-                if !in_slots.contains(&equality_index_in_slot_key(owner, edge.vertex_edge_id)) {
-                    return;
-                }
-                out.push((
-                    edge.neighbor_vid(),
-                    EdgeBinding {
-                        handle: EdgeHandle {
-                            owner_vertex_id: owner,
-                            vertex_edge_id: edge.vertex_edge_id,
+            for_each_csr_expand_edge(
+                store,
+                src_id,
+                direction,
+                edge_label_id,
+                EdgeSequenceOrder::Descending,
+                |edge| {
+                    let owner = canonical_undirected_owner(src_id, edge.neighbor_vid());
+                    if !in_slots.contains(&equality_index_in_slot_key(owner, edge.vertex_edge_id)) {
+                        return;
+                    }
+                    out.push((
+                        edge.neighbor_vid(),
+                        EdgeBinding {
+                            handle: EdgeHandle {
+                                owner_vertex_id: owner,
+                                vertex_edge_id: edge.vertex_edge_id,
+                            },
+                            inline_value: edge.inline_value,
                         },
-                        inline_value: edge.inline_value,
-                    },
-                ));
-            })?;
+                    ));
+                },
+            )?;
         }
         other => return Err(PlanQueryError::UnsupportedDirection(other)),
     }
@@ -3717,6 +3829,99 @@ fn sort_rows(
     });
 
     Ok(keyed_rows.into_iter().map(|(_, row)| row).collect())
+}
+
+fn gleaph_sequence_order_after_expand(
+    ops: &[PlanOp],
+    expand_idx: usize,
+    edge_var: &str,
+    has_single_fixed_label: bool,
+) -> Result<EdgeSequenceOrder, PlanQueryError> {
+    for op in &ops[expand_idx + 1..] {
+        match op {
+            PlanOp::Sort { order_by } | PlanOp::TopK { order_by, .. } => {
+                let Some((sort_edge_var, order)) = gleaph_sequence_sort(order_by) else {
+                    continue;
+                };
+                if sort_edge_var != edge_var {
+                    continue;
+                }
+                if !has_single_fixed_label {
+                    return Err(PlanQueryError::GleaphSequence {
+                        message: format!(
+                            "ORDER BY GLEAPH.SEQUENCE({sort_edge_var}) requires a single fixed edge label"
+                        ),
+                    });
+                }
+                return Ok(order);
+            }
+            PlanOp::Expand { edge, .. } | PlanOp::ExpandFilter { edge, .. }
+                if edge.as_ref() == edge_var =>
+            {
+                break;
+            }
+            PlanOp::Aggregate { .. }
+            | PlanOp::ShortestPath { .. }
+            | PlanOp::HashJoin { .. }
+            | PlanOp::CartesianProduct { .. }
+            | PlanOp::OptionalMatch { .. }
+            | PlanOp::Materialize { .. } => break,
+            _ => {}
+        }
+    }
+    Ok(EdgeSequenceOrder::Descending)
+}
+
+fn previous_op_binds_edge(ops: &[PlanOp], op_idx: usize, edge_var: &str) -> bool {
+    for op in ops[..op_idx].iter().rev() {
+        match op {
+            PlanOp::Expand { edge, .. } | PlanOp::ExpandFilter { edge, .. } => {
+                return edge.as_ref() == edge_var;
+            }
+            PlanOp::Aggregate { .. }
+            | PlanOp::ShortestPath { .. }
+            | PlanOp::HashJoin { .. }
+            | PlanOp::CartesianProduct { .. }
+            | PlanOp::OptionalMatch { .. }
+            | PlanOp::Materialize { .. } => return false,
+            _ => {}
+        }
+    }
+    false
+}
+
+fn gleaph_sequence_sort(order_by: &OrderByClause) -> Option<(String, EdgeSequenceOrder)> {
+    let [item] = order_by.items.as_slice() else {
+        return None;
+    };
+    if item.null_order.is_some() {
+        return None;
+    }
+    let order = match item.direction {
+        Some(SortDirection::Asc | SortDirection::Ascending) => EdgeSequenceOrder::Ascending,
+        Some(SortDirection::Desc | SortDirection::Descending) | None => {
+            EdgeSequenceOrder::Descending
+        }
+    };
+    let ExprKind::FunctionCall {
+        name,
+        args,
+        distinct,
+    } = &item.expr.kind
+    else {
+        return None;
+    };
+    if !is_gleaph_sequence_call(name, *distinct) || args.len() != 1 {
+        return None;
+    }
+    super::gleaph_weight::gleaph_weight_arg_edge_var(&args[0]).map(|edge_var| (edge_var, order))
+}
+
+fn is_gleaph_sequence_call(name: &ObjectName, distinct: bool) -> bool {
+    !distinct
+        && name.parts.len() == 2
+        && name.parts[0].eq_ignore_ascii_case("gleaph")
+        && name.parts[1].eq_ignore_ascii_case("sequence")
 }
 
 fn eval_sort_expr(
@@ -6174,6 +6379,107 @@ mod tests {
 
         assert_eq!(text_column(&first, "b.name"), vec!["edge 4", "edge 3"]);
         assert_eq!(text_column(&second, "b.name"), vec!["edge 2", "edge 1"]);
+    }
+
+    #[test]
+    fn gleaph_sequence_asc_pages_labeled_edges_in_insertion_order() {
+        let store = GraphStore::new();
+        let src = store
+            .insert_vertex_named(["SeqAscPageSource"], Vec::<(&str, Value)>::new())
+            .expect("insert source");
+        for i in 0..5 {
+            let dst = store
+                .insert_vertex_named(
+                    ["SeqAscPageTarget"],
+                    [("name", Value::Text(format!("seq edge {i}")))],
+                )
+                .expect("insert target");
+            store
+                .insert_directed_edge_named(
+                    src,
+                    dst,
+                    Some("SeqAscPageRel"),
+                    Vec::<(&str, Value)>::new(),
+                )
+                .expect("insert edge");
+        }
+
+        let page = plan_gql(
+            "MATCH (a:SeqAscPageSource)-[e:SeqAscPageRel]->(b) \
+             ORDER BY GLEAPH.SEQUENCE(e) ASC LIMIT 2 OFFSET 1 RETURN b.name",
+        );
+
+        let result = store
+            .execute_plan_query(&page, &params(), GqlExecutionContext::default())
+            .expect("execute asc page");
+
+        assert_eq!(
+            text_column(&result, "b.name"),
+            vec!["seq edge 1", "seq edge 2"]
+        );
+    }
+
+    #[test]
+    fn gleaph_sequence_desc_matches_default_labeled_edge_order() {
+        let store = GraphStore::new();
+        let src = store
+            .insert_vertex_named(["SeqDescPageSource"], Vec::<(&str, Value)>::new())
+            .expect("insert source");
+        for i in 0..4 {
+            let dst = store
+                .insert_vertex_named(
+                    ["SeqDescPageTarget"],
+                    [("name", Value::Text(format!("seq desc edge {i}")))],
+                )
+                .expect("insert target");
+            store
+                .insert_directed_edge_named(
+                    src,
+                    dst,
+                    Some("SeqDescPageRel"),
+                    Vec::<(&str, Value)>::new(),
+                )
+                .expect("insert edge");
+        }
+
+        let page = plan_gql(
+            "MATCH (a:SeqDescPageSource)-[e:SeqDescPageRel]->(b) \
+             ORDER BY GLEAPH.SEQUENCE(e) DESC LIMIT 2 RETURN b.name",
+        );
+
+        let result = store
+            .execute_plan_query(&page, &params(), GqlExecutionContext::default())
+            .expect("execute desc page");
+
+        assert_eq!(
+            text_column(&result, "b.name"),
+            vec!["seq desc edge 3", "seq desc edge 2"]
+        );
+    }
+
+    #[test]
+    fn gleaph_sequence_rejects_unlabeled_edge_pattern() {
+        let store = GraphStore::new();
+        let src = store
+            .insert_vertex_named(["SeqNoLabelSource"], Vec::<(&str, Value)>::new())
+            .expect("insert source");
+        let dst = store
+            .insert_vertex_named(["SeqNoLabelTarget"], Vec::<(&str, Value)>::new())
+            .expect("insert target");
+        store
+            .insert_directed_edge_named(src, dst, Option::<&str>::None, Vec::<(&str, Value)>::new())
+            .expect("insert edge");
+
+        let page = plan_gql(
+            "MATCH (a:SeqNoLabelSource)-[e]->(b) \
+             ORDER BY GLEAPH.SEQUENCE(e) ASC RETURN b",
+        );
+
+        let err = store
+            .execute_plan_query(&page, &params(), GqlExecutionContext::default())
+            .expect_err("unlabeled sequence order should fail");
+
+        assert!(err.to_string().contains("single fixed edge label"), "{err}");
     }
 
     #[test]

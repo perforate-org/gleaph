@@ -757,6 +757,21 @@ impl GraphStore {
         GRAPH.with_borrow(|graph| graph.for_each_out_edges_for_label(vertex_id, label, visit))
     }
 
+    pub(crate) fn for_each_out_edges_for_label_ordered<Visit>(
+        &self,
+        vertex_id: VertexId,
+        label: LaraLabelId,
+        order: OutEdgeOrder,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLabeledError>
+    where
+        Visit: FnMut(Edge),
+    {
+        GRAPH.with_borrow(|graph| {
+            graph.for_each_out_edges_for_label_ordered(vertex_id, label, order, visit)
+        })
+    }
+
     pub(crate) fn for_each_out_edges_for_label_unchecked<Visit>(
         &self,
         vertex_id: VertexId,
@@ -962,6 +977,21 @@ impl GraphStore {
         Visit: FnMut(Edge),
     {
         GRAPH.with_borrow(|graph| graph.for_each_in_edges_for_label(vertex_id, label, visit))
+    }
+
+    pub(crate) fn for_each_in_edges_for_label_ordered<Visit>(
+        &self,
+        vertex_id: VertexId,
+        label: LaraLabelId,
+        order: OutEdgeOrder,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLabeledError>
+    where
+        Visit: FnMut(Edge),
+    {
+        GRAPH.with_borrow(|graph| {
+            graph.for_each_in_edges_for_label_ordered(vertex_id, label, order, visit)
+        })
     }
 
     pub(crate) fn for_each_in_edges_for_label_unchecked<Visit>(

@@ -2166,6 +2166,55 @@ where
         }
     }
 
+    /// Visits outgoing edges for `label_id` in `order` without materializing the full bucket row.
+    pub fn for_each_edges_for_label_ordered<Visit>(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        order: OutEdgeOrder,
+        mut visit: Visit,
+    ) -> Result<(), LabeledOperationError>
+    where
+        Visit: FnMut(E),
+    {
+        for edge in self.out_edges_iter_for_label_ordered(src, label_id, order)? {
+            visit(edge);
+        }
+        Ok(())
+    }
+
+    /// Iterator over one label's outgoing span (bypass row or one bucket), without materializing the
+    /// full multi-label row.
+    fn out_edges_iter_for_label_ordered(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        order: OutEdgeOrder,
+    ) -> Result<LabeledSpanIter<'_, E, M>, LabeledOperationError> {
+        self.ensure_vertex(src)?;
+        let vertex = self.vertices.get(src);
+        if vertex.is_default_edge_labeled() {
+            if label_id != self.bypass_storage_label_for(&vertex) {
+                return Ok(LabeledSpanIter::Empty);
+            }
+            return match order {
+                OutEdgeOrder::Descending => Ok(LabeledSpanIter::Desc(
+                    self.edges.out_edges_iter(&self.vertices, src)?,
+                )),
+                OutEdgeOrder::Ascending => Ok(LabeledSpanIter::Asc(
+                    self.edges.asc_out_edges_iter(&self.vertices, src)?,
+                )),
+            };
+        }
+        match self.find_bucket(src, &vertex, label_id)? {
+            BucketSearch::Found { slot, bucket } => {
+                let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
+                self.labeled_bucket_span_iter(src, order, &vertex, &[bucket], 0, bucket_index)
+            }
+            BucketSearch::Missing { .. } => Ok(LabeledSpanIter::Empty),
+        }
+    }
+
     /// Descending-scan iterator over one label's outgoing span (bypass row or one bucket), without
     /// materializing the full multi-label row.
     pub(crate) fn out_edges_iter_for_label(

@@ -711,6 +711,22 @@ where
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
+    /// Visits forward outgoing edges for one label in `order`.
+    pub fn for_each_out_edges_for_label_ordered<Visit>(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        order: OutEdgeOrder,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLabeledError>
+    where
+        Visit: FnMut(E),
+    {
+        self.forward
+            .for_each_edges_for_label_ordered(src, label_id, order, visit)
+            .map_err(DeferredBidirectionalLabeledError::Forward)
+    }
+
     /// Like [`LabeledLaraGraph::skip_then_visit_each_out_edge_for_label`] on the forward store.
     pub fn skip_then_visit_each_forward_out_edge_for_label<Visit, Err>(
         &self,
@@ -863,6 +879,22 @@ where
     {
         self.reverse
             .for_each_edges_for_label(dst, label_id, visit)
+            .map_err(DeferredBidirectionalLabeledError::Reverse)
+    }
+
+    /// Visits reverse outgoing edges for one label in `order`.
+    pub fn for_each_in_edges_for_label_ordered<Visit>(
+        &self,
+        dst: VertexId,
+        label_id: BucketLabelKey,
+        order: OutEdgeOrder,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLabeledError>
+    where
+        Visit: FnMut(E),
+    {
+        self.reverse
+            .for_each_edges_for_label_ordered(dst, label_id, order, visit)
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
 
