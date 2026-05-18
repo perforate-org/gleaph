@@ -711,6 +711,80 @@ where
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
+    /// Like [`LabeledLaraGraph::skip_then_visit_each_out_edge_for_label`] on the forward store.
+    pub fn skip_then_visit_each_forward_out_edge_for_label<Visit, Err>(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        offset_remaining: &mut usize,
+        visit: Visit,
+    ) -> Result<Result<bool, Err>, DeferredBidirectionalLabeledError>
+    where
+        Visit: FnMut(E) -> Result<bool, Err>,
+    {
+        self.forward
+            .skip_then_visit_each_out_edge_for_label(src, label_id, offset_remaining, visit)
+            .map_err(DeferredBidirectionalLabeledError::Forward)
+    }
+
+    /// Like [`LabeledLaraGraph::skip_then_visit_each_out_edge_by_directedness`] on the forward store.
+    pub fn skip_then_visit_each_forward_out_edge_by_directedness<Visit, Err>(
+        &self,
+        src: VertexId,
+        directedness: BucketDirectedness,
+        offset_remaining: &mut usize,
+        visit: Visit,
+    ) -> Result<Result<bool, Err>, DeferredBidirectionalLabeledError>
+    where
+        Visit: FnMut(E) -> Result<bool, Err>,
+    {
+        self.forward
+            .skip_then_visit_each_out_edge_by_directedness(
+                src,
+                directedness,
+                offset_remaining,
+                visit,
+            )
+            .map_err(DeferredBidirectionalLabeledError::Forward)
+    }
+
+    /// Like [`LabeledLaraGraph::skip_then_visit_each_out_edge_for_label`] on the reverse store.
+    pub fn skip_then_visit_each_reverse_out_edge_for_label<Visit, Err>(
+        &self,
+        dst: VertexId,
+        label_id: BucketLabelKey,
+        offset_remaining: &mut usize,
+        visit: Visit,
+    ) -> Result<Result<bool, Err>, DeferredBidirectionalLabeledError>
+    where
+        Visit: FnMut(E) -> Result<bool, Err>,
+    {
+        self.reverse
+            .skip_then_visit_each_out_edge_for_label(dst, label_id, offset_remaining, visit)
+            .map_err(DeferredBidirectionalLabeledError::Reverse)
+    }
+
+    /// Like [`LabeledLaraGraph::skip_then_visit_each_out_edge_by_directedness`] on the reverse store.
+    pub fn skip_then_visit_each_reverse_out_edge_by_directedness<Visit, Err>(
+        &self,
+        dst: VertexId,
+        directedness: BucketDirectedness,
+        offset_remaining: &mut usize,
+        visit: Visit,
+    ) -> Result<Result<bool, Err>, DeferredBidirectionalLabeledError>
+    where
+        Visit: FnMut(E) -> Result<bool, Err>,
+    {
+        self.reverse
+            .skip_then_visit_each_out_edge_by_directedness(
+                dst,
+                directedness,
+                offset_remaining,
+                visit,
+            )
+            .map_err(DeferredBidirectionalLabeledError::Reverse)
+    }
+
     /// Forward outgoing edges filtered by label-bucket directedness in `order`.
     ///
     /// See [`LabeledLaraGraph::for_each_out_edges_by_directedness`].

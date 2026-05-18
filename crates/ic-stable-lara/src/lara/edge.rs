@@ -17,8 +17,10 @@
 //!
 //! **Default contiguous read contract:** [`EdgeStore::out_edges_iter`] (see [`OutEdgesIter`])
 //! walks the overflow log from the chain head first, then live slab slots **high index to low**
-//! (still skipping vacant placeholders). That descending scan is the preferred hot path (cache- and
-//! prefetch-friendly, newest log entries first). Callers that need slot order should use
+//! (still skipping vacant placeholders). Log-backed rows prefetch the log chain at iterator
+//! construction so slab scans can skip log-deleted slab slots without decoding them. That
+//! descending scan is the preferred hot path (cache- and prefetch-friendly, newest log entries
+//! first). Callers that need slot order should use
 //! `asc_out_edges` instead, or reverse the vector produced by `out_edges_iter` when
 //! packing rows contiguously (e.g. segment rebalance snapshots).
 //! The log, counts, span metadata, and free span index are update-side structures.
@@ -77,7 +79,7 @@ pub(crate) use log::DEFAULT_MAX_LOG_ENTRIES;
 pub use log::HeaderV1 as LogHeaderV1;
 use log::LogStore;
 use span_meta::{SPAN_PHYSICAL_UNASSIGNED, SegmentSpanMeta, SegmentSpanMetaStore};
-use std::{cell::Cell, fmt, iter::FusedIterator};
+use std::{cell::Cell, fmt, iter::FusedIterator, num::NonZero};
 
 const INLINE_EDGE_BYTES: usize = 64;
 /// When a clean slab row is at least this many bytes, [`OutEdgesIter`] and [`OutEdgeSlabIter`]
@@ -228,6 +230,134 @@ pub struct EdgeStore<E: CsrEdge, M: Memory> {
     log: LogStore<E, M>,
     span_meta: SegmentSpanMetaStore<M>,
     free_spans: FreeSpanStore<M>,
+}
+
+/// Descending scan for a **log-backed** row without prefetching every live log edge into a `Vec`.
+///
+/// Same logical order as [`OutEdgesIter`]: replay the overflow log chain (newest first), then walk
+/// the slab prefix in descending slot order, skipping slab slots targeted by log delete records.
+pub(crate) struct LogBackedDescIter<'a, E: CsrEdge, M: Memory> {
+    store: &'a EdgeStore<E, M>,
+    leaf: u32,
+    next_log: i32,
+    remaining_log: u32,
+    base_slot_start: u64,
+    remaining_slab: u32,
+    yield_remaining: u32,
+    log_header: LogHeaderV1,
+    log_table: Option<Vec<u8>>,
+    slab_chunk: Option<OutEdgeSlabChunk>,
+    deleted_log_indices: Vec<u32>,
+    deleted_slab_offsets: Vec<u32>,
+    sorted_slab_deletes: bool,
+}
+
+impl<'a, E, M> LogBackedDescIter<'a, E, M>
+where
+    E: CsrEdge,
+    M: Memory,
+{
+    fn decode_slab_slot(&mut self, slot_idx: u32) -> E {
+        out_edge_slab_decode_slot(
+            self.store,
+            self.base_slot_start,
+            &mut self.slab_chunk,
+            slot_idx,
+        )
+    }
+}
+
+impl<'a, E, M> Iterator for LogBackedDescIter<'a, E, M>
+where
+    E: CsrEdge,
+    M: Memory,
+{
+    type Item = E;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.yield_remaining == 0 {
+            return None;
+        }
+        if self.next_log >= 0 {
+            if self.log_table.is_none() {
+                let mut buf = Vec::new();
+                self.store
+                    .log
+                    .read_segment_entry_table_into(&self.log_header, self.leaf, &mut buf);
+                self.log_table = Some(buf);
+            }
+            let log_table_sl = self
+                .log_table
+                .as_ref()
+                .and_then(|b| (!b.is_empty()).then_some(b.as_slice()));
+            while self.next_log >= 0 {
+                if self.remaining_log == 0 {
+                    self.next_log = -1;
+                    break;
+                }
+                self.remaining_log -= 1;
+                let log_idx = self.next_log as u32;
+                let (prev, src, edge) = self.store.read_log_edge_from_table_or_store(
+                    &self.log_header,
+                    self.leaf,
+                    log_idx,
+                    log_table_sl,
+                );
+                self.next_log = prev;
+                if let Some(target) = decode_delete_target(src) {
+                    match target {
+                        DeleteTarget::Slab(offset) => self.deleted_slab_offsets.push(offset),
+                        DeleteTarget::Log(index) => self.deleted_log_indices.push(index),
+                    }
+                    continue;
+                }
+                if let Some(pos) = self.deleted_log_indices.iter().position(|&d| d == log_idx) {
+                    self.deleted_log_indices.swap_remove(pos);
+                    continue;
+                }
+                self.yield_remaining -= 1;
+                return Some(edge);
+            }
+        }
+        if !self.sorted_slab_deletes {
+            self.sorted_slab_deletes = true;
+            self.deleted_slab_offsets.sort_unstable();
+        }
+        while self.remaining_slab > 0 {
+            self.remaining_slab -= 1;
+            let slot_idx = self.remaining_slab;
+            if self.deleted_slab_offsets.binary_search(&slot_idx).is_ok() {
+                continue;
+            }
+            let edge = self.decode_slab_slot(slot_idx);
+            if edge.neighbor_vid().is_slab_vacant_neighbor() {
+                continue;
+            }
+            self.yield_remaining -= 1;
+            return Some(edge);
+        }
+        self.yield_remaining = 0;
+        None
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let n = usize::try_from(self.yield_remaining).unwrap_or(usize::MAX);
+        (n, Some(n))
+    }
+}
+
+impl<E, M> ExactSizeIterator for LogBackedDescIter<'_, E, M>
+where
+    E: CsrEdge,
+    M: Memory,
+{
+}
+
+impl<E, M> FusedIterator for LogBackedDescIter<'_, E, M>
+where
+    E: CsrEdge,
+    M: Memory,
+{
 }
 
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
@@ -863,7 +993,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             return Ok(());
         }
 
-        let mut walk = self.out_edges_iter(vertices, vid)?;
+        let mut walk = self.log_backed_desc_edges_iter(vertices, vid)?;
         while let Some(edge) = walk.next() {
             if matches(&edge) && !window.emit_edge(edge, &mut visit) {
                 return Ok(());
@@ -902,7 +1032,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             return Ok(None);
         }
 
-        let mut walk = self.out_edges_iter(vertices, vid)?;
+        let mut walk = self.log_backed_desc_edges_iter(vertices, vid)?;
         while let Some(edge) = walk.next() {
             if matches(&edge) {
                 return Ok(Some(edge));
@@ -927,6 +1057,108 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         Ok(v.degree() > 0)
     }
 
+    /// Walks the overflow log once (newest→oldest along `prev`) and returns live log edges in that
+    /// visitation order plus slab slot indices targeted by log delete records.
+    ///
+    /// Matches the historical lazy [`OutEdgesIter`] log phase: delete entries update
+    /// `deleted_log_indices` / `deleted_slab_offsets` before inserts at the same log index are
+    /// skipped.
+    fn prefetch_descending_log_edges(
+        &self,
+        log_h: &LogHeaderV1,
+        leaf: u32,
+        log_head: i32,
+    ) -> Result<(Vec<E>, Vec<u32>), LaraOperationError> {
+        let mut log_table_buf = Vec::new();
+        self.log
+            .read_segment_entry_table_into(log_h, leaf, &mut log_table_buf);
+        let log_table = (!log_table_buf.is_empty()).then_some(log_table_buf.as_slice());
+
+        let mut deleted_log_indices: Vec<u32> = Vec::new();
+        let mut deleted_slab_offsets: Vec<u32> = Vec::new();
+        let mut log_edges: Vec<E> = Vec::new();
+        let mut log_i = log_head;
+        let mut budget = log_h.max_log_entries;
+        while budget > 0 {
+            budget -= 1;
+            if log_i < 0 {
+                return Ok((log_edges, deleted_slab_offsets));
+            }
+            let log_idx = log_i as u32;
+            let (prev, src, edge) =
+                self.read_log_edge_from_table_or_store(log_h, leaf, log_idx, log_table);
+            log_i = prev;
+            if let Some(target) = decode_delete_target(src) {
+                match target {
+                    DeleteTarget::Slab(offset) => deleted_slab_offsets.push(offset),
+                    DeleteTarget::Log(index) => deleted_log_indices.push(index),
+                }
+                continue;
+            }
+            if let Some(pos) = deleted_log_indices.iter().position(|&d| d == log_idx) {
+                deleted_log_indices.swap_remove(pos);
+                continue;
+            }
+            log_edges.push(edge);
+        }
+        if log_i >= 0 {
+            return Err(LaraOperationError::LogChainShort);
+        }
+        Ok((log_edges, deleted_slab_offsets))
+    }
+
+    /// Descending scan over a **log-backed** row without prefetching live log edges into a buffer.
+    ///
+    /// Used by [`Self::visit_out_edges`] and [`Self::find_first_out_edge_matching`] so full
+    /// traversals do not allocate a `Vec` of every live log edge. Public iteration
+    /// ([`Self::out_edges_iter`]) still prefetches for cheaper [`Iterator::advance_by`] / `skip`.
+    pub(crate) fn log_backed_desc_edges_iter<V, A>(
+        &self,
+        vertices: &A,
+        vid: VertexId,
+    ) -> Result<LogBackedDescIter<'_, E, M>, LaraOperationError>
+    where
+        V: CsrVertex + CsrVertexTombstoneScan,
+        A: VertexAccess<V>,
+    {
+        let edge_layout = self.edge_layout();
+        let v = vertices.get_in_range(vid)?;
+        let v_ord = u32::from(vid);
+        let log_owner = vertices.log_leaf_vertex(vid);
+        let on_slab = self.on_slab_edges_with_layout(&edge_layout, vertices, v_ord, &v)?;
+        let stored = v.stored_degree();
+        let slab_count = on_slab.min(stored);
+        let nbytes_slab = (slab_count as usize)
+            .checked_mul(E::BYTES)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let slab_chunk = if nbytes_slab >= OUT_EDGE_SLAB_PREFETCH_MIN_BYTES {
+            Some(OutEdgeSlabChunk {
+                buf: Vec::new(),
+                chunk_low: 0,
+                chunk_high: 0,
+            })
+        } else {
+            None
+        };
+        let log_header = self.log.header();
+        let leaf = leaf_segment(log_owner, edge_layout.segment_size);
+        Ok(LogBackedDescIter {
+            store: self,
+            leaf,
+            next_log: v.log_head(),
+            remaining_log: log_header.max_log_entries,
+            base_slot_start: v.base_slot_start(),
+            remaining_slab: slab_count,
+            yield_remaining: v.degree(),
+            log_header,
+            log_table: None,
+            slab_chunk,
+            deleted_log_indices: Vec::new(),
+            deleted_slab_offsets: Vec::new(),
+            sorted_slab_deletes: false,
+        })
+    }
+
     /// Default **descending** contiguous scan over one vertex row (see [`OutEdgesIter`]).
     pub(crate) fn out_edges_iter<V, A>(
         &self,
@@ -943,22 +1175,18 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         if V::record_is_vertex_tombstone(&v) && v.stored_degree() == 0 && v.log_head() < 0 {
             return Ok(OutEdgesIter {
                 store: self,
-                leaf: 0,
-                next_log: -1,
-                remaining_log: 0,
                 base_slot_start: v.base_slot_start(),
                 remaining_slab: 0,
                 yield_remaining: 0,
-                log_header: None,
-                log_table: None,
+                log_edges: Vec::new(),
+                log_pos: 0,
                 slab_chunk: None,
-                deleted_log_indices: Vec::new(),
                 deleted_slab_offsets: Vec::new(),
             });
         }
         // Clean rows: the full neighborhood is on the slab, so the iterator never
         // walks the overflow log. Skip `edge_layout()` (full slab header read) and
-        // log metadata; `leaf` is only read while `remaining_log > 0`.
+        // log metadata.
         if v.log_head() < 0 {
             let stored = v.stored_degree();
             let live = v.degree();
@@ -976,16 +1204,12 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             };
             return Ok(OutEdgesIter {
                 store: self,
-                leaf: 0,
-                next_log: -1,
-                remaining_log: 0,
                 base_slot_start: v.base_slot_start(),
                 remaining_slab: stored,
                 yield_remaining: live,
-                log_header: None,
-                log_table: None,
+                log_edges: Vec::new(),
+                log_pos: 0,
                 slab_chunk,
-                deleted_log_indices: Vec::new(),
                 deleted_slab_offsets: Vec::new(),
             });
         }
@@ -1010,19 +1234,19 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         };
 
         let log_header = self.log.header();
+        let leaf = leaf_segment(log_owner, edge_layout.segment_size);
+        let (log_edges, mut deleted_slab_offsets) =
+            self.prefetch_descending_log_edges(&log_header, leaf, v.log_head())?;
+        deleted_slab_offsets.sort_unstable();
         Ok(OutEdgesIter {
             store: self,
-            leaf: leaf_segment(log_owner, edge_layout.segment_size),
-            next_log: v.log_head(),
-            remaining_log: log_header.max_log_entries,
             base_slot_start: v.base_slot_start(),
             remaining_slab: slab_count,
             yield_remaining: v.degree(),
-            log_header: Some(log_header),
-            log_table: None,
+            log_edges,
+            log_pos: 0,
             slab_chunk,
-            deleted_log_indices: Vec::new(),
-            deleted_slab_offsets: Vec::new(),
+            deleted_slab_offsets,
         })
     }
 
@@ -1800,10 +2024,19 @@ impl<E: CsrEdge, M: Memory> Iterator for OutEdgeSlabIter<'_, E, M> {
         self.next_live_edge_filtered(&mut none)
     }
 
-    fn nth(&mut self, n: usize) -> Option<Self::Item> {
-        for _ in 0..n {
-            self.next()?;
+    fn advance_by(&mut self, n: usize) -> Result<(), NonZero<usize>> {
+        let mut remaining = n;
+        while remaining > 0 {
+            if self.next().is_none() {
+                return Err(NonZero::new(remaining).expect("remaining > 0"));
+            }
+            remaining -= 1;
         }
+        Ok(())
+    }
+
+    fn nth(&mut self, n: usize) -> Option<Self::Item> {
+        self.advance_by(n).ok()?;
         self.next()
     }
 
@@ -1821,6 +2054,11 @@ impl<E: CsrEdge, M: Memory> FusedIterator for OutEdgeSlabIter<'_, E, M> {}
 /// overflow log from the chain head first (each step follows the `prev` link), then live slab
 /// slots **high index to low** (skipping [`VertexId::SLAB_VACANT`] placeholders).
 ///
+/// Log-backed rows **prefetch** the overflow chain at construction (same classification as the
+/// historical lazy walk): live log edges are buffered in head-first order, and log delete records
+/// populate a sorted slab-offset list so the slab phase can skip log-deleted slots without
+/// decoding them.
+///
 /// This is **not** the same order as [`EdgeStore::asc_out_edges`] (slot /
 /// materialization order). Prefer this iterator for hot contiguous reads; use `asc_out_edges`
 /// or reverse the collected vector when you need ascending slot layout (e.g. rebalance packing).
@@ -1833,19 +2071,17 @@ impl<E: CsrEdge, M: Memory> FusedIterator for OutEdgeSlabIter<'_, E, M> {}
 /// logic is shared with [`OutEdgeSlabIter`].
 pub struct OutEdgesIter<'a, E: CsrEdge, M: Memory> {
     store: &'a EdgeStore<E, M>,
-    leaf: u32,
-    next_log: i32,
-    remaining_log: u32,
     base_slot_start: u64,
     /// Count of slab prefix slots still to scan; slots are visited `remaining_slab - 1` down to `0`.
     remaining_slab: u32,
     /// Live edges not yet yielded (matches [`ExactSizeIterator`] contract).
     yield_remaining: u32,
-    log_header: Option<LogHeaderV1>,
-    /// Prefetched [`LogStore::read_segment_entry_table_into`] bytes; filled on first log step.
-    log_table: Option<Vec<u8>>,
+    /// Live overflow-log edges in descending-scan order (newest chain head first).
+    log_edges: Vec<E>,
+    log_pos: usize,
     slab_chunk: Option<OutEdgeSlabChunk>,
-    deleted_log_indices: Vec<u32>,
+    /// Slab slot indices (within this row's slab prefix) targeted by log delete records, sorted for
+    /// binary search. Slots in this set are skipped during the slab phase without decoding.
     deleted_slab_offsets: Vec<u32>,
 }
 
@@ -1854,30 +2090,23 @@ where
     E: CsrEdge,
     M: Memory,
 {
-    fn consume_deleted_log_index(&mut self, log_idx: u32) -> bool {
-        if let Some(index) = self
-            .deleted_log_indices
-            .iter()
-            .position(|deleted| *deleted == log_idx)
-        {
-            self.deleted_log_indices.swap_remove(index);
-            true
-        } else {
-            false
+    /// Iterator that yields no edges (descending scan order contract preserved).
+    pub(crate) fn empty(store: &'a EdgeStore<E, M>) -> Self {
+        Self {
+            store,
+            base_slot_start: 0,
+            remaining_slab: 0,
+            yield_remaining: 0,
+            log_edges: Vec::new(),
+            log_pos: 0,
+            slab_chunk: None,
+            deleted_slab_offsets: Vec::new(),
         }
     }
 
-    fn consume_deleted_slab_offset(&mut self, offset: u32) -> bool {
-        if let Some(index) = self
-            .deleted_slab_offsets
-            .iter()
-            .position(|deleted| *deleted == offset)
-        {
-            self.deleted_slab_offsets.swap_remove(index);
-            true
-        } else {
-            false
-        }
+    #[inline]
+    fn slab_slot_deleted(&self, slot_idx: u32) -> bool {
+        self.deleted_slab_offsets.binary_search(&slot_idx).is_ok()
     }
 
     fn decode_slab_slot(&mut self, slot_idx: u32) -> E {
@@ -1901,36 +2130,9 @@ where
         if self.yield_remaining == 0 {
             return None;
         }
-        while self.remaining_log > 0 {
-            if self.next_log < 0 {
-                self.remaining_log = 0;
-                break;
-            }
-            let log_h = self.log_header.as_ref()?;
-            if self.log_table.is_none() {
-                let mut buf = Vec::new();
-                self.store
-                    .log
-                    .read_segment_entry_table_into(log_h, self.leaf, &mut buf);
-                self.log_table = Some(buf);
-            }
-            let table = self.log_table.as_ref().map(|b| b.as_slice());
-            let log_idx = self.next_log as u32;
-            let (prev, src, edge) = self
-                .store
-                .read_log_edge_from_table_or_store(log_h, self.leaf, log_idx, table);
-            self.next_log = prev;
-            self.remaining_log -= 1;
-            if let Some(target) = decode_delete_target(src) {
-                match target {
-                    DeleteTarget::Slab(offset) => self.deleted_slab_offsets.push(offset),
-                    DeleteTarget::Log(index) => self.deleted_log_indices.push(index),
-                }
-                continue;
-            }
-            if self.consume_deleted_log_index(log_idx) {
-                continue;
-            }
+        if self.log_pos < self.log_edges.len() {
+            let edge = self.log_edges[self.log_pos];
+            self.log_pos += 1;
             self.yield_remaining -= 1;
             return Some(edge);
         }
@@ -1938,11 +2140,11 @@ where
         while self.remaining_slab > 0 {
             self.remaining_slab -= 1;
             let slot_idx = self.remaining_slab;
-            let edge = self.decode_slab_slot(slot_idx);
-            if edge.neighbor_vid().is_slab_vacant_neighbor() {
+            if self.slab_slot_deleted(slot_idx) {
                 continue;
             }
-            if self.consume_deleted_slab_offset(slot_idx) {
+            let edge = self.decode_slab_slot(slot_idx);
+            if edge.neighbor_vid().is_slab_vacant_neighbor() {
                 continue;
             }
             self.yield_remaining -= 1;
@@ -1956,10 +2158,44 @@ where
         None
     }
 
-    fn nth(&mut self, n: usize) -> Option<Self::Item> {
-        for _ in 0..n {
-            self.next()?;
+    fn advance_by(&mut self, mut n: usize) -> Result<(), NonZero<usize>> {
+        if n == 0 {
+            return Ok(());
         }
+        let log_rem = self.log_edges.len().saturating_sub(self.log_pos);
+        let take = n.min(log_rem);
+        self.log_pos += take;
+        let take_u32 = u32::try_from(take).unwrap_or(u32::MAX);
+        self.yield_remaining = self.yield_remaining.saturating_sub(take_u32);
+        n -= take;
+        if n == 0 {
+            return Ok(());
+        }
+
+        while n > 0 {
+            if self.yield_remaining == 0 {
+                return Err(NonZero::new(n).expect("remaining > 0"));
+            }
+            if self.remaining_slab == 0 {
+                return Err(NonZero::new(n).expect("remaining > 0"));
+            }
+            self.remaining_slab -= 1;
+            let slot_idx = self.remaining_slab;
+            if self.slab_slot_deleted(slot_idx) {
+                continue;
+            }
+            let edge = self.decode_slab_slot(slot_idx);
+            if edge.neighbor_vid().is_slab_vacant_neighbor() {
+                continue;
+            }
+            self.yield_remaining -= 1;
+            n -= 1;
+        }
+        Ok(())
+    }
+
+    fn nth(&mut self, n: usize) -> Option<Self::Item> {
+        self.advance_by(n).ok()?;
         self.next()
     }
 
@@ -2113,6 +2349,22 @@ where
         );
         self.remaining = 0;
         None
+    }
+
+    fn advance_by(&mut self, n: usize) -> Result<(), NonZero<usize>> {
+        let mut remaining = n;
+        while remaining > 0 {
+            if self.next().is_none() {
+                return Err(NonZero::new(remaining).expect("remaining > 0"));
+            }
+            remaining -= 1;
+        }
+        Ok(())
+    }
+
+    fn nth(&mut self, n: usize) -> Option<Self::Item> {
+        self.advance_by(n).ok()?;
+        self.next()
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {

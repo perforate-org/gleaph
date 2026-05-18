@@ -33,7 +33,7 @@ use crate::{
 #[cfg(feature = "canbench")]
 use canbench_rs::bench_scope;
 use ic_stable_structures::Memory;
-use std::{cell::Cell, cmp::Ordering, fmt, iter::FusedIterator, marker::PhantomData};
+use std::{cell::Cell, cmp::Ordering, fmt, iter::FusedIterator, marker::PhantomData, num::NonZero};
 
 const DEFAULT_SEGMENT_SIZE: u32 = 32;
 const BULK_BUCKET_SEARCH_MIN_DEGREE: u32 = 16;
@@ -246,6 +246,46 @@ where
             }
         }
     }
+
+    fn advance_by(&mut self, mut n: usize) -> Result<(), NonZero<usize>> {
+        if n == 0 {
+            return Ok(());
+        }
+        loop {
+            match &mut self.kind {
+                LabeledOutEdgesIterKind::Empty => {
+                    return Err(NonZero::new(n).expect("n > 0"));
+                }
+                LabeledOutEdgesIterKind::BypassDesc(it) => return it.advance_by(n),
+                LabeledOutEdgesIterKind::BypassAsc(it) => return it.advance_by(n),
+                LabeledOutEdgesIterKind::Buckets { current, .. } => match current {
+                    LabeledSpanIter::Empty => match self.roll_to_next_bucket_span() {
+                        Ok(()) => continue,
+                        Err(()) => return Err(NonZero::new(n).expect("n > 0")),
+                    },
+                    LabeledSpanIter::Desc(it) => match it.advance_by(n) {
+                        Ok(()) => return Ok(()),
+                        Err(left) => {
+                            n = left.get();
+                            *current = LabeledSpanIter::Empty;
+                        }
+                    },
+                    LabeledSpanIter::Asc(it) => match it.advance_by(n) {
+                        Ok(()) => return Ok(()),
+                        Err(left) => {
+                            n = left.get();
+                            *current = LabeledSpanIter::Empty;
+                        }
+                    },
+                },
+            }
+        }
+    }
+
+    fn nth(&mut self, n: usize) -> Option<Self::Item> {
+        self.advance_by(n).ok()?;
+        self.next()
+    }
 }
 
 impl<'a, E, M> FusedIterator for LabeledOutEdgesIter<'a, E, M>
@@ -268,6 +308,57 @@ where
             kind: LabeledOutEdgesIterKind::Empty,
         }
     }
+
+    /// Advances past the exhausted current span to the next non-empty bucket span, mirroring
+    /// [`Iterator::next`] roll logic for [`LabeledOutEdgesIterKind::Buckets`].
+    fn roll_to_next_bucket_span(&mut self) -> Result<(), ()> {
+        let LabeledOutEdgesIterKind::Buckets {
+            vertex,
+            buckets,
+            base_bucket_index,
+            next_bucket,
+            current,
+        } = &mut self.kind
+        else {
+            return Err(());
+        };
+        loop {
+            let local = match next_bucket.take() {
+                Some(l) => l,
+                None => {
+                    *current = LabeledSpanIter::Empty;
+                    return Err(());
+                }
+            };
+            if self.order == OutEdgeOrder::Descending {
+                *next_bucket = local.checked_sub(1);
+            } else {
+                let next = local + 1;
+                if next < buckets.len() {
+                    *next_bucket = Some(next);
+                }
+            }
+            if buckets[local].degree() == 0 {
+                continue;
+            }
+            let bucket_index = match base_bucket_index.checked_add(local as u32) {
+                Some(b) => b,
+                None => continue,
+            };
+            *current = self
+                .graph
+                .labeled_bucket_span_iter(
+                    self.src,
+                    self.order,
+                    vertex,
+                    buckets,
+                    local,
+                    bucket_index,
+                )
+                .map_err(|_| ())?;
+            return Ok(());
+        }
+    }
 }
 
 impl<E, M> Iterator for LabeledSpanIter<'_, E, M>
@@ -283,6 +374,22 @@ where
             Self::Desc(it) => it.next(),
             Self::Asc(it) => it.next(),
         }
+    }
+
+    fn advance_by(&mut self, n: usize) -> Result<(), NonZero<usize>> {
+        if n == 0 {
+            return Ok(());
+        }
+        match self {
+            Self::Empty => Err(NonZero::new(n).expect("n > 0")),
+            Self::Desc(it) => it.advance_by(n),
+            Self::Asc(it) => it.advance_by(n),
+        }
+    }
+
+    fn nth(&mut self, n: usize) -> Option<Self::Item> {
+        self.advance_by(n).ok()?;
+        self.next()
     }
 }
 
@@ -2056,6 +2163,115 @@ where
                     .map_err(Into::into)
             }
             BucketSearch::Missing { .. } => Ok(()),
+        }
+    }
+
+    /// Descending-scan iterator over one label's outgoing span (bypass row or one bucket), without
+    /// materializing the full multi-label row.
+    pub(crate) fn out_edges_iter_for_label(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+    ) -> Result<OutEdgesIter<'_, E, M>, LabeledOperationError> {
+        self.ensure_vertex(src)?;
+        let vertex = self.vertices.get(src);
+        if vertex.is_default_edge_labeled() {
+            if label_id != self.bypass_storage_label_for(&vertex) {
+                return Ok(OutEdgesIter::empty(&self.edges));
+            }
+            return self
+                .edges
+                .out_edges_iter(&self.vertices, src)
+                .map_err(LabeledOperationError::Store);
+        }
+        match self.find_bucket(src, &vertex, label_id)? {
+            BucketSearch::Found { slot, bucket } => {
+                let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
+                let successor_start =
+                    self.bucket_successor_start_after_bucket(&vertex, bucket_index, &bucket)?;
+                self.edges
+                    .out_edges_iter(
+                        &LabelEdgeSpanAccess::new(&self.buckets, slot, successor_start, src),
+                        VertexId::from(0),
+                    )
+                    .map_err(LabeledOperationError::Store)
+            }
+            BucketSearch::Missing { .. } => Ok(OutEdgesIter::empty(&self.edges)),
+        }
+    }
+
+    /// Applies `advance_by` for `*offset_remaining`, then visits subsequent edges in descending CSR
+    /// order until `visit` returns `true` (stop) or the iterator ends.
+    ///
+    /// On success, `*offset_remaining` is set to `0` when the full skip is applied inside this label
+    /// span. If the span ends before the skip completes, `*offset_remaining` is set to the
+    /// shortfall (same contract as [`Iterator::advance_by`] error value).
+    pub(crate) fn skip_then_visit_each_out_edge_for_label<Visit, Err>(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        offset_remaining: &mut usize,
+        mut visit: Visit,
+    ) -> Result<Result<bool, Err>, LabeledOperationError>
+    where
+        Visit: FnMut(E) -> Result<bool, Err>,
+    {
+        let skip = *offset_remaining;
+        let mut it = self.out_edges_iter_for_label(src, label_id)?;
+        match Iterator::advance_by(&mut it, skip) {
+            Ok(()) => {
+                *offset_remaining = 0;
+            }
+            Err(nz) => {
+                *offset_remaining = nz.get();
+                return Ok(Ok(false));
+            }
+        }
+        loop {
+            let Some(edge) = it.next() else {
+                return Ok(Ok(false));
+            };
+            match visit(edge) {
+                Ok(false) => continue,
+                Ok(true) => return Ok(Ok(true)),
+                Err(e) => return Ok(Err(e)),
+            }
+        }
+    }
+
+    /// Applies `advance_by` for `*offset_remaining`, then visits outgoing edges whose
+    /// [`BucketLabelKey`] matches `directedness` in descending scan order.
+    pub(crate) fn skip_then_visit_each_out_edge_by_directedness<Visit, Err>(
+        &self,
+        src: VertexId,
+        directedness: BucketDirectedness,
+        offset_remaining: &mut usize,
+        mut visit: Visit,
+    ) -> Result<Result<bool, Err>, LabeledOperationError>
+    where
+        Visit: FnMut(E) -> Result<bool, Err>,
+    {
+        let skip = *offset_remaining;
+        let mut it =
+            self.out_edges_by_directedness_iter(src, directedness, OutEdgeOrder::Descending)?;
+        match Iterator::advance_by(&mut it, skip) {
+            Ok(()) => {
+                *offset_remaining = 0;
+            }
+            Err(nz) => {
+                *offset_remaining = nz.get();
+                return Ok(Ok(false));
+            }
+        }
+        loop {
+            let Some(edge) = it.next() else {
+                return Ok(Ok(false));
+            };
+            match visit(edge) {
+                Ok(false) => continue,
+                Ok(true) => return Ok(Ok(true)),
+                Err(e) => return Ok(Err(e)),
+            }
         }
     }
 
@@ -3853,6 +4069,46 @@ mod tests {
                 .collect::<Vec<_>>(),
             asc
         );
+    }
+
+    #[test]
+    fn labeled_out_edges_iter_advance_by_and_nth_match_scan() {
+        let graph = test_graph();
+        let road = BucketLabelKey::from_raw(2);
+        graph
+            .insert_edge(VertexId::from(0), road, TestEdge { target: 10 })
+            .unwrap();
+        graph
+            .insert_edge(VertexId::from(0), road, TestEdge { target: 11 })
+            .unwrap();
+
+        let full: Vec<_> = graph
+            .desc_out_edges_iter(VertexId::from(0))
+            .unwrap()
+            .collect();
+        assert_eq!(full.len(), 2);
+
+        let mut it = graph.desc_out_edges_iter(VertexId::from(0)).unwrap();
+        assert_eq!(it.advance_by(0), Ok(()));
+        assert_eq!(it.next(), Some(full[0]));
+
+        let mut it = graph.desc_out_edges_iter(VertexId::from(0)).unwrap();
+        assert_eq!(it.advance_by(1), Ok(()));
+        assert_eq!(it.next(), Some(full[1]));
+
+        let mut it = graph.desc_out_edges_iter(VertexId::from(0)).unwrap();
+        assert_eq!(it.advance_by(2), Ok(()));
+        assert_eq!(it.next(), None);
+
+        let mut it = graph.desc_out_edges_iter(VertexId::from(0)).unwrap();
+        assert_eq!(it.advance_by(3), Err(NonZero::new(1).unwrap()));
+
+        let mut it = graph.desc_out_edges_iter(VertexId::from(0)).unwrap();
+        assert_eq!(it.nth(0), Some(full[0]));
+        let mut it = graph.desc_out_edges_iter(VertexId::from(0)).unwrap();
+        assert_eq!(it.nth(1), Some(full[1]));
+        let mut it = graph.desc_out_edges_iter(VertexId::from(0)).unwrap();
+        assert_eq!(it.nth(2), None);
     }
 
     #[test]

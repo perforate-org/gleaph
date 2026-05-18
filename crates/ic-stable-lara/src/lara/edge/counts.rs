@@ -25,7 +25,7 @@
 
 use crate::{GrowFailed, read_u64, safe_write, traits::CsrEdge, types::Address, write, write_u64};
 use ic_stable_structures::Memory;
-use std::{cell::Cell, convert::TryInto, fmt, marker::PhantomData};
+use std::{cell::Cell, convert::TryInto, fmt, marker::PhantomData, num::NonZero};
 
 /// Magic bytes that identify a LARA segment-count memory.
 pub const MAGIC: [u8; 3] = *b"LSC";
@@ -315,14 +315,29 @@ impl<'a, E: CsrEdge, M: Memory> Iterator for Iter<'a, E, M> {
     type Item = SegmentEdgeCounts;
 
     #[inline]
-    fn nth(&mut self, n: usize) -> Option<Self::Item> {
-        let skip = n as u64;
-        let remaining = self.back.saturating_sub(self.front);
-        if skip >= remaining {
-            self.front = self.back;
-            return None;
+    fn advance_by(&mut self, n: usize) -> Result<(), NonZero<usize>> {
+        if n == 0 {
+            return Ok(());
         }
-        self.front += skip;
+        let remaining_u64 = self.back.saturating_sub(self.front);
+        let remaining = usize::try_from(remaining_u64).unwrap_or(usize::MAX);
+        if n >= remaining {
+            self.front = self.back;
+            return match n - remaining {
+                0 => Ok(()),
+                left => Err(NonZero::new(left).expect("left > 0")),
+            };
+        }
+        self.front = self
+            .front
+            .checked_add(n as u64)
+            .expect("front + n fits within back");
+        Ok(())
+    }
+
+    #[inline]
+    fn nth(&mut self, n: usize) -> Option<Self::Item> {
+        self.advance_by(n).ok()?;
         self.next()
     }
 

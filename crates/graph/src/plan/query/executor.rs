@@ -781,6 +781,136 @@ impl LimitedRows {
     }
 }
 
+#[derive(Clone, Copy)]
+enum CsrOffsetFastPath {
+    ForwardLabel(LaraLabelId),
+    ForwardDirectedness(BucketDirectedness),
+    ReverseLabel(LaraLabelId),
+    ReverseDirectedness(BucketDirectedness),
+}
+
+fn csr_offset_fast_path_for_expand(
+    direction: EdgeDirection,
+    label_id: Option<EdgeLabelId>,
+) -> Option<CsrOffsetFastPath> {
+    match direction {
+        EdgeDirection::PointingRight => Some(match label_id {
+            Some(lid) => {
+                let storage = lid.pack(EdgeDirectedness::Directed);
+                CsrOffsetFastPath::ForwardLabel(LaraLabelId::from_raw(storage.raw()))
+            }
+            None => CsrOffsetFastPath::ForwardDirectedness(BucketDirectedness::Directed),
+        }),
+        EdgeDirection::PointingLeft => Some(match label_id {
+            Some(lid) => {
+                let storage = lid.pack(EdgeDirectedness::Directed);
+                CsrOffsetFastPath::ReverseLabel(LaraLabelId::from_raw(storage.raw()))
+            }
+            None => CsrOffsetFastPath::ReverseDirectedness(BucketDirectedness::Directed),
+        }),
+        EdgeDirection::Undirected => Some(match label_id {
+            Some(lid) => {
+                let storage = lid.pack(EdgeDirectedness::Undirected);
+                CsrOffsetFastPath::ForwardLabel(LaraLabelId::from_raw(storage.raw()))
+            }
+            None => CsrOffsetFastPath::ForwardDirectedness(BucketDirectedness::Undirected),
+        }),
+        _ => None,
+    }
+}
+
+fn stream_expand_owner_vertex_id(
+    src_id: VertexId,
+    dst_id: VertexId,
+    direction: EdgeDirection,
+    edge: Edge,
+) -> VertexId {
+    match direction {
+        EdgeDirection::PointingRight => src_id,
+        EdgeDirection::PointingLeft => edge.neighbor_vid(),
+        EdgeDirection::Undirected => canonical_undirected_owner(src_id, dst_id),
+        _ => unreachable!("unsupported CSR expand streaming direction"),
+    }
+}
+
+fn visit_csr_expand_fast_path<Visit>(
+    store: &GraphStore,
+    src_id: VertexId,
+    fast_path: CsrOffsetFastPath,
+    offset_remaining: &mut usize,
+    visit: Visit,
+) -> Result<Result<bool, PlanQueryError>, GraphStoreError>
+where
+    Visit: FnMut(Edge) -> Result<bool, PlanQueryError>,
+{
+    match fast_path {
+        CsrOffsetFastPath::ForwardLabel(label) => {
+            store.skip_then_visit_each_out_edge_for_label(src_id, label, offset_remaining, visit)
+        }
+        CsrOffsetFastPath::ForwardDirectedness(directedness) => store
+            .skip_then_visit_each_out_edge_by_directedness(
+                src_id,
+                directedness,
+                offset_remaining,
+                visit,
+            ),
+        CsrOffsetFastPath::ReverseLabel(label) => {
+            store.skip_then_visit_each_in_edge_for_label(src_id, label, offset_remaining, visit)
+        }
+        CsrOffsetFastPath::ReverseDirectedness(directedness) => store
+            .skip_then_visit_each_in_edge_by_directedness(
+                src_id,
+                directedness,
+                offset_remaining,
+                visit,
+            ),
+    }
+}
+
+fn build_expanded_row(
+    store: &GraphStore,
+    row: &PlanRow,
+    edge_key: Option<&str>,
+    dst_key: &str,
+    dst_id: VertexId,
+    edge_binding: EdgeBinding,
+    edge_property_projection: Option<&[Str]>,
+    dst_property_projection: Option<&[Str]>,
+) -> Result<PlanRow, PlanQueryError> {
+    let mut expanded = row.clone();
+    if let Some(edge_key) = edge_key {
+        let edge_binding = if edge_property_projection.is_some_and(|props| !props.is_empty()) {
+            PlanBinding::Value(edge_to_projected_record(
+                store,
+                edge_binding,
+                edge_property_projection.unwrap(),
+            )?)
+        } else {
+            PlanBinding::Edge(edge_binding)
+        };
+        expanded.insert(edge_key.to_owned(), edge_binding);
+    }
+    expanded.insert(
+        dst_key.to_owned(),
+        vertex_binding_for_projection(store, dst_id, dst_property_projection)?,
+    );
+    Ok(expanded)
+}
+
+/// Operators after an expand must not drop rows, so a CSR `advance_by` skip matches global `OFFSET`
+/// semantics for that expand hop.
+fn streaming_ops_preserve_row_cardinality_after(ops: &[PlanOp], start: usize) -> bool {
+    let mut i = start;
+    while i < ops.len() {
+        match &ops[i] {
+            PlanOp::Project { distinct, .. } if !distinct => i += 1,
+            PlanOp::Let { .. } => i += 1,
+            _ => return false,
+        }
+    }
+    true
+}
+
 fn limited_streaming_prefix_limit_idx(ops: &[PlanOp], start_idx: usize) -> Option<usize> {
     for (idx, op) in ops.iter().enumerate().skip(start_idx) {
         match op {
@@ -1151,6 +1281,141 @@ fn stream_expand(
     let dst_only_prefilter = dst_filter_is_dst_vertex_only(dst_filter, dst.as_ref());
     let edge_key = emit_edge_binding.then(|| edge.to_string());
     let dst_key = dst.to_string();
+    let csr_expand_fast_path = csr_offset_fast_path_for_expand(direction, label_id);
+
+    let csr_offset_fast_path = (indexed_edge_equality.is_none()
+        && dst_filter.is_empty()
+        && !matches!(row.get(dst.as_ref()), Some(PlanBinding::Vertex(_)))
+        && streaming_ops_preserve_row_cardinality_after(ops, op_idx + 1))
+    .then(|| csr_expand_fast_path)
+    .flatten();
+
+    if let Some(fast_path) = csr_offset_fast_path {
+        let mut offset_slot = sink.offset_remaining;
+        let mut visit = |edge: Edge| {
+            // `skip_then_visit_each_out_edge_for_label` applies the global OFFSET inside the CSR
+            // iterator; clear the sink-side skip before downstream `LimitedRows::push`.
+            sink.offset_remaining = 0;
+            let dst_id = edge.neighbor_vid();
+            let owner_vertex_id = stream_expand_owner_vertex_id(src_id, dst_id, direction, edge);
+            let edge_binding = EdgeBinding {
+                handle: EdgeHandle {
+                    owner_vertex_id,
+                    vertex_edge_id: edge.vertex_edge_id,
+                },
+                inline_value: edge.inline_value,
+            };
+            let expanded = build_expanded_row(
+                store,
+                &row,
+                edge_key.as_deref(),
+                dst_key.as_str(),
+                dst_id,
+                edge_binding,
+                edge_property_projection,
+                dst_property_projection,
+            );
+            let expanded = expanded?;
+            Ok(stream_row_through_ops(
+                store,
+                ops,
+                op_idx + 1,
+                expanded,
+                parameters,
+                caller,
+                gleaph_weight_decoders,
+                evaluator,
+                sink,
+                clears_active_aggregate,
+            )?)
+        };
+        let res =
+            visit_csr_expand_fast_path(store, src_id, fast_path, &mut offset_slot, &mut visit);
+        sink.offset_remaining = offset_slot;
+        return match res {
+            Ok(Ok(done)) => Ok(done),
+            Ok(Err(e)) => Err(e),
+            Err(e) => Err(e.into()),
+        };
+    }
+
+    if let Some(fast_path) = csr_expand_fast_path {
+        let edge_equality_filter =
+            edge_equality_stream_filter(store, indexed_edge_equality, parameters)?;
+        if matches!(edge_equality_filter, EdgeEqualityStreamFilter::NoMatches) {
+            return Ok(false);
+        }
+        let mut offset_slot = 0;
+        let mut visit = |edge: Edge| {
+            let dst_id = edge.neighbor_vid();
+            let owner_vertex_id = stream_expand_owner_vertex_id(src_id, dst_id, direction, edge);
+            if !edge_matches_stream_filter(
+                store,
+                &edge_equality_filter,
+                owner_vertex_id,
+                edge.vertex_edge_id,
+            )? {
+                return Ok(false);
+            }
+            if !expand_dst_matches_prebound_vertex(&row, dst, dst_id) {
+                return Ok(false);
+            }
+            if dst_only_prefilter
+                && !vertex_row_matches_dst_filters(
+                    store,
+                    parameters,
+                    dst,
+                    dst_id,
+                    dst_filter,
+                    caller,
+                    gleaph_weight_decoders,
+                )?
+            {
+                return Ok(false);
+            }
+            let edge_binding = EdgeBinding {
+                handle: EdgeHandle {
+                    owner_vertex_id,
+                    vertex_edge_id: edge.vertex_edge_id,
+                },
+                inline_value: edge.inline_value,
+            };
+            let expanded = build_expanded_row(
+                store,
+                &row,
+                edge_key.as_deref(),
+                dst_key.as_str(),
+                dst_id,
+                edge_binding,
+                edge_property_projection,
+                dst_property_projection,
+            );
+            let expanded = expanded?;
+            if !dst_only_prefilter && !row_matches_all(evaluator, &expanded, dst_filter)? {
+                return Ok(false);
+            }
+            Ok(stream_row_through_ops(
+                store,
+                ops,
+                op_idx + 1,
+                expanded,
+                parameters,
+                caller,
+                gleaph_weight_decoders,
+                evaluator,
+                sink,
+                clears_active_aggregate,
+            )?)
+        };
+        let res =
+            visit_csr_expand_fast_path(store, src_id, fast_path, &mut offset_slot, &mut visit);
+        return match res {
+            Ok(Ok(done)) => Ok(done),
+            Ok(Err(e)) => Err(e),
+            Err(e) => Err(e.into()),
+        };
+    }
+
     let mut candidates = Vec::new();
     expand_candidates_into(
         store,
@@ -1178,23 +1443,17 @@ fn stream_expand(
         {
             continue;
         }
-        let mut expanded = row.clone();
-        if let Some(edge_key) = &edge_key {
-            let edge_binding = if edge_property_projection.is_some_and(|props| !props.is_empty()) {
-                PlanBinding::Value(edge_to_projected_record(
-                    store,
-                    edge_binding,
-                    edge_property_projection.unwrap(),
-                )?)
-            } else {
-                PlanBinding::Edge(edge_binding)
-            };
-            expanded.insert(edge_key.clone(), edge_binding);
-        }
-        expanded.insert(
-            dst_key.clone(),
-            vertex_binding_for_projection(store, dst_id, dst_property_projection)?,
+        let expanded = build_expanded_row(
+            store,
+            &row,
+            edge_key.as_deref(),
+            dst_key.as_str(),
+            dst_id,
+            edge_binding,
+            edge_property_projection,
+            dst_property_projection,
         );
+        let expanded = expanded?;
         if !dst_only_prefilter && !row_matches_all(evaluator, &expanded, dst_filter)? {
             continue;
         }
@@ -1829,6 +2088,76 @@ fn edge_matches_indexed_equality(
     Ok(actual_bytes == Some(expected))
 }
 
+enum EdgeEqualityStreamFilter {
+    None,
+    NoMatches,
+    Indexed(IntSet<u64>),
+    StoreLookup {
+        property_id: gleaph_graph_kernel::entry::PropertyId,
+        expected: Vec<u8>,
+    },
+}
+
+fn edge_equality_stream_filter(
+    store: &GraphStore,
+    indexed_edge_equality: Option<&(Str, ScanValue)>,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<EdgeEqualityStreamFilter, PlanQueryError> {
+    let Some((property, scan_value)) = indexed_edge_equality else {
+        return Ok(EdgeEqualityStreamFilter::None);
+    };
+    let Some(property_id) = store.property_id(property.as_ref()) else {
+        return Ok(EdgeEqualityStreamFilter::NoMatches);
+    };
+    let Some(expected) = resolve_scan_value_bytes(scan_value, parameters)? else {
+        return Ok(EdgeEqualityStreamFilter::NoMatches);
+    };
+    let Some(postings) = edge_equal::lookup_equal(property_id, &expected) else {
+        return Ok(EdgeEqualityStreamFilter::StoreLookup {
+            property_id,
+            expected,
+        });
+    };
+    let mut slots = IntSet::default();
+    for posting in &postings {
+        slots.insert(equality_index_in_slot_key(
+            posting.owner_vertex_id,
+            posting.vertex_edge_id,
+        ));
+    }
+    Ok(EdgeEqualityStreamFilter::Indexed(slots))
+}
+
+fn edge_matches_stream_filter(
+    store: &GraphStore,
+    filter: &EdgeEqualityStreamFilter,
+    owner_vertex_id: VertexId,
+    vertex_edge_id: VertexEdgeId,
+) -> Result<bool, PlanQueryError> {
+    match filter {
+        EdgeEqualityStreamFilter::None => Ok(true),
+        EdgeEqualityStreamFilter::NoMatches => Ok(false),
+        EdgeEqualityStreamFilter::Indexed(slots) => {
+            Ok(slots.contains(&equality_index_in_slot_key(owner_vertex_id, vertex_edge_id)))
+        }
+        EdgeEqualityStreamFilter::StoreLookup {
+            property_id,
+            expected,
+        } => {
+            let Some(actual) = store.edge_property(owner_vertex_id, vertex_edge_id, *property_id)
+            else {
+                return Ok(false);
+            };
+            let actual_bytes = value_to_index_key_bytes(&actual).map_err(|_| {
+                PlanQueryError::InvalidExpressionValue {
+                    expression: "indexed edge equality value encoding".to_owned(),
+                }
+            })?;
+            Ok(actual_bytes.as_deref() == Some(expected.as_slice()))
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn execute_expand(
     store: &GraphStore,
@@ -1863,11 +2192,86 @@ fn execute_expand(
     let mut out = Vec::new();
     let edge_key = emit_edge_binding.then(|| edge.to_string());
     let dst_key = dst.to_string();
+    let csr_expand_fast_path = csr_offset_fast_path_for_expand(direction, label_id);
+    let edge_equality_filter = if csr_expand_fast_path.is_some() {
+        let filter = edge_equality_stream_filter(store, indexed_edge_equality, parameters)?;
+        if matches!(filter, EdgeEqualityStreamFilter::NoMatches) {
+            return Ok(Vec::new());
+        }
+        Some(filter)
+    } else {
+        None
+    };
     let mut candidates = Vec::new();
     for row in rows {
         let Some(src_id) = vertex_binding_for_traversal(&row, src)? else {
             continue;
         };
+        if let Some(fast_path) = csr_expand_fast_path {
+            let mut offset_slot = 0;
+            let mut visit = |edge: Edge| {
+                let dst_id = edge.neighbor_vid();
+                let owner_vertex_id =
+                    stream_expand_owner_vertex_id(src_id, dst_id, direction, edge);
+                if !edge_matches_stream_filter(
+                    store,
+                    edge_equality_filter
+                        .as_ref()
+                        .expect("filter exists with fast path"),
+                    owner_vertex_id,
+                    edge.vertex_edge_id,
+                )? {
+                    return Ok(false);
+                }
+                if !expand_dst_matches_prebound_vertex(&row, dst, dst_id) {
+                    return Ok(false);
+                }
+                if dst_only_prefilter {
+                    if !vertex_row_matches_dst_filters(
+                        store,
+                        parameters,
+                        dst,
+                        dst_id,
+                        dst_filter,
+                        caller,
+                        gleaph_weight_decoders,
+                    )? {
+                        return Ok(false);
+                    }
+                }
+                let edge_binding = EdgeBinding {
+                    handle: EdgeHandle {
+                        owner_vertex_id,
+                        vertex_edge_id: edge.vertex_edge_id,
+                    },
+                    inline_value: edge.inline_value,
+                };
+                let expanded = build_expanded_row(
+                    store,
+                    &row,
+                    edge_key.as_deref(),
+                    dst_key.as_str(),
+                    dst_id,
+                    edge_binding,
+                    edge_property_projection,
+                    dst_property_projection,
+                );
+                let expanded = expanded?;
+                if !dst_only_prefilter && !row_matches_all(&evaluator, &expanded, dst_filter)? {
+                    return Ok(false);
+                }
+                out.push(expanded);
+                Ok(false)
+            };
+            let res =
+                visit_csr_expand_fast_path(store, src_id, fast_path, &mut offset_slot, &mut visit);
+            match res {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => return Err(e),
+                Err(e) => return Err(e.into()),
+            }
+            continue;
+        }
         candidates.clear();
         expand_candidates_into(
             store,
@@ -1895,24 +2299,17 @@ fn execute_expand(
                     continue;
                 }
             }
-            let mut expanded = row.clone();
-            if let Some(edge_key) = &edge_key {
-                let edge_binding =
-                    if edge_property_projection.is_some_and(|props| !props.is_empty()) {
-                        PlanBinding::Value(edge_to_projected_record(
-                            store,
-                            edge_binding,
-                            edge_property_projection.unwrap(),
-                        )?)
-                    } else {
-                        PlanBinding::Edge(edge_binding)
-                    };
-                expanded.insert(edge_key.clone(), edge_binding);
-            }
-            expanded.insert(
-                dst_key.clone(),
-                vertex_binding_for_projection(store, dst_id, dst_property_projection)?,
+            let expanded = build_expanded_row(
+                store,
+                &row,
+                edge_key.as_deref(),
+                dst_key.as_str(),
+                dst_id,
+                edge_binding,
+                edge_property_projection,
+                dst_property_projection,
             );
+            let expanded = expanded?;
             if !dst_only_prefilter && !row_matches_all(&evaluator, &expanded, dst_filter)? {
                 continue;
             }
@@ -2943,25 +3340,6 @@ fn edge_path_element(shard_id: u64, handle: EdgeHandle) -> PathElement {
 }
 
 type ExpandCandidate = (VertexId, EdgeBinding);
-
-fn expand_candidates(
-    store: &GraphStore,
-    src_id: VertexId,
-    direction: EdgeDirection,
-    edge_label_id: Option<EdgeLabelId>,
-) -> Result<Vec<ExpandCandidate>, PlanQueryError> {
-    let mut out = Vec::new();
-    expand_candidates_into(
-        store,
-        src_id,
-        direction,
-        edge_label_id,
-        None,
-        &BTreeMap::new(),
-        &mut out,
-    )?;
-    Ok(out)
-}
 
 fn expand_candidates_into(
     store: &GraphStore,
@@ -5799,6 +6177,163 @@ mod tests {
     }
 
     #[test]
+    fn unlabeled_directed_expand_limit_offset_uses_latest_edges() {
+        let store = GraphStore::new();
+        let src = store
+            .insert_vertex_named(["LazyUnlabeledPageSource"], Vec::<(&str, Value)>::new())
+            .expect("insert source");
+        for i in 0..5 {
+            let dst = store
+                .insert_vertex_named(
+                    ["LazyUnlabeledPageTarget"],
+                    [("name", Value::Text(format!("unlabeled edge {i}")))],
+                )
+                .expect("insert target");
+            store
+                .insert_directed_edge_named(
+                    src,
+                    dst,
+                    Option::<&str>::None,
+                    Vec::<(&str, Value)>::new(),
+                )
+                .expect("insert edge");
+        }
+
+        let page =
+            plan_gql("MATCH (a:LazyUnlabeledPageSource)-[]->(b) RETURN b.name LIMIT 2 OFFSET 2");
+
+        let result = store
+            .execute_plan_query(&page, &params(), GqlExecutionContext::default())
+            .expect("execute page");
+
+        assert_eq!(
+            text_column(&result, "b.name"),
+            vec!["unlabeled edge 2", "unlabeled edge 1"]
+        );
+    }
+
+    #[test]
+    fn reverse_expand_limit_offset_uses_latest_in_edges() {
+        let store = GraphStore::new();
+        let dst = store
+            .insert_vertex_named(["LazyReversePageTarget"], Vec::<(&str, Value)>::new())
+            .expect("insert target");
+        for i in 0..5 {
+            let src = store
+                .insert_vertex_named(
+                    ["LazyReversePageSource"],
+                    [("name", Value::Text(format!("reverse edge {i}")))],
+                )
+                .expect("insert source");
+            store
+                .insert_directed_edge_named(
+                    src,
+                    dst,
+                    Some("LazyReversePageRel"),
+                    Vec::<(&str, Value)>::new(),
+                )
+                .expect("insert edge");
+        }
+
+        let page = plan_gql(
+            "MATCH (b:LazyReversePageTarget)<-[:LazyReversePageRel]-(a) RETURN a.name LIMIT 2 OFFSET 2",
+        );
+
+        let result = store
+            .execute_plan_query(&page, &params(), GqlExecutionContext::default())
+            .expect("execute page");
+
+        assert_eq!(
+            text_column(&result, "a.name"),
+            vec!["reverse edge 2", "reverse edge 1"]
+        );
+    }
+
+    #[test]
+    fn undirected_expand_limit_offset_uses_latest_edges() {
+        let store = GraphStore::new();
+        let src = store
+            .insert_vertex_named(["LazyUndirectedPageSource"], Vec::<(&str, Value)>::new())
+            .expect("insert source");
+        for i in 0..5 {
+            let dst = store
+                .insert_vertex_named(
+                    ["LazyUndirectedPageTarget"],
+                    [("name", Value::Text(format!("undirected edge {i}")))],
+                )
+                .expect("insert target");
+            store
+                .insert_undirected_edge_named(
+                    src,
+                    dst,
+                    Option::<&str>::None,
+                    Vec::<(&str, Value)>::new(),
+                )
+                .expect("insert edge");
+        }
+
+        let page =
+            plan_gql("MATCH (a:LazyUndirectedPageSource)~[]~(b) RETURN b.name LIMIT 2 OFFSET 2");
+
+        let result = store
+            .execute_plan_query(&page, &params(), GqlExecutionContext::default())
+            .expect("execute page");
+
+        assert_eq!(
+            text_column(&result, "b.name"),
+            vec!["undirected edge 2", "undirected edge 1"]
+        );
+    }
+
+    #[test]
+    fn filtered_expand_limit_offset_skips_only_matching_edges() {
+        let store = GraphStore::new();
+        let src = store
+            .insert_vertex_named(["LazyFilteredPageSource"], Vec::<(&str, Value)>::new())
+            .expect("insert source");
+        for (i, keep) in [
+            (0, true),
+            (1, false),
+            (2, true),
+            (3, false),
+            (4, true),
+            (5, true),
+        ] {
+            let dst = store
+                .insert_vertex_named(
+                    ["LazyFilteredPageTarget"],
+                    [
+                        ("name", Value::Text(format!("filtered edge {i}"))),
+                        ("keep", Value::Bool(keep)),
+                    ],
+                )
+                .expect("insert target");
+            store
+                .insert_directed_edge_named(
+                    src,
+                    dst,
+                    Some("LazyFilteredPageRel"),
+                    Vec::<(&str, Value)>::new(),
+                )
+                .expect("insert edge");
+        }
+
+        let page = plan_gql(
+            "MATCH (a:LazyFilteredPageSource)-[:LazyFilteredPageRel]->(b) \
+             WHERE b.keep = true RETURN b.name LIMIT 2 OFFSET 1",
+        );
+
+        let result = store
+            .execute_plan_query(&page, &params(), GqlExecutionContext::default())
+            .expect("execute page");
+
+        assert_eq!(
+            text_column(&result, "b.name"),
+            vec!["filtered edge 4", "filtered edge 2"]
+        );
+    }
+
+    #[test]
     fn executes_planner_expand_filter() {
         let store = GraphStore::new();
         let a = store
@@ -6861,6 +7396,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn limited_expand_reused_dst_skips_neighbor_mismatch() {
+        let store = GraphStore::new();
+        setup_reused_dst_expand_graph(&store);
+        let plan =
+            plan_gql("MATCH (a:ReuseExpandA)-[:ReuseExpandRel]->(a) RETURN a.name AS name LIMIT 1");
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("reused dst expand");
+        assert_eq!(text_column(&result, "name"), vec!["anchor"]);
+    }
+
     fn setup_reused_dst_relabeled_graph(store: &GraphStore) -> VertexId {
         let a = store
             .insert_vertex_named(
@@ -7027,6 +7574,68 @@ mod tests {
             .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("indexed expand");
         assert_eq!(result.rows.len(), 1);
+    }
+
+    #[test]
+    fn indexed_expand_limit_offset_skips_only_matching_edges() {
+        let store = GraphStore::new();
+        let a = store
+            .insert_vertex_named(["IdxEqPageA"], Vec::<(&str, Value)>::new())
+            .expect("a");
+        for (i, weight) in [(0, 5), (1, 9), (2, 5), (3, 9), (4, 5), (5, 5)] {
+            let b = store
+                .insert_vertex_named(
+                    ["IdxEqPageB"],
+                    [("name", Value::Text(format!("indexed edge {i}")))],
+                )
+                .expect("b");
+            store
+                .insert_directed_edge_named(
+                    a,
+                    b,
+                    Some("IdxEqPageRel"),
+                    [("weight", Value::Int64(weight))],
+                )
+                .expect("edge");
+        }
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "a".into(),
+                label: Some("IdxEqPageA".into()),
+                property_projection: None,
+            },
+            PlanOp::Expand {
+                src: "a".into(),
+                edge: "e".into(),
+                dst: "b".into(),
+                direction: EdgeDirection::PointingRight,
+                label: Some("IdxEqPageRel".into()),
+                label_expr: None,
+                var_len: None,
+                indexed_edge_equality: Some(("weight".into(), ScanValue::Literal(Value::Int64(5)))),
+                edge_property_projection: None,
+                dst_property_projection: None,
+                hop_aux_binding: None,
+                emit_edge_binding: true,
+            },
+            PlanOp::Project {
+                columns: vec![project(prop("b", "name"), "name")],
+                distinct: false,
+            },
+            PlanOp::Limit {
+                count: Some(Expr::new(ExprKind::Literal(Value::Int64(2)))),
+                offset: Some(Expr::new(ExprKind::Literal(Value::Int64(1)))),
+            },
+        ]);
+
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("indexed expand");
+
+        assert_eq!(
+            text_column(&result, "name"),
+            vec!["indexed edge 4", "indexed edge 2"]
+        );
     }
 
     #[test]

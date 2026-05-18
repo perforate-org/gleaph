@@ -745,14 +745,6 @@ impl GraphStore {
         GRAPH.with_borrow(|graph| graph.asc_in_edges(vertex_id))
     }
 
-    pub(crate) fn out_edges_for_label(
-        &self,
-        vertex_id: VertexId,
-        label: LaraLabelId,
-    ) -> Result<Vec<Edge>, DeferredBidirectionalLabeledError> {
-        GRAPH.with_borrow(|graph| graph.out_edges_for_label(vertex_id, label))
-    }
-
     pub(crate) fn for_each_out_edges_for_label<Visit>(
         &self,
         vertex_id: VertexId,
@@ -779,6 +771,102 @@ impl GraphStore {
         GRAPH.with_borrow(|graph| {
             graph.for_each_out_edges_for_label_unchecked(vertex_id, label, visit)
         })
+    }
+
+    /// Applies CSR `Iterator::advance_by` for the global streaming offset, then visits subsequent
+    /// out-edges for one label (see [`DeferredBidirectionalLabeledLaraGraph::skip_then_visit_each_forward_out_edge_for_label`]).
+    pub(crate) fn skip_then_visit_each_out_edge_for_label<Visit, Err>(
+        &self,
+        vertex_id: VertexId,
+        label: LaraLabelId,
+        offset_remaining: &mut usize,
+        visit: Visit,
+    ) -> Result<Result<bool, Err>, GraphStoreError>
+    where
+        Visit: FnMut(Edge) -> Result<bool, Err>,
+    {
+        GRAPH
+            .with_borrow(|graph| {
+                graph.skip_then_visit_each_forward_out_edge_for_label(
+                    vertex_id,
+                    label,
+                    offset_remaining,
+                    visit,
+                )
+            })
+            .map_err(GraphStoreError::from)
+    }
+
+    /// Applies CSR `Iterator::advance_by` for the global streaming offset, then visits subsequent
+    /// forward out-edges whose bucket directedness matches `directedness`.
+    pub(crate) fn skip_then_visit_each_out_edge_by_directedness<Visit, Err>(
+        &self,
+        vertex_id: VertexId,
+        directedness: BucketDirectedness,
+        offset_remaining: &mut usize,
+        visit: Visit,
+    ) -> Result<Result<bool, Err>, GraphStoreError>
+    where
+        Visit: FnMut(Edge) -> Result<bool, Err>,
+    {
+        GRAPH
+            .with_borrow(|graph| {
+                graph.skip_then_visit_each_forward_out_edge_by_directedness(
+                    vertex_id,
+                    directedness,
+                    offset_remaining,
+                    visit,
+                )
+            })
+            .map_err(GraphStoreError::from)
+    }
+
+    /// Applies CSR `Iterator::advance_by` for the global streaming offset, then visits subsequent
+    /// reverse out-edges for one label (incoming forward edges).
+    pub(crate) fn skip_then_visit_each_in_edge_for_label<Visit, Err>(
+        &self,
+        vertex_id: VertexId,
+        label: LaraLabelId,
+        offset_remaining: &mut usize,
+        visit: Visit,
+    ) -> Result<Result<bool, Err>, GraphStoreError>
+    where
+        Visit: FnMut(Edge) -> Result<bool, Err>,
+    {
+        GRAPH
+            .with_borrow(|graph| {
+                graph.skip_then_visit_each_reverse_out_edge_for_label(
+                    vertex_id,
+                    label,
+                    offset_remaining,
+                    visit,
+                )
+            })
+            .map_err(GraphStoreError::from)
+    }
+
+    /// Applies CSR `Iterator::advance_by` for the global streaming offset, then visits subsequent
+    /// reverse out-edges whose bucket directedness matches `directedness`.
+    pub(crate) fn skip_then_visit_each_in_edge_by_directedness<Visit, Err>(
+        &self,
+        vertex_id: VertexId,
+        directedness: BucketDirectedness,
+        offset_remaining: &mut usize,
+        visit: Visit,
+    ) -> Result<Result<bool, Err>, GraphStoreError>
+    where
+        Visit: FnMut(Edge) -> Result<bool, Err>,
+    {
+        GRAPH
+            .with_borrow(|graph| {
+                graph.skip_then_visit_each_reverse_out_edge_by_directedness(
+                    vertex_id,
+                    directedness,
+                    offset_remaining,
+                    visit,
+                )
+            })
+            .map_err(GraphStoreError::from)
     }
 
     /// Outgoing edges whose bucket label matches `directedness`, in `order`
@@ -862,14 +950,6 @@ impl GraphStore {
                 )
             })
             .map_err(GraphStoreError::from)
-    }
-
-    pub(crate) fn in_edges_for_label(
-        &self,
-        vertex_id: VertexId,
-        label: LaraLabelId,
-    ) -> Result<Vec<Edge>, DeferredBidirectionalLabeledError> {
-        GRAPH.with_borrow(|graph| graph.in_edges_for_label(vertex_id, label))
     }
 
     pub(crate) fn for_each_in_edges_for_label<Visit>(

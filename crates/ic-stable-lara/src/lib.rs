@@ -35,6 +35,7 @@
 
 #![allow(incomplete_features)]
 #![cfg_attr(all(feature = "canbench", target_family = "wasm"), no_main)]
+#![feature(iter_advance_by)]
 #![feature(specialization)]
 #![warn(missing_docs)]
 
