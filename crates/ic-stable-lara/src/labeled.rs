@@ -65,14 +65,15 @@ pub(crate) mod traits;
 
 pub use bidirectional::{
     BidirectionalLabeledError, BidirectionalLabeledLaraGraph, DeferredBidirectionalLabeledError,
-    DeferredBidirectionalLabeledLaraGraph, LabeledBidirectionalMaintenanceReport,
-    Orientation as LabeledOrientation,
+    DeferredBidirectionalLabeledLaraGraph, EdgeSlotMoveObserver,
+    LabeledBidirectionalMaintenanceReport, Orientation as LabeledOrientation,
 };
 pub use bucket_label_key::{
     BUCKET_LABEL_DIRECTED_BIT, BUCKET_LABEL_INDEX_MASK, BucketDirectedness, BucketLabelKey,
 };
 pub use bucket_store::InitError as LabelBucketStoreInitError;
 pub use deferred::{DeferredError, DeferredLabeledLaraGraph, MaintenanceWorkItem};
+pub use graph::EdgeSlotMove;
 pub use graph::{
     InitError as LabeledGraphInitError, LabeledLaraGraph, LabeledOperationError,
     LabeledOutEdgesIter, OutEdgeOrder,

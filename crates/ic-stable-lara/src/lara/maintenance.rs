@@ -10,7 +10,7 @@ use crate::{
         edge::{AscOutEdgesIter, OutEdgesIter},
         operation_error::LaraOperationError,
     },
-    traits::{CsrEdge, CsrEdgeSlabVacancy, CsrVertex},
+    traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
 use ic_stable_roaring::{BitmapError, StableRoaringBitmap};
 use ic_stable_structures::Memory;
@@ -635,7 +635,7 @@ where
     /// Removes one outgoing edge without preserving adjacency order.
     pub fn remove_edge_deferred(&self, src: VertexId, edge: E) -> Result<bool, DeferredError>
     where
-        E: PartialEq + CsrEdgeSlabVacancy,
+        E: PartialEq + CsrEdgeTombstone,
     {
         Ok(self
             .remove_edge_matching_deferred(src, |candidate| *candidate == edge)?
@@ -649,7 +649,7 @@ where
         matches: F,
     ) -> Result<Option<E>, DeferredError>
     where
-        E: CsrEdgeSlabVacancy,
+        E: CsrEdgeTombstone,
         F: FnMut(&E) -> bool,
     {
         self.graph
@@ -896,7 +896,7 @@ mod tests {
     }
 
     #[test]
-    fn deferred_remove_appends_delete_log_and_removes_edge() {
+    fn deferred_remove_appends_overflow_log_delete_and_removes_edge() {
         let graph = deferred_test_graph(8, 2, &[0, 2, 4, 6]);
 
         for dst in 10..13 {

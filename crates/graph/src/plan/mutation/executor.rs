@@ -176,12 +176,7 @@ fn execute_set_item(
 
             if let Some(edge) = bindings.edges.get(variable.as_ref()) {
                 store
-                    .set_edge_property(
-                        edge.owner_vertex_id,
-                        edge.vertex_edge_id,
-                        property_id,
-                        value,
-                    )
+                    .set_edge_property(*edge, property_id, value)
                     .map_err(GraphStoreError::from)?;
                 return Ok(());
             }
@@ -241,7 +236,7 @@ fn execute_remove_item(
             }
 
             if let Some(edge) = bindings.edges.get(variable.as_ref()) {
-                store.remove_edge_property(edge.owner_vertex_id, edge.vertex_edge_id, property_id);
+                store.remove_edge_property(*edge, property_id);
                 return Ok(());
             }
 
@@ -311,9 +306,9 @@ mod tests {
     use gleaph_gql::ast::{BinaryOp, CmpOp, Expr, ExprKind, TruthValue, UnaryOp};
     use gleaph_gql::types::Decimal;
     use gleaph_gql_planner::plan::{PlanDiagnostics, PropertyAssignment};
-    use gleaph_graph_kernel::entry::VertexEdgeId;
-    use ic_stable_lara::DeferredBidirectionalLabeledError;
+    use gleaph_graph_kernel::entry::{EdgeSlotIndex, PropertyId};
     use ic_stable_lara::traits::CsrEdge;
+    use ic_stable_lara::{BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledError};
 
     #[test]
     fn executes_insert_vertex_and_edge_ops() {
@@ -367,12 +362,10 @@ mod tests {
             Some(Value::Text("Alice".into()))
         );
         assert_eq!(edge.owner_vertex_id, a);
-        assert_eq!(
-            store.edge_property(edge.owner_vertex_id, edge.vertex_edge_id, since),
-            Some(Value::Int64(2026))
-        );
+        assert_eq!(store.edge_property(edge, since), Some(Value::Int64(2026)));
         assert!(store.out_edges(a).unwrap().iter().any(|candidate| {
-            candidate.neighbor_vid() == b && candidate.vertex_edge_id == edge.vertex_edge_id
+            candidate.neighbor_vid() == b
+                && candidate.edge_slot_index == EdgeSlotIndex::from_raw(edge.slot_index)
         }));
     }
 
@@ -462,10 +455,7 @@ mod tests {
             store.vertex_property(bindings.vertices["a"], name),
             Some(Value::Text("Alice".into()))
         );
-        assert_eq!(
-            store.edge_property(edge.owner_vertex_id, edge.vertex_edge_id, weight),
-            Some(Value::Int64(7))
-        );
+        assert_eq!(store.edge_property(edge, weight), Some(Value::Int64(7)));
     }
 
     #[test]
@@ -526,10 +516,7 @@ mod tests {
         let edge = bindings.edges["e"];
 
         assert_eq!(store.vertex_property(bindings.vertices["a"], name), None);
-        assert_eq!(
-            store.edge_property(edge.owner_vertex_id, edge.vertex_edge_id, weight),
-            None
-        );
+        assert_eq!(store.edge_property(edge, weight), None);
     }
 
     #[test]
@@ -946,10 +933,7 @@ mod tests {
         let w = store.property_id("w").expect("w property");
         let e = bindings.edges["e"];
 
-        assert_eq!(
-            store.edge_property(e.owner_vertex_id, e.vertex_edge_id, w),
-            None
-        );
+        assert_eq!(store.edge_property(e, w), None);
         assert!(store.in_edges(b).expect("in edges").is_empty());
         assert!(store.out_edges(b).expect("out edges").is_empty());
 
@@ -1003,7 +987,6 @@ mod tests {
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
             .expect("delete directed edge");
         let a = bindings.vertices["a"];
-        let w = store.property_id("w").expect("w property");
         assert!(!bindings.edges.contains_key("e"));
 
         assert!(
@@ -1012,7 +995,14 @@ mod tests {
                 .expect("out edges after delete")
                 .is_empty()
         );
-        assert_eq!(store.edge_property(a, VertexEdgeId::from_raw(1), w), None);
+        assert_eq!(
+            store.edge_properties(EdgeHandle {
+                owner_vertex_id: a,
+                label_id: LaraLabelId::from_raw(0),
+                slot_index: 1,
+            }),
+            Vec::<(PropertyId, Value)>::new()
+        );
     }
 
     #[test]
@@ -1054,12 +1044,17 @@ mod tests {
             .expect("delete undirected edge");
         let low = bindings.vertices["a"];
         let high = bindings.vertices["b"];
-        let w = store.property_id("w").expect("w property");
         let owner = canonical_undirected_owner(low, high);
-        let edge_id = VertexEdgeId::from_raw(1);
 
         assert!(store.out_edges(low).unwrap().is_empty());
         assert!(store.out_edges(high).unwrap().is_empty());
-        assert_eq!(store.edge_property(owner, edge_id, w), None);
+        assert_eq!(
+            store.edge_properties(EdgeHandle {
+                owner_vertex_id: owner,
+                label_id: LaraLabelId::from_raw(0),
+                slot_index: 1,
+            }),
+            Vec::<(PropertyId, Value)>::new()
+        );
     }
 }

@@ -12,7 +12,8 @@ use std::fmt;
 
 pub use deferred::{
     BidirectionalMaintenanceReport as LabeledBidirectionalMaintenanceReport,
-    DeferredBidirectionalLabeledError, DeferredBidirectionalLabeledLaraGraph, Orientation,
+    DeferredBidirectionalLabeledError, DeferredBidirectionalLabeledLaraGraph, EdgeSlotMoveObserver,
+    Orientation,
 };
 
 /// Errors returned by bidirectional labeled graph operations.

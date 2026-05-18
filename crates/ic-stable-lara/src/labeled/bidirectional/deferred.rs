@@ -5,12 +5,12 @@ use crate::{
     labeled::{
         BucketLabelKey,
         bucket_label_key::BucketDirectedness,
-        graph::{InitError, LabeledLaraGraph, LabeledOperationError, OutEdgeOrder},
+        graph::{EdgeSlotMove, InitError, LabeledLaraGraph, LabeledOperationError, OutEdgeOrder},
     },
     lara::maintenance::{
         DeferredConfig, DeferredConfigError, MaintenanceBudget, MaintenanceWorkReport,
     },
-    traits::{CsrEdge, CsrEdgeSlabVacancy, CsrVertex},
+    traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
 use ic_stable_roaring::{BitmapError, InitError as RoaringInitError, StableRoaringBitmap};
 use ic_stable_structures::{Memory, Storable, storable::Bound};
@@ -24,6 +24,19 @@ use std::{borrow::Cow, fmt};
 pub struct BidirectionalMaintenanceReport {
     /// Aggregated work performed by the unified queue.
     pub work: MaintenanceWorkReport,
+}
+
+/// Observer for edge slot relocations produced by labeled row compaction.
+pub trait EdgeSlotMoveObserver {
+    /// Called after a row compaction has moved one live edge slot.
+    fn edge_slot_moved(&mut self, orientation: Orientation, vid: VertexId, moved: EdgeSlotMove);
+}
+
+struct NoopEdgeSlotMoveObserver;
+
+impl EdgeSlotMoveObserver for NoopEdgeSlotMoveObserver {
+    fn edge_slot_moved(&mut self, _orientation: Orientation, _vid: VertexId, _moved: EdgeSlotMove) {
+    }
 }
 
 impl BidirectionalMaintenanceReport {
@@ -324,7 +337,7 @@ impl From<crate::GrowFailed> for DeferredBidirectionalLabeledError {
 /// Bidirectional labeled LARA graph whose two orientations share one deferred queue.
 pub struct DeferredBidirectionalLabeledLaraGraph<E, M>
 where
-    E: CsrEdge + CsrEdgeSlabVacancy,
+    E: CsrEdge + CsrEdgeTombstone,
     M: Memory,
 {
     forward: LabeledLaraGraph<E, M>,
@@ -335,7 +348,7 @@ where
 
 impl<E, M> DeferredBidirectionalLabeledLaraGraph<E, M>
 where
-    E: CsrEdge + CsrEdgeSlabVacancy,
+    E: CsrEdge + CsrEdgeTombstone,
     M: Memory,
 {
     /// Creates fresh bidirectional labeled stores with a shared deferred queue.
@@ -981,11 +994,85 @@ where
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
+    /// Finds the first forward outgoing edge accepted by `pred` in default descending order,
+    /// returning the edge, label id, and physical slot index inside that label row.
+    pub fn find_forward_out_edge_slot_with_label_by_predicate<F>(
+        &self,
+        src: VertexId,
+        pred: F,
+    ) -> Result<Option<(E, BucketLabelKey, u32)>, DeferredBidirectionalLabeledError>
+    where
+        F: FnMut(&E) -> bool,
+    {
+        self.forward
+            .find_out_edge_slot_with_label_by_predicate(src, pred)
+            .map_err(DeferredBidirectionalLabeledError::Forward)
+    }
+
+    /// Finds the first reverse-store outgoing edge accepted by `pred` in default descending order,
+    /// returning the edge, label id, and physical slot index inside that reverse label row.
+    pub fn find_reverse_out_edge_slot_with_label_by_predicate<F>(
+        &self,
+        dst: VertexId,
+        pred: F,
+    ) -> Result<Option<(E, BucketLabelKey, u32)>, DeferredBidirectionalLabeledError>
+    where
+        F: FnMut(&E) -> bool,
+    {
+        self.reverse
+            .find_out_edge_slot_with_label_by_predicate(dst, pred)
+            .map_err(DeferredBidirectionalLabeledError::Reverse)
+    }
+
+    /// Removes one forward edge at the given label-row slot.
+    pub fn remove_forward_edge_at_slot(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        slot_index: u32,
+    ) -> Result<Option<E>, DeferredBidirectionalLabeledError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.forward
+            .remove_edge_at_slot(src, label_id, slot_index)
+            .map_err(DeferredBidirectionalLabeledError::Forward)
+    }
+
+    /// Removes one reverse-store edge from `dst` under `label_id`.
+    pub fn remove_reverse_edge_matching<F>(
+        &self,
+        dst: VertexId,
+        label_id: BucketLabelKey,
+        matches: F,
+    ) -> Result<Option<E>, DeferredBidirectionalLabeledError>
+    where
+        E: CsrEdgeTombstone,
+        F: FnMut(&E) -> bool,
+    {
+        self.reverse
+            .remove_edge_matching(dst, label_id, matches)
+            .map_err(DeferredBidirectionalLabeledError::Reverse)
+    }
+
     /// Processes queued maintenance work up to `budget`.
     pub fn maintenance(
         &self,
         budget: MaintenanceBudget,
     ) -> Result<BidirectionalMaintenanceReport, DeferredBidirectionalLabeledError> {
+        self.maintenance_with_edge_slot_move_observer(budget, &mut NoopEdgeSlotMoveObserver)
+    }
+
+    /// Processes queued maintenance work and reports edge slot relocations to `observer`.
+    pub fn maintenance_with_edge_slot_move_observer<O>(
+        &self,
+        budget: MaintenanceBudget,
+        observer: &mut O,
+    ) -> Result<BidirectionalMaintenanceReport, DeferredBidirectionalLabeledError>
+    where
+        O: EdgeSlotMoveObserver,
+        E: CsrEdgeTombstone,
+    {
         let mut report = BidirectionalMaintenanceReport::default();
         let max_items = budget.max_work_items.unwrap_or(u32::MAX);
         while report.work.processed_work_items < max_items {
@@ -1013,7 +1100,11 @@ where
                         Orientation::Forward => &self.forward,
                         Orientation::Reverse => &self.reverse,
                     };
-                    if graph.compact_vertex_edge_span(vid, bucket_index).is_ok() {
+                    if let Ok(moves) = graph.compact_vertex_edge_span_with_moves(vid, bucket_index)
+                    {
+                        for moved in moves {
+                            observer.edge_slot_moved(orientation, vid, moved);
+                        }
                         report.work.rebalanced_segments =
                             report.work.rebalanced_segments.saturating_add(1);
                     }
@@ -1027,7 +1118,10 @@ where
                         report.work.rebalanced_segments =
                             report.work.rebalanced_segments.saturating_add(1);
                     }
-                    if graph.compact_vertex_edge_span(vid, 0).is_ok() {
+                    if let Ok(moves) = graph.compact_vertex_edge_span_with_moves(vid, 0) {
+                        for moved in moves {
+                            observer.edge_slot_moved(orientation, vid, moved);
+                        }
                         report.work.rebalanced_segments =
                             report.work.rebalanced_segments.saturating_add(1);
                     }
@@ -1390,7 +1484,7 @@ mod tests {
     use super::*;
     use crate::{
         test_support::{labeled_lara_memories, vector_memory},
-        traits::{CsrEdge, CsrEdgeSlabVacancy},
+        traits::{CsrEdge, CsrEdgeTombstone},
     };
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1416,9 +1510,9 @@ mod tests {
         }
     }
 
-    impl CsrEdgeSlabVacancy for TestEdge {
-        fn slab_vacant_edge() -> Self {
-            Self(u32::from(crate::VertexId::SLAB_VACANT))
+    impl CsrEdgeTombstone for TestEdge {
+        fn tombstone_edge() -> Self {
+            Self(u32::from(crate::VertexId::EDGE_TOMBSTONE_SENTINEL))
         }
     }
 

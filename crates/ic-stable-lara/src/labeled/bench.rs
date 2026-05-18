@@ -11,7 +11,7 @@ use crate::{
     VertexId,
     lara::maintenance::MaintenanceBudget,
     test_support::{labeled_lara_memories, vector_memory},
-    traits::{CsrEdge, CsrEdgeSlabVacancy},
+    traits::{CsrEdge, CsrEdgeTombstone},
 };
 use canbench_rs::{bench, bench_fn};
 use std::hint::black_box;
@@ -40,9 +40,9 @@ impl CsrEdge for BenchEdge {
     }
 }
 
-impl CsrEdgeSlabVacancy for BenchEdge {
-    fn slab_vacant_edge() -> Self {
-        Self(u32::from(VertexId::SLAB_VACANT))
+impl CsrEdgeTombstone for BenchEdge {
+    fn tombstone_edge() -> Self {
+        Self(u32::from(VertexId::EDGE_TOMBSTONE_SENTINEL))
     }
 }
 

@@ -11,16 +11,17 @@
 //! - free span metadata for retired physical ranges.
 //!
 //! [`EdgeStore::asc_out_edges`] materializes the row in **slot order**
-//! (ascending slab indices, skipping [`crate::VertexId::SLAB_VACANT`] placeholders,
+//! (ascending slab indices, skipping tombstoned slots,
 //! then overflow-log edges oldest-to-newest). Use this when you need the exact CSR
 //! / insertion layout.
 //!
 //! **Default contiguous read contract:** [`EdgeStore::out_edges_iter`] (see [`OutEdgesIter`])
 //! walks the overflow log from the chain head first, then live slab slots **high index to low**
-//! (still skipping vacant placeholders). Log-backed rows prefetch the log chain at iterator
-//! construction so slab scans can skip log-deleted slab slots without decoding them. That
-//! descending scan is the preferred hot path (cache- and prefetch-friendly, newest log entries
-//! first). Callers that need slot order should use
+//! (still skipping tombstoned slots). Log-backed rows prefetch the log chain at iterator
+//! construction so slab scans can skip slots masked by core-LARA overflow-log delete entries without
+//! decoding them. Labeled compact rows normally avoid this log-backed path by rewriting rows into
+//! slab tombstones before deletion. The descending scan is the preferred hot path (cache- and
+//! prefetch-friendly, newest log entries first). Callers that need slot order should use
 //! `asc_out_edges` instead, or reverse the vector produced by `out_edges_iter` when
 //! packing rows contiguously (e.g. segment rebalance snapshots).
 //! The log, counts, span metadata, and free span index are update-side structures.
@@ -29,7 +30,7 @@
 //!
 //! Insertions first try to append at `base_slot_start + stored_degree`, or reuse
 //! the first tail tombstone at `base_slot_start + degree` when `stored_degree > degree`.
-//! allowed only when it stays before this row’s CSR slab boundary (the next
+//! Appending is allowed only when it stays before this row’s CSR slab boundary (the next
 //! vertex's `base_slot_start`, PMA leaf total, or `elem_capacity`);
 //! otherwise the edge is written to the segment log and later folded by
 //! maintenance or relocation.
@@ -67,7 +68,7 @@ pub mod span_meta;
 use super::operation_error::{LaraOperationError, VertexAccess};
 use crate::{
     GrowFailed, SegmentId, VertexCount, VertexId,
-    traits::{CsrEdge, CsrEdgeSlabVacancy, CsrVertex, CsrVertexTombstoneScan},
+    traits::{CsrEdge, CsrEdgeTombstone, CsrVertex, CsrVertexTombstoneScan},
 };
 use counts::{SegmentEdgeCounts, SegmentEdgeCountsStore};
 pub(crate) use edges::EdgeSlabStore;
@@ -160,7 +161,7 @@ fn decode_delete_target(src: i32) -> Option<DeleteTarget> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum InsertLocation {
-    Slab,
+    Slab(u32),
     Log,
 }
 
@@ -234,8 +235,9 @@ pub struct EdgeStore<E: CsrEdge, M: Memory> {
 
 /// Descending scan for a **log-backed** row without prefetching every live log edge into a `Vec`.
 ///
-/// Same logical order as [`OutEdgesIter`]: replay the overflow log chain (newest first), then walk
-/// the slab prefix in descending slot order, skipping slab slots targeted by log delete records.
+/// Same logical order as [`OutEdgesIter`]: scan the core-LARA overflow log chain (newest first),
+/// then walk the slab prefix in descending slot order, skipping slab slots targeted by overflow-log
+/// delete entries.
 pub(crate) struct LogBackedDescIter<'a, E: CsrEdge, M: Memory> {
     store: &'a EdgeStore<E, M>,
     leaf: u32,
@@ -330,7 +332,7 @@ where
                 continue;
             }
             let edge = self.decode_slab_slot(slot_idx);
-            if edge.neighbor_vid().is_slab_vacant_neighbor() {
+            if edge.is_deleted_slot() {
                 continue;
             }
             self.yield_remaining -= 1;
@@ -848,7 +850,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             let mut out = Vec::with_capacity(live);
             for (offset, chunk) in raw.chunks_exact(E::BYTES).enumerate() {
                 let edge = E::read_from(chunk);
-                if edge.neighbor_vid().is_slab_vacant_neighbor() {
+                if edge.is_deleted_slot() {
                     continue;
                 }
                 out.push((DeleteTarget::Slab(offset as u32), edge));
@@ -871,7 +873,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 .checked_add(i as u64)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             let edge = self.read_slot(slot);
-            if !edge.neighbor_vid().is_slab_vacant_neighbor() {
+            if !edge.is_deleted_slot() {
                 out.push((DeleteTarget::Slab(i as u32), edge));
             }
         }
@@ -1424,7 +1426,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             self.write_slot(loc, edge)
                 .map_err(LaraOperationError::WriteEdgeSlotFailed)?;
             vertices.set(vid, &v.grow_packed_slab_by_one());
-            InsertLocation::Slab
+            InsertLocation::Slab(v.stored_degree())
         } else {
             self.insert_into_log_with_layout(
                 &edge_layout,
@@ -1442,7 +1444,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         Ok(location)
     }
 
-    pub(crate) fn remove_edge_slab_placeholder_matching<V, A, F>(
+    pub(crate) fn remove_edge_slab_tombstone_matching<V, A, F>(
         &self,
         vertices: &A,
         vid: VertexId,
@@ -1451,7 +1453,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     where
         V: CsrVertex,
         A: VertexAccess<V>,
-        E: CsrEdgeSlabVacancy,
+        E: CsrEdgeTombstone,
         F: FnMut(&E) -> bool,
     {
         let edge_layout = self.edge_layout();
@@ -1494,7 +1496,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 .checked_add(u64::from(i))
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             let edge = self.read_slot(slot);
-            if edge.is_slab_vacant_edge() {
+            if edge.is_tombstone_edge() {
                 continue;
             }
             if matches(&edge) {
@@ -1510,9 +1512,9 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             .checked_add(u64::from(local_index))
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         let removed = self.read_slot(rm_slot);
-        self.write_slot(rm_slot, E::slab_vacant_edge())
+        self.write_slot(rm_slot, E::tombstone_edge())
             .map_err(LaraOperationError::WriteEdgeSlotFailed)?;
-        vertices.set(vid, &v.after_slab_placeholder_delete());
+        vertices.set(vid, &v.after_slab_tombstone_delete());
         let next_global = edge_layout
             .num_edges
             .checked_sub(1)
@@ -1563,7 +1565,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 .map_err(LaraOperationError::WriteLogFailed)?;
         }
         self.log.write_idx_with_header(&log_h, leaf, idx + 1);
-        vertices.set(vid, &v.with_log_head(idx).after_slab_placeholder_delete());
+        vertices.set(vid, &v.with_log_head(idx).after_slab_tombstone_delete());
         Ok(())
     }
 
@@ -1591,7 +1593,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 .checked_add(u64::from(stored_offset))
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             let edge = self.read_slot(slot);
-            if edge.neighbor_vid().is_slab_vacant_neighbor() {
+            if edge.is_deleted_slot() {
                 continue;
             }
             if seen == offset {
@@ -1602,6 +1604,70 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         }
         Ok(None)
+    }
+
+    pub(crate) fn find_first_out_edge_slot_matching<V, A, F>(
+        &self,
+        vertices: &A,
+        vid: VertexId,
+        mut matches: F,
+    ) -> Result<Option<(u32, E)>, LaraOperationError>
+    where
+        V: CsrVertex + CsrVertexTombstoneScan,
+        A: VertexAccess<V>,
+        F: FnMut(&E) -> bool,
+    {
+        let v = vertices.get_in_range(vid)?;
+        if V::record_is_vertex_tombstone(&v) && v.stored_degree() == 0 && v.log_head() < 0 {
+            return Ok(None);
+        }
+        if v.log_head() >= 0 {
+            return Ok(None);
+        }
+        let mut it =
+            OutEdgeSlabIter::try_new(self, v.base_slot_start(), v.stored_degree(), v.degree())?;
+        while let Some((slot, edge)) = it.next_live_edge_with_slot() {
+            if matches(&edge) {
+                return Ok(Some((slot, edge)));
+            }
+        }
+        Ok(None)
+    }
+
+    pub(crate) fn remove_edge_at_slab_slot<V, A>(
+        &self,
+        vertices: &A,
+        vid: VertexId,
+        slot_index: u32,
+    ) -> Result<Option<E>, LaraOperationError>
+    where
+        V: CsrVertex,
+        A: VertexAccess<V>,
+        E: CsrEdgeTombstone,
+    {
+        let edge_layout = self.edge_layout();
+        let v = vertices.get_in_range(vid)?;
+        if v.log_head() >= 0 || slot_index >= v.stored_degree() {
+            return Ok(None);
+        }
+        let rm_slot = v
+            .base_slot_start()
+            .checked_add(u64::from(slot_index))
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let removed = self.read_slot(rm_slot);
+        if removed.is_deleted_slot() {
+            return Ok(None);
+        }
+        self.write_slot(rm_slot, E::tombstone_edge())
+            .map_err(LaraOperationError::WriteEdgeSlotFailed)?;
+        vertices.set(vid, &v.after_slab_tombstone_delete());
+        let next_global = edge_layout
+            .num_edges
+            .checked_sub(1)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        self.set_num_edges(next_global);
+        self.bump_counts_leaf_with_layout(&edge_layout, vertices.log_leaf_vertex(vid), -1, 0)?;
+        Ok(Some(removed))
     }
 
     pub(crate) fn clear_row_slab<V, A>(
@@ -1832,6 +1898,12 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     }
 }
 
+impl InsertLocation {
+    pub(crate) fn inserted_into_log(self) -> bool {
+        matches!(self, Self::Log)
+    }
+}
+
 #[inline]
 fn leaf_segment(vid: VertexId, segment_size: u32) -> u32 {
     u32::from(vid) / segment_size.max(1)
@@ -1894,9 +1966,11 @@ fn out_edge_slab_decode_slot<E: CsrEdge, M: Memory>(
         }
         let off = (slot_idx - cache.chunk_low) as usize * E::BYTES;
         debug_assert!(off + E::BYTES <= cache.buf.len());
-        E::read_from(&cache.buf[off..off + E::BYTES])
+        E::read_from(&cache.buf[off..off + E::BYTES]).with_slot_index(slot_idx)
     } else {
-        store.read_slot(base_slot_start + u64::from(slot_idx))
+        store
+            .read_slot(base_slot_start + u64::from(slot_idx))
+            .with_slot_index(slot_idx)
     }
 }
 
@@ -1914,15 +1988,17 @@ fn out_edge_slab_decode_slot_asc<E: CsrEdge, M: Memory>(
         }
         let off = (slot_idx - cache.chunk_low) as usize * E::BYTES;
         debug_assert!(off + E::BYTES <= cache.buf.len());
-        E::read_from(&cache.buf[off..off + E::BYTES])
+        E::read_from(&cache.buf[off..off + E::BYTES]).with_slot_index(slot_idx)
     } else {
-        store.read_slot(base_slot_start + u64::from(slot_idx))
+        store
+            .read_slot(base_slot_start + u64::from(slot_idx))
+            .with_slot_index(slot_idx)
     }
 }
 
 /// Iterator over **slab-resident** outgoing edges in [`EdgeStore`]'s default **descending** slot
-/// order (high index → low, skipping vacant placeholders). For rows with no overflow log
-/// (`log_head < 0`) and no log-replay delete markers; same sequence as the slab phase of
+/// order (high index → low, skipping tombstoned slots). For rows with no overflow log
+/// (`log_head < 0`) and no overflow-log delete markers; same sequence as the slab phase of
 /// [`OutEdgesIter`].
 pub(crate) struct OutEdgeSlabIter<'a, E: CsrEdge, M: Memory> {
     store: &'a EdgeStore<E, M>,
@@ -2000,8 +2076,8 @@ impl<'a, E: CsrEdge, M: Memory> OutEdgeSlabIter<'a, E, M> {
                     continue;
                 }
             }
-            let edge = E::read_from(bytes);
-            if edge.neighbor_vid().is_slab_vacant_neighbor() {
+            let edge = E::read_from(bytes).with_slot_index(slot_idx);
+            if edge.is_deleted_slot() {
                 continue;
             }
             self.yield_remaining -= 1;
@@ -2010,6 +2086,33 @@ impl<'a, E: CsrEdge, M: Memory> OutEdgeSlabIter<'a, E, M> {
         debug_assert_eq!(
             self.yield_remaining, 0,
             "slab scan ended before yielding all logical edges"
+        );
+        self.yield_remaining = 0;
+        None
+    }
+
+    pub(crate) fn next_live_edge_with_slot(&mut self) -> Option<(u32, E)> {
+        if self.yield_remaining == 0 {
+            return None;
+        }
+        while self.remaining_slab > 0 {
+            self.remaining_slab -= 1;
+            let slot_idx = self.remaining_slab;
+            let edge = out_edge_slab_decode_slot(
+                self.store,
+                self.base_slot_start,
+                &mut self.slab_chunk,
+                slot_idx,
+            );
+            if edge.is_deleted_slot() {
+                continue;
+            }
+            self.yield_remaining -= 1;
+            return Some((slot_idx, edge));
+        }
+        debug_assert_eq!(
+            self.yield_remaining, 0,
+            "slab iterator exhausted before yielding expected live edge count"
         );
         self.yield_remaining = 0;
         None
@@ -2052,11 +2155,11 @@ impl<E: CsrEdge, M: Memory> FusedIterator for OutEdgeSlabIter<'_, E, M> {}
 
 /// Iterator over outgoing edges in [`EdgeStore`]'s **default descending scan order**:
 /// overflow log from the chain head first (each step follows the `prev` link), then live slab
-/// slots **high index to low** (skipping [`VertexId::SLAB_VACANT`] placeholders).
+/// slots **high index to low** (skipping tombstoned slots).
 ///
 /// Log-backed rows **prefetch** the overflow chain at construction (same classification as the
-/// historical lazy walk): live log edges are buffered in head-first order, and log delete records
-/// populate a sorted slab-offset list so the slab phase can skip log-deleted slots without
+/// historical lazy walk): live log edges are buffered in head-first order, and log delete entries
+/// populate a sorted slab-offset list so the slab phase can skip masked slots without
 /// decoding them.
 ///
 /// This is **not** the same order as [`EdgeStore::asc_out_edges`] (slot /
@@ -2080,7 +2183,7 @@ pub struct OutEdgesIter<'a, E: CsrEdge, M: Memory> {
     log_edges: Vec<E>,
     log_pos: usize,
     slab_chunk: Option<OutEdgeSlabChunk>,
-    /// Slab slot indices (within this row's slab prefix) targeted by log delete records, sorted for
+    /// Slab slot indices (within this row's slab prefix) targeted by overflow-log delete entries, sorted for
     /// binary search. Slots in this set are skipped during the slab phase without decoding.
     deleted_slab_offsets: Vec<u32>,
 }
@@ -2144,7 +2247,7 @@ where
                 continue;
             }
             let edge = self.decode_slab_slot(slot_idx);
-            if edge.neighbor_vid().is_slab_vacant_neighbor() {
+            if edge.is_deleted_slot() {
                 continue;
             }
             self.yield_remaining -= 1;
@@ -2185,7 +2288,7 @@ where
                 continue;
             }
             let edge = self.decode_slab_slot(slot_idx);
-            if edge.neighbor_vid().is_slab_vacant_neighbor() {
+            if edge.is_deleted_slot() {
                 continue;
             }
             self.yield_remaining -= 1;
@@ -2223,7 +2326,7 @@ where
 /// [`EdgeStore::asc_out_edges`]).
 ///
 /// Slab slots scan low→high with fixed-size forward prefetch chunks. When a row has an overflow
-/// log, the constructor replays log entries old→new into insertion/deletion caches; iteration then
+/// log, the constructor folds log entries old→new into insertion/deletion caches; iteration then
 /// streams live slab slots first and cached inserted log edges last.
 pub struct AscOutEdgesIter<'a, E: CsrEdge, M: Memory> {
     store: &'a EdgeStore<E, M>,
@@ -2333,7 +2436,7 @@ where
                 continue;
             }
             let edge = self.decode_slab_slot(slot_idx);
-            if edge.neighbor_vid().is_slab_vacant_neighbor() {
+            if edge.is_deleted_slot() {
                 continue;
             }
             self.remaining = self.remaining.checked_sub(1)?;

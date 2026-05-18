@@ -1,7 +1,7 @@
 use super::aggregate;
 use super::error::PlanQueryError;
 use super::sort_keys::compare_sort_keys;
-use crate::facade::{EdgeHandle, GraphStore, GraphStoreError, canonical_undirected_owner};
+use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
 use crate::gql_execution_context::{GqlExecutionContext, try_eval_runtime_function_call};
 use crate::index::edge_equal;
 use crate::index::lookup::PropertyIndexLookup;
@@ -29,7 +29,7 @@ use gleaph_gql_planner::plan::{
     ScanValue, ShortestMode, ShortestPathCost, Str, VarLenSpec,
 };
 use gleaph_graph_kernel::entry::{
-    Edge, EdgeDirectedness, EdgeLabelId, PreparedWeightDecoder, Vertex, VertexEdgeId,
+    Edge, EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, PreparedWeightDecoder, Vertex,
     decode_inline_weight,
 };
 use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest};
@@ -879,14 +879,14 @@ fn csr_offset_fast_path_for_expand(
 
 fn stream_expand_owner_vertex_id(
     src_id: VertexId,
-    dst_id: VertexId,
+    _dst_id: VertexId,
     direction: EdgeDirection,
-    edge: Edge,
+    _edge: Edge,
 ) -> VertexId {
     match direction {
         EdgeDirection::PointingRight => src_id,
-        EdgeDirection::PointingLeft => edge.neighbor_vid(),
-        EdgeDirection::Undirected => canonical_undirected_owner(src_id, dst_id),
+        EdgeDirection::PointingLeft => src_id,
+        EdgeDirection::Undirected => src_id,
         _ => unreachable!("unsupported CSR expand streaming direction"),
     }
 }
@@ -1362,7 +1362,8 @@ fn stream_expand(
             let edge_binding = EdgeBinding {
                 handle: EdgeHandle {
                     owner_vertex_id,
-                    vertex_edge_id: edge.vertex_edge_id,
+                    label_id: LaraLabelId::from_raw(edge.label_id),
+                    slot_index: edge.edge_slot_index.raw(),
                 },
                 inline_value: edge.inline_value,
             };
@@ -1413,8 +1414,10 @@ fn stream_expand(
             if !edge_matches_stream_filter(
                 store,
                 &edge_equality_filter,
+                direction,
                 owner_vertex_id,
-                edge.vertex_edge_id,
+                LaraLabelId::from_raw(edge.label_id),
+                edge.edge_slot_index,
             )? {
                 return Ok(false);
             }
@@ -1437,7 +1440,8 @@ fn stream_expand(
             let edge_binding = EdgeBinding {
                 handle: EdgeHandle {
                     owner_vertex_id,
-                    vertex_edge_id: edge.vertex_edge_id,
+                    label_id: LaraLabelId::from_raw(edge.label_id),
+                    slot_index: edge.edge_slot_index.raw(),
                 },
                 inline_value: edge.inline_value,
             };
@@ -1785,7 +1789,7 @@ fn hash_plan_binding_for_join(binding: &PlanBinding, hasher: &mut RapidHasher<'_
         PlanBinding::Edge(e) => {
             hasher.write_u8(2);
             hasher.write_u32(u32::from(e.handle.owner_vertex_id));
-            hasher.write_u32(e.handle.vertex_edge_id.raw());
+            hasher.write_u32(e.handle.slot_index);
             hasher.write_u16(e.inline_value);
         }
         PlanBinding::Value(v) => {
@@ -2079,13 +2083,7 @@ fn edge_to_projected_record(
     for property in properties {
         let value = store
             .property_id(property.as_ref())
-            .and_then(|property_id| {
-                store.edge_property(
-                    binding.handle.owner_vertex_id,
-                    binding.handle.vertex_edge_id,
-                    property_id,
-                )
-            })
+            .and_then(|property_id| store.edge_property(binding.handle, property_id))
             .unwrap_or(Value::Null);
         fields.push((property.to_string(), value));
     }
@@ -2129,7 +2127,8 @@ fn vertex_row_matches_dst_filters(
 fn edge_matches_indexed_equality(
     store: &GraphStore,
     owner_vertex_id: VertexId,
-    vertex_edge_id: VertexEdgeId,
+    label_id: LaraLabelId,
+    edge_slot_index: EdgeSlotIndex,
     property: &str,
     scan_value: &ScanValue,
     parameters: &BTreeMap<String, Value>,
@@ -2140,7 +2139,12 @@ fn edge_matches_indexed_equality(
     let Some(expected) = resolve_scan_value_bytes(scan_value, parameters)? else {
         return Ok(false);
     };
-    let Some(actual) = store.edge_property(owner_vertex_id, vertex_edge_id, property_id) else {
+    let handle = EdgeHandle {
+        owner_vertex_id,
+        label_id,
+        slot_index: edge_slot_index.raw(),
+    };
+    let Some(actual) = store.edge_property(handle, property_id) else {
         return Ok(false);
     };
     let actual_bytes =
@@ -2153,11 +2157,22 @@ fn edge_matches_indexed_equality(
 enum EdgeEqualityStreamFilter {
     None,
     NoMatches,
-    Indexed(IntSet<u64>),
+    /// Fast path when all postings share one label: `(owner, slot)` keys in an [`IntSet`].
+    IndexedSingleLabel {
+        label_id: u16,
+        slots: IntSet<u64>,
+    },
+    /// Fallback when postings span multiple labels.
+    IndexedMultiLabel(BTreeSet<(u32, u16, u32)>),
     StoreLookup {
         property_id: gleaph_graph_kernel::entry::PropertyId,
         expected: Vec<u8>,
     },
+}
+
+#[inline]
+fn equality_index_slot_key(owner: VertexId, slot_index: u32) -> u64 {
+    u64::from(u32::from(owner)) << 32 | u64::from(slot_index)
 }
 
 fn edge_equality_stream_filter(
@@ -2180,34 +2195,104 @@ fn edge_equality_stream_filter(
             expected,
         });
     };
+    let mut labels = IntSet::default();
     let mut slots = IntSet::default();
     for posting in &postings {
-        slots.insert(equality_index_in_slot_key(
+        labels.insert(posting.label_id);
+        slots.insert(equality_index_slot_key(
             posting.owner_vertex_id,
-            posting.vertex_edge_id,
+            posting.slot_index,
         ));
     }
-    Ok(EdgeEqualityStreamFilter::Indexed(slots))
+    if labels.len() == 1 {
+        let label_id = *labels.iter().next().expect("non-empty labels");
+        Ok(EdgeEqualityStreamFilter::IndexedSingleLabel {
+            label_id,
+            slots,
+        })
+    } else {
+        let mut heterogeneous = BTreeSet::new();
+        for posting in &postings {
+            heterogeneous.insert((
+                u32::from(posting.owner_vertex_id),
+                posting.label_id,
+                posting.slot_index,
+            ));
+        }
+        Ok(EdgeEqualityStreamFilter::IndexedMultiLabel(heterogeneous))
+    }
 }
 
 fn edge_matches_stream_filter(
     store: &GraphStore,
     filter: &EdgeEqualityStreamFilter,
+    direction: EdgeDirection,
     owner_vertex_id: VertexId,
-    vertex_edge_id: VertexEdgeId,
+    label_id: LaraLabelId,
+    edge_slot_index: EdgeSlotIndex,
 ) -> Result<bool, PlanQueryError> {
     match filter {
         EdgeEqualityStreamFilter::None => Ok(true),
         EdgeEqualityStreamFilter::NoMatches => Ok(false),
-        EdgeEqualityStreamFilter::Indexed(slots) => {
-            Ok(slots.contains(&equality_index_in_slot_key(owner_vertex_id, vertex_edge_id)))
+        EdgeEqualityStreamFilter::IndexedSingleLabel { label_id: expected, slots } => {
+            if label_id.raw() != *expected {
+                return Ok(false);
+            }
+            let key = equality_index_slot_key(owner_vertex_id, edge_slot_index.raw());
+            if slots.contains(&key) {
+                return Ok(true);
+            }
+            if matches!(
+                direction,
+                EdgeDirection::PointingLeft | EdgeDirection::Undirected
+            ) {
+                let canonical = store.canonical_edge_handle(EdgeHandle {
+                    owner_vertex_id,
+                    label_id,
+                    slot_index: edge_slot_index.raw(),
+                });
+                return Ok(slots.contains(&equality_index_slot_key(
+                    canonical.owner_vertex_id,
+                    canonical.slot_index,
+                )));
+            }
+            Ok(false)
+        }
+        EdgeEqualityStreamFilter::IndexedMultiLabel(slots) => {
+            if slots.contains(&(
+                u32::from(owner_vertex_id),
+                label_id.raw(),
+                edge_slot_index.raw(),
+            )) {
+                return Ok(true);
+            }
+            if matches!(
+                direction,
+                EdgeDirection::PointingLeft | EdgeDirection::Undirected
+            ) {
+                let canonical = store.canonical_edge_handle(EdgeHandle {
+                    owner_vertex_id,
+                    label_id,
+                    slot_index: edge_slot_index.raw(),
+                });
+                return Ok(slots.contains(&(
+                    u32::from(canonical.owner_vertex_id),
+                    canonical.label_id.raw(),
+                    canonical.slot_index,
+                )));
+            }
+            Ok(false)
         }
         EdgeEqualityStreamFilter::StoreLookup {
             property_id,
             expected,
         } => {
-            let Some(actual) = store.edge_property(owner_vertex_id, vertex_edge_id, *property_id)
-            else {
+            let handle = EdgeHandle {
+                owner_vertex_id,
+                label_id,
+                slot_index: edge_slot_index.raw(),
+            };
+            let Some(actual) = store.edge_property(handle, *property_id) else {
                 return Ok(false);
             };
             let actual_bytes = value_to_index_key_bytes(&actual).map_err(|_| {
@@ -2281,8 +2366,10 @@ fn execute_expand(
                     edge_equality_filter
                         .as_ref()
                         .expect("filter exists with fast path"),
+                    direction,
                     owner_vertex_id,
-                    edge.vertex_edge_id,
+                    LaraLabelId::from_raw(edge.label_id),
+                    edge.edge_slot_index,
                 )? {
                     return Ok(false);
                 }
@@ -2305,7 +2392,8 @@ fn execute_expand(
                 let edge_binding = EdgeBinding {
                     handle: EdgeHandle {
                         owner_vertex_id,
-                        vertex_edge_id: edge.vertex_edge_id,
+                        label_id: LaraLabelId::from_raw(edge.label_id),
+                        slot_index: edge.edge_slot_index.raw(),
                     },
                     inline_value: edge.inline_value,
                 };
@@ -2583,7 +2671,8 @@ impl ShortestFixedLabelExpand {
                             EdgeBinding {
                                 handle: EdgeHandle {
                                     owner_vertex_id: current,
-                                    vertex_edge_id: edge.vertex_edge_id,
+                                    label_id: LaraLabelId::from_raw(edge.label_id),
+                                    slot_index: edge.edge_slot_index.raw(),
                                 },
                                 inline_value: edge.inline_value,
                             },
@@ -2600,8 +2689,9 @@ impl ShortestFixedLabelExpand {
                             edge.neighbor_vid(),
                             EdgeBinding {
                                 handle: EdgeHandle {
-                                    owner_vertex_id: edge.neighbor_vid(),
-                                    vertex_edge_id: edge.vertex_edge_id,
+                                    owner_vertex_id: current,
+                                    label_id: LaraLabelId::from_raw(edge.label_id),
+                                    slot_index: edge.edge_slot_index.raw(),
                                 },
                                 inline_value: edge.inline_value,
                             },
@@ -2614,13 +2704,13 @@ impl ShortestFixedLabelExpand {
                 let _scope = bench_scope("shortest_fixed_expand_undirected");
                 store
                     .for_each_out_edges_for_label_unchecked(current, storage, |edge| {
-                        let owner = canonical_undirected_owner(current, edge.neighbor_vid());
                         out.push((
                             edge.neighbor_vid(),
                             EdgeBinding {
                                 handle: EdgeHandle {
-                                    owner_vertex_id: owner,
-                                    vertex_edge_id: edge.vertex_edge_id,
+                                    owner_vertex_id: current,
+                                    label_id: LaraLabelId::from_raw(edge.label_id),
+                                    slot_index: edge.edge_slot_index.raw(),
                                 },
                                 inline_value: edge.inline_value,
                             },
@@ -2971,8 +3061,7 @@ type WeightedHopCostCache = IntMap<u64, IntMap<u16, WeightedCost>>;
 
 #[inline]
 fn weighted_hop_cache_outer_key(edge: EdgeBinding) -> u64 {
-    u64::from(u32::from(edge.handle.owner_vertex_id)) << 32
-        | u64::from(edge.handle.vertex_edge_id.raw())
+    u64::from(u32::from(edge.handle.owner_vertex_id)) << 32 | u64::from(edge.handle.slot_index)
 }
 
 fn map_weighted_cost_add_err(err: NumericOpError) -> PlanQueryError {
@@ -3382,9 +3471,9 @@ fn vertex_element_id_bytes(shard_id: u64, vertex_id: VertexId) -> Vec<u8> {
 fn edge_element_id_bytes(
     shard_id: u64,
     owner_vertex_id: VertexId,
-    vertex_edge_id: gleaph_graph_kernel::entry::VertexEdgeId,
+    edge_slot_index: gleaph_graph_kernel::entry::EdgeSlotIndex,
 ) -> Vec<u8> {
-    GraphPathEdgeId::new(shard_id, owner_vertex_id, vertex_edge_id)
+    GraphPathEdgeId::new(shard_id, owner_vertex_id, edge_slot_index)
         .to_bytes()
         .to_vec()
 }
@@ -3399,9 +3488,13 @@ fn vertex_path_element(shard_id: u64, vertex_id: VertexId) -> PathElement {
 
 fn edge_path_element(shard_id: u64, handle: EdgeHandle) -> PathElement {
     PathElement::Edge(
-        GraphPathEdgeId::new(shard_id, handle.owner_vertex_id, handle.vertex_edge_id)
-            .to_bytes()
-            .into(),
+        GraphPathEdgeId::new(
+            shard_id,
+            handle.owner_vertex_id,
+            EdgeSlotIndex::from_raw(handle.slot_index),
+        )
+        .to_bytes()
+        .into(),
     )
 }
 
@@ -3450,7 +3543,8 @@ fn expand_candidates_into(
                         match edge_matches_indexed_equality(
                             store,
                             src_id,
-                            edge.vertex_edge_id,
+                            LaraLabelId::from_raw(edge.label_id),
+                            edge.edge_slot_index,
                             property,
                             scan_value,
                             parameters,
@@ -3468,7 +3562,8 @@ fn expand_candidates_into(
                         EdgeBinding {
                             handle: EdgeHandle {
                                 owner_vertex_id: src_id,
-                                vertex_edge_id: edge.vertex_edge_id,
+                                label_id: LaraLabelId::from_raw(edge.label_id),
+                                slot_index: edge.edge_slot_index.raw(),
                             },
                             inline_value: edge.inline_value,
                         },
@@ -3494,8 +3589,9 @@ fn expand_candidates_into(
                     if let Some((property, scan_value)) = indexed {
                         match edge_matches_indexed_equality(
                             store,
-                            edge.neighbor_vid(),
-                            edge.vertex_edge_id,
+                            src_id,
+                            LaraLabelId::from_raw(edge.label_id),
+                            edge.edge_slot_index,
                             property,
                             scan_value,
                             parameters,
@@ -3512,8 +3608,9 @@ fn expand_candidates_into(
                         edge.neighbor_vid(),
                         EdgeBinding {
                             handle: EdgeHandle {
-                                owner_vertex_id: edge.neighbor_vid(),
-                                vertex_edge_id: edge.vertex_edge_id,
+                                owner_vertex_id: src_id,
+                                label_id: LaraLabelId::from_raw(edge.label_id),
+                                slot_index: edge.edge_slot_index.raw(),
                             },
                             inline_value: edge.inline_value,
                         },
@@ -3536,12 +3633,12 @@ fn expand_candidates_into(
                     if error.is_some() {
                         return;
                     }
-                    let owner = canonical_undirected_owner(src_id, edge.neighbor_vid());
                     if let Some((property, scan_value)) = indexed {
                         match edge_matches_indexed_equality(
                             store,
-                            owner,
-                            edge.vertex_edge_id,
+                            src_id,
+                            LaraLabelId::from_raw(edge.label_id),
+                            edge.edge_slot_index,
                             property,
                             scan_value,
                             parameters,
@@ -3558,8 +3655,9 @@ fn expand_candidates_into(
                         edge.neighbor_vid(),
                         EdgeBinding {
                             handle: EdgeHandle {
-                                owner_vertex_id: owner,
-                                vertex_edge_id: edge.vertex_edge_id,
+                                owner_vertex_id: src_id,
+                                label_id: LaraLabelId::from_raw(edge.label_id),
+                                slot_index: edge.edge_slot_index.raw(),
                             },
                             inline_value: edge.inline_value,
                         },
@@ -3646,12 +3744,6 @@ where
     }
 }
 
-/// Packs `(owner_vertex_id, vertex_edge_id)` for [`IntSet`] membership in the edge equality index.
-#[inline]
-fn equality_index_in_slot_key(owner: VertexId, edge_id: VertexEdgeId) -> u64 {
-    u64::from(u32::from(owner)) << 32 | u64::from(edge_id.raw())
-}
-
 /// Probes the in-process edge equality index and, on hit, enumerates only matching slots.
 /// Returns `Ok(true)` when the index owned the lookup (including zero matches).
 fn expand_candidates_via_equality_index(
@@ -3664,6 +3756,9 @@ fn expand_candidates_via_equality_index(
     parameters: &BTreeMap<String, Value>,
     out: &mut Vec<ExpandCandidate>,
 ) -> Result<bool, PlanQueryError> {
+    if !matches!(direction, EdgeDirection::PointingRight) {
+        return Ok(false);
+    }
     let Some(property_id) = store.property_id(property) else {
         return Ok(false);
     };
@@ -3675,15 +3770,16 @@ fn expand_candidates_via_equality_index(
         return Ok(false);
     };
 
-    let mut out_slots: IntSet<u32> = IntSet::default();
-    let mut in_slots: IntSet<u64> = IntSet::default();
+    let mut out_slots: BTreeSet<(u16, u32)> = BTreeSet::new();
+    let mut in_slots: BTreeSet<(u32, u16, u32)> = BTreeSet::new();
     for posting in &postings {
         if posting.owner_vertex_id == src_id {
-            out_slots.insert(posting.vertex_edge_id.raw());
+            out_slots.insert((posting.label_id, posting.slot_index));
         }
-        in_slots.insert(equality_index_in_slot_key(
-            posting.owner_vertex_id,
-            posting.vertex_edge_id,
+        in_slots.insert((
+            u32::from(posting.owner_vertex_id),
+            posting.label_id,
+            posting.slot_index,
         ));
     }
 
@@ -3696,7 +3792,7 @@ fn expand_candidates_via_equality_index(
                 edge_label_id,
                 EdgeSequenceOrder::Descending,
                 |edge| {
-                    if !out_slots.contains(&edge.vertex_edge_id.raw()) {
+                    if !out_slots.contains(&(edge.label_id, edge.edge_slot_index.raw())) {
                         return;
                     }
                     out.push((
@@ -3704,7 +3800,8 @@ fn expand_candidates_via_equality_index(
                         EdgeBinding {
                             handle: EdgeHandle {
                                 owner_vertex_id: src_id,
-                                vertex_edge_id: edge.vertex_edge_id,
+                                label_id: LaraLabelId::from_raw(edge.label_id),
+                                slot_index: edge.edge_slot_index.raw(),
                             },
                             inline_value: edge.inline_value,
                         },
@@ -3720,9 +3817,15 @@ fn expand_candidates_via_equality_index(
                 edge_label_id,
                 EdgeSequenceOrder::Descending,
                 |edge| {
-                    if !in_slots.contains(&equality_index_in_slot_key(
-                        edge.neighbor_vid(),
-                        edge.vertex_edge_id,
+                    let canonical = store.canonical_edge_handle(EdgeHandle {
+                        owner_vertex_id: src_id,
+                        label_id: LaraLabelId::from_raw(edge.label_id),
+                        slot_index: edge.edge_slot_index.raw(),
+                    });
+                    if !in_slots.contains(&(
+                        u32::from(canonical.owner_vertex_id),
+                        canonical.label_id.raw(),
+                        canonical.slot_index,
                     )) {
                         return;
                     }
@@ -3730,8 +3833,9 @@ fn expand_candidates_via_equality_index(
                         edge.neighbor_vid(),
                         EdgeBinding {
                             handle: EdgeHandle {
-                                owner_vertex_id: edge.neighbor_vid(),
-                                vertex_edge_id: edge.vertex_edge_id,
+                                owner_vertex_id: src_id,
+                                label_id: LaraLabelId::from_raw(edge.label_id),
+                                slot_index: edge.edge_slot_index.raw(),
                             },
                             inline_value: edge.inline_value,
                         },
@@ -3747,16 +3851,25 @@ fn expand_candidates_via_equality_index(
                 edge_label_id,
                 EdgeSequenceOrder::Descending,
                 |edge| {
-                    let owner = canonical_undirected_owner(src_id, edge.neighbor_vid());
-                    if !in_slots.contains(&equality_index_in_slot_key(owner, edge.vertex_edge_id)) {
+                    let canonical = store.canonical_edge_handle(EdgeHandle {
+                        owner_vertex_id: src_id,
+                        label_id: LaraLabelId::from_raw(edge.label_id),
+                        slot_index: edge.edge_slot_index.raw(),
+                    });
+                    if !in_slots.contains(&(
+                        u32::from(canonical.owner_vertex_id),
+                        canonical.label_id.raw(),
+                        canonical.slot_index,
+                    )) {
                         return;
                     }
                     out.push((
                         edge.neighbor_vid(),
                         EdgeBinding {
                             handle: EdgeHandle {
-                                owner_vertex_id: owner,
-                                vertex_edge_id: edge.vertex_edge_id,
+                                owner_vertex_id: src_id,
+                                label_id: LaraLabelId::from_raw(edge.label_id),
+                                slot_index: edge.edge_slot_index.raw(),
                             },
                             inline_value: edge.inline_value,
                         },
@@ -4343,13 +4456,7 @@ impl QueryExprEvaluator<'_> {
                 Some(PlanBinding::Edge(edge)) => self
                     .store
                     .property_id(property)
-                    .and_then(|property_id| {
-                        self.store.edge_property(
-                            edge.handle.owner_vertex_id,
-                            edge.handle.vertex_edge_id,
-                            property_id,
-                        )
-                    })
+                    .and_then(|property_id| self.store.edge_property(edge.handle, property_id))
                     .map_or(Ok(Value::Null), Ok),
                 Some(PlanBinding::Value(value)) => Ok(record_property(value, property)),
                 Some(PlanBinding::Path(pb)) => {
@@ -4375,7 +4482,7 @@ impl QueryExprEvaluator<'_> {
                 Some(PlanBinding::Edge(edge)) => Ok(Value::Bytes(edge_element_id_bytes(
                     shard_id,
                     edge.handle.owner_vertex_id,
-                    edge.handle.vertex_edge_id,
+                    EdgeSlotIndex::from_raw(edge.handle.slot_index),
                 ))),
                 Some(PlanBinding::Value(Value::Null)) => Ok(Value::Null),
                 Some(binding) => Err(PlanQueryError::InvalidExpressionValue {
@@ -4513,11 +4620,11 @@ fn vertex_to_value(store: &GraphStore, vertex_id: VertexId) -> Result<Value, Pla
 fn edge_to_value(store: &GraphStore, binding: EdgeBinding) -> Result<Value, PlanQueryError> {
     let handle = binding.handle;
     let (_edge, bucket_label) = store
-        .find_outgoing_edge_with_bucket_label(handle.owner_vertex_id, handle.vertex_edge_id)?
+        .find_outgoing_edge_with_bucket_label(handle)?
         .ok_or_else(|| PlanQueryError::MissingBinding {
             variable: format!("edge {:?}", handle),
         })?;
-    let storage = LaraLabelId::from_raw(bucket_label.unwrap_or(LaraLabelId::from_raw(0)).raw());
+    let storage = LaraLabelId::from_raw(bucket_label.raw());
     let catalog_id = EdgeLabelId::from_raw(storage.label_index());
     Ok(Value::Record(vec![
         (
@@ -4525,8 +4632,8 @@ fn edge_to_value(store: &GraphStore, binding: EdgeBinding) -> Result<Value, Plan
             Value::Uint64(u64::from(handle.owner_vertex_id)),
         ),
         (
-            "vertex_edge_id".to_owned(),
-            Value::Uint64(u64::from(handle.vertex_edge_id.raw())),
+            "edge_slot_index".to_owned(),
+            Value::Uint64(u64::from(handle.slot_index)),
         ),
         (
             "inline_value".to_owned(),
@@ -4548,7 +4655,7 @@ fn edge_to_value(store: &GraphStore, binding: EdgeBinding) -> Result<Value, Plan
             Value::Bool(storage.is_undirected()),
         ),
         ("properties".to_owned(), {
-            store.edge_properties_gql_record(handle.owner_vertex_id, handle.vertex_edge_id)
+            store.edge_properties_gql_record(handle)
         }),
     ]))
 }
@@ -7639,6 +7746,110 @@ mod tests {
         assert_eq!(result.rows[0].get("since"), Some(&Value::Int64(2026)));
     }
 
+    #[test]
+    fn reverse_expand_resolves_edge_properties_through_alias() {
+        let store = GraphStore::new();
+        let a = store
+            .insert_vertex_named(["QueryReverseSource"], [("name", Value::Text("A".into()))])
+            .expect("insert source");
+        let b = store
+            .insert_vertex_named(["QueryReverseTarget"], [("name", Value::Text("B".into()))])
+            .expect("insert target");
+        store
+            .insert_directed_edge_named(
+                a,
+                b,
+                Some("QueryReverseKnows"),
+                [("since", Value::Int64(2027))],
+            )
+            .expect("insert edge");
+
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "b".into(),
+                label: Some("QueryReverseTarget".into()),
+                property_projection: None,
+            },
+            PlanOp::Expand {
+                src: "b".into(),
+                edge: "e".into(),
+                dst: "a".into(),
+                direction: EdgeDirection::PointingLeft,
+                label: Some("QueryReverseKnows".into()),
+                label_expr: None,
+                var_len: None,
+                indexed_edge_equality: None,
+                edge_property_projection: None,
+                dst_property_projection: None,
+                hop_aux_binding: None,
+                emit_edge_binding: true,
+            },
+            PlanOp::Project {
+                columns: vec![project(prop("e", "since"), "since")],
+                distinct: false,
+            },
+        ]);
+
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute reverse query");
+
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0].get("since"), Some(&Value::Int64(2027)));
+    }
+
+    #[test]
+    fn undirected_expand_from_noncanonical_endpoint_resolves_edge_properties_through_alias() {
+        let store = GraphStore::new();
+        let low = store
+            .insert_vertex_named(["QueryUndirLow"], [("name", Value::Text("low".into()))])
+            .expect("insert low");
+        let high = store
+            .insert_vertex_named(["QueryUndirHigh"], [("name", Value::Text("high".into()))])
+            .expect("insert high");
+        store
+            .insert_undirected_edge_named(
+                low,
+                high,
+                Some("QueryUndirKnows"),
+                [("since", Value::Int64(2028))],
+            )
+            .expect("insert edge");
+
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "a".into(),
+                label: Some("QueryUndirLow".into()),
+                property_projection: None,
+            },
+            PlanOp::Expand {
+                src: "a".into(),
+                edge: "e".into(),
+                dst: "b".into(),
+                direction: EdgeDirection::Undirected,
+                label: Some("QueryUndirKnows".into()),
+                label_expr: None,
+                var_len: None,
+                indexed_edge_equality: None,
+                edge_property_projection: None,
+                dst_property_projection: None,
+                hop_aux_binding: None,
+                emit_edge_binding: true,
+            },
+            PlanOp::Project {
+                columns: vec![project(prop("e", "since"), "since")],
+                distinct: false,
+            },
+        ]);
+
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute undirected query");
+
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0].get("since"), Some(&Value::Int64(2028)));
+    }
+
     fn setup_reused_dst_expand_graph(store: &GraphStore) -> VertexId {
         let a = store
             .insert_vertex_named(["ReuseExpandA"], [("name", Value::Text("anchor".into()))])
@@ -9354,7 +9565,10 @@ mod tests {
             GraphPathEdgeId::try_from_slice(bytes_column(&result, "eid")).expect("edge element id");
         assert_eq!(edge_id.shard_id, 7);
         assert_eq!(edge_id.owner_vertex_id, edge.owner_vertex_id);
-        assert_eq!(edge_id.vertex_edge_id, edge.vertex_edge_id);
+        assert_eq!(
+            edge_id.edge_slot_index,
+            EdgeSlotIndex::from_raw(edge.slot_index)
+        );
     }
 
     #[test]
@@ -9443,13 +9657,19 @@ mod tests {
             edge_path_id(&elements[1]).owner_vertex_id,
             ab.owner_vertex_id
         );
-        assert_eq!(edge_path_id(&elements[1]).vertex_edge_id, ab.vertex_edge_id);
+        assert_eq!(
+            edge_path_id(&elements[1]).edge_slot_index,
+            EdgeSlotIndex::from_raw(ab.slot_index)
+        );
         assert_eq!(vertex_path_id(&elements[2]).vertex_id, b);
         assert_eq!(
             edge_path_id(&elements[3]).owner_vertex_id,
             bc.owner_vertex_id
         );
-        assert_eq!(edge_path_id(&elements[3]).vertex_edge_id, bc.vertex_edge_id);
+        assert_eq!(
+            edge_path_id(&elements[3]).edge_slot_index,
+            EdgeSlotIndex::from_raw(bc.slot_index)
+        );
         assert_eq!(vertex_path_id(&elements[4]).vertex_id, c);
     }
 

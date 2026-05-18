@@ -1,4 +1,3 @@
-pub mod compact_edge;
 pub mod edge;
 pub mod label;
 pub mod property;
@@ -6,8 +5,7 @@ pub mod vertex;
 pub mod vertex_ref;
 pub mod weight;
 
-pub use compact_edge::CompactEdge;
-pub use edge::{Edge, EdgeMeta, VertexEdgeId};
+pub use edge::{Edge, EdgeMeta, EdgeSlotIndex};
 pub use label::{
     EDGE_LABEL_CATALOG_MAX, EDGE_LABEL_DIRECTED_BIT, EdgeDirectedness, EdgeLabelId,
     TaggedEdgeLabelId, VertexLabelId,

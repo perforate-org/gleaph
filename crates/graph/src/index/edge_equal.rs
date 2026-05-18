@@ -6,7 +6,7 @@
 
 use gleaph_gql::Value;
 use gleaph_gql::value_to_index_key_bytes;
-use gleaph_graph_kernel::entry::{PropertyId, VertexEdgeId};
+use gleaph_graph_kernel::entry::PropertyId;
 use ic_stable_lara::VertexId;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -14,7 +14,8 @@ use std::collections::BTreeMap;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct EdgeEqualityPosting {
     pub owner_vertex_id: VertexId,
-    pub vertex_edge_id: VertexEdgeId,
+    pub label_id: u16,
+    pub slot_index: u32,
 }
 
 type PostingKey = (u32, Vec<u8>);
@@ -34,7 +35,8 @@ fn posting_key(property_id: PropertyId, value_bytes: &[u8]) -> PostingKey {
 
 pub(crate) fn record_edge_property_change(
     owner_vertex_id: VertexId,
-    vertex_edge_id: VertexEdgeId,
+    label_id: u16,
+    slot_index: u32,
     property_id: PropertyId,
     prev: Option<&Value>,
     new: Option<&Value>,
@@ -42,32 +44,46 @@ pub(crate) fn record_edge_property_change(
     match (prev, new) {
         (None, Some(n)) => {
             if let Some(bytes) = encode_value(n) {
-                insert_posting(owner_vertex_id, vertex_edge_id, property_id, bytes);
+                insert_posting(owner_vertex_id, label_id, slot_index, property_id, bytes);
             }
         }
         (Some(p), Some(n)) if p != n => {
             if let Some(old_bytes) = encode_value(p) {
-                remove_posting(owner_vertex_id, vertex_edge_id, property_id, old_bytes);
+                remove_posting(
+                    owner_vertex_id,
+                    label_id,
+                    slot_index,
+                    property_id,
+                    old_bytes,
+                );
             }
             if let Some(new_bytes) = encode_value(n) {
-                insert_posting(owner_vertex_id, vertex_edge_id, property_id, new_bytes);
+                insert_posting(
+                    owner_vertex_id,
+                    label_id,
+                    slot_index,
+                    property_id,
+                    new_bytes,
+                );
             }
         }
         (Some(p), None) => {
             if let Some(bytes) = encode_value(p) {
-                remove_posting(owner_vertex_id, vertex_edge_id, property_id, bytes);
+                remove_posting(owner_vertex_id, label_id, slot_index, property_id, bytes);
             }
         }
         _ => {}
     }
 }
 
-pub(crate) fn remove_all_for_edge(owner_vertex_id: VertexId, vertex_edge_id: VertexEdgeId) {
+pub(crate) fn remove_all_for_edge(owner_vertex_id: VertexId, label_id: u16, slot_index: u32) {
     EDGE_EQUALITY.with(|index| {
         let mut map = index.borrow_mut();
         map.retain(|_, postings| {
             postings.retain(|p| {
-                p.owner_vertex_id != owner_vertex_id || p.vertex_edge_id != vertex_edge_id
+                p.owner_vertex_id != owner_vertex_id
+                    || p.label_id != label_id
+                    || p.slot_index != slot_index
             });
             !postings.is_empty()
         });
@@ -90,13 +106,15 @@ pub(crate) fn lookup_equal(
 
 fn insert_posting(
     owner_vertex_id: VertexId,
-    vertex_edge_id: VertexEdgeId,
+    label_id: u16,
+    slot_index: u32,
     property_id: PropertyId,
     value_bytes: Vec<u8>,
 ) {
     let posting = EdgeEqualityPosting {
         owner_vertex_id,
-        vertex_edge_id,
+        label_id,
+        slot_index,
     };
     EDGE_EQUALITY.with(|index| {
         index
@@ -109,7 +127,8 @@ fn insert_posting(
 
 fn remove_posting(
     owner_vertex_id: VertexId,
-    vertex_edge_id: VertexEdgeId,
+    label_id: u16,
+    slot_index: u32,
     property_id: PropertyId,
     value_bytes: Vec<u8>,
 ) {
@@ -118,7 +137,9 @@ fn remove_posting(
         let mut map = index.borrow_mut();
         if let Some(postings) = map.get_mut(&key) {
             postings.retain(|p| {
-                p.owner_vertex_id != owner_vertex_id || p.vertex_edge_id != vertex_edge_id
+                p.owner_vertex_id != owner_vertex_id
+                    || p.label_id != label_id
+                    || p.slot_index != slot_index
             });
             if postings.is_empty() {
                 map.remove(&key);
@@ -135,16 +156,17 @@ mod tests {
     #[test]
     fn lookup_tracks_insert_update_remove() {
         let owner = VertexId::from(9u32);
-        let eid = VertexEdgeId::from_raw(3);
+        let slot = 3;
         let pid = PropertyId::from_raw(7);
 
-        record_edge_property_change(owner, eid, pid, None, Some(&Value::Int64(5)));
+        record_edge_property_change(owner, 0, slot, pid, None, Some(&Value::Int64(5)));
         let hits = lookup_equal(pid, &encode_value(&Value::Int64(5)).unwrap()).unwrap();
         assert_eq!(hits.len(), 1);
 
         record_edge_property_change(
             owner,
-            eid,
+            0,
+            slot,
             pid,
             Some(&Value::Int64(5)),
             Some(&Value::Int64(9)),
@@ -157,7 +179,7 @@ mod tests {
             1
         );
 
-        record_edge_property_change(owner, eid, pid, Some(&Value::Int64(9)), None);
+        record_edge_property_change(owner, 0, slot, pid, Some(&Value::Int64(9)), None);
         assert!(lookup_equal(pid, &encode_value(&Value::Int64(9)).unwrap()).is_none());
     }
 }

@@ -78,12 +78,7 @@ impl GraphMutationExecutor for GraphStore {
     ) -> Result<EdgeHandle, GraphStoreError> {
         let handle = self.insert_directed_edge(source_vertex_id, target_vertex_id, label)?;
         for (property_id, value) in properties {
-            self.set_edge_property(
-                handle.owner_vertex_id,
-                handle.vertex_edge_id,
-                property_id,
-                value,
-            )?;
+            self.set_edge_property(handle, property_id, value)?;
         }
         Ok(handle)
     }
@@ -97,12 +92,7 @@ impl GraphMutationExecutor for GraphStore {
     ) -> Result<EdgeHandle, GraphStoreError> {
         let handle = self.insert_undirected_edge(endpoint_a, endpoint_b, label)?;
         for (property_id, value) in properties {
-            self.set_edge_property(
-                handle.owner_vertex_id,
-                handle.vertex_edge_id,
-                property_id,
-                value,
-            )?;
+            self.set_edge_property(handle, property_id, value)?;
         }
         Ok(handle)
     }
@@ -190,12 +180,12 @@ mod tests {
 
         assert_eq!(directed.owner_vertex_id, source);
         assert_eq!(
-            store.edge_property(directed.owner_vertex_id, directed.vertex_edge_id, property),
+            store.edge_property(directed, property),
             Some(Value::Text("knows".into()))
         );
         assert!(store.out_edges(source).unwrap().iter().any(|edge| {
             edge.neighbor_vid() == target
-                && edge.vertex_edge_id == directed.vertex_edge_id
+                && edge.edge_slot_index.raw() == directed.slot_index
                 && store.find_forward_edge_bucket_label(source, edge).unwrap()
                     == Some(LaraLabelId::from_raw(
                         directed_label.pack(EdgeDirectedness::Directed).raw(),
@@ -214,7 +204,7 @@ mod tests {
         assert_eq!(undirected.owner_vertex_id, target);
         assert!(store.out_edges(target).unwrap().iter().any(|edge| {
             edge.neighbor_vid() == source
-                && edge.vertex_edge_id == undirected.vertex_edge_id
+                && edge.edge_slot_index.raw() == undirected.slot_index
                 && store
                     .find_forward_edge_bucket_label(target, edge)
                     .map(|l| l.map(|id| TaggedEdgeLabelId::from_raw(id.raw())))

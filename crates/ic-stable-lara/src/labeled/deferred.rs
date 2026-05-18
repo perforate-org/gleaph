@@ -7,7 +7,7 @@ use crate::{
         maintenance::{MaintenanceBudget, MaintenanceWorkReport},
         vertex::InitError as VertexInitError,
     },
-    traits::{CsrEdge, CsrEdgeSlabVacancy},
+    traits::{CsrEdge, CsrEdgeTombstone},
 };
 use ic_stable_structures::{Memory, Storable, storable::Bound};
 use ic_stable_vec_deque::{
@@ -72,9 +72,9 @@ mod tests {
         }
     }
 
-    impl CsrEdgeSlabVacancy for TestEdge {
-        fn slab_vacant_edge() -> Self {
-            Self(u32::from(crate::VertexId::SLAB_VACANT))
+    impl CsrEdgeTombstone for TestEdge {
+        fn tombstone_edge() -> Self {
+            Self(u32::from(crate::VertexId::EDGE_TOMBSTONE_SENTINEL))
         }
     }
 
@@ -342,7 +342,7 @@ where
         matches: F,
     ) -> Result<Option<E>, DeferredError>
     where
-        E: CsrEdgeSlabVacancy,
+        E: CsrEdgeTombstone,
         F: FnMut(&E) -> bool,
     {
         let removed = self
@@ -392,7 +392,10 @@ where
     }
 
     /// Processes queued labeled maintenance work up to `budget`.
-    pub fn maintenance(&self, budget: MaintenanceBudget) -> MaintenanceWorkReport {
+    pub fn maintenance(&self, budget: MaintenanceBudget) -> MaintenanceWorkReport
+    where
+        E: CsrEdgeTombstone,
+    {
         let mut report = MaintenanceWorkReport::default();
         let max_items = budget.max_work_items.unwrap_or(u32::MAX);
         while report.processed_work_items < max_items {

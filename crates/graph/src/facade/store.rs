@@ -1,28 +1,30 @@
-use super::stable::edge_ids::canonical_undirected_owner;
 use super::stable::edge_label_catalog::EdgeLabelCatalogError;
 use super::stable::edge_weight_profiles::EdgeWeightProfileStoreError;
 use super::stable::memory::StableGraph;
 use super::stable::vertex_label_catalog::VertexLabelCatalogError;
 use super::stable::{
-    EDGE_LABEL_CATALOG, EDGE_PROPERTIES, EDGE_WEIGHT_PROFILES, GRAPH, GRAPH_DEFAULT_EDGE_LABEL,
-    METADATA, PREPARED_QUERY_CATALOG, PROPERTY_CATALOG, VERTEX_EDGE_IDS, VERTEX_LABEL_CATALOG,
-    VERTEX_LABELS, VERTEX_PROPERTIES,
+    EDGE_ALIASES, EDGE_LABEL_CATALOG, EDGE_PROPERTIES, EDGE_WEIGHT_PROFILES, GRAPH,
+    GRAPH_DEFAULT_EDGE_LABEL, METADATA, PREPARED_QUERY_CATALOG, PROPERTY_CATALOG,
+    VERTEX_LABEL_CATALOG, VERTEX_LABELS, VERTEX_PROPERTIES,
 };
 use super::{
-    GraphMetadata, GraphMetadataError, IndexRouting, PropertyCatalogError,
-    VertexEdgeIdAllocatorError, VertexLabelStoreError, VertexPropertyStoreError,
+    GraphMetadata, GraphMetadataError, IndexRouting, PropertyCatalogError, VertexLabelStoreError,
+    VertexPropertyStoreError,
 };
 use crate::index::{edge_equal, pending};
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{
-    Edge, EdgeDirectedness, EdgeLabelId, EdgeWeightProfile, PropertyId, TaggedEdgeLabelId, Vertex,
-    VertexEdgeId, VertexLabelId, VertexRef,
+    Edge, EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, EdgeWeightProfile, PropertyId,
+    TaggedEdgeLabelId, Vertex, VertexLabelId, VertexRef,
 };
 use gleaph_graph_prepared::{PreparedQueryError, PreparedQueryRecord};
 use ic_stable_lara::{
     BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledError, MaintenanceBudget,
     VertexCount, VertexId,
-    labeled::{BucketDirectedness, LabeledBidirectionalMaintenanceReport, OutEdgeOrder},
+    labeled::{
+        BucketDirectedness, EdgeSlotMove, EdgeSlotMoveObserver,
+        LabeledBidirectionalMaintenanceReport, LabeledOrientation, OutEdgeOrder,
+    },
     traits::CsrEdge,
 };
 use std::fmt;
@@ -35,6 +37,19 @@ use std::fmt;
 /// initialized in [`super::stable`].
 #[derive(Clone, Copy, Debug, Default)]
 pub struct GraphStore;
+
+struct GraphSidecarMoveObserver;
+
+impl EdgeSlotMoveObserver for GraphSidecarMoveObserver {
+    fn edge_slot_moved(
+        &mut self,
+        orientation: LabeledOrientation,
+        vid: VertexId,
+        moved: EdgeSlotMove,
+    ) {
+        GraphStore::move_edge_sidecars_for_compaction(orientation, vid, moved);
+    }
+}
 
 fn edge_storage_label(catalog: Option<EdgeLabelId>, undirected: bool) -> TaggedEdgeLabelId {
     match catalog {
@@ -59,23 +74,28 @@ fn lara_label(id: TaggedEdgeLabelId) -> LaraLabelId {
     LaraLabelId::from_raw(id.raw())
 }
 
-fn build_edge_to(target: VertexId, vertex_edge_id: VertexEdgeId, inline_value: u16) -> Edge {
+pub fn canonical_undirected_owner(a: VertexId, b: VertexId) -> VertexId {
+    if u32::from(a) >= u32::from(b) { a } else { b }
+}
+
+fn build_edge_to(target: VertexId, inline_value: u16) -> Edge {
     Edge {
         target: VertexRef::local(target),
-        vertex_edge_id,
+        edge_slot_index: EdgeSlotIndex::from_raw(0),
+        label_id: 0,
         inline_value,
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EdgeHandle {
     pub owner_vertex_id: VertexId,
-    pub vertex_edge_id: VertexEdgeId,
+    pub label_id: LaraLabelId,
+    pub slot_index: u32,
 }
 
 #[derive(Debug)]
 pub enum GraphStoreError {
     Graph(DeferredBidirectionalLabeledError),
-    VertexEdgeId(VertexEdgeIdAllocatorError),
     VertexLabelCatalog(VertexLabelCatalogError),
     EdgeLabelCatalog(EdgeLabelCatalogError),
     EdgeWeightProfile(EdgeWeightProfileStoreError),
@@ -89,7 +109,8 @@ pub enum GraphStoreError {
     /// No outgoing edge record matches the handle on the owner's forward row.
     EdgeNotFound {
         owner_vertex_id: VertexId,
-        vertex_edge_id: VertexEdgeId,
+        label_id: LaraLabelId,
+        slot_index: u32,
     },
     /// Edge label id is outside the inline edge band `0x0001..=0x3FFF`.
     InvalidEdgeLabelId(EdgeLabelId),
@@ -99,7 +120,6 @@ impl fmt::Display for GraphStoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Graph(err) => write!(f, "{err}"),
-            Self::VertexEdgeId(err) => write!(f, "{err}"),
             Self::VertexLabelCatalog(err) => write!(f, "{err}"),
             Self::EdgeLabelCatalog(err) => write!(f, "{err}"),
             Self::EdgeWeightProfile(err) => write!(f, "{err}"),
@@ -112,10 +132,11 @@ impl fmt::Display for GraphStoreError {
             ),
             Self::EdgeNotFound {
                 owner_vertex_id,
-                vertex_edge_id,
+                label_id,
+                slot_index,
             } => write!(
                 f,
-                "no edge record for owner {owner_vertex_id:?} and local edge id {vertex_edge_id:?}"
+                "no edge record for owner {owner_vertex_id:?}, label {label_id:?}, slot {slot_index}"
             ),
             Self::InvalidEdgeLabelId(id) => write!(
                 f,
@@ -126,11 +147,20 @@ impl fmt::Display for GraphStoreError {
     }
 }
 
+impl EdgeHandle {
+    fn at_slot(owner_vertex_id: VertexId, label_id: LaraLabelId, slot_index: u32) -> Self {
+        Self {
+            owner_vertex_id,
+            label_id,
+            slot_index,
+        }
+    }
+}
+
 impl std::error::Error for GraphStoreError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Graph(err) => Some(err),
-            Self::VertexEdgeId(err) => Some(err),
             Self::VertexLabelCatalog(err) => Some(err),
             Self::EdgeLabelCatalog(err) => Some(err),
             Self::EdgeWeightProfile(err) => Some(err),
@@ -147,12 +177,6 @@ impl std::error::Error for GraphStoreError {
 impl From<DeferredBidirectionalLabeledError> for GraphStoreError {
     fn from(value: DeferredBidirectionalLabeledError) -> Self {
         Self::Graph(value)
-    }
-}
-
-impl From<VertexEdgeIdAllocatorError> for GraphStoreError {
-    fn from(value: VertexEdgeIdAllocatorError) -> Self {
-        Self::VertexEdgeId(value)
     }
 }
 
@@ -515,31 +539,46 @@ impl GraphStore {
         })
     }
 
-    pub fn edge_property(
-        &self,
-        owner_vertex_id: VertexId,
-        vertex_edge_id: VertexEdgeId,
-        property_id: PropertyId,
-    ) -> Option<Value> {
-        EDGE_PROPERTIES
-            .with_borrow(|properties| properties.get(owner_vertex_id, vertex_edge_id, property_id))
+    pub fn edge_property(&self, handle: EdgeHandle, property_id: PropertyId) -> Option<Value> {
+        let handle = self.canonical_edge_handle(handle);
+        EDGE_PROPERTIES.with_borrow(|properties| {
+            properties.get(
+                handle.owner_vertex_id,
+                handle.label_id.raw(),
+                handle.slot_index,
+                property_id,
+            )
+        })
     }
 
     pub fn set_edge_property(
         &self,
-        owner_vertex_id: VertexId,
-        vertex_edge_id: VertexEdgeId,
+        handle: EdgeHandle,
         property_id: PropertyId,
         value: Value,
     ) -> Result<Option<Value>, VertexPropertyStoreError> {
-        let prev = EDGE_PROPERTIES
-            .with_borrow(|properties| properties.get(owner_vertex_id, vertex_edge_id, property_id));
+        let handle = self.canonical_edge_handle(handle);
+        let prev = EDGE_PROPERTIES.with_borrow(|properties| {
+            properties.get(
+                handle.owner_vertex_id,
+                handle.label_id.raw(),
+                handle.slot_index,
+                property_id,
+            )
+        });
         let old = EDGE_PROPERTIES.with_borrow_mut(|properties| {
-            properties.set(owner_vertex_id, vertex_edge_id, property_id, value.clone())
+            properties.set(
+                handle.owner_vertex_id,
+                handle.label_id.raw(),
+                handle.slot_index,
+                property_id,
+                value.clone(),
+            )
         })?;
         edge_equal::record_edge_property_change(
-            owner_vertex_id,
-            vertex_edge_id,
+            handle.owner_vertex_id,
+            handle.label_id.raw(),
+            handle.slot_index,
             property_id,
             prev.as_ref(),
             Some(&value),
@@ -549,19 +588,31 @@ impl GraphStore {
 
     pub fn remove_edge_property(
         &self,
-        owner_vertex_id: VertexId,
-        vertex_edge_id: VertexEdgeId,
+        handle: EdgeHandle,
         property_id: PropertyId,
     ) -> Option<Value> {
-        let prev = EDGE_PROPERTIES
-            .with_borrow(|properties| properties.get(owner_vertex_id, vertex_edge_id, property_id));
+        let handle = self.canonical_edge_handle(handle);
+        let prev = EDGE_PROPERTIES.with_borrow(|properties| {
+            properties.get(
+                handle.owner_vertex_id,
+                handle.label_id.raw(),
+                handle.slot_index,
+                property_id,
+            )
+        });
         let removed = EDGE_PROPERTIES.with_borrow_mut(|properties| {
-            properties.remove(owner_vertex_id, vertex_edge_id, property_id)
+            properties.remove(
+                handle.owner_vertex_id,
+                handle.label_id.raw(),
+                handle.slot_index,
+                property_id,
+            )
         });
         if let Some(ref old) = prev {
             edge_equal::record_edge_property_change(
-                owner_vertex_id,
-                vertex_edge_id,
+                handle.owner_vertex_id,
+                handle.label_id.raw(),
+                handle.slot_index,
                 property_id,
                 Some(old),
                 None,
@@ -570,26 +621,25 @@ impl GraphStore {
         removed
     }
 
-    pub fn edge_properties(
-        &self,
-        owner_vertex_id: VertexId,
-        vertex_edge_id: VertexEdgeId,
-    ) -> Vec<(PropertyId, Value)> {
+    pub fn edge_properties(&self, handle: EdgeHandle) -> Vec<(PropertyId, Value)> {
+        let handle = self.canonical_edge_handle(handle);
         EDGE_PROPERTIES.with_borrow(|properties| {
-            properties.properties_for_edge(owner_vertex_id, vertex_edge_id)
+            properties.properties_for_edge(
+                handle.owner_vertex_id,
+                handle.label_id.raw(),
+                handle.slot_index,
+            )
         })
     }
 
-    pub(crate) fn edge_properties_gql_record(
-        &self,
-        owner_vertex_id: VertexId,
-        vertex_edge_id: VertexEdgeId,
-    ) -> Value {
+    pub(crate) fn edge_properties_gql_record(&self, handle: EdgeHandle) -> Value {
+        let handle = self.canonical_edge_handle(handle);
         EDGE_PROPERTIES.with_borrow(|properties| {
             let mut fields: Vec<(String, Value)> = Vec::new();
             properties.for_each_property_for_edge(
-                owner_vertex_id,
-                vertex_edge_id,
+                handle.owner_vertex_id,
+                handle.label_id.raw(),
+                handle.slot_index,
                 |property_id, value| {
                     let name = self
                         .property_name(property_id)
@@ -603,28 +653,6 @@ impl GraphStore {
                 Value::Record(fields)
             }
         })
-    }
-
-    pub fn allocate_vertex_edge_id(
-        &self,
-        owner_vertex_id: VertexId,
-    ) -> Result<VertexEdgeId, VertexEdgeIdAllocatorError> {
-        VERTEX_EDGE_IDS.with_borrow_mut(|ids| ids.allocate_for_owner(owner_vertex_id))
-    }
-
-    pub fn allocate_directed_edge_id(
-        &self,
-        source_vertex_id: VertexId,
-    ) -> Result<(VertexId, VertexEdgeId), VertexEdgeIdAllocatorError> {
-        VERTEX_EDGE_IDS.with_borrow_mut(|ids| ids.allocate_directed(source_vertex_id))
-    }
-
-    pub fn allocate_undirected_edge_id(
-        &self,
-        endpoint_a: VertexId,
-        endpoint_b: VertexId,
-    ) -> Result<(VertexId, VertexEdgeId), VertexEdgeIdAllocatorError> {
-        VERTEX_EDGE_IDS.with_borrow_mut(|ids| ids.allocate_undirected(endpoint_a, endpoint_b))
     }
 
     fn validate_catalog_edge_label(label: Option<EdgeLabelId>) -> Result<(), GraphStoreError> {
@@ -646,21 +674,32 @@ impl GraphStore {
         self.ensure_vertex_id(target_vertex_id)?;
         Self::validate_catalog_edge_label(catalog_label)?;
 
-        let (owner_vertex_id, vertex_edge_id) = self.allocate_directed_edge_id(source_vertex_id)?;
         let label = lara_label(edge_storage_label(catalog_label, false));
-        let forward = build_edge_to(target_vertex_id, vertex_edge_id, 0);
+        let forward = build_edge_to(target_vertex_id, 0);
         let reverse = Edge {
             target: VertexRef::local(source_vertex_id),
-            vertex_edge_id,
+            edge_slot_index: EdgeSlotIndex::from_raw(0),
+            label_id: 0,
             inline_value: forward.inline_value,
         };
         self.with_graph_mut(|graph| {
             graph.insert_directed_edge(source_vertex_id, target_vertex_id, label, forward, reverse)
         })?;
-        Ok(EdgeHandle {
-            owner_vertex_id,
-            vertex_edge_id,
-        })
+        let canonical = self
+            .find_newest_forward_handle(source_vertex_id, label, |edge| {
+                edge.neighbor_vid() == target_vertex_id && edge.inline_value == forward.inline_value
+            })?
+            .ok_or(GraphStoreError::EdgeNotFound {
+                owner_vertex_id: source_vertex_id,
+                label_id: label,
+                slot_index: u32::MAX,
+            })?;
+        if let Some(alias) = self.find_newest_reverse_handle(target_vertex_id, label, |edge| {
+            edge.neighbor_vid() == source_vertex_id && edge.inline_value == forward.inline_value
+        })? {
+            self.insert_edge_alias(alias, canonical);
+        }
+        Ok(canonical)
     }
 
     /// Test/canbench helper to insert a directed edge with a specific `inline_value`.
@@ -676,21 +715,32 @@ impl GraphStore {
         self.ensure_vertex_id(target_vertex_id)?;
         Self::validate_catalog_edge_label(catalog_label)?;
 
-        let (owner_vertex_id, vertex_edge_id) = self.allocate_directed_edge_id(source_vertex_id)?;
         let label = lara_label(edge_storage_label(catalog_label, false));
-        let forward = build_edge_to(target_vertex_id, vertex_edge_id, inline_value);
+        let forward = build_edge_to(target_vertex_id, inline_value);
         let reverse = Edge {
             target: VertexRef::local(source_vertex_id),
-            vertex_edge_id,
+            edge_slot_index: EdgeSlotIndex::from_raw(0),
+            label_id: 0,
             inline_value: forward.inline_value,
         };
         self.with_graph_mut(|graph| {
             graph.insert_directed_edge(source_vertex_id, target_vertex_id, label, forward, reverse)
         })?;
-        Ok(EdgeHandle {
-            owner_vertex_id,
-            vertex_edge_id,
-        })
+        let canonical = self
+            .find_newest_forward_handle(source_vertex_id, label, |edge| {
+                edge.neighbor_vid() == target_vertex_id && edge.inline_value == forward.inline_value
+            })?
+            .ok_or(GraphStoreError::EdgeNotFound {
+                owner_vertex_id: source_vertex_id,
+                label_id: label,
+                slot_index: u32::MAX,
+            })?;
+        if let Some(alias) = self.find_newest_reverse_handle(target_vertex_id, label, |edge| {
+            edge.neighbor_vid() == source_vertex_id && edge.inline_value == forward.inline_value
+        })? {
+            self.insert_edge_alias(alias, canonical);
+        }
+        Ok(canonical)
     }
 
     pub fn insert_undirected_edge(
@@ -703,18 +753,38 @@ impl GraphStore {
         self.ensure_vertex_id(endpoint_b)?;
         Self::validate_catalog_edge_label(catalog_label)?;
 
-        let (owner_vertex_id, vertex_edge_id) =
-            self.allocate_undirected_edge_id(endpoint_a, endpoint_b)?;
         let label = lara_label(edge_storage_label(catalog_label, true));
-        let edge_ab = build_edge_to(endpoint_b, vertex_edge_id, 0);
-        let edge_ba = build_edge_to(endpoint_a, vertex_edge_id, 0);
+        let edge_ab = build_edge_to(endpoint_b, 0);
+        let edge_ba = build_edge_to(endpoint_a, 0);
         self.with_graph_mut(|graph| {
             graph.insert_undirected_deferred(endpoint_a, endpoint_b, label, edge_ab, edge_ba)
         })?;
-        Ok(EdgeHandle {
-            owner_vertex_id,
-            vertex_edge_id,
-        })
+        let owner_vertex_id = canonical_undirected_owner(endpoint_a, endpoint_b);
+        let target = if owner_vertex_id == endpoint_a {
+            endpoint_b
+        } else {
+            endpoint_a
+        };
+        let canonical = self
+            .find_newest_forward_handle(owner_vertex_id, label, |edge| {
+                edge.neighbor_vid() == target && edge.inline_value == 0
+            })?
+            .ok_or(GraphStoreError::EdgeNotFound {
+                owner_vertex_id,
+                label_id: label,
+                slot_index: u32::MAX,
+            })?;
+        let alias_vertex_id = if owner_vertex_id == endpoint_a {
+            endpoint_b
+        } else {
+            endpoint_a
+        };
+        if let Some(alias) = self.find_newest_forward_handle(alias_vertex_id, label, |edge| {
+            edge.neighbor_vid() == owner_vertex_id && edge.inline_value == 0
+        })? {
+            self.insert_edge_alias(alias, canonical);
+        }
+        Ok(canonical)
     }
 
     pub fn out_edges(
@@ -1018,6 +1088,98 @@ impl GraphStore {
         GRAPH.with_borrow(|graph| graph.find_forward_edge_label(owner_vertex_id, edge))
     }
 
+    fn find_newest_forward_handle<F>(
+        &self,
+        owner_vertex_id: VertexId,
+        expected_label: LaraLabelId,
+        mut pred: F,
+    ) -> Result<Option<EdgeHandle>, GraphStoreError>
+    where
+        F: FnMut(&Edge) -> bool,
+    {
+        GRAPH
+            .with_borrow(|graph| {
+                graph.find_forward_out_edge_slot_with_label_by_predicate(owner_vertex_id, |edge| {
+                    pred(edge)
+                })
+            })
+            .map_err(GraphStoreError::from)
+            .map(|found| {
+                found.and_then(|(_, label_id, slot_index)| {
+                    (label_id == expected_label).then_some(EdgeHandle {
+                        owner_vertex_id,
+                        label_id,
+                        slot_index,
+                    })
+                })
+            })
+    }
+
+    fn find_newest_reverse_handle<F>(
+        &self,
+        row_vertex_id: VertexId,
+        expected_label: LaraLabelId,
+        mut pred: F,
+    ) -> Result<Option<EdgeHandle>, GraphStoreError>
+    where
+        F: FnMut(&Edge) -> bool,
+    {
+        GRAPH
+            .with_borrow(|graph| {
+                graph.find_reverse_out_edge_slot_with_label_by_predicate(row_vertex_id, |edge| {
+                    pred(edge)
+                })
+            })
+            .map_err(GraphStoreError::from)
+            .map(|found| {
+                found.and_then(|(_, label_id, slot_index)| {
+                    (label_id == expected_label).then_some(EdgeHandle::at_slot(
+                        row_vertex_id,
+                        label_id,
+                        slot_index,
+                    ))
+                })
+            })
+    }
+
+    pub(crate) fn canonical_edge_handle(&self, handle: EdgeHandle) -> EdgeHandle {
+        EDGE_ALIASES
+            .with_borrow(|aliases| {
+                aliases.get(
+                    handle.owner_vertex_id,
+                    handle.label_id.raw(),
+                    handle.slot_index,
+                )
+            })
+            .map(|canonical| {
+                EdgeHandle::at_slot(
+                    canonical.canonical_vertex_id(),
+                    handle.label_id,
+                    canonical.canonical_slot_index(),
+                )
+            })
+            .unwrap_or(handle)
+    }
+
+    fn insert_edge_alias(&self, alias: EdgeHandle, canonical: EdgeHandle) {
+        if alias.owner_vertex_id == canonical.owner_vertex_id
+            && alias.label_id == canonical.label_id
+            && alias.slot_index == canonical.slot_index
+        {
+            return;
+        }
+        debug_assert_eq!(alias.label_id, canonical.label_id);
+        EDGE_ALIASES.with_borrow_mut(|aliases| {
+            aliases.insert(
+                alias.owner_vertex_id,
+                alias.label_id.raw(),
+                alias.slot_index,
+                canonical.owner_vertex_id,
+                canonical.slot_index,
+            );
+        });
+    }
+
     /// Scans outgoing edges without materializing the full CSR row.
     pub fn for_each_out_edge_matching<Match, Visit>(
         &self,
@@ -1114,8 +1276,11 @@ impl GraphStore {
         &self,
         budget: MaintenanceBudget,
     ) -> Result<LabeledBidirectionalMaintenanceReport, GraphStoreError> {
+        let mut observer = GraphSidecarMoveObserver;
         GRAPH
-            .with_borrow(|graph| graph.maintenance(budget))
+            .with_borrow(|graph| {
+                graph.maintenance_with_edge_slot_move_observer(budget, &mut observer)
+            })
             .map_err(GraphStoreError::from)
     }
 
@@ -1158,25 +1323,31 @@ impl GraphStore {
             .map_err(GraphStoreError::from)?;
         self.clear_vertex_stable_payloads_before_graph_delete(vertex_id)?;
 
-        let mut to_clear: Vec<(VertexId, VertexEdgeId)> = Vec::new();
-        for e in self.out_edges(vertex_id).map_err(GraphStoreError::from)? {
-            to_clear.push((
-                self.edge_sidecar_owner_from_out_row(vertex_id, &e),
-                e.vertex_edge_id,
-            ));
+        let mut to_clear: Vec<EdgeHandle> = Vec::new();
+        for edge in self.out_edges(vertex_id).map_err(GraphStoreError::from)? {
+            let owner = self.edge_sidecar_owner_from_out_row(vertex_id, &edge);
+            to_clear.push(EdgeHandle {
+                owner_vertex_id: owner,
+                label_id: LaraLabelId::from_raw(edge.label_id),
+                slot_index: edge.edge_slot_index.raw(),
+            });
         }
-        for e in self.in_edges(vertex_id).map_err(GraphStoreError::from)? {
-            to_clear.push((
-                self.edge_sidecar_owner_from_in_row(vertex_id, &e),
-                e.vertex_edge_id,
-            ));
+        for edge in self.in_edges(vertex_id).map_err(GraphStoreError::from)? {
+            let owner = self.edge_sidecar_owner_from_in_row(vertex_id, &edge);
+            to_clear.push(EdgeHandle {
+                owner_vertex_id: owner,
+                label_id: LaraLabelId::from_raw(edge.label_id),
+                slot_index: edge.edge_slot_index.raw(),
+            });
         }
-        to_clear.sort_unstable();
-        to_clear.dedup();
+        to_clear.sort_unstable_by_key(|h| {
+            (u32::from(h.owner_vertex_id), h.label_id.raw(), h.slot_index)
+        });
+        to_clear.dedup_by_key(|h| (u32::from(h.owner_vertex_id), h.label_id.raw(), h.slot_index));
 
         self.with_graph_mut(|graph| graph.delete_vertex_deferred(vertex_id))?;
-        for (owner, veid) in to_clear {
-            Self::clear_edge_properties_stable(owner, veid);
+        for handle in to_clear {
+            self.clear_edge_sidecars(handle);
         }
         self.drain_deferred_maintenance()?;
         Ok(())
@@ -1184,30 +1355,37 @@ impl GraphStore {
 
     /// Removes one logical edge (and its stable properties) identified by `handle`.
     pub fn delete_edge_by_handle(&self, handle: EdgeHandle) -> Result<(), GraphStoreError> {
-        self.ensure_vertex_id(handle.owner_vertex_id)
+        let canonical = self.canonical_edge_handle(handle);
+        self.ensure_vertex_id(canonical.owner_vertex_id)
             .map_err(GraphStoreError::from)?;
-        let edge = self
-            .find_outgoing_edge_record(handle.owner_vertex_id, handle.vertex_edge_id)?
-            .ok_or(GraphStoreError::EdgeNotFound {
-                owner_vertex_id: handle.owner_vertex_id,
-                vertex_edge_id: handle.vertex_edge_id,
-            })?;
-        Self::clear_edge_properties_stable(handle.owner_vertex_id, handle.vertex_edge_id);
+        self.clear_edge_sidecars(handle);
+        let edge = self.with_graph_mut(|graph| {
+            graph.remove_forward_edge_at_slot(
+                canonical.owner_vertex_id,
+                canonical.label_id,
+                canonical.slot_index,
+            )
+        })?;
+        let edge = edge.ok_or(GraphStoreError::EdgeNotFound {
+            owner_vertex_id: canonical.owner_vertex_id,
+            label_id: canonical.label_id,
+            slot_index: canonical.slot_index,
+        })?;
         let neighbor = edge.neighbor_vid();
-        let removed = if self.edge_is_undirected(handle.owner_vertex_id, &edge)? {
+        self.with_graph_mut(|graph| {
+            graph.remove_reverse_edge_matching(neighbor, canonical.label_id, |cand| {
+                cand.neighbor_vid() == canonical.owner_vertex_id
+                    && *cand == edge.with_neighbor_vid(canonical.owner_vertex_id)
+            })
+        })?;
+        if TaggedEdgeLabelId::from_raw(canonical.label_id.raw()).is_undirected() {
             self.with_graph_mut(|graph| {
-                graph.remove_undirected_deferred(handle.owner_vertex_id, neighbor, edge)
-            })?
-        } else {
-            self.with_graph_mut(|graph| {
-                graph.remove_directed_deferred(handle.owner_vertex_id, neighbor, edge)
-            })?
-        };
-        if !removed {
-            return Err(GraphStoreError::EdgeNotFound {
-                owner_vertex_id: handle.owner_vertex_id,
-                vertex_edge_id: handle.vertex_edge_id,
-            });
+                graph.remove_directed_deferred(
+                    neighbor,
+                    canonical.owner_vertex_id,
+                    edge.with_neighbor_vid(canonical.owner_vertex_id),
+                )
+            })?;
         }
         self.drain_deferred_maintenance()?;
         Ok(())
@@ -1249,11 +1427,95 @@ impl GraphStore {
         }
     }
 
-    fn clear_edge_properties_stable(owner_vertex_id: VertexId, vertex_edge_id: VertexEdgeId) {
-        edge_equal::remove_all_for_edge(owner_vertex_id, vertex_edge_id);
+    fn clear_edge_sidecars(&self, handle: EdgeHandle) {
+        let handle = self.canonical_edge_handle(handle);
+        edge_equal::remove_all_for_edge(
+            handle.owner_vertex_id,
+            handle.label_id.raw(),
+            handle.slot_index,
+        );
         EDGE_PROPERTIES.with_borrow_mut(|store| {
-            store.remove_all_for_edge(owner_vertex_id, vertex_edge_id);
+            store.remove_all_for_edge(
+                handle.owner_vertex_id,
+                handle.label_id.raw(),
+                handle.slot_index,
+            );
         });
+        EDGE_ALIASES.with_borrow_mut(|aliases| {
+            aliases.remove(
+                handle.owner_vertex_id,
+                handle.label_id.raw(),
+                handle.slot_index,
+            );
+            aliases.remove_all_for_canonical(
+                handle.owner_vertex_id,
+                handle.label_id.raw(),
+                handle.slot_index,
+            );
+        });
+    }
+
+    fn move_edge_sidecars_for_compaction(
+        orientation: LabeledOrientation,
+        owner_vertex_id: VertexId,
+        moved: EdgeSlotMove,
+    ) {
+        let label_id = moved.label_id.raw();
+        match orientation {
+            LabeledOrientation::Forward => {
+                let moved_properties = EDGE_PROPERTIES.with_borrow_mut(|store| {
+                    store
+                        .move_all_for_edge(
+                            owner_vertex_id,
+                            label_id,
+                            moved.old_slot_index,
+                            moved.new_slot_index,
+                        )
+                        .expect("stored edge property values remain encodable")
+                });
+                if !moved_properties.is_empty() {
+                    edge_equal::remove_all_for_edge(
+                        owner_vertex_id,
+                        label_id,
+                        moved.old_slot_index,
+                    );
+                    for (property_id, value) in &moved_properties {
+                        edge_equal::record_edge_property_change(
+                            owner_vertex_id,
+                            label_id,
+                            moved.new_slot_index,
+                            *property_id,
+                            None,
+                            Some(value),
+                        );
+                    }
+                }
+                EDGE_ALIASES.with_borrow_mut(|aliases| {
+                    aliases.move_canonical_target(
+                        owner_vertex_id,
+                        label_id,
+                        moved.old_slot_index,
+                        moved.new_slot_index,
+                    );
+                    aliases.move_alias_key(
+                        owner_vertex_id,
+                        label_id,
+                        moved.old_slot_index,
+                        moved.new_slot_index,
+                    );
+                });
+            }
+            LabeledOrientation::Reverse => {
+                EDGE_ALIASES.with_borrow_mut(|aliases| {
+                    aliases.move_alias_key(
+                        owner_vertex_id,
+                        label_id,
+                        moved.old_slot_index,
+                        moved.new_slot_index,
+                    );
+                });
+            }
+        }
     }
 
     fn clear_vertex_properties_stable_only(&self, vertex_id: VertexId) {
@@ -1294,34 +1556,66 @@ impl GraphStore {
 
     fn lookup_forward_out_edge(
         &self,
-        owner_vertex_id: VertexId,
-        vertex_edge_id: VertexEdgeId,
-    ) -> Result<Option<(Edge, Option<LaraLabelId>)>, GraphStoreError> {
+        handle: EdgeHandle,
+    ) -> Result<Option<(Edge, LaraLabelId)>, GraphStoreError> {
         GRAPH.with_borrow(|graph| {
             graph
-                .find_forward_out_edge_with_label_by_predicate(owner_vertex_id, |candidate| {
-                    candidate.vertex_edge_id == vertex_edge_id
+                .find_forward_out_edge_slot_with_label_by_predicate(
+                    handle.owner_vertex_id,
+                    |edge| edge.edge_slot_index == EdgeSlotIndex::from_raw(handle.slot_index),
+                )
+                .map(|found| {
+                    found.and_then(|(edge, label_id, slot_index)| {
+                        (label_id == handle.label_id && slot_index == handle.slot_index)
+                            .then_some((edge, label_id))
+                    })
                 })
                 .map_err(GraphStoreError::from)
         })
     }
 
+    fn lookup_reverse_out_edge(
+        &self,
+        handle: EdgeHandle,
+    ) -> Result<Option<(Edge, LaraLabelId)>, GraphStoreError> {
+        GRAPH.with_borrow(|graph| {
+            graph
+                .find_reverse_out_edge_slot_with_label_by_predicate(
+                    handle.owner_vertex_id,
+                    |edge| edge.edge_slot_index == EdgeSlotIndex::from_raw(handle.slot_index),
+                )
+                .map(|found| {
+                    found.and_then(|(edge, label_id, slot_index)| {
+                        (label_id == handle.label_id && slot_index == handle.slot_index)
+                            .then_some((edge, label_id))
+                    })
+                })
+                .map_err(GraphStoreError::from)
+        })
+    }
+
+    fn lookup_edge_entry(
+        &self,
+        handle: EdgeHandle,
+    ) -> Result<Option<(Edge, LaraLabelId)>, GraphStoreError> {
+        match self.lookup_forward_out_edge(handle)? {
+            Some(found) => Ok(Some(found)),
+            None => self.lookup_reverse_out_edge(handle),
+        }
+    }
+
     pub(crate) fn find_outgoing_edge_with_bucket_label(
         &self,
-        owner_vertex_id: VertexId,
-        vertex_edge_id: VertexEdgeId,
-    ) -> Result<Option<(Edge, Option<LaraLabelId>)>, GraphStoreError> {
-        self.lookup_forward_out_edge(owner_vertex_id, vertex_edge_id)
+        handle: EdgeHandle,
+    ) -> Result<Option<(Edge, LaraLabelId)>, GraphStoreError> {
+        self.lookup_edge_entry(handle)
     }
 
     pub(crate) fn find_outgoing_edge_record(
         &self,
-        owner_vertex_id: VertexId,
-        vertex_edge_id: VertexEdgeId,
+        handle: EdgeHandle,
     ) -> Result<Option<Edge>, GraphStoreError> {
-        Ok(self
-            .lookup_forward_out_edge(owner_vertex_id, vertex_edge_id)?
-            .map(|(edge, _)| edge))
+        Ok(self.lookup_edge_entry(handle)?.map(|(edge, _)| edge))
     }
 
     fn contains_vertex(&self, vertex_id: VertexId) -> bool {
@@ -1366,12 +1660,15 @@ mod tests {
             .expect("insert directed edge");
 
         assert_eq!(directed.owner_vertex_id, source);
-        assert_eq!(directed.vertex_edge_id, VertexEdgeId::from_raw(1));
+        assert_eq!(
+            EdgeSlotIndex::from_raw(directed.slot_index),
+            EdgeSlotIndex::from_raw(0)
+        );
 
         let out_edges = store.out_edges(source).expect("read out edges");
         assert!(out_edges.iter().any(|edge| {
             edge.target == VertexRef::local(target)
-                && edge.vertex_edge_id == directed.vertex_edge_id
+                && edge.edge_slot_index.raw() == directed.slot_index
                 && !store.edge_is_undirected(source, edge).unwrap()
         }));
 
@@ -1380,12 +1677,15 @@ mod tests {
             .expect("insert undirected edge");
 
         assert_eq!(undirected.owner_vertex_id, target);
-        assert_eq!(undirected.vertex_edge_id, VertexEdgeId::from_raw(1));
+        assert_eq!(
+            EdgeSlotIndex::from_raw(undirected.slot_index),
+            EdgeSlotIndex::from_raw(0)
+        );
 
         let target_out_edges = store.out_edges(target).expect("read target out edges");
         assert!(target_out_edges.iter().any(|edge| {
             edge.target == VertexRef::local(source)
-                && edge.vertex_edge_id == undirected.vertex_edge_id
+                && edge.edge_slot_index.raw() == undirected.slot_index
                 && store.edge_is_undirected(target, edge).unwrap()
         }));
     }
@@ -1405,5 +1705,148 @@ mod tests {
         store.insert_directed_edge(a, b, None).expect("edge");
         store.detach_delete_vertex(a).expect("detach delete");
         assert!(store.out_edges(b).expect("out").is_empty());
+    }
+
+    #[test]
+    fn forward_edge_compaction_moves_property_sidecars() {
+        let store = GraphStore::new();
+        let source = store.insert_vertex().expect("source");
+        let first = store.insert_vertex().expect("first");
+        let second = store.insert_vertex().expect("second");
+        let third = store.insert_vertex().expect("third");
+        let label = store
+            .get_or_insert_edge_label_id("CompactionMovesForward")
+            .expect("label");
+        let property = store
+            .get_or_insert_property_id("move_marker")
+            .expect("property");
+
+        let first_edge = store
+            .insert_directed_edge(source, first, Some(label))
+            .expect("first edge");
+        store
+            .insert_directed_edge(source, second, Some(label))
+            .expect("second edge");
+        store
+            .insert_directed_edge(source, third, Some(label))
+            .expect("third edge");
+
+        let old_third = EdgeHandle::at_slot(
+            source,
+            lara_label(label.pack(EdgeDirectedness::Directed)),
+            2,
+        );
+        store
+            .set_edge_property(old_third, property, Value::Int64(33))
+            .expect("set property");
+        store
+            .delete_edge_by_handle(first_edge)
+            .expect("delete first");
+        store.with_graph_mut(|graph| {
+            graph
+                .mark_compact_vertex_edge_span(LabeledOrientation::Forward, source, 0)
+                .expect("mark compaction");
+        });
+        store
+            .run_maintenance_best_effort(MaintenanceBudget {
+                max_instructions: 0,
+                reserve_instructions: 0,
+                checkpoint_every: 1,
+                max_work_items: None,
+                max_segments: None,
+                max_delete_edge_steps: None,
+            })
+            .expect("maintenance");
+
+        let moved = store
+            .out_edges(source)
+            .expect("out edges")
+            .into_iter()
+            .find(|edge| edge.neighbor_vid() == third)
+            .expect("third edge after compaction");
+        assert_eq!(moved.edge_slot_index, EdgeSlotIndex::from_raw(1));
+        let new_third = EdgeHandle::at_slot(
+            source,
+            LaraLabelId::from_raw(moved.label_id),
+            moved.edge_slot_index.raw(),
+        );
+        assert_eq!(
+            store.edge_property(new_third, property),
+            Some(Value::Int64(33))
+        );
+        assert_eq!(store.edge_property(old_third, property), None);
+    }
+
+    #[test]
+    fn reverse_edge_compaction_moves_alias_keys() {
+        let store = GraphStore::new();
+        let first = store.insert_vertex().expect("first");
+        let second = store.insert_vertex().expect("second");
+        let third = store.insert_vertex().expect("third");
+        let target = store.insert_vertex().expect("target");
+        let label = store
+            .get_or_insert_edge_label_id("CompactionMovesReverseAlias")
+            .expect("label");
+        let other_label = store
+            .get_or_insert_edge_label_id("CompactionMovesReverseAliasOther")
+            .expect("other label");
+        let property = store
+            .get_or_insert_property_id("reverse_move_marker")
+            .expect("property");
+
+        let first_edge = store
+            .insert_directed_edge(first, target, Some(label))
+            .expect("first edge");
+        store
+            .insert_directed_edge(second, target, Some(label))
+            .expect("second edge");
+        let third_edge = store
+            .insert_directed_edge(third, target, Some(label))
+            .expect("third edge");
+        store
+            .insert_directed_edge(second, target, Some(other_label))
+            .expect("other label edge");
+        store
+            .set_edge_property(third_edge, property, Value::Int64(44))
+            .expect("set property");
+
+        store
+            .delete_edge_by_handle(first_edge)
+            .expect("delete first");
+        store.with_graph_mut(|graph| {
+            graph
+                .mark_compact_dense_labeled_vertex_maintenance(LabeledOrientation::Reverse, target)
+                .expect("mark reverse compaction");
+        });
+        store
+            .run_maintenance_best_effort(MaintenanceBudget {
+                max_instructions: 0,
+                reserve_instructions: 0,
+                checkpoint_every: 1,
+                max_work_items: None,
+                max_segments: None,
+                max_delete_edge_steps: None,
+            })
+            .expect("maintenance");
+
+        let moved_alias = store
+            .in_edges(target)
+            .expect("in edges")
+            .into_iter()
+            .find(|edge| {
+                edge.neighbor_vid() == third
+                    && edge.label_id == label.pack(EdgeDirectedness::Directed).raw()
+            })
+            .expect("third reverse edge after compaction");
+        assert_eq!(moved_alias.edge_slot_index, EdgeSlotIndex::from_raw(1));
+        let alias_handle = EdgeHandle::at_slot(
+            target,
+            LaraLabelId::from_raw(moved_alias.label_id),
+            moved_alias.edge_slot_index.raw(),
+        );
+        assert_eq!(
+            store.edge_property(alias_handle, property),
+            Some(Value::Int64(44))
+        );
     }
 }

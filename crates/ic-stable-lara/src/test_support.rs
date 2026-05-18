@@ -1,5 +1,5 @@
 use crate::lara::edge::EdgeLayout;
-use crate::traits::CsrEdgeSlabVacancy;
+use crate::traits::CsrEdgeTombstone;
 use crate::*;
 use std::{cell::RefCell, rc::Rc};
 
@@ -26,9 +26,9 @@ impl CsrEdge for TestEdge {
     }
 }
 
-impl CsrEdgeSlabVacancy for TestEdge {
-    fn slab_vacant_edge() -> Self {
-        Self(u32::from(VertexId::SLAB_VACANT))
+impl CsrEdgeTombstone for TestEdge {
+    fn tombstone_edge() -> Self {
+        Self(u32::from(VertexId::EDGE_TOMBSTONE_SENTINEL))
     }
 }
 
@@ -71,10 +71,10 @@ impl CsrEdge for LabelledTestEdge {
     }
 }
 
-impl CsrEdgeSlabVacancy for LabelledTestEdge {
-    fn slab_vacant_edge() -> Self {
+impl CsrEdgeTombstone for LabelledTestEdge {
+    fn tombstone_edge() -> Self {
         Self {
-            neighbor: u32::from(VertexId::SLAB_VACANT),
+            neighbor: u32::from(VertexId::EDGE_TOMBSTONE_SENTINEL),
             label: 0,
         }
     }
@@ -122,10 +122,10 @@ impl CsrEdge for UndirectedTestEdge {
     }
 }
 
-impl CsrEdgeSlabVacancy for UndirectedTestEdge {
-    fn slab_vacant_edge() -> Self {
+impl CsrEdgeTombstone for UndirectedTestEdge {
+    fn tombstone_edge() -> Self {
         Self {
-            neighbor: u32::from(VertexId::SLAB_VACANT),
+            neighbor: u32::from(VertexId::EDGE_TOMBSTONE_SENTINEL),
             undirected: false,
         }
     }
@@ -264,7 +264,7 @@ pub(crate) fn deferred_bidirectional_test_graph<E>(
     starts: &[u64],
 ) -> TestDeferredBidirectionalLaraGraph<E>
 where
-    E: CsrEdge + CsrEdgeSlabVacancy,
+    E: CsrEdge + CsrEdgeTombstone,
 {
     let graph = crate::DeferredBidirectionalLaraGraph::new_with_config(
         vector_memory(),

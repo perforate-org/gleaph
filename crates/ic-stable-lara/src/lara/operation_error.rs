@@ -28,7 +28,7 @@ pub enum LaraOperationError {
     VertexAccess(VertexAccessError),
     /// Mutating API on a logically deleted vertex row.
     VertexDeleted,
-    /// Log replay ended before enough edges were read.
+    /// Overflow-log folding ended before enough edges were read.
     LogChainShort,
     /// `degree * E::BYTES` overflowed when sizing a collect buffer.
     CollectAllocationOverflow,

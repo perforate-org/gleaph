@@ -1,24 +1,27 @@
 use super::vertex_properties::{StoredPropertyValue, VertexPropertyStoreError};
 use gleaph_gql::Value;
-use gleaph_graph_kernel::entry::{PropertyId, VertexEdgeId};
+use gleaph_graph_kernel::entry::PropertyId;
 use ic_stable_lara::VertexId;
 use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
 use std::{borrow::Cow, ops::Bound as RangeBound};
 
 fn edge_property_key_range(
     owner_vertex_id: VertexId,
-    vertex_edge_id: VertexEdgeId,
+    label_id: u16,
+    slot_index: u32,
 ) -> (RangeBound<EdgePropertyKey>, RangeBound<EdgePropertyKey>) {
     let owner_vertex_id = u32::from_le_bytes(owner_vertex_id.to_le_bytes());
     let start = EdgePropertyKey {
         owner_vertex_id,
-        vertex_edge_id,
+        label_id,
+        slot_index,
         property_id: PropertyId::from_raw(0),
     };
-    let upper = vertex_edge_id.raw().checked_add(1).map(|next_edge_id| {
+    let upper = slot_index.checked_add(1).map(|next_slot| {
         RangeBound::Excluded(EdgePropertyKey {
             owner_vertex_id,
-            vertex_edge_id: VertexEdgeId::from_raw(next_edge_id),
+            label_id,
+            slot_index: next_slot,
             property_id: PropertyId::from_raw(0),
         })
     });
@@ -31,19 +34,22 @@ fn edge_property_key_range(
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EdgePropertyKey {
     owner_vertex_id: u32,
-    vertex_edge_id: VertexEdgeId,
+    label_id: u16,
+    slot_index: u32,
     property_id: PropertyId,
 }
 
 impl EdgePropertyKey {
     pub fn new(
         owner_vertex_id: VertexId,
-        vertex_edge_id: VertexEdgeId,
+        label_id: u16,
+        slot_index: u32,
         property_id: PropertyId,
     ) -> Self {
         Self {
             owner_vertex_id: u32::from_le_bytes(owner_vertex_id.to_le_bytes()),
-            vertex_edge_id,
+            label_id,
+            slot_index,
             property_id,
         }
     }
@@ -52,8 +58,12 @@ impl EdgePropertyKey {
         VertexId::from(self.owner_vertex_id)
     }
 
-    pub fn vertex_edge_id(self) -> VertexEdgeId {
-        self.vertex_edge_id
+    pub fn label_id(self) -> u16 {
+        self.label_id
+    }
+
+    pub fn slot_index(self) -> u32 {
+        self.slot_index
     }
 
     pub fn property_id(self) -> PropertyId {
@@ -63,7 +73,7 @@ impl EdgePropertyKey {
 
 impl Storable for EdgePropertyKey {
     const BOUND: Bound = Bound::Bounded {
-        max_size: 12,
+        max_size: 14,
         is_fixed_size: true,
     };
 
@@ -72,27 +82,31 @@ impl Storable for EdgePropertyKey {
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(12);
+        let mut out = Vec::with_capacity(14);
         out.extend_from_slice(&self.owner_vertex_id.to_be_bytes());
-        out.extend_from_slice(&self.vertex_edge_id.raw().to_be_bytes());
+        out.extend_from_slice(&self.label_id.to_be_bytes());
+        out.extend_from_slice(&self.slot_index.to_be_bytes());
         out.extend_from_slice(&self.property_id.raw().to_be_bytes());
         out
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
         let bytes = bytes.as_ref();
-        assert_eq!(bytes.len(), 12, "EdgePropertyKey expects exactly 12 bytes");
+        assert_eq!(bytes.len(), 14, "EdgePropertyKey expects exactly 14 bytes");
 
         let mut owner = [0; 4];
-        let mut edge = [0; 4];
+        let mut label = [0; 2];
+        let mut slot = [0; 4];
         let mut property = [0; 4];
         owner.copy_from_slice(&bytes[0..4]);
-        edge.copy_from_slice(&bytes[4..8]);
-        property.copy_from_slice(&bytes[8..12]);
+        label.copy_from_slice(&bytes[4..6]);
+        slot.copy_from_slice(&bytes[6..10]);
+        property.copy_from_slice(&bytes[10..14]);
 
         Self {
             owner_vertex_id: u32::from_be_bytes(owner),
-            vertex_edge_id: VertexEdgeId::from_raw(u32::from_be_bytes(edge)),
+            label_id: u16::from_be_bytes(label),
+            slot_index: u32::from_be_bytes(slot),
             property_id: PropertyId::from_raw(u32::from_be_bytes(property)),
         }
     }
@@ -112,7 +126,8 @@ impl<M: Memory> EdgePropertyStore<M> {
     pub fn get(
         &self,
         owner_vertex_id: VertexId,
-        vertex_edge_id: VertexEdgeId,
+        label_id: u16,
+        slot_index: u32,
         property_id: PropertyId,
     ) -> Option<Value> {
         if property_id.raw() == 0 {
@@ -121,7 +136,8 @@ impl<M: Memory> EdgePropertyStore<M> {
         self.properties
             .get(&EdgePropertyKey::new(
                 owner_vertex_id,
-                vertex_edge_id,
+                label_id,
+                slot_index,
                 property_id,
             ))
             .map(|value| value.0)
@@ -130,7 +146,8 @@ impl<M: Memory> EdgePropertyStore<M> {
     pub fn set(
         &mut self,
         owner_vertex_id: VertexId,
-        vertex_edge_id: VertexEdgeId,
+        label_id: u16,
+        slot_index: u32,
         property_id: PropertyId,
         value: Value,
     ) -> Result<Option<Value>, VertexPropertyStoreError> {
@@ -141,7 +158,7 @@ impl<M: Memory> EdgePropertyStore<M> {
         Ok(self
             .properties
             .insert(
-                EdgePropertyKey::new(owner_vertex_id, vertex_edge_id, property_id),
+                EdgePropertyKey::new(owner_vertex_id, label_id, slot_index, property_id),
                 StoredPropertyValue(value),
             )
             .map(|previous| previous.0))
@@ -150,7 +167,8 @@ impl<M: Memory> EdgePropertyStore<M> {
     pub fn remove(
         &mut self,
         owner_vertex_id: VertexId,
-        vertex_edge_id: VertexEdgeId,
+        label_id: u16,
+        slot_index: u32,
         property_id: PropertyId,
     ) -> Option<Value> {
         if property_id.raw() == 0 {
@@ -159,7 +177,8 @@ impl<M: Memory> EdgePropertyStore<M> {
         self.properties
             .remove(&EdgePropertyKey::new(
                 owner_vertex_id,
-                vertex_edge_id,
+                label_id,
+                slot_index,
                 property_id,
             ))
             .map(|value| value.0)
@@ -168,10 +187,11 @@ impl<M: Memory> EdgePropertyStore<M> {
     pub fn properties_for_edge(
         &self,
         owner_vertex_id: VertexId,
-        vertex_edge_id: VertexEdgeId,
+        label_id: u16,
+        slot_index: u32,
     ) -> Vec<(PropertyId, Value)> {
         let mut out = Vec::new();
-        self.for_each_property_for_edge(owner_vertex_id, vertex_edge_id, |pid, v| {
+        self.for_each_property_for_edge(owner_vertex_id, label_id, slot_index, |pid, v| {
             out.push((pid, v));
         });
         out
@@ -180,16 +200,19 @@ impl<M: Memory> EdgePropertyStore<M> {
     pub(crate) fn for_each_property_for_edge<F>(
         &self,
         owner_vertex_id: VertexId,
-        vertex_edge_id: VertexEdgeId,
+        label_id: u16,
+        slot_index: u32,
         mut f: F,
     ) where
         F: FnMut(PropertyId, Value),
     {
-        let range = edge_property_key_range(owner_vertex_id, vertex_edge_id);
+        let range = edge_property_key_range(owner_vertex_id, label_id, slot_index);
         let owner = owner_vertex_id;
         for entry in self.properties.range(range).take_while(|entry| {
             let key = entry.key();
-            key.owner_vertex_id() == owner && key.vertex_edge_id() == vertex_edge_id
+            key.owner_vertex_id() == owner
+                && key.label_id() == label_id
+                && key.slot_index() == slot_index
         }) {
             let (key, value) = entry.into_pair();
             f(key.property_id(), value.0);
@@ -200,9 +223,10 @@ impl<M: Memory> EdgePropertyStore<M> {
     pub fn remove_all_for_edge(
         &mut self,
         owner_vertex_id: VertexId,
-        vertex_edge_id: VertexEdgeId,
+        label_id: u16,
+        slot_index: u32,
     ) -> u32 {
-        let range = edge_property_key_range(owner_vertex_id, vertex_edge_id);
+        let range = edge_property_key_range(owner_vertex_id, label_id, slot_index);
         let owner = owner_vertex_id;
         let mut removed = 0u32;
 
@@ -211,12 +235,42 @@ impl<M: Memory> EdgePropertyStore<M> {
                 return removed;
             };
             let key = *entry.key();
-            if key.owner_vertex_id() != owner || key.vertex_edge_id() != vertex_edge_id {
+            if key.owner_vertex_id() != owner
+                || key.label_id() != label_id
+                || key.slot_index() != slot_index
+            {
                 return removed;
             }
             self.properties.remove(&key);
             removed = removed.saturating_add(1);
         }
+    }
+
+    pub fn move_all_for_edge(
+        &mut self,
+        owner_vertex_id: VertexId,
+        label_id: u16,
+        old_slot_index: u32,
+        new_slot_index: u32,
+    ) -> Result<Vec<(PropertyId, Value)>, VertexPropertyStoreError> {
+        if old_slot_index == new_slot_index {
+            return Ok(Vec::new());
+        }
+        let properties = self.properties_for_edge(owner_vertex_id, label_id, old_slot_index);
+        if properties.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.remove_all_for_edge(owner_vertex_id, label_id, old_slot_index);
+        for (property_id, value) in &properties {
+            self.set(
+                owner_vertex_id,
+                label_id,
+                new_slot_index,
+                *property_id,
+                value.clone(),
+            )?;
+        }
+        Ok(properties)
     }
 
     pub fn into_memory(self) -> M {
@@ -237,34 +291,34 @@ mod tests {
     fn set_get_and_replace_edge_property() {
         let mut store = store();
         let owner = VertexId::from(7);
-        let edge = VertexEdgeId::from_raw(3);
+        let edge = 3;
         let weight = PropertyId::from_raw(1);
 
-        assert_eq!(store.get(owner, edge, weight), None);
+        assert_eq!(store.get(owner, 0, edge, weight), None);
         assert_eq!(
-            store.set(owner, edge, weight, Value::Int64(10)).unwrap(),
+            store.set(owner, 0, edge, weight, Value::Int64(10)).unwrap(),
             None
         );
-        assert_eq!(store.get(owner, edge, weight), Some(Value::Int64(10)));
+        assert_eq!(store.get(owner, 0, edge, weight), Some(Value::Int64(10)));
         assert_eq!(
-            store.set(owner, edge, weight, Value::Int64(20)).unwrap(),
+            store.set(owner, 0, edge, weight, Value::Int64(20)).unwrap(),
             Some(Value::Int64(10))
         );
-        assert_eq!(store.get(owner, edge, weight), Some(Value::Int64(20)));
+        assert_eq!(store.get(owner, 0, edge, weight), Some(Value::Int64(20)));
     }
 
     #[test]
     fn remove_edge_property() {
         let mut store = store();
         let owner = VertexId::from(7);
-        let edge = VertexEdgeId::from_raw(3);
+        let edge = 3;
         let weight = PropertyId::from_raw(1);
 
-        store.set(owner, edge, weight, Value::Int64(10)).unwrap();
+        store.set(owner, 0, edge, weight, Value::Int64(10)).unwrap();
 
-        assert_eq!(store.remove(owner, edge, weight), Some(Value::Int64(10)));
-        assert_eq!(store.remove(owner, edge, weight), None);
-        assert_eq!(store.get(owner, edge, weight), None);
+        assert_eq!(store.remove(owner, 0, edge, weight), Some(Value::Int64(10)));
+        assert_eq!(store.remove(owner, 0, edge, weight), None);
+        assert_eq!(store.get(owner, 0, edge, weight), None);
     }
 
     #[test]
@@ -272,43 +326,43 @@ mod tests {
         let mut store = store();
         let alice = VertexId::from(7);
         let bob = VertexId::from(8);
-        let first = VertexEdgeId::from_raw(3);
-        let second = VertexEdgeId::from_raw(4);
+        let first = 3;
+        let second = 4;
         let weight = PropertyId::from_raw(1);
         let since = PropertyId::from_raw(2);
 
         store
-            .set(alice, first, since, Value::Int64(2026))
+            .set(alice, 0, first, since, Value::Int64(2026))
             .expect("set first since");
         store
-            .set(alice, first, weight, Value::Int64(10))
+            .set(alice, 0, first, weight, Value::Int64(10))
             .expect("set first weight");
         store
-            .set(alice, second, weight, Value::Int64(20))
+            .set(alice, 0, second, weight, Value::Int64(20))
             .expect("set second weight");
         store
-            .set(bob, first, weight, Value::Int64(30))
+            .set(bob, 0, first, weight, Value::Int64(30))
             .expect("set bob first weight");
 
         assert_eq!(
-            store.properties_for_edge(alice, first),
+            store.properties_for_edge(alice, 0, first),
             vec![(weight, Value::Int64(10)), (since, Value::Int64(2026)),]
         );
     }
 
     #[test]
-    fn properties_for_edge_handles_max_vertex_edge_id() {
+    fn properties_for_edge_handles_max_edge_slot_index() {
         let mut store = store();
         let owner = VertexId::from(u32::MAX);
-        let edge = VertexEdgeId::from_raw(u32::MAX);
+        let edge = u32::MAX;
         let weight = PropertyId::from_raw(1);
 
         store
-            .set(owner, edge, weight, Value::Int64(10))
+            .set(owner, 0, edge, weight, Value::Int64(10))
             .expect("set max edge property");
 
         assert_eq!(
-            store.properties_for_edge(owner, edge),
+            store.properties_for_edge(owner, 0, edge),
             vec![(weight, Value::Int64(10))]
         );
     }
@@ -318,24 +372,30 @@ mod tests {
         let mut store = store();
         let alice = VertexId::from(7);
         let bob = VertexId::from(8);
-        let first = VertexEdgeId::from_raw(3);
-        let second = VertexEdgeId::from_raw(4);
+        let first = 3;
+        let second = 4;
         let weight = PropertyId::from_raw(1);
         let since = PropertyId::from_raw(2);
 
-        store.set(alice, first, weight, Value::Int64(10)).unwrap();
-        store.set(alice, first, since, Value::Int64(2026)).unwrap();
-        store.set(alice, second, weight, Value::Int64(11)).unwrap();
-        store.set(bob, first, weight, Value::Int64(12)).unwrap();
+        store
+            .set(alice, 0, first, weight, Value::Int64(10))
+            .unwrap();
+        store
+            .set(alice, 0, first, since, Value::Int64(2026))
+            .unwrap();
+        store
+            .set(alice, 0, second, weight, Value::Int64(11))
+            .unwrap();
+        store.set(bob, 0, first, weight, Value::Int64(12)).unwrap();
 
-        assert_eq!(store.remove_all_for_edge(alice, first), 2);
-        assert!(store.properties_for_edge(alice, first).is_empty());
+        assert_eq!(store.remove_all_for_edge(alice, 0, first), 2);
+        assert!(store.properties_for_edge(alice, 0, first).is_empty());
         assert_eq!(
-            store.properties_for_edge(alice, second),
+            store.properties_for_edge(alice, 0, second),
             vec![(weight, Value::Int64(11))]
         );
         assert_eq!(
-            store.properties_for_edge(bob, first),
+            store.properties_for_edge(bob, 0, first),
             vec![(weight, Value::Int64(12))]
         );
     }
@@ -344,15 +404,15 @@ mod tests {
     fn persists_across_reopen() {
         let mut store = store();
         let owner = VertexId::from(7);
-        let edge = VertexEdgeId::from_raw(3);
+        let edge = 3;
         let weight = PropertyId::from_raw(1);
 
-        store.set(owner, edge, weight, Value::Int64(10)).unwrap();
+        store.set(owner, 0, edge, weight, Value::Int64(10)).unwrap();
         let memory = store.into_memory();
 
         let reopened = EdgePropertyStore::init(memory);
 
-        assert_eq!(reopened.get(owner, edge, weight), Some(Value::Int64(10)));
+        assert_eq!(reopened.get(owner, 0, edge, weight), Some(Value::Int64(10)));
     }
 
     #[test]
@@ -362,18 +422,15 @@ mod tests {
         assert!(matches!(
             store.set(
                 VertexId::from(7),
-                VertexEdgeId::from_raw(3),
+                0,
+                3,
                 PropertyId::default(),
                 Value::Null
             ),
             Err(VertexPropertyStoreError::ReservedPropertyId(id)) if id.raw() == 0
         ));
         assert_eq!(
-            store.get(
-                VertexId::from(7),
-                VertexEdgeId::from_raw(3),
-                PropertyId::default()
-            ),
+            store.get(VertexId::from(7), 0, 3, PropertyId::default()),
             None
         );
     }

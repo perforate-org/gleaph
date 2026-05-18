@@ -164,11 +164,11 @@ impl CsrVertex for LabelBucket {
         self
     }
 
-    fn after_slab_placeholder_delete(self) -> Self {
+    fn after_slab_tombstone_delete(self) -> Self {
         self.with_unmaintained_deletes(
             self.unmaintained_deletes
                 .checked_add(1)
-                .expect("LabelBucket delete placeholders are compacted before u8 overflow"),
+                .expect("LabelBucket edge tombstones are compacted before u8 overflow"),
         )
     }
 
@@ -476,12 +476,12 @@ impl CsrVertex for LabeledVertex {
         self
     }
 
-    fn after_slab_placeholder_delete(self) -> Self {
+    fn after_slab_tombstone_delete(self) -> Self {
         if self.is_default_edge_labeled() {
             return self.with_unmaintained_bypass_delete_count(
                 self.unmaintained_bypass_delete_count()
                     .checked_add(1)
-                    .expect("bypass delete placeholders are compacted before u8 overflow"),
+                    .expect("bypass edge tombstones are compacted before u8 overflow"),
             );
         }
         self.with_degree(self.row_count.saturating_sub(1))

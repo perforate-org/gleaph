@@ -1,4 +1,4 @@
-use super::edge_ids::VertexEdgeIdAllocator;
+use super::edge_alias::EdgeAliasIndex;
 use super::edge_label_catalog::EdgeLabelCatalog;
 use super::edge_properties::EdgePropertyStore;
 use super::edge_weight_profiles::EdgeWeightProfileStore;
@@ -54,7 +54,7 @@ const PROPERTY_NAME_TO_ID: MemoryId = MemoryId::new(25);
 const PROPERTY_ID_TO_NAME: MemoryId = MemoryId::new(26);
 const VERTEX_PROPERTIES: MemoryId = MemoryId::new(27);
 const EDGE_PROPERTIES: MemoryId = MemoryId::new(28);
-const VERTEX_EDGE_IDS: MemoryId = MemoryId::new(29);
+const EDGE_ALIASES: MemoryId = MemoryId::new(29);
 const AUTH_PRINCIPAL_RECORDS: MemoryId = MemoryId::new(30);
 const PREPARED_QUERY_CATALOG: MemoryId = MemoryId::new(31);
 const GRAPH_METADATA: MemoryId = MemoryId::new(32);
@@ -74,7 +74,7 @@ pub(crate) type StableVertexLabelStore = VertexLabelStore<Memory>;
 pub(crate) type StablePropertyCatalog = PropertyCatalog<Memory, Memory>;
 pub(crate) type StableVertexPropertyStore = VertexPropertyStore<Memory>;
 pub(crate) type StableEdgePropertyStore = EdgePropertyStore<Memory>;
-pub(crate) type StableVertexEdgeIdAllocator = VertexEdgeIdAllocator<Memory>;
+pub(crate) type StableEdgeAliasIndex = EdgeAliasIndex<Memory>;
 pub(crate) type StableAuthState = AuthState<Memory>;
 pub(crate) type StablePreparedQueryCatalog = PreparedQueryCatalog<Memory>;
 pub(crate) type StableMetadata = StableGraphMetadata<Memory>;
@@ -153,12 +153,12 @@ pub(crate) fn init_edge_property_store() -> StableEdgePropertyStore {
     EdgePropertyStore::init(MEMORY_MANAGER.with(|m| m.borrow().get(EDGE_PROPERTIES)))
 }
 
-pub(crate) fn init_auth_state() -> StableAuthState {
-    AuthState::init(MEMORY_MANAGER.with(|m| m.borrow().get(AUTH_PRINCIPAL_RECORDS)))
+pub(crate) fn init_edge_alias_index() -> StableEdgeAliasIndex {
+    EdgeAliasIndex::init(MEMORY_MANAGER.with(|m| m.borrow().get(EDGE_ALIASES)))
 }
 
-pub(crate) fn init_vertex_edge_id_allocator() -> StableVertexEdgeIdAllocator {
-    VertexEdgeIdAllocator::init(MEMORY_MANAGER.with(|m| m.borrow().get(VERTEX_EDGE_IDS)))
+pub(crate) fn init_auth_state() -> StableAuthState {
+    AuthState::init(MEMORY_MANAGER.with(|m| m.borrow().get(AUTH_PRINCIPAL_RECORDS)))
 }
 
 pub(crate) fn init_prepared_query_catalog() -> StablePreparedQueryCatalog {

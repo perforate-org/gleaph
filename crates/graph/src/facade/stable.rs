@@ -8,7 +8,7 @@ use std::cell::RefCell;
 
 pub(crate) mod memory;
 
-pub(crate) mod edge_ids;
+pub(crate) mod edge_alias;
 pub(crate) mod edge_label_catalog;
 pub(crate) mod edge_properties;
 pub(crate) mod edge_weight_profiles;
@@ -47,8 +47,8 @@ thread_local! {
         memory::init_edge_property_store()
     );
 
-    pub(crate) static VERTEX_EDGE_IDS: RefCell<memory::StableVertexEdgeIdAllocator> = RefCell::new(
-        memory::init_vertex_edge_id_allocator()
+    pub(crate) static EDGE_ALIASES: RefCell<memory::StableEdgeAliasIndex> = RefCell::new(
+        memory::init_edge_alias_index()
     );
 
     pub(crate) static AUTH_STATE: RefCell<memory::StableAuthState> =

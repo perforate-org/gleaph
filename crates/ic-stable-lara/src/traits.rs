@@ -34,15 +34,14 @@ pub trait CsrVertex: Storable + Copy {
     /// Returns a copy after updating the **stored** neighborhood width used for layout.
     fn with_degree(self, degree: u32) -> Self;
 
-    /// Updates this row after [`crate::lara::edge::EdgeStore::remove_edge_slab_placeholder_matching`]
-    /// logically removed one on-slab edge by writing a vacant placeholder (no swap).
-    fn after_slab_placeholder_delete(self) -> Self;
+    /// Updates this row after one on-slab edge was tombstoned in place (no swap).
+    fn after_slab_tombstone_delete(self) -> Self;
 
-    /// Grows the packed slab row by one live edge (append path when no vacant reuse).
+    /// Grows the packed slab row by one live edge (append path when no tombstoned reuse).
     fn grow_packed_slab_by_one(self) -> Self;
 
-    /// After writing into the first vacant slab slot at `base + degree()` (see
-    /// [`Self::after_slab_placeholder_delete`]), adjusts counters so [`Self::degree`] grows by one
+    /// After writing into the first tombstoned slab slot at `base + degree()` (see
+    /// [`Self::after_slab_tombstone_delete`]), adjusts counters so [`Self::degree`] grows by one
     /// without growing [`Self::stored_degree`].
     ///
     /// Default: no-op (rows without deferred tail tombstones).
@@ -112,17 +111,34 @@ pub trait CsrEdge: Copy {
     fn neighbor_vid(&self) -> VertexId;
     /// Returns a copy with the adjacent vertex id changed.
     fn with_neighbor_vid(self, vid: VertexId) -> Self;
+    /// Returns a copy annotated with the physical slot index from which it was read.
+    #[inline]
+    fn with_slot_index(self, _slot_index: u32) -> Self {
+        self
+    }
+    /// Returns a copy annotated with the label-row id from which it was read.
+    #[inline]
+    fn with_label_id(self, _label_id: u16) -> Self {
+        self
+    }
+    /// Returns `true` when this slot holds a logical delete marker.
+    #[inline]
+    fn is_deleted_slot(&self) -> bool {
+        self.neighbor_vid().is_edge_tombstone_sentinel()
+    }
 }
 
-/// Edge records that support **logical slab deletion** without swap-remove:
-/// [`VertexId::SLAB_VACANT`] marks a cell deleted until a leaf rebalance packs the row.
-pub trait CsrEdgeSlabVacancy: CsrEdge {
-    /// Encoded edge payload for a vacant slab slot (must satisfy [`Self::is_slab_vacant_edge`]).
-    fn slab_vacant_edge() -> Self;
-    /// Returns `true` when this slot holds a logical-delete placeholder.
+/// Edge records that support **logical slab deletion** without swap-remove.
+///
+/// New compact edge layouts generally encode this as a tombstone bit in the slot payload. Older
+/// test edges may still use [`VertexId::EDGE_TOMBSTONE_SENTINEL`] as their sentinel.
+pub trait CsrEdgeTombstone: CsrEdge {
+    /// Encoded edge payload for a tombstoned slab slot (must satisfy [`Self::is_tombstone_edge`]).
+    fn tombstone_edge() -> Self;
+    /// Returns `true` when this slot holds a logical tombstone.
     #[inline]
-    fn is_slab_vacant_edge(&self) -> bool {
-        self.neighbor_vid().is_slab_vacant_neighbor()
+    fn is_tombstone_edge(&self) -> bool {
+        self.is_deleted_slot()
     }
 }
 

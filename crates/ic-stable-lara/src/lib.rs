@@ -12,7 +12,8 @@
 //!
 //! A clean scan is authoritative over `base_slot_start` and **logical**
 //! [`traits::CsrVertex::degree`], walking only **live** slab records (skipping
-//! [`VertexId::SLAB_VACANT`] placeholders) plus the overflow log when `log_head >= 0`.
+//! [`VertexId::EDGE_TOMBSTONE_SENTINEL`] tombstones) plus the core overflow log when
+//! `log_head >= 0`.
 //! It must not consult PMA segment counts, PMA span-metadata stores, or the
 //! free-span index. Update paths use CSR neighbor bases alongside those PMA
 //! structures to decide slab insert windows and relocation.
@@ -101,11 +102,11 @@ pub struct VertexId(u32);
 
 impl VertexId {
     /// Neighbor id reserved for an edge slab cell that is logically deleted until compaction.
-    pub const SLAB_VACANT: Self = Self(u32::MAX);
+    pub const EDGE_TOMBSTONE_SENTINEL: Self = Self(u32::MAX);
 
-    /// Returns `true` when this id is the reserved slab-vacancy sentinel ([`Self::SLAB_VACANT`]).
+    /// Returns `true` when this id is the reserved edge tombstone sentinel ([`Self::EDGE_TOMBSTONE_SENTINEL`]).
     #[inline]
-    pub const fn is_slab_vacant_neighbor(self) -> bool {
+    pub const fn is_edge_tombstone_sentinel(self) -> bool {
         self.0 == u32::MAX
     }
 

@@ -7,8 +7,8 @@
 //! - **Scan contract:** read one vertex row, then enumerate **logical** out-edges.
 //!   For [`crate::lara::vertex::Vertex`] rows this means [`crate::traits::CsrVertex::degree`]
 //!   (live count); the slab may reserve [`crate::traits::CsrVertex::stored_degree`] cells with
-//!   [`crate::VertexId::SLAB_VACANT`] placeholders until a rebalance packs the row. Iteration APIs
-//!   skip vacant cells. Scan code must not branch on segment span metadata or read relocation /
+//!   [`crate::VertexId::EDGE_TOMBSTONE_SENTINEL`] tombstones until a rebalance packs the row. Iteration APIs
+//!   skip tombstoned cells. Scan code must not branch on segment span metadata or read relocation /
 //!   free-span metadata beyond the vertex row fields used for visibility.
 //! - **Update contract:** insert, resize, rebalance, relocate, and maintenance
 //!   code may read and rewrite `base_slot_start`, live/stored widths, and log metadata. Owned slab span
@@ -38,13 +38,13 @@ use crate::{
     GrowFailed, SegmentId, VertexId,
     lara::{
         edge::{
-            AscOutEdgesIter, EdgeHeaderV1, EdgeStore, InsertLocation, OutEdgesIter,
-            counts::SegmentEdgeCounts, segment_tree_leaf_count,
+            AscOutEdgesIter, EdgeHeaderV1, EdgeStore, OutEdgesIter, counts::SegmentEdgeCounts,
+            segment_tree_leaf_count,
         },
         operation_error::{LaraOperationError, VertexAccess, VertexAccessError},
         vertex::VertexStore,
     },
-    traits::{CsrEdge, CsrEdgeSlabVacancy, CsrVertex, CsrVertexTombstoneScan},
+    traits::{CsrEdge, CsrEdgeTombstone, CsrVertex, CsrVertexTombstoneScan},
 };
 use ic_stable_structures::Memory;
 use std::{fmt, marker::PhantomData};
@@ -369,14 +369,14 @@ where
     /// Removes one outgoing edge whose full edge record matches `edge`.
     ///
     /// On slab-only rows (`log_head < 0`), the matching cell becomes a
-    /// [`CsrEdgeSlabVacancy::slab_vacant_edge`] placeholder and the vertex's logical
+    /// [`CsrEdgeTombstone::tombstone_edge`] tombstone and the vertex's logical
     /// degree drops; physical slab width may stay larger until rebalance compacts the row.
     /// Use this API only where adjacency order is not part of the caller's contract.
     /// When several edges connect the same vertices, fields such as labels or properties
     /// in `E` decide which single record is removed.
     pub fn remove_edge(&self, src: VertexId, edge: E) -> Result<bool, LaraOperationError>
     where
-        E: PartialEq + CsrEdgeSlabVacancy,
+        E: PartialEq + CsrEdgeTombstone,
     {
         Ok(self
             .remove_edge_matching(src, |candidate| *candidate == edge)?
@@ -385,7 +385,7 @@ where
 
     /// Removes the first outgoing edge accepted by `matches`.
     ///
-    /// On slab-only rows, removal uses a vacant placeholder ([`CsrEdgeSlabVacancy`]) rather than
+    /// On slab-only rows, removal writes an edge tombstone ([`CsrEdgeTombstone`]) rather than
     /// swap-remove. Returns the removed edge record when one was present. This is useful for
     /// matching on only part of the payload, such as a label or one property.
     pub fn remove_edge_matching<F>(
@@ -394,7 +394,7 @@ where
         matches: F,
     ) -> Result<Option<E>, LaraOperationError>
     where
-        E: CsrEdgeSlabVacancy,
+        E: CsrEdgeTombstone,
         F: FnMut(&E) -> bool,
     {
         if u32::from(src) >= self.vertices.len() {
@@ -407,7 +407,7 @@ where
             return Err(LaraOperationError::VertexDeleted);
         }
         self.edges
-            .remove_edge_slab_placeholder_matching(&self.vertices, src, matches)
+            .remove_edge_slab_tombstone_matching(&self.vertices, src, matches)
     }
 
     /// Doubles or otherwise expands the edge slab and redistributes all rows.
@@ -486,7 +486,7 @@ where
         };
         Ok(InsertOutcome {
             segment,
-            inserted_into_log: location == InsertLocation::Log,
+            inserted_into_log: location.inserted_into_log(),
         })
     }
 
@@ -554,7 +554,7 @@ where
         matches: F,
     ) -> Result<Option<E>, LaraOperationError>
     where
-        E: CsrEdgeSlabVacancy,
+        E: CsrEdgeTombstone,
         F: FnMut(&E) -> bool,
     {
         if u32::from(src) >= self.vertices.len() {
@@ -565,7 +565,7 @@ where
                 .map_err(LaraOperationError::RebalanceFailed)?;
         }
         self.edges
-            .remove_edge_slab_placeholder_matching(&self.vertices, src, matches)
+            .remove_edge_slab_tombstone_matching(&self.vertices, src, matches)
     }
 
     fn rebalance_after_insert(&self, src: VertexId) -> Result<(), LaraOperationError> {
@@ -1699,7 +1699,7 @@ mod tests {
     }
 
     #[test]
-    fn lara_remove_edge_uses_slab_placeholder_delete() {
+    fn lara_remove_edge_uses_slab_tombstone_delete() {
         let graph = test_graph(8, 2, &[0, 4]);
 
         graph.insert_edge(VertexId::from(0), TestEdge(10)).unwrap();
@@ -1742,7 +1742,7 @@ mod tests {
     }
 
     #[test]
-    fn lara_clear_row_after_placeholder_delete_counts_only_live_edges() {
+    fn lara_clear_row_after_tombstone_delete_counts_only_live_edges() {
         let graph = test_graph(8, 2, &[0, 4]);
 
         graph.insert_edge(VertexId::from(0), TestEdge(10)).unwrap();
@@ -1771,7 +1771,7 @@ mod tests {
     }
 
     #[test]
-    fn lara_remove_edge_appends_delete_log_without_reordering() {
+    fn lara_remove_edge_appends_overflow_log_delete_without_reordering() {
         let graph = test_graph(2, 2, &[0, 1]);
 
         graph
@@ -1805,7 +1805,7 @@ mod tests {
     }
 
     #[test]
-    fn lara_delete_log_targets_exact_duplicate_occurrence() {
+    fn lara_overflow_log_delete_targets_exact_duplicate_occurrence() {
         let graph = test_graph(2, 2, &[0, 1]);
 
         graph

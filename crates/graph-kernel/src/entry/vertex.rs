@@ -115,8 +115,8 @@ impl CsrVertex for Vertex {
         Self(self.0.with_log_head(idx))
     }
 
-    fn after_slab_placeholder_delete(self) -> Self {
-        Self(self.0.after_slab_placeholder_delete())
+    fn after_slab_tombstone_delete(self) -> Self {
+        Self(self.0.after_slab_tombstone_delete())
     }
 
     fn grow_packed_slab_by_one(self) -> Self {

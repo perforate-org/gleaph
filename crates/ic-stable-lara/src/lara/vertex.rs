@@ -4,7 +4,7 @@
 //! and per-segment log head (`-1` when the whole neighborhood is on the slab).
 //! Clean scans use `base_slot_start` plus logical degree ([`Vertex::live_edges`] /
 //! [`CsrVertex::degree`]); slab iteration may span [`Vertex::slab_slots`] until
-//! rebalance packs vacant placeholders away.
+//! maintenance compacts tombstoned edge slots away.
 //!
 //! Owned slab spans for inserts and relocation use CSR geometry:
 //! `[base_slot_start, slab_window_exclusive_end)` derives from the next vertex's
@@ -117,8 +117,8 @@ impl std::error::Error for InitError {}
 /// Default fixed-width LARA vertex row (20 bytes on wire).
 ///
 /// `live_edges` is the logical out-degree (clean scans, rebalance packing).
-/// `slab_slots` is the physical slab prefix width; it may be larger while vacant
-/// placeholders from logical deletes await compaction on leaf rebalance.
+/// `slab_slots` is the physical slab prefix width; it may be larger while tombstoned cells from
+/// logical deletes await compaction on leaf rebalance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Vertex {
     /// First edge slot in this vertex's clean slab prefix.
@@ -168,7 +168,7 @@ impl CsrVertex for Vertex {
         self.slab_slots = n;
         self
     }
-    fn after_slab_placeholder_delete(mut self) -> Self {
+    fn after_slab_tombstone_delete(mut self) -> Self {
         self.live_edges = self.live_edges.saturating_sub(1);
         self
     }

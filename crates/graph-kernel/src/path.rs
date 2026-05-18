@@ -3,7 +3,7 @@
 //! `gleaph-gql` treats path element IDs as opaque bytes. This module defines
 //! the graph-kernel interpretation of those bytes for Gleaph runtimes.
 
-use crate::entry::VertexEdgeId;
+use crate::entry::EdgeSlotIndex;
 use ic_stable_lara::VertexId;
 use std::fmt;
 
@@ -61,7 +61,10 @@ impl GraphPathVertexId {
 pub struct GraphPathEdgeId {
     pub shard_id: u64,
     pub owner_vertex_id: VertexId,
-    pub vertex_edge_id: VertexEdgeId,
+    /// Physical slot index wrapper for the bound edge at query time.
+    ///
+    /// This is an engine-local handle component, not a stable logical edge id across compaction.
+    pub edge_slot_index: EdgeSlotIndex,
 }
 
 impl GraphPathEdgeId {
@@ -69,12 +72,12 @@ impl GraphPathEdgeId {
     pub const fn new(
         shard_id: u64,
         owner_vertex_id: VertexId,
-        vertex_edge_id: VertexEdgeId,
+        edge_slot_index: EdgeSlotIndex,
     ) -> Self {
         Self {
             shard_id,
             owner_vertex_id,
-            vertex_edge_id,
+            edge_slot_index,
         }
     }
 
@@ -83,7 +86,7 @@ impl GraphPathEdgeId {
         let mut out = [0; EDGE_PATH_ID_BYTES];
         out[0..8].copy_from_slice(&self.shard_id.to_le_bytes());
         out[8..12].copy_from_slice(&self.owner_vertex_id.to_le_bytes());
-        out[12..16].copy_from_slice(&self.vertex_edge_id.to_le_bytes());
+        out[12..16].copy_from_slice(&self.edge_slot_index.to_le_bytes());
         out
     }
 
@@ -93,12 +96,12 @@ impl GraphPathEdgeId {
         shard_id.copy_from_slice(&bytes[0..8]);
         let mut owner_vertex_id = [0; 4];
         owner_vertex_id.copy_from_slice(&bytes[8..12]);
-        let mut vertex_edge_id = [0; 4];
-        vertex_edge_id.copy_from_slice(&bytes[12..16]);
+        let mut edge_slot_index = [0; 4];
+        edge_slot_index.copy_from_slice(&bytes[12..16]);
         Self {
             shard_id: u64::from_le_bytes(shard_id),
             owner_vertex_id: VertexId::from(u32::from_le_bytes(owner_vertex_id)),
-            vertex_edge_id: VertexEdgeId::from_le_bytes(vertex_edge_id),
+            edge_slot_index: EdgeSlotIndex::from_le_bytes(edge_slot_index),
         }
     }
 
@@ -150,7 +153,7 @@ mod tests {
 
     #[test]
     fn edge_path_id_roundtrips() {
-        let id = GraphPathEdgeId::new(42, VertexId::from(7), VertexEdgeId::from_raw(9));
+        let id = GraphPathEdgeId::new(42, VertexId::from(7), EdgeSlotIndex::from_raw(9));
         assert_eq!(GraphPathEdgeId::from_bytes(id.to_bytes()), id);
         assert_eq!(GraphPathEdgeId::try_from_slice(&id.to_bytes()), Ok(id));
     }

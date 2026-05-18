@@ -2,16 +2,15 @@ use ic_stable_structures::{Storable, storable::Bound};
 use std::borrow::Cow;
 use std::fmt;
 
-/// Edge identifier scoped to one canonical owner vertex.
+/// Slot index wrapper for an edge inside one `(vertex, label)` adjacency row.
 ///
-/// A [`VertexEdgeId`] is not globally unique by itself. Pair it with the
-/// canonical owner [`ic_stable_lara::VertexId`] when addressing durable edge
-/// payloads such as property rows.
+/// Compact edge rows do not persist a self-identifying edge id. During scans this value is attached
+/// from the physical slot being read.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub struct VertexEdgeId(u32);
+pub struct EdgeSlotIndex(u32);
 
-impl VertexEdgeId {
+impl EdgeSlotIndex {
     #[inline]
     pub const fn from_raw(raw: u32) -> Self {
         Self(raw)
@@ -33,7 +32,7 @@ impl VertexEdgeId {
     }
 }
 
-impl Storable for VertexEdgeId {
+impl Storable for EdgeSlotIndex {
     const BOUND: Bound = Bound::Bounded {
         max_size: 4,
         is_fixed_size: true,
@@ -54,7 +53,7 @@ impl Storable for VertexEdgeId {
     }
 }
 
-impl fmt::Display for VertexEdgeId {
+impl fmt::Display for EdgeSlotIndex {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self.0, f)
     }
