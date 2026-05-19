@@ -67,7 +67,7 @@ pub(crate) fn clear_pending() {
 }
 
 fn push(op: PendingPostingOp) {
-    if !GraphStore::new().index_configured() {
+    if !GraphStore::new().federation_configured() {
         return;
     }
     PENDING.with(|p| p.borrow_mut().push(op));
@@ -156,7 +156,7 @@ async fn compensate_index_ops(
 pub(crate) async fn flush_pending(
     index: Option<&dyn PropertyIndexLookup>,
 ) -> Result<(), PlanQueryError> {
-    if !GraphStore::new().index_configured() {
+    if !GraphStore::new().federation_configured() {
         clear_pending();
         return Ok(());
     }
@@ -221,7 +221,7 @@ pub(crate) async fn flush_pending(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::facade::IndexRouting;
+    use crate::facade::FederationRouting;
     use async_trait::async_trait;
     use candid::Principal;
     use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest};
@@ -290,7 +290,8 @@ mod tests {
         let index = FlakyIndex::new(2);
         let graph = GraphStore::new();
         graph
-            .set_index_routing(Some(IndexRouting {
+            .set_federation_routing(Some(FederationRouting {
+                router_canister: Principal::management_canister(),
                 index_canister: Principal::management_canister(),
                 shard_id: 0,
             }))
@@ -336,7 +337,7 @@ mod tests {
             } if value_bytes == &[11]
         ));
 
-        graph.set_index_routing(None).expect("clear routing");
+        graph.set_federation_routing(None).expect("clear routing");
         clear_pending();
     }
 }

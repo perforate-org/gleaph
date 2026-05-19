@@ -1,6 +1,7 @@
 //! Candid-shaped types for canister `init` and admin APIs.
 
 use candid::{CandidType, Deserialize, Principal};
+use gleaph_graph_kernel::federation::ShardId;
 
 /// Arguments supplied by the registry (or installer) on first `init`.
 #[derive(CandidType, Deserialize, Clone, Debug)]
@@ -9,12 +10,11 @@ pub struct GraphInitArgs {
     #[serde(default)]
     pub initial_admins: Vec<Principal>,
     pub logical_graph_name: Option<String>,
-    /// Optional `gleaph-graph-index` canister principal for federated property indexing.
+    /// Router canister for federation (required together with `shard_id`).
     #[serde(default)]
-    pub index_canister: Option<Principal>,
-    /// Shard id registered on the index canister for this graph replica (required together with `index_canister`).
+    pub router_canister: Option<Principal>,
     #[serde(default)]
-    pub graph_shard_id: Option<u64>,
+    pub shard_id: Option<ShardId>,
 }
 
 #[derive(CandidType, Deserialize)]

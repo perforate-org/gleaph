@@ -8,13 +8,14 @@ use ic_cdk::api::msg_caller;
 
 use crate::GqlExecutionContext;
 use crate::auth::{admin_upsert_principal, bootstrap_canister_auth, caller_role};
-use crate::facade::{GraphMetadata, GraphStore, IndexRouting};
+use crate::facade::{FederationRouting, GraphMetadata, GraphStore};
 use crate::gql_run::{
     GqlCanisterExecutionMode, run_adhoc_gql_last_read_row_count,
     run_prepared_gql_last_read_row_count,
 };
 use crate::index::ic::IcPropertyIndexClient;
 use crate::index::lookup::PropertyIndexLookup;
+use crate::index::router::verify_shard_attachment;
 use gleaph_auth::Role;
 use gleaph_gql::Value;
 use gleaph_gql_ic::decode_gql_params_blob;
@@ -24,20 +25,29 @@ use super::types::{GrantRoleArgs, GraphInitArgs};
 pub fn init(args: GraphInitArgs) {
     bootstrap_canister_auth(args.issuing_principal, &args.initial_admins);
 
-    let fed_routing = match (args.index_canister, args.graph_shard_id) {
-        (Some(index_canister), Some(shard_id)) => Some(IndexRouting {
-            index_canister,
-            shard_id,
-        }),
+    let federation_routing = match (args.router_canister, args.shard_id) {
+        (Some(router_canister), Some(shard_id)) => {
+            let entry = verify_shard_attachment(
+                router_canister,
+                shard_id,
+                args.logical_graph_name.as_deref(),
+            )
+            .unwrap_or_else(|e| ic_cdk::trap(e.to_string()));
+            Some(FederationRouting {
+                router_canister,
+                shard_id,
+                index_canister: entry.index_canister,
+            })
+        }
         (None, None) => None,
         _ => ic_cdk::trap(
-            "GraphInitArgs: index_canister and graph_shard_id must both be set or both omitted",
+            "GraphInitArgs: router_canister and shard_id must both be set or both omitted",
         ),
     };
 
     let mut metadata = GraphMetadata::default();
     metadata.set_logical_graph_name(args.logical_graph_name);
-    metadata.set_index_routing(fed_routing);
+    metadata.set_federation_routing(federation_routing);
 
     if let Err(err) = GraphStore::new().set_metadata(metadata) {
         ic_cdk::trap(err.to_string());
@@ -52,7 +62,7 @@ pub(crate) fn decode_gql_param_map(params: Vec<u8>) -> Result<BTreeMap<String, V
 
 fn wasm_index_client_holder() -> Option<IcPropertyIndexClient> {
     GraphStore::new()
-        .index_routing()
+        .federation_routing()
         .map(|r| IcPropertyIndexClient {
             index_principal: r.index_canister,
             shard_id: r.shard_id,

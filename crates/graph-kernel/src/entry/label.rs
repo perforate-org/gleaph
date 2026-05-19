@@ -1,5 +1,7 @@
+use candid::CandidType;
 use ic_stable_lara::labeled::{BUCKET_LABEL_DIRECTED_BIT, BucketDirectedness, BucketLabelKey};
 use ic_stable_structures::{Storable, storable::Bound};
+use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::fmt;
 
@@ -14,7 +16,10 @@ pub type TaggedEdgeLabelId = BucketLabelKey;
 
 /// Vertex label identifier (`0` reserved; catalog allocates `1..=0xFFFF`).
 #[repr(transparent)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default, CandidType, Serialize,
+    Deserialize,
+)]
 pub struct VertexLabelId(u16);
 
 /// Catalog edge label id: lower 15 bits only (MSB must stay clear).
@@ -22,7 +27,10 @@ pub struct VertexLabelId(u16);
 /// Stable name maps and weight profiles use this type. Storage / LARA bucket keys use
 /// [`TaggedEdgeLabelId`], which adds the directed MSB.
 #[repr(transparent)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default, CandidType, Serialize,
+    Deserialize,
+)]
 pub struct EdgeLabelId(u16);
 
 /// Directed vs undirected interpretation for [`EdgeLabelId::pack`].

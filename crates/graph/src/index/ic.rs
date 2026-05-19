@@ -11,7 +11,7 @@ use ic_cdk::call::CallFailed;
 #[derive(Clone, Debug)]
 pub struct IcPropertyIndexClient {
     pub index_principal: Principal,
-    pub shard_id: u64,
+    pub shard_id: gleaph_graph_kernel::federation::ShardId,
 }
 
 fn ic_wait_err(op: &'static str, err: CallFailed) -> PlanQueryError {

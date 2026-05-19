@@ -1,18 +1,19 @@
 //! Composite posting key: `(property_id, value_bytes, shard_id, vertex_id)` ordered for prefix scans.
 
+use gleaph_graph_kernel::federation::ShardId;
 use ic_stable_structures::Storable;
 use ic_stable_structures::storable::Bound;
 use std::borrow::Cow;
 use std::cmp::Ordering;
 
-const POSTING_KEY_MAGIC: u8 = 1;
+const POSTING_KEY_MAGIC: u8 = 2;
 
 /// Lexicographic order: `property_id`, then `value` (memcmp), then `shard_id`, then `vertex_id`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PostingKey {
     pub property_id: u32,
     pub value: Vec<u8>,
-    pub shard_id: u64,
+    pub shard_id: ShardId,
     pub vertex_id: u32,
 }
 
@@ -50,7 +51,7 @@ impl Storable for PostingKey {
 
 impl PostingKey {
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(1 + 4 + 4 + self.value.len() + 8 + 4);
+        let mut out = Vec::with_capacity(1 + 4 + 4 + self.value.len() + 4 + 4);
         out.push(POSTING_KEY_MAGIC);
         out.extend_from_slice(&self.property_id.to_le_bytes());
         let len_u32: u32 = self
@@ -76,8 +77,8 @@ impl PostingKey {
         let val_end = val_start.checked_add(usize_len)?;
         let value = bytes.get(val_start..val_end)?.to_vec();
         let shard_off = val_end;
-        let shard_id = u64::from_le_bytes(bytes.get(shard_off..shard_off + 8)?.try_into().ok()?);
-        let vid_off = shard_off + 8;
+        let shard_id = u32::from_le_bytes(bytes.get(shard_off..shard_off + 4)?.try_into().ok()?);
+        let vid_off = shard_off + 4;
         let vertex_id = u32::from_le_bytes(bytes.get(vid_off..vid_off + 4)?.try_into().ok()?);
         Some(Self {
             property_id: pid,
@@ -102,7 +103,7 @@ impl PostingKey {
         Self {
             property_id,
             value: value.to_vec(),
-            shard_id: u64::MAX,
+            shard_id: u32::MAX,
             vertex_id: u32::MAX,
         }
     }

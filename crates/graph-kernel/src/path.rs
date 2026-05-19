@@ -4,6 +4,7 @@
 //! the graph-kernel interpretation of those bytes for Gleaph runtimes.
 
 use crate::entry::EdgeSlotIndex;
+use crate::federation::ShardId;
 use ic_stable_lara::VertexId;
 use std::fmt;
 
@@ -12,13 +13,13 @@ pub const EDGE_PATH_ID_BYTES: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GraphPathVertexId {
-    pub shard_id: u64,
+    pub shard_id: ShardId,
     pub vertex_id: VertexId,
 }
 
 impl GraphPathVertexId {
     #[inline]
-    pub const fn new(shard_id: u64, vertex_id: VertexId) -> Self {
+    pub const fn new(shard_id: ShardId, vertex_id: VertexId) -> Self {
         Self {
             shard_id,
             vertex_id,
@@ -28,19 +29,19 @@ impl GraphPathVertexId {
     #[inline]
     pub fn to_bytes(self) -> [u8; VERTEX_PATH_ID_BYTES] {
         let mut out = [0; VERTEX_PATH_ID_BYTES];
-        out[0..8].copy_from_slice(&self.shard_id.to_le_bytes());
+        out[0..4].copy_from_slice(&self.shard_id.to_le_bytes());
         out[8..12].copy_from_slice(&self.vertex_id.to_le_bytes());
         out
     }
 
     #[inline]
     pub fn from_bytes(bytes: [u8; VERTEX_PATH_ID_BYTES]) -> Self {
-        let mut shard_id = [0; 8];
-        shard_id.copy_from_slice(&bytes[0..8]);
+        let mut shard_id = [0; 4];
+        shard_id.copy_from_slice(&bytes[0..4]);
         let mut vertex_id = [0; 4];
         vertex_id.copy_from_slice(&bytes[8..12]);
         Self {
-            shard_id: u64::from_le_bytes(shard_id),
+            shard_id: u32::from_le_bytes(shard_id),
             vertex_id: VertexId::from(u32::from_le_bytes(vertex_id)),
         }
     }
@@ -59,7 +60,7 @@ impl GraphPathVertexId {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GraphPathEdgeId {
-    pub shard_id: u64,
+    pub shard_id: ShardId,
     pub owner_vertex_id: VertexId,
     /// Physical slot index wrapper for the bound edge at query time.
     ///
@@ -70,7 +71,7 @@ pub struct GraphPathEdgeId {
 impl GraphPathEdgeId {
     #[inline]
     pub const fn new(
-        shard_id: u64,
+        shard_id: ShardId,
         owner_vertex_id: VertexId,
         edge_slot_index: EdgeSlotIndex,
     ) -> Self {
@@ -84,7 +85,7 @@ impl GraphPathEdgeId {
     #[inline]
     pub fn to_bytes(self) -> [u8; EDGE_PATH_ID_BYTES] {
         let mut out = [0; EDGE_PATH_ID_BYTES];
-        out[0..8].copy_from_slice(&self.shard_id.to_le_bytes());
+        out[0..4].copy_from_slice(&self.shard_id.to_le_bytes());
         out[8..12].copy_from_slice(&self.owner_vertex_id.to_le_bytes());
         out[12..16].copy_from_slice(&self.edge_slot_index.to_le_bytes());
         out
@@ -92,14 +93,14 @@ impl GraphPathEdgeId {
 
     #[inline]
     pub fn from_bytes(bytes: [u8; EDGE_PATH_ID_BYTES]) -> Self {
-        let mut shard_id = [0; 8];
-        shard_id.copy_from_slice(&bytes[0..8]);
+        let mut shard_id = [0; 4];
+        shard_id.copy_from_slice(&bytes[0..4]);
         let mut owner_vertex_id = [0; 4];
         owner_vertex_id.copy_from_slice(&bytes[8..12]);
         let mut edge_slot_index = [0; 4];
         edge_slot_index.copy_from_slice(&bytes[12..16]);
         Self {
-            shard_id: u64::from_le_bytes(shard_id),
+            shard_id: u32::from_le_bytes(shard_id),
             owner_vertex_id: VertexId::from(u32::from_le_bytes(owner_vertex_id)),
             edge_slot_index: EdgeSlotIndex::from_le_bytes(edge_slot_index),
         }

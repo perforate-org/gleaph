@@ -1,9 +1,14 @@
+use candid::CandidType;
 use ic_stable_structures::{Storable, storable::Bound};
+use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::fmt;
 
 #[repr(transparent)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default, CandidType, Serialize,
+    Deserialize,
+)]
 pub struct PropertyId(u32);
 
 impl PropertyId {

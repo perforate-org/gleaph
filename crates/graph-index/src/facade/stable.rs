@@ -1,7 +1,4 @@
-//! Stable-memory-backed index fragments (admin set, shard registry, postings).
-//!
-//! Module visibility is `pub(crate)` within [`super`] (see [`crate::facade::store`]): only facade
-//! code references these thread-locals directly.
+//! Stable-memory-backed index fragments (admin set, shard owners, postings).
 
 use std::cell::RefCell;
 
@@ -11,9 +8,12 @@ thread_local! {
     pub(crate) static INDEX_ADMINS: RefCell<memory::StableIndexAdminSet> =
         RefCell::new(memory::init_index_admins());
 
-    pub(crate) static INDEX_SHARDS: RefCell<memory::StableIndexShardMap> =
-        RefCell::new(memory::init_index_shards());
+    pub(crate) static INDEX_SHARD_OWNERS: RefCell<memory::StableIndexShardOwnerMap> =
+        RefCell::new(memory::init_index_shard_owners());
 
     pub(crate) static INDEX_POSTINGS: RefCell<memory::StableIndexPostingSet> =
         RefCell::new(memory::init_index_postings());
+
+    pub(crate) static INDEX_ROUTER: RefCell<memory::StableIndexRouterCell> =
+        RefCell::new(memory::init_index_router());
 }

@@ -1798,7 +1798,7 @@ fn hash_plan_binding_for_join(binding: &PlanBinding, hasher: &mut RapidHasher<'_
         }
         PlanBinding::Path(pb) => {
             hasher.write_u8(4);
-            hasher.write_u64(pb.shard_id);
+            hasher.write_u32(pb.shard_id);
             hasher.write_usize(pb.leaf_state_idx);
             hasher.write_usize(Arc::as_ptr(&pb.states) as usize);
             hasher.write_usize(pb.states.len());
@@ -1847,9 +1847,9 @@ fn cmp_to_posting_range_request(
     })
 }
 
-fn local_shard_filter_id() -> Result<u64, PlanQueryError> {
+fn local_shard_filter_id() -> Result<gleaph_graph_kernel::federation::ShardId, PlanQueryError> {
     GraphStore::new()
-        .index_routing()
+        .federation_routing()
         .map(|r| r.shard_id)
         .ok_or(PlanQueryError::UnsupportedOp("IndexScan(no shard routing)"))
 }
@@ -1859,7 +1859,7 @@ fn filter_hits_for_local_shard(
     rows: Vec<PlanRow>,
     variable: &str,
     hits: &[PostingHit],
-    shard: u64,
+    shard: gleaph_graph_kernel::federation::ShardId,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
     let mut out = Vec::new();
     for row in rows {
@@ -2489,7 +2489,7 @@ struct PathSearchNode {
 /// Lazy path result from [`execute_shortest_path`]: shares [`Arc`] search state across many rows.
 #[derive(Clone, Debug)]
 pub struct PathBinding {
-    shard_id: u64,
+    shard_id: gleaph_graph_kernel::federation::ShardId,
     states: Arc<Vec<PathSearchNode>>,
     leaf_state_idx: usize,
 }
@@ -3411,7 +3411,7 @@ fn path_binding_to_value(pb: &PathBinding) -> Value {
 }
 
 fn materialize_path_from_search_states(
-    shard_id: u64,
+    shard_id: gleaph_graph_kernel::federation::ShardId,
     states: &[PathSearchNode],
     state_idx: usize,
 ) -> Value {
@@ -3434,7 +3434,7 @@ fn materialize_path_from_search_states(
 }
 
 fn fill_path_elements_leaf_to_root(
-    shard_id: u64,
+    shard_id: gleaph_graph_kernel::federation::ShardId,
     states: &[PathSearchNode],
     mut state_idx: usize,
     elements: &mut Vec<PathElement>,
@@ -3458,18 +3458,18 @@ fn fill_path_elements_leaf_to_root(
     elements.reverse();
 }
 
-fn local_shard_id(store: &GraphStore) -> u64 {
-    store.index_routing().map(|r| r.shard_id).unwrap_or(0)
+fn local_shard_id(store: &GraphStore) -> gleaph_graph_kernel::federation::ShardId {
+    store.federation_routing().map(|r| r.shard_id).unwrap_or(0)
 }
 
-fn vertex_element_id_bytes(shard_id: u64, vertex_id: VertexId) -> Vec<u8> {
+fn vertex_element_id_bytes(shard_id: gleaph_graph_kernel::federation::ShardId, vertex_id: VertexId) -> Vec<u8> {
     GraphPathVertexId::new(shard_id, vertex_id)
         .to_bytes()
         .to_vec()
 }
 
 fn edge_element_id_bytes(
-    shard_id: u64,
+    shard_id: gleaph_graph_kernel::federation::ShardId,
     owner_vertex_id: VertexId,
     edge_slot_index: gleaph_graph_kernel::entry::EdgeSlotIndex,
 ) -> Vec<u8> {
@@ -3478,7 +3478,10 @@ fn edge_element_id_bytes(
         .to_vec()
 }
 
-fn vertex_path_element(shard_id: u64, vertex_id: VertexId) -> PathElement {
+fn vertex_path_element(
+    shard_id: gleaph_graph_kernel::federation::ShardId,
+    vertex_id: VertexId,
+) -> PathElement {
     PathElement::Vertex(
         GraphPathVertexId::new(shard_id, vertex_id)
             .to_bytes()
@@ -3486,7 +3489,7 @@ fn vertex_path_element(shard_id: u64, vertex_id: VertexId) -> PathElement {
     )
 }
 
-fn edge_path_element(shard_id: u64, handle: EdgeHandle) -> PathElement {
+fn edge_path_element(shard_id: gleaph_graph_kernel::federation::ShardId, handle: EdgeHandle) -> PathElement {
     PathElement::Edge(
         GraphPathEdgeId::new(
             shard_id,
@@ -4788,7 +4791,7 @@ fn plan_op_name(op: &PlanOp) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::facade::IndexRouting;
+    use crate::facade::FederationRouting;
     use crate::facade::mutation_executor::GraphMutationExecutor;
     use crate::gql_execution_context::GqlExecutionContext;
     use crate::index::lookup::PropertyIndexLookup;
@@ -5069,7 +5072,8 @@ mod tests {
 
     fn configure_test_index(store: &GraphStore) {
         store
-            .set_index_routing(Some(IndexRouting {
+            .set_federation_routing(Some(FederationRouting {
+                router_canister: Principal::management_canister(),
                 index_canister: Principal::management_canister(),
                 shard_id: 7,
             }))

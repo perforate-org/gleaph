@@ -8,7 +8,7 @@ use super::stable::{
     VERTEX_LABEL_CATALOG, VERTEX_LABELS, VERTEX_PROPERTIES,
 };
 use super::{
-    GraphMetadata, GraphMetadataError, IndexRouting, PropertyCatalogError, VertexLabelStoreError,
+    FederationRouting, GraphMetadata, GraphMetadataError, PropertyCatalogError, VertexLabelStoreError,
     VertexPropertyStoreError,
 };
 use crate::index::{edge_equal, pending};
@@ -240,23 +240,23 @@ impl GraphStore {
         })
     }
 
-    pub fn index_routing(&self) -> Option<IndexRouting> {
-        METADATA.with_borrow(|m| m.get().index_routing())
+    pub fn federation_routing(&self) -> Option<FederationRouting> {
+        METADATA.with_borrow(|m| m.get().federation_routing())
     }
 
-    pub fn set_index_routing(
+    pub fn set_federation_routing(
         &self,
-        index_routing: Option<IndexRouting>,
+        federation_routing: Option<FederationRouting>,
     ) -> Result<(), GraphMetadataError> {
         METADATA.with_borrow_mut(|m| {
             let mut metadata = m.get().clone();
-            metadata.set_index_routing(index_routing);
+            metadata.set_federation_routing(federation_routing);
             m.set(metadata)
         })
     }
 
-    pub fn index_configured(&self) -> bool {
-        METADATA.with_borrow(|m| m.get().index_configured())
+    pub fn federation_configured(&self) -> bool {
+        METADATA.with_borrow(|m| m.get().federation_configured())
     }
 
     pub fn vertex_label_id(&self, name: &str) -> Option<VertexLabelId> {

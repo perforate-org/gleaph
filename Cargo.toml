@@ -10,6 +10,7 @@ members = [
     "crates/graph-catalog",
     "crates/graph-index",
     "crates/graph-kernel",
+    "crates/router",
     "crates/graph-prepared",
     "crates/ic-stable-lara",
     "crates/ic-stable-paged-ordered-map",
@@ -31,6 +32,7 @@ gleaph-gql-planner = { path = "crates/gql-planner" }
 gleaph-graph-catalog = { path = "crates/graph-catalog" }
 gleaph-graph-index = { path = "crates/graph-index" }
 gleaph-graph-kernel = { path = "crates/graph-kernel" }
+gleaph-router = { path = "crates/router" }
 gleaph-graph-prepared = { path = "crates/graph-prepared" }
 ic-stable-lara = { path = "crates/ic-stable-lara" }
 ic-stable-paged-ordered-map = { path = "crates/ic-stable-paged-ordered-map" }

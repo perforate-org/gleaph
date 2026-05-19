@@ -1,4 +1,5 @@
 use candid::{CandidType, Decode, Encode, Principal};
+use gleaph_graph_kernel::federation::ShardId;
 use ic_stable_structures::{
     Memory, StableCell,
     storable::{Bound, Storable},
@@ -33,9 +34,10 @@ impl<M: Memory> StableGraphMetadata<M> {
 }
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct IndexRouting {
+pub struct FederationRouting {
+    pub router_canister: Principal,
+    pub shard_id: ShardId,
     pub index_canister: Principal,
-    pub shard_id: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,7 +59,7 @@ impl std::error::Error for GraphMetadataError {}
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
 pub struct GraphMetadataV1 {
     logical_graph_name: Option<String>,
-    index_routing: Option<IndexRouting>,
+    federation_routing: Option<FederationRouting>,
 }
 
 impl GraphMetadataV1 {
@@ -106,21 +108,21 @@ impl GraphMetadata {
         }
     }
 
-    pub fn index_routing(&self) -> Option<IndexRouting> {
+    pub fn federation_routing(&self) -> Option<FederationRouting> {
         match self {
-            GraphMetadata::V1(v) => v.index_routing.clone(),
+            GraphMetadata::V1(v) => v.federation_routing.clone(),
         }
     }
 
-    pub fn set_index_routing(&mut self, index_routing: Option<IndexRouting>) {
+    pub fn set_federation_routing(&mut self, federation_routing: Option<FederationRouting>) {
         match self {
-            GraphMetadata::V1(v) => v.index_routing = index_routing,
+            GraphMetadata::V1(v) => v.federation_routing = federation_routing,
         }
     }
 
-    pub fn index_configured(&self) -> bool {
+    pub fn federation_configured(&self) -> bool {
         match self {
-            GraphMetadata::V1(v) => v.index_routing.is_some(),
+            GraphMetadata::V1(v) => v.federation_routing.is_some(),
         }
     }
 }

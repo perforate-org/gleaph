@@ -20,4 +20,4 @@ pub use ic_budget::timer_lara_maintenance_budget;
 pub use ic_gql_extensions::{ic_extension_type_names, init_ic_gql_extensions};
 pub use store::{EdgeHandle, GraphStore, GraphStoreError, canonical_undirected_owner};
 
-pub use stable::metadata::{GraphMetadata, GraphMetadataError, IndexRouting};
+pub use stable::metadata::{FederationRouting, GraphMetadata, GraphMetadataError};

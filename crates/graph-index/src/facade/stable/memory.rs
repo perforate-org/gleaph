@@ -1,20 +1,24 @@
-//! Stable-memory fragments for the federation index (admins, shard registry, postings).
+//! Stable-memory fragments for the federation index (admins, shard owners, postings).
+
+use candid::Principal;
+use gleaph_graph_kernel::federation::ShardId;
+use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
+use ic_stable_structures::{BTreeMap, BTreeSet, Cell, DefaultMemoryImpl};
+use std::cell::RefCell;
 
 use crate::key::PostingKey;
-use candid::Principal;
-use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
-use ic_stable_structures::{BTreeMap, BTreeSet, DefaultMemoryImpl};
-use std::cell::RefCell;
 
 pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
 
 const INDEX_ADMINS: MemoryId = MemoryId::new(0);
-const INDEX_SHARDS: MemoryId = MemoryId::new(1);
+const INDEX_SHARD_OWNERS: MemoryId = MemoryId::new(1);
 const INDEX_POSTINGS: MemoryId = MemoryId::new(2);
+const INDEX_ROUTER: MemoryId = MemoryId::new(3);
 
 pub(crate) type StableIndexAdminSet = BTreeSet<Principal, Memory>;
-pub(crate) type StableIndexShardMap = BTreeMap<u64, Principal, Memory>;
+pub(crate) type StableIndexShardOwnerMap = BTreeMap<ShardId, Principal, Memory>;
 pub(crate) type StableIndexPostingSet = BTreeSet<PostingKey, Memory>;
+pub(crate) type StableIndexRouterCell = Cell<Principal, Memory>;
 
 thread_local! {
     pub(crate) static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
@@ -25,10 +29,17 @@ pub(crate) fn init_index_admins() -> StableIndexAdminSet {
     BTreeSet::init(MEMORY_MANAGER.with(|m| m.borrow().get(INDEX_ADMINS)))
 }
 
-pub(crate) fn init_index_shards() -> StableIndexShardMap {
-    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(INDEX_SHARDS)))
+pub(crate) fn init_index_shard_owners() -> StableIndexShardOwnerMap {
+    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(INDEX_SHARD_OWNERS)))
 }
 
 pub(crate) fn init_index_postings() -> StableIndexPostingSet {
     BTreeSet::init(MEMORY_MANAGER.with(|m| m.borrow().get(INDEX_POSTINGS)))
+}
+
+pub(crate) fn init_index_router() -> StableIndexRouterCell {
+    Cell::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(INDEX_ROUTER)),
+        Principal::anonymous(),
+    )
 }

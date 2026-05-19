@@ -13,7 +13,7 @@ pub enum IndexError {
 impl std::fmt::Display for IndexError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NotAuthorized => write!(f, "caller is not an index admin"),
+            Self::NotAuthorized => write!(f, "caller is not authorized"),
             Self::UnknownShard => write!(f, "shard is not registered"),
             Self::WrongShardOwner => write!(f, "caller does not own this shard"),
             Self::InvalidPrincipalInRegistry => write!(f, "invalid principal in shard registry"),

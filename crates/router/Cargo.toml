@@ -1,0 +1,22 @@
+[package]
+name = "gleaph-router"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+candid.workspace = true
+gleaph-gql-ic.workspace = true
+gleaph-graph-kernel.workspace = true
+ic-cdk.workspace = true
+ic-cdk-macros.workspace = true
+ic-stable-structures.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+candid.workspace = true
+futures = "0.3"

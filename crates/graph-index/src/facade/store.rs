@@ -3,12 +3,13 @@
 //! Mirrors [`gleaph_graph::facade::GraphStore`]: coordination methods delegate to
 //! `thread_local` [`RefCell`]s wrapping stable [`ic_stable_structures`] collections.
 
-use super::stable::{INDEX_ADMINS, INDEX_POSTINGS, INDEX_SHARDS};
+use super::stable::{INDEX_ADMINS, INDEX_POSTINGS, INDEX_ROUTER, INDEX_SHARD_OWNERS};
 use crate::init::IndexInitArgs;
 use crate::key::PostingKey;
 use crate::posting_range::posting_key_half_open_range;
 use crate::state::IndexError;
 use candid::Principal;
+use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest};
 
 /// Stateless facade over index stable structures initialized in [`super::stable`].
@@ -20,7 +21,7 @@ impl IndexStore {
         Self
     }
 
-    /// Clears admins, shard registry, and postings; seeds admins from init args (canister [`init`]).
+    /// Clears admins, shard owners, postings; seeds admins and router principal from init args.
     pub fn init_from_args(&self, args: &IndexInitArgs) {
         INDEX_ADMINS.with_borrow_mut(|admins| {
             admins.clear();
@@ -28,8 +29,11 @@ impl IndexStore {
                 admins.insert(*p);
             }
         });
-        INDEX_SHARDS.with_borrow_mut(|shards| shards.clear_new());
+        INDEX_SHARD_OWNERS.with_borrow_mut(|shards| shards.clear_new());
         INDEX_POSTINGS.with_borrow_mut(|postings| postings.clear());
+        INDEX_ROUTER.with_borrow_mut(|router| {
+            router.set(args.router_canister);
+        });
     }
 
     pub fn bootstrap_admins(&self, principals: &[Principal]) {
@@ -40,28 +44,45 @@ impl IndexStore {
         });
     }
 
-    pub fn admin_register_shard(
-        &self,
-        caller: Principal,
-        shard_id: u64,
-        shard_principal: Principal,
-    ) -> Result<(), IndexError> {
-        let authorized = INDEX_ADMINS.with_borrow(|admins| admins.contains(&caller));
-        if !authorized {
+    fn assert_router_caller(&self, caller: Principal) -> Result<(), IndexError> {
+        let router = INDEX_ROUTER.with_borrow(|r| *r.get());
+        if caller != router {
             return Err(IndexError::NotAuthorized);
         }
-        if shard_principal == Principal::anonymous() {
+        Ok(())
+    }
+
+    pub fn admin_set_shard_owner(
+        &self,
+        caller: Principal,
+        shard_id: ShardId,
+        owner_principal: Principal,
+    ) -> Result<(), IndexError> {
+        self.assert_router_caller(caller)?;
+        if owner_principal == Principal::anonymous() {
             return Err(IndexError::InvalidPrincipalInRegistry);
         }
-        let existing = INDEX_SHARDS.with_borrow(|shards| shards.get(&shard_id));
+        let existing = INDEX_SHARD_OWNERS.with_borrow(|shards| shards.get(&shard_id));
         if let Some(p) = existing {
-            if p != shard_principal {
+            if p != owner_principal {
                 return Err(IndexError::ShardAlreadyRegistered);
             }
             return Ok(());
         }
-        INDEX_SHARDS.with_borrow_mut(|shards| {
-            shards.insert(shard_id, shard_principal);
+        INDEX_SHARD_OWNERS.with_borrow_mut(|shards| {
+            shards.insert(shard_id, owner_principal);
+        });
+        Ok(())
+    }
+
+    pub fn admin_clear_shard_owner(
+        &self,
+        caller: Principal,
+        shard_id: ShardId,
+    ) -> Result<(), IndexError> {
+        self.assert_router_caller(caller)?;
+        INDEX_SHARD_OWNERS.with_borrow_mut(|shards| {
+            shards.remove(&shard_id);
         });
         Ok(())
     }
@@ -69,7 +90,7 @@ impl IndexStore {
     pub fn posting_insert(
         &self,
         caller: Principal,
-        shard_id: u64,
+        shard_id: ShardId,
         property_id: u32,
         value: Vec<u8>,
         vertex_id: u32,
@@ -80,7 +101,7 @@ impl IndexStore {
             shard_id,
             vertex_id,
         };
-        let registered = INDEX_SHARDS.with_borrow(|shards| shards.get(&shard_id));
+        let registered = INDEX_SHARD_OWNERS.with_borrow(|shards| shards.get(&shard_id));
         let Some(reg) = registered else {
             return Err(IndexError::UnknownShard);
         };
@@ -96,7 +117,7 @@ impl IndexStore {
     pub fn posting_remove(
         &self,
         caller: Principal,
-        shard_id: u64,
+        shard_id: ShardId,
         property_id: u32,
         value: Vec<u8>,
         vertex_id: u32,
@@ -107,7 +128,7 @@ impl IndexStore {
             shard_id,
             vertex_id,
         };
-        let registered = INDEX_SHARDS.with_borrow(|shards| shards.get(&shard_id));
+        let registered = INDEX_SHARD_OWNERS.with_borrow(|shards| shards.get(&shard_id));
         let Some(reg) = registered else {
             return Err(IndexError::UnknownShard);
         };
@@ -153,9 +174,6 @@ impl IndexStore {
         })
     }
 
-    pub fn resolve_shard_principal(&self, shard_id: u64) -> Option<Principal> {
-        INDEX_SHARDS.with_borrow(|shards| shards.get(&shard_id))
-    }
 }
 
 #[cfg(test)]
@@ -170,18 +188,31 @@ mod tests {
         value_to_index_key_bytes(&value).unwrap().unwrap()
     }
 
+    fn test_router() -> Principal {
+        Principal::from_slice(&[9])
+    }
+
+    fn init_test_store(store: &IndexStore) -> Principal {
+        let router = test_router();
+        store.init_from_args(&IndexInitArgs {
+            controllers: vec![],
+            router_canister: router,
+        });
+        router
+    }
+
+    fn register_shard_owner(store: &IndexStore, router: Principal, shard_id: u32, owner: Principal) {
+        store
+            .admin_set_shard_owner(router, shard_id, owner)
+            .expect("set shard owner");
+    }
+
     #[test]
     fn insert_and_lookup_equal() {
         let store = IndexStore::new();
-        store.init_from_args(&IndexInitArgs {
-            controllers: vec![],
-        });
-        let admin = Principal::anonymous();
-        store.bootstrap_admins(&[admin]);
+        let router = init_test_store(&store);
         let shard_principal = Principal::from_slice(&[1]);
-        store
-            .admin_register_shard(admin, 7, shard_principal)
-            .expect("register shard");
+        register_shard_owner(&store, router, 7, shard_principal);
 
         store
             .posting_insert(shard_principal, 7, 42, b"v".to_vec(), 100)
@@ -200,15 +231,9 @@ mod tests {
     #[test]
     fn insert_and_lookup_equal_principal_value_index_key() {
         let store = IndexStore::new();
-        store.init_from_args(&IndexInitArgs {
-            controllers: vec![],
-        });
-        let admin = Principal::anonymous();
-        store.bootstrap_admins(&[admin]);
+        let router = init_test_store(&store);
         let shard_principal = Principal::from_slice(&[1]);
-        store
-            .admin_register_shard(admin, 7, shard_principal)
-            .expect("register shard");
+        register_shard_owner(&store, router, 7, shard_principal);
 
         let p = Principal::from_text("aaaaa-aa").expect("management id");
         let key = index_key(Value::from(PrincipalValue(p)));
@@ -230,15 +255,9 @@ mod tests {
     #[test]
     fn lookup_range_ge_and_lt_use_encoded_lex_order() {
         let store = IndexStore::new();
-        store.init_from_args(&IndexInitArgs {
-            controllers: vec![],
-        });
-        let admin = Principal::anonymous();
-        store.bootstrap_admins(&[admin]);
+        let router = init_test_store(&store);
         let shard_principal = Principal::from_slice(&[1]);
-        store
-            .admin_register_shard(admin, 7, shard_principal)
-            .expect("register shard");
+        register_shard_owner(&store, router, 7, shard_principal);
 
         for (vid, val) in [
             (100u32, vec![1u8]),
@@ -270,15 +289,9 @@ mod tests {
     #[test]
     fn lookup_range_respects_sortable_value_key_boundaries() {
         let store = IndexStore::new();
-        store.init_from_args(&IndexInitArgs {
-            controllers: vec![],
-        });
-        let admin = Principal::anonymous();
-        store.bootstrap_admins(&[admin]);
+        let router = init_test_store(&store);
         let shard_principal = Principal::from_slice(&[1]);
-        store
-            .admin_register_shard(admin, 7, shard_principal)
-            .expect("register shard");
+        register_shard_owner(&store, router, 7, shard_principal);
 
         for (vid, value) in [
             (10u32, gleaph_gql::Value::Int64(-1)),
@@ -312,15 +325,9 @@ mod tests {
     #[test]
     fn lookup_range_text_prefix_boundaries_are_exact() {
         let store = IndexStore::new();
-        store.init_from_args(&IndexInitArgs {
-            controllers: vec![],
-        });
-        let admin = Principal::anonymous();
-        store.bootstrap_admins(&[admin]);
+        let router = init_test_store(&store);
         let shard_principal = Principal::from_slice(&[1]);
-        store
-            .admin_register_shard(admin, 7, shard_principal)
-            .expect("register shard");
+        register_shard_owner(&store, router, 7, shard_principal);
 
         for (vid, value) in [
             (1u32, gleaph_gql::Value::Text("a".into())),
@@ -347,15 +354,9 @@ mod tests {
     #[test]
     fn lookup_range_respects_list_value_key_boundaries() {
         let store = IndexStore::new();
-        store.init_from_args(&IndexInitArgs {
-            controllers: vec![],
-        });
-        let admin = Principal::anonymous();
-        store.bootstrap_admins(&[admin]);
+        let router = init_test_store(&store);
         let shard_principal = Principal::from_slice(&[1]);
-        store
-            .admin_register_shard(admin, 7, shard_principal)
-            .expect("register shard");
+        register_shard_owner(&store, router, 7, shard_principal);
 
         let values = [
             (10u32, gleaph_gql::Value::List(vec![])),
@@ -404,15 +405,9 @@ mod tests {
     #[test]
     fn lookup_range_respects_record_value_key_boundaries() {
         let store = IndexStore::new();
-        store.init_from_args(&IndexInitArgs {
-            controllers: vec![],
-        });
-        let admin = Principal::anonymous();
-        store.bootstrap_admins(&[admin]);
+        let router = init_test_store(&store);
         let shard_principal = Principal::from_slice(&[1]);
-        store
-            .admin_register_shard(admin, 7, shard_principal)
-            .expect("register shard");
+        register_shard_owner(&store, router, 7, shard_principal);
 
         for (vid, value) in [
             (
@@ -459,50 +454,50 @@ mod tests {
     }
 
     #[test]
-    fn admin_register_shard_idempotent_same_principal() {
+    fn admin_set_shard_owner_idempotent_same_principal() {
         let store = IndexStore::new();
-        store.init_from_args(&IndexInitArgs {
-            controllers: vec![],
-        });
-        let admin = Principal::anonymous();
-        store.bootstrap_admins(&[admin]);
+        let router = init_test_store(&store);
         let shard = Principal::from_slice(&[2]);
         store
-            .admin_register_shard(admin, 1, shard)
+            .admin_set_shard_owner(router, 1, shard)
             .expect("first register");
         store
-            .admin_register_shard(admin, 1, shard)
+            .admin_set_shard_owner(router, 1, shard)
             .expect("idempotent re-register");
     }
 
     #[test]
-    fn admin_register_shard_rejects_principal_change() {
+    fn admin_set_shard_owner_rejects_principal_change() {
         let store = IndexStore::new();
-        store.init_from_args(&IndexInitArgs {
-            controllers: vec![],
-        });
-        let admin = Principal::anonymous();
-        store.bootstrap_admins(&[admin]);
+        let router = init_test_store(&store);
         let a = Principal::self_authenticating([1u8; 32]);
         let b = Principal::self_authenticating([2u8; 32]);
-        store.admin_register_shard(admin, 9, a).unwrap();
+        store.admin_set_shard_owner(router, 9, a).unwrap();
         assert_eq!(
-            store.admin_register_shard(admin, 9, b),
+            store.admin_set_shard_owner(router, 9, b),
             Err(IndexError::ShardAlreadyRegistered)
         );
     }
 
     #[test]
-    fn admin_register_shard_rejects_anonymous_shard_principal() {
+    fn admin_set_shard_owner_rejects_anonymous_owner() {
         let store = IndexStore::new();
-        store.init_from_args(&IndexInitArgs {
-            controllers: vec![],
-        });
-        let admin = Principal::anonymous();
-        store.bootstrap_admins(&[admin]);
+        let router = init_test_store(&store);
         assert_eq!(
-            store.admin_register_shard(admin, 3, Principal::anonymous()),
+            store.admin_set_shard_owner(router, 3, Principal::anonymous()),
             Err(IndexError::InvalidPrincipalInRegistry)
         );
+    }
+
+    #[test]
+    fn admin_set_shard_owner_rejects_non_router_caller() {
+        let store = IndexStore::new();
+        let router = init_test_store(&store);
+        let other = Principal::from_slice(&[8]);
+        assert_eq!(
+            store.admin_set_shard_owner(other, 1, Principal::from_slice(&[1])),
+            Err(IndexError::NotAuthorized)
+        );
+        let _ = router;
     }
 }
