@@ -177,6 +177,19 @@ pub struct EdgeSlotMove {
     pub new_slot_index: u32,
 }
 
+/// Result of one incremental [`LabeledLaraGraph::compact_vertex_edge_span_one_step`] call.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum VertexEdgeSpanCompactOneStep {
+    /// One live edge was relocated inside its label bucket; sidecars should follow `move`.
+    EdgeMoved(EdgeSlotMove),
+    /// The current label bucket is packed; continue from the next bucket index.
+    AdvanceBucket(u32),
+    /// Overflow-log buckets required a full span rewrite; `moves` lists slot rewrites.
+    OverflowRewrite(Vec<EdgeSlotMove>),
+    /// The vertex span is fully compacted.
+    Finished,
+}
+
 /// Streaming iterator over outgoing edges in a fixed scan order (see
 /// [`LabeledLaraGraph::desc_out_edges_iter`], [`LabeledLaraGraph::asc_out_edges_iter`], and
 /// [`LabeledLaraGraph::out_edges_by_directedness_iter`]).
@@ -1780,6 +1793,120 @@ where
         Ok(moves)
     }
 
+    fn first_edge_slot_move_in_bucket(
+        bucket: &LabelBucket,
+        edges: &EdgeStore<E, M>,
+    ) -> Result<Option<EdgeSlotMove>, LabeledOperationError> {
+        if bucket.degree() == 0 || bucket.overflow_log_head >= 0 {
+            return Ok(None);
+        }
+        let mut next_live = 0u32;
+        for old_slot_index in 0..bucket.edge_len {
+            let edge_slot = bucket
+                .edge_start
+                .checked_add(u64::from(old_slot_index))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            if edges.read_slot(edge_slot).is_deleted_slot() {
+                continue;
+            }
+            if old_slot_index != next_live {
+                return Ok(Some(EdgeSlotMove {
+                    label_id: bucket.bucket_label_key,
+                    old_slot_index,
+                    new_slot_index: next_live,
+                }));
+            }
+            next_live = next_live
+                .checked_add(1)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        }
+        Ok(None)
+    }
+
+    fn apply_edge_slot_move_in_bucket(
+        &self,
+        bucket: &LabelBucket,
+        moved: EdgeSlotMove,
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        let from = bucket
+            .edge_start
+            .checked_add(u64::from(moved.old_slot_index))
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let to = bucket
+            .edge_start
+            .checked_add(u64::from(moved.new_slot_index))
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let edge = self.edges.read_slot(from);
+        self.edges
+            .write_slot(to, edge)
+            .map_err(LabeledOperationError::from)?;
+        self.edges
+            .write_slot(from, E::tombstone_edge())
+            .map_err(LabeledOperationError::from)?;
+        Ok(())
+    }
+
+    fn finalize_bucket_slab_metadata(bucket: LabelBucket) -> LabelBucket {
+        bucket
+            .with_edge_range(bucket.edge_start, bucket.degree())
+            .with_unmaintained_deletes(0)
+            .with_overflow_log_head(-1)
+    }
+
+    /// One incremental compaction step for a vertex edge span (one edge move, bucket advance, or finish).
+    pub(crate) fn compact_vertex_edge_span_one_step(
+        &self,
+        vid: VertexId,
+        resume_bucket_index: u32,
+    ) -> Result<VertexEdgeSpanCompactOneStep, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.ensure_vertex(vid)?;
+        let vertex = self.vertices.get(vid);
+        if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
+            return Ok(VertexEdgeSpanCompactOneStep::Finished);
+        }
+        let buckets = self.read_vertex_label_buckets(&vertex)?;
+        let mut total_live = 0u32;
+        for bucket in &buckets {
+            total_live = total_live
+                .checked_add(bucket.degree())
+                .ok_or(LaraOperationError::RowDegreeOverflow)?;
+        }
+        if resume_bucket_index == 0 && buckets.iter().any(|b| b.overflow_log_head >= 0) {
+            let moves = self.vertex_edge_span_slot_moves(&buckets)?;
+            self.rewrite_vertex_edge_span(vid, None, 0, true, false)?;
+            return Ok(VertexEdgeSpanCompactOneStep::OverflowRewrite(moves));
+        }
+        if resume_bucket_index >= vertex.degree() {
+            if vertex.vertex_edge_alloc_slots > total_live {
+                self.rewrite_vertex_edge_span(vid, None, 0, true, false)?;
+            }
+            return Ok(VertexEdgeSpanCompactOneStep::Finished);
+        }
+        let bucket_index = resume_bucket_index;
+        let slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
+        let bucket = self
+            .buckets
+            .read_label_bucket_slot(slot)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        if let Some(moved) = Self::first_edge_slot_move_in_bucket(&bucket, &self.edges)? {
+            self.apply_edge_slot_move_in_bucket(&bucket, moved)?;
+            return Ok(VertexEdgeSpanCompactOneStep::EdgeMoved(moved));
+        }
+        let finalized = Self::finalize_bucket_slab_metadata(bucket);
+        if finalized != bucket {
+            self.buckets.write_label_bucket_slot(slot, finalized)?;
+        }
+        Ok(VertexEdgeSpanCompactOneStep::AdvanceBucket(
+            bucket_index.saturating_add(1),
+        ))
+    }
+
     fn calculate_label_edge_span_positions(
         start_slot: u64,
         span_slots: u32,
@@ -1924,24 +2051,25 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        self.ensure_vertex(vid)?;
-        let vertex = self.vertices.get(vid);
-        if vertex.is_default_edge_labeled() {
-            return Ok(Vec::new());
+        let _ = bucket_index;
+        let mut moves = Vec::new();
+        let mut resume = 0u32;
+        loop {
+            match self.compact_vertex_edge_span_one_step(vid, resume)? {
+                VertexEdgeSpanCompactOneStep::EdgeMoved(moved) => {
+                    moves.push(moved);
+                }
+                VertexEdgeSpanCompactOneStep::AdvanceBucket(next) => {
+                    resume = next;
+                }
+                VertexEdgeSpanCompactOneStep::OverflowRewrite(batch) => {
+                    moves.extend(batch);
+                    break;
+                }
+                VertexEdgeSpanCompactOneStep::Finished => break,
+            }
         }
-        if bucket_index >= vertex.degree() {
-            return Ok(Vec::new());
-        }
-        let buckets = self.read_vertex_label_buckets(&vertex)?;
-        let mut total_live = 0u32;
-        for bucket in &buckets {
-            total_live = total_live
-                .checked_add(bucket.degree())
-                .ok_or(LaraOperationError::RowDegreeOverflow)?;
-        }
-        let moves = self.vertex_edge_span_slot_moves(&buckets)?;
-        self.rewrite_vertex_edge_span(vid, None, 0, true, false)
-            .map(|_| moves)
+        Ok(moves)
     }
 
     /// Inserts one edge under `label_id` at `src`.

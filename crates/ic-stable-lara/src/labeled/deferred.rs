@@ -7,7 +7,7 @@ use crate::{
         maintenance::{MaintenanceBudget, MaintenanceWorkReport},
         vertex::InitError as VertexInitError,
     },
-    traits::{CsrEdge, CsrEdgeTombstone},
+    traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
 use ic_stable_structures::{Memory, Storable, storable::Bound};
 use ic_stable_vec_deque::{
@@ -26,12 +26,14 @@ pub enum MaintenanceWorkItem {
         /// Vertex whose LabelBucketStore VertexSegment should be compacted.
         vid: VertexId,
     },
-    /// Compact the VertexEdgeSpan containing one LabelEdgeSpan.
+    /// Compact the VertexEdgeSpan containing one LabelEdgeSpan (one edge step per queue pop).
     CompactVertexEdgeSpan {
         /// Vertex owning the VertexEdgeSpan.
         vid: VertexId,
         /// Label-bucket index used to validate that the work item is still relevant.
-        bucket_index: u32,
+        anchor_bucket_index: u32,
+        /// Next label-bucket index to compact.
+        resume_bucket_index: u32,
     },
     /// Compact the label-bucket vertex segment, then the owning vertex edge span
     /// (dense-leaf deferred enqueue).
@@ -130,16 +132,18 @@ mod tests {
         graph
             .mark_compact_vertex_edge_span(VertexId::from(0), 0)
             .unwrap();
-        let report = graph.maintenance(MaintenanceBudget {
+        let budget = MaintenanceBudget {
             max_instructions: 0,
             reserve_instructions: 0,
             checkpoint_every: 1,
-            max_work_items: Some(1),
+            max_work_items: None,
             max_segments: None,
             max_delete_edge_steps: None,
-        });
+        };
+        while graph.maintenance_queue_len() > 0 {
+            graph.maintenance(budget);
+        }
 
-        assert_eq!(report.processed_work_items, 1);
         let after = graph.inner().vertices().get(VertexId::from(0));
         assert_eq!(after.vertex_edge_alloc_slots(), 9);
     }
@@ -173,21 +177,26 @@ mod tests {
 
 impl Storable for MaintenanceWorkItem {
     const BOUND: Bound = Bound::Bounded {
-        max_size: 12,
+        max_size: 16,
         is_fixed_size: true,
     };
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        let mut bytes = [0u8; 12];
+        let mut bytes = [0u8; 16];
         match *self {
             Self::CompactLabelBucketVertexSegment { vid } => {
                 bytes[0] = 0;
                 bytes[4..8].copy_from_slice(&u32::from(vid).to_le_bytes());
             }
-            Self::CompactVertexEdgeSpan { vid, bucket_index } => {
+            Self::CompactVertexEdgeSpan {
+                vid,
+                anchor_bucket_index,
+                resume_bucket_index,
+            } => {
                 bytes[0] = 1;
                 bytes[4..8].copy_from_slice(&u32::from(vid).to_le_bytes());
-                bytes[8..12].copy_from_slice(&bucket_index.to_le_bytes());
+                bytes[8..12].copy_from_slice(&anchor_bucket_index.to_le_bytes());
+                bytes[12..16].copy_from_slice(&resume_bucket_index.to_le_bytes());
             }
             Self::CompactDenseLabeledVertexMaintenance { vid } => {
                 bytes[0] = 2;
@@ -207,11 +216,24 @@ impl Storable for MaintenanceWorkItem {
         match b[0] {
             1 => Self::CompactVertexEdgeSpan {
                 vid,
-                bucket_index: u32::from_le_bytes(b[8..12].try_into().unwrap()),
+                anchor_bucket_index: u32::from_le_bytes(b[8..12].try_into().unwrap()),
+                resume_bucket_index: u32::from_le_bytes(b[12..16].try_into().unwrap()),
             },
             2 => Self::CompactDenseLabeledVertexMaintenance { vid },
             _ => Self::CompactLabelBucketVertexSegment { vid },
         }
+    }
+}
+
+#[inline]
+fn current_instruction_counter() -> u64 {
+    #[cfg(target_family = "wasm")]
+    {
+        ic_cdk::api::instruction_counter()
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        0
     }
 }
 
@@ -386,7 +408,11 @@ where
         bucket_index: u32,
     ) -> Result<(), DeferredError> {
         self.queue
-            .push_back(&MaintenanceWorkItem::CompactVertexEdgeSpan { vid, bucket_index })
+            .push_back(&MaintenanceWorkItem::CompactVertexEdgeSpan {
+                vid,
+                anchor_bucket_index: bucket_index,
+                resume_bucket_index: 0,
+            })
             .map_err(DeferredError::QueueGrow)?;
         Ok(())
     }
@@ -396,38 +422,90 @@ where
     where
         E: CsrEdgeTombstone,
     {
+        use crate::labeled::graph::VertexEdgeSpanCompactOneStep;
+
         let mut report = MaintenanceWorkReport::default();
+        let baseline = current_instruction_counter();
         let max_items = budget.max_work_items.unwrap_or(u32::MAX);
+        let mut checkpoint_tick = 0u32;
+
         while report.processed_work_items < max_items {
+            checkpoint_tick = checkpoint_tick.wrapping_add(1);
+            let should_check = budget.checkpoint_every <= 1
+                || checkpoint_tick.is_multiple_of(budget.checkpoint_every);
+            if should_check
+                && budget.max_instructions > 0
+                && current_instruction_counter()
+                    .saturating_sub(baseline)
+                    .saturating_add(budget.reserve_instructions)
+                    >= budget.max_instructions
+            {
+                break;
+            }
+
             let Some(item) = self.queue.pop_front() else {
                 break;
             };
             report.processed_work_items = report.processed_work_items.saturating_add(1);
             #[cfg(feature = "canbench")]
             let _bench_scope = bench_scope("labeled_deferred_maintenance_item");
-            match item {
+            let requeue = match item {
                 MaintenanceWorkItem::CompactLabelBucketVertexSegment { vid } => {
                     if self.inner.compact_label_bucket_vertex_segment(vid).is_ok() {
                         report.rebalanced_segments = report.rebalanced_segments.saturating_add(1);
                     }
+                    None
                 }
-                MaintenanceWorkItem::CompactVertexEdgeSpan { vid, bucket_index } => {
-                    if self
-                        .inner
-                        .compact_vertex_edge_span(vid, bucket_index)
-                        .is_ok()
-                    {
-                        report.rebalanced_segments = report.rebalanced_segments.saturating_add(1);
+                MaintenanceWorkItem::CompactVertexEdgeSpan {
+                    vid,
+                    anchor_bucket_index,
+                    resume_bucket_index,
+                } => {
+                    let vertex = self.inner.vertices().get(vid);
+                    if anchor_bucket_index >= vertex.degree() {
+                        None
+                    } else {
+                        match self
+                            .inner
+                            .compact_vertex_edge_span_one_step(vid, resume_bucket_index)
+                        {
+                            Ok(VertexEdgeSpanCompactOneStep::EdgeMoved(_)) => {
+                                Some(MaintenanceWorkItem::CompactVertexEdgeSpan {
+                                    vid,
+                                    anchor_bucket_index,
+                                    resume_bucket_index,
+                                })
+                            }
+                            Ok(VertexEdgeSpanCompactOneStep::AdvanceBucket(next)) => {
+                                Some(MaintenanceWorkItem::CompactVertexEdgeSpan {
+                                    vid,
+                                    anchor_bucket_index,
+                                    resume_bucket_index: next,
+                                })
+                            }
+                            Ok(VertexEdgeSpanCompactOneStep::OverflowRewrite(_))
+                            | Ok(VertexEdgeSpanCompactOneStep::Finished) => {
+                                report.rebalanced_segments =
+                                    report.rebalanced_segments.saturating_add(1);
+                                None
+                            }
+                            Err(_) => None,
+                        }
                     }
                 }
                 MaintenanceWorkItem::CompactDenseLabeledVertexMaintenance { vid } => {
                     if self.inner.compact_label_bucket_vertex_segment(vid).is_ok() {
                         report.rebalanced_segments = report.rebalanced_segments.saturating_add(1);
                     }
-                    if self.inner.compact_vertex_edge_span(vid, 0).is_ok() {
-                        report.rebalanced_segments = report.rebalanced_segments.saturating_add(1);
-                    }
+                    Some(MaintenanceWorkItem::CompactVertexEdgeSpan {
+                        vid,
+                        anchor_bucket_index: 0,
+                        resume_bucket_index: 0,
+                    })
                 }
+            };
+            if let Some(next) = requeue {
+                let _ = self.queue.push_front(&next);
             }
         }
         report.remaining_queue_len = self.queue.len();

@@ -24,6 +24,10 @@ use std::{borrow::Cow, fmt};
 pub struct BidirectionalMaintenanceReport {
     /// Aggregated work performed by the unified queue.
     pub work: MaintenanceWorkReport,
+    /// Instruction-counter delta for this maintenance call (wasm only).
+    pub instructions_used: u64,
+    /// Whether [`MaintenanceBudget::max_instructions`] stopped the run early.
+    pub instruction_budget_exhausted: bool,
 }
 
 /// Observer for edge slot relocations produced by labeled row compaction.
@@ -65,14 +69,16 @@ pub enum MaintenanceWorkItem {
         /// Vertex inside the segment to compact.
         vid: VertexId,
     },
-    /// Compact one VertexEdgeSpan in one orientation.
+    /// Compact one VertexEdgeSpan in one orientation (incremental; one edge step per queue pop).
     CompactVertexEdgeSpan {
         /// Orientation whose VertexEdgeSpan should be compacted.
         orientation: Orientation,
         /// Vertex owning the VertexEdgeSpan.
         vid: VertexId,
         /// Label-bucket index used to validate that the work item is still relevant.
-        bucket_index: u32,
+        anchor_bucket_index: u32,
+        /// Next label-bucket index to compact (0 at enqueue time).
+        resume_bucket_index: u32,
     },
     /// Compact the label-bucket vertex segment then the vertex edge span for one orientation.
     CompactDenseLabeledVertexMaintenance {
@@ -97,7 +103,8 @@ fn maintenance_work_item_bytes(item: &MaintenanceWorkItem) -> [u8; 16] {
         MaintenanceWorkItem::CompactVertexEdgeSpan {
             orientation,
             vid,
-            bucket_index,
+            anchor_bucket_index,
+            resume_bucket_index,
         } => {
             b[0] = 1;
             b[1] = match orientation {
@@ -105,7 +112,8 @@ fn maintenance_work_item_bytes(item: &MaintenanceWorkItem) -> [u8; 16] {
                 Orientation::Reverse => 1,
             };
             b[4..8].copy_from_slice(&u32::from(vid).to_le_bytes());
-            b[8..12].copy_from_slice(&bucket_index.to_le_bytes());
+            b[8..12].copy_from_slice(&anchor_bucket_index.to_le_bytes());
+            b[12..16].copy_from_slice(&resume_bucket_index.to_le_bytes());
         }
         MaintenanceWorkItem::CompactDenseLabeledVertexMaintenance { orientation, vid } => {
             b[0] = 2;
@@ -145,7 +153,8 @@ impl Storable for MaintenanceWorkItem {
             1 => Self::CompactVertexEdgeSpan {
                 orientation,
                 vid,
-                bucket_index: u32::from_le_bytes(b[8..12].try_into().unwrap()),
+                anchor_bucket_index: u32::from_le_bytes(b[8..12].try_into().unwrap()),
+                resume_bucket_index: u32::from_le_bytes(b[12..16].try_into().unwrap()),
             },
             2 => Self::CompactDenseLabeledVertexMaintenance { orientation, vid },
             _ => Self::CompactLabelBucketVertexSegment { orientation, vid },
@@ -213,6 +222,27 @@ impl<M: Memory> BidirectionalMaintenanceQueue<M> {
             .clear(work_item_key(item))
             .map_err(DeferredBidirectionalLabeledError::MaintenanceDirtyBitmap)
     }
+
+    fn requeue_front(
+        &self,
+        item: MaintenanceWorkItem,
+    ) -> Result<(), DeferredBidirectionalLabeledError> {
+        self.queue
+            .push_front(&item)
+            .map_err(DeferredBidirectionalLabeledError::MaintenanceQueue)
+    }
+}
+
+#[inline]
+fn current_instruction_counter() -> u64 {
+    #[cfg(target_family = "wasm")]
+    {
+        ic_cdk::api::instruction_counter()
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        0
+    }
 }
 
 fn work_item_key(item: MaintenanceWorkItem) -> u32 {
@@ -227,13 +257,14 @@ fn work_item_key(item: MaintenanceWorkItem) -> u32 {
         MaintenanceWorkItem::CompactVertexEdgeSpan {
             orientation,
             vid,
-            bucket_index,
+            anchor_bucket_index,
+            resume_bucket_index: _,
         } => {
             let orient = match orientation {
                 Orientation::Forward => 0,
                 Orientation::Reverse => 1,
             };
-            0x4000_0000 | bucket_index ^ (u32::from(vid) << 1) ^ orient
+            0x4000_0000 | anchor_bucket_index ^ (u32::from(vid) << 1) ^ orient
         }
         MaintenanceWorkItem::CompactDenseLabeledVertexMaintenance { orientation, vid } => {
             let orient = match orientation {
@@ -647,7 +678,8 @@ where
             .mark_dirty(MaintenanceWorkItem::CompactVertexEdgeSpan {
                 orientation,
                 vid,
-                bucket_index,
+                anchor_bucket_index: bucket_index,
+                resume_bucket_index: 0,
             })
             .map(|_| ())
     }
@@ -1085,14 +1117,34 @@ where
         O: EdgeSlotMoveObserver,
         E: CsrEdgeTombstone,
     {
+        use crate::labeled::graph::VertexEdgeSpanCompactOneStep;
+
         let mut report = BidirectionalMaintenanceReport::default();
+        let baseline = current_instruction_counter();
         let max_items = budget.max_work_items.unwrap_or(u32::MAX);
+        let mut checkpoint_tick = 0u32;
+
         while report.work.processed_work_items < max_items {
+            checkpoint_tick = checkpoint_tick.wrapping_add(1);
+            let should_check = budget.checkpoint_every <= 1
+                || checkpoint_tick.is_multiple_of(budget.checkpoint_every);
+            report.instructions_used = current_instruction_counter().saturating_sub(baseline);
+            if should_check
+                && budget.max_instructions > 0
+                && report
+                    .instructions_used
+                    .saturating_add(budget.reserve_instructions)
+                    >= budget.max_instructions
+            {
+                report.instruction_budget_exhausted = true;
+                break;
+            }
+
             let Some(item) = self.maintenance.pop_next()? else {
                 break;
             };
             report.work.processed_work_items = report.work.processed_work_items.saturating_add(1);
-            match item {
+            let requeue = match item {
                 MaintenanceWorkItem::CompactLabelBucketVertexSegment { orientation, vid } => {
                     let graph = match orientation {
                         Orientation::Forward => &self.forward,
@@ -1102,23 +1154,55 @@ where
                         report.work.rebalanced_segments =
                             report.work.rebalanced_segments.saturating_add(1);
                     }
+                    None
                 }
                 MaintenanceWorkItem::CompactVertexEdgeSpan {
                     orientation,
                     vid,
-                    bucket_index,
+                    anchor_bucket_index,
+                    resume_bucket_index,
                 } => {
                     let graph = match orientation {
                         Orientation::Forward => &self.forward,
                         Orientation::Reverse => &self.reverse,
                     };
-                    if let Ok(moves) = graph.compact_vertex_edge_span_with_moves(vid, bucket_index)
-                    {
-                        for moved in moves {
-                            observer.edge_slot_moved(orientation, vid, moved);
+                    let vertex = graph.vertices().get(vid);
+                    if anchor_bucket_index >= vertex.degree() {
+                        None
+                    } else {
+                        match graph.compact_vertex_edge_span_one_step(vid, resume_bucket_index) {
+                            Ok(VertexEdgeSpanCompactOneStep::EdgeMoved(moved)) => {
+                                observer.edge_slot_moved(orientation, vid, moved);
+                                Some(MaintenanceWorkItem::CompactVertexEdgeSpan {
+                                    orientation,
+                                    vid,
+                                    anchor_bucket_index,
+                                    resume_bucket_index,
+                                })
+                            }
+                            Ok(VertexEdgeSpanCompactOneStep::AdvanceBucket(next)) => {
+                                Some(MaintenanceWorkItem::CompactVertexEdgeSpan {
+                                    orientation,
+                                    vid,
+                                    anchor_bucket_index,
+                                    resume_bucket_index: next,
+                                })
+                            }
+                            Ok(VertexEdgeSpanCompactOneStep::OverflowRewrite(moves)) => {
+                                for moved in moves {
+                                    observer.edge_slot_moved(orientation, vid, moved);
+                                }
+                                report.work.rebalanced_segments =
+                                    report.work.rebalanced_segments.saturating_add(1);
+                                None
+                            }
+                            Ok(VertexEdgeSpanCompactOneStep::Finished) => {
+                                report.work.rebalanced_segments =
+                                    report.work.rebalanced_segments.saturating_add(1);
+                                None
+                            }
+                            Err(_) => None,
                         }
-                        report.work.rebalanced_segments =
-                            report.work.rebalanced_segments.saturating_add(1);
                     }
                 }
                 MaintenanceWorkItem::CompactDenseLabeledVertexMaintenance { orientation, vid } => {
@@ -1130,17 +1214,27 @@ where
                         report.work.rebalanced_segments =
                             report.work.rebalanced_segments.saturating_add(1);
                     }
-                    if let Ok(moves) = graph.compact_vertex_edge_span_with_moves(vid, 0) {
-                        for moved in moves {
-                            observer.edge_slot_moved(orientation, vid, moved);
-                        }
-                        report.work.rebalanced_segments =
-                            report.work.rebalanced_segments.saturating_add(1);
-                    }
+                    Some(MaintenanceWorkItem::CompactVertexEdgeSpan {
+                        orientation,
+                        vid,
+                        anchor_bucket_index: 0,
+                        resume_bucket_index: 0,
+                    })
                 }
+            };
+            if let Some(next) = requeue {
+                self.maintenance.requeue_front(next)?;
+            } else {
+                self.maintenance.complete(item)?;
             }
-            self.maintenance.complete(item)?;
         }
+
+        report.instructions_used = current_instruction_counter().saturating_sub(baseline);
+        report.instruction_budget_exhausted |= budget.max_instructions > 0
+            && report
+                .instructions_used
+                .saturating_add(budget.reserve_instructions)
+                >= budget.max_instructions;
         report.work.remaining_queue_len = self.maintenance.len();
         Ok(report)
     }
@@ -1729,18 +1823,18 @@ mod tests {
         graph
             .mark_compact_vertex_edge_span(Orientation::Forward, hub, 0)
             .expect("mark");
-        let report = graph
-            .maintenance(MaintenanceBudget {
-                max_instructions: 0,
-                reserve_instructions: 0,
-                checkpoint_every: 1,
-                max_work_items: Some(1),
-                max_segments: None,
-                max_delete_edge_steps: None,
-            })
-            .expect("maintenance");
+        let budget = MaintenanceBudget {
+            max_instructions: 0,
+            reserve_instructions: 0,
+            checkpoint_every: 1,
+            max_work_items: None,
+            max_segments: None,
+            max_delete_edge_steps: None,
+        };
+        while graph.maintenance_queue_len() > 0 {
+            graph.maintenance(budget).expect("maintenance");
+        }
 
-        assert_eq!(report.work.processed_work_items, 1);
         let after = graph.forward().vertices().get(hub);
         assert_eq!(after.vertex_edge_alloc_slots(), 9);
     }
