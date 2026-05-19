@@ -93,8 +93,8 @@ async fn import_migrated_vertex(
 }
 
 #[update(guard = "guard_admin")]
-fn tombstone_migrated_vertex(vertex_id: u32) -> Result<(), String> {
-    canister::handlers::tombstone_migrated_vertex_canister(vertex_id)
+async fn tombstone_migrated_vertex(vertex_id: u32) -> Result<(), String> {
+    canister::handlers::tombstone_migrated_vertex_canister(vertex_id).await
 }
 
 ic_cdk::export_candid!();

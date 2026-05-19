@@ -1,6 +1,6 @@
 //! Export/import a single vertex during router-coordinated migration.
 
-use super::index::sync_migration_index_postings;
+use super::index::{remove_source_index_postings_for_vertex, sync_migration_index_postings};
 use super::super::store::{EdgeHandle, GraphStore, GraphStoreError};
 use crate::index::lookup::PropertyIndexLookup;
 use crate::plan::PlanQueryError;
@@ -367,6 +367,37 @@ pub fn tombstone_migrated_vertex(
     store: &GraphStore,
     vertex_id: VertexId,
 ) -> Result<(), GraphStoreError> {
+    tombstone_migrated_vertex_impl(store, vertex_id)
+}
+
+/// Like [`tombstone_migrated_vertex`], then removes any remaining source-shard index postings.
+pub async fn tombstone_migrated_vertex_with_index(
+    store: &GraphStore,
+    vertex_id: VertexId,
+    index: &dyn PropertyIndexLookup,
+) -> Result<(), GraphStoreError> {
+    let routing = store
+        .federation_routing()
+        .ok_or(GraphStoreError::VertexPlacement(
+            placement::VertexPlacementError::Rejected(RouterError::ShardNotRegistered),
+        ))?;
+    let source_local = placement::local_vertex_id_raw(vertex_id);
+    remove_source_index_postings_for_vertex(
+        index,
+        store,
+        vertex_id,
+        routing.shard_id,
+        source_local,
+    )
+    .await
+    .map_err(plan_query_to_store)?;
+    tombstone_migrated_vertex_impl(store, vertex_id)
+}
+
+fn tombstone_migrated_vertex_impl(
+    store: &GraphStore,
+    vertex_id: VertexId,
+) -> Result<(), GraphStoreError> {
     let routing = store
         .federation_routing()
         .ok_or(GraphStoreError::VertexPlacement(
@@ -582,5 +613,124 @@ mod tests {
             index.inserts.borrow().as_slice(),
             &[(9, store.property_id("k").expect("pid").raw(), u32::from(dest_id))]
         );
+    }
+
+    #[test]
+    fn full_migration_roundtrip_with_index_sync() {
+        let index = RecordingIndex::default();
+        let store = GraphStore::new();
+        store
+            .set_federation_routing(Some(FederationRouting {
+                router_canister: Principal::management_canister(),
+                index_canister: Principal::management_canister(),
+                shard_id: 7,
+            }))
+            .expect("source routing");
+
+        let source_id = store
+            .insert_vertex_named(["Full"], [("k", Value::Text("v".into()))])
+            .expect("insert");
+        let logical = store.logical_vertex_id(source_id).expect("logical");
+        let pid = store.property_id("k").expect("pid").raw();
+
+        placement::begin_vertex_migration(
+            Principal::management_canister(),
+            BeginVertexMigrationArgs {
+                logical_vertex_id: logical,
+                destination_shard_id: 9,
+            },
+        )
+        .expect("begin");
+
+        let bundle = export_local_vertex_for_migration(&store, source_id).expect("export");
+
+        store
+            .set_federation_routing(Some(FederationRouting {
+                router_canister: Principal::management_canister(),
+                index_canister: Principal::management_canister(),
+                shard_id: 9,
+            }))
+            .expect("dest routing");
+
+        let dest_id = pollster::block_on(import_migrated_vertex_with_index(
+            &store, bundle, &index,
+        ))
+        .expect("import");
+        assert_eq!(index.removes.borrow().len(), 1);
+        assert_eq!(index.inserts.borrow().len(), 1);
+
+        store
+            .set_federation_routing(Some(FederationRouting {
+                router_canister: Principal::management_canister(),
+                index_canister: Principal::management_canister(),
+                shard_id: 7,
+            }))
+            .expect("source routing again");
+
+        pollster::block_on(tombstone_migrated_vertex_with_index(
+            &store, source_id, &index,
+        ))
+        .expect("tombstone");
+        assert!(store.vertex(source_id).expect("row").is_tombstone());
+        assert_eq!(
+            index.removes.borrow().as_slice(),
+            &[
+                (7, pid, u32::from(source_id)),
+                (7, pid, u32::from(source_id)),
+            ]
+        );
+        assert_eq!(
+            index.inserts.borrow().as_slice(),
+            &[(9, pid, u32::from(dest_id))]
+        );
+    }
+
+    #[test]
+    fn tombstoned_migrated_source_vertex_is_not_writable() {
+        let store = GraphStore::new();
+        store
+            .set_federation_routing(Some(FederationRouting {
+                router_canister: Principal::management_canister(),
+                index_canister: Principal::management_canister(),
+                shard_id: 7,
+            }))
+            .expect("routing");
+
+        let source_id = store.insert_vertex().expect("insert");
+        let logical = store.logical_vertex_id(source_id).expect("logical");
+
+        placement::begin_vertex_migration(
+            Principal::management_canister(),
+            BeginVertexMigrationArgs {
+                logical_vertex_id: logical,
+                destination_shard_id: 9,
+            },
+        )
+        .expect("begin");
+
+        let bundle = export_local_vertex_for_migration(&store, source_id).expect("export");
+
+        store
+            .set_federation_routing(Some(FederationRouting {
+                router_canister: Principal::management_canister(),
+                index_canister: Principal::management_canister(),
+                shard_id: 9,
+            }))
+            .expect("dest routing");
+        import_migrated_vertex(&store, bundle).expect("import");
+
+        store
+            .set_federation_routing(Some(FederationRouting {
+                router_canister: Principal::management_canister(),
+                index_canister: Principal::management_canister(),
+                shard_id: 7,
+            }))
+            .expect("source routing");
+        tombstone_migrated_vertex(&store, source_id).expect("tombstone");
+
+        assert!(matches!(
+            store.assert_local_vertex_writable(source_id),
+            Err(GraphStoreError::VertexTombstoned)
+        ));
     }
 }

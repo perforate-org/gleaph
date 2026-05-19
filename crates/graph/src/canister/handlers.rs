@@ -12,7 +12,9 @@ use crate::facade::migration::{
     export_local_vertex_for_migration, import_migrated_vertex, tombstone_migrated_vertex,
 };
 #[cfg(target_family = "wasm")]
-use crate::facade::migration::import_migrated_vertex_with_index;
+use crate::facade::migration::{
+    import_migrated_vertex_with_index, tombstone_migrated_vertex_with_index,
+};
 use crate::facade::{FederationRouting, GraphMetadata, GraphStore};
 use crate::gql_run::{
     GqlCanisterExecutionMode, run_adhoc_gql_last_read_row_count,
@@ -244,7 +246,23 @@ pub async fn import_migrated_vertex_canister(bundle: ExportedVertex) -> Result<u
     }
 }
 
-pub fn tombstone_migrated_vertex_canister(vertex_id: u32) -> Result<(), String> {
+pub async fn tombstone_migrated_vertex_canister(vertex_id: u32) -> Result<(), String> {
     let store = GraphStore::new();
-    tombstone_migrated_vertex(&store, VertexId::from(vertex_id)).map_err(|e| e.to_string())
+    #[cfg(target_family = "wasm")]
+    {
+        let index_holder = wasm_index_client_holder().ok_or_else(|| {
+            "federated graph shard requires index_canister for migration tombstone".to_string()
+        })?;
+        return tombstone_migrated_vertex_with_index(
+            &store,
+            VertexId::from(vertex_id),
+            &index_holder as &dyn PropertyIndexLookup,
+        )
+        .await
+        .map_err(|e| e.to_string());
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        tombstone_migrated_vertex(&store, VertexId::from(vertex_id)).map_err(|e| e.to_string())
+    }
 }

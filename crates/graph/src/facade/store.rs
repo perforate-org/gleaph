@@ -131,6 +131,8 @@ pub enum GraphStoreError {
     VertexPlacement(placement::VertexPlacementError),
     /// Router reports this shard-local vertex is frozen during migration.
     VertexMigrating,
+    /// Shard-local CSR row is tombstoned (stale after migration).
+    VertexTombstoned,
 }
 
 impl fmt::Display for GraphStoreError {
@@ -162,6 +164,7 @@ impl fmt::Display for GraphStoreError {
             ),
             Self::VertexPlacement(err) => write!(f, "{err}"),
             Self::VertexMigrating => write!(f, "vertex is frozen for migration on this shard"),
+            Self::VertexTombstoned => write!(f, "vertex row is tombstoned on this shard"),
         }
     }
 }
@@ -190,7 +193,8 @@ impl std::error::Error for GraphStoreError {
             | Self::EdgeNotFound { .. }
             | Self::InvalidEdgeLabelId(_)
             | Self::VertexPlacement(_)
-            | Self::VertexMigrating => None,
+            | Self::VertexMigrating
+            | Self::VertexTombstoned => None,
         }
     }
 }
@@ -469,6 +473,12 @@ impl GraphStore {
 
     /// Rejects writes to a shard-local vertex that the router has marked as migrating away.
     pub(crate) fn assert_local_vertex_writable(&self, vertex_id: VertexId) -> Result<(), GraphStoreError> {
+        if self
+            .vertex(vertex_id)
+            .is_some_and(|v| v.is_tombstone())
+        {
+            return Err(GraphStoreError::VertexTombstoned);
+        }
         let Some(routing) = self.federation_routing() else {
             return Ok(());
         };
