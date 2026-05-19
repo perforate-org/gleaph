@@ -28,6 +28,12 @@ pub(crate) fn resolve_shard(shard_id: ShardId) -> Result<ShardRegistryEntry, Rou
     RouterStore::new().resolve_shard(shard_id)
 }
 
+pub(crate) fn list_shards_for_graph(
+    logical_graph_name: String,
+) -> Result<Vec<ShardRegistryEntry>, RouterError> {
+    RouterStore::new().list_shards_for_graph(&logical_graph_name)
+}
+
 pub(crate) fn resolve_placement(
     logical_vertex_id: LogicalVertexId,
 ) -> Result<VertexPlacement, RouterError> {

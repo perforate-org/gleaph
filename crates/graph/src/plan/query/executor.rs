@@ -1416,7 +1416,7 @@ fn stream_expand(
         return Ok(false);
     }
 
-    let Some(src_id) = vertex_binding_for_traversal(&row, src)? else {
+    let Some(src_id) = vertex_binding_for_traversal(store, &row, src, Some(direction))? else {
         return Ok(false);
     };
     let dst_only_prefilter = dst_filter_is_dst_vertex_only(dst_filter, dst.as_ref());
@@ -2500,7 +2500,7 @@ fn execute_expand(
     };
     let mut candidates = Vec::new();
     for row in rows {
-        let Some(src_id) = vertex_binding_for_traversal(&row, src)? else {
+        let Some(src_id) = vertex_binding_for_traversal(store, &row, src, Some(direction))? else {
             continue;
         };
         if let Some(fast_path) = csr_expand_fast_path {
@@ -2697,10 +2697,10 @@ fn execute_shortest_path(
     let store_hop_edges = emit_edge_binding || emit_path_binding;
     let mut out = Vec::new();
     for row in rows {
-        let Some(src_id) = vertex_binding_for_traversal(&row, src)? else {
+        let Some(src_id) = vertex_binding_for_traversal(store, &row, src, Some(direction))? else {
             continue;
         };
-        let Some(dst_id) = vertex_binding_for_traversal(&row, dst)? else {
+        let Some(dst_id) = vertex_binding_for_traversal(store, &row, dst, None)? else {
             continue;
         };
         let paths = match cost {
@@ -4856,12 +4856,58 @@ fn vertex_binding(row: &PlanRow, variable: &str) -> Result<VertexId, PlanQueryEr
 
 /// Resolve a graph traversal source when the variable may be null-padded after an optional miss.
 fn vertex_binding_for_traversal(
+    store: &GraphStore,
     row: &PlanRow,
     variable: &str,
+    expand_direction: Option<EdgeDirection>,
 ) -> Result<Option<VertexId>, PlanQueryError> {
     match row.get(variable) {
         Some(PlanBinding::Value(Value::Null)) => Ok(None),
+        Some(PlanBinding::RemoteVertex(logical)) => {
+            resolve_federated_traversal_vertex(store, *logical, expand_direction)
+        }
         _ => vertex_binding(row, variable).map(Some),
+    }
+}
+
+/// Maps a logical vertex to a local [`VertexId`] when this shard is authoritative.
+fn resolve_federated_traversal_vertex(
+    store: &GraphStore,
+    logical_vertex_id: LogicalVertexId,
+    expand_direction: Option<EdgeDirection>,
+) -> Result<Option<VertexId>, PlanQueryError> {
+    let Some(routing) = store.federation_routing() else {
+        return Err(PlanQueryError::UnsupportedOp(
+            "Expand(remote vertex requires federation routing)",
+        ));
+    };
+    let placement = placement::resolve_placement(routing.router_canister, logical_vertex_id)
+        .map_err(|_| PlanQueryError::UnsupportedOp("Expand(remote placement lookup)"))?;
+    match placement {
+        gleaph_graph_kernel::federation::VertexPlacement::Active(loc)
+            if loc.shard_id == routing.shard_id =>
+        {
+            Ok(Some(VertexId::from(loc.local_vertex_id)))
+        }
+        gleaph_graph_kernel::federation::VertexPlacement::Active(_) => {
+            let op = match expand_direction {
+                Some(EdgeDirection::PointingLeft) => {
+                    "Expand.reverse(federated fan-out not implemented; use list_shards_for_graph)"
+                }
+                _ => "Expand(federated fan-out not implemented; placement on another shard)",
+            };
+            Err(PlanQueryError::UnsupportedOp(op))
+        }
+        gleaph_graph_kernel::federation::VertexPlacement::Migrating { source, .. }
+            if source.shard_id == routing.shard_id =>
+        {
+            Err(PlanQueryError::UnsupportedOp("Expand(vertex migrating on this shard)"))
+        }
+        gleaph_graph_kernel::federation::VertexPlacement::Migrating { .. } => {
+            Err(PlanQueryError::UnsupportedOp(
+                "Expand(vertex migrating on another shard)",
+            ))
+        }
     }
 }
 

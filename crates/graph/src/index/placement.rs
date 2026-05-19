@@ -4,7 +4,7 @@ use candid::Principal;
 use gleaph_graph_kernel::federation::{
     BeginVertexMigrationArgs, CommitVertexPlacementArgs, FinishVertexMigrationArgs, LocalVertexId,
     LogicalVertexId, PhysicalPlacementKey, PhysicalVertexLocation, ReleaseLogicalVertexArgs,
-    RouterError, ShardId, VertexPlacement,
+    RouterError, ShardId, ShardRegistryEntry, VertexPlacement,
 };
 use ic_stable_lara::VertexId;
 use std::cell::{Cell, RefCell};
@@ -37,6 +37,8 @@ thread_local! {
         std::collections::HashMap<LogicalVertexId, VertexPlacement>,
     > = RefCell::new(std::collections::HashMap::new());
     static NATIVE_TEST_MIGRATION_COUNTER: Cell<u64> = const { Cell::new(0) };
+    static NATIVE_TEST_SHARDS: RefCell<Vec<ShardRegistryEntry>> =
+        RefCell::new(Vec::new());
 }
 
 pub fn allocate_logical_vertex_id(
@@ -119,6 +121,52 @@ pub fn commit_vertex_placement(
         }
         Ok(())
     }
+}
+
+pub fn list_shards_for_graph(
+    router_canister: Principal,
+    logical_graph_name: &str,
+) -> Result<Vec<ShardRegistryEntry>, VertexPlacementError> {
+    #[cfg(target_family = "wasm")]
+    {
+        use ic_cdk::call::Call;
+
+        let shards: Result<Vec<ShardRegistryEntry>, RouterError> = Call::unbounded_wait(
+            router_canister,
+            "list_shards_for_graph",
+        )
+        .with_args(&(logical_graph_name.to_string(),))
+        .wait()
+        .map_err(|e| VertexPlacementError::Call(format!("{e:?}")))?
+        .candid()
+        .map_err(|e| VertexPlacementError::Call(format!("candid decode: {e}")))?;
+
+        return shards.map_err(VertexPlacementError::Rejected);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let _ = router_canister;
+        Ok(NATIVE_TEST_SHARDS.with_borrow(|shards| {
+            shards
+                .iter()
+                .filter(|entry| entry.logical_graph_name == logical_graph_name)
+                .cloned()
+                .collect()
+        }))
+    }
+}
+
+/// Registers a shard in the native test registry (unit tests only).
+#[cfg(test)]
+pub fn native_test_register_shard(entry: ShardRegistryEntry) {
+    NATIVE_TEST_SHARDS.with_borrow_mut(|shards| {
+        if let Some(idx) = shards.iter().position(|s| s.shard_id == entry.shard_id) {
+            shards[idx] = entry;
+        } else {
+            shards.push(entry);
+        }
+    });
 }
 
 pub fn resolve_placement(
@@ -398,6 +446,28 @@ mod tests {
     use crate::facade::mutation_executor::GraphMutationExecutor;
     use crate::facade::{FederationRouting, GraphStore, GraphStoreError};
     use gleaph_gql::Value;
+
+    #[test]
+    fn list_shards_for_graph_uses_native_registry() {
+        native_test_register_shard(ShardRegistryEntry {
+            shard_id: 7,
+            graph_canister: Principal::management_canister(),
+            index_canister: Principal::management_canister(),
+            logical_graph_name: "tenant.main".into(),
+            registered_at_ns: 0,
+        });
+        native_test_register_shard(ShardRegistryEntry {
+            shard_id: 9,
+            graph_canister: Principal::management_canister(),
+            index_canister: Principal::management_canister(),
+            logical_graph_name: "tenant.main".into(),
+            registered_at_ns: 0,
+        });
+
+        let listed = list_shards_for_graph(Principal::management_canister(), "tenant.main")
+            .expect("list");
+        assert_eq!(listed.len(), 2);
+    }
 
     #[test]
     fn delete_vertex_releases_router_placement() {

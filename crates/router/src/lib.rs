@@ -37,6 +37,13 @@ fn resolve_shard(shard_id: types::ShardId) -> Result<types::ShardRegistryEntry, 
 }
 
 #[query]
+fn list_shards_for_graph(
+    logical_graph_name: String,
+) -> Result<Vec<types::ShardRegistryEntry>, RouterError> {
+    canister::list_shards_for_graph(logical_graph_name)
+}
+
+#[query]
 fn resolve_placement(
     logical_vertex_id: types::LogicalVertexId,
 ) -> Result<types::VertexPlacement, RouterError> {

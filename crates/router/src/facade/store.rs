@@ -95,6 +95,24 @@ impl RouterStore {
             .ok_or(RouterError::ShardNotRegistered)
     }
 
+    /// Returns all shard registrations for a logical graph (for federated query fan-out).
+    pub fn list_shards_for_graph(
+        &self,
+        logical_graph_name: &str,
+    ) -> Result<Vec<ShardRegistryEntry>, RouterError> {
+        validate_metadata_name(logical_graph_name)?;
+        let mut out = Vec::new();
+        ROUTER_SHARDS.with_borrow(|shards| {
+            for lazy in shards.iter() {
+                let entry = lazy.value();
+                if entry.logical_graph_name == logical_graph_name {
+                    out.push(entry);
+                }
+            }
+        });
+        Ok(out)
+    }
+
     pub fn resolve_placement(
         &self,
         logical_vertex_id: LogicalVertexId,
@@ -641,6 +659,45 @@ mod tests {
             placement,
             VertexPlacement::Active(PhysicalVertexLocation::new(7, 42))
         );
+    }
+
+    #[test]
+    fn list_shards_for_graph_returns_matching_registrations() {
+        let store = RouterStore::new();
+        store.init_from_args(&RouterInitArgs {
+            controllers: vec![],
+        });
+        let admin = Principal::anonymous();
+        store.bootstrap_controllers(&[admin]);
+
+        let graph_a = graph_principal(1);
+        let graph_b = graph_principal(4);
+        let graph_c = graph_principal(5);
+        let index = graph_principal(2);
+
+        for (shard_id, graph) in [(7, graph_a), (9, graph_c), (11, graph_b)] {
+            futures::executor::block_on(store.admin_register_shard(
+                admin,
+                AdminRegisterShardArgs {
+                    shard_id,
+                    graph_canister: graph,
+                    index_canister: index,
+                    logical_graph_name: if shard_id != 11 {
+                        "tenant.main".into()
+                    } else {
+                        "other.graph".into()
+                    },
+                },
+            ))
+            .expect("register");
+        }
+
+        let listed = store
+            .list_shards_for_graph("tenant.main")
+            .expect("list");
+        assert_eq!(listed.len(), 2);
+        assert!(listed.iter().any(|e| e.shard_id == 7));
+        assert!(listed.iter().any(|e| e.shard_id == 9));
     }
 
     #[test]
