@@ -100,6 +100,145 @@ mod tests {
         DeferredLabeledLaraGraph::new(inner, vector_memory()).expect("deferred graph")
     }
 
+    fn drain_vertex_edge_span_compact_queue(
+        graph: &DeferredLabeledLaraGraph<TestEdge, crate::VectorMemory>,
+    ) {
+        let budget = MaintenanceBudget {
+            max_instructions: 0,
+            reserve_instructions: 0,
+            checkpoint_every: 1,
+            max_work_items: None,
+            max_segments: None,
+            max_delete_edge_steps: None,
+        };
+        while graph.maintenance_queue_len() > 0 {
+            graph.maintenance(budget);
+        }
+    }
+
+    #[test]
+    fn maintenance_vertex_edge_span_compact_one_work_item_per_step() {
+        let graph = graph();
+        graph
+            .inner()
+            .push_vertex(crate::labeled::record::LabeledVertex::default())
+            .unwrap();
+        let label = BucketLabelKey::from_raw(2);
+        graph
+            .insert_edge(
+                VertexId::from(0),
+                BucketLabelKey::from_raw(99),
+                TestEdge(999),
+            )
+            .unwrap();
+        for target in 0..30u32 {
+            graph
+                .insert_edge(VertexId::from(0), label, TestEdge(target))
+                .unwrap();
+        }
+        for target in 0..25u32 {
+            graph
+                .remove_edge_matching(VertexId::from(0), label, |edge| edge.0 == target)
+                .unwrap();
+        }
+
+        graph
+            .mark_compact_vertex_edge_span(VertexId::from(0), 0)
+            .unwrap();
+        let budget_one = MaintenanceBudget {
+            max_instructions: 0,
+            reserve_instructions: 0,
+            checkpoint_every: 1,
+            max_work_items: Some(1),
+            max_segments: None,
+            max_delete_edge_steps: None,
+        };
+
+        let mut steps = 0u32;
+        while graph.maintenance_queue_len() > 0 {
+            let report = graph.maintenance(budget_one);
+            assert_eq!(
+                report.processed_work_items, 1,
+                "each maintenance call should advance exactly one compaction step"
+            );
+            steps = steps.saturating_add(1);
+            assert!(
+                steps < 512,
+                "incremental compaction should finish within a bounded number of steps"
+            );
+        }
+        assert!(
+            steps > 1,
+            "tombstone-heavy bucket should need multiple steps"
+        );
+
+        let inner = graph.inner();
+        assert_eq!(
+            inner
+                .iter_edges_for_label(VertexId::from(0), label)
+                .unwrap(),
+            vec![
+                TestEdge(29),
+                TestEdge(28),
+                TestEdge(27),
+                TestEdge(26),
+                TestEdge(25)
+            ]
+        );
+    }
+
+    #[test]
+    fn maintenance_vertex_edge_span_compact_clears_many_slab_tombstones() {
+        let graph = graph();
+        graph
+            .inner()
+            .push_vertex(crate::labeled::record::LabeledVertex::default())
+            .unwrap();
+        let label = BucketLabelKey::from_raw(2);
+        for target in 1..=120u32 {
+            graph
+                .insert_edge(VertexId::from(0), label, TestEdge(target))
+                .unwrap();
+        }
+        for target in 1..=115u32 {
+            graph
+                .remove_edge_matching(VertexId::from(0), label, |edge| edge.0 == target)
+                .unwrap();
+        }
+
+        let inner = graph.inner();
+        assert_eq!(
+            inner
+                .iter_edges_for_label(VertexId::from(0), label)
+                .unwrap()
+                .len(),
+            5
+        );
+
+        graph
+            .mark_compact_vertex_edge_span(VertexId::from(0), 0)
+            .unwrap();
+        drain_vertex_edge_span_compact_queue(&graph);
+
+        assert_eq!(
+            inner
+                .iter_edges_for_label(VertexId::from(0), label)
+                .unwrap(),
+            vec![
+                TestEdge(120),
+                TestEdge(119),
+                TestEdge(118),
+                TestEdge(117),
+                TestEdge(116)
+            ]
+        );
+        crate::labeled::invariants::assert_labeled_layout_invariants(
+            inner.vertices(),
+            inner.buckets(),
+            inner.edges(),
+        );
+    }
+
     #[test]
     fn maintenance_compacts_vertex_edge_span() {
         let graph = graph();
@@ -127,25 +266,15 @@ mod tests {
         }
 
         let before = graph.inner().vertices().get(VertexId::from(0));
-        assert!(before.vertex_edge_alloc_slots() > 8);
+        assert!(before.stored_slots > 8);
 
         graph
             .mark_compact_vertex_edge_span(VertexId::from(0), 0)
             .unwrap();
-        let budget = MaintenanceBudget {
-            max_instructions: 0,
-            reserve_instructions: 0,
-            checkpoint_every: 1,
-            max_work_items: None,
-            max_segments: None,
-            max_delete_edge_steps: None,
-        };
-        while graph.maintenance_queue_len() > 0 {
-            graph.maintenance(budget);
-        }
+        drain_vertex_edge_span_compact_queue(&graph);
 
         let after = graph.inner().vertices().get(VertexId::from(0));
-        assert_eq!(after.vertex_edge_alloc_slots(), 9);
+        assert_eq!(after.stored_slots, 9);
     }
 
     #[test]

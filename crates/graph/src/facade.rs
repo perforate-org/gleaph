@@ -1,8 +1,8 @@
 //! Public coordination layer over stable storage and canister-local auth.
 
+pub(crate) mod edge_equality_index;
 mod ic_budget;
 mod ic_gql_extensions;
-pub(crate) mod edge_equality_index;
 mod stable;
 
 pub mod auth;

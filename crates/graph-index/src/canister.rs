@@ -16,7 +16,10 @@ pub(crate) fn init(args: IndexInitArgs) {
     IndexStore::new().init_from_args(&args);
 }
 
-pub(crate) fn admin_set_shard_owner(shard_id: ShardId, owner_principal: Principal) -> Result<(), String> {
+pub(crate) fn admin_set_shard_owner(
+    shard_id: ShardId,
+    owner_principal: Principal,
+) -> Result<(), String> {
     IndexStore::new()
         .admin_set_shard_owner(msg_caller(), shard_id, owner_principal)
         .map_err(|e| e.to_string())

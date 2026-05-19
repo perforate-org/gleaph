@@ -6,7 +6,17 @@ use std::fmt;
 
 #[repr(transparent)]
 #[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default, CandidType, Serialize,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    CandidType,
+    Serialize,
     Deserialize,
 )]
 pub struct PropertyId(u32);

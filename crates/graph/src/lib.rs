@@ -95,7 +95,9 @@ fn federated_outgoing_expand(
 }
 
 #[query(guard = "guard_admin")]
-fn export_vertex_for_migration(vertex_id: u32) -> Result<gleaph_graph_kernel::federation::ExportedVertex, String> {
+fn export_vertex_for_migration(
+    vertex_id: u32,
+) -> Result<gleaph_graph_kernel::federation::ExportedVertex, String> {
     canister::handlers::export_vertex_for_migration(vertex_id)
 }
 

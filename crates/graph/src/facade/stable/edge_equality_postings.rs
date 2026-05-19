@@ -2,8 +2,8 @@
 
 use gleaph_graph_kernel::entry::PropertyId;
 use ic_stable_lara::VertexId;
-use ic_stable_structures::{BTreeSet, Memory, Storable};
 use ic_stable_structures::storable::Bound;
+use ic_stable_structures::{BTreeSet, Memory, Storable};
 use std::borrow::Cow;
 use std::cmp::Ordering;
 
@@ -173,7 +173,9 @@ impl<M: Memory> EdgeEqualityPostingStore<M> {
         let hi = EdgeEqualityPostingKey::prefix_upper(property_id, value_bytes);
         self.postings
             .range(lo..=hi)
-            .filter(|key| key.property_id == property_id.raw() && key.value.as_slice() == value_bytes)
+            .filter(|key| {
+                key.property_id == property_id.raw() && key.value.as_slice() == value_bytes
+            })
             .collect()
     }
 

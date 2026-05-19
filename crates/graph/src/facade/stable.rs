@@ -9,16 +9,16 @@ use std::cell::RefCell;
 pub(crate) mod memory;
 
 pub(crate) mod edge_alias;
+pub(crate) mod edge_equality_postings;
 pub(crate) mod edge_label_catalog;
 pub(crate) mod edge_properties;
 pub(crate) mod edge_weight_profiles;
 pub(crate) mod metadata;
 pub(crate) mod property_catalog;
-pub(crate) mod vertex_label_catalog;
-pub(crate) mod vertex_labels;
-pub(crate) mod edge_equality_postings;
 pub(crate) mod remote_forward_in;
 pub(crate) mod remote_vertex_refs;
+pub(crate) mod vertex_label_catalog;
+pub(crate) mod vertex_labels;
 pub(crate) mod vertex_logical_ids;
 pub(crate) mod vertex_properties;
 

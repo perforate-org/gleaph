@@ -4,8 +4,8 @@ use super::sort_keys::compare_sort_keys;
 use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
 use crate::gql_execution_context::{GqlExecutionContext, try_eval_runtime_function_call};
 use crate::index::edge_equal;
-use crate::index::placement;
 use crate::index::lookup::PropertyIndexLookup;
+use crate::index::placement;
 use crate::plan::expr_evaluator::{
     SearchedCaseWhenOutcome, eval_abs_expr, eval_acos_expr, eval_and_expr, eval_asin_expr,
     eval_atan_expr, eval_binary_expr, eval_cast_expr, eval_ceil_expr, eval_compare_expr,
@@ -898,11 +898,7 @@ fn stream_expand_owner_vertex_id(
     }
 }
 
-fn edge_binding_for_expand(
-    src_id: VertexId,
-    direction: EdgeDirection,
-    edge: Edge,
-) -> EdgeBinding {
+fn edge_binding_for_expand(src_id: VertexId, direction: EdgeDirection, edge: Edge) -> EdgeBinding {
     let dst_id = edge
         .edge_target()
         .and_then(|target| match target {
@@ -1983,9 +1979,11 @@ async fn materialize_federated_index_hits(
                             hit.shard_id,
                             hit.vertex_id,
                         )
-                        .map_err(|e| PlanQueryError::FederatedIndexCall {
-                            op: "resolve_logical_at",
-                            detail: e.to_string(),
+                        .map_err(|e| {
+                            PlanQueryError::FederatedIndexCall {
+                                op: "resolve_logical_at",
+                                detail: e.to_string(),
+                            }
                         })?;
                         logical_cache.insert(key, resolved);
                         resolved
@@ -2105,10 +2103,11 @@ async fn execute_index_intersection(
                 }
                 (1u64 << 63) | u64::from(u32::from(vid))
             } else {
-                let physical = gleaph_graph_kernel::federation::PhysicalPlacementKey::from_posting_hit(
-                    h.shard_id,
-                    h.vertex_id,
-                );
+                let physical =
+                    gleaph_graph_kernel::federation::PhysicalPlacementKey::from_posting_hit(
+                        h.shard_id,
+                        h.vertex_id,
+                    );
                 let logical = match logical_cache.get(&physical) {
                     Some(cached) => *cached,
                     None => {
@@ -2117,9 +2116,11 @@ async fn execute_index_intersection(
                             h.shard_id,
                             h.vertex_id,
                         )
-                        .map_err(|e| PlanQueryError::FederatedIndexCall {
-                            op: "resolve_logical_at",
-                            detail: e.to_string(),
+                        .map_err(|e| {
+                            PlanQueryError::FederatedIndexCall {
+                                op: "resolve_logical_at",
+                                detail: e.to_string(),
+                            }
                         })?;
                         logical_cache.insert(physical, resolved);
                         resolved
@@ -2357,10 +2358,7 @@ fn edge_equality_stream_filter(
     }
     if labels.len() == 1 {
         let label_id = *labels.iter().next().expect("non-empty labels");
-        Ok(EdgeEqualityStreamFilter::IndexedSingleLabel {
-            label_id,
-            slots,
-        })
+        Ok(EdgeEqualityStreamFilter::IndexedSingleLabel { label_id, slots })
     } else {
         let mut heterogeneous = BTreeSet::new();
         for posting in &postings {
@@ -2385,7 +2383,10 @@ fn edge_matches_stream_filter(
     match filter {
         EdgeEqualityStreamFilter::None => Ok(true),
         EdgeEqualityStreamFilter::NoMatches => Ok(false),
-        EdgeEqualityStreamFilter::IndexedSingleLabel { label_id: expected, slots } => {
+        EdgeEqualityStreamFilter::IndexedSingleLabel {
+            label_id: expected,
+            slots,
+        } => {
             if label_id.raw() != *expected {
                 return Ok(false);
             }
@@ -2511,8 +2512,7 @@ fn expand_rows_from_federated_incoming_hits(
         expanded.insert(dst.to_owned(), dst_binding);
         if let Some(edge_key) = edge_key.as_ref() {
             let edge_binding = if hit.shard_id == routing.shard_id {
-                let handle =
-                    crate::facade::federation_expand::edge_handle_for_federated_hit(hit);
+                let handle = crate::facade::federation_expand::edge_handle_for_federated_hit(hit);
                 PlanBinding::Edge(EdgeBinding {
                     handle,
                     inline_value: hit.inline_value,
@@ -2583,9 +2583,8 @@ fn execute_expand(
                     resolve_federated_traversal_vertex(store, *logical, Some(direction)),
                     Err(PlanQueryError::UnsupportedOp(_))
                 ) {
-                    let label_id_raw = label_id.map(|lid| {
-                        lid.pack(EdgeDirectedness::Directed).raw()
-                    });
+                    let label_id_raw =
+                        label_id.map(|lid| lid.pack(EdgeDirectedness::Directed).raw());
                     let hits = pollster::block_on(
                         crate::facade::federation_expand::federated_incoming_expand_all_shards(
                             store,
@@ -2627,9 +2626,8 @@ fn execute_expand(
                     resolve_federated_traversal_vertex(store, *logical, Some(direction)),
                     Err(PlanQueryError::UnsupportedOp(_))
                 ) {
-                    let label_id_raw = label_id.map(|lid| {
-                        lid.pack(EdgeDirectedness::Directed).raw()
-                    });
+                    let label_id_raw =
+                        label_id.map(|lid| lid.pack(EdgeDirectedness::Directed).raw());
                     let hits = pollster::block_on(
                         crate::facade::federation_expand::federated_outgoing_expand_authoritative_shard(
                             store,
@@ -3011,11 +3009,7 @@ impl ShortestFixedLabelExpand {
                         {
                             out.push((
                                 edge_dst,
-                                edge_binding_for_expand(
-                                    current,
-                                    EdgeDirection::PointingLeft,
-                                    edge,
-                                ),
+                                edge_binding_for_expand(current, EdgeDirection::PointingLeft, edge),
                             ));
                         }
                     })
@@ -3031,11 +3025,7 @@ impl ShortestFixedLabelExpand {
                         {
                             out.push((
                                 edge_dst,
-                                edge_binding_for_expand(
-                                    current,
-                                    EdgeDirection::Undirected,
-                                    edge,
-                                ),
+                                edge_binding_for_expand(current, EdgeDirection::Undirected, edge),
                             ));
                         }
                     })
@@ -3793,12 +3783,16 @@ fn local_shard_id(store: &GraphStore) -> gleaph_graph_kernel::federation::ShardI
     store.federation_routing().map(|r| r.shard_id).unwrap_or(0)
 }
 
-fn vertex_element_id_bytes(store: &GraphStore, vertex_id: VertexId) -> Result<Vec<u8>, PlanQueryError> {
-    let path_id = store.path_vertex_element_id(vertex_id).ok_or_else(|| {
-        PlanQueryError::MissingBinding {
-            variable: format!("logical vertex id for {vertex_id:?}"),
-        }
-    })?;
+fn vertex_element_id_bytes(
+    store: &GraphStore,
+    vertex_id: VertexId,
+) -> Result<Vec<u8>, PlanQueryError> {
+    let path_id =
+        store
+            .path_vertex_element_id(vertex_id)
+            .ok_or_else(|| PlanQueryError::MissingBinding {
+                variable: format!("logical vertex id for {vertex_id:?}"),
+            })?;
     Ok(path_id.to_bytes().to_vec())
 }
 
@@ -3813,13 +3807,18 @@ fn edge_element_id_bytes(
 }
 
 fn vertex_path_element(store: &GraphStore, vertex_id: VertexId) -> PathElement {
-    let path_id = store
-        .path_vertex_element_id(vertex_id)
-        .unwrap_or_else(|| GraphPathVertexId::new(gleaph_graph_kernel::federation::standalone_logical_vertex_id(vertex_id)));
+    let path_id = store.path_vertex_element_id(vertex_id).unwrap_or_else(|| {
+        GraphPathVertexId::new(
+            gleaph_graph_kernel::federation::standalone_logical_vertex_id(vertex_id),
+        )
+    });
     PathElement::Vertex(path_id.to_bytes().into())
 }
 
-fn edge_path_element(shard_id: gleaph_graph_kernel::federation::ShardId, handle: EdgeHandle) -> PathElement {
+fn edge_path_element(
+    shard_id: gleaph_graph_kernel::federation::ShardId,
+    handle: EdgeHandle,
+) -> PathElement {
     PathElement::Edge(
         GraphPathEdgeId::new(
             shard_id,
@@ -3891,10 +3890,7 @@ fn expand_candidates_into(
                         }
                     }
                     if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge) {
-                        out.push((
-                            edge_dst,
-                            edge_binding_for_expand(src_id, direction, edge),
-                        ));
+                        out.push((edge_dst, edge_binding_for_expand(src_id, direction, edge)));
                     }
                 },
             )?;
@@ -3933,10 +3929,7 @@ fn expand_candidates_into(
                         }
                     }
                     if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge) {
-                        out.push((
-                            edge_dst,
-                            edge_binding_for_expand(src_id, direction, edge),
-                        ));
+                        out.push((edge_dst, edge_binding_for_expand(src_id, direction, edge)));
                     }
                 },
             )?;
@@ -3975,10 +3968,7 @@ fn expand_candidates_into(
                         }
                     }
                     if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge) {
-                        out.push((
-                            edge_dst,
-                            edge_binding_for_expand(src_id, direction, edge),
-                        ));
+                        out.push((edge_dst, edge_binding_for_expand(src_id, direction, edge)));
                     }
                 },
             )?;
@@ -4114,10 +4104,7 @@ fn expand_candidates_via_equality_index(
                         return;
                     }
                     if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge) {
-                        out.push((
-                            edge_dst,
-                            edge_binding_for_expand(src_id, direction, edge),
-                        ));
+                        out.push((edge_dst, edge_binding_for_expand(src_id, direction, edge)));
                     }
                 },
             )?;
@@ -4143,10 +4130,7 @@ fn expand_candidates_via_equality_index(
                         return;
                     }
                     if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge) {
-                        out.push((
-                            edge_dst,
-                            edge_binding_for_expand(src_id, direction, edge),
-                        ));
+                        out.push((edge_dst, edge_binding_for_expand(src_id, direction, edge)));
                     }
                 },
             )?;
@@ -4172,10 +4156,7 @@ fn expand_candidates_via_equality_index(
                         return;
                     }
                     if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge) {
-                        out.push((
-                            edge_dst,
-                            edge_binding_for_expand(src_id, direction, edge),
-                        ));
+                        out.push((edge_dst, edge_binding_for_expand(src_id, direction, edge)));
                     }
                 },
             )?;
@@ -4785,9 +4766,9 @@ impl QueryExprEvaluator<'_> {
     fn eval_element_id(&self, row: &PlanRow, expr: &Expr) -> Result<Value, PlanQueryError> {
         if let ExprKind::Variable(name) = &expr.kind {
             return match row.get(name) {
-                Some(PlanBinding::Vertex(vertex_id)) => {
-                    Ok(Value::Bytes(vertex_element_id_bytes(self.store, *vertex_id)?))
-                }
+                Some(PlanBinding::Vertex(vertex_id)) => Ok(Value::Bytes(vertex_element_id_bytes(
+                    self.store, *vertex_id,
+                )?)),
                 Some(PlanBinding::RemoteVertex(logical_vertex_id)) => Ok(Value::Bytes(
                     GraphPathVertexId::new(*logical_vertex_id)
                         .to_bytes()
@@ -5068,13 +5049,13 @@ fn resolve_federated_traversal_vertex(
         gleaph_graph_kernel::federation::VertexPlacement::Migrating { source, .. }
             if source.shard_id == routing.shard_id =>
         {
-            Err(PlanQueryError::UnsupportedOp("Expand(vertex migrating on this shard)"))
-        }
-        gleaph_graph_kernel::federation::VertexPlacement::Migrating { .. } => {
             Err(PlanQueryError::UnsupportedOp(
-                "Expand(vertex migrating on another shard)",
+                "Expand(vertex migrating on this shard)",
             ))
         }
+        gleaph_graph_kernel::federation::VertexPlacement::Migrating { .. } => Err(
+            PlanQueryError::UnsupportedOp("Expand(vertex migrating on another shard)"),
+        ),
     }
 }
 
@@ -5573,9 +5554,7 @@ mod tests {
             Some(PlanBinding::Vertex(v)) if *v == source
         ));
         assert_eq!(
-            store
-                .logical_vertex_id(source)
-                .expect("source logical"),
+            store.logical_vertex_id(source).expect("source logical"),
             source_logical
         );
     }

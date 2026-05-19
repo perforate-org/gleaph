@@ -17,7 +17,17 @@ pub type TaggedEdgeLabelId = BucketLabelKey;
 /// Vertex label identifier (`0` reserved; catalog allocates `1..=0xFFFF`).
 #[repr(transparent)]
 #[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default, CandidType, Serialize,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    CandidType,
+    Serialize,
     Deserialize,
 )]
 pub struct VertexLabelId(u16);
@@ -28,7 +38,17 @@ pub struct VertexLabelId(u16);
 /// [`TaggedEdgeLabelId`], which adds the directed MSB.
 #[repr(transparent)]
 #[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default, CandidType, Serialize,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    CandidType,
+    Serialize,
     Deserialize,
 )]
 pub struct EdgeLabelId(u16);

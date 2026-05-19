@@ -170,9 +170,11 @@ where
     pub fn push_vertex(&self) -> Result<VertexId, BidirectionalLabeledError> {
         let _ = self.vertex_count()?;
         self.forward
-            .push_vertex(crate::labeled::record::LabeledVertex::default())?;
+            .push_vertex(crate::labeled::record::LabeledVertex::default())
+            .map_err(BidirectionalLabeledError::Forward)?;
         self.reverse
-            .push_vertex(crate::labeled::record::LabeledVertex::default())?;
+            .push_vertex(crate::labeled::record::LabeledVertex::default())
+            .map_err(BidirectionalLabeledError::Reverse)?;
         Ok(VertexId::from(
             self.forward.vertex_count().0.saturating_sub(1),
         ))

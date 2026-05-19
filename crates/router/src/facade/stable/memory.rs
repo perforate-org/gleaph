@@ -1,7 +1,9 @@
 //! Stable-memory layout for the router canister.
 
 use candid::Principal;
-use gleaph_graph_kernel::federation::{LogicalVertexId, ShardId, ShardRegistryEntry, VertexPlacement};
+use gleaph_graph_kernel::federation::{
+    LogicalVertexId, ShardId, ShardRegistryEntry, VertexPlacement,
+};
 
 use gleaph_gql_ic::graph_registry::GraphRegistryEntry;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};

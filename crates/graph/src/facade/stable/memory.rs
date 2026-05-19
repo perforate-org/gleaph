@@ -85,7 +85,8 @@ pub(crate) type StablePreparedQueryCatalog = PreparedQueryCatalog<Memory>;
 pub(crate) type StableMetadata = StableGraphMetadata<Memory>;
 pub(crate) type StableEdgeWeightProfileStore = EdgeWeightProfileStore<Memory>;
 pub(crate) type StableVertexLogicalIdMap = super::vertex_logical_ids::VertexLogicalIdMap<Memory>;
-pub(crate) type StableRemoteVertexRefTable = super::remote_vertex_refs::RemoteVertexRefTable<Memory>;
+pub(crate) type StableRemoteVertexRefTable =
+    super::remote_vertex_refs::RemoteVertexRefTable<Memory>;
 pub(crate) type StableRemoteForwardInIndex = super::remote_forward_in::RemoteForwardInIndex<Memory>;
 pub(crate) type StableEdgeEqualityPostingStore =
     super::edge_equality_postings::EdgeEqualityPostingStore<Memory>;

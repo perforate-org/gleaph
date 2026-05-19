@@ -22,6 +22,17 @@ pub(crate) fn assert_labeled_layout_invariants<E, M>(
     let bucket_cap = buckets.header().elem_capacity;
     for vidx in 0..vertices.len() {
         let vertex = vertices.get(VertexId::from(vidx));
+        if !vertex.is_default_edge_labeled() {
+            assert!(
+                LabeledVertex::label_bucket_count_fits(vertex.degree()),
+                "vertex {vidx}: label bucket count {} exceeds MAX_VERTEX_LABEL_BUCKETS",
+                vertex.degree()
+            );
+            assert!(
+                vertex.label_bucket_descriptor_span().is_some(),
+                "vertex {vidx}: label bucket descriptor span (degree + slack) overflows u32",
+            );
+        }
         if vertex.is_default_edge_labeled() {
             let end = vertex
                 .base_slot_start()
@@ -33,10 +44,11 @@ pub(crate) fn assert_labeled_layout_invariants<E, M>(
             );
             continue;
         }
-        let bucket_alloc = vertex.bucket_alloc_slots().max(vertex.degree());
-        let bucket_end = vertex
-            .base_slot_start()
-            .saturating_add(u64::from(bucket_alloc));
+        let bucket_end = vertex.base_slot_start().saturating_add(u64::from(
+            vertex
+                .label_bucket_descriptor_span()
+                .expect("normal vertex must have descriptor span"),
+        ));
         assert!(
             bucket_end <= bucket_cap,
             "vertex {vidx}: bucket allocation [{}, {bucket_end}) exceeds bucket capacity {bucket_cap}",
@@ -70,14 +82,14 @@ pub(crate) fn assert_labeled_layout_invariants<E, M>(
                     .expect("bucket slot must exist");
                 first
                     .edge_start
-                    .saturating_add(u64::from(vertex.vertex_edge_alloc_slots()))
+                    .saturating_add(u64::from(vertex.stored_slots))
             };
             successor_start = successor_start.max(bucket.edge_start);
             let gap = successor_start.saturating_sub(bucket.edge_start);
             let on_slab_len = if bucket.overflow_log_head < 0 {
-                u64::from(bucket.edge_len)
+                u64::from(bucket.stored_slots)
             } else {
-                gap.min(u64::from(bucket.edge_len))
+                gap.min(u64::from(bucket.stored_slots))
             };
             let edge_end_physical = bucket.edge_start.saturating_add(on_slab_len);
             assert!(
@@ -86,7 +98,7 @@ pub(crate) fn assert_labeled_layout_invariants<E, M>(
                 bucket.edge_start
             );
             if let Some(base) = span_base {
-                let span_end = base.saturating_add(u64::from(vertex.vertex_edge_alloc_slots()));
+                let span_end = base.saturating_add(u64::from(vertex.stored_slots));
                 assert!(
                     edge_end_physical <= span_end,
                     "vertex {vidx} bucket {slot}: on-slab edge range [{}, {edge_end_physical}) exceeds VertexEdgeSpan [{base}, {span_end})",
@@ -116,7 +128,7 @@ where
         return (d, 0);
     }
     if vertex.degree() == 0 {
-        return (0, i64::from(vertex.vertex_edge_alloc_slots()));
+        return (0, i64::from(vertex.stored_slots));
     }
     let mut live = 0i64;
     let start = vertex.base_slot_start();
@@ -126,7 +138,7 @@ where
             .expect("bucket slot must exist");
         live += i64::from(bucket.degree());
     }
-    (live, i64::from(vertex.vertex_edge_alloc_slots()))
+    (live, i64::from(vertex.stored_slots))
 }
 
 /// Asserts incremental PMA leaf [`crate::lara::edge::counts::SegmentEdgeCounts`] match

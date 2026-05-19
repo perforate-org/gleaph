@@ -12,14 +12,14 @@
 //!   successor boundary is the VertexEdgeSpan end.
 //! - **Update contract:** LabelBucket inserts and maintenance rewrite the
 //!   owning LabelBucketStore VertexSegment, updating each affected
-//!   [`LabeledVertex::base_slot_start`] and [`LabeledVertex::row_count`]. Edge
+//!   [`LabeledVertex::base_slot_start`] and [`LabeledVertex::degree`]. Edge
 //!   inserts under a label append through [`crate::lara::edge::EdgeStore`] using
 //!   the same slab vs per-segment overflow log split as core LARA rows; when the
 //!   slab window up to the next bucket boundary is full, new edges for that label
 //!   go to the segment log (see [`crate::labeled::record::LabelBucket::overflow_log_head`]).
 //!   A full segment log triggers a VertexEdgeSpan rewrite that folds overflow back
-//!   onto the slab and may widen the [`LabeledVertex::vertex_edge_alloc_slots`]
-//!   reservation. The edge bytes still live in the
+//!   onto the slab and may widen the [`LabeledVertex::stored_slots`] reservation.
+//!   The edge bytes still live in the
 //!   regular [`crate::lara::edge::EdgeStore`] slab, so allocation and free-span
 //!   reuse stay centralized in the existing LARA implementation.
 //!
@@ -29,20 +29,30 @@
 //! rewritten vertex rows point at the new committed layout.
 //!
 //! The edge layer has one additional labeled-specific rule. For a non-default
-//! vertex, [`LabeledVertex::vertex_edge_alloc_slots`] reserves one contiguous
+//! vertex, [`LabeledVertex::stored_slots`] reserves one contiguous
 //! physical VertexEdgeSpan for all labels on that vertex. The [`LabelBucket`] rows are
 //! kept strictly sorted by [`BucketLabelKey`], and their LabelEdgeSpans are laid out in
 //! that same order inside the VertexEdgeSpan:
 //!
 //! ```text
-//! LabeledVertex
-//!   base_slot_start -> [ LabelBucket(label=2), LabelBucket(label=7), ... ]
-//!   row_count       -> number of LabelBuckets
-//!   vertex_edge_alloc_slots -> physical edge slots reserved for all labels below
+//! LabeledVertex (normal mode)
+//!   base_slot_start     -> LabelBucket descriptor span in LabelBucketStore
+//!   degree              -> live LabelBucket rows (≤ MAX_VERTEX_LABEL_BUCKETS = 65536)
+//!   bucket_slack_slots  -> extra descriptor slots in metadata (physical span = degree + slack)
+//!   stored_slots        -> VertexEdgeSpan width for edge bytes (all labels)
 //!
 //! EdgeStore slab
 //!   LabelEdgeSpan(label=2) | slack | LabelEdgeSpan(label=7) | slack | ...
 //! ```
+//!
+//! Default-label **bypass** rows skip LabelBuckets: [`LabeledVertex::degree`] / [`LabeledVertex::stored_slots`]
+//! track logical and physical edge slots directly, and overflow uses metadata bits 4–11 as
+//! [`LabeledVertex::bypass_overflow_log_head`].
+//!
+//! ## API note
+//!
+//! [`LabeledLaraGraph::push_vertex`] now returns [`LabeledOperationError`] (not [`crate::GrowFailed`])
+//! and rejects normal-mode rows whose label-bucket count exceeds [`MAX_VERTEX_LABEL_BUCKETS`].
 //!
 //! This keeps the bucket descriptors exact-fit while allowing edge-heavy labels
 //! to grow without adding allocation fields to every [`LabelBucket`].
@@ -78,7 +88,10 @@ pub use graph::{
     InitError as LabeledGraphInitError, LabeledLaraGraph, LabeledOperationError,
     LabeledOutEdgesIter, OutEdgeOrder,
 };
-pub use record::{LabelBucket, LabeledVertex};
+pub use record::{
+    LabelBucket, LabeledVertex, LabeledVertexFieldError, MAX_VERTEX_LABEL_BUCKET_SLACK,
+    MAX_VERTEX_LABEL_BUCKETS,
+};
 pub use traits::LabeledCsrVertex;
 
 /// Convenience alias for the single-orientation labeled LARA graph.

@@ -48,14 +48,12 @@ pub fn allocate_logical_vertex_id(
     {
         use ic_cdk::call::Call;
 
-        let logical: Result<LogicalVertexId, RouterError> = Call::unbounded_wait(
-            router_canister,
-            "allocate_logical_vertex_id",
-        )
-        .wait()
-        .map_err(|e| VertexPlacementError::Call(format!("{e:?}")))?
-        .candid()
-        .map_err(|e| VertexPlacementError::Call(format!("candid decode: {e}")))?;
+        let logical: Result<LogicalVertexId, RouterError> =
+            Call::unbounded_wait(router_canister, "allocate_logical_vertex_id")
+                .wait()
+                .map_err(|e| VertexPlacementError::Call(format!("{e:?}")))?
+                .candid()
+                .map_err(|e| VertexPlacementError::Call(format!("candid decode: {e}")))?;
 
         return logical.map_err(VertexPlacementError::Rejected);
     }
@@ -81,12 +79,13 @@ pub fn commit_vertex_placement(
     {
         use ic_cdk::call::Call;
 
-        let (): Result<(), RouterError> = Call::unbounded_wait(router_canister, "commit_vertex_placement")
-            .with_arg(&(args,))
-            .wait()
-            .map_err(|e| VertexPlacementError::Call(format!("{e:?}")))?
-            .candid()
-            .map_err(|e| VertexPlacementError::Call(format!("candid decode: {e}")))?;
+        let (): Result<(), RouterError> =
+            Call::unbounded_wait(router_canister, "commit_vertex_placement")
+                .with_arg(&(args,))
+                .wait()
+                .map_err(|e| VertexPlacementError::Call(format!("{e:?}")))?
+                .candid()
+                .map_err(|e| VertexPlacementError::Call(format!("candid decode: {e}")))?;
 
         return ().map_err(VertexPlacementError::Rejected);
     }
@@ -94,11 +93,9 @@ pub fn commit_vertex_placement(
     #[cfg(not(target_family = "wasm"))]
     {
         let _ = router_canister;
-        let pending = NATIVE_TEST_PENDING_LOGICAL
-            .with(|p| p.take())
-            .ok_or(VertexPlacementError::Rejected(
-                RouterError::UnallocatedLogicalVertex,
-            ))?;
+        let pending = NATIVE_TEST_PENDING_LOGICAL.with(|p| p.take()).ok_or(
+            VertexPlacementError::Rejected(RouterError::UnallocatedLogicalVertex),
+        )?;
         if pending != args.logical_vertex_id {
             return Err(VertexPlacementError::Rejected(
                 RouterError::UnallocatedLogicalVertex,
@@ -131,15 +128,13 @@ pub fn list_shards_for_graph(
     {
         use ic_cdk::call::Call;
 
-        let shards: Result<Vec<ShardRegistryEntry>, RouterError> = Call::unbounded_wait(
-            router_canister,
-            "list_shards_for_graph",
-        )
-        .with_args(&(logical_graph_name.to_string(),))
-        .wait()
-        .map_err(|e| VertexPlacementError::Call(format!("{e:?}")))?
-        .candid()
-        .map_err(|e| VertexPlacementError::Call(format!("candid decode: {e}")))?;
+        let shards: Result<Vec<ShardRegistryEntry>, RouterError> =
+            Call::unbounded_wait(router_canister, "list_shards_for_graph")
+                .with_args(&(logical_graph_name.to_string(),))
+                .wait()
+                .map_err(|e| VertexPlacementError::Call(format!("{e:?}")))?
+                .candid()
+                .map_err(|e| VertexPlacementError::Call(format!("candid decode: {e}")))?;
 
         return shards.map_err(VertexPlacementError::Rejected);
     }
@@ -177,15 +172,13 @@ pub fn resolve_placement(
     {
         use ic_cdk::call::Call;
 
-        let placement: Result<VertexPlacement, RouterError> = Call::unbounded_wait(
-            router_canister,
-            "resolve_placement",
-        )
-        .with_args(&(logical_vertex_id,))
-        .wait()
-        .map_err(|e| VertexPlacementError::Call(format!("{e:?}")))?
-        .candid()
-        .map_err(|e| VertexPlacementError::Call(format!("candid decode: {e}")))?;
+        let placement: Result<VertexPlacement, RouterError> =
+            Call::unbounded_wait(router_canister, "resolve_placement")
+                .with_args(&(logical_vertex_id,))
+                .wait()
+                .map_err(|e| VertexPlacementError::Call(format!("{e:?}")))?
+                .candid()
+                .map_err(|e| VertexPlacementError::Call(format!("candid decode: {e}")))?;
 
         return placement.map_err(VertexPlacementError::Rejected);
     }
@@ -207,12 +200,13 @@ pub fn begin_vertex_migration(
     {
         use ic_cdk::call::Call;
 
-        let (): Result<(), RouterError> = Call::unbounded_wait(router_canister, "begin_vertex_migration")
-            .with_arg(&(args,))
-            .wait()
-            .map_err(|e| VertexPlacementError::Call(format!("{e:?}")))?
-            .candid()
-            .map_err(|e| VertexPlacementError::Call(format!("candid decode: {e}")))?;
+        let (): Result<(), RouterError> =
+            Call::unbounded_wait(router_canister, "begin_vertex_migration")
+                .with_arg(&(args,))
+                .wait()
+                .map_err(|e| VertexPlacementError::Call(format!("{e:?}")))?
+                .candid()
+                .map_err(|e| VertexPlacementError::Call(format!("candid decode: {e}")))?;
 
         return ().map_err(VertexPlacementError::Rejected);
     }
@@ -258,12 +252,13 @@ pub fn finish_vertex_migration(
     {
         use ic_cdk::call::Call;
 
-        let (): Result<(), RouterError> = Call::unbounded_wait(router_canister, "finish_vertex_migration")
-            .with_arg(&(args,))
-            .wait()
-            .map_err(|e| VertexPlacementError::Call(format!("{e:?}")))?
-            .candid()
-            .map_err(|e| VertexPlacementError::Call(format!("candid decode: {e}")))?;
+        let (): Result<(), RouterError> =
+            Call::unbounded_wait(router_canister, "finish_vertex_migration")
+                .with_arg(&(args,))
+                .wait()
+                .map_err(|e| VertexPlacementError::Call(format!("{e:?}")))?
+                .candid()
+                .map_err(|e| VertexPlacementError::Call(format!("candid decode: {e}")))?;
 
         return ().map_err(VertexPlacementError::Rejected);
     }
@@ -281,7 +276,9 @@ fn native_release_logical_vertex_placement(
 ) -> Result<(), VertexPlacementError> {
     let routing = crate::facade::GraphStore::new()
         .federation_routing()
-        .ok_or(VertexPlacementError::Rejected(RouterError::ShardNotRegistered))?;
+        .ok_or(VertexPlacementError::Rejected(
+            RouterError::ShardNotRegistered,
+        ))?;
 
     let placement = NATIVE_TEST_PLACEMENTS
         .with_borrow(|map| map.get(&args.logical_vertex_id).copied())
@@ -305,10 +302,14 @@ fn native_release_logical_vertex_placement(
 }
 
 #[cfg(not(target_family = "wasm"))]
-fn native_begin_vertex_migration(args: BeginVertexMigrationArgs) -> Result<(), VertexPlacementError> {
+fn native_begin_vertex_migration(
+    args: BeginVertexMigrationArgs,
+) -> Result<(), VertexPlacementError> {
     let routing = crate::facade::GraphStore::new()
         .federation_routing()
-        .ok_or(VertexPlacementError::Rejected(RouterError::ShardNotRegistered))?;
+        .ok_or(VertexPlacementError::Rejected(
+            RouterError::ShardNotRegistered,
+        ))?;
 
     let placement = NATIVE_TEST_PLACEMENTS
         .with_borrow(|map| map.get(&args.logical_vertex_id).copied())
@@ -321,9 +322,9 @@ fn native_begin_vertex_migration(args: BeginVertexMigrationArgs) -> Result<(), V
         return Err(VertexPlacementError::Rejected(RouterError::Forbidden));
     }
     if source.shard_id == args.destination_shard_id {
-        return Err(VertexPlacementError::Rejected(RouterError::InvalidMigrationState(
-            "destination shard must differ from source".into(),
-        )));
+        return Err(VertexPlacementError::Rejected(
+            RouterError::InvalidMigrationState("destination shard must differ from source".into()),
+        ));
     }
 
     let epoch = NATIVE_TEST_MIGRATION_COUNTER.with(|c| {
@@ -346,10 +347,14 @@ fn native_begin_vertex_migration(args: BeginVertexMigrationArgs) -> Result<(), V
 }
 
 #[cfg(not(target_family = "wasm"))]
-fn native_finish_vertex_migration(args: FinishVertexMigrationArgs) -> Result<(), VertexPlacementError> {
+fn native_finish_vertex_migration(
+    args: FinishVertexMigrationArgs,
+) -> Result<(), VertexPlacementError> {
     let routing = crate::facade::GraphStore::new()
         .federation_routing()
-        .ok_or(VertexPlacementError::Rejected(RouterError::ShardNotRegistered))?;
+        .ok_or(VertexPlacementError::Rejected(
+            RouterError::ShardNotRegistered,
+        ))?;
 
     let placement = NATIVE_TEST_PLACEMENTS
         .with_borrow(|map| map.get(&args.logical_vertex_id).copied())
@@ -361,18 +366,21 @@ fn native_finish_vertex_migration(args: FinishVertexMigrationArgs) -> Result<(),
         ..
     } = placement
     else {
-        return Err(VertexPlacementError::Rejected(RouterError::VertexNotMigrating));
+        return Err(VertexPlacementError::Rejected(
+            RouterError::VertexNotMigrating,
+        ));
     };
     if destination_shard_id != routing.shard_id {
         return Err(VertexPlacementError::Rejected(RouterError::Forbidden));
     }
 
-    let destination = PhysicalVertexLocation::new(
-        routing.shard_id,
-        args.destination_local_vertex_id,
-    );
+    let destination =
+        PhysicalVertexLocation::new(routing.shard_id, args.destination_local_vertex_id);
     NATIVE_TEST_PLACEMENT_BY_PHYSICAL.with_borrow_mut(|map| {
-        map.remove(&PhysicalPlacementKey::new(source.shard_id, source.local_vertex_id));
+        map.remove(&PhysicalPlacementKey::new(
+            source.shard_id,
+            source.local_vertex_id,
+        ));
         map.insert(
             PhysicalPlacementKey::new(destination.shard_id, destination.local_vertex_id),
             args.logical_vertex_id,
@@ -412,15 +420,13 @@ pub fn resolve_logical_at(
     {
         use ic_cdk::call::Call;
 
-        let logical: Result<LogicalVertexId, RouterError> = Call::unbounded_wait(
-            router_canister,
-            "resolve_logical_at",
-        )
-        .with_args(&(shard_id, local_vertex_id))
-        .wait()
-        .map_err(|e| VertexPlacementError::Call(format!("{e:?}")))?
-        .candid()
-        .map_err(|e| VertexPlacementError::Call(format!("candid decode: {e}")))?;
+        let logical: Result<LogicalVertexId, RouterError> =
+            Call::unbounded_wait(router_canister, "resolve_logical_at")
+                .with_args(&(shard_id, local_vertex_id))
+                .wait()
+                .map_err(|e| VertexPlacementError::Call(format!("{e:?}")))?
+                .candid()
+                .map_err(|e| VertexPlacementError::Call(format!("candid decode: {e}")))?;
 
         return match logical {
             Ok(id) => Ok(Some(id)),
@@ -464,8 +470,8 @@ mod tests {
             registered_at_ns: 0,
         });
 
-        let listed = list_shards_for_graph(Principal::management_canister(), "tenant.main")
-            .expect("list");
+        let listed =
+            list_shards_for_graph(Principal::management_canister(), "tenant.main").expect("list");
         assert_eq!(listed.len(), 2);
     }
 

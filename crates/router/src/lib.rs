@@ -135,9 +135,7 @@ fn allocate_logical_vertex_id() -> Result<types::LogicalVertexId, RouterError> {
 }
 
 #[update]
-fn commit_vertex_placement(
-    args: types::CommitVertexPlacementArgs,
-) -> Result<(), RouterError> {
+fn commit_vertex_placement(args: types::CommitVertexPlacementArgs) -> Result<(), RouterError> {
     canister::commit_vertex_placement(args)
 }
 

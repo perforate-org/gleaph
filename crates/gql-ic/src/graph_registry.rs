@@ -1,5 +1,5 @@
-use candid::{CandidType, Decode, Encode};
 use candid::Principal;
+use candid::{CandidType, Decode, Encode};
 use ic_stable_structures::storable::{Bound, Storable};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;

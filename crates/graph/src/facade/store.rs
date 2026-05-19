@@ -9,20 +9,20 @@ use super::stable::{
     VERTEX_PROPERTIES,
 };
 use super::{
-    FederationRouting, GraphMetadata, GraphMetadataError, PropertyCatalogError, VertexLabelStoreError,
-    VertexPropertyStoreError,
+    FederationRouting, GraphMetadata, GraphMetadataError, PropertyCatalogError,
+    VertexLabelStoreError, VertexPropertyStoreError,
 };
 use crate::index::{edge_equal, pending, placement};
-use gleaph_graph_kernel::federation::{
-    standalone_logical_vertex_id, CommitVertexPlacementArgs, LogicalVertexId, ReleaseLogicalVertexArgs,
-    VertexPlacement,
-};
-use gleaph_graph_kernel::path::GraphPathVertexId;
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{
     Edge, EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, EdgeTarget, EdgeWeightProfile, PropertyId,
     RemoteRefId, TaggedEdgeLabelId, Vertex, VertexLabelId, VertexRef,
 };
+use gleaph_graph_kernel::federation::{
+    CommitVertexPlacementArgs, LogicalVertexId, ReleaseLogicalVertexArgs, VertexPlacement,
+    standalone_logical_vertex_id,
+};
+use gleaph_graph_kernel::path::GraphPathVertexId;
 use gleaph_graph_prepared::{PreparedQueryError, PreparedQueryRecord};
 use ic_stable_lara::{
     BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledError, MaintenanceBudget,
@@ -473,11 +473,11 @@ impl GraphStore {
     }
 
     /// Rejects writes to a shard-local vertex that the router has marked as migrating away.
-    pub(crate) fn assert_local_vertex_writable(&self, vertex_id: VertexId) -> Result<(), GraphStoreError> {
-        if self
-            .vertex(vertex_id)
-            .is_some_and(|v| v.is_tombstone())
-        {
+    pub(crate) fn assert_local_vertex_writable(
+        &self,
+        vertex_id: VertexId,
+    ) -> Result<(), GraphStoreError> {
+        if self.vertex(vertex_id).is_some_and(|v| v.is_tombstone()) {
             return Err(GraphStoreError::VertexTombstoned);
         }
         let Some(routing) = self.federation_routing() else {
@@ -487,7 +487,8 @@ impl GraphStore {
             return Ok(());
         };
         let placement = placement::resolve_placement(routing.router_canister, logical_vertex_id)?;
-        if let gleaph_graph_kernel::federation::VertexPlacement::Migrating { source, .. } = placement
+        if let gleaph_graph_kernel::federation::VertexPlacement::Migrating { source, .. } =
+            placement
         {
             let local = placement::local_vertex_id_raw(vertex_id);
             if source.shard_id == routing.shard_id && source.local_vertex_id == local {
@@ -503,10 +504,7 @@ impl GraphStore {
     }
 
     /// Interns a shard-local [`RemoteRefId`] for `logical_vertex_id` (idempotent).
-    pub fn ensure_remote_ref(
-        &self,
-        logical_vertex_id: LogicalVertexId,
-    ) -> RemoteRefId {
+    pub fn ensure_remote_ref(&self, logical_vertex_id: LogicalVertexId) -> RemoteRefId {
         REMOTE_VERTEX_REFS.with_borrow_mut(|table| table.ensure_remote_ref(logical_vertex_id))
     }
 
@@ -514,16 +512,14 @@ impl GraphStore {
         &self,
         remote_ref: RemoteRefId,
     ) -> Option<LogicalVertexId> {
-        REMOTE_VERTEX_REFS
-            .with_borrow(|table| table.logical_vertex_id(remote_ref))
+        REMOTE_VERTEX_REFS.with_borrow(|table| table.logical_vertex_id(remote_ref))
     }
 
     pub fn remote_ref_for_logical(
         &self,
         logical_vertex_id: LogicalVertexId,
     ) -> Option<RemoteRefId> {
-        REMOTE_VERTEX_REFS
-            .with_borrow(|table| table.remote_ref_for_logical(logical_vertex_id))
+        REMOTE_VERTEX_REFS.with_borrow(|table| table.remote_ref_for_logical(logical_vertex_id))
     }
 
     pub(crate) fn edge_sidecar_owner_from_in_row(&self, dst: VertexId, edge: &Edge) -> VertexId {
@@ -588,11 +584,7 @@ impl GraphStore {
         Ok(handle)
     }
 
-    pub(crate) fn register_remote_forward_in(
-        &self,
-        handle: EdgeHandle,
-        remote_ref: RemoteRefId,
-    ) {
+    pub(crate) fn register_remote_forward_in(&self, handle: EdgeHandle, remote_ref: RemoteRefId) {
         REMOTE_FORWARD_IN.with_borrow_mut(|index| {
             index.insert(
                 remote_ref,
@@ -623,10 +615,7 @@ impl GraphStore {
 
     fn unregister_remote_forward_in_for_handle(&self, handle: EdgeHandle) {
         let label = handle.label_id;
-        for edge in self
-            .out_edges(handle.owner_vertex_id)
-            .unwrap_or_default()
-        {
+        for edge in self.out_edges(handle.owner_vertex_id).unwrap_or_default() {
             if edge.label_id != label.raw() || edge.edge_slot_index.raw() != handle.slot_index {
                 continue;
             }
@@ -1766,27 +1755,23 @@ impl GraphStore {
                 });
                 let label = LaraLabelId::from_raw(label_id);
                 let _ = GRAPH.with_borrow(|graph| {
-                    graph.for_each_out_edges_for_label_unchecked(
-                        owner_vertex_id,
-                        label,
-                        |edge| {
-                            if edge.edge_slot_index.raw() != moved.new_slot_index {
-                                return;
-                            }
-                            let Some(EdgeTarget::Remote(remote_ref)) = edge.edge_target() else {
-                                return;
-                            };
-                            REMOTE_FORWARD_IN.with_borrow_mut(|index| {
-                                index.move_slot(
-                                    remote_ref,
-                                    owner_vertex_id,
-                                    label_id,
-                                    moved.old_slot_index,
-                                    moved.new_slot_index,
-                                );
-                            });
-                        },
-                    )
+                    graph.for_each_out_edges_for_label_unchecked(owner_vertex_id, label, |edge| {
+                        if edge.edge_slot_index.raw() != moved.new_slot_index {
+                            return;
+                        }
+                        let Some(EdgeTarget::Remote(remote_ref)) = edge.edge_target() else {
+                            return;
+                        };
+                        REMOTE_FORWARD_IN.with_borrow_mut(|index| {
+                            index.move_slot(
+                                remote_ref,
+                                owner_vertex_id,
+                                label_id,
+                                moved.old_slot_index,
+                                moved.new_slot_index,
+                            );
+                        });
+                    })
                 });
             }
             LabeledOrientation::Reverse => {
@@ -1849,8 +1834,7 @@ impl GraphStore {
         let Some(logical_vertex_id) = self.logical_vertex_id(vertex_id) else {
             return Ok(());
         };
-        let placement =
-            placement::resolve_placement(routing.router_canister, logical_vertex_id)?;
+        let placement = placement::resolve_placement(routing.router_canister, logical_vertex_id)?;
         let VertexPlacement::Active(loc) = placement else {
             return Ok(());
         };

@@ -69,7 +69,11 @@ impl Storable for RemoteForwardInKey {
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
         let bytes = bytes.as_ref();
-        assert_eq!(bytes.len(), 14, "RemoteForwardInKey expects exactly 14 bytes");
+        assert_eq!(
+            bytes.len(),
+            14,
+            "RemoteForwardInKey expects exactly 14 bytes"
+        );
 
         let mut remote = [0; 4];
         let mut source = [0; 4];

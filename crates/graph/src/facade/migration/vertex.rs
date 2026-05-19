@@ -1,18 +1,18 @@
 //! Export/import a single vertex during router-coordinated migration.
 
-use super::index::{remove_source_index_postings_for_vertex, sync_migration_index_postings};
 use super::super::store::{EdgeHandle, GraphStore, GraphStoreError};
+use super::index::{remove_source_index_postings_for_vertex, sync_migration_index_postings};
 use crate::index::lookup::PropertyIndexLookup;
-use crate::plan::PlanQueryError;
-use gleaph_gql_ic::IcExtensionBinaryDecode;
 use crate::index::placement;
+use crate::plan::PlanQueryError;
 use gleaph_gql::Value;
+use gleaph_gql_ic::IcExtensionBinaryDecode;
 use gleaph_graph_kernel::entry::{Edge, EdgeLabelId, TaggedEdgeLabelId, Vertex};
-use gleaph_graph_kernel::federation::{
-    ExportedEdgeTarget, ExportedOutEdge, ExportedProperty, ExportedVertex, FinishVertexMigrationArgs,
-    LogicalVertexId, VertexPlacement,
-};
 use gleaph_graph_kernel::federation::RouterError;
+use gleaph_graph_kernel::federation::{
+    ExportedEdgeTarget, ExportedOutEdge, ExportedProperty, ExportedVertex,
+    FinishVertexMigrationArgs, LogicalVertexId, VertexPlacement,
+};
 use ic_stable_lara::labeled::record::LabeledVertex;
 use ic_stable_lara::traits::{CsrEdgeTombstone, CsrVertexTombstone};
 use ic_stable_lara::{BucketLabelKey as LaraLabelId, VertexId};
@@ -31,14 +31,13 @@ fn export_edge_target(
 ) -> Result<ExportedEdgeTarget, GraphStoreError> {
     match edge.edge_target() {
         Some(gleaph_graph_kernel::entry::EdgeTarget::Local(vid)) => {
-            let logical_vertex_id = store.logical_vertex_id(vid).ok_or(
-                GraphStoreError::VertexPlacement(placement::VertexPlacementError::Rejected(
-                    RouterError::VertexNotFound,
-                )),
-            )?;
-            Ok(ExportedEdgeTarget::Local {
-                logical_vertex_id,
-            })
+            let logical_vertex_id =
+                store
+                    .logical_vertex_id(vid)
+                    .ok_or(GraphStoreError::VertexPlacement(
+                        placement::VertexPlacementError::Rejected(RouterError::VertexNotFound),
+                    ))?;
+            Ok(ExportedEdgeTarget::Local { logical_vertex_id })
         }
         Some(gleaph_graph_kernel::entry::EdgeTarget::Remote(remote_ref)) => {
             let logical_vertex_id = store.logical_vertex_for_remote_ref(remote_ref).ok_or(
@@ -46,9 +45,7 @@ fn export_edge_target(
                     RouterError::VertexNotFound,
                 )),
             )?;
-            Ok(ExportedEdgeTarget::Remote {
-                logical_vertex_id,
-            })
+            Ok(ExportedEdgeTarget::Remote { logical_vertex_id })
         }
         None => Err(GraphStoreError::VertexPlacement(
             placement::VertexPlacementError::Rejected(RouterError::InvalidArgument(
@@ -116,11 +113,12 @@ pub fn export_local_vertex_for_migration(
             placement::VertexPlacementError::Rejected(RouterError::VertexNotFound),
         ))?;
 
-    let logical_vertex_id = store.logical_vertex_id(vertex_id).ok_or(
-        GraphStoreError::VertexPlacement(placement::VertexPlacementError::Rejected(
-            RouterError::VertexNotFound,
-        )),
-    )?;
+    let logical_vertex_id =
+        store
+            .logical_vertex_id(vertex_id)
+            .ok_or(GraphStoreError::VertexPlacement(
+                placement::VertexPlacementError::Rejected(RouterError::VertexNotFound),
+            ))?;
 
     let placement = placement::resolve_placement(routing.router_canister, logical_vertex_id)?;
     let VertexPlacement::Migrating {
@@ -206,22 +204,14 @@ fn import_out_edge(
     };
 
     let handle = if matches!(edge.target, ExportedEdgeTarget::Remote { .. }) {
-        store.insert_directed_edge_to_logical(
-            owner_vertex_id,
-            logical,
-            edge.catalog_label,
-        )?
+        store.insert_directed_edge_to_logical(owner_vertex_id, logical, edge.catalog_label)?
     } else if let Some(target_vertex_id) = resolve_local_endpoint(store, logical) {
         if edge.undirected {
             store.insert_undirected_edge(owner_vertex_id, target_vertex_id, edge.catalog_label)?;
             return Ok(());
         }
         if edge.inline_value == 0 {
-            store.insert_directed_edge(
-                owner_vertex_id,
-                target_vertex_id,
-                edge.catalog_label,
-            )?
+            store.insert_directed_edge(owner_vertex_id, target_vertex_id, edge.catalog_label)?
         } else {
             store.insert_directed_edge_with_inline_value(
                 owner_vertex_id,
@@ -293,7 +283,8 @@ fn import_migrated_vertex_impl(
             placement::VertexPlacementError::Rejected(RouterError::ShardNotRegistered),
         ))?;
 
-    let placement = placement::resolve_placement(routing.router_canister, bundle.logical_vertex_id)?;
+    let placement =
+        placement::resolve_placement(routing.router_canister, bundle.logical_vertex_id)?;
     let VertexPlacement::Migrating {
         destination_shard_id,
         ..
@@ -404,11 +395,12 @@ fn tombstone_migrated_vertex_impl(
             placement::VertexPlacementError::Rejected(RouterError::ShardNotRegistered),
         ))?;
 
-    let logical_vertex_id = store.logical_vertex_id(vertex_id).ok_or(
-        GraphStoreError::VertexPlacement(placement::VertexPlacementError::Rejected(
-            RouterError::VertexNotFound,
-        )),
-    )?;
+    let logical_vertex_id =
+        store
+            .logical_vertex_id(vertex_id)
+            .ok_or(GraphStoreError::VertexPlacement(
+                placement::VertexPlacementError::Rejected(RouterError::VertexNotFound),
+            ))?;
 
     let placement = placement::resolve_placement(routing.router_canister, logical_vertex_id)?;
     let VertexPlacement::Active(authoritative) = placement else {
@@ -445,10 +437,8 @@ mod tests {
     use crate::facade::{FederationRouting, GraphStore};
     use candid::Principal;
     use gleaph_gql::Value;
-    use gleaph_graph_kernel::federation::{
-        BeginVertexMigrationArgs, VertexPlacement,
-    };
     use gleaph_graph_kernel::federation::PhysicalVertexLocation;
+    use gleaph_graph_kernel::federation::{BeginVertexMigrationArgs, VertexPlacement};
 
     #[test]
     fn export_import_and_tombstone_roundtrip() {
@@ -600,18 +590,24 @@ mod tests {
             .expect("dest routing");
 
         let index = RecordingIndex::default();
-        let dest_id = pollster::block_on(import_migrated_vertex_with_index(
-            &store, bundle, &index,
-        ))
-        .expect("import");
+        let dest_id = pollster::block_on(import_migrated_vertex_with_index(&store, bundle, &index))
+            .expect("import");
 
         assert_eq!(
             index.removes.borrow().as_slice(),
-            &[(7, store.property_id("k").expect("pid").raw(), u32::from(source_id))]
+            &[(
+                7,
+                store.property_id("k").expect("pid").raw(),
+                u32::from(source_id)
+            )]
         );
         assert_eq!(
             index.inserts.borrow().as_slice(),
-            &[(9, store.property_id("k").expect("pid").raw(), u32::from(dest_id))]
+            &[(
+                9,
+                store.property_id("k").expect("pid").raw(),
+                u32::from(dest_id)
+            )]
         );
     }
 
@@ -652,10 +648,8 @@ mod tests {
             }))
             .expect("dest routing");
 
-        let dest_id = pollster::block_on(import_migrated_vertex_with_index(
-            &store, bundle, &index,
-        ))
-        .expect("import");
+        let dest_id = pollster::block_on(import_migrated_vertex_with_index(&store, bundle, &index))
+            .expect("import");
         assert_eq!(index.removes.borrow().len(), 1);
         assert_eq!(index.inserts.borrow().len(), 1);
 

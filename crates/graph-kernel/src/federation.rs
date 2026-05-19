@@ -7,9 +7,7 @@ mod router_error;
 pub use expand::{
     FederatedExpandNeighbor, FederatedIncomingExpandArgs, FederatedOutgoingExpandArgs,
 };
-pub use migration::{
-    ExportedEdgeTarget, ExportedOutEdge, ExportedProperty, ExportedVertex,
-};
+pub use migration::{ExportedEdgeTarget, ExportedOutEdge, ExportedProperty, ExportedVertex};
 pub use router_error::RouterError;
 
 use candid::{CandidType, Decode, Encode, Principal};

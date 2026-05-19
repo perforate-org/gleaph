@@ -12,8 +12,8 @@ use crate::init::RouterInitArgs;
 use crate::state::RouterError;
 use crate::types::{
     AdminRegisterShardArgs, BeginVertexMigrationArgs, CommitVertexPlacementArgs, EdgeLabelId,
-    FinishVertexMigrationArgs, GraphRegistryEntry, GraphStatus, PropertyId, ReleaseLogicalVertexArgs,
-    ShardId, VertexLabelId, VertexPlacement,
+    FinishVertexMigrationArgs, GraphRegistryEntry, GraphStatus, PropertyId,
+    ReleaseLogicalVertexArgs, ShardId, VertexLabelId, VertexPlacement,
 };
 use candid::Principal;
 use gleaph_graph_kernel::entry::EDGE_LABEL_CATALOG_MAX;
@@ -128,9 +128,7 @@ impl RouterStore {
         local_vertex_id: LocalVertexId,
     ) -> Result<LogicalVertexId, RouterError> {
         ROUTER_PLACEMENT_BY_PHYSICAL
-            .with_borrow(|p| {
-                p.get(PhysicalPlacementKey::new(shard_id, local_vertex_id))
-            })
+            .with_borrow(|p| p.get(PhysicalPlacementKey::new(shard_id, local_vertex_id)))
             .ok_or(RouterError::VertexNotFound)
     }
 
@@ -186,7 +184,8 @@ impl RouterStore {
         if !self.is_controller(caller) {
             return Err(RouterError::NotAuthorized);
         }
-        if args.graph_canister == Principal::anonymous() || args.index_canister == Principal::anonymous()
+        if args.graph_canister == Principal::anonymous()
+            || args.index_canister == Principal::anonymous()
         {
             return Err(RouterError::InvalidArgument(
                 "graph and index principals must be non-anonymous".into(),
@@ -221,13 +220,9 @@ impl RouterStore {
             registered_at_ns,
         };
 
-        index_sync::admin_set_shard_owner(
-            args.index_canister,
-            args.shard_id,
-            args.graph_canister,
-        )
-        .await
-        .map_err(RouterError::Internal)?;
+        index_sync::admin_set_shard_owner(args.index_canister, args.shard_id, args.graph_canister)
+            .await
+            .map_err(RouterError::Internal)?;
 
         ROUTER_SHARDS.with_borrow_mut(|s| {
             s.insert(args.shard_id, entry);
@@ -333,7 +328,10 @@ impl RouterStore {
             .ok_or_else(|| RouterError::NotFound(name.to_owned()))
     }
 
-    pub fn reverse_vertex_label_name(&self, label_id: VertexLabelId) -> Result<String, RouterError> {
+    pub fn reverse_vertex_label_name(
+        &self,
+        label_id: VertexLabelId,
+    ) -> Result<String, RouterError> {
         ROUTER_VERTEX_LABEL_BY_ID
             .with_borrow(|m| m.get(&label_id.raw()))
             .ok_or_else(|| RouterError::NotFound(format!("vertex label id {}", label_id.raw())))
@@ -387,18 +385,13 @@ impl RouterStore {
             return Err(RouterError::UnallocatedLogicalVertex);
         }
 
-        if ROUTER_PLACEMENTS
-            .with_borrow(|p| p.contains_key(&args.logical_vertex_id))
-        {
+        if ROUTER_PLACEMENTS.with_borrow(|p| p.contains_key(&args.logical_vertex_id)) {
             return Err(RouterError::PlacementAlreadyCommitted);
         }
 
-        let placement = VertexPlacement::Active(PhysicalVertexLocation::new(
-            shard_id,
-            args.local_vertex_id,
-        ));
-        let physical_key =
-            PhysicalPlacementKey::new(shard_id, args.local_vertex_id);
+        let placement =
+            VertexPlacement::Active(PhysicalVertexLocation::new(shard_id, args.local_vertex_id));
+        let physical_key = PhysicalPlacementKey::new(shard_id, args.local_vertex_id);
         ROUTER_PLACEMENTS.with_borrow_mut(|p| {
             p.insert(args.logical_vertex_id, placement);
         });
@@ -479,15 +472,11 @@ impl RouterStore {
             return Err(RouterError::Forbidden);
         }
 
-        let destination = PhysicalVertexLocation::new(
-            destination_shard,
-            args.destination_local_vertex_id,
-        );
+        let destination =
+            PhysicalVertexLocation::new(destination_shard, args.destination_local_vertex_id);
         let old_physical = PhysicalPlacementKey::new(source.shard_id, source.local_vertex_id);
-        let new_physical = PhysicalPlacementKey::new(
-            destination.shard_id,
-            destination.local_vertex_id,
-        );
+        let new_physical =
+            PhysicalPlacementKey::new(destination.shard_id, destination.local_vertex_id);
 
         ROUTER_PLACEMENT_BY_PHYSICAL.with_borrow_mut(|p| {
             p.remove(old_physical);
@@ -532,7 +521,6 @@ impl RouterStore {
             .with_borrow(|m| m.get(&caller))
             .ok_or(RouterError::ShardNotRegistered)
     }
-
 }
 
 fn intern_vertex_label_name(name: &str) -> Result<VertexLabelId, RouterError> {
@@ -579,7 +567,9 @@ fn intern_edge_label_name(name: &str) -> Result<EdgeLabelId, RouterError> {
 
 fn validate_metadata_name(name: &str) -> Result<(), RouterError> {
     if name.is_empty() {
-        return Err(RouterError::InvalidArgument("name must not be empty".into()));
+        return Err(RouterError::InvalidArgument(
+            "name must not be empty".into(),
+        ));
     }
     if name.len() > MAX_METADATA_NAME_BYTES {
         return Err(RouterError::InvalidArgument(format!(
@@ -634,9 +624,7 @@ mod tests {
         ))
         .expect("register");
 
-        let logical = store
-            .allocate_logical_vertex_id(graph)
-            .expect("allocate");
+        let logical = store.allocate_logical_vertex_id(graph).expect("allocate");
         assert_eq!(logical, 1);
 
         store
@@ -649,10 +637,7 @@ mod tests {
             )
             .expect("commit");
 
-        assert_eq!(
-            store.resolve_logical_at(7, 42).expect("reverse"),
-            logical
-        );
+        assert_eq!(store.resolve_logical_at(7, 42).expect("reverse"), logical);
 
         let placement = store.resolve_placement(logical).expect("resolve");
         assert_eq!(
@@ -692,9 +677,7 @@ mod tests {
             .expect("register");
         }
 
-        let listed = store
-            .list_shards_for_graph("tenant.main")
-            .expect("list");
+        let listed = store.list_shards_for_graph("tenant.main").expect("list");
         assert_eq!(listed.len(), 2);
         assert!(listed.iter().any(|e| e.shard_id == 7));
         assert!(listed.iter().any(|e| e.shard_id == 9));
@@ -723,9 +706,7 @@ mod tests {
         ))
         .expect("register");
 
-        let logical = store
-            .allocate_logical_vertex_id(graph)
-            .expect("allocate");
+        let logical = store.allocate_logical_vertex_id(graph).expect("allocate");
         store
             .commit_vertex_placement(
                 graph,
@@ -739,7 +720,9 @@ mod tests {
         store
             .release_logical_vertex_placement(
                 graph,
-                ReleaseLogicalVertexArgs { logical_vertex_id: logical },
+                ReleaseLogicalVertexArgs {
+                    logical_vertex_id: logical,
+                },
             )
             .expect("release");
 

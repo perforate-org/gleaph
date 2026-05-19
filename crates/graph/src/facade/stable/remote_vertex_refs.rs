@@ -23,8 +23,7 @@ impl<M: Memory> RemoteVertexRefTable<M> {
             return existing;
         }
         let ref_id = RemoteRefId::from_raw(self.allocate_ref_id());
-        self.ref_to_logical
-            .insert(ref_id, logical_vertex_id);
+        self.ref_to_logical.insert(ref_id, logical_vertex_id);
         self.logical_to_ref.insert(logical_vertex_id, ref_id);
         ref_id
     }
@@ -33,7 +32,10 @@ impl<M: Memory> RemoteVertexRefTable<M> {
         self.ref_to_logical.get(&remote_ref)
     }
 
-    pub fn remote_ref_for_logical(&self, logical_vertex_id: LogicalVertexId) -> Option<RemoteRefId> {
+    pub fn remote_ref_for_logical(
+        &self,
+        logical_vertex_id: LogicalVertexId,
+    ) -> Option<RemoteRefId> {
         self.logical_to_ref.get(&logical_vertex_id)
     }
 

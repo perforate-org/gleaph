@@ -68,17 +68,22 @@ pub(crate) fn record_edge_property_change(
 pub(crate) fn remove_all_for_edge(owner_vertex_id: VertexId, label_id: u16, slot_index: u32) {
     let keys: Vec<_> = EDGE_PROPERTIES.with_borrow(|properties| {
         let mut keys = Vec::new();
-        properties.for_each_property_for_edge(owner_vertex_id, label_id, slot_index, |pid, value| {
-            if let Some(bytes) = encode_value(&value) {
-                keys.push(EdgeEqualityPostingKey::new(
-                    pid,
-                    &bytes,
-                    owner_vertex_id,
-                    label_id,
-                    slot_index,
-                ));
-            }
-        });
+        properties.for_each_property_for_edge(
+            owner_vertex_id,
+            label_id,
+            slot_index,
+            |pid, value| {
+                if let Some(bytes) = encode_value(&value) {
+                    keys.push(EdgeEqualityPostingKey::new(
+                        pid,
+                        &bytes,
+                        owner_vertex_id,
+                        label_id,
+                        slot_index,
+                    ));
+                }
+            },
+        );
         keys
     });
     EDGE_EQUALITY_POSTINGS.with_borrow_mut(|index| {

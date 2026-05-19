@@ -112,7 +112,10 @@ mod tests {
     #[test]
     fn local_and_remote_targets_roundtrip_through_edge_target() {
         let local = VertexRef::local(VertexId::from(7));
-        assert_eq!(local.edge_target(), Some(EdgeTarget::Local(VertexId::from(7))));
+        assert_eq!(
+            local.edge_target(),
+            Some(EdgeTarget::Local(VertexId::from(7)))
+        );
 
         let remote = VertexRef::remote_ref(RemoteRefId::from_raw(99));
         assert_eq!(

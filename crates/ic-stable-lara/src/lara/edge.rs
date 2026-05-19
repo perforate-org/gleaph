@@ -76,7 +76,6 @@ use edges::tree_height_for_segment_count;
 pub use edges::{HeaderV1 as EdgeHeaderV1, InitError as SlabInitError, segment_tree_leaf_count};
 use free_span::{FreeSpan, FreeSpanStore};
 use ic_stable_structures::Memory;
-pub(crate) use log::DEFAULT_MAX_LOG_ENTRIES;
 pub use log::HeaderV1 as LogHeaderV1;
 use log::LogStore;
 use span_meta::{SPAN_PHYSICAL_UNASSIGNED, SegmentSpanMeta, SegmentSpanMetaStore};
@@ -383,6 +382,13 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     /// When [`EdgeLayout::initial_vertex_edge_slots`] is non-empty and ids remain
     /// empty past `v_ord` inside the logical leaf range, the implicit stripe width
     /// still follows `initial_vertex_edge_slots`.
+    #[inline]
+    fn max_slab_window_for_vertex<V: CsrVertex>(v: &V, base: u64, end: u64) -> u64 {
+        v.slab_append_exclusive_end(base)
+            .map(|bypass_end| end.max(bypass_end))
+            .unwrap_or(end)
+    }
+
     pub(crate) fn slab_window_exclusive_end<V, A>(
         &self,
         edge_layout: &EdgeLayout,
@@ -414,13 +420,13 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             );
             let span_rec = self.span_meta_store().get(u64::from(leaf));
             if span_rec.physical_start == SPAN_PHYSICAL_UNASSIGNED {
-                return next_base;
+                return Self::max_slab_window_for_vertex(v, base, next_base);
             }
             let c = self.counts.get(u64::from(leaf + edge_layout.segment_count));
             let cap = span_rec
                 .physical_start
                 .saturating_add(c.total.max(0) as u64);
-            return next_base.min(cap);
+            return Self::max_slab_window_for_vertex(v, base, next_base.min(cap));
         }
 
         let w = edge_layout.initial_vertex_edge_slots;
@@ -428,13 +434,13 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             let tail = base.saturating_add(u64::from(w));
             let span_rec = self.span_meta_store().get(u64::from(leaf));
             if span_rec.physical_start == SPAN_PHYSICAL_UNASSIGNED {
-                return tail;
+                return Self::max_slab_window_for_vertex(v, base, tail);
             }
             let c = self.counts.get(u64::from(leaf + edge_layout.segment_count));
             let cap = span_rec
                 .physical_start
                 .saturating_add(c.total.max(0) as u64);
-            return tail.min(cap);
+            return Self::max_slab_window_for_vertex(v, base, tail.min(cap));
         }
 
         if v_ord.saturating_add(1) < len {
@@ -448,7 +454,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                     let cap = span_rec
                         .physical_start
                         .saturating_add(c.total.max(0) as u64);
-                    return next_base.min(cap);
+                    return Self::max_slab_window_for_vertex(v, base, next_base.min(cap));
                 }
                 if leaf < edge_layout.segment_count {
                     let c = self.counts.get(u64::from(leaf + edge_layout.segment_count));
@@ -456,27 +462,29 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                     if total_u > 0 {
                         let head = vertices.get(VertexId::from(leaf_start)).base_slot_start();
                         let cap = head.saturating_add(total_u);
-                        return next_base.min(cap);
+                        return Self::max_slab_window_for_vertex(v, base, next_base.min(cap));
                     }
                 }
-                return next_base;
+                return Self::max_slab_window_for_vertex(v, base, next_base);
             }
         }
 
         let span_rec = self.span_meta_store().get(u64::from(leaf));
         if span_rec.physical_start != SPAN_PHYSICAL_UNASSIGNED {
             let c = self.counts.get(u64::from(leaf + edge_layout.segment_count));
-            return span_rec
+            let end = span_rec
                 .physical_start
                 .saturating_add(c.total.max(0) as u64);
+            return Self::max_slab_window_for_vertex(v, base, end);
         }
 
-        if leaf < edge_layout.segment_count {
+        let end = if leaf < edge_layout.segment_count {
             let c = self.counts.get(u64::from(leaf + edge_layout.segment_count));
             base.saturating_add(c.total.max(0) as u64)
         } else {
             edge_layout.elem_capacity
-        }
+        };
+        Self::max_slab_window_for_vertex(v, base, end)
     }
 
     /// Creates a fresh edge subsystem over the supplied stable memories.
@@ -1410,8 +1418,8 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         }
         let log_owner = vertices.log_leaf_vertex(vid);
 
-        let next_stored = v
-            .stored_degree()
+        let _next_degree = v
+            .degree()
             .checked_add(1)
             .ok_or(LaraOperationError::RowDegreeOverflow)?;
         let next_num_edges = edge_layout
@@ -1423,9 +1431,19 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             .checked_add(u64::from(v.stored_degree()))
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         let location = if self.have_space_on_slab(vertices, v_ord, &v, loc, &edge_layout) {
+            let write_end = loc
+                .checked_add(1)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            if write_end > self.header().elem_capacity {
+                self.set_elem_capacity(write_end)
+                    .map_err(LaraOperationError::ResizeFailed)?;
+            }
             self.write_slot(loc, edge)
                 .map_err(LaraOperationError::WriteEdgeSlotFailed)?;
-            vertices.set(vid, &v.grow_packed_slab_by_one());
+            let grown = v
+                .try_grow_packed_slab_by_one()
+                .map_err(|()| LaraOperationError::RowDegreeOverflow)?;
+            vertices.set(vid, &grown);
             InsertLocation::Slab(v.stored_degree())
         } else {
             self.insert_into_log_with_layout(
@@ -1434,7 +1452,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 vid,
                 log_owner,
                 v,
-                next_stored,
+                _next_degree,
                 edge,
             )?;
             InsertLocation::Log
@@ -1742,7 +1760,12 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 .map_err(LaraOperationError::WriteLogFailed)?;
         }
         self.log.write_idx_with_header(&log_h, leaf, idx + 1);
-        vertices.set(vid, &v.with_log_head(idx).with_degree(next_degree));
+        let _ = next_degree;
+        let grown = v
+            .with_log_head(idx)
+            .try_grow_packed_slab_by_one()
+            .map_err(|()| LaraOperationError::RowDegreeOverflow)?;
+        vertices.set(vid, &grown);
         Ok(())
     }
 

@@ -8,13 +8,10 @@ use gleaph_graph_kernel::federation::{
     FederatedExpandNeighbor, FederatedIncomingExpandArgs, FederatedOutgoingExpandArgs,
     LocalVertexId, LogicalVertexId, PhysicalVertexLocation, ShardId, VertexPlacement,
 };
-use ic_stable_lara::traits::{CsrEdgeTombstone, CsrVertexTombstone};
 use ic_stable_lara::VertexId;
+use ic_stable_lara::traits::{CsrEdgeTombstone, CsrVertexTombstone};
 
-fn logical_id_for_local_vertex(
-    store: &GraphStore,
-    vertex_id: VertexId,
-) -> Option<LogicalVertexId> {
+fn logical_id_for_local_vertex(store: &GraphStore, vertex_id: VertexId) -> Option<LogicalVertexId> {
     store.logical_vertex_id(vertex_id)
 }
 
@@ -50,7 +47,10 @@ fn collect_authoritative_incoming(
     out: &mut Vec<FederatedExpandNeighbor>,
 ) -> Result<(), GraphStoreError> {
     let target_local_raw = placement::local_vertex_id_raw(target_local);
-    for edge in store.in_edges(target_local).map_err(GraphStoreError::from)? {
+    for edge in store
+        .in_edges(target_local)
+        .map_err(GraphStoreError::from)?
+    {
         if edge.is_tombstone_edge() || !label_matches(&edge, label_id_raw) {
             continue;
         }
@@ -212,14 +212,7 @@ fn collect_forward_to_remote_incoming(
             return Ok(());
         }
     }
-    collect_forward_to_remote_incoming_scan(
-        store,
-        shard_id,
-        remote_ref,
-        label_id_raw,
-        out,
-        true,
-    )
+    collect_forward_to_remote_incoming_scan(store, shard_id, remote_ref, label_id_raw, out, true)
 }
 
 /// Lists incoming neighbors of `target_logical_vertex_id` visible on this graph shard.
@@ -239,10 +232,8 @@ pub fn collect_incoming_neighbors(
     if let Ok(VertexPlacement::Active(PhysicalVertexLocation {
         shard_id,
         local_vertex_id,
-    })) = placement::resolve_placement(
-        routing.router_canister,
-        args.target_logical_vertex_id,
-    ) {
+    })) = placement::resolve_placement(routing.router_canister, args.target_logical_vertex_id)
+    {
         if shard_id == routing.shard_id {
             collect_authoritative_incoming(
                 store,
@@ -294,7 +285,10 @@ fn collect_authoritative_outgoing(
     out: &mut Vec<FederatedExpandNeighbor>,
 ) -> Result<(), GraphStoreError> {
     let source_local_raw = placement::local_vertex_id_raw(source_local);
-    for edge in store.out_edges(source_local).map_err(GraphStoreError::from)? {
+    for edge in store
+        .out_edges(source_local)
+        .map_err(GraphStoreError::from)?
+    {
         if edge.is_tombstone_edge() || !label_matches(&edge, label_id_raw) {
             continue;
         }
@@ -330,11 +324,7 @@ pub fn collect_outgoing_neighbors(
     let Some(VertexPlacement::Active(PhysicalVertexLocation {
         shard_id,
         local_vertex_id,
-    })) = placement::resolve_placement(
-        routing.router_canister,
-        args.source_logical_vertex_id,
-    )
-    .ok()
+    })) = placement::resolve_placement(routing.router_canister, args.source_logical_vertex_id).ok()
     else {
         return Ok(out);
     };
@@ -372,11 +362,9 @@ pub async fn federated_outgoing_expand_authoritative_shard(
             ),
         ))?;
 
-    let placement = placement::resolve_placement(
-        routing.router_canister,
-        args.source_logical_vertex_id,
-    )
-    .map_err(GraphStoreError::from)?;
+    let placement =
+        placement::resolve_placement(routing.router_canister, args.source_logical_vertex_id)
+            .map_err(GraphStoreError::from)?;
     let VertexPlacement::Active(PhysicalVertexLocation {
         shard_id: authoritative_shard,
         ..
@@ -640,9 +628,15 @@ mod tests {
         .expect("collect");
 
         assert_eq!(hits.len(), 2);
-        let logicals: Vec<_> = hits.iter().map(|hit| hit.neighbor_logical_vertex_id).collect();
+        let logicals: Vec<_> = hits
+            .iter()
+            .map(|hit| hit.neighbor_logical_vertex_id)
+            .collect();
         assert!(logicals.contains(&target_logical));
         assert!(logicals.contains(&remote_logical));
-        assert!(hits.iter().all(|hit| hit.target_local_vertex_id == u32::from(source)));
+        assert!(
+            hits.iter()
+                .all(|hit| hit.target_local_vertex_id == u32::from(source))
+        );
     }
 }

@@ -16,6 +16,10 @@ use crate::VertexId;
 /// out-degree). [`Self::stored_degree`] is the backing width used for slab / overflow layout
 /// and may be larger while deferred deletes have not been folded.
 ///
+/// On [`crate::labeled::record::LabeledVertex`], normal (bucket) mode uses [`Self::stored_degree`]
+/// as the live label-bucket row count for edge-store geometry; edge bytes are sized separately
+/// via [`crate::labeled::record::LabeledVertex::stored_slots`] and per-bucket spans.
+///
 /// Owned slab spans for inserts and relocation follow CSR geometry:
 /// adjacent [`Self::base_slot_start`] values and PMA leaf totals (plus `elem_capacity`).
 pub trait CsrVertex: Storable + Copy {
@@ -40,6 +44,14 @@ pub trait CsrVertex: Storable + Copy {
     /// Grows the packed slab row by one live edge (append path when no tombstoned reuse).
     fn grow_packed_slab_by_one(self) -> Self;
 
+    /// Fallible grow used by [`crate::lara::edge::EdgeStore::insert_edge`]; default delegates
+    /// to [`Self::grow_packed_slab_by_one`]. [`crate::labeled::record::LabeledVertex`] checks
+    /// overflow in release instead of panicking.
+    #[inline]
+    fn try_grow_packed_slab_by_one(self) -> Result<Self, ()> {
+        Ok(self.grow_packed_slab_by_one())
+    }
+
     /// After writing into the first tombstoned slab slot at `base + degree()` (see
     /// [`Self::after_slab_tombstone_delete`]), adjusts counters so [`Self::degree`] grows by one
     /// without growing [`Self::stored_degree`].
@@ -54,6 +66,17 @@ pub trait CsrVertex: Storable + Copy {
     fn log_head(self) -> i32;
     /// Returns a copy with a new overflow log head.
     fn with_log_head(self, idx: i32) -> Self;
+
+    /// Minimum exclusive end for the next on-slab append at `base + stored_degree()`.
+    ///
+    /// Default-label bypass rows return `base + stored_slots + 1` so [`crate::lara::edge::EdgeStore::insert_edge`]
+    /// can grow past the PMA leaf `initial_vertex_edge_slots` window without a spurious
+    /// overflow-log spill.
+    #[inline]
+    fn slab_append_exclusive_end(self, base: u64) -> Option<u64> {
+        let _ = (self, base);
+        None
+    }
 }
 
 /// Optional marker support for vertex rows that can represent deleted vertices.

@@ -8,7 +8,7 @@
 //! bucket count.
 //!
 //! This store owns only bucket descriptors. It does not know or reserve edge
-//! capacity. Edge capacity belongs to [`LabeledVertex::vertex_edge_alloc_slots`]
+//! capacity. Edge capacity belongs to [`LabeledVertex::vertex_stored_slots`]
 //! and is managed by `LabeledLaraGraph` when it rewrites a VertexEdgeSpan.
 //!
 //! Bucket rows for one vertex are strictly sorted by [`crate::labeled::BucketLabelKey`], so
@@ -17,7 +17,12 @@
 
 use crate::{
     VertexId,
-    labeled::{bucket_label_key::BucketDirectedness, record::LabelBucket, record::LabeledVertex},
+    labeled::{
+        bucket_label_key::BucketDirectedness,
+        record::{
+            LabelBucket, LabeledVertex, MAX_VERTEX_LABEL_BUCKET_SLACK, MAX_VERTEX_LABEL_BUCKETS,
+        },
+    },
     lara::{
         edge::{
             EdgeHeaderV1 as SlabHeaderV1, EdgeSlabStore,
@@ -76,7 +81,7 @@ pub(crate) enum DirectednessPartitionStrategy {
     LinearFromEnd,
 }
 
-/// Numerator/denominator for multiplicative growth of `bucket_alloc_slots` on segment rewrite:
+/// Numerator/denominator for multiplicative growth of label-bucket descriptor span on rewrite:
 /// `new = max(ceil(max(current, MIN_BUCKET_ROW_ALLOC) * NUM / DEN), needed)`.
 ///
 /// Default `5 / 4` (~1.25×, ceiling). Enable `bucket_row_grow_150` for `3 / 2`, or
@@ -454,19 +459,37 @@ impl<M: Memory> LabelBucketStore<M> {
         Ok((start, raw_end.min(vertices.len())))
     }
 
-    fn bucket_row_alloc(vertex: LabeledVertex) -> u32 {
-        vertex.bucket_alloc_slots().max(vertex.degree())
+    fn label_bucket_descriptor_span(vertex: LabeledVertex) -> Result<u32, LaraOperationError> {
+        vertex
+            .label_bucket_descriptor_span()
+            .ok_or(LaraOperationError::CollectAllocationOverflow)
     }
 
-    fn grow_bucket_row_alloc(current: u32, needed: u32) -> Result<u32, LaraOperationError> {
-        let base = current.max(MIN_BUCKET_ROW_ALLOC);
+    fn grow_label_bucket_descriptor_span(
+        current_physical: u32,
+        needed_live: u32,
+    ) -> Result<u32, LaraOperationError> {
+        if !LabeledVertex::label_bucket_count_fits(needed_live) {
+            return Err(LaraOperationError::RowDegreeOverflow);
+        }
+        let base = current_physical.max(needed_live).max(MIN_BUCKET_ROW_ALLOC);
         let prod = u64::from(base)
             .checked_mul(u64::from(BUCKET_ROW_GROW_NUM))
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         let grown_u64 = prod.div_ceil(u64::from(BUCKET_ROW_GROW_DEN));
-        let grown =
-            u32::try_from(grown_u64).map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
-        Ok(grown.max(needed))
+        let grown = u32::try_from(grown_u64).map_err(|_| LaraOperationError::RowDegreeOverflow)?;
+        let max_physical = MAX_VERTEX_LABEL_BUCKETS
+            .checked_add(u32::from(MAX_VERTEX_LABEL_BUCKET_SLACK))
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        Ok(grown.max(needed_live).min(max_physical))
+    }
+
+    fn slack_for_physical_span(
+        live_rows: u32,
+        physical_span: u32,
+    ) -> Result<u16, LaraOperationError> {
+        LabeledVertex::bucket_slack_for_descriptor_span(live_rows, physical_span)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)
     }
 
     fn collect_segment_bucket_rows<V>(
@@ -484,8 +507,11 @@ impl<M: Memory> LabelBucketStore<M> {
             if v.is_default_edge_labeled() {
                 continue;
             }
-            let alloc = Self::bucket_row_alloc(v);
+            let alloc = Self::label_bucket_descriptor_span(v)?;
             let deg = v.degree();
+            if !LabeledVertex::label_bucket_count_fits(deg) {
+                return Err(LaraOperationError::RowDegreeOverflow);
+            }
             let buckets = if deg == 0 {
                 Vec::new()
             } else {
@@ -507,14 +533,17 @@ impl<M: Memory> LabelBucketStore<M> {
     where
         V: VertexAccess<LabeledVertex>,
     {
-        let total: u64 = rows.iter().map(|(_, _, _, alloc)| u64::from(*alloc)).sum();
-        let mut old_spans: Vec<(u64, u64)> = rows
+        let total: u64 = rows
             .iter()
-            .filter_map(|(_, v, _, _)| {
-                let alloc = Self::bucket_row_alloc(*v);
-                (alloc > 0).then_some((v.base_slot_start(), u64::from(alloc)))
-            })
-            .collect();
+            .map(|(_, _, _, physical)| u64::from(*physical))
+            .sum();
+        let mut old_spans = Vec::new();
+        for (_, v, _, _) in &rows {
+            let physical = Self::label_bucket_descriptor_span(*v)?;
+            if physical > 0 {
+                old_spans.push((v.base_slot_start(), u64::from(physical)));
+            }
+        }
         old_spans.sort_unstable_by_key(|(start, _)| *start);
 
         let new_base = if total == 0 {
@@ -523,16 +552,16 @@ impl<M: Memory> LabelBucketStore<M> {
             self.allocate_span(total)?
         };
         let mut cursor = new_base;
-        for (v_ord, v, buckets, alloc) in rows {
+        for (v_ord, v, buckets, physical) in rows {
             let row_base = cursor;
             self.write_label_bucket_slots_contiguous(cursor, &buckets)?;
             cursor = row_base
-                .checked_add(u64::from(alloc))
+                .checked_add(u64::from(physical))
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            vertices.set(
-                VertexId::from(v_ord),
-                &v.with_bucket_row_and_alloc(row_base, buckets.len() as u32, alloc),
-            );
+            let live = buckets.len() as u32;
+            let slack = Self::slack_for_physical_span(live, physical)?;
+            let updated = v.try_with_bucket_row_and_slack(row_base, live, slack)?;
+            vertices.set(VertexId::from(v_ord), &updated);
         }
 
         for (start, len) in old_spans {
@@ -558,8 +587,12 @@ impl<M: Memory> LabelBucketStore<M> {
         V: VertexAccess<LabeledVertex>,
     {
         let mut rows = self.collect_segment_bucket_rows(vertices, vid)?;
-        for (_, _, buckets, alloc) in &mut rows {
-            *alloc = buckets.len() as u32;
+        for (_, _, buckets, physical) in &mut rows {
+            let live = buckets.len() as u32;
+            if !LabeledVertex::label_bucket_count_fits(live) {
+                return Err(LaraOperationError::RowDegreeOverflow);
+            }
+            *physical = live;
         }
         self.rewrite_segment_bucket_rows(vertices, rows)
     }
@@ -627,7 +660,7 @@ impl<M: Memory> LabelBucketStore<M> {
         if insert_index > v.degree() {
             return Err(LaraOperationError::CollectAllocationOverflow);
         }
-        if !v.is_default_edge_labeled() && Self::bucket_row_alloc(v) > v.degree() {
+        if !v.is_default_edge_labeled() && v.bucket_slack_slots() > 0 {
             let base = v.base_slot_start();
             let deg = v.degree();
             let mut row = if deg == 0 {
@@ -644,8 +677,13 @@ impl<M: Memory> LabelBucketStore<M> {
             let next_degree = v
                 .degree()
                 .checked_add(1)
+                .filter(|count| LabeledVertex::label_bucket_count_fits(*count))
                 .ok_or(LaraOperationError::RowDegreeOverflow)?;
-            vertices.set(vid, &v.with_degree(next_degree));
+            let updated = v
+                .try_with_label_bucket_count(next_degree)?
+                .with_bucket_slack_slots(v.bucket_slack_slots().saturating_sub(1))
+                .ensure_valid_normal_row()?;
+            vertices.set(vid, &updated);
             return Ok((insert_at, false));
         }
 
@@ -659,8 +697,12 @@ impl<M: Memory> LabelBucketStore<M> {
                 }
                 inserted_index = Some(u64::from(insert_index));
                 buckets.insert(index, bucket);
-                *alloc =
-                    Self::grow_bucket_row_alloc(Self::bucket_row_alloc(*v), buckets.len() as u32)?;
+                let needed_live = buckets.len() as u32;
+                if !LabeledVertex::label_bucket_count_fits(needed_live) {
+                    return Err(LaraOperationError::RowDegreeOverflow);
+                }
+                let current_physical = Self::label_bucket_descriptor_span(*v)?;
+                *alloc = Self::grow_label_bucket_descriptor_span(current_physical, needed_live)?;
                 break;
             }
         }

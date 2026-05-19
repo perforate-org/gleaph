@@ -709,9 +709,11 @@ where
             });
         }
         self.forward
-            .push_vertex(crate::labeled::record::LabeledVertex::default())?;
+            .push_vertex(crate::labeled::record::LabeledVertex::default())
+            .map_err(DeferredBidirectionalLabeledError::Forward)?;
         self.reverse
-            .push_vertex(crate::labeled::record::LabeledVertex::default())?;
+            .push_vertex(crate::labeled::record::LabeledVertex::default())
+            .map_err(DeferredBidirectionalLabeledError::Reverse)?;
         Ok(VertexId::from(
             self.forward.vertex_count().0.saturating_sub(1),
         ))
@@ -1268,10 +1270,10 @@ where
         let _ = self.vertex_count_checked()?;
         self.forward
             .push_vertex(row)
-            .map_err(DeferredBidirectionalLabeledError::Grow)?;
+            .map_err(DeferredBidirectionalLabeledError::Forward)?;
         self.reverse
             .push_vertex(row)
-            .map_err(DeferredBidirectionalLabeledError::Grow)?;
+            .map_err(DeferredBidirectionalLabeledError::Reverse)?;
         Ok(VertexId::from(
             self.forward.vertex_count().0.saturating_sub(1),
         ))
@@ -1818,7 +1820,7 @@ mod tests {
                 .unwrap();
         }
         let before = graph.forward().vertices().get(hub);
-        assert!(before.vertex_edge_alloc_slots() > 8);
+        assert!(before.stored_slots > 8);
 
         graph
             .mark_compact_vertex_edge_span(Orientation::Forward, hub, 0)
@@ -1836,6 +1838,6 @@ mod tests {
         }
 
         let after = graph.forward().vertices().get(hub);
-        assert_eq!(after.vertex_edge_alloc_slots(), 9);
+        assert_eq!(after.stored_slots, 9);
     }
 }

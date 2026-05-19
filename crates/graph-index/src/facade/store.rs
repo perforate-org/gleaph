@@ -173,7 +173,6 @@ impl IndexStore {
                 .collect()
         })
     }
-
 }
 
 #[cfg(test)]
@@ -201,7 +200,12 @@ mod tests {
         router
     }
 
-    fn register_shard_owner(store: &IndexStore, router: Principal, shard_id: u32, owner: Principal) {
+    fn register_shard_owner(
+        store: &IndexStore,
+        router: Principal,
+        shard_id: u32,
+        owner: Principal,
+    ) {
         store
             .admin_set_shard_owner(router, shard_id, owner)
             .expect("set shard owner");
