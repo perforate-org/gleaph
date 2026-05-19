@@ -26,6 +26,20 @@ pub struct CommitVertexPlacementArgs {
     pub local_vertex_id: LocalVertexId,
 }
 
+/// Source shard begins migrating a vertex to another shard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct BeginVertexMigrationArgs {
+    pub logical_vertex_id: LogicalVertexId,
+    pub destination_shard_id: ShardId,
+}
+
+/// Destination shard completes migration after importing vertex data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct FinishVertexMigrationArgs {
+    pub logical_vertex_id: LogicalVertexId,
+    pub destination_local_vertex_id: LocalVertexId,
+}
+
 /// Standalone-shard identity mapping: local dense id equals logical id on one process.
 #[inline]
 pub fn standalone_logical_vertex_id(local: VertexId) -> LogicalVertexId {
@@ -118,7 +132,11 @@ impl PhysicalVertexLocation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub enum VertexPlacement {
     Active(PhysicalVertexLocation),
-    Migrating { epoch: u64 },
+    Migrating {
+        epoch: u64,
+        source: PhysicalVertexLocation,
+        destination_shard_id: ShardId,
+    },
 }
 
 /// Shard registration record returned by the router (`resolve_shard`).

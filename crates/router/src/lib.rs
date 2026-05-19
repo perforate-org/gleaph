@@ -134,4 +134,14 @@ fn commit_vertex_placement(
     canister::commit_vertex_placement(args)
 }
 
+#[update]
+fn begin_vertex_migration(args: types::BeginVertexMigrationArgs) -> Result<(), RouterError> {
+    canister::begin_vertex_migration(args)
+}
+
+#[update]
+fn finish_vertex_migration(args: types::FinishVertexMigrationArgs) -> Result<(), RouterError> {
+    canister::finish_vertex_migration(args)
+}
+
 ic_cdk::export_candid!();

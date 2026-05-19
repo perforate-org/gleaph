@@ -128,6 +128,8 @@ pub enum GraphStoreError {
     /// Edge label id is outside the inline edge band `0x0001..=0x3FFF`.
     InvalidEdgeLabelId(EdgeLabelId),
     VertexPlacement(placement::VertexPlacementError),
+    /// Router reports this shard-local vertex is frozen during migration.
+    VertexMigrating,
 }
 
 impl fmt::Display for GraphStoreError {
@@ -158,6 +160,7 @@ impl fmt::Display for GraphStoreError {
                 id.raw()
             ),
             Self::VertexPlacement(err) => write!(f, "{err}"),
+            Self::VertexMigrating => write!(f, "vertex is frozen for migration on this shard"),
         }
     }
 }
@@ -185,7 +188,8 @@ impl std::error::Error for GraphStoreError {
             Self::VertexNotDetached { .. }
             | Self::EdgeNotFound { .. }
             | Self::InvalidEdgeLabelId(_)
-            | Self::VertexPlacement(_) => None,
+            | Self::VertexPlacement(_)
+            | Self::VertexMigrating => None,
         }
     }
 }
@@ -460,6 +464,25 @@ impl GraphStore {
                     .is_none()
                     .then(|| standalone_logical_vertex_id(vertex_id))
             })
+    }
+
+    /// Rejects writes to a shard-local vertex that the router has marked as migrating away.
+    pub(crate) fn assert_local_vertex_writable(&self, vertex_id: VertexId) -> Result<(), GraphStoreError> {
+        let Some(routing) = self.federation_routing() else {
+            return Ok(());
+        };
+        let Some(logical_vertex_id) = self.logical_vertex_id(vertex_id) else {
+            return Ok(());
+        };
+        let placement = placement::resolve_placement(routing.router_canister, logical_vertex_id)?;
+        if let gleaph_graph_kernel::federation::VertexPlacement::Migrating { source, .. } = placement
+        {
+            let local = placement::local_vertex_id_raw(vertex_id);
+            if source.shard_id == routing.shard_id && source.local_vertex_id == local {
+                return Err(GraphStoreError::VertexMigrating);
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn path_vertex_element_id(&self, vertex_id: VertexId) -> Option<GraphPathVertexId> {

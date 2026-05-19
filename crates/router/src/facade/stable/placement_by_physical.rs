@@ -20,6 +20,10 @@ impl<M: Memory> PlacementByPhysicalMap<M> {
         self.map.get(&key)
     }
 
+    pub fn remove(&mut self, key: PhysicalPlacementKey) {
+        self.map.remove(&key);
+    }
+
     pub fn clear_new(&mut self) {
         self.map.clear_new();
     }

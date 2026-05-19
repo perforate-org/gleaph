@@ -24,6 +24,9 @@ thread_local! {
     pub(crate) static ROUTER_PLACEMENT_BY_PHYSICAL: RefCell<memory::StablePlacementByPhysicalMap> =
         RefCell::new(memory::init_placement_by_physical());
 
+    pub(crate) static ROUTER_MIGRATION_COUNTER: RefCell<memory::StableMigrationCounter> =
+        RefCell::new(memory::init_migration_counter());
+
     pub(crate) static ROUTER_LOGICAL_COUNTER: RefCell<memory::StableLogicalCounter> =
         RefCell::new(memory::init_logical_counter());
 

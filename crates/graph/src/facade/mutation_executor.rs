@@ -71,6 +71,7 @@ impl GraphMutationExecutor for GraphStore {
         self.set_vertex(vertex_id, vertex)?;
 
         for (property_id, value) in properties {
+            self.assert_local_vertex_writable(vertex_id)?;
             self.set_vertex_property(vertex_id, property_id, value)?;
         }
 
@@ -84,6 +85,8 @@ impl GraphMutationExecutor for GraphStore {
         label: Option<EdgeLabelId>,
         properties: impl IntoIterator<Item = (PropertyId, Value)>,
     ) -> Result<EdgeHandle, GraphStoreError> {
+        self.assert_local_vertex_writable(source_vertex_id)?;
+        self.assert_local_vertex_writable(target_vertex_id)?;
         let handle = self.insert_directed_edge(source_vertex_id, target_vertex_id, label)?;
         for (property_id, value) in properties {
             self.set_edge_property(handle, property_id, value)?;
@@ -98,6 +101,8 @@ impl GraphMutationExecutor for GraphStore {
         label: Option<EdgeLabelId>,
         properties: impl IntoIterator<Item = (PropertyId, Value)>,
     ) -> Result<EdgeHandle, GraphStoreError> {
+        self.assert_local_vertex_writable(endpoint_a)?;
+        self.assert_local_vertex_writable(endpoint_b)?;
         let handle = self.insert_undirected_edge(endpoint_a, endpoint_b, label)?;
         for (property_id, value) in properties {
             self.set_edge_property(handle, property_id, value)?;
@@ -139,6 +144,7 @@ impl GraphMutationExecutor for GraphStore {
         label: Option<impl AsRef<str>>,
         properties: impl IntoIterator<Item = (impl AsRef<str>, Value)>,
     ) -> Result<EdgeHandle, GraphStoreError> {
+        self.assert_local_vertex_writable(source_vertex_id)?;
         let label = label
             .map(|label| self.get_or_insert_edge_label_id(label.as_ref()))
             .transpose()?;
