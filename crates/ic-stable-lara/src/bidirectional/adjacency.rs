@@ -45,7 +45,8 @@ where
 {
     match order {
         OutEdgeOrder::Ascending => {
-            for edge in store.asc_out_edges(src)? {
+            let mut iter = store.asc_out_edges_iter(src)?;
+            while let Some(edge) = iter.next() {
                 if edge_matches_filter(&edge, filter) {
                     visit(edge);
                 }
