@@ -3406,11 +3406,12 @@ thread_local! {
 /// `plan_query_materialize_value_rows` benches.
 const PATH_MATERIALIZE_SCRATCH_MIN_ELEMENTS: usize = 16;
 
-fn path_binding_to_value(pb: &PathBinding) -> Value {
-    materialize_path_from_search_states(pb.shard_id, pb.states.as_ref(), pb.leaf_state_idx)
+fn path_binding_to_value(store: &GraphStore, pb: &PathBinding) -> Value {
+    materialize_path_from_search_states(store, pb.shard_id, pb.states.as_ref(), pb.leaf_state_idx)
 }
 
 fn materialize_path_from_search_states(
+    store: &GraphStore,
     shard_id: gleaph_graph_kernel::federation::ShardId,
     states: &[PathSearchNode],
     state_idx: usize,
@@ -3419,21 +3420,22 @@ fn materialize_path_from_search_states(
     let min_cap = depth.saturating_mul(2).saturating_add(1);
     if min_cap < PATH_MATERIALIZE_SCRATCH_MIN_ELEMENTS {
         let mut elements = Vec::with_capacity(min_cap);
-        fill_path_elements_leaf_to_root(shard_id, states, state_idx, &mut elements);
+        fill_path_elements_leaf_to_root(store, shard_id, states, state_idx, &mut elements);
         return Value::Path(elements);
     }
     PATH_MATERIALIZE_SCRATCH.with(|scratch| {
         if let Ok(mut elements) = scratch.try_borrow_mut() {
-            fill_path_elements_leaf_to_root(shard_id, states, state_idx, &mut elements);
+            fill_path_elements_leaf_to_root(store, shard_id, states, state_idx, &mut elements);
             return Value::Path(std::mem::take(&mut *elements));
         }
         let mut elements = Vec::with_capacity(min_cap);
-        fill_path_elements_leaf_to_root(shard_id, states, state_idx, &mut elements);
+        fill_path_elements_leaf_to_root(store, shard_id, states, state_idx, &mut elements);
         Value::Path(elements)
     })
 }
 
 fn fill_path_elements_leaf_to_root(
+    store: &GraphStore,
     shard_id: gleaph_graph_kernel::federation::ShardId,
     states: &[PathSearchNode],
     mut state_idx: usize,
@@ -3446,7 +3448,7 @@ fn fill_path_elements_leaf_to_root(
     }
     loop {
         let state = &states[state_idx];
-        elements.push(vertex_path_element(shard_id, state.current));
+        elements.push(vertex_path_element(store, state.current));
         if let Some(edge_binding) = state.edge {
             elements.push(edge_path_element(shard_id, edge_binding.handle));
         }
@@ -3462,10 +3464,13 @@ fn local_shard_id(store: &GraphStore) -> gleaph_graph_kernel::federation::ShardI
     store.federation_routing().map(|r| r.shard_id).unwrap_or(0)
 }
 
-fn vertex_element_id_bytes(shard_id: gleaph_graph_kernel::federation::ShardId, vertex_id: VertexId) -> Vec<u8> {
-    GraphPathVertexId::new(shard_id, vertex_id)
-        .to_bytes()
-        .to_vec()
+fn vertex_element_id_bytes(store: &GraphStore, vertex_id: VertexId) -> Result<Vec<u8>, PlanQueryError> {
+    let path_id = store.path_vertex_element_id(vertex_id).ok_or_else(|| {
+        PlanQueryError::MissingBinding {
+            variable: format!("logical vertex id for {vertex_id:?}"),
+        }
+    })?;
+    Ok(path_id.to_bytes().to_vec())
 }
 
 fn edge_element_id_bytes(
@@ -3478,15 +3483,11 @@ fn edge_element_id_bytes(
         .to_vec()
 }
 
-fn vertex_path_element(
-    shard_id: gleaph_graph_kernel::federation::ShardId,
-    vertex_id: VertexId,
-) -> PathElement {
-    PathElement::Vertex(
-        GraphPathVertexId::new(shard_id, vertex_id)
-            .to_bytes()
-            .into(),
-    )
+fn vertex_path_element(store: &GraphStore, vertex_id: VertexId) -> PathElement {
+    let path_id = store
+        .path_vertex_element_id(vertex_id)
+        .unwrap_or_else(|| GraphPathVertexId::new(gleaph_graph_kernel::federation::standalone_logical_vertex_id(vertex_id)));
+    PathElement::Vertex(path_id.to_bytes().into())
 }
 
 fn edge_path_element(shard_id: gleaph_graph_kernel::federation::ShardId, handle: EdgeHandle) -> PathElement {
@@ -4462,9 +4463,10 @@ impl QueryExprEvaluator<'_> {
                     .and_then(|property_id| self.store.edge_property(edge.handle, property_id))
                     .map_or(Ok(Value::Null), Ok),
                 Some(PlanBinding::Value(value)) => Ok(record_property(value, property)),
-                Some(PlanBinding::Path(pb)) => {
-                    Ok(record_property(&path_binding_to_value(pb), property))
-                }
+                Some(PlanBinding::Path(pb)) => Ok(record_property(
+                    &path_binding_to_value(self.store, pb),
+                    property,
+                )),
                 None => Err(PlanQueryError::MissingBinding {
                     variable: name.clone(),
                 }),
@@ -4477,13 +4479,12 @@ impl QueryExprEvaluator<'_> {
 
     fn eval_element_id(&self, row: &PlanRow, expr: &Expr) -> Result<Value, PlanQueryError> {
         if let ExprKind::Variable(name) = &expr.kind {
-            let shard_id = local_shard_id(self.store);
             return match row.get(name) {
                 Some(PlanBinding::Vertex(vertex_id)) => {
-                    Ok(Value::Bytes(vertex_element_id_bytes(shard_id, *vertex_id)))
+                    Ok(Value::Bytes(vertex_element_id_bytes(self.store, *vertex_id)?))
                 }
                 Some(PlanBinding::Edge(edge)) => Ok(Value::Bytes(edge_element_id_bytes(
-                    shard_id,
+                    local_shard_id(self.store),
                     edge.handle.owner_vertex_id,
                     EdgeSlotIndex::from_raw(edge.handle.slot_index),
                 ))),
@@ -4598,7 +4599,7 @@ fn binding_to_value(store: &GraphStore, binding: &PlanBinding) -> Result<Value, 
         PlanBinding::Vertex(vertex_id) => vertex_to_value(store, *vertex_id),
         PlanBinding::Edge(edge) => edge_to_value(store, *edge),
         PlanBinding::Value(value) => Ok(value.clone()),
-        PlanBinding::Path(pb) => Ok(path_binding_to_value(pb)),
+        PlanBinding::Path(pb) => Ok(path_binding_to_value(store, pb)),
     }
 }
 
@@ -5094,6 +5095,15 @@ mod tests {
             }
             other => panic!("expected vertex path element, got {other:?}"),
         }
+    }
+
+    fn assert_path_vertex_local(store: &GraphStore, element: &PathElement, local: VertexId) {
+        assert_eq!(
+            vertex_path_id(element).logical_vertex_id,
+            store
+                .logical_vertex_id(local)
+                .expect("logical vertex id for local vertex")
+        );
     }
 
     fn edge_path_id(element: &PathElement) -> GraphPathEdgeId {
@@ -7894,8 +7904,8 @@ mod tests {
         assert_eq!(
             GraphPathVertexId::try_from_slice(id_bytes.as_ref())
                 .expect("decode vertex id")
-                .vertex_id,
-            anchor,
+                .logical_vertex_id,
+            store.logical_vertex_id(anchor).expect("anchor logical id"),
         );
     }
 
@@ -7976,8 +7986,8 @@ mod tests {
         assert_eq!(
             GraphPathVertexId::try_from_slice(id_bytes.as_ref())
                 .expect("decode vertex id")
-                .vertex_id,
-            anchor,
+                .logical_vertex_id,
+            store.logical_vertex_id(anchor).expect("anchor logical id"),
         );
     }
 
@@ -9563,8 +9573,10 @@ mod tests {
         assert_eq!(result.rows.len(), 1);
         let vertex_id = GraphPathVertexId::try_from_slice(bytes_column(&result, "aid"))
             .expect("vertex element id");
-        assert_eq!(vertex_id.shard_id, 7);
-        assert_eq!(vertex_id.vertex_id, a);
+        assert_eq!(
+            vertex_id.logical_vertex_id,
+            store.logical_vertex_id(a).expect("logical id for a")
+        );
         let edge_id =
             GraphPathEdgeId::try_from_slice(bytes_column(&result, "eid")).expect("edge element id");
         assert_eq!(edge_id.shard_id, 7);
@@ -9655,8 +9667,7 @@ mod tests {
         assert_eq!(result.rows.len(), 1);
         let elements = path_column(&result, "p");
         assert_eq!(elements.len(), 5);
-        assert_eq!(vertex_path_id(&elements[0]).shard_id, 7);
-        assert_eq!(vertex_path_id(&elements[0]).vertex_id, a);
+        assert_path_vertex_local(&store, &elements[0], a);
         assert_eq!(
             edge_path_id(&elements[1]).owner_vertex_id,
             ab.owner_vertex_id
@@ -9665,7 +9676,7 @@ mod tests {
             edge_path_id(&elements[1]).edge_slot_index,
             EdgeSlotIndex::from_raw(ab.slot_index)
         );
-        assert_eq!(vertex_path_id(&elements[2]).vertex_id, b);
+        assert_path_vertex_local(&store, &elements[2], b);
         assert_eq!(
             edge_path_id(&elements[3]).owner_vertex_id,
             bc.owner_vertex_id
@@ -9674,7 +9685,7 @@ mod tests {
             edge_path_id(&elements[3]).edge_slot_index,
             EdgeSlotIndex::from_raw(bc.slot_index)
         );
-        assert_eq!(vertex_path_id(&elements[4]).vertex_id, c);
+        assert_path_vertex_local(&store, &elements[4], c);
     }
 
     #[test]
@@ -9718,8 +9729,7 @@ mod tests {
 
         let elements = path_column(&result, "p");
         assert_eq!(elements.len(), 1);
-        assert_eq!(vertex_path_id(&elements[0]).shard_id, 0);
-        assert_eq!(vertex_path_id(&elements[0]).vertex_id, a);
+        assert_path_vertex_local(&store, &elements[0], a);
         assert_eq!(result.rows[0].get("e"), Some(&Value::Null));
     }
 
@@ -9789,15 +9799,21 @@ mod tests {
             .expect("execute all shortest paths");
 
         assert_eq!(result.rows.len(), 2);
-        let middle_vertices: BTreeSet<VertexId> = result
+        let middle_vertices: BTreeSet<gleaph_graph_kernel::federation::LogicalVertexId> = result
             .rows
             .iter()
             .map(|row| match row.get("p") {
-                Some(Value::Path(elements)) => vertex_path_id(&elements[2]).vertex_id,
+                Some(Value::Path(elements)) => vertex_path_id(&elements[2]).logical_vertex_id,
                 other => panic!("expected path, got {other:?}"),
             })
             .collect();
-        assert_eq!(middle_vertices, BTreeSet::from([b1, b2]));
+        assert_eq!(
+            middle_vertices,
+            BTreeSet::from([
+                store.logical_vertex_id(b1).expect("b1 logical id"),
+                store.logical_vertex_id(b2).expect("b2 logical id"),
+            ])
+        );
     }
 
     #[test]
@@ -10012,7 +10028,7 @@ mod tests {
             5,
             "GLEAPH.WEIGHT(e) * $scale with scale=1 should match unscaled weighted shortest path"
         );
-        assert_eq!(vertex_path_id(&elements[4]).vertex_id, c);
+        assert_path_vertex_local(&store, &elements[4], c);
     }
 
     fn weighted_shortest_plan_with_cost(cost: Expr) -> PhysicalPlan {
@@ -10176,7 +10192,7 @@ mod tests {
             )
             .expect("float64 precision weighted shortest path");
         assert_eq!(path_column(&result, "p").len(), 5);
-        assert_eq!(vertex_path_id(&path_column(&result, "p")[4]).vertex_id, c);
+        assert_path_vertex_local(&store, &path_column(&result, "p")[4], c);
     }
 
     #[test]
@@ -10271,15 +10287,21 @@ mod tests {
             .expect("weighted all-shortest with equal zero costs");
 
         assert_eq!(result.rows.len(), 2);
-        let middle_vertices: BTreeSet<VertexId> = result
+        let middle_vertices: BTreeSet<gleaph_graph_kernel::federation::LogicalVertexId> = result
             .rows
             .iter()
             .map(|row| match row.get("p") {
-                Some(Value::Path(elements)) => vertex_path_id(&elements[2]).vertex_id,
+                Some(Value::Path(elements)) => vertex_path_id(&elements[2]).logical_vertex_id,
                 other => panic!("expected path, got {other:?}"),
             })
             .collect();
-        assert_eq!(middle_vertices, BTreeSet::from([b1, b2]));
+        assert_eq!(
+            middle_vertices,
+            BTreeSet::from([
+                store.logical_vertex_id(b1).expect("b1 logical id"),
+                store.logical_vertex_id(b2).expect("b2 logical id"),
+            ])
+        );
     }
 
     #[test]
@@ -10315,7 +10337,7 @@ mod tests {
             )
             .expect("decimal precision weighted shortest path");
         assert_eq!(path_column(&result, "p").len(), 5);
-        assert_eq!(vertex_path_id(&path_column(&result, "p")[4]).vertex_id, c);
+        assert_path_vertex_local(&store, &path_column(&result, "p")[4], c);
     }
 
     #[test]
@@ -10330,7 +10352,7 @@ mod tests {
             )
             .expect("wide-integer precision weighted shortest path");
         assert_eq!(path_column(&result, "p").len(), 5);
-        assert_eq!(vertex_path_id(&path_column(&result, "p")[4]).vertex_id, c);
+        assert_path_vertex_local(&store, &path_column(&result, "p")[4], c);
     }
 
     #[test]
@@ -10346,7 +10368,7 @@ mod tests {
             )
             .expect("floor-wrapped weighted shortest path");
         assert_eq!(path_column(&result, "p").len(), 5);
-        assert_eq!(vertex_path_id(&path_column(&result, "p")[4]).vertex_id, c);
+        assert_path_vertex_local(&store, &path_column(&result, "p")[4], c);
     }
 
     #[test]
@@ -10367,7 +10389,7 @@ mod tests {
             )
             .expect("cast-wrapped weighted shortest path");
         assert_eq!(path_column(&result, "p").len(), 5);
-        assert_eq!(vertex_path_id(&path_column(&result, "p")[4]).vertex_id, c);
+        assert_path_vertex_local(&store, &path_column(&result, "p")[4], c);
     }
 
     #[test]
@@ -10386,7 +10408,7 @@ mod tests {
             )
             .expect("float128-cast weighted shortest path");
         assert_eq!(path_column(&result, "p").len(), 5);
-        assert_eq!(vertex_path_id(&path_column(&result, "p")[4]).vertex_id, c);
+        assert_path_vertex_local(&store, &path_column(&result, "p")[4], c);
     }
 
     #[test]
@@ -10405,7 +10427,7 @@ mod tests {
             )
             .expect("float256-cast weighted shortest path");
         assert_eq!(path_column(&result, "p").len(), 5);
-        assert_eq!(vertex_path_id(&path_column(&result, "p")[4]).vertex_id, c);
+        assert_path_vertex_local(&store, &path_column(&result, "p")[4], c);
     }
 
     #[test]
@@ -10427,7 +10449,7 @@ mod tests {
             )
             .expect("int-precision-cast weighted shortest path");
         assert_eq!(path_column(&result, "p").len(), 5);
-        assert_eq!(vertex_path_id(&path_column(&result, "p")[4]).vertex_id, c);
+        assert_path_vertex_local(&store, &path_column(&result, "p")[4], c);
     }
 
     #[test]
@@ -10449,7 +10471,7 @@ mod tests {
             )
             .expect("float-precision-cast weighted shortest path");
         assert_eq!(path_column(&result, "p").len(), 5);
-        assert_eq!(vertex_path_id(&path_column(&result, "p")[4]).vertex_id, c);
+        assert_path_vertex_local(&store, &path_column(&result, "p")[4], c);
     }
 
     #[test]
@@ -10470,7 +10492,7 @@ mod tests {
             )
             .expect("int8-cast-wrapped weighted shortest path");
         assert_eq!(path_column(&result, "p").len(), 5);
-        assert_eq!(vertex_path_id(&path_column(&result, "p")[4]).vertex_id, c);
+        assert_path_vertex_local(&store, &path_column(&result, "p")[4], c);
     }
 
     #[test]
@@ -10493,7 +10515,7 @@ mod tests {
             )
             .expect("decimal-cast-wrapped weighted shortest path");
         assert_eq!(path_column(&result, "p").len(), 5);
-        assert_eq!(vertex_path_id(&path_column(&result, "p")[4]).vertex_id, c);
+        assert_path_vertex_local(&store, &path_column(&result, "p")[4], c);
     }
 
     #[test]
@@ -10516,7 +10538,7 @@ mod tests {
             )
             .expect("decimal-precision-cast weighted shortest path");
         assert_eq!(path_column(&result, "p").len(), 5);
-        assert_eq!(vertex_path_id(&path_column(&result, "p")[4]).vertex_id, c);
+        assert_path_vertex_local(&store, &path_column(&result, "p")[4], c);
     }
 
     #[test]
@@ -10535,7 +10557,7 @@ mod tests {
             )
             .expect("coalesce-wrapped weighted shortest path");
         assert_eq!(path_column(&result, "p").len(), 5);
-        assert_eq!(vertex_path_id(&path_column(&result, "p")[4]).vertex_id, c);
+        assert_path_vertex_local(&store, &path_column(&result, "p")[4], c);
     }
 
     #[test]
@@ -10561,7 +10583,7 @@ mod tests {
             )
             .expect("case-wrapped weighted shortest path");
         assert_eq!(path_column(&result, "p").len(), 5);
-        assert_eq!(vertex_path_id(&path_column(&result, "p")[4]).vertex_id, c);
+        assert_path_vertex_local(&store, &path_column(&result, "p")[4], c);
     }
 
     #[test]
@@ -10610,7 +10632,7 @@ mod tests {
             .expect("weighted shortest path");
         let elements = path_column(&result, "p");
         assert_eq!(elements.len(), 5, "expected 2-hop weighted shortest path");
-        assert_eq!(vertex_path_id(&elements[4]).vertex_id, c);
+        assert_path_vertex_local(&store, &elements[4], c);
     }
 
     /// Graph where a cheaper arrival at `x` exhausts the hop bound while a higher-cost arrival
@@ -10701,8 +10723,8 @@ mod tests {
             .expect("hop-bound weighted shortest path");
         let elements = path_column(&result, "p");
         assert_eq!(elements.len(), 5, "expected s->x->dst (2 edges)");
-        assert_eq!(vertex_path_id(&elements[0]).vertex_id, s);
-        assert_eq!(vertex_path_id(&elements[4]).vertex_id, dst);
+        assert_path_vertex_local(&store, &elements[0], s);
+        assert_path_vertex_local(&store, &elements[4], dst);
     }
 
     /// Graph where a longer prefix reaches `mid` with lower total cost after a stale higher-cost
@@ -10793,8 +10815,8 @@ mod tests {
             .expect("stale-entry weighted shortest path");
         let elements = path_column(&result, "p");
         assert_eq!(elements.len(), 7, "expected s->a->mid->dst (3 edges)");
-        assert_eq!(vertex_path_id(&elements[6]).vertex_id, dst);
-        assert_eq!(vertex_path_id(&elements[0]).vertex_id, s);
+        assert_path_vertex_local(&store, &elements[6], dst);
+        assert_path_vertex_local(&store, &elements[0], s);
     }
 
     #[test]
@@ -10888,7 +10910,7 @@ mod tests {
             5,
             "expected 2-hop zero-cost detour a->d1->c, not 1-hop direct edge"
         );
-        assert_eq!(vertex_path_id(&elements[elements.len() - 1]).vertex_id, c);
+        assert_path_vertex_local(&store, &elements[elements.len() - 1], c);
     }
 
     #[test]
@@ -10934,7 +10956,7 @@ mod tests {
             .expect("hop-count shortest path");
         let elements = path_column(&result, "p");
         assert_eq!(elements.len(), 3, "expected 1-hop unweighted shortest path");
-        assert_eq!(vertex_path_id(&elements[2]).vertex_id, c);
+        assert_path_vertex_local(&store, &elements[2], c);
     }
 
     #[test]

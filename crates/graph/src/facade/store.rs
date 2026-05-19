@@ -5,13 +5,17 @@ use super::stable::vertex_label_catalog::VertexLabelCatalogError;
 use super::stable::{
     EDGE_ALIASES, EDGE_LABEL_CATALOG, EDGE_PROPERTIES, EDGE_WEIGHT_PROFILES, GRAPH,
     GRAPH_DEFAULT_EDGE_LABEL, METADATA, PREPARED_QUERY_CATALOG, PROPERTY_CATALOG,
-    VERTEX_LABEL_CATALOG, VERTEX_LABELS, VERTEX_PROPERTIES,
+    VERTEX_LABEL_CATALOG, VERTEX_LABELS, VERTEX_LOGICAL_IDS, VERTEX_PROPERTIES,
 };
 use super::{
     FederationRouting, GraphMetadata, GraphMetadataError, PropertyCatalogError, VertexLabelStoreError,
     VertexPropertyStoreError,
 };
-use crate::index::{edge_equal, pending};
+use crate::index::{edge_equal, pending, placement};
+use gleaph_graph_kernel::federation::{
+    standalone_logical_vertex_id, CommitVertexPlacementArgs, LogicalVertexId,
+};
+use gleaph_graph_kernel::path::GraphPathVertexId;
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{
     Edge, EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, EdgeWeightProfile, PropertyId,
@@ -114,6 +118,7 @@ pub enum GraphStoreError {
     },
     /// Edge label id is outside the inline edge band `0x0001..=0x3FFF`.
     InvalidEdgeLabelId(EdgeLabelId),
+    VertexPlacement(placement::VertexPlacementError),
 }
 
 impl fmt::Display for GraphStoreError {
@@ -143,6 +148,7 @@ impl fmt::Display for GraphStoreError {
                 "edge label id {} is not a catalog edge label (MSB clear, non-zero)",
                 id.raw()
             ),
+            Self::VertexPlacement(err) => write!(f, "{err}"),
         }
     }
 }
@@ -169,8 +175,15 @@ impl std::error::Error for GraphStoreError {
             Self::PropertyValue(err) => Some(err),
             Self::VertexNotDetached { .. }
             | Self::EdgeNotFound { .. }
-            | Self::InvalidEdgeLabelId(_) => None,
+            | Self::InvalidEdgeLabelId(_)
+            | Self::VertexPlacement(_) => None,
         }
+    }
+}
+
+impl From<placement::VertexPlacementError> for GraphStoreError {
+    fn from(value: placement::VertexPlacementError) -> Self {
+        Self::VertexPlacement(value)
     }
 }
 
@@ -392,15 +405,57 @@ impl GraphStore {
         GRAPH.with_borrow(|graph| graph.vertex_count())
     }
 
-    pub fn insert_vertex(&self) -> Result<VertexId, DeferredBidirectionalLabeledError> {
+    pub fn insert_vertex(&self) -> Result<VertexId, GraphStoreError> {
         self.insert_vertex_row(Vertex::default())
     }
 
-    pub fn insert_vertex_row(
-        &self,
-        vertex: Vertex,
-    ) -> Result<VertexId, DeferredBidirectionalLabeledError> {
-        self.with_graph_mut(|graph| graph.push_vertex_row(vertex.into()))
+    pub fn insert_vertex_row(&self, vertex: Vertex) -> Result<VertexId, GraphStoreError> {
+        let pending_logical = self
+            .federation_routing()
+            .map(|routing| placement::allocate_logical_vertex_id(routing.router_canister))
+            .transpose()?;
+
+        let vertex_id = self
+            .with_graph_mut(|graph| graph.push_vertex_row(vertex.into()))
+            .map_err(GraphStoreError::from)?;
+
+        let logical_vertex_id = match pending_logical {
+            Some(logical_vertex_id) => {
+                let routing = self
+                    .federation_routing()
+                    .expect("federation routing required after allocate");
+                placement::commit_vertex_placement(
+                    routing.router_canister,
+                    CommitVertexPlacementArgs {
+                        logical_vertex_id,
+                        local_vertex_id: placement::local_vertex_id_raw(vertex_id),
+                    },
+                )?;
+                logical_vertex_id
+            }
+            None => standalone_logical_vertex_id(vertex_id),
+        };
+
+        VERTEX_LOGICAL_IDS.with_borrow_mut(|map| {
+            map.insert(vertex_id, logical_vertex_id);
+        });
+        Ok(vertex_id)
+    }
+
+    /// Resolves the stable logical vertex id for a shard-local [`VertexId`].
+    pub fn logical_vertex_id(&self, vertex_id: VertexId) -> Option<LogicalVertexId> {
+        VERTEX_LOGICAL_IDS
+            .with_borrow(|map| map.get(vertex_id))
+            .or_else(|| {
+                self.federation_routing()
+                    .is_none()
+                    .then(|| standalone_logical_vertex_id(vertex_id))
+            })
+    }
+
+    pub(crate) fn path_vertex_element_id(&self, vertex_id: VertexId) -> Option<GraphPathVertexId> {
+        self.logical_vertex_id(vertex_id)
+            .map(GraphPathVertexId::new)
     }
 
     pub fn vertex(&self, vertex_id: VertexId) -> Option<Vertex> {

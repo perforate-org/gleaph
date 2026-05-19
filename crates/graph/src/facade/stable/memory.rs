@@ -59,6 +59,7 @@ const AUTH_PRINCIPAL_RECORDS: MemoryId = MemoryId::new(30);
 const PREPARED_QUERY_CATALOG: MemoryId = MemoryId::new(31);
 const GRAPH_METADATA: MemoryId = MemoryId::new(32);
 const EDGE_WEIGHT_PROFILES: MemoryId = MemoryId::new(33);
+const VERTEX_LOGICAL_IDS: MemoryId = MemoryId::new(36);
 
 pub(crate) const GRAPH_DEFAULT_EDGE_LABEL: LaraLabelId = LaraLabelId::UNLABELED_DIRECTED;
 
@@ -79,6 +80,7 @@ pub(crate) type StableAuthState = AuthState<Memory>;
 pub(crate) type StablePreparedQueryCatalog = PreparedQueryCatalog<Memory>;
 pub(crate) type StableMetadata = StableGraphMetadata<Memory>;
 pub(crate) type StableEdgeWeightProfileStore = EdgeWeightProfileStore<Memory>;
+pub(crate) type StableVertexLogicalIdMap = super::vertex_logical_ids::VertexLogicalIdMap<Memory>;
 
 thread_local! {
     static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
@@ -173,5 +175,11 @@ pub(crate) fn init_metadata() -> StableMetadata {
     StableGraphMetadata::init(
         MEMORY_MANAGER.with(|m| m.borrow().get(GRAPH_METADATA)),
         GraphMetadata::default(),
+    )
+}
+
+pub(crate) fn init_vertex_logical_ids() -> StableVertexLogicalIdMap {
+    super::vertex_logical_ids::VertexLogicalIdMap::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(VERTEX_LOGICAL_IDS)),
     )
 }

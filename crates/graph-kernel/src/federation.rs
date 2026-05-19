@@ -19,6 +19,19 @@ pub type ShardId = u32;
 /// Dense vertex index within a single graph shard (`VertexId` in LARA).
 pub type LocalVertexId = u32;
 
+/// Router `commit_vertex_placement` argument (graph shard → router).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct CommitVertexPlacementArgs {
+    pub logical_vertex_id: LogicalVertexId,
+    pub local_vertex_id: LocalVertexId,
+}
+
+/// Standalone-shard identity mapping: local dense id equals logical id on one process.
+#[inline]
+pub fn standalone_logical_vertex_id(local: VertexId) -> LogicalVertexId {
+    u64::from(u32::from_le_bytes(local.to_le_bytes()))
+}
+
 /// Current physical storage location of a vertex.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct PhysicalVertexLocation {

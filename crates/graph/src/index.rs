@@ -4,4 +4,5 @@ pub mod edge_equal;
 pub mod ic;
 pub mod lookup;
 pub mod pending;
+pub mod placement;
 pub mod router;

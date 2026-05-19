@@ -16,6 +16,7 @@ pub(crate) mod metadata;
 pub(crate) mod property_catalog;
 pub(crate) mod vertex_label_catalog;
 pub(crate) mod vertex_labels;
+pub(crate) mod vertex_logical_ids;
 pub(crate) mod vertex_properties;
 
 pub(crate) use memory::GRAPH_DEFAULT_EDGE_LABEL;
@@ -64,4 +65,7 @@ thread_local! {
 
     pub(crate) static EDGE_WEIGHT_PROFILES: RefCell<memory::StableEdgeWeightProfileStore> =
         RefCell::new(memory::init_edge_weight_profiles());
+
+    pub(crate) static VERTEX_LOGICAL_IDS: RefCell<memory::StableVertexLogicalIdMap> =
+        RefCell::new(memory::init_vertex_logical_ids());
 }
