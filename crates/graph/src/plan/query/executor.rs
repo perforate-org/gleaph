@@ -33,7 +33,9 @@ use gleaph_graph_kernel::entry::{
     Edge, EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, EdgeTarget, PreparedWeightDecoder, Vertex,
     decode_inline_weight,
 };
-use gleaph_graph_kernel::federation::LogicalVertexId;
+use gleaph_graph_kernel::federation::{
+    FederatedExpandNeighbor, FederatedIncomingExpandArgs, LogicalVertexId,
+};
 use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest};
 use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
@@ -2454,6 +2456,80 @@ fn edge_matches_stream_filter(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn expand_rows_from_federated_incoming_hits(
+    store: &GraphStore,
+    row: &PlanRow,
+    hits: &[FederatedExpandNeighbor],
+    dst: &str,
+    edge: &str,
+    emit_edge_binding: bool,
+    dst_property_projection: Option<&[Str]>,
+    dst_filter: &[Expr],
+    parameters: &BTreeMap<String, Value>,
+    caller: Option<Principal>,
+    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
+    evaluator: &QueryExprEvaluator<'_>,
+) -> Result<Vec<PlanRow>, PlanQueryError> {
+    let routing = federation_routing(store)?;
+    let dst_only_prefilter = dst_filter_is_dst_vertex_only(dst_filter, dst);
+    let edge_key = emit_edge_binding.then(|| edge.to_string());
+    let mut out = Vec::with_capacity(hits.len());
+    for hit in hits {
+        let dst_binding = if hit.shard_id == routing.shard_id {
+            expand_dst_binding(
+                store,
+                ExpandDst::Local(VertexId::from(hit.neighbor_local_vertex_id)),
+                dst_property_projection,
+            )?
+        } else {
+            if dst_property_projection.is_some_and(|props| !props.is_empty()) {
+                return Err(PlanQueryError::InvalidExpressionValue {
+                    expression: "property projection on remote vertex binding".into(),
+                });
+            }
+            PlanBinding::RemoteVertex(hit.neighbor_logical_vertex_id)
+        };
+
+        if let PlanBinding::Vertex(dst_id) = &dst_binding {
+            if dst_only_prefilter
+                && !vertex_row_matches_dst_filters(
+                    store,
+                    parameters,
+                    &Str::from(dst),
+                    *dst_id,
+                    dst_filter,
+                    caller,
+                    gleaph_weight_decoders,
+                )?
+            {
+                continue;
+            }
+        }
+
+        let mut expanded = row.clone();
+        expanded.insert(dst.to_owned(), dst_binding);
+        if let Some(edge_key) = edge_key.as_ref() {
+            let edge_binding = if hit.shard_id == routing.shard_id {
+                let handle =
+                    crate::facade::federation_expand::edge_handle_for_federated_hit(hit);
+                PlanBinding::Edge(EdgeBinding {
+                    handle,
+                    inline_value: hit.inline_value,
+                })
+            } else {
+                PlanBinding::Value(Value::Null)
+            };
+            expanded.insert(edge_key.clone(), edge_binding);
+        }
+        if !dst_only_prefilter && !row_matches_all(evaluator, &expanded, dst_filter)? {
+            continue;
+        }
+        out.push(expanded);
+    }
+    Ok(out)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn execute_expand(
     store: &GraphStore,
     rows: Vec<PlanRow>,
@@ -2500,7 +2576,53 @@ fn execute_expand(
     };
     let mut candidates = Vec::new();
     for row in rows {
-        let Some(src_id) = vertex_binding_for_traversal(store, &row, src, Some(direction))? else {
+        if matches!(direction, EdgeDirection::PointingLeft) {
+            if let Some(PlanBinding::RemoteVertex(logical)) = row.get(src.as_ref()) {
+                if matches!(
+                    resolve_federated_traversal_vertex(store, *logical, Some(direction)),
+                    Err(PlanQueryError::UnsupportedOp(_))
+                ) {
+                    let label_id_raw = label_id.map(|lid| {
+                        lid.pack(EdgeDirectedness::Directed).raw()
+                    });
+                    let hits = pollster::block_on(
+                        crate::facade::federation_expand::federated_incoming_expand_all_shards(
+                            store,
+                            FederatedIncomingExpandArgs {
+                                target_logical_vertex_id: *logical,
+                                label_id_raw,
+                            },
+                        ),
+                    )
+                    .map_err(|e| PlanQueryError::FederatedIndexCall {
+                        op: "federated_incoming_expand",
+                        detail: e.to_string(),
+                    })?;
+                    out.extend(expand_rows_from_federated_incoming_hits(
+                        store,
+                        &row,
+                        &hits,
+                        dst.as_ref(),
+                        edge.as_ref(),
+                        emit_edge_binding,
+                        dst_property_projection,
+                        dst_filter,
+                        parameters,
+                        caller,
+                        gleaph_weight_decoders,
+                        &evaluator,
+                    )?);
+                    continue;
+                }
+            }
+        }
+
+        let Some(src_id) = (match row.get(src.as_ref()) {
+            Some(PlanBinding::RemoteVertex(logical)) => {
+                resolve_federated_traversal_vertex(store, *logical, Some(direction))?
+            }
+            _ => vertex_binding_for_traversal(store, &row, src, Some(direction))?,
+        }) else {
             continue;
         };
         if let Some(fast_path) = csr_expand_fast_path {
@@ -5281,6 +5403,22 @@ mod tests {
             .expect("set index routing");
     }
 
+    fn configure_test_federation(store: &GraphStore) {
+        configure_test_index(store);
+        store
+            .set_logical_graph_name(Some("tenant.main".into()))
+            .expect("graph name");
+        placement::native_test_register_shard(
+            gleaph_graph_kernel::federation::ShardRegistryEntry {
+                shard_id: 7,
+                graph_canister: Principal::management_canister(),
+                index_canister: Principal::management_canister(),
+                logical_graph_name: "tenant.main".into(),
+                registered_at_ns: 0,
+            },
+        );
+    }
+
     fn path_column<'a>(result: &'a PlanQueryResult, column: &str) -> &'a [PathElement] {
         match result.rows.first().and_then(|row| row.get(column)) {
             Some(Value::Path(elements)) => elements,
@@ -5348,6 +5486,53 @@ mod tests {
             rows[0].get("n"),
             Some(PlanBinding::RemoteVertex(9001))
         ));
+    }
+
+    #[test]
+    fn federated_reverse_expand_from_remote_vertex_binding() {
+        let store = GraphStore::new();
+        configure_test_federation(&store);
+        let source = store.insert_vertex().expect("source");
+        let source_logical = store.logical_vertex_id(source).expect("logical");
+        let remote_logical = 88_001u64;
+        store
+            .insert_directed_edge_to_logical(source, remote_logical, None)
+            .expect("remote edge");
+
+        let mut seed = PlanRow::new();
+        seed.insert("b".to_owned(), PlanBinding::RemoteVertex(remote_logical));
+
+        let out = execute_expand(
+            &store,
+            vec![seed],
+            &params(),
+            &"b".into(),
+            &"e".into(),
+            &"a".into(),
+            EdgeDirection::PointingLeft,
+            None,
+            EdgeSequenceOrder::Descending,
+            &[],
+            true,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("federated reverse expand");
+
+        assert_eq!(out.len(), 1);
+        assert!(matches!(
+            out[0].get("a"),
+            Some(PlanBinding::Vertex(v)) if *v == source
+        ));
+        assert_eq!(
+            store
+                .logical_vertex_id(source)
+                .expect("source logical"),
+            source_logical
+        );
     }
 
     #[test]

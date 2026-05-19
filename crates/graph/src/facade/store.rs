@@ -517,6 +517,22 @@ impl GraphStore {
             .with_borrow(|table| table.logical_vertex_id(remote_ref))
     }
 
+    pub fn remote_ref_for_logical(
+        &self,
+        logical_vertex_id: LogicalVertexId,
+    ) -> Option<RemoteRefId> {
+        REMOTE_VERTEX_REFS
+            .with_borrow(|table| table.remote_ref_for_logical(logical_vertex_id))
+    }
+
+    pub(crate) fn edge_sidecar_owner_from_in_row(&self, dst: VertexId, edge: &Edge) -> VertexId {
+        if self.edge_is_undirected(dst, edge).unwrap_or(false) {
+            canonical_undirected_owner(dst, edge.neighbor_vid())
+        } else {
+            edge.neighbor_vid()
+        }
+    }
+
     pub fn edge_target(&self, edge: &Edge) -> Option<EdgeTarget> {
         edge.edge_target()
     }
@@ -1609,14 +1625,6 @@ impl GraphStore {
             canonical_undirected_owner(endpoint, edge.neighbor_vid())
         } else {
             endpoint
-        }
-    }
-
-    fn edge_sidecar_owner_from_in_row(&self, dst: VertexId, edge: &Edge) -> VertexId {
-        if self.edge_is_undirected(dst, edge).unwrap_or(false) {
-            canonical_undirected_owner(dst, edge.neighbor_vid())
-        } else {
-            edge.neighbor_vid()
         }
     }
 

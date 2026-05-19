@@ -26,7 +26,9 @@ use crate::index::router::verify_shard_attachment;
 use gleaph_auth::Role;
 use gleaph_gql::Value;
 use gleaph_gql_ic::decode_gql_params_blob;
-use gleaph_graph_kernel::federation::{BeginVertexMigrationArgs, ExportedVertex};
+use gleaph_graph_kernel::federation::{
+    BeginVertexMigrationArgs, ExportedVertex, FederatedExpandNeighbor, FederatedIncomingExpandArgs,
+};
 use ic_stable_lara::VertexId;
 
 use super::types::{GrantRoleArgs, GraphInitArgs};
@@ -215,6 +217,14 @@ pub fn begin_vertex_migration_canister(args: BeginVertexMigrationArgs) -> Result
         .federation_routing()
         .ok_or("federation routing not configured")?;
     crate::index::placement::begin_vertex_migration(routing.router_canister, args)
+        .map_err(|e| e.to_string())
+}
+
+pub fn federated_incoming_expand(
+    args: FederatedIncomingExpandArgs,
+) -> Result<Vec<FederatedExpandNeighbor>, String> {
+    let store = GraphStore::new();
+    crate::facade::federation_expand::collect_incoming_neighbors(&store, args)
         .map_err(|e| e.to_string())
 }
 

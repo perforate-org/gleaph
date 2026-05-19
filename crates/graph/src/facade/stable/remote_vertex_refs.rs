@@ -33,6 +33,10 @@ impl<M: Memory> RemoteVertexRefTable<M> {
         self.ref_to_logical.get(&remote_ref)
     }
 
+    pub fn remote_ref_for_logical(&self, logical_vertex_id: LogicalVertexId) -> Option<RemoteRefId> {
+        self.logical_to_ref.get(&logical_vertex_id)
+    }
+
     fn allocate_ref_id(&self) -> u32 {
         let id = self.next_ref_id.get();
         self.next_ref_id.set(id.saturating_add(1));

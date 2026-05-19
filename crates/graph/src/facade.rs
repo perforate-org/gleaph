@@ -8,6 +8,7 @@ pub mod auth;
 
 mod store;
 
+pub mod federation_expand;
 pub mod migration;
 pub mod mutation_executor;
 

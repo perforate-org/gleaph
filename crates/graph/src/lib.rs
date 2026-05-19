@@ -80,6 +80,13 @@ fn begin_vertex_migration(
     canister::handlers::begin_vertex_migration_canister(args)
 }
 
+#[query(guard = "guard_read")]
+fn federated_incoming_expand(
+    args: gleaph_graph_kernel::federation::FederatedIncomingExpandArgs,
+) -> Result<Vec<gleaph_graph_kernel::federation::FederatedExpandNeighbor>, String> {
+    canister::handlers::federated_incoming_expand(args)
+}
+
 #[query(guard = "guard_admin")]
 fn export_vertex_for_migration(vertex_id: u32) -> Result<gleaph_graph_kernel::federation::ExportedVertex, String> {
     canister::handlers::export_vertex_for_migration(vertex_id)

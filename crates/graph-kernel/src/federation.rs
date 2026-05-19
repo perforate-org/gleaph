@@ -1,8 +1,10 @@
 //! Distributed graph federation identifiers and placement types.
 
+mod expand;
 mod migration;
 mod router_error;
 
+pub use expand::{FederatedExpandNeighbor, FederatedIncomingExpandArgs};
 pub use migration::{
     ExportedEdgeTarget, ExportedOutEdge, ExportedProperty, ExportedVertex,
 };
