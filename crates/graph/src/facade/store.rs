@@ -5,7 +5,7 @@ use super::stable::vertex_label_catalog::VertexLabelCatalogError;
 use super::stable::{
     EDGE_ALIASES, EDGE_LABEL_CATALOG, EDGE_PROPERTIES, EDGE_WEIGHT_PROFILES, GRAPH,
     GRAPH_DEFAULT_EDGE_LABEL, METADATA, PREPARED_QUERY_CATALOG, PROPERTY_CATALOG,
-    VERTEX_LABEL_CATALOG, VERTEX_LABELS, VERTEX_LOGICAL_IDS, VERTEX_PROPERTIES,
+    REMOTE_VERTEX_REFS, VERTEX_LABEL_CATALOG, VERTEX_LABELS, VERTEX_LOGICAL_IDS, VERTEX_PROPERTIES,
 };
 use super::{
     FederationRouting, GraphMetadata, GraphMetadataError, PropertyCatalogError, VertexLabelStoreError,
@@ -18,8 +18,8 @@ use gleaph_graph_kernel::federation::{
 use gleaph_graph_kernel::path::GraphPathVertexId;
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{
-    Edge, EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, EdgeWeightProfile, PropertyId,
-    TaggedEdgeLabelId, Vertex, VertexLabelId, VertexRef,
+    Edge, EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, EdgeTarget, EdgeWeightProfile, PropertyId,
+    RemoteRefId, TaggedEdgeLabelId, Vertex, VertexLabelId, VertexRef,
 };
 use gleaph_graph_prepared::{PreparedQueryError, PreparedQueryRecord};
 use ic_stable_lara::{
@@ -85,6 +85,15 @@ pub fn canonical_undirected_owner(a: VertexId, b: VertexId) -> VertexId {
 fn build_edge_to(target: VertexId, inline_value: u16) -> Edge {
     Edge {
         target: VertexRef::local(target),
+        edge_slot_index: EdgeSlotIndex::from_raw(0),
+        label_id: 0,
+        inline_value,
+    }
+}
+
+fn build_edge_to_remote(remote_ref: RemoteRefId, inline_value: u16) -> Edge {
+    Edge {
+        target: VertexRef::remote_ref(remote_ref),
         edge_slot_index: EdgeSlotIndex::from_raw(0),
         label_id: 0,
         inline_value,
@@ -456,6 +465,55 @@ impl GraphStore {
     pub(crate) fn path_vertex_element_id(&self, vertex_id: VertexId) -> Option<GraphPathVertexId> {
         self.logical_vertex_id(vertex_id)
             .map(GraphPathVertexId::new)
+    }
+
+    /// Interns a shard-local [`RemoteRefId`] for `logical_vertex_id` (idempotent).
+    pub fn ensure_remote_ref(
+        &self,
+        logical_vertex_id: LogicalVertexId,
+    ) -> RemoteRefId {
+        REMOTE_VERTEX_REFS.with_borrow_mut(|table| table.ensure_remote_ref(logical_vertex_id))
+    }
+
+    pub fn logical_vertex_for_remote_ref(
+        &self,
+        remote_ref: RemoteRefId,
+    ) -> Option<LogicalVertexId> {
+        REMOTE_VERTEX_REFS
+            .with_borrow(|table| table.logical_vertex_id(remote_ref))
+    }
+
+    pub fn edge_target(&self, edge: &Edge) -> Option<EdgeTarget> {
+        edge.edge_target()
+    }
+
+    /// Inserts a forward-only directed edge to a vertex on another shard (remote ref).
+    pub fn insert_directed_edge_to_logical(
+        &self,
+        source_vertex_id: VertexId,
+        target_logical_vertex_id: LogicalVertexId,
+        catalog_label: Option<EdgeLabelId>,
+    ) -> Result<EdgeHandle, GraphStoreError> {
+        self.ensure_vertex_id(source_vertex_id)?;
+        Self::validate_catalog_edge_label(catalog_label)?;
+
+        let remote_ref = self.ensure_remote_ref(target_logical_vertex_id);
+        let label = lara_label(edge_storage_label(catalog_label, false));
+        let forward = build_edge_to_remote(remote_ref, 0);
+        self.with_graph_mut(|graph| {
+            graph.insert_forward_out_edge(source_vertex_id, label, forward)
+        })?;
+        self.find_newest_forward_handle(source_vertex_id, label, |edge| {
+            matches!(
+                edge.edge_target(),
+                Some(EdgeTarget::Remote(found)) if found == remote_ref
+            ) && edge.inline_value == forward.inline_value
+        })?
+        .ok_or(GraphStoreError::EdgeNotFound {
+            owner_vertex_id: source_vertex_id,
+            label_id: label,
+            slot_index: u32::MAX,
+        })
     }
 
     pub fn vertex(&self, vertex_id: VertexId) -> Option<Vertex> {
@@ -1743,6 +1801,32 @@ mod tests {
                 && edge.edge_slot_index.raw() == undirected.slot_index
                 && store.edge_is_undirected(target, edge).unwrap()
         }));
+    }
+
+    #[test]
+    fn insert_directed_edge_to_logical_stores_remote_ref() {
+        let store = GraphStore::new();
+        let source = store.insert_vertex().expect("source");
+        let target_logical = 42_u64;
+
+        let handle = store
+            .insert_directed_edge_to_logical(source, target_logical, None)
+            .expect("remote edge");
+
+        let remote_ref = store.ensure_remote_ref(target_logical);
+        assert_eq!(
+            store.logical_vertex_for_remote_ref(remote_ref),
+            Some(target_logical)
+        );
+        assert_eq!(store.ensure_remote_ref(target_logical), remote_ref);
+
+        let out_edges = store.out_edges(source).expect("out edges");
+        assert_eq!(out_edges.len(), 1);
+        assert_eq!(
+            out_edges[0].edge_target(),
+            Some(EdgeTarget::Remote(remote_ref))
+        );
+        assert_eq!(handle.owner_vertex_id, source);
     }
 
     #[test]

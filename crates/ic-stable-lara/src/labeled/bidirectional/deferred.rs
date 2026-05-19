@@ -685,6 +685,18 @@ where
         ))
     }
 
+    /// Inserts one outgoing edge on the forward store only (remote / external targets).
+    pub fn insert_forward_out_edge(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        forward_edge: E,
+    ) -> Result<(), DeferredBidirectionalLabeledError> {
+        self.forward
+            .insert_edge_skip_leaf_cascade(src, label_id, forward_edge)
+            .map_err(DeferredBidirectionalLabeledError::Forward)
+    }
+
     /// Inserts one directed edge into forward and reverse orientations.
     pub fn insert_directed_edge(
         &self,

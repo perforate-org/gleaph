@@ -29,9 +29,10 @@ use gleaph_gql_planner::plan::{
     ScanValue, ShortestMode, ShortestPathCost, Str, VarLenSpec,
 };
 use gleaph_graph_kernel::entry::{
-    Edge, EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, PreparedWeightDecoder, Vertex,
+    Edge, EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, EdgeTarget, PreparedWeightDecoder, Vertex,
     decode_inline_weight,
 };
+use gleaph_graph_kernel::federation::LogicalVertexId;
 use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest};
 use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
@@ -101,6 +102,8 @@ pub struct EdgeBinding {
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlanBinding {
     Vertex(VertexId),
+    /// Neighbor bound via a shard-local remote ref (logical id only on this shard).
+    RemoteVertex(LogicalVertexId),
     Edge(EdgeBinding),
     Value(Value),
     /// Shortest-path walk materialized to [`Value::Path`] only in [`binding_to_value`] / expression eval.
@@ -891,6 +894,35 @@ fn stream_expand_owner_vertex_id(
     }
 }
 
+fn edge_binding_for_expand(
+    src_id: VertexId,
+    direction: EdgeDirection,
+    edge: Edge,
+) -> EdgeBinding {
+    let dst_id = edge
+        .edge_target()
+        .and_then(|target| match target {
+            EdgeTarget::Local(vertex_id) => Some(vertex_id),
+            EdgeTarget::Remote(_) => None,
+        })
+        .unwrap_or_else(VertexId::default);
+    EdgeBinding {
+        handle: EdgeHandle {
+            owner_vertex_id: stream_expand_owner_vertex_id(src_id, dst_id, direction, edge),
+            label_id: LaraLabelId::from_raw(edge.label_id),
+            slot_index: edge.edge_slot_index.raw(),
+        },
+        inline_value: edge.inline_value,
+    }
+}
+
+fn expand_accepts_remote_dst(
+    dst_only_prefilter: bool,
+    dst_property_projection: Option<&[Str]>,
+) -> bool {
+    !dst_only_prefilter && !dst_property_projection.is_some_and(|props| !props.is_empty())
+}
+
 fn visit_csr_expand_fast_path<Visit>(
     store: &GraphStore,
     src_id: VertexId,
@@ -925,12 +957,59 @@ where
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+enum ExpandDst {
+    Local(VertexId),
+    Remote(LogicalVertexId),
+}
+
+impl ExpandDst {
+    fn from_edge(store: &GraphStore, edge: &Edge) -> Result<Option<Self>, PlanQueryError> {
+        match edge.edge_target() {
+            Some(EdgeTarget::Local(vertex_id)) => Ok(Some(Self::Local(vertex_id))),
+            Some(EdgeTarget::Remote(remote_ref)) => {
+                let logical = store
+                    .logical_vertex_for_remote_ref(remote_ref)
+                    .ok_or_else(|| PlanQueryError::MissingBinding {
+                        variable: format!("remote ref {}", remote_ref.raw()),
+                    })?;
+                Ok(Some(Self::Remote(logical)))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn requires_local_vertex_data(self) -> bool {
+        matches!(self, Self::Local(_))
+    }
+}
+
+fn expand_dst_binding(
+    store: &GraphStore,
+    dst: ExpandDst,
+    dst_property_projection: Option<&[Str]>,
+) -> Result<PlanBinding, PlanQueryError> {
+    match dst {
+        ExpandDst::Local(vertex_id) => {
+            vertex_binding_for_projection(store, vertex_id, dst_property_projection)
+        }
+        ExpandDst::Remote(logical_vertex_id) => {
+            if dst_property_projection.is_some_and(|props| !props.is_empty()) {
+                return Err(PlanQueryError::InvalidExpressionValue {
+                    expression: "property projection on remote vertex binding".into(),
+                });
+            }
+            Ok(PlanBinding::RemoteVertex(logical_vertex_id))
+        }
+    }
+}
+
 fn build_expanded_row(
     store: &GraphStore,
     row: &PlanRow,
     edge_key: Option<&str>,
     dst_key: &str,
-    dst_id: VertexId,
+    dst: ExpandDst,
     edge_binding: EdgeBinding,
     edge_property_projection: Option<&[Str]>,
     dst_property_projection: Option<&[Str]>,
@@ -950,7 +1029,7 @@ fn build_expanded_row(
     }
     expanded.insert(
         dst_key.to_owned(),
-        vertex_binding_for_projection(store, dst_id, dst_property_projection)?,
+        expand_dst_binding(store, dst, dst_property_projection)?,
     );
     Ok(expanded)
 }
@@ -1346,7 +1425,10 @@ fn stream_expand(
 
     let csr_offset_fast_path = (indexed_edge_equality.is_none()
         && dst_filter.is_empty()
-        && !matches!(row.get(dst.as_ref()), Some(PlanBinding::Vertex(_)))
+        && !matches!(
+            row.get(dst.as_ref()),
+            Some(PlanBinding::Vertex(_)) | Some(PlanBinding::RemoteVertex(_))
+        )
         && streaming_ops_preserve_row_cardinality_after(ops, op_idx + 1))
     .then(|| csr_expand_fast_path)
     .flatten();
@@ -1357,22 +1439,21 @@ fn stream_expand(
             // `skip_then_visit_each_out_edge_for_label` applies the global OFFSET inside the CSR
             // iterator; clear the sink-side skip before downstream `LimitedRows::push`.
             sink.offset_remaining = 0;
-            let dst_id = edge.neighbor_vid();
-            let owner_vertex_id = stream_expand_owner_vertex_id(src_id, dst_id, direction, edge);
-            let edge_binding = EdgeBinding {
-                handle: EdgeHandle {
-                    owner_vertex_id,
-                    label_id: LaraLabelId::from_raw(edge.label_id),
-                    slot_index: edge.edge_slot_index.raw(),
-                },
-                inline_value: edge.inline_value,
+            let Some(edge_dst) = ExpandDst::from_edge(store, &edge)? else {
+                return Ok(false);
             };
+            if !expand_accepts_remote_dst(dst_only_prefilter, dst_property_projection)
+                && !edge_dst.requires_local_vertex_data()
+            {
+                return Ok(false);
+            }
+            let edge_binding = edge_binding_for_expand(src_id, direction, edge);
             let expanded = build_expanded_row(
                 store,
                 &row,
                 edge_key.as_deref(),
                 dst_key.as_str(),
-                dst_id,
+                edge_dst,
                 edge_binding,
                 edge_property_projection,
                 dst_property_projection,
@@ -1409,48 +1490,46 @@ fn stream_expand(
         }
         let mut offset_slot = 0;
         let mut visit = |edge: Edge| {
-            let dst_id = edge.neighbor_vid();
-            let owner_vertex_id = stream_expand_owner_vertex_id(src_id, dst_id, direction, edge);
+            let Some(edge_dst) = ExpandDst::from_edge(store, &edge)? else {
+                return Ok(false);
+            };
+            let edge_binding = edge_binding_for_expand(src_id, direction, edge);
             if !edge_matches_stream_filter(
                 store,
                 &edge_equality_filter,
                 direction,
-                owner_vertex_id,
+                edge_binding.handle.owner_vertex_id,
                 LaraLabelId::from_raw(edge.label_id),
                 edge.edge_slot_index,
             )? {
                 return Ok(false);
             }
-            if !expand_dst_matches_prebound_vertex(&row, dst, dst_id) {
+            if !expand_dst_matches_prebound_vertex(&row, dst, edge_dst) {
                 return Ok(false);
             }
-            if dst_only_prefilter
-                && !vertex_row_matches_dst_filters(
-                    store,
-                    parameters,
-                    dst,
-                    dst_id,
-                    dst_filter,
-                    caller,
-                    gleaph_weight_decoders,
-                )?
-            {
+            if let ExpandDst::Local(dst_id) = edge_dst {
+                if dst_only_prefilter
+                    && !vertex_row_matches_dst_filters(
+                        store,
+                        parameters,
+                        dst,
+                        dst_id,
+                        dst_filter,
+                        caller,
+                        gleaph_weight_decoders,
+                    )?
+                {
+                    return Ok(false);
+                }
+            } else if !expand_accepts_remote_dst(dst_only_prefilter, dst_property_projection) {
                 return Ok(false);
             }
-            let edge_binding = EdgeBinding {
-                handle: EdgeHandle {
-                    owner_vertex_id,
-                    label_id: LaraLabelId::from_raw(edge.label_id),
-                    slot_index: edge.edge_slot_index.raw(),
-                },
-                inline_value: edge.inline_value,
-            };
             let expanded = build_expanded_row(
                 store,
                 &row,
                 edge_key.as_deref(),
                 dst_key.as_str(),
-                dst_id,
+                edge_dst,
                 edge_binding,
                 edge_property_projection,
                 dst_property_projection,
@@ -1492,21 +1571,25 @@ fn stream_expand(
         parameters,
         &mut candidates,
     )?;
-    for (dst_id, edge_binding) in candidates.iter().copied() {
-        if !expand_dst_matches_prebound_vertex(&row, dst, dst_id) {
+    for (edge_dst, edge_binding) in candidates.iter().copied() {
+        if !expand_dst_matches_prebound_vertex(&row, dst, edge_dst) {
             continue;
         }
-        if dst_only_prefilter
-            && !vertex_row_matches_dst_filters(
-                store,
-                parameters,
-                dst,
-                dst_id,
-                dst_filter,
-                caller,
-                gleaph_weight_decoders,
-            )?
-        {
+        if let ExpandDst::Local(dst_id) = edge_dst {
+            if dst_only_prefilter
+                && !vertex_row_matches_dst_filters(
+                    store,
+                    parameters,
+                    dst,
+                    dst_id,
+                    dst_filter,
+                    caller,
+                    gleaph_weight_decoders,
+                )?
+            {
+                continue;
+            }
+        } else if !expand_accepts_remote_dst(dst_only_prefilter, dst_property_projection) {
             continue;
         }
         let expanded = build_expanded_row(
@@ -1514,7 +1597,7 @@ fn stream_expand(
             &row,
             edge_key.as_deref(),
             dst_key.as_str(),
-            dst_id,
+            edge_dst,
             edge_binding,
             edge_property_projection,
             dst_property_projection,
@@ -1802,6 +1885,10 @@ fn hash_plan_binding_for_join(binding: &PlanBinding, hasher: &mut RapidHasher<'_
             hasher.write_usize(pb.leaf_state_idx);
             hasher.write_usize(Arc::as_ptr(&pb.states) as usize);
             hasher.write_usize(pb.states.len());
+        }
+        PlanBinding::RemoteVertex(logical) => {
+            hasher.write_u8(5);
+            hasher.write_u64(*logical);
         }
     }
 }
@@ -2358,51 +2445,48 @@ fn execute_expand(
         if let Some(fast_path) = csr_expand_fast_path {
             let mut offset_slot = 0;
             let mut visit = |edge: Edge| {
-                let dst_id = edge.neighbor_vid();
-                let owner_vertex_id =
-                    stream_expand_owner_vertex_id(src_id, dst_id, direction, edge);
+                let Some(edge_dst) = ExpandDst::from_edge(store, &edge)? else {
+                    return Ok(false);
+                };
+                let edge_binding = edge_binding_for_expand(src_id, direction, edge);
                 if !edge_matches_stream_filter(
                     store,
                     edge_equality_filter
                         .as_ref()
                         .expect("filter exists with fast path"),
                     direction,
-                    owner_vertex_id,
+                    edge_binding.handle.owner_vertex_id,
                     LaraLabelId::from_raw(edge.label_id),
                     edge.edge_slot_index,
                 )? {
                     return Ok(false);
                 }
-                if !expand_dst_matches_prebound_vertex(&row, dst, dst_id) {
+                if !expand_dst_matches_prebound_vertex(&row, dst, edge_dst) {
                     return Ok(false);
                 }
-                if dst_only_prefilter {
-                    if !vertex_row_matches_dst_filters(
-                        store,
-                        parameters,
-                        dst,
-                        dst_id,
-                        dst_filter,
-                        caller,
-                        gleaph_weight_decoders,
-                    )? {
+                if let ExpandDst::Local(dst_id) = edge_dst {
+                    if dst_only_prefilter
+                        && !vertex_row_matches_dst_filters(
+                            store,
+                            parameters,
+                            dst,
+                            dst_id,
+                            dst_filter,
+                            caller,
+                            gleaph_weight_decoders,
+                        )?
+                    {
                         return Ok(false);
                     }
+                } else if !expand_accepts_remote_dst(dst_only_prefilter, dst_property_projection) {
+                    return Ok(false);
                 }
-                let edge_binding = EdgeBinding {
-                    handle: EdgeHandle {
-                        owner_vertex_id,
-                        label_id: LaraLabelId::from_raw(edge.label_id),
-                        slot_index: edge.edge_slot_index.raw(),
-                    },
-                    inline_value: edge.inline_value,
-                };
                 let expanded = build_expanded_row(
                     store,
                     &row,
                     edge_key.as_deref(),
                     dst_key.as_str(),
-                    dst_id,
+                    edge_dst,
                     edge_binding,
                     edge_property_projection,
                     dst_property_projection,
@@ -2434,29 +2518,33 @@ fn execute_expand(
             parameters,
             &mut candidates,
         )?;
-        for (dst_id, edge_binding) in candidates.iter().copied() {
-            if !expand_dst_matches_prebound_vertex(&row, dst, dst_id) {
+        for (edge_dst, edge_binding) in candidates.iter().copied() {
+            if !expand_dst_matches_prebound_vertex(&row, dst, edge_dst) {
                 continue;
             }
-            if dst_only_prefilter {
-                if !vertex_row_matches_dst_filters(
-                    store,
-                    parameters,
-                    dst,
-                    dst_id,
-                    dst_filter,
-                    caller,
-                    gleaph_weight_decoders,
-                )? {
+            if let ExpandDst::Local(dst_id) = edge_dst {
+                if dst_only_prefilter
+                    && !vertex_row_matches_dst_filters(
+                        store,
+                        parameters,
+                        dst,
+                        dst_id,
+                        dst_filter,
+                        caller,
+                        gleaph_weight_decoders,
+                    )?
+                {
                     continue;
                 }
+            } else if !expand_accepts_remote_dst(dst_only_prefilter, dst_property_projection) {
+                continue;
             }
             let expanded = build_expanded_row(
                 store,
                 &row,
                 edge_key.as_deref(),
                 dst_key.as_str(),
-                dst_id,
+                edge_dst,
                 edge_binding,
                 edge_property_projection,
                 dst_property_projection,
@@ -2471,10 +2559,14 @@ fn execute_expand(
     Ok(out)
 }
 
-fn expand_dst_matches_prebound_vertex(row: &PlanRow, dst: &Str, dst_id: VertexId) -> bool {
-    match row.get(dst.as_ref()) {
-        Some(PlanBinding::Vertex(id)) => dst_id == *id,
-        _ => true,
+fn expand_dst_matches_prebound_vertex(row: &PlanRow, dst: &Str, edge_dst: ExpandDst) -> bool {
+    match (row.get(dst.as_ref()), edge_dst) {
+        (Some(PlanBinding::Vertex(id)), ExpandDst::Local(dst_id)) => *id == dst_id,
+        (Some(PlanBinding::RemoteVertex(logical)), ExpandDst::Remote(dst_logical)) => {
+            *logical == dst_logical
+        }
+        (None, _) => true,
+        _ => false,
     }
 }
 
@@ -2666,17 +2758,18 @@ impl ShortestFixedLabelExpand {
                 let _scope = bench_scope("shortest_fixed_expand_forward");
                 store
                     .for_each_out_edges_for_label_unchecked(current, storage, |edge| {
-                        out.push((
-                            edge.neighbor_vid(),
-                            EdgeBinding {
-                                handle: EdgeHandle {
-                                    owner_vertex_id: current,
-                                    label_id: LaraLabelId::from_raw(edge.label_id),
-                                    slot_index: edge.edge_slot_index.raw(),
-                                },
-                                inline_value: edge.inline_value,
-                            },
-                        ));
+                        if let Ok(Some(edge_dst @ ExpandDst::Local(_))) =
+                            ExpandDst::from_edge(store, &edge)
+                        {
+                            out.push((
+                                edge_dst,
+                                edge_binding_for_expand(
+                                    current,
+                                    EdgeDirection::PointingRight,
+                                    edge,
+                                ),
+                            ));
+                        }
                     })
                     .map_err(GraphStoreError::from)?;
             }
@@ -2685,17 +2778,18 @@ impl ShortestFixedLabelExpand {
                 let _scope = bench_scope("shortest_fixed_expand_reverse");
                 store
                     .for_each_in_edges_for_label_unchecked(current, storage, |edge| {
-                        out.push((
-                            edge.neighbor_vid(),
-                            EdgeBinding {
-                                handle: EdgeHandle {
-                                    owner_vertex_id: current,
-                                    label_id: LaraLabelId::from_raw(edge.label_id),
-                                    slot_index: edge.edge_slot_index.raw(),
-                                },
-                                inline_value: edge.inline_value,
-                            },
-                        ));
+                        if let Ok(Some(edge_dst @ ExpandDst::Local(_))) =
+                            ExpandDst::from_edge(store, &edge)
+                        {
+                            out.push((
+                                edge_dst,
+                                edge_binding_for_expand(
+                                    current,
+                                    EdgeDirection::PointingLeft,
+                                    edge,
+                                ),
+                            ));
+                        }
                     })
                     .map_err(GraphStoreError::from)?;
             }
@@ -2704,17 +2798,18 @@ impl ShortestFixedLabelExpand {
                 let _scope = bench_scope("shortest_fixed_expand_undirected");
                 store
                     .for_each_out_edges_for_label_unchecked(current, storage, |edge| {
-                        out.push((
-                            edge.neighbor_vid(),
-                            EdgeBinding {
-                                handle: EdgeHandle {
-                                    owner_vertex_id: current,
-                                    label_id: LaraLabelId::from_raw(edge.label_id),
-                                    slot_index: edge.edge_slot_index.raw(),
-                                },
-                                inline_value: edge.inline_value,
-                            },
-                        ));
+                        if let Ok(Some(edge_dst @ ExpandDst::Local(_))) =
+                            ExpandDst::from_edge(store, &edge)
+                        {
+                            out.push((
+                                edge_dst,
+                                edge_binding_for_expand(
+                                    current,
+                                    EdgeDirection::Undirected,
+                                    edge,
+                                ),
+                            ));
+                        }
                     })
                     .map_err(GraphStoreError::from)?;
             }
@@ -2809,7 +2904,10 @@ fn shortest_paths_between(
 
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _relax_scope = bench_scope("shortest_bfs_relax_neighbors");
-        for (next, edge_binding) in candidates.iter().copied() {
+        for (edge_dst, edge_binding) in candidates.iter().copied() {
+            let ExpandDst::Local(next) = edge_dst else {
+                continue;
+            };
             let next_depth = depth + 1;
             if let Some(visited) = any_visited.as_mut() {
                 if !visited.insert(u32::from(next)) {
@@ -3226,7 +3324,10 @@ fn weighted_shortest_paths_between(
         }
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _relax_scope = bench_scope("weighted_shortest_relax");
-        for (next, edge_binding) in candidates.iter().copied() {
+        for (edge_dst, edge_binding) in candidates.iter().copied() {
+            let ExpandDst::Local(next) = edge_dst else {
+                continue;
+            };
             if any_best_cost.is_none() && path_search_contains_vertex(&states, state_idx, next) {
                 continue;
             }
@@ -3502,7 +3603,7 @@ fn edge_path_element(shard_id: gleaph_graph_kernel::federation::ShardId, handle:
     )
 }
 
-type ExpandCandidate = (VertexId, EdgeBinding);
+type ExpandCandidate = (ExpandDst, EdgeBinding);
 
 fn expand_candidates_into(
     store: &GraphStore,
@@ -3561,17 +3662,12 @@ fn expand_candidates_into(
                             }
                         }
                     }
-                    out.push((
-                        edge.neighbor_vid(),
-                        EdgeBinding {
-                            handle: EdgeHandle {
-                                owner_vertex_id: src_id,
-                                label_id: LaraLabelId::from_raw(edge.label_id),
-                                slot_index: edge.edge_slot_index.raw(),
-                            },
-                            inline_value: edge.inline_value,
-                        },
-                    ));
+                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge) {
+                        out.push((
+                            edge_dst,
+                            edge_binding_for_expand(src_id, direction, edge),
+                        ));
+                    }
                 },
             )?;
             if let Some(err) = error {
@@ -3608,17 +3704,12 @@ fn expand_candidates_into(
                             }
                         }
                     }
-                    out.push((
-                        edge.neighbor_vid(),
-                        EdgeBinding {
-                            handle: EdgeHandle {
-                                owner_vertex_id: src_id,
-                                label_id: LaraLabelId::from_raw(edge.label_id),
-                                slot_index: edge.edge_slot_index.raw(),
-                            },
-                            inline_value: edge.inline_value,
-                        },
-                    ));
+                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge) {
+                        out.push((
+                            edge_dst,
+                            edge_binding_for_expand(src_id, direction, edge),
+                        ));
+                    }
                 },
             )?;
             if let Some(err) = error {
@@ -3655,17 +3746,12 @@ fn expand_candidates_into(
                             }
                         }
                     }
-                    out.push((
-                        edge.neighbor_vid(),
-                        EdgeBinding {
-                            handle: EdgeHandle {
-                                owner_vertex_id: src_id,
-                                label_id: LaraLabelId::from_raw(edge.label_id),
-                                slot_index: edge.edge_slot_index.raw(),
-                            },
-                            inline_value: edge.inline_value,
-                        },
-                    ));
+                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge) {
+                        out.push((
+                            edge_dst,
+                            edge_binding_for_expand(src_id, direction, edge),
+                        ));
+                    }
                 },
             )?;
             if let Some(err) = error {
@@ -3799,17 +3885,12 @@ fn expand_candidates_via_equality_index(
                     if !out_slots.contains(&(edge.label_id, edge.edge_slot_index.raw())) {
                         return;
                     }
-                    out.push((
-                        edge.neighbor_vid(),
-                        EdgeBinding {
-                            handle: EdgeHandle {
-                                owner_vertex_id: src_id,
-                                label_id: LaraLabelId::from_raw(edge.label_id),
-                                slot_index: edge.edge_slot_index.raw(),
-                            },
-                            inline_value: edge.inline_value,
-                        },
-                    ));
+                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge) {
+                        out.push((
+                            edge_dst,
+                            edge_binding_for_expand(src_id, direction, edge),
+                        ));
+                    }
                 },
             )?;
         }
@@ -3833,17 +3914,12 @@ fn expand_candidates_via_equality_index(
                     )) {
                         return;
                     }
-                    out.push((
-                        edge.neighbor_vid(),
-                        EdgeBinding {
-                            handle: EdgeHandle {
-                                owner_vertex_id: src_id,
-                                label_id: LaraLabelId::from_raw(edge.label_id),
-                                slot_index: edge.edge_slot_index.raw(),
-                            },
-                            inline_value: edge.inline_value,
-                        },
-                    ));
+                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge) {
+                        out.push((
+                            edge_dst,
+                            edge_binding_for_expand(src_id, direction, edge),
+                        ));
+                    }
                 },
             )?;
         }
@@ -3867,17 +3943,12 @@ fn expand_candidates_via_equality_index(
                     )) {
                         return;
                     }
-                    out.push((
-                        edge.neighbor_vid(),
-                        EdgeBinding {
-                            handle: EdgeHandle {
-                                owner_vertex_id: src_id,
-                                label_id: LaraLabelId::from_raw(edge.label_id),
-                                slot_index: edge.edge_slot_index.raw(),
-                            },
-                            inline_value: edge.inline_value,
-                        },
-                    ));
+                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge) {
+                        out.push((
+                            edge_dst,
+                            edge_binding_for_expand(src_id, direction, edge),
+                        ));
+                    }
                 },
             )?;
         }
@@ -4437,7 +4508,12 @@ impl QueryExprEvaluator<'_> {
                 ))
             }
             Some(PlanBinding::Value(Value::Null)) => Ok(false),
-            Some(PlanBinding::Value(_) | PlanBinding::Edge(_) | PlanBinding::Path(_)) => Ok(false),
+            Some(
+                PlanBinding::Value(_)
+                | PlanBinding::Edge(_)
+                | PlanBinding::Path(_)
+                | PlanBinding::RemoteVertex(_),
+            ) => Ok(false),
             None => Err(PlanQueryError::MissingBinding {
                 variable: name.clone(),
             }),
@@ -4467,6 +4543,7 @@ impl QueryExprEvaluator<'_> {
                     &path_binding_to_value(self.store, pb),
                     property,
                 )),
+                Some(PlanBinding::RemoteVertex(_)) => Ok(Value::Null),
                 None => Err(PlanQueryError::MissingBinding {
                     variable: name.clone(),
                 }),
@@ -4483,6 +4560,11 @@ impl QueryExprEvaluator<'_> {
                 Some(PlanBinding::Vertex(vertex_id)) => {
                     Ok(Value::Bytes(vertex_element_id_bytes(self.store, *vertex_id)?))
                 }
+                Some(PlanBinding::RemoteVertex(logical_vertex_id)) => Ok(Value::Bytes(
+                    GraphPathVertexId::new(*logical_vertex_id)
+                        .to_bytes()
+                        .to_vec(),
+                )),
                 Some(PlanBinding::Edge(edge)) => Ok(Value::Bytes(edge_element_id_bytes(
                     local_shard_id(self.store),
                     edge.handle.owner_vertex_id,
@@ -4597,6 +4679,10 @@ fn value_row(store: &GraphStore, row: &PlanRow) -> Result<BTreeMap<String, Value
 fn binding_to_value(store: &GraphStore, binding: &PlanBinding) -> Result<Value, PlanQueryError> {
     match binding {
         PlanBinding::Vertex(vertex_id) => vertex_to_value(store, *vertex_id),
+        PlanBinding::RemoteVertex(logical_vertex_id) => Ok(Value::Record(vec![
+            ("id".to_owned(), Value::Uint64(*logical_vertex_id)),
+            ("remote".to_owned(), Value::Bool(true)),
+        ])),
         PlanBinding::Edge(edge) => edge_to_value(store, *edge),
         PlanBinding::Value(value) => Ok(value.clone()),
         PlanBinding::Path(pb) => Ok(path_binding_to_value(store, pb)),

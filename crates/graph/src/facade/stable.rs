@@ -16,6 +16,7 @@ pub(crate) mod metadata;
 pub(crate) mod property_catalog;
 pub(crate) mod vertex_label_catalog;
 pub(crate) mod vertex_labels;
+pub(crate) mod remote_vertex_refs;
 pub(crate) mod vertex_logical_ids;
 pub(crate) mod vertex_properties;
 
@@ -68,4 +69,7 @@ thread_local! {
 
     pub(crate) static VERTEX_LOGICAL_IDS: RefCell<memory::StableVertexLogicalIdMap> =
         RefCell::new(memory::init_vertex_logical_ids());
+
+    pub(crate) static REMOTE_VERTEX_REFS: RefCell<memory::StableRemoteVertexRefTable> =
+        RefCell::new(memory::init_remote_vertex_refs());
 }

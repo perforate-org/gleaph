@@ -1,6 +1,7 @@
 pub mod edge;
 pub mod label;
 pub mod property;
+pub mod remote_ref;
 pub mod vertex;
 pub mod vertex_ref;
 pub mod weight;
@@ -11,6 +12,7 @@ pub use label::{
     TaggedEdgeLabelId, VertexLabelId,
 };
 pub use property::PropertyId;
+pub use remote_ref::{EdgeTarget, RemoteRefId};
 pub use vertex::Vertex;
 pub use vertex_ref::VertexRef;
 pub use weight::{

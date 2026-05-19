@@ -13,6 +13,7 @@
 //! `target` is a [`VertexRef`] (local id plus optional remote bit). Relationship
 //! type and directionality are carried by the labeled bucket layer, not this row.
 
+use super::remote_ref::EdgeTarget;
 use super::vertex_ref::VertexRef;
 use ic_stable_lara::{
     VertexId,
@@ -86,10 +87,9 @@ impl CsrEdge for Edge {
 
     #[inline]
     fn with_neighbor_vid(self, vid: VertexId) -> Self {
-        let target = if self.target.is_remote() {
-            VertexRef::remote(vid)
-        } else {
-            VertexRef::local(vid)
+        let target = match self.target.edge_target() {
+            Some(EdgeTarget::Remote(remote_ref)) => VertexRef::remote_ref(remote_ref),
+            Some(EdgeTarget::Local(_)) | None => VertexRef::local(vid),
         };
         Self {
             target,
@@ -115,6 +115,14 @@ impl CsrEdge for Edge {
     }
 }
 
+impl Edge {
+    /// Resolves the stored neighbor as a local or remote [`EdgeTarget`].
+    #[inline]
+    pub fn edge_target(self) -> Option<EdgeTarget> {
+        self.target.edge_target()
+    }
+}
+
 impl CsrEdgeTombstone for Edge {
     fn tombstone_edge() -> Self {
         Self {
@@ -133,6 +141,7 @@ impl CsrEdgeTombstone for Edge {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entry::RemoteRefId;
 
     #[test]
     fn edge_width_matches_documented_storage_layout() {
@@ -147,14 +156,14 @@ mod tests {
     #[test]
     fn write_to_encodes_fields_as_little_endian() {
         let edge = Edge {
-            target: VertexRef::remote(VertexId::from(0x1234_5678)),
+            target: VertexRef::remote_ref(RemoteRefId::from_raw(0x1234_5678)),
             edge_slot_index: EdgeSlotIndex::from_raw(0xA1B2_C3D4),
             label_id: 0,
             inline_value: 0x9A8B,
         };
         let mut bytes = [0u8; Edge::BYTES];
         edge.write_to(&mut bytes);
-        assert_eq!(bytes, [0x78, 0x56, 0x34, 0x52, 0x8B, 0x9A,]);
+        assert_eq!(bytes, [0x78, 0x56, 0x34, 0x52, 0x8B, 0x9A]);
     }
 
     #[test]

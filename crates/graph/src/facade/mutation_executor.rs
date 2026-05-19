@@ -40,6 +40,14 @@ pub trait GraphMutationExecutor {
         properties: impl IntoIterator<Item = (impl AsRef<str>, Value)>,
     ) -> Result<EdgeHandle, GraphStoreError>;
 
+    fn insert_directed_edge_to_logical_named(
+        &self,
+        source_vertex_id: VertexId,
+        target_logical_vertex_id: gleaph_graph_kernel::federation::LogicalVertexId,
+        label: Option<impl AsRef<str>>,
+        properties: impl IntoIterator<Item = (impl AsRef<str>, Value)>,
+    ) -> Result<EdgeHandle, GraphStoreError>;
+
     fn insert_undirected_edge_named(
         &self,
         endpoint_a: VertexId,
@@ -122,6 +130,27 @@ impl GraphMutationExecutor for GraphStore {
             .transpose()?;
         let properties = resolve_properties(self, properties)?;
         self.insert_directed_edge_with(source_vertex_id, target_vertex_id, label, properties)
+    }
+
+    fn insert_directed_edge_to_logical_named(
+        &self,
+        source_vertex_id: VertexId,
+        target_logical_vertex_id: gleaph_graph_kernel::federation::LogicalVertexId,
+        label: Option<impl AsRef<str>>,
+        properties: impl IntoIterator<Item = (impl AsRef<str>, Value)>,
+    ) -> Result<EdgeHandle, GraphStoreError> {
+        let label = label
+            .map(|label| self.get_or_insert_edge_label_id(label.as_ref()))
+            .transpose()?;
+        let handle = self.insert_directed_edge_to_logical(
+            source_vertex_id,
+            target_logical_vertex_id,
+            label,
+        )?;
+        for (property_id, value) in resolve_properties(self, properties)? {
+            self.set_edge_property(handle, property_id, value)?;
+        }
+        Ok(handle)
     }
 
     fn insert_undirected_edge_named(
