@@ -13,7 +13,8 @@ use super::{
 };
 use crate::index::{edge_equal, pending, placement};
 use gleaph_graph_kernel::federation::{
-    standalone_logical_vertex_id, CommitVertexPlacementArgs, LogicalVertexId,
+    standalone_logical_vertex_id, CommitVertexPlacementArgs, LogicalVertexId, ReleaseLogicalVertexArgs,
+    VertexPlacement,
 };
 use gleaph_graph_kernel::path::GraphPathVertexId;
 use gleaph_gql::Value;
@@ -1483,6 +1484,7 @@ impl GraphStore {
 
     /// `DELETE` semantics: remove the vertex only when it has no incident edges.
     pub fn delete_vertex(&self, vertex_id: VertexId) -> Result<(), GraphStoreError> {
+        self.assert_local_vertex_writable(vertex_id)?;
         self.ensure_vertex_id(vertex_id)
             .map_err(GraphStoreError::from)?;
         if self.vertex_has_incident_edges(vertex_id)? {
@@ -1499,6 +1501,7 @@ impl GraphStore {
     /// Incident edges are cleared via LARA's queued incremental `delete_vertex_deferred`
     /// maintenance; stable edge property sidecars are cleared as each edge is removed.
     pub fn detach_delete_vertex(&self, vertex_id: VertexId) -> Result<(), GraphStoreError> {
+        self.assert_local_vertex_writable(vertex_id)?;
         self.ensure_vertex_id(vertex_id)
             .map_err(GraphStoreError::from)?;
         self.clear_vertex_stable_payloads_before_graph_delete(vertex_id)?;
@@ -1716,6 +1719,7 @@ impl GraphStore {
         vertex_id: VertexId,
     ) -> Result<(), GraphStoreError> {
         self.clear_vertex_properties_stable_only(vertex_id);
+        self.release_federated_vertex_placement_if_authoritative(vertex_id)?;
 
         let vertex = self.vertex(vertex_id).ok_or_else(|| {
             GraphStoreError::Graph(DeferredBidirectionalLabeledError::VertexOutOfRange {
@@ -1731,6 +1735,34 @@ impl GraphStore {
                 .set_labels(vertex_id, vertex, [])
                 .map_err(GraphStoreError::from)
         })?;
+        Ok(())
+    }
+
+    fn release_federated_vertex_placement_if_authoritative(
+        &self,
+        vertex_id: VertexId,
+    ) -> Result<(), GraphStoreError> {
+        let Some(routing) = self.federation_routing() else {
+            return Ok(());
+        };
+        let Some(logical_vertex_id) = self.logical_vertex_id(vertex_id) else {
+            return Ok(());
+        };
+        let placement =
+            placement::resolve_placement(routing.router_canister, logical_vertex_id)?;
+        let VertexPlacement::Active(loc) = placement else {
+            return Ok(());
+        };
+        if loc.shard_id != routing.shard_id
+            || loc.local_vertex_id != placement::local_vertex_id_raw(vertex_id)
+        {
+            return Ok(());
+        }
+        placement::release_logical_vertex_placement(
+            routing.router_canister,
+            ReleaseLogicalVertexArgs { logical_vertex_id },
+        )?;
+        VERTEX_LOGICAL_IDS.with_borrow_mut(|map| map.remove(vertex_id));
         Ok(())
     }
 

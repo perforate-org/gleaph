@@ -144,4 +144,11 @@ fn finish_vertex_migration(args: types::FinishVertexMigrationArgs) -> Result<(),
     canister::finish_vertex_migration(args)
 }
 
+#[update]
+fn release_logical_vertex_placement(
+    args: types::ReleaseLogicalVertexArgs,
+) -> Result<(), RouterError> {
+    canister::release_logical_vertex_placement(args)
+}
+
 ic_cdk::export_candid!();

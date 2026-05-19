@@ -3,8 +3,8 @@
 use candid::Principal;
 use gleaph_graph_kernel::federation::{
     BeginVertexMigrationArgs, CommitVertexPlacementArgs, FinishVertexMigrationArgs, LocalVertexId,
-    LogicalVertexId, PhysicalPlacementKey, PhysicalVertexLocation, RouterError, ShardId,
-    VertexPlacement,
+    LogicalVertexId, PhysicalPlacementKey, PhysicalVertexLocation, ReleaseLogicalVertexArgs,
+    RouterError, ShardId, VertexPlacement,
 };
 use ic_stable_lara::VertexId;
 use std::cell::{Cell, RefCell};
@@ -176,6 +176,32 @@ pub fn begin_vertex_migration(
     }
 }
 
+pub fn release_logical_vertex_placement(
+    router_canister: Principal,
+    args: ReleaseLogicalVertexArgs,
+) -> Result<(), VertexPlacementError> {
+    #[cfg(target_family = "wasm")]
+    {
+        use ic_cdk::call::Call;
+
+        let (): Result<(), RouterError> =
+            Call::unbounded_wait(router_canister, "release_logical_vertex_placement")
+                .with_arg(&(args,))
+                .wait()
+                .map_err(|e| VertexPlacementError::Call(format!("{e:?}")))?
+                .candid()
+                .map_err(|e| VertexPlacementError::Call(format!("candid decode: {e}")))?;
+
+        return ().map_err(VertexPlacementError::Rejected);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let _ = router_canister;
+        native_release_logical_vertex_placement(args)
+    }
+}
+
 pub fn finish_vertex_migration(
     router_canister: Principal,
     args: FinishVertexMigrationArgs,
@@ -199,6 +225,35 @@ pub fn finish_vertex_migration(
         let _ = router_canister;
         native_finish_vertex_migration(args)
     }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn native_release_logical_vertex_placement(
+    args: ReleaseLogicalVertexArgs,
+) -> Result<(), VertexPlacementError> {
+    let routing = crate::facade::GraphStore::new()
+        .federation_routing()
+        .ok_or(VertexPlacementError::Rejected(RouterError::ShardNotRegistered))?;
+
+    let placement = NATIVE_TEST_PLACEMENTS
+        .with_borrow(|map| map.get(&args.logical_vertex_id).copied())
+        .ok_or(VertexPlacementError::Rejected(RouterError::VertexNotFound))?;
+
+    let VertexPlacement::Active(loc) = placement else {
+        return Err(VertexPlacementError::Rejected(RouterError::Forbidden));
+    };
+    if loc.shard_id != routing.shard_id {
+        return Err(VertexPlacementError::Rejected(RouterError::Forbidden));
+    }
+
+    let physical = PhysicalPlacementKey::new(loc.shard_id, loc.local_vertex_id);
+    NATIVE_TEST_PLACEMENT_BY_PHYSICAL.with_borrow_mut(|map| {
+        map.remove(&physical);
+    });
+    NATIVE_TEST_PLACEMENTS.with_borrow_mut(|map| {
+        map.remove(&args.logical_vertex_id);
+    });
+    Ok(())
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -343,6 +398,29 @@ mod tests {
     use crate::facade::mutation_executor::GraphMutationExecutor;
     use crate::facade::{FederationRouting, GraphStore, GraphStoreError};
     use gleaph_gql::Value;
+
+    #[test]
+    fn delete_vertex_releases_router_placement() {
+        let store = GraphStore::new();
+        store
+            .set_federation_routing(Some(FederationRouting {
+                router_canister: Principal::management_canister(),
+                index_canister: Principal::management_canister(),
+                shard_id: 7,
+            }))
+            .expect("routing");
+
+        let vid = store.insert_vertex().expect("insert");
+        let logical = store.logical_vertex_id(vid).expect("logical");
+
+        store.delete_vertex(vid).expect("delete");
+
+        assert!(matches!(
+            resolve_placement(Principal::management_canister(), logical),
+            Err(VertexPlacementError::Rejected(RouterError::VertexNotFound))
+        ));
+        assert!(store.logical_vertex_id(vid).is_none());
+    }
 
     #[test]
     fn migrating_source_vertex_is_not_writable_on_graph_shard() {

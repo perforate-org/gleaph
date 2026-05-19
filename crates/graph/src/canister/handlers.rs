@@ -24,7 +24,7 @@ use crate::index::router::verify_shard_attachment;
 use gleaph_auth::Role;
 use gleaph_gql::Value;
 use gleaph_gql_ic::decode_gql_params_blob;
-use gleaph_graph_kernel::federation::ExportedVertex;
+use gleaph_graph_kernel::federation::{BeginVertexMigrationArgs, ExportedVertex};
 use ic_stable_lara::VertexId;
 
 use super::types::{GrantRoleArgs, GraphInitArgs};
@@ -205,6 +205,15 @@ pub fn whoami() -> Principal {
 pub fn my_role() -> Result<String, String> {
     let p = msg_caller();
     Ok(caller_role(&p).to_string())
+}
+
+pub fn begin_vertex_migration_canister(args: BeginVertexMigrationArgs) -> Result<(), String> {
+    let store = GraphStore::new();
+    let routing = store
+        .federation_routing()
+        .ok_or("federation routing not configured")?;
+    crate::index::placement::begin_vertex_migration(routing.router_canister, args)
+        .map_err(|e| e.to_string())
 }
 
 pub fn export_vertex_for_migration(vertex_id: u32) -> Result<ExportedVertex, String> {

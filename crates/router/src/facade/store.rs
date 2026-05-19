@@ -12,8 +12,8 @@ use crate::init::RouterInitArgs;
 use crate::state::RouterError;
 use crate::types::{
     AdminRegisterShardArgs, BeginVertexMigrationArgs, CommitVertexPlacementArgs, EdgeLabelId,
-    FinishVertexMigrationArgs, GraphRegistryEntry, GraphStatus, PropertyId, ShardId, VertexLabelId,
-    VertexPlacement,
+    FinishVertexMigrationArgs, GraphRegistryEntry, GraphStatus, PropertyId, ReleaseLogicalVertexArgs,
+    ShardId, VertexLabelId, VertexPlacement,
 };
 use candid::Principal;
 use gleaph_graph_kernel::entry::EDGE_LABEL_CATALOG_MAX;
@@ -481,6 +481,34 @@ impl RouterStore {
         Ok(())
     }
 
+    pub fn release_logical_vertex_placement(
+        &self,
+        caller: Principal,
+        args: ReleaseLogicalVertexArgs,
+    ) -> Result<(), RouterError> {
+        let shard_id = self.shard_id_for_graph_caller(caller)?;
+
+        let placement = ROUTER_PLACEMENTS
+            .with_borrow(|p| p.get(&args.logical_vertex_id))
+            .ok_or(RouterError::VertexNotFound)?;
+
+        let VertexPlacement::Active(loc) = placement else {
+            return Err(RouterError::Forbidden);
+        };
+        if loc.shard_id != shard_id {
+            return Err(RouterError::Forbidden);
+        }
+
+        let physical_key = PhysicalPlacementKey::new(loc.shard_id, loc.local_vertex_id);
+        ROUTER_PLACEMENT_BY_PHYSICAL.with_borrow_mut(|p| {
+            p.remove(physical_key);
+        });
+        ROUTER_PLACEMENTS.with_borrow_mut(|p| {
+            p.remove(&args.logical_vertex_id);
+        });
+        Ok(())
+    }
+
     fn shard_id_for_graph_caller(&self, caller: Principal) -> Result<ShardId, RouterError> {
         ROUTER_SHARD_BY_GRAPH
             .with_borrow(|m| m.get(&caller))
@@ -613,6 +641,53 @@ mod tests {
             placement,
             VertexPlacement::Active(PhysicalVertexLocation::new(7, 42))
         );
+    }
+
+    #[test]
+    fn release_logical_vertex_placement_clears_registry() {
+        let store = RouterStore::new();
+        store.init_from_args(&RouterInitArgs {
+            controllers: vec![],
+        });
+        let admin = Principal::anonymous();
+        store.bootstrap_controllers(&[admin]);
+
+        let graph = graph_principal(1);
+        let index = graph_principal(2);
+
+        futures::executor::block_on(store.admin_register_shard(
+            admin,
+            AdminRegisterShardArgs {
+                shard_id: 7,
+                graph_canister: graph,
+                index_canister: index,
+                logical_graph_name: "tenant.main".into(),
+            },
+        ))
+        .expect("register");
+
+        let logical = store
+            .allocate_logical_vertex_id(graph)
+            .expect("allocate");
+        store
+            .commit_vertex_placement(
+                graph,
+                CommitVertexPlacementArgs {
+                    logical_vertex_id: logical,
+                    local_vertex_id: 42,
+                },
+            )
+            .expect("commit");
+
+        store
+            .release_logical_vertex_placement(
+                graph,
+                ReleaseLogicalVertexArgs { logical_vertex_id: logical },
+            )
+            .expect("release");
+
+        assert!(store.resolve_placement(logical).is_err());
+        assert!(store.resolve_logical_at(7, 42).is_err());
     }
 
     #[test]

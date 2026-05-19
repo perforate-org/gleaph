@@ -73,6 +73,13 @@ fn my_role() -> Result<String, String> {
     canister::handlers::my_role()
 }
 
+#[update(guard = "guard_admin")]
+fn begin_vertex_migration(
+    args: gleaph_graph_kernel::federation::BeginVertexMigrationArgs,
+) -> Result<(), String> {
+    canister::handlers::begin_vertex_migration_canister(args)
+}
+
 #[query(guard = "guard_admin")]
 fn export_vertex_for_migration(vertex_id: u32) -> Result<gleaph_graph_kernel::federation::ExportedVertex, String> {
     canister::handlers::export_vertex_for_migration(vertex_id)

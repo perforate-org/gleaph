@@ -44,6 +44,12 @@ pub struct FinishVertexMigrationArgs {
     pub destination_local_vertex_id: LocalVertexId,
 }
 
+/// Authoritative graph shard drops router placement after deleting the vertex locally.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct ReleaseLogicalVertexArgs {
+    pub logical_vertex_id: LogicalVertexId,
+}
+
 /// Standalone-shard identity mapping: local dense id equals logical id on one process.
 #[inline]
 pub fn standalone_logical_vertex_id(local: VertexId) -> LogicalVertexId {

@@ -5,8 +5,8 @@ use crate::init::RouterInitArgs;
 use crate::state::RouterError;
 use crate::types::{
     AdminRegisterShardArgs, BeginVertexMigrationArgs, CommitVertexPlacementArgs, EdgeLabelId,
-    FinishVertexMigrationArgs, GraphRegistryEntry, LogicalVertexId, PropertyId, ShardId,
-    ShardRegistryEntry, VertexLabelId, VertexPlacement,
+    FinishVertexMigrationArgs, GraphRegistryEntry, LogicalVertexId, PropertyId,
+    ReleaseLogicalVertexArgs, ShardId, ShardRegistryEntry, VertexLabelId, VertexPlacement,
 };
 use candid::Principal;
 use gleaph_gql_ic::graph_registry::GraphStatus;
@@ -115,4 +115,10 @@ pub(crate) fn begin_vertex_migration(args: BeginVertexMigrationArgs) -> Result<(
 
 pub(crate) fn finish_vertex_migration(args: FinishVertexMigrationArgs) -> Result<(), RouterError> {
     RouterStore::new().finish_vertex_migration(msg_caller(), args)
+}
+
+pub(crate) fn release_logical_vertex_placement(
+    args: ReleaseLogicalVertexArgs,
+) -> Result<(), RouterError> {
+    RouterStore::new().release_logical_vertex_placement(msg_caller(), args)
 }

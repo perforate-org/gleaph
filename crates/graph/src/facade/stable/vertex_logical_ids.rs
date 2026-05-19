@@ -25,4 +25,8 @@ impl<M: Memory> VertexLogicalIdMap<M> {
         self.map
             .insert(local_vertex_id(vertex_id), logical_vertex_id);
     }
+
+    pub fn remove(&mut self, vertex_id: VertexId) {
+        self.map.remove(&local_vertex_id(vertex_id));
+    }
 }

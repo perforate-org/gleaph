@@ -9,7 +9,8 @@ pub use gleaph_gql_ic::graph_registry::{
 pub use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId, VertexLabelId};
 pub use gleaph_graph_kernel::federation::{
     BeginVertexMigrationArgs, CommitVertexPlacementArgs, FinishVertexMigrationArgs, LocalVertexId,
-    LogicalVertexId, PhysicalVertexLocation, ShardId, ShardRegistryEntry, VertexPlacement,
+    LogicalVertexId, PhysicalVertexLocation, ReleaseLogicalVertexArgs, ShardId,
+    ShardRegistryEntry, VertexPlacement,
 };
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
