@@ -5,7 +5,7 @@
 
 use gleaph_graph_kernel::entry::RemoteRefId;
 use ic_stable_lara::VertexId;
-use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
+use ic_stable_structures::{BTreeSet, Memory, Storable, storable::Bound};
 use std::borrow::Cow;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -89,36 +89,14 @@ impl Storable for RemoteForwardInKey {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-struct RemoteForwardInMarker;
-
-impl Storable for RemoteForwardInMarker {
-    const BOUND: Bound = Bound::Bounded {
-        max_size: 0,
-        is_fixed_size: true,
-    };
-
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Borrowed(&[])
-    }
-
-    fn into_bytes(self) -> Vec<u8> {
-        Vec::new()
-    }
-
-    fn from_bytes(_bytes: Cow<'_, [u8]>) -> Self {
-        Self
-    }
-}
-
 pub struct RemoteForwardInIndex<M: Memory> {
-    postings: StableBTreeMap<RemoteForwardInKey, RemoteForwardInMarker, M>,
+    postings: BTreeSet<RemoteForwardInKey, M>,
 }
 
 impl<M: Memory> RemoteForwardInIndex<M> {
     pub fn init(memory: M) -> Self {
         Self {
-            postings: StableBTreeMap::init(memory),
+            postings: BTreeSet::init(memory),
         }
     }
 
@@ -134,7 +112,7 @@ impl<M: Memory> RemoteForwardInIndex<M> {
         slot_index: u32,
     ) {
         let key = RemoteForwardInKey::new(remote_ref, source_vertex_id, label_id, slot_index);
-        self.postings.insert(key, RemoteForwardInMarker);
+        self.postings.insert(key);
     }
 
     pub fn remove(
@@ -175,8 +153,8 @@ impl<M: Memory> RemoteForwardInIndex<M> {
             0,
             0,
         );
-        for entry in self.postings.range(start..end) {
-            visit(*entry.key());
+        for key in self.postings.range(start..end) {
+            visit(key);
         }
     }
 
@@ -185,7 +163,7 @@ impl<M: Memory> RemoteForwardInIndex<M> {
         self.postings
             .range(start..)
             .next()
-            .is_some_and(|entry| entry.key().remote_ref() == remote_ref)
+            .is_some_and(|key| key.remote_ref() == remote_ref)
     }
 }
 
