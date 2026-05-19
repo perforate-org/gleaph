@@ -1,10 +1,9 @@
 //! Stable LARA vertex column.
 //!
-//! The default row stores a direct edge base, live edge count, slab slot count,
-//! and per-segment log head (`-1` when the whole neighborhood is on the slab).
-//! Clean scans use `base_slot_start` plus logical degree ([`Vertex::live_edges`] /
-//! [`CsrVertex::degree`]); slab iteration may span [`Vertex::slab_slots`] until
-//! maintenance compacts tombstoned edge slots away.
+//! The default row stores a packed locator (36-bit slab base + 28-bit tail), live edge count,
+//! and slab slot count. Clean scans use [`Vertex::base_slot_start`] plus logical degree
+//! ([`Vertex::live_edges`] / [`CsrVertex::degree`]); slab iteration may span
+//! [`Vertex::slab_slots`] until maintenance compacts tombstoned edge slots away.
 //!
 //! Owned slab spans for inserts and relocation use CSR geometry:
 //! `[base_slot_start, slab_window_exclusive_end)` derives from the next vertex's
@@ -12,9 +11,9 @@
 //!
 //! # V1 layout
 //!
-//! For [`Vertex`], each row is 20 bytes: bytes `0..8` are `base_slot_start` (LE),
-//! `8..12` are `live_edges`, `12..16` are `slab_slots`, and the last `u32` (LE) stores
-//! `(log_head + 1)` in the low 31 bits (`0` means no overflow log) and bit `31` for the vertex tombstone.
+//! For [`Vertex`], each row is 16 bytes: bytes `0..8` are the locator word (LE)
+//! — low 36 bits are `base_slot_start`, high 28 bits are tail metadata (bit 0 tombstone;
+//! bits 1–27 encode `(log_head + 1)`, `0` = no overflow log) — then `live_edges` and `slab_slots`.
 //!
 //! ```text
 //! -------------------------------------------------- <- Address 0
@@ -39,7 +38,13 @@
 //! ```
 
 use crate::{
-    GrowFailed, VertexId, read_u32, safe_write,
+    GrowFailed, VertexId,
+    lara::edge::DEFAULT_MAX_LOG_ENTRIES,
+    read_u32, safe_write,
+    slab_index::{
+        decode_meta28, decode_slot_index, encode_locator_word, pack_vertex_tail28, slot_index_fits,
+        try_encode_locator_word, try_pack_vertex_tail28, unpack_vertex_tail28,
+    },
     traits::{CsrVertex, CsrVertexTombstone},
     types::Address,
     write_u32,
@@ -53,10 +58,6 @@ const LAYOUT_VERSION: u8 = 1;
 const DATA_OFFSET: u64 = 64;
 const LEN_OFFSET: u64 = 4;
 const STRIDE_OFFSET: u64 = 8;
-/// Bit 31 of the packed tail word: logical vertex deletion (tombstone).
-const VERTEX_TOMBSTONE_BIT: u32 = 1 << 31;
-/// Low 31 bits: `(log_head + 1)` when `log_head >= 0`, else `0` (no overflow log).
-const LOG_HEAD_PAYLOAD_MASK: u32 = VERTEX_TOMBSTONE_BIT - 1;
 /// Stack buffer width for [`VertexStore::get`] when `V::BYTES` is small enough.
 const INLINE_VERTEX_ROW_BYTES: usize = 64;
 
@@ -114,43 +115,194 @@ impl fmt::Display for InitError {
 
 impl std::error::Error for InitError {}
 
-/// Default fixed-width LARA vertex row (20 bytes on wire).
-///
-/// `live_edges` is the logical out-degree (clean scans, rebalance packing).
-/// `slab_slots` is the physical slab prefix width; it may be larger while tombstoned cells from
-/// logical deletes await compaction on leaf rebalance.
+/// Field validation errors for [`Vertex::try_from_parts`] and [`Vertex::try_read_from`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Vertex {
-    /// First edge slot in this vertex's clean slab prefix.
-    pub base_slot_start: u64,
-    /// Live edges counted by graph APIs ([`CsrVertex::degree`]).
-    pub live_edges: u32,
-    /// Physical slab cells reserved for this row ([`CsrVertex::stored_degree`]).
-    pub slab_slots: u32,
-    /// Head entry in the per-segment overflow log, or `-1` when no log is present.
-    pub log_head: i32,
-    /// Logical deletion marker (serialized as bit 31 of the packed tail word).
-    /// Deleted vertex ids are never reused.
-    pub deleted: bool,
+pub enum VertexFieldError {
+    /// Wire slice length is not exactly [`Vertex::BYTES`].
+    WireLengthMismatch,
+    /// `base_slot_start` does not fit in 36 bits.
+    SlotIndexOverflow,
+    /// Overflow log head does not fit in the packed tail28 encoding.
+    LogHeadOverflow,
+    /// Overflow log head is not in `0..`[`DEFAULT_MAX_LOG_ENTRIES`].
+    OverflowLogHeadOutOfRange,
 }
 
-impl Default for Vertex {
-    fn default() -> Self {
-        Self {
-            base_slot_start: 0,
-            live_edges: 0,
-            slab_slots: 0,
-            log_head: -1,
-            deleted: false,
+impl fmt::Display for VertexFieldError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::WireLengthMismatch => write!(f, "vertex wire row must be exactly 16 bytes"),
+            Self::SlotIndexOverflow => {
+                write!(f, "vertex base_slot_start exceeds 36-bit slot index")
+            }
+            Self::LogHeadOverflow => write!(f, "vertex log head does not fit in packed tail28"),
+            Self::OverflowLogHeadOutOfRange => write!(
+                f,
+                "vertex overflow log head must be < {DEFAULT_MAX_LOG_ENTRIES}"
+            ),
         }
     }
 }
 
+impl std::error::Error for VertexFieldError {}
+
+/// Default fixed-width LARA vertex row (16 bytes on wire).
+///
+/// `live_edges` is the logical out-degree (clean scans, rebalance packing).
+/// `slab_slots` is the physical slab prefix width; it may be larger while tombstoned cells from
+/// logical deletes await compaction on leaf rebalance.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Vertex {
+    locator: u64,
+    /// Live edges counted by graph APIs ([`CsrVertex::degree`]).
+    pub live_edges: u32,
+    /// Physical slab cells reserved for this row ([`CsrVertex::stored_degree`]).
+    pub slab_slots: u32,
+}
+
+impl Default for Vertex {
+    fn default() -> Self {
+        Self::from_parts(0, 0, 0, -1, false)
+    }
+}
+
+impl Vertex {
+    /// Fixed byte width of one encoded vertex row.
+    pub const BYTES: usize = 16;
+
+    /// Builds a row from logical fields (panics on invalid input in debug).
+    #[inline]
+    pub fn from_parts(
+        base_slot_start: u64,
+        live_edges: u32,
+        slab_slots: u32,
+        log_head: i32,
+        deleted: bool,
+    ) -> Self {
+        Self::try_from_parts(base_slot_start, live_edges, slab_slots, log_head, deleted)
+            .expect("Vertex::from_parts: invalid fields")
+    }
+
+    /// Fallible constructor with release-safe range checks.
+    #[inline]
+    pub fn try_from_parts(
+        base_slot_start: u64,
+        live_edges: u32,
+        slab_slots: u32,
+        log_head: i32,
+        deleted: bool,
+    ) -> Result<Self, VertexFieldError> {
+        if !slot_index_fits(base_slot_start) {
+            return Err(VertexFieldError::SlotIndexOverflow);
+        }
+        Self::validate_log_head(log_head)?;
+        let tail =
+            try_pack_vertex_tail28(log_head, deleted).ok_or(VertexFieldError::LogHeadOverflow)?;
+        let locator = try_encode_locator_word(base_slot_start, tail)
+            .ok_or(VertexFieldError::SlotIndexOverflow)?;
+        Ok(Self {
+            locator,
+            live_edges,
+            slab_slots,
+        })
+    }
+
+    /// Global edge-slot index where this vertex's slab prefix starts.
+    #[inline]
+    pub fn base_slot_start(self) -> u64 {
+        decode_slot_index(self.locator)
+    }
+
+    /// Head entry in the per-segment overflow log, or `-1` when no log is present.
+    #[inline]
+    pub fn log_head(self) -> i32 {
+        unpack_vertex_tail28(decode_meta28(self.locator)).0
+    }
+
+    /// Logical deletion marker (tombstone bit in the locator tail).
+    #[inline]
+    pub fn deleted(self) -> bool {
+        unpack_vertex_tail28(decode_meta28(self.locator)).1
+    }
+
+    #[inline]
+    fn with_locator(mut self, locator: u64) -> Self {
+        self.locator = locator;
+        self
+    }
+
+    #[inline]
+    fn with_tail28(self, tail: u32) -> Self {
+        self.with_locator(encode_locator_word(self.base_slot_start(), tail))
+    }
+
+    /// Returns a copy with a new slab base (rejects out-of-range indices).
+    #[inline]
+    pub fn try_with_base_slot_start(self, start: u64) -> Result<Self, VertexFieldError> {
+        if !slot_index_fits(start) {
+            return Err(VertexFieldError::SlotIndexOverflow);
+        }
+        Ok(self.with_locator(encode_locator_word(start, decode_meta28(self.locator))))
+    }
+
+    /// Returns a copy with a new overflow log head (rejects out-of-range indices).
+    #[inline]
+    pub fn try_with_log_head(self, idx: i32) -> Result<Self, VertexFieldError> {
+        Self::validate_log_head(idx)?;
+        let tail =
+            try_pack_vertex_tail28(idx, self.deleted()).ok_or(VertexFieldError::LogHeadOverflow)?;
+        Ok(self.with_tail28(tail))
+    }
+
+    /// Encodes this vertex row into exactly [`Self::BYTES`] bytes.
+    pub fn write_to(self, bytes: &mut [u8]) {
+        debug_assert_eq!(bytes.len(), Self::BYTES);
+        bytes.copy_from_slice(&vertex_row_bytes(&self));
+    }
+
+    /// Decodes a vertex row from exactly [`Self::BYTES`] bytes.
+    pub fn read_from(bytes: &[u8]) -> Self {
+        Self::try_read_from(bytes).expect("invalid Vertex wire bytes")
+    }
+
+    /// Decodes and validates a vertex row from exactly [`Self::BYTES`] bytes.
+    pub fn try_read_from(bytes: &[u8]) -> Result<Self, VertexFieldError> {
+        let chunk: [u8; Self::BYTES] = bytes
+            .try_into()
+            .map_err(|_| VertexFieldError::WireLengthMismatch)?;
+        let vertex = Self {
+            locator: u64::from_le_bytes(chunk[0..8].try_into().expect("locator")),
+            live_edges: u32::from_le_bytes(chunk[8..12].try_into().expect("live")),
+            slab_slots: u32::from_le_bytes(chunk[12..16].try_into().expect("slab")),
+        };
+        vertex.ensure_valid_wire()
+    }
+
+    #[inline]
+    fn validate_log_head(log_head: i32) -> Result<(), VertexFieldError> {
+        if log_head >= 0 && log_head >= DEFAULT_MAX_LOG_ENTRIES as i32 {
+            return Err(VertexFieldError::OverflowLogHeadOutOfRange);
+        }
+        Ok(())
+    }
+
+    #[inline]
+    fn ensure_valid_wire(self) -> Result<Self, VertexFieldError> {
+        if !slot_index_fits(self.base_slot_start()) {
+            return Err(VertexFieldError::SlotIndexOverflow);
+        }
+        let (log_head, _) = unpack_vertex_tail28(decode_meta28(self.locator));
+        Self::validate_log_head(log_head)?;
+        Ok(self)
+    }
+}
+
 impl CsrVertex for Vertex {
-    const BYTES: usize = 20;
+    const BYTES: usize = 16;
 
     fn base_slot_start(&self) -> u64 {
-        self.base_slot_start
+        decode_slot_index(self.locator)
     }
     fn degree(&self) -> u32 {
         self.live_edges
@@ -158,9 +310,9 @@ impl CsrVertex for Vertex {
     fn stored_degree(&self) -> u32 {
         self.slab_slots
     }
-    fn with_base_slot_start(mut self, start: u64) -> Self {
-        self.base_slot_start = start;
-        self
+    fn with_base_slot_start(self, start: u64) -> Self {
+        self.try_with_base_slot_start(start)
+            .expect("Vertex::with_base_slot_start: slot index overflow")
     }
     /// Sets both live and slab to `n` (packed row after rebalance or fresh materialization).
     fn with_degree(mut self, n: u32) -> Self {
@@ -186,64 +338,29 @@ impl CsrVertex for Vertex {
     }
 
     fn log_head(self) -> i32 {
-        self.log_head
+        unpack_vertex_tail28(decode_meta28(self.locator)).0
     }
-    fn with_log_head(mut self, idx: i32) -> Self {
-        if idx >= 0 {
-            assert!(
-                idx <= (LOG_HEAD_PAYLOAD_MASK - 1) as i32,
-                "vertex log head does not fit in packed LARA row"
-            );
-        }
-        self.log_head = idx;
-        self
+    fn with_log_head(self, idx: i32) -> Self {
+        self.try_with_log_head(idx)
+            .expect("vertex overflow log head is invalid for packed LARA row")
     }
 }
 
 impl CsrVertexTombstone for Vertex {
     fn is_tombstone(&self) -> bool {
-        self.deleted
+        self.deleted()
     }
 
-    fn with_tombstone(mut self, tomb: bool) -> Self {
-        self.deleted = tomb;
-        self
+    fn with_tombstone(self, tomb: bool) -> Self {
+        self.with_tail28(pack_vertex_tail28(self.log_head(), tomb))
     }
-}
-
-#[inline]
-fn pack_vertex_tail(log_head: i32, deleted: bool) -> u32 {
-    let mut w = if log_head < 0 {
-        0u32
-    } else {
-        let enc = (log_head as u32).wrapping_add(1);
-        assert!(
-            enc & VERTEX_TOMBSTONE_BIT == 0,
-            "vertex log head encoding must not use tombstone bit"
-        );
-        enc
-    };
-    if deleted {
-        w |= VERTEX_TOMBSTONE_BIT;
-    }
-    w
-}
-
-#[inline]
-fn unpack_vertex_tail(word: u32) -> (i32, bool) {
-    let deleted = (word & VERTEX_TOMBSTONE_BIT) != 0;
-    let enc = word & LOG_HEAD_PAYLOAD_MASK;
-    let log_head = if enc == 0 { -1 } else { (enc - 1) as i32 };
-    (log_head, deleted)
 }
 
 fn vertex_row_bytes(v: &Vertex) -> [u8; Vertex::BYTES] {
     let mut b = [0u8; Vertex::BYTES];
-    b[0..8].copy_from_slice(&v.base_slot_start.to_le_bytes());
+    b[0..8].copy_from_slice(&v.locator.to_le_bytes());
     b[8..12].copy_from_slice(&v.live_edges.to_le_bytes());
     b[12..16].copy_from_slice(&v.slab_slots.to_le_bytes());
-    let tail = pack_vertex_tail(v.log_head, v.deleted);
-    b[16..20].copy_from_slice(&tail.to_le_bytes());
     b
 }
 
@@ -262,30 +379,7 @@ impl Storable for Vertex {
     }
 
     fn from_bytes(bytes: Cow<[u8]>) -> Self {
-        let b = bytes.as_ref();
-        assert_eq!(
-            b.len(),
-            Vertex::BYTES,
-            "Vertex::from_bytes expects exactly {} bytes",
-            Vertex::BYTES
-        );
-        let mut u = [0u8; 8];
-        let mut live = [0u8; 4];
-        let mut slab = [0u8; 4];
-        let mut t = [0u8; 4];
-        u.copy_from_slice(&b[0..8]);
-        live.copy_from_slice(&b[8..12]);
-        slab.copy_from_slice(&b[12..16]);
-        t.copy_from_slice(&b[16..20]);
-        let tail = u32::from_le_bytes(t);
-        let (log_head, deleted) = unpack_vertex_tail(tail);
-        Self {
-            base_slot_start: u64::from_le_bytes(u),
-            live_edges: u32::from_le_bytes(live),
-            slab_slots: u32::from_le_bytes(slab),
-            log_head,
-            deleted,
-        }
+        Self::try_read_from(bytes.as_ref()).expect("Vertex::from_bytes: invalid wire row")
     }
 }
 
@@ -451,10 +545,21 @@ fn verify_vertex_width<V: CsrVertex>() -> Result<(), InitError> {
 
 #[cfg(test)]
 mod tests {
-    use super::Vertex;
-    use crate::traits::{CsrVertex, CsrVertexTombstone};
+    use super::{Vertex, VertexFieldError};
+    use crate::{
+        lara::edge::DEFAULT_MAX_LOG_ENTRIES,
+        slab_index::{SLOT_INDEX_MASK, encode_locator_word, pack_vertex_tail28},
+        traits::{CsrVertex, CsrVertexTombstone},
+    };
     use ic_stable_structures::Storable;
     use std::borrow::Cow;
+    use std::mem::size_of;
+
+    #[test]
+    fn vertex_row_is_16_bytes() {
+        assert_eq!(size_of::<Vertex>(), 16);
+        assert_eq!(Vertex::BYTES, 16);
+    }
 
     #[test]
     fn vertex_default_has_no_overflow_log() {
@@ -463,39 +568,80 @@ mod tests {
 
     #[test]
     fn vertex_storable_roundtrip_default_tail() {
-        let v = Vertex {
-            base_slot_start: 0x0102_0304_0506_0708,
-            live_edges: 0x090a_0b0c,
-            slab_slots: 0x090a_0b0c,
-            log_head: -1,
-            deleted: false,
-        };
+        let v = Vertex::from_parts(
+            0x0102_0304_0506_0708 & SLOT_INDEX_MASK,
+            0x090a_0b0c,
+            0x090a_0b0c,
+            -1,
+            false,
+        );
         assert_eq!(Vertex::from_bytes(v.to_bytes()), v);
         assert_eq!(Vertex::from_bytes(Cow::Owned(v.into_bytes())), v);
     }
 
     #[test]
-    fn tombstone_bit_preserves_log_head() {
-        let v = Vertex {
-            base_slot_start: 1,
-            live_edges: 2,
-            slab_slots: 2,
-            log_head: 42,
-            deleted: false,
-        }
-        .with_tombstone(true);
-        assert!(v.is_tombstone());
-        assert_eq!(v.log_head(), 42);
-        let back = Vertex::from_bytes(v.to_bytes());
-        assert!(back.deleted);
-        assert_eq!(back.log_head, 42);
+    fn vertex_golden_wire_bytes() {
+        let v = Vertex::from_parts(0x0123_4567_89ab_cdef & SLOT_INDEX_MASK, 3, 5, 7, false);
+        let bytes = v.into_bytes();
+        assert_eq!(bytes.len(), 16);
+        let tail = pack_vertex_tail28(7, false);
+        let locator = (u64::from(tail) << 36) | (v.base_slot_start() & SLOT_INDEX_MASK);
+        assert_eq!(u64::from_le_bytes(bytes[0..8].try_into().unwrap()), locator);
+        assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), 3);
+        assert_eq!(u32::from_le_bytes(bytes[12..16].try_into().unwrap()), 5);
     }
 
     #[test]
-    #[should_panic(expected = "vertex log head does not fit in packed LARA row")]
+    fn tombstone_bit_preserves_log_head() {
+        let v = Vertex::from_parts(1, 2, 2, 42, false).with_tombstone(true);
+        assert!(v.is_tombstone());
+        assert_eq!(v.log_head(), 42);
+        let back = Vertex::from_bytes(v.to_bytes());
+        assert!(back.deleted());
+        assert_eq!(back.log_head(), 42);
+    }
+
+    #[test]
+    fn try_from_parts_rejects_slot_overflow() {
+        assert_eq!(
+            Vertex::try_from_parts(SLOT_INDEX_MASK + 1, 0, 0, -1, false),
+            Err(VertexFieldError::SlotIndexOverflow)
+        );
+    }
+
+    #[test]
+    fn try_from_parts_rejects_overflow_log_head() {
+        assert_eq!(
+            Vertex::try_from_parts(0, 0, 0, DEFAULT_MAX_LOG_ENTRIES as i32, false),
+            Err(VertexFieldError::OverflowLogHeadOutOfRange)
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "vertex overflow log head is invalid for packed LARA row")]
     fn oversized_log_head_panics() {
         let v = Vertex::default();
-        let _ = v.with_log_head(super::LOG_HEAD_PAYLOAD_MASK as i32);
+        let _ = v.with_log_head(DEFAULT_MAX_LOG_ENTRIES as i32);
+    }
+
+    #[test]
+    fn try_read_from_rejects_wire_length_mismatch() {
+        assert_eq!(
+            Vertex::try_read_from(&[0u8; 15]),
+            Err(VertexFieldError::WireLengthMismatch)
+        );
+    }
+
+    #[test]
+    fn try_read_from_rejects_overflow_log_on_wire() {
+        let tail = pack_vertex_tail28(DEFAULT_MAX_LOG_ENTRIES as i32, false);
+        let locator = encode_locator_word(0, tail);
+        let mut bytes = [0u8; Vertex::BYTES];
+        bytes[0..8].copy_from_slice(&locator.to_le_bytes());
+        assert_eq!(
+            Vertex::try_read_from(&bytes),
+            Err(VertexFieldError::OverflowLogHeadOutOfRange)
+        );
     }
 }
 
@@ -513,13 +659,13 @@ mod bench {
         let store = VertexStore::new(memories.memory()).expect("vertex store");
         for i in 0..n {
             store
-                .push(Vertex {
-                    base_slot_start: i * 4,
-                    live_edges: (i % 8) as u32,
-                    slab_slots: (i % 8) as u32,
-                    log_head: -1,
-                    deleted: false,
-                })
+                .push(Vertex::from_parts(
+                    i * 4,
+                    (i % 8) as u32,
+                    (i % 8) as u32,
+                    -1,
+                    false,
+                ))
                 .expect("push vertex");
         }
         store
@@ -535,13 +681,7 @@ mod bench {
             let _scope = canbench_rs::bench_scope("lara_vertex_push");
             for i in 0..helper::MEDIUM_N {
                 store
-                    .push(Vertex {
-                        base_slot_start: black_box(i * 4),
-                        live_edges: 0,
-                        slab_slots: 0,
-                        log_head: -1,
-                        deleted: false,
-                    })
+                    .push(Vertex::from_parts(black_box(i * 4), 0, 0, -1, false))
                     .expect("push vertex");
             }
         })

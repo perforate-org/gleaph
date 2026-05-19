@@ -117,6 +117,7 @@ impl<M: Memory> LabelBucketStore<M> {
         elem_capacity: u64,
         slots_per_vertex: u32,
     ) -> Result<Self, crate::GrowFailed> {
+        crate::slab_index::validate_elem_capacity_grow_failed(elem_capacity, slab.size())?;
         let header = SlabHeaderV1::new(
             elem_capacity,
             1,
@@ -220,7 +221,7 @@ impl<M: Memory> LabelBucketStore<M> {
             let bucket = self
                 .read_label_bucket_slot(slot)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            if bucket.bucket_label_key.is_undirected() {
+            if bucket.bucket_label_key().is_undirected() {
                 lo = mid + 1;
             } else {
                 hi = mid;
@@ -233,7 +234,7 @@ impl<M: Memory> LabelBucketStore<M> {
             let bucket = self
                 .read_label_bucket_slot(slot)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            if bucket.bucket_label_key.is_directed() {
+            if bucket.bucket_label_key().is_directed() {
                 return Ok(i);
             }
         }
@@ -254,7 +255,7 @@ impl<M: Memory> LabelBucketStore<M> {
             let bucket = self
                 .read_label_bucket_slot(slot)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            if bucket.bucket_label_key.is_directed() {
+            if bucket.bucket_label_key().is_directed() {
                 return Ok(i);
             }
         }
@@ -278,7 +279,7 @@ impl<M: Memory> LabelBucketStore<M> {
             let bucket = self
                 .read_label_bucket_slot(slot)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            if bucket.bucket_label_key.is_undirected() {
+            if bucket.bucket_label_key().is_undirected() {
                 return Ok(i.saturating_add(1));
             }
         }
@@ -383,8 +384,10 @@ impl<M: Memory> LabelBucketStore<M> {
         if slot < cap {
             return Ok(());
         }
-        let next = slot
-            .checked_add(1)
+        if !crate::slab_index::slot_index_fits(slot) {
+            return Err(LaraOperationError::CollectAllocationOverflow);
+        }
+        let next = crate::slab_index::checked_add_slot_exclusive_end(slot, 1)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         self.slab
             .set_elem_capacity(next)
@@ -425,9 +428,10 @@ impl<M: Memory> LabelBucketStore<M> {
             return Ok(span.start_slot);
         }
         let start = self.header().elem_capacity;
-        let last_in_span = start
-            .checked_add(len)
-            .and_then(|end| end.checked_sub(1))
+        let end = crate::slab_index::checked_add_slot_exclusive_end(start, len)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let last_in_span = end
+            .checked_sub(1)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         self.grow_capacity_to_fit(last_in_span)?;
         self.record_allocation(last_in_span)?;
@@ -636,8 +640,8 @@ impl<M: Memory> LabelBucketStore<M> {
         let buckets = self.read_label_bucket_slots_contiguous(v.base_slot_start(), v.degree());
         let buckets = buckets.ok_or(LaraOperationError::CollectAllocationOverflow)?;
         let index = buckets
-            .binary_search_by_key(&bucket.bucket_label_key, |candidate| {
-                candidate.bucket_label_key
+            .binary_search_by_key(&bucket.bucket_label_key(), |candidate| {
+                candidate.bucket_label_key()
             })
             .unwrap_or_else(|index| index);
         self.insert_label_bucket_at(vertices, vid, bucket, index as u32)
@@ -760,10 +764,8 @@ mod tests {
                 .insert_label_bucket(
                     &vertices,
                     VertexId::from(0),
-                    LabelBucket {
-                        bucket_label_key: crate::labeled::BucketLabelKey::from_raw(label),
-                        ..Default::default()
-                    },
+                    LabelBucket::default()
+                        .with_bucket_label_key(crate::labeled::BucketLabelKey::from_raw(label)),
                 )
                 .unwrap();
         }
@@ -775,7 +777,7 @@ mod tests {
                 .read_label_bucket_slot(vertex.base_slot_start() + offset)
                 .unwrap();
             assert_eq!(
-                bucket.bucket_label_key,
+                bucket.bucket_label_key(),
                 crate::labeled::BucketLabelKey::from_raw(offset as u16)
             );
         }
@@ -792,10 +794,8 @@ mod tests {
                 .insert_label_bucket(
                     &vertices,
                     VertexId::from(0),
-                    LabelBucket {
-                        bucket_label_key: crate::labeled::BucketLabelKey::from_raw(label),
-                        ..Default::default()
-                    },
+                    LabelBucket::default()
+                        .with_bucket_label_key(crate::labeled::BucketLabelKey::from_raw(label)),
                 )
                 .unwrap();
         }

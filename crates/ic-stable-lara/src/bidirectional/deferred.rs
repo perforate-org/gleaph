@@ -1901,13 +1901,7 @@ mod tests {
         )
         .unwrap();
         forward
-            .push_vertex(Vertex {
-                base_slot_start: 0,
-                live_edges: 0,
-                slab_slots: 0,
-                log_head: -1,
-                deleted: false,
-            })
+            .push_vertex(Vertex::from_parts(0, 0, 0, -1, false))
             .unwrap();
 
         let (fv, fc, fe, fl, fs, ff, ffs) = forward.into_memories();

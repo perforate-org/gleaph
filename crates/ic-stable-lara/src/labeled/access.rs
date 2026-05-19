@@ -57,7 +57,7 @@ impl<M: Memory> VertexAccess<LabelBucket> for LabelEdgeSpanAccess<'_, M> {
         match u32::from(id) {
             0 => bucket,
             1 => {
-                let succ = self.successor_start.max(bucket.edge_start);
+                let succ = self.successor_start.max(bucket.edge_start());
                 bucket.with_edge_range(succ, 0).with_overflow_log_head(-1)
             }
             _ => panic!("LabelEdgeSpanAccess only exposes row 0 and successor row 1"),

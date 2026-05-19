@@ -23,6 +23,15 @@
 //! successors across leaves, PMA totals, and slab `elem_capacity`), not by a stored
 //! per-row capacity field.
 //!
+//! **36-bit slab indices:** global edge-slot indices and packed vertex/bucket
+//! locators use a 36-bit index space ([`slab_index::SLOT_INDEX_MASK`]). Slab
+//! `elem_capacity` (exclusive end) must not exceed [`slab_index::MAX_SLOT_EXCLUSIVE_END`].
+//! Vertex rows are 16 bytes: a packed `u64` locator (36-bit index + 28-bit metadata)
+//! plus `u32` live/stored widths.
+//!
+//! [`slab_index`] is the crate-root module for slot bounds and locator helpers.
+//! [`labeled::slot_index`] re-exports it and adds [`LabelBucket`] packed-word helpers.
+//!
 //! The main external reference for the dynamic adjacency idea is
 //! [DGAP](https://github.com/DIR-LAB/DGAP), but this crate owns a separate
 //! persisted layout and API centered on LARA CSR rows and local relocation contracts.
@@ -53,6 +62,7 @@ mod bench;
 pub mod bidirectional;
 pub mod labeled;
 pub mod lara;
+pub mod slab_index;
 pub mod traits;
 mod types;
 

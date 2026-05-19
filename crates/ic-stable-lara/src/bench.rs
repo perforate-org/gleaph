@@ -55,13 +55,7 @@ pub(crate) fn test_edge(seed: u64) -> TestEdge {
 
 #[inline]
 pub(crate) fn vertex(base_slot_start: u64) -> Vertex {
-    Vertex {
-        base_slot_start,
-        live_edges: 0,
-        slab_slots: 0,
-        log_head: -1,
-        deleted: false,
-    }
+    Vertex::from_parts(base_slot_start, 0, 0, -1, false)
 }
 
 pub(crate) fn lara_graph(

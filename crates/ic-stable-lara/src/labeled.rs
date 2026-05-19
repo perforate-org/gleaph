@@ -71,6 +71,7 @@ pub(crate) mod deferred;
 pub(crate) mod graph;
 pub(crate) mod invariants;
 pub mod record;
+pub mod slot_index;
 pub(crate) mod traits;
 
 pub use bidirectional::{

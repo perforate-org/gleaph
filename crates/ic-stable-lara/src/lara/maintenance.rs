@@ -872,7 +872,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![TestEdge(12), TestEdge(11), TestEdge(10)]
         );
-        assert!(graph.graph().vertices().get(VertexId::from(0)).log_head >= 0);
+        assert!(graph.graph().vertices().get(VertexId::from(0)).log_head() >= 0);
         assert!(graph.maintenance_queue().is_dirty(SegmentId::from(0)));
 
         let report = graph
@@ -888,7 +888,10 @@ mod tests {
 
         assert_eq!(report.work.processed_segments, 1);
         assert_eq!(report.work.rebalanced_segments, 1);
-        assert_eq!(graph.graph().vertices().get(VertexId::from(0)).log_head, -1);
+        assert_eq!(
+            graph.graph().vertices().get(VertexId::from(0)).log_head(),
+            -1
+        );
         assert_eq!(
             graph.asc_out_edges(VertexId::from(0)).unwrap(),
             vec![TestEdge(10), TestEdge(11), TestEdge(12)]
@@ -904,7 +907,7 @@ mod tests {
                 .insert_edge_deferred(VertexId::from(0), TestEdge(dst))
                 .unwrap();
         }
-        assert!(graph.graph().vertices().get(VertexId::from(0)).log_head >= 0);
+        assert!(graph.graph().vertices().get(VertexId::from(0)).log_head() >= 0);
 
         assert!(
             graph
@@ -917,7 +920,7 @@ mod tests {
             vec![TestEdge(10), TestEdge(12)]
         );
         assert_eq!(graph.graph().vertices().get(VertexId::from(0)).degree(), 2);
-        assert!(graph.graph().vertices().get(VertexId::from(0)).log_head >= 0);
+        assert!(graph.graph().vertices().get(VertexId::from(0)).log_head() >= 0);
     }
 
     #[test]
@@ -1014,13 +1017,7 @@ mod tests {
         .unwrap();
         for slot in [0, 4, 8, 12] {
             graph
-                .push_vertex(Vertex {
-                    base_slot_start: slot,
-                    live_edges: 0,
-                    slab_slots: 0,
-                    log_head: -1,
-                    deleted: false,
-                })
+                .push_vertex(Vertex::from_parts(slot, 0, 0, -1, false))
                 .unwrap();
         }
 

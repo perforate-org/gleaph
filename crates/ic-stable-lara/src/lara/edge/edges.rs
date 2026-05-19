@@ -131,6 +131,8 @@ pub enum InitError {
         /// Edge record width read from stable memory.
         actual: u32,
     },
+    /// Persisted [`HeaderV1::elem_capacity`] exceeds the 36-bit slab index space.
+    ElemCapacityOverflow,
 }
 
 impl fmt::Display for InitError {
@@ -142,6 +144,9 @@ impl fmt::Display for InitError {
             Self::OutOfMemory => write!(f, "failed to allocate edge slab metadata"),
             Self::StrideMismatch { expected, actual } => {
                 write!(f, "edge stride mismatch: expected {expected}, got {actual}")
+            }
+            Self::ElemCapacityOverflow => {
+                write!(f, "edge slab elem_capacity exceeds 36-bit slot index space")
             }
         }
     }
@@ -191,6 +196,9 @@ impl<E: CsrEdge, M: Memory> EdgeSlabStore<E, M> {
                 expected: E::BYTES as u32,
                 actual: header.stride,
             });
+        }
+        if !crate::slab_index::validate_elem_capacity(header.elem_capacity).is_ok() {
+            return Err(InitError::ElemCapacityOverflow);
         }
         Ok(store)
     }
@@ -250,6 +258,12 @@ impl<E: CsrEdge, M: Memory> EdgeSlabStore<E, M> {
     }
     /// Updates the slab capacity and grows stable memory if needed.
     pub fn set_elem_capacity(&self, n: u64) -> Result<(), GrowFailed> {
+        if !crate::slab_index::slot_exclusive_end_fits(n) {
+            return Err(GrowFailed {
+                current_size: self.memory.size(),
+                delta: 0,
+            });
+        }
         let mut h = self.header().map_err(|_| GrowFailed {
             current_size: self.memory.size(),
             delta: 0,
@@ -365,6 +379,34 @@ pub fn segment_tree_leaf_count(vertex_len: VertexCount, segment_size: u32) -> u3
         vertex_len.div_ceil(sz)
     };
     need.max(1).checked_next_power_of_two().unwrap_or(u32::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{EdgeSlabStore, HeaderV1, InitError};
+    use crate::{
+        slab_index::MAX_SLOT_EXCLUSIVE_END,
+        test_support::{TestEdge, vector_memory},
+        traits::CsrEdge,
+        types::Address,
+        write_u64,
+    };
+
+    #[test]
+    fn edge_slab_init_rejects_elem_capacity_above_index_space() {
+        let memory = vector_memory();
+        let header = HeaderV1::new(64, 1, 4, TestEdge::BYTES as u32, 0);
+        EdgeSlabStore::<TestEdge, _>::new(memory.clone(), header).expect("seed slab");
+        write_u64(
+            &memory,
+            Address::from(4),
+            MAX_SLOT_EXCLUSIVE_END.saturating_add(1),
+        );
+        assert!(matches!(
+            EdgeSlabStore::<TestEdge, _>::init(memory),
+            Err(InitError::ElemCapacityOverflow)
+        ));
+    }
 }
 
 #[cfg(feature = "canbench")]

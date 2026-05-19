@@ -169,6 +169,7 @@ where
         segment_size: u32,
         initial_vertex_edge_slots: u32,
     ) -> Result<Self, GrowFailed> {
+        crate::slab_index::validate_elem_capacity_grow_failed(elem_capacity, edges.size())?;
         Ok(Self {
             vertices: VertexStore::new(vertices)?,
             edges: EdgeStore::new(
@@ -187,6 +188,8 @@ where
     }
 
     /// Opens a graph from stable memories, creating it when the edge slab is empty.
+    ///
+    /// See [`EdgeStore::init`] for how `elem_capacity` is interpreted on reopen.
     #[allow(clippy::too_many_arguments)]
     pub fn init(
         vertices: M,
@@ -1496,8 +1499,12 @@ mod tests {
     use crate::VertexId;
     use crate::lara::edge::EdgeLayout;
     use crate::lara::vertex::Vertex;
-    use crate::test_support::{
-        LabelledTestEdge, TestEdge, assert_vertex_capacity_invariants, lara_test_graph, test_graph,
+    use crate::{
+        slab_index::MAX_SLOT_EXCLUSIVE_END,
+        test_support::{
+            LabelledTestEdge, TestEdge, assert_vertex_capacity_invariants, lara_test_graph,
+            test_graph, vector_memory,
+        },
     };
     use ic_stable_structures::{Storable, storable::Bound};
     use std::borrow::Cow;
@@ -1558,6 +1565,26 @@ mod tests {
     }
 
     #[test]
+    fn lara_graph_new_rejects_elem_capacity_above_index_space() {
+        assert!(
+            LaraGraph::<TestEdge, Vertex, _>::new(
+                vector_memory(),
+                vector_memory(),
+                vector_memory(),
+                vector_memory(),
+                vector_memory(),
+                vector_memory(),
+                vector_memory(),
+                MAX_SLOT_EXCLUSIVE_END.saturating_add(1),
+                4,
+                0,
+            )
+            .is_err(),
+            "elem_capacity above 36-bit index space must be rejected at open"
+        );
+    }
+
+    #[test]
     fn lara_init_creates_empty_graph_when_memory_is_empty() {
         let graph = LaraGraph::<TestEdge, Vertex, _>::init(
             crate::test_support::vector_memory(),
@@ -1595,43 +1622,31 @@ mod tests {
         .unwrap();
 
         graph
-            .push_vertex(Vertex {
-                base_slot_start: 0,
-                live_edges: 0,
-                slab_slots: 0,
-                log_head: -1,
-                deleted: false,
-            })
+            .push_vertex(Vertex::from_parts(0, 0, 0, -1, false))
             .unwrap();
         graph
-            .push_vertex(Vertex {
-                base_slot_start: 0,
-                live_edges: 0,
-                slab_slots: 0,
-                log_head: -1,
-                deleted: false,
-            })
+            .push_vertex(Vertex::from_parts(0, 0, 0, -1, false))
             .unwrap();
 
-        assert_eq!(graph.vertices().get(VertexId::from(0)).base_slot_start, 0);
+        assert_eq!(graph.vertices().get(VertexId::from(0)).base_slot_start(), 0);
         let layout: EdgeLayout = graph.edges().header().into();
         let v0 = graph.vertices().get(VertexId::from(0));
         let end0 = graph
             .edges()
             .slab_window_exclusive_end(&layout, graph.vertices(), 0, &v0);
-        assert_eq!(end0.saturating_sub(v0.base_slot_start), 2);
-        assert_eq!(graph.vertices().get(VertexId::from(1)).base_slot_start, 2);
+        assert_eq!(end0.saturating_sub(v0.base_slot_start()), 2);
+        assert_eq!(graph.vertices().get(VertexId::from(1)).base_slot_start(), 2);
         let v1 = graph.vertices().get(VertexId::from(1));
         let end1 = graph
             .edges()
             .slab_window_exclusive_end(&layout, graph.vertices(), 1, &v1);
-        assert_eq!(end1.saturating_sub(v1.base_slot_start), 2);
+        assert_eq!(end1.saturating_sub(v1.base_slot_start()), 2);
 
         graph.insert_edge(VertexId::from(1), TestEdge(10)).unwrap();
         graph.insert_edge(VertexId::from(1), TestEdge(11)).unwrap();
 
         assert_eq!(graph.vertices().get(VertexId::from(1)).degree(), 2);
-        assert_eq!(graph.vertices().get(VertexId::from(1)).log_head, -1);
+        assert_eq!(graph.vertices().get(VertexId::from(1)).log_head(), -1);
         assert_eq!(
             graph.asc_out_edges(VertexId::from(1)).unwrap(),
             vec![TestEdge(10), TestEdge(11)]
@@ -1652,7 +1667,7 @@ mod tests {
             vec![TestEdge(10), TestEdge(11)]
         );
         assert_eq!(graph.vertices().get(VertexId::from(0)).degree(), 2);
-        assert_eq!(graph.vertices().get(VertexId::from(0)).log_head, -1);
+        assert_eq!(graph.vertices().get(VertexId::from(0)).log_head(), -1);
         assert!(graph.edges().header().elem_capacity >= 4);
     }
 
@@ -1783,7 +1798,7 @@ mod tests {
         graph
             .insert_edge_raw(VertexId::from(0), TestEdge(12))
             .unwrap();
-        assert!(graph.vertices().get(VertexId::from(0)).log_head >= 0);
+        assert!(graph.vertices().get(VertexId::from(0)).log_head() >= 0);
 
         assert!(graph.remove_edge(VertexId::from(0), TestEdge(11)).unwrap());
 
@@ -1799,7 +1814,7 @@ mod tests {
             vec![TestEdge(10), TestEdge(12)]
         );
         assert_eq!(graph.vertices().get(VertexId::from(0)).degree(), 2);
-        assert!(graph.vertices().get(VertexId::from(0)).log_head >= 0);
+        assert!(graph.vertices().get(VertexId::from(0)).log_head() >= 0);
         assert_eq!(graph.edges().header().num_edges, 2);
         assert_vertex_capacity_invariants(&graph);
     }
@@ -1820,7 +1835,7 @@ mod tests {
         graph
             .insert_edge_raw(VertexId::from(0), TestEdge(12))
             .unwrap();
-        assert!(graph.vertices().get(VertexId::from(0)).log_head >= 0);
+        assert!(graph.vertices().get(VertexId::from(0)).log_head() >= 0);
 
         let mut seen_tens = 0u32;
         let removed = graph
@@ -1907,14 +1922,14 @@ mod tests {
         }
 
         assert_eq!(graph.edges().header().elem_capacity, 8);
-        assert_eq!(graph.vertices().get(VertexId::from(0)).log_head, -1);
+        assert_eq!(graph.vertices().get(VertexId::from(0)).log_head(), -1);
         assert_eq!(
             graph.asc_out_edges(VertexId::from(0)).unwrap(),
             vec![TestEdge(10), TestEdge(11), TestEdge(12), TestEdge(13)]
         );
         assert!(
-            graph.vertices().get(VertexId::from(1)).base_slot_start
-                > graph.vertices().get(VertexId::from(0)).base_slot_start + 3
+            graph.vertices().get(VertexId::from(1)).base_slot_start()
+                > graph.vertices().get(VertexId::from(0)).base_slot_start() + 3
         );
     }
 
@@ -1953,7 +1968,7 @@ mod tests {
         let released = graph.edges().free_span_store().peek_best_fit(1).unwrap();
         assert_eq!(released.start_slot, 0);
         assert!(released.len > 0);
-        assert_eq!(graph.vertices().get(VertexId::from(0)).base_slot_start, 4);
+        assert_eq!(graph.vertices().get(VertexId::from(0)).base_slot_start(), 4);
         assert_eq!(graph.vertices().get(VertexId::from(0)).degree(), 4);
         let layout: EdgeLayout = graph.edges().header().into();
         let v = graph.vertices().get(VertexId::from(0));
@@ -1961,10 +1976,10 @@ mod tests {
             .edges()
             .slab_window_exclusive_end(&layout, graph.vertices(), 0, &v);
         assert!(
-            v.base_slot_start.saturating_add(u64::from(v.degree())) <= end,
+            v.base_slot_start().saturating_add(u64::from(v.degree())) <= end,
             "slab neighborhood must fit csr window",
         );
-        assert_eq!(graph.vertices().get(VertexId::from(0)).log_head, -1);
+        assert_eq!(graph.vertices().get(VertexId::from(0)).log_head(), -1);
         assert_eq!(graph.edges().counts_store().get(1).actual, 4);
         assert_eq!(graph.edges().counts_store().get(1).total, 7);
         assert_eq!(graph.edges().counts_store().get(2).actual, 4);
@@ -1979,7 +1994,10 @@ mod tests {
         for dst in 10..20 {
             graph.insert_edge(VertexId::from(0), TestEdge(dst)).unwrap();
         }
-        assert_eq!(graph.vertices().get(VertexId::from(0)).base_slot_start, 12);
+        assert_eq!(
+            graph.vertices().get(VertexId::from(0)).base_slot_start(),
+            12
+        );
         assert_eq!(
             graph
                 .edges()
@@ -2019,7 +2037,7 @@ mod tests {
                 TestEdge(24)
             ]
         );
-        assert_eq!(graph.vertices().get(VertexId::from(1)).base_slot_start, 0);
+        assert_eq!(graph.vertices().get(VertexId::from(1)).base_slot_start(), 0);
         assert_eq!(graph.edges().span_meta_store().get(0).physical_start, 12);
         assert_eq!(graph.edges().span_meta_store().get(1).physical_start, 0);
         let root = graph.edges().counts_store().get(1);
@@ -2067,26 +2085,12 @@ mod tests {
         let graph = test_graph(40, 2, &[0, 2, 20, 22]);
         graph.edges().write_slot(0, TestEdge(101)).unwrap();
         graph.edges().write_slot(2, TestEdge(201)).unwrap();
-        graph.vertices().set(
-            VertexId::from(0),
-            &Vertex {
-                base_slot_start: 0,
-                live_edges: 1,
-                slab_slots: 1,
-                log_head: -1,
-                deleted: false,
-            },
-        );
-        graph.vertices().set(
-            VertexId::from(1),
-            &Vertex {
-                base_slot_start: 2,
-                live_edges: 1,
-                slab_slots: 1,
-                log_head: -1,
-                deleted: false,
-            },
-        );
+        graph
+            .vertices()
+            .set(VertexId::from(0), &Vertex::from_parts(0, 1, 1, -1, false));
+        graph
+            .vertices()
+            .set(VertexId::from(1), &Vertex::from_parts(2, 1, 1, -1, false));
         let layout = graph.layout();
         graph.update_leaf_count_and_ancestors(
             &layout,
@@ -2120,26 +2124,12 @@ mod tests {
         let graph = test_graph(40, 2, &[0, 2, 20, 22]);
         graph.edges().write_slot(0, TestEdge(301)).unwrap();
         graph.edges().write_slot(2, TestEdge(401)).unwrap();
-        graph.vertices().set(
-            VertexId::from(0),
-            &Vertex {
-                base_slot_start: 0,
-                live_edges: 1,
-                slab_slots: 1,
-                log_head: -1,
-                deleted: false,
-            },
-        );
-        graph.vertices().set(
-            VertexId::from(1),
-            &Vertex {
-                base_slot_start: 2,
-                live_edges: 1,
-                slab_slots: 1,
-                log_head: -1,
-                deleted: false,
-            },
-        );
+        graph
+            .vertices()
+            .set(VertexId::from(0), &Vertex::from_parts(0, 1, 1, -1, false));
+        graph
+            .vertices()
+            .set(VertexId::from(1), &Vertex::from_parts(2, 1, 1, -1, false));
         let layout = graph.layout();
         graph.update_leaf_count_and_ancestors(
             &layout,
@@ -2179,26 +2169,12 @@ mod tests {
         graph.edges().write_slot(10, TestEdge(101)).unwrap();
         graph.edges().write_slot(13, TestEdge(201)).unwrap();
         graph.edges().write_slot(14, TestEdge(202)).unwrap();
-        graph.vertices().set(
-            VertexId::from(2),
-            &Vertex {
-                base_slot_start: 10,
-                live_edges: 1,
-                slab_slots: 1,
-                log_head: -1,
-                deleted: false,
-            },
-        );
-        graph.vertices().set(
-            VertexId::from(3),
-            &Vertex {
-                base_slot_start: 13,
-                live_edges: 2,
-                slab_slots: 2,
-                log_head: -1,
-                deleted: false,
-            },
-        );
+        graph
+            .vertices()
+            .set(VertexId::from(2), &Vertex::from_parts(10, 1, 1, -1, false));
+        graph
+            .vertices()
+            .set(VertexId::from(3), &Vertex::from_parts(13, 2, 2, -1, false));
         let layout = graph.layout();
         graph.update_leaf_count_and_ancestors(
             &layout,
@@ -2225,7 +2201,7 @@ mod tests {
                 .unwrap()
         );
 
-        assert_eq!(graph.vertices().get(VertexId::from(2)).base_slot_start, 4);
+        assert_eq!(graph.vertices().get(VertexId::from(2)).base_slot_start(), 4);
         assert_eq!(
             graph.asc_out_edges(VertexId::from(2)).unwrap(),
             vec![TestEdge(101)]
@@ -2251,26 +2227,12 @@ mod tests {
         let graph = test_graph(40, 2, &[0, 3, 10, 12]);
         graph.edges().write_slot(10, TestEdge(301)).unwrap();
         graph.edges().write_slot(12, TestEdge(401)).unwrap();
-        graph.vertices().set(
-            VertexId::from(2),
-            &Vertex {
-                base_slot_start: 10,
-                live_edges: 1,
-                slab_slots: 1,
-                log_head: -1,
-                deleted: false,
-            },
-        );
-        graph.vertices().set(
-            VertexId::from(3),
-            &Vertex {
-                base_slot_start: 12,
-                live_edges: 1,
-                slab_slots: 1,
-                log_head: -1,
-                deleted: false,
-            },
-        );
+        graph
+            .vertices()
+            .set(VertexId::from(2), &Vertex::from_parts(10, 1, 1, -1, false));
+        graph
+            .vertices()
+            .set(VertexId::from(3), &Vertex::from_parts(12, 1, 1, -1, false));
         let layout = graph.layout();
         graph.update_leaf_count_and_ancestors(
             &layout,
@@ -2297,7 +2259,10 @@ mod tests {
                 .unwrap()
         );
 
-        assert_eq!(graph.vertices().get(VertexId::from(2)).base_slot_start, 15);
+        assert_eq!(
+            graph.vertices().get(VertexId::from(2)).base_slot_start(),
+            15
+        );
         assert_eq!(
             graph.asc_out_edges(VertexId::from(2)).unwrap(),
             vec![TestEdge(301)]
@@ -2322,16 +2287,9 @@ mod tests {
     fn lara_segment_slide_requires_both_free_neighbors_and_previous_segment() {
         let graph = test_graph(40, 2, &[0, 2, 10, 13]);
         graph.edges().write_slot(10, TestEdge(501)).unwrap();
-        graph.vertices().set(
-            VertexId::from(2),
-            &Vertex {
-                base_slot_start: 10,
-                live_edges: 1,
-                slab_slots: 1,
-                log_head: -1,
-                deleted: false,
-            },
-        );
+        graph
+            .vertices()
+            .set(VertexId::from(2), &Vertex::from_parts(10, 1, 1, -1, false));
         let layout = graph.layout();
         graph.update_leaf_count_and_ancestors(
             &layout,
@@ -2348,7 +2306,10 @@ mod tests {
                 .try_slide_segment_for_adjacent_buffer_with_layout(&layout)
                 .unwrap()
         );
-        assert_eq!(graph.vertices().get(VertexId::from(2)).base_slot_start, 10);
+        assert_eq!(
+            graph.vertices().get(VertexId::from(2)).base_slot_start(),
+            10
+        );
         assert_eq!(
             graph.edges().free_span_store().spans(),
             vec![crate::lara::edge::free_span::FreeSpan {
@@ -2363,26 +2324,12 @@ mod tests {
         let graph = test_graph(40, 2, &[0, 2, 10, 13]);
         graph.edges().write_slot(10, TestEdge(601)).unwrap();
         graph.edges().write_slot(13, TestEdge(701)).unwrap();
-        graph.vertices().set(
-            VertexId::from(2),
-            &Vertex {
-                base_slot_start: 10,
-                live_edges: 1,
-                slab_slots: 1,
-                log_head: -1,
-                deleted: false,
-            },
-        );
-        graph.vertices().set(
-            VertexId::from(3),
-            &Vertex {
-                base_slot_start: 13,
-                live_edges: 1,
-                slab_slots: 1,
-                log_head: -1,
-                deleted: false,
-            },
-        );
+        graph
+            .vertices()
+            .set(VertexId::from(2), &Vertex::from_parts(10, 1, 1, -1, false));
+        graph
+            .vertices()
+            .set(VertexId::from(3), &Vertex::from_parts(13, 1, 1, -1, false));
         let layout = graph.layout();
         graph.update_leaf_count_and_ancestors(
             &layout,
@@ -2416,7 +2363,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            reopened.vertices().get(VertexId::from(2)).base_slot_start,
+            reopened.vertices().get(VertexId::from(2)).base_slot_start(),
             4
         );
         assert_eq!(
@@ -2450,13 +2397,7 @@ mod tests {
         .unwrap();
         for base_slot_start in [0, 2, 10, 13] {
             graph
-                .push_vertex(Vertex {
-                    base_slot_start,
-                    live_edges: 0,
-                    slab_slots: 0,
-                    log_head: -1,
-                    deleted: false,
-                })
+                .push_vertex(Vertex::from_parts(base_slot_start, 0, 0, -1, false))
                 .unwrap();
         }
         graph.edges().write_slot(10, LargeTestEdge::new(7)).unwrap();
@@ -2464,26 +2405,12 @@ mod tests {
             .edges()
             .write_slot(13, LargeTestEdge::new(11))
             .unwrap();
-        graph.vertices().set(
-            VertexId::from(2),
-            &Vertex {
-                base_slot_start: 10,
-                live_edges: 1,
-                slab_slots: 1,
-                log_head: -1,
-                deleted: false,
-            },
-        );
-        graph.vertices().set(
-            VertexId::from(3),
-            &Vertex {
-                base_slot_start: 13,
-                live_edges: 1,
-                slab_slots: 1,
-                log_head: -1,
-                deleted: false,
-            },
-        );
+        graph
+            .vertices()
+            .set(VertexId::from(2), &Vertex::from_parts(10, 1, 1, -1, false));
+        graph
+            .vertices()
+            .set(VertexId::from(3), &Vertex::from_parts(13, 1, 1, -1, false));
         let layout = graph.layout();
         graph.update_leaf_count_and_ancestors(
             &layout,
@@ -2510,7 +2437,7 @@ mod tests {
                 .unwrap()
         );
 
-        assert_eq!(graph.vertices().get(VertexId::from(2)).base_slot_start, 4);
+        assert_eq!(graph.vertices().get(VertexId::from(2)).base_slot_start(), 4);
         assert_eq!(
             graph.asc_out_edges(VertexId::from(2)).unwrap(),
             vec![LargeTestEdge::new(7)]
@@ -2545,10 +2472,10 @@ mod tests {
             .edges()
             .slab_window_exclusive_end(&layout, reopened.vertices(), 0, &v);
         assert!(
-            v.base_slot_start.saturating_add(u64::from(v.degree())) <= end,
+            v.base_slot_start().saturating_add(u64::from(v.degree())) <= end,
             "slab neighborhood must fit csr window",
         );
-        assert_eq!(reopened.vertices().get(VertexId::from(0)).log_head, -1);
+        assert_eq!(reopened.vertices().get(VertexId::from(0)).log_head(), -1);
         assert_eq!(
             reopened.asc_out_edges(VertexId::from(0)).unwrap(),
             vec![TestEdge(10), TestEdge(11), TestEdge(12), TestEdge(13)]

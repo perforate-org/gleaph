@@ -76,8 +76,8 @@ use edges::tree_height_for_segment_count;
 pub use edges::{HeaderV1 as EdgeHeaderV1, InitError as SlabInitError, segment_tree_leaf_count};
 use free_span::{FreeSpan, FreeSpanStore};
 use ic_stable_structures::Memory;
-pub use log::HeaderV1 as LogHeaderV1;
 use log::LogStore;
+pub use log::{DEFAULT_MAX_LOG_ENTRIES, HeaderV1 as LogHeaderV1};
 use span_meta::{SPAN_PHYSICAL_UNASSIGNED, SegmentSpanMeta, SegmentSpanMetaStore};
 use std::{cell::Cell, fmt, iter::FusedIterator, num::NonZero};
 
@@ -500,6 +500,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         segment_size: u32,
         initial_vertex_edge_slots: u32,
     ) -> Result<Self, GrowFailed> {
+        crate::slab_index::validate_elem_capacity_grow_failed(elem_capacity, edges.size())?;
         let segment_count = segment_tree_leaf_count(VertexCount::default(), segment_size);
         let header = EdgeHeaderV1::new(
             elem_capacity,
@@ -538,6 +539,11 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     }
 
     /// Opens an edge subsystem from stable memories, creating it when the edge slab is empty.
+    ///
+    /// When subgraph memories already exist, `elem_capacity` is only used for the empty-slab
+    /// creation path. On reopen the persisted [`EdgeHeaderV1::elem_capacity`] is authoritative
+    /// (validated in [`EdgeSlabStore::init`]); pass the same value you used at first open if
+    /// the slab has not been grown since.
     #[allow(clippy::too_many_arguments)]
     pub fn init(
         counts: M,
@@ -567,6 +573,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let counts = SegmentEdgeCountsStore::init(counts).map_err(InitError::Counts)?;
         let edges = EdgeSlabStore::init(edges).map_err(InitError::Edges)?;
         let header = edges.header().map_err(InitError::Edges)?;
+        let _ = elem_capacity;
         let log = LogStore::init(log).map_err(InitError::Log)?;
         let span_meta = SegmentSpanMetaStore::init(span_meta).map_err(InitError::SpanMeta)?;
         let free_spans = FreeSpanStore::init(free_spans, free_span_by_start)
@@ -741,6 +748,12 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             delta: 0,
         };
         if let Some(span) = self.free_spans.take_best_fit(len).map_err(map_err)? {
+            crate::slab_index::checked_add_slot_exclusive_end(span.start_slot, len).ok_or(
+                GrowFailed {
+                    current_size: 0,
+                    delta: 0,
+                },
+            )?;
             if let Some((avoid_start, avoid_len)) = avoid {
                 if Self::spans_overlap(span.start_slot, len, avoid_start, avoid_len) {
                     self.free_spans
@@ -758,7 +771,12 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         }
 
         let start = cap;
-        self.set_elem_capacity(start.saturating_add(len))?;
+        let new_cap =
+            crate::slab_index::checked_add_slot_exclusive_end(start, len).ok_or(GrowFailed {
+                current_size: 0,
+                delta: 0,
+            })?;
+        self.set_elem_capacity(new_cap)?;
         Ok(start)
     }
 
@@ -2530,22 +2548,10 @@ mod tests {
 
         let vertices = VertexStore::<Vertex, _>::new(mv).unwrap();
         vertices
-            .push(Vertex {
-                base_slot_start: 0,
-                live_edges: 0,
-                slab_slots: 0,
-                log_head: -1,
-                deleted: false,
-            })
+            .push(Vertex::from_parts(0, 0, 0, -1, false))
             .unwrap();
         vertices
-            .push(Vertex {
-                base_slot_start: 1,
-                live_edges: 0,
-                slab_slots: 0,
-                log_head: -1,
-                deleted: false,
-            })
+            .push(Vertex::from_parts(1, 0, 0, -1, false))
             .unwrap();
 
         let edges = EdgeStore::new(
@@ -2598,7 +2604,7 @@ mod tests {
             vec![TestEdge(10), TestEdge(11)]
         );
         assert_eq!(vertices.get(VertexId::from(0)).live_edges, 2);
-        assert!(vertices.get(VertexId::from(0)).log_head >= 0);
+        assert!(vertices.get(VertexId::from(0)).log_head() >= 0);
     }
 
     #[test]
@@ -2610,22 +2616,10 @@ mod tests {
 
         let vertices = VertexStore::<Vertex, _>::new(mv).unwrap();
         vertices
-            .push(Vertex {
-                base_slot_start: 0,
-                live_edges: 0,
-                slab_slots: 0,
-                log_head: -1,
-                deleted: false,
-            })
+            .push(Vertex::from_parts(0, 0, 0, -1, false))
             .unwrap();
         vertices
-            .push(Vertex {
-                base_slot_start: 2,
-                live_edges: 0,
-                slab_slots: 0,
-                log_head: -1,
-                deleted: false,
-            })
+            .push(Vertex::from_parts(2, 0, 0, -1, false))
             .unwrap();
 
         let edges = EdgeStore::new(
@@ -2652,7 +2646,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(vertices.get(VertexId::from(0)).live_edges, 2);
-        assert_eq!(vertices.get(VertexId::from(0)).log_head, -1);
+        assert_eq!(vertices.get(VertexId::from(0)).log_head(), -1);
         assert_eq!(
             edges.asc_out_edges(&vertices, VertexId::from(0)).unwrap(),
             vec![TestEdge(10), TestEdge(11)]
@@ -2668,22 +2662,10 @@ mod tests {
 
         let vertices = VertexStore::<Vertex, _>::new(mv).unwrap();
         vertices
-            .push(Vertex {
-                base_slot_start: 0,
-                live_edges: 0,
-                slab_slots: 0,
-                log_head: -1,
-                deleted: false,
-            })
+            .push(Vertex::from_parts(0, 0, 0, -1, false))
             .unwrap();
         vertices
-            .push(Vertex {
-                base_slot_start: 2,
-                live_edges: 0,
-                slab_slots: 0,
-                log_head: -1,
-                deleted: false,
-            })
+            .push(Vertex::from_parts(2, 0, 0, -1, false))
             .unwrap();
 
         let edges = EdgeStore::new(
@@ -2732,13 +2714,7 @@ mod tests {
 
         let vertices = VertexStore::<Vertex, _>::new(mv).unwrap();
         vertices
-            .push(Vertex {
-                base_slot_start: 0,
-                live_edges: 2,
-                slab_slots: 2,
-                log_head: -1,
-                deleted: false,
-            })
+            .push(Vertex::from_parts(0, 2, 2, -1, false))
             .unwrap();
 
         let edges = EdgeStore::new(

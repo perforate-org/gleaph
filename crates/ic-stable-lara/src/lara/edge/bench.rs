@@ -23,13 +23,13 @@ fn edge_store_with_vertices(
     let vertices = VertexStore::new(memories.memory()).expect("vertices");
     for vid in 0..vertex_count {
         vertices
-            .push(Vertex {
-                base_slot_start: u64::from(vid) * u64::from(slot_stride),
-                live_edges: 0,
-                slab_slots: 0,
-                log_head: -1,
-                deleted: false,
-            })
+            .push(Vertex::from_parts(
+                u64::from(vid) * u64::from(slot_stride),
+                0,
+                0,
+                -1,
+                false,
+            ))
             .expect("push vertex");
     }
     let edges = EdgeStore::new(
@@ -104,7 +104,7 @@ fn bench_lara_edge_store_log_spill_128() -> canbench_rs::BenchResult {
                 )
                 .expect("insert log edge");
         }
-        black_box(vertices.get(VertexId::from(0)).log_head);
+        black_box(vertices.get(VertexId::from(0)).log_head());
     })
 }
 

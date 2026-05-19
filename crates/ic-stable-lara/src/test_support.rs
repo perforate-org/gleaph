@@ -208,13 +208,7 @@ where
     .unwrap();
     for &base_slot_start in starts {
         graph
-            .push_vertex(Vertex {
-                base_slot_start,
-                live_edges: 0,
-                slab_slots: 0,
-                log_head: -1,
-                deleted: false,
-            })
+            .push_vertex(Vertex::from_parts(base_slot_start, 0, 0, -1, false))
             .unwrap();
     }
     graph
@@ -246,13 +240,7 @@ where
     .unwrap();
     for &base_slot_start in starts {
         graph
-            .push_vertex(Vertex {
-                base_slot_start,
-                live_edges: 0,
-                slab_slots: 0,
-                log_head: -1,
-                deleted: false,
-            })
+            .push_vertex(Vertex::from_parts(base_slot_start, 0, 0, -1, false))
             .unwrap();
     }
     graph
@@ -294,13 +282,7 @@ where
     .unwrap();
     for &base_slot_start in starts {
         graph
-            .push_vertex(Vertex {
-                base_slot_start,
-                live_edges: 0,
-                slab_slots: 0,
-                log_head: -1,
-                deleted: false,
-            })
+            .push_vertex(Vertex::from_parts(base_slot_start, 0, 0, -1, false))
             .unwrap();
     }
     graph
@@ -316,18 +298,18 @@ pub(crate) fn assert_vertex_capacity_invariants(graph: &LaraGraph<TestEdge, Vert
             .edges()
             .slab_window_exclusive_end(&layout, graph.vertices(), vidx, &v);
         assert!(
-            end >= v.base_slot_start,
+            end >= v.base_slot_start(),
             "vertex {vidx}: csr window end {end} before base {}",
-            v.base_slot_start
+            v.base_slot_start()
         );
-        if v.log_head < 0 {
+        if v.log_head() < 0 {
             assert!(
-                v.base_slot_start.saturating_add(u64::from(v.degree())) <= end,
+                v.base_slot_start().saturating_add(u64::from(v.degree())) <= end,
                 "vertex {vidx}: live slab prefix extends past csr window end {end}"
             );
         }
-        if end > v.base_slot_start {
-            owned_spans.push((vidx, v.base_slot_start, end));
+        if end > v.base_slot_start() {
+            owned_spans.push((vidx, v.base_slot_start(), end));
         }
     }
 
@@ -369,13 +351,7 @@ pub(crate) fn deferred_test_graph(
     .unwrap();
     for &base_slot_start in starts {
         graph
-            .push_vertex(Vertex {
-                base_slot_start,
-                live_edges: 0,
-                slab_slots: 0,
-                log_head: -1,
-                deleted: false,
-            })
+            .push_vertex(Vertex::from_parts(base_slot_start, 0, 0, -1, false))
             .unwrap();
     }
     graph
