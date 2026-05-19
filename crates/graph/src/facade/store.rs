@@ -1731,12 +1731,15 @@ impl GraphStore {
                         .expect("stored edge property values remain encodable")
                 });
                 if !moved_properties.is_empty() {
-                    edge_equal::remove_all_for_edge(
-                        owner_vertex_id,
-                        label_id,
-                        moved.old_slot_index,
-                    );
                     for (property_id, value) in &moved_properties {
+                        edge_equal::record_edge_property_change(
+                            owner_vertex_id,
+                            label_id,
+                            moved.old_slot_index,
+                            *property_id,
+                            Some(value),
+                            None,
+                        );
                         edge_equal::record_edge_property_change(
                             owner_vertex_id,
                             label_id,

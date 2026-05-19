@@ -2,6 +2,7 @@
 
 mod ic_budget;
 mod ic_gql_extensions;
+pub(crate) mod edge_equality_index;
 mod stable;
 
 pub mod auth;

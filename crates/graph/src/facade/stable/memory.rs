@@ -63,6 +63,7 @@ const VERTEX_LOGICAL_IDS: MemoryId = MemoryId::new(36);
 const REMOTE_REF_TO_LOGICAL: MemoryId = MemoryId::new(37);
 const LOGICAL_TO_REMOTE_REF: MemoryId = MemoryId::new(38);
 const REMOTE_FORWARD_IN: MemoryId = MemoryId::new(39);
+const EDGE_EQUALITY_POSTINGS: MemoryId = MemoryId::new(40);
 
 pub(crate) const GRAPH_DEFAULT_EDGE_LABEL: LaraLabelId = LaraLabelId::UNLABELED_DIRECTED;
 
@@ -86,6 +87,8 @@ pub(crate) type StableEdgeWeightProfileStore = EdgeWeightProfileStore<Memory>;
 pub(crate) type StableVertexLogicalIdMap = super::vertex_logical_ids::VertexLogicalIdMap<Memory>;
 pub(crate) type StableRemoteVertexRefTable = super::remote_vertex_refs::RemoteVertexRefTable<Memory>;
 pub(crate) type StableRemoteForwardInIndex = super::remote_forward_in::RemoteForwardInIndex<Memory>;
+pub(crate) type StableEdgeEqualityPostingStore =
+    super::edge_equality_postings::EdgeEqualityPostingStore<Memory>;
 
 thread_local! {
     static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
@@ -199,5 +202,11 @@ pub(crate) fn init_remote_vertex_refs() -> StableRemoteVertexRefTable {
 pub(crate) fn init_remote_forward_in() -> StableRemoteForwardInIndex {
     super::remote_forward_in::RemoteForwardInIndex::init(
         MEMORY_MANAGER.with(|m| m.borrow().get(REMOTE_FORWARD_IN)),
+    )
+}
+
+pub(crate) fn init_edge_equality_postings() -> StableEdgeEqualityPostingStore {
+    super::edge_equality_postings::EdgeEqualityPostingStore::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(EDGE_EQUALITY_POSTINGS)),
     )
 }
