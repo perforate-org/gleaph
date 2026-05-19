@@ -649,11 +649,38 @@ impl GraphStore {
         property_id: PropertyId,
         value: Value,
     ) -> Result<Option<Value>, VertexPropertyStoreError> {
+        self.set_vertex_property_inner(vertex_id, property_id, value, true)
+    }
+
+    /// Sets a vertex property without queueing federated index postings (migration import).
+    pub(crate) fn set_vertex_property_without_index_pending(
+        &self,
+        vertex_id: VertexId,
+        property_id: PropertyId,
+        value: Value,
+    ) -> Result<Option<Value>, VertexPropertyStoreError> {
+        self.set_vertex_property_inner(vertex_id, property_id, value, false)
+    }
+
+    fn set_vertex_property_inner(
+        &self,
+        vertex_id: VertexId,
+        property_id: PropertyId,
+        value: Value,
+        record_index_pending: bool,
+    ) -> Result<Option<Value>, VertexPropertyStoreError> {
         let prev =
             VERTEX_PROPERTIES.with_borrow(|properties| properties.get(vertex_id, property_id));
         let out = VERTEX_PROPERTIES
             .with_borrow_mut(|properties| properties.set(vertex_id, property_id, value.clone()))?;
-        pending::record_vertex_property_change(vertex_id, property_id, prev.as_ref(), Some(&value));
+        if record_index_pending {
+            pending::record_vertex_property_change(
+                vertex_id,
+                property_id,
+                prev.as_ref(),
+                Some(&value),
+            );
+        }
         Ok(out)
     }
 

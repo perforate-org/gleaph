@@ -30,6 +30,10 @@ fn ic_candid_decode_err(op: &'static str) -> PlanQueryError {
 
 #[async_trait(?Send)]
 impl PropertyIndexLookup for IcPropertyIndexClient {
+    fn local_shard_id(&self) -> gleaph_graph_kernel::federation::ShardId {
+        self.shard_id
+    }
+
     async fn lookup_equal(
         &self,
         property_id: u32,
@@ -58,14 +62,15 @@ impl PropertyIndexLookup for IcPropertyIndexClient {
         Ok(hits)
     }
 
-    async fn posting_insert(
+    async fn posting_insert_at(
         &self,
+        shard_id: gleaph_graph_kernel::federation::ShardId,
         property_id: u32,
         value: Vec<u8>,
         vertex_id: u32,
     ) -> Result<(), PlanQueryError> {
         let (): () = Call::bounded_wait(self.index_principal, "posting_insert")
-            .with_args(&(self.shard_id, property_id, value, vertex_id))
+            .with_args(&(shard_id, property_id, value, vertex_id))
             .await
             .map_err(|e| ic_wait_err("posting_insert", e))?
             .candid()
@@ -73,14 +78,15 @@ impl PropertyIndexLookup for IcPropertyIndexClient {
         Ok(())
     }
 
-    async fn posting_remove(
+    async fn posting_remove_at(
         &self,
+        shard_id: gleaph_graph_kernel::federation::ShardId,
         property_id: u32,
         value: Vec<u8>,
         vertex_id: u32,
     ) -> Result<(), PlanQueryError> {
         let (): () = Call::bounded_wait(self.index_principal, "posting_remove")
-            .with_args(&(self.shard_id, property_id, value, vertex_id))
+            .with_args(&(shard_id, property_id, value, vertex_id))
             .await
             .map_err(|e| ic_wait_err("posting_remove", e))?
             .candid()

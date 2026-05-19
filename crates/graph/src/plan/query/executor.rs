@@ -4999,8 +4999,13 @@ mod tests {
             Ok(self.range_hits.borrow().clone())
         }
 
-        async fn posting_insert(
+        fn local_shard_id(&self) -> u32 {
+            0
+        }
+
+        async fn posting_insert_at(
             &self,
+            _shard_id: u32,
             _property_id: u32,
             _value: Vec<u8>,
             _vertex_id: u32,
@@ -5008,8 +5013,9 @@ mod tests {
             Ok(())
         }
 
-        async fn posting_remove(
+        async fn posting_remove_at(
             &self,
+            _shard_id: u32,
             _property_id: u32,
             _value: Vec<u8>,
             _vertex_id: u32,

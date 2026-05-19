@@ -1,6 +1,9 @@
 //! Export/import a single vertex during router-coordinated migration.
 
+use super::index::sync_migration_index_postings;
 use super::super::store::{EdgeHandle, GraphStore, GraphStoreError};
+use crate::index::lookup::PropertyIndexLookup;
+use crate::plan::PlanQueryError;
 use gleaph_gql_ic::IcExtensionBinaryDecode;
 use crate::index::placement;
 use gleaph_gql::Value;
@@ -253,6 +256,37 @@ pub fn import_migrated_vertex(
     store: &GraphStore,
     bundle: ExportedVertex,
 ) -> Result<VertexId, GraphStoreError> {
+    import_migrated_vertex_impl(store, bundle)
+}
+
+/// Like [`import_migrated_vertex`], then updates federated index postings for exported properties.
+pub async fn import_migrated_vertex_with_index(
+    store: &GraphStore,
+    bundle: ExportedVertex,
+    index: &dyn PropertyIndexLookup,
+) -> Result<VertexId, GraphStoreError> {
+    let routing = store
+        .federation_routing()
+        .ok_or(GraphStoreError::VertexPlacement(
+            placement::VertexPlacementError::Rejected(RouterError::ShardNotRegistered),
+        ))?;
+    let dest_shard = routing.shard_id;
+    let vertex_id = import_migrated_vertex_impl(store, bundle.clone())?;
+    let dest_local = placement::local_vertex_id_raw(vertex_id);
+    sync_migration_index_postings(index, &bundle, dest_shard, dest_local)
+        .await
+        .map_err(plan_query_to_store)?;
+    Ok(vertex_id)
+}
+
+fn plan_query_to_store(err: PlanQueryError) -> GraphStoreError {
+    GraphStoreError::VertexPlacement(placement::VertexPlacementError::Call(err.to_string()))
+}
+
+fn import_migrated_vertex_impl(
+    store: &GraphStore,
+    bundle: ExportedVertex,
+) -> Result<VertexId, GraphStoreError> {
     let routing = store
         .federation_routing()
         .ok_or(GraphStoreError::VertexPlacement(
@@ -309,7 +343,7 @@ pub fn import_migrated_vertex(
             )))
         })?;
         store
-            .set_vertex_property(vertex_id, prop.property_id, value)
+            .set_vertex_property_without_index_pending(vertex_id, prop.property_id, value)
             .map_err(GraphStoreError::from)?;
     }
 
@@ -442,5 +476,111 @@ mod tests {
 
         tombstone_migrated_vertex(&store, source_id).expect("tombstone");
         assert!(store.vertex(source_id).expect("row").is_tombstone());
+    }
+
+    #[derive(Default)]
+    struct RecordingIndex {
+        removes: std::cell::RefCell<Vec<(u32, u32, u32)>>,
+        inserts: std::cell::RefCell<Vec<(u32, u32, u32)>>,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl PropertyIndexLookup for RecordingIndex {
+        fn local_shard_id(&self) -> u32 {
+            9
+        }
+
+        async fn lookup_equal(
+            &self,
+            _property_id: u32,
+            _value: Vec<u8>,
+        ) -> Result<Vec<gleaph_graph_kernel::index::PostingHit>, PlanQueryError> {
+            Ok(vec![])
+        }
+
+        async fn lookup_range(
+            &self,
+            _property_id: u32,
+            _req: &gleaph_graph_kernel::index::PostingRangeRequest,
+        ) -> Result<Vec<gleaph_graph_kernel::index::PostingHit>, PlanQueryError> {
+            Ok(vec![])
+        }
+
+        async fn posting_insert_at(
+            &self,
+            shard_id: u32,
+            property_id: u32,
+            _value: Vec<u8>,
+            vertex_id: u32,
+        ) -> Result<(), PlanQueryError> {
+            self.inserts
+                .borrow_mut()
+                .push((shard_id, property_id, vertex_id));
+            Ok(())
+        }
+
+        async fn posting_remove_at(
+            &self,
+            shard_id: u32,
+            property_id: u32,
+            _value: Vec<u8>,
+            vertex_id: u32,
+        ) -> Result<(), PlanQueryError> {
+            self.removes
+                .borrow_mut()
+                .push((shard_id, property_id, vertex_id));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn import_syncs_index_postings() {
+        let store = GraphStore::new();
+        store
+            .set_federation_routing(Some(FederationRouting {
+                router_canister: Principal::management_canister(),
+                index_canister: Principal::management_canister(),
+                shard_id: 7,
+            }))
+            .expect("source routing");
+
+        let source_id = store
+            .insert_vertex_named(["Idx"], [("k", Value::Text("v".into()))])
+            .expect("insert");
+        let logical = store.logical_vertex_id(source_id).expect("logical");
+
+        placement::begin_vertex_migration(
+            Principal::management_canister(),
+            BeginVertexMigrationArgs {
+                logical_vertex_id: logical,
+                destination_shard_id: 9,
+            },
+        )
+        .expect("begin");
+
+        let bundle = export_local_vertex_for_migration(&store, source_id).expect("export");
+
+        store
+            .set_federation_routing(Some(FederationRouting {
+                router_canister: Principal::management_canister(),
+                index_canister: Principal::management_canister(),
+                shard_id: 9,
+            }))
+            .expect("dest routing");
+
+        let index = RecordingIndex::default();
+        let dest_id = pollster::block_on(import_migrated_vertex_with_index(
+            &store, bundle, &index,
+        ))
+        .expect("import");
+
+        assert_eq!(
+            index.removes.borrow().as_slice(),
+            &[(7, store.property_id("k").expect("pid").raw(), u32::from(source_id))]
+        );
+        assert_eq!(
+            index.inserts.borrow().as_slice(),
+            &[(9, store.property_id("k").expect("pid").raw(), u32::from(dest_id))]
+        );
     }
 }

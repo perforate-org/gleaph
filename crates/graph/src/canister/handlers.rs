@@ -8,6 +8,11 @@ use ic_cdk::api::msg_caller;
 
 use crate::GqlExecutionContext;
 use crate::auth::{admin_upsert_principal, bootstrap_canister_auth, caller_role};
+use crate::facade::migration::{
+    export_local_vertex_for_migration, import_migrated_vertex, tombstone_migrated_vertex,
+};
+#[cfg(target_family = "wasm")]
+use crate::facade::migration::import_migrated_vertex_with_index;
 use crate::facade::{FederationRouting, GraphMetadata, GraphStore};
 use crate::gql_run::{
     GqlCanisterExecutionMode, run_adhoc_gql_last_read_row_count,
@@ -19,6 +24,8 @@ use crate::index::router::verify_shard_attachment;
 use gleaph_auth::Role;
 use gleaph_gql::Value;
 use gleaph_gql_ic::decode_gql_params_blob;
+use gleaph_graph_kernel::federation::ExportedVertex;
+use ic_stable_lara::VertexId;
 
 use super::types::{GrantRoleArgs, GraphInitArgs};
 
@@ -198,4 +205,37 @@ pub fn whoami() -> Principal {
 pub fn my_role() -> Result<String, String> {
     let p = msg_caller();
     Ok(caller_role(&p).to_string())
+}
+
+pub fn export_vertex_for_migration(vertex_id: u32) -> Result<ExportedVertex, String> {
+    let store = GraphStore::new();
+    export_local_vertex_for_migration(&store, VertexId::from(vertex_id)).map_err(|e| e.to_string())
+}
+
+pub async fn import_migrated_vertex_canister(bundle: ExportedVertex) -> Result<u32, String> {
+    let store = GraphStore::new();
+    #[cfg(target_family = "wasm")]
+    {
+        let index_holder = wasm_index_client_holder().ok_or_else(|| {
+            "federated graph shard requires index_canister for migration import".to_string()
+        })?;
+        let vertex_id = import_migrated_vertex_with_index(
+            &store,
+            bundle,
+            &index_holder as &dyn PropertyIndexLookup,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        return Ok(u32::from(vertex_id));
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let vertex_id = import_migrated_vertex(&store, bundle).map_err(|e| e.to_string())?;
+        Ok(u32::from(vertex_id))
+    }
+}
+
+pub fn tombstone_migrated_vertex_canister(vertex_id: u32) -> Result<(), String> {
+    let store = GraphStore::new();
+    tombstone_migrated_vertex(&store, VertexId::from(vertex_id)).map_err(|e| e.to_string())
 }

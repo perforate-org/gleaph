@@ -2,6 +2,7 @@
 
 use crate::plan::PlanQueryError;
 use async_trait::async_trait;
+use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest};
 
 #[async_trait(?Send)]
@@ -23,10 +24,35 @@ pub trait PropertyIndexLookup {
         property_id: u32,
         value: Vec<u8>,
         vertex_id: u32,
-    ) -> Result<(), PlanQueryError>;
+    ) -> Result<(), PlanQueryError> {
+        self.posting_insert_at(self.local_shard_id(), property_id, value, vertex_id)
+            .await
+    }
 
     async fn posting_remove(
         &self,
+        property_id: u32,
+        value: Vec<u8>,
+        vertex_id: u32,
+    ) -> Result<(), PlanQueryError> {
+        self.posting_remove_at(self.local_shard_id(), property_id, value, vertex_id)
+            .await
+    }
+
+    /// Shard that owns `vertex_id` in [`posting_insert`] / [`posting_remove`].
+    fn local_shard_id(&self) -> ShardId;
+
+    async fn posting_insert_at(
+        &self,
+        shard_id: ShardId,
+        property_id: u32,
+        value: Vec<u8>,
+        vertex_id: u32,
+    ) -> Result<(), PlanQueryError>;
+
+    async fn posting_remove_at(
+        &self,
+        shard_id: ShardId,
         property_id: u32,
         value: Vec<u8>,
         vertex_id: u32,
@@ -38,6 +64,10 @@ pub struct NoPropertyIndex;
 
 #[async_trait(?Send)]
 impl PropertyIndexLookup for NoPropertyIndex {
+    fn local_shard_id(&self) -> ShardId {
+        0
+    }
+
     async fn lookup_equal(
         &self,
         _property_id: u32,
@@ -54,8 +84,9 @@ impl PropertyIndexLookup for NoPropertyIndex {
         Err(PlanQueryError::UnsupportedOp("IndexScan(no index client)"))
     }
 
-    async fn posting_insert(
+    async fn posting_insert_at(
         &self,
+        _shard_id: ShardId,
         _property_id: u32,
         _value: Vec<u8>,
         _vertex_id: u32,
@@ -63,8 +94,9 @@ impl PropertyIndexLookup for NoPropertyIndex {
         Ok(())
     }
 
-    async fn posting_remove(
+    async fn posting_remove_at(
         &self,
+        _shard_id: ShardId,
         _property_id: u32,
         _value: Vec<u8>,
         _vertex_id: u32,

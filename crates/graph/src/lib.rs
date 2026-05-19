@@ -73,4 +73,21 @@ fn my_role() -> Result<String, String> {
     canister::handlers::my_role()
 }
 
+#[query(guard = "guard_admin")]
+fn export_vertex_for_migration(vertex_id: u32) -> Result<gleaph_graph_kernel::federation::ExportedVertex, String> {
+    canister::handlers::export_vertex_for_migration(vertex_id)
+}
+
+#[update(guard = "guard_admin")]
+async fn import_migrated_vertex(
+    bundle: gleaph_graph_kernel::federation::ExportedVertex,
+) -> Result<u32, String> {
+    canister::handlers::import_migrated_vertex_canister(bundle).await
+}
+
+#[update(guard = "guard_admin")]
+fn tombstone_migrated_vertex(vertex_id: u32) -> Result<(), String> {
+    canister::handlers::tombstone_migrated_vertex_canister(vertex_id)
+}
+
 ic_cdk::export_candid!();
