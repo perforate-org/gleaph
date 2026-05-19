@@ -4,6 +4,7 @@ use super::sort_keys::compare_sort_keys;
 use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
 use crate::gql_execution_context::{GqlExecutionContext, try_eval_runtime_function_call};
 use crate::index::edge_equal;
+use crate::index::placement;
 use crate::index::lookup::PropertyIndexLookup;
 use crate::plan::expr_evaluator::{
     SearchedCaseWhenOutcome, eval_abs_expr, eval_acos_expr, eval_and_expr, eval_asin_expr,
@@ -1934,36 +1935,67 @@ fn cmp_to_posting_range_request(
     })
 }
 
-fn local_shard_filter_id() -> Result<gleaph_graph_kernel::federation::ShardId, PlanQueryError> {
-    GraphStore::new()
+fn federation_routing(
+    store: &GraphStore,
+) -> Result<crate::facade::FederationRouting, PlanQueryError> {
+    store
         .federation_routing()
-        .map(|r| r.shard_id)
         .ok_or(PlanQueryError::UnsupportedOp("IndexScan(no shard routing)"))
 }
 
-fn filter_hits_for_local_shard(
+async fn materialize_federated_index_hits(
     store: &GraphStore,
     rows: Vec<PlanRow>,
     variable: &str,
     hits: &[PostingHit],
-    shard: gleaph_graph_kernel::federation::ShardId,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
+    let routing = federation_routing(store)?;
+    let local_shard = routing.shard_id;
+    let mut logical_cache: std::collections::HashMap<
+        gleaph_graph_kernel::federation::PhysicalPlacementKey,
+        Option<gleaph_graph_kernel::federation::LogicalVertexId>,
+    > = std::collections::HashMap::new();
     let mut out = Vec::new();
     for row in rows {
-        for h in hits {
-            if h.shard_id != shard {
-                continue;
-            }
-            let vid = VertexId::from_le_bytes(h.vertex_id.to_le_bytes());
-            let Some(vertex) = store.vertex(vid) else {
-                continue;
+        for hit in hits {
+            let binding = if hit.shard_id == local_shard {
+                let vertex_id = VertexId::from(hit.vertex_id);
+                let Some(vertex) = store.vertex(vertex_id) else {
+                    continue;
+                };
+                if vertex.is_tombstone() {
+                    continue;
+                }
+                PlanBinding::Vertex(vertex_id)
+            } else {
+                let key = gleaph_graph_kernel::federation::PhysicalPlacementKey::from_posting_hit(
+                    hit.shard_id,
+                    hit.vertex_id,
+                );
+                let logical = match logical_cache.get(&key) {
+                    Some(cached) => *cached,
+                    None => {
+                        let resolved = placement::resolve_logical_at(
+                            routing.router_canister,
+                            hit.shard_id,
+                            hit.vertex_id,
+                        )
+                        .map_err(|e| PlanQueryError::FederatedIndexCall {
+                            op: "resolve_logical_at",
+                            detail: e.to_string(),
+                        })?;
+                        logical_cache.insert(key, resolved);
+                        resolved
+                    }
+                };
+                let Some(logical_vertex_id) = logical else {
+                    continue;
+                };
+                PlanBinding::RemoteVertex(logical_vertex_id)
             };
-            if vertex.is_tombstone() {
-                continue;
-            }
-            let mut r = row.clone();
-            r.insert(variable.to_string(), PlanBinding::Vertex(vid));
-            out.push(r);
+            let mut row = row.clone();
+            row.insert(variable.to_string(), binding);
+            out.push(row);
         }
     }
     Ok(out)
@@ -1983,7 +2015,6 @@ async fn execute_index_scan(
     let Some(ix) = index else {
         return Err(PlanQueryError::UnsupportedOp("IndexScan(no index client)"));
     };
-    let shard = local_shard_filter_id()?;
     let pid = property_id_for_scan(store, property_name)?;
     let Some(bytes) = resolve_scan_value_bytes(scan_value, parameters)? else {
         return Ok(Vec::new());
@@ -1994,7 +2025,7 @@ async fn execute_index_scan(
         let req = cmp_to_posting_range_request(cmp, bytes)?;
         ix.lookup_range(pid, &req).await?
     };
-    filter_hits_for_local_shard(store, rows, variable, &hits, shard)
+    materialize_federated_index_hits(store, rows, variable, &hits).await
 }
 
 async fn execute_conditional_index_scan(
@@ -2020,7 +2051,6 @@ async fn execute_conditional_index_scan(
                     "ConditionalIndexScan(no index client)",
                 ));
             };
-            let shard = local_shard_filter_id()?;
             let pid = property_id_for_scan(store, c.property.as_ref())?;
             let hits = if c.cmp == CmpOp::Eq {
                 ix.lookup_equal(pid, bytes).await?
@@ -2028,7 +2058,7 @@ async fn execute_conditional_index_scan(
                 let req = cmp_to_posting_range_request(c.cmp, bytes)?;
                 ix.lookup_range(pid, &req).await?
             };
-            return filter_hits_for_local_shard(store, rows, c.variable.as_ref(), &hits, shard);
+            return materialize_federated_index_hits(store, rows, c.variable.as_ref(), &hits).await;
         }
     }
     execute_node_scan(store, rows, fallback_variable, fallback_label)
@@ -2047,8 +2077,9 @@ async fn execute_index_intersection(
             "IndexIntersection(no index client)",
         ));
     };
-    let shard = local_shard_filter_id()?;
-    let mut sets: Vec<IntSet<u32>> = Vec::with_capacity(scans.len());
+    let routing = federation_routing(store)?;
+    let local_shard = routing.shard_id;
+    let mut sets: Vec<IntSet<u64>> = Vec::with_capacity(scans.len());
     for spec in scans {
         if spec.cmp != CmpOp::Eq {
             return Err(PlanQueryError::UnsupportedOp("IndexIntersection.cmp"));
@@ -2059,20 +2090,48 @@ async fn execute_index_intersection(
         };
         let hits = ix.lookup_equal(pid, bytes).await?;
         let mut hs = IntSet::default();
+        let mut logical_cache = std::collections::HashMap::new();
         for h in hits {
-            if h.shard_id != shard {
-                continue;
-            }
-            let vid = VertexId::from_le_bytes(h.vertex_id.to_le_bytes());
-            if let Some(vertex) = store.vertex(vid)
-                && !vertex.is_tombstone()
-            {
-                hs.insert(u32::from(vid));
-            }
+            let key = if h.shard_id == local_shard {
+                let vid = VertexId::from(h.vertex_id);
+                let Some(vertex) = store.vertex(vid) else {
+                    continue;
+                };
+                if vertex.is_tombstone() {
+                    continue;
+                }
+                (1u64 << 63) | u64::from(u32::from(vid))
+            } else {
+                let physical = gleaph_graph_kernel::federation::PhysicalPlacementKey::from_posting_hit(
+                    h.shard_id,
+                    h.vertex_id,
+                );
+                let logical = match logical_cache.get(&physical) {
+                    Some(cached) => *cached,
+                    None => {
+                        let resolved = placement::resolve_logical_at(
+                            routing.router_canister,
+                            h.shard_id,
+                            h.vertex_id,
+                        )
+                        .map_err(|e| PlanQueryError::FederatedIndexCall {
+                            op: "resolve_logical_at",
+                            detail: e.to_string(),
+                        })?;
+                        logical_cache.insert(physical, resolved);
+                        resolved
+                    }
+                };
+                let Some(logical) = logical else {
+                    continue;
+                };
+                logical
+            };
+            hs.insert(key);
         }
         sets.push(hs);
     }
-    let mut intersection: Option<IntSet<u32>> = None;
+    let mut intersection: Option<IntSet<u64>> = None;
     for s in sets {
         intersection = Some(match intersection {
             None => s,
@@ -2084,12 +2143,14 @@ async fn execute_index_intersection(
     };
     let mut out = Vec::new();
     for row in rows {
-        for vid in &ids {
+        for id in &ids {
+            let binding = if *id >> 63 != 0 {
+                PlanBinding::Vertex(VertexId::from((*id & !(1u64 << 63)) as u32))
+            } else {
+                PlanBinding::RemoteVertex(*id)
+            };
             let mut r = row.clone();
-            r.insert(
-                variable.to_string(),
-                PlanBinding::Vertex(VertexId::from(*vid)),
-            );
+            r.insert(variable.to_string(), binding);
             out.push(r);
         }
     }
@@ -4882,6 +4943,7 @@ mod tests {
     use crate::facade::mutation_executor::GraphMutationExecutor;
     use crate::gql_execution_context::GqlExecutionContext;
     use crate::index::lookup::PropertyIndexLookup;
+    use crate::index::placement::native_test_register_physical_placement;
     use crate::plan::query::GLEAPH_PATH_EXTENSION_HANDLER;
     use async_trait::async_trait;
     use candid::Principal;
@@ -5197,6 +5259,43 @@ mod tests {
             PathElement::Edge(id) => GraphPathEdgeId::try_from_slice(id.as_ref()).expect("edge id"),
             other => panic!("expected edge path element, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn federated_index_scan_materializes_foreign_shard_hit_as_remote_vertex() {
+        let store = GraphStore::new();
+        configure_test_index(&store);
+        let _ = store
+            .insert_vertex_named(["ForeignIndexScanSeed"], [("age", Value::Uint8(1))])
+            .expect("register age property");
+        native_test_register_physical_placement(9, 42, 9001);
+        let index = MockPropertyIndex::default();
+        index.equal_hits.borrow_mut().push(PostingHit {
+            shard_id: 9,
+            vertex_id: 42,
+        });
+        let plan = plan(vec![PlanOp::IndexScan {
+            variable: "n".into(),
+            property: "age".into(),
+            value: ScanValue::Literal(Value::Int64(5)),
+            cmp: CmpOp::Eq,
+            property_projection: None,
+        }]);
+
+        let rows = pollster::block_on(execute_plan_query_bindings(
+            &store,
+            &plan,
+            &params(),
+            Some(&index),
+            GqlExecutionContext::default(),
+        ))
+        .expect("execute federated index scan");
+
+        assert_eq!(rows.len(), 1);
+        assert!(matches!(
+            rows[0].get("n"),
+            Some(PlanBinding::RemoteVertex(9001))
+        ));
     }
 
     #[test]

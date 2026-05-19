@@ -12,6 +12,7 @@ gleaph-gql = { path = "../gql", features = [
     "f256",
 ] }
 candid.workspace = true
+ic-stable-structures.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 

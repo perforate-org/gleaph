@@ -1,6 +1,8 @@
-use candid::CandidType;
+use candid::{CandidType, Decode, Encode};
 use candid::Principal;
+use ic_stable_structures::storable::{Bound, Storable};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
@@ -28,6 +30,22 @@ pub struct GraphRegistryEntry {
     pub version: u64,
     pub updated_at_ns: u64,
     pub provisioning_state: ProvisioningState,
+}
+
+impl Storable for GraphRegistryEntry {
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode GraphRegistryEntry"))
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode GraphRegistryEntry")
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(bytes.as_ref(), GraphRegistryEntry).expect("decode GraphRegistryEntry")
+    }
+
+    const BOUND: Bound = Bound::Unbounded;
 }
 
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]

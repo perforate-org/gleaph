@@ -33,6 +33,13 @@ pub(crate) fn resolve_placement(
     RouterStore::new().resolve_placement(logical_vertex_id)
 }
 
+pub(crate) fn resolve_logical_at(
+    shard_id: ShardId,
+    local_vertex_id: gleaph_graph_kernel::federation::LocalVertexId,
+) -> Result<LogicalVertexId, RouterError> {
+    RouterStore::new().resolve_logical_at(shard_id, local_vertex_id)
+}
+
 pub(crate) fn lookup_vertex_label_id(name: String) -> Result<VertexLabelId, RouterError> {
     RouterStore::new().lookup_vertex_label_id(&name)
 }

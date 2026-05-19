@@ -2,11 +2,11 @@
 
 use super::stable::{
     ROUTER_CONTROLLERS, ROUTER_EDGE_LABEL_BY_ID, ROUTER_EDGE_LABEL_BY_NAME, ROUTER_GRAPHS,
-    ROUTER_LOGICAL_COUNTER, ROUTER_PENDING_LOGICAL, ROUTER_PLACEMENTS, ROUTER_PROPERTY_BY_ID,
+    ROUTER_LOGICAL_COUNTER, ROUTER_PENDING_LOGICAL, ROUTER_PLACEMENT_BY_PHYSICAL,
+    ROUTER_PLACEMENTS, ROUTER_PROPERTY_BY_ID,
     ROUTER_PROPERTY_BY_NAME, ROUTER_SHARD_BY_GRAPH, ROUTER_SHARDS, ROUTER_VERTEX_LABEL_BY_ID,
     ROUTER_VERTEX_LABEL_BY_NAME,
 };
-use super::stable::storable::StoredGraphRegistryEntry;
 use crate::index_sync;
 use crate::init::RouterInitArgs;
 use crate::state::RouterError;
@@ -16,7 +16,10 @@ use crate::types::{
 };
 use candid::Principal;
 use gleaph_graph_kernel::entry::EDGE_LABEL_CATALOG_MAX;
-use gleaph_graph_kernel::federation::{LogicalVertexId, PhysicalVertexLocation, ShardRegistryEntry};
+use gleaph_graph_kernel::federation::{
+    LocalVertexId, LogicalVertexId, PhysicalPlacementKey, PhysicalVertexLocation,
+    ShardRegistryEntry,
+};
 
 const MAX_METADATA_NAME_BYTES: usize = 256;
 
@@ -40,6 +43,7 @@ impl RouterStore {
         ROUTER_SHARDS.with_borrow_mut(|s| s.clear_new());
         ROUTER_SHARD_BY_GRAPH.with_borrow_mut(|m| m.clear_new());
         ROUTER_PLACEMENTS.with_borrow_mut(|p| p.clear_new());
+        ROUTER_PLACEMENT_BY_PHYSICAL.with_borrow_mut(|p| p.clear_new());
         ROUTER_LOGICAL_COUNTER.with_borrow_mut(|c| {
             c.set(0);
         });
@@ -71,7 +75,6 @@ impl RouterStore {
     ) -> Result<GraphRegistryEntry, RouterError> {
         let entry = ROUTER_GRAPHS
             .with_borrow(|graphs| graphs.get(&graph_name.to_string()))
-            .map(|stored| stored.0)
             .ok_or_else(|| RouterError::NotFound(graph_name.to_owned()))?;
         if caller != entry.owner && !entry.admins.contains(&caller) {
             return Err(RouterError::Forbidden);
@@ -97,6 +100,18 @@ impl RouterStore {
             .ok_or(RouterError::VertexNotFound)
     }
 
+    pub fn resolve_logical_at(
+        &self,
+        shard_id: ShardId,
+        local_vertex_id: LocalVertexId,
+    ) -> Result<LogicalVertexId, RouterError> {
+        ROUTER_PLACEMENT_BY_PHYSICAL
+            .with_borrow(|p| {
+                p.get(PhysicalPlacementKey::new(shard_id, local_vertex_id))
+            })
+            .ok_or(RouterError::VertexNotFound)
+    }
+
     pub fn admin_register_graph(
         &self,
         caller: Principal,
@@ -109,7 +124,7 @@ impl RouterStore {
             return Err(RouterError::Conflict(entry.graph_name.clone()));
         }
         ROUTER_GRAPHS.with_borrow_mut(|g| {
-            g.insert(entry.graph_name.clone(), StoredGraphRegistryEntry(entry));
+            g.insert(entry.graph_name.clone(), entry);
         });
         Ok(())
     }
@@ -126,7 +141,6 @@ impl RouterStore {
         }
         let mut entry = ROUTER_GRAPHS
             .with_borrow(|g| g.get(&graph_name.to_string()))
-            .map(|stored| stored.0)
             .ok_or_else(|| RouterError::NotFound(graph_name.to_owned()))?;
         if entry.version != version {
             return Err(RouterError::Conflict(format!(
@@ -137,7 +151,7 @@ impl RouterStore {
         entry.status = status;
         entry.version = version.saturating_add(1);
         ROUTER_GRAPHS.with_borrow_mut(|g| {
-            g.insert(graph_name.to_string(), StoredGraphRegistryEntry(entry));
+            g.insert(graph_name.to_string(), entry);
         });
         Ok(())
     }
@@ -361,8 +375,13 @@ impl RouterStore {
             shard_id,
             args.local_vertex_id,
         ));
+        let physical_key =
+            PhysicalPlacementKey::new(shard_id, args.local_vertex_id);
         ROUTER_PLACEMENTS.with_borrow_mut(|p| {
             p.insert(args.logical_vertex_id, placement);
+        });
+        ROUTER_PLACEMENT_BY_PHYSICAL.with_borrow_mut(|p| {
+            p.insert(physical_key, args.logical_vertex_id);
         });
         ROUTER_PENDING_LOGICAL.with_borrow_mut(|p| {
             p.remove(&caller);
@@ -491,6 +510,11 @@ mod tests {
                 },
             )
             .expect("commit");
+
+        assert_eq!(
+            store.resolve_logical_at(7, 42).expect("reverse"),
+            logical
+        );
 
         let placement = store.resolve_placement(logical).expect("resolve");
         assert_eq!(

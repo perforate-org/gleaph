@@ -757,6 +757,7 @@ version = "0.1.0"
 dependencies = [
  "candid",
  "gleaph-gql",
+ "ic-stable-structures",
  "rkyv 0.8.16",
  "serde",
  "thiserror 2.0.18",

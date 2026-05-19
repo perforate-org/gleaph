@@ -32,6 +32,66 @@ pub fn standalone_logical_vertex_id(local: VertexId) -> LogicalVertexId {
     u64::from(u32::from_le_bytes(local.to_le_bytes()))
 }
 
+/// Stable key for reverse placement lookup (`shard_id`, `local_vertex_id`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PhysicalPlacementKey {
+    pub shard_id: ShardId,
+    pub local_vertex_id: LocalVertexId,
+}
+
+impl PhysicalPlacementKey {
+    #[inline]
+    pub const fn new(shard_id: ShardId, local_vertex_id: LocalVertexId) -> Self {
+        Self {
+            shard_id,
+            local_vertex_id,
+        }
+    }
+
+    #[inline]
+    pub const fn from_posting_hit(shard_id: ShardId, vertex_id: u32) -> Self {
+        Self::new(shard_id, vertex_id)
+    }
+
+    #[inline]
+    pub fn to_le_bytes(self) -> [u8; 8] {
+        let mut out = [0u8; 8];
+        out[0..4].copy_from_slice(&self.shard_id.to_le_bytes());
+        out[4..8].copy_from_slice(&self.local_vertex_id.to_le_bytes());
+        out
+    }
+
+    #[inline]
+    pub fn from_le_bytes(bytes: [u8; 8]) -> Self {
+        let mut shard = [0; 4];
+        let mut local = [0; 4];
+        shard.copy_from_slice(&bytes[0..4]);
+        local.copy_from_slice(&bytes[4..8]);
+        Self::new(u32::from_le_bytes(shard), u32::from_le_bytes(local))
+    }
+}
+
+impl Storable for PhysicalPlacementKey {
+    const BOUND: Bound = Bound::Bounded {
+        max_size: 8,
+        is_fixed_size: true,
+    };
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Vec::from(self.to_le_bytes()))
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        Vec::from(self.to_le_bytes())
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        let mut raw = [0u8; 8];
+        raw.copy_from_slice(bytes.as_ref());
+        Self::from_le_bytes(raw)
+    }
+}
+
 /// Current physical storage location of a vertex.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct PhysicalVertexLocation {

@@ -3,7 +3,7 @@
 use candid::Principal;
 use gleaph_graph_kernel::federation::{LogicalVertexId, ShardId, ShardRegistryEntry, VertexPlacement};
 
-use super::storable::StoredGraphRegistryEntry;
+use gleaph_gql_ic::graph_registry::GraphRegistryEntry;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use ic_stable_structures::{BTreeMap, BTreeSet, Cell, DefaultMemoryImpl};
 use std::cell::RefCell;
@@ -23,9 +23,10 @@ const ROUTER_EDGE_LABEL_BY_NAME: MemoryId = MemoryId::new(9);
 const ROUTER_EDGE_LABEL_BY_ID: MemoryId = MemoryId::new(10);
 const ROUTER_PROPERTY_BY_NAME: MemoryId = MemoryId::new(11);
 const ROUTER_PROPERTY_BY_ID: MemoryId = MemoryId::new(12);
+const ROUTER_PLACEMENT_BY_PHYSICAL: MemoryId = MemoryId::new(13);
 
 pub(crate) type StableControllerSet = BTreeSet<Principal, Memory>;
-pub(crate) type StableGraphRegistry = BTreeMap<String, StoredGraphRegistryEntry, Memory>;
+pub(crate) type StableGraphRegistry = BTreeMap<String, GraphRegistryEntry, Memory>;
 pub(crate) type StableShardRegistry = BTreeMap<ShardId, ShardRegistryEntry, Memory>;
 pub(crate) type StableShardByGraph = BTreeMap<Principal, ShardId, Memory>;
 pub(crate) type StablePlacementMap = BTreeMap<LogicalVertexId, VertexPlacement, Memory>;
@@ -35,6 +36,8 @@ pub(crate) type StableLabelNameIntern = BTreeMap<String, u16, Memory>;
 pub(crate) type StableLabelIdReverse = BTreeMap<u16, String, Memory>;
 pub(crate) type StablePropertyNameIntern = BTreeMap<String, u32, Memory>;
 pub(crate) type StablePropertyIdReverse = BTreeMap<u32, String, Memory>;
+pub(crate) type StablePlacementByPhysicalMap =
+    super::placement_by_physical::PlacementByPhysicalMap<Memory>;
 
 thread_local! {
     pub(crate) static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
@@ -94,4 +97,10 @@ pub(crate) fn init_property_by_name() -> StablePropertyNameIntern {
 
 pub(crate) fn init_property_by_id() -> StablePropertyIdReverse {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_PROPERTY_BY_ID)))
+}
+
+pub(crate) fn init_placement_by_physical() -> StablePlacementByPhysicalMap {
+    super::placement_by_physical::PlacementByPhysicalMap::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_PLACEMENT_BY_PHYSICAL)),
+    )
 }

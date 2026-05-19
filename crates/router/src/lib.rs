@@ -44,6 +44,14 @@ fn resolve_placement(
 }
 
 #[query]
+fn resolve_logical_at(
+    shard_id: types::ShardId,
+    local_vertex_id: gleaph_graph_kernel::federation::LocalVertexId,
+) -> Result<types::LogicalVertexId, RouterError> {
+    canister::resolve_logical_at(shard_id, local_vertex_id)
+}
+
+#[query]
 fn lookup_vertex_label_id(name: String) -> Result<types::VertexLabelId, RouterError> {
     canister::lookup_vertex_label_id(name)
 }

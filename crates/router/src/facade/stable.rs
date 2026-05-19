@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 
 pub(crate) mod memory;
-pub(crate) mod storable;
+pub(crate) mod placement_by_physical;
 
 thread_local! {
     pub(crate) static ROUTER_CONTROLLERS: RefCell<memory::StableControllerSet> =
@@ -20,6 +20,9 @@ thread_local! {
 
     pub(crate) static ROUTER_PLACEMENTS: RefCell<memory::StablePlacementMap> =
         RefCell::new(memory::init_placements());
+
+    pub(crate) static ROUTER_PLACEMENT_BY_PHYSICAL: RefCell<memory::StablePlacementByPhysicalMap> =
+        RefCell::new(memory::init_placement_by_physical());
 
     pub(crate) static ROUTER_LOGICAL_COUNTER: RefCell<memory::StableLogicalCounter> =
         RefCell::new(memory::init_logical_counter());
