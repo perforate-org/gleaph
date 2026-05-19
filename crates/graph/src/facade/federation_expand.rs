@@ -1,12 +1,12 @@
-//! Shard-local incoming expand for federated graph queries.
+//! Federated expand: shard-local collection and cross-shard coordination.
 
 use super::stable::REMOTE_FORWARD_IN;
 use super::store::{EdgeHandle, GraphStore, GraphStoreError};
 use crate::index::placement;
 use gleaph_graph_kernel::entry::{Edge, EdgeTarget, RemoteRefId};
 use gleaph_graph_kernel::federation::{
-    FederatedExpandNeighbor, FederatedIncomingExpandArgs, FederatedOutgoingExpandArgs,
-    LocalVertexId, LogicalVertexId, PhysicalVertexLocation, ShardId, VertexPlacement,
+    FederatedExpandArgs, FederatedExpandDirection, FederatedExpandNeighbor, LocalVertexId,
+    LogicalVertexId, PhysicalVertexLocation, ShardId, VertexPlacement,
 };
 use ic_stable_lara::VertexId;
 use ic_stable_lara::traits::{CsrEdgeTombstone, CsrVertexTombstone};
@@ -18,7 +18,7 @@ fn logical_id_for_local_vertex(store: &GraphStore, vertex_id: VertexId) -> Optio
 fn push_neighbor(
     out: &mut Vec<FederatedExpandNeighbor>,
     shard_id: ShardId,
-    target_local_vertex_id: LocalVertexId,
+    anchor_local_vertex_id: LocalVertexId,
     neighbor_logical_vertex_id: LogicalVertexId,
     neighbor_local_vertex_id: LocalVertexId,
     edge: &Edge,
@@ -27,7 +27,7 @@ fn push_neighbor(
         shard_id,
         neighbor_logical_vertex_id,
         neighbor_local_vertex_id: u32::from(neighbor_local_vertex_id),
-        target_local_vertex_id,
+        anchor_local_vertex_id,
         label_id_raw: edge.label_id,
         slot_index: edge.edge_slot_index.raw(),
         inline_value: edge.inline_value,
@@ -218,10 +218,26 @@ fn collect_forward_to_remote_incoming(
     collect_forward_to_remote_incoming_scan(store, shard_id, remote_ref, label_id_raw, out, true)
 }
 
-/// Lists incoming neighbors of `target_logical_vertex_id` visible on this graph shard.
-pub fn collect_incoming_neighbors(
+/// Shard-local expand: incoming or outgoing neighbors for one logical vertex.
+pub fn collect_federated_expand(
     store: &GraphStore,
-    args: FederatedIncomingExpandArgs,
+    args: FederatedExpandArgs,
+) -> Result<Vec<FederatedExpandNeighbor>, GraphStoreError> {
+    match args.direction {
+        FederatedExpandDirection::Incoming => {
+            collect_incoming_neighbors(store, args.logical_vertex_id, args.label_id_raw)
+        }
+        FederatedExpandDirection::Outgoing => {
+            collect_outgoing_neighbors(store, args.logical_vertex_id, args.label_id_raw)
+        }
+    }
+}
+
+/// Lists incoming neighbors of `logical_vertex_id` visible on this graph shard.
+fn collect_incoming_neighbors(
+    store: &GraphStore,
+    logical_vertex_id: LogicalVertexId,
+    label_id_raw: Option<u16>,
 ) -> Result<Vec<FederatedExpandNeighbor>, GraphStoreError> {
     let routing = store
         .federation_routing()
@@ -235,28 +251,28 @@ pub fn collect_incoming_neighbors(
     if let Ok(VertexPlacement::Active(PhysicalVertexLocation {
         shard_id,
         local_vertex_id,
-    })) = placement::resolve_placement(routing.router_canister, args.target_logical_vertex_id)
+    })) = placement::resolve_placement(routing.router_canister, logical_vertex_id)
     {
         if shard_id == routing.shard_id {
             collect_authoritative_incoming(
                 store,
                 routing.shard_id,
                 VertexId::from(local_vertex_id),
-                args.target_logical_vertex_id,
-                args.label_id_raw,
+                logical_vertex_id,
+                label_id_raw,
                 &mut out,
             )?;
             return Ok(out);
         }
     }
 
-    if let Some(remote_ref) = store.remote_ref_for_logical(args.target_logical_vertex_id) {
+    if let Some(remote_ref) = store.remote_ref_for_logical(logical_vertex_id) {
         collect_forward_to_remote_incoming(
             store,
             routing.shard_id,
-            args.target_logical_vertex_id,
+            logical_vertex_id,
             remote_ref,
-            args.label_id_raw,
+            label_id_raw,
             &mut out,
         )?;
     }
@@ -310,10 +326,11 @@ fn collect_authoritative_outgoing(
     Ok(())
 }
 
-/// Lists outgoing neighbors of `source_logical_vertex_id` on its authoritative shard.
-pub fn collect_outgoing_neighbors(
+/// Lists outgoing neighbors of `logical_vertex_id` on its authoritative shard.
+fn collect_outgoing_neighbors(
     store: &GraphStore,
-    args: FederatedOutgoingExpandArgs,
+    logical_vertex_id: LogicalVertexId,
+    label_id_raw: Option<u16>,
 ) -> Result<Vec<FederatedExpandNeighbor>, GraphStoreError> {
     let routing = store
         .federation_routing()
@@ -327,7 +344,7 @@ pub fn collect_outgoing_neighbors(
     let Some(VertexPlacement::Active(PhysicalVertexLocation {
         shard_id,
         local_vertex_id,
-    })) = placement::resolve_placement(routing.router_canister, args.source_logical_vertex_id).ok()
+    })) = placement::resolve_placement(routing.router_canister, logical_vertex_id).ok()
     else {
         return Ok(out);
     };
@@ -338,17 +355,29 @@ pub fn collect_outgoing_neighbors(
         store,
         routing.shard_id,
         VertexId::from(local_vertex_id),
-        args.source_logical_vertex_id,
-        args.label_id_raw,
+        logical_vertex_id,
+        label_id_raw,
         &mut out,
     )?;
     Ok(out)
 }
 
-/// Queries the authoritative shard for outgoing expand neighbors.
-pub async fn federated_outgoing_expand_authoritative_shard(
+/// Cross-shard expand orchestration used by the query executor (not a canister endpoint).
+pub async fn federated_expand_coordinator(
     store: &GraphStore,
-    args: FederatedOutgoingExpandArgs,
+    args: FederatedExpandArgs,
+) -> Result<Vec<FederatedExpandNeighbor>, GraphStoreError> {
+    match args.direction {
+        FederatedExpandDirection::Incoming => federated_expand_incoming_all_shards(store, args).await,
+        FederatedExpandDirection::Outgoing => {
+            federated_expand_outgoing_authoritative(store, args).await
+        }
+    }
+}
+
+async fn federated_expand_outgoing_authoritative(
+    store: &GraphStore,
+    args: FederatedExpandArgs,
 ) -> Result<Vec<FederatedExpandNeighbor>, GraphStoreError> {
     let routing = store
         .federation_routing()
@@ -366,7 +395,7 @@ pub async fn federated_outgoing_expand_authoritative_shard(
         ))?;
 
     let placement =
-        placement::resolve_placement(routing.router_canister, args.source_logical_vertex_id)
+        placement::resolve_placement(routing.router_canister, args.logical_vertex_id)
             .map_err(GraphStoreError::from)?;
     let VertexPlacement::Active(PhysicalVertexLocation {
         shard_id: authoritative_shard,
@@ -377,7 +406,7 @@ pub async fn federated_outgoing_expand_authoritative_shard(
     };
 
     if authoritative_shard == routing.shard_id {
-        return collect_outgoing_neighbors(store, args);
+        return collect_outgoing_neighbors(store, args.logical_vertex_id, args.label_id_raw);
     }
 
     let shards = placement::list_shards_for_graph(routing.router_canister, &graph_name)
@@ -389,17 +418,16 @@ pub async fn federated_outgoing_expand_authoritative_shard(
         return Ok(Vec::new());
     };
 
-    crate::index::federation::federated_outgoing_expand(entry.graph_canister, args)
+    crate::index::federation::call_graph_federated_expand(entry.graph_canister, args)
         .await
         .map_err(|e| {
             GraphStoreError::VertexPlacement(placement::VertexPlacementError::Call(e.to_string()))
         })
 }
 
-/// Fan-out incoming expand to every shard registered for this graph.
-pub async fn federated_incoming_expand_all_shards(
+async fn federated_expand_incoming_all_shards(
     store: &GraphStore,
-    args: FederatedIncomingExpandArgs,
+    args: FederatedExpandArgs,
 ) -> Result<Vec<FederatedExpandNeighbor>, GraphStoreError> {
     let routing = store
         .federation_routing()
@@ -422,9 +450,9 @@ pub async fn federated_incoming_expand_all_shards(
     let mut merged = Vec::new();
     for entry in shards {
         let hits = if entry.shard_id == routing.shard_id {
-            collect_incoming_neighbors(store, args)?
+            collect_federated_expand(store, args)?
         } else {
-            crate::index::federation::federated_incoming_expand(entry.graph_canister, args)
+            crate::index::federation::call_graph_federated_expand(entry.graph_canister, args)
                 .await
                 .map_err(|e| {
                     GraphStoreError::VertexPlacement(placement::VertexPlacementError::Call(
@@ -439,8 +467,8 @@ pub async fn federated_incoming_expand_all_shards(
 
 /// Builds a local [`EdgeHandle`] for a federated hit returned from this shard.
 pub fn edge_handle_for_federated_hit(hit: &FederatedExpandNeighbor) -> EdgeHandle {
-    let owner_vertex_id = if hit.target_local_vertex_id != 0 {
-        VertexId::from(hit.target_local_vertex_id)
+    let owner_vertex_id = if hit.anchor_local_vertex_id != 0 {
+        VertexId::from(hit.anchor_local_vertex_id)
     } else {
         VertexId::from(hit.neighbor_local_vertex_id)
     };
@@ -488,10 +516,11 @@ mod tests {
             .insert_directed_edge(source, target, None)
             .expect("edge");
 
-        let hits = collect_incoming_neighbors(
+        let hits = collect_federated_expand(
             &store,
-            FederatedIncomingExpandArgs {
-                target_logical_vertex_id: target_logical,
+            FederatedExpandArgs {
+                logical_vertex_id: target_logical,
+                direction: FederatedExpandDirection::Incoming,
                 label_id_raw: None,
             },
         )
@@ -499,7 +528,7 @@ mod tests {
 
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].neighbor_logical_vertex_id, source_logical);
-        assert_eq!(hits[0].target_local_vertex_id, u32::from(target));
+        assert_eq!(hits[0].anchor_local_vertex_id, u32::from(target));
     }
 
     #[test]
@@ -523,10 +552,11 @@ mod tests {
 
         assert!(REMOTE_FORWARD_IN.with_borrow(|index| index.has_postings_for(remote_ref)));
 
-        let hits = collect_incoming_neighbors(
+        let hits = collect_federated_expand(
             &store,
-            FederatedIncomingExpandArgs {
-                target_logical_vertex_id: remote_logical,
+            FederatedExpandArgs {
+                logical_vertex_id: remote_logical,
+                direction: FederatedExpandDirection::Incoming,
                 label_id_raw: None,
             },
         )
@@ -583,10 +613,11 @@ mod tests {
             .insert_directed_edge_to_logical(source, remote_logical, None)
             .expect("remote edge");
 
-        let hits = collect_incoming_neighbors(
+        let hits = collect_federated_expand(
             &store,
-            FederatedIncomingExpandArgs {
-                target_logical_vertex_id: remote_logical,
+            FederatedExpandArgs {
+                logical_vertex_id: remote_logical,
+                direction: FederatedExpandDirection::Incoming,
                 label_id_raw: None,
             },
         )
@@ -594,7 +625,7 @@ mod tests {
 
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].neighbor_logical_vertex_id, source_logical);
-        assert_eq!(hits[0].target_local_vertex_id, 0);
+        assert_eq!(hits[0].anchor_local_vertex_id, 0);
     }
 
     #[test]
@@ -621,10 +652,11 @@ mod tests {
             .insert_directed_edge_to_logical(source, remote_logical, None)
             .expect("remote edge");
 
-        let hits = collect_outgoing_neighbors(
+        let hits = collect_federated_expand(
             &store,
-            FederatedOutgoingExpandArgs {
-                source_logical_vertex_id: source_logical,
+            FederatedExpandArgs {
+                logical_vertex_id: source_logical,
+                direction: FederatedExpandDirection::Outgoing,
                 label_id_raw: None,
             },
         )
@@ -639,7 +671,7 @@ mod tests {
         assert!(logicals.contains(&remote_logical));
         assert!(
             hits.iter()
-                .all(|hit| hit.target_local_vertex_id == u32::from(source))
+                .all(|hit| hit.anchor_local_vertex_id == u32::from(source))
         );
     }
 }

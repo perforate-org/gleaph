@@ -27,8 +27,7 @@ use gleaph_auth::Role;
 use gleaph_gql::Value;
 use gleaph_gql_ic::decode_gql_params_blob;
 use gleaph_graph_kernel::federation::{
-    BeginVertexMigrationArgs, ExportedVertex, FederatedExpandNeighbor, FederatedIncomingExpandArgs,
-    FederatedOutgoingExpandArgs,
+    BeginVertexMigrationArgs, ExportedVertex, FederatedExpandArgs, FederatedExpandNeighbor,
 };
 use ic_stable_lara::VertexId;
 
@@ -212,7 +211,7 @@ pub fn my_role() -> Result<String, String> {
     Ok(caller_role(&p).to_string())
 }
 
-pub fn begin_vertex_migration_canister(args: BeginVertexMigrationArgs) -> Result<(), String> {
+pub fn migration_begin(args: BeginVertexMigrationArgs) -> Result<(), String> {
     let store = GraphStore::new();
     let routing = store
         .federation_routing()
@@ -221,28 +220,19 @@ pub fn begin_vertex_migration_canister(args: BeginVertexMigrationArgs) -> Result
         .map_err(|e| e.to_string())
 }
 
-pub fn federated_incoming_expand(
-    args: FederatedIncomingExpandArgs,
-) -> Result<Vec<FederatedExpandNeighbor>, String> {
+pub fn federated_expand(args: FederatedExpandArgs) -> Result<Vec<FederatedExpandNeighbor>, String> {
     let store = GraphStore::new();
-    crate::facade::federation_expand::collect_incoming_neighbors(&store, args)
+    crate::facade::federation_expand::collect_federated_expand(&store, args)
         .map_err(|e| e.to_string())
 }
 
-pub fn federated_outgoing_expand(
-    args: FederatedOutgoingExpandArgs,
-) -> Result<Vec<FederatedExpandNeighbor>, String> {
+pub fn migration_export(local_vertex_id: u32) -> Result<ExportedVertex, String> {
     let store = GraphStore::new();
-    crate::facade::federation_expand::collect_outgoing_neighbors(&store, args)
+    export_local_vertex_for_migration(&store, VertexId::from(local_vertex_id))
         .map_err(|e| e.to_string())
 }
 
-pub fn export_vertex_for_migration(vertex_id: u32) -> Result<ExportedVertex, String> {
-    let store = GraphStore::new();
-    export_local_vertex_for_migration(&store, VertexId::from(vertex_id)).map_err(|e| e.to_string())
-}
-
-pub async fn import_migrated_vertex_canister(bundle: ExportedVertex) -> Result<u32, String> {
+pub async fn migration_import(bundle: ExportedVertex) -> Result<u32, String> {
     let store = GraphStore::new();
     #[cfg(target_family = "wasm")]
     {
@@ -265,8 +255,9 @@ pub async fn import_migrated_vertex_canister(bundle: ExportedVertex) -> Result<u
     }
 }
 
-pub async fn tombstone_migrated_vertex_canister(vertex_id: u32) -> Result<(), String> {
+pub async fn migration_tombstone(local_vertex_id: u32) -> Result<(), String> {
     let store = GraphStore::new();
+    let vertex_id = VertexId::from(local_vertex_id);
     #[cfg(target_family = "wasm")]
     {
         let index_holder = wasm_index_client_holder().ok_or_else(|| {
@@ -274,7 +265,7 @@ pub async fn tombstone_migrated_vertex_canister(vertex_id: u32) -> Result<(), St
         })?;
         return tombstone_migrated_vertex_with_index(
             &store,
-            VertexId::from(vertex_id),
+            vertex_id,
             &index_holder as &dyn PropertyIndexLookup,
         )
         .await
@@ -282,6 +273,6 @@ pub async fn tombstone_migrated_vertex_canister(vertex_id: u32) -> Result<(), St
     }
     #[cfg(not(target_family = "wasm"))]
     {
-        tombstone_migrated_vertex(&store, VertexId::from(vertex_id)).map_err(|e| e.to_string())
+        tombstone_migrated_vertex(&store, vertex_id).map_err(|e| e.to_string())
     }
 }

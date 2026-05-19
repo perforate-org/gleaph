@@ -34,7 +34,7 @@ use gleaph_graph_kernel::entry::{
     decode_inline_weight,
 };
 use gleaph_graph_kernel::federation::{
-    FederatedExpandNeighbor, FederatedIncomingExpandArgs, FederatedOutgoingExpandArgs,
+    FederatedExpandArgs, FederatedExpandDirection, FederatedExpandNeighbor,
     LogicalVertexId,
 };
 use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest};
@@ -2454,7 +2454,7 @@ fn edge_matches_stream_filter(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn expand_rows_from_federated_incoming_hits(
+fn expand_rows_from_federated_expand_hits(
     store: &GraphStore,
     row: &PlanRow,
     hits: &[FederatedExpandNeighbor],
@@ -2582,19 +2582,20 @@ fn execute_expand(
                     let label_id_raw =
                         label_id.map(|lid| lid.pack(EdgeDirectedness::Directed).raw());
                     let hits = pollster::block_on(
-                        crate::facade::federation_expand::federated_incoming_expand_all_shards(
+                        crate::facade::federation_expand::federated_expand_coordinator(
                             store,
-                            FederatedIncomingExpandArgs {
-                                target_logical_vertex_id: *logical,
+                            FederatedExpandArgs {
+                                logical_vertex_id: *logical,
+                                direction: FederatedExpandDirection::Incoming,
                                 label_id_raw,
                             },
                         ),
                     )
                     .map_err(|e| PlanQueryError::FederatedIndexCall {
-                        op: "federated_incoming_expand",
+                        op: "federated_expand",
                         detail: e.to_string(),
                     })?;
-                    out.extend(expand_rows_from_federated_incoming_hits(
+                    out.extend(expand_rows_from_federated_expand_hits(
                         store,
                         &row,
                         &hits,
@@ -2625,19 +2626,20 @@ fn execute_expand(
                     let label_id_raw =
                         label_id.map(|lid| lid.pack(EdgeDirectedness::Directed).raw());
                     let hits = pollster::block_on(
-                        crate::facade::federation_expand::federated_outgoing_expand_authoritative_shard(
+                        crate::facade::federation_expand::federated_expand_coordinator(
                             store,
-                            FederatedOutgoingExpandArgs {
-                                source_logical_vertex_id: *logical,
+                            FederatedExpandArgs {
+                                logical_vertex_id: *logical,
+                                direction: FederatedExpandDirection::Outgoing,
                                 label_id_raw,
                             },
                         ),
                     )
                     .map_err(|e| PlanQueryError::FederatedIndexCall {
-                        op: "federated_outgoing_expand",
+                        op: "federated_expand",
                         detail: e.to_string(),
                     })?;
-                    out.extend(expand_rows_from_federated_incoming_hits(
+                    out.extend(expand_rows_from_federated_expand_hits(
                         store,
                         &row,
                         &hits,

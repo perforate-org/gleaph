@@ -74,43 +74,36 @@ fn my_role() -> Result<String, String> {
 }
 
 #[update(guard = "guard_admin")]
-fn begin_vertex_migration(
+fn migration_begin(
     args: gleaph_graph_kernel::federation::BeginVertexMigrationArgs,
 ) -> Result<(), String> {
-    canister::handlers::begin_vertex_migration_canister(args)
+    canister::handlers::migration_begin(args)
 }
 
 #[query(guard = "guard_read")]
-fn federated_incoming_expand(
-    args: gleaph_graph_kernel::federation::FederatedIncomingExpandArgs,
+fn federated_expand(
+    args: gleaph_graph_kernel::federation::FederatedExpandArgs,
 ) -> Result<Vec<gleaph_graph_kernel::federation::FederatedExpandNeighbor>, String> {
-    canister::handlers::federated_incoming_expand(args)
-}
-
-#[query(guard = "guard_read")]
-fn federated_outgoing_expand(
-    args: gleaph_graph_kernel::federation::FederatedOutgoingExpandArgs,
-) -> Result<Vec<gleaph_graph_kernel::federation::FederatedExpandNeighbor>, String> {
-    canister::handlers::federated_outgoing_expand(args)
+    canister::handlers::federated_expand(args)
 }
 
 #[query(guard = "guard_admin")]
-fn export_vertex_for_migration(
-    vertex_id: u32,
+fn migration_export(
+    local_vertex_id: u32,
 ) -> Result<gleaph_graph_kernel::federation::ExportedVertex, String> {
-    canister::handlers::export_vertex_for_migration(vertex_id)
+    canister::handlers::migration_export(local_vertex_id)
 }
 
 #[update(guard = "guard_admin")]
-async fn import_migrated_vertex(
+async fn migration_import(
     bundle: gleaph_graph_kernel::federation::ExportedVertex,
 ) -> Result<u32, String> {
-    canister::handlers::import_migrated_vertex_canister(bundle).await
+    canister::handlers::migration_import(bundle).await
 }
 
 #[update(guard = "guard_admin")]
-async fn tombstone_migrated_vertex(vertex_id: u32) -> Result<(), String> {
-    canister::handlers::tombstone_migrated_vertex_canister(vertex_id).await
+async fn migration_tombstone(local_vertex_id: u32) -> Result<(), String> {
+    canister::handlers::migration_tombstone(local_vertex_id).await
 }
 
 ic_cdk::export_candid!();

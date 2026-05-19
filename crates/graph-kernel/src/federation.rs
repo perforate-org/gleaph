@@ -4,9 +4,7 @@ mod expand;
 mod migration;
 mod router_error;
 
-pub use expand::{
-    FederatedExpandNeighbor, FederatedIncomingExpandArgs, FederatedOutgoingExpandArgs,
-};
+pub use expand::{FederatedExpandArgs, FederatedExpandDirection, FederatedExpandNeighbor};
 pub use migration::{ExportedEdgeTarget, ExportedOutEdge, ExportedProperty, ExportedVertex};
 pub use router_error::RouterError;
 
