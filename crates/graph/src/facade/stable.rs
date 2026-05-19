@@ -16,6 +16,7 @@ pub(crate) mod metadata;
 pub(crate) mod property_catalog;
 pub(crate) mod vertex_label_catalog;
 pub(crate) mod vertex_labels;
+pub(crate) mod remote_forward_in;
 pub(crate) mod remote_vertex_refs;
 pub(crate) mod vertex_logical_ids;
 pub(crate) mod vertex_properties;
@@ -72,4 +73,7 @@ thread_local! {
 
     pub(crate) static REMOTE_VERTEX_REFS: RefCell<memory::StableRemoteVertexRefTable> =
         RefCell::new(memory::init_remote_vertex_refs());
+
+    pub(crate) static REMOTE_FORWARD_IN: RefCell<memory::StableRemoteForwardInIndex> =
+        RefCell::new(memory::init_remote_forward_in());
 }

@@ -5,7 +5,8 @@ use super::stable::vertex_label_catalog::VertexLabelCatalogError;
 use super::stable::{
     EDGE_ALIASES, EDGE_LABEL_CATALOG, EDGE_PROPERTIES, EDGE_WEIGHT_PROFILES, GRAPH,
     GRAPH_DEFAULT_EDGE_LABEL, METADATA, PREPARED_QUERY_CATALOG, PROPERTY_CATALOG,
-    REMOTE_VERTEX_REFS, VERTEX_LABEL_CATALOG, VERTEX_LABELS, VERTEX_LOGICAL_IDS, VERTEX_PROPERTIES,
+    REMOTE_FORWARD_IN, REMOTE_VERTEX_REFS, VERTEX_LABEL_CATALOG, VERTEX_LABELS, VERTEX_LOGICAL_IDS,
+    VERTEX_PROPERTIES,
 };
 use super::{
     FederationRouting, GraphMetadata, GraphMetadataError, PropertyCatalogError, VertexLabelStoreError,
@@ -571,17 +572,67 @@ impl GraphStore {
         self.with_graph_mut(|graph| {
             graph.insert_forward_out_edge(source_vertex_id, label, forward)
         })?;
-        self.find_newest_forward_handle(source_vertex_id, label, |edge| {
-            matches!(
-                edge.edge_target(),
-                Some(EdgeTarget::Remote(found)) if found == remote_ref
-            ) && edge.inline_value == forward.inline_value
-        })?
-        .ok_or(GraphStoreError::EdgeNotFound {
-            owner_vertex_id: source_vertex_id,
-            label_id: label,
-            slot_index: u32::MAX,
-        })
+        let handle = self
+            .find_newest_forward_handle(source_vertex_id, label, |edge| {
+                matches!(
+                    edge.edge_target(),
+                    Some(EdgeTarget::Remote(found)) if found == remote_ref
+                ) && edge.inline_value == forward.inline_value
+            })?
+            .ok_or(GraphStoreError::EdgeNotFound {
+                owner_vertex_id: source_vertex_id,
+                label_id: label,
+                slot_index: u32::MAX,
+            })?;
+        self.register_remote_forward_in(handle, remote_ref);
+        Ok(handle)
+    }
+
+    pub(crate) fn register_remote_forward_in(
+        &self,
+        handle: EdgeHandle,
+        remote_ref: RemoteRefId,
+    ) {
+        REMOTE_FORWARD_IN.with_borrow_mut(|index| {
+            index.insert(
+                remote_ref,
+                handle.owner_vertex_id,
+                handle.label_id.raw(),
+                handle.slot_index,
+            );
+        });
+    }
+
+    pub(crate) fn unregister_remote_forward_in_for_out_edge(
+        &self,
+        source_vertex_id: VertexId,
+        edge: &Edge,
+    ) {
+        let Some(EdgeTarget::Remote(remote_ref)) = edge.edge_target() else {
+            return;
+        };
+        REMOTE_FORWARD_IN.with_borrow_mut(|index| {
+            index.remove(
+                remote_ref,
+                source_vertex_id,
+                edge.label_id,
+                edge.edge_slot_index.raw(),
+            );
+        });
+    }
+
+    fn unregister_remote_forward_in_for_handle(&self, handle: EdgeHandle) {
+        let label = handle.label_id;
+        for edge in self
+            .out_edges(handle.owner_vertex_id)
+            .unwrap_or_default()
+        {
+            if edge.label_id != label.raw() || edge.edge_slot_index.raw() != handle.slot_index {
+                continue;
+            }
+            self.unregister_remote_forward_in_for_out_edge(handle.owner_vertex_id, &edge);
+            return;
+        }
     }
 
     pub fn vertex(&self, vertex_id: VertexId) -> Option<Vertex> {
@@ -1534,6 +1585,7 @@ impl GraphStore {
 
         let mut to_clear: Vec<EdgeHandle> = Vec::new();
         for edge in self.out_edges(vertex_id).map_err(GraphStoreError::from)? {
+            self.unregister_remote_forward_in_for_out_edge(vertex_id, &edge);
             let owner = self.edge_sidecar_owner_from_out_row(vertex_id, &edge);
             to_clear.push(EdgeHandle {
                 owner_vertex_id: owner,
@@ -1568,6 +1620,7 @@ impl GraphStore {
         self.ensure_vertex_id(canonical.owner_vertex_id)
             .map_err(GraphStoreError::from)?;
         self.clear_edge_sidecars(handle);
+        self.unregister_remote_forward_in_for_handle(canonical);
         let edge = self.with_graph_mut(|graph| {
             graph.remove_forward_edge_at_slot(
                 canonical.owner_vertex_id,
@@ -1580,7 +1633,10 @@ impl GraphStore {
             label_id: canonical.label_id,
             slot_index: canonical.slot_index,
         })?;
-        let neighbor = edge.neighbor_vid();
+        let Some(EdgeTarget::Local(neighbor)) = edge.edge_target() else {
+            self.drain_deferred_maintenance()?;
+            return Ok(());
+        };
         self.with_graph_mut(|graph| {
             graph.remove_reverse_edge_matching(neighbor, canonical.label_id, |cand| {
                 cand.neighbor_vid() == canonical.owner_vertex_id
@@ -1704,6 +1760,30 @@ impl GraphStore {
                         moved.old_slot_index,
                         moved.new_slot_index,
                     );
+                });
+                let label = LaraLabelId::from_raw(label_id);
+                let _ = GRAPH.with_borrow(|graph| {
+                    graph.for_each_out_edges_for_label_unchecked(
+                        owner_vertex_id,
+                        label,
+                        |edge| {
+                            if edge.edge_slot_index.raw() != moved.new_slot_index {
+                                return;
+                            }
+                            let Some(EdgeTarget::Remote(remote_ref)) = edge.edge_target() else {
+                                return;
+                            };
+                            REMOTE_FORWARD_IN.with_borrow_mut(|index| {
+                                index.move_slot(
+                                    remote_ref,
+                                    owner_vertex_id,
+                                    label_id,
+                                    moved.old_slot_index,
+                                    moved.new_slot_index,
+                                );
+                            });
+                        },
+                    )
                 });
             }
             LabeledOrientation::Reverse => {

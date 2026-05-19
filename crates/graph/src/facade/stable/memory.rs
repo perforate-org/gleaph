@@ -62,6 +62,7 @@ const EDGE_WEIGHT_PROFILES: MemoryId = MemoryId::new(33);
 const VERTEX_LOGICAL_IDS: MemoryId = MemoryId::new(36);
 const REMOTE_REF_TO_LOGICAL: MemoryId = MemoryId::new(37);
 const LOGICAL_TO_REMOTE_REF: MemoryId = MemoryId::new(38);
+const REMOTE_FORWARD_IN: MemoryId = MemoryId::new(39);
 
 pub(crate) const GRAPH_DEFAULT_EDGE_LABEL: LaraLabelId = LaraLabelId::UNLABELED_DIRECTED;
 
@@ -84,6 +85,7 @@ pub(crate) type StableMetadata = StableGraphMetadata<Memory>;
 pub(crate) type StableEdgeWeightProfileStore = EdgeWeightProfileStore<Memory>;
 pub(crate) type StableVertexLogicalIdMap = super::vertex_logical_ids::VertexLogicalIdMap<Memory>;
 pub(crate) type StableRemoteVertexRefTable = super::remote_vertex_refs::RemoteVertexRefTable<Memory>;
+pub(crate) type StableRemoteForwardInIndex = super::remote_forward_in::RemoteForwardInIndex<Memory>;
 
 thread_local! {
     static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
@@ -191,5 +193,11 @@ pub(crate) fn init_remote_vertex_refs() -> StableRemoteVertexRefTable {
     super::remote_vertex_refs::RemoteVertexRefTable::init(
         MEMORY_MANAGER.with(|m| m.borrow().get(REMOTE_REF_TO_LOGICAL)),
         MEMORY_MANAGER.with(|m| m.borrow().get(LOGICAL_TO_REMOTE_REF)),
+    )
+}
+
+pub(crate) fn init_remote_forward_in() -> StableRemoteForwardInIndex {
+    super::remote_forward_in::RemoteForwardInIndex::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(REMOTE_FORWARD_IN)),
     )
 }

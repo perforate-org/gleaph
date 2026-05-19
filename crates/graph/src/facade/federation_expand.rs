@@ -1,5 +1,6 @@
 //! Shard-local incoming expand for federated graph queries.
 
+use super::stable::REMOTE_FORWARD_IN;
 use super::store::{EdgeHandle, GraphStore, GraphStoreError};
 use crate::index::placement;
 use gleaph_graph_kernel::entry::{Edge, EdgeTarget, RemoteRefId};
@@ -69,13 +70,81 @@ fn collect_authoritative_incoming(
     Ok(())
 }
 
-fn collect_forward_to_remote_incoming(
+fn push_forward_to_remote_hit(
     store: &GraphStore,
     shard_id: ShardId,
-    _target_logical: LogicalVertexId,
+    source_vertex_id: VertexId,
+    remote_ref: RemoteRefId,
+    label_id_raw: Option<u16>,
+    label_id: u16,
+    slot_index: u32,
+    out: &mut Vec<FederatedExpandNeighbor>,
+) -> Result<(), GraphStoreError> {
+    let Some(source_logical) = logical_id_for_local_vertex(store, source_vertex_id) else {
+        return Ok(());
+    };
+    let edge = store
+        .out_edges(source_vertex_id)
+        .map_err(GraphStoreError::from)?
+        .into_iter()
+        .find(|edge| edge.label_id == label_id && edge.edge_slot_index.raw() == slot_index);
+    let Some(edge) = edge else {
+        return Ok(());
+    };
+    if edge.is_tombstone_edge() || !label_matches(&edge, label_id_raw) {
+        return Ok(());
+    }
+    let Some(EdgeTarget::Remote(found)) = edge.edge_target() else {
+        return Ok(());
+    };
+    if found != remote_ref {
+        return Ok(());
+    }
+    push_neighbor(
+        out,
+        shard_id,
+        0,
+        source_logical,
+        placement::local_vertex_id_raw(source_vertex_id),
+        &edge,
+    );
+    Ok(())
+}
+
+fn collect_forward_to_remote_incoming_from_index(
+    store: &GraphStore,
+    shard_id: ShardId,
     remote_ref: RemoteRefId,
     label_id_raw: Option<u16>,
     out: &mut Vec<FederatedExpandNeighbor>,
+) -> Result<(), GraphStoreError> {
+    let keys = REMOTE_FORWARD_IN.with_borrow(|index| {
+        let mut keys = Vec::new();
+        index.for_each_for_remote_ref(remote_ref, |key| keys.push(key));
+        keys
+    });
+    for key in keys {
+        push_forward_to_remote_hit(
+            store,
+            shard_id,
+            key.source_vertex_id(),
+            remote_ref,
+            label_id_raw,
+            key.label_id(),
+            key.slot_index(),
+            out,
+        )?;
+    }
+    Ok(())
+}
+
+fn collect_forward_to_remote_incoming_scan(
+    store: &GraphStore,
+    shard_id: ShardId,
+    remote_ref: RemoteRefId,
+    label_id_raw: Option<u16>,
+    out: &mut Vec<FederatedExpandNeighbor>,
+    backfill_index: bool,
 ) -> Result<(), GraphStoreError> {
     let vertex_count = u32::from(store.vertex_count());
     for raw in 0..vertex_count {
@@ -84,9 +153,6 @@ fn collect_forward_to_remote_incoming(
             continue;
         };
         if vertex.is_tombstone() {
-            continue;
-        }
-        let Some(source_logical) = logical_id_for_local_vertex(store, vertex_id) else {
             continue;
         };
         for edge in store.out_edges(vertex_id).map_err(GraphStoreError::from)? {
@@ -99,6 +165,19 @@ fn collect_forward_to_remote_incoming(
             if found != remote_ref {
                 continue;
             }
+            if backfill_index {
+                store.register_remote_forward_in(
+                    EdgeHandle {
+                        owner_vertex_id: vertex_id,
+                        label_id: ic_stable_lara::BucketLabelKey::from_raw(edge.label_id),
+                        slot_index: edge.edge_slot_index.raw(),
+                    },
+                    remote_ref,
+                );
+            }
+            let Some(source_logical) = logical_id_for_local_vertex(store, vertex_id) else {
+                continue;
+            };
             push_neighbor(
                 out,
                 shard_id,
@@ -110,6 +189,37 @@ fn collect_forward_to_remote_incoming(
         }
     }
     Ok(())
+}
+
+fn collect_forward_to_remote_incoming(
+    store: &GraphStore,
+    shard_id: ShardId,
+    _target_logical: LogicalVertexId,
+    remote_ref: RemoteRefId,
+    label_id_raw: Option<u16>,
+    out: &mut Vec<FederatedExpandNeighbor>,
+) -> Result<(), GraphStoreError> {
+    let index_populated = REMOTE_FORWARD_IN.with_borrow(|index| !index.is_empty());
+    if index_populated {
+        collect_forward_to_remote_incoming_from_index(
+            store,
+            shard_id,
+            remote_ref,
+            label_id_raw,
+            out,
+        )?;
+        if !out.is_empty() {
+            return Ok(());
+        }
+    }
+    collect_forward_to_remote_incoming_scan(
+        store,
+        shard_id,
+        remote_ref,
+        label_id_raw,
+        out,
+        true,
+    )
 }
 
 /// Lists incoming neighbors of `target_logical_vertex_id` visible on this graph shard.
@@ -179,7 +289,7 @@ fn collect_authoritative_outgoing(
     store: &GraphStore,
     shard_id: ShardId,
     source_local: VertexId,
-    source_logical: LogicalVertexId,
+    _source_logical: LogicalVertexId,
     label_id_raw: Option<u16>,
     out: &mut Vec<FederatedExpandNeighbor>,
 ) -> Result<(), GraphStoreError> {
@@ -399,6 +509,68 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].neighbor_logical_vertex_id, source_logical);
         assert_eq!(hits[0].target_local_vertex_id, u32::from(target));
+    }
+
+    #[test]
+    fn forward_to_remote_uses_stable_index_after_insert() {
+        register_test_shard(7, "g");
+        let store = GraphStore::new();
+        store
+            .set_federation_routing(Some(FederationRouting {
+                router_canister: Principal::management_canister(),
+                index_canister: Principal::management_canister(),
+                shard_id: 7,
+            }))
+            .expect("routing");
+
+        let source = store.insert_vertex().expect("source");
+        let remote_logical = 99_002u64;
+        let remote_ref = store.ensure_remote_ref(remote_logical);
+        store
+            .insert_directed_edge_to_logical(source, remote_logical, None)
+            .expect("remote edge");
+
+        assert!(REMOTE_FORWARD_IN.with_borrow(|index| index.has_postings_for(remote_ref)));
+
+        let hits = collect_incoming_neighbors(
+            &store,
+            FederatedIncomingExpandArgs {
+                target_logical_vertex_id: remote_logical,
+                label_id_raw: None,
+            },
+        )
+        .expect("collect");
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(
+            hits[0].neighbor_local_vertex_id,
+            placement::local_vertex_id_raw(source)
+        );
+    }
+
+    #[test]
+    fn delete_remote_forward_edge_removes_index_posting() {
+        register_test_shard(7, "g");
+        let store = GraphStore::new();
+        store
+            .set_federation_routing(Some(FederationRouting {
+                router_canister: Principal::management_canister(),
+                index_canister: Principal::management_canister(),
+                shard_id: 7,
+            }))
+            .expect("routing");
+
+        let source = store.insert_vertex().expect("source");
+        let remote_logical = 99_003u64;
+        let remote_ref = store.ensure_remote_ref(remote_logical);
+        let handle = store
+            .insert_directed_edge_to_logical(source, remote_logical, None)
+            .expect("remote edge");
+        assert!(REMOTE_FORWARD_IN.with_borrow(|index| index.has_postings_for(remote_ref)));
+
+        store.delete_edge_by_handle(handle).expect("delete");
+
+        assert!(!REMOTE_FORWARD_IN.with_borrow(|index| index.has_postings_for(remote_ref)));
     }
 
     #[test]
