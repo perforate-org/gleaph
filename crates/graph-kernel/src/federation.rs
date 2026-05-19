@@ -1,7 +1,11 @@
 //! Distributed graph federation identifiers and placement types.
 
+mod migration;
 mod router_error;
 
+pub use migration::{
+    ExportedEdgeTarget, ExportedOutEdge, ExportedProperty, ExportedVertex,
+};
 pub use router_error::RouterError;
 
 use candid::{CandidType, Decode, Encode, Principal};

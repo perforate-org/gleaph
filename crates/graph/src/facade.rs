@@ -8,6 +8,7 @@ pub mod auth;
 
 mod store;
 
+pub mod migration;
 pub mod mutation_executor;
 
 pub use stable::edge_label_catalog::EdgeLabelCatalogError;

@@ -510,6 +510,24 @@ impl GraphStore {
         edge.edge_target()
     }
 
+    /// Pushes a vertex row during migration import (no router allocate).
+    pub(crate) fn push_migrated_vertex_row(
+        &self,
+        vertex: Vertex,
+    ) -> Result<VertexId, DeferredBidirectionalLabeledError> {
+        self.with_graph_mut(|graph| graph.push_vertex_row(vertex.into()))
+    }
+
+    pub(crate) fn register_logical_vertex_mapping(
+        &self,
+        vertex_id: VertexId,
+        logical_vertex_id: LogicalVertexId,
+    ) {
+        VERTEX_LOGICAL_IDS.with_borrow_mut(|map| {
+            map.insert(vertex_id, logical_vertex_id);
+        });
+    }
+
     /// Inserts a forward-only directed edge to a vertex on another shard (remote ref).
     pub fn insert_directed_edge_to_logical(
         &self,
@@ -838,9 +856,8 @@ impl GraphStore {
         Ok(canonical)
     }
 
-    /// Test/canbench helper to insert a directed edge with a specific `inline_value`.
-    #[cfg(any(test, feature = "canbench"))]
-    pub fn insert_directed_edge_with_inline_value(
+    /// Inserts a directed edge with a specific `inline_value` (migration / tests).
+    pub(crate) fn insert_directed_edge_with_inline_value(
         &self,
         source_vertex_id: VertexId,
         target_vertex_id: VertexId,
