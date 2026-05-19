@@ -34,7 +34,8 @@ use gleaph_graph_kernel::entry::{
     decode_inline_weight,
 };
 use gleaph_graph_kernel::federation::{
-    FederatedExpandNeighbor, FederatedIncomingExpandArgs, LogicalVertexId,
+    FederatedExpandNeighbor, FederatedIncomingExpandArgs, FederatedOutgoingExpandArgs,
+    LogicalVertexId,
 };
 use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest};
 use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
@@ -2617,6 +2618,50 @@ fn execute_expand(
             }
         }
 
+        if matches!(
+            direction,
+            EdgeDirection::PointingRight | EdgeDirection::Undirected
+        ) {
+            if let Some(PlanBinding::RemoteVertex(logical)) = row.get(src.as_ref()) {
+                if matches!(
+                    resolve_federated_traversal_vertex(store, *logical, Some(direction)),
+                    Err(PlanQueryError::UnsupportedOp(_))
+                ) {
+                    let label_id_raw = label_id.map(|lid| {
+                        lid.pack(EdgeDirectedness::Directed).raw()
+                    });
+                    let hits = pollster::block_on(
+                        crate::facade::federation_expand::federated_outgoing_expand_authoritative_shard(
+                            store,
+                            FederatedOutgoingExpandArgs {
+                                source_logical_vertex_id: *logical,
+                                label_id_raw,
+                            },
+                        ),
+                    )
+                    .map_err(|e| PlanQueryError::FederatedIndexCall {
+                        op: "federated_outgoing_expand",
+                        detail: e.to_string(),
+                    })?;
+                    out.extend(expand_rows_from_federated_incoming_hits(
+                        store,
+                        &row,
+                        &hits,
+                        dst.as_ref(),
+                        edge.as_ref(),
+                        emit_edge_binding,
+                        dst_property_projection,
+                        dst_filter,
+                        parameters,
+                        caller,
+                        gleaph_weight_decoders,
+                        &evaluator,
+                    )?);
+                    continue;
+                }
+            }
+        }
+
         let Some(src_id) = (match row.get(src.as_ref()) {
             Some(PlanBinding::RemoteVertex(logical)) => {
                 resolve_federated_traversal_vertex(store, *logical, Some(direction))?
@@ -5014,9 +5059,9 @@ fn resolve_federated_traversal_vertex(
         gleaph_graph_kernel::federation::VertexPlacement::Active(_) => {
             let op = match expand_direction {
                 Some(EdgeDirection::PointingLeft) => {
-                    "Expand.reverse(federated fan-out not implemented; use list_shards_for_graph)"
+                    "Expand.reverse(federated placement on another shard)"
                 }
-                _ => "Expand(federated fan-out not implemented; placement on another shard)",
+                _ => "Expand.forward(federated placement on another shard)",
             };
             Err(PlanQueryError::UnsupportedOp(op))
         }

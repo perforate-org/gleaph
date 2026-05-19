@@ -13,6 +13,13 @@ pub struct FederatedIncomingExpandArgs {
     pub label_id_raw: Option<u16>,
 }
 
+/// Outgoing-neighbor probe for a logical vertex on its authoritative graph shard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct FederatedOutgoingExpandArgs {
+    pub source_logical_vertex_id: LogicalVertexId,
+    pub label_id_raw: Option<u16>,
+}
+
 /// One incoming half-edge visible on the responding shard.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct FederatedExpandNeighbor {

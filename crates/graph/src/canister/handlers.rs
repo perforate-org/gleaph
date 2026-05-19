@@ -28,6 +28,7 @@ use gleaph_gql::Value;
 use gleaph_gql_ic::decode_gql_params_blob;
 use gleaph_graph_kernel::federation::{
     BeginVertexMigrationArgs, ExportedVertex, FederatedExpandNeighbor, FederatedIncomingExpandArgs,
+    FederatedOutgoingExpandArgs,
 };
 use ic_stable_lara::VertexId;
 
@@ -225,6 +226,14 @@ pub fn federated_incoming_expand(
 ) -> Result<Vec<FederatedExpandNeighbor>, String> {
     let store = GraphStore::new();
     crate::facade::federation_expand::collect_incoming_neighbors(&store, args)
+        .map_err(|e| e.to_string())
+}
+
+pub fn federated_outgoing_expand(
+    args: FederatedOutgoingExpandArgs,
+) -> Result<Vec<FederatedExpandNeighbor>, String> {
+    let store = GraphStore::new();
+    crate::facade::federation_expand::collect_outgoing_neighbors(&store, args)
         .map_err(|e| e.to_string())
 }
 
