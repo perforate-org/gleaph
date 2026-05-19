@@ -48,7 +48,7 @@ fn collect_authoritative_incoming(
 ) -> Result<(), GraphStoreError> {
     let target_local_raw = placement::local_vertex_id_raw(target_local);
     for edge in store
-        .in_edges(target_local)
+        .directed_in_edges(target_local)
         .map_err(GraphStoreError::from)?
     {
         if edge.is_tombstone_edge() || !label_matches(&edge, label_id_raw) {
@@ -84,7 +84,7 @@ fn push_forward_to_remote_hit(
         return Ok(());
     };
     let edge = store
-        .out_edges(source_vertex_id)
+        .directed_out_edges(source_vertex_id)
         .map_err(GraphStoreError::from)?
         .into_iter()
         .find(|edge| edge.label_id == label_id && edge.edge_slot_index.raw() == slot_index);
@@ -155,7 +155,10 @@ fn collect_forward_to_remote_incoming_scan(
         if vertex.is_tombstone() {
             continue;
         };
-        for edge in store.out_edges(vertex_id).map_err(GraphStoreError::from)? {
+        for edge in store
+            .directed_out_edges(vertex_id)
+            .map_err(GraphStoreError::from)?
+        {
             if edge.is_tombstone_edge() || !label_matches(&edge, label_id_raw) {
                 continue;
             }
@@ -286,7 +289,7 @@ fn collect_authoritative_outgoing(
 ) -> Result<(), GraphStoreError> {
     let source_local_raw = placement::local_vertex_id_raw(source_local);
     for edge in store
-        .out_edges(source_local)
+        .directed_out_edges(source_local)
         .map_err(GraphStoreError::from)?
     {
         if edge.is_tombstone_edge() || !label_matches(&edge, label_id_raw) {

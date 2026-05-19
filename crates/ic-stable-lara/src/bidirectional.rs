@@ -1,26 +1,42 @@
 //! Bidirectional LARA graph wrapper.
 //!
-//! A [`LaraGraph`] stores one oriented adjacency index. This
-//! module composes two such indexes: a forward graph for out-neighbors and a
-//! reverse graph for the transpose.
+//! A [`LaraGraph`] stores one oriented adjacency index. This module composes two such indexes:
+//! a forward graph for out-neighbors and a reverse graph for the transpose.
+//!
+//! ## Typed out-adjacency (aligned with labeled bidirectional)
+//!
+//! Both unlabeled and labeled bidirectional wrappers expose the same surface:
+//! `directed_out_edges`, `directed_in_edges`, `undirected_edges`, `for_each_*`, and
+//! `*_edges_iter` (with [`OutEdgeOrder`]).
+//!
+//! **Unlabeled** graphs discriminate directed vs undirected via [`CsrEdgeUndirected`] on the
+//! edge payload ([`UndirectedEdgeFlag`]). **Labeled** graphs use [`crate::labeled::BucketLabelKey`]
+//! bucket MSB (see [`crate::labeled::bidirectional`]). Gleaph production code uses labeled only.
 
+mod adjacency;
 #[cfg(feature = "canbench")]
 mod bench;
 pub mod deferred;
 
 use crate::{
     GrowFailed, LaraGraph, VertexCount, VertexId,
-    lara::{InitError, edge::OutEdgesIter, operation_error::LaraOperationError},
+    lara::{InitError, operation_error::LaraOperationError},
     traits::{CsrEdge, CsrEdgeTombstone, CsrEdgeUndirected, CsrVertex},
 };
+use adjacency::{OutEdgeDirectednessFilter, filtered_out_edges_iter, for_each_lara_out_filtered};
 use ic_stable_structures::Memory;
 use std::fmt;
 
+pub use crate::labeled::OutEdgeOrder;
+pub use adjacency::FilteredOutEdgesIter;
 pub use deferred::{
     BidirectionalMaintenanceReport, DeferredBidirectionalLara, DeferredBidirectionalLaraError,
     DeferredBidirectionalLaraGraph, DeleteEdgeObserver,
 };
 
+/// Unlabeled bidirectional graphs only: undirected adjacency via [`CsrEdgeUndirected`].
+///
+/// Labeled CSR uses bucket wire keys; see [`crate::labeled::bidirectional`].
 pub(crate) trait UndirectedEdgeFlag {
     fn marked_undirected(&self) -> bool;
 }
@@ -289,42 +305,136 @@ where
         Ok(())
     }
 
-    /// Collects outgoing edges from the forward store in slab slot order.
-    pub fn asc_out_edges(&self, src: VertexId) -> Result<Vec<E>, BidirectionalLaraError> {
-        self.ensure_vertex(src)?;
-        self.forward
-            .asc_out_edges(src)
-            .map_err(BidirectionalLaraError::Forward)
+    /// All directed outgoing edges at `src` in ascending slot order.
+    pub fn directed_out_edges(&self, src: VertexId) -> Result<Vec<E>, BidirectionalLaraError> {
+        let mut edges = Vec::new();
+        self.for_each_directed_out_edges(src, OutEdgeOrder::Ascending, |edge| edges.push(edge))?;
+        Ok(edges)
     }
 
-    /// Collects incoming edges from the reverse store in slab slot order.
-    pub fn asc_in_edges(&self, dst: VertexId) -> Result<Vec<E>, BidirectionalLaraError> {
-        self.ensure_vertex(dst)?;
-        self.reverse
-            .asc_out_edges(dst)
-            .map_err(BidirectionalLaraError::Reverse)
+    /// All directed incoming edges at `dst` in ascending slot order.
+    pub fn directed_in_edges(&self, dst: VertexId) -> Result<Vec<E>, BidirectionalLaraError> {
+        let mut edges = Vec::new();
+        self.for_each_directed_in_edges(dst, OutEdgeOrder::Ascending, |edge| edges.push(edge))?;
+        Ok(edges)
     }
 
-    /// Iterates outgoing edges from the forward store in standard scan order.
-    pub fn out_edges_iter(
+    /// Undirected outgoing edges at `src` in ascending slot order (forward store only).
+    pub fn undirected_edges(&self, src: VertexId) -> Result<Vec<E>, BidirectionalLaraError> {
+        let mut edges = Vec::new();
+        self.for_each_undirected_edges(src, OutEdgeOrder::Ascending, |edge| edges.push(edge))?;
+        Ok(edges)
+    }
+
+    /// Visits directed forward outgoing edges in `order`.
+    pub fn for_each_directed_out_edges<Visit>(
         &self,
         src: VertexId,
-    ) -> Result<OutEdgesIter<'_, E, M>, BidirectionalLaraError> {
+        order: OutEdgeOrder,
+        mut visit: Visit,
+    ) -> Result<(), BidirectionalLaraError>
+    where
+        Visit: FnMut(E),
+    {
         self.ensure_vertex(src)?;
-        self.forward
-            .out_edges_iter(src)
-            .map_err(BidirectionalLaraError::Forward)
+        for_each_lara_out_filtered(
+            &self.forward,
+            src,
+            OutEdgeDirectednessFilter::DirectedOnly,
+            order,
+            &mut visit,
+        )
+        .map_err(BidirectionalLaraError::Forward)
     }
 
-    /// Iterates incoming edges from the reverse store in standard scan order.
-    pub fn in_edges_iter(
+    /// Visits undirected forward outgoing edges in `order`.
+    pub fn for_each_undirected_edges<Visit>(
+        &self,
+        src: VertexId,
+        order: OutEdgeOrder,
+        mut visit: Visit,
+    ) -> Result<(), BidirectionalLaraError>
+    where
+        Visit: FnMut(E),
+    {
+        self.ensure_vertex(src)?;
+        for_each_lara_out_filtered(
+            &self.forward,
+            src,
+            OutEdgeDirectednessFilter::UndirectedOnly,
+            order,
+            &mut visit,
+        )
+        .map_err(BidirectionalLaraError::Forward)
+    }
+
+    /// Visits directed incoming edges at `dst` in `order` (reverse store).
+    pub fn for_each_directed_in_edges<Visit>(
         &self,
         dst: VertexId,
-    ) -> Result<OutEdgesIter<'_, E, M>, BidirectionalLaraError> {
+        order: OutEdgeOrder,
+        mut visit: Visit,
+    ) -> Result<(), BidirectionalLaraError>
+    where
+        Visit: FnMut(E),
+    {
         self.ensure_vertex(dst)?;
-        self.reverse
-            .out_edges_iter(dst)
-            .map_err(BidirectionalLaraError::Reverse)
+        for_each_lara_out_filtered(
+            &self.reverse,
+            dst,
+            OutEdgeDirectednessFilter::DirectedOnly,
+            order,
+            &mut visit,
+        )
+        .map_err(BidirectionalLaraError::Reverse)
+    }
+
+    /// Streaming directed forward out-edges filtered by edge payload in `order`.
+    pub fn directed_out_edges_iter(
+        &self,
+        src: VertexId,
+        order: OutEdgeOrder,
+    ) -> Result<FilteredOutEdgesIter<'_, E, M>, BidirectionalLaraError> {
+        self.ensure_vertex(src)?;
+        filtered_out_edges_iter(
+            &self.forward,
+            src,
+            OutEdgeDirectednessFilter::DirectedOnly,
+            order,
+        )
+        .map_err(BidirectionalLaraError::Forward)
+    }
+
+    /// Streaming undirected forward out-edges filtered by edge payload in `order`.
+    pub fn undirected_edges_iter(
+        &self,
+        src: VertexId,
+        order: OutEdgeOrder,
+    ) -> Result<FilteredOutEdgesIter<'_, E, M>, BidirectionalLaraError> {
+        self.ensure_vertex(src)?;
+        filtered_out_edges_iter(
+            &self.forward,
+            src,
+            OutEdgeDirectednessFilter::UndirectedOnly,
+            order,
+        )
+        .map_err(BidirectionalLaraError::Forward)
+    }
+
+    /// Streaming directed incoming edges filtered by edge payload in `order`.
+    pub fn directed_in_edges_iter(
+        &self,
+        dst: VertexId,
+        order: OutEdgeOrder,
+    ) -> Result<FilteredOutEdgesIter<'_, E, M>, BidirectionalLaraError> {
+        self.ensure_vertex(dst)?;
+        filtered_out_edges_iter(
+            &self.reverse,
+            dst,
+            OutEdgeDirectednessFilter::DirectedOnly,
+            order,
+        )
+        .map_err(BidirectionalLaraError::Reverse)
     }
 
     /// Inserts a directed edge from `src` to `dst`.
@@ -450,7 +560,10 @@ where
         Ok(Some(edge))
     }
 
-    /// Inserts an undirected edge by materializing both directions in both orientations.
+    /// Inserts an undirected edge on forward out-adjacency only (`u → v` and `v → u`).
+    ///
+    /// Reverse orientation stores no undirected records; use [`Self::undirected_edges`]
+    /// at each endpoint. Directed edges still use forward + reverse.
     pub fn insert_undirected(
         &self,
         u: VertexId,
@@ -465,28 +578,17 @@ where
         let edge = edge.with_undirected(true);
 
         if u == v {
-            let loop_edge = edge.with_neighbor_vid(u);
             self.forward
-                .insert_edge(u, loop_edge)
+                .insert_edge(u, edge.with_neighbor_vid(u))
                 .map_err(BidirectionalLaraError::Forward)?;
-            self.reverse
-                .insert_edge(u, loop_edge)
-                .map_err(BidirectionalLaraError::Reverse)?;
-            return Ok(());
+        } else {
+            self.forward
+                .insert_edge(u, edge.with_neighbor_vid(v))
+                .map_err(BidirectionalLaraError::Forward)?;
+            self.forward
+                .insert_edge(v, edge.with_neighbor_vid(u))
+                .map_err(BidirectionalLaraError::Forward)?;
         }
-
-        self.forward
-            .insert_edge(u, edge.with_neighbor_vid(v))
-            .map_err(BidirectionalLaraError::Forward)?;
-        self.forward
-            .insert_edge(v, edge.with_neighbor_vid(u))
-            .map_err(BidirectionalLaraError::Forward)?;
-        self.reverse
-            .insert_edge(v, edge.with_neighbor_vid(u))
-            .map_err(BidirectionalLaraError::Reverse)?;
-        self.reverse
-            .insert_edge(u, edge.with_neighbor_vid(v))
-            .map_err(BidirectionalLaraError::Reverse)?;
         Ok(())
     }
 
@@ -508,12 +610,12 @@ where
 
         if u == v {
             return Ok(self
-                .remove_directed_record_unchecked(u, u, edge.with_neighbor_vid(u))?
+                .remove_forward_record_unchecked(u, u, edge.with_neighbor_vid(u))?
                 .is_some());
         }
 
-        let uv = self.remove_directed_record_unchecked(u, v, edge.with_neighbor_vid(v))?;
-        let vu = self.remove_directed_record_unchecked(v, u, edge.with_neighbor_vid(u))?;
+        let uv = self.remove_forward_record_unchecked(u, v, edge.with_neighbor_vid(v))?;
+        let vu = self.remove_forward_record_unchecked(v, u, edge.with_neighbor_vid(u))?;
         Ok(uv.is_some() || vu.is_some())
     }
 
@@ -534,7 +636,7 @@ where
         self.ensure_vertex(u)?;
         self.ensure_vertex(v)?;
 
-        let removed = self.remove_directed_matching_unchecked(u, v, |edge| {
+        let removed = self.remove_forward_matching_unchecked(u, v, |edge| {
             edge.neighbor_vid() == v
                 && <E as UndirectedEdgeFlag>::marked_undirected(edge)
                 && matches(edge)
@@ -544,8 +646,7 @@ where
         };
 
         if u != v {
-            let opposite =
-                self.remove_directed_record_unchecked(v, u, edge.with_neighbor_vid(u))?;
+            let opposite = self.remove_forward_record_unchecked(v, u, edge.with_neighbor_vid(u))?;
             if opposite.is_none() {
                 return Err(BidirectionalLaraError::Forward(
                     LaraOperationError::UndirectedRemoveOrientationMismatch,
@@ -553,6 +654,33 @@ where
             }
         }
         Ok(Some(edge))
+    }
+
+    fn remove_forward_record_unchecked(
+        &self,
+        src: VertexId,
+        dst: VertexId,
+        edge: E,
+    ) -> Result<Option<E>, BidirectionalLaraError>
+    where
+        E: PartialEq + CsrEdgeTombstone,
+    {
+        self.remove_forward_matching_unchecked(src, dst, |candidate| *candidate == edge)
+    }
+
+    fn remove_forward_matching_unchecked<F>(
+        &self,
+        src: VertexId,
+        dst: VertexId,
+        mut matches: F,
+    ) -> Result<Option<E>, BidirectionalLaraError>
+    where
+        E: PartialEq + CsrEdgeTombstone,
+        F: FnMut(&E) -> bool,
+    {
+        self.forward
+            .remove_edge_matching(src, |edge| edge.neighbor_vid() == dst && matches(edge))
+            .map_err(BidirectionalLaraError::Forward)
     }
 
     fn ensure_matching_vertex_counts(&self) -> Result<(), BidirectionalLaraError> {
@@ -593,15 +721,21 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            graph.asc_out_edges(VertexId::from(0)).unwrap(),
+            graph.directed_out_edges(VertexId::from(0)).unwrap(),
             vec![TestEdge(2)]
         );
-        assert_eq!(graph.asc_out_edges(VertexId::from(2)).unwrap(), Vec::new());
         assert_eq!(
-            graph.asc_in_edges(VertexId::from(2)).unwrap(),
+            graph.directed_out_edges(VertexId::from(2)).unwrap(),
+            Vec::new()
+        );
+        assert_eq!(
+            graph.directed_in_edges(VertexId::from(2)).unwrap(),
             vec![TestEdge(0)]
         );
-        assert_eq!(graph.asc_in_edges(VertexId::from(0)).unwrap(), Vec::new());
+        assert_eq!(
+            graph.directed_in_edges(VertexId::from(0)).unwrap(),
+            Vec::new()
+        );
     }
 
     #[test]
@@ -646,8 +780,14 @@ mod tests {
                 .unwrap()
         );
 
-        assert_eq!(graph.asc_out_edges(VertexId::from(0)).unwrap(), Vec::new());
-        assert_eq!(graph.asc_in_edges(VertexId::from(2)).unwrap(), Vec::new());
+        assert_eq!(
+            graph.directed_out_edges(VertexId::from(0)).unwrap(),
+            Vec::new()
+        );
+        assert_eq!(
+            graph.directed_in_edges(VertexId::from(2)).unwrap(),
+            Vec::new()
+        );
         assert!(
             !graph
                 .remove_directed(VertexId::from(0), VertexId::from(2), TestEdge(2))
@@ -673,9 +813,12 @@ mod tests {
                 .remove_directed(VertexId::from(0), VertexId::from(1), blue)
                 .unwrap()
         );
-        assert_eq!(graph.asc_out_edges(VertexId::from(0)).unwrap(), vec![red]);
         assert_eq!(
-            graph.asc_in_edges(VertexId::from(1)).unwrap(),
+            graph.directed_out_edges(VertexId::from(0)).unwrap(),
+            vec![red]
+        );
+        assert_eq!(
+            graph.directed_in_edges(VertexId::from(1)).unwrap(),
             vec![red.with_neighbor_vid(VertexId::from(0))]
         );
     }
@@ -699,9 +842,12 @@ mod tests {
             })
             .unwrap();
         assert_eq!(removed, Some(red));
-        assert_eq!(graph.asc_out_edges(VertexId::from(0)).unwrap(), vec![blue]);
         assert_eq!(
-            graph.asc_in_edges(VertexId::from(1)).unwrap(),
+            graph.directed_out_edges(VertexId::from(0)).unwrap(),
+            vec![blue]
+        );
+        assert_eq!(
+            graph.directed_in_edges(VertexId::from(1)).unwrap(),
             vec![blue.with_neighbor_vid(VertexId::from(0))]
         );
     }
@@ -721,8 +867,14 @@ mod tests {
                 actual
             } if expected == VertexId::from(1) && actual == VertexId::from(0)
         ));
-        assert_eq!(graph.asc_out_edges(VertexId::from(0)).unwrap(), Vec::new());
-        assert_eq!(graph.asc_in_edges(VertexId::from(1)).unwrap(), Vec::new());
+        assert_eq!(
+            graph.directed_out_edges(VertexId::from(0)).unwrap(),
+            Vec::new()
+        );
+        assert_eq!(
+            graph.directed_in_edges(VertexId::from(1)).unwrap(),
+            Vec::new()
+        );
     }
 
     #[test]
@@ -738,12 +890,18 @@ mod tests {
             err,
             BidirectionalLaraError::UndirectedEdgeInDirectedInsert
         ));
-        assert_eq!(graph.asc_out_edges(VertexId::from(0)).unwrap(), Vec::new());
-        assert_eq!(graph.asc_in_edges(VertexId::from(1)).unwrap(), Vec::new());
+        assert_eq!(
+            graph.directed_out_edges(VertexId::from(0)).unwrap(),
+            Vec::new()
+        );
+        assert_eq!(
+            graph.directed_in_edges(VertexId::from(1)).unwrap(),
+            Vec::new()
+        );
     }
 
     #[test]
-    fn bidirectional_undirected_insert_materializes_symmetric_adjacency() {
+    fn bidirectional_undirected_insert_materializes_forward_out_at_both_endpoints() {
         let graph = bidirectional_test_graph::<UndirectedTestEdge>(&[0, 4, 8]);
 
         graph
@@ -754,38 +912,28 @@ mod tests {
             )
             .unwrap();
 
+        let uv = UndirectedTestEdge {
+            neighbor: 2,
+            undirected: true,
+        };
+        let vu = UndirectedTestEdge {
+            neighbor: 0,
+            undirected: true,
+        };
+        assert_eq!(graph.undirected_edges(VertexId::from(0)).unwrap(), vec![uv]);
+        assert_eq!(graph.undirected_edges(VertexId::from(2)).unwrap(), vec![vu]);
         assert_eq!(
-            graph.asc_out_edges(VertexId::from(0)).unwrap(),
-            vec![UndirectedTestEdge {
-                neighbor: 2,
-                undirected: true
-            }]
+            graph.directed_in_edges(VertexId::from(0)).unwrap(),
+            Vec::new()
         );
         assert_eq!(
-            graph.asc_out_edges(VertexId::from(2)).unwrap(),
-            vec![UndirectedTestEdge {
-                neighbor: 0,
-                undirected: true
-            }]
-        );
-        assert_eq!(
-            graph.asc_in_edges(VertexId::from(0)).unwrap(),
-            vec![UndirectedTestEdge {
-                neighbor: 2,
-                undirected: true
-            }]
-        );
-        assert_eq!(
-            graph.asc_in_edges(VertexId::from(2)).unwrap(),
-            vec![UndirectedTestEdge {
-                neighbor: 0,
-                undirected: true
-            }]
+            graph.directed_in_edges(VertexId::from(2)).unwrap(),
+            Vec::new()
         );
     }
 
     #[test]
-    fn bidirectional_undirected_self_loop_stores_one_loop_per_orientation() {
+    fn bidirectional_undirected_self_loop_stores_one_forward_out_record() {
         let graph = bidirectional_test_graph::<UndirectedTestEdge>(&[0, 4]);
 
         graph
@@ -801,12 +949,12 @@ mod tests {
             undirected: true,
         };
         assert_eq!(
-            graph.asc_out_edges(VertexId::from(1)).unwrap(),
+            graph.undirected_edges(VertexId::from(1)).unwrap(),
             vec![loop_edge]
         );
         assert_eq!(
-            graph.asc_in_edges(VertexId::from(1)).unwrap(),
-            vec![loop_edge]
+            graph.directed_in_edges(VertexId::from(1)).unwrap(),
+            Vec::new()
         );
     }
 
@@ -824,11 +972,11 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            reopened.asc_out_edges(VertexId::from(0)).unwrap(),
+            reopened.directed_out_edges(VertexId::from(0)).unwrap(),
             vec![TestEdge(2)]
         );
         assert_eq!(
-            reopened.asc_in_edges(VertexId::from(2)).unwrap(),
+            reopened.directed_in_edges(VertexId::from(2)).unwrap(),
             vec![TestEdge(0)]
         );
     }

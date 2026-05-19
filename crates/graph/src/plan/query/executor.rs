@@ -845,9 +845,10 @@ impl LimitedRows {
 #[derive(Clone, Copy)]
 enum CsrOffsetFastPath {
     ForwardLabel(LaraLabelId),
-    ForwardDirectedness(BucketDirectedness),
+    ForwardDirected,
+    ForwardUndirected,
     ReverseLabel(LaraLabelId),
-    ReverseDirectedness(BucketDirectedness),
+    ReverseDirected,
 }
 
 fn csr_offset_fast_path_for_expand(
@@ -864,21 +865,21 @@ fn csr_offset_fast_path_for_expand(
                 let storage = lid.pack(EdgeDirectedness::Directed);
                 CsrOffsetFastPath::ForwardLabel(LaraLabelId::from_raw(storage.raw()))
             }
-            None => CsrOffsetFastPath::ForwardDirectedness(BucketDirectedness::Directed),
+            None => CsrOffsetFastPath::ForwardDirected,
         }),
         EdgeDirection::PointingLeft => Some(match label_id {
             Some(lid) => {
                 let storage = lid.pack(EdgeDirectedness::Directed);
                 CsrOffsetFastPath::ReverseLabel(LaraLabelId::from_raw(storage.raw()))
             }
-            None => CsrOffsetFastPath::ReverseDirectedness(BucketDirectedness::Directed),
+            None => CsrOffsetFastPath::ReverseDirected,
         }),
         EdgeDirection::Undirected => Some(match label_id {
             Some(lid) => {
                 let storage = lid.pack(EdgeDirectedness::Undirected);
                 CsrOffsetFastPath::ForwardLabel(LaraLabelId::from_raw(storage.raw()))
             }
-            None => CsrOffsetFastPath::ForwardDirectedness(BucketDirectedness::Undirected),
+            None => CsrOffsetFastPath::ForwardUndirected,
         }),
         _ => None,
     }
@@ -937,23 +938,18 @@ where
         CsrOffsetFastPath::ForwardLabel(label) => {
             store.skip_then_visit_each_out_edge_for_label(src_id, label, offset_remaining, visit)
         }
-        CsrOffsetFastPath::ForwardDirectedness(directedness) => store
-            .skip_then_visit_each_out_edge_by_directedness(
-                src_id,
-                directedness,
-                offset_remaining,
-                visit,
-            ),
+        CsrOffsetFastPath::ForwardDirected => {
+            store.skip_then_visit_each_directed_out_edge(src_id, offset_remaining, visit)
+        }
+        CsrOffsetFastPath::ForwardUndirected => {
+            store.skip_then_visit_each_undirected_edge(src_id, offset_remaining, visit)
+        }
         CsrOffsetFastPath::ReverseLabel(label) => {
             store.skip_then_visit_each_in_edge_for_label(src_id, label, offset_remaining, visit)
         }
-        CsrOffsetFastPath::ReverseDirectedness(directedness) => store
-            .skip_then_visit_each_in_edge_by_directedness(
-                src_id,
-                directedness,
-                offset_remaining,
-                visit,
-            ),
+        CsrOffsetFastPath::ReverseDirected => {
+            store.skip_then_visit_each_directed_in_edge(src_id, offset_remaining, visit)
+        }
     }
 }
 
@@ -2946,28 +2942,21 @@ fn execute_shortest_path(
     Ok(out)
 }
 
-/// Pre-resolves catalog edge label → Lara storage key once per shortest-path search, then expands
-/// with [`GraphStore::for_each_out_edges_for_label_unchecked`] to avoid repeated `ensure_vertex` and
-/// `expand_candidates_into` plumbing per hop.
+/// Holds a catalog [`EdgeLabelId`] per shortest-path search; expansion uses directed/undirected
+/// GraphStore APIs so wire MSB packing stays internal.
 #[derive(Clone, Copy)]
 enum ShortestFixedLabelExpand {
-    Forward { storage: LaraLabelId },
-    Reverse { storage: LaraLabelId },
-    Undirected { storage: LaraLabelId },
+    Forward { label: EdgeLabelId },
+    Reverse { label: EdgeLabelId },
+    Undirected { label: EdgeLabelId },
 }
 
 impl ShortestFixedLabelExpand {
     fn new(direction: EdgeDirection, catalog: EdgeLabelId) -> Result<Self, PlanQueryError> {
         match direction {
-            EdgeDirection::PointingRight => Ok(Self::Forward {
-                storage: catalog.pack(EdgeDirectedness::Directed),
-            }),
-            EdgeDirection::PointingLeft => Ok(Self::Reverse {
-                storage: catalog.pack(EdgeDirectedness::Directed),
-            }),
-            EdgeDirection::Undirected => Ok(Self::Undirected {
-                storage: catalog.pack(EdgeDirectedness::Undirected),
-            }),
+            EdgeDirection::PointingRight => Ok(Self::Forward { label: catalog }),
+            EdgeDirection::PointingLeft => Ok(Self::Reverse { label: catalog }),
+            EdgeDirection::Undirected => Ok(Self::Undirected { label: catalog }),
             other => Err(PlanQueryError::UnsupportedDirection(other)),
         }
     }
@@ -2979,11 +2968,11 @@ impl ShortestFixedLabelExpand {
         out: &mut Vec<ExpandCandidate>,
     ) -> Result<(), PlanQueryError> {
         match self {
-            Self::Forward { storage } => {
+            Self::Forward { label } => {
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _scope = bench_scope("shortest_fixed_expand_forward");
                 store
-                    .for_each_out_edges_for_label_unchecked(current, storage, |edge| {
+                    .for_each_directed_out_edges_for_label_unchecked(current, label, |edge| {
                         if let Ok(Some(edge_dst @ ExpandDst::Local(_))) =
                             ExpandDst::from_edge(store, &edge)
                         {
@@ -2999,11 +2988,11 @@ impl ShortestFixedLabelExpand {
                     })
                     .map_err(GraphStoreError::from)?;
             }
-            Self::Reverse { storage } => {
+            Self::Reverse { label } => {
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _scope = bench_scope("shortest_fixed_expand_reverse");
                 store
-                    .for_each_in_edges_for_label_unchecked(current, storage, |edge| {
+                    .for_each_directed_in_edges_for_label_unchecked(current, label, |edge| {
                         if let Ok(Some(edge_dst @ ExpandDst::Local(_))) =
                             ExpandDst::from_edge(store, &edge)
                         {
@@ -3015,11 +3004,11 @@ impl ShortestFixedLabelExpand {
                     })
                     .map_err(GraphStoreError::from)?;
             }
-            Self::Undirected { storage } => {
+            Self::Undirected { label } => {
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _scope = bench_scope("shortest_fixed_expand_undirected");
                 store
-                    .for_each_out_edges_for_label_unchecked(current, storage, |edge| {
+                    .for_each_undirected_edges_for_label_unchecked(current, label, |edge| {
                         if let Ok(Some(edge_dst @ ExpandDst::Local(_))) =
                             ExpandDst::from_edge(store, &edge)
                         {
@@ -3992,58 +3981,40 @@ fn for_each_csr_expand_edge<F>(
 where
     F: FnMut(Edge),
 {
+    let order = sequence_order.into();
     match direction {
-        EdgeDirection::PointingRight | EdgeDirection::Undirected => {
+        EdgeDirection::PointingRight => {
             if let Some(lid) = edge_label_id {
-                let storage = lid.pack(if matches!(direction, EdgeDirection::Undirected) {
-                    EdgeDirectedness::Undirected
-                } else {
-                    EdgeDirectedness::Directed
-                });
                 store
-                    .for_each_out_edges_for_label_ordered(
-                        src_id,
-                        LaraLabelId::from_raw(storage.raw()),
-                        sequence_order.into(),
-                        visit,
-                    )
+                    .for_each_directed_out_edges_for_label(src_id, lid, order, visit)
                     .map_err(GraphStoreError::from)?;
             } else {
-                let directedness = match direction {
-                    EdgeDirection::PointingRight => BucketDirectedness::Directed,
-                    EdgeDirection::Undirected => BucketDirectedness::Undirected,
-                    _ => unreachable!(),
-                };
                 store
-                    .for_each_out_edges_by_directedness_unchecked(
-                        src_id,
-                        directedness,
-                        sequence_order.into(),
-                        visit,
-                    )
+                    .for_each_directed_out_edges(src_id, order, visit)
+                    .map_err(GraphStoreError::from)?;
+            }
+            Ok(())
+        }
+        EdgeDirection::Undirected => {
+            if let Some(lid) = edge_label_id {
+                store
+                    .for_each_undirected_edges_for_label(src_id, lid, order, visit)
+                    .map_err(GraphStoreError::from)?;
+            } else {
+                store
+                    .for_each_undirected_edges(src_id, order, visit)
                     .map_err(GraphStoreError::from)?;
             }
             Ok(())
         }
         EdgeDirection::PointingLeft => {
             if let Some(lid) = edge_label_id {
-                let storage = lid.pack(EdgeDirectedness::Directed);
                 store
-                    .for_each_in_edges_for_label_ordered(
-                        src_id,
-                        LaraLabelId::from_raw(storage.raw()),
-                        sequence_order.into(),
-                        visit,
-                    )
+                    .for_each_directed_in_edges_for_label(src_id, lid, order, visit)
                     .map_err(GraphStoreError::from)?;
             } else {
                 store
-                    .for_each_in_edges_by_directedness_unchecked(
-                        src_id,
-                        BucketDirectedness::Directed,
-                        sequence_order.into(),
-                        visit,
-                    )
+                    .for_each_directed_in_edges(src_id, order, visit)
                     .map_err(GraphStoreError::from)?;
             }
             Ok(())

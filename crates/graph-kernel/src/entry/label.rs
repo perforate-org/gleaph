@@ -88,9 +88,15 @@ impl VertexLabelId {
 }
 
 impl EdgeLabelId {
+    /// Catalog label index (lower 15 bits; directed MSB cleared).
+    #[inline]
+    pub const fn label_index(self) -> u16 {
+        self.0 & EDGE_LABEL_CATALOG_MAX
+    }
+
     #[inline]
     pub const fn from_raw(raw: u16) -> Self {
-        Self(raw)
+        Self(raw & EDGE_LABEL_CATALOG_MAX)
     }
 
     #[inline]
@@ -102,7 +108,7 @@ impl EdgeLabelId {
     #[inline]
     pub const fn pack(self, directedness: EdgeDirectedness) -> TaggedEdgeLabelId {
         TaggedEdgeLabelId::new_from_index(
-            self.raw(),
+            self.label_index(),
             match directedness {
                 EdgeDirectedness::Directed => BucketDirectedness::Directed,
                 EdgeDirectedness::Undirected => BucketDirectedness::Undirected,

@@ -59,7 +59,7 @@ mod types;
 pub use bidirectional::{
     BidirectionalLara, BidirectionalLaraError, BidirectionalLaraGraph,
     BidirectionalMaintenanceReport, DeferredBidirectionalLara, DeferredBidirectionalLaraError,
-    DeferredBidirectionalLaraGraph, DeleteEdgeObserver,
+    DeferredBidirectionalLaraGraph, DeleteEdgeObserver, FilteredOutEdgesIter,
 };
 pub use labeled::{
     BidirectionalLabeledError, BidirectionalLabeledLara, BidirectionalLabeledLaraGraph,

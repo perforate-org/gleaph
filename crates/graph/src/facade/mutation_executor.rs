@@ -218,14 +218,20 @@ mod tests {
             store.edge_property(directed, property),
             Some(Value::Text("knows".into()))
         );
-        assert!(store.out_edges(source).unwrap().iter().any(|edge| {
-            edge.neighbor_vid() == target
-                && edge.edge_slot_index.raw() == directed.slot_index
-                && store.find_forward_edge_bucket_label(source, edge).unwrap()
-                    == Some(LaraLabelId::from_raw(
-                        directed_label.pack(EdgeDirectedness::Directed).raw(),
-                    ))
-        }));
+        assert!(
+            store
+                .directed_out_edges(source)
+                .unwrap()
+                .iter()
+                .any(|edge| {
+                    edge.neighbor_vid() == target
+                        && edge.edge_slot_index.raw() == directed.slot_index
+                        && store.find_forward_edge_bucket_label(source, edge).unwrap()
+                            == Some(LaraLabelId::from_raw(
+                                directed_label.pack(EdgeDirectedness::Directed).raw(),
+                            ))
+                })
+        );
 
         let undirected = store
             .insert_undirected_edge_with(
@@ -237,7 +243,7 @@ mod tests {
             .expect("insert undirected edge");
 
         assert_eq!(undirected.owner_vertex_id, target);
-        assert!(store.out_edges(target).unwrap().iter().any(|edge| {
+        assert!(store.undirected_edges(target).unwrap().iter().any(|edge| {
             edge.neighbor_vid() == source
                 && edge.edge_slot_index.raw() == undirected.slot_index
                 && store

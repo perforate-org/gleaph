@@ -80,6 +80,13 @@ fn lara_label(id: TaggedEdgeLabelId) -> LaraLabelId {
     LaraLabelId::from_raw(id.raw())
 }
 
+fn wire_catalog_label(label: Option<EdgeLabelId>, directedness: EdgeDirectedness) -> LaraLabelId {
+    lara_label(edge_storage_label(
+        label,
+        matches!(directedness, EdgeDirectedness::Undirected),
+    ))
+}
+
 pub fn canonical_undirected_owner(a: VertexId, b: VertexId) -> VertexId {
     if u32::from(a) >= u32::from(b) { a } else { b }
 }
@@ -615,7 +622,10 @@ impl GraphStore {
 
     fn unregister_remote_forward_in_for_handle(&self, handle: EdgeHandle) {
         let label = handle.label_id;
-        for edge in self.out_edges(handle.owner_vertex_id).unwrap_or_default() {
+        for edge in self
+            .directed_out_edges(handle.owner_vertex_id)
+            .unwrap_or_default()
+        {
             if edge.label_id != label.raw() || edge.edge_slot_index.raw() != handle.slot_index {
                 continue;
             }
@@ -1034,32 +1044,31 @@ impl GraphStore {
         Ok(canonical)
     }
 
-    pub fn out_edges(
-        &self,
-        vertex_id: VertexId,
-    ) -> Result<Vec<Edge>, DeferredBidirectionalLabeledError> {
-        GRAPH.with_borrow(|graph| graph.out_edges(vertex_id))
+    /// Directed outgoing edges at `vertex_id` in ascending slot order.
+    pub fn directed_out_edges(&self, vertex_id: VertexId) -> Result<Vec<Edge>, GraphStoreError> {
+        let mut edges = Vec::new();
+        self.for_each_directed_out_edges(vertex_id, OutEdgeOrder::Ascending, |edge| {
+            edges.push(edge)
+        })?;
+        Ok(edges)
     }
 
-    pub fn in_edges(
-        &self,
-        vertex_id: VertexId,
-    ) -> Result<Vec<Edge>, DeferredBidirectionalLabeledError> {
-        GRAPH.with_borrow(|graph| graph.in_edges(vertex_id))
+    /// Directed incoming edges at `vertex_id` in ascending slot order.
+    pub fn directed_in_edges(&self, vertex_id: VertexId) -> Result<Vec<Edge>, GraphStoreError> {
+        let mut edges = Vec::new();
+        self.for_each_directed_in_edges(vertex_id, OutEdgeOrder::Ascending, |edge| {
+            edges.push(edge)
+        })?;
+        Ok(edges)
     }
 
-    pub fn asc_out_edges(
-        &self,
-        vertex_id: VertexId,
-    ) -> Result<Vec<Edge>, DeferredBidirectionalLabeledError> {
-        GRAPH.with_borrow(|graph| graph.asc_out_edges(vertex_id))
-    }
-
-    pub fn asc_in_edges(
-        &self,
-        vertex_id: VertexId,
-    ) -> Result<Vec<Edge>, DeferredBidirectionalLabeledError> {
-        GRAPH.with_borrow(|graph| graph.asc_in_edges(vertex_id))
+    /// Undirected edges at `vertex_id` in ascending slot order (forward store only).
+    pub fn undirected_edges(&self, vertex_id: VertexId) -> Result<Vec<Edge>, GraphStoreError> {
+        let mut edges = Vec::new();
+        self.for_each_undirected_edges(vertex_id, OutEdgeOrder::Ascending, |edge| {
+            edges.push(edge);
+        })?;
+        Ok(edges)
     }
 
     pub(crate) fn for_each_out_edges_for_label<Visit>(
@@ -1130,11 +1139,10 @@ impl GraphStore {
     }
 
     /// Applies CSR `Iterator::advance_by` for the global streaming offset, then visits subsequent
-    /// forward out-edges whose bucket directedness matches `directedness`.
-    pub(crate) fn skip_then_visit_each_out_edge_by_directedness<Visit, Err>(
+    /// directed forward out-edges.
+    pub(crate) fn skip_then_visit_each_directed_out_edge<Visit, Err>(
         &self,
         vertex_id: VertexId,
-        directedness: BucketDirectedness,
         offset_remaining: &mut usize,
         visit: Visit,
     ) -> Result<Result<bool, Err>, GraphStoreError>
@@ -1145,7 +1153,29 @@ impl GraphStore {
             .with_borrow(|graph| {
                 graph.skip_then_visit_each_forward_out_edge_by_directedness(
                     vertex_id,
-                    directedness,
+                    BucketDirectedness::Directed,
+                    offset_remaining,
+                    visit,
+                )
+            })
+            .map_err(GraphStoreError::from)
+    }
+
+    /// Like [`Self::skip_then_visit_each_directed_out_edge`], but for undirected buckets only.
+    pub(crate) fn skip_then_visit_each_undirected_edge<Visit, Err>(
+        &self,
+        vertex_id: VertexId,
+        offset_remaining: &mut usize,
+        visit: Visit,
+    ) -> Result<Result<bool, Err>, GraphStoreError>
+    where
+        Visit: FnMut(Edge) -> Result<bool, Err>,
+    {
+        GRAPH
+            .with_borrow(|graph| {
+                graph.skip_then_visit_each_forward_out_edge_by_directedness(
+                    vertex_id,
+                    BucketDirectedness::Undirected,
                     offset_remaining,
                     visit,
                 )
@@ -1178,11 +1208,10 @@ impl GraphStore {
     }
 
     /// Applies CSR `Iterator::advance_by` for the global streaming offset, then visits subsequent
-    /// reverse out-edges whose bucket directedness matches `directedness`.
-    pub(crate) fn skip_then_visit_each_in_edge_by_directedness<Visit, Err>(
+    /// directed incoming edges (reverse CSR).
+    pub(crate) fn skip_then_visit_each_directed_in_edge<Visit, Err>(
         &self,
         vertex_id: VertexId,
-        directedness: BucketDirectedness,
         offset_remaining: &mut usize,
         visit: Visit,
     ) -> Result<Result<bool, Err>, GraphStoreError>
@@ -1193,91 +1222,8 @@ impl GraphStore {
             .with_borrow(|graph| {
                 graph.skip_then_visit_each_reverse_out_edge_by_directedness(
                     vertex_id,
-                    directedness,
+                    BucketDirectedness::Directed,
                     offset_remaining,
-                    visit,
-                )
-            })
-            .map_err(GraphStoreError::from)
-    }
-
-    /// Outgoing edges whose bucket label matches `directedness`, in `order`
-    /// (see [`ic_stable_lara::LabeledLaraGraph::for_each_out_edges_by_directedness`]).
-    pub fn for_each_out_edges_by_directedness<Visit>(
-        &self,
-        vertex_id: VertexId,
-        directedness: BucketDirectedness,
-        order: OutEdgeOrder,
-        visit: Visit,
-    ) -> Result<(), GraphStoreError>
-    where
-        Visit: FnMut(Edge),
-    {
-        GRAPH
-            .with_borrow(|graph| {
-                graph.for_each_out_edges_by_directedness(vertex_id, directedness, order, visit)
-            })
-            .map_err(GraphStoreError::from)
-    }
-
-    /// Like [`Self::for_each_out_edges_by_directedness`], but skips `ensure_vertex` on the hot path.
-    pub fn for_each_out_edges_by_directedness_unchecked<Visit>(
-        &self,
-        vertex_id: VertexId,
-        directedness: BucketDirectedness,
-        order: OutEdgeOrder,
-        visit: Visit,
-    ) -> Result<(), GraphStoreError>
-    where
-        Visit: FnMut(Edge),
-    {
-        GRAPH
-            .with_borrow(|graph| {
-                graph.for_each_out_edges_by_directedness_unchecked(
-                    vertex_id,
-                    directedness,
-                    order,
-                    visit,
-                )
-            })
-            .map_err(GraphStoreError::from)
-    }
-
-    /// Incoming edges (reverse CSR at `vertex_id`) filtered by bucket directedness in `order`.
-    pub fn for_each_in_edges_by_directedness<Visit>(
-        &self,
-        vertex_id: VertexId,
-        directedness: BucketDirectedness,
-        order: OutEdgeOrder,
-        visit: Visit,
-    ) -> Result<(), GraphStoreError>
-    where
-        Visit: FnMut(Edge),
-    {
-        GRAPH
-            .with_borrow(|graph| {
-                graph.for_each_in_edges_by_directedness(vertex_id, directedness, order, visit)
-            })
-            .map_err(GraphStoreError::from)
-    }
-
-    /// Like [`Self::for_each_in_edges_by_directedness`], but skips reverse vertex range validation.
-    pub fn for_each_in_edges_by_directedness_unchecked<Visit>(
-        &self,
-        vertex_id: VertexId,
-        directedness: BucketDirectedness,
-        order: OutEdgeOrder,
-        visit: Visit,
-    ) -> Result<(), GraphStoreError>
-    where
-        Visit: FnMut(Edge),
-    {
-        GRAPH
-            .with_borrow(|graph| {
-                graph.for_each_in_edges_by_directedness_unchecked(
-                    vertex_id,
-                    directedness,
-                    order,
                     visit,
                 )
             })
@@ -1325,6 +1271,180 @@ impl GraphStore {
         GRAPH.with_borrow(|graph| {
             graph.for_each_in_edges_for_label_unchecked(vertex_id, label, visit)
         })
+    }
+
+    /// Directed outgoing edges for one catalog label (`EdgeLabelId` MSB ignored; wire key packed internally).
+    pub fn for_each_directed_out_edges_for_label<Visit>(
+        &self,
+        vertex_id: VertexId,
+        label: EdgeLabelId,
+        order: OutEdgeOrder,
+        visit: Visit,
+    ) -> Result<(), GraphStoreError>
+    where
+        Visit: FnMut(Edge),
+    {
+        self.for_each_out_edges_for_label_ordered(
+            vertex_id,
+            wire_catalog_label(Some(label), EdgeDirectedness::Directed),
+            order,
+            visit,
+        )
+        .map_err(GraphStoreError::from)
+    }
+
+    /// Directed outgoing edges for one catalog label; skips `ensure_vertex` on the hot path.
+    pub fn for_each_directed_out_edges_for_label_unchecked<Visit>(
+        &self,
+        vertex_id: VertexId,
+        label: EdgeLabelId,
+        visit: Visit,
+    ) -> Result<(), GraphStoreError>
+    where
+        Visit: FnMut(Edge),
+    {
+        self.for_each_out_edges_for_label_unchecked(
+            vertex_id,
+            wire_catalog_label(Some(label), EdgeDirectedness::Directed),
+            visit,
+        )
+        .map_err(GraphStoreError::from)
+    }
+
+    /// Directed incoming edges for one catalog label (reverse CSR; MSB packed internally).
+    pub fn for_each_directed_in_edges_for_label<Visit>(
+        &self,
+        vertex_id: VertexId,
+        label: EdgeLabelId,
+        order: OutEdgeOrder,
+        visit: Visit,
+    ) -> Result<(), GraphStoreError>
+    where
+        Visit: FnMut(Edge),
+    {
+        self.for_each_in_edges_for_label_ordered(
+            vertex_id,
+            wire_catalog_label(Some(label), EdgeDirectedness::Directed),
+            order,
+            visit,
+        )
+        .map_err(GraphStoreError::from)
+    }
+
+    /// Directed incoming edges for one catalog label; skips reverse vertex range validation.
+    pub fn for_each_directed_in_edges_for_label_unchecked<Visit>(
+        &self,
+        vertex_id: VertexId,
+        label: EdgeLabelId,
+        visit: Visit,
+    ) -> Result<(), GraphStoreError>
+    where
+        Visit: FnMut(Edge),
+    {
+        self.for_each_in_edges_for_label_unchecked(
+            vertex_id,
+            wire_catalog_label(Some(label), EdgeDirectedness::Directed),
+            visit,
+        )
+        .map_err(GraphStoreError::from)
+    }
+
+    /// Undirected edges incident to `vertex_id` (forward out-adjacency only).
+    pub fn for_each_undirected_edges_for_label<Visit>(
+        &self,
+        vertex_id: VertexId,
+        label: EdgeLabelId,
+        order: OutEdgeOrder,
+        visit: Visit,
+    ) -> Result<(), GraphStoreError>
+    where
+        Visit: FnMut(Edge),
+    {
+        self.for_each_out_edges_for_label_ordered(
+            vertex_id,
+            wire_catalog_label(Some(label), EdgeDirectedness::Undirected),
+            order,
+            visit,
+        )
+        .map_err(GraphStoreError::from)
+    }
+
+    /// Like [`Self::for_each_undirected_edges_for_label`], but skips `ensure_vertex`.
+    pub fn for_each_undirected_edges_for_label_unchecked<Visit>(
+        &self,
+        vertex_id: VertexId,
+        label: EdgeLabelId,
+        visit: Visit,
+    ) -> Result<(), GraphStoreError>
+    where
+        Visit: FnMut(Edge),
+    {
+        self.for_each_out_edges_for_label_unchecked(
+            vertex_id,
+            wire_catalog_label(Some(label), EdgeDirectedness::Undirected),
+            visit,
+        )
+        .map_err(GraphStoreError::from)
+    }
+
+    /// All directed outgoing edges at `vertex_id` (any catalog label, directed buckets only).
+    pub fn for_each_directed_out_edges<Visit>(
+        &self,
+        vertex_id: VertexId,
+        order: OutEdgeOrder,
+        visit: Visit,
+    ) -> Result<(), GraphStoreError>
+    where
+        Visit: FnMut(Edge),
+    {
+        GRAPH
+            .with_borrow(|graph| graph.for_each_directed_out_edges(vertex_id, order, visit))
+            .map_err(GraphStoreError::from)
+    }
+
+    /// All directed incoming edges at `vertex_id` (reverse store, directed buckets only).
+    pub fn for_each_directed_in_edges<Visit>(
+        &self,
+        vertex_id: VertexId,
+        order: OutEdgeOrder,
+        visit: Visit,
+    ) -> Result<(), GraphStoreError>
+    where
+        Visit: FnMut(Edge),
+    {
+        GRAPH
+            .with_borrow(|graph| graph.for_each_directed_in_edges(vertex_id, order, visit))
+            .map_err(GraphStoreError::from)
+    }
+
+    /// All undirected edges at `vertex_id` (forward out-adjacency, undirected buckets only).
+    pub fn for_each_undirected_edges<Visit>(
+        &self,
+        vertex_id: VertexId,
+        order: OutEdgeOrder,
+        visit: Visit,
+    ) -> Result<(), GraphStoreError>
+    where
+        Visit: FnMut(Edge),
+    {
+        GRAPH
+            .with_borrow(|graph| graph.for_each_undirected_edges(vertex_id, order, visit))
+            .map_err(GraphStoreError::from)
+    }
+
+    /// Like [`Self::for_each_undirected_edges`], but skips `ensure_vertex`.
+    pub fn for_each_undirected_edges_unchecked<Visit>(
+        &self,
+        vertex_id: VertexId,
+        order: OutEdgeOrder,
+        visit: Visit,
+    ) -> Result<(), GraphStoreError>
+    where
+        Visit: FnMut(Edge),
+    {
+        GRAPH
+            .with_borrow(|graph| graph.for_each_undirected_edges_unchecked(vertex_id, order, visit))
+            .map_err(GraphStoreError::from)
     }
 
     pub(crate) fn find_forward_edge_bucket_label(
@@ -1427,88 +1547,6 @@ impl GraphStore {
         });
     }
 
-    /// Scans outgoing edges without materializing the full CSR row.
-    pub fn for_each_out_edge_matching<Match, Visit>(
-        &self,
-        vertex_id: VertexId,
-        matches: Match,
-        visit: Visit,
-    ) -> Result<(), DeferredBidirectionalLabeledError>
-    where
-        Match: FnMut(&Edge) -> bool,
-        Visit: FnMut(Edge),
-    {
-        GRAPH.with_borrow(|graph| {
-            graph.visit_out_edges(
-                vertex_id,
-                None,
-                None,
-                None::<&mut dyn FnMut(&[u8]) -> bool>,
-                matches,
-                visit,
-            )
-        })
-    }
-
-    /// Visits outgoing edges with optional `offset` / `limit`, slab raw-byte prefilter, and match predicate.
-    pub fn visit_out_edges<Match, Visit>(
-        &self,
-        vertex_id: VertexId,
-        offset: Option<usize>,
-        limit: Option<usize>,
-        raw_matches: Option<&mut dyn FnMut(&[u8]) -> bool>,
-        matches: Match,
-        visit: Visit,
-    ) -> Result<(), DeferredBidirectionalLabeledError>
-    where
-        Match: FnMut(&Edge) -> bool,
-        Visit: FnMut(Edge),
-    {
-        GRAPH.with_borrow(|graph| {
-            graph.visit_out_edges(vertex_id, offset, limit, raw_matches, matches, visit)
-        })
-    }
-
-    /// Scans incoming edges without materializing the full CSR row.
-    pub fn for_each_in_edge_matching<Match, Visit>(
-        &self,
-        vertex_id: VertexId,
-        matches: Match,
-        visit: Visit,
-    ) -> Result<(), DeferredBidirectionalLabeledError>
-    where
-        Match: FnMut(&Edge) -> bool,
-        Visit: FnMut(Edge),
-    {
-        self.visit_in_edges(
-            vertex_id,
-            None,
-            None,
-            None::<&mut dyn FnMut(&[u8]) -> bool>,
-            matches,
-            visit,
-        )
-    }
-
-    /// Visits incoming edges with optional `offset` / `limit`, slab raw-byte prefilter, and match predicate.
-    pub fn visit_in_edges<Match, Visit>(
-        &self,
-        vertex_id: VertexId,
-        offset: Option<usize>,
-        limit: Option<usize>,
-        raw_matches: Option<&mut dyn FnMut(&[u8]) -> bool>,
-        matches: Match,
-        visit: Visit,
-    ) -> Result<(), DeferredBidirectionalLabeledError>
-    where
-        Match: FnMut(&Edge) -> bool,
-        Visit: FnMut(Edge),
-    {
-        GRAPH.with_borrow(|graph| {
-            graph.visit_in_edges(vertex_id, offset, limit, raw_matches, matches, visit)
-        })
-    }
-
     /// Runs deferred LARA maintenance until the queue is empty or the budget is exhausted.
     ///
     /// Production canisters should use a tight instruction budget and rely on
@@ -1573,7 +1611,7 @@ impl GraphStore {
         self.clear_vertex_stable_payloads_before_graph_delete(vertex_id)?;
 
         let mut to_clear: Vec<EdgeHandle> = Vec::new();
-        for edge in self.out_edges(vertex_id).map_err(GraphStoreError::from)? {
+        let mut push_out = |edge: Edge| {
             self.unregister_remote_forward_in_for_out_edge(vertex_id, &edge);
             let owner = self.edge_sidecar_owner_from_out_row(vertex_id, &edge);
             to_clear.push(EdgeHandle {
@@ -1581,15 +1619,21 @@ impl GraphStore {
                 label_id: LaraLabelId::from_raw(edge.label_id),
                 slot_index: edge.edge_slot_index.raw(),
             });
-        }
-        for edge in self.in_edges(vertex_id).map_err(GraphStoreError::from)? {
+        };
+        self.for_each_directed_out_edges(vertex_id, OutEdgeOrder::Ascending, |edge| {
+            push_out(edge);
+        })?;
+        self.for_each_undirected_edges(vertex_id, OutEdgeOrder::Ascending, |edge| {
+            push_out(edge);
+        })?;
+        self.for_each_directed_in_edges(vertex_id, OutEdgeOrder::Ascending, |edge| {
             let owner = self.edge_sidecar_owner_from_in_row(vertex_id, &edge);
             to_clear.push(EdgeHandle {
                 owner_vertex_id: owner,
                 label_id: LaraLabelId::from_raw(edge.label_id),
                 slot_index: edge.edge_slot_index.raw(),
             });
-        }
+        })?;
         to_clear.sort_unstable_by_key(|h| {
             (u32::from(h.owner_vertex_id), h.label_id.raw(), h.slot_index)
         });
@@ -1962,7 +2006,7 @@ mod tests {
             EdgeSlotIndex::from_raw(0)
         );
 
-        let out_edges = store.out_edges(source).expect("read out edges");
+        let out_edges = store.directed_out_edges(source).expect("read out edges");
         assert!(out_edges.iter().any(|edge| {
             edge.target == VertexRef::local(target)
                 && edge.edge_slot_index.raw() == directed.slot_index
@@ -1979,7 +2023,9 @@ mod tests {
             EdgeSlotIndex::from_raw(0)
         );
 
-        let target_out_edges = store.out_edges(target).expect("read target out edges");
+        let target_out_edges = store
+            .undirected_edges(target)
+            .expect("read target out edges");
         assert!(target_out_edges.iter().any(|edge| {
             edge.target == VertexRef::local(source)
                 && edge.edge_slot_index.raw() == undirected.slot_index
@@ -2004,7 +2050,7 @@ mod tests {
         );
         assert_eq!(store.ensure_remote_ref(target_logical), remote_ref);
 
-        let out_edges = store.out_edges(source).expect("out edges");
+        let out_edges = store.directed_out_edges(source).expect("out edges");
         assert_eq!(out_edges.len(), 1);
         assert_eq!(
             out_edges[0].edge_target(),
@@ -2027,7 +2073,7 @@ mod tests {
         let b = store.insert_vertex().expect("b");
         store.insert_directed_edge(a, b, None).expect("edge");
         store.detach_delete_vertex(a).expect("detach delete");
-        assert!(store.out_edges(b).expect("out").is_empty());
+        assert!(store.directed_in_edges(b).expect("in").is_empty());
     }
 
     #[test]
@@ -2082,7 +2128,7 @@ mod tests {
             .expect("maintenance");
 
         let moved = store
-            .out_edges(source)
+            .directed_out_edges(source)
             .expect("out edges")
             .into_iter()
             .find(|edge| edge.neighbor_vid() == third)
@@ -2132,6 +2178,7 @@ mod tests {
         store
             .set_edge_property(third_edge, property, Value::Int64(44))
             .expect("set property");
+        let wire_label = lara_label(label.pack(EdgeDirectedness::Directed));
 
         store
             .delete_edge_by_handle(first_edge)
@@ -2152,23 +2199,23 @@ mod tests {
             })
             .expect("maintenance");
 
-        let moved_alias = store
-            .in_edges(target)
-            .expect("in edges")
-            .into_iter()
-            .find(|edge| {
-                edge.neighbor_vid() == third
-                    && edge.label_id == label.pack(EdgeDirectedness::Directed).raw()
-            })
+        assert_eq!(
+            store.edge_property(third_edge, property),
+            Some(Value::Int64(44)),
+            "canonical forward handle keeps properties across reverse compaction"
+        );
+
+        let reverse_third = store
+            .find_newest_reverse_handle(target, wire_label, |edge| edge.neighbor_vid() == third)
+            .expect("reverse lookup after compaction")
             .expect("third reverse edge after compaction");
-        assert_eq!(moved_alias.edge_slot_index, EdgeSlotIndex::from_raw(1));
-        let alias_handle = EdgeHandle::at_slot(
-            target,
-            LaraLabelId::from_raw(moved_alias.label_id),
-            moved_alias.edge_slot_index.raw(),
+        assert_eq!(
+            store.canonical_edge_handle(reverse_third),
+            third_edge,
+            "reverse CSR slot should still alias the canonical forward handle"
         );
         assert_eq!(
-            store.edge_property(alias_handle, property),
+            store.edge_property(reverse_third, property),
             Some(Value::Int64(44))
         );
     }

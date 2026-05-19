@@ -4,7 +4,9 @@ pub(crate) mod deferred;
 
 use crate::{
     VertexCount, VertexId,
-    labeled::{BucketLabelKey, graph::LabeledLaraGraph},
+    labeled::{
+        BucketLabelKey, OutEdgeOrder, bucket_label_key::BucketDirectedness, graph::LabeledLaraGraph,
+    },
     traits::CsrEdge,
 };
 use ic_stable_structures::Memory;
@@ -220,93 +222,53 @@ where
             .map_err(BidirectionalLabeledError::Reverse)
     }
 
-    /// All forward outgoing edges in descending scan order.
-    pub fn out_edges(&self, src: VertexId) -> Result<Vec<E>, BidirectionalLabeledError> {
+    /// Directed outgoing edges in descending scan order.
+    pub fn directed_out_edges(&self, src: VertexId) -> Result<Vec<E>, BidirectionalLabeledError> {
         self.forward
-            .out_edges(src)
+            .iter_out_edges_directed_only(src, OutEdgeOrder::Descending)
             .map_err(BidirectionalLabeledError::Forward)
     }
 
-    /// Incoming edges in descending scan order.
-    pub fn in_edges(&self, dst: VertexId) -> Result<Vec<E>, BidirectionalLabeledError> {
+    /// Directed incoming edges in descending scan order.
+    pub fn directed_in_edges(&self, dst: VertexId) -> Result<Vec<E>, BidirectionalLabeledError> {
         self.reverse
-            .out_edges(dst)
+            .iter_out_edges_directed_only(dst, OutEdgeOrder::Descending)
             .map_err(BidirectionalLabeledError::Reverse)
     }
 
-    /// All forward outgoing edges in ascending slot/materialization order.
-    pub fn asc_out_edges(&self, src: VertexId) -> Result<Vec<E>, BidirectionalLabeledError> {
-        self.forward
-            .asc_out_edges(src)
-            .map_err(BidirectionalLabeledError::Forward)
-    }
-
-    /// Incoming edges in ascending slot/materialization order.
-    pub fn asc_in_edges(&self, dst: VertexId) -> Result<Vec<E>, BidirectionalLabeledError> {
-        self.reverse
-            .asc_out_edges(dst)
-            .map_err(BidirectionalLabeledError::Reverse)
-    }
-
-    /// Streaming forward out-edge iterator in descending scan order.
-    pub fn out_edges_iter(
+    /// Streaming directed forward out-edge iterator in `order`.
+    pub fn directed_out_edges_iter(
         &self,
         src: VertexId,
+        order: OutEdgeOrder,
     ) -> Result<crate::labeled::graph::LabeledOutEdgesIter<'_, E, M>, BidirectionalLabeledError>
     {
         self.forward
-            .desc_out_edges_iter(src)
+            .out_edges_by_directedness_iter(src, BucketDirectedness::Directed, order)
             .map_err(BidirectionalLabeledError::Forward)
     }
 
-    /// Streaming incoming-edge iterator in descending scan order.
-    pub fn in_edges_iter(
-        &self,
-        dst: VertexId,
-    ) -> Result<crate::labeled::graph::LabeledOutEdgesIter<'_, E, M>, BidirectionalLabeledError>
-    {
-        self.reverse
-            .desc_out_edges_iter(dst)
-            .map_err(BidirectionalLabeledError::Reverse)
-    }
-
-    /// Explicit descending-scan alias for [`Self::out_edges_iter`].
-    pub fn desc_out_edges_iter(
+    /// Streaming undirected forward out-edge iterator in `order`.
+    pub fn undirected_edges_iter(
         &self,
         src: VertexId,
-    ) -> Result<crate::labeled::graph::LabeledOutEdgesIter<'_, E, M>, BidirectionalLabeledError>
-    {
-        self.out_edges_iter(src)
-    }
-
-    /// Explicit descending-scan alias for [`Self::in_edges_iter`].
-    pub fn desc_in_edges_iter(
-        &self,
-        dst: VertexId,
-    ) -> Result<crate::labeled::graph::LabeledOutEdgesIter<'_, E, M>, BidirectionalLabeledError>
-    {
-        self.in_edges_iter(dst)
-    }
-
-    /// Streaming forward out-edge iterator in ascending slot/materialization order.
-    pub fn asc_out_edges_iter(
-        &self,
-        src: VertexId,
+        order: OutEdgeOrder,
     ) -> Result<crate::labeled::graph::LabeledOutEdgesIter<'_, E, M>, BidirectionalLabeledError>
     {
         self.forward
-            .asc_out_edges_iter(src)
+            .out_edges_by_directedness_iter(src, BucketDirectedness::Undirected, order)
             .map_err(BidirectionalLabeledError::Forward)
     }
 
-    /// Streaming incoming-edge iterator in ascending slot/materialization order.
-    pub fn asc_in_edges_iter(
+    /// Streaming directed incoming-edge iterator in `order`.
+    pub fn directed_in_edges_iter(
         &self,
         dst: VertexId,
+        order: OutEdgeOrder,
     ) -> Result<crate::labeled::graph::LabeledOutEdgesIter<'_, E, M>, BidirectionalLabeledError>
     {
         self.reverse
-            .asc_out_edges_iter(dst)
+            .out_edges_by_directedness_iter(dst, BucketDirectedness::Directed, order)
             .map_err(BidirectionalLabeledError::Reverse)
     }
 }

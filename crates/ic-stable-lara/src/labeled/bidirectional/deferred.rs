@@ -1,4 +1,8 @@
 //! Deferred-maintenance bidirectional labeled LARA graph wrapper.
+//!
+//! Directed vs undirected adjacency is selected by [`BucketLabelKey`] / [`BucketDirectedness`]
+//! (bucket MSB), not edge-payload flags. Use [`Self::for_each_directed_out_edges`],
+//! [`Self::for_each_undirected_edges`], and the matching `*_iter` helpers.
 
 use crate::{
     VertexCount, VertexId,
@@ -861,9 +865,7 @@ where
     }
 
     /// Forward outgoing edges filtered by label-bucket directedness in `order`.
-    ///
-    /// See [`LabeledLaraGraph::for_each_out_edges_by_directedness`].
-    pub fn for_each_out_edges_by_directedness<Visit>(
+    pub(crate) fn for_each_out_edges_by_directedness<Visit>(
         &self,
         src: VertexId,
         directedness: BucketDirectedness,
@@ -879,7 +881,7 @@ where
     }
 
     /// Like [`Self::for_each_out_edges_by_directedness`], but skips forward vertex range validation.
-    pub fn for_each_out_edges_by_directedness_unchecked<Visit>(
+    pub(crate) fn for_each_out_edges_by_directedness_unchecked<Visit>(
         &self,
         src: VertexId,
         directedness: BucketDirectedness,
@@ -895,7 +897,7 @@ where
     }
 
     /// Reverse orientation: visits edges at `dst` filtered by directedness (incoming to `dst` forward).
-    pub fn for_each_in_edges_by_directedness<Visit>(
+    pub(crate) fn for_each_in_edges_by_directedness<Visit>(
         &self,
         dst: VertexId,
         directedness: BucketDirectedness,
@@ -911,7 +913,7 @@ where
     }
 
     /// Like [`Self::for_each_in_edges_by_directedness`], but skips reverse vertex range validation.
-    pub fn for_each_in_edges_by_directedness_unchecked<Visit>(
+    pub(crate) fn for_each_in_edges_by_directedness_unchecked<Visit>(
         &self,
         dst: VertexId,
         directedness: BucketDirectedness,
@@ -1306,168 +1308,75 @@ where
         Ok(())
     }
 
-    /// All forward outgoing edges in default **descending** scan order (see [`LabeledLaraGraph::out_edges`]).
-    #[inline]
-    pub fn out_edges(&self, src: VertexId) -> Result<Vec<E>, DeferredBidirectionalLabeledError> {
-        self.forward
-            .out_edges(src)
-            .map_err(DeferredBidirectionalLabeledError::Forward)
-    }
-
-    /// Incoming edges to `dst` in the forward orientation (reverse CSR at `dst`), descending scan order.
-    #[inline]
-    pub fn in_edges(&self, dst: VertexId) -> Result<Vec<E>, DeferredBidirectionalLabeledError> {
-        self.reverse
-            .out_edges(dst)
-            .map_err(DeferredBidirectionalLabeledError::Reverse)
-    }
-
-    /// All forward outgoing edges in ascending slot/materialization order ([`LabeledLaraGraph::asc_out_edges`]).
-    #[inline]
-    pub fn asc_out_edges(
+    /// Directed outgoing edges at `src` in ascending slot order.
+    pub fn directed_out_edges(
         &self,
         src: VertexId,
     ) -> Result<Vec<E>, DeferredBidirectionalLabeledError> {
-        self.forward
-            .asc_out_edges(src)
-            .map_err(DeferredBidirectionalLabeledError::Forward)
+        let mut edges = Vec::new();
+        self.for_each_directed_out_edges(src, OutEdgeOrder::Ascending, |edge| edges.push(edge))?;
+        Ok(edges)
     }
 
-    /// Incoming edges in ascending slot/materialization order on the reverse orientation.
-    #[inline]
-    pub fn asc_in_edges(&self, dst: VertexId) -> Result<Vec<E>, DeferredBidirectionalLabeledError> {
-        self.reverse
-            .asc_out_edges(dst)
-            .map_err(DeferredBidirectionalLabeledError::Reverse)
-    }
-
-    /// `true` when `src` has at least one outgoing edge in the forward orientation.
-    pub fn has_out_edges(&self, src: VertexId) -> Result<bool, DeferredBidirectionalLabeledError> {
-        let len = self.vertex_count_checked()?;
-        if u32::from(src) >= len.0 {
-            return Err(DeferredBidirectionalLabeledError::VertexOutOfRange { vid: src, len });
-        }
-        Ok(self.forward.vertices().get(src).degree() > 0)
-    }
-
-    /// `true` when `dst` has at least one incoming edge in the forward orientation.
-    pub fn has_in_edges(&self, dst: VertexId) -> Result<bool, DeferredBidirectionalLabeledError> {
-        let len = self.vertex_count_checked()?;
-        if u32::from(dst) >= len.0 {
-            return Err(DeferredBidirectionalLabeledError::VertexOutOfRange { vid: dst, len });
-        }
-        Ok(self.reverse.vertices().get(dst).degree() > 0)
-    }
-
-    /// Visits forward outgoing edges with optional `offset` / `limit`, raw-byte prefilter, and match predicate.
-    pub fn visit_out_edges<Match, Visit>(
-        &self,
-        vertex_id: VertexId,
-        offset: Option<usize>,
-        limit: Option<usize>,
-        raw_matches: Option<&mut dyn FnMut(&[u8]) -> bool>,
-        matches: Match,
-        visit: Visit,
-    ) -> Result<(), DeferredBidirectionalLabeledError>
-    where
-        Match: FnMut(&E) -> bool,
-        Visit: FnMut(E),
-    {
-        self.forward
-            .visit_out_edges(vertex_id, offset, limit, raw_matches, matches, visit)
-            .map_err(DeferredBidirectionalLabeledError::Forward)
-    }
-
-    /// Visits incoming edges with optional `offset` / `limit`, raw-byte prefilter, and match predicate.
-    pub fn visit_in_edges<Match, Visit>(
-        &self,
-        vertex_id: VertexId,
-        offset: Option<usize>,
-        limit: Option<usize>,
-        raw_matches: Option<&mut dyn FnMut(&[u8]) -> bool>,
-        matches: Match,
-        visit: Visit,
-    ) -> Result<(), DeferredBidirectionalLabeledError>
-    where
-        Match: FnMut(&E) -> bool,
-        Visit: FnMut(E),
-    {
-        self.reverse
-            .visit_out_edges(vertex_id, offset, limit, raw_matches, matches, visit)
-            .map_err(DeferredBidirectionalLabeledError::Reverse)
-    }
-
-    /// Streaming forward out-edge iterator in descending scan order.
-    pub fn out_edges_iter(
-        &self,
-        src: VertexId,
-    ) -> Result<
-        crate::labeled::graph::LabeledOutEdgesIter<'_, E, M>,
-        DeferredBidirectionalLabeledError,
-    > {
-        self.forward
-            .desc_out_edges_iter(src)
-            .map_err(DeferredBidirectionalLabeledError::Forward)
-    }
-
-    /// Streaming incoming-edge iterator in descending scan order.
-    pub fn in_edges_iter(
+    /// Directed incoming edges at `dst` in ascending slot order.
+    pub fn directed_in_edges(
         &self,
         dst: VertexId,
-    ) -> Result<
-        crate::labeled::graph::LabeledOutEdgesIter<'_, E, M>,
-        DeferredBidirectionalLabeledError,
-    > {
-        self.reverse
-            .desc_out_edges_iter(dst)
-            .map_err(DeferredBidirectionalLabeledError::Reverse)
+    ) -> Result<Vec<E>, DeferredBidirectionalLabeledError> {
+        let mut edges = Vec::new();
+        self.for_each_directed_in_edges(dst, OutEdgeOrder::Ascending, |edge| edges.push(edge))?;
+        Ok(edges)
     }
 
-    /// Explicit descending-scan alias for [`Self::out_edges_iter`].
-    pub fn desc_out_edges_iter(
+    /// Undirected edges at `src` in ascending slot order (forward store only).
+    pub fn undirected_edges(
         &self,
         src: VertexId,
-    ) -> Result<
-        crate::labeled::graph::LabeledOutEdgesIter<'_, E, M>,
-        DeferredBidirectionalLabeledError,
-    > {
-        self.out_edges_iter(src)
+    ) -> Result<Vec<E>, DeferredBidirectionalLabeledError> {
+        let mut edges = Vec::new();
+        self.for_each_undirected_edges(src, OutEdgeOrder::Ascending, |edge| edges.push(edge))?;
+        Ok(edges)
     }
 
-    /// Explicit descending-scan alias for [`Self::in_edges_iter`].
-    pub fn desc_in_edges_iter(
-        &self,
-        dst: VertexId,
-    ) -> Result<
-        crate::labeled::graph::LabeledOutEdgesIter<'_, E, M>,
-        DeferredBidirectionalLabeledError,
-    > {
-        self.in_edges_iter(dst)
-    }
-
-    /// Streaming forward out-edge iterator in ascending slot/materialization order.
-    pub fn asc_out_edges_iter(
+    /// Streaming directed forward out-edge iterator in `order`.
+    pub fn directed_out_edges_iter(
         &self,
         src: VertexId,
+        order: OutEdgeOrder,
     ) -> Result<
         crate::labeled::graph::LabeledOutEdgesIter<'_, E, M>,
         DeferredBidirectionalLabeledError,
     > {
         self.forward
-            .asc_out_edges_iter(src)
+            .out_edges_by_directedness_iter(src, BucketDirectedness::Directed, order)
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
-    /// Streaming incoming-edge iterator in ascending slot/materialization order.
-    pub fn asc_in_edges_iter(
+    /// Streaming undirected forward out-edge iterator in `order`.
+    pub fn undirected_edges_iter(
+        &self,
+        src: VertexId,
+        order: OutEdgeOrder,
+    ) -> Result<
+        crate::labeled::graph::LabeledOutEdgesIter<'_, E, M>,
+        DeferredBidirectionalLabeledError,
+    > {
+        self.forward
+            .out_edges_by_directedness_iter(src, BucketDirectedness::Undirected, order)
+            .map_err(DeferredBidirectionalLabeledError::Forward)
+    }
+
+    /// Streaming directed incoming-edge iterator in `order`.
+    pub fn directed_in_edges_iter(
         &self,
         dst: VertexId,
+        order: OutEdgeOrder,
     ) -> Result<
         crate::labeled::graph::LabeledOutEdgesIter<'_, E, M>,
         DeferredBidirectionalLabeledError,
     > {
         self.reverse
-            .asc_out_edges_iter(dst)
+            .out_edges_by_directedness_iter(dst, BucketDirectedness::Directed, order)
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
 
@@ -1476,7 +1385,12 @@ where
         &self,
         vid: VertexId,
     ) -> Result<bool, DeferredBidirectionalLabeledError> {
-        Ok(self.has_out_edges(vid)? || self.has_in_edges(vid)?)
+        let len = self.vertex_count_checked()?;
+        if u32::from(vid) >= len.0 {
+            return Err(DeferredBidirectionalLabeledError::VertexOutOfRange { vid, len });
+        }
+        Ok(self.forward.vertices().get(vid).degree() > 0
+            || self.reverse.vertices().get(vid).degree() > 0)
     }
 
     /// Removes one directed logical edge by scanning every forward label bucket.
@@ -1514,7 +1428,7 @@ where
         Ok(false)
     }
 
-    /// Removes one undirected logical edge (four physical inserts' inverse).
+    /// Removes one undirected logical edge (forward out records at both endpoints).
     pub fn remove_undirected_deferred(
         &self,
         u: VertexId,
@@ -1524,10 +1438,44 @@ where
     where
         E: PartialEq,
     {
-        let ok_uv = self.remove_directed_deferred(u, v, edge_at_u)?;
         let edge_at_v = edge_at_u.with_neighbor_vid(u);
-        let ok_vu = self.remove_directed_deferred(v, u, edge_at_v)?;
+        let ok_uv = self.remove_forward_half_undirected(u, v, edge_at_u)?;
+        let ok_vu = if u == v {
+            ok_uv
+        } else {
+            self.remove_forward_half_undirected(v, u, edge_at_v)?
+        };
         Ok(ok_uv || ok_vu)
+    }
+
+    fn remove_forward_half_undirected(
+        &self,
+        src: VertexId,
+        dst: VertexId,
+        edge: E,
+    ) -> Result<bool, DeferredBidirectionalLabeledError>
+    where
+        E: PartialEq,
+    {
+        let labels = self
+            .forward
+            .out_edge_label_ids(src)
+            .map_err(DeferredBidirectionalLabeledError::Forward)?;
+        for label_id in labels {
+            if label_id.is_directed() {
+                continue;
+            }
+            let removed = self
+                .forward
+                .remove_edge_matching(src, label_id, |cand| {
+                    *cand == edge && cand.neighbor_vid() == dst
+                })
+                .map_err(DeferredBidirectionalLabeledError::Forward)?;
+            if removed.is_some() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Queued incremental vertex deletion: removes all incident edges then clears the row.
@@ -1539,12 +1487,27 @@ where
         E: PartialEq,
     {
         while self.has_incident_edges(vid)? {
-            if let Some(edge) = self.asc_out_edges(vid)?.into_iter().next() {
+            if let Some(edge) = self
+                .forward
+                .asc_out_edges(vid)
+                .map_err(DeferredBidirectionalLabeledError::Forward)?
+                .into_iter()
+                .next()
+            {
                 let dst = edge.neighbor_vid();
-                let _ = self.remove_directed_deferred(vid, dst, edge)?;
-                continue;
+                if self.remove_undirected_deferred(vid, dst, edge)?
+                    || self.remove_directed_deferred(vid, dst, edge)?
+                {
+                    continue;
+                }
             }
-            if let Some(edge) = self.asc_in_edges(vid)?.into_iter().next() {
+            if let Some(edge) = self
+                .reverse
+                .asc_out_edges(vid)
+                .map_err(DeferredBidirectionalLabeledError::Reverse)?
+                .into_iter()
+                .next()
+            {
                 let src = edge.neighbor_vid();
                 let rev = edge.with_neighbor_vid(vid);
                 let _ = self.remove_directed_deferred(src, vid, rev)?;
@@ -1572,7 +1535,7 @@ where
         Ok(true)
     }
 
-    /// Undirected insert matching the four-orientation materialization used by core LARA.
+    /// Inserts an undirected edge on forward out-adjacency at both endpoints (no reverse rows).
     pub fn insert_undirected_deferred(
         &self,
         u: VertexId,
@@ -1581,9 +1544,97 @@ where
         edge_uv: E,
         edge_vu: E,
     ) -> Result<(), DeferredBidirectionalLabeledError> {
-        self.insert_directed_edge(u, v, label_id, edge_uv, edge_vu)?;
-        self.insert_directed_edge(v, u, label_id, edge_vu, edge_uv)?;
+        debug_assert!(
+            label_id.is_undirected(),
+            "insert_undirected_deferred requires an undirected bucket label"
+        );
+        self.forward
+            .insert_edge_skip_leaf_cascade(u, label_id, edge_uv)
+            .map_err(DeferredBidirectionalLabeledError::Forward)?;
+        if u != v {
+            self.forward
+                .insert_edge_skip_leaf_cascade(v, label_id, edge_vu)
+                .map_err(DeferredBidirectionalLabeledError::Forward)?;
+        }
+        if self.forward.labeled_leaf_segment_is_dense(u) {
+            self.mark_compact_dense_labeled_vertex_maintenance(Orientation::Forward, u)?;
+        }
+        if u != v && self.forward.labeled_leaf_segment_is_dense(v) {
+            self.mark_compact_dense_labeled_vertex_maintenance(Orientation::Forward, v)?;
+        }
         Ok(())
+    }
+
+    /// Visits undirected outgoing edges at `vertex_id` (forward store, undirected buckets only).
+    pub fn for_each_undirected_edges<Visit>(
+        &self,
+        vertex_id: VertexId,
+        order: OutEdgeOrder,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLabeledError>
+    where
+        Visit: FnMut(E),
+    {
+        self.for_each_out_edges_by_directedness(
+            vertex_id,
+            BucketDirectedness::Undirected,
+            order,
+            visit,
+        )
+    }
+
+    /// Like [`Self::for_each_undirected_edges`], but skips `ensure_vertex`.
+    pub fn for_each_undirected_edges_unchecked<Visit>(
+        &self,
+        vertex_id: VertexId,
+        order: OutEdgeOrder,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLabeledError>
+    where
+        Visit: FnMut(E),
+    {
+        self.for_each_out_edges_by_directedness_unchecked(
+            vertex_id,
+            BucketDirectedness::Undirected,
+            order,
+            visit,
+        )
+    }
+
+    /// Visits directed outgoing edges at `vertex_id` (forward store, directed buckets only).
+    pub fn for_each_directed_out_edges<Visit>(
+        &self,
+        vertex_id: VertexId,
+        order: OutEdgeOrder,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLabeledError>
+    where
+        Visit: FnMut(E),
+    {
+        self.for_each_out_edges_by_directedness(
+            vertex_id,
+            BucketDirectedness::Directed,
+            order,
+            visit,
+        )
+    }
+
+    /// Visits directed incoming edges at `vertex_id` (reverse store, directed buckets only).
+    pub fn for_each_directed_in_edges<Visit>(
+        &self,
+        vertex_id: VertexId,
+        order: OutEdgeOrder,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLabeledError>
+    where
+        Visit: FnMut(E),
+    {
+        self.for_each_in_edges_by_directedness(
+            vertex_id,
+            BucketDirectedness::Directed,
+            order,
+            visit,
+        )
     }
 }
 
@@ -1746,13 +1797,13 @@ mod tests {
     }
 
     #[test]
-    fn visit_out_edges_descending_matches_asc_slot_order_materialization() {
+    fn directed_out_edges_iter_matches_asc_materialization() {
         let graph = graph();
         graph.push_vertex().expect("a");
         graph.push_vertex().expect("b");
         graph.push_vertex().expect("c");
-        let label_lo = BucketLabelKey::from_raw(10);
-        let label_hi = BucketLabelKey::from_raw(20);
+        let label_lo = BucketLabelKey::directed_from_index(10);
+        let label_hi = BucketLabelKey::directed_from_index(20);
         graph
             .insert_directed_edge(
                 VertexId::from(0),
@@ -1771,24 +1822,13 @@ mod tests {
                 TestEdge(0),
             )
             .unwrap();
-        let collected = graph.asc_out_edges(VertexId::from(0)).unwrap();
-        let mut streamed = Vec::new();
-        graph
-            .visit_out_edges(
-                VertexId::from(0),
-                None,
-                None,
-                None,
-                |_| true,
-                |e| streamed.push(e),
-            )
-            .unwrap();
-        assert_eq!(collected, vec![TestEdge(1), TestEdge(2)]);
-        assert_eq!(
-            streamed,
-            graph.forward.out_edges(VertexId::from(0)).unwrap(),
-            "visit_out_edges follows descending scan per span"
-        );
+        let asc = graph.directed_out_edges(VertexId::from(0)).unwrap();
+        let desc: Vec<_> = graph
+            .directed_out_edges_iter(VertexId::from(0), OutEdgeOrder::Descending)
+            .expect("iter")
+            .collect();
+        assert_eq!(asc, vec![TestEdge(1), TestEdge(2)]);
+        assert_eq!(desc, vec![TestEdge(2), TestEdge(1)]);
     }
 
     #[test]

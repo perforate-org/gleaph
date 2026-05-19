@@ -1381,18 +1381,21 @@ mod bench_setup_tests {
         assert_eq!(prefixes.len(), CACHE_PREFIX_COUNT);
         assert_eq!(spokes.len(), CACHE_HUB_OUT_DEGREE);
         assert_eq!(
-            store.out_edges(src).expect("src out").len(),
+            store.directed_out_edges(src).expect("src out").len(),
             CACHE_PREFIX_COUNT
         );
         assert_eq!(
-            store.out_edges(hub).expect("hub out").len(),
+            store.directed_out_edges(hub).expect("hub out").len(),
             CACHE_HUB_OUT_DEGREE
         );
         for prefix in prefixes {
-            assert_eq!(store.out_edges(prefix).expect("prefix out").len(), 1);
+            assert_eq!(
+                store.directed_out_edges(prefix).expect("prefix out").len(),
+                1
+            );
         }
         for spoke in spokes {
-            let out = store.out_edges(spoke).expect("spoke out");
+            let out = store.directed_out_edges(spoke).expect("spoke out");
             assert_eq!(out.len(), 1);
             assert_eq!(out[0].neighbor_vid(), dst);
         }

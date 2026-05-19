@@ -159,7 +159,19 @@ pub fn export_local_vertex_for_migration(
         .collect::<Result<Vec<_>, GraphStoreError>>()?;
 
     let mut out_edges = Vec::new();
-    for edge in store.out_edges(vertex_id).map_err(GraphStoreError::from)? {
+    for edge in store
+        .directed_out_edges(vertex_id)
+        .map_err(GraphStoreError::from)?
+    {
+        if edge.is_tombstone_edge() {
+            continue;
+        }
+        out_edges.push(export_out_edge(store, vertex_id, &edge)?);
+    }
+    for edge in store
+        .undirected_edges(vertex_id)
+        .map_err(GraphStoreError::from)?
+    {
         if edge.is_tombstone_edge() {
             continue;
         }

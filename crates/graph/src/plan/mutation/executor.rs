@@ -363,10 +363,16 @@ mod tests {
         );
         assert_eq!(edge.owner_vertex_id, a);
         assert_eq!(store.edge_property(edge, since), Some(Value::Int64(2026)));
-        assert!(store.out_edges(a).unwrap().iter().any(|candidate| {
-            candidate.neighbor_vid() == b
-                && candidate.edge_slot_index == EdgeSlotIndex::from_raw(edge.slot_index)
-        }));
+        assert!(
+            store
+                .directed_out_edges(a)
+                .unwrap()
+                .iter()
+                .any(|candidate| {
+                    candidate.neighbor_vid() == b
+                        && candidate.edge_slot_index == EdgeSlotIndex::from_raw(edge.slot_index)
+                })
+        );
     }
 
     #[test]
@@ -934,17 +940,18 @@ mod tests {
         let e = bindings.edges["e"];
 
         assert_eq!(store.edge_property(e, w), None);
-        assert!(store.in_edges(b).expect("in edges").is_empty());
-        assert!(store.out_edges(b).expect("out edges").is_empty());
+        assert!(store.directed_in_edges(b).expect("in edges").is_empty());
+        assert!(store.directed_out_edges(b).expect("out edges").is_empty());
 
         let before_a_u32: u32 = before_a.into();
         let deleted = VertexId::from(before_a_u32);
         assert!(
             matches!(
-                store.out_edges(deleted),
-                Err(DeferredBidirectionalLabeledError::VertexOutOfRange { vid, .. })
-                    if vid == deleted
-            ) || store.out_edges(deleted).unwrap().is_empty(),
+                store.directed_out_edges(deleted),
+                Err(GraphStoreError::Graph(
+                    ic_stable_lara::DeferredBidirectionalLabeledError::VertexOutOfRange { vid, .. }
+                )) if vid == deleted
+            ) || store.directed_out_edges(deleted).unwrap().is_empty(),
             "deleted vertex should not expose outgoing edges"
         );
     }
@@ -991,7 +998,7 @@ mod tests {
 
         assert!(
             store
-                .out_edges(a)
+                .directed_out_edges(a)
                 .expect("out edges after delete")
                 .is_empty()
         );
@@ -1046,8 +1053,8 @@ mod tests {
         let high = bindings.vertices["b"];
         let owner = canonical_undirected_owner(low, high);
 
-        assert!(store.out_edges(low).unwrap().is_empty());
-        assert!(store.out_edges(high).unwrap().is_empty());
+        assert!(store.directed_out_edges(low).unwrap().is_empty());
+        assert!(store.directed_out_edges(high).unwrap().is_empty());
         assert_eq!(
             store.edge_properties(EdgeHandle {
                 owner_vertex_id: owner,
