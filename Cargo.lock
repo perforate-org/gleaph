@@ -785,6 +785,8 @@ dependencies = [
  "gleaph-gql",
  "gleaph-graph-kernel",
  "rapidhash",
+ "rkyv 0.8.16",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -798,7 +800,6 @@ dependencies = [
  "derive_more",
  "ethnum",
  "f256",
- "gleaph-auth",
  "gleaph-gql",
  "gleaph-gql-ic",
  "gleaph-gql-planner",
@@ -875,7 +876,10 @@ version = "0.1.0"
 dependencies = [
  "candid",
  "futures",
+ "gleaph-auth",
+ "gleaph-gql",
  "gleaph-gql-ic",
+ "gleaph-gql-planner",
  "gleaph-graph-kernel",
  "ic-cdk",
  "ic-cdk-macros",

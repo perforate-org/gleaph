@@ -28,9 +28,9 @@ In combination with `IC.MSG_CALLER()`, Prepared Queries can also be used to impl
 
 ## Access control (roles)
 
-Gleaph graph canisters use a five-level role hierarchy (each level includes all lower levels): **Executor**, **Read**, **Write**, **Manager**, **Admin**.
+The **router** canister enforces a five-level role hierarchy (each level includes all lower levels): **Executor**, **Read**, **Write**, **Manager**, **Admin**.
 
-Every **caller** is treated as **Executor** until a row exists in stable auth for that principal (for example after `admin_grant_role`). Administrators from `init` (`issuing_principal` / `initial_admins`) are stored as **Admin**.
+Every **caller** is treated as **Executor** until a row exists in stable auth for that principal (for example after `admin_grant_role`). Administrators from router `init` (`issuing_principal` / `initial_admins`) are stored as **Admin**. Graph shards do not expose user GQL; they accept plan execution only from the router (or peer graph shards for federation).
 
 - **Executor**: may execute **prepared** GQL only (including prepared updates).
 - **Read**: may execute arbitrary **read-only** GQL programs (and prepared execution).
@@ -40,9 +40,9 @@ Every **caller** is treated as **Executor** until a row exists in stable auth fo
 
 Implementation overview:
 
-- Crate [`crates/gleaph-auth`](crates/gleaph-auth): stable RBAC types and [`AuthState`](crates/gleaph-auth/src/lib.rs).
+- Crate [`crates/gleaph-auth`](crates/auth): stable RBAC types and [`AuthState`](crates/auth/src/lib.rs).
 - [`gleaph_gql::program_modification`](crates/gql/src/program_modification.rs): static classification of a parsed program for read vs write paths.
-- [`gleaph-graph`](crates/graph): stable maps for principals and prepared sources; on **wasm**, ic-cdk `#[init]` / `#[query]` / `#[update]` entrypoints live in [`lib.rs`](crates/graph/src/lib.rs), with handlers and types under [`canister/`](crates/graph/src/canister/).
+- [`gleaph-router`](crates/router): stable auth map, `gql_*` / `prepared_*` entrypoints, and [`rbac`](crates/router/src/rbac.rs) checks in [`lib.rs`](crates/router/src/lib.rs).
 
 **Internet Computer controllers** can still upgrade code or replace canister state; they are separate from in-canister roles.
 
