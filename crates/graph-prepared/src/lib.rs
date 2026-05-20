@@ -45,6 +45,31 @@ fn rkyv_from_bytes_aligned_program(bytes: &[u8]) -> Result<GqlProgram, rkyv::ran
     rkyv::from_bytes::<GqlProgram, rkyv::rancor::Error>(&aligned)
 }
 
+/// Wire format for [`ExecuteProgramArgs::program_blob`]: `requires_write` byte + rkyv program.
+pub fn encode_program_wire(record: &PreparedQueryRecord) -> Vec<u8> {
+    let prog_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&record.program)
+        .expect("prepared GQL program rkyv encode should not fail")
+        .into_vec();
+    let mut v = Vec::with_capacity(1 + prog_bytes.len());
+    v.push(u8::from(record.requires_write_path));
+    v.extend_from_slice(&prog_bytes);
+    v
+}
+
+/// Decode [`encode_program_wire`] payload.
+pub fn decode_program_wire(bytes: &[u8]) -> Result<PreparedQueryRecord, PreparedQueryError> {
+    if bytes.is_empty() {
+        return Err(PreparedQueryError::Parse("empty program blob".into()));
+    }
+    let requires_write_path = bytes[0] != 0;
+    let program = rkyv_from_bytes_aligned_program(&bytes[1..])
+        .map_err(|e| PreparedQueryError::Parse(format!("program rkyv decode: {e}")))?;
+    Ok(PreparedQueryRecord {
+        program,
+        requires_write_path,
+    })
+}
+
 impl Storable for PreparedQueryRecord {
     fn to_bytes(&self) -> Cow<'_, [u8]> {
         let prog_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&self.program)
