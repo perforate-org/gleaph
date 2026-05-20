@@ -24,6 +24,7 @@ use gleaph_gql::numeric_order::{NormalizedNumeric, NumericOrderError, normalized
 use gleaph_gql::types::{EdgeDirection, LabelExpr, PathElement};
 use gleaph_gql::value_cmp::compare_values;
 use gleaph_gql::{Value, hash_value_for_join, value_to_index_key_bytes};
+use gleaph_gql_planner::OutputSchema;
 use gleaph_gql_planner::collect_expr_variables;
 use gleaph_gql_planner::plan::{
     AggregateSpec, ConditionalScanCandidate, IndexScanSpec, PhysicalPlan, PlanOp, ProjectColumn,
@@ -202,13 +203,15 @@ pub fn materialize_plan_rows(
     store: &GraphStore,
     rows: &[PlanRow],
 ) -> Result<Vec<BTreeMap<String, Value>>, PlanQueryError> {
-    #[cfg(all(feature = "canbench", target_family = "wasm"))]
-    let _scope = bench_scope("plan_query_materialize_value_rows");
-    let mut out = Vec::with_capacity(rows.len());
-    for row in rows {
-        out.push(value_row(store, row)?);
-    }
-    Ok(out)
+    super::materialize::materialize_plan_rows(store, rows, &OutputSchema::default())
+}
+
+pub fn materialize_plan_rows_for_schema(
+    store: &GraphStore,
+    rows: &[PlanRow],
+    schema: &OutputSchema,
+) -> Result<Vec<BTreeMap<String, Value>>, PlanQueryError> {
+    super::materialize::materialize_plan_rows(store, rows, schema)
 }
 
 pub async fn execute_plan_query(
@@ -218,10 +221,12 @@ pub async fn execute_plan_query(
     index: Option<&dyn PropertyIndexLookup>,
     execution: GqlExecutionContext,
 ) -> Result<PlanQueryResult, PlanQueryError> {
-    let rows = execute_plan_query_bindings(store, plan, parameters, index, execution).await?;
-    Ok(PlanQueryResult {
-        rows: materialize_plan_rows(store, &rows)?,
-    })
+    let bindings = execute_plan_query_bindings(store, plan, parameters, index, execution).await?;
+    super::materialize::hydrate_plan_rows(
+        store,
+        &super::materialize::PlanQueryBindings { rows: bindings },
+        &plan.output,
+    )
 }
 
 async fn execute_ops(
@@ -2855,6 +2860,12 @@ impl PartialEq for PathBinding {
 
 impl Eq for PathBinding {}
 
+impl PathBinding {
+    pub(crate) fn materialize_cache_key(&self) -> (usize, usize) {
+        (Arc::as_ptr(&self.states) as usize, self.leaf_state_idx)
+    }
+}
+
 struct ShortestPathSearchResult {
     states: Vec<PathSearchNode>,
     found: Vec<usize>,
@@ -3751,7 +3762,7 @@ thread_local! {
 /// `plan_query_materialize_value_rows` benches.
 const PATH_MATERIALIZE_SCRATCH_MIN_ELEMENTS: usize = 16;
 
-fn path_binding_to_value(store: &GraphStore, pb: &PathBinding) -> Value {
+pub(super) fn path_binding_to_value(store: &GraphStore, pb: &PathBinding) -> Value {
     materialize_path_from_search_states(store, pb.shard_id, pb.states.as_ref(), pb.leaf_state_idx)
 }
 
@@ -4880,7 +4891,10 @@ fn expression_name(expr: &Expr) -> String {
     }
 }
 
-fn value_row(store: &GraphStore, row: &PlanRow) -> Result<BTreeMap<String, Value>, PlanQueryError> {
+pub(super) fn value_row(
+    store: &GraphStore,
+    row: &PlanRow,
+) -> Result<BTreeMap<String, Value>, PlanQueryError> {
     if row.len() == 1 {
         let (name, binding) = row.iter().next().expect("len==1 guarantees one entry");
         let value = binding_to_value(store, binding)?;
@@ -4893,7 +4907,10 @@ fn value_row(store: &GraphStore, row: &PlanRow) -> Result<BTreeMap<String, Value
         .collect()
 }
 
-fn binding_to_value(store: &GraphStore, binding: &PlanBinding) -> Result<Value, PlanQueryError> {
+pub(super) fn binding_to_value(
+    store: &GraphStore,
+    binding: &PlanBinding,
+) -> Result<Value, PlanQueryError> {
     match binding {
         PlanBinding::Vertex(vertex_id) => vertex_to_value(store, *vertex_id),
         PlanBinding::RemoteVertex(logical_vertex_id) => Ok(Value::Record(vec![
@@ -5227,11 +5244,7 @@ mod tests {
     }
 
     fn plan(ops: Vec<PlanOp>) -> PhysicalPlan {
-        PhysicalPlan {
-            ops,
-            diagnostics: PlanDiagnostics::default(),
-            annotations: PlanAnnotations::default(),
-        }
+        PhysicalPlan::from_ops(ops)
     }
 
     fn plan_gql(input: &str) -> PhysicalPlan {

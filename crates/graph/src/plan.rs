@@ -12,7 +12,8 @@ pub use mutation::{
 };
 pub use query::PlanQueryExecutor;
 pub use query::{
-    EdgeBinding, PathBinding, PlanBinding, PlanQueryError, PlanQueryResult, PlanQueryRow,
-    execute_plan_query, execute_plan_query_bindings, execute_plan_query_bindings_with_initial_rows,
-    materialize_plan_rows,
+    EdgeBinding, PathBinding, PlanBinding, PlanQueryBindings, PlanQueryError, PlanQueryResult,
+    PlanQueryRow, execute_plan_query, execute_plan_query_bindings,
+    execute_plan_query_bindings_with_initial_rows, hydrate_plan_rows, materialize_plan_rows,
+    materialize_plan_rows_for_schema,
 };

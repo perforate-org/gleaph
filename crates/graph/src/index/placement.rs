@@ -3,7 +3,7 @@
 use candid::Principal;
 use gleaph_graph_kernel::federation::{
     BeginVertexMigrationArgs, CommitVertexPlacementArgs, FinishVertexMigrationArgs, LocalVertexId,
-    LogicalVertexId, PhysicalPlacementKey, ReleaseLogicalVertexArgs,
+    LogicalVertexId, PhysicalPlacementKey, PhysicalVertexLocation, ReleaseLogicalVertexArgs,
     RouterError, ShardId, ShardRegistryEntry, VertexPlacement,
 };
 use ic_stable_lara::VertexId;

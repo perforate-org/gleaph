@@ -25,6 +25,7 @@ pub mod explain;
 mod expr_alias;
 pub mod expr_children;
 pub mod join_order;
+pub mod output_schema;
 pub mod path_extensions;
 pub mod plan;
 pub mod planner;
@@ -45,6 +46,9 @@ pub use expr_children::for_each_immediate_child_expr;
 pub use path_extensions::{
     PathPatternExtensionContext, PathPatternExtensionHandler, PlanBuildOptions,
     RejectingPathExtensionHandler, SingleEdgePathInfo,
+};
+pub use output_schema::{
+    OutputBindingKind, OutputColumn, OutputSchema, derive_output_schema,
 };
 pub use plan::{
     PhysicalPlan, PlanAnnotations, PlanDiagnostics, PlanOp, PlanSummary, ShortestPathCost,

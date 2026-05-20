@@ -40,11 +40,7 @@ fn var(name: &str) -> Expr {
 }
 
 fn plan(ops: Vec<PlanOp>) -> PhysicalPlan {
-    PhysicalPlan {
-        ops,
-        diagnostics: PlanDiagnostics::default(),
-        annotations: PlanAnnotations::default(),
-    }
+    PhysicalPlan::from_ops(ops)
 }
 
 fn gleaph_weight_call(edge_var: &str) -> Expr {

@@ -211,6 +211,7 @@ mod tests {
             }],
             diagnostics: PlanDiagnostics::default(),
             annotations: PlanAnnotations::default(),
+        ..Default::default()
         };
         assert_eq!(first_executor_unsupported_op(&plan), None);
     }
@@ -235,6 +236,7 @@ mod tests {
             }],
             diagnostics: PlanDiagnostics::default(),
             annotations: PlanAnnotations::default(),
+        ..Default::default()
         };
         assert_eq!(first_executor_unsupported_op(&plan), None);
     }
@@ -253,6 +255,7 @@ mod tests {
             }],
             diagnostics: PlanDiagnostics::default(),
             annotations: PlanAnnotations::default(),
+        ..Default::default()
         };
         assert_eq!(
             first_executor_unsupported_op(&plan),
@@ -280,6 +283,7 @@ mod tests {
             }],
             diagnostics: PlanDiagnostics::default(),
             annotations: PlanAnnotations::default(),
+        ..Default::default()
         };
         assert_eq!(first_executor_unsupported_op(&plan), None);
     }
@@ -306,6 +310,7 @@ mod tests {
             }],
             diagnostics: PlanDiagnostics::default(),
             annotations: PlanAnnotations::default(),
+        ..Default::default()
         };
         assert_eq!(
             first_executor_unsupported_op(&plan),
@@ -340,6 +345,7 @@ mod tests {
             }],
             diagnostics: PlanDiagnostics::default(),
             annotations: PlanAnnotations::default(),
+        ..Default::default()
         };
         assert_eq!(first_executor_unsupported_op(&plan), None);
     }
@@ -360,6 +366,7 @@ mod tests {
             }],
             diagnostics: PlanDiagnostics::default(),
             annotations: PlanAnnotations::default(),
+        ..Default::default()
         };
 
         assert_eq!(first_executor_unsupported_op(&plan), None);
@@ -384,6 +391,7 @@ mod tests {
             }],
             diagnostics: PlanDiagnostics::default(),
             annotations: PlanAnnotations::default(),
+        ..Default::default()
         };
         assert_eq!(
             first_executor_unsupported_op(&plan),
@@ -415,6 +423,7 @@ mod tests {
             ops: vec![PlanOp::OptionalMatch { sub_plan }],
             diagnostics: PlanDiagnostics::default(),
             annotations: PlanAnnotations::default(),
+        ..Default::default()
         };
         assert_eq!(first_executor_unsupported_op(&plan), None);
     }
@@ -468,6 +477,7 @@ mod tests {
             }],
             diagnostics: PlanDiagnostics::default(),
             annotations: PlanAnnotations::default(),
+        ..Default::default()
         };
         assert_eq!(first_executor_unsupported_op(&plan), None);
     }

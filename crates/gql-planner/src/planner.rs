@@ -496,10 +496,13 @@ fn build_plan_core(
     annotations.optimizer.estimated_cost = Some(cost::estimate_cost(&ops, stats));
     annotations.optimizer.estimated_rows = Some(cost::estimate_rows(&ops, stats));
 
+    let output = crate::output_schema::derive_output_schema(&ops);
+
     Ok(PhysicalPlan {
         ops,
         diagnostics: PlanDiagnostics::default(),
         annotations,
+        output,
     })
 }
 

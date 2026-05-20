@@ -345,6 +345,7 @@ mod tests {
             ],
             diagnostics: PlanDiagnostics::default(),
             annotations: Default::default(),
+            ..Default::default()
         };
 
         let bindings = store
@@ -389,6 +390,7 @@ mod tests {
             }],
             diagnostics: PlanDiagnostics::default(),
             annotations: Default::default(),
+            ..Default::default()
         };
         let mut parameters = BTreeMap::new();
         parameters.insert("name".to_owned(), Value::Text("Ada".into()));
@@ -448,6 +450,7 @@ mod tests {
             ],
             diagnostics: PlanDiagnostics::default(),
             annotations: Default::default(),
+            ..Default::default()
         };
 
         let bindings = store
@@ -512,6 +515,7 @@ mod tests {
             ],
             diagnostics: PlanDiagnostics::default(),
             annotations: Default::default(),
+            ..Default::default()
         };
 
         let bindings = store
@@ -544,6 +548,7 @@ mod tests {
             ],
             diagnostics: PlanDiagnostics::default(),
             annotations: Default::default(),
+            ..Default::default()
         };
 
         let bindings = store
@@ -574,6 +579,7 @@ mod tests {
             }],
             diagnostics: PlanDiagnostics::default(),
             annotations: Default::default(),
+            ..Default::default()
         };
         let mut existing_bindings = bindings;
         execute_ops_with_bindings(
@@ -630,6 +636,7 @@ mod tests {
             }],
             diagnostics: PlanDiagnostics::default(),
             annotations: Default::default(),
+            ..Default::default()
         };
         let mut parameters = BTreeMap::new();
         parameters.insert("base".to_owned(), Value::Int64(2));
@@ -698,6 +705,7 @@ mod tests {
             }],
             diagnostics: PlanDiagnostics::default(),
             annotations: Default::default(),
+            ..Default::default()
         };
 
         let bindings = store
@@ -784,6 +792,7 @@ mod tests {
             }],
             diagnostics: PlanDiagnostics::default(),
             annotations: Default::default(),
+            ..Default::default()
         };
 
         let bindings = store
@@ -855,6 +864,7 @@ mod tests {
             ],
             diagnostics: PlanDiagnostics::default(),
             annotations: Default::default(),
+            ..Default::default()
         };
 
         let err = store
@@ -886,6 +896,7 @@ mod tests {
             ],
             diagnostics: PlanDiagnostics::default(),
             annotations: Default::default(),
+            ..Default::default()
         };
 
         store
@@ -930,6 +941,7 @@ mod tests {
             ],
             diagnostics: PlanDiagnostics::default(),
             annotations: Default::default(),
+            ..Default::default()
         };
 
         let bindings = store
@@ -988,6 +1000,7 @@ mod tests {
             ],
             diagnostics: PlanDiagnostics::default(),
             annotations: Default::default(),
+            ..Default::default()
         };
 
         let bindings = store
@@ -1044,6 +1057,7 @@ mod tests {
             ],
             diagnostics: PlanDiagnostics::default(),
             annotations: Default::default(),
+            ..Default::default()
         };
 
         let bindings = store

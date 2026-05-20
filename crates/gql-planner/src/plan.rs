@@ -38,9 +38,21 @@ pub struct PhysicalPlan {
     pub diagnostics: PlanDiagnostics,
     /// Metadata produced during planning (cost estimates, anchor info, etc.).
     pub annotations: PlanAnnotations,
+    /// Final RETURN / WITH column layout for result hydration.
+    pub output: crate::output_schema::OutputSchema,
 }
 
 impl PhysicalPlan {
+    /// Build a plan and derive [`crate::output_schema::OutputSchema`] from its ops.
+    pub fn from_ops(ops: Vec<PlanOp>) -> Self {
+        let output = crate::output_schema::derive_output_schema(&ops);
+        Self {
+            ops,
+            output,
+            ..Self::default()
+        }
+    }
+
     /// True if any operator in this plan (including nested sub-plans) is DML.
     pub fn has_dml(&self) -> bool {
         ops_contain_dml(&self.ops)

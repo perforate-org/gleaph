@@ -1642,6 +1642,7 @@ fn test_explain_includes_dml_warnings() {
             }],
         },
         annotations: PlanAnnotations::default(),
+        ..Default::default()
     };
     let output = explain_plan(&plan);
     assert!(
