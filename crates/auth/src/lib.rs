@@ -7,8 +7,10 @@
 //! Principals with **no row in stable storage** are treated as [`Role::Executor`].
 //!
 //! Prepared-query **registration** requires [`Role::Admin`] or [`Role::Manager`] with
-//! [`ManagerCapability::PREPARE_REGISTER`]. Prepared-query **execution** does not consult this
-//! RBAC table (graph canisters separate read vs write by composite query vs update entrypoints).
+//! [`ManagerCapability::PREPARE_REGISTER`]. Prepared-query **execution** uses the default
+//! [`Role::Executor`] for any caller without a stored row; ad-hoc GQL requires at least
+//! [`Role::Read`] (write programs require [`Role::Write`]). Enforced on the **router** canister;
+//! graph shards trust the router as the only GQL entrypoint.
 
 use candid::Principal;
 use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
@@ -121,52 +123,9 @@ impl Storable for AuthRecord {
     }
 }
 
-/// Canonical principal encoding for stable maps (`Principal::as_slice()` bytes, length-prefixed).
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct PrincipalKey(pub Vec<u8>);
-
-impl From<Principal> for PrincipalKey {
-    fn from(p: Principal) -> Self {
-        let s = p.as_slice();
-        let mut v = Vec::with_capacity(1 + s.len());
-        v.push(s.len() as u8);
-        v.extend_from_slice(s);
-        Self(v)
-    }
-}
-
-impl PrincipalKey {
-    pub fn principal(&self) -> Option<Principal> {
-        if self.0.is_empty() {
-            return None;
-        }
-        let len = self.0[0] as usize;
-        if len == 0 || self.0.len() < 1 + len {
-            return None;
-        }
-        Principal::try_from_slice(&self.0[1..1 + len]).ok()
-    }
-}
-
-impl Storable for PrincipalKey {
-    const BOUND: Bound = Bound::Unbounded;
-
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Borrowed(&self.0)
-    }
-
-    fn into_bytes(self) -> Vec<u8> {
-        self.0
-    }
-
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Self(bytes.into_owned())
-    }
-}
-
 /// Stable principal → auth record map.
 pub struct AuthState<M: Memory> {
-    map: StableBTreeMap<PrincipalKey, AuthRecord, M>,
+    map: StableBTreeMap<Principal, AuthRecord, M>,
 }
 
 impl<M: Memory> AuthState<M> {
@@ -177,7 +136,7 @@ impl<M: Memory> AuthState<M> {
     }
 
     pub fn get_record(&self, p: &Principal) -> Option<AuthRecord> {
-        self.map.get(&PrincipalKey::from(*p))
+        self.map.get(p)
     }
 
     /// Role stored in stable map, if any and valid.
@@ -233,7 +192,7 @@ impl<M: Memory> AuthState<M> {
 
     /// Insert or replace the full record (Admin maintenance).
     pub fn upsert_record(&mut self, p: Principal, record: AuthRecord) {
-        self.map.insert(PrincipalKey::from(p), record);
+        self.map.insert(p, record);
     }
 
     /// Bootstrap: grant [`Role::Admin`] to `issuing_principal` and every entry in `initial_admins`.
