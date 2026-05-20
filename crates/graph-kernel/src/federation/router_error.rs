@@ -15,6 +15,16 @@ pub enum RouterError {
     Conflict(String),
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
+    /// GQL program kind (read vs write) does not match the canister entrypoint (query vs update).
+    #[error(
+        "execution path mismatch on {entrypoint}: {program_kind} program cannot use {call_kind} call; {remedy}"
+    )]
+    ExecutionPathMismatch {
+        entrypoint: String,
+        program_kind: String,
+        call_kind: String,
+        remedy: String,
+    },
     #[error("graph unavailable")]
     GraphUnavailable,
     #[error("shard not registered")]

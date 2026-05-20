@@ -2,10 +2,12 @@
 
 mod expand;
 mod migration;
+mod peer_sync;
 mod router_error;
 
 pub use expand::{FederatedExpandArgs, FederatedExpandDirection, FederatedExpandNeighbor};
 pub use migration::{ExportedEdgeTarget, ExportedOutEdge, ExportedProperty, ExportedVertex};
+pub use peer_sync::{AddGraphPeerArgs, BootstrapGraphPeersArgs, RemoveGraphPeerArgs};
 pub use router_error::RouterError;
 
 use candid::{CandidType, Decode, Encode, Principal};

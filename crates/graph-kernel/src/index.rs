@@ -2,7 +2,9 @@
 
 use crate::federation::ShardId;
 
-#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize,
+)]
 pub struct PostingHit {
     pub shard_id: ShardId,
     pub vertex_id: u32,

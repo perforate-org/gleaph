@@ -5,6 +5,8 @@
 //! [`crate::entry::edge::Edge::inline_value`] and applies the decoder.
 
 use half::f16;
+use ic_stable_structures::storable::{Bound, Storable};
+use std::borrow::Cow;
 use thiserror::Error;
 
 /// Label-level configuration for interpreting [`crate::entry::edge::Edge::inline_value`] as a
@@ -121,6 +123,27 @@ pub fn decode_inline_weight(
     Ok(v)
 }
 
+impl Storable for EdgeWeightProfile {
+    const BOUND: Bound = Bound::Bounded {
+        max_size: 256,
+        is_fixed_size: false,
+    };
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(
+            candid::encode_one(self).expect("EdgeWeightProfile candid encode should not fail"),
+        )
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        candid::encode_one(&self).expect("EdgeWeightProfile candid encode should not fail")
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        candid::decode_one(&bytes).expect("EdgeWeightProfile candid decode should not fail")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,5 +179,17 @@ mod tests {
         let d = p.prepare().unwrap();
         let bits = f16::from_f32(1.5).to_bits();
         assert!((decode_inline_weight(&d, bits).unwrap() - 1.5).abs() < 1e-3);
+    }
+
+    #[test]
+    fn storable_roundtrip() {
+        let profile = EdgeWeightProfile {
+            encoding: WeightEncoding::Linear {
+                min: 1.0,
+                max: 10.0,
+            },
+        };
+        let decoded = EdgeWeightProfile::from_bytes(profile.to_bytes());
+        assert_eq!(decoded, profile);
     }
 }
