@@ -46,6 +46,10 @@ Implementation overview:
 
 **Internet Computer controllers** can still upgrade code or replace canister state; they are separate from in-canister roles.
 
+## Design documentation
+
+Architecture and GQL/federation design notes live in [`design/`](./design/). Start with [`design/README.md`](./design/README.md).
+
 ## License
 
 This project is licensed under either of [Apache License, Version 2.0](./LICENSE-APACHE) or [MIT License](./LICENSE-MIT) at your option.
