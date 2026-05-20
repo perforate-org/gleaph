@@ -1696,17 +1696,7 @@ async fn execute_cartesian_product(
 }
 
 fn merge_rows(left: &PlanRow, right: &PlanRow) -> Option<PlanRow> {
-    let mut merged = left.clone();
-    for (name, right_binding) in right.iter() {
-        match merged.get(name) {
-            Some(left_binding) if left_binding != right_binding => return None,
-            Some(_) => {}
-            None => {
-                merged.insert(name.to_string(), right_binding.clone());
-            }
-        }
-    }
-    Some(merged)
+    left.try_merge(right, &[])
 }
 
 /// Like [`merge_rows`], but caller guarantees join-key columns already match between `left` and `right`.
@@ -1716,24 +1706,8 @@ fn merge_rows_with_known_join_keys(
     right: &PlanRow,
     join_keys: &[Str],
 ) -> Option<PlanRow> {
-    let mut merged = left.clone();
-    for (name, right_binding) in right.iter() {
-        let skip_join_col = match join_keys {
-            [only] => name == only.as_ref(),
-            keys => keys.iter().any(|k| k.as_ref() == name),
-        };
-        if skip_join_col {
-            continue;
-        }
-        match merged.get(name) {
-            Some(existing) if existing != right_binding => return None,
-            Some(_) => {}
-            None => {
-                merged.insert(name.to_string(), right_binding.clone());
-            }
-        }
-    }
-    Some(merged)
+    let skip: Vec<&str> = join_keys.iter().map(|k| k.as_ref()).collect();
+    left.try_merge(right, &skip)
 }
 
 async fn execute_hash_join(

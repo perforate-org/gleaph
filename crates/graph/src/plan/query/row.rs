@@ -161,6 +161,101 @@ impl PlanRow {
         out
     }
 
+    /// Merge `right` into a clone of `self`. Conflicting bindings return `None`.
+    ///
+    /// When both rows share the same [`BindingLayout`], merges dense slots directly
+    /// instead of iterating a map. Names in `skip_names` are taken from `self` only
+    /// (join-key fast path).
+    pub fn try_merge(&self, right: &Self, skip_names: &[&str]) -> Option<Self> {
+        if let (Some(left_layout), Some(right_layout)) = (&self.layout, &right.layout) {
+            if Rc::ptr_eq(left_layout, right_layout) || left_layout.as_ref() == right_layout.as_ref()
+            {
+                return self.try_merge_indexed(right, left_layout, skip_names);
+            }
+        }
+        self.try_merge_fallback(right, skip_names)
+    }
+
+    fn try_merge_indexed(
+        &self,
+        right: &Self,
+        layout: &Rc<BindingLayout>,
+        skip_names: &[&str],
+    ) -> Option<Self> {
+        let skip_single = match skip_names {
+            [] => None,
+            [only] => layout.index_of(only),
+            _ => None,
+        };
+        let skip_many: Vec<usize> = if skip_names.len() <= 1 {
+            Vec::new()
+        } else {
+            skip_names
+                .iter()
+                .filter_map(|name| layout.index_of(name))
+                .collect()
+        };
+
+        let mut slots = self.slots.clone();
+        let mut spill = self.spill.clone();
+
+        let skip_slot = |idx: usize| {
+            skip_single == Some(idx) || skip_many.iter().any(|&s| s == idx)
+        };
+
+        for (name, right_binding) in right.iter() {
+            if skip_names.contains(&name) {
+                continue;
+            }
+            if let Some(idx) = layout.index_of(name) {
+                if skip_slot(idx) {
+                    continue;
+                }
+                match slots.get(idx) {
+                    Some(Some(left_binding)) if left_binding != right_binding => return None,
+                    Some(None) | None => {
+                        if idx >= slots.len() {
+                            slots.resize(idx + 1, None);
+                        }
+                        slots[idx] = Some(right_binding.clone());
+                    }
+                    Some(Some(_)) => {}
+                }
+            } else {
+                match self.get(name).or_else(|| spill.get(name)) {
+                    Some(left_binding) if left_binding != right_binding => return None,
+                    Some(_) => {}
+                    None => {
+                        spill.insert(name.to_string(), right_binding.clone());
+                    }
+                }
+            }
+        }
+
+        Some(Self {
+            layout: Some(Rc::clone(layout)),
+            slots,
+            spill,
+        })
+    }
+
+    fn try_merge_fallback(&self, right: &Self, skip_names: &[&str]) -> Option<Self> {
+        let mut merged = self.clone();
+        for (name, right_binding) in right.iter() {
+            if skip_names.contains(&name) {
+                continue;
+            }
+            match merged.get(name) {
+                Some(left_binding) if left_binding != right_binding => return None,
+                Some(_) => {}
+                None => {
+                    merged.insert(name.to_string(), right_binding.clone());
+                }
+            }
+        }
+        Some(merged)
+    }
+
     /// Row containing only the listed variables (used after shortest-path narrowing).
     pub fn retain_only(
         layout: Rc<BindingLayout>,
@@ -255,6 +350,61 @@ mod tests {
         );
         assert!(row.is_singleton_binding("p"));
         assert!(!row.is_singleton_binding("q"));
+    }
+
+    #[test]
+    fn try_merge_indexed_rows_combine_disjoint_slots() {
+        use gleaph_gql_planner::{derive_binding_layout, PlanOp};
+        let layout = Rc::new(derive_binding_layout(&[
+            PlanOp::NodeScan {
+                variable: "a".into(),
+                label: None,
+                property_projection: None,
+            },
+            PlanOp::NodeScan {
+                variable: "b".into(),
+                label: None,
+                property_projection: None,
+            },
+            PlanOp::NodeScan {
+                variable: "c".into(),
+                label: None,
+                property_projection: None,
+            },
+        ]));
+        let mut left = PlanRow::with_layout(Rc::clone(&layout));
+        left.insert("a".into(), PlanBinding::Vertex(VertexId::from(1)));
+        left.insert("b".into(), PlanBinding::Vertex(VertexId::from(2)));
+
+        let mut right = PlanRow::with_layout(Rc::clone(&layout));
+        right.insert("a".into(), PlanBinding::Vertex(VertexId::from(1)));
+        right.insert("c".into(), PlanBinding::Vertex(VertexId::from(3)));
+
+        let merged = left.try_merge(&right, &["a"]).expect("merge");
+        assert_eq!(
+            merged.get("b").and_then(|b| match b {
+                PlanBinding::Vertex(v) => Some(*v),
+                _ => None,
+            }),
+            Some(VertexId::from(2))
+        );
+        assert_eq!(
+            merged.get("c").and_then(|b| match b {
+                PlanBinding::Vertex(v) => Some(*v),
+                _ => None,
+            }),
+            Some(VertexId::from(3))
+        );
+    }
+
+    #[test]
+    fn try_merge_indexed_rows_reject_conflicting_slots() {
+        let layout = Rc::new(BindingLayout::single("a".into()));
+        let left =
+            PlanRow::with_layout_and_binding(Rc::clone(&layout), "a", PlanBinding::Vertex(VertexId::from(1)));
+        let right =
+            PlanRow::with_layout_and_binding(layout, "a", PlanBinding::Vertex(VertexId::from(2)));
+        assert!(left.try_merge(&right, &[]).is_none());
     }
 
     #[test]
