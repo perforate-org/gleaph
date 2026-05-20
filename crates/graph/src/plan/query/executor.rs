@@ -24,7 +24,7 @@ use gleaph_gql::numeric_order::{NormalizedNumeric, NumericOrderError, normalized
 use gleaph_gql::types::{EdgeDirection, LabelExpr, PathElement};
 use gleaph_gql::value_cmp::compare_values;
 use gleaph_gql::{Value, hash_value_for_join, value_to_index_key_bytes};
-use gleaph_gql_planner::OutputSchema;
+use gleaph_gql_planner::{BindingLayout, OutputSchema};
 use gleaph_gql_planner::collect_expr_variables;
 use gleaph_gql_planner::plan::{
     AggregateSpec, ConditionalScanCandidate, IndexScanSpec, PhysicalPlan, PlanOp, ProjectColumn,
@@ -49,9 +49,10 @@ use rapidhash::fast::RapidHasher;
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap};
 use std::hash::Hasher;
 use std::pin::Pin;
+use std::rc::Rc;
 use std::sync::Arc;
 
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
@@ -114,14 +115,7 @@ pub enum PlanBinding {
     Path(PathBinding),
 }
 
-/// One query result row before GQL [`Value`] materialization: column name → [`PlanBinding`].
-///
-/// Shortest-path columns stay as [`PlanBinding::Path`] until [`materialize_plan_rows`] or
-/// [`PlanQueryResult::try_from_plan_rows`].
-pub type PlanQueryRow = BTreeMap<String, PlanBinding>;
-
-/// Alias used throughout the executor implementation.
-pub(crate) type PlanRow = PlanQueryRow;
+pub use super::row::{PlanQueryRow, PlanRow};
 
 /// Bindings for each hash-join key column (planner order), used for equality and hashing.
 type HashJoinKey = Vec<PlanBinding>;
@@ -151,7 +145,7 @@ pub async fn execute_plan_query_bindings(
         parameters,
         index,
         execution,
-        vec![PlanRow::new()],
+        vec![super::row::empty_row_for_plan(plan)],
         false,
     )
     .await
@@ -1706,12 +1700,12 @@ async fn execute_cartesian_product(
 
 fn merge_rows(left: &PlanRow, right: &PlanRow) -> Option<PlanRow> {
     let mut merged = left.clone();
-    for (name, right_binding) in right {
+    for (name, right_binding) in right.iter() {
         match merged.get(name) {
             Some(left_binding) if left_binding != right_binding => return None,
             Some(_) => {}
             None => {
-                merged.insert(name.clone(), right_binding.clone());
+                merged.insert(name.to_string(), right_binding.clone());
             }
         }
     }
@@ -1726,20 +1720,19 @@ fn merge_rows_with_known_join_keys(
     join_keys: &[Str],
 ) -> Option<PlanRow> {
     let mut merged = left.clone();
-    for (name, right_binding) in right {
-        let name_str = name.as_str();
+    for (name, right_binding) in right.iter() {
         let skip_join_col = match join_keys {
-            [only] => name_str == only.as_ref(),
-            keys => keys.iter().any(|k| k.as_ref() == name_str),
+            [only] => name == only.as_ref(),
+            keys => keys.iter().any(|k| k.as_ref() == name),
         };
         if skip_join_col {
             continue;
         }
-        match merged.get(name_str) {
+        match merged.get(name) {
             Some(existing) if existing != right_binding => return None,
             Some(_) => {}
             None => {
-                merged.insert(name.clone(), right_binding.clone());
+                merged.insert(name.to_string(), right_binding.clone());
             }
         }
     }
@@ -2979,9 +2972,11 @@ fn execute_shortest_path(
             });
             let row = if path_only_rows {
                 let path_key = path_key.as_ref().expect("path_only_rows implies path_key");
-                let mut row = PlanRow::new();
-                row.insert(path_key.clone(), path_binding);
-                row
+                PlanRow::with_layout_and_binding(
+                    Rc::new(BindingLayout::single(Str::from(path_key.as_str()))),
+                    path_key,
+                    path_binding,
+                )
             } else {
                 let mut row = row.clone();
                 if let Some(edge_key) = &edge_key {
@@ -4865,13 +4860,12 @@ fn project_row(
     columns: &[ProjectColumn],
 ) -> Result<PlanRow, PlanQueryError> {
     if columns.is_empty() {
-        return row
-            .iter()
-            .map(|(name, binding)| {
-                binding_to_value(evaluator.store, binding)
-                    .map(|value| (name.clone(), PlanBinding::Value(value)))
-            })
-            .collect();
+        let mut out = PlanRow::new();
+        for (name, binding) in row.iter() {
+            let value = binding_to_value(evaluator.store, binding)?;
+            out.insert(name.to_string(), PlanBinding::Value(value));
+        }
+        return Ok(out);
     }
 
     // Fast path: `RETURN v` / `RETURN v AS alias` — keep graph bindings so later
@@ -4890,25 +4884,25 @@ fn project_row(
                 .as_ref()
                 .map(Str::to_string)
                 .unwrap_or_else(|| var_name.clone());
-            let mut out = PlanRow::new();
-            out.insert(name, binding.clone());
-            return Ok(out);
+            return Ok(PlanRow::with_layout_and_binding(
+                Rc::new(BindingLayout::single(Str::from(name.as_str()))),
+                &name,
+                binding.clone(),
+            ));
         }
     }
 
-    columns
-        .iter()
-        .map(|column| {
-            let name = column
-                .alias
-                .as_ref()
-                .map(Str::to_string)
-                .unwrap_or_else(|| expression_name(&column.expr));
-            evaluator
-                .eval_expr(row, &column.expr)
-                .map(|value| (name, PlanBinding::Value(value)))
-        })
-        .collect()
+    let mut out = PlanRow::new();
+    for column in columns {
+        let name = column
+            .alias
+            .as_ref()
+            .map(Str::to_string)
+            .unwrap_or_else(|| expression_name(&column.expr));
+        let value = evaluator.eval_expr(row, &column.expr)?;
+        out.insert(name, PlanBinding::Value(value));
+    }
+    Ok(out)
 }
 
 fn expression_name(expr: &Expr) -> String {
@@ -4929,11 +4923,13 @@ pub(super) fn value_row(
         let (name, binding) = row.iter().next().expect("len==1 guarantees one entry");
         let value = binding_to_value(store, binding)?;
         let mut out = BTreeMap::new();
-        out.insert(name.clone(), value);
+        out.insert(name.to_string(), value);
         return Ok(out);
     }
     row.iter()
-        .map(|(name, binding)| binding_to_value(store, binding).map(|value| (name.clone(), value)))
+        .map(|(name, binding)| {
+            binding_to_value(store, binding).map(|value| (name.to_string(), value))
+        })
         .collect()
 }
 
@@ -7754,9 +7750,18 @@ mod tests {
 
     #[test]
     fn cartesian_product_drops_conflicting_bindings() {
-        let left = PlanRow::from([("x".to_owned(), PlanBinding::Value(Value::Int64(1)))]);
-        let same = PlanRow::from([("x".to_owned(), PlanBinding::Value(Value::Int64(1)))]);
-        let different = PlanRow::from([("x".to_owned(), PlanBinding::Value(Value::Int64(2)))]);
+        let left = PlanRow::from(BTreeMap::from([(
+            "x".to_owned(),
+            PlanBinding::Value(Value::Int64(1)),
+        )]));
+        let same = PlanRow::from(BTreeMap::from([(
+            "x".to_owned(),
+            PlanBinding::Value(Value::Int64(1)),
+        )]));
+        let different = PlanRow::from(BTreeMap::from([(
+            "x".to_owned(),
+            PlanBinding::Value(Value::Int64(2)),
+        )]));
 
         assert_eq!(merge_rows(&left, &same), Some(left.clone()));
         assert_eq!(merge_rows(&left, &different), None);

@@ -384,7 +384,7 @@ async fn run_wire_plans(
             let initial = if use_seeds {
                 std::mem::take(&mut seed_rows)
             } else {
-                vec![PlanQueryRow::new()]
+                vec![crate::plan::empty_row_for_plan(plan)]
             };
             let skip = use_seeds;
             match materialize {

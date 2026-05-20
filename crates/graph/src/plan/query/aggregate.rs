@@ -938,7 +938,7 @@ mod tests {
     }
 
     fn row_value(name: &str, v: Value) -> PlanRow {
-        BTreeMap::from([(name.to_owned(), PlanBinding::Value(v))])
+        BTreeMap::from([(name.to_owned(), PlanBinding::Value(v))]).into()
     }
 
     #[test]

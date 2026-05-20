@@ -1,0 +1,186 @@
+//! Column-oriented plan row storage using [`gleaph_gql_planner::BindingLayout`].
+
+use std::collections::BTreeMap;
+use std::rc::Rc;
+
+use gleaph_gql_planner::{BindingLayout, PhysicalPlan};
+
+use super::executor::PlanBinding;
+
+pub fn empty_row_for_plan(plan: &PhysicalPlan) -> PlanRow {
+    if plan.binding_layout.is_empty() {
+        PlanRow::new()
+    } else {
+        PlanRow::with_layout(Rc::new(plan.binding_layout.clone()))
+    }
+}
+
+/// One executor row: dense slots when a [`BindingLayout`] is present, else a map.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PlanRow {
+    layout: Option<Rc<BindingLayout>>,
+    slots: Vec<Option<PlanBinding>>,
+    spill: BTreeMap<String, PlanBinding>,
+}
+
+impl PlanRow {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_layout(layout: Rc<BindingLayout>) -> Self {
+        let len = layout.len();
+        Self {
+            layout: Some(layout),
+            slots: vec![None; len],
+            spill: BTreeMap::new(),
+        }
+    }
+
+    pub fn with_layout_and_binding(
+        layout: Rc<BindingLayout>,
+        name: &str,
+        binding: PlanBinding,
+    ) -> Self {
+        let mut row = Self::with_layout(layout);
+        row.insert(name.to_string(), binding);
+        row
+    }
+
+    pub fn len(&self) -> usize {
+        if let Some(layout) = &self.layout {
+            layout
+                .len()
+                .max(self.slots.iter().filter(|b| b.is_some()).count())
+        } else {
+            self.spill.len()
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn contains_key(&self, name: &str) -> bool {
+        self.get(name).is_some()
+    }
+
+    pub fn get(&self, name: &str) -> Option<&PlanBinding> {
+        if let Some(layout) = &self.layout {
+            if let Some(idx) = layout.index_of(name) {
+                return self.slots.get(idx).and_then(|b| b.as_ref());
+            }
+        }
+        self.spill.get(name)
+    }
+
+    pub fn insert(&mut self, name: String, binding: PlanBinding) {
+        if let Some(layout) = &self.layout {
+            if let Some(idx) = layout.index_of(&name) {
+                if idx >= self.slots.len() {
+                    self.slots.resize(idx + 1, None);
+                }
+                self.slots[idx] = Some(binding);
+                return;
+            }
+        }
+        self.spill.insert(name, binding);
+    }
+
+    pub fn iter(&self) -> PlanRowIter<'_> {
+        PlanRowIter {
+            row: self,
+            map_idx: 0,
+            slot_idx: 0,
+        }
+    }
+
+    /// Clone and set or replace bindings (indexed fast path when layout matches).
+    pub fn clone_with_bindings(
+        &self,
+        updates: impl IntoIterator<Item = (String, PlanBinding)>,
+    ) -> Self {
+        let mut out = self.clone();
+        for (name, binding) in updates {
+            out.insert(name, binding);
+        }
+        out
+    }
+
+    /// Row containing only the listed variables (used after shortest-path narrowing).
+    pub fn retain_only(
+        layout: Rc<BindingLayout>,
+        source: &Self,
+        keep: &[&str],
+    ) -> Self {
+        let mut out = Self::with_layout(layout);
+        for name in keep {
+            if let Some(binding) = source.get(name) {
+                out.insert(name.to_string(), binding.clone());
+            }
+        }
+        out
+    }
+
+    pub fn into_btree_map(self) -> BTreeMap<String, PlanBinding> {
+        let mut out = self.spill;
+        if let Some(layout) = &self.layout {
+            for (idx, binding) in self.slots.into_iter().enumerate() {
+                if let Some(binding) = binding {
+                    if let Some(name) = layout.name_at(idx) {
+                        out.insert(name.to_string(), binding);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    pub fn from_btree_map(map: BTreeMap<String, PlanBinding>) -> Self {
+        Self {
+            layout: None,
+            slots: Vec::new(),
+            spill: map,
+        }
+    }
+}
+
+impl From<BTreeMap<String, PlanBinding>> for PlanRow {
+    fn from(map: BTreeMap<String, PlanBinding>) -> Self {
+        Self::from_btree_map(map)
+    }
+}
+
+pub struct PlanRowIter<'a> {
+    row: &'a PlanRow,
+    map_idx: usize,
+    slot_idx: usize,
+}
+
+impl<'a> Iterator for PlanRowIter<'a> {
+    type Item = (&'a str, &'a PlanBinding);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(layout) = &self.row.layout {
+            while self.slot_idx < self.row.slots.len() {
+                let idx = self.slot_idx;
+                self.slot_idx += 1;
+                if let Some(binding) = self.row.slots[idx].as_ref() {
+                    let name = layout.name_at(idx)?;
+                    return Some((name, binding));
+                }
+            }
+        }
+        let spill = &self.row.spill;
+        let keys: Vec<_> = spill.keys().collect();
+        if self.map_idx < keys.len() {
+            let key = keys[self.map_idx];
+            self.map_idx += 1;
+            return spill.get(key).map(|b| (key.as_str(), b));
+        }
+        None
+    }
+}
+
+/// Public alias used across graph plan execution.
+pub type PlanQueryRow = PlanRow;

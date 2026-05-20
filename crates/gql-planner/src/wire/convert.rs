@@ -56,12 +56,17 @@ pub fn physical_plan_to_wire(plan: &PhysicalPlan) -> Result<PhysicalPlanWire, St
 pub fn physical_plan_from_wire(wire: &PhysicalPlanWire) -> Result<PhysicalPlan, String> {
     let dec = Decoder::new(wire);
     let ops = dec.decode_ops(&wire.ops)?;
+    let mut annotations = PlanAnnotations::default();
+    let mut ops = ops;
+    crate::pushdown::apply_shortest_path_binding_pruning(&mut ops, &mut annotations);
     let output = crate::output_schema::derive_output_schema(&ops);
+    let binding_layout = crate::binding_layout::derive_binding_layout(&ops);
     Ok(PhysicalPlan {
         ops,
         diagnostics: PlanDiagnostics::default(),
-        annotations: PlanAnnotations::default(),
+        annotations,
         output,
+        binding_layout,
     })
 }
 

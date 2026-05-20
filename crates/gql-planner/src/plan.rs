@@ -40,15 +40,22 @@ pub struct PhysicalPlan {
     pub annotations: PlanAnnotations,
     /// Final RETURN / WITH column layout for result hydration.
     pub output: crate::output_schema::OutputSchema,
+    /// Dense variable slots for executor row storage.
+    pub binding_layout: crate::binding_layout::BindingLayout,
 }
 
 impl PhysicalPlan {
     /// Build a plan and derive [`crate::output_schema::OutputSchema`] from its ops.
-    pub fn from_ops(ops: Vec<PlanOp>) -> Self {
+    pub fn from_ops(mut ops: Vec<PlanOp>) -> Self {
+        let mut annotations = PlanAnnotations::default();
+        crate::pushdown::apply_shortest_path_binding_pruning(&mut ops, &mut annotations);
         let output = crate::output_schema::derive_output_schema(&ops);
+        let binding_layout = crate::binding_layout::derive_binding_layout(&ops);
         Self {
             ops,
             output,
+            annotations,
+            binding_layout,
             ..Self::default()
         }
     }

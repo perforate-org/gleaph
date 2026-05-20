@@ -18,6 +18,7 @@
 //! separate crate.
 
 pub mod anchor;
+pub mod binding_layout;
 pub mod cost;
 pub mod cse;
 pub mod executor_contract;
@@ -47,6 +48,7 @@ pub use path_extensions::{
     PathPatternExtensionContext, PathPatternExtensionHandler, PlanBuildOptions,
     RejectingPathExtensionHandler, SingleEdgePathInfo,
 };
+pub use binding_layout::{BindingLayout, SharedBindingLayout, derive_binding_layout};
 pub use output_schema::{
     OutputBindingKind, OutputColumn, OutputSchema, derive_output_schema,
 };
