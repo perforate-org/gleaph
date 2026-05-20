@@ -10,9 +10,18 @@ rust-version = "1.88"
 gleaph-gql = { path = "../gql" }
 gleaph-graph-kernel.workspace = true
 rapidhash = "4"
+rkyv = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
 
 [features]
-default = []
+default = ["plan-wire"]
+plan-wire = [
+    "dep:rkyv",
+    "dep:thiserror",
+    "gleaph-gql/ast-rkyv-no-span",
+    "gleaph-gql/f128",
+    "gleaph-gql/f256",
+]
 cypher = ["gleaph-gql/cypher"]
 sql-compat = ["gleaph-gql/sql-compat"]
 

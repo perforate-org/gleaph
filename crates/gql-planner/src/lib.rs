@@ -33,6 +33,9 @@ pub mod pushdown;
 pub mod semantic;
 pub mod stats;
 
+#[cfg(feature = "plan-wire")]
+pub mod wire;
+
 mod variable_refs;
 
 // Re-export key types and functions.
