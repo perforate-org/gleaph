@@ -1,4 +1,5 @@
 mod aggregate;
+mod arena;
 mod error;
 mod executor;
 mod gleaph_weight;

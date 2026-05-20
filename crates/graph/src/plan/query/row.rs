@@ -76,6 +76,14 @@ impl PlanRow {
         self.layout.as_ref().map(Rc::clone)
     }
 
+    pub(crate) fn layout(&self) -> Option<&Rc<BindingLayout>> {
+        self.layout.as_ref()
+    }
+
+    pub(crate) fn take_slots(&mut self) -> Vec<Option<PlanBinding>> {
+        std::mem::take(&mut self.slots)
+    }
+
     pub fn contains_key(&self, name: &str) -> bool {
         self.get(name).is_some()
     }

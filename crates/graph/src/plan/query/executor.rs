@@ -172,6 +172,7 @@ pub async fn execute_plan_query_bindings_with_initial_rows(
         let _scope = bench_scope("plan_query_prepare_gleaph_weight");
         super::gleaph_weight::prepare_gleaph_weight_decoders(store, ops)?
     };
+    super::arena::QueryArena::with(|arena| arena.reset());
     #[cfg(all(feature = "canbench", target_family = "wasm"))]
     let _scope = bench_scope("plan_query_execute_ops");
     execute_ops_from(
@@ -1787,7 +1788,7 @@ async fn execute_hash_join(
             };
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("hash_join_vertex_probe_merge");
-            for rr in right_rows {
+            for rr in &right_rows {
                 let Some(PlanBinding::Vertex(vid)) = rr.get(jk) else {
                     continue;
                 };
@@ -1795,11 +1796,17 @@ async fn execute_hash_join(
                     continue;
                 };
                 for lr in left_matches {
-                    if let Some(merged) = merge_rows_with_known_join_keys(lr, &rr, join_keys) {
+                    if let Some(merged) = merge_rows_with_known_join_keys(lr, rr, join_keys) {
                         out.push(merged);
                     }
                 }
             }
+            super::arena::QueryArena::with(|arena| {
+                arena.recycle_rows(right_rows);
+                for (_, bucket) in left_by_vertex {
+                    arena.recycle_rows(bucket);
+                }
+            });
         } else {
             let buckets = {
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
@@ -1814,8 +1821,8 @@ async fn execute_hash_join(
 
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("hash_join_bucket_probe_merge");
-            for rr in right_rows {
-                let key = extract_join_key(&rr, join_keys)?;
+            for rr in &right_rows {
+                let key = extract_join_key(rr, join_keys)?;
                 let h = hash_join_mix(&key);
                 let Some(bucket) = buckets.get(&h) else {
                     continue;
@@ -1832,6 +1839,14 @@ async fn execute_hash_join(
                     }
                 }
             }
+            super::arena::QueryArena::with(|arena| {
+                arena.recycle_rows(right_rows);
+                for bucket in buckets.into_values() {
+                    for (_, rows) in bucket {
+                        arena.recycle_rows(rows);
+                    }
+                }
+            });
         }
     }
     Ok(out)
