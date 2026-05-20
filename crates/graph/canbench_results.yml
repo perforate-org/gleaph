@@ -766,38 +766,38 @@ benches:
   bench_graph_weighted_all_shortest_literal_frontier_branch4_depth4:
     total:
       calls: 1
-      instructions: 4963423
+      instructions: 4734085
       heap_increase: 2
       stable_memory_increase: 0
     scopes:
       graph_store_tls_out_label_unchecked:
         calls: 85
-        instructions: 468199
+        instructions: 468539
         heap_increase: 0
         stable_memory_increase: 0
       plan_op_project:
         calls: 1
-        instructions: 125708
+        instructions: 124761
         heap_increase: 1
         stable_memory_increase: 0
       plan_query_execute_ops:
         calls: 1
-        instructions: 3876040
+        instructions: 3646445
         heap_increase: 1
         stable_memory_increase: 0
       plan_query_materialize_value_rows:
         calls: 1
-        instructions: 820105
+        instructions: 816240
         heap_increase: 1
         stable_memory_increase: 0
       plan_query_prepare_gleaph_weight:
         calls: 1
-        instructions: 684
+        instructions: 685
         heap_increase: 0
         stable_memory_increase: 0
       shortest_bfs_expand:
         calls: 85
-        instructions: 1068664
+        instructions: 1069004
         heap_increase: 0
         stable_memory_increase: 0
       shortest_bfs_relax_neighbors:
@@ -807,12 +807,12 @@ benches:
         stable_memory_increase: 0
       shortest_fixed_expand_forward:
         calls: 85
-        instructions: 623379
+        instructions: 623719
         heap_increase: 0
         stable_memory_increase: 0
       weighted_all_shortest_literal_frontier:
         calls: 1
-        instructions: 4961634
+        instructions: 4732354
         heap_increase: 2
         stable_memory_increase: 0
   bench_graph_weighted_shortest_frontier_heap_branch4_depth4:

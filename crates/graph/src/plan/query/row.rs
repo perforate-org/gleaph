@@ -95,6 +95,45 @@ impl PlanRow {
         }
     }
 
+    /// Clone row storage and apply binding updates in one pass (expand / scan hot path).
+    pub fn fork<'a>(
+        &self,
+        updates: impl IntoIterator<Item = (&'a str, PlanBinding)>,
+    ) -> Self {
+        match &self.layout {
+            Some(layout) => {
+                let mut slots = self.slots.clone();
+                let mut spill = self.spill.clone();
+                for (name, binding) in updates {
+                    if let Some(idx) = layout.index_of(name) {
+                        if idx >= slots.len() {
+                            slots.resize(idx + 1, None);
+                        }
+                        slots[idx] = Some(binding);
+                    } else {
+                        spill.insert(name.to_string(), binding);
+                    }
+                }
+                Self {
+                    layout: Some(Rc::clone(layout)),
+                    slots,
+                    spill,
+                }
+            }
+            None => {
+                let mut spill = self.spill.clone();
+                for (name, binding) in updates {
+                    spill.insert(name.to_string(), binding);
+                }
+                Self {
+                    layout: None,
+                    slots: Vec::new(),
+                    spill,
+                }
+            }
+        }
+    }
+
     /// Clone and set or replace bindings (indexed fast path when layout matches).
     pub fn clone_with_bindings(
         &self,
@@ -184,3 +223,29 @@ impl<'a> Iterator for PlanRowIter<'a> {
 
 /// Public alias used across graph plan execution.
 pub type PlanQueryRow = PlanRow;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ic_stable_lara::VertexId;
+    use gleaph_gql_planner::BindingLayout;
+
+    #[test]
+    fn fork_updates_layout_slot() {
+        let layout = Rc::new(BindingLayout::single("a".into()));
+        let row = PlanRow::with_layout_and_binding(
+            Rc::clone(&layout),
+            "a",
+            PlanBinding::Vertex(VertexId::from(1)),
+        );
+        let out = row.fork([("a", PlanBinding::Vertex(VertexId::from(2)))]);
+        assert_eq!(
+            out.get("a").and_then(|b| match b {
+                PlanBinding::Vertex(v) => Some(*v),
+                _ => None,
+            }),
+            Some(VertexId::from(2))
+        );
+        assert!(out.spill.is_empty());
+    }
+}

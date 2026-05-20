@@ -1045,8 +1045,8 @@ fn build_expanded_row(
     edge_property_projection: Option<&[Str]>,
     dst_property_projection: Option<&[Str]>,
 ) -> Result<PlanRow, PlanQueryError> {
-    let mut expanded = row.clone();
-    if let Some(edge_key) = edge_key {
+    let dst_binding = expand_dst_binding(store, dst, dst_property_projection)?;
+    let expanded = if let Some(edge_key) = edge_key {
         let edge_binding = if edge_property_projection.is_some_and(|props| !props.is_empty()) {
             PlanBinding::Value(edge_to_projected_record(
                 store,
@@ -1056,12 +1056,10 @@ fn build_expanded_row(
         } else {
             PlanBinding::Edge(edge_binding)
         };
-        expanded.insert(edge_key.to_owned(), edge_binding);
-    }
-    expanded.insert(
-        dst_key.to_owned(),
-        expand_dst_binding(store, dst, dst_property_projection)?,
-    );
+        row.fork([(edge_key, edge_binding), (dst_key, dst_binding)])
+    } else {
+        row.fork([(dst_key, dst_binding)])
+    };
     Ok(expanded)
 }
 
@@ -2024,9 +2022,7 @@ async fn materialize_federated_index_hits(
                 };
                 PlanBinding::RemoteVertex(logical_vertex_id)
             };
-            let mut row = row.clone();
-            row.insert(variable.to_string(), binding);
-            out.push(row);
+            out.push(row.fork([(variable, binding)]));
         }
     }
     Ok(out)
@@ -2183,9 +2179,7 @@ async fn execute_index_intersection(
             } else {
                 PlanBinding::RemoteVertex(*id)
             };
-            let mut r = row.clone();
-            r.insert(variable.to_string(), binding);
-            out.push(r);
+            out.push(row.fork([(variable, binding)]));
         }
     }
     Ok(out)
@@ -2219,9 +2213,7 @@ fn execute_node_scan(
             {
                 continue;
             }
-            let mut row = row.clone();
-            row.insert(variable.to_string(), PlanBinding::Vertex(vertex_id));
-            out.push(row);
+            out.push(row.fork([(variable.as_ref(), PlanBinding::Vertex(vertex_id))]));
         }
     }
     Ok(out)
@@ -2538,9 +2530,7 @@ fn expand_rows_from_federated_expand_hits(
             }
         }
 
-        let mut expanded = row.clone();
-        expanded.insert(dst.to_owned(), dst_binding);
-        if let Some(edge_key) = edge_key.as_ref() {
+        let expanded = if let Some(edge_key) = edge_key.as_ref() {
             let edge_binding = if hit.shard_id == routing.shard_id {
                 let handle = crate::facade::federation_expand::edge_handle_for_federated_hit(hit);
                 PlanBinding::Edge(EdgeBinding {
@@ -2550,8 +2540,10 @@ fn expand_rows_from_federated_expand_hits(
             } else {
                 PlanBinding::Value(Value::Null)
             };
-            expanded.insert(edge_key.clone(), edge_binding);
-        }
+            row.fork([(dst, dst_binding), (edge_key.as_str(), edge_binding)])
+        } else {
+            row.fork([(dst, dst_binding)])
+        };
         if !dst_only_prefilter && !row_matches_all(evaluator, &expanded, dst_filter)? {
             continue;
         }
@@ -2964,6 +2956,10 @@ fn execute_shortest_path(
                 emit_edge_binding,
             )
         });
+        let path_only_layout = path_only_rows.then(|| {
+            let path_key = path_key.as_ref().expect("path_only_rows implies path_key");
+            Rc::new(BindingLayout::single(Str::from(path_key.as_str())))
+        });
         for state_idx in found {
             let path_binding = PlanBinding::Path(PathBinding {
                 shard_id,
@@ -2973,26 +2969,26 @@ fn execute_shortest_path(
             let row = if path_only_rows {
                 let path_key = path_key.as_ref().expect("path_only_rows implies path_key");
                 PlanRow::with_layout_and_binding(
-                    Rc::new(BindingLayout::single(Str::from(path_key.as_str()))),
+                    Rc::clone(path_only_layout.as_ref().expect("path_only_layout")),
                     path_key,
                     path_binding,
                 )
             } else {
-                let mut row = row.clone();
-                if let Some(edge_key) = &edge_key {
-                    match path_states[state_idx].edge {
-                        Some(edge_binding) => {
-                            row.insert(edge_key.clone(), PlanBinding::Edge(edge_binding));
-                        }
-                        None => {
-                            row.insert(edge_key.clone(), PlanBinding::Value(Value::Null));
-                        }
+                let path_updates: Vec<(&str, PlanBinding)> = {
+                    let mut updates = Vec::with_capacity(2);
+                    if let Some(edge_key) = edge_key.as_deref() {
+                        let edge_binding = match path_states[state_idx].edge {
+                            Some(edge_binding) => PlanBinding::Edge(edge_binding),
+                            None => PlanBinding::Value(Value::Null),
+                        };
+                        updates.push((edge_key, edge_binding));
                     }
-                }
-                if let Some(path_key) = &path_key {
-                    row.insert(path_key.clone(), path_binding);
-                }
-                row
+                    if let Some(path_key) = path_key.as_deref() {
+                        updates.push((path_key, path_binding));
+                    }
+                    updates
+                };
+                row.fork(path_updates)
             };
             out.push(row);
             if matches!(mode, ShortestMode::AnyShortest) {
