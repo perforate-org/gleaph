@@ -15,6 +15,26 @@ pub fn empty_row_for_plan(plan: &PhysicalPlan) -> PlanRow {
     }
 }
 
+pub fn empty_row_for_plan_with_arena(plan: &PhysicalPlan, arena: &mut super::arena::QueryArena) -> PlanRow {
+    if plan.binding_layout.is_empty() {
+        PlanRow::new()
+    } else {
+        let layout = Rc::new(plan.binding_layout.clone());
+        let len = layout.len();
+        let mut slots = arena.checkout_slots(len);
+        if slots.len() < len {
+            slots.resize(len, None);
+        } else {
+            slots.clear();
+        }
+        PlanRow {
+            layout: Some(layout),
+            slots,
+            spill: BTreeMap::new(),
+        }
+    }
+}
+
 /// One executor row: dense slots when a [`BindingLayout`] is present, else a map.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PlanRow {
@@ -124,25 +144,7 @@ impl PlanRow {
         updates: impl IntoIterator<Item = (&'a str, PlanBinding)>,
     ) -> Self {
         match &self.layout {
-            Some(layout) => {
-                let mut slots = self.slots.clone();
-                let mut spill = self.spill.clone();
-                for (name, binding) in updates {
-                    if let Some(idx) = layout.index_of(name) {
-                        if idx >= slots.len() {
-                            slots.resize(idx + 1, None);
-                        }
-                        slots[idx] = Some(binding);
-                    } else {
-                        spill.insert(name.to_string(), binding);
-                    }
-                }
-                Self {
-                    layout: Some(Rc::clone(layout)),
-                    slots,
-                    spill,
-                }
-            }
+            Some(layout) => self.fork_indexed(layout, updates),
             None => {
                 let mut spill = self.spill.clone();
                 for (name, binding) in updates {
@@ -153,6 +155,69 @@ impl PlanRow {
                     slots: Vec::new(),
                     spill,
                 }
+            }
+        }
+    }
+
+    /// Like [`Self::fork`] but checks out slot storage from the query [`super::arena::QueryArena`].
+    pub fn fork_with_arena<'a>(
+        &self,
+        arena: &mut super::arena::QueryArena,
+        updates: impl IntoIterator<Item = (&'a str, PlanBinding)>,
+    ) -> Self {
+        match &self.layout {
+            Some(layout) if arena.has_pooled_slots() => {
+                let mut slots = arena.copy_slots_from(&self.slots);
+                let mut spill = if self.spill.is_empty() {
+                    BTreeMap::new()
+                } else {
+                    self.spill.clone()
+                };
+                Self::apply_slot_updates(layout, &mut slots, &mut spill, updates);
+                Self {
+                    layout: Some(Rc::clone(layout)),
+                    slots,
+                    spill,
+                }
+            }
+            Some(layout) => self.fork_indexed(layout, updates),
+            None => self.fork(updates),
+        }
+    }
+
+    fn fork_indexed<'a>(
+        &self,
+        layout: &Rc<BindingLayout>,
+        updates: impl IntoIterator<Item = (&'a str, PlanBinding)>,
+    ) -> Self {
+        let mut slots = self.slots.clone();
+        let mut spill = if self.spill.is_empty() {
+            BTreeMap::new()
+        } else {
+            self.spill.clone()
+        };
+        Self::apply_slot_updates(layout, &mut slots, &mut spill, updates);
+        Self {
+            layout: Some(Rc::clone(layout)),
+            slots,
+            spill,
+        }
+    }
+
+    fn apply_slot_updates<'a>(
+        layout: &BindingLayout,
+        slots: &mut Vec<Option<PlanBinding>>,
+        spill: &mut BTreeMap<String, PlanBinding>,
+        updates: impl IntoIterator<Item = (&'a str, PlanBinding)>,
+    ) {
+        for (name, binding) in updates {
+            if let Some(idx) = layout.index_of(name) {
+                if idx >= slots.len() {
+                    slots.resize(idx + 1, None);
+                }
+                slots[idx] = Some(binding);
+            } else {
+                spill.insert(name.to_string(), binding);
             }
         }
     }
@@ -209,6 +274,42 @@ impl PlanRow {
         skip_names: &[&str],
     ) -> Option<Self> {
         let mut slots = self.slots.clone();
+        let mut spill = if self.spill.is_empty() {
+            BTreeMap::new()
+        } else {
+            self.spill.clone()
+        };
+        Self::apply_right_to_merged_slots(
+            &mut slots,
+            &mut spill,
+            &self.slots,
+            &self.spill,
+            right,
+            layout,
+            skip_names,
+        )?;
+        Some(Self {
+            layout: Some(Rc::clone(layout)),
+            slots,
+            spill,
+        })
+    }
+
+    pub(crate) fn try_merge_indexed_with_arena(
+        &self,
+        arena: &mut super::arena::QueryArena,
+        right: &Self,
+        layout: &Rc<BindingLayout>,
+        skip_names: &[&str],
+    ) -> Option<Self> {
+        let min_cap = self
+            .slots
+            .len()
+            .max(right.slots.len())
+            .max(layout.len());
+        let mut slots = arena.checkout_slots(min_cap);
+        slots.clear();
+        slots.extend(self.slots.iter().cloned());
         let mut spill = if self.spill.is_empty() {
             BTreeMap::new()
         } else {

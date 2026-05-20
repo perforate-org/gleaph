@@ -35,6 +35,34 @@ impl QueryArena {
         self.slot_pool.clear();
     }
 
+    pub fn has_pooled_slots(&self) -> bool {
+        !self.slot_pool.is_empty()
+    }
+
+    /// Reuse a pooled buffer when possible; otherwise allocate with at least `min_cap` capacity.
+    pub fn checkout_slots(&mut self, min_cap: usize) -> Vec<Option<super::executor::PlanBinding>> {
+        if let Some(idx) = self
+            .slot_pool
+            .iter()
+            .position(|buf| buf.capacity() >= min_cap)
+        {
+            let mut buf = self.slot_pool.swap_remove(idx);
+            buf.clear();
+            return buf;
+        }
+        Vec::with_capacity(min_cap)
+    }
+
+    pub fn copy_slots_from(
+        &mut self,
+        source: &[Option<super::executor::PlanBinding>],
+    ) -> Vec<Option<super::executor::PlanBinding>> {
+        let mut slots = self.checkout_slots(source.len());
+        slots.clear();
+        slots.extend(source.iter().cloned());
+        slots
+    }
+
     pub fn recycle_rows(&mut self, rows: Vec<PlanRow>) {
         for mut row in rows {
             if row.layout().is_some() {
@@ -72,6 +100,21 @@ mod tests {
             );
             arena.recycle_rows(vec![row]);
             assert_eq!(arena.slot_pool.len(), 1);
+        });
+    }
+
+    #[test]
+    fn checkout_reuses_recycled_buffer() {
+        QueryArena::with(|arena| {
+            arena.reset();
+            let row = PlanRow::with_layout_and_binding(
+                Rc::new(BindingLayout::single("a".into())),
+                "a",
+                PlanBinding::Vertex(VertexId::from(1)),
+            );
+            arena.recycle_rows(vec![row]);
+            let buf = arena.checkout_slots(1);
+            assert!(buf.capacity() >= 1);
         });
     }
 }

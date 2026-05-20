@@ -2,13 +2,13 @@ benches:
   bench_graph_expand_deep_row_hub_24out:
     total:
       calls: 1
-      instructions: 1081374
+      instructions: 1082448
       heap_increase: 0
       stable_memory_increase: 128
     scopes:
       expand_deep_row_hub_24out:
         calls: 1
-        instructions: 1079909
+        instructions: 1080983
         heap_increase: 0
         stable_memory_increase: 128
       plan_op_project:
@@ -18,12 +18,12 @@ benches:
         stable_memory_increase: 0
       plan_query_execute_ops:
         calls: 1
-        instructions: 471712
+        instructions: 472359
         heap_increase: 0
         stable_memory_increase: 0
       plan_query_materialize_value_rows:
         calls: 1
-        instructions: 526259
+        instructions: 526529
         heap_increase: 0
         stable_memory_increase: 128
       plan_query_prepare_gleaph_weight:
@@ -34,13 +34,13 @@ benches:
   bench_graph_expand_filter_10pct_pass:
     total:
       calls: 1
-      instructions: 10592776
+      instructions: 10598703
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       expand_filter_10pct_pass:
         calls: 1
-        instructions: 10591311
+        instructions: 10597238
         heap_increase: 0
         stable_memory_increase: 0
       plan_op_project:
@@ -50,12 +50,12 @@ benches:
         stable_memory_increase: 0
       plan_query_execute_ops:
         calls: 1
-        instructions: 9254947
+        instructions: 9260057
         heap_increase: 0
         stable_memory_increase: 0
       plan_query_materialize_value_rows:
         calls: 1
-        instructions: 1240755
+        instructions: 1241415
         heap_increase: 0
         stable_memory_increase: 0
       plan_query_prepare_gleaph_weight:
@@ -66,13 +66,13 @@ benches:
   bench_graph_expand_filter_hub_return_dst_tag_eq:
     total:
       calls: 1
-      instructions: 1177834
+      instructions: 1178751
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       expand_filter_hub_return_dst:
         calls: 1
-        instructions: 1176254
+        instructions: 1177171
         heap_increase: 0
         stable_memory_increase: 0
       plan_op_project:
@@ -82,12 +82,12 @@ benches:
         stable_memory_increase: 0
       plan_query_execute_ops:
         calls: 1
-        instructions: 727004
+        instructions: 727554
         heap_increase: 0
         stable_memory_increase: 0
       plan_query_materialize_value_rows:
         calls: 1
-        instructions: 395775
+        instructions: 395985
         heap_increase: 0
         stable_memory_increase: 0
       plan_query_prepare_gleaph_weight:
@@ -98,49 +98,49 @@ benches:
   bench_graph_expand_hash_join_then_expand_48x24:
     total:
       calls: 1
-      instructions: 39493509
-      heap_increase: 31
+      instructions: 39605049
+      heap_increase: 32
       stable_memory_increase: 128
     scopes:
       expand_hash_join_then_expand_48x24:
         calls: 1
-        instructions: 39491962
-        heap_increase: 31
+        instructions: 39603387
+        heap_increase: 32
         stable_memory_increase: 128
       hash_join_left_subplan:
         calls: 1
-        instructions: 1510419
+        instructions: 1513341
         heap_increase: 0
         stable_memory_increase: 0
       hash_join_right_subplan:
         calls: 1
-        instructions: 982682
+        instructions: 983625
         heap_increase: 0
         stable_memory_increase: 0
       hash_join_vertex_partition:
         calls: 1
-        instructions: 38991
+        instructions: 39027
         heap_increase: 0
         stable_memory_increase: 0
       hash_join_vertex_probe_merge:
         calls: 1
-        instructions: 2692748
+        instructions: 2693576
         heap_increase: 4
         stable_memory_increase: 0
       plan_op_project:
         calls: 1
-        instructions: 2307724
+        instructions: 2251118
         heap_increase: 13
         stable_memory_increase: 0
       plan_query_execute_ops:
         calls: 1
-        instructions: 7992666
+        instructions: 7962297
         heap_increase: 17
         stable_memory_increase: 0
       plan_query_materialize_value_rows:
         calls: 1
-        instructions: 27926261
-        heap_increase: 14
+        instructions: 28025890
+        heap_increase: 15
         stable_memory_increase: 128
       plan_query_prepare_gleaph_weight:
         calls: 1
@@ -150,13 +150,13 @@ benches:
   bench_graph_expand_hub_return_dst_100_only:
     total:
       calls: 1
-      instructions: 1859966
+      instructions: 1861808
       heap_increase: 2
       stable_memory_increase: 128
     scopes:
       expand_hub_return_dst_100:
         calls: 1
-        instructions: 1858495
+        instructions: 1860337
         heap_increase: 2
         stable_memory_increase: 128
       plan_op_project:
@@ -166,12 +166,12 @@ benches:
         stable_memory_increase: 0
       plan_query_execute_ops:
         calls: 1
-        instructions: 560295
+        instructions: 561380
         heap_increase: 1
         stable_memory_increase: 0
       plan_query_materialize_value_rows:
         calls: 1
-        instructions: 985096
+        instructions: 985696
         heap_increase: 1
         stable_memory_increase: 128
       plan_query_prepare_gleaph_weight:
@@ -182,13 +182,13 @@ benches:
   bench_graph_expand_hub_return_dst_1k_only:
     total:
       calls: 1
-      instructions: 17979968
+      instructions: 17996210
       heap_increase: 27
       stable_memory_increase: 128
     scopes:
       expand_hub_return_dst_1k:
         calls: 1
-        instructions: 17978497
+        instructions: 17994739
         heap_increase: 27
         stable_memory_increase: 128
       plan_op_project:
@@ -198,12 +198,12 @@ benches:
         stable_memory_increase: 0
       plan_query_execute_ops:
         calls: 1
-        instructions: 5214540
+        instructions: 5224625
         heap_increase: 13
         stable_memory_increase: 0
       plan_query_materialize_value_rows:
         calls: 1
-        instructions: 9750954
+        instructions: 9756954
         heap_increase: 14
         stable_memory_increase: 128
       plan_query_prepare_gleaph_weight:
@@ -214,13 +214,13 @@ benches:
   bench_graph_expand_hub_return_dst_500_only:
     total:
       calls: 1
-      instructions: 9029764
+      instructions: 9038006
       heap_increase: 13
       stable_memory_increase: 128
     scopes:
       expand_hub_return_dst_500:
         calls: 1
-        instructions: 9028293
+        instructions: 9036535
         heap_increase: 13
         stable_memory_increase: 128
       plan_op_project:
@@ -230,12 +230,12 @@ benches:
         stable_memory_increase: 0
       plan_query_execute_ops:
         calls: 1
-        instructions: 2627905
+        instructions: 2632990
         heap_increase: 6
         stable_memory_increase: 0
       plan_query_materialize_value_rows:
         calls: 1
-        instructions: 4881751
+        instructions: 4884751
         heap_increase: 7
         stable_memory_increase: 128
       plan_query_prepare_gleaph_weight:
@@ -246,13 +246,13 @@ benches:
   bench_graph_expand_hub_return_dst_only:
     total:
       calls: 1
-      instructions: 1830431
+      instructions: 1831954
       heap_increase: 0
       stable_memory_increase: 128
     scopes:
       expand_hub_return_dst:
         calls: 1
-        instructions: 1828966
+        instructions: 1830489
         heap_increase: 0
         stable_memory_increase: 128
       plan_op_project:
@@ -262,12 +262,12 @@ benches:
         stable_memory_increase: 0
       plan_query_execute_ops:
         calls: 1
-        instructions: 1070425
+        instructions: 1071377
         heap_increase: 0
         stable_memory_increase: 0
       plan_query_materialize_value_rows:
         calls: 1
-        instructions: 675576
+        instructions: 675990
         heap_increase: 0
         stable_memory_increase: 128
       plan_query_prepare_gleaph_weight:
@@ -278,13 +278,13 @@ benches:
   bench_graph_expand_hub_return_edge:
     total:
       calls: 1
-      instructions: 1830431
+      instructions: 1831954
       heap_increase: 0
       stable_memory_increase: 128
     scopes:
       expand_hub_return_edge:
         calls: 1
-        instructions: 1828966
+        instructions: 1830489
         heap_increase: 0
         stable_memory_increase: 128
       plan_op_project:
@@ -294,12 +294,12 @@ benches:
         stable_memory_increase: 0
       plan_query_execute_ops:
         calls: 1
-        instructions: 1070425
+        instructions: 1071377
         heap_increase: 0
         stable_memory_increase: 0
       plan_query_materialize_value_rows:
         calls: 1
-        instructions: 675576
+        instructions: 675990
         heap_increase: 0
         stable_memory_increase: 128
       plan_query_prepare_gleaph_weight:
@@ -310,13 +310,13 @@ benches:
   bench_graph_expand_indexed_eq_selective_24match:
     total:
       calls: 1
-      instructions: 4917088
+      instructions: 4920052
       heap_increase: 0
       stable_memory_increase: 128
     scopes:
       expand_indexed_eq_selective_24match:
         calls: 1
-        instructions: 4915534
+        instructions: 4918498
         heap_increase: 0
         stable_memory_increase: 128
       plan_op_project:
@@ -326,12 +326,12 @@ benches:
         stable_memory_increase: 0
       plan_query_execute_ops:
         calls: 1
-        instructions: 4067220
+        instructions: 4069619
         heap_increase: 0
         stable_memory_increase: 0
       plan_query_materialize_value_rows:
         calls: 1
-        instructions: 764898
+        instructions: 765306
         heap_increase: 0
         stable_memory_increase: 128
       plan_query_prepare_gleaph_weight:
@@ -342,13 +342,13 @@ benches:
   bench_graph_expand_mixed_label_hub_10kscan_500match:
     total:
       calls: 1
-      instructions: 9109991
+      instructions: 9118236
       heap_increase: 10
       stable_memory_increase: 128
     scopes:
       expand_mixed_label_hub_10kscan_500match:
         calls: 1
-        instructions: 9108523
+        instructions: 9116768
         heap_increase: 10
         stable_memory_increase: 128
       plan_op_project:
@@ -358,12 +358,12 @@ benches:
         stable_memory_increase: 0
       plan_query_execute_ops:
         calls: 1
-        instructions: 2643123
+        instructions: 2648211
         heap_increase: 3
         stable_memory_increase: 0
       plan_query_materialize_value_rows:
         calls: 1
-        instructions: 4936530
+        instructions: 4939530
         heap_increase: 7
         stable_memory_increase: 128
       plan_query_prepare_gleaph_weight:
@@ -374,13 +374,13 @@ benches:
   bench_graph_expand_mixed_label_hub_240scan_24match:
     total:
       calls: 1
-      instructions: 511444
+      instructions: 512062
       heap_increase: 0
       stable_memory_increase: 128
     scopes:
       expand_mixed_label_hub_240scan_24match:
         calls: 1
-        instructions: 509813
+        instructions: 510431
         heap_increase: 0
         stable_memory_increase: 128
       plan_op_project:
@@ -390,12 +390,12 @@ benches:
         stable_memory_increase: 0
       plan_query_execute_ops:
         calls: 1
-        instructions: 183193
+        instructions: 183510
         heap_increase: 0
         stable_memory_increase: 0
       plan_query_materialize_value_rows:
         calls: 1
-        instructions: 243875
+        instructions: 244019
         heap_increase: 0
         stable_memory_increase: 128
       plan_query_prepare_gleaph_weight:
@@ -406,13 +406,13 @@ benches:
   bench_graph_expand_mixed_label_hub_2kscan_100match:
     total:
       calls: 1
-      instructions: 1876281
+      instructions: 1878126
       heap_increase: 2
       stable_memory_increase: 128
     scopes:
       expand_mixed_label_hub_2kscan_100match:
         calls: 1
-        instructions: 1874721
+        instructions: 1876566
         heap_increase: 2
         stable_memory_increase: 128
       plan_op_project:
@@ -422,12 +422,12 @@ benches:
         stable_memory_increase: 0
       plan_query_execute_ops:
         calls: 1
-        instructions: 576914
+        instructions: 578002
         heap_increase: 1
         stable_memory_increase: 0
       plan_query_materialize_value_rows:
         calls: 1
-        instructions: 985402
+        instructions: 986002
         heap_increase: 1
         stable_memory_increase: 128
       plan_query_prepare_gleaph_weight:
@@ -438,13 +438,13 @@ benches:
   bench_graph_expand_mixed_label_hub_50kscan_1kmatch:
     total:
       calls: 1
-      instructions: 18004267
+      instructions: 18020512
       heap_increase: 4
       stable_memory_increase: 128
     scopes:
       expand_mixed_label_hub_50kscan_1kmatch:
         calls: 1
-        instructions: 18002799
+        instructions: 18019044
         heap_increase: 4
         stable_memory_increase: 128
       plan_op_project:
@@ -454,12 +454,12 @@ benches:
         stable_memory_increase: 0
       plan_query_execute_ops:
         calls: 1
-        instructions: 5233897
+        instructions: 5243985
         heap_increase: 0
         stable_memory_increase: 0
       plan_query_materialize_value_rows:
         calls: 1
-        instructions: 9744117
+        instructions: 9750117
         heap_increase: 4
         stable_memory_increase: 128
       plan_query_prepare_gleaph_weight:
@@ -470,13 +470,13 @@ benches:
   bench_graph_expand_skewed_noise_10k_a_500b:
     total:
       calls: 1
-      instructions: 9612281
+      instructions: 9620524
       heap_increase: 9
       stable_memory_increase: 128
     scopes:
       expand_skewed_noise_10k_a_500b:
         calls: 1
-        instructions: 9610721
+        instructions: 9618964
         heap_increase: 9
         stable_memory_increase: 128
       plan_op_project:
@@ -486,12 +486,12 @@ benches:
         stable_memory_increase: 0
       plan_query_execute_ops:
         calls: 1
-        instructions: 2636335
+        instructions: 2641421
         heap_increase: 2
         stable_memory_increase: 0
       plan_query_materialize_value_rows:
         calls: 1
-        instructions: 5431491
+        instructions: 5434491
         heap_increase: 7
         stable_memory_increase: 128
       plan_query_prepare_gleaph_weight:
@@ -502,13 +502,13 @@ benches:
   bench_graph_expand_skewed_noise_200a_24b:
     total:
       calls: 1
-      instructions: 529166
+      instructions: 529793
       heap_increase: 0
       stable_memory_increase: 128
     scopes:
       expand_skewed_noise_200a_24b:
         calls: 1
-        instructions: 527606
+        instructions: 528233
         heap_increase: 0
         stable_memory_increase: 128
       plan_op_project:
@@ -518,12 +518,12 @@ benches:
         stable_memory_increase: 0
       plan_query_execute_ops:
         calls: 1
-        instructions: 172779
+        instructions: 173105
         heap_increase: 0
         stable_memory_increase: 0
       plan_query_materialize_value_rows:
         calls: 1
-        instructions: 271398
+        instructions: 271542
         heap_increase: 0
         stable_memory_increase: 128
       plan_query_prepare_gleaph_weight:
@@ -534,13 +534,13 @@ benches:
   bench_graph_expand_skewed_noise_2k_a_100b:
     total:
       calls: 1
-      instructions: 1985542
+      instructions: 1987385
       heap_increase: 1
       stable_memory_increase: 128
     scopes:
       expand_skewed_noise_2k_a_100b:
         calls: 1
-        instructions: 1983982
+        instructions: 1985825
         heap_increase: 1
         stable_memory_increase: 128
       plan_op_project:
@@ -550,12 +550,12 @@ benches:
         stable_memory_increase: 0
       plan_query_execute_ops:
         calls: 1
-        instructions: 570165
+        instructions: 571251
         heap_increase: 0
         stable_memory_increase: 0
       plan_query_materialize_value_rows:
         calls: 1
-        instructions: 1102968
+        instructions: 1103568
         heap_increase: 1
         stable_memory_increase: 128
       plan_query_prepare_gleaph_weight:
@@ -566,13 +566,13 @@ benches:
   bench_graph_expand_skewed_noise_50k_a_1k_b:
     total:
       calls: 1
-      instructions: 19128323
+      instructions: 19144566
       heap_increase: 2
       stable_memory_increase: 128
     scopes:
       expand_skewed_noise_50k_a_1k_b:
         calls: 1
-        instructions: 19126763
+        instructions: 19143006
         heap_increase: 2
         stable_memory_increase: 128
       plan_op_project:
@@ -582,12 +582,12 @@ benches:
         stable_memory_increase: 0
       plan_query_execute_ops:
         calls: 1
-        instructions: 5218650
+        instructions: 5228736
         heap_increase: 0
         stable_memory_increase: 0
       plan_query_materialize_value_rows:
         calls: 1
-        instructions: 10933716
+        instructions: 10939716
         heap_increase: 2
         stable_memory_increase: 128
       plan_query_prepare_gleaph_weight:
@@ -598,7 +598,7 @@ benches:
   bench_graph_gql_ic_params_blob_decode:
     total:
       calls: 1
-      instructions: 11880
+      instructions: 11904
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -610,18 +610,18 @@ benches:
   bench_graph_hop_count_shortest_converging_hub_48prefix_24hub_out:
     total:
       calls: 1
-      instructions: 2663151
+      instructions: 2666014
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       graph_store_tls_out_label_unchecked:
         calls: 51
-        instructions: 286405
+        instructions: 287833
         heap_increase: 0
         stable_memory_increase: 0
       hop_count_shortest_converging_hub:
         calls: 1
-        instructions: 2661548
+        instructions: 2664411
         heap_increase: 0
         stable_memory_increase: 0
       plan_op_project:
@@ -631,12 +631,12 @@ benches:
         stable_memory_increase: 0
       plan_query_execute_ops:
         calls: 1
-        instructions: 2632730
+        instructions: 2635440
         heap_increase: 0
         stable_memory_increase: 0
       plan_query_materialize_value_rows:
         calls: 1
-        instructions: 13638
+        instructions: 13634
         heap_increase: 0
         stable_memory_increase: 0
       plan_query_prepare_gleaph_weight:
@@ -646,34 +646,34 @@ benches:
         stable_memory_increase: 0
       shortest_bfs_expand:
         calls: 51
-        instructions: 692435
+        instructions: 693853
         heap_increase: 0
         stable_memory_increase: 0
       shortest_bfs_relax_neighbors:
         calls: 51
-        instructions: 92109
+        instructions: 92099
         heap_increase: 0
         stable_memory_increase: 0
       shortest_fixed_expand_forward:
         calls: 51
-        instructions: 379683
+        instructions: 381111
         heap_increase: 0
         stable_memory_increase: 0
   bench_graph_hop_count_shortest_frontier_queue_branch4_depth4:
     total:
       calls: 1
-      instructions: 2645689
+      instructions: 2647926
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       graph_store_tls_out_label_unchecked:
         calls: 22
-        instructions: 143176
+        instructions: 143792
         heap_increase: 0
         stable_memory_increase: 0
       hop_count_shortest_frontier_queue:
         calls: 1
-        instructions: 2644086
+        instructions: 2646323
         heap_increase: 0
         stable_memory_increase: 0
       plan_op_project:
@@ -683,12 +683,12 @@ benches:
         stable_memory_increase: 0
       plan_query_execute_ops:
         calls: 1
-        instructions: 2614651
+        instructions: 2616735
         heap_increase: 0
         stable_memory_increase: 0
       plan_query_materialize_value_rows:
         calls: 1
-        instructions: 14126
+        instructions: 14122
         heap_increase: 0
         stable_memory_increase: 0
       plan_query_prepare_gleaph_weight:
@@ -698,44 +698,44 @@ benches:
         stable_memory_increase: 0
       shortest_bfs_expand:
         calls: 22
-        instructions: 365813
+        instructions: 366419
         heap_increase: 0
         stable_memory_increase: 0
       shortest_bfs_relax_neighbors:
         calls: 22
-        instructions: 86448
+        instructions: 86438
         heap_increase: 0
         stable_memory_increase: 0
       shortest_fixed_expand_forward:
         calls: 22
-        instructions: 184034
+        instructions: 184650
         heap_increase: 0
         stable_memory_increase: 0
   bench_graph_hop_shortest_return_endpoints_branch4_depth4:
     total:
       calls: 1
-      instructions: 2681626
+      instructions: 2683890
       heap_increase: 0
       stable_memory_increase: 128
     scopes:
       graph_store_tls_out_label_unchecked:
         calls: 22
-        instructions: 143176
+        instructions: 143792
         heap_increase: 0
         stable_memory_increase: 0
       hop_shortest_return_endpoints:
         calls: 1
-        instructions: 2680023
+        instructions: 2682287
         heap_increase: 0
         stable_memory_increase: 128
       plan_op_project:
         calls: 1
-        instructions: 49072
+        instructions: 49096
         heap_increase: 0
         stable_memory_increase: 128
       plan_query_execute_ops:
         calls: 1
-        instructions: 2653082
+        instructions: 2655189
         heap_increase: 0
         stable_memory_increase: 128
       plan_query_materialize_value_rows:
@@ -750,29 +750,29 @@ benches:
         stable_memory_increase: 0
       shortest_bfs_expand:
         calls: 22
-        instructions: 364860
+        instructions: 365466
         heap_increase: 0
         stable_memory_increase: 0
       shortest_bfs_relax_neighbors:
         calls: 22
-        instructions: 85495
+        instructions: 85485
         heap_increase: 0
         stable_memory_increase: 0
       shortest_fixed_expand_forward:
         calls: 22
-        instructions: 184034
+        instructions: 184650
         heap_increase: 0
         stable_memory_increase: 0
   bench_graph_weighted_all_shortest_literal_frontier_branch4_depth4:
     total:
       calls: 1
-      instructions: 4730390
+      instructions: 4733959
       heap_increase: 2
       stable_memory_increase: 0
     scopes:
       graph_store_tls_out_label_unchecked:
         calls: 85
-        instructions: 465819
+        instructions: 468199
         heap_increase: 0
         stable_memory_increase: 0
       plan_op_project:
@@ -782,12 +782,12 @@ benches:
         stable_memory_increase: 0
       plan_query_execute_ops:
         calls: 1
-        instructions: 3642700
+        instructions: 3646557
         heap_increase: 1
         stable_memory_increase: 0
       plan_query_materialize_value_rows:
         calls: 1
-        instructions: 816240
+        instructions: 815795
         heap_increase: 1
         stable_memory_increase: 0
       plan_query_prepare_gleaph_weight:
@@ -797,7 +797,7 @@ benches:
         stable_memory_increase: 0
       shortest_bfs_expand:
         calls: 85
-        instructions: 1066284
+        instructions: 1068664
         heap_increase: 0
         stable_memory_increase: 0
       shortest_bfs_relax_neighbors:
@@ -807,24 +807,24 @@ benches:
         stable_memory_increase: 0
       shortest_fixed_expand_forward:
         calls: 85
-        instructions: 620999
+        instructions: 623379
         heap_increase: 0
         stable_memory_increase: 0
       weighted_all_shortest_literal_frontier:
         calls: 1
-        instructions: 4728659
+        instructions: 4732228
         heap_increase: 2
         stable_memory_increase: 0
   bench_graph_weighted_shortest_frontier_heap_branch4_depth4:
     total:
       calls: 1
-      instructions: 2646196
+      instructions: 2648433
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       graph_store_tls_out_label_unchecked:
         calls: 22
-        instructions: 143176
+        instructions: 143792
         heap_increase: 0
         stable_memory_increase: 0
       plan_op_project:
@@ -834,12 +834,12 @@ benches:
         stable_memory_increase: 0
       plan_query_execute_ops:
         calls: 1
-        instructions: 2615029
+        instructions: 2617113
         heap_increase: 0
         stable_memory_increase: 0
       plan_query_materialize_value_rows:
         calls: 1
-        instructions: 14126
+        instructions: 14122
         heap_increase: 0
         stable_memory_increase: 0
       plan_query_prepare_gleaph_weight:
@@ -849,34 +849,34 @@ benches:
         stable_memory_increase: 0
       shortest_bfs_expand:
         calls: 22
-        instructions: 365813
+        instructions: 366419
         heap_increase: 0
         stable_memory_increase: 0
       shortest_bfs_relax_neighbors:
         calls: 22
-        instructions: 86448
+        instructions: 86438
         heap_increase: 0
         stable_memory_increase: 0
       shortest_fixed_expand_forward:
         calls: 22
-        instructions: 184034
+        instructions: 184650
         heap_increase: 0
         stable_memory_increase: 0
       weighted_shortest_frontier_heap:
         calls: 1
-        instructions: 2644498
+        instructions: 2646735
         heap_increase: 0
         stable_memory_increase: 0
   bench_graph_weighted_shortest_repeated_edge_cost_cache_48prefix_24hub_out:
     total:
       calls: 1
-      instructions: 2810907
+      instructions: 2813244
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       graph_store_tls_out_label_unchecked:
         calls: 32
-        instructions: 189608
+        instructions: 190504
         heap_increase: 0
         stable_memory_increase: 0
       plan_op_project:
@@ -886,37 +886,37 @@ benches:
         stable_memory_increase: 0
       plan_query_execute_ops:
         calls: 1
-        instructions: 2691298
+        instructions: 2693476
         heap_increase: 0
         stable_memory_increase: 0
       plan_query_materialize_value_rows:
         calls: 1
-        instructions: 13586
+        instructions: 13582
         heap_increase: 0
         stable_memory_increase: 0
       plan_query_prepare_gleaph_weight:
         calls: 1
-        instructions: 88254
+        instructions: 88260
         heap_increase: 0
         stable_memory_increase: 0
       shortest_fixed_expand_forward:
         calls: 32
-        instructions: 248441
+        instructions: 249337
         heap_increase: 0
         stable_memory_increase: 0
       weighted_shortest_edge_cost_cache:
         calls: 1
-        instructions: 2808388
+        instructions: 2810725
         heap_increase: 0
         stable_memory_increase: 0
       weighted_shortest_expand:
         calls: 32
-        instructions: 672562
+        instructions: 673448
         heap_increase: 0
         stable_memory_increase: 0
       weighted_shortest_relax:
         calls: 32
-        instructions: 301528
+        instructions: 301518
         heap_increase: 0
         stable_memory_increase: 0
 version: 0.4.0

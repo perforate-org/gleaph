@@ -139,13 +139,17 @@ pub async fn execute_plan_query_bindings(
     index: Option<&dyn PropertyIndexLookup>,
     execution: GqlExecutionContext,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
+    let initial_rows = super::arena::QueryArena::with(|arena| {
+        arena.reset();
+        vec![super::row::empty_row_for_plan_with_arena(plan, arena)]
+    });
     execute_plan_query_bindings_with_initial_rows(
         store,
         plan,
         parameters,
         index,
         execution,
-        vec![super::row::empty_row_for_plan(plan)],
+        initial_rows,
         false,
     )
     .await
@@ -1037,6 +1041,7 @@ fn expand_dst_binding(
 }
 
 fn build_expanded_row(
+    arena: Option<&mut super::arena::QueryArena>,
     store: &GraphStore,
     row: &PlanRow,
     edge_key: Option<&str>,
@@ -1057,9 +1062,17 @@ fn build_expanded_row(
         } else {
             PlanBinding::Edge(edge_binding)
         };
-        row.fork([(edge_key, edge_binding), (dst_key, dst_binding)])
+        match arena {
+            Some(arena) => {
+                row.fork_with_arena(arena, [(edge_key, edge_binding), (dst_key, dst_binding)])
+            }
+            None => row.fork([(edge_key, edge_binding), (dst_key, dst_binding)]),
+        }
     } else {
-        row.fork([(dst_key, dst_binding)])
+        match arena {
+            Some(arena) => row.fork_with_arena(arena, [(dst_key, dst_binding)]),
+            None => row.fork([(dst_key, dst_binding)]),
+        }
     };
     Ok(expanded)
 }
@@ -1478,6 +1491,7 @@ fn stream_expand(
             }
             let edge_binding = edge_binding_for_expand(src_id, direction, edge);
             let expanded = build_expanded_row(
+                None,
                 store,
                 &row,
                 edge_key.as_deref(),
@@ -1486,8 +1500,7 @@ fn stream_expand(
                 edge_binding,
                 edge_property_projection,
                 dst_property_projection,
-            );
-            let expanded = expanded?;
+            )?;
             Ok(stream_row_through_ops(
                 store,
                 ops,
@@ -1554,6 +1567,7 @@ fn stream_expand(
                 return Ok(false);
             }
             let expanded = build_expanded_row(
+                None,
                 store,
                 &row,
                 edge_key.as_deref(),
@@ -1562,8 +1576,7 @@ fn stream_expand(
                 edge_binding,
                 edge_property_projection,
                 dst_property_projection,
-            );
-            let expanded = expanded?;
+            )?;
             if !dst_only_prefilter && !row_matches_all(evaluator, &expanded, dst_filter)? {
                 return Ok(false);
             }
@@ -1622,6 +1635,7 @@ fn stream_expand(
             continue;
         }
         let expanded = build_expanded_row(
+            None,
             store,
             &row,
             edge_key.as_deref(),
@@ -1716,6 +1730,16 @@ fn merge_rows_with_known_join_keys(
     }
 }
 
+fn merge_rows_with_known_join_keys_pooled(
+    _arena: &mut super::arena::QueryArena,
+    left: &PlanRow,
+    right: &PlanRow,
+    join_keys: &[Str],
+) -> Option<PlanRow> {
+    // Merge stays on `try_merge_skip_one` (slot clone). Arena is for row recycle after join.
+    merge_rows_with_known_join_keys(left, right, join_keys)
+}
+
 async fn execute_hash_join(
     store: &GraphStore,
     parameters: &BTreeMap<String, Value>,
@@ -1788,20 +1812,22 @@ async fn execute_hash_join(
             };
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("hash_join_vertex_probe_merge");
-            for rr in &right_rows {
-                let Some(PlanBinding::Vertex(vid)) = rr.get(jk) else {
-                    continue;
-                };
-                let Some(left_matches) = left_by_vertex.get(&u32::from(*vid)) else {
-                    continue;
-                };
-                for lr in left_matches {
-                    if let Some(merged) = merge_rows_with_known_join_keys(lr, rr, join_keys) {
-                        out.push(merged);
+            super::arena::QueryArena::with(|arena| {
+                for rr in &right_rows {
+                    let Some(PlanBinding::Vertex(vid)) = rr.get(jk) else {
+                        continue;
+                    };
+                    let Some(left_matches) = left_by_vertex.get(&u32::from(*vid)) else {
+                        continue;
+                    };
+                    for lr in left_matches {
+                        if let Some(merged) =
+                            merge_rows_with_known_join_keys_pooled(arena, lr, rr, join_keys)
+                        {
+                            out.push(merged);
+                        }
                     }
                 }
-            }
-            super::arena::QueryArena::with(|arena| {
                 arena.recycle_rows(right_rows);
                 for (_, bucket) in left_by_vertex {
                     arena.recycle_rows(bucket);
@@ -1821,32 +1847,33 @@ async fn execute_hash_join(
 
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("hash_join_bucket_probe_merge");
-            for rr in &right_rows {
-                let key = extract_join_key(rr, join_keys)?;
-                let h = hash_join_mix(&key);
-                let Some(bucket) = buckets.get(&h) else {
-                    continue;
-                };
-                for (left_key, left_matches) in bucket {
-                    if left_key == &key {
-                        for lr in left_matches {
-                            if let Some(merged) =
-                                merge_rows_with_known_join_keys(lr, &rr, join_keys)
-                            {
-                                out.push(merged);
+            super::arena::QueryArena::with(|arena| -> Result<(), PlanQueryError> {
+                for rr in &right_rows {
+                    let key = extract_join_key(rr, join_keys)?;
+                    let h = hash_join_mix(&key);
+                    let Some(bucket) = buckets.get(&h) else {
+                        continue;
+                    };
+                    for (left_key, left_matches) in bucket {
+                        if left_key == &key {
+                            for lr in left_matches {
+                                if let Some(merged) =
+                                    merge_rows_with_known_join_keys_pooled(arena, lr, rr, join_keys)
+                                {
+                                    out.push(merged);
+                                }
                             }
                         }
                     }
                 }
-            }
-            super::arena::QueryArena::with(|arena| {
                 arena.recycle_rows(right_rows);
                 for bucket in buckets.into_values() {
                     for (_, rows) in bucket {
                         arena.recycle_rows(rows);
                     }
                 }
-            });
+                Ok(())
+            })?;
         }
     }
     Ok(out)
@@ -2577,7 +2604,6 @@ fn execute_expand(
         gleaph_weight_decoders,
     };
     let dst_only_prefilter = dst_filter_is_dst_vertex_only(dst_filter, dst.as_ref());
-    let mut out = Vec::new();
     let edge_key = emit_edge_binding.then(|| edge.to_string());
     let dst_key = dst.to_string();
     let csr_expand_fast_path = csr_offset_fast_path_for_expand(direction, label_id, sequence_order);
@@ -2590,6 +2616,7 @@ fn execute_expand(
     } else {
         None
     };
+    let mut out = Vec::new();
     let mut candidates = Vec::new();
     for row in rows {
         if matches!(direction, EdgeDirection::PointingLeft) {
@@ -2725,6 +2752,7 @@ fn execute_expand(
                     return Ok(false);
                 }
                 let expanded = build_expanded_row(
+                    None,
                     store,
                     &row,
                     edge_key.as_deref(),
@@ -2733,8 +2761,7 @@ fn execute_expand(
                     edge_binding,
                     edge_property_projection,
                     dst_property_projection,
-                );
-                let expanded = expanded?;
+                )?;
                 if !dst_only_prefilter && !row_matches_all(&evaluator, &expanded, dst_filter)? {
                     return Ok(false);
                 }
@@ -2783,6 +2810,7 @@ fn execute_expand(
                 continue;
             }
             let expanded = build_expanded_row(
+                None,
                 store,
                 &row,
                 edge_key.as_deref(),
@@ -2791,8 +2819,7 @@ fn execute_expand(
                 edge_binding,
                 edge_property_projection,
                 dst_property_projection,
-            );
-            let expanded = expanded?;
+            )?;
             if !dst_only_prefilter && !row_matches_all(&evaluator, &expanded, dst_filter)? {
                 continue;
             }
