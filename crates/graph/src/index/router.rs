@@ -29,15 +29,10 @@ pub fn verify_shard_attachment(
     expected_graph_name: Option<&str>,
 ) -> Result<ShardRegistryEntry, RouterInitError> {
     use ic_cdk::api::canister_self;
-    use ic_cdk::call::Call;
 
     let entry: Result<ShardRegistryEntry, RouterError> =
-        Call::unbounded_wait(router_canister, "resolve_shard")
-            .with_arg(&(shard_id,))
-            .wait()
-            .map_err(|e| RouterInitError::Call(format!("{e:?}")))?
-            .candid()
-            .map_err(|e| RouterInitError::Call(format!("candid decode: {e}")))?;
+        crate::index::router_call::call_router1(router_canister, "resolve_shard", shard_id)
+            .map_err(RouterInitError::Call)?;
 
     let entry = entry.map_err(|e| RouterInitError::Rejected(format!("{e:?}")))?;
 

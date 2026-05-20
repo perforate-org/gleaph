@@ -3,7 +3,7 @@
 use candid::Principal;
 use gleaph_graph_kernel::federation::{
     BeginVertexMigrationArgs, CommitVertexPlacementArgs, FinishVertexMigrationArgs, LocalVertexId,
-    LogicalVertexId, PhysicalPlacementKey, PhysicalVertexLocation, ReleaseLogicalVertexArgs,
+    LogicalVertexId, PhysicalPlacementKey, ReleaseLogicalVertexArgs,
     RouterError, ShardId, ShardRegistryEntry, VertexPlacement,
 };
 use ic_stable_lara::VertexId;
@@ -46,15 +46,9 @@ pub fn allocate_logical_vertex_id(
 ) -> Result<LogicalVertexId, VertexPlacementError> {
     #[cfg(target_family = "wasm")]
     {
-        use ic_cdk::call::Call;
-
         let logical: Result<LogicalVertexId, RouterError> =
-            Call::unbounded_wait(router_canister, "allocate_logical_vertex_id")
-                .wait()
-                .map_err(|e| VertexPlacementError::Call(format!("{e:?}")))?
-                .candid()
-                .map_err(|e| VertexPlacementError::Call(format!("candid decode: {e}")))?;
-
+            super::router_call::call_router0(router_canister, "allocate_logical_vertex_id")
+                .map_err(VertexPlacementError::Call)?;
         return logical.map_err(VertexPlacementError::Rejected);
     }
 
@@ -77,17 +71,13 @@ pub fn commit_vertex_placement(
 ) -> Result<(), VertexPlacementError> {
     #[cfg(target_family = "wasm")]
     {
-        use ic_cdk::call::Call;
-
-        let (): Result<(), RouterError> =
-            Call::unbounded_wait(router_canister, "commit_vertex_placement")
-                .with_arg(&(args,))
-                .wait()
-                .map_err(|e| VertexPlacementError::Call(format!("{e:?}")))?
-                .candid()
-                .map_err(|e| VertexPlacementError::Call(format!("candid decode: {e}")))?;
-
-        return ().map_err(VertexPlacementError::Rejected);
+        let result: Result<(), RouterError> = super::router_call::call_router1(
+            router_canister,
+            "commit_vertex_placement",
+            args,
+        )
+        .map_err(VertexPlacementError::Call)?;
+        return result.map_err(VertexPlacementError::Rejected);
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -126,16 +116,13 @@ pub fn list_shards_for_graph(
 ) -> Result<Vec<ShardRegistryEntry>, VertexPlacementError> {
     #[cfg(target_family = "wasm")]
     {
-        use ic_cdk::call::Call;
-
         let shards: Result<Vec<ShardRegistryEntry>, RouterError> =
-            Call::unbounded_wait(router_canister, "list_shards_for_graph")
-                .with_args(&(logical_graph_name.to_string(),))
-                .wait()
-                .map_err(|e| VertexPlacementError::Call(format!("{e:?}")))?
-                .candid()
-                .map_err(|e| VertexPlacementError::Call(format!("candid decode: {e}")))?;
-
+            super::router_call::call_router1(
+                router_canister,
+                "list_shards_for_graph",
+                logical_graph_name.to_string(),
+            )
+            .map_err(VertexPlacementError::Call)?;
         return shards.map_err(VertexPlacementError::Rejected);
     }
 
@@ -170,16 +157,12 @@ pub fn resolve_placement(
 ) -> Result<VertexPlacement, VertexPlacementError> {
     #[cfg(target_family = "wasm")]
     {
-        use ic_cdk::call::Call;
-
-        let placement: Result<VertexPlacement, RouterError> =
-            Call::unbounded_wait(router_canister, "resolve_placement")
-                .with_args(&(logical_vertex_id,))
-                .wait()
-                .map_err(|e| VertexPlacementError::Call(format!("{e:?}")))?
-                .candid()
-                .map_err(|e| VertexPlacementError::Call(format!("candid decode: {e}")))?;
-
+        let placement: Result<VertexPlacement, RouterError> = super::router_call::call_router1(
+            router_canister,
+            "resolve_placement",
+            logical_vertex_id,
+        )
+        .map_err(VertexPlacementError::Call)?;
         return placement.map_err(VertexPlacementError::Rejected);
     }
 
@@ -198,17 +181,13 @@ pub fn begin_vertex_migration(
 ) -> Result<(), VertexPlacementError> {
     #[cfg(target_family = "wasm")]
     {
-        use ic_cdk::call::Call;
-
-        let (): Result<(), RouterError> =
-            Call::unbounded_wait(router_canister, "begin_vertex_migration")
-                .with_arg(&(args,))
-                .wait()
-                .map_err(|e| VertexPlacementError::Call(format!("{e:?}")))?
-                .candid()
-                .map_err(|e| VertexPlacementError::Call(format!("candid decode: {e}")))?;
-
-        return ().map_err(VertexPlacementError::Rejected);
+        let result: Result<(), RouterError> = super::router_call::call_router1(
+            router_canister,
+            "begin_vertex_migration",
+            args,
+        )
+        .map_err(VertexPlacementError::Call)?;
+        return result.map_err(VertexPlacementError::Rejected);
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -224,17 +203,13 @@ pub fn release_logical_vertex_placement(
 ) -> Result<(), VertexPlacementError> {
     #[cfg(target_family = "wasm")]
     {
-        use ic_cdk::call::Call;
-
-        let (): Result<(), RouterError> =
-            Call::unbounded_wait(router_canister, "release_logical_vertex_placement")
-                .with_arg(&(args,))
-                .wait()
-                .map_err(|e| VertexPlacementError::Call(format!("{e:?}")))?
-                .candid()
-                .map_err(|e| VertexPlacementError::Call(format!("candid decode: {e}")))?;
-
-        return ().map_err(VertexPlacementError::Rejected);
+        let result: Result<(), RouterError> = super::router_call::call_router1(
+            router_canister,
+            "release_logical_vertex_placement",
+            args,
+        )
+        .map_err(VertexPlacementError::Call)?;
+        return result.map_err(VertexPlacementError::Rejected);
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -250,17 +225,13 @@ pub fn finish_vertex_migration(
 ) -> Result<(), VertexPlacementError> {
     #[cfg(target_family = "wasm")]
     {
-        use ic_cdk::call::Call;
-
-        let (): Result<(), RouterError> =
-            Call::unbounded_wait(router_canister, "finish_vertex_migration")
-                .with_arg(&(args,))
-                .wait()
-                .map_err(|e| VertexPlacementError::Call(format!("{e:?}")))?
-                .candid()
-                .map_err(|e| VertexPlacementError::Call(format!("candid decode: {e}")))?;
-
-        return ().map_err(VertexPlacementError::Rejected);
+        let result: Result<(), RouterError> = super::router_call::call_router1(
+            router_canister,
+            "finish_vertex_migration",
+            args,
+        )
+        .map_err(VertexPlacementError::Call)?;
+        return result.map_err(VertexPlacementError::Rejected);
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -418,15 +389,13 @@ pub fn resolve_logical_at(
 ) -> Result<Option<LogicalVertexId>, VertexPlacementError> {
     #[cfg(target_family = "wasm")]
     {
-        use ic_cdk::call::Call;
-
-        let logical: Result<LogicalVertexId, RouterError> =
-            Call::unbounded_wait(router_canister, "resolve_logical_at")
-                .with_args(&(shard_id, local_vertex_id))
-                .wait()
-                .map_err(|e| VertexPlacementError::Call(format!("{e:?}")))?
-                .candid()
-                .map_err(|e| VertexPlacementError::Call(format!("candid decode: {e}")))?;
+        let logical: Result<LogicalVertexId, RouterError> = super::router_call::call_router2(
+            router_canister,
+            "resolve_logical_at",
+            shard_id,
+            local_vertex_id,
+        )
+        .map_err(VertexPlacementError::Call)?;
 
         return match logical {
             Ok(id) => Ok(Some(id)),

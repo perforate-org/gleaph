@@ -2,6 +2,6 @@
 # query-call scale benches under `src/bench/large.rs`.
 build_cmd: "sh -c 'EXTRA=\"${CANBENCH_GLEAPH_GRAPH_FEATURES:-}\"; CARGO_TARGET_DIR=../../target cargo build --release --target wasm32-unknown-unknown --features canbench${EXTRA:+,}${EXTRA}'"
 wasm_path: "../../target/wasm32-unknown-unknown/release/gleaph_graph.wasm"
-# Candid `GraphInitArgs`: issuing_principal `aaaaa-aa`, empty `initial_admins`, `logical_graph_name` null.
+# Candid `GraphInitArgs`: all fields default / null (no federation in default bench init).
 init_args:
-  hex: 4449444c036c039fd5a4f70201c5fe8fd203689284fcde0c026d686e71010000010000
+  hex: 4449444c046c03dcd7bda804019dbbfed10c029284fcde0c036e796e686e710100000000

@@ -13,3 +13,21 @@ pub struct GraphInitArgs {
     #[serde(default)]
     pub shard_id: Option<ShardId>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bench_init_args_candid_hex() {
+        let args = GraphInitArgs {
+            logical_graph_name: None,
+            router_canister: None,
+            shard_id: None,
+        };
+        let bytes = candid::encode_one(args).expect("encode GraphInitArgs");
+        let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        eprintln!("canbench init_args hex: {hex}");
+        assert!(!hex.is_empty());
+    }
+}
