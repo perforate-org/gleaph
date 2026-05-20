@@ -1706,8 +1706,13 @@ fn merge_rows_with_known_join_keys(
     right: &PlanRow,
     join_keys: &[Str],
 ) -> Option<PlanRow> {
-    let skip: Vec<&str> = join_keys.iter().map(|k| k.as_ref()).collect();
-    left.try_merge(right, &skip)
+    match join_keys {
+        [only] => left.try_merge_skip_one(right, only.as_ref()),
+        keys => {
+            let skip: Vec<&str> = keys.iter().map(|k| k.as_ref()).collect();
+            left.try_merge(right, &skip)
+        }
+    }
 }
 
 async fn execute_hash_join(

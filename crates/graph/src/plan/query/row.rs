@@ -167,50 +167,80 @@ impl PlanRow {
     /// instead of iterating a map. Names in `skip_names` are taken from `self` only
     /// (join-key fast path).
     pub fn try_merge(&self, right: &Self, skip_names: &[&str]) -> Option<Self> {
+        match skip_names {
+            [only] => self.try_merge_skip_one(right, only),
+            _ => self.try_merge_skip_many(right, skip_names),
+        }
+    }
+
+    /// Hash-join hot path: one join key, no per-merge skip-name allocation.
+    pub fn try_merge_skip_one(&self, right: &Self, skip_name: &str) -> Option<Self> {
         if let (Some(left_layout), Some(right_layout)) = (&self.layout, &right.layout) {
             if Rc::ptr_eq(left_layout, right_layout) || left_layout.as_ref() == right_layout.as_ref()
             {
-                return self.try_merge_indexed(right, left_layout, skip_names);
+                return self.try_merge_indexed_skip(right, left_layout, &[skip_name]);
+            }
+        }
+        self.try_merge_fallback(right, &[skip_name])
+    }
+
+    fn try_merge_skip_many(&self, right: &Self, skip_names: &[&str]) -> Option<Self> {
+        if let (Some(left_layout), Some(right_layout)) = (&self.layout, &right.layout) {
+            if Rc::ptr_eq(left_layout, right_layout) || left_layout.as_ref() == right_layout.as_ref()
+            {
+                return self.try_merge_indexed_skip(right, left_layout, skip_names);
             }
         }
         self.try_merge_fallback(right, skip_names)
     }
 
-    fn try_merge_indexed(
+    fn try_merge_indexed_skip(
         &self,
         right: &Self,
         layout: &Rc<BindingLayout>,
         skip_names: &[&str],
     ) -> Option<Self> {
-        let skip_single = match skip_names {
-            [] => None,
-            [only] => layout.index_of(only),
-            _ => None,
-        };
-        let skip_many: Vec<usize> = if skip_names.len() <= 1 {
-            Vec::new()
-        } else {
-            skip_names
-                .iter()
-                .filter_map(|name| layout.index_of(name))
-                .collect()
-        };
-
         let mut slots = self.slots.clone();
-        let mut spill = self.spill.clone();
+        let mut spill = if self.spill.is_empty() {
+            BTreeMap::new()
+        } else {
+            self.spill.clone()
+        };
+        Self::apply_right_to_merged_slots(
+            &mut slots,
+            &mut spill,
+            &self.slots,
+            &self.spill,
+            right,
+            layout,
+            skip_names,
+        )?;
+        Some(Self {
+            layout: Some(Rc::clone(layout)),
+            slots,
+            spill,
+        })
+    }
 
-        let skip_slot = |idx: usize| {
-            skip_single == Some(idx) || skip_many.iter().any(|&s| s == idx)
+    fn apply_right_to_merged_slots(
+        slots: &mut Vec<Option<PlanBinding>>,
+        spill: &mut BTreeMap<String, PlanBinding>,
+        left_slots: &[Option<PlanBinding>],
+        left_spill: &BTreeMap<String, PlanBinding>,
+        right: &Self,
+        layout: &BindingLayout,
+        skip_names: &[&str],
+    ) -> Option<()> {
+        let should_skip = |name: &str| match skip_names {
+            [only] => name == *only,
+            names => names.iter().any(|s| *s == name),
         };
 
         for (name, right_binding) in right.iter() {
-            if skip_names.contains(&name) {
+            if should_skip(name) {
                 continue;
             }
             if let Some(idx) = layout.index_of(name) {
-                if skip_slot(idx) {
-                    continue;
-                }
                 match slots.get(idx) {
                     Some(Some(left_binding)) if left_binding != right_binding => return None,
                     Some(None) | None => {
@@ -222,7 +252,14 @@ impl PlanRow {
                     Some(Some(_)) => {}
                 }
             } else {
-                match self.get(name).or_else(|| spill.get(name)) {
+                let left_binding = left_slots
+                    .iter()
+                    .enumerate()
+                    .find_map(|(i, b)| {
+                        layout.name_at(i).filter(|n| *n == name).and_then(|_| b.as_ref())
+                    })
+                    .or_else(|| left_spill.get(name));
+                match left_binding {
                     Some(left_binding) if left_binding != right_binding => return None,
                     Some(_) => {}
                     None => {
@@ -231,12 +268,7 @@ impl PlanRow {
                 }
             }
         }
-
-        Some(Self {
-            layout: Some(Rc::clone(layout)),
-            slots,
-            spill,
-        })
+        Some(())
     }
 
     fn try_merge_fallback(&self, right: &Self, skip_names: &[&str]) -> Option<Self> {
