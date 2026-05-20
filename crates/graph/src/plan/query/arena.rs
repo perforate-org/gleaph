@@ -9,7 +9,7 @@ use std::cell::RefCell;
 use super::row::PlanRow;
 
 const MAX_SLOT_POOL: usize = 32;
-const MIN_RECYCLE_SLOT_CAPACITY: usize = 4;
+const MIN_RECYCLE_SLOT_CAPACITY: usize = 1;
 
 thread_local! {
     static QUERY_ARENA: RefCell<QueryArena> = RefCell::new(QueryArena::new());
