@@ -1395,8 +1395,7 @@ fn stream_node_scan(
         {
             continue;
         }
-        let mut scanned = row.clone();
-        scanned.insert(variable.to_string(), PlanBinding::Vertex(vertex_id));
+        let scanned = row.fork([(variable.as_ref(), PlanBinding::Vertex(vertex_id))]);
         if stream_row_through_ops(
             store,
             ops,
@@ -4880,6 +4879,17 @@ fn project_row(
                 .as_ref()
                 .map(Str::to_string)
                 .unwrap_or_else(|| var_name.clone());
+            if column.alias.is_none()
+                && row.is_singleton_binding(var_name.as_str())
+            {
+                if let Some(layout) = row.shared_layout() {
+                    return Ok(PlanRow::with_layout_and_binding(
+                        layout,
+                        var_name.as_str(),
+                        binding.clone(),
+                    ));
+                }
+            }
             let mut out = PlanRow::new();
             out.insert(name, binding.clone());
             return Ok(out);

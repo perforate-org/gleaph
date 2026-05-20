@@ -61,6 +61,21 @@ impl PlanRow {
         self.len() == 0
     }
 
+    /// Number of variables currently bound on this row.
+    pub fn binding_count(&self) -> usize {
+        let slot_count = self.slots.iter().filter(|b| b.is_some()).count();
+        slot_count + self.spill.len()
+    }
+
+    /// True when `name` is the only binding on this row.
+    pub fn is_singleton_binding(&self, name: &str) -> bool {
+        self.get(name).is_some() && self.binding_count() == 1
+    }
+
+    pub fn shared_layout(&self) -> Option<Rc<BindingLayout>> {
+        self.layout.as_ref().map(Rc::clone)
+    }
+
     pub fn contains_key(&self, name: &str) -> bool {
         self.get(name).is_some()
     }
@@ -229,6 +244,18 @@ mod tests {
     use super::*;
     use ic_stable_lara::VertexId;
     use gleaph_gql_planner::BindingLayout;
+
+    #[test]
+    fn singleton_binding_detects_single_slot() {
+        let layout = Rc::new(BindingLayout::single("p".into()));
+        let row = PlanRow::with_layout_and_binding(
+            layout,
+            "p",
+            PlanBinding::Value(gleaph_gql::Value::Null),
+        );
+        assert!(row.is_singleton_binding("p"));
+        assert!(!row.is_singleton_binding("q"));
+    }
 
     #[test]
     fn fork_updates_layout_slot() {
