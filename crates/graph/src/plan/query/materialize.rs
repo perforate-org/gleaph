@@ -70,6 +70,13 @@ fn resolve_column_binding<'a>(
         })
 }
 
+fn single_path_output_column(schema: &OutputSchema) -> Option<&OutputColumn> {
+    if schema.columns.len() != 1 || schema.columns[0].kind != OutputBindingKind::Path {
+        return None;
+    }
+    Some(&schema.columns[0])
+}
+
 pub(crate) fn materialize_plan_rows(
     store: &GraphStore,
     rows: &[PlanQueryRow],
@@ -84,6 +91,19 @@ pub(crate) fn materialize_plan_rows(
     if schema.hydrates_all_row_bindings() {
         for row in rows {
             out.push(super::executor::value_row(store, row)?);
+        }
+        return Ok(out);
+    }
+
+    if let Some(column) = single_path_output_column(schema) {
+        let name = column.name.to_string();
+        for row in rows {
+            let value = match resolve_column_binding(row, column) {
+                Some(PlanBinding::Path(pb)) => ctx.materialize_path(pb),
+                Some(binding) => ctx.materialize_binding(binding, column.kind)?,
+                None => Value::Null,
+            };
+            out.push(std::collections::BTreeMap::from([(name.clone(), value)]));
         }
         return Ok(out);
     }

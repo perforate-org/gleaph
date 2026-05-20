@@ -2,6 +2,7 @@ mod aggregate;
 mod error;
 mod executor;
 mod gleaph_weight;
+mod live_vars;
 mod materialize;
 mod path_pattern_extensions;
 mod sort_keys;

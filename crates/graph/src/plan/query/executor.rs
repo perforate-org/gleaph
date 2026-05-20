@@ -675,6 +675,7 @@ fn execute_ops_from<'a>(
                     cost,
                     parameters,
                     gwd,
+                    &ops[op_idx + 1..],
                 )?,
                 PlanOp::Aggregate {
                     group_by,
@@ -2889,6 +2890,7 @@ fn execute_shortest_path(
     cost: &ShortestPathCost,
     parameters: &BTreeMap<String, Value>,
     gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
+    remaining_ops: &[PlanOp],
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
     if matches!(mode, ShortestMode::ShortestK(_)) {
         return Err(PlanQueryError::UnsupportedOp("ShortestPath.ShortestK"));
@@ -2959,28 +2961,44 @@ fn execute_shortest_path(
             .then(|| path_var.map(|path_var| path_var.to_string()))
             .flatten();
         let path_states = Arc::new(states);
+        let path_only_rows = path_key.as_ref().is_some_and(|path_key| {
+            super::live_vars::shortest_path_may_emit_path_only_rows(
+                remaining_ops,
+                path_key,
+                src.as_ref(),
+                dst.as_ref(),
+                edge.as_ref(),
+                emit_edge_binding,
+            )
+        });
         for state_idx in found {
-            let mut row = row.clone();
-            if let Some(edge_key) = &edge_key {
-                match path_states[state_idx].edge {
-                    Some(edge_binding) => {
-                        row.insert(edge_key.clone(), PlanBinding::Edge(edge_binding));
-                    }
-                    None => {
-                        row.insert(edge_key.clone(), PlanBinding::Value(Value::Null));
+            let path_binding = PlanBinding::Path(PathBinding {
+                shard_id,
+                states: Arc::clone(&path_states),
+                leaf_state_idx: state_idx,
+            });
+            let row = if path_only_rows {
+                let path_key = path_key.as_ref().expect("path_only_rows implies path_key");
+                let mut row = PlanRow::new();
+                row.insert(path_key.clone(), path_binding);
+                row
+            } else {
+                let mut row = row.clone();
+                if let Some(edge_key) = &edge_key {
+                    match path_states[state_idx].edge {
+                        Some(edge_binding) => {
+                            row.insert(edge_key.clone(), PlanBinding::Edge(edge_binding));
+                        }
+                        None => {
+                            row.insert(edge_key.clone(), PlanBinding::Value(Value::Null));
+                        }
                     }
                 }
-            }
-            if let Some(path_key) = &path_key {
-                row.insert(
-                    path_key.clone(),
-                    PlanBinding::Path(PathBinding {
-                        shard_id,
-                        states: Arc::clone(&path_states),
-                        leaf_state_idx: state_idx,
-                    }),
-                );
-            }
+                if let Some(path_key) = &path_key {
+                    row.insert(path_key.clone(), path_binding);
+                }
+                row
+            };
             out.push(row);
             if matches!(mode, ShortestMode::AnyShortest) {
                 break;
@@ -3794,26 +3812,32 @@ fn fill_path_elements_leaf_to_root(
     store: &GraphStore,
     shard_id: gleaph_graph_kernel::federation::ShardId,
     states: &[PathSearchNode],
-    mut state_idx: usize,
+    state_idx: usize,
     elements: &mut Vec<PathElement>,
 ) {
     elements.clear();
-    let cap = states[state_idx].depth as usize * 2 + 1;
+    let mut chain: Vec<usize> = Vec::new();
+    let mut idx = state_idx;
+    loop {
+        chain.push(idx);
+        let Some(previous) = states[idx].previous else {
+            break;
+        };
+        idx = previous;
+    }
+    let cap = chain.len() * 2;
     if elements.capacity() < cap {
         elements.reserve(cap.saturating_sub(elements.capacity()));
     }
-    loop {
-        let state = &states[state_idx];
-        elements.push(vertex_path_element(store, state.current));
-        if let Some(edge_binding) = state.edge {
-            elements.push(edge_path_element(shard_id, edge_binding.handle));
+    for (hop, &si) in chain.iter().rev().enumerate() {
+        let state = &states[si];
+        if hop > 0 {
+            if let Some(edge_binding) = state.edge {
+                elements.push(edge_path_element(shard_id, edge_binding.handle));
+            }
         }
-        let Some(previous) = state.previous else {
-            break;
-        };
-        state_idx = previous;
+        elements.push(vertex_path_element(store, state.current));
     }
-    elements.reverse();
 }
 
 fn local_shard_id(store: &GraphStore) -> gleaph_graph_kernel::federation::ShardId {
@@ -3844,11 +3868,17 @@ fn edge_element_id_bytes(
 }
 
 fn vertex_path_element(store: &GraphStore, vertex_id: VertexId) -> PathElement {
-    let path_id = store.path_vertex_element_id(vertex_id).unwrap_or_else(|| {
+    let path_id = if store.federation_configured() {
+        store.path_vertex_element_id(vertex_id).unwrap_or_else(|| {
+            GraphPathVertexId::new(
+                gleaph_graph_kernel::federation::standalone_logical_vertex_id(vertex_id),
+            )
+        })
+    } else {
         GraphPathVertexId::new(
             gleaph_graph_kernel::federation::standalone_logical_vertex_id(vertex_id),
         )
-    });
+    };
     PathElement::Vertex(path_id.to_bytes().into())
 }
 
