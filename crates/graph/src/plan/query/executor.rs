@@ -4884,11 +4884,9 @@ fn project_row(
                 .as_ref()
                 .map(Str::to_string)
                 .unwrap_or_else(|| var_name.clone());
-            return Ok(PlanRow::with_layout_and_binding(
-                Rc::new(BindingLayout::single(Str::from(name.as_str()))),
-                &name,
-                binding.clone(),
-            ));
+            let mut out = PlanRow::new();
+            out.insert(name, binding.clone());
+            return Ok(out);
         }
     }
 

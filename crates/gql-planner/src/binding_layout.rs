@@ -144,20 +144,7 @@ fn register_op_bindings(op: &PlanOp, layout: &mut BindingLayout) {
                 layout.insert_name(ord.clone());
             }
         }
-        PlanOp::Project { columns, .. } | PlanOp::Materialize { columns, .. } => {
-            if columns.is_empty() {
-                return;
-            }
-            let mut narrowed = BindingLayout::default();
-            for col in columns {
-                if let Some(alias) = &col.alias {
-                    narrowed.insert_name(alias.clone());
-                } else if let gleaph_gql::ast::ExprKind::Variable(v) = &col.expr.kind {
-                    narrowed.insert_name(Str::from(v.as_str()));
-                }
-            }
-            *layout = narrowed;
-        }
+        PlanOp::Project { .. } | PlanOp::Materialize { .. } => {}
         PlanOp::OptionalMatch { sub_plan } => {
             register_subplan_bindings(sub_plan, layout);
         }
@@ -269,7 +256,7 @@ mod tests {
     use crate::plan::{PhysicalPlan, PlanOp, ProjectColumn, ShortestMode};
 
     #[test]
-    fn all_shortest_bench_layout_is_path_only_after_project() {
+    fn all_shortest_bench_layout_includes_shortest_path_variables() {
         let plan = PhysicalPlan::from_ops(vec![
             PlanOp::NodeScan {
                 variable: "a".into(),
@@ -303,7 +290,8 @@ mod tests {
                 distinct: false,
             },
         ]);
-        assert_eq!(plan.binding_layout.len(), 1);
-        assert_eq!(plan.binding_layout.name_at(0), Some("p"));
+        assert!(plan.binding_layout.index_of("a").is_some());
+        assert!(plan.binding_layout.index_of("c").is_some());
+        assert!(plan.binding_layout.index_of("p").is_some());
     }
 }
