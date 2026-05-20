@@ -3,9 +3,10 @@
 use crate::facade::store::RouterStore;
 use crate::init::RouterInitArgs;
 use crate::state::RouterError;
+use crate::facade::auth;
 use crate::types::{
     AdminRegisterShardArgs, BeginVertexMigrationArgs, CommitVertexPlacementArgs, EdgeLabelId,
-    FinishVertexMigrationArgs, GraphRegistryEntry, LogicalVertexId, PropertyId,
+    FinishVertexMigrationArgs, GrantRoleArgs, GraphRegistryEntry, LogicalVertexId, PropertyId,
     ReleaseLogicalVertexArgs, ShardId, ShardRegistryEntry, VertexLabelId, VertexPlacement,
 };
 use candid::Principal;
@@ -14,10 +15,28 @@ use ic_cdk::api::msg_caller;
 
 pub(crate) fn init(args: RouterInitArgs) {
     RouterStore::new().init_from_args(&args);
+    auth::bootstrap_canister_auth(args.issuing_principal, &args.initial_admins);
 }
 
 pub(crate) fn whoami() -> Principal {
     msg_caller()
+}
+
+pub(crate) fn my_role() -> Result<String, RouterError> {
+    Ok(auth::caller_role(&msg_caller()).to_string())
+}
+
+pub(crate) fn admin_grant_role(args: GrantRoleArgs) -> Result<(), RouterError> {
+    let role = auth::parse_role(&args.role).map_err(RouterError::InvalidArgument)?;
+    auth::admin_upsert_principal(&msg_caller(), args.target, role, args.manager_caps).map_err(
+        |e| {
+            if e.contains("required") {
+                RouterError::Forbidden
+            } else {
+                RouterError::InvalidArgument(e)
+            }
+        },
+    )
 }
 
 pub(crate) fn resolve_graph(graph_name: String) -> Result<GraphRegistryEntry, RouterError> {
@@ -105,6 +124,21 @@ pub(crate) fn admin_intern_edge_label(name: String) -> Result<EdgeLabelId, Route
 
 pub(crate) fn admin_intern_property(name: String) -> Result<PropertyId, RouterError> {
     RouterStore::new().admin_intern_property(msg_caller(), &name)
+}
+
+pub(crate) fn admin_set_indexed_vertex_property(
+    logical_graph_name: String,
+    property: String,
+) -> Result<(), RouterError> {
+    use crate::facade::stable::ROUTER_INDEXED_PROPERTIES;
+    use crate::planner_stats::RouterGraphStats;
+    ROUTER_INDEXED_PROPERTIES.with_borrow_mut(|m| {
+        let entry = m
+            .entry(logical_graph_name)
+            .or_insert_with(RouterGraphStats::default);
+        *entry = entry.clone().with_indexed_vertex_property(property);
+    });
+    Ok(())
 }
 
 pub(crate) fn allocate_logical_vertex_id() -> Result<LogicalVertexId, RouterError> {

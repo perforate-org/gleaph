@@ -11,6 +11,13 @@ pub use gleaph_graph_kernel::federation::{
     VertexPlacement,
 };
 
+#[derive(CandidType, Deserialize)]
+pub struct GrantRoleArgs {
+    pub target: Principal,
+    pub role: String,
+    pub manager_caps: u64,
+}
+
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct AdminRegisterShardArgs {
     pub shard_id: ShardId,

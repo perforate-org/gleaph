@@ -230,6 +230,15 @@ impl RouterStore {
         ROUTER_SHARD_BY_GRAPH.with_borrow_mut(|m| {
             m.insert(args.graph_canister, args.shard_id);
         });
+
+        #[cfg(target_family = "wasm")]
+        crate::peer_sync::sync_peers_after_shard_register(
+            &args.logical_graph_name,
+            args.graph_canister,
+        )
+        .await
+        .map_err(RouterError::Internal)?;
+
         Ok(())
     }
 
@@ -245,7 +254,19 @@ impl RouterStore {
             .with_borrow(|s| s.get(&shard_id))
             .ok_or(RouterError::ShardNotRegistered)?;
 
+        let siblings: Vec<Principal> = self
+            .list_shards_for_graph(&entry.logical_graph_name)?
+            .into_iter()
+            .map(|shard| shard.graph_canister)
+            .filter(|graph| *graph != entry.graph_canister)
+            .collect();
+
         index_sync::admin_clear_shard_owner(entry.index_canister, shard_id)
+            .await
+            .map_err(RouterError::Internal)?;
+
+        #[cfg(target_family = "wasm")]
+        crate::peer_sync::sync_peers_after_shard_unregister(entry.graph_canister, &siblings)
             .await
             .map_err(RouterError::Internal)?;
 
@@ -601,12 +622,18 @@ mod tests {
         Principal::self_authenticating([byte; 32])
     }
 
+    fn test_init_args() -> RouterInitArgs {
+        RouterInitArgs {
+            issuing_principal: Principal::anonymous(),
+            initial_admins: vec![],
+            controllers: vec![],
+        }
+    }
+
     #[test]
     fn register_shard_and_allocate_commit_placement() {
         let store = RouterStore::new();
-        store.init_from_args(&RouterInitArgs {
-            controllers: vec![],
-        });
+        store.init_from_args(&test_init_args());
         let admin = Principal::anonymous();
         store.bootstrap_controllers(&[admin]);
 
@@ -649,9 +676,7 @@ mod tests {
     #[test]
     fn list_shards_for_graph_returns_matching_registrations() {
         let store = RouterStore::new();
-        store.init_from_args(&RouterInitArgs {
-            controllers: vec![],
-        });
+        store.init_from_args(&test_init_args());
         let admin = Principal::anonymous();
         store.bootstrap_controllers(&[admin]);
 
@@ -684,11 +709,44 @@ mod tests {
     }
 
     #[test]
+    fn unregister_shard_removes_registry_and_leaves_siblings() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::anonymous();
+        store.bootstrap_controllers(&[admin]);
+
+        let graph_a = graph_principal(1);
+        let graph_b = graph_principal(4);
+        let index = graph_principal(2);
+
+        for (shard_id, graph) in [(7, graph_a), (9, graph_b)] {
+            futures::executor::block_on(store.admin_register_shard(
+                admin,
+                AdminRegisterShardArgs {
+                    shard_id,
+                    graph_canister: graph,
+                    index_canister: index,
+                    logical_graph_name: "tenant.main".into(),
+                },
+            ))
+            .expect("register");
+        }
+
+        futures::executor::block_on(store.admin_unregister_shard(admin, 7))
+            .expect("unregister");
+
+        let listed = store.list_shards_for_graph("tenant.main").expect("list");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].shard_id, 9);
+        assert_eq!(listed[0].graph_canister, graph_b);
+        assert!(store.resolve_shard(7).is_err());
+        assert!(store.resolve_shard(9).is_ok());
+    }
+
+    #[test]
     fn release_logical_vertex_placement_clears_registry() {
         let store = RouterStore::new();
-        store.init_from_args(&RouterInitArgs {
-            controllers: vec![],
-        });
+        store.init_from_args(&test_init_args());
         let admin = Principal::anonymous();
         store.bootstrap_controllers(&[admin]);
 
@@ -733,9 +791,7 @@ mod tests {
     #[test]
     fn vertex_migration_updates_placement_and_physical_reverse_index() {
         let store = RouterStore::new();
-        store.init_from_args(&RouterInitArgs {
-            controllers: vec![],
-        });
+        store.init_from_args(&test_init_args());
         let admin = Principal::anonymous();
         store.bootstrap_controllers(&[admin]);
 
@@ -821,9 +877,7 @@ mod tests {
     #[test]
     fn resolve_graph_checks_permissions() {
         let store = RouterStore::new();
-        store.init_from_args(&RouterInitArgs {
-            controllers: vec![],
-        });
+        store.init_from_args(&test_init_args());
         let admin = Principal::anonymous();
         store.bootstrap_controllers(&[admin]);
         let owner = graph_principal(10);
@@ -852,9 +906,7 @@ mod tests {
     #[test]
     fn vertex_and_edge_labels_with_same_name_get_distinct_ids() {
         let store = RouterStore::new();
-        store.init_from_args(&RouterInitArgs {
-            controllers: vec![],
-        });
+        store.init_from_args(&test_init_args());
         let admin = Principal::anonymous();
         store.bootstrap_controllers(&[admin]);
 

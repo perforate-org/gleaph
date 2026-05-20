@@ -6,6 +6,7 @@ use gleaph_graph_kernel::federation::{
 };
 
 use gleaph_gql_ic::graph_registry::GraphRegistryEntry;
+use gleaph_auth::AuthState;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use ic_stable_structures::{BTreeMap, BTreeSet, Cell, DefaultMemoryImpl};
 use std::cell::RefCell;
@@ -27,6 +28,7 @@ const ROUTER_PROPERTY_BY_NAME: MemoryId = MemoryId::new(11);
 const ROUTER_PROPERTY_BY_ID: MemoryId = MemoryId::new(12);
 const ROUTER_PLACEMENT_BY_PHYSICAL: MemoryId = MemoryId::new(13);
 const ROUTER_MIGRATION_COUNTER: MemoryId = MemoryId::new(14);
+const ROUTER_AUTH_PRINCIPAL_RECORDS: MemoryId = MemoryId::new(15);
 
 pub(crate) type StableControllerSet = BTreeSet<Principal, Memory>;
 pub(crate) type StableGraphRegistry = BTreeMap<String, GraphRegistryEntry, Memory>;
@@ -42,6 +44,7 @@ pub(crate) type StablePropertyIdReverse = BTreeMap<u32, String, Memory>;
 pub(crate) type StablePlacementByPhysicalMap =
     super::placement_by_physical::PlacementByPhysicalMap<Memory>;
 pub(crate) type StableMigrationCounter = Cell<u64, Memory>;
+pub(crate) type StableAuthState = AuthState<Memory>;
 
 thread_local! {
     pub(crate) static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
@@ -114,4 +117,8 @@ pub(crate) fn init_migration_counter() -> StableMigrationCounter {
         MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_MIGRATION_COUNTER)),
         0u64,
     )
+}
+
+pub(crate) fn init_auth_state() -> StableAuthState {
+    AuthState::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_AUTH_PRINCIPAL_RECORDS)))
 }

@@ -1,9 +1,18 @@
 //! Gleaph router canister — federation control plane (graph registry, shard registry, placement).
 
 mod canister;
+mod execution_path;
 pub mod facade;
+mod gql;
+mod graph_client;
+mod index_client;
 mod index_sync;
 pub mod init;
+mod planner_stats;
+mod peer_sync;
+mod prepared;
+mod rbac;
+mod seed;
 pub mod state;
 pub mod types;
 
@@ -22,6 +31,16 @@ fn init(args: RouterInitArgs) {
 #[query]
 fn whoami() -> Principal {
     canister::whoami()
+}
+
+#[query]
+fn my_role() -> Result<String, RouterError> {
+    canister::my_role()
+}
+
+#[update]
+fn admin_grant_role(args: types::GrantRoleArgs) -> Result<(), RouterError> {
+    canister::admin_grant_role(args)
 }
 
 #[query]
@@ -154,6 +173,85 @@ fn release_logical_vertex_placement(
     args: types::ReleaseLogicalVertexArgs,
 ) -> Result<(), RouterError> {
     canister::release_logical_vertex_placement(args)
+}
+
+/// Read-only GQL: composite query (calls index + graph query endpoints).
+#[query(composite = true)]
+async fn gql_query(
+    logical_graph_name: String,
+    query: String,
+    params: Vec<u8>,
+) -> Result<u64, RouterError> {
+    gql::gql_query(logical_graph_name, query, params).await
+}
+
+/// GQL with DML/DDL/CALL: update (may call graph update endpoints from here).
+#[update]
+async fn gql_execute(
+    logical_graph_name: String,
+    query: String,
+    params: Vec<u8>,
+) -> Result<u64, RouterError> {
+    gql::gql_execute(logical_graph_name, query, params).await
+}
+
+/// Read-only GQL on the update path only (no composite-query savings; bypasses path check).
+#[update]
+async fn force_gql_execute(
+    logical_graph_name: String,
+    query: String,
+    params: Vec<u8>,
+) -> Result<u64, RouterError> {
+    gql::force_gql_execute(logical_graph_name, query, params).await
+}
+
+#[update]
+fn prepared_register(
+    logical_graph_name: String,
+    name: String,
+    query: String,
+) -> Result<(), RouterError> {
+    prepared::prepared_register(logical_graph_name, name, query)
+}
+
+#[update]
+fn prepared_drop(logical_graph_name: String, name: String) -> Result<(), RouterError> {
+    prepared::prepared_drop(&logical_graph_name, &name)
+}
+
+#[query(composite = true)]
+async fn prepared_execute_query(
+    logical_graph_name: String,
+    name: String,
+    params: Vec<u8>,
+) -> Result<u64, RouterError> {
+    prepared::prepared_execute_query(logical_graph_name, name, params).await
+}
+
+#[update]
+async fn prepared_execute_update(
+    logical_graph_name: String,
+    name: String,
+    params: Vec<u8>,
+) -> Result<u64, RouterError> {
+    prepared::prepared_execute_update(logical_graph_name, name, params).await
+}
+
+#[update]
+async fn force_prepared_execute_update(
+    logical_graph_name: String,
+    name: String,
+    params: Vec<u8>,
+) -> Result<u64, RouterError> {
+    prepared::force_prepared_execute_update(logical_graph_name, name, params).await
+}
+
+#[update]
+fn admin_set_indexed_vertex_property(
+    logical_graph_name: String,
+    property: String,
+) -> Result<(), RouterError> {
+    canister::admin_set_indexed_vertex_property(logical_graph_name, property)
 }
 
 ic_cdk::export_candid!();
