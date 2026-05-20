@@ -8,7 +8,9 @@ license.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [features]
-default = []
+default = ["gql-parse", "plan-wire"]
+gql-parse = []
+plan-wire = ["gleaph-gql-planner/plan-wire"]
 canbench = ["dep:canbench-rs"]
 # Extra-large query-call benchmarks. These build larger synthetic graphs before each
 # benchmark, so keep them out of the default canbench set.
@@ -24,10 +26,9 @@ async-trait = "0.1"
 bitflags.workspace = true
 candid.workspace = true
 derive_more = { version = "2", features = ["display", "from", "into"] }
-gleaph-auth.workspace = true
 gleaph-gql = { workspace = true, features = ["f128", "f256"] }
 gleaph-gql-ic.workspace = true
-gleaph-gql-planner.workspace = true
+gleaph-gql-planner = { workspace = true, features = ["plan-wire"] }
 gleaph-graph-prepared.workspace = true
 gleaph-graph-kernel.workspace = true
 half.workspace = true

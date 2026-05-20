@@ -1,28 +1,54 @@
-//! RBAC guards for canister entrypoints.
+//! Caller guards for graph canister entrypoints (control plane only — no end-user RBAC).
 
 use candid::Principal;
 use ic_cdk::api::msg_caller;
 
-use crate::auth::{can_prepare_register, require_at_least};
-use gleaph_auth::Role;
+use crate::facade::GraphStore;
 
-pub fn guard_read() -> Result<(), String> {
-    require_at_least(&msg_caller(), Role::Read)
+/// Native unit tests call handlers directly without a router caller principal.
+#[cfg(not(target_family = "wasm"))]
+pub fn guard_router_canister() -> Result<(), String> {
+    Ok(())
 }
 
-pub fn guard_write() -> Result<(), String> {
-    require_at_least(&msg_caller(), Role::Write)
-}
-
-pub fn guard_prepare_register() -> Result<(), String> {
-    let p: Principal = msg_caller();
-    if can_prepare_register(&p) {
+/// Production graph shards accept plan execution only from the configured router.
+#[cfg(target_family = "wasm")]
+pub fn guard_router_canister() -> Result<(), String> {
+    let caller = msg_caller();
+    let routing = GraphStore::new()
+        .federation_routing()
+        .ok_or("federation routing not configured")?;
+    if caller == routing.router_canister {
         Ok(())
     } else {
-        Err("Admin role or Manager with PREPARE_REGISTER is required".into())
+        Err(format!(
+            "caller {caller} is not the configured router canister {}",
+            routing.router_canister
+        ))
     }
 }
 
-pub fn guard_admin() -> Result<(), String> {
-    require_at_least(&msg_caller(), Role::Admin)
+/// `federated_expand` is invoked by the router or a sibling graph shard (not end users).
+#[cfg(not(target_family = "wasm"))]
+pub fn guard_router_or_peer_graph() -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(target_family = "wasm")]
+pub fn guard_router_or_peer_graph() -> Result<(), String> {
+    let caller = msg_caller();
+    if guard_router_canister().is_ok() {
+        return Ok(());
+    }
+    if GraphStore::new().is_peer_graph_canister(&caller) {
+        return Ok(());
+    }
+    Err(format!(
+        "caller {caller} is not the router or a registered peer graph canister"
+    ))
+}
+
+/// Migration and other control-plane admin hooks (installer / router operations).
+pub fn guard_control_plane_admin() -> Result<(), String> {
+    guard_router_canister()
 }

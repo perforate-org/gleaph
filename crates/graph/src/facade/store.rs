@@ -4,15 +4,16 @@ use super::stable::memory::StableGraph;
 use super::stable::vertex_label_catalog::VertexLabelCatalogError;
 use super::stable::{
     EDGE_ALIASES, EDGE_LABEL_CATALOG, EDGE_PROPERTIES, EDGE_WEIGHT_PROFILES, GRAPH,
-    GRAPH_DEFAULT_EDGE_LABEL, METADATA, PREPARED_QUERY_CATALOG, PROPERTY_CATALOG,
-    REMOTE_FORWARD_IN, REMOTE_VERTEX_REFS, VERTEX_LABEL_CATALOG, VERTEX_LABELS, VERTEX_LOGICAL_IDS,
-    VERTEX_PROPERTIES,
+    GRAPH_DEFAULT_EDGE_LABEL, METADATA, PEER_GRAPH_CANISTERS, PROPERTY_CATALOG,
+    REMOTE_FORWARD_IN, REMOTE_VERTEX_REFS, VERTEX_LABEL_CATALOG, VERTEX_LABELS,
+    VERTEX_LOGICAL_IDS, VERTEX_PROPERTIES,
 };
 use super::{
     FederationRouting, GraphMetadata, GraphMetadataError, PropertyCatalogError,
     VertexLabelStoreError, VertexPropertyStoreError,
 };
 use crate::index::{edge_equal, pending, placement};
+use candid::Principal;
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{
     Edge, EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, EdgeTarget, EdgeWeightProfile, PropertyId,
@@ -23,7 +24,6 @@ use gleaph_graph_kernel::federation::{
     standalone_logical_vertex_id,
 };
 use gleaph_graph_kernel::path::GraphPathVertexId;
-use gleaph_graph_prepared::{PreparedQueryError, PreparedQueryRecord};
 use ic_stable_lara::{
     BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledError, MaintenanceBudget,
     VertexCount, VertexId,
@@ -298,6 +298,25 @@ impl GraphStore {
         METADATA.with_borrow(|m| m.get().federation_configured())
     }
 
+    pub fn is_peer_graph_canister(&self, principal: &Principal) -> bool {
+        PEER_GRAPH_CANISTERS.with_borrow(|peers| peers.contains(principal))
+    }
+
+    pub fn bootstrap_peer_graph_canisters(&self, peers: &[Principal], self_canister: Principal) {
+        PEER_GRAPH_CANISTERS.with_borrow_mut(|set| set.insert_many(peers, self_canister));
+    }
+
+    pub fn add_peer_graph_canister(&self, peer: Principal, self_canister: Principal) {
+        if peer == self_canister {
+            return;
+        }
+        PEER_GRAPH_CANISTERS.with_borrow_mut(|set| set.insert(peer));
+    }
+
+    pub fn remove_peer_graph_canister(&self, peer: &Principal) -> bool {
+        PEER_GRAPH_CANISTERS.with_borrow_mut(|set| set.remove(peer))
+    }
+
     pub fn vertex_label_id(&self, name: &str) -> Option<VertexLabelId> {
         VERTEX_LABEL_CATALOG.with_borrow(|catalog| catalog.get_id(name))
     }
@@ -403,28 +422,6 @@ impl GraphStore {
         id: PropertyId,
     ) -> Result<(), PropertyCatalogError> {
         PROPERTY_CATALOG.with_borrow_mut(|catalog| catalog.insert_with_id(name, id))
-    }
-
-    pub fn prepared_query_register(
-        &self,
-        name: String,
-        source: &str,
-    ) -> Result<(), PreparedQueryError> {
-        PREPARED_QUERY_CATALOG.with_borrow_mut(|c| c.register(name, source))
-    }
-
-    pub fn prepared_query_drop(&self, name: &str) {
-        PREPARED_QUERY_CATALOG.with_borrow_mut(|c| {
-            c.remove(name);
-        });
-    }
-
-    pub fn prepared_query_get(&self, name: &str) -> Option<PreparedQueryRecord> {
-        PREPARED_QUERY_CATALOG.with_borrow(|c| c.get(name))
-    }
-
-    pub fn prepared_query_contains(&self, name: &str) -> bool {
-        PREPARED_QUERY_CATALOG.with_borrow(|c| c.contains_key(name))
     }
 
     pub fn vertex_count(&self) -> VertexCount {
@@ -1985,6 +1982,25 @@ impl GraphStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use candid::Principal;
+
+    #[test]
+    fn peer_graph_canister_bootstrap_and_remove() {
+        let store = GraphStore::new();
+        let self_canister = Principal::self_authenticating([1u8; 32]);
+        let peer_a = Principal::self_authenticating([2u8; 32]);
+        let peer_b = Principal::self_authenticating([3u8; 32]);
+
+        store.bootstrap_peer_graph_canisters(&[self_canister, peer_a, peer_b], self_canister);
+        assert!(store.is_peer_graph_canister(&peer_a));
+        assert!(store.is_peer_graph_canister(&peer_b));
+        assert!(!store.is_peer_graph_canister(&self_canister));
+
+        store.add_peer_graph_canister(peer_a, self_canister);
+        assert!(store.remove_peer_graph_canister(&peer_a));
+        assert!(!store.is_peer_graph_canister(&peer_a));
+        assert!(store.is_peer_graph_canister(&peer_b));
+    }
 
     #[test]
     fn inserts_vertices_and_edges_through_facade() {

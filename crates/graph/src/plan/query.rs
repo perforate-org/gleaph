@@ -11,5 +11,6 @@ pub use error::PlanQueryError;
 pub use executor::PlanQueryExecutor;
 pub use executor::{
     EdgeBinding, PathBinding, PlanBinding, PlanQueryResult, PlanQueryRow, execute_plan_query,
-    execute_plan_query_bindings, materialize_plan_rows,
+    execute_plan_query_bindings, execute_plan_query_bindings_with_initial_rows,
+    materialize_plan_rows,
 };

@@ -34,8 +34,7 @@ use gleaph_graph_kernel::entry::{
     decode_inline_weight,
 };
 use gleaph_graph_kernel::federation::{
-    FederatedExpandArgs, FederatedExpandDirection, FederatedExpandNeighbor,
-    LogicalVertexId,
+    FederatedExpandArgs, FederatedExpandDirection, FederatedExpandNeighbor, LogicalVertexId,
 };
 use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest};
 use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
@@ -145,22 +144,58 @@ pub async fn execute_plan_query_bindings(
     index: Option<&dyn PropertyIndexLookup>,
     execution: GqlExecutionContext,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
+    execute_plan_query_bindings_with_initial_rows(
+        store,
+        plan,
+        parameters,
+        index,
+        execution,
+        vec![PlanRow::new()],
+        false,
+    )
+    .await
+}
+
+/// Like [`execute_plan_query_bindings`] but starts from `initial_rows` and may skip the
+/// leading [`PlanOp::IndexScan`] (router seed routing).
+pub async fn execute_plan_query_bindings_with_initial_rows(
+    store: &GraphStore,
+    plan: &PhysicalPlan,
+    parameters: &BTreeMap<String, Value>,
+    index: Option<&dyn PropertyIndexLookup>,
+    execution: GqlExecutionContext,
+    initial_rows: Vec<PlanRow>,
+    skip_leading_index_scan: bool,
+) -> Result<Vec<PlanRow>, PlanQueryError> {
+    let ops = if skip_leading_index_scan {
+        skip_first_index_scan_ops(&plan.ops)
+    } else {
+        plan.ops.as_slice()
+    };
     let gleaph_weight_decoders = {
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _scope = bench_scope("plan_query_prepare_gleaph_weight");
-        super::gleaph_weight::prepare_gleaph_weight_decoders(store, &plan.ops)?
+        super::gleaph_weight::prepare_gleaph_weight_decoders(store, ops)?
     };
     #[cfg(all(feature = "canbench", target_family = "wasm"))]
     let _scope = bench_scope("plan_query_execute_ops");
-    execute_ops(
+    execute_ops_from(
         store,
-        &plan.ops,
+        ops,
         parameters,
+        initial_rows,
         index,
         execution,
         gleaph_weight_decoders.as_ref(),
     )
     .await
+}
+
+fn skip_first_index_scan_ops(ops: &[PlanOp]) -> &[PlanOp] {
+    match ops.first() {
+        Some(PlanOp::IndexScan { .. }) => &ops[1..],
+        _ => ops,
+    }
 }
 
 pub fn materialize_plan_rows(

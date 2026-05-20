@@ -11,19 +11,18 @@ pub async fn call_graph_federated_expand(
 ) -> Result<Vec<FederatedExpandNeighbor>, PlanQueryError> {
     use ic_cdk::call::Call;
 
-    let hits: Vec<FederatedExpandNeighbor> =
-        Call::bounded_wait(graph_canister, "federated_expand")
-            .with_args(&(args,))
-            .await
-            .map_err(|e| PlanQueryError::FederatedIndexCall {
-                op: "federated_expand",
-                detail: format!("{e:?}"),
-            })?
-            .candid()
-            .map_err(|_| PlanQueryError::FederatedIndexCall {
-                op: "federated_expand",
-                detail: "candid decode failed".into(),
-            })?;
+    let hits: Vec<FederatedExpandNeighbor> = Call::bounded_wait(graph_canister, "federated_expand")
+        .with_args(&(args,))
+        .await
+        .map_err(|e| PlanQueryError::FederatedIndexCall {
+            op: "federated_expand",
+            detail: format!("{e:?}"),
+        })?
+        .candid()
+        .map_err(|_| PlanQueryError::FederatedIndexCall {
+            op: "federated_expand",
+            detail: "candid decode failed".into(),
+        })?;
     Ok(hits)
 }
 

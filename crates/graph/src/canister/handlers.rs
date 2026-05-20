@@ -1,13 +1,8 @@
 //! Request bodies for canister methods (called from `lib.rs` ic-cdk entrypoints).
 
 use std::collections::BTreeMap;
-use std::str::FromStr;
 
-use candid::Principal;
-use ic_cdk::api::msg_caller;
-
-use crate::GqlExecutionContext;
-use crate::auth::{admin_upsert_principal, bootstrap_canister_auth, caller_role};
+use crate::gql_execution_context::GqlExecutionContext;
 use crate::facade::migration::{
     export_local_vertex_for_migration, import_migrated_vertex, tombstone_migrated_vertex,
 };
@@ -16,26 +11,24 @@ use crate::facade::migration::{
     import_migrated_vertex_with_index, tombstone_migrated_vertex_with_index,
 };
 use crate::facade::{FederationRouting, GraphMetadata, GraphStore};
-use crate::gql_run::{
-    GqlCanisterExecutionMode, run_adhoc_gql_last_read_row_count,
-    run_prepared_gql_last_read_row_count,
-};
+use crate::gql_run::{kernel_execution_mode, run_wire_plan_last_read_row_count};
 use crate::index::ic::IcPropertyIndexClient;
 use crate::index::lookup::PropertyIndexLookup;
 use crate::index::router::verify_shard_attachment;
-use gleaph_auth::Role;
+use candid::Decode;
 use gleaph_gql::Value;
 use gleaph_gql_ic::decode_gql_params_blob;
 use gleaph_graph_kernel::federation::{
     BeginVertexMigrationArgs, ExportedVertex, FederatedExpandArgs, FederatedExpandNeighbor,
 };
+use gleaph_graph_kernel::plan_exec::{
+    ExecutePlanArgs, ExecutePlanResult, GqlExecutionMode, SeedBindingsWire,
+};
 use ic_stable_lara::VertexId;
 
-use super::types::{GrantRoleArgs, GraphInitArgs};
+use super::types::GraphInitArgs;
 
 pub fn init(args: GraphInitArgs) {
-    bootstrap_canister_auth(args.issuing_principal, &args.initial_admins);
-
     let federation_routing = match (args.router_canister, args.shard_id) {
         (Some(router_canister), Some(shard_id)) => {
             let entry = verify_shard_attachment(
@@ -80,75 +73,49 @@ fn wasm_index_client_holder() -> Option<IcPropertyIndexClient> {
         })
 }
 
-pub async fn gql_query(query: String, params: Vec<u8>) -> Result<u64, String> {
-    let p = msg_caller();
-    let role = caller_role(&p);
-    let pmap = decode_gql_param_map(params)?;
-    #[cfg(target_family = "wasm")]
-    let index_holder = wasm_index_client_holder();
-    #[cfg(target_family = "wasm")]
-    let ix = index_holder.as_ref().map(|c| c as &dyn PropertyIndexLookup);
-    #[cfg(not(target_family = "wasm"))]
-    let ix: Option<&dyn PropertyIndexLookup> = None;
-
-    let row_count = run_adhoc_gql_last_read_row_count(
-        GraphStore::new(),
-        &query,
-        &pmap,
-        role,
-        ix,
-        GqlCanisterExecutionMode::CompositeQuery,
-        GqlExecutionContext { caller: Some(p) },
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-    Ok(row_count as u64)
-}
-
-pub async fn gql_execute(query: String, params: Vec<u8>) -> Result<u64, String> {
-    let p = msg_caller();
-    let role = caller_role(&p);
-    let pmap = decode_gql_param_map(params)?;
-    #[cfg(target_family = "wasm")]
-    let index_holder = wasm_index_client_holder();
-    #[cfg(target_family = "wasm")]
-    let ix = index_holder.as_ref().map(|c| c as &dyn PropertyIndexLookup);
-    #[cfg(not(target_family = "wasm"))]
-    let ix: Option<&dyn PropertyIndexLookup> = None;
-
-    let row_count = run_adhoc_gql_last_read_row_count(
-        GraphStore::new(),
-        &query,
-        &pmap,
-        role,
-        ix,
-        GqlCanisterExecutionMode::Update,
-        GqlExecutionContext { caller: Some(p) },
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-    Ok(row_count as u64)
-}
-
-pub fn prepared_register(name: String, query: String) -> Result<(), String> {
-    let store = GraphStore::new();
-    store
-        .prepared_query_register(name, &query)
-        .map_err(|e| e.to_string())
-}
-
-pub fn prepared_drop(name: String) -> Result<(), String> {
-    GraphStore::new().prepared_query_drop(&name);
+fn ensure_execution_mode(
+    args_mode: GqlExecutionMode,
+    expected: GqlExecutionMode,
+    entrypoint: &str,
+) -> Result<(), String> {
+    if args_mode != expected {
+        return Err(format!(
+            "{entrypoint} requires {expected:?} mode (got {args_mode:?})"
+        ));
+    }
     Ok(())
 }
 
-pub async fn prepared_execute_query(name: String, params: Vec<u8>) -> Result<u64, String> {
-    let p = msg_caller();
+pub async fn execute_plan_query(args: ExecutePlanArgs) -> Result<ExecutePlanResult, String> {
+    ensure_execution_mode(args.mode, GqlExecutionMode::Query, "execute_plan_query")?;
+    execute_plan_impl(args).await
+}
+
+pub async fn execute_plan_update(args: ExecutePlanArgs) -> Result<ExecutePlanResult, String> {
+    ensure_execution_mode(args.mode, GqlExecutionMode::Update, "execute_plan_update")?;
+    execute_plan_impl(args).await
+}
+
+async fn execute_plan_impl(args: ExecutePlanArgs) -> Result<ExecutePlanResult, String> {
     let store = GraphStore::new();
-    let record = store
-        .prepared_query_get(&name)
-        .ok_or_else(|| format!("unknown prepared query {name:?}"))?;
-    let pmap = decode_gql_param_map(params)?;
+    let routing = store
+        .federation_routing()
+        .ok_or("federation routing not configured")?;
+    if routing.shard_id != args.target_shard_id {
+        return Err(format!(
+            "target_shard_id {} does not match this graph shard {}",
+            args.target_shard_id, routing.shard_id
+        ));
+    }
+    let pmap = decode_gql_param_map(args.params_blob)?;
+    let seeds = match args.seed_bindings_blob {
+        Some(blob) => {
+            let wire: SeedBindingsWire = Decode!(&blob, SeedBindingsWire)
+                .map_err(|e| format!("seed_bindings decode: {e}"))?;
+            Some(wire)
+        }
+        None => None,
+    };
     #[cfg(target_family = "wasm")]
     let index_holder = wasm_index_client_holder();
     #[cfg(target_family = "wasm")]
@@ -156,59 +123,41 @@ pub async fn prepared_execute_query(name: String, params: Vec<u8>) -> Result<u64
     #[cfg(not(target_family = "wasm"))]
     let ix: Option<&dyn PropertyIndexLookup> = None;
 
-    let row_count = run_prepared_gql_last_read_row_count(
+    let row_count = run_wire_plan_last_read_row_count(
         store,
-        &record,
+        &args.plan_blob,
         &pmap,
+        kernel_execution_mode(args.mode),
         ix,
-        GqlCanisterExecutionMode::CompositeQuery,
-        GqlExecutionContext { caller: Some(p) },
+        GqlExecutionContext::default(),
+        seeds,
     )
     .await
     .map_err(|e| e.to_string())?;
-    Ok(row_count as u64)
+    Ok(ExecutePlanResult {
+        row_count: row_count as u64,
+    })
 }
 
-pub async fn prepared_execute_update(name: String, params: Vec<u8>) -> Result<u64, String> {
-    let p = msg_caller();
-    let store = GraphStore::new();
-    let record = store
-        .prepared_query_get(&name)
-        .ok_or_else(|| format!("unknown prepared query {name:?}"))?;
-    let pmap = decode_gql_param_map(params)?;
-    #[cfg(target_family = "wasm")]
-    let index_holder = wasm_index_client_holder();
-    #[cfg(target_family = "wasm")]
-    let ix = index_holder.as_ref().map(|c| c as &dyn PropertyIndexLookup);
-    #[cfg(not(target_family = "wasm"))]
-    let ix: Option<&dyn PropertyIndexLookup> = None;
-
-    let row_count = run_prepared_gql_last_read_row_count(
-        store,
-        &record,
-        &pmap,
-        ix,
-        GqlCanisterExecutionMode::Update,
-        GqlExecutionContext { caller: Some(p) },
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-    Ok(row_count as u64)
-}
-
-pub fn admin_grant_role(args: GrantRoleArgs) -> Result<(), String> {
-    let role = Role::from_str(&args.role).map_err(|e| e.to_string())?;
-    admin_upsert_principal(&msg_caller(), args.target, role, args.manager_caps)?;
+pub fn bootstrap_graph_peers(
+    args: gleaph_graph_kernel::federation::BootstrapGraphPeersArgs,
+) -> Result<(), String> {
+    let self_canister = ic_cdk::api::canister_self();
+    GraphStore::new().bootstrap_peer_graph_canisters(&args.peers, self_canister);
     Ok(())
 }
 
-pub fn whoami() -> Principal {
-    msg_caller()
+pub fn add_graph_peer(args: gleaph_graph_kernel::federation::AddGraphPeerArgs) -> Result<(), String> {
+    let self_canister = ic_cdk::api::canister_self();
+    GraphStore::new().add_peer_graph_canister(args.peer, self_canister);
+    Ok(())
 }
 
-pub fn my_role() -> Result<String, String> {
-    let p = msg_caller();
-    Ok(caller_role(&p).to_string())
+pub fn remove_graph_peer(
+    args: gleaph_graph_kernel::federation::RemoveGraphPeerArgs,
+) -> Result<(), String> {
+    GraphStore::new().remove_peer_graph_canister(&args.peer);
+    Ok(())
 }
 
 pub fn migration_begin(args: BeginVertexMigrationArgs) -> Result<(), String> {

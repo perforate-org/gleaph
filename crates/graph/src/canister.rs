@@ -4,4 +4,4 @@ pub mod guards;
 pub(crate) mod handlers;
 pub mod types;
 
-pub use types::{GrantRoleArgs, GraphInitArgs};
+pub use types::GraphInitArgs;

@@ -7,9 +7,7 @@ use super::property_catalog::PropertyCatalog;
 use super::vertex_label_catalog::VertexLabelCatalog;
 use super::vertex_labels::VertexLabelStore;
 use super::vertex_properties::VertexPropertyStore;
-use gleaph_auth::AuthState;
 use gleaph_graph_kernel::entry::Edge;
-use gleaph_graph_prepared::PreparedQueryCatalog;
 use ic_stable_lara::{
     BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledLaraGraph,
     lara::maintenance::DeferredConfig,
@@ -55,8 +53,6 @@ const PROPERTY_ID_TO_NAME: MemoryId = MemoryId::new(26);
 const VERTEX_PROPERTIES: MemoryId = MemoryId::new(27);
 const EDGE_PROPERTIES: MemoryId = MemoryId::new(28);
 const EDGE_ALIASES: MemoryId = MemoryId::new(29);
-const AUTH_PRINCIPAL_RECORDS: MemoryId = MemoryId::new(30);
-const PREPARED_QUERY_CATALOG: MemoryId = MemoryId::new(31);
 const GRAPH_METADATA: MemoryId = MemoryId::new(32);
 const EDGE_WEIGHT_PROFILES: MemoryId = MemoryId::new(33);
 const VERTEX_LOGICAL_IDS: MemoryId = MemoryId::new(36);
@@ -64,6 +60,7 @@ const REMOTE_REF_TO_LOGICAL: MemoryId = MemoryId::new(37);
 const LOGICAL_TO_REMOTE_REF: MemoryId = MemoryId::new(38);
 const REMOTE_FORWARD_IN: MemoryId = MemoryId::new(39);
 const EDGE_EQUALITY_POSTINGS: MemoryId = MemoryId::new(40);
+const PEER_GRAPH_CANISTERS: MemoryId = MemoryId::new(41);
 
 pub(crate) const GRAPH_DEFAULT_EDGE_LABEL: LaraLabelId = LaraLabelId::UNLABELED_DIRECTED;
 
@@ -80,8 +77,6 @@ pub(crate) type StablePropertyCatalog = PropertyCatalog<Memory, Memory>;
 pub(crate) type StableVertexPropertyStore = VertexPropertyStore<Memory>;
 pub(crate) type StableEdgePropertyStore = EdgePropertyStore<Memory>;
 pub(crate) type StableEdgeAliasIndex = EdgeAliasIndex<Memory>;
-pub(crate) type StableAuthState = AuthState<Memory>;
-pub(crate) type StablePreparedQueryCatalog = PreparedQueryCatalog<Memory>;
 pub(crate) type StableMetadata = StableGraphMetadata<Memory>;
 pub(crate) type StableEdgeWeightProfileStore = EdgeWeightProfileStore<Memory>;
 pub(crate) type StableVertexLogicalIdMap = super::vertex_logical_ids::VertexLogicalIdMap<Memory>;
@@ -90,6 +85,8 @@ pub(crate) type StableRemoteVertexRefTable =
 pub(crate) type StableRemoteForwardInIndex = super::remote_forward_in::RemoteForwardInIndex<Memory>;
 pub(crate) type StableEdgeEqualityPostingStore =
     super::edge_equality_postings::EdgeEqualityPostingStore<Memory>;
+pub(crate) type StablePeerGraphCanisterSet =
+    super::peer_graph_canisters::PeerGraphCanisterSet<Memory>;
 
 thread_local! {
     static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
@@ -168,14 +165,6 @@ pub(crate) fn init_edge_alias_index() -> StableEdgeAliasIndex {
     EdgeAliasIndex::init(MEMORY_MANAGER.with(|m| m.borrow().get(EDGE_ALIASES)))
 }
 
-pub(crate) fn init_auth_state() -> StableAuthState {
-    AuthState::init(MEMORY_MANAGER.with(|m| m.borrow().get(AUTH_PRINCIPAL_RECORDS)))
-}
-
-pub(crate) fn init_prepared_query_catalog() -> StablePreparedQueryCatalog {
-    PreparedQueryCatalog::init(MEMORY_MANAGER.with(|m| m.borrow().get(PREPARED_QUERY_CATALOG)))
-}
-
 pub(crate) fn init_edge_weight_profiles() -> StableEdgeWeightProfileStore {
     EdgeWeightProfileStore::init(MEMORY_MANAGER.with(|m| m.borrow().get(EDGE_WEIGHT_PROFILES)))
 }
@@ -209,5 +198,11 @@ pub(crate) fn init_remote_forward_in() -> StableRemoteForwardInIndex {
 pub(crate) fn init_edge_equality_postings() -> StableEdgeEqualityPostingStore {
     super::edge_equality_postings::EdgeEqualityPostingStore::init(
         MEMORY_MANAGER.with(|m| m.borrow().get(EDGE_EQUALITY_POSTINGS)),
+    )
+}
+
+pub(crate) fn init_peer_graph_canisters() -> StablePeerGraphCanisterSet {
+    super::peer_graph_canisters::PeerGraphCanisterSet::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(PEER_GRAPH_CANISTERS)),
     )
 }

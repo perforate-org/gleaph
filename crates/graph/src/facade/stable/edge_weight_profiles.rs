@@ -1,38 +1,13 @@
 //! Optional [`gleaph_graph_kernel::entry::EdgeWeightProfile`] per catalog [`EdgeLabelId`].
 
-use gleaph_graph_kernel::entry::{EdgeLabelId, EdgeWeightProfile};
-use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
-use std::borrow::Cow;
+use gleaph_graph_kernel::entry::{EdgeLabelId, EdgeWeightProfile, WeightProfilePrepareError};
+use ic_stable_structures::{Memory, StableBTreeMap};
 use std::fmt;
-
-/// Encoded [`EdgeWeightProfile`] bytes (`candid`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProfileBlob(pub Vec<u8>);
-
-impl Storable for ProfileBlob {
-    const BOUND: Bound = Bound::Bounded {
-        max_size: 256,
-        is_fixed_size: false,
-    };
-
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Borrowed(&self.0)
-    }
-
-    fn into_bytes(self) -> Vec<u8> {
-        self.0
-    }
-
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Self(bytes.into_owned())
-    }
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EdgeWeightProfileStoreError {
     InvalidCatalogLabel(EdgeLabelId),
-    EncodeFailed(String),
-    DecodeFailed(String),
+    InvalidProfile(WeightProfilePrepareError),
 }
 
 impl fmt::Display for EdgeWeightProfileStoreError {
@@ -45,8 +20,7 @@ impl fmt::Display for EdgeWeightProfileStoreError {
                     id.raw()
                 )
             }
-            Self::EncodeFailed(e) => write!(f, "failed to encode edge weight profile: {e}"),
-            Self::DecodeFailed(e) => write!(f, "failed to decode edge weight profile: {e}"),
+            Self::InvalidProfile(e) => write!(f, "{e}"),
         }
     }
 }
@@ -54,7 +28,7 @@ impl fmt::Display for EdgeWeightProfileStoreError {
 impl std::error::Error for EdgeWeightProfileStoreError {}
 
 pub struct EdgeWeightProfileStore<M: Memory> {
-    inner: StableBTreeMap<EdgeLabelId, ProfileBlob, M>,
+    inner: StableBTreeMap<EdgeLabelId, EdgeWeightProfile, M>,
 }
 
 impl<M: Memory> EdgeWeightProfileStore<M> {
@@ -65,8 +39,7 @@ impl<M: Memory> EdgeWeightProfileStore<M> {
     }
 
     pub fn get(&self, label: EdgeLabelId) -> Option<EdgeWeightProfile> {
-        let bytes = self.inner.get(&label)?;
-        candid::decode_one(&bytes.0).ok()
+        self.inner.get(&label)
     }
 
     pub fn insert(
@@ -77,9 +50,10 @@ impl<M: Memory> EdgeWeightProfileStore<M> {
         if !label.is_catalog_allocatable() {
             return Err(EdgeWeightProfileStoreError::InvalidCatalogLabel(label));
         }
-        let bytes = candid::encode_one(&profile)
-            .map_err(|e| EdgeWeightProfileStoreError::EncodeFailed(e.to_string()))?;
-        self.inner.insert(label, ProfileBlob(bytes));
+        profile
+            .validate()
+            .map_err(EdgeWeightProfileStoreError::InvalidProfile)?;
+        self.inner.insert(label, profile);
         Ok(())
     }
 

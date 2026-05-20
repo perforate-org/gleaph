@@ -368,7 +368,9 @@ pub async fn federated_expand_coordinator(
     args: FederatedExpandArgs,
 ) -> Result<Vec<FederatedExpandNeighbor>, GraphStoreError> {
     match args.direction {
-        FederatedExpandDirection::Incoming => federated_expand_incoming_all_shards(store, args).await,
+        FederatedExpandDirection::Incoming => {
+            federated_expand_incoming_all_shards(store, args).await
+        }
         FederatedExpandDirection::Outgoing => {
             federated_expand_outgoing_authoritative(store, args).await
         }
@@ -394,9 +396,8 @@ async fn federated_expand_outgoing_authoritative(
             ),
         ))?;
 
-    let placement =
-        placement::resolve_placement(routing.router_canister, args.logical_vertex_id)
-            .map_err(GraphStoreError::from)?;
+    let placement = placement::resolve_placement(routing.router_canister, args.logical_vertex_id)
+        .map_err(GraphStoreError::from)?;
     let VertexPlacement::Active(PhysicalVertexLocation {
         shard_id: authoritative_shard,
         ..

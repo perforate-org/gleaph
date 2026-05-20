@@ -1,7 +1,7 @@
 //! Stable-memory-backed graph fragments (catalogs, property stores, id allocator, init).
 //!
 //! Module visibility is `pub(in crate::facade)` (see `facade.rs`): only code under `facade`
-//! (notably [`super::store`] and [`super::auth`]) may reference this module directly. Stable-backed
+//! (notably [`super::store`]) may reference this module directly. Stable-backed
 //! error types are re-exported at the `facade` root for public `GraphStore` signatures.
 
 use std::cell::RefCell;
@@ -14,6 +14,7 @@ pub(crate) mod edge_label_catalog;
 pub(crate) mod edge_properties;
 pub(crate) mod edge_weight_profiles;
 pub(crate) mod metadata;
+pub(crate) mod peer_graph_canisters;
 pub(crate) mod property_catalog;
 pub(crate) mod remote_forward_in;
 pub(crate) mod remote_vertex_refs;
@@ -55,13 +56,6 @@ thread_local! {
         memory::init_edge_alias_index()
     );
 
-    pub(crate) static AUTH_STATE: RefCell<memory::StableAuthState> =
-        RefCell::new(memory::init_auth_state());
-
-    pub(crate) static PREPARED_QUERY_CATALOG: RefCell<memory::StablePreparedQueryCatalog> = RefCell::new(
-        memory::init_prepared_query_catalog()
-    );
-
     pub(crate) static METADATA: RefCell<memory::StableMetadata> = RefCell::new(
         memory::init_metadata()
     );
@@ -80,4 +74,7 @@ thread_local! {
 
     pub(crate) static EDGE_EQUALITY_POSTINGS: RefCell<memory::StableEdgeEqualityPostingStore> =
         RefCell::new(memory::init_edge_equality_postings());
+
+    pub(crate) static PEER_GRAPH_CANISTERS: RefCell<memory::StablePeerGraphCanisterSet> =
+        RefCell::new(memory::init_peer_graph_canisters());
 }
