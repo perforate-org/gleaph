@@ -10,6 +10,7 @@ node_modules/
 
 .canbench/
 
+frontend-old/
 gleaph-old/
 old_crates/
 escape_crates/

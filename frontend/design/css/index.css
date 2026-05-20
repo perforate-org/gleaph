@@ -1,6 +1,0 @@
-/* Canonical token bundle. Figma ↔ CSS map: ../figma/variables.manifest.json */
-@import "./primitives.css";
-@import "./semantic.css";
-@import "./elevation.css";
-@import "./typography.css";
-@import "./motion.css";

@@ -1,7 +1,5 @@
 packages:
   - "sdk/*"
-  - "frontend/design"
-  - "frontend/product"
-  - "frontend/dashboard"
+  - "frontend/apps/*"
 
 minimumReleaseAge: 10080 # 1 week

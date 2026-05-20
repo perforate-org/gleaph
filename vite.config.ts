@@ -21,13 +21,6 @@ export default defineConfig({
         command: "vp run @gleaph/sdk#pack",
         dependsOn: ["sdk:test", "sdk:build"],
       },
-      "product:check": {
-        command: "vp run @gleaph/product#check",
-      },
-      "product:build": {
-        command: "vp run @gleaph/product#build",
-        dependsOn: ["product:check"],
-      },
       "dashboard:check": {
         command: "vp run @gleaph/dashboard#check",
       },

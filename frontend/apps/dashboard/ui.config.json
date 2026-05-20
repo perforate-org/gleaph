@@ -1,0 +1,14 @@
+{
+  "$schema": "https://solid-ui.com/schema.json",
+  "tsx": true,
+  "tailwind": {
+    "config": "tailwind.config.js",
+    "css": "src/index.css",
+    "baseColor": "slate",
+    "cssVariables": true
+  },
+  "aliases": {
+    "components": "~/components",
+    "utils": "~/lib/utils"
+  }
+}
