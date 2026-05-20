@@ -6,7 +6,9 @@ use gleaph_gql::Value;
 use gleaph_gql_planner::{OutputBindingKind, OutputColumn, OutputSchema};
 
 use super::error::PlanQueryError;
-use super::executor::{binding_to_value, path_binding_to_value, PlanQueryRow};
+use super::executor::{
+    PathElementBuildCache, binding_to_value, path_binding_to_value, PlanQueryRow,
+};
 use crate::facade::GraphStore;
 use crate::plan::query::{PathBinding, PlanBinding};
 
@@ -20,6 +22,7 @@ pub struct PlanQueryBindings {
 pub(crate) struct MaterializeCtx<'a> {
     store: &'a GraphStore,
     path_cache: HashMap<(usize, usize), Value>,
+    path_elements: PathElementBuildCache,
 }
 
 impl<'a> MaterializeCtx<'a> {
@@ -27,6 +30,7 @@ impl<'a> MaterializeCtx<'a> {
         Self {
             store,
             path_cache: HashMap::new(),
+            path_elements: PathElementBuildCache::default(),
         }
     }
 
@@ -35,7 +39,7 @@ impl<'a> MaterializeCtx<'a> {
         if let Some(cached) = self.path_cache.get(&key) {
             return cached.clone();
         }
-        let value = path_binding_to_value(self.store, pb);
+        let value = path_binding_to_value(self.store, pb, Some(&mut self.path_elements));
         self.path_cache.insert(key, value.clone());
         value
     }

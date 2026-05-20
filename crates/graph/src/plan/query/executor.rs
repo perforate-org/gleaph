@@ -21,7 +21,7 @@ use gleaph_gql::ast::{
 };
 use gleaph_gql::numeric_ops::{NumericOpError, eval_binary_numeric};
 use gleaph_gql::numeric_order::{NormalizedNumeric, NumericOrderError, normalized_numeric_parts};
-use gleaph_gql::types::{EdgeDirection, LabelExpr, PathElement};
+use gleaph_gql::types::{EdgeDirection, LabelExpr, PathElement, PathElementId};
 use gleaph_gql::value_cmp::compare_values;
 use gleaph_gql::{Value, hash_value_for_join, value_to_index_key_bytes};
 use gleaph_gql_planner::OutputSchema;
@@ -49,7 +49,7 @@ use rapidhash::fast::RapidHasher;
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap};
 use std::hash::Hasher;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -3780,8 +3780,63 @@ thread_local! {
 /// `plan_query_materialize_value_rows` benches.
 const PATH_MATERIALIZE_SCRATCH_MIN_ELEMENTS: usize = 16;
 
-pub(super) fn path_binding_to_value(store: &GraphStore, pb: &PathBinding) -> Value {
-    materialize_path_from_search_states(store, pb.shard_id, pb.states.as_ref(), pb.leaf_state_idx)
+/// Reused across many path materializations in one hydrate batch (shared vertex/edge element ids).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PathElementBuildCache {
+    vertices: IntMap<u32, PathElementId>,
+    edges: HashMap<(gleaph_graph_kernel::federation::ShardId, u32, u32), PathElementId>,
+}
+
+impl PathElementBuildCache {
+    fn vertex_element(
+        &mut self,
+        store: &GraphStore,
+        vertex_id: VertexId,
+    ) -> PathElement {
+        let key = u32::from(vertex_id);
+        if let Some(cached) = self.vertices.get(&key) {
+            return PathElement::Vertex(cached.clone());
+        }
+        let element = vertex_path_element(store, vertex_id);
+        if let PathElement::Vertex(id) = &element {
+            self.vertices.insert(key, id.clone());
+        }
+        element
+    }
+
+    fn edge_element(
+        &mut self,
+        shard_id: gleaph_graph_kernel::federation::ShardId,
+        handle: EdgeHandle,
+    ) -> PathElement {
+        let key = (
+            shard_id,
+            u32::from(handle.owner_vertex_id),
+            handle.slot_index,
+        );
+        if let Some(cached) = self.edges.get(&key) {
+            return PathElement::Edge(cached.clone());
+        }
+        let element = edge_path_element(shard_id, handle);
+        if let PathElement::Edge(id) = &element {
+            self.edges.insert(key, id.clone());
+        }
+        element
+    }
+}
+
+pub(super) fn path_binding_to_value(
+    store: &GraphStore,
+    pb: &PathBinding,
+    element_cache: Option<&mut PathElementBuildCache>,
+) -> Value {
+    materialize_path_from_search_states(
+        store,
+        pb.shard_id,
+        pb.states.as_ref(),
+        pb.leaf_state_idx,
+        element_cache,
+    )
 }
 
 fn materialize_path_from_search_states(
@@ -3789,21 +3844,43 @@ fn materialize_path_from_search_states(
     shard_id: gleaph_graph_kernel::federation::ShardId,
     states: &[PathSearchNode],
     state_idx: usize,
+    element_cache: Option<&mut PathElementBuildCache>,
 ) -> Value {
     let depth = states[state_idx].depth as usize;
     let min_cap = depth.saturating_mul(2).saturating_add(1);
     if min_cap < PATH_MATERIALIZE_SCRATCH_MIN_ELEMENTS {
         let mut elements = Vec::with_capacity(min_cap);
-        fill_path_elements_leaf_to_root(store, shard_id, states, state_idx, &mut elements);
+        fill_path_elements_leaf_to_root(
+            store,
+            shard_id,
+            states,
+            state_idx,
+            &mut elements,
+            element_cache,
+        );
         return Value::Path(elements);
     }
     PATH_MATERIALIZE_SCRATCH.with(|scratch| {
         if let Ok(mut elements) = scratch.try_borrow_mut() {
-            fill_path_elements_leaf_to_root(store, shard_id, states, state_idx, &mut elements);
+            fill_path_elements_leaf_to_root(
+                store,
+                shard_id,
+                states,
+                state_idx,
+                &mut elements,
+                element_cache,
+            );
             return Value::Path(std::mem::take(&mut *elements));
         }
         let mut elements = Vec::with_capacity(min_cap);
-        fill_path_elements_leaf_to_root(store, shard_id, states, state_idx, &mut elements);
+        fill_path_elements_leaf_to_root(
+            store,
+            shard_id,
+            states,
+            state_idx,
+            &mut elements,
+            element_cache,
+        );
         Value::Path(elements)
     })
 }
@@ -3814,6 +3891,7 @@ fn fill_path_elements_leaf_to_root(
     states: &[PathSearchNode],
     state_idx: usize,
     elements: &mut Vec<PathElement>,
+    mut element_cache: Option<&mut PathElementBuildCache>,
 ) {
     elements.clear();
     let mut chain: Vec<usize> = Vec::new();
@@ -3833,10 +3911,18 @@ fn fill_path_elements_leaf_to_root(
         let state = &states[si];
         if hop > 0 {
             if let Some(edge_binding) = state.edge {
-                elements.push(edge_path_element(shard_id, edge_binding.handle));
+                let edge = match element_cache.as_deref_mut() {
+                    Some(cache) => cache.edge_element(shard_id, edge_binding.handle),
+                    None => edge_path_element(shard_id, edge_binding.handle),
+                };
+                elements.push(edge);
             }
         }
-        elements.push(vertex_path_element(store, state.current));
+        let vertex = match element_cache.as_deref_mut() {
+            Some(cache) => cache.vertex_element(store, state.current),
+            None => vertex_path_element(store, state.current),
+        };
+        elements.push(vertex);
     }
 }
 
@@ -4798,7 +4884,7 @@ impl QueryExprEvaluator<'_> {
                     .map_or(Ok(Value::Null), Ok),
                 Some(PlanBinding::Value(value)) => Ok(record_property(value, property)),
                 Some(PlanBinding::Path(pb)) => Ok(record_property(
-                    &path_binding_to_value(self.store, pb),
+                    &path_binding_to_value(self.store, pb, None),
                     property,
                 )),
                 Some(PlanBinding::RemoteVertex(_)) => Ok(Value::Null),
@@ -4949,7 +5035,7 @@ pub(super) fn binding_to_value(
         ])),
         PlanBinding::Edge(edge) => edge_to_value(store, *edge),
         PlanBinding::Value(value) => Ok(value.clone()),
-        PlanBinding::Path(pb) => Ok(path_binding_to_value(store, pb)),
+        PlanBinding::Path(pb) => Ok(path_binding_to_value(store, pb, None)),
     }
 }
 
