@@ -16,7 +16,6 @@ use gleaph_gql_planner::plan::PhysicalPlan;
 use gleaph_gql_planner::{PlanBuildOptions, build_plan_with_schema_and_options};
 
 use super::context::QueryExprEvaluator;
-use super::PlanQueryResult;
 use super::super::{GLEAPH_PATH_EXTENSION_HANDLER, materialize};
 use crate::facade::FederationRouting;
 use crate::index::lookup::PropertyIndexLookup;
@@ -29,11 +28,6 @@ pub(crate) use super::bindings::EdgeBinding;
 pub(crate) use super::context::ExecuteCtx;
 pub(crate) use super::expand::{execute_expand, ExpandDst};
 pub(crate) use super::join::merge_rows;
-pub(crate) use super::path::{
-    decode_direct_gleaph_weight_hop_cost, local_shard_id, materialize_path_from_search_states,
-    weighted_shortest_can_use_hop_count, weighted_shortest_paths_between, ShortestFixedLabelExpand,
-    WeightedCost, WeightedCostOrderKey,
-};
 pub(crate) use super::{
     edge_binding_for_expand, EdgeSequenceOrder, execute_plan_query, execute_plan_query_bindings,
 };
@@ -59,6 +53,7 @@ pub use crate::facade::mutation_executor::GraphMutationExecutor;
 pub use crate::gql_execution_context::GqlExecutionContext;
 pub use super::super::row::PlanRow;
 pub use super::PlanBinding;
+pub use super::PlanQueryResult;
 pub use super::super::error::PlanQueryError;
 pub use crate::index::placement::native_test_register_physical_placement;
 
@@ -338,38 +333,6 @@ pub fn configure_test_federation(store: &GraphStore) {
     });
 }
 
-pub fn path_column<'a>(result: &'a PlanQueryResult, column: &str) -> &'a [PathElement] {
-    match result.rows.first().and_then(|row| row.get(column)) {
-        Some(Value::Path(elements)) => elements,
-        other => panic!("expected path column {column}, got {other:?}"),
-    }
-}
-
-pub fn vertex_path_id(element: &PathElement) -> GraphPathVertexId {
-    match element {
-        PathElement::Vertex(id) => {
-            GraphPathVertexId::try_from_slice(id.as_ref()).expect("vertex path id")
-        }
-        other => panic!("expected vertex path element, got {other:?}"),
-    }
-}
-
-pub fn assert_path_vertex_local(store: &GraphStore, element: &PathElement, local: VertexId) {
-    assert_eq!(
-        vertex_path_id(element).logical_vertex_id,
-        store
-            .logical_vertex_id(local)
-            .expect("logical vertex id for local vertex")
-    );
-}
-
-pub fn edge_path_id(element: &PathElement) -> GraphPathEdgeId {
-    match element {
-        PathElement::Edge(id) => GraphPathEdgeId::try_from_slice(id.as_ref()).expect("edge id"),
-        other => panic!("expected edge path element, got {other:?}"),
-    }
-}
-
 pub fn agg_count_star() -> Expr {
     Expr::new(ExprKind::Aggregate {
         func: AggregateFunc::CountStar,
@@ -396,195 +359,3 @@ pub fn eval_test_expr(expr: Expr) -> Value {
         .expect("eval test expr")
 }
 
-pub fn catalog_edge_label(store: &GraphStore, label_name: &str) -> EdgeLabelId {
-    store.edge_label_id(label_name).expect("edge label")
-}
-
-pub fn gleaph_weight_call(edge_var: &str) -> Expr {
-    Expr::new(ExprKind::FunctionCall {
-        name: ObjectName::qualified(vec!["GLEAPH".into(), "WEIGHT".into()]),
-        args: vec![Expr::var(edge_var)],
-        distinct: false,
-    })
-}
-
-pub fn scaled_gleaph_weight_cost(edge_var: &str, scale_param: &str) -> Expr {
-    Expr::new(ExprKind::BinaryOp {
-        left: Box::new(gleaph_weight_call(edge_var)),
-        op: BinaryOp::Mul,
-        right: Box::new(Expr::new(ExprKind::Parameter(scale_param.to_owned()))),
-    })
-}
-
-pub fn setup_weighted_road_graph(store: &GraphStore) -> (VertexId, VertexId, VertexId) {
-    use gleaph_graph_kernel::entry::{EdgeWeightProfile, WeightEncoding};
-    let a = store
-        .insert_vertex_named(["WgtA"], Vec::<(&str, Value)>::new())
-        .expect("insert a");
-    let b = store
-        .insert_vertex_named(["WgtB"], Vec::<(&str, Value)>::new())
-        .expect("insert b");
-    let c = store
-        .insert_vertex_named(["WgtC"], Vec::<(&str, Value)>::new())
-        .expect("insert c");
-    let label_id = store
-        .get_or_insert_edge_label_id("WgtRoad")
-        .expect("road label");
-    store
-        .set_edge_label_weight_profile(
-            label_id,
-            EdgeWeightProfile {
-                encoding: WeightEncoding::RawU16,
-            },
-        )
-        .expect("weight profile");
-    let road = catalog_edge_label(store, "WgtRoad");
-    store
-        .insert_directed_edge_with_inline_value(a, b, Some(road), 1)
-        .expect("a->b");
-    store
-        .insert_directed_edge_with_inline_value(b, c, Some(road), 1)
-        .expect("b->c");
-    store
-        .insert_directed_edge_with_inline_value(a, c, Some(road), 100)
-        .expect("a->c");
-    (a, b, c)
-}
-
-pub fn weighted_shortest_plan_with_cost(cost: Expr) -> PhysicalPlan {
-    weighted_shortest_plan_with_cost_mode(cost, ShortestMode::AnyShortest)
-}
-
-pub fn weighted_shortest_plan_with_cost_mode(cost: Expr, mode: ShortestMode) -> PhysicalPlan {
-    plan(vec![
-        PlanOp::NodeScan {
-            variable: "a".into(),
-            label: Some("WgtA".into()),
-            property_projection: None,
-        },
-        PlanOp::NodeScan {
-            variable: "c".into(),
-            label: Some("WgtC".into()),
-            property_projection: None,
-        },
-        PlanOp::ShortestPath {
-            src: "a".into(),
-            dst: "c".into(),
-            edge: "e".into(),
-            path_var: Some("p".into()),
-            emit_edge_binding: true,
-            emit_path_binding: true,
-            mode,
-            direction: EdgeDirection::PointingRight,
-            label: Some("WgtRoad".into()),
-            label_expr: None,
-            var_len: Some(VarLenSpec { min: 1, max: Some(5) }),
-            cost: ShortestPathCost::EdgeCostExpr {
-                edge_var: "e".into(),
-                expr: cost,
-            },
-        },
-        PlanOp::Project {
-            columns: vec![project(var("p"), "p")],
-            distinct: false,
-        },
-    ])
-}
-
-pub fn weighted_2_24_precision_cost_expr() -> Expr {
-    Expr::new(ExprKind::CaseSimple {
-        operand: Box::new(gleaph_weight_call("e")),
-        when_clauses: vec![
-            WhenClause {
-                span: Span::DUMMY,
-                condition: Expr::new(ExprKind::Literal(Value::Float32(1.0))),
-                result: Expr::new(ExprKind::Literal(Value::Float64(8_388_608.0))),
-            },
-            WhenClause {
-                span: Span::DUMMY,
-                condition: Expr::new(ExprKind::Literal(Value::Float32(100.0))),
-                result: Expr::new(ExprKind::Literal(Value::Float64(16_777_217.0))),
-            },
-        ],
-        else_clause: Some(Box::new(Expr::new(ExprKind::Literal(Value::Float64(0.0))))),
-    })
-}
-
-pub fn cast_expr_to_float32(expr: Expr) -> Expr {
-    Expr::new(ExprKind::Cast {
-        expr: Box::new(expr),
-        target: gleaph_gql::ast::ValueType::Float32 {
-            keyword: gleaph_gql::ast::Keyword::new("FLOAT32"),
-        },
-    })
-}
-
-pub fn weighted_2_24_precision_cost_expr_float32() -> Expr {
-    Expr::new(ExprKind::CaseSimple {
-        operand: Box::new(gleaph_weight_call("e")),
-        when_clauses: vec![
-            WhenClause {
-                span: Span::DUMMY,
-                condition: Expr::new(ExprKind::Literal(Value::Float32(1.0))),
-                result: cast_expr_to_float32(Expr::new(ExprKind::Literal(Value::Float64(
-                    8_388_608.0,
-                )))),
-            },
-            WhenClause {
-                span: Span::DUMMY,
-                condition: Expr::new(ExprKind::Literal(Value::Float32(100.0))),
-                result: cast_expr_to_float32(Expr::new(ExprKind::Literal(Value::Float64(
-                    16_777_217.0,
-                )))),
-            },
-        ],
-        else_clause: Some(Box::new(cast_expr_to_float32(Expr::new(ExprKind::Literal(
-            Value::Float64(0.0),
-        ))))),
-    })
-}
-
-pub fn weighted_decimal_precision_cost_expr() -> Expr {
-    use gleaph_gql::types::Decimal;
-    Expr::new(ExprKind::CaseSimple {
-        operand: Box::new(gleaph_weight_call("e")),
-        when_clauses: vec![
-            WhenClause {
-                span: Span::DUMMY,
-                condition: Expr::new(ExprKind::Literal(Value::Float32(1.0))),
-                result: Expr::new(ExprKind::Literal(Value::Decimal(
-                    Decimal::parse("0.10").expect("decimal"),
-                ))),
-            },
-            WhenClause {
-                span: Span::DUMMY,
-                condition: Expr::new(ExprKind::Literal(Value::Float32(100.0))),
-                result: Expr::new(ExprKind::Literal(Value::Decimal(
-                    Decimal::parse("0.21").expect("decimal"),
-                ))),
-            },
-        ],
-        else_clause: Some(Box::new(Expr::new(ExprKind::Literal(Value::Decimal(
-            Decimal::from_i64(0),
-        ))))),
-    })
-}
-
-pub fn weighted_wide_integer_precision_cost_expr() -> Expr {
-    Expr::new(ExprKind::CaseSimple {
-        operand: Box::new(gleaph_weight_call("e")),
-        when_clauses: vec![
-            WhenClause {
-                span: Span::DUMMY,
-                condition: Expr::new(ExprKind::Literal(Value::Float32(1.0))),
-                result: Expr::new(ExprKind::Literal(Value::Int64(1_000_000))),
-            },
-            WhenClause {
-                span: Span::DUMMY,
-                condition: Expr::new(ExprKind::Literal(Value::Float32(100.0))),
-                result: Expr::new(ExprKind::Literal(Value::Int64(2_000_001))),
-            },
-        ],
-        else_clause: Some(Box::new(Expr::new(ExprKind::Literal(Value::Int64(0))))),
-    })
-}
