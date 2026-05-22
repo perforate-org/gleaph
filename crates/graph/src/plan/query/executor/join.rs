@@ -1,12 +1,10 @@
 //! Hash join and cartesian product operators.
 
 use std::hash::Hasher;
-use std::pin::Pin;
 use std::sync::Arc;
 
-use gleaph_gql::{Value, hash_value_for_join};
+use gleaph_gql::hash_value_for_join;
 use gleaph_gql_planner::plan::{PlanOp, Str};
-use ic_stable_lara::VertexId;
 use nohash_hasher::IntMap;
 use rapidhash::fast::RapidHasher;
 

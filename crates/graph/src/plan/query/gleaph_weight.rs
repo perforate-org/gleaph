@@ -28,8 +28,8 @@ pub(crate) fn decode_traversal_edge_weight(
     inline_value: u16,
     weight_decoder: Option<&PreparedWeightDecoder>,
 ) -> Result<f32, PlanQueryError> {
-    if let Some(catalog) = catalog_edge_label_from_wire(handle.label_id) {
-        if let Some(profile) = store.edge_label_value_profile(catalog) {
+    if let Some(catalog) = catalog_edge_label_from_wire(handle.label_id)
+        && let Some(profile) = store.edge_label_value_profile(catalog) {
             let decoder = profile.prepare().map_err(
                 |e: gleaph_graph_kernel::entry::EdgeValueProfileError| {
                     PlanQueryError::GleaphWeight {
@@ -52,16 +52,14 @@ pub(crate) fn decode_traversal_edge_weight(
             })?;
             return decoded_edge_value_to_weight(decoded);
         }
-    }
-    if let Some(decoder) = weight_decoder {
-        if value_len == 2 {
+    if let Some(decoder) = weight_decoder
+        && value_len == 2 {
             return decode_inline_weight(decoder, inline_value).map_err(|e| {
                 PlanQueryError::GleaphWeight {
                     message: format!("GLEAPH.WEIGHT decode failed: {e}"),
                 }
             });
         }
-    }
     Err(PlanQueryError::GleaphWeight {
         message: format!(
             "edge label row has no value profile and stored width {} is not a legacy u16 weight",
@@ -112,7 +110,7 @@ pub(crate) fn is_gleaph_weight_call(name: &ObjectName, distinct: bool) -> bool {
         && name.parts[1].eq_ignore_ascii_case("weight")
 }
 
-pub(crate) fn gleaph_weight_single_arg<'a>(args: &'a [Expr]) -> Option<&'a Expr> {
+pub(crate) fn gleaph_weight_single_arg(args: &[Expr]) -> Option<&Expr> {
     if args.len() == 1 {
         Some(&args[0])
     } else {

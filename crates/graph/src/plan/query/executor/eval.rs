@@ -1,18 +1,15 @@
 //! Expression evaluation, projection, and binding materialization.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
-use candid::Principal;
-use gleaph_gql::ast::{BinaryOp, CmpOp, Expr, ExprKind, ObjectName, TruthValue};
-use gleaph_gql::types::{EdgeDirection, LabelExpr};
-use gleaph_gql::{Value, value_to_index_key_bytes};
-use gleaph_gql_planner::plan::{AggregateSpec, ProjectColumn, Str};
-use gleaph_graph_kernel::entry::{Edge, EdgeLabelId, EdgeSlotIndex, PreparedWeightDecoder, Vertex};
+use gleaph_gql::Value;
+use gleaph_gql::ast::{CmpOp, Expr, ExprKind, ObjectName, TruthValue};
+use gleaph_gql::types::LabelExpr;
+use gleaph_gql_planner::plan::{ProjectColumn, Str};
+use gleaph_graph_kernel::entry::{EdgeLabelId, EdgeSlotIndex, PreparedWeightDecoder, Vertex};
 use gleaph_graph_kernel::path::GraphPathVertexId;
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
-use ic_stable_lara::traits::CsrVertexTombstone;
 
 use super::super::error::PlanQueryError;
 use super::super::row::PlanRow;
@@ -98,7 +95,7 @@ fn try_eval_gleaph_weight(
             variable: edge_var.clone(),
         })?;
     match binding {
-        PlanBinding::Value(Value::Null) => return Ok(Some(Value::Null)),
+        PlanBinding::Value(Value::Null) => Ok(Some(Value::Null)),
         PlanBinding::Edge(edge) => {
             let w = super::super::gleaph_weight::decode_traversal_edge_weight(
                 store,
@@ -548,15 +545,14 @@ pub(crate) fn project_row(
                 .as_ref()
                 .map(Str::to_string)
                 .unwrap_or_else(|| var_name.clone());
-            if column.alias.is_none() && row.is_singleton_binding(var_name.as_str()) {
-                if let Some(layout) = row.shared_layout() {
+            if column.alias.is_none() && row.is_singleton_binding(var_name.as_str())
+                && let Some(layout) = row.shared_layout() {
                     return Ok(PlanRow::with_layout_and_binding(
                         layout,
                         var_name.as_str(),
                         binding.clone(),
                     ));
                 }
-            }
             let mut out = PlanRow::new();
             out.insert(name, binding.clone());
             return Ok(out);

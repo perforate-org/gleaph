@@ -9,12 +9,9 @@ mod scan;
 
 pub use bindings::EdgeBinding;
 pub(crate) use eval::{binding_to_value, eval_sort_expr, project_row, value_row};
-pub(crate) use join::{execute_cartesian_product, execute_hash_join, merge_rows};
 pub(crate) use ops::execute_ops_from;
 pub use path::PathBinding;
-pub(crate) use path::{
-    edge_element_id_bytes, local_shard_id, path_binding_to_value, vertex_element_id_bytes,
-};
+pub(crate) use path::path_binding_to_value;
 pub(crate) use scan::{federation_routing, resolve_scan_value_bytes};
 
 #[cfg(test)]
@@ -26,69 +23,30 @@ pub(crate) use path::{
     weighted_shortest_can_use_hop_count, weighted_shortest_paths_between,
 };
 
-use super::aggregate;
 use super::error::PlanQueryError;
 use super::sort_keys::compare_sort_keys;
-use crate::facade::{EdgeHandle, GraphStore, GraphStoreError, canonical_undirected_owner};
-use crate::gql_execution_context::{GqlExecutionContext, try_eval_runtime_function_call};
-use crate::index::edge_equal;
+use crate::facade::GraphStore;
+use crate::gql_execution_context::GqlExecutionContext;
 use crate::index::lookup::PropertyIndexLookup;
 use crate::index::placement;
-use crate::plan::expr_evaluator::{
-    SearchedCaseWhenOutcome, eval_abs_expr, eval_acos_expr, eval_and_expr, eval_asin_expr,
-    eval_atan_expr, eval_binary_expr, eval_cast_expr, eval_ceil_expr, eval_compare_expr,
-    eval_concat_expr, eval_cos_expr, eval_cosh_expr, eval_cot_expr, eval_degrees_expr,
-    eval_exp_expr, eval_floor_expr, eval_ln_expr, eval_log_expr, eval_log10_expr, eval_mod_expr,
-    eval_not_expr, eval_or_expr, eval_power_expr, eval_radians_expr, eval_sin_expr, eval_sinh_expr,
-    eval_sqrt_expr, eval_tan_expr, eval_tanh_expr, eval_unary_expr, eval_xor_expr,
-    searched_case_when_outcome, truthy,
-};
-use bindings::{edge_binding_for_federated_expand_hit, federated_expand_label_id_raw};
+use crate::plan::expr_evaluator::truthy;
 use candid::Principal;
 use context::{ExecuteCtx, QueryExprEvaluator};
-use expand::{ExpandCandidate, ExpandDst, execute_expand};
-use gleaph_gql::ast::{
-    BinaryOp, CmpOp, Expr, ExprKind, ObjectName, OrderByClause, SortDirection, TruthValue,
-};
-use gleaph_gql::numeric_ops::{NumericOpError, eval_binary_numeric};
-use gleaph_gql::numeric_order::{NormalizedNumeric, NumericOrderError, normalized_numeric_parts};
-use gleaph_gql::types::{EdgeDirection, LabelExpr, PathElement};
-use gleaph_gql::value_cmp::compare_values;
-use gleaph_gql::{Value, hash_value_for_join, value_to_index_key_bytes};
+use gleaph_gql::Value;
+use gleaph_gql::ast::{Expr, ExprKind, ObjectName, OrderByClause, SortDirection};
+use gleaph_gql::types::{EdgeDirection, LabelExpr};
+use gleaph_gql_planner::OutputSchema;
 use gleaph_gql_planner::collect_expr_variables;
-use gleaph_gql_planner::plan::{
-    AggregateSpec, ConditionalScanCandidate, IndexScanSpec, PhysicalPlan, PlanOp, ProjectColumn,
-    ScanValue, ShortestMode, ShortestPathCost, Str, VarLenSpec,
-};
-use gleaph_gql_planner::{BindingLayout, OutputSchema};
-use gleaph_graph_kernel::entry::{
-    Edge, EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, EdgeTarget, PreparedWeightDecoder, Vertex,
-};
-use gleaph_graph_kernel::federation::{
-    FederatedExpandArgs, FederatedExpandDirection, FederatedExpandNeighbor, LogicalVertexId,
-};
-use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest};
-use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
-use ic_stable_lara::BucketLabelKey as LaraLabelId;
+use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, Str};
+use gleaph_graph_kernel::entry::PreparedWeightDecoder;
+use gleaph_graph_kernel::federation::LogicalVertexId;
 use ic_stable_lara::VertexId;
-use ic_stable_lara::labeled::{BucketDirectedness, OutEdgeOrder};
+use ic_stable_lara::labeled::OutEdgeOrder;
 use ic_stable_lara::traits::{CsrEdge, CsrVertexTombstone};
-use nohash_hasher::{IntMap, IntSet};
-use path::execute_shortest_path;
-use rapidhash::fast::RapidHasher;
-use scan::{
-    execute_conditional_index_scan, execute_index_intersection, execute_index_scan,
-    execute_limited_streaming_prefix, execute_node_scan, limited_streaming_prefix_limit_idx,
-};
 #[cfg(test)]
 use std::cell::Cell;
-use std::cell::RefCell;
-use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap};
+use std::collections::BTreeMap;
 use std::hash::Hasher;
-use std::pin::Pin;
-use std::rc::Rc;
-use std::sync::Arc;
 
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
 use canbench_rs::bench_scope;

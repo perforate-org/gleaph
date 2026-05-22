@@ -112,24 +112,22 @@ impl PlanRow {
     }
 
     pub fn get(&self, name: &str) -> Option<&PlanBinding> {
-        if let Some(layout) = &self.layout {
-            if let Some(idx) = layout.index_of(name) {
+        if let Some(layout) = &self.layout
+            && let Some(idx) = layout.index_of(name) {
                 return self.slots.get(idx).and_then(|b| b.as_ref());
             }
-        }
         self.spill.get(name)
     }
 
     pub fn insert(&mut self, name: String, binding: PlanBinding) {
-        if let Some(layout) = &self.layout {
-            if let Some(idx) = layout.index_of(&name) {
+        if let Some(layout) = &self.layout
+            && let Some(idx) = layout.index_of(&name) {
                 if idx >= self.slots.len() {
                     self.slots.resize(idx + 1, None);
                 }
                 self.slots[idx] = Some(binding);
                 return;
             }
-        }
         self.spill.insert(name, binding);
     }
 
@@ -248,24 +246,22 @@ impl PlanRow {
 
     /// Hash-join hot path: one join key, no per-merge skip-name allocation.
     pub fn try_merge_skip_one(&self, right: &Self, skip_name: &str) -> Option<Self> {
-        if let (Some(left_layout), Some(right_layout)) = (&self.layout, &right.layout) {
-            if Rc::ptr_eq(left_layout, right_layout)
-                || left_layout.as_ref() == right_layout.as_ref()
+        if let (Some(left_layout), Some(right_layout)) = (&self.layout, &right.layout)
+            && (Rc::ptr_eq(left_layout, right_layout)
+                || left_layout.as_ref() == right_layout.as_ref())
             {
                 return self.try_merge_indexed_skip(right, left_layout, &[skip_name]);
             }
-        }
         self.try_merge_fallback(right, &[skip_name])
     }
 
     fn try_merge_skip_many(&self, right: &Self, skip_names: &[&str]) -> Option<Self> {
-        if let (Some(left_layout), Some(right_layout)) = (&self.layout, &right.layout) {
-            if Rc::ptr_eq(left_layout, right_layout)
-                || left_layout.as_ref() == right_layout.as_ref()
+        if let (Some(left_layout), Some(right_layout)) = (&self.layout, &right.layout)
+            && (Rc::ptr_eq(left_layout, right_layout)
+                || left_layout.as_ref() == right_layout.as_ref())
             {
                 return self.try_merge_indexed_skip(right, left_layout, skip_names);
             }
-        }
         self.try_merge_fallback(right, skip_names)
     }
 
@@ -340,7 +336,7 @@ impl PlanRow {
     ) -> Option<()> {
         let should_skip = |name: &str| match skip_names {
             [only] => name == *only,
-            names => names.iter().any(|s| *s == name),
+            names => names.contains(&name),
         };
 
         for (name, right_binding) in right.iter() {
@@ -366,7 +362,7 @@ impl PlanRow {
                         layout
                             .name_at(i)
                             .filter(|n| *n == name)
-                            .and_then(|_| b.as_ref())
+                            .and(b.as_ref())
                     })
                     .or_else(|| left_spill.get(name));
                 match left_binding {
@@ -413,11 +409,10 @@ impl PlanRow {
         let mut out = self.spill;
         if let Some(layout) = &self.layout {
             for (idx, binding) in self.slots.into_iter().enumerate() {
-                if let Some(binding) = binding {
-                    if let Some(name) = layout.name_at(idx) {
+                if let Some(binding) = binding
+                    && let Some(name) = layout.name_at(idx) {
                         out.insert(name.to_string(), binding);
                     }
-                }
             }
         }
         out

@@ -27,7 +27,7 @@ fn push_neighbor(
     out.push(FederatedExpandNeighbor {
         shard_id,
         neighbor_logical_vertex_id,
-        neighbor_local_vertex_id: u32::from(neighbor_local_vertex_id),
+        neighbor_local_vertex_id: neighbor_local_vertex_id,
         anchor_local_vertex_id,
         label_id_raw: edge.label_id,
         slot_index: edge.edge_slot_index.raw(),
@@ -51,8 +51,7 @@ fn collect_authoritative_incoming(
 ) -> Result<(), GraphStoreError> {
     let target_local_raw = placement::local_vertex_id_raw(target_local);
     for edge in store
-        .directed_in_edges(target_local)
-        .map_err(GraphStoreError::from)?
+        .directed_in_edges(target_local)?
     {
         if edge.is_tombstone_edge() || !label_matches(&edge, label_id_raw) {
             continue;
@@ -95,8 +94,7 @@ fn push_forward_to_remote_hit(
         return Ok(());
     };
     let edge = store
-        .directed_out_edges(source_vertex_id)
-        .map_err(GraphStoreError::from)?
+        .directed_out_edges(source_vertex_id)?
         .into_iter()
         .find(|edge| edge.label_id == label_id && edge.edge_slot_index.raw() == slot_index);
     let Some(edge) = edge else {
@@ -167,8 +165,7 @@ fn collect_forward_to_remote_incoming_scan(
             continue;
         };
         for edge in store
-            .directed_out_edges(vertex_id)
-            .map_err(GraphStoreError::from)?
+            .directed_out_edges(vertex_id)?
         {
             if edge.is_tombstone_edge() || !label_matches(&edge, label_id_raw) {
                 continue;
@@ -266,8 +263,7 @@ fn collect_incoming_neighbors(
         shard_id,
         local_vertex_id,
     })) = placement::resolve_placement(routing.router_canister, logical_vertex_id)
-    {
-        if shard_id == routing.shard_id {
+        && shard_id == routing.shard_id {
             collect_authoritative_incoming(
                 store,
                 routing.shard_id,
@@ -278,7 +274,6 @@ fn collect_incoming_neighbors(
             )?;
             return Ok(out);
         }
-    }
 
     if let Some(remote_ref) = store.remote_ref_for_logical(logical_vertex_id) {
         collect_forward_to_remote_incoming(
@@ -335,8 +330,7 @@ fn collect_authoritative_undirected(
 ) -> Result<(), GraphStoreError> {
     let probe_local_raw = placement::local_vertex_id_raw(probe_local);
     for edge in store
-        .undirected_edges(probe_local)
-        .map_err(GraphStoreError::from)?
+        .undirected_edges(probe_local)?
     {
         if edge.is_tombstone_edge() || !label_matches(&edge, label_id_raw) {
             continue;
@@ -374,8 +368,7 @@ fn collect_undirected_to_remote(
             continue;
         }
         for edge in store
-            .undirected_edges(vertex_id)
-            .map_err(GraphStoreError::from)?
+            .undirected_edges(vertex_id)?
         {
             if edge.is_tombstone_edge() || !label_matches(&edge, label_id_raw) {
                 continue;
@@ -422,8 +415,7 @@ fn collect_undirected_neighbors(
         shard_id,
         local_vertex_id,
     })) = placement::resolve_placement(routing.router_canister, logical_vertex_id)
-    {
-        if shard_id == routing.shard_id {
+        && shard_id == routing.shard_id {
             collect_authoritative_undirected(
                 store,
                 routing.shard_id,
@@ -434,7 +426,6 @@ fn collect_undirected_neighbors(
             )?;
             return Ok(out);
         }
-    }
 
     if let Some(remote_ref) = store.remote_ref_for_logical(logical_vertex_id) {
         collect_undirected_to_remote(store, routing.shard_id, remote_ref, label_id_raw, &mut out)?;
@@ -452,8 +443,7 @@ fn collect_authoritative_outgoing(
 ) -> Result<(), GraphStoreError> {
     let source_local_raw = placement::local_vertex_id_raw(source_local);
     for edge in store
-        .directed_out_edges(source_local)
-        .map_err(GraphStoreError::from)?
+        .directed_out_edges(source_local)?
     {
         if edge.is_tombstone_edge() || !label_matches(&edge, label_id_raw) {
             continue;

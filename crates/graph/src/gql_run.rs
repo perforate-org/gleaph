@@ -372,7 +372,7 @@ async fn run_wire_plans(
     let mut last_read_plan_rows: Vec<PlanQueryRow> = Vec::new();
 
     let (mut seed_rows, mut skip_index) = if let Some(ref s) = seeds {
-        seed_initial_rows(&store, s)?
+        seed_initial_rows(store, s)?
     } else {
         (Vec::new(), false)
     };

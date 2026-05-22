@@ -1,8 +1,6 @@
 //! Vertex/index scan operators and limit+offset streaming execution.
 
-use std::cell::Cell;
-use std::collections::{BTreeMap, HashMap};
-use std::pin::Pin;
+use std::collections::BTreeMap;
 
 use candid::Principal;
 use gleaph_gql::ast::{CmpOp, Expr};
@@ -20,21 +18,19 @@ use nohash_hasher::IntSet;
 
 use super::super::error::PlanQueryError;
 use super::super::row::PlanRow;
-use super::context::{ExecuteCtx, QueryExprEvaluator};
+use super::context::QueryExprEvaluator;
 use super::expand::{
     EdgeEqualityStreamFilter, ExpandDst, build_expanded_row, csr_offset_fast_path_for_expand,
     edge_binding_for_expand, edge_equality_stream_filter, edge_matches_stream_filter,
     expand_accepts_remote_dst, expand_candidates_into, expand_dst_matches_prebound_vertex,
     visit_csr_expand_fast_path,
 };
-use super::ops::execute_ops_from;
 use super::{
     EdgeSequenceOrder, PlanBinding, dst_filter_is_dst_vertex_only, ensure_simple_expand,
     limit_value, project_row, row_matches_all, vertex_binding_for_traversal,
     vertex_row_matches_dst_filters,
 };
-use crate::facade::{GraphStore, GraphStoreError};
-use crate::gql_execution_context::GqlExecutionContext;
+use crate::facade::GraphStore;
 use crate::index::lookup::PropertyIndexLookup;
 use crate::index::placement;
 
@@ -477,7 +473,7 @@ fn stream_expand(
             Some(PlanBinding::Vertex(_)) | Some(PlanBinding::RemoteVertex(_))
         )
         && streaming_ops_preserve_row_cardinality_after(ops, op_idx + 1))
-    .then(|| csr_expand_fast_path)
+    .then_some(csr_expand_fast_path)
     .flatten();
 
     if let Some(fast_path) = csr_offset_fast_path {
@@ -506,7 +502,7 @@ fn stream_expand(
                 edge_property_projection,
                 dst_property_projection,
             )?;
-            Ok(stream_row_through_ops(
+            stream_row_through_ops(
                 store,
                 ops,
                 op_idx + 1,
@@ -517,7 +513,7 @@ fn stream_expand(
                 evaluator,
                 sink,
                 clears_active_aggregate,
-            )?)
+            )
         };
         let res =
             visit_csr_expand_fast_path(store, src_id, fast_path, &mut offset_slot, &mut visit);
@@ -585,7 +581,7 @@ fn stream_expand(
             if !dst_only_prefilter && !row_matches_all(evaluator, &expanded, dst_filter)? {
                 return Ok(false);
             }
-            Ok(stream_row_through_ops(
+            stream_row_through_ops(
                 store,
                 ops,
                 op_idx + 1,
@@ -596,7 +592,7 @@ fn stream_expand(
                 evaluator,
                 sink,
                 clears_active_aggregate,
-            )?)
+            )
         };
         let res =
             visit_csr_expand_fast_path(store, src_id, fast_path, &mut offset_slot, &mut visit);

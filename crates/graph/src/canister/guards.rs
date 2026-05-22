@@ -1,10 +1,5 @@
 //! Caller guards for graph canister entrypoints (control plane only — no end-user RBAC).
 
-use candid::Principal;
-use ic_cdk::api::msg_caller;
-
-use crate::facade::GraphStore;
-
 /// Native unit tests call handlers directly without a router caller principal.
 #[cfg(not(target_family = "wasm"))]
 pub fn guard_router_canister() -> Result<(), String> {

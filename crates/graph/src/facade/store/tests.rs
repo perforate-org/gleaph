@@ -1,0 +1,711 @@
+use super::helpers::{edge_storage_label, lara_label};
+use super::*;
+use crate::facade::mutation_executor::GraphMutationExecutor;
+use candid::Principal;
+use gleaph_gql::Value;
+use gleaph_graph_kernel::entry::{
+    EdgeDirectedness, EdgeSlotIndex, EdgeTarget, EdgeWeightProfile, VertexRef, WeightEncoding,
+};
+use ic_stable_lara::{
+    MaintenanceBudget, OutEdgeOrder, VertexId,
+    labeled::{BucketLabelKey as LaraLabelId, LabeledOrientation},
+    traits::CsrEdge,
+};
+use std::collections::BTreeMap;
+
+#[test]
+fn peer_graph_canister_bootstrap_and_remove() {
+    let store = GraphStore::new();
+    let self_canister = Principal::self_authenticating([1u8; 32]);
+    let peer_a = Principal::self_authenticating([2u8; 32]);
+    let peer_b = Principal::self_authenticating([3u8; 32]);
+
+    store.bootstrap_peer_graph_canisters(&[self_canister, peer_a, peer_b], self_canister);
+    assert!(store.is_peer_graph_canister(&peer_a));
+    assert!(store.is_peer_graph_canister(&peer_b));
+    assert!(!store.is_peer_graph_canister(&self_canister));
+
+    store.add_peer_graph_canister(peer_a, self_canister);
+    assert!(store.remove_peer_graph_canister(&peer_a));
+    assert!(!store.is_peer_graph_canister(&peer_a));
+    assert!(store.is_peer_graph_canister(&peer_b));
+}
+
+#[test]
+fn inline_edge_values_round_trip_on_parallel_out_edges() {
+    let store = GraphStore::new();
+    let s = store.insert_vertex().expect("s");
+    let a = store.insert_vertex().expect("a");
+    let mid = store.insert_vertex().expect("mid");
+    let dst = store.insert_vertex().expect("dst");
+    let label_id = store
+        .get_or_insert_edge_label_id("WgtRoad")
+        .expect("road label");
+    store
+        .set_edge_label_weight_profile(
+            label_id,
+            EdgeWeightProfile {
+                encoding: WeightEncoding::RawU16,
+            },
+        )
+        .expect("weight profile");
+    store
+        .insert_directed_edge_with_inline_value(s, mid, Some(label_id), 10)
+        .expect("s->mid");
+    store
+        .insert_directed_edge_with_inline_value(s, a, Some(label_id), 5)
+        .expect("s->a");
+    store
+        .insert_directed_edge_with_inline_value(a, mid, Some(label_id), 1)
+        .expect("a->mid");
+    store
+        .insert_directed_edge_with_inline_value(mid, dst, Some(label_id), 0)
+        .expect("mid->dst");
+    let _ = dst;
+    let mut weights = Vec::new();
+    store
+        .for_each_directed_out_edges_for_label_unchecked(s, label_id, |edge| {
+            weights.push(edge.inline_value_u16());
+        })
+        .expect("out edges");
+    weights.sort_unstable();
+    assert_eq!(weights, vec![5, 10]);
+}
+
+#[test]
+fn weighted_road_parallel_out_edges_from_a_round_trip() {
+    let store = GraphStore::new();
+    let a = store.insert_vertex().expect("a");
+    let b = store.insert_vertex().expect("b");
+    let c = store.insert_vertex().expect("c");
+    let label_id = store
+        .get_or_insert_edge_label_id("WgtRoad")
+        .expect("road label");
+    store
+        .set_edge_label_weight_profile(
+            label_id,
+            EdgeWeightProfile {
+                encoding: WeightEncoding::RawU16,
+            },
+        )
+        .expect("weight profile");
+    store
+        .insert_directed_edge_with_inline_value(a, b, Some(label_id), 1)
+        .expect("a->b");
+    store
+        .insert_directed_edge_with_inline_value(b, c, Some(label_id), 1)
+        .expect("b->c");
+    store
+        .insert_directed_edge_with_inline_value(a, c, Some(label_id), 100)
+        .expect("a->c");
+    let mut weights = Vec::new();
+    store
+        .for_each_directed_out_edges_for_label_unchecked(a, label_id, |edge| {
+            weights.push(edge.inline_value_u16());
+        })
+        .expect("out edges from a");
+    weights.sort_unstable();
+    assert_eq!(weights, vec![1, 100]);
+}
+
+#[test]
+fn directed_out_edges_visit_attaches_inline_values() {
+    let store = GraphStore::new();
+    let a = store.insert_vertex().expect("a");
+    let label_id = store
+        .get_or_insert_edge_label_id("VisitWgtRoad")
+        .expect("road label");
+    store
+        .set_edge_label_weight_profile(
+            label_id,
+            EdgeWeightProfile {
+                encoding: WeightEncoding::RawU16,
+            },
+        )
+        .expect("weight profile");
+    for weight in 1..=8u16 {
+        let t = store.insert_vertex().expect("target");
+        store
+            .insert_directed_edge_with_inline_value(a, t, Some(label_id), weight)
+            .expect("a->t");
+    }
+    let mut weights = Vec::new();
+    store
+        .for_each_directed_out_edges(a, OutEdgeOrder::Ascending, |edge| {
+            weights.push(edge.inline_value_u16());
+        })
+        .expect("out edges");
+    weights.sort_unstable();
+    assert_eq!(weights, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+}
+
+#[test]
+fn delete_valued_directed_edge_by_handle_removes_reverse_alias_slot() {
+    let store = GraphStore::new();
+    let source = store.insert_vertex().expect("source");
+    let target = store.insert_vertex().expect("target");
+    let label_id = store
+        .get_or_insert_edge_label_id("DeleteValuedDirected")
+        .expect("label");
+
+    let first = store
+        .insert_directed_edge_with_value_bytes(source, target, Some(label_id), &[1, 0])
+        .expect("first edge");
+    let second = store
+        .insert_directed_edge_with_value_bytes(source, target, Some(label_id), &[2, 0])
+        .expect("second edge");
+
+    assert_eq!(store.directed_in_edges(target).expect("in before").len(), 2);
+    store.delete_edge_by_handle(first).expect("delete first");
+
+    let in_edges = store.directed_in_edges(target).expect("in after");
+    assert_eq!(in_edges.len(), 1);
+    assert!(in_edges.iter().all(|edge| edge.neighbor_vid() == source));
+
+    let wire_label = lara_label(label_id.pack(EdgeDirectedness::Directed));
+    let reverse = store
+        .find_first_reverse_handle_descending(target, wire_label, |edge| {
+            edge.neighbor_vid() == source
+        })
+        .expect("reverse lookup")
+        .expect("remaining reverse edge");
+    assert_eq!(store.canonical_reverse_in_edge_handle(reverse), second);
+}
+
+#[test]
+fn directed_reverse_alias_does_not_require_matching_slot_index() {
+    let store = GraphStore::new();
+    let source = store.insert_vertex().expect("source");
+    let target = store.insert_vertex().expect("target");
+    let other_source = store.insert_vertex().expect("other source");
+    let label_id = store
+        .get_or_insert_edge_label_id("DirectedAliasSlotSkew")
+        .expect("label");
+
+    store
+        .insert_directed_edge_with_value_bytes(other_source, target, Some(label_id), &[7, 0])
+        .expect("preexisting edge");
+    let canonical = store
+        .insert_directed_edge_with_value_bytes(source, target, Some(label_id), &[42, 0])
+        .expect("skewed edge");
+
+    let wire_label = lara_label(label_id.pack(EdgeDirectedness::Directed));
+    let reverse = store
+        .find_first_reverse_handle_descending(target, wire_label, |edge| {
+            edge.neighbor_vid() == source
+        })
+        .expect("reverse lookup")
+        .expect("reverse edge");
+    assert_ne!(
+        reverse.slot_index, canonical.slot_index,
+        "test setup should force forward/reverse slot skew"
+    );
+    assert_eq!(store.canonical_reverse_in_edge_handle(reverse), canonical);
+
+    let edge = store
+        .find_outgoing_edge_record(reverse)
+        .expect("edge lookup")
+        .expect("canonicalized edge");
+    assert_eq!(edge.value_bytes(), &[42, 0]);
+}
+
+#[test]
+fn delete_valued_undirected_edge_by_handle_removes_alias_slot() {
+    let store = GraphStore::new();
+    let low = store.insert_vertex().expect("low");
+    let high = store.insert_vertex().expect("high");
+    let label_id = store
+        .get_or_insert_edge_label_id("DeleteValuedUndirected")
+        .expect("label");
+
+    let first = store
+        .insert_undirected_edge_with_value_bytes(low, high, Some(label_id), &[1, 0])
+        .expect("first edge");
+    let second = store
+        .insert_undirected_edge_with_value_bytes(low, high, Some(label_id), &[2, 0])
+        .expect("second edge");
+
+    store.delete_edge_by_handle(first).expect("delete first");
+
+    let weights_from = |vertex| {
+        let mut weights: Vec<u16> = store
+            .undirected_edges(vertex)
+            .expect("undirected edges")
+            .into_iter()
+            .map(|edge| edge.inline_value_u16())
+            .collect();
+        weights.sort_unstable();
+        weights
+    };
+    assert_eq!(weights_from(low), vec![2]);
+    assert_eq!(weights_from(high), vec![2]);
+
+    let wire_label = lara_label(label_id.pack(EdgeDirectedness::Undirected));
+    let alias = store
+        .find_first_forward_handle_descending(low, wire_label, |edge| edge.neighbor_vid() == high)
+        .expect("alias lookup")
+        .expect("remaining alias half");
+    assert_eq!(store.canonical_edge_handle(alias), second);
+}
+
+#[test]
+fn unvalued_parallel_directed_inserts_align_reverse_alias_slot() {
+    let store = GraphStore::new();
+    let source = store.insert_vertex().expect("source");
+    let target = store.insert_vertex().expect("target");
+    let label_id = store
+        .get_or_insert_edge_label_id("UnvaluedParallelDirected")
+        .expect("label");
+
+    let first = store
+        .insert_directed_edge(source, target, Some(label_id))
+        .expect("first edge");
+    let second = store
+        .insert_directed_edge(source, target, Some(label_id))
+        .expect("second edge");
+    assert_ne!(first.slot_index, second.slot_index);
+    assert_eq!(store.directed_in_edges(target).expect("in before").len(), 2);
+
+    store.delete_edge_by_handle(first).expect("delete first");
+
+    let in_edges = store.directed_in_edges(target).expect("in after");
+    assert_eq!(in_edges.len(), 1);
+    assert_eq!(in_edges[0].edge_slot_index.raw(), second.slot_index);
+}
+
+#[test]
+fn valued_parallel_insert_returns_handles_for_each_value() {
+    let store = GraphStore::new();
+    let source = store.insert_vertex().expect("source");
+    let target = store.insert_vertex().expect("target");
+    let label_id = store
+        .get_or_insert_edge_label_id("ParallelValuedHandles")
+        .expect("label");
+    store
+        .set_edge_label_weight_profile(
+            label_id,
+            EdgeWeightProfile {
+                encoding: WeightEncoding::RawU16,
+            },
+        )
+        .expect("weight profile");
+
+    let first = store
+        .insert_directed_edge_with_value_bytes(source, target, Some(label_id), &[1, 0])
+        .expect("first edge");
+    let second = store
+        .insert_directed_edge_with_value_bytes(source, target, Some(label_id), &[2, 0])
+        .expect("second edge");
+
+    assert_ne!(first.slot_index, second.slot_index);
+    let mut values_by_slot = BTreeMap::new();
+    store
+        .for_each_directed_out_edges_for_label_unchecked(source, label_id, |edge| {
+            values_by_slot.insert(edge.edge_slot_index.raw(), edge.value_bytes().to_vec());
+        })
+        .expect("out edges");
+    assert_eq!(values_by_slot[&first.slot_index], vec![1, 0]);
+    assert_eq!(values_by_slot[&second.slot_index], vec![2, 0]);
+}
+
+#[test]
+fn lookup_edge_record_at_handle_includes_stored_value_bytes() {
+    let store = GraphStore::new();
+    let source = store.insert_vertex().expect("source");
+    let target = store.insert_vertex().expect("target");
+    let label_id = store
+        .get_or_insert_edge_label_id("LookupEdgeRecordValue")
+        .expect("label");
+    store
+        .set_edge_label_weight_profile(
+            label_id,
+            EdgeWeightProfile {
+                encoding: WeightEncoding::RawU16,
+            },
+        )
+        .expect("weight profile");
+    let handle = store
+        .insert_directed_edge_with_value_bytes(source, target, Some(label_id), &[4, 0])
+        .expect("edge");
+    let edge = store
+        .find_outgoing_edge_record(handle)
+        .expect("lookup")
+        .expect("edge record");
+    assert_eq!(edge.value_bytes(), &[4, 0]);
+}
+
+/// Regression: vertex `a` is target of `s->a` (reverse-IN alias) and source of `a->mid`
+/// (forward-OUT). Shared slot index `0` in both CSR stores must not alias across stores.
+#[test]
+fn forward_out_lookup_ignores_reverse_in_alias_when_slots_collide() {
+    let store = GraphStore::new();
+    let s = store.insert_vertex().expect("s");
+    let a = store.insert_vertex().expect("a");
+    let mid = store.insert_vertex().expect("mid");
+    let label_id = store
+        .get_or_insert_edge_label_id("ForwardOutReverseInSlotCollision")
+        .expect("label");
+    store
+        .set_edge_label_weight_profile(
+            label_id,
+            EdgeWeightProfile {
+                encoding: WeightEncoding::RawU16,
+            },
+        )
+        .expect("weight profile");
+    store
+        .insert_directed_edge_with_value_bytes(s, a, Some(label_id), &[5, 0])
+        .expect("s->a");
+    let a_to_mid = store
+        .insert_directed_edge_with_value_bytes(a, mid, Some(label_id), &[1, 0])
+        .expect("a->mid");
+
+    assert_eq!(
+        store.canonical_edge_handle(a_to_mid),
+        a_to_mid,
+        "forward OUT handle must not resolve through reverse-IN alias"
+    );
+    let edge = store
+        .find_outgoing_edge_record(a_to_mid)
+        .expect("lookup")
+        .expect("edge");
+    assert_eq!(edge.value_bytes(), &[1, 0]);
+}
+
+#[test]
+fn valued_insert_after_delete_returns_handle_for_new_edge() {
+    let store = GraphStore::new();
+    let source = store.insert_vertex().expect("source");
+    let target_a = store.insert_vertex().expect("target a");
+    let target_b = store.insert_vertex().expect("target b");
+    let label_id = store
+        .get_or_insert_edge_label_id("TombstoneHandleLookup")
+        .expect("label");
+    store
+        .set_edge_label_weight_profile(
+            label_id,
+            EdgeWeightProfile {
+                encoding: WeightEncoding::RawU16,
+            },
+        )
+        .expect("weight profile");
+
+    let doomed = store
+        .insert_directed_edge_with_value_bytes(source, target_a, Some(label_id), &[1, 0])
+        .expect("doomed edge");
+    store
+        .insert_directed_edge_with_value_bytes(source, target_b, Some(label_id), &[2, 0])
+        .expect("survivor edge");
+    store.delete_edge_by_handle(doomed).expect("delete doomed");
+
+    let replacement = store
+        .insert_directed_edge_with_value_bytes(source, target_a, Some(label_id), &[9, 0])
+        .expect("replacement edge");
+    let edge = store
+        .directed_out_edges(source)
+        .expect("out edges")
+        .into_iter()
+        .find(|edge| edge.edge_slot_index.raw() == replacement.slot_index)
+        .expect("replacement edge record");
+    assert_eq!(edge.value_bytes(), &[9, 0]);
+    assert_eq!(edge.neighbor_vid(), target_a);
+    assert_eq!(
+        store.directed_in_edges(target_a).expect("in edges").len(),
+        1
+    );
+}
+
+#[test]
+fn insert_edge_handle_lookup_is_scoped_to_expected_label() {
+    let store = GraphStore::new();
+    let source = store.insert_vertex().expect("source");
+    let target = store.insert_vertex().expect("target");
+    let low_label = store
+        .get_or_insert_edge_label_id("LookupLow")
+        .expect("low label");
+    let high_label = store
+        .get_or_insert_edge_label_id("LookupHigh")
+        .expect("high label");
+
+    store
+        .insert_directed_edge(source, target, Some(high_label))
+        .expect("high edge");
+    let low = store
+        .insert_directed_edge(source, target, Some(low_label))
+        .expect("low edge");
+
+    assert_eq!(
+        low.label_id,
+        lara_label(edge_storage_label(Some(low_label), false))
+    );
+}
+
+#[test]
+fn edge_label_lookup_uses_edge_label_annotation() {
+    let store = GraphStore::new();
+    let source = store.insert_vertex().expect("source");
+    let target = store.insert_vertex().expect("target");
+    let directed_label = store
+        .get_or_insert_edge_label_id("LookupDirected")
+        .expect("directed label");
+    let undirected_label = store
+        .get_or_insert_edge_label_id("LookupUndirected")
+        .expect("undirected label");
+    store
+        .insert_directed_edge(source, target, Some(directed_label))
+        .expect("directed edge");
+    let undirected = store
+        .insert_undirected_edge(source, target, Some(undirected_label))
+        .expect("undirected edge");
+
+    let edge = store
+        .undirected_edges(source)
+        .expect("undirected edges")
+        .into_iter()
+        .find(|edge| edge.edge_slot_index.raw() == undirected.slot_index)
+        .expect("inserted undirected edge");
+
+    assert_eq!(
+        store
+            .find_forward_edge_bucket_label(source, &edge)
+            .expect("find label"),
+        Some(lara_label(edge_storage_label(Some(undirected_label), true)))
+    );
+    assert!(store.edge_is_undirected(source, &edge).unwrap());
+}
+
+#[test]
+fn inserts_vertices_and_edges_through_facade() {
+    let store = GraphStore::new();
+    let start: u32 = store.vertex_count().into();
+    let source = store.insert_vertex().expect("insert source vertex");
+    let target = store.insert_vertex().expect("insert target vertex");
+
+    assert_eq!(source, VertexId::from(start));
+    assert_eq!(target, VertexId::from(start + 1));
+
+    let directed = store
+        .insert_directed_edge(source, target, None)
+        .expect("insert directed edge");
+
+    assert_eq!(directed.owner_vertex_id, source);
+    assert_eq!(
+        EdgeSlotIndex::from_raw(directed.slot_index),
+        EdgeSlotIndex::from_raw(0)
+    );
+
+    let out_edges = store.directed_out_edges(source).expect("read out edges");
+    assert!(out_edges.iter().any(|edge| {
+        edge.target == VertexRef::local(target)
+            && edge.edge_slot_index.raw() == directed.slot_index
+            && !store.edge_is_undirected(source, edge).unwrap()
+    }));
+
+    let undirected = store
+        .insert_undirected_edge(target, source, None)
+        .expect("insert undirected edge");
+
+    assert_eq!(undirected.owner_vertex_id, target);
+    assert_eq!(
+        EdgeSlotIndex::from_raw(undirected.slot_index),
+        EdgeSlotIndex::from_raw(0)
+    );
+
+    let target_out_edges = store
+        .undirected_edges(target)
+        .expect("read target out edges");
+    assert!(target_out_edges.iter().any(|edge| {
+        edge.target == VertexRef::local(source)
+            && edge.edge_slot_index.raw() == undirected.slot_index
+            && store.edge_is_undirected(target, edge).unwrap()
+    }));
+}
+
+#[test]
+fn insert_directed_edge_to_logical_stores_remote_ref() {
+    let store = GraphStore::new();
+    let source = store.insert_vertex().expect("source");
+    let target_logical = 42_u64;
+
+    let handle = store
+        .insert_directed_edge_to_logical(source, target_logical, None)
+        .expect("remote edge");
+
+    let remote_ref = store.ensure_remote_ref(target_logical);
+    assert_eq!(
+        store.logical_vertex_for_remote_ref(remote_ref),
+        Some(target_logical)
+    );
+    assert_eq!(store.ensure_remote_ref(target_logical), remote_ref);
+
+    let out_edges = store.directed_out_edges(source).expect("out edges");
+    assert_eq!(out_edges.len(), 1);
+    assert_eq!(
+        out_edges[0].edge_target(),
+        Some(EdgeTarget::Remote(remote_ref))
+    );
+    assert_eq!(handle.owner_vertex_id, source);
+}
+
+#[test]
+fn timer_maintenance_tick_runs_on_empty_graph() {
+    let store = GraphStore::new();
+    let report = store.run_timer_maintenance_tick().expect("tick");
+    assert_eq!(report.remaining_queue_len(), 0);
+}
+
+#[test]
+fn detach_delete_homogeneous_directed_edge() {
+    let store = GraphStore::new();
+    let a = store.insert_vertex().expect("a");
+    let b = store.insert_vertex().expect("b");
+    store.insert_directed_edge(a, b, None).expect("edge");
+    store.detach_delete_vertex(a).expect("detach delete");
+    assert!(store.directed_in_edges(b).expect("in").is_empty());
+}
+
+#[test]
+fn forward_edge_compaction_moves_property_sidecars() {
+    let store = GraphStore::new();
+    let source = store.insert_vertex().expect("source");
+    let first = store.insert_vertex().expect("first");
+    let second = store.insert_vertex().expect("second");
+    let third = store.insert_vertex().expect("third");
+    let label = store
+        .get_or_insert_edge_label_id("CompactionMovesForward")
+        .expect("label");
+    let property = store
+        .get_or_insert_property_id("move_marker")
+        .expect("property");
+
+    let first_edge = store
+        .insert_directed_edge(source, first, Some(label))
+        .expect("first edge");
+    store
+        .insert_directed_edge(source, second, Some(label))
+        .expect("second edge");
+    store
+        .insert_directed_edge(source, third, Some(label))
+        .expect("third edge");
+
+    let old_third = EdgeHandle::at_slot(
+        source,
+        lara_label(label.pack(EdgeDirectedness::Directed)),
+        2,
+    );
+    store
+        .set_edge_property(old_third, property, Value::Int64(33))
+        .expect("set property");
+    store
+        .delete_edge_by_handle(first_edge)
+        .expect("delete first");
+    store.with_graph_mut(|graph| {
+        graph
+            .mark_compact_vertex_edge_span(LabeledOrientation::Forward, source, 0)
+            .expect("mark compaction");
+    });
+    store
+        .run_maintenance_best_effort(MaintenanceBudget {
+            max_instructions: 0,
+            reserve_instructions: 0,
+            checkpoint_every: 1,
+            max_work_items: None,
+            max_segments: None,
+            max_delete_edge_steps: None,
+        })
+        .expect("maintenance");
+
+    let moved = store
+        .directed_out_edges(source)
+        .expect("out edges")
+        .into_iter()
+        .find(|edge| edge.neighbor_vid() == third)
+        .expect("third edge after compaction");
+    assert_eq!(moved.edge_slot_index, EdgeSlotIndex::from_raw(1));
+    let new_third = EdgeHandle::at_slot(
+        source,
+        LaraLabelId::from_raw(moved.label_id),
+        moved.edge_slot_index.raw(),
+    );
+    assert_eq!(
+        store.edge_property(new_third, property),
+        Some(Value::Int64(33))
+    );
+    assert_eq!(store.edge_property(old_third, property), None);
+}
+
+#[test]
+fn reverse_edge_compaction_moves_alias_keys() {
+    let store = GraphStore::new();
+    let first = store.insert_vertex().expect("first");
+    let second = store.insert_vertex().expect("second");
+    let third = store.insert_vertex().expect("third");
+    let target = store.insert_vertex().expect("target");
+    let label = store
+        .get_or_insert_edge_label_id("CompactionMovesReverseAlias")
+        .expect("label");
+    let other_label = store
+        .get_or_insert_edge_label_id("CompactionMovesReverseAliasOther")
+        .expect("other label");
+    let property = store
+        .get_or_insert_property_id("reverse_move_marker")
+        .expect("property");
+
+    let first_edge = store
+        .insert_directed_edge(first, target, Some(label))
+        .expect("first edge");
+    store
+        .insert_directed_edge(second, target, Some(label))
+        .expect("second edge");
+    let third_edge = store
+        .insert_directed_edge(third, target, Some(label))
+        .expect("third edge");
+    store
+        .insert_directed_edge(second, target, Some(other_label))
+        .expect("other label edge");
+    store
+        .set_edge_property(third_edge, property, Value::Int64(44))
+        .expect("set property");
+    let wire_label = lara_label(label.pack(EdgeDirectedness::Directed));
+
+    store
+        .delete_edge_by_handle(first_edge)
+        .expect("delete first");
+    store.with_graph_mut(|graph| {
+        graph
+            .mark_compact_dense_labeled_vertex_maintenance(LabeledOrientation::Reverse, target)
+            .expect("mark reverse compaction");
+    });
+    store
+        .run_maintenance_best_effort(MaintenanceBudget {
+            max_instructions: 0,
+            reserve_instructions: 0,
+            checkpoint_every: 1,
+            max_work_items: None,
+            max_segments: None,
+            max_delete_edge_steps: None,
+        })
+        .expect("maintenance");
+
+    assert_eq!(
+        store.edge_property(third_edge, property),
+        Some(Value::Int64(44)),
+        "canonical forward handle keeps properties across reverse compaction"
+    );
+
+    let reverse_third = store
+        .find_first_reverse_handle_descending(target, wire_label, |edge| {
+            edge.neighbor_vid() == third
+        })
+        .expect("reverse lookup after compaction")
+        .expect("third reverse edge after compaction");
+    assert_eq!(
+        store.canonical_reverse_in_edge_handle(reverse_third),
+        third_edge,
+        "reverse CSR slot should still alias the canonical forward handle"
+    );
+    assert_eq!(
+        store.edge_property(reverse_third, property),
+        Some(Value::Int64(44))
+    );
+}

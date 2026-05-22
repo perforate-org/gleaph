@@ -38,7 +38,7 @@ thread_local! {
     > = RefCell::new(std::collections::HashMap::new());
     static NATIVE_TEST_MIGRATION_COUNTER: Cell<u64> = const { Cell::new(0) };
     static NATIVE_TEST_SHARDS: RefCell<Vec<ShardRegistryEntry>> =
-        RefCell::new(Vec::new());
+        const { RefCell::new(Vec::new()) };
 }
 
 pub fn allocate_logical_vertex_id(

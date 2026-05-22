@@ -146,8 +146,8 @@ fn validate_cost_expr_gleaph_weight_usage_inner(
     edge_var: &str,
     context: GleaphWeightVarContext,
 ) -> Result<(), PlannerError> {
-    if let ExprKind::Variable(v) = &expr.kind {
-        if context == GleaphWeightVarContext::Normal {
+    if let ExprKind::Variable(v) = &expr.kind
+        && context == GleaphWeightVarContext::Normal {
             return if v == edge_var {
                 Err(cost_shape_err(
                     "GLEAPH.COST expression may only reference the edge variable inside GLEAPH.WEIGHT(edgeVar)",
@@ -156,7 +156,6 @@ fn validate_cost_expr_gleaph_weight_usage_inner(
                 Ok(())
             };
         }
-    }
     if context == GleaphWeightVarContext::GleaphWeightArg {
         return match gleaph_weight_arg_edge_var(expr) {
             Some(v) if v == edge_var => Ok(()),
@@ -170,8 +169,7 @@ fn validate_cost_expr_gleaph_weight_usage_inner(
         args,
         distinct,
     } = &expr.kind
-    {
-        if is_gleaph_weight_call(name, *distinct) {
+        && is_gleaph_weight_call(name, *distinct) {
             let arg = gleaph_weight_single_arg(args).ok_or_else(|| {
                 cost_shape_err(format!(
                     "GLEAPH.WEIGHT expects 1 argument in GLEAPH.COST expression, got {}",
@@ -184,7 +182,6 @@ fn validate_cost_expr_gleaph_weight_usage_inner(
                 GleaphWeightVarContext::GleaphWeightArg,
             );
         }
-    }
     try_for_each_immediate_child_expr(expr, |child| {
         validate_cost_expr_gleaph_weight_usage_inner(
             child,

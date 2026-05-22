@@ -262,8 +262,7 @@ impl ShortestFixedLabelExpand {
                                 Err(err) => expand_err = Some(err),
                             }
                         }
-                    })
-                    .map_err(GraphStoreError::from)?;
+                    })?;
                 if let Some(err) = expand_err {
                     return Err(err);
                 }
@@ -290,8 +289,7 @@ impl ShortestFixedLabelExpand {
                                 Err(err) => expand_err = Some(err),
                             }
                         }
-                    })
-                    .map_err(GraphStoreError::from)?;
+                    })?;
                 if let Some(err) = expand_err {
                     return Err(err);
                 }
@@ -318,8 +316,7 @@ impl ShortestFixedLabelExpand {
                                 Err(err) => expand_err = Some(err),
                             }
                         }
-                    })
-                    .map_err(GraphStoreError::from)?;
+                    })?;
                 if let Some(err) = expand_err {
                     return Err(err);
                 }
@@ -787,11 +784,10 @@ pub(crate) fn weighted_shortest_paths_between(
     };
 
     while let Some(entry) = heap.pop() {
-        if let Some(ref min) = found_min_cost {
-            if matches!(entry.cost.cmp(min), Ordering::Greater) {
+        if let Some(ref min) = found_min_cost
+            && matches!(entry.cost.cmp(min), Ordering::Greater) {
                 break;
             }
-        }
         let state_idx = entry.state_idx;
         let current = states[state_idx].current;
         let depth = states[state_idx].depth;
@@ -878,11 +874,10 @@ pub(crate) fn weighted_shortest_paths_between(
                 )?
             };
             let next_cost = entry.cost.checked_add(&hop_cost)?;
-            if let Some(ref min) = found_min_cost {
-                if matches!(next_cost.cmp(min), Ordering::Greater) {
+            if let Some(ref min) = found_min_cost
+                && matches!(next_cost.cmp(min), Ordering::Greater) {
                     continue;
                 }
-            }
             if let Some(best_cost) = any_best_cost.as_mut() {
                 let next_vertex = u32::from(next);
                 if best_cost
@@ -1027,7 +1022,7 @@ pub(crate) fn decode_direct_gleaph_weight_hop_cost(
 
 thread_local! {
     /// Reuses capacity when materializing many shortest-path rows on one thread (e.g. `AllShortest`).
-    static PATH_MATERIALIZE_SCRATCH: RefCell<Vec<PathElement>> = RefCell::new(Vec::new());
+    static PATH_MATERIALIZE_SCRATCH: RefCell<Vec<PathElement>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Below this estimated element count (`depth * 2 + 1`), allocate a fresh `Vec` only: `thread_local`
@@ -1086,11 +1081,10 @@ fn fill_path_elements_leaf_to_root(
     }
     for (hop, &si) in chain.iter().rev().enumerate() {
         let state = &states[si];
-        if hop > 0 {
-            if let Some(edge_binding) = state.edge {
+        if hop > 0
+            && let Some(edge_binding) = state.edge {
                 elements.push(edge_path_element(shard_id, edge_binding.handle));
             }
-        }
         elements.push(vertex_path_element(store, state.current));
     }
 }

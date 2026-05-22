@@ -21,11 +21,10 @@ use super::scan::{
     execute_limited_streaming_prefix, execute_node_scan, limited_streaming_prefix_limit_idx,
 };
 use super::{
-    EdgeSequenceOrder, PlanBinding, dedup_rows, ensure_simple_expand,
-    gleaph_sequence_order_after_expand, gleaph_sequence_sort, limit_value, plan_op_name,
-    previous_op_binds_edge, project_row, row_matches_all, sort_rows,
+    PlanBinding, dedup_rows, ensure_simple_expand, gleaph_sequence_order_after_expand,
+    gleaph_sequence_sort, limit_value, plan_op_name, previous_op_binds_edge, project_row,
+    row_matches_all, sort_rows,
 };
-use crate::index::lookup::PropertyIndexLookup;
 
 pub(crate) async fn execute_ops(
     ctx: &ExecuteCtx<'_>,
@@ -212,7 +211,7 @@ pub(crate) fn execute_ops_from<'a>(
         let store = ctx.store;
         let parameters = ctx.parameters;
         let index = ctx.index;
-        let caller = ctx.caller();
+        let _caller = ctx.caller();
         let gwd = ctx.gleaph_weight_decoders;
         let mut rows = initial_rows;
         // Index of the nearest preceding `PlanOp::Aggregate` for resolving

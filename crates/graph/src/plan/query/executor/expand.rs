@@ -8,15 +8,14 @@ use gleaph_gql::types::EdgeDirection;
 use gleaph_gql::{Value, value_to_index_key_bytes};
 use gleaph_gql_planner::plan::{ScanValue, Str};
 use gleaph_graph_kernel::entry::{
-    Edge, EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, EdgeTarget, PreparedWeightDecoder, Vertex,
+    Edge, EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, EdgeTarget, PreparedWeightDecoder,
 };
 use gleaph_graph_kernel::federation::{
     FederatedExpandArgs, FederatedExpandDirection, FederatedExpandNeighbor, LogicalVertexId,
 };
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
-use ic_stable_lara::labeled::OutEdgeOrder;
-use ic_stable_lara::traits::{CsrEdge, CsrEdgeTombstone};
+use ic_stable_lara::traits::CsrEdge;
 use nohash_hasher::IntSet;
 
 use super::super::error::PlanQueryError;
@@ -471,8 +470,8 @@ fn expand_rows_from_federated_expand_hits(
             PlanBinding::RemoteVertex(hit.neighbor_logical_vertex_id)
         };
 
-        if let PlanBinding::Vertex(dst_id) = &dst_binding {
-            if dst_only_prefilter
+        if let PlanBinding::Vertex(dst_id) = &dst_binding
+            && dst_only_prefilter
                 && !vertex_row_matches_dst_filters(
                     store,
                     parameters,
@@ -485,7 +484,6 @@ fn expand_rows_from_federated_expand_hits(
             {
                 continue;
             }
-        }
 
         let expanded = if let Some(edge_key) = edge_key.as_ref() {
             let edge_binding = PlanBinding::Edge(edge_binding_for_federated_expand_hit(
@@ -547,9 +545,9 @@ pub(crate) fn execute_expand(
     let mut out = Vec::new();
     let mut candidates = Vec::new();
     for row in rows {
-        if matches!(direction, EdgeDirection::PointingLeft) {
-            if let Some(PlanBinding::RemoteVertex(logical)) = row.get(src.as_ref()) {
-                if matches!(
+        if matches!(direction, EdgeDirection::PointingLeft)
+            && let Some(PlanBinding::RemoteVertex(logical)) = row.get(src.as_ref())
+                && matches!(
                     resolve_federated_traversal_vertex(store, *logical, Some(direction)),
                     Err(PlanQueryError::UnsupportedOp(_))
                 ) {
@@ -584,12 +582,10 @@ pub(crate) fn execute_expand(
                     )?);
                     continue;
                 }
-            }
-        }
 
-        if matches!(direction, EdgeDirection::PointingRight) {
-            if let Some(PlanBinding::RemoteVertex(logical)) = row.get(src.as_ref()) {
-                if matches!(
+        if matches!(direction, EdgeDirection::PointingRight)
+            && let Some(PlanBinding::RemoteVertex(logical)) = row.get(src.as_ref())
+                && matches!(
                     resolve_federated_traversal_vertex(store, *logical, Some(direction)),
                     Err(PlanQueryError::UnsupportedOp(_))
                 ) {
@@ -624,12 +620,10 @@ pub(crate) fn execute_expand(
                     )?);
                     continue;
                 }
-            }
-        }
 
-        if matches!(direction, EdgeDirection::Undirected) {
-            if let Some(PlanBinding::RemoteVertex(logical)) = row.get(src.as_ref()) {
-                if matches!(
+        if matches!(direction, EdgeDirection::Undirected)
+            && let Some(PlanBinding::RemoteVertex(logical)) = row.get(src.as_ref())
+                && matches!(
                     resolve_federated_traversal_vertex(store, *logical, Some(direction)),
                     Err(PlanQueryError::UnsupportedOp(_))
                 ) {
@@ -664,8 +658,6 @@ pub(crate) fn execute_expand(
                     )?);
                     continue;
                 }
-            }
-        }
 
         let Some(src_id) = (match row.get(src.as_ref()) {
             Some(PlanBinding::RemoteVertex(logical)) => {
@@ -868,14 +860,12 @@ pub(crate) fn expand_candidates_into(
                             }
                         }
                     }
-                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge) {
-                        if let Err(err) =
+                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge)
+                        && let Err(err) =
                             push_expand_candidate(out, store, src_id, direction, edge_dst, edge)
                         {
                             error = Some(err);
-                            return;
                         }
-                    }
                 },
             )?;
             if let Some(err) = error {
@@ -914,14 +904,12 @@ pub(crate) fn expand_candidates_into(
                             }
                         }
                     }
-                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge) {
-                        if let Err(err) =
+                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge)
+                        && let Err(err) =
                             push_expand_candidate(out, store, src_id, direction, edge_dst, edge)
                         {
                             error = Some(err);
-                            return;
                         }
-                    }
                 },
             )?;
             if let Some(err) = error {
@@ -960,14 +948,12 @@ pub(crate) fn expand_candidates_into(
                             }
                         }
                     }
-                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge) {
-                        if let Err(err) =
+                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge)
+                        && let Err(err) =
                             push_expand_candidate(out, store, src_id, direction, edge_dst, edge)
                         {
                             error = Some(err);
-                            return;
                         }
-                    }
                 },
             )?;
             if let Some(err) = error {
@@ -995,36 +981,30 @@ where
         EdgeDirection::PointingRight => {
             if let Some(lid) = edge_label_id {
                 store
-                    .for_each_directed_out_edges_for_label(src_id, lid, order, visit)
-                    .map_err(GraphStoreError::from)?;
+                    .for_each_directed_out_edges_for_label(src_id, lid, order, visit)?;
             } else {
                 store
-                    .for_each_directed_out_edges(src_id, order, visit)
-                    .map_err(GraphStoreError::from)?;
+                    .for_each_directed_out_edges(src_id, order, visit)?;
             }
             Ok(())
         }
         EdgeDirection::Undirected => {
             if let Some(lid) = edge_label_id {
                 store
-                    .for_each_undirected_edges_for_label(src_id, lid, order, visit)
-                    .map_err(GraphStoreError::from)?;
+                    .for_each_undirected_edges_for_label(src_id, lid, order, visit)?;
             } else {
                 store
-                    .for_each_undirected_edges(src_id, order, visit)
-                    .map_err(GraphStoreError::from)?;
+                    .for_each_undirected_edges(src_id, order, visit)?;
             }
             Ok(())
         }
         EdgeDirection::PointingLeft => {
             if let Some(lid) = edge_label_id {
                 store
-                    .for_each_directed_in_edges_for_label(src_id, lid, order, visit)
-                    .map_err(GraphStoreError::from)?;
+                    .for_each_directed_in_edges_for_label(src_id, lid, order, visit)?;
             } else {
                 store
-                    .for_each_directed_in_edges(src_id, order, visit)
-                    .map_err(GraphStoreError::from)?;
+                    .for_each_directed_in_edges(src_id, order, visit)?;
             }
             Ok(())
         }
@@ -1084,13 +1064,12 @@ fn expand_candidates_via_equality_index(
                     if !out_slots.contains(&(edge.label_id, edge.edge_slot_index.raw())) {
                         return;
                     }
-                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge) {
-                        if let Err(err) =
+                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge)
+                        && let Err(err) =
                             push_expand_candidate(out, store, src_id, direction, edge_dst, edge)
                         {
                             error = Some(err);
                         }
-                    }
                 },
             )?;
         }
@@ -1117,13 +1096,12 @@ fn expand_candidates_via_equality_index(
                     )) {
                         return;
                     }
-                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge) {
-                        if let Err(err) =
+                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge)
+                        && let Err(err) =
                             push_expand_candidate(out, store, src_id, direction, edge_dst, edge)
                         {
                             error = Some(err);
                         }
-                    }
                 },
             )?;
         }
@@ -1150,13 +1128,12 @@ fn expand_candidates_via_equality_index(
                     )) {
                         return;
                     }
-                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge) {
-                        if let Err(err) =
+                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge)
+                        && let Err(err) =
                             push_expand_candidate(out, store, src_id, direction, edge_dst, edge)
                         {
                             error = Some(err);
                         }
-                    }
                 },
             )?;
         }

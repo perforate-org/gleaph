@@ -11,7 +11,7 @@ use gleaph_graph_kernel::entry::{Edge, EdgeLabelId, TaggedEdgeLabelId, Vertex};
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_graph_kernel::federation::{
     ExportedEdgeTarget, ExportedOutEdge, ExportedProperty, ExportedVertex,
-    FinishVertexMigrationArgs, LogicalVertexId, VertexPlacement,
+    FinishVertexMigrationArgs, VertexPlacement,
 };
 use ic_stable_lara::labeled::record::LabeledVertex;
 use ic_stable_lara::traits::{CsrEdgeTombstone, CsrVertexTombstone};
@@ -123,7 +123,6 @@ pub fn export_local_vertex_for_migration(
     let placement = placement::resolve_placement(routing.router_canister, logical_vertex_id)?;
     let VertexPlacement::Migrating {
         source,
-        destination_shard_id: _,
         ..
     } = placement
     else {
@@ -160,8 +159,7 @@ pub fn export_local_vertex_for_migration(
 
     let mut out_edges = Vec::new();
     for edge in store
-        .directed_out_edges(vertex_id)
-        .map_err(GraphStoreError::from)?
+        .directed_out_edges(vertex_id)?
     {
         if edge.is_tombstone_edge() {
             continue;
@@ -169,8 +167,7 @@ pub fn export_local_vertex_for_migration(
         out_edges.push(export_out_edge(store, vertex_id, &edge)?);
     }
     for edge in store
-        .undirected_edges(vertex_id)
-        .map_err(GraphStoreError::from)?
+        .undirected_edges(vertex_id)?
     {
         if edge.is_tombstone_edge() {
             continue;

@@ -1,0 +1,174 @@
+//! Graph store helpers and edge-alias key encoding.
+
+use gleaph_graph_kernel::entry::{
+    Edge, EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, EdgeTarget, RemoteRefId, TaggedEdgeLabelId,
+    VertexRef,
+};
+use ic_stable_lara::{
+    VertexId,
+    labeled::{
+        BucketLabelKey as LaraLabelId, EdgeSlotMove, EdgeSlotMoveObserver, LabeledOrientation,
+    },
+    traits::CsrEdge,
+};
+
+use super::GraphStore;
+use super::error::GraphStoreError;
+
+/// Tag bit for reverse-IN alias keys so they do not collide with forward-OUT slot indices
+
+/// on the same vertex (both CSR stores use independent slot counters).
+
+const EDGE_ALIAS_REVERSE_IN_TAG: u32 = 1 << 31;
+
+#[inline]
+
+pub(super) fn edge_alias_slot_key(slot_index: u32, reverse_in: bool) -> u32 {
+    if reverse_in {
+        slot_index | EDGE_ALIAS_REVERSE_IN_TAG
+    } else {
+        slot_index
+    }
+}
+
+#[inline]
+
+pub(super) fn edge_alias_slot_key_parts(slot_key: u32) -> (u32, bool) {
+    let reverse_in = slot_key & EDGE_ALIAS_REVERSE_IN_TAG != 0;
+
+    (slot_key & !EDGE_ALIAS_REVERSE_IN_TAG, reverse_in)
+}
+
+pub(super) struct GraphSidecarMoveObserver;
+
+impl EdgeSlotMoveObserver for GraphSidecarMoveObserver {
+    fn edge_slot_moved(
+        &mut self,
+
+        orientation: LabeledOrientation,
+
+        vid: VertexId,
+
+        moved: EdgeSlotMove,
+    ) {
+        GraphStore::move_edge_sidecars_for_compaction(orientation, vid, moved);
+    }
+}
+
+pub(super) fn edge_storage_label(
+    catalog: Option<EdgeLabelId>,
+    undirected: bool,
+) -> TaggedEdgeLabelId {
+    match catalog {
+        None => {
+            if undirected {
+                TaggedEdgeLabelId::UNLABELED_UNDIRECTED
+            } else {
+                TaggedEdgeLabelId::UNLABELED_DIRECTED
+            }
+        }
+
+        Some(catalog_id) => {
+            if undirected {
+                catalog_id.pack(EdgeDirectedness::Undirected)
+            } else {
+                catalog_id.pack(EdgeDirectedness::Directed)
+            }
+        }
+    }
+}
+
+pub(super) fn lara_label(id: TaggedEdgeLabelId) -> LaraLabelId {
+    LaraLabelId::from_raw(id.raw())
+}
+
+pub(super) fn wire_catalog_label(
+    label: Option<EdgeLabelId>,
+    directedness: EdgeDirectedness,
+) -> LaraLabelId {
+    lara_label(edge_storage_label(
+        label,
+        matches!(directedness, EdgeDirectedness::Undirected),
+    ))
+}
+
+pub fn canonical_undirected_owner(a: VertexId, b: VertexId) -> VertexId {
+    if u32::from(a) >= u32::from(b) { a } else { b }
+}
+
+pub(super) fn build_edge_to(target: VertexId) -> Edge {
+    Edge {
+        target: VertexRef::local(target),
+
+        edge_slot_index: EdgeSlotIndex::from_raw(0),
+
+        label_id: 0,
+
+        value: gleaph_graph_kernel::entry::EdgeValuePayload::EMPTY,
+    }
+}
+
+pub(super) fn build_edge_to_with_value_bytes(target: VertexId, value_bytes: &[u8]) -> Edge {
+    build_edge_to(target).with_value_bytes(value_bytes)
+}
+
+pub(super) fn build_edge_to_remote(remote_ref: RemoteRefId) -> Edge {
+    Edge {
+        target: VertexRef::remote_ref(remote_ref),
+
+        edge_slot_index: EdgeSlotIndex::from_raw(0),
+
+        label_id: 0,
+
+        value: gleaph_graph_kernel::entry::EdgeValuePayload::EMPTY,
+    }
+}
+
+pub(super) fn build_edge_to_remote_with_value_bytes(
+    remote_ref: RemoteRefId,
+    value_bytes: &[u8],
+) -> Edge {
+    build_edge_to_remote(remote_ref).with_value_bytes(value_bytes)
+}
+
+pub(super) fn validate_edge_value_bytes(value_bytes: &[u8]) -> Result<(), GraphStoreError> {
+    match value_bytes.len() {
+        0 | 1 | 2 | 4 | 8 => Ok(()),
+
+        len => Err(GraphStoreError::InvalidEdgeValueWidth(len)),
+    }
+}
+
+fn edge_value_bytes_match(edge: &Edge, value_bytes: &[u8]) -> bool {
+    edge.value_bytes() == value_bytes
+}
+
+pub(super) fn edge_matches_local_neighbor(
+    edge: &Edge,
+    neighbor: VertexId,
+    value_bytes: &[u8],
+) -> bool {
+    edge.neighbor_vid() == neighbor && edge_value_bytes_match(edge, value_bytes)
+}
+
+pub(super) fn edge_matches_remote_target(
+    edge: &Edge,
+    remote_ref: RemoteRefId,
+    value_bytes: &[u8],
+) -> bool {
+    matches!(
+
+        edge.edge_target(),
+
+        Some(EdgeTarget::Remote(found)) if found == remote_ref
+
+    ) && edge_value_bytes_match(edge, value_bytes)
+}
+
+pub fn catalog_edge_label_from_wire(label: LaraLabelId) -> Option<EdgeLabelId> {
+    if label == LaraLabelId::UNLABELED_DIRECTED || label == LaraLabelId::UNLABELED_UNDIRECTED {
+        None
+    } else {
+        Some(EdgeLabelId::from_raw(label.label_index()))
+    }
+}
