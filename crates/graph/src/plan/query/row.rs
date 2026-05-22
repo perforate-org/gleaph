@@ -527,4 +527,51 @@ mod tests {
         );
         assert!(out.spill.is_empty());
     }
+
+    #[test]
+    fn spill_map_row_stores_bindings_outside_layout() {
+        let mut row = PlanRow::new();
+        row.insert("extra".into(), PlanBinding::Value(gleaph_gql::Value::Null));
+        assert_eq!(row.binding_count(), 1);
+        assert!(row.get("extra").is_some());
+        assert!(!row.contains_key("missing"));
+    }
+
+    #[test]
+    fn fork_with_arena_reuses_pooled_slots() {
+        use super::super::arena::QueryArena;
+
+        let layout = Rc::new(BindingLayout::single("a".into()));
+        QueryArena::with(|arena| {
+            arena.reset();
+            let row = PlanRow::with_layout_and_binding(
+                Rc::clone(&layout),
+                "a",
+                PlanBinding::Vertex(VertexId::from(1)),
+            );
+            let forked =
+                row.fork_with_arena(arena, [("a", PlanBinding::Vertex(VertexId::from(9)))]);
+            assert_eq!(
+                forked.get("a").and_then(|b| match b {
+                    PlanBinding::Vertex(v) => Some(*v),
+                    _ => None,
+                }),
+                Some(VertexId::from(9))
+            );
+        });
+    }
+
+    #[test]
+    fn empty_row_for_plan_uses_layout_when_present() {
+        use gleaph_gql_planner::{PhysicalPlan, PlanOp};
+        let ops = vec![PlanOp::NodeScan {
+            variable: "n".into(),
+            label: None,
+            property_projection: None,
+        }];
+        let plan = PhysicalPlan::from_ops(ops);
+        let row = empty_row_for_plan(&plan);
+        assert!(row.layout().is_some());
+        assert_eq!(row.layout().unwrap().len(), 1);
+    }
 }

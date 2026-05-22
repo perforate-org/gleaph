@@ -419,6 +419,85 @@ pub fn log_entry_stride<E: CsrEdge>() -> u64 {
     8 + E::BYTES as u64
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::TestEdge;
+
+    fn fresh_store(segments: u32) -> LogStore<TestEdge, crate::VectorMemory> {
+        LogStore::new(
+            crate::test_support::vector_memory(),
+            HeaderV1::new(segments, TestEdge::BYTES as u32),
+        )
+        .expect("log store")
+    }
+
+    #[test]
+    fn init_rejects_empty_memory() {
+        let mem = crate::test_support::vector_memory();
+        assert!(matches!(
+            LogStore::<TestEdge, _>::init(mem),
+            Err(InitError::OutOfMemory)
+        ));
+    }
+
+    #[test]
+    fn init_rejects_bad_magic() {
+        let mem = crate::test_support::vector_memory();
+        crate::write_u32(&mem, crate::types::Address::from(0), 0xDEADBEEF);
+        assert!(matches!(
+            LogStore::<TestEdge, _>::init(mem),
+            Err(InitError::BadMagic { .. })
+        ));
+    }
+
+    #[test]
+    fn write_read_entry_round_trip() {
+        let store = fresh_store(2);
+        let edge = TestEdge(42);
+        let mut payload = [0u8; TestEdge::BYTES];
+        edge.write_to(&mut payload);
+        store
+            .write_entry(0, 0, -1, 7, &payload)
+            .expect("write entry");
+        store.write_idx(0, 1);
+        let mut out = [0u8; TestEdge::BYTES];
+        let (prev, src) = store.read_entry(0, 0, &mut out);
+        assert_eq!(prev, -1);
+        assert_eq!(src, 7);
+        assert_eq!(TestEdge::read_from(&out), edge);
+    }
+
+    #[test]
+    fn release_segment_clears_entries_and_index() {
+        let store = fresh_store(1);
+        let edge = TestEdge(9);
+        let mut payload = [0u8; TestEdge::BYTES];
+        edge.write_to(&mut payload);
+        store
+            .write_entry(0, 0, -1, 1, &payload)
+            .expect("write entry");
+        store.write_idx(0, 1);
+        store.release_segment(0).expect("release");
+        assert_eq!(store.read_idx(0), 0);
+        let mut out = [0u8; TestEdge::BYTES];
+        let (prev, src) = store.read_entry(0, 0, &mut out);
+        assert_eq!(prev, 0);
+        assert_eq!(src, 0);
+        assert_eq!(TestEdge::read_from(&out), TestEdge(0));
+    }
+
+    #[test]
+    fn grow_segment_count_initializes_new_indexes() {
+        let store = fresh_store(1);
+        store.grow_segment_count_to(3).expect("grow");
+        assert_eq!(store.header().segment_count, 3);
+        assert_eq!(store.read_idx(0), 0);
+        assert_eq!(store.read_idx(1), 0);
+        assert_eq!(store.read_idx(2), 0);
+    }
+}
+
 #[cfg(feature = "canbench")]
 mod bench {
     use std::hint::black_box;

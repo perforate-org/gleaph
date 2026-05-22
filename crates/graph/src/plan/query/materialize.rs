@@ -130,3 +130,96 @@ pub fn hydrate_plan_rows(
         rows: materialize_plan_rows(store, &bindings.rows, schema)?,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::facade::GraphStore;
+    use gleaph_gql::Value;
+    use gleaph_gql_planner::plan::Str;
+    use gleaph_gql_planner::{OutputBindingKind, OutputColumn};
+    use ic_stable_lara::VertexId;
+
+    #[test]
+    fn hydrates_all_row_bindings_when_schema_empty() {
+        let store = GraphStore::new();
+        let v = store.insert_vertex().expect("vertex");
+        let mut row = PlanQueryRow::new();
+        row.insert("n".into(), PlanBinding::Vertex(v));
+        let out = materialize_plan_rows(&store, &[row], &OutputSchema::default()).unwrap();
+        assert_eq!(out.len(), 1);
+        assert!(out[0].contains_key("n"));
+    }
+
+    #[test]
+    fn materializes_named_vertex_column() {
+        let store = GraphStore::new();
+        let v = store.insert_vertex().expect("vertex");
+        let mut row = PlanQueryRow::new();
+        row.insert("n".into(), PlanBinding::Vertex(v));
+        let schema = OutputSchema {
+            columns: vec![OutputColumn {
+                name: Str::from("n"),
+                kind: OutputBindingKind::Vertex,
+                source_var: Some(Str::from("n")),
+            }],
+        };
+        let out = materialize_plan_rows(&store, &[row], &schema).unwrap();
+        assert_eq!(out.len(), 1);
+        match &out[0]["n"] {
+            Value::Record(fields) => assert!(!fields.is_empty()),
+            other => panic!("expected vertex record, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn missing_binding_yields_null_for_column() {
+        let store = GraphStore::new();
+        let row = PlanQueryRow::new();
+        let schema = OutputSchema {
+            columns: vec![OutputColumn {
+                name: Str::from("missing"),
+                kind: OutputBindingKind::Vertex,
+                source_var: Some(Str::from("missing")),
+            }],
+        };
+        let out = materialize_plan_rows(&store, &[row], &schema).unwrap();
+        assert_eq!(out[0]["missing"], Value::Null);
+    }
+
+    #[test]
+    fn resolves_column_via_source_var_alias() {
+        let store = GraphStore::new();
+        let v = store.insert_vertex().expect("vertex");
+        let mut row = PlanQueryRow::new();
+        row.insert("n".into(), PlanBinding::Vertex(v));
+        let schema = OutputSchema {
+            columns: vec![OutputColumn {
+                name: Str::from("alias"),
+                kind: OutputBindingKind::Vertex,
+                source_var: Some(Str::from("n")),
+            }],
+        };
+        let out = materialize_plan_rows(&store, &[row], &schema).unwrap();
+        match &out[0]["alias"] {
+            Value::Record(_) => {}
+            other => panic!("expected vertex record via source_var, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn materializes_scalar_value_column() {
+        let store = GraphStore::new();
+        let mut row = PlanQueryRow::new();
+        row.insert("x".into(), PlanBinding::Value(Value::Int64(42)));
+        let schema = OutputSchema {
+            columns: vec![OutputColumn {
+                name: Str::from("x"),
+                kind: OutputBindingKind::Scalar,
+                source_var: Some(Str::from("x")),
+            }],
+        };
+        let out = materialize_plan_rows(&store, &[row], &schema).unwrap();
+        assert_eq!(out[0]["x"], Value::Int64(42));
+    }
+}

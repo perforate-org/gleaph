@@ -148,3 +148,43 @@ impl Storable for GraphMetadata {
 
     const BOUND: Bound = Bound::Unbounded;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use candid::Principal;
+
+    #[test]
+    fn validate_name_rejects_oversized_utf8() {
+        let name = "x".repeat(MAX_LOGICAL_GRAPH_NAME_BYTES + 1);
+        let err = GraphMetadata::validate_name(&name).unwrap_err();
+        assert!(matches!(
+            err,
+            GraphMetadataError::InvalidLogicalGraphName(_)
+        ));
+    }
+
+    #[test]
+    fn validate_name_accepts_max_length() {
+        let name = "x".repeat(MAX_LOGICAL_GRAPH_NAME_BYTES);
+        GraphMetadata::validate_name(&name).expect("max length name should be valid");
+    }
+
+    #[test]
+    fn metadata_round_trip_storable_encoding() {
+        let mut metadata = GraphMetadata::default();
+        metadata.set_logical_graph_name(Some("gleaph-test".into()));
+        metadata.set_federation_routing(Some(FederationRouting {
+            router_canister: Principal::management_canister(),
+            shard_id: 7,
+            index_canister: Principal::anonymous(),
+        }));
+        metadata.validate_for_store().expect("valid metadata");
+
+        let bytes = metadata.to_bytes();
+        let decoded = GraphMetadata::from_bytes(bytes);
+        assert_eq!(decoded.logical_graph_name(), Some("gleaph-test".into()));
+        assert!(decoded.federation_configured());
+        assert_eq!(decoded.federation_routing().unwrap().shard_id, 7u32);
+    }
+}

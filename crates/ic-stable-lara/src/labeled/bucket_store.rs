@@ -783,6 +783,129 @@ mod tests {
         }
     }
 
+    fn insert_buckets_with_keys(
+        buckets: &LabelBucketStore<crate::VectorMemory>,
+        vertices: &VertexFixture,
+        keys: &[crate::labeled::BucketLabelKey],
+    ) {
+        for key in keys {
+            buckets
+                .insert_label_bucket(
+                    vertices,
+                    VertexId::from(0),
+                    LabelBucket::default().with_bucket_label_key(*key),
+                )
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn partition_strategies_agree_on_mixed_directedness() {
+        use crate::labeled::bucket_label_key::{BucketDirectedness, BucketLabelKey};
+
+        let buckets = store();
+        let vertices = VertexFixture {
+            vertex: RefCell::new(LabeledVertex::default()),
+        };
+        let keys = [
+            BucketLabelKey::undirected_from_index(1),
+            BucketLabelKey::undirected_from_index(2),
+            BucketLabelKey::directed_from_index(3),
+            BucketLabelKey::directed_from_index(4),
+        ];
+        insert_buckets_with_keys(&buckets, &vertices, &keys);
+        let vertex = vertices.get(VertexId::from(0));
+        let base = vertex.base_slot_start();
+        let degree = vertex.degree();
+
+        let strategies = [
+            DirectednessPartitionStrategy::HybridBinary,
+            DirectednessPartitionStrategy::LinearFromStart,
+            DirectednessPartitionStrategy::LinearFromEnd,
+        ];
+        let mut partition_points = Vec::new();
+        for strategy in strategies {
+            let (und_lo, und_hi) = buckets
+                .directedness_bucket_index_range(
+                    base,
+                    degree,
+                    BucketDirectedness::Undirected,
+                    strategy,
+                )
+                .unwrap();
+            partition_points.push(und_hi);
+            assert_eq!(und_lo, 0);
+            assert_eq!(und_hi, 2, "two undirected buckets precede directed keys");
+            let (dir_lo, dir_hi) = buckets
+                .directedness_bucket_index_range(
+                    base,
+                    degree,
+                    BucketDirectedness::Directed,
+                    strategy,
+                )
+                .unwrap();
+            assert_eq!(dir_lo, 2);
+            assert_eq!(dir_hi, degree);
+        }
+        assert!(
+            partition_points.windows(2).all(|w| w[0] == w[1]),
+            "all partition strategies must return the same boundary"
+        );
+    }
+
+    #[test]
+    fn undirected_only_vertex_has_full_range_for_undirected() {
+        use crate::labeled::bucket_label_key::{BucketDirectedness, BucketLabelKey};
+
+        let buckets = store();
+        let vertices = VertexFixture {
+            vertex: RefCell::new(LabeledVertex::default()),
+        };
+        insert_buckets_with_keys(
+            &buckets,
+            &vertices,
+            &[
+                BucketLabelKey::undirected_from_index(1),
+                BucketLabelKey::undirected_from_index(2),
+            ],
+        );
+        let vertex = vertices.get(VertexId::from(0));
+        let (lo, hi) = buckets
+            .directedness_bucket_index_range(
+                vertex.base_slot_start(),
+                vertex.degree(),
+                BucketDirectedness::Undirected,
+                DirectednessPartitionStrategy::HybridBinary,
+            )
+            .unwrap();
+        assert_eq!((lo, hi), (0, vertex.degree()));
+        let (dir_lo, dir_hi) = buckets
+            .directedness_bucket_index_range(
+                vertex.base_slot_start(),
+                vertex.degree(),
+                BucketDirectedness::Directed,
+                DirectednessPartitionStrategy::HybridBinary,
+            )
+            .unwrap();
+        assert_eq!((dir_lo, dir_hi), (vertex.degree(), vertex.degree()));
+    }
+
+    #[test]
+    fn directedness_range_empty_when_degree_zero() {
+        use crate::labeled::bucket_label_key::BucketDirectedness;
+
+        let buckets = store();
+        let (lo, hi) = buckets
+            .directedness_bucket_index_range(
+                0,
+                0,
+                BucketDirectedness::Undirected,
+                DirectednessPartitionStrategy::HybridBinary,
+            )
+            .unwrap();
+        assert_eq!((lo, hi), (0, 0));
+    }
+
     #[test]
     fn compact_segment_releases_old_span_for_reuse() {
         let buckets = store();
