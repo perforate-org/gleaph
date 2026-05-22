@@ -4,6 +4,7 @@ use candid::CandidType;
 use serde::{Deserialize, Serialize};
 
 use super::{LocalVertexId, LogicalVertexId, ShardId};
+use crate::entry::EdgeValuePayload;
 
 /// Direction of a federated expand probe on a graph shard.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
@@ -40,4 +41,25 @@ pub struct FederatedExpandNeighbor {
     pub inline_value: u16,
     pub value_len: u8,
     pub value_bytes: [u8; 8],
+}
+
+impl FederatedExpandNeighbor {
+    #[inline]
+    pub fn value_payload(self) -> EdgeValuePayload {
+        EdgeValuePayload {
+            bytes: self.value_bytes,
+            len: self.value_len,
+        }
+    }
+
+    #[inline]
+    pub fn from_value_payload(
+        mut self,
+        value: EdgeValuePayload,
+    ) -> Self {
+        self.value_bytes = value.bytes;
+        self.value_len = value.len;
+        self.inline_value = value.inline_u16();
+        self
+    }
 }

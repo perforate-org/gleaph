@@ -23,10 +23,7 @@ fn push_neighbor(
     neighbor_local_vertex_id: LocalVertexId,
     edge: &Edge,
 ) {
-    let mut value_bytes = [0u8; 8];
-    let value_slice = edge.value_bytes();
-    let value_len = value_slice.len().min(8) as u8;
-    value_bytes[..usize::from(value_len)].copy_from_slice(&value_slice[..usize::from(value_len)]);
+    let value = edge.value;
     out.push(FederatedExpandNeighbor {
         shard_id,
         neighbor_logical_vertex_id,
@@ -34,9 +31,9 @@ fn push_neighbor(
         anchor_local_vertex_id,
         label_id_raw: edge.label_id,
         slot_index: edge.edge_slot_index.raw(),
-        inline_value: edge.inline_value_u16(),
-        value_len,
-        value_bytes,
+        inline_value: value.inline_u16(),
+        value_len: value.len,
+        value_bytes: value.bytes,
     });
 }
 

@@ -13,8 +13,9 @@ pub(crate) use path_pattern_extensions::GLEAPH_PATH_EXTENSION_HANDLER;
 
 pub use error::PlanQueryError;
 pub use executor::PlanQueryExecutor;
+pub use executor::EdgeBinding;
 pub use executor::{
-    EdgeBinding, PathBinding, PlanBinding, PlanQueryResult, execute_plan_query,
+    PathBinding, PlanBinding, PlanQueryResult, execute_plan_query,
     execute_plan_query_bindings, execute_plan_query_bindings_with_initial_rows,
     materialize_plan_rows, materialize_plan_rows_for_schema,
 };

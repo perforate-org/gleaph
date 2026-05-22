@@ -6,6 +6,7 @@ mod ic_gql_extensions;
 mod stable;
 
 mod store;
+mod store_edge_insert;
 
 pub mod federation_expand;
 pub mod migration;

@@ -117,8 +117,7 @@ fn build_edge_to(target: VertexId) -> Edge {
         target: VertexRef::local(target),
         edge_slot_index: EdgeSlotIndex::from_raw(0),
         label_id: 0,
-        value_bytes: [0u8; 8],
-        value_len: 0,
+        value: gleaph_graph_kernel::entry::EdgeValuePayload::EMPTY,
     }
 }
 
@@ -131,8 +130,7 @@ fn build_edge_to_remote(remote_ref: RemoteRefId) -> Edge {
         target: VertexRef::remote_ref(remote_ref),
         edge_slot_index: EdgeSlotIndex::from_raw(0),
         label_id: 0,
-        value_bytes: [0u8; 8],
-        value_len: 0,
+        value: gleaph_graph_kernel::entry::EdgeValuePayload::EMPTY,
     }
 }
 
@@ -1082,8 +1080,7 @@ impl GraphStore {
             target: VertexRef::local(source_vertex_id),
             edge_slot_index: EdgeSlotIndex::from_raw(0),
             label_id: 0,
-            value_bytes: [0u8; 8],
-            value_len: 0,
+            value: gleaph_graph_kernel::entry::EdgeValuePayload::EMPTY,
         };
         self.with_graph_mut(|graph| {
             graph.insert_directed_edge(source_vertex_id, target_vertex_id, label, forward, reverse)
@@ -1140,8 +1137,7 @@ impl GraphStore {
             target: VertexRef::local(source_vertex_id),
             edge_slot_index: EdgeSlotIndex::from_raw(0),
             label_id: 0,
-            value_bytes: [0u8; 8],
-            value_len: 0,
+            value: gleaph_graph_kernel::entry::EdgeValuePayload::EMPTY,
         };
         self.with_graph_mut(|graph| {
             graph.insert_directed_edge(source_vertex_id, target_vertex_id, label, forward, reverse)

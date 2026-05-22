@@ -189,84 +189,12 @@ pub fn export_local_vertex_for_migration(
     })
 }
 
-fn resolve_local_endpoint(
-    store: &GraphStore,
-    logical_vertex_id: LogicalVertexId,
-) -> Option<VertexId> {
-    let routing = store.federation_routing()?;
-    let placement =
-        placement::resolve_placement(routing.router_canister, logical_vertex_id).ok()?;
-    let VertexPlacement::Active(loc) = placement else {
-        return None;
-    };
-    if loc.shard_id != routing.shard_id {
-        return None;
-    }
-    Some(VertexId::from(loc.local_vertex_id))
-}
-
-fn insert_exported_out_edge(
-    store: &GraphStore,
-    owner_vertex_id: VertexId,
-    target: &ExportedEdgeTarget,
-    undirected: bool,
-    value_bytes: &[u8],
-    catalog_label: Option<EdgeLabelId>,
-) -> Result<EdgeHandle, GraphStoreError> {
-    let logical = match *target {
-        ExportedEdgeTarget::Local { logical_vertex_id }
-        | ExportedEdgeTarget::Remote { logical_vertex_id } => logical_vertex_id,
-    };
-    let local_target = match target {
-        ExportedEdgeTarget::Local { .. } => resolve_local_endpoint(store, logical),
-        ExportedEdgeTarget::Remote { .. } => None,
-    };
-    let valued = !value_bytes.is_empty();
-
-    match (local_target, undirected, valued) {
-        (Some(target_vertex_id), false, false) => {
-            store.insert_directed_edge(owner_vertex_id, target_vertex_id, catalog_label)
-        }
-        (Some(target_vertex_id), false, true) => store.insert_directed_edge_with_value_bytes(
-            owner_vertex_id,
-            target_vertex_id,
-            catalog_label,
-            value_bytes,
-        ),
-        (Some(target_vertex_id), true, false) => {
-            store.insert_undirected_edge(owner_vertex_id, target_vertex_id, catalog_label)
-        }
-        (Some(target_vertex_id), true, true) => store.insert_undirected_edge_with_value_bytes(
-            owner_vertex_id,
-            target_vertex_id,
-            catalog_label,
-            value_bytes,
-        ),
-        (None, false, false) => {
-            store.insert_directed_edge_to_logical(owner_vertex_id, logical, catalog_label)
-        }
-        (None, false, true) => store.insert_directed_edge_to_logical_with_value_bytes(
-            owner_vertex_id,
-            logical,
-            catalog_label,
-            value_bytes,
-        ),
-        (None, true, _) => store.insert_undirected_edge_to_logical_with_value_bytes(
-            owner_vertex_id,
-            logical,
-            catalog_label,
-            value_bytes,
-        ),
-    }
-}
-
 fn import_out_edge(
     store: &GraphStore,
     owner_vertex_id: VertexId,
     edge: &ExportedOutEdge,
 ) -> Result<(), GraphStoreError> {
-    let handle = insert_exported_out_edge(
-        store,
+    let handle = store.insert_exported_out_edge(
         owner_vertex_id,
         &edge.target,
         edge.undirected,

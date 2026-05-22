@@ -1,5 +1,6 @@
 pub mod edge;
 pub mod edge_value;
+pub mod edge_value_payload;
 pub mod label;
 pub mod property;
 pub mod remote_ref;
@@ -8,6 +9,7 @@ pub mod vertex_ref;
 pub mod weight;
 
 pub use edge::{Edge, EdgeMeta, EdgeSlotIndex, MAX_EDGE_VALUE_BYTES};
+pub use edge_value_payload::EdgeValuePayload;
 pub use edge_value::{
     DecodedEdgeValue, EdgeValueEncoding, EdgeValueProfile, EdgeValueProfileError, EdgeValueWidth,
     PreparedEdgeValueDecoder, decode_edge_value, decode_edge_weight,

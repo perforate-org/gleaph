@@ -14,6 +14,7 @@
 //! type, directionality, and per-edge values are carried by the labeled bucket layer
 //! and [`EdgeValueStore`], not this row.
 
+use super::edge_value_payload::EdgeValuePayload;
 use super::remote_ref::EdgeTarget;
 use super::vertex_ref::VertexRef;
 use ic_stable_lara::{
@@ -38,15 +39,13 @@ pub struct Edge {
     pub target: VertexRef,
     pub edge_slot_index: EdgeSlotIndex,
     pub label_id: u16,
-    /// In-memory edge value bytes (not persisted on the 4-byte wire row).
-    pub value_bytes: [u8; MAX_EDGE_VALUE_BYTES],
-    /// Active length of [`Self::value_bytes`] (0..=8).
-    pub value_len: u8,
+    /// In-memory edge value (not persisted on the 4-byte wire row).
+    pub value: EdgeValuePayload,
 }
 
 impl PartialEq for Edge {
     fn eq(&self, other: &Self) -> bool {
-        self.target == other.target && self.value_bytes() == other.value_bytes()
+        self.target == other.target && self.value == other.value
     }
 }
 
@@ -55,7 +54,7 @@ impl Eq for Edge {}
 impl Hash for Edge {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.target.hash(state);
-        self.value_bytes().hash(state);
+        self.value.hash(state);
     }
 }
 
@@ -63,27 +62,20 @@ impl Edge {
     /// Returns the active value byte slice.
     #[inline]
     pub fn value_bytes(&self) -> &[u8] {
-        &self.value_bytes[..usize::from(self.value_len.min(MAX_EDGE_VALUE_BYTES as u8))]
+        self.value.as_slice()
     }
 
     /// Sets the in-memory value bytes (length must be <= [`MAX_EDGE_VALUE_BYTES`]).
     #[inline]
     pub fn with_value_bytes(mut self, bytes: &[u8]) -> Self {
-        let len = bytes.len().min(MAX_EDGE_VALUE_BYTES);
-        self.value_bytes = [0u8; MAX_EDGE_VALUE_BYTES];
-        self.value_bytes[..len].copy_from_slice(&bytes[..len]);
-        self.value_len = len as u8;
+        self.value = EdgeValuePayload::from_slice(bytes);
         self
     }
 
     /// Legacy u16 weight view when the active value is exactly two bytes (little-endian).
     #[inline]
     pub fn inline_value_u16(self) -> u16 {
-        if self.value_len == 2 {
-            u16::from_le_bytes(self.value_bytes[0..2].try_into().unwrap())
-        } else {
-            0
-        }
+        self.value.inline_u16()
     }
 
     /// Resolves the stored neighbor as a local or remote [`EdgeTarget`].
@@ -106,8 +98,7 @@ impl CsrEdge for Edge {
             target: VertexRef::from_le_bytes(chunk[0..4].try_into().unwrap()),
             edge_slot_index: EdgeSlotIndex::from_raw(0),
             label_id: 0,
-            value_bytes: [0u8; MAX_EDGE_VALUE_BYTES],
-            value_len: 0,
+            value: EdgeValuePayload::EMPTY,
         }
     }
 
@@ -136,8 +127,7 @@ impl CsrEdge for Edge {
             target,
             edge_slot_index: self.edge_slot_index,
             label_id: self.label_id,
-            value_bytes: self.value_bytes,
-            value_len: self.value_len,
+            value: self.value,
         }
     }
 
@@ -161,7 +151,7 @@ impl CsrEdge for Edge {
     }
 
     fn edge_value_byte_width(&self) -> u8 {
-        self.value_len
+        self.value.len
     }
 
     fn edge_value_bytes(&self) -> &[u8] {
@@ -183,8 +173,7 @@ impl CsrEdgeTombstone for Edge {
             target: VertexRef::tombstone(),
             edge_slot_index: EdgeSlotIndex::from_raw(0),
             label_id: 0,
-            value_bytes: [0u8; MAX_EDGE_VALUE_BYTES],
-            value_len: 0,
+            value: EdgeValuePayload::EMPTY,
         }
     }
 
@@ -214,8 +203,7 @@ mod tests {
             target: VertexRef::remote_ref(RemoteRefId::from_raw(0x1234_5678)),
             edge_slot_index: EdgeSlotIndex::from_raw(0xA1B2_C3D4),
             label_id: 0,
-            value_bytes: [0x8B, 0x9A, 0, 0, 0, 0, 0, 0],
-            value_len: 2,
+            value: EdgeValuePayload::from_slice(&0x9A8Bu16.to_le_bytes()),
         };
         let mut bytes = [0u8; Edge::BYTES];
         edge.write_to(&mut bytes);
@@ -227,7 +215,7 @@ mod tests {
         let bytes = [0x78, 0x56, 0x34, 0x12];
         let edge = Edge::read_from(&bytes);
         assert_eq!(edge.target, VertexRef::local(VertexId::from(0x1234_5678)));
-        assert_eq!(edge.value_len, 0);
+        assert!(edge.value.is_empty());
 
         let mut round_trip = [0u8; Edge::BYTES];
         edge.write_to(&mut round_trip);
