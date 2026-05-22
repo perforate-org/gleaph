@@ -1,9 +1,7 @@
 //! Canonical edge insert paths (directed / undirected, local / logical, valued / unvalued).
 
 use gleaph_graph_kernel::entry::EdgeLabelId;
-use gleaph_graph_kernel::federation::{
-    ExportedEdgeTarget, LogicalVertexId, VertexPlacement,
-};
+use gleaph_graph_kernel::federation::{ExportedEdgeTarget, LogicalVertexId, VertexPlacement};
 use ic_stable_lara::VertexId;
 
 use crate::index::placement;
@@ -55,57 +53,47 @@ impl GraphStore {
         source_vertex_id: VertexId,
         spec: InsertEdgeSpec<'_>,
     ) -> Result<EdgeHandle, GraphStoreError> {
-        let valued = spec
-            .value_bytes
-            .is_some_and(|b| !b.is_empty());
+        let valued = spec.value_bytes.is_some_and(|b| !b.is_empty());
         let value = spec.value_bytes.unwrap_or(&[]);
 
         match (spec.target, spec.topology, valued) {
             (InsertEdgeTarget::Local(target), InsertEdgeTopology::Directed, false) => {
                 self.insert_directed_edge(source_vertex_id, target, spec.catalog_label)
             }
-            (InsertEdgeTarget::Local(target), InsertEdgeTopology::Directed, true) => {
-                self.insert_directed_edge_with_value_bytes(
+            (InsertEdgeTarget::Local(target), InsertEdgeTopology::Directed, true) => self
+                .insert_directed_edge_with_value_bytes(
                     source_vertex_id,
                     target,
                     spec.catalog_label,
                     value,
-                )
-            }
+                ),
             (InsertEdgeTarget::Local(target), InsertEdgeTopology::Undirected, false) => {
                 self.insert_undirected_edge(source_vertex_id, target, spec.catalog_label)
             }
-            (InsertEdgeTarget::Local(target), InsertEdgeTopology::Undirected, true) => {
-                self.insert_undirected_edge_with_value_bytes(
+            (InsertEdgeTarget::Local(target), InsertEdgeTopology::Undirected, true) => self
+                .insert_undirected_edge_with_value_bytes(
                     source_vertex_id,
                     target,
                     spec.catalog_label,
                     value,
-                )
-            }
+                ),
             (InsertEdgeTarget::Logical(logical), InsertEdgeTopology::Directed, false) => {
-                self.insert_directed_edge_to_logical(
-                    source_vertex_id,
-                    logical,
-                    spec.catalog_label,
-                )
+                self.insert_directed_edge_to_logical(source_vertex_id, logical, spec.catalog_label)
             }
-            (InsertEdgeTarget::Logical(logical), InsertEdgeTopology::Directed, true) => {
-                self.insert_directed_edge_to_logical_with_value_bytes(
+            (InsertEdgeTarget::Logical(logical), InsertEdgeTopology::Directed, true) => self
+                .insert_directed_edge_to_logical_with_value_bytes(
                     source_vertex_id,
                     logical,
                     spec.catalog_label,
                     value,
-                )
-            }
-            (InsertEdgeTarget::Logical(logical), InsertEdgeTopology::Undirected, _) => {
-                self.insert_undirected_edge_to_logical_with_value_bytes(
+                ),
+            (InsertEdgeTarget::Logical(logical), InsertEdgeTopology::Undirected, _) => self
+                .insert_undirected_edge_to_logical_with_value_bytes(
                     source_vertex_id,
                     logical,
                     spec.catalog_label,
                     value,
-                )
-            }
+                ),
         }
     }
 

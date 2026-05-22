@@ -15,29 +15,36 @@ use gleaph_gql::value::{ExtensionSortableKey, ExtensionValue};
 use gleaph_gql_planner::plan::PhysicalPlan;
 use gleaph_gql_planner::{PlanBuildOptions, build_plan_with_schema_and_options};
 
-use super::context::QueryExprEvaluator;
 use super::super::{GLEAPH_PATH_EXTENSION_HANDLER, materialize};
+use super::context::QueryExprEvaluator;
 use crate::facade::FederationRouting;
 use crate::index::lookup::PropertyIndexLookup;
 use crate::index::placement;
 
-pub use std::collections::{BTreeMap, BTreeSet};
-pub use std::rc::Rc;
+pub use super::super::error::PlanQueryError;
+pub use super::super::row::PlanRow;
+pub use super::PlanBinding;
 pub use super::PlanQueryExecutor;
+pub use super::PlanQueryResult;
 pub(crate) use super::bindings::EdgeBinding;
 pub(crate) use super::context::ExecuteCtx;
-pub(crate) use super::expand::{execute_expand, ExpandDst};
+pub(crate) use super::expand::{ExpandDst, execute_expand};
 pub(crate) use super::join::merge_rows;
 pub(crate) use super::{
-    edge_binding_for_expand, EdgeSequenceOrder, execute_plan_query, execute_plan_query_bindings,
+    EdgeSequenceOrder, edge_binding_for_expand, execute_plan_query, execute_plan_query_bindings,
 };
-pub use gleaph_gql::{Value, value_to_index_key_bytes};
-pub use gleaph_gql::token::Span;
+pub use crate::facade::EdgeHandle;
+pub use crate::facade::GraphStore;
+pub use crate::facade::mutation_executor::GraphMutationExecutor;
+pub use crate::gql_execution_context::GqlExecutionContext;
+pub use crate::index::placement::native_test_register_physical_placement;
 pub use gleaph_gql::ast::{
     AggregateFunc, BinaryOp, CmpOp, Expr, ExprKind, NullOrder, ObjectName, OrderByClause, SetOp,
     SortDirection, SortItem, Statement, WhenClause,
 };
+pub use gleaph_gql::token::Span;
 pub use gleaph_gql::types::{EdgeDirection, LabelExpr};
+pub use gleaph_gql::{Value, value_to_index_key_bytes};
 pub use gleaph_gql_planner::plan::{
     AggregateSpec, ConditionalScanCandidate, PlanOp, ProjectColumn, ScanValue, ShortestMode,
     ShortestPathCost, Str, VarLenSpec, WcojEdge,
@@ -47,15 +54,8 @@ pub use gleaph_graph_kernel::federation::FederatedExpandNeighbor;
 pub use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest};
 pub use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
 pub use ic_stable_lara::VertexId;
-pub use crate::facade::EdgeHandle;
-pub use crate::facade::GraphStore;
-pub use crate::facade::mutation_executor::GraphMutationExecutor;
-pub use crate::gql_execution_context::GqlExecutionContext;
-pub use super::super::row::PlanRow;
-pub use super::PlanBinding;
-pub use super::PlanQueryResult;
-pub use super::super::error::PlanQueryError;
-pub use crate::index::placement::native_test_register_physical_placement;
+pub use std::collections::{BTreeMap, BTreeSet};
+pub use std::rc::Rc;
 
 #[derive(Default)]
 pub struct MockPropertyIndex {
@@ -358,4 +358,3 @@ pub fn eval_test_expr(expr: Expr) -> Value {
         .eval_expr(&PlanRow::new(), &expr)
         .expect("eval test expr")
 }
-

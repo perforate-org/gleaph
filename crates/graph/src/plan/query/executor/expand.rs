@@ -19,16 +19,18 @@ use ic_stable_lara::labeled::OutEdgeOrder;
 use ic_stable_lara::traits::{CsrEdge, CsrEdgeTombstone};
 use nohash_hasher::IntSet;
 
-use super::bindings::{EdgeBinding, edge_binding_for_federated_expand_hit, federated_expand_label_id_raw};
-use super::context::{ExecuteCtx, QueryExprEvaluator};
-use super::{
-    PlanBinding, dst_filter_is_dst_vertex_only, edge_to_projected_record, federation_routing,
-    resolve_federated_traversal_vertex, resolve_scan_value_bytes, row_matches_all,
-    vertex_binding_for_projection, vertex_binding_for_traversal, vertex_row_matches_dst_filters,
-    EdgeSequenceOrder,
-};
 use super::super::error::PlanQueryError;
 use super::super::row::PlanRow;
+use super::bindings::{
+    EdgeBinding, edge_binding_for_federated_expand_hit, federated_expand_label_id_raw,
+};
+use super::context::{ExecuteCtx, QueryExprEvaluator};
+use super::{
+    EdgeSequenceOrder, PlanBinding, dst_filter_is_dst_vertex_only, edge_to_projected_record,
+    federation_routing, resolve_federated_traversal_vertex, resolve_scan_value_bytes,
+    row_matches_all, vertex_binding_for_projection, vertex_binding_for_traversal,
+    vertex_row_matches_dst_filters,
+};
 use crate::facade::{EdgeHandle, GraphStore, GraphStoreError, canonical_undirected_owner};
 use crate::index::edge_equal;
 
@@ -169,7 +171,10 @@ pub(crate) enum ExpandDst {
 }
 
 impl ExpandDst {
-    pub(crate) fn from_edge(store: &GraphStore, edge: &Edge) -> Result<Option<Self>, PlanQueryError> {
+    pub(crate) fn from_edge(
+        store: &GraphStore,
+        edge: &Edge,
+    ) -> Result<Option<Self>, PlanQueryError> {
         match edge.edge_target() {
             Some(EdgeTarget::Local(vertex_id)) => Ok(Some(Self::Local(vertex_id))),
             Some(EdgeTarget::Remote(remote_ref)) => {
@@ -787,7 +792,11 @@ pub(crate) fn execute_expand(
     Ok(out)
 }
 
-pub(crate) fn expand_dst_matches_prebound_vertex(row: &PlanRow, dst: &Str, edge_dst: ExpandDst) -> bool {
+pub(crate) fn expand_dst_matches_prebound_vertex(
+    row: &PlanRow,
+    dst: &Str,
+    edge_dst: ExpandDst,
+) -> bool {
     match (row.get(dst.as_ref()), edge_dst) {
         (Some(PlanBinding::Vertex(id)), ExpandDst::Local(dst_id)) => *id == dst_id,
         (Some(PlanBinding::RemoteVertex(logical)), ExpandDst::Remote(dst_logical)) => {

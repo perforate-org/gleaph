@@ -53,10 +53,7 @@ impl FederatedExpandNeighbor {
     }
 
     #[inline]
-    pub fn from_value_payload(
-        mut self,
-        value: EdgeValuePayload,
-    ) -> Self {
+    pub fn from_value_payload(mut self, value: EdgeValuePayload) -> Self {
         self.value_bytes = value.bytes;
         self.value_len = value.len;
         self.inline_value = value.inline_u16();

@@ -4,17 +4,17 @@ use std::hash::Hasher;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use gleaph_gql_planner::plan::{PlanOp, Str};
 use gleaph_gql::{Value, hash_value_for_join};
+use gleaph_gql_planner::plan::{PlanOp, Str};
 use ic_stable_lara::VertexId;
 use nohash_hasher::IntMap;
 use rapidhash::fast::RapidHasher;
 
-use super::context::ExecuteCtx;
-use super::ops::execute_ops_from;
-use super::PlanBinding;
 use super::super::error::PlanQueryError;
 use super::super::row::PlanRow;
+use super::PlanBinding;
+use super::context::ExecuteCtx;
+use super::ops::execute_ops_from;
 
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
 use canbench_rs::bench_scope;

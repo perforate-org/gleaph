@@ -4,28 +4,24 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use candid::Principal;
-use gleaph_gql::ast::{
-    BinaryOp, CmpOp, Expr, ExprKind, ObjectName, TruthValue,
-};
+use gleaph_gql::ast::{BinaryOp, CmpOp, Expr, ExprKind, ObjectName, TruthValue};
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql::{Value, value_to_index_key_bytes};
 use gleaph_gql_planner::plan::{AggregateSpec, ProjectColumn, Str};
-use gleaph_graph_kernel::entry::{
-    Edge, EdgeLabelId, EdgeSlotIndex, PreparedWeightDecoder, Vertex,
-};
+use gleaph_graph_kernel::entry::{Edge, EdgeLabelId, EdgeSlotIndex, PreparedWeightDecoder, Vertex};
 use gleaph_graph_kernel::path::GraphPathVertexId;
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
 use ic_stable_lara::traits::CsrVertexTombstone;
 
+use super::super::error::PlanQueryError;
+use super::super::row::PlanRow;
+use super::PlanBinding;
 use super::bindings::EdgeBinding;
 use super::context::QueryExprEvaluator;
 use super::path::{
     edge_element_id_bytes, local_shard_id, path_binding_to_value, vertex_element_id_bytes,
 };
-use super::PlanBinding;
-use super::super::error::PlanQueryError;
-use super::super::row::PlanRow;
 use crate::facade::GraphStore;
 use crate::gql_execution_context::try_eval_runtime_function_call;
 use crate::plan::expr_evaluator::{

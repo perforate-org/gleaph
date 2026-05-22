@@ -9,6 +9,9 @@ use gleaph_gql_planner::plan::PlanOp;
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
 use canbench_rs::bench_scope;
 
+use super::super::aggregate;
+use super::super::error::PlanQueryError;
+use super::super::row::PlanRow;
 use super::context::ExecuteCtx;
 use super::expand::execute_expand;
 use super::join::{execute_cartesian_product, execute_hash_join};
@@ -18,16 +21,16 @@ use super::scan::{
     execute_limited_streaming_prefix, execute_node_scan, limited_streaming_prefix_limit_idx,
 };
 use super::{
-    EdgeSequenceOrder, PlanBinding, dedup_rows, ensure_simple_expand, gleaph_sequence_order_after_expand,
-    gleaph_sequence_sort, limit_value, plan_op_name, previous_op_binds_edge, project_row,
-    row_matches_all, sort_rows,
+    EdgeSequenceOrder, PlanBinding, dedup_rows, ensure_simple_expand,
+    gleaph_sequence_order_after_expand, gleaph_sequence_sort, limit_value, plan_op_name,
+    previous_op_binds_edge, project_row, row_matches_all, sort_rows,
 };
-use super::super::aggregate;
-use super::super::error::PlanQueryError;
-use super::super::row::PlanRow;
 use crate::index::lookup::PropertyIndexLookup;
 
-pub(crate) async fn execute_ops(ctx: &ExecuteCtx<'_>, ops: &[PlanOp]) -> Result<Vec<PlanRow>, PlanQueryError> {
+pub(crate) async fn execute_ops(
+    ctx: &ExecuteCtx<'_>,
+    ops: &[PlanOp],
+) -> Result<Vec<PlanRow>, PlanQueryError> {
     execute_ops_from(ctx, ops, vec![PlanRow::new()]).await
 }
 
@@ -988,5 +991,4 @@ mod tests {
             );
         }
     }
-
 }

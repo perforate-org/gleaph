@@ -8,13 +8,13 @@ mod path;
 mod scan;
 
 pub use bindings::EdgeBinding;
+pub(crate) use eval::{binding_to_value, eval_sort_expr, project_row, value_row};
+pub(crate) use join::{execute_cartesian_product, execute_hash_join, merge_rows};
+pub(crate) use ops::execute_ops_from;
 pub use path::PathBinding;
 pub(crate) use path::{
     edge_element_id_bytes, local_shard_id, path_binding_to_value, vertex_element_id_bytes,
 };
-pub(crate) use eval::{binding_to_value, eval_sort_expr, project_row, value_row};
-pub(crate) use join::{execute_cartesian_product, execute_hash_join, merge_rows};
-pub(crate) use ops::execute_ops_from;
 pub(crate) use scan::{federation_routing, resolve_scan_value_bytes};
 
 #[cfg(test)]
@@ -27,16 +27,6 @@ pub(crate) use path::{
 };
 
 use super::aggregate;
-use bindings::{edge_binding_for_federated_expand_hit, federated_expand_label_id_raw};
-use context::{ExecuteCtx, QueryExprEvaluator};
-use expand::{
-    execute_expand, ExpandCandidate, ExpandDst,
-};
-use path::execute_shortest_path;
-use scan::{
-    execute_conditional_index_scan, execute_index_intersection, execute_index_scan,
-    execute_limited_streaming_prefix, execute_node_scan, limited_streaming_prefix_limit_idx,
-};
 use super::error::PlanQueryError;
 use super::sort_keys::compare_sort_keys;
 use crate::facade::{EdgeHandle, GraphStore, GraphStoreError, canonical_undirected_owner};
@@ -53,7 +43,10 @@ use crate::plan::expr_evaluator::{
     eval_sqrt_expr, eval_tan_expr, eval_tanh_expr, eval_unary_expr, eval_xor_expr,
     searched_case_when_outcome, truthy,
 };
+use bindings::{edge_binding_for_federated_expand_hit, federated_expand_label_id_raw};
 use candid::Principal;
+use context::{ExecuteCtx, QueryExprEvaluator};
+use expand::{ExpandCandidate, ExpandDst, execute_expand};
 use gleaph_gql::ast::{
     BinaryOp, CmpOp, Expr, ExprKind, ObjectName, OrderByClause, SortDirection, TruthValue,
 };
@@ -81,7 +74,12 @@ use ic_stable_lara::VertexId;
 use ic_stable_lara::labeled::{BucketDirectedness, OutEdgeOrder};
 use ic_stable_lara::traits::{CsrEdge, CsrVertexTombstone};
 use nohash_hasher::{IntMap, IntSet};
+use path::execute_shortest_path;
 use rapidhash::fast::RapidHasher;
+use scan::{
+    execute_conditional_index_scan, execute_index_intersection, execute_index_scan,
+    execute_limited_streaming_prefix, execute_node_scan, limited_streaming_prefix_limit_idx,
+};
 #[cfg(test)]
 use std::cell::Cell;
 use std::cell::RefCell;
@@ -243,8 +241,6 @@ pub async fn execute_plan_query(
     )
 }
 
-
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum EdgeSequenceOrder {
     Ascending,
@@ -260,9 +256,6 @@ impl From<EdgeSequenceOrder> for OutEdgeOrder {
         }
     }
 }
-
-
-
 
 pub(crate) fn vertex_binding_for_projection(
     store: &GraphStore,
@@ -342,8 +335,6 @@ pub(crate) fn vertex_row_matches_dst_filters(
     };
     row_matches_all(&evaluator, &stub, dst_filter)
 }
-
-
 
 pub(crate) fn ensure_simple_expand(
     label_expr: &Option<LabelExpr>,
@@ -647,4 +638,3 @@ mod test_support;
 
 #[cfg(test)]
 mod tests_integration;
-

@@ -4,6 +4,7 @@ use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap};
 use std::pin::Pin;
 
+use candid::Principal;
 use gleaph_gql::ast::{CmpOp, Expr};
 use gleaph_gql::types::EdgeDirection;
 use gleaph_gql::{Value, value_to_index_key_bytes};
@@ -12,18 +13,19 @@ use gleaph_gql_planner::plan::{
 };
 use gleaph_graph_kernel::entry::{Edge, PreparedWeightDecoder};
 use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest};
-use candid::Principal;
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
-use nohash_hasher::IntSet;
 use ic_stable_lara::traits::CsrVertexTombstone;
+use nohash_hasher::IntSet;
 
+use super::super::error::PlanQueryError;
+use super::super::row::PlanRow;
 use super::context::{ExecuteCtx, QueryExprEvaluator};
 use super::expand::{
-    EdgeEqualityStreamFilter, build_expanded_row, csr_offset_fast_path_for_expand,
+    EdgeEqualityStreamFilter, ExpandDst, build_expanded_row, csr_offset_fast_path_for_expand,
     edge_binding_for_expand, edge_equality_stream_filter, edge_matches_stream_filter,
     expand_accepts_remote_dst, expand_candidates_into, expand_dst_matches_prebound_vertex,
-    visit_csr_expand_fast_path, ExpandDst,
+    visit_csr_expand_fast_path,
 };
 use super::ops::execute_ops_from;
 use super::{
@@ -31,13 +33,10 @@ use super::{
     limit_value, project_row, row_matches_all, vertex_binding_for_traversal,
     vertex_row_matches_dst_filters,
 };
-use super::super::error::PlanQueryError;
-use super::super::row::PlanRow;
 use crate::facade::{GraphStore, GraphStoreError};
 use crate::gql_execution_context::GqlExecutionContext;
 use crate::index::lookup::PropertyIndexLookup;
 use crate::index::placement;
-
 
 #[cfg(test)]
 thread_local! {
@@ -94,7 +93,10 @@ fn streaming_ops_preserve_row_cardinality_after(ops: &[PlanOp], start: usize) ->
     true
 }
 
-pub(crate) fn limited_streaming_prefix_limit_idx(ops: &[PlanOp], start_idx: usize) -> Option<usize> {
+pub(crate) fn limited_streaming_prefix_limit_idx(
+    ops: &[PlanOp],
+    start_idx: usize,
+) -> Option<usize> {
     for (idx, op) in ops.iter().enumerate().skip(start_idx) {
         match op {
             PlanOp::Limit { count: Some(_), .. } => return Some(idx),
@@ -967,8 +969,6 @@ pub(crate) fn execute_node_scan(
     }
     Ok(out)
 }
-
-
 
 #[cfg(test)]
 mod tests {

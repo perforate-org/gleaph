@@ -2,36 +2,34 @@
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::hash::Hasher;
 use std::collections::{BTreeMap, BinaryHeap};
+use std::hash::Hasher;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use gleaph_gql::Value;
 use gleaph_gql::ast::{BinaryOp, Expr, ExprKind};
 use gleaph_gql::numeric_ops::{NumericOpError, eval_binary_numeric};
 use gleaph_gql::numeric_order::{NormalizedNumeric, NumericOrderError, normalized_numeric_parts};
 use gleaph_gql::types::{EdgeDirection, LabelExpr, PathElement};
 use gleaph_gql::value_cmp::compare_values;
-use gleaph_gql::Value;
-use gleaph_gql_planner::plan::{PlanOp, ShortestMode, ShortestPathCost, Str, VarLenSpec};
-use rapidhash::fast::RapidHasher;
 use gleaph_gql_planner::BindingLayout;
+use gleaph_gql_planner::plan::{PlanOp, ShortestMode, ShortestPathCost, Str, VarLenSpec};
 use gleaph_graph_kernel::entry::{EdgeLabelId, EdgeSlotIndex, PreparedWeightDecoder};
 use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
 use ic_stable_lara::VertexId;
 use nohash_hasher::{IntMap, IntSet};
+use rapidhash::fast::RapidHasher;
 
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
 use canbench_rs::bench_scope;
 
-use super::bindings::EdgeBinding;
-use super::context::QueryExprEvaluator;
-use super::expand::{
-    edge_binding_for_expand, expand_candidates_into, ExpandCandidate, ExpandDst,
-};
-use super::{EdgeSequenceOrder, PlanBinding, vertex_binding_for_traversal};
 use super::super::error::PlanQueryError;
 use super::super::row::PlanRow;
+use super::bindings::EdgeBinding;
+use super::context::QueryExprEvaluator;
+use super::expand::{ExpandCandidate, ExpandDst, edge_binding_for_expand, expand_candidates_into};
+use super::{EdgeSequenceOrder, PlanBinding, vertex_binding_for_traversal};
 use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
 
 #[derive(Clone, Debug)]
@@ -223,7 +221,10 @@ pub(crate) enum ShortestFixedLabelExpand {
 }
 
 impl ShortestFixedLabelExpand {
-    pub(crate) fn new(direction: EdgeDirection, catalog: EdgeLabelId) -> Result<Self, PlanQueryError> {
+    pub(crate) fn new(
+        direction: EdgeDirection,
+        catalog: EdgeLabelId,
+    ) -> Result<Self, PlanQueryError> {
         match direction {
             EdgeDirection::PointingRight => Ok(Self::Forward { label: catalog }),
             EdgeDirection::PointingLeft => Ok(Self::Reverse { label: catalog }),
@@ -1186,9 +1187,7 @@ mod path_test_helpers {
 
     pub fn edge_path_id(element: &PathElement) -> GraphPathEdgeId {
         match element {
-            PathElement::Edge(id) => {
-                GraphPathEdgeId::try_from_slice(id.as_ref()).expect("edge id")
-            }
+            PathElement::Edge(id) => GraphPathEdgeId::try_from_slice(id.as_ref()).expect("edge id"),
             other => panic!("expected edge path element, got {other:?}"),
         }
     }
@@ -1275,7 +1274,10 @@ mod path_test_helpers {
                 direction: EdgeDirection::PointingRight,
                 label: Some("WgtRoad".into()),
                 label_expr: None,
-                var_len: Some(VarLenSpec { min: 1, max: Some(5) }),
+                var_len: Some(VarLenSpec {
+                    min: 1,
+                    max: Some(5),
+                }),
                 cost: ShortestPathCost::EdgeCostExpr {
                     edge_var: "e".into(),
                     expr: cost,
@@ -1335,9 +1337,9 @@ mod path_test_helpers {
                     )))),
                 },
             ],
-            else_clause: Some(Box::new(cast_expr_to_float32(Expr::new(ExprKind::Literal(
-                Value::Float64(0.0),
-            ))))),
+            else_clause: Some(Box::new(cast_expr_to_float32(Expr::new(
+                ExprKind::Literal(Value::Float64(0.0)),
+            )))),
         })
     }
 
@@ -1389,12 +1391,12 @@ mod path_test_helpers {
 
 #[cfg(test)]
 mod tests {
-    use super::path_test_helpers::*;
     use super::super::test_support::*;
+    use super::path_test_helpers::*;
     use super::{
+        ShortestFixedLabelExpand, WeightedCost, WeightedCostOrderKey,
         decode_direct_gleaph_weight_hop_cost, local_shard_id, materialize_path_from_search_states,
         weighted_shortest_can_use_hop_count, weighted_shortest_paths_between,
-        ShortestFixedLabelExpand, WeightedCost, WeightedCostOrderKey,
     };
     use ic_stable_lara::traits::CsrEdge;
     use pollster;

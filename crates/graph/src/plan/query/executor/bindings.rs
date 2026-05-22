@@ -1,9 +1,7 @@
 //! Plan execution bindings: edge handles with stored value bytes.
 
 use gleaph_gql::types::EdgeDirection;
-use gleaph_graph_kernel::entry::{
-    Edge, EdgeDirectedness, EdgeLabelId, EdgeValuePayload,
-};
+use gleaph_graph_kernel::entry::{Edge, EdgeDirectedness, EdgeLabelId, EdgeValuePayload};
 use gleaph_graph_kernel::federation::{FederatedExpandNeighbor, ShardId};
 
 use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
@@ -87,7 +85,6 @@ pub(crate) fn federated_expand_label_id_raw(
         lid.pack(directedness).raw()
     })
 }
-
 
 #[cfg(test)]
 mod tests {
