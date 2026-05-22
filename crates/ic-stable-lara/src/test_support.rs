@@ -157,8 +157,16 @@ pub(crate) fn labeled_lara_memories() -> (
     VectorMemory,
     VectorMemory,
     VectorMemory,
+    VectorMemory,
+    VectorMemory,
+    VectorMemory,
+    VectorMemory,
 ) {
     (
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
         vector_memory(),
         vector_memory(),
         vector_memory(),

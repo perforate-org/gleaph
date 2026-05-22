@@ -29,6 +29,7 @@
 #[cfg(feature = "canbench")]
 mod bench;
 pub mod edge;
+pub mod edge_value;
 pub mod maintenance;
 pub mod operation_error;
 pub mod vertex;

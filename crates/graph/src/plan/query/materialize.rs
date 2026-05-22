@@ -6,7 +6,7 @@ use gleaph_gql::Value;
 use gleaph_gql_planner::{OutputBindingKind, OutputColumn, OutputSchema};
 
 use super::error::PlanQueryError;
-use super::executor::{binding_to_value, path_binding_to_value, PlanQueryRow};
+use super::executor::{PlanQueryRow, binding_to_value, path_binding_to_value};
 use crate::facade::GraphStore;
 use crate::plan::query::{PathBinding, PlanBinding};
 
@@ -61,13 +61,12 @@ fn resolve_column_binding<'a>(
     row: &'a PlanQueryRow,
     column: &OutputColumn,
 ) -> Option<&'a PlanBinding> {
-    row.get(column.name.as_ref())
-        .or_else(|| {
-            column
-                .source_var
-                .as_ref()
-                .and_then(|var| row.get(var.as_ref()))
-        })
+    row.get(column.name.as_ref()).or_else(|| {
+        column
+            .source_var
+            .as_ref()
+            .and_then(|var| row.get(var.as_ref()))
+    })
 }
 
 fn single_path_output_column(schema: &OutputSchema) -> Option<&OutputColumn> {

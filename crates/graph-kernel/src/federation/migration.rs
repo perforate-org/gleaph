@@ -11,7 +11,7 @@ use crate::entry::{EdgeLabelId, PropertyId, VertexLabelId};
 pub struct ExportedOutEdge {
     pub catalog_label: Option<EdgeLabelId>,
     pub undirected: bool,
-    pub inline_value: u16,
+    pub value_bytes: Vec<u8>,
     pub target: ExportedEdgeTarget,
     pub properties: Vec<ExportedProperty>,
 }

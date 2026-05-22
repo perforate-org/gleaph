@@ -102,8 +102,8 @@ mod tests {
 
     #[test]
     fn rejects_mismatched_bundle_flag() {
-        let err = validate_plan_bundle_write_flag(&[plan_with_dml()], false)
-            .expect_err("flag mismatch");
+        let err =
+            validate_plan_bundle_write_flag(&[plan_with_dml()], false).expect_err("flag mismatch");
         assert!(err.0.contains("does not match"));
     }
 

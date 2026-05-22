@@ -355,8 +355,12 @@ async fn run_wire_plans(
 ) -> Result<TransactionBlockRun, GqlRunError> {
     crate::plan_wire_guard::validate_wire_plan_execution(
         match mode {
-            GqlCanisterExecutionMode::CompositeQuery => gleaph_graph_kernel::plan_exec::GqlExecutionMode::Query,
-            GqlCanisterExecutionMode::Update => gleaph_graph_kernel::plan_exec::GqlExecutionMode::Update,
+            GqlCanisterExecutionMode::CompositeQuery => {
+                gleaph_graph_kernel::plan_exec::GqlExecutionMode::Query
+            }
+            GqlCanisterExecutionMode::Update => {
+                gleaph_graph_kernel::plan_exec::GqlExecutionMode::Update
+            }
         },
         plans,
         requires_write_path,

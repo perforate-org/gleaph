@@ -93,6 +93,7 @@ pub use record::{
     LabelBucket, LabeledVertex, LabeledVertexFieldError, MAX_VERTEX_LABEL_BUCKET_SLACK,
     MAX_VERTEX_LABEL_BUCKETS,
 };
+pub use slot_index::ValueWidthCode;
 pub use traits::LabeledCsrVertex;
 
 /// Convenience alias for the single-orientation labeled LARA graph.

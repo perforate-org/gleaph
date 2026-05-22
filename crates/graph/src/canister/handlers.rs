@@ -2,7 +2,6 @@
 
 use std::collections::BTreeMap;
 
-use crate::gql_execution_context::GqlExecutionContext;
 use crate::facade::migration::{
     export_local_vertex_for_migration, import_migrated_vertex, tombstone_migrated_vertex,
 };
@@ -11,6 +10,7 @@ use crate::facade::migration::{
     import_migrated_vertex_with_index, tombstone_migrated_vertex_with_index,
 };
 use crate::facade::{FederationRouting, GraphMetadata, GraphStore};
+use crate::gql_execution_context::GqlExecutionContext;
 use crate::gql_run::{kernel_execution_mode, run_wire_plan_last_read_row_count};
 use crate::index::ic::IcPropertyIndexClient;
 use crate::index::lookup::PropertyIndexLookup;
@@ -147,7 +147,9 @@ pub fn bootstrap_graph_peers(
     Ok(())
 }
 
-pub fn add_graph_peer(args: gleaph_graph_kernel::federation::AddGraphPeerArgs) -> Result<(), String> {
+pub fn add_graph_peer(
+    args: gleaph_graph_kernel::federation::AddGraphPeerArgs,
+) -> Result<(), String> {
     let self_canister = ic_cdk::api::canister_self();
     GraphStore::new().add_peer_graph_canister(args.peer, self_canister);
     Ok(())

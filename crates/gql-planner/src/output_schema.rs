@@ -82,7 +82,10 @@ fn output_column_from_project(
 ) -> OutputColumn {
     let (name, source_var) = project_column_name_and_var(col);
     let kind = match source_var.as_ref().map(|v| v.as_ref()) {
-        Some(var) => kinds.get(var).copied().unwrap_or(OutputBindingKind::Dynamic),
+        Some(var) => kinds
+            .get(var)
+            .copied()
+            .unwrap_or(OutputBindingKind::Dynamic),
         None => OutputBindingKind::Scalar,
     };
     OutputColumn {
@@ -207,7 +210,10 @@ fn register_binding_kinds(op: &PlanOp, kinds: &mut HashMap<String, OutputBinding
         PlanOp::OptionalMatch { sub_plan, .. } => {
             kinds.extend(infer_binding_kinds(sub_plan));
         }
-        PlanOp::UseGraph { sub_plan: Some(sub_plan), .. } => {
+        PlanOp::UseGraph {
+            sub_plan: Some(sub_plan),
+            ..
+        } => {
             kinds.extend(infer_binding_kinds(sub_plan));
         }
         PlanOp::SetOperation { right, .. } => {
@@ -216,7 +222,9 @@ fn register_binding_kinds(op: &PlanOp, kinds: &mut HashMap<String, OutputBinding
         PlanOp::InlineProcedureCall { sub_plan, .. } => {
             kinds.extend(infer_binding_kinds(&sub_plan.ops));
         }
-        PlanOp::WorstCaseOptimalJoin { variables, edges, .. } => {
+        PlanOp::WorstCaseOptimalJoin {
+            variables, edges, ..
+        } => {
             for variable in variables {
                 kinds.insert(variable.to_string(), OutputBindingKind::Vertex);
             }

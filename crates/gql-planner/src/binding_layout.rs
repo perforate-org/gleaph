@@ -80,7 +80,13 @@ fn register_op_bindings(op: &PlanOp, layout: &mut BindingLayout) {
                 layout.insert_name(c.variable.clone());
             }
         }
-        PlanOp::EdgeBindEndpoints { edge, near, far, hop_aux_binding, .. } => {
+        PlanOp::EdgeBindEndpoints {
+            edge,
+            near,
+            far,
+            hop_aux_binding,
+            ..
+        } => {
             layout.insert_name(edge.clone());
             layout.insert_name(near.clone());
             layout.insert_name(far.clone());
@@ -138,7 +144,11 @@ fn register_op_bindings(op: &PlanOp, layout: &mut BindingLayout) {
                 layout.insert_name(Str::from(binding.variable.as_str()));
             }
         }
-        PlanOp::For { variable, ordinality, .. } => {
+        PlanOp::For {
+            variable,
+            ordinality,
+            ..
+        } => {
             layout.insert_name(variable.clone());
             if let Some(ord) = ordinality {
                 layout.insert_name(ord.clone());
@@ -148,7 +158,12 @@ fn register_op_bindings(op: &PlanOp, layout: &mut BindingLayout) {
         PlanOp::OptionalMatch { sub_plan } => {
             register_subplan_bindings(sub_plan, layout);
         }
-        PlanOp::HashJoin { left, right, join_keys, .. } => {
+        PlanOp::HashJoin {
+            left,
+            right,
+            join_keys,
+            ..
+        } => {
             register_subplan_bindings(left, layout);
             register_subplan_bindings(right, layout);
             for key in join_keys {
@@ -162,7 +177,11 @@ fn register_op_bindings(op: &PlanOp, layout: &mut BindingLayout) {
         PlanOp::SetOperation { right, .. } => {
             register_subplan_bindings(&right.ops, layout);
         }
-        PlanOp::InlineProcedureCall { sub_plan, scope_vars, .. } => {
+        PlanOp::InlineProcedureCall {
+            sub_plan,
+            scope_vars,
+            ..
+        } => {
             register_subplan_bindings(&sub_plan.ops, layout);
             for v in scope_vars {
                 layout.insert_name(v.clone());
@@ -172,7 +191,9 @@ fn register_op_bindings(op: &PlanOp, layout: &mut BindingLayout) {
             sub_plan: Some(sub_plan),
             ..
         } => register_subplan_bindings(sub_plan, layout),
-        PlanOp::WorstCaseOptimalJoin { variables, edges, .. } => {
+        PlanOp::WorstCaseOptimalJoin {
+            variables, edges, ..
+        } => {
             for v in variables {
                 layout.insert_name(v.clone());
             }
@@ -188,10 +209,7 @@ fn register_op_bindings(op: &PlanOp, layout: &mut BindingLayout) {
             }
         }
         PlanOp::InsertEdge {
-            variable,
-            src,
-            dst,
-            ..
+            variable, src, dst, ..
         } => {
             if let Some(variable) = variable {
                 layout.insert_name(variable.clone());
@@ -252,8 +270,8 @@ pub type SharedBindingLayout = Rc<BindingLayout>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gleaph_gql::ast::{Expr, ExprKind};
     use crate::plan::{PhysicalPlan, PlanOp, ProjectColumn, ShortestMode};
+    use gleaph_gql::ast::{Expr, ExprKind};
 
     #[test]
     fn all_shortest_bench_layout_includes_shortest_path_variables() {

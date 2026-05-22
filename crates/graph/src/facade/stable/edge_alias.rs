@@ -239,6 +239,21 @@ impl<M: Memory> EdgeAliasIndex<M> {
         }
         removed
     }
+
+    pub fn find_alias_for_canonical(
+        &self,
+        canonical_vertex_id: VertexId,
+        label_id: u16,
+        canonical_slot_index: u32,
+    ) -> Option<(VertexId, u32)> {
+        self.aliases.iter().find_map(|entry| {
+            let (key, value) = entry.into_pair();
+            (key.label_id() == label_id
+                && value.canonical_vertex_id() == canonical_vertex_id
+                && value.canonical_slot_index() == canonical_slot_index)
+                .then_some((VertexId::from(key.alias_vertex_id), key.alias_slot_index))
+        })
+    }
 }
 
 #[cfg(test)]
@@ -260,5 +275,20 @@ mod tests {
 
         assert_eq!(index.remove_all_for_canonical(canonical, 7, 9), 1);
         assert!(index.get(alias, 7, 3).is_none());
+    }
+
+    #[test]
+    fn finds_alias_for_canonical() {
+        let mut index = EdgeAliasIndex::init(VectorMemory::default());
+        let alias = VertexId::from(2);
+        let canonical = VertexId::from(1);
+
+        index.insert(alias, 7, 3, canonical, 9);
+
+        assert_eq!(
+            index.find_alias_for_canonical(canonical, 7, 9),
+            Some((alias, 3))
+        );
+        assert_eq!(index.find_alias_for_canonical(canonical, 8, 9), None);
     }
 }

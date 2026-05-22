@@ -2,15 +2,14 @@
 //!
 //! [`EdgeWeightProfile`] is catalog metadata attached to an edge-capable label. At query preparation
 //! time it is compiled into a [`PreparedWeightDecoder`] so the traversal hot path only reads
-//! [`crate::entry::edge::Edge::inline_value`] and applies the decoder.
+//! stored edge value bytes (typically 2-byte u16) and applies the decoder.
 
 use half::f16;
 use ic_stable_structures::storable::{Bound, Storable};
 use std::borrow::Cow;
 use thiserror::Error;
 
-/// Label-level configuration for interpreting [`crate::entry::edge::Edge::inline_value`] as a
-/// traversal weight.
+/// Label-level configuration for interpreting stored edge-value bytes as a traversal weight.
 #[derive(Clone, Debug, PartialEq, candid::CandidType, serde::Serialize, serde::Deserialize)]
 pub struct EdgeWeightProfile {
     pub encoding: WeightEncoding,
@@ -24,7 +23,7 @@ pub enum WeightEncoding {
     Linear { min: f32, max: f32 },
     /// Map `u16` linearly in log-space from `ln(min)` to `ln(max)`.
     Log { min: f32, max: f32 },
-    /// Interpret `inline_value` as IEEE 754 binary16 bits, then widen to `f32`.
+    /// Interpret stored u16 bits as IEEE 754 binary16, then widen to `f32`.
     Binary16,
 }
 

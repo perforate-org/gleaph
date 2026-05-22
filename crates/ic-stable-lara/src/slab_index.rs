@@ -15,6 +15,54 @@ pub const META28_MASK: u64 = (1u64 << META28_BITS) - 1;
 /// Overflow-log head sentinel in an 8-bit wire field (`0..=169` valid).
 pub const OVERFLOW_LOG_NONE: u8 = 0xFF;
 
+/// Width of a global byte offset in `EdgeValueStore`.
+pub const BYTE_OFFSET_BITS: u32 = 40;
+/// All-ones mask for a valid byte offset.
+pub const BYTE_OFFSET_MASK: u64 = (1u64 << BYTE_OFFSET_BITS) - 1;
+/// Maximum exclusive end of a byte range (last valid offset is [`BYTE_OFFSET_MASK`]).
+pub const MAX_BYTE_EXCLUSIVE_END: u64 = BYTE_OFFSET_MASK + 1;
+
+/// Decodes a 40-bit little-endian byte offset from five wire bytes.
+#[inline]
+pub fn read_u40(bytes: &[u8; 5]) -> u64 {
+    let mut raw = [0u8; 8];
+    raw[0..5].copy_from_slice(bytes);
+    u64::from_le_bytes(raw) & BYTE_OFFSET_MASK
+}
+
+/// Encodes a byte offset into five little-endian wire bytes.
+#[inline]
+pub fn write_u40(offset: u64, bytes: &mut [u8; 5]) {
+    debug_assert!(byte_offset_fits(offset));
+    let raw = offset.to_le_bytes();
+    bytes.copy_from_slice(&raw[0..5]);
+}
+
+/// Returns `true` when `offset` fits in the 40-bit byte-offset space.
+#[inline]
+pub fn byte_offset_fits(offset: u64) -> bool {
+    offset <= BYTE_OFFSET_MASK
+}
+
+/// Returns `true` when `end` is a valid exclusive byte end.
+#[inline]
+pub fn byte_exclusive_end_fits(end: u64) -> bool {
+    end <= MAX_BYTE_EXCLUSIVE_END
+}
+
+/// Adds two byte offsets and rejects sums above [`BYTE_OFFSET_MASK`].
+#[inline]
+pub fn checked_add_byte_offset(lhs: u64, rhs: u64) -> Option<u64> {
+    lhs.checked_add(rhs).filter(|sum| byte_offset_fits(*sum))
+}
+
+/// Adds to an exclusive byte end and rejects sums above [`MAX_BYTE_EXCLUSIVE_END`].
+#[inline]
+pub fn checked_add_byte_exclusive_end(lhs: u64, rhs: u64) -> Option<u64> {
+    lhs.checked_add(rhs)
+        .filter(|sum| byte_exclusive_end_fits(*sum))
+}
+
 /// Lower 36 bits of a packed locator or bucket word.
 #[inline]
 pub fn decode_slot_index(word: u64) -> u64 {

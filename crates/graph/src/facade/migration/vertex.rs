@@ -89,7 +89,7 @@ fn export_out_edge(
     Ok(ExportedOutEdge {
         catalog_label,
         undirected,
-        inline_value: edge.inline_value,
+        value_bytes: edge.value_bytes().to_vec(),
         target: export_edge_target(store, edge)?,
         properties,
     })
@@ -205,36 +205,74 @@ fn resolve_local_endpoint(
     Some(VertexId::from(loc.local_vertex_id))
 }
 
+fn insert_exported_out_edge(
+    store: &GraphStore,
+    owner_vertex_id: VertexId,
+    target: &ExportedEdgeTarget,
+    undirected: bool,
+    value_bytes: &[u8],
+    catalog_label: Option<EdgeLabelId>,
+) -> Result<EdgeHandle, GraphStoreError> {
+    let logical = match *target {
+        ExportedEdgeTarget::Local { logical_vertex_id }
+        | ExportedEdgeTarget::Remote { logical_vertex_id } => logical_vertex_id,
+    };
+    let local_target = match target {
+        ExportedEdgeTarget::Local { .. } => resolve_local_endpoint(store, logical),
+        ExportedEdgeTarget::Remote { .. } => None,
+    };
+    let valued = !value_bytes.is_empty();
+
+    match (local_target, undirected, valued) {
+        (Some(target_vertex_id), false, false) => {
+            store.insert_directed_edge(owner_vertex_id, target_vertex_id, catalog_label)
+        }
+        (Some(target_vertex_id), false, true) => store.insert_directed_edge_with_value_bytes(
+            owner_vertex_id,
+            target_vertex_id,
+            catalog_label,
+            value_bytes,
+        ),
+        (Some(target_vertex_id), true, false) => {
+            store.insert_undirected_edge(owner_vertex_id, target_vertex_id, catalog_label)
+        }
+        (Some(target_vertex_id), true, true) => store.insert_undirected_edge_with_value_bytes(
+            owner_vertex_id,
+            target_vertex_id,
+            catalog_label,
+            value_bytes,
+        ),
+        (None, false, false) => {
+            store.insert_directed_edge_to_logical(owner_vertex_id, logical, catalog_label)
+        }
+        (None, false, true) => store.insert_directed_edge_to_logical_with_value_bytes(
+            owner_vertex_id,
+            logical,
+            catalog_label,
+            value_bytes,
+        ),
+        (None, true, _) => store.insert_undirected_edge_to_logical_with_value_bytes(
+            owner_vertex_id,
+            logical,
+            catalog_label,
+            value_bytes,
+        ),
+    }
+}
+
 fn import_out_edge(
     store: &GraphStore,
     owner_vertex_id: VertexId,
     edge: &ExportedOutEdge,
 ) -> Result<(), GraphStoreError> {
-    let logical = match edge.target {
-        ExportedEdgeTarget::Local { logical_vertex_id }
-        | ExportedEdgeTarget::Remote { logical_vertex_id } => logical_vertex_id,
-    };
-
-    let handle = if matches!(edge.target, ExportedEdgeTarget::Remote { .. }) {
-        store.insert_directed_edge_to_logical(owner_vertex_id, logical, edge.catalog_label)?
-    } else if let Some(target_vertex_id) = resolve_local_endpoint(store, logical) {
-        if edge.undirected {
-            store.insert_undirected_edge(owner_vertex_id, target_vertex_id, edge.catalog_label)?;
-            return Ok(());
-        }
-        if edge.inline_value == 0 {
-            store.insert_directed_edge(owner_vertex_id, target_vertex_id, edge.catalog_label)?
-        } else {
-            store.insert_directed_edge_with_inline_value(
-                owner_vertex_id,
-                target_vertex_id,
-                edge.catalog_label,
-                edge.inline_value,
-            )?
-        }
-    } else {
-        return Ok(());
-    };
+    let handle = insert_exported_out_edge(
+        store,
+        owner_vertex_id,
+        &edge.target,
+        edge.undirected,
+        &edge.value_bytes,
+        edge.catalog_label,
+    )?;
 
     for prop in &edge.properties {
         let value = Value::from_binary_bytes_with_extensions(
@@ -321,8 +359,8 @@ fn import_migrated_vertex_impl(
         ));
     }
 
-    let labeled = LabeledVertex::read_from(&bundle.vertex_row_bytes);
-    let vertex = Vertex::from(labeled);
+    let _source_vertex_row = LabeledVertex::read_from(&bundle.vertex_row_bytes);
+    let vertex = Vertex::default();
     let vertex_id = store
         .push_migrated_vertex_row(vertex)
         .map_err(GraphStoreError::from)?;
@@ -449,8 +487,10 @@ mod tests {
     use crate::facade::{FederationRouting, GraphStore};
     use candid::Principal;
     use gleaph_gql::Value;
+    use gleaph_graph_kernel::entry::EdgeTarget;
     use gleaph_graph_kernel::federation::PhysicalVertexLocation;
     use gleaph_graph_kernel::federation::{BeginVertexMigrationArgs, VertexPlacement};
+    use ic_stable_lara::CsrEdge;
 
     #[test]
     fn export_import_and_tombstone_roundtrip() {
@@ -620,6 +660,250 @@ mod tests {
                 store.property_id("k").expect("pid").raw(),
                 u32::from(dest_id)
             )]
+        );
+    }
+
+    #[test]
+    fn migration_preserves_edge_value_bytes() {
+        let store = GraphStore::new();
+        store
+            .set_federation_routing(Some(FederationRouting {
+                router_canister: Principal::management_canister(),
+                index_canister: Principal::management_canister(),
+                shard_id: 7,
+            }))
+            .expect("source routing");
+
+        store
+            .set_federation_routing(Some(FederationRouting {
+                router_canister: Principal::management_canister(),
+                index_canister: Principal::management_canister(),
+                shard_id: 9,
+            }))
+            .expect("target routing");
+        let directed_target = store.insert_vertex().expect("directed target");
+        let undirected_target = store.insert_vertex().expect("undirected target");
+
+        store
+            .set_federation_routing(Some(FederationRouting {
+                router_canister: Principal::management_canister(),
+                index_canister: Principal::management_canister(),
+                shard_id: 7,
+            }))
+            .expect("source routing");
+        let source_id = store.insert_vertex().expect("source");
+        let directed_label = store
+            .get_or_insert_edge_label_id("MigratingDirectedValue")
+            .expect("directed label");
+        let undirected_label = store
+            .get_or_insert_edge_label_id("MigratingUndirectedValue")
+            .expect("undirected label");
+        store
+            .insert_directed_edge_with_value_bytes(
+                source_id,
+                directed_target,
+                Some(directed_label),
+                &[1, 2, 3, 4],
+            )
+            .expect("directed edge");
+        store
+            .insert_undirected_edge_with_value_bytes(
+                source_id,
+                undirected_target,
+                Some(undirected_label),
+                &[9],
+            )
+            .expect("undirected edge");
+        let logical = store.logical_vertex_id(source_id).expect("logical");
+
+        placement::begin_vertex_migration(
+            Principal::management_canister(),
+            BeginVertexMigrationArgs {
+                logical_vertex_id: logical,
+                destination_shard_id: 9,
+            },
+        )
+        .expect("begin");
+
+        let bundle = export_local_vertex_for_migration(&store, source_id).expect("export");
+        assert!(
+            bundle
+                .out_edges
+                .iter()
+                .any(|edge| edge.value_bytes == [1, 2, 3, 4])
+        );
+        assert!(bundle.out_edges.iter().any(|edge| edge.value_bytes == [9]));
+
+        store
+            .set_federation_routing(Some(FederationRouting {
+                router_canister: Principal::management_canister(),
+                index_canister: Principal::management_canister(),
+                shard_id: 9,
+            }))
+            .expect("dest routing");
+
+        let dest_id = import_migrated_vertex(&store, bundle).expect("import");
+        let directed_values: Vec<Vec<u8>> = store
+            .directed_out_edges(dest_id)
+            .expect("directed out")
+            .into_iter()
+            .filter(|edge| edge.neighbor_vid() == directed_target)
+            .map(|edge| edge.value_bytes().to_vec())
+            .collect();
+        assert_eq!(directed_values, vec![vec![1, 2, 3, 4]]);
+
+        let undirected_values: Vec<Vec<u8>> = store
+            .undirected_edges(dest_id)
+            .expect("undirected out")
+            .into_iter()
+            .filter(|edge| edge.neighbor_vid() == undirected_target)
+            .map(|edge| edge.value_bytes().to_vec())
+            .collect();
+        assert_eq!(undirected_values, vec![vec![9]]);
+    }
+
+    #[test]
+    fn migration_preserves_edge_to_source_shard_target_as_remote() {
+        let store = GraphStore::new();
+        store
+            .set_federation_routing(Some(FederationRouting {
+                router_canister: Principal::management_canister(),
+                index_canister: Principal::management_canister(),
+                shard_id: 7,
+            }))
+            .expect("source routing");
+
+        let source_id = store.insert_vertex().expect("source");
+        let source_shard_target = store.insert_vertex().expect("source shard target");
+        let target_logical = store
+            .logical_vertex_id(source_shard_target)
+            .expect("target logical");
+        let label = store
+            .get_or_insert_edge_label_id("MigratingRemoteValue")
+            .expect("label");
+        store
+            .insert_directed_edge_with_value_bytes(
+                source_id,
+                source_shard_target,
+                Some(label),
+                &[8],
+            )
+            .expect("edge");
+        let logical = store.logical_vertex_id(source_id).expect("logical");
+
+        placement::begin_vertex_migration(
+            Principal::management_canister(),
+            BeginVertexMigrationArgs {
+                logical_vertex_id: logical,
+                destination_shard_id: 9,
+            },
+        )
+        .expect("begin");
+
+        let bundle = export_local_vertex_for_migration(&store, source_id).expect("export");
+        store
+            .set_federation_routing(Some(FederationRouting {
+                router_canister: Principal::management_canister(),
+                index_canister: Principal::management_canister(),
+                shard_id: 9,
+            }))
+            .expect("dest routing");
+
+        let dest_id = import_migrated_vertex(&store, bundle).expect("import");
+        let edge = store
+            .directed_out_edges(dest_id)
+            .expect("directed out")
+            .into_iter()
+            .find(|edge| edge.value_bytes() == [8])
+            .expect("remote edge");
+        let Some(EdgeTarget::Remote(remote_ref)) = edge.edge_target() else {
+            panic!("expected remote edge target");
+        };
+        assert_eq!(
+            store.logical_vertex_for_remote_ref(remote_ref),
+            Some(target_logical)
+        );
+    }
+
+    #[test]
+    fn migration_preserves_remote_undirected_edge_kind() {
+        let store = GraphStore::new();
+        store
+            .set_federation_routing(Some(FederationRouting {
+                router_canister: Principal::management_canister(),
+                index_canister: Principal::management_canister(),
+                shard_id: 7,
+            }))
+            .expect("source routing");
+
+        let source_id = store.insert_vertex().expect("source");
+        let remote_target = store.insert_vertex().expect("remote target");
+        let source_logical = store.logical_vertex_id(source_id).expect("source logical");
+        let target_logical = store
+            .logical_vertex_id(remote_target)
+            .expect("target logical");
+        let label = store
+            .get_or_insert_edge_label_id("MigratingRemoteUndirected")
+            .expect("label");
+
+        placement::begin_vertex_migration(
+            Principal::management_canister(),
+            BeginVertexMigrationArgs {
+                logical_vertex_id: source_logical,
+                destination_shard_id: 9,
+            },
+        )
+        .expect("begin");
+
+        let mut vertex_row_bytes = vec![0u8; Vertex::BYTES];
+        Vertex::default()
+            .into_labeled()
+            .write_to(&mut vertex_row_bytes);
+        let bundle = ExportedVertex {
+            logical_vertex_id: source_logical,
+            source_shard_id: 7,
+            source_local_vertex_id: placement::local_vertex_id_raw(source_id),
+            vertex_row_bytes,
+            labels: Vec::new(),
+            properties: Vec::new(),
+            out_edges: vec![ExportedOutEdge {
+                catalog_label: Some(label),
+                undirected: true,
+                value_bytes: vec![7],
+                target: ExportedEdgeTarget::Remote {
+                    logical_vertex_id: target_logical,
+                },
+                properties: Vec::new(),
+            }],
+        };
+
+        store
+            .set_federation_routing(Some(FederationRouting {
+                router_canister: Principal::management_canister(),
+                index_canister: Principal::management_canister(),
+                shard_id: 9,
+            }))
+            .expect("dest routing");
+
+        let dest_id = import_migrated_vertex(&store, bundle).expect("import");
+        assert!(
+            store
+                .directed_out_edges(dest_id)
+                .expect("directed out")
+                .is_empty()
+        );
+        let edge = store
+            .undirected_edges(dest_id)
+            .expect("undirected out")
+            .into_iter()
+            .find(|edge| edge.value_bytes() == [7])
+            .expect("remote undirected edge");
+        let Some(EdgeTarget::Remote(remote_ref)) = edge.edge_target() else {
+            panic!("expected remote edge target");
+        };
+        assert_eq!(
+            store.logical_vertex_for_remote_ref(remote_ref),
+            Some(target_logical)
         );
     }
 

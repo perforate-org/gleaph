@@ -710,6 +710,68 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         self.header().into()
     }
 
+    /// Returns overflow-log entry indices from oldest to newest by walking `head`.
+    pub(crate) fn overflow_log_chain_asc_indices(&self, leaf: u32, head: i32) -> Vec<u32> {
+        if head < 0 {
+            return Vec::new();
+        }
+        let mut chain = Vec::new();
+        let mut cur = head;
+        let h = self.log.header();
+        let scratch_len = E::BYTES.max(1);
+        while cur >= 0 {
+            chain.push(cur as u32);
+            if E::BYTES <= INLINE_EDGE_BYTES {
+                let mut scratch = [0u8; INLINE_EDGE_BYTES];
+                let (prev, _) = self.log.read_entry_with_header(
+                    &h,
+                    leaf,
+                    cur as u32,
+                    &mut scratch[..scratch_len],
+                );
+                cur = prev;
+            } else {
+                let mut scratch = vec![0u8; E::BYTES];
+                let (prev, _) = self
+                    .log
+                    .read_entry_with_header(&h, leaf, cur as u32, &mut scratch);
+                cur = prev;
+            }
+        }
+        chain.reverse();
+        chain
+    }
+
+    /// Decodes one overflow-log edge payload at `entry_idx` in `leaf`.
+    pub(crate) fn decode_overflow_log_edge_at(&self, leaf: u32, entry_idx: u32) -> E {
+        let h = self.log.header();
+        if E::BYTES <= INLINE_EDGE_BYTES {
+            let mut payload = [0u8; INLINE_EDGE_BYTES];
+            self.log
+                .read_entry_with_header(&h, leaf, entry_idx, &mut payload[..E::BYTES]);
+            E::read_from(&payload[..E::BYTES]).with_slot_index(entry_idx)
+        } else {
+            let mut payload = vec![0u8; E::BYTES];
+            self.log
+                .read_entry_with_header(&h, leaf, entry_idx, &mut payload);
+            E::read_from(&payload).with_slot_index(entry_idx)
+        }
+    }
+
+    /// Live edges stored on the slab prefix for one CSR row (overflow-log rows only).
+    pub(crate) fn on_slab_degree_for_vertex_access<V, A>(
+        &self,
+        vertices: &A,
+        v_ord: u32,
+        v: &V,
+    ) -> Result<u32, LaraOperationError>
+    where
+        V: CsrVertex,
+        A: VertexAccess<V>,
+    {
+        self.on_slab_edges_with_layout(&self.edge_layout(), vertices, v_ord, v)
+    }
+
     /// Consumes the edge subsystem and returns its stable memories in constructor order.
     pub fn into_memories(self) -> (M, M, M, M, M, M) {
         let (free_spans, free_span_by_start) = self.free_spans.into_memories();
@@ -879,7 +941,11 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 if edge.is_deleted_slot() {
                     continue;
                 }
-                out.push((DeleteTarget::Slab(offset as u32), edge));
+                let slot_index = offset as u32;
+                out.push((
+                    DeleteTarget::Slab(slot_index),
+                    edge.with_slot_index(slot_index),
+                ));
             }
             debug_assert_eq!(
                 out.len(),
@@ -900,7 +966,11 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             let edge = self.read_slot(slot);
             if !edge.is_deleted_slot() {
-                out.push((DeleteTarget::Slab(i as u32), edge));
+                let slot_index = i as u32;
+                out.push((
+                    DeleteTarget::Slab(slot_index),
+                    edge.with_slot_index(slot_index),
+                ));
             }
         }
         if v.log_head() < 0 {

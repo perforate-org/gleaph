@@ -7,7 +7,7 @@ use crate::{
     labeled::{
         BucketLabelKey, OutEdgeOrder, bucket_label_key::BucketDirectedness, graph::LabeledLaraGraph,
     },
-    traits::CsrEdge,
+    traits::{CsrEdge, CsrEdgeTombstone},
 };
 use ic_stable_structures::Memory;
 use std::fmt;
@@ -88,7 +88,7 @@ where
 
 impl<E, M> BidirectionalLabeledLaraGraph<E, M>
 where
-    E: CsrEdge,
+    E: CsrEdge + CsrEdgeTombstone,
     M: Memory,
 {
     /// Creates fresh forward and reverse labeled stores over the supplied memories.
@@ -104,6 +104,10 @@ where
         forward_edge_span_meta: M,
         forward_edge_free_spans: M,
         forward_edge_free_span_by_start: M,
+        forward_value_slab: M,
+        forward_value_free_spans: M,
+        forward_value_free_span_by_start: M,
+        forward_value_log: M,
         reverse_vertices: M,
         reverse_buckets: M,
         reverse_bucket_free_spans: M,
@@ -114,6 +118,10 @@ where
         reverse_edge_span_meta: M,
         reverse_edge_free_spans: M,
         reverse_edge_free_span_by_start: M,
+        reverse_value_slab: M,
+        reverse_value_free_spans: M,
+        reverse_value_free_span_by_start: M,
+        reverse_value_log: M,
         elem_capacity: u64,
         default_label: BucketLabelKey,
     ) -> Result<Self, BidirectionalLabeledError> {
@@ -128,6 +136,10 @@ where
             forward_edge_span_meta,
             forward_edge_free_spans,
             forward_edge_free_span_by_start,
+            forward_value_slab,
+            forward_value_free_spans,
+            forward_value_free_span_by_start,
+            forward_value_log,
             elem_capacity,
             default_label,
         )?;
@@ -142,6 +154,10 @@ where
             reverse_edge_span_meta,
             reverse_edge_free_spans,
             reverse_edge_free_span_by_start,
+            reverse_value_slab,
+            reverse_value_free_spans,
+            reverse_value_free_span_by_start,
+            reverse_value_log,
             elem_capacity,
             default_label,
         )?;

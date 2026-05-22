@@ -45,7 +45,12 @@ fn variables_read_by_op(op: &PlanOp, out: &mut BTreeSet<String>) {
                 collect_expr_vars(expr, out);
             }
         }
-        PlanOp::TopK { order_by, k, offset, .. } => {
+        PlanOp::TopK {
+            order_by,
+            k,
+            offset,
+            ..
+        } => {
             for item in &order_by.items {
                 collect_expr_vars(&item.expr, out);
             }
@@ -57,7 +62,9 @@ fn variables_read_by_op(op: &PlanOp, out: &mut BTreeSet<String>) {
         PlanOp::Expand { src, .. } => {
             out.insert(src.to_string());
         }
-        PlanOp::ExpandFilter { src, dst_filter, .. } => {
+        PlanOp::ExpandFilter {
+            src, dst_filter, ..
+        } => {
             out.insert(src.to_string());
             for predicate in dst_filter {
                 collect_expr_vars(predicate, out);
@@ -72,7 +79,11 @@ fn variables_read_by_op(op: &PlanOp, out: &mut BTreeSet<String>) {
                 out.insert(key.to_string());
             }
         }
-        PlanOp::Aggregate { group_by, aggregates, .. } => {
+        PlanOp::Aggregate {
+            group_by,
+            aggregates,
+            ..
+        } => {
             for key in group_by {
                 collect_expr_vars(key, out);
             }
@@ -102,7 +113,9 @@ fn variables_read_by_op(op: &PlanOp, out: &mut BTreeSet<String>) {
         PlanOp::SetProperties { items } => {
             for item in items {
                 match item {
-                    gleaph_gql_planner::plan::SetPlanItem::Property { variable, value, .. }
+                    gleaph_gql_planner::plan::SetPlanItem::Property {
+                        variable, value, ..
+                    }
                     | gleaph_gql_planner::plan::SetPlanItem::AllProperties { variable, value } => {
                         out.insert(variable.to_string());
                         collect_expr_vars(value, out);
@@ -171,9 +184,7 @@ pub fn shortest_path_may_emit_path_only_rows(
     if !needed.contains(path_var) {
         return false;
     }
-    ![src, dst, edge]
-        .iter()
-        .any(|name| needed.contains(*name))
+    ![src, dst, edge].iter().any(|name| needed.contains(*name))
 }
 
 #[cfg(test)]

@@ -1,9 +1,9 @@
 //! Canister request handlers for `gleaph-router`.
 
+use crate::facade::auth;
 use crate::facade::store::RouterStore;
 use crate::init::RouterInitArgs;
 use crate::state::RouterError;
-use crate::facade::auth;
 use crate::types::{
     AdminRegisterShardArgs, BeginVertexMigrationArgs, CommitVertexPlacementArgs, EdgeLabelId,
     FinishVertexMigrationArgs, GrantRoleArgs, GraphRegistryEntry, LogicalVertexId, PropertyId,
@@ -28,15 +28,13 @@ pub(crate) fn my_role() -> Result<String, RouterError> {
 
 pub(crate) fn admin_grant_role(args: GrantRoleArgs) -> Result<(), RouterError> {
     let role = auth::parse_role(&args.role).map_err(RouterError::InvalidArgument)?;
-    auth::admin_upsert_principal(&msg_caller(), args.target, role, args.manager_caps).map_err(
-        |e| {
-            if e.contains("required") {
-                RouterError::Forbidden
-            } else {
-                RouterError::InvalidArgument(e)
-            }
-        },
-    )
+    auth::admin_upsert_principal(&msg_caller(), args.target, role, args.manager_caps).map_err(|e| {
+        if e.contains("required") {
+            RouterError::Forbidden
+        } else {
+            RouterError::InvalidArgument(e)
+        }
+    })
 }
 
 pub(crate) fn resolve_graph(graph_name: String) -> Result<GraphRegistryEntry, RouterError> {

@@ -1,7 +1,7 @@
 use super::aggregate;
 use super::error::PlanQueryError;
 use super::sort_keys::compare_sort_keys;
-use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
+use crate::facade::{EdgeHandle, GraphStore, GraphStoreError, canonical_undirected_owner};
 use crate::gql_execution_context::{GqlExecutionContext, try_eval_runtime_function_call};
 use crate::index::edge_equal;
 use crate::index::lookup::PropertyIndexLookup;
@@ -24,15 +24,15 @@ use gleaph_gql::numeric_order::{NormalizedNumeric, NumericOrderError, normalized
 use gleaph_gql::types::{EdgeDirection, LabelExpr, PathElement};
 use gleaph_gql::value_cmp::compare_values;
 use gleaph_gql::{Value, hash_value_for_join, value_to_index_key_bytes};
-use gleaph_gql_planner::{BindingLayout, OutputSchema};
 use gleaph_gql_planner::collect_expr_variables;
 use gleaph_gql_planner::plan::{
     AggregateSpec, ConditionalScanCandidate, IndexScanSpec, PhysicalPlan, PlanOp, ProjectColumn,
     ScanValue, ShortestMode, ShortestPathCost, Str, VarLenSpec,
 };
+use gleaph_gql_planner::{BindingLayout, OutputSchema};
 use gleaph_graph_kernel::entry::{
-    Edge, EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, EdgeTarget, PreparedWeightDecoder, Vertex,
-    decode_inline_weight,
+    Edge, EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, EdgeTarget, MAX_EDGE_VALUE_BYTES,
+    PreparedWeightDecoder, Vertex,
 };
 use gleaph_graph_kernel::federation::{
     FederatedExpandArgs, FederatedExpandDirection, FederatedExpandNeighbor, LogicalVertexId,
@@ -97,11 +97,88 @@ impl PlanQueryResult {
     }
 }
 
-/// Edge variable binding for one traversal hop: stable handle plus CSR `inline_value`.
+/// Edge variable binding for one traversal hop: stable handle plus stored value bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EdgeBinding {
     pub handle: EdgeHandle,
+    /// Little-endian u16 view when [`Self::value_len`] is `2`.
     pub inline_value: u16,
+    pub value_bytes: [u8; MAX_EDGE_VALUE_BYTES],
+    pub value_len: u8,
+}
+
+impl EdgeBinding {
+    #[inline]
+    pub fn value_bytes_slice(&self) -> &[u8] {
+        &self.value_bytes[..usize::from(self.value_len.min(MAX_EDGE_VALUE_BYTES as u8))]
+    }
+
+    pub fn from_edge(handle: EdgeHandle, edge: Edge) -> Self {
+        let mut value_bytes = [0u8; MAX_EDGE_VALUE_BYTES];
+        let slice = edge.value_bytes();
+        let len = slice.len().min(MAX_EDGE_VALUE_BYTES);
+        value_bytes[..len].copy_from_slice(slice);
+        Self {
+            handle,
+            inline_value: edge.inline_value_u16(),
+            value_bytes,
+            value_len: len as u8,
+        }
+    }
+
+    /// Edge binding from a federated wire hit on another shard (no local CSR hydration).
+    pub fn from_federated_neighbor_hit(hit: &FederatedExpandNeighbor) -> Self {
+        Self {
+            handle: crate::facade::federation_expand::edge_handle_from_federated_hit_wire(hit),
+            inline_value: hit.inline_value,
+            value_bytes: hit.value_bytes,
+            value_len: hit.value_len,
+        }
+    }
+
+    pub fn from_federated_hit(
+        store: &GraphStore,
+        hit: &FederatedExpandNeighbor,
+    ) -> Result<Self, GraphStoreError> {
+        let handle = crate::facade::federation_expand::edge_handle_for_federated_hit(store, hit)?;
+        if let Some(edge) = store.find_outgoing_edge_record(handle)? {
+            return Ok(Self::from_edge(handle, edge));
+        }
+        Ok(Self {
+            handle,
+            inline_value: hit.inline_value,
+            value_bytes: hit.value_bytes,
+            value_len: hit.value_len,
+        })
+    }
+}
+
+fn edge_binding_for_federated_expand_hit(
+    store: &GraphStore,
+    hit: &FederatedExpandNeighbor,
+    local_shard_id: gleaph_graph_kernel::federation::ShardId,
+) -> Result<EdgeBinding, PlanQueryError> {
+    if hit.shard_id == local_shard_id {
+        EdgeBinding::from_federated_hit(store, hit).map_err(PlanQueryError::from)
+    } else {
+        Ok(EdgeBinding::from_federated_neighbor_hit(hit))
+    }
+}
+
+fn federated_expand_label_id_raw(
+    label_id: Option<EdgeLabelId>,
+    direction: EdgeDirection,
+) -> Option<u16> {
+    label_id.map(|lid| {
+        let directedness = match direction {
+            EdgeDirection::Undirected => EdgeDirectedness::Undirected,
+            EdgeDirection::PointingLeft | EdgeDirection::PointingRight => {
+                EdgeDirectedness::Directed
+            }
+            _ => EdgeDirectedness::Directed,
+        };
+        lid.pack(directedness).raw()
+    })
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -925,36 +1002,55 @@ fn csr_offset_fast_path_for_expand(
     }
 }
 
-fn stream_expand_owner_vertex_id(
-    src_id: VertexId,
-    _dst_id: VertexId,
+fn canonical_forward_owner_for_expand(
+    store: &GraphStore,
+    probe_vertex_id: VertexId,
     direction: EdgeDirection,
-    _edge: Edge,
-) -> VertexId {
-    match direction {
-        EdgeDirection::PointingRight => src_id,
-        EdgeDirection::PointingLeft => src_id,
-        EdgeDirection::Undirected => src_id,
-        _ => unreachable!("unsupported CSR expand streaming direction"),
-    }
+    edge: &Edge,
+) -> Result<VertexId, PlanQueryError> {
+    Ok(match direction {
+        EdgeDirection::PointingRight => probe_vertex_id,
+        EdgeDirection::PointingLeft => store.edge_sidecar_owner_from_in_row(probe_vertex_id, edge),
+        EdgeDirection::Undirected => {
+            canonical_undirected_owner(probe_vertex_id, edge.neighbor_vid())
+        }
+        other => return Err(PlanQueryError::UnsupportedDirection(other)),
+    })
 }
 
-fn edge_binding_for_expand(src_id: VertexId, direction: EdgeDirection, edge: Edge) -> EdgeBinding {
-    let dst_id = edge
-        .edge_target()
-        .and_then(|target| match target {
-            EdgeTarget::Local(vertex_id) => Some(vertex_id),
-            EdgeTarget::Remote(_) => None,
-        })
-        .unwrap_or_else(VertexId::default);
-    EdgeBinding {
-        handle: EdgeHandle {
-            owner_vertex_id: stream_expand_owner_vertex_id(src_id, dst_id, direction, edge),
-            label_id: LaraLabelId::from_raw(edge.label_id),
-            slot_index: edge.edge_slot_index.raw(),
-        },
-        inline_value: edge.inline_value,
-    }
+fn edge_binding_for_expand(
+    store: &GraphStore,
+    probe_vertex_id: VertexId,
+    direction: EdgeDirection,
+    edge: Edge,
+) -> Result<EdgeBinding, PlanQueryError> {
+    let owner_vertex_id =
+        canonical_forward_owner_for_expand(store, probe_vertex_id, direction, &edge)?;
+    let handle = EdgeHandle {
+        owner_vertex_id,
+        label_id: LaraLabelId::from_raw(edge.label_id),
+        slot_index: edge.edge_slot_index.raw(),
+    };
+    let record = store
+        .find_outgoing_edge_record(handle)
+        .map_err(PlanQueryError::from)?
+        .unwrap_or(edge);
+    Ok(EdgeBinding::from_edge(handle, record))
+}
+
+fn push_expand_candidate(
+    out: &mut Vec<(ExpandDst, EdgeBinding)>,
+    store: &GraphStore,
+    probe_vertex_id: VertexId,
+    direction: EdgeDirection,
+    edge_dst: ExpandDst,
+    edge: Edge,
+) -> Result<(), PlanQueryError> {
+    out.push((
+        edge_dst,
+        edge_binding_for_expand(store, probe_vertex_id, direction, edge)?,
+    ));
+    Ok(())
 }
 
 fn expand_accepts_remote_dst(
@@ -1489,7 +1585,7 @@ fn stream_expand(
             {
                 return Ok(false);
             }
-            let edge_binding = edge_binding_for_expand(src_id, direction, edge);
+            let edge_binding = edge_binding_for_expand(store, src_id, direction, edge)?;
             let expanded = build_expanded_row(
                 None,
                 store,
@@ -1535,7 +1631,7 @@ fn stream_expand(
             let Some(edge_dst) = ExpandDst::from_edge(store, &edge)? else {
                 return Ok(false);
             };
-            let edge_binding = edge_binding_for_expand(src_id, direction, edge);
+            let edge_binding = edge_binding_for_expand(store, src_id, direction, edge)?;
             if !edge_matches_stream_filter(
                 store,
                 &edge_equality_filter,
@@ -1921,7 +2017,8 @@ fn hash_plan_binding_for_join(binding: &PlanBinding, hasher: &mut RapidHasher<'_
             hasher.write_u8(2);
             hasher.write_u32(u32::from(e.handle.owner_vertex_id));
             hasher.write_u32(e.handle.slot_index);
-            hasher.write_u16(e.inline_value);
+            hasher.write_u8(e.value_len);
+            hasher.write(e.value_bytes_slice());
         }
         PlanBinding::Value(v) => {
             hasher.write_u8(3);
@@ -2320,9 +2417,11 @@ fn vertex_row_matches_dst_filters(
 
 fn edge_matches_indexed_equality(
     store: &GraphStore,
-    owner_vertex_id: VertexId,
+    probe_vertex_id: VertexId,
+    direction: EdgeDirection,
     label_id: LaraLabelId,
     edge_slot_index: EdgeSlotIndex,
+    edge: &Edge,
     property: &str,
     scan_value: &ScanValue,
     parameters: &BTreeMap<String, Value>,
@@ -2333,6 +2432,8 @@ fn edge_matches_indexed_equality(
     let Some(expected) = resolve_scan_value_bytes(scan_value, parameters)? else {
         return Ok(false);
     };
+    let owner_vertex_id =
+        canonical_forward_owner_for_expand(store, probe_vertex_id, direction, edge)?;
     let handle = EdgeHandle {
         owner_vertex_id,
         label_id,
@@ -2551,15 +2652,11 @@ fn expand_rows_from_federated_expand_hits(
         }
 
         let expanded = if let Some(edge_key) = edge_key.as_ref() {
-            let edge_binding = if hit.shard_id == routing.shard_id {
-                let handle = crate::facade::federation_expand::edge_handle_for_federated_hit(hit);
-                PlanBinding::Edge(EdgeBinding {
-                    handle,
-                    inline_value: hit.inline_value,
-                })
-            } else {
-                PlanBinding::Value(Value::Null)
-            };
+            let edge_binding = PlanBinding::Edge(edge_binding_for_federated_expand_hit(
+                store,
+                hit,
+                routing.shard_id,
+            )?);
             row.fork([(dst, dst_binding), (edge_key.as_str(), edge_binding)])
         } else {
             row.fork([(dst, dst_binding)])
@@ -2625,8 +2722,7 @@ fn execute_expand(
                     resolve_federated_traversal_vertex(store, *logical, Some(direction)),
                     Err(PlanQueryError::UnsupportedOp(_))
                 ) {
-                    let label_id_raw =
-                        label_id.map(|lid| lid.pack(EdgeDirectedness::Directed).raw());
+                    let label_id_raw = federated_expand_label_id_raw(label_id, direction);
                     let hits = pollster::block_on(
                         crate::facade::federation_expand::federated_expand_coordinator(
                             store,
@@ -2660,23 +2756,59 @@ fn execute_expand(
             }
         }
 
-        if matches!(
-            direction,
-            EdgeDirection::PointingRight | EdgeDirection::Undirected
-        ) {
+        if matches!(direction, EdgeDirection::PointingRight) {
             if let Some(PlanBinding::RemoteVertex(logical)) = row.get(src.as_ref()) {
                 if matches!(
                     resolve_federated_traversal_vertex(store, *logical, Some(direction)),
                     Err(PlanQueryError::UnsupportedOp(_))
                 ) {
-                    let label_id_raw =
-                        label_id.map(|lid| lid.pack(EdgeDirectedness::Directed).raw());
+                    let label_id_raw = federated_expand_label_id_raw(label_id, direction);
                     let hits = pollster::block_on(
                         crate::facade::federation_expand::federated_expand_coordinator(
                             store,
                             FederatedExpandArgs {
                                 logical_vertex_id: *logical,
                                 direction: FederatedExpandDirection::Outgoing,
+                                label_id_raw,
+                            },
+                        ),
+                    )
+                    .map_err(|e| PlanQueryError::FederatedIndexCall {
+                        op: "federated_expand",
+                        detail: e.to_string(),
+                    })?;
+                    out.extend(expand_rows_from_federated_expand_hits(
+                        store,
+                        &row,
+                        &hits,
+                        dst.as_ref(),
+                        edge.as_ref(),
+                        emit_edge_binding,
+                        dst_property_projection,
+                        dst_filter,
+                        parameters,
+                        caller,
+                        gleaph_weight_decoders,
+                        &evaluator,
+                    )?);
+                    continue;
+                }
+            }
+        }
+
+        if matches!(direction, EdgeDirection::Undirected) {
+            if let Some(PlanBinding::RemoteVertex(logical)) = row.get(src.as_ref()) {
+                if matches!(
+                    resolve_federated_traversal_vertex(store, *logical, Some(direction)),
+                    Err(PlanQueryError::UnsupportedOp(_))
+                ) {
+                    let label_id_raw = federated_expand_label_id_raw(label_id, direction);
+                    let hits = pollster::block_on(
+                        crate::facade::federation_expand::federated_expand_coordinator(
+                            store,
+                            FederatedExpandArgs {
+                                logical_vertex_id: *logical,
+                                direction: FederatedExpandDirection::Undirected,
                                 label_id_raw,
                             },
                         ),
@@ -2718,7 +2850,7 @@ fn execute_expand(
                 let Some(edge_dst) = ExpandDst::from_edge(store, &edge)? else {
                     return Ok(false);
                 };
-                let edge_binding = edge_binding_for_expand(src_id, direction, edge);
+                let edge_binding = edge_binding_for_expand(store, src_id, direction, edge)?;
                 if !edge_matches_stream_filter(
                     store,
                     edge_equality_filter
@@ -3048,54 +3180,86 @@ impl ShortestFixedLabelExpand {
             Self::Forward { label } => {
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _scope = bench_scope("shortest_fixed_expand_forward");
+                let mut expand_err = None;
                 store
                     .for_each_directed_out_edges_for_label_unchecked(current, label, |edge| {
+                        if expand_err.is_some() {
+                            return;
+                        }
                         if let Ok(Some(edge_dst @ ExpandDst::Local(_))) =
                             ExpandDst::from_edge(store, &edge)
                         {
-                            out.push((
-                                edge_dst,
-                                edge_binding_for_expand(
-                                    current,
-                                    EdgeDirection::PointingRight,
-                                    edge,
-                                ),
-                            ));
+                            match edge_binding_for_expand(
+                                store,
+                                current,
+                                EdgeDirection::PointingRight,
+                                edge,
+                            ) {
+                                Ok(binding) => out.push((edge_dst, binding)),
+                                Err(err) => expand_err = Some(err),
+                            }
                         }
                     })
                     .map_err(GraphStoreError::from)?;
+                if let Some(err) = expand_err {
+                    return Err(err);
+                }
             }
             Self::Reverse { label } => {
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _scope = bench_scope("shortest_fixed_expand_reverse");
+                let mut expand_err = None;
                 store
                     .for_each_directed_in_edges_for_label_unchecked(current, label, |edge| {
+                        if expand_err.is_some() {
+                            return;
+                        }
                         if let Ok(Some(edge_dst @ ExpandDst::Local(_))) =
                             ExpandDst::from_edge(store, &edge)
                         {
-                            out.push((
-                                edge_dst,
-                                edge_binding_for_expand(current, EdgeDirection::PointingLeft, edge),
-                            ));
+                            match edge_binding_for_expand(
+                                store,
+                                current,
+                                EdgeDirection::PointingLeft,
+                                edge,
+                            ) {
+                                Ok(binding) => out.push((edge_dst, binding)),
+                                Err(err) => expand_err = Some(err),
+                            }
                         }
                     })
                     .map_err(GraphStoreError::from)?;
+                if let Some(err) = expand_err {
+                    return Err(err);
+                }
             }
             Self::Undirected { label } => {
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _scope = bench_scope("shortest_fixed_expand_undirected");
+                let mut expand_err = None;
                 store
                     .for_each_undirected_edges_for_label_unchecked(current, label, |edge| {
+                        if expand_err.is_some() {
+                            return;
+                        }
                         if let Ok(Some(edge_dst @ ExpandDst::Local(_))) =
                             ExpandDst::from_edge(store, &edge)
                         {
-                            out.push((
-                                edge_dst,
-                                edge_binding_for_expand(current, EdgeDirection::Undirected, edge),
-                            ));
+                            match edge_binding_for_expand(
+                                store,
+                                current,
+                                EdgeDirection::Undirected,
+                                edge,
+                            ) {
+                                Ok(binding) => out.push((edge_dst, binding)),
+                                Err(err) => expand_err = Some(err),
+                            }
                         }
                     })
                     .map_err(GraphStoreError::from)?;
+                if let Some(err) = expand_err {
+                    return Err(err);
+                }
             }
         }
         Ok(())
@@ -3439,11 +3603,18 @@ fn compare_weighted_numeric(
     }
 }
 
-type WeightedHopCostCache = IntMap<u64, IntMap<u16, WeightedCost>>;
+type WeightedHopCostCache = IntMap<u64, IntMap<u64, WeightedCost>>;
 
 #[inline]
 fn weighted_hop_cache_outer_key(edge: EdgeBinding) -> u64 {
     u64::from(u32::from(edge.handle.owner_vertex_id)) << 32 | u64::from(edge.handle.slot_index)
+}
+
+fn weighted_hop_cache_value_key(edge: EdgeBinding) -> u64 {
+    let mut hasher = RapidHasher::default();
+    hasher.write_u8(edge.value_len);
+    hasher.write(edge.value_bytes_slice());
+    hasher.finish()
 }
 
 fn map_weighted_cost_add_err(err: NumericOpError) -> PlanQueryError {
@@ -3617,8 +3788,8 @@ fn weighted_shortest_paths_between(
             }
             let hop_cost = if use_hop_cost_cache {
                 let outer = weighted_hop_cache_outer_key(edge_binding);
-                let inline = edge_binding.inline_value;
-                if let Some(cost) = hop_cost_cache.get(&outer).and_then(|m| m.get(&inline)) {
+                let value_key = weighted_hop_cache_value_key(edge_binding);
+                if let Some(cost) = hop_cost_cache.get(&outer).and_then(|m| m.get(&value_key)) {
                     cost.clone()
                 } else {
                     let cost = eval_shortest_hop_cost(
@@ -3632,11 +3803,12 @@ fn weighted_shortest_paths_between(
                     hop_cost_cache
                         .entry(outer)
                         .or_default()
-                        .insert(inline, cost.clone());
+                        .insert(value_key, cost.clone());
                     cost
                 }
             } else {
                 decode_direct_gleaph_weight_hop_cost(
+                    store,
                     direct_gleaph_weight_decoder
                         .expect("direct GLEAPH.WEIGHT decoder must be present"),
                     edge_binding,
@@ -3702,9 +3874,13 @@ fn eval_shortest_hop_cost(
     parameters: &BTreeMap<String, Value>,
     gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
 ) -> Result<WeightedCost, PlanQueryError> {
-    if let Some(cost) =
-        eval_direct_gleaph_weight_hop_cost(expr, edge_var, edge_binding, gleaph_weight_decoders)?
-    {
+    if let Some(cost) = eval_direct_gleaph_weight_hop_cost(
+        store,
+        expr,
+        edge_var,
+        edge_binding,
+        gleaph_weight_decoders,
+    )? {
         return Ok(cost);
     }
     let mut row = PlanRow::new();
@@ -3721,6 +3897,7 @@ fn eval_shortest_hop_cost(
 }
 
 fn eval_direct_gleaph_weight_hop_cost(
+    store: &GraphStore,
     expr: &Expr,
     edge_var: &str,
     edge_binding: EdgeBinding,
@@ -3731,7 +3908,7 @@ fn eval_direct_gleaph_weight_hop_cost(
     else {
         return Ok(None);
     };
-    decode_direct_gleaph_weight_hop_cost(decoder, edge_binding).map(Some)
+    decode_direct_gleaph_weight_hop_cost(store, decoder, edge_binding).map(Some)
 }
 
 fn direct_gleaph_weight_hop_cost_decoder<'a>(
@@ -3770,14 +3947,18 @@ fn direct_gleaph_weight_hop_cost_decoder<'a>(
 }
 
 fn decode_direct_gleaph_weight_hop_cost(
+    store: &GraphStore,
     decoder: &PreparedWeightDecoder,
     edge_binding: EdgeBinding,
 ) -> Result<WeightedCost, PlanQueryError> {
-    let weight = decode_inline_weight(decoder, edge_binding.inline_value).map_err(|e| {
-        PlanQueryError::GleaphWeight {
-            message: format!("GLEAPH.WEIGHT decode failed: {e}"),
-        }
-    })?;
+    let weight = super::gleaph_weight::decode_traversal_edge_weight(
+        store,
+        edge_binding.handle,
+        edge_binding.value_len,
+        edge_binding.value_bytes_slice(),
+        edge_binding.inline_value,
+        Some(decoder),
+    )?;
     Ok(WeightedCost::from_validated_non_negative_float32(weight))
 }
 
@@ -3953,8 +4134,10 @@ fn expand_candidates_into(
                         match edge_matches_indexed_equality(
                             store,
                             src_id,
+                            direction,
                             LaraLabelId::from_raw(edge.label_id),
                             edge.edge_slot_index,
+                            &edge,
                             property,
                             scan_value,
                             parameters,
@@ -3968,7 +4151,12 @@ fn expand_candidates_into(
                         }
                     }
                     if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge) {
-                        out.push((edge_dst, edge_binding_for_expand(src_id, direction, edge)));
+                        if let Err(err) =
+                            push_expand_candidate(out, store, src_id, direction, edge_dst, edge)
+                        {
+                            error = Some(err);
+                            return;
+                        }
                     }
                 },
             )?;
@@ -3992,8 +4180,10 @@ fn expand_candidates_into(
                         match edge_matches_indexed_equality(
                             store,
                             src_id,
+                            direction,
                             LaraLabelId::from_raw(edge.label_id),
                             edge.edge_slot_index,
+                            &edge,
                             property,
                             scan_value,
                             parameters,
@@ -4007,7 +4197,12 @@ fn expand_candidates_into(
                         }
                     }
                     if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge) {
-                        out.push((edge_dst, edge_binding_for_expand(src_id, direction, edge)));
+                        if let Err(err) =
+                            push_expand_candidate(out, store, src_id, direction, edge_dst, edge)
+                        {
+                            error = Some(err);
+                            return;
+                        }
                     }
                 },
             )?;
@@ -4031,8 +4226,10 @@ fn expand_candidates_into(
                         match edge_matches_indexed_equality(
                             store,
                             src_id,
+                            direction,
                             LaraLabelId::from_raw(edge.label_id),
                             edge.edge_slot_index,
+                            &edge,
                             property,
                             scan_value,
                             parameters,
@@ -4046,7 +4243,12 @@ fn expand_candidates_into(
                         }
                     }
                     if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge) {
-                        out.push((edge_dst, edge_binding_for_expand(src_id, direction, edge)));
+                        if let Err(err) =
+                            push_expand_candidate(out, store, src_id, direction, edge_dst, edge)
+                        {
+                            error = Some(err);
+                            return;
+                        }
                     }
                 },
             )?;
@@ -4124,9 +4326,6 @@ fn expand_candidates_via_equality_index(
     parameters: &BTreeMap<String, Value>,
     out: &mut Vec<ExpandCandidate>,
 ) -> Result<bool, PlanQueryError> {
-    if !matches!(direction, EdgeDirection::PointingRight) {
-        return Ok(false);
-    }
     let Some(property_id) = store.property_id(property) else {
         return Ok(false);
     };
@@ -4151,6 +4350,7 @@ fn expand_candidates_via_equality_index(
         ));
     }
 
+    let mut error = None;
     match direction {
         EdgeDirection::PointingRight => {
             for_each_csr_expand_edge(
@@ -4160,11 +4360,18 @@ fn expand_candidates_via_equality_index(
                 edge_label_id,
                 EdgeSequenceOrder::Descending,
                 |edge| {
+                    if error.is_some() {
+                        return;
+                    }
                     if !out_slots.contains(&(edge.label_id, edge.edge_slot_index.raw())) {
                         return;
                     }
                     if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge) {
-                        out.push((edge_dst, edge_binding_for_expand(src_id, direction, edge)));
+                        if let Err(err) =
+                            push_expand_candidate(out, store, src_id, direction, edge_dst, edge)
+                        {
+                            error = Some(err);
+                        }
                     }
                 },
             )?;
@@ -4177,6 +4384,9 @@ fn expand_candidates_via_equality_index(
                 edge_label_id,
                 EdgeSequenceOrder::Descending,
                 |edge| {
+                    if error.is_some() {
+                        return;
+                    }
                     let canonical = store.canonical_edge_handle(EdgeHandle {
                         owner_vertex_id: src_id,
                         label_id: LaraLabelId::from_raw(edge.label_id),
@@ -4190,7 +4400,11 @@ fn expand_candidates_via_equality_index(
                         return;
                     }
                     if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge) {
-                        out.push((edge_dst, edge_binding_for_expand(src_id, direction, edge)));
+                        if let Err(err) =
+                            push_expand_candidate(out, store, src_id, direction, edge_dst, edge)
+                        {
+                            error = Some(err);
+                        }
                     }
                 },
             )?;
@@ -4203,6 +4417,9 @@ fn expand_candidates_via_equality_index(
                 edge_label_id,
                 EdgeSequenceOrder::Descending,
                 |edge| {
+                    if error.is_some() {
+                        return;
+                    }
                     let canonical = store.canonical_edge_handle(EdgeHandle {
                         owner_vertex_id: src_id,
                         label_id: LaraLabelId::from_raw(edge.label_id),
@@ -4216,12 +4433,19 @@ fn expand_candidates_via_equality_index(
                         return;
                     }
                     if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge) {
-                        out.push((edge_dst, edge_binding_for_expand(src_id, direction, edge)));
+                        if let Err(err) =
+                            push_expand_candidate(out, store, src_id, direction, edge_dst, edge)
+                        {
+                            error = Some(err);
+                        }
                     }
                 },
             )?;
         }
         other => return Err(PlanQueryError::UnsupportedDirection(other)),
+    }
+    if let Some(err) = error {
+        return Err(err);
     }
     Ok(true)
 }
@@ -4417,6 +4641,7 @@ struct QueryExprEvaluator<'a> {
 }
 
 fn try_eval_gleaph_weight(
+    store: &GraphStore,
     decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
     name: &ObjectName,
     args: &[Expr],
@@ -4460,11 +4685,14 @@ fn try_eval_gleaph_weight(
     match binding {
         PlanBinding::Value(Value::Null) => return Ok(Some(Value::Null)),
         PlanBinding::Edge(edge) => {
-            let w = decode_inline_weight(decoder, edge.inline_value).map_err(|e| {
-                PlanQueryError::GleaphWeight {
-                    message: format!("GLEAPH.WEIGHT decode failed: {e}"),
-                }
-            })?;
+            let w = super::gleaph_weight::decode_traversal_edge_weight(
+                store,
+                edge.handle,
+                edge.value_len,
+                edge.value_bytes_slice(),
+                edge.inline_value,
+                Some(decoder),
+            )?;
             Ok(Some(Value::Float32(w)))
         }
         _ => Err(PlanQueryError::GleaphWeight {
@@ -4734,9 +4962,14 @@ impl QueryExprEvaluator<'_> {
                 args,
                 distinct,
             } => {
-                if let Some(v) =
-                    try_eval_gleaph_weight(self.gleaph_weight_decoders, name, args, *distinct, row)?
-                {
+                if let Some(v) = try_eval_gleaph_weight(
+                    self.store,
+                    self.gleaph_weight_decoders,
+                    name,
+                    args,
+                    *distinct,
+                    row,
+                )? {
                     return Ok(v);
                 }
                 match try_eval_runtime_function_call(self.caller, name, args, *distinct) {
@@ -4900,9 +5133,7 @@ fn project_row(
                 .as_ref()
                 .map(Str::to_string)
                 .unwrap_or_else(|| var_name.clone());
-            if column.alias.is_none()
-                && row.is_singleton_binding(var_name.as_str())
-            {
+            if column.alias.is_none() && row.is_singleton_binding(var_name.as_str()) {
                 if let Some(layout) = row.shared_layout() {
                     return Ok(PlanRow::with_layout_and_binding(
                         layout,
@@ -5117,6 +5348,9 @@ fn resolve_federated_traversal_vertex(
             let op = match expand_direction {
                 Some(EdgeDirection::PointingLeft) => {
                     "Expand.reverse(federated placement on another shard)"
+                }
+                Some(EdgeDirection::Undirected) => {
+                    "Expand.undirected(federated placement on another shard)"
                 }
                 _ => "Expand.forward(federated placement on another shard)",
             };
@@ -9196,6 +9430,77 @@ mod tests {
     }
 
     #[test]
+    fn gleaph_weight_accepts_edge_value_profile_without_legacy_weight_profile() {
+        let store = GraphStore::new();
+        use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
+        let a = store
+            .insert_vertex_named(["ValueProfileWgtA"], Vec::<(&str, Value)>::new())
+            .expect("a");
+        let b = store
+            .insert_vertex_named(["ValueProfileWgtB"], Vec::<(&str, Value)>::new())
+            .expect("b");
+        let label_id = store
+            .get_or_insert_edge_label_id("ValueProfileWgtRoad")
+            .expect("label");
+        store
+            .set_edge_label_value_profile(
+                label_id,
+                EdgeValueProfile {
+                    width: EdgeValueWidth::W2,
+                    encoding: EdgeValueEncoding::WeightRawU16,
+                },
+            )
+            .expect("value profile");
+        store
+            .insert_directed_edge_with_value_bytes(a, b, Some(label_id), &[9, 0])
+            .expect("edge");
+
+        let gql = "MATCH (a:ValueProfileWgtA)-[e:ValueProfileWgtRoad]->(b:ValueProfileWgtB) RETURN GLEAPH.WEIGHT(e) AS w";
+        let plan = plan_gql(gql);
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("value-profile-only gleaph weight");
+        assert_eq!(result.rows[0].get("w"), Some(&Value::Float32(9.0)));
+    }
+
+    #[test]
+    fn gleaph_weight_rejects_edge_value_width_mismatch() {
+        let store = GraphStore::new();
+        use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
+        let a = store
+            .insert_vertex_named(["MissingValueWgtA"], Vec::<(&str, Value)>::new())
+            .expect("a");
+        let b = store
+            .insert_vertex_named(["MissingValueWgtB"], Vec::<(&str, Value)>::new())
+            .expect("b");
+        let label_id = store
+            .get_or_insert_edge_label_id("MissingValueWgtRoad")
+            .expect("label");
+        store
+            .set_edge_label_value_profile(
+                label_id,
+                EdgeValueProfile {
+                    width: EdgeValueWidth::W2,
+                    encoding: EdgeValueEncoding::WeightRawU16,
+                },
+            )
+            .expect("value profile");
+        store
+            .insert_directed_edge(a, b, Some(label_id))
+            .expect("edge without value");
+
+        let gql = "MATCH (a:MissingValueWgtA)-[e:MissingValueWgtRoad]->(b:MissingValueWgtB) RETURN GLEAPH.WEIGHT(e) AS w";
+        let plan = plan_gql(gql);
+        let err = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect_err("missing edge value must not decode as zero");
+        assert!(
+            err.to_string().contains("edge value width mismatch"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn shortest_path_after_optional_miss_drops_null_destination_rows() {
         let store = GraphStore::new();
         store
@@ -10558,6 +10863,63 @@ mod tests {
         assert_path_vertex_local(&store, &elements[4], c);
     }
 
+    #[test]
+    fn federated_neighbor_hit_preserves_remote_value_bytes() {
+        let hit = FederatedExpandNeighbor {
+            shard_id: 99,
+            neighbor_logical_vertex_id: 1,
+            neighbor_local_vertex_id: 2,
+            anchor_local_vertex_id: 3,
+            label_id_raw: 0,
+            slot_index: 4,
+            inline_value: 42,
+            value_len: 2,
+            value_bytes: [42, 0, 0, 0, 0, 0, 0, 0],
+        };
+        let binding = EdgeBinding::from_federated_neighbor_hit(&hit);
+        assert_eq!(binding.value_len, 2);
+        assert_eq!(binding.value_bytes_slice(), &[42, 0]);
+        assert_eq!(binding.inline_value, 42);
+    }
+
+    #[test]
+    fn reverse_expand_binding_resolves_forward_edge_value_and_owner() {
+        let store = GraphStore::new();
+        let a = store.insert_vertex().expect("a");
+        let b = store.insert_vertex().expect("b");
+        let label_id = store
+            .get_or_insert_edge_label_id("RevExpandWgt")
+            .expect("label");
+        store
+            .set_edge_label_weight_profile(
+                label_id,
+                gleaph_graph_kernel::entry::EdgeWeightProfile {
+                    encoding: gleaph_graph_kernel::entry::WeightEncoding::RawU16,
+                },
+            )
+            .expect("profile");
+        store
+            .insert_directed_edge_with_inline_value(a, b, Some(label_id), 42)
+            .expect("edge");
+
+        let in_edge = store.directed_in_edges(b).expect("in edges")[0];
+        let binding = edge_binding_for_expand(&store, b, EdgeDirection::PointingLeft, in_edge)
+            .expect("binding");
+        assert_eq!(binding.handle.owner_vertex_id, a);
+        assert_eq!(binding.value_bytes_slice(), &[42, 0]);
+
+        let weight = crate::plan::query::gleaph_weight::decode_traversal_edge_weight(
+            &store,
+            binding.handle,
+            binding.value_len,
+            binding.value_bytes_slice(),
+            binding.inline_value,
+            None,
+        )
+        .expect("decode weight");
+        assert_eq!(weight, 42.0);
+    }
+
     fn weighted_shortest_plan_with_cost(cost: Expr) -> PhysicalPlan {
         weighted_shortest_plan_with_cost_mode(cost, ShortestMode::AnyShortest)
     }
@@ -11298,9 +11660,246 @@ mod tests {
     }
 
     #[test]
+    fn stale_mid_diamond_edge_bindings_carry_expected_weights() {
+        use gleaph_gql_planner::plan::{PlanOp, ShortestMode, VarLenSpec};
+        let store = GraphStore::new();
+        let (s, _dst) = setup_stale_mid_diamond_graph(&store);
+        let road = catalog_edge_label(&store, "WgtRoad");
+        let cost_expr = gleaph_weight_call("e");
+        let decoders = crate::plan::query::gleaph_weight::prepare_gleaph_weight_decoders(
+            &store,
+            &[PlanOp::ShortestPath {
+                src: "a".into(),
+                dst: "c".into(),
+                edge: "e".into(),
+                path_var: None,
+                emit_edge_binding: true,
+                emit_path_binding: false,
+                mode: ShortestMode::AnyShortest,
+                direction: EdgeDirection::PointingRight,
+                label: Some("WgtRoad".into()),
+                label_expr: None,
+                var_len: Some(VarLenSpec {
+                    min: 1,
+                    max: Some(5),
+                }),
+                cost: gleaph_gql_planner::plan::ShortestPathCost::EdgeCostExpr {
+                    edge_var: "e".into(),
+                    expr: cost_expr.clone(),
+                },
+            }],
+        )
+        .expect("decoders")
+        .expect("table");
+        let decoder = decoders.get("e").expect("edge decoder");
+        let mut weights = BTreeMap::new();
+        store
+            .for_each_directed_out_edges_for_label_unchecked(s, road, |edge| {
+                let binding =
+                    edge_binding_for_expand(&store, s, EdgeDirection::PointingRight, edge)
+                        .expect("binding");
+                let w = crate::plan::query::gleaph_weight::decode_traversal_edge_weight(
+                    &store,
+                    binding.handle,
+                    binding.value_len,
+                    binding.value_bytes_slice(),
+                    binding.inline_value,
+                    Some(decoder),
+                )
+                .expect("decode");
+                weights.insert(edge.neighbor_vid(), w);
+            })
+            .expect("for_each");
+        let mut sorted: Vec<_> = weights.into_values().collect();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert_eq!(sorted, vec![5.0, 10.0]);
+    }
+
+    #[test]
+    fn stale_mid_diamond_shortest_expand_hop_costs_are_5_10_and_1() {
+        use gleaph_gql_planner::plan::{PlanOp, ShortestMode, VarLenSpec};
+        let store = GraphStore::new();
+        let (s, dst) = setup_stale_mid_diamond_graph(&store);
+        let road = catalog_edge_label(&store, "WgtRoad");
+        let cost_expr = gleaph_weight_call("e");
+        let decoders = crate::plan::query::gleaph_weight::prepare_gleaph_weight_decoders(
+            &store,
+            &[PlanOp::ShortestPath {
+                src: "a".into(),
+                dst: "c".into(),
+                edge: "e".into(),
+                path_var: None,
+                emit_edge_binding: true,
+                emit_path_binding: false,
+                mode: ShortestMode::AnyShortest,
+                direction: EdgeDirection::PointingRight,
+                label: Some("WgtRoad".into()),
+                label_expr: None,
+                var_len: Some(VarLenSpec {
+                    min: 1,
+                    max: Some(5),
+                }),
+                cost: gleaph_gql_planner::plan::ShortestPathCost::EdgeCostExpr {
+                    edge_var: "e".into(),
+                    expr: cost_expr.clone(),
+                },
+            }],
+        )
+        .expect("decoders")
+        .expect("table");
+        let decoder = decoders.get("e").expect("edge decoder");
+        let prep = ShortestFixedLabelExpand::new(EdgeDirection::PointingRight, road).expect("prep");
+        let mut from_s = Vec::new();
+        prep.expand_into(&store, s, &mut from_s).expect("from s");
+        let mut hop_costs = Vec::new();
+        for (edge_dst, binding) in from_s {
+            let hop = decode_direct_gleaph_weight_hop_cost(&store, decoder, binding).expect("hop");
+            hop_costs.push((
+                u32::from(match edge_dst {
+                    ExpandDst::Local(v) => v,
+                    ExpandDst::Remote(_) => panic!("remote"),
+                }),
+                hop.order_key,
+            ));
+        }
+        hop_costs.sort_by_key(|(vid, _)| *vid);
+        assert_eq!(hop_costs.len(), 2);
+        assert!(
+            matches!(hop_costs[0].1, WeightedCostOrderKey::Float64(v) if (v - 5.0).abs() < f64::EPSILON)
+        );
+        assert!(
+            matches!(hop_costs[1].1, WeightedCostOrderKey::Float64(v) if (v - 10.0).abs() < f64::EPSILON)
+        );
+
+        let detour = hop_costs[0].0;
+        store
+            .for_each_directed_out_edges_for_label_unchecked(VertexId::from(detour), road, |edge| {
+                assert_eq!(edge.inline_value_u16(), 1, "raw CSR edge value");
+                assert_eq!(edge.value_bytes(), &[1, 0]);
+                let handle = EdgeHandle {
+                    owner_vertex_id: VertexId::from(detour),
+                    label_id: ic_stable_lara::BucketLabelKey::from_raw(edge.label_id),
+                    slot_index: edge.edge_slot_index.raw(),
+                };
+                let record = store
+                    .find_outgoing_edge_record(handle)
+                    .expect("lookup")
+                    .expect("record");
+                assert_eq!(
+                    record.value_bytes(),
+                    edge.value_bytes(),
+                    "find_outgoing_edge_record must match iterated edge bytes"
+                );
+            })
+            .expect("out from detour");
+        let mut from_detour = Vec::new();
+        prep.expand_into(&store, VertexId::from(detour), &mut from_detour)
+            .expect("from detour");
+        assert_eq!(from_detour.len(), 1);
+        let binding = from_detour[0].1;
+        assert_eq!(
+            binding.inline_value, 1,
+            "binding inline_value for detour->mid"
+        );
+        assert_eq!(
+            binding.value_bytes_slice(),
+            &[1, 0],
+            "binding value_bytes for detour->mid"
+        );
+        let hop =
+            decode_direct_gleaph_weight_hop_cost(&store, decoder, binding).expect("detour hop");
+        assert!(
+            matches!(hop.order_key, WeightedCostOrderKey::Float64(v) if (v - 1.0).abs() < f64::EPSILON),
+            "detour->mid hop cost, got {:?}",
+            hop.order_key
+        );
+        let _ = dst;
+    }
+
+    #[test]
+    fn stale_mid_diamond_weighted_search_finds_cheaper_three_hop_path() {
+        use gleaph_gql_planner::plan::{PlanOp, ShortestMode, VarLenSpec};
+        let store = GraphStore::new();
+        let (s, dst) = setup_stale_mid_diamond_graph(&store);
+        let road = catalog_edge_label(&store, "WgtRoad");
+        let cost_expr = gleaph_weight_call("e");
+        let decoders = crate::plan::query::gleaph_weight::prepare_gleaph_weight_decoders(
+            &store,
+            &[PlanOp::ShortestPath {
+                src: "a".into(),
+                dst: "c".into(),
+                edge: "e".into(),
+                path_var: Some("p".into()),
+                emit_edge_binding: true,
+                emit_path_binding: true,
+                mode: ShortestMode::AnyShortest,
+                direction: EdgeDirection::PointingRight,
+                label: Some("WgtRoad".into()),
+                label_expr: None,
+                var_len: Some(VarLenSpec {
+                    min: 1,
+                    max: Some(5),
+                }),
+                cost: gleaph_gql_planner::plan::ShortestPathCost::EdgeCostExpr {
+                    edge_var: "e".into(),
+                    expr: cost_expr.clone(),
+                },
+            }],
+        )
+        .expect("decoders")
+        .expect("decoder table");
+        let search = weighted_shortest_paths_between(
+            &store,
+            s,
+            dst,
+            EdgeDirection::PointingRight,
+            Some(road),
+            &Some(VarLenSpec {
+                min: 1,
+                max: Some(5),
+            }),
+            "e",
+            &cost_expr,
+            ShortestMode::AnyShortest,
+            &BTreeMap::new(),
+            Some(&decoders),
+            true,
+        )
+        .expect("search");
+        let path = materialize_path_from_search_states(
+            &store,
+            local_shard_id(&store),
+            &search.states,
+            *search.found.first().expect("path"),
+        );
+        let elements = match path {
+            Value::Path(elements) => elements,
+            other => panic!("unexpected path value: {other:?}"),
+        };
+        assert_eq!(
+            elements.len(),
+            7,
+            "expected s->detour->mid->dst; got {elements:?}"
+        );
+    }
+
+    #[test]
     fn weighted_shortest_skips_stale_higher_cost_vertex_entries() {
         let store = GraphStore::new();
         let (s, dst) = setup_stale_mid_diamond_graph(&store);
+        let road = catalog_edge_label(&store, "WgtRoad");
+        let mut weights = Vec::new();
+        store
+            .for_each_directed_out_edges_for_label_unchecked(s, road, |edge| {
+                weights.push(edge.inline_value_u16());
+            })
+            .expect("out edges from s");
+        weights.sort_unstable();
+        assert_eq!(
+            weights,
+            vec![5, 10],
+            "edge weights from s must be persisted for weighted shortest path"
+        );
         let plan = plan(vec![
             PlanOp::NodeScan {
                 variable: "a".into(),

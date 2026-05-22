@@ -4,7 +4,6 @@ use std::collections::BTreeMap;
 
 use candid::Principal;
 use gleaph_gql::parser;
-use ic_cdk::api::msg_caller;
 use gleaph_gql::program_modification::classify_program;
 use gleaph_gql::type_check::NoSchema;
 use gleaph_gql_ic::decode_gql_params_blob;
@@ -14,13 +13,14 @@ use gleaph_gql_planner::wire::encode_block_plans;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::PostingHit;
 use gleaph_graph_kernel::plan_exec::GqlExecutionMode;
+use ic_cdk::api::msg_caller;
 
 use crate::execution_path::check_adhoc_execution_path;
 use crate::facade::store::RouterStore;
-use crate::rbac::authorize_adhoc_gql;
 use crate::graph_client::execute_plan_on_graph;
 use crate::index_client::RouterIndexClient;
 use crate::planner_stats::RouterGraphStats;
+use crate::rbac::authorize_adhoc_gql;
 use crate::seed::{SeedProbe, resolve_seed_shard_with_probe, seeds_for_local_shard};
 use crate::state::RouterError;
 

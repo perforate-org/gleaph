@@ -71,12 +71,9 @@ pub fn commit_vertex_placement(
 ) -> Result<(), VertexPlacementError> {
     #[cfg(target_family = "wasm")]
     {
-        let result: Result<(), RouterError> = super::router_call::call_router1(
-            router_canister,
-            "commit_vertex_placement",
-            args,
-        )
-        .map_err(VertexPlacementError::Call)?;
+        let result: Result<(), RouterError> =
+            super::router_call::call_router1(router_canister, "commit_vertex_placement", args)
+                .map_err(VertexPlacementError::Call)?;
         return result.map_err(VertexPlacementError::Rejected);
     }
 
@@ -181,12 +178,9 @@ pub fn begin_vertex_migration(
 ) -> Result<(), VertexPlacementError> {
     #[cfg(target_family = "wasm")]
     {
-        let result: Result<(), RouterError> = super::router_call::call_router1(
-            router_canister,
-            "begin_vertex_migration",
-            args,
-        )
-        .map_err(VertexPlacementError::Call)?;
+        let result: Result<(), RouterError> =
+            super::router_call::call_router1(router_canister, "begin_vertex_migration", args)
+                .map_err(VertexPlacementError::Call)?;
         return result.map_err(VertexPlacementError::Rejected);
     }
 
@@ -225,12 +219,9 @@ pub fn finish_vertex_migration(
 ) -> Result<(), VertexPlacementError> {
     #[cfg(target_family = "wasm")]
     {
-        let result: Result<(), RouterError> = super::router_call::call_router1(
-            router_canister,
-            "finish_vertex_migration",
-            args,
-        )
-        .map_err(VertexPlacementError::Call)?;
+        let result: Result<(), RouterError> =
+            super::router_call::call_router1(router_canister, "finish_vertex_migration", args)
+                .map_err(VertexPlacementError::Call)?;
         return result.map_err(VertexPlacementError::Rejected);
     }
 

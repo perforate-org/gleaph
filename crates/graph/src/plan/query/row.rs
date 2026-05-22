@@ -15,7 +15,10 @@ pub fn empty_row_for_plan(plan: &PhysicalPlan) -> PlanRow {
     }
 }
 
-pub fn empty_row_for_plan_with_arena(plan: &PhysicalPlan, arena: &mut super::arena::QueryArena) -> PlanRow {
+pub fn empty_row_for_plan_with_arena(
+    plan: &PhysicalPlan,
+    arena: &mut super::arena::QueryArena,
+) -> PlanRow {
     if plan.binding_layout.is_empty() {
         PlanRow::new()
     } else {
@@ -139,10 +142,7 @@ impl PlanRow {
     }
 
     /// Clone row storage and apply binding updates in one pass (expand / scan hot path).
-    pub fn fork<'a>(
-        &self,
-        updates: impl IntoIterator<Item = (&'a str, PlanBinding)>,
-    ) -> Self {
+    pub fn fork<'a>(&self, updates: impl IntoIterator<Item = (&'a str, PlanBinding)>) -> Self {
         match &self.layout {
             Some(layout) => self.fork_indexed(layout, updates),
             None => {
@@ -249,7 +249,8 @@ impl PlanRow {
     /// Hash-join hot path: one join key, no per-merge skip-name allocation.
     pub fn try_merge_skip_one(&self, right: &Self, skip_name: &str) -> Option<Self> {
         if let (Some(left_layout), Some(right_layout)) = (&self.layout, &right.layout) {
-            if Rc::ptr_eq(left_layout, right_layout) || left_layout.as_ref() == right_layout.as_ref()
+            if Rc::ptr_eq(left_layout, right_layout)
+                || left_layout.as_ref() == right_layout.as_ref()
             {
                 return self.try_merge_indexed_skip(right, left_layout, &[skip_name]);
             }
@@ -259,7 +260,8 @@ impl PlanRow {
 
     fn try_merge_skip_many(&self, right: &Self, skip_names: &[&str]) -> Option<Self> {
         if let (Some(left_layout), Some(right_layout)) = (&self.layout, &right.layout) {
-            if Rc::ptr_eq(left_layout, right_layout) || left_layout.as_ref() == right_layout.as_ref()
+            if Rc::ptr_eq(left_layout, right_layout)
+                || left_layout.as_ref() == right_layout.as_ref()
             {
                 return self.try_merge_indexed_skip(right, left_layout, skip_names);
             }
@@ -302,11 +304,7 @@ impl PlanRow {
         layout: &Rc<BindingLayout>,
         skip_names: &[&str],
     ) -> Option<Self> {
-        let min_cap = self
-            .slots
-            .len()
-            .max(right.slots.len())
-            .max(layout.len());
+        let min_cap = self.slots.len().max(right.slots.len()).max(layout.len());
         let mut slots = arena.checkout_slots(min_cap);
         slots.clear();
         slots.extend(self.slots.iter().cloned());
@@ -365,7 +363,10 @@ impl PlanRow {
                     .iter()
                     .enumerate()
                     .find_map(|(i, b)| {
-                        layout.name_at(i).filter(|n| *n == name).and_then(|_| b.as_ref())
+                        layout
+                            .name_at(i)
+                            .filter(|n| *n == name)
+                            .and_then(|_| b.as_ref())
                     })
                     .or_else(|| left_spill.get(name));
                 match left_binding {
@@ -398,11 +399,7 @@ impl PlanRow {
     }
 
     /// Row containing only the listed variables (used after shortest-path narrowing).
-    pub fn retain_only(
-        layout: Rc<BindingLayout>,
-        source: &Self,
-        keep: &[&str],
-    ) -> Self {
+    pub fn retain_only(layout: Rc<BindingLayout>, source: &Self, keep: &[&str]) -> Self {
         let mut out = Self::with_layout(layout);
         for name in keep {
             if let Some(binding) = source.get(name) {
@@ -478,8 +475,8 @@ pub type PlanQueryRow = PlanRow;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ic_stable_lara::VertexId;
     use gleaph_gql_planner::BindingLayout;
+    use ic_stable_lara::VertexId;
 
     #[test]
     fn singleton_binding_detects_single_slot() {
@@ -495,7 +492,7 @@ mod tests {
 
     #[test]
     fn try_merge_indexed_rows_combine_disjoint_slots() {
-        use gleaph_gql_planner::{derive_binding_layout, PlanOp};
+        use gleaph_gql_planner::{PlanOp, derive_binding_layout};
         let layout = Rc::new(derive_binding_layout(&[
             PlanOp::NodeScan {
                 variable: "a".into(),
@@ -541,8 +538,11 @@ mod tests {
     #[test]
     fn try_merge_indexed_rows_reject_conflicting_slots() {
         let layout = Rc::new(BindingLayout::single("a".into()));
-        let left =
-            PlanRow::with_layout_and_binding(Rc::clone(&layout), "a", PlanBinding::Vertex(VertexId::from(1)));
+        let left = PlanRow::with_layout_and_binding(
+            Rc::clone(&layout),
+            "a",
+            PlanBinding::Vertex(VertexId::from(1)),
+        );
         let right =
             PlanRow::with_layout_and_binding(layout, "a", PlanBinding::Vertex(VertexId::from(2)));
         assert!(left.try_merge(&right, &[]).is_none());

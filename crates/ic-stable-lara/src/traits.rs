@@ -144,10 +144,39 @@ pub trait CsrEdge: Copy {
     fn with_label_id(self, _label_id: u16) -> Self {
         self
     }
+    /// Label-row id attached by scanners, when the edge type carries it.
+    #[inline]
+    fn edge_label_id_raw(&self) -> Option<u16> {
+        None
+    }
     /// Returns `true` when this slot holds a logical delete marker.
     #[inline]
     fn is_deleted_slot(&self) -> bool {
         self.neighbor_vid().is_edge_tombstone_sentinel()
+    }
+
+    /// Physical byte width of the in-memory edge value (0 when absent).
+    #[inline]
+    fn edge_value_byte_width(&self) -> u8 {
+        0
+    }
+
+    /// In-memory edge value bytes; length must match [`Self::edge_value_byte_width`].
+    #[inline]
+    fn edge_value_bytes(&self) -> &[u8] {
+        &[]
+    }
+
+    /// Returns a copy with in-memory value bytes attached (wire row unchanged).
+    #[inline]
+    fn with_stored_value_bytes(self, _width: u8, _bytes: &[u8]) -> Self {
+        self
+    }
+
+    /// Logical slot index within the label row (0 when not set by the scanner).
+    #[inline]
+    fn edge_slot_index_raw(&self) -> u32 {
+        0
     }
 }
 

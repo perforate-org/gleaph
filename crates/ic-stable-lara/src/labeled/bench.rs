@@ -58,6 +58,10 @@ fn bench_graph(elem_capacity: u64) -> LabeledLaraGraph<BenchEdge, crate::VectorM
         edge_span_meta,
         edge_free_spans,
         edge_free_span_by_start,
+        value_slab,
+        value_free_spans,
+        value_free_span_by_start,
+        value_log,
     ) = labeled_lara_memories();
     LabeledLaraGraph::new(
         vertices,
@@ -70,6 +74,10 @@ fn bench_graph(elem_capacity: u64) -> LabeledLaraGraph<BenchEdge, crate::VectorM
         edge_span_meta,
         edge_free_spans,
         edge_free_span_by_start,
+        value_slab,
+        value_free_spans,
+        value_free_span_by_start,
+        value_log,
         elem_capacity,
         BucketLabelKey::from_raw(1),
     )

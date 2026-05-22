@@ -91,6 +91,18 @@ pub enum MaintenanceWorkItem {
         /// Vertex to compact.
         vid: VertexId,
     },
+    /// Compact only the vertex value byte span.
+    CompactVertexValueSpan {
+        orientation: Orientation,
+        vid: VertexId,
+    },
+    /// Compact edge and value spans together (preferred when values are present).
+    CompactVertexEdgeAndValueSpan {
+        orientation: Orientation,
+        vid: VertexId,
+        anchor_bucket_index: u32,
+        resume_bucket_index: u32,
+    },
 }
 
 fn maintenance_work_item_bytes(item: &MaintenanceWorkItem) -> [u8; 16] {
@@ -127,6 +139,29 @@ fn maintenance_work_item_bytes(item: &MaintenanceWorkItem) -> [u8; 16] {
             };
             b[4..8].copy_from_slice(&u32::from(vid).to_le_bytes());
         }
+        MaintenanceWorkItem::CompactVertexValueSpan { orientation, vid } => {
+            b[0] = 3;
+            b[1] = match orientation {
+                Orientation::Forward => 0,
+                Orientation::Reverse => 1,
+            };
+            b[4..8].copy_from_slice(&u32::from(vid).to_le_bytes());
+        }
+        MaintenanceWorkItem::CompactVertexEdgeAndValueSpan {
+            orientation,
+            vid,
+            anchor_bucket_index,
+            resume_bucket_index,
+        } => {
+            b[0] = 4;
+            b[1] = match orientation {
+                Orientation::Forward => 0,
+                Orientation::Reverse => 1,
+            };
+            b[4..8].copy_from_slice(&u32::from(vid).to_le_bytes());
+            b[8..12].copy_from_slice(&anchor_bucket_index.to_le_bytes());
+            b[12..16].copy_from_slice(&resume_bucket_index.to_le_bytes());
+        }
     }
     b
 }
@@ -161,6 +196,13 @@ impl Storable for MaintenanceWorkItem {
                 resume_bucket_index: u32::from_le_bytes(b[12..16].try_into().unwrap()),
             },
             2 => Self::CompactDenseLabeledVertexMaintenance { orientation, vid },
+            3 => Self::CompactVertexValueSpan { orientation, vid },
+            4 => Self::CompactVertexEdgeAndValueSpan {
+                orientation,
+                vid,
+                anchor_bucket_index: u32::from_le_bytes(b[8..12].try_into().unwrap()),
+                resume_bucket_index: u32::from_le_bytes(b[12..16].try_into().unwrap()),
+            },
             _ => Self::CompactLabelBucketVertexSegment { orientation, vid },
         }
     }
@@ -277,6 +319,25 @@ fn work_item_key(item: MaintenanceWorkItem) -> u32 {
             };
             0xC000_0000u32 ^ u32::from(vid).wrapping_mul(2_654_435_761) ^ orient
         }
+        MaintenanceWorkItem::CompactVertexValueSpan { orientation, vid } => {
+            let orient = match orientation {
+                Orientation::Forward => 0,
+                Orientation::Reverse => 1,
+            };
+            0x8000_0000 | u32::from(vid).wrapping_mul(2) ^ orient
+        }
+        MaintenanceWorkItem::CompactVertexEdgeAndValueSpan {
+            orientation,
+            vid,
+            anchor_bucket_index,
+            resume_bucket_index: _,
+        } => {
+            let orient = match orientation {
+                Orientation::Forward => 0,
+                Orientation::Reverse => 1,
+            };
+            0xA000_0000 | anchor_bucket_index ^ (u32::from(vid) << 1) ^ orient
+        }
     }
 }
 
@@ -381,6 +442,21 @@ where
     config: DeferredConfig,
 }
 
+fn edge_matches_remove_target<E>(candidate: &E, expected: &E, neighbor: VertexId) -> bool
+where
+    E: CsrEdge + PartialEq,
+{
+    if candidate.neighbor_vid() != neighbor {
+        return false;
+    }
+    let width = expected.edge_value_byte_width();
+    if width != 0 {
+        return candidate.edge_value_byte_width() == width
+            && candidate.edge_value_bytes() == expected.edge_value_bytes();
+    }
+    candidate.edge_slot_index_raw() == expected.edge_slot_index_raw()
+}
+
 impl<E, M> DeferredBidirectionalLabeledLaraGraph<E, M>
 where
     E: CsrEdge + CsrEdgeTombstone,
@@ -399,6 +475,10 @@ where
         forward_edge_span_meta: M,
         forward_edge_free_spans: M,
         forward_edge_free_span_by_start: M,
+        forward_value_slab: M,
+        forward_value_free_spans: M,
+        forward_value_free_span_by_start: M,
+        forward_value_log: M,
         reverse_vertices: M,
         reverse_buckets: M,
         reverse_bucket_free_spans: M,
@@ -409,6 +489,10 @@ where
         reverse_edge_span_meta: M,
         reverse_edge_free_spans: M,
         reverse_edge_free_span_by_start: M,
+        reverse_value_slab: M,
+        reverse_value_free_spans: M,
+        reverse_value_free_span_by_start: M,
+        reverse_value_log: M,
         maintenance_queue: M,
         dirty_work_items: M,
         elem_capacity: u64,
@@ -425,6 +509,10 @@ where
             forward_edge_span_meta,
             forward_edge_free_spans,
             forward_edge_free_span_by_start,
+            forward_value_slab,
+            forward_value_free_spans,
+            forward_value_free_span_by_start,
+            forward_value_log,
             reverse_vertices,
             reverse_buckets,
             reverse_bucket_free_spans,
@@ -435,6 +523,10 @@ where
             reverse_edge_span_meta,
             reverse_edge_free_spans,
             reverse_edge_free_span_by_start,
+            reverse_value_slab,
+            reverse_value_free_spans,
+            reverse_value_free_span_by_start,
+            reverse_value_log,
             maintenance_queue,
             dirty_work_items,
             elem_capacity,
@@ -456,6 +548,10 @@ where
         forward_edge_span_meta: M,
         forward_edge_free_spans: M,
         forward_edge_free_span_by_start: M,
+        forward_value_slab: M,
+        forward_value_free_spans: M,
+        forward_value_free_span_by_start: M,
+        forward_value_log: M,
         reverse_vertices: M,
         reverse_buckets: M,
         reverse_bucket_free_spans: M,
@@ -466,6 +562,10 @@ where
         reverse_edge_span_meta: M,
         reverse_edge_free_spans: M,
         reverse_edge_free_span_by_start: M,
+        reverse_value_slab: M,
+        reverse_value_free_spans: M,
+        reverse_value_free_span_by_start: M,
+        reverse_value_log: M,
         maintenance_queue: M,
         dirty_work_items: M,
         elem_capacity: u64,
@@ -486,6 +586,10 @@ where
             forward_edge_span_meta,
             forward_edge_free_spans,
             forward_edge_free_span_by_start,
+            forward_value_slab,
+            forward_value_free_spans,
+            forward_value_free_span_by_start,
+            forward_value_log,
             elem_capacity,
             default_label,
         )?;
@@ -500,6 +604,10 @@ where
             reverse_edge_span_meta,
             reverse_edge_free_spans,
             reverse_edge_free_span_by_start,
+            reverse_value_slab,
+            reverse_value_free_spans,
+            reverse_value_free_span_by_start,
+            reverse_value_log,
             elem_capacity,
             default_label,
         )?;
@@ -525,6 +633,10 @@ where
         forward_edge_span_meta: M,
         forward_edge_free_spans: M,
         forward_edge_free_span_by_start: M,
+        forward_value_slab: M,
+        forward_value_free_spans: M,
+        forward_value_free_span_by_start: M,
+        forward_value_log: M,
         reverse_vertices: M,
         reverse_buckets: M,
         reverse_bucket_free_spans: M,
@@ -535,6 +647,10 @@ where
         reverse_edge_span_meta: M,
         reverse_edge_free_spans: M,
         reverse_edge_free_span_by_start: M,
+        reverse_value_slab: M,
+        reverse_value_free_spans: M,
+        reverse_value_free_span_by_start: M,
+        reverse_value_log: M,
         maintenance_queue: M,
         dirty_work_items: M,
         elem_capacity: u64,
@@ -551,6 +667,10 @@ where
             forward_edge_span_meta,
             forward_edge_free_spans,
             forward_edge_free_span_by_start,
+            forward_value_slab,
+            forward_value_free_spans,
+            forward_value_free_span_by_start,
+            forward_value_log,
             reverse_vertices,
             reverse_buckets,
             reverse_bucket_free_spans,
@@ -561,6 +681,10 @@ where
             reverse_edge_span_meta,
             reverse_edge_free_spans,
             reverse_edge_free_span_by_start,
+            reverse_value_slab,
+            reverse_value_free_spans,
+            reverse_value_free_span_by_start,
+            reverse_value_log,
             maintenance_queue,
             dirty_work_items,
             elem_capacity,
@@ -582,6 +706,10 @@ where
         forward_edge_span_meta: M,
         forward_edge_free_spans: M,
         forward_edge_free_span_by_start: M,
+        forward_value_slab: M,
+        forward_value_free_spans: M,
+        forward_value_free_span_by_start: M,
+        forward_value_log: M,
         reverse_vertices: M,
         reverse_buckets: M,
         reverse_bucket_free_spans: M,
@@ -592,6 +720,10 @@ where
         reverse_edge_span_meta: M,
         reverse_edge_free_spans: M,
         reverse_edge_free_span_by_start: M,
+        reverse_value_slab: M,
+        reverse_value_free_spans: M,
+        reverse_value_free_span_by_start: M,
+        reverse_value_log: M,
         maintenance_queue: M,
         dirty_work_items: M,
         elem_capacity: u64,
@@ -612,6 +744,10 @@ where
             forward_edge_span_meta,
             forward_edge_free_spans,
             forward_edge_free_span_by_start,
+            forward_value_slab,
+            forward_value_free_spans,
+            forward_value_free_span_by_start,
+            forward_value_log,
             elem_capacity,
             default_label,
         )
@@ -627,6 +763,10 @@ where
             reverse_edge_span_meta,
             reverse_edge_free_spans,
             reverse_edge_free_span_by_start,
+            reverse_value_slab,
+            reverse_value_free_spans,
+            reverse_value_free_span_by_start,
+            reverse_value_log,
             elem_capacity,
             default_label,
         )
@@ -733,6 +873,23 @@ where
         self.forward
             .insert_edge_skip_leaf_cascade(src, label_id, forward_edge)
             .map_err(DeferredBidirectionalLabeledError::Forward)
+    }
+
+    /// Ensures forward/reverse label buckets declare `value_width_code` for a directed insert.
+    pub fn ensure_directed_edge_value_width(
+        &self,
+        src: VertexId,
+        dst: VertexId,
+        label_id: BucketLabelKey,
+        value_width_code: crate::labeled::ValueWidthCode,
+    ) -> Result<(), DeferredBidirectionalLabeledError> {
+        self.forward
+            .ensure_label_bucket_value_width(src, label_id, value_width_code)
+            .map_err(DeferredBidirectionalLabeledError::Forward)?;
+        self.reverse
+            .ensure_label_bucket_value_width(dst, label_id, value_width_code)
+            .map_err(DeferredBidirectionalLabeledError::Reverse)?;
+        Ok(())
     }
 
     /// Inserts one directed edge into forward and reverse orientations.
@@ -1087,6 +1244,21 @@ where
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
+    /// Removes one reverse-store edge at the given label-row slot.
+    pub fn remove_reverse_edge_at_slot(
+        &self,
+        dst: VertexId,
+        label_id: BucketLabelKey,
+        slot_index: u32,
+    ) -> Result<Option<E>, DeferredBidirectionalLabeledError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.reverse
+            .remove_edge_at_slot(dst, label_id, slot_index)
+            .map_err(DeferredBidirectionalLabeledError::Reverse)
+    }
+
     /// Removes one reverse-store edge from `dst` under `label_id`.
     pub fn remove_reverse_edge_matching<F>(
         &self,
@@ -1224,6 +1396,48 @@ where
                         anchor_bucket_index: 0,
                         resume_bucket_index: 0,
                     })
+                }
+                MaintenanceWorkItem::CompactVertexValueSpan { .. } => None,
+                MaintenanceWorkItem::CompactVertexEdgeAndValueSpan {
+                    orientation,
+                    vid,
+                    anchor_bucket_index,
+                    resume_bucket_index,
+                } => {
+                    let graph = match orientation {
+                        Orientation::Forward => &self.forward,
+                        Orientation::Reverse => &self.reverse,
+                    };
+                    let vertex = graph.vertices().get(vid);
+                    if anchor_bucket_index >= vertex.degree() {
+                        None
+                    } else {
+                        match graph.compact_vertex_edge_span_one_step(vid, resume_bucket_index) {
+                            Ok(VertexEdgeSpanCompactOneStep::EdgeMoved(_)) => {
+                                Some(MaintenanceWorkItem::CompactVertexEdgeAndValueSpan {
+                                    orientation,
+                                    vid,
+                                    anchor_bucket_index,
+                                    resume_bucket_index,
+                                })
+                            }
+                            Ok(VertexEdgeSpanCompactOneStep::AdvanceBucket(next)) => {
+                                Some(MaintenanceWorkItem::CompactVertexEdgeAndValueSpan {
+                                    orientation,
+                                    vid,
+                                    anchor_bucket_index,
+                                    resume_bucket_index: next,
+                                })
+                            }
+                            Ok(VertexEdgeSpanCompactOneStep::OverflowRewrite(_))
+                            | Ok(VertexEdgeSpanCompactOneStep::Finished) => {
+                                report.work.rebalanced_segments =
+                                    report.work.rebalanced_segments.saturating_add(1);
+                                None
+                            }
+                            Err(_) => None,
+                        }
+                    }
                 }
             };
             if let Some(next) = requeue {
@@ -1411,17 +1625,23 @@ where
             let removed = self
                 .forward
                 .remove_edge_matching(src, label_id, |cand| {
-                    *cand == edge && cand.neighbor_vid() == dst
+                    edge_matches_remove_target(cand, &edge, dst)
                 })
                 .map_err(DeferredBidirectionalLabeledError::Forward)?;
             if let Some(removed) = removed {
-                let rev = removed.with_neighbor_vid(src);
-                let _ = self
+                let reverse_edge = removed.with_neighbor_vid(src);
+                let reverse_removed = self
                     .reverse
                     .remove_edge_matching(dst, label_id, |cand| {
-                        *cand == rev && cand.neighbor_vid() == src
+                        *cand == reverse_edge && cand.neighbor_vid() == src
                     })
                     .map_err(DeferredBidirectionalLabeledError::Reverse)?;
+                if reverse_removed.is_none() {
+                    let _ = self
+                        .reverse
+                        .remove_edge_matching(dst, label_id, |cand| cand.neighbor_vid() == src)
+                        .map_err(DeferredBidirectionalLabeledError::Reverse)?;
+                }
                 return Ok(true);
             }
         }
@@ -1468,7 +1688,7 @@ where
             let removed = self
                 .forward
                 .remove_edge_matching(src, label_id, |cand| {
-                    *cand == edge && cand.neighbor_vid() == dst
+                    edge_matches_remove_target(cand, &edge, dst)
                 })
                 .map_err(DeferredBidirectionalLabeledError::Forward)?;
             if removed.is_some() {
@@ -1678,8 +1898,10 @@ mod tests {
     use crate::VectorMemory;
 
     fn graph() -> DeferredBidirectionalLabeledLaraGraph<TestEdge, VectorMemory> {
-        let (fv, fb, fbfs, fbfsbs, fec, fe, fel, fesm, fefs, fefsbs) = labeled_lara_memories();
-        let (rv, rb, rbfs, rbfsbs, rec, re, rel, resm, refs, refsbs) = labeled_lara_memories();
+        let (fv, fb, fbfs, fbfsbs, fec, fe, fel, fesm, fefs, fefsbs, fvs, fvffs, fvffsbs, fvlog) =
+            labeled_lara_memories();
+        let (rv, rb, rbfs, rbfsbs, rec, re, rel, resm, refs, refsbs, rvs, rvffs, rvffsbs, rvlog) =
+            labeled_lara_memories();
         DeferredBidirectionalLabeledLaraGraph::new(
             fv,
             fb,
@@ -1691,6 +1913,10 @@ mod tests {
             fesm,
             fefs,
             fefsbs,
+            fvs,
+            fvffs,
+            fvffsbs,
+            fvlog,
             rv,
             rb,
             rbfs,
@@ -1701,6 +1927,10 @@ mod tests {
             resm,
             refs,
             refsbs,
+            rvs,
+            rvffs,
+            rvffsbs,
+            rvlog,
             vector_memory(),
             vector_memory(),
             128,
@@ -1711,8 +1941,10 @@ mod tests {
 
     #[test]
     fn delete_vertex_after_mixed_bucket_and_bypass_edge() {
-        let (fv, fb, fbfs, fbfsbs, fec, fe, fel, fesm, fefs, fefsbs) = labeled_lara_memories();
-        let (rv, rb, rbfs, rbfsbs, rec, re, rel, resm, refs, refsbs) = labeled_lara_memories();
+        let (fv, fb, fbfs, fbfsbs, fec, fe, fel, fesm, fefs, fefsbs, fvs, fvffs, fvffsbs, fvlog) =
+            labeled_lara_memories();
+        let (rv, rb, rbfs, rbfsbs, rec, re, rel, resm, refs, refsbs, rvs, rvffs, rvffsbs, rvlog) =
+            labeled_lara_memories();
         let graph = DeferredBidirectionalLabeledLaraGraph::new(
             fv,
             fb,
@@ -1724,6 +1956,10 @@ mod tests {
             fesm,
             fefs,
             fefsbs,
+            fvs,
+            fvffs,
+            fvffsbs,
+            fvlog,
             rv,
             rb,
             rbfs,
@@ -1734,6 +1970,10 @@ mod tests {
             resm,
             refs,
             refsbs,
+            rvs,
+            rvffs,
+            rvffsbs,
+            rvlog,
             vector_memory(),
             vector_memory(),
             128,
@@ -1879,5 +2119,309 @@ mod tests {
 
         let after = graph.forward().vertices().get(hub);
         assert_eq!(after.stored_slots, 9);
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct ValuedTestEdge {
+        target: u32,
+        slot_index: u32,
+        value: [u8; 8],
+        value_len: u8,
+    }
+
+    impl ValuedTestEdge {
+        fn with_u16(target: u32, inline: u16) -> Self {
+            let mut value = [0u8; 8];
+            value[0..2].copy_from_slice(&inline.to_le_bytes());
+            Self {
+                target,
+                slot_index: 0,
+                value,
+                value_len: 2,
+            }
+        }
+    }
+
+    impl CsrEdge for ValuedTestEdge {
+        const BYTES: usize = 4;
+
+        fn read_from(bytes: &[u8]) -> Self {
+            Self {
+                target: u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
+                slot_index: 0,
+                value: [0u8; 8],
+                value_len: 0,
+            }
+        }
+
+        fn write_to(self, bytes: &mut [u8]) {
+            bytes[0..4].copy_from_slice(&self.target.to_le_bytes());
+        }
+
+        fn neighbor_vid(&self) -> VertexId {
+            VertexId::from(self.target)
+        }
+
+        fn with_neighbor_vid(self, vid: VertexId) -> Self {
+            Self {
+                target: u32::from(vid),
+                ..self
+            }
+        }
+
+        fn with_slot_index(self, slot_index: u32) -> Self {
+            Self { slot_index, ..self }
+        }
+
+        fn edge_value_byte_width(&self) -> u8 {
+            self.value_len
+        }
+
+        fn edge_value_bytes(&self) -> &[u8] {
+            &self.value[..usize::from(self.value_len)]
+        }
+
+        fn with_stored_value_bytes(mut self, width: u8, bytes: &[u8]) -> Self {
+            self.value = [0u8; 8];
+            let len = usize::from(width).min(bytes.len()).min(8);
+            self.value[..len].copy_from_slice(&bytes[..len]);
+            self.value_len = width;
+            self
+        }
+
+        fn edge_slot_index_raw(&self) -> u32 {
+            self.slot_index
+        }
+    }
+
+    impl CsrEdgeTombstone for ValuedTestEdge {
+        fn tombstone_edge() -> Self {
+            Self {
+                target: u32::from(VertexId::EDGE_TOMBSTONE_SENTINEL),
+                slot_index: 0,
+                value: [0u8; 8],
+                value_len: 0,
+            }
+        }
+    }
+
+    fn valued_bidirectional_graph()
+    -> DeferredBidirectionalLabeledLaraGraph<ValuedTestEdge, VectorMemory> {
+        let (fv, fb, fbfs, fbfsbs, fec, fe, fel, fesm, fefs, fefsbs, fvs, fvffs, fvffsbs, fvlog) =
+            labeled_lara_memories();
+        let (rv, rb, rbfs, rbfsbs, rec, re, rel, resm, refs, refsbs, rvs, rvffs, rvffsbs, rvlog) =
+            labeled_lara_memories();
+        DeferredBidirectionalLabeledLaraGraph::new(
+            fv,
+            fb,
+            fbfs,
+            fbfsbs,
+            fec,
+            fe,
+            fel,
+            fesm,
+            fefs,
+            fefsbs,
+            fvs,
+            fvffs,
+            fvffsbs,
+            fvlog,
+            rv,
+            rb,
+            rbfs,
+            rbfsbs,
+            rec,
+            re,
+            rel,
+            resm,
+            refs,
+            refsbs,
+            rvs,
+            rvffs,
+            rvffsbs,
+            rvlog,
+            vector_memory(),
+            vector_memory(),
+            256,
+            BucketLabelKey::UNLABELED_DIRECTED,
+        )
+        .expect("graph")
+    }
+
+    #[test]
+    fn bidirectional_parallel_edge_values_survive_diamond_insert() {
+        let graph = valued_bidirectional_graph();
+        for _ in 0..4 {
+            graph.push_vertex().unwrap();
+        }
+        let road = BucketLabelKey::directed_from_index(2);
+        let rev = |src: u32| ValuedTestEdge::with_u16(src, 0);
+        graph
+            .insert_directed_edge(
+                VertexId::from(0),
+                VertexId::from(2),
+                road,
+                ValuedTestEdge::with_u16(2, 10),
+                rev(0),
+            )
+            .unwrap();
+        graph
+            .insert_directed_edge(
+                VertexId::from(0),
+                VertexId::from(1),
+                road,
+                ValuedTestEdge::with_u16(1, 5),
+                rev(0),
+            )
+            .unwrap();
+        graph
+            .insert_directed_edge(
+                VertexId::from(1),
+                VertexId::from(2),
+                road,
+                ValuedTestEdge::with_u16(2, 1),
+                rev(1),
+            )
+            .unwrap();
+        let mut weights = Vec::new();
+        graph
+            .for_each_out_edges_for_label_unchecked(VertexId::from(0), road, |edge| {
+                if edge.value_len == 2 {
+                    weights.push(u16::from_le_bytes([edge.value[0], edge.value[1]]));
+                }
+            })
+            .unwrap();
+        weights.sort_unstable();
+        assert_eq!(weights, vec![5, 10]);
+    }
+
+    #[test]
+    fn remove_directed_deferred_uses_edge_value_to_select_parallel_edge() {
+        let graph = valued_bidirectional_graph();
+        for _ in 0..2 {
+            graph.push_vertex().unwrap();
+        }
+        let road = BucketLabelKey::directed_from_index(2);
+        graph
+            .ensure_directed_edge_value_width(
+                VertexId::from(0),
+                VertexId::from(1),
+                road,
+                crate::labeled::ValueWidthCode::W2,
+            )
+            .unwrap();
+        let rev = |src: u32| ValuedTestEdge::with_u16(src, 0);
+        graph
+            .insert_directed_edge(
+                VertexId::from(0),
+                VertexId::from(1),
+                road,
+                ValuedTestEdge::with_u16(1, 10),
+                rev(0),
+            )
+            .unwrap();
+        graph
+            .insert_directed_edge(
+                VertexId::from(0),
+                VertexId::from(1),
+                road,
+                ValuedTestEdge::with_u16(1, 20),
+                rev(0),
+            )
+            .unwrap();
+
+        assert!(
+            graph
+                .remove_directed_deferred(
+                    VertexId::from(0),
+                    VertexId::from(1),
+                    ValuedTestEdge::with_u16(1, 20),
+                )
+                .unwrap()
+        );
+
+        let mut weights = Vec::new();
+        graph
+            .for_each_out_edges_for_label_unchecked(VertexId::from(0), road, |edge| {
+                if edge.value_len == 2 {
+                    weights.push(u16::from_le_bytes([edge.value[0], edge.value[1]]));
+                }
+            })
+            .unwrap();
+        assert_eq!(weights, vec![10]);
+        assert_eq!(
+            graph
+                .in_edges_for_label(VertexId::from(1), road)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn remove_undirected_deferred_uses_edge_value_to_select_parallel_edge() {
+        let graph = valued_bidirectional_graph();
+        for _ in 0..2 {
+            graph.push_vertex().unwrap();
+        }
+        let road = BucketLabelKey::undirected_from_index(2);
+        graph
+            .forward()
+            .ensure_label_bucket_value_width(
+                VertexId::from(0),
+                road,
+                crate::labeled::ValueWidthCode::W2,
+            )
+            .unwrap();
+        graph
+            .forward()
+            .ensure_label_bucket_value_width(
+                VertexId::from(1),
+                road,
+                crate::labeled::ValueWidthCode::W2,
+            )
+            .unwrap();
+        graph
+            .insert_undirected_deferred(
+                VertexId::from(0),
+                VertexId::from(1),
+                road,
+                ValuedTestEdge::with_u16(1, 10),
+                ValuedTestEdge::with_u16(0, 10),
+            )
+            .unwrap();
+        graph
+            .insert_undirected_deferred(
+                VertexId::from(0),
+                VertexId::from(1),
+                road,
+                ValuedTestEdge::with_u16(1, 20),
+                ValuedTestEdge::with_u16(0, 20),
+            )
+            .unwrap();
+
+        assert!(
+            graph
+                .remove_undirected_deferred(
+                    VertexId::from(0),
+                    VertexId::from(1),
+                    ValuedTestEdge::with_u16(1, 20),
+                )
+                .unwrap()
+        );
+
+        let weights_from = |vertex| {
+            let mut weights = Vec::new();
+            graph
+                .for_each_undirected_edges(vertex, OutEdgeOrder::Ascending, |edge| {
+                    if edge.value_len == 2 {
+                        weights.push(u16::from_le_bytes([edge.value[0], edge.value[1]]));
+                    }
+                })
+                .unwrap();
+            weights
+        };
+        assert_eq!(weights_from(VertexId::from(0)), vec![10]);
+        assert_eq!(weights_from(VertexId::from(1)), vec![10]);
     }
 }

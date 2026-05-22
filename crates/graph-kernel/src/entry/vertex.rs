@@ -159,8 +159,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn vertex_width_is_16_bytes() {
-        assert_eq!(Vertex::BYTES, 16);
+    fn vertex_width_matches_labeled_vertex_layout() {
+        assert_eq!(Vertex::BYTES, 21);
         assert!(
             core::mem::size_of::<Vertex>() >= Vertex::BYTES,
             "Rust layout may include tail padding; wire width is {}",

@@ -12,6 +12,9 @@ pub enum FederatedExpandDirection {
     Incoming,
     /// Forward expand: successors on the authoritative shard (`out_edges` only).
     Outgoing,
+    /// Undirected expand: incident undirected edges on the authoritative shard plus cross-shard scans
+    /// to a remote ref when the probe vertex is not local.
+    Undirected,
 }
 
 /// Neighbor enumeration for one logical vertex on one graph shard.
@@ -33,5 +36,8 @@ pub struct FederatedExpandNeighbor {
     pub anchor_local_vertex_id: LocalVertexId,
     pub label_id_raw: u16,
     pub slot_index: u32,
+    /// Little-endian u16 view when [`Self::value_len`] is `2`.
     pub inline_value: u16,
+    pub value_len: u8,
+    pub value_bytes: [u8; 8],
 }

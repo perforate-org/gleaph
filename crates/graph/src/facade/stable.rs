@@ -12,6 +12,7 @@ pub(crate) mod edge_alias;
 pub(crate) mod edge_equality_postings;
 pub(crate) mod edge_label_catalog;
 pub(crate) mod edge_properties;
+pub(crate) mod edge_value_profiles;
 pub(crate) mod edge_weight_profiles;
 pub(crate) mod metadata;
 pub(crate) mod peer_graph_canisters;
@@ -62,6 +63,9 @@ thread_local! {
 
     pub(crate) static EDGE_WEIGHT_PROFILES: RefCell<memory::StableEdgeWeightProfileStore> =
         RefCell::new(memory::init_edge_weight_profiles());
+
+    pub(crate) static EDGE_VALUE_PROFILES: RefCell<memory::StableEdgeValueProfileStore> =
+        RefCell::new(memory::init_edge_value_profiles());
 
     pub(crate) static VERTEX_LOGICAL_IDS: RefCell<memory::StableVertexLogicalIdMap> =
         RefCell::new(memory::init_vertex_logical_ids());

@@ -13,8 +13,8 @@ use gleaph_graph_kernel::plan_exec::GqlExecutionMode;
 use crate::execution_path::check_prepared_execution_path;
 use crate::facade::stable::ROUTER_PREPARED_PLANS;
 use crate::gql::dispatch_plan_blob;
-use crate::rbac::{authorize_prepared_catalog_change, authorize_prepared_execute};
 use crate::planner_stats::RouterGraphStats;
+use crate::rbac::{authorize_prepared_catalog_change, authorize_prepared_execute};
 use crate::state::RouterError;
 
 #[derive(Clone, Debug)]

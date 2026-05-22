@@ -54,10 +54,7 @@ pub async fn execute_program_on_graph(
     call_graph(graph, method, args).await
 }
 
-pub async fn bootstrap_graph_peers(
-    graph: Principal,
-    peers: Vec<Principal>,
-) -> Result<(), String> {
+pub async fn bootstrap_graph_peers(graph: Principal, peers: Vec<Principal>) -> Result<(), String> {
     call_graph(
         graph,
         "bootstrap_graph_peers",
@@ -71,12 +68,7 @@ pub async fn add_graph_peer(graph: Principal, peer: Principal) -> Result<(), Str
 }
 
 pub async fn remove_graph_peer(graph: Principal, peer: Principal) -> Result<(), String> {
-    call_graph(
-        graph,
-        "remove_graph_peer",
-        RemoveGraphPeerArgs { peer },
-    )
-    .await
+    call_graph(graph, "remove_graph_peer", RemoveGraphPeerArgs { peer }).await
 }
 
 pub async fn execute_plan_on_graph(

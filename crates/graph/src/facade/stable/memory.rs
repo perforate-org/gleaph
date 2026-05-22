@@ -1,6 +1,7 @@
 use super::edge_alias::EdgeAliasIndex;
 use super::edge_label_catalog::EdgeLabelCatalog;
 use super::edge_properties::EdgePropertyStore;
+use super::edge_value_profiles::EdgeValueProfileStore;
 use super::edge_weight_profiles::EdgeWeightProfileStore;
 use super::metadata::{GraphMetadata, StableGraphMetadata};
 use super::property_catalog::PropertyCatalog;
@@ -27,6 +28,10 @@ const FWD_EDGE_LOG: MemoryId = MemoryId::new(6);
 const FWD_EDGE_SPAN_META: MemoryId = MemoryId::new(7);
 const FWD_EDGE_FREE_SPANS: MemoryId = MemoryId::new(8);
 const FWD_EDGE_FREE_SPAN_BY_START: MemoryId = MemoryId::new(9);
+const FWD_VALUE_SLAB: MemoryId = MemoryId::new(42);
+const FWD_VALUE_LOG: MemoryId = MemoryId::new(49);
+const FWD_VALUE_FREE_SPANS: MemoryId = MemoryId::new(45);
+const FWD_VALUE_FREE_SPAN_BY_START: MemoryId = MemoryId::new(46);
 
 // --- Labeled graph: reverse orientation (10 memories) ---
 const REV_VERTICES: MemoryId = MemoryId::new(10);
@@ -39,6 +44,10 @@ const REV_EDGE_LOG: MemoryId = MemoryId::new(16);
 const REV_EDGE_SPAN_META: MemoryId = MemoryId::new(17);
 const REV_EDGE_FREE_SPANS: MemoryId = MemoryId::new(18);
 const REV_EDGE_FREE_SPAN_BY_START: MemoryId = MemoryId::new(19);
+const REV_VALUE_SLAB: MemoryId = MemoryId::new(43);
+const REV_VALUE_LOG: MemoryId = MemoryId::new(50);
+const REV_VALUE_FREE_SPANS: MemoryId = MemoryId::new(47);
+const REV_VALUE_FREE_SPAN_BY_START: MemoryId = MemoryId::new(48);
 
 const MAINTENANCE_QUEUE: MemoryId = MemoryId::new(20);
 const DIRTY_WORK_ITEMS: MemoryId = MemoryId::new(21);
@@ -55,6 +64,7 @@ const EDGE_PROPERTIES: MemoryId = MemoryId::new(28);
 const EDGE_ALIASES: MemoryId = MemoryId::new(29);
 const GRAPH_METADATA: MemoryId = MemoryId::new(32);
 const EDGE_WEIGHT_PROFILES: MemoryId = MemoryId::new(33);
+const EDGE_VALUE_PROFILES: MemoryId = MemoryId::new(44);
 const VERTEX_LOGICAL_IDS: MemoryId = MemoryId::new(36);
 const REMOTE_REF_TO_LOGICAL: MemoryId = MemoryId::new(37);
 const LOGICAL_TO_REMOTE_REF: MemoryId = MemoryId::new(38);
@@ -79,6 +89,7 @@ pub(crate) type StableEdgePropertyStore = EdgePropertyStore<Memory>;
 pub(crate) type StableEdgeAliasIndex = EdgeAliasIndex<Memory>;
 pub(crate) type StableMetadata = StableGraphMetadata<Memory>;
 pub(crate) type StableEdgeWeightProfileStore = EdgeWeightProfileStore<Memory>;
+pub(crate) type StableEdgeValueProfileStore = EdgeValueProfileStore<Memory>;
 pub(crate) type StableVertexLogicalIdMap = super::vertex_logical_ids::VertexLogicalIdMap<Memory>;
 pub(crate) type StableRemoteVertexRefTable =
     super::remote_vertex_refs::RemoteVertexRefTable<Memory>;
@@ -105,6 +116,10 @@ pub(crate) fn init_graph() -> StableGraph {
         MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGE_SPAN_META)),
         MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGE_FREE_SPANS)),
         MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGE_FREE_SPAN_BY_START)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_VALUE_SLAB)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_VALUE_LOG)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_VALUE_FREE_SPANS)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_VALUE_FREE_SPAN_BY_START)),
         MEMORY_MANAGER.with(|m| m.borrow().get(REV_VERTICES)),
         MEMORY_MANAGER.with(|m| m.borrow().get(REV_BUCKETS)),
         MEMORY_MANAGER.with(|m| m.borrow().get(REV_BUCKET_FREE_SPANS)),
@@ -115,6 +130,10 @@ pub(crate) fn init_graph() -> StableGraph {
         MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGE_SPAN_META)),
         MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGE_FREE_SPANS)),
         MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGE_FREE_SPAN_BY_START)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(REV_VALUE_SLAB)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(REV_VALUE_LOG)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(REV_VALUE_FREE_SPANS)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(REV_VALUE_FREE_SPAN_BY_START)),
         MEMORY_MANAGER.with(|m| m.borrow().get(MAINTENANCE_QUEUE)),
         MEMORY_MANAGER.with(|m| m.borrow().get(DIRTY_WORK_ITEMS)),
         GRAPH_ELEM_CAPACITY,
@@ -167,6 +186,10 @@ pub(crate) fn init_edge_alias_index() -> StableEdgeAliasIndex {
 
 pub(crate) fn init_edge_weight_profiles() -> StableEdgeWeightProfileStore {
     EdgeWeightProfileStore::init(MEMORY_MANAGER.with(|m| m.borrow().get(EDGE_WEIGHT_PROFILES)))
+}
+
+pub(crate) fn init_edge_value_profiles() -> StableEdgeValueProfileStore {
+    EdgeValueProfileStore::init(MEMORY_MANAGER.with(|m| m.borrow().get(EDGE_VALUE_PROFILES)))
 }
 
 pub(crate) fn init_metadata() -> StableMetadata {

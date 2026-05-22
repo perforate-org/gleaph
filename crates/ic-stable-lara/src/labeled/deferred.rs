@@ -41,6 +41,20 @@ pub enum MaintenanceWorkItem {
         /// Vertex to compact in both stores.
         vid: VertexId,
     },
+    /// Compact only the vertex value byte span (allocation/log cleanup).
+    CompactVertexValueSpan {
+        /// Vertex owning the value span.
+        vid: VertexId,
+    },
+    /// Compact edge and value spans together (preferred for value-bearing labels).
+    CompactVertexEdgeAndValueSpan {
+        /// Vertex owning both spans.
+        vid: VertexId,
+        /// Label-bucket index used to validate relevance.
+        anchor_bucket_index: u32,
+        /// Next label-bucket index to compact.
+        resume_bucket_index: u32,
+    },
 }
 
 #[cfg(test)]
@@ -81,7 +95,8 @@ mod tests {
     }
 
     fn graph() -> DeferredLabeledLaraGraph<TestEdge, crate::VectorMemory> {
-        let (v, b, bfs, bfsbs, ec, e, el, esm, efs, efsbs) = labeled_lara_memories();
+        let (v, b, bfs, bfsbs, ec, e, el, esm, efs, efsbs, vs, vffs, vffsbs, vlog) =
+            labeled_lara_memories();
         let inner = LabeledLaraGraph::new(
             v,
             b,
@@ -93,6 +108,10 @@ mod tests {
             esm,
             efs,
             efsbs,
+            vs,
+            vffs,
+            vffsbs,
+            vlog,
             1024,
             BucketLabelKey::from_raw(1),
         )
@@ -331,6 +350,20 @@ impl Storable for MaintenanceWorkItem {
                 bytes[0] = 2;
                 bytes[4..8].copy_from_slice(&u32::from(vid).to_le_bytes());
             }
+            Self::CompactVertexValueSpan { vid } => {
+                bytes[0] = 3;
+                bytes[4..8].copy_from_slice(&u32::from(vid).to_le_bytes());
+            }
+            Self::CompactVertexEdgeAndValueSpan {
+                vid,
+                anchor_bucket_index,
+                resume_bucket_index,
+            } => {
+                bytes[0] = 4;
+                bytes[4..8].copy_from_slice(&u32::from(vid).to_le_bytes());
+                bytes[8..12].copy_from_slice(&anchor_bucket_index.to_le_bytes());
+                bytes[12..16].copy_from_slice(&resume_bucket_index.to_le_bytes());
+            }
         }
         Cow::Owned(Vec::from(bytes))
     }
@@ -349,6 +382,12 @@ impl Storable for MaintenanceWorkItem {
                 resume_bucket_index: u32::from_le_bytes(b[12..16].try_into().unwrap()),
             },
             2 => Self::CompactDenseLabeledVertexMaintenance { vid },
+            3 => Self::CompactVertexValueSpan { vid },
+            4 => Self::CompactVertexEdgeAndValueSpan {
+                vid,
+                anchor_bucket_index: u32::from_le_bytes(b[8..12].try_into().unwrap()),
+                resume_bucket_index: u32::from_le_bytes(b[12..16].try_into().unwrap()),
+            },
             _ => Self::CompactLabelBucketVertexSegment { vid },
         }
     }
@@ -409,7 +448,7 @@ where
 
 impl<E, M> DeferredLabeledLaraGraph<E, M>
 where
-    E: CsrEdge,
+    E: CsrEdge + CsrEdgeTombstone,
     M: Memory,
 {
     /// Wraps an existing labeled graph with a deferred maintenance queue.
@@ -433,6 +472,10 @@ where
         edge_span_meta: M,
         edge_free_spans: M,
         edge_free_span_by_start: M,
+        value_slab: M,
+        value_free_spans: M,
+        value_free_span_by_start: M,
+        value_log: M,
         queue_memory: M,
         elem_capacity: u64,
         default_label: crate::labeled::BucketLabelKey,
@@ -448,6 +491,10 @@ where
             edge_span_meta,
             edge_free_spans,
             edge_free_span_by_start,
+            value_slab,
+            value_free_spans,
+            value_free_span_by_start,
+            value_log,
             elem_capacity,
             default_label,
         )?;
@@ -631,6 +678,44 @@ where
                         anchor_bucket_index: 0,
                         resume_bucket_index: 0,
                     })
+                }
+                MaintenanceWorkItem::CompactVertexValueSpan { .. } => None,
+                MaintenanceWorkItem::CompactVertexEdgeAndValueSpan {
+                    vid,
+                    anchor_bucket_index,
+                    resume_bucket_index,
+                } => {
+                    let vertex = self.inner.vertices().get(vid);
+                    if anchor_bucket_index >= vertex.degree() {
+                        None
+                    } else {
+                        match self
+                            .inner
+                            .compact_vertex_edge_span_one_step(vid, resume_bucket_index)
+                        {
+                            Ok(VertexEdgeSpanCompactOneStep::EdgeMoved(_)) => {
+                                Some(MaintenanceWorkItem::CompactVertexEdgeAndValueSpan {
+                                    vid,
+                                    anchor_bucket_index,
+                                    resume_bucket_index,
+                                })
+                            }
+                            Ok(VertexEdgeSpanCompactOneStep::AdvanceBucket(next)) => {
+                                Some(MaintenanceWorkItem::CompactVertexEdgeAndValueSpan {
+                                    vid,
+                                    anchor_bucket_index,
+                                    resume_bucket_index: next,
+                                })
+                            }
+                            Ok(VertexEdgeSpanCompactOneStep::OverflowRewrite(_))
+                            | Ok(VertexEdgeSpanCompactOneStep::Finished) => {
+                                report.rebalanced_segments =
+                                    report.rebalanced_segments.saturating_add(1);
+                                None
+                            }
+                            Err(_) => None,
+                        }
+                    }
                 }
             };
             if let Some(next) = requeue {

@@ -19,6 +19,9 @@ pub use stable::vertex_properties::VertexPropertyStoreError;
 
 pub use ic_budget::timer_lara_maintenance_budget;
 pub use ic_gql_extensions::{ic_extension_type_names, init_ic_gql_extensions};
-pub use store::{EdgeHandle, GraphStore, GraphStoreError, canonical_undirected_owner};
+pub use store::{
+    EdgeHandle, GraphStore, GraphStoreError, canonical_undirected_owner,
+    catalog_edge_label_from_wire,
+};
 
 pub use stable::metadata::{FederationRouting, GraphMetadata, GraphMetadataError};

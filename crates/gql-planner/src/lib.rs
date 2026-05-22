@@ -41,16 +41,14 @@ pub mod wire;
 mod variable_refs;
 
 // Re-export key types and functions.
+pub use binding_layout::{BindingLayout, SharedBindingLayout, derive_binding_layout};
 pub use executor_contract::first_executor_unsupported_op;
 pub use explain::explain_plan;
 pub use expr_children::for_each_immediate_child_expr;
+pub use output_schema::{OutputBindingKind, OutputColumn, OutputSchema, derive_output_schema};
 pub use path_extensions::{
     PathPatternExtensionContext, PathPatternExtensionHandler, PlanBuildOptions,
     RejectingPathExtensionHandler, SingleEdgePathInfo,
-};
-pub use binding_layout::{BindingLayout, SharedBindingLayout, derive_binding_layout};
-pub use output_schema::{
-    OutputBindingKind, OutputColumn, OutputSchema, derive_output_schema,
 };
 pub use plan::{
     PhysicalPlan, PlanAnnotations, PlanDiagnostics, PlanOp, PlanSummary, ShortestPathCost,

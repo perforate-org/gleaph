@@ -103,11 +103,7 @@ mod tests {
     #[test]
     fn manager_with_prepare_cap_can_register() {
         let p = principal(5);
-        upsert_role(
-            p,
-            Role::Manager,
-            ManagerCapability::PREPARE_REGISTER.bits(),
-        );
+        upsert_role(p, Role::Manager, ManagerCapability::PREPARE_REGISTER.bits());
         authorize_prepared_catalog_change(&p).expect("ok");
     }
 

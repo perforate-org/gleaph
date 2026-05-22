@@ -732,8 +732,7 @@ mod tests {
             .expect("register");
         }
 
-        futures::executor::block_on(store.admin_unregister_shard(admin, 7))
-            .expect("unregister");
+        futures::executor::block_on(store.admin_unregister_shard(admin, 7)).expect("unregister");
 
         let listed = store.list_shards_for_graph("tenant.main").expect("list");
         assert_eq!(listed.len(), 1);

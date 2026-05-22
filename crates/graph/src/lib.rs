@@ -18,9 +18,7 @@ use ic_cdk_macros::{init, query, update};
 
 use crate::canister::{
     GraphInitArgs,
-    guards::{
-        guard_control_plane_admin, guard_router_canister, guard_router_or_peer_graph,
-    },
+    guards::{guard_control_plane_admin, guard_router_canister, guard_router_or_peer_graph},
 };
 
 #[init]
@@ -52,9 +50,7 @@ fn bootstrap_graph_peers(
 }
 
 #[update(guard = "guard_router_canister")]
-fn add_graph_peer(
-    args: gleaph_graph_kernel::federation::AddGraphPeerArgs,
-) -> Result<(), String> {
+fn add_graph_peer(args: gleaph_graph_kernel::federation::AddGraphPeerArgs) -> Result<(), String> {
     canister::handlers::add_graph_peer(args)
 }
 
