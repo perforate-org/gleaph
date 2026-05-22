@@ -254,7 +254,7 @@ impl RouterStore {
             .with_borrow(|s| s.get(&shard_id))
             .ok_or(RouterError::ShardNotRegistered)?;
 
-        let siblings: Vec<Principal> = self
+        let _siblings: Vec<Principal> = self
             .list_shards_for_graph(&entry.logical_graph_name)?
             .into_iter()
             .map(|shard| shard.graph_canister)

@@ -150,6 +150,17 @@ async fn prepared_execute(
     .await
 }
 
-fn prepared_key(logical_graph_name: &str, name: &str) -> String {
+pub(crate) fn prepared_key(logical_graph_name: &str, name: &str) -> String {
     format!("{logical_graph_name}\0{name}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prepared_key;
+
+    #[test]
+    fn prepared_key_uses_nul_separator() {
+        assert_eq!(prepared_key("graph", "q1"), "graph\0q1");
+        assert_ne!(prepared_key("graph", "q1"), prepared_key("graph", "q2"));
+    }
 }

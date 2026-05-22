@@ -2,11 +2,9 @@
 
 use candid::Principal;
 use gleaph_graph_kernel::federation::{
-    AddGraphPeerArgs, BootstrapGraphPeersArgs, RemoveGraphPeerArgs, ShardId,
+    AddGraphPeerArgs, BootstrapGraphPeersArgs, RemoveGraphPeerArgs,
 };
-use gleaph_graph_kernel::plan_exec::{
-    ExecutePlanArgs, ExecutePlanResult, ExecuteProgramArgs, ExecuteProgramResult,
-};
+use gleaph_graph_kernel::plan_exec::{ExecutePlanArgs, ExecutePlanResult};
 
 #[cfg(target_family = "wasm")]
 async fn call_graph<T: candid::CandidType, R: candid::CandidType>(
@@ -32,26 +30,6 @@ async fn call_graph<T: candid::CandidType, R: candid::CandidType>(
     _args: T,
 ) -> Result<R, String> {
     Err(format!("graph {method} unavailable in native builds"))
-}
-
-pub async fn execute_program_on_graph(
-    graph: Principal,
-    target_shard_id: ShardId,
-    program_blob: Vec<u8>,
-    params_blob: Vec<u8>,
-    mode: gleaph_graph_kernel::plan_exec::GqlExecutionMode,
-) -> Result<ExecuteProgramResult, String> {
-    let args = ExecuteProgramArgs {
-        target_shard_id,
-        program_blob,
-        params_blob,
-        mode,
-    };
-    let method = match mode {
-        gleaph_graph_kernel::plan_exec::GqlExecutionMode::Query => "execute_program_query",
-        gleaph_graph_kernel::plan_exec::GqlExecutionMode::Update => "execute_program_update",
-    };
-    call_graph(graph, method, args).await
 }
 
 pub async fn bootstrap_graph_peers(graph: Principal, peers: Vec<Principal>) -> Result<(), String> {

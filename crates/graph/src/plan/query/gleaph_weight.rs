@@ -29,37 +29,39 @@ pub(crate) fn decode_traversal_edge_weight(
     weight_decoder: Option<&PreparedWeightDecoder>,
 ) -> Result<f32, PlanQueryError> {
     if let Some(catalog) = catalog_edge_label_from_wire(handle.label_id)
-        && let Some(profile) = store.edge_label_value_profile(catalog) {
-            let decoder = profile.prepare().map_err(
-                |e: gleaph_graph_kernel::entry::EdgeValueProfileError| {
+        && let Some(profile) = store.edge_label_value_profile(catalog)
+    {
+        let decoder =
+            profile
+                .prepare()
+                .map_err(|e: gleaph_graph_kernel::entry::EdgeValueProfileError| {
                     PlanQueryError::GleaphWeight {
                         message: format!("edge value profile decode prepare failed: {e}"),
                     }
-                },
-            )?;
-            let expected_width = profile.required_byte_width();
-            if value_len != expected_width || value_bytes.len() != usize::from(expected_width) {
-                return Err(PlanQueryError::GleaphWeight {
-                    message: format!(
-                        "edge value width mismatch: profile expects {expected_width} bytes, edge stores {value_len}"
-                    ),
-                });
-            }
-            let decoded = decode_edge_value(&decoder, value_bytes).map_err(|e| {
-                PlanQueryError::GleaphWeight {
-                    message: format!("edge value decode failed: {e}"),
-                }
-            })?;
-            return decoded_edge_value_to_weight(decoded);
-        }
-    if let Some(decoder) = weight_decoder
-        && value_len == 2 {
-            return decode_inline_weight(decoder, inline_value).map_err(|e| {
-                PlanQueryError::GleaphWeight {
-                    message: format!("GLEAPH.WEIGHT decode failed: {e}"),
-                }
+                })?;
+        let expected_width = profile.required_byte_width();
+        if value_len != expected_width || value_bytes.len() != usize::from(expected_width) {
+            return Err(PlanQueryError::GleaphWeight {
+                message: format!(
+                    "edge value width mismatch: profile expects {expected_width} bytes, edge stores {value_len}"
+                ),
             });
         }
+        let decoded =
+            decode_edge_value(&decoder, value_bytes).map_err(|e| PlanQueryError::GleaphWeight {
+                message: format!("edge value decode failed: {e}"),
+            })?;
+        return decoded_edge_value_to_weight(decoded);
+    }
+    if let Some(decoder) = weight_decoder
+        && value_len == 2
+    {
+        return decode_inline_weight(decoder, inline_value).map_err(|e| {
+            PlanQueryError::GleaphWeight {
+                message: format!("GLEAPH.WEIGHT decode failed: {e}"),
+            }
+        });
+    }
     Err(PlanQueryError::GleaphWeight {
         message: format!(
             "edge label row has no value profile and stored width {} is not a legacy u16 weight",

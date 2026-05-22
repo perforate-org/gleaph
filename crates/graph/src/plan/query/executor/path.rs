@@ -30,7 +30,7 @@ use super::bindings::EdgeBinding;
 use super::context::QueryExprEvaluator;
 use super::expand::{ExpandCandidate, ExpandDst, edge_binding_for_expand, expand_candidates_into};
 use super::{EdgeSequenceOrder, PlanBinding, vertex_binding_for_traversal};
-use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
+use crate::facade::{EdgeHandle, GraphStore};
 
 #[derive(Clone, Debug)]
 pub(crate) struct PathSearchNode {
@@ -244,25 +244,24 @@ impl ShortestFixedLabelExpand {
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _scope = bench_scope("shortest_fixed_expand_forward");
                 let mut expand_err = None;
-                store
-                    .for_each_directed_out_edges_for_label_unchecked(current, label, |edge| {
-                        if expand_err.is_some() {
-                            return;
+                store.for_each_directed_out_edges_for_label_unchecked(current, label, |edge| {
+                    if expand_err.is_some() {
+                        return;
+                    }
+                    if let Ok(Some(edge_dst @ ExpandDst::Local(_))) =
+                        ExpandDst::from_edge(store, &edge)
+                    {
+                        match edge_binding_for_expand(
+                            store,
+                            current,
+                            EdgeDirection::PointingRight,
+                            edge,
+                        ) {
+                            Ok(binding) => out.push((edge_dst, binding)),
+                            Err(err) => expand_err = Some(err),
                         }
-                        if let Ok(Some(edge_dst @ ExpandDst::Local(_))) =
-                            ExpandDst::from_edge(store, &edge)
-                        {
-                            match edge_binding_for_expand(
-                                store,
-                                current,
-                                EdgeDirection::PointingRight,
-                                edge,
-                            ) {
-                                Ok(binding) => out.push((edge_dst, binding)),
-                                Err(err) => expand_err = Some(err),
-                            }
-                        }
-                    })?;
+                    }
+                })?;
                 if let Some(err) = expand_err {
                     return Err(err);
                 }
@@ -271,25 +270,24 @@ impl ShortestFixedLabelExpand {
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _scope = bench_scope("shortest_fixed_expand_reverse");
                 let mut expand_err = None;
-                store
-                    .for_each_directed_in_edges_for_label_unchecked(current, label, |edge| {
-                        if expand_err.is_some() {
-                            return;
+                store.for_each_directed_in_edges_for_label_unchecked(current, label, |edge| {
+                    if expand_err.is_some() {
+                        return;
+                    }
+                    if let Ok(Some(edge_dst @ ExpandDst::Local(_))) =
+                        ExpandDst::from_edge(store, &edge)
+                    {
+                        match edge_binding_for_expand(
+                            store,
+                            current,
+                            EdgeDirection::PointingLeft,
+                            edge,
+                        ) {
+                            Ok(binding) => out.push((edge_dst, binding)),
+                            Err(err) => expand_err = Some(err),
                         }
-                        if let Ok(Some(edge_dst @ ExpandDst::Local(_))) =
-                            ExpandDst::from_edge(store, &edge)
-                        {
-                            match edge_binding_for_expand(
-                                store,
-                                current,
-                                EdgeDirection::PointingLeft,
-                                edge,
-                            ) {
-                                Ok(binding) => out.push((edge_dst, binding)),
-                                Err(err) => expand_err = Some(err),
-                            }
-                        }
-                    })?;
+                    }
+                })?;
                 if let Some(err) = expand_err {
                     return Err(err);
                 }
@@ -298,25 +296,24 @@ impl ShortestFixedLabelExpand {
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _scope = bench_scope("shortest_fixed_expand_undirected");
                 let mut expand_err = None;
-                store
-                    .for_each_undirected_edges_for_label_unchecked(current, label, |edge| {
-                        if expand_err.is_some() {
-                            return;
+                store.for_each_undirected_edges_for_label_unchecked(current, label, |edge| {
+                    if expand_err.is_some() {
+                        return;
+                    }
+                    if let Ok(Some(edge_dst @ ExpandDst::Local(_))) =
+                        ExpandDst::from_edge(store, &edge)
+                    {
+                        match edge_binding_for_expand(
+                            store,
+                            current,
+                            EdgeDirection::Undirected,
+                            edge,
+                        ) {
+                            Ok(binding) => out.push((edge_dst, binding)),
+                            Err(err) => expand_err = Some(err),
                         }
-                        if let Ok(Some(edge_dst @ ExpandDst::Local(_))) =
-                            ExpandDst::from_edge(store, &edge)
-                        {
-                            match edge_binding_for_expand(
-                                store,
-                                current,
-                                EdgeDirection::Undirected,
-                                edge,
-                            ) {
-                                Ok(binding) => out.push((edge_dst, binding)),
-                                Err(err) => expand_err = Some(err),
-                            }
-                        }
-                    })?;
+                    }
+                })?;
                 if let Some(err) = expand_err {
                     return Err(err);
                 }
@@ -785,9 +782,10 @@ pub(crate) fn weighted_shortest_paths_between(
 
     while let Some(entry) = heap.pop() {
         if let Some(ref min) = found_min_cost
-            && matches!(entry.cost.cmp(min), Ordering::Greater) {
-                break;
-            }
+            && matches!(entry.cost.cmp(min), Ordering::Greater)
+        {
+            break;
+        }
         let state_idx = entry.state_idx;
         let current = states[state_idx].current;
         let depth = states[state_idx].depth;
@@ -875,9 +873,10 @@ pub(crate) fn weighted_shortest_paths_between(
             };
             let next_cost = entry.cost.checked_add(&hop_cost)?;
             if let Some(ref min) = found_min_cost
-                && matches!(next_cost.cmp(min), Ordering::Greater) {
-                    continue;
-                }
+                && matches!(next_cost.cmp(min), Ordering::Greater)
+            {
+                continue;
+            }
             if let Some(best_cost) = any_best_cost.as_mut() {
                 let next_vertex = u32::from(next);
                 if best_cost
@@ -1082,9 +1081,10 @@ fn fill_path_elements_leaf_to_root(
     for (hop, &si) in chain.iter().rev().enumerate() {
         let state = &states[si];
         if hop > 0
-            && let Some(edge_binding) = state.edge {
-                elements.push(edge_path_element(shard_id, edge_binding.handle));
-            }
+            && let Some(edge_binding) = state.edge
+        {
+            elements.push(edge_path_element(shard_id, edge_binding.handle));
+        }
         elements.push(vertex_path_element(store, state.current));
     }
 }

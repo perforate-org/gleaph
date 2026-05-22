@@ -522,18 +522,20 @@ fn numeric_to_u128(value: &Value) -> Result<u128, ExprEvaluationError> {
 
 fn cast_signed(value: Value, width: u16) -> Result<Value, ExprEvaluationError> {
     if width == 256
-        && let Some(v) = value.as_i256() {
-            return Ok(Value::Int256(gleaph_gql::types::Int256::new(v)));
-        }
+        && let Some(v) = value.as_i256()
+    {
+        return Ok(Value::Int256(gleaph_gql::types::Int256::new(v)));
+    }
     let v = numeric_to_i128(&value)?;
     narrow_signed(v, width).ok_or(ExprEvaluationError::NumericOverflow)
 }
 
 fn cast_unsigned(value: Value, width: u16) -> Result<Value, ExprEvaluationError> {
     if width == 256
-        && let Some(v) = value.as_u256() {
-            return Ok(Value::Uint256(gleaph_gql::types::Uint256::new(v)));
-        }
+        && let Some(v) = value.as_u256()
+    {
+        return Ok(Value::Uint256(gleaph_gql::types::Uint256::new(v)));
+    }
     let v = numeric_to_u128(&value)?;
     narrow_unsigned(v, width).ok_or(ExprEvaluationError::NumericOverflow)
 }

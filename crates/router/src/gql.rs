@@ -21,7 +21,7 @@ use crate::graph_client::execute_plan_on_graph;
 use crate::index_client::RouterIndexClient;
 use crate::planner_stats::RouterGraphStats;
 use crate::rbac::authorize_adhoc_gql;
-use crate::seed::{SeedProbe, resolve_seed_shard_with_probe, seeds_for_local_shard};
+use crate::seed::{SeedProbe, seeds_for_local_shard};
 use crate::state::RouterError;
 
 pub async fn gql_query(
@@ -186,36 +186,12 @@ pub async fn dispatch_plan_blob(
     Ok(total_rows)
 }
 
+#[derive(Clone, Debug)]
 pub struct SeedRouting {
     pub shard_id: ShardId,
     pub graph_canister: Principal,
     pub hits: Vec<PostingHit>,
     pub probe: Option<SeedProbe>,
-}
-
-pub fn resolve_seed_shard(
-    store: &RouterStore,
-    hits: &[PostingHit],
-    logical_graph_name: &str,
-) -> Result<SeedRouting, RouterError> {
-    let mut routings = resolve_seed_routings_multi(
-        store,
-        hits,
-        logical_graph_name,
-        SeedProbe {
-            variable: String::new(),
-            property: String::new(),
-            property_id: 0,
-            value_bytes: Vec::new(),
-        },
-    )?;
-    if routings.len() != 1 {
-        return Err(RouterError::InvalidArgument(format!(
-            "expected one shard, got {}",
-            routings.len()
-        )));
-    }
-    Ok(routings.remove(0))
 }
 
 /// Phase 4: fan out one routing per distinct shard in index hits.
@@ -252,4 +228,93 @@ pub fn resolve_seed_routings_multi(
         });
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use candid::Principal;
+    use gleaph_graph_kernel::index::PostingHit;
+
+    use crate::facade::store::RouterStore;
+    use crate::gql::resolve_seed_routings_multi;
+    use crate::init::RouterInitArgs;
+    use crate::seed::SeedProbe;
+    use crate::state::RouterError;
+    use crate::types::AdminRegisterShardArgs;
+
+    fn graph_principal(byte: u8) -> Principal {
+        Principal::self_authenticating([byte; 32])
+    }
+
+    fn store_with_shards() -> RouterStore {
+        let store = RouterStore::new();
+        store.init_from_args(&RouterInitArgs {
+            issuing_principal: Principal::anonymous(),
+            initial_admins: vec![],
+            controllers: vec![],
+        });
+        let admin = Principal::anonymous();
+        store.bootstrap_controllers(&[admin]);
+        for (shard_id, graph_byte) in [(7u32, 1u8), (9, 4)] {
+            futures::executor::block_on(store.admin_register_shard(
+                admin,
+                AdminRegisterShardArgs {
+                    shard_id,
+                    graph_canister: graph_principal(graph_byte),
+                    index_canister: graph_principal(2),
+                    logical_graph_name: "tenant.main".into(),
+                },
+            ))
+            .expect("register shard");
+        }
+        store
+    }
+
+    #[test]
+    fn resolve_seed_routings_multi_fans_out_by_shard() {
+        let store = store_with_shards();
+        let probe = SeedProbe {
+            variable: "u".into(),
+            property: "uid".into(),
+            property_id: 1,
+            value_bytes: vec![1, 2, 3],
+        };
+        let hits = vec![
+            PostingHit {
+                shard_id: 7,
+                vertex_id: 10,
+            },
+            PostingHit {
+                shard_id: 9,
+                vertex_id: 20,
+            },
+        ];
+        let routings = resolve_seed_routings_multi(&store, &hits, "tenant.main", probe.clone())
+            .expect("route");
+        assert_eq!(routings.len(), 2);
+        assert_eq!(routings[0].shard_id, 7);
+        assert_eq!(routings[1].shard_id, 9);
+        assert_eq!(routings[0].hits.len(), 1);
+        assert_eq!(routings[0].hits[0].vertex_id, 10);
+        assert!(routings[0].probe.as_ref().is_some());
+        assert_eq!(routings[0].graph_canister, graph_principal(1));
+    }
+
+    #[test]
+    fn resolve_seed_routings_multi_rejects_unknown_shard() {
+        let store = store_with_shards();
+        let probe = SeedProbe {
+            variable: "u".into(),
+            property: "uid".into(),
+            property_id: 1,
+            value_bytes: vec![],
+        };
+        let hits = vec![PostingHit {
+            shard_id: 99,
+            vertex_id: 1,
+        }];
+        let err = resolve_seed_routings_multi(&store, &hits, "tenant.main", probe)
+            .expect_err("unknown shard");
+        assert!(matches!(err, RouterError::ShardNotRegistered));
+    }
 }

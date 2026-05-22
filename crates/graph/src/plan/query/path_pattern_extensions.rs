@@ -147,15 +147,16 @@ fn validate_cost_expr_gleaph_weight_usage_inner(
     context: GleaphWeightVarContext,
 ) -> Result<(), PlannerError> {
     if let ExprKind::Variable(v) = &expr.kind
-        && context == GleaphWeightVarContext::Normal {
-            return if v == edge_var {
-                Err(cost_shape_err(
-                    "GLEAPH.COST expression may only reference the edge variable inside GLEAPH.WEIGHT(edgeVar)",
-                ))
-            } else {
-                Ok(())
-            };
-        }
+        && context == GleaphWeightVarContext::Normal
+    {
+        return if v == edge_var {
+            Err(cost_shape_err(
+                "GLEAPH.COST expression may only reference the edge variable inside GLEAPH.WEIGHT(edgeVar)",
+            ))
+        } else {
+            Ok(())
+        };
+    }
     if context == GleaphWeightVarContext::GleaphWeightArg {
         return match gleaph_weight_arg_edge_var(expr) {
             Some(v) if v == edge_var => Ok(()),
@@ -169,19 +170,20 @@ fn validate_cost_expr_gleaph_weight_usage_inner(
         args,
         distinct,
     } = &expr.kind
-        && is_gleaph_weight_call(name, *distinct) {
-            let arg = gleaph_weight_single_arg(args).ok_or_else(|| {
-                cost_shape_err(format!(
-                    "GLEAPH.WEIGHT expects 1 argument in GLEAPH.COST expression, got {}",
-                    args.len()
-                ))
-            })?;
-            return validate_cost_expr_gleaph_weight_usage_inner(
-                arg,
-                edge_var,
-                GleaphWeightVarContext::GleaphWeightArg,
-            );
-        }
+        && is_gleaph_weight_call(name, *distinct)
+    {
+        let arg = gleaph_weight_single_arg(args).ok_or_else(|| {
+            cost_shape_err(format!(
+                "GLEAPH.WEIGHT expects 1 argument in GLEAPH.COST expression, got {}",
+                args.len()
+            ))
+        })?;
+        return validate_cost_expr_gleaph_weight_usage_inner(
+            arg,
+            edge_var,
+            GleaphWeightVarContext::GleaphWeightArg,
+        );
+    }
     try_for_each_immediate_child_expr(expr, |child| {
         validate_cost_expr_gleaph_weight_usage_inner(
             child,

@@ -45,7 +45,7 @@ fn rkyv_from_bytes_aligned_program(bytes: &[u8]) -> Result<GqlProgram, rkyv::ran
     rkyv::from_bytes::<GqlProgram, rkyv::rancor::Error>(&aligned)
 }
 
-/// Wire format for [`ExecuteProgramArgs::program_blob`]: `requires_write` byte + rkyv program.
+/// Stable prepared program blob: `requires_write` byte + rkyv [`GqlProgram`] bytes.
 pub fn encode_program_wire(record: &PreparedQueryRecord) -> Vec<u8> {
     let prog_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&record.program)
         .expect("prepared GQL program rkyv encode should not fail")

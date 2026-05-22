@@ -26,3 +26,14 @@ pub mod s14_09;
 pub mod s14_10;
 pub mod s14_11;
 pub mod s14_12;
+
+pub mod call_procedure;
+pub mod clause_coverage;
+pub mod ddl_coverage;
+pub mod delete_variants;
+pub mod object_names;
+pub mod schema_references;
+pub mod select_variants;
+pub mod set_operations;
+pub mod set_remove_labels;
+pub mod validate_coverage;

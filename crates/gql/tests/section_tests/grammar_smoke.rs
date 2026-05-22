@@ -1,6 +1,6 @@
-//! GQL grammar coverage tests.
+//! §6–§21 — Grammar smoke tests (parse + validate representative inputs).
 //!
-//! This test module systematically verifies that the gql crate can parse
+//! This module systematically verifies that the gql crate can parse
 //! representative inputs for every grammar section in GQL (ISO/IEC 39075).
 //! Each test is annotated with the corresponding GQL section number.
 //!

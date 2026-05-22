@@ -30,4 +30,8 @@ pub mod s20_14;
 pub mod s20_20;
 pub mod s20_21;
 pub mod s20_27;
-pub mod s20_extra;
+
+pub mod expr_constructors;
+pub mod expr_functions;
+pub mod expr_literals;
+pub mod expr_misc;

@@ -17,14 +17,10 @@ pub mod s11;
 pub mod s12;
 pub mod s13;
 pub mod s14;
-pub mod s14_extra;
-pub mod s14_stmt_extra;
 pub mod s15;
 pub mod s16;
-pub mod s16_extra;
 pub mod s17;
 pub mod s18;
-pub mod s18_extra;
 pub mod s19;
 pub mod s20;
 pub mod s21;
@@ -43,3 +39,4 @@ pub fn ta(prog: &GqlProgram) -> &TransactionActivity {
 pub fn body(prog: &GqlProgram) -> &StatementBlock {
     ta(prog).body.as_ref().unwrap()
 }
+pub mod grammar_smoke;

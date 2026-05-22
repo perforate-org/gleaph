@@ -75,8 +75,7 @@ pub mod slot_index;
 pub(crate) mod traits;
 
 pub use bidirectional::{
-    BidirectionalLabeledError, BidirectionalLabeledLaraGraph, DeferredBidirectionalLabeledError,
-    DeferredBidirectionalLabeledLaraGraph, EdgeSlotMoveObserver,
+    DeferredBidirectionalLabeledError, DeferredBidirectionalLabeledLaraGraph, EdgeSlotMoveObserver,
     LabeledBidirectionalMaintenanceReport, Orientation as LabeledOrientation,
 };
 pub use bucket_label_key::{
@@ -100,7 +99,5 @@ pub use traits::LabeledCsrVertex;
 pub type LabeledLara<E, M> = LabeledLaraGraph<E, M>;
 /// Convenience alias for the deferred-maintenance labeled LARA graph.
 pub type DeferredLabeledLara<E, M> = DeferredLabeledLaraGraph<E, M>;
-/// Convenience alias for the bidirectional labeled LARA graph.
-pub type BidirectionalLabeledLara<E, M> = BidirectionalLabeledLaraGraph<E, M>;
 /// Convenience alias for the deferred bidirectional labeled LARA graph.
 pub type DeferredBidirectionalLabeledLara<E, M> = DeferredBidirectionalLabeledLaraGraph<E, M>;

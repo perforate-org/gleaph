@@ -72,7 +72,6 @@ pub use bidirectional::{
     DeferredBidirectionalLaraGraph, DeleteEdgeObserver, FilteredOutEdgesIter,
 };
 pub use labeled::{
-    BidirectionalLabeledError, BidirectionalLabeledLara, BidirectionalLabeledLaraGraph,
     BucketLabelKey, DeferredBidirectionalLabeledError, DeferredBidirectionalLabeledLara,
     DeferredBidirectionalLabeledLaraGraph, DeferredLabeledLara, DeferredLabeledLaraGraph,
     LabelBucket, LabeledCsrVertex, LabeledLara, LabeledLaraGraph, LabeledOutEdgesIter,

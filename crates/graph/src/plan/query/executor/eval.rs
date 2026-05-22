@@ -545,14 +545,16 @@ pub(crate) fn project_row(
                 .as_ref()
                 .map(Str::to_string)
                 .unwrap_or_else(|| var_name.clone());
-            if column.alias.is_none() && row.is_singleton_binding(var_name.as_str())
-                && let Some(layout) = row.shared_layout() {
-                    return Ok(PlanRow::with_layout_and_binding(
-                        layout,
-                        var_name.as_str(),
-                        binding.clone(),
-                    ));
-                }
+            if column.alias.is_none()
+                && row.is_singleton_binding(var_name.as_str())
+                && let Some(layout) = row.shared_layout()
+            {
+                return Ok(PlanRow::with_layout_and_binding(
+                    layout,
+                    var_name.as_str(),
+                    binding.clone(),
+                ));
+            }
             let mut out = PlanRow::new();
             out.insert(name, binding.clone());
             return Ok(out);

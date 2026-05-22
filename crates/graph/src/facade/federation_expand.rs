@@ -50,9 +50,7 @@ fn collect_authoritative_incoming(
     out: &mut Vec<FederatedExpandNeighbor>,
 ) -> Result<(), GraphStoreError> {
     let target_local_raw = placement::local_vertex_id_raw(target_local);
-    for edge in store
-        .directed_in_edges(target_local)?
-    {
+    for edge in store.directed_in_edges(target_local)? {
         if edge.is_tombstone_edge() || !label_matches(&edge, label_id_raw) {
             continue;
         }
@@ -164,9 +162,7 @@ fn collect_forward_to_remote_incoming_scan(
         if vertex.is_tombstone() {
             continue;
         };
-        for edge in store
-            .directed_out_edges(vertex_id)?
-        {
+        for edge in store.directed_out_edges(vertex_id)? {
             if edge.is_tombstone_edge() || !label_matches(&edge, label_id_raw) {
                 continue;
             }
@@ -263,17 +259,18 @@ fn collect_incoming_neighbors(
         shard_id,
         local_vertex_id,
     })) = placement::resolve_placement(routing.router_canister, logical_vertex_id)
-        && shard_id == routing.shard_id {
-            collect_authoritative_incoming(
-                store,
-                routing.shard_id,
-                VertexId::from(local_vertex_id),
-                logical_vertex_id,
-                label_id_raw,
-                &mut out,
-            )?;
-            return Ok(out);
-        }
+        && shard_id == routing.shard_id
+    {
+        collect_authoritative_incoming(
+            store,
+            routing.shard_id,
+            VertexId::from(local_vertex_id),
+            logical_vertex_id,
+            label_id_raw,
+            &mut out,
+        )?;
+        return Ok(out);
+    }
 
     if let Some(remote_ref) = store.remote_ref_for_logical(logical_vertex_id) {
         collect_forward_to_remote_incoming(
@@ -329,9 +326,7 @@ fn collect_authoritative_undirected(
     out: &mut Vec<FederatedExpandNeighbor>,
 ) -> Result<(), GraphStoreError> {
     let probe_local_raw = placement::local_vertex_id_raw(probe_local);
-    for edge in store
-        .undirected_edges(probe_local)?
-    {
+    for edge in store.undirected_edges(probe_local)? {
         if edge.is_tombstone_edge() || !label_matches(&edge, label_id_raw) {
             continue;
         }
@@ -367,9 +362,7 @@ fn collect_undirected_to_remote(
         if vertex.is_tombstone() {
             continue;
         }
-        for edge in store
-            .undirected_edges(vertex_id)?
-        {
+        for edge in store.undirected_edges(vertex_id)? {
             if edge.is_tombstone_edge() || !label_matches(&edge, label_id_raw) {
                 continue;
             }
@@ -415,17 +408,18 @@ fn collect_undirected_neighbors(
         shard_id,
         local_vertex_id,
     })) = placement::resolve_placement(routing.router_canister, logical_vertex_id)
-        && shard_id == routing.shard_id {
-            collect_authoritative_undirected(
-                store,
-                routing.shard_id,
-                VertexId::from(local_vertex_id),
-                logical_vertex_id,
-                label_id_raw,
-                &mut out,
-            )?;
-            return Ok(out);
-        }
+        && shard_id == routing.shard_id
+    {
+        collect_authoritative_undirected(
+            store,
+            routing.shard_id,
+            VertexId::from(local_vertex_id),
+            logical_vertex_id,
+            label_id_raw,
+            &mut out,
+        )?;
+        return Ok(out);
+    }
 
     if let Some(remote_ref) = store.remote_ref_for_logical(logical_vertex_id) {
         collect_undirected_to_remote(store, routing.shard_id, remote_ref, label_id_raw, &mut out)?;
@@ -442,9 +436,7 @@ fn collect_authoritative_outgoing(
     out: &mut Vec<FederatedExpandNeighbor>,
 ) -> Result<(), GraphStoreError> {
     let source_local_raw = placement::local_vertex_id_raw(source_local);
-    for edge in store
-        .directed_out_edges(source_local)?
-    {
+    for edge in store.directed_out_edges(source_local)? {
         if edge.is_tombstone_edge() || !label_matches(&edge, label_id_raw) {
             continue;
         }

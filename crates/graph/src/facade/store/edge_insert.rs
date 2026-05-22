@@ -16,9 +16,11 @@ impl GraphStore {
         label: Option<EdgeLabelId>,
     ) -> Result<(), GraphStoreError> {
         if let Some(id) = label
-            && id.raw() != 0 && !id.is_catalog_allocatable() {
-                return Err(GraphStoreError::InvalidEdgeLabelId(id));
-            }
+            && id.raw() != 0
+            && !id.is_catalog_allocatable()
+        {
+            return Err(GraphStoreError::InvalidEdgeLabelId(id));
+        }
         Ok(())
     }
 

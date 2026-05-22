@@ -36,20 +36,6 @@ pub struct ExecutePlanResult {
     pub row_count: u64,
 }
 
-/// Phase-0 bridge: rkyv [`gleaph_gql::ast::GqlProgram`] (no parse on graph).
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
-pub struct ExecuteProgramArgs {
-    pub target_shard_id: ShardId,
-    pub program_blob: Vec<u8>,
-    pub params_blob: Vec<u8>,
-    pub mode: GqlExecutionMode,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
-pub struct ExecuteProgramResult {
-    pub row_count: u64,
-}
-
 /// Router → graph seed bindings for a single variable on the target shard.
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct SeedBindingEntry {
@@ -60,4 +46,59 @@ pub struct SeedBindingEntry {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct SeedBindingsWire {
     pub entries: Vec<SeedBindingEntry>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use candid::{Decode, Encode};
+
+    #[test]
+    fn gql_execution_mode_candid_roundtrip() {
+        for mode in [GqlExecutionMode::Query, GqlExecutionMode::Update] {
+            let bytes = Encode!(&mode).expect("encode");
+            let decoded: GqlExecutionMode = Decode!(&bytes, GqlExecutionMode).expect("decode");
+            assert_eq!(mode, decoded);
+        }
+    }
+
+    #[test]
+    fn execute_plan_args_with_seed_bindings_roundtrip() {
+        let seed = SeedBindingsWire {
+            entries: vec![SeedBindingEntry {
+                variable: "u".into(),
+                local_vertex_ids: vec![1, 2],
+            }],
+        };
+        let seed_blob = Encode!(&seed).expect("seed encode");
+        let args = ExecutePlanArgs {
+            target_shard_id: 7,
+            plan_blob: vec![1, 2, 3],
+            params_blob: vec![4],
+            mode: GqlExecutionMode::Query,
+            seed_bindings_blob: Some(seed_blob),
+        };
+        let bytes = Encode!(&args).expect("encode");
+        let decoded: ExecutePlanArgs = Decode!(&bytes, ExecutePlanArgs).expect("decode");
+        assert_eq!(args, decoded);
+    }
+
+    #[test]
+    fn seed_bindings_wire_roundtrip() {
+        let wire = SeedBindingsWire {
+            entries: vec![
+                SeedBindingEntry {
+                    variable: "a".into(),
+                    local_vertex_ids: vec![10],
+                },
+                SeedBindingEntry {
+                    variable: "b".into(),
+                    local_vertex_ids: vec![20, 21],
+                },
+            ],
+        };
+        let bytes = Encode!(&wire).expect("encode");
+        let decoded: SeedBindingsWire = Decode!(&bytes, SeedBindingsWire).expect("decode");
+        assert_eq!(wire, decoded);
+    }
 }

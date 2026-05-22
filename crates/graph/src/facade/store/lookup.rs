@@ -57,14 +57,16 @@ impl GraphStore {
         }
         let reverse_canonical = self.canonical_reverse_in_edge_handle(handle);
         if reverse_canonical != handle
-            && let Some(found) = self.lookup_forward_out_edge(reverse_canonical)? {
-                return Ok(Some(found));
-            }
+            && let Some(found) = self.lookup_forward_out_edge(reverse_canonical)?
+        {
+            return Ok(Some(found));
+        }
         let undirected_canonical = self.canonical_edge_handle(handle);
         if undirected_canonical != handle
-            && let Some(found) = self.lookup_forward_out_edge(undirected_canonical)? {
-                return Ok(Some(found));
-            }
+            && let Some(found) = self.lookup_forward_out_edge(undirected_canonical)?
+        {
+            return Ok(Some(found));
+        }
         if reverse_canonical != handle {
             return self.lookup_reverse_out_edge(reverse_canonical);
         }

@@ -60,3 +60,71 @@ impl FederatedExpandNeighbor {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use candid::{Decode, Encode};
+    #[test]
+    fn federated_expand_neighbor_value_payload_roundtrip() {
+        let neighbor = FederatedExpandNeighbor {
+            shard_id: 1,
+            neighbor_logical_vertex_id: 2,
+            neighbor_local_vertex_id: 3,
+            anchor_local_vertex_id: 4,
+            label_id_raw: 5,
+            slot_index: 6,
+            inline_value: 0,
+            value_len: 2,
+            value_bytes: [9, 8, 0, 0, 0, 0, 0, 0],
+        };
+        let payload = neighbor.value_payload();
+        let restored = FederatedExpandNeighbor {
+            shard_id: 1,
+            neighbor_logical_vertex_id: 2,
+            neighbor_local_vertex_id: 3,
+            anchor_local_vertex_id: 4,
+            label_id_raw: 5,
+            slot_index: 6,
+            inline_value: 0,
+            value_len: 0,
+            value_bytes: [0; 8],
+        }
+        .from_value_payload(payload);
+        assert_eq!(restored.value_len, 2);
+        assert_eq!(restored.value_bytes[0], 9);
+    }
+
+    #[test]
+    fn federated_expand_args_candid_roundtrip() {
+        let args = FederatedExpandArgs {
+            logical_vertex_id: 99,
+            direction: FederatedExpandDirection::Undirected,
+            label_id_raw: Some(7),
+        };
+        let bytes = Encode!(&args).expect("encode");
+        let decoded: FederatedExpandArgs = Decode!(&bytes, FederatedExpandArgs).expect("decode");
+        assert_eq!(args, decoded);
+    }
+
+    #[test]
+    fn edge_value_payload_inline_u16_maps_neighbor_fields() {
+        let payload = EdgeValuePayload {
+            bytes: [0x34, 0x12, 0, 0, 0, 0, 0, 0],
+            len: 2,
+        };
+        let neighbor = FederatedExpandNeighbor {
+            shard_id: 0,
+            neighbor_logical_vertex_id: 0,
+            neighbor_local_vertex_id: 0,
+            anchor_local_vertex_id: 0,
+            label_id_raw: 0,
+            slot_index: 0,
+            inline_value: 0,
+            value_len: 0,
+            value_bytes: [0; 8],
+        }
+        .from_value_payload(payload);
+        assert_eq!(neighbor.inline_value, 0x1234);
+    }
+}

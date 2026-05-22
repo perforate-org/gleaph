@@ -133,4 +133,37 @@ mod tests {
         )
         .expect("force bypass");
     }
+
+    #[test]
+    fn prepared_rejects_write_plan_on_query_call() {
+        let err = check_prepared_execution_path(
+            "prepared_execute_query",
+            GqlExecutionMode::Query,
+            true,
+            false,
+        )
+        .expect_err("write on query");
+        assert!(matches!(
+            err,
+            RouterError::ExecutionPathMismatch {
+                entrypoint,
+                program_kind,
+                call_kind,
+                ..
+            } if entrypoint == "prepared_execute_query"
+                && program_kind == "write"
+                && call_kind == "query"
+        ));
+    }
+
+    #[test]
+    fn prepared_force_bypasses_read_on_update_mismatch() {
+        check_prepared_execution_path(
+            "force_prepared_execute_update",
+            GqlExecutionMode::Update,
+            false,
+            true,
+        )
+        .expect("force bypass");
+    }
 }

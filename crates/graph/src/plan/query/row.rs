@@ -113,21 +113,23 @@ impl PlanRow {
 
     pub fn get(&self, name: &str) -> Option<&PlanBinding> {
         if let Some(layout) = &self.layout
-            && let Some(idx) = layout.index_of(name) {
-                return self.slots.get(idx).and_then(|b| b.as_ref());
-            }
+            && let Some(idx) = layout.index_of(name)
+        {
+            return self.slots.get(idx).and_then(|b| b.as_ref());
+        }
         self.spill.get(name)
     }
 
     pub fn insert(&mut self, name: String, binding: PlanBinding) {
         if let Some(layout) = &self.layout
-            && let Some(idx) = layout.index_of(&name) {
-                if idx >= self.slots.len() {
-                    self.slots.resize(idx + 1, None);
-                }
-                self.slots[idx] = Some(binding);
-                return;
+            && let Some(idx) = layout.index_of(&name)
+        {
+            if idx >= self.slots.len() {
+                self.slots.resize(idx + 1, None);
             }
+            self.slots[idx] = Some(binding);
+            return;
+        }
         self.spill.insert(name, binding);
     }
 
@@ -249,9 +251,9 @@ impl PlanRow {
         if let (Some(left_layout), Some(right_layout)) = (&self.layout, &right.layout)
             && (Rc::ptr_eq(left_layout, right_layout)
                 || left_layout.as_ref() == right_layout.as_ref())
-            {
-                return self.try_merge_indexed_skip(right, left_layout, &[skip_name]);
-            }
+        {
+            return self.try_merge_indexed_skip(right, left_layout, &[skip_name]);
+        }
         self.try_merge_fallback(right, &[skip_name])
     }
 
@@ -259,9 +261,9 @@ impl PlanRow {
         if let (Some(left_layout), Some(right_layout)) = (&self.layout, &right.layout)
             && (Rc::ptr_eq(left_layout, right_layout)
                 || left_layout.as_ref() == right_layout.as_ref())
-            {
-                return self.try_merge_indexed_skip(right, left_layout, skip_names);
-            }
+        {
+            return self.try_merge_indexed_skip(right, left_layout, skip_names);
+        }
         self.try_merge_fallback(right, skip_names)
     }
 
@@ -272,38 +274,6 @@ impl PlanRow {
         skip_names: &[&str],
     ) -> Option<Self> {
         let mut slots = self.slots.clone();
-        let mut spill = if self.spill.is_empty() {
-            BTreeMap::new()
-        } else {
-            self.spill.clone()
-        };
-        Self::apply_right_to_merged_slots(
-            &mut slots,
-            &mut spill,
-            &self.slots,
-            &self.spill,
-            right,
-            layout,
-            skip_names,
-        )?;
-        Some(Self {
-            layout: Some(Rc::clone(layout)),
-            slots,
-            spill,
-        })
-    }
-
-    pub(crate) fn try_merge_indexed_with_arena(
-        &self,
-        arena: &mut super::arena::QueryArena,
-        right: &Self,
-        layout: &Rc<BindingLayout>,
-        skip_names: &[&str],
-    ) -> Option<Self> {
-        let min_cap = self.slots.len().max(right.slots.len()).max(layout.len());
-        let mut slots = arena.checkout_slots(min_cap);
-        slots.clear();
-        slots.extend(self.slots.iter().cloned());
         let mut spill = if self.spill.is_empty() {
             BTreeMap::new()
         } else {
@@ -358,12 +328,7 @@ impl PlanRow {
                 let left_binding = left_slots
                     .iter()
                     .enumerate()
-                    .find_map(|(i, b)| {
-                        layout
-                            .name_at(i)
-                            .filter(|n| *n == name)
-                            .and(b.as_ref())
-                    })
+                    .find_map(|(i, b)| layout.name_at(i).filter(|n| *n == name).and(b.as_ref()))
                     .or_else(|| left_spill.get(name));
                 match left_binding {
                     Some(left_binding) if left_binding != right_binding => return None,
@@ -410,9 +375,10 @@ impl PlanRow {
         if let Some(layout) = &self.layout {
             for (idx, binding) in self.slots.into_iter().enumerate() {
                 if let Some(binding) = binding
-                    && let Some(name) = layout.name_at(idx) {
-                        out.insert(name.to_string(), binding);
-                    }
+                    && let Some(name) = layout.name_at(idx)
+                {
+                    out.insert(name.to_string(), binding);
+                }
             }
         }
         out

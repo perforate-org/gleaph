@@ -35,9 +35,16 @@ use crate::index::lookup::PropertyIndexLookup;
 use crate::index::placement;
 
 #[cfg(test)]
-thread_local! {
-    pub(crate) static NODE_SCAN_VISITS: Cell<usize> = const { Cell::new(0) };
+mod test_counters {
+    use std::cell::Cell;
+
+    thread_local! {
+        pub(crate) static NODE_SCAN_VISITS: Cell<usize> = const { Cell::new(0) };
+    }
 }
+
+#[cfg(test)]
+pub(crate) use test_counters::NODE_SCAN_VISITS;
 
 pub(crate) struct LimitedStreamingPrefixResult {
     pub(crate) rows: Vec<PlanRow>,

@@ -34,3 +34,11 @@ pub mod s16_16;
 pub mod s16_17;
 pub mod s16_18;
 pub mod s16_19;
+
+pub mod edge_directions;
+pub(crate) mod helpers;
+pub mod insert_edge;
+pub mod label_expr_tests;
+pub mod match_modes;
+pub mod property_map;
+pub mod simplified_path;

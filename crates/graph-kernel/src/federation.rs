@@ -192,3 +192,87 @@ impl Storable for VertexPlacement {
 
     const BOUND: Bound = Bound::Unbounded;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use candid::{Decode, Encode};
+    use ic_stable_structures::Storable;
+
+    #[test]
+    fn physical_placement_key_le_bytes_roundtrip() {
+        let key = PhysicalPlacementKey::new(7, 42);
+        assert_eq!(key, PhysicalPlacementKey::from_le_bytes(key.to_le_bytes()));
+        assert_eq!(key, PhysicalPlacementKey::from_posting_hit(7, 42));
+    }
+
+    #[test]
+    fn physical_placement_key_storable_roundtrip() {
+        let key = PhysicalPlacementKey::new(3, 99);
+        let bytes = key.to_bytes();
+        assert_eq!(key, PhysicalPlacementKey::from_bytes(bytes));
+    }
+
+    #[test]
+    fn vertex_placement_storable_and_candid_roundtrip() {
+        let active = VertexPlacement::Active(PhysicalVertexLocation::new(1, 10));
+        let migrating = VertexPlacement::Migrating {
+            epoch: 2,
+            source: PhysicalVertexLocation::new(1, 10),
+            destination_shard_id: 9,
+        };
+        for placement in [active, migrating] {
+            let storable = placement.to_bytes();
+            assert_eq!(placement, VertexPlacement::from_bytes(storable));
+            let encoded = Encode!(&placement).expect("encode");
+            let decoded: VertexPlacement = Decode!(&encoded, VertexPlacement).expect("decode");
+            assert_eq!(placement, decoded);
+        }
+    }
+
+    #[test]
+    fn shard_registry_entry_storable_roundtrip() {
+        let entry = ShardRegistryEntry {
+            shard_id: 5,
+            graph_canister: Principal::anonymous(),
+            index_canister: Principal::management_canister(),
+            logical_graph_name: "g.main".into(),
+            registered_at_ns: 123,
+        };
+        let bytes = entry.to_bytes();
+        assert_eq!(entry, ShardRegistryEntry::from_bytes(bytes));
+    }
+
+    #[test]
+    fn migration_args_candid_roundtrip() {
+        let commit = CommitVertexPlacementArgs {
+            logical_vertex_id: 1,
+            local_vertex_id: 42,
+        };
+        let begin = BeginVertexMigrationArgs {
+            logical_vertex_id: 1,
+            destination_shard_id: 9,
+        };
+        let finish = FinishVertexMigrationArgs {
+            logical_vertex_id: 1,
+            destination_local_vertex_id: 99,
+        };
+        let release = ReleaseLogicalVertexArgs {
+            logical_vertex_id: 1,
+        };
+        for value in [
+            Encode!(&commit).unwrap(),
+            Encode!(&begin).unwrap(),
+            Encode!(&finish).unwrap(),
+            Encode!(&release).unwrap(),
+        ] {
+            assert!(!value.is_empty());
+        }
+    }
+
+    #[test]
+    fn standalone_logical_vertex_id_maps_local_bytes() {
+        let local = VertexId::from(42u32);
+        assert_eq!(standalone_logical_vertex_id(local), 42);
+    }
+}
