@@ -20,6 +20,7 @@ use ic_stable_structures::Memory;
 
 use super::error::LabeledOperationError;
 use super::{BucketSearch, DEFAULT_SEGMENT_SIZE, LabeledLaraGraph};
+
 impl<E, M> LabeledLaraGraph<E, M>
 where
     E: CsrEdge,

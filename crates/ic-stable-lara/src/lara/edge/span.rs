@@ -1,12 +1,11 @@
 //! EdgeStore `span` implementation.
 
 use crate::{GrowFailed, traits::CsrEdge};
-#[cfg(feature = "canbench")]
-use canbench_rs::bench_scope;
 use ic_stable_structures::Memory;
 
 use super::EdgeStore;
 use super::free_span::FreeSpan;
+
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     pub(super) fn spans_overlap(a_start: u64, a_len: u64, b_start: u64, b_len: u64) -> bool {
         let a_end = a_start.saturating_add(a_len);

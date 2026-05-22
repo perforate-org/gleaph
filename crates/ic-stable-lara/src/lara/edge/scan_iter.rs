@@ -1,10 +1,7 @@
 //! Out-edge iterators and slab prefetch helpers.
 
-use crate::lara::operation_error::{LaraOperationError, VertexAccess};
-use crate::{
-    VertexId,
-    traits::{CsrEdge, CsrEdgeTombstone, CsrVertex, CsrVertexTombstoneScan},
-};
+use crate::lara::operation_error::LaraOperationError;
+use crate::{VertexId, traits::CsrEdge};
 use ic_stable_structures::Memory;
 use std::{iter::FusedIterator, num::NonZero};
 
@@ -13,6 +10,7 @@ use super::{
     DeleteTarget, EdgeStore, INLINE_EDGE_BYTES, OUT_EDGE_SLAB_CHUNK_SLOTS,
     OUT_EDGE_SLAB_PREFETCH_MIN_BYTES, decode_delete_target,
 };
+
 /// Descending scan for a **log-backed** row without prefetching every live log edge into a `Vec`.
 ///
 /// Same logical order as [`OutEdgesIter`]: scan the core-LARA overflow log chain (newest first),

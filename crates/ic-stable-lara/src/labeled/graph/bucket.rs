@@ -20,6 +20,7 @@ use super::{
     BUCKET_LOOKUP_CACHE_ENTRIES, BULK_BUCKET_SEARCH_MIN_DEGREE, BucketLookupCache, BucketSearch,
     LEAF_VERTEX_EDGE_SEGMENT_DENSITY, LabeledLaraGraph,
 };
+
 impl<E, M> LabeledLaraGraph<E, M>
 where
     E: CsrEdge,

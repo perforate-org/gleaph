@@ -15,6 +15,7 @@ use ic_stable_structures::Memory;
 
 use super::LabeledLaraGraph;
 use super::error::LabeledOperationError;
+
 impl<E, M> LabeledLaraGraph<E, M>
 where
     E: CsrEdge,

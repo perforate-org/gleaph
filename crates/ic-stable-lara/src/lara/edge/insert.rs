@@ -5,12 +5,11 @@ use crate::{
     VertexId,
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex, CsrVertexTombstoneScan},
 };
-#[cfg(feature = "canbench")]
-use canbench_rs::bench_scope;
 use ic_stable_structures::Memory;
 
 use super::scan_iter::{OutEdgeSlabIter, leaf_segment};
 use super::{DeleteTarget, EdgeStore, InsertLocation, decode_delete_target};
+
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     pub(super) fn collect_out_edge_refs_slot_order<V, A>(
         &self,

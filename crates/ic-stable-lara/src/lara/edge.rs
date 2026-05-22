@@ -78,6 +78,7 @@ use span_meta::SegmentSpanMetaStore;
 use std::{cell::Cell, iter::FusedIterator};
 
 pub(super) const INLINE_EDGE_BYTES: usize = 64;
+
 /// When a clean slab row is at least this many bytes, [`OutEdgesIter`] and [`OutEdgeSlabIter`]
 /// read the slab in fixed-size **descending** slot chunks instead of one stable read per edge.
 pub(super) const OUT_EDGE_SLAB_PREFETCH_MIN_BYTES: usize = 64;

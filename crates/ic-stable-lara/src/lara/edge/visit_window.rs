@@ -1,7 +1,6 @@
 //! Out-edge visit window.
 
 /// Applies `offset` / `limit` to a logical stream of outgoing edges (after raw / match filters).
-/// Applies `offset` / `limit` to a logical stream of outgoing edges (after raw / match filters).
 pub(crate) struct OutEdgeVisitWindow {
     skip: usize,
     take: Option<usize>,

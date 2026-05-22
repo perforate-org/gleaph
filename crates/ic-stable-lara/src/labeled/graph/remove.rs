@@ -18,6 +18,7 @@ use std::cell::Cell;
 
 use super::error::LabeledOperationError;
 use super::{BucketSearch, LabeledLaraGraph, OutEdgeOrder};
+
 impl<E, M> LabeledLaraGraph<E, M>
 where
     E: CsrEdge,

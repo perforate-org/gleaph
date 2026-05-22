@@ -20,6 +20,7 @@ use std::{cell::Cell, marker::PhantomData};
 
 use super::error::{InitError, LabeledOperationError};
 use super::{DEFAULT_SEGMENT_SIZE, LabeledLaraGraph};
+
 impl<E, M> LabeledLaraGraph<E, M>
 where
     E: CsrEdge,

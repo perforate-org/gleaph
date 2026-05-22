@@ -16,6 +16,7 @@ use ic_stable_structures::Memory;
 
 use super::error::LabeledOperationError;
 use super::{DEFAULT_SEGMENT_SIZE, EdgeSlotMove, LabeledLaraGraph, VertexEdgeSpanCompactOneStep};
+
 impl<E, M> LabeledLaraGraph<E, M>
 where
     E: CsrEdge,

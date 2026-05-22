@@ -13,6 +13,7 @@ use ic_stable_structures::Memory;
 use std::{iter::FusedIterator, num::NonZero};
 
 use super::{LabeledLaraGraph, OutEdgeOrder};
+
 /// Streaming iterator over outgoing edges in a fixed scan order (see
 /// [`LabeledLaraGraph::desc_out_edges_iter`], [`LabeledLaraGraph::asc_out_edges_iter`], and
 /// [`LabeledLaraGraph::out_edges_by_directedness_iter`]).

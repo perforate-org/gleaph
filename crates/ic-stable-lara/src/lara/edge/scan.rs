@@ -5,8 +5,6 @@ use crate::{
     VertexId,
     traits::{CsrEdge, CsrVertex, CsrVertexTombstoneScan},
 };
-#[cfg(feature = "canbench")]
-use canbench_rs::bench_scope;
 use ic_stable_structures::Memory;
 
 use super::scan_iter::{
@@ -16,6 +14,7 @@ use super::{
     DeleteTarget, EdgeStore, OUT_EDGE_SLAB_PREFETCH_MIN_BYTES, OutEdgeVisitWindow, OutEdgesIter,
     decode_delete_target,
 };
+
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     pub(crate) fn asc_out_edges<V, A>(
         &self,

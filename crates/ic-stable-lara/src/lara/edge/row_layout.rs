@@ -5,14 +5,13 @@ use crate::{
     GrowFailed, SegmentId, VertexId,
     traits::{CsrEdge, CsrVertex},
 };
-#[cfg(feature = "canbench")]
-use canbench_rs::bench_scope;
 use ic_stable_structures::Memory;
 
 use super::counts::SegmentEdgeCounts;
 use super::scan_iter::leaf_segment;
 use super::span_meta::{SPAN_PHYSICAL_UNASSIGNED, SegmentSpanMeta};
 use super::{EdgeLayout, EdgeStore};
+
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     pub(super) fn max_slab_window_for_vertex<V: CsrVertex>(v: &V, base: u64, end: u64) -> u64 {
         v.slab_append_exclusive_end(base)

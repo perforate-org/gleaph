@@ -1,12 +1,6 @@
 //! EdgeStore `init` implementation.
 
-use crate::lara::operation_error::VertexAccess;
-use crate::{
-    GrowFailed, SegmentId, VertexCount,
-    traits::{CsrEdge, CsrVertex},
-};
-#[cfg(feature = "canbench")]
-use canbench_rs::bench_scope;
+use crate::{GrowFailed, SegmentId, VertexCount, traits::CsrEdge};
 use ic_stable_structures::Memory;
 use std::cell::Cell;
 
@@ -20,6 +14,7 @@ use super::free_span::FreeSpanStore;
 use super::log::HeaderV1 as LogHeaderV1;
 use super::log::LogStore;
 use super::span_meta::{SegmentSpanMeta, SegmentSpanMetaStore};
+
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     pub fn new(
         counts: M,

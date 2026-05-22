@@ -1,14 +1,10 @@
 //! EdgeStore `slab` implementation.
 
-use crate::{
-    GrowFailed,
-    traits::{CsrEdge, CsrVertex},
-};
-#[cfg(feature = "canbench")]
-use canbench_rs::bench_scope;
+use crate::{GrowFailed, traits::CsrEdge};
 use ic_stable_structures::Memory;
 
 use super::{EdgeStore, INLINE_EDGE_BYTES};
+
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     pub fn read_slot(&self, slot: u64) -> E {
         if E::BYTES <= 8 {

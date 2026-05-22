@@ -5,8 +5,6 @@ use crate::{
     SegmentId, VertexId,
     traits::{CsrEdge, CsrVertex},
 };
-#[cfg(feature = "canbench")]
-use canbench_rs::bench_scope;
 use ic_stable_structures::Memory;
 
 use super::log::HeaderV1 as LogHeaderV1;
@@ -15,6 +13,7 @@ use super::{
     DeleteTarget, EdgeLayout, EdgeStore, INLINE_EDGE_BYTES, decode_delete_target,
     encode_delete_target,
 };
+
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     pub(crate) fn overflow_log_chain_asc_indices(&self, leaf: u32, head: i32) -> Vec<u32> {
         if head < 0 {
