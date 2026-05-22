@@ -50,6 +50,55 @@ impl CsrEdgeTombstone for TestEdge {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FlagTombstoneEdge {
+    raw: u32,
+}
+
+impl FlagTombstoneEdge {
+    const TOMBSTONE_BIT: u32 = 1 << 31;
+
+    pub fn live(target: u32) -> Self {
+        Self { raw: target }
+    }
+}
+
+impl CsrEdge for FlagTombstoneEdge {
+    const BYTES: usize = 4;
+
+    fn read_from(bytes: &[u8]) -> Self {
+        Self {
+            raw: u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
+        }
+    }
+
+    fn write_to(self, bytes: &mut [u8]) {
+        bytes[0..4].copy_from_slice(&self.raw.to_le_bytes());
+    }
+
+    fn neighbor_vid(&self) -> VertexId {
+        VertexId::from(self.raw & !Self::TOMBSTONE_BIT)
+    }
+
+    fn with_neighbor_vid(self, vid: VertexId) -> Self {
+        Self {
+            raw: (self.raw & Self::TOMBSTONE_BIT) | u32::from(vid),
+        }
+    }
+}
+
+impl CsrEdgeTombstone for FlagTombstoneEdge {
+    fn tombstone_edge() -> Self {
+        Self {
+            raw: Self::TOMBSTONE_BIT,
+        }
+    }
+
+    fn is_tombstone_edge(&self) -> bool {
+        self.raw & Self::TOMBSTONE_BIT != 0
+    }
+}
+
 pub fn mem() -> crate::VectorMemory {
     vector_memory()
 }
@@ -82,6 +131,28 @@ pub fn test_graph_with_default(
 
 pub fn test_graph() -> LabeledLaraGraph<TestEdge, crate::VectorMemory> {
     test_graph_with_default(BucketLabelKey::directed_from_index(1))
+}
+
+pub fn flag_tombstone_graph() -> LabeledLaraGraph<FlagTombstoneEdge, crate::VectorMemory> {
+    LabeledLaraGraph::new(
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        256,
+        BucketLabelKey::directed_from_index(1),
+    )
+    .unwrap()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

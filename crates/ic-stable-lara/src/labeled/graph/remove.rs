@@ -58,7 +58,7 @@ where
         let rm_slot = checked_add_slot_index(bucket.edge_start(), u64::from(slot_index))
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         let removed = self.edges.read_slot(rm_slot);
-        if removed.is_deleted_slot() {
+        if removed.is_tombstone_edge() {
             return Ok(None);
         }
         self.edges
@@ -604,6 +604,28 @@ mod tests {
     use super::super::test_support::*;
     use super::super::*;
     use crate::VertexId;
+
+    #[test]
+    fn remove_edge_at_slot_uses_edge_tombstone_contract() {
+        let graph = flag_tombstone_graph();
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let road = BucketLabelKey::from_raw(2);
+        graph
+            .insert_edge(VertexId::from(0), road, FlagTombstoneEdge::live(10))
+            .unwrap();
+
+        let removed = graph
+            .remove_edge_matching(VertexId::from(0), road, |edge| {
+                edge.neighbor_vid() == VertexId::from(10)
+            })
+            .unwrap();
+        assert_eq!(removed, Some(FlagTombstoneEdge::live(10)));
+
+        let removed_again = graph
+            .remove_edge_at_slot(VertexId::from(0), road, 0)
+            .unwrap();
+        assert_eq!(removed_again, None);
+    }
 
     #[test]
     fn remove_edge_leaves_slab_tombstone_until_rebalance() {

@@ -432,7 +432,7 @@ where
                 let edge_slot =
                     checked_add_slot_index(bucket.edge_start(), u64::from(old_slot_index))
                         .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                if self.edges.read_slot(edge_slot).is_deleted_slot() {
+                if self.edges.read_slot(edge_slot).is_tombstone_edge() {
                     continue;
                 }
                 if old_slot_index != next_live {
@@ -453,7 +453,10 @@ where
     pub(super) fn first_edge_slot_move_in_bucket(
         bucket: &LabelBucket,
         edges: &EdgeStore<E, M>,
-    ) -> Result<Option<EdgeSlotMove>, LabeledOperationError> {
+    ) -> Result<Option<EdgeSlotMove>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
         if bucket.degree() == 0 || bucket.overflow_log_head() >= 0 {
             return Ok(None);
         }
@@ -461,7 +464,7 @@ where
         for old_slot_index in 0..bucket.stored_slots {
             let edge_slot = checked_add_slot_index(bucket.edge_start(), u64::from(old_slot_index))
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            if edges.read_slot(edge_slot).is_deleted_slot() {
+            if edges.read_slot(edge_slot).is_tombstone_edge() {
                 continue;
             }
             if old_slot_index != next_live {
@@ -1642,6 +1645,35 @@ mod tests {
             graph.vertices(),
             graph.buckets(),
             graph.edges(),
+        );
+    }
+    #[test]
+    fn compact_vertex_edge_span_uses_edge_tombstone_contract() {
+        let graph = flag_tombstone_graph();
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let road = BucketLabelKey::from_raw(2);
+        for target in [10, 11, 12] {
+            graph
+                .insert_edge(VertexId::from(0), road, FlagTombstoneEdge::live(target))
+                .unwrap();
+        }
+        graph
+            .remove_edge_matching(VertexId::from(0), road, |edge| {
+                *edge == FlagTombstoneEdge::live(10)
+            })
+            .unwrap();
+
+        let moved = graph
+            .compact_vertex_edge_span_one_step(VertexId::from(0), 0)
+            .unwrap();
+
+        assert_eq!(
+            moved,
+            VertexEdgeSpanCompactOneStep::EdgeMoved(EdgeSlotMove {
+                label_id: road,
+                old_slot_index: 1,
+                new_slot_index: 0,
+            })
         );
     }
     #[test]
