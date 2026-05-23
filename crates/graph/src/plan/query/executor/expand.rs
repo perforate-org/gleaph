@@ -1837,7 +1837,7 @@ mod tests {
             .get_or_insert_edge_label_id("AbsWgtRoad")
             .expect("label");
         store
-            .set_edge_label_weight_profile(
+            .install_edge_label_weight_profile_at_init(
                 label_id,
                 EdgeWeightProfile {
                     encoding: WeightEncoding::RawU16,
@@ -1869,7 +1869,7 @@ mod tests {
             .get_or_insert_edge_label_id("ValueProfileWgtRoad")
             .expect("label");
         store
-            .set_edge_label_value_profile(
+            .install_edge_label_value_profile_at_init(
                 label_id,
                 EdgeValueProfile {
                     width: EdgeValueWidth::W2,
@@ -1902,7 +1902,7 @@ mod tests {
             .get_or_insert_edge_label_id("MissingValueWgtRoad")
             .expect("label");
         store
-            .set_edge_label_value_profile(
+            .install_edge_label_value_profile_at_init(
                 label_id,
                 EdgeValueProfile {
                     width: EdgeValueWidth::W2,
@@ -1910,17 +1910,11 @@ mod tests {
                 },
             )
             .expect("value profile");
-        store
-            .insert_directed_edge(a, b, Some(label_id))
-            .expect("edge without value");
-
-        let gql = "MATCH (a:MissingValueWgtA)-[e:MissingValueWgtRoad]->(b:MissingValueWgtB) RETURN GLEAPH.WEIGHT(e) AS w";
-        let plan = plan_gql(gql);
         let err = store
-            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
-            .expect_err("missing edge value must not decode as zero");
+            .insert_directed_edge(a, b, Some(label_id))
+            .expect_err("edge without value bytes must fail at insert");
         assert!(
-            err.to_string().contains("edge value width mismatch"),
+            err.to_string().contains("expects 2 value bytes, got 0"),
             "unexpected error: {err}"
         );
     }

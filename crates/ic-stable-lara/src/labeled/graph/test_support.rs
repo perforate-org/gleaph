@@ -174,6 +174,17 @@ impl ValuedTestEdge {
             value_len: 2,
         }
     }
+
+    pub fn with_i32(target: u32, inline: i32) -> Self {
+        let mut value = [0u8; 8];
+        value[0..4].copy_from_slice(&inline.to_le_bytes());
+        Self {
+            target,
+            slot_index: 0,
+            value,
+            value_len: 4,
+        }
+    }
 }
 
 impl CsrEdge for ValuedTestEdge {

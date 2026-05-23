@@ -22,11 +22,7 @@ where
     M: Memory,
 {
     pub(super) fn bucket_resident_value_bytes(&self, bucket: &LabelBucket) -> u64 {
-        if !bucket.is_value_allocated() {
-            return 0;
-        }
-        u64::from(bucket.stored_slots.max(bucket.degree))
-            .saturating_mul(u64::from(bucket.value_width()))
+        crate::labeled::invariants::bucket_resident_value_bytes(bucket)
     }
     pub(super) fn reconcile_vertex_value_allocated_bytes(
         &self,
@@ -42,12 +38,22 @@ where
                     .ok_or(LaraOperationError::CollectAllocationOverflow)
             })?;
         if vertex.value_allocated_bytes() == total {
+            debug_assert_eq!(
+                vertex.value_allocated_bytes(),
+                total,
+                "vertex {src:?} value_allocated_bytes must match bucket resident sum"
+            );
             return Ok(());
         }
         let updated = vertex
             .try_with_value_allocated_bytes(total)
             .map_err(LabeledOperationError::from)?;
         self.vertices.set(src, &updated);
+        debug_assert_eq!(
+            self.vertices.get(src).value_allocated_bytes(),
+            total,
+            "vertex {src:?} value_allocated_bytes must match bucket resident sum after reconcile"
+        );
         Ok(())
     }
     pub(super) fn value_log_leaf(&self, src: VertexId) -> u32 {
@@ -186,6 +192,11 @@ where
         edge_chain: &[u32],
         value_chain: &[u32],
     ) -> Option<Vec<u8>> {
+        debug_assert_eq!(
+            edge_chain.len(),
+            value_chain.len(),
+            "edge/value overflow log chains must have equal length at lookup time"
+        );
         let slot_index = edge.edge_slot_index_raw();
         for (&entry_idx, &value_idx) in edge_chain.iter().zip(value_chain.iter()) {
             if entry_idx != slot_index {
@@ -486,33 +497,59 @@ where
             log_chains,
         )
     }
+    pub(super) fn collect_bucket_values_before_edge_rewrite(
+        &self,
+        src: VertexId,
+        vertex: &LabeledVertex,
+        buckets: &[LabelBucket],
+    ) -> Result<Vec<Vec<Vec<u8>>>, LabeledOperationError> {
+        let mut saved = Vec::with_capacity(buckets.len());
+        for (index, bucket) in buckets.iter().enumerate() {
+            let values = match self.read_bucket_values_slab_dense(bucket) {
+                Some(v) => v,
+                None => {
+                    self.read_bucket_values_in_edge_slot_order(src, vertex, index as u32, bucket)?
+                }
+            };
+            if bucket.value_width() > 0 {
+                let live = usize::try_from(bucket.degree()).unwrap_or(usize::MAX);
+                debug_assert_eq!(
+                    values.len(),
+                    live,
+                    "collect before rewrite: one value per live edge (bucket {index})"
+                );
+            }
+            saved.push(values);
+        }
+        Ok(saved)
+    }
+
     pub(super) fn sync_vertex_value_spans_after_edge_rewrite(
         &self,
         src: VertexId,
         old_buckets: &[LabelBucket],
         new_buckets: &[LabelBucket],
+        saved: &[Vec<Vec<u8>>],
     ) -> Result<(), LabeledOperationError> {
-        if old_buckets.len() != new_buckets.len() {
+        if old_buckets.len() != new_buckets.len() || saved.len() != old_buckets.len() {
             return Err(LabeledOperationError::from(
                 LaraOperationError::CollectAllocationOverflow,
             ));
         }
         let vertex = self.vertices.get(src);
-        let mut saved: Vec<Vec<Vec<u8>>> = Vec::with_capacity(old_buckets.len());
-        for (index, old) in old_buckets.iter().enumerate() {
-            let values = match self.read_bucket_values_slab_dense(old) {
-                Some(v) => v,
-                None => {
-                    self.read_bucket_values_in_edge_slot_order(src, &vertex, index as u32, old)?
-                }
-            };
-            saved.push(values);
+        for old in old_buckets {
             self.release_bucket_value_span(src, old)?;
         }
         for (index, new_bucket) in new_buckets.iter().enumerate() {
             if new_bucket.value_width() == 0 {
                 continue;
             }
+            let live = usize::try_from(new_bucket.degree()).unwrap_or(usize::MAX);
+            debug_assert_eq!(
+                saved[index].len(),
+                live,
+                "sync after rewrite: saved value count must match new live degree (bucket {index})"
+            );
             let slot = Self::labeled_vertex_bucket_slot(&vertex, index as u32)?;
             let mut bucket = new_bucket.with_value_offset(0);
             bucket = self.ensure_bucket_value_span(src, slot, bucket, 0)?;
@@ -623,6 +660,11 @@ mod tests {
             .collect();
         weights.sort_unstable();
         assert_eq!(weights, vec![1, 100]);
+        crate::labeled::invariants::assert_labeled_layout_invariants(
+            graph.vertices(),
+            graph.buckets(),
+            graph.edges(),
+        );
     }
     #[test]
     fn edge_values_survive_middle_vertex_insert() {
@@ -921,5 +963,134 @@ mod tests {
             })
             .unwrap();
         assert!(weights.contains(&200), "newest insert weight: {weights:?}");
+    }
+
+    #[test]
+    fn w4_edge_values_round_trip() {
+        let graph = valued_test_graph();
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let road = BucketLabelKey::from_raw(2);
+        graph
+            .ensure_label_bucket_value_width(VertexId::from(0), road, ValueWidthCode::W4)
+            .unwrap();
+        for (target, cost) in [(1, 100i32), (2, 200), (3, 300)] {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    VertexId::from(0),
+                    road,
+                    ValuedTestEdge::with_i32(target, cost),
+                )
+                .unwrap();
+        }
+        let mut costs = Vec::new();
+        graph
+            .for_each_edges_for_label(VertexId::from(0), road, |edge| {
+                if edge.value_len == 4 {
+                    costs.push(i32::from_le_bytes(edge.value[0..4].try_into().unwrap()));
+                }
+            })
+            .unwrap();
+        costs.sort_unstable();
+        assert_eq!(costs, vec![100, 200, 300]);
+    }
+
+    #[test]
+    fn cannot_change_bucket_value_width_after_allocation() {
+        let graph = valued_test_graph();
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let road = BucketLabelKey::from_raw(2);
+        graph
+            .ensure_label_bucket_value_width(VertexId::from(0), road, ValueWidthCode::W2)
+            .unwrap();
+        graph
+            .insert_edge_skip_leaf_cascade(VertexId::from(0), road, ValuedTestEdge::with_u16(1, 1))
+            .unwrap();
+        assert!(
+            graph
+                .ensure_label_bucket_value_width(VertexId::from(0), road, ValueWidthCode::W4)
+                .is_err(),
+            "widening an allocated value bucket must fail"
+        );
+    }
+
+    #[test]
+    fn edge_values_survive_rewrite_with_tombstones() {
+        let graph = valued_test_graph();
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let road = BucketLabelKey::from_raw(2);
+        graph
+            .ensure_label_bucket_value_width(VertexId::from(0), road, ValueWidthCode::W2)
+            .unwrap();
+        for (target, weight) in [(1, 10), (2, 20), (3, 30)] {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    VertexId::from(0),
+                    road,
+                    ValuedTestEdge::with_u16(target, weight),
+                )
+                .unwrap();
+        }
+        graph
+            .remove_edge_at_slot(VertexId::from(0), road, 0)
+            .unwrap()
+            .expect("removed low slot");
+
+        graph
+            .rewrite_vertex_edge_span(VertexId::from(0), None, 1, false, true)
+            .unwrap();
+
+        let mut values = Vec::new();
+        graph
+            .for_each_edges_for_label(VertexId::from(0), road, |edge| {
+                if edge.value_len == 2 {
+                    values.push((
+                        edge.target,
+                        u16::from_le_bytes([edge.value[0], edge.value[1]]),
+                    ));
+                }
+            })
+            .unwrap();
+        values.sort_unstable();
+        assert_eq!(values, vec![(2, 20), (3, 30)]);
+    }
+
+    #[test]
+    fn edge_values_preserved_after_tombstone_delete_and_compact() {
+        let graph = valued_test_graph();
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let road = BucketLabelKey::from_raw(2);
+        graph
+            .ensure_label_bucket_value_width(VertexId::from(0), road, ValueWidthCode::W2)
+            .unwrap();
+        for (target, weight) in [(1, 10), (2, 20), (3, 30)] {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    VertexId::from(0),
+                    road,
+                    ValuedTestEdge::with_u16(target, weight),
+                )
+                .unwrap();
+        }
+        graph
+            .remove_edge_at_slot(VertexId::from(0), road, 0)
+            .unwrap()
+            .expect("removed low slot");
+        graph
+            .compact_vertex_edge_span(VertexId::from(0), 0)
+            .unwrap();
+
+        let mut values = Vec::new();
+        graph
+            .for_each_edges_for_label(VertexId::from(0), road, |edge| {
+                if edge.value_len == 2 {
+                    values.push((
+                        edge.target,
+                        u16::from_le_bytes([edge.value[0], edge.value[1]]),
+                    ));
+                }
+            })
+            .unwrap();
+        values.sort_unstable();
+        assert_eq!(values, vec![(2, 20), (3, 30)]);
     }
 }

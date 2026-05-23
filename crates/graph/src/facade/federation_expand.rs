@@ -741,7 +741,7 @@ mod tests {
             .get_or_insert_edge_label_id("FedIncomingValue")
             .expect("label");
         store
-            .set_edge_label_weight_profile(
+            .install_edge_label_weight_profile_at_init(
                 label_id,
                 gleaph_graph_kernel::entry::EdgeWeightProfile {
                     encoding: gleaph_graph_kernel::entry::WeightEncoding::RawU16,
@@ -794,7 +794,7 @@ mod tests {
             .get_or_insert_edge_label_id("FedUndirValue")
             .expect("label");
         store
-            .set_edge_label_weight_profile(
+            .install_edge_label_weight_profile_at_init(
                 label_id,
                 EdgeWeightProfile {
                     encoding: WeightEncoding::RawU16,

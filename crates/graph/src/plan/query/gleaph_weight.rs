@@ -532,4 +532,42 @@ mod tests {
         ));
         assert!(!is_gleaph_weight_call(&ObjectName::simple("other"), false));
     }
+
+    #[test]
+    fn decode_traversal_edge_weight_uses_edge_value_profile() {
+        use crate::facade::EdgeHandle;
+        use gleaph_graph_kernel::entry::{
+            EdgeDirectedness, EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth,
+        };
+        use ic_stable_lara::{VertexId, labeled::BucketLabelKey as LaraLabelId};
+
+        let store = GraphStore::new();
+        let label_id = store
+            .get_or_insert_edge_label_id("DecodeTraversalWgt")
+            .expect("label");
+        store
+            .install_edge_label_value_profile_at_init(
+                label_id,
+                EdgeValueProfile {
+                    width: EdgeValueWidth::W2,
+                    encoding: EdgeValueEncoding::WeightRawU16,
+                },
+            )
+            .expect("value profile");
+        let wire = label_id.pack(EdgeDirectedness::Directed);
+        let handle = EdgeHandle {
+            owner_vertex_id: VertexId::from(0),
+            label_id: LaraLabelId::from_raw(wire.raw()),
+            slot_index: 0,
+        };
+        let w = decode_traversal_edge_weight(&store, handle, 2, &[9, 0], 9, None).expect("decode");
+        assert_eq!(w, 9.0);
+
+        let err =
+            decode_traversal_edge_weight(&store, handle, 0, &[], 0, None).expect_err("no bytes");
+        assert!(
+            err.to_string().contains("edge value width mismatch"),
+            "unexpected error: {err}"
+        );
+    }
 }

@@ -387,4 +387,86 @@ mod tests {
         let w = decode_edge_weight(&dec, &3u16.to_le_bytes()).expect("weight");
         assert_eq!(w, 3.0);
     }
+
+    #[test]
+    fn validate_rejects_width_encoding_mismatch() {
+        let profile = EdgeValueProfile {
+            width: EdgeValueWidth::W2,
+            encoding: EdgeValueEncoding::RawI32,
+        };
+        assert_eq!(
+            profile.validate(),
+            Err(EdgeValueProfileError::WidthEncodingMismatch)
+        );
+    }
+
+    #[test]
+    fn weight_linear_u16_decodes_scaled() {
+        let profile = EdgeValueProfile {
+            width: EdgeValueWidth::W2,
+            encoding: EdgeValueEncoding::WeightLinearU16 {
+                min: 10.0,
+                max: 20.0,
+            },
+        };
+        let dec = profile.prepare().expect("prepare");
+        let w = decode_edge_weight(&dec, &u16::MAX.to_le_bytes()).expect("weight");
+        assert!((w - 20.0).abs() < 1e-4);
+        let w0 = decode_edge_weight(&dec, &0u16.to_le_bytes()).expect("weight min");
+        assert!((w0 - 10.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn weight_log_u16_decodes() {
+        let profile = EdgeValueProfile {
+            width: EdgeValueWidth::W2,
+            encoding: EdgeValueEncoding::WeightLogU16 {
+                min: 1.0,
+                max: 10.0,
+            },
+        };
+        let dec = profile.prepare().expect("prepare");
+        let w = decode_edge_weight(&dec, &u16::MAX.to_le_bytes()).expect("weight");
+        assert!((w - 10.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn f32_profile_round_trips() {
+        let profile = EdgeValueProfile {
+            width: EdgeValueWidth::W4,
+            encoding: EdgeValueEncoding::F32,
+        };
+        let dec = profile.prepare().expect("prepare");
+        let bytes = 3.5f32.to_le_bytes();
+        assert_eq!(
+            decode_edge_value(&dec, &bytes).expect("decode"),
+            DecodedEdgeValue::F32(3.5)
+        );
+    }
+
+    #[test]
+    fn decode_edge_weight_rejects_non_weight_encoding() {
+        let profile = EdgeValueProfile {
+            width: EdgeValueWidth::W4,
+            encoding: EdgeValueEncoding::RawI32,
+        };
+        let dec = profile.prepare().expect("prepare");
+        let err = decode_edge_weight(&dec, &42i32.to_le_bytes()).unwrap_err();
+        assert_eq!(err, EdgeValueProfileError::WidthEncodingMismatch);
+    }
+
+    #[test]
+    fn edge_weight_profile_converts_to_value_profile() {
+        use super::super::weight::{EdgeWeightProfile, WeightEncoding};
+        let weight = EdgeWeightProfile {
+            encoding: WeightEncoding::Linear { min: 0.0, max: 1.0 },
+        };
+        let profile = EdgeValueProfile::from(weight);
+        assert_eq!(profile.width, EdgeValueWidth::W2);
+        assert!(matches!(
+            profile.encoding,
+            EdgeValueEncoding::WeightLinearU16 { .. }
+        ));
+        profile.validate().expect("converted profile valid");
+    }
 }

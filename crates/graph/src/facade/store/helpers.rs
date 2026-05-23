@@ -1,8 +1,8 @@
 //! Graph store helpers and edge-alias key encoding.
 
 use gleaph_graph_kernel::entry::{
-    Edge, EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, EdgeTarget, RemoteRefId, TaggedEdgeLabelId,
-    VertexRef,
+    Edge, EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, EdgeTarget, EdgeValueProfile, RemoteRefId,
+    TaggedEdgeLabelId, VertexRef,
 };
 use ic_stable_lara::{
     VertexId,
@@ -137,6 +137,33 @@ pub(super) fn validate_edge_value_bytes(value_bytes: &[u8]) -> Result<(), GraphS
 
         len => Err(GraphStoreError::InvalidEdgeValueWidth(len)),
     }
+}
+
+/// Checks supported physical widths and that bytes match the label's catalog value profile width.
+///
+/// New catalog labels default to [`EdgeValueProfile::no_value`] (0 bytes). Non-zero payloads require
+/// a matching profile installed at graph init via [`GraphStore::install_edge_label_value_profile_at_init`]
+/// or [`GraphStore::install_edge_label_weight_profile_at_init`].
+pub(super) fn validate_edge_value_bytes_for_label(
+    store: &GraphStore,
+    catalog_label: Option<EdgeLabelId>,
+    value_bytes: &[u8],
+) -> Result<(), GraphStoreError> {
+    validate_edge_value_bytes(value_bytes)?;
+    let expected_width = catalog_label
+        .and_then(|id| store.edge_label_value_profile(id))
+        .unwrap_or(EdgeValueProfile::no_value())
+        .required_byte_width();
+    let expected = usize::from(expected_width);
+    let actual = value_bytes.len();
+    if actual != expected {
+        return Err(GraphStoreError::EdgeValueWidthMismatch {
+            label: catalog_label,
+            expected,
+            actual,
+        });
+    }
+    Ok(())
 }
 
 fn edge_value_bytes_match(edge: &Edge, value_bytes: &[u8]) -> bool {

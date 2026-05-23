@@ -212,6 +212,14 @@ where
 
         let slab_only_bulk = self.label_buckets_allow_contiguous_slab_copy(&vertex, &buckets)?;
 
+        let needs_value_sync =
+            Self::vertex_value_spans_need_sync_after_rewrite(&buckets, moved, old_alloc, compact);
+        let saved_values = if needs_value_sync {
+            Some(self.collect_bucket_values_before_edge_rewrite(src, &vertex, &buckets)?)
+        } else {
+            None
+        };
+
         let disjoint_copy = moved && old_alloc > 0;
         if disjoint_copy {
             #[cfg(feature = "canbench")]
@@ -396,8 +404,8 @@ where
         #[cfg(feature = "canbench")]
         let _bench_scope = bench_scope("labeled_rewrite_finalize");
         let new_buckets = self.read_vertex_label_buckets(&vertex)?;
-        if Self::vertex_value_spans_need_sync_after_rewrite(&buckets, moved, old_alloc, compact) {
-            self.sync_vertex_value_spans_after_edge_rewrite(src, &buckets, &new_buckets)?;
+        if let Some(saved) = saved_values {
+            self.sync_vertex_value_spans_after_edge_rewrite(src, &buckets, &new_buckets, &saved)?;
         }
         if moved && old_alloc > 0 {
             self.release_vertex_edge_span_slab(old_base, u64::from(old_alloc))?;

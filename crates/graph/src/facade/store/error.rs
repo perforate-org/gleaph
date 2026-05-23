@@ -36,6 +36,14 @@ pub enum GraphStoreError {
     InvalidEdgeLabelId(EdgeLabelId),
     /// Edge value byte width is not supported by labeled edge-value storage.
     InvalidEdgeValueWidth(usize),
+    /// Stored edge-value bytes do not match the catalog label's configured width.
+    EdgeValueWidthMismatch {
+        label: Option<EdgeLabelId>,
+        expected: usize,
+        actual: usize,
+    },
+    /// Edge value profile was already installed for this catalog label at init.
+    EdgeLabelProfileAlreadyInstalled(EdgeLabelId),
     VertexPlacement(placement::VertexPlacementError),
     /// Router reports this shard-local vertex is frozen during migration.
     VertexMigrating,
@@ -74,6 +82,26 @@ impl fmt::Display for GraphStoreError {
             Self::InvalidEdgeValueWidth(width) => {
                 write!(f, "edge value byte width {width} is not supported")
             }
+            Self::EdgeValueWidthMismatch {
+                label,
+                expected,
+                actual,
+            } => match label {
+                Some(id) => write!(
+                    f,
+                    "edge label {} expects {expected} value bytes, got {actual}",
+                    id.raw()
+                ),
+                None => write!(
+                    f,
+                    "unlabeled edges expect {expected} value bytes, got {actual}"
+                ),
+            },
+            Self::EdgeLabelProfileAlreadyInstalled(id) => write!(
+                f,
+                "edge label {} value profile is already installed (init-time only)",
+                id.raw()
+            ),
             Self::VertexPlacement(err) => write!(f, "{err}"),
             Self::VertexMigrating => write!(f, "vertex is frozen for migration on this shard"),
             Self::VertexTombstoned => write!(f, "vertex row is tombstoned on this shard"),
@@ -96,6 +124,8 @@ impl std::error::Error for GraphStoreError {
             | Self::EdgeNotFound { .. }
             | Self::InvalidEdgeLabelId(_)
             | Self::InvalidEdgeValueWidth(_)
+            | Self::EdgeValueWidthMismatch { .. }
+            | Self::EdgeLabelProfileAlreadyInstalled(_)
             | Self::VertexPlacement(_)
             | Self::VertexMigrating
             | Self::VertexTombstoned => None,

@@ -235,7 +235,7 @@ fn setup_repeated_edge_cost_cache_graph(store: &GraphStore) -> (VertexId, Vertex
         .get_or_insert_edge_label_id("BenchWspWgtEdge")
         .expect("edge label");
     store
-        .set_edge_label_weight_profile(
+        .install_edge_label_weight_profile_at_init(
             label_id,
             EdgeWeightProfile {
                 encoding: WeightEncoding::RawU16,

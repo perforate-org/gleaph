@@ -10,7 +10,7 @@ use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
 use super::helpers::{
     build_edge_to_remote_with_value_bytes, edge_matches_remote_target, edge_storage_label,
-    lara_label, validate_edge_value_bytes,
+    lara_label, validate_edge_value_bytes_for_label,
 };
 
 impl GraphStore {
@@ -71,7 +71,7 @@ impl GraphStore {
     ) -> Result<EdgeHandle, GraphStoreError> {
         self.ensure_vertex_id(source_vertex_id)?;
         Self::validate_catalog_edge_label(catalog_label)?;
-        validate_edge_value_bytes(value_bytes)?;
+        validate_edge_value_bytes_for_label(self, catalog_label, value_bytes)?;
 
         let remote_ref = self.ensure_remote_ref(target_logical_vertex_id);
         let label = lara_label(edge_storage_label(catalog_label, undirected));

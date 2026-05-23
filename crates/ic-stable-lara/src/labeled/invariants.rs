@@ -1,6 +1,7 @@
 //! Debug invariant helpers for labeled CSR layouts.
 
 use super::bucket_store::LabelBucketStore;
+use super::record::LabelBucket;
 use crate::{
     VertexId,
     labeled::{BucketLabelKey, LabeledVertex, slot_index::checked_add_slot_index},
@@ -8,6 +9,16 @@ use crate::{
     traits::{CsrEdge, CsrVertex},
 };
 use ic_stable_structures::Memory;
+
+/// Resident value bytes charged to a bucket's slab span (`stored_slots × width`, or `degree` when larger).
+#[inline]
+pub(crate) fn bucket_resident_value_bytes(bucket: &LabelBucket) -> u64 {
+    if !bucket.is_value_allocated() {
+        return 0;
+    }
+    u64::from(bucket.stored_slots.max(bucket.degree))
+        .saturating_mul(u64::from(bucket.value_width()))
+}
 
 #[inline]
 fn slot_end_exclusive(base: u64, width: u32, context: &str) -> u64 {
@@ -141,7 +152,31 @@ pub(crate) fn assert_labeled_layout_invariants<E, M>(
                     bucket.edge_start()
                 );
             }
+            if bucket.is_value_allocated() {
+                assert!(
+                    bucket.value_width() > 0,
+                    "vertex {vidx} bucket {slot}: value_allocated bucket must have non-zero width"
+                );
+            }
         }
+        let mut resident_value_bytes = 0u64;
+        for offset in 0..deg {
+            let slot = slot_at(
+                base_start,
+                offset,
+                &format!("vertex {vidx} value accounting bucket index"),
+            );
+            let bucket = buckets
+                .read_label_bucket_slot(slot)
+                .expect("bucket slot must exist");
+            resident_value_bytes =
+                resident_value_bytes.saturating_add(bucket_resident_value_bytes(&bucket));
+        }
+        assert_eq!(
+            vertex.value_allocated_bytes(),
+            resident_value_bytes,
+            "vertex {vidx}: value_allocated_bytes must equal sum of resident bucket value spans"
+        );
     }
 }
 

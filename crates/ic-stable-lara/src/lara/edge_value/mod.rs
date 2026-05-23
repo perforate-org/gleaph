@@ -610,4 +610,34 @@ mod tests {
         store.read_value_log_entry(3, 0, 1, &mut out);
         assert_eq!(out, [7]);
     }
+
+    #[test]
+    fn grow_byte_span_in_place_extends_tail_span() {
+        let store = test_store();
+        let offset = store.allocate_byte_span(4).expect("allocate");
+        store.write_bytes(offset, &[1, 2, 3, 4]).expect("write");
+        assert!(
+            store
+                .grow_byte_span_in_place(offset, 4, 8)
+                .expect("grow in place")
+        );
+        let mut buf = [0u8; 8];
+        store.read_bytes(offset, &mut buf);
+        assert_eq!(buf, [1, 2, 3, 4, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn init_rejects_mismatched_log_segment_count() {
+        use super::log::{HeaderV1 as LogHeader, ValueLogStore};
+
+        let edge_segments = 3u32;
+        let log_mem = mem();
+        let log = ValueLogStore::new(log_mem, LogHeader::new(2))
+            .expect("log with fewer segments than edge store");
+        let log_mem = log.into_memory();
+        assert!(matches!(
+            EdgeValueStore::init(mem(), log_mem, mem(), mem(), 1024, edge_segments),
+            Err(InitError::ValueLogLayoutMismatch)
+        ));
+    }
 }

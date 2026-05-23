@@ -75,3 +75,45 @@ impl<M: Memory> EdgeValueProfileStore<M> {
         self.inner.into_memory()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gleaph_graph_kernel::entry::{
+        EdgeLabelId, EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth,
+    };
+    use ic_stable_structures::VectorMemory;
+    use std::{cell::RefCell, rc::Rc};
+
+    fn mem() -> VectorMemory {
+        Rc::new(RefCell::new(Vec::new()))
+    }
+
+    #[test]
+    fn insert_rejects_invalid_profile_encoding() {
+        let mut store = EdgeValueProfileStore::init(mem());
+        let label = EdgeLabelId::from_raw(1);
+        let profile = EdgeValueProfile {
+            width: EdgeValueWidth::W4,
+            encoding: EdgeValueEncoding::WeightRawU16,
+        };
+        assert!(matches!(
+            store.insert(label, profile),
+            Err(EdgeValueProfileStoreError::InvalidProfile(
+                EdgeValueProfileError::WidthEncodingMismatch
+            ))
+        ));
+    }
+
+    #[test]
+    fn insert_and_get_round_trip() {
+        let mut store = EdgeValueProfileStore::init(mem());
+        let label = EdgeLabelId::from_raw(2);
+        let profile = EdgeValueProfile {
+            width: EdgeValueWidth::W2,
+            encoding: EdgeValueEncoding::WeightRawU16,
+        };
+        store.insert(label, profile.clone()).expect("insert");
+        assert_eq!(store.get(label), Some(profile));
+    }
+}

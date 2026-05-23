@@ -1221,7 +1221,7 @@ mod path_test_helpers {
             .get_or_insert_edge_label_id("WgtRoad")
             .expect("road label");
         store
-            .set_edge_label_weight_profile(
+            .install_edge_label_weight_profile_at_init(
                 label_id,
                 EdgeWeightProfile {
                     encoding: WeightEncoding::RawU16,
@@ -2342,7 +2342,7 @@ mod tests {
             .get_or_insert_edge_label_id("WgtRoad")
             .expect("road label");
         store
-            .set_edge_label_weight_profile(
+            .install_edge_label_weight_profile_at_init(
                 label_id,
                 EdgeWeightProfile {
                     encoding: WeightEncoding::RawU16,
@@ -2433,7 +2433,7 @@ mod tests {
             .get_or_insert_edge_label_id("WgtRoad")
             .expect("road label");
         store
-            .set_edge_label_weight_profile(
+            .install_edge_label_weight_profile_at_init(
                 label_id,
                 EdgeWeightProfile {
                     encoding: WeightEncoding::RawU16,
@@ -2758,7 +2758,7 @@ mod tests {
             .get_or_insert_edge_label_id("WgtRoad")
             .expect("road label");
         store
-            .set_edge_label_weight_profile(
+            .install_edge_label_weight_profile_at_init(
                 label_id,
                 EdgeWeightProfile {
                     encoding: WeightEncoding::RawU16,

@@ -8,7 +8,8 @@ use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
 use super::helpers::{
     build_edge_to, build_edge_to_with_value_bytes, canonical_undirected_owner,
-    edge_matches_local_neighbor, edge_storage_label, lara_label, validate_edge_value_bytes,
+    edge_matches_local_neighbor, edge_storage_label, lara_label,
+    validate_edge_value_bytes_for_label,
 };
 
 impl GraphStore {
@@ -33,6 +34,7 @@ impl GraphStore {
         self.ensure_vertex_id(source_vertex_id)?;
         self.ensure_vertex_id(target_vertex_id)?;
         Self::validate_catalog_edge_label(catalog_label)?;
+        validate_edge_value_bytes_for_label(self, catalog_label, &[])?;
 
         let label = lara_label(edge_storage_label(catalog_label, false));
         let forward = build_edge_to(target_vertex_id);
@@ -87,7 +89,7 @@ impl GraphStore {
         self.ensure_vertex_id(source_vertex_id)?;
         self.ensure_vertex_id(target_vertex_id)?;
         Self::validate_catalog_edge_label(catalog_label)?;
-        validate_edge_value_bytes(value_bytes)?;
+        validate_edge_value_bytes_for_label(self, catalog_label, value_bytes)?;
 
         let label = lara_label(edge_storage_label(catalog_label, false));
         let forward = build_edge_to_with_value_bytes(target_vertex_id, value_bytes);
@@ -127,6 +129,7 @@ impl GraphStore {
         self.ensure_vertex_id(endpoint_a)?;
         self.ensure_vertex_id(endpoint_b)?;
         Self::validate_catalog_edge_label(catalog_label)?;
+        validate_edge_value_bytes_for_label(self, catalog_label, &[])?;
 
         let label = lara_label(edge_storage_label(catalog_label, true));
         let edge_ab = build_edge_to(endpoint_b);
@@ -174,7 +177,7 @@ impl GraphStore {
         self.ensure_vertex_id(endpoint_a)?;
         self.ensure_vertex_id(endpoint_b)?;
         Self::validate_catalog_edge_label(catalog_label)?;
-        validate_edge_value_bytes(value_bytes)?;
+        validate_edge_value_bytes_for_label(self, catalog_label, value_bytes)?;
 
         let label = lara_label(edge_storage_label(catalog_label, true));
         let edge_ab = build_edge_to_with_value_bytes(endpoint_b, value_bytes);

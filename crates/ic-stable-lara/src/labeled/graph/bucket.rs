@@ -578,12 +578,21 @@ where
         bucket: &LabelBucket,
     ) -> (Vec<u32>, Vec<u32>) {
         let leaf = self.value_log_leaf(src);
-        (
-            self.edges
-                .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head()),
-            self.values
-                .value_log_chain_asc_indices(leaf, bucket.value_log_head()),
-        )
+        let edge_chain = self
+            .edges
+            .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head());
+        let value_chain = self
+            .values
+            .value_log_chain_asc_indices(leaf, bucket.value_log_head());
+        if bucket.overflow_log_head() >= 0 || bucket.value_log_head() >= 0 {
+            debug_assert_eq!(
+                edge_chain.len(),
+                value_chain.len(),
+                "edge and value overflow log chains must stay paired (vertex {src:?}, label {:?})",
+                bucket.bucket_label_key()
+            );
+        }
+        (edge_chain, value_chain)
     }
 }
 
