@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use crate::facade::migration::{
     migration_apply_chunk as apply_migration_chunk, migration_cutover as cutover_migration,
-    migration_maintenance_step, migration_reconcile,
+    migration_cutover_with_index, migration_maintenance_step, migration_reconcile,
     migration_staging_begin as begin_migration_staging, migration_start as start_migration,
     migration_status as query_migration_status, prune_migrated_source_maintenance_step,
 };
