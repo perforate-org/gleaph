@@ -1,5 +1,6 @@
 mod aggregate;
 mod arena;
+mod edge_value_batch_kernel;
 mod error;
 mod executor;
 mod gleaph_weight;

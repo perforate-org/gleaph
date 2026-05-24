@@ -62,6 +62,7 @@ mod values;
 pub use error::{InitError, LabeledOperationError, OutEdgeOrder};
 pub use iter::LabeledOutEdgesIter;
 pub use iter::LabeledSpanIter;
+pub use iter::{LabeledEdgeValueBatch, LabeledEdgeValueBatchScratch};
 
 /// Single-orientation multi-level labeled CSR graph.
 pub struct LabeledLaraGraph<E, M>

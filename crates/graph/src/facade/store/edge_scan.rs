@@ -4,7 +4,9 @@ use super::super::stable::GRAPH;
 use gleaph_graph_kernel::entry::{Edge, EdgeDirectedness, EdgeLabelId};
 use ic_stable_lara::{
     BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledError, VertexId,
-    labeled::{BucketDirectedness, OutEdgeOrder},
+    labeled::{
+        BucketDirectedness, LabeledEdgeValueBatch, LabeledEdgeValueBatchScratch, OutEdgeOrder,
+    },
 };
 
 use super::GraphStore;
@@ -60,6 +62,22 @@ impl GraphStore {
     {
         GRAPH.with_borrow(|graph| {
             graph.for_each_out_edges_for_label_ordered(vertex_id, label, order, visit)
+        })
+    }
+
+    pub(crate) fn visit_out_edge_value_batches_for_label<Visit>(
+        &self,
+        vertex_id: VertexId,
+        label: LaraLabelId,
+        order: OutEdgeOrder,
+        scratch: &mut LabeledEdgeValueBatchScratch<Edge>,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLabeledError>
+    where
+        Visit: for<'b> FnMut(LabeledEdgeValueBatch<'b, Edge>),
+    {
+        GRAPH.with_borrow(|graph| {
+            graph.visit_out_edge_value_batches_for_label(vertex_id, label, order, scratch, visit)
         })
     }
 

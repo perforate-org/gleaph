@@ -947,6 +947,23 @@ where
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
+    /// Visits forward outgoing edges and parallel value bytes for one label in `order`.
+    pub fn visit_out_edge_value_batches_for_label<Visit>(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        order: OutEdgeOrder,
+        scratch: &mut crate::labeled::LabeledEdgeValueBatchScratch<E>,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLabeledError>
+    where
+        Visit: for<'b> FnMut(crate::labeled::LabeledEdgeValueBatch<'b, E>),
+    {
+        self.forward
+            .visit_out_edge_value_batches_for_label(src, label_id, order, scratch, visit)
+            .map_err(DeferredBidirectionalLabeledError::Forward)
+    }
+
     /// Like [`LabeledLaraGraph::skip_then_visit_each_out_edge_for_label`] on the forward store.
     pub fn skip_then_visit_each_forward_out_edge_for_label<Visit, Err>(
         &self,

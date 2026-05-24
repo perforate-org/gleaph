@@ -868,6 +868,177 @@ mod tests {
         expected.sort_unstable();
         assert_eq!(weights, expected);
     }
+
+    #[test]
+    fn dense_edge_value_batches_follow_requested_order() {
+        let graph = valued_test_graph();
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let road = BucketLabelKey::from_raw(2);
+        graph
+            .ensure_label_bucket_value_width(VertexId::from(0), road, ValueWidthCode::W2)
+            .unwrap();
+        for (target, weight) in [(1, 10u16), (2, 20), (3, 30)] {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    VertexId::from(0),
+                    road,
+                    ValuedTestEdge::with_u16(target, weight),
+                )
+                .unwrap();
+        }
+
+        let mut scratch = LabeledEdgeValueBatchScratch::default();
+        let mut asc = Vec::new();
+        graph
+            .visit_out_edge_value_batches_for_label(
+                VertexId::from(0),
+                road,
+                OutEdgeOrder::Ascending,
+                &mut scratch,
+                |batch| {
+                    assert!(batch.dense);
+                    assert_eq!(batch.width_code, ValueWidthCode::W2);
+                    asc.extend(
+                        batch
+                            .value_bytes
+                            .chunks_exact(2)
+                            .map(|b| u16::from_le_bytes([b[0], b[1]])),
+                    );
+                },
+            )
+            .unwrap();
+        assert_eq!(asc, vec![10, 20, 30]);
+
+        let mut desc = Vec::new();
+        graph
+            .visit_out_edge_value_batches_for_label(
+                VertexId::from(0),
+                road,
+                OutEdgeOrder::Descending,
+                &mut scratch,
+                |batch| {
+                    assert!(batch.dense);
+                    desc.extend(
+                        batch
+                            .value_bytes
+                            .chunks_exact(2)
+                            .map(|b| u16::from_le_bytes([b[0], b[1]])),
+                    );
+                },
+            )
+            .unwrap();
+        assert_eq!(desc, vec![30, 20, 10]);
+    }
+
+    #[test]
+    fn edge_value_batches_keep_label_widths_separate() {
+        let graph = valued_test_graph();
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let tiny = BucketLabelKey::from_raw(2);
+        let wide = BucketLabelKey::from_raw(3);
+        graph
+            .ensure_label_bucket_value_width(VertexId::from(0), tiny, ValueWidthCode::W1)
+            .unwrap();
+        graph
+            .ensure_label_bucket_value_width(VertexId::from(0), wide, ValueWidthCode::W16)
+            .unwrap();
+        graph
+            .insert_edge_skip_leaf_cascade(
+                VertexId::from(0),
+                tiny,
+                ValuedTestEdge::with_bytes(1, &[7]),
+            )
+            .unwrap();
+        graph
+            .insert_edge_skip_leaf_cascade(
+                VertexId::from(0),
+                wide,
+                ValuedTestEdge::with_bytes(2, &[9; 16]),
+            )
+            .unwrap();
+
+        let mut scratch = LabeledEdgeValueBatchScratch::default();
+        let mut tiny_bytes = Vec::new();
+        graph
+            .visit_out_edge_value_batches_for_label(
+                VertexId::from(0),
+                tiny,
+                OutEdgeOrder::Ascending,
+                &mut scratch,
+                |batch| {
+                    assert_eq!(batch.label_id, tiny);
+                    assert_eq!(batch.width_code, ValueWidthCode::W1);
+                    tiny_bytes.extend_from_slice(batch.value_bytes);
+                },
+            )
+            .unwrap();
+        assert_eq!(tiny_bytes, vec![7]);
+
+        let mut wide_bytes = Vec::new();
+        graph
+            .visit_out_edge_value_batches_for_label(
+                VertexId::from(0),
+                wide,
+                OutEdgeOrder::Ascending,
+                &mut scratch,
+                |batch| {
+                    assert_eq!(batch.label_id, wide);
+                    assert_eq!(batch.width_code, ValueWidthCode::W16);
+                    wide_bytes.extend_from_slice(batch.value_bytes);
+                },
+            )
+            .unwrap();
+        assert_eq!(wide_bytes, vec![9; 16]);
+    }
+
+    #[test]
+    fn log_backed_edge_value_batches_match_iterator_values() {
+        let graph = valued_test_graph_with_capacity(1 << 16);
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let road = BucketLabelKey::from_raw(2);
+        graph
+            .ensure_label_bucket_value_width(VertexId::from(0), road, ValueWidthCode::W2)
+            .unwrap();
+        for target in 1..=33u32 {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    VertexId::from(0),
+                    road,
+                    ValuedTestEdge::with_u16(target, target as u16),
+                )
+                .unwrap();
+        }
+        let vertex = graph.vertices().get(VertexId::from(0));
+        let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
+        let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
+        assert!(bucket.overflow_log_head() >= 0);
+
+        let mut from_iter = Vec::new();
+        graph
+            .for_each_edges_for_label_ordered(
+                VertexId::from(0),
+                road,
+                OutEdgeOrder::Descending,
+                |edge| from_iter.extend_from_slice(edge.edge_value_bytes()),
+            )
+            .unwrap();
+
+        let mut scratch = LabeledEdgeValueBatchScratch::default();
+        let mut from_batches = Vec::new();
+        graph
+            .visit_out_edge_value_batches_for_label(
+                VertexId::from(0),
+                road,
+                OutEdgeOrder::Descending,
+                &mut scratch,
+                |batch| {
+                    assert!(!batch.dense);
+                    from_batches.extend_from_slice(batch.value_bytes);
+                },
+            )
+            .unwrap();
+        assert_eq!(from_batches, from_iter);
+    }
     #[test]
     fn valued_default_label_insert_uses_bucket_storage() {
         let graph = valued_test_graph();

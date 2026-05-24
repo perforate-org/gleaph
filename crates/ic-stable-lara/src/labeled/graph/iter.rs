@@ -14,6 +14,48 @@ use std::{iter::FusedIterator, num::NonZero};
 
 use super::{LabeledLaraGraph, OutEdgeOrder};
 
+/// Reusable buffers for labeled edge-value batch traversal.
+#[derive(Clone, Debug)]
+pub struct LabeledEdgeValueBatchScratch<E> {
+    /// Edge rows in the same order as the parallel value byte chunks.
+    pub edges: Vec<E>,
+    /// Flattened value bytes: `edges.len() * batch.width_code.byte_width()` bytes.
+    pub value_bytes: Vec<u8>,
+}
+
+impl<E> Default for LabeledEdgeValueBatchScratch<E> {
+    fn default() -> Self {
+        Self {
+            edges: Vec::new(),
+            value_bytes: Vec::new(),
+        }
+    }
+}
+
+impl<E> LabeledEdgeValueBatchScratch<E> {
+    /// Clears both reusable buffers while preserving allocation capacity.
+    pub fn clear(&mut self) {
+        self.edges.clear();
+        self.value_bytes.clear();
+    }
+}
+
+/// One batch of edges and their parallel value bytes for a single label bucket.
+pub struct LabeledEdgeValueBatch<'a, E> {
+    /// Label bucket visited by this batch.
+    pub label_id: BucketLabelKey,
+    /// Physical byte width of each edge value in this batch.
+    pub width_code: crate::labeled::slot_index::ValueWidthCode,
+    /// Scan order used for both `edges` and `value_bytes`.
+    pub order: OutEdgeOrder,
+    /// Edge rows in scan order.
+    pub edges: &'a [E],
+    /// Flattened edge-value bytes in the same order as `edges`.
+    pub value_bytes: &'a [u8],
+    /// `true` when the batch was read from contiguous resident edge/value slab spans.
+    pub dense: bool,
+}
+
 /// Streaming iterator over outgoing edges in a fixed scan order (see
 /// [`LabeledLaraGraph::desc_out_edges_iter`], [`LabeledLaraGraph::asc_out_edges_iter`], and
 /// [`LabeledLaraGraph::out_edges_by_directedness_iter`]).

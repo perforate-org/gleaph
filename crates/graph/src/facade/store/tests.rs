@@ -9,7 +9,7 @@ use gleaph_graph_kernel::entry::{
 };
 use ic_stable_lara::{
     MaintenanceBudget, OutEdgeOrder, VertexId,
-    labeled::{BucketLabelKey as LaraLabelId, LabeledOrientation},
+    labeled::{BucketLabelKey as LaraLabelId, LabeledEdgeValueBatchScratch, LabeledOrientation},
     traits::CsrEdge,
 };
 use std::collections::BTreeMap;
@@ -163,6 +163,55 @@ fn i32_edge_value_profile_round_trip() {
         .find(|edge| edge.neighbor_vid() == target)
         .expect("inserted edge");
     assert_eq!(edge.value_bytes(), &100i32.to_le_bytes());
+}
+
+#[test]
+fn graph_store_visits_fixed_label_edge_value_batches() {
+    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
+
+    let store = GraphStore::new();
+    let source = store.insert_vertex().expect("source");
+    let first = store.insert_vertex().expect("first");
+    let second = store.insert_vertex().expect("second");
+    let label_id = store
+        .get_or_insert_edge_label_id("BatchValues")
+        .expect("label");
+    store
+        .install_edge_label_value_profile_at_init(
+            label_id,
+            EdgeValueProfile {
+                width: EdgeValueWidth::W2,
+                encoding: EdgeValueEncoding::RawU16,
+            },
+        )
+        .expect("profile");
+    store
+        .insert_directed_edge_with_value_bytes(source, first, Some(label_id), &[1, 0])
+        .expect("first edge");
+    store
+        .insert_directed_edge_with_value_bytes(source, second, Some(label_id), &[2, 0])
+        .expect("second edge");
+
+    let mut scratch = LabeledEdgeValueBatchScratch::default();
+    let mut values = Vec::new();
+    store
+        .visit_out_edge_value_batches_for_label(
+            source,
+            lara_label(label_id.pack(EdgeDirectedness::Directed)),
+            OutEdgeOrder::Ascending,
+            &mut scratch,
+            |batch| {
+                assert!(batch.dense);
+                values.extend(
+                    batch
+                        .value_bytes
+                        .chunks_exact(2)
+                        .map(|b| u16::from_le_bytes([b[0], b[1]])),
+                );
+            },
+        )
+        .expect("batch traversal");
+    assert_eq!(values, vec![1, 2]);
 }
 
 #[test]

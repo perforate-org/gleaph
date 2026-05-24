@@ -159,13 +159,25 @@ pub fn flag_tombstone_graph() -> LabeledLaraGraph<FlagTombstoneEdge, crate::Vect
 pub struct ValuedTestEdge {
     pub target: u32,
     pub slot_index: u32,
-    pub value: [u8; 8],
+    pub value: [u8; 64],
     pub value_len: u8,
 }
 
 impl ValuedTestEdge {
+    pub fn with_bytes(target: u32, bytes: &[u8]) -> Self {
+        let mut value = [0u8; 64];
+        let len = bytes.len().min(64);
+        value[..len].copy_from_slice(&bytes[..len]);
+        Self {
+            target,
+            slot_index: 0,
+            value,
+            value_len: len as u8,
+        }
+    }
+
     pub fn with_u16(target: u32, inline: u16) -> Self {
-        let mut value = [0u8; 8];
+        let mut value = [0u8; 64];
         value[0..2].copy_from_slice(&inline.to_le_bytes());
         Self {
             target,
@@ -176,7 +188,7 @@ impl ValuedTestEdge {
     }
 
     pub fn with_i32(target: u32, inline: i32) -> Self {
-        let mut value = [0u8; 8];
+        let mut value = [0u8; 64];
         value[0..4].copy_from_slice(&inline.to_le_bytes());
         Self {
             target,
@@ -194,7 +206,7 @@ impl CsrEdge for ValuedTestEdge {
         Self {
             target: u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
             slot_index: 0,
-            value: [0u8; 8],
+            value: [0u8; 64],
             value_len: 0,
         }
     }
@@ -231,8 +243,8 @@ impl CsrEdge for ValuedTestEdge {
     }
 
     fn with_stored_value_bytes(mut self, width: u8, bytes: &[u8]) -> Self {
-        self.value = [0u8; 8];
-        let len = usize::from(width).min(bytes.len()).min(8);
+        self.value = [0u8; 64];
+        let len = usize::from(width).min(bytes.len()).min(64);
         self.value[..len].copy_from_slice(&bytes[..len]);
         self.value_len = width;
         self
@@ -244,7 +256,7 @@ impl CsrEdgeTombstone for ValuedTestEdge {
         Self {
             target: u32::from(VertexId::EDGE_TOMBSTONE_SENTINEL),
             slot_index: 0,
-            value: [0u8; 8],
+            value: [0u8; 64],
             value_len: 0,
         }
     }

@@ -19,8 +19,10 @@ use canbench_rs::bench_scope;
 use ic_stable_structures::Memory;
 
 use super::error::LabeledOperationError;
-use super::iter::LabeledOutEdgesIterKind;
+use super::iter::{LabeledEdgeValueBatch, LabeledEdgeValueBatchScratch, LabeledOutEdgesIterKind};
 use super::{BucketSearch, LabeledLaraGraph, LabeledOutEdgesIter, LabeledSpanIter, OutEdgeOrder};
+
+const EDGE_VALUE_BATCH_TARGET_BYTES: usize = 2048;
 
 impl<E, M> LabeledLaraGraph<E, M>
 where
@@ -761,6 +763,156 @@ where
                 iter: self.edges.asc_out_edges_iter(&acc, VertexId::from(0))?,
             }),
         }
+    }
+
+    /// Visits outgoing edges for one label as batches with parallel flattened value bytes.
+    pub fn visit_out_edge_value_batches_for_label<Visit>(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        order: OutEdgeOrder,
+        scratch: &mut LabeledEdgeValueBatchScratch<E>,
+        mut visit: Visit,
+    ) -> Result<(), LabeledOperationError>
+    where
+        Visit: for<'b> FnMut(LabeledEdgeValueBatch<'b, E>),
+    {
+        self.ensure_vertex(src)?;
+        let vertex = self.vertices.get(src);
+        if vertex.is_default_edge_labeled() {
+            return Ok(());
+        }
+        let (slot, bucket) = match self.find_bucket(src, &vertex, label_id)? {
+            BucketSearch::Found { slot, bucket } => (slot, bucket),
+            BucketSearch::Missing { .. } => return Ok(()),
+        };
+        if bucket.degree() == 0 || bucket.value_width() == 0 {
+            return Ok(());
+        }
+        let dense = bucket.value_log_head() < 0
+            && bucket.overflow_log_head() < 0
+            && bucket.stored_slots == bucket.degree();
+        if dense {
+            return self
+                .visit_dense_out_edge_value_batches_for_bucket(bucket, order, scratch, &mut visit);
+        }
+
+        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
+        let mut iter =
+            self.labeled_bucket_span_iter(src, order, &vertex, &[bucket], 0, bucket_index)?;
+        let width = usize::from(bucket.value_width());
+        let batch_edges = (EDGE_VALUE_BATCH_TARGET_BYTES / width).max(1);
+        loop {
+            scratch.clear();
+            scratch.edges.reserve(batch_edges);
+            scratch.value_bytes.reserve(batch_edges * width);
+            for _ in 0..batch_edges {
+                let Some(edge) = iter.next() else {
+                    break;
+                };
+                scratch
+                    .value_bytes
+                    .extend_from_slice(edge.edge_value_bytes());
+                scratch.edges.push(edge);
+            }
+            if scratch.edges.is_empty() {
+                return Ok(());
+            }
+            visit(LabeledEdgeValueBatch {
+                label_id,
+                width_code: bucket.value_width_code(),
+                order,
+                edges: &scratch.edges,
+                value_bytes: &scratch.value_bytes,
+                dense: false,
+            });
+        }
+    }
+
+    fn visit_dense_out_edge_value_batches_for_bucket<Visit>(
+        &self,
+        bucket: LabelBucket,
+        order: OutEdgeOrder,
+        scratch: &mut LabeledEdgeValueBatchScratch<E>,
+        visit: &mut Visit,
+    ) -> Result<(), LabeledOperationError>
+    where
+        Visit: for<'b> FnMut(LabeledEdgeValueBatch<'b, E>),
+    {
+        let width = usize::from(bucket.value_width());
+        let batch_edges = (EDGE_VALUE_BATCH_TARGET_BYTES / width).max(1);
+        let degree = bucket.degree();
+        let mut remaining = degree;
+        while remaining > 0 {
+            let take = remaining.min(batch_edges as u32);
+            let first_slot = match order {
+                OutEdgeOrder::Descending => remaining - take,
+                OutEdgeOrder::Ascending => degree - remaining,
+            };
+            scratch.clear();
+            scratch.edges.reserve(take as usize);
+            scratch.value_bytes.reserve(take as usize * width);
+
+            let mut raw_edges = vec![0u8; take as usize * E::BYTES];
+            self.edges
+                .read_slots_contiguous(bucket.edge_start() + u64::from(first_slot), &mut raw_edges);
+            let value_offset = bucket
+                .value_offset()
+                .checked_add(u64::from(first_slot) * u64::from(bucket.value_width()))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let mut raw_values = vec![0u8; take as usize * width];
+            self.values.read_bytes(value_offset, &mut raw_values);
+
+            match order {
+                OutEdgeOrder::Ascending => {
+                    for i in 0..take as usize {
+                        let slot = first_slot + i as u32;
+                        let edge_off = i * E::BYTES;
+                        let value_off = i * width;
+                        let edge = E::read_from(&raw_edges[edge_off..edge_off + E::BYTES])
+                            .with_slot_index(slot)
+                            .with_label_id(bucket.bucket_label_key().raw());
+                        if edge.is_deleted_slot() {
+                            continue;
+                        }
+                        scratch.edges.push(edge);
+                        scratch
+                            .value_bytes
+                            .extend_from_slice(&raw_values[value_off..value_off + width]);
+                    }
+                }
+                OutEdgeOrder::Descending => {
+                    for i in (0..take as usize).rev() {
+                        let slot = first_slot + i as u32;
+                        let edge_off = i * E::BYTES;
+                        let value_off = i * width;
+                        let edge = E::read_from(&raw_edges[edge_off..edge_off + E::BYTES])
+                            .with_slot_index(slot)
+                            .with_label_id(bucket.bucket_label_key().raw());
+                        if edge.is_deleted_slot() {
+                            continue;
+                        }
+                        scratch.edges.push(edge);
+                        scratch
+                            .value_bytes
+                            .extend_from_slice(&raw_values[value_off..value_off + width]);
+                    }
+                }
+            }
+
+            if !scratch.edges.is_empty() {
+                visit(LabeledEdgeValueBatch {
+                    label_id: bucket.bucket_label_key(),
+                    width_code: bucket.value_width_code(),
+                    order,
+                    edges: &scratch.edges,
+                    value_bytes: &scratch.value_bytes,
+                    dense: true,
+                });
+            }
+            remaining -= take;
+        }
+        Ok(())
     }
     pub fn visit_out_edges<Match, Visit>(
         &self,
