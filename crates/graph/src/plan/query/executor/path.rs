@@ -15,9 +15,12 @@ use gleaph_gql::types::{EdgeDirection, LabelExpr, PathElement};
 use gleaph_gql::value_cmp::compare_values;
 use gleaph_gql_planner::BindingLayout;
 use gleaph_gql_planner::plan::{PlanOp, ShortestMode, ShortestPathCost, Str, VarLenSpec};
-use gleaph_graph_kernel::entry::{EdgeLabelId, EdgeSlotIndex, PreparedWeightDecoder};
+use gleaph_graph_kernel::entry::{
+    EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, PreparedWeightDecoder,
+};
 use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
-use ic_stable_lara::VertexId;
+use ic_stable_lara::labeled::{LabeledEdgeValueBatchScratch, OutEdgeOrder};
+use ic_stable_lara::{BucketLabelKey as LaraLabelId, VertexId};
 use nohash_hasher::{IntMap, IntSet};
 use rapidhash::fast::RapidHasher;
 
@@ -245,24 +248,78 @@ impl ShortestFixedLabelExpand {
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _scope = bench_scope("shortest_fixed_expand_forward");
                 let mut expand_err = None;
-                store.for_each_directed_out_edges_for_label_unchecked(current, label, |edge| {
-                    if expand_err.is_some() {
-                        return;
-                    }
-                    if let Ok(Some(edge_dst @ ExpandDst::Local(_))) =
-                        ExpandDst::from_edge(store, &edge)
-                    {
-                        match edge_binding_for_expand(
-                            store,
+                if store
+                    .edge_label_value_profile(label)
+                    .is_some_and(|profile| profile.required_byte_width() > 0)
+                {
+                    let storage_label =
+                        LaraLabelId::from_raw(label.pack(EdgeDirectedness::Directed).raw());
+                    let mut scratch = LabeledEdgeValueBatchScratch::default();
+                    store
+                        .visit_out_edge_value_batches_for_label(
                             current,
-                            EdgeDirection::PointingRight,
-                            edge,
-                        ) {
-                            Ok(binding) => out.push((edge_dst, binding)),
-                            Err(err) => expand_err = Some(err),
-                        }
-                    }
-                })?;
+                            storage_label,
+                            OutEdgeOrder::Descending,
+                            &mut scratch,
+                            |batch| {
+                                if expand_err.is_some() {
+                                    return;
+                                }
+                                let width = usize::from(batch.width_code.byte_width());
+                                debug_assert_eq!(
+                                    batch.value_bytes.len(),
+                                    batch.edges.len() * width
+                                );
+                                for (edge, value) in batch
+                                    .edges
+                                    .iter()
+                                    .zip(batch.value_bytes.chunks_exact(width))
+                                {
+                                    if expand_err.is_some() {
+                                        return;
+                                    }
+                                    let edge = edge.with_value_bytes(value);
+                                    if let Ok(Some(edge_dst @ ExpandDst::Local(_))) =
+                                        ExpandDst::from_edge(store, &edge)
+                                    {
+                                        match edge_binding_for_expand(
+                                            store,
+                                            current,
+                                            EdgeDirection::PointingRight,
+                                            edge,
+                                        ) {
+                                            Ok(binding) => out.push((edge_dst, binding)),
+                                            Err(err) => expand_err = Some(err),
+                                        }
+                                    }
+                                }
+                            },
+                        )
+                        .map_err(crate::facade::GraphStoreError::from)?;
+                } else {
+                    store.for_each_directed_out_edges_for_label_unchecked(
+                        current,
+                        label,
+                        |edge| {
+                            if expand_err.is_some() {
+                                return;
+                            }
+                            if let Ok(Some(edge_dst @ ExpandDst::Local(_))) =
+                                ExpandDst::from_edge(store, &edge)
+                            {
+                                match edge_binding_for_expand(
+                                    store,
+                                    current,
+                                    EdgeDirection::PointingRight,
+                                    edge,
+                                ) {
+                                    Ok(binding) => out.push((edge_dst, binding)),
+                                    Err(err) => expand_err = Some(err),
+                                }
+                            }
+                        },
+                    )?;
+                }
                 if let Some(err) = expand_err {
                     return Err(err);
                 }
