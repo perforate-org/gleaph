@@ -15,6 +15,7 @@ use gleaph_graph_kernel::federation::{
 };
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
+use ic_stable_lara::labeled::LabeledEdgeValueBatchScratch;
 use ic_stable_lara::traits::CsrEdge;
 use nohash_hasher::IntSet;
 
@@ -980,7 +981,38 @@ where
     match direction {
         EdgeDirection::PointingRight => {
             if let Some(lid) = edge_label_id {
-                store.for_each_directed_out_edges_for_label(src_id, lid, order, visit)?;
+                if store
+                    .edge_label_value_profile(lid)
+                    .is_some_and(|profile| profile.required_byte_width() > 0)
+                {
+                    let label = LaraLabelId::from_raw(lid.pack(EdgeDirectedness::Directed).raw());
+                    let mut scratch = LabeledEdgeValueBatchScratch::default();
+                    let mut visit = visit;
+                    store
+                        .visit_out_edge_value_batches_for_label(
+                            src_id,
+                            label,
+                            order,
+                            &mut scratch,
+                            |batch| {
+                                let width = usize::from(batch.width_code.byte_width());
+                                debug_assert_eq!(
+                                    batch.value_bytes.len(),
+                                    batch.edges.len() * width
+                                );
+                                for (edge, value) in batch
+                                    .edges
+                                    .iter()
+                                    .zip(batch.value_bytes.chunks_exact(width))
+                                {
+                                    visit(edge.with_value_bytes(value));
+                                }
+                            },
+                        )
+                        .map_err(GraphStoreError::from)?;
+                } else {
+                    store.for_each_directed_out_edges_for_label(src_id, lid, order, visit)?;
+                }
             } else {
                 store.for_each_directed_out_edges(src_id, order, visit)?;
             }
@@ -1885,6 +1917,91 @@ mod tests {
             .expect("value-profile-only gleaph weight");
         assert_eq!(result.rows[0].get("w"), Some(&Value::Float32(9.0)));
     }
+
+    #[test]
+    fn ascending_forward_fixed_label_candidates_use_batched_edge_values() {
+        let store = GraphStore::new();
+        use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
+        let a = store
+            .insert_vertex_named(["BatchExpandA"], Vec::<(&str, Value)>::new())
+            .expect("a");
+        let b = store
+            .insert_vertex_named(["BatchExpandB"], Vec::<(&str, Value)>::new())
+            .expect("b");
+        let c = store
+            .insert_vertex_named(["BatchExpandC"], Vec::<(&str, Value)>::new())
+            .expect("c");
+        let label_id = store
+            .get_or_insert_edge_label_id("BatchExpandRoad")
+            .unwrap();
+        store
+            .install_edge_label_value_profile_at_init(
+                label_id,
+                EdgeValueProfile {
+                    width: EdgeValueWidth::W2,
+                    encoding: EdgeValueEncoding::RawU16,
+                },
+            )
+            .unwrap();
+        store
+            .insert_directed_edge_with_value_bytes(a, b, Some(label_id), &[1, 0])
+            .unwrap();
+        store
+            .insert_directed_edge_with_value_bytes(a, c, Some(label_id), &[2, 0])
+            .unwrap();
+
+        let mut out = Vec::new();
+        super::expand_candidates_into(
+            &store,
+            a,
+            EdgeDirection::PointingRight,
+            Some(label_id),
+            EdgeSequenceOrder::Ascending,
+            None,
+            &params(),
+            &mut out,
+        )
+        .expect("expand candidates");
+
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].1.value_bytes_slice(), &[1, 0]);
+        assert_eq!(out[1].1.value_bytes_slice(), &[2, 0]);
+    }
+
+    #[test]
+    fn ascending_forward_fixed_label_without_edge_values_keeps_scalar_scan() {
+        let store = GraphStore::new();
+        let a = store
+            .insert_vertex_named(["ScalarExpandA"], Vec::<(&str, Value)>::new())
+            .expect("a");
+        let b = store
+            .insert_vertex_named(["ScalarExpandB"], Vec::<(&str, Value)>::new())
+            .expect("b");
+        let label_id = store
+            .get_or_insert_edge_label_id("ScalarExpandRoad")
+            .unwrap();
+        store
+            .insert_directed_edge_with_value_bytes(a, b, Some(label_id), &[])
+            .unwrap();
+
+        let mut out = Vec::new();
+        super::expand_candidates_into(
+            &store,
+            a,
+            EdgeDirection::PointingRight,
+            Some(label_id),
+            EdgeSequenceOrder::Ascending,
+            None,
+            &params(),
+            &mut out,
+        )
+        .expect("expand candidates");
+
+        assert_eq!(out.len(), 1);
+        assert!(matches!(out[0].0, ExpandDst::Local(dst) if dst == b));
+        assert!(out[0].1.value_bytes_slice().is_empty());
+    }
+
     #[test]
     fn gleaph_weight_rejects_edge_value_width_mismatch() {
         let store = GraphStore::new();
