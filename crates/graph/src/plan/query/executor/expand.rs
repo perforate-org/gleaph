@@ -15,7 +15,6 @@ use gleaph_graph_kernel::federation::{
 };
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
-use ic_stable_lara::labeled::LabeledEdgeValueBatchScratch;
 use ic_stable_lara::traits::CsrEdge;
 use nohash_hasher::IntSet;
 
@@ -981,38 +980,8 @@ where
     match direction {
         EdgeDirection::PointingRight => {
             if let Some(lid) = edge_label_id {
-                if store
-                    .edge_label_value_profile(lid)
-                    .is_some_and(|profile| profile.required_byte_width() > 0)
-                {
-                    let label = LaraLabelId::from_raw(lid.pack(EdgeDirectedness::Directed).raw());
-                    let mut scratch = LabeledEdgeValueBatchScratch::default();
-                    let mut visit = visit;
-                    store
-                        .visit_out_edge_value_batches_for_label(
-                            src_id,
-                            label,
-                            order,
-                            &mut scratch,
-                            |batch| {
-                                let width = usize::from(batch.width_code.byte_width());
-                                debug_assert_eq!(
-                                    batch.value_bytes.len(),
-                                    batch.edges.len() * width
-                                );
-                                for (edge, value) in batch
-                                    .edges
-                                    .iter()
-                                    .zip(batch.value_bytes.chunks_exact(width))
-                                {
-                                    visit(edge.with_value_bytes(value));
-                                }
-                            },
-                        )
-                        .map_err(GraphStoreError::from)?;
-                } else {
-                    store.for_each_directed_out_edges_for_label(src_id, lid, order, visit)?;
-                }
+                store
+                    .for_each_directed_out_edges_for_label_with_values(src_id, lid, order, visit)?;
             } else {
                 store.for_each_directed_out_edges(src_id, order, visit)?;
             }
