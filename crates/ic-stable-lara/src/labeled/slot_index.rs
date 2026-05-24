@@ -30,11 +30,26 @@ pub enum ValueWidthCode {
     W4 = 3,
     /// 8 bytes per edge slot.
     W8 = 4,
+    /// 16 bytes per edge slot.
+    W16 = 5,
+    /// 32 bytes per edge slot.
+    W32 = 6,
+    /// 64 bytes per edge slot.
+    W64 = 7,
 }
 
 impl ValueWidthCode {
-    /// All valid codes (excluding reserved 5..7).
-    pub const VALID: [Self; 5] = [Self::Zero, Self::W1, Self::W2, Self::W4, Self::W8];
+    /// All valid codes.
+    pub const VALID: [Self; 8] = [
+        Self::Zero,
+        Self::W1,
+        Self::W2,
+        Self::W4,
+        Self::W8,
+        Self::W16,
+        Self::W32,
+        Self::W64,
+    ];
 
     /// Byte width for a valid code (`0` for [`Self::Zero`]).
     #[inline]
@@ -45,6 +60,9 @@ impl ValueWidthCode {
             Self::W2 => 2,
             Self::W4 => 4,
             Self::W8 => 8,
+            Self::W16 => 16,
+            Self::W32 => 32,
+            Self::W64 => 64,
         }
     }
 
@@ -57,6 +75,9 @@ impl ValueWidthCode {
             2 => Some(Self::W2),
             4 => Some(Self::W4),
             8 => Some(Self::W8),
+            16 => Some(Self::W16),
+            32 => Some(Self::W32),
+            64 => Some(Self::W64),
             _ => None,
         }
     }
@@ -92,7 +113,7 @@ pub fn try_encode_bucket_word(
     }
     let head = try_encode_overflow_log_byte(overflow_log_head)?;
     let code = value_width_code as u64;
-    if code > 4 {
+    if code > 7 {
         return None;
     }
     Some(
@@ -120,7 +141,7 @@ pub fn replace_bucket_overflow_log_head(word: u64, overflow_log_head: i32) -> Op
 #[inline]
 pub fn replace_bucket_value_width_code(word: u64, value_width_code: ValueWidthCode) -> u64 {
     let code = value_width_code as u64;
-    debug_assert!(code <= 4);
+    debug_assert!(code <= 7);
     (word & !BUCKET_VALUE_WIDTH_MASK) | (code << BUCKET_VALUE_WIDTH_SHIFT)
 }
 
@@ -145,6 +166,9 @@ pub fn decode_bucket_value_width_code(word: u64) -> ValueWidthCode {
         2 => ValueWidthCode::W2,
         3 => ValueWidthCode::W4,
         4 => ValueWidthCode::W8,
+        5 => ValueWidthCode::W16,
+        6 => ValueWidthCode::W32,
+        7 => ValueWidthCode::W64,
         _ => ValueWidthCode::Zero,
     }
 }

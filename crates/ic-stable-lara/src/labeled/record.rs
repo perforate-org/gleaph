@@ -315,9 +315,6 @@ impl LabelBucket {
         if head_byte != OVERFLOW_LOG_NONE && head_byte >= 170 {
             return Err(LabelBucketFieldError::OverflowLogHeadOutOfRange);
         }
-        if bucket_value_width_code_raw(word) > 4 {
-            return Err(LabelBucketFieldError::ValueWidthCodeReserved);
-        }
         let value_offset = read_u40(&chunk[16..21].try_into().unwrap());
         if !byte_offset_fits(value_offset) {
             return Err(LabelBucketFieldError::ValueOffsetOverflow);
@@ -349,7 +346,7 @@ pub enum LabelBucketFieldError {
     ValueOffsetOverflow,
     /// Value overflow log head byte is out of range.
     ValueLogHeadOutOfRange,
-    /// Value-width code uses reserved values 5..7.
+    /// Value-width code is out of range for the 3-bit field (unreachable on valid wire).
     ValueWidthCodeReserved,
 }
 
@@ -1192,13 +1189,23 @@ mod tests {
     }
 
     #[test]
-    fn label_bucket_rejects_reserved_value_width_code() {
-        let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 0, -1);
+    fn label_bucket_round_trips_w64_value_width_code() {
+        use crate::labeled::slot_index::ValueWidthCode;
+        let bucket = LabelBucket::from_parts_with_value(
+            BucketLabelKey::default(),
+            0,
+            0,
+            0,
+            -1,
+            ValueWidthCode::W64,
+            0,
+            -1,
+        );
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
-        bytes[7] |= 0x50;
-        let err = LabelBucket::try_read_from(&bytes).expect_err("reserved value width code");
-        assert_eq!(err, LabelBucketFieldError::ValueWidthCodeReserved);
+        let decoded = LabelBucket::try_read_from(&bytes).expect("decode");
+        assert_eq!(decoded.value_width_code(), ValueWidthCode::W64);
+        assert_eq!(decoded.value_width(), 64);
     }
 
     #[test]

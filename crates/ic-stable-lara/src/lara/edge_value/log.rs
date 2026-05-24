@@ -9,9 +9,9 @@ pub const MAGIC: [u8; 3] = *b"LVL";
 /// Current overflow-log layout version.
 pub const LAYOUT_VERSION: u8 = 1;
 const HEADER_SIZE: u64 = 32;
-const INLINE_LOG_ENTRY_BYTES: usize = 32;
+const INLINE_LOG_ENTRY_BYTES: usize = 72;
 /// Maximum encoded value width stored in one log entry.
-pub const PAYLOAD_BYTES: usize = 8;
+pub const PAYLOAD_BYTES: usize = 64;
 
 /// Default per-segment overflow-log capacity (matches edge log).
 pub const DEFAULT_MAX_LOG_ENTRIES: u32 = 170;

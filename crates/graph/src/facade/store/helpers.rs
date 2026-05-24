@@ -133,7 +133,7 @@ pub(super) fn build_edge_to_remote_with_value_bytes(
 
 pub(super) fn validate_edge_value_bytes(value_bytes: &[u8]) -> Result<(), GraphStoreError> {
     match value_bytes.len() {
-        0 | 1 | 2 | 4 | 8 => Ok(()),
+        0 | 1 | 2 | 4 | 8 | 16 | 32 | 64 => Ok(()),
 
         len => Err(GraphStoreError::InvalidEdgeValueWidth(len)),
     }

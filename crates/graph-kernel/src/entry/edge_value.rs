@@ -20,6 +20,9 @@ pub enum EdgeValueWidth {
     W2,
     W4,
     W8,
+    W16,
+    W32,
+    W64,
 }
 
 impl EdgeValueWidth {
@@ -31,6 +34,9 @@ impl EdgeValueWidth {
             Self::W2 => 2,
             Self::W4 => 4,
             Self::W8 => 8,
+            Self::W16 => 16,
+            Self::W32 => 32,
+            Self::W64 => 64,
         }
     }
 
@@ -42,6 +48,9 @@ impl EdgeValueWidth {
             Self::W2 => ValueWidthCode::W2,
             Self::W4 => ValueWidthCode::W4,
             Self::W8 => ValueWidthCode::W8,
+            Self::W16 => ValueWidthCode::W16,
+            Self::W32 => ValueWidthCode::W32,
+            Self::W64 => ValueWidthCode::W64,
         }
     }
 
@@ -53,6 +62,9 @@ impl EdgeValueWidth {
             2 => Some(Self::W2),
             4 => Some(Self::W4),
             8 => Some(Self::W8),
+            16 => Some(Self::W16),
+            32 => Some(Self::W32),
+            64 => Some(Self::W64),
             _ => None,
         }
     }
@@ -72,6 +84,10 @@ pub enum EdgeValueEncoding {
     F16,
     F32,
     F64,
+    RawU128,
+    RawI128,
+    RawFixed32,
+    RawFixed64,
     WeightRawU16,
     WeightLinearU16 { min: f32, max: f32 },
     WeightLogU16 { min: f32, max: f32 },
@@ -95,6 +111,10 @@ pub enum DecodedEdgeValue {
     I16(i16),
     I32(i32),
     I64(i64),
+    U128(u128),
+    I128(i128),
+    Fixed32([u8; 32]),
+    Fixed64([u8; 64]),
     F32(f32),
     Weight(f32),
 }
@@ -112,6 +132,10 @@ pub enum PreparedEdgeValueDecoder {
     F16,
     F32,
     F64,
+    RawU128,
+    RawI128,
+    RawFixed32,
+    RawFixed64,
     WeightRawU16,
     WeightLinear { min: f32, scale: f32 },
     WeightLog { min_ln: f32, scale: f32 },
@@ -180,6 +204,11 @@ impl EdgeValueProfile {
                 EdgeValueWidth::W8,
                 EdgeValueEncoding::RawU64 | EdgeValueEncoding::RawI64 | EdgeValueEncoding::F64,
             ) => w == 8,
+            (EdgeValueWidth::W16, EdgeValueEncoding::RawU128 | EdgeValueEncoding::RawI128) => {
+                w == 16
+            }
+            (EdgeValueWidth::W32, EdgeValueEncoding::RawFixed32) => w == 32,
+            (EdgeValueWidth::W64, EdgeValueEncoding::RawFixed64) => w == 64,
             _ => false,
         };
         if !ok {
@@ -225,6 +254,10 @@ impl EdgeValueProfile {
             EdgeValueEncoding::F16 => PreparedEdgeValueDecoder::F16,
             EdgeValueEncoding::F32 => PreparedEdgeValueDecoder::F32,
             EdgeValueEncoding::F64 => PreparedEdgeValueDecoder::F64,
+            EdgeValueEncoding::RawU128 => PreparedEdgeValueDecoder::RawU128,
+            EdgeValueEncoding::RawI128 => PreparedEdgeValueDecoder::RawI128,
+            EdgeValueEncoding::RawFixed32 => PreparedEdgeValueDecoder::RawFixed32,
+            EdgeValueEncoding::RawFixed64 => PreparedEdgeValueDecoder::RawFixed64,
             EdgeValueEncoding::WeightRawU16 => PreparedEdgeValueDecoder::WeightRawU16,
             EdgeValueEncoding::WeightLinearU16 { min, max } => {
                 let scale = if max > min {
@@ -292,6 +325,14 @@ pub fn decode_edge_value(
         PreparedEdgeValueDecoder::F64 => {
             DecodedEdgeValue::F32(f64::from_le_bytes(read_fixed::<8>(bytes)) as f32)
         }
+        PreparedEdgeValueDecoder::RawU128 => {
+            DecodedEdgeValue::U128(u128::from_le_bytes(read_fixed::<16>(bytes)))
+        }
+        PreparedEdgeValueDecoder::RawI128 => {
+            DecodedEdgeValue::I128(i128::from_le_bytes(read_fixed::<16>(bytes)))
+        }
+        PreparedEdgeValueDecoder::RawFixed32 => DecodedEdgeValue::Fixed32(read_fixed::<32>(bytes)),
+        PreparedEdgeValueDecoder::RawFixed64 => DecodedEdgeValue::Fixed64(read_fixed::<64>(bytes)),
         PreparedEdgeValueDecoder::WeightRawU16 => {
             let v = u16::from_le_bytes(read_fixed::<2>(bytes)) as f32;
             validate_weight_f32(v)?;
@@ -453,6 +494,42 @@ mod tests {
         let dec = profile.prepare().expect("prepare");
         let err = decode_edge_weight(&dec, &42i32.to_le_bytes()).unwrap_err();
         assert_eq!(err, EdgeValueProfileError::WidthEncodingMismatch);
+    }
+
+    #[test]
+    fn wide_fixed_profiles_round_trip() {
+        for (width, encoding, expected) in [
+            (
+                EdgeValueWidth::W16,
+                EdgeValueEncoding::RawU128,
+                DecodedEdgeValue::U128(0x0123_4567_89AB_CDEF_u128),
+            ),
+            (
+                EdgeValueWidth::W32,
+                EdgeValueEncoding::RawFixed32,
+                DecodedEdgeValue::Fixed32([7u8; 32]),
+            ),
+            (
+                EdgeValueWidth::W64,
+                EdgeValueEncoding::RawFixed64,
+                DecodedEdgeValue::Fixed64([9u8; 64]),
+            ),
+        ] {
+            let profile = EdgeValueProfile { width, encoding };
+            let dec = profile.prepare().expect("prepare");
+            let bytes = match &expected {
+                DecodedEdgeValue::U128(v) => v.to_le_bytes().to_vec(),
+                DecodedEdgeValue::Fixed32(b) => b.to_vec(),
+                DecodedEdgeValue::Fixed64(b) => b.to_vec(),
+                _ => panic!("unexpected test case"),
+            };
+            assert_eq!(
+                decode_edge_value(&dec, &bytes).expect("decode"),
+                expected,
+                "width {:?}",
+                width
+            );
+        }
     }
 
     #[test]

@@ -8,13 +8,13 @@ The default edge label never stores values (`value_width = 0`).
 
 ## Wire layouts
 
-| Record | Size | Notes |
-|--------|------|--------|
-| `Edge` (CSR row) | 4 B | `VertexRef` target only |
-| `LabelBucket` | 22 B | + `value_offset` (u40), `value_log_head`, `value_width_code` in packed word |
-| `LabeledVertex` | 21 B | + `value_allocated_bytes` (u40) |
+| Record           | Size | Notes                                                                       |
+| ---------------- | ---- | --------------------------------------------------------------------------- |
+| `Edge` (CSR row) | 4 B  | `VertexRef` target only                                                     |
+| `LabelBucket`    | 22 B | + `value_offset` (u40), `value_log_head`, `value_width_code` in packed word |
+| `LabeledVertex`  | 21 B | + `value_allocated_bytes` (u40)                                             |
 
-`value_width_code` encodes physical width only: `0, 1, 2, 4, 8` bytes. Signed vs unsigned vs float semantics live in the shard **edge value profile** catalog (`EdgeValueProfile`).
+`value_width_code` encodes physical width only: `0, 1, 2, 4, 8, 16, 32, 64` bytes. Signed vs unsigned vs float semantics live in the shard **edge value profile** catalog (`EdgeValueProfile`).
 
 ## Invariant
 
@@ -34,7 +34,7 @@ Compaction and span rewrites must apply the **same logical order** to edges and 
 - Existing 10 edge/bucket memories
 - `value_slab` — byte CSR backing store (`EdgeValueStore`)
 - `value_free_spans` / `value_free_span_by_start` — retired byte-span index
-- `value_log` — per-PMA-leaf overflow log (`LVL`, 16 B entries: `prev`, `src`, 8 B payload)
+- `value_log` — per-PMA-leaf overflow log (`LVL`, 72 B entries: `prev`, `src`, 64 B payload)
 
 When an edge insert lands in the edge overflow log, the paired value bytes are written to the value log at the same entry index; `LabelBucket::value_log_head` tracks the chain head (parallel to `overflow_log_head`).
 

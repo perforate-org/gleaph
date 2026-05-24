@@ -1926,7 +1926,7 @@ mod tests {
             slot_index: 4,
             inline_value: 42,
             value_len: 2,
-            value_bytes: [42, 0, 0, 0, 0, 0, 0, 0],
+            value_bytes: gleaph_graph_kernel::entry::EdgeValuePayload::from_slice(&[42, 0]).bytes,
         };
         let binding = EdgeBinding::from_federated_neighbor_hit(&hit);
         assert_eq!(binding.value_len(), 2);

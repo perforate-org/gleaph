@@ -2,10 +2,10 @@
 
 use super::edge::MAX_EDGE_VALUE_BYTES;
 use candid::CandidType;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Stored edge-value bytes (not part of the 4-byte labeled CSR row).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, CandidType, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, CandidType)]
 pub struct EdgeValuePayload {
     pub bytes: [u8; MAX_EDGE_VALUE_BYTES],
     pub len: u8,
@@ -61,5 +61,30 @@ impl EdgeValuePayload {
         } else {
             0
         }
+    }
+}
+
+impl Serialize for EdgeValuePayload {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        (&self.len, self.as_slice()).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for EdgeValuePayload {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let (len, active): (u8, Vec<u8>) = Deserialize::deserialize(deserializer)?;
+        if usize::from(len) != active.len() {
+            return Err(serde::de::Error::custom(
+                "edge value len does not match active byte length",
+            ));
+        }
+        if active.len() > MAX_EDGE_VALUE_BYTES {
+            return Err(serde::de::Error::custom(format!(
+                "edge value length {} exceeds max {}",
+                active.len(),
+                MAX_EDGE_VALUE_BYTES
+            )));
+        }
+        Ok(Self::from_slice(&active))
     }
 }

@@ -30,7 +30,7 @@ pub use id::EdgeSlotIndex;
 pub use meta::EdgeMeta;
 
 /// Maximum edge-value byte width supported by labeled storage profiles.
-pub const MAX_EDGE_VALUE_BYTES: usize = 8;
+pub const MAX_EDGE_VALUE_BYTES: usize = 64;
 
 /// Fixed-size adjacency entry stored in one labeled CSR slab slot.
 #[repr(C)]
