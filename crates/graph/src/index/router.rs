@@ -1,7 +1,7 @@
 //! Inter-canister client for `gleaph-router` (Wasm init verification).
 
 use candid::Principal;
-use gleaph_graph_kernel::federation::{ShardId, ShardRegistryEntry};
+use gleaph_graph_kernel::federation::{RouterError, ShardId, ShardRegistryEntry};
 
 #[derive(Clone, Debug)]
 pub enum RouterInitError {
@@ -22,7 +22,7 @@ impl std::error::Error for RouterInitError {}
 
 /// Verifies this graph shard is registered on the router and returns routing metadata.
 #[cfg(target_family = "wasm")]
-pub fn verify_shard_attachment(
+pub async fn verify_shard_attachment(
     router_canister: Principal,
     shard_id: ShardId,
     expected_graph_name: Option<&str>,
@@ -31,6 +31,7 @@ pub fn verify_shard_attachment(
 
     let entry: Result<ShardRegistryEntry, RouterError> =
         crate::index::router_call::call_router1(router_canister, "resolve_shard", shard_id)
+            .await
             .map_err(RouterInitError::Call)?;
 
     let entry = entry.map_err(|e| RouterInitError::Rejected(format!("{e:?}")))?;

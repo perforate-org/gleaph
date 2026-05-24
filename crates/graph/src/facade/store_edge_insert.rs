@@ -13,15 +13,27 @@ fn resolve_local_endpoint(
     logical_vertex_id: LogicalVertexId,
 ) -> Option<VertexId> {
     let routing = store.federation_routing()?;
-    let placement =
-        placement::resolve_placement(routing.router_canister, logical_vertex_id).ok()?;
-    let VertexPlacement::Active(loc) = placement else {
-        return None;
-    };
-    if loc.shard_id != routing.shard_id {
-        return None;
+    #[cfg(target_family = "wasm")]
+    {
+        let local = crate::facade::stable::VERTEX_LOGICAL_IDS
+            .with_borrow(|m| m.find_vertex_id(logical_vertex_id))?;
+        return Some(local);
     }
-    Some(VertexId::from(loc.local_vertex_id))
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let placement = pollster::block_on(placement::resolve_placement(
+            routing.router_canister,
+            logical_vertex_id,
+        ))
+        .ok()?;
+        let VertexPlacement::Active(loc) = placement else {
+            return None;
+        };
+        if loc.shard_id != routing.shard_id {
+            return None;
+        }
+        Some(VertexId::from(loc.local_vertex_id))
+    }
 }
 
 /// Target endpoint for an edge insert.

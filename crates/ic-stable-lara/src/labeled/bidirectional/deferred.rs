@@ -1244,6 +1244,38 @@ where
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
+    /// Updates the edge-value payload for one forward-out edge at `slot_index`.
+    pub fn update_forward_edge_value_at_slot(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        slot_index: u32,
+        edge: E,
+    ) -> Result<bool, DeferredBidirectionalLabeledError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.forward
+            .update_edge_value_at_slot(src, label_id, slot_index, edge)
+            .map_err(DeferredBidirectionalLabeledError::Forward)
+    }
+
+    /// Updates the edge-value payload for one reverse-store out edge at `slot_index`.
+    pub fn update_reverse_edge_value_at_slot(
+        &self,
+        dst: VertexId,
+        label_id: BucketLabelKey,
+        slot_index: u32,
+        edge: E,
+    ) -> Result<bool, DeferredBidirectionalLabeledError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.reverse
+            .update_edge_value_at_slot(dst, label_id, slot_index, edge)
+            .map_err(DeferredBidirectionalLabeledError::Reverse)
+    }
+
     /// Removes one reverse-store edge at the given label-row slot.
     pub fn remove_reverse_edge_at_slot(
         &self,

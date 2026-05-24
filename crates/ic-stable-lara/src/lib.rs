@@ -62,6 +62,7 @@ mod bench;
 pub mod bidirectional;
 pub mod labeled;
 pub mod lara;
+pub mod log_head;
 pub mod slab_index;
 pub mod traits;
 mod types;
@@ -92,6 +93,7 @@ pub use lara::{
     operation_error::{LaraOperationError, VertexAccessError},
     vertex::{InitError as VertexInitError, Vertex, VertexStore},
 };
+pub use log_head::LogHead;
 pub use traits::*;
 
 /// Convenience alias for the single-orientation LARA graph.

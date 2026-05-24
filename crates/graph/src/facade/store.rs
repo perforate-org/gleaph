@@ -12,13 +12,15 @@ mod edge_insert;
 mod edge_logical;
 mod edge_properties;
 mod edge_scan;
+mod edge_value;
 mod error;
 mod handle;
-mod helpers;
+pub(crate) mod helpers;
 mod lookup;
 mod maintenance;
 mod metadata;
 mod sidecar;
+mod stub_prune;
 #[cfg(test)]
 mod tests;
 mod vertex;

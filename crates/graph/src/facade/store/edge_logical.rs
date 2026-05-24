@@ -6,6 +6,7 @@ use gleaph_graph_kernel::federation::LogicalVertexId;
 use ic_stable_lara::VertexId;
 
 use super::GraphStore;
+use super::edge_insert::journal_edge_insert_to_logical;
 use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
 use super::helpers::{
@@ -89,6 +90,16 @@ impl GraphStore {
                 slot_index: u32::MAX,
             })?;
         self.register_remote_forward_in(handle, remote_ref);
+        journal_edge_insert_to_logical(
+            self,
+            source_vertex_id,
+            target_logical_vertex_id,
+            true,
+            catalog_label,
+            undirected,
+            value_bytes,
+            handle,
+        )?;
         Ok(handle)
     }
 
@@ -123,10 +134,14 @@ impl GraphStore {
 
     pub(super) fn unregister_remote_forward_in_for_handle(&self, handle: EdgeHandle) {
         let label = handle.label_id;
-        for edge in self
+        let mut edges = self
             .directed_out_edges(handle.owner_vertex_id)
-            .unwrap_or_default()
-        {
+            .unwrap_or_default();
+        edges.extend(
+            self.undirected_edges(handle.owner_vertex_id)
+                .unwrap_or_default(),
+        );
+        for edge in edges {
             if edge.label_id != label.raw() || edge.edge_slot_index.raw() != handle.slot_index {
                 continue;
             }

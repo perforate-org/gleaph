@@ -52,7 +52,20 @@ impl GraphStore {
         vertex: Vertex,
         labels: impl IntoIterator<Item = VertexLabelId>,
     ) -> Result<Vertex, VertexLabelStoreError> {
-        VERTEX_LABELS.with_borrow_mut(|store| store.set_labels(vertex_id, vertex, labels))
+        let prev: Vec<_> = self.vertex_labels(vertex_id, vertex);
+        let next: Vec<_> = labels.into_iter().collect();
+        let out = VERTEX_LABELS
+            .with_borrow_mut(|store| store.set_labels(vertex_id, vertex, next.iter().copied()))?;
+        use crate::facade::migration::incremental::{
+            journal_vertex_label_added, journal_vertex_label_removed,
+        };
+        for label in prev.iter().filter(|l| !next.contains(l)) {
+            let _ = journal_vertex_label_removed(self, vertex_id, *label);
+        }
+        for label in next.iter().filter(|l| !prev.contains(l)) {
+            let _ = journal_vertex_label_added(self, vertex_id, *label);
+        }
+        Ok(out)
     }
 
     pub fn add_vertex_label(
@@ -61,7 +74,12 @@ impl GraphStore {
         vertex: Vertex,
         label: VertexLabelId,
     ) -> Result<Vertex, VertexLabelStoreError> {
-        VERTEX_LABELS.with_borrow_mut(|store| store.add_label(vertex_id, vertex, label))
+        let out =
+            VERTEX_LABELS.with_borrow_mut(|store| store.add_label(vertex_id, vertex, label))?;
+        let _ = crate::facade::migration::incremental::journal_vertex_label_added(
+            self, vertex_id, label,
+        );
+        Ok(out)
     }
 
     pub fn remove_vertex_label(
@@ -70,6 +88,11 @@ impl GraphStore {
         vertex: Vertex,
         label: VertexLabelId,
     ) -> Vertex {
-        VERTEX_LABELS.with_borrow_mut(|store| store.remove_label(vertex_id, vertex, label))
+        let out =
+            VERTEX_LABELS.with_borrow_mut(|store| store.remove_label(vertex_id, vertex, label));
+        let _ = crate::facade::migration::incremental::journal_vertex_label_removed(
+            self, vertex_id, label,
+        );
+        out
     }
 }

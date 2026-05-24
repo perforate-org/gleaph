@@ -55,7 +55,7 @@ impl EdgeSlotMoveObserver for GraphSidecarMoveObserver {
     }
 }
 
-pub(super) fn edge_storage_label(
+pub(crate) fn edge_storage_label(
     catalog: Option<EdgeLabelId>,
     undirected: bool,
 ) -> TaggedEdgeLabelId {
@@ -78,7 +78,7 @@ pub(super) fn edge_storage_label(
     }
 }
 
-pub(super) fn lara_label(id: TaggedEdgeLabelId) -> LaraLabelId {
+pub(crate) fn lara_label(id: TaggedEdgeLabelId) -> LaraLabelId {
     LaraLabelId::from_raw(id.raw())
 }
 
@@ -170,7 +170,7 @@ fn edge_value_bytes_match(edge: &Edge, value_bytes: &[u8]) -> bool {
     edge.value_bytes() == value_bytes
 }
 
-pub(super) fn edge_matches_local_neighbor(
+pub(crate) fn edge_matches_local_neighbor(
     edge: &Edge,
     neighbor: VertexId,
     value_bytes: &[u8],

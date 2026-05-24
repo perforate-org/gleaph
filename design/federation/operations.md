@@ -46,19 +46,18 @@ Uses:
 
 **Limit:** Inter-canister path requires **wasm** (`UnsupportedOp` on native builds in `crates/graph/src/index/federation.rs`).
 
-## Migration (data plane)
+## Migration (incremental)
 
-**Implemented** on graph shard (primitives + tests in `crates/graph/src/facade/migration/vertex.rs`):
+**Implemented** on graph shard (`crates/graph/src/facade/migration/incremental.rs`):
 
-| Step | API / action | Shard |
-|------|----------------|-------|
-| 1 | Router `begin_vertex_migration` | Router sets `Migrating` |
-| 2 | `migration_export` bundle | Source (read-only export) |
-| 3 | `migration_import` | Destination |
-| 4 | Router `finish_vertex_migration` | Destination local id bound |
-| 5 | `migration_tombstone` + `release_logical_vertex` | Source cleanup |
+| Step | API | Shard |
+|------|-----|-------|
+| 1 | `migration_start` | Source (`SourceMigrating`, journal) |
+| 2 | `migration_staging_begin` | Destination (`TargetStaging`) |
+| 3 | `migration_maintenance_tick` + `migration_apply_chunk` | Chunked `X.o` / `X.i` copy |
+| 4 | `migration_cutover` | Router finish + `ForwardingStub` on source |
 
-**Not implemented (orchestration gap):** Router does **not** automatically chain export → import → tombstone. Operators or future router workflows must drive steps explicitly.
+See [incremental-migration.md](incremental-migration.md). Bulk `migration_export` / `migration_import` / `migration_tombstone` are removed.
 
 ### Migration invariants
 

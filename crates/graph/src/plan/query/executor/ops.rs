@@ -17,8 +17,9 @@ use super::expand::execute_expand;
 use super::join::{execute_cartesian_product, execute_hash_join};
 use super::path::execute_shortest_path;
 use super::scan::{
-    execute_conditional_index_scan, execute_index_intersection, execute_index_scan,
-    execute_limited_streaming_prefix, execute_node_scan, limited_streaming_prefix_limit_idx,
+    LIMITED_STREAMING_REMOTE_EXPAND_SOURCE, execute_conditional_index_scan,
+    execute_index_intersection, execute_index_scan, execute_limited_streaming_prefix,
+    execute_node_scan, limited_streaming_prefix_limit_idx,
 };
 use super::{
     PlanBinding, dedup_rows, ensure_simple_expand, gleaph_sequence_order_after_expand,
@@ -202,6 +203,23 @@ async fn execute_optional_match(
     Ok(out)
 }
 
+fn limited_streaming_prefix_expand_count(ops: &[PlanOp]) -> usize {
+    ops.iter()
+        .filter(|op| matches!(op, PlanOp::Expand { .. } | PlanOp::ExpandFilter { .. }))
+        .count()
+}
+
+fn limited_streaming_prefix_has_remote_expand_source(ops: &[PlanOp], rows: &[PlanRow]) -> bool {
+    ops.iter().any(|op| {
+        let src = match op {
+            PlanOp::Expand { src, .. } | PlanOp::ExpandFilter { src, .. } => src,
+            _ => return false,
+        };
+        rows.iter()
+            .any(|row| matches!(row.get(src.as_ref()), Some(PlanBinding::RemoteVertex(_))))
+    })
+}
+
 pub(crate) fn execute_ops_from<'a>(
     ctx: &'a ExecuteCtx<'a>,
     ops: &'a [PlanOp],
@@ -227,21 +245,59 @@ pub(crate) fn execute_ops_from<'a>(
             });
             let evaluator = ctx.expr_evaluator(aggregate_specs);
             if let Some(limit_idx) = limited_streaming_prefix_limit_idx(ops, op_idx) {
-                let result = execute_limited_streaming_prefix(
-                    ctx.store,
-                    &ops[op_idx..=limit_idx],
-                    rows,
-                    ctx.parameters,
-                    ctx.caller(),
-                    ctx.gleaph_weight_decoders,
-                    aggregate_specs,
-                )?;
-                rows = result.rows;
-                if result.clears_active_aggregate {
-                    active_aggregate_op_idx = None;
+                let prefix_ops = &ops[op_idx..=limit_idx];
+                let expand_count = limited_streaming_prefix_expand_count(prefix_ops);
+                if expand_count > 0
+                    && limited_streaming_prefix_has_remote_expand_source(prefix_ops, &rows)
+                {
+                    // Remote expand sources need async placement/federated routing; execute the
+                    // regular async operator path below.
+                } else if expand_count > 1 {
+                    // A later expand in the same prefix may see a remote vertex emitted by an
+                    // earlier expand, so keep the original rows available for async fallback.
+                    let streaming_input = rows;
+                    let result = execute_limited_streaming_prefix(
+                        ctx.store,
+                        prefix_ops,
+                        streaming_input.clone(),
+                        ctx.parameters,
+                        ctx.caller(),
+                        ctx.gleaph_weight_decoders,
+                        aggregate_specs,
+                    );
+                    match result {
+                        Ok(result) => {
+                            rows = result.rows;
+                            if result.clears_active_aggregate {
+                                active_aggregate_op_idx = None;
+                            }
+                            op_idx = limit_idx + 1;
+                            continue;
+                        }
+                        Err(PlanQueryError::UnsupportedOp(op))
+                            if op == LIMITED_STREAMING_REMOTE_EXPAND_SOURCE =>
+                        {
+                            rows = streaming_input;
+                        }
+                        Err(err) => return Err(err),
+                    }
+                } else {
+                    let result = execute_limited_streaming_prefix(
+                        ctx.store,
+                        prefix_ops,
+                        rows,
+                        ctx.parameters,
+                        ctx.caller(),
+                        ctx.gleaph_weight_decoders,
+                        aggregate_specs,
+                    )?;
+                    rows = result.rows;
+                    if result.clears_active_aggregate {
+                        active_aggregate_op_idx = None;
+                    }
+                    op_idx = limit_idx + 1;
+                    continue;
                 }
-                op_idx = limit_idx + 1;
-                continue;
             }
             rows = match op {
                 PlanOp::NodeScan {
@@ -363,7 +419,8 @@ pub(crate) fn execute_ops_from<'a>(
                         indexed_edge_equality.as_ref(),
                         edge_property_projection.as_deref(),
                         dst_property_projection.as_deref(),
-                    )?
+                    )
+                    .await?
                 }
                 PlanOp::ExpandFilter {
                     src,
@@ -401,7 +458,8 @@ pub(crate) fn execute_ops_from<'a>(
                         indexed_edge_equality.as_ref(),
                         edge_property_projection.as_deref(),
                         dst_property_projection.as_deref(),
-                    )?
+                    )
+                    .await?
                 }
                 PlanOp::ShortestPath {
                     src,
@@ -416,25 +474,28 @@ pub(crate) fn execute_ops_from<'a>(
                     label_expr,
                     var_len,
                     cost,
-                } => execute_shortest_path(
-                    store,
-                    rows,
-                    src,
-                    dst,
-                    edge,
-                    path_var.as_ref(),
-                    *emit_edge_binding,
-                    *emit_path_binding,
-                    *mode,
-                    *direction,
-                    label.as_ref(),
-                    label_expr,
-                    var_len,
-                    cost,
-                    parameters,
-                    gwd,
-                    &ops[op_idx + 1..],
-                )?,
+                } => {
+                    execute_shortest_path(
+                        store,
+                        rows,
+                        src,
+                        dst,
+                        edge,
+                        path_var.as_ref(),
+                        *emit_edge_binding,
+                        *emit_path_binding,
+                        *mode,
+                        *direction,
+                        label.as_ref(),
+                        label_expr,
+                        var_len,
+                        cost,
+                        parameters,
+                        gwd,
+                        &ops[op_idx + 1..],
+                    )
+                    .await?
+                }
                 PlanOp::Aggregate {
                     group_by,
                     aggregates,

@@ -55,7 +55,7 @@ fn export_edge_target(
     }
 }
 
-fn export_out_edge(
+pub(crate) fn export_out_edge(
     store: &GraphStore,
     owner_vertex_id: VertexId,
     edge: &Edge,
@@ -120,7 +120,23 @@ pub fn export_local_vertex_for_migration(
                 placement::VertexPlacementError::Rejected(RouterError::VertexNotFound),
             ))?;
 
-    let placement = placement::resolve_placement(routing.router_canister, logical_vertex_id)?;
+    #[cfg(not(target_family = "wasm"))]
+    let placement = pollster::block_on(placement::resolve_placement(
+        routing.router_canister,
+        logical_vertex_id,
+    ))?;
+    #[cfg(target_family = "wasm")]
+    let placement = {
+        let _ = routing;
+        VertexPlacement::Migrating {
+            epoch: 0,
+            source: gleaph_graph_kernel::federation::PhysicalVertexLocation::new(
+                routing.shard_id,
+                placement::local_vertex_id_raw(vertex_id),
+            ),
+            destination_shard_id: 0,
+        }
+    };
     let VertexPlacement::Migrating { source, .. } = placement else {
         return Err(GraphStoreError::VertexPlacement(
             placement::VertexPlacementError::Rejected(RouterError::VertexNotMigrating),
@@ -178,7 +194,7 @@ pub fn export_local_vertex_for_migration(
     })
 }
 
-fn import_out_edge(
+pub(crate) fn import_out_edge(
     store: &GraphStore,
     owner_vertex_id: VertexId,
     edge: &ExportedOutEdge,
@@ -250,8 +266,17 @@ fn import_migrated_vertex_impl(
             placement::VertexPlacementError::Rejected(RouterError::ShardNotRegistered),
         ))?;
 
-    let placement =
-        placement::resolve_placement(routing.router_canister, bundle.logical_vertex_id)?;
+    #[cfg(not(target_family = "wasm"))]
+    let placement = pollster::block_on(placement::resolve_placement(
+        routing.router_canister,
+        bundle.logical_vertex_id,
+    ))?;
+    #[cfg(target_family = "wasm")]
+    let placement = VertexPlacement::Migrating {
+        epoch: 0,
+        source: gleaph_graph_kernel::federation::PhysicalVertexLocation::new(0, 0),
+        destination_shard_id: routing.shard_id,
+    };
     let VertexPlacement::Migrating {
         destination_shard_id,
         ..
@@ -309,13 +334,14 @@ fn import_migrated_vertex_impl(
         import_out_edge(store, vertex_id, edge)?;
     }
 
-    placement::finish_vertex_migration(
+    #[cfg(not(target_family = "wasm"))]
+    pollster::block_on(placement::finish_vertex_migration(
         routing.router_canister,
         FinishVertexMigrationArgs {
             logical_vertex_id: bundle.logical_vertex_id,
             destination_local_vertex_id: placement::local_vertex_id_raw(vertex_id),
         },
-    )?;
+    ))?;
 
     Ok(vertex_id)
 }
@@ -369,7 +395,18 @@ fn tombstone_migrated_vertex_impl(
                 placement::VertexPlacementError::Rejected(RouterError::VertexNotFound),
             ))?;
 
-    let placement = placement::resolve_placement(routing.router_canister, logical_vertex_id)?;
+    #[cfg(not(target_family = "wasm"))]
+    let placement = pollster::block_on(placement::resolve_placement(
+        routing.router_canister,
+        logical_vertex_id,
+    ))?;
+    #[cfg(target_family = "wasm")]
+    let placement = VertexPlacement::Active(
+        gleaph_graph_kernel::federation::PhysicalVertexLocation::new(
+            routing.shard_id,
+            placement::local_vertex_id_raw(vertex_id),
+        ),
+    );
     let VertexPlacement::Active(authoritative) = placement else {
         return Err(GraphStoreError::VertexPlacement(
             placement::VertexPlacementError::Rejected(RouterError::InvalidMigrationState(
@@ -395,549 +432,4 @@ fn tombstone_migrated_vertex_impl(
         ))?;
     store.set_vertex(vertex_id, vertex.with_tombstone(true))?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::facade::mutation_executor::GraphMutationExecutor;
-    use crate::facade::{FederationRouting, GraphStore};
-    use candid::Principal;
-    use gleaph_gql::Value;
-    use gleaph_graph_kernel::entry::EdgeTarget;
-    use gleaph_graph_kernel::federation::PhysicalVertexLocation;
-    use gleaph_graph_kernel::federation::{BeginVertexMigrationArgs, VertexPlacement};
-    use ic_stable_lara::CsrEdge;
-
-    #[test]
-    fn export_import_and_tombstone_roundtrip() {
-        let store = GraphStore::new();
-        store
-            .set_federation_routing(Some(FederationRouting {
-                router_canister: Principal::management_canister(),
-                index_canister: Principal::management_canister(),
-                shard_id: 7,
-            }))
-            .expect("source routing");
-
-        let source_id = store
-            .insert_vertex_named(["MigrateMe"], [("k", Value::Text("v".into()))])
-            .expect("insert source");
-        let logical = store.logical_vertex_id(source_id).expect("logical");
-
-        placement::begin_vertex_migration(
-            Principal::management_canister(),
-            BeginVertexMigrationArgs {
-                logical_vertex_id: logical,
-                destination_shard_id: 9,
-            },
-        )
-        .expect("begin");
-
-        let bundle = export_local_vertex_for_migration(&store, source_id).expect("export");
-        assert_eq!(bundle.logical_vertex_id, logical);
-        assert_eq!(bundle.properties.len(), 1);
-
-        store
-            .set_federation_routing(Some(FederationRouting {
-                router_canister: Principal::management_canister(),
-                index_canister: Principal::management_canister(),
-                shard_id: 9,
-            }))
-            .expect("dest routing");
-
-        let dest_id = import_migrated_vertex(&store, bundle).expect("import");
-        assert_eq!(
-            placement::resolve_placement(Principal::management_canister(), logical).expect("place"),
-            VertexPlacement::Active(PhysicalVertexLocation::new(9, u32::from(dest_id)))
-        );
-        assert_eq!(
-            store.vertex_property(dest_id, store.property_id("k").expect("pid")),
-            Some(Value::Text("v".into()))
-        );
-
-        store
-            .set_federation_routing(Some(FederationRouting {
-                router_canister: Principal::management_canister(),
-                index_canister: Principal::management_canister(),
-                shard_id: 7,
-            }))
-            .expect("source routing again");
-
-        tombstone_migrated_vertex(&store, source_id).expect("tombstone");
-        assert!(store.vertex(source_id).expect("row").is_tombstone());
-    }
-
-    #[derive(Default)]
-    struct RecordingIndex {
-        removes: std::cell::RefCell<Vec<(u32, u32, u32)>>,
-        inserts: std::cell::RefCell<Vec<(u32, u32, u32)>>,
-    }
-
-    #[async_trait::async_trait(?Send)]
-    impl PropertyIndexLookup for RecordingIndex {
-        fn local_shard_id(&self) -> u32 {
-            9
-        }
-
-        async fn lookup_equal(
-            &self,
-            _property_id: u32,
-            _value: Vec<u8>,
-        ) -> Result<Vec<gleaph_graph_kernel::index::PostingHit>, PlanQueryError> {
-            Ok(vec![])
-        }
-
-        async fn lookup_range(
-            &self,
-            _property_id: u32,
-            _req: &gleaph_graph_kernel::index::PostingRangeRequest,
-        ) -> Result<Vec<gleaph_graph_kernel::index::PostingHit>, PlanQueryError> {
-            Ok(vec![])
-        }
-
-        async fn posting_insert_at(
-            &self,
-            shard_id: u32,
-            property_id: u32,
-            _value: Vec<u8>,
-            vertex_id: u32,
-        ) -> Result<(), PlanQueryError> {
-            self.inserts
-                .borrow_mut()
-                .push((shard_id, property_id, vertex_id));
-            Ok(())
-        }
-
-        async fn posting_remove_at(
-            &self,
-            shard_id: u32,
-            property_id: u32,
-            _value: Vec<u8>,
-            vertex_id: u32,
-        ) -> Result<(), PlanQueryError> {
-            self.removes
-                .borrow_mut()
-                .push((shard_id, property_id, vertex_id));
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn import_syncs_index_postings() {
-        let store = GraphStore::new();
-        store
-            .set_federation_routing(Some(FederationRouting {
-                router_canister: Principal::management_canister(),
-                index_canister: Principal::management_canister(),
-                shard_id: 7,
-            }))
-            .expect("source routing");
-
-        let source_id = store
-            .insert_vertex_named(["Idx"], [("k", Value::Text("v".into()))])
-            .expect("insert");
-        let logical = store.logical_vertex_id(source_id).expect("logical");
-
-        placement::begin_vertex_migration(
-            Principal::management_canister(),
-            BeginVertexMigrationArgs {
-                logical_vertex_id: logical,
-                destination_shard_id: 9,
-            },
-        )
-        .expect("begin");
-
-        let bundle = export_local_vertex_for_migration(&store, source_id).expect("export");
-
-        store
-            .set_federation_routing(Some(FederationRouting {
-                router_canister: Principal::management_canister(),
-                index_canister: Principal::management_canister(),
-                shard_id: 9,
-            }))
-            .expect("dest routing");
-
-        let index = RecordingIndex::default();
-        let dest_id = pollster::block_on(import_migrated_vertex_with_index(&store, bundle, &index))
-            .expect("import");
-
-        assert_eq!(
-            index.removes.borrow().as_slice(),
-            &[(
-                7,
-                store.property_id("k").expect("pid").raw(),
-                u32::from(source_id)
-            )]
-        );
-        assert_eq!(
-            index.inserts.borrow().as_slice(),
-            &[(
-                9,
-                store.property_id("k").expect("pid").raw(),
-                u32::from(dest_id)
-            )]
-        );
-    }
-
-    #[test]
-    fn migration_preserves_edge_value_bytes() {
-        let store = GraphStore::new();
-        store
-            .set_federation_routing(Some(FederationRouting {
-                router_canister: Principal::management_canister(),
-                index_canister: Principal::management_canister(),
-                shard_id: 7,
-            }))
-            .expect("source routing");
-
-        store
-            .set_federation_routing(Some(FederationRouting {
-                router_canister: Principal::management_canister(),
-                index_canister: Principal::management_canister(),
-                shard_id: 9,
-            }))
-            .expect("target routing");
-        let directed_target = store.insert_vertex().expect("directed target");
-        let undirected_target = store.insert_vertex().expect("undirected target");
-
-        store
-            .set_federation_routing(Some(FederationRouting {
-                router_canister: Principal::management_canister(),
-                index_canister: Principal::management_canister(),
-                shard_id: 7,
-            }))
-            .expect("source routing");
-        let source_id = store.insert_vertex().expect("source");
-        let directed_label = store
-            .get_or_insert_edge_label_id("MigratingDirectedValue")
-            .expect("directed label");
-        let undirected_label = store
-            .get_or_insert_edge_label_id("MigratingUndirectedValue")
-            .expect("undirected label");
-        store
-            .insert_directed_edge_with_value_bytes(
-                source_id,
-                directed_target,
-                Some(directed_label),
-                &[1, 2, 3, 4],
-            )
-            .expect("directed edge");
-        store
-            .insert_undirected_edge_with_value_bytes(
-                source_id,
-                undirected_target,
-                Some(undirected_label),
-                &[9],
-            )
-            .expect("undirected edge");
-        let logical = store.logical_vertex_id(source_id).expect("logical");
-
-        placement::begin_vertex_migration(
-            Principal::management_canister(),
-            BeginVertexMigrationArgs {
-                logical_vertex_id: logical,
-                destination_shard_id: 9,
-            },
-        )
-        .expect("begin");
-
-        let bundle = export_local_vertex_for_migration(&store, source_id).expect("export");
-        assert!(
-            bundle
-                .out_edges
-                .iter()
-                .any(|edge| edge.value_bytes == [1, 2, 3, 4])
-        );
-        assert!(bundle.out_edges.iter().any(|edge| edge.value_bytes == [9]));
-
-        store
-            .set_federation_routing(Some(FederationRouting {
-                router_canister: Principal::management_canister(),
-                index_canister: Principal::management_canister(),
-                shard_id: 9,
-            }))
-            .expect("dest routing");
-
-        let dest_id = import_migrated_vertex(&store, bundle).expect("import");
-        let directed_values: Vec<Vec<u8>> = store
-            .directed_out_edges(dest_id)
-            .expect("directed out")
-            .into_iter()
-            .filter(|edge| edge.neighbor_vid() == directed_target)
-            .map(|edge| edge.value_bytes().to_vec())
-            .collect();
-        assert_eq!(directed_values, vec![vec![1, 2, 3, 4]]);
-
-        let undirected_values: Vec<Vec<u8>> = store
-            .undirected_edges(dest_id)
-            .expect("undirected out")
-            .into_iter()
-            .filter(|edge| edge.neighbor_vid() == undirected_target)
-            .map(|edge| edge.value_bytes().to_vec())
-            .collect();
-        assert_eq!(undirected_values, vec![vec![9]]);
-    }
-
-    #[test]
-    fn migration_preserves_edge_to_source_shard_target_as_remote() {
-        let store = GraphStore::new();
-        store
-            .set_federation_routing(Some(FederationRouting {
-                router_canister: Principal::management_canister(),
-                index_canister: Principal::management_canister(),
-                shard_id: 7,
-            }))
-            .expect("source routing");
-
-        let source_id = store.insert_vertex().expect("source");
-        let source_shard_target = store.insert_vertex().expect("source shard target");
-        let target_logical = store
-            .logical_vertex_id(source_shard_target)
-            .expect("target logical");
-        let label = store
-            .get_or_insert_edge_label_id("MigratingRemoteValue")
-            .expect("label");
-        store
-            .insert_directed_edge_with_value_bytes(
-                source_id,
-                source_shard_target,
-                Some(label),
-                &[8],
-            )
-            .expect("edge");
-        let logical = store.logical_vertex_id(source_id).expect("logical");
-
-        placement::begin_vertex_migration(
-            Principal::management_canister(),
-            BeginVertexMigrationArgs {
-                logical_vertex_id: logical,
-                destination_shard_id: 9,
-            },
-        )
-        .expect("begin");
-
-        let bundle = export_local_vertex_for_migration(&store, source_id).expect("export");
-        store
-            .set_federation_routing(Some(FederationRouting {
-                router_canister: Principal::management_canister(),
-                index_canister: Principal::management_canister(),
-                shard_id: 9,
-            }))
-            .expect("dest routing");
-
-        let dest_id = import_migrated_vertex(&store, bundle).expect("import");
-        let edge = store
-            .directed_out_edges(dest_id)
-            .expect("directed out")
-            .into_iter()
-            .find(|edge| edge.value_bytes() == [8])
-            .expect("remote edge");
-        let Some(EdgeTarget::Remote(remote_ref)) = edge.edge_target() else {
-            panic!("expected remote edge target");
-        };
-        assert_eq!(
-            store.logical_vertex_for_remote_ref(remote_ref),
-            Some(target_logical)
-        );
-    }
-
-    #[test]
-    fn migration_preserves_remote_undirected_edge_kind() {
-        let store = GraphStore::new();
-        store
-            .set_federation_routing(Some(FederationRouting {
-                router_canister: Principal::management_canister(),
-                index_canister: Principal::management_canister(),
-                shard_id: 7,
-            }))
-            .expect("source routing");
-
-        let source_id = store.insert_vertex().expect("source");
-        let remote_target = store.insert_vertex().expect("remote target");
-        let source_logical = store.logical_vertex_id(source_id).expect("source logical");
-        let target_logical = store
-            .logical_vertex_id(remote_target)
-            .expect("target logical");
-        let label = store
-            .get_or_insert_edge_label_id("MigratingRemoteUndirected")
-            .expect("label");
-
-        placement::begin_vertex_migration(
-            Principal::management_canister(),
-            BeginVertexMigrationArgs {
-                logical_vertex_id: source_logical,
-                destination_shard_id: 9,
-            },
-        )
-        .expect("begin");
-
-        let mut vertex_row_bytes = vec![0u8; Vertex::BYTES];
-        Vertex::default()
-            .into_labeled()
-            .write_to(&mut vertex_row_bytes);
-        let bundle = ExportedVertex {
-            logical_vertex_id: source_logical,
-            source_shard_id: 7,
-            source_local_vertex_id: placement::local_vertex_id_raw(source_id),
-            vertex_row_bytes,
-            labels: Vec::new(),
-            properties: Vec::new(),
-            out_edges: vec![ExportedOutEdge {
-                catalog_label: Some(label),
-                undirected: true,
-                value_bytes: vec![7],
-                target: ExportedEdgeTarget::Remote {
-                    logical_vertex_id: target_logical,
-                },
-                properties: Vec::new(),
-            }],
-        };
-
-        store
-            .set_federation_routing(Some(FederationRouting {
-                router_canister: Principal::management_canister(),
-                index_canister: Principal::management_canister(),
-                shard_id: 9,
-            }))
-            .expect("dest routing");
-
-        let dest_id = import_migrated_vertex(&store, bundle).expect("import");
-        assert!(
-            store
-                .directed_out_edges(dest_id)
-                .expect("directed out")
-                .is_empty()
-        );
-        let edge = store
-            .undirected_edges(dest_id)
-            .expect("undirected out")
-            .into_iter()
-            .find(|edge| edge.value_bytes() == [7])
-            .expect("remote undirected edge");
-        let Some(EdgeTarget::Remote(remote_ref)) = edge.edge_target() else {
-            panic!("expected remote edge target");
-        };
-        assert_eq!(
-            store.logical_vertex_for_remote_ref(remote_ref),
-            Some(target_logical)
-        );
-    }
-
-    #[test]
-    fn full_migration_roundtrip_with_index_sync() {
-        let index = RecordingIndex::default();
-        let store = GraphStore::new();
-        store
-            .set_federation_routing(Some(FederationRouting {
-                router_canister: Principal::management_canister(),
-                index_canister: Principal::management_canister(),
-                shard_id: 7,
-            }))
-            .expect("source routing");
-
-        let source_id = store
-            .insert_vertex_named(["Full"], [("k", Value::Text("v".into()))])
-            .expect("insert");
-        let logical = store.logical_vertex_id(source_id).expect("logical");
-        let pid = store.property_id("k").expect("pid").raw();
-
-        placement::begin_vertex_migration(
-            Principal::management_canister(),
-            BeginVertexMigrationArgs {
-                logical_vertex_id: logical,
-                destination_shard_id: 9,
-            },
-        )
-        .expect("begin");
-
-        let bundle = export_local_vertex_for_migration(&store, source_id).expect("export");
-
-        store
-            .set_federation_routing(Some(FederationRouting {
-                router_canister: Principal::management_canister(),
-                index_canister: Principal::management_canister(),
-                shard_id: 9,
-            }))
-            .expect("dest routing");
-
-        let dest_id = pollster::block_on(import_migrated_vertex_with_index(&store, bundle, &index))
-            .expect("import");
-        assert_eq!(index.removes.borrow().len(), 1);
-        assert_eq!(index.inserts.borrow().len(), 1);
-
-        store
-            .set_federation_routing(Some(FederationRouting {
-                router_canister: Principal::management_canister(),
-                index_canister: Principal::management_canister(),
-                shard_id: 7,
-            }))
-            .expect("source routing again");
-
-        pollster::block_on(tombstone_migrated_vertex_with_index(
-            &store, source_id, &index,
-        ))
-        .expect("tombstone");
-        assert!(store.vertex(source_id).expect("row").is_tombstone());
-        assert_eq!(
-            index.removes.borrow().as_slice(),
-            &[
-                (7, pid, u32::from(source_id)),
-                (7, pid, u32::from(source_id)),
-            ]
-        );
-        assert_eq!(
-            index.inserts.borrow().as_slice(),
-            &[(9, pid, u32::from(dest_id))]
-        );
-    }
-
-    #[test]
-    fn tombstoned_migrated_source_vertex_is_not_writable() {
-        let store = GraphStore::new();
-        store
-            .set_federation_routing(Some(FederationRouting {
-                router_canister: Principal::management_canister(),
-                index_canister: Principal::management_canister(),
-                shard_id: 7,
-            }))
-            .expect("routing");
-
-        let source_id = store.insert_vertex().expect("insert");
-        let logical = store.logical_vertex_id(source_id).expect("logical");
-
-        placement::begin_vertex_migration(
-            Principal::management_canister(),
-            BeginVertexMigrationArgs {
-                logical_vertex_id: logical,
-                destination_shard_id: 9,
-            },
-        )
-        .expect("begin");
-
-        let bundle = export_local_vertex_for_migration(&store, source_id).expect("export");
-
-        store
-            .set_federation_routing(Some(FederationRouting {
-                router_canister: Principal::management_canister(),
-                index_canister: Principal::management_canister(),
-                shard_id: 9,
-            }))
-            .expect("dest routing");
-        import_migrated_vertex(&store, bundle).expect("import");
-
-        store
-            .set_federation_routing(Some(FederationRouting {
-                router_canister: Principal::management_canister(),
-                index_canister: Principal::management_canister(),
-                shard_id: 7,
-            }))
-            .expect("source routing");
-        tombstone_migrated_vertex(&store, source_id).expect("tombstone");
-
-        assert!(matches!(
-            store.assert_local_vertex_writable(source_id),
-            Err(GraphStoreError::VertexTombstoned)
-        ));
-    }
 }

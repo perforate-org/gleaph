@@ -22,8 +22,8 @@ use crate::canister::{
 };
 
 #[init]
-fn init(args: GraphInitArgs) {
-    canister::handlers::init(args);
+async fn init(args: GraphInitArgs) {
+    canister::handlers::init(args).await;
 }
 
 /// Router → graph: read-only plan wire (may call index / federated expand).
@@ -62,36 +62,78 @@ fn remove_graph_peer(
 }
 
 #[update(guard = "guard_control_plane_admin")]
-fn migration_begin(
+async fn migration_start(
     args: gleaph_graph_kernel::federation::BeginVertexMigrationArgs,
-) -> Result<(), String> {
-    canister::handlers::migration_begin(args)
+) -> Result<gleaph_graph_kernel::federation::MigrationStartResult, String> {
+    canister::handlers::migration_start(args).await
 }
 
-#[query(guard = "guard_router_or_peer_graph")]
-fn federated_expand(
-    args: gleaph_graph_kernel::federation::FederatedExpandArgs,
-) -> Result<Vec<gleaph_graph_kernel::federation::FederatedExpandNeighbor>, String> {
-    canister::handlers::federated_expand(args)
+#[update(guard = "guard_control_plane_admin")]
+async fn migration_staging_begin(
+    args: gleaph_graph_kernel::federation::MigrationStagingArgs,
+) -> Result<gleaph_graph_kernel::federation::MigrationStartResult, String> {
+    canister::handlers::migration_staging_begin(args).await
+}
+
+#[update(guard = "guard_control_plane_admin")]
+async fn migration_apply_chunk(
+    chunk: gleaph_graph_kernel::federation::MigrationApplyChunk,
+) -> Result<(), String> {
+    canister::handlers::migration_apply_chunk(chunk).await
+}
+
+#[update(guard = "guard_control_plane_admin")]
+async fn migration_cutover(
+    logical_vertex_id: gleaph_graph_kernel::federation::LogicalVertexId,
+) -> Result<(), String> {
+    canister::handlers::migration_cutover(logical_vertex_id).await
 }
 
 #[query(guard = "guard_control_plane_admin")]
-fn migration_export(
-    local_vertex_id: u32,
-) -> Result<gleaph_graph_kernel::federation::ExportedVertex, String> {
-    canister::handlers::migration_export(local_vertex_id)
+fn migration_status(
+    logical_vertex_id: gleaph_graph_kernel::federation::LogicalVertexId,
+) -> Result<gleaph_graph_kernel::federation::MigrationStatus, String> {
+    canister::handlers::migration_status_query(logical_vertex_id)
 }
 
 #[update(guard = "guard_control_plane_admin")]
-async fn migration_import(
-    bundle: gleaph_graph_kernel::federation::ExportedVertex,
-) -> Result<u32, String> {
-    canister::handlers::migration_import(bundle).await
+async fn migration_maintenance_tick()
+-> Result<Option<gleaph_graph_kernel::federation::MigrationApplyChunk>, String> {
+    canister::handlers::migration_maintenance_tick().await
+}
+
+#[cfg(feature = "pocket-ic-e2e")]
+#[update]
+fn e2e_attach_federation(args: canister::types::E2eAttachFederationArgs) -> Result<(), String> {
+    canister::handlers::e2e_attach_federation(args)
+}
+
+#[cfg(feature = "pocket-ic-e2e")]
+#[update(guard = "guard_control_plane_admin")]
+async fn e2e_insert_vertex() -> Result<canister::types::E2eInsertVertexResult, String> {
+    canister::handlers::e2e_insert_vertex().await
+}
+
+#[cfg(feature = "pocket-ic-e2e")]
+#[update(guard = "guard_control_plane_admin")]
+fn e2e_insert_directed_edge(
+    args: canister::types::E2eInsertDirectedEdgeArgs,
+) -> Result<(), String> {
+    canister::handlers::e2e_insert_directed_edge(args)
 }
 
 #[update(guard = "guard_control_plane_admin")]
-async fn migration_tombstone(local_vertex_id: u32) -> Result<(), String> {
-    canister::handlers::migration_tombstone(local_vertex_id).await
+async fn migration_reconcile(
+    logical_vertex_id: gleaph_graph_kernel::federation::LogicalVertexId,
+) -> Result<gleaph_graph_kernel::federation::MigrationReconcileReport, String> {
+    canister::handlers::migration_reconcile_query(logical_vertex_id).await
+}
+
+#[query(composite = true, guard = "guard_router_or_peer_graph")]
+async fn federated_expand(
+    args: gleaph_graph_kernel::federation::FederatedExpandArgs,
+) -> Result<Vec<gleaph_graph_kernel::federation::FederatedExpandNeighbor>, String> {
+    canister::handlers::federated_expand(args).await
 }
 
 ic_cdk::export_candid!();

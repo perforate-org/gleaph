@@ -1,11 +1,19 @@
 //! Distributed graph federation identifiers and placement types.
 
 mod expand;
+mod incremental_migration;
 mod migration;
 mod peer_sync;
 mod router_error;
 
 pub use expand::{FederatedExpandArgs, FederatedExpandDirection, FederatedExpandNeighbor};
+pub use incremental_migration::{
+    EdgeCopyCursor, ExportedInReverseEdge, MigrationApplyChunk, MigrationEdgeHandleWire,
+    MigrationItem, MigrationJournalEntry, MigrationJournalOp, MigrationMetadataSnapshot,
+    MigrationOrientation, MigrationPhase, MigrationReconcileAction, MigrationReconcileReport,
+    MigrationStagingArgs, MigrationStartResult, MigrationStatus, PruneMigratedSourceItem,
+    PruneMigratedSourcePhase, VertexMigrationState,
+};
 pub use migration::{ExportedEdgeTarget, ExportedOutEdge, ExportedProperty, ExportedVertex};
 pub use peer_sync::{AddGraphPeerArgs, BootstrapGraphPeersArgs, RemoveGraphPeerArgs};
 pub use router_error::RouterError;

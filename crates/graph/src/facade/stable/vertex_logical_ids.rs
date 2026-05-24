@@ -29,4 +29,10 @@ impl<M: Memory> VertexLogicalIdMap<M> {
     pub fn remove(&mut self, vertex_id: VertexId) {
         self.map.remove(&local_vertex_id(vertex_id));
     }
+
+    pub fn find_vertex_id(&self, logical_vertex_id: LogicalVertexId) -> Option<VertexId> {
+        self.map.iter().find_map(|entry| {
+            (entry.value() == logical_vertex_id).then_some(VertexId::from(*entry.key()))
+        })
+    }
 }

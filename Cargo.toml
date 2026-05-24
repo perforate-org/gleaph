@@ -15,6 +15,7 @@ members = [
     "crates/ic-stable-lara",
     "crates/ic-stable-paged-ordered-map",
     "crates/ic-stable-vec-deque",
+    "crates/pocket-ic-tests",
 ]
 resolver = "2"
 
@@ -39,7 +40,7 @@ ic-stable-paged-ordered-map = { path = "crates/ic-stable-paged-ordered-map" }
 ic-stable-vec-deque = { path = "crates/ic-stable-vec-deque" }
 
 bitflags = "2.11.1"
-canbench-rs = "0.5"
+canbench-rs = "0.6"
 candid = "0.10"
 concat-string = "1"
 ethnum = "1.5.3"

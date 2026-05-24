@@ -68,6 +68,7 @@ impl GraphStore {
     }
 
     pub fn delete_edge_by_handle(&self, handle: EdgeHandle) -> Result<(), GraphStoreError> {
+        crate::facade::migration::incremental::journal_edge_removed(self, handle)?;
         let canonical = self.canonical_edge_handle_for_sidecar(handle);
         self.ensure_vertex_id(canonical.owner_vertex_id)
             .map_err(GraphStoreError::from)?;

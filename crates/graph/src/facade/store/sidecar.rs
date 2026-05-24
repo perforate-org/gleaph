@@ -199,19 +199,25 @@ impl GraphStore {
         let Some(logical_vertex_id) = self.logical_vertex_id(vertex_id) else {
             return Ok(());
         };
-        let placement = placement::resolve_placement(routing.router_canister, logical_vertex_id)?;
-        let VertexPlacement::Active(loc) = placement else {
-            return Ok(());
-        };
-        if loc.shard_id != routing.shard_id
-            || loc.local_vertex_id != placement::local_vertex_id_raw(vertex_id)
+        #[cfg(not(target_family = "wasm"))]
         {
-            return Ok(());
+            let placement = pollster::block_on(placement::resolve_placement(
+                routing.router_canister,
+                logical_vertex_id,
+            ))?;
+            let VertexPlacement::Active(loc) = placement else {
+                return Ok(());
+            };
+            if loc.shard_id != routing.shard_id
+                || loc.local_vertex_id != placement::local_vertex_id_raw(vertex_id)
+            {
+                return Ok(());
+            }
+            pollster::block_on(placement::release_logical_vertex_placement(
+                routing.router_canister,
+                ReleaseLogicalVertexArgs { logical_vertex_id },
+            ))?;
         }
-        placement::release_logical_vertex_placement(
-            routing.router_canister,
-            ReleaseLogicalVertexArgs { logical_vertex_id },
-        )?;
         VERTEX_LOGICAL_IDS.with_borrow_mut(|map| map.remove(vertex_id));
         Ok(())
     }

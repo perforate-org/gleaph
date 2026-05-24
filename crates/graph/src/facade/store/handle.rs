@@ -10,7 +10,7 @@ pub struct EdgeHandle {
 }
 
 impl EdgeHandle {
-    pub(super) fn at_slot(
+    pub(crate) fn at_slot(
         owner_vertex_id: VertexId,
         label_id: LaraLabelId,
         slot_index: u32,

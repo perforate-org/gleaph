@@ -1,0 +1,32 @@
+[package]
+name = "gleaph-pocket-ic-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[test]]
+name = "router_placement"
+path = "tests/router_placement.rs"
+harness = true
+
+[[test]]
+name = "incremental_migration"
+path = "tests/incremental_migration.rs"
+harness = true
+
+[dependencies]
+candid.workspace = true
+gleaph-gql-ic.workspace = true
+gleaph-graph-kernel.workspace = true
+gleaph-router = { path = "../router" }
+pocket-ic = "13.0.0"
+serde.workspace = true
+
+[build-dependencies]
+cargo_metadata = "0.23"
+flate2 = "1"
+ureq = { version = "3", default-features = false, features = ["rustls"] }

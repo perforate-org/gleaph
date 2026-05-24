@@ -1,0 +1,370 @@
+//! Shared helpers for PocketIC federation tests.
+
+use candid::{CandidType, Decode, Encode, Principal};
+use gleaph_gql_ic::graph_registry::{GraphRegistryEntry, GraphStatus, ProvisioningState};
+use gleaph_graph_kernel::federation::{
+    LogicalVertexId, MigrationApplyChunk, MigrationStartResult, MigrationStatus, ShardId,
+    VertexPlacement,
+};
+use gleaph_router::RouterInitArgs;
+use gleaph_router::types::AdminRegisterShardArgs;
+use pocket_ic::{PocketIc, PocketIcBuilder};
+use std::path::PathBuf;
+
+/// PocketIC instance using `POCKET_IC_BIN` at runtime, or `.pocket-ic/pocket-ic` from `build.rs`.
+pub fn new_pocket_ic() -> PocketIc {
+    let server_binary = std::env::var_os("POCKET_IC_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("POCKET_IC_BIN")));
+    PocketIcBuilder::new()
+        .with_server_binary(server_binary)
+        .with_application_subnet()
+        .build()
+}
+
+pub const GRAPH_NAME: &str = "gleaph.pocket_ic";
+pub const SOURCE_SHARD: ShardId = 7;
+pub const DEST_SHARD: ShardId = 9;
+
+pub struct FederationEnv {
+    pub pic: PocketIc,
+    pub admin: Principal,
+    pub router: Principal,
+    pub index: Principal,
+    pub graph_source: Principal,
+    pub graph_dest: Principal,
+}
+
+#[derive(CandidType, serde::Deserialize)]
+pub struct GraphInitArgs {
+    pub logical_graph_name: Option<String>,
+    pub router_canister: Option<Principal>,
+    pub shard_id: Option<ShardId>,
+}
+
+#[derive(CandidType, serde::Deserialize)]
+pub struct E2eAttachFederationArgs {
+    pub logical_graph_name: Option<String>,
+    pub router_canister: Principal,
+    pub index_canister: Principal,
+    pub shard_id: ShardId,
+}
+
+#[derive(CandidType)]
+pub struct IndexInitArgs {
+    pub controllers: Vec<Principal>,
+    pub router_canister: Principal,
+}
+
+#[derive(CandidType, Clone, Debug, serde::Deserialize)]
+pub struct E2eInsertVertexResult {
+    pub local_vertex_id: u32,
+    pub logical_vertex_id: LogicalVertexId,
+}
+
+#[derive(CandidType, Clone, Debug, serde::Deserialize)]
+pub struct E2eInsertDirectedEdgeArgs {
+    pub source_local_vertex_id: u32,
+    pub target_local_vertex_id: u32,
+}
+
+pub fn wasm_bytes(env_var: &str) -> Vec<u8> {
+    let path = PathBuf::from(std::env::var(env_var).unwrap_or_else(|_| {
+        panic!("build.rs must set {env_var} (run `cargo test -p gleaph-pocket-ic-tests` from workspace)")
+    }));
+    std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
+fn create_funded_canister(pic: &PocketIc) -> Principal {
+    let id = pic.create_canister();
+    pic.add_cycles(id, 2_000_000_000_000);
+    id
+}
+
+/// Router + index only (no graph WASM). Used for placement smoke tests.
+pub fn install_router_and_index() -> FederationEnv {
+    let pic = new_pocket_ic();
+    let admin = Principal::from_slice(&[0xAB; 29]);
+
+    let router = create_funded_canister(&pic);
+    pic.install_canister(
+        router,
+        wasm_bytes("ROUTER_WASM"),
+        Encode!(&RouterInitArgs {
+            issuing_principal: admin,
+            initial_admins: vec![],
+            controllers: vec![admin],
+        })
+        .expect("encode router init"),
+        None,
+    );
+
+    let index = create_funded_canister(&pic);
+    pic.install_canister(
+        index,
+        wasm_bytes("INDEX_WASM"),
+        Encode!(&IndexInitArgs {
+            controllers: vec![admin],
+            router_canister: router,
+        })
+        .expect("encode index init"),
+        None,
+    );
+
+    FederationEnv {
+        pic,
+        admin,
+        router,
+        index,
+        graph_source: Principal::anonymous(),
+        graph_dest: Principal::anonymous(),
+    }
+}
+
+pub fn install_federation() -> FederationEnv {
+    let pic = new_pocket_ic();
+    let admin = Principal::from_slice(&[0xAB; 29]);
+
+    let router = create_funded_canister(&pic);
+    pic.install_canister(
+        router,
+        wasm_bytes("ROUTER_WASM"),
+        Encode!(&RouterInitArgs {
+            issuing_principal: admin,
+            initial_admins: vec![],
+            controllers: vec![admin],
+        })
+        .expect("encode router init"),
+        None,
+    );
+
+    let index = create_funded_canister(&pic);
+    pic.install_canister(
+        index,
+        wasm_bytes("INDEX_WASM"),
+        Encode!(&IndexInitArgs {
+            controllers: vec![admin],
+            router_canister: router,
+        })
+        .expect("encode index init"),
+        None,
+    );
+
+    let graph_source = create_funded_canister(&pic);
+    let graph_dest = create_funded_canister(&pic);
+
+    register_graph_and_shards(&pic, admin, router, index, graph_source, graph_dest);
+
+    for (graph, _shard) in [(graph_source, SOURCE_SHARD), (graph_dest, DEST_SHARD)] {
+        pic.install_canister(
+            graph,
+            wasm_bytes("GRAPH_WASM"),
+            Encode!(&GraphInitArgs {
+                logical_graph_name: Some(GRAPH_NAME.into()),
+                router_canister: None,
+                shard_id: None,
+            })
+            .expect("encode graph init"),
+            None,
+        );
+    }
+
+    let env = FederationEnv {
+        pic,
+        admin,
+        router,
+        index,
+        graph_source,
+        graph_dest,
+    };
+
+    for (graph, shard) in [(graph_source, SOURCE_SHARD), (graph_dest, DEST_SHARD)] {
+        let _: () = update_as_router(
+            &env,
+            graph,
+            "e2e_attach_federation",
+            E2eAttachFederationArgs {
+                logical_graph_name: Some(GRAPH_NAME.into()),
+                router_canister: router,
+                index_canister: index,
+                shard_id: shard,
+            },
+        );
+    }
+
+    let peers = Encode!(&gleaph_graph_kernel::federation::BootstrapGraphPeersArgs {
+        peers: vec![graph_dest],
+    })
+    .expect("encode peers");
+    env.pic
+        .update_call(graph_source, router, "bootstrap_graph_peers", peers.clone())
+        .expect("bootstrap source peers");
+    let peers = Encode!(&gleaph_graph_kernel::federation::BootstrapGraphPeersArgs {
+        peers: vec![graph_source],
+    })
+    .expect("encode peers");
+    env.pic
+        .update_call(graph_dest, router, "bootstrap_graph_peers", peers)
+        .expect("bootstrap dest peers");
+
+    env
+}
+
+pub fn register_graph_and_shards(
+    pic: &PocketIc,
+    admin: Principal,
+    router: Principal,
+    index: Principal,
+    graph_source: Principal,
+    graph_dest: Principal,
+) {
+    let entry = GraphRegistryEntry {
+        graph_name: GRAPH_NAME.into(),
+        canister_id: graph_source,
+        owner: admin,
+        admins: Default::default(),
+        status: GraphStatus::Active,
+        version: 1,
+        updated_at_ns: 0,
+        provisioning_state: ProvisioningState::None,
+    };
+    pic.update_call(
+        router,
+        admin,
+        "admin_register_graph",
+        Encode!(&entry).expect("encode graph registry"),
+    )
+    .expect("admin_register_graph");
+
+    for (shard, graph) in [(SOURCE_SHARD, graph_source), (DEST_SHARD, graph_dest)] {
+        let args = AdminRegisterShardArgs {
+            shard_id: shard,
+            graph_canister: graph,
+            index_canister: index,
+            logical_graph_name: GRAPH_NAME.into(),
+        };
+        pic.update_call(
+            router,
+            admin,
+            "admin_register_shard",
+            Encode!(&args).expect("encode register shard"),
+        )
+        .expect("admin_register_shard");
+    }
+}
+
+pub fn update_as_router<T: CandidType, R: CandidType + serde::de::DeserializeOwned>(
+    env: &FederationEnv,
+    canister: Principal,
+    method: &str,
+    args: T,
+) -> R {
+    let bytes = env
+        .pic
+        .update_call(
+            canister,
+            env.router,
+            method,
+            Encode!(&args).expect("encode"),
+        )
+        .unwrap_or_else(|e| panic!("{method} on {canister}: {e:?}"));
+    match Decode!(&bytes, Result<R, String>) {
+        Ok(Ok(value)) => value,
+        Ok(Err(err)) => panic!("{method} on {canister} rejected: {err}"),
+        Err(err) => panic!("decode {method}: {err}"),
+    }
+}
+
+pub fn query_as_router<T: CandidType, R: CandidType + serde::de::DeserializeOwned>(
+    env: &FederationEnv,
+    canister: Principal,
+    method: &str,
+    args: T,
+) -> R {
+    let bytes = env
+        .pic
+        .query_call(
+            canister,
+            env.router,
+            method,
+            Encode!(&args).expect("encode"),
+        )
+        .unwrap_or_else(|e| panic!("{method} on {canister}: {e:?}"));
+    match Decode!(&bytes, Result<R, String>) {
+        Ok(Ok(value)) => value,
+        Ok(Err(err)) => panic!("{method} on {canister} rejected: {err}"),
+        Err(err) => panic!("decode {method}: {err}"),
+    }
+}
+
+pub fn e2e_insert_vertex(env: &FederationEnv, graph: Principal) -> E2eInsertVertexResult {
+    update_as_router(env, graph, "e2e_insert_vertex", ())
+}
+
+pub fn e2e_insert_edge(
+    env: &FederationEnv,
+    graph: Principal,
+    source_local: u32,
+    target_local: u32,
+) {
+    let _: () = update_as_router(
+        env,
+        graph,
+        "e2e_insert_directed_edge",
+        E2eInsertDirectedEdgeArgs {
+            source_local_vertex_id: source_local,
+            target_local_vertex_id: target_local,
+        },
+    );
+}
+
+pub fn migration_status(
+    env: &FederationEnv,
+    graph: Principal,
+    logical: LogicalVertexId,
+) -> MigrationStatus {
+    query_as_router(env, graph, "migration_status", logical)
+}
+
+pub fn run_migration_until_ready(
+    env: &FederationEnv,
+    logical: LogicalVertexId,
+) -> MigrationStartResult {
+    for step in 0..256 {
+        let status = migration_status(env, env.graph_source, logical);
+        if status.ready_for_cutover {
+            return MigrationStartResult {
+                logical_vertex_id: logical,
+                epoch: status.item.as_ref().map(|i| i.epoch).unwrap_or(0),
+                local_vertex_id: status
+                    .item
+                    .as_ref()
+                    .map(|i| i.source_local_vertex_id)
+                    .unwrap_or(0),
+                metadata_snapshot: gleaph_graph_kernel::federation::MigrationMetadataSnapshot {
+                    labels: vec![],
+                    properties: vec![],
+                },
+            };
+        }
+        if let Some(chunk) = update_as_router::<(), Option<MigrationApplyChunk>>(
+            env,
+            env.graph_source,
+            "migration_maintenance_tick",
+            (),
+        ) {
+            let _: () = update_as_router(env, env.graph_dest, "migration_apply_chunk", chunk);
+        }
+        if step + 1 == 256 {
+            panic!(
+                "migration not ready; phase={:?}",
+                status.item.map(|i| i.phase)
+            );
+        }
+    }
+    unreachable!()
+}
+
+pub fn resolve_placement(env: &FederationEnv, logical: LogicalVertexId) -> VertexPlacement {
+    query_as_router(env, env.router, "resolve_placement", logical)
+}

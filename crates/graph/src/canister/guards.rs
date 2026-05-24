@@ -9,6 +9,9 @@ pub fn guard_router_canister() -> Result<(), String> {
 /// Production graph shards accept plan execution only from the configured router.
 #[cfg(target_family = "wasm")]
 pub fn guard_router_canister() -> Result<(), String> {
+    use crate::facade::GraphStore;
+    use ic_cdk::api::msg_caller;
+
     let caller = msg_caller();
     let routing = GraphStore::new()
         .federation_routing()
@@ -31,6 +34,9 @@ pub fn guard_router_or_peer_graph() -> Result<(), String> {
 
 #[cfg(target_family = "wasm")]
 pub fn guard_router_or_peer_graph() -> Result<(), String> {
+    use crate::facade::GraphStore;
+    use ic_cdk::api::msg_caller;
+
     let caller = msg_caller();
     if guard_router_canister().is_ok() {
         return Ok(());

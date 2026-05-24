@@ -51,7 +51,7 @@ stateDiagram-v2
 
 1. **Router is authoritative** for `VertexPlacement` and logical id allocation.
 2. **At most one active physical home** per logical vertex (`Active` location).
-3. While **`Migrating`**, the **source shard** rejects local writes (`GraphStoreError::VertexMigrating` in `crates/graph/src/facade/store.rs`).
+3. While **`Migrating`**, the **source shard** remains writable (`SourceMigrating`); **staging** rows on the destination reject user writes until cutover.
 4. **Logical id is stable** across migration; only `PhysicalVertexLocation` changes.
 5. Graph shards **commit** placement after local insert; they do not invent logical ids independently in federated mode.
 

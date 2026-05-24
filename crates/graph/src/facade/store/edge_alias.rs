@@ -20,7 +20,7 @@ impl GraphStore {
         GRAPH.with_borrow(|graph| graph.find_forward_edge_label(owner_vertex_id, edge))
     }
 
-    pub(super) fn find_first_forward_handle_descending<F>(
+    pub(crate) fn find_first_forward_handle_descending<F>(
         &self,
         owner_vertex_id: VertexId,
         expected_label: LaraLabelId,
@@ -46,7 +46,7 @@ impl GraphStore {
             .map(|()| found)
     }
 
-    pub(super) fn find_first_reverse_handle_descending<F>(
+    pub(crate) fn find_first_reverse_handle_descending<F>(
         &self,
         row_vertex_id: VertexId,
         expected_label: LaraLabelId,
@@ -201,7 +201,7 @@ impl GraphStore {
         Ok(())
     }
 
-    pub(super) fn alias_for_canonical_edge(
+    pub(crate) fn alias_for_canonical_edge(
         &self,
         canonical: EdgeHandle,
     ) -> Option<(VertexId, u32, bool)> {

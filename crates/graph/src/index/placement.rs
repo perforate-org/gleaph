@@ -41,13 +41,14 @@ thread_local! {
         const { RefCell::new(Vec::new()) };
 }
 
-pub fn allocate_logical_vertex_id(
+pub async fn allocate_logical_vertex_id(
     router_canister: Principal,
 ) -> Result<LogicalVertexId, VertexPlacementError> {
     #[cfg(target_family = "wasm")]
     {
         let logical: Result<LogicalVertexId, RouterError> =
             super::router_call::call_router0(router_canister, "allocate_logical_vertex_id")
+                .await
                 .map_err(VertexPlacementError::Call)?;
         return logical.map_err(VertexPlacementError::Rejected);
     }
@@ -65,7 +66,7 @@ pub fn allocate_logical_vertex_id(
     }
 }
 
-pub fn commit_vertex_placement(
+pub async fn commit_vertex_placement(
     router_canister: Principal,
     args: CommitVertexPlacementArgs,
 ) -> Result<(), VertexPlacementError> {
@@ -73,6 +74,7 @@ pub fn commit_vertex_placement(
     {
         let result: Result<(), RouterError> =
             super::router_call::call_router1(router_canister, "commit_vertex_placement", args)
+                .await
                 .map_err(VertexPlacementError::Call)?;
         return result.map_err(VertexPlacementError::Rejected);
     }
@@ -107,7 +109,7 @@ pub fn commit_vertex_placement(
     }
 }
 
-pub fn list_shards_for_graph(
+pub async fn list_shards_for_graph(
     router_canister: Principal,
     logical_graph_name: &str,
 ) -> Result<Vec<ShardRegistryEntry>, VertexPlacementError> {
@@ -119,6 +121,7 @@ pub fn list_shards_for_graph(
                 "list_shards_for_graph",
                 logical_graph_name.to_string(),
             )
+            .await
             .map_err(VertexPlacementError::Call)?;
         return shards.map_err(VertexPlacementError::Rejected);
     }
@@ -148,7 +151,7 @@ pub fn native_test_register_shard(entry: ShardRegistryEntry) {
     });
 }
 
-pub fn resolve_placement(
+pub async fn resolve_placement(
     router_canister: Principal,
     logical_vertex_id: LogicalVertexId,
 ) -> Result<VertexPlacement, VertexPlacementError> {
@@ -159,6 +162,7 @@ pub fn resolve_placement(
             "resolve_placement",
             logical_vertex_id,
         )
+        .await
         .map_err(VertexPlacementError::Call)?;
         return placement.map_err(VertexPlacementError::Rejected);
     }
@@ -172,7 +176,7 @@ pub fn resolve_placement(
     }
 }
 
-pub fn begin_vertex_migration(
+pub async fn begin_vertex_migration(
     router_canister: Principal,
     args: BeginVertexMigrationArgs,
 ) -> Result<(), VertexPlacementError> {
@@ -180,6 +184,7 @@ pub fn begin_vertex_migration(
     {
         let result: Result<(), RouterError> =
             super::router_call::call_router1(router_canister, "begin_vertex_migration", args)
+                .await
                 .map_err(VertexPlacementError::Call)?;
         return result.map_err(VertexPlacementError::Rejected);
     }
@@ -191,7 +196,7 @@ pub fn begin_vertex_migration(
     }
 }
 
-pub fn release_logical_vertex_placement(
+pub async fn release_logical_vertex_placement(
     router_canister: Principal,
     args: ReleaseLogicalVertexArgs,
 ) -> Result<(), VertexPlacementError> {
@@ -202,6 +207,7 @@ pub fn release_logical_vertex_placement(
             "release_logical_vertex_placement",
             args,
         )
+        .await
         .map_err(VertexPlacementError::Call)?;
         return result.map_err(VertexPlacementError::Rejected);
     }
@@ -213,7 +219,7 @@ pub fn release_logical_vertex_placement(
     }
 }
 
-pub fn finish_vertex_migration(
+pub async fn finish_vertex_migration(
     router_canister: Principal,
     args: FinishVertexMigrationArgs,
 ) -> Result<(), VertexPlacementError> {
@@ -221,6 +227,7 @@ pub fn finish_vertex_migration(
     {
         let result: Result<(), RouterError> =
             super::router_call::call_router1(router_canister, "finish_vertex_migration", args)
+                .await
                 .map_err(VertexPlacementError::Call)?;
         return result.map_err(VertexPlacementError::Rejected);
     }
@@ -373,7 +380,7 @@ pub fn native_test_register_physical_placement(
     });
 }
 
-pub fn resolve_logical_at(
+pub async fn resolve_logical_at(
     router_canister: Principal,
     shard_id: ShardId,
     local_vertex_id: LocalVertexId,
@@ -386,6 +393,7 @@ pub fn resolve_logical_at(
             shard_id,
             local_vertex_id,
         )
+        .await
         .map_err(VertexPlacementError::Call)?;
 
         return match logical {
@@ -430,8 +438,11 @@ mod tests {
             registered_at_ns: 0,
         });
 
-        let listed =
-            list_shards_for_graph(Principal::management_canister(), "tenant.main").expect("list");
+        let listed = pollster::block_on(list_shards_for_graph(
+            Principal::management_canister(),
+            "tenant.main",
+        ))
+        .expect("list");
         assert_eq!(listed.len(), 2);
     }
 
@@ -452,14 +463,14 @@ mod tests {
         store.delete_vertex(vid).expect("delete");
 
         assert!(matches!(
-            resolve_placement(Principal::management_canister(), logical),
+            pollster::block_on(resolve_placement(Principal::management_canister(), logical)),
             Err(VertexPlacementError::Rejected(RouterError::VertexNotFound))
         ));
         assert!(store.logical_vertex_id(vid).is_none());
     }
 
     #[test]
-    fn migrating_source_vertex_is_not_writable_on_graph_shard() {
+    fn migrating_source_vertex_remains_writable_on_graph_shard() {
         let store = GraphStore::new();
         store
             .set_federation_routing(Some(FederationRouting {
@@ -470,22 +481,21 @@ mod tests {
             .expect("routing");
 
         let vid = store
-            .insert_vertex_named(["Frozen"], [("age", Value::Uint8(1))])
+            .insert_vertex_named(["Migrating"], [("age", Value::Uint8(1))])
             .expect("insert");
         let logical = store.logical_vertex_id(vid).expect("logical");
 
-        begin_vertex_migration(
+        pollster::block_on(begin_vertex_migration(
             Principal::management_canister(),
             BeginVertexMigrationArgs {
                 logical_vertex_id: logical,
                 destination_shard_id: 9,
             },
-        )
+        ))
         .expect("begin");
 
-        assert!(matches!(
-            store.assert_local_vertex_writable(vid),
-            Err(GraphStoreError::VertexMigrating)
-        ));
+        store
+            .assert_local_vertex_writable(vid)
+            .expect("source writable");
     }
 }

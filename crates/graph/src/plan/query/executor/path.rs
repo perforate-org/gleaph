@@ -70,7 +70,7 @@ pub(crate) struct ShortestPathSearchResult {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn execute_shortest_path(
+pub(crate) async fn execute_shortest_path(
     store: &GraphStore,
     rows: Vec<PlanRow>,
     src: &Str,
@@ -105,10 +105,11 @@ pub(crate) fn execute_shortest_path(
     let store_hop_edges = emit_edge_binding || emit_path_binding;
     let mut out = Vec::new();
     for row in rows {
-        let Some(src_id) = vertex_binding_for_traversal(store, &row, src, Some(direction))? else {
+        let Some(src_id) = vertex_binding_for_traversal(store, &row, src, Some(direction)).await?
+        else {
             continue;
         };
-        let Some(dst_id) = vertex_binding_for_traversal(store, &row, dst, None)? else {
+        let Some(dst_id) = vertex_binding_for_traversal(store, &row, dst, None).await? else {
             continue;
         };
         let paths = match cost {
@@ -2960,9 +2961,7 @@ mod tests {
             .get_or_insert_edge_label_id("WgtNoProfileRoad")
             .expect("road label");
         let road = catalog_edge_label(&store, "WgtNoProfileRoad");
-        store
-            .insert_directed_edge_with_inline_value(a, c, Some(road), 1)
-            .expect("edge");
+        store.insert_directed_edge(a, c, Some(road)).expect("edge");
         let plan = plan(vec![
             PlanOp::NodeScan {
                 variable: "a".into(),

@@ -220,9 +220,16 @@ impl RouterStore {
             registered_at_ns,
         };
 
-        index_sync::admin_set_shard_owner(args.index_canister, args.shard_id, args.graph_canister)
+        #[cfg(not(feature = "pocket-ic-e2e"))]
+        {
+            index_sync::admin_set_shard_owner(
+                args.index_canister,
+                args.shard_id,
+                args.graph_canister,
+            )
             .await
             .map_err(RouterError::Internal)?;
+        }
 
         ROUTER_SHARDS.with_borrow_mut(|s| {
             s.insert(args.shard_id, entry);
@@ -261,12 +268,15 @@ impl RouterStore {
             .filter(|graph| *graph != entry.graph_canister)
             .collect();
 
-        index_sync::admin_clear_shard_owner(entry.index_canister, shard_id)
-            .await
-            .map_err(RouterError::Internal)?;
+        #[cfg(not(feature = "pocket-ic-e2e"))]
+        {
+            index_sync::admin_clear_shard_owner(entry.index_canister, shard_id)
+                .await
+                .map_err(RouterError::Internal)?;
+        }
 
         #[cfg(target_family = "wasm")]
-        crate::peer_sync::sync_peers_after_shard_unregister(entry.graph_canister, &siblings)
+        crate::peer_sync::sync_peers_after_shard_unregister(entry.graph_canister, &_siblings)
             .await
             .map_err(RouterError::Internal)?;
 

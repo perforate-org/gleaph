@@ -20,6 +20,9 @@ ic-stable-structures.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 
+[features]
+pocket-ic-e2e = []
+
 [dev-dependencies]
 candid.workspace = true
 futures = "0.3"

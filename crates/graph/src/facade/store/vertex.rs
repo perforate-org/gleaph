@@ -1,6 +1,6 @@
 //! GraphStore `vertex` implementation.
 
-use super::super::stable::{GRAPH, REMOTE_VERTEX_REFS, VERTEX_LOGICAL_IDS};
+use super::super::stable::{GRAPH, REMOTE_VERTEX_REFS, VERTEX_LOGICAL_IDS, VERTEX_MIGRATION_STATE};
 use crate::index::placement;
 use gleaph_graph_kernel::entry::{Edge, EdgeTarget, RemoteRefId, Vertex};
 use gleaph_graph_kernel::federation::{
@@ -19,14 +19,23 @@ impl GraphStore {
     }
 
     pub fn insert_vertex(&self) -> Result<VertexId, GraphStoreError> {
-        self.insert_vertex_row(Vertex::default())
+        #[cfg(not(target_family = "wasm"))]
+        {
+            return pollster::block_on(self.insert_vertex_row(Vertex::default()));
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            ic_cdk::trap("insert_vertex: use insert_vertex_row().await on wasm");
+        }
     }
 
-    pub fn insert_vertex_row(&self, vertex: Vertex) -> Result<VertexId, GraphStoreError> {
-        let pending_logical = self
-            .federation_routing()
-            .map(|routing| placement::allocate_logical_vertex_id(routing.router_canister))
-            .transpose()?;
+    pub async fn insert_vertex_row(&self, vertex: Vertex) -> Result<VertexId, GraphStoreError> {
+        let pending_logical = match self.federation_routing() {
+            Some(routing) => {
+                Some(placement::allocate_logical_vertex_id(routing.router_canister).await?)
+            }
+            None => None,
+        };
 
         let vertex_id = self
             .with_graph_mut(|graph| graph.push_vertex_row(vertex.into()))
@@ -43,7 +52,8 @@ impl GraphStore {
                         logical_vertex_id,
                         local_vertex_id: placement::local_vertex_id_raw(vertex_id),
                     },
-                )?;
+                )
+                .await?;
                 logical_vertex_id
             }
             None => standalone_logical_vertex_id(vertex_id),
@@ -78,12 +88,55 @@ impl GraphStore {
         let Some(logical_vertex_id) = self.logical_vertex_id(vertex_id) else {
             return Ok(());
         };
-        let placement = placement::resolve_placement(routing.router_canister, logical_vertex_id)?;
-        if let gleaph_graph_kernel::federation::VertexPlacement::Migrating { source, .. } =
-            placement
+        let local = placement::local_vertex_id_raw(vertex_id);
+        #[cfg(target_family = "wasm")]
+        let placement = {
+            let _ = logical_vertex_id;
+            gleaph_graph_kernel::federation::VertexPlacement::Active(
+                gleaph_graph_kernel::federation::PhysicalVertexLocation::new(
+                    routing.shard_id,
+                    local,
+                ),
+            )
+        };
+        #[cfg(not(target_family = "wasm"))]
+        let placement = pollster::block_on(placement::resolve_placement(
+            routing.router_canister,
+            logical_vertex_id,
+        ))?;
+        if let Some(state) =
+            crate::facade::stable::VERTEX_MIGRATION_STATE.with_borrow(|m| m.get(local))
         {
-            let local = placement::local_vertex_id_raw(vertex_id);
-            if source.shard_id == routing.shard_id && source.local_vertex_id == local {
+            match state {
+                gleaph_graph_kernel::federation::VertexMigrationState::TargetStaging { .. }
+                | gleaph_graph_kernel::federation::VertexMigrationState::ForwardingStub {
+                    ..
+                } => {
+                    return Err(GraphStoreError::VertexMigrating);
+                }
+                gleaph_graph_kernel::federation::VertexMigrationState::SourceMigrating {
+                    ..
+                } => {}
+                gleaph_graph_kernel::federation::VertexMigrationState::Active => {}
+            }
+        }
+        if let gleaph_graph_kernel::federation::VertexPlacement::Migrating {
+            destination_shard_id,
+            ..
+        } = placement
+        {
+            if destination_shard_id == routing.shard_id && {
+                VERTEX_MIGRATION_STATE
+                    .with_borrow(|m| m.get(local))
+                    .is_some_and(|s| {
+                        matches!(
+                            s,
+                            gleaph_graph_kernel::federation::VertexMigrationState::TargetStaging {
+                                ..
+                            }
+                        )
+                    })
+            } {
                 return Err(GraphStoreError::VertexMigrating);
             }
         }

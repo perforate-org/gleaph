@@ -71,6 +71,12 @@ const LOGICAL_TO_REMOTE_REF: MemoryId = MemoryId::new(38);
 const REMOTE_FORWARD_IN: MemoryId = MemoryId::new(39);
 const EDGE_EQUALITY_POSTINGS: MemoryId = MemoryId::new(40);
 const PEER_GRAPH_CANISTERS: MemoryId = MemoryId::new(41);
+const VERTEX_MIGRATION_STATE: MemoryId = MemoryId::new(51);
+const MIGRATION_QUEUE: MemoryId = MemoryId::new(52);
+const MIGRATION_JOURNAL: MemoryId = MemoryId::new(53);
+const MIGRATION_OUT_HANDLE_MAP: MemoryId = MemoryId::new(54);
+const MIGRATION_REV_HANDLE_MAP: MemoryId = MemoryId::new(55);
+const PRUNE_MIGRATED_SOURCE_QUEUE: MemoryId = MemoryId::new(56);
 
 pub(crate) const GRAPH_DEFAULT_EDGE_LABEL: LaraLabelId = LaraLabelId::UNLABELED_DIRECTED;
 
@@ -98,6 +104,13 @@ pub(crate) type StableEdgeEqualityPostingStore =
     super::edge_equality_postings::EdgeEqualityPostingStore<Memory>;
 pub(crate) type StablePeerGraphCanisterSet =
     super::peer_graph_canisters::PeerGraphCanisterSet<Memory>;
+pub(crate) type StableVertexMigrationStateMap = super::migration::VertexMigrationStateMap<Memory>;
+pub(crate) type StableMigrationQueueMap = super::migration::MigrationQueueMap<Memory>;
+pub(crate) type StableMigrationJournalMap = super::migration::MigrationJournalMap<Memory>;
+pub(crate) type StableMigrationOutHandleMap = super::migration::MigrationOutHandleMap<Memory>;
+pub(crate) type StableMigrationRevHandleMap = super::migration::MigrationRevHandleMap<Memory>;
+pub(crate) type StablePruneMigratedSourceQueueMap =
+    super::migration::PruneMigratedSourceQueueMap<Memory>;
 
 thread_local! {
     static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
@@ -227,5 +240,41 @@ pub(crate) fn init_edge_equality_postings() -> StableEdgeEqualityPostingStore {
 pub(crate) fn init_peer_graph_canisters() -> StablePeerGraphCanisterSet {
     super::peer_graph_canisters::PeerGraphCanisterSet::init(
         MEMORY_MANAGER.with(|m| m.borrow().get(PEER_GRAPH_CANISTERS)),
+    )
+}
+
+pub(crate) fn init_vertex_migration_state() -> StableVertexMigrationStateMap {
+    super::migration::VertexMigrationStateMap::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(VERTEX_MIGRATION_STATE)),
+    )
+}
+
+pub(crate) fn init_migration_queue() -> StableMigrationQueueMap {
+    super::migration::MigrationQueueMap::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(MIGRATION_QUEUE)),
+    )
+}
+
+pub(crate) fn init_migration_journal() -> StableMigrationJournalMap {
+    super::migration::MigrationJournalMap::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(MIGRATION_JOURNAL)),
+    )
+}
+
+pub(crate) fn init_migration_out_handle_map() -> StableMigrationOutHandleMap {
+    super::migration::MigrationOutHandleMap::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(MIGRATION_OUT_HANDLE_MAP)),
+    )
+}
+
+pub(crate) fn init_migration_rev_handle_map() -> StableMigrationRevHandleMap {
+    super::migration::MigrationRevHandleMap::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(MIGRATION_REV_HANDLE_MAP)),
+    )
+}
+
+pub(crate) fn init_prune_migrated_source_queue() -> StablePruneMigratedSourceQueueMap {
+    super::migration::PruneMigratedSourceQueueMap::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(PRUNE_MIGRATED_SOURCE_QUEUE)),
     )
 }

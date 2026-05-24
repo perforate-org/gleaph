@@ -3,11 +3,10 @@
 use std::collections::BTreeMap;
 
 use crate::facade::migration::{
-    export_local_vertex_for_migration, import_migrated_vertex, tombstone_migrated_vertex,
-};
-#[cfg(target_family = "wasm")]
-use crate::facade::migration::{
-    import_migrated_vertex_with_index, tombstone_migrated_vertex_with_index,
+    migration_apply_chunk as apply_migration_chunk, migration_cutover as cutover_migration,
+    migration_maintenance_step, migration_reconcile,
+    migration_staging_begin as begin_migration_staging, migration_start as start_migration,
+    migration_status as query_migration_status, prune_migrated_source_maintenance_step,
 };
 use crate::facade::{FederationRouting, GraphMetadata, GraphStore};
 use crate::gql_execution_context::GqlExecutionContext;
@@ -19,24 +18,34 @@ use candid::Decode;
 use gleaph_gql::Value;
 use gleaph_gql_ic::decode_gql_params_blob;
 use gleaph_graph_kernel::federation::{
-    BeginVertexMigrationArgs, ExportedVertex, FederatedExpandArgs, FederatedExpandNeighbor,
+    BeginVertexMigrationArgs, FederatedExpandArgs, FederatedExpandNeighbor, LogicalVertexId,
+    MigrationApplyChunk, MigrationReconcileReport, MigrationStagingArgs, MigrationStartResult,
+    MigrationStatus,
 };
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanArgs, ExecutePlanResult, GqlExecutionMode, SeedBindingsWire,
 };
-use ic_stable_lara::VertexId;
 
 use super::types::GraphInitArgs;
 
-pub fn init(args: GraphInitArgs) {
+pub async fn init(args: GraphInitArgs) {
     let federation_routing = match (args.router_canister, args.shard_id) {
         (Some(router_canister), Some(shard_id)) => {
+            #[cfg(target_family = "wasm")]
             let entry = verify_shard_attachment(
                 router_canister,
                 shard_id,
                 args.logical_graph_name.as_deref(),
             )
+            .await
             .unwrap_or_else(|e| ic_cdk::trap(e.to_string()));
+            #[cfg(not(target_family = "wasm"))]
+            let entry = verify_shard_attachment(
+                router_canister,
+                shard_id,
+                args.logical_graph_name.as_deref(),
+            )
+            .unwrap_or_else(|e| panic!("{e}"));
             Some(FederationRouting {
                 router_canister,
                 shard_id,
@@ -162,68 +171,126 @@ pub fn remove_graph_peer(
     Ok(())
 }
 
-pub fn migration_begin(args: BeginVertexMigrationArgs) -> Result<(), String> {
+pub async fn migration_start(
+    args: BeginVertexMigrationArgs,
+) -> Result<MigrationStartResult, String> {
     let store = GraphStore::new();
-    let routing = store
-        .federation_routing()
-        .ok_or("federation routing not configured")?;
-    crate::index::placement::begin_vertex_migration(routing.router_canister, args)
+    start_migration(&store, args)
+        .await
         .map_err(|e| e.to_string())
 }
 
-pub fn federated_expand(args: FederatedExpandArgs) -> Result<Vec<FederatedExpandNeighbor>, String> {
+pub async fn migration_staging_begin(
+    args: MigrationStagingArgs,
+) -> Result<MigrationStartResult, String> {
     let store = GraphStore::new();
-    crate::facade::federation_expand::collect_federated_expand(&store, args)
+    begin_migration_staging(&store, args)
+        .await
         .map_err(|e| e.to_string())
 }
 
-pub fn migration_export(local_vertex_id: u32) -> Result<ExportedVertex, String> {
+pub async fn migration_apply_chunk(chunk: MigrationApplyChunk) -> Result<(), String> {
     let store = GraphStore::new();
-    export_local_vertex_for_migration(&store, VertexId::from(local_vertex_id))
+    apply_migration_chunk(&store, chunk)
+        .await
         .map_err(|e| e.to_string())
 }
 
-pub async fn migration_import(bundle: ExportedVertex) -> Result<u32, String> {
+pub async fn migration_cutover(logical_vertex_id: LogicalVertexId) -> Result<(), String> {
     let store = GraphStore::new();
-    #[cfg(target_family = "wasm")]
+    #[cfg(all(target_family = "wasm", not(feature = "pocket-ic-e2e")))]
     {
-        let index_holder = wasm_index_client_holder().ok_or_else(|| {
-            "federated graph shard requires index_canister for migration import".to_string()
-        })?;
-        let vertex_id = import_migrated_vertex_with_index(
-            &store,
-            bundle,
-            &index_holder as &dyn PropertyIndexLookup,
-        )
+        if let Some(ix) = wasm_index_client_holder()
+            .as_ref()
+            .map(|c| c as &dyn PropertyIndexLookup)
+        {
+            return migration_cutover_with_index(&store, logical_vertex_id, ix)
+                .await
+                .map_err(|e| e.to_string());
+        }
+    }
+    cutover_migration(&store, logical_vertex_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+pub async fn migration_reconcile_query(
+    logical_vertex_id: LogicalVertexId,
+) -> Result<MigrationReconcileReport, String> {
+    let store = GraphStore::new();
+    migration_reconcile(&store, logical_vertex_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+pub fn migration_status_query(
+    logical_vertex_id: LogicalVertexId,
+) -> Result<MigrationStatus, String> {
+    let store = GraphStore::new();
+    query_migration_status(&store, logical_vertex_id).map_err(|e| e.to_string())
+}
+
+pub async fn migration_maintenance_tick() -> Result<Option<MigrationApplyChunk>, String> {
+    let store = GraphStore::new();
+    let chunk = migration_maintenance_step(&store)
         .await
         .map_err(|e| e.to_string())?;
-        return Ok(u32::from(vertex_id));
-    }
-    #[cfg(not(target_family = "wasm"))]
-    {
-        let vertex_id = import_migrated_vertex(&store, bundle).map_err(|e| e.to_string())?;
-        Ok(u32::from(vertex_id))
-    }
+    let _ = prune_migrated_source_maintenance_step(&store).map_err(|e| e.to_string())?;
+    Ok(chunk)
 }
 
-pub async fn migration_tombstone(local_vertex_id: u32) -> Result<(), String> {
+#[cfg(feature = "pocket-ic-e2e")]
+pub fn e2e_attach_federation(args: super::types::E2eAttachFederationArgs) -> Result<(), String> {
+    if ic_cdk::api::msg_caller() != args.router_canister {
+        return Err("e2e_attach_federation: caller must be the configured router".into());
+    }
+    let mut metadata = GraphMetadata::default();
+    metadata.set_logical_graph_name(args.logical_graph_name);
+    metadata.set_federation_routing(Some(FederationRouting {
+        router_canister: args.router_canister,
+        shard_id: args.shard_id,
+        index_canister: args.index_canister,
+    }));
+    GraphStore::new()
+        .set_metadata(metadata)
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(feature = "pocket-ic-e2e")]
+pub async fn e2e_insert_vertex() -> Result<super::types::E2eInsertVertexResult, String> {
+    use crate::index::placement;
     let store = GraphStore::new();
-    let vertex_id = VertexId::from(local_vertex_id);
-    #[cfg(target_family = "wasm")]
-    {
-        let index_holder = wasm_index_client_holder().ok_or_else(|| {
-            "federated graph shard requires index_canister for migration tombstone".to_string()
-        })?;
-        return tombstone_migrated_vertex_with_index(
-            &store,
-            vertex_id,
-            &index_holder as &dyn PropertyIndexLookup,
-        )
+    let vertex_id = store
+        .insert_vertex_row(gleaph_graph_kernel::entry::Vertex::default())
         .await
-        .map_err(|e| e.to_string());
-    }
-    #[cfg(not(target_family = "wasm"))]
-    {
-        tombstone_migrated_vertex(&store, vertex_id).map_err(|e| e.to_string())
-    }
+        .map_err(|e| e.to_string())?;
+    let logical_vertex_id = store
+        .logical_vertex_id(vertex_id)
+        .ok_or_else(|| "logical id missing after insert".to_string())?;
+    Ok(super::types::E2eInsertVertexResult {
+        local_vertex_id: placement::local_vertex_id_raw(vertex_id),
+        logical_vertex_id,
+    })
+}
+
+#[cfg(feature = "pocket-ic-e2e")]
+pub fn e2e_insert_directed_edge(
+    args: super::types::E2eInsertDirectedEdgeArgs,
+) -> Result<(), String> {
+    let store = GraphStore::new();
+    let source = ic_stable_lara::VertexId::from(args.source_local_vertex_id);
+    let target = ic_stable_lara::VertexId::from(args.target_local_vertex_id);
+    store
+        .insert_directed_edge(source, target, None)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub async fn federated_expand(
+    args: FederatedExpandArgs,
+) -> Result<Vec<FederatedExpandNeighbor>, String> {
+    let store = GraphStore::new();
+    crate::facade::federation_expand::collect_federated_expand(&store, args)
+        .await
+        .map_err(|e| e.to_string())
 }

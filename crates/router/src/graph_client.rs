@@ -7,7 +7,7 @@ use gleaph_graph_kernel::federation::{
 use gleaph_graph_kernel::plan_exec::{ExecutePlanArgs, ExecutePlanResult};
 
 #[cfg(target_family = "wasm")]
-async fn call_graph<T: candid::CandidType, R: candid::CandidType>(
+async fn call_graph<T: candid::CandidType, R: candid::CandidType + serde::de::DeserializeOwned>(
     graph: Principal,
     method: &str,
     args: T,

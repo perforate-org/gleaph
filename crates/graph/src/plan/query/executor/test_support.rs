@@ -186,6 +186,14 @@ pub fn node_scan_visits() -> usize {
     super::scan::NODE_SCAN_VISITS.with(|visits| visits.get())
 }
 
+pub fn reset_edge_stream_visits() {
+    super::scan::EDGE_STREAM_VISITS.with(|visits| visits.set(0));
+}
+
+pub fn edge_stream_visits() -> usize {
+    super::scan::EDGE_STREAM_VISITS.with(|visits| visits.get())
+}
+
 #[derive(Clone, Debug)]
 pub struct TestOrderableExt(u8);
 

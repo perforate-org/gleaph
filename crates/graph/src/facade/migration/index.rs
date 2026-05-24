@@ -1,11 +1,16 @@
 //! Federated index posting maintenance during vertex migration.
 
 use crate::facade::GraphStore;
+use crate::facade::store::GraphStoreError;
 use crate::index::lookup::PropertyIndexLookup;
+use crate::index::placement::VertexPlacementError;
 use crate::plan::PlanQueryError;
 use gleaph_gql::{Value, value_to_index_key_bytes};
 use gleaph_gql_ic::IcExtensionBinaryDecode;
-use gleaph_graph_kernel::federation::{ExportedProperty, ExportedVertex, ShardId};
+use gleaph_graph_kernel::entry::Vertex;
+use gleaph_graph_kernel::federation::{
+    ExportedProperty, ExportedVertex, MigrationItem, RouterError, ShardId,
+};
 use ic_stable_lara::VertexId;
 
 fn index_key_bytes(prop: &ExportedProperty) -> Result<Option<Vec<u8>>, PlanQueryError> {
@@ -52,6 +57,45 @@ pub async fn sync_migration_index_postings(
             .await?;
     }
     Ok(())
+}
+
+/// Property bundle for [`sync_migration_index_postings`] after destination cutover.
+pub fn exported_vertex_for_index_sync(
+    store: &GraphStore,
+    item: &MigrationItem,
+) -> Result<ExportedVertex, GraphStoreError> {
+    let dest_id = VertexId::from(item.target_local_vertex_id);
+    let vertex = store
+        .vertex(dest_id)
+        .ok_or(GraphStoreError::VertexPlacement(
+            VertexPlacementError::Rejected(RouterError::VertexNotFound),
+        ))?;
+    let mut vertex_row_bytes = vec![0u8; Vertex::BYTES];
+    vertex.into_labeled().write_to(&mut vertex_row_bytes);
+    let labels = store.vertex_labels(dest_id, vertex);
+    let properties = store
+        .vertex_properties(dest_id)
+        .into_iter()
+        .map(|(property_id, value)| {
+            Ok(ExportedProperty {
+                property_id,
+                value_bytes: value.to_binary_bytes().map_err(|e| {
+                    GraphStoreError::VertexPlacement(VertexPlacementError::Call(format!(
+                        "property encode: {e}"
+                    )))
+                })?,
+            })
+        })
+        .collect::<Result<Vec<_>, GraphStoreError>>()?;
+    Ok(ExportedVertex {
+        logical_vertex_id: item.logical_vertex_id,
+        source_shard_id: item.source_shard_id,
+        source_local_vertex_id: item.source_local_vertex_id,
+        vertex_row_bytes,
+        labels,
+        properties,
+        out_edges: vec![],
+    })
 }
 
 /// Best-effort removal of source-shard postings still keyed at a stale physical vertex.

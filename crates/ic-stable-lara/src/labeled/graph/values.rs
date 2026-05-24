@@ -2,6 +2,7 @@
 
 use crate::{
     VertexId,
+    labeled::slot_index::checked_add_slot_index,
     labeled::{
         access::LabelEdgeSpanAccess,
         bucket_label_key::BucketLabelKey,
@@ -13,8 +14,8 @@ use crate::{
 };
 use ic_stable_structures::Memory;
 
-use super::LabeledLaraGraph;
 use super::error::LabeledOperationError;
+use super::{BucketSearch, LabeledLaraGraph};
 
 impl<E, M> LabeledLaraGraph<E, M>
 where
@@ -416,6 +417,61 @@ where
         }
         Ok(bucket)
     }
+    /// Updates the edge-value payload for one live edge at `slot_index` inside `label_id`.
+    pub fn update_edge_value_at_slot(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        slot_index: u32,
+        edge: E,
+    ) -> Result<bool, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.ensure_vertex(src)?;
+        let vertex = self.vertices.get(src);
+        if vertex.is_default_edge_labeled() {
+            if label_id != self.bypass_storage_label_for(&vertex)
+                || slot_index >= vertex.stored_degree()
+            {
+                return Ok(false);
+            }
+            let edge_slot = checked_add_slot_index(vertex.base_slot_start(), u64::from(slot_index))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let current = self.edges.read_slot(edge_slot);
+            if current.is_tombstone_edge() {
+                return Ok(false);
+            }
+            if edge.edge_value_byte_width() != 0 {
+                return Ok(false);
+            }
+            return Ok(true);
+        }
+        let (slot, mut bucket) = match self.find_bucket(src, &vertex, label_id)? {
+            BucketSearch::Found { slot, bucket } => (slot, bucket),
+            BucketSearch::Missing { .. } => return Ok(false),
+        };
+        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
+        if bucket.overflow_log_head() >= 0 {
+            bucket = self.ensure_label_bucket_folded_to_slab(src, bucket_index, slot, bucket)?;
+        }
+        if slot_index >= bucket.stored_slots {
+            return Ok(false);
+        }
+        let edge_slot = checked_add_slot_index(bucket.edge_start(), u64::from(slot_index))
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let current = self.edges.read_slot(edge_slot);
+        if current.is_deleted_slot() || current.is_tombstone_edge() {
+            return Ok(false);
+        }
+        if edge.edge_value_byte_width() != 0 {
+            self.write_edge_value_at_slot(&bucket, slot_index, &edge)?;
+        }
+        self.buckets.write_label_bucket_slot(slot, bucket)?;
+        self.invalidate_bucket_lookup_for_label(src, label_id);
+        Ok(true)
+    }
+
     pub(super) fn write_edge_value_at_slot(
         &self,
         bucket: &LabelBucket,

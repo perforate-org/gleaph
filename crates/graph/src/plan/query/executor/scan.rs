@@ -27,12 +27,15 @@ use super::expand::{
 };
 use super::{
     EdgeSequenceOrder, PlanBinding, dst_filter_is_dst_vertex_only, ensure_simple_expand,
-    limit_value, project_row, row_matches_all, vertex_binding_for_traversal,
-    vertex_row_matches_dst_filters,
+    limit_value, project_row, row_matches_all, vertex_row_matches_dst_filters,
 };
 use crate::facade::GraphStore;
+use crate::facade::migration::{migration_visibility_filter_needed, vertex_visible_to_query};
 use crate::index::lookup::PropertyIndexLookup;
 use crate::index::placement;
+
+pub(crate) const LIMITED_STREAMING_REMOTE_EXPAND_SOURCE: &str =
+    "LimitedStreamingPrefix.remote_expand_source";
 
 #[cfg(test)]
 mod test_counters {
@@ -40,11 +43,12 @@ mod test_counters {
 
     thread_local! {
         pub(crate) static NODE_SCAN_VISITS: Cell<usize> = const { Cell::new(0) };
+        pub(crate) static EDGE_STREAM_VISITS: Cell<usize> = const { Cell::new(0) };
     }
 }
 
 #[cfg(test)]
-pub(crate) use test_counters::NODE_SCAN_VISITS;
+pub(crate) use test_counters::{EDGE_STREAM_VISITS, NODE_SCAN_VISITS};
 
 pub(crate) struct LimitedStreamingPrefixResult {
     pub(crate) rows: Vec<PlanRow>,
@@ -402,6 +406,7 @@ fn stream_node_scan(
         return Ok(false);
     }
 
+    let filter_migration_visibility = migration_visibility_filter_needed();
     for raw in 0..u32::from(store.vertex_count()) {
         #[cfg(test)]
         NODE_SCAN_VISITS.with(|visits| visits.set(visits.get() + 1));
@@ -409,7 +414,9 @@ fn stream_node_scan(
         let Some(vertex) = store.vertex(vertex_id) else {
             continue;
         };
-        if vertex.is_tombstone() {
+        if vertex.is_tombstone()
+            || (filter_migration_visibility && !vertex_visible_to_query(vertex_id))
+        {
             continue;
         }
         if let Some(filter) = label_id
@@ -434,6 +441,22 @@ fn stream_node_scan(
         }
     }
     Ok(false)
+}
+
+fn local_vertex_binding_for_limited_streaming_expand(
+    row: &PlanRow,
+    variable: &str,
+) -> Result<Option<VertexId>, PlanQueryError> {
+    match row.get(variable) {
+        Some(PlanBinding::Value(Value::Null)) => Ok(None),
+        Some(PlanBinding::Vertex(vertex_id)) => Ok(Some(*vertex_id)),
+        Some(PlanBinding::RemoteVertex(_)) => Err(PlanQueryError::UnsupportedOp(
+            LIMITED_STREAMING_REMOTE_EXPAND_SOURCE,
+        )),
+        Some(_) | None => Err(PlanQueryError::MissingBinding {
+            variable: variable.to_owned(),
+        }),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -465,7 +488,8 @@ fn stream_expand(
         return Ok(false);
     }
 
-    let Some(src_id) = vertex_binding_for_traversal(store, &row, src, Some(direction))? else {
+    let Some(src_id) = local_vertex_binding_for_limited_streaming_expand(&row, src.as_ref())?
+    else {
         return Ok(false);
     };
     let dst_only_prefilter = dst_filter_is_dst_vertex_only(dst_filter, dst.as_ref());
@@ -486,8 +510,10 @@ fn stream_expand(
     if let Some(fast_path) = csr_offset_fast_path {
         let mut offset_slot = sink.offset_remaining;
         let mut visit = |edge: Edge| {
-            // `skip_then_visit_each_out_edge_for_label` applies the global OFFSET inside the CSR
-            // iterator; clear the sink-side skip before downstream `LimitedRows::push`.
+            #[cfg(test)]
+            EDGE_STREAM_VISITS.with(|visits| visits.set(visits.get() + 1));
+            // `skip_then_visit_each_*` applies the global OFFSET inside the CSR iterator; clear
+            // the sink-side skip before downstream `LimitedRows::push`.
             sink.offset_remaining = 0;
             let Some(edge_dst) = ExpandDst::from_edge(store, &edge)? else {
                 return Ok(false);
@@ -540,6 +566,8 @@ fn stream_expand(
         }
         let mut offset_slot = 0;
         let mut visit = |edge: Edge| {
+            #[cfg(test)]
+            EDGE_STREAM_VISITS.with(|visits| visits.set(visits.get() + 1));
             let Some(edge_dst) = ExpandDst::from_edge(store, &edge)? else {
                 return Ok(false);
             };
@@ -652,8 +680,7 @@ fn stream_expand(
             edge_binding,
             edge_property_projection,
             dst_property_projection,
-        );
-        let expanded = expanded?;
+        )?;
         if !dst_only_prefilter && !row_matches_all(evaluator, &expanded, dst_filter)? {
             continue;
         }
@@ -761,6 +788,7 @@ async fn materialize_federated_index_hits(
                             hit.shard_id,
                             hit.vertex_id,
                         )
+                        .await
                         .map_err(|e| {
                             PlanQueryError::FederatedIndexCall {
                                 op: "resolve_logical_at",
@@ -896,6 +924,7 @@ pub(crate) async fn execute_index_intersection(
                             h.shard_id,
                             h.vertex_id,
                         )
+                        .await
                         .map_err(|e| {
                             PlanQueryError::FederatedIndexCall {
                                 op: "resolve_logical_at",
@@ -2047,12 +2076,17 @@ mod tests {
             "MATCH (a:LazyEdgePageSource)-[:LazyEdgePageRel]->(b) RETURN b.name LIMIT 2 OFFSET 2",
         );
 
+        reset_edge_stream_visits();
         let first = store
             .execute_plan_query(&first_page, &params(), GqlExecutionContext::default())
             .expect("execute first page");
+        assert_eq!(edge_stream_visits(), 2);
+
+        reset_edge_stream_visits();
         let second = store
             .execute_plan_query(&second_page, &params(), GqlExecutionContext::default())
             .expect("execute second page");
+        assert_eq!(edge_stream_visits(), 2);
 
         assert_eq!(text_column(&first, "b.name"), vec!["edge 4", "edge 3"]);
         assert_eq!(text_column(&second, "b.name"), vec!["edge 2", "edge 1"]);
@@ -2181,6 +2215,7 @@ mod tests {
         let page =
             plan_gql("MATCH (a:LazyUnlabeledPageSource)-[]->(b) RETURN b.name LIMIT 2 OFFSET 2");
 
+        reset_edge_stream_visits();
         let result = store
             .execute_plan_query(&page, &params(), GqlExecutionContext::default())
             .expect("execute page");
@@ -2189,6 +2224,7 @@ mod tests {
             text_column(&result, "b.name"),
             vec!["unlabeled edge 2", "unlabeled edge 1"]
         );
+        assert_eq!(edge_stream_visits(), 2);
     }
     #[test]
     fn reverse_expand_limit_offset_uses_latest_in_edges() {
@@ -2217,6 +2253,7 @@ mod tests {
             "MATCH (b:LazyReversePageTarget)<-[:LazyReversePageRel]-(a) RETURN a.name LIMIT 2 OFFSET 2",
         );
 
+        reset_edge_stream_visits();
         let result = store
             .execute_plan_query(&page, &params(), GqlExecutionContext::default())
             .expect("execute page");
@@ -2225,6 +2262,7 @@ mod tests {
             text_column(&result, "a.name"),
             vec!["reverse edge 2", "reverse edge 1"]
         );
+        assert_eq!(edge_stream_visits(), 2);
     }
     #[test]
     fn undirected_expand_limit_offset_uses_latest_edges() {
@@ -2252,6 +2290,7 @@ mod tests {
         let page =
             plan_gql("MATCH (a:LazyUndirectedPageSource)~[]~(b) RETURN b.name LIMIT 2 OFFSET 2");
 
+        reset_edge_stream_visits();
         let result = store
             .execute_plan_query(&page, &params(), GqlExecutionContext::default())
             .expect("execute page");
@@ -2260,6 +2299,7 @@ mod tests {
             text_column(&result, "b.name"),
             vec!["undirected edge 2", "undirected edge 1"]
         );
+        assert_eq!(edge_stream_visits(), 2);
     }
     #[test]
     fn filtered_expand_limit_offset_skips_only_matching_edges() {
@@ -2299,6 +2339,7 @@ mod tests {
              WHERE b.keep = true RETURN b.name LIMIT 2 OFFSET 1",
         );
 
+        reset_edge_stream_visits();
         let result = store
             .execute_plan_query(&page, &params(), GqlExecutionContext::default())
             .expect("execute page");
@@ -2307,6 +2348,7 @@ mod tests {
             text_column(&result, "b.name"),
             vec!["filtered edge 4", "filtered edge 2"]
         );
+        assert_eq!(edge_stream_visits(), 4);
     }
     #[test]
     fn node_scan_projects_vertex_property() {
@@ -2391,6 +2433,7 @@ mod tests {
             },
         ]);
 
+        reset_edge_stream_visits();
         let result = store
             .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("indexed expand");
@@ -2399,6 +2442,7 @@ mod tests {
             text_column(&result, "name"),
             vec!["indexed edge 4", "indexed edge 2"]
         );
+        assert_eq!(edge_stream_visits(), 4);
     }
     #[test]
     fn aggregate_count_star_after_node_scan() {

@@ -504,7 +504,7 @@ fn expand_rows_from_federated_expand_hits(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn execute_expand(
+pub(crate) async fn execute_expand(
     ctx: &ExecuteCtx<'_>,
     rows: Vec<PlanRow>,
     src: &Str,
@@ -548,21 +548,20 @@ pub(crate) fn execute_expand(
         if matches!(direction, EdgeDirection::PointingLeft)
             && let Some(PlanBinding::RemoteVertex(logical)) = row.get(src.as_ref())
             && matches!(
-                resolve_federated_traversal_vertex(store, *logical, Some(direction)),
+                resolve_federated_traversal_vertex(store, *logical, Some(direction)).await,
                 Err(PlanQueryError::UnsupportedOp(_))
             )
         {
             let label_id_raw = federated_expand_label_id_raw(label_id, direction);
-            let hits = pollster::block_on(
-                crate::facade::federation_expand::federated_expand_coordinator(
-                    store,
-                    FederatedExpandArgs {
-                        logical_vertex_id: *logical,
-                        direction: FederatedExpandDirection::Incoming,
-                        label_id_raw,
-                    },
-                ),
+            let hits = crate::facade::federation_expand::federated_expand_coordinator(
+                store,
+                FederatedExpandArgs {
+                    logical_vertex_id: *logical,
+                    direction: FederatedExpandDirection::Incoming,
+                    label_id_raw,
+                },
             )
+            .await
             .map_err(|e| PlanQueryError::FederatedIndexCall {
                 op: "federated_expand",
                 detail: e.to_string(),
@@ -587,21 +586,20 @@ pub(crate) fn execute_expand(
         if matches!(direction, EdgeDirection::PointingRight)
             && let Some(PlanBinding::RemoteVertex(logical)) = row.get(src.as_ref())
             && matches!(
-                resolve_federated_traversal_vertex(store, *logical, Some(direction)),
+                resolve_federated_traversal_vertex(store, *logical, Some(direction)).await,
                 Err(PlanQueryError::UnsupportedOp(_))
             )
         {
             let label_id_raw = federated_expand_label_id_raw(label_id, direction);
-            let hits = pollster::block_on(
-                crate::facade::federation_expand::federated_expand_coordinator(
-                    store,
-                    FederatedExpandArgs {
-                        logical_vertex_id: *logical,
-                        direction: FederatedExpandDirection::Outgoing,
-                        label_id_raw,
-                    },
-                ),
+            let hits = crate::facade::federation_expand::federated_expand_coordinator(
+                store,
+                FederatedExpandArgs {
+                    logical_vertex_id: *logical,
+                    direction: FederatedExpandDirection::Outgoing,
+                    label_id_raw,
+                },
             )
+            .await
             .map_err(|e| PlanQueryError::FederatedIndexCall {
                 op: "federated_expand",
                 detail: e.to_string(),
@@ -626,21 +624,20 @@ pub(crate) fn execute_expand(
         if matches!(direction, EdgeDirection::Undirected)
             && let Some(PlanBinding::RemoteVertex(logical)) = row.get(src.as_ref())
             && matches!(
-                resolve_federated_traversal_vertex(store, *logical, Some(direction)),
+                resolve_federated_traversal_vertex(store, *logical, Some(direction)).await,
                 Err(PlanQueryError::UnsupportedOp(_))
             )
         {
             let label_id_raw = federated_expand_label_id_raw(label_id, direction);
-            let hits = pollster::block_on(
-                crate::facade::federation_expand::federated_expand_coordinator(
-                    store,
-                    FederatedExpandArgs {
-                        logical_vertex_id: *logical,
-                        direction: FederatedExpandDirection::Undirected,
-                        label_id_raw,
-                    },
-                ),
+            let hits = crate::facade::federation_expand::federated_expand_coordinator(
+                store,
+                FederatedExpandArgs {
+                    logical_vertex_id: *logical,
+                    direction: FederatedExpandDirection::Undirected,
+                    label_id_raw,
+                },
             )
+            .await
             .map_err(|e| PlanQueryError::FederatedIndexCall {
                 op: "federated_expand",
                 detail: e.to_string(),
@@ -664,9 +661,9 @@ pub(crate) fn execute_expand(
 
         let Some(src_id) = (match row.get(src.as_ref()) {
             Some(PlanBinding::RemoteVertex(logical)) => {
-                resolve_federated_traversal_vertex(store, *logical, Some(direction))?
+                resolve_federated_traversal_vertex(store, *logical, Some(direction)).await?
             }
-            _ => vertex_binding_for_traversal(store, &row, src, Some(direction))?,
+            _ => vertex_binding_for_traversal(store, &row, src, Some(direction)).await?,
         }) else {
             continue;
         };
@@ -1168,7 +1165,7 @@ mod tests {
             GqlExecutionContext::default(),
             None,
         );
-        let out = execute_expand(
+        let out = pollster::block_on(execute_expand(
             &ctx,
             vec![seed],
             &"b".into(),
@@ -1182,13 +1179,13 @@ mod tests {
             None,
             None,
             None,
-        )
+        ))
         .expect("federated reverse expand");
 
         assert_eq!(out.len(), 1);
         assert!(matches!(
             out[0].get("a"),
-            Some(PlanBinding::Vertex(v)) if (*v) == source
+            Some(PlanBinding::Vertex(v)) if *v == source
         ));
         assert_eq!(
             store.logical_vertex_id(source).expect("source logical"),

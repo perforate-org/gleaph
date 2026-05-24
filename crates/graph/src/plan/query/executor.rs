@@ -461,7 +461,7 @@ fn vertex_binding(row: &PlanRow, variable: &str) -> Result<VertexId, PlanQueryEr
 }
 
 /// Resolve a graph traversal source when the variable may be null-padded after an optional miss.
-pub(crate) fn vertex_binding_for_traversal(
+pub(crate) async fn vertex_binding_for_traversal(
     store: &GraphStore,
     row: &PlanRow,
     variable: &str,
@@ -470,14 +470,14 @@ pub(crate) fn vertex_binding_for_traversal(
     match row.get(variable) {
         Some(PlanBinding::Value(Value::Null)) => Ok(None),
         Some(PlanBinding::RemoteVertex(logical)) => {
-            resolve_federated_traversal_vertex(store, *logical, expand_direction)
+            resolve_federated_traversal_vertex(store, *logical, expand_direction).await
         }
         _ => vertex_binding(row, variable).map(Some),
     }
 }
 
 /// Maps a logical vertex to a local [`VertexId`] when this shard is authoritative.
-pub(crate) fn resolve_federated_traversal_vertex(
+pub(crate) async fn resolve_federated_traversal_vertex(
     store: &GraphStore,
     logical_vertex_id: LogicalVertexId,
     expand_direction: Option<EdgeDirection>,
@@ -488,6 +488,7 @@ pub(crate) fn resolve_federated_traversal_vertex(
         ));
     };
     let placement = placement::resolve_placement(routing.router_canister, logical_vertex_id)
+        .await
         .map_err(|_| PlanQueryError::UnsupportedOp("Expand(remote placement lookup)"))?;
     match placement {
         gleaph_graph_kernel::federation::VertexPlacement::Active(loc)
@@ -510,9 +511,7 @@ pub(crate) fn resolve_federated_traversal_vertex(
         gleaph_graph_kernel::federation::VertexPlacement::Migrating { source, .. }
             if source.shard_id == routing.shard_id =>
         {
-            Err(PlanQueryError::UnsupportedOp(
-                "Expand(vertex migrating on this shard)",
-            ))
+            Ok(Some(VertexId::from(source.local_vertex_id)))
         }
         gleaph_graph_kernel::federation::VertexPlacement::Migrating { .. } => Err(
             PlanQueryError::UnsupportedOp("Expand(vertex migrating on another shard)"),

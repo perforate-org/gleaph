@@ -20,6 +20,8 @@ canbench_large = ["canbench"]
 # Use only for WASM canprof / canbench runs: `--features canbench,canbench_lara`.
 canbench_lara = ["canbench", "ic-stable-lara/canbench"]
 sql-compat = ["gleaph-gql/sql-compat", "gleaph-gql-planner/sql-compat"]
+# Test-only canister methods for PocketIC multi-canister E2E (not enabled in release benches).
+pocket-ic-e2e = []
 
 [dependencies]
 async-trait = "0.1"

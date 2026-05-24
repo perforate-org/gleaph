@@ -1,5 +1,7 @@
 //! Shared 36-bit CSR slab slot indices (edge slab and label-bucket slab).
 
+use crate::LogHead;
+
 /// Width of a global slab slot index (`base_slot_start`, `edge_start`, …).
 pub const SLOT_INDEX_BITS: u32 = 36;
 /// All-ones mask for a valid slot index.
@@ -202,16 +204,26 @@ pub fn try_pack_vertex_tail28(log_head: i32, tombstone: bool) -> Option<u32> {
 /// Encodes an overflow-log head (`-1` → [`OVERFLOW_LOG_NONE`]).
 #[inline]
 pub fn encode_overflow_log_byte(head: i32) -> u8 {
-    try_encode_overflow_log_byte(head).expect("overflow log head out of range")
+    encode_log_head(LogHead::from_i32(head).expect("overflow log head out of range"))
+}
+
+/// Encodes a [`LogHead`] to its wire byte.
+#[inline]
+pub fn encode_log_head(head: crate::LogHead) -> u8 {
+    head.as_byte()
 }
 
 /// Fallible [`encode_overflow_log_byte`].
 #[inline]
 pub fn try_encode_overflow_log_byte(head: i32) -> Option<u8> {
-    if head < 0 {
-        Some(OVERFLOW_LOG_NONE)
-    } else if head < 170 {
-        Some(head as u8)
+    LogHead::from_i32(head).map(encode_log_head)
+}
+
+/// Fallible [`encode_log_head`].
+#[inline]
+pub fn try_encode_log_head(head: LogHead) -> Option<u8> {
+    if head.is_none() || head.index().is_some_and(|i| i < 170) {
+        Some(head.as_byte())
     } else {
         None
     }
@@ -220,11 +232,13 @@ pub fn try_encode_overflow_log_byte(head: i32) -> Option<u8> {
 /// Decodes an overflow-log head byte.
 #[inline]
 pub fn decode_overflow_log_byte(byte: u8) -> i32 {
-    if byte == OVERFLOW_LOG_NONE {
-        -1
-    } else {
-        i32::from(byte)
-    }
+    decode_log_head(byte).to_i32()
+}
+
+/// Decodes a wire byte to [`LogHead`].
+#[inline]
+pub fn decode_log_head(byte: u8) -> LogHead {
+    LogHead::from_byte(byte)
 }
 
 #[cfg(test)]

@@ -1,6 +1,7 @@
 //! Parse, plan, and execute GQL against [`GraphStore`] (library / unit tests; RBAC on router).
 
 use crate::facade::GraphStore;
+use crate::facade::migration::vertex_visible_to_query;
 use crate::gql_execution_context::GqlExecutionContext;
 use crate::index::lookup::PropertyIndexLookup;
 use crate::index::pending;
@@ -331,7 +332,7 @@ fn seed_initial_rows(
             let Some(vertex) = store.vertex(vertex_id) else {
                 continue;
             };
-            if vertex.is_tombstone() {
+            if vertex.is_tombstone() || !vertex_visible_to_query(vertex_id) {
                 continue;
             }
             let mut row = PlanQueryRow::new();
