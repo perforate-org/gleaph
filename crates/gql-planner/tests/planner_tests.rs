@@ -692,6 +692,48 @@ fn test_gleaph_vector_flipped_l2_fuses_to_edge_vector_predicate() {
 }
 
 #[test]
+fn test_gleaph_vector_without_fixed_label_is_rejected() {
+    let err = plan_query_err(
+        "MATCH (a:Person)-[e]->(b:Person) \
+         WHERE GLEAPH.VECTOR.L2_SQUARED(e, $q) <= 4.0 RETURN a, b",
+    );
+
+    assert!(matches!(
+        err,
+        PlannerError::UnsupportedPattern(message)
+            if message.contains("GLEAPH.VECTOR.* can only be used")
+    ));
+}
+
+#[test]
+fn test_gleaph_vector_return_expression_is_rejected() {
+    let err = plan_query_err(
+        "MATCH (a:Person)-[e:REL]->(b:Person) \
+         RETURN GLEAPH.VECTOR.DOT(e, $q) AS score",
+    );
+
+    assert!(matches!(
+        err,
+        PlannerError::UnsupportedPattern(message)
+            if message.contains("GLEAPH.VECTOR.* can only be used")
+    ));
+}
+
+#[test]
+fn test_gleaph_vector_wrong_comparator_is_rejected() {
+    let err = plan_query_err(
+        "MATCH (a:Person)-[e:REL]->(b:Person) \
+         WHERE GLEAPH.VECTOR.L2_SQUARED(e, $q) >= 4.0 RETURN a, b",
+    );
+
+    assert!(matches!(
+        err,
+        PlannerError::UnsupportedPattern(message)
+            if message.contains("GLEAPH.VECTOR.* can only be used")
+    ));
+}
+
+#[test]
 fn test_indexed_edge_equality_top_level_where_strips_conjunct() {
     let mut stats = TableStats::default();
     stats.indexed_edge_properties.insert("weight".to_owned());

@@ -11,13 +11,16 @@ use crate::gql_execution_context::GqlExecutionContext;
 use crate::plan::query::{PlanQueryResult, execute_plan_query};
 use canbench_rs::bench;
 use gleaph_gql::Value;
-use gleaph_gql::ast::{Expr, ExprKind, ObjectName};
+use gleaph_gql::ast::{CmpOp, Expr, ExprKind, ObjectName};
 use gleaph_gql::types::EdgeDirection;
 use gleaph_gql_planner::plan::{
-    PhysicalPlan, PlanAnnotations, PlanDiagnostics, PlanOp, ProjectColumn, ScanValue, ShortestMode,
-    ShortestPathCost, VarLenSpec,
+    EdgeVectorMetric, EdgeVectorPredicate, PhysicalPlan, PlanOp, ProjectColumn, ScanValue,
+    ShortestMode, ShortestPathCost, VarLenSpec,
 };
-use gleaph_graph_kernel::entry::{EdgeLabelId, EdgeWeightProfile, WeightEncoding};
+use gleaph_graph_kernel::entry::{
+    EdgeLabelId, EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth, EdgeWeightProfile, Vertex,
+    WeightEncoding,
+};
 use ic_stable_lara::{MaintenanceBudget, VertexId};
 use std::collections::BTreeMap;
 use std::hint::black_box;
@@ -39,6 +42,18 @@ fn var(name: &str) -> Expr {
     Expr::new(ExprKind::Variable(name.to_owned()))
 }
 
+fn f32_vector_value(values: &[f32]) -> Value {
+    Value::List(values.iter().copied().map(Value::Float32).collect())
+}
+
+fn f32_vector_bytes(values: &[f32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(values.len() * 4);
+    for value in values {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    out
+}
+
 fn plan(ops: Vec<PlanOp>) -> PhysicalPlan {
     PhysicalPlan::from_ops(ops)
 }
@@ -53,6 +68,23 @@ fn gleaph_weight_call(edge_var: &str) -> Expr {
 
 fn catalog_edge_label(store: &GraphStore, label_name: &str) -> EdgeLabelId {
     store.edge_label_id(label_name).expect("edge label")
+}
+
+fn insert_bench_vertex_named(store: &GraphStore, labels: &[&str]) -> VertexId {
+    let label_ids = labels
+        .iter()
+        .map(|label| store.get_or_insert_vertex_label_id(label))
+        .collect::<Result<Vec<_>, _>>()
+        .expect("vertex labels");
+    let vertex_id = store
+        .push_migrated_vertex_row(Vertex::default())
+        .expect("vertex row");
+    let vertex = store.vertex(vertex_id).expect("new vertex");
+    let vertex = store
+        .set_vertex_labels(vertex_id, vertex, label_ids)
+        .expect("set labels");
+    store.set_vertex(vertex_id, vertex).expect("write vertex");
+    vertex_id
 }
 
 fn weighted_shortest_plan(
@@ -481,6 +513,8 @@ fn expand_plan_for_label(
             var_len: None,
             indexed_edge_equality: indexed_edge_equality
                 .map(|(property, value)| (property.into(), value)),
+            edge_value_predicate: None,
+            edge_vector_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
             hop_aux_binding: None,
@@ -555,6 +589,7 @@ fn expand_filter_plan() -> PhysicalPlan {
             var_len: None,
             indexed_edge_equality: None,
             edge_value_predicate: None,
+            edge_vector_predicate: None,
             dst_filter: vec![Expr::new(ExprKind::Compare {
                 left: Box::new(Expr::new(ExprKind::PropertyAccess {
                     expr: Box::new(Expr::new(ExprKind::Variable("b".to_owned()))),
@@ -826,6 +861,7 @@ fn expand_deep_row_plan() -> PhysicalPlan {
             var_len: None,
             indexed_edge_equality: None,
             edge_value_predicate: None,
+            edge_vector_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
             hop_aux_binding: None,
@@ -841,6 +877,7 @@ fn expand_deep_row_plan() -> PhysicalPlan {
             var_len: None,
             indexed_edge_equality: None,
             edge_value_predicate: None,
+            edge_vector_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
             hop_aux_binding: None,
@@ -856,6 +893,7 @@ fn expand_deep_row_plan() -> PhysicalPlan {
             var_len: None,
             indexed_edge_equality: None,
             edge_value_predicate: None,
+            edge_vector_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
             hop_aux_binding: None,
@@ -929,6 +967,7 @@ fn expand_filter_10pct_plan() -> PhysicalPlan {
             var_len: None,
             indexed_edge_equality: None,
             edge_value_predicate: None,
+            edge_vector_predicate: None,
             dst_filter: vec![Expr::new(ExprKind::Compare {
                 left: Box::new(Expr::new(ExprKind::PropertyAccess {
                     expr: Box::new(Expr::new(ExprKind::Variable("b".to_owned()))),
@@ -1025,6 +1064,7 @@ fn expand_hash_join_then_expand_plan() -> PhysicalPlan {
                     var_len: None,
                     indexed_edge_equality: None,
                     edge_value_predicate: None,
+                    edge_vector_predicate: None,
                     edge_property_projection: None,
                     dst_property_projection: None,
                     hop_aux_binding: None,
@@ -1047,6 +1087,7 @@ fn expand_hash_join_then_expand_plan() -> PhysicalPlan {
                     var_len: None,
                     indexed_edge_equality: None,
                     edge_value_predicate: None,
+                    edge_vector_predicate: None,
                     edge_property_projection: None,
                     dst_property_projection: None,
                     hop_aux_binding: None,
@@ -1097,6 +1138,84 @@ fn setup_expand_indexed_eq_graph(store: &GraphStore) {
             )
             .expect("edge");
     }
+}
+
+const EXPAND_VECTOR_DIMS: usize = 16;
+const EXPAND_VECTOR_TOTAL: u32 = 24;
+const EXPAND_VECTOR_PASS: u32 = 8;
+
+fn setup_expand_vector_graph(store: &GraphStore) {
+    let hub = insert_bench_vertex_named(store, &["BenchExpandHub"]);
+    let label_id = store
+        .get_or_insert_edge_label_id("BenchVectorEdge")
+        .expect("edge label");
+    store
+        .install_edge_label_value_profile_at_init(
+            label_id,
+            EdgeValueProfile {
+                width: EdgeValueWidth::W64,
+                encoding: EdgeValueEncoding::VectorF32 {
+                    dims: EXPAND_VECTOR_DIMS as u16,
+                },
+            },
+        )
+        .expect("vector profile");
+
+    let near = vec![1.0; EXPAND_VECTOR_DIMS];
+    let far = vec![9.0; EXPAND_VECTOR_DIMS];
+    let near_bytes = f32_vector_bytes(&near);
+    let far_bytes = f32_vector_bytes(&far);
+    for i in 0..EXPAND_VECTOR_TOTAL {
+        let dst = insert_bench_vertex_named(store, &[]);
+        let bytes = if i < EXPAND_VECTOR_PASS {
+            near_bytes.as_slice()
+        } else {
+            far_bytes.as_slice()
+        };
+        store
+            .insert_directed_edge_with_value_bytes(hub, dst, Some(label_id), bytes)
+            .expect("edge");
+    }
+}
+
+fn expand_vector_plan(
+    metric: EdgeVectorMetric,
+    op: CmpOp,
+    threshold: f32,
+    query: &[f32],
+) -> PhysicalPlan {
+    plan(vec![
+        PlanOp::NodeScan {
+            variable: "h".into(),
+            label: Some("BenchExpandHub".into()),
+            property_projection: None,
+        },
+        PlanOp::Expand {
+            src: "h".into(),
+            edge: "e".into(),
+            dst: "b".into(),
+            direction: EdgeDirection::PointingRight,
+            label: Some("BenchVectorEdge".into()),
+            label_expr: None,
+            var_len: None,
+            indexed_edge_equality: None,
+            edge_value_predicate: None,
+            edge_vector_predicate: Some(EdgeVectorPredicate {
+                metric,
+                query: ScanValue::Literal(f32_vector_value(query)),
+                op,
+                threshold: ScanValue::Literal(Value::Float32(threshold)),
+            }),
+            edge_property_projection: None,
+            dst_property_projection: None,
+            hop_aux_binding: None,
+            emit_edge_binding: false,
+        },
+        PlanOp::Project {
+            columns: vec![project(var("b"), "b")],
+            distinct: false,
+        },
+    ])
 }
 
 // --- Large-hub label-adjacency benches (paired single-label controls) ---
@@ -1260,6 +1379,39 @@ fn bench_graph_expand_indexed_eq_selective_24match() -> canbench_rs::BenchResult
         let _scope = canbench_rs::bench_scope("expand_indexed_eq_selective_24match");
         let result = execute_expand_plan(black_box(&store), black_box(&plan));
         assert_eq!(result.rows.len(), EXPAND_FILTER_PASS as usize);
+        black_box(result.rows.len())
+    })
+}
+
+/// 24 fixed-label vector edge values; L2 threshold selects 8 rows via SIMD vector scoring.
+#[bench(raw)]
+fn bench_graph_expand_vector_l2_24scan_8match() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    setup_expand_vector_graph(&store);
+    let query = vec![1.0; EXPAND_VECTOR_DIMS];
+    let plan = expand_vector_plan(EdgeVectorMetric::L2Squared, CmpOp::Le, 4.0, &query);
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("expand_vector_l2_24scan_8match");
+        let result = execute_expand_plan(black_box(&store), black_box(&plan));
+        assert_eq!(result.rows.len(), EXPAND_VECTOR_PASS as usize);
+        black_box(result.rows.len())
+    })
+}
+
+/// 24 fixed-label vector edge values; DOT threshold selects 8 rows via SIMD vector scoring.
+#[bench(raw)]
+fn bench_graph_expand_vector_dot_24scan_8match() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    setup_expand_vector_graph(&store);
+    let query = vec![-1.0; EXPAND_VECTOR_DIMS];
+    let threshold = -(EXPAND_VECTOR_DIMS as f32) - 4.0;
+    let plan = expand_vector_plan(EdgeVectorMetric::Dot, CmpOp::Ge, threshold, &query);
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("expand_vector_dot_24scan_8match");
+        let result = execute_expand_plan(black_box(&store), black_box(&plan));
+        assert_eq!(result.rows.len(), EXPAND_VECTOR_PASS as usize);
         black_box(result.rows.len())
     })
 }
