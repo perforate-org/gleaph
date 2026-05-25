@@ -5,6 +5,7 @@
 //! on patterns and modification statements, and other semantic rules.
 
 mod query_validation;
+mod session;
 
 use crate::ast::*;
 use crate::error::GqlError;
@@ -17,6 +18,7 @@ use std::collections::BTreeMap;
 use query_validation::{
     collect_pattern_bindings, composite_query_result_scopes, validate_composite_query,
 };
+use session::validate_session_command;
 
 /// Result alias for validation.
 type VResult = Result<(), GqlError>;
@@ -36,35 +38,6 @@ pub fn validate(program: &GqlProgram) -> VResult {
         validate_transaction_activity(ta)?;
     }
     Ok(())
-}
-
-// ════════════════════════════════════════════════════════════════════════════════
-// Session validation (§7)
-// ════════════════════════════════════════════════════════════════════════════════
-
-fn validate_session_command(cmd: &SessionCommand) -> VResult {
-    match cmd {
-        SessionCommand::Set(set) => validate_session_set(set),
-        // SESSION RESET and SESSION CLOSE have no semantic constraints beyond parsing.
-        _ => Ok(()),
-    }
-}
-
-fn validate_session_set(set: &SessionSetCommand) -> VResult {
-    match set {
-        SessionSetCommand::Schema(on) | SessionSetCommand::Graph { name: on, .. } => {
-            validate_catalog_object_name(on)
-        }
-        SessionSetCommand::Parameter { name, .. }
-        | SessionSetCommand::GraphParameter { name, .. }
-        | SessionSetCommand::BindingTableParameter { name, .. } => {
-            if name.is_empty() {
-                return Err(verr("SESSION SET parameter name must not be empty"));
-            }
-            Ok(())
-        }
-        SessionSetCommand::TimeZone(_) => Ok(()),
-    }
 }
 
 /// Applies [`crate::name_limits`] to each segment of a catalog [`ObjectName`].
@@ -856,6 +829,7 @@ fn verr(msg: &str) -> GqlError {
 #[cfg(test)]
 mod tests {
     use super::query_validation::{validate_graph_reference, validate_return, validate_select};
+    use super::session::validate_session_set;
     use super::*;
     use crate::parser;
     use crate::token::Span;
