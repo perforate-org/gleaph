@@ -8,7 +8,7 @@ mod large;
 use crate::facade::GraphStore;
 use crate::facade::mutation_executor::GraphMutationExecutor;
 use crate::gql_execution_context::GqlExecutionContext;
-use crate::plan::query::{PlanQueryResult, execute_plan_query};
+use crate::plan::query::{PlanQueryResult, execute_plan_query, execute_plan_query_bindings};
 use canbench_rs::bench;
 use gleaph_gql::Value;
 use gleaph_gql::ast::{CmpOp, Expr, ExprKind, ObjectName};
@@ -536,6 +536,18 @@ fn execute_expand_plan(store: &GraphStore, plan: &PhysicalPlan) -> PlanQueryResu
         GqlExecutionContext::default(),
     ))
     .expect("execute expand plan")
+}
+
+fn execute_expand_bindings(store: &GraphStore, plan: &PhysicalPlan) -> usize {
+    pollster::block_on(execute_plan_query_bindings(
+        store,
+        plan,
+        &params(),
+        None,
+        GqlExecutionContext::default(),
+    ))
+    .expect("execute expand bindings")
+    .len()
 }
 
 /// Hub fanout expand returning only destination vertices; edge binding is pruned.
@@ -1144,10 +1156,56 @@ const EXPAND_VECTOR_DIMS: usize = 16;
 const EXPAND_VECTOR_TOTAL: u32 = 24;
 const EXPAND_VECTOR_PASS: u32 = 8;
 
+#[derive(Clone, Copy)]
+struct ExpandVectorGraphScale<'a> {
+    hub_label: &'a str,
+    edge_label: &'a str,
+    total: u32,
+    pass: u32,
+    dims: usize,
+    edges_per_hub: u32,
+}
+
 fn setup_expand_vector_graph(store: &GraphStore) {
-    let hub = insert_bench_vertex_named(store, &["BenchExpandHub"]);
+    setup_expand_vector_graph_scaled(
+        store,
+        "BenchExpandHub",
+        "BenchVectorEdge",
+        EXPAND_VECTOR_TOTAL,
+        EXPAND_VECTOR_PASS,
+    );
+}
+
+fn setup_expand_vector_graph_scaled(
+    store: &GraphStore,
+    hub_label: &str,
+    edge_label: &str,
+    total: u32,
+    pass: u32,
+) {
+    setup_expand_vector_graph_with_scale(
+        store,
+        ExpandVectorGraphScale {
+            hub_label,
+            edge_label,
+            total,
+            pass,
+            dims: EXPAND_VECTOR_DIMS,
+            edges_per_hub: total,
+        },
+    );
+}
+
+fn setup_expand_vector_graph_with_scale(store: &GraphStore, scale: ExpandVectorGraphScale<'_>) {
+    assert!(scale.edges_per_hub > 0, "edges_per_hub must be non-zero");
+    assert!(scale.pass <= scale.total, "pass must not exceed total");
+    assert!(scale.dims > 0, "vector dims must be non-zero");
+    assert!(
+        scale.dims * std::mem::size_of::<f32>() <= 64,
+        "W64 vector profile can hold at most 64 bytes"
+    );
     let label_id = store
-        .get_or_insert_edge_label_id("BenchVectorEdge")
+        .get_or_insert_edge_label_id(scale.edge_label)
         .expect("edge label");
     store
         .install_edge_label_value_profile_at_init(
@@ -1155,19 +1213,23 @@ fn setup_expand_vector_graph(store: &GraphStore) {
             EdgeValueProfile {
                 width: EdgeValueWidth::W64,
                 encoding: EdgeValueEncoding::VectorF32 {
-                    dims: EXPAND_VECTOR_DIMS as u16,
+                    dims: scale.dims as u16,
                 },
             },
         )
         .expect("vector profile");
 
-    let near = vec![1.0; EXPAND_VECTOR_DIMS];
-    let far = vec![9.0; EXPAND_VECTOR_DIMS];
+    let near = vec![1.0; scale.dims];
+    let far = vec![9.0; scale.dims];
     let near_bytes = f32_vector_bytes(&near);
     let far_bytes = f32_vector_bytes(&far);
-    for i in 0..EXPAND_VECTOR_TOTAL {
+    let mut hub = insert_bench_vertex_named(store, &[scale.hub_label]);
+    for i in 0..scale.total {
+        if i > 0 && i % scale.edges_per_hub == 0 {
+            hub = insert_bench_vertex_named(store, &[scale.hub_label]);
+        }
         let dst = insert_bench_vertex_named(store, &[]);
-        let bytes = if i < EXPAND_VECTOR_PASS {
+        let bytes = if i < scale.pass {
             near_bytes.as_slice()
         } else {
             far_bytes.as_slice()
@@ -1179,6 +1241,8 @@ fn setup_expand_vector_graph(store: &GraphStore) {
 }
 
 fn expand_vector_plan(
+    hub_label: &str,
+    edge_label: &str,
     metric: EdgeVectorMetric,
     op: CmpOp,
     threshold: f32,
@@ -1187,7 +1251,7 @@ fn expand_vector_plan(
     plan(vec![
         PlanOp::NodeScan {
             variable: "h".into(),
-            label: Some("BenchExpandHub".into()),
+            label: Some(hub_label.into()),
             property_projection: None,
         },
         PlanOp::Expand {
@@ -1195,7 +1259,7 @@ fn expand_vector_plan(
             edge: "e".into(),
             dst: "b".into(),
             direction: EdgeDirection::PointingRight,
-            label: Some("BenchVectorEdge".into()),
+            label: Some(edge_label.into()),
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
@@ -1214,6 +1278,44 @@ fn expand_vector_plan(
         PlanOp::Project {
             columns: vec![project(var("b"), "b")],
             distinct: false,
+        },
+    ])
+}
+
+fn expand_vector_bindings_plan(
+    hub_label: &str,
+    edge_label: &str,
+    metric: EdgeVectorMetric,
+    op: CmpOp,
+    threshold: f32,
+    query: &[f32],
+) -> PhysicalPlan {
+    plan(vec![
+        PlanOp::NodeScan {
+            variable: "h".into(),
+            label: Some(hub_label.into()),
+            property_projection: None,
+        },
+        PlanOp::Expand {
+            src: "h".into(),
+            edge: "e".into(),
+            dst: "b".into(),
+            direction: EdgeDirection::PointingRight,
+            label: Some(edge_label.into()),
+            label_expr: None,
+            var_len: None,
+            indexed_edge_equality: None,
+            edge_value_predicate: None,
+            edge_vector_predicate: Some(EdgeVectorPredicate {
+                metric,
+                query: ScanValue::Literal(f32_vector_value(query)),
+                op,
+                threshold: ScanValue::Literal(Value::Float32(threshold)),
+            }),
+            edge_property_projection: None,
+            dst_property_projection: None,
+            hop_aux_binding: None,
+            emit_edge_binding: false,
         },
     ])
 }
@@ -1389,7 +1491,14 @@ fn bench_graph_expand_vector_l2_24scan_8match() -> canbench_rs::BenchResult {
     let store = GraphStore::new();
     setup_expand_vector_graph(&store);
     let query = vec![1.0; EXPAND_VECTOR_DIMS];
-    let plan = expand_vector_plan(EdgeVectorMetric::L2Squared, CmpOp::Le, 4.0, &query);
+    let plan = expand_vector_plan(
+        "BenchExpandHub",
+        "BenchVectorEdge",
+        EdgeVectorMetric::L2Squared,
+        CmpOp::Le,
+        4.0,
+        &query,
+    );
 
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("expand_vector_l2_24scan_8match");
@@ -1406,7 +1515,14 @@ fn bench_graph_expand_vector_dot_24scan_8match() -> canbench_rs::BenchResult {
     setup_expand_vector_graph(&store);
     let query = vec![-1.0; EXPAND_VECTOR_DIMS];
     let threshold = -(EXPAND_VECTOR_DIMS as f32) - 4.0;
-    let plan = expand_vector_plan(EdgeVectorMetric::Dot, CmpOp::Ge, threshold, &query);
+    let plan = expand_vector_plan(
+        "BenchExpandHub",
+        "BenchVectorEdge",
+        EdgeVectorMetric::Dot,
+        CmpOp::Ge,
+        threshold,
+        &query,
+    );
 
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("expand_vector_dot_24scan_8match");

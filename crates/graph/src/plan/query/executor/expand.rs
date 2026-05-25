@@ -137,6 +137,25 @@ fn push_expand_candidate(
     Ok(())
 }
 
+fn push_scanned_value_expand_candidate(
+    out: &mut Vec<(ExpandDst, EdgeBinding)>,
+    store: &GraphStore,
+    probe_vertex_id: VertexId,
+    direction: EdgeDirection,
+    edge_dst: ExpandDst,
+    edge: Edge,
+) -> Result<(), PlanQueryError> {
+    let owner_vertex_id =
+        canonical_forward_owner_for_expand(store, probe_vertex_id, direction, &edge)?;
+    let handle = EdgeHandle {
+        owner_vertex_id,
+        label_id: LaraLabelId::from_raw(edge.label_id),
+        slot_index: edge.edge_slot_index.raw(),
+    };
+    out.push((edge_dst, EdgeBinding::from_edge(handle, edge)));
+    Ok(())
+}
+
 pub(crate) fn expand_accepts_remote_dst(
     dst_only_prefilter: bool,
     dst_property_projection: Option<&[Str]>,
@@ -547,6 +566,17 @@ pub(crate) async fn execute_expand(
     let csr_expand_fast_path = (edge_value_predicate.is_none() && edge_vector_predicate.is_none())
         .then(|| csr_offset_fast_path_for_expand(direction, label_id, sequence_order))
         .flatten();
+    let prepared_vector_dst_only_predicate = prepare_vector_dst_only_expand_predicate(
+        store,
+        label_id,
+        direction,
+        emit_edge_binding,
+        indexed_edge_equality,
+        edge_value_predicate,
+        edge_vector_predicate,
+        edge_property_projection,
+        parameters,
+    )?;
     let edge_equality_filter = if csr_expand_fast_path.is_some() {
         let filter = edge_equality_stream_filter(store, indexed_edge_equality, parameters)?;
         if matches!(filter, EdgeEqualityStreamFilter::NoMatches) {
@@ -556,8 +586,10 @@ pub(crate) async fn execute_expand(
     } else {
         None
     };
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(rows.len());
     let mut candidates = Vec::new();
+    let mut vector_batch_scratch = LabeledEdgeValueBatchScratch::default();
+    let mut vector_matches = Vec::new();
     for row in rows {
         if matches!(direction, EdgeDirection::PointingLeft)
             && let Some(PlanBinding::RemoteVertex(logical)) = row.get(src.as_ref())
@@ -746,6 +778,30 @@ pub(crate) async fn execute_expand(
             }
             continue;
         }
+        if let Some((edge_label_id, predicate)) = prepared_vector_dst_only_predicate.as_ref() {
+            expand_vector_dst_only_rows_into(
+                store,
+                &row,
+                src_id,
+                direction,
+                *edge_label_id,
+                sequence_order,
+                dst,
+                dst_key.as_str(),
+                dst_filter,
+                dst_only_prefilter,
+                dst_property_projection,
+                parameters,
+                caller,
+                gleaph_weight_decoders,
+                &evaluator,
+                predicate,
+                &mut out,
+                &mut vector_batch_scratch,
+                &mut vector_matches,
+            )?;
+            continue;
+        }
         candidates.clear();
         expand_candidates_into(
             store,
@@ -798,6 +854,45 @@ pub(crate) async fn execute_expand(
         }
     }
     Ok(out)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_vector_dst_only_expand_predicate(
+    store: &GraphStore,
+    label_id: Option<EdgeLabelId>,
+    direction: EdgeDirection,
+    emit_edge_binding: bool,
+    indexed_edge_equality: Option<&(Str, ScanValue)>,
+    edge_value_predicate: Option<&EdgeValuePredicate>,
+    edge_vector_predicate: Option<&EdgeVectorPredicate>,
+    edge_property_projection: Option<&[Str]>,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<Option<(EdgeLabelId, PreparedEdgeVectorThreshold)>, PlanQueryError> {
+    if emit_edge_binding
+        || indexed_edge_equality.is_some()
+        || edge_value_predicate.is_some()
+        || edge_vector_predicate.is_none()
+        || edge_property_projection.is_some_and(|props| !props.is_empty())
+        || !matches!(
+            direction,
+            EdgeDirection::PointingRight | EdgeDirection::PointingLeft
+        )
+    {
+        return Ok(None);
+    }
+    let Some(edge_label_id) = label_id else {
+        return Ok(None);
+    };
+    let Some(predicate) = PreparedEdgeVectorThreshold::prepare(
+        store,
+        edge_label_id,
+        edge_vector_predicate.expect("checked above"),
+        parameters,
+    )?
+    else {
+        return Ok(None);
+    };
+    Ok(Some((edge_label_id, predicate)))
 }
 
 pub(crate) fn expand_dst_matches_prebound_vertex(
@@ -870,6 +965,43 @@ impl PreparedEdgeVectorThreshold {
             op: predicate.op,
             threshold,
         }))
+    }
+
+    fn collect_matching_indices(&self, value_bytes: &[u8], out: &mut Vec<usize>) {
+        match (self.metric, self.op) {
+            (KernelEdgeVectorMetric::L2Squared, CmpOp::Lt) => {
+                self.kernel.collect_l2_squared_upper_bound_indices(
+                    value_bytes,
+                    &self.query,
+                    self.threshold,
+                    false,
+                    out,
+                )
+            }
+            (KernelEdgeVectorMetric::L2Squared, CmpOp::Le) => {
+                self.kernel.collect_l2_squared_upper_bound_indices(
+                    value_bytes,
+                    &self.query,
+                    self.threshold,
+                    true,
+                    out,
+                )
+            }
+            _ => self.kernel.collect_matching_indices(
+                value_bytes,
+                &self.query,
+                self.metric,
+                self.threshold,
+                |score, threshold| match self.op {
+                    CmpOp::Lt => score < threshold,
+                    CmpOp::Le => score <= threshold,
+                    CmpOp::Gt => score > threshold,
+                    CmpOp::Ge => score >= threshold,
+                    CmpOp::Eq | CmpOp::Ne => false,
+                },
+                out,
+            ),
+        }
     }
 }
 
@@ -1195,9 +1327,9 @@ pub(crate) fn expand_candidates_matching_edge_value_into(
             let value_end = value_start + width;
             let edge = edge.with_value_bytes(&batch.value_bytes[value_start..value_end]);
             match ExpandDst::from_edge(store, &edge).and_then(|edge_dst| match edge_dst {
-                Some(edge_dst) => {
-                    push_expand_candidate(out, store, src_id, direction, edge_dst, edge)
-                }
+                Some(edge_dst) => push_scanned_value_expand_candidate(
+                    out, store, src_id, direction, edge_dst, edge,
+                ),
                 None => Ok(()),
             }) {
                 Ok(()) => {}
@@ -1255,20 +1387,10 @@ pub(crate) fn expand_candidates_matching_edge_vector_threshold_into(
             return;
         }
         matches.clear();
-        predicate.kernel.collect_matching_indices(
-            batch.value_bytes,
-            &predicate.query,
-            predicate.metric,
-            predicate.threshold,
-            |score, threshold| match predicate.op {
-                CmpOp::Lt => score < threshold,
-                CmpOp::Le => score <= threshold,
-                CmpOp::Gt => score > threshold,
-                CmpOp::Ge => score >= threshold,
-                CmpOp::Eq | CmpOp::Ne => false,
-            },
-            &mut matches,
-        );
+        predicate.collect_matching_indices(batch.value_bytes, &mut matches);
+        if !matches.is_empty() {
+            out.reserve(matches.len());
+        }
         let width = predicate.kernel.byte_width();
         for idx in matches.iter().copied() {
             let Some(edge) = batch.edges.get(idx).copied() else {
@@ -1278,9 +1400,9 @@ pub(crate) fn expand_candidates_matching_edge_vector_threshold_into(
             let value_end = value_start + width;
             let edge = edge.with_value_bytes(&batch.value_bytes[value_start..value_end]);
             match ExpandDst::from_edge(store, &edge).and_then(|edge_dst| match edge_dst {
-                Some(edge_dst) => {
-                    push_expand_candidate(out, store, src_id, direction, edge_dst, edge)
-                }
+                Some(edge_dst) => push_scanned_value_expand_candidate(
+                    out, store, src_id, direction, edge_dst, edge,
+                ),
                 None => Ok(()),
             }) {
                 Ok(()) => {}
@@ -1308,6 +1430,112 @@ pub(crate) fn expand_candidates_matching_edge_vector_threshold_into(
                 storage_label,
                 order,
                 &mut scratch,
+                &mut visit_batch,
+            )
+            .map_err(GraphStoreError::from)?,
+        other => return Err(PlanQueryError::UnsupportedDirection(other)),
+    }
+    if let Some(err) = error {
+        return Err(err);
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn expand_vector_dst_only_rows_into(
+    store: &GraphStore,
+    row: &PlanRow,
+    src_id: VertexId,
+    direction: EdgeDirection,
+    edge_label_id: EdgeLabelId,
+    sequence_order: EdgeSequenceOrder,
+    dst: &Str,
+    dst_key: &str,
+    dst_filter: &[Expr],
+    dst_only_prefilter: bool,
+    dst_property_projection: Option<&[Str]>,
+    parameters: &BTreeMap<String, Value>,
+    caller: Option<Principal>,
+    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
+    evaluator: &QueryExprEvaluator<'_>,
+    predicate: &PreparedEdgeVectorThreshold,
+    out: &mut Vec<PlanRow>,
+    scratch: &mut LabeledEdgeValueBatchScratch<Edge>,
+    matches: &mut Vec<usize>,
+) -> Result<(), PlanQueryError> {
+    let storage_label = LaraLabelId::from_raw(edge_label_id.pack(EdgeDirectedness::Directed).raw());
+    let order = sequence_order.into();
+    let mut error = None;
+    let mut visit_batch = |batch: ic_stable_lara::labeled::LabeledEdgeValueBatch<'_, Edge>| {
+        if error.is_some() {
+            return;
+        }
+        matches.clear();
+        predicate.collect_matching_indices(batch.value_bytes, matches);
+        if !matches.is_empty() {
+            out.reserve(matches.len());
+        }
+        for idx in matches.iter().copied() {
+            let Some(edge) = batch.edges.get(idx).copied() else {
+                continue;
+            };
+            match ExpandDst::from_edge(store, &edge).and_then(|edge_dst| {
+                let Some(edge_dst) = edge_dst else {
+                    return Ok(());
+                };
+                if !expand_dst_matches_prebound_vertex(row, dst, edge_dst) {
+                    return Ok(());
+                }
+                if let ExpandDst::Local(dst_id) = edge_dst {
+                    if dst_only_prefilter
+                        && !vertex_row_matches_dst_filters(
+                            store,
+                            parameters,
+                            dst,
+                            dst_id,
+                            dst_filter,
+                            caller,
+                            gleaph_weight_decoders,
+                        )?
+                    {
+                        return Ok(());
+                    }
+                } else if !expand_accepts_remote_dst(dst_only_prefilter, dst_property_projection) {
+                    return Ok(());
+                }
+                let dst_binding = expand_dst_binding(store, edge_dst, dst_property_projection)?;
+                let expanded = row.fork([(dst_key, dst_binding)]);
+                if !dst_only_prefilter && !row_matches_all(evaluator, &expanded, dst_filter)? {
+                    return Ok(());
+                }
+                out.push(expanded);
+                Ok(())
+            }) {
+                Ok(()) => {}
+                Err(err) => {
+                    error = Some(err);
+                    return;
+                }
+            }
+        }
+    };
+
+    match direction {
+        EdgeDirection::PointingRight => store
+            .visit_out_edge_value_batches_for_label(
+                src_id,
+                storage_label,
+                order,
+                scratch,
+                &mut visit_batch,
+            )
+            .map_err(GraphStoreError::from)?,
+        EdgeDirection::PointingLeft => store
+            .visit_in_edge_value_batches_for_label(
+                src_id,
+                storage_label,
+                order,
+                scratch,
                 &mut visit_batch,
             )
             .map_err(GraphStoreError::from)?,
@@ -2674,6 +2902,105 @@ mod tests {
     }
 
     #[test]
+    fn vector_dst_only_expand_filter_keeps_projection_fast_path_semantics() {
+        let store = GraphStore::new();
+        use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
+        let a = store
+            .insert_vertex_named(["VectorDstOnlyFilterA"], Vec::<(&str, Value)>::new())
+            .expect("a");
+        let keep = store
+            .insert_vertex_named(
+                ["VectorDstOnlyFilterB"],
+                [
+                    ("age", Value::Int64(44)),
+                    ("name", Value::Text("keep".into())),
+                ],
+            )
+            .expect("keep");
+        let drop = store
+            .insert_vertex_named(
+                ["VectorDstOnlyFilterB"],
+                [
+                    ("age", Value::Int64(10)),
+                    ("name", Value::Text("drop".into())),
+                ],
+            )
+            .expect("drop");
+        let label_id = store
+            .get_or_insert_edge_label_id("VectorDstOnlyFilterRoad")
+            .unwrap();
+        store
+            .install_edge_label_value_profile_at_init(
+                label_id,
+                EdgeValueProfile {
+                    width: EdgeValueWidth::W16,
+                    encoding: EdgeValueEncoding::VectorF32 { dims: 4 },
+                },
+            )
+            .unwrap();
+        let near_bytes = f32_vector_bytes(&[1.0, 1.0, 1.0, 1.0]);
+        store
+            .insert_directed_edge_with_value_bytes(a, keep, Some(label_id), &near_bytes)
+            .unwrap();
+        store
+            .insert_directed_edge_with_value_bytes(a, drop, Some(label_id), &near_bytes)
+            .unwrap();
+
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "a".into(),
+                label: Some("VectorDstOnlyFilterA".into()),
+                property_projection: None,
+            },
+            PlanOp::ExpandFilter {
+                src: "a".into(),
+                edge: "e".into(),
+                dst: "b".into(),
+                direction: EdgeDirection::PointingRight,
+                label: Some("VectorDstOnlyFilterRoad".into()),
+                label_expr: None,
+                var_len: None,
+                indexed_edge_equality: None,
+                edge_value_predicate: None,
+                edge_vector_predicate: Some(EdgeVectorPredicate {
+                    metric: EdgeVectorMetric::L2Squared,
+                    query: ScanValue::Literal(Value::List(vec![
+                        Value::Float32(1.0),
+                        Value::Float32(1.0),
+                        Value::Float32(1.0),
+                        Value::Float32(1.0),
+                    ])),
+                    op: CmpOp::Le,
+                    threshold: ScanValue::Literal(Value::Float32(4.0)),
+                }),
+                dst_filter: vec![Expr::new(ExprKind::Compare {
+                    left: Box::new(prop("b", "age")),
+                    op: CmpOp::Gt,
+                    right: Box::new(Expr::new(ExprKind::Literal(Value::Int64(18)))),
+                })],
+                edge_property_projection: None,
+                dst_property_projection: Some(vec!["name".into()].into()),
+                hop_aux_binding: None,
+                emit_edge_binding: false,
+            },
+            PlanOp::Project {
+                columns: vec![project(prop("b", "name"), "name")],
+                distinct: false,
+            },
+        ]);
+
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute query");
+
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(
+            result.rows[0].get("name"),
+            Some(&Value::Text("keep".into()))
+        );
+    }
+
+    #[test]
     fn ascending_forward_fixed_label_candidates_use_batched_edge_values() {
         let store = GraphStore::new();
         use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
@@ -3044,6 +3371,7 @@ mod tests {
 
         assert_eq!(out.len(), 1);
         assert!(matches!(out[0].0, ExpandDst::Local(dst) if dst == near));
+        assert_eq!(out[0].1.handle.owner_vertex_id, a);
         assert_eq!(out[0].1.value_bytes_slice(), near_bytes.as_slice());
     }
 
@@ -3113,6 +3441,7 @@ mod tests {
 
         assert_eq!(out.len(), 1);
         assert!(matches!(out[0].0, ExpandDst::Local(dst) if dst == near));
+        assert_eq!(out[0].1.handle.owner_vertex_id, near);
         assert_eq!(out[0].1.value_bytes_slice(), near_bytes.as_slice());
     }
 

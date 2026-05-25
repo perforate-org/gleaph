@@ -17,6 +17,16 @@ const FOF_SECOND_HOP: u32 = 64;
 const ROAD_GRID_SIDE: u32 = 64;
 const ROAD_GRID_MAX_HOPS: u64 = (ROAD_GRID_SIDE as u64 - 1) * 2;
 
+const VECTOR_SCAN_MEDIUM: u32 = 128;
+const VECTOR_PASS_MEDIUM: u32 = 16;
+const VECTOR_SCAN_LARGE: u32 = 512;
+const VECTOR_PASS_LARGE: u32 = 64;
+const VECTOR_SCAN_XLARGE: u32 = 4_096;
+const VECTOR_PASS_XLARGE: u32 = 512;
+const VECTOR_SCAN_XXLARGE: u32 = 16_384;
+const VECTOR_PASS_XXLARGE: u32 = 2_048;
+const VECTOR_EDGES_PER_HUB: u32 = 32;
+
 fn lit_i64(value: i64) -> Expr {
     Expr::new(ExprKind::Literal(Value::Int64(value)))
 }
@@ -294,6 +304,263 @@ fn bench_graph_large_weighted_road_grid_64x64() -> canbench_rs::BenchResult {
     })
 }
 
+fn large_expand_vector_bench(
+    hub_label: &str,
+    edge_label: &str,
+    total: u32,
+    pass: u32,
+    metric: EdgeVectorMetric,
+    op: CmpOp,
+    threshold: f32,
+    query: &[f32],
+    scope: &'static str,
+) -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    setup_expand_vector_graph_with_scale(
+        &store,
+        ExpandVectorGraphScale {
+            hub_label,
+            edge_label,
+            total,
+            pass,
+            dims: EXPAND_VECTOR_DIMS,
+            edges_per_hub: VECTOR_EDGES_PER_HUB,
+        },
+    );
+    let plan = expand_vector_plan(hub_label, edge_label, metric, op, threshold, query);
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope(scope);
+        let result = execute_expand_plan(black_box(&store), black_box(&plan));
+        assert_eq!(result.rows.len(), pass as usize);
+        black_box(result.rows.len())
+    })
+}
+
+fn large_expand_vector_bindings_bench(
+    hub_label: &str,
+    edge_label: &str,
+    total: u32,
+    pass: u32,
+    metric: EdgeVectorMetric,
+    op: CmpOp,
+    threshold: f32,
+    query: &[f32],
+    scope: &'static str,
+) -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    setup_expand_vector_graph_with_scale(
+        &store,
+        ExpandVectorGraphScale {
+            hub_label,
+            edge_label,
+            total,
+            pass,
+            dims: EXPAND_VECTOR_DIMS,
+            edges_per_hub: VECTOR_EDGES_PER_HUB,
+        },
+    );
+    let plan = expand_vector_bindings_plan(hub_label, edge_label, metric, op, threshold, query);
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope(scope);
+        let row_count = execute_expand_bindings(black_box(&store), black_box(&plan));
+        assert_eq!(row_count, pass as usize);
+        black_box(row_count)
+    })
+}
+
+/// Fixed-label vector edge values over a medium fanout; L2 threshold selects 16 rows.
+#[bench(raw)]
+fn bench_graph_large_expand_vector_l2_128scan_16match() -> canbench_rs::BenchResult {
+    let query = vec![1.0; EXPAND_VECTOR_DIMS];
+    large_expand_vector_bench(
+        "BenchLargeVectorHubL2Medium",
+        "BenchLargeVectorEdgeL2Medium",
+        VECTOR_SCAN_MEDIUM,
+        VECTOR_PASS_MEDIUM,
+        EdgeVectorMetric::L2Squared,
+        CmpOp::Le,
+        4.0,
+        &query,
+        "large_expand_vector_l2_128scan_16match",
+    )
+}
+
+/// Fixed-label vector edge values over a medium fanout; DOT threshold selects 16 rows.
+#[bench(raw)]
+fn bench_graph_large_expand_vector_dot_128scan_16match() -> canbench_rs::BenchResult {
+    let query = vec![-1.0; EXPAND_VECTOR_DIMS];
+    let threshold = -(EXPAND_VECTOR_DIMS as f32) - 4.0;
+    large_expand_vector_bench(
+        "BenchLargeVectorHubDotMedium",
+        "BenchLargeVectorEdgeDotMedium",
+        VECTOR_SCAN_MEDIUM,
+        VECTOR_PASS_MEDIUM,
+        EdgeVectorMetric::Dot,
+        CmpOp::Ge,
+        threshold,
+        &query,
+        "large_expand_vector_dot_128scan_16match",
+    )
+}
+
+/// Fixed-label vector edge values over a larger fanout; L2 threshold selects 64 rows.
+#[bench(raw)]
+fn bench_graph_large_expand_vector_l2_512scan_64match() -> canbench_rs::BenchResult {
+    let query = vec![1.0; EXPAND_VECTOR_DIMS];
+    large_expand_vector_bench(
+        "BenchLargeVectorHubL2Large",
+        "BenchLargeVectorEdgeL2Large",
+        VECTOR_SCAN_LARGE,
+        VECTOR_PASS_LARGE,
+        EdgeVectorMetric::L2Squared,
+        CmpOp::Le,
+        4.0,
+        &query,
+        "large_expand_vector_l2_512scan_64match",
+    )
+}
+
+/// Fixed-label vector edge values over a larger fanout; DOT threshold selects 64 rows.
+#[bench(raw)]
+fn bench_graph_large_expand_vector_dot_512scan_64match() -> canbench_rs::BenchResult {
+    let query = vec![-1.0; EXPAND_VECTOR_DIMS];
+    let threshold = -(EXPAND_VECTOR_DIMS as f32) - 4.0;
+    large_expand_vector_bench(
+        "BenchLargeVectorHubDotLarge",
+        "BenchLargeVectorEdgeDotLarge",
+        VECTOR_SCAN_LARGE,
+        VECTOR_PASS_LARGE,
+        EdgeVectorMetric::Dot,
+        CmpOp::Ge,
+        threshold,
+        &query,
+        "large_expand_vector_dot_512scan_64match",
+    )
+}
+
+/// Fixed-label vector edge values over an xlarge logical scan; L2 threshold selects 512 rows.
+#[bench(raw)]
+fn bench_graph_large_expand_vector_l2_4096scan_512match() -> canbench_rs::BenchResult {
+    let query = vec![1.0; EXPAND_VECTOR_DIMS];
+    large_expand_vector_bench(
+        "BenchLargeVectorHubL2XLarge",
+        "BenchLargeVectorEdgeL2XLarge",
+        VECTOR_SCAN_XLARGE,
+        VECTOR_PASS_XLARGE,
+        EdgeVectorMetric::L2Squared,
+        CmpOp::Le,
+        4.0,
+        &query,
+        "large_expand_vector_l2_4096scan_512match",
+    )
+}
+
+/// Fixed-label vector edge values over an xlarge logical scan; DOT threshold selects 512 rows.
+#[bench(raw)]
+fn bench_graph_large_expand_vector_dot_4096scan_512match() -> canbench_rs::BenchResult {
+    let query = vec![-1.0; EXPAND_VECTOR_DIMS];
+    let threshold = -(EXPAND_VECTOR_DIMS as f32) - 4.0;
+    large_expand_vector_bench(
+        "BenchLargeVectorHubDotXLarge",
+        "BenchLargeVectorEdgeDotXLarge",
+        VECTOR_SCAN_XLARGE,
+        VECTOR_PASS_XLARGE,
+        EdgeVectorMetric::Dot,
+        CmpOp::Ge,
+        threshold,
+        &query,
+        "large_expand_vector_dot_4096scan_512match",
+    )
+}
+
+/// Fixed-label vector edge values over an xxlarge logical scan; L2 threshold selects 2,048 rows.
+#[bench(raw)]
+fn bench_graph_large_expand_vector_l2_16384scan_2048match() -> canbench_rs::BenchResult {
+    let query = vec![1.0; EXPAND_VECTOR_DIMS];
+    large_expand_vector_bench(
+        "BenchLargeVectorHubL2XXLarge",
+        "BenchLargeVectorEdgeL2XXLarge",
+        VECTOR_SCAN_XXLARGE,
+        VECTOR_PASS_XXLARGE,
+        EdgeVectorMetric::L2Squared,
+        CmpOp::Le,
+        4.0,
+        &query,
+        "large_expand_vector_l2_16384scan_2048match",
+    )
+}
+
+/// Fixed-label vector edge values over an xxlarge logical scan; DOT threshold selects 2,048 rows.
+#[bench(raw)]
+fn bench_graph_large_expand_vector_dot_16384scan_2048match() -> canbench_rs::BenchResult {
+    let query = vec![-1.0; EXPAND_VECTOR_DIMS];
+    let threshold = -(EXPAND_VECTOR_DIMS as f32) - 4.0;
+    large_expand_vector_bench(
+        "BenchLargeVectorHubDotXXLarge",
+        "BenchLargeVectorEdgeDotXXLarge",
+        VECTOR_SCAN_XXLARGE,
+        VECTOR_PASS_XXLARGE,
+        EdgeVectorMetric::Dot,
+        CmpOp::Ge,
+        threshold,
+        &query,
+        "large_expand_vector_dot_16384scan_2048match",
+    )
+}
+
+/// Scan/predicate-only fixed-label vector L2 over 16,384 rows; no edge passes.
+#[bench(raw)]
+fn bench_graph_large_expand_vector_bindings_l2_16384scan_0match() -> canbench_rs::BenchResult {
+    let query = vec![1.0; EXPAND_VECTOR_DIMS];
+    large_expand_vector_bindings_bench(
+        "BenchLargeVectorHubL2BindingsZero",
+        "BenchLargeVectorEdgeL2BindingsZero",
+        VECTOR_SCAN_XXLARGE,
+        0,
+        EdgeVectorMetric::L2Squared,
+        CmpOp::Le,
+        4.0,
+        &query,
+        "large_expand_vector_bindings_l2_16384scan_0match",
+    )
+}
+
+/// Scan/predicate-only fixed-label vector L2 over 16,384 rows; 128 rows pass.
+#[bench(raw)]
+fn bench_graph_large_expand_vector_bindings_l2_16384scan_128match() -> canbench_rs::BenchResult {
+    let query = vec![1.0; EXPAND_VECTOR_DIMS];
+    large_expand_vector_bindings_bench(
+        "BenchLargeVectorHubL2BindingsSparse",
+        "BenchLargeVectorEdgeL2BindingsSparse",
+        VECTOR_SCAN_XXLARGE,
+        128,
+        EdgeVectorMetric::L2Squared,
+        CmpOp::Le,
+        4.0,
+        &query,
+        "large_expand_vector_bindings_l2_16384scan_128match",
+    )
+}
+
+/// Scan/predicate-only fixed-label vector L2 over 16,384 rows; 2,048 rows pass.
+#[bench(raw)]
+fn bench_graph_large_expand_vector_bindings_l2_16384scan_2048match() -> canbench_rs::BenchResult {
+    let query = vec![1.0; EXPAND_VECTOR_DIMS];
+    large_expand_vector_bindings_bench(
+        "BenchLargeVectorHubL2BindingsCurrent",
+        "BenchLargeVectorEdgeL2BindingsCurrent",
+        VECTOR_SCAN_XXLARGE,
+        VECTOR_PASS_XXLARGE,
+        EdgeVectorMetric::L2Squared,
+        CmpOp::Le,
+        4.0,
+        &query,
+        "large_expand_vector_bindings_l2_16384scan_2048match",
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,5 +587,32 @@ mod tests {
         setup_large_road_grid_graph(&store);
         let result = execute_shortest_plan(&store, &large_road_grid_weighted_shortest_plan());
         assert_eq!(result.rows.len(), 1);
+    }
+
+    #[test]
+    fn large_vector_setup_and_execute() {
+        let store = GraphStore::new();
+        setup_expand_vector_graph_with_scale(
+            &store,
+            ExpandVectorGraphScale {
+                hub_label: "BenchLargeVectorHubTest",
+                edge_label: "BenchLargeVectorEdgeTest",
+                total: VECTOR_SCAN_MEDIUM,
+                pass: VECTOR_PASS_MEDIUM,
+                dims: EXPAND_VECTOR_DIMS,
+                edges_per_hub: VECTOR_EDGES_PER_HUB,
+            },
+        );
+        let query = vec![1.0; EXPAND_VECTOR_DIMS];
+        let plan = expand_vector_plan(
+            "BenchLargeVectorHubTest",
+            "BenchLargeVectorEdgeTest",
+            EdgeVectorMetric::L2Squared,
+            CmpOp::Le,
+            4.0,
+            &query,
+        );
+        let result = execute_expand_plan(&store, &plan);
+        assert_eq!(result.rows.len(), VECTOR_PASS_MEDIUM as usize);
     }
 }
