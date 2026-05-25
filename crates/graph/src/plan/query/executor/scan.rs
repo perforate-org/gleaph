@@ -7,7 +7,8 @@ use gleaph_gql::ast::{CmpOp, Expr};
 use gleaph_gql::types::EdgeDirection;
 use gleaph_gql::{Value, value_to_index_key_bytes};
 use gleaph_gql_planner::plan::{
-    AggregateSpec, ConditionalScanCandidate, IndexScanSpec, PlanOp, ScanValue, Str,
+    AggregateSpec, ConditionalScanCandidate, EdgeValuePredicate, EdgeVectorPredicate,
+    IndexScanSpec, PlanOp, ScanValue, Str,
 };
 use gleaph_graph_kernel::entry::{Edge, PreparedWeightDecoder};
 use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest};
@@ -312,6 +313,8 @@ fn stream_row_through_ops(
             label_expr,
             var_len,
             indexed_edge_equality,
+            edge_value_predicate,
+            edge_vector_predicate,
             edge_property_projection,
             dst_property_projection,
             hop_aux_binding,
@@ -333,6 +336,8 @@ fn stream_row_through_ops(
                 &[],
                 *emit_edge_binding,
                 indexed_edge_equality.as_ref(),
+                edge_value_predicate.as_ref(),
+                edge_vector_predicate.as_ref(),
                 edge_property_projection.as_deref(),
                 dst_property_projection.as_deref(),
                 caller,
@@ -351,6 +356,8 @@ fn stream_row_through_ops(
             label_expr,
             var_len,
             indexed_edge_equality,
+            edge_value_predicate,
+            edge_vector_predicate,
             dst_filter,
             edge_property_projection,
             dst_property_projection,
@@ -373,6 +380,8 @@ fn stream_row_through_ops(
                 dst_filter,
                 *emit_edge_binding,
                 indexed_edge_equality.as_ref(),
+                edge_value_predicate.as_ref(),
+                edge_vector_predicate.as_ref(),
                 edge_property_projection.as_deref(),
                 dst_property_projection.as_deref(),
                 caller,
@@ -475,6 +484,8 @@ fn stream_expand(
     dst_filter: &[Expr],
     emit_edge_binding: bool,
     indexed_edge_equality: Option<&(Str, ScanValue)>,
+    edge_value_predicate: Option<&EdgeValuePredicate>,
+    edge_vector_predicate: Option<&EdgeVectorPredicate>,
     edge_property_projection: Option<&[Str]>,
     dst_property_projection: Option<&[Str]>,
     caller: Option<Principal>,
@@ -495,9 +506,13 @@ fn stream_expand(
     let dst_only_prefilter = dst_filter_is_dst_vertex_only(dst_filter, dst.as_ref());
     let edge_key = emit_edge_binding.then(|| edge.to_string());
     let dst_key = dst.to_string();
-    let csr_expand_fast_path = csr_offset_fast_path_for_expand(direction, label_id, sequence_order);
+    let csr_expand_fast_path = (edge_value_predicate.is_none() && edge_vector_predicate.is_none())
+        .then(|| csr_offset_fast_path_for_expand(direction, label_id, sequence_order))
+        .flatten();
 
     let csr_offset_fast_path = (indexed_edge_equality.is_none()
+        && edge_value_predicate.is_none()
+        && edge_vector_predicate.is_none()
         && dst_filter.is_empty()
         && !matches!(
             row.get(dst.as_ref()),
@@ -646,6 +661,8 @@ fn stream_expand(
         label_id,
         EdgeSequenceOrder::Descending,
         indexed_edge_equality,
+        edge_value_predicate,
+        edge_vector_predicate,
         parameters,
         &mut candidates,
     )?;
@@ -2418,6 +2435,8 @@ mod tests {
                 label_expr: None,
                 var_len: None,
                 indexed_edge_equality: Some(("weight".into(), ScanValue::Literal(Value::Int64(5)))),
+                edge_value_predicate: None,
+                edge_vector_predicate: None,
                 edge_property_projection: None,
                 dst_property_projection: None,
                 hop_aux_binding: None,

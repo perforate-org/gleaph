@@ -102,13 +102,7 @@ impl GraphStore {
 
         let label = lara_label(edge_storage_label(catalog_label, false));
         let forward = build_edge_to_with_value_bytes(target_vertex_id, value_bytes);
-        // Reverse CSR rows only store the source id; edge values live on the forward owner.
-        let reverse = Edge {
-            target: VertexRef::local(source_vertex_id),
-            edge_slot_index: EdgeSlotIndex::from_raw(0),
-            label_id: 0,
-            value: gleaph_graph_kernel::entry::EdgeValuePayload::EMPTY,
-        };
+        let reverse = build_edge_to_with_value_bytes(source_vertex_id, value_bytes);
         self.with_graph_mut(|graph| {
             graph.insert_directed_edge(source_vertex_id, target_vertex_id, label, forward, reverse)
         })?;

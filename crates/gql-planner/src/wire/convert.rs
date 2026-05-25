@@ -9,9 +9,10 @@ use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use rkyv::rancor;
 
 use crate::plan::{
-    AggregateSpec, ConditionalScanCandidate, IndexScanSpec, PhysicalPlan, PlanAnnotations,
-    PlanDiagnostics, PlanOp, ProjectColumn, PropertyAssignment, RemovePlanItem, ScanValue,
-    SetPlanItem, ShortestMode, ShortestPathCost, Str, VarLenSpec, WcojEdge, YieldColumn,
+    AggregateSpec, ConditionalScanCandidate, EdgeValuePredicate, EdgeVectorMetric,
+    EdgeVectorPredicate, IndexScanSpec, PhysicalPlan, PlanAnnotations, PlanDiagnostics, PlanOp,
+    ProjectColumn, PropertyAssignment, RemovePlanItem, ScanValue, SetPlanItem, ShortestMode,
+    ShortestPathCost, Str, VarLenSpec, WcojEdge, YieldColumn,
 };
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -134,6 +135,8 @@ pub enum PlanOpWire {
         label_expr: Option<u32>,
         var_len: Option<VarLenSpecWire>,
         indexed_edge_equality: Option<(String, ScanValueWire)>,
+        edge_value_predicate: Option<EdgeValuePredicateWire>,
+        edge_vector_predicate: Option<EdgeVectorPredicateWire>,
         edge_property_projection: Option<Vec<String>>,
         dst_property_projection: Option<Vec<String>>,
         hop_aux_binding: Option<String>,
@@ -148,6 +151,8 @@ pub enum PlanOpWire {
         label_expr: Option<u32>,
         var_len: Option<VarLenSpecWire>,
         indexed_edge_equality: Option<(String, ScanValueWire)>,
+        edge_value_predicate: Option<EdgeValuePredicateWire>,
+        edge_vector_predicate: Option<EdgeVectorPredicateWire>,
         dst_filter: Vec<u32>,
         edge_property_projection: Option<Vec<String>>,
         dst_property_projection: Option<Vec<String>>,
@@ -290,6 +295,20 @@ pub enum ScanValueWire {
     /// Rkyv-encoded [`Value`].
     Literal(Vec<u8>),
     Parameter(String),
+}
+
+#[derive(Clone, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct EdgeValuePredicateWire {
+    op: u8,
+    value: ScanValueWire,
+}
+
+#[derive(Clone, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct EdgeVectorPredicateWire {
+    metric: u8,
+    query: ScanValueWire,
+    op: u8,
+    threshold: ScanValueWire,
 }
 
 #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
@@ -554,6 +573,8 @@ impl Encoder {
                 label_expr,
                 var_len,
                 indexed_edge_equality,
+                edge_value_predicate,
+                edge_vector_predicate,
                 edge_property_projection,
                 dst_property_projection,
                 hop_aux_binding,
@@ -567,6 +588,8 @@ impl Encoder {
                 label_expr: opt_label_expr_id(self, label_expr.as_ref())?,
                 var_len: var_len.map(var_len_to_wire),
                 indexed_edge_equality: encode_indexed_edge_equality(indexed_edge_equality)?,
+                edge_value_predicate: encode_edge_value_predicate(edge_value_predicate)?,
+                edge_vector_predicate: encode_edge_vector_predicate(edge_vector_predicate)?,
                 edge_property_projection: opt_str_slice(edge_property_projection),
                 dst_property_projection: opt_str_slice(dst_property_projection),
                 hop_aux_binding: opt_str_opt(hop_aux_binding),
@@ -581,6 +604,8 @@ impl Encoder {
                 label_expr,
                 var_len,
                 indexed_edge_equality,
+                edge_value_predicate,
+                edge_vector_predicate,
                 dst_filter,
                 edge_property_projection,
                 dst_property_projection,
@@ -595,6 +620,8 @@ impl Encoder {
                 label_expr: opt_label_expr_id(self, label_expr.as_ref())?,
                 var_len: var_len.map(var_len_to_wire),
                 indexed_edge_equality: encode_indexed_edge_equality(indexed_edge_equality)?,
+                edge_value_predicate: encode_edge_value_predicate(edge_value_predicate)?,
+                edge_vector_predicate: encode_edge_vector_predicate(edge_vector_predicate)?,
                 dst_filter: self.intern_exprs(dst_filter)?,
                 edge_property_projection: opt_str_slice(edge_property_projection),
                 dst_property_projection: opt_str_slice(dst_property_projection),
@@ -1016,6 +1043,8 @@ impl<'a> Decoder<'a> {
                 label_expr,
                 var_len,
                 indexed_edge_equality,
+                edge_value_predicate,
+                edge_vector_predicate,
                 edge_property_projection,
                 dst_property_projection,
                 hop_aux_binding,
@@ -1029,6 +1058,8 @@ impl<'a> Decoder<'a> {
                 label_expr: decode_opt_label_expr(self, *label_expr)?,
                 var_len: var_len.map(var_len_from_wire),
                 indexed_edge_equality: decode_indexed_edge_equality(indexed_edge_equality)?,
+                edge_value_predicate: decode_edge_value_predicate(edge_value_predicate)?,
+                edge_vector_predicate: decode_edge_vector_predicate(edge_vector_predicate)?,
                 edge_property_projection: decode_str_slice(edge_property_projection),
                 dst_property_projection: decode_str_slice(dst_property_projection),
                 hop_aux_binding: opt_rc_str(hop_aux_binding),
@@ -1043,6 +1074,8 @@ impl<'a> Decoder<'a> {
                 label_expr,
                 var_len,
                 indexed_edge_equality,
+                edge_value_predicate,
+                edge_vector_predicate,
                 dst_filter,
                 edge_property_projection,
                 dst_property_projection,
@@ -1057,6 +1090,8 @@ impl<'a> Decoder<'a> {
                 label_expr: decode_opt_label_expr(self, *label_expr)?,
                 var_len: var_len.map(var_len_from_wire),
                 indexed_edge_equality: decode_indexed_edge_equality(indexed_edge_equality)?,
+                edge_value_predicate: decode_edge_value_predicate(edge_value_predicate)?,
+                edge_vector_predicate: decode_edge_vector_predicate(edge_vector_predicate)?,
                 dst_filter: dst_filter
                     .iter()
                     .map(|id| self.expr(*id))
@@ -1407,6 +1442,102 @@ fn decode_scan_value(v: &ScanValueWire) -> Result<ScanValue, String> {
         ScanValueWire::Literal(bytes) => ScanValue::Literal(rkyv_decode_value(bytes)?),
         ScanValueWire::Parameter(p) => ScanValue::Parameter(p.as_str().into()),
     })
+}
+
+fn encode_edge_value_predicate(
+    v: &Option<EdgeValuePredicate>,
+) -> Result<Option<EdgeValuePredicateWire>, String> {
+    v.as_ref()
+        .map(|pred| {
+            Ok(EdgeValuePredicateWire {
+                op: cmp_op_to_wire(pred.op),
+                value: encode_scan_value(&pred.value)?,
+            })
+        })
+        .transpose()
+}
+
+fn decode_edge_value_predicate(
+    v: &Option<EdgeValuePredicateWire>,
+) -> Result<Option<EdgeValuePredicate>, String> {
+    v.as_ref()
+        .map(|pred| {
+            Ok(EdgeValuePredicate {
+                op: cmp_op_from_wire(pred.op)?,
+                value: decode_scan_value(&pred.value)?,
+            })
+        })
+        .transpose()
+}
+
+fn encode_edge_vector_predicate(
+    v: &Option<EdgeVectorPredicate>,
+) -> Result<Option<EdgeVectorPredicateWire>, String> {
+    v.as_ref()
+        .map(|pred| {
+            Ok(EdgeVectorPredicateWire {
+                metric: edge_vector_metric_to_wire(pred.metric),
+                query: encode_scan_value(&pred.query)?,
+                op: cmp_op_to_wire(pred.op),
+                threshold: encode_scan_value(&pred.threshold)?,
+            })
+        })
+        .transpose()
+}
+
+fn decode_edge_vector_predicate(
+    v: &Option<EdgeVectorPredicateWire>,
+) -> Result<Option<EdgeVectorPredicate>, String> {
+    v.as_ref()
+        .map(|pred| {
+            Ok(EdgeVectorPredicate {
+                metric: edge_vector_metric_from_wire(pred.metric)?,
+                query: decode_scan_value(&pred.query)?,
+                op: cmp_op_from_wire(pred.op)?,
+                threshold: decode_scan_value(&pred.threshold)?,
+            })
+        })
+        .transpose()
+}
+
+fn edge_vector_metric_to_wire(metric: EdgeVectorMetric) -> u8 {
+    match metric {
+        EdgeVectorMetric::Dot => 0,
+        EdgeVectorMetric::L2Squared => 1,
+        EdgeVectorMetric::CosineDistance => 2,
+    }
+}
+
+fn edge_vector_metric_from_wire(metric: u8) -> Result<EdgeVectorMetric, String> {
+    match metric {
+        0 => Ok(EdgeVectorMetric::Dot),
+        1 => Ok(EdgeVectorMetric::L2Squared),
+        2 => Ok(EdgeVectorMetric::CosineDistance),
+        other => Err(format!("invalid edge vector metric tag {other}")),
+    }
+}
+
+fn cmp_op_to_wire(op: CmpOp) -> u8 {
+    match op {
+        CmpOp::Eq => 0,
+        CmpOp::Ne => 1,
+        CmpOp::Lt => 2,
+        CmpOp::Le => 3,
+        CmpOp::Gt => 4,
+        CmpOp::Ge => 5,
+    }
+}
+
+fn cmp_op_from_wire(op: u8) -> Result<CmpOp, String> {
+    match op {
+        0 => Ok(CmpOp::Eq),
+        1 => Ok(CmpOp::Ne),
+        2 => Ok(CmpOp::Lt),
+        3 => Ok(CmpOp::Le),
+        4 => Ok(CmpOp::Gt),
+        5 => Ok(CmpOp::Ge),
+        _ => Err(format!("invalid edge value predicate comparison op {op}")),
+    }
 }
 
 fn rkyv_encode_value(value: &Value) -> Result<Vec<u8>, String> {

@@ -277,24 +277,29 @@ impl ShortestFixedLabelExpand {
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _scope = bench_scope("shortest_fixed_expand_reverse");
                 let mut expand_err = None;
-                store.for_each_directed_in_edges_for_label_unchecked(current, label, |edge| {
-                    if expand_err.is_some() {
-                        return;
-                    }
-                    if let Ok(Some(edge_dst @ ExpandDst::Local(_))) =
-                        ExpandDst::from_edge(store, &edge)
-                    {
-                        match edge_binding_for_expand(
-                            store,
-                            current,
-                            EdgeDirection::PointingLeft,
-                            edge,
-                        ) {
-                            Ok(binding) => out.push((edge_dst, binding)),
-                            Err(err) => expand_err = Some(err),
+                store.for_each_directed_in_edges_for_label_with_values(
+                    current,
+                    label,
+                    OutEdgeOrder::Descending,
+                    |edge| {
+                        if expand_err.is_some() {
+                            return;
                         }
-                    }
-                })?;
+                        if let Ok(Some(edge_dst @ ExpandDst::Local(_))) =
+                            ExpandDst::from_edge(store, &edge)
+                        {
+                            match edge_binding_for_expand(
+                                store,
+                                current,
+                                EdgeDirection::PointingLeft,
+                                edge,
+                            ) {
+                                Ok(binding) => out.push((edge_dst, binding)),
+                                Err(err) => expand_err = Some(err),
+                            }
+                        }
+                    },
+                )?;
                 if let Some(err) = expand_err {
                     return Err(err);
                 }
@@ -407,6 +412,8 @@ fn shortest_paths_between(
                     direction,
                     label_id,
                     EdgeSequenceOrder::Descending,
+                    None,
+                    None,
                     None,
                     &BTreeMap::new(),
                     &mut candidates,
@@ -835,6 +842,8 @@ pub(crate) fn weighted_shortest_paths_between(
                     direction,
                     label_id,
                     EdgeSequenceOrder::Descending,
+                    None,
+                    None,
                     None,
                     &BTreeMap::new(),
                     &mut candidates,

@@ -554,6 +554,7 @@ fn expand_filter_plan() -> PhysicalPlan {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
+            edge_value_predicate: None,
             dst_filter: vec![Expr::new(ExprKind::Compare {
                 left: Box::new(Expr::new(ExprKind::PropertyAccess {
                     expr: Box::new(Expr::new(ExprKind::Variable("b".to_owned()))),
@@ -824,6 +825,7 @@ fn expand_deep_row_plan() -> PhysicalPlan {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
+            edge_value_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
             hop_aux_binding: None,
@@ -838,6 +840,7 @@ fn expand_deep_row_plan() -> PhysicalPlan {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
+            edge_value_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
             hop_aux_binding: None,
@@ -852,6 +855,7 @@ fn expand_deep_row_plan() -> PhysicalPlan {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
+            edge_value_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
             hop_aux_binding: None,
@@ -924,6 +928,7 @@ fn expand_filter_10pct_plan() -> PhysicalPlan {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
+            edge_value_predicate: None,
             dst_filter: vec![Expr::new(ExprKind::Compare {
                 left: Box::new(Expr::new(ExprKind::PropertyAccess {
                     expr: Box::new(Expr::new(ExprKind::Variable("b".to_owned()))),
@@ -1019,6 +1024,7 @@ fn expand_hash_join_then_expand_plan() -> PhysicalPlan {
                     label_expr: None,
                     var_len: None,
                     indexed_edge_equality: None,
+                    edge_value_predicate: None,
                     edge_property_projection: None,
                     dst_property_projection: None,
                     hop_aux_binding: None,
@@ -1040,6 +1046,7 @@ fn expand_hash_join_then_expand_plan() -> PhysicalPlan {
                     label_expr: None,
                     var_len: None,
                     indexed_edge_equality: None,
+                    edge_value_predicate: None,
                     edge_property_projection: None,
                     dst_property_projection: None,
                     hop_aux_binding: None,

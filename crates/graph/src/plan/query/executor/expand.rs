@@ -3,21 +3,28 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use candid::Principal;
-use gleaph_gql::ast::Expr;
+use gleaph_gql::ast::{CmpOp, Expr};
 use gleaph_gql::types::EdgeDirection;
 use gleaph_gql::{Value, value_to_index_key_bytes};
-use gleaph_gql_planner::plan::{ScanValue, Str};
+use gleaph_gql_planner::plan::{
+    EdgeValuePredicate, EdgeVectorMetric as PlanEdgeVectorMetric, EdgeVectorPredicate, ScanValue,
+    Str,
+};
 use gleaph_graph_kernel::entry::{
-    Edge, EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, EdgeTarget, PreparedWeightDecoder,
+    Edge, EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, EdgeTarget, EdgeValueEncoding,
+    EdgeValueProfile, PreparedWeightDecoder,
 };
 use gleaph_graph_kernel::federation::{
     FederatedExpandArgs, FederatedExpandDirection, FederatedExpandNeighbor, LogicalVertexId,
 };
+use half::f16;
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
+use ic_stable_lara::labeled::LabeledEdgeValueBatchScratch;
 use ic_stable_lara::traits::CsrEdge;
 use nohash_hasher::IntSet;
 
+use super::super::edge_value_batch_kernel::PreparedEdgeValueBatchKernel;
 use super::super::error::PlanQueryError;
 use super::super::row::PlanRow;
 use super::bindings::{
@@ -32,6 +39,9 @@ use super::{
 };
 use crate::facade::{EdgeHandle, GraphStore, GraphStoreError, canonical_undirected_owner};
 use crate::index::edge_equal;
+use crate::plan::query::edge_vector_kernel::{
+    EdgeVectorMetric as KernelEdgeVectorMetric, PreparedEdgeVectorKernel,
+};
 
 #[derive(Clone, Copy)]
 pub(crate) enum CsrOffsetFastPath {
@@ -516,6 +526,8 @@ pub(crate) async fn execute_expand(
     dst_filter: &[Expr],
     emit_edge_binding: bool,
     indexed_edge_equality: Option<&(Str, ScanValue)>,
+    edge_value_predicate: Option<&EdgeValuePredicate>,
+    edge_vector_predicate: Option<&EdgeVectorPredicate>,
     edge_property_projection: Option<&[Str]>,
     dst_property_projection: Option<&[Str]>,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
@@ -532,7 +544,9 @@ pub(crate) async fn execute_expand(
     let dst_only_prefilter = dst_filter_is_dst_vertex_only(dst_filter, dst.as_ref());
     let edge_key = emit_edge_binding.then(|| edge.to_string());
     let dst_key = dst.to_string();
-    let csr_expand_fast_path = csr_offset_fast_path_for_expand(direction, label_id, sequence_order);
+    let csr_expand_fast_path = (edge_value_predicate.is_none() && edge_vector_predicate.is_none())
+        .then(|| csr_offset_fast_path_for_expand(direction, label_id, sequence_order))
+        .flatten();
     let edge_equality_filter = if csr_expand_fast_path.is_some() {
         let filter = edge_equality_stream_filter(store, indexed_edge_equality, parameters)?;
         if matches!(filter, EdgeEqualityStreamFilter::NoMatches) {
@@ -740,6 +754,8 @@ pub(crate) async fn execute_expand(
             label_id,
             sequence_order,
             indexed_edge_equality,
+            edge_value_predicate,
+            edge_vector_predicate,
             parameters,
             &mut candidates,
         )?;
@@ -801,6 +817,508 @@ pub(crate) fn expand_dst_matches_prebound_vertex(
 
 pub(crate) type ExpandCandidate = (ExpandDst, EdgeBinding);
 
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedEdgeValuePredicate {
+    kernel: PreparedEdgeValueBatchKernel,
+    op: CmpOp,
+    expected: Vec<u8>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedEdgeVectorThreshold {
+    kernel: PreparedEdgeVectorKernel,
+    metric: KernelEdgeVectorMetric,
+    query: Vec<f32>,
+    op: CmpOp,
+    threshold: f32,
+}
+
+impl PreparedEdgeVectorThreshold {
+    pub(crate) fn prepare(
+        store: &GraphStore,
+        label_id: EdgeLabelId,
+        predicate: &EdgeVectorPredicate,
+        parameters: &BTreeMap<String, Value>,
+    ) -> Result<Option<Self>, PlanQueryError> {
+        let Some(profile) = store.edge_label_value_profile(label_id) else {
+            return Ok(None);
+        };
+        let EdgeValueEncoding::VectorF32 { dims } = profile.encoding else {
+            return Err(PlanQueryError::UnsupportedOp(
+                "edge vector predicate for non-vector encodings",
+            ));
+        };
+        let query = scan_value_to_f32_vector(&predicate.query, parameters)?;
+        let threshold = scan_value_to_f32(&predicate.threshold, parameters)?;
+        profile
+            .validate()
+            .map_err(|err| PlanQueryError::InvalidExpressionValue {
+                expression: format!("edge vector value profile: {err}"),
+            })?;
+        if usize::from(dims) != query.len() {
+            return Err(PlanQueryError::InvalidExpressionValue {
+                expression: "edge vector query dimension".into(),
+            });
+        }
+        let Some(kernel) = PreparedEdgeVectorKernel::new(usize::from(dims)) else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            kernel,
+            metric: kernel_edge_vector_metric(predicate.metric),
+            query,
+            op: predicate.op,
+            threshold,
+        }))
+    }
+}
+
+fn kernel_edge_vector_metric(metric: PlanEdgeVectorMetric) -> KernelEdgeVectorMetric {
+    match metric {
+        PlanEdgeVectorMetric::Dot => KernelEdgeVectorMetric::Dot,
+        PlanEdgeVectorMetric::L2Squared => KernelEdgeVectorMetric::L2Squared,
+        PlanEdgeVectorMetric::CosineDistance => KernelEdgeVectorMetric::CosineDistance,
+    }
+}
+
+impl PreparedEdgeValuePredicate {
+    pub(crate) fn prepare(
+        store: &GraphStore,
+        label_id: EdgeLabelId,
+        predicate: &EdgeValuePredicate,
+        parameters: &BTreeMap<String, Value>,
+    ) -> Result<Option<Self>, PlanQueryError> {
+        let Some(profile) = store.edge_label_value_profile(label_id) else {
+            return Ok(None);
+        };
+        if profile.required_byte_width() == 0 {
+            return Ok(None);
+        }
+        let Some(expected) =
+            scan_value_to_edge_value_bytes(&profile, &predicate.value, parameters)?
+        else {
+            return Ok(None);
+        };
+        let kernel =
+            PreparedEdgeValueBatchKernel::new(profile.width.to_width_code(), profile.encoding);
+        Ok(Some(Self {
+            kernel,
+            op: predicate.op,
+            expected,
+        }))
+    }
+}
+
+fn scan_value_to_edge_value_bytes(
+    profile: &EdgeValueProfile,
+    scan_value: &ScanValue,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<Option<Vec<u8>>, PlanQueryError> {
+    let value = match scan_value {
+        ScanValue::Literal(value) => value,
+        ScanValue::Parameter(name) => {
+            parameters
+                .get(name.as_ref())
+                .ok_or_else(|| PlanQueryError::MissingParameter {
+                    name: name.to_string(),
+                })?
+        }
+    };
+    if matches!(value, Value::Null) {
+        return Ok(None);
+    }
+    edge_value_bytes_from_value(profile, value)
+}
+
+fn scan_value_to_f32_vector(
+    scan_value: &ScanValue,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<Vec<f32>, PlanQueryError> {
+    let value = scan_value_to_value(scan_value, parameters)?;
+    let Value::List(items) = value else {
+        return Err(PlanQueryError::InvalidExpressionValue {
+            expression: "edge vector query".into(),
+        });
+    };
+    items
+        .iter()
+        .map(f32_from_value)
+        .collect::<Result<Vec<_>, _>>()
+}
+
+fn scan_value_to_f32(
+    scan_value: &ScanValue,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<f32, PlanQueryError> {
+    f32_from_value(scan_value_to_value(scan_value, parameters)?)
+}
+
+fn scan_value_to_value<'a>(
+    scan_value: &'a ScanValue,
+    parameters: &'a BTreeMap<String, Value>,
+) -> Result<&'a Value, PlanQueryError> {
+    match scan_value {
+        ScanValue::Literal(value) => Ok(value),
+        ScanValue::Parameter(name) => {
+            parameters
+                .get(name.as_ref())
+                .ok_or_else(|| PlanQueryError::MissingParameter {
+                    name: name.to_string(),
+                })
+        }
+    }
+}
+
+fn edge_value_bytes_from_value(
+    profile: &EdgeValueProfile,
+    value: &Value,
+) -> Result<Option<Vec<u8>>, PlanQueryError> {
+    let bytes = match &profile.encoding {
+        EdgeValueEncoding::RawU8 => u8_from_value(value).map(|v| vec![v])?,
+        EdgeValueEncoding::RawU16 | EdgeValueEncoding::WeightRawU16 => {
+            u16_from_value(value).map(|v| v.to_le_bytes().to_vec())?
+        }
+        EdgeValueEncoding::RawU32 => u32_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
+        EdgeValueEncoding::RawU64 => u64_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
+        EdgeValueEncoding::RawI8 => i8_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
+        EdgeValueEncoding::RawI16 => i16_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
+        EdgeValueEncoding::RawI32 => i32_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
+        EdgeValueEncoding::RawI64 => i64_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
+        EdgeValueEncoding::RawU128 => u128_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
+        EdgeValueEncoding::RawI128 => i128_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
+        EdgeValueEncoding::F16 => {
+            f32_from_value(value).map(|v| f16::from_f32(v).to_le_bytes().to_vec())?
+        }
+        EdgeValueEncoding::F32 => f32_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
+        EdgeValueEncoding::F64 => f64_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
+        EdgeValueEncoding::RawFixed32 => fixed_bytes_from_value(value, 32)?,
+        EdgeValueEncoding::RawFixed64 => fixed_bytes_from_value(value, 64)?,
+        EdgeValueEncoding::WeightLinearU16 { .. }
+        | EdgeValueEncoding::WeightLogU16 { .. }
+        | EdgeValueEncoding::WeightBinary16 => {
+            return Err(PlanQueryError::UnsupportedOp(
+                "edge value predicate for transformed weight encodings",
+            ));
+        }
+        EdgeValueEncoding::VectorF32 { .. } => {
+            return Err(PlanQueryError::UnsupportedOp(
+                "edge value predicate for vector encodings",
+            ));
+        }
+    };
+    if bytes.len() != usize::from(profile.required_byte_width()) {
+        return Err(PlanQueryError::InvalidExpressionValue {
+            expression: "edge value predicate byte width".into(),
+        });
+    }
+    Ok(Some(bytes))
+}
+
+fn fixed_bytes_from_value(value: &Value, expected_len: usize) -> Result<Vec<u8>, PlanQueryError> {
+    match value {
+        Value::Bytes(bytes) if bytes.len() == expected_len => Ok(bytes.clone()),
+        _ => Err(PlanQueryError::InvalidExpressionValue {
+            expression: "fixed-width edge value predicate literal".into(),
+        }),
+    }
+}
+
+fn u8_from_value(value: &Value) -> Result<u8, PlanQueryError> {
+    unsigned_from_value(value).and_then(|v| {
+        u8::try_from(v).map_err(|_| PlanQueryError::InvalidExpressionValue {
+            expression: "u8 edge value predicate literal".into(),
+        })
+    })
+}
+
+fn u16_from_value(value: &Value) -> Result<u16, PlanQueryError> {
+    unsigned_from_value(value).and_then(|v| {
+        u16::try_from(v).map_err(|_| PlanQueryError::InvalidExpressionValue {
+            expression: "u16 edge value predicate literal".into(),
+        })
+    })
+}
+
+fn u32_from_value(value: &Value) -> Result<u32, PlanQueryError> {
+    unsigned_from_value(value).and_then(|v| {
+        u32::try_from(v).map_err(|_| PlanQueryError::InvalidExpressionValue {
+            expression: "u32 edge value predicate literal".into(),
+        })
+    })
+}
+
+fn u64_from_value(value: &Value) -> Result<u64, PlanQueryError> {
+    unsigned_from_value(value).and_then(|v| {
+        u64::try_from(v).map_err(|_| PlanQueryError::InvalidExpressionValue {
+            expression: "u64 edge value predicate literal".into(),
+        })
+    })
+}
+
+fn u128_from_value(value: &Value) -> Result<u128, PlanQueryError> {
+    unsigned_from_value(value)
+}
+
+fn i8_from_value(value: &Value) -> Result<i8, PlanQueryError> {
+    signed_from_value(value).and_then(|v| {
+        i8::try_from(v).map_err(|_| PlanQueryError::InvalidExpressionValue {
+            expression: "i8 edge value predicate literal".into(),
+        })
+    })
+}
+
+fn i16_from_value(value: &Value) -> Result<i16, PlanQueryError> {
+    signed_from_value(value).and_then(|v| {
+        i16::try_from(v).map_err(|_| PlanQueryError::InvalidExpressionValue {
+            expression: "i16 edge value predicate literal".into(),
+        })
+    })
+}
+
+fn i32_from_value(value: &Value) -> Result<i32, PlanQueryError> {
+    signed_from_value(value).and_then(|v| {
+        i32::try_from(v).map_err(|_| PlanQueryError::InvalidExpressionValue {
+            expression: "i32 edge value predicate literal".into(),
+        })
+    })
+}
+
+fn i64_from_value(value: &Value) -> Result<i64, PlanQueryError> {
+    signed_from_value(value).and_then(|v| {
+        i64::try_from(v).map_err(|_| PlanQueryError::InvalidExpressionValue {
+            expression: "i64 edge value predicate literal".into(),
+        })
+    })
+}
+
+fn i128_from_value(value: &Value) -> Result<i128, PlanQueryError> {
+    signed_from_value(value)
+}
+
+fn unsigned_from_value(value: &Value) -> Result<u128, PlanQueryError> {
+    match value {
+        Value::Uint8(v) => Ok(u128::from(*v)),
+        Value::Uint16(v) => Ok(u128::from(*v)),
+        Value::Uint32(v) => Ok(u128::from(*v)),
+        Value::Uint64(v) => Ok(u128::from(*v)),
+        Value::Uint128(v) => Ok(*v),
+        Value::Int8(v) => u128::try_from(*v).map_err(|_| invalid_unsigned_edge_value()),
+        Value::Int16(v) => u128::try_from(*v).map_err(|_| invalid_unsigned_edge_value()),
+        Value::Int32(v) => u128::try_from(*v).map_err(|_| invalid_unsigned_edge_value()),
+        Value::Int64(v) => u128::try_from(*v).map_err(|_| invalid_unsigned_edge_value()),
+        Value::Int128(v) => u128::try_from(*v).map_err(|_| invalid_unsigned_edge_value()),
+        _ => Err(invalid_unsigned_edge_value()),
+    }
+}
+
+fn signed_from_value(value: &Value) -> Result<i128, PlanQueryError> {
+    match value {
+        Value::Int8(v) => Ok(i128::from(*v)),
+        Value::Int16(v) => Ok(i128::from(*v)),
+        Value::Int32(v) => Ok(i128::from(*v)),
+        Value::Int64(v) => Ok(i128::from(*v)),
+        Value::Int128(v) => Ok(*v),
+        Value::Uint8(v) => Ok(i128::from(*v)),
+        Value::Uint16(v) => Ok(i128::from(*v)),
+        Value::Uint32(v) => Ok(i128::from(*v)),
+        Value::Uint64(v) => Ok(i128::from(*v)),
+        Value::Uint128(v) => i128::try_from(*v).map_err(|_| invalid_signed_edge_value()),
+        _ => Err(invalid_signed_edge_value()),
+    }
+}
+
+fn f32_from_value(value: &Value) -> Result<f32, PlanQueryError> {
+    match value {
+        Value::Float16(v) => Ok(v.to_f32()),
+        Value::Float32(v) => Ok(*v),
+        Value::Float64(v) if *v >= f32::MIN as f64 && *v <= f32::MAX as f64 => Ok(*v as f32),
+        _ => Err(PlanQueryError::InvalidExpressionValue {
+            expression: "f32 edge value predicate literal".into(),
+        }),
+    }
+}
+
+fn f64_from_value(value: &Value) -> Result<f64, PlanQueryError> {
+    match value {
+        Value::Float16(v) => Ok(f64::from(v.to_f32())),
+        Value::Float32(v) => Ok(f64::from(*v)),
+        Value::Float64(v) => Ok(*v),
+        _ => Err(PlanQueryError::InvalidExpressionValue {
+            expression: "f64 edge value predicate literal".into(),
+        }),
+    }
+}
+
+fn invalid_unsigned_edge_value() -> PlanQueryError {
+    PlanQueryError::InvalidExpressionValue {
+        expression: "unsigned edge value predicate literal".into(),
+    }
+}
+
+fn invalid_signed_edge_value() -> PlanQueryError {
+    PlanQueryError::InvalidExpressionValue {
+        expression: "signed edge value predicate literal".into(),
+    }
+}
+
+pub(crate) fn expand_candidates_matching_edge_value_into(
+    store: &GraphStore,
+    src_id: VertexId,
+    direction: EdgeDirection,
+    edge_label_id: EdgeLabelId,
+    sequence_order: EdgeSequenceOrder,
+    predicate: &PreparedEdgeValuePredicate,
+    out: &mut Vec<ExpandCandidate>,
+) -> Result<(), PlanQueryError> {
+    let storage_label = LaraLabelId::from_raw(edge_label_id.pack(EdgeDirectedness::Directed).raw());
+    let order = sequence_order.into();
+    let mut scratch = LabeledEdgeValueBatchScratch::default();
+    let mut matches = Vec::new();
+    let mut error = None;
+    let mut visit_batch = |batch: ic_stable_lara::labeled::LabeledEdgeValueBatch<'_, Edge>| {
+        if error.is_some() {
+            return;
+        }
+        matches.clear();
+        predicate.kernel.collect_matching_value_indices(
+            batch.value_bytes,
+            predicate.op,
+            &predicate.expected,
+            &mut matches,
+        );
+        let width = usize::from(batch.width_code.byte_width());
+        for idx in matches.iter().copied() {
+            let Some(edge) = batch.edges.get(idx).copied() else {
+                continue;
+            };
+            let value_start = idx * width;
+            let value_end = value_start + width;
+            let edge = edge.with_value_bytes(&batch.value_bytes[value_start..value_end]);
+            match ExpandDst::from_edge(store, &edge).and_then(|edge_dst| match edge_dst {
+                Some(edge_dst) => {
+                    push_expand_candidate(out, store, src_id, direction, edge_dst, edge)
+                }
+                None => Ok(()),
+            }) {
+                Ok(()) => {}
+                Err(err) => {
+                    error = Some(err);
+                    return;
+                }
+            }
+        }
+    };
+
+    match direction {
+        EdgeDirection::PointingRight => store
+            .visit_out_edge_value_batches_for_label(
+                src_id,
+                storage_label,
+                order,
+                &mut scratch,
+                &mut visit_batch,
+            )
+            .map_err(GraphStoreError::from)?,
+        EdgeDirection::PointingLeft => store
+            .visit_in_edge_value_batches_for_label(
+                src_id,
+                storage_label,
+                order,
+                &mut scratch,
+                &mut visit_batch,
+            )
+            .map_err(GraphStoreError::from)?,
+        other => return Err(PlanQueryError::UnsupportedDirection(other)),
+    }
+    if let Some(err) = error {
+        return Err(err);
+    }
+    Ok(())
+}
+
+pub(crate) fn expand_candidates_matching_edge_vector_threshold_into(
+    store: &GraphStore,
+    src_id: VertexId,
+    direction: EdgeDirection,
+    edge_label_id: EdgeLabelId,
+    sequence_order: EdgeSequenceOrder,
+    predicate: &PreparedEdgeVectorThreshold,
+    out: &mut Vec<ExpandCandidate>,
+) -> Result<(), PlanQueryError> {
+    let storage_label = LaraLabelId::from_raw(edge_label_id.pack(EdgeDirectedness::Directed).raw());
+    let order = sequence_order.into();
+    let mut scratch = LabeledEdgeValueBatchScratch::default();
+    let mut matches = Vec::new();
+    let mut error = None;
+    let mut visit_batch = |batch: ic_stable_lara::labeled::LabeledEdgeValueBatch<'_, Edge>| {
+        if error.is_some() {
+            return;
+        }
+        matches.clear();
+        predicate.kernel.collect_matching_indices(
+            batch.value_bytes,
+            &predicate.query,
+            predicate.metric,
+            predicate.threshold,
+            |score, threshold| match predicate.op {
+                CmpOp::Lt => score < threshold,
+                CmpOp::Le => score <= threshold,
+                CmpOp::Gt => score > threshold,
+                CmpOp::Ge => score >= threshold,
+                CmpOp::Eq | CmpOp::Ne => false,
+            },
+            &mut matches,
+        );
+        let width = predicate.kernel.byte_width();
+        for idx in matches.iter().copied() {
+            let Some(edge) = batch.edges.get(idx).copied() else {
+                continue;
+            };
+            let value_start = idx * width;
+            let value_end = value_start + width;
+            let edge = edge.with_value_bytes(&batch.value_bytes[value_start..value_end]);
+            match ExpandDst::from_edge(store, &edge).and_then(|edge_dst| match edge_dst {
+                Some(edge_dst) => {
+                    push_expand_candidate(out, store, src_id, direction, edge_dst, edge)
+                }
+                None => Ok(()),
+            }) {
+                Ok(()) => {}
+                Err(err) => {
+                    error = Some(err);
+                    return;
+                }
+            }
+        }
+    };
+
+    match direction {
+        EdgeDirection::PointingRight => store
+            .visit_out_edge_value_batches_for_label(
+                src_id,
+                storage_label,
+                order,
+                &mut scratch,
+                &mut visit_batch,
+            )
+            .map_err(GraphStoreError::from)?,
+        EdgeDirection::PointingLeft => store
+            .visit_in_edge_value_batches_for_label(
+                src_id,
+                storage_label,
+                order,
+                &mut scratch,
+                &mut visit_batch,
+            )
+            .map_err(GraphStoreError::from)?,
+        other => return Err(PlanQueryError::UnsupportedDirection(other)),
+    }
+    if let Some(err) = error {
+        return Err(err);
+    }
+    Ok(())
+}
+
 pub(crate) fn expand_candidates_into(
     store: &GraphStore,
     src_id: VertexId,
@@ -808,6 +1326,8 @@ pub(crate) fn expand_candidates_into(
     edge_label_id: Option<EdgeLabelId>,
     sequence_order: EdgeSequenceOrder,
     indexed_edge_equality: Option<&(Str, ScanValue)>,
+    edge_value_predicate: Option<&EdgeValuePredicate>,
+    edge_vector_predicate: Option<&EdgeVectorPredicate>,
     parameters: &BTreeMap<String, Value>,
     out: &mut Vec<ExpandCandidate>,
 ) -> Result<(), PlanQueryError> {
@@ -824,6 +1344,54 @@ pub(crate) fn expand_candidates_into(
             out,
         )?
     {
+        return Ok(());
+    }
+    if let Some(edge_value_predicate) = edge_value_predicate {
+        let Some(edge_label_id) = edge_label_id else {
+            return Ok(());
+        };
+        let Some(predicate) = PreparedEdgeValuePredicate::prepare(
+            store,
+            edge_label_id,
+            edge_value_predicate,
+            parameters,
+        )?
+        else {
+            return Ok(());
+        };
+        expand_candidates_matching_edge_value_into(
+            store,
+            src_id,
+            direction,
+            edge_label_id,
+            sequence_order,
+            &predicate,
+            out,
+        )?;
+        return Ok(());
+    }
+    if let Some(edge_vector_predicate) = edge_vector_predicate {
+        let Some(edge_label_id) = edge_label_id else {
+            return Ok(());
+        };
+        let Some(predicate) = PreparedEdgeVectorThreshold::prepare(
+            store,
+            edge_label_id,
+            edge_vector_predicate,
+            parameters,
+        )?
+        else {
+            return Ok(());
+        };
+        expand_candidates_matching_edge_vector_threshold_into(
+            store,
+            src_id,
+            direction,
+            edge_label_id,
+            sequence_order,
+            &predicate,
+            out,
+        )?;
         return Ok(());
     }
 
@@ -997,7 +1565,8 @@ where
         }
         EdgeDirection::PointingLeft => {
             if let Some(lid) = edge_label_id {
-                store.for_each_directed_in_edges_for_label(src_id, lid, order, visit)?;
+                store
+                    .for_each_directed_in_edges_for_label_with_values(src_id, lid, order, visit)?;
             } else {
                 store.for_each_directed_in_edges(src_id, order, visit)?;
             }
@@ -1143,6 +1712,7 @@ fn expand_candidates_via_equality_index(
 #[cfg(test)]
 mod tests {
     use super::super::test_support::*;
+    use gleaph_gql_planner::plan::{EdgeValuePredicate, EdgeVectorMetric, EdgeVectorPredicate};
     use pollster;
     #[test]
     fn federated_reverse_expand_from_remote_vertex_binding() {
@@ -1177,6 +1747,8 @@ mod tests {
             EdgeSequenceOrder::Descending,
             &[],
             true,
+            None,
+            None,
             None,
             None,
             None,
@@ -1347,6 +1919,8 @@ mod tests {
                 label_expr: None,
                 var_len: None,
                 indexed_edge_equality: None,
+                edge_value_predicate: None,
+                edge_vector_predicate: None,
                 edge_property_projection: None,
                 dst_property_projection: None,
                 hop_aux_binding: None,
@@ -1410,6 +1984,8 @@ mod tests {
                 label_expr: None,
                 var_len: None,
                 indexed_edge_equality: None,
+                edge_value_predicate: None,
+                edge_vector_predicate: None,
                 edge_property_projection: None,
                 dst_property_projection: None,
                 hop_aux_binding: None,
@@ -1461,6 +2037,8 @@ mod tests {
                 label_expr: None,
                 var_len: None,
                 indexed_edge_equality: None,
+                edge_value_predicate: None,
+                edge_vector_predicate: None,
                 edge_property_projection: None,
                 dst_property_projection: None,
                 hop_aux_binding: None,
@@ -1645,6 +2223,8 @@ mod tests {
                 label_expr: None,
                 var_len: None,
                 indexed_edge_equality: None,
+                edge_value_predicate: None,
+                edge_vector_predicate: None,
                 dst_filter: vec![Expr::new(ExprKind::Compare {
                     left: Box::new(prop("b", "age")),
                     op: CmpOp::Gt,
@@ -1701,6 +2281,8 @@ mod tests {
                 label_expr: None,
                 var_len: None,
                 indexed_edge_equality: Some(("weight".into(), ScanValue::Literal(Value::Int64(5)))),
+                edge_value_predicate: None,
+                edge_vector_predicate: None,
                 edge_property_projection: None,
                 dst_property_projection: None,
                 hop_aux_binding: None,
@@ -1743,6 +2325,8 @@ mod tests {
                 label_expr: None,
                 var_len: None,
                 indexed_edge_equality: None,
+                edge_value_predicate: None,
+                edge_vector_predicate: None,
                 edge_property_projection: Some(Rc::from([])),
                 dst_property_projection: Some(Rc::from([Str::from("uid")])),
                 hop_aux_binding: None,
@@ -1801,6 +2385,8 @@ mod tests {
                 label_expr: None,
                 var_len: None,
                 indexed_edge_equality: None,
+                edge_value_predicate: None,
+                edge_vector_predicate: None,
                 edge_property_projection: None,
                 dst_property_projection: None,
                 hop_aux_binding: None,
@@ -1888,6 +2474,206 @@ mod tests {
     }
 
     #[test]
+    fn gql_gleaph_weight_equality_uses_edge_value_predicate_expand() {
+        let store = GraphStore::new();
+        use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
+        let a = store
+            .insert_vertex_named(["GqlBatchEqualA"], Vec::<(&str, Value)>::new())
+            .expect("a");
+        let b = store
+            .insert_vertex_named(["GqlBatchEqualB"], Vec::<(&str, Value)>::new())
+            .expect("b");
+        let c = store
+            .insert_vertex_named(["GqlBatchEqualC"], Vec::<(&str, Value)>::new())
+            .expect("c");
+        let label_id = store
+            .get_or_insert_edge_label_id("GqlBatchEqualRoad")
+            .unwrap();
+        store
+            .install_edge_label_value_profile_at_init(
+                label_id,
+                EdgeValueProfile {
+                    width: EdgeValueWidth::W2,
+                    encoding: EdgeValueEncoding::WeightRawU16,
+                },
+            )
+            .unwrap();
+        store
+            .insert_directed_edge_with_value_bytes(a, b, Some(label_id), &7u16.to_le_bytes())
+            .unwrap();
+        store
+            .insert_directed_edge_with_value_bytes(a, c, Some(label_id), &9u16.to_le_bytes())
+            .unwrap();
+
+        let plan = plan_gql(
+            "MATCH (a:GqlBatchEqualA)-[e:GqlBatchEqualRoad]->(b) \
+             WHERE GLEAPH.WEIGHT(e) = 7 RETURN b",
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute query");
+
+        assert_eq!(result.rows.len(), 1);
+    }
+
+    #[test]
+    fn gql_gleaph_weight_gt_uses_edge_value_predicate_expand() {
+        let store = GraphStore::new();
+        use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
+        let a = store
+            .insert_vertex_named(["GqlBatchGtA"], Vec::<(&str, Value)>::new())
+            .expect("a");
+        let b = store
+            .insert_vertex_named(["GqlBatchGtB"], Vec::<(&str, Value)>::new())
+            .expect("b");
+        let c = store
+            .insert_vertex_named(["GqlBatchGtC"], Vec::<(&str, Value)>::new())
+            .expect("c");
+        let label_id = store.get_or_insert_edge_label_id("GqlBatchGtRoad").unwrap();
+        store
+            .install_edge_label_value_profile_at_init(
+                label_id,
+                EdgeValueProfile {
+                    width: EdgeValueWidth::W2,
+                    encoding: EdgeValueEncoding::WeightRawU16,
+                },
+            )
+            .unwrap();
+        store
+            .insert_directed_edge_with_value_bytes(a, b, Some(label_id), &7u16.to_le_bytes())
+            .unwrap();
+        store
+            .insert_directed_edge_with_value_bytes(a, c, Some(label_id), &9u16.to_le_bytes())
+            .unwrap();
+
+        let plan = plan_gql(
+            "MATCH (a:GqlBatchGtA)-[e:GqlBatchGtRoad]->(b) \
+             WHERE GLEAPH.WEIGHT(e) > 7 RETURN b",
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute query");
+
+        assert_eq!(result.rows.len(), 1);
+    }
+
+    #[test]
+    fn gql_gleaph_vector_l2_uses_edge_vector_predicate_expand() {
+        let store = GraphStore::new();
+        use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
+        let a = store
+            .insert_vertex_named(["GqlVectorA"], Vec::<(&str, Value)>::new())
+            .expect("a");
+        let near = store
+            .insert_vertex_named(["GqlVectorB"], [("name", Value::Text("near".into()))])
+            .expect("near");
+        let far = store
+            .insert_vertex_named(["GqlVectorB"], [("name", Value::Text("far".into()))])
+            .expect("far");
+        let label_id = store.get_or_insert_edge_label_id("GqlVectorRoad").unwrap();
+        store
+            .install_edge_label_value_profile_at_init(
+                label_id,
+                EdgeValueProfile {
+                    width: EdgeValueWidth::W16,
+                    encoding: EdgeValueEncoding::VectorF32 { dims: 4 },
+                },
+            )
+            .unwrap();
+        let near_bytes = f32_vector_bytes(&[1.0, 1.0, 1.0, 1.0]);
+        let far_bytes = f32_vector_bytes(&[9.0, 9.0, 9.0, 9.0]);
+        store
+            .insert_directed_edge_with_value_bytes(a, near, Some(label_id), &near_bytes)
+            .unwrap();
+        store
+            .insert_directed_edge_with_value_bytes(a, far, Some(label_id), &far_bytes)
+            .unwrap();
+
+        let mut parameters = params();
+        parameters.insert(
+            "$q".into(),
+            Value::List(vec![
+                Value::Float32(1.0),
+                Value::Float32(1.0),
+                Value::Float32(1.0),
+                Value::Float32(1.0),
+            ]),
+        );
+        let plan = plan_gql(
+            "MATCH (a:GqlVectorA)-[e:GqlVectorRoad]->(b:GqlVectorB) \
+             WHERE GLEAPH.VECTOR.L2_SQUARED(e, $q) <= 4.0 RETURN b.name AS name",
+        );
+        let result = store
+            .execute_plan_query(&plan, &parameters, GqlExecutionContext::default())
+            .expect("execute query");
+
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(
+            result.rows[0].get("name"),
+            Some(&Value::Text("near".into()))
+        );
+    }
+
+    #[test]
+    fn gql_gleaph_vector_dot_uses_edge_vector_predicate_expand() {
+        let store = GraphStore::new();
+        use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
+        let a = store
+            .insert_vertex_named(["GqlVectorDotA"], Vec::<(&str, Value)>::new())
+            .expect("a");
+        let high = store
+            .insert_vertex_named(["GqlVectorDotB"], [("name", Value::Text("high".into()))])
+            .expect("high");
+        let low = store
+            .insert_vertex_named(["GqlVectorDotB"], [("name", Value::Text("low".into()))])
+            .expect("low");
+        let label_id = store
+            .get_or_insert_edge_label_id("GqlVectorDotRoad")
+            .unwrap();
+        store
+            .install_edge_label_value_profile_at_init(
+                label_id,
+                EdgeValueProfile {
+                    width: EdgeValueWidth::W16,
+                    encoding: EdgeValueEncoding::VectorF32 { dims: 4 },
+                },
+            )
+            .unwrap();
+        let high_bytes = f32_vector_bytes(&[2.0, 2.0, 2.0, 2.0]);
+        let low_bytes = f32_vector_bytes(&[0.1, 0.1, 0.1, 0.1]);
+        store
+            .insert_directed_edge_with_value_bytes(a, high, Some(label_id), &high_bytes)
+            .unwrap();
+        store
+            .insert_directed_edge_with_value_bytes(a, low, Some(label_id), &low_bytes)
+            .unwrap();
+
+        let mut parameters = params();
+        parameters.insert(
+            "$q".into(),
+            Value::List(vec![
+                Value::Float32(1.0),
+                Value::Float32(1.0),
+                Value::Float32(1.0),
+                Value::Float32(1.0),
+            ]),
+        );
+        let plan = plan_gql(
+            "MATCH (a:GqlVectorDotA)-[e:GqlVectorDotRoad]->(b:GqlVectorDotB) \
+             WHERE GLEAPH.VECTOR.DOT(e, $q) >= 4.0 RETURN b.name AS name",
+        );
+        let result = store
+            .execute_plan_query(&plan, &parameters, GqlExecutionContext::default())
+            .expect("execute query");
+
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(
+            result.rows[0].get("name"),
+            Some(&Value::Text("high".into()))
+        );
+    }
+
+    #[test]
     fn ascending_forward_fixed_label_candidates_use_batched_edge_values() {
         let store = GraphStore::new();
         use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
@@ -1927,6 +2713,8 @@ mod tests {
             Some(label_id),
             EdgeSequenceOrder::Ascending,
             None,
+            None,
+            None,
             &params(),
             &mut out,
         )
@@ -1935,6 +2723,397 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].1.value_bytes_slice(), &[1, 0]);
         assert_eq!(out[1].1.value_bytes_slice(), &[2, 0]);
+    }
+
+    #[test]
+    fn ascending_reverse_fixed_label_candidates_use_batched_edge_values() {
+        let store = GraphStore::new();
+        use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
+        let a = store
+            .insert_vertex_named(["BatchReverseExpandA"], Vec::<(&str, Value)>::new())
+            .expect("a");
+        let b = store
+            .insert_vertex_named(["BatchReverseExpandB"], Vec::<(&str, Value)>::new())
+            .expect("b");
+        let c = store
+            .insert_vertex_named(["BatchReverseExpandC"], Vec::<(&str, Value)>::new())
+            .expect("c");
+        let label_id = store
+            .get_or_insert_edge_label_id("BatchReverseExpandRoad")
+            .unwrap();
+        store
+            .install_edge_label_value_profile_at_init(
+                label_id,
+                EdgeValueProfile {
+                    width: EdgeValueWidth::W2,
+                    encoding: EdgeValueEncoding::RawU16,
+                },
+            )
+            .unwrap();
+        store
+            .insert_directed_edge_with_value_bytes(a, c, Some(label_id), &[1, 0])
+            .unwrap();
+        store
+            .insert_directed_edge_with_value_bytes(b, c, Some(label_id), &[2, 0])
+            .unwrap();
+
+        let mut out = Vec::new();
+        super::expand_candidates_into(
+            &store,
+            c,
+            EdgeDirection::PointingLeft,
+            Some(label_id),
+            EdgeSequenceOrder::Ascending,
+            None,
+            None,
+            None,
+            &params(),
+            &mut out,
+        )
+        .expect("expand candidates");
+
+        assert_eq!(out.len(), 2);
+        let mut values = out
+            .iter()
+            .map(|(_, binding)| binding.value_bytes_slice().to_vec())
+            .collect::<Vec<_>>();
+        values.sort();
+        assert_eq!(values, vec![vec![1, 0], vec![2, 0]]);
+    }
+
+    #[test]
+    fn forward_fixed_label_edge_value_predicate_uses_batch_kernel() {
+        let store = GraphStore::new();
+        use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
+        let a = store
+            .insert_vertex_named(["BatchEqualA"], Vec::<(&str, Value)>::new())
+            .expect("a");
+        let b = store
+            .insert_vertex_named(["BatchEqualB"], Vec::<(&str, Value)>::new())
+            .expect("b");
+        let c = store
+            .insert_vertex_named(["BatchEqualC"], Vec::<(&str, Value)>::new())
+            .expect("c");
+        let label_id = store.get_or_insert_edge_label_id("BatchEqualRoad").unwrap();
+        store
+            .install_edge_label_value_profile_at_init(
+                label_id,
+                EdgeValueProfile {
+                    width: EdgeValueWidth::W2,
+                    encoding: EdgeValueEncoding::RawU16,
+                },
+            )
+            .unwrap();
+        store
+            .insert_directed_edge_with_value_bytes(a, b, Some(label_id), &7u16.to_le_bytes())
+            .unwrap();
+        store
+            .insert_directed_edge_with_value_bytes(a, c, Some(label_id), &9u16.to_le_bytes())
+            .unwrap();
+
+        let equality = super::PreparedEdgeValuePredicate::prepare(
+            &store,
+            label_id,
+            &EdgeValuePredicate {
+                op: CmpOp::Eq,
+                value: ScanValue::Literal(Value::Uint16(7)),
+            },
+            &params(),
+        )
+        .expect("prepare")
+        .expect("equality");
+        let mut out = Vec::new();
+        super::expand_candidates_matching_edge_value_into(
+            &store,
+            a,
+            EdgeDirection::PointingRight,
+            label_id,
+            EdgeSequenceOrder::Ascending,
+            &equality,
+            &mut out,
+        )
+        .expect("expand candidates");
+
+        assert_eq!(out.len(), 1);
+        assert!(matches!(out[0].0, ExpandDst::Local(dst) if dst == b));
+        assert_eq!(out[0].1.value_bytes_slice(), &7u16.to_le_bytes());
+    }
+
+    #[test]
+    fn expand_plan_edge_value_predicate_filters_candidates() {
+        let store = GraphStore::new();
+        use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
+        let a = store
+            .insert_vertex_named(["PlanBatchEqualA"], Vec::<(&str, Value)>::new())
+            .expect("a");
+        let b = store
+            .insert_vertex_named(["PlanBatchEqualB"], Vec::<(&str, Value)>::new())
+            .expect("b");
+        let c = store
+            .insert_vertex_named(["PlanBatchEqualC"], Vec::<(&str, Value)>::new())
+            .expect("c");
+        let label_id = store
+            .get_or_insert_edge_label_id("PlanBatchEqualRoad")
+            .unwrap();
+        store
+            .install_edge_label_value_profile_at_init(
+                label_id,
+                EdgeValueProfile {
+                    width: EdgeValueWidth::W2,
+                    encoding: EdgeValueEncoding::RawU16,
+                },
+            )
+            .unwrap();
+        store
+            .insert_directed_edge_with_value_bytes(a, b, Some(label_id), &7u16.to_le_bytes())
+            .unwrap();
+        store
+            .insert_directed_edge_with_value_bytes(a, c, Some(label_id), &9u16.to_le_bytes())
+            .unwrap();
+
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "a".into(),
+                label: Some("PlanBatchEqualA".into()),
+                property_projection: None,
+            },
+            PlanOp::Expand {
+                src: "a".into(),
+                edge: "e".into(),
+                dst: "b".into(),
+                direction: EdgeDirection::PointingRight,
+                label: Some("PlanBatchEqualRoad".into()),
+                label_expr: None,
+                var_len: None,
+                indexed_edge_equality: None,
+                edge_value_predicate: Some(EdgeValuePredicate {
+                    op: CmpOp::Eq,
+                    value: ScanValue::Literal(Value::Uint16(7)),
+                }),
+                edge_vector_predicate: None,
+                edge_property_projection: None,
+                dst_property_projection: None,
+                hop_aux_binding: None,
+                emit_edge_binding: true,
+            },
+            PlanOp::Project {
+                columns: vec![project(var("b"), "b")],
+                distinct: false,
+            },
+        ]);
+
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute query");
+
+        assert_eq!(result.rows.len(), 1);
+        assert!(matches!(result.rows[0].get("b"), Some(Value::Record(_))));
+    }
+
+    #[test]
+    fn reverse_fixed_label_edge_value_predicate_uses_batch_kernel() {
+        let store = GraphStore::new();
+        use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
+        let a = store
+            .insert_vertex_named(["BatchReverseEqualA"], Vec::<(&str, Value)>::new())
+            .expect("a");
+        let b = store
+            .insert_vertex_named(["BatchReverseEqualB"], Vec::<(&str, Value)>::new())
+            .expect("b");
+        let c = store
+            .insert_vertex_named(["BatchReverseEqualC"], Vec::<(&str, Value)>::new())
+            .expect("c");
+        let label_id = store
+            .get_or_insert_edge_label_id("BatchReverseEqualRoad")
+            .unwrap();
+        store
+            .install_edge_label_value_profile_at_init(
+                label_id,
+                EdgeValueProfile {
+                    width: EdgeValueWidth::W2,
+                    encoding: EdgeValueEncoding::RawU16,
+                },
+            )
+            .unwrap();
+        store
+            .insert_directed_edge_with_value_bytes(a, c, Some(label_id), &7u16.to_le_bytes())
+            .unwrap();
+        store
+            .insert_directed_edge_with_value_bytes(b, c, Some(label_id), &9u16.to_le_bytes())
+            .unwrap();
+
+        let equality = super::PreparedEdgeValuePredicate::prepare(
+            &store,
+            label_id,
+            &EdgeValuePredicate {
+                op: CmpOp::Eq,
+                value: ScanValue::Literal(Value::Uint16(7)),
+            },
+            &params(),
+        )
+        .expect("prepare")
+        .expect("equality");
+        let mut out = Vec::new();
+        super::expand_candidates_matching_edge_value_into(
+            &store,
+            c,
+            EdgeDirection::PointingLeft,
+            label_id,
+            EdgeSequenceOrder::Ascending,
+            &equality,
+            &mut out,
+        )
+        .expect("expand candidates");
+
+        assert_eq!(out.len(), 1);
+        assert!(matches!(out[0].0, ExpandDst::Local(dst) if dst == a));
+        assert_eq!(out[0].1.value_bytes_slice(), &7u16.to_le_bytes());
+    }
+
+    fn f32_vector_bytes(values: &[f32]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(values.len() * 4);
+        for value in values {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        out
+    }
+
+    #[test]
+    fn forward_fixed_label_edge_vector_threshold_uses_batch_kernel() {
+        let store = GraphStore::new();
+        use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
+        let a = store
+            .insert_vertex_named(["BatchVectorA"], Vec::<(&str, Value)>::new())
+            .expect("a");
+        let near = store
+            .insert_vertex_named(["BatchVectorNear"], Vec::<(&str, Value)>::new())
+            .expect("near");
+        let far = store
+            .insert_vertex_named(["BatchVectorFar"], Vec::<(&str, Value)>::new())
+            .expect("far");
+        let label_id = store
+            .get_or_insert_edge_label_id("BatchVectorRoad")
+            .unwrap();
+        store
+            .install_edge_label_value_profile_at_init(
+                label_id,
+                EdgeValueProfile {
+                    width: EdgeValueWidth::W16,
+                    encoding: EdgeValueEncoding::VectorF32 { dims: 4 },
+                },
+            )
+            .unwrap();
+        let near_bytes = f32_vector_bytes(&[1.0, 1.0, 1.0, 1.0]);
+        let far_bytes = f32_vector_bytes(&[9.0, 9.0, 9.0, 9.0]);
+        store
+            .insert_directed_edge_with_value_bytes(a, near, Some(label_id), &near_bytes)
+            .unwrap();
+        store
+            .insert_directed_edge_with_value_bytes(a, far, Some(label_id), &far_bytes)
+            .unwrap();
+
+        let predicate = super::PreparedEdgeVectorThreshold::prepare(
+            &store,
+            label_id,
+            &EdgeVectorPredicate {
+                metric: EdgeVectorMetric::L2Squared,
+                query: ScanValue::Literal(Value::List(vec![
+                    Value::Float32(1.0),
+                    Value::Float32(1.0),
+                    Value::Float32(1.0),
+                    Value::Float32(1.0),
+                ])),
+                op: CmpOp::Le,
+                threshold: ScanValue::Literal(Value::Float32(4.0)),
+            },
+            &params(),
+        )
+        .expect("prepare")
+        .expect("predicate");
+        let mut out = Vec::new();
+        super::expand_candidates_matching_edge_vector_threshold_into(
+            &store,
+            a,
+            EdgeDirection::PointingRight,
+            label_id,
+            EdgeSequenceOrder::Ascending,
+            &predicate,
+            &mut out,
+        )
+        .expect("expand candidates");
+
+        assert_eq!(out.len(), 1);
+        assert!(matches!(out[0].0, ExpandDst::Local(dst) if dst == near));
+        assert_eq!(out[0].1.value_bytes_slice(), near_bytes.as_slice());
+    }
+
+    #[test]
+    fn reverse_fixed_label_edge_vector_threshold_uses_batch_kernel() {
+        let store = GraphStore::new();
+        use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
+        let near = store
+            .insert_vertex_named(["BatchVectorReverseNear"], Vec::<(&str, Value)>::new())
+            .expect("near");
+        let far = store
+            .insert_vertex_named(["BatchVectorReverseFar"], Vec::<(&str, Value)>::new())
+            .expect("far");
+        let c = store
+            .insert_vertex_named(["BatchVectorReverseC"], Vec::<(&str, Value)>::new())
+            .expect("c");
+        let label_id = store
+            .get_or_insert_edge_label_id("BatchVectorReverseRoad")
+            .unwrap();
+        store
+            .install_edge_label_value_profile_at_init(
+                label_id,
+                EdgeValueProfile {
+                    width: EdgeValueWidth::W16,
+                    encoding: EdgeValueEncoding::VectorF32 { dims: 4 },
+                },
+            )
+            .unwrap();
+        let near_bytes = f32_vector_bytes(&[1.0, 1.0, 1.0, 1.0]);
+        let far_bytes = f32_vector_bytes(&[9.0, 9.0, 9.0, 9.0]);
+        store
+            .insert_directed_edge_with_value_bytes(near, c, Some(label_id), &near_bytes)
+            .unwrap();
+        store
+            .insert_directed_edge_with_value_bytes(far, c, Some(label_id), &far_bytes)
+            .unwrap();
+
+        let predicate = super::PreparedEdgeVectorThreshold::prepare(
+            &store,
+            label_id,
+            &EdgeVectorPredicate {
+                metric: EdgeVectorMetric::L2Squared,
+                query: ScanValue::Literal(Value::List(vec![
+                    Value::Float32(1.0),
+                    Value::Float32(1.0),
+                    Value::Float32(1.0),
+                    Value::Float32(1.0),
+                ])),
+                op: CmpOp::Le,
+                threshold: ScanValue::Literal(Value::Float32(4.0)),
+            },
+            &params(),
+        )
+        .expect("prepare")
+        .expect("predicate");
+        let mut out = Vec::new();
+        super::expand_candidates_matching_edge_vector_threshold_into(
+            &store,
+            c,
+            EdgeDirection::PointingLeft,
+            label_id,
+            EdgeSequenceOrder::Ascending,
+            &predicate,
+            &mut out,
+        )
+        .expect("expand candidates");
+
+        assert_eq!(out.len(), 1);
+        assert!(matches!(out[0].0, ExpandDst::Local(dst) if dst == near));
+        assert_eq!(out[0].1.value_bytes_slice(), near_bytes.as_slice());
     }
 
     #[test]
@@ -1960,6 +3139,8 @@ mod tests {
             EdgeDirection::PointingRight,
             Some(label_id),
             EdgeSequenceOrder::Ascending,
+            None,
+            None,
             None,
             &params(),
             &mut out,

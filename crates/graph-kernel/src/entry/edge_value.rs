@@ -88,6 +88,7 @@ pub enum EdgeValueEncoding {
     RawI128,
     RawFixed32,
     RawFixed64,
+    VectorF32 { dims: u16 },
     WeightRawU16,
     WeightLinearU16 { min: f32, max: f32 },
     WeightLogU16 { min: f32, max: f32 },
@@ -116,6 +117,7 @@ pub enum DecodedEdgeValue {
     Fixed32([u8; 32]),
     Fixed64([u8; 64]),
     F32(f32),
+    VectorF32(Vec<f32>),
     Weight(f32),
 }
 
@@ -136,6 +138,7 @@ pub enum PreparedEdgeValueDecoder {
     RawI128,
     RawFixed32,
     RawFixed64,
+    VectorF32 { dims: u16 },
     WeightRawU16,
     WeightLinear { min: f32, scale: f32 },
     WeightLog { min_ln: f32, scale: f32 },
@@ -209,6 +212,9 @@ impl EdgeValueProfile {
             }
             (EdgeValueWidth::W32, EdgeValueEncoding::RawFixed32) => w == 32,
             (EdgeValueWidth::W64, EdgeValueEncoding::RawFixed64) => w == 64,
+            (_, EdgeValueEncoding::VectorF32 { dims }) => {
+                *dims > 0 && u32::from(*dims) * 4 == u32::from(w)
+            }
             _ => false,
         };
         if !ok {
@@ -258,6 +264,9 @@ impl EdgeValueProfile {
             EdgeValueEncoding::RawI128 => PreparedEdgeValueDecoder::RawI128,
             EdgeValueEncoding::RawFixed32 => PreparedEdgeValueDecoder::RawFixed32,
             EdgeValueEncoding::RawFixed64 => PreparedEdgeValueDecoder::RawFixed64,
+            EdgeValueEncoding::VectorF32 { dims } => {
+                PreparedEdgeValueDecoder::VectorF32 { dims: *dims }
+            }
             EdgeValueEncoding::WeightRawU16 => PreparedEdgeValueDecoder::WeightRawU16,
             EdgeValueEncoding::WeightLinearU16 { min, max } => {
                 let scale = if max > min {
@@ -333,6 +342,14 @@ pub fn decode_edge_value(
         }
         PreparedEdgeValueDecoder::RawFixed32 => DecodedEdgeValue::Fixed32(read_fixed::<32>(bytes)),
         PreparedEdgeValueDecoder::RawFixed64 => DecodedEdgeValue::Fixed64(read_fixed::<64>(bytes)),
+        PreparedEdgeValueDecoder::VectorF32 { dims } => {
+            let dims = usize::from(*dims);
+            let mut values = Vec::with_capacity(dims);
+            for chunk in bytes.chunks_exact(4).take(dims) {
+                values.push(f32::from_le_bytes(read_fixed::<4>(chunk)));
+            }
+            DecodedEdgeValue::VectorF32(values)
+        }
         PreparedEdgeValueDecoder::WeightRawU16 => {
             let v = u16::from_le_bytes(read_fixed::<2>(bytes)) as f32;
             validate_weight_f32(v)?;
@@ -530,6 +547,35 @@ mod tests {
                 width
             );
         }
+    }
+
+    #[test]
+    fn vector_f32_profile_validates_and_decodes() {
+        let profile = EdgeValueProfile {
+            width: EdgeValueWidth::W32,
+            encoding: EdgeValueEncoding::VectorF32 { dims: 8 },
+        };
+        let dec = profile.prepare().expect("prepare vector profile");
+        let mut bytes = Vec::new();
+        for value in [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        assert_eq!(
+            decode_edge_value(&dec, &bytes).expect("decode"),
+            DecodedEdgeValue::VectorF32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
+        );
+    }
+
+    #[test]
+    fn vector_f32_rejects_width_dimension_mismatch() {
+        let profile = EdgeValueProfile {
+            width: EdgeValueWidth::W32,
+            encoding: EdgeValueEncoding::VectorF32 { dims: 7 },
+        };
+        assert_eq!(
+            profile.validate(),
+            Err(EdgeValueProfileError::WidthEncodingMismatch)
+        );
     }
 
     #[test]

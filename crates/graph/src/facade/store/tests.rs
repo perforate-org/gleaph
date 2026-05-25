@@ -215,6 +215,155 @@ fn graph_store_visits_fixed_label_edge_value_batches() {
 }
 
 #[test]
+fn graph_store_visits_fixed_label_in_edge_value_batches() {
+    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
+
+    let store = GraphStore::new();
+    let first = store.insert_vertex().expect("first");
+    let second = store.insert_vertex().expect("second");
+    let target = store.insert_vertex().expect("target");
+    let label_id = store
+        .get_or_insert_edge_label_id("BatchInValues")
+        .expect("label");
+    store
+        .install_edge_label_value_profile_at_init(
+            label_id,
+            EdgeValueProfile {
+                width: EdgeValueWidth::W2,
+                encoding: EdgeValueEncoding::RawU16,
+            },
+        )
+        .expect("profile");
+    store
+        .insert_directed_edge_with_value_bytes(first, target, Some(label_id), &[1, 0])
+        .expect("first edge");
+    store
+        .insert_directed_edge_with_value_bytes(second, target, Some(label_id), &[2, 0])
+        .expect("second edge");
+
+    let mut scratch = LabeledEdgeValueBatchScratch::default();
+    let mut values = Vec::new();
+    store
+        .visit_in_edge_value_batches_for_label(
+            target,
+            lara_label(label_id.pack(EdgeDirectedness::Directed)),
+            OutEdgeOrder::Ascending,
+            &mut scratch,
+            |batch| {
+                assert!(batch.dense);
+                values.extend(
+                    batch
+                        .value_bytes
+                        .chunks_exact(2)
+                        .map(|b| u16::from_le_bytes([b[0], b[1]])),
+                );
+            },
+        )
+        .expect("batch traversal");
+    values.sort_unstable();
+    assert_eq!(values, vec![1, 2]);
+}
+
+#[test]
+fn updating_directed_edge_value_updates_forward_and_reverse_rows() {
+    let store = GraphStore::new();
+    let source = store.insert_vertex().expect("source");
+    let target = store.insert_vertex().expect("target");
+    let label_id = store
+        .get_or_insert_edge_label_id("UpdateDirectedValueBothRows")
+        .expect("label");
+    install_w2_weight_profile(&store, label_id);
+
+    let forward = store
+        .insert_directed_edge_with_value_bytes(source, target, Some(label_id), &[1, 0])
+        .expect("edge");
+    let wire_label = lara_label(label_id.pack(EdgeDirectedness::Directed));
+    let reverse = store
+        .find_first_reverse_handle_descending(target, wire_label, |edge| {
+            edge.neighbor_vid() == source
+        })
+        .expect("reverse lookup")
+        .expect("reverse edge");
+
+    store
+        .update_edge_value_at_handle(forward, &[9, 0])
+        .expect("forward update");
+    assert_eq!(
+        store
+            .find_outgoing_edge_record(forward)
+            .expect("forward lookup")
+            .expect("forward edge")
+            .value_bytes(),
+        &[9, 0]
+    );
+    assert_eq!(
+        store
+            .directed_in_edges(target)
+            .expect("in edges")
+            .into_iter()
+            .find(|edge| edge.neighbor_vid() == source)
+            .expect("reverse row")
+            .value_bytes(),
+        &[9, 0]
+    );
+
+    store
+        .update_edge_value_at_handle(reverse, &[5, 0])
+        .expect("reverse update");
+    assert_eq!(
+        store
+            .find_outgoing_edge_record(forward)
+            .expect("forward lookup after reverse update")
+            .expect("forward edge after reverse update")
+            .value_bytes(),
+        &[5, 0]
+    );
+    assert_eq!(
+        store
+            .directed_in_edges(target)
+            .expect("in edges after reverse update")
+            .into_iter()
+            .find(|edge| edge.neighbor_vid() == source)
+            .expect("reverse row after reverse update")
+            .value_bytes(),
+        &[5, 0]
+    );
+}
+
+#[test]
+fn updating_undirected_edge_value_updates_both_storage_rows() {
+    let store = GraphStore::new();
+    let low = store.insert_vertex().expect("low");
+    let high = store.insert_vertex().expect("high");
+    let label_id = store
+        .get_or_insert_edge_label_id("UpdateUndirectedValueBothRows")
+        .expect("label");
+    install_w2_weight_profile(&store, label_id);
+
+    let handle = store
+        .insert_undirected_edge_with_value_bytes(low, high, Some(label_id), &[1, 0])
+        .expect("edge");
+    store
+        .update_edge_value_at_handle(handle, &[8, 0])
+        .expect("update");
+
+    let low_edge = store
+        .undirected_edges(low)
+        .expect("low edges")
+        .into_iter()
+        .find(|edge| edge.neighbor_vid() == high)
+        .expect("low row");
+    let high_edge = store
+        .undirected_edges(high)
+        .expect("high edges")
+        .into_iter()
+        .find(|edge| edge.neighbor_vid() == low)
+        .expect("high row");
+    assert_eq!(low_edge.value_bytes(), &[8, 0]);
+    assert_eq!(high_edge.value_bytes(), &[8, 0]);
+}
+
+#[test]
 fn forward_edge_compaction_preserves_inline_values() {
     let store = GraphStore::new();
     let source = store.insert_vertex().expect("source");

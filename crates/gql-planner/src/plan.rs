@@ -188,6 +188,10 @@ pub enum PlanOp {
         /// When set, expand by probing an indexed edge-property equality first (then
         /// binding the far endpoint), instead of scanning all incident edges.
         indexed_edge_equality: Option<(Str, ScanValue)>,
+        /// When set, fixed-label expand filters by the label's inline edge-value bytes.
+        edge_value_predicate: Option<EdgeValuePredicate>,
+        /// When set, fixed-label expand filters by SIMD vector scoring over inline edge values.
+        edge_vector_predicate: Option<EdgeVectorPredicate>,
         edge_property_projection: Option<Rc<[Str]>>,
         dst_property_projection: Option<Rc<[Str]>>,
         /// Optional variable bound to a **per-hop auxiliary scalar** after each expansion row
@@ -210,6 +214,10 @@ pub enum PlanOp {
         var_len: Option<VarLenSpec>,
         /// When set, same indexed edge-property path as [`PlanOp::Expand`].
         indexed_edge_equality: Option<(Str, ScanValue)>,
+        /// When set, same inline edge-value predicate path as [`PlanOp::Expand`].
+        edge_value_predicate: Option<EdgeValuePredicate>,
+        /// When set, same inline edge-vector predicate path as [`PlanOp::Expand`].
+        edge_vector_predicate: Option<EdgeVectorPredicate>,
         /// Predicates evaluated on the destination node during expansion.
         dst_filter: Vec<Expr>,
         edge_property_projection: Option<Rc<[Str]>>,
@@ -478,6 +486,30 @@ pub enum ScanValue {
 }
 
 // CmpOp is re-exported from gleaph_gql::ast::CmpOp.
+
+/// A comparison that can be evaluated directly against fixed-width edge-value bytes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EdgeValuePredicate {
+    pub op: CmpOp,
+    pub value: ScanValue,
+}
+
+/// Vector metric evaluated directly against fixed-width `VectorF32` edge-value bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EdgeVectorMetric {
+    Dot,
+    L2Squared,
+    CosineDistance,
+}
+
+/// A vector score comparison that can be evaluated directly against edge-value bytes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EdgeVectorPredicate {
+    pub metric: EdgeVectorMetric,
+    pub query: ScanValue,
+    pub op: CmpOp,
+    pub threshold: ScanValue,
+}
 
 /// Variable-length expansion bounds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

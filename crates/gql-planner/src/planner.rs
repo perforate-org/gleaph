@@ -2086,7 +2086,7 @@ fn plan_path_term(
                             .is_some_and(|p| p.0 == *src_var);
                     let mut wc_clone = where_conjuncts.clone();
                     let fusion_on_clone =
-                        plan_edge_filter_fusion(edge_var, edge, stats, &mut wc_clone);
+                        plan_edge_filter_fusion(edge_var, edge, stats, false, &mut wc_clone);
                     let use_leading = try_leading
                         && fusion_on_clone.indexed_equality.is_some()
                         && var_len.is_none()
@@ -2146,9 +2146,17 @@ fn plan_path_term(
                         let edge_fusion = if shortest_mode.is_some() {
                             EdgeFilterFusion::default()
                         } else {
-                            plan_edge_filter_fusion(edge_var, edge, stats, where_conjuncts)
+                            plan_edge_filter_fusion(
+                                edge_var,
+                                edge,
+                                stats,
+                                label_str.is_some() && label_expr.is_none() && var_len.is_none(),
+                                where_conjuncts,
+                            )
                         };
                         let indexed_edge_equality = edge_fusion.indexed_equality.clone();
+                        let edge_value_predicate = edge_fusion.edge_value_predicate.clone();
+                        let edge_vector_predicate = edge_fusion.edge_vector_predicate.clone();
 
                         if let Some(mode) = shortest_mode {
                             if let Some(dst_node) = dst_node.as_ref() {
@@ -2209,6 +2217,8 @@ fn plan_path_term(
                                 label_expr,
                                 var_len,
                                 indexed_edge_equality,
+                                edge_value_predicate,
+                                edge_vector_predicate,
                                 dst_filter: dst_filters,
                                 edge_property_projection: None,
                                 dst_property_projection: None,
@@ -2231,6 +2241,8 @@ fn plan_path_term(
                                 label_expr,
                                 var_len,
                                 indexed_edge_equality,
+                                edge_value_predicate,
+                                edge_vector_predicate,
                                 edge_property_projection: None,
                                 dst_property_projection: None,
                                 hop_aux_binding: hop_aux_binding_for_edge_if_referenced(
@@ -2370,6 +2382,8 @@ fn emit_node_inline_filters(var: &str, node: &NodePattern, ops: &mut Vec<PlanOp>
 #[derive(Default, Clone)]
 struct EdgeFilterFusion {
     indexed_equality: Option<(Str, ScanValue)>,
+    edge_value_predicate: Option<EdgeValuePredicate>,
+    edge_vector_predicate: Option<EdgeVectorPredicate>,
     skip_inline_prop: Option<String>,
     /// `None`: emit full `edge.where_clause`. `Some(predicates)` emits only these (empty = omit).
     edge_where_override: Option<Vec<Expr>>,
@@ -2379,9 +2393,48 @@ fn plan_edge_filter_fusion(
     edge_var: &str,
     edge: &EdgePattern,
     stats: Option<&dyn GraphStats>,
+    allow_edge_value_predicate: bool,
     where_conjuncts: &mut Vec<Expr>,
 ) -> EdgeFilterFusion {
     let mut out = EdgeFilterFusion::default();
+    if allow_edge_value_predicate
+        && let Some((idx, pred)) =
+            find_first_edge_vector_predicate_in_conjunctions(where_conjuncts, edge_var)
+    {
+        where_conjuncts.remove(idx);
+        out.edge_vector_predicate = Some(pred);
+        return out;
+    }
+    if allow_edge_value_predicate && let Some(where_clause) = edge.where_clause.as_ref() {
+        let mut conj = flatten_conjunction(where_clause);
+        if let Some((idx, pred)) = find_first_edge_vector_predicate_in_conjunctions(&conj, edge_var)
+        {
+            conj.remove(idx);
+            out.edge_vector_predicate = Some(pred);
+            out.edge_where_override = Some(conj);
+            return out;
+        }
+    }
+
+    if allow_edge_value_predicate
+        && let Some((idx, pred)) =
+            find_first_edge_value_predicate_in_conjunctions(where_conjuncts, edge_var)
+    {
+        where_conjuncts.remove(idx);
+        out.edge_value_predicate = Some(pred);
+        return out;
+    }
+    if allow_edge_value_predicate && let Some(where_clause) = edge.where_clause.as_ref() {
+        let mut conj = flatten_conjunction(where_clause);
+        if let Some((idx, pred)) = find_first_edge_value_predicate_in_conjunctions(&conj, edge_var)
+        {
+            conj.remove(idx);
+            out.edge_value_predicate = Some(pred);
+            out.edge_where_override = Some(conj);
+            return out;
+        }
+    }
+
     let Some(stats) = stats else {
         return out;
     };
@@ -2418,6 +2471,169 @@ fn plan_edge_filter_fusion(
     }
 
     out
+}
+
+fn find_first_edge_value_predicate_in_conjunctions(
+    conjuncts: &[Expr],
+    edge_var: &str,
+) -> Option<(usize, EdgeValuePredicate)> {
+    for (i, c) in conjuncts.iter().enumerate() {
+        if let Some((v, pred)) = parse_gleaph_weight_predicate(c)
+            && v == edge_var
+        {
+            return Some((i, pred));
+        }
+    }
+    None
+}
+
+fn find_first_edge_vector_predicate_in_conjunctions(
+    conjuncts: &[Expr],
+    edge_var: &str,
+) -> Option<(usize, EdgeVectorPredicate)> {
+    for (i, c) in conjuncts.iter().enumerate() {
+        if let Some((v, pred)) = parse_gleaph_vector_predicate(c)
+            && v == edge_var
+        {
+            return Some((i, pred));
+        }
+    }
+    None
+}
+
+fn parse_gleaph_vector_predicate(expr: &Expr) -> Option<(String, EdgeVectorPredicate)> {
+    let ExprKind::Compare { left, op, right } = &expr.kind else {
+        return None;
+    };
+    if let Some((edge_var, metric, query)) = gleaph_vector_call(left) {
+        let threshold = anchor::scan_value_from_expr(right)?;
+        if vector_metric_accepts_cmp(metric, *op) {
+            return Some((
+                edge_var,
+                EdgeVectorPredicate {
+                    metric,
+                    query,
+                    op: *op,
+                    threshold,
+                },
+            ));
+        }
+    }
+    if let Some((edge_var, metric, query)) = gleaph_vector_call(right) {
+        let flipped = flip_cmp_op(*op)?;
+        let threshold = anchor::scan_value_from_expr(left)?;
+        if vector_metric_accepts_cmp(metric, flipped) {
+            return Some((
+                edge_var,
+                EdgeVectorPredicate {
+                    metric,
+                    query,
+                    op: flipped,
+                    threshold,
+                },
+            ));
+        }
+    }
+    None
+}
+
+fn vector_metric_accepts_cmp(metric: EdgeVectorMetric, op: CmpOp) -> bool {
+    match metric {
+        EdgeVectorMetric::L2Squared | EdgeVectorMetric::CosineDistance => {
+            matches!(op, CmpOp::Lt | CmpOp::Le)
+        }
+        EdgeVectorMetric::Dot => matches!(op, CmpOp::Gt | CmpOp::Ge),
+    }
+}
+
+fn parse_gleaph_weight_predicate(expr: &Expr) -> Option<(String, EdgeValuePredicate)> {
+    let ExprKind::Compare { left, op, right } = &expr.kind else {
+        return None;
+    };
+    if let Some(edge_var) = gleaph_weight_edge_var(left) {
+        return anchor::scan_value_from_expr(right)
+            .map(|value| (edge_var, EdgeValuePredicate { op: *op, value }));
+    }
+    if let Some(edge_var) = gleaph_weight_edge_var(right) {
+        let flipped = flip_cmp_op(*op)?;
+        return anchor::scan_value_from_expr(left)
+            .map(|value| (edge_var, EdgeValuePredicate { op: flipped, value }));
+    }
+    None
+}
+
+fn gleaph_vector_call(expr: &Expr) -> Option<(String, EdgeVectorMetric, ScanValue)> {
+    let ExprKind::FunctionCall {
+        name,
+        args,
+        distinct,
+    } = &expr.kind
+    else {
+        return None;
+    };
+    if *distinct
+        || name.parts.len() != 3
+        || !name.parts[0].eq_ignore_ascii_case("gleaph")
+        || !name.parts[1].eq_ignore_ascii_case("vector")
+        || args.len() != 2
+    {
+        return None;
+    }
+    let metric = if name.parts[2].eq_ignore_ascii_case("l2_squared") {
+        EdgeVectorMetric::L2Squared
+    } else if name.parts[2].eq_ignore_ascii_case("cosine_distance") {
+        EdgeVectorMetric::CosineDistance
+    } else if name.parts[2].eq_ignore_ascii_case("dot") {
+        EdgeVectorMetric::Dot
+    } else {
+        return None;
+    };
+    let edge_var = edge_var_from_expr(&args[0])?;
+    let query = anchor::scan_value_from_expr(&args[1])?;
+    Some((edge_var, metric, query))
+}
+
+fn edge_var_from_expr(expr: &Expr) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Variable(v) => Some(v.clone()),
+        ExprKind::Paren(inner) => edge_var_from_expr(inner),
+        _ => None,
+    }
+}
+
+fn flip_cmp_op(op: CmpOp) -> Option<CmpOp> {
+    Some(match op {
+        CmpOp::Eq => CmpOp::Eq,
+        CmpOp::Ne => CmpOp::Ne,
+        CmpOp::Lt => CmpOp::Gt,
+        CmpOp::Le => CmpOp::Ge,
+        CmpOp::Gt => CmpOp::Lt,
+        CmpOp::Ge => CmpOp::Le,
+    })
+}
+
+fn gleaph_weight_edge_var(expr: &Expr) -> Option<String> {
+    let ExprKind::FunctionCall {
+        name,
+        args,
+        distinct,
+    } = &expr.kind
+    else {
+        return None;
+    };
+    if *distinct
+        || name.parts.len() != 2
+        || !name.parts[0].eq_ignore_ascii_case("gleaph")
+        || !name.parts[1].eq_ignore_ascii_case("weight")
+        || args.len() != 1
+    {
+        return None;
+    }
+    match &args[0].kind {
+        ExprKind::Variable(v) => Some(v.clone()),
+        ExprKind::Paren(inner) => gleaph_weight_edge_var(inner),
+        _ => None,
+    }
 }
 
 fn find_first_indexed_edge_eq_in_conjunctions(

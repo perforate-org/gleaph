@@ -622,6 +622,8 @@ mod tests {
                 label_expr: None,
                 var_len: None,
                 indexed_edge_equality: None,
+                edge_value_predicate: None,
+                edge_vector_predicate: None,
                 edge_property_projection: None,
                 dst_property_projection: None,
                 hop_aux_binding: None,

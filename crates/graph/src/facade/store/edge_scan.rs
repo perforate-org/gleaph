@@ -81,6 +81,22 @@ impl GraphStore {
         })
     }
 
+    pub(crate) fn visit_in_edge_value_batches_for_label<Visit>(
+        &self,
+        vertex_id: VertexId,
+        label: LaraLabelId,
+        order: OutEdgeOrder,
+        scratch: &mut LabeledEdgeValueBatchScratch<Edge>,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLabeledError>
+    where
+        Visit: for<'b> FnMut(LabeledEdgeValueBatch<'b, Edge>),
+    {
+        GRAPH.with_borrow(|graph| {
+            graph.visit_in_edge_value_batches_for_label(vertex_id, label, order, scratch, visit)
+        })
+    }
+
     pub(crate) fn for_each_directed_out_edges_for_label_with_values<Visit>(
         &self,
         vertex_id: VertexId,
@@ -118,6 +134,46 @@ impl GraphStore {
             .map_err(GraphStoreError::from)
         } else {
             self.for_each_directed_out_edges_for_label(vertex_id, label, order, visit)
+        }
+    }
+
+    pub(crate) fn for_each_directed_in_edges_for_label_with_values<Visit>(
+        &self,
+        vertex_id: VertexId,
+        label: EdgeLabelId,
+        order: OutEdgeOrder,
+        visit: Visit,
+    ) -> Result<(), GraphStoreError>
+    where
+        Visit: FnMut(Edge),
+    {
+        if self
+            .edge_label_value_profile(label)
+            .is_some_and(|profile| profile.required_byte_width() > 0)
+        {
+            let storage_label = LaraLabelId::from_raw(label.pack(EdgeDirectedness::Directed).raw());
+            let mut scratch = LabeledEdgeValueBatchScratch::default();
+            let mut visit = visit;
+            self.visit_in_edge_value_batches_for_label(
+                vertex_id,
+                storage_label,
+                order,
+                &mut scratch,
+                |batch| {
+                    let width = usize::from(batch.width_code.byte_width());
+                    debug_assert_eq!(batch.value_bytes.len(), batch.edges.len() * width);
+                    for (edge, value) in batch
+                        .edges
+                        .iter()
+                        .zip(batch.value_bytes.chunks_exact(width))
+                    {
+                        visit(edge.with_value_bytes(value));
+                    }
+                },
+            )
+            .map_err(GraphStoreError::from)
+        } else {
+            self.for_each_directed_in_edges_for_label(vertex_id, label, order, visit)
         }
     }
 
