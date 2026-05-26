@@ -5,9 +5,11 @@ use crate::types::{EdgeDirection, LabelExpr};
 use super::catalog::{
     DeleteStatement, InsertStatement, ObjectName, RemoveStatement, SetStatement,
 };
-use super::pattern_expr::{
-    Expr, ExprKind, GraphPattern, PathPattern, PathPatternExpr, PathPatternExtension,
-    PathPatternPrefix, PathTerm, SimplifiedPathPattern, ValueType,
+use super::expr::{Expr, ExprKind};
+use super::graph_type::ValueType;
+use super::pattern::{
+    GraphPattern, PathPattern, PathPatternExpr, PathPatternExtension, PathPatternPrefix, PathTerm,
+    SimplifiedPathPattern,
 };
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -755,5 +757,46 @@ pub struct YieldItem {
     pub span: Span,
     pub name: String,
     pub alias: Option<String>,
+}
+
+impl std::fmt::Display for SetOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Union => write!(f, "UNION"),
+            Self::UnionAll => write!(f, "UNION ALL"),
+            Self::UnionDistinct => write!(f, "UNION DISTINCT"),
+            Self::Except => write!(f, "EXCEPT"),
+            Self::ExceptAll => write!(f, "EXCEPT ALL"),
+            Self::ExceptDistinct => write!(f, "EXCEPT DISTINCT"),
+            Self::Intersect => write!(f, "INTERSECT"),
+            Self::IntersectAll => write!(f, "INTERSECT ALL"),
+            Self::IntersectDistinct => write!(f, "INTERSECT DISTINCT"),
+            Self::Otherwise => write!(f, "OTHERWISE"),
+        }
+    }
+}
+
+impl LinearQueryStatement {
+    /// Create a linear query with no result statement.
+    pub fn parts_only(parts: Vec<SimpleQueryStatement>) -> Self {
+        Self {
+            span: Span::DUMMY,
+            at_schema: None,
+            prefix_bindings: vec![],
+            parts,
+            result: None,
+        }
+    }
+}
+
+impl CompositeQueryExpr {
+    /// Create a composite query from a single linear query (no set operations).
+    pub fn single(linear: LinearQueryStatement) -> Self {
+        Self {
+            span: Span::DUMMY,
+            left: linear,
+            rest: vec![],
+        }
+    }
 }
 

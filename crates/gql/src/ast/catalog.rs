@@ -1,7 +1,8 @@
 use crate::token::Span;
 use crate::types::EdgeDirection;
 
-use super::pattern_expr::{Expr, GraphTypeDefinition};
+use super::expr::Expr;
+use super::graph_type::GraphTypeDefinition;
 use super::program::SessionCommand;
 use super::query::{CompositeQueryExpr, IsOrColon};
 

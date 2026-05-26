@@ -4,12 +4,16 @@
 //! by section. All types derive `Clone`, `Debug`, and `PartialEq`.
 
 mod catalog;
-mod pattern_expr;
-mod query;
+mod expr;
+mod graph_type;
+mod pattern;
 mod program;
+mod query;
 
 pub use catalog::*;
-pub use pattern_expr::*;
+pub use expr::*;
+pub use graph_type::*;
+pub use pattern::*;
 pub use program::*;
 pub use query::*;
 

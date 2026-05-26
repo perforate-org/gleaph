@@ -1,7 +1,7 @@
 use crate::token::Span;
 
 use super::catalog::{ObjectName, Statement};
-use super::pattern_expr::Expr;
+use super::expr::Expr;
 use super::query::{BindingTypeAnnotation, TypedPrefix, YieldItem};
 
 // ════════════════════════════════════════════════════════════════════════════════
