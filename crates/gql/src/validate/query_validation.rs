@@ -2,14 +2,12 @@ use crate::ast::*;
 use crate::error::GqlError;
 use rapidhash::RapidHashSet;
 
+use super::dml::{validate_delete_vars, validate_insert, validate_remove_vars, validate_set_vars};
+use super::expr::{validate_expr, validate_let};
 use super::{
     VResult, validate_call_procedure, validate_catalog_object_name, validate_inline_scope_vars,
     validate_yield_alias_uniqueness, verr,
 };
-use super::dml::{
-    validate_delete_vars, validate_insert, validate_remove_vars, validate_set_vars,
-};
-use super::expr::{validate_expr, validate_let};
 
 pub(super) fn validate_composite_query(
     cq: &CompositeQueryExpr,

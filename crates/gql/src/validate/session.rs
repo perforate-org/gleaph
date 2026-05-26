@@ -1,6 +1,6 @@
 use crate::ast::*;
 
-use super::{validate_catalog_object_name, VResult, verr};
+use super::{VResult, validate_catalog_object_name, verr};
 
 pub(super) fn validate_session_command(cmd: &SessionCommand) -> VResult {
     match cmd {

@@ -16,12 +16,6 @@ pub(crate) use scan::{federation_routing, resolve_scan_value_bytes};
 
 #[cfg(test)]
 pub(crate) use expand::edge_binding_for_expand;
-#[cfg(test)]
-pub(crate) use path::{
-    ShortestFixedLabelExpand, WeightedCost, WeightedCostOrderKey,
-    decode_direct_gleaph_weight_hop_cost, materialize_path_from_search_states,
-    weighted_shortest_can_use_hop_count, weighted_shortest_paths_between,
-};
 
 use super::error::PlanQueryError;
 use super::sort_keys::compare_sort_keys;

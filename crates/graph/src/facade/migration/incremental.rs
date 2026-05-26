@@ -1868,6 +1868,5 @@ pub fn set_native_pending_apply(chunk: MigrationApplyChunk) {
     NATIVE_PENDING_APPLY.with_borrow_mut(|p| *p = Some(chunk));
 }
 
-
 #[cfg(test)]
 mod tests;

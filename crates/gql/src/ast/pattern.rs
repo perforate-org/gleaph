@@ -3,10 +3,7 @@ use crate::types::{EdgeDirection, LabelExpr};
 
 use super::catalog::{ObjectName, PropertySetting};
 use super::expr::Expr;
-use super::query::{
-    BindingTypeAnnotation, CompositeQueryExpr, GroupOrGroups, IsOrColon, Keyword, LetBinding,
-    LinearQueryStatement, OrderByClause, PathOrPaths, SetOp, SimpleQueryStatement, TypedPrefix,
-};
+use super::query::{GroupOrGroups, IsOrColon, PathOrPaths};
 // ════════════════════════════════════════════════════════════════════════════════
 // §16 — Graph pattern
 // ════════════════════════════════════════════════════════════════════════════════
@@ -529,4 +526,3 @@ pub enum SimplifiedContents {
     /// Parenthesized group: `(simplifiedContents)`
     Group(#[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))] Box<SimplifiedContents>),
 }
-

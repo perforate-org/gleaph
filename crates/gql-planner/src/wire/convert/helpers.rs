@@ -1,21 +1,18 @@
 use std::rc::Rc;
 
 use gleaph_gql::Value;
-use gleaph_gql::ast::{AggregateFunc, CmpOp, Expr, OrderByClause};
-use gleaph_gql::types::LabelExpr;
+use gleaph_gql::ast::CmpOp;
 
 use crate::plan::{
     ConditionalScanCandidate, EdgeValuePredicate, EdgeVectorMetric, EdgeVectorPredicate,
-    IndexScanSpec, RemovePlanItem, ScanValue, SetPlanItem, ShortestMode, ShortestPathCost, Str,
-    VarLenSpec, YieldColumn,
+    IndexScanSpec, RemovePlanItem, ScanValue, ShortestMode, Str, VarLenSpec, YieldColumn,
 };
 
 use rkyv::rancor;
 
-use super::pools::{rkyv_decode_expr, rkyv_encode_expr};
 use super::types::{
-    ConditionalScanCandidateWire, EdgeValuePredicateWire, EdgeVectorPredicateWire, IndexScanSpecWire,
-    RemovePlanItemWire, ScanValueWire, ShortestModeWire, ShortestPathCostWire, VarLenSpecWire,
+    ConditionalScanCandidateWire, EdgeValuePredicateWire, EdgeVectorPredicateWire,
+    IndexScanSpecWire, RemovePlanItemWire, ScanValueWire, ShortestModeWire, VarLenSpecWire,
     YieldColumnWire,
 };
 
@@ -192,7 +189,9 @@ pub(super) fn decode_indexed_edge_equality(
     }
 }
 
-pub(super) fn encode_conditional_candidate(c: &ConditionalScanCandidate) -> ConditionalScanCandidateWire {
+pub(super) fn encode_conditional_candidate(
+    c: &ConditionalScanCandidate,
+) -> ConditionalScanCandidateWire {
     ConditionalScanCandidateWire {
         param_name: c.param_name.to_string(),
         property: c.property.to_string(),
@@ -201,7 +200,9 @@ pub(super) fn encode_conditional_candidate(c: &ConditionalScanCandidate) -> Cond
     }
 }
 
-pub(super) fn decode_conditional_candidate(c: &ConditionalScanCandidateWire) -> ConditionalScanCandidate {
+pub(super) fn decode_conditional_candidate(
+    c: &ConditionalScanCandidateWire,
+) -> ConditionalScanCandidate {
     ConditionalScanCandidate {
         param_name: c.param_name.as_str().into(),
         property: c.property.as_str().into(),

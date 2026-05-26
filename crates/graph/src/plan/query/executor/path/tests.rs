@@ -236,15 +236,16 @@ mod path_test_helpers {
 }
 
 mod tests {
-    use crate::plan::query::executor::test_support::*;
-    use super::path_test_helpers::*;
     use super::super::{
-        ShortestFixedLabelExpand, WeightedCost, WeightedCostOrderKey,
-        decode_direct_gleaph_weight_hop_cost, local_shard_id, materialize_path_from_search_states,
+        ShortestFixedLabelExpand, local_shard_id,
+        materialize::materialize_path_from_search_states,
+        weighted::{WeightedCost, WeightedCostOrderKey, decode_direct_gleaph_weight_hop_cost},
         weighted_shortest_can_use_hop_count, weighted_shortest_paths_between,
     };
+    use super::path_test_helpers::*;
+    use crate::plan::query::executor::test_support::*;
     use ic_stable_lara::traits::CsrEdge;
-    use pollster;
+
     #[test]
     fn shortest_path_optional_hit_with_dst_label_narrowing() {
         let store = GraphStore::new();

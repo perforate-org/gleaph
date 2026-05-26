@@ -6,27 +6,18 @@
 
 use gleaph_gql::ast::*;
 use gleaph_gql::type_check::{
-    BindingKind, DmlDiagnosticSeverity, NoSchema, PropertySchema, TypeWarning,
-    dml_diagnostic_from_warning, infer_composite_query_binding_kinds_and_warnings_with_schema,
+    BindingKind, NoSchema, PropertySchema,
     infer_linear_query_binding_kinds_and_warnings_with_schema,
     infer_linear_query_binding_kinds_with_schema, infer_linear_query_binding_kinds_with_seed,
     infer_statement_block_binding_kinds_with_schema, type_check_statement_block_with_schema,
-    type_check_statement_with_schema, type_diagnostic_from_warning,
+    type_check_statement_with_schema,
 };
-use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::anchor::{self, extract_simple_label};
 use crate::cost;
 use crate::cse;
 use crate::explain::explain_plan;
-use crate::expr_alias::substitute_return_aliases_in_expr;
-use crate::expr_children::for_each_immediate_child_expr;
-use crate::join_order;
-use crate::path_extensions::{
-    PathPatternExtensionContext, PlanBuildOptions, REJECTING_PATH_EXTENSION_HANDLER,
-    SingleEdgePathInfo,
-};
+use crate::path_extensions::{PlanBuildOptions, REJECTING_PATH_EXTENSION_HANDLER};
 use crate::plan::*;
 use crate::pushdown;
 use crate::semantic::{self, SemanticAnalysis, SemanticConstraint};
@@ -758,7 +749,6 @@ fn populate_semantic_annotations(
     }
 }
 
-
 fn index_for_next(nexts: &[NextStatement], current: &NextStatement) -> usize {
     nexts
         .iter()
@@ -767,13 +757,12 @@ fn index_for_next(nexts: &[NextStatement], current: &NextStatement) -> usize {
         .expect("next statement belongs to block")
 }
 
-
 mod dml;
 mod join;
 mod match_plan;
 mod optimize;
 
-use dml::{plan_delete, plan_insert, plan_remove, plan_set};
+use dml::plan_insert;
 use join::{detect_independent_match_groups, plan_bushy_join};
 use match_plan::{detect_conditional_candidates, plan_result_statement, plan_simple_statement};
 use optimize::{apply_wcoj_replacement, set_reoptimization_hints};
@@ -784,10 +773,10 @@ mod tests;
 mod composite;
 mod validate;
 
+pub(crate) use composite::build_composite_plan_with_binding_kinds;
+pub(crate) use composite::build_composite_plan_with_binding_kinds_and_options;
 pub use composite::{
     build_composite_plan, build_composite_plan_output, build_composite_plan_output_with_schema,
     build_composite_plan_with_schema, build_composite_plan_with_schema_and_options,
 };
-pub(crate) use composite::build_composite_plan_with_binding_kinds;
-pub(crate) use composite::build_composite_plan_with_binding_kinds_and_options;
 pub(crate) use validate::{apply_type_checker_dml_diagnostics, validate_plan};

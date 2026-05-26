@@ -21,8 +21,6 @@ use std::fmt;
 use std::hash::Hasher;
 use std::str;
 
-use crate::types::{Decimal, Int256, PathElement, Uint256};
-
 /// Error returned when one [`Value`] cannot be encoded to, or decoded from,
 /// the rewrite-side binary byte format.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -189,4 +187,3 @@ mod impls;
 
 pub use enum_::Value;
 pub use impls::f128_is_finite;
-

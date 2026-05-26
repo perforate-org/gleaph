@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
-use gleaph_gql::ast::CmpOp;
 use gleaph_gql::Value;
+use gleaph_gql::ast::CmpOp;
 use gleaph_gql_planner::plan::{
     EdgeValuePredicate, EdgeVectorMetric as PlanEdgeVectorMetric, EdgeVectorPredicate, ScanValue,
 };

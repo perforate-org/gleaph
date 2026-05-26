@@ -1,34 +1,31 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use candid::Principal;
+use gleaph_gql::Value;
 use gleaph_gql::ast::Expr;
 use gleaph_gql::types::EdgeDirection;
-use gleaph_gql::Value;
 use gleaph_gql_planner::plan::{EdgeValuePredicate, EdgeVectorPredicate, ScanValue, Str};
 use gleaph_graph_kernel::entry::{Edge, EdgeDirectedness, EdgeLabelId, PreparedWeightDecoder};
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
 use ic_stable_lara::labeled::LabeledEdgeValueBatchScratch;
-use ic_stable_lara::traits::CsrEdge;
-use nohash_hasher::IntSet;
 
+use super::predicates::{PreparedEdgeValuePredicate, PreparedEdgeVectorThreshold};
+use super::{
+    ExpandDst, edge_matches_indexed_equality, expand_accepts_remote_dst, expand_dst_binding,
+    expand_dst_matches_prebound_vertex, push_expand_candidate, push_scanned_value_expand_candidate,
+    row_matches_all,
+};
 use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
 use crate::index::edge_equal;
 use crate::plan::query::error::PlanQueryError;
 use crate::plan::query::executor::bindings::EdgeBinding;
 use crate::plan::query::executor::context::QueryExprEvaluator;
 use crate::plan::query::executor::{
-    resolve_scan_value_bytes, vertex_row_matches_dst_filters, EdgeSequenceOrder, PlanBinding,
+    EdgeSequenceOrder, resolve_scan_value_bytes, vertex_row_matches_dst_filters,
 };
 use crate::plan::query::row::PlanRow;
-use super::predicates::{PreparedEdgeValuePredicate, PreparedEdgeVectorThreshold};
-use super::{
-    edge_binding_for_expand, edge_matches_indexed_equality, expand_accepts_remote_dst,
-    expand_dst_binding, expand_dst_matches_prebound_vertex, push_expand_candidate,
-    push_scanned_value_expand_candidate, row_matches_all, ExpandDst,
-};
 pub(crate) type ExpandCandidate = (ExpandDst, EdgeBinding);
-
 
 pub(crate) fn expand_candidates_matching_edge_value_into(
     store: &GraphStore,

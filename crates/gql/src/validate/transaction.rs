@@ -3,8 +3,8 @@ use rapidhash::RapidHashSet;
 use crate::ast::*;
 
 use super::{
-    statement_result_scopes, validate_statement_with_scope, validate_yield_alias_uniqueness,
-    VResult, verr,
+    VResult, statement_result_scopes, validate_statement_with_scope,
+    validate_yield_alias_uniqueness, verr,
 };
 
 pub(super) fn validate_transaction_activity(ta: &TransactionActivity) -> VResult {

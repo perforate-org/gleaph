@@ -1,23 +1,9 @@
 use gleaph_gql::ast::*;
-use gleaph_gql::type_check::{BindingKind, PropertySchema};
-use gleaph_gql::types::{EdgeDirection, LabelExpr};
-use std::collections::{BTreeMap, BTreeSet};
 
-use crate::anchor::{self, extract_simple_label};
-use crate::cost;
-use crate::expr_alias::substitute_return_aliases_in_expr;
-use crate::expr_children::for_each_immediate_child_expr;
-use crate::join_order;
-use crate::path_extensions::{
-    PathPatternExtensionContext, PlanBuildOptions, REJECTING_PATH_EXTENSION_HANDLER,
-    SingleEdgePathInfo,
-};
-use crate::plan::*;
-use crate::pushdown;
-use crate::semantic::{self, SemanticAnalysis, SemanticConstraint};
-use crate::stats::GraphStats;
 use super::super::result::flatten_conjunction;
-use super::super::PlannerError;
+use crate::anchor::{self};
+use crate::plan::*;
+use crate::stats::GraphStats;
 
 /// Collect all inline predicates from a node pattern (properties + WHERE clause)
 /// without emitting them as PlanOps. Used by FilterIntoPattern to fuse into ExpandFilter.

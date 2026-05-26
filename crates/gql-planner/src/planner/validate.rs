@@ -3,9 +3,11 @@ use gleaph_gql::type_check::{
     DmlDiagnosticSeverity, TypeWarning, dml_diagnostic_from_warning, type_diagnostic_from_warning,
 };
 
-use crate::expr_children::for_each_immediate_child_expr;
-use crate::plan::{PhysicalPlan, PlanDiagnostics, PlanOp, PropertyAssignment, SetPlanItem, ShortestPathCost};
 use super::PlannerError;
+use crate::expr_children::for_each_immediate_child_expr;
+use crate::plan::{
+    PhysicalPlan, PlanDiagnostics, PlanOp, PropertyAssignment, SetPlanItem, ShortestPathCost,
+};
 pub(crate) fn validate_plan(plan: PhysicalPlan) -> Result<PhysicalPlan, PlannerError> {
     if let Some(error) = plan.diagnostics.dml_errors.first() {
         Err(PlannerError::FatalDml(error.clone()))
@@ -182,7 +184,10 @@ fn is_gleaph_vector_function_call(expr: &Expr) -> bool {
         && name.parts[1].eq_ignore_ascii_case("vector")
 }
 
-pub(crate) fn apply_type_checker_dml_diagnostics(diagnostics: &mut PlanDiagnostics, warnings: &[TypeWarning]) {
+pub(crate) fn apply_type_checker_dml_diagnostics(
+    diagnostics: &mut PlanDiagnostics,
+    warnings: &[TypeWarning],
+) {
     for warning in warnings {
         if let Some(dml) = dml_diagnostic_from_warning(warning) {
             match dml.severity {

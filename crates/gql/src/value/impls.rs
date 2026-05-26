@@ -1,13 +1,10 @@
 use std::any::Any;
-use std::borrow::Cow;
-use std::cmp::Ordering;
 use std::fmt;
 use std::hash::Hasher;
 use std::str;
 
 use super::{
-    DenyExtensionBinaryDecode, ExtensionBinaryDecode, ExtensionSortableKey, ExtensionValue, Value,
-    ValueBinaryError,
+    DenyExtensionBinaryDecode, ExtensionBinaryDecode, ExtensionValue, Value, ValueBinaryError,
 };
 use crate::types::{Decimal, Int256, PathElement, Uint256};
 
@@ -1047,6 +1044,7 @@ impl Value {
 #[cfg(test)]
 mod tests {
     use std::borrow::Cow;
+    use std::cmp::Ordering;
 
     use super::*;
     use gleaph_gql_macros::define_gql_extension;

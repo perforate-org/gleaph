@@ -72,7 +72,7 @@ fn value_type_not_null_wrapping() {
             }
         ),
         _ => panic!("Expected NotNull"),
-}
+    }
 }
 
 #[test]
@@ -140,7 +140,7 @@ fn value_type_list_with_element_type() {
             assert_eq!(*max_length, Some(100));
         }
         _ => panic!("Expected List"),
-}
+    }
 }
 
 #[test]
@@ -170,7 +170,7 @@ fn value_type_record() {
     match &ty {
         ValueType::Record { fields, .. } => assert_eq!(fields.len(), 2),
         _ => panic!("Expected Record"),
-}
+    }
 }
 
 #[test]
@@ -229,7 +229,7 @@ fn trim_spec_copy() {
     assert_eq!(ts, ts2);
 }
 
-    // ── Display impl coverage ────────────────────────────────────────
+// ── Display impl coverage ────────────────────────────────────────
 
 #[test]
 fn binary_op_display_all() {
@@ -272,7 +272,7 @@ fn set_op_display_all() {
     assert_eq!(format!("{}", SetOp::Otherwise), "OTHERWISE");
 }
 
-    // ── Keyword impls ────────────────────────────────────────────────
+// ── Keyword impls ────────────────────────────────────────────────
 
 #[test]
 fn keyword_equality_ignores_content() {
@@ -296,7 +296,7 @@ fn keyword_clone() {
     assert_eq!(k2.0, "FLOAT");
 }
 
-    // ── StatementBlock::iter_statements ──────────────────────────────
+// ── StatementBlock::iter_statements ──────────────────────────────
 
 #[test]
 fn statement_block_iter_statements() {
@@ -317,7 +317,7 @@ fn statement_block_iter_statements() {
     assert_eq!(count, 2, "expected 2 statements");
 }
 
-    // ── Copy/Clone/PartialEq for small enums ────────────────────────
+// ── Copy/Clone/PartialEq for small enums ────────────────────────
 
 #[test]
 fn transaction_end_copy() {
@@ -429,7 +429,7 @@ fn duration_qualifier_variants() {
     );
 }
 
-    // ── IsOrColon / TypedPrefix ──────────────────────────────────────
+// ── IsOrColon / TypedPrefix ──────────────────────────────────────
 
 #[test]
 fn is_or_colon_variants() {
@@ -446,7 +446,7 @@ fn typed_prefix_variants() {
     assert_ne!(TypedPrefix::DoubleColon, TypedPrefix::Typed);
 }
 
-    // ── PathOrPaths / GroupOrGroups ──────────────────────────────────
+// ── PathOrPaths / GroupOrGroups ──────────────────────────────────
 
 #[test]
 fn path_or_paths_variants() {
@@ -462,7 +462,7 @@ fn group_or_groups_variants() {
     assert_ne!(GroupOrGroups::Group, GroupOrGroups::Groups);
 }
 
-    // ── MatchMode variants ──────────────────────────────────────────
+// ── MatchMode variants ──────────────────────────────────────────
 
 #[test]
 fn match_mode_element_keyword_variants() {
@@ -501,7 +501,7 @@ fn match_mode_edge_keyword_variants() {
     );
 }
 
-    // ── PathMode variants ───────────────────────────────────────────
+// ── PathMode variants ───────────────────────────────────────────
 
 #[test]
 fn path_mode_variants() {
@@ -512,7 +512,7 @@ fn path_mode_variants() {
     assert_ne!(PathMode::Walk, PathMode::Trail);
 }
 
-    // ── ValueType variants ──────────────────────────────────────────
+// ── ValueType variants ──────────────────────────────────────────
 
 #[test]
 fn value_type_simple_variants() {
@@ -554,7 +554,7 @@ fn value_type_string_with_lengths() {
             assert_eq!(*max_length, Some(255));
         }
         _ => panic!("Expected String"),
-}
+    }
 }
 
 #[test]
@@ -571,7 +571,7 @@ fn value_type_closed_dynamic_union() {
     match &ty {
         ValueType::ClosedDynamicUnion(types) => assert_eq!(types.len(), 2),
         _ => panic!("Expected ClosedDynamicUnion"),
-}
+    }
 }
 
 #[test]
@@ -589,7 +589,7 @@ fn value_type_decimal() {
             assert_eq!(*scale, Some(2));
         }
         _ => panic!("Expected Decimal"),
-}
+    }
 }
 
 #[test]
@@ -604,10 +604,10 @@ fn value_type_float_precision() {
             assert_eq!(*scale, Some(8));
         }
         _ => panic!("Expected FloatPrecision"),
-}
+    }
 }
 
-    // ── SchemaReference ─────────────────────────────────────────────
+// ── SchemaReference ─────────────────────────────────────────────
 
 #[test]
 fn schema_reference_variants() {
@@ -618,22 +618,22 @@ fn schema_reference_variants() {
     match &sr2 {
         SchemaReference::Absolute(parts) => assert_eq!(parts.len(), 2),
         _ => panic!("Expected Absolute"),
-}
+    }
 
     let sr3 = SchemaReference::Relative(vec!["..".into(), "other".into()]);
     match &sr3 {
         SchemaReference::Relative(parts) => assert_eq!(parts.len(), 2),
         _ => panic!("Expected Relative"),
-}
+    }
 
     let sr4 = SchemaReference::Parameter("myParam".into());
     match &sr4 {
         SchemaReference::Parameter(name) => assert_eq!(name, "myParam"),
         _ => panic!("Expected Parameter"),
-}
+    }
 }
 
-    // ── ProcedureBindingKind ────────────────────────────────────────
+// ── ProcedureBindingKind ────────────────────────────────────────
 
 #[test]
 fn procedure_binding_kind_variants() {
@@ -642,9 +642,9 @@ fn procedure_binding_kind_variants() {
     assert_eq!(ProcedureBindingKind::Value, ProcedureBindingKind::Value);
 }
 
-    // ── StringPredicateKind ─────────────────────────────────────────
+// ── StringPredicateKind ─────────────────────────────────────────
 
-    #[cfg(feature = "cypher")]
+#[cfg(feature = "cypher")]
 #[test]
 fn string_predicate_kind_variants() {
     assert_eq!(
@@ -656,7 +656,7 @@ fn string_predicate_kind_variants() {
     assert_eq!(StringPredicateKind::ILike, StringPredicateKind::ILike);
 }
 
-    // ── LinearQueryStatement parts_only ─────────────────────────────
+// ── LinearQueryStatement parts_only ─────────────────────────────
 
 #[test]
 fn linear_query_parts_only() {
@@ -674,32 +674,32 @@ mod rkyv_roundtrip_tests {
     use super::*;
     use rkyv::{from_bytes_unchecked, rancor::Error, to_bytes};
 
-#[test]
-fn truth_value_roundtrip() {
-    let v = TruthValue::Unknown;
-    let bytes = to_bytes::<Error>(&v).unwrap();
-    let back = unsafe { from_bytes_unchecked::<TruthValue, Error>(&bytes).unwrap() };
-    assert_eq!(back, v);
-}
+    #[test]
+    fn truth_value_roundtrip() {
+        let v = TruthValue::Unknown;
+        let bytes = to_bytes::<Error>(&v).unwrap();
+        let back = unsafe { from_bytes_unchecked::<TruthValue, Error>(&bytes).unwrap() };
+        assert_eq!(back, v);
+    }
 
-#[test]
-fn path_pattern_extension_roundtrip() {
-    let pattern = PathPattern {
-        span: Span::DUMMY,
-        variable: None,
-        prefix: None,
-        expr: PathPatternExpr::Term(PathTerm {
+    #[test]
+    fn path_pattern_extension_roundtrip() {
+        let pattern = PathPattern {
             span: Span::DUMMY,
-            factors: vec![],
-        }),
-        extensions: vec![PathPatternExtension {
-            span: Span::DUMMY,
-            name: ObjectName::simple("VENDOR_COST"),
-            expr: Expr::var("e"),
-        }],
-    };
-    let bytes = to_bytes::<Error>(&pattern).unwrap();
-    let back = unsafe { from_bytes_unchecked::<PathPattern, Error>(&bytes).unwrap() };
-    assert_eq!(back, pattern);
-}
+            variable: None,
+            prefix: None,
+            expr: PathPatternExpr::Term(PathTerm {
+                span: Span::DUMMY,
+                factors: vec![],
+            }),
+            extensions: vec![PathPatternExtension {
+                span: Span::DUMMY,
+                name: ObjectName::simple("VENDOR_COST"),
+                expr: Expr::var("e"),
+            }],
+        };
+        let bytes = to_bytes::<Error>(&pattern).unwrap();
+        let back = unsafe { from_bytes_unchecked::<PathPattern, Error>(&bytes).unwrap() };
+        assert_eq!(back, pattern);
+    }
 }

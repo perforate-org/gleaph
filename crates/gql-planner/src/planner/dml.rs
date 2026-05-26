@@ -1,6 +1,5 @@
 use gleaph_gql::ast::*;
 use gleaph_gql::type_check::BindingKind;
-use std::collections::BTreeMap;
 
 use crate::plan::*;
 

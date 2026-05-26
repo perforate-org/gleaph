@@ -2,46 +2,25 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use candid::Principal;
-use gleaph_gql::ast::{CmpOp, Expr};
 use gleaph_gql::types::EdgeDirection;
 use gleaph_gql::{Value, value_to_index_key_bytes};
-use gleaph_gql_planner::plan::{
-    EdgeValuePredicate, EdgeVectorMetric as PlanEdgeVectorMetric, EdgeVectorPredicate, ScanValue,
-    Str,
-};
-use gleaph_graph_kernel::entry::{
-    Edge, EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, EdgeTarget, EdgeValueEncoding,
-    EdgeValueProfile, PreparedWeightDecoder,
-};
-use gleaph_graph_kernel::federation::{
-    FederatedExpandArgs, FederatedExpandDirection, FederatedExpandNeighbor, LogicalVertexId,
-};
-use half::f16;
+use gleaph_gql_planner::plan::{ScanValue, Str};
+use gleaph_graph_kernel::entry::{Edge, EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, EdgeTarget};
+use gleaph_graph_kernel::federation::LogicalVertexId;
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
-use ic_stable_lara::labeled::LabeledEdgeValueBatchScratch;
 use ic_stable_lara::traits::CsrEdge;
 use nohash_hasher::IntSet;
 
-use super::super::edge_value_batch_kernel::PreparedEdgeValueBatchKernel;
 use super::super::error::PlanQueryError;
 use super::super::row::PlanRow;
-use super::bindings::{
-    EdgeBinding, edge_binding_for_federated_expand_hit, federated_expand_label_id_raw,
-};
-use super::context::{ExecuteCtx, QueryExprEvaluator};
+use super::bindings::EdgeBinding;
 use super::{
-    EdgeSequenceOrder, PlanBinding, dst_filter_is_dst_vertex_only, edge_to_projected_record,
-    federation_routing, resolve_federated_traversal_vertex, resolve_scan_value_bytes,
-    row_matches_all, vertex_binding_for_projection, vertex_binding_for_traversal,
-    vertex_row_matches_dst_filters,
+    EdgeSequenceOrder, PlanBinding, edge_to_projected_record, resolve_scan_value_bytes,
+    row_matches_all, vertex_binding_for_projection,
 };
 use crate::facade::{EdgeHandle, GraphStore, GraphStoreError, canonical_undirected_owner};
 use crate::index::edge_equal;
-use crate::plan::query::edge_vector_kernel::{
-    EdgeVectorMetric as KernelEdgeVectorMetric, PreparedEdgeVectorKernel,
-};
 
 #[derive(Clone, Copy)]
 pub(crate) enum CsrOffsetFastPath {
@@ -465,20 +444,13 @@ pub(crate) fn edge_matches_stream_filter(
 }
 
 #[allow(clippy::too_many_arguments)]
-
-
 mod candidates;
 mod predicates;
 
-pub(crate) use candidates::{
-    ExpandCandidate, expand_candidates_into, expand_candidates_matching_edge_value_into,
-    expand_candidates_matching_edge_vector_threshold_into,
-};
-pub(crate) use predicates::{PreparedEdgeValuePredicate, PreparedEdgeVectorThreshold};
+pub(crate) use candidates::{ExpandCandidate, expand_candidates_into};
 
 #[cfg(test)]
 mod tests;
-
 
 mod execute;
 pub(crate) use execute::{execute_expand, expand_dst_matches_prebound_vertex};

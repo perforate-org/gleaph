@@ -1,7 +1,7 @@
 use crate::token::Span;
 use crate::types::EdgeDirection;
 
-use super::catalog::{ObjectName, PropertySetting};
+use super::catalog::ObjectName;
 use super::expr::Expr;
 use super::query::{Keyword, TypedPrefix};
 

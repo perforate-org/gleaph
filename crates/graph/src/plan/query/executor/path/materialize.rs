@@ -2,13 +2,13 @@ use std::cell::RefCell;
 
 use gleaph_gql::Value;
 use gleaph_gql::types::PathElement;
-use gleaph_graph_kernel::entry::{EdgeLabelId, EdgeSlotIndex};
+use gleaph_graph_kernel::entry::EdgeSlotIndex;
 use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
 use ic_stable_lara::VertexId;
 
+use super::{PathBinding, PathSearchNode};
 use crate::facade::{EdgeHandle, GraphStore};
 use crate::plan::query::error::PlanQueryError;
-use super::{PathBinding, PathSearchNode};
 
 thread_local! {
     /// Reuses capacity when materializing many shortest-path rows on one thread (e.g. `AllShortest`).
@@ -136,4 +136,3 @@ fn edge_path_element(
         .into(),
     )
 }
-

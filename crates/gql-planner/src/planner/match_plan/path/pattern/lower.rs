@@ -1,26 +1,14 @@
 use gleaph_gql::ast::*;
-use gleaph_gql::type_check::{BindingKind, PropertySchema};
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
-use crate::anchor::{self, extract_simple_label};
-use crate::cost;
-use crate::expr_alias::substitute_return_aliases_in_expr;
-use crate::expr_children::for_each_immediate_child_expr;
-use crate::join_order;
-use crate::path_extensions::{
-    PathPatternExtensionContext, PlanBuildOptions, REJECTING_PATH_EXTENSION_HANDLER,
-    SingleEdgePathInfo,
-};
-use crate::plan::*;
-use crate::pushdown;
-use crate::semantic::{self, SemanticAnalysis, SemanticConstraint};
-use crate::stats::GraphStats;
-use super::super::filters::{
-    EdgeFilterFusion, parse_edge_var_property_equality, quantifier_to_var_len,
-};
 use super::super::super::result::flatten_conjunction;
+use super::super::filters::{parse_edge_var_property_equality, quantifier_to_var_len};
+use crate::anchor::{self, extract_simple_label};
+use crate::path_extensions::{PathPatternExtensionContext, PlanBuildOptions, SingleEdgePathInfo};
+use crate::plan::*;
 use crate::planner::PlannerError;
+use crate::stats::GraphStats;
 
 pub(super) fn plan_path_pattern(
     path: &PathPattern,

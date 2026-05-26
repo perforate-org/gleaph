@@ -1,26 +1,16 @@
 //! Shortest-path search (`ShortestPath` plan operator).
 
-use std::cell::RefCell;
-use std::cmp::Ordering;
-use std::collections::{BTreeMap, BinaryHeap};
-use std::hash::Hasher;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use gleaph_gql::Value;
-use gleaph_gql::ast::{BinaryOp, Expr, ExprKind};
-use gleaph_gql::numeric_ops::{NumericOpError, eval_binary_numeric};
-use gleaph_gql::numeric_order::{NormalizedNumeric, NumericOrderError, normalized_numeric_parts};
-use gleaph_gql::types::{EdgeDirection, LabelExpr, PathElement};
-use gleaph_gql::value_cmp::compare_values;
+use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql_planner::BindingLayout;
 use gleaph_gql_planner::plan::{PlanOp, ShortestMode, ShortestPathCost, Str, VarLenSpec};
-use gleaph_graph_kernel::entry::{EdgeLabelId, EdgeSlotIndex, PreparedWeightDecoder};
-use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
+use gleaph_graph_kernel::entry::{EdgeLabelId, PreparedWeightDecoder};
 use ic_stable_lara::VertexId;
 use ic_stable_lara::labeled::OutEdgeOrder;
-use nohash_hasher::{IntMap, IntSet};
-use rapidhash::fast::RapidHasher;
 
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
 use canbench_rs::bench_scope;
@@ -28,10 +18,22 @@ use canbench_rs::bench_scope;
 use super::super::error::PlanQueryError;
 use super::super::row::PlanRow;
 use super::bindings::EdgeBinding;
-use super::context::QueryExprEvaluator;
-use super::expand::{ExpandCandidate, ExpandDst, edge_binding_for_expand, expand_candidates_into};
-use super::{EdgeSequenceOrder, PlanBinding, vertex_binding_for_traversal};
-use crate::facade::{EdgeHandle, GraphStore};
+use super::expand::{ExpandCandidate, ExpandDst, edge_binding_for_expand};
+use super::{PlanBinding, vertex_binding_for_traversal};
+use crate::facade::GraphStore;
+
+mod materialize;
+mod search;
+pub mod weighted;
+
+pub(crate) use materialize::{
+    edge_element_id_bytes, local_shard_id, path_binding_to_value, vertex_element_id_bytes,
+};
+pub(crate) use search::shortest_paths_between;
+pub(crate) use weighted::{weighted_shortest_can_use_hop_count, weighted_shortest_paths_between};
+
+#[cfg(test)]
+mod tests;
 
 #[derive(Clone, Debug)]
 pub(crate) struct PathSearchNode {
@@ -334,20 +336,3 @@ impl ShortestFixedLabelExpand {
         Ok(())
     }
 }
-
-mod materialize;
-mod search;
-mod weighted;
-
-pub(crate) use materialize::{
-    edge_element_id_bytes, local_shard_id, materialize_path_from_search_states,
-    path_binding_to_value, vertex_element_id_bytes,
-};
-pub(crate) use search::shortest_paths_between;
-pub(crate) use weighted::{
-    WeightedCost, WeightedCostOrderKey, decode_direct_gleaph_weight_hop_cost,
-    weighted_shortest_can_use_hop_count, weighted_shortest_paths_between,
-};
-
-#[cfg(test)]
-mod tests;

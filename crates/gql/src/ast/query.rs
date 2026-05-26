@@ -1,16 +1,9 @@
-use crate::Value;
 use crate::token::Span;
-use crate::types::{EdgeDirection, LabelExpr};
 
-use super::catalog::{
-    DeleteStatement, InsertStatement, ObjectName, RemoveStatement, SetStatement,
-};
-use super::expr::{Expr, ExprKind};
+use super::catalog::{DeleteStatement, InsertStatement, ObjectName, RemoveStatement, SetStatement};
+use super::expr::Expr;
 use super::graph_type::ValueType;
-use super::pattern::{
-    GraphPattern, PathPattern, PathPatternExpr, PathPatternExtension, PathPatternPrefix, PathTerm,
-    SimplifiedPathPattern,
-};
+use super::pattern::GraphPattern;
 
 // ════════════════════════════════════════════════════════════════════════════════
 // §14 — Query statements
@@ -799,4 +792,3 @@ impl CompositeQueryExpr {
         }
     }
 }
-

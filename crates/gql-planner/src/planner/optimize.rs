@@ -1,7 +1,6 @@
-use gleaph_gql::ast::{CmpOp, Expr, ExprKind, OrderByClause};
+use gleaph_gql::ast::Expr;
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
 
-use crate::expr_children::for_each_immediate_child_expr;
 use crate::plan::*;
 use crate::stats::GraphStats;
 // ════════════════════════════════════════════════════════════════════════════════

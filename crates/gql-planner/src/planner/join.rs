@@ -1,12 +1,12 @@
 use gleaph_gql::ast::*;
 use gleaph_gql::type_check::{BindingKind, PropertySchema};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
+use super::PlannerError;
 use crate::path_extensions::PlanBuildOptions;
 use crate::plan::*;
 use crate::pushdown;
 use crate::stats::GraphStats;
-use super::PlannerError;
 // ════════════════════════════════════════════════════════════════════════════════
 // Bushy Join Detection
 // ════════════════════════════════════════════════════════════════════════════════

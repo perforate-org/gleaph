@@ -2,20 +2,18 @@ use gleaph_gql::ast::{Expr, OrderByClause};
 use gleaph_gql::types::LabelExpr;
 
 use crate::plan::{
-    AggregateSpec, PlanOp, ProjectColumn, PropertyAssignment, RemovePlanItem, SetPlanItem,
-    ShortestPathCost, WcojEdge, YieldColumn,
+    AggregateSpec, PlanOp, ProjectColumn, PropertyAssignment, SetPlanItem, ShortestPathCost,
+    WcojEdge,
 };
-use gleaph_gql::ast::{AggregateFunc, LetBinding, SetOp};
-use gleaph_gql::token::Span;
 
 use super::helpers::{
-    cmp_op_to_wire, encode_conditional_candidate, encode_edge_value_predicate,
-    encode_edge_vector_predicate, encode_index_scan_spec, encode_indexed_edge_equality,
-    encode_remove_item, encode_scan_value, encode_yield_column, opt_str_opt, opt_str_slice, rc_str,
-    shortest_mode_to_wire, var_len_to_wire, vec_rc_str, vec_str,
+    encode_conditional_candidate, encode_edge_value_predicate, encode_edge_vector_predicate,
+    encode_index_scan_spec, encode_indexed_edge_equality, encode_remove_item, encode_scan_value,
+    encode_yield_column, opt_str_opt, opt_str_slice, shortest_mode_to_wire, var_len_to_wire,
+    vec_str,
 };
-use super::pools::{rkyv_encode_expr, rkyv_encode_label_expr, rkyv_encode_order_by};
 use super::physical_plan_to_wire;
+use super::pools::{rkyv_encode_expr, rkyv_encode_label_expr, rkyv_encode_order_by};
 use super::types::*;
 
 #[derive(Default)]

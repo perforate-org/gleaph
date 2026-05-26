@@ -1,31 +1,16 @@
 use gleaph_gql::ast::*;
-use gleaph_gql::type_check::{BindingKind, PropertySchema};
-use gleaph_gql::types::{EdgeDirection, LabelExpr};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
-use crate::anchor::{self, extract_simple_label};
-use crate::cost;
-use crate::expr_alias::substitute_return_aliases_in_expr;
-use crate::expr_children::for_each_immediate_child_expr;
-use crate::join_order;
-use crate::path_extensions::{
-    PathPatternExtensionContext, PlanBuildOptions, REJECTING_PATH_EXTENSION_HANDLER,
-    SingleEdgePathInfo,
-};
-use crate::plan::*;
-use crate::pushdown;
-use crate::semantic::{self, SemanticAnalysis, SemanticConstraint};
-use crate::stats::GraphStats;
-use gleaph_gql::type_check::type_diagnostic_from_warning;
+use super::super::filters::{EdgeFilterFusion, quantifier_to_var_len};
 use super::lower::{
-    first_hop_supports_leading_edge_index, hop_aux_binding_for_edge_if_referenced, plan_edge_expand_labels,
-    PathElement,
+    PathElement, first_hop_supports_leading_edge_index, hop_aux_binding_for_edge_if_referenced,
+    plan_edge_expand_labels,
 };
-use super::super::filters::{
-    EdgeFilterFusion, parse_edge_var_property_equality, quantifier_to_var_len,
-};
-use super::super::super::result::flatten_conjunction;
+use crate::anchor::extract_simple_label;
+use crate::join_order;
+use crate::plan::*;
 use crate::planner::PlannerError;
+use crate::stats::GraphStats;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn plan_path_term(
@@ -210,8 +195,13 @@ pub(super) fn plan_path_term(
                             .as_ref()
                             .is_some_and(|p| p.0 == *src_var);
                     let mut wc_clone = where_conjuncts.clone();
-                    let fusion_on_clone =
-                        super::super::filters::plan_edge_filter_fusion(edge_var, edge, stats, false, &mut wc_clone);
+                    let fusion_on_clone = super::super::filters::plan_edge_filter_fusion(
+                        edge_var,
+                        edge,
+                        stats,
+                        false,
+                        &mut wc_clone,
+                    );
                     let use_leading = try_leading
                         && fusion_on_clone.indexed_equality.is_some()
                         && var_len.is_none()
@@ -240,7 +230,12 @@ pub(super) fn plan_path_term(
                                 referenced_vars,
                             ),
                         });
-                        super::super::filters::emit_edge_inline_filters(edge_var, edge, &fusion_on_clone, ops);
+                        super::super::filters::emit_edge_inline_filters(
+                            edge_var,
+                            edge,
+                            &fusion_on_clone,
+                            ops,
+                        );
                         bound_node_vars.insert(src_var.clone());
                         bound_node_vars.insert(dst_var.clone());
                         path_bound_node_vars.insert(src_var.clone());
@@ -380,7 +375,12 @@ pub(super) fn plan_path_term(
                             path_bound_node_vars.insert(dst_var.clone());
                         }
 
-                        super::super::filters::emit_edge_inline_filters(edge_var, edge, &edge_fusion, ops);
+                        super::super::filters::emit_edge_inline_filters(
+                            edge_var,
+                            edge,
+                            &edge_fusion,
+                            ops,
+                        );
                     }
                 }
                 prev_node_var = None;

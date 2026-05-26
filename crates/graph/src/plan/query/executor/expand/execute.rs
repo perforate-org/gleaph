@@ -1,38 +1,37 @@
 use std::collections::BTreeMap;
 
 use candid::Principal;
+use gleaph_gql::Value;
 use gleaph_gql::ast::Expr;
 use gleaph_gql::types::EdgeDirection;
-use gleaph_gql::Value;
-use gleaph_gql_planner::plan::{
-    EdgeValuePredicate, EdgeVectorPredicate, ScanValue, Str,
-};
+use gleaph_gql_planner::plan::{EdgeValuePredicate, EdgeVectorPredicate, ScanValue, Str};
 use gleaph_graph_kernel::entry::{Edge, EdgeLabelId, PreparedWeightDecoder};
-use gleaph_graph_kernel::federation::{FederatedExpandArgs, FederatedExpandDirection, FederatedExpandNeighbor};
+use gleaph_graph_kernel::federation::{
+    FederatedExpandArgs, FederatedExpandDirection, FederatedExpandNeighbor,
+};
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
 use ic_stable_lara::labeled::LabeledEdgeValueBatchScratch;
 
+use super::candidates::{expand_candidates_into, expand_vector_dst_only_rows_into};
+use super::predicates::PreparedEdgeVectorThreshold;
+use super::{
+    EdgeEqualityStreamFilter, ExpandDst, build_expanded_row, csr_offset_fast_path_for_expand,
+    edge_binding_for_expand, edge_equality_stream_filter, edge_matches_stream_filter,
+    expand_accepts_remote_dst, expand_dst_binding, visit_csr_expand_fast_path,
+};
 use crate::facade::GraphStore;
 use crate::plan::query::error::PlanQueryError;
-use crate::plan::query::executor::bindings::EdgeBinding;
-use crate::plan::query::executor::context::{ExecuteCtx, QueryExprEvaluator};
 use crate::plan::query::executor::bindings::{
     edge_binding_for_federated_expand_hit, federated_expand_label_id_raw,
 };
+use crate::plan::query::executor::context::{ExecuteCtx, QueryExprEvaluator};
 use crate::plan::query::executor::{
-    dst_filter_is_dst_vertex_only, federation_routing, resolve_federated_traversal_vertex,
-    row_matches_all, vertex_binding_for_traversal, vertex_row_matches_dst_filters, EdgeSequenceOrder,
-    PlanBinding,
+    EdgeSequenceOrder, PlanBinding, dst_filter_is_dst_vertex_only, federation_routing,
+    resolve_federated_traversal_vertex, row_matches_all, vertex_binding_for_traversal,
+    vertex_row_matches_dst_filters,
 };
 use crate::plan::query::row::PlanRow;
-use super::predicates::PreparedEdgeVectorThreshold;
-use super::{
-    build_expanded_row, csr_offset_fast_path_for_expand, edge_binding_for_expand,
-    edge_equality_stream_filter, edge_matches_stream_filter, expand_accepts_remote_dst,
-    expand_dst_binding, visit_csr_expand_fast_path, EdgeEqualityStreamFilter, ExpandDst,
-};
-use super::candidates::{expand_candidates_into, expand_vector_dst_only_rows_into};
 
 fn expand_rows_from_federated_expand_hits(
     store: &GraphStore,

@@ -5,9 +5,7 @@ use crate::types::LabelExpr;
 use super::catalog::ObjectName;
 use super::graph_type::ValueType;
 use super::pattern::{GraphPattern, NodePattern, PathPattern};
-use super::query::{
-    CompositeQueryExpr, Keyword, LetBinding, OrderByClause, SetOp, SimpleQueryStatement,
-};
+use super::query::{CompositeQueryExpr, Keyword, LetBinding, OrderByClause};
 
 // ════════════════════════════════════════════════════════════════════════════════
 // §19-20 — Expressions

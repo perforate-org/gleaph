@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
 use candid::Principal;
+use gleaph_gql::Value;
 use gleaph_gql::ast::Expr;
 use gleaph_gql::types::EdgeDirection;
-use gleaph_gql::Value;
 use gleaph_gql_planner::plan::{
     AggregateSpec, EdgeValuePredicate, EdgeVectorPredicate, PlanOp, ScanValue, Str,
 };
@@ -23,8 +23,8 @@ use crate::plan::query::executor::expand::{
     visit_csr_expand_fast_path,
 };
 use crate::plan::query::executor::{
-    dst_filter_is_dst_vertex_only, ensure_simple_expand, limit_value, project_row, row_matches_all,
-    vertex_row_matches_dst_filters, EdgeSequenceOrder, PlanBinding,
+    EdgeSequenceOrder, PlanBinding, dst_filter_is_dst_vertex_only, ensure_simple_expand,
+    limit_value, project_row, row_matches_all, vertex_row_matches_dst_filters,
 };
 use crate::plan::query::row::PlanRow;
 

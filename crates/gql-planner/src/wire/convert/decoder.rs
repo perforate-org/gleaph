@@ -2,23 +2,22 @@ use gleaph_gql::ast::{Expr, OrderByClause};
 use gleaph_gql::types::LabelExpr;
 
 use crate::plan::{
-    AggregateSpec, PlanOp, ProjectColumn, PropertyAssignment, RemovePlanItem, SetPlanItem,
-    WcojEdge, YieldColumn,
+    AggregateSpec, PlanOp, ProjectColumn, PropertyAssignment, SetPlanItem, WcojEdge,
 };
-use gleaph_gql::ast::{AggregateFunc, LetBinding, SetOp};
+use gleaph_gql::ast::LetBinding;
 use gleaph_gql::token::Span;
 
+use super::PhysicalPlanWire;
 use super::helpers::{
-    cmp_op_from_wire, decode_conditional_candidate, decode_edge_value_predicate,
-    decode_edge_vector_predicate, decode_index_scan_spec, decode_indexed_edge_equality,
-    decode_remove_item, decode_scan_value, decode_str_slice, decode_yield_column, opt_rc_str,
-    rc_str, shortest_mode_from_wire, var_len_from_wire, vec_rc_str, vec_str,
+    decode_conditional_candidate, decode_edge_value_predicate, decode_edge_vector_predicate,
+    decode_index_scan_spec, decode_indexed_edge_equality, decode_remove_item, decode_scan_value,
+    decode_str_slice, decode_yield_column, opt_rc_str, rc_str, shortest_mode_from_wire,
+    var_len_from_wire, vec_rc_str,
 };
 use super::physical_plan_from_wire;
-use crate::plan::ShortestPathCost;
 use super::pools::{rkyv_decode_expr, rkyv_decode_label_expr, rkyv_decode_order_by};
 use super::types::*;
-use super::PhysicalPlanWire;
+use crate::plan::ShortestPathCost;
 
 pub(super) struct Decoder<'a> {
     wire: &'a PhysicalPlanWire,

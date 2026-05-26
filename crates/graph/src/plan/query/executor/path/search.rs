@@ -9,11 +9,11 @@ use nohash_hasher::IntSet;
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
 use canbench_rs::bench_scope;
 
+use super::{PathSearchNode, ShortestFixedLabelExpand, ShortestPathSearchResult};
 use crate::facade::GraphStore;
 use crate::plan::query::error::PlanQueryError;
-use crate::plan::query::executor::expand::{ExpandCandidate, ExpandDst, expand_candidates_into};
 use crate::plan::query::executor::EdgeSequenceOrder;
-use super::{PathSearchNode, ShortestFixedLabelExpand, ShortestPathSearchResult};
+use crate::plan::query::executor::expand::{ExpandDst, expand_candidates_into};
 
 pub(crate) fn shortest_paths_between(
     store: &GraphStore,

@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BinaryHeap};
 use std::hash::Hasher;
@@ -7,28 +6,27 @@ use gleaph_gql::Value;
 use gleaph_gql::ast::{BinaryOp, Expr, ExprKind};
 use gleaph_gql::numeric_ops::{NumericOpError, eval_binary_numeric};
 use gleaph_gql::numeric_order::{NormalizedNumeric, NumericOrderError, normalized_numeric_parts};
-use gleaph_gql::value_cmp::compare_values;
 use gleaph_gql::types::EdgeDirection;
-use gleaph_gql_planner::plan::{ShortestMode, Str, VarLenSpec};
+use gleaph_gql::value_cmp::compare_values;
+use gleaph_gql_planner::plan::{ShortestMode, VarLenSpec};
 use gleaph_graph_kernel::entry::{EdgeLabelId, PreparedWeightDecoder};
 use ic_stable_lara::VertexId;
-use ic_stable_lara::labeled::OutEdgeOrder;
-use nohash_hasher::{IntMap, IntSet};
+use nohash_hasher::IntMap;
 use rapidhash::fast::RapidHasher;
 
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
 use canbench_rs::bench_scope;
 
+use super::search::path_search_contains_vertex;
+use super::{PathSearchNode, ShortestFixedLabelExpand, ShortestPathSearchResult};
 use crate::facade::GraphStore;
 use crate::plan::query::error::PlanQueryError;
-use crate::plan::query::executor::context::QueryExprEvaluator;
 use crate::plan::query::executor::bindings::EdgeBinding;
-use crate::plan::query::executor::expand::{ExpandCandidate, ExpandDst, expand_candidates_into};
+use crate::plan::query::executor::context::QueryExprEvaluator;
+use crate::plan::query::executor::expand::{ExpandDst, expand_candidates_into};
 use crate::plan::query::executor::{EdgeSequenceOrder, PlanBinding};
 use crate::plan::query::gleaph_weight;
 use crate::plan::query::row::PlanRow;
-use super::search::path_search_contains_vertex;
-use super::{PathSearchNode, ShortestFixedLabelExpand, ShortestPathSearchResult};
 
 pub(crate) fn weighted_shortest_can_use_hop_count(mode: ShortestMode, cost_expr: &Expr) -> bool {
     let ExprKind::Literal(value) = &cost_expr.kind else {

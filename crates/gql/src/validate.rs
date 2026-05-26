@@ -15,18 +15,12 @@ mod transaction;
 
 use crate::ast::*;
 use crate::error::GqlError;
-use crate::name_limits::{
-    validate_graph_type_identifier, validate_label_name, validate_property_name,
-};
 use rapidhash::RapidHashSet;
-use std::collections::BTreeMap;
 
-use query_validation::{
-    collect_pattern_bindings, composite_query_result_scopes, validate_composite_query,
-};
 use procedure::{
     validate_call_procedure, validate_inline_scope_vars, validate_yield_alias_uniqueness,
 };
+use query_validation::{composite_query_result_scopes, validate_composite_query};
 use session::validate_session_command;
 use transaction::validate_transaction_activity;
 
