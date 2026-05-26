@@ -1,0 +1,675 @@
+use std::collections::{BTreeMap, BTreeSet};
+
+use candid::Principal;
+use gleaph_gql::ast::Expr;
+use gleaph_gql::types::EdgeDirection;
+use gleaph_gql::Value;
+use gleaph_gql_planner::plan::{EdgeValuePredicate, EdgeVectorPredicate, ScanValue, Str};
+use gleaph_graph_kernel::entry::{Edge, EdgeDirectedness, EdgeLabelId, PreparedWeightDecoder};
+use ic_stable_lara::BucketLabelKey as LaraLabelId;
+use ic_stable_lara::VertexId;
+use ic_stable_lara::labeled::LabeledEdgeValueBatchScratch;
+use ic_stable_lara::traits::CsrEdge;
+use nohash_hasher::IntSet;
+
+use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
+use crate::index::edge_equal;
+use crate::plan::query::error::PlanQueryError;
+use crate::plan::query::executor::bindings::EdgeBinding;
+use crate::plan::query::executor::context::QueryExprEvaluator;
+use crate::plan::query::executor::{
+    resolve_scan_value_bytes, vertex_row_matches_dst_filters, EdgeSequenceOrder, PlanBinding,
+};
+use crate::plan::query::row::PlanRow;
+use super::predicates::{PreparedEdgeValuePredicate, PreparedEdgeVectorThreshold};
+use super::{
+    edge_binding_for_expand, edge_matches_indexed_equality, expand_accepts_remote_dst,
+    expand_dst_binding, expand_dst_matches_prebound_vertex, push_expand_candidate,
+    push_scanned_value_expand_candidate, row_matches_all, ExpandDst,
+};
+pub(crate) type ExpandCandidate = (ExpandDst, EdgeBinding);
+
+
+pub(crate) fn expand_candidates_matching_edge_value_into(
+    store: &GraphStore,
+    src_id: VertexId,
+    direction: EdgeDirection,
+    edge_label_id: EdgeLabelId,
+    sequence_order: EdgeSequenceOrder,
+    predicate: &PreparedEdgeValuePredicate,
+    out: &mut Vec<ExpandCandidate>,
+) -> Result<(), PlanQueryError> {
+    let storage_label = LaraLabelId::from_raw(edge_label_id.pack(EdgeDirectedness::Directed).raw());
+    let order = sequence_order.into();
+    let mut scratch = LabeledEdgeValueBatchScratch::default();
+    let mut matches = Vec::new();
+    let mut error = None;
+    let mut visit_batch = |batch: ic_stable_lara::labeled::LabeledEdgeValueBatch<'_, Edge>| {
+        if error.is_some() {
+            return;
+        }
+        matches.clear();
+        predicate.kernel.collect_matching_value_indices(
+            batch.value_bytes,
+            predicate.op,
+            &predicate.expected,
+            &mut matches,
+        );
+        let width = usize::from(batch.width_code.byte_width());
+        for idx in matches.iter().copied() {
+            let Some(edge) = batch.edges.get(idx).copied() else {
+                continue;
+            };
+            let value_start = idx * width;
+            let value_end = value_start + width;
+            let edge = edge.with_value_bytes(&batch.value_bytes[value_start..value_end]);
+            match ExpandDst::from_edge(store, &edge).and_then(|edge_dst| match edge_dst {
+                Some(edge_dst) => push_scanned_value_expand_candidate(
+                    out, store, src_id, direction, edge_dst, edge,
+                ),
+                None => Ok(()),
+            }) {
+                Ok(()) => {}
+                Err(err) => {
+                    error = Some(err);
+                    return;
+                }
+            }
+        }
+    };
+
+    match direction {
+        EdgeDirection::PointingRight => store
+            .visit_out_edge_value_batches_for_label(
+                src_id,
+                storage_label,
+                order,
+                &mut scratch,
+                &mut visit_batch,
+            )
+            .map_err(GraphStoreError::from)?,
+        EdgeDirection::PointingLeft => store
+            .visit_in_edge_value_batches_for_label(
+                src_id,
+                storage_label,
+                order,
+                &mut scratch,
+                &mut visit_batch,
+            )
+            .map_err(GraphStoreError::from)?,
+        other => return Err(PlanQueryError::UnsupportedDirection(other)),
+    }
+    if let Some(err) = error {
+        return Err(err);
+    }
+    Ok(())
+}
+
+pub(crate) fn expand_candidates_matching_edge_vector_threshold_into(
+    store: &GraphStore,
+    src_id: VertexId,
+    direction: EdgeDirection,
+    edge_label_id: EdgeLabelId,
+    sequence_order: EdgeSequenceOrder,
+    predicate: &PreparedEdgeVectorThreshold,
+    out: &mut Vec<ExpandCandidate>,
+) -> Result<(), PlanQueryError> {
+    let storage_label = LaraLabelId::from_raw(edge_label_id.pack(EdgeDirectedness::Directed).raw());
+    let order = sequence_order.into();
+    let mut scratch = LabeledEdgeValueBatchScratch::default();
+    let mut matches = Vec::new();
+    let mut error = None;
+    let mut visit_batch = |batch: ic_stable_lara::labeled::LabeledEdgeValueBatch<'_, Edge>| {
+        if error.is_some() {
+            return;
+        }
+        matches.clear();
+        predicate.collect_matching_indices(batch.value_bytes, &mut matches);
+        if !matches.is_empty() {
+            out.reserve(matches.len());
+        }
+        let width = predicate.kernel.byte_width();
+        for idx in matches.iter().copied() {
+            let Some(edge) = batch.edges.get(idx).copied() else {
+                continue;
+            };
+            let value_start = idx * width;
+            let value_end = value_start + width;
+            let edge = edge.with_value_bytes(&batch.value_bytes[value_start..value_end]);
+            match ExpandDst::from_edge(store, &edge).and_then(|edge_dst| match edge_dst {
+                Some(edge_dst) => push_scanned_value_expand_candidate(
+                    out, store, src_id, direction, edge_dst, edge,
+                ),
+                None => Ok(()),
+            }) {
+                Ok(()) => {}
+                Err(err) => {
+                    error = Some(err);
+                    return;
+                }
+            }
+        }
+    };
+
+    match direction {
+        EdgeDirection::PointingRight => store
+            .visit_out_edge_value_batches_for_label(
+                src_id,
+                storage_label,
+                order,
+                &mut scratch,
+                &mut visit_batch,
+            )
+            .map_err(GraphStoreError::from)?,
+        EdgeDirection::PointingLeft => store
+            .visit_in_edge_value_batches_for_label(
+                src_id,
+                storage_label,
+                order,
+                &mut scratch,
+                &mut visit_batch,
+            )
+            .map_err(GraphStoreError::from)?,
+        other => return Err(PlanQueryError::UnsupportedDirection(other)),
+    }
+    if let Some(err) = error {
+        return Err(err);
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn expand_vector_dst_only_rows_into(
+    store: &GraphStore,
+    row: &PlanRow,
+    src_id: VertexId,
+    direction: EdgeDirection,
+    edge_label_id: EdgeLabelId,
+    sequence_order: EdgeSequenceOrder,
+    dst: &Str,
+    dst_key: &str,
+    dst_filter: &[Expr],
+    dst_only_prefilter: bool,
+    dst_property_projection: Option<&[Str]>,
+    parameters: &BTreeMap<String, Value>,
+    caller: Option<Principal>,
+    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
+    evaluator: &QueryExprEvaluator<'_>,
+    predicate: &PreparedEdgeVectorThreshold,
+    out: &mut Vec<PlanRow>,
+    scratch: &mut LabeledEdgeValueBatchScratch<Edge>,
+    matches: &mut Vec<usize>,
+) -> Result<(), PlanQueryError> {
+    let storage_label = LaraLabelId::from_raw(edge_label_id.pack(EdgeDirectedness::Directed).raw());
+    let order = sequence_order.into();
+    let mut error = None;
+    let mut visit_batch = |batch: ic_stable_lara::labeled::LabeledEdgeValueBatch<'_, Edge>| {
+        if error.is_some() {
+            return;
+        }
+        matches.clear();
+        predicate.collect_matching_indices(batch.value_bytes, matches);
+        if !matches.is_empty() {
+            out.reserve(matches.len());
+        }
+        for idx in matches.iter().copied() {
+            let Some(edge) = batch.edges.get(idx).copied() else {
+                continue;
+            };
+            match ExpandDst::from_edge(store, &edge).and_then(|edge_dst| {
+                let Some(edge_dst) = edge_dst else {
+                    return Ok(());
+                };
+                if !expand_dst_matches_prebound_vertex(row, dst, edge_dst) {
+                    return Ok(());
+                }
+                if let ExpandDst::Local(dst_id) = edge_dst {
+                    if dst_only_prefilter
+                        && !vertex_row_matches_dst_filters(
+                            store,
+                            parameters,
+                            dst,
+                            dst_id,
+                            dst_filter,
+                            caller,
+                            gleaph_weight_decoders,
+                        )?
+                    {
+                        return Ok(());
+                    }
+                } else if !expand_accepts_remote_dst(dst_only_prefilter, dst_property_projection) {
+                    return Ok(());
+                }
+                let dst_binding = expand_dst_binding(store, edge_dst, dst_property_projection)?;
+                let expanded = row.fork([(dst_key, dst_binding)]);
+                if !dst_only_prefilter && !row_matches_all(evaluator, &expanded, dst_filter)? {
+                    return Ok(());
+                }
+                out.push(expanded);
+                Ok(())
+            }) {
+                Ok(()) => {}
+                Err(err) => {
+                    error = Some(err);
+                    return;
+                }
+            }
+        }
+    };
+
+    match direction {
+        EdgeDirection::PointingRight => store
+            .visit_out_edge_value_batches_for_label(
+                src_id,
+                storage_label,
+                order,
+                scratch,
+                &mut visit_batch,
+            )
+            .map_err(GraphStoreError::from)?,
+        EdgeDirection::PointingLeft => store
+            .visit_in_edge_value_batches_for_label(
+                src_id,
+                storage_label,
+                order,
+                scratch,
+                &mut visit_batch,
+            )
+            .map_err(GraphStoreError::from)?,
+        other => return Err(PlanQueryError::UnsupportedDirection(other)),
+    }
+    if let Some(err) = error {
+        return Err(err);
+    }
+    Ok(())
+}
+
+pub(crate) fn expand_candidates_into(
+    store: &GraphStore,
+    src_id: VertexId,
+    direction: EdgeDirection,
+    edge_label_id: Option<EdgeLabelId>,
+    sequence_order: EdgeSequenceOrder,
+    indexed_edge_equality: Option<&(Str, ScanValue)>,
+    edge_value_predicate: Option<&EdgeValuePredicate>,
+    edge_vector_predicate: Option<&EdgeVectorPredicate>,
+    parameters: &BTreeMap<String, Value>,
+    out: &mut Vec<ExpandCandidate>,
+) -> Result<(), PlanQueryError> {
+    let indexed = indexed_edge_equality.map(|(property, value)| (property.as_ref(), value));
+    if let Some((property, scan_value)) = indexed
+        && expand_candidates_via_equality_index(
+            store,
+            src_id,
+            direction,
+            edge_label_id,
+            property,
+            scan_value,
+            parameters,
+            out,
+        )?
+    {
+        return Ok(());
+    }
+    if let Some(edge_value_predicate) = edge_value_predicate {
+        let Some(edge_label_id) = edge_label_id else {
+            return Ok(());
+        };
+        let Some(predicate) = PreparedEdgeValuePredicate::prepare(
+            store,
+            edge_label_id,
+            edge_value_predicate,
+            parameters,
+        )?
+        else {
+            return Ok(());
+        };
+        expand_candidates_matching_edge_value_into(
+            store,
+            src_id,
+            direction,
+            edge_label_id,
+            sequence_order,
+            &predicate,
+            out,
+        )?;
+        return Ok(());
+    }
+    if let Some(edge_vector_predicate) = edge_vector_predicate {
+        let Some(edge_label_id) = edge_label_id else {
+            return Ok(());
+        };
+        let Some(predicate) = PreparedEdgeVectorThreshold::prepare(
+            store,
+            edge_label_id,
+            edge_vector_predicate,
+            parameters,
+        )?
+        else {
+            return Ok(());
+        };
+        expand_candidates_matching_edge_vector_threshold_into(
+            store,
+            src_id,
+            direction,
+            edge_label_id,
+            sequence_order,
+            &predicate,
+            out,
+        )?;
+        return Ok(());
+    }
+
+    match direction {
+        EdgeDirection::PointingRight => {
+            let mut error = None;
+            for_each_csr_expand_edge(
+                store,
+                src_id,
+                direction,
+                edge_label_id,
+                sequence_order,
+                |edge| {
+                    if error.is_some() {
+                        return;
+                    }
+                    if let Some((property, scan_value)) = indexed {
+                        match edge_matches_indexed_equality(
+                            store,
+                            src_id,
+                            direction,
+                            LaraLabelId::from_raw(edge.label_id),
+                            edge.edge_slot_index,
+                            &edge,
+                            property,
+                            scan_value,
+                            parameters,
+                        ) {
+                            Ok(false) => return,
+                            Ok(true) => {}
+                            Err(err) => {
+                                error = Some(err);
+                                return;
+                            }
+                        }
+                    }
+                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge)
+                        && let Err(err) =
+                            push_expand_candidate(out, store, src_id, direction, edge_dst, edge)
+                    {
+                        error = Some(err);
+                    }
+                },
+            )?;
+            if let Some(err) = error {
+                return Err(err);
+            }
+        }
+        EdgeDirection::PointingLeft => {
+            let mut error = None;
+            for_each_csr_expand_edge(
+                store,
+                src_id,
+                direction,
+                edge_label_id,
+                sequence_order,
+                |edge| {
+                    if error.is_some() {
+                        return;
+                    }
+                    if let Some((property, scan_value)) = indexed {
+                        match edge_matches_indexed_equality(
+                            store,
+                            src_id,
+                            direction,
+                            LaraLabelId::from_raw(edge.label_id),
+                            edge.edge_slot_index,
+                            &edge,
+                            property,
+                            scan_value,
+                            parameters,
+                        ) {
+                            Ok(false) => return,
+                            Ok(true) => {}
+                            Err(err) => {
+                                error = Some(err);
+                                return;
+                            }
+                        }
+                    }
+                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge)
+                        && let Err(err) =
+                            push_expand_candidate(out, store, src_id, direction, edge_dst, edge)
+                    {
+                        error = Some(err);
+                    }
+                },
+            )?;
+            if let Some(err) = error {
+                return Err(err);
+            }
+        }
+        EdgeDirection::Undirected => {
+            let mut error = None;
+            for_each_csr_expand_edge(
+                store,
+                src_id,
+                direction,
+                edge_label_id,
+                sequence_order,
+                |edge| {
+                    if error.is_some() {
+                        return;
+                    }
+                    if let Some((property, scan_value)) = indexed {
+                        match edge_matches_indexed_equality(
+                            store,
+                            src_id,
+                            direction,
+                            LaraLabelId::from_raw(edge.label_id),
+                            edge.edge_slot_index,
+                            &edge,
+                            property,
+                            scan_value,
+                            parameters,
+                        ) {
+                            Ok(false) => return,
+                            Ok(true) => {}
+                            Err(err) => {
+                                error = Some(err);
+                                return;
+                            }
+                        }
+                    }
+                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge)
+                        && let Err(err) =
+                            push_expand_candidate(out, store, src_id, direction, edge_dst, edge)
+                    {
+                        error = Some(err);
+                    }
+                },
+            )?;
+            if let Some(err) = error {
+                return Err(err);
+            }
+        }
+        other => return Err(PlanQueryError::UnsupportedDirection(other)),
+    }
+    Ok(())
+}
+
+fn for_each_csr_expand_edge<F>(
+    store: &GraphStore,
+    src_id: VertexId,
+    direction: EdgeDirection,
+    edge_label_id: Option<EdgeLabelId>,
+    sequence_order: EdgeSequenceOrder,
+    visit: F,
+) -> Result<(), PlanQueryError>
+where
+    F: FnMut(Edge),
+{
+    let order = sequence_order.into();
+    match direction {
+        EdgeDirection::PointingRight => {
+            if let Some(lid) = edge_label_id {
+                store
+                    .for_each_directed_out_edges_for_label_with_values(src_id, lid, order, visit)?;
+            } else {
+                store.for_each_directed_out_edges(src_id, order, visit)?;
+            }
+            Ok(())
+        }
+        EdgeDirection::Undirected => {
+            if let Some(lid) = edge_label_id {
+                store.for_each_undirected_edges_for_label(src_id, lid, order, visit)?;
+            } else {
+                store.for_each_undirected_edges(src_id, order, visit)?;
+            }
+            Ok(())
+        }
+        EdgeDirection::PointingLeft => {
+            if let Some(lid) = edge_label_id {
+                store
+                    .for_each_directed_in_edges_for_label_with_values(src_id, lid, order, visit)?;
+            } else {
+                store.for_each_directed_in_edges(src_id, order, visit)?;
+            }
+            Ok(())
+        }
+        other => Err(PlanQueryError::UnsupportedDirection(other)),
+    }
+}
+
+/// Probes the in-process edge equality index and, on hit, enumerates only matching slots.
+/// Returns `Ok(true)` when the index owned the lookup (including zero matches).
+fn expand_candidates_via_equality_index(
+    store: &GraphStore,
+    src_id: VertexId,
+    direction: EdgeDirection,
+    edge_label_id: Option<EdgeLabelId>,
+    property: &str,
+    scan_value: &ScanValue,
+    parameters: &BTreeMap<String, Value>,
+    out: &mut Vec<ExpandCandidate>,
+) -> Result<bool, PlanQueryError> {
+    let Some(property_id) = store.property_id(property) else {
+        return Ok(false);
+    };
+    let Some(expected) = resolve_scan_value_bytes(scan_value, parameters)? else {
+        out.clear();
+        return Ok(true);
+    };
+    let Some(postings) = edge_equal::lookup_equal(property_id, &expected) else {
+        return Ok(false);
+    };
+
+    let mut out_slots: BTreeSet<(u16, u32)> = BTreeSet::new();
+    let mut in_slots: BTreeSet<(u32, u16, u32)> = BTreeSet::new();
+    for posting in &postings {
+        if posting.owner_vertex_id == src_id {
+            out_slots.insert((posting.label_id, posting.slot_index));
+        }
+        in_slots.insert((
+            u32::from(posting.owner_vertex_id),
+            posting.label_id,
+            posting.slot_index,
+        ));
+    }
+
+    let mut error = None;
+    match direction {
+        EdgeDirection::PointingRight => {
+            for_each_csr_expand_edge(
+                store,
+                src_id,
+                direction,
+                edge_label_id,
+                EdgeSequenceOrder::Descending,
+                |edge| {
+                    if error.is_some() {
+                        return;
+                    }
+                    if !out_slots.contains(&(edge.label_id, edge.edge_slot_index.raw())) {
+                        return;
+                    }
+                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge)
+                        && let Err(err) =
+                            push_expand_candidate(out, store, src_id, direction, edge_dst, edge)
+                    {
+                        error = Some(err);
+                    }
+                },
+            )?;
+        }
+        EdgeDirection::PointingLeft => {
+            for_each_csr_expand_edge(
+                store,
+                src_id,
+                direction,
+                edge_label_id,
+                EdgeSequenceOrder::Descending,
+                |edge| {
+                    if error.is_some() {
+                        return;
+                    }
+                    let canonical = store.canonical_edge_handle(EdgeHandle {
+                        owner_vertex_id: src_id,
+                        label_id: LaraLabelId::from_raw(edge.label_id),
+                        slot_index: edge.edge_slot_index.raw(),
+                    });
+                    if !in_slots.contains(&(
+                        u32::from(canonical.owner_vertex_id),
+                        canonical.label_id.raw(),
+                        canonical.slot_index,
+                    )) {
+                        return;
+                    }
+                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge)
+                        && let Err(err) =
+                            push_expand_candidate(out, store, src_id, direction, edge_dst, edge)
+                    {
+                        error = Some(err);
+                    }
+                },
+            )?;
+        }
+        EdgeDirection::Undirected => {
+            for_each_csr_expand_edge(
+                store,
+                src_id,
+                direction,
+                edge_label_id,
+                EdgeSequenceOrder::Descending,
+                |edge| {
+                    if error.is_some() {
+                        return;
+                    }
+                    let canonical = store.canonical_edge_handle(EdgeHandle {
+                        owner_vertex_id: src_id,
+                        label_id: LaraLabelId::from_raw(edge.label_id),
+                        slot_index: edge.edge_slot_index.raw(),
+                    });
+                    if !in_slots.contains(&(
+                        u32::from(canonical.owner_vertex_id),
+                        canonical.label_id.raw(),
+                        canonical.slot_index,
+                    )) {
+                        return;
+                    }
+                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge)
+                        && let Err(err) =
+                            push_expand_candidate(out, store, src_id, direction, edge_dst, edge)
+                    {
+                        error = Some(err);
+                    }
+                },
+            )?;
+        }
+        other => return Err(PlanQueryError::UnsupportedDirection(other)),
+    }
+    if let Some(err) = error {
+        return Err(err);
+    }
+    Ok(true)
+}
