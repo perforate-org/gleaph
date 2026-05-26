@@ -4,8 +4,10 @@
 //! purely in the grammar. It validates variable scoping, structural constraints
 //! on patterns and modification statements, and other semantic rules.
 
+mod procedure;
 mod query_validation;
 mod session;
+mod transaction;
 
 use crate::ast::*;
 use crate::error::GqlError;
@@ -18,7 +20,11 @@ use std::collections::BTreeMap;
 use query_validation::{
     collect_pattern_bindings, composite_query_result_scopes, validate_composite_query,
 };
+use procedure::{
+    validate_call_procedure, validate_inline_scope_vars, validate_yield_alias_uniqueness,
+};
 use session::validate_session_command;
+use transaction::validate_transaction_activity;
 
 /// Result alias for validation.
 type VResult = Result<(), GqlError>;
@@ -44,78 +50,6 @@ pub fn validate(program: &GqlProgram) -> VResult {
 pub(super) fn validate_catalog_object_name(name: &ObjectName) -> VResult {
     for part in &name.parts {
         crate::name_limits::validate_catalog_name_part(part).map_err(|e| verr(&e.to_string()))?;
-    }
-    Ok(())
-}
-
-// ════════════════════════════════════════════════════════════════════════════════
-// Transaction validation (§8)
-// ════════════════════════════════════════════════════════════════════════════════
-
-fn validate_transaction_activity(ta: &TransactionActivity) -> VResult {
-    // Validate START TRANSACTION characteristics.
-    if let Some(ref start) = ta.start {
-        validate_start_transaction(start)?;
-    }
-
-    // Validate the statement body.
-    if let Some(ref body) = ta.body {
-        let mut scope = RapidHashSet::default();
-        let mut graph_scope = RapidHashSet::default();
-        validate_statement_with_scope(&body.first, &scope, &graph_scope)?;
-        let (mut prev_result_scope, mut prev_result_graph_scope) =
-            statement_result_scopes(&body.first, &scope, &graph_scope)?;
-        for next in &body.next {
-            // Validate YIELD alias uniqueness within a NEXT boundary.
-            if let Some(ref yields) = next.yield_items {
-                validate_yield_alias_uniqueness(yields, "NEXT YIELD")?;
-                let mut projected = RapidHashSet::default();
-                let mut projected_graph = RapidHashSet::default();
-                for yi in yields {
-                    if !prev_result_scope.contains(&yi.name) {
-                        return Err(verr(&format!(
-                            "NEXT YIELD variable '{}' is not in scope",
-                            yi.name
-                        )));
-                    }
-                    let output_name = yi.alias.clone().unwrap_or_else(|| yi.name.clone());
-                    if prev_result_graph_scope.contains(&yi.name) {
-                        projected_graph.insert(output_name.clone());
-                    }
-                    projected.insert(output_name);
-                }
-                scope = projected;
-                graph_scope = projected_graph;
-            } else {
-                scope = prev_result_scope.clone();
-                graph_scope = prev_result_graph_scope.clone();
-            }
-            validate_statement_with_scope(&next.statement, &scope, &graph_scope)?;
-            (prev_result_scope, prev_result_graph_scope) =
-                statement_result_scopes(&next.statement, &scope, &graph_scope)?;
-        }
-    }
-
-    Ok(())
-}
-
-/// Validates `START TRANSACTION` characteristics.
-///
-/// GQL §8.1: contradictory access modes (`READ ONLY, READ WRITE`) are
-/// semantically invalid.
-fn validate_start_transaction(start: &StartTransactionCommand) -> VResult {
-    let mut has_read_only = false;
-    let mut has_read_write = false;
-    for mode in &start.access_modes {
-        match mode {
-            TransactionAccessMode::ReadOnly => has_read_only = true,
-            TransactionAccessMode::ReadWrite => has_read_write = true,
-        }
-    }
-    if has_read_only && has_read_write {
-        return Err(verr(
-            "START TRANSACTION has contradictory access modes: both READ ONLY and READ WRITE",
-        ));
     }
     Ok(())
 }
@@ -776,48 +710,6 @@ fn validate_expr(
 // Helpers
 // ════════════════════════════════════════════════════════════════════════════════
 
-// ════════════════════════════════════════════════════════════════════════════════
-// YIELD / CALL validation helpers
-// ════════════════════════════════════════════════════════════════════════════════
-
-/// Validates that YIELD item output names (alias or bare name) are unique.
-fn validate_yield_alias_uniqueness(yields: &[YieldItem], context: &str) -> VResult {
-    let mut seen = RapidHashSet::default();
-    for item in yields {
-        let output_name = item.alias.as_ref().unwrap_or(&item.name);
-        if !seen.insert(output_name.clone()) {
-            return Err(verr(&format!(
-                "{context}: duplicate output name '{output_name}'"
-            )));
-        }
-    }
-    Ok(())
-}
-
-/// Validates a named CALL procedure statement.
-fn validate_call_procedure(cp: &CallProcedureStatement) -> VResult {
-    if cp.name.parts.is_empty() {
-        return Err(verr("CALL procedure name must not be empty"));
-    }
-    if let Some(ref yields) = cp.yield_items {
-        validate_yield_alias_uniqueness(yields, "CALL YIELD")?;
-    }
-    Ok(())
-}
-
-/// Validates an inline procedure call (scope variable duplicates, body).
-fn validate_inline_scope_vars(ipc: &InlineProcedureCall) -> VResult {
-    let mut seen = RapidHashSet::default();
-    for var in &ipc.scope_vars {
-        if !seen.insert(var.clone()) {
-            return Err(verr(&format!(
-                "inline CALL: duplicate scope variable '{var}'"
-            )));
-        }
-    }
-    Ok(())
-}
-
 fn verr(msg: &str) -> GqlError {
     GqlError::Validation(msg.to_string())
 }
@@ -829,6 +721,7 @@ fn verr(msg: &str) -> GqlError {
 #[cfg(test)]
 mod tests {
     use super::query_validation::{validate_graph_reference, validate_return, validate_select};
+    use super::procedure::validate_call_procedure;
     use super::session::validate_session_set;
     use super::*;
     use crate::parser;
