@@ -32,6 +32,7 @@ const FWD_VALUE_SLAB: MemoryId = MemoryId::new(42);
 const FWD_VALUE_LOG: MemoryId = MemoryId::new(49);
 const FWD_VALUE_FREE_SPANS: MemoryId = MemoryId::new(45);
 const FWD_VALUE_FREE_SPAN_BY_START: MemoryId = MemoryId::new(46);
+const FWD_VALUE_BLOBS: MemoryId = MemoryId::new(57);
 
 // --- Labeled graph: reverse orientation (10 memories) ---
 const REV_VERTICES: MemoryId = MemoryId::new(10);
@@ -48,6 +49,7 @@ const REV_VALUE_SLAB: MemoryId = MemoryId::new(43);
 const REV_VALUE_LOG: MemoryId = MemoryId::new(50);
 const REV_VALUE_FREE_SPANS: MemoryId = MemoryId::new(47);
 const REV_VALUE_FREE_SPAN_BY_START: MemoryId = MemoryId::new(48);
+const REV_VALUE_BLOBS: MemoryId = MemoryId::new(58);
 
 const MAINTENANCE_QUEUE: MemoryId = MemoryId::new(20);
 const DIRTY_WORK_ITEMS: MemoryId = MemoryId::new(21);
@@ -130,9 +132,10 @@ pub(crate) fn init_graph() -> StableGraph {
         MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGE_FREE_SPANS)),
         MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGE_FREE_SPAN_BY_START)),
         MEMORY_MANAGER.with(|m| m.borrow().get(FWD_VALUE_SLAB)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_VALUE_LOG)),
         MEMORY_MANAGER.with(|m| m.borrow().get(FWD_VALUE_FREE_SPANS)),
         MEMORY_MANAGER.with(|m| m.borrow().get(FWD_VALUE_FREE_SPAN_BY_START)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_VALUE_LOG)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_VALUE_BLOBS)),
         MEMORY_MANAGER.with(|m| m.borrow().get(REV_VERTICES)),
         MEMORY_MANAGER.with(|m| m.borrow().get(REV_BUCKETS)),
         MEMORY_MANAGER.with(|m| m.borrow().get(REV_BUCKET_FREE_SPANS)),
@@ -144,9 +147,10 @@ pub(crate) fn init_graph() -> StableGraph {
         MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGE_FREE_SPANS)),
         MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGE_FREE_SPAN_BY_START)),
         MEMORY_MANAGER.with(|m| m.borrow().get(REV_VALUE_SLAB)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(REV_VALUE_LOG)),
         MEMORY_MANAGER.with(|m| m.borrow().get(REV_VALUE_FREE_SPANS)),
         MEMORY_MANAGER.with(|m| m.borrow().get(REV_VALUE_FREE_SPAN_BY_START)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(REV_VALUE_LOG)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(REV_VALUE_BLOBS)),
         MEMORY_MANAGER.with(|m| m.borrow().get(MAINTENANCE_QUEUE)),
         MEMORY_MANAGER.with(|m| m.borrow().get(DIRTY_WORK_ITEMS)),
         GRAPH_ELEM_CAPACITY,

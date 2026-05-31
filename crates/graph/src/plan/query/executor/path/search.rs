@@ -103,7 +103,7 @@ pub(crate) fn shortest_paths_between(
 
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _relax_scope = bench_scope("shortest_bfs_relax_neighbors");
-        for (edge_dst, edge_binding) in candidates.iter().copied() {
+        for (edge_dst, edge_binding) in candidates.iter().cloned() {
             let ExpandDst::Local(next) = edge_dst else {
                 continue;
             };

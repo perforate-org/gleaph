@@ -19,7 +19,7 @@ use super::{LabeledLaraGraph, OutEdgeOrder};
 pub struct LabeledEdgeValueBatchScratch<E> {
     /// Edge rows in the same order as the parallel value byte chunks.
     pub edges: Vec<E>,
-    /// Flattened value bytes: `edges.len() * batch.width_code.byte_width()` bytes.
+    /// Flattened value bytes: `edges.len() * batch.byte_width.byte_width()` bytes.
     pub value_bytes: Vec<u8>,
 }
 
@@ -45,7 +45,7 @@ pub struct LabeledEdgeValueBatch<'a, E> {
     /// Label bucket visited by this batch.
     pub label_id: BucketLabelKey,
     /// Physical byte width of each edge value in this batch.
-    pub width_code: crate::labeled::slot_index::ValueWidthCode,
+    pub byte_width: u16,
     /// Scan order used for both `edges` and `value_bytes`.
     pub order: OutEdgeOrder,
     /// Edge rows in scan order.

@@ -72,7 +72,7 @@ fn fill_path_elements_leaf_to_root(
     for (hop, &si) in chain.iter().rev().enumerate() {
         let state = &states[si];
         if hop > 0
-            && let Some(edge_binding) = state.edge
+            && let Some(edge_binding) = state.edge.clone()
         {
             elements.push(edge_path_element(shard_id, edge_binding.handle));
         }

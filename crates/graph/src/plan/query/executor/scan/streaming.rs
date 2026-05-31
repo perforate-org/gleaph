@@ -558,14 +558,16 @@ fn stream_expand(
             let Some(edge_dst) = ExpandDst::from_edge(store, &edge)? else {
                 return Ok(false);
             };
+            let label_id = edge.label_id;
+            let slot_index = edge.edge_slot_index;
             let edge_binding = edge_binding_for_expand(store, src_id, direction, edge)?;
             if !edge_matches_stream_filter(
                 store,
                 &edge_equality_filter,
                 direction,
                 edge_binding.handle.owner_vertex_id,
-                LaraLabelId::from_raw(edge.label_id),
-                edge.edge_slot_index,
+                LaraLabelId::from_raw(label_id),
+                slot_index,
             )? {
                 return Ok(false);
             }
@@ -638,7 +640,7 @@ fn stream_expand(
         parameters,
         &mut candidates,
     )?;
-    for (edge_dst, edge_binding) in candidates.iter().copied() {
+    for (edge_dst, edge_binding) in candidates.iter().cloned() {
         if !expand_dst_matches_prebound_vertex(&row, dst, edge_dst) {
             continue;
         }

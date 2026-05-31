@@ -438,7 +438,7 @@ where
         for vidx in 0..vertex_len {
             let neighborhood = cache.vertex_edges(vidx as usize);
             let start = positions[vidx as usize];
-            for (i, edge) in neighborhood.iter().copied().enumerate() {
+            for (i, edge) in neighborhood.iter().cloned().enumerate() {
                 self.edges.write_slot(start + i as u64, edge)?;
             }
             let vid = VertexId::from(vidx);
@@ -479,7 +479,7 @@ where
             layout = self.layout();
             segment = self.segment_for_vertex_id_with_layout(&layout, src);
         }
-        let location = match self.edges.insert_edge(&self.vertices, src, edge) {
+        let location = match self.edges.insert_edge(&self.vertices, src, edge.clone()) {
             Ok(location) => location,
             Err(LaraOperationError::SegmentLogFull) => {
                 self.rebalance_leaf_segment_with_layout(&layout, segment)
@@ -800,7 +800,7 @@ where
         for (offset, &start) in positions.iter().enumerate() {
             let neighborhood = cache.vertex_edges(offset);
             let vid_u32 = start_vertex + offset as u32;
-            for (i, edge) in neighborhood.iter().copied().enumerate() {
+            for (i, edge) in neighborhood.iter().cloned().enumerate() {
                 self.edges.write_slot(start + i as u64, edge)?;
             }
             let id = VertexId::from(vid_u32);
@@ -883,7 +883,7 @@ where
         for (offset, &start) in positions.iter().enumerate() {
             let neighborhood = cache.vertex_edges(offset);
             let vid_u32 = start_vertex.saturating_add(offset as u32);
-            for (i, edge) in neighborhood.iter().copied().enumerate() {
+            for (i, edge) in neighborhood.iter().cloned().enumerate() {
                 self.edges.write_slot(start + i as u64, edge)?;
             }
             let id = VertexId::from(vid_u32);
@@ -957,7 +957,7 @@ where
         for (offset, &start) in positions.iter().enumerate() {
             let neighborhood = cache.vertex_edges(offset);
             let vid_u32 = start_vertex.saturating_add(offset as u32);
-            for (i, edge) in neighborhood.iter().copied().enumerate() {
+            for (i, edge) in neighborhood.iter().cloned().enumerate() {
                 self.edges.write_slot(start + i as u64, edge)?;
             }
             let id = VertexId::from(vid_u32);
@@ -1141,7 +1141,7 @@ where
         for (offset, &start) in positions.iter().enumerate() {
             let neighborhood = cache.vertex_edges(offset);
             let vid_u32 = start_vertex.saturating_add(offset as u32);
-            for (i, edge) in neighborhood.iter().copied().enumerate() {
+            for (i, edge) in neighborhood.iter().cloned().enumerate() {
                 self.edges.write_slot(start + i as u64, edge)?;
             }
             let id = VertexId::from(vid_u32);
@@ -1532,7 +1532,7 @@ mod tests {
             Self(out)
         }
 
-        fn write_to(self, bytes: &mut [u8]) {
+        fn write_to(&self, bytes: &mut [u8]) {
             bytes[..80].copy_from_slice(&self.0);
         }
 
@@ -1540,9 +1540,10 @@ mod tests {
             VertexId::from(u32::from(self.0[0]))
         }
 
-        fn with_neighbor_vid(mut self, vid: VertexId) -> Self {
-            self.0[0] = u32::from(vid) as u8;
-            self
+        fn with_neighbor_vid(&self, vid: VertexId) -> Self {
+            let mut edge = self.clone();
+            edge.0[0] = u32::from(vid) as u8;
+            edge
         }
     }
 

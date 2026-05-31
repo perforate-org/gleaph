@@ -6,7 +6,7 @@ use crate::{
         access::LabelEdgeSpanAccess,
         bucket_label_key::BucketLabelKey,
         record::{LabelBucket, LabeledVertex},
-        slot_index::{ValueWidthCode, checked_add_slot_index},
+        slot_index::checked_add_slot_index,
     },
     lara::{
         edge::{InsertLocation, segment_tree_leaf_count},
@@ -111,16 +111,17 @@ where
 
         let (bucket_slot, mut bucket) = self.find_or_create_bucket(src, &vertex, label_id)?;
         let vertex = self.vertices.get(src);
-        if let Some(code) = ValueWidthCode::from_byte_width(edge.edge_value_byte_width()) {
-            if code != ValueWidthCode::Zero && code != bucket.value_width_code() {
-                bucket = self.ensure_bucket_value_width_on_slot(src, bucket_slot, bucket, code)?;
-                self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
-            }
+        let value_width = edge.edge_value_byte_width();
+        if value_width != 0 && value_width != bucket.value_byte_width() {
+            bucket =
+                self.ensure_bucket_value_byte_width_on_slot(src, bucket_slot, bucket, value_width)?;
+            self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
         }
         self.ensure_bucket_slack_insert_when_peers_have_values(src, &vertex)?;
         let vertex = self.vertices.get(src);
         let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, bucket_slot)?;
         for _attempt in 0..64u32 {
+            let attempt_edge = edge.clone();
             let vertex = self.vertices.get(src);
             let successor_start =
                 self.bucket_successor_start_after_bucket(&vertex, bucket_index, &bucket)?;
@@ -130,13 +131,13 @@ where
                     checked_add_slot_index(bucket.edge_start(), u64::from(bucket.stored_slots))
                         .ok_or(LaraOperationError::CollectAllocationOverflow)?;
                 debug_assert!(write_slot < successor_start);
-                self.edges.write_slot(write_slot, edge)?;
+                self.edges.write_slot(write_slot, attempt_edge.clone())?;
                 let prev_stored_slots = bucket.stored_slots;
                 let bucket = bucket.grow_packed_slab_by_one();
                 let bucket =
                     self.ensure_bucket_value_span(src, bucket_slot, bucket, prev_stored_slots)?;
                 let slot_index = bucket.stored_slots.saturating_sub(1);
-                self.write_edge_value_at_slot(&bucket, slot_index, &edge)?;
+                self.write_edge_value_at_slot(&bucket, slot_index, &attempt_edge)?;
                 self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
                 let hdr = self.edges.header();
                 let next_num_edges = hdr
@@ -151,7 +152,10 @@ where
                 return Ok(());
             }
             let access = LabelEdgeSpanAccess::new(&self.buckets, bucket_slot, successor_start, src);
-            match self.edges.insert_edge(&access, VertexId::from(0), edge) {
+            match self
+                .edges
+                .insert_edge(&access, VertexId::from(0), attempt_edge.clone())
+            {
                 Ok(InsertLocation::Slab(written_slot)) => {
                     bucket = self
                         .buckets
@@ -164,7 +168,7 @@ where
                     }
                     let bucket =
                         self.ensure_bucket_value_span(src, bucket_slot, bucket, prev_stored_slots)?;
-                    self.write_edge_value_at_slot(&bucket, written_slot, &edge)?;
+                    self.write_edge_value_at_slot(&bucket, written_slot, &attempt_edge)?;
                     self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
                     self.invalidate_bucket_lookup_for_label(src, label_id);
                     return Ok(());
@@ -179,7 +183,8 @@ where
                         self.ensure_bucket_value_span(src, bucket_slot, bucket, prev_stored_slots)?;
                     let entry_idx = bucket.overflow_log_head();
                     if bucket.is_value_allocated() && entry_idx >= 0 {
-                        bucket = self.write_edge_value_to_log(src, &bucket, entry_idx, &edge)?;
+                        bucket =
+                            self.write_edge_value_to_log(src, &bucket, entry_idx, &attempt_edge)?;
                     }
                     self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
                     self.invalidate_bucket_lookup_for_label(src, label_id);
@@ -191,7 +196,7 @@ where
                         && !has_edge_value
                         && label_id == self.bypass_storage_label_for(&vertex)
                     {
-                        return self.insert_homogeneous_bypass_edge(src, label_id, edge);
+                        return self.insert_homogeneous_bypass_edge(src, label_id, attempt_edge);
                     }
                     self.reclaim_edge_log_leaf_for_labeled(src)?;
                     let vertex = self.vertices.get(src);

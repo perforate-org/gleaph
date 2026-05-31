@@ -122,18 +122,18 @@ impl<V: CsrVertex + CsrVertexTombstone> CsrVertexTombstoneScan for V {
 /// at row `dst` in the reverse store.
 ///
 /// Hot paths use a **64-byte stack buffer** when `BYTES <= 64`; larger widths still work via heap.
-pub trait CsrEdge: Copy {
+pub trait CsrEdge: Clone {
     /// Fixed byte width of one encoded edge record.
     const BYTES: usize;
     /// Decodes an edge record from exactly [`Self::BYTES`] bytes.
     fn read_from(bytes: &[u8]) -> Self;
     /// Encodes this edge record into exactly [`Self::BYTES`] bytes.
-    fn write_to(self, bytes: &mut [u8]);
+    fn write_to(&self, bytes: &mut [u8]);
 
     /// Adjacent vertex id for this orientation (out-neighbor in the forward CSR).
     fn neighbor_vid(&self) -> VertexId;
     /// Returns a copy with the adjacent vertex id changed.
-    fn with_neighbor_vid(self, vid: VertexId) -> Self;
+    fn with_neighbor_vid(&self, vid: VertexId) -> Self;
     /// Returns a copy annotated with the physical slot index from which it was read.
     #[inline]
     fn with_slot_index(self, _slot_index: u32) -> Self {
@@ -157,7 +157,7 @@ pub trait CsrEdge: Copy {
 
     /// Physical byte width of the in-memory edge value (0 when absent).
     #[inline]
-    fn edge_value_byte_width(&self) -> u8 {
+    fn edge_value_byte_width(&self) -> u16 {
         0
     }
 
@@ -169,7 +169,7 @@ pub trait CsrEdge: Copy {
 
     /// Returns a copy with in-memory value bytes attached (wire row unchanged).
     #[inline]
-    fn with_stored_value_bytes(self, _width: u8, _bytes: &[u8]) -> Self {
+    fn with_stored_value_bytes(self, _width: u16, _bytes: &[u8]) -> Self {
         self
     }
 

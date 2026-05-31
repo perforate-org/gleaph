@@ -755,7 +755,7 @@ mod tests {
         let rail = BucketLabelKey::from_raw(3);
         for (src, label) in [(VertexId::from(0), road), (VertexId::from(1), rail)] {
             graph
-                .ensure_label_bucket_value_width(src, label, ValueWidthCode::W2)
+                .ensure_label_bucket_value_byte_width(src, label, 2u16)
                 .unwrap();
         }
         for (src, label) in [(VertexId::from(0), road), (VertexId::from(1), rail)] {
@@ -786,12 +786,10 @@ mod tests {
         let leaf = graph.value_log_leaf(VertexId::from(1));
         let rail_head = u32::try_from(rail_bucket.value_log_head()).unwrap();
         let mut before = [0u8; 2];
-        graph.values().read_value_log_entry(
-            leaf,
-            rail_head,
-            rail_bucket.value_width(),
-            &mut before,
-        );
+        graph
+            .values()
+            .read_value_log_entry(leaf, rail_head, rail_bucket.value_byte_width(), &mut before)
+            .expect("read before");
 
         let road_bucket_log_only = road_bucket.with_degree_field(0).with_stored_slots(0);
         graph
@@ -801,7 +799,8 @@ mod tests {
         let mut after = [0u8; 2];
         graph
             .values()
-            .read_value_log_entry(leaf, rail_head, rail_bucket.value_width(), &mut after);
+            .read_value_log_entry(leaf, rail_head, rail_bucket.value_byte_width(), &mut after)
+            .expect("read after");
         assert_ne!(before, [0, 0]);
         assert_eq!(after, before);
     }
@@ -811,7 +810,7 @@ mod tests {
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .ensure_label_bucket_value_width(VertexId::from(0), road, ValueWidthCode::W2)
+            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
         graph
             .insert_edge_skip_leaf_cascade(VertexId::from(0), road, ValuedTestEdge::with_u16(1, 42))
@@ -841,7 +840,7 @@ mod tests {
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .ensure_label_bucket_value_width(VertexId::from(0), road, ValueWidthCode::W2)
+            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
         graph
             .insert_edge_skip_leaf_cascade(VertexId::from(0), road, ValuedTestEdge::with_u16(1, 42))

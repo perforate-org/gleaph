@@ -4,8 +4,10 @@ use crate::{
     VertexCount, VertexId,
     labeled::record::LabeledVertexFieldError,
     lara::{
-        edge::InitError as EdgeInitError, edge_value::InitError as ValueInitError,
-        operation_error::LaraOperationError, vertex::InitError as VertexInitError,
+        edge::InitError as EdgeInitError,
+        edge_value::{InitError as ValueInitError, ValueLogReadError, ValueLogWriteError},
+        operation_error::LaraOperationError,
+        vertex::InitError as VertexInitError,
     },
 };
 use std::fmt;
@@ -22,6 +24,10 @@ pub enum LabeledOperationError {
     },
     /// Underlying LARA store operation failed.
     Store(LaraOperationError),
+    /// Reading an edge-value overflow-log entry failed.
+    ValueLogRead(ValueLogReadError),
+    /// Writing an edge-value overflow-log entry failed.
+    ValueLogWrite(ValueLogWriteError),
     /// A default-label bypass was requested for a row that cannot use it.
     InvalidDefaultBypass,
     /// Vertex row fields are inconsistent with labeled bucket-mode limits.
@@ -35,6 +41,8 @@ impl fmt::Display for LabeledOperationError {
                 write!(f, "vertex {vid} out of range (len={len})")
             }
             Self::Store(err) => write!(f, "{err}"),
+            Self::ValueLogRead(err) => write!(f, "{err}"),
+            Self::ValueLogWrite(err) => write!(f, "{err}"),
             Self::InvalidDefaultBypass => write!(
                 f,
                 "default-label bypass requires exactly one default adjacency label"
@@ -48,6 +56,8 @@ impl std::error::Error for LabeledOperationError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Store(err) => Some(err),
+            Self::ValueLogRead(err) => Some(err),
+            Self::ValueLogWrite(err) => Some(err),
             Self::VertexOutOfRange { .. }
             | Self::InvalidDefaultBypass
             | Self::InvalidVertexRow(_) => None,
@@ -91,8 +101,7 @@ impl From<crate::labeled::record::LabelBucketFieldError> for LaraOperationError 
             crate::labeled::record::LabelBucketFieldError::ReservedTopBitSet
             | crate::labeled::record::LabelBucketFieldError::OverflowLogHeadOutOfRange
             | crate::labeled::record::LabelBucketFieldError::ValueOffsetOverflow
-            | crate::labeled::record::LabelBucketFieldError::ValueLogHeadOutOfRange
-            | crate::labeled::record::LabelBucketFieldError::ValueWidthCodeReserved => {
+            | crate::labeled::record::LabelBucketFieldError::ValueLogHeadOutOfRange => {
                 Self::CollectAllocationOverflow
             }
         }
@@ -108,6 +117,18 @@ impl From<LaraOperationError> for LabeledOperationError {
 impl From<crate::GrowFailed> for LabeledOperationError {
     fn from(value: crate::GrowFailed) -> Self {
         Self::Store(LaraOperationError::RebalanceFailed(value))
+    }
+}
+
+impl From<ValueLogReadError> for LabeledOperationError {
+    fn from(value: ValueLogReadError) -> Self {
+        Self::ValueLogRead(value)
+    }
+}
+
+impl From<ValueLogWriteError> for LabeledOperationError {
+    fn from(value: ValueLogWriteError) -> Self {
+        Self::ValueLogWrite(value)
     }
 }
 

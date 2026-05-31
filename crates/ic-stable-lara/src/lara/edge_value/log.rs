@@ -7,11 +7,11 @@ use std::{cell::Cell, fmt};
 /// Magic bytes that identify a LARA value overflow-log memory.
 pub const MAGIC: [u8; 3] = *b"LVL";
 /// Current overflow-log layout version.
-pub const LAYOUT_VERSION: u8 = 1;
+pub const LAYOUT_VERSION: u8 = 2;
 const HEADER_SIZE: u64 = 32;
-const INLINE_LOG_ENTRY_BYTES: usize = 72;
-/// Maximum encoded value width stored in one log entry.
-pub const PAYLOAD_BYTES: usize = 64;
+const INLINE_LOG_ENTRY_BYTES: usize = 17;
+/// Payload bytes per value overflow log entry (`ValueLogCell`).
+pub const PAYLOAD_BYTES: usize = 9;
 
 /// Default per-segment overflow-log capacity (matches edge log).
 pub const DEFAULT_MAX_LOG_ENTRIES: u32 = 170;
@@ -148,7 +148,10 @@ impl<M: Memory> ValueLogStore<M> {
         entry_idx: u32,
         out: &mut [u8],
     ) -> (i32, i32) {
-        debug_assert!(out.len() >= PAYLOAD_BYTES);
+        debug_assert!(
+            out.len() >= PAYLOAD_BYTES,
+            "value log read buffer too small"
+        );
         let off = entry_offset(h, leaf_segment, entry_idx);
         let prev = read_i32(&self.memory, Address::from(off));
         let src = read_i32(&self.memory, Address::from(off + 4));

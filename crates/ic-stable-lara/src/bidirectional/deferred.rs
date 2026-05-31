@@ -960,8 +960,9 @@ where
             return Err(DeferredBidirectionalLaraError::UndirectedEdgeInDirectedInsert);
         }
 
+        let reverse = edge.with_neighbor_vid(src);
         self.insert_oriented_deferred(Orientation::Forward, src, edge)?;
-        self.insert_oriented_deferred(Orientation::Reverse, dst, edge.with_neighbor_vid(src))?;
+        self.insert_oriented_deferred(Orientation::Reverse, dst, reverse)?;
         Ok(())
     }
 
@@ -1044,9 +1045,10 @@ where
         let Some(edge) = removed_forward else {
             return Ok(None);
         };
+        let reverse_edge = edge.with_neighbor_vid(src);
         let removed_reverse = self
             .reverse
-            .remove_edge(dst, edge.with_neighbor_vid(src))
+            .remove_edge(dst, reverse_edge)
             .map_err(DeferredBidirectionalLaraError::Reverse)?;
         if !removed_reverse {
             return Err(DeferredBidirectionalLaraError::Reverse(

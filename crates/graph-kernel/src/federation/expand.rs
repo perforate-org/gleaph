@@ -1,10 +1,13 @@
 //! Wire types for cross-shard expand (graph canister query API).
 
 use candid::CandidType;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 
 use super::{LocalVertexId, LogicalVertexId, ShardId};
-use crate::entry::{EdgeValuePayload, MAX_EDGE_VALUE_BYTES};
+use crate::entry::EdgeValuePayload;
+
+/// Maximum edge-value bytes carried by one federated expand hit.
+pub const MAX_FEDERATED_EXPAND_VALUE_BYTE_WIDTH: u16 = 4096;
 
 /// Direction of a federated expand probe on a graph shard.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
@@ -27,8 +30,29 @@ pub struct FederatedExpandArgs {
     pub label_id_raw: Option<u16>,
 }
 
+/// Rejects oversize federated expand value payloads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FederatedExpandValueError {
+    ValueBytesTooLong { len: usize, max: u16 },
+}
+
+impl std::fmt::Display for FederatedExpandValueError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ValueBytesTooLong { len, max } => {
+                write!(
+                    f,
+                    "federated expand value_bytes length {len} exceeds max {max}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for FederatedExpandValueError {}
+
 /// One half-edge visible on the responding shard.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType)]
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct FederatedExpandNeighbor {
     pub shard_id: ShardId,
     pub neighbor_logical_vertex_id: LogicalVertexId,
@@ -37,93 +61,39 @@ pub struct FederatedExpandNeighbor {
     pub anchor_local_vertex_id: LocalVertexId,
     pub label_id_raw: u16,
     pub slot_index: u32,
-    /// Little-endian u16 view when [`Self::value_len`] is `2`.
+    /// Little-endian u16 view when value length is `2`.
     pub inline_value: u16,
-    pub value_len: u8,
-    pub value_bytes: [u8; MAX_EDGE_VALUE_BYTES],
+    pub value_bytes: Vec<u8>,
 }
 
 impl FederatedExpandNeighbor {
     #[inline]
-    pub fn value_payload(self) -> EdgeValuePayload {
-        EdgeValuePayload {
-            bytes: self.value_bytes,
-            len: self.value_len,
-        }
+    pub fn value_payload(&self) -> EdgeValuePayload {
+        EdgeValuePayload::from_slice(&self.value_bytes)
     }
 
     #[inline]
     pub fn from_value_payload(mut self, value: EdgeValuePayload) -> Self {
-        self.value_bytes = value.bytes;
-        self.value_len = value.len;
         self.inline_value = value.inline_u16();
+        self.value_bytes = value.as_slice().to_vec();
         self
     }
-}
 
-impl Serialize for FederatedExpandNeighbor {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeStruct;
-        let mut s = serializer.serialize_struct("FederatedExpandNeighbor", 9)?;
-        s.serialize_field("shard_id", &self.shard_id)?;
-        s.serialize_field(
-            "neighbor_logical_vertex_id",
-            &self.neighbor_logical_vertex_id,
-        )?;
-        s.serialize_field("neighbor_local_vertex_id", &self.neighbor_local_vertex_id)?;
-        s.serialize_field("anchor_local_vertex_id", &self.anchor_local_vertex_id)?;
-        s.serialize_field("label_id_raw", &self.label_id_raw)?;
-        s.serialize_field("slot_index", &self.slot_index)?;
-        s.serialize_field("inline_value", &self.inline_value)?;
-        s.serialize_field("value_len", &self.value_len)?;
-        s.serialize_field(
-            "value_bytes",
-            &self.value_bytes[..usize::from(self.value_len)],
-        )?;
-        s.end()
+    #[inline]
+    pub fn value_len(&self) -> usize {
+        self.value_bytes.len()
     }
-}
 
-impl<'de> Deserialize<'de> for FederatedExpandNeighbor {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        struct Wire {
-            shard_id: ShardId,
-            neighbor_logical_vertex_id: LogicalVertexId,
-            neighbor_local_vertex_id: LocalVertexId,
-            anchor_local_vertex_id: LocalVertexId,
-            label_id_raw: u16,
-            slot_index: u32,
-            inline_value: u16,
-            value_len: u8,
-            value_bytes: Vec<u8>,
+    /// Bounds-checks [`Self::value_bytes`] before returning neighbors on the wire.
+    pub fn validate_wire(&self) -> Result<(), FederatedExpandValueError> {
+        let len = self.value_bytes.len();
+        if len > usize::from(MAX_FEDERATED_EXPAND_VALUE_BYTE_WIDTH) {
+            return Err(FederatedExpandValueError::ValueBytesTooLong {
+                len,
+                max: MAX_FEDERATED_EXPAND_VALUE_BYTE_WIDTH,
+            });
         }
-        let wire = Wire::deserialize(deserializer)?;
-        if usize::from(wire.value_len) != wire.value_bytes.len() {
-            return Err(serde::de::Error::custom(
-                "federated expand value_len does not match value_bytes length",
-            ));
-        }
-        if wire.value_bytes.len() > MAX_EDGE_VALUE_BYTES {
-            return Err(serde::de::Error::custom(format!(
-                "federated expand value_bytes length {} exceeds max {}",
-                wire.value_bytes.len(),
-                MAX_EDGE_VALUE_BYTES
-            )));
-        }
-        let mut value_bytes = [0u8; MAX_EDGE_VALUE_BYTES];
-        value_bytes[..wire.value_bytes.len()].copy_from_slice(&wire.value_bytes);
-        Ok(Self {
-            shard_id: wire.shard_id,
-            neighbor_logical_vertex_id: wire.neighbor_logical_vertex_id,
-            neighbor_local_vertex_id: wire.neighbor_local_vertex_id,
-            anchor_local_vertex_id: wire.anchor_local_vertex_id,
-            label_id_raw: wire.label_id_raw,
-            slot_index: wire.slot_index,
-            inline_value: wire.inline_value,
-            value_len: wire.value_len,
-            value_bytes,
-        })
+        Ok(())
     }
 }
 
@@ -131,6 +101,7 @@ impl<'de> Deserialize<'de> for FederatedExpandNeighbor {
 mod tests {
     use super::*;
     use candid::{Decode, Encode};
+
     #[test]
     fn federated_expand_neighbor_value_payload_roundtrip() {
         let neighbor = FederatedExpandNeighbor {
@@ -141,13 +112,7 @@ mod tests {
             label_id_raw: 5,
             slot_index: 6,
             inline_value: 0,
-            value_len: 2,
-            value_bytes: {
-                let mut b = [0u8; MAX_EDGE_VALUE_BYTES];
-                b[0] = 9;
-                b[1] = 8;
-                b
-            },
+            value_bytes: vec![9, 8],
         };
         let payload = neighbor.value_payload();
         let restored = FederatedExpandNeighbor {
@@ -158,12 +123,10 @@ mod tests {
             label_id_raw: 5,
             slot_index: 6,
             inline_value: 0,
-            value_len: 0,
-            value_bytes: [0u8; MAX_EDGE_VALUE_BYTES],
+            value_bytes: Vec::new(),
         }
         .from_value_payload(payload);
-        assert_eq!(restored.value_len, 2);
-        assert_eq!(restored.value_bytes[0], 9);
+        assert_eq!(restored.value_bytes, vec![9, 8]);
     }
 
     #[test]
@@ -189,10 +152,48 @@ mod tests {
             label_id_raw: 0,
             slot_index: 0,
             inline_value: 0,
-            value_len: 0,
-            value_bytes: [0u8; MAX_EDGE_VALUE_BYTES],
+            value_bytes: Vec::new(),
         }
         .from_value_payload(payload);
         assert_eq!(neighbor.inline_value, 0x1234);
+    }
+
+    #[test]
+    fn value_bytes_reject_over_max_width() {
+        let oversized = vec![0u8; usize::from(MAX_FEDERATED_EXPAND_VALUE_BYTE_WIDTH) + 1];
+        let neighbor = FederatedExpandNeighbor {
+            shard_id: 0,
+            neighbor_logical_vertex_id: 0,
+            neighbor_local_vertex_id: 0,
+            anchor_local_vertex_id: 0,
+            label_id_raw: 0,
+            slot_index: 0,
+            inline_value: 0,
+            value_bytes: oversized,
+        };
+        assert!(matches!(
+            neighbor.validate_wire(),
+            Err(FederatedExpandValueError::ValueBytesTooLong { .. })
+        ));
+    }
+
+    #[test]
+    fn federated_expand_neighbor_candid_roundtrip_validates() {
+        let neighbor = FederatedExpandNeighbor {
+            shard_id: 1,
+            neighbor_logical_vertex_id: 2,
+            neighbor_local_vertex_id: 3,
+            anchor_local_vertex_id: 4,
+            label_id_raw: 5,
+            slot_index: 6,
+            inline_value: 7,
+            value_bytes: vec![1, 2, 3],
+        };
+        neighbor.validate_wire().expect("valid payload");
+        let bytes = Encode!(&neighbor).expect("encode");
+        let decoded: FederatedExpandNeighbor =
+            Decode!(&bytes, FederatedExpandNeighbor).expect("decode");
+        decoded.validate_wire().expect("decoded payload valid");
+        assert_eq!(decoded.value_bytes, neighbor.value_bytes);
     }
 }

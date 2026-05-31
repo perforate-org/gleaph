@@ -1343,6 +1343,7 @@ mod tests {
         let mut weights = BTreeMap::new();
         store
             .for_each_directed_out_edges_for_label_unchecked(s, road, |edge| {
+                let neighbor = edge.neighbor_vid();
                 let binding =
                     edge_binding_for_expand(&store, s, EdgeDirection::PointingRight, edge)
                         .expect("binding");
@@ -1355,7 +1356,7 @@ mod tests {
                     Some(decoder),
                 )
                 .expect("decode");
-                weights.insert(edge.neighbor_vid(), w);
+                weights.insert(neighbor, w);
             })
             .expect("for_each");
         let mut sorted: Vec<_> = weights.into_values().collect();
@@ -1422,7 +1423,8 @@ mod tests {
         store
             .for_each_directed_out_edges_for_label_unchecked(VertexId::from(detour), road, |edge| {
                 assert_eq!(edge.inline_value_u16(), 1, "raw CSR edge value");
-                assert_eq!(edge.value_bytes(), &[1, 0]);
+                let value_bytes = edge.value_bytes().to_vec();
+                assert_eq!(value_bytes, vec![1, 0]);
                 let handle = EdgeHandle {
                     owner_vertex_id: VertexId::from(detour),
                     label_id: ic_stable_lara::BucketLabelKey::from_raw(edge.label_id),
@@ -1434,7 +1436,7 @@ mod tests {
                     .expect("record");
                 assert_eq!(
                     record.value_bytes(),
-                    edge.value_bytes(),
+                    value_bytes.as_slice(),
                     "find_outgoing_edge_record must match iterated edge bytes"
                 );
             })
@@ -1443,7 +1445,7 @@ mod tests {
         prep.expand_into(&store, VertexId::from(detour), &mut from_detour)
             .expect("from detour");
         assert_eq!(from_detour.len(), 1);
-        let binding = from_detour[0].1;
+        let binding = from_detour[0].1.clone();
         assert_eq!(
             binding.inline_value(),
             1,

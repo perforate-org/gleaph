@@ -30,11 +30,10 @@ pub use id::EdgeSlotIndex;
 pub use meta::EdgeMeta;
 
 /// Maximum edge-value byte width supported by labeled storage profiles.
-pub const MAX_EDGE_VALUE_BYTES: usize = 64;
+pub const MAX_EDGE_VALUE_BYTES: usize = u16::MAX as usize;
 
 /// Fixed-size adjacency entry stored in one labeled CSR slab slot.
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Edge {
     pub target: VertexRef,
     pub edge_slot_index: EdgeSlotIndex,
@@ -45,7 +44,10 @@ pub struct Edge {
 
 impl PartialEq for Edge {
     fn eq(&self, other: &Self) -> bool {
-        self.target == other.target && self.value == other.value
+        self.target == other.target
+            && self.edge_slot_index == other.edge_slot_index
+            && self.label_id == other.label_id
+            && self.value == other.value
     }
 }
 
@@ -54,6 +56,8 @@ impl Eq for Edge {}
 impl Hash for Edge {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.target.hash(state);
+        self.edge_slot_index.hash(state);
+        self.label_id.hash(state);
         self.value.hash(state);
     }
 }
@@ -65,22 +69,24 @@ impl Edge {
         self.value.as_slice()
     }
 
-    /// Sets the in-memory value bytes (length must be <= [`MAX_EDGE_VALUE_BYTES`]).
+    /// Sets the in-memory value bytes (length must be <= [`MAX_EDGE_VALUE_BYTES`] when enforced by callers).
     #[inline]
-    pub fn with_value_bytes(mut self, bytes: &[u8]) -> Self {
-        self.value = EdgeValuePayload::from_slice(bytes);
-        self
+    pub fn with_value_bytes(&self, bytes: &[u8]) -> Self {
+        Self {
+            value: EdgeValuePayload::from_slice(bytes),
+            ..self.clone()
+        }
     }
 
     /// Legacy u16 weight view when the active value is exactly two bytes (little-endian).
     #[inline]
-    pub fn inline_value_u16(self) -> u16 {
+    pub fn inline_value_u16(&self) -> u16 {
         self.value.inline_u16()
     }
 
     /// Resolves the stored neighbor as a local or remote [`EdgeTarget`].
     #[inline]
-    pub fn edge_target(self) -> Option<EdgeTarget> {
+    pub fn edge_target(&self) -> Option<EdgeTarget> {
         self.target.edge_target()
     }
 }
@@ -103,7 +109,7 @@ impl CsrEdge for Edge {
     }
 
     #[inline]
-    fn write_to(self, bytes: &mut [u8]) {
+    fn write_to(&self, bytes: &mut [u8]) {
         debug_assert_eq!(
             bytes.len(),
             Self::BYTES,
@@ -118,7 +124,7 @@ impl CsrEdge for Edge {
     }
 
     #[inline]
-    fn with_neighbor_vid(self, vid: VertexId) -> Self {
+    fn with_neighbor_vid(&self, vid: VertexId) -> Self {
         let target = match self.target.edge_target() {
             Some(EdgeTarget::Remote(remote_ref)) => VertexRef::remote_ref(remote_ref),
             Some(EdgeTarget::Local(_)) | None => VertexRef::local(vid),
@@ -127,7 +133,7 @@ impl CsrEdge for Edge {
             target,
             edge_slot_index: self.edge_slot_index,
             label_id: self.label_id,
-            value: self.value,
+            value: self.value.clone(),
         }
     }
 
@@ -150,15 +156,15 @@ impl CsrEdge for Edge {
         self.target.is_tombstone()
     }
 
-    fn edge_value_byte_width(&self) -> u8 {
-        self.value.len
+    fn edge_value_byte_width(&self) -> u16 {
+        u16::try_from(self.value.len()).unwrap_or(u16::MAX)
     }
 
     fn edge_value_bytes(&self) -> &[u8] {
         self.value_bytes()
     }
 
-    fn with_stored_value_bytes(self, _width: u8, bytes: &[u8]) -> Self {
+    fn with_stored_value_bytes(self, _width: u16, bytes: &[u8]) -> Self {
         self.with_value_bytes(bytes)
     }
 
@@ -186,6 +192,22 @@ impl CsrEdgeTombstone for Edge {
 mod tests {
     use super::*;
     use crate::entry::RemoteRefId;
+    use std::collections::hash_map::DefaultHasher;
+
+    fn test_edge(slot: u32, label_id: u16) -> Edge {
+        Edge {
+            target: VertexRef::local(VertexId::from(1)),
+            edge_slot_index: EdgeSlotIndex::from_raw(slot),
+            label_id,
+            value: EdgeValuePayload::from_inline_u16(7),
+        }
+    }
+
+    fn hash(edge: &Edge) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        edge.hash(&mut hasher);
+        hasher.finish()
+    }
 
     #[test]
     fn edge_width_matches_documented_storage_layout() {
@@ -195,6 +217,18 @@ mod tests {
             "Rust layout may include tail padding; wire width is {}",
             Edge::BYTES
         );
+    }
+
+    #[test]
+    fn edge_identity_includes_label_id_and_slot_index() {
+        let base = test_edge(1, 2);
+        let different_slot = test_edge(2, 2);
+        let different_label = test_edge(1, 3);
+
+        assert_ne!(base, different_slot);
+        assert_ne!(base, different_label);
+        assert_ne!(hash(&base), hash(&different_slot));
+        assert_ne!(hash(&base), hash(&different_label));
     }
 
     #[test]

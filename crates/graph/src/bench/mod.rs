@@ -18,8 +18,7 @@ use gleaph_gql_planner::plan::{
     ShortestMode, ShortestPathCost, VarLenSpec,
 };
 use gleaph_graph_kernel::entry::{
-    EdgeLabelId, EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth, EdgeWeightProfile, Vertex,
-    WeightEncoding,
+    EdgeLabelId, EdgeValueEncoding, EdgeValueProfile, EdgeWeightProfile, Vertex, WeightEncoding,
 };
 use ic_stable_lara::{MaintenanceBudget, VertexId};
 use std::collections::BTreeMap;
@@ -1211,7 +1210,7 @@ fn setup_expand_vector_graph_with_scale(store: &GraphStore, scale: ExpandVectorG
         .install_edge_label_value_profile_at_init(
             label_id,
             EdgeValueProfile {
-                width: EdgeValueWidth::W64,
+                byte_width: 64,
                 encoding: EdgeValueEncoding::VectorF32 {
                     dims: scale.dims as u16,
                 },

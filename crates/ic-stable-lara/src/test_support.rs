@@ -13,7 +13,7 @@ impl CsrEdge for TestEdge {
         Self(u32::from_le_bytes(bytes[0..4].try_into().unwrap()))
     }
 
-    fn write_to(self, bytes: &mut [u8]) {
+    fn write_to(&self, bytes: &mut [u8]) {
         bytes[0..4].copy_from_slice(&self.0.to_le_bytes());
     }
 
@@ -21,7 +21,7 @@ impl CsrEdge for TestEdge {
         VertexId::from(self.0)
     }
 
-    fn with_neighbor_vid(self, vid: VertexId) -> Self {
+    fn with_neighbor_vid(&self, vid: VertexId) -> Self {
         Self(u32::from(vid))
     }
 }
@@ -54,7 +54,7 @@ impl CsrEdge for LabelledTestEdge {
         }
     }
 
-    fn write_to(self, bytes: &mut [u8]) {
+    fn write_to(&self, bytes: &mut [u8]) {
         bytes[0..4].copy_from_slice(&self.neighbor.to_le_bytes());
         bytes[4..8].copy_from_slice(&self.label.to_le_bytes());
     }
@@ -63,10 +63,10 @@ impl CsrEdge for LabelledTestEdge {
         VertexId::from(self.neighbor)
     }
 
-    fn with_neighbor_vid(self, vid: VertexId) -> Self {
+    fn with_neighbor_vid(&self, vid: VertexId) -> Self {
         Self {
             neighbor: u32::from(vid),
-            ..self
+            ..*self
         }
     }
 }
@@ -105,7 +105,7 @@ impl CsrEdge for UndirectedTestEdge {
         }
     }
 
-    fn write_to(self, bytes: &mut [u8]) {
+    fn write_to(&self, bytes: &mut [u8]) {
         bytes[0..4].copy_from_slice(&self.neighbor.to_le_bytes());
         bytes[4] = u8::from(self.undirected);
     }
@@ -114,10 +114,10 @@ impl CsrEdge for UndirectedTestEdge {
         VertexId::from(self.neighbor)
     }
 
-    fn with_neighbor_vid(self, vid: VertexId) -> Self {
+    fn with_neighbor_vid(&self, vid: VertexId) -> Self {
         Self {
             neighbor: u32::from(vid),
-            ..self
+            ..*self
         }
     }
 }
@@ -161,8 +161,10 @@ pub(crate) fn labeled_lara_memories() -> (
     VectorMemory,
     VectorMemory,
     VectorMemory,
+    VectorMemory,
 ) {
     (
+        vector_memory(),
         vector_memory(),
         vector_memory(),
         vector_memory(),

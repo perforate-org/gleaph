@@ -79,9 +79,7 @@ impl<M: Memory> EdgeValueProfileStore<M> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gleaph_graph_kernel::entry::{
-        EdgeLabelId, EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth,
-    };
+    use gleaph_graph_kernel::entry::{EdgeLabelId, EdgeValueEncoding, EdgeValueProfile};
     use ic_stable_structures::VectorMemory;
     use std::{cell::RefCell, rc::Rc};
 
@@ -94,7 +92,7 @@ mod tests {
         let mut store = EdgeValueProfileStore::init(mem());
         let label = EdgeLabelId::from_raw(1);
         let profile = EdgeValueProfile {
-            width: EdgeValueWidth::W4,
+            byte_width: 4,
             encoding: EdgeValueEncoding::WeightRawU16,
         };
         assert!(matches!(
@@ -110,7 +108,7 @@ mod tests {
         let mut store = EdgeValueProfileStore::init(mem());
         let label = EdgeLabelId::from_raw(2);
         let profile = EdgeValueProfile {
-            width: EdgeValueWidth::W2,
+            byte_width: 2,
             encoding: EdgeValueEncoding::WeightRawU16,
         };
         store.insert(label, profile.clone()).expect("insert");

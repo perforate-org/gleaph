@@ -52,9 +52,9 @@ pub(crate) fn expand_candidates_matching_edge_value_into(
             &predicate.expected,
             &mut matches,
         );
-        let width = usize::from(batch.width_code.byte_width());
-        for idx in matches.iter().copied() {
-            let Some(edge) = batch.edges.get(idx).copied() else {
+        let width = usize::from(batch.byte_width);
+        for idx in matches.iter().cloned() {
+            let Some(edge) = batch.edges.get(idx).cloned() else {
                 continue;
             };
             let value_start = idx * width;
@@ -126,8 +126,8 @@ pub(crate) fn expand_candidates_matching_edge_vector_threshold_into(
             out.reserve(matches.len());
         }
         let width = predicate.kernel.byte_width();
-        for idx in matches.iter().copied() {
-            let Some(edge) = batch.edges.get(idx).copied() else {
+        for idx in matches.iter().cloned() {
+            let Some(edge) = batch.edges.get(idx).cloned() else {
                 continue;
             };
             let value_start = idx * width;
@@ -209,8 +209,8 @@ pub(super) fn expand_vector_dst_only_rows_into(
         if !matches.is_empty() {
             out.reserve(matches.len());
         }
-        for idx in matches.iter().copied() {
-            let Some(edge) = batch.edges.get(idx).copied() else {
+        for idx in matches.iter().cloned() {
+            let Some(edge) = batch.edges.get(idx).cloned() else {
                 continue;
             };
             match ExpandDst::from_edge(store, &edge).and_then(|edge_dst| {

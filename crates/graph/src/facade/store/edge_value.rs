@@ -40,7 +40,7 @@ impl GraphStore {
                     forward.owner_vertex_id,
                     forward.label_id,
                     forward.slot_index,
-                    new_edge,
+                    new_edge.clone(),
                 )
             })
             .map_err(GraphStoreError::from)?;
@@ -59,7 +59,7 @@ impl GraphStore {
                                 reverse.owner_vertex_id,
                                 reverse.label_id,
                                 reverse.slot_index,
-                                new_edge,
+                                new_edge.clone(),
                             )
                         })
                         .map_err(GraphStoreError::from)?;
@@ -78,7 +78,7 @@ impl GraphStore {
                             alias.owner_vertex_id,
                             alias.label_id,
                             alias.slot_index,
-                            new_edge,
+                            new_edge.clone(),
                         )
                     })
                     .map_err(GraphStoreError::from)?;
@@ -91,7 +91,7 @@ impl GraphStore {
                         reverse.owner_vertex_id,
                         reverse.label_id,
                         reverse.slot_index,
-                        new_edge,
+                        new_edge.clone(),
                     )
                 })
                 .map_err(GraphStoreError::from)?;

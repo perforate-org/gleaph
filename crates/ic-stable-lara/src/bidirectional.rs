@@ -459,11 +459,12 @@ where
             return Err(BidirectionalLaraError::UndirectedEdgeInDirectedInsert);
         }
 
+        let reverse = edge.with_neighbor_vid(src);
         self.forward
             .insert_edge(src, edge)
             .map_err(BidirectionalLaraError::Forward)?;
         self.reverse
-            .insert_edge(dst, edge.with_neighbor_vid(src))
+            .insert_edge(dst, reverse)
             .map_err(BidirectionalLaraError::Reverse)?;
         Ok(())
     }

@@ -17,7 +17,7 @@ pub(crate) fn bucket_resident_value_bytes(bucket: &LabelBucket) -> u64 {
         return 0;
     }
     u64::from(bucket.stored_slots.max(bucket.degree))
-        .saturating_mul(u64::from(bucket.value_width()))
+        .saturating_mul(u64::from(bucket.value_byte_width()))
 }
 
 #[inline]
@@ -154,7 +154,7 @@ pub(crate) fn assert_labeled_layout_invariants<E, M>(
             }
             if bucket.is_value_allocated() {
                 assert!(
-                    bucket.value_width() > 0,
+                    bucket.value_byte_width() > 0,
                     "vertex {vidx} bucket {slot}: value_allocated bucket must have non-zero width"
                 );
             }

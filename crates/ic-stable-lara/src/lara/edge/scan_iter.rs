@@ -470,7 +470,7 @@ where
             return None;
         }
         if self.log_pos < self.log_edges.len() {
-            let edge = self.log_edges[self.log_pos];
+            let edge = self.log_edges[self.log_pos].clone();
             self.log_pos += 1;
             self.yield_remaining -= 1;
             return Some(edge);

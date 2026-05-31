@@ -132,11 +132,10 @@ pub(super) fn build_edge_to_remote_with_value_bytes(
 }
 
 pub(super) fn validate_edge_value_bytes(value_bytes: &[u8]) -> Result<(), GraphStoreError> {
-    match value_bytes.len() {
-        0 | 1 | 2 | 4 | 8 | 16 | 32 | 64 => Ok(()),
-
-        len => Err(GraphStoreError::InvalidEdgeValueWidth(len)),
+    if value_bytes.len() > usize::from(gleaph_graph_kernel::entry::MAX_EDGE_VALUE_BYTE_WIDTH) {
+        return Err(GraphStoreError::InvalidEdgeValueWidth(value_bytes.len()));
     }
+    Ok(())
 }
 
 /// Checks supported physical widths and that bytes match the label's catalog value profile width.

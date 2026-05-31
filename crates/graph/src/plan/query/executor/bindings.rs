@@ -9,7 +9,7 @@ use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
 use super::super::error::PlanQueryError;
 
 /// Edge variable binding for one traversal hop: stable handle plus stored value bytes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EdgeBinding {
     pub handle: EdgeHandle,
     pub value: EdgeValuePayload,
@@ -22,12 +22,12 @@ impl EdgeBinding {
     }
 
     #[inline]
-    pub fn value_len(self) -> u8 {
-        self.value.len
+    pub fn value_len(&self) -> usize {
+        self.value.len()
     }
 
     #[inline]
-    pub fn inline_value(self) -> u16 {
+    pub fn inline_value(&self) -> u16 {
         self.value.inline_u16()
     }
 
@@ -110,7 +110,7 @@ mod tests {
             .insert_directed_edge_with_inline_value(a, b, Some(label_id), 42)
             .expect("edge");
 
-        let in_edge = store.directed_in_edges(b).expect("in edges")[0];
+        let in_edge = store.directed_in_edges(b).expect("in edges")[0].clone();
         let binding = edge_binding_for_expand(&store, b, EdgeDirection::PointingLeft, in_edge)
             .expect("binding");
         assert_eq!(binding.handle.owner_vertex_id, a);

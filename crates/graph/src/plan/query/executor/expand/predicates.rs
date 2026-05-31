@@ -133,8 +133,7 @@ impl PreparedEdgeValuePredicate {
         else {
             return Ok(None);
         };
-        let kernel =
-            PreparedEdgeValueBatchKernel::new(profile.width.to_width_code(), profile.encoding);
+        let kernel = PreparedEdgeValueBatchKernel::new(profile.byte_width, profile.encoding);
         Ok(Some(Self {
             kernel,
             op: predicate.op,
@@ -239,6 +238,14 @@ fn edge_value_bytes_from_value(
                 "edge value predicate for vector encodings",
             ));
         }
+        EdgeValueEncoding::RawBytes => match value {
+            Value::Bytes(bytes) => bytes.clone(),
+            _ => {
+                return Err(PlanQueryError::InvalidExpressionValue {
+                    expression: "opaque edge value predicate literal".into(),
+                });
+            }
+        },
     };
     if bytes.len() != usize::from(profile.required_byte_width()) {
         return Err(PlanQueryError::InvalidExpressionValue {

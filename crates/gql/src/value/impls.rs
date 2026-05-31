@@ -1173,7 +1173,7 @@ mod tests {
         let int256 = Int256::new(ethnum::I256::from(9_007_199_254_740_993i128));
         let v = Value::Int256(int256);
         let via_f128 = v.as_f128().expect("as_f128");
-        let via_f64 = (v.as_f64().expect("as_f64") as f128);
+        let via_f64 = v.as_f64().expect("as_f64") as f128;
         assert_ne!(via_f128, via_f64);
         assert_eq!(via_f128, 9_007_199_254_740_993.0f128);
     }

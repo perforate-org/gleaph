@@ -26,7 +26,7 @@ impl CsrEdge for BenchEdge {
         Self(u32::from_le_bytes(bytes[0..4].try_into().unwrap()))
     }
 
-    fn write_to(self, bytes: &mut [u8]) {
+    fn write_to(&self, bytes: &mut [u8]) {
         bytes[0..4].copy_from_slice(&self.0.to_le_bytes());
         bytes[4..10].fill(0);
     }
@@ -35,7 +35,7 @@ impl CsrEdge for BenchEdge {
         VertexId::from(self.0)
     }
 
-    fn with_neighbor_vid(self, vid: VertexId) -> Self {
+    fn with_neighbor_vid(&self, vid: VertexId) -> Self {
         Self(u32::from(vid))
     }
 }
@@ -62,6 +62,7 @@ fn bench_graph(elem_capacity: u64) -> LabeledLaraGraph<BenchEdge, crate::VectorM
         value_free_spans,
         value_free_span_by_start,
         value_log,
+        value_blob,
     ) = labeled_lara_memories();
     LabeledLaraGraph::new(
         vertices,
@@ -78,6 +79,7 @@ fn bench_graph(elem_capacity: u64) -> LabeledLaraGraph<BenchEdge, crate::VectorM
         value_free_spans,
         value_free_span_by_start,
         value_log,
+        value_blob,
         elem_capacity,
         BucketLabelKey::from_raw(1),
     )

@@ -7,7 +7,6 @@ use crate::{
         access::LabelEdgeSpanAccess,
         bucket_label_key::BucketLabelKey,
         record::{LabelBucket, LabeledVertex},
-        slot_index::ValueWidthCode,
     },
     lara::{edge::EdgeStore, edge_value::EdgeValueStore, operation_error::LaraOperationError},
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
@@ -81,14 +80,14 @@ where
         bucket: &LabelBucket,
     ) -> Option<Vec<Vec<u8>>> {
         if !bucket.is_value_allocated()
-            || bucket.value_width() == 0
+            || bucket.value_byte_width() == 0
             || bucket.value_log_head() >= 0
             || bucket.stored_slots != bucket.degree()
         {
             return None;
         }
         let degree = bucket.degree() as usize;
-        let width = usize::from(bucket.value_width());
+        let width = usize::from(bucket.value_byte_width());
         let nbytes = degree.checked_mul(width)?;
         let mut raw = vec![0u8; nbytes];
         self.values.read_bytes(bucket.value_offset(), &mut raw);
@@ -105,7 +104,7 @@ where
         bucket_index: u32,
         bucket: &LabelBucket,
     ) -> Result<Vec<Vec<u8>>, LabeledOperationError> {
-        if !bucket.is_value_allocated() || bucket.value_width() == 0 {
+        if !bucket.is_value_allocated() || bucket.value_byte_width() == 0 {
             return Ok(Vec::new());
         }
         if let Some(dense) = self.read_bucket_values_slab_dense(bucket) {
@@ -133,7 +132,7 @@ where
         edge: &E,
         log_chains: Option<&(Vec<u32>, Vec<u32>)>,
     ) -> Result<Vec<u8>, LabeledOperationError> {
-        let width = bucket.value_width();
+        let width = bucket.value_byte_width();
         if width == 0 {
             return Ok(Vec::new());
         }
@@ -158,7 +157,7 @@ where
                 edge,
                 edge_chain,
                 value_chain,
-            ) {
+            )? {
                 return Ok(bytes);
             }
         } else {
@@ -171,7 +170,7 @@ where
                 edge,
                 &edge_chain,
                 &value_chain,
-            ) {
+            )? {
                 return Ok(bytes);
             }
         }
@@ -188,11 +187,11 @@ where
         edges: &EdgeStore<E, M>,
         values: &EdgeValueStore<M>,
         leaf: u32,
-        width: u8,
+        width: u16,
         edge: &E,
         edge_chain: &[u32],
         value_chain: &[u32],
-    ) -> Option<Vec<u8>> {
+    ) -> Result<Option<Vec<u8>>, LabeledOperationError> {
         debug_assert_eq!(
             edge_chain.len(),
             value_chain.len(),
@@ -206,11 +205,11 @@ where
             let logged = edges.decode_overflow_log_edge_at(leaf, entry_idx);
             if logged.neighbor_vid() == edge.neighbor_vid() {
                 let mut buf = vec![0u8; usize::from(width)];
-                values.read_value_log_entry(leaf, value_idx, width, &mut buf);
-                return Some(buf);
+                values.read_value_log_entry(leaf, value_idx, width, &mut buf)?;
+                return Ok(Some(buf));
             }
         }
-        None
+        Ok(None)
     }
     pub(super) fn write_edge_value_to_log(
         &self,
@@ -219,7 +218,7 @@ where
         entry_idx: i32,
         edge: &E,
     ) -> Result<LabelBucket, LabeledOperationError> {
-        let width = bucket.value_width();
+        let width = bucket.value_byte_width();
         if width == 0 {
             return Ok(*bucket);
         }
@@ -269,28 +268,28 @@ where
     ) -> Result<Vec<Vec<u8>>, LabeledOperationError> {
         self.collect_bucket_values_asc_order(src, vertex, bucket_index, bucket)
     }
-    pub(super) fn ensure_bucket_value_width_on_slot(
+    pub(super) fn ensure_bucket_value_byte_width_on_slot(
         &self,
         _src: VertexId,
         _bucket_slot: u64,
         bucket: LabelBucket,
-        value_width_code: ValueWidthCode,
+        value_byte_width: u16,
     ) -> Result<LabelBucket, LabeledOperationError> {
-        if bucket.value_width_code() == value_width_code {
+        if bucket.value_byte_width() == value_byte_width {
             return Ok(bucket);
         }
-        if bucket.is_value_allocated() && value_width_code != ValueWidthCode::Zero {
+        if bucket.is_value_allocated() && value_byte_width != 0 {
             return Err(LabeledOperationError::from(
                 LaraOperationError::CollectAllocationOverflow,
             ));
         }
-        Ok(bucket.with_value_width_code(value_width_code))
+        Ok(bucket.with_value_byte_width(value_byte_width))
     }
-    pub fn ensure_label_bucket_value_width(
+    pub fn ensure_label_bucket_value_byte_width(
         &self,
         src: VertexId,
         label_id: BucketLabelKey,
-        value_width_code: ValueWidthCode,
+        value_byte_width: u16,
     ) -> Result<(), LabeledOperationError> {
         self.ensure_vertex(src)?;
         let vertex = self.vertices.get(src);
@@ -298,8 +297,12 @@ where
             return Ok(());
         }
         let (bucket_slot, bucket) = self.find_or_create_bucket(src, &vertex, label_id)?;
-        let bucket =
-            self.ensure_bucket_value_width_on_slot(src, bucket_slot, bucket, value_width_code)?;
+        let bucket = self.ensure_bucket_value_byte_width_on_slot(
+            src,
+            bucket_slot,
+            bucket,
+            value_byte_width,
+        )?;
         self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
         Ok(())
     }
@@ -310,7 +313,7 @@ where
         mut bucket: LabelBucket,
         prev_stored_slots: u32,
     ) -> Result<LabelBucket, LabeledOperationError> {
-        let width = bucket.value_width();
+        let width = bucket.value_byte_width();
         let needed_slots = bucket.stored_slots.max(bucket.degree);
         if width == 0 || needed_slots == 0 {
             return Ok(bucket);
@@ -478,7 +481,7 @@ where
         slot_index: u32,
         edge: &E,
     ) -> Result<(), LabeledOperationError> {
-        let width = bucket.value_width();
+        let width = bucket.value_byte_width();
         if width == 0 {
             return Ok(());
         }
@@ -513,7 +516,7 @@ where
         if !bucket.is_value_allocated() {
             return edge;
         }
-        let width = bucket.value_width();
+        let width = bucket.value_byte_width();
         let edge = edge.with_slot_index(slot_index);
         let buf = self
             .read_bucket_value_for_edge(src, &bucket, &edge, log_chains)
@@ -567,7 +570,7 @@ where
                     self.read_bucket_values_in_edge_slot_order(src, vertex, index as u32, bucket)?
                 }
             };
-            if bucket.value_width() > 0 {
+            if bucket.value_byte_width() > 0 {
                 let live = usize::try_from(bucket.degree()).unwrap_or(usize::MAX);
                 debug_assert_eq!(
                     values.len(),
@@ -597,7 +600,7 @@ where
             self.release_bucket_value_span(src, old)?;
         }
         for (index, new_bucket) in new_buckets.iter().enumerate() {
-            if new_bucket.value_width() == 0 {
+            if new_bucket.value_byte_width() == 0 {
                 continue;
             }
             let live = usize::try_from(new_bucket.degree()).unwrap_or(usize::MAX);
@@ -609,7 +612,7 @@ where
             let slot = Self::labeled_vertex_bucket_slot(&vertex, index as u32)?;
             let mut bucket = new_bucket.with_value_offset(0);
             bucket = self.ensure_bucket_value_span(src, slot, bucket, 0)?;
-            let width = bucket.value_width();
+            let width = bucket.value_byte_width();
             let flat_len = saved[index]
                 .len()
                 .checked_mul(usize::from(width))
@@ -681,7 +684,7 @@ mod tests {
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .ensure_label_bucket_value_width(VertexId::from(0), road, ValueWidthCode::W2)
+            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
         graph
             .insert_edge_skip_leaf_cascade(VertexId::from(0), road, ValuedTestEdge::with_u16(1, 1))
@@ -712,7 +715,10 @@ mod tests {
         let mut weights: Vec<u16> = edges
             .iter()
             .filter(|e| e.value_len == 2)
-            .map(|e| u16::from_le_bytes([e.value[0], e.value[1]]))
+            .map(|e| {
+                let b = e.edge_value_bytes();
+                u16::from_le_bytes([b[0], b[1]])
+            })
             .collect();
         weights.sort_unstable();
         assert_eq!(weights, vec![1, 100]);
@@ -730,7 +736,7 @@ mod tests {
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .ensure_label_bucket_value_width(VertexId::from(0), road, ValueWidthCode::W2)
+            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
         graph
             .insert_edge_skip_leaf_cascade(VertexId::from(0), road, ValuedTestEdge::with_u16(1, 1))
@@ -749,7 +755,8 @@ mod tests {
         graph
             .for_each_edges_for_label(VertexId::from(0), road, |edge| {
                 if edge.value_len == 2 {
-                    weights.push(u16::from_le_bytes([edge.value[0], edge.value[1]]));
+                    let b = edge.edge_value_bytes();
+                    weights.push(u16::from_le_bytes([b[0], b[1]]));
                 }
             })
             .unwrap();
@@ -762,7 +769,7 @@ mod tests {
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .ensure_label_bucket_value_width(VertexId::from(0), road, ValueWidthCode::W2)
+            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
         for (target, weight) in [(1u32, 3u16), (2, 7), (3, 11)] {
             graph
@@ -780,7 +787,8 @@ mod tests {
         graph
             .for_each_edges_for_label(VertexId::from(0), road, |edge| {
                 if edge.value_len == 2 {
-                    weights.push(u16::from_le_bytes([edge.value[0], edge.value[1]]));
+                    let b = edge.edge_value_bytes();
+                    weights.push(u16::from_le_bytes([b[0], b[1]]));
                 }
             })
             .unwrap();
@@ -795,7 +803,7 @@ mod tests {
         let road = BucketLabelKey::from_raw(2);
         let rail = BucketLabelKey::from_raw(3);
         graph
-            .ensure_label_bucket_value_width(VertexId::from(0), road, ValueWidthCode::W2)
+            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
         graph
             .insert_edge(VertexId::from(0), road, ValuedTestEdge::with_u16(1, 42))
@@ -807,7 +815,8 @@ mod tests {
         graph
             .for_each_edges_for_label(VertexId::from(0), road, |edge| {
                 if edge.value_len == 2 {
-                    weights.push(u16::from_le_bytes([edge.value[0], edge.value[1]]));
+                    let b = edge.edge_value_bytes();
+                    weights.push(u16::from_le_bytes([b[0], b[1]]));
                 }
             })
             .unwrap();
@@ -819,7 +828,7 @@ mod tests {
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .ensure_label_bucket_value_width(VertexId::from(0), road, ValueWidthCode::W2)
+            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
         for target in 1..=31u32 {
             let weight = u16::try_from(target.saturating_mul(10)).expect("weight fits u16");
@@ -856,7 +865,8 @@ mod tests {
         graph
             .for_each_edges_for_label(VertexId::from(0), road, |edge| {
                 if edge.value_len == 2 {
-                    weights.push(u16::from_le_bytes([edge.value[0], edge.value[1]]));
+                    let b = edge.edge_value_bytes();
+                    weights.push(u16::from_le_bytes([b[0], b[1]]));
                 }
             })
             .unwrap();
@@ -875,7 +885,7 @@ mod tests {
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .ensure_label_bucket_value_width(VertexId::from(0), road, ValueWidthCode::W2)
+            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
         for (target, weight) in [(1, 10u16), (2, 20), (3, 30)] {
             graph
@@ -897,7 +907,7 @@ mod tests {
                 &mut scratch,
                 |batch| {
                     assert!(batch.dense);
-                    assert_eq!(batch.width_code, ValueWidthCode::W2);
+                    assert_eq!(batch.byte_width, 2u16);
                     asc.extend(
                         batch
                             .value_bytes
@@ -937,10 +947,10 @@ mod tests {
         let tiny = BucketLabelKey::from_raw(2);
         let wide = BucketLabelKey::from_raw(3);
         graph
-            .ensure_label_bucket_value_width(VertexId::from(0), tiny, ValueWidthCode::W1)
+            .ensure_label_bucket_value_byte_width(VertexId::from(0), tiny, 1u16)
             .unwrap();
         graph
-            .ensure_label_bucket_value_width(VertexId::from(0), wide, ValueWidthCode::W16)
+            .ensure_label_bucket_value_byte_width(VertexId::from(0), wide, 16u16)
             .unwrap();
         graph
             .insert_edge_skip_leaf_cascade(
@@ -967,7 +977,7 @@ mod tests {
                 &mut scratch,
                 |batch| {
                     assert_eq!(batch.label_id, tiny);
-                    assert_eq!(batch.width_code, ValueWidthCode::W1);
+                    assert_eq!(batch.byte_width, 1u16);
                     tiny_bytes.extend_from_slice(batch.value_bytes);
                 },
             )
@@ -983,7 +993,7 @@ mod tests {
                 &mut scratch,
                 |batch| {
                     assert_eq!(batch.label_id, wide);
-                    assert_eq!(batch.width_code, ValueWidthCode::W16);
+                    assert_eq!(batch.byte_width, 16u16);
                     wide_bytes.extend_from_slice(batch.value_bytes);
                 },
             )
@@ -997,7 +1007,7 @@ mod tests {
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .ensure_label_bucket_value_width(VertexId::from(0), road, ValueWidthCode::W2)
+            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
         for target in 1..=33u32 {
             graph
@@ -1057,7 +1067,8 @@ mod tests {
         graph
             .for_each_edges_for_label(VertexId::from(0), default, |edge| {
                 if edge.value_len == 2 {
-                    weights.push(u16::from_le_bytes([edge.value[0], edge.value[1]]));
+                    let b = edge.edge_value_bytes();
+                    weights.push(u16::from_le_bytes([b[0], b[1]]));
                 }
             })
             .unwrap();
@@ -1069,7 +1080,7 @@ mod tests {
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .ensure_label_bucket_value_width(VertexId::from(0), road, ValueWidthCode::W2)
+            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
         for (target, weight) in [(1, 42), (2, 99)] {
             graph
@@ -1110,7 +1121,7 @@ mod tests {
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .ensure_label_bucket_value_width(VertexId::from(0), road, ValueWidthCode::W2)
+            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
         for (target, weight) in [(1, 10), (2, 20), (3, 30)] {
             graph
@@ -1134,10 +1145,10 @@ mod tests {
         graph
             .for_each_edges_for_label(VertexId::from(0), road, |edge| {
                 if edge.value_len == 2 {
-                    values.push((
-                        edge.target,
-                        u16::from_le_bytes([edge.value[0], edge.value[1]]),
-                    ));
+                    values.push((edge.target, {
+                        let b = edge.edge_value_bytes();
+                        u16::from_le_bytes([b[0], b[1]])
+                    }));
                 }
             })
             .unwrap();
@@ -1152,7 +1163,7 @@ mod tests {
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .ensure_label_bucket_value_width(VertexId::from(0), road, ValueWidthCode::W2)
+            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
         for target in 1..=32u32 {
             let weight = u16::try_from(target).expect("weight fits u16");
@@ -1185,11 +1196,98 @@ mod tests {
         graph
             .for_each_edges_for_label(VertexId::from(0), road, |edge| {
                 if edge.value_len == 2 && edge.target == 2 {
-                    weights.push(u16::from_le_bytes([edge.value[0], edge.value[1]]));
+                    let b = edge.edge_value_bytes();
+                    weights.push(u16::from_le_bytes([b[0], b[1]]));
                 }
             })
             .unwrap();
         assert!(weights.contains(&200), "newest insert weight: {weights:?}");
+    }
+
+    #[test]
+    fn slab_value_byte_width_12_round_trips() {
+        let graph = valued_test_graph();
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let road = BucketLabelKey::from_raw(2);
+        const WIDTH: u16 = 12;
+        graph
+            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, WIDTH)
+            .unwrap();
+        let payload: Vec<u8> = (0..WIDTH).map(|i| (i as u8).wrapping_add(3)).collect();
+        graph
+            .insert_edge(
+                VertexId::from(0),
+                road,
+                ValuedTestEdge::with_bytes(1, &payload),
+            )
+            .unwrap();
+        let mut seen = Vec::new();
+        graph
+            .for_each_edges_for_label(VertexId::from(0), road, |edge| {
+                if edge.value_len == WIDTH {
+                    seen.push(edge.edge_value_bytes().to_vec());
+                }
+            })
+            .unwrap();
+        assert_eq!(seen, vec![payload]);
+    }
+
+    #[test]
+    fn wide_value_byte_width_12_round_trips_via_overflow_blob_log() {
+        const WIDTH: u16 = 12;
+        let graph = valued_test_graph_with_capacity(1 << 16);
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let road = BucketLabelKey::from_raw(2);
+        graph
+            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, WIDTH)
+            .unwrap();
+        let payload: Vec<u8> = (0..WIDTH).map(|i| (i as u8).wrapping_add(9)).collect();
+        for target in 1..=31u32 {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    VertexId::from(0),
+                    road,
+                    ValuedTestEdge::with_bytes(target, &payload),
+                )
+                .unwrap();
+        }
+        graph
+            .insert_edge_skip_leaf_cascade(
+                VertexId::from(0),
+                road,
+                ValuedTestEdge::with_bytes(33, &payload),
+            )
+            .unwrap();
+        graph
+            .insert_edge_skip_leaf_cascade(
+                VertexId::from(0),
+                road,
+                ValuedTestEdge::with_bytes(33, &payload),
+            )
+            .unwrap();
+
+        let vertex = graph.vertices().get(VertexId::from(0));
+        let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
+        let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
+        assert!(
+            bucket.overflow_log_head() >= 0,
+            "expected edge overflow log for wide values"
+        );
+        assert!(
+            bucket.value_log_head() >= 0,
+            "expected value overflow log for 12-byte payloads"
+        );
+
+        let mut seen = Vec::new();
+        graph
+            .for_each_edges_for_label(VertexId::from(0), road, |edge| {
+                if edge.value_len == WIDTH {
+                    seen.push(edge.edge_value_bytes().to_vec());
+                }
+            })
+            .unwrap();
+        assert_eq!(seen.len(), 33);
+        assert!(seen.iter().all(|v| v == &payload));
     }
 
     #[test]
@@ -1198,7 +1296,7 @@ mod tests {
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .ensure_label_bucket_value_width(VertexId::from(0), road, ValueWidthCode::W4)
+            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 4u16)
             .unwrap();
         for (target, cost) in [(1, 100i32), (2, 200), (3, 300)] {
             graph
@@ -1213,7 +1311,9 @@ mod tests {
         graph
             .for_each_edges_for_label(VertexId::from(0), road, |edge| {
                 if edge.value_len == 4 {
-                    costs.push(i32::from_le_bytes(edge.value[0..4].try_into().unwrap()));
+                    costs.push(i32::from_le_bytes(
+                        edge.edge_value_bytes().try_into().unwrap(),
+                    ));
                 }
             })
             .unwrap();
@@ -1227,14 +1327,14 @@ mod tests {
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .ensure_label_bucket_value_width(VertexId::from(0), road, ValueWidthCode::W2)
+            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
         graph
             .insert_edge_skip_leaf_cascade(VertexId::from(0), road, ValuedTestEdge::with_u16(1, 1))
             .unwrap();
         assert!(
             graph
-                .ensure_label_bucket_value_width(VertexId::from(0), road, ValueWidthCode::W4)
+                .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 4u16)
                 .is_err(),
             "widening an allocated value bucket must fail"
         );
@@ -1246,7 +1346,7 @@ mod tests {
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .ensure_label_bucket_value_width(VertexId::from(0), road, ValueWidthCode::W2)
+            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
         for (target, weight) in [(1, 10), (2, 20), (3, 30)] {
             graph
@@ -1270,10 +1370,10 @@ mod tests {
         graph
             .for_each_edges_for_label(VertexId::from(0), road, |edge| {
                 if edge.value_len == 2 {
-                    values.push((
-                        edge.target,
-                        u16::from_le_bytes([edge.value[0], edge.value[1]]),
-                    ));
+                    values.push((edge.target, {
+                        let b = edge.edge_value_bytes();
+                        u16::from_le_bytes([b[0], b[1]])
+                    }));
                 }
             })
             .unwrap();
@@ -1287,7 +1387,7 @@ mod tests {
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .ensure_label_bucket_value_width(VertexId::from(0), road, ValueWidthCode::W2)
+            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
         for (target, weight) in [(1, 10), (2, 20), (3, 30)] {
             graph
@@ -1310,10 +1410,10 @@ mod tests {
         graph
             .for_each_edges_for_label(VertexId::from(0), road, |edge| {
                 if edge.value_len == 2 {
-                    values.push((
-                        edge.target,
-                        u16::from_le_bytes([edge.value[0], edge.value[1]]),
-                    ));
+                    values.push((edge.target, {
+                        let b = edge.edge_value_bytes();
+                        u16::from_le_bytes([b[0], b[1]])
+                    }));
                 }
             })
             .unwrap();

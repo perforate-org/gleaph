@@ -731,7 +731,7 @@ fn return_abs_gleaph_weight_does_not_break_decoder_prep() {
 #[test]
 fn gleaph_weight_accepts_edge_value_profile_without_legacy_weight_profile() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
+    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile};
     let a = store
         .insert_vertex_named(["ValueProfileWgtA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -745,7 +745,7 @@ fn gleaph_weight_accepts_edge_value_profile_without_legacy_weight_profile() {
         .install_edge_label_value_profile_at_init(
             label_id,
             EdgeValueProfile {
-                width: EdgeValueWidth::W2,
+                byte_width: 2,
                 encoding: EdgeValueEncoding::WeightRawU16,
             },
         )
@@ -765,7 +765,7 @@ fn gleaph_weight_accepts_edge_value_profile_without_legacy_weight_profile() {
 #[test]
 fn gql_gleaph_weight_equality_uses_edge_value_predicate_expand() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
+    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile};
     let a = store
         .insert_vertex_named(["GqlBatchEqualA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -782,7 +782,7 @@ fn gql_gleaph_weight_equality_uses_edge_value_predicate_expand() {
         .install_edge_label_value_profile_at_init(
             label_id,
             EdgeValueProfile {
-                width: EdgeValueWidth::W2,
+                byte_width: 2,
                 encoding: EdgeValueEncoding::WeightRawU16,
             },
         )
@@ -808,7 +808,7 @@ fn gql_gleaph_weight_equality_uses_edge_value_predicate_expand() {
 #[test]
 fn gql_gleaph_weight_gt_uses_edge_value_predicate_expand() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
+    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile};
     let a = store
         .insert_vertex_named(["GqlBatchGtA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -823,7 +823,7 @@ fn gql_gleaph_weight_gt_uses_edge_value_predicate_expand() {
         .install_edge_label_value_profile_at_init(
             label_id,
             EdgeValueProfile {
-                width: EdgeValueWidth::W2,
+                byte_width: 2,
                 encoding: EdgeValueEncoding::WeightRawU16,
             },
         )
@@ -849,7 +849,7 @@ fn gql_gleaph_weight_gt_uses_edge_value_predicate_expand() {
 #[test]
 fn gql_gleaph_vector_l2_uses_edge_vector_predicate_expand() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
+    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile};
     let a = store
         .insert_vertex_named(["GqlVectorA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -864,7 +864,7 @@ fn gql_gleaph_vector_l2_uses_edge_vector_predicate_expand() {
         .install_edge_label_value_profile_at_init(
             label_id,
             EdgeValueProfile {
-                width: EdgeValueWidth::W16,
+                byte_width: 16,
                 encoding: EdgeValueEncoding::VectorF32 { dims: 4 },
             },
         )
@@ -906,7 +906,7 @@ fn gql_gleaph_vector_l2_uses_edge_vector_predicate_expand() {
 #[test]
 fn gql_gleaph_vector_dot_uses_edge_vector_predicate_expand() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
+    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile};
     let a = store
         .insert_vertex_named(["GqlVectorDotA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -923,7 +923,7 @@ fn gql_gleaph_vector_dot_uses_edge_vector_predicate_expand() {
         .install_edge_label_value_profile_at_init(
             label_id,
             EdgeValueProfile {
-                width: EdgeValueWidth::W16,
+                byte_width: 16,
                 encoding: EdgeValueEncoding::VectorF32 { dims: 4 },
             },
         )
@@ -965,7 +965,7 @@ fn gql_gleaph_vector_dot_uses_edge_vector_predicate_expand() {
 #[test]
 fn vector_dst_only_expand_filter_keeps_projection_fast_path_semantics() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
+    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile};
     let a = store
         .insert_vertex_named(["VectorDstOnlyFilterA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -994,7 +994,7 @@ fn vector_dst_only_expand_filter_keeps_projection_fast_path_semantics() {
         .install_edge_label_value_profile_at_init(
             label_id,
             EdgeValueProfile {
-                width: EdgeValueWidth::W16,
+                byte_width: 16,
                 encoding: EdgeValueEncoding::VectorF32 { dims: 4 },
             },
         )
@@ -1064,7 +1064,7 @@ fn vector_dst_only_expand_filter_keeps_projection_fast_path_semantics() {
 #[test]
 fn ascending_forward_fixed_label_candidates_use_batched_edge_values() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
+    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile};
     let a = store
         .insert_vertex_named(["BatchExpandA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -1081,7 +1081,7 @@ fn ascending_forward_fixed_label_candidates_use_batched_edge_values() {
         .install_edge_label_value_profile_at_init(
             label_id,
             EdgeValueProfile {
-                width: EdgeValueWidth::W2,
+                byte_width: 2,
                 encoding: EdgeValueEncoding::RawU16,
             },
         )
@@ -1116,7 +1116,7 @@ fn ascending_forward_fixed_label_candidates_use_batched_edge_values() {
 #[test]
 fn ascending_reverse_fixed_label_candidates_use_batched_edge_values() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
+    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile};
     let a = store
         .insert_vertex_named(["BatchReverseExpandA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -1133,7 +1133,7 @@ fn ascending_reverse_fixed_label_candidates_use_batched_edge_values() {
         .install_edge_label_value_profile_at_init(
             label_id,
             EdgeValueProfile {
-                width: EdgeValueWidth::W2,
+                byte_width: 2,
                 encoding: EdgeValueEncoding::RawU16,
             },
         )
@@ -1172,7 +1172,7 @@ fn ascending_reverse_fixed_label_candidates_use_batched_edge_values() {
 #[test]
 fn forward_fixed_label_edge_value_predicate_uses_batch_kernel() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
+    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile};
     let a = store
         .insert_vertex_named(["BatchEqualA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -1187,7 +1187,7 @@ fn forward_fixed_label_edge_value_predicate_uses_batch_kernel() {
         .install_edge_label_value_profile_at_init(
             label_id,
             EdgeValueProfile {
-                width: EdgeValueWidth::W2,
+                byte_width: 2,
                 encoding: EdgeValueEncoding::RawU16,
             },
         )
@@ -1230,7 +1230,7 @@ fn forward_fixed_label_edge_value_predicate_uses_batch_kernel() {
 #[test]
 fn expand_plan_edge_value_predicate_filters_candidates() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
+    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile};
     let a = store
         .insert_vertex_named(["PlanBatchEqualA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -1247,7 +1247,7 @@ fn expand_plan_edge_value_predicate_filters_candidates() {
         .install_edge_label_value_profile_at_init(
             label_id,
             EdgeValueProfile {
-                width: EdgeValueWidth::W2,
+                byte_width: 2,
                 encoding: EdgeValueEncoding::RawU16,
             },
         )
@@ -1301,7 +1301,7 @@ fn expand_plan_edge_value_predicate_filters_candidates() {
 #[test]
 fn reverse_fixed_label_edge_value_predicate_uses_batch_kernel() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
+    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile};
     let a = store
         .insert_vertex_named(["BatchReverseEqualA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -1318,7 +1318,7 @@ fn reverse_fixed_label_edge_value_predicate_uses_batch_kernel() {
         .install_edge_label_value_profile_at_init(
             label_id,
             EdgeValueProfile {
-                width: EdgeValueWidth::W2,
+                byte_width: 2,
                 encoding: EdgeValueEncoding::RawU16,
             },
         )
@@ -1369,7 +1369,7 @@ fn f32_vector_bytes(values: &[f32]) -> Vec<u8> {
 #[test]
 fn forward_fixed_label_edge_vector_threshold_uses_batch_kernel() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
+    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile};
     let a = store
         .insert_vertex_named(["BatchVectorA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -1386,7 +1386,7 @@ fn forward_fixed_label_edge_vector_threshold_uses_batch_kernel() {
         .install_edge_label_value_profile_at_init(
             label_id,
             EdgeValueProfile {
-                width: EdgeValueWidth::W16,
+                byte_width: 16,
                 encoding: EdgeValueEncoding::VectorF32 { dims: 4 },
             },
         )
@@ -1439,7 +1439,7 @@ fn forward_fixed_label_edge_vector_threshold_uses_batch_kernel() {
 #[test]
 fn reverse_fixed_label_edge_vector_threshold_uses_batch_kernel() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
+    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile};
     let near = store
         .insert_vertex_named(["BatchVectorReverseNear"], Vec::<(&str, Value)>::new())
         .expect("near");
@@ -1456,7 +1456,7 @@ fn reverse_fixed_label_edge_vector_threshold_uses_batch_kernel() {
         .install_edge_label_value_profile_at_init(
             label_id,
             EdgeValueProfile {
-                width: EdgeValueWidth::W16,
+                byte_width: 16,
                 encoding: EdgeValueEncoding::VectorF32 { dims: 4 },
             },
         )
@@ -1545,7 +1545,7 @@ fn ascending_forward_fixed_label_without_edge_values_keeps_scalar_scan() {
 #[test]
 fn gleaph_weight_rejects_edge_value_width_mismatch() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
+    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile};
     let a = store
         .insert_vertex_named(["MissingValueWgtA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -1559,7 +1559,7 @@ fn gleaph_weight_rejects_edge_value_width_mismatch() {
         .install_edge_label_value_profile_at_init(
             label_id,
             EdgeValueProfile {
-                width: EdgeValueWidth::W2,
+                byte_width: 2,
                 encoding: EdgeValueEncoding::WeightRawU16,
             },
         )
@@ -1582,8 +1582,7 @@ fn federated_neighbor_hit_preserves_remote_value_bytes() {
         label_id_raw: 0,
         slot_index: 4,
         inline_value: 42,
-        value_len: 2,
-        value_bytes: gleaph_graph_kernel::entry::EdgeValuePayload::from_slice(&[42, 0]).bytes,
+        value_bytes: vec![42, 0],
     };
     let binding = EdgeBinding::from_federated_neighbor_hit(&hit);
     assert_eq!(binding.value_len(), 2);

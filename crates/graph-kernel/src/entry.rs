@@ -10,10 +10,11 @@ pub mod weight;
 
 pub use edge::{Edge, EdgeMeta, EdgeSlotIndex, MAX_EDGE_VALUE_BYTES};
 pub use edge_value::{
-    DecodedEdgeValue, EdgeValueEncoding, EdgeValueProfile, EdgeValueProfileError, EdgeValueWidth,
+    DecodedEdgeValue, EdgeValueEncoding, EdgeValueProfile, EdgeValueProfileError,
     PreparedEdgeValueDecoder, decode_edge_value, decode_edge_weight,
 };
 pub use edge_value_payload::EdgeValuePayload;
+pub use edge_value_payload::MAX_EDGE_VALUE_BYTE_WIDTH;
 pub use label::{
     EDGE_LABEL_CATALOG_MAX, EDGE_LABEL_DIRECTED_BIT, EdgeDirectedness, EdgeLabelId,
     TaggedEdgeLabelId, VertexLabelId,

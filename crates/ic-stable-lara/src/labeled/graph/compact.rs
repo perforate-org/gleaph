@@ -507,7 +507,7 @@ where
         self.edges
             .write_slot(from, E::tombstone_edge())
             .map_err(LabeledOperationError::from)?;
-        let width = bucket.value_width();
+        let width = bucket.value_byte_width();
         if bucket.is_value_allocated() {
             let from_off = bucket
                 .value_offset()
@@ -771,7 +771,12 @@ where
                 .write_slots_contiguous(bucket.edge_start(), &buf[..run])?;
         }
         let had_value_log = bucket.value_log_head() >= 0;
-        let saved = if bucket.is_value_allocated() && bucket.value_width() > 0 {
+        if had_value_log {
+            let leaf = self.value_log_leaf(src);
+            let (_, value_chain) = self.bucket_log_chains(src, &bucket);
+            self.values.sweep_value_log_chain(leaf, &value_chain);
+        }
+        let saved = if bucket.is_value_allocated() && bucket.value_byte_width() > 0 {
             if had_value_log {
                 Some(self.collect_bucket_values_asc_order(src, vertex, bucket_index, &bucket)?)
             } else {
@@ -790,7 +795,7 @@ where
                 .map_err(LabeledOperationError::from)?;
         }
         if let Some(saved) = saved {
-            let width = bucket.value_width();
+            let width = bucket.value_byte_width();
             let flat_len = saved
                 .len()
                 .checked_mul(usize::from(width))
@@ -816,11 +821,14 @@ where
         if bucket.value_log_head() < 0 || !bucket.is_value_allocated() {
             return Ok(bucket);
         }
+        let leaf = self.value_log_leaf(src);
+        let (_, value_chain) = self.bucket_log_chains(src, &bucket);
+        self.values.sweep_value_log_chain(leaf, &value_chain);
         let saved = self.collect_bucket_values_asc_order(src, vertex, bucket_index, &bucket)?;
         let bucket = bucket
             .try_with_value_log_head(-1)
             .map_err(LabeledOperationError::from)?;
-        let width = bucket.value_width();
+        let width = bucket.value_byte_width();
         let flat_len = saved
             .len()
             .checked_mul(usize::from(width))
@@ -927,6 +935,7 @@ mod tests {
     fn homogeneous_bypass_appends_stay_slab_only_without_overflow_log() {
         let default = BucketLabelKey::from_raw(7);
         let graph = LabeledLaraGraph::new(
+            mem(),
             mem(),
             mem(),
             mem(),
@@ -1174,6 +1183,7 @@ mod tests {
             mem(),
             mem(),
             mem(),
+            mem(),
             1 << 20,
             BucketLabelKey::from_raw(1),
         )
@@ -1222,6 +1232,7 @@ mod tests {
             mem(),
             mem(),
             mem(),
+            mem(),
             1 << 20,
             BucketLabelKey::from_raw(1),
         )
@@ -1246,6 +1257,7 @@ mod tests {
     #[test]
     fn mixed_label_hub_parallel_edges_do_not_corrupt_overflow_log() {
         let graph = LabeledLaraGraph::new(
+            mem(),
             mem(),
             mem(),
             mem(),

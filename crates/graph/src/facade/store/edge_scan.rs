@@ -120,7 +120,7 @@ impl GraphStore {
                 order,
                 &mut scratch,
                 |batch| {
-                    let width = usize::from(batch.width_code.byte_width());
+                    let width = usize::from(batch.byte_width);
                     debug_assert_eq!(batch.value_bytes.len(), batch.edges.len() * width);
                     for (edge, value) in batch
                         .edges
@@ -160,7 +160,7 @@ impl GraphStore {
                 order,
                 &mut scratch,
                 |batch| {
-                    let width = usize::from(batch.width_code.byte_width());
+                    let width = usize::from(batch.byte_width);
                     debug_assert_eq!(batch.value_bytes.len(), batch.edges.len() * width);
                     for (edge, value) in batch
                         .edges

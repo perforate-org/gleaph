@@ -1,9 +1,7 @@
 //! Shared fixtures for labeled graph tests.
 
 pub use super::LabeledLaraGraph;
-pub use crate::labeled::{
-    MAX_VERTEX_LABEL_BUCKETS, record::LabeledVertexFieldError, slot_index::ValueWidthCode,
-};
+pub use crate::labeled::{MAX_VERTEX_LABEL_BUCKETS, record::LabeledVertexFieldError};
 use crate::labeled::{bucket_label_key::BucketLabelKey, record::LabeledVertex};
 pub use crate::lara::operation_error::LaraOperationError;
 pub use crate::traits::CsrVertex;
@@ -27,7 +25,7 @@ impl CsrEdge for TestEdge {
         }
     }
 
-    fn write_to(self, bytes: &mut [u8]) {
+    fn write_to(&self, bytes: &mut [u8]) {
         bytes[0..4].copy_from_slice(&self.target.to_le_bytes());
     }
 
@@ -35,7 +33,7 @@ impl CsrEdge for TestEdge {
         VertexId::from(self.target)
     }
 
-    fn with_neighbor_vid(self, vid: VertexId) -> Self {
+    fn with_neighbor_vid(&self, vid: VertexId) -> Self {
         Self {
             target: u32::from(vid),
         }
@@ -72,7 +70,7 @@ impl CsrEdge for FlagTombstoneEdge {
         }
     }
 
-    fn write_to(self, bytes: &mut [u8]) {
+    fn write_to(&self, bytes: &mut [u8]) {
         bytes[0..4].copy_from_slice(&self.raw.to_le_bytes());
     }
 
@@ -80,7 +78,7 @@ impl CsrEdge for FlagTombstoneEdge {
         VertexId::from(self.raw & !Self::TOMBSTONE_BIT)
     }
 
-    fn with_neighbor_vid(self, vid: VertexId) -> Self {
+    fn with_neighbor_vid(&self, vid: VertexId) -> Self {
         Self {
             raw: (self.raw & Self::TOMBSTONE_BIT) | u32::from(vid),
         }
@@ -107,6 +105,7 @@ pub fn test_graph_with_default(
     default_label: BucketLabelKey,
 ) -> LabeledLaraGraph<TestEdge, crate::VectorMemory> {
     let graph = LabeledLaraGraph::new(
+        mem(),
         mem(),
         mem(),
         mem(),
@@ -149,53 +148,40 @@ pub fn flag_tombstone_graph() -> LabeledLaraGraph<FlagTombstoneEdge, crate::Vect
         mem(),
         mem(),
         mem(),
+        mem(),
         256,
         BucketLabelKey::directed_from_index(1),
     )
     .unwrap()
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValuedTestEdge {
     pub target: u32,
     pub slot_index: u32,
-    pub value: [u8; 64],
-    pub value_len: u8,
+    pub value: Vec<u8>,
+    pub value_len: u16,
 }
 
 impl ValuedTestEdge {
     pub fn with_bytes(target: u32, bytes: &[u8]) -> Self {
-        let mut value = [0u8; 64];
-        let len = bytes.len().min(64);
-        value[..len].copy_from_slice(&bytes[..len]);
+        let len = u16::try_from(bytes.len()).expect("test value fits u16");
+        let mut value = vec![0u8; bytes.len()];
+        value.copy_from_slice(bytes);
         Self {
             target,
             slot_index: 0,
             value,
-            value_len: len as u8,
+            value_len: len,
         }
     }
 
     pub fn with_u16(target: u32, inline: u16) -> Self {
-        let mut value = [0u8; 64];
-        value[0..2].copy_from_slice(&inline.to_le_bytes());
-        Self {
-            target,
-            slot_index: 0,
-            value,
-            value_len: 2,
-        }
+        Self::with_bytes(target, &inline.to_le_bytes())
     }
 
     pub fn with_i32(target: u32, inline: i32) -> Self {
-        let mut value = [0u8; 64];
-        value[0..4].copy_from_slice(&inline.to_le_bytes());
-        Self {
-            target,
-            slot_index: 0,
-            value,
-            value_len: 4,
-        }
+        Self::with_bytes(target, &inline.to_le_bytes())
     }
 }
 
@@ -206,12 +192,12 @@ impl CsrEdge for ValuedTestEdge {
         Self {
             target: u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
             slot_index: 0,
-            value: [0u8; 64],
+            value: Vec::new(),
             value_len: 0,
         }
     }
 
-    fn write_to(self, bytes: &mut [u8]) {
+    fn write_to(&self, bytes: &mut [u8]) {
         bytes[0..4].copy_from_slice(&self.target.to_le_bytes());
     }
 
@@ -219,10 +205,10 @@ impl CsrEdge for ValuedTestEdge {
         VertexId::from(self.target)
     }
 
-    fn with_neighbor_vid(self, vid: VertexId) -> Self {
+    fn with_neighbor_vid(&self, vid: VertexId) -> Self {
         Self {
             target: u32::from(vid),
-            ..self
+            ..self.clone()
         }
     }
 
@@ -234,7 +220,7 @@ impl CsrEdge for ValuedTestEdge {
         self.slot_index
     }
 
-    fn edge_value_byte_width(&self) -> u8 {
+    fn edge_value_byte_width(&self) -> u16 {
         self.value_len
     }
 
@@ -242,11 +228,10 @@ impl CsrEdge for ValuedTestEdge {
         &self.value[..usize::from(self.value_len)]
     }
 
-    fn with_stored_value_bytes(mut self, width: u8, bytes: &[u8]) -> Self {
-        self.value = [0u8; 64];
-        let len = usize::from(width).min(bytes.len()).min(64);
-        self.value[..len].copy_from_slice(&bytes[..len]);
-        self.value_len = width;
+    fn with_stored_value_bytes(mut self, width: u16, bytes: &[u8]) -> Self {
+        let len = usize::from(width).min(bytes.len());
+        self.value = bytes[..len].to_vec();
+        self.value_len = u16::try_from(len).expect("test value width fits u16");
         self
     }
 }
@@ -256,7 +241,7 @@ impl CsrEdgeTombstone for ValuedTestEdge {
         Self {
             target: u32::from(VertexId::EDGE_TOMBSTONE_SENTINEL),
             slot_index: 0,
-            value: [0u8; 64],
+            value: Vec::new(),
             value_len: 0,
         }
     }
@@ -270,6 +255,7 @@ pub fn valued_test_graph_with_capacity(
     elem_capacity: u64,
 ) -> LabeledLaraGraph<ValuedTestEdge, crate::VectorMemory> {
     LabeledLaraGraph::new(
+        mem(),
         mem(),
         mem(),
         mem(),

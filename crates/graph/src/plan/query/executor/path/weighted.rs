@@ -245,13 +245,13 @@ fn compare_weighted_numeric(
 type WeightedHopCostCache = IntMap<u64, IntMap<u64, WeightedCost>>;
 
 #[inline]
-fn weighted_hop_cache_outer_key(edge: EdgeBinding) -> u64 {
+fn weighted_hop_cache_outer_key(edge: &EdgeBinding) -> u64 {
     u64::from(u32::from(edge.handle.owner_vertex_id)) << 32 | u64::from(edge.handle.slot_index)
 }
 
-fn weighted_hop_cache_value_key(edge: EdgeBinding) -> u64 {
+fn weighted_hop_cache_value_key(edge: &EdgeBinding) -> u64 {
     let mut hasher = RapidHasher::default();
-    hasher.write_u8(edge.value_len());
+    hasher.write_u64(u64::try_from(edge.value_len()).unwrap_or(u64::MAX));
     hasher.write(edge.value_bytes_slice());
     hasher.finish()
 }
@@ -420,7 +420,7 @@ pub(crate) fn weighted_shortest_paths_between(
         }
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _relax_scope = bench_scope("weighted_shortest_relax");
-        for (edge_dst, edge_binding) in candidates.iter().copied() {
+        for (edge_dst, edge_binding) in candidates.iter().cloned() {
             let ExpandDst::Local(next) = edge_dst else {
                 continue;
             };
@@ -428,8 +428,8 @@ pub(crate) fn weighted_shortest_paths_between(
                 continue;
             }
             let hop_cost = if use_hop_cost_cache {
-                let outer = weighted_hop_cache_outer_key(edge_binding);
-                let value_key = weighted_hop_cache_value_key(edge_binding);
+                let outer = weighted_hop_cache_outer_key(&edge_binding);
+                let value_key = weighted_hop_cache_value_key(&edge_binding);
                 if let Some(cost) = hop_cost_cache.get(&outer).and_then(|m| m.get(&value_key)) {
                     cost.clone()
                 } else {
@@ -437,7 +437,7 @@ pub(crate) fn weighted_shortest_paths_between(
                         store,
                         cost_expr,
                         edge_var,
-                        edge_binding,
+                        edge_binding.clone(),
                         parameters,
                         gleaph_weight_decoders,
                     )?;
@@ -452,7 +452,7 @@ pub(crate) fn weighted_shortest_paths_between(
                     store,
                     direct_gleaph_weight_decoder
                         .expect("direct GLEAPH.WEIGHT decoder must be present"),
-                    edge_binding,
+                    edge_binding.clone(),
                 )?
             };
             let next_cost = entry.cost.checked_add(&hop_cost)?;
@@ -476,7 +476,7 @@ pub(crate) fn weighted_shortest_paths_between(
             states.push(PathSearchNode {
                 current: next,
                 previous: Some(state_idx),
-                edge: store_hop_edges.then_some(edge_binding),
+                edge: store_hop_edges.then_some(edge_binding.clone()),
                 depth: depth + 1,
             });
             heap.push(WeightedQueueEntry {
@@ -501,7 +501,7 @@ fn eval_shortest_hop_cost(
         store,
         expr,
         edge_var,
-        edge_binding,
+        edge_binding.clone(),
         gleaph_weight_decoders,
     )? {
         return Ok(cost);

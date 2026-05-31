@@ -97,7 +97,7 @@ pub(crate) fn edge_binding_for_expand(
     let record = store
         .find_outgoing_edge_record(handle)
         .map_err(PlanQueryError::from)?
-        .unwrap_or(edge);
+        .unwrap_or_else(|| edge.clone());
     Ok(EdgeBinding::from_edge(handle, record))
 }
 

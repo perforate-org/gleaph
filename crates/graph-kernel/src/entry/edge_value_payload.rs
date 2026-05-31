@@ -1,35 +1,38 @@
 //! In-memory edge value bytes shared across storage, federation wire, and query bindings.
 
-use super::edge::MAX_EDGE_VALUE_BYTES;
 use candid::CandidType;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+/// Maximum edge-value byte width supported by labeled storage profiles.
+pub const MAX_EDGE_VALUE_BYTE_WIDTH: u16 = u16::MAX;
+
 /// Stored edge-value bytes (not part of the 4-byte labeled CSR row).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, CandidType)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Default)]
 pub struct EdgeValuePayload {
-    pub bytes: [u8; MAX_EDGE_VALUE_BYTES],
-    pub len: u8,
+    bytes: Vec<u8>,
 }
 
-impl Default for EdgeValuePayload {
-    fn default() -> Self {
-        Self::EMPTY
+impl CandidType for EdgeValuePayload {
+    fn _ty() -> candid::types::Type {
+        <Vec<u8> as CandidType>::_ty()
+    }
+
+    fn idl_serialize<S>(&self, serializer: S) -> Result<(), S::Error>
+    where
+        S: candid::types::Serializer,
+    {
+        self.bytes.as_slice().idl_serialize(serializer)
     }
 }
 
 impl EdgeValuePayload {
-    pub const EMPTY: Self = Self {
-        bytes: [0u8; MAX_EDGE_VALUE_BYTES],
-        len: 0,
-    };
+    pub const EMPTY: Self = Self { bytes: Vec::new() };
 
     #[inline]
     pub fn from_slice(bytes: &[u8]) -> Self {
-        let len = bytes.len().min(MAX_EDGE_VALUE_BYTES) as u8;
-        let mut out = Self::EMPTY;
-        out.bytes[..usize::from(len)].copy_from_slice(&bytes[..usize::from(len)]);
-        out.len = len;
-        out
+        Self {
+            bytes: bytes.to_vec(),
+        }
     }
 
     #[inline]
@@ -38,14 +41,14 @@ impl EdgeValuePayload {
     }
 
     #[inline]
-    pub fn is_empty(self) -> bool {
-        self.len == 0
+    pub fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
     }
 
     /// Active value bytes as a slice.
     #[inline]
     pub fn as_slice(&self) -> &[u8] {
-        &self.bytes[..usize::from(self.len.min(MAX_EDGE_VALUE_BYTES as u8))]
+        &self.bytes
     }
 
     #[inline]
@@ -53,10 +56,15 @@ impl EdgeValuePayload {
         self.as_slice()
     }
 
-    /// Little-endian `u16` view when [`Self::len`] is exactly `2`.
     #[inline]
-    pub fn inline_u16(self) -> u16 {
-        if self.len == 2 {
+    pub fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    /// Little-endian `u16` view when length is exactly `2`.
+    #[inline]
+    pub fn inline_u16(&self) -> u16 {
+        if self.bytes.len() == 2 {
             u16::from_le_bytes(self.bytes[0..2].try_into().unwrap())
         } else {
             0
@@ -66,25 +74,20 @@ impl EdgeValuePayload {
 
 impl Serialize for EdgeValuePayload {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        (&self.len, self.as_slice()).serialize(serializer)
+        self.bytes.serialize(serializer)
     }
 }
 
 impl<'de> Deserialize<'de> for EdgeValuePayload {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let (len, active): (u8, Vec<u8>) = Deserialize::deserialize(deserializer)?;
-        if usize::from(len) != active.len() {
-            return Err(serde::de::Error::custom(
-                "edge value len does not match active byte length",
-            ));
-        }
-        if active.len() > MAX_EDGE_VALUE_BYTES {
+        let bytes: Vec<u8> = Deserialize::deserialize(deserializer)?;
+        if bytes.len() > usize::from(MAX_EDGE_VALUE_BYTE_WIDTH) {
             return Err(serde::de::Error::custom(format!(
                 "edge value length {} exceeds max {}",
-                active.len(),
-                MAX_EDGE_VALUE_BYTES
+                bytes.len(),
+                MAX_EDGE_VALUE_BYTE_WIDTH
             )));
         }
-        Ok(Self::from_slice(&active))
+        Ok(Self { bytes })
     }
 }

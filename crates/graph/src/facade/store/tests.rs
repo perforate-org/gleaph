@@ -27,14 +27,14 @@ fn install_w2_weight_profile(store: &GraphStore, label_id: EdgeLabelId) {
 
 #[test]
 fn install_edge_label_value_profile_rejected_on_second_install() {
-    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
+    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile};
 
     let store = GraphStore::new();
     let label_id = store
         .get_or_insert_edge_label_id("ProfileInitOnce")
         .expect("label");
     let profile = EdgeValueProfile {
-        width: EdgeValueWidth::W2,
+        byte_width: 2,
         encoding: EdgeValueEncoding::WeightRawU16,
     };
     store
@@ -76,7 +76,7 @@ fn insert_rejects_value_bytes_when_label_profile_expects_zero_width() {
 
 #[test]
 fn insert_rejects_value_bytes_when_profile_width_differs() {
-    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
+    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile};
 
     let store = GraphStore::new();
     let source = store.insert_vertex().expect("source");
@@ -88,7 +88,7 @@ fn insert_rejects_value_bytes_when_profile_width_differs() {
         .install_edge_label_value_profile_at_init(
             label_id,
             EdgeValueProfile {
-                width: EdgeValueWidth::W2,
+                byte_width: 2,
                 encoding: EdgeValueEncoding::WeightRawU16,
             },
         )
@@ -121,16 +121,23 @@ fn insert_rejects_invalid_edge_value_byte_width() {
 
     let err = store
         .insert_directed_edge_with_value_bytes(source, target, Some(label_id), &[1, 2, 3])
-        .expect_err("three-byte payload is unsupported");
+        .expect_err("three-byte payload without a matching profile");
     assert!(
-        matches!(err, GraphStoreError::InvalidEdgeValueWidth(3)),
+        matches!(
+            err,
+            GraphStoreError::EdgeValueWidthMismatch {
+                expected: 0,
+                actual: 3,
+                ..
+            }
+        ),
         "unexpected error: {err:?}"
     );
 }
 
 #[test]
 fn i32_edge_value_profile_round_trip() {
-    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
+    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile};
 
     let store = GraphStore::new();
     let source = store.insert_vertex().expect("source");
@@ -142,7 +149,7 @@ fn i32_edge_value_profile_round_trip() {
         .install_edge_label_value_profile_at_init(
             label_id,
             EdgeValueProfile {
-                width: EdgeValueWidth::W4,
+                byte_width: 4,
                 encoding: EdgeValueEncoding::RawI32,
             },
         )
@@ -167,7 +174,7 @@ fn i32_edge_value_profile_round_trip() {
 
 #[test]
 fn graph_store_visits_fixed_label_edge_value_batches() {
-    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
+    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile};
 
     let store = GraphStore::new();
     let source = store.insert_vertex().expect("source");
@@ -180,7 +187,7 @@ fn graph_store_visits_fixed_label_edge_value_batches() {
         .install_edge_label_value_profile_at_init(
             label_id,
             EdgeValueProfile {
-                width: EdgeValueWidth::W2,
+                byte_width: 2,
                 encoding: EdgeValueEncoding::RawU16,
             },
         )
@@ -216,7 +223,7 @@ fn graph_store_visits_fixed_label_edge_value_batches() {
 
 #[test]
 fn graph_store_visits_fixed_label_in_edge_value_batches() {
-    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth};
+    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile};
 
     let store = GraphStore::new();
     let first = store.insert_vertex().expect("first");
@@ -229,7 +236,7 @@ fn graph_store_visits_fixed_label_in_edge_value_batches() {
         .install_edge_label_value_profile_at_init(
             label_id,
             EdgeValueProfile {
-                width: EdgeValueWidth::W2,
+                byte_width: 2,
                 encoding: EdgeValueEncoding::RawU16,
             },
         )

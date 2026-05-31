@@ -786,7 +786,7 @@ where
             BucketSearch::Found { slot, bucket } => (slot, bucket),
             BucketSearch::Missing { .. } => return Ok(()),
         };
-        if bucket.degree() == 0 || bucket.value_width() == 0 {
+        if bucket.degree() == 0 || bucket.value_byte_width() == 0 {
             return Ok(());
         }
         let dense = bucket.value_log_head() < 0
@@ -800,7 +800,7 @@ where
         let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
         let mut iter =
             self.labeled_bucket_span_iter(src, order, &vertex, &[bucket], 0, bucket_index)?;
-        let width = usize::from(bucket.value_width());
+        let width = usize::from(bucket.value_byte_width());
         let batch_edges = (EDGE_VALUE_BATCH_TARGET_BYTES / width).max(1);
         loop {
             scratch.clear();
@@ -820,7 +820,7 @@ where
             }
             visit(LabeledEdgeValueBatch {
                 label_id,
-                width_code: bucket.value_width_code(),
+                byte_width: bucket.value_byte_width(),
                 order,
                 edges: &scratch.edges,
                 value_bytes: &scratch.value_bytes,
@@ -839,7 +839,7 @@ where
     where
         Visit: for<'b> FnMut(LabeledEdgeValueBatch<'b, E>),
     {
-        let width = usize::from(bucket.value_width());
+        let width = usize::from(bucket.value_byte_width());
         let batch_edges = (EDGE_VALUE_BATCH_TARGET_BYTES / width).max(1);
         let degree = bucket.degree();
         let mut remaining = degree;
@@ -858,7 +858,7 @@ where
                 .read_slots_contiguous(bucket.edge_start() + u64::from(first_slot), &mut raw_edges);
             let value_offset = bucket
                 .value_offset()
-                .checked_add(u64::from(first_slot) * u64::from(bucket.value_width()))
+                .checked_add(u64::from(first_slot) * u64::from(bucket.value_byte_width()))
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             let mut raw_values = vec![0u8; take as usize * width];
             self.values.read_bytes(value_offset, &mut raw_values);
@@ -903,7 +903,7 @@ where
             if !scratch.edges.is_empty() {
                 visit(LabeledEdgeValueBatch {
                     label_id: bucket.bucket_label_key(),
-                    width_code: bucket.value_width_code(),
+                    byte_width: bucket.value_byte_width(),
                     order,
                     edges: &scratch.edges,
                     value_bytes: &scratch.value_bytes,

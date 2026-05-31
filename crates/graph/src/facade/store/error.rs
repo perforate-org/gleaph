@@ -42,6 +42,10 @@ pub enum GraphStoreError {
         expected: usize,
         actual: usize,
     },
+    /// Federated expand returned or attempted to send invalid edge-value bytes.
+    FederatedExpandValue {
+        detail: String,
+    },
     /// Edge value profile was already installed for this catalog label at init.
     EdgeLabelProfileAlreadyInstalled(EdgeLabelId),
     VertexPlacement(placement::VertexPlacementError),
@@ -97,6 +101,9 @@ impl fmt::Display for GraphStoreError {
                     "unlabeled edges expect {expected} value bytes, got {actual}"
                 ),
             },
+            Self::FederatedExpandValue { detail } => {
+                write!(f, "invalid federated expand edge value: {detail}")
+            }
             Self::EdgeLabelProfileAlreadyInstalled(id) => write!(
                 f,
                 "edge label {} value profile is already installed (init-time only)",
@@ -125,6 +132,7 @@ impl std::error::Error for GraphStoreError {
             | Self::InvalidEdgeLabelId(_)
             | Self::InvalidEdgeValueWidth(_)
             | Self::EdgeValueWidthMismatch { .. }
+            | Self::FederatedExpandValue { .. }
             | Self::EdgeLabelProfileAlreadyInstalled(_)
             | Self::VertexPlacement(_)
             | Self::VertexMigrating

@@ -1,14 +1,23 @@
 //! Log-backed byte CSR for per-label edge values (separate from target rows).
 
+mod blob_id;
+mod blob_store;
+mod blobs;
+mod cell;
 mod log;
 
 use crate::lara::edge::free_span::FreeSpanStore;
+use crate::lara::edge_value::blobs::EdgeValueBlobMap;
+use crate::lara::edge_value::cell::MAX_VALUE_LOG_INLINE_WIDTH;
 use crate::lara::edge_value::log::{HeaderV1 as ValueLogHeaderV1, PAYLOAD_BYTES, ValueLogStore};
 use crate::slab_index::{byte_exclusive_end_fits, byte_offset_fits, checked_add_byte_offset};
 use crate::{GrowFailed, read_u64, safe_write, types::Address, write_u64};
 use ic_stable_structures::Memory;
 use std::{cell::Cell, fmt};
 
+pub use blob_id::EdgeValueBlobId;
+pub use blob_store::{BlobStoreError, EdgeValueBlobStore, NoopEdgeValueBlobStore};
+pub use cell::ValueLogCell;
 pub use log::{InitError as ValueLogInitError, ValueLogStore as ValueOverflowLogStore};
 
 /// Magic bytes for the value byte slab.
@@ -75,6 +84,111 @@ impl fmt::Display for InitError {
 }
 
 impl std::error::Error for InitError {}
+
+/// Errors returned while writing one value overflow-log entry.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ValueLogWriteError {
+    /// Stable memory could not grow or write the value-log entry.
+    Grow(GrowFailed),
+    /// External blob storage rejected the payload.
+    Blob(BlobStoreError),
+}
+
+impl fmt::Display for ValueLogWriteError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Grow(err) => write!(f, "value log write failed: {err}"),
+            Self::Blob(err) => write!(f, "value blob write failed: {err}"),
+        }
+    }
+}
+
+impl std::error::Error for ValueLogWriteError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Grow(err) => Some(err),
+            Self::Blob(err) => Some(err),
+        }
+    }
+}
+
+impl From<GrowFailed> for ValueLogWriteError {
+    fn from(value: GrowFailed) -> Self {
+        Self::Grow(value)
+    }
+}
+
+impl From<BlobStoreError> for ValueLogWriteError {
+    fn from(value: BlobStoreError) -> Self {
+        Self::Blob(value)
+    }
+}
+
+/// Errors returned while reading one value overflow-log entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ValueLogReadError {
+    /// Caller-provided output buffer is smaller than the expected edge-value width.
+    OutputTooSmall {
+        /// Expected edge-value byte width.
+        width: u16,
+        /// Actual output buffer length.
+        out_len: usize,
+    },
+    /// Inline cell tag/payload cannot represent the expected width.
+    InvalidInlineCell {
+        /// Expected edge-value byte width.
+        width: u16,
+    },
+    /// Blob-tagged value-log entry has no corresponding blob payload.
+    MissingBlob {
+        /// Value-log leaf segment.
+        leaf_segment: u32,
+        /// Value-log entry index inside the segment.
+        entry_idx: u32,
+    },
+    /// Blob payload length does not match the expected edge-value width.
+    BlobWidthMismatch {
+        /// Expected edge-value byte width.
+        expected: u16,
+        /// Actual blob payload length.
+        actual: usize,
+    },
+    /// Requested ascending log-chain index is outside the materialized chain.
+    MissingAscLogIndex {
+        /// Oldest-to-newest value-log index requested by the caller.
+        asc_log_index: u32,
+    },
+}
+
+impl fmt::Display for ValueLogReadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OutputTooSmall { width, out_len } => write!(
+                f,
+                "value log read output too small: width {width}, output length {out_len}"
+            ),
+            Self::InvalidInlineCell { width } => {
+                write!(f, "invalid inline value log cell for width {width}")
+            }
+            Self::MissingBlob {
+                leaf_segment,
+                entry_idx,
+            } => write!(
+                f,
+                "missing value blob for leaf segment {leaf_segment}, entry {entry_idx}"
+            ),
+            Self::BlobWidthMismatch { expected, actual } => write!(
+                f,
+                "value blob width mismatch: expected {expected} bytes, got {actual}"
+            ),
+            Self::MissingAscLogIndex { asc_log_index } => {
+                write!(f, "value log ascending index {asc_log_index} is missing")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ValueLogReadError {}
 
 /// Stable byte slab for edge values.
 #[derive(Clone, Debug)]
@@ -187,6 +301,7 @@ impl<M: Memory> ValueByteSlabStore<M> {
 pub struct EdgeValueStore<M: Memory> {
     slab: ValueByteSlabStore<M>,
     log: ValueLogStore<M>,
+    blobs: EdgeValueBlobMap<M>,
     free_spans: FreeSpanStore<M>,
     header: Cell<HeaderV1>,
 }
@@ -195,6 +310,7 @@ impl<M: Memory> EdgeValueStore<M> {
     pub fn new(
         slab_memory: M,
         value_log: M,
+        value_blobs: M,
         free_spans: M,
         free_span_by_start: M,
         byte_capacity: u64,
@@ -209,10 +325,12 @@ impl<M: Memory> EdgeValueStore<M> {
         let header = HeaderV1::new(byte_capacity);
         let slab = ValueByteSlabStore::new(slab_memory, header)?;
         let log = ValueLogStore::new(value_log, ValueLogHeaderV1::new(segment_count))?;
+        let blobs = EdgeValueBlobMap::init(value_blobs);
         let free_spans = FreeSpanStore::new(free_spans, free_span_by_start)?;
         Ok(Self {
             slab,
             log,
+            blobs,
             free_spans,
             header: Cell::new(header),
         })
@@ -221,6 +339,7 @@ impl<M: Memory> EdgeValueStore<M> {
     pub fn init(
         slab_memory: M,
         value_log: M,
+        value_blobs: M,
         free_spans: M,
         free_span_by_start: M,
         byte_capacity: u64,
@@ -248,10 +367,12 @@ impl<M: Memory> EdgeValueStore<M> {
             FreeSpanStore::init(free_spans, free_span_by_start)
                 .map_err(|_| InitError::FreeSpansInvalid)?
         };
+        let blobs = EdgeValueBlobMap::init(value_blobs);
         let header = slab.header()?;
         Ok(Self {
             slab,
             log,
+            blobs,
             free_spans,
             header: Cell::new(header),
         })
@@ -262,7 +383,37 @@ impl<M: Memory> EdgeValueStore<M> {
     }
 
     pub(crate) fn release_value_log_segment(&self, leaf_segment: u32) -> Result<(), GrowFailed> {
+        let high_water = self.value_log_segment_high_water(leaf_segment);
+        self.blobs.drain_leaf_segment(leaf_segment, high_water);
         self.log.release_segment(leaf_segment)
+    }
+
+    pub(crate) fn value_log_segment_high_water(&self, leaf_segment: u32) -> u32 {
+        let h = self.log.header();
+        self.log.read_idx_with_header(&h, leaf_segment).max(0) as u32
+    }
+
+    pub(crate) fn sweep_value_log_chain(&self, leaf_segment: u32, value_chain: &[u32]) {
+        for &entry_idx in value_chain {
+            self.blobs.drop_log_site(leaf_segment, entry_idx);
+            self.clear_value_log_cell(leaf_segment, entry_idx);
+        }
+    }
+
+    fn read_value_log_cell(&self, leaf_segment: u32, entry_idx: u32) -> ValueLogCell {
+        let mut payload = [0u8; PAYLOAD_BYTES];
+        let h = self.log.header();
+        self.log
+            .read_entry_with_header(&h, leaf_segment, entry_idx, &mut payload);
+        ValueLogCell::from_bytes(payload)
+    }
+
+    pub(crate) fn clear_value_log_cell(&self, leaf_segment: u32, entry_idx: u32) {
+        let h = self.log.header();
+        let zeros = [0u8; PAYLOAD_BYTES];
+        let _ = self
+            .log
+            .write_entry_with_header(&h, leaf_segment, entry_idx, -1, -1, &zeros);
     }
 
     pub(crate) fn write_value_log_entry(
@@ -271,15 +422,28 @@ impl<M: Memory> EdgeValueStore<M> {
         entry_idx: u32,
         prev_head: i32,
         src: i32,
-        width: u8,
+        width: u16,
         value_bytes: &[u8],
-    ) -> Result<(), GrowFailed> {
-        let mut payload = [0u8; PAYLOAD_BYTES];
-        let n = usize::from(width).min(PAYLOAD_BYTES).min(value_bytes.len());
-        payload[..n].copy_from_slice(&value_bytes[..n]);
+    ) -> Result<(), ValueLogWriteError> {
+        self.blobs.drop_log_site(leaf_segment, entry_idx);
+        let cell = if usize::from(width) <= MAX_VALUE_LOG_INLINE_WIDTH {
+            let w = usize::from(width);
+            debug_assert_eq!(value_bytes.len(), w);
+            ValueLogCell::inline(width, value_bytes)
+        } else {
+            let id = EdgeValueBlobId::from_log_site(leaf_segment, entry_idx);
+            self.blobs.put_blob(id, value_bytes)?;
+            ValueLogCell::blob(width)
+        };
         let h = self.log.header();
-        self.log
-            .write_entry_with_header(&h, leaf_segment, entry_idx, prev_head, src, &payload)?;
+        self.log.write_entry_with_header(
+            &h,
+            leaf_segment,
+            entry_idx,
+            prev_head,
+            src,
+            cell.as_bytes(),
+        )?;
         self.log.write_idx_at_least(
             leaf_segment,
             i32::try_from(entry_idx).unwrap_or(i32::MAX) + 1,
@@ -291,15 +455,41 @@ impl<M: Memory> EdgeValueStore<M> {
         &self,
         leaf_segment: u32,
         entry_idx: u32,
-        width: u8,
+        width: u16,
         out: &mut [u8],
-    ) {
-        let mut payload = [0u8; PAYLOAD_BYTES];
-        let h = self.log.header();
-        self.log
-            .read_entry_with_header(&h, leaf_segment, entry_idx, &mut payload);
-        let n = usize::from(width).min(out.len()).min(PAYLOAD_BYTES);
-        out[..n].copy_from_slice(&payload[..n]);
+    ) -> Result<(), ValueLogReadError> {
+        let w = usize::from(width);
+        if w == 0 || out.len() < w {
+            return Err(ValueLogReadError::OutputTooSmall {
+                width,
+                out_len: out.len(),
+            });
+        }
+        let cell = self.read_value_log_cell(leaf_segment, entry_idx);
+        if cell.is_inline() {
+            if cell.decode_inline(width, out).is_some() {
+                return Ok(());
+            }
+            return Err(ValueLogReadError::InvalidInlineCell { width });
+        } else if cell.is_blob() {
+            let id = EdgeValueBlobId::from_log_site(leaf_segment, entry_idx);
+            let mut buf = Vec::with_capacity(w);
+            if !self.blobs.get_blob(id, &mut buf) {
+                return Err(ValueLogReadError::MissingBlob {
+                    leaf_segment,
+                    entry_idx,
+                });
+            }
+            if buf.len() != w {
+                return Err(ValueLogReadError::BlobWidthMismatch {
+                    expected: width,
+                    actual: buf.len(),
+                });
+            }
+            out[..w].copy_from_slice(&buf);
+            return Ok(());
+        }
+        Err(ValueLogReadError::InvalidInlineCell { width })
     }
 
     /// Returns value-log entry indices from oldest to newest by walking `log_head`.
@@ -328,11 +518,11 @@ impl<M: Memory> EdgeValueStore<M> {
         leaf_segment: u32,
         log_head: i32,
         asc_log_index: u32,
-        width: u8,
+        width: u16,
         out: &mut [u8],
-    ) {
+    ) -> Result<(), ValueLogReadError> {
         if log_head < 0 || width == 0 {
-            return;
+            return Err(ValueLogReadError::MissingAscLogIndex { asc_log_index });
         }
         let mut chain = Vec::new();
         let mut cur = log_head;
@@ -347,8 +537,9 @@ impl<M: Memory> EdgeValueStore<M> {
         }
         chain.reverse();
         if let Some(&idx) = chain.get(asc_log_index as usize) {
-            self.read_value_log_entry(leaf_segment, idx, width, out);
+            return self.read_value_log_entry(leaf_segment, idx, width, out);
         }
+        Err(ValueLogReadError::MissingAscLogIndex { asc_log_index })
     }
 
     pub fn header(&self) -> HeaderV1 {
@@ -393,7 +584,7 @@ impl<M: Memory> EdgeValueStore<M> {
         Ok(())
     }
 
-    pub fn read_value_slot(&self, offset: u64, width: u8, out: &mut [u8]) {
+    pub fn read_value_slot(&self, offset: u64, width: u16, out: &mut [u8]) {
         debug_assert_eq!(out.len(), usize::from(width));
         if width == 0 {
             return;
@@ -401,7 +592,12 @@ impl<M: Memory> EdgeValueStore<M> {
         self.read_bytes(offset, out);
     }
 
-    pub fn write_value_slot(&self, offset: u64, width: u8, bytes: &[u8]) -> Result<(), GrowFailed> {
+    pub fn write_value_slot(
+        &self,
+        offset: u64,
+        width: u16,
+        bytes: &[u8],
+    ) -> Result<(), GrowFailed> {
         debug_assert_eq!(bytes.len(), usize::from(width));
         if width == 0 {
             return Ok(());
@@ -534,7 +730,21 @@ mod tests {
     }
 
     fn test_store() -> EdgeValueStore<VectorMemory> {
-        EdgeValueStore::new(mem(), mem(), mem(), mem(), 1024, 1).expect("store")
+        EdgeValueStore::new(mem(), mem(), mem(), mem(), mem(), 1024, 1).expect("store")
+    }
+
+    #[test]
+    fn value_log_blob_round_trips_wide_payload() {
+        let store = test_store();
+        let payload = vec![0xABu8; 100];
+        store
+            .write_value_log_entry(0, 0, -1, 0, 100, &payload)
+            .expect("write");
+        let mut out = vec![0u8; 100];
+        store
+            .read_value_log_entry(0, 0, 100, &mut out)
+            .expect("read");
+        assert_eq!(out, payload);
     }
 
     #[test]
@@ -544,10 +754,78 @@ mod tests {
             .write_value_log_entry(0, 0, -1, 0, 4, &[1, 2, 3, 4])
             .expect("write");
         let mut out = [0u8; 4];
-        store.read_value_log_entry(0, 0, 4, &mut out);
+        store.read_value_log_entry(0, 0, 4, &mut out).expect("read");
         assert_eq!(out, [1, 2, 3, 4]);
-        store.read_value_log_asc_index(0, 0, 0, 4, &mut out);
+        store
+            .read_value_log_asc_index(0, 0, 0, 4, &mut out)
+            .expect("read asc");
         assert_eq!(out, [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn value_log_read_rejects_undersized_output_buffer() {
+        let store = test_store();
+        store
+            .write_value_log_entry(0, 0, -1, 0, 4, &[1, 2, 3, 4])
+            .expect("write");
+        let mut out = [0u8; 3];
+        assert_eq!(
+            store.read_value_log_entry(0, 0, 4, &mut out),
+            Err(ValueLogReadError::OutputTooSmall {
+                width: 4,
+                out_len: 3
+            })
+        );
+    }
+
+    #[test]
+    fn value_log_read_rejects_inline_width_above_inline_limit() {
+        let store = test_store();
+        store
+            .write_value_log_entry(0, 0, -1, 0, 8, &[1, 2, 3, 4, 5, 6, 7, 8])
+            .expect("write");
+        let mut out = [0u8; 9];
+        assert_eq!(
+            store.read_value_log_entry(0, 0, 9, &mut out),
+            Err(ValueLogReadError::InvalidInlineCell { width: 9 })
+        );
+    }
+
+    #[test]
+    fn value_log_read_rejects_missing_blob() {
+        let store = test_store();
+        store
+            .write_value_log_entry(0, 0, -1, 0, 9, &[1, 2, 3, 4, 5, 6, 7, 8, 9])
+            .expect("write");
+        store.blobs.drop_log_site(0, 0);
+        let mut out = [0u8; 9];
+        assert_eq!(
+            store.read_value_log_entry(0, 0, 9, &mut out),
+            Err(ValueLogReadError::MissingBlob {
+                leaf_segment: 0,
+                entry_idx: 0
+            })
+        );
+    }
+
+    #[test]
+    fn value_log_read_rejects_blob_width_mismatch() {
+        let store = test_store();
+        store
+            .write_value_log_entry(0, 0, -1, 0, 9, &[1, 2, 3, 4, 5, 6, 7, 8, 9])
+            .expect("write");
+        store
+            .blobs
+            .put_blob(EdgeValueBlobId::from_log_site(0, 0), &[1, 2, 3, 4, 5])
+            .expect("overwrite blob");
+        let mut out = [0u8; 9];
+        assert_eq!(
+            store.read_value_log_entry(0, 0, 9, &mut out),
+            Err(ValueLogReadError::BlobWidthMismatch {
+                expected: 9,
+                actual: 5
+            })
+        );
     }
 
     #[test]
@@ -591,9 +869,13 @@ mod tests {
             .write_value_log_entry(0, 1, 0, 0, 2, &[20, 0])
             .expect("entry 1");
         let mut out = [0u8; 2];
-        store.read_value_log_asc_index(0, 1, 0, 2, &mut out);
+        store
+            .read_value_log_asc_index(0, 1, 0, 2, &mut out)
+            .expect("read oldest");
         assert_eq!(out, [10, 0]);
-        store.read_value_log_asc_index(0, 1, 1, 2, &mut out);
+        store
+            .read_value_log_asc_index(0, 1, 1, 2, &mut out)
+            .expect("read newest");
         assert_eq!(out, [20, 0]);
     }
 
@@ -607,7 +889,9 @@ mod tests {
             .write_value_log_entry(3, 0, -1, 0, 1, &[7])
             .expect("leaf 3");
         let mut out = [0u8; 1];
-        store.read_value_log_entry(3, 0, 1, &mut out);
+        store
+            .read_value_log_entry(3, 0, 1, &mut out)
+            .expect("read leaf 3");
         assert_eq!(out, [7]);
     }
 
@@ -636,7 +920,7 @@ mod tests {
             .expect("log with fewer segments than edge store");
         let log_mem = log.into_memory();
         assert!(matches!(
-            EdgeValueStore::init(mem(), log_mem, mem(), mem(), 1024, edge_segments),
+            EdgeValueStore::init(mem(), log_mem, mem(), mem(), mem(), 1024, edge_segments),
             Err(InitError::ValueLogLayoutMismatch)
         ));
     }

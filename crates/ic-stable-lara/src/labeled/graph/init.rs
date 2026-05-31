@@ -69,6 +69,7 @@ where
         value_free_spans: M,
         value_free_span_by_start: M,
         value_log: M,
+        value_blobs: M,
         elem_capacity: u64,
         default_label: BucketLabelKey,
     ) -> Result<Self, crate::GrowFailed> {
@@ -97,6 +98,7 @@ where
             values: EdgeValueStore::new(
                 value_slab,
                 value_log,
+                value_blobs,
                 value_free_spans,
                 value_free_span_by_start,
                 elem_capacity,
@@ -123,6 +125,7 @@ where
         value_free_spans: M,
         value_free_span_by_start: M,
         value_log: M,
+        value_blobs: M,
         elem_capacity: u64,
         default_label: BucketLabelKey,
     ) -> Result<Self, InitError> {
@@ -153,6 +156,7 @@ where
             values: EdgeValueStore::init(
                 value_slab,
                 value_log,
+                value_blobs,
                 value_free_spans,
                 value_free_span_by_start,
                 elem_capacity,

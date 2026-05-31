@@ -23,7 +23,7 @@ use super::error::PlanQueryError;
 pub(crate) fn decode_traversal_edge_weight(
     store: &GraphStore,
     handle: EdgeHandle,
-    value_len: u8,
+    value_len: usize,
     value_bytes: &[u8],
     inline_value: u16,
     weight_decoder: Option<&PreparedWeightDecoder>,
@@ -40,7 +40,9 @@ pub(crate) fn decode_traversal_edge_weight(
                     }
                 })?;
         let expected_width = profile.required_byte_width();
-        if value_len != expected_width || value_bytes.len() != usize::from(expected_width) {
+        if value_len != usize::from(expected_width)
+            || value_bytes.len() != usize::from(expected_width)
+        {
             return Err(PlanQueryError::GleaphWeight {
                 message: format!(
                     "edge value width mismatch: profile expects {expected_width} bytes, edge stores {value_len}"
@@ -536,9 +538,7 @@ mod tests {
     #[test]
     fn decode_traversal_edge_weight_uses_edge_value_profile() {
         use crate::facade::EdgeHandle;
-        use gleaph_graph_kernel::entry::{
-            EdgeDirectedness, EdgeValueEncoding, EdgeValueProfile, EdgeValueWidth,
-        };
+        use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeValueEncoding, EdgeValueProfile};
         use ic_stable_lara::{VertexId, labeled::BucketLabelKey as LaraLabelId};
 
         let store = GraphStore::new();
@@ -549,7 +549,7 @@ mod tests {
             .install_edge_label_value_profile_at_init(
                 label_id,
                 EdgeValueProfile {
-                    width: EdgeValueWidth::W2,
+                    byte_width: 2,
                     encoding: EdgeValueEncoding::WeightRawU16,
                 },
             )

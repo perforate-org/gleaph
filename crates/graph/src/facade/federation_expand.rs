@@ -6,6 +6,7 @@ use super::migration::incremental::{
 use super::migration::vertex_visible_to_query;
 use super::stable::REMOTE_FORWARD_IN;
 use super::store::{EdgeHandle, GraphStore, GraphStoreError, canonical_undirected_owner};
+use crate::facade::catalog_edge_label_from_wire;
 use crate::index::placement;
 use gleaph_graph_kernel::entry::{Edge, EdgeTarget, RemoteRefId};
 use gleaph_graph_kernel::federation::{
@@ -35,9 +36,9 @@ fn push_neighbor(
     neighbor_logical_vertex_id: LogicalVertexId,
     neighbor_local_vertex_id: LocalVertexId,
     edge: &Edge,
-) {
-    let value = edge.value;
-    out.push(FederatedExpandNeighbor {
+) -> Result<(), GraphStoreError> {
+    let value = edge.value.clone();
+    let neighbor = FederatedExpandNeighbor {
         shard_id,
         neighbor_logical_vertex_id,
         neighbor_local_vertex_id: neighbor_local_vertex_id,
@@ -45,9 +46,16 @@ fn push_neighbor(
         label_id_raw: edge.label_id,
         slot_index: edge.edge_slot_index.raw(),
         inline_value: value.inline_u16(),
-        value_len: value.len,
-        value_bytes: value.bytes,
-    });
+        value_bytes: value.as_slice().to_vec(),
+    }
+    .from_value_payload(value);
+    if let Err(err) = neighbor.validate_wire() {
+        return Err(GraphStoreError::FederatedExpandValue {
+            detail: err.to_string(),
+        });
+    }
+    out.push(neighbor);
+    Ok(())
 }
 
 fn label_matches(edge: &Edge, label_id_raw: Option<u16>) -> bool {
@@ -71,7 +79,7 @@ fn collect_authoritative_incoming(
             let Some(neighbor_logical) = store.logical_vertex_for_remote_ref(remote_ref) else {
                 continue;
             };
-            push_neighbor(out, shard_id, target_local_raw, neighbor_logical, 0, &edge);
+            push_neighbor(out, shard_id, target_local_raw, neighbor_logical, 0, &edge)?;
             continue;
         }
         let owner = store.edge_sidecar_owner_from_in_row(target_local, &edge);
@@ -93,7 +101,7 @@ fn collect_authoritative_incoming(
             neighbor_logical,
             placement::local_vertex_id_raw(owner),
             &forward_edge,
-        );
+        )?;
     }
     Ok(())
 }
@@ -134,7 +142,7 @@ fn push_forward_to_remote_hit(
         source_logical,
         placement::local_vertex_id_raw(source_vertex_id),
         &edge,
-    );
+    )?;
     Ok(())
 }
 
@@ -215,7 +223,7 @@ fn collect_forward_to_remote_incoming_scan(
                 source_logical,
                 placement::local_vertex_id_raw(vertex_id),
                 &edge,
-            );
+            )?;
         }
     }
     Ok(())
@@ -285,7 +293,7 @@ fn collect_local_forward_to_stub_incoming(
             }) {
                 continue;
             }
-            push_neighbor(out, shard_id, anchor, source_logical, neighbor, &edge);
+            push_neighbor(out, shard_id, anchor, source_logical, neighbor, &edge)?;
         }
     }
     Ok(())
@@ -404,7 +412,7 @@ fn forward_undirected_edge_record(
             label_id: label,
             slot_index: edge.edge_slot_index.raw(),
         })?
-        .unwrap_or(*edge))
+        .unwrap_or_else(|| edge.clone()))
 }
 
 fn collect_authoritative_undirected(
@@ -431,7 +439,7 @@ fn collect_authoritative_undirected(
             neighbor_logical,
             neighbor_local,
             &forward_edge,
-        );
+        )?;
     }
     Ok(())
 }
@@ -476,7 +484,7 @@ fn collect_undirected_to_remote(
                 source_logical,
                 placement::local_vertex_id_raw(vertex_id),
                 &forward_edge,
-            );
+            )?;
         }
     }
     Ok(())
@@ -530,7 +538,7 @@ fn collect_local_undirected_to_stub(
                 source_logical,
                 neighbor,
                 &forward_edge,
-            );
+            )?;
         }
     }
     Ok(())
@@ -612,7 +620,7 @@ fn collect_authoritative_outgoing(
             neighbor_logical,
             neighbor_local,
             &edge,
-        );
+        )?;
     }
     Ok(())
 }
@@ -687,6 +695,47 @@ pub async fn federated_expand_coordinator(
     }
 }
 
+fn validate_federated_expand_hits(
+    store: &GraphStore,
+    args: FederatedExpandArgs,
+    hits: &[FederatedExpandNeighbor],
+) -> Result<(), GraphStoreError> {
+    let expected_width = args
+        .label_id_raw
+        .and_then(|raw| catalog_edge_label_from_wire(ic_stable_lara::BucketLabelKey::from_raw(raw)))
+        .and_then(|label| store.edge_label_value_profile(label))
+        .map(|profile| usize::from(profile.required_byte_width()));
+
+    for hit in hits {
+        hit.validate_wire()
+            .map_err(|err| GraphStoreError::FederatedExpandValue {
+                detail: err.to_string(),
+            })?;
+        if let Some(label_id_raw) = args.label_id_raw
+            && hit.label_id_raw != label_id_raw
+        {
+            return Err(GraphStoreError::FederatedExpandValue {
+                detail: format!(
+                    "requested label {label_id_raw}, remote hit returned label {}",
+                    hit.label_id_raw
+                ),
+            });
+        }
+        if let Some(expected) = expected_width
+            && hit.value_bytes.len() != expected
+        {
+            return Err(GraphStoreError::FederatedExpandValue {
+                detail: format!(
+                    "label {} expects {expected} value bytes, remote hit returned {}",
+                    hit.label_id_raw,
+                    hit.value_bytes.len()
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 async fn federated_expand_undirected_all_shards(
     store: &GraphStore,
     args: FederatedExpandArgs,
@@ -723,6 +772,7 @@ async fn federated_expand_undirected_all_shards(
                     ))
                 })?
         };
+        validate_federated_expand_hits(store, args, &hits)?;
         merged.extend(hits);
     }
     Ok(merged)
@@ -772,11 +822,13 @@ async fn federated_expand_outgoing_authoritative(
         return Ok(Vec::new());
     };
 
-    crate::index::federation::call_graph_federated_expand(entry.graph_canister, args)
+    let hits = crate::index::federation::call_graph_federated_expand(entry.graph_canister, args)
         .await
         .map_err(|e| {
             GraphStoreError::VertexPlacement(placement::VertexPlacementError::Call(e.to_string()))
-        })
+        })?;
+    validate_federated_expand_hits(store, args, &hits)?;
+    Ok(hits)
 }
 
 async fn federated_expand_incoming_all_shards(
@@ -815,6 +867,7 @@ async fn federated_expand_incoming_all_shards(
                     ))
                 })?
         };
+        validate_federated_expand_hits(store, args, &hits)?;
         merged.extend(hits);
     }
     Ok(merged)
@@ -892,6 +945,9 @@ mod tests {
     use super::*;
     use crate::facade::{FederationRouting, GraphStore};
     use candid::Principal;
+    use gleaph_graph_kernel::entry::{
+        EdgeSlotIndex, EdgeValueEncoding, EdgeValuePayload, EdgeValueProfile,
+    };
     use gleaph_graph_kernel::federation::ShardRegistryEntry;
 
     fn register_test_shard(shard_id: u32, graph_name: &str) {
@@ -945,7 +1001,7 @@ mod tests {
         .expect("collect");
 
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].value_len, 2);
+        assert_eq!(hits[0].value_len(), 2);
         assert_eq!(hits[0].value_bytes[..2], [7, 0]);
         let handle = edge_handle_for_federated_hit(&store, &hits[0]).expect("handle");
         assert_eq!(
@@ -953,6 +1009,124 @@ mod tests {
             u32::from(source),
             "incoming forward owner is the predecessor"
         );
+    }
+
+    #[test]
+    fn push_neighbor_rejects_oversize_value_bytes() {
+        let edge = Edge {
+            target: gleaph_graph_kernel::entry::VertexRef::local(VertexId::from(1)),
+            edge_slot_index: EdgeSlotIndex::from_raw(0),
+            label_id: 1,
+            value: EdgeValuePayload::from_slice(&vec![
+                0;
+                usize::from(
+                    gleaph_graph_kernel::federation::MAX_FEDERATED_EXPAND_VALUE_BYTE_WIDTH
+                ) + 1
+            ]),
+        };
+        let err = push_neighbor(&mut Vec::new(), 0, 0, 1, 1, &edge).unwrap_err();
+        assert!(matches!(err, GraphStoreError::FederatedExpandValue { .. }));
+    }
+
+    #[test]
+    fn remote_hits_must_match_label_edge_value_width() {
+        let store = GraphStore::new();
+        let label_id = store
+            .get_or_insert_edge_label_id("FedWidthCheck")
+            .expect("label");
+        store
+            .install_edge_label_value_profile_at_init(
+                label_id,
+                EdgeValueProfile {
+                    byte_width: 2,
+                    encoding: EdgeValueEncoding::RawU16,
+                },
+            )
+            .expect("profile");
+        let hit = FederatedExpandNeighbor {
+            shard_id: 1,
+            neighbor_logical_vertex_id: 2,
+            neighbor_local_vertex_id: 3,
+            anchor_local_vertex_id: 4,
+            label_id_raw: label_id.raw(),
+            slot_index: 0,
+            inline_value: 0,
+            value_bytes: vec![9],
+        };
+        let err = validate_federated_expand_hits(
+            &store,
+            FederatedExpandArgs {
+                logical_vertex_id: 1,
+                direction: FederatedExpandDirection::Incoming,
+                label_id_raw: Some(label_id.raw()),
+            },
+            &[hit],
+        )
+        .unwrap_err();
+        assert!(matches!(err, GraphStoreError::FederatedExpandValue { .. }));
+    }
+
+    #[test]
+    fn remote_hits_must_match_requested_label() {
+        let store = GraphStore::new();
+        let requested = store
+            .get_or_insert_edge_label_id("FedRequestedLabel")
+            .expect("requested label");
+        let returned = store
+            .get_or_insert_edge_label_id("FedReturnedLabel")
+            .expect("returned label");
+        let hit = FederatedExpandNeighbor {
+            shard_id: 1,
+            neighbor_logical_vertex_id: 2,
+            neighbor_local_vertex_id: 3,
+            anchor_local_vertex_id: 4,
+            label_id_raw: returned.raw(),
+            slot_index: 0,
+            inline_value: 0,
+            value_bytes: Vec::new(),
+        };
+        let err = validate_federated_expand_hits(
+            &store,
+            FederatedExpandArgs {
+                logical_vertex_id: 1,
+                direction: FederatedExpandDirection::Incoming,
+                label_id_raw: Some(requested.raw()),
+            },
+            &[hit],
+        )
+        .unwrap_err();
+        assert!(matches!(err, GraphStoreError::FederatedExpandValue { .. }));
+    }
+
+    #[test]
+    fn remote_hits_reject_oversize_value_bytes_before_merge() {
+        let store = GraphStore::new();
+        let hit = FederatedExpandNeighbor {
+            shard_id: 1,
+            neighbor_logical_vertex_id: 2,
+            neighbor_local_vertex_id: 3,
+            anchor_local_vertex_id: 4,
+            label_id_raw: 0,
+            slot_index: 0,
+            inline_value: 0,
+            value_bytes: vec![
+                0;
+                usize::from(
+                    gleaph_graph_kernel::federation::MAX_FEDERATED_EXPAND_VALUE_BYTE_WIDTH
+                ) + 1
+            ],
+        };
+        let err = validate_federated_expand_hits(
+            &store,
+            FederatedExpandArgs {
+                logical_vertex_id: 1,
+                direction: FederatedExpandDirection::Incoming,
+                label_id_raw: None,
+            },
+            &[hit],
+        )
+        .unwrap_err();
+        assert!(matches!(err, GraphStoreError::FederatedExpandValue { .. }));
     }
 
     #[test]
@@ -1046,7 +1220,7 @@ mod tests {
         .expect("collect");
 
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].value_len, 2);
+        assert_eq!(hits[0].value_len(), 2);
         assert_eq!(hits[0].value_bytes[..2], [5, 0]);
     }
 

@@ -612,7 +612,7 @@ pub(crate) fn binding_to_value(
             ("id".to_owned(), Value::Uint64(*logical_vertex_id)),
             ("remote".to_owned(), Value::Bool(true)),
         ])),
-        PlanBinding::Edge(edge) => edge_to_value(store, *edge),
+        PlanBinding::Edge(edge) => edge_to_value(store, edge.clone()),
         PlanBinding::Value(value) => Ok(value.clone()),
         PlanBinding::Path(pb) => Ok(path_binding_to_value(store, pb)),
     }

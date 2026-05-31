@@ -479,6 +479,7 @@ where
         forward_value_free_spans: M,
         forward_value_free_span_by_start: M,
         forward_value_log: M,
+        forward_value_blobs: M,
         reverse_vertices: M,
         reverse_buckets: M,
         reverse_bucket_free_spans: M,
@@ -493,6 +494,7 @@ where
         reverse_value_free_spans: M,
         reverse_value_free_span_by_start: M,
         reverse_value_log: M,
+        reverse_value_blobs: M,
         maintenance_queue: M,
         dirty_work_items: M,
         elem_capacity: u64,
@@ -513,6 +515,7 @@ where
             forward_value_free_spans,
             forward_value_free_span_by_start,
             forward_value_log,
+            forward_value_blobs,
             reverse_vertices,
             reverse_buckets,
             reverse_bucket_free_spans,
@@ -527,6 +530,7 @@ where
             reverse_value_free_spans,
             reverse_value_free_span_by_start,
             reverse_value_log,
+            reverse_value_blobs,
             maintenance_queue,
             dirty_work_items,
             elem_capacity,
@@ -552,6 +556,7 @@ where
         forward_value_free_spans: M,
         forward_value_free_span_by_start: M,
         forward_value_log: M,
+        forward_value_blobs: M,
         reverse_vertices: M,
         reverse_buckets: M,
         reverse_bucket_free_spans: M,
@@ -566,6 +571,7 @@ where
         reverse_value_free_spans: M,
         reverse_value_free_span_by_start: M,
         reverse_value_log: M,
+        reverse_value_blobs: M,
         maintenance_queue: M,
         dirty_work_items: M,
         elem_capacity: u64,
@@ -590,6 +596,7 @@ where
             forward_value_free_spans,
             forward_value_free_span_by_start,
             forward_value_log,
+            forward_value_blobs,
             elem_capacity,
             default_label,
         )?;
@@ -608,6 +615,7 @@ where
             reverse_value_free_spans,
             reverse_value_free_span_by_start,
             reverse_value_log,
+            reverse_value_blobs,
             elem_capacity,
             default_label,
         )?;
@@ -637,6 +645,7 @@ where
         forward_value_free_spans: M,
         forward_value_free_span_by_start: M,
         forward_value_log: M,
+        forward_value_blobs: M,
         reverse_vertices: M,
         reverse_buckets: M,
         reverse_bucket_free_spans: M,
@@ -651,6 +660,7 @@ where
         reverse_value_free_spans: M,
         reverse_value_free_span_by_start: M,
         reverse_value_log: M,
+        reverse_value_blobs: M,
         maintenance_queue: M,
         dirty_work_items: M,
         elem_capacity: u64,
@@ -671,6 +681,7 @@ where
             forward_value_free_spans,
             forward_value_free_span_by_start,
             forward_value_log,
+            forward_value_blobs,
             reverse_vertices,
             reverse_buckets,
             reverse_bucket_free_spans,
@@ -685,6 +696,7 @@ where
             reverse_value_free_spans,
             reverse_value_free_span_by_start,
             reverse_value_log,
+            reverse_value_blobs,
             maintenance_queue,
             dirty_work_items,
             elem_capacity,
@@ -710,6 +722,7 @@ where
         forward_value_free_spans: M,
         forward_value_free_span_by_start: M,
         forward_value_log: M,
+        forward_value_blobs: M,
         reverse_vertices: M,
         reverse_buckets: M,
         reverse_bucket_free_spans: M,
@@ -724,6 +737,7 @@ where
         reverse_value_free_spans: M,
         reverse_value_free_span_by_start: M,
         reverse_value_log: M,
+        reverse_value_blobs: M,
         maintenance_queue: M,
         dirty_work_items: M,
         elem_capacity: u64,
@@ -748,6 +762,7 @@ where
             forward_value_free_spans,
             forward_value_free_span_by_start,
             forward_value_log,
+            forward_value_blobs,
             elem_capacity,
             default_label,
         )
@@ -767,6 +782,7 @@ where
             reverse_value_free_spans,
             reverse_value_free_span_by_start,
             reverse_value_log,
+            reverse_value_blobs,
             elem_capacity,
             default_label,
         )
@@ -875,19 +891,19 @@ where
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
-    /// Ensures forward/reverse label buckets declare `value_width_code` for a directed insert.
+    /// Ensures forward/reverse label buckets declare `value_byte_width` for a directed insert.
     pub fn ensure_directed_edge_value_width(
         &self,
         src: VertexId,
         dst: VertexId,
         label_id: BucketLabelKey,
-        value_width_code: crate::labeled::ValueWidthCode,
+        value_byte_width: u16,
     ) -> Result<(), DeferredBidirectionalLabeledError> {
         self.forward
-            .ensure_label_bucket_value_width(src, label_id, value_width_code)
+            .ensure_label_bucket_value_byte_width(src, label_id, value_byte_width)
             .map_err(DeferredBidirectionalLabeledError::Forward)?;
         self.reverse
-            .ensure_label_bucket_value_width(dst, label_id, value_width_code)
+            .ensure_label_bucket_value_byte_width(dst, label_id, value_byte_width)
             .map_err(DeferredBidirectionalLabeledError::Reverse)?;
         Ok(())
     }
@@ -1782,7 +1798,7 @@ where
                 .next()
             {
                 let dst = edge.neighbor_vid();
-                if self.remove_undirected_deferred(vid, dst, edge)?
+                if self.remove_undirected_deferred(vid, dst, edge.clone())?
                     || self.remove_directed_deferred(vid, dst, edge)?
                 {
                     continue;
@@ -1943,7 +1959,7 @@ mod tests {
             Self(u32::from_le_bytes(bytes[0..4].try_into().unwrap()))
         }
 
-        fn write_to(self, bytes: &mut [u8]) {
+        fn write_to(&self, bytes: &mut [u8]) {
             bytes[0..4].copy_from_slice(&self.0.to_le_bytes());
         }
 
@@ -1951,7 +1967,7 @@ mod tests {
             VertexId::from(self.0)
         }
 
-        fn with_neighbor_vid(self, vid: VertexId) -> Self {
+        fn with_neighbor_vid(&self, vid: VertexId) -> Self {
             Self(u32::from(vid))
         }
     }
@@ -1965,10 +1981,40 @@ mod tests {
     use crate::VectorMemory;
 
     fn graph() -> DeferredBidirectionalLabeledLaraGraph<TestEdge, VectorMemory> {
-        let (fv, fb, fbfs, fbfsbs, fec, fe, fel, fesm, fefs, fefsbs, fvs, fvffs, fvffsbs, fvlog) =
-            labeled_lara_memories();
-        let (rv, rb, rbfs, rbfsbs, rec, re, rel, resm, refs, refsbs, rvs, rvffs, rvffsbs, rvlog) =
-            labeled_lara_memories();
+        let (
+            fv,
+            fb,
+            fbfs,
+            fbfsbs,
+            fec,
+            fe,
+            fel,
+            fesm,
+            fefs,
+            fefsbs,
+            fvs,
+            fvffs,
+            fvffsbs,
+            fvlog,
+            fvblobs,
+        ) = labeled_lara_memories();
+        let (
+            rv,
+            rb,
+            rbfs,
+            rbfsbs,
+            rec,
+            re,
+            rel,
+            resm,
+            refs,
+            refsbs,
+            rvs,
+            rvffs,
+            rvffsbs,
+            rvlog,
+            rvblobs,
+        ) = labeled_lara_memories();
         DeferredBidirectionalLabeledLaraGraph::new(
             fv,
             fb,
@@ -1984,6 +2030,7 @@ mod tests {
             fvffs,
             fvffsbs,
             fvlog,
+            fvblobs,
             rv,
             rb,
             rbfs,
@@ -1998,6 +2045,7 @@ mod tests {
             rvffs,
             rvffsbs,
             rvlog,
+            rvblobs,
             vector_memory(),
             vector_memory(),
             128,
@@ -2008,10 +2056,40 @@ mod tests {
 
     #[test]
     fn delete_vertex_after_mixed_bucket_and_bypass_edge() {
-        let (fv, fb, fbfs, fbfsbs, fec, fe, fel, fesm, fefs, fefsbs, fvs, fvffs, fvffsbs, fvlog) =
-            labeled_lara_memories();
-        let (rv, rb, rbfs, rbfsbs, rec, re, rel, resm, refs, refsbs, rvs, rvffs, rvffsbs, rvlog) =
-            labeled_lara_memories();
+        let (
+            fv,
+            fb,
+            fbfs,
+            fbfsbs,
+            fec,
+            fe,
+            fel,
+            fesm,
+            fefs,
+            fefsbs,
+            fvs,
+            fvffs,
+            fvffsbs,
+            fvlog,
+            fvblobs,
+        ) = labeled_lara_memories();
+        let (
+            rv,
+            rb,
+            rbfs,
+            rbfsbs,
+            rec,
+            re,
+            rel,
+            resm,
+            refs,
+            refsbs,
+            rvs,
+            rvffs,
+            rvffsbs,
+            rvlog,
+            rvblobs,
+        ) = labeled_lara_memories();
         let graph = DeferredBidirectionalLabeledLaraGraph::new(
             fv,
             fb,
@@ -2027,6 +2105,7 @@ mod tests {
             fvffs,
             fvffsbs,
             fvlog,
+            fvblobs,
             rv,
             rb,
             rbfs,
@@ -2041,6 +2120,7 @@ mod tests {
             rvffs,
             rvffsbs,
             rvlog,
+            rvblobs,
             vector_memory(),
             vector_memory(),
             128,
@@ -2193,7 +2273,7 @@ mod tests {
         target: u32,
         slot_index: u32,
         value: [u8; 8],
-        value_len: u8,
+        value_len: u16,
     }
 
     impl ValuedTestEdge {
@@ -2221,7 +2301,7 @@ mod tests {
             }
         }
 
-        fn write_to(self, bytes: &mut [u8]) {
+        fn write_to(&self, bytes: &mut [u8]) {
             bytes[0..4].copy_from_slice(&self.target.to_le_bytes());
         }
 
@@ -2229,10 +2309,10 @@ mod tests {
             VertexId::from(self.target)
         }
 
-        fn with_neighbor_vid(self, vid: VertexId) -> Self {
+        fn with_neighbor_vid(&self, vid: VertexId) -> Self {
             Self {
                 target: u32::from(vid),
-                ..self
+                ..*self
             }
         }
 
@@ -2240,7 +2320,7 @@ mod tests {
             Self { slot_index, ..self }
         }
 
-        fn edge_value_byte_width(&self) -> u8 {
+        fn edge_value_byte_width(&self) -> u16 {
             self.value_len
         }
 
@@ -2248,7 +2328,7 @@ mod tests {
             &self.value[..usize::from(self.value_len)]
         }
 
-        fn with_stored_value_bytes(mut self, width: u8, bytes: &[u8]) -> Self {
+        fn with_stored_value_bytes(mut self, width: u16, bytes: &[u8]) -> Self {
             self.value = [0u8; 8];
             let len = usize::from(width).min(bytes.len()).min(8);
             self.value[..len].copy_from_slice(&bytes[..len]);
@@ -2274,10 +2354,40 @@ mod tests {
 
     fn valued_bidirectional_graph()
     -> DeferredBidirectionalLabeledLaraGraph<ValuedTestEdge, VectorMemory> {
-        let (fv, fb, fbfs, fbfsbs, fec, fe, fel, fesm, fefs, fefsbs, fvs, fvffs, fvffsbs, fvlog) =
-            labeled_lara_memories();
-        let (rv, rb, rbfs, rbfsbs, rec, re, rel, resm, refs, refsbs, rvs, rvffs, rvffsbs, rvlog) =
-            labeled_lara_memories();
+        let (
+            fv,
+            fb,
+            fbfs,
+            fbfsbs,
+            fec,
+            fe,
+            fel,
+            fesm,
+            fefs,
+            fefsbs,
+            fvs,
+            fvffs,
+            fvffsbs,
+            fvlog,
+            fvblobs,
+        ) = labeled_lara_memories();
+        let (
+            rv,
+            rb,
+            rbfs,
+            rbfsbs,
+            rec,
+            re,
+            rel,
+            resm,
+            refs,
+            refsbs,
+            rvs,
+            rvffs,
+            rvffsbs,
+            rvlog,
+            rvblobs,
+        ) = labeled_lara_memories();
         DeferredBidirectionalLabeledLaraGraph::new(
             fv,
             fb,
@@ -2293,6 +2403,7 @@ mod tests {
             fvffs,
             fvffsbs,
             fvlog,
+            fvblobs,
             rv,
             rb,
             rbfs,
@@ -2307,6 +2418,7 @@ mod tests {
             rvffs,
             rvffsbs,
             rvlog,
+            rvblobs,
             vector_memory(),
             vector_memory(),
             256,
@@ -2354,7 +2466,8 @@ mod tests {
         graph
             .for_each_out_edges_for_label_unchecked(VertexId::from(0), road, |edge| {
                 if edge.value_len == 2 {
-                    weights.push(u16::from_le_bytes([edge.value[0], edge.value[1]]));
+                    let b = edge.edge_value_bytes();
+                    weights.push(u16::from_le_bytes([b[0], b[1]]));
                 }
             })
             .unwrap();
@@ -2370,12 +2483,7 @@ mod tests {
         }
         let road = BucketLabelKey::directed_from_index(2);
         graph
-            .ensure_directed_edge_value_width(
-                VertexId::from(0),
-                VertexId::from(1),
-                road,
-                crate::labeled::ValueWidthCode::W2,
-            )
+            .ensure_directed_edge_value_width(VertexId::from(0), VertexId::from(1), road, 2u16)
             .unwrap();
         let rev = |src: u32| ValuedTestEdge::with_u16(src, 0);
         graph
@@ -2411,7 +2519,8 @@ mod tests {
         graph
             .for_each_out_edges_for_label_unchecked(VertexId::from(0), road, |edge| {
                 if edge.value_len == 2 {
-                    weights.push(u16::from_le_bytes([edge.value[0], edge.value[1]]));
+                    let b = edge.edge_value_bytes();
+                    weights.push(u16::from_le_bytes([b[0], b[1]]));
                 }
             })
             .unwrap();
@@ -2434,19 +2543,11 @@ mod tests {
         let road = BucketLabelKey::undirected_from_index(2);
         graph
             .forward()
-            .ensure_label_bucket_value_width(
-                VertexId::from(0),
-                road,
-                crate::labeled::ValueWidthCode::W2,
-            )
+            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
         graph
             .forward()
-            .ensure_label_bucket_value_width(
-                VertexId::from(1),
-                road,
-                crate::labeled::ValueWidthCode::W2,
-            )
+            .ensure_label_bucket_value_byte_width(VertexId::from(1), road, 2u16)
             .unwrap();
         graph
             .insert_undirected_deferred(
@@ -2482,7 +2583,8 @@ mod tests {
             graph
                 .for_each_undirected_edges(vertex, OutEdgeOrder::Ascending, |edge| {
                     if edge.value_len == 2 {
-                        weights.push(u16::from_le_bytes([edge.value[0], edge.value[1]]));
+                        let b = edge.edge_value_bytes();
+                        weights.push(u16::from_le_bytes([b[0], b[1]]));
                     }
                 })
                 .unwrap();

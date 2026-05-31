@@ -212,6 +212,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             let Some((target, removed)) = removed else {
                 return Ok(None);
             };
+            let removed_for_return = removed.clone();
             self.insert_delete_into_log_with_layout(
                 &edge_layout,
                 vertices,
@@ -226,7 +227,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             self.set_num_edges(next_global);
             self.bump_counts_leaf_with_layout(&edge_layout, log_owner, -1, 0)?;
-            return Ok(Some(removed));
+            return Ok(Some(removed_for_return));
         }
         let live = v.degree();
         if live == 0 {

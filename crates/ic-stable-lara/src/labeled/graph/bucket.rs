@@ -608,7 +608,7 @@ mod tests {
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .ensure_label_bucket_value_width(VertexId::from(0), road, ValueWidthCode::W2)
+            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
         for target in 1..=33u32 {
             let weight = u16::try_from(target).expect("weight fits u16");
@@ -644,8 +644,9 @@ mod tests {
         );
         for edge in &visited {
             assert_eq!(edge.value_len, 2);
+            let b = edge.edge_value_bytes();
             assert_eq!(
-                u16::from_le_bytes([edge.value[0], edge.value[1]]),
+                u16::from_le_bytes([b[0], b[1]]),
                 u16::try_from(edge.target).unwrap()
             );
         }

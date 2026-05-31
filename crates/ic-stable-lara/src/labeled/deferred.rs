@@ -75,7 +75,7 @@ mod tests {
             Self(u32::from_le_bytes(bytes[0..4].try_into().unwrap()))
         }
 
-        fn write_to(self, bytes: &mut [u8]) {
+        fn write_to(&self, bytes: &mut [u8]) {
             bytes[0..4].copy_from_slice(&self.0.to_le_bytes());
         }
 
@@ -83,7 +83,7 @@ mod tests {
             VertexId::from(self.0)
         }
 
-        fn with_neighbor_vid(self, vid: VertexId) -> Self {
+        fn with_neighbor_vid(&self, vid: VertexId) -> Self {
             Self(u32::from(vid))
         }
     }
@@ -95,7 +95,7 @@ mod tests {
     }
 
     fn graph() -> DeferredLabeledLaraGraph<TestEdge, crate::VectorMemory> {
-        let (v, b, bfs, bfsbs, ec, e, el, esm, efs, efsbs, vs, vffs, vffsbs, vlog) =
+        let (v, b, bfs, bfsbs, ec, e, el, esm, efs, efsbs, vs, vffs, vffsbs, vlog, vblobs) =
             labeled_lara_memories();
         let inner = LabeledLaraGraph::new(
             v,
@@ -112,6 +112,7 @@ mod tests {
             vffs,
             vffsbs,
             vlog,
+            vblobs,
             1024,
             BucketLabelKey::from_raw(1),
         )
@@ -476,6 +477,7 @@ where
         value_free_spans: M,
         value_free_span_by_start: M,
         value_log: M,
+        value_blobs: M,
         queue_memory: M,
         elem_capacity: u64,
         default_label: crate::labeled::BucketLabelKey,
@@ -495,6 +497,7 @@ where
             value_free_spans,
             value_free_span_by_start,
             value_log,
+            value_blobs,
             elem_capacity,
             default_label,
         )?;

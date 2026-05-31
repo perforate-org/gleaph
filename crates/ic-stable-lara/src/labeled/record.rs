@@ -3,11 +3,10 @@
 use crate::VertexId;
 use crate::labeled::bucket_label_key::{BUCKET_LABEL_INDEX_MASK, BucketLabelKey};
 use crate::labeled::slot_index::{
-    OVERFLOW_LOG_NONE, ValueWidthCode, bucket_value_width_code_raw, bucket_word_has_zero_reserved,
-    checked_add_slot_index, decode_bucket_label_key, decode_bucket_overflow_log_head,
-    decode_bucket_value_width_code, decode_meta28, decode_overflow_log_byte, decode_slot_index,
-    encode_locator_word, encode_overflow_log_byte, read_u40, replace_bucket_label_key,
-    replace_bucket_overflow_log_head, replace_bucket_value_width_code, slot_index_fits,
+    OVERFLOW_LOG_NONE, bucket_word_has_zero_reserved, checked_add_slot_index,
+    decode_bucket_label_key, decode_bucket_overflow_log_head, decode_meta28,
+    decode_overflow_log_byte, decode_slot_index, encode_locator_word, encode_overflow_log_byte,
+    read_u40, replace_bucket_label_key, replace_bucket_overflow_log_head, slot_index_fits,
     try_encode_bucket_word, try_encode_locator_word, try_encode_overflow_log_byte,
     try_replace_slot_index, write_u40,
 };
@@ -16,7 +15,7 @@ use crate::traits::{CsrEdge, CsrVertex, CsrVertexTombstone};
 use ic_stable_structures::{Storable, storable::Bound};
 use std::borrow::Cow;
 
-/// One LabelBucket descriptor in the intermediate CSR layer (22 bytes on wire).
+/// One LabelBucket descriptor in the intermediate CSR layer (24 bytes on wire).
 ///
 /// Physical edge capacity within the containing [`LabeledVertex`] VertexEdgeSpan is
 /// [`LabeledVertex::stored_slots`]; this row tracks one label's slab prefix and optional
@@ -34,6 +33,8 @@ pub struct LabelBucket {
     pub stored_slots: u32,
     /// Byte offset into [`EdgeValueStore`] where this bucket's value span starts.
     value_offset: u64,
+    /// Physical byte width per edge value slot (`0` = no values).
+    value_byte_width: u16,
     /// Wire byte for per-bucket value overflow log head (`0xFF` = none).
     value_log_byte: u8,
 }
@@ -46,7 +47,7 @@ impl Default for LabelBucket {
 
 impl LabelBucket {
     /// Fixed byte width of one encoded LabelBucket.
-    pub const BYTES: usize = 22;
+    pub const BYTES: usize = 24;
 
     /// Builds a row from logical fields.
     #[inline]
@@ -63,7 +64,7 @@ impl LabelBucket {
             degree,
             stored_slots,
             overflow_log_head,
-            ValueWidthCode::Zero,
+            0,
             0,
             -1,
         )
@@ -78,7 +79,7 @@ impl LabelBucket {
         degree: u32,
         stored_slots: u32,
         overflow_log_head: i32,
-        value_width_code: ValueWidthCode,
+        value_byte_width: u16,
         value_offset: u64,
         value_log_head: i32,
     ) -> Self {
@@ -88,7 +89,7 @@ impl LabelBucket {
             degree,
             stored_slots,
             overflow_log_head,
-            value_width_code,
+            value_byte_width,
             value_offset,
             value_log_head,
         )
@@ -103,7 +104,7 @@ impl LabelBucket {
         degree: u32,
         stored_slots: u32,
         overflow_log_head: i32,
-        value_width_code: ValueWidthCode,
+        value_byte_width: u16,
         value_offset: u64,
         value_log_head: i32,
     ) -> Result<Self, LabelBucketFieldError> {
@@ -113,13 +114,8 @@ impl LabelBucket {
         if !byte_offset_fits(value_offset) {
             return Err(LabelBucketFieldError::ValueOffsetOverflow);
         }
-        let word = try_encode_bucket_word(
-            edge_start,
-            bucket_label_key,
-            overflow_log_head,
-            value_width_code,
-        )
-        .ok_or(LabelBucketFieldError::OverflowLogHeadOutOfRange)?;
+        let word = try_encode_bucket_word(edge_start, bucket_label_key, overflow_log_head)
+            .ok_or(LabelBucketFieldError::OverflowLogHeadOutOfRange)?;
         let value_log_byte = try_encode_overflow_log_byte(value_log_head)
             .ok_or(LabelBucketFieldError::ValueLogHeadOutOfRange)?;
         Ok(Self {
@@ -127,6 +123,7 @@ impl LabelBucket {
             degree,
             stored_slots,
             value_offset,
+            value_byte_width,
             value_log_byte,
         })
     }
@@ -149,18 +146,6 @@ impl LabelBucket {
         decode_bucket_overflow_log_head(self.word)
     }
 
-    /// Physical edge-value width code for this bucket.
-    #[inline]
-    pub fn value_width_code(self) -> ValueWidthCode {
-        decode_bucket_value_width_code(self.word)
-    }
-
-    /// Physical byte width per edge slot (`0` when [`Self::value_width_code`] is [`ValueWidthCode::Zero`]).
-    #[inline]
-    pub fn value_width(self) -> u8 {
-        self.value_width_code().byte_width()
-    }
-
     /// Byte offset into `EdgeValueStore` for this bucket's value span.
     #[inline]
     pub fn value_offset(self) -> u64 {
@@ -173,10 +158,16 @@ impl LabelBucket {
         decode_overflow_log_byte(self.value_log_byte)
     }
 
+    /// Physical byte width per edge value slot (`0` = no values).
+    #[inline]
+    pub fn value_byte_width(self) -> u16 {
+        self.value_byte_width
+    }
+
     /// Returns `true` when this bucket owns a non-empty value span.
     #[inline]
     pub fn is_value_allocated(self) -> bool {
-        self.value_width() != 0 && self.degree != 0
+        self.value_byte_width != 0 && self.degree != 0
     }
 
     #[inline]
@@ -185,10 +176,13 @@ impl LabelBucket {
         self
     }
 
-    /// Returns a copy with [`Self::value_width_code`] updated.
+    /// Returns a copy with [`Self::value_byte_width`] updated.
     #[inline]
-    pub fn with_value_width_code(self, code: ValueWidthCode) -> Self {
-        self.with_word(replace_bucket_value_width_code(self.word, code))
+    pub fn with_value_byte_width(self, value_byte_width: u16) -> Self {
+        Self {
+            value_byte_width,
+            ..self
+        }
     }
 
     /// Returns a copy with [`Self::value_offset`] updated.
@@ -226,6 +220,7 @@ impl LabelBucket {
             degree,
             stored_slots,
             value_offset,
+            value_byte_width,
             value_log_byte,
         } = self;
         bytes[0..8].copy_from_slice(&word.to_le_bytes());
@@ -235,7 +230,8 @@ impl LabelBucket {
             .try_into()
             .expect("LabelBucket value_offset wire slice must be 5 bytes");
         write_u40(value_offset, value_wire);
-        bytes[21] = value_log_byte;
+        bytes[21..23].copy_from_slice(&value_byte_width.to_le_bytes());
+        bytes[23] = value_log_byte;
     }
 
     /// Returns a copy with `edge_start` / [`Self::stored_slots`] updated.
@@ -319,7 +315,8 @@ impl LabelBucket {
         if !byte_offset_fits(value_offset) {
             return Err(LabelBucketFieldError::ValueOffsetOverflow);
         }
-        let value_log_byte = chunk[21];
+        let value_byte_width = u16::from_le_bytes(chunk[21..23].try_into().unwrap());
+        let value_log_byte = chunk[23];
         if value_log_byte != OVERFLOW_LOG_NONE && value_log_byte >= 170 {
             return Err(LabelBucketFieldError::ValueLogHeadOutOfRange);
         }
@@ -328,6 +325,7 @@ impl LabelBucket {
             degree: u32::from_le_bytes(chunk[8..12].try_into().unwrap()),
             stored_slots: u32::from_le_bytes(chunk[12..16].try_into().unwrap()),
             value_offset,
+            value_byte_width,
             value_log_byte,
         })
     }
@@ -346,8 +344,6 @@ pub enum LabelBucketFieldError {
     ValueOffsetOverflow,
     /// Value overflow log head byte is out of range.
     ValueLogHeadOutOfRange,
-    /// Value-width code is out of range for the 3-bit field (unreachable on valid wire).
-    ValueWidthCodeReserved,
 }
 
 impl core::fmt::Display for LabelBucketFieldError {
@@ -365,9 +361,6 @@ impl core::fmt::Display for LabelBucketFieldError {
             }
             Self::ValueLogHeadOutOfRange => {
                 write!(f, "label bucket value log head out of range")
-            }
-            Self::ValueWidthCodeReserved => {
-                write!(f, "label bucket value_width_code is reserved")
             }
         }
     }
@@ -429,16 +422,16 @@ impl CsrEdge for LabelBucket {
         LabelBucket::read_from(bytes)
     }
 
-    fn write_to(self, bytes: &mut [u8]) {
-        LabelBucket::write_to(self, bytes);
+    fn write_to(&self, bytes: &mut [u8]) {
+        LabelBucket::write_to(*self, bytes);
     }
 
     fn neighbor_vid(&self) -> VertexId {
         VertexId::from(u32::from(self.bucket_label_key().raw()))
     }
 
-    fn with_neighbor_vid(self, _vid: VertexId) -> Self {
-        self
+    fn with_neighbor_vid(&self, _vid: VertexId) -> Self {
+        *self
     }
 }
 
@@ -1089,7 +1082,7 @@ mod tests {
     #[test]
     fn wire_rows_match_documented_layout() {
         assert_eq!(LabeledVertex::BYTES, 21);
-        assert_eq!(LabelBucket::BYTES, 22);
+        assert_eq!(LabelBucket::BYTES, 24);
         assert!(mem::size_of::<LabeledVertex>() >= LabeledVertex::BYTES);
         assert!(mem::size_of::<LabelBucket>() >= LabelBucket::BYTES);
     }
@@ -1129,23 +1122,14 @@ mod tests {
                 0,
                 0,
                 -1,
-                ValueWidthCode::Zero,
+                0u16,
                 0,
                 -1,
             ),
             Err(LabelBucketFieldError::SlotIndexOverflow)
         );
         assert_eq!(
-            LabelBucket::try_from_parts(
-                BucketLabelKey::default(),
-                0,
-                0,
-                0,
-                170,
-                ValueWidthCode::Zero,
-                0,
-                -1,
-            ),
+            LabelBucket::try_from_parts(BucketLabelKey::default(), 0, 0, 0, 170, 0u16, 0, -1,),
             Err(LabelBucketFieldError::OverflowLogHeadOutOfRange)
         );
         assert_eq!(
@@ -1189,23 +1173,22 @@ mod tests {
     }
 
     #[test]
-    fn label_bucket_round_trips_w64_value_width_code() {
-        use crate::labeled::slot_index::ValueWidthCode;
+    fn label_bucket_round_trips_w64_value_byte_width() {
         let bucket = LabelBucket::from_parts_with_value(
             BucketLabelKey::default(),
             0,
             0,
             0,
             -1,
-            ValueWidthCode::W64,
+            64u16,
             0,
             -1,
         );
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
         let decoded = LabelBucket::try_read_from(&bytes).expect("decode");
-        assert_eq!(decoded.value_width_code(), ValueWidthCode::W64);
-        assert_eq!(decoded.value_width(), 64);
+        assert_eq!(decoded.value_byte_width(), 64u16);
+        assert_eq!(decoded.value_byte_width(), 64);
     }
 
     #[test]
@@ -1251,7 +1234,7 @@ mod tests {
             2,
             2,
             -1,
-            ValueWidthCode::W2,
+            2u16,
             4,
             -1,
         );

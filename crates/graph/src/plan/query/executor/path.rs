@@ -193,8 +193,8 @@ pub(crate) async fn execute_shortest_path(
                 let path_updates: Vec<(&str, PlanBinding)> = {
                     let mut updates = Vec::with_capacity(2);
                     if let Some(edge_key) = edge_key.as_deref() {
-                        let edge_binding = match path_states[state_idx].edge {
-                            Some(edge_binding) => PlanBinding::Edge(edge_binding),
+                        let edge_binding = match &path_states[state_idx].edge {
+                            Some(edge_binding) => PlanBinding::Edge(edge_binding.clone()),
                             None => PlanBinding::Value(Value::Null),
                         };
                         updates.push((edge_key, edge_binding));

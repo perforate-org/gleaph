@@ -178,6 +178,7 @@ mod tests {
             mem(),
             mem(),
             mem(),
+            mem(),
             1,
             default,
         )
@@ -284,6 +285,7 @@ mod tests {
     #[test]
     fn bypass_grow_does_not_repoint_bucket_mode_successor_bucket_base() {
         let graph = LabeledLaraGraph::new(
+            mem(),
             mem(),
             mem(),
             mem(),
