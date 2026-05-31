@@ -20,8 +20,7 @@ pub use diagnostics::{
     DML004_TARGET_UNKNOWN, DML005_INSERT_EDGE_DIRECTION, DML006_MATCH_EDGE_DIRECTION,
     DiagnosticSeverity, DmlDiagnostic, DmlDiagnosticSeverity, TypeDiagnostic,
     dml_diagnostic_from_warning, dml_diagnostic_severity, dml_target_path_message,
-    dml_target_unknown_message, dml_target_value_message, dml_unsupported_set_replace_message,
-    type_diagnostic_from_warning,
+    dml_target_unknown_message, dml_target_value_message, type_diagnostic_from_warning,
 };
 pub use env::{TypeWarning, WarningKind, WarningProvenance};
 pub use graph_type_schema::GraphTypePropertySchema;
@@ -774,12 +773,6 @@ fn check_set(env: &mut TypeEnv<'_>, s: &SetStatement) {
             } => {
                 check_expr_constraints(env, value);
                 check_dml_target(env, "SET", variable, *span);
-                env.warn_at_with_code(
-                    WarningKind::UnsupportedDml,
-                    DML001_UNSUPPORTED_SET_REPLACE,
-                    dml_unsupported_set_replace_message(variable),
-                    *span,
-                );
             }
             SetItem::Label { span, variable, .. } => {
                 check_dml_target(env, "SET label", variable, *span);

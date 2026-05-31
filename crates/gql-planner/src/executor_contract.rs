@@ -7,7 +7,7 @@
 use gleaph_gql::ast::AggregateFunc;
 use gleaph_gql::types::EdgeDirection;
 
-use crate::plan::{AggregateSpec, PhysicalPlan, PlanOp, SetPlanItem};
+use crate::plan::{AggregateSpec, PhysicalPlan, PlanOp};
 
 /// Returns the first operator (or nested operator) the executor cannot run, if any.
 ///
@@ -54,16 +54,7 @@ fn check_op(op: &PlanOp) -> Option<&'static str> {
             }
         }
         PlanOp::SetOperation { right, .. } => first_executor_unsupported_op(right),
-        PlanOp::SetProperties { items } => {
-            if items
-                .iter()
-                .any(|it| matches!(it, SetPlanItem::AllProperties { .. }))
-            {
-                Some("SetProperties.AllProperties")
-            } else {
-                None
-            }
-        }
+        PlanOp::SetProperties { .. } => None,
         PlanOp::EdgeBindEndpoints { direction, .. } => match direction {
             EdgeDirection::PointingRight | EdgeDirection::PointingLeft => None,
             _ => Some("EdgeBindEndpoints.direction"),
@@ -242,7 +233,7 @@ mod tests {
     }
 
     #[test]
-    fn set_all_properties_reported_unsupported() {
+    fn set_all_properties_is_supported_in_contract() {
         use crate::plan::SetPlanItem;
         let plan = PhysicalPlan {
             ops: vec![PlanOp::SetProperties {
@@ -257,10 +248,7 @@ mod tests {
             annotations: PlanAnnotations::default(),
             ..Default::default()
         };
-        assert_eq!(
-            first_executor_unsupported_op(&plan),
-            Some("SetProperties.AllProperties")
-        );
+        assert_eq!(first_executor_unsupported_op(&plan), None);
     }
 
     #[test]

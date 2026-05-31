@@ -3,6 +3,7 @@ use super::expr_evaluator::{MutationPropertyExprEvaluation, MutationPropertyExpr
 use crate::facade::mutation_executor::GraphMutationExecutor;
 use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
 use crate::gql_execution_context::GqlExecutionContext;
+use gleaph_gql::Value;
 use gleaph_gql::types::EdgeDirection;
 use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, RemovePlanItem, SetPlanItem, Str};
 use ic_stable_lara::VertexId;
@@ -185,8 +186,8 @@ fn execute_set_item(
                 variable: variable.to_string(),
             })
         }
-        SetPlanItem::AllProperties { .. } => {
-            Err(PlanMutationError::UnsupportedSetItem("AllProperties"))
+        SetPlanItem::AllProperties { variable, value } => {
+            execute_set_all_properties(store, variable, value, evaluator, bindings)
         }
         SetPlanItem::Label { variable, label } => {
             let label_id = store
@@ -217,6 +218,57 @@ fn execute_set_item(
             })
         }
     }
+}
+
+fn execute_set_all_properties(
+    store: &GraphStore,
+    variable: &Str,
+    value: &gleaph_gql::ast::Expr,
+    evaluator: &impl MutationPropertyExprEvaluation,
+    bindings: &PlanMutationBindings,
+) -> Result<(), PlanMutationError> {
+    let fields = match evaluator.eval(variable.as_ref(), value)? {
+        Value::Record(fields) => fields,
+        _ => {
+            return Err(PlanMutationError::InvalidPropertyReplacement {
+                variable: variable.to_string(),
+            });
+        }
+    };
+
+    if let Some(vertex_id) = bindings.vertices.get(variable.as_ref()) {
+        for (property_id, _) in store.vertex_properties(*vertex_id) {
+            store.remove_vertex_property(*vertex_id, property_id);
+        }
+        for (name, value) in fields {
+            let property_id = store
+                .get_or_insert_property_id(&name)
+                .map_err(GraphStoreError::from)?;
+            store
+                .set_vertex_property(*vertex_id, property_id, value)
+                .map_err(GraphStoreError::from)?;
+        }
+        return Ok(());
+    }
+
+    if let Some(edge) = bindings.edges.get(variable.as_ref()) {
+        for (property_id, _) in store.edge_properties(*edge) {
+            store.remove_edge_property(*edge, property_id);
+        }
+        for (name, value) in fields {
+            let property_id = store
+                .get_or_insert_property_id(&name)
+                .map_err(GraphStoreError::from)?;
+            store
+                .set_edge_property(*edge, property_id, value)
+                .map_err(GraphStoreError::from)?;
+        }
+        return Ok(());
+    }
+
+    Err(PlanMutationError::MissingElementBinding {
+        variable: variable.to_string(),
+    })
 }
 
 fn execute_remove_item(
@@ -527,6 +579,185 @@ mod tests {
 
         assert_eq!(store.vertex_property(bindings.vertices["a"], name), None);
         assert_eq!(store.edge_property(edge, weight), None);
+    }
+
+    #[test]
+    fn set_all_properties_replaces_vertex_properties() {
+        let store = GraphStore::new();
+        let plan = PhysicalPlan {
+            ops: vec![
+                PlanOp::InsertVertex {
+                    variable: Some("a".into()),
+                    labels: vec![],
+                    properties: vec![
+                        PropertyAssignment {
+                            name: "name".into(),
+                            value: Expr::new(ExprKind::Literal(Value::Text("Alice".into()))),
+                        },
+                        PropertyAssignment {
+                            name: "stale".into(),
+                            value: Expr::new(ExprKind::Literal(Value::Bool(true))),
+                        },
+                    ],
+                },
+                PlanOp::SetProperties {
+                    items: vec![SetPlanItem::AllProperties {
+                        variable: "a".into(),
+                        value: Expr::new(ExprKind::RecordLiteral(vec![
+                            (
+                                "name".into(),
+                                Expr::new(ExprKind::Literal(Value::Text("Bob".into()))),
+                            ),
+                            ("age".into(), Expr::new(ExprKind::Literal(Value::Int64(42)))),
+                        ])),
+                    }],
+                },
+            ],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: Default::default(),
+            ..Default::default()
+        };
+
+        let bindings = store
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
+            .expect("execute set all properties");
+        let vertex_id = bindings.vertices["a"];
+        let name = store.property_id("name").expect("name property");
+        let age = store.property_id("age").expect("age property");
+        let stale = store.property_id("stale").expect("stale property");
+
+        assert_eq!(
+            store.vertex_property(vertex_id, name),
+            Some(Value::Text("Bob".into()))
+        );
+        assert_eq!(
+            store.vertex_property(vertex_id, age),
+            Some(Value::Int64(42))
+        );
+        assert_eq!(store.vertex_property(vertex_id, stale), None);
+    }
+
+    #[test]
+    fn set_all_properties_replaces_edge_properties() {
+        let store = GraphStore::new();
+        let plan = PhysicalPlan {
+            ops: vec![
+                PlanOp::InsertVertex {
+                    variable: Some("a".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertVertex {
+                    variable: Some("b".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertEdge {
+                    variable: Some("e".into()),
+                    src: "a".into(),
+                    dst: "b".into(),
+                    direction: EdgeDirection::PointingRight,
+                    labels: vec![],
+                    properties: vec![
+                        PropertyAssignment {
+                            name: "weight".into(),
+                            value: Expr::new(ExprKind::Literal(Value::Int64(7))),
+                        },
+                        PropertyAssignment {
+                            name: "stale".into(),
+                            value: Expr::new(ExprKind::Literal(Value::Text("old".into()))),
+                        },
+                    ],
+                },
+                PlanOp::SetProperties {
+                    items: vec![SetPlanItem::AllProperties {
+                        variable: "e".into(),
+                        value: Expr::new(ExprKind::RecordLiteral(vec![(
+                            "weight".into(),
+                            Expr::new(ExprKind::Literal(Value::Int64(9))),
+                        )])),
+                    }],
+                },
+            ],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: Default::default(),
+            ..Default::default()
+        };
+
+        let bindings = store
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
+            .expect("execute edge set all properties");
+        let edge = bindings.edges["e"];
+        let weight = store.property_id("weight").expect("weight property");
+        let stale = store.property_id("stale").expect("stale property");
+
+        assert_eq!(store.edge_property(edge, weight), Some(Value::Int64(9)));
+        assert_eq!(store.edge_property(edge, stale), None);
+    }
+
+    #[test]
+    fn set_all_properties_empty_record_clears_properties() {
+        let store = GraphStore::new();
+        let plan = PhysicalPlan {
+            ops: vec![
+                PlanOp::InsertVertex {
+                    variable: Some("a".into()),
+                    labels: vec![],
+                    properties: vec![PropertyAssignment {
+                        name: "name".into(),
+                        value: Expr::new(ExprKind::Literal(Value::Text("Alice".into()))),
+                    }],
+                },
+                PlanOp::SetProperties {
+                    items: vec![SetPlanItem::AllProperties {
+                        variable: "a".into(),
+                        value: Expr::new(ExprKind::RecordLiteral(vec![])),
+                    }],
+                },
+            ],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: Default::default(),
+            ..Default::default()
+        };
+
+        let bindings = store
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
+            .expect("execute set empty properties");
+        let vertex_id = bindings.vertices["a"];
+
+        assert!(store.vertex_properties(vertex_id).is_empty());
+    }
+
+    #[test]
+    fn set_all_properties_rejects_non_record_value() {
+        let store = GraphStore::new();
+        let plan = PhysicalPlan {
+            ops: vec![
+                PlanOp::InsertVertex {
+                    variable: Some("a".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::SetProperties {
+                    items: vec![SetPlanItem::AllProperties {
+                        variable: "a".into(),
+                        value: Expr::new(ExprKind::Literal(Value::Int64(1))),
+                    }],
+                },
+            ],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: Default::default(),
+            ..Default::default()
+        };
+
+        let err = store
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
+            .expect_err("non-record replacement should fail");
+
+        assert!(matches!(
+            err,
+            PlanMutationError::InvalidPropertyReplacement { variable } if variable == "a"
+        ));
     }
 
     #[test]

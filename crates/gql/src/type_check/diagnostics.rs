@@ -103,10 +103,6 @@ pub fn dml_target_unknown_message(op_name: &str, variable: Option<&str>) -> Stri
     )
 }
 
-pub fn dml_unsupported_set_replace_message(variable: &str) -> String {
-    format!("SET {variable} = ... is not yet supported by the executor")
-}
-
 fn format_dml_target_ref(variable: Option<&str>) -> String {
     variable
         .map(|name| format!(" `{name}`"))

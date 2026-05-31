@@ -39,6 +39,9 @@ pub enum PlanMutationError {
     ExpressionUnsupportedNumericConversion {
         property: String,
     },
+    InvalidPropertyReplacement {
+        variable: String,
+    },
     UnsupportedSetItem(&'static str),
     UnsupportedRemoveItem(&'static str),
     MissingParameter {
@@ -102,6 +105,9 @@ impl fmt::Display for PlanMutationError {
                     f,
                     "unsupported numeric conversion in property expression for '{property}'"
                 )
+            }
+            Self::InvalidPropertyReplacement { variable } => {
+                write!(f, "SET {variable} = ... requires a record value")
             }
             Self::UnsupportedSetItem(item) => write!(f, "unsupported SET item: {item}"),
             Self::UnsupportedRemoveItem(item) => write!(f, "unsupported REMOVE item: {item}"),

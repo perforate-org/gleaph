@@ -945,18 +945,6 @@ fn set_scalar_target_warns() {
 }
 
 #[test]
-fn set_all_properties_warns_as_unsupported_dml() {
-    let warnings =
-        parse_and_check_with_schema("MATCH (n:Person) SET n = {name: 'Bob'}", &TestSchema);
-    assert!(
-        warnings
-            .iter()
-            .any(|w| w.kind == WarningKind::UnsupportedDml && w.code == Some("DML001")),
-        "expected DML001 unsupported SET warning, got: {warnings:?}"
-    );
-}
-
-#[test]
 fn remove_scalar_target_warns() {
     let warnings =
         parse_and_check_with_schema("MATCH (n:Person) LET x = n.age REMOVE x.name", &TestSchema);
