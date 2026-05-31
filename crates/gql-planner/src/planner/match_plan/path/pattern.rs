@@ -8,6 +8,7 @@ use crate::path_extensions::PlanBuildOptions;
 use crate::plan::*;
 use crate::stats::GraphStats;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn plan_match(
     match_stmt: &MatchStatement,
     stage: usize,

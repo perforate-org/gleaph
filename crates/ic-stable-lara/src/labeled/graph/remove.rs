@@ -24,6 +24,7 @@ where
     E: CsrEdge,
     M: Memory,
 {
+    /// Removes the edge stored at `slot_index` in the bucket identified by `label_id`.
     pub fn remove_edge_at_slot(
         &self,
         src: VertexId,
@@ -325,6 +326,7 @@ where
         }
         Ok(())
     }
+    /// Visits outgoing edges whose bucket directedness matches `directedness`.
     pub fn for_each_out_edges_by_directedness<Visit>(
         &self,
         src: VertexId,
@@ -345,6 +347,7 @@ where
             &mut visit,
         )
     }
+    /// Visits outgoing edges by directedness without checking that `src` is in range.
     pub fn for_each_out_edges_by_directedness_unchecked<Visit>(
         &self,
         src: VertexId,
@@ -365,6 +368,7 @@ where
             &mut visit,
         )
     }
+    /// Finds the label bucket containing `needle` on `src`.
     pub fn find_edge_label(
         &self,
         src: VertexId,
@@ -457,6 +461,7 @@ where
         }
         Ok(None)
     }
+    /// Returns the labels that currently have outgoing edges for `src`.
     pub fn out_edge_label_ids(
         &self,
         src: VertexId,
@@ -484,6 +489,7 @@ where
         }
         Ok(out)
     }
+    /// Removes the first edge in `label_id` for `src` that satisfies `matches`.
     pub fn remove_edge_matching<F>(
         &self,
         src: VertexId,

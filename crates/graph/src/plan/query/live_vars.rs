@@ -191,7 +191,7 @@ pub fn shortest_path_may_emit_path_only_rows(
 mod tests {
     use super::*;
     use gleaph_gql::ast::{Expr, ExprKind};
-    use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, ProjectColumn, ShortestMode, Str};
+    use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, ProjectColumn, ShortestMode};
 
     #[test]
     fn all_shortest_bench_plan_allows_path_only_rows() {

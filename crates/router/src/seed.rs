@@ -69,24 +69,24 @@ fn extract_from_op(
                 .lookup_property_id(property.as_ref())
                 .map_err(|_| RouterError::NotFound(format!("property {}", property.as_ref())))?
                 .raw();
-            return Ok(Some(SeedProbe {
+            Ok(Some(SeedProbe {
                 variable: variable.to_string(),
                 property: property.to_string(),
                 property_id,
                 payload_bytes,
-            }));
+            }))
         }
         PlanOp::HashJoin { left, right, .. } => {
             if let Some(p) = extract_from_ops(left, parameters, store)? {
                 return Ok(Some(p));
             }
-            return extract_from_ops(right, parameters, store);
+            extract_from_ops(right, parameters, store)
         }
         PlanOp::CartesianProduct { left, right } => {
             if let Some(p) = extract_from_ops(left, parameters, store)? {
                 return Ok(Some(p));
             }
-            return extract_from_ops(right, parameters, store);
+            extract_from_ops(right, parameters, store)
         }
         PlanOp::OptionalMatch { sub_plan } => extract_from_ops(sub_plan, parameters, store),
         PlanOp::InlineProcedureCall { sub_plan, .. } => {
@@ -145,7 +145,7 @@ mod tests {
     use gleaph_gql_planner::PhysicalPlan;
     use gleaph_gql_planner::plan::{PlanOp, ScanValue};
     use gleaph_graph_kernel::index::PostingHit;
-    use gleaph_graph_kernel::plan_exec::{SeedBindingEntry, SeedBindingsWire};
+    use gleaph_graph_kernel::plan_exec::SeedBindingsWire;
 
     use super::{SeedProbe, seeds_for_local_shard};
     use crate::facade::store::RouterStore;

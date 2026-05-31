@@ -15,7 +15,7 @@ pub fn empty_row_for_plan(plan: &PhysicalPlan) -> PlanRow {
     }
 }
 
-pub fn empty_row_for_plan_with_arena(
+pub(crate) fn empty_row_for_plan_with_arena(
     plan: &PhysicalPlan,
     arena: &mut super::arena::QueryArena,
 ) -> PlanRow {
@@ -160,7 +160,7 @@ impl PlanRow {
     }
 
     /// Like [`Self::fork`] but checks out slot storage from the query [`super::arena::QueryArena`].
-    pub fn fork_with_arena<'a>(
+    pub(crate) fn fork_with_arena<'a>(
         &self,
         arena: &mut super::arena::QueryArena,
         updates: impl IntoIterator<Item = (&'a str, PlanBinding)>,

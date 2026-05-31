@@ -104,13 +104,11 @@ pub(crate) async fn forwarding_stub_on_current_shard(
                 cached_location,
                 ..
             } = state
+                && lid == logical_vertex_id
+                && cached_location.shard_id == authoritative.shard_id
+                && stub_local.is_none()
             {
-                if lid == logical_vertex_id
-                    && cached_location.shard_id == authoritative.shard_id
-                    && stub_local.is_none()
-                {
-                    stub_local = Some(local);
-                }
+                stub_local = Some(local);
             }
         });
     });
@@ -1085,9 +1083,8 @@ fn copy_out_edges_for_directedness(
         if !past_cursor {
             if bucket_raw == item.edge_cursor.label_raw && slot >= item.edge_cursor.slot_index {
                 past_cursor = true;
-            } else if bucket_raw < item.edge_cursor.label_raw {
-                continue;
-            } else if bucket_raw == item.edge_cursor.label_raw && slot < item.edge_cursor.slot_index
+            } else if bucket_raw < item.edge_cursor.label_raw
+                || (bucket_raw == item.edge_cursor.label_raw && slot < item.edge_cursor.slot_index)
             {
                 continue;
             } else {
@@ -1249,38 +1246,37 @@ async fn migration_cutover_impl(
         destination_shard_id,
     } = placement
     else {
-        if let VertexPlacement::Active(dest) = placement {
-            if let Some(item) = load_item(logical_vertex_id)
-                && routing.shard_id == item.source_shard_id
-            {
-                let source_id = VertexId::from(item.source_local_vertex_id);
-                if let Some(ix) = index {
-                    remove_source_index_postings_for_vertex(
-                        ix,
-                        store,
-                        source_id,
-                        item.source_shard_id,
-                        item.source_local_vertex_id,
-                    )
-                    .await
-                    .map_err(plan_query_to_store)?;
-                }
-                set_migration_state(
-                    source_id,
-                    VertexMigrationState::ForwardingStub {
-                        logical_vertex_id,
-                        cached_location: dest,
-                        epoch: item.epoch,
-                    },
-                );
-                cleanup_migration_artifacts(logical_vertex_id, item.epoch);
-                enqueue_prune_migrated_source(
+        if let VertexPlacement::Active(dest) = placement
+            && let Some(item) = load_item(logical_vertex_id)
+            && routing.shard_id == item.source_shard_id
+        {
+            let source_id = VertexId::from(item.source_local_vertex_id);
+            if let Some(ix) = index {
+                remove_source_index_postings_for_vertex(
+                    ix,
                     store,
-                    logical_vertex_id,
+                    source_id,
+                    item.source_shard_id,
                     item.source_local_vertex_id,
-                    item.epoch,
-                );
+                )
+                .await
+                .map_err(plan_query_to_store)?;
             }
+            set_migration_state(
+                source_id,
+                VertexMigrationState::ForwardingStub {
+                    logical_vertex_id,
+                    cached_location: dest,
+                    epoch: item.epoch,
+                },
+            );
+            cleanup_migration_artifacts(logical_vertex_id, item.epoch);
+            enqueue_prune_migrated_source(
+                store,
+                logical_vertex_id,
+                item.source_local_vertex_id,
+                item.epoch,
+            );
         }
         return Ok(());
     };
@@ -1420,10 +1416,10 @@ fn find_forwarding_stub(
                 logical_vertex_id: lid,
                 ..
             } = state
+                && lid == logical_vertex_id
+                && found.is_none()
             {
-                if lid == logical_vertex_id && found.is_none() {
-                    found = Some((local, state));
-                }
+                found = Some((local, state));
             }
         });
     });
@@ -1548,16 +1544,15 @@ pub async fn migration_reconcile(
                     action: MigrationReconcileAction::CleanedOrphanArtifacts { epoch: item.epoch },
                 });
             }
-            if !prune_queue_has_item(logical_vertex_id) {
-                if let Some((stub_local, VertexMigrationState::ForwardingStub { epoch, .. })) =
+            if !prune_queue_has_item(logical_vertex_id)
+                && let Some((stub_local, VertexMigrationState::ForwardingStub { epoch, .. })) =
                     find_forwarding_stub(logical_vertex_id)
+            {
+                let stub_id = VertexId::from(stub_local);
+                if stub_has_live_edge_payload(store, stub_id)
+                    || stub_has_vertex_payload(store, stub_id)
                 {
-                    let stub_id = VertexId::from(stub_local);
-                    if stub_has_live_edge_payload(store, stub_id)
-                        || stub_has_vertex_payload(store, stub_id)
-                    {
-                        enqueue_prune_migrated_source(store, logical_vertex_id, stub_local, epoch);
-                    }
+                    enqueue_prune_migrated_source(store, logical_vertex_id, stub_local, epoch);
                 }
             }
             Ok(MigrationReconcileReport {

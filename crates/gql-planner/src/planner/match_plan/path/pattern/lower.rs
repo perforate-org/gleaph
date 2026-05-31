@@ -10,6 +10,7 @@ use crate::plan::*;
 use crate::planner::PlannerError;
 use crate::stats::GraphStats;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn plan_path_pattern(
     path: &PathPattern,
     stats: Option<&dyn GraphStats>,

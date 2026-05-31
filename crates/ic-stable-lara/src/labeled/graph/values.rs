@@ -285,6 +285,7 @@ where
         }
         Ok(bucket.with_payload_byte_width(payload_byte_width))
     }
+    /// Ensures that the bucket for `label_id` can store payload slots of `payload_byte_width`.
     pub fn ensure_label_bucket_payload_byte_width(
         &self,
         src: VertexId,

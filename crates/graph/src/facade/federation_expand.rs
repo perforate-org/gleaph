@@ -40,7 +40,7 @@ fn push_neighbor(
     let neighbor = FederatedExpandNeighbor {
         shard_id,
         neighbor_logical_vertex_id,
-        neighbor_local_vertex_id: neighbor_local_vertex_id,
+        neighbor_local_vertex_id,
         anchor_local_vertex_id,
         label_id_raw: edge.label_id,
         slot_index: edge.edge_slot_index.raw(),
@@ -647,18 +647,17 @@ async fn collect_outgoing_neighbors(
         shard_id,
         local_vertex_id,
     }) = authoritative_local_for_expand(placement)
+        && shard_id == routing.shard_id
     {
-        if shard_id == routing.shard_id {
-            collect_authoritative_outgoing(
-                store,
-                routing.shard_id,
-                VertexId::from(local_vertex_id),
-                logical_vertex_id,
-                label_id_raw,
-                &mut out,
-            )?;
-            return Ok(out);
-        }
+        collect_authoritative_outgoing(
+            store,
+            routing.shard_id,
+            VertexId::from(local_vertex_id),
+            logical_vertex_id,
+            label_id_raw,
+            &mut out,
+        )?;
+        return Ok(out);
     }
 
     if let Some(stub_local) = forwarding_stub_on_current_shard(store, logical_vertex_id).await {

@@ -39,14 +39,18 @@ fn byte_offset(addr: u64) -> u64 {
 /// Persisted V1 value-slab header (byte-addressed).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HeaderV1 {
+    /// Header magic bytes.
     pub magic: [u8; 3],
+    /// Payload slab layout version.
     pub version: u8,
     /// Exclusive end of the byte address space (max valid offset + 1).
     pub byte_capacity: u64,
+    /// First byte offset after the occupied slab region.
     pub slab_occupied_tail: u64,
 }
 
 impl HeaderV1 {
+    /// Creates a V1 payload-slab header with the given byte capacity.
     pub fn new(byte_capacity: u64) -> Self {
         Self {
             magic: MAGIC,
@@ -60,12 +64,22 @@ impl HeaderV1 {
 /// Errors when reopening a payload slab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InitError {
-    BadMagic { actual: [u8; 3] },
+    /// The payload slab header had unexpected magic bytes.
+    BadMagic {
+        /// Magic bytes read from stable memory.
+        actual: [u8; 3],
+    },
+    /// The payload slab layout version is not supported.
     IncompatibleVersion(u8),
+    /// The payload slab header or backing memory layout is invalid.
     InvalidLayout,
+    /// The configured byte capacity exceeds the supported address space.
     ByteCapacityOverflow,
+    /// The payload free-span index could not be reopened.
     FreeSpansInvalid,
+    /// The payload overflow log could not be reopened.
     PayloadLog(log::InitError),
+    /// The payload overflow-log segment count does not match the edge store.
     PayloadLogLayoutMismatch,
 }
 
@@ -199,6 +213,7 @@ pub struct PayloadByteSlabStore<M: Memory> {
 }
 
 impl<M: Memory> PayloadByteSlabStore<M> {
+    /// Creates a new payload byte slab with `header`.
     pub fn new(memory: M, header: HeaderV1) -> Result<Self, GrowFailed> {
         let store = Self { memory };
         store.grow_for_header(&header)?;
@@ -206,6 +221,7 @@ impl<M: Memory> PayloadByteSlabStore<M> {
         Ok(store)
     }
 
+    /// Reopens an existing payload byte slab.
     pub fn init(memory: M) -> Result<Self, InitError> {
         if memory.size() == 0 {
             return Err(InitError::InvalidLayout);
@@ -226,14 +242,17 @@ impl<M: Memory> PayloadByteSlabStore<M> {
         Ok(store)
     }
 
+    /// Returns the backing memory.
     pub fn into_memory(self) -> M {
         self.memory
     }
 
+    /// Reads and validates the persisted payload-slab header.
     pub fn header(&self) -> Result<HeaderV1, InitError> {
         self.read_header()
     }
 
+    /// Persists `h` as the payload-slab header.
     pub fn write_header(&self, h: &HeaderV1) {
         self.memory.write(0, &h.magic);
         self.memory.write(3, &[h.version]);
@@ -249,6 +268,7 @@ impl<M: Memory> PayloadByteSlabStore<M> {
         );
     }
 
+    /// Grows the byte slab capacity to `n`.
     pub fn set_byte_capacity(&self, n: u64) -> Result<(), GrowFailed> {
         if !byte_exclusive_end_fits(n) {
             return Err(GrowFailed {
@@ -266,10 +286,12 @@ impl<M: Memory> PayloadByteSlabStore<M> {
         Ok(())
     }
 
+    /// Reads bytes from the payload slab at `offset`.
     pub fn read_bytes(&self, offset: u64, out: &mut [u8]) {
         self.memory.read(byte_offset(offset), out);
     }
 
+    /// Writes bytes to the payload slab at `offset`, growing stable memory if needed.
     pub fn write_bytes(&self, offset: u64, bytes: &[u8]) -> Result<(), GrowFailed> {
         safe_write(&self.memory, byte_offset(offset), bytes)
     }
@@ -309,6 +331,7 @@ pub struct EdgePayloadStore<M: Memory> {
 }
 
 impl<M: Memory> EdgePayloadStore<M> {
+    /// Creates a new edge-payload store over empty stable memories.
     pub fn new(
         slab_memory: M,
         payload_log: M,
@@ -338,6 +361,7 @@ impl<M: Memory> EdgePayloadStore<M> {
         })
     }
 
+    /// Reopens an edge-payload store, initializing empty payload memories when needed.
     pub fn init(
         slab_memory: M,
         payload_log: M,
@@ -548,14 +572,17 @@ impl<M: Memory> EdgePayloadStore<M> {
         Err(PayloadLogReadError::MissingAscLogIndex { asc_log_index })
     }
 
+    /// Returns the cached payload-slab header.
     pub fn header(&self) -> HeaderV1 {
         self.header.get()
     }
 
+    /// Returns the current payload byte capacity.
     pub fn byte_capacity(&self) -> u64 {
         self.header().byte_capacity
     }
 
+    /// Sets the payload byte capacity to `end`.
     pub fn set_byte_capacity(&self, end: u64) -> Result<(), GrowFailed> {
         self.slab.set_byte_capacity(end)?;
         let mut h = self.header();
@@ -564,11 +591,13 @@ impl<M: Memory> EdgePayloadStore<M> {
         Ok(())
     }
 
+    /// Reads bytes from the payload slab.
     pub fn read_bytes(&self, offset: u64, out: &mut [u8]) {
         debug_assert!(byte_offset_fits(offset));
         self.slab.read_bytes(offset, out);
     }
 
+    /// Writes bytes to the payload slab.
     pub fn write_bytes(&self, offset: u64, bytes: &[u8]) -> Result<(), GrowFailed> {
         if bytes.is_empty() {
             return Ok(());
@@ -590,6 +619,7 @@ impl<M: Memory> EdgePayloadStore<M> {
         Ok(())
     }
 
+    /// Reads one fixed-width payload slot.
     pub fn read_value_slot(&self, offset: u64, width: u16, out: &mut [u8]) {
         debug_assert_eq!(out.len(), usize::from(width));
         if width == 0 {
@@ -598,6 +628,7 @@ impl<M: Memory> EdgePayloadStore<M> {
         self.read_bytes(offset, out);
     }
 
+    /// Writes one fixed-width payload slot.
     pub fn write_payload_slot(
         &self,
         offset: u64,
@@ -611,6 +642,7 @@ impl<M: Memory> EdgePayloadStore<M> {
         self.write_bytes(offset, bytes)
     }
 
+    /// Writes an arbitrary byte range to the payload slab.
     pub fn write_range(&self, offset: u64, bytes: &[u8]) -> Result<(), GrowFailed> {
         self.write_bytes(offset, bytes)
     }

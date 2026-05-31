@@ -22,15 +22,20 @@ impl std::error::Error for BlobStoreError {}
 
 /// Store for edge payload bytes keyed by overflow log site.
 pub trait EdgePayloadBlobStore {
+    /// Stores `bytes` under `id`.
     fn put_blob(&mut self, id: EdgePayloadBlobId, bytes: &[u8]) -> Result<(), BlobStoreError>;
+    /// Reads the blob under `id` into `out`, returning whether it existed.
     fn get_blob(&self, id: EdgePayloadBlobId, out: &mut Vec<u8>) -> bool;
+    /// Deletes the blob under `id` if present.
     fn drop_blob(&mut self, id: EdgePayloadBlobId);
 
+    /// Deletes the blob associated with one payload overflow-log site.
     #[inline]
     fn drop_log_site(&mut self, leaf: u32, entry_idx: u32) {
         self.drop_blob(EdgePayloadBlobId::from_log_site(leaf, entry_idx));
     }
 
+    /// Deletes blobs for all allocated log entries in a leaf segment.
     fn drain_leaf_segment(&mut self, leaf: u32, high_water_entry_idx: u32) {
         for entry_idx in 0..high_water_entry_idx {
             self.drop_log_site(leaf, entry_idx);

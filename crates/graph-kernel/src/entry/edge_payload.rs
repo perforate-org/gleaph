@@ -52,7 +52,7 @@ impl Serialize for EdgePayload {
 impl<'de> Deserialize<'de> for EdgePayload {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let bytes: Vec<u8> = Deserialize::deserialize(deserializer)?;
-        if bytes.len() > usize::from(MAX_EDGE_PAYLOAD_BYTES) {
+        if bytes.len() > MAX_EDGE_PAYLOAD_BYTES {
             return Err(serde::de::Error::custom(format!(
                 "edge payload length {} exceeds max {}",
                 bytes.len(),
@@ -246,10 +246,14 @@ impl EdgePayloadProfile {
                     return Err(WeightProfilePrepareError::InvalidLinearRange.into());
                 }
             }
-            EdgePayloadEncoding::WeightLogU16 { min, max } => {
-                if !min.is_finite() || !max.is_finite() || *min <= 0.0 || *max <= 0.0 || min > max {
-                    return Err(WeightProfilePrepareError::InvalidLogRange.into());
-                }
+            EdgePayloadEncoding::WeightLogU16 { min, max }
+                if (!min.is_finite()
+                    || !max.is_finite()
+                    || *min <= 0.0
+                    || *max <= 0.0
+                    || min > max) =>
+            {
+                return Err(WeightProfilePrepareError::InvalidLogRange.into());
             }
             _ => {}
         }

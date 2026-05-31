@@ -1,7 +1,7 @@
 //! Stable map for edge payload overflow payloads wider than 8 bytes.
 
 use super::blob_id::EdgePayloadBlobId;
-use super::blob_store::{BlobStoreError, EdgePayloadBlobStore};
+use super::blob_store::BlobStoreError;
 use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
 use std::borrow::Cow;
 use std::cell::RefCell;

@@ -28,7 +28,7 @@ pub(crate) fn decode_delete_target(src: i32) -> Option<DeleteTarget> {
         return None;
     }
     let tag = (-1i64 - i64::from(src)) as u32;
-    if tag % 2 == 0 {
+    if tag.is_multiple_of(2) {
         Some(DeleteTarget::Slab(tag / 2))
     } else {
         Some(DeleteTarget::Log(tag / 2))

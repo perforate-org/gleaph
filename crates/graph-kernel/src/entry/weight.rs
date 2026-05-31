@@ -4,7 +4,6 @@
 //! time it is compiled into a [`PreparedWeightDecoder`] so the traversal hot path only reads
 //! stored edge payload bytes (typically 2-byte u16) and applies the decoder.
 
-use half::f16;
 use ic_stable_structures::storable::{Bound, Storable};
 use std::borrow::Cow;
 use thiserror::Error;
@@ -125,6 +124,7 @@ impl Storable for EdgeWeightProfile {
 mod tests {
     use super::*;
     use crate::entry::edge_payload::{EdgePayloadProfile, decode_edge_weight};
+    use half::f16;
 
     fn decode_weight_bytes(profile: &EdgeWeightProfile, bytes: &[u8]) -> f32 {
         let payload_profile = EdgePayloadProfile::from(profile.clone());

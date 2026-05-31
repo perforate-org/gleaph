@@ -13,7 +13,7 @@ use crate::{
 use ic_stable_structures::Memory;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum OutEdgeDirectednessFilter {
+pub enum OutEdgeDirectednessFilter {
     DirectedOnly,
     UndirectedOnly,
 }
@@ -45,8 +45,8 @@ where
 {
     match order {
         OutEdgeOrder::Ascending => {
-            let mut iter = store.asc_out_edges_iter(src)?;
-            while let Some(edge) = iter.next() {
+            let iter = store.asc_out_edges_iter(src)?;
+            for edge in iter {
                 if edge_matches_filter(&edge, filter) {
                     visit(edge);
                 }
@@ -59,7 +59,7 @@ where
                 None,
                 None::<&mut dyn FnMut(&[u8]) -> bool>,
                 |edge| edge_matches_filter(edge, filter),
-                |edge| visit(edge),
+                visit,
             )?;
         }
     }
@@ -68,7 +68,9 @@ where
 
 /// Iterator over one unlabeled store row, filtered by edge-payload directedness.
 pub enum FilteredOutEdgesIter<'a, E: CsrEdge, M: Memory> {
+    /// Ascending slot-order iterator with a directedness filter.
     Ascending(AscOutEdgesIter<'a, E, M>, OutEdgeDirectednessFilter),
+    /// Descending hot-path iterator with a directedness filter.
     Descending(OutEdgesIter<'a, E, M>, OutEdgeDirectednessFilter),
 }
 

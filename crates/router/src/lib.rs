@@ -4,10 +4,22 @@ mod canister;
 mod execution_path;
 pub mod facade;
 mod gql;
+#[expect(
+    dead_code,
+    reason = "graph peer calls are used by deployment orchestration paths"
+)]
 mod graph_client;
+#[expect(
+    dead_code,
+    reason = "index client is carried by router state and deployment wiring"
+)]
 mod index_client;
 mod index_sync;
 pub mod init;
+#[expect(
+    dead_code,
+    reason = "peer sync hooks are invoked by registry lifecycle paths"
+)]
 mod peer_sync;
 mod planner_stats;
 mod prepared;

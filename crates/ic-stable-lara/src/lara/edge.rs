@@ -65,8 +65,7 @@ pub mod free_span;
 mod log;
 pub mod span_meta;
 
-use super::operation_error::VertexAccess;
-use crate::traits::{CsrEdge, CsrEdgeTombstone, CsrVertex, CsrVertexTombstoneScan};
+use crate::traits::CsrEdge;
 use counts::SegmentEdgeCountsStore;
 pub(crate) use edges::EdgeSlabStore;
 pub use edges::{HeaderV1 as EdgeHeaderV1, InitError as SlabInitError, segment_tree_leaf_count};
@@ -75,7 +74,7 @@ use ic_stable_structures::Memory;
 use log::LogStore;
 pub use log::{DEFAULT_MAX_LOG_ENTRIES, HeaderV1 as LogHeaderV1};
 use span_meta::SegmentSpanMetaStore;
-use std::{cell::Cell, iter::FusedIterator};
+use std::cell::Cell;
 
 pub(super) const INLINE_EDGE_BYTES: usize = 64;
 

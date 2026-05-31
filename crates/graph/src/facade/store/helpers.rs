@@ -122,7 +122,7 @@ pub(super) fn build_edge_to_remote_with_payload_bytes(
 }
 
 pub(super) fn validate_edge_payload_bytes(payload_bytes: &[u8]) -> Result<(), GraphStoreError> {
-    if payload_bytes.len() > usize::from(gleaph_graph_kernel::entry::MAX_EDGE_PAYLOAD_BYTES) {
+    if payload_bytes.len() > gleaph_graph_kernel::entry::MAX_EDGE_PAYLOAD_BYTES {
         return Err(GraphStoreError::InvalidEdgePayloadWidth(
             payload_bytes.len(),
         ));

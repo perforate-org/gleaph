@@ -635,7 +635,7 @@ pub(crate) fn execute_ops_from<'a>(
 #[cfg(test)]
 mod tests {
     use super::super::test_support::*;
-    use pollster;
+
     #[test]
     fn executes_planner_use_graph_as_single_store_pass_through() {
         let store = GraphStore::new();

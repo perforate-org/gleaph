@@ -599,9 +599,11 @@ where
         let mut effective_live = 0u64;
         let mut total_weight = buckets.len() as u64;
         for (index, bucket) in buckets.iter().enumerate() {
-            let extra = (preferred == Some(index))
-                .then_some(preferred_extra)
-                .unwrap_or(0);
+            let extra = if preferred == Some(index) {
+                preferred_extra
+            } else {
+                0
+            };
             let degree = u64::from(
                 bucket
                     .degree()
@@ -640,9 +642,11 @@ where
             let start = u64::try_from(cursor_fp / P)
                 .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
             out.push(start);
-            let extra = (preferred == Some(index))
-                .then_some(preferred_extra)
-                .unwrap_or(0);
+            let extra = if preferred == Some(index) {
+                preferred_extra
+            } else {
+                0
+            };
             let deg = u128::from(
                 bucket
                     .degree()
@@ -666,6 +670,7 @@ where
         }
         Ok(out)
     }
+    /// Compacts all edge buckets for `vid` into slab-backed spans.
     pub fn compact_vertex_edge_span(
         &self,
         vid: VertexId,
@@ -677,6 +682,7 @@ where
         self.compact_vertex_edge_span_with_moves(vid, bucket_index)
             .map(|_| ())
     }
+    /// Compacts all edge buckets for `vid` and returns the slab-slot moves performed.
     pub fn compact_vertex_edge_span_with_moves(
         &self,
         vid: VertexId,

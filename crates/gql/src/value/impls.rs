@@ -1,11 +1,7 @@
-use std::any::Any;
 use std::fmt;
-use std::hash::Hasher;
 use std::str;
 
-use super::{
-    DenyExtensionBinaryDecode, ExtensionBinaryDecode, ExtensionValue, Value, ValueBinaryError,
-};
+use super::{DenyExtensionBinaryDecode, ExtensionBinaryDecode, Value, ValueBinaryError};
 use crate::types::{Decimal, Int256, PathElement, Uint256};
 
 // ──── Clone ────
@@ -1047,6 +1043,7 @@ mod tests {
     use std::cmp::Ordering;
 
     use super::*;
+    use crate::{ExtensionValue, value::Any};
     use gleaph_gql_macros::define_gql_extension;
 
     #[test]
@@ -1867,6 +1864,7 @@ mod tests {
         }
     }
 
+    #[allow(dead_code)]
     fn decode_rr_short(payload: &[u8]) -> Result<Box<dyn ExtensionValue>, ValueBinaryError> {
         let b = *payload
             .first()

@@ -54,7 +54,7 @@ impl PreparedEdgeVectorKernel {
         F: Fn(f32, f32) -> bool,
     {
         let width = self.byte_width();
-        if width == 0 || query.len() != self.dims || payload_bytes.len() % width != 0 {
+        if width == 0 || query.len() != self.dims || !payload_bytes.len().is_multiple_of(width) {
             return;
         }
         for (idx, bytes) in payload_bytes.chunks_exact(width).enumerate() {
@@ -78,7 +78,7 @@ impl PreparedEdgeVectorKernel {
         let width = self.byte_width();
         if width == 0
             || query.len() != self.dims
-            || payload_bytes.len() % width != 0
+            || !payload_bytes.len().is_multiple_of(width)
             || threshold.is_nan()
         {
             return;

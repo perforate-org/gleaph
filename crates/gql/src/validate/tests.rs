@@ -2,7 +2,7 @@ use super::ddl::{
     validate_create_graph, validate_create_graph_type, validate_create_schema, validate_drop_name,
 };
 use super::dml::{validate_delete, validate_remove_items, validate_set_items};
-use super::expr::{validate_expr, validate_let};
+use super::expr::validate_let;
 use super::graph_type::validate_graph_type_definition;
 use super::procedure::validate_call_procedure;
 use super::query_validation::{validate_graph_reference, validate_return, validate_select};

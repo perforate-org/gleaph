@@ -259,7 +259,7 @@ fn hash_plan_binding_for_join(binding: &PlanBinding, hasher: &mut RapidHasher<'_
 #[cfg(test)]
 mod tests {
     use super::super::test_support::*;
-    use pollster;
+
     #[test]
     fn cartesian_product_combines_independent_subplans() {
         let store = GraphStore::new();

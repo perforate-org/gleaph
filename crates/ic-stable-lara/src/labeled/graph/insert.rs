@@ -26,6 +26,7 @@ where
     E: CsrEdge,
     M: Memory,
 {
+    /// Appends a vertex row and grows segment metadata when a new leaf is needed.
     pub fn push_vertex(
         &self,
         mut vertex: LabeledVertex,
@@ -33,9 +34,7 @@ where
         vertex.ensure_valid_normal_row()?;
         let id = self.vertices.len();
         if id > 0 {
-            let prev_end = self
-                .vertex_bucket_descriptor_row_end(VertexId::from(id as u32 - 1))
-                .map_err(LabeledOperationError::from)?;
+            let prev_end = self.vertex_bucket_descriptor_row_end(VertexId::from(id - 1))?;
             if vertex.base_slot_start() < prev_end {
                 vertex = vertex.with_base_slot_start(prev_end);
             }
@@ -55,6 +54,7 @@ where
         }
         Ok(VertexId::from(id))
     }
+    /// Compacts the label-bucket descriptor segment containing `vid`.
     pub fn compact_label_bucket_vertex_segment(
         &self,
         vid: VertexId,
@@ -68,6 +68,7 @@ where
         self.invalidate_bucket_lookup_caches_for_bucket_segment(vid)?;
         Ok(())
     }
+    /// Inserts `edge` into the bucket identified by `label_id` for `src`.
     pub fn insert_edge(
         &self,
         src: VertexId,
@@ -338,6 +339,7 @@ where
         self.buckets.write_label_bucket_slot(slot, bucket)?;
         Ok(true)
     }
+    /// Converts an eligible vertex row back to default-label bypass storage.
     pub fn enable_default_edge_bypass(&self, src: VertexId) -> Result<(), LabeledOperationError> {
         self.ensure_vertex(src)?;
         let vertex = self.vertices.get(src);

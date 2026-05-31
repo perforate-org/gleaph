@@ -140,53 +140,54 @@ where
             .checked_add(u64::from(deg))
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
 
-        if let Some(cache) = self.last_bucket_lookup.get() {
-            if cache.vid == src && cache.base_slot_start == start && cache.degree == deg {
-                if cache.bucket_key == label_id && (start..range_end).contains(&cache.slot) {
-                    let bucket = self
-                        .buckets
-                        .read_label_bucket_slot(cache.slot)
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                    if bucket.bucket_label_key() == label_id {
-                        return Ok(BucketSearch::Found {
-                            slot: cache.slot,
-                            bucket,
-                        });
-                    }
+        if let Some(cache) = self.last_bucket_lookup.get()
+            && cache.vid == src
+            && cache.base_slot_start == start
+            && cache.degree == deg
+        {
+            if cache.bucket_key == label_id && (start..range_end).contains(&cache.slot) {
+                let bucket = self
+                    .buckets
+                    .read_label_bucket_slot(cache.slot)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                if bucket.bucket_label_key() == label_id {
+                    return Ok(BucketSearch::Found {
+                        slot: cache.slot,
+                        bucket,
+                    });
                 }
-                if let Some(slot_after_cache) = cache.slot.checked_add(1) {
-                    if slot_after_cache == range_end && cache.bucket_key < label_id {
-                        let bucket = self
-                            .buckets
-                            .read_label_bucket_slot(cache.slot)
-                            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                        if bucket.bucket_label_key() == cache.bucket_key {
-                            return Ok(BucketSearch::Missing { insert_index: deg });
-                        }
-                    }
+            }
+            if let Some(slot_after_cache) = cache.slot.checked_add(1)
+                && slot_after_cache == range_end
+                && cache.bucket_key < label_id
+            {
+                let bucket = self
+                    .buckets
+                    .read_label_bucket_slot(cache.slot)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                if bucket.bucket_label_key() == cache.bucket_key {
+                    return Ok(BucketSearch::Missing { insert_index: deg });
                 }
             }
         }
         let cache_index = Self::bucket_lookup_cache_index(src, label_id);
-        if let Some(cache) = self.bucket_lookup_cache[cache_index].get() {
-            if cache.vid == src
-                && cache.bucket_key == label_id
-                && cache.base_slot_start == start
-                && cache.degree == deg
-            {
-                if (start..range_end).contains(&cache.slot) {
-                    let bucket = self
-                        .buckets
-                        .read_label_bucket_slot(cache.slot)
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                    if bucket.bucket_label_key() == label_id {
-                        self.last_bucket_lookup.set(Some(cache));
-                        return Ok(BucketSearch::Found {
-                            slot: cache.slot,
-                            bucket,
-                        });
-                    }
-                }
+        if let Some(cache) = self.bucket_lookup_cache[cache_index].get()
+            && cache.vid == src
+            && cache.bucket_key == label_id
+            && cache.base_slot_start == start
+            && cache.degree == deg
+            && (start..range_end).contains(&cache.slot)
+        {
+            let bucket = self
+                .buckets
+                .read_label_bucket_slot(cache.slot)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            if bucket.bucket_label_key() == label_id {
+                self.last_bucket_lookup.set(Some(cache));
+                return Ok(BucketSearch::Found {
+                    slot: cache.slot,
+                    bucket,
+                });
             }
         }
         // Fast paths: avoid binary search + canbench scope overhead on tiny degree.

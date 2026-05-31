@@ -21,7 +21,7 @@ impl GraphStore {
     pub fn insert_vertex(&self) -> Result<VertexId, GraphStoreError> {
         #[cfg(not(target_family = "wasm"))]
         {
-            return pollster::block_on(self.insert_vertex_row(Vertex::default()));
+            pollster::block_on(self.insert_vertex_row(Vertex::default()))
         }
         #[cfg(target_family = "wasm")]
         {
@@ -124,8 +124,8 @@ impl GraphStore {
             destination_shard_id,
             ..
         } = placement
-        {
-            if destination_shard_id == routing.shard_id && {
+            && destination_shard_id == routing.shard_id
+            && {
                 VERTEX_MIGRATION_STATE
                     .with_borrow(|m| m.get(local))
                     .is_some_and(|s| {
@@ -136,9 +136,9 @@ impl GraphStore {
                             }
                         )
                     })
-            } {
-                return Err(GraphStoreError::VertexMigrating);
             }
+        {
+            return Err(GraphStoreError::VertexMigrating);
         }
         Ok(())
     }

@@ -68,8 +68,8 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             return Ok(());
         }
 
-        let mut walk = self.log_backed_desc_edges_iter(vertices, vid)?;
-        while let Some(edge) = walk.next() {
+        let walk = self.log_backed_desc_edges_iter(vertices, vid)?;
+        for edge in walk {
             if matches(&edge) && !window.emit_edge(edge, &mut visit) {
                 return Ok(());
             }
@@ -103,8 +103,8 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             return Ok(None);
         }
 
-        let mut walk = self.log_backed_desc_edges_iter(vertices, vid)?;
-        while let Some(edge) = walk.next() {
+        let walk = self.log_backed_desc_edges_iter(vertices, vid)?;
+        for edge in walk {
             if matches(&edge) {
                 return Ok(Some(edge));
             }

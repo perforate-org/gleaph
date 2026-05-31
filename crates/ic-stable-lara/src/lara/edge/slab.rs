@@ -6,6 +6,7 @@ use ic_stable_structures::Memory;
 use super::{EdgeStore, INLINE_EDGE_BYTES};
 
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
+    /// Reads one edge slab slot.
     pub fn read_slot(&self, slot: u64) -> E {
         if E::BYTES <= 8 {
             let mut buf = [0u8; 8];
@@ -31,6 +32,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     ) -> Result<(), GrowFailed> {
         self.edges.write_slots_contiguous(start_slot, bytes)
     }
+    /// Writes one edge slab slot.
     pub fn write_slot(&self, slot: u64, edge: E) -> Result<(), GrowFailed> {
         if E::BYTES <= 8 {
             let mut buf = [0u8; 8];

@@ -192,10 +192,8 @@ fn register_binding_kinds(op: &PlanOp, kinds: &mut HashMap<String, OutputBinding
             if *emit_edge_binding {
                 kinds.insert(edge.to_string(), OutputBindingKind::Edge);
             }
-            if *emit_path_binding {
-                if let Some(path_var) = path_var {
-                    kinds.insert(path_var.to_string(), OutputBindingKind::Path);
-                }
+            if *emit_path_binding && let Some(path_var) = path_var {
+                kinds.insert(path_var.to_string(), OutputBindingKind::Path);
             }
         }
         PlanOp::Let { bindings } => {
@@ -240,7 +238,7 @@ fn register_binding_kinds(op: &PlanOp, kinds: &mut HashMap<String, OutputBinding
 mod tests {
     use super::*;
     use crate::plan::{PlanOp, ShortestMode, ShortestPathCost, VarLenSpec};
-    use gleaph_gql::ast::{Expr, ExprKind};
+    use gleaph_gql::ast::Expr;
     use gleaph_gql::types::EdgeDirection;
 
     #[test]

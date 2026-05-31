@@ -41,7 +41,7 @@ impl PreparedEdgePayloadBatchKernel {
         out: &mut Vec<usize>,
     ) {
         let width = self.width_usize();
-        if width == 0 || needle.len() != width || payload_bytes.len() % width != 0 {
+        if width == 0 || needle.len() != width || !payload_bytes.len().is_multiple_of(width) {
             return;
         }
         match width {
@@ -66,7 +66,7 @@ impl PreparedEdgePayloadBatchKernel {
             return;
         }
         let width = self.width_usize();
-        if width == 0 || needle.len() != width || payload_bytes.len() % width != 0 {
+        if width == 0 || needle.len() != width || !payload_bytes.len().is_multiple_of(width) {
             return;
         }
         if self.is_weight_encoding() {

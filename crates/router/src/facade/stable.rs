@@ -54,11 +54,11 @@ thread_local! {
     /// Per logical graph: which vertex/edge properties are indexed (planner catalog).
     pub(crate) static ROUTER_INDEXED_PROPERTIES: RefCell<
         std::collections::BTreeMap<String, crate::planner_stats::RouterGraphStats>,
-    > = RefCell::new(std::collections::BTreeMap::new());
+    > = const { RefCell::new(std::collections::BTreeMap::new()) };
 
     pub(crate) static ROUTER_PREPARED_PLANS: RefCell<
         std::collections::BTreeMap<String, crate::prepared::PreparedPlanRecord>,
-    > = RefCell::new(std::collections::BTreeMap::new());
+    > = const { RefCell::new(std::collections::BTreeMap::new()) };
 
     pub(crate) static ROUTER_AUTH_STATE: RefCell<memory::StableAuthState> =
         RefCell::new(memory::init_auth_state());

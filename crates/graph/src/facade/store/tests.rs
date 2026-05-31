@@ -1,6 +1,5 @@
 use super::helpers::{edge_storage_label, lara_label};
 use super::*;
-use crate::facade::mutation_executor::GraphMutationExecutor;
 use candid::Principal;
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{

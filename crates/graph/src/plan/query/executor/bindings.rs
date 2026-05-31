@@ -84,7 +84,7 @@ pub(crate) fn federated_expand_label_id_raw(
 #[cfg(test)]
 mod tests {
     use super::super::test_support::*;
-    use pollster;
+
     #[test]
     fn reverse_expand_binding_resolves_forward_edge_payload_and_owner() {
         let store = GraphStore::new();

@@ -138,7 +138,6 @@ mod tests {
     use gleaph_gql::Value;
     use gleaph_gql_planner::plan::Str;
     use gleaph_gql_planner::{OutputBindingKind, OutputColumn};
-    use ic_stable_lara::VertexId;
 
     #[test]
     fn hydrates_all_row_bindings_when_schema_empty() {

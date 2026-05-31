@@ -5,10 +5,7 @@ use crate::plan::{PlanAnnotations, PlanOp};
 use super::vars::collect_variables_ref;
 
 /// Prune unnecessary `ShortestPath` output bindings when downstream ops don't read them.
-pub fn apply_shortest_path_binding_pruning(
-    ops: &mut Vec<PlanOp>,
-    _annotations: &mut PlanAnnotations,
-) {
+pub fn apply_shortest_path_binding_pruning(ops: &mut [PlanOp], _annotations: &mut PlanAnnotations) {
     let mut live = LiveBindings::default();
     prune_shortest_path_bindings_in_ops(ops, &mut live);
 }

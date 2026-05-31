@@ -13,21 +13,25 @@ impl EdgePayloadBlobId {
         Self(((leaf as u64) << 8) | (entry_idx as u64))
     }
 
+    /// Returns the owning edge segment.
     #[inline]
     pub const fn leaf(self) -> u32 {
         (self.0 >> 8) as u32
     }
 
+    /// Returns the overflow-log entry index within the segment.
     #[inline]
     pub const fn entry_idx(self) -> u32 {
         (self.0 & 0xFF) as u32
     }
 
+    /// Returns the packed raw blob id.
     #[inline]
     pub const fn raw(self) -> u64 {
         self.0
     }
 
+    /// Creates a blob id from its packed representation.
     #[inline]
     pub const fn from_raw(raw: u64) -> Self {
         Self(raw)

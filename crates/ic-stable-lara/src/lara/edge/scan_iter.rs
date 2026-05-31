@@ -16,7 +16,7 @@ use super::{
 /// Same logical order as [`OutEdgesIter`]: scan the core-LARA overflow log chain (newest first),
 /// then walk the slab prefix in descending slot order, skipping slab slots targeted by overflow-log
 /// delete entries.
-pub(super) struct LogBackedDescIter<'a, E: CsrEdge, M: Memory> {
+pub(crate) struct LogBackedDescIter<'a, E: CsrEdge, M: Memory> {
     pub(super) store: &'a EdgeStore<E, M>,
     pub(super) leaf: u32,
     pub(super) next_log: i32,
@@ -307,10 +307,10 @@ impl<'a, E: CsrEdge, M: Memory> OutEdgeSlabIter<'a, E, M> {
                     .read_slots_contiguous(start, &mut single[..E::BYTES]);
                 &single[..E::BYTES]
             };
-            if let Some(raw_m) = raw_matches.as_mut() {
-                if !raw_m(bytes) {
-                    continue;
-                }
+            if let Some(raw_m) = raw_matches.as_mut()
+                && !raw_m(bytes)
+            {
+                continue;
             }
             let edge = E::read_from(bytes).with_slot_index(slot_idx);
             if edge.is_deleted_slot() {

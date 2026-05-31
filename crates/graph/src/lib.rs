@@ -2,14 +2,34 @@
 
 #[cfg(feature = "canbench")]
 mod bench;
+#[expect(
+    dead_code,
+    reason = "facade exposes canister storage helpers used by feature and integration paths"
+)]
 pub mod facade;
 pub mod gql_execution_context;
+#[expect(
+    dead_code,
+    reason = "ad-hoc GQL helpers are retained for canister/debug entry points"
+)]
 pub mod gql_run;
+#[expect(
+    dead_code,
+    reason = "index clients include IC/router implementations selected by deployment wiring"
+)]
 mod index;
 mod plan_wire_guard;
 
+#[expect(
+    dead_code,
+    reason = "planner/executor contains optional operator and kernel paths"
+)]
 pub mod plan;
 
+#[expect(
+    dead_code,
+    reason = "canister helpers are reached through IC macros and deployment features"
+)]
 mod canister;
 
 // --- Canister surface (ic-cdk macros stay here; logic lives in `canister::`) ---

@@ -17,23 +17,28 @@ impl Default for PayloadLogCell {
 }
 
 impl PayloadLogCell {
+    /// Empty payload-log cell.
     pub const EMPTY: Self = Self([0u8; PAYLOAD_LOG_CELL_BYTES]);
 
+    /// Returns the on-wire cell bytes.
     #[inline]
     pub fn as_bytes(&self) -> &[u8; PAYLOAD_LOG_CELL_BYTES] {
         &self.0
     }
 
+    /// Creates a cell from on-wire bytes.
     #[inline]
     pub fn from_bytes(bytes: [u8; PAYLOAD_LOG_CELL_BYTES]) -> Self {
         Self(bytes)
     }
 
+    /// Returns whether the cell is all zero bytes.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.0 == [0u8; PAYLOAD_LOG_CELL_BYTES]
     }
 
+    /// Returns the cell tag byte.
     #[inline]
     pub fn tag(&self) -> u8 {
         self.0[0]
@@ -58,11 +63,13 @@ impl PayloadLogCell {
         Self(cell)
     }
 
+    /// Returns whether the payload is stored inline in the cell.
     #[inline]
     pub fn is_inline(&self) -> bool {
         self.0[0] == TAG_INLINE
     }
 
+    /// Returns whether the payload bytes live in the blob map.
     #[inline]
     pub fn is_blob(&self) -> bool {
         self.0[0] == TAG_BLOB
@@ -78,6 +85,7 @@ impl PayloadLogCell {
         }
     }
 
+    /// Decodes an inline payload using the bucket-provided `width`.
     pub fn decode_inline(&self, width: u16, out: &mut [u8]) -> Option<usize> {
         if !self.is_inline() {
             return None;

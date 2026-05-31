@@ -91,6 +91,7 @@ where
         }
         Some((base, total_edges))
     }
+    /// Visits outgoing edges for one label in descending scan order.
     pub fn for_each_edges_for_label<Visit>(
         &self,
         src: VertexId,
@@ -127,6 +128,7 @@ where
         }
         Ok(())
     }
+    /// Visits outgoing edges for one label in the requested order.
     pub fn for_each_edges_for_label_ordered<Visit>(
         &self,
         src: VertexId,
@@ -282,6 +284,7 @@ where
             }
         }
     }
+    /// Visits outgoing edges for one label without checking that `src` is in range.
     pub fn for_each_edges_for_label_unchecked<Visit>(
         &self,
         src: VertexId,
@@ -376,9 +379,9 @@ where
             return Ok(());
         }
 
-        let buckets = self.read_vertex_label_buckets(&vertex)?;
+        let buckets = self.read_vertex_label_buckets(vertex)?;
         if let Some((base, total_edges)) =
-            Self::try_contiguous_tiled_labeled_out_edges(&vertex, &buckets)
+            Self::try_contiguous_tiled_labeled_out_edges(vertex, &buckets)
         {
             if total_edges == 0 {
                 return Ok(());
@@ -524,9 +527,9 @@ where
                     continue;
                 }
                 let log_chains = self.bucket_payload_log_chains_opt(src, bucket);
-                let slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
+                let slot = Self::labeled_vertex_bucket_slot(vertex, bucket_index)?;
                 let successor_start =
-                    self.bucket_successor_start_after_bucket(&vertex, bucket_index, bucket)?;
+                    self.bucket_successor_start_after_bucket(vertex, bucket_index, bucket)?;
                 let acc = LabelEdgeSpanAccess::new(&self.buckets, slot, successor_start, src);
                 if bucket.overflow_log_head() < 0 {
                     let mut it = OutEdgeSlabIter::try_new(
@@ -587,9 +590,9 @@ where
                     continue;
                 }
                 let log_chains = self.bucket_payload_log_chains_opt(src, bucket);
-                let slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
+                let slot = Self::labeled_vertex_bucket_slot(vertex, bucket_index)?;
                 let successor_start =
-                    self.bucket_successor_start_after_bucket(&vertex, bucket_index, bucket)?;
+                    self.bucket_successor_start_after_bucket(vertex, bucket_index, bucket)?;
                 let acc = LabelEdgeSpanAccess::new(&self.buckets, slot, successor_start, src);
                 if bucket.overflow_log_head() < 0 {
                     for slot_idx in 0..bucket.degree() {
@@ -661,10 +664,10 @@ where
             return Ok(LabeledOutEdgesIter::empty(self, src, order));
         }
         if vertex.is_default_edge_labeled() {
-            if let Some(directedness) = directedness {
-                if self.bypass_storage_label_for(&vertex).directedness() != directedness {
-                    return Ok(LabeledOutEdgesIter::empty(self, src, order));
-                }
+            if let Some(directedness) = directedness
+                && self.bypass_storage_label_for(&vertex).directedness() != directedness
+            {
+                return Ok(LabeledOutEdgesIter::empty(self, src, order));
             }
             return match order {
                 OutEdgeOrder::Descending => Ok(LabeledOutEdgesIter {
@@ -917,6 +920,7 @@ where
         }
         Ok(())
     }
+    /// Visits matching outgoing edges in descending scan order with optional offset and limit.
     pub fn visit_out_edges<Match, Visit>(
         &self,
         src: VertexId,
@@ -943,6 +947,7 @@ where
             &mut visit,
         )
     }
+    /// Visits all outgoing edges in descending scan order with optional offset and limit.
     pub fn visit_out_edges_unfiltered<Visit>(
         &self,
         src: VertexId,
@@ -956,6 +961,7 @@ where
     {
         self.visit_out_edges(src, offset, limit, raw_matches, |_| true, visit)
     }
+    /// Visits matching outgoing edges in ascending slot order with optional offset and limit.
     pub fn visit_asc_out_edges<Match, Visit>(
         &self,
         src: VertexId,
@@ -982,6 +988,7 @@ where
             &mut visit,
         )
     }
+    /// Visits all outgoing edges in ascending slot order with optional offset and limit.
     pub fn visit_asc_out_edges_unfiltered<Visit>(
         &self,
         src: VertexId,
@@ -995,6 +1002,7 @@ where
     {
         self.visit_asc_out_edges(src, offset, limit, raw_matches, |_| true, visit)
     }
+    /// Collects outgoing edges for `src` in descending scan order.
     pub fn out_edges(&self, src: VertexId) -> Result<Vec<E>, LabeledOperationError> {
         self.ensure_vertex(src)?;
         let vertex = self.vertices.get(src);
@@ -1011,6 +1019,7 @@ where
         )?;
         Ok(out)
     }
+    /// Collects outgoing edges for `src` in ascending slot order.
     pub fn asc_out_edges(&self, src: VertexId) -> Result<Vec<E>, LabeledOperationError> {
         self.ensure_vertex(src)?;
         let vertex = self.vertices.get(src);
@@ -1027,18 +1036,21 @@ where
         )?;
         Ok(out)
     }
+    /// Returns an iterator over outgoing edges in descending scan order.
     pub fn desc_out_edges_iter(
         &self,
         src: VertexId,
     ) -> Result<LabeledOutEdgesIter<'_, E, M>, LabeledOperationError> {
         self.labeled_out_edges_iter(src, OutEdgeOrder::Descending, None)
     }
+    /// Returns an iterator over outgoing edges in ascending slot order.
     pub fn asc_out_edges_iter(
         &self,
         src: VertexId,
     ) -> Result<LabeledOutEdgesIter<'_, E, M>, LabeledOperationError> {
         self.labeled_out_edges_iter(src, OutEdgeOrder::Ascending, None)
     }
+    /// Finds the first outgoing edge matching `pred`, returning its label when available.
     pub fn find_out_edge_with_label_by_predicate<F>(
         &self,
         src: VertexId,
@@ -1141,6 +1153,7 @@ where
         }
         Ok(None)
     }
+    /// Finds the first outgoing edge matching `pred`, returning its label and bucket slot index.
     pub fn find_out_edge_slot_with_label_by_predicate<F>(
         &self,
         src: VertexId,
@@ -1196,6 +1209,7 @@ where
         }
         Ok(None)
     }
+    /// Collects outgoing edges for one label.
     pub fn iter_edges_for_label(
         &self,
         src: VertexId,
@@ -1205,6 +1219,7 @@ where
         self.for_each_edges_for_label(src, label_id, |edge| out.push(edge))?;
         Ok(out)
     }
+    /// Returns the bucket-index range that stores edges with `directedness`.
     pub fn out_edge_bucket_index_range_for_directedness(
         &self,
         src: VertexId,
@@ -1225,6 +1240,7 @@ where
             strategy,
         )?)
     }
+    /// Collects outgoing edges whose bucket directedness matches `directedness`.
     pub fn iter_out_edges_by_directedness(
         &self,
         src: VertexId,
@@ -1234,6 +1250,7 @@ where
         self.out_edges_by_directedness_iter(src, directedness, order)
             .map(|iter| iter.collect())
     }
+    /// Returns an iterator over outgoing edges whose bucket directedness matches `directedness`.
     pub fn out_edges_by_directedness_iter(
         &self,
         src: VertexId,
@@ -1242,6 +1259,7 @@ where
     ) -> Result<LabeledOutEdgesIter<'_, E, M>, LabeledOperationError> {
         self.labeled_out_edges_iter(src, order, Some(directedness))
     }
+    /// Collects directed outgoing edges.
     pub fn iter_out_edges_directed_only(
         &self,
         src: VertexId,
@@ -1249,6 +1267,7 @@ where
     ) -> Result<Vec<E>, LabeledOperationError> {
         self.iter_out_edges_by_directedness(src, BucketDirectedness::Directed, order)
     }
+    /// Collects undirected outgoing edges.
     pub fn iter_out_edges_undirected_only(
         &self,
         src: VertexId,

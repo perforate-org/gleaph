@@ -28,7 +28,15 @@
 
 #[cfg(feature = "canbench")]
 mod bench;
+#[expect(
+    dead_code,
+    reason = "edge store includes maintenance helpers used by feature-specific paths"
+)]
 pub mod edge;
+#[expect(
+    dead_code,
+    reason = "payload log helpers are used by targeted edge-value maintenance paths"
+)]
 pub mod edge_payload;
 pub mod maintenance;
 pub mod operation_error;

@@ -291,7 +291,10 @@ fn write<M: Memory>(memory: &M, offset: u64, bytes: &[u8]) {
 }
 
 #[cfg(any(test, feature = "canbench"))]
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "test support is compiled by feature-specific harnesses"
+)]
 mod test_support;
 
 #[cfg(test)]

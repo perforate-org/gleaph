@@ -75,10 +75,10 @@ pub(crate) fn stub_has_live_edge_payload(store: &GraphStore, source_id: VertexId
 }
 
 pub(crate) fn stub_has_vertex_payload(store: &GraphStore, source_id: VertexId) -> bool {
-    if let Some(vertex) = store.vertex(source_id) {
-        if !store.vertex_labels(source_id, vertex).is_empty() {
-            return true;
-        }
+    if let Some(vertex) = store.vertex(source_id)
+        && !store.vertex_labels(source_id, vertex).is_empty()
+    {
+        return true;
     }
     !store.vertex_properties(source_id).is_empty()
 }

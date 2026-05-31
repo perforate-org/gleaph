@@ -232,7 +232,7 @@ pub(crate) fn assert_labeled_edge_store_pma_counts<E, M>(
     let mut per_leaf_total = vec![0i64; header.segment_count as usize];
     for vidx in 0..vertices.len() {
         let vid = VertexId::from(vidx);
-        let leaf = (vidx as u32 / seg) as usize;
+        let leaf = (vidx / seg) as usize;
         if leaf >= per_leaf_actual.len() {
             continue;
         }

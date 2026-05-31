@@ -732,7 +732,7 @@ impl LabeledVertex {
     /// Returns a copy with LabelBucket descriptor slack changed (normal mode only).
     #[inline]
     pub fn with_bucket_slack_slots(self, slack: u16) -> Self {
-        let clamped = u32::from(slack.min(MAX_VERTEX_LABEL_BUCKET_SLACK));
+        let clamped = u32::from(slack);
         let mut raw = self.metadata_word() & !BUCKET_SLACK_MASK;
         raw |= clamped << BUCKET_SLACK_SHIFT;
         self.with_metadata_word(raw)

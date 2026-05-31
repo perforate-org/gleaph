@@ -35,33 +35,37 @@ impl Default for BucketLabelKey {
     }
 }
 
-#[allow(missing_docs)]
 impl BucketLabelKey {
     /// Homogeneous bypass / unlabeled directed bucket key.
     pub const UNLABELED_DIRECTED: Self = Self(BUCKET_LABEL_DIRECTED_BIT);
     /// Homogeneous bypass / unlabeled undirected bucket key.
     pub const UNLABELED_UNDIRECTED: Self = Self(0);
 
+    /// Creates a key from its raw `u16` representation.
     #[inline]
     pub const fn from_raw(raw: u16) -> Self {
         Self(raw)
     }
 
+    /// Returns the raw `u16` wire representation.
     #[inline]
     pub const fn raw(self) -> u16 {
         self.0
     }
 
+    /// Creates a directed key from a low-15-bit label index.
     #[inline]
     pub const fn directed_from_index(label_index: u16) -> Self {
         Self((label_index & BUCKET_LABEL_INDEX_MASK) | BUCKET_LABEL_DIRECTED_BIT)
     }
 
+    /// Creates an undirected key from a low-15-bit label index.
     #[inline]
     pub const fn undirected_from_index(label_index: u16) -> Self {
         Self(label_index & BUCKET_LABEL_INDEX_MASK)
     }
 
+    /// Creates a key from a label index and directedness.
     #[inline]
     pub const fn new_from_index(label_index: u16, directedness: BucketDirectedness) -> Self {
         match directedness {
@@ -76,16 +80,19 @@ impl BucketLabelKey {
         self.0 & BUCKET_LABEL_INDEX_MASK
     }
 
+    /// Returns whether this key is undirected.
     #[inline]
     pub const fn is_undirected(self) -> bool {
         self.0 & BUCKET_LABEL_DIRECTED_BIT == 0
     }
 
+    /// Returns whether this key is directed.
     #[inline]
     pub const fn is_directed(self) -> bool {
         !self.is_undirected()
     }
 
+    /// Returns the directedness encoded by this key.
     #[inline]
     pub const fn directedness(self) -> BucketDirectedness {
         if self.is_undirected() {
@@ -95,11 +102,13 @@ impl BucketLabelKey {
         }
     }
 
+    /// Returns the little-endian bytes of this key.
     #[inline]
     pub const fn to_le_bytes(self) -> [u8; 2] {
         self.0.to_le_bytes()
     }
 
+    /// Creates a key from little-endian bytes.
     #[inline]
     pub const fn from_le_bytes(bytes: [u8; 2]) -> Self {
         Self(u16::from_le_bytes(bytes))

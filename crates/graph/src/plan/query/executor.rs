@@ -36,11 +36,7 @@ use gleaph_graph_kernel::entry::PreparedWeightDecoder;
 use gleaph_graph_kernel::federation::LogicalVertexId;
 use ic_stable_lara::VertexId;
 use ic_stable_lara::labeled::OutEdgeOrder;
-use ic_stable_lara::traits::{CsrEdge, CsrVertexTombstone};
-#[cfg(test)]
-use std::cell::Cell;
 use std::collections::BTreeMap;
-use std::hash::Hasher;
 
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
 use canbench_rs::bench_scope;

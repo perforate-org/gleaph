@@ -10,12 +10,11 @@ use async_trait::async_trait;
 use candid::Principal;
 use gleaph_gql::parser;
 use gleaph_gql::type_check::NoSchema;
-use gleaph_gql::types::PathElement;
 use gleaph_gql::value::{ExtensionSortableKey, ExtensionValue};
 use gleaph_gql_planner::plan::PhysicalPlan;
 use gleaph_gql_planner::{PlanBuildOptions, build_plan_with_schema_and_options};
 
-use super::super::{GLEAPH_PATH_EXTENSION_HANDLER, materialize};
+use super::super::GLEAPH_PATH_EXTENSION_HANDLER;
 use super::context::QueryExprEvaluator;
 use crate::facade::FederationRouting;
 use crate::index::lookup::PropertyIndexLookup;
@@ -49,7 +48,7 @@ pub use gleaph_gql_planner::plan::{
     AggregateSpec, ConditionalScanCandidate, PlanOp, ProjectColumn, ScanValue, ShortestMode,
     ShortestPathCost, Str, VarLenSpec, WcojEdge,
 };
-pub use gleaph_graph_kernel::entry::{EdgeLabelId, EdgeSlotIndex};
+pub use gleaph_graph_kernel::entry::EdgeSlotIndex;
 pub use gleaph_graph_kernel::federation::FederatedExpandNeighbor;
 pub use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest};
 pub use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};

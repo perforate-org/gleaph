@@ -19,14 +19,20 @@ pub const DEFAULT_MAX_LOG_ENTRIES: u32 = 170;
 /// Persisted V1 payload overflow-log header.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HeaderV1 {
+    /// Header magic bytes.
     pub magic: [u8; 3],
+    /// Payload-log layout version.
     pub version: u8,
+    /// Number of edge segments represented by the log.
     pub segment_count: u32,
+    /// Maximum log entries per segment.
     pub max_log_entries: u32,
+    /// Bytes reserved for each log entry.
     pub stride: u32,
 }
 
 impl HeaderV1 {
+    /// Creates a payload-log header for `segment_count` segments.
     pub fn new(segment_count: u32) -> Self {
         Self {
             magic: MAGIC,
@@ -41,10 +47,22 @@ impl HeaderV1 {
 /// Errors returned when reopening a persisted payload overflow log.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InitError {
-    BadMagic { actual: [u8; 3] },
+    /// The payload-log header had unexpected magic bytes.
+    BadMagic {
+        /// Magic bytes read from stable memory.
+        actual: [u8; 3],
+    },
+    /// The payload-log layout version is not supported.
     IncompatibleVersion(u8),
+    /// The payload-log memory could not be allocated or was empty on reopen.
     OutOfMemory,
-    StrideMismatch { expected: u32, actual: u32 },
+    /// The persisted entry stride does not match this implementation.
+    StrideMismatch {
+        /// Expected entry stride.
+        expected: u32,
+        /// Entry stride read from stable memory.
+        actual: u32,
+    },
 }
 
 impl fmt::Display for InitError {
@@ -75,6 +93,7 @@ pub struct PayloadLogStore<M: Memory> {
 }
 
 impl<M: Memory> PayloadLogStore<M> {
+    /// Creates a new payload overflow log with `header`.
     pub fn new(memory: M, header: HeaderV1) -> Result<Self, GrowFailed> {
         let store = Self {
             memory,
@@ -85,6 +104,7 @@ impl<M: Memory> PayloadLogStore<M> {
         Ok(store)
     }
 
+    /// Reopens an existing payload overflow log.
     pub fn init(memory: M) -> Result<Self, InitError> {
         if memory.size() == 0 {
             return Err(InitError::OutOfMemory);
@@ -112,11 +132,13 @@ impl<M: Memory> PayloadLogStore<M> {
         Ok(store)
     }
 
+    /// Returns the backing memory.
     pub fn into_memory(self) -> M {
         self.memory
     }
 
     #[inline]
+    /// Returns the cached payload-log header.
     pub fn header(&self) -> HeaderV1 {
         self.header_mirror.get()
     }
@@ -177,6 +199,7 @@ impl<M: Memory> PayloadLogStore<M> {
         safe_write(&self.memory, off, &bytes[..entry_len])
     }
 
+    /// Clears the payload overflow-log entries for `leaf_segment`.
     pub fn release_segment(&self, leaf_segment: u32) -> Result<(), GrowFailed> {
         let h = self.header();
         let idx = self.read_idx_with_header(&h, leaf_segment);

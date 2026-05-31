@@ -459,10 +459,11 @@ fn for_each_expr_in_op(op: &PlanOp, f: &mut impl FnMut(&Expr)) {
                 visit_expr(a, f);
             }
         }
-        PlanOp::ShortestPath { cost, .. } => {
-            if let ShortestPathCost::EdgeCostExpr { expr, .. } = cost {
-                visit_expr(expr, f);
-            }
+        PlanOp::ShortestPath {
+            cost: ShortestPathCost::EdgeCostExpr { expr, .. },
+            ..
+        } => {
+            visit_expr(expr, f);
         }
         PlanOp::HashJoin { left, right, .. } => {
             for_each_expr_in_ops(left, f);

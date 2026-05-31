@@ -7,7 +7,6 @@ use super::stable::{
     ROUTER_PROPERTY_BY_NAME, ROUTER_SHARD_BY_GRAPH, ROUTER_SHARDS, ROUTER_VERTEX_LABEL_BY_ID,
     ROUTER_VERTEX_LABEL_BY_NAME,
 };
-use crate::index_sync;
 use crate::init::RouterInitArgs;
 use crate::state::RouterError;
 use crate::types::{

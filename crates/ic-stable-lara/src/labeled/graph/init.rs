@@ -54,6 +54,7 @@ where
         }
         candidate == needle
     }
+    /// Creates a new labeled LARA graph over empty stable memories.
     pub fn new(
         vertices: M,
         buckets: M,
@@ -110,6 +111,7 @@ where
             _marker: PhantomData,
         })
     }
+    /// Reopens a labeled LARA graph from existing stable memories.
     pub fn init(
         vertices: M,
         buckets: M,
@@ -169,18 +171,22 @@ where
             _marker: PhantomData,
         })
     }
+    /// Returns the stable vertex store.
     pub fn vertices(&self) -> &VertexStore<LabeledVertex, M> {
         &self.vertices
     }
     pub(crate) fn buckets(&self) -> &LabelBucketStore<M> {
         &self.buckets
     }
+    /// Returns the stable edge store.
     pub fn edges(&self) -> &EdgeStore<E, M> {
         &self.edges
     }
+    /// Returns the stable edge-payload store.
     pub fn values(&self) -> &EdgePayloadStore<M> {
         &self.values
     }
+    /// Returns the label used for unlabeled/default edge storage.
     pub fn default_label(&self) -> BucketLabelKey {
         self.default_label
     }
@@ -206,6 +212,7 @@ where
             .ok_or(LaraOperationError::CollectAllocationOverflow.into())
         }
     }
+    /// Returns the number of vertex rows in the graph.
     pub fn vertex_count(&self) -> VertexCount {
         VertexCount::from(self.vertices.len())
     }

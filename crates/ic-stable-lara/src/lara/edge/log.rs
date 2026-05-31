@@ -195,7 +195,10 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
     }
 
     /// Reads the next-free entry index for a leaf segment.
-    #[allow(dead_code)] // stable `LogStore` API; in-crate uses `read_idx_with_header`
+    #[expect(
+        dead_code,
+        reason = "stable LogStore API; in-crate uses read_idx_with_header"
+    )]
     pub fn read_idx(&self, leaf_segment: u32) -> i32 {
         let h = self.header();
         self.read_idx_with_header(&h, leaf_segment)
@@ -240,7 +243,10 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
     }
 
     /// Writes the next-free entry index for a leaf segment.
-    #[allow(dead_code)] // stable `LogStore` API; in-crate uses `write_idx_with_header`
+    #[expect(
+        dead_code,
+        reason = "stable LogStore API; in-crate uses write_idx_with_header"
+    )]
     pub fn write_idx(&self, leaf_segment: u32, idx: i32) {
         let h = self.header();
         self.write_idx_with_header(&h, leaf_segment, idx);
@@ -255,7 +261,10 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
     }
 
     /// Reads one log entry payload and returns `(previous_entry, source_vertex)`.
-    #[allow(dead_code)] // stable `LogStore` API; in-crate uses `read_entry_with_header`
+    #[expect(
+        dead_code,
+        reason = "stable LogStore API; in-crate uses read_entry_with_header"
+    )]
     pub fn read_entry(&self, leaf_segment: u32, entry_idx: u32, out: &mut [u8]) -> (i32, i32) {
         let h = self.header();
         self.read_entry_with_header(&h, leaf_segment, entry_idx, out)
@@ -276,7 +285,10 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
     }
 
     /// Writes one log entry in a leaf segment.
-    #[allow(dead_code)] // stable `LogStore` API; in-crate uses `write_entry_with_header`
+    #[expect(
+        dead_code,
+        reason = "stable LogStore API; in-crate uses write_entry_with_header"
+    )]
     pub fn write_entry(
         &self,
         leaf_segment: u32,

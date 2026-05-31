@@ -133,10 +133,8 @@ fn register_op_bindings(op: &PlanOp, layout: &mut BindingLayout) {
             if *emit_edge_binding {
                 layout.insert_name(edge.clone());
             }
-            if *emit_path_binding {
-                if let Some(path_var) = path_var {
-                    layout.insert_name(path_var.clone());
-                }
+            if *emit_path_binding && let Some(path_var) = path_var {
+                layout.insert_name(path_var.clone());
             }
         }
         PlanOp::Let { bindings } => {
@@ -269,7 +267,6 @@ pub type SharedBindingLayout = Rc<BindingLayout>;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::plan::{PhysicalPlan, PlanOp, ProjectColumn, ShortestMode};
     use gleaph_gql::ast::{Expr, ExprKind};
 

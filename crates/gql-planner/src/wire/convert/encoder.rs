@@ -321,7 +321,7 @@ impl Encoder {
                 variable: variable.to_string(),
                 scans: scans
                     .iter()
-                    .map(|s| encode_index_scan_spec(s))
+                    .map(encode_index_scan_spec)
                     .collect::<Result<_, _>>()?,
                 property_projection: opt_str_slice(property_projection),
             },

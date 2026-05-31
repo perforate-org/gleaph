@@ -16,6 +16,7 @@ use super::log::LogStore;
 use super::span_meta::{SegmentSpanMeta, SegmentSpanMetaStore};
 
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
+    /// Creates a new edge store over empty stable memories.
     pub fn new(
         counts: M,
         edges: M,
@@ -64,6 +65,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             free_spans,
         })
     }
+    /// Reopens an edge store from stable memories, creating it when the edge slab is empty.
     pub fn init(
         counts: M,
         edges: M,
@@ -183,6 +185,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         );
         Ok(())
     }
+    /// Returns the cached edge-store header.
     pub fn header(&self) -> EdgeHeaderV1 {
         self.header.get()
     }
@@ -190,15 +193,19 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         self.edges.write_header(header);
         self.header.set(*header);
     }
+    /// Returns the segment edge-count store.
     pub fn counts_store(&self) -> &SegmentEdgeCountsStore<E, M> {
         &self.counts
     }
+    /// Returns the segment span-metadata store.
     pub fn span_meta_store(&self) -> &SegmentSpanMetaStore<M> {
         &self.span_meta
     }
+    /// Returns the free-span index for retired slab ranges.
     pub fn free_span_store(&self) -> &FreeSpanStore<M> {
         &self.free_spans
     }
+    /// Decomposes the edge store into its backing memories.
     pub fn into_memories(self) -> (M, M, M, M, M, M) {
         let (free_spans, free_span_by_start) = self.free_spans.into_memories();
         (
@@ -210,6 +217,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             free_span_by_start,
         )
     }
+    /// Clears and releases the overflow-log segment for `leaf_segment`.
     pub fn release_log_segment(&self, leaf_segment: SegmentId) -> Result<(), GrowFailed> {
         self.log.release_segment(u32::from(leaf_segment))
     }

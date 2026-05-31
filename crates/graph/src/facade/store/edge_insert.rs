@@ -295,31 +295,30 @@ pub(super) fn journal_edge_insert(
         )?;
     }
 
-    if let Some(predecessor_logical_vertex_id) = store.logical_vertex_id(source_vertex_id) {
-        if let Some(reverse) =
+    if let Some(predecessor_logical_vertex_id) = store.logical_vertex_id(source_vertex_id)
+        && let Some(reverse) =
             store.find_reverse_alias_for_canonical(canonical, target_vertex_id, source_vertex_id)?
-        {
-            maybe_journal_migration_op(
-                store,
-                target_vertex_id,
-                MigrationJournalOp::InReverseAdded {
-                    source_handle: migration_wire_handle(
-                        target_vertex_id,
-                        reverse.label_id,
-                        reverse.slot_index,
-                    ),
-                    predecessor_logical_vertex_id,
-                    predecessor_is_remote: source_vertex_id != target_vertex_id,
-                    catalog_label,
-                    canonical_source_handle: migration_wire_handle(
-                        source_vertex_id,
-                        canonical.label_id,
-                        canonical.slot_index,
-                    ),
-                    payload_bytes: payload_bytes.to_vec(),
-                },
-            )?;
-        }
+    {
+        maybe_journal_migration_op(
+            store,
+            target_vertex_id,
+            MigrationJournalOp::InReverseAdded {
+                source_handle: migration_wire_handle(
+                    target_vertex_id,
+                    reverse.label_id,
+                    reverse.slot_index,
+                ),
+                predecessor_logical_vertex_id,
+                predecessor_is_remote: source_vertex_id != target_vertex_id,
+                catalog_label,
+                canonical_source_handle: migration_wire_handle(
+                    source_vertex_id,
+                    canonical.label_id,
+                    canonical.slot_index,
+                ),
+                payload_bytes: payload_bytes.to_vec(),
+            },
+        )?;
     }
     Ok(())
 }

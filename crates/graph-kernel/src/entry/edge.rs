@@ -14,7 +14,7 @@
 //! type, directionality, and per-edge payloads are carried by the labeled bucket layer
 //! and [`EdgePayloadStore`], not this row.
 
-use super::edge_payload::{EdgePayload, MAX_EDGE_PAYLOAD_BYTES};
+use super::edge_payload::EdgePayload;
 use super::remote_ref::EdgeTarget;
 use super::vertex_ref::VertexRef;
 use ic_stable_lara::{
@@ -66,7 +66,7 @@ impl Edge {
         self.payload.as_slice()
     }
 
-    /// Sets the in-memory payload bytes (length must be <= [`MAX_EDGE_PAYLOAD_BYTES`] when enforced by callers).
+    /// Sets the in-memory payload bytes.
     #[inline]
     pub fn with_payload_bytes(&self, bytes: &[u8]) -> Self {
         Self {

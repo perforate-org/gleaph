@@ -82,7 +82,7 @@ fn try_eval_gleaph_weight(
             message: "GLEAPH.WEIGHT argument must be an edge variable".into(),
         });
     };
-    let decoder = map
+    let _decoder = map
         .get(&edge_var)
         .ok_or_else(|| PlanQueryError::GleaphWeight {
             message: format!(
@@ -714,7 +714,7 @@ fn vertex_matches_label_expr(
 #[cfg(test)]
 mod tests {
     use super::super::test_support::*;
-    use pollster;
+
     #[test]
     fn executes_planner_match_return_property() {
         let store = GraphStore::new();

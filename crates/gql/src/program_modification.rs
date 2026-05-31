@@ -29,10 +29,10 @@ impl ProgramModificationFlags {
 /// Inspect a parsed program (after successful parse).
 pub fn classify_program(program: &GqlProgram) -> ProgramModificationFlags {
     let _ = &program.session_activity;
-    if let Some(tx) = &program.transaction_activity {
-        if let Some(body) = &tx.body {
-            return classify_statement_block(body);
-        }
+    if let Some(tx) = &program.transaction_activity
+        && let Some(body) = &tx.body
+    {
+        return classify_statement_block(body);
     }
     ProgramModificationFlags::default()
 }
