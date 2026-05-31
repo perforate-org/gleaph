@@ -11,10 +11,10 @@
 //! ```
 //!
 //! `target` is a [`VertexRef`] (local id plus optional remote bit). Relationship
-//! type, directionality, and per-edge values are carried by the labeled bucket layer
-//! and [`EdgeValueStore`], not this row.
+//! type, directionality, and per-edge payloads are carried by the labeled bucket layer
+//! and [`EdgePayloadStore`], not this row.
 
-use super::edge_value_payload::EdgeValuePayload;
+use super::edge_payload::{EdgePayload, MAX_EDGE_PAYLOAD_BYTES};
 use super::remote_ref::EdgeTarget;
 use super::vertex_ref::VertexRef;
 use ic_stable_lara::{
@@ -29,17 +29,14 @@ mod meta;
 pub use id::EdgeSlotIndex;
 pub use meta::EdgeMeta;
 
-/// Maximum edge-value byte width supported by labeled storage profiles.
-pub const MAX_EDGE_VALUE_BYTES: usize = u16::MAX as usize;
-
 /// Fixed-size adjacency entry stored in one labeled CSR slab slot.
 #[derive(Clone, Debug)]
 pub struct Edge {
     pub target: VertexRef,
     pub edge_slot_index: EdgeSlotIndex,
     pub label_id: u16,
-    /// In-memory edge value (not persisted on the 4-byte wire row).
-    pub value: EdgeValuePayload,
+    /// In-memory edge payload (not persisted on the 4-byte wire row).
+    pub payload: EdgePayload,
 }
 
 impl PartialEq for Edge {
@@ -47,7 +44,7 @@ impl PartialEq for Edge {
         self.target == other.target
             && self.edge_slot_index == other.edge_slot_index
             && self.label_id == other.label_id
-            && self.value == other.value
+            && self.payload == other.payload
     }
 }
 
@@ -58,30 +55,24 @@ impl Hash for Edge {
         self.target.hash(state);
         self.edge_slot_index.hash(state);
         self.label_id.hash(state);
-        self.value.hash(state);
+        self.payload.hash(state);
     }
 }
 
 impl Edge {
-    /// Returns the active value byte slice.
+    /// Returns the active payload byte slice.
     #[inline]
-    pub fn value_bytes(&self) -> &[u8] {
-        self.value.as_slice()
+    pub fn payload_bytes(&self) -> &[u8] {
+        self.payload.as_slice()
     }
 
-    /// Sets the in-memory value bytes (length must be <= [`MAX_EDGE_VALUE_BYTES`] when enforced by callers).
+    /// Sets the in-memory payload bytes (length must be <= [`MAX_EDGE_PAYLOAD_BYTES`] when enforced by callers).
     #[inline]
-    pub fn with_value_bytes(&self, bytes: &[u8]) -> Self {
+    pub fn with_payload_bytes(&self, bytes: &[u8]) -> Self {
         Self {
-            value: EdgeValuePayload::from_slice(bytes),
+            payload: EdgePayload::from_slice(bytes),
             ..self.clone()
         }
-    }
-
-    /// Legacy u16 weight view when the active value is exactly two bytes (little-endian).
-    #[inline]
-    pub fn inline_value_u16(&self) -> u16 {
-        self.value.inline_u16()
     }
 
     /// Resolves the stored neighbor as a local or remote [`EdgeTarget`].
@@ -104,7 +95,7 @@ impl CsrEdge for Edge {
             target: VertexRef::from_le_bytes(chunk[0..4].try_into().unwrap()),
             edge_slot_index: EdgeSlotIndex::from_raw(0),
             label_id: 0,
-            value: EdgeValuePayload::EMPTY,
+            payload: EdgePayload::EMPTY,
         }
     }
 
@@ -133,7 +124,7 @@ impl CsrEdge for Edge {
             target,
             edge_slot_index: self.edge_slot_index,
             label_id: self.label_id,
-            value: self.value.clone(),
+            payload: self.payload.clone(),
         }
     }
 
@@ -156,16 +147,17 @@ impl CsrEdge for Edge {
         self.target.is_tombstone()
     }
 
-    fn edge_value_byte_width(&self) -> u16 {
-        u16::try_from(self.value.len()).unwrap_or(u16::MAX)
+    fn edge_payload_byte_width(&self) -> u16 {
+        u16::try_from(self.payload.len()).unwrap_or(u16::MAX)
     }
 
-    fn edge_value_bytes(&self) -> &[u8] {
-        self.value_bytes()
+    fn edge_payload_bytes(&self) -> &[u8] {
+        self.payload.as_slice()
     }
 
-    fn with_stored_value_bytes(self, _width: u16, bytes: &[u8]) -> Self {
-        self.with_value_bytes(bytes)
+    fn with_stored_payload_bytes(mut self, _width: u16, bytes: &[u8]) -> Self {
+        self.payload = EdgePayload::from_slice(bytes);
+        self
     }
 
     fn edge_slot_index_raw(&self) -> u32 {
@@ -179,7 +171,7 @@ impl CsrEdgeTombstone for Edge {
             target: VertexRef::tombstone(),
             edge_slot_index: EdgeSlotIndex::from_raw(0),
             label_id: 0,
-            value: EdgeValuePayload::EMPTY,
+            payload: EdgePayload::EMPTY,
         }
     }
 
@@ -199,7 +191,7 @@ mod tests {
             target: VertexRef::local(VertexId::from(1)),
             edge_slot_index: EdgeSlotIndex::from_raw(slot),
             label_id,
-            value: EdgeValuePayload::from_inline_u16(7),
+            payload: EdgePayload::from_slice(&7u16.to_le_bytes()),
         }
     }
 
@@ -237,7 +229,7 @@ mod tests {
             target: VertexRef::remote_ref(RemoteRefId::from_raw(0x1234_5678)),
             edge_slot_index: EdgeSlotIndex::from_raw(0xA1B2_C3D4),
             label_id: 0,
-            value: EdgeValuePayload::from_slice(&0x9A8Bu16.to_le_bytes()),
+            payload: EdgePayload::from_slice(&0x9A8Bu16.to_le_bytes()),
         };
         let mut bytes = [0u8; Edge::BYTES];
         edge.write_to(&mut bytes);
@@ -249,7 +241,7 @@ mod tests {
         let bytes = [0x78, 0x56, 0x34, 0x12];
         let edge = Edge::read_from(&bytes);
         assert_eq!(edge.target, VertexRef::local(VertexId::from(0x1234_5678)));
-        assert!(edge.value.is_empty());
+        assert!(edge.payload.is_empty());
 
         let mut round_trip = [0u8; Edge::BYTES];
         edge.write_to(&mut round_trip);
@@ -264,11 +256,8 @@ mod tests {
     }
 
     #[test]
-    fn with_value_bytes_round_trips() {
-        let edge = Edge::tombstone_edge().with_value_bytes(&[1, 2, 3, 4]);
-        assert_eq!(edge.value_bytes(), &[1, 2, 3, 4]);
-        assert_eq!(edge.inline_value_u16(), 0);
-        let u16_edge = Edge::tombstone_edge().with_value_bytes(&0x9A8Bu16.to_le_bytes());
-        assert_eq!(u16_edge.inline_value_u16(), 0x9A8B);
+    fn with_payload_bytes_round_trips() {
+        let edge = Edge::tombstone_edge().with_payload_bytes(&[1, 2, 3, 4]);
+        assert_eq!(edge.payload_bytes(), &[1, 2, 3, 4]);
     }
 }

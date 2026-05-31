@@ -46,7 +46,7 @@ pub enum MaintenanceWorkItem {
         /// Vertex owning the value span.
         vid: VertexId,
     },
-    /// Compact edge and value spans together (preferred for value-bearing labels).
+    /// Compact edge and payload spans together (preferred for value-bearing labels).
     CompactVertexEdgeAndValueSpan {
         /// Vertex owning both spans.
         vid: VertexId,
@@ -473,10 +473,10 @@ where
         edge_span_meta: M,
         edge_free_spans: M,
         edge_free_span_by_start: M,
-        value_slab: M,
+        payload_slab: M,
         value_free_spans: M,
         value_free_span_by_start: M,
-        value_log: M,
+        payload_log: M,
         value_blobs: M,
         queue_memory: M,
         elem_capacity: u64,
@@ -493,10 +493,10 @@ where
             edge_span_meta,
             edge_free_spans,
             edge_free_span_by_start,
-            value_slab,
+            payload_slab,
             value_free_spans,
             value_free_span_by_start,
-            value_log,
+            payload_log,
             value_blobs,
             elem_capacity,
             default_label,

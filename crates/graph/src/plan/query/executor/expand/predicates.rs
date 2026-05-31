@@ -3,20 +3,20 @@ use std::collections::BTreeMap;
 use gleaph_gql::Value;
 use gleaph_gql::ast::CmpOp;
 use gleaph_gql_planner::plan::{
-    EdgeValuePredicate, EdgeVectorMetric as PlanEdgeVectorMetric, EdgeVectorPredicate, ScanValue,
+    EdgePayloadPredicate, EdgeVectorMetric as PlanEdgeVectorMetric, EdgeVectorPredicate, ScanValue,
 };
-use gleaph_graph_kernel::entry::{EdgeLabelId, EdgeValueEncoding, EdgeValueProfile};
+use gleaph_graph_kernel::entry::{EdgeLabelId, EdgePayloadEncoding, EdgePayloadProfile};
 use half::f16;
 
 use crate::facade::GraphStore;
-use crate::plan::query::edge_value_batch_kernel::PreparedEdgeValueBatchKernel;
+use crate::plan::query::edge_payload_batch_kernel::PreparedEdgePayloadBatchKernel;
 use crate::plan::query::edge_vector_kernel::{
     EdgeVectorMetric as KernelEdgeVectorMetric, PreparedEdgeVectorKernel,
 };
 use crate::plan::query::error::PlanQueryError;
 #[derive(Clone, Debug)]
-pub(crate) struct PreparedEdgeValuePredicate {
-    pub(crate) kernel: PreparedEdgeValueBatchKernel,
+pub(crate) struct PreparedEdgePayloadPredicate {
+    pub(crate) kernel: PreparedEdgePayloadBatchKernel,
     pub(crate) op: CmpOp,
     pub(crate) expected: Vec<u8>,
 }
@@ -37,10 +37,10 @@ impl PreparedEdgeVectorThreshold {
         predicate: &EdgeVectorPredicate,
         parameters: &BTreeMap<String, Value>,
     ) -> Result<Option<Self>, PlanQueryError> {
-        let Some(profile) = store.edge_label_value_profile(label_id) else {
+        let Some(profile) = store.edge_label_payload_profile(label_id) else {
             return Ok(None);
         };
-        let EdgeValueEncoding::VectorF32 { dims } = profile.encoding else {
+        let EdgePayloadEncoding::VectorF32 { dims } = profile.encoding else {
             return Err(PlanQueryError::UnsupportedOp(
                 "edge vector predicate for non-vector encodings",
             ));
@@ -50,7 +50,7 @@ impl PreparedEdgeVectorThreshold {
         profile
             .validate()
             .map_err(|err| PlanQueryError::InvalidExpressionValue {
-                expression: format!("edge vector value profile: {err}"),
+                expression: format!("edge vector payload profile: {err}"),
             })?;
         if usize::from(dims) != query.len() {
             return Err(PlanQueryError::InvalidExpressionValue {
@@ -69,11 +69,11 @@ impl PreparedEdgeVectorThreshold {
         }))
     }
 
-    pub(crate) fn collect_matching_indices(&self, value_bytes: &[u8], out: &mut Vec<usize>) {
+    pub(crate) fn collect_matching_indices(&self, payload_bytes: &[u8], out: &mut Vec<usize>) {
         match (self.metric, self.op) {
             (KernelEdgeVectorMetric::L2Squared, CmpOp::Lt) => {
                 self.kernel.collect_l2_squared_upper_bound_indices(
-                    value_bytes,
+                    payload_bytes,
                     &self.query,
                     self.threshold,
                     false,
@@ -82,7 +82,7 @@ impl PreparedEdgeVectorThreshold {
             }
             (KernelEdgeVectorMetric::L2Squared, CmpOp::Le) => {
                 self.kernel.collect_l2_squared_upper_bound_indices(
-                    value_bytes,
+                    payload_bytes,
                     &self.query,
                     self.threshold,
                     true,
@@ -90,7 +90,7 @@ impl PreparedEdgeVectorThreshold {
                 )
             }
             _ => self.kernel.collect_matching_indices(
-                value_bytes,
+                payload_bytes,
                 &self.query,
                 self.metric,
                 self.threshold,
@@ -115,25 +115,25 @@ fn kernel_edge_vector_metric(metric: PlanEdgeVectorMetric) -> KernelEdgeVectorMe
     }
 }
 
-impl PreparedEdgeValuePredicate {
+impl PreparedEdgePayloadPredicate {
     pub(crate) fn prepare(
         store: &GraphStore,
         label_id: EdgeLabelId,
-        predicate: &EdgeValuePredicate,
+        predicate: &EdgePayloadPredicate,
         parameters: &BTreeMap<String, Value>,
     ) -> Result<Option<Self>, PlanQueryError> {
-        let Some(profile) = store.edge_label_value_profile(label_id) else {
+        let Some(profile) = store.edge_label_payload_profile(label_id) else {
             return Ok(None);
         };
         if profile.required_byte_width() == 0 {
             return Ok(None);
         }
         let Some(expected) =
-            scan_value_to_edge_value_bytes(&profile, &predicate.value, parameters)?
+            scan_value_to_edge_payload_bytes(&profile, &predicate.value, parameters)?
         else {
             return Ok(None);
         };
-        let kernel = PreparedEdgeValueBatchKernel::new(profile.byte_width, profile.encoding);
+        let kernel = PreparedEdgePayloadBatchKernel::new(profile.byte_width, profile.encoding);
         Ok(Some(Self {
             kernel,
             op: predicate.op,
@@ -142,8 +142,8 @@ impl PreparedEdgeValuePredicate {
     }
 }
 
-fn scan_value_to_edge_value_bytes(
-    profile: &EdgeValueProfile,
+fn scan_value_to_edge_payload_bytes(
+    profile: &EdgePayloadProfile,
     scan_value: &ScanValue,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<Option<Vec<u8>>, PlanQueryError> {
@@ -160,7 +160,7 @@ fn scan_value_to_edge_value_bytes(
     if matches!(value, Value::Null) {
         return Ok(None);
     }
-    edge_value_bytes_from_value(profile, value)
+    edge_payload_bytes_from_value(profile, value)
 }
 
 fn scan_value_to_f32_vector(
@@ -202,54 +202,54 @@ fn scan_value_to_value<'a>(
     }
 }
 
-fn edge_value_bytes_from_value(
-    profile: &EdgeValueProfile,
+fn edge_payload_bytes_from_value(
+    profile: &EdgePayloadProfile,
     value: &Value,
 ) -> Result<Option<Vec<u8>>, PlanQueryError> {
     let bytes = match &profile.encoding {
-        EdgeValueEncoding::RawU8 => u8_from_value(value).map(|v| vec![v])?,
-        EdgeValueEncoding::RawU16 | EdgeValueEncoding::WeightRawU16 => {
+        EdgePayloadEncoding::RawU8 => u8_from_value(value).map(|v| vec![v])?,
+        EdgePayloadEncoding::RawU16 | EdgePayloadEncoding::WeightRawU16 => {
             u16_from_value(value).map(|v| v.to_le_bytes().to_vec())?
         }
-        EdgeValueEncoding::RawU32 => u32_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
-        EdgeValueEncoding::RawU64 => u64_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
-        EdgeValueEncoding::RawI8 => i8_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
-        EdgeValueEncoding::RawI16 => i16_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
-        EdgeValueEncoding::RawI32 => i32_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
-        EdgeValueEncoding::RawI64 => i64_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
-        EdgeValueEncoding::RawU128 => u128_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
-        EdgeValueEncoding::RawI128 => i128_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
-        EdgeValueEncoding::F16 => {
+        EdgePayloadEncoding::RawU32 => u32_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
+        EdgePayloadEncoding::RawU64 => u64_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
+        EdgePayloadEncoding::RawI8 => i8_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
+        EdgePayloadEncoding::RawI16 => i16_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
+        EdgePayloadEncoding::RawI32 => i32_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
+        EdgePayloadEncoding::RawI64 => i64_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
+        EdgePayloadEncoding::RawU128 => u128_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
+        EdgePayloadEncoding::RawI128 => i128_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
+        EdgePayloadEncoding::F16 => {
             f32_from_value(value).map(|v| f16::from_f32(v).to_le_bytes().to_vec())?
         }
-        EdgeValueEncoding::F32 => f32_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
-        EdgeValueEncoding::F64 => f64_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
-        EdgeValueEncoding::RawFixed32 => fixed_bytes_from_value(value, 32)?,
-        EdgeValueEncoding::RawFixed64 => fixed_bytes_from_value(value, 64)?,
-        EdgeValueEncoding::WeightLinearU16 { .. }
-        | EdgeValueEncoding::WeightLogU16 { .. }
-        | EdgeValueEncoding::WeightBinary16 => {
+        EdgePayloadEncoding::F32 => f32_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
+        EdgePayloadEncoding::F64 => f64_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
+        EdgePayloadEncoding::RawFixed32 => fixed_bytes_from_value(value, 32)?,
+        EdgePayloadEncoding::RawFixed64 => fixed_bytes_from_value(value, 64)?,
+        EdgePayloadEncoding::WeightLinearU16 { .. }
+        | EdgePayloadEncoding::WeightLogU16 { .. }
+        | EdgePayloadEncoding::WeightBinary16 => {
             return Err(PlanQueryError::UnsupportedOp(
-                "edge value predicate for transformed weight encodings",
+                "edge payload predicate for transformed weight encodings",
             ));
         }
-        EdgeValueEncoding::VectorF32 { .. } => {
+        EdgePayloadEncoding::VectorF32 { .. } => {
             return Err(PlanQueryError::UnsupportedOp(
-                "edge value predicate for vector encodings",
+                "edge payload predicate for vector encodings",
             ));
         }
-        EdgeValueEncoding::RawBytes => match value {
+        EdgePayloadEncoding::RawBytes => match value {
             Value::Bytes(bytes) => bytes.clone(),
             _ => {
                 return Err(PlanQueryError::InvalidExpressionValue {
-                    expression: "opaque edge value predicate literal".into(),
+                    expression: "opaque edge payload predicate literal".into(),
                 });
             }
         },
     };
     if bytes.len() != usize::from(profile.required_byte_width()) {
         return Err(PlanQueryError::InvalidExpressionValue {
-            expression: "edge value predicate byte width".into(),
+            expression: "edge payload predicate byte width".into(),
         });
     }
     Ok(Some(bytes))
@@ -259,7 +259,7 @@ fn fixed_bytes_from_value(value: &Value, expected_len: usize) -> Result<Vec<u8>,
     match value {
         Value::Bytes(bytes) if bytes.len() == expected_len => Ok(bytes.clone()),
         _ => Err(PlanQueryError::InvalidExpressionValue {
-            expression: "fixed-width edge value predicate literal".into(),
+            expression: "fixed-width edge payload predicate literal".into(),
         }),
     }
 }
@@ -267,7 +267,7 @@ fn fixed_bytes_from_value(value: &Value, expected_len: usize) -> Result<Vec<u8>,
 fn u8_from_value(value: &Value) -> Result<u8, PlanQueryError> {
     unsigned_from_value(value).and_then(|v| {
         u8::try_from(v).map_err(|_| PlanQueryError::InvalidExpressionValue {
-            expression: "u8 edge value predicate literal".into(),
+            expression: "u8 edge payload predicate literal".into(),
         })
     })
 }
@@ -275,7 +275,7 @@ fn u8_from_value(value: &Value) -> Result<u8, PlanQueryError> {
 fn u16_from_value(value: &Value) -> Result<u16, PlanQueryError> {
     unsigned_from_value(value).and_then(|v| {
         u16::try_from(v).map_err(|_| PlanQueryError::InvalidExpressionValue {
-            expression: "u16 edge value predicate literal".into(),
+            expression: "u16 edge payload predicate literal".into(),
         })
     })
 }
@@ -283,7 +283,7 @@ fn u16_from_value(value: &Value) -> Result<u16, PlanQueryError> {
 fn u32_from_value(value: &Value) -> Result<u32, PlanQueryError> {
     unsigned_from_value(value).and_then(|v| {
         u32::try_from(v).map_err(|_| PlanQueryError::InvalidExpressionValue {
-            expression: "u32 edge value predicate literal".into(),
+            expression: "u32 edge payload predicate literal".into(),
         })
     })
 }
@@ -291,7 +291,7 @@ fn u32_from_value(value: &Value) -> Result<u32, PlanQueryError> {
 fn u64_from_value(value: &Value) -> Result<u64, PlanQueryError> {
     unsigned_from_value(value).and_then(|v| {
         u64::try_from(v).map_err(|_| PlanQueryError::InvalidExpressionValue {
-            expression: "u64 edge value predicate literal".into(),
+            expression: "u64 edge payload predicate literal".into(),
         })
     })
 }
@@ -303,7 +303,7 @@ fn u128_from_value(value: &Value) -> Result<u128, PlanQueryError> {
 fn i8_from_value(value: &Value) -> Result<i8, PlanQueryError> {
     signed_from_value(value).and_then(|v| {
         i8::try_from(v).map_err(|_| PlanQueryError::InvalidExpressionValue {
-            expression: "i8 edge value predicate literal".into(),
+            expression: "i8 edge payload predicate literal".into(),
         })
     })
 }
@@ -311,7 +311,7 @@ fn i8_from_value(value: &Value) -> Result<i8, PlanQueryError> {
 fn i16_from_value(value: &Value) -> Result<i16, PlanQueryError> {
     signed_from_value(value).and_then(|v| {
         i16::try_from(v).map_err(|_| PlanQueryError::InvalidExpressionValue {
-            expression: "i16 edge value predicate literal".into(),
+            expression: "i16 edge payload predicate literal".into(),
         })
     })
 }
@@ -319,7 +319,7 @@ fn i16_from_value(value: &Value) -> Result<i16, PlanQueryError> {
 fn i32_from_value(value: &Value) -> Result<i32, PlanQueryError> {
     signed_from_value(value).and_then(|v| {
         i32::try_from(v).map_err(|_| PlanQueryError::InvalidExpressionValue {
-            expression: "i32 edge value predicate literal".into(),
+            expression: "i32 edge payload predicate literal".into(),
         })
     })
 }
@@ -327,7 +327,7 @@ fn i32_from_value(value: &Value) -> Result<i32, PlanQueryError> {
 fn i64_from_value(value: &Value) -> Result<i64, PlanQueryError> {
     signed_from_value(value).and_then(|v| {
         i64::try_from(v).map_err(|_| PlanQueryError::InvalidExpressionValue {
-            expression: "i64 edge value predicate literal".into(),
+            expression: "i64 edge payload predicate literal".into(),
         })
     })
 }
@@ -343,12 +343,12 @@ fn unsigned_from_value(value: &Value) -> Result<u128, PlanQueryError> {
         Value::Uint32(v) => Ok(u128::from(*v)),
         Value::Uint64(v) => Ok(u128::from(*v)),
         Value::Uint128(v) => Ok(*v),
-        Value::Int8(v) => u128::try_from(*v).map_err(|_| invalid_unsigned_edge_value()),
-        Value::Int16(v) => u128::try_from(*v).map_err(|_| invalid_unsigned_edge_value()),
-        Value::Int32(v) => u128::try_from(*v).map_err(|_| invalid_unsigned_edge_value()),
-        Value::Int64(v) => u128::try_from(*v).map_err(|_| invalid_unsigned_edge_value()),
-        Value::Int128(v) => u128::try_from(*v).map_err(|_| invalid_unsigned_edge_value()),
-        _ => Err(invalid_unsigned_edge_value()),
+        Value::Int8(v) => u128::try_from(*v).map_err(|_| invalid_unsigned_edge_payload()),
+        Value::Int16(v) => u128::try_from(*v).map_err(|_| invalid_unsigned_edge_payload()),
+        Value::Int32(v) => u128::try_from(*v).map_err(|_| invalid_unsigned_edge_payload()),
+        Value::Int64(v) => u128::try_from(*v).map_err(|_| invalid_unsigned_edge_payload()),
+        Value::Int128(v) => u128::try_from(*v).map_err(|_| invalid_unsigned_edge_payload()),
+        _ => Err(invalid_unsigned_edge_payload()),
     }
 }
 
@@ -363,8 +363,8 @@ fn signed_from_value(value: &Value) -> Result<i128, PlanQueryError> {
         Value::Uint16(v) => Ok(i128::from(*v)),
         Value::Uint32(v) => Ok(i128::from(*v)),
         Value::Uint64(v) => Ok(i128::from(*v)),
-        Value::Uint128(v) => i128::try_from(*v).map_err(|_| invalid_signed_edge_value()),
-        _ => Err(invalid_signed_edge_value()),
+        Value::Uint128(v) => i128::try_from(*v).map_err(|_| invalid_signed_edge_payload()),
+        _ => Err(invalid_signed_edge_payload()),
     }
 }
 
@@ -374,7 +374,7 @@ fn f32_from_value(value: &Value) -> Result<f32, PlanQueryError> {
         Value::Float32(v) => Ok(*v),
         Value::Float64(v) if *v >= f32::MIN as f64 && *v <= f32::MAX as f64 => Ok(*v as f32),
         _ => Err(PlanQueryError::InvalidExpressionValue {
-            expression: "f32 edge value predicate literal".into(),
+            expression: "f32 edge payload predicate literal".into(),
         }),
     }
 }
@@ -385,19 +385,19 @@ fn f64_from_value(value: &Value) -> Result<f64, PlanQueryError> {
         Value::Float32(v) => Ok(f64::from(*v)),
         Value::Float64(v) => Ok(*v),
         _ => Err(PlanQueryError::InvalidExpressionValue {
-            expression: "f64 edge value predicate literal".into(),
+            expression: "f64 edge payload predicate literal".into(),
         }),
     }
 }
 
-fn invalid_unsigned_edge_value() -> PlanQueryError {
+fn invalid_unsigned_edge_payload() -> PlanQueryError {
     PlanQueryError::InvalidExpressionValue {
-        expression: "unsigned edge value predicate literal".into(),
+        expression: "unsigned edge payload predicate literal".into(),
     }
 }
 
-fn invalid_signed_edge_value() -> PlanQueryError {
+fn invalid_signed_edge_payload() -> PlanQueryError {
     PlanQueryError::InvalidExpressionValue {
-        expression: "signed edge value predicate literal".into(),
+        expression: "signed edge payload predicate literal".into(),
     }
 }

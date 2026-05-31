@@ -12,7 +12,7 @@ pub(crate) use eval::{binding_to_value, eval_sort_expr, project_row, value_row};
 pub(crate) use ops::execute_ops_from;
 pub use path::PathBinding;
 pub(crate) use path::path_binding_to_value;
-pub(crate) use scan::{federation_routing, resolve_scan_value_bytes};
+pub(crate) use scan::{federation_routing, resolve_scan_payload_bytes};
 
 #[cfg(test)]
 pub(crate) use expand::edge_binding_for_expand;

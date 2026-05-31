@@ -55,14 +55,14 @@ impl Storable for EdgeEqualityPostingKey {
 impl EdgeEqualityPostingKey {
     pub fn new(
         property_id: PropertyId,
-        value_bytes: &[u8],
+        payload_bytes: &[u8],
         owner_vertex_id: VertexId,
         label_id: u16,
         slot_index: u32,
     ) -> Self {
         Self {
             property_id: property_id.raw(),
-            value: value_bytes.to_vec(),
+            value: payload_bytes.to_vec(),
             owner_vertex_id: u32::from(owner_vertex_id),
             label_id,
             slot_index,
@@ -167,14 +167,14 @@ impl<M: Memory> EdgeEqualityPostingStore<M> {
     pub fn lookup_range(
         &self,
         property_id: PropertyId,
-        value_bytes: &[u8],
+        payload_bytes: &[u8],
     ) -> Vec<EdgeEqualityPostingKey> {
-        let lo = EdgeEqualityPostingKey::prefix_lower(property_id, value_bytes);
-        let hi = EdgeEqualityPostingKey::prefix_upper(property_id, value_bytes);
+        let lo = EdgeEqualityPostingKey::prefix_lower(property_id, payload_bytes);
+        let hi = EdgeEqualityPostingKey::prefix_upper(property_id, payload_bytes);
         self.postings
             .range(lo..=hi)
             .filter(|key| {
-                key.property_id == property_id.raw() && key.value.as_slice() == value_bytes
+                key.property_id == property_id.raw() && key.value.as_slice() == payload_bytes
             })
             .collect()
     }

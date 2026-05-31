@@ -213,9 +213,9 @@ where
         let slab_only_bulk = self.label_buckets_allow_contiguous_slab_copy(&vertex, &buckets)?;
 
         let needs_value_sync =
-            Self::vertex_value_spans_need_sync_after_rewrite(&buckets, moved, old_alloc, compact);
+            Self::vertex_payload_spans_need_sync_after_rewrite(&buckets, moved, old_alloc, compact);
         let saved_values = if needs_value_sync {
-            Some(self.collect_bucket_values_before_edge_rewrite(src, &vertex, &buckets)?)
+            Some(self.collect_bucket_payloads_before_edge_rewrite(src, &vertex, &buckets)?)
         } else {
             None
         };
@@ -405,7 +405,7 @@ where
         let _bench_scope = bench_scope("labeled_rewrite_finalize");
         let new_buckets = self.read_vertex_label_buckets(&vertex)?;
         if let Some(saved) = saved_values {
-            self.sync_vertex_value_spans_after_edge_rewrite(src, &buckets, &new_buckets, &saved)?;
+            self.sync_vertex_payload_spans_after_edge_rewrite(src, &buckets, &new_buckets, &saved)?;
         }
         if moved && old_alloc > 0 {
             self.release_vertex_edge_span_slab(old_base, u64::from(old_alloc))?;
@@ -507,20 +507,20 @@ where
         self.edges
             .write_slot(from, E::tombstone_edge())
             .map_err(LabeledOperationError::from)?;
-        let width = bucket.value_byte_width();
-        if bucket.is_value_allocated() {
+        let width = bucket.payload_byte_width();
+        if bucket.is_payload_allocated() {
             let from_off = bucket
-                .value_offset()
+                .payload_offset()
                 .checked_add(u64::from(moved.old_slot_index) * u64::from(width))
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             let to_off = bucket
-                .value_offset()
+                .payload_offset()
                 .checked_add(u64::from(moved.new_slot_index) * u64::from(width))
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             let mut buf = vec![0u8; usize::from(width)];
             self.values.read_bytes(from_off, &mut buf);
             self.values
-                .write_value_slot(to_off, width, &buf)
+                .write_payload_slot(to_off, width, &buf)
                 .map_err(LabeledOperationError::from)?;
         }
         Ok(())
@@ -770,17 +770,17 @@ where
             self.edges
                 .write_slots_contiguous(bucket.edge_start(), &buf[..run])?;
         }
-        let had_value_log = bucket.value_log_head() >= 0;
-        if had_value_log {
-            let leaf = self.value_log_leaf(src);
-            let (_, value_chain) = self.bucket_log_chains(src, &bucket);
-            self.values.sweep_value_log_chain(leaf, &value_chain);
+        let had_payload_log = bucket.payload_log_head() >= 0;
+        if had_payload_log {
+            let leaf = self.payload_log_leaf(src);
+            let (_, payload_chain) = self.bucket_log_chains(src, &bucket);
+            self.values.sweep_payload_log_chain(leaf, &payload_chain);
         }
-        let saved = if bucket.is_value_allocated() && bucket.value_byte_width() > 0 {
-            if had_value_log {
-                Some(self.collect_bucket_values_asc_order(src, vertex, bucket_index, &bucket)?)
+        let saved = if bucket.is_payload_allocated() && bucket.payload_byte_width() > 0 {
+            if had_payload_log {
+                Some(self.collect_bucket_payloads_asc_order(src, vertex, bucket_index, &bucket)?)
             } else {
-                self.read_bucket_values_slab_dense(&bucket)
+                self.read_bucket_payloads_slab_dense(&bucket)
             }
         } else {
             None
@@ -789,13 +789,13 @@ where
             .with_overflow_log_head(-1)
             .with_stored_slots(degree)
             .with_degree_field(degree);
-        if had_value_log {
+        if had_payload_log {
             bucket = bucket
-                .try_with_value_log_head(-1)
+                .try_with_payload_log_head(-1)
                 .map_err(LabeledOperationError::from)?;
         }
         if let Some(saved) = saved {
-            let width = bucket.value_byte_width();
+            let width = bucket.payload_byte_width();
             let flat_len = saved
                 .len()
                 .checked_mul(usize::from(width))
@@ -805,12 +805,12 @@ where
                 flat.extend_from_slice(bytes);
             }
             self.values
-                .write_bytes(bucket.value_offset(), &flat)
+                .write_bytes(bucket.payload_offset(), &flat)
                 .map_err(LabeledOperationError::from)?;
         }
         Ok(bucket)
     }
-    pub(super) fn fold_label_bucket_value_log_to_slab(
+    pub(super) fn fold_label_bucket_payload_log_to_slab(
         &self,
         src: VertexId,
         vertex: &LabeledVertex,
@@ -818,17 +818,17 @@ where
         bucket_slot: u64,
         bucket: LabelBucket,
     ) -> Result<LabelBucket, LabeledOperationError> {
-        if bucket.value_log_head() < 0 || !bucket.is_value_allocated() {
+        if bucket.payload_log_head() < 0 || !bucket.is_payload_allocated() {
             return Ok(bucket);
         }
-        let leaf = self.value_log_leaf(src);
-        let (_, value_chain) = self.bucket_log_chains(src, &bucket);
-        self.values.sweep_value_log_chain(leaf, &value_chain);
-        let saved = self.collect_bucket_values_asc_order(src, vertex, bucket_index, &bucket)?;
+        let leaf = self.payload_log_leaf(src);
+        let (_, payload_chain) = self.bucket_log_chains(src, &bucket);
+        self.values.sweep_payload_log_chain(leaf, &payload_chain);
+        let saved = self.collect_bucket_payloads_asc_order(src, vertex, bucket_index, &bucket)?;
         let bucket = bucket
-            .try_with_value_log_head(-1)
+            .try_with_payload_log_head(-1)
             .map_err(LabeledOperationError::from)?;
-        let width = bucket.value_byte_width();
+        let width = bucket.payload_byte_width();
         let flat_len = saved
             .len()
             .checked_mul(usize::from(width))
@@ -839,7 +839,7 @@ where
                 flat.extend_from_slice(bytes);
             }
             self.values
-                .write_bytes(bucket.value_offset(), &flat)
+                .write_bytes(bucket.payload_offset(), &flat)
                 .map_err(LabeledOperationError::from)?;
         }
         self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
@@ -868,8 +868,8 @@ where
                         break;
                     }
                 }
-            } else if bucket.value_log_head() >= 0 {
-                self.fold_label_bucket_value_log_to_slab(
+            } else if bucket.payload_log_head() >= 0 {
+                self.fold_label_bucket_payload_log_to_slab(
                     vid,
                     &vertex,
                     bucket_index,
@@ -898,7 +898,7 @@ where
             .release_log_segment(SegmentId::from(leaf))
             .map_err(LabeledOperationError::from)?;
         self.values
-            .release_value_log_segment(leaf)
+            .release_payload_log_segment(leaf)
             .map_err(LabeledOperationError::from)?;
         Ok(())
     }

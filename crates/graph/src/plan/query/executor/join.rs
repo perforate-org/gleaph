@@ -235,8 +235,8 @@ fn hash_plan_binding_for_join(binding: &PlanBinding, hasher: &mut RapidHasher<'_
             hasher.write_u8(2);
             hasher.write_u32(u32::from(e.handle.owner_vertex_id));
             hasher.write_u32(e.handle.slot_index);
-            hasher.write_u64(u64::try_from(e.value_len()).unwrap_or(u64::MAX));
-            hasher.write(e.value_bytes_slice());
+            hasher.write_u64(u64::try_from(e.payload_len()).unwrap_or(u64::MAX));
+            hasher.write(e.payload_bytes_slice());
         }
         PlanBinding::Value(v) => {
             hasher.write_u8(3);
@@ -386,7 +386,7 @@ mod tests {
                         label_expr: None,
                         var_len: None,
                         indexed_edge_equality: None,
-                        edge_value_predicate: None,
+                        edge_payload_predicate: None,
                         edge_vector_predicate: None,
                         edge_property_projection: None,
                         dst_property_projection: None,
@@ -722,7 +722,7 @@ mod tests {
                         label_expr: None,
                         var_len: None,
                         indexed_edge_equality: None,
-                        edge_value_predicate: None,
+                        edge_payload_predicate: None,
                         edge_vector_predicate: None,
                         edge_property_projection: None,
                         dst_property_projection: None,

@@ -4,13 +4,13 @@ use candid::Principal;
 use gleaph_gql::Value;
 use gleaph_gql::ast::Expr;
 use gleaph_gql::types::EdgeDirection;
-use gleaph_gql_planner::plan::{EdgeValuePredicate, EdgeVectorPredicate, ScanValue, Str};
+use gleaph_gql_planner::plan::{EdgePayloadPredicate, EdgeVectorPredicate, ScanValue, Str};
 use gleaph_graph_kernel::entry::{Edge, EdgeDirectedness, EdgeLabelId, PreparedWeightDecoder};
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
-use ic_stable_lara::labeled::LabeledEdgeValueBatchScratch;
+use ic_stable_lara::labeled::LabeledEdgePayloadBatchScratch;
 
-use super::predicates::{PreparedEdgeValuePredicate, PreparedEdgeVectorThreshold};
+use super::predicates::{PreparedEdgePayloadPredicate, PreparedEdgeVectorThreshold};
 use super::{
     ExpandDst, edge_matches_indexed_equality, expand_accepts_remote_dst, expand_dst_binding,
     expand_dst_matches_prebound_vertex, push_expand_candidate, push_scanned_value_expand_candidate,
@@ -22,32 +22,32 @@ use crate::plan::query::error::PlanQueryError;
 use crate::plan::query::executor::bindings::EdgeBinding;
 use crate::plan::query::executor::context::QueryExprEvaluator;
 use crate::plan::query::executor::{
-    EdgeSequenceOrder, resolve_scan_value_bytes, vertex_row_matches_dst_filters,
+    EdgeSequenceOrder, resolve_scan_payload_bytes, vertex_row_matches_dst_filters,
 };
 use crate::plan::query::row::PlanRow;
 pub(crate) type ExpandCandidate = (ExpandDst, EdgeBinding);
 
-pub(crate) fn expand_candidates_matching_edge_value_into(
+pub(crate) fn expand_candidates_matching_edge_payload_into(
     store: &GraphStore,
     src_id: VertexId,
     direction: EdgeDirection,
     edge_label_id: EdgeLabelId,
     sequence_order: EdgeSequenceOrder,
-    predicate: &PreparedEdgeValuePredicate,
+    predicate: &PreparedEdgePayloadPredicate,
     out: &mut Vec<ExpandCandidate>,
 ) -> Result<(), PlanQueryError> {
     let storage_label = LaraLabelId::from_raw(edge_label_id.pack(EdgeDirectedness::Directed).raw());
     let order = sequence_order.into();
-    let mut scratch = LabeledEdgeValueBatchScratch::default();
+    let mut scratch = LabeledEdgePayloadBatchScratch::default();
     let mut matches = Vec::new();
     let mut error = None;
-    let mut visit_batch = |batch: ic_stable_lara::labeled::LabeledEdgeValueBatch<'_, Edge>| {
+    let mut visit_batch = |batch: ic_stable_lara::labeled::LabeledEdgePayloadBatch<'_, Edge>| {
         if error.is_some() {
             return;
         }
         matches.clear();
         predicate.kernel.collect_matching_value_indices(
-            batch.value_bytes,
+            batch.payload_bytes,
             predicate.op,
             &predicate.expected,
             &mut matches,
@@ -57,9 +57,9 @@ pub(crate) fn expand_candidates_matching_edge_value_into(
             let Some(edge) = batch.edges.get(idx).cloned() else {
                 continue;
             };
-            let value_start = idx * width;
-            let value_end = value_start + width;
-            let edge = edge.with_value_bytes(&batch.value_bytes[value_start..value_end]);
+            let payload_start = idx * width;
+            let payload_end = payload_start + width;
+            let edge = edge.with_payload_bytes(&batch.payload_bytes[payload_start..payload_end]);
             match ExpandDst::from_edge(store, &edge).and_then(|edge_dst| match edge_dst {
                 Some(edge_dst) => push_scanned_value_expand_candidate(
                     out, store, src_id, direction, edge_dst, edge,
@@ -77,7 +77,7 @@ pub(crate) fn expand_candidates_matching_edge_value_into(
 
     match direction {
         EdgeDirection::PointingRight => store
-            .visit_out_edge_value_batches_for_label(
+            .visit_out_edge_payload_batches_for_label(
                 src_id,
                 storage_label,
                 order,
@@ -86,7 +86,7 @@ pub(crate) fn expand_candidates_matching_edge_value_into(
             )
             .map_err(GraphStoreError::from)?,
         EdgeDirection::PointingLeft => store
-            .visit_in_edge_value_batches_for_label(
+            .visit_in_edge_payload_batches_for_label(
                 src_id,
                 storage_label,
                 order,
@@ -113,15 +113,15 @@ pub(crate) fn expand_candidates_matching_edge_vector_threshold_into(
 ) -> Result<(), PlanQueryError> {
     let storage_label = LaraLabelId::from_raw(edge_label_id.pack(EdgeDirectedness::Directed).raw());
     let order = sequence_order.into();
-    let mut scratch = LabeledEdgeValueBatchScratch::default();
+    let mut scratch = LabeledEdgePayloadBatchScratch::default();
     let mut matches = Vec::new();
     let mut error = None;
-    let mut visit_batch = |batch: ic_stable_lara::labeled::LabeledEdgeValueBatch<'_, Edge>| {
+    let mut visit_batch = |batch: ic_stable_lara::labeled::LabeledEdgePayloadBatch<'_, Edge>| {
         if error.is_some() {
             return;
         }
         matches.clear();
-        predicate.collect_matching_indices(batch.value_bytes, &mut matches);
+        predicate.collect_matching_indices(batch.payload_bytes, &mut matches);
         if !matches.is_empty() {
             out.reserve(matches.len());
         }
@@ -130,9 +130,9 @@ pub(crate) fn expand_candidates_matching_edge_vector_threshold_into(
             let Some(edge) = batch.edges.get(idx).cloned() else {
                 continue;
             };
-            let value_start = idx * width;
-            let value_end = value_start + width;
-            let edge = edge.with_value_bytes(&batch.value_bytes[value_start..value_end]);
+            let payload_start = idx * width;
+            let payload_end = payload_start + width;
+            let edge = edge.with_payload_bytes(&batch.payload_bytes[payload_start..payload_end]);
             match ExpandDst::from_edge(store, &edge).and_then(|edge_dst| match edge_dst {
                 Some(edge_dst) => push_scanned_value_expand_candidate(
                     out, store, src_id, direction, edge_dst, edge,
@@ -150,7 +150,7 @@ pub(crate) fn expand_candidates_matching_edge_vector_threshold_into(
 
     match direction {
         EdgeDirection::PointingRight => store
-            .visit_out_edge_value_batches_for_label(
+            .visit_out_edge_payload_batches_for_label(
                 src_id,
                 storage_label,
                 order,
@@ -159,7 +159,7 @@ pub(crate) fn expand_candidates_matching_edge_vector_threshold_into(
             )
             .map_err(GraphStoreError::from)?,
         EdgeDirection::PointingLeft => store
-            .visit_in_edge_value_batches_for_label(
+            .visit_in_edge_payload_batches_for_label(
                 src_id,
                 storage_label,
                 order,
@@ -194,18 +194,18 @@ pub(super) fn expand_vector_dst_only_rows_into(
     evaluator: &QueryExprEvaluator<'_>,
     predicate: &PreparedEdgeVectorThreshold,
     out: &mut Vec<PlanRow>,
-    scratch: &mut LabeledEdgeValueBatchScratch<Edge>,
+    scratch: &mut LabeledEdgePayloadBatchScratch<Edge>,
     matches: &mut Vec<usize>,
 ) -> Result<(), PlanQueryError> {
     let storage_label = LaraLabelId::from_raw(edge_label_id.pack(EdgeDirectedness::Directed).raw());
     let order = sequence_order.into();
     let mut error = None;
-    let mut visit_batch = |batch: ic_stable_lara::labeled::LabeledEdgeValueBatch<'_, Edge>| {
+    let mut visit_batch = |batch: ic_stable_lara::labeled::LabeledEdgePayloadBatch<'_, Edge>| {
         if error.is_some() {
             return;
         }
         matches.clear();
-        predicate.collect_matching_indices(batch.value_bytes, matches);
+        predicate.collect_matching_indices(batch.payload_bytes, matches);
         if !matches.is_empty() {
             out.reserve(matches.len());
         }
@@ -256,7 +256,7 @@ pub(super) fn expand_vector_dst_only_rows_into(
 
     match direction {
         EdgeDirection::PointingRight => store
-            .visit_out_edge_value_batches_for_label(
+            .visit_out_edge_payload_batches_for_label(
                 src_id,
                 storage_label,
                 order,
@@ -265,7 +265,7 @@ pub(super) fn expand_vector_dst_only_rows_into(
             )
             .map_err(GraphStoreError::from)?,
         EdgeDirection::PointingLeft => store
-            .visit_in_edge_value_batches_for_label(
+            .visit_in_edge_payload_batches_for_label(
                 src_id,
                 storage_label,
                 order,
@@ -288,7 +288,7 @@ pub(crate) fn expand_candidates_into(
     edge_label_id: Option<EdgeLabelId>,
     sequence_order: EdgeSequenceOrder,
     indexed_edge_equality: Option<&(Str, ScanValue)>,
-    edge_value_predicate: Option<&EdgeValuePredicate>,
+    edge_payload_predicate: Option<&EdgePayloadPredicate>,
     edge_vector_predicate: Option<&EdgeVectorPredicate>,
     parameters: &BTreeMap<String, Value>,
     out: &mut Vec<ExpandCandidate>,
@@ -308,20 +308,20 @@ pub(crate) fn expand_candidates_into(
     {
         return Ok(());
     }
-    if let Some(edge_value_predicate) = edge_value_predicate {
+    if let Some(edge_payload_predicate) = edge_payload_predicate {
         let Some(edge_label_id) = edge_label_id else {
             return Ok(());
         };
-        let Some(predicate) = PreparedEdgeValuePredicate::prepare(
+        let Some(predicate) = PreparedEdgePayloadPredicate::prepare(
             store,
             edge_label_id,
-            edge_value_predicate,
+            edge_payload_predicate,
             parameters,
         )?
         else {
             return Ok(());
         };
-        expand_candidates_matching_edge_value_into(
+        expand_candidates_matching_edge_payload_into(
             store,
             src_id,
             direction,
@@ -510,8 +510,9 @@ where
     match direction {
         EdgeDirection::PointingRight => {
             if let Some(lid) = edge_label_id {
-                store
-                    .for_each_directed_out_edges_for_label_with_values(src_id, lid, order, visit)?;
+                store.for_each_directed_out_edges_for_label_with_payloads(
+                    src_id, lid, order, visit,
+                )?;
             } else {
                 store.for_each_directed_out_edges(src_id, order, visit)?;
             }
@@ -527,8 +528,9 @@ where
         }
         EdgeDirection::PointingLeft => {
             if let Some(lid) = edge_label_id {
-                store
-                    .for_each_directed_in_edges_for_label_with_values(src_id, lid, order, visit)?;
+                store.for_each_directed_in_edges_for_label_with_payloads(
+                    src_id, lid, order, visit,
+                )?;
             } else {
                 store.for_each_directed_in_edges(src_id, order, visit)?;
             }
@@ -553,7 +555,7 @@ fn expand_candidates_via_equality_index(
     let Some(property_id) = store.property_id(property) else {
         return Ok(false);
     };
-    let Some(expected) = resolve_scan_value_bytes(scan_value, parameters)? else {
+    let Some(expected) = resolve_scan_payload_bytes(scan_value, parameters)? else {
         out.clear();
         return Ok(true);
     };

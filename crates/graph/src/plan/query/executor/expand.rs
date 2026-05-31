@@ -16,7 +16,7 @@ use super::super::error::PlanQueryError;
 use super::super::row::PlanRow;
 use super::bindings::EdgeBinding;
 use super::{
-    EdgeSequenceOrder, PlanBinding, edge_to_projected_record, resolve_scan_value_bytes,
+    EdgeSequenceOrder, PlanBinding, edge_to_projected_record, resolve_scan_payload_bytes,
     row_matches_all, vertex_binding_for_projection,
 };
 use crate::facade::{EdgeHandle, GraphStore, GraphStoreError, canonical_undirected_owner};
@@ -272,7 +272,7 @@ fn edge_matches_indexed_equality(
     let Some(property_id) = store.property_id(property) else {
         return Ok(false);
     };
-    let Some(expected) = resolve_scan_value_bytes(scan_value, parameters)? else {
+    let Some(expected) = resolve_scan_payload_bytes(scan_value, parameters)? else {
         return Ok(false);
     };
     let owner_vertex_id =
@@ -324,7 +324,7 @@ pub(crate) fn edge_equality_stream_filter(
     let Some(property_id) = store.property_id(property.as_ref()) else {
         return Ok(EdgeEqualityStreamFilter::NoMatches);
     };
-    let Some(expected) = resolve_scan_value_bytes(scan_value, parameters)? else {
+    let Some(expected) = resolve_scan_payload_bytes(scan_value, parameters)? else {
         return Ok(EdgeEqualityStreamFilter::NoMatches);
     };
     let Some(postings) = edge_equal::lookup_equal(property_id, &expected) else {

@@ -100,10 +100,8 @@ fn try_eval_gleaph_weight(
             let w = super::super::gleaph_weight::decode_traversal_edge_weight(
                 store,
                 edge.handle,
-                edge.value_len(),
-                edge.value_bytes_slice(),
-                edge.inline_value(),
-                Some(decoder),
+                edge.payload_len(),
+                edge.payload_bytes_slice(),
             )?;
             Ok(Some(Value::Float32(w)))
         }
@@ -655,8 +653,8 @@ fn edge_to_value(store: &GraphStore, binding: EdgeBinding) -> Result<Value, Plan
             Value::Uint64(u64::from(handle.slot_index)),
         ),
         (
-            "inline_value".to_owned(),
-            Value::Uint64(u64::from(binding.inline_value())),
+            "payload".to_owned(),
+            Value::Bytes(binding.payload_bytes_slice().to_vec()),
         ),
         (
             "label".to_owned(),

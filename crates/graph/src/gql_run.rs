@@ -872,13 +872,13 @@ mod tests {
             )
             .expect("profile");
         store
-            .insert_directed_edge_with_inline_value(a, b, Some(label_id), 1)
+            .insert_directed_edge_with_payload_bytes(a, b, Some(label_id), &1u16.to_le_bytes())
             .expect("a->b");
         store
-            .insert_directed_edge_with_inline_value(b, c, Some(label_id), 1)
+            .insert_directed_edge_with_payload_bytes(b, c, Some(label_id), &1u16.to_le_bytes())
             .expect("b->c");
         store
-            .insert_directed_edge_with_inline_value(a, c, Some(label_id), 100)
+            .insert_directed_edge_with_payload_bytes(a, c, Some(label_id), &100u16.to_le_bytes())
             .expect("a->c");
     }
 

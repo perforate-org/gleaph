@@ -85,7 +85,7 @@ pub use bucket_store::InitError as LabelBucketStoreInitError;
 pub use deferred::{DeferredError, DeferredLabeledLaraGraph, MaintenanceWorkItem};
 pub use graph::EdgeSlotMove;
 pub use graph::{
-    InitError as LabeledGraphInitError, LabeledEdgeValueBatch, LabeledEdgeValueBatchScratch,
+    InitError as LabeledGraphInitError, LabeledEdgePayloadBatch, LabeledEdgePayloadBatchScratch,
     LabeledLaraGraph, LabeledOperationError, LabeledOutEdgesIter, OutEdgeOrder,
 };
 pub use record::{

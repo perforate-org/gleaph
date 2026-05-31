@@ -106,7 +106,7 @@ pub(super) fn emit_node_inline_filters(var: &str, node: &NodePattern, ops: &mut 
 #[derive(Default, Clone)]
 pub(super) struct EdgeFilterFusion {
     pub(super) indexed_equality: Option<(Str, ScanValue)>,
-    pub(super) edge_value_predicate: Option<EdgeValuePredicate>,
+    pub(super) edge_payload_predicate: Option<EdgePayloadPredicate>,
     pub(super) edge_vector_predicate: Option<EdgeVectorPredicate>,
     pub(super) skip_inline_prop: Option<String>,
     /// `None`: emit full `edge.where_clause`. `Some(predicates)` emits only these (empty = omit).
@@ -117,11 +117,11 @@ pub(super) fn plan_edge_filter_fusion(
     edge_var: &str,
     edge: &EdgePattern,
     stats: Option<&dyn GraphStats>,
-    allow_edge_value_predicate: bool,
+    allow_edge_payload_predicate: bool,
     where_conjuncts: &mut Vec<Expr>,
 ) -> EdgeFilterFusion {
     let mut out = EdgeFilterFusion::default();
-    if allow_edge_value_predicate
+    if allow_edge_payload_predicate
         && let Some((idx, pred)) =
             find_first_edge_vector_predicate_in_conjunctions(where_conjuncts, edge_var)
     {
@@ -129,7 +129,7 @@ pub(super) fn plan_edge_filter_fusion(
         out.edge_vector_predicate = Some(pred);
         return out;
     }
-    if allow_edge_value_predicate && let Some(where_clause) = edge.where_clause.as_ref() {
+    if allow_edge_payload_predicate && let Some(where_clause) = edge.where_clause.as_ref() {
         let mut conj = flatten_conjunction(where_clause);
         if let Some((idx, pred)) = find_first_edge_vector_predicate_in_conjunctions(&conj, edge_var)
         {
@@ -140,20 +140,21 @@ pub(super) fn plan_edge_filter_fusion(
         }
     }
 
-    if allow_edge_value_predicate
+    if allow_edge_payload_predicate
         && let Some((idx, pred)) =
-            find_first_edge_value_predicate_in_conjunctions(where_conjuncts, edge_var)
+            find_first_edge_payload_predicate_in_conjunctions(where_conjuncts, edge_var)
     {
         where_conjuncts.remove(idx);
-        out.edge_value_predicate = Some(pred);
+        out.edge_payload_predicate = Some(pred);
         return out;
     }
-    if allow_edge_value_predicate && let Some(where_clause) = edge.where_clause.as_ref() {
+    if allow_edge_payload_predicate && let Some(where_clause) = edge.where_clause.as_ref() {
         let mut conj = flatten_conjunction(where_clause);
-        if let Some((idx, pred)) = find_first_edge_value_predicate_in_conjunctions(&conj, edge_var)
+        if let Some((idx, pred)) =
+            find_first_edge_payload_predicate_in_conjunctions(&conj, edge_var)
         {
             conj.remove(idx);
-            out.edge_value_predicate = Some(pred);
+            out.edge_payload_predicate = Some(pred);
             out.edge_where_override = Some(conj);
             return out;
         }
@@ -197,10 +198,10 @@ pub(super) fn plan_edge_filter_fusion(
     out
 }
 
-fn find_first_edge_value_predicate_in_conjunctions(
+fn find_first_edge_payload_predicate_in_conjunctions(
     conjuncts: &[Expr],
     edge_var: &str,
-) -> Option<(usize, EdgeValuePredicate)> {
+) -> Option<(usize, EdgePayloadPredicate)> {
     for (i, c) in conjuncts.iter().enumerate() {
         if let Some((v, pred)) = parse_gleaph_weight_predicate(c)
             && v == edge_var
@@ -270,18 +271,18 @@ fn vector_metric_accepts_cmp(metric: EdgeVectorMetric, op: CmpOp) -> bool {
     }
 }
 
-fn parse_gleaph_weight_predicate(expr: &Expr) -> Option<(String, EdgeValuePredicate)> {
+fn parse_gleaph_weight_predicate(expr: &Expr) -> Option<(String, EdgePayloadPredicate)> {
     let ExprKind::Compare { left, op, right } = &expr.kind else {
         return None;
     };
     if let Some(edge_var) = gleaph_weight_edge_var(left) {
         return anchor::scan_value_from_expr(right)
-            .map(|value| (edge_var, EdgeValuePredicate { op: *op, value }));
+            .map(|value| (edge_var, EdgePayloadPredicate { op: *op, value }));
     }
     if let Some(edge_var) = gleaph_weight_edge_var(right) {
         let flipped = flip_cmp_op(*op)?;
         return anchor::scan_value_from_expr(left)
-            .map(|value| (edge_var, EdgeValuePredicate { op: flipped, value }));
+            .map(|value| (edge_var, EdgePayloadPredicate { op: flipped, value }));
     }
     None
 }

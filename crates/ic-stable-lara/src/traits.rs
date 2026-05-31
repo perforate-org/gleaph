@@ -155,21 +155,21 @@ pub trait CsrEdge: Clone {
         self.neighbor_vid().is_edge_tombstone_sentinel()
     }
 
-    /// Physical byte width of the in-memory edge value (0 when absent).
+    /// Physical byte width of the in-memory edge payload (0 when absent).
     #[inline]
-    fn edge_value_byte_width(&self) -> u16 {
+    fn edge_payload_byte_width(&self) -> u16 {
         0
     }
 
-    /// In-memory edge value bytes; length must match [`Self::edge_value_byte_width`].
+    /// In-memory edge payload bytes; length must match [`Self::edge_payload_byte_width`].
     #[inline]
-    fn edge_value_bytes(&self) -> &[u8] {
+    fn edge_payload_bytes(&self) -> &[u8] {
         &[]
     }
 
-    /// Returns a copy with in-memory value bytes attached (wire row unchanged).
+    /// Returns a copy with in-memory payload bytes attached (wire row unchanged).
     #[inline]
-    fn with_stored_value_bytes(self, _width: u16, _bytes: &[u8]) -> Self {
+    fn with_stored_payload_bytes(self, _width: u16, _bytes: &[u8]) -> Self {
         self
     }
 

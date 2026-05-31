@@ -9,7 +9,7 @@ use crate::{
     },
     lara::{
         edge::{EdgeStore, counts::SegmentEdgeCounts, segment_tree_leaf_count},
-        edge_value::EdgeValueStore,
+        edge_payload::EdgePayloadStore,
         operation_error::LaraOperationError,
         vertex::VertexStore,
     },
@@ -40,17 +40,17 @@ where
             if candidate.edge_slot_index_raw() != needle.edge_slot_index_raw() {
                 return false;
             }
-            let width = needle.edge_value_byte_width();
+            let width = needle.edge_payload_byte_width();
             if width != 0 {
-                return candidate.edge_value_byte_width() == width
-                    && candidate.edge_value_bytes() == needle.edge_value_bytes();
+                return candidate.edge_payload_byte_width() == width
+                    && candidate.edge_payload_bytes() == needle.edge_payload_bytes();
             }
             return true;
         }
-        let width = needle.edge_value_byte_width();
+        let width = needle.edge_payload_byte_width();
         if width != 0 {
-            return candidate.edge_value_byte_width() == width
-                && candidate.edge_value_bytes() == needle.edge_value_bytes();
+            return candidate.edge_payload_byte_width() == width
+                && candidate.edge_payload_bytes() == needle.edge_payload_bytes();
         }
         candidate == needle
     }
@@ -65,10 +65,10 @@ where
         edge_span_meta: M,
         edge_free_spans: M,
         edge_free_span_by_start: M,
-        value_slab: M,
+        payload_slab: M,
         value_free_spans: M,
         value_free_span_by_start: M,
-        value_log: M,
+        payload_log: M,
         value_blobs: M,
         elem_capacity: u64,
         default_label: BucketLabelKey,
@@ -95,9 +95,9 @@ where
                 DEFAULT_SEGMENT_SIZE,
                 DEFAULT_SEGMENT_SIZE,
             )?,
-            values: EdgeValueStore::new(
-                value_slab,
-                value_log,
+            values: EdgePayloadStore::new(
+                payload_slab,
+                payload_log,
                 value_blobs,
                 value_free_spans,
                 value_free_span_by_start,
@@ -121,10 +121,10 @@ where
         edge_span_meta: M,
         edge_free_spans: M,
         edge_free_span_by_start: M,
-        value_slab: M,
+        payload_slab: M,
         value_free_spans: M,
         value_free_span_by_start: M,
-        value_log: M,
+        payload_log: M,
         value_blobs: M,
         elem_capacity: u64,
         default_label: BucketLabelKey,
@@ -153,16 +153,16 @@ where
             )
             .map_err(InitError::Buckets)?,
             edges,
-            values: EdgeValueStore::init(
-                value_slab,
-                value_log,
+            values: EdgePayloadStore::init(
+                payload_slab,
+                payload_log,
                 value_blobs,
                 value_free_spans,
                 value_free_span_by_start,
                 elem_capacity,
                 edge_segment_count,
             )
-            .map_err(InitError::Values)?,
+            .map_err(InitError::Payloads)?,
             default_label,
             last_bucket_lookup: Cell::new(None),
             bucket_lookup_cache: std::array::from_fn(|_| Cell::new(None)),
@@ -178,7 +178,7 @@ where
     pub fn edges(&self) -> &EdgeStore<E, M> {
         &self.edges
     }
-    pub fn values(&self) -> &EdgeValueStore<M> {
+    pub fn values(&self) -> &EdgePayloadStore<M> {
         &self.values
     }
     pub fn default_label(&self) -> BucketLabelKey {

@@ -73,7 +73,7 @@ fn large_feed_page_plan() -> PhysicalPlan {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
-            edge_value_predicate: None,
+            edge_payload_predicate: None,
             edge_vector_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
@@ -167,7 +167,7 @@ fn large_friends_of_friends_plan() -> PhysicalPlan {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
-            edge_value_predicate: None,
+            edge_payload_predicate: None,
             edge_vector_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
@@ -183,7 +183,7 @@ fn large_friends_of_friends_plan() -> PhysicalPlan {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
-            edge_value_predicate: None,
+            edge_payload_predicate: None,
             edge_vector_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
@@ -252,21 +252,21 @@ fn setup_large_road_grid_graph(store: &GraphStore) {
             let from = vertices[idx(x, y)];
             if x + 1 < ROAD_GRID_SIDE {
                 store
-                    .insert_directed_edge_with_inline_value(
+                    .insert_directed_edge_with_payload_bytes(
                         from,
                         vertices[idx(x + 1, y)],
                         Some(road),
-                        1,
+                        &1u16.to_le_bytes(),
                     )
                     .expect("east road");
             }
             if y + 1 < ROAD_GRID_SIDE {
                 store
-                    .insert_directed_edge_with_inline_value(
+                    .insert_directed_edge_with_payload_bytes(
                         from,
                         vertices[idx(x, y + 1)],
                         Some(road),
-                        1,
+                        &1u16.to_le_bytes(),
                     )
                     .expect("south road");
             }
@@ -370,7 +370,7 @@ fn large_expand_vector_bindings_bench(
     })
 }
 
-/// Fixed-label vector edge values over a medium fanout; L2 threshold selects 16 rows.
+/// Fixed-label vector edge payloads over a medium fanout; L2 threshold selects 16 rows.
 #[bench(raw)]
 fn bench_graph_large_expand_vector_l2_128scan_16match() -> canbench_rs::BenchResult {
     let query = vec![1.0; EXPAND_VECTOR_DIMS];
@@ -387,7 +387,7 @@ fn bench_graph_large_expand_vector_l2_128scan_16match() -> canbench_rs::BenchRes
     )
 }
 
-/// Fixed-label vector edge values over a medium fanout; DOT threshold selects 16 rows.
+/// Fixed-label vector edge payloads over a medium fanout; DOT threshold selects 16 rows.
 #[bench(raw)]
 fn bench_graph_large_expand_vector_dot_128scan_16match() -> canbench_rs::BenchResult {
     let query = vec![-1.0; EXPAND_VECTOR_DIMS];
@@ -405,7 +405,7 @@ fn bench_graph_large_expand_vector_dot_128scan_16match() -> canbench_rs::BenchRe
     )
 }
 
-/// Fixed-label vector edge values over a larger fanout; L2 threshold selects 64 rows.
+/// Fixed-label vector edge payloads over a larger fanout; L2 threshold selects 64 rows.
 #[bench(raw)]
 fn bench_graph_large_expand_vector_l2_512scan_64match() -> canbench_rs::BenchResult {
     let query = vec![1.0; EXPAND_VECTOR_DIMS];
@@ -422,7 +422,7 @@ fn bench_graph_large_expand_vector_l2_512scan_64match() -> canbench_rs::BenchRes
     )
 }
 
-/// Fixed-label vector edge values over a larger fanout; DOT threshold selects 64 rows.
+/// Fixed-label vector edge payloads over a larger fanout; DOT threshold selects 64 rows.
 #[bench(raw)]
 fn bench_graph_large_expand_vector_dot_512scan_64match() -> canbench_rs::BenchResult {
     let query = vec![-1.0; EXPAND_VECTOR_DIMS];
@@ -440,7 +440,7 @@ fn bench_graph_large_expand_vector_dot_512scan_64match() -> canbench_rs::BenchRe
     )
 }
 
-/// Fixed-label vector edge values over an xlarge logical scan; L2 threshold selects 512 rows.
+/// Fixed-label vector edge payloads over an xlarge logical scan; L2 threshold selects 512 rows.
 #[bench(raw)]
 fn bench_graph_large_expand_vector_l2_4096scan_512match() -> canbench_rs::BenchResult {
     let query = vec![1.0; EXPAND_VECTOR_DIMS];
@@ -457,7 +457,7 @@ fn bench_graph_large_expand_vector_l2_4096scan_512match() -> canbench_rs::BenchR
     )
 }
 
-/// Fixed-label vector edge values over an xlarge logical scan; DOT threshold selects 512 rows.
+/// Fixed-label vector edge payloads over an xlarge logical scan; DOT threshold selects 512 rows.
 #[bench(raw)]
 fn bench_graph_large_expand_vector_dot_4096scan_512match() -> canbench_rs::BenchResult {
     let query = vec![-1.0; EXPAND_VECTOR_DIMS];
@@ -475,7 +475,7 @@ fn bench_graph_large_expand_vector_dot_4096scan_512match() -> canbench_rs::Bench
     )
 }
 
-/// Fixed-label vector edge values over an xxlarge logical scan; L2 threshold selects 2,048 rows.
+/// Fixed-label vector edge payloads over an xxlarge logical scan; L2 threshold selects 2,048 rows.
 #[bench(raw)]
 fn bench_graph_large_expand_vector_l2_16384scan_2048match() -> canbench_rs::BenchResult {
     let query = vec![1.0; EXPAND_VECTOR_DIMS];
@@ -492,7 +492,7 @@ fn bench_graph_large_expand_vector_l2_16384scan_2048match() -> canbench_rs::Benc
     )
 }
 
-/// Fixed-label vector edge values over an xxlarge logical scan; DOT threshold selects 2,048 rows.
+/// Fixed-label vector edge payloads over an xxlarge logical scan; DOT threshold selects 2,048 rows.
 #[bench(raw)]
 fn bench_graph_large_expand_vector_dot_16384scan_2048match() -> canbench_rs::BenchResult {
     let query = vec![-1.0; EXPAND_VECTOR_DIMS];

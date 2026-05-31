@@ -275,7 +275,7 @@ pub(super) fn plan_path_term(
                             )
                         };
                         let indexed_edge_equality = edge_fusion.indexed_equality.clone();
-                        let edge_value_predicate = edge_fusion.edge_value_predicate.clone();
+                        let edge_payload_predicate = edge_fusion.edge_payload_predicate.clone();
                         let edge_vector_predicate = edge_fusion.edge_vector_predicate.clone();
 
                         if let Some(mode) = shortest_mode {
@@ -337,7 +337,7 @@ pub(super) fn plan_path_term(
                                 label_expr,
                                 var_len,
                                 indexed_edge_equality,
-                                edge_value_predicate,
+                                edge_payload_predicate,
                                 edge_vector_predicate,
                                 dst_filter: dst_filters,
                                 edge_property_projection: None,
@@ -361,7 +361,7 @@ pub(super) fn plan_path_term(
                                 label_expr,
                                 var_len,
                                 indexed_edge_equality,
-                                edge_value_predicate,
+                                edge_payload_predicate,
                                 edge_vector_predicate,
                                 edge_property_projection: None,
                                 dst_property_projection: None,

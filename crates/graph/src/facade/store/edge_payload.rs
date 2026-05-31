@@ -1,22 +1,22 @@
-//! Inline edge value updates (CSR value store).
+//! Inline edge payload updates (CSR value store).
 
 use super::GraphStore;
 use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
-use super::helpers::{catalog_edge_label_from_wire, validate_edge_value_bytes_for_label};
-use crate::facade::migration::incremental::journal_edge_value_changed;
+use super::helpers::{catalog_edge_label_from_wire, validate_edge_payload_bytes_for_label};
+use crate::facade::migration::incremental::journal_edge_payload_changed;
 use gleaph_graph_kernel::entry::EdgeTarget;
 use ic_stable_lara::traits::CsrEdge;
 
 impl GraphStore {
-    /// Updates the inline edge-value payload at `handle` and journals when the owner is migrating.
-    pub(crate) fn update_edge_value_at_handle(
+    /// Updates the inline edge-payload payload at `handle` and journals when the owner is migrating.
+    pub(crate) fn update_edge_payload_at_handle(
         &self,
         handle: EdgeHandle,
-        value_bytes: &[u8],
+        payload_bytes: &[u8],
     ) -> Result<(), GraphStoreError> {
         let catalog_label = catalog_edge_label_from_wire(handle.label_id);
-        validate_edge_value_bytes_for_label(self, catalog_label, value_bytes)?;
+        validate_edge_payload_bytes_for_label(self, catalog_label, payload_bytes)?;
 
         let reverse_canonical = self.canonical_reverse_in_edge_handle(handle);
         let forward = if reverse_canonical != handle {
@@ -32,11 +32,11 @@ impl GraphStore {
                 label_id: forward.label_id,
                 slot_index: forward.slot_index,
             })?;
-        let new_edge = edge.with_value_bytes(value_bytes);
+        let new_edge = edge.with_payload_bytes(payload_bytes);
 
         let mut updated = self
             .with_graph_mut(|graph| {
-                graph.update_forward_edge_value_at_slot(
+                graph.update_forward_edge_payload_at_slot(
                     forward.owner_vertex_id,
                     forward.label_id,
                     forward.slot_index,
@@ -55,7 +55,7 @@ impl GraphStore {
                 {
                     updated |= self
                         .with_graph_mut(|graph| {
-                            graph.update_reverse_edge_value_at_slot(
+                            graph.update_reverse_edge_payload_at_slot(
                                 reverse.owner_vertex_id,
                                 reverse.label_id,
                                 reverse.slot_index,
@@ -74,7 +74,7 @@ impl GraphStore {
             {
                 updated |= self
                     .with_graph_mut(|graph| {
-                        graph.update_forward_edge_value_at_slot(
+                        graph.update_forward_edge_payload_at_slot(
                             alias.owner_vertex_id,
                             alias.label_id,
                             alias.slot_index,
@@ -87,7 +87,7 @@ impl GraphStore {
             let reverse = self.canonical_reverse_in_edge_handle(handle);
             updated = self
                 .with_graph_mut(|graph| {
-                    graph.update_reverse_edge_value_at_slot(
+                    graph.update_reverse_edge_payload_at_slot(
                         reverse.owner_vertex_id,
                         reverse.label_id,
                         reverse.slot_index,
@@ -104,7 +104,7 @@ impl GraphStore {
             });
         }
 
-        journal_edge_value_changed(self, handle, value_bytes)?;
+        journal_edge_payload_changed(self, handle, payload_bytes)?;
         Ok(())
     }
 }

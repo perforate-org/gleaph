@@ -96,7 +96,7 @@ pub enum MaintenanceWorkItem {
         orientation: Orientation,
         vid: VertexId,
     },
-    /// Compact edge and value spans together (preferred when values are present).
+    /// Compact edge and payload spans together (preferred when values are present).
     CompactVertexEdgeAndValueSpan {
         orientation: Orientation,
         vid: VertexId,
@@ -449,10 +449,10 @@ where
     if candidate.neighbor_vid() != neighbor {
         return false;
     }
-    let width = expected.edge_value_byte_width();
+    let width = expected.edge_payload_byte_width();
     if width != 0 {
-        return candidate.edge_value_byte_width() == width
-            && candidate.edge_value_bytes() == expected.edge_value_bytes();
+        return candidate.edge_payload_byte_width() == width
+            && candidate.edge_payload_bytes() == expected.edge_payload_bytes();
     }
     candidate.edge_slot_index_raw() == expected.edge_slot_index_raw()
 }
@@ -475,11 +475,11 @@ where
         forward_edge_span_meta: M,
         forward_edge_free_spans: M,
         forward_edge_free_span_by_start: M,
-        forward_value_slab: M,
-        forward_value_free_spans: M,
-        forward_value_free_span_by_start: M,
-        forward_value_log: M,
-        forward_value_blobs: M,
+        forward_payload_slab: M,
+        forward_payload_free_spans: M,
+        forward_payload_free_span_by_start: M,
+        forward_payload_log: M,
+        forward_payload_blobs: M,
         reverse_vertices: M,
         reverse_buckets: M,
         reverse_bucket_free_spans: M,
@@ -490,11 +490,11 @@ where
         reverse_edge_span_meta: M,
         reverse_edge_free_spans: M,
         reverse_edge_free_span_by_start: M,
-        reverse_value_slab: M,
-        reverse_value_free_spans: M,
-        reverse_value_free_span_by_start: M,
-        reverse_value_log: M,
-        reverse_value_blobs: M,
+        reverse_payload_slab: M,
+        reverse_payload_free_spans: M,
+        reverse_payload_free_span_by_start: M,
+        reverse_payload_log: M,
+        reverse_payload_blobs: M,
         maintenance_queue: M,
         dirty_work_items: M,
         elem_capacity: u64,
@@ -511,11 +511,11 @@ where
             forward_edge_span_meta,
             forward_edge_free_spans,
             forward_edge_free_span_by_start,
-            forward_value_slab,
-            forward_value_free_spans,
-            forward_value_free_span_by_start,
-            forward_value_log,
-            forward_value_blobs,
+            forward_payload_slab,
+            forward_payload_free_spans,
+            forward_payload_free_span_by_start,
+            forward_payload_log,
+            forward_payload_blobs,
             reverse_vertices,
             reverse_buckets,
             reverse_bucket_free_spans,
@@ -526,11 +526,11 @@ where
             reverse_edge_span_meta,
             reverse_edge_free_spans,
             reverse_edge_free_span_by_start,
-            reverse_value_slab,
-            reverse_value_free_spans,
-            reverse_value_free_span_by_start,
-            reverse_value_log,
-            reverse_value_blobs,
+            reverse_payload_slab,
+            reverse_payload_free_spans,
+            reverse_payload_free_span_by_start,
+            reverse_payload_log,
+            reverse_payload_blobs,
             maintenance_queue,
             dirty_work_items,
             elem_capacity,
@@ -552,11 +552,11 @@ where
         forward_edge_span_meta: M,
         forward_edge_free_spans: M,
         forward_edge_free_span_by_start: M,
-        forward_value_slab: M,
-        forward_value_free_spans: M,
-        forward_value_free_span_by_start: M,
-        forward_value_log: M,
-        forward_value_blobs: M,
+        forward_payload_slab: M,
+        forward_payload_free_spans: M,
+        forward_payload_free_span_by_start: M,
+        forward_payload_log: M,
+        forward_payload_blobs: M,
         reverse_vertices: M,
         reverse_buckets: M,
         reverse_bucket_free_spans: M,
@@ -567,11 +567,11 @@ where
         reverse_edge_span_meta: M,
         reverse_edge_free_spans: M,
         reverse_edge_free_span_by_start: M,
-        reverse_value_slab: M,
-        reverse_value_free_spans: M,
-        reverse_value_free_span_by_start: M,
-        reverse_value_log: M,
-        reverse_value_blobs: M,
+        reverse_payload_slab: M,
+        reverse_payload_free_spans: M,
+        reverse_payload_free_span_by_start: M,
+        reverse_payload_log: M,
+        reverse_payload_blobs: M,
         maintenance_queue: M,
         dirty_work_items: M,
         elem_capacity: u64,
@@ -592,11 +592,11 @@ where
             forward_edge_span_meta,
             forward_edge_free_spans,
             forward_edge_free_span_by_start,
-            forward_value_slab,
-            forward_value_free_spans,
-            forward_value_free_span_by_start,
-            forward_value_log,
-            forward_value_blobs,
+            forward_payload_slab,
+            forward_payload_free_spans,
+            forward_payload_free_span_by_start,
+            forward_payload_log,
+            forward_payload_blobs,
             elem_capacity,
             default_label,
         )?;
@@ -611,11 +611,11 @@ where
             reverse_edge_span_meta,
             reverse_edge_free_spans,
             reverse_edge_free_span_by_start,
-            reverse_value_slab,
-            reverse_value_free_spans,
-            reverse_value_free_span_by_start,
-            reverse_value_log,
-            reverse_value_blobs,
+            reverse_payload_slab,
+            reverse_payload_free_spans,
+            reverse_payload_free_span_by_start,
+            reverse_payload_log,
+            reverse_payload_blobs,
             elem_capacity,
             default_label,
         )?;
@@ -641,11 +641,11 @@ where
         forward_edge_span_meta: M,
         forward_edge_free_spans: M,
         forward_edge_free_span_by_start: M,
-        forward_value_slab: M,
-        forward_value_free_spans: M,
-        forward_value_free_span_by_start: M,
-        forward_value_log: M,
-        forward_value_blobs: M,
+        forward_payload_slab: M,
+        forward_payload_free_spans: M,
+        forward_payload_free_span_by_start: M,
+        forward_payload_log: M,
+        forward_payload_blobs: M,
         reverse_vertices: M,
         reverse_buckets: M,
         reverse_bucket_free_spans: M,
@@ -656,11 +656,11 @@ where
         reverse_edge_span_meta: M,
         reverse_edge_free_spans: M,
         reverse_edge_free_span_by_start: M,
-        reverse_value_slab: M,
-        reverse_value_free_spans: M,
-        reverse_value_free_span_by_start: M,
-        reverse_value_log: M,
-        reverse_value_blobs: M,
+        reverse_payload_slab: M,
+        reverse_payload_free_spans: M,
+        reverse_payload_free_span_by_start: M,
+        reverse_payload_log: M,
+        reverse_payload_blobs: M,
         maintenance_queue: M,
         dirty_work_items: M,
         elem_capacity: u64,
@@ -677,11 +677,11 @@ where
             forward_edge_span_meta,
             forward_edge_free_spans,
             forward_edge_free_span_by_start,
-            forward_value_slab,
-            forward_value_free_spans,
-            forward_value_free_span_by_start,
-            forward_value_log,
-            forward_value_blobs,
+            forward_payload_slab,
+            forward_payload_free_spans,
+            forward_payload_free_span_by_start,
+            forward_payload_log,
+            forward_payload_blobs,
             reverse_vertices,
             reverse_buckets,
             reverse_bucket_free_spans,
@@ -692,11 +692,11 @@ where
             reverse_edge_span_meta,
             reverse_edge_free_spans,
             reverse_edge_free_span_by_start,
-            reverse_value_slab,
-            reverse_value_free_spans,
-            reverse_value_free_span_by_start,
-            reverse_value_log,
-            reverse_value_blobs,
+            reverse_payload_slab,
+            reverse_payload_free_spans,
+            reverse_payload_free_span_by_start,
+            reverse_payload_log,
+            reverse_payload_blobs,
             maintenance_queue,
             dirty_work_items,
             elem_capacity,
@@ -718,11 +718,11 @@ where
         forward_edge_span_meta: M,
         forward_edge_free_spans: M,
         forward_edge_free_span_by_start: M,
-        forward_value_slab: M,
-        forward_value_free_spans: M,
-        forward_value_free_span_by_start: M,
-        forward_value_log: M,
-        forward_value_blobs: M,
+        forward_payload_slab: M,
+        forward_payload_free_spans: M,
+        forward_payload_free_span_by_start: M,
+        forward_payload_log: M,
+        forward_payload_blobs: M,
         reverse_vertices: M,
         reverse_buckets: M,
         reverse_bucket_free_spans: M,
@@ -733,11 +733,11 @@ where
         reverse_edge_span_meta: M,
         reverse_edge_free_spans: M,
         reverse_edge_free_span_by_start: M,
-        reverse_value_slab: M,
-        reverse_value_free_spans: M,
-        reverse_value_free_span_by_start: M,
-        reverse_value_log: M,
-        reverse_value_blobs: M,
+        reverse_payload_slab: M,
+        reverse_payload_free_spans: M,
+        reverse_payload_free_span_by_start: M,
+        reverse_payload_log: M,
+        reverse_payload_blobs: M,
         maintenance_queue: M,
         dirty_work_items: M,
         elem_capacity: u64,
@@ -758,11 +758,11 @@ where
             forward_edge_span_meta,
             forward_edge_free_spans,
             forward_edge_free_span_by_start,
-            forward_value_slab,
-            forward_value_free_spans,
-            forward_value_free_span_by_start,
-            forward_value_log,
-            forward_value_blobs,
+            forward_payload_slab,
+            forward_payload_free_spans,
+            forward_payload_free_span_by_start,
+            forward_payload_log,
+            forward_payload_blobs,
             elem_capacity,
             default_label,
         )
@@ -778,11 +778,11 @@ where
             reverse_edge_span_meta,
             reverse_edge_free_spans,
             reverse_edge_free_span_by_start,
-            reverse_value_slab,
-            reverse_value_free_spans,
-            reverse_value_free_span_by_start,
-            reverse_value_log,
-            reverse_value_blobs,
+            reverse_payload_slab,
+            reverse_payload_free_spans,
+            reverse_payload_free_span_by_start,
+            reverse_payload_log,
+            reverse_payload_blobs,
             elem_capacity,
             default_label,
         )
@@ -891,19 +891,19 @@ where
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
-    /// Ensures forward/reverse label buckets declare `value_byte_width` for a directed insert.
-    pub fn ensure_directed_edge_value_width(
+    /// Ensures forward/reverse label buckets declare `payload_byte_width` for a directed insert.
+    pub fn ensure_directed_edge_payload_width(
         &self,
         src: VertexId,
         dst: VertexId,
         label_id: BucketLabelKey,
-        value_byte_width: u16,
+        payload_byte_width: u16,
     ) -> Result<(), DeferredBidirectionalLabeledError> {
         self.forward
-            .ensure_label_bucket_value_byte_width(src, label_id, value_byte_width)
+            .ensure_label_bucket_payload_byte_width(src, label_id, payload_byte_width)
             .map_err(DeferredBidirectionalLabeledError::Forward)?;
         self.reverse
-            .ensure_label_bucket_value_byte_width(dst, label_id, value_byte_width)
+            .ensure_label_bucket_payload_byte_width(dst, label_id, payload_byte_width)
             .map_err(DeferredBidirectionalLabeledError::Reverse)?;
         Ok(())
     }
@@ -964,37 +964,37 @@ where
     }
 
     /// Visits forward outgoing edges and parallel value bytes for one label in `order`.
-    pub fn visit_out_edge_value_batches_for_label<Visit>(
+    pub fn visit_out_edge_payload_batches_for_label<Visit>(
         &self,
         src: VertexId,
         label_id: BucketLabelKey,
         order: OutEdgeOrder,
-        scratch: &mut crate::labeled::LabeledEdgeValueBatchScratch<E>,
+        scratch: &mut crate::labeled::LabeledEdgePayloadBatchScratch<E>,
         visit: Visit,
     ) -> Result<(), DeferredBidirectionalLabeledError>
     where
-        Visit: for<'b> FnMut(crate::labeled::LabeledEdgeValueBatch<'b, E>),
+        Visit: for<'b> FnMut(crate::labeled::LabeledEdgePayloadBatch<'b, E>),
     {
         self.forward
-            .visit_out_edge_value_batches_for_label(src, label_id, order, scratch, visit)
+            .visit_out_edge_payload_batches_for_label(src, label_id, order, scratch, visit)
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
     /// Visits reverse outgoing edges (incoming edges in the public graph view) and parallel value
     /// bytes for one label in `order`.
-    pub fn visit_in_edge_value_batches_for_label<Visit>(
+    pub fn visit_in_edge_payload_batches_for_label<Visit>(
         &self,
         dst: VertexId,
         label_id: BucketLabelKey,
         order: OutEdgeOrder,
-        scratch: &mut crate::labeled::LabeledEdgeValueBatchScratch<E>,
+        scratch: &mut crate::labeled::LabeledEdgePayloadBatchScratch<E>,
         visit: Visit,
     ) -> Result<(), DeferredBidirectionalLabeledError>
     where
-        Visit: for<'b> FnMut(crate::labeled::LabeledEdgeValueBatch<'b, E>),
+        Visit: for<'b> FnMut(crate::labeled::LabeledEdgePayloadBatch<'b, E>),
     {
         self.reverse
-            .visit_out_edge_value_batches_for_label(dst, label_id, order, scratch, visit)
+            .visit_out_edge_payload_batches_for_label(dst, label_id, order, scratch, visit)
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
 
@@ -1295,8 +1295,8 @@ where
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
-    /// Updates the edge-value payload for one forward-out edge at `slot_index`.
-    pub fn update_forward_edge_value_at_slot(
+    /// Updates the edge-payload payload for one forward-out edge at `slot_index`.
+    pub fn update_forward_edge_payload_at_slot(
         &self,
         src: VertexId,
         label_id: BucketLabelKey,
@@ -1307,12 +1307,12 @@ where
         E: CsrEdgeTombstone,
     {
         self.forward
-            .update_edge_value_at_slot(src, label_id, slot_index, edge)
+            .update_edge_payload_at_slot(src, label_id, slot_index, edge)
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
-    /// Updates the edge-value payload for one reverse-store out edge at `slot_index`.
-    pub fn update_reverse_edge_value_at_slot(
+    /// Updates the edge-payload payload for one reverse-store out edge at `slot_index`.
+    pub fn update_reverse_edge_payload_at_slot(
         &self,
         dst: VertexId,
         label_id: BucketLabelKey,
@@ -1323,7 +1323,7 @@ where
         E: CsrEdgeTombstone,
     {
         self.reverse
-            .update_edge_value_at_slot(dst, label_id, slot_index, edge)
+            .update_edge_payload_at_slot(dst, label_id, slot_index, edge)
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
 
@@ -2269,27 +2269,28 @@ mod tests {
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    struct ValuedTestEdge {
+    struct PayloadTestEdge {
         target: u32,
         slot_index: u32,
         value: [u8; 8],
-        value_len: u16,
+        payload_len: u16,
     }
 
-    impl ValuedTestEdge {
-        fn with_u16(target: u32, inline: u16) -> Self {
+    impl PayloadTestEdge {
+        fn with_bytes(target: u32, bytes: &[u8]) -> Self {
             let mut value = [0u8; 8];
-            value[0..2].copy_from_slice(&inline.to_le_bytes());
+            let len = bytes.len().min(8);
+            value[..len].copy_from_slice(&bytes[..len]);
             Self {
                 target,
                 slot_index: 0,
                 value,
-                value_len: 2,
+                payload_len: u16::try_from(len).expect("test payload fits u16 width"),
             }
         }
     }
 
-    impl CsrEdge for ValuedTestEdge {
+    impl CsrEdge for PayloadTestEdge {
         const BYTES: usize = 4;
 
         fn read_from(bytes: &[u8]) -> Self {
@@ -2297,7 +2298,7 @@ mod tests {
                 target: u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
                 slot_index: 0,
                 value: [0u8; 8],
-                value_len: 0,
+                payload_len: 0,
             }
         }
 
@@ -2320,19 +2321,19 @@ mod tests {
             Self { slot_index, ..self }
         }
 
-        fn edge_value_byte_width(&self) -> u16 {
-            self.value_len
+        fn edge_payload_byte_width(&self) -> u16 {
+            self.payload_len
         }
 
-        fn edge_value_bytes(&self) -> &[u8] {
-            &self.value[..usize::from(self.value_len)]
+        fn edge_payload_bytes(&self) -> &[u8] {
+            &self.value[..usize::from(self.payload_len)]
         }
 
-        fn with_stored_value_bytes(mut self, width: u16, bytes: &[u8]) -> Self {
+        fn with_stored_payload_bytes(mut self, width: u16, bytes: &[u8]) -> Self {
             self.value = [0u8; 8];
             let len = usize::from(width).min(bytes.len()).min(8);
             self.value[..len].copy_from_slice(&bytes[..len]);
-            self.value_len = width;
+            self.payload_len = width;
             self
         }
 
@@ -2341,19 +2342,19 @@ mod tests {
         }
     }
 
-    impl CsrEdgeTombstone for ValuedTestEdge {
+    impl CsrEdgeTombstone for PayloadTestEdge {
         fn tombstone_edge() -> Self {
             Self {
                 target: u32::from(VertexId::EDGE_TOMBSTONE_SENTINEL),
                 slot_index: 0,
                 value: [0u8; 8],
-                value_len: 0,
+                payload_len: 0,
             }
         }
     }
 
     fn valued_bidirectional_graph()
-    -> DeferredBidirectionalLabeledLaraGraph<ValuedTestEdge, VectorMemory> {
+    -> DeferredBidirectionalLabeledLaraGraph<PayloadTestEdge, VectorMemory> {
         let (
             fv,
             fb,
@@ -2428,19 +2429,19 @@ mod tests {
     }
 
     #[test]
-    fn bidirectional_parallel_edge_values_survive_diamond_insert() {
+    fn bidirectional_parallel_edge_payloads_survive_diamond_insert() {
         let graph = valued_bidirectional_graph();
         for _ in 0..4 {
             graph.push_vertex().unwrap();
         }
         let road = BucketLabelKey::directed_from_index(2);
-        let rev = |src: u32| ValuedTestEdge::with_u16(src, 0);
+        let rev = |src: u32| PayloadTestEdge::with_bytes(src, &0u16.to_le_bytes());
         graph
             .insert_directed_edge(
                 VertexId::from(0),
                 VertexId::from(2),
                 road,
-                ValuedTestEdge::with_u16(2, 10),
+                PayloadTestEdge::with_bytes(2, &10u16.to_le_bytes()),
                 rev(0),
             )
             .unwrap();
@@ -2449,7 +2450,7 @@ mod tests {
                 VertexId::from(0),
                 VertexId::from(1),
                 road,
-                ValuedTestEdge::with_u16(1, 5),
+                PayloadTestEdge::with_bytes(1, &5u16.to_le_bytes()),
                 rev(0),
             )
             .unwrap();
@@ -2458,15 +2459,15 @@ mod tests {
                 VertexId::from(1),
                 VertexId::from(2),
                 road,
-                ValuedTestEdge::with_u16(2, 1),
+                PayloadTestEdge::with_bytes(2, &1u16.to_le_bytes()),
                 rev(1),
             )
             .unwrap();
         let mut weights = Vec::new();
         graph
             .for_each_out_edges_for_label_unchecked(VertexId::from(0), road, |edge| {
-                if edge.value_len == 2 {
-                    let b = edge.edge_value_bytes();
+                if edge.payload_len == 2 {
+                    let b = edge.edge_payload_bytes();
                     weights.push(u16::from_le_bytes([b[0], b[1]]));
                 }
             })
@@ -2476,22 +2477,22 @@ mod tests {
     }
 
     #[test]
-    fn remove_directed_deferred_uses_edge_value_to_select_parallel_edge() {
+    fn remove_directed_deferred_uses_edge_payload_to_select_parallel_edge() {
         let graph = valued_bidirectional_graph();
         for _ in 0..2 {
             graph.push_vertex().unwrap();
         }
         let road = BucketLabelKey::directed_from_index(2);
         graph
-            .ensure_directed_edge_value_width(VertexId::from(0), VertexId::from(1), road, 2u16)
+            .ensure_directed_edge_payload_width(VertexId::from(0), VertexId::from(1), road, 2u16)
             .unwrap();
-        let rev = |src: u32| ValuedTestEdge::with_u16(src, 0);
+        let rev = |src: u32| PayloadTestEdge::with_bytes(src, &0u16.to_le_bytes());
         graph
             .insert_directed_edge(
                 VertexId::from(0),
                 VertexId::from(1),
                 road,
-                ValuedTestEdge::with_u16(1, 10),
+                PayloadTestEdge::with_bytes(1, &10u16.to_le_bytes()),
                 rev(0),
             )
             .unwrap();
@@ -2500,7 +2501,7 @@ mod tests {
                 VertexId::from(0),
                 VertexId::from(1),
                 road,
-                ValuedTestEdge::with_u16(1, 20),
+                PayloadTestEdge::with_bytes(1, &20u16.to_le_bytes()),
                 rev(0),
             )
             .unwrap();
@@ -2510,7 +2511,7 @@ mod tests {
                 .remove_directed_deferred(
                     VertexId::from(0),
                     VertexId::from(1),
-                    ValuedTestEdge::with_u16(1, 20),
+                    PayloadTestEdge::with_bytes(1, &20u16.to_le_bytes()),
                 )
                 .unwrap()
         );
@@ -2518,8 +2519,8 @@ mod tests {
         let mut weights = Vec::new();
         graph
             .for_each_out_edges_for_label_unchecked(VertexId::from(0), road, |edge| {
-                if edge.value_len == 2 {
-                    let b = edge.edge_value_bytes();
+                if edge.payload_len == 2 {
+                    let b = edge.edge_payload_bytes();
                     weights.push(u16::from_le_bytes([b[0], b[1]]));
                 }
             })
@@ -2535,7 +2536,7 @@ mod tests {
     }
 
     #[test]
-    fn remove_undirected_deferred_uses_edge_value_to_select_parallel_edge() {
+    fn remove_undirected_deferred_uses_edge_payload_to_select_parallel_edge() {
         let graph = valued_bidirectional_graph();
         for _ in 0..2 {
             graph.push_vertex().unwrap();
@@ -2543,19 +2544,19 @@ mod tests {
         let road = BucketLabelKey::undirected_from_index(2);
         graph
             .forward()
-            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 2u16)
+            .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
         graph
             .forward()
-            .ensure_label_bucket_value_byte_width(VertexId::from(1), road, 2u16)
+            .ensure_label_bucket_payload_byte_width(VertexId::from(1), road, 2u16)
             .unwrap();
         graph
             .insert_undirected_deferred(
                 VertexId::from(0),
                 VertexId::from(1),
                 road,
-                ValuedTestEdge::with_u16(1, 10),
-                ValuedTestEdge::with_u16(0, 10),
+                PayloadTestEdge::with_bytes(1, &10u16.to_le_bytes()),
+                PayloadTestEdge::with_bytes(0, &10u16.to_le_bytes()),
             )
             .unwrap();
         graph
@@ -2563,8 +2564,8 @@ mod tests {
                 VertexId::from(0),
                 VertexId::from(1),
                 road,
-                ValuedTestEdge::with_u16(1, 20),
-                ValuedTestEdge::with_u16(0, 20),
+                PayloadTestEdge::with_bytes(1, &20u16.to_le_bytes()),
+                PayloadTestEdge::with_bytes(0, &20u16.to_le_bytes()),
             )
             .unwrap();
 
@@ -2573,7 +2574,7 @@ mod tests {
                 .remove_undirected_deferred(
                     VertexId::from(0),
                     VertexId::from(1),
-                    ValuedTestEdge::with_u16(1, 20),
+                    PayloadTestEdge::with_bytes(1, &20u16.to_le_bytes()),
                 )
                 .unwrap()
         );
@@ -2582,8 +2583,8 @@ mod tests {
             let mut weights = Vec::new();
             graph
                 .for_each_undirected_edges(vertex, OutEdgeOrder::Ascending, |edge| {
-                    if edge.value_len == 2 {
-                        let b = edge.edge_value_bytes();
+                    if edge.payload_len == 2 {
+                        let b = edge.edge_payload_bytes();
                         weights.push(u16::from_le_bytes([b[0], b[1]]));
                     }
                 })

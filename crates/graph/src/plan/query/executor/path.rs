@@ -248,7 +248,7 @@ impl ShortestFixedLabelExpand {
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _scope = bench_scope("shortest_fixed_expand_forward");
                 let mut expand_err = None;
-                store.for_each_directed_out_edges_for_label_with_values(
+                store.for_each_directed_out_edges_for_label_with_payloads(
                     current,
                     label,
                     OutEdgeOrder::Descending,
@@ -279,7 +279,7 @@ impl ShortestFixedLabelExpand {
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _scope = bench_scope("shortest_fixed_expand_reverse");
                 let mut expand_err = None;
-                store.for_each_directed_in_edges_for_label_with_values(
+                store.for_each_directed_in_edges_for_label_with_payloads(
                     current,
                     label,
                     OutEdgeOrder::Descending,

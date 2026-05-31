@@ -17,7 +17,7 @@ use crate::{
         bucket_store::LabelBucketStore,
         record::{LabelBucket, LabeledVertex},
     },
-    lara::{edge::EdgeStore, edge_value::EdgeValueStore, vertex::VertexStore},
+    lara::{edge::EdgeStore, edge_payload::EdgePayloadStore, vertex::VertexStore},
     traits::CsrEdge,
 };
 #[cfg(feature = "canbench")]
@@ -62,7 +62,7 @@ mod values;
 pub use error::{InitError, LabeledOperationError, OutEdgeOrder};
 pub use iter::LabeledOutEdgesIter;
 pub use iter::LabeledSpanIter;
-pub use iter::{LabeledEdgeValueBatch, LabeledEdgeValueBatchScratch};
+pub use iter::{LabeledEdgePayloadBatch, LabeledEdgePayloadBatchScratch};
 
 /// Single-orientation multi-level labeled CSR graph.
 pub struct LabeledLaraGraph<E, M>
@@ -73,7 +73,7 @@ where
     vertices: VertexStore<LabeledVertex, M>,
     buckets: LabelBucketStore<M>,
     edges: EdgeStore<E, M>,
-    values: EdgeValueStore<M>,
+    values: EdgePayloadStore<M>,
     default_label: BucketLabelKey,
     last_bucket_lookup: Cell<Option<BucketLookupCache>>,
     bucket_lookup_cache: [Cell<Option<BucketLookupCache>>; BUCKET_LOOKUP_CACHE_ENTRIES],

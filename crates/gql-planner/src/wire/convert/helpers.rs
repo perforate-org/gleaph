@@ -4,14 +4,14 @@ use gleaph_gql::Value;
 use gleaph_gql::ast::CmpOp;
 
 use crate::plan::{
-    ConditionalScanCandidate, EdgeValuePredicate, EdgeVectorMetric, EdgeVectorPredicate,
+    ConditionalScanCandidate, EdgePayloadPredicate, EdgeVectorMetric, EdgeVectorPredicate,
     IndexScanSpec, RemovePlanItem, ScanValue, ShortestMode, Str, VarLenSpec, YieldColumn,
 };
 
 use rkyv::rancor;
 
 use super::types::{
-    ConditionalScanCandidateWire, EdgeValuePredicateWire, EdgeVectorPredicateWire,
+    ConditionalScanCandidateWire, EdgePayloadPredicateWire, EdgeVectorPredicateWire,
     IndexScanSpecWire, RemovePlanItemWire, ScanValueWire, ShortestModeWire, VarLenSpecWire,
     YieldColumnWire,
 };
@@ -65,12 +65,12 @@ pub(super) fn decode_scan_value(v: &ScanValueWire) -> Result<ScanValue, String> 
     })
 }
 
-pub(super) fn encode_edge_value_predicate(
-    v: &Option<EdgeValuePredicate>,
-) -> Result<Option<EdgeValuePredicateWire>, String> {
+pub(super) fn encode_edge_payload_predicate(
+    v: &Option<EdgePayloadPredicate>,
+) -> Result<Option<EdgePayloadPredicateWire>, String> {
     v.as_ref()
         .map(|pred| {
-            Ok(EdgeValuePredicateWire {
+            Ok(EdgePayloadPredicateWire {
                 op: cmp_op_to_wire(pred.op),
                 value: encode_scan_value(&pred.value)?,
             })
@@ -78,12 +78,12 @@ pub(super) fn encode_edge_value_predicate(
         .transpose()
 }
 
-pub(super) fn decode_edge_value_predicate(
-    v: &Option<EdgeValuePredicateWire>,
-) -> Result<Option<EdgeValuePredicate>, String> {
+pub(super) fn decode_edge_payload_predicate(
+    v: &Option<EdgePayloadPredicateWire>,
+) -> Result<Option<EdgePayloadPredicate>, String> {
     v.as_ref()
         .map(|pred| {
-            Ok(EdgeValuePredicate {
+            Ok(EdgePayloadPredicate {
                 op: cmp_op_from_wire(pred.op)?,
                 value: decode_scan_value(&pred.value)?,
             })
@@ -157,7 +157,7 @@ pub(super) fn cmp_op_from_wire(op: u8) -> Result<CmpOp, String> {
         3 => Ok(CmpOp::Le),
         4 => Ok(CmpOp::Gt),
         5 => Ok(CmpOp::Ge),
-        _ => Err(format!("invalid edge value predicate comparison op {op}")),
+        _ => Err(format!("invalid edge payload predicate comparison op {op}")),
     }
 }
 

@@ -14,45 +14,45 @@ use std::{iter::FusedIterator, num::NonZero};
 
 use super::{LabeledLaraGraph, OutEdgeOrder};
 
-/// Reusable buffers for labeled edge-value batch traversal.
+/// Reusable buffers for labeled edge-payload batch traversal.
 #[derive(Clone, Debug)]
-pub struct LabeledEdgeValueBatchScratch<E> {
+pub struct LabeledEdgePayloadBatchScratch<E> {
     /// Edge rows in the same order as the parallel value byte chunks.
     pub edges: Vec<E>,
     /// Flattened value bytes: `edges.len() * batch.byte_width.byte_width()` bytes.
-    pub value_bytes: Vec<u8>,
+    pub payload_bytes: Vec<u8>,
 }
 
-impl<E> Default for LabeledEdgeValueBatchScratch<E> {
+impl<E> Default for LabeledEdgePayloadBatchScratch<E> {
     fn default() -> Self {
         Self {
             edges: Vec::new(),
-            value_bytes: Vec::new(),
+            payload_bytes: Vec::new(),
         }
     }
 }
 
-impl<E> LabeledEdgeValueBatchScratch<E> {
+impl<E> LabeledEdgePayloadBatchScratch<E> {
     /// Clears both reusable buffers while preserving allocation capacity.
     pub fn clear(&mut self) {
         self.edges.clear();
-        self.value_bytes.clear();
+        self.payload_bytes.clear();
     }
 }
 
 /// One batch of edges and their parallel value bytes for a single label bucket.
-pub struct LabeledEdgeValueBatch<'a, E> {
+pub struct LabeledEdgePayloadBatch<'a, E> {
     /// Label bucket visited by this batch.
     pub label_id: BucketLabelKey,
-    /// Physical byte width of each edge value in this batch.
+    /// Physical byte width of each edge payload in this batch.
     pub byte_width: u16,
-    /// Scan order used for both `edges` and `value_bytes`.
+    /// Scan order used for both `edges` and `payload_bytes`.
     pub order: OutEdgeOrder,
     /// Edge rows in scan order.
     pub edges: &'a [E],
-    /// Flattened edge-value bytes in the same order as `edges`.
-    pub value_bytes: &'a [u8],
-    /// `true` when the batch was read from contiguous resident edge/value slab spans.
+    /// Flattened edge-payload bytes in the same order as `edges`.
+    pub payload_bytes: &'a [u8],
+    /// `true` when the batch was read from contiguous resident edge/payload slab spans.
     pub dense: bool,
 }
 
@@ -304,7 +304,7 @@ where
                 iter,
             } => iter.next().map(|edge| {
                 let slot = edge.edge_slot_index_raw();
-                graph.attach_edge_value(
+                graph.attach_edge_payload(
                     *src,
                     vertex,
                     *bucket_index,
@@ -325,7 +325,7 @@ where
                 iter,
             } => iter.next().map(|edge| {
                 let slot = edge.edge_slot_index_raw();
-                graph.attach_edge_value(
+                graph.attach_edge_payload(
                     *src,
                     vertex,
                     *bucket_index,

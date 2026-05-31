@@ -12,12 +12,12 @@ use ic_stable_structures::Memory;
 
 /// Resident value bytes charged to a bucket's slab span (`stored_slots × width`, or `degree` when larger).
 #[inline]
-pub(crate) fn bucket_resident_value_bytes(bucket: &LabelBucket) -> u64 {
-    if !bucket.is_value_allocated() {
+pub(crate) fn bucket_resident_payload_bytes(bucket: &LabelBucket) -> u64 {
+    if !bucket.is_payload_allocated() {
         return 0;
     }
     u64::from(bucket.stored_slots.max(bucket.degree))
-        .saturating_mul(u64::from(bucket.value_byte_width()))
+        .saturating_mul(u64::from(bucket.payload_byte_width()))
 }
 
 #[inline]
@@ -152,14 +152,14 @@ pub(crate) fn assert_labeled_layout_invariants<E, M>(
                     bucket.edge_start()
                 );
             }
-            if bucket.is_value_allocated() {
+            if bucket.is_payload_allocated() {
                 assert!(
-                    bucket.value_byte_width() > 0,
+                    bucket.payload_byte_width() > 0,
                     "vertex {vidx} bucket {slot}: value_allocated bucket must have non-zero width"
                 );
             }
         }
-        let mut resident_value_bytes = 0u64;
+        let mut resident_payload_bytes = 0u64;
         for offset in 0..deg {
             let slot = slot_at(
                 base_start,
@@ -169,13 +169,13 @@ pub(crate) fn assert_labeled_layout_invariants<E, M>(
             let bucket = buckets
                 .read_label_bucket_slot(slot)
                 .expect("bucket slot must exist");
-            resident_value_bytes =
-                resident_value_bytes.saturating_add(bucket_resident_value_bytes(&bucket));
+            resident_payload_bytes =
+                resident_payload_bytes.saturating_add(bucket_resident_payload_bytes(&bucket));
         }
         assert_eq!(
-            vertex.value_allocated_bytes(),
-            resident_value_bytes,
-            "vertex {vidx}: value_allocated_bytes must equal sum of resident bucket value spans"
+            vertex.payload_allocated_bytes(),
+            resident_payload_bytes,
+            "vertex {vidx}: payload_allocated_bytes must equal sum of resident bucket value spans"
         );
     }
 }

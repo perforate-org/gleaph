@@ -1,4 +1,4 @@
-//! Composite posting key: `(property_id, value_bytes, shard_id, vertex_id)` ordered for prefix scans.
+//! Composite posting key: `(property_id, payload_bytes, shard_id, vertex_id)` ordered for prefix scans.
 
 use gleaph_graph_kernel::federation::ShardId;
 use ic_stable_structures::Storable;

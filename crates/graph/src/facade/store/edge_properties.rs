@@ -55,8 +55,8 @@ impl GraphStore {
             prev.as_ref(),
             Some(&value),
         );
-        if let Ok(value_bytes) = value.to_binary_bytes() {
-            let _ = journal_edge_property_changed(self, handle, property_id, Some(value_bytes));
+        if let Ok(payload_bytes) = value.to_binary_bytes() {
+            let _ = journal_edge_property_changed(self, handle, property_id, Some(payload_bytes));
         }
         Ok(old)
     }

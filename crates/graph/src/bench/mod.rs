@@ -18,7 +18,7 @@ use gleaph_gql_planner::plan::{
     ShortestMode, ShortestPathCost, VarLenSpec,
 };
 use gleaph_graph_kernel::entry::{
-    EdgeLabelId, EdgeValueEncoding, EdgeValueProfile, EdgeWeightProfile, Vertex, WeightEncoding,
+    EdgeLabelId, EdgePayloadEncoding, EdgePayloadProfile, EdgeWeightProfile, Vertex, WeightEncoding,
 };
 use ic_stable_lara::{MaintenanceBudget, VertexId};
 use std::collections::BTreeMap;
@@ -285,12 +285,17 @@ fn setup_repeated_edge_cost_cache_graph(store: &GraphStore) -> (VertexId, Vertex
     }
     for (i, &prefix) in prefixes.iter().enumerate() {
         store
-            .insert_directed_edge_with_inline_value(prefix, hub, Some(road), 1)
+            .insert_directed_edge_with_payload_bytes(prefix, hub, Some(road), &1u16.to_le_bytes())
             .unwrap_or_else(|e| panic!("prefix->hub i={i}: {e:?}"));
     }
     for (i, &prefix) in prefixes.iter().enumerate() {
         store
-            .insert_directed_edge_with_inline_value(src, prefix, Some(road), (i % 10) as u16 + 1)
+            .insert_directed_edge_with_payload_bytes(
+                src,
+                prefix,
+                Some(road),
+                &((i % 10) as u16 + 1).to_le_bytes(),
+            )
             .unwrap_or_else(|e| panic!("src->prefix i={i}: {e:?}"));
     }
     store
@@ -309,10 +314,15 @@ fn setup_repeated_edge_cost_cache_graph(store: &GraphStore) -> (VertexId, Vertex
             .insert_vertex_named(["BenchWspSpoke"], Vec::<(&str, Value)>::new())
             .expect("insert spoke");
         store
-            .insert_directed_edge_with_inline_value(hub, spoke, Some(road), (j % 5) as u16 + 1)
+            .insert_directed_edge_with_payload_bytes(
+                hub,
+                spoke,
+                Some(road),
+                &((j % 5) as u16 + 1).to_le_bytes(),
+            )
             .expect("hub->spoke");
         store
-            .insert_directed_edge_with_inline_value(spoke, dst, Some(road), 1)
+            .insert_directed_edge_with_payload_bytes(spoke, dst, Some(road), &1u16.to_le_bytes())
             .expect("spoke->dst");
     }
 
@@ -512,7 +522,7 @@ fn expand_plan_for_label(
             var_len: None,
             indexed_edge_equality: indexed_edge_equality
                 .map(|(property, value)| (property.into(), value)),
-            edge_value_predicate: None,
+            edge_payload_predicate: None,
             edge_vector_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
@@ -599,7 +609,7 @@ fn expand_filter_plan() -> PhysicalPlan {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
-            edge_value_predicate: None,
+            edge_payload_predicate: None,
             edge_vector_predicate: None,
             dst_filter: vec![Expr::new(ExprKind::Compare {
                 left: Box::new(Expr::new(ExprKind::PropertyAccess {
@@ -871,7 +881,7 @@ fn expand_deep_row_plan() -> PhysicalPlan {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
-            edge_value_predicate: None,
+            edge_payload_predicate: None,
             edge_vector_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
@@ -887,7 +897,7 @@ fn expand_deep_row_plan() -> PhysicalPlan {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
-            edge_value_predicate: None,
+            edge_payload_predicate: None,
             edge_vector_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
@@ -903,7 +913,7 @@ fn expand_deep_row_plan() -> PhysicalPlan {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
-            edge_value_predicate: None,
+            edge_payload_predicate: None,
             edge_vector_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
@@ -977,7 +987,7 @@ fn expand_filter_10pct_plan() -> PhysicalPlan {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
-            edge_value_predicate: None,
+            edge_payload_predicate: None,
             edge_vector_predicate: None,
             dst_filter: vec![Expr::new(ExprKind::Compare {
                 left: Box::new(Expr::new(ExprKind::PropertyAccess {
@@ -1074,7 +1084,7 @@ fn expand_hash_join_then_expand_plan() -> PhysicalPlan {
                     label_expr: None,
                     var_len: None,
                     indexed_edge_equality: None,
-                    edge_value_predicate: None,
+                    edge_payload_predicate: None,
                     edge_vector_predicate: None,
                     edge_property_projection: None,
                     dst_property_projection: None,
@@ -1097,7 +1107,7 @@ fn expand_hash_join_then_expand_plan() -> PhysicalPlan {
                     label_expr: None,
                     var_len: None,
                     indexed_edge_equality: None,
-                    edge_value_predicate: None,
+                    edge_payload_predicate: None,
                     edge_vector_predicate: None,
                     edge_property_projection: None,
                     dst_property_projection: None,
@@ -1207,11 +1217,11 @@ fn setup_expand_vector_graph_with_scale(store: &GraphStore, scale: ExpandVectorG
         .get_or_insert_edge_label_id(scale.edge_label)
         .expect("edge label");
     store
-        .install_edge_label_value_profile_at_init(
+        .install_edge_label_payload_profile_at_init(
             label_id,
-            EdgeValueProfile {
+            EdgePayloadProfile {
                 byte_width: 64,
-                encoding: EdgeValueEncoding::VectorF32 {
+                encoding: EdgePayloadEncoding::VectorF32 {
                     dims: scale.dims as u16,
                 },
             },
@@ -1234,7 +1244,7 @@ fn setup_expand_vector_graph_with_scale(store: &GraphStore, scale: ExpandVectorG
             far_bytes.as_slice()
         };
         store
-            .insert_directed_edge_with_value_bytes(hub, dst, Some(label_id), bytes)
+            .insert_directed_edge_with_payload_bytes(hub, dst, Some(label_id), bytes)
             .expect("edge");
     }
 }
@@ -1262,7 +1272,7 @@ fn expand_vector_plan(
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
-            edge_value_predicate: None,
+            edge_payload_predicate: None,
             edge_vector_predicate: Some(EdgeVectorPredicate {
                 metric,
                 query: ScanValue::Literal(f32_vector_value(query)),
@@ -1304,7 +1314,7 @@ fn expand_vector_bindings_plan(
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
-            edge_value_predicate: None,
+            edge_payload_predicate: None,
             edge_vector_predicate: Some(EdgeVectorPredicate {
                 metric,
                 query: ScanValue::Literal(f32_vector_value(query)),
@@ -1484,7 +1494,7 @@ fn bench_graph_expand_indexed_eq_selective_24match() -> canbench_rs::BenchResult
     })
 }
 
-/// 24 fixed-label vector edge values; L2 threshold selects 8 rows via SIMD vector scoring.
+/// 24 fixed-label vector edge payloads; L2 threshold selects 8 rows via SIMD vector scoring.
 #[bench(raw)]
 fn bench_graph_expand_vector_l2_24scan_8match() -> canbench_rs::BenchResult {
     let store = GraphStore::new();
@@ -1507,7 +1517,7 @@ fn bench_graph_expand_vector_l2_24scan_8match() -> canbench_rs::BenchResult {
     })
 }
 
-/// 24 fixed-label vector edge values; DOT threshold selects 8 rows via SIMD vector scoring.
+/// 24 fixed-label vector edge payloads; DOT threshold selects 8 rows via SIMD vector scoring.
 #[bench(raw)]
 fn bench_graph_expand_vector_dot_24scan_8match() -> canbench_rs::BenchResult {
     let store = GraphStore::new();
@@ -1697,16 +1707,21 @@ mod bench_setup_tests {
         }
         for &prefix in &prefixes {
             store
-                .insert_directed_edge_with_inline_value(prefix, hub, Some(road), 1)
+                .insert_directed_edge_with_payload_bytes(
+                    prefix,
+                    hub,
+                    Some(road),
+                    &1u16.to_le_bytes(),
+                )
                 .expect("prefix->hub");
         }
         for (i, &prefix) in prefixes.iter().enumerate() {
             store
-                .insert_directed_edge_with_inline_value(
+                .insert_directed_edge_with_payload_bytes(
                     src,
                     prefix,
                     Some(road),
-                    (i % 10) as u16 + 1,
+                    &((i % 10) as u16 + 1).to_le_bytes(),
                 )
                 .expect("src->prefix");
         }
@@ -1714,7 +1729,7 @@ mod bench_setup_tests {
             .insert_vertex_named(["BenchWspSpoke"], Vec::<(&str, Value)>::new())
             .expect("spoke");
         store
-            .insert_directed_edge_with_inline_value(hub, spoke, Some(road), 1)
+            .insert_directed_edge_with_payload_bytes(hub, spoke, Some(road), &1u16.to_le_bytes())
             .expect("hub->spoke");
         let _ = dst;
     }
@@ -1737,15 +1752,20 @@ mod bench_setup_tests {
                 .insert_vertex_named(["BenchWspPrefix"], Vec::<(&str, Value)>::new())
                 .expect("prefix");
             store
-                .insert_directed_edge_with_inline_value(
+                .insert_directed_edge_with_payload_bytes(
                     src,
                     prefix,
                     Some(road),
-                    (i % 10) as u16 + 1,
+                    &((i % 10) as u16 + 1).to_le_bytes(),
                 )
                 .unwrap_or_else(|e| panic!("src->prefix i={i}: {e:?}"));
             store
-                .insert_directed_edge_with_inline_value(prefix, hub, Some(road), 1)
+                .insert_directed_edge_with_payload_bytes(
+                    prefix,
+                    hub,
+                    Some(road),
+                    &1u16.to_le_bytes(),
+                )
                 .unwrap_or_else(|e| panic!("prefix->hub i={i}: {e:?}"));
         }
     }
@@ -1765,11 +1785,11 @@ mod bench_setup_tests {
                 .insert_vertex_named(["BenchWspPrefix"], Vec::<(&str, Value)>::new())
                 .expect("prefix");
             store
-                .insert_directed_edge_with_inline_value(
+                .insert_directed_edge_with_payload_bytes(
                     src,
                     prefix,
                     Some(road),
-                    (i % 10) as u16 + 1,
+                    &((i % 10) as u16 + 1).to_le_bytes(),
                 )
                 .unwrap_or_else(|e| panic!("src->prefix i={i}: {e:?}"));
         }

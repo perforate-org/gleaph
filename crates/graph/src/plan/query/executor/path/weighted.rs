@@ -251,8 +251,8 @@ fn weighted_hop_cache_outer_key(edge: &EdgeBinding) -> u64 {
 
 fn weighted_hop_cache_value_key(edge: &EdgeBinding) -> u64 {
     let mut hasher = RapidHasher::default();
-    hasher.write_u64(u64::try_from(edge.value_len()).unwrap_or(u64::MAX));
-    hasher.write(edge.value_bytes_slice());
+    hasher.write_u64(u64::try_from(edge.payload_len()).unwrap_or(u64::MAX));
+    hasher.write(edge.payload_bytes_slice());
     hasher.finish()
 }
 
@@ -448,12 +448,7 @@ pub(crate) fn weighted_shortest_paths_between(
                     cost
                 }
             } else {
-                decode_direct_gleaph_weight_hop_cost(
-                    store,
-                    direct_gleaph_weight_decoder
-                        .expect("direct GLEAPH.WEIGHT decoder must be present"),
-                    edge_binding.clone(),
-                )?
+                decode_direct_gleaph_weight_hop_cost(store, edge_binding.clone())?
             };
             let next_cost = entry.cost.checked_add(&hop_cost)?;
             if let Some(ref min) = found_min_cost
@@ -526,12 +521,10 @@ fn eval_direct_gleaph_weight_hop_cost(
     edge_binding: EdgeBinding,
     gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
 ) -> Result<Option<WeightedCost>, PlanQueryError> {
-    let Some(decoder) =
-        direct_gleaph_weight_hop_cost_decoder(expr, edge_var, gleaph_weight_decoders)?
-    else {
+    if direct_gleaph_weight_hop_cost_decoder(expr, edge_var, gleaph_weight_decoders)?.is_none() {
         return Ok(None);
-    };
-    decode_direct_gleaph_weight_hop_cost(store, decoder, edge_binding).map(Some)
+    }
+    decode_direct_gleaph_weight_hop_cost(store, edge_binding).map(Some)
 }
 
 fn direct_gleaph_weight_hop_cost_decoder<'a>(
@@ -571,16 +564,13 @@ fn direct_gleaph_weight_hop_cost_decoder<'a>(
 
 pub(crate) fn decode_direct_gleaph_weight_hop_cost(
     store: &GraphStore,
-    decoder: &PreparedWeightDecoder,
     edge_binding: EdgeBinding,
 ) -> Result<WeightedCost, PlanQueryError> {
     let weight = gleaph_weight::decode_traversal_edge_weight(
         store,
         edge_binding.handle,
-        edge_binding.value_len(),
-        edge_binding.value_bytes_slice(),
-        edge_binding.inline_value(),
-        Some(decoder),
+        edge_binding.payload_len(),
+        edge_binding.payload_bytes_slice(),
     )?;
     Ok(WeightedCost::from_validated_non_negative_float32(weight))
 }

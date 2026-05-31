@@ -1,22 +1,22 @@
-//! Per-segment overflow log for edge value bytes (paired with edge overflow logs).
+//! Per-segment overflow log for edge payload bytes (paired with edge overflow logs).
 
 use crate::{GrowFailed, read_i32, read_u32, safe_write, types::Address, write_i32, write_u32};
 use ic_stable_structures::Memory;
 use std::{cell::Cell, fmt};
 
-/// Magic bytes that identify a LARA value overflow-log memory.
+/// Magic bytes that identify a LARA payload overflow-log memory.
 pub const MAGIC: [u8; 3] = *b"LVL";
 /// Current overflow-log layout version.
 pub const LAYOUT_VERSION: u8 = 2;
 const HEADER_SIZE: u64 = 32;
 const INLINE_LOG_ENTRY_BYTES: usize = 17;
-/// Payload bytes per value overflow log entry (`ValueLogCell`).
+/// Payload bytes per payload overflow log entry (`PayloadLogCell`).
 pub const PAYLOAD_BYTES: usize = 9;
 
 /// Default per-segment overflow-log capacity (matches edge log).
 pub const DEFAULT_MAX_LOG_ENTRIES: u32 = 170;
 
-/// Persisted V1 value overflow-log header.
+/// Persisted V1 payload overflow-log header.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HeaderV1 {
     pub magic: [u8; 3],
@@ -33,12 +33,12 @@ impl HeaderV1 {
             version: LAYOUT_VERSION,
             segment_count,
             max_log_entries: DEFAULT_MAX_LOG_ENTRIES,
-            stride: VALUE_LOG_ENTRY_STRIDE as u32,
+            stride: PAYLOAD_LOG_ENTRY_STRIDE as u32,
         }
     }
 }
 
-/// Errors returned when reopening a persisted value overflow log.
+/// Errors returned when reopening a persisted payload overflow log.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InitError {
     BadMagic { actual: [u8; 3] },
@@ -51,14 +51,14 @@ impl fmt::Display for InitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::BadMagic { actual } => {
-                write!(f, "bad value log magic {actual:?}, expected {MAGIC:?}")
+                write!(f, "bad payload log magic {actual:?}, expected {MAGIC:?}")
             }
-            Self::IncompatibleVersion(v) => write!(f, "unsupported value log layout version {v}"),
-            Self::OutOfMemory => write!(f, "failed to allocate value log metadata"),
+            Self::IncompatibleVersion(v) => write!(f, "unsupported payload log layout version {v}"),
+            Self::OutOfMemory => write!(f, "failed to allocate payload log metadata"),
             Self::StrideMismatch { expected, actual } => {
                 write!(
                     f,
-                    "value log entry stride mismatch: expected {expected}, got {actual}"
+                    "payload log entry stride mismatch: expected {expected}, got {actual}"
                 )
             }
         }
@@ -69,12 +69,12 @@ impl std::error::Error for InitError {}
 
 /// Stable per-segment overflow log for values that did not fit on the byte slab.
 #[derive(Clone, Debug)]
-pub struct ValueLogStore<M: Memory> {
+pub struct PayloadLogStore<M: Memory> {
     memory: M,
     header_mirror: Cell<HeaderV1>,
 }
 
-impl<M: Memory> ValueLogStore<M> {
+impl<M: Memory> PayloadLogStore<M> {
     pub fn new(memory: M, header: HeaderV1) -> Result<Self, GrowFailed> {
         let store = Self {
             memory,
@@ -102,7 +102,7 @@ impl<M: Memory> ValueLogStore<M> {
         if header.version != LAYOUT_VERSION {
             return Err(InitError::IncompatibleVersion(header.version));
         }
-        let expected = VALUE_LOG_ENTRY_STRIDE as u32;
+        let expected = PAYLOAD_LOG_ENTRY_STRIDE as u32;
         if header.stride != expected {
             return Err(InitError::StrideMismatch {
                 expected,
@@ -150,7 +150,7 @@ impl<M: Memory> ValueLogStore<M> {
     ) -> (i32, i32) {
         debug_assert!(
             out.len() >= PAYLOAD_BYTES,
-            "value log read buffer too small"
+            "payload log read buffer too small"
         );
         let off = entry_offset(h, leaf_segment, entry_idx);
         let prev = read_i32(&self.memory, Address::from(off));
@@ -169,7 +169,7 @@ impl<M: Memory> ValueLogStore<M> {
         payload: &[u8; PAYLOAD_BYTES],
     ) -> Result<(), GrowFailed> {
         let off = entry_offset(h, leaf_segment, entry_idx);
-        let entry_len = VALUE_LOG_ENTRY_STRIDE;
+        let entry_len = PAYLOAD_LOG_ENTRY_STRIDE;
         let mut bytes = [0u8; INLINE_LOG_ENTRY_BYTES];
         bytes[0..4].copy_from_slice(&prev.to_le_bytes());
         bytes[4..8].copy_from_slice(&src.to_le_bytes());
@@ -180,7 +180,7 @@ impl<M: Memory> ValueLogStore<M> {
     pub fn release_segment(&self, leaf_segment: u32) -> Result<(), GrowFailed> {
         let h = self.header();
         let idx = self.read_idx_with_header(&h, leaf_segment);
-        let stride = VALUE_LOG_ENTRY_STRIDE;
+        let stride = PAYLOAD_LOG_ENTRY_STRIDE;
         let zeros = [0u8; INLINE_LOG_ENTRY_BYTES];
         for i in 0..idx.max(0) as u32 {
             safe_write(
@@ -242,7 +242,7 @@ impl<M: Memory> ValueLogStore<M> {
     }
 }
 
-pub const VALUE_LOG_ENTRY_STRIDE: usize = 8 + PAYLOAD_BYTES;
+pub const PAYLOAD_LOG_ENTRY_STRIDE: usize = 8 + PAYLOAD_BYTES;
 
 #[inline]
 fn idx_offset(h: &HeaderV1, leaf_segment: u32) -> u64 {
@@ -251,14 +251,14 @@ fn idx_offset(h: &HeaderV1, leaf_segment: u32) -> u64 {
 
 #[inline]
 fn segment_block_size(h: &HeaderV1) -> u64 {
-    4 + u64::from(h.max_log_entries).saturating_mul(VALUE_LOG_ENTRY_STRIDE as u64)
+    4 + u64::from(h.max_log_entries).saturating_mul(PAYLOAD_LOG_ENTRY_STRIDE as u64)
 }
 
 #[inline]
 fn entry_offset(h: &HeaderV1, leaf_segment: u32, entry_idx: u32) -> u64 {
     idx_offset(h, leaf_segment)
         .saturating_add(4)
-        .saturating_add(u64::from(entry_idx).saturating_mul(VALUE_LOG_ENTRY_STRIDE as u64))
+        .saturating_add(u64::from(entry_idx).saturating_mul(PAYLOAD_LOG_ENTRY_STRIDE as u64))
 }
 
 #[inline]

@@ -1405,7 +1405,7 @@ fn indexed_expand_limit_offset_skips_only_matching_edges() {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: Some(("weight".into(), ScanValue::Literal(Value::Int64(5)))),
-            edge_value_predicate: None,
+            edge_payload_predicate: None,
             edge_vector_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,

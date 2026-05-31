@@ -1,6 +1,5 @@
 pub mod edge;
-pub mod edge_value;
-pub mod edge_value_payload;
+pub mod edge_payload;
 pub mod label;
 pub mod property;
 pub mod remote_ref;
@@ -8,13 +7,12 @@ pub mod vertex;
 pub mod vertex_ref;
 pub mod weight;
 
-pub use edge::{Edge, EdgeMeta, EdgeSlotIndex, MAX_EDGE_VALUE_BYTES};
-pub use edge_value::{
-    DecodedEdgeValue, EdgeValueEncoding, EdgeValueProfile, EdgeValueProfileError,
-    PreparedEdgeValueDecoder, decode_edge_value, decode_edge_weight,
+pub use edge::{Edge, EdgeMeta, EdgeSlotIndex};
+pub use edge_payload::{
+    DecodedEdgePayload, EdgePayload, EdgePayloadEncoding, EdgePayloadProfile,
+    EdgePayloadProfileError, MAX_EDGE_PAYLOAD_BYTES, PreparedEdgePayloadDecoder,
+    decode_edge_payload, decode_edge_weight,
 };
-pub use edge_value_payload::EdgeValuePayload;
-pub use edge_value_payload::MAX_EDGE_VALUE_BYTE_WIDTH;
 pub use label::{
     EDGE_LABEL_CATALOG_MAX, EDGE_LABEL_DIRECTED_BIT, EdgeDirectedness, EdgeLabelId,
     TaggedEdgeLabelId, VertexLabelId,
@@ -25,5 +23,5 @@ pub use vertex::Vertex;
 pub use vertex_ref::VertexRef;
 pub use weight::{
     EdgeWeightProfile, PreparedWeightDecoder, WeightDecodeError, WeightEncoding,
-    WeightProfilePrepareError, decode_inline_weight,
+    WeightProfilePrepareError,
 };

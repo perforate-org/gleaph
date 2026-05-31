@@ -27,14 +27,14 @@ impl PreparedEdgeVectorKernel {
 
     pub(crate) fn score(
         &self,
-        edge_value_bytes: &[u8],
+        edge_payload_bytes: &[u8],
         query: &[f32],
         metric: EdgeVectorMetric,
     ) -> Option<f32> {
-        if query.len() != self.dims || edge_value_bytes.len() < self.byte_width() {
+        if query.len() != self.dims || edge_payload_bytes.len() < self.byte_width() {
             return None;
         }
-        let bytes = &edge_value_bytes[..self.byte_width()];
+        let bytes = &edge_payload_bytes[..self.byte_width()];
         match metric {
             EdgeVectorMetric::Dot => Some(dot_f32_bytes(bytes, query)),
             EdgeVectorMetric::L2Squared => Some(l2_squared_f32_bytes(bytes, query)),
@@ -44,7 +44,7 @@ impl PreparedEdgeVectorKernel {
 
     pub(crate) fn collect_matching_indices<F>(
         &self,
-        value_bytes: &[u8],
+        payload_bytes: &[u8],
         query: &[f32],
         metric: EdgeVectorMetric,
         threshold: f32,
@@ -54,10 +54,10 @@ impl PreparedEdgeVectorKernel {
         F: Fn(f32, f32) -> bool,
     {
         let width = self.byte_width();
-        if width == 0 || query.len() != self.dims || value_bytes.len() % width != 0 {
+        if width == 0 || query.len() != self.dims || payload_bytes.len() % width != 0 {
             return;
         }
-        for (idx, bytes) in value_bytes.chunks_exact(width).enumerate() {
+        for (idx, bytes) in payload_bytes.chunks_exact(width).enumerate() {
             let Some(score) = self.score(bytes, query, metric) else {
                 continue;
             };
@@ -69,7 +69,7 @@ impl PreparedEdgeVectorKernel {
 
     pub(crate) fn collect_l2_squared_upper_bound_indices(
         &self,
-        value_bytes: &[u8],
+        payload_bytes: &[u8],
         query: &[f32],
         threshold: f32,
         inclusive: bool,
@@ -78,7 +78,7 @@ impl PreparedEdgeVectorKernel {
         let width = self.byte_width();
         if width == 0
             || query.len() != self.dims
-            || value_bytes.len() % width != 0
+            || payload_bytes.len() % width != 0
             || threshold.is_nan()
         {
             return;
@@ -86,7 +86,7 @@ impl PreparedEdgeVectorKernel {
         if threshold < 0.0 {
             return;
         }
-        for (idx, bytes) in value_bytes.chunks_exact(width).enumerate() {
+        for (idx, bytes) in payload_bytes.chunks_exact(width).enumerate() {
             let Some(score) =
                 l2_squared_f32_bytes_with_upper_bound(bytes, query, threshold, inclusive)
             else {
@@ -348,18 +348,28 @@ mod bench {
             .sum()
     }
 
-    fn collect_l2_scalar(value_bytes: &[u8], query: &[f32], threshold: f32, out: &mut Vec<usize>) {
+    fn collect_l2_scalar(
+        payload_bytes: &[u8],
+        query: &[f32],
+        threshold: f32,
+        out: &mut Vec<usize>,
+    ) {
         out.clear();
-        for (idx, bytes) in value_bytes.chunks_exact(DIMS * 4).enumerate() {
+        for (idx, bytes) in payload_bytes.chunks_exact(DIMS * 4).enumerate() {
             if l2_squared_scalar(bytes, query) <= threshold {
                 out.push(idx);
             }
         }
     }
 
-    fn collect_dot_scalar(value_bytes: &[u8], query: &[f32], threshold: f32, out: &mut Vec<usize>) {
+    fn collect_dot_scalar(
+        payload_bytes: &[u8],
+        query: &[f32],
+        threshold: f32,
+        out: &mut Vec<usize>,
+    ) {
         out.clear();
-        for (idx, bytes) in value_bytes.chunks_exact(DIMS * 4).enumerate() {
+        for (idx, bytes) in payload_bytes.chunks_exact(DIMS * 4).enumerate() {
             if dot_scalar(bytes, query) >= threshold {
                 out.push(idx);
             }

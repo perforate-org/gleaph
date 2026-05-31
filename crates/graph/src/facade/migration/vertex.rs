@@ -77,7 +77,7 @@ pub(crate) fn export_out_edge(
         .map(|(property_id, value)| {
             Ok(ExportedProperty {
                 property_id,
-                value_bytes: value.to_binary_bytes().map_err(|e| {
+                payload_bytes: value.to_binary_bytes().map_err(|e| {
                     GraphStoreError::VertexPlacement(placement::VertexPlacementError::Call(
                         format!("property encode: {e}"),
                     ))
@@ -89,7 +89,7 @@ pub(crate) fn export_out_edge(
     Ok(ExportedOutEdge {
         catalog_label,
         undirected,
-        value_bytes: edge.value_bytes().to_vec(),
+        payload_bytes: edge.payload_bytes().to_vec(),
         target: export_edge_target(store, edge)?,
         properties,
     })
@@ -160,7 +160,7 @@ pub fn export_local_vertex_for_migration(
         .map(|(property_id, value)| {
             Ok(ExportedProperty {
                 property_id,
-                value_bytes: value.to_binary_bytes().map_err(|e| {
+                payload_bytes: value.to_binary_bytes().map_err(|e| {
                     GraphStoreError::VertexPlacement(placement::VertexPlacementError::Call(
                         format!("property encode: {e}"),
                     ))
@@ -203,13 +203,13 @@ pub(crate) fn import_out_edge(
         owner_vertex_id,
         &edge.target,
         edge.undirected,
-        &edge.value_bytes,
+        &edge.payload_bytes,
         edge.catalog_label,
     )?;
 
     for prop in &edge.properties {
         let value = Value::from_binary_bytes_with_extensions(
-            &prop.value_bytes,
+            &prop.payload_bytes,
             &IcExtensionBinaryDecode::INSTANCE,
         )
         .map_err(|e| {
@@ -317,7 +317,7 @@ fn import_migrated_vertex_impl(
 
     for prop in bundle.properties {
         let value = Value::from_binary_bytes_with_extensions(
-            &prop.value_bytes,
+            &prop.payload_bytes,
             &IcExtensionBinaryDecode::INSTANCE,
         )
         .map_err(|e| {

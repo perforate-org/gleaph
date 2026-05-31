@@ -156,14 +156,14 @@ pub fn flag_tombstone_graph() -> LabeledLaraGraph<FlagTombstoneEdge, crate::Vect
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ValuedTestEdge {
+pub struct PayloadTestEdge {
     pub target: u32,
     pub slot_index: u32,
     pub value: Vec<u8>,
-    pub value_len: u16,
+    pub payload_len: u16,
 }
 
-impl ValuedTestEdge {
+impl PayloadTestEdge {
     pub fn with_bytes(target: u32, bytes: &[u8]) -> Self {
         let len = u16::try_from(bytes.len()).expect("test value fits u16");
         let mut value = vec![0u8; bytes.len()];
@@ -172,12 +172,8 @@ impl ValuedTestEdge {
             target,
             slot_index: 0,
             value,
-            value_len: len,
+            payload_len: len,
         }
-    }
-
-    pub fn with_u16(target: u32, inline: u16) -> Self {
-        Self::with_bytes(target, &inline.to_le_bytes())
     }
 
     pub fn with_i32(target: u32, inline: i32) -> Self {
@@ -185,7 +181,7 @@ impl ValuedTestEdge {
     }
 }
 
-impl CsrEdge for ValuedTestEdge {
+impl CsrEdge for PayloadTestEdge {
     const BYTES: usize = 4;
 
     fn read_from(bytes: &[u8]) -> Self {
@@ -193,7 +189,7 @@ impl CsrEdge for ValuedTestEdge {
             target: u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
             slot_index: 0,
             value: Vec::new(),
-            value_len: 0,
+            payload_len: 0,
         }
     }
 
@@ -220,40 +216,40 @@ impl CsrEdge for ValuedTestEdge {
         self.slot_index
     }
 
-    fn edge_value_byte_width(&self) -> u16 {
-        self.value_len
+    fn edge_payload_byte_width(&self) -> u16 {
+        self.payload_len
     }
 
-    fn edge_value_bytes(&self) -> &[u8] {
-        &self.value[..usize::from(self.value_len)]
+    fn edge_payload_bytes(&self) -> &[u8] {
+        &self.value[..usize::from(self.payload_len)]
     }
 
-    fn with_stored_value_bytes(mut self, width: u16, bytes: &[u8]) -> Self {
+    fn with_stored_payload_bytes(mut self, width: u16, bytes: &[u8]) -> Self {
         let len = usize::from(width).min(bytes.len());
         self.value = bytes[..len].to_vec();
-        self.value_len = u16::try_from(len).expect("test value width fits u16");
+        self.payload_len = u16::try_from(len).expect("test value width fits u16");
         self
     }
 }
 
-impl CsrEdgeTombstone for ValuedTestEdge {
+impl CsrEdgeTombstone for PayloadTestEdge {
     fn tombstone_edge() -> Self {
         Self {
             target: u32::from(VertexId::EDGE_TOMBSTONE_SENTINEL),
             slot_index: 0,
             value: Vec::new(),
-            value_len: 0,
+            payload_len: 0,
         }
     }
 }
 
-pub fn valued_test_graph() -> LabeledLaraGraph<ValuedTestEdge, crate::VectorMemory> {
-    valued_test_graph_with_capacity(256)
+pub fn payload_test_graph() -> LabeledLaraGraph<PayloadTestEdge, crate::VectorMemory> {
+    payload_test_graph_with_capacity(256)
 }
 
-pub fn valued_test_graph_with_capacity(
+pub fn payload_test_graph_with_capacity(
     elem_capacity: u64,
-) -> LabeledLaraGraph<ValuedTestEdge, crate::VectorMemory> {
+) -> LabeledLaraGraph<PayloadTestEdge, crate::VectorMemory> {
     LabeledLaraGraph::new(
         mem(),
         mem(),

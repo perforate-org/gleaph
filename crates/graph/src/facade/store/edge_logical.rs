@@ -10,8 +10,8 @@ use super::edge_insert::journal_edge_insert_to_logical;
 use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
 use super::helpers::{
-    build_edge_to_remote_with_value_bytes, edge_matches_remote_target, edge_storage_label,
-    lara_label, validate_edge_value_bytes_for_label,
+    build_edge_to_remote_with_payload_bytes, edge_matches_remote_target, edge_storage_label,
+    lara_label, validate_edge_payload_bytes_for_label,
 };
 
 impl GraphStore {
@@ -21,7 +21,7 @@ impl GraphStore {
         target_logical_vertex_id: LogicalVertexId,
         catalog_label: Option<EdgeLabelId>,
     ) -> Result<EdgeHandle, GraphStoreError> {
-        self.insert_edge_to_logical_with_value_bytes(
+        self.insert_edge_to_logical_with_payload_bytes(
             source_vertex_id,
             target_logical_vertex_id,
             catalog_label,
@@ -30,59 +30,59 @@ impl GraphStore {
         )
     }
 
-    pub(crate) fn insert_directed_edge_to_logical_with_value_bytes(
+    pub(crate) fn insert_directed_edge_to_logical_with_payload_bytes(
         &self,
         source_vertex_id: VertexId,
         target_logical_vertex_id: LogicalVertexId,
         catalog_label: Option<EdgeLabelId>,
-        value_bytes: &[u8],
+        payload_bytes: &[u8],
     ) -> Result<EdgeHandle, GraphStoreError> {
-        self.insert_edge_to_logical_with_value_bytes(
+        self.insert_edge_to_logical_with_payload_bytes(
             source_vertex_id,
             target_logical_vertex_id,
             catalog_label,
             false,
-            value_bytes,
+            payload_bytes,
         )
     }
 
-    pub(crate) fn insert_undirected_edge_to_logical_with_value_bytes(
+    pub(crate) fn insert_undirected_edge_to_logical_with_payload_bytes(
         &self,
         source_vertex_id: VertexId,
         target_logical_vertex_id: LogicalVertexId,
         catalog_label: Option<EdgeLabelId>,
-        value_bytes: &[u8],
+        payload_bytes: &[u8],
     ) -> Result<EdgeHandle, GraphStoreError> {
-        self.insert_edge_to_logical_with_value_bytes(
+        self.insert_edge_to_logical_with_payload_bytes(
             source_vertex_id,
             target_logical_vertex_id,
             catalog_label,
             true,
-            value_bytes,
+            payload_bytes,
         )
     }
 
-    fn insert_edge_to_logical_with_value_bytes(
+    fn insert_edge_to_logical_with_payload_bytes(
         &self,
         source_vertex_id: VertexId,
         target_logical_vertex_id: LogicalVertexId,
         catalog_label: Option<EdgeLabelId>,
         undirected: bool,
-        value_bytes: &[u8],
+        payload_bytes: &[u8],
     ) -> Result<EdgeHandle, GraphStoreError> {
         self.ensure_vertex_id(source_vertex_id)?;
         Self::validate_catalog_edge_label(catalog_label)?;
-        validate_edge_value_bytes_for_label(self, catalog_label, value_bytes)?;
+        validate_edge_payload_bytes_for_label(self, catalog_label, payload_bytes)?;
 
         let remote_ref = self.ensure_remote_ref(target_logical_vertex_id);
         let label = lara_label(edge_storage_label(catalog_label, undirected));
-        let forward = build_edge_to_remote_with_value_bytes(remote_ref, value_bytes);
+        let forward = build_edge_to_remote_with_payload_bytes(remote_ref, payload_bytes);
         self.with_graph_mut(|graph| {
             graph.insert_forward_out_edge(source_vertex_id, label, forward)
         })?;
         let handle = self
             .find_first_forward_handle_descending(source_vertex_id, label, |edge| {
-                edge_matches_remote_target(edge, remote_ref, value_bytes)
+                edge_matches_remote_target(edge, remote_ref, payload_bytes)
             })?
             .ok_or(GraphStoreError::EdgeNotFound {
                 owner_vertex_id: source_vertex_id,
@@ -97,7 +97,7 @@ impl GraphStore {
             true,
             catalog_label,
             undirected,
-            value_bytes,
+            payload_bytes,
             handle,
         )?;
         Ok(handle)

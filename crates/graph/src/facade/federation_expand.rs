@@ -37,7 +37,6 @@ fn push_neighbor(
     neighbor_local_vertex_id: LocalVertexId,
     edge: &Edge,
 ) -> Result<(), GraphStoreError> {
-    let value = edge.value.clone();
     let neighbor = FederatedExpandNeighbor {
         shard_id,
         neighbor_logical_vertex_id,
@@ -45,12 +44,10 @@ fn push_neighbor(
         anchor_local_vertex_id,
         label_id_raw: edge.label_id,
         slot_index: edge.edge_slot_index.raw(),
-        inline_value: value.inline_u16(),
-        value_bytes: value.as_slice().to_vec(),
-    }
-    .from_value_payload(value);
+        payload_bytes: edge.payload.as_slice().to_vec(),
+    };
     if let Err(err) = neighbor.validate_wire() {
-        return Err(GraphStoreError::FederatedExpandValue {
+        return Err(GraphStoreError::FederatedExpandPayload {
             detail: err.to_string(),
         });
     }
@@ -703,18 +700,18 @@ fn validate_federated_expand_hits(
     let expected_width = args
         .label_id_raw
         .and_then(|raw| catalog_edge_label_from_wire(ic_stable_lara::BucketLabelKey::from_raw(raw)))
-        .and_then(|label| store.edge_label_value_profile(label))
+        .and_then(|label| store.edge_label_payload_profile(label))
         .map(|profile| usize::from(profile.required_byte_width()));
 
     for hit in hits {
         hit.validate_wire()
-            .map_err(|err| GraphStoreError::FederatedExpandValue {
+            .map_err(|err| GraphStoreError::FederatedExpandPayload {
                 detail: err.to_string(),
             })?;
         if let Some(label_id_raw) = args.label_id_raw
             && hit.label_id_raw != label_id_raw
         {
-            return Err(GraphStoreError::FederatedExpandValue {
+            return Err(GraphStoreError::FederatedExpandPayload {
                 detail: format!(
                     "requested label {label_id_raw}, remote hit returned label {}",
                     hit.label_id_raw
@@ -722,13 +719,13 @@ fn validate_federated_expand_hits(
             });
         }
         if let Some(expected) = expected_width
-            && hit.value_bytes.len() != expected
+            && hit.payload_bytes.len() != expected
         {
-            return Err(GraphStoreError::FederatedExpandValue {
+            return Err(GraphStoreError::FederatedExpandPayload {
                 detail: format!(
                     "label {} expects {expected} value bytes, remote hit returned {}",
                     hit.label_id_raw,
-                    hit.value_bytes.len()
+                    hit.payload_bytes.len()
                 ),
             });
         }
@@ -946,7 +943,7 @@ mod tests {
     use crate::facade::{FederationRouting, GraphStore};
     use candid::Principal;
     use gleaph_graph_kernel::entry::{
-        EdgeSlotIndex, EdgeValueEncoding, EdgeValuePayload, EdgeValueProfile,
+        EdgePayload, EdgePayloadEncoding, EdgePayloadProfile, EdgeSlotIndex,
     };
     use gleaph_graph_kernel::federation::ShardRegistryEntry;
 
@@ -961,7 +958,7 @@ mod tests {
     }
 
     #[test]
-    fn authoritative_incoming_includes_edge_value_bytes() {
+    fn authoritative_incoming_includes_edge_payload_bytes() {
         register_test_shard(7, "g");
         let store = GraphStore::new();
         store
@@ -987,7 +984,7 @@ mod tests {
             )
             .expect("profile");
         store
-            .insert_directed_edge_with_value_bytes(source, target, Some(label_id), &[7, 0])
+            .insert_directed_edge_with_payload_bytes(source, target, Some(label_id), &[7, 0])
             .expect("edge");
 
         let hits = pollster::block_on(collect_federated_expand(
@@ -1001,8 +998,8 @@ mod tests {
         .expect("collect");
 
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].value_len(), 2);
-        assert_eq!(hits[0].value_bytes[..2], [7, 0]);
+        assert_eq!(hits[0].payload_len(), 2);
+        assert_eq!(hits[0].payload_bytes[..2], [7, 0]);
         let handle = edge_handle_for_federated_hit(&store, &hits[0]).expect("handle");
         assert_eq!(
             u32::from(handle.owner_vertex_id),
@@ -1012,34 +1009,37 @@ mod tests {
     }
 
     #[test]
-    fn push_neighbor_rejects_oversize_value_bytes() {
+    fn push_neighbor_rejects_oversize_payload_bytes() {
         let edge = Edge {
             target: gleaph_graph_kernel::entry::VertexRef::local(VertexId::from(1)),
             edge_slot_index: EdgeSlotIndex::from_raw(0),
             label_id: 1,
-            value: EdgeValuePayload::from_slice(&vec![
+            payload: EdgePayload::from_slice(&vec![
                 0;
                 usize::from(
-                    gleaph_graph_kernel::federation::MAX_FEDERATED_EXPAND_VALUE_BYTE_WIDTH
+                    gleaph_graph_kernel::federation::MAX_FEDERATED_EXPAND_PAYLOAD_BYTE_WIDTH
                 ) + 1
             ]),
         };
         let err = push_neighbor(&mut Vec::new(), 0, 0, 1, 1, &edge).unwrap_err();
-        assert!(matches!(err, GraphStoreError::FederatedExpandValue { .. }));
+        assert!(matches!(
+            err,
+            GraphStoreError::FederatedExpandPayload { .. }
+        ));
     }
 
     #[test]
-    fn remote_hits_must_match_label_edge_value_width() {
+    fn remote_hits_must_match_label_edge_payload_width() {
         let store = GraphStore::new();
         let label_id = store
             .get_or_insert_edge_label_id("FedWidthCheck")
             .expect("label");
         store
-            .install_edge_label_value_profile_at_init(
+            .install_edge_label_payload_profile_at_init(
                 label_id,
-                EdgeValueProfile {
+                EdgePayloadProfile {
                     byte_width: 2,
-                    encoding: EdgeValueEncoding::RawU16,
+                    encoding: EdgePayloadEncoding::RawU16,
                 },
             )
             .expect("profile");
@@ -1050,8 +1050,7 @@ mod tests {
             anchor_local_vertex_id: 4,
             label_id_raw: label_id.raw(),
             slot_index: 0,
-            inline_value: 0,
-            value_bytes: vec![9],
+            payload_bytes: vec![9],
         };
         let err = validate_federated_expand_hits(
             &store,
@@ -1063,7 +1062,10 @@ mod tests {
             &[hit],
         )
         .unwrap_err();
-        assert!(matches!(err, GraphStoreError::FederatedExpandValue { .. }));
+        assert!(matches!(
+            err,
+            GraphStoreError::FederatedExpandPayload { .. }
+        ));
     }
 
     #[test]
@@ -1082,8 +1084,7 @@ mod tests {
             anchor_local_vertex_id: 4,
             label_id_raw: returned.raw(),
             slot_index: 0,
-            inline_value: 0,
-            value_bytes: Vec::new(),
+            payload_bytes: Vec::new(),
         };
         let err = validate_federated_expand_hits(
             &store,
@@ -1095,11 +1096,14 @@ mod tests {
             &[hit],
         )
         .unwrap_err();
-        assert!(matches!(err, GraphStoreError::FederatedExpandValue { .. }));
+        assert!(matches!(
+            err,
+            GraphStoreError::FederatedExpandPayload { .. }
+        ));
     }
 
     #[test]
-    fn remote_hits_reject_oversize_value_bytes_before_merge() {
+    fn remote_hits_reject_oversize_payload_bytes_before_merge() {
         let store = GraphStore::new();
         let hit = FederatedExpandNeighbor {
             shard_id: 1,
@@ -1108,11 +1112,10 @@ mod tests {
             anchor_local_vertex_id: 4,
             label_id_raw: 0,
             slot_index: 0,
-            inline_value: 0,
-            value_bytes: vec![
+            payload_bytes: vec![
                 0;
                 usize::from(
-                    gleaph_graph_kernel::federation::MAX_FEDERATED_EXPAND_VALUE_BYTE_WIDTH
+                    gleaph_graph_kernel::federation::MAX_FEDERATED_EXPAND_PAYLOAD_BYTE_WIDTH
                 ) + 1
             ],
         };
@@ -1126,7 +1129,10 @@ mod tests {
             &[hit],
         )
         .unwrap_err();
-        assert!(matches!(err, GraphStoreError::FederatedExpandValue { .. }));
+        assert!(matches!(
+            err,
+            GraphStoreError::FederatedExpandPayload { .. }
+        ));
     }
 
     #[test]
@@ -1149,7 +1155,7 @@ mod tests {
             target: gleaph_graph_kernel::entry::VertexRef::remote_ref(remote_ref),
             edge_slot_index: gleaph_graph_kernel::entry::EdgeSlotIndex::from_raw(0),
             label_id: 0,
-            value: gleaph_graph_kernel::entry::EdgeValuePayload::from_slice(&[3, 0]),
+            payload: gleaph_graph_kernel::entry::EdgePayload::from_slice(&[3, 0]),
         };
         store
             .with_graph_mut(|graph| {
@@ -1174,11 +1180,11 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].neighbor_logical_vertex_id, remote_logical);
         assert_eq!(hits[0].neighbor_local_vertex_id, 0);
-        assert_eq!(hits[0].value_bytes[..2], [3, 0]);
+        assert_eq!(hits[0].payload_bytes[..2], [3, 0]);
     }
 
     #[test]
-    fn authoritative_undirected_includes_edge_value_bytes() {
+    fn authoritative_undirected_includes_edge_payload_bytes() {
         use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeWeightProfile, WeightEncoding};
 
         register_test_shard(7, "g");
@@ -1206,7 +1212,7 @@ mod tests {
             )
             .expect("profile");
         store
-            .insert_undirected_edge_with_value_bytes(low, high, Some(label_id), &[5, 0])
+            .insert_undirected_edge_with_payload_bytes(low, high, Some(label_id), &[5, 0])
             .expect("edge");
 
         let hits = pollster::block_on(collect_federated_expand(
@@ -1220,8 +1226,8 @@ mod tests {
         .expect("collect");
 
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].value_len(), 2);
-        assert_eq!(hits[0].value_bytes[..2], [5, 0]);
+        assert_eq!(hits[0].payload_len(), 2);
+        assert_eq!(hits[0].payload_bytes[..2], [5, 0]);
     }
 
     #[test]

@@ -11,8 +11,8 @@ use gleaph_gql_planner::plan::{
     PlanOp, ProjectColumn, ScanValue, ShortestPathCost, Str, VarLenSpec,
 };
 use gleaph_graph_kernel::entry::{
-    DecodedEdgeValue, EdgeValueProfileError, PreparedEdgeValueDecoder, PreparedWeightDecoder,
-    WeightProfilePrepareError, decode_edge_value, decode_inline_weight,
+    DecodedEdgePayload, EdgePayloadProfileError, PreparedEdgePayloadDecoder, PreparedWeightDecoder,
+    WeightProfilePrepareError, decode_edge_payload,
 };
 
 use crate::facade::{EdgeHandle, GraphStore, catalog_edge_label_from_wire};
@@ -23,60 +23,47 @@ use super::error::PlanQueryError;
 pub(crate) fn decode_traversal_edge_weight(
     store: &GraphStore,
     handle: EdgeHandle,
-    value_len: usize,
-    value_bytes: &[u8],
-    inline_value: u16,
-    weight_decoder: Option<&PreparedWeightDecoder>,
+    payload_len: usize,
+    payload_bytes: &[u8],
 ) -> Result<f32, PlanQueryError> {
     if let Some(catalog) = catalog_edge_label_from_wire(handle.label_id)
-        && let Some(profile) = store.edge_label_value_profile(catalog)
+        && let Some(profile) = store.edge_label_payload_profile(catalog)
     {
-        let decoder =
-            profile
-                .prepare()
-                .map_err(|e: gleaph_graph_kernel::entry::EdgeValueProfileError| {
-                    PlanQueryError::GleaphWeight {
-                        message: format!("edge value profile decode prepare failed: {e}"),
-                    }
-                })?;
+        let decoder = profile.prepare().map_err(
+            |e: gleaph_graph_kernel::entry::EdgePayloadProfileError| PlanQueryError::GleaphWeight {
+                message: format!("edge payload profile decode prepare failed: {e}"),
+            },
+        )?;
         let expected_width = profile.required_byte_width();
-        if value_len != usize::from(expected_width)
-            || value_bytes.len() != usize::from(expected_width)
+        if payload_len != usize::from(expected_width)
+            || payload_bytes.len() != usize::from(expected_width)
         {
             return Err(PlanQueryError::GleaphWeight {
                 message: format!(
-                    "edge value width mismatch: profile expects {expected_width} bytes, edge stores {value_len}"
+                    "edge payload width mismatch: profile expects {expected_width} bytes, edge stores {payload_len}"
                 ),
             });
         }
-        let decoded =
-            decode_edge_value(&decoder, value_bytes).map_err(|e| PlanQueryError::GleaphWeight {
-                message: format!("edge value decode failed: {e}"),
-            })?;
-        return decoded_edge_value_to_weight(decoded);
-    }
-    if let Some(decoder) = weight_decoder
-        && value_len == 2
-    {
-        return decode_inline_weight(decoder, inline_value).map_err(|e| {
+        let decoded = decode_edge_payload(&decoder, payload_bytes).map_err(|e| {
             PlanQueryError::GleaphWeight {
-                message: format!("GLEAPH.WEIGHT decode failed: {e}"),
+                message: format!("edge payload decode failed: {e}"),
             }
-        });
+        })?;
+        return decoded_edge_payload_to_weight(decoded);
     }
     Err(PlanQueryError::GleaphWeight {
         message: format!(
-            "edge label row has no value profile and stored width {} is not a legacy u16 weight",
-            value_len
+            "edge label row has no payload profile (stored width {} bytes)",
+            payload_len
         ),
     })
 }
 
-fn decoded_edge_value_to_weight(decoded: DecodedEdgeValue) -> Result<f32, PlanQueryError> {
+fn decoded_edge_payload_to_weight(decoded: DecodedEdgePayload) -> Result<f32, PlanQueryError> {
     match decoded {
-        DecodedEdgeValue::Weight(w) => Ok(w),
+        DecodedEdgePayload::Weight(w) => Ok(w),
         other => Err(PlanQueryError::GleaphWeight {
-            message: format!("edge value encoding {other:?} is not a traversal weight"),
+            message: format!("edge payload encoding {other:?} is not a traversal weight"),
         }),
     }
 }
@@ -246,14 +233,13 @@ fn finish_decoder_from_label_name(
             ),
         });
     }
-    if let Some(profile) = store.edge_label_value_profile(label_id) {
-        let decoder =
-            profile
-                .prepare()
-                .map_err(|e: EdgeValueProfileError| PlanQueryError::GleaphWeight {
-                    message: format!("GLEAPH.WEIGHT({edge_var}): invalid value profile: {e}"),
-                })?;
-        ensure_edge_value_decoder_is_weight(edge_var, label_name, &decoder)?;
+    if let Some(profile) = store.edge_label_payload_profile(label_id) {
+        let decoder = profile.prepare().map_err(|e: EdgePayloadProfileError| {
+            PlanQueryError::GleaphWeight {
+                message: format!("GLEAPH.WEIGHT({edge_var}): invalid payload profile: {e}"),
+            }
+        })?;
+        ensure_edge_payload_decoder_is_weight(edge_var, label_name, &decoder)?;
         return Ok(PreparedWeightDecoder::RawU16);
     }
 
@@ -271,23 +257,23 @@ fn finish_decoder_from_label_name(
     )
 }
 
-fn ensure_edge_value_decoder_is_weight(
+fn ensure_edge_payload_decoder_is_weight(
     edge_var: &str,
     label_name: &str,
-    decoder: &PreparedEdgeValueDecoder,
+    decoder: &PreparedEdgePayloadDecoder,
 ) -> Result<(), PlanQueryError> {
     if matches!(
         decoder,
-        PreparedEdgeValueDecoder::WeightRawU16
-            | PreparedEdgeValueDecoder::WeightLinear { .. }
-            | PreparedEdgeValueDecoder::WeightLog { .. }
-            | PreparedEdgeValueDecoder::WeightBinary16
+        PreparedEdgePayloadDecoder::WeightRawU16
+            | PreparedEdgePayloadDecoder::WeightLinear { .. }
+            | PreparedEdgePayloadDecoder::WeightLog { .. }
+            | PreparedEdgePayloadDecoder::WeightBinary16
     ) {
         return Ok(());
     }
     Err(PlanQueryError::GleaphWeight {
         message: format!(
-            "GLEAPH.WEIGHT({edge_var}): edge label '{label_name}' value profile is not a weight encoding"
+            "GLEAPH.WEIGHT({edge_var}): edge label '{label_name}' payload profile is not a weight encoding"
         ),
     })
 }
@@ -536,9 +522,11 @@ mod tests {
     }
 
     #[test]
-    fn decode_traversal_edge_weight_uses_edge_value_profile() {
+    fn decode_traversal_edge_weight_uses_edge_payload_profile() {
         use crate::facade::EdgeHandle;
-        use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeValueEncoding, EdgeValueProfile};
+        use gleaph_graph_kernel::entry::{
+            EdgeDirectedness, EdgePayloadEncoding, EdgePayloadProfile,
+        };
         use ic_stable_lara::{VertexId, labeled::BucketLabelKey as LaraLabelId};
 
         let store = GraphStore::new();
@@ -546,27 +534,26 @@ mod tests {
             .get_or_insert_edge_label_id("DecodeTraversalWgt")
             .expect("label");
         store
-            .install_edge_label_value_profile_at_init(
+            .install_edge_label_payload_profile_at_init(
                 label_id,
-                EdgeValueProfile {
+                EdgePayloadProfile {
                     byte_width: 2,
-                    encoding: EdgeValueEncoding::WeightRawU16,
+                    encoding: EdgePayloadEncoding::WeightRawU16,
                 },
             )
-            .expect("value profile");
+            .expect("payload profile");
         let wire = label_id.pack(EdgeDirectedness::Directed);
         let handle = EdgeHandle {
             owner_vertex_id: VertexId::from(0),
             label_id: LaraLabelId::from_raw(wire.raw()),
             slot_index: 0,
         };
-        let w = decode_traversal_edge_weight(&store, handle, 2, &[9, 0], 9, None).expect("decode");
+        let w = decode_traversal_edge_weight(&store, handle, 2, &[9, 0]).expect("decode");
         assert_eq!(w, 9.0);
 
-        let err =
-            decode_traversal_edge_weight(&store, handle, 0, &[], 0, None).expect_err("no bytes");
+        let err = decode_traversal_edge_weight(&store, handle, 0, &[]).expect_err("no bytes");
         assert!(
-            err.to_string().contains("edge value width mismatch"),
+            err.to_string().contains("edge payload width mismatch"),
             "unexpected error: {err}"
         );
     }

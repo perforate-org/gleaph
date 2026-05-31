@@ -1,7 +1,7 @@
 //! Graph store error type and conversions.
 
 use super::super::stable::edge_label_catalog::EdgeLabelCatalogError;
-use super::super::stable::edge_value_profiles::EdgeValueProfileStoreError;
+use super::super::stable::edge_payload_profiles::EdgePayloadProfileStoreError;
 use super::super::stable::edge_weight_profiles::EdgeWeightProfileStoreError;
 use super::super::stable::vertex_label_catalog::VertexLabelCatalogError;
 use super::super::{PropertyCatalogError, VertexLabelStoreError, VertexPropertyStoreError};
@@ -17,7 +17,7 @@ pub enum GraphStoreError {
     Graph(DeferredBidirectionalLabeledError),
     VertexLabelCatalog(VertexLabelCatalogError),
     EdgeLabelCatalog(EdgeLabelCatalogError),
-    EdgeValueProfile(EdgeValueProfileStoreError),
+    EdgePayloadProfile(EdgePayloadProfileStoreError),
     EdgeWeightProfile(EdgeWeightProfileStoreError),
     PropertyCatalog(PropertyCatalogError),
     VertexLabel(VertexLabelStoreError),
@@ -34,19 +34,19 @@ pub enum GraphStoreError {
     },
     /// Edge label id is outside the inline edge band `0x0001..=0x3FFF`.
     InvalidEdgeLabelId(EdgeLabelId),
-    /// Edge value byte width is not supported by labeled edge-value storage.
-    InvalidEdgeValueWidth(usize),
-    /// Stored edge-value bytes do not match the catalog label's configured width.
-    EdgeValueWidthMismatch {
+    /// Edge payload byte width is not supported by labeled edge-payload storage.
+    InvalidEdgePayloadWidth(usize),
+    /// Stored edge-payload bytes do not match the catalog label's configured width.
+    EdgePayloadWidthMismatch {
         label: Option<EdgeLabelId>,
         expected: usize,
         actual: usize,
     },
-    /// Federated expand returned or attempted to send invalid edge-value bytes.
-    FederatedExpandValue {
+    /// Federated expand returned or attempted to send invalid edge-payload bytes.
+    FederatedExpandPayload {
         detail: String,
     },
-    /// Edge value profile was already installed for this catalog label at init.
+    /// Edge payload profile was already installed for this catalog label at init.
     EdgeLabelProfileAlreadyInstalled(EdgeLabelId),
     VertexPlacement(placement::VertexPlacementError),
     /// Router reports this shard-local vertex is frozen during migration.
@@ -61,7 +61,7 @@ impl fmt::Display for GraphStoreError {
             Self::Graph(err) => write!(f, "{err}"),
             Self::VertexLabelCatalog(err) => write!(f, "{err}"),
             Self::EdgeLabelCatalog(err) => write!(f, "{err}"),
-            Self::EdgeValueProfile(err) => write!(f, "{err}"),
+            Self::EdgePayloadProfile(err) => write!(f, "{err}"),
             Self::EdgeWeightProfile(err) => write!(f, "{err}"),
             Self::PropertyCatalog(err) => write!(f, "{err}"),
             Self::VertexLabel(err) => write!(f, "{err}"),
@@ -83,10 +83,10 @@ impl fmt::Display for GraphStoreError {
                 "edge label id {} is not a catalog edge label (MSB clear, non-zero)",
                 id.raw()
             ),
-            Self::InvalidEdgeValueWidth(width) => {
-                write!(f, "edge value byte width {width} is not supported")
+            Self::InvalidEdgePayloadWidth(width) => {
+                write!(f, "edge payload byte width {width} is not supported")
             }
-            Self::EdgeValueWidthMismatch {
+            Self::EdgePayloadWidthMismatch {
                 label,
                 expected,
                 actual,
@@ -101,12 +101,12 @@ impl fmt::Display for GraphStoreError {
                     "unlabeled edges expect {expected} value bytes, got {actual}"
                 ),
             },
-            Self::FederatedExpandValue { detail } => {
-                write!(f, "invalid federated expand edge value: {detail}")
+            Self::FederatedExpandPayload { detail } => {
+                write!(f, "invalid federated expand edge payload: {detail}")
             }
             Self::EdgeLabelProfileAlreadyInstalled(id) => write!(
                 f,
-                "edge label {} value profile is already installed (init-time only)",
+                "edge label {} payload profile is already installed (init-time only)",
                 id.raw()
             ),
             Self::VertexPlacement(err) => write!(f, "{err}"),
@@ -122,7 +122,7 @@ impl std::error::Error for GraphStoreError {
             Self::Graph(err) => Some(err),
             Self::VertexLabelCatalog(err) => Some(err),
             Self::EdgeLabelCatalog(err) => Some(err),
-            Self::EdgeValueProfile(err) => Some(err),
+            Self::EdgePayloadProfile(err) => Some(err),
             Self::EdgeWeightProfile(err) => Some(err),
             Self::PropertyCatalog(err) => Some(err),
             Self::VertexLabel(err) => Some(err),
@@ -130,9 +130,9 @@ impl std::error::Error for GraphStoreError {
             Self::VertexNotDetached { .. }
             | Self::EdgeNotFound { .. }
             | Self::InvalidEdgeLabelId(_)
-            | Self::InvalidEdgeValueWidth(_)
-            | Self::EdgeValueWidthMismatch { .. }
-            | Self::FederatedExpandValue { .. }
+            | Self::InvalidEdgePayloadWidth(_)
+            | Self::EdgePayloadWidthMismatch { .. }
+            | Self::FederatedExpandPayload { .. }
             | Self::EdgeLabelProfileAlreadyInstalled(_)
             | Self::VertexPlacement(_)
             | Self::VertexMigrating
@@ -165,9 +165,9 @@ impl From<EdgeLabelCatalogError> for GraphStoreError {
     }
 }
 
-impl From<EdgeValueProfileStoreError> for GraphStoreError {
-    fn from(value: EdgeValueProfileStoreError) -> Self {
-        Self::EdgeValueProfile(value)
+impl From<EdgePayloadProfileStoreError> for GraphStoreError {
+    fn from(value: EdgePayloadProfileStoreError) -> Self {
+        Self::EdgePayloadProfile(value)
     }
 }
 

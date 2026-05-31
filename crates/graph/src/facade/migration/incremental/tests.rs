@@ -133,7 +133,7 @@ fn install_w2_weight_profile(
 }
 
 #[test]
-fn journal_out_edge_value_changed_applies_on_staging() {
+fn journal_out_edge_payload_changed_applies_on_staging() {
     let store = GraphStore::new();
     store
         .set_federation_routing(Some(FederationRouting {
@@ -161,7 +161,7 @@ fn journal_out_edge_value_changed_applies_on_staging() {
     .expect("start");
 
     let source_handle = store
-        .insert_directed_edge_with_value_bytes(source, target, Some(label_id), &[1, 0])
+        .insert_directed_edge_with_payload_bytes(source, target, Some(label_id), &[1, 0])
         .expect("edge");
     let source_wire =
         migration_wire_handle(source, source_handle.label_id, source_handle.slot_index);
@@ -216,7 +216,7 @@ fn journal_out_edge_value_changed_applies_on_staging() {
         .expect("source routing");
 
     store
-        .update_edge_value_at_handle(source_handle, &[9, 0])
+        .update_edge_payload_at_handle(source_handle, &[9, 0])
         .expect("source value change");
 
     store
@@ -232,9 +232,9 @@ fn journal_out_edge_value_changed_applies_on_staging() {
         logical_vertex_id: logical,
         epoch,
         seq: 99,
-        op: MigrationJournalOp::OutEdgeValueChanged {
+        op: MigrationJournalOp::OutEdgePayloadChanged {
             source_handle: source_wire,
-            value_bytes: vec![9, 0],
+            payload_bytes: vec![9, 0],
         },
     };
     pollster::block_on(apply_journal_to_staging(&store, staging_id, &item, &entry))
@@ -246,7 +246,7 @@ fn journal_out_edge_value_changed_applies_on_staging() {
         .find_outgoing_edge_record(staging_handle)
         .expect("staging lookup")
         .expect("staging edge");
-    assert_eq!(edge.value_bytes(), &[9, 0]);
+    assert_eq!(edge.payload_bytes(), &[9, 0]);
 }
 
 #[test]
@@ -278,7 +278,7 @@ fn journal_out_edge_removed_applies_on_staging() {
     .expect("start");
 
     let source_handle = store
-        .insert_directed_edge_with_value_bytes(source, target, Some(label_id), &[1, 0])
+        .insert_directed_edge_with_payload_bytes(source, target, Some(label_id), &[1, 0])
         .expect("edge");
     let source_wire =
         migration_wire_handle(source, source_handle.label_id, source_handle.slot_index);
@@ -468,7 +468,7 @@ fn journal_remote_parallel_out_edge_maps_value_updates_to_inserted_edge() {
 
     e2e_set_shard(&store, E2E_SOURCE_SHARD);
     let first = store
-        .insert_directed_edge_to_logical_with_value_bytes(
+        .insert_directed_edge_to_logical_with_payload_bytes(
             source,
             remote_logical,
             Some(label_id),
@@ -476,7 +476,7 @@ fn journal_remote_parallel_out_edge_maps_value_updates_to_inserted_edge() {
         )
         .expect("first remote edge");
     let second = store
-        .insert_directed_edge_to_logical_with_value_bytes(
+        .insert_directed_edge_to_logical_with_payload_bytes(
             source,
             remote_logical,
             Some(label_id),
@@ -511,9 +511,9 @@ fn journal_remote_parallel_out_edge_maps_value_updates_to_inserted_edge() {
         logical_vertex_id: logical,
         epoch: start.epoch,
         seq: 2,
-        op: MigrationJournalOp::OutEdgeValueChanged {
+        op: MigrationJournalOp::OutEdgePayloadChanged {
             source_handle: second_wire,
-            value_bytes: vec![9, 0],
+            payload_bytes: vec![9, 0],
         },
     };
     pollster::block_on(apply_journal_to_staging(&store, staging_id, &item, &update))
@@ -530,7 +530,7 @@ fn journal_remote_parallel_out_edge_maps_value_updates_to_inserted_edge() {
                     if store.logical_vertex_for_remote_ref(remote_ref) == Some(remote_logical)
             )
         })
-        .map(|edge| edge.value_bytes().to_vec())
+        .map(|edge| edge.payload_bytes().to_vec())
         .collect::<Vec<_>>();
     assert!(values.contains(&vec![1, 0]));
     assert!(values.contains(&vec![9, 0]));
@@ -652,7 +652,7 @@ fn native_pending_apply_delivers_maintenance_chunk() {
         .expect("label");
     install_w2_weight_profile(&store, label_id);
     store
-        .insert_directed_edge_with_value_bytes(source, neighbor, Some(label_id), &[1, 0])
+        .insert_directed_edge_with_payload_bytes(source, neighbor, Some(label_id), &[1, 0])
         .expect("edge");
 
     let start = pollster::block_on(migration_start(
@@ -722,7 +722,7 @@ fn journal_out_edge_property_set_applies_on_staging() {
     .expect("start");
 
     let source_handle = store
-        .insert_directed_edge_with_value_bytes(source, target, Some(label_id), &[1, 0])
+        .insert_directed_edge_with_payload_bytes(source, target, Some(label_id), &[1, 0])
         .expect("edge");
     let source_wire =
         migration_wire_handle(source, source_handle.label_id, source_handle.slot_index);
@@ -769,7 +769,7 @@ fn journal_out_edge_property_set_applies_on_staging() {
     });
 
     let prop = PropertyId::from_raw(42);
-    let value_bytes = Value::Int64(88).to_binary_bytes().expect("encode");
+    let payload_bytes = Value::Int64(88).to_binary_bytes().expect("encode");
     let item = load_item(logical).expect("item");
     let entry = MigrationJournalEntry {
         logical_vertex_id: logical,
@@ -778,7 +778,7 @@ fn journal_out_edge_property_set_applies_on_staging() {
         op: MigrationJournalOp::OutEdgePropertySet {
             source_handle: source_wire,
             property_id: prop,
-            value_bytes,
+            payload_bytes,
         },
     };
     pollster::block_on(apply_journal_to_staging(&store, staging_id, &item, &entry))
@@ -825,7 +825,7 @@ fn migration_reconcile_rebuilds_lost_queue_item() {
         .expect("label");
     install_w2_weight_profile(&store, label_id);
     store
-        .insert_directed_edge_with_value_bytes(source, neighbor, Some(label_id), &[1, 0])
+        .insert_directed_edge_with_payload_bytes(source, neighbor, Some(label_id), &[1, 0])
         .expect("edge");
 
     let start = pollster::block_on(migration_start(
@@ -917,9 +917,9 @@ fn incremental_migration_e2e_copy_and_cutover() {
         .expect("label");
     install_w2_weight_profile(&store, label_id);
 
-    let edge_value = [5u8, 0];
+    let edge_payload = [5u8, 0];
     store
-        .insert_directed_edge_with_value_bytes(source, neighbor, Some(label_id), &edge_value)
+        .insert_directed_edge_with_payload_bytes(source, neighbor, Some(label_id), &edge_payload)
         .expect("out edge");
 
     let start = pollster::block_on(migration_start(
@@ -997,7 +997,7 @@ fn incremental_migration_e2e_copy_and_cutover() {
         .find_outgoing_edge_record(remote_edge)
         .expect("edge record")
         .expect("edge payload");
-    assert_eq!(edge.value_bytes(), &edge_value);
+    assert_eq!(edge.payload_bytes(), &edge_payload);
 
     e2e_set_shard(&store, E2E_SOURCE_SHARD);
     let source_id = VertexId::from(source_local);
@@ -1057,7 +1057,7 @@ fn prune_clears_stub_payload_preserves_neighbor_edges() {
     install_w2_weight_profile(&store, label_id);
     // Neighbor -> migrant: canonical edge lives on neighbor.o and must survive source prune.
     let incoming_handle = store
-        .insert_directed_edge_with_value_bytes(neighbor, source, Some(label_id), &[3, 0])
+        .insert_directed_edge_with_payload_bytes(neighbor, source, Some(label_id), &[3, 0])
         .expect("edge into migrant");
     let property_id = store.get_or_insert_property_id("kept").expect("property");
     store
@@ -1133,7 +1133,7 @@ fn prune_clears_stub_undirected_payload_preserves_neighbor_row() {
         .expect("label");
     install_w2_weight_profile(&store, label_id);
     store
-        .insert_undirected_edge_with_value_bytes(source, neighbor, Some(label_id), &[4, 0])
+        .insert_undirected_edge_with_payload_bytes(source, neighbor, Some(label_id), &[4, 0])
         .expect("undirected edge");
 
     let start = pollster::block_on(migration_start(
@@ -1196,7 +1196,7 @@ fn migration_copies_undirected_edges_before_source_prune() {
         .expect("label");
     install_w2_weight_profile(&store, label_id);
     store
-        .insert_undirected_edge_with_value_bytes(source, neighbor, Some(label_id), &[6, 0])
+        .insert_undirected_edge_with_payload_bytes(source, neighbor, Some(label_id), &[6, 0])
         .expect("undirected edge");
 
     let start = pollster::block_on(migration_start(
@@ -1327,7 +1327,7 @@ fn in_reverse_journal_maps_to_the_inserted_destination_row() {
         epoch,
         &ExportedInReverseEdge {
             catalog_label: Some(label_id),
-            value_bytes: vec![1, 0],
+            payload_bytes: vec![1, 0],
             predecessor_logical_vertex_id: 90_001,
             predecessor_is_remote: true,
             source_reverse_handle: source_a,
@@ -1343,7 +1343,7 @@ fn in_reverse_journal_maps_to_the_inserted_destination_row() {
         epoch,
         &ExportedInReverseEdge {
             catalog_label: Some(label_id),
-            value_bytes: vec![2, 0],
+            payload_bytes: vec![2, 0],
             predecessor_logical_vertex_id: 90_002,
             predecessor_is_remote: true,
             source_reverse_handle: source_b,
@@ -1367,7 +1367,7 @@ fn in_reverse_journal_maps_to_the_inserted_destination_row() {
         seq: 0,
         op: MigrationJournalOp::InReverseValueChanged {
             source_handle: source_b,
-            value_bytes: vec![9, 0],
+            payload_bytes: vec![9, 0],
         },
     };
     pollster::block_on(apply_journal_to_staging(&store, target, &item, &entry))
@@ -1389,8 +1389,8 @@ fn in_reverse_journal_maps_to_the_inserted_destination_row() {
         .find_outgoing_edge_record(handle_from_wire(target, target_b))
         .expect("second lookup")
         .expect("second edge");
-    assert_eq!(first.value_bytes(), &[1, 0]);
-    assert_eq!(second.value_bytes(), &[9, 0]);
+    assert_eq!(first.payload_bytes(), &[1, 0]);
+    assert_eq!(second.payload_bytes(), &[9, 0]);
 }
 
 #[test]
@@ -1407,7 +1407,7 @@ fn canonical_incoming_edge_mutations_journal_to_migrating_target_reverse_row() {
         .expect("label");
     install_w2_weight_profile(&store, label_id);
     let incoming = store
-        .insert_directed_edge_with_value_bytes(pred, source, Some(label_id), &[1, 0])
+        .insert_directed_edge_with_payload_bytes(pred, source, Some(label_id), &[1, 0])
         .expect("incoming edge");
     let wire_label =
         lara_label(label_id.pack(gleaph_graph_kernel::entry::EdgeDirectedness::Directed));
@@ -1451,7 +1451,7 @@ fn canonical_incoming_edge_mutations_journal_to_migrating_target_reverse_row() {
 
     e2e_set_shard(&store, E2E_SOURCE_SHARD);
     store
-        .update_edge_value_at_handle(incoming, &[9, 0])
+        .update_edge_payload_at_handle(incoming, &[9, 0])
         .expect("incoming value update");
     let entries = MIGRATION_JOURNAL.with_borrow(|j| j.entries_for(logical, start.epoch, 0, 0));
     assert_eq!(entries.len(), 1);
@@ -1473,7 +1473,7 @@ fn canonical_incoming_edge_mutations_journal_to_migrating_target_reverse_row() {
         .find_outgoing_edge_record(target_handle)
         .expect("target lookup")
         .expect("target reverse row");
-    assert_eq!(updated.value_bytes(), &[9, 0]);
+    assert_eq!(updated.payload_bytes(), &[9, 0]);
 
     e2e_set_shard(&store, E2E_SOURCE_SHARD);
     store
@@ -1517,7 +1517,7 @@ fn in_reverse_copy_is_resumable_and_preserves_label() {
     for i in 0..5 {
         let pred = store.insert_vertex().expect("pred");
         store
-            .insert_directed_edge_with_value_bytes(pred, source, Some(label_id), &[i, 0])
+            .insert_directed_edge_with_payload_bytes(pred, source, Some(label_id), &[i, 0])
             .expect("incoming edge");
     }
 
@@ -1583,7 +1583,7 @@ fn in_reverse_copy_is_resumable_and_preserves_label() {
     let mut copied_values = dest_in_edges
         .iter()
         .filter(|e| e.label_id == label_raw)
-        .map(|e| e.value_bytes().to_vec())
+        .map(|e| e.payload_bytes().to_vec())
         .collect::<Vec<_>>();
     copied_values.sort();
     assert_eq!(

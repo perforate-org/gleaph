@@ -8,7 +8,7 @@ use crate::{
         bucket_label_key::BucketLabelKey,
         record::{LabelBucket, LabeledVertex},
     },
-    lara::{edge::EdgeStore, edge_value::EdgeValueStore, operation_error::LaraOperationError},
+    lara::{edge::EdgeStore, edge_payload::EdgePayloadStore, operation_error::LaraOperationError},
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
 use ic_stable_structures::Memory;
@@ -21,10 +21,10 @@ where
     E: CsrEdge,
     M: Memory,
 {
-    pub(super) fn bucket_resident_value_bytes(&self, bucket: &LabelBucket) -> u64 {
-        crate::labeled::invariants::bucket_resident_value_bytes(bucket)
+    pub(super) fn bucket_resident_payload_bytes(&self, bucket: &LabelBucket) -> u64 {
+        crate::labeled::invariants::bucket_resident_payload_bytes(bucket)
     }
-    pub(super) fn reconcile_vertex_value_allocated_bytes(
+    pub(super) fn reconcile_vertex_payload_allocated_bytes(
         &self,
         src: VertexId,
         vertex: &LabeledVertex,
@@ -32,34 +32,34 @@ where
     ) -> Result<(), LabeledOperationError> {
         let total: u64 = buckets
             .iter()
-            .map(|b| self.bucket_resident_value_bytes(b))
+            .map(|b| self.bucket_resident_payload_bytes(b))
             .try_fold(0u64, |acc, bytes| {
                 acc.checked_add(bytes)
                     .ok_or(LaraOperationError::CollectAllocationOverflow)
             })?;
-        if vertex.value_allocated_bytes() == total {
+        if vertex.payload_allocated_bytes() == total {
             debug_assert_eq!(
-                vertex.value_allocated_bytes(),
+                vertex.payload_allocated_bytes(),
                 total,
-                "vertex {src:?} value_allocated_bytes must match bucket resident sum"
+                "vertex {src:?} payload_allocated_bytes must match bucket resident sum"
             );
             return Ok(());
         }
         let updated = vertex
-            .try_with_value_allocated_bytes(total)
+            .try_with_payload_allocated_bytes(total)
             .map_err(LabeledOperationError::from)?;
         self.vertices.set(src, &updated);
         debug_assert_eq!(
-            self.vertices.get(src).value_allocated_bytes(),
+            self.vertices.get(src).payload_allocated_bytes(),
             total,
-            "vertex {src:?} value_allocated_bytes must match bucket resident sum after reconcile"
+            "vertex {src:?} payload_allocated_bytes must match bucket resident sum after reconcile"
         );
         Ok(())
     }
-    pub(super) fn value_log_leaf(&self, src: VertexId) -> u32 {
+    pub(super) fn payload_log_leaf(&self, src: VertexId) -> u32 {
         u32::from(src) / self.edges.header().segment_size.max(1)
     }
-    pub(super) fn vertex_value_spans_need_sync_after_rewrite(
+    pub(super) fn vertex_payload_spans_need_sync_after_rewrite(
         old_buckets: &[LabelBucket],
         moved: bool,
         old_alloc: u32,
@@ -69,45 +69,45 @@ where
             return true;
         }
         if compact {
-            return old_buckets.iter().any(|b| b.is_value_allocated());
+            return old_buckets.iter().any(|b| b.is_payload_allocated());
         }
         old_buckets.iter().any(|b| {
-            b.is_value_allocated() && (b.value_log_head() >= 0 || b.stored_slots != b.degree())
+            b.is_payload_allocated() && (b.payload_log_head() >= 0 || b.stored_slots != b.degree())
         })
     }
-    pub(super) fn read_bucket_values_slab_dense(
+    pub(super) fn read_bucket_payloads_slab_dense(
         &self,
         bucket: &LabelBucket,
     ) -> Option<Vec<Vec<u8>>> {
-        if !bucket.is_value_allocated()
-            || bucket.value_byte_width() == 0
-            || bucket.value_log_head() >= 0
+        if !bucket.is_payload_allocated()
+            || bucket.payload_byte_width() == 0
+            || bucket.payload_log_head() >= 0
             || bucket.stored_slots != bucket.degree()
         {
             return None;
         }
         let degree = bucket.degree() as usize;
-        let width = usize::from(bucket.value_byte_width());
+        let width = usize::from(bucket.payload_byte_width());
         let nbytes = degree.checked_mul(width)?;
         let mut raw = vec![0u8; nbytes];
-        self.values.read_bytes(bucket.value_offset(), &mut raw);
+        self.values.read_bytes(bucket.payload_offset(), &mut raw);
         Some(
             raw.chunks(width)
                 .map(|chunk| chunk.to_vec())
                 .collect::<Vec<_>>(),
         )
     }
-    pub(super) fn collect_bucket_values_asc_order(
+    pub(super) fn collect_bucket_payloads_asc_order(
         &self,
         src: VertexId,
         vertex: &LabeledVertex,
         bucket_index: u32,
         bucket: &LabelBucket,
     ) -> Result<Vec<Vec<u8>>, LabeledOperationError> {
-        if !bucket.is_value_allocated() || bucket.value_byte_width() == 0 {
+        if !bucket.is_payload_allocated() || bucket.payload_byte_width() == 0 {
             return Ok(Vec::new());
         }
-        if let Some(dense) = self.read_bucket_values_slab_dense(bucket) {
+        if let Some(dense) = self.read_bucket_payloads_slab_dense(bucket) {
             return Ok(dense);
         }
         let slot = Self::labeled_vertex_bucket_slot(vertex, bucket_index)?;
@@ -121,55 +121,55 @@ where
             (bucket.overflow_log_head() >= 0).then(|| self.bucket_log_chains(src, bucket));
         let mut out = Vec::with_capacity(edges.len());
         for edge in edges {
-            out.push(self.read_bucket_value_for_edge(src, bucket, &edge, log_chains.as_ref())?);
+            out.push(self.read_bucket_payload_for_edge(src, bucket, &edge, log_chains.as_ref())?);
         }
         Ok(out)
     }
-    pub(super) fn read_bucket_value_for_edge(
+    pub(super) fn read_bucket_payload_for_edge(
         &self,
         src: VertexId,
         bucket: &LabelBucket,
         edge: &E,
         log_chains: Option<&(Vec<u32>, Vec<u32>)>,
     ) -> Result<Vec<u8>, LabeledOperationError> {
-        let width = bucket.value_byte_width();
+        let width = bucket.payload_byte_width();
         if width == 0 {
             return Ok(Vec::new());
         }
         let slot_index = edge.edge_slot_index_raw();
-        if bucket.value_log_head() < 0 && bucket.overflow_log_head() < 0 {
+        if bucket.payload_log_head() < 0 && bucket.overflow_log_head() < 0 {
             let mut buf = vec![0u8; usize::from(width)];
             let offset = bucket
-                .value_offset()
+                .payload_offset()
                 .checked_add(u64::from(slot_index) * u64::from(width))
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             self.values.read_bytes(offset, &mut buf);
             return Ok(buf);
         }
 
-        let leaf = self.value_log_leaf(src);
-        if let Some((edge_chain, value_chain)) = log_chains {
-            if let Some(bytes) = Self::lookup_bucket_value_in_log_chains(
+        let leaf = self.payload_log_leaf(src);
+        if let Some((edge_chain, payload_chain)) = log_chains {
+            if let Some(bytes) = Self::lookup_bucket_payload_in_log_chains(
                 &self.edges,
                 &self.values,
                 leaf,
                 width,
                 edge,
                 edge_chain,
-                value_chain,
+                payload_chain,
             )? {
                 return Ok(bytes);
             }
         } else {
-            let (edge_chain, value_chain) = self.bucket_log_chains(src, bucket);
-            if let Some(bytes) = Self::lookup_bucket_value_in_log_chains(
+            let (edge_chain, payload_chain) = self.bucket_log_chains(src, bucket);
+            if let Some(bytes) = Self::lookup_bucket_payload_in_log_chains(
                 &self.edges,
                 &self.values,
                 leaf,
                 width,
                 edge,
                 &edge_chain,
-                &value_chain,
+                &payload_chain,
             )? {
                 return Ok(bytes);
             }
@@ -177,119 +177,119 @@ where
 
         let mut buf = vec![0u8; usize::from(width)];
         let offset = bucket
-            .value_offset()
+            .payload_offset()
             .checked_add(u64::from(slot_index) * u64::from(width))
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         self.values.read_bytes(offset, &mut buf);
         Ok(buf)
     }
-    pub(super) fn lookup_bucket_value_in_log_chains(
+    pub(super) fn lookup_bucket_payload_in_log_chains(
         edges: &EdgeStore<E, M>,
-        values: &EdgeValueStore<M>,
+        values: &EdgePayloadStore<M>,
         leaf: u32,
         width: u16,
         edge: &E,
         edge_chain: &[u32],
-        value_chain: &[u32],
+        payload_chain: &[u32],
     ) -> Result<Option<Vec<u8>>, LabeledOperationError> {
         debug_assert_eq!(
             edge_chain.len(),
-            value_chain.len(),
-            "edge/value overflow log chains must have equal length at lookup time"
+            payload_chain.len(),
+            "edge/payload overflow log chains must have equal length at lookup time"
         );
         let slot_index = edge.edge_slot_index_raw();
-        for (&entry_idx, &value_idx) in edge_chain.iter().zip(value_chain.iter()) {
+        for (&entry_idx, &value_idx) in edge_chain.iter().zip(payload_chain.iter()) {
             if entry_idx != slot_index {
                 continue;
             }
             let logged = edges.decode_overflow_log_edge_at(leaf, entry_idx);
             if logged.neighbor_vid() == edge.neighbor_vid() {
                 let mut buf = vec![0u8; usize::from(width)];
-                values.read_value_log_entry(leaf, value_idx, width, &mut buf)?;
+                values.read_payload_log_entry(leaf, value_idx, width, &mut buf)?;
                 return Ok(Some(buf));
             }
         }
         Ok(None)
     }
-    pub(super) fn write_edge_value_to_log(
+    pub(super) fn write_edge_payload_to_log(
         &self,
         src: VertexId,
         bucket: &LabelBucket,
         entry_idx: i32,
         edge: &E,
     ) -> Result<LabelBucket, LabeledOperationError> {
-        let width = bucket.value_byte_width();
+        let width = bucket.payload_byte_width();
         if width == 0 {
             return Ok(*bucket);
         }
         let src_i32 = i32::try_from(u32::from(src))
             .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
         self.values
-            .write_value_log_entry(
-                self.value_log_leaf(src),
+            .write_payload_log_entry(
+                self.payload_log_leaf(src),
                 u32::try_from(entry_idx)
                     .map_err(|_| LaraOperationError::CollectAllocationOverflow)?,
-                bucket.value_log_head(),
+                bucket.payload_log_head(),
                 src_i32,
                 width,
-                edge.edge_value_bytes(),
+                edge.edge_payload_bytes(),
             )
             .map_err(LabeledOperationError::from)?;
         bucket
-            .try_with_value_log_head(entry_idx)
+            .try_with_payload_log_head(entry_idx)
             .map_err(LabeledOperationError::from)
     }
-    pub(super) fn release_bucket_value_span(
+    pub(super) fn release_bucket_payload_span(
         &self,
         src: VertexId,
         bucket: &LabelBucket,
     ) -> Result<(), LabeledOperationError> {
-        let len = self.bucket_resident_value_bytes(bucket);
+        let len = self.bucket_resident_payload_bytes(bucket);
         if len == 0 {
             return Ok(());
         }
         self.values
-            .retire_byte_span(bucket.value_offset(), len)
+            .retire_byte_span(bucket.payload_offset(), len)
             .map_err(LabeledOperationError::from)?;
         let vertex = self.vertices.get(src);
-        let new_alloc = vertex.value_allocated_bytes().saturating_sub(len);
+        let new_alloc = vertex.payload_allocated_bytes().saturating_sub(len);
         let updated = vertex
-            .try_with_value_allocated_bytes(new_alloc)
+            .try_with_payload_allocated_bytes(new_alloc)
             .map_err(LabeledOperationError::from)?;
         self.vertices.set(src, &updated);
         Ok(())
     }
-    pub(super) fn read_bucket_values_in_edge_slot_order(
+    pub(super) fn read_bucket_payloads_in_edge_slot_order(
         &self,
         src: VertexId,
         vertex: &LabeledVertex,
         bucket_index: u32,
         bucket: &LabelBucket,
     ) -> Result<Vec<Vec<u8>>, LabeledOperationError> {
-        self.collect_bucket_values_asc_order(src, vertex, bucket_index, bucket)
+        self.collect_bucket_payloads_asc_order(src, vertex, bucket_index, bucket)
     }
-    pub(super) fn ensure_bucket_value_byte_width_on_slot(
+    pub(super) fn ensure_bucket_payload_byte_width_on_slot(
         &self,
         _src: VertexId,
         _bucket_slot: u64,
         bucket: LabelBucket,
-        value_byte_width: u16,
+        payload_byte_width: u16,
     ) -> Result<LabelBucket, LabeledOperationError> {
-        if bucket.value_byte_width() == value_byte_width {
+        if bucket.payload_byte_width() == payload_byte_width {
             return Ok(bucket);
         }
-        if bucket.is_value_allocated() && value_byte_width != 0 {
+        if bucket.is_payload_allocated() && payload_byte_width != 0 {
             return Err(LabeledOperationError::from(
                 LaraOperationError::CollectAllocationOverflow,
             ));
         }
-        Ok(bucket.with_value_byte_width(value_byte_width))
+        Ok(bucket.with_payload_byte_width(payload_byte_width))
     }
-    pub fn ensure_label_bucket_value_byte_width(
+    pub fn ensure_label_bucket_payload_byte_width(
         &self,
         src: VertexId,
         label_id: BucketLabelKey,
-        value_byte_width: u16,
+        payload_byte_width: u16,
     ) -> Result<(), LabeledOperationError> {
         self.ensure_vertex(src)?;
         let vertex = self.vertices.get(src);
@@ -297,23 +297,23 @@ where
             return Ok(());
         }
         let (bucket_slot, bucket) = self.find_or_create_bucket(src, &vertex, label_id)?;
-        let bucket = self.ensure_bucket_value_byte_width_on_slot(
+        let bucket = self.ensure_bucket_payload_byte_width_on_slot(
             src,
             bucket_slot,
             bucket,
-            value_byte_width,
+            payload_byte_width,
         )?;
         self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
         Ok(())
     }
-    pub(super) fn ensure_bucket_value_span(
+    pub(super) fn ensure_bucket_payload_span(
         &self,
         src: VertexId,
         bucket_slot: u64,
         mut bucket: LabelBucket,
         prev_stored_slots: u32,
     ) -> Result<LabelBucket, LabeledOperationError> {
-        let width = bucket.value_byte_width();
+        let width = bucket.payload_byte_width();
         let needed_slots = bucket.stored_slots.max(bucket.degree);
         if width == 0 || needed_slots == 0 {
             return Ok(bucket);
@@ -325,7 +325,7 @@ where
             .checked_mul(u64::from(width))
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         let tail = self.values.header().slab_occupied_tail;
-        let old_offset = bucket.value_offset();
+        let old_offset = bucket.payload_offset();
         let span_ends_at_tail = old_offset
             .checked_add(had_bytes)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?
@@ -349,8 +349,8 @@ where
                     .map_err(LabeledOperationError::from)?
             };
             bucket = bucket
-                .with_value_offset(offset)
-                .try_with_value_log_head(-1)
+                .with_payload_offset(offset)
+                .try_with_payload_log_head(-1)
                 .map_err(LabeledOperationError::from)?;
             alloc_delta = needed_bytes;
         } else if span_ends_at_tail
@@ -395,9 +395,9 @@ where
                     .retire_byte_span(old_offset, had_bytes)
                     .map_err(LabeledOperationError::from)?;
             }
-            bucket = bucket.with_value_offset(new_offset);
+            bucket = bucket.with_payload_offset(new_offset);
             alloc_delta = extra;
-            debug_assert_eq!(bucket.value_offset(), new_offset);
+            debug_assert_eq!(bucket.payload_offset(), new_offset);
         }
 
         self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
@@ -405,23 +405,23 @@ where
         if alloc_delta > 0 {
             let vertex = self.vertices.get(src);
             let new_alloc = vertex
-                .value_allocated_bytes()
+                .payload_allocated_bytes()
                 .checked_add(alloc_delta)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             let updated = vertex
-                .try_with_value_allocated_bytes(new_alloc)
+                .try_with_payload_allocated_bytes(new_alloc)
                 .map_err(LabeledOperationError::from)?;
             self.vertices.set(src, &updated);
         }
-        if bucket.is_value_allocated() {
+        if bucket.is_payload_allocated() {
             let vertex = self.vertices.get(src);
             let buckets = self.read_vertex_label_buckets(&vertex)?;
-            self.reconcile_vertex_value_allocated_bytes(src, &vertex, &buckets)?;
+            self.reconcile_vertex_payload_allocated_bytes(src, &vertex, &buckets)?;
         }
         Ok(bucket)
     }
-    /// Updates the edge-value payload for one live edge at `slot_index` inside `label_id`.
-    pub fn update_edge_value_at_slot(
+    /// Updates the edge-payload payload for one live edge at `slot_index` inside `label_id`.
+    pub fn update_edge_payload_at_slot(
         &self,
         src: VertexId,
         label_id: BucketLabelKey,
@@ -445,7 +445,7 @@ where
             if current.is_tombstone_edge() {
                 return Ok(false);
             }
-            if edge.edge_value_byte_width() != 0 {
+            if edge.edge_payload_byte_width() != 0 {
                 return Ok(false);
             }
             return Ok(true);
@@ -467,25 +467,25 @@ where
         if current.is_deleted_slot() || current.is_tombstone_edge() {
             return Ok(false);
         }
-        if edge.edge_value_byte_width() != 0 {
-            self.write_edge_value_at_slot(&bucket, slot_index, &edge)?;
+        if edge.edge_payload_byte_width() != 0 {
+            self.write_edge_payload_at_slot(&bucket, slot_index, &edge)?;
         }
         self.buckets.write_label_bucket_slot(slot, bucket)?;
         self.invalidate_bucket_lookup_for_label(src, label_id);
         Ok(true)
     }
 
-    pub(super) fn write_edge_value_at_slot(
+    pub(super) fn write_edge_payload_at_slot(
         &self,
         bucket: &LabelBucket,
         slot_index: u32,
         edge: &E,
     ) -> Result<(), LabeledOperationError> {
-        let width = bucket.value_byte_width();
+        let width = bucket.payload_byte_width();
         if width == 0 {
             return Ok(());
         }
-        let value_width = edge.edge_value_byte_width();
+        let value_width = edge.edge_payload_byte_width();
         if value_width == 0 {
             return Ok(());
         }
@@ -495,15 +495,15 @@ where
             ));
         }
         let offset = bucket
-            .value_offset()
+            .payload_offset()
             .checked_add(u64::from(slot_index) * u64::from(width))
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         self.values
-            .write_value_slot(offset, width, edge.edge_value_bytes())
+            .write_payload_slot(offset, width, edge.edge_payload_bytes())
             .map_err(LabeledOperationError::from)?;
         Ok(())
     }
-    pub(super) fn attach_edge_value(
+    pub(super) fn attach_edge_payload(
         &self,
         src: VertexId,
         _vertex: &LabeledVertex,
@@ -513,30 +513,30 @@ where
         edge: E,
         log_chains: Option<&(Vec<u32>, Vec<u32>)>,
     ) -> E {
-        if !bucket.is_value_allocated() {
+        if !bucket.is_payload_allocated() {
             return edge;
         }
-        let width = bucket.value_byte_width();
+        let width = bucket.payload_byte_width();
         let edge = edge.with_slot_index(slot_index);
         let buf = self
-            .read_bucket_value_for_edge(src, &bucket, &edge, log_chains)
+            .read_bucket_payload_for_edge(src, &bucket, &edge, log_chains)
             .unwrap_or_else(|_| vec![0u8; usize::from(width)]);
-        edge.with_stored_value_bytes(width, &buf)
+        edge.with_stored_payload_bytes(width, &buf)
     }
-    pub(super) fn bucket_value_log_chains_opt(
+    pub(super) fn bucket_payload_log_chains_opt(
         &self,
         src: VertexId,
         bucket: &LabelBucket,
     ) -> Option<(Vec<u32>, Vec<u32>)> {
-        if bucket.is_value_allocated()
-            && (bucket.overflow_log_head() >= 0 || bucket.value_log_head() >= 0)
+        if bucket.is_payload_allocated()
+            && (bucket.overflow_log_head() >= 0 || bucket.payload_log_head() >= 0)
         {
             Some(self.bucket_log_chains(src, bucket))
         } else {
             None
         }
     }
-    pub(super) fn labeled_edge_with_value(
+    pub(super) fn labeled_edge_with_payload(
         &self,
         src: VertexId,
         vertex: &LabeledVertex,
@@ -546,7 +546,7 @@ where
         edge: E,
         log_chains: Option<&(Vec<u32>, Vec<u32>)>,
     ) -> E {
-        self.attach_edge_value(
+        self.attach_edge_payload(
             src,
             vertex,
             bucket_index,
@@ -556,7 +556,7 @@ where
             log_chains,
         )
     }
-    pub(super) fn collect_bucket_values_before_edge_rewrite(
+    pub(super) fn collect_bucket_payloads_before_edge_rewrite(
         &self,
         src: VertexId,
         vertex: &LabeledVertex,
@@ -564,13 +564,13 @@ where
     ) -> Result<Vec<Vec<Vec<u8>>>, LabeledOperationError> {
         let mut saved = Vec::with_capacity(buckets.len());
         for (index, bucket) in buckets.iter().enumerate() {
-            let values = match self.read_bucket_values_slab_dense(bucket) {
+            let values = match self.read_bucket_payloads_slab_dense(bucket) {
                 Some(v) => v,
                 None => {
-                    self.read_bucket_values_in_edge_slot_order(src, vertex, index as u32, bucket)?
+                    self.read_bucket_payloads_in_edge_slot_order(src, vertex, index as u32, bucket)?
                 }
             };
-            if bucket.value_byte_width() > 0 {
+            if bucket.payload_byte_width() > 0 {
                 let live = usize::try_from(bucket.degree()).unwrap_or(usize::MAX);
                 debug_assert_eq!(
                     values.len(),
@@ -583,7 +583,7 @@ where
         Ok(saved)
     }
 
-    pub(super) fn sync_vertex_value_spans_after_edge_rewrite(
+    pub(super) fn sync_vertex_payload_spans_after_edge_rewrite(
         &self,
         src: VertexId,
         old_buckets: &[LabelBucket],
@@ -597,10 +597,10 @@ where
         }
         let vertex = self.vertices.get(src);
         for old in old_buckets {
-            self.release_bucket_value_span(src, old)?;
+            self.release_bucket_payload_span(src, old)?;
         }
         for (index, new_bucket) in new_buckets.iter().enumerate() {
-            if new_bucket.value_byte_width() == 0 {
+            if new_bucket.payload_byte_width() == 0 {
                 continue;
             }
             let live = usize::try_from(new_bucket.degree()).unwrap_or(usize::MAX);
@@ -610,9 +610,9 @@ where
                 "sync after rewrite: saved value count must match new live degree (bucket {index})"
             );
             let slot = Self::labeled_vertex_bucket_slot(&vertex, index as u32)?;
-            let mut bucket = new_bucket.with_value_offset(0);
-            bucket = self.ensure_bucket_value_span(src, slot, bucket, 0)?;
-            let width = bucket.value_byte_width();
+            let mut bucket = new_bucket.with_payload_offset(0);
+            bucket = self.ensure_bucket_payload_span(src, slot, bucket, 0)?;
+            let width = bucket.payload_byte_width();
             let flat_len = saved[index]
                 .len()
                 .checked_mul(usize::from(width))
@@ -623,7 +623,7 @@ where
                     flat.extend_from_slice(bytes);
                 }
                 self.values
-                    .write_bytes(bucket.value_offset(), &flat)
+                    .write_bytes(bucket.payload_offset(), &flat)
                     .map_err(LabeledOperationError::from)?;
             }
             self.buckets.write_label_bucket_slot(slot, bucket)?;
@@ -645,14 +645,14 @@ where
         let buckets = self.read_vertex_label_buckets(&vertex)?;
         let has_live_value_span = buckets
             .iter()
-            .any(|b| b.is_value_allocated() && self.bucket_resident_value_bytes(b) > 0);
+            .any(|b| b.is_payload_allocated() && self.bucket_resident_payload_bytes(b) > 0);
         if has_live_value_span {
-            return self.reconcile_vertex_value_allocated_bytes(src, &vertex, &buckets);
+            return self.reconcile_vertex_payload_allocated_bytes(src, &vertex, &buckets);
         }
-        if vertex.value_allocated_bytes() > 0 {
+        if vertex.payload_allocated_bytes() > 0 {
             return Ok(());
         }
-        if buckets.iter().any(|b| b.is_value_allocated()) {
+        if buckets.iter().any(|b| b.is_payload_allocated()) {
             if self.vertex_label_buckets_have_overflow(&vertex)? {
                 self.reclaim_vertex_overflow_buckets(src)?;
             }
@@ -678,22 +678,26 @@ mod tests {
     use crate::VertexId;
 
     #[test]
-    fn edge_values_round_trip_via_unchecked_label_iteration() {
-        let graph = valued_test_graph();
+    fn edge_payloads_round_trip_via_unchecked_label_iteration() {
+        let graph = payload_test_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 2u16)
-            .unwrap();
-        graph
-            .insert_edge_skip_leaf_cascade(VertexId::from(0), road, ValuedTestEdge::with_u16(1, 1))
+            .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
         graph
             .insert_edge_skip_leaf_cascade(
                 VertexId::from(0),
                 road,
-                ValuedTestEdge::with_u16(2, 100),
+                PayloadTestEdge::with_bytes(1, &1u16.to_le_bytes()),
+            )
+            .unwrap();
+        graph
+            .insert_edge_skip_leaf_cascade(
+                VertexId::from(0),
+                road,
+                PayloadTestEdge::with_bytes(2, &100u16.to_le_bytes()),
             )
             .unwrap();
         let vertex = graph.vertices().get(VertexId::from(0));
@@ -701,7 +705,7 @@ mod tests {
             graph.find_bucket(VertexId::from(0), &vertex, road).unwrap()
         {
             let mut raw = vec![0u8; 4];
-            graph.values().read_bytes(bucket.value_offset(), &mut raw);
+            graph.values().read_bytes(bucket.payload_offset(), &mut raw);
             assert_eq!(u16::from_le_bytes([raw[0], raw[1]]), 1);
             assert_eq!(u16::from_le_bytes([raw[2], raw[3]]), 100);
         }
@@ -714,9 +718,9 @@ mod tests {
         assert_eq!(edges.len(), 2);
         let mut weights: Vec<u16> = edges
             .iter()
-            .filter(|e| e.value_len == 2)
+            .filter(|e| e.payload_len == 2)
             .map(|e| {
-                let b = e.edge_value_bytes();
+                let b = e.edge_payload_bytes();
                 u16::from_le_bytes([b[0], b[1]])
             })
             .collect();
@@ -729,33 +733,41 @@ mod tests {
         );
     }
     #[test]
-    fn edge_values_survive_middle_vertex_insert() {
-        let graph = valued_test_graph();
+    fn edge_payloads_survive_middle_vertex_insert() {
+        let graph = payload_test_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 2u16)
-            .unwrap();
-        graph
-            .insert_edge_skip_leaf_cascade(VertexId::from(0), road, ValuedTestEdge::with_u16(1, 1))
-            .unwrap();
-        graph
-            .insert_edge_skip_leaf_cascade(VertexId::from(1), road, ValuedTestEdge::with_u16(2, 1))
+            .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
         graph
             .insert_edge_skip_leaf_cascade(
                 VertexId::from(0),
                 road,
-                ValuedTestEdge::with_u16(2, 100),
+                PayloadTestEdge::with_bytes(1, &1u16.to_le_bytes()),
+            )
+            .unwrap();
+        graph
+            .insert_edge_skip_leaf_cascade(
+                VertexId::from(1),
+                road,
+                PayloadTestEdge::with_bytes(2, &1u16.to_le_bytes()),
+            )
+            .unwrap();
+        graph
+            .insert_edge_skip_leaf_cascade(
+                VertexId::from(0),
+                road,
+                PayloadTestEdge::with_bytes(2, &100u16.to_le_bytes()),
             )
             .unwrap();
         let mut weights = Vec::new();
         graph
             .for_each_edges_for_label(VertexId::from(0), road, |edge| {
-                if edge.value_len == 2 {
-                    let b = edge.edge_value_bytes();
+                if edge.payload_len == 2 {
+                    let b = edge.edge_payload_bytes();
                     weights.push(u16::from_le_bytes([b[0], b[1]]));
                 }
             })
@@ -764,19 +776,19 @@ mod tests {
         assert_eq!(weights, vec![1, 100]);
     }
     #[test]
-    fn edge_values_preserved() {
-        let graph = valued_test_graph();
+    fn edge_payloads_preserved() {
+        let graph = payload_test_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 2u16)
+            .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
-        for (target, weight) in [(1u32, 3u16), (2, 7), (3, 11)] {
+        for (target, weight) in [(1u32, 3u16), (2, 7u16), (3, 11)] {
             graph
                 .insert_edge_skip_leaf_cascade(
                     VertexId::from(0),
                     road,
-                    ValuedTestEdge::with_u16(target, weight),
+                    PayloadTestEdge::with_bytes(target, &weight.to_le_bytes()),
                 )
                 .unwrap();
         }
@@ -786,8 +798,8 @@ mod tests {
         let mut weights = Vec::new();
         graph
             .for_each_edges_for_label(VertexId::from(0), road, |edge| {
-                if edge.value_len == 2 {
-                    let b = edge.edge_value_bytes();
+                if edge.payload_len == 2 {
+                    let b = edge.edge_payload_bytes();
                     weights.push(u16::from_le_bytes([b[0], b[1]]));
                 }
             })
@@ -796,26 +808,34 @@ mod tests {
         assert_eq!(weights, vec![3, 7, 11]);
     }
     #[test]
-    fn edge_values_survive_unrelated() {
-        let graph = valued_test_graph();
+    fn edge_payloads_survive_unrelated() {
+        let graph = payload_test_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         let rail = BucketLabelKey::from_raw(3);
         graph
-            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 2u16)
+            .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
         graph
-            .insert_edge(VertexId::from(0), road, ValuedTestEdge::with_u16(1, 42))
+            .insert_edge(
+                VertexId::from(0),
+                road,
+                PayloadTestEdge::with_bytes(1, &42u16.to_le_bytes()),
+            )
             .unwrap();
         graph
-            .insert_edge(VertexId::from(0), rail, ValuedTestEdge::with_u16(2, 0))
+            .insert_edge(
+                VertexId::from(0),
+                rail,
+                PayloadTestEdge::with_bytes(2, &0u16.to_le_bytes()),
+            )
             .unwrap();
         let mut weights = Vec::new();
         graph
             .for_each_edges_for_label(VertexId::from(0), road, |edge| {
-                if edge.value_len == 2 {
-                    let b = edge.edge_value_bytes();
+                if edge.payload_len == 2 {
+                    let b = edge.edge_payload_bytes();
                     weights.push(u16::from_le_bytes([b[0], b[1]]));
                 }
             })
@@ -823,12 +843,12 @@ mod tests {
         assert_eq!(weights, vec![42]);
     }
     #[test]
-    fn edge_values_round_trip_when_edge_and_value_use_overflow_log() {
-        let graph = valued_test_graph_with_capacity(1 << 16);
+    fn edge_payloads_round_trip_when_edge_and_value_use_overflow_log() {
+        let graph = payload_test_graph_with_capacity(1 << 16);
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 2u16)
+            .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
         for target in 1..=31u32 {
             let weight = u16::try_from(target.saturating_mul(10)).expect("weight fits u16");
@@ -836,7 +856,7 @@ mod tests {
                 .insert_edge_skip_leaf_cascade(
                     VertexId::from(0),
                     road,
-                    ValuedTestEdge::with_u16(target, weight),
+                    PayloadTestEdge::with_bytes(target, &weight.to_le_bytes()),
                 )
                 .unwrap();
         }
@@ -844,14 +864,14 @@ mod tests {
             .insert_edge_skip_leaf_cascade(
                 VertexId::from(0),
                 road,
-                ValuedTestEdge::with_u16(33, 320),
+                PayloadTestEdge::with_bytes(33, &320u16.to_le_bytes()),
             )
             .unwrap();
         graph
             .insert_edge_skip_leaf_cascade(
                 VertexId::from(0),
                 road,
-                ValuedTestEdge::with_u16(33, 330),
+                PayloadTestEdge::with_bytes(33, &330u16.to_le_bytes()),
             )
             .unwrap();
 
@@ -859,13 +879,13 @@ mod tests {
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
         assert!(bucket.overflow_log_head() >= 0);
-        assert!(bucket.value_log_head() >= 0);
+        assert!(bucket.payload_log_head() >= 0);
 
         let mut weights = Vec::new();
         graph
             .for_each_edges_for_label(VertexId::from(0), road, |edge| {
-                if edge.value_len == 2 {
-                    let b = edge.edge_value_bytes();
+                if edge.payload_len == 2 {
+                    let b = edge.edge_payload_bytes();
                     weights.push(u16::from_le_bytes([b[0], b[1]]));
                 }
             })
@@ -880,27 +900,27 @@ mod tests {
     }
 
     #[test]
-    fn dense_edge_value_batches_follow_requested_order() {
-        let graph = valued_test_graph();
+    fn dense_edge_payload_batches_follow_requested_order() {
+        let graph = payload_test_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 2u16)
+            .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
-        for (target, weight) in [(1, 10u16), (2, 20), (3, 30)] {
+        for (target, weight) in [(1, 10u16), (2, 20u16), (3, 30u16)] {
             graph
                 .insert_edge_skip_leaf_cascade(
                     VertexId::from(0),
                     road,
-                    ValuedTestEdge::with_u16(target, weight),
+                    PayloadTestEdge::with_bytes(target, &weight.to_le_bytes()),
                 )
                 .unwrap();
         }
 
-        let mut scratch = LabeledEdgeValueBatchScratch::default();
+        let mut scratch = LabeledEdgePayloadBatchScratch::default();
         let mut asc = Vec::new();
         graph
-            .visit_out_edge_value_batches_for_label(
+            .visit_out_edge_payload_batches_for_label(
                 VertexId::from(0),
                 road,
                 OutEdgeOrder::Ascending,
@@ -910,7 +930,7 @@ mod tests {
                     assert_eq!(batch.byte_width, 2u16);
                     asc.extend(
                         batch
-                            .value_bytes
+                            .payload_bytes
                             .chunks_exact(2)
                             .map(|b| u16::from_le_bytes([b[0], b[1]])),
                     );
@@ -921,7 +941,7 @@ mod tests {
 
         let mut desc = Vec::new();
         graph
-            .visit_out_edge_value_batches_for_label(
+            .visit_out_edge_payload_batches_for_label(
                 VertexId::from(0),
                 road,
                 OutEdgeOrder::Descending,
@@ -930,7 +950,7 @@ mod tests {
                     assert!(batch.dense);
                     desc.extend(
                         batch
-                            .value_bytes
+                            .payload_bytes
                             .chunks_exact(2)
                             .map(|b| u16::from_le_bytes([b[0], b[1]])),
                     );
@@ -941,36 +961,36 @@ mod tests {
     }
 
     #[test]
-    fn edge_value_batches_keep_label_widths_separate() {
-        let graph = valued_test_graph();
+    fn edge_payload_batches_keep_label_widths_separate() {
+        let graph = payload_test_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let tiny = BucketLabelKey::from_raw(2);
         let wide = BucketLabelKey::from_raw(3);
         graph
-            .ensure_label_bucket_value_byte_width(VertexId::from(0), tiny, 1u16)
+            .ensure_label_bucket_payload_byte_width(VertexId::from(0), tiny, 1u16)
             .unwrap();
         graph
-            .ensure_label_bucket_value_byte_width(VertexId::from(0), wide, 16u16)
+            .ensure_label_bucket_payload_byte_width(VertexId::from(0), wide, 16u16)
             .unwrap();
         graph
             .insert_edge_skip_leaf_cascade(
                 VertexId::from(0),
                 tiny,
-                ValuedTestEdge::with_bytes(1, &[7]),
+                PayloadTestEdge::with_bytes(1, &[7]),
             )
             .unwrap();
         graph
             .insert_edge_skip_leaf_cascade(
                 VertexId::from(0),
                 wide,
-                ValuedTestEdge::with_bytes(2, &[9; 16]),
+                PayloadTestEdge::with_bytes(2, &[9; 16]),
             )
             .unwrap();
 
-        let mut scratch = LabeledEdgeValueBatchScratch::default();
+        let mut scratch = LabeledEdgePayloadBatchScratch::default();
         let mut tiny_bytes = Vec::new();
         graph
-            .visit_out_edge_value_batches_for_label(
+            .visit_out_edge_payload_batches_for_label(
                 VertexId::from(0),
                 tiny,
                 OutEdgeOrder::Ascending,
@@ -978,7 +998,7 @@ mod tests {
                 |batch| {
                     assert_eq!(batch.label_id, tiny);
                     assert_eq!(batch.byte_width, 1u16);
-                    tiny_bytes.extend_from_slice(batch.value_bytes);
+                    tiny_bytes.extend_from_slice(batch.payload_bytes);
                 },
             )
             .unwrap();
@@ -986,7 +1006,7 @@ mod tests {
 
         let mut wide_bytes = Vec::new();
         graph
-            .visit_out_edge_value_batches_for_label(
+            .visit_out_edge_payload_batches_for_label(
                 VertexId::from(0),
                 wide,
                 OutEdgeOrder::Ascending,
@@ -994,7 +1014,7 @@ mod tests {
                 |batch| {
                     assert_eq!(batch.label_id, wide);
                     assert_eq!(batch.byte_width, 16u16);
-                    wide_bytes.extend_from_slice(batch.value_bytes);
+                    wide_bytes.extend_from_slice(batch.payload_bytes);
                 },
             )
             .unwrap();
@@ -1002,19 +1022,19 @@ mod tests {
     }
 
     #[test]
-    fn log_backed_edge_value_batches_match_iterator_values() {
-        let graph = valued_test_graph_with_capacity(1 << 16);
+    fn log_backed_edge_payload_batches_match_iterator_values() {
+        let graph = payload_test_graph_with_capacity(1 << 16);
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 2u16)
+            .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
         for target in 1..=33u32 {
             graph
                 .insert_edge_skip_leaf_cascade(
                     VertexId::from(0),
                     road,
-                    ValuedTestEdge::with_u16(target, target as u16),
+                    PayloadTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
                 )
                 .unwrap();
         }
@@ -1029,21 +1049,21 @@ mod tests {
                 VertexId::from(0),
                 road,
                 OutEdgeOrder::Descending,
-                |edge| from_iter.extend_from_slice(edge.edge_value_bytes()),
+                |edge| from_iter.extend_from_slice(edge.edge_payload_bytes()),
             )
             .unwrap();
 
-        let mut scratch = LabeledEdgeValueBatchScratch::default();
+        let mut scratch = LabeledEdgePayloadBatchScratch::default();
         let mut from_batches = Vec::new();
         graph
-            .visit_out_edge_value_batches_for_label(
+            .visit_out_edge_payload_batches_for_label(
                 VertexId::from(0),
                 road,
                 OutEdgeOrder::Descending,
                 &mut scratch,
                 |batch| {
                     assert!(!batch.dense);
-                    from_batches.extend_from_slice(batch.value_bytes);
+                    from_batches.extend_from_slice(batch.payload_bytes);
                 },
             )
             .unwrap();
@@ -1051,11 +1071,15 @@ mod tests {
     }
     #[test]
     fn valued_default_label_insert_uses_bucket_storage() {
-        let graph = valued_test_graph();
+        let graph = payload_test_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let default = graph.default_label();
         graph
-            .insert_edge(VertexId::from(0), default, ValuedTestEdge::with_u16(1, 42))
+            .insert_edge(
+                VertexId::from(0),
+                default,
+                PayloadTestEdge::with_bytes(1, &42u16.to_le_bytes()),
+            )
             .unwrap();
 
         let vertex = graph.vertices().get(VertexId::from(0));
@@ -1066,8 +1090,8 @@ mod tests {
         let mut weights = Vec::new();
         graph
             .for_each_edges_for_label(VertexId::from(0), default, |edge| {
-                if edge.value_len == 2 {
-                    let b = edge.edge_value_bytes();
+                if edge.payload_len == 2 {
+                    let b = edge.edge_payload_bytes();
                     weights.push(u16::from_le_bytes([b[0], b[1]]));
                 }
             })
@@ -1075,19 +1099,19 @@ mod tests {
         assert_eq!(weights, vec![42]);
     }
     #[test]
-    fn removing_non_last_valued_edge_by_slot_preserves_value_log_head() {
-        let graph = valued_test_graph();
+    fn removing_non_last_payloaded_edge_by_slot_preserves_payload_log_head() {
+        let graph = payload_test_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 2u16)
+            .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
-        for (target, weight) in [(1, 42), (2, 99)] {
+        for (target, weight) in [(1, 42u16), (2, 99)] {
             graph
                 .insert_edge_skip_leaf_cascade(
                     VertexId::from(0),
                     road,
-                    ValuedTestEdge::with_u16(target, weight),
+                    PayloadTestEdge::with_bytes(target, &weight.to_le_bytes()),
                 )
                 .unwrap();
         }
@@ -1097,7 +1121,7 @@ mod tests {
             .buckets()
             .read_label_bucket_slot(bucket_slot)
             .unwrap()
-            .try_with_value_log_head(0)
+            .try_with_payload_log_head(0)
             .unwrap();
         graph
             .buckets()
@@ -1113,22 +1137,22 @@ mod tests {
         let bucket_slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
         assert_eq!(bucket.degree(), 1);
-        assert_eq!(bucket.value_log_head(), 0);
+        assert_eq!(bucket.payload_log_head(), 0);
     }
     #[test]
     fn valued_insert_reusing_low_tombstone_preserves_existing_values() {
-        let graph = valued_test_graph();
+        let graph = payload_test_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 2u16)
+            .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
-        for (target, weight) in [(1, 10), (2, 20), (3, 30)] {
+        for (target, weight) in [(1, 10u16), (2, 20u16), (3, 30u16)] {
             graph
                 .insert_edge_skip_leaf_cascade(
                     VertexId::from(0),
                     road,
-                    ValuedTestEdge::with_u16(target, weight),
+                    PayloadTestEdge::with_bytes(target, &weight.to_le_bytes()),
                 )
                 .unwrap();
         }
@@ -1138,15 +1162,19 @@ mod tests {
             .unwrap()
             .expect("removed low slot");
         graph
-            .insert_edge_skip_leaf_cascade(VertexId::from(0), road, ValuedTestEdge::with_u16(4, 40))
+            .insert_edge_skip_leaf_cascade(
+                VertexId::from(0),
+                road,
+                PayloadTestEdge::with_bytes(4, &40u16.to_le_bytes()),
+            )
             .unwrap();
 
         let mut values = Vec::new();
         graph
             .for_each_edges_for_label(VertexId::from(0), road, |edge| {
-                if edge.value_len == 2 {
+                if edge.payload_len == 2 {
                     values.push((edge.target, {
-                        let b = edge.edge_value_bytes();
+                        let b = edge.edge_payload_bytes();
                         u16::from_le_bytes([b[0], b[1]])
                     }));
                 }
@@ -1156,14 +1184,14 @@ mod tests {
         assert_eq!(values, vec![(2, 20), (3, 30), (4, 40)]);
     }
     #[test]
-    fn edge_values_survive_middle_vertex_insert_with_overflow_log() {
-        let graph = valued_test_graph();
+    fn edge_payloads_survive_middle_vertex_insert_with_overflow_log() {
+        let graph = payload_test_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 2u16)
+            .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
         for target in 1..=32u32 {
             let weight = u16::try_from(target).expect("weight fits u16");
@@ -1171,18 +1199,22 @@ mod tests {
                 .insert_edge_skip_leaf_cascade(
                     VertexId::from(0),
                     road,
-                    ValuedTestEdge::with_u16(target, weight),
+                    PayloadTestEdge::with_bytes(target, &weight.to_le_bytes()),
                 )
                 .unwrap();
         }
         graph
-            .insert_edge_skip_leaf_cascade(VertexId::from(1), road, ValuedTestEdge::with_u16(2, 2))
+            .insert_edge_skip_leaf_cascade(
+                VertexId::from(1),
+                road,
+                PayloadTestEdge::with_bytes(2, &2u16.to_le_bytes()),
+            )
             .unwrap();
         graph
             .insert_edge_skip_leaf_cascade(
                 VertexId::from(0),
                 road,
-                ValuedTestEdge::with_u16(2, 200),
+                PayloadTestEdge::with_bytes(2, &200u16.to_le_bytes()),
             )
             .unwrap();
 
@@ -1190,13 +1222,13 @@ mod tests {
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
         assert!(bucket.overflow_log_head() >= 0);
-        assert!(bucket.value_log_head() >= 0);
+        assert!(bucket.payload_log_head() >= 0);
 
         let mut weights = Vec::new();
         graph
             .for_each_edges_for_label(VertexId::from(0), road, |edge| {
-                if edge.value_len == 2 && edge.target == 2 {
-                    let b = edge.edge_value_bytes();
+                if edge.payload_len == 2 && edge.target == 2 {
+                    let b = edge.edge_payload_bytes();
                     weights.push(u16::from_le_bytes([b[0], b[1]]));
                 }
             })
@@ -1205,27 +1237,27 @@ mod tests {
     }
 
     #[test]
-    fn slab_value_byte_width_12_round_trips() {
-        let graph = valued_test_graph();
+    fn slab_payload_byte_width_12_round_trips() {
+        let graph = payload_test_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         const WIDTH: u16 = 12;
         graph
-            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, WIDTH)
+            .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, WIDTH)
             .unwrap();
         let payload: Vec<u8> = (0..WIDTH).map(|i| (i as u8).wrapping_add(3)).collect();
         graph
             .insert_edge(
                 VertexId::from(0),
                 road,
-                ValuedTestEdge::with_bytes(1, &payload),
+                PayloadTestEdge::with_bytes(1, &payload),
             )
             .unwrap();
         let mut seen = Vec::new();
         graph
             .for_each_edges_for_label(VertexId::from(0), road, |edge| {
-                if edge.value_len == WIDTH {
-                    seen.push(edge.edge_value_bytes().to_vec());
+                if edge.payload_len == WIDTH {
+                    seen.push(edge.edge_payload_bytes().to_vec());
                 }
             })
             .unwrap();
@@ -1233,13 +1265,13 @@ mod tests {
     }
 
     #[test]
-    fn wide_value_byte_width_12_round_trips_via_overflow_blob_log() {
+    fn wide_payload_byte_width_12_round_trips_via_overflow_blob_log() {
         const WIDTH: u16 = 12;
-        let graph = valued_test_graph_with_capacity(1 << 16);
+        let graph = payload_test_graph_with_capacity(1 << 16);
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, WIDTH)
+            .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, WIDTH)
             .unwrap();
         let payload: Vec<u8> = (0..WIDTH).map(|i| (i as u8).wrapping_add(9)).collect();
         for target in 1..=31u32 {
@@ -1247,7 +1279,7 @@ mod tests {
                 .insert_edge_skip_leaf_cascade(
                     VertexId::from(0),
                     road,
-                    ValuedTestEdge::with_bytes(target, &payload),
+                    PayloadTestEdge::with_bytes(target, &payload),
                 )
                 .unwrap();
         }
@@ -1255,14 +1287,14 @@ mod tests {
             .insert_edge_skip_leaf_cascade(
                 VertexId::from(0),
                 road,
-                ValuedTestEdge::with_bytes(33, &payload),
+                PayloadTestEdge::with_bytes(33, &payload),
             )
             .unwrap();
         graph
             .insert_edge_skip_leaf_cascade(
                 VertexId::from(0),
                 road,
-                ValuedTestEdge::with_bytes(33, &payload),
+                PayloadTestEdge::with_bytes(33, &payload),
             )
             .unwrap();
 
@@ -1274,15 +1306,15 @@ mod tests {
             "expected edge overflow log for wide values"
         );
         assert!(
-            bucket.value_log_head() >= 0,
-            "expected value overflow log for 12-byte payloads"
+            bucket.payload_log_head() >= 0,
+            "expected payload overflow log for 12-byte payloads"
         );
 
         let mut seen = Vec::new();
         graph
             .for_each_edges_for_label(VertexId::from(0), road, |edge| {
-                if edge.value_len == WIDTH {
-                    seen.push(edge.edge_value_bytes().to_vec());
+                if edge.payload_len == WIDTH {
+                    seen.push(edge.edge_payload_bytes().to_vec());
                 }
             })
             .unwrap();
@@ -1291,28 +1323,28 @@ mod tests {
     }
 
     #[test]
-    fn w4_edge_values_round_trip() {
-        let graph = valued_test_graph();
+    fn w4_edge_payloads_round_trip() {
+        let graph = payload_test_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 4u16)
+            .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, 4u16)
             .unwrap();
         for (target, cost) in [(1, 100i32), (2, 200), (3, 300)] {
             graph
                 .insert_edge_skip_leaf_cascade(
                     VertexId::from(0),
                     road,
-                    ValuedTestEdge::with_i32(target, cost),
+                    PayloadTestEdge::with_i32(target, cost),
                 )
                 .unwrap();
         }
         let mut costs = Vec::new();
         graph
             .for_each_edges_for_label(VertexId::from(0), road, |edge| {
-                if edge.value_len == 4 {
+                if edge.payload_len == 4 {
                     costs.push(i32::from_le_bytes(
-                        edge.edge_value_bytes().try_into().unwrap(),
+                        edge.edge_payload_bytes().try_into().unwrap(),
                     ));
                 }
             })
@@ -1322,38 +1354,42 @@ mod tests {
     }
 
     #[test]
-    fn cannot_change_bucket_value_width_after_allocation() {
-        let graph = valued_test_graph();
+    fn cannot_change_bucket_payload_width_after_allocation() {
+        let graph = payload_test_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 2u16)
+            .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
         graph
-            .insert_edge_skip_leaf_cascade(VertexId::from(0), road, ValuedTestEdge::with_u16(1, 1))
+            .insert_edge_skip_leaf_cascade(
+                VertexId::from(0),
+                road,
+                PayloadTestEdge::with_bytes(1, &1u16.to_le_bytes()),
+            )
             .unwrap();
         assert!(
             graph
-                .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 4u16)
+                .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, 4u16)
                 .is_err(),
             "widening an allocated value bucket must fail"
         );
     }
 
     #[test]
-    fn edge_values_survive_rewrite_with_tombstones() {
-        let graph = valued_test_graph();
+    fn edge_payloads_survive_rewrite_with_tombstones() {
+        let graph = payload_test_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 2u16)
+            .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
-        for (target, weight) in [(1, 10), (2, 20), (3, 30)] {
+        for (target, weight) in [(1, 10u16), (2, 20u16), (3, 30u16)] {
             graph
                 .insert_edge_skip_leaf_cascade(
                     VertexId::from(0),
                     road,
-                    ValuedTestEdge::with_u16(target, weight),
+                    PayloadTestEdge::with_bytes(target, &weight.to_le_bytes()),
                 )
                 .unwrap();
         }
@@ -1369,9 +1405,9 @@ mod tests {
         let mut values = Vec::new();
         graph
             .for_each_edges_for_label(VertexId::from(0), road, |edge| {
-                if edge.value_len == 2 {
+                if edge.payload_len == 2 {
                     values.push((edge.target, {
-                        let b = edge.edge_value_bytes();
+                        let b = edge.edge_payload_bytes();
                         u16::from_le_bytes([b[0], b[1]])
                     }));
                 }
@@ -1382,19 +1418,19 @@ mod tests {
     }
 
     #[test]
-    fn edge_values_preserved_after_tombstone_delete_and_compact() {
-        let graph = valued_test_graph();
+    fn edge_payloads_preserved_after_tombstone_delete_and_compact() {
+        let graph = payload_test_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 2u16)
+            .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
-        for (target, weight) in [(1, 10), (2, 20), (3, 30)] {
+        for (target, weight) in [(1, 10u16), (2, 20u16), (3, 30u16)] {
             graph
                 .insert_edge_skip_leaf_cascade(
                     VertexId::from(0),
                     road,
-                    ValuedTestEdge::with_u16(target, weight),
+                    PayloadTestEdge::with_bytes(target, &weight.to_le_bytes()),
                 )
                 .unwrap();
         }
@@ -1409,9 +1445,9 @@ mod tests {
         let mut values = Vec::new();
         graph
             .for_each_edges_for_label(VertexId::from(0), road, |edge| {
-                if edge.value_len == 2 {
+                if edge.payload_len == 2 {
                     values.push((edge.target, {
-                        let b = edge.edge_value_bytes();
+                        let b = edge.edge_payload_bytes();
                         u16::from_le_bytes([b[0], b[1]])
                     }));
                 }

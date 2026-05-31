@@ -577,22 +577,22 @@ where
         src: VertexId,
         bucket: &LabelBucket,
     ) -> (Vec<u32>, Vec<u32>) {
-        let leaf = self.value_log_leaf(src);
+        let leaf = self.payload_log_leaf(src);
         let edge_chain = self
             .edges
             .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head());
-        let value_chain = self
+        let payload_chain = self
             .values
-            .value_log_chain_asc_indices(leaf, bucket.value_log_head());
-        if bucket.overflow_log_head() >= 0 || bucket.value_log_head() >= 0 {
+            .payload_log_chain_asc_indices(leaf, bucket.payload_log_head());
+        if bucket.overflow_log_head() >= 0 || bucket.payload_log_head() >= 0 {
             debug_assert_eq!(
                 edge_chain.len(),
-                value_chain.len(),
-                "edge and value overflow log chains must stay paired (vertex {src:?}, label {:?})",
+                payload_chain.len(),
+                "edge and payload overflow log chains must stay paired (vertex {src:?}, label {:?})",
                 bucket.bucket_label_key()
             );
         }
-        (edge_chain, value_chain)
+        (edge_chain, payload_chain)
     }
 }
 
@@ -604,11 +604,11 @@ mod tests {
 
     #[test]
     fn visit_out_edges_with_raw_still_applies_matches_on_log_backed_bucket() {
-        let graph = valued_test_graph();
+        let graph = payload_test_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .ensure_label_bucket_value_byte_width(VertexId::from(0), road, 2u16)
+            .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
         for target in 1..=33u32 {
             let weight = u16::try_from(target).expect("weight fits u16");
@@ -616,7 +616,7 @@ mod tests {
                 .insert_edge_skip_leaf_cascade(
                     VertexId::from(0),
                     road,
-                    ValuedTestEdge::with_u16(target, weight),
+                    PayloadTestEdge::with_bytes(target, &weight.to_le_bytes()),
                 )
                 .unwrap();
         }
@@ -643,8 +643,8 @@ mod tests {
             vec![32, 30]
         );
         for edge in &visited {
-            assert_eq!(edge.value_len, 2);
-            let b = edge.edge_value_bytes();
+            assert_eq!(edge.payload_len, 2);
+            let b = edge.edge_payload_bytes();
             assert_eq!(
                 u16::from_le_bytes([b[0], b[1]]),
                 u16::try_from(edge.target).unwrap()

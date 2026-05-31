@@ -19,7 +19,7 @@ pub struct SeedProbe {
     pub variable: String,
     pub property: String,
     pub property_id: u32,
-    pub value_bytes: Vec<u8>,
+    pub payload_bytes: Vec<u8>,
 }
 
 impl SeedProbe {
@@ -63,7 +63,7 @@ fn extract_from_op(
             cmp,
             ..
         } if *cmp == gleaph_gql::ast::CmpOp::Eq => {
-            let value_bytes = resolve_scan_value(value, parameters)
+            let payload_bytes = resolve_scan_value(value, parameters)
                 .ok_or_else(|| RouterError::InvalidArgument("missing seed parameter".into()))?;
             let property_id = store
                 .lookup_property_id(property.as_ref())
@@ -73,7 +73,7 @@ fn extract_from_op(
                 variable: variable.to_string(),
                 property: property.to_string(),
                 property_id,
-                value_bytes,
+                payload_bytes,
             }));
         }
         PlanOp::HashJoin { left, right, .. } => {
@@ -187,7 +187,7 @@ mod tests {
         assert_eq!(probe.variable, "u");
         assert_eq!(probe.property, "uid");
         assert_eq!(probe.property_id, 1);
-        assert!(!probe.value_bytes.is_empty());
+        assert!(!probe.payload_bytes.is_empty());
 
         params.insert("x".into(), Value::Text("alice".into()));
         let plan = PhysicalPlan::from_ops(vec![PlanOp::IndexScan {
@@ -200,7 +200,7 @@ mod tests {
         let probe = SeedProbe::from_plans(std::slice::from_ref(&plan), &params, &store)
             .expect("probe")
             .expect("parameter probe");
-        assert!(!probe.value_bytes.is_empty());
+        assert!(!probe.payload_bytes.is_empty());
     }
 
     #[test]

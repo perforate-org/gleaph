@@ -188,9 +188,9 @@ pub enum PlanOp {
         /// When set, expand by probing an indexed edge-property equality first (then
         /// binding the far endpoint), instead of scanning all incident edges.
         indexed_edge_equality: Option<(Str, ScanValue)>,
-        /// When set, fixed-label expand filters by the label's inline edge-value bytes.
-        edge_value_predicate: Option<EdgeValuePredicate>,
-        /// When set, fixed-label expand filters by SIMD vector scoring over inline edge values.
+        /// When set, fixed-label expand filters by the label's inline edge-payload bytes.
+        edge_payload_predicate: Option<EdgePayloadPredicate>,
+        /// When set, fixed-label expand filters by SIMD vector scoring over inline edge payloads.
         edge_vector_predicate: Option<EdgeVectorPredicate>,
         edge_property_projection: Option<Rc<[Str]>>,
         dst_property_projection: Option<Rc<[Str]>>,
@@ -214,8 +214,8 @@ pub enum PlanOp {
         var_len: Option<VarLenSpec>,
         /// When set, same indexed edge-property path as [`PlanOp::Expand`].
         indexed_edge_equality: Option<(Str, ScanValue)>,
-        /// When set, same inline edge-value predicate path as [`PlanOp::Expand`].
-        edge_value_predicate: Option<EdgeValuePredicate>,
+        /// When set, same inline edge-payload predicate path as [`PlanOp::Expand`].
+        edge_payload_predicate: Option<EdgePayloadPredicate>,
         /// When set, same inline edge-vector predicate path as [`PlanOp::Expand`].
         edge_vector_predicate: Option<EdgeVectorPredicate>,
         /// Predicates evaluated on the destination node during expansion.
@@ -487,14 +487,14 @@ pub enum ScanValue {
 
 // CmpOp is re-exported from gleaph_gql::ast::CmpOp.
 
-/// A comparison that can be evaluated directly against fixed-width edge-value bytes.
+/// A comparison that can be evaluated directly against fixed-width edge-payload bytes.
 #[derive(Clone, Debug, PartialEq)]
-pub struct EdgeValuePredicate {
+pub struct EdgePayloadPredicate {
     pub op: CmpOp,
     pub value: ScanValue,
 }
 
-/// Vector metric evaluated directly against fixed-width `VectorF32` edge-value bytes.
+/// Vector metric evaluated directly against fixed-width `VectorF32` edge-payload bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EdgeVectorMetric {
     Dot,
@@ -502,7 +502,7 @@ pub enum EdgeVectorMetric {
     CosineDistance,
 }
 
-/// A vector score comparison that can be evaluated directly against edge-value bytes.
+/// A vector score comparison that can be evaluated directly against edge-payload bytes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EdgeVectorPredicate {
     pub metric: EdgeVectorMetric,

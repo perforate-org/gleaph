@@ -17,7 +17,7 @@ pub const META28_MASK: u64 = (1u64 << META28_BITS) - 1;
 /// Overflow-log head sentinel in an 8-bit wire field (`0..=169` valid).
 pub const OVERFLOW_LOG_NONE: u8 = 0xFF;
 
-/// Width of a global byte offset in `EdgeValueStore`.
+/// Width of a global byte offset in `EdgePayloadStore`.
 pub const BYTE_OFFSET_BITS: u32 = 40;
 /// All-ones mask for a valid byte offset.
 pub const BYTE_OFFSET_MASK: u64 = (1u64 << BYTE_OFFSET_BITS) - 1;

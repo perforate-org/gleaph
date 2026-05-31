@@ -7,9 +7,9 @@ use super::GraphStore;
 use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
 use super::helpers::{
-    build_edge_to, build_edge_to_with_value_bytes, canonical_undirected_owner,
+    build_edge_to, build_edge_to_with_payload_bytes, canonical_undirected_owner,
     edge_matches_local_neighbor, edge_storage_label, lara_label,
-    validate_edge_value_bytes_for_label,
+    validate_edge_payload_bytes_for_label,
 };
 
 impl GraphStore {
@@ -34,7 +34,7 @@ impl GraphStore {
         self.ensure_vertex_id(source_vertex_id)?;
         self.ensure_vertex_id(target_vertex_id)?;
         Self::validate_catalog_edge_label(catalog_label)?;
-        validate_edge_value_bytes_for_label(self, catalog_label, &[])?;
+        validate_edge_payload_bytes_for_label(self, catalog_label, &[])?;
 
         let label = lara_label(edge_storage_label(catalog_label, false));
         let forward = build_edge_to(target_vertex_id);
@@ -42,7 +42,7 @@ impl GraphStore {
             target: VertexRef::local(source_vertex_id),
             edge_slot_index: EdgeSlotIndex::from_raw(0),
             label_id: 0,
-            value: gleaph_graph_kernel::entry::EdgeValuePayload::EMPTY,
+            payload: gleaph_graph_kernel::entry::EdgePayload::EMPTY,
         };
         self.with_graph_mut(|graph| {
             graph.insert_directed_edge(source_vertex_id, target_vertex_id, label, forward, reverse)
@@ -73,42 +73,27 @@ impl GraphStore {
         Ok(canonical)
     }
 
-    pub(crate) fn insert_directed_edge_with_inline_value(
+    pub(crate) fn insert_directed_edge_with_payload_bytes(
         &self,
         source_vertex_id: VertexId,
         target_vertex_id: VertexId,
         catalog_label: Option<EdgeLabelId>,
-        inline_value: u16,
-    ) -> Result<EdgeHandle, GraphStoreError> {
-        self.insert_directed_edge_with_value_bytes(
-            source_vertex_id,
-            target_vertex_id,
-            catalog_label,
-            &inline_value.to_le_bytes(),
-        )
-    }
-
-    pub(crate) fn insert_directed_edge_with_value_bytes(
-        &self,
-        source_vertex_id: VertexId,
-        target_vertex_id: VertexId,
-        catalog_label: Option<EdgeLabelId>,
-        value_bytes: &[u8],
+        payload_bytes: &[u8],
     ) -> Result<EdgeHandle, GraphStoreError> {
         self.ensure_vertex_id(source_vertex_id)?;
         self.ensure_vertex_id(target_vertex_id)?;
         Self::validate_catalog_edge_label(catalog_label)?;
-        validate_edge_value_bytes_for_label(self, catalog_label, value_bytes)?;
+        validate_edge_payload_bytes_for_label(self, catalog_label, payload_bytes)?;
 
         let label = lara_label(edge_storage_label(catalog_label, false));
-        let forward = build_edge_to_with_value_bytes(target_vertex_id, value_bytes);
-        let reverse = build_edge_to_with_value_bytes(source_vertex_id, value_bytes);
+        let forward = build_edge_to_with_payload_bytes(target_vertex_id, payload_bytes);
+        let reverse = build_edge_to_with_payload_bytes(source_vertex_id, payload_bytes);
         self.with_graph_mut(|graph| {
             graph.insert_directed_edge(source_vertex_id, target_vertex_id, label, forward, reverse)
         })?;
         let canonical = self
             .find_first_forward_handle_descending(source_vertex_id, label, |edge| {
-                edge_matches_local_neighbor(edge, target_vertex_id, value_bytes)
+                edge_matches_local_neighbor(edge, target_vertex_id, payload_bytes)
             })?
             .ok_or(GraphStoreError::EdgeNotFound {
                 owner_vertex_id: source_vertex_id,
@@ -126,7 +111,7 @@ impl GraphStore {
             target_vertex_id,
             catalog_label,
             false,
-            value_bytes,
+            payload_bytes,
             canonical,
         )?;
         Ok(canonical)
@@ -141,7 +126,7 @@ impl GraphStore {
         self.ensure_vertex_id(endpoint_a)?;
         self.ensure_vertex_id(endpoint_b)?;
         Self::validate_catalog_edge_label(catalog_label)?;
-        validate_edge_value_bytes_for_label(self, catalog_label, &[])?;
+        validate_edge_payload_bytes_for_label(self, catalog_label, &[])?;
 
         let label = lara_label(edge_storage_label(catalog_label, true));
         let edge_ab = build_edge_to(endpoint_b);
@@ -197,21 +182,21 @@ impl GraphStore {
         Ok(canonical)
     }
 
-    pub(crate) fn insert_undirected_edge_with_value_bytes(
+    pub(crate) fn insert_undirected_edge_with_payload_bytes(
         &self,
         endpoint_a: VertexId,
         endpoint_b: VertexId,
         catalog_label: Option<EdgeLabelId>,
-        value_bytes: &[u8],
+        payload_bytes: &[u8],
     ) -> Result<EdgeHandle, GraphStoreError> {
         self.ensure_vertex_id(endpoint_a)?;
         self.ensure_vertex_id(endpoint_b)?;
         Self::validate_catalog_edge_label(catalog_label)?;
-        validate_edge_value_bytes_for_label(self, catalog_label, value_bytes)?;
+        validate_edge_payload_bytes_for_label(self, catalog_label, payload_bytes)?;
 
         let label = lara_label(edge_storage_label(catalog_label, true));
-        let edge_ab = build_edge_to_with_value_bytes(endpoint_b, value_bytes);
-        let edge_ba = build_edge_to_with_value_bytes(endpoint_a, value_bytes);
+        let edge_ab = build_edge_to_with_payload_bytes(endpoint_b, payload_bytes);
+        let edge_ba = build_edge_to_with_payload_bytes(endpoint_a, payload_bytes);
         self.with_graph_mut(|graph| {
             graph.insert_undirected_deferred(endpoint_a, endpoint_b, label, edge_ab, edge_ba)
         })?;
@@ -223,7 +208,7 @@ impl GraphStore {
         };
         let canonical = self
             .find_first_forward_handle_descending(owner_vertex_id, label, |edge| {
-                edge_matches_local_neighbor(edge, target, value_bytes)
+                edge_matches_local_neighbor(edge, target, payload_bytes)
             })?
             .ok_or(GraphStoreError::EdgeNotFound {
                 owner_vertex_id,
@@ -237,7 +222,7 @@ impl GraphStore {
         };
         if let Some(alias) =
             self.find_first_forward_handle_descending(alias_vertex_id, label, |edge| {
-                edge_matches_local_neighbor(edge, owner_vertex_id, value_bytes)
+                edge_matches_local_neighbor(edge, owner_vertex_id, payload_bytes)
             })?
         {
             self.insert_edge_alias(alias, canonical, false);
@@ -247,7 +232,7 @@ impl GraphStore {
                 owner_vertex_id,
                 catalog_label,
                 true,
-                value_bytes,
+                payload_bytes,
                 alias,
             )?;
         }
@@ -257,18 +242,18 @@ impl GraphStore {
             target,
             catalog_label,
             true,
-            value_bytes,
+            payload_bytes,
             canonical,
         )?;
         Ok(canonical)
     }
 
-    pub(crate) fn insert_directed_edge_with_value_bytes_journal(
+    pub(crate) fn insert_directed_edge_with_payload_bytes_journal(
         &self,
         source_vertex_id: VertexId,
         target_vertex_id: VertexId,
         catalog_label: Option<EdgeLabelId>,
-        value_bytes: &[u8],
+        payload_bytes: &[u8],
         canonical: EdgeHandle,
     ) -> Result<(), GraphStoreError> {
         journal_edge_insert(
@@ -277,7 +262,7 @@ impl GraphStore {
             target_vertex_id,
             catalog_label,
             false,
-            value_bytes,
+            payload_bytes,
             canonical,
         )
     }
@@ -289,7 +274,7 @@ pub(super) fn journal_edge_insert(
     target_vertex_id: VertexId,
     catalog_label: Option<EdgeLabelId>,
     undirected: bool,
-    value_bytes: &[u8],
+    payload_bytes: &[u8],
     canonical: EdgeHandle,
 ) -> Result<(), GraphStoreError> {
     use crate::facade::migration::incremental::{
@@ -305,7 +290,7 @@ pub(super) fn journal_edge_insert(
             false,
             catalog_label,
             undirected,
-            value_bytes,
+            payload_bytes,
             canonical,
         )?;
     }
@@ -331,7 +316,7 @@ pub(super) fn journal_edge_insert(
                         canonical.label_id,
                         canonical.slot_index,
                     ),
-                    value_bytes: value_bytes.to_vec(),
+                    payload_bytes: payload_bytes.to_vec(),
                 },
             )?;
         }
@@ -346,7 +331,7 @@ pub(super) fn journal_edge_insert_to_logical(
     target_is_remote: bool,
     catalog_label: Option<EdgeLabelId>,
     undirected: bool,
-    value_bytes: &[u8],
+    payload_bytes: &[u8],
     source_handle: EdgeHandle,
 ) -> Result<(), GraphStoreError> {
     use crate::facade::migration::incremental::{
@@ -360,7 +345,7 @@ pub(super) fn journal_edge_insert_to_logical(
         MigrationJournalOp::OutEdgeAdded {
             catalog_label,
             undirected,
-            value_bytes: value_bytes.to_vec(),
+            payload_bytes: payload_bytes.to_vec(),
             target_logical_vertex_id,
             target_is_remote,
             source_handle: migration_wire_handle(

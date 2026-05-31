@@ -4,11 +4,11 @@ use super::super::PropertyCatalogError;
 use super::super::stable::edge_label_catalog::EdgeLabelCatalogError;
 use super::super::stable::vertex_label_catalog::VertexLabelCatalogError;
 use super::super::stable::{
-    EDGE_LABEL_CATALOG, EDGE_VALUE_PROFILES, EDGE_WEIGHT_PROFILES, GRAPH_DEFAULT_EDGE_LABEL,
+    EDGE_LABEL_CATALOG, EDGE_PAYLOAD_PROFILES, EDGE_WEIGHT_PROFILES, GRAPH_DEFAULT_EDGE_LABEL,
     PROPERTY_CATALOG, VERTEX_LABEL_CATALOG,
 };
 use gleaph_graph_kernel::entry::{
-    Edge, EdgeLabelId, EdgeValueProfile, EdgeWeightProfile, PropertyId, TaggedEdgeLabelId,
+    Edge, EdgeLabelId, EdgePayloadProfile, EdgeWeightProfile, PropertyId, TaggedEdgeLabelId,
     VertexLabelId,
 };
 use ic_stable_lara::{DeferredBidirectionalLabeledError, VertexId};
@@ -82,7 +82,7 @@ impl GraphStore {
         EDGE_LABEL_CATALOG.with_borrow_mut(|catalog| catalog.insert_with_id(name, id))
     }
 
-    /// Installs weight + derived value profiles for a catalog label at graph init time only.
+    /// Installs weight + derived payload profiles for a catalog label at graph init time only.
     ///
     /// Call before any edge insert using this label. Re-installation returns
     /// [`GraphStoreError::EdgeLabelProfileAlreadyInstalled`].
@@ -91,24 +91,24 @@ impl GraphStore {
         label: EdgeLabelId,
         profile: EdgeWeightProfile,
     ) -> Result<(), GraphStoreError> {
-        Self::ensure_edge_label_value_profile_uninstalled(label)?;
-        let value_profile = EdgeValueProfile::from(profile.clone());
+        Self::ensure_edge_label_payload_profile_uninstalled(label)?;
+        let payload_profile = EdgePayloadProfile::from(profile.clone());
         EDGE_WEIGHT_PROFILES.with_borrow_mut(|store| store.insert(label, profile))?;
-        EDGE_VALUE_PROFILES.with_borrow_mut(|store| store.insert(label, value_profile))?;
+        EDGE_PAYLOAD_PROFILES.with_borrow_mut(|store| store.insert(label, payload_profile))?;
         Ok(())
     }
 
-    /// Installs a value profile for a catalog label at graph init time only.
+    /// Installs a payload profile for a catalog label at graph init time only.
     ///
     /// Call before any edge insert using this label. Re-installation returns
     /// [`GraphStoreError::EdgeLabelProfileAlreadyInstalled`].
-    pub(crate) fn install_edge_label_value_profile_at_init(
+    pub(crate) fn install_edge_label_payload_profile_at_init(
         &self,
         label: EdgeLabelId,
-        profile: EdgeValueProfile,
+        profile: EdgePayloadProfile,
     ) -> Result<(), GraphStoreError> {
-        Self::ensure_edge_label_value_profile_uninstalled(label)?;
-        EDGE_VALUE_PROFILES.with_borrow_mut(|store| store.insert(label, profile))?;
+        Self::ensure_edge_label_payload_profile_uninstalled(label)?;
+        EDGE_PAYLOAD_PROFILES.with_borrow_mut(|store| store.insert(label, profile))?;
         Ok(())
     }
 
@@ -116,23 +116,23 @@ impl GraphStore {
         EDGE_WEIGHT_PROFILES.with_borrow(|store| store.get(label))
     }
 
-    pub fn edge_label_value_profile(&self, label: EdgeLabelId) -> Option<EdgeValueProfile> {
-        EDGE_VALUE_PROFILES.with_borrow(|store| store.get(label))
+    pub fn edge_label_payload_profile(&self, label: EdgeLabelId) -> Option<EdgePayloadProfile> {
+        EDGE_PAYLOAD_PROFILES.with_borrow(|store| store.get(label))
     }
 
     pub(crate) fn remove_edge_label_weight_profile(&self, label: EdgeLabelId) {
         EDGE_WEIGHT_PROFILES.with_borrow_mut(|store| store.remove(label));
-        EDGE_VALUE_PROFILES.with_borrow_mut(|store| store.remove(label));
+        EDGE_PAYLOAD_PROFILES.with_borrow_mut(|store| store.remove(label));
     }
 
-    pub(crate) fn remove_edge_label_value_profile(&self, label: EdgeLabelId) {
-        EDGE_VALUE_PROFILES.with_borrow_mut(|store| store.remove(label));
+    pub(crate) fn remove_edge_label_payload_profile(&self, label: EdgeLabelId) {
+        EDGE_PAYLOAD_PROFILES.with_borrow_mut(|store| store.remove(label));
     }
 
-    fn ensure_edge_label_value_profile_uninstalled(
+    fn ensure_edge_label_payload_profile_uninstalled(
         label: EdgeLabelId,
     ) -> Result<(), GraphStoreError> {
-        if EDGE_VALUE_PROFILES
+        if EDGE_PAYLOAD_PROFILES
             .with_borrow(|store| store.get(label))
             .is_some()
         {

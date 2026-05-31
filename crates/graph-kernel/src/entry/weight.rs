@@ -1,15 +1,15 @@
-//! Edge-label weight profiles and prepared decoders for traversal-time `inline_value`.
+//! Edge-label weight profiles and prepared decoders for traversal-time inline u16 payloads.
 //!
 //! [`EdgeWeightProfile`] is catalog metadata attached to an edge-capable label. At query preparation
 //! time it is compiled into a [`PreparedWeightDecoder`] so the traversal hot path only reads
-//! stored edge value bytes (typically 2-byte u16) and applies the decoder.
+//! stored edge payload bytes (typically 2-byte u16) and applies the decoder.
 
 use half::f16;
 use ic_stable_structures::storable::{Bound, Storable};
 use std::borrow::Cow;
 use thiserror::Error;
 
-/// Label-level configuration for interpreting stored edge-value bytes as a traversal weight.
+/// Label-level configuration for interpreting stored edge-payload bytes as a traversal weight.
 #[derive(Clone, Debug, PartialEq, candid::CandidType, serde::Serialize, serde::Deserialize)]
 pub struct EdgeWeightProfile {
     pub encoding: WeightEncoding,
@@ -100,28 +100,6 @@ impl EdgeWeightProfile {
     }
 }
 
-/// Decodes a stored `inline_value` using a prepared decoder; enforces finite, non-negative `f32`.
-pub fn decode_inline_weight(
-    decoder: &PreparedWeightDecoder,
-    inline_value: u16,
-) -> Result<f32, WeightDecodeError> {
-    let v = match decoder {
-        PreparedWeightDecoder::RawU16 => inline_value as f32,
-        PreparedWeightDecoder::Linear { min, scale } => min + scale * (inline_value as f32),
-        PreparedWeightDecoder::Log { min_ln, scale } => {
-            (min_ln + scale * (inline_value as f32)).exp()
-        }
-        PreparedWeightDecoder::Binary16 => f16::from_bits(inline_value).to_f32(),
-    };
-    if !v.is_finite() {
-        return Err(WeightDecodeError::NonFinite);
-    }
-    if v < 0.0 {
-        return Err(WeightDecodeError::Negative);
-    }
-    Ok(v)
-}
-
 impl Storable for EdgeWeightProfile {
     const BOUND: Bound = Bound::Bounded {
         max_size: 256,
@@ -146,15 +124,21 @@ impl Storable for EdgeWeightProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entry::edge_payload::{EdgePayloadProfile, decode_edge_weight};
+
+    fn decode_weight_bytes(profile: &EdgeWeightProfile, bytes: &[u8]) -> f32 {
+        let payload_profile = EdgePayloadProfile::from(profile.clone());
+        let decoder = payload_profile.prepare().expect("prepare");
+        decode_edge_weight(&decoder, bytes).expect("decode")
+    }
 
     #[test]
     fn raw_u16_round_trip() {
         let p = EdgeWeightProfile {
             encoding: WeightEncoding::RawU16,
         };
-        let d = p.prepare().unwrap();
-        assert_eq!(decode_inline_weight(&d, 0).unwrap(), 0.0);
-        assert_eq!(decode_inline_weight(&d, 65535).unwrap(), 65535.0);
+        assert_eq!(decode_weight_bytes(&p, &0u16.to_le_bytes()), 0.0);
+        assert_eq!(decode_weight_bytes(&p, &65535u16.to_le_bytes()), 65535.0);
     }
 
     #[test]
@@ -165,9 +149,8 @@ mod tests {
                 max: 20.0,
             },
         };
-        let d = p.prepare().unwrap();
-        assert!((decode_inline_weight(&d, 0).unwrap() - 10.0).abs() < 1e-4);
-        assert!((decode_inline_weight(&d, u16::MAX).unwrap() - 20.0).abs() < 1e-3);
+        assert!((decode_weight_bytes(&p, &0u16.to_le_bytes()) - 10.0).abs() < 1e-4);
+        assert!((decode_weight_bytes(&p, &u16::MAX.to_le_bytes()) - 20.0).abs() < 1e-3);
     }
 
     #[test]
@@ -175,9 +158,8 @@ mod tests {
         let p = EdgeWeightProfile {
             encoding: WeightEncoding::Binary16,
         };
-        let d = p.prepare().unwrap();
         let bits = f16::from_f32(1.5).to_bits();
-        assert!((decode_inline_weight(&d, bits).unwrap() - 1.5).abs() < 1e-3);
+        assert!((decode_weight_bytes(&p, &bits.to_le_bytes()) - 1.5).abs() < 1e-3);
     }
 
     #[test]

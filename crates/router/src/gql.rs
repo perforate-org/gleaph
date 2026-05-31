@@ -141,7 +141,7 @@ pub async fn dispatch_plan_blob(
     let routings = match seed_probe {
         Some(probe) => {
             let hits = index
-                .lookup_equal(probe.property_id, probe.value_bytes.clone())
+                .lookup_equal(probe.property_id, probe.payload_bytes.clone())
                 .await
                 .map_err(RouterError::InvalidArgument)?;
             if hits.is_empty() {
@@ -277,7 +277,7 @@ mod tests {
             variable: "u".into(),
             property: "uid".into(),
             property_id: 1,
-            value_bytes: vec![1, 2, 3],
+            payload_bytes: vec![1, 2, 3],
         };
         let hits = vec![
             PostingHit {
@@ -307,7 +307,7 @@ mod tests {
             variable: "u".into(),
             property: "uid".into(),
             property_id: 1,
-            value_bytes: vec![],
+            payload_bytes: vec![],
         };
         let hits = vec![PostingHit {
             shard_id: 99,

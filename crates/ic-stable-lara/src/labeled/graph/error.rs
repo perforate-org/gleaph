@@ -5,7 +5,7 @@ use crate::{
     labeled::record::LabeledVertexFieldError,
     lara::{
         edge::InitError as EdgeInitError,
-        edge_value::{InitError as ValueInitError, ValueLogReadError, ValueLogWriteError},
+        edge_payload::{InitError as ValueInitError, PayloadLogReadError, PayloadLogWriteError},
         operation_error::LaraOperationError,
         vertex::InitError as VertexInitError,
     },
@@ -24,10 +24,10 @@ pub enum LabeledOperationError {
     },
     /// Underlying LARA store operation failed.
     Store(LaraOperationError),
-    /// Reading an edge-value overflow-log entry failed.
-    ValueLogRead(ValueLogReadError),
-    /// Writing an edge-value overflow-log entry failed.
-    ValueLogWrite(ValueLogWriteError),
+    /// Reading an edge-payload overflow-log entry failed.
+    PayloadLogRead(PayloadLogReadError),
+    /// Writing an edge-payload overflow-log entry failed.
+    PayloadLogWrite(PayloadLogWriteError),
     /// A default-label bypass was requested for a row that cannot use it.
     InvalidDefaultBypass,
     /// Vertex row fields are inconsistent with labeled bucket-mode limits.
@@ -41,8 +41,8 @@ impl fmt::Display for LabeledOperationError {
                 write!(f, "vertex {vid} out of range (len={len})")
             }
             Self::Store(err) => write!(f, "{err}"),
-            Self::ValueLogRead(err) => write!(f, "{err}"),
-            Self::ValueLogWrite(err) => write!(f, "{err}"),
+            Self::PayloadLogRead(err) => write!(f, "{err}"),
+            Self::PayloadLogWrite(err) => write!(f, "{err}"),
             Self::InvalidDefaultBypass => write!(
                 f,
                 "default-label bypass requires exactly one default adjacency label"
@@ -56,8 +56,8 @@ impl std::error::Error for LabeledOperationError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Store(err) => Some(err),
-            Self::ValueLogRead(err) => Some(err),
-            Self::ValueLogWrite(err) => Some(err),
+            Self::PayloadLogRead(err) => Some(err),
+            Self::PayloadLogWrite(err) => Some(err),
             Self::VertexOutOfRange { .. }
             | Self::InvalidDefaultBypass
             | Self::InvalidVertexRow(_) => None,
@@ -100,8 +100,8 @@ impl From<crate::labeled::record::LabelBucketFieldError> for LaraOperationError 
             }
             crate::labeled::record::LabelBucketFieldError::ReservedTopBitSet
             | crate::labeled::record::LabelBucketFieldError::OverflowLogHeadOutOfRange
-            | crate::labeled::record::LabelBucketFieldError::ValueOffsetOverflow
-            | crate::labeled::record::LabelBucketFieldError::ValueLogHeadOutOfRange => {
+            | crate::labeled::record::LabelBucketFieldError::PayloadOffsetOverflow
+            | crate::labeled::record::LabelBucketFieldError::PayloadLogHeadOutOfRange => {
                 Self::CollectAllocationOverflow
             }
         }
@@ -120,15 +120,15 @@ impl From<crate::GrowFailed> for LabeledOperationError {
     }
 }
 
-impl From<ValueLogReadError> for LabeledOperationError {
-    fn from(value: ValueLogReadError) -> Self {
-        Self::ValueLogRead(value)
+impl From<PayloadLogReadError> for LabeledOperationError {
+    fn from(value: PayloadLogReadError) -> Self {
+        Self::PayloadLogRead(value)
     }
 }
 
-impl From<ValueLogWriteError> for LabeledOperationError {
-    fn from(value: ValueLogWriteError) -> Self {
-        Self::ValueLogWrite(value)
+impl From<PayloadLogWriteError> for LabeledOperationError {
+    fn from(value: PayloadLogWriteError) -> Self {
+        Self::PayloadLogWrite(value)
     }
 }
 
@@ -141,8 +141,8 @@ pub enum InitError {
     Buckets(crate::labeled::LabelBucketStoreInitError),
     /// The edge subsystem could not be reopened.
     Edges(EdgeInitError),
-    /// The edge-value byte slab could not be reopened.
-    Values(ValueInitError),
+    /// The edge-payload byte slab could not be reopened.
+    Payloads(ValueInitError),
 }
 
 impl fmt::Display for InitError {
@@ -151,7 +151,7 @@ impl fmt::Display for InitError {
             Self::Vertices(e) => write!(f, "vertex init failed: {e}"),
             Self::Buckets(e) => write!(f, "bucket init failed: {e}"),
             Self::Edges(e) => write!(f, "edge init failed: {e}"),
-            Self::Values(e) => write!(f, "value slab init failed: {e}"),
+            Self::Payloads(e) => write!(f, "payload slab init failed: {e}"),
         }
     }
 }

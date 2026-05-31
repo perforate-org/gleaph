@@ -1,7 +1,7 @@
-//! Stable map for edge value overflow payloads wider than 8 bytes.
+//! Stable map for edge payload overflow payloads wider than 8 bytes.
 
-use super::blob_id::EdgeValueBlobId;
-use super::blob_store::{BlobStoreError, EdgeValueBlobStore};
+use super::blob_id::EdgePayloadBlobId;
+use super::blob_store::{BlobStoreError, EdgePayloadBlobStore};
 use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -30,7 +30,7 @@ impl Storable for BlobBytes {
     }
 }
 
-impl Storable for EdgeValueBlobId {
+impl Storable for EdgePayloadBlobId {
     const BOUND: Bound = Bound::Bounded {
         max_size: 8,
         is_fixed_size: true,
@@ -45,16 +45,16 @@ impl Storable for EdgeValueBlobId {
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        EdgeValueBlobId::from_raw(u64::from_le_bytes(bytes.as_ref().try_into().unwrap()))
+        EdgePayloadBlobId::from_raw(u64::from_le_bytes(bytes.as_ref().try_into().unwrap()))
     }
 }
 
-/// Stable btree backing large overflow-log edge values.
-pub struct EdgeValueBlobMap<M: Memory> {
-    inner: RefCell<StableBTreeMap<EdgeValueBlobId, BlobBytes, M>>,
+/// Stable btree backing large overflow-log edge payloads.
+pub struct EdgePayloadBlobMap<M: Memory> {
+    inner: RefCell<StableBTreeMap<EdgePayloadBlobId, BlobBytes, M>>,
 }
 
-impl<M: Memory> EdgeValueBlobMap<M> {
+impl<M: Memory> EdgePayloadBlobMap<M> {
     pub fn init(memory: M) -> Self {
         Self {
             inner: RefCell::new(StableBTreeMap::init(memory)),
@@ -66,8 +66,8 @@ impl<M: Memory> EdgeValueBlobMap<M> {
     }
 }
 
-impl<M: Memory> EdgeValueBlobMap<M> {
-    pub fn put_blob(&self, id: EdgeValueBlobId, bytes: &[u8]) -> Result<(), BlobStoreError> {
+impl<M: Memory> EdgePayloadBlobMap<M> {
+    pub fn put_blob(&self, id: EdgePayloadBlobId, bytes: &[u8]) -> Result<(), BlobStoreError> {
         if bytes.len() > usize::from(u16::MAX) {
             return Err(BlobStoreError::ValueTooLarge);
         }
@@ -77,7 +77,7 @@ impl<M: Memory> EdgeValueBlobMap<M> {
         Ok(())
     }
 
-    pub fn get_blob(&self, id: EdgeValueBlobId, out: &mut Vec<u8>) -> bool {
+    pub fn get_blob(&self, id: EdgePayloadBlobId, out: &mut Vec<u8>) -> bool {
         let Some(blob) = self.inner.borrow().get(&id) else {
             return false;
         };
@@ -86,12 +86,12 @@ impl<M: Memory> EdgeValueBlobMap<M> {
         true
     }
 
-    pub fn drop_blob(&self, id: EdgeValueBlobId) {
+    pub fn drop_blob(&self, id: EdgePayloadBlobId) {
         self.inner.borrow_mut().remove(&id);
     }
 
     pub fn drop_log_site(&self, leaf: u32, entry_idx: u32) {
-        self.drop_blob(EdgeValueBlobId::from_log_site(leaf, entry_idx));
+        self.drop_blob(EdgePayloadBlobId::from_log_site(leaf, entry_idx));
     }
 
     pub fn drain_leaf_segment(&self, leaf: u32, high_water_entry_idx: u32) {

@@ -121,7 +121,7 @@ pub enum MigrationJournalOp {
     },
     VertexPropertySet {
         property_id: PropertyId,
-        value_bytes: Vec<u8>,
+        payload_bytes: Vec<u8>,
     },
     VertexPropertyRemoved {
         property_id: PropertyId,
@@ -129,7 +129,7 @@ pub enum MigrationJournalOp {
     OutEdgeAdded {
         catalog_label: Option<EdgeLabelId>,
         undirected: bool,
-        value_bytes: Vec<u8>,
+        payload_bytes: Vec<u8>,
         target_logical_vertex_id: LogicalVertexId,
         target_is_remote: bool,
         source_handle: MigrationEdgeHandleWire,
@@ -137,14 +137,14 @@ pub enum MigrationJournalOp {
     OutEdgeRemoved {
         source_handle: MigrationEdgeHandleWire,
     },
-    OutEdgeValueChanged {
+    OutEdgePayloadChanged {
         source_handle: MigrationEdgeHandleWire,
-        value_bytes: Vec<u8>,
+        payload_bytes: Vec<u8>,
     },
     OutEdgePropertySet {
         source_handle: MigrationEdgeHandleWire,
         property_id: PropertyId,
-        value_bytes: Vec<u8>,
+        payload_bytes: Vec<u8>,
     },
     OutEdgePropertyRemoved {
         source_handle: MigrationEdgeHandleWire,
@@ -156,19 +156,19 @@ pub enum MigrationJournalOp {
         predecessor_is_remote: bool,
         catalog_label: Option<EdgeLabelId>,
         canonical_source_handle: MigrationEdgeHandleWire,
-        value_bytes: Vec<u8>,
+        payload_bytes: Vec<u8>,
     },
     InReverseRemoved {
         source_handle: MigrationEdgeHandleWire,
     },
     InReverseValueChanged {
         source_handle: MigrationEdgeHandleWire,
-        value_bytes: Vec<u8>,
+        payload_bytes: Vec<u8>,
     },
     InReversePropertySet {
         source_handle: MigrationEdgeHandleWire,
         property_id: PropertyId,
-        value_bytes: Vec<u8>,
+        payload_bytes: Vec<u8>,
     },
     InReversePropertyRemoved {
         source_handle: MigrationEdgeHandleWire,
@@ -295,7 +295,7 @@ pub struct MigrationApplyChunk {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct ExportedInReverseEdge {
     pub catalog_label: Option<EdgeLabelId>,
-    pub value_bytes: Vec<u8>,
+    pub payload_bytes: Vec<u8>,
     pub predecessor_logical_vertex_id: LogicalVertexId,
     pub predecessor_is_remote: bool,
     pub source_reverse_handle: MigrationEdgeHandleWire,

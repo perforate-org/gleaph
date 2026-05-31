@@ -1,8 +1,8 @@
 //! Record vertex property changes for the federated index canister.
 //!
-//! ## Index posting keys (`value_bytes`)
+//! ## Index posting keys (`payload_bytes`)
 //!
-//! Each [`PendingPostingOp`] carries a `value_bytes` field: the **sortable property-index key** for
+//! Each [`PendingPostingOp`] carries a `payload_bytes` field: the **sortable property-index key** for
 //! that snapshot of the property value, from [`gleaph_gql::value_to_index_key_bytes`]. The federated
 //! index uses these bytes (with `property_id`) for equality and range lookups.
 //!
@@ -20,7 +20,7 @@
 //! ## Persistence vs index
 //!
 //! Stable vertex storage serializes [`gleaph_gql::Value`] with [`gleaph_gql::Value::to_binary_bytes`].
-//! That encoding is **not** what appears in `value_bytes` here. A value can be persisted on the graph
+//! That encoding is **not** what appears in `payload_bytes` here. A value can be persisted on the graph
 //! while producing no postings when [`gleaph_gql::value_to_index_key_bytes`] returns `None` or `Err`.
 //! Extensions such as [`gleaph_gql_ic::PrincipalValue`] participate in the index when they supply a
 //! sortable key so [`gleaph_gql::value_to_index_key_bytes`] succeeds.
@@ -46,12 +46,12 @@ use std::cell::RefCell;
 pub(crate) enum PendingPostingOp {
     Insert {
         property_id: u32,
-        value_bytes: Vec<u8>,
+        payload_bytes: Vec<u8>,
         vertex_id: u32,
     },
     Remove {
         property_id: u32,
-        value_bytes: Vec<u8>,
+        payload_bytes: Vec<u8>,
         vertex_id: u32,
     },
 }
@@ -92,7 +92,7 @@ pub(crate) fn record_vertex_property_change(
             if let Some(bytes) = encode_value(n) {
                 push(PendingPostingOp::Insert {
                     property_id: pid,
-                    value_bytes: bytes,
+                    payload_bytes: bytes,
                     vertex_id: vid,
                 });
             }
@@ -101,14 +101,14 @@ pub(crate) fn record_vertex_property_change(
             if let Some(old_bytes) = encode_value(p) {
                 push(PendingPostingOp::Remove {
                     property_id: pid,
-                    value_bytes: old_bytes,
+                    payload_bytes: old_bytes,
                     vertex_id: vid,
                 });
             }
             if let Some(new_bytes) = encode_value(n) {
                 push(PendingPostingOp::Insert {
                     property_id: pid,
-                    value_bytes: new_bytes,
+                    payload_bytes: new_bytes,
                     vertex_id: vid,
                 });
             }
@@ -117,7 +117,7 @@ pub(crate) fn record_vertex_property_change(
             if let Some(bytes) = encode_value(p) {
                 push(PendingPostingOp::Remove {
                     property_id: pid,
-                    value_bytes: bytes,
+                    payload_bytes: bytes,
                     vertex_id: vid,
                 });
             }
@@ -134,18 +134,18 @@ async fn compensate_index_ops(
         match op {
             PendingPostingOp::Insert {
                 property_id,
-                value_bytes,
+                payload_bytes,
                 vertex_id,
             } => {
-                ix.posting_remove(*property_id, value_bytes.clone(), *vertex_id)
+                ix.posting_remove(*property_id, payload_bytes.clone(), *vertex_id)
                     .await?;
             }
             PendingPostingOp::Remove {
                 property_id,
-                value_bytes,
+                payload_bytes,
                 vertex_id,
             } => {
-                ix.posting_insert(*property_id, value_bytes.clone(), *vertex_id)
+                ix.posting_insert(*property_id, payload_bytes.clone(), *vertex_id)
                     .await?;
             }
         }
@@ -176,18 +176,18 @@ pub(crate) async fn flush_pending(
         let result = match op {
             PendingPostingOp::Insert {
                 property_id,
-                value_bytes,
+                payload_bytes,
                 vertex_id,
             } => {
-                ix.posting_insert(*property_id, value_bytes.clone(), *vertex_id)
+                ix.posting_insert(*property_id, payload_bytes.clone(), *vertex_id)
                     .await
             }
             PendingPostingOp::Remove {
                 property_id,
-                value_bytes,
+                payload_bytes,
                 vertex_id,
             } => {
-                ix.posting_remove(*property_id, value_bytes.clone(), *vertex_id)
+                ix.posting_remove(*property_id, payload_bytes.clone(), *vertex_id)
                     .await
             }
         };
@@ -307,12 +307,12 @@ mod tests {
             p.borrow_mut().extend([
                 PendingPostingOp::Insert {
                     property_id: 1,
-                    value_bytes: vec![10],
+                    payload_bytes: vec![10],
                     vertex_id: 1,
                 },
                 PendingPostingOp::Insert {
                     property_id: 1,
-                    value_bytes: vec![11],
+                    payload_bytes: vec![11],
                     vertex_id: 2,
                 },
             ]);
@@ -330,17 +330,17 @@ mod tests {
             &restored[0],
             PendingPostingOp::Insert {
                 property_id: 1,
-                value_bytes,
+                payload_bytes,
                 vertex_id: 1
-            } if value_bytes == &[10]
+            } if payload_bytes == &[10]
         ));
         assert!(matches!(
             &restored[1],
             PendingPostingOp::Insert {
                 property_id: 1,
-                value_bytes,
+                payload_bytes,
                 vertex_id: 2
-            } if value_bytes == &[11]
+            } if payload_bytes == &[11]
         ));
 
         graph.set_federation_routing(None).expect("clear routing");

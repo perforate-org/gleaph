@@ -4,14 +4,14 @@ use candid::Principal;
 use gleaph_gql::Value;
 use gleaph_gql::ast::Expr;
 use gleaph_gql::types::EdgeDirection;
-use gleaph_gql_planner::plan::{EdgeValuePredicate, EdgeVectorPredicate, ScanValue, Str};
+use gleaph_gql_planner::plan::{EdgePayloadPredicate, EdgeVectorPredicate, ScanValue, Str};
 use gleaph_graph_kernel::entry::{Edge, EdgeLabelId, PreparedWeightDecoder};
 use gleaph_graph_kernel::federation::{
     FederatedExpandArgs, FederatedExpandDirection, FederatedExpandNeighbor,
 };
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
-use ic_stable_lara::labeled::LabeledEdgeValueBatchScratch;
+use ic_stable_lara::labeled::LabeledEdgePayloadBatchScratch;
 
 use super::candidates::{expand_candidates_into, expand_vector_dst_only_rows_into};
 use super::predicates::PreparedEdgeVectorThreshold;
@@ -113,7 +113,7 @@ pub(crate) async fn execute_expand(
     dst_filter: &[Expr],
     emit_edge_binding: bool,
     indexed_edge_equality: Option<&(Str, ScanValue)>,
-    edge_value_predicate: Option<&EdgeValuePredicate>,
+    edge_payload_predicate: Option<&EdgePayloadPredicate>,
     edge_vector_predicate: Option<&EdgeVectorPredicate>,
     edge_property_projection: Option<&[Str]>,
     dst_property_projection: Option<&[Str]>,
@@ -131,16 +131,17 @@ pub(crate) async fn execute_expand(
     let dst_only_prefilter = dst_filter_is_dst_vertex_only(dst_filter, dst.as_ref());
     let edge_key = emit_edge_binding.then(|| edge.to_string());
     let dst_key = dst.to_string();
-    let csr_expand_fast_path = (edge_value_predicate.is_none() && edge_vector_predicate.is_none())
-        .then(|| csr_offset_fast_path_for_expand(direction, label_id, sequence_order))
-        .flatten();
+    let csr_expand_fast_path = (edge_payload_predicate.is_none()
+        && edge_vector_predicate.is_none())
+    .then(|| csr_offset_fast_path_for_expand(direction, label_id, sequence_order))
+    .flatten();
     let prepared_vector_dst_only_predicate = prepare_vector_dst_only_expand_predicate(
         store,
         label_id,
         direction,
         emit_edge_binding,
         indexed_edge_equality,
-        edge_value_predicate,
+        edge_payload_predicate,
         edge_vector_predicate,
         edge_property_projection,
         parameters,
@@ -156,7 +157,7 @@ pub(crate) async fn execute_expand(
     };
     let mut out = Vec::with_capacity(rows.len());
     let mut candidates = Vec::new();
-    let mut vector_batch_scratch = LabeledEdgeValueBatchScratch::default();
+    let mut vector_batch_scratch = LabeledEdgePayloadBatchScratch::default();
     let mut vector_matches = Vec::new();
     for row in rows {
         if matches!(direction, EdgeDirection::PointingLeft)
@@ -380,7 +381,7 @@ pub(crate) async fn execute_expand(
             label_id,
             sequence_order,
             indexed_edge_equality,
-            edge_value_predicate,
+            edge_payload_predicate,
             edge_vector_predicate,
             parameters,
             &mut candidates,
@@ -433,14 +434,14 @@ fn prepare_vector_dst_only_expand_predicate(
     direction: EdgeDirection,
     emit_edge_binding: bool,
     indexed_edge_equality: Option<&(Str, ScanValue)>,
-    edge_value_predicate: Option<&EdgeValuePredicate>,
+    edge_payload_predicate: Option<&EdgePayloadPredicate>,
     edge_vector_predicate: Option<&EdgeVectorPredicate>,
     edge_property_projection: Option<&[Str]>,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<Option<(EdgeLabelId, PreparedEdgeVectorThreshold)>, PlanQueryError> {
     if emit_edge_binding
         || indexed_edge_equality.is_some()
-        || edge_value_predicate.is_some()
+        || edge_payload_predicate.is_some()
         || edge_vector_predicate.is_none()
         || edge_property_projection.is_some_and(|props| !props.is_empty())
         || !matches!(

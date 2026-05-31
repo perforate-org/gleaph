@@ -63,7 +63,7 @@ pub enum PlanOpWire {
         label_expr: Option<u32>,
         var_len: Option<VarLenSpecWire>,
         indexed_edge_equality: Option<(String, ScanValueWire)>,
-        edge_value_predicate: Option<EdgeValuePredicateWire>,
+        edge_payload_predicate: Option<EdgePayloadPredicateWire>,
         edge_vector_predicate: Option<EdgeVectorPredicateWire>,
         edge_property_projection: Option<Vec<String>>,
         dst_property_projection: Option<Vec<String>>,
@@ -79,7 +79,7 @@ pub enum PlanOpWire {
         label_expr: Option<u32>,
         var_len: Option<VarLenSpecWire>,
         indexed_edge_equality: Option<(String, ScanValueWire)>,
-        edge_value_predicate: Option<EdgeValuePredicateWire>,
+        edge_payload_predicate: Option<EdgePayloadPredicateWire>,
         edge_vector_predicate: Option<EdgeVectorPredicateWire>,
         dst_filter: Vec<u32>,
         edge_property_projection: Option<Vec<String>>,
@@ -226,7 +226,7 @@ pub enum ScanValueWire {
 }
 
 #[derive(Clone, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-pub struct EdgeValuePredicateWire {
+pub struct EdgePayloadPredicateWire {
     pub op: u8,
     pub value: ScanValueWire,
 }

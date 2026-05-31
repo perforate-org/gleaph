@@ -94,9 +94,9 @@ where
     {
         self.ensure_vertex(src)?;
         let mut vertex = self.vertices.get(src);
-        let has_edge_value = edge.edge_value_byte_width() != 0;
+        let has_edge_payload = edge.edge_payload_byte_width() != 0;
         if vertex.is_default_edge_labeled() {
-            if !has_edge_value && label_id == self.bypass_storage_label_for(&vertex) {
+            if !has_edge_payload && label_id == self.bypass_storage_label_for(&vertex) {
                 return self.insert_homogeneous_bypass_edge(src, label_id, edge);
             }
             self.promote_bypass_to_bucket_mode(src)?;
@@ -104,17 +104,21 @@ where
         } else if vertex.degree() == 0
             && self.is_homogeneous_bypass_label(label_id)
             && self.may_use_homogeneous_bypass(src)
-            && !has_edge_value
+            && !has_edge_payload
         {
             return self.insert_homogeneous_bypass(src, label_id, edge);
         }
 
         let (bucket_slot, mut bucket) = self.find_or_create_bucket(src, &vertex, label_id)?;
         let vertex = self.vertices.get(src);
-        let value_width = edge.edge_value_byte_width();
-        if value_width != 0 && value_width != bucket.value_byte_width() {
-            bucket =
-                self.ensure_bucket_value_byte_width_on_slot(src, bucket_slot, bucket, value_width)?;
+        let value_width = edge.edge_payload_byte_width();
+        if value_width != 0 && value_width != bucket.payload_byte_width() {
+            bucket = self.ensure_bucket_payload_byte_width_on_slot(
+                src,
+                bucket_slot,
+                bucket,
+                value_width,
+            )?;
             self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
         }
         self.ensure_bucket_slack_insert_when_peers_have_values(src, &vertex)?;
@@ -135,9 +139,9 @@ where
                 let prev_stored_slots = bucket.stored_slots;
                 let bucket = bucket.grow_packed_slab_by_one();
                 let bucket =
-                    self.ensure_bucket_value_span(src, bucket_slot, bucket, prev_stored_slots)?;
+                    self.ensure_bucket_payload_span(src, bucket_slot, bucket, prev_stored_slots)?;
                 let slot_index = bucket.stored_slots.saturating_sub(1);
-                self.write_edge_value_at_slot(&bucket, slot_index, &attempt_edge)?;
+                self.write_edge_payload_at_slot(&bucket, slot_index, &attempt_edge)?;
                 self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
                 let hdr = self.edges.header();
                 let next_num_edges = hdr
@@ -166,9 +170,13 @@ where
                     if new_stored != bucket.stored_slots {
                         bucket = bucket.with_stored_slots(new_stored);
                     }
-                    let bucket =
-                        self.ensure_bucket_value_span(src, bucket_slot, bucket, prev_stored_slots)?;
-                    self.write_edge_value_at_slot(&bucket, written_slot, &attempt_edge)?;
+                    let bucket = self.ensure_bucket_payload_span(
+                        src,
+                        bucket_slot,
+                        bucket,
+                        prev_stored_slots,
+                    )?;
+                    self.write_edge_payload_at_slot(&bucket, written_slot, &attempt_edge)?;
                     self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
                     self.invalidate_bucket_lookup_for_label(src, label_id);
                     return Ok(());
@@ -179,12 +187,16 @@ where
                         .read_label_bucket_slot(bucket_slot)
                         .ok_or(LaraOperationError::CollectAllocationOverflow)?;
                     let prev_stored_slots = bucket.stored_slots;
-                    let mut bucket =
-                        self.ensure_bucket_value_span(src, bucket_slot, bucket, prev_stored_slots)?;
+                    let mut bucket = self.ensure_bucket_payload_span(
+                        src,
+                        bucket_slot,
+                        bucket,
+                        prev_stored_slots,
+                    )?;
                     let entry_idx = bucket.overflow_log_head();
-                    if bucket.is_value_allocated() && entry_idx >= 0 {
+                    if bucket.is_payload_allocated() && entry_idx >= 0 {
                         bucket =
-                            self.write_edge_value_to_log(src, &bucket, entry_idx, &attempt_edge)?;
+                            self.write_edge_payload_to_log(src, &bucket, entry_idx, &attempt_edge)?;
                     }
                     self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
                     self.invalidate_bucket_lookup_for_label(src, label_id);
@@ -193,7 +205,7 @@ where
                 Err(LaraOperationError::SegmentLogFull) => {
                     let vertex = self.vertices.get(src);
                     if vertex.is_default_edge_labeled()
-                        && !has_edge_value
+                        && !has_edge_payload
                         && label_id == self.bypass_storage_label_for(&vertex)
                     {
                         return self.insert_homogeneous_bypass_edge(src, label_id, attempt_edge);

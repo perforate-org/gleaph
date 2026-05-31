@@ -96,10 +96,10 @@ pub(crate) fn remove_all_for_edge(owner_vertex_id: VertexId, label_id: u16, slot
 /// Returns `Some(postings)` when postings exist for `(property, value)` in stable storage.
 pub(crate) fn lookup_equal(
     property_id: PropertyId,
-    value_bytes: &[u8],
+    payload_bytes: &[u8],
 ) -> Option<Vec<EdgeEqualityPosting>> {
     let keys =
-        EDGE_EQUALITY_POSTINGS.with_borrow(|index| index.lookup_range(property_id, value_bytes));
+        EDGE_EQUALITY_POSTINGS.with_borrow(|index| index.lookup_range(property_id, payload_bytes));
     if keys.is_empty() {
         return None;
     }
@@ -126,11 +126,11 @@ fn insert_posting(
     label_id: u16,
     slot_index: u32,
     property_id: PropertyId,
-    value_bytes: Vec<u8>,
+    payload_bytes: Vec<u8>,
 ) {
     let key = EdgeEqualityPostingKey::new(
         property_id,
-        &value_bytes,
+        &payload_bytes,
         owner_vertex_id,
         label_id,
         slot_index,
@@ -143,11 +143,11 @@ fn remove_posting(
     label_id: u16,
     slot_index: u32,
     property_id: PropertyId,
-    value_bytes: Vec<u8>,
+    payload_bytes: Vec<u8>,
 ) {
     let key = EdgeEqualityPostingKey::new(
         property_id,
-        &value_bytes,
+        &payload_bytes,
         owner_vertex_id,
         label_id,
         slot_index,

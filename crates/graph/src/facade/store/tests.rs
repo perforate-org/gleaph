@@ -9,7 +9,7 @@ use gleaph_graph_kernel::entry::{
 };
 use ic_stable_lara::{
     MaintenanceBudget, OutEdgeOrder, VertexId,
-    labeled::{BucketLabelKey as LaraLabelId, LabeledEdgeValueBatchScratch, LabeledOrientation},
+    labeled::{BucketLabelKey as LaraLabelId, LabeledEdgePayloadBatchScratch, LabeledOrientation},
     traits::CsrEdge,
 };
 use std::collections::BTreeMap;
@@ -26,22 +26,22 @@ fn install_w2_weight_profile(store: &GraphStore, label_id: EdgeLabelId) {
 }
 
 #[test]
-fn install_edge_label_value_profile_rejected_on_second_install() {
-    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile};
+fn install_edge_label_payload_profile_rejected_on_second_install() {
+    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
 
     let store = GraphStore::new();
     let label_id = store
         .get_or_insert_edge_label_id("ProfileInitOnce")
         .expect("label");
-    let profile = EdgeValueProfile {
+    let profile = EdgePayloadProfile {
         byte_width: 2,
-        encoding: EdgeValueEncoding::WeightRawU16,
+        encoding: EdgePayloadEncoding::WeightRawU16,
     };
     store
-        .install_edge_label_value_profile_at_init(label_id, profile.clone())
+        .install_edge_label_payload_profile_at_init(label_id, profile.clone())
         .expect("first install");
     let err = store
-        .install_edge_label_value_profile_at_init(label_id, profile)
+        .install_edge_label_payload_profile_at_init(label_id, profile)
         .expect_err("second install must fail");
     assert!(
         matches!(err, GraphStoreError::EdgeLabelProfileAlreadyInstalled(id) if id == label_id),
@@ -50,7 +50,7 @@ fn install_edge_label_value_profile_rejected_on_second_install() {
 }
 
 #[test]
-fn insert_rejects_value_bytes_when_label_profile_expects_zero_width() {
+fn insert_rejects_payload_bytes_when_label_profile_expects_zero_width() {
     let store = GraphStore::new();
     let source = store.insert_vertex().expect("source");
     let target = store.insert_vertex().expect("target");
@@ -59,12 +59,12 @@ fn insert_rejects_value_bytes_when_label_profile_expects_zero_width() {
         .expect("label");
 
     let err = store
-        .insert_directed_edge_with_value_bytes(source, target, Some(label_id), &[1, 0])
+        .insert_directed_edge_with_payload_bytes(source, target, Some(label_id), &[1, 0])
         .expect_err("new label defaults to zero-byte values");
     assert!(
         matches!(
             err,
-            GraphStoreError::EdgeValueWidthMismatch {
+            GraphStoreError::EdgePayloadWidthMismatch {
                 expected: 0,
                 actual: 2,
                 ..
@@ -75,8 +75,8 @@ fn insert_rejects_value_bytes_when_label_profile_expects_zero_width() {
 }
 
 #[test]
-fn insert_rejects_value_bytes_when_profile_width_differs() {
-    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile};
+fn insert_rejects_payload_bytes_when_profile_width_differs() {
+    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
 
     let store = GraphStore::new();
     let source = store.insert_vertex().expect("source");
@@ -85,22 +85,27 @@ fn insert_rejects_value_bytes_when_profile_width_differs() {
         .get_or_insert_edge_label_id("ProfileWidthMismatch")
         .expect("label");
     store
-        .install_edge_label_value_profile_at_init(
+        .install_edge_label_payload_profile_at_init(
             label_id,
-            EdgeValueProfile {
+            EdgePayloadProfile {
                 byte_width: 2,
-                encoding: EdgeValueEncoding::WeightRawU16,
+                encoding: EdgePayloadEncoding::WeightRawU16,
             },
         )
         .expect("profile");
 
     let err = store
-        .insert_directed_edge_with_value_bytes(source, target, Some(label_id), &42i32.to_le_bytes())
+        .insert_directed_edge_with_payload_bytes(
+            source,
+            target,
+            Some(label_id),
+            &42i32.to_le_bytes(),
+        )
         .expect_err("four-byte payload on W2 label");
     assert!(
         matches!(
             err,
-            GraphStoreError::EdgeValueWidthMismatch {
+            GraphStoreError::EdgePayloadWidthMismatch {
                 expected: 2,
                 actual: 4,
                 ..
@@ -111,7 +116,7 @@ fn insert_rejects_value_bytes_when_profile_width_differs() {
 }
 
 #[test]
-fn insert_rejects_invalid_edge_value_byte_width() {
+fn insert_rejects_invalid_edge_payload_byte_width() {
     let store = GraphStore::new();
     let source = store.insert_vertex().expect("source");
     let target = store.insert_vertex().expect("target");
@@ -120,12 +125,12 @@ fn insert_rejects_invalid_edge_value_byte_width() {
         .expect("label");
 
     let err = store
-        .insert_directed_edge_with_value_bytes(source, target, Some(label_id), &[1, 2, 3])
+        .insert_directed_edge_with_payload_bytes(source, target, Some(label_id), &[1, 2, 3])
         .expect_err("three-byte payload without a matching profile");
     assert!(
         matches!(
             err,
-            GraphStoreError::EdgeValueWidthMismatch {
+            GraphStoreError::EdgePayloadWidthMismatch {
                 expected: 0,
                 actual: 3,
                 ..
@@ -136,8 +141,8 @@ fn insert_rejects_invalid_edge_value_byte_width() {
 }
 
 #[test]
-fn i32_edge_value_profile_round_trip() {
-    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile};
+fn i32_edge_payload_profile_round_trip() {
+    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
 
     let store = GraphStore::new();
     let source = store.insert_vertex().expect("source");
@@ -146,16 +151,16 @@ fn i32_edge_value_profile_round_trip() {
         .get_or_insert_edge_label_id("I32CostRoad")
         .expect("label");
     store
-        .install_edge_label_value_profile_at_init(
+        .install_edge_label_payload_profile_at_init(
             label_id,
-            EdgeValueProfile {
+            EdgePayloadProfile {
                 byte_width: 4,
-                encoding: EdgeValueEncoding::RawI32,
+                encoding: EdgePayloadEncoding::RawI32,
             },
         )
-        .expect("value profile");
+        .expect("payload profile");
     store
-        .insert_directed_edge_with_value_bytes(
+        .insert_directed_edge_with_payload_bytes(
             source,
             target,
             Some(label_id),
@@ -169,12 +174,12 @@ fn i32_edge_value_profile_round_trip() {
         .into_iter()
         .find(|edge| edge.neighbor_vid() == target)
         .expect("inserted edge");
-    assert_eq!(edge.value_bytes(), &100i32.to_le_bytes());
+    assert_eq!(edge.payload_bytes(), &100i32.to_le_bytes());
 }
 
 #[test]
-fn graph_store_visits_fixed_label_edge_value_batches() {
-    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile};
+fn graph_store_visits_fixed_label_edge_payload_batches() {
+    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
 
     let store = GraphStore::new();
     let source = store.insert_vertex().expect("source");
@@ -184,25 +189,25 @@ fn graph_store_visits_fixed_label_edge_value_batches() {
         .get_or_insert_edge_label_id("BatchValues")
         .expect("label");
     store
-        .install_edge_label_value_profile_at_init(
+        .install_edge_label_payload_profile_at_init(
             label_id,
-            EdgeValueProfile {
+            EdgePayloadProfile {
                 byte_width: 2,
-                encoding: EdgeValueEncoding::RawU16,
+                encoding: EdgePayloadEncoding::RawU16,
             },
         )
         .expect("profile");
     store
-        .insert_directed_edge_with_value_bytes(source, first, Some(label_id), &[1, 0])
+        .insert_directed_edge_with_payload_bytes(source, first, Some(label_id), &[1, 0])
         .expect("first edge");
     store
-        .insert_directed_edge_with_value_bytes(source, second, Some(label_id), &[2, 0])
+        .insert_directed_edge_with_payload_bytes(source, second, Some(label_id), &[2, 0])
         .expect("second edge");
 
-    let mut scratch = LabeledEdgeValueBatchScratch::default();
+    let mut scratch = LabeledEdgePayloadBatchScratch::default();
     let mut values = Vec::new();
     store
-        .visit_out_edge_value_batches_for_label(
+        .visit_out_edge_payload_batches_for_label(
             source,
             lara_label(label_id.pack(EdgeDirectedness::Directed)),
             OutEdgeOrder::Ascending,
@@ -211,7 +216,7 @@ fn graph_store_visits_fixed_label_edge_value_batches() {
                 assert!(batch.dense);
                 values.extend(
                     batch
-                        .value_bytes
+                        .payload_bytes
                         .chunks_exact(2)
                         .map(|b| u16::from_le_bytes([b[0], b[1]])),
                 );
@@ -222,8 +227,8 @@ fn graph_store_visits_fixed_label_edge_value_batches() {
 }
 
 #[test]
-fn graph_store_visits_fixed_label_in_edge_value_batches() {
-    use gleaph_graph_kernel::entry::{EdgeValueEncoding, EdgeValueProfile};
+fn graph_store_visits_fixed_label_in_edge_payload_batches() {
+    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
 
     let store = GraphStore::new();
     let first = store.insert_vertex().expect("first");
@@ -233,25 +238,25 @@ fn graph_store_visits_fixed_label_in_edge_value_batches() {
         .get_or_insert_edge_label_id("BatchInValues")
         .expect("label");
     store
-        .install_edge_label_value_profile_at_init(
+        .install_edge_label_payload_profile_at_init(
             label_id,
-            EdgeValueProfile {
+            EdgePayloadProfile {
                 byte_width: 2,
-                encoding: EdgeValueEncoding::RawU16,
+                encoding: EdgePayloadEncoding::RawU16,
             },
         )
         .expect("profile");
     store
-        .insert_directed_edge_with_value_bytes(first, target, Some(label_id), &[1, 0])
+        .insert_directed_edge_with_payload_bytes(first, target, Some(label_id), &[1, 0])
         .expect("first edge");
     store
-        .insert_directed_edge_with_value_bytes(second, target, Some(label_id), &[2, 0])
+        .insert_directed_edge_with_payload_bytes(second, target, Some(label_id), &[2, 0])
         .expect("second edge");
 
-    let mut scratch = LabeledEdgeValueBatchScratch::default();
+    let mut scratch = LabeledEdgePayloadBatchScratch::default();
     let mut values = Vec::new();
     store
-        .visit_in_edge_value_batches_for_label(
+        .visit_in_edge_payload_batches_for_label(
             target,
             lara_label(label_id.pack(EdgeDirectedness::Directed)),
             OutEdgeOrder::Ascending,
@@ -260,7 +265,7 @@ fn graph_store_visits_fixed_label_in_edge_value_batches() {
                 assert!(batch.dense);
                 values.extend(
                     batch
-                        .value_bytes
+                        .payload_bytes
                         .chunks_exact(2)
                         .map(|b| u16::from_le_bytes([b[0], b[1]])),
                 );
@@ -272,7 +277,7 @@ fn graph_store_visits_fixed_label_in_edge_value_batches() {
 }
 
 #[test]
-fn updating_directed_edge_value_updates_forward_and_reverse_rows() {
+fn updating_directed_edge_payload_updates_forward_and_reverse_rows() {
     let store = GraphStore::new();
     let source = store.insert_vertex().expect("source");
     let target = store.insert_vertex().expect("target");
@@ -282,7 +287,7 @@ fn updating_directed_edge_value_updates_forward_and_reverse_rows() {
     install_w2_weight_profile(&store, label_id);
 
     let forward = store
-        .insert_directed_edge_with_value_bytes(source, target, Some(label_id), &[1, 0])
+        .insert_directed_edge_with_payload_bytes(source, target, Some(label_id), &[1, 0])
         .expect("edge");
     let wire_label = lara_label(label_id.pack(EdgeDirectedness::Directed));
     let reverse = store
@@ -293,14 +298,14 @@ fn updating_directed_edge_value_updates_forward_and_reverse_rows() {
         .expect("reverse edge");
 
     store
-        .update_edge_value_at_handle(forward, &[9, 0])
+        .update_edge_payload_at_handle(forward, &[9, 0])
         .expect("forward update");
     assert_eq!(
         store
             .find_outgoing_edge_record(forward)
             .expect("forward lookup")
             .expect("forward edge")
-            .value_bytes(),
+            .payload_bytes(),
         &[9, 0]
     );
     assert_eq!(
@@ -310,19 +315,19 @@ fn updating_directed_edge_value_updates_forward_and_reverse_rows() {
             .into_iter()
             .find(|edge| edge.neighbor_vid() == source)
             .expect("reverse row")
-            .value_bytes(),
+            .payload_bytes(),
         &[9, 0]
     );
 
     store
-        .update_edge_value_at_handle(reverse, &[5, 0])
+        .update_edge_payload_at_handle(reverse, &[5, 0])
         .expect("reverse update");
     assert_eq!(
         store
             .find_outgoing_edge_record(forward)
             .expect("forward lookup after reverse update")
             .expect("forward edge after reverse update")
-            .value_bytes(),
+            .payload_bytes(),
         &[5, 0]
     );
     assert_eq!(
@@ -332,13 +337,13 @@ fn updating_directed_edge_value_updates_forward_and_reverse_rows() {
             .into_iter()
             .find(|edge| edge.neighbor_vid() == source)
             .expect("reverse row after reverse update")
-            .value_bytes(),
+            .payload_bytes(),
         &[5, 0]
     );
 }
 
 #[test]
-fn updating_undirected_edge_value_updates_both_storage_rows() {
+fn updating_undirected_edge_payload_updates_both_storage_rows() {
     let store = GraphStore::new();
     let low = store.insert_vertex().expect("low");
     let high = store.insert_vertex().expect("high");
@@ -348,10 +353,10 @@ fn updating_undirected_edge_value_updates_both_storage_rows() {
     install_w2_weight_profile(&store, label_id);
 
     let handle = store
-        .insert_undirected_edge_with_value_bytes(low, high, Some(label_id), &[1, 0])
+        .insert_undirected_edge_with_payload_bytes(low, high, Some(label_id), &[1, 0])
         .expect("edge");
     store
-        .update_edge_value_at_handle(handle, &[8, 0])
+        .update_edge_payload_at_handle(handle, &[8, 0])
         .expect("update");
 
     let low_edge = store
@@ -366,12 +371,12 @@ fn updating_undirected_edge_value_updates_both_storage_rows() {
         .into_iter()
         .find(|edge| edge.neighbor_vid() == low)
         .expect("high row");
-    assert_eq!(low_edge.value_bytes(), &[8, 0]);
-    assert_eq!(high_edge.value_bytes(), &[8, 0]);
+    assert_eq!(low_edge.payload_bytes(), &[8, 0]);
+    assert_eq!(high_edge.payload_bytes(), &[8, 0]);
 }
 
 #[test]
-fn forward_edge_compaction_preserves_inline_values() {
+fn forward_edge_compaction_preserves_inline_payloads() {
     let store = GraphStore::new();
     let source = store.insert_vertex().expect("source");
     let first = store.insert_vertex().expect("first");
@@ -390,13 +395,13 @@ fn forward_edge_compaction_preserves_inline_values() {
         .expect("weight profile");
 
     let doomed = store
-        .insert_directed_edge_with_value_bytes(source, first, Some(label), &[1, 0])
+        .insert_directed_edge_with_payload_bytes(source, first, Some(label), &[1, 0])
         .expect("first edge");
     store
-        .insert_directed_edge_with_value_bytes(source, second, Some(label), &[2, 0])
+        .insert_directed_edge_with_payload_bytes(source, second, Some(label), &[2, 0])
         .expect("second edge");
     store
-        .insert_directed_edge_with_value_bytes(source, third, Some(label), &[33, 0])
+        .insert_directed_edge_with_payload_bytes(source, third, Some(label), &[33, 0])
         .expect("third edge");
 
     store.delete_edge_by_handle(doomed).expect("delete first");
@@ -422,11 +427,11 @@ fn forward_edge_compaction_preserves_inline_values() {
         .into_iter()
         .find(|edge| edge.neighbor_vid() == third)
         .expect("third edge after compaction");
-    assert_eq!(third_edge.value_bytes(), &[33, 0]);
+    assert_eq!(third_edge.payload_bytes(), &[33, 0]);
 }
 
 #[test]
-fn undirected_canonical_owner_carries_value_bytes() {
+fn undirected_canonical_owner_carries_payload_bytes() {
     let store = GraphStore::new();
     let low = store.insert_vertex().expect("low");
     let high = store.insert_vertex().expect("high");
@@ -443,14 +448,14 @@ fn undirected_canonical_owner_carries_value_bytes() {
         .expect("weight profile");
 
     let handle = store
-        .insert_undirected_edge_with_value_bytes(low, high, Some(label_id), &[7, 0])
+        .insert_undirected_edge_with_payload_bytes(low, high, Some(label_id), &[7, 0])
         .expect("undirected edge");
     let owner = store.canonical_edge_handle(handle).owner_vertex_id;
     let edge = store
         .find_outgoing_edge_record(handle)
         .expect("lookup")
         .expect("edge record");
-    assert_eq!(edge.value_bytes(), &[7, 0]);
+    assert_eq!(edge.payload_bytes(), &[7, 0]);
     assert_eq!(owner, high, "higher vid owns undirected forward CSR row");
 
     let alias = store
@@ -459,7 +464,7 @@ fn undirected_canonical_owner_carries_value_bytes() {
         .into_iter()
         .find(|edge| edge.neighbor_vid() == high)
         .expect("alias half");
-    assert_eq!(alias.value_bytes(), &[7, 0]);
+    assert_eq!(alias.payload_bytes(), &[7, 0]);
 }
 
 #[test]
@@ -481,7 +486,7 @@ fn peer_graph_canister_bootstrap_and_remove() {
 }
 
 #[test]
-fn inline_edge_values_round_trip_on_parallel_out_edges() {
+fn inline_edge_payloads_round_trip_on_parallel_out_edges() {
     let store = GraphStore::new();
     let s = store.insert_vertex().expect("s");
     let a = store.insert_vertex().expect("a");
@@ -499,22 +504,22 @@ fn inline_edge_values_round_trip_on_parallel_out_edges() {
         )
         .expect("weight profile");
     store
-        .insert_directed_edge_with_inline_value(s, mid, Some(label_id), 10)
+        .insert_directed_edge_with_payload_bytes(s, mid, Some(label_id), &10u16.to_le_bytes())
         .expect("s->mid");
     store
-        .insert_directed_edge_with_inline_value(s, a, Some(label_id), 5)
+        .insert_directed_edge_with_payload_bytes(s, a, Some(label_id), &5u16.to_le_bytes())
         .expect("s->a");
     store
-        .insert_directed_edge_with_inline_value(a, mid, Some(label_id), 1)
+        .insert_directed_edge_with_payload_bytes(a, mid, Some(label_id), &1u16.to_le_bytes())
         .expect("a->mid");
     store
-        .insert_directed_edge_with_inline_value(mid, dst, Some(label_id), 0)
+        .insert_directed_edge_with_payload_bytes(mid, dst, Some(label_id), &0u16.to_le_bytes())
         .expect("mid->dst");
     let _ = dst;
     let mut weights = Vec::new();
     store
         .for_each_directed_out_edges_for_label_unchecked(s, label_id, |edge| {
-            weights.push(edge.inline_value_u16());
+            weights.push(u16::from_le_bytes(edge.payload_bytes().try_into().unwrap()));
         })
         .expect("out edges");
     weights.sort_unstable();
@@ -539,18 +544,18 @@ fn weighted_road_parallel_out_edges_from_a_round_trip() {
         )
         .expect("weight profile");
     store
-        .insert_directed_edge_with_inline_value(a, b, Some(label_id), 1)
+        .insert_directed_edge_with_payload_bytes(a, b, Some(label_id), &1u16.to_le_bytes())
         .expect("a->b");
     store
-        .insert_directed_edge_with_inline_value(b, c, Some(label_id), 1)
+        .insert_directed_edge_with_payload_bytes(b, c, Some(label_id), &1u16.to_le_bytes())
         .expect("b->c");
     store
-        .insert_directed_edge_with_inline_value(a, c, Some(label_id), 100)
+        .insert_directed_edge_with_payload_bytes(a, c, Some(label_id), &100u16.to_le_bytes())
         .expect("a->c");
     let mut weights = Vec::new();
     store
         .for_each_directed_out_edges_for_label_unchecked(a, label_id, |edge| {
-            weights.push(edge.inline_value_u16());
+            weights.push(u16::from_le_bytes(edge.payload_bytes().try_into().unwrap()));
         })
         .expect("out edges from a");
     weights.sort_unstable();
@@ -558,7 +563,7 @@ fn weighted_road_parallel_out_edges_from_a_round_trip() {
 }
 
 #[test]
-fn directed_out_edges_visit_attaches_inline_values() {
+fn directed_out_edges_visit_attaches_inline_payloads() {
     let store = GraphStore::new();
     let a = store.insert_vertex().expect("a");
     let label_id = store
@@ -575,13 +580,13 @@ fn directed_out_edges_visit_attaches_inline_values() {
     for weight in 1..=8u16 {
         let t = store.insert_vertex().expect("target");
         store
-            .insert_directed_edge_with_inline_value(a, t, Some(label_id), weight)
+            .insert_directed_edge_with_payload_bytes(a, t, Some(label_id), &weight.to_le_bytes())
             .expect("a->t");
     }
     let mut weights = Vec::new();
     store
         .for_each_directed_out_edges(a, OutEdgeOrder::Ascending, |edge| {
-            weights.push(edge.inline_value_u16());
+            weights.push(u16::from_le_bytes(edge.payload_bytes().try_into().unwrap()));
         })
         .expect("out edges");
     weights.sort_unstable();
@@ -599,10 +604,10 @@ fn delete_valued_directed_edge_by_handle_removes_reverse_alias_slot() {
     install_w2_weight_profile(&store, label_id);
 
     let first = store
-        .insert_directed_edge_with_value_bytes(source, target, Some(label_id), &[1, 0])
+        .insert_directed_edge_with_payload_bytes(source, target, Some(label_id), &[1, 0])
         .expect("first edge");
     let second = store
-        .insert_directed_edge_with_value_bytes(source, target, Some(label_id), &[2, 0])
+        .insert_directed_edge_with_payload_bytes(source, target, Some(label_id), &[2, 0])
         .expect("second edge");
 
     assert_eq!(store.directed_in_edges(target).expect("in before").len(), 2);
@@ -634,10 +639,10 @@ fn directed_reverse_alias_does_not_require_matching_slot_index() {
     install_w2_weight_profile(&store, label_id);
 
     store
-        .insert_directed_edge_with_value_bytes(other_source, target, Some(label_id), &[7, 0])
+        .insert_directed_edge_with_payload_bytes(other_source, target, Some(label_id), &[7, 0])
         .expect("preexisting edge");
     let canonical = store
-        .insert_directed_edge_with_value_bytes(source, target, Some(label_id), &[42, 0])
+        .insert_directed_edge_with_payload_bytes(source, target, Some(label_id), &[42, 0])
         .expect("skewed edge");
 
     let wire_label = lara_label(label_id.pack(EdgeDirectedness::Directed));
@@ -657,7 +662,7 @@ fn directed_reverse_alias_does_not_require_matching_slot_index() {
         .find_outgoing_edge_record(reverse)
         .expect("edge lookup")
         .expect("canonicalized edge");
-    assert_eq!(edge.value_bytes(), &[42, 0]);
+    assert_eq!(edge.payload_bytes(), &[42, 0]);
 }
 
 #[test]
@@ -671,10 +676,10 @@ fn delete_valued_undirected_edge_by_handle_removes_alias_slot() {
     install_w2_weight_profile(&store, label_id);
 
     let first = store
-        .insert_undirected_edge_with_value_bytes(low, high, Some(label_id), &[1, 0])
+        .insert_undirected_edge_with_payload_bytes(low, high, Some(label_id), &[1, 0])
         .expect("first edge");
     let second = store
-        .insert_undirected_edge_with_value_bytes(low, high, Some(label_id), &[2, 0])
+        .insert_undirected_edge_with_payload_bytes(low, high, Some(label_id), &[2, 0])
         .expect("second edge");
 
     store.delete_edge_by_handle(first).expect("delete first");
@@ -684,7 +689,7 @@ fn delete_valued_undirected_edge_by_handle_removes_alias_slot() {
             .undirected_edges(vertex)
             .expect("undirected edges")
             .into_iter()
-            .map(|edge| edge.inline_value_u16())
+            .map(|edge| u16::from_le_bytes(edge.payload_bytes().try_into().unwrap()))
             .collect();
         weights.sort_unstable();
         weights
@@ -743,17 +748,17 @@ fn valued_parallel_insert_returns_handles_for_each_value() {
         .expect("weight profile");
 
     let first = store
-        .insert_directed_edge_with_value_bytes(source, target, Some(label_id), &[1, 0])
+        .insert_directed_edge_with_payload_bytes(source, target, Some(label_id), &[1, 0])
         .expect("first edge");
     let second = store
-        .insert_directed_edge_with_value_bytes(source, target, Some(label_id), &[2, 0])
+        .insert_directed_edge_with_payload_bytes(source, target, Some(label_id), &[2, 0])
         .expect("second edge");
 
     assert_ne!(first.slot_index, second.slot_index);
     let mut values_by_slot = BTreeMap::new();
     store
         .for_each_directed_out_edges_for_label_unchecked(source, label_id, |edge| {
-            values_by_slot.insert(edge.edge_slot_index.raw(), edge.value_bytes().to_vec());
+            values_by_slot.insert(edge.edge_slot_index.raw(), edge.payload_bytes().to_vec());
         })
         .expect("out edges");
     assert_eq!(values_by_slot[&first.slot_index], vec![1, 0]);
@@ -761,7 +766,7 @@ fn valued_parallel_insert_returns_handles_for_each_value() {
 }
 
 #[test]
-fn lookup_edge_record_at_handle_includes_stored_value_bytes() {
+fn lookup_edge_record_at_handle_includes_stored_payload_bytes() {
     let store = GraphStore::new();
     let source = store.insert_vertex().expect("source");
     let target = store.insert_vertex().expect("target");
@@ -777,13 +782,13 @@ fn lookup_edge_record_at_handle_includes_stored_value_bytes() {
         )
         .expect("weight profile");
     let handle = store
-        .insert_directed_edge_with_value_bytes(source, target, Some(label_id), &[4, 0])
+        .insert_directed_edge_with_payload_bytes(source, target, Some(label_id), &[4, 0])
         .expect("edge");
     let edge = store
         .find_outgoing_edge_record(handle)
         .expect("lookup")
         .expect("edge record");
-    assert_eq!(edge.value_bytes(), &[4, 0]);
+    assert_eq!(edge.payload_bytes(), &[4, 0]);
 }
 
 /// Regression: vertex `a` is target of `s->a` (reverse-IN alias) and source of `a->mid`
@@ -806,10 +811,10 @@ fn forward_out_lookup_ignores_reverse_in_alias_when_slots_collide() {
         )
         .expect("weight profile");
     store
-        .insert_directed_edge_with_value_bytes(s, a, Some(label_id), &[5, 0])
+        .insert_directed_edge_with_payload_bytes(s, a, Some(label_id), &[5, 0])
         .expect("s->a");
     let a_to_mid = store
-        .insert_directed_edge_with_value_bytes(a, mid, Some(label_id), &[1, 0])
+        .insert_directed_edge_with_payload_bytes(a, mid, Some(label_id), &[1, 0])
         .expect("a->mid");
 
     assert_eq!(
@@ -821,7 +826,7 @@ fn forward_out_lookup_ignores_reverse_in_alias_when_slots_collide() {
         .find_outgoing_edge_record(a_to_mid)
         .expect("lookup")
         .expect("edge");
-    assert_eq!(edge.value_bytes(), &[1, 0]);
+    assert_eq!(edge.payload_bytes(), &[1, 0]);
 }
 
 #[test]
@@ -843,15 +848,15 @@ fn valued_insert_after_delete_returns_handle_for_new_edge() {
         .expect("weight profile");
 
     let doomed = store
-        .insert_directed_edge_with_value_bytes(source, target_a, Some(label_id), &[1, 0])
+        .insert_directed_edge_with_payload_bytes(source, target_a, Some(label_id), &[1, 0])
         .expect("doomed edge");
     store
-        .insert_directed_edge_with_value_bytes(source, target_b, Some(label_id), &[2, 0])
+        .insert_directed_edge_with_payload_bytes(source, target_b, Some(label_id), &[2, 0])
         .expect("survivor edge");
     store.delete_edge_by_handle(doomed).expect("delete doomed");
 
     let replacement = store
-        .insert_directed_edge_with_value_bytes(source, target_a, Some(label_id), &[9, 0])
+        .insert_directed_edge_with_payload_bytes(source, target_a, Some(label_id), &[9, 0])
         .expect("replacement edge");
     let edge = store
         .directed_out_edges(source)
@@ -859,7 +864,7 @@ fn valued_insert_after_delete_returns_handle_for_new_edge() {
         .into_iter()
         .find(|edge| edge.edge_slot_index.raw() == replacement.slot_index)
         .expect("replacement edge record");
-    assert_eq!(edge.value_bytes(), &[9, 0]);
+    assert_eq!(edge.payload_bytes(), &[9, 0]);
     assert_eq!(edge.neighbor_vid(), target_a);
     assert_eq!(
         store.directed_in_edges(target_a).expect("in edges").len(),

@@ -8,7 +8,7 @@ mod router_error;
 
 pub use expand::{
     FederatedExpandArgs, FederatedExpandDirection, FederatedExpandNeighbor,
-    MAX_FEDERATED_EXPAND_VALUE_BYTE_WIDTH,
+    MAX_FEDERATED_EXPAND_PAYLOAD_BYTE_WIDTH,
 };
 pub use incremental_migration::{
     EdgeCopyCursor, ExportedInReverseEdge, MigrationApplyChunk, MigrationEdgeHandleWire,

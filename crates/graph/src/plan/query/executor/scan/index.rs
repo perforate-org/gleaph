@@ -22,7 +22,7 @@ fn property_id_for_scan(store: &GraphStore, property_name: &str) -> Result<u32, 
         .ok_or(PlanQueryError::UnsupportedOp("IndexScan.unknown_property"))
 }
 
-pub(crate) fn resolve_scan_value_bytes(
+pub(crate) fn resolve_scan_payload_bytes(
     sv: &ScanValue,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<Option<Vec<u8>>, PlanQueryError> {
@@ -138,7 +138,7 @@ pub(crate) async fn execute_index_scan(
         return Err(PlanQueryError::UnsupportedOp("IndexScan(no index client)"));
     };
     let pid = property_id_for_scan(store, property_name)?;
-    let Some(bytes) = resolve_scan_value_bytes(scan_value, parameters)? else {
+    let Some(bytes) = resolve_scan_payload_bytes(scan_value, parameters)? else {
         return Ok(Vec::new());
     };
     let hits = if cmp == CmpOp::Eq {
@@ -207,7 +207,7 @@ pub(crate) async fn execute_index_intersection(
             return Err(PlanQueryError::UnsupportedOp("IndexIntersection.cmp"));
         }
         let pid = property_id_for_scan(store, spec.property.as_ref())?;
-        let Some(bytes) = resolve_scan_value_bytes(&spec.value, parameters)? else {
+        let Some(bytes) = resolve_scan_payload_bytes(&spec.value, parameters)? else {
             return Ok(Vec::new());
         };
         let hits = ix.lookup_equal(pid, bytes).await?;

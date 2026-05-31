@@ -15,7 +15,7 @@ use ic_stable_lara::VertexId;
 
 fn index_key_bytes(prop: &ExportedProperty) -> Result<Option<Vec<u8>>, PlanQueryError> {
     let value = Value::from_binary_bytes_with_extensions(
-        &prop.value_bytes,
+        &prop.payload_bytes,
         &IcExtensionBinaryDecode::INSTANCE,
     )
     .map_err(|e| PlanQueryError::FederatedIndexCall {
@@ -79,7 +79,7 @@ pub fn exported_vertex_for_index_sync(
         .map(|(property_id, value)| {
             Ok(ExportedProperty {
                 property_id,
-                value_bytes: value.to_binary_bytes().map_err(|e| {
+                payload_bytes: value.to_binary_bytes().map_err(|e| {
                     GraphStoreError::VertexPlacement(VertexPlacementError::Call(format!(
                         "property encode: {e}"
                     )))

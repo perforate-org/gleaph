@@ -11,7 +11,7 @@ use crate::entry::{EdgeLabelId, PropertyId, VertexLabelId};
 pub struct ExportedOutEdge {
     pub catalog_label: Option<EdgeLabelId>,
     pub undirected: bool,
-    pub value_bytes: Vec<u8>,
+    pub payload_bytes: Vec<u8>,
     pub target: ExportedEdgeTarget,
     pub properties: Vec<ExportedProperty>,
 }
@@ -26,7 +26,7 @@ pub enum ExportedEdgeTarget {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct ExportedProperty {
     pub property_id: PropertyId,
-    pub value_bytes: Vec<u8>,
+    pub payload_bytes: Vec<u8>,
 }
 
 /// Vertex payload moved from source graph shard to destination.

@@ -19,9 +19,7 @@ use crate::index::placement;
 use crate::plan::PlanQueryError;
 use gleaph_gql::Value;
 use gleaph_gql_ic::IcExtensionBinaryDecode;
-use gleaph_graph_kernel::entry::{
-    Edge, EdgeLabelId, EdgeTarget, EdgeValuePayload, Vertex, VertexRef,
-};
+use gleaph_graph_kernel::entry::{Edge, EdgeLabelId, EdgePayload, EdgeTarget, Vertex, VertexRef};
 use gleaph_graph_kernel::federation::{
     BeginVertexMigrationArgs, ExportedInReverseEdge, ExportedOutEdge, ExportedProperty,
     FinishVertexMigrationArgs, LocalVertexId, LogicalVertexId, MigrationApplyChunk,
@@ -185,7 +183,7 @@ fn capture_metadata_snapshot(
         .map(|(property_id, value)| {
             Ok(ExportedProperty {
                 property_id,
-                value_bytes: value.to_binary_bytes().map_err(|e| {
+                payload_bytes: value.to_binary_bytes().map_err(|e| {
                     GraphStoreError::VertexPlacement(placement::VertexPlacementError::Call(
                         format!("property encode: {e}"),
                     ))
@@ -346,7 +344,7 @@ fn apply_vertex_metadata_snapshot(
 
     for prop in &snapshot.properties {
         let value = Value::from_binary_bytes_with_extensions(
-            &prop.value_bytes,
+            &prop.payload_bytes,
             &IcExtensionBinaryDecode::INSTANCE,
         )
         .map_err(|e| {
@@ -477,7 +475,7 @@ async fn find_imported_out_edge_handle(
     use gleaph_graph_kernel::federation::ExportedEdgeTarget;
 
     let label = lara_label(edge_storage_label(edge.catalog_label, edge.undirected));
-    let value_bytes = edge.value_bytes.as_slice();
+    let payload_bytes = edge.payload_bytes.as_slice();
     let target = &edge.target;
     let local_neighbor = match target {
         ExportedEdgeTarget::Local { logical_vertex_id } => {
@@ -492,18 +490,18 @@ async fn find_imported_out_edge_handle(
     store
         .find_first_forward_handle_descending(owner_id, label, |e| {
             if let Some(neighbor) = local_neighbor {
-                return edge_matches_local_neighbor(e, neighbor, value_bytes);
+                return edge_matches_local_neighbor(e, neighbor, payload_bytes);
             }
             if let Some(logical_vertex_id) = remote_logical {
                 if let Some(EdgeTarget::Remote(remote_ref)) = e.edge_target() {
                     return store.logical_vertex_for_remote_ref(remote_ref)
                         == Some(logical_vertex_id)
-                        && e.value_bytes() == value_bytes;
+                        && e.payload_bytes() == payload_bytes;
                 }
                 return e.edge_target().is_some_and(|t| match t {
                     EdgeTarget::Remote(r) => {
                         store.logical_vertex_for_remote_ref(r) == Some(logical_vertex_id)
-                            && e.value_bytes() == value_bytes
+                            && e.payload_bytes() == payload_bytes
                     }
                     _ => false,
                 });
@@ -543,7 +541,7 @@ fn import_in_reverse_edge(
         target: pred_ref,
         edge_slot_index: gleaph_graph_kernel::entry::EdgeSlotIndex::from_raw(0),
         label_id: 0,
-        value: EdgeValuePayload::from_slice(&rev.value_bytes),
+        payload: EdgePayload::from_slice(&rev.payload_bytes),
     };
 
     store
@@ -560,7 +558,7 @@ fn import_in_reverse_edge(
 
     let handle = store
         .find_first_reverse_handle_descending(target_vertex_id, label, |edge| {
-            edge.target == pred_ref && edge.value_bytes() == rev.value_bytes.as_slice()
+            edge.target == pred_ref && edge.payload_bytes() == rev.payload_bytes.as_slice()
         })?
         .ok_or(GraphStoreError::EdgeNotFound {
             owner_vertex_id: target_vertex_id,
@@ -579,7 +577,7 @@ fn import_in_reverse_edge(
 
     for prop in &rev.properties {
         let value = Value::from_binary_bytes_with_extensions(
-            &prop.value_bytes,
+            &prop.payload_bytes,
             &IcExtensionBinaryDecode::INSTANCE,
         )
         .map_err(|e| {
@@ -785,10 +783,10 @@ async fn apply_journal_to_staging(
         }
         MigrationJournalOp::VertexPropertySet {
             property_id,
-            value_bytes,
+            payload_bytes,
         } => {
             let value = Value::from_binary_bytes_with_extensions(
-                value_bytes,
+                payload_bytes,
                 &IcExtensionBinaryDecode::INSTANCE,
             )
             .map_err(|e| {
@@ -806,7 +804,7 @@ async fn apply_journal_to_staging(
         MigrationJournalOp::OutEdgeAdded {
             catalog_label,
             undirected,
-            value_bytes,
+            payload_bytes,
             target_logical_vertex_id,
             target_is_remote,
             source_handle,
@@ -820,7 +818,7 @@ async fn apply_journal_to_staging(
             let edge = exported_out_from_journal(
                 *catalog_label,
                 *undirected,
-                value_bytes,
+                payload_bytes,
                 *target_logical_vertex_id,
                 *target_is_remote,
             );
@@ -844,28 +842,28 @@ async fn apply_journal_to_staging(
                 let _ = store.delete_edge_by_handle(handle);
             }
         }
-        MigrationJournalOp::OutEdgeValueChanged {
+        MigrationJournalOp::OutEdgePayloadChanged {
             source_handle,
-            value_bytes,
+            payload_bytes,
         } => {
             if let Some(target_wire) =
                 MIGRATION_OUT_HANDLE_MAP.with_borrow(|m| m.get(logical, epoch, *source_handle))
             {
                 let handle = handle_from_wire(target_id, target_wire);
-                store.update_edge_value_at_handle(handle, value_bytes)?;
+                store.update_edge_payload_at_handle(handle, payload_bytes)?;
             }
         }
         MigrationJournalOp::OutEdgePropertySet {
             source_handle,
             property_id,
-            value_bytes,
+            payload_bytes,
         } => {
             if let Some(target_wire) =
                 MIGRATION_OUT_HANDLE_MAP.with_borrow(|m| m.get(logical, epoch, *source_handle))
             {
                 let handle = handle_from_wire(target_id, target_wire);
                 let value = Value::from_binary_bytes_with_extensions(
-                    value_bytes,
+                    payload_bytes,
                     &IcExtensionBinaryDecode::INSTANCE,
                 )
                 .map_err(|e| {
@@ -895,7 +893,7 @@ async fn apply_journal_to_staging(
             predecessor_is_remote,
             catalog_label,
             canonical_source_handle,
-            value_bytes,
+            payload_bytes,
         } => {
             if MIGRATION_REV_HANDLE_MAP
                 .with_borrow(|m| m.get(logical, epoch, *source_handle))
@@ -905,7 +903,7 @@ async fn apply_journal_to_staging(
             }
             let rev = ExportedInReverseEdge {
                 catalog_label: *catalog_label,
-                value_bytes: value_bytes.clone(),
+                payload_bytes: payload_bytes.clone(),
                 predecessor_logical_vertex_id: *predecessor_logical_vertex_id,
                 predecessor_is_remote: *predecessor_is_remote,
                 source_reverse_handle: *source_handle,
@@ -924,26 +922,26 @@ async fn apply_journal_to_staging(
         }
         MigrationJournalOp::InReverseValueChanged {
             source_handle,
-            value_bytes,
+            payload_bytes,
         } => {
             if let Some(target_wire) =
                 MIGRATION_REV_HANDLE_MAP.with_borrow(|m| m.get(logical, epoch, *source_handle))
             {
                 let handle = handle_from_wire(target_id, target_wire);
-                store.update_edge_value_at_handle(handle, value_bytes)?;
+                store.update_edge_payload_at_handle(handle, payload_bytes)?;
             }
         }
         MigrationJournalOp::InReversePropertySet {
             source_handle,
             property_id,
-            value_bytes,
+            payload_bytes,
         } => {
             if let Some(target_wire) =
                 MIGRATION_REV_HANDLE_MAP.with_borrow(|m| m.get(logical, epoch, *source_handle))
             {
                 let handle = handle_from_wire(target_id, target_wire);
                 let value = Value::from_binary_bytes_with_extensions(
-                    value_bytes,
+                    payload_bytes,
                     &IcExtensionBinaryDecode::INSTANCE,
                 )
                 .map_err(|e| {
@@ -974,7 +972,7 @@ async fn apply_journal_to_staging(
 fn exported_out_from_journal(
     catalog_label: Option<EdgeLabelId>,
     undirected: bool,
-    value_bytes: &[u8],
+    payload_bytes: &[u8],
     target_logical_vertex_id: LogicalVertexId,
     target_is_remote: bool,
 ) -> ExportedOutEdge {
@@ -990,7 +988,7 @@ fn exported_out_from_journal(
     ExportedOutEdge {
         catalog_label,
         undirected,
-        value_bytes: value_bytes.to_vec(),
+        payload_bytes: payload_bytes.to_vec(),
         target,
         properties: vec![],
     }
@@ -1184,7 +1182,7 @@ fn export_in_reverse_edge(
         .map(|(property_id, value)| {
             Ok(ExportedProperty {
                 property_id,
-                value_bytes: value.to_binary_bytes().map_err(|e| {
+                payload_bytes: value.to_binary_bytes().map_err(|e| {
                     GraphStoreError::VertexPlacement(placement::VertexPlacementError::Call(
                         format!("property encode: {e}"),
                     ))
@@ -1203,7 +1201,7 @@ fn export_in_reverse_edge(
 
     Ok(ExportedInReverseEdge {
         catalog_label: catalog_edge_label_from_wire(bucket),
-        value_bytes: canonical_edge.value_bytes().to_vec(),
+        payload_bytes: canonical_edge.payload_bytes().to_vec(),
         predecessor_logical_vertex_id,
         predecessor_is_remote,
         source_reverse_handle,
@@ -1727,7 +1725,7 @@ pub(crate) fn journal_vertex_property_set(
     property_id: gleaph_graph_kernel::entry::PropertyId,
     value: &Value,
 ) -> Result<(), GraphStoreError> {
-    let value_bytes = value.to_binary_bytes().map_err(|e| {
+    let payload_bytes = value.to_binary_bytes().map_err(|e| {
         GraphStoreError::VertexPlacement(placement::VertexPlacementError::Call(format!(
             "property encode: {e}"
         )))
@@ -1737,7 +1735,7 @@ pub(crate) fn journal_vertex_property_set(
         vertex_id,
         MigrationJournalOp::VertexPropertySet {
             property_id,
-            value_bytes,
+            payload_bytes,
         },
     )
 }
@@ -1772,23 +1770,23 @@ pub(crate) fn journal_edge_removed(
     maybe_journal_migration_op(store, owner, op)
 }
 
-/// Records an inline edge-value change on a [`VertexMigrationState::SourceMigrating`] vertex.
-pub(crate) fn journal_edge_value_changed(
+/// Records an inline edge-payload change on a [`VertexMigrationState::SourceMigrating`] vertex.
+pub(crate) fn journal_edge_payload_changed(
     store: &GraphStore,
     handle: EdgeHandle,
-    value_bytes: &[u8],
+    payload_bytes: &[u8],
 ) -> Result<(), GraphStoreError> {
     let Some((owner, wire, kind)) = migration_journal_edge_target(store, handle) else {
         return Ok(());
     };
     let op = match kind {
-        MigrationJournalEdgeKind::Out => MigrationJournalOp::OutEdgeValueChanged {
+        MigrationJournalEdgeKind::Out => MigrationJournalOp::OutEdgePayloadChanged {
             source_handle: wire,
-            value_bytes: value_bytes.to_vec(),
+            payload_bytes: payload_bytes.to_vec(),
         },
         MigrationJournalEdgeKind::InReverse => MigrationJournalOp::InReverseValueChanged {
             source_handle: wire,
-            value_bytes: value_bytes.to_vec(),
+            payload_bytes: payload_bytes.to_vec(),
         },
     };
     maybe_journal_migration_op(store, owner, op)
@@ -1799,16 +1797,16 @@ pub(crate) fn journal_edge_property_changed(
     store: &GraphStore,
     handle: EdgeHandle,
     property_id: gleaph_graph_kernel::entry::PropertyId,
-    value_bytes: Option<Vec<u8>>,
+    payload_bytes: Option<Vec<u8>>,
 ) -> Result<(), GraphStoreError> {
     let Some((owner, wire, kind)) = migration_journal_edge_target(store, handle) else {
         return Ok(());
     };
-    let op = match (kind, value_bytes) {
+    let op = match (kind, payload_bytes) {
         (MigrationJournalEdgeKind::Out, Some(bytes)) => MigrationJournalOp::OutEdgePropertySet {
             source_handle: wire,
             property_id,
-            value_bytes: bytes,
+            payload_bytes: bytes,
         },
         (MigrationJournalEdgeKind::Out, None) => MigrationJournalOp::OutEdgePropertyRemoved {
             source_handle: wire,
@@ -1818,7 +1816,7 @@ pub(crate) fn journal_edge_property_changed(
             MigrationJournalOp::InReversePropertySet {
                 source_handle: wire,
                 property_id,
-                value_bytes: bytes,
+                payload_bytes: bytes,
             }
         }
         (MigrationJournalEdgeKind::InReverse, None) => {
