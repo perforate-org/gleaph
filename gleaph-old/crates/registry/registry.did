@@ -1,6 +1,0 @@
-service : {
-  create_graph: (record { name: text; max_vertices: nat32; initial_edge_capacity: nat64 }) -> (record { id: nat64; name: text; canister_id: opt principal; owner: principal; max_vertices: nat32 });
-  delete_graph: (nat64) -> (bool);
-  list_graphs: () -> (vec record { id: nat64; name: text; canister_id: opt principal; owner: principal; max_vertices: nat32 }) query;
-  grant_access: (nat64, principal, variant { Read; Write; Admin }) -> (bool);
-}
