@@ -1,54 +1,137 @@
 # Gleaph
 
-**Gleaph** is a graph database designed to run on the decentralized blockchain platform [Internet Computer](https://internetcomputer.org/).
+**Gleaph** is a graph database designed to run on the
+[Internet Computer](https://internetcomputer.org/).
 
-Its internal storage model is based on LARA (Localized Adjacency Relocation Array), a graph representation derived from Compressed Sparse Row (CSR). LARA is specifically optimized for the execution environment of Internet Computer, allowing Gleaph to operate efficiently within the platform’s resource constraints.
+Gleaph combines:
 
-## GQL (Graph Query Language)
+- **GQL** (Graph Query Language, ISO/IEC 39075) for standard graph querying
+- **LARA**, a CSR-derived stable graph storage layout optimized for Internet Computer canisters
+- **Prepared Queries** for safe frontend-to-canister execution
+- **Federated graph shards** for scaling graph data across canisters
+- A path toward **vector-aware graph search** and **GraphRAG**
 
-Gleaph uses [GQL](https://www.gqlstandards.org/) (Graph Query Language, [ISO/IEC 39075](https://www.iso.org/standard/76120.html)) as its query language.
+Gleaph is not only a place to store connected data. Its long-term direction is to make
+relationships, properties, embeddings, and access-control-aware query execution available
+through one graph-native execution model.
 
-GQL is a standardized graph query language, comparable to SQL in relational databases, designed for querying, traversing, and analyzing graph data.
+## Why Gleaph?
 
-### `IC.PRINCIPAL` and `IC.MSG_CALLER()`
+Modern applications increasingly need to combine structured relationships with semantic
+similarity.
 
-Gleaph extends GQL for Internet Computer by providing the `IC.PRINCIPAL` type and the `IC.MSG_CALLER()` function.
+A knowledge graph may tell you:
 
-These extensions allow queries to directly access the caller’s Principal, making it easier to work with authentication and caller identity within Internet Computer applications.
+- which documents cite each other
+- which users can access which records
+- which entities belong to the same project
+- which events happened before or after another event
 
-## Prepared Query
+A vector index may tell you:
 
-**Prepared Query** is one of Gleaph’s core features.
+- which passages are semantically close
+- which entities are similar
+- which memories or documents are relevant to a prompt
 
-It allows database administrators to pre-register queries that can be executed by unprivileged users, preventing arbitrary query execution and improving security.
+Gleaph aims to bring these together: graph traversal, filtering, authorization, and
+vector-aware ranking should be expressible as one query plan instead of being stitched
+together across unrelated systems.
 
-This makes it possible for frontend applications to send queries directly to Gleaph safely, without requiring intermediary canisters or backend servers.
+## GQL
 
-In combination with `IC.MSG_CALLER()`, Prepared Queries can also be used to implement access control patterns where users are only allowed to access data related to themselves.
+Gleaph uses [GQL](https://www.gqlstandards.org/) (Graph Query Language,
+[ISO/IEC 39075](https://www.iso.org/standard/76120.html)) as its query language.
 
-## Access control (roles)
+The `gleaph-gql` and `gleaph-gql-planner` crates are intended to remain general-purpose
+GQL crates. Internet Computer-specific behavior is implemented outside those portable
+layers.
 
-The **router** canister enforces a five-level role hierarchy (each level includes all lower levels): **Executor**, **Read**, **Write**, **Manager**, **Admin**.
+## Storage: LARA
 
-Every **caller** is treated as **Executor** until a row exists in stable auth for that principal (for example after `admin_grant_role`). Administrators from router `init` (`issuing_principal` / `initial_admins`) are stored as **Admin**. Graph shards do not expose user GQL; they accept plan execution only from the router (or peer graph shards for federation).
+Gleaph’s storage model is based on **LARA** (Localized Adjacency Relocation Array), a
+graph representation derived from Compressed Sparse Row (CSR).
 
-- **Executor**: may execute **prepared** GQL only (including prepared updates).
-- **Read**: may execute arbitrary **read-only** GQL programs (and prepared execution).
-- **Write**: may execute programs that perform **data modification**, **catalog DDL** (`CREATE`/`DROP` graph and related statements), or contain a named `CALL` (treated conservatively as requiring write access until procedure semantics are modeled).
-- **Manager**: same as Write, plus optional **capability bits** (for example `PREPARE_REGISTER`, future index DDL bits). Only **Admin** or a **Manager** with `PREPARE_REGISTER` may register or drop prepared queries; **Write** and below cannot.
-- **Admin**: full access, including assigning roles via `admin_grant_role`.
+LARA is designed for stable memory and canister constraints: compact adjacency storage,
+predictable traversal, and local relocation without assuming a conventional server
+runtime.
 
-Implementation overview:
+## Prepared Queries
 
-- Crate [`crates/gleaph-auth`](crates/auth): stable RBAC types and [`AuthState`](crates/auth/src/lib.rs).
-- [`gleaph_gql::program_modification`](crates/gql/src/program_modification.rs): static classification of a parsed program for read vs write paths.
-- [`gleaph-router`](crates/router): stable auth map, `gql_*` / `prepared_*` entrypoints, and [`rbac`](crates/router/src/rbac.rs) checks in [`lib.rs`](crates/router/src/lib.rs).
+Prepared Queries allow administrators to pre-register GQL programs that can be executed
+by less-privileged callers.
 
-**Internet Computer controllers** can still upgrade code or replace canister state; they are separate from in-canister roles.
+This is especially important on the Internet Computer: frontends can safely call Gleaph
+directly without requiring a custom backend canister for every application query.
 
-## Design documentation
+## Vector-Aware Graph Search
 
-Architecture and GQL/federation design notes live in [`design/`](./design/). Start with [`design/README.md`](./design/README.md).
+Gleaph is being shaped to support vector payloads and vector predicates alongside graph
+structure.
+
+The near-term model is:
+
+- store vectors as graph-associated payloads
+- filter candidates through graph patterns, labels, properties, or access rules
+- apply vector predicates such as distance thresholds
+- return graph-shaped results rather than isolated vector hits
+
+This is different from positioning Gleaph as a standalone vector database. The important
+idea is graph-first retrieval: vectors become part of the graph execution model.
+
+Future work may include:
+
+- vector indexes for approximate nearest-neighbor search
+- vector-aware GQL extensions or procedures
+- hybrid ranking over graph distance, edge weights, properties, and embedding distance
+- shard-aware vector retrieval for federated deployments
+
+## GraphRAG Direction
+
+Gleaph is a natural fit for GraphRAG-style systems because it can represent both the
+retrieval substrate and the authorization model.
+
+A GraphRAG application could use Gleaph to model:
+
+- documents, chunks, entities, claims, and citations
+- relationships between extracted entities
+- provenance from generated answers back to source material
+- tenant, user, and role-based access control
+- semantic similarity between chunks or entities
+
+Instead of retrieving text chunks first and reconstructing context later, Gleaph can make
+retrieval graph-aware from the beginning:
+
+1. find semantically relevant chunks
+2. traverse to related entities, documents, or citations
+3. filter by caller identity and prepared-query permissions
+4. return a bounded, explainable context subgraph for generation
+
+## Internet Computer Integration
+
+Gleaph extends GQL for Internet Computer use cases with:
+
+- `IC.PRINCIPAL`
+- `IC.MSG_CALLER()`
+
+These allow prepared queries to express caller-aware access patterns directly.
+
+## Access Control
+
+The router canister enforces a role hierarchy:
+
+- Executor
+- Read
+- Write
+- Manager
+- Admin
+
+Graph shards do not expose arbitrary user GQL. They execute planned work from the router
+or trusted peer shards.
+
+## Design Documentation
+
+Architecture, GQL layers, federation, execution, storage, and security notes live in
+[`design/`](./design/).
 
 ## License
 
