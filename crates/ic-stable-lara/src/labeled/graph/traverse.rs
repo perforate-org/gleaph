@@ -306,7 +306,7 @@ where
         let skip = *offset_remaining;
         let mut it =
             self.out_edges_iter_for_label_ordered(src, label_id, OutEdgeOrder::Descending)?;
-        match Iterator::advance_by(&mut it, skip) {
+        match it.try_advance_by(skip) {
             Ok(()) => {
                 *offset_remaining = 0;
             }
@@ -319,6 +319,7 @@ where
             let Some(edge) = it.next() else {
                 return Ok(Ok(false));
             };
+            let edge = edge?;
             match visit(edge) {
                 Ok(false) => continue,
                 Ok(true) => return Ok(Ok(true)),
@@ -339,7 +340,7 @@ where
         let skip = *offset_remaining;
         let mut it =
             self.out_edges_by_directedness_iter(src, directedness, OutEdgeOrder::Descending)?;
-        match Iterator::advance_by(&mut it, skip) {
+        match it.try_advance_by(skip)? {
             Ok(()) => {
                 *offset_remaining = 0;
             }
@@ -352,6 +353,7 @@ where
             let Some(edge) = it.next() else {
                 return Ok(Ok(false));
             };
+            let edge = edge?;
             match visit(edge) {
                 Ok(false) => continue,
                 Ok(true) => return Ok(Ok(true)),
@@ -393,7 +395,7 @@ where
         for edge in
             self.out_edges_iter_for_label_ordered(src, label_id, OutEdgeOrder::Descending)?
         {
-            visit(edge.with_label_id(label_id.raw()));
+            visit(edge?.with_label_id(label_id.raw()));
         }
         Ok(())
     }
@@ -890,6 +892,7 @@ where
                 let Some(edge) = iter.next() else {
                     break;
                 };
+                let edge = edge?;
                 scratch
                     .payload_bytes
                     .extend_from_slice(edge.edge_payload_bytes());
@@ -1363,7 +1366,7 @@ where
         order: OutEdgeOrder,
     ) -> Result<Vec<E>, LabeledOperationError> {
         self.out_edges_by_directedness_iter(src, directedness, order)
-            .map(|iter| iter.collect())
+            .and_then(|iter| iter.collect())
     }
     /// Returns an iterator over outgoing edges whose bucket directedness matches `directedness`.
     pub fn out_edges_by_directedness_iter(
@@ -1418,7 +1421,8 @@ mod tests {
         let lazy: Vec<_> = graph
             .desc_out_edges_iter(VertexId::from(0))
             .unwrap()
-            .collect();
+            .collect::<Result<_, _>>()
+            .unwrap();
         assert_eq!(lazy, expected);
     }
     #[test]
@@ -1438,14 +1442,16 @@ mod tests {
             graph
                 .desc_out_edges_iter(VertexId::from(0))
                 .unwrap()
-                .collect::<Vec<_>>(),
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap(),
             desc
         );
         assert_eq!(
             graph
                 .asc_out_edges_iter(VertexId::from(0))
                 .unwrap()
-                .collect::<Vec<_>>(),
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap(),
             asc
         );
     }
@@ -1463,30 +1469,31 @@ mod tests {
         let full: Vec<_> = graph
             .desc_out_edges_iter(VertexId::from(0))
             .unwrap()
-            .collect();
+            .collect::<Result<_, _>>()
+            .unwrap();
         assert_eq!(full.len(), 2);
 
         let mut it = graph.desc_out_edges_iter(VertexId::from(0)).unwrap();
-        assert_eq!(it.advance_by(0), Ok(()));
-        assert_eq!(it.next(), Some(full[0]));
+        assert_eq!(it.try_advance_by(0).unwrap(), Ok(()));
+        assert_eq!(it.next().transpose().unwrap(), Some(full[0]));
 
         let mut it = graph.desc_out_edges_iter(VertexId::from(0)).unwrap();
-        assert_eq!(it.advance_by(1), Ok(()));
-        assert_eq!(it.next(), Some(full[1]));
+        assert_eq!(it.try_advance_by(1).unwrap(), Ok(()));
+        assert_eq!(it.next().transpose().unwrap(), Some(full[1]));
 
         let mut it = graph.desc_out_edges_iter(VertexId::from(0)).unwrap();
-        assert_eq!(it.advance_by(2), Ok(()));
-        assert_eq!(it.next(), None);
+        assert_eq!(it.try_advance_by(2).unwrap(), Ok(()));
+        assert_eq!(it.next().transpose().unwrap(), None);
 
         let mut it = graph.desc_out_edges_iter(VertexId::from(0)).unwrap();
-        assert_eq!(it.advance_by(3), Err(NonZero::new(1).unwrap()));
+        assert_eq!(it.try_advance_by(3).unwrap(), Err(NonZero::new(1).unwrap()));
 
         let mut it = graph.desc_out_edges_iter(VertexId::from(0)).unwrap();
-        assert_eq!(it.nth(0), Some(full[0]));
+        assert_eq!(it.nth(0).transpose().unwrap(), Some(full[0]));
         let mut it = graph.desc_out_edges_iter(VertexId::from(0)).unwrap();
-        assert_eq!(it.nth(1), Some(full[1]));
+        assert_eq!(it.nth(1).transpose().unwrap(), Some(full[1]));
         let mut it = graph.desc_out_edges_iter(VertexId::from(0)).unwrap();
-        assert_eq!(it.nth(2), None);
+        assert_eq!(it.nth(2).transpose().unwrap(), None);
     }
     #[test]
     fn out_edges_by_directedness_filters_and_orders() {

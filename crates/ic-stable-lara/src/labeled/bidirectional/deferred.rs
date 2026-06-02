@@ -2213,7 +2213,8 @@ mod tests {
         let desc: Vec<_> = graph
             .directed_out_edges_iter(VertexId::from(0), OutEdgeOrder::Descending)
             .expect("iter")
-            .collect();
+            .collect::<Result<_, _>>()
+            .unwrap();
         assert_eq!(asc, vec![TestEdge(1), TestEdge(2)]);
         assert_eq!(desc, vec![TestEdge(2), TestEdge(1)]);
     }

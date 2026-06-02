@@ -12,7 +12,7 @@ use crate::{
 use ic_stable_structures::Memory;
 use std::{iter::FusedIterator, num::NonZero};
 
-use super::{LabeledLaraGraph, OutEdgeOrder};
+use super::{LabeledLaraGraph, LabeledOperationError, OutEdgeOrder};
 
 /// Reusable buffers for labeled edge-payload batch traversal.
 #[derive(Clone, Debug)]
@@ -114,17 +114,21 @@ where
     E: CsrEdge,
     M: Memory,
 {
-    type Item = E;
+    type Item = Result<E, LabeledOperationError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             match &mut self.kind {
                 LabeledOutEdgesIterKind::Empty => return None,
                 LabeledOutEdgesIterKind::BypassDesc { label_id, iter } => {
-                    return iter.next().map(|edge| edge.with_label_id(label_id.raw()));
+                    return iter
+                        .next()
+                        .map(|edge| Ok(edge.with_label_id(label_id.raw())));
                 }
                 LabeledOutEdgesIterKind::BypassAsc { label_id, iter } => {
-                    return iter.next().map(|edge| edge.with_label_id(label_id.raw()));
+                    return iter
+                        .next()
+                        .map(|edge| Ok(edge.with_label_id(label_id.raw())));
                 }
                 LabeledOutEdgesIterKind::Buckets {
                     vertex,
@@ -149,59 +153,32 @@ where
                         continue;
                     }
                     let bucket_index = base_bucket_index.checked_add(local as u32)?;
-                    *current = self
-                        .graph
-                        .labeled_bucket_span_iter(
-                            self.src,
-                            self.order,
-                            vertex,
-                            buckets,
-                            local,
-                            bucket_index,
-                        )
-                        .ok()?;
-                }
-            }
-        }
-    }
-
-    fn advance_by(&mut self, mut n: usize) -> Result<(), NonZero<usize>> {
-        if n == 0 {
-            return Ok(());
-        }
-        loop {
-            match &mut self.kind {
-                LabeledOutEdgesIterKind::Empty => {
-                    return Err(NonZero::new(n).expect("n > 0"));
-                }
-                LabeledOutEdgesIterKind::BypassDesc { iter, .. } => return iter.advance_by(n),
-                LabeledOutEdgesIterKind::BypassAsc { iter, .. } => return iter.advance_by(n),
-                LabeledOutEdgesIterKind::Buckets { current, .. } => match current {
-                    LabeledSpanIter::Empty => match self.roll_to_next_bucket_span() {
-                        Ok(()) => continue,
-                        Err(()) => return Err(NonZero::new(n).expect("n > 0")),
-                    },
-                    LabeledSpanIter::Desc { iter, .. } => match iter.advance_by(n) {
-                        Ok(()) => return Ok(()),
-                        Err(left) => {
-                            n = left.get();
-                            *current = LabeledSpanIter::Empty;
+                    match self.graph.labeled_bucket_span_iter(
+                        self.src,
+                        self.order,
+                        vertex,
+                        buckets,
+                        local,
+                        bucket_index,
+                    ) {
+                        Ok(span) => *current = span,
+                        Err(err) => {
+                            self.kind = LabeledOutEdgesIterKind::Empty;
+                            return Some(Err(err));
                         }
-                    },
-                    LabeledSpanIter::Asc { iter, .. } => match iter.advance_by(n) {
-                        Ok(()) => return Ok(()),
-                        Err(left) => {
-                            n = left.get();
-                            *current = LabeledSpanIter::Empty;
-                        }
-                    },
-                },
+                    }
+                }
             }
         }
     }
 
     fn nth(&mut self, n: usize) -> Option<Self::Item> {
-        self.advance_by(n).ok()?;
+        for _ in 0..n {
+            match self.next()? {
+                Ok(_) => {}
+                Err(err) => return Some(Err(err)),
+            }
+        }
         self.next()
     }
 }
@@ -233,7 +210,43 @@ where
 
     /// Advances past the exhausted current span to the next non-empty bucket span, mirroring
     /// [`Iterator::next`] roll logic for [`LabeledOutEdgesIterKind::Buckets`].
-    fn roll_to_next_bucket_span(&mut self) -> Result<(), ()> {
+    pub fn try_advance_by(
+        &mut self,
+        mut n: usize,
+    ) -> Result<Result<(), NonZero<usize>>, LabeledOperationError> {
+        if n == 0 {
+            return Ok(Ok(()));
+        }
+        loop {
+            match &mut self.kind {
+                LabeledOutEdgesIterKind::Empty => {
+                    return Ok(Err(NonZero::new(n).expect("n > 0")));
+                }
+                LabeledOutEdgesIterKind::BypassDesc { iter, .. } => {
+                    return Ok(iter.advance_by(n));
+                }
+                LabeledOutEdgesIterKind::BypassAsc { iter, .. } => {
+                    return Ok(iter.advance_by(n));
+                }
+                LabeledOutEdgesIterKind::Buckets { current, .. } => match current.try_advance_by(n)
+                {
+                    Ok(()) => return Ok(Ok(())),
+                    Err(left) => {
+                        n = left.get();
+                        *current = LabeledSpanIter::Empty;
+                        if self.roll_to_next_bucket_span()? {
+                            continue;
+                        }
+                        return Ok(Err(NonZero::new(n).expect("n > 0")));
+                    }
+                },
+            }
+        }
+    }
+
+    /// Advances past the exhausted current span to the next non-empty bucket span, mirroring
+    /// [`Iterator::next`] roll logic for [`LabeledOutEdgesIterKind::Buckets`].
+    fn roll_to_next_bucket_span(&mut self) -> Result<bool, LabeledOperationError> {
         let LabeledOutEdgesIterKind::Buckets {
             vertex,
             buckets,
@@ -242,14 +255,14 @@ where
             current,
         } = &mut self.kind
         else {
-            return Err(());
+            return Ok(false);
         };
         loop {
             let local = match next_bucket.take() {
                 Some(l) => l,
                 None => {
                     *current = LabeledSpanIter::Empty;
-                    return Err(());
+                    return Ok(false);
                 }
             };
             if self.order == OutEdgeOrder::Descending {
@@ -267,18 +280,15 @@ where
                 Some(b) => b,
                 None => continue,
             };
-            *current = self
-                .graph
-                .labeled_bucket_span_iter(
-                    self.src,
-                    self.order,
-                    vertex,
-                    buckets,
-                    local,
-                    bucket_index,
-                )
-                .map_err(|_| ())?;
-            return Ok(());
+            *current = self.graph.labeled_bucket_span_iter(
+                self.src,
+                self.order,
+                vertex,
+                buckets,
+                local,
+                bucket_index,
+            )?;
+            return Ok(true);
         }
     }
 }
@@ -288,7 +298,7 @@ where
     E: CsrEdge,
     M: Memory,
 {
-    type Item = E;
+    type Item = Result<E, LabeledOperationError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self {
@@ -304,7 +314,7 @@ where
                 iter,
             } => iter.next().map(|edge| {
                 let slot = edge.edge_slot_index_raw();
-                graph.attach_edge_payload(
+                graph.try_labeled_edge_with_payload(
                     *src,
                     vertex,
                     *bucket_index,
@@ -325,7 +335,7 @@ where
                 iter,
             } => iter.next().map(|edge| {
                 let slot = edge.edge_slot_index_raw();
-                graph.attach_edge_payload(
+                graph.try_labeled_edge_with_payload(
                     *src,
                     vertex,
                     *bucket_index,
@@ -338,7 +348,23 @@ where
         }
     }
 
-    fn advance_by(&mut self, n: usize) -> Result<(), NonZero<usize>> {
+    fn nth(&mut self, n: usize) -> Option<Self::Item> {
+        for _ in 0..n {
+            match self.next()? {
+                Ok(_) => {}
+                Err(err) => return Some(Err(err)),
+            }
+        }
+        self.next()
+    }
+}
+
+impl<E, M> LabeledSpanIter<'_, E, M>
+where
+    E: CsrEdge,
+    M: Memory,
+{
+    pub fn try_advance_by(&mut self, n: usize) -> Result<(), NonZero<usize>> {
         if n == 0 {
             return Ok(());
         }
@@ -347,11 +373,6 @@ where
             Self::Desc { iter, .. } => iter.advance_by(n),
             Self::Asc { iter, .. } => iter.advance_by(n),
         }
-    }
-
-    fn nth(&mut self, n: usize) -> Option<Self::Item> {
-        self.advance_by(n).ok()?;
-        self.next()
     }
 }
 

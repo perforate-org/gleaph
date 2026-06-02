@@ -1402,6 +1402,61 @@ mod tests {
     }
 
     #[test]
+    fn payload_log_read_failure_is_reported_by_streaming_apis() {
+        const WIDTH: u16 = 12;
+        let graph = payload_test_graph_with_capacity(1 << 16);
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let road = BucketLabelKey::from_raw(2);
+        graph
+            .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, WIDTH)
+            .unwrap();
+        let payload = [9u8; WIDTH as usize];
+        for target in 1..=33u32 {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    VertexId::from(0),
+                    road,
+                    PayloadTestEdge::with_bytes(target, &payload),
+                )
+                .unwrap();
+        }
+
+        let vertex = graph.vertices().get(VertexId::from(0));
+        let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
+        let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
+        assert!(bucket.payload_log_head() >= 0);
+        graph.values().drop_payload_blob_for_test(
+            graph.payload_log_leaf(VertexId::from(0)),
+            bucket.payload_log_head() as u32,
+        );
+
+        let err = graph
+            .desc_out_edges_iter(VertexId::from(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .expect_err("streaming iterator must report corrupt payload log");
+        assert!(
+            matches!(err, LabeledOperationError::PayloadLogRead(_)),
+            "unexpected iterator error: {err:?}"
+        );
+
+        let mut scratch = LabeledEdgePayloadBatchScratch::default();
+        let err = graph
+            .visit_out_edge_payload_batches_for_label(
+                VertexId::from(0),
+                road,
+                OutEdgeOrder::Descending,
+                &mut scratch,
+                |_| {},
+            )
+            .expect_err("payload batch traversal must report corrupt payload log");
+        assert!(
+            matches!(err, LabeledOperationError::PayloadLogRead(_)),
+            "unexpected batch error: {err:?}"
+        );
+    }
+
+    #[test]
     fn find_out_edge_predicate_sees_attached_payload() {
         let graph = payload_test_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
