@@ -141,17 +141,15 @@ where
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         let span_end_exclusive = Self::vertex_label_edge_span_end_exclusive(vertex, &first_global)?;
         let buckets = self.read_vertex_label_buckets_range(vertex, lo, hi)?;
-        if let Some((base, total_edges)) =
+        if let Some(run) =
             Self::try_contiguous_tiled_labeled_out_edges_slice(&buckets, span_end_exclusive)
         {
             #[cfg(feature = "canbench")]
             let _bench_scope = bench_scope("labeled_out_edges_by_directedness_tiled");
-            if total_edges > 0 {
-                let nbytes = (total_edges as usize)
-                    .checked_mul(E::BYTES)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            if run.total_edges() > 0 {
+                let nbytes = run.byte_len::<E>()?;
                 let mut raw = vec![0u8; nbytes];
-                self.edges.read_slots_contiguous(base, &mut raw);
+                self.edges.read_slots_contiguous(run.base(), &mut raw);
                 match ascending {
                     false => {
                         let mut bucket_rev_idx = buckets.len() as isize - 1;
@@ -167,29 +165,15 @@ where
                             let bucket_index = lo + bidx as u32;
                             let log_chains = self.bucket_payload_log_chains_opt(src, bucket);
                             let slot = slot_rev.unwrap_or(bucket.degree().saturating_sub(1));
-                            let rel = bucket
-                                .edge_start()
-                                .saturating_sub(base)
-                                .checked_add(u64::from(slot))
-                                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                            let byte_off = usize::try_from(rel)
-                                .map_err(|_| LaraOperationError::CollectAllocationOverflow)?
-                                .checked_mul(E::BYTES)
-                                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                            let byte_end = byte_off
-                                .checked_add(E::BYTES)
-                                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                            if byte_end > raw.len() {
-                                return Err(LaraOperationError::CollectAllocationOverflow.into());
-                            }
+                            let chunk = run.edge_chunk::<E>(&raw, bucket, slot)?;
                             visit(
-                                self.try_labeled_edge_with_payload(
+                                self.attach_edge_payload(
                                     src,
                                     vertex,
                                     bucket_index,
                                     *bucket,
                                     slot,
-                                    E::read_from(&raw[byte_off..byte_end])
+                                    E::read_from(chunk)
                                         .with_slot_index(slot)
                                         .with_label_id(bucket.bucket_label_key().raw()),
                                     log_chains.as_ref(),
@@ -211,31 +195,15 @@ where
                             let bucket_index = lo + local as u32;
                             let log_chains = self.bucket_payload_log_chains_opt(src, bucket);
                             for slot in 0..bucket.degree() {
-                                let rel = bucket
-                                    .edge_start()
-                                    .saturating_sub(base)
-                                    .checked_add(u64::from(slot))
-                                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                                let byte_off = usize::try_from(rel)
-                                    .map_err(|_| LaraOperationError::CollectAllocationOverflow)?
-                                    .checked_mul(E::BYTES)
-                                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                                let byte_end = byte_off
-                                    .checked_add(E::BYTES)
-                                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                                if byte_end > raw.len() {
-                                    return Err(
-                                        LaraOperationError::CollectAllocationOverflow.into()
-                                    );
-                                }
+                                let chunk = run.edge_chunk::<E>(&raw, bucket, slot)?;
                                 visit(
-                                    self.try_labeled_edge_with_payload(
+                                    self.attach_edge_payload(
                                         src,
                                         vertex,
                                         bucket_index,
                                         *bucket,
                                         slot,
-                                        E::read_from(&raw[byte_off..byte_end])
+                                        E::read_from(chunk)
                                             .with_slot_index(slot)
                                             .with_label_id(bucket.bucket_label_key().raw()),
                                         log_chains.as_ref(),
@@ -270,7 +238,7 @@ where
                         )?;
                         for edge in it {
                             let slot_index = edge.edge_slot_index_raw();
-                            visit(self.try_labeled_edge_with_payload(
+                            visit(self.attach_edge_payload(
                                 src,
                                 vertex,
                                 bucket_index,
@@ -283,7 +251,7 @@ where
                     } else {
                         for edge in self.edges.out_edges_iter(&acc, VertexId::from(0))? {
                             let slot_index = edge.edge_slot_index_raw();
-                            visit(self.try_labeled_edge_with_payload(
+                            visit(self.attach_edge_payload(
                                 src,
                                 vertex,
                                 bucket_index,
@@ -310,7 +278,7 @@ where
                     let acc = LabelEdgeSpanAccess::new(&self.buckets, slot, successor, src);
                     for edge in self.edges.asc_out_edges(&acc, VertexId::from(0))? {
                         let slot_index = edge.edge_slot_index_raw();
-                        visit(self.try_labeled_edge_with_payload(
+                        visit(self.attach_edge_payload(
                             src,
                             vertex,
                             bucket_index,
@@ -433,7 +401,7 @@ where
             let acc = LabelEdgeSpanAccess::new(&self.buckets, slot, successor, src);
             for edge in self.edges.out_edges_iter(&acc, VertexId::from(0))? {
                 let slot_index = edge.edge_slot_index_raw();
-                let edge = self.try_labeled_edge_with_payload(
+                let edge = self.attach_edge_payload(
                     src,
                     &vertex,
                     bucket_index,
@@ -544,7 +512,7 @@ where
                 if edge.is_deleted_slot() || edge.is_tombstone_edge() {
                     continue;
                 }
-                let edge_with_value = self.try_labeled_edge_with_payload(
+                let edge_with_value = self.attach_edge_payload(
                     src,
                     &vertex,
                     bucket_index,

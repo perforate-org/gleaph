@@ -504,7 +504,7 @@ where
             .map_err(LabeledOperationError::from)?;
         Ok(())
     }
-    pub(super) fn try_attach_edge_payload(
+    pub(super) fn attach_edge_payload(
         &self,
         src: VertexId,
         _vertex: &LabeledVertex,
@@ -522,27 +522,6 @@ where
         let buf = self.read_bucket_payload_for_edge(src, &bucket, &edge, log_chains)?;
         Ok(edge.with_stored_payload_bytes(width, &buf))
     }
-    pub(super) fn attach_edge_payload(
-        &self,
-        src: VertexId,
-        vertex: &LabeledVertex,
-        bucket_index: u32,
-        bucket: LabelBucket,
-        slot_index: u32,
-        edge: E,
-        log_chains: Option<&(Vec<u32>, Vec<u32>)>,
-    ) -> E {
-        self.try_attach_edge_payload(
-            src,
-            vertex,
-            bucket_index,
-            bucket,
-            slot_index,
-            edge,
-            log_chains,
-        )
-        .expect("labeled edge payload read failed")
-    }
     pub(super) fn bucket_payload_log_chains_opt(
         &self,
         src: VertexId,
@@ -555,47 +534,6 @@ where
         } else {
             None
         }
-    }
-    pub(super) fn try_labeled_edge_with_payload(
-        &self,
-        src: VertexId,
-        vertex: &LabeledVertex,
-        bucket_index: u32,
-        bucket: LabelBucket,
-        slot_index: u32,
-        edge: E,
-        log_chains: Option<&(Vec<u32>, Vec<u32>)>,
-    ) -> Result<E, LabeledOperationError> {
-        self.try_attach_edge_payload(
-            src,
-            vertex,
-            bucket_index,
-            bucket,
-            slot_index,
-            edge,
-            log_chains,
-        )
-    }
-    pub(super) fn labeled_edge_with_payload(
-        &self,
-        src: VertexId,
-        vertex: &LabeledVertex,
-        bucket_index: u32,
-        bucket: LabelBucket,
-        slot_index: u32,
-        edge: E,
-        log_chains: Option<&(Vec<u32>, Vec<u32>)>,
-    ) -> E {
-        self.try_labeled_edge_with_payload(
-            src,
-            vertex,
-            bucket_index,
-            bucket,
-            slot_index,
-            edge,
-            log_chains,
-        )
-        .expect("labeled edge payload read failed")
     }
     pub(super) fn collect_bucket_payloads_before_edge_rewrite(
         &self,
@@ -979,6 +917,19 @@ mod tests {
             )
             .unwrap();
         assert_eq!(asc, vec![10, 20, 30]);
+        let mut from_iter = Vec::new();
+        graph
+            .for_each_edges_for_label_ordered(
+                VertexId::from(0),
+                road,
+                OutEdgeOrder::Ascending,
+                |edge| {
+                    let bytes = edge.edge_payload_bytes();
+                    from_iter.push(u16::from_le_bytes([bytes[0], bytes[1]]));
+                },
+            )
+            .unwrap();
+        assert_eq!(asc, from_iter);
 
         let mut desc = Vec::new();
         graph

@@ -91,28 +91,26 @@ pub(super) enum LabeledOutEdgesIterKind<'a, E: CsrEdge, M: Memory> {
     },
 }
 
+#[doc(hidden)]
+pub struct LabeledBucketScan<'a, E: CsrEdge, M: Memory> {
+    graph: &'a LabeledLaraGraph<E, M>,
+    src: VertexId,
+    vertex: LabeledVertex,
+    bucket_index: u32,
+    bucket: LabelBucket,
+    label_id: BucketLabelKey,
+    log_chains: Option<(Vec<u32>, Vec<u32>)>,
+    kind: LabeledBucketScanKind<'a, E, M>,
+}
+
+pub(super) enum LabeledBucketScanKind<'a, E: CsrEdge, M: Memory> {
+    Desc { iter: OutEdgesIter<'a, E, M> },
+    Asc { iter: AscOutEdgesIter<'a, E, M> },
+}
+
 pub enum LabeledSpanIter<'a, E: CsrEdge, M: Memory> {
     Empty,
-    Desc {
-        graph: &'a LabeledLaraGraph<E, M>,
-        src: VertexId,
-        vertex: LabeledVertex,
-        bucket_index: u32,
-        bucket: LabelBucket,
-        label_id: BucketLabelKey,
-        log_chains: Option<(Vec<u32>, Vec<u32>)>,
-        iter: OutEdgesIter<'a, E, M>,
-    },
-    Asc {
-        graph: &'a LabeledLaraGraph<E, M>,
-        src: VertexId,
-        vertex: LabeledVertex,
-        bucket_index: u32,
-        bucket: LabelBucket,
-        label_id: BucketLabelKey,
-        log_chains: Option<(Vec<u32>, Vec<u32>)>,
-        iter: AscOutEdgesIter<'a, E, M>,
-    },
+    Scan(LabeledBucketScan<'a, E, M>),
 }
 
 impl<'a, E, M> Iterator for LabeledOutEdgesIter<'a, E, M>
@@ -302,6 +300,41 @@ where
     }
 }
 
+impl<E, M> Iterator for LabeledBucketScan<'_, E, M>
+where
+    E: CsrEdge,
+    M: Memory,
+{
+    type Item = Result<E, LabeledOperationError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let edge = match &mut self.kind {
+            LabeledBucketScanKind::Desc { iter } => iter.next()?,
+            LabeledBucketScanKind::Asc { iter } => iter.next()?,
+        };
+        let slot = edge.edge_slot_index_raw();
+        Some(self.graph.attach_edge_payload(
+            self.src,
+            &self.vertex,
+            self.bucket_index,
+            self.bucket,
+            slot,
+            edge.with_label_id(self.label_id.raw()),
+            self.log_chains.as_ref(),
+        ))
+    }
+
+    fn nth(&mut self, n: usize) -> Option<Self::Item> {
+        for _ in 0..n {
+            match self.next()? {
+                Ok(_) => {}
+                Err(err) => return Some(Err(err)),
+            }
+        }
+        self.next()
+    }
+}
+
 impl<E, M> Iterator for LabeledSpanIter<'_, E, M>
 where
     E: CsrEdge,
@@ -312,48 +345,7 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         match self {
             Self::Empty => None,
-            Self::Desc {
-                graph,
-                src,
-                vertex,
-                bucket_index,
-                bucket,
-                label_id,
-                log_chains,
-                iter,
-            } => iter.next().map(|edge| {
-                let slot = edge.edge_slot_index_raw();
-                graph.try_labeled_edge_with_payload(
-                    *src,
-                    vertex,
-                    *bucket_index,
-                    *bucket,
-                    slot,
-                    edge.with_label_id(label_id.raw()),
-                    log_chains.as_ref(),
-                )
-            }),
-            Self::Asc {
-                graph,
-                src,
-                vertex,
-                bucket_index,
-                bucket,
-                label_id,
-                log_chains,
-                iter,
-            } => iter.next().map(|edge| {
-                let slot = edge.edge_slot_index_raw();
-                graph.try_labeled_edge_with_payload(
-                    *src,
-                    vertex,
-                    *bucket_index,
-                    *bucket,
-                    slot,
-                    edge.with_label_id(label_id.raw()),
-                    log_chains.as_ref(),
-                )
-            }),
+            Self::Scan(scan) => scan.next(),
         }
     }
 
@@ -368,7 +360,7 @@ where
     }
 }
 
-impl<E, M> LabeledSpanIter<'_, E, M>
+impl<E, M> LabeledBucketScan<'_, E, M>
 where
     E: CsrEdge,
     M: Memory,
@@ -377,10 +369,69 @@ where
         if n == 0 {
             return Ok(());
         }
+        match &mut self.kind {
+            LabeledBucketScanKind::Desc { iter } => iter.advance_by(n),
+            LabeledBucketScanKind::Asc { iter } => iter.advance_by(n),
+        }
+    }
+}
+
+impl<E, M> LabeledSpanIter<'_, E, M>
+where
+    E: CsrEdge,
+    M: Memory,
+{
+    pub(super) fn desc<'a>(
+        graph: &'a LabeledLaraGraph<E, M>,
+        src: VertexId,
+        vertex: LabeledVertex,
+        bucket_index: u32,
+        bucket: LabelBucket,
+        label_id: BucketLabelKey,
+        log_chains: Option<(Vec<u32>, Vec<u32>)>,
+        iter: OutEdgesIter<'a, E, M>,
+    ) -> LabeledSpanIter<'a, E, M> {
+        LabeledSpanIter::Scan(LabeledBucketScan {
+            graph,
+            src,
+            vertex,
+            bucket_index,
+            bucket,
+            label_id,
+            log_chains,
+            kind: LabeledBucketScanKind::Desc { iter },
+        })
+    }
+
+    pub(super) fn asc<'a>(
+        graph: &'a LabeledLaraGraph<E, M>,
+        src: VertexId,
+        vertex: LabeledVertex,
+        bucket_index: u32,
+        bucket: LabelBucket,
+        label_id: BucketLabelKey,
+        log_chains: Option<(Vec<u32>, Vec<u32>)>,
+        iter: AscOutEdgesIter<'a, E, M>,
+    ) -> LabeledSpanIter<'a, E, M> {
+        LabeledSpanIter::Scan(LabeledBucketScan {
+            graph,
+            src,
+            vertex,
+            bucket_index,
+            bucket,
+            label_id,
+            log_chains,
+            kind: LabeledBucketScanKind::Asc { iter },
+        })
+    }
+
+    pub fn try_advance_by(&mut self, n: usize) -> Result<(), NonZero<usize>> {
+        if n == 0 {
+            return Ok(());
+        }
         match self {
             Self::Empty => Err(NonZero::new(n).expect("n > 0")),
-            Self::Desc { iter, .. } => iter.advance_by(n),
-            Self::Asc { iter, .. } => iter.advance_by(n),
+            Self::Scan(scan) => scan.try_advance_by(n),
         }
     }
 }
