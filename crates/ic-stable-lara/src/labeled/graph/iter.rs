@@ -6,7 +6,10 @@ use crate::{
         bucket_label_key::BucketLabelKey,
         record::{LabelBucket, LabeledVertex},
     },
-    lara::edge::{AscOutEdgesIter, OutEdgeSlabIter, OutEdgesIter},
+    lara::{
+        edge::{AscOutEdgesIter, OutEdgeSlabIter, OutEdgesIter},
+        operation_error::LaraOperationError,
+    },
     traits::{CsrEdge, CsrVertex},
 };
 use ic_stable_structures::Memory;
@@ -56,9 +59,12 @@ pub struct LabeledEdgePayloadBatch<'a, E> {
     pub dense: bool,
 }
 
-/// Streaming iterator over outgoing edges in a fixed scan order (see
-/// [`LabeledLaraGraph::desc_out_edges_iter`], [`LabeledLaraGraph::asc_out_edges_iter`], and
-/// [`LabeledLaraGraph::out_edges_by_directedness_iter`]).
+/// Streaming iterator over outgoing edges in a fixed scan order.
+///
+/// Items are fallible because labeled edge rows may need to read payload bytes from stable
+/// payload storage. Use `collect::<Result<Vec<_>, _>>()` when materializing rows. For paging or
+/// OFFSET-style traversal, prefer [`LabeledOutEdgesIter::try_advance_by`] over
+/// [`Iterator::nth`] or [`Iterator::skip`] so skipped rows do not read payload bytes.
 pub struct LabeledOutEdgesIter<'a, E: CsrEdge, M: Memory> {
     pub(super) graph: &'a LabeledLaraGraph<E, M>,
     pub(super) src: VertexId,
@@ -152,7 +158,10 @@ where
                     if buckets[local].degree() == 0 {
                         continue;
                     }
-                    let bucket_index = base_bucket_index.checked_add(local as u32)?;
+                    let Some(bucket_index) = base_bucket_index.checked_add(local as u32) else {
+                        self.kind = LabeledOutEdgesIterKind::Empty;
+                        return Some(Err(LaraOperationError::CollectAllocationOverflow.into()));
+                    };
                     match self.graph.labeled_bucket_span_iter(
                         self.src,
                         self.order,
@@ -208,8 +217,10 @@ where
         }
     }
 
-    /// Advances past the exhausted current span to the next non-empty bucket span, mirroring
-    /// [`Iterator::next`] roll logic for [`LabeledOutEdgesIterKind::Buckets`].
+    /// Advances by live rows without reading skipped payload bytes.
+    ///
+    /// Returns `Ok(Err(left))` when the iterator ends before all `n` rows are skipped, and
+    /// returns `Err` for storage/layout failures encountered while moving between bucket spans.
     pub fn try_advance_by(
         &mut self,
         mut n: usize,
@@ -244,8 +255,7 @@ where
         }
     }
 
-    /// Advances past the exhausted current span to the next non-empty bucket span, mirroring
-    /// [`Iterator::next`] roll logic for [`LabeledOutEdgesIterKind::Buckets`].
+    /// Advances past the exhausted current span to the next non-empty bucket span.
     fn roll_to_next_bucket_span(&mut self) -> Result<bool, LabeledOperationError> {
         let LabeledOutEdgesIterKind::Buckets {
             vertex,
@@ -276,10 +286,9 @@ where
             if buckets[local].degree() == 0 {
                 continue;
             }
-            let bucket_index = match base_bucket_index.checked_add(local as u32) {
-                Some(b) => b,
-                None => continue,
-            };
+            let bucket_index = base_bucket_index
+                .checked_add(local as u32)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             *current = self.graph.labeled_bucket_span_iter(
                 self.src,
                 self.order,

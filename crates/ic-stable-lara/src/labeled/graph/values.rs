@@ -1430,6 +1430,10 @@ mod tests {
             bucket.payload_log_head() as u32,
         );
 
+        let mut iter = graph.desc_out_edges_iter(VertexId::from(0)).unwrap();
+        assert_eq!(iter.try_advance_by(33).unwrap(), Ok(()));
+        assert_eq!(iter.next().transpose().unwrap(), None);
+
         let err = graph
             .desc_out_edges_iter(VertexId::from(0))
             .unwrap()
