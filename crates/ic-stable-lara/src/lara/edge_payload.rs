@@ -518,6 +518,11 @@ impl<M: Memory> EdgePayloadStore<M> {
         Err(PayloadLogReadError::InvalidInlineCell { width })
     }
 
+    #[cfg(test)]
+    pub(crate) fn drop_payload_blob_for_test(&self, leaf_segment: u32, entry_idx: u32) {
+        self.blobs.drop_log_site(leaf_segment, entry_idx);
+    }
+
     /// Returns value-log entry indices from oldest to newest by walking `log_head`.
     pub(crate) fn payload_log_chain_asc_indices(
         &self,

@@ -14,7 +14,6 @@ use crate::{
 #[cfg(feature = "canbench")]
 use canbench_rs::bench_scope;
 use ic_stable_structures::Memory;
-use std::cell::Cell;
 
 use super::error::LabeledOperationError;
 use super::{BucketSearch, LabeledLaraGraph, OutEdgeOrder};
@@ -184,7 +183,7 @@ where
                                 return Err(LaraOperationError::CollectAllocationOverflow.into());
                             }
                             visit(
-                                self.labeled_edge_with_payload(
+                                self.try_labeled_edge_with_payload(
                                     src,
                                     vertex,
                                     bucket_index,
@@ -194,7 +193,7 @@ where
                                         .with_slot_index(slot)
                                         .with_label_id(bucket.bucket_label_key().raw()),
                                     log_chains.as_ref(),
-                                ),
+                                )?,
                             );
                             if slot == 0 {
                                 bucket_rev_idx -= 1;
@@ -230,7 +229,7 @@ where
                                     );
                                 }
                                 visit(
-                                    self.labeled_edge_with_payload(
+                                    self.try_labeled_edge_with_payload(
                                         src,
                                         vertex,
                                         bucket_index,
@@ -240,7 +239,7 @@ where
                                             .with_slot_index(slot)
                                             .with_label_id(bucket.bucket_label_key().raw()),
                                         log_chains.as_ref(),
-                                    ),
+                                    )?,
                                 );
                             }
                         }
@@ -271,7 +270,7 @@ where
                         )?;
                         for edge in it {
                             let slot_index = edge.edge_slot_index_raw();
-                            visit(self.labeled_edge_with_payload(
+                            visit(self.try_labeled_edge_with_payload(
                                 src,
                                 vertex,
                                 bucket_index,
@@ -279,12 +278,12 @@ where
                                 slot_index,
                                 edge.with_label_id(bucket.bucket_label_key().raw()),
                                 log_chains.as_ref(),
-                            ));
+                            )?);
                         }
                     } else {
                         for edge in self.edges.out_edges_iter(&acc, VertexId::from(0))? {
                             let slot_index = edge.edge_slot_index_raw();
-                            visit(self.labeled_edge_with_payload(
+                            visit(self.try_labeled_edge_with_payload(
                                 src,
                                 vertex,
                                 bucket_index,
@@ -292,7 +291,7 @@ where
                                 slot_index,
                                 edge.with_label_id(bucket.bucket_label_key().raw()),
                                 log_chains.as_ref(),
-                            ));
+                            )?);
                         }
                     }
                 }
@@ -311,7 +310,7 @@ where
                     let acc = LabelEdgeSpanAccess::new(&self.buckets, slot, successor, src);
                     for edge in self.edges.asc_out_edges(&acc, VertexId::from(0))? {
                         let slot_index = edge.edge_slot_index_raw();
-                        visit(self.labeled_edge_with_payload(
+                        visit(self.try_labeled_edge_with_payload(
                             src,
                             vertex,
                             bucket_index,
@@ -319,7 +318,7 @@ where
                             slot_index,
                             edge.with_label_id(bucket.bucket_label_key().raw()),
                             log_chains.as_ref(),
-                        ));
+                        )?);
                     }
                 }
             }
@@ -431,32 +430,21 @@ where
                 continue;
             }
             let log_chains = self.bucket_payload_log_chains_opt(src, &bucket);
-            let found_label = Cell::new(None);
-            self.edges.visit_out_edges(
-                &LabelEdgeSpanAccess::new(&self.buckets, slot, successor, src),
-                VertexId::from(0),
-                None,
-                None,
-                None::<&mut dyn FnMut(&[u8]) -> bool>,
-                |_| found_label.get().is_none(),
-                |edge| {
-                    let slot_index = edge.edge_slot_index_raw();
-                    let edge = self.labeled_edge_with_payload(
-                        src,
-                        &vertex,
-                        bucket_index,
-                        bucket,
-                        slot_index,
-                        edge.with_label_id(bucket.bucket_label_key().raw()),
-                        log_chains.as_ref(),
-                    );
-                    if Self::edge_matches_label_lookup(&edge, needle) {
-                        found_label.set(Some(bucket.bucket_label_key()));
-                    }
-                },
-            )?;
-            if let Some(label_id) = found_label.into_inner() {
-                return Ok(Some(label_id));
+            let acc = LabelEdgeSpanAccess::new(&self.buckets, slot, successor, src);
+            for edge in self.edges.out_edges_iter(&acc, VertexId::from(0))? {
+                let slot_index = edge.edge_slot_index_raw();
+                let edge = self.try_labeled_edge_with_payload(
+                    src,
+                    &vertex,
+                    bucket_index,
+                    bucket,
+                    slot_index,
+                    edge.with_label_id(bucket.bucket_label_key().raw()),
+                    log_chains.as_ref(),
+                )?;
+                if Self::edge_matches_label_lookup(&edge, needle) {
+                    return Ok(Some(bucket.bucket_label_key()));
+                }
             }
         }
         Ok(None)
@@ -553,10 +541,10 @@ where
                 let edge_slot = checked_add_slot_index(bucket.edge_start(), u64::from(offset))
                     .ok_or(LaraOperationError::CollectAllocationOverflow)?;
                 let edge = self.edges.read_slot(edge_slot);
-                if edge.is_tombstone_edge() {
+                if edge.is_deleted_slot() || edge.is_tombstone_edge() {
                     continue;
                 }
-                let edge_with_value = self.labeled_edge_with_payload(
+                let edge_with_value = self.try_labeled_edge_with_payload(
                     src,
                     &vertex,
                     bucket_index,
@@ -564,7 +552,7 @@ where
                     offset,
                     edge,
                     log_chains.as_ref(),
-                );
+                )?;
                 if matches(&edge_with_value) {
                     found = Some((offset, edge_with_value));
                     break;
@@ -656,6 +644,10 @@ mod tests {
             graph.iter_edges_for_label(VertexId::from(0), road).unwrap(),
             vec![TestEdge { target: 12 }, TestEdge { target: 10 }]
         );
+        assert_eq!(
+            graph.asc_out_edges(VertexId::from(0)).unwrap(),
+            vec![TestEdge { target: 10 }, TestEdge { target: 12 }]
+        );
         let vertex = graph.vertices().get(VertexId::from(0));
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
@@ -672,6 +664,14 @@ mod tests {
                 TestEdge { target: 13 },
                 TestEdge { target: 12 },
                 TestEdge { target: 10 },
+            ]
+        );
+        assert_eq!(
+            graph.asc_out_edges(VertexId::from(0)).unwrap(),
+            vec![
+                TestEdge { target: 10 },
+                TestEdge { target: 12 },
+                TestEdge { target: 13 },
             ]
         );
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();

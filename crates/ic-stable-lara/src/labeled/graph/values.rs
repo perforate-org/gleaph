@@ -504,7 +504,7 @@ where
             .map_err(LabeledOperationError::from)?;
         Ok(())
     }
-    pub(super) fn attach_edge_payload(
+    pub(super) fn try_attach_edge_payload(
         &self,
         src: VertexId,
         _vertex: &LabeledVertex,
@@ -513,16 +513,35 @@ where
         slot_index: u32,
         edge: E,
         log_chains: Option<&(Vec<u32>, Vec<u32>)>,
-    ) -> E {
+    ) -> Result<E, LabeledOperationError> {
         if !bucket.is_payload_allocated() {
-            return edge;
+            return Ok(edge);
         }
         let width = bucket.payload_byte_width();
         let edge = edge.with_slot_index(slot_index);
-        let buf = self
-            .read_bucket_payload_for_edge(src, &bucket, &edge, log_chains)
-            .unwrap_or_else(|_| vec![0u8; usize::from(width)]);
-        edge.with_stored_payload_bytes(width, &buf)
+        let buf = self.read_bucket_payload_for_edge(src, &bucket, &edge, log_chains)?;
+        Ok(edge.with_stored_payload_bytes(width, &buf))
+    }
+    pub(super) fn attach_edge_payload(
+        &self,
+        src: VertexId,
+        vertex: &LabeledVertex,
+        bucket_index: u32,
+        bucket: LabelBucket,
+        slot_index: u32,
+        edge: E,
+        log_chains: Option<&(Vec<u32>, Vec<u32>)>,
+    ) -> E {
+        self.try_attach_edge_payload(
+            src,
+            vertex,
+            bucket_index,
+            bucket,
+            slot_index,
+            edge,
+            log_chains,
+        )
+        .expect("labeled edge payload read failed")
     }
     pub(super) fn bucket_payload_log_chains_opt(
         &self,
@@ -537,6 +556,26 @@ where
             None
         }
     }
+    pub(super) fn try_labeled_edge_with_payload(
+        &self,
+        src: VertexId,
+        vertex: &LabeledVertex,
+        bucket_index: u32,
+        bucket: LabelBucket,
+        slot_index: u32,
+        edge: E,
+        log_chains: Option<&(Vec<u32>, Vec<u32>)>,
+    ) -> Result<E, LabeledOperationError> {
+        self.try_attach_edge_payload(
+            src,
+            vertex,
+            bucket_index,
+            bucket,
+            slot_index,
+            edge,
+            log_chains,
+        )
+    }
     pub(super) fn labeled_edge_with_payload(
         &self,
         src: VertexId,
@@ -547,7 +586,7 @@ where
         edge: E,
         log_chains: Option<&(Vec<u32>, Vec<u32>)>,
     ) -> E {
-        self.attach_edge_payload(
+        self.try_labeled_edge_with_payload(
             src,
             vertex,
             bucket_index,
@@ -556,6 +595,7 @@ where
             edge,
             log_chains,
         )
+        .expect("labeled edge payload read failed")
     }
     pub(super) fn collect_bucket_payloads_before_edge_rewrite(
         &self,
@@ -1321,6 +1361,78 @@ mod tests {
             .unwrap();
         assert_eq!(seen.len(), 33);
         assert!(seen.iter().all(|v| v == &payload));
+    }
+
+    #[test]
+    fn payload_log_read_failure_is_reported_during_scan() {
+        const WIDTH: u16 = 12;
+        let graph = payload_test_graph_with_capacity(1 << 16);
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let road = BucketLabelKey::from_raw(2);
+        graph
+            .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, WIDTH)
+            .unwrap();
+        let payload = [7u8; WIDTH as usize];
+        for target in 1..=33u32 {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    VertexId::from(0),
+                    road,
+                    PayloadTestEdge::with_bytes(target, &payload),
+                )
+                .unwrap();
+        }
+
+        let vertex = graph.vertices().get(VertexId::from(0));
+        let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
+        let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
+        assert!(bucket.payload_log_head() >= 0);
+        graph.values().drop_payload_blob_for_test(
+            graph.payload_log_leaf(VertexId::from(0)),
+            bucket.payload_log_head() as u32,
+        );
+
+        let err = graph
+            .for_each_edges_for_label(VertexId::from(0), road, |_| {})
+            .expect_err("corrupt payload log must not be converted to zero payload");
+        assert!(
+            matches!(err, LabeledOperationError::PayloadLogRead(_)),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn find_out_edge_predicate_sees_attached_payload() {
+        let graph = payload_test_graph();
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let road = BucketLabelKey::from_raw(2);
+        graph
+            .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, 2u16)
+            .unwrap();
+        graph
+            .insert_edge_skip_leaf_cascade(
+                VertexId::from(0),
+                road,
+                PayloadTestEdge::with_bytes(1, &10u16.to_le_bytes()),
+            )
+            .unwrap();
+        graph
+            .insert_edge_skip_leaf_cascade(
+                VertexId::from(0),
+                road,
+                PayloadTestEdge::with_bytes(2, &20u16.to_le_bytes()),
+            )
+            .unwrap();
+
+        let needle = 20u16.to_le_bytes();
+        let found = graph
+            .find_out_edge_with_label_by_predicate(VertexId::from(0), |edge| {
+                edge.edge_payload_byte_width() == 2 && edge.edge_payload_bytes() == needle
+            })
+            .unwrap()
+            .expect("payload predicate should match");
+        assert_eq!(found.0.target, 2);
+        assert_eq!(found.1, Some(road));
     }
 
     #[test]

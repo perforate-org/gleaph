@@ -12,7 +12,7 @@ use crate::{
         edge::{OutEdgeSlabIter, OutEdgeVisitWindow, OutEdgesIter},
         operation_error::LaraOperationError,
     },
-    traits::{CsrEdge, CsrVertex},
+    traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
 #[cfg(feature = "canbench")]
 use canbench_rs::bench_scope;
@@ -71,6 +71,9 @@ where
         if buckets.iter().any(|b| b.overflow_log_head() >= 0) {
             return None;
         }
+        if buckets.iter().any(|b| b.stored_slots != b.degree()) {
+            return None;
+        }
         let base = buckets.first()?.edge_start();
         let mut pos = base;
         let mut total_edges: u32 = 0;
@@ -99,6 +102,7 @@ where
         visit: Visit,
     ) -> Result<(), LabeledOperationError>
     where
+        E: CsrEdgeTombstone,
         Visit: FnMut(E),
     {
         let mut visit = visit;
@@ -121,12 +125,7 @@ where
                 )
                 .map_err(Into::into);
         }
-        for edge in
-            self.out_edges_iter_for_label_ordered(src, label_id, OutEdgeOrder::Descending)?
-        {
-            visit(edge.with_label_id(label_id.raw()));
-        }
-        Ok(())
+        self.for_each_edges_for_label_ordered(src, label_id, OutEdgeOrder::Descending, visit)
     }
     /// Visits outgoing edges for one label in the requested order.
     pub fn for_each_edges_for_label_ordered<Visit>(
@@ -134,13 +133,89 @@ where
         src: VertexId,
         label_id: BucketLabelKey,
         order: OutEdgeOrder,
-        mut visit: Visit,
+        visit: Visit,
     ) -> Result<(), LabeledOperationError>
     where
+        E: CsrEdgeTombstone,
         Visit: FnMut(E),
     {
-        for edge in self.out_edges_iter_for_label_ordered(src, label_id, order)? {
-            visit(edge.with_label_id(label_id.raw()));
+        let mut visit = visit;
+        self.ensure_vertex(src)?;
+        let vertex = self.vertices.get(src);
+        if vertex.is_default_edge_labeled() {
+            if label_id != self.bypass_storage_label_for(&vertex) {
+                return Ok(());
+            }
+            return match order {
+                OutEdgeOrder::Descending => self
+                    .edges
+                    .visit_out_edges(
+                        &self.vertices,
+                        src,
+                        None,
+                        None,
+                        None::<&mut dyn FnMut(&[u8]) -> bool>,
+                        |_| true,
+                        |edge| visit(edge.with_label_id(label_id.raw())),
+                    )
+                    .map_err(Into::into),
+                OutEdgeOrder::Ascending => {
+                    for edge in self.edges.asc_out_edges(&self.vertices, src)? {
+                        visit(edge.with_label_id(label_id.raw()));
+                    }
+                    Ok(())
+                }
+            };
+        }
+        let BucketSearch::Found { slot, bucket } = self.find_bucket(src, &vertex, label_id)? else {
+            return Ok(());
+        };
+        if bucket.degree() == 0 {
+            return Ok(());
+        }
+        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
+        let successor_start =
+            self.bucket_successor_start_after_bucket(&vertex, bucket_index, &bucket)?;
+        let acc = LabelEdgeSpanAccess::new(&self.buckets, slot, successor_start, src);
+        let log_chains = self.bucket_payload_log_chains_opt(src, &bucket);
+        match order {
+            OutEdgeOrder::Descending => {
+                for edge in self.edges.out_edges_iter(&acc, VertexId::from(0))? {
+                    let slot_index = edge.edge_slot_index_raw();
+                    visit(self.try_labeled_edge_with_payload(
+                        src,
+                        &vertex,
+                        bucket_index,
+                        bucket,
+                        slot_index,
+                        edge.with_label_id(bucket.bucket_label_key().raw()),
+                        log_chains.as_ref(),
+                    )?);
+                }
+            }
+            OutEdgeOrder::Ascending => {
+                for slot_index in 0..bucket.stored_slots {
+                    let edge_slot =
+                        checked_add_slot_index(bucket.edge_start(), u64::from(slot_index))
+                            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    let edge = self.edges.read_slot(edge_slot);
+                    if edge.is_deleted_slot() || edge.is_tombstone_edge() {
+                        continue;
+                    }
+                    visit(
+                        self.try_labeled_edge_with_payload(
+                            src,
+                            &vertex,
+                            bucket_index,
+                            bucket,
+                            slot_index,
+                            edge.with_slot_index(slot_index)
+                                .with_label_id(bucket.bucket_label_key().raw()),
+                            log_chains.as_ref(),
+                        )?,
+                    );
+                }
+            }
         }
         Ok(())
     }
@@ -334,6 +409,7 @@ where
         visit: &mut Visit,
     ) -> Result<(), LabeledOperationError>
     where
+        E: CsrEdgeTombstone,
         Match: FnMut(&E) -> bool,
         Visit: FnMut(E),
     {
@@ -422,7 +498,7 @@ where
                     }
                     let chunk = &raw[byte_off..byte_end];
                     let cont = if let Some(raw_m) = raw_matches.as_mut() {
-                        let edge = self.labeled_edge_with_payload(
+                        let edge = self.try_labeled_edge_with_payload(
                             src,
                             vertex,
                             bucket_index,
@@ -432,7 +508,7 @@ where
                                 .with_slot_index(slot)
                                 .with_label_id(bucket.bucket_label_key().raw()),
                             log_chains.as_ref(),
-                        );
+                        )?;
                         if raw_m(chunk) {
                             if matches(&edge) {
                                 window.emit_edge(edge, visit)
@@ -443,7 +519,7 @@ where
                             true
                         }
                     } else {
-                        let edge = self.labeled_edge_with_payload(
+                        let edge = self.try_labeled_edge_with_payload(
                             src,
                             vertex,
                             bucket_index,
@@ -453,7 +529,7 @@ where
                                 .with_slot_index(slot)
                                 .with_label_id(bucket.bucket_label_key().raw()),
                             log_chains.as_ref(),
-                        );
+                        )?;
                         if matches(&edge) {
                             window.emit_edge(edge, visit)
                         } else {
@@ -494,7 +570,7 @@ where
                             return Err(LaraOperationError::CollectAllocationOverflow.into());
                         }
                         let chunk = &raw[byte_off..byte_end];
-                        let edge = self.labeled_edge_with_payload(
+                        let edge = self.try_labeled_edge_with_payload(
                             src,
                             vertex,
                             bucket_index,
@@ -504,7 +580,7 @@ where
                                 .with_slot_index(slot)
                                 .with_label_id(bucket.bucket_label_key().raw()),
                             log_chains.as_ref(),
-                        );
+                        )?;
                         let passes = if let Some(raw_m) = raw_matches.as_mut() {
                             raw_m(chunk) && matches(&edge)
                         } else {
@@ -541,7 +617,7 @@ where
                     let has_raw = raw_matches.is_some();
                     while let Some(edge) = it.next_live_edge_filtered(&mut raw_matches) {
                         let slot_index = edge.edge_slot_index_raw();
-                        let edge = self.labeled_edge_with_payload(
+                        let edge = self.try_labeled_edge_with_payload(
                             src,
                             vertex,
                             bucket_index,
@@ -549,7 +625,7 @@ where
                             slot_index,
                             edge.with_label_id(bucket.bucket_label_key().raw()),
                             log_chains.as_ref(),
-                        );
+                        )?;
                         if has_raw {
                             if matches(&edge) && !window.emit_edge(edge, visit) {
                                 return Ok(());
@@ -561,7 +637,7 @@ where
                 } else {
                     for edge in self.edges.out_edges_iter(&acc, VertexId::from(0))? {
                         let slot_index = edge.edge_slot_index_raw();
-                        let edge = self.labeled_edge_with_payload(
+                        let edge = self.try_labeled_edge_with_payload(
                             src,
                             vertex,
                             bucket_index,
@@ -569,7 +645,7 @@ where
                             slot_index,
                             edge.with_label_id(bucket.bucket_label_key().raw()),
                             log_chains.as_ref(),
-                        );
+                        )?;
                         let passes = if let Some(raw_m) = raw_matches.as_mut() {
                             let mut buf = vec![0u8; E::BYTES];
                             edge.write_to(&mut buf);
@@ -595,24 +671,22 @@ where
                     self.bucket_successor_start_after_bucket(vertex, bucket_index, bucket)?;
                 let acc = LabelEdgeSpanAccess::new(&self.buckets, slot, successor_start, src);
                 if bucket.overflow_log_head() < 0 {
-                    for slot_idx in 0..bucket.degree() {
+                    for slot_idx in 0..bucket.stored_slots {
                         let at = checked_add_slot_index(bucket.edge_start(), u64::from(slot_idx))
                             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                        if self.edges.read_slot(at).is_deleted_slot() {
+                        let edge = self.edges.read_slot(at);
+                        if edge.is_deleted_slot() || edge.is_tombstone_edge() {
                             continue;
                         }
-                        let edge = self.labeled_edge_with_payload(
+                        let edge = self.try_labeled_edge_with_payload(
                             src,
                             vertex,
                             bucket_index,
                             *bucket,
                             slot_idx,
-                            self.edges
-                                .read_slot(at)
-                                .with_slot_index(slot_idx)
-                                .with_label_id(bucket.bucket_label_key().raw()),
+                            edge.with_label_id(bucket.bucket_label_key().raw()),
                             log_chains.as_ref(),
-                        );
+                        )?;
                         let passes = if let Some(raw_m) = raw_matches.as_mut() {
                             let mut buf = vec![0u8; E::BYTES];
                             edge.write_to(&mut buf);
@@ -627,7 +701,7 @@ where
                 } else {
                     for edge in self.edges.asc_out_edges(&acc, VertexId::from(0))? {
                         let slot_index = edge.edge_slot_index_raw();
-                        let edge = self.labeled_edge_with_payload(
+                        let edge = self.try_labeled_edge_with_payload(
                             src,
                             vertex,
                             bucket_index,
@@ -635,7 +709,7 @@ where
                             slot_index,
                             edge.with_label_id(bucket.bucket_label_key().raw()),
                             log_chains.as_ref(),
-                        );
+                        )?;
                         let passes = if let Some(raw_m) = raw_matches.as_mut() {
                             let mut buf = vec![0u8; E::BYTES];
                             edge.write_to(&mut buf);
@@ -931,6 +1005,7 @@ where
         mut visit: Visit,
     ) -> Result<(), LabeledOperationError>
     where
+        E: CsrEdgeTombstone,
         Match: FnMut(&E) -> bool,
         Visit: FnMut(E),
     {
@@ -957,6 +1032,7 @@ where
         visit: Visit,
     ) -> Result<(), LabeledOperationError>
     where
+        E: CsrEdgeTombstone,
         Visit: FnMut(E),
     {
         self.visit_out_edges(src, offset, limit, raw_matches, |_| true, visit)
@@ -972,6 +1048,7 @@ where
         mut visit: Visit,
     ) -> Result<(), LabeledOperationError>
     where
+        E: CsrEdgeTombstone,
         Match: FnMut(&E) -> bool,
         Visit: FnMut(E),
     {
@@ -998,12 +1075,16 @@ where
         visit: Visit,
     ) -> Result<(), LabeledOperationError>
     where
+        E: CsrEdgeTombstone,
         Visit: FnMut(E),
     {
         self.visit_asc_out_edges(src, offset, limit, raw_matches, |_| true, visit)
     }
     /// Collects outgoing edges for `src` in descending scan order.
-    pub fn out_edges(&self, src: VertexId) -> Result<Vec<E>, LabeledOperationError> {
+    pub fn out_edges(&self, src: VertexId) -> Result<Vec<E>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
         self.ensure_vertex(src)?;
         let vertex = self.vertices.get(src);
         let mut out = Vec::new();
@@ -1020,7 +1101,10 @@ where
         Ok(out)
     }
     /// Collects outgoing edges for `src` in ascending slot order.
-    pub fn asc_out_edges(&self, src: VertexId) -> Result<Vec<E>, LabeledOperationError> {
+    pub fn asc_out_edges(&self, src: VertexId) -> Result<Vec<E>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
         self.ensure_vertex(src)?;
         let vertex = self.vertices.get(src);
         let mut out = Vec::new();
@@ -1115,7 +1199,16 @@ where
                 if byte_end > raw.len() {
                     return Err(LaraOperationError::CollectAllocationOverflow.into());
                 }
-                let edge = E::read_from(&raw[byte_off..byte_end]).with_slot_index(slot);
+                let log_chains = self.bucket_payload_log_chains_opt(src, bucket);
+                let edge = self.try_labeled_edge_with_payload(
+                    src,
+                    &vertex,
+                    bidx as u32,
+                    *bucket,
+                    slot,
+                    E::read_from(&raw[byte_off..byte_end]).with_slot_index(slot),
+                    log_chains.as_ref(),
+                )?;
                 if pred(&edge) {
                     return Ok(Some((
                         edge.with_slot_index(slot)
@@ -1139,16 +1232,24 @@ where
             let successor_start =
                 self.bucket_successor_start_after_bucket(&vertex, bucket_index, bucket)?;
             let acc = LabelEdgeSpanAccess::new(&self.buckets, slot, successor_start, src);
-            if let Some(edge) = self.edges.find_first_out_edge_matching(
-                &acc,
-                VertexId::from(0),
-                None::<&mut dyn FnMut(&[u8]) -> bool>,
-                &mut pred,
-            )? {
-                return Ok(Some((
-                    edge.with_label_id(bucket.bucket_label_key().raw()),
-                    Some(bucket.bucket_label_key()),
-                )));
+            let log_chains = self.bucket_payload_log_chains_opt(src, bucket);
+            for edge in self.edges.out_edges_iter(&acc, VertexId::from(0))? {
+                let slot_index = edge.edge_slot_index_raw();
+                let edge = self.try_labeled_edge_with_payload(
+                    src,
+                    &vertex,
+                    bucket_index,
+                    *bucket,
+                    slot_index,
+                    edge,
+                    log_chains.as_ref(),
+                )?;
+                if pred(&edge) {
+                    return Ok(Some((
+                        edge.with_label_id(bucket.bucket_label_key().raw()),
+                        Some(bucket.bucket_label_key()),
+                    )));
+                }
             }
         }
         Ok(None)
@@ -1160,6 +1261,7 @@ where
         mut pred: F,
     ) -> Result<Option<(E, BucketLabelKey, u32)>, LabeledOperationError>
     where
+        E: CsrEdgeTombstone,
         F: FnMut(&E) -> bool,
     {
         self.ensure_vertex(src)?;
@@ -1191,13 +1293,23 @@ where
                     bucket,
                 )?;
             }
+            let log_chains = self.bucket_payload_log_chains_opt(src, &bucket);
             for slot_index in (0..bucket.stored_slots).rev() {
                 let edge_slot = checked_add_slot_index(bucket.edge_start(), u64::from(slot_index))
                     .ok_or(LaraOperationError::CollectAllocationOverflow)?;
                 let edge = self.edges.read_slot(edge_slot).with_slot_index(slot_index);
-                if edge.is_deleted_slot() {
+                if edge.is_deleted_slot() || edge.is_tombstone_edge() {
                     continue;
                 }
+                let edge = self.try_labeled_edge_with_payload(
+                    src,
+                    &vertex,
+                    bucket_index,
+                    bucket,
+                    slot_index,
+                    edge,
+                    log_chains.as_ref(),
+                )?;
                 if pred(&edge) {
                     return Ok(Some((
                         edge.with_label_id(bucket.bucket_label_key().raw()),
@@ -1214,7 +1326,10 @@ where
         &self,
         src: VertexId,
         label_id: BucketLabelKey,
-    ) -> Result<Vec<E>, LabeledOperationError> {
+    ) -> Result<Vec<E>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
         let mut out = Vec::new();
         self.for_each_edges_for_label(src, label_id, |edge| out.push(edge))?;
         Ok(out)
