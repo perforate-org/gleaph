@@ -24,15 +24,18 @@ where
         let default = self.default_label.raw();
         raw == default || raw == (default & BUCKET_LABEL_INDEX_MASK)
     }
+
     pub(super) fn may_use_homogeneous_bypass(&self, src: VertexId) -> bool {
         match u32::from(src).checked_add(1) {
             Some(next) => next >= self.vertices.len(),
             None => false,
         }
     }
+
     pub(super) fn bypass_storage_label_for(&self, vertex: &LabeledVertex) -> BucketLabelKey {
         vertex.bypass_storage_label(self.default_label)
     }
+
     pub(super) fn bump_successor_origins_after_bypass_end(
         &self,
         src: VertexId,
@@ -50,6 +53,7 @@ where
         }
         Ok(())
     }
+
     pub(super) fn insert_homogeneous_bypass_edge(
         &self,
         src: VertexId,
@@ -66,6 +70,7 @@ where
         let region_end = self.bypass_region_end(src)?;
         self.bump_successor_origins_after_bypass_end(src, region_end)
     }
+
     pub(super) fn bypass_region_end(&self, src: VertexId) -> Result<u64, LabeledOperationError> {
         let vertex = self.vertices.get(src);
         debug_assert!(vertex.is_default_edge_labeled());
@@ -75,6 +80,7 @@ where
         )
         .ok_or(LaraOperationError::CollectAllocationOverflow.into())
     }
+
     pub(super) fn ensure_bypass_edge_origin(
         &self,
         src: VertexId,
@@ -94,6 +100,7 @@ where
         }
         Ok(())
     }
+
     pub(super) fn insert_homogeneous_bypass(
         &self,
         src: VertexId,
@@ -105,6 +112,7 @@ where
         self.set_labeled_vertex(src, vertex.with_homogeneous_bypass_label(label_id))?;
         self.insert_homogeneous_bypass_edge(src, label_id, edge)
     }
+
     pub(super) fn promote_bypass_to_bucket_mode(
         &self,
         src: VertexId,
@@ -195,6 +203,7 @@ mod tests {
         assert!(graph.edges().header().elem_capacity >= 4);
         assert_eq!(graph.iter_edges_for_label(hub, default).unwrap().len(), 4);
     }
+
     #[test]
     fn out_edges_by_directedness_bypass_empty_when_directedness_mismatches() {
         use crate::labeled::BucketDirectedness;
@@ -229,6 +238,7 @@ mod tests {
             vec![TestEdge { target: 9 }]
         );
     }
+
     #[test]
     fn mixed_default_bypass_and_normal_labeled_pma_counts_stay_consistent() {
         let graph = test_graph();
@@ -261,6 +271,7 @@ mod tests {
             graph.edges(),
         );
     }
+
     #[test]
     fn default_bypass_points_directly_into_edge_csr() {
         let graph = test_graph();
@@ -282,6 +293,7 @@ mod tests {
             vec![TestEdge { target: 7 }]
         );
     }
+
     #[test]
     fn bypass_grow_does_not_repoint_bucket_mode_successor_bucket_base() {
         let graph = LabeledLaraGraph::new(
@@ -363,6 +375,7 @@ mod tests {
             }]
         );
     }
+
     #[test]
     fn first_homogeneous_insert_enters_bypass_without_enable() {
         let graph = test_graph();
@@ -385,6 +398,7 @@ mod tests {
         let earlier = graph.vertices().get(VertexId::from(0));
         assert!(!earlier.is_default_edge_labeled());
     }
+
     #[test]
     fn non_tail_single_label_insert_does_not_rebase_successor_bypass_edges() {
         let graph = test_graph();
@@ -423,6 +437,7 @@ mod tests {
             graph.edges(),
         );
     }
+
     #[test]
     fn homogeneous_undirected_bypass_and_promotion_on_named_label() {
         let graph = test_graph_with_default(BucketLabelKey::UNLABELED_DIRECTED);
@@ -465,6 +480,7 @@ mod tests {
             graph.edges(),
         );
     }
+
     #[test]
     fn bypass_accumulates_many_slab_tombstones_without_promotion() {
         let graph = test_graph();
@@ -496,6 +512,7 @@ mod tests {
             vec![TestEdge { target: 202 }, TestEdge { target: 201 }]
         );
     }
+
     #[test]
     fn empty_bypass_promotes_as_empty_when_next_insert_uses_different_label() {
         let graph = test_graph();

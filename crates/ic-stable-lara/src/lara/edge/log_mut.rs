@@ -45,6 +45,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         chain.reverse();
         chain
     }
+
     pub(crate) fn decode_overflow_log_edge_at(&self, leaf: u32, entry_idx: u32) -> E {
         let h = self.log.header();
         if E::BYTES <= INLINE_EDGE_BYTES {
@@ -59,6 +60,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             E::read_from(&payload).with_slot_index(entry_idx)
         }
     }
+
     pub(super) fn prefetch_descending_log_edges(
         &self,
         log_h: &LogHeaderV1,
@@ -102,6 +104,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         }
         Ok((log_edges, deleted_slab_offsets))
     }
+
     pub(super) fn read_log_edge_from_table_or_store(
         &self,
         log_h: &LogHeaderV1,
@@ -141,6 +144,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             (prev, _src, E::read_from(&buf))
         }
     }
+
     pub(super) fn insert_delete_into_log_with_layout<V, A>(
         &self,
         edge_layout: &EdgeLayout,
@@ -185,6 +189,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         vertices.set(vid, &v.with_log_head(idx).after_slab_tombstone_delete());
         Ok(())
     }
+
     pub(super) fn insert_into_log_with_layout<V, A>(
         &self,
         edge_layout: &EdgeLayout,
@@ -236,11 +241,13 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         vertices.set(vid, &grown);
         Ok(())
     }
+
     pub(crate) fn log_is_full_with_segment_size(&self, vid: VertexId, segment_size: u32) -> bool {
         let log_h = self.log.header();
         let leaf = leaf_segment(vid, segment_size);
         self.log.read_idx_with_header(&log_h, leaf) >= log_h.max_log_entries as i32
     }
+
     pub(crate) fn log_fill_ratio(&self, segment: SegmentId) -> f64 {
         let log_h = self.log.header();
         let idx = self

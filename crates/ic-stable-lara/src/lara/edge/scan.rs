@@ -31,6 +31,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             .map(|(_, edge)| edge)
             .collect())
     }
+
     pub(crate) fn visit_out_edges<V, A, Match, Visit>(
         &self,
         vertices: &A,
@@ -76,6 +77,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         }
         Ok(())
     }
+
     pub(crate) fn find_first_out_edge_matching<V, A, Match>(
         &self,
         vertices: &A,
@@ -111,6 +113,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         }
         Ok(None)
     }
+
     pub(crate) fn has_out_edges<V, A>(
         &self,
         vertices: &A,
@@ -123,6 +126,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let v = vertices.get_in_range(vid)?;
         Ok(v.degree() > 0)
     }
+
     pub(crate) fn log_backed_desc_edges_iter<V, A>(
         &self,
         vertices: &A,
@@ -169,6 +173,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             sorted_slab_deletes: false,
         })
     }
+
     pub(crate) fn out_edges_iter<V, A>(
         &self,
         vertices: &A,
@@ -258,6 +263,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             deleted_slab_offsets,
         })
     }
+
     pub(crate) fn desc_out_edges_iter<V, A>(
         &self,
         vertices: &A,
@@ -269,6 +275,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     {
         self.out_edges_iter(vertices, vid)
     }
+
     pub(crate) fn asc_out_edges_iter<V, A>(
         &self,
         vertices: &A,
@@ -428,6 +435,7 @@ mod tests {
         assert_eq!(vertices.get(VertexId::from(0)).live_edges, 2);
         assert!(vertices.get(VertexId::from(0)).log_head() >= 0);
     }
+
     #[test]
     fn edge_store_uses_csr_neighbor_bases_for_slab_space() {
         let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
@@ -473,6 +481,7 @@ mod tests {
             vec![TestEdge(10), TestEdge(11)]
         );
     }
+
     #[test]
     fn out_edges_iter_nth_pure_slab_matches_scan_order() {
         let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
@@ -524,6 +533,7 @@ mod tests {
         let mut it = edges.out_edges_iter(&vertices, VertexId::from(0)).unwrap();
         assert_eq!(it.nth(2), None);
     }
+
     #[test]
     fn edge_store_scan_uses_base_and_degree_only() {
         let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));

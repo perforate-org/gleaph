@@ -256,6 +256,7 @@ impl<E: CsrEdge, M: Memory> EdgeSlabStore<E, M> {
     pub fn set_num_edges(&self, n: u64) {
         write_u64(&self.memory, Address::from(NUM_EDGES_OFFSET), n);
     }
+
     /// Updates the slab capacity and grows stable memory if needed.
     pub fn set_elem_capacity(&self, n: u64) -> Result<(), GrowFailed> {
         if !crate::slab_index::slot_exclusive_end_fits(n) {
@@ -273,6 +274,7 @@ impl<E: CsrEdge, M: Memory> EdgeSlabStore<E, M> {
         write_u64(&self.memory, Address::from(ELEM_CAPACITY_OFFSET), n);
         Ok(())
     }
+
     /// Reads the raw bytes for `slot` into `out`.
     pub fn read_slot(&self, slot: u64, out: &mut [u8]) {
         self.memory.read(slot_offset::<E>(slot), out);

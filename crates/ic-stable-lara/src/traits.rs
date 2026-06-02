@@ -33,6 +33,7 @@ pub trait CsrVertex: Storable + Copy {
     fn stored_degree(&self) -> u32 {
         self.degree()
     }
+
     /// Returns a copy with a new slab base slot.
     fn with_base_slot_start(self, start: u64) -> Self;
     /// Returns a copy after updating the **stored** neighborhood width used for layout.
@@ -139,16 +140,19 @@ pub trait CsrEdge: Clone {
     fn with_slot_index(self, _slot_index: u32) -> Self {
         self
     }
+
     /// Returns a copy annotated with the label-row id from which it was read.
     #[inline]
     fn with_label_id(self, _label_id: u16) -> Self {
         self
     }
+
     /// Label-row id attached by scanners, when the edge type carries it.
     #[inline]
     fn edge_label_id_raw(&self) -> Option<u16> {
         None
     }
+
     /// Returns `true` when this slot holds a logical delete marker.
     #[inline]
     fn is_deleted_slot(&self) -> bool {

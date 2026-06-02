@@ -1502,6 +1502,7 @@ pub(crate) enum MarkPriority {
     Dirty(SegmentId),
     Urgent(SegmentId),
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;

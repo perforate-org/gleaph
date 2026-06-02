@@ -12,9 +12,11 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let b_end = b_start.saturating_add(b_len);
         a_start < b_end && b_start < a_end
     }
+
     pub(crate) fn allocate_span(&self, len: u64) -> Result<u64, GrowFailed> {
         self.allocate_span_avoiding(len, None)
     }
+
     pub(crate) fn allocate_span_avoiding(
         &self,
         len: u64,
@@ -60,6 +62,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         self.set_elem_capacity(new_cap)?;
         Ok(start)
     }
+
     pub(crate) fn release_span(&self, start_slot: u64, len: u64) -> Result<(), GrowFailed> {
         if len > 0 {
             self.free_spans

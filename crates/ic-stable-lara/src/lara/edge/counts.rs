@@ -394,6 +394,7 @@ impl<'a, E: CsrEdge, M: Memory> DoubleEndedIterator for Iter<'a, E, M> {
 impl<'a, E: CsrEdge, M: Memory> ExactSizeIterator for Iter<'a, E, M> {}
 
 impl<'a, E: CsrEdge, M: Memory> std::iter::FusedIterator for Iter<'a, E, M> {}
+
 #[cfg(test)]
 mod tests {
     use crate::VectorMemory;

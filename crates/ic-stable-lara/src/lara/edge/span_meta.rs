@@ -255,6 +255,7 @@ impl<M: Memory> SegmentSpanMetaStore<M> {
         }
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;

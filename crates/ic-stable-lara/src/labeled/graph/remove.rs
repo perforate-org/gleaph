@@ -87,6 +87,7 @@ where
             .map_err(LabeledOperationError::from)?;
         Ok(Some(removed))
     }
+
     pub(super) fn for_each_out_edges_by_directedness_impl<Visit>(
         &self,
         src: VertexId,
@@ -293,6 +294,7 @@ where
         }
         Ok(())
     }
+
     /// Visits outgoing edges whose bucket directedness matches `directedness`.
     pub fn for_each_out_edges_by_directedness<Visit>(
         &self,
@@ -314,6 +316,7 @@ where
             &mut visit,
         )
     }
+
     /// Visits outgoing edges by directedness without checking that `src` is in range.
     pub fn for_each_out_edges_by_directedness_unchecked<Visit>(
         &self,
@@ -335,6 +338,7 @@ where
             &mut visit,
         )
     }
+
     /// Finds the label bucket containing `needle` on `src`.
     pub fn find_edge_label(
         &self,
@@ -417,6 +421,7 @@ where
         }
         Ok(None)
     }
+
     /// Returns the labels that currently have outgoing edges for `src`.
     pub fn out_edge_label_ids(
         &self,
@@ -445,6 +450,7 @@ where
         }
         Ok(out)
     }
+
     /// Removes the first edge in `label_id` for `src` that satisfies `matches`.
     pub fn remove_edge_matching<F>(
         &self,
@@ -462,6 +468,7 @@ where
         }
         Ok(removed)
     }
+
     pub(crate) fn remove_edge_matching_skip_leaf_cascade<F>(
         &self,
         src: VertexId,
@@ -647,6 +654,7 @@ mod tests {
         assert_eq!(bucket.stored_slots.saturating_sub(bucket.degree), 1);
         assert_eq!(bucket.degree(), 3);
     }
+
     #[test]
     fn remove_edge_from_one_label_keeps_next_label_isolated() {
         let graph = test_graph();
@@ -681,6 +689,7 @@ mod tests {
             graph.edges(),
         );
     }
+
     #[test]
     fn default_bypass_conversion_clears_vertex_edge_span_allocation() {
         let graph = test_graph();
@@ -719,6 +728,7 @@ mod tests {
             vec![TestEdge { target: 8 }, TestEdge { target: 7 }]
         );
     }
+
     #[test]
     fn releasing_one_bucket_payload_span_keeps_other_bucket_payload_log() {
         let graph = payload_test_graph_with_capacity(1 << 20);
@@ -791,6 +801,7 @@ mod tests {
         assert_ne!(before, [0, 0]);
         assert_eq!(after, before);
     }
+
     #[test]
     fn removing_last_payloaded_edge_clears_vertex_payload_allocation() {
         let graph = payload_test_graph();
@@ -825,6 +836,7 @@ mod tests {
         assert!(!bucket.is_payload_allocated());
         assert_eq!(bucket.payload_log_head(), -1);
     }
+
     #[test]
     fn removing_last_payloaded_edge_by_slot_clears_vertex_payload_allocation() {
         let graph = payload_test_graph();

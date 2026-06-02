@@ -65,6 +65,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             free_spans,
         })
     }
+
     /// Reopens an edge store from stable memories, creating it when the edge slab is empty.
     pub fn init(
         counts: M,
@@ -118,6 +119,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             free_spans,
         })
     }
+
     pub(crate) fn grow_segment_tree_to(&self, new_segment_count: u32) -> Result<(), GrowFailed> {
         let h = self.header();
         let old = h.segment_count;
@@ -135,6 +137,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         self.write_header(&nh);
         Ok(())
     }
+
     pub(super) fn migrate_counts_for_segment_grow(
         &self,
         old_l: u32,
@@ -185,26 +188,32 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         );
         Ok(())
     }
+
     /// Returns the cached edge-store header.
     pub fn header(&self) -> EdgeHeaderV1 {
         self.header.get()
     }
+
     pub(super) fn write_header(&self, header: &EdgeHeaderV1) {
         self.edges.write_header(header);
         self.header.set(*header);
     }
+
     /// Returns the segment edge-count store.
     pub fn counts_store(&self) -> &SegmentEdgeCountsStore<E, M> {
         &self.counts
     }
+
     /// Returns the segment span-metadata store.
     pub fn span_meta_store(&self) -> &SegmentSpanMetaStore<M> {
         &self.span_meta
     }
+
     /// Returns the free-span index for retired slab ranges.
     pub fn free_span_store(&self) -> &FreeSpanStore<M> {
         &self.free_spans
     }
+
     /// Decomposes the edge store into its backing memories.
     pub fn into_memories(self) -> (M, M, M, M, M, M) {
         let (free_spans, free_span_by_start) = self.free_spans.into_memories();
@@ -217,16 +226,19 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             free_span_by_start,
         )
     }
+
     /// Clears and releases the overflow-log segment for `leaf_segment`.
     pub fn release_log_segment(&self, leaf_segment: SegmentId) -> Result<(), GrowFailed> {
         self.log.release_segment(u32::from(leaf_segment))
     }
+
     pub(crate) fn set_num_edges(&self, n: u64) {
         self.edges.set_num_edges(n);
         let mut header = self.header();
         header.num_edges = n;
         self.header.set(header);
     }
+
     pub(crate) fn set_elem_capacity(&self, n: u64) -> Result<(), GrowFailed> {
         self.edges.set_elem_capacity(n)?;
         let mut header = self.header();
@@ -234,6 +246,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         self.header.set(header);
         Ok(())
     }
+
     pub(crate) fn set_count(&self, index: u64, count: SegmentEdgeCounts) {
         self.counts.set(index, &count);
     }

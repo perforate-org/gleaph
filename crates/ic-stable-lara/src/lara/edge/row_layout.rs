@@ -18,6 +18,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             .map(|bypass_end| end.max(bypass_end))
             .unwrap_or(end)
     }
+
     pub(crate) fn slab_window_exclusive_end<V, A>(
         &self,
         edge_layout: &EdgeLayout,
@@ -115,6 +116,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         };
         Self::max_slab_window_for_vertex(v, base, end)
     }
+
     pub(crate) fn set_segment_physical_start(
         &self,
         segment: SegmentId,
@@ -131,9 +133,11 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         }
         Ok(())
     }
+
     pub(super) fn edge_layout(&self) -> EdgeLayout {
         self.header().into()
     }
+
     pub(crate) fn on_slab_degree_for_vertex_access<V, A>(
         &self,
         vertices: &A,
@@ -146,6 +150,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     {
         self.on_slab_edges_with_layout(&self.edge_layout(), vertices, v_ord, v)
     }
+
     pub(super) fn on_slab_edges_with_layout<V, A>(
         &self,
         edge_layout: &EdgeLayout,
@@ -173,6 +178,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             v.stored_degree()
         })
     }
+
     pub(super) fn have_space_on_slab<V, A>(
         &self,
         vertices: &A,
@@ -187,6 +193,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     {
         loc < self.slab_window_exclusive_end(edge_layout, vertices, v_ord, v)
     }
+
     pub(crate) fn bump_vertex_segment_counts(
         &self,
         vid: VertexId,
@@ -196,6 +203,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let edge_layout = self.edge_layout();
         self.bump_counts_leaf_with_layout(&edge_layout, vid, d_actual, d_total)
     }
+
     pub(super) fn bump_counts_leaf_with_layout(
         &self,
         edge_layout: &EdgeLayout,

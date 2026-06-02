@@ -22,9 +22,11 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             E::read_from(&buf)
         }
     }
+
     pub(crate) fn read_slots_contiguous(&self, start_slot: u64, out: &mut [u8]) {
         self.edges.read_slots_contiguous(start_slot, out);
     }
+
     pub(crate) fn write_slots_contiguous(
         &self,
         start_slot: u64,
@@ -32,6 +34,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     ) -> Result<(), GrowFailed> {
         self.edges.write_slots_contiguous(start_slot, bytes)
     }
+
     /// Writes one edge slab slot.
     pub fn write_slot(&self, slot: u64, edge: E) -> Result<(), GrowFailed> {
         if E::BYTES <= 8 {

@@ -304,22 +304,27 @@ impl CsrVertex for Vertex {
     fn base_slot_start(&self) -> u64 {
         decode_slot_index(self.locator)
     }
+
     fn degree(&self) -> u32 {
         self.live_edges
     }
+
     fn stored_degree(&self) -> u32 {
         self.slab_slots
     }
+
     fn with_base_slot_start(self, start: u64) -> Self {
         self.try_with_base_slot_start(start)
             .expect("Vertex::with_base_slot_start: slot index overflow")
     }
+
     /// Sets both live and slab to `n` (packed row after rebalance or fresh materialization).
     fn with_degree(mut self, n: u32) -> Self {
         self.live_edges = n;
         self.slab_slots = n;
         self
     }
+
     fn after_slab_tombstone_delete(mut self) -> Self {
         self.live_edges = self.live_edges.saturating_sub(1);
         self
@@ -340,6 +345,7 @@ impl CsrVertex for Vertex {
     fn log_head(self) -> i32 {
         unpack_vertex_tail28(decode_meta28(self.locator)).0
     }
+
     fn with_log_head(self, idx: i32) -> Self {
         self.try_with_log_head(idx)
             .expect("vertex overflow log head is invalid for packed LARA row")
@@ -444,10 +450,12 @@ impl<V: CsrVertex, M: Memory> VertexStore<V, M> {
     pub fn len(&self) -> u32 {
         self.header_mirror.get().len
     }
+
     /// Returns `true` when the store contains no vertex rows.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
     /// Consumes the store and returns the underlying stable memory.
     pub fn into_memory(self) -> M {
         self.memory

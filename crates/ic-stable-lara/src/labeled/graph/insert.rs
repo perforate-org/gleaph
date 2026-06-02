@@ -54,6 +54,7 @@ where
         }
         Ok(VertexId::from(id))
     }
+
     /// Compacts the label-bucket descriptor segment containing `vid`.
     pub fn compact_label_bucket_vertex_segment(
         &self,
@@ -68,6 +69,7 @@ where
         self.invalidate_bucket_lookup_caches_for_bucket_segment(vid)?;
         Ok(())
     }
+
     /// Inserts `edge` into the bucket identified by `label_id` for `src`.
     pub fn insert_edge(
         &self,
@@ -84,6 +86,7 @@ where
         }
         Ok(())
     }
+
     pub(crate) fn insert_edge_skip_leaf_cascade(
         &self,
         src: VertexId,
@@ -226,6 +229,7 @@ where
             LaraOperationError::SegmentLogFull,
         ))
     }
+
     pub(super) fn find_or_create_bucket(
         &self,
         src: VertexId,
@@ -275,6 +279,7 @@ where
         self.cache_bucket_lookup(src, label_id, &vertex, bucket_slot);
         Ok((bucket_slot, bucket))
     }
+
     pub(super) fn try_place_new_bucket_edge_span(
         &self,
         src: VertexId,
@@ -339,6 +344,7 @@ where
         self.buckets.write_label_bucket_slot(slot, bucket)?;
         Ok(true)
     }
+
     /// Converts an eligible vertex row back to default-label bypass storage.
     pub fn enable_default_edge_bypass(&self, src: VertexId) -> Result<(), LabeledOperationError> {
         self.ensure_vertex(src)?;
@@ -401,6 +407,7 @@ mod tests {
             .unwrap();
         assert!(graph.edges().header().segment_count >= 2);
     }
+
     #[test]
     fn labeled_insert_and_iter_by_label() {
         let graph = test_graph();
@@ -439,6 +446,7 @@ mod tests {
             graph.edges(),
         );
     }
+
     #[test]
     fn insert_beyond_initial_label_edge_span_capacity_relocates_vertex_edge_span() {
         let graph = test_graph();

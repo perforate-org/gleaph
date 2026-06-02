@@ -128,6 +128,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         }
         Ok(out)
     }
+
     pub(crate) fn insert_edge<V, A>(
         &self,
         vertices: &A,
@@ -189,6 +190,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         self.bump_counts_leaf_with_layout(&edge_layout, log_owner, 1, 0)?;
         Ok(location)
     }
+
     pub(crate) fn remove_edge_slab_tombstone_matching<V, A, F>(
         &self,
         vertices: &A,
@@ -269,6 +271,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         self.bump_counts_leaf_with_layout(&edge_layout, log_owner, -1, 0)?;
         Ok(Some(removed))
     }
+
     pub(crate) fn row_edge_at_slab<V, A>(
         &self,
         vertices: &A,
@@ -305,6 +308,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         }
         Ok(None)
     }
+
     pub(crate) fn find_first_out_edge_slot_matching<V, A, F>(
         &self,
         vertices: &A,
@@ -332,6 +336,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         }
         Ok(None)
     }
+
     pub(crate) fn remove_edge_at_slab_slot<V, A>(
         &self,
         vertices: &A,
@@ -367,6 +372,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         self.bump_counts_leaf_with_layout(&edge_layout, vertices.log_leaf_vertex(vid), -1, 0)?;
         Ok(Some(removed))
     }
+
     pub(crate) fn clear_row_slab<V, A>(
         &self,
         vertices: &A,

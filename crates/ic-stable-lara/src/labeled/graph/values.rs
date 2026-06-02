@@ -24,6 +24,7 @@ where
     pub(super) fn bucket_resident_payload_bytes(&self, bucket: &LabelBucket) -> u64 {
         crate::labeled::invariants::bucket_resident_payload_bytes(bucket)
     }
+
     pub(super) fn reconcile_vertex_payload_allocated_bytes(
         &self,
         src: VertexId,
@@ -56,9 +57,11 @@ where
         );
         Ok(())
     }
+
     pub(super) fn payload_log_leaf(&self, src: VertexId) -> u32 {
         u32::from(src) / self.edges.header().segment_size.max(1)
     }
+
     pub(super) fn vertex_payload_spans_need_sync_after_rewrite(
         old_buckets: &[LabelBucket],
         moved: bool,
@@ -75,6 +78,7 @@ where
             b.is_payload_allocated() && (b.payload_log_head() >= 0 || b.stored_slots != b.degree())
         })
     }
+
     pub(super) fn read_bucket_payloads_slab_dense(
         &self,
         bucket: &LabelBucket,
@@ -97,6 +101,7 @@ where
                 .collect::<Vec<_>>(),
         )
     }
+
     pub(super) fn collect_bucket_payloads_asc_order(
         &self,
         src: VertexId,
@@ -125,6 +130,7 @@ where
         }
         Ok(out)
     }
+
     pub(super) fn read_bucket_payload_for_edge(
         &self,
         src: VertexId,
@@ -183,6 +189,7 @@ where
         self.values.read_bytes(offset, &mut buf);
         Ok(buf)
     }
+
     pub(super) fn lookup_bucket_payload_in_log_chains(
         edges: &EdgeStore<E, M>,
         values: &EdgePayloadStore<M>,
@@ -211,6 +218,7 @@ where
         }
         Ok(None)
     }
+
     pub(super) fn write_edge_payload_to_log(
         &self,
         src: VertexId,
@@ -239,6 +247,7 @@ where
             .try_with_payload_log_head(entry_idx)
             .map_err(LabeledOperationError::from)
     }
+
     pub(super) fn release_bucket_payload_span(
         &self,
         src: VertexId,
@@ -259,6 +268,7 @@ where
         self.vertices.set(src, &updated);
         Ok(())
     }
+
     pub(super) fn read_bucket_payloads_in_edge_slot_order(
         &self,
         src: VertexId,
@@ -268,6 +278,7 @@ where
     ) -> Result<Vec<Vec<u8>>, LabeledOperationError> {
         self.collect_bucket_payloads_asc_order(src, vertex, bucket_index, bucket)
     }
+
     pub(super) fn ensure_bucket_payload_byte_width_on_slot(
         &self,
         _src: VertexId,
@@ -285,6 +296,7 @@ where
         }
         Ok(bucket.with_payload_byte_width(payload_byte_width))
     }
+
     /// Ensures that the bucket for `label_id` can store payload slots of `payload_byte_width`.
     pub fn ensure_label_bucket_payload_byte_width(
         &self,
@@ -307,6 +319,7 @@ where
         self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
         Ok(())
     }
+
     pub(super) fn ensure_bucket_payload_span(
         &self,
         src: VertexId,
@@ -421,6 +434,7 @@ where
         }
         Ok(bucket)
     }
+
     /// Updates the edge-payload payload for one live edge at `slot_index` inside `label_id`.
     pub fn update_edge_payload_at_slot(
         &self,
@@ -504,6 +518,7 @@ where
             .map_err(LabeledOperationError::from)?;
         Ok(())
     }
+
     pub(super) fn attach_edge_payload(
         &self,
         src: VertexId,
@@ -522,6 +537,7 @@ where
         let buf = self.read_bucket_payload_for_edge(src, &bucket, &edge, log_chains)?;
         Ok(edge.with_stored_payload_bytes(width, &buf))
     }
+
     pub(super) fn bucket_payload_log_chains_opt(
         &self,
         src: VertexId,
@@ -535,6 +551,7 @@ where
             None
         }
     }
+
     pub(super) fn collect_bucket_payloads_before_edge_rewrite(
         &self,
         src: VertexId,
@@ -609,6 +626,7 @@ where
         }
         Ok(())
     }
+
     pub(super) fn ensure_bucket_slack_insert_when_peers_have_values(
         &self,
         src: VertexId,
@@ -711,6 +729,7 @@ mod tests {
             graph.edges(),
         );
     }
+
     #[test]
     fn edge_payloads_survive_middle_vertex_insert() {
         let graph = payload_test_graph();
@@ -754,6 +773,7 @@ mod tests {
         weights.sort_unstable();
         assert_eq!(weights, vec![1, 100]);
     }
+
     #[test]
     fn edge_payloads_preserved() {
         let graph = payload_test_graph();
@@ -786,6 +806,7 @@ mod tests {
         weights.sort_unstable();
         assert_eq!(weights, vec![3, 7, 11]);
     }
+
     #[test]
     fn edge_payloads_survive_unrelated() {
         let graph = payload_test_graph();
@@ -821,6 +842,7 @@ mod tests {
             .unwrap();
         assert_eq!(weights, vec![42]);
     }
+
     #[test]
     fn edge_payloads_round_trip_when_edge_and_value_use_overflow_log() {
         let graph = payload_test_graph_with_capacity(1 << 16);
@@ -1061,6 +1083,7 @@ mod tests {
             .unwrap();
         assert_eq!(from_batches, from_iter);
     }
+
     #[test]
     fn valued_default_label_insert_uses_bucket_storage() {
         let graph = payload_test_graph();
@@ -1090,6 +1113,7 @@ mod tests {
             .unwrap();
         assert_eq!(weights, vec![42]);
     }
+
     #[test]
     fn removing_non_last_payloaded_edge_by_slot_preserves_payload_log_head() {
         let graph = payload_test_graph();
@@ -1131,6 +1155,7 @@ mod tests {
         assert_eq!(bucket.degree(), 1);
         assert_eq!(bucket.payload_log_head(), 0);
     }
+
     #[test]
     fn valued_insert_reusing_low_tombstone_preserves_existing_values() {
         let graph = payload_test_graph();
@@ -1175,6 +1200,7 @@ mod tests {
         values.sort_unstable();
         assert_eq!(values, vec![(2, 20), (3, 30), (4, 40)]);
     }
+
     #[test]
     fn edge_payloads_survive_middle_vertex_insert_with_overflow_log() {
         let graph = payload_test_graph();

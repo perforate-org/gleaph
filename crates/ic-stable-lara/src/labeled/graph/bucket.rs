@@ -30,6 +30,7 @@ where
         segment_span_density(self.leaf_segment_counts_for_vid(vid))
             >= LEAF_VERTEX_EDGE_SEGMENT_DENSITY
     }
+
     pub(super) fn leaf_any_vertex_has_overflow_log(
         &self,
         leaf: u32,
@@ -49,6 +50,7 @@ where
         }
         Ok(false)
     }
+
     pub(super) fn rebalance_cascade_after_labeled_mutation(
         &self,
         src: VertexId,
@@ -122,6 +124,7 @@ where
         }
         Ok(())
     }
+
     pub(super) fn find_bucket(
         &self,
         src: VertexId,
@@ -295,6 +298,7 @@ where
         }
         Ok(BucketSearch::Missing { insert_index: lo })
     }
+
     pub(crate) fn invalidate_bucket_lookup_caches_for_bucket_segment(
         &self,
         vid: VertexId,
@@ -316,6 +320,7 @@ where
         }
         Ok(())
     }
+
     pub(crate) fn clear_vertex_label_buckets_for_segment(
         &self,
         vid: VertexId,
@@ -325,6 +330,7 @@ where
         self.invalidate_bucket_lookup_caches_for_bucket_segment(vid)?;
         Ok(())
     }
+
     pub(super) fn invalidate_bucket_lookup_for_label(
         &self,
         src: VertexId,
@@ -333,6 +339,7 @@ where
         self.last_bucket_lookup.set(None);
         self.bucket_lookup_cache[Self::bucket_lookup_cache_index(src, label_id)].set(None);
     }
+
     pub(super) fn cache_bucket_lookup(
         &self,
         src: VertexId,
@@ -350,12 +357,14 @@ where
         self.last_bucket_lookup.set(Some(cache));
         self.bucket_lookup_cache[Self::bucket_lookup_cache_index(src, label_id)].set(Some(cache));
     }
+
     pub(super) fn bucket_lookup_cache_index(src: VertexId, label_id: BucketLabelKey) -> usize {
         let mixed = u32::from(src)
             .wrapping_mul(0x9E37_79B1)
             .wrapping_add(u32::from(label_id.raw()));
         (mixed as usize) & (BUCKET_LOOKUP_CACHE_ENTRIES - 1)
     }
+
     pub(super) fn labeled_bucket_descriptor_index(
         vertex: &LabeledVertex,
         bucket_slot: u64,
@@ -365,6 +374,7 @@ where
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         u32::try_from(d).map_err(|_| LaraOperationError::CollectAllocationOverflow.into())
     }
+
     pub(super) fn labeled_vertex_bucket_slot(
         vertex: &LabeledVertex,
         bucket_index: u32,
@@ -374,6 +384,7 @@ where
             .checked_add(u64::from(bucket_index))
             .ok_or(LaraOperationError::CollectAllocationOverflow.into())
     }
+
     pub(super) fn find_bucket_slot(
         &self,
         vertex: &LabeledVertex,
@@ -386,6 +397,7 @@ where
             },
         )
     }
+
     pub(super) fn read_vertex_label_buckets(
         &self,
         vertex: &LabeledVertex,
@@ -403,6 +415,7 @@ where
             .read_label_bucket_slots_contiguous(start, deg)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?)
     }
+
     pub(super) fn read_vertex_label_buckets_range(
         &self,
         vertex: &LabeledVertex,
@@ -425,6 +438,7 @@ where
             .read_label_bucket_slots_contiguous(start, n)
             .ok_or(LaraOperationError::CollectAllocationOverflow.into())
     }
+
     pub(super) fn vertex_label_buckets_have_overflow(
         &self,
         vertex: &LabeledVertex,
@@ -435,6 +449,7 @@ where
         let buckets = self.read_vertex_label_buckets(vertex)?;
         Ok(buckets.iter().any(|b| b.overflow_log_head() >= 0))
     }
+
     pub(super) fn bucket_successor_start(
         &self,
         vertex: &LabeledVertex,
@@ -447,6 +462,7 @@ where
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         self.bucket_successor_start_after_bucket(vertex, bucket_index, &cur)
     }
+
     pub(super) fn bucket_successor_start_after_bucket(
         &self,
         vertex: &LabeledVertex,
@@ -486,6 +502,7 @@ where
         )
         .ok_or(LaraOperationError::CollectAllocationOverflow.into())
     }
+
     pub(super) fn label_buckets_allow_contiguous_slab_copy(
         &self,
         vertex: &LabeledVertex,
@@ -512,6 +529,7 @@ where
         }
         Ok(true)
     }
+
     pub(super) fn vertex_bucket_descriptor_row_end(
         &self,
         vid: VertexId,
@@ -528,6 +546,7 @@ where
             .checked_add(u64::from(span))
             .ok_or(LaraOperationError::CollectAllocationOverflow.into())
     }
+
     pub(super) fn ensure_vertex_bucket_row_origin(
         &self,
         src: VertexId,
@@ -547,6 +566,7 @@ where
         }
         Ok(())
     }
+
     pub(super) fn ensure_label_bucket_folded_to_slab(
         &self,
         src: VertexId,
@@ -573,6 +593,7 @@ where
             }
         }
     }
+
     pub(super) fn bucket_log_chains(
         &self,
         src: VertexId,
@@ -652,6 +673,7 @@ mod tests {
             );
         }
     }
+
     #[test]
     fn out_edge_bucket_index_range_agrees_with_slice_partition() {
         use crate::labeled::BucketDirectedness;
@@ -731,6 +753,7 @@ mod tests {
             p as u32
         );
     }
+
     #[test]
     fn label_buckets_and_edges_follow_label_order() {
         let graph = test_graph();
@@ -771,6 +794,7 @@ mod tests {
             graph.edges(),
         );
     }
+
     #[test]
     fn bucket_tail_missing_cache_revalidates_cached_slot_label() {
         let graph = test_graph();
@@ -814,6 +838,7 @@ mod tests {
             .collect();
         assert_eq!(labels, vec![low, inserted, new_tail]);
     }
+
     #[test]
     fn empty_middle_label_bucket_does_not_expose_neighbor_edges() {
         let graph = test_graph();
@@ -879,6 +904,7 @@ mod tests {
             graph.edges(),
         );
     }
+
     #[test]
     fn insert_beyond_initial_label_bucket_store_vertex_segment_relocates_buckets() {
         let graph = test_graph();

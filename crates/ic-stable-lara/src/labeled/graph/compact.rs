@@ -29,6 +29,7 @@ where
         checked_add_slot_index(first_bucket.edge_start(), u64::from(vertex.stored_slots))
             .ok_or(LaraOperationError::CollectAllocationOverflow.into())
     }
+
     pub(super) fn release_vertex_edge_span_slab(
         &self,
         base: u64,
@@ -86,6 +87,7 @@ where
             self.release_vertex_edge_span_slab(tail_base, tail_len)
         }
     }
+
     pub(super) fn rewrite_vertex_edge_span_read_and_plan(
         &self,
         vertex: &LabeledVertex,
@@ -167,11 +169,13 @@ where
             buckets, old_alloc, old_base, total_live, new_alloc, moved, positions,
         ))
     }
+
     pub(super) fn edge_bytes_for_len(edge_count: usize) -> Result<usize, LabeledOperationError> {
         edge_count
             .checked_mul(E::BYTES)
             .ok_or(LaraOperationError::CollectAllocationOverflow.into())
     }
+
     pub(super) fn rewrite_vertex_edge_span(
         &self,
         src: VertexId,
@@ -420,6 +424,7 @@ where
         }
         Ok(())
     }
+
     pub(super) fn vertex_edge_span_slot_moves(
         &self,
         buckets: &[LabelBucket],
@@ -458,6 +463,7 @@ where
         }
         Ok(moves)
     }
+
     pub(super) fn first_edge_slot_move_in_bucket(
         bucket: &LabelBucket,
         edges: &EdgeStore<E, M>,
@@ -488,6 +494,7 @@ where
         }
         Ok(None)
     }
+
     pub(super) fn apply_edge_slot_move_in_bucket(
         &self,
         bucket: &LabelBucket,
@@ -525,11 +532,13 @@ where
         }
         Ok(())
     }
+
     pub(super) fn finalize_bucket_slab_metadata(bucket: LabelBucket) -> LabelBucket {
         bucket
             .with_stored_slots(bucket.degree())
             .with_overflow_log_head(-1)
     }
+
     pub(crate) fn compact_vertex_edge_span_one_step(
         &self,
         vid: VertexId,
@@ -584,6 +593,7 @@ where
             bucket_index.saturating_add(1),
         ))
     }
+
     pub(super) fn calculate_label_edge_span_positions(
         start_slot: u64,
         span_slots: u32,
@@ -670,6 +680,7 @@ where
         }
         Ok(out)
     }
+
     /// Compacts all edge buckets for `vid` into slab-backed spans.
     pub fn compact_vertex_edge_span(
         &self,
@@ -682,6 +693,7 @@ where
         self.compact_vertex_edge_span_with_moves(vid, bucket_index)
             .map(|_| ())
     }
+
     /// Compacts all edge buckets for `vid` and returns the slab-slot moves performed.
     pub fn compact_vertex_edge_span_with_moves(
         &self,
@@ -711,6 +723,7 @@ where
         }
         Ok(moves)
     }
+
     pub(super) fn maintain_vertex_edge_span_light(
         &self,
         vid: VertexId,
@@ -738,6 +751,7 @@ where
         }
         Ok(())
     }
+
     pub(super) fn fold_label_bucket_to_slab(
         &self,
         src: VertexId,
@@ -816,6 +830,7 @@ where
         }
         Ok(bucket)
     }
+
     pub(super) fn fold_label_bucket_payload_log_to_slab(
         &self,
         src: VertexId,
@@ -851,6 +866,7 @@ where
         self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
         Ok(bucket)
     }
+
     pub(super) fn reclaim_vertex_overflow_buckets(
         &self,
         vid: VertexId,
@@ -889,6 +905,7 @@ where
         }
         Ok(())
     }
+
     pub(super) fn reclaim_edge_log_leaf_for_labeled(
         &self,
         src: VertexId,
@@ -937,6 +954,7 @@ mod tests {
         ));
         assert_eq!(graph.vertices().get(hub).degree(), u32::MAX);
     }
+
     #[test]
     fn homogeneous_bypass_appends_stay_slab_only_without_overflow_log() {
         let default = BucketLabelKey::from_raw(7);
@@ -975,6 +993,7 @@ mod tests {
         assert_eq!(vertex.degree(), 8);
         assert_eq!(graph.iter_edges_for_label(hub, default).unwrap().len(), 8);
     }
+
     #[test]
     fn push_vertex_rejects_normal_row_with_label_bucket_overflow() {
         let graph = test_graph();
@@ -989,6 +1008,7 @@ mod tests {
             )
         ));
     }
+
     #[test]
     fn homogeneous_bypass_region_end_rejects_slot_overflow() {
         let default = BucketLabelKey::from_raw(7);
@@ -1012,6 +1032,7 @@ mod tests {
             LabeledOperationError::Store(LaraOperationError::CollectAllocationOverflow)
         ));
     }
+
     #[test]
     fn bucket_vertex_prefix_end_rejects_slot_overflow() {
         let graph = test_graph();
@@ -1043,6 +1064,7 @@ mod tests {
             LabeledOperationError::Store(LaraOperationError::CollectAllocationOverflow)
         ));
     }
+
     #[test]
     fn last_bucket_successor_rejects_span_end_overflow() {
         let graph = test_graph();
@@ -1080,6 +1102,7 @@ mod tests {
             LabeledOperationError::Store(LaraOperationError::CollectAllocationOverflow)
         ));
     }
+
     #[test]
     fn contiguous_tiled_out_edges_rejects_span_end_overflow() {
         let vertex = LabeledVertex::default()
@@ -1101,6 +1124,7 @@ mod tests {
             None
         );
     }
+
     #[test]
     fn normal_label_bucket_insert_rejects_edge_len_overflow() {
         let graph = test_graph();
@@ -1131,6 +1155,7 @@ mod tests {
             .unwrap();
         assert_eq!(bucket.stored_slots, u32::MAX);
     }
+
     #[test]
     fn vertex_edge_span_rewrite_rejects_total_live_overflow() {
         let graph = test_graph();
@@ -1161,6 +1186,7 @@ mod tests {
             LabeledOperationError::Store(LaraOperationError::RowDegreeOverflow)
         ));
     }
+
     #[test]
     fn rewrite_copy_byte_len_rejects_usize_overflow() {
         let oversized = usize::MAX / TestEdge::BYTES + 1;
@@ -1172,6 +1198,7 @@ mod tests {
             LabeledOperationError::Store(LaraOperationError::CollectAllocationOverflow)
         ));
     }
+
     #[test]
     fn two_label_hub_500_then_173_parallel_edges() {
         let graph = LabeledLaraGraph::new(
@@ -1221,6 +1248,7 @@ mod tests {
                 .unwrap_or_else(|e| panic!("label_b edge_i={edge_i}: {e:?}"));
         }
     }
+
     #[test]
     fn mixed_label_hub_20_labels_500_edges_each() {
         let graph = LabeledLaraGraph::new(
@@ -1260,6 +1288,7 @@ mod tests {
             }
         }
     }
+
     #[test]
     fn mixed_label_hub_parallel_edges_do_not_corrupt_overflow_log() {
         let graph = LabeledLaraGraph::new(
@@ -1304,6 +1333,7 @@ mod tests {
             graph.edges(),
         );
     }
+
     #[test]
     fn find_bucket_resolves_non_default_label_after_parallel_inserts() {
         let graph = test_graph();
@@ -1318,6 +1348,7 @@ mod tests {
         assert_eq!(vertex.degree(), 1);
         assert!(graph.find_bucket_slot(&vertex, label).unwrap().is_some());
     }
+
     #[test]
     fn parallel_catalog_edges_on_high_index_vertex_stay_on_slab() {
         let graph = test_graph();
@@ -1334,6 +1365,7 @@ mod tests {
         assert_eq!(vertex.degree(), 1);
         assert_eq!(graph.iter_edges_for_label(hub, label).unwrap().len(), 240);
     }
+
     #[test]
     fn catalog_label_parallel_inserts_use_single_bucket_row() {
         let graph = test_graph();
@@ -1363,6 +1395,7 @@ mod tests {
             vec![road]
         );
     }
+
     #[test]
     fn incremental_vertex_edge_span_compact_clears_many_tombstones() {
         use super::VertexEdgeSpanCompactOneStep;
@@ -1425,6 +1458,7 @@ mod tests {
             graph.edges(),
         );
     }
+
     #[test]
     fn incremental_vertex_edge_span_compact_preserves_other_label_bucket() {
         use super::VertexEdgeSpanCompactOneStep;
@@ -1492,6 +1526,7 @@ mod tests {
             ]
         );
     }
+
     #[test]
     fn label_bucket_accumulates_many_slab_tombstones_before_compact() {
         let graph = test_graph();
@@ -1529,6 +1564,7 @@ mod tests {
             vec![TestEdge { target: 202 }, TestEdge { target: 201 }]
         );
     }
+
     #[test]
     fn label_bucket_store_vertex_segment_compacts_across_thirty_two_vertices() {
         let graph = test_graph();
@@ -1578,6 +1614,7 @@ mod tests {
             vec![TestEdge { target: 20 }]
         );
     }
+
     #[test]
     fn vertex_edge_span_rewrite_weights_slack_by_label_degree() {
         let graph = test_graph();
@@ -1617,6 +1654,7 @@ mod tests {
             graph.edges(),
         );
     }
+
     #[test]
     fn compact_vertex_edge_span_shrinks_vertex_edge_span() {
         let graph = test_graph();
@@ -1673,6 +1711,7 @@ mod tests {
             graph.edges(),
         );
     }
+
     #[test]
     fn compact_vertex_edge_span_uses_edge_tombstone_contract() {
         let graph = flag_tombstone_graph();
@@ -1702,6 +1741,7 @@ mod tests {
             })
         );
     }
+
     #[test]
     fn compact_label_bucket_vertex_segment_preserves_rows() {
         let graph = test_graph();
