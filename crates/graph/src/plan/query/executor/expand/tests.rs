@@ -54,6 +54,7 @@ fn federated_reverse_expand_from_remote_vertex_binding() {
         source_logical
     );
 }
+
 #[test]
 fn executes_planner_one_hop_expand() {
     let store = GraphStore::new();
@@ -111,6 +112,7 @@ fn executes_planner_one_hop_expand() {
     );
     assert_eq!(result.rows[0].get("since"), Some(&Value::Int64(2026)));
 }
+
 #[test]
 fn executes_planner_expand_filter() {
     let store = GraphStore::new();
@@ -175,6 +177,7 @@ fn executes_planner_expand_filter() {
         Some(&Value::Text("Planner EF Keep".into()))
     );
 }
+
 #[test]
 fn directed_expand_projects_endpoint_and_edge_properties() {
     let store = GraphStore::new();
@@ -240,6 +243,7 @@ fn directed_expand_projects_endpoint_and_edge_properties() {
     );
     assert_eq!(result.rows[0].get("since"), Some(&Value::Int64(2026)));
 }
+
 #[test]
 fn reverse_expand_resolves_edge_properties_through_alias() {
     let store = GraphStore::new();
@@ -293,6 +297,7 @@ fn reverse_expand_resolves_edge_properties_through_alias() {
     assert_eq!(result.rows.len(), 1);
     assert_eq!(result.rows[0].get("since"), Some(&Value::Int64(2027)));
 }
+
 #[test]
 fn undirected_expand_from_noncanonical_endpoint_resolves_edge_properties_through_alias() {
     let store = GraphStore::new();
@@ -362,6 +367,7 @@ fn setup_reused_dst_expand_graph(store: &GraphStore) -> VertexId {
         .expect("out-edge");
     a
 }
+
 #[test]
 fn expand_reused_dst_only_keeps_self_loop_edges() {
     let store = GraphStore::new();
@@ -390,6 +396,7 @@ fn expand_reused_dst_only_keeps_self_loop_edges() {
         store.logical_vertex_id(anchor).expect("anchor logical id"),
     );
 }
+
 #[test]
 fn expand_reused_dst_rejects_neighbor_mismatch() {
     let store = GraphStore::new();
@@ -407,6 +414,7 @@ fn expand_reused_dst_rejects_neighbor_mismatch() {
         result.rows
     );
 }
+
 #[test]
 fn limited_expand_reused_dst_skips_neighbor_mismatch() {
     let store = GraphStore::new();
@@ -440,6 +448,7 @@ fn setup_reused_dst_relabeled_graph(store: &GraphStore) -> VertexId {
         .expect("out-edge");
     a
 }
+
 #[test]
 fn expand_reused_dst_relabeled_endpoints_keep_self_loop() {
     let store = GraphStore::new();
@@ -469,6 +478,7 @@ fn expand_reused_dst_relabeled_endpoints_keep_self_loop() {
         store.logical_vertex_id(anchor).expect("anchor logical id"),
     );
 }
+
 #[test]
 fn expand_filter_applies_destination_predicate() {
     let store = GraphStore::new();
@@ -537,6 +547,7 @@ fn expand_filter_applies_destination_predicate() {
     assert_eq!(result.rows.len(), 1);
     assert_eq!(result.rows[0].get("age"), Some(&Value::Int64(44)));
 }
+
 #[test]
 fn expand_indexed_edge_equality_filters_candidates() {
     let store = GraphStore::new();
@@ -587,6 +598,7 @@ fn expand_indexed_edge_equality_filters_candidates() {
         .expect("indexed expand");
     assert_eq!(result.rows.len(), 1);
 }
+
 #[test]
 fn expand_applies_dst_property_projection_for_property_return() {
     let store = GraphStore::new();
@@ -636,6 +648,7 @@ fn expand_applies_dst_property_projection_for_property_return() {
     assert_eq!(result.rows[0].get("a_uid"), Some(&Value::Text("a1".into())));
     assert_eq!(result.rows[0].get("b_uid"), Some(&Value::Text("b1".into())));
 }
+
 #[test]
 fn return_star_projects_vertex_and_edge_records() {
     let store = GraphStore::new();
@@ -696,6 +709,7 @@ fn return_star_projects_vertex_and_edge_records() {
     assert!(matches!(result.rows[0].get("b"), Some(Value::Record(_))));
     assert!(matches!(result.rows[0].get("e"), Some(Value::Record(_))));
 }
+
 #[test]
 fn return_abs_gleaph_weight_does_not_break_decoder_prep() {
     let store = GraphStore::new();
@@ -728,6 +742,7 @@ fn return_abs_gleaph_weight_does_not_break_decoder_prep() {
     assert_eq!(result.rows.len(), 1);
     assert_eq!(result.rows[0].get("w"), Some(&Value::Float32(3.0)));
 }
+
 #[test]
 fn gleaph_weight_accepts_edge_payload_profile_without_legacy_weight_profile() {
     let store = GraphStore::new();
@@ -1572,6 +1587,7 @@ fn gleaph_weight_rejects_edge_payload_width_mismatch() {
         "unexpected error: {err}"
     );
 }
+
 #[test]
 fn federated_neighbor_hit_preserves_remote_payload_bytes() {
     let hit = FederatedExpandNeighbor {

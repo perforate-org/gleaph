@@ -68,6 +68,7 @@ impl GrowFailed {
     pub fn current_size_pages(&self) -> u64 {
         self.current_size
     }
+
     /// Number of pages the grow tried to add.
     pub fn delta_pages(&self) -> u64 {
         self.delta

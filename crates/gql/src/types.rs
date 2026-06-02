@@ -499,65 +499,79 @@ mod tests {
         let v = Int256::parse("12345678901234567890").unwrap();
         assert_eq!(v.to_string(), "12345678901234567890");
     }
+
     #[test]
     fn int256_parse_negative() {
         let v = Int256::parse("-999").unwrap();
         assert_eq!(v.0, ethnum::I256::from(-999));
     }
+
     #[test]
     fn int256_parse_invalid() {
         assert!(Int256::parse("not_a_number").is_none());
     }
+
     #[test]
     fn int256_from_str() {
         let v: Int256 = "42".parse().unwrap();
         assert_eq!(v.0, ethnum::I256::from(42));
     }
+
     #[test]
     fn uint256_parse_valid() {
         let v = Uint256::parse("99999999999999999999").unwrap();
         assert_eq!(v.to_string(), "99999999999999999999");
     }
+
     #[test]
     fn uint256_parse_invalid() {
         assert!(Uint256::parse("abc").is_none());
     }
+
     #[test]
     fn uint256_from_str() {
         let v: Uint256 = "100".parse().unwrap();
         assert_eq!(v.0, ethnum::U256::from(100u128));
     }
+
     #[test]
     fn decimal_new_and_display() {
         let d = Decimal::new(rust_decimal::Decimal::new(314, 2));
         assert_eq!(d.to_string(), "3.14");
     }
+
     #[test]
     fn decimal_to_f64() {
         let d = Decimal::parse("2.5").unwrap();
         assert_eq!(d.to_f64(), Some(2.5));
     }
+
     #[test]
     fn decimal_from_i64() {
         assert_eq!(Decimal::from_i64(42).to_string(), "42");
     }
+
     #[test]
     fn decimal_from_u64() {
         assert_eq!(Decimal::from_u64(100).to_string(), "100");
     }
+
     #[test]
     fn decimal_from_i128() {
         assert_eq!(Decimal::from_i128(-1).to_string(), "-1");
     }
+
     #[test]
     fn decimal_from_u128() {
         assert_eq!(Decimal::from_u128(999).to_string(), "999");
     }
+
     #[test]
     fn decimal_normalize() {
         let d = Decimal::parse("1.2000").unwrap();
         assert_eq!(d.normalize().to_string(), "1.2");
     }
+
     #[test]
     fn decimal_parse_invalid() {
         assert!(Decimal::parse("not_decimal").is_none());
@@ -642,11 +656,13 @@ mod tests {
         assert!(matches!(narrow_signed(1, 256), Some(Value::Int256(_))));
         assert!(narrow_signed(1, 7).is_none());
     }
+
     #[test]
     fn narrow_signed_overflow() {
         assert!(narrow_signed(200, 8).is_none());
         assert!(narrow_signed(40000, 16).is_none());
     }
+
     #[test]
     fn narrow_unsigned_all_widths() {
         use crate::Value;
@@ -664,11 +680,13 @@ mod tests {
         assert!(matches!(narrow_unsigned(1, 256), Some(Value::Uint256(_))));
         assert!(narrow_unsigned(1, 7).is_none());
     }
+
     #[test]
     fn narrow_unsigned_overflow() {
         assert!(narrow_unsigned(300, 8).is_none());
         assert!(narrow_unsigned(70000, 16).is_none());
     }
+
     #[test]
     fn label_and_expression() {
         let expr = LabelExpr::And(

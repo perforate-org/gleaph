@@ -1681,18 +1681,22 @@ mod tests {
         fn type_name(&self) -> &str {
             "Unencodable"
         }
+
         fn clone_box(&self) -> Box<dyn ExtensionValue> {
             Box::new(self.clone())
         }
+
         fn eq_ext(&self, other: &dyn ExtensionValue) -> bool {
             other.as_any().downcast_ref::<Self>().is_some()
         }
+
         fn cmp_ext(&self, other: &dyn ExtensionValue) -> Option<Ordering> {
             other
                 .as_any()
                 .downcast_ref::<Self>()
                 .map(|_| Ordering::Equal)
         }
+
         fn as_any(&self) -> &dyn Any {
             self
         }
@@ -1714,9 +1718,11 @@ mod tests {
         fn type_name(&self) -> &str {
             "MockExt"
         }
+
         fn clone_box(&self) -> Box<dyn ExtensionValue> {
             Box::new(self.clone())
         }
+
         fn eq_ext(&self, other: &dyn ExtensionValue) -> bool {
             if let Some(o) = other.as_any().downcast_ref::<MockExt>() {
                 self.0 == o.0
@@ -1724,18 +1730,22 @@ mod tests {
                 false
             }
         }
+
         fn cmp_ext(&self, other: &dyn ExtensionValue) -> Option<Ordering> {
             other
                 .as_any()
                 .downcast_ref::<MockExt>()
                 .map(|o| self.0.cmp(&o.0))
         }
+
         fn as_any(&self) -> &dyn Any {
             self
         }
+
         fn binary_payload(&self) -> Result<Cow<'_, [u8]>, ValueBinaryError> {
             Ok(Cow::Borrowed(self.0.as_bytes()))
         }
+
         fn compact_kind(&self) -> Option<u8> {
             Some(MOCK_EXT_COMPACT_KIND)
         }
@@ -1754,9 +1764,11 @@ mod tests {
         fn type_name(&self) -> &str {
             "MockShortBlob"
         }
+
         fn clone_box(&self) -> Box<dyn ExtensionValue> {
             Box::new(self.clone())
         }
+
         fn eq_ext(&self, other: &dyn ExtensionValue) -> bool {
             if let Some(o) = other.as_any().downcast_ref::<MockShortBlob>() {
                 self.0 == o.0
@@ -1764,15 +1776,18 @@ mod tests {
                 false
             }
         }
+
         fn cmp_ext(&self, other: &dyn ExtensionValue) -> Option<Ordering> {
             other
                 .as_any()
                 .downcast_ref::<MockShortBlob>()
                 .map(|o| self.0.cmp(&o.0))
         }
+
         fn as_any(&self) -> &dyn Any {
             self
         }
+
         fn short_blob(&self) -> Option<Cow<'_, [u8]>> {
             Some(Cow::Borrowed(self.0.as_slice()))
         }
@@ -1814,15 +1829,18 @@ mod tests {
         fn type_name(&self) -> &str {
             "NonOrderableExtension"
         }
+
         fn clone_box(&self) -> Box<dyn ExtensionValue> {
             Box::new(self.clone())
         }
+
         fn eq_ext(&self, other: &dyn ExtensionValue) -> bool {
             other
                 .as_any()
                 .downcast_ref::<Self>()
                 .is_some_and(|o| self.0 == o.0)
         }
+
         fn as_any(&self) -> &dyn Any {
             self
         }

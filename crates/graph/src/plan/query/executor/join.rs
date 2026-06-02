@@ -315,6 +315,7 @@ mod tests {
 
         assert_eq!(result.rows.len(), 4);
     }
+
     #[test]
     fn cartesian_product_drops_conflicting_bindings() {
         let left = PlanRow::from(BTreeMap::from([(
@@ -333,6 +334,7 @@ mod tests {
         assert_eq!(merge_rows(&left, &same), Some(left.clone()));
         assert_eq!(merge_rows(&left, &different), None);
     }
+
     #[test]
     fn hash_join_matches_planned_two_match() {
         let store = GraphStore::new();
@@ -412,6 +414,7 @@ mod tests {
         assert_eq!(hj_result.rows.len(), seq_result.rows.len());
         assert_eq!(hj_result.rows, seq_result.rows);
     }
+
     #[test]
     fn hash_join_joins_equivalent_decimal_scales() {
         use gleaph_gql::types::Decimal;
@@ -566,6 +569,7 @@ mod tests {
             assert!(row.get("right_tag").is_some());
         }
     }
+
     #[test]
     fn hash_join_two_join_keys_excludes_partial_match() {
         let store = GraphStore::new();
@@ -655,6 +659,7 @@ mod tests {
         assert_eq!(row.get("lt"), Some(&Value::Text("L12".into())));
         assert_eq!(row.get("rt"), Some(&Value::Text("R12".into())));
     }
+
     #[test]
     fn hash_join_matches_sequential_on_branching_graph() {
         let store = GraphStore::new();

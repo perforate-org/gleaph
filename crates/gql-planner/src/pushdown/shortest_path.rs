@@ -387,6 +387,7 @@ fn exprs_reference_var(exprs: &[gleaph_gql::ast::Expr], var: &str) -> bool {
         found
     })
 }
+
 #[cfg(test)]
 mod tests {
     use gleaph_gql::ast::{Expr, ExprKind};

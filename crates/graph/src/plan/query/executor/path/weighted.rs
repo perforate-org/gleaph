@@ -484,6 +484,7 @@ pub(crate) fn weighted_shortest_paths_between(
 
     Ok(ShortestPathSearchResult { states, found })
 }
+
 fn eval_shortest_hop_cost(
     store: &GraphStore,
     expr: &Expr,

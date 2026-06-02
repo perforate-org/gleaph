@@ -742,6 +742,7 @@ mod tests {
             Some(&Value::Text("Planner Alice".into()))
         );
     }
+
     #[test]
     fn executes_planner_property_filter() {
         let store = GraphStore::new();
@@ -776,6 +777,7 @@ mod tests {
             Some(&Value::Text("Planner Filter Ada".into()))
         );
     }
+
     #[test]
     fn executes_planner_let_binding() {
         let store = GraphStore::new();
@@ -791,6 +793,7 @@ mod tests {
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0].get("x"), Some(&Value::Int64(37)));
     }
+
     #[test]
     fn executes_planner_let_binding_dependency_order() {
         let store = GraphStore::new();
@@ -806,6 +809,7 @@ mod tests {
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0].get("y"), Some(&Value::Int64(22)));
     }
+
     #[test]
     fn executes_planner_standalone_filter() {
         let store = GraphStore::new();
@@ -841,6 +845,7 @@ mod tests {
             Some(&Value::Text("Active Ada".into()))
         );
     }
+
     #[test]
     fn executes_planner_order_by() {
         let store = GraphStore::new();
@@ -860,6 +865,7 @@ mod tests {
             vec!["Planner Sort A", "Planner Sort B", "Planner Sort C"]
         );
     }
+
     #[test]
     fn executes_planner_order_by_limit_topk() {
         let store = GraphStore::new();
@@ -885,6 +891,7 @@ mod tests {
             vec!["Planner TopK A", "Planner TopK B"]
         );
     }
+
     #[test]
     fn executes_planner_order_by_record_value() {
         let store = GraphStore::new();
@@ -912,6 +919,7 @@ mod tests {
             vec!["Planner Record A", "Planner Record B"]
         );
     }
+
     #[test]
     fn executes_planner_record_equality_independent_of_field_order() {
         let store = GraphStore::new();
@@ -933,6 +941,7 @@ mod tests {
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0].get("same"), Some(&Value::Bool(true)));
     }
+
     #[test]
     fn executes_planner_return_star() {
         let store = GraphStore::new();
@@ -951,6 +960,7 @@ mod tests {
         assert_eq!(result.rows.len(), 1);
         assert!(matches!(result.rows[0].get("n"), Some(Value::Record(_))));
     }
+
     #[test]
     fn executes_planner_limit() {
         let store = GraphStore::new();
@@ -967,6 +977,7 @@ mod tests {
 
         assert_eq!(result.rows.len(), 1);
     }
+
     #[test]
     fn property_filter_keeps_matching_vertices() {
         let store = GraphStore::new();
@@ -1018,6 +1029,7 @@ mod tests {
             Some(&Value::Text("Filter Ada".into()))
         );
     }
+
     #[test]
     fn sort_orders_projected_scalars_ascending_and_descending() {
         let store = GraphStore::new();
@@ -1076,6 +1088,7 @@ mod tests {
             vec!["Sort Scalar C", "Sort Scalar B", "Sort Scalar A"]
         );
     }
+
     #[test]
     fn sort_orders_multiple_keys() {
         let store = GraphStore::new();
@@ -1122,6 +1135,7 @@ mod tests {
             vec!["Multi B", "Multi A", "Multi B", "Multi A"]
         );
     }
+
     #[test]
     fn sort_honors_explicit_null_ordering() {
         let store = GraphStore::new();
@@ -1173,6 +1187,7 @@ mod tests {
         assert_eq!(first.rows[0].get("name"), Some(&Value::Null));
         assert_eq!(last.rows[2].get("name"), Some(&Value::Null));
     }
+
     #[test]
     fn sort_rejects_incomparable_keys() {
         let store = GraphStore::new();
@@ -1206,6 +1221,7 @@ mod tests {
 
         assert!(matches!(err, PlanQueryError::IncomparableSortValues { .. }));
     }
+
     #[test]
     fn topk_sorts_then_applies_offset_and_k() {
         let store = GraphStore::new();
@@ -1237,6 +1253,7 @@ mod tests {
 
         assert_eq!(text_column(&result, "name"), vec!["TopK B", "TopK C"]);
     }
+
     #[test]
     fn materialize_and_limit_shape_rows() {
         let store = GraphStore::new();
@@ -1282,6 +1299,7 @@ mod tests {
             Some(&Value::Text("Limit A".into()))
         );
     }
+
     #[test]
     fn case_searched_skips_untaken_invalid_result() {
         use gleaph_gql::ast::WhenClause;
@@ -1297,6 +1315,7 @@ mod tests {
         });
         assert_eq!(eval_test_expr(expr), Value::Float32(1.0));
     }
+
     #[test]
     fn case_searched_unknown_skips_invalid_then() {
         use gleaph_gql::ast::WhenClause;
@@ -1319,6 +1338,7 @@ mod tests {
         });
         assert_eq!(eval_test_expr(expr), Value::Int32(2));
     }
+
     #[test]
     fn case_simple_skips_untaken_invalid_result() {
         use gleaph_gql::ast::WhenClause;
@@ -1335,6 +1355,7 @@ mod tests {
         });
         assert_eq!(eval_test_expr(expr), Value::Int32(2));
     }
+
     #[test]
     fn case_searched_unknown_condition_falls_through() {
         use gleaph_gql::ast::WhenClause;
@@ -1355,6 +1376,7 @@ mod tests {
         });
         assert_eq!(eval_test_expr(expr), Value::Int32(2));
     }
+
     #[test]
     fn case_searched_all_unknown_uses_else() {
         use gleaph_gql::ast::WhenClause;
@@ -1368,6 +1390,7 @@ mod tests {
         });
         assert_eq!(eval_test_expr(expr), Value::Int32(3));
     }
+
     #[test]
     fn case_simple_skips_incomparable_when_and_uses_else() {
         use gleaph_gql::ast::WhenClause;
@@ -1426,6 +1449,7 @@ mod tests {
             filter: None,
         })
     }
+
     #[test]
     fn aggregate_count_star_empty_graph_after_scan() {
         let store = GraphStore::new();
@@ -1450,6 +1474,7 @@ mod tests {
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0].get("cnt"), Some(&Value::Int64(0)));
     }
+
     #[test]
     fn aggregate_groups_by_property_and_counts_rows() {
         let store = GraphStore::new();
@@ -1484,6 +1509,7 @@ mod tests {
         assert_eq!(result.rows[0].get("d"), Some(&Value::Text("S".into())));
         assert_eq!(result.rows[0].get("c"), Some(&Value::Int64(2)));
     }
+
     #[test]
     fn aggregate_sum_min_max_avg_numeric_property() {
         let store = GraphStore::new();
@@ -1527,6 +1553,7 @@ mod tests {
         assert_eq!(result.rows[0].get("mx"), Some(&Value::Int64(20)));
         assert_eq!(result.rows[0].get("a"), Some(&Value::Int64(15)));
     }
+
     #[test]
     fn aggregate_count_distinct_property() {
         let store = GraphStore::new();
@@ -1569,6 +1596,7 @@ mod tests {
             .expect("distinct");
         assert_eq!(result.rows[0].get("c"), Some(&Value::Int64(1)));
     }
+
     #[test]
     fn aggregate_grouped_empty_input_yields_no_rows() {
         let store = GraphStore::new();
@@ -1595,6 +1623,7 @@ mod tests {
             .expect("empty groups");
         assert!(result.rows.is_empty());
     }
+
     #[test]
     fn aggregate_count_star_with_filter_manual_plan() {
         let store = GraphStore::new();
@@ -1645,6 +1674,7 @@ mod tests {
             .expect("filtered");
         assert_eq!(result.rows[0].get("c"), Some(&Value::Int64(1)));
     }
+
     #[test]
     fn aggregate_collect_list_manual_plan() {
         let store = GraphStore::new();
@@ -1697,6 +1727,7 @@ mod tests {
             other => panic!("expected list: {other:?}"),
         }
     }
+
     #[test]
     fn aggregate_percentile_cont_manual_plan() {
         let store = GraphStore::new();
@@ -1746,6 +1777,7 @@ mod tests {
             other => panic!("expected float median: {other:?}"),
         }
     }
+
     #[test]
     fn aggregate_sum_with_expr2_is_rejected() {
         let store = GraphStore::new();
@@ -1769,6 +1801,7 @@ mod tests {
             "{err:?}"
         );
     }
+
     #[test]
     fn executes_planner_match_return_count_star() {
         let store = GraphStore::new();
@@ -1782,6 +1815,7 @@ mod tests {
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0].get("c"), Some(&Value::Int64(1)));
     }
+
     #[test]
     fn executes_planner_match_return_count_star_plus_literal() {
         let store = GraphStore::new();
@@ -1798,6 +1832,7 @@ mod tests {
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0].get("c"), Some(&Value::Int64(3)));
     }
+
     #[test]
     fn executes_planner_avg_nested_in_arithmetic() {
         let store = GraphStore::new();
@@ -1814,6 +1849,7 @@ mod tests {
             other => panic!("expected numeric doubled: {other:?}"),
         }
     }
+
     #[test]
     fn executes_planner_group_by_having_count_filter() {
         let store = GraphStore::new();
@@ -1830,6 +1866,7 @@ mod tests {
         assert_eq!(result.rows[0].get("n.k"), Some(&Value::Int64(1)));
         assert_eq!(result.rows[0].get("cnt"), Some(&Value::Int64(2)));
     }
+
     #[test]
     fn executes_planner_group_by_having_count_return_alias() {
         let store = GraphStore::new();
@@ -1846,6 +1883,7 @@ mod tests {
         assert_eq!(result.rows[0].get("n.k"), Some(&Value::Int64(1)));
         assert_eq!(result.rows[0].get("cnt"), Some(&Value::Int64(2)));
     }
+
     #[test]
     fn executes_planner_collect_list_names() {
         let store = GraphStore::new();
@@ -1873,6 +1911,7 @@ mod tests {
         texts.sort();
         assert_eq!(texts, vec!["a".to_string(), "b".to_string()]);
     }
+
     #[test]
     fn executes_planner_stddev_pop_two_values() {
         let store = GraphStore::new();
@@ -1888,6 +1927,7 @@ mod tests {
             other => panic!("expected float stddev: {other:?}"),
         }
     }
+
     #[test]
     fn executes_planner_percentile_cont_planned() {
         let store = GraphStore::new();

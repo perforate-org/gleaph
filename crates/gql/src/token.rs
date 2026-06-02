@@ -253,29 +253,35 @@ mod tests {
     fn is_ident_unquoted() {
         assert!(Token::Ident("foo".into()).is_ident());
     }
+
     #[test]
     fn is_ident_quoted() {
         assert!(Token::QuotedIdent("bar".into()).is_ident());
     }
+
     #[test]
     fn is_ident_non_ident() {
         assert!(!Token::Star.is_ident());
     }
+
     #[test]
     fn is_keyword_match() {
         assert!(Token::Ident("MATCH".into()).is_keyword("match"));
         assert!(Token::Ident("match".into()).is_keyword("MATCH"));
     }
+
     #[test]
     fn is_keyword_no_match() {
         assert!(!Token::Ident("RETURN".into()).is_keyword("MATCH"));
         assert!(!Token::Star.is_keyword("MATCH"));
     }
+
     #[test]
     fn as_ident_str_some() {
         assert_eq!(Token::Ident("foo".into()).as_ident_str(), Some("foo"));
         assert_eq!(Token::QuotedIdent("bar".into()).as_ident_str(), Some("bar"));
     }
+
     #[test]
     fn as_ident_str_none() {
         assert_eq!(Token::Star.as_ident_str(), None);

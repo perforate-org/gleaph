@@ -657,6 +657,7 @@ mod tests {
             Some(&Value::Text("Planner UseGraph".into()))
         );
     }
+
     #[test]
     fn executes_planner_cartesian_product_for_independent_matches() {
         let store = GraphStore::new();
@@ -700,6 +701,7 @@ mod tests {
                 && row.get("city") == Some(&Value::Text("Planner CP Paris".into()))
         }));
     }
+
     #[test]
     fn optional_match_planner_null_padding_when_no_edge() {
         let store = GraphStore::new();
@@ -724,6 +726,7 @@ mod tests {
         assert_eq!(result.rows[0].get("nn"), Some(&Value::Text("solo".into())));
         assert_eq!(result.rows[0].get("mn"), Some(&Value::Null));
     }
+
     #[test]
     fn optional_match_planner_returns_m_when_edge_exists() {
         let store = GraphStore::new();
@@ -746,6 +749,7 @@ mod tests {
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0].get("mn"), Some(&Value::Text("buddy".into())));
     }
+
     #[test]
     fn optional_match_leading_empty_graph_null_binds_pattern_var() {
         let store = GraphStore::new();
@@ -765,6 +769,7 @@ mod tests {
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0].get("is_n_null"), Some(&Value::Bool(true)));
     }
+
     #[test]
     fn mandatory_match_after_optional_miss_drops_null_bound_rows() {
         let store = GraphStore::new();
@@ -789,6 +794,7 @@ mod tests {
             result.rows
         );
     }
+
     #[test]
     fn mandatory_match_after_optional_hit_continues_chain() {
         let store = GraphStore::new();
@@ -815,6 +821,7 @@ mod tests {
             .expect("mandatory match after optional hit");
         assert_eq!(result.rows.len(), 1);
     }
+
     #[test]
     fn rebound_node_label_is_enforced_without_rescan() {
         let store = GraphStore::new();
@@ -832,6 +839,7 @@ mod tests {
             result.rows
         );
     }
+
     #[test]
     fn rebound_label_succeeds_when_vertex_has_both_labels() {
         let store = GraphStore::new();
@@ -896,6 +904,7 @@ mod tests {
             result.rows
         );
     }
+
     #[test]
     fn rebound_inline_property_succeeds_when_value_matches() {
         let store = GraphStore::new();
@@ -934,6 +943,7 @@ mod tests {
             .expect("rebound inline property match");
         assert_eq!(result.rows.len(), 1);
     }
+
     #[test]
     fn optional_match_manual_null_padding_edge_and_dst() {
         let store = GraphStore::new();
@@ -982,6 +992,7 @@ mod tests {
         assert_eq!(result.rows[0].get("e_null"), Some(&Value::Bool(true)));
         assert_eq!(result.rows[0].get("m_null"), Some(&Value::Bool(true)));
     }
+
     #[test]
     fn optional_match_gleaph_weight_on_null_edge_returns_null() {
         let store = GraphStore::new();

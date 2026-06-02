@@ -139,6 +139,7 @@ pub(crate) fn shortest_paths_between(
 
     Ok(ShortestPathSearchResult { states, found })
 }
+
 pub(crate) fn path_search_contains_vertex(
     states: &[PathSearchNode],
     mut state_idx: usize,

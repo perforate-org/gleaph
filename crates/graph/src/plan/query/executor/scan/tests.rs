@@ -36,6 +36,7 @@ fn federated_index_scan_materializes_foreign_shard_hit_as_remote_vertex() {
         Some(PlanBinding::RemoteVertex(9001))
     ));
 }
+
 #[test]
 fn executes_equality_index_scan_with_sortable_key() {
     let store = GraphStore::new();
@@ -76,6 +77,7 @@ fn executes_equality_index_scan_with_sortable_key() {
     );
     assert!(index.range_calls.borrow().is_empty());
 }
+
 #[test]
 fn equality_index_scan_unifies_decimal_and_integer_key_with_final_filter() {
     let store = GraphStore::new();
@@ -128,6 +130,7 @@ fn equality_index_scan_unifies_decimal_and_integer_key_with_final_filter() {
             .unwrap()
     );
 }
+
 #[test]
 fn equality_index_scan_unifies_float_and_decimal_key_with_final_filter() {
     let store = GraphStore::new();
@@ -180,6 +183,7 @@ fn equality_index_scan_unifies_float_and_decimal_key_with_final_filter() {
             .unwrap()
     );
 }
+
 #[test]
 fn equality_index_scan_final_filter_drops_inexact_float_decimal_candidate() {
     let store = GraphStore::new();
@@ -222,6 +226,7 @@ fn equality_index_scan_final_filter_drops_inexact_float_decimal_candidate() {
 
     assert!(result.rows.is_empty());
 }
+
 #[test]
 fn equality_index_scan_matches_list_valued_posting() {
     let store = GraphStore::new();
@@ -273,6 +278,7 @@ fn equality_index_scan_matches_list_valued_posting() {
         value_to_index_key_bytes(&stored).unwrap().unwrap()
     );
 }
+
 #[test]
 fn equality_index_scan_matches_record_valued_posting_independent_of_field_order() {
     let store = GraphStore::new();
@@ -333,6 +339,7 @@ fn equality_index_scan_matches_record_valued_posting_independent_of_field_order(
         value_to_index_key_bytes(&stored).unwrap().unwrap()
     );
 }
+
 #[test]
 fn equality_index_scan_final_filter_drops_inexact_nested_numeric_candidate() {
     let store = GraphStore::new();
@@ -379,6 +386,7 @@ fn equality_index_scan_final_filter_drops_inexact_nested_numeric_candidate() {
 
     assert!(result.rows.is_empty());
 }
+
 #[test]
 fn executes_range_index_scan_with_lookup_range() {
     let store = GraphStore::new();
@@ -429,6 +437,7 @@ fn executes_range_index_scan_with_lookup_range() {
             if bytes == &value_to_index_key_bytes(&Value::Int64(5)).unwrap().unwrap()
     ));
 }
+
 #[test]
 fn executes_list_range_index_scan_with_lookup_range() {
     let store = GraphStore::new();
@@ -496,6 +505,7 @@ fn executes_list_range_index_scan_with_lookup_range() {
     ));
     assert!(index.equal_calls.borrow().is_empty());
 }
+
 #[test]
 fn executes_record_range_index_scan_with_lookup_range() {
     let store = GraphStore::new();
@@ -557,6 +567,7 @@ fn executes_record_range_index_scan_with_lookup_range() {
     ));
     assert!(index.equal_calls.borrow().is_empty());
 }
+
 #[test]
 fn executes_orderable_extension_equality_index_scan() {
     let store = GraphStore::new();
@@ -604,6 +615,7 @@ fn executes_orderable_extension_equality_index_scan() {
     );
     assert!(index.range_calls.borrow().is_empty());
 }
+
 #[test]
 fn executes_orderable_extension_range_index_scan() {
     let store = GraphStore::new();
@@ -652,6 +664,7 @@ fn executes_orderable_extension_range_index_scan() {
     ));
     assert!(index.equal_calls.borrow().is_empty());
 }
+
 #[test]
 fn index_scan_rejects_unsupported_parameter_value() {
     let store = GraphStore::new();
@@ -681,6 +694,7 @@ fn index_scan_rejects_unsupported_parameter_value() {
 
     assert!(matches!(err, PlanQueryError::InvalidExpressionValue { .. }));
 }
+
 #[test]
 fn index_scan_rejects_non_orderable_extension_parameter_value() {
     let store = GraphStore::new();
@@ -713,6 +727,7 @@ fn index_scan_rejects_non_orderable_extension_parameter_value() {
 
     assert!(matches!(err, PlanQueryError::InvalidExpressionValue { .. }));
 }
+
 #[test]
 fn range_index_scan_rejects_unsupported_nested_parameter_value() {
     let store = GraphStore::new();
@@ -742,6 +757,7 @@ fn range_index_scan_rejects_unsupported_nested_parameter_value() {
 
     assert!(matches!(err, PlanQueryError::InvalidExpressionValue { .. }));
 }
+
 #[test]
 fn index_scan_rejects_non_finite_float_parameter_value() {
     let store = GraphStore::new();
@@ -771,6 +787,7 @@ fn index_scan_rejects_non_finite_float_parameter_value() {
 
     assert!(matches!(err, PlanQueryError::InvalidExpressionValue { .. }));
 }
+
 #[test]
 fn conditional_index_scan_falls_back_for_null_or_unsupported_parameter() {
     let store = GraphStore::new();
@@ -809,6 +826,7 @@ fn conditional_index_scan_falls_back_for_null_or_unsupported_parameter() {
     assert!(index.equal_calls.borrow().is_empty());
     assert!(index.range_calls.borrow().is_empty());
 }
+
 #[test]
 fn conditional_index_scan_falls_back_for_non_orderable_extension_parameter() {
     let store = GraphStore::new();
@@ -847,6 +865,7 @@ fn conditional_index_scan_falls_back_for_non_orderable_extension_parameter() {
     assert!(index.equal_calls.borrow().is_empty());
     assert!(index.range_calls.borrow().is_empty());
 }
+
 #[test]
 fn conditional_range_index_scan_falls_back_for_unsupported_nested_parameter() {
     let store = GraphStore::new();
@@ -885,6 +904,7 @@ fn conditional_range_index_scan_falls_back_for_unsupported_nested_parameter() {
     assert!(index.equal_calls.borrow().is_empty());
     assert!(index.range_calls.borrow().is_empty());
 }
+
 #[test]
 fn conditional_index_scan_falls_back_for_non_finite_float_parameter() {
     let store = GraphStore::new();
@@ -923,6 +943,7 @@ fn conditional_index_scan_falls_back_for_non_finite_float_parameter() {
     assert!(index.equal_calls.borrow().is_empty());
     assert!(index.range_calls.borrow().is_empty());
 }
+
 #[test]
 fn planner_limit_stops_node_scan_after_enough_rows() {
     let store = GraphStore::new();
@@ -950,6 +971,7 @@ fn planner_limit_stops_node_scan_after_enough_rows() {
     assert_eq!(text_column(&result, "n.name"), vec!["first"]);
     assert_eq!(node_scan_visits(), 1);
 }
+
 #[test]
 fn planner_limit_stops_after_filter_accepts_enough_rows() {
     let store = GraphStore::new();
@@ -1018,6 +1040,7 @@ fn planner_limit_stops_after_filter_accepts_enough_rows() {
     assert_eq!(text_column(&result, "n.name"), vec!["keep a", "keep b"]);
     assert_eq!(node_scan_visits(), 12);
 }
+
 #[test]
 fn order_by_limit_remains_a_materializing_barrier() {
     let store = GraphStore::new();
@@ -1040,6 +1063,7 @@ fn order_by_limit_remains_a_materializing_barrier() {
     assert_eq!(text_column(&result, "n.name"), vec!["a"]);
     assert_eq!(node_scan_visits(), 3);
 }
+
 #[test]
 fn labeled_expand_limit_offset_pages_latest_edges() {
     let store = GraphStore::new();
@@ -1085,6 +1109,7 @@ fn labeled_expand_limit_offset_pages_latest_edges() {
     assert_eq!(text_column(&first, "b.name"), vec!["edge 4", "edge 3"]);
     assert_eq!(text_column(&second, "b.name"), vec!["edge 2", "edge 1"]);
 }
+
 #[test]
 fn gleaph_sequence_asc_pages_labeled_edges_in_insertion_order() {
     let store = GraphStore::new();
@@ -1122,6 +1147,7 @@ fn gleaph_sequence_asc_pages_labeled_edges_in_insertion_order() {
         vec!["seq edge 1", "seq edge 2"]
     );
 }
+
 #[test]
 fn gleaph_sequence_desc_matches_default_labeled_edge_order() {
     let store = GraphStore::new();
@@ -1159,6 +1185,7 @@ fn gleaph_sequence_desc_matches_default_labeled_edge_order() {
         vec!["seq desc edge 3", "seq desc edge 2"]
     );
 }
+
 #[test]
 fn gleaph_sequence_rejects_unlabeled_edge_pattern() {
     let store = GraphStore::new();
@@ -1183,6 +1210,7 @@ fn gleaph_sequence_rejects_unlabeled_edge_pattern() {
 
     assert!(err.to_string().contains("single fixed edge label"), "{err}");
 }
+
 #[test]
 fn unlabeled_directed_expand_limit_offset_uses_latest_edges() {
     let store = GraphStore::new();
@@ -1214,6 +1242,7 @@ fn unlabeled_directed_expand_limit_offset_uses_latest_edges() {
     );
     assert_eq!(edge_stream_visits(), 2);
 }
+
 #[test]
 fn reverse_expand_limit_offset_uses_latest_in_edges() {
     let store = GraphStore::new();
@@ -1252,6 +1281,7 @@ fn reverse_expand_limit_offset_uses_latest_in_edges() {
     );
     assert_eq!(edge_stream_visits(), 2);
 }
+
 #[test]
 fn undirected_expand_limit_offset_uses_latest_edges() {
     let store = GraphStore::new();
@@ -1288,6 +1318,7 @@ fn undirected_expand_limit_offset_uses_latest_edges() {
     );
     assert_eq!(edge_stream_visits(), 2);
 }
+
 #[test]
 fn filtered_expand_limit_offset_skips_only_matching_edges() {
     let store = GraphStore::new();
@@ -1337,6 +1368,7 @@ fn filtered_expand_limit_offset_skips_only_matching_edges() {
     );
     assert_eq!(edge_stream_visits(), 4);
 }
+
 #[test]
 fn node_scan_projects_vertex_property() {
     let store = GraphStore::new();
@@ -1368,6 +1400,7 @@ fn node_scan_projects_vertex_property() {
         Some(&Value::Text("Node Alice".into()))
     );
 }
+
 #[test]
 fn indexed_expand_limit_offset_skips_only_matching_edges() {
     let store = GraphStore::new();
@@ -1433,6 +1466,7 @@ fn indexed_expand_limit_offset_skips_only_matching_edges() {
     );
     assert_eq!(edge_stream_visits(), 4);
 }
+
 #[test]
 fn aggregate_count_star_after_node_scan() {
     let store = GraphStore::new();
