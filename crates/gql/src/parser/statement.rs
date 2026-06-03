@@ -4,10 +4,10 @@
 use crate::ast::{
     BindingTypeAnnotation, CallProcedureStatement, CompositeQueryExpr, DeleteDetach,
     DeleteStatement, FilterStatement, ForOrdinality, ForStatement, GqlProgram, GraphPattern,
-    InlineProcedureCall, InsertStatement, IsOrColon, LetBinding, LetStatement,
-    LinearQueryStatement, MatchStatement, NextStatement, ObjectName, ProcedureBindingDefinition,
-    ProcedureBindingInitializer, ProcedureBindingKind, RemoveItem, RemoveStatement,
-    ResultStatement, SchemaReference, SetItem, SetOp, SetQuantifier, SetStatement,
+    InlineProcedureCall, InlineProcedureScope, InsertStatement, IsOrColon, LetBinding,
+    LetStatement, LinearQueryStatement, MatchStatement, NextStatement, ObjectName,
+    ProcedureBindingDefinition, ProcedureBindingInitializer, ProcedureBindingKind, RemoveItem,
+    RemoveStatement, ResultStatement, SchemaReference, SetItem, SetOp, SetQuantifier, SetStatement,
     SimpleQueryStatement, Statement, StatementBlock, TransactionActivity, TransactionEnd,
     TypedPrefix,
 };
@@ -545,7 +545,7 @@ impl Parser<'_> {
                     span: self.span_since(start),
                     optional: false,
                     use_graph: Some(graph),
-                    scope_vars: vec![],
+                    scope: InlineProcedureScope::ImplicitAll,
                     body: Box::new(body),
                 },
             ));
@@ -1117,16 +1117,16 @@ impl Parser<'_> {
         let start = self.save();
         let optional = self.eat_keyword("OPTIONAL");
         self.expect_keyword("CALL")?;
-        let scope_vars = if self.eat_token(&Token::LParen) {
+        let scope = if self.eat_token(&Token::LParen) {
             let vars = if self.at_token(&Token::RParen) {
                 vec![]
             } else {
                 self.comma_list(|p| p.expect_ident())?
             };
             self.expect_token(&Token::RParen)?;
-            vars
+            InlineProcedureScope::Explicit(vars)
         } else {
-            vec![]
+            InlineProcedureScope::ImplicitAll
         };
         self.expect_token(&Token::LBrace)?;
         let body = self.parse_composite_query_expr()?;
@@ -1135,7 +1135,7 @@ impl Parser<'_> {
             span: self.span_since(start),
             optional,
             use_graph: None,
-            scope_vars,
+            scope,
             body: Box::new(body),
         })
     }

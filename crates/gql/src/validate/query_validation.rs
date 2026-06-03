@@ -209,33 +209,35 @@ fn inline_procedure_body_scope(
     ipc: &InlineProcedureCall,
     scope: &RapidHashSet<String>,
 ) -> Result<RapidHashSet<String>, GqlError> {
-    if ipc.scope_vars.is_empty() {
-        return Ok(scope.clone());
-    }
-    let mut selected = RapidHashSet::default();
-    for name in &ipc.scope_vars {
-        if !scope.contains(name) {
-            return Err(verr(&format!(
-                "inline procedure scope variable '{name}' is not in scope"
-            )));
+    match &ipc.scope {
+        InlineProcedureScope::ImplicitAll => Ok(scope.clone()),
+        InlineProcedureScope::Explicit(vars) => {
+            let mut selected = RapidHashSet::default();
+            for name in vars {
+                if !scope.contains(name) {
+                    return Err(verr(&format!(
+                        "inline procedure scope variable '{name}' is not in scope"
+                    )));
+                }
+                selected.insert(name.clone());
+            }
+            Ok(selected)
         }
-        selected.insert(name.clone());
     }
-    Ok(selected)
 }
 
 fn inline_procedure_body_graph_scope(
     ipc: &InlineProcedureCall,
     graph_scope: &RapidHashSet<String>,
 ) -> RapidHashSet<String> {
-    if ipc.scope_vars.is_empty() {
-        return graph_scope.clone();
+    match &ipc.scope {
+        InlineProcedureScope::ImplicitAll => graph_scope.clone(),
+        InlineProcedureScope::Explicit(vars) => vars
+            .iter()
+            .filter(|name| graph_scope.contains(*name))
+            .cloned()
+            .collect(),
     }
-    ipc.scope_vars
-        .iter()
-        .filter(|name| graph_scope.contains(*name))
-        .cloned()
-        .collect()
 }
 
 fn validate_procedure_bindings(
@@ -747,8 +749,10 @@ fn collect_linear_query_scopes_with_order(
             SimpleQueryStatement::InlineProcedureCall(ipc) => {
                 let outer_scope = scope.clone();
                 let outer_graph_scope = graph_scope.clone();
+                let body_scope = inline_procedure_body_scope(ipc, &outer_scope)?;
+                let body_graph_scope = inline_procedure_body_graph_scope(ipc, &outer_graph_scope);
                 let layout =
-                    composite_query_result_layout(&ipc.body, &outer_scope, &outer_graph_scope)?;
+                    composite_query_result_layout(&ipc.body, &body_scope, &body_graph_scope)?;
                 collect_inline_procedure_result_bindings(
                     ipc,
                     &outer_scope,

@@ -25,6 +25,25 @@ use gleaph_gql::types::{EdgeDirection, LabelExpr};
 /// Cheaply-cloneable string type for identifiers (variable names, labels, properties, etc.).
 pub type Str = Rc<str>;
 
+/// Variable import scope for an inline procedure call.
+#[derive(Clone, Debug)]
+pub enum InlineProcedureScope {
+    /// No scope clause was written; the full outer scope is visible.
+    ImplicitAll,
+    /// A scope clause was written; only these variables are visible.
+    Explicit(Vec<Str>),
+}
+
+impl InlineProcedureScope {
+    /// Returns the explicitly imported variables, if a scope clause was written.
+    pub fn explicit_vars(&self) -> Option<&[Str]> {
+        match self {
+            Self::ImplicitAll => None,
+            Self::Explicit(vars) => Some(vars),
+        }
+    }
+}
+
 // ════════════════════════════════════════════════════════════════════════════════
 // PhysicalPlan
 // ════════════════════════════════════════════════════════════════════════════════
@@ -276,7 +295,7 @@ pub enum PlanOp {
     /// Inline procedure call: CALL { <sub-query> }.
     InlineProcedureCall {
         sub_plan: Box<PhysicalPlan>,
-        scope_vars: Vec<Str>,
+        scope: InlineProcedureScope,
         optional: bool,
     },
 

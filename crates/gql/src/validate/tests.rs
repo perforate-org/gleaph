@@ -216,6 +216,16 @@ fn invalid_inline_procedure_scope_var_not_visible_in_body() {
 }
 
 #[test]
+fn invalid_inline_procedure_empty_scope_hides_outer_vars() {
+    let err = parse_and_validate("MATCH (n) CALL () { RETURN n } RETURN n")
+        .expect_err("expected explicit empty inline scope to hide outer vars");
+    assert!(
+        err.to_string().contains("variable 'n' is not in scope"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn invalid_inline_procedure_scope_var_hides_graph_binding_in_body() {
     let err = parse_and_validate(
         "GRAPH g = myGraph VALUE x = 1 CALL (x) { VALUE g = 1 USE g MATCH (n) RETURN n } RETURN x",
@@ -1798,11 +1808,11 @@ fn invalid_let_in_unbound_in_binding() {
     assert!(err.to_string().contains("'x'"));
 }
 
-// ── Inline procedure with empty scope vars (line 492-493) ──
+// ── Inline procedure with omitted scope clause (line 492-493) ──
 
 #[test]
-fn valid_inline_procedure_empty_scope_clause() {
-    // Empty scope clause means entire outer scope is passed through.
+fn valid_inline_procedure_omitted_scope_clause() {
+    // Omitted scope clause means entire outer scope is passed through.
     assert!(parse_and_validate("MATCH (n) CALL { RETURN n } RETURN n").is_ok());
 }
 

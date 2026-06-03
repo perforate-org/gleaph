@@ -37,7 +37,7 @@ mod nested_procedure_specification {
         let ipc = first_inline_call(&prog);
         assert!(!ipc.optional);
         assert!(ipc.use_graph.is_none());
-        assert!(ipc.scope_vars.is_empty());
+        assert!(matches!(ipc.scope, InlineProcedureScope::ImplicitAll));
         // The body should contain a linear query with a MATCH part and a RETURN result.
         let linear = &ipc.body.left;
         assert!(!linear.parts.is_empty());
@@ -96,6 +96,9 @@ mod nested_query_specification {
     fn inline_call_with_scope_vars() {
         let prog = p("MATCH (x) CALL (x) { MATCH (n) WHERE n.id = x.id RETURN n }");
         let ipc = first_inline_call(&prog);
-        assert_eq!(ipc.scope_vars, vec!["x".to_string()]);
+        assert_eq!(
+            ipc.scope,
+            InlineProcedureScope::Explicit(vec!["x".to_string()])
+        );
     }
 }

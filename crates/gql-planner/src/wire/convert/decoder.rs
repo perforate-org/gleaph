@@ -2,7 +2,8 @@ use gleaph_gql::ast::{Expr, OrderByClause};
 use gleaph_gql::types::LabelExpr;
 
 use crate::plan::{
-    AggregateSpec, PlanOp, ProjectColumn, PropertyAssignment, SetPlanItem, WcojEdge,
+    AggregateSpec, InlineProcedureScope, PlanOp, ProjectColumn, PropertyAssignment, SetPlanItem,
+    WcojEdge,
 };
 use gleaph_gql::ast::LetBinding;
 use gleaph_gql::token::Span;
@@ -274,11 +275,11 @@ impl<'a> Decoder<'a> {
             },
             PlanOpWire::InlineProcedureCall {
                 sub_plan,
-                scope_vars,
+                scope,
                 optional,
             } => PlanOp::InlineProcedureCall {
                 sub_plan: Box::new(physical_plan_from_wire(sub_plan)?),
-                scope_vars: vec_rc_str(scope_vars),
+                scope: decode_inline_procedure_scope(scope),
                 optional: *optional,
             },
             PlanOpWire::UseGraph {
@@ -497,6 +498,15 @@ impl<'a> Decoder<'a> {
 
 fn decode_opt_label_expr(dec: &Decoder<'_>, id: Option<u32>) -> Result<Option<LabelExpr>, String> {
     id.map(|i| dec.label_expr(i)).transpose()
+}
+
+fn decode_inline_procedure_scope(scope: &InlineProcedureScopeWire) -> InlineProcedureScope {
+    match scope {
+        InlineProcedureScopeWire::ImplicitAll => InlineProcedureScope::ImplicitAll,
+        InlineProcedureScopeWire::Explicit(vars) => {
+            InlineProcedureScope::Explicit(vec_rc_str(vars))
+        }
+    }
 }
 
 pub(super) fn decode_shortest_path_cost(

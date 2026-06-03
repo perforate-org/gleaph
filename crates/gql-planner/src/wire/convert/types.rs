@@ -121,7 +121,7 @@ pub enum PlanOpWire {
     InlineProcedureCall {
         #[rkyv(omit_bounds)]
         sub_plan: Box<PhysicalPlanWire>,
-        scope_vars: Vec<String>,
+        scope: InlineProcedureScopeWire,
         optional: bool,
     },
     UseGraph {
@@ -212,6 +212,12 @@ pub enum PlanOpWire {
     DeleteEdge {
         variable: String,
     },
+}
+
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub enum InlineProcedureScopeWire {
+    ImplicitAll,
+    Explicit(Vec<String>),
 }
 
 // ════════════════════════════════════════════════════════════════════════════════

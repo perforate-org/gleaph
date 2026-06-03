@@ -455,7 +455,16 @@ fn check_simple_query(env: &mut TypeEnv<'_>, sq: &SimpleQueryStatement) {
             check_call_procedure(env, cp);
         }
         SimpleQueryStatement::InlineProcedureCall(ipc) => {
-            check_composite_query(env, &ipc.body);
+            let mut body_env = inline_procedure_body_type_env(env, &ipc.scope);
+            check_composite_query(&mut body_env, &ipc.body);
+            let return_types = infer_composite_query_return_types(&body_env, &ipc.body);
+            env.warnings.extend(body_env.warnings);
+            for (name, ty) in return_types {
+                env.bind(name.clone(), ty);
+                if ipc.optional {
+                    env.optional_vars.insert(name);
+                }
+            }
         }
         SimpleQueryStatement::Focused { body, .. } => {
             if let Some(inner) = body {
@@ -692,6 +701,41 @@ fn check_select(env: &mut TypeEnv<'_>, sel: &SelectStatement) {
                     check_expr_constraints(env, &sort_item.expr);
                 }
             }
+        }
+    }
+}
+
+fn inline_procedure_body_type_env<'a>(
+    env: &TypeEnv<'a>,
+    scope: &InlineProcedureScope,
+) -> TypeEnv<'a> {
+    match scope {
+        InlineProcedureScope::ImplicitAll => env.fork(),
+        InlineProcedureScope::Explicit(vars) => {
+            let mut scoped = TypeEnv::new(env.schema);
+            for name in vars {
+                scoped.bind(name.clone(), env.get(name));
+                if env.optional_vars.contains(name) {
+                    scoped.optional_vars.insert(name.clone());
+                }
+                for (var, property) in &env.narrowed_nonnull {
+                    if var == name {
+                        scoped
+                            .narrowed_nonnull
+                            .insert((var.clone(), property.clone()));
+                    }
+                }
+                if let Some(labels) = env.narrowed_labels.get(name) {
+                    scoped.narrowed_labels.insert(name.clone(), labels.clone());
+                }
+                #[cfg(feature = "cypher")]
+                if let Some(label) = env.narrowed_edge_labels.get(name) {
+                    scoped
+                        .narrowed_edge_labels
+                        .insert(name.clone(), label.clone());
+                }
+            }
+            scoped
         }
     }
 }

@@ -3804,6 +3804,55 @@ fn test_inline_procedure_call_has_subplan() {
     }
 }
 
+#[test]
+fn test_inline_procedure_call_preserves_implicit_scope() {
+    let plan = plan_query("CALL { RETURN 1 AS x } RETURN x");
+    let Some(PlanOp::InlineProcedureCall { scope, .. }) = plan
+        .ops
+        .iter()
+        .find(|op| matches!(op, PlanOp::InlineProcedureCall { .. }))
+    else {
+        panic!("expected InlineProcedureCall");
+    };
+    assert!(matches!(
+        scope,
+        gleaph_gql_planner::plan::InlineProcedureScope::ImplicitAll
+    ));
+}
+
+#[test]
+fn test_inline_procedure_call_preserves_explicit_empty_scope() {
+    let plan = plan_query("CALL () { RETURN 1 AS x } RETURN x");
+    let Some(PlanOp::InlineProcedureCall { scope, .. }) = plan
+        .ops
+        .iter()
+        .find(|op| matches!(op, PlanOp::InlineProcedureCall { .. }))
+    else {
+        panic!("expected InlineProcedureCall");
+    };
+    assert!(matches!(
+        scope,
+        gleaph_gql_planner::plan::InlineProcedureScope::Explicit(vars) if vars.is_empty()
+    ));
+}
+
+#[test]
+fn test_inline_procedure_call_preserves_explicit_scope_vars() {
+    let plan = plan_query("MATCH (n) CALL (n) { RETURN n AS x } RETURN x");
+    let Some(PlanOp::InlineProcedureCall { scope, .. }) = plan
+        .ops
+        .iter()
+        .find(|op| matches!(op, PlanOp::InlineProcedureCall { .. }))
+    else {
+        panic!("expected InlineProcedureCall");
+    };
+    assert!(matches!(
+        scope,
+        gleaph_gql_planner::plan::InlineProcedureScope::Explicit(vars)
+            if vars.iter().map(|v| v.as_ref()).collect::<Vec<_>>() == ["n"]
+    ));
+}
+
 // ════════════════════════════════════════════════════════════════════════════════
 // Phase E: USE GRAPH (Focused)
 // ════════════════════════════════════════════════════════════════════════════════

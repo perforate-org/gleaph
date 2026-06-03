@@ -176,13 +176,13 @@ fn register_op_bindings(op: &PlanOp, layout: &mut BindingLayout) {
             register_subplan_bindings(&right.ops, layout);
         }
         PlanOp::InlineProcedureCall {
-            sub_plan,
-            scope_vars,
-            ..
+            sub_plan, scope, ..
         } => {
             register_subplan_bindings(&sub_plan.ops, layout);
-            for v in scope_vars {
-                layout.insert_name(v.clone());
+            if let Some(vars) = scope.explicit_vars() {
+                for v in vars {
+                    layout.insert_name(v.clone());
+                }
             }
         }
         PlanOp::UseGraph {

@@ -777,15 +777,14 @@ fn format_op(op: &PlanOp) -> String {
 
         PlanOp::InlineProcedureCall {
             sub_plan,
-            scope_vars,
+            scope,
             optional,
         } => {
             let opt = if *optional { "OPTIONAL " } else { "" };
             let sub_ops: Vec<String> = sub_plan.ops.iter().map(format_op).collect();
-            let scope = if scope_vars.is_empty() {
-                String::new()
-            } else {
-                format!(" scope=[{}]", scope_vars.join(", "))
+            let scope = match scope {
+                InlineProcedureScope::ImplicitAll => String::new(),
+                InlineProcedureScope::Explicit(vars) => format!(" scope=[{}]", vars.join(", ")),
             };
             format!(
                 "{}InlineProcedureCall{} [{}]",

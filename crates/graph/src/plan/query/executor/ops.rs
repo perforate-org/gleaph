@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::pin::Pin;
 
 use gleaph_gql::Value;
-use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, Str};
+use gleaph_gql_planner::plan::{InlineProcedureScope, PhysicalPlan, PlanOp};
 
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
 use canbench_rs::bench_scope;
@@ -231,24 +231,26 @@ async fn execute_optional_match(
     Ok(out)
 }
 
-fn inline_seed_row(row: &PlanRow, scope_vars: &[Str]) -> Result<PlanRow, PlanQueryError> {
-    if scope_vars.is_empty() {
-        return Ok(row.clone());
-    }
-    let mut seed = PlanRow::new();
-    for v in scope_vars {
-        match row.get(v.as_ref()) {
-            Some(binding) => {
-                seed.insert(v.to_string(), binding.clone());
+fn inline_seed_row(row: &PlanRow, scope: &InlineProcedureScope) -> Result<PlanRow, PlanQueryError> {
+    match scope {
+        InlineProcedureScope::ImplicitAll => Ok(row.clone()),
+        InlineProcedureScope::Explicit(vars) => {
+            let mut seed = PlanRow::new();
+            for v in vars {
+                match row.get(v.as_ref()) {
+                    Some(binding) => {
+                        seed.insert(v.to_string(), binding.clone());
+                    }
+                    None => {
+                        return Err(PlanQueryError::MissingBinding {
+                            variable: v.to_string(),
+                        });
+                    }
+                }
             }
-            None => {
-                return Err(PlanQueryError::MissingBinding {
-                    variable: v.to_string(),
-                });
-            }
+            Ok(seed)
         }
     }
-    Ok(seed)
 }
 
 fn merge_inline_rows(
@@ -290,13 +292,13 @@ async fn execute_inline_procedure_call(
     ctx: &ExecuteCtx<'_>,
     rows: Vec<PlanRow>,
     sub_plan: &PhysicalPlan,
-    scope_vars: &[Str],
+    scope: &InlineProcedureScope,
     optional: bool,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
     let optional_padding_vars = inline_output_vars(sub_plan);
     let mut out = Vec::new();
     for outer_row in rows {
-        let seed = inline_seed_row(&outer_row, scope_vars)?;
+        let seed = inline_seed_row(&outer_row, scope)?;
         let sub_rows = execute_ops_from(ctx, &sub_plan.ops, vec![seed]).await?;
         if sub_rows.is_empty() {
             if optional {
@@ -760,12 +762,9 @@ pub(crate) fn execute_ops_from<'a>(
                 }
                 PlanOp::InlineProcedureCall {
                     sub_plan,
-                    scope_vars,
+                    scope,
                     optional,
-                } => {
-                    execute_inline_procedure_call(ctx, rows, sub_plan, scope_vars, *optional)
-                        .await?
-                }
+                } => execute_inline_procedure_call(ctx, rows, sub_plan, scope, *optional).await?,
                 PlanOp::SetOperation { op, right } => {
                     let right_input = set_operation_input
                         .clone()
@@ -1527,6 +1526,21 @@ mod tests {
                 .find_map(|(key, value)| (key == "id").then_some(value)),
             Some(&Value::Uint64(u64::from(vertex)))
         );
+    }
+
+    #[test]
+    fn inline_explicit_empty_scope_runs_independent_subquery() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["InlineEmptyScope"], Vec::<(&str, Value)>::new())
+            .expect("insert");
+        let plan = plan_gql("MATCH (n:InlineEmptyScope) CALL () { RETURN 1 AS x } RETURN n, x");
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("inline explicit empty scope");
+        assert_eq!(result.rows.len(), 1);
+        assert!(result.rows[0].contains_key("n"));
+        assert_eq!(result.rows[0].get("x"), Some(&Value::Int64(1)));
     }
 
     #[test]

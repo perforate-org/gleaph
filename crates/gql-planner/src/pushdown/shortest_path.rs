@@ -313,9 +313,11 @@ fn update_live_before_op(op: &PlanOp, live: &mut LiveBindings) {
                 add_expr_vars_to_live(arg, live);
             }
         }
-        PlanOp::InlineProcedureCall { scope_vars, .. } => {
-            for variable in scope_vars {
-                live.insert(variable.to_string());
+        PlanOp::InlineProcedureCall { scope, .. } => {
+            if let Some(vars) = scope.explicit_vars() {
+                for variable in vars {
+                    live.insert(variable.to_string());
+                }
             }
         }
         PlanOp::WorstCaseOptimalJoin { variables, edges } => {

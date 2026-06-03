@@ -32,11 +32,13 @@ pub(super) fn validate_call_procedure(cp: &CallProcedureStatement) -> VResult {
 /// Validates an inline procedure call (scope variable duplicates, body).
 pub(super) fn validate_inline_scope_vars(ipc: &InlineProcedureCall) -> VResult {
     let mut seen = RapidHashSet::default();
-    for var in &ipc.scope_vars {
-        if !seen.insert(var.clone()) {
-            return Err(verr(&format!(
-                "inline CALL: duplicate scope variable '{var}'"
-            )));
+    if let InlineProcedureScope::Explicit(vars) = &ipc.scope {
+        for var in vars {
+            if !seen.insert(var.clone()) {
+                return Err(verr(&format!(
+                    "inline CALL: duplicate scope variable '{var}'"
+                )));
+            }
         }
     }
     Ok(())

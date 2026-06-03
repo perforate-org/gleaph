@@ -102,7 +102,7 @@ mod procedure_call {
 mod inline_procedure_call {
     use super::*;
 
-    /// CALL { MATCH (n) RETURN n } — no scope vars
+    /// CALL { MATCH (n) RETURN n } — implicit all scope
     #[test]
     fn no_scope_vars() {
         let prog = p("CALL { MATCH (n) RETURN n }");
@@ -114,7 +114,7 @@ mod inline_procedure_call {
                 .iter()
                 .find(|p| matches!(p, SimpleQueryStatement::InlineProcedureCall(_)));
             if let Some(SimpleQueryStatement::InlineProcedureCall(ic)) = call {
-                assert!(ic.scope_vars.is_empty());
+                assert!(matches!(ic.scope, InlineProcedureScope::ImplicitAll));
                 assert!(!ic.optional);
             } else {
                 panic!("expected InlineProcedureCall in parts");
@@ -136,7 +136,10 @@ mod inline_procedure_call {
                 .iter()
                 .find(|p| matches!(p, SimpleQueryStatement::InlineProcedureCall(_)));
             if let Some(SimpleQueryStatement::InlineProcedureCall(ic)) = call {
-                assert_eq!(ic.scope_vars, vec!["a".to_string(), "b".to_string()]);
+                assert_eq!(
+                    ic.scope,
+                    InlineProcedureScope::Explicit(vec!["a".to_string(), "b".to_string()])
+                );
             } else {
                 panic!("expected InlineProcedureCall in parts");
             }
@@ -152,7 +155,7 @@ mod inline_procedure_call {
 mod variable_scope_clause {
     use super::*;
 
-    /// CALL () { MATCH (n) RETURN n } — empty scope_vars = []
+    /// CALL () { MATCH (n) RETURN n } — explicit empty scope
     #[test]
     fn empty() {
         let prog = p("CALL () { MATCH (n) RETURN n }");
@@ -164,7 +167,7 @@ mod variable_scope_clause {
                 .iter()
                 .find(|p| matches!(p, SimpleQueryStatement::InlineProcedureCall(_)));
             if let Some(SimpleQueryStatement::InlineProcedureCall(ic)) = call {
-                assert!(ic.scope_vars.is_empty());
+                assert_eq!(ic.scope, InlineProcedureScope::Explicit(vec![]));
             } else {
                 panic!("expected InlineProcedureCall in parts");
             }
@@ -185,7 +188,10 @@ mod variable_scope_clause {
                 .iter()
                 .find(|p| matches!(p, SimpleQueryStatement::InlineProcedureCall(_)));
             if let Some(SimpleQueryStatement::InlineProcedureCall(ic)) = call {
-                assert_eq!(ic.scope_vars, vec!["x".to_string()]);
+                assert_eq!(
+                    ic.scope,
+                    InlineProcedureScope::Explicit(vec!["x".to_string()])
+                );
             } else {
                 panic!("expected InlineProcedureCall in parts");
             }

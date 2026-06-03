@@ -158,9 +158,11 @@ fn produced_vars_by_position(ops: &[PlanOp]) -> ProducedVars {
                     current.insert(col.alias.as_deref().unwrap_or(&col.name).to_string());
                 }
             }
-            PlanOp::InlineProcedureCall { scope_vars, .. } => {
-                for v in scope_vars {
-                    current.insert(v.to_string());
+            PlanOp::InlineProcedureCall { scope, .. } => {
+                if let Some(vars) = scope.explicit_vars() {
+                    for v in vars {
+                        current.insert(v.to_string());
+                    }
                 }
             }
             PlanOp::UseGraph {

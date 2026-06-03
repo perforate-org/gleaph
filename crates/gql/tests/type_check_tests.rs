@@ -1938,3 +1938,17 @@ fn match_directed_arrow_warns_on_undirected_schema() {
         "expected MATCH schema edge direction warning, got: {warnings:?}"
     );
 }
+
+#[test]
+fn inline_call_exported_alias_preserves_type_for_downstream_exprs() {
+    let warnings = parse_and_check_with_schema(
+        "MATCH (n:Person) CALL { RETURN n AS x } RETURN x.age + 'hi'",
+        &TestSchema,
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.kind == WarningKind::BinaryOpMismatch),
+        "expected BinaryOpMismatch from exported inline CALL alias, got: {warnings:?}"
+    );
+}

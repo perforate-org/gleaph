@@ -181,11 +181,16 @@ pub(super) fn plan_simple_statement(
             }
             ops.push(PlanOp::InlineProcedureCall {
                 sub_plan: Box::new(sub_plan),
-                scope_vars: inline
-                    .scope_vars
-                    .iter()
-                    .map(|s| Str::from(s.as_str()))
-                    .collect(),
+                scope: match &inline.scope {
+                    gleaph_gql::ast::InlineProcedureScope::ImplicitAll => {
+                        crate::plan::InlineProcedureScope::ImplicitAll
+                    }
+                    gleaph_gql::ast::InlineProcedureScope::Explicit(vars) => {
+                        crate::plan::InlineProcedureScope::Explicit(
+                            vars.iter().map(|s| Str::from(s.as_str())).collect(),
+                        )
+                    }
+                },
                 optional: inline.optional,
             });
             Ok(())

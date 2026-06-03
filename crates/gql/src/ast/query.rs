@@ -720,6 +720,19 @@ pub struct CallProcedureStatement {
     pub yield_items: Option<Vec<YieldItem>>,
 }
 
+/// Variable import scope for an inline procedure call.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+pub enum InlineProcedureScope {
+    /// No scope clause was written; the full outer scope is visible.
+    ImplicitAll,
+    /// A scope clause was written; only these variables are visible.
+    Explicit(Vec<String>),
+}
+
 /// Inline procedure call: [OPTIONAL] CALL { <statements> }
 ///
 /// When `use_graph` is `Some`, this models the GQL rule
@@ -735,7 +748,7 @@ pub struct InlineProcedureCall {
     pub span: Span,
     pub optional: bool,
     pub use_graph: Option<ObjectName>,
-    pub scope_vars: Vec<String>,
+    pub scope: InlineProcedureScope,
     pub body: Box<CompositeQueryExpr>,
 }
 
