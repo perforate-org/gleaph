@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::pin::Pin;
 
 use gleaph_gql::Value;
-use gleaph_gql_planner::plan::PlanOp;
+use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, Str};
 
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
 use canbench_rs::bench_scope;
@@ -15,7 +15,7 @@ use super::super::row::PlanRow;
 use super::context::ExecuteCtx;
 use super::expand::execute_expand;
 use super::for_loop::execute_for;
-use super::join::{execute_cartesian_product, execute_hash_join};
+use super::join::{execute_cartesian_product, execute_hash_join, merge_rows};
 use super::path::execute_shortest_path;
 use super::scan::{
     LIMITED_STREAMING_REMOTE_EXPAND_SOURCE, execute_conditional_index_scan,
@@ -24,9 +24,9 @@ use super::scan::{
 };
 use super::set_operation::execute_set_operation;
 use super::{
-    PlanBinding, dedup_rows, ensure_simple_expand, gleaph_sequence_order_after_expand,
-    gleaph_sequence_sort, limit_value, plan_op_name, previous_op_binds_edge, project_row,
-    row_matches_all, sort_rows,
+    PlanBinding, binding_to_value, dedup_rows, ensure_simple_expand,
+    gleaph_sequence_order_after_expand, gleaph_sequence_sort, limit_value, plan_op_name,
+    previous_op_binds_edge, project_row, row_matches_all, sort_rows,
 };
 
 pub(crate) async fn execute_ops(
@@ -168,16 +168,21 @@ fn extend_subplan_written_vars_from_op(op: &PlanOp, out: &mut BTreeSet<String>) 
         | PlanOp::Filter { .. }
         | PlanOp::CallProcedure { .. }
         | PlanOp::Aggregate { .. }
-        | PlanOp::Project { .. }
         | PlanOp::Sort { .. }
         | PlanOp::Limit { .. }
         | PlanOp::TopK { .. }
-        | PlanOp::Materialize { .. }
         | PlanOp::SetProperties { .. }
         | PlanOp::RemoveProperties { .. }
         | PlanOp::DeleteVertex { .. }
         | PlanOp::DetachDeleteVertex { .. }
         | PlanOp::DeleteEdge { .. } => {}
+        PlanOp::Project { columns, .. } | PlanOp::Materialize { columns, .. } => {
+            for col in columns {
+                if let Some(alias) = &col.alias {
+                    out.insert(alias.to_string());
+                }
+            }
+        }
     }
 }
 
@@ -224,6 +229,104 @@ async fn execute_optional_match(
         }
     }
     Ok(out)
+}
+
+fn inline_seed_row(row: &PlanRow, scope_vars: &[Str]) -> Result<PlanRow, PlanQueryError> {
+    if scope_vars.is_empty() {
+        return Ok(row.clone());
+    }
+    let mut seed = PlanRow::new();
+    for v in scope_vars {
+        match row.get(v.as_ref()) {
+            Some(binding) => {
+                seed.insert(v.to_string(), binding.clone());
+            }
+            None => {
+                return Err(PlanQueryError::MissingBinding {
+                    variable: v.to_string(),
+                });
+            }
+        }
+    }
+    Ok(seed)
+}
+
+fn merge_inline_rows(
+    store: &crate::facade::GraphStore,
+    outer: &PlanRow,
+    inner: PlanRow,
+) -> Result<PlanRow, PlanQueryError> {
+    if let Some(merged) = merge_rows(outer, &inner) {
+        return Ok(merged);
+    }
+
+    let mut merged = outer.clone();
+    for (name, inner_binding) in inner.iter() {
+        match outer.get(name) {
+            Some(outer_binding) if inline_bindings_match(store, outer_binding, inner_binding)? => {}
+            Some(_) => {
+                return Err(PlanQueryError::InvalidExpressionValue {
+                    expression: "inline CALL: conflicting bindings on merge".into(),
+                });
+            }
+            None => merged.insert(name.to_string(), inner_binding.clone()),
+        }
+    }
+    Ok(merged)
+}
+
+fn inline_bindings_match(
+    store: &crate::facade::GraphStore,
+    left: &PlanBinding,
+    right: &PlanBinding,
+) -> Result<bool, PlanQueryError> {
+    if left == right {
+        return Ok(true);
+    }
+    Ok(binding_to_value(store, left)? == binding_to_value(store, right)?)
+}
+
+async fn execute_inline_procedure_call(
+    ctx: &ExecuteCtx<'_>,
+    rows: Vec<PlanRow>,
+    sub_plan: &PhysicalPlan,
+    scope_vars: &[Str],
+    optional: bool,
+) -> Result<Vec<PlanRow>, PlanQueryError> {
+    let optional_padding_vars = inline_output_vars(sub_plan);
+    let mut out = Vec::new();
+    for outer_row in rows {
+        let seed = inline_seed_row(&outer_row, scope_vars)?;
+        let sub_rows = execute_ops_from(ctx, &sub_plan.ops, vec![seed]).await?;
+        if sub_rows.is_empty() {
+            if optional {
+                let mut padded = outer_row;
+                for v in &optional_padding_vars {
+                    if !padded.contains_key(v) {
+                        padded.insert(v.clone(), PlanBinding::Value(Value::Null));
+                    }
+                }
+                out.push(padded);
+            }
+        } else {
+            for inner in sub_rows {
+                out.push(merge_inline_rows(ctx.store, &outer_row, inner)?);
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn inline_output_vars(sub_plan: &PhysicalPlan) -> BTreeSet<String> {
+    if !sub_plan.output.hydrates_all_row_bindings() {
+        return sub_plan
+            .output
+            .columns
+            .iter()
+            .map(|col| col.name.to_string())
+            .collect();
+    }
+    subplan_written_vars(&sub_plan.ops)
 }
 
 fn limited_streaming_prefix_expand_count(ops: &[PlanOp]) -> usize {
@@ -654,6 +757,14 @@ pub(crate) fn execute_ops_from<'a>(
                 PlanOp::OptionalMatch { sub_plan } => {
                     let written = subplan_written_vars(sub_plan);
                     execute_optional_match(ctx, rows, sub_plan, &written).await?
+                }
+                PlanOp::InlineProcedureCall {
+                    sub_plan,
+                    scope_vars,
+                    optional,
+                } => {
+                    execute_inline_procedure_call(ctx, rows, sub_plan, scope_vars, *optional)
+                        .await?
                 }
                 PlanOp::SetOperation { op, right } => {
                     let right_input = set_operation_input
@@ -1335,6 +1446,233 @@ mod tests {
         assert_eq!(result.rows.len(), 2);
         assert_eq!(result.rows[0].get("t"), Some(&Value::Text("x".into())));
         assert_eq!(result.rows[1].get("t"), Some(&Value::Text("y".into())));
+    }
+
+    #[test]
+    fn inline_basic_correlated_call_returns_projected_binding() {
+        let store = GraphStore::new();
+        let vertex = store
+            .insert_vertex_named(["InlineBasic"], Vec::<(&str, Value)>::new())
+            .expect("insert");
+        let plan = plan_gql("MATCH (n:InlineBasic) CALL { RETURN n AS x } RETURN x");
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("inline basic");
+        assert_eq!(result.rows.len(), 1);
+        let Value::Record(record) = result.rows[0].get("x").expect("x") else {
+            panic!("expected vertex record for x");
+        };
+        assert_eq!(
+            record
+                .iter()
+                .find_map(|(key, value)| (key == "id").then_some(value)),
+            Some(&Value::Uint64(u64::from(vertex)))
+        );
+    }
+
+    #[test]
+    fn inline_call_expands_row_cardinality() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["InlineFor"], [("name", Value::Text("for-node".into()))])
+            .expect("insert");
+        let plan = plan_gql(
+            "MATCH (n:InlineFor) CALL { FOR x IN [1, 2] RETURN x } RETURN n.name AS name, x",
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("inline for");
+        assert_eq!(result.rows.len(), 2);
+        assert_eq!(
+            result.rows[0].get("name"),
+            Some(&Value::Text("for-node".into()))
+        );
+        assert_eq!(result.rows[1].get("name"), result.rows[0].get("name"));
+        assert_eq!(result.rows[0].get("x"), Some(&Value::Int64(1)));
+        assert_eq!(result.rows[1].get("x"), Some(&Value::Int64(2)));
+    }
+
+    #[test]
+    fn inline_call_filters_outer_row_when_subquery_empty() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["InlineEmpty"], Vec::<(&str, Value)>::new())
+            .expect("insert");
+        let plan = plan_gql(
+            "MATCH (n:InlineEmpty) CALL { MATCH (m:DefinitelyMissing) RETURN m } RETURN n",
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("inline empty subquery");
+        assert!(result.rows.is_empty());
+    }
+
+    #[test]
+    fn inline_scoped_call_reads_listed_variable() {
+        let store = GraphStore::new();
+        let vertex = store
+            .insert_vertex_named(["InlineScope"], Vec::<(&str, Value)>::new())
+            .expect("insert");
+        let plan = plan_gql("MATCH (n:InlineScope) CALL (n) { RETURN n AS x } RETURN x");
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("inline scoped");
+        assert_eq!(result.rows.len(), 1);
+        let Value::Record(record) = result.rows[0].get("x").expect("x") else {
+            panic!("expected vertex record for x");
+        };
+        assert_eq!(
+            record
+                .iter()
+                .find_map(|(key, value)| (key == "id").then_some(value)),
+            Some(&Value::Uint64(u64::from(vertex)))
+        );
+    }
+
+    #[test]
+    fn inline_return_star_preserves_outer_bindings() {
+        let store = GraphStore::new();
+        let vertex = store
+            .insert_vertex_named(["InlineReturnStar"], Vec::<(&str, Value)>::new())
+            .expect("insert");
+        let plan = plan_gql("MATCH (n:InlineReturnStar) CALL { RETURN * } RETURN n");
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("inline return star");
+        assert_eq!(result.rows.len(), 1);
+        let Value::Record(record) = result.rows[0].get("n").expect("n") else {
+            panic!("expected vertex record for n");
+        };
+        assert_eq!(
+            record
+                .iter()
+                .find_map(|(key, value)| (key == "id").then_some(value)),
+            Some(&Value::Uint64(u64::from(vertex)))
+        );
+    }
+
+    #[test]
+    fn inline_scoped_return_star_preserves_outer_bindings() {
+        let store = GraphStore::new();
+        let vertex = store
+            .insert_vertex_named(["InlineScopedReturnStar"], Vec::<(&str, Value)>::new())
+            .expect("insert");
+        let plan = plan_gql("MATCH (n:InlineScopedReturnStar) CALL (n) { RETURN * } RETURN n");
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("inline scoped return star");
+        assert_eq!(result.rows.len(), 1);
+        let Value::Record(record) = result.rows[0].get("n").expect("n") else {
+            panic!("expected vertex record for n");
+        };
+        assert_eq!(
+            record
+                .iter()
+                .find_map(|(key, value)| (key == "id").then_some(value)),
+            Some(&Value::Uint64(u64::from(vertex)))
+        );
+    }
+
+    #[test]
+    fn inline_composite_union_reads_outer_binding() {
+        let store = GraphStore::new();
+        let vertex = store
+            .insert_vertex_named(["InlineUnion"], Vec::<(&str, Value)>::new())
+            .expect("insert");
+        let plan =
+            plan_gql("MATCH (n:InlineUnion) CALL { RETURN n AS x UNION RETURN n AS x } RETURN x");
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("inline union");
+        assert_eq!(result.rows.len(), 1);
+        let Value::Record(record) = result.rows[0].get("x").expect("x") else {
+            panic!("expected vertex record for x");
+        };
+        assert_eq!(
+            record
+                .iter()
+                .find_map(|(key, value)| (key == "id").then_some(value)),
+            Some(&Value::Uint64(u64::from(vertex)))
+        );
+    }
+
+    #[test]
+    fn inline_otherwise_falls_back_to_outer_binding() {
+        let store = GraphStore::new();
+        let vertex = store
+            .insert_vertex_named(["InlineOtherwise"], Vec::<(&str, Value)>::new())
+            .expect("insert");
+        let plan = plan_gql(
+            "MATCH (n:InlineOtherwise) CALL { \
+             MATCH (m:MissingInlineOtherwise) RETURN m AS x \
+             OTHERWISE \
+             RETURN n AS x \
+             } RETURN x",
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("inline otherwise");
+        assert_eq!(result.rows.len(), 1);
+        let Value::Record(record) = result.rows[0].get("x").expect("x") else {
+            panic!("expected vertex record for x");
+        };
+        assert_eq!(
+            record
+                .iter()
+                .find_map(|(key, value)| (key == "id").then_some(value)),
+            Some(&Value::Uint64(u64::from(vertex)))
+        );
+    }
+
+    #[test]
+    fn inline_optional_call_null_pads_subquery_bindings() {
+        let store = GraphStore::new();
+        let vertex = store
+            .insert_vertex_named(["InlineOptional"], Vec::<(&str, Value)>::new())
+            .expect("insert");
+        let plan = plan_gql(
+            "MATCH (n:InlineOptional) OPTIONAL CALL { \
+             MATCH (m:MissingOptionalInline) RETURN m AS x \
+             } RETURN n, x",
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("inline optional");
+        assert_eq!(result.rows.len(), 1);
+        let Value::Record(record) = result.rows[0].get("n").expect("n") else {
+            panic!("expected vertex record for n");
+        };
+        assert_eq!(
+            record
+                .iter()
+                .find_map(|(key, value)| (key == "id").then_some(value)),
+            Some(&Value::Uint64(u64::from(vertex)))
+        );
+        assert_eq!(result.rows[0].get("x"), Some(&Value::Null));
+    }
+
+    #[test]
+    fn inline_optional_call_does_not_export_internal_match_bindings() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["InlineOptionalNoLeak"], Vec::<(&str, Value)>::new())
+            .expect("insert");
+        let plan = plan_gql(
+            "MATCH (n:InlineOptionalNoLeak) OPTIONAL CALL { \
+             MATCH (m:MissingOptionalInlineNoLeak) RETURN m AS x \
+             } RETURN *",
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("inline optional no leak");
+        assert_eq!(result.rows.len(), 1);
+        assert!(result.rows[0].contains_key("n"));
+        assert_eq!(result.rows[0].get("x"), Some(&Value::Null));
+        assert!(
+            !result.rows[0].contains_key("m"),
+            "internal MATCH variable must not leak from OPTIONAL CALL miss: {:?}",
+            result.rows[0]
+        );
     }
 
     #[test]
