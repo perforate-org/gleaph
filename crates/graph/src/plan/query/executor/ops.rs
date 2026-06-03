@@ -407,7 +407,7 @@ pub(crate) fn execute_ops_from<'a>(
                     rows,
                     variable.as_ref(),
                     list,
-                    ordinality.as_deref().map(|s| s.as_ref()),
+                    ordinality.as_deref(),
                 )?,
                 PlanOp::Filter { condition } => rows
                     .into_iter()
@@ -1200,6 +1200,86 @@ mod tests {
             .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("intersect all");
         assert_eq!(result.rows.len(), 2);
+    }
+
+    #[test]
+    fn executes_otherwise_returns_left_when_non_empty() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(
+                ["OtherwiseLeft"],
+                [("name", Value::Text("left-only".into()))],
+            )
+            .expect("insert left");
+        store
+            .insert_vertex_named(
+                ["OtherwiseRight"],
+                [("name", Value::Text("right-fallback".into()))],
+            )
+            .expect("insert right");
+        let plan = plan_statement_gql(
+            "MATCH (n:OtherwiseLeft) RETURN n.name AS name \
+             OTHERWISE \
+             MATCH (m:OtherwiseRight) RETURN m.name AS name",
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("otherwise non-empty left");
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(
+            result.rows[0].get("name"),
+            Some(&Value::Text("left-only".into()))
+        );
+    }
+
+    #[test]
+    fn executes_otherwise_falls_back_when_left_empty() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(
+                ["OtherwiseRightOnly"],
+                [("name", Value::Text("fallback".into()))],
+            )
+            .expect("insert right");
+        let plan = plan_statement_gql(
+            "MATCH (n:OtherwiseMissing) RETURN n.name AS name \
+             OTHERWISE \
+             MATCH (m:OtherwiseRightOnly) RETURN m.name AS name",
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("otherwise empty left");
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(
+            result.rows[0].get("name"),
+            Some(&Value::Text("fallback".into()))
+        );
+    }
+
+    #[test]
+    fn executes_chained_otherwise_reaches_third_branch() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(
+                ["OtherwisePresentC"],
+                [("name", Value::Text("third".into()))],
+            )
+            .expect("insert third");
+        let plan = plan_statement_gql(
+            "MATCH (n:OtherwiseMissingA) RETURN n.name AS name \
+             OTHERWISE \
+             MATCH (m:OtherwiseMissingB) RETURN m.name AS name \
+             OTHERWISE \
+             MATCH (p:OtherwisePresentC) RETURN p.name AS name",
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("chained otherwise");
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(
+            result.rows[0].get("name"),
+            Some(&Value::Text("third".into()))
+        );
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! §14.2 composite set operations (`UNION`, `EXCEPT`, `INTERSECT`).
+//! §14.2 composite set operations (`UNION`, `EXCEPT`, `INTERSECT`, `OTHERWISE`).
 
 use std::collections::BTreeMap;
 
@@ -20,11 +20,11 @@ pub(crate) async fn execute_set_operation(
     right: &PhysicalPlan,
     right_input: Vec<PlanRow>,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
-    match op {
-        SetOp::Otherwise => {
-            return Err(PlanQueryError::UnsupportedOp("SetOperation.Otherwise"));
+    if matches!(op, SetOp::Otherwise) {
+        if left.is_empty() {
+            return execute_ops_from(ctx, &right.ops, right_input).await;
         }
-        _ => {}
+        return Ok(left);
     }
     let right_rows = execute_ops_from(ctx, &right.ops, right_input).await?;
     Ok(apply_set_op(op, left, right_rows))
@@ -272,6 +272,60 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert_eq!(out[0], scalar_row("x", 1));
         assert_eq!(out[1], scalar_row("x", 2));
+    }
+
+    #[test]
+    fn otherwise_non_empty_left_skips_right_branch() {
+        let store = GraphStore::new();
+        let parameters = params();
+        let ctx = ExecuteCtx::new(
+            &store,
+            &parameters,
+            None,
+            GqlExecutionContext::default(),
+            None,
+        );
+        let right = project_var_as_plan("missing", "x");
+        let left = vec![scalar_row("x", 1)];
+        let right_input = vec![PlanRow::new()];
+
+        let out = pollster::block_on(execute_set_operation(
+            &ctx,
+            left.clone(),
+            SetOp::Otherwise,
+            &right,
+            right_input,
+        ))
+        .expect("otherwise should not evaluate the right branch when left is non-empty");
+
+        assert_eq!(out, left);
+    }
+
+    #[test]
+    fn otherwise_empty_left_executes_right_with_input() {
+        let store = GraphStore::new();
+        let parameters = params();
+        let ctx = ExecuteCtx::new(
+            &store,
+            &parameters,
+            None,
+            GqlExecutionContext::default(),
+            None,
+        );
+        let right = project_var_as_plan("n", "x");
+        let right_input = vec![scalar_row("n", 42)];
+
+        let out = pollster::block_on(execute_set_operation(
+            &ctx,
+            Vec::new(),
+            SetOp::Otherwise,
+            &right,
+            right_input,
+        ))
+        .expect("otherwise should execute the right branch when left is empty");
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0], scalar_row("x", 42));
     }
 
     #[test]

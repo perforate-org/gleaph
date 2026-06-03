@@ -64,7 +64,7 @@ Catalog `PlanOp` variants and note **executor support** and **federation relevan
 | `Sort` / `Limit` / `TopK` | Exec | TopK fusion in planner |
 | `Aggregate` | Exec | |
 | `Materialize` | Exec | |
-| `SetOperation` | Exec | `UNION` / `EXCEPT` / `INTERSECT` (ALL and DISTINCT); `OTHERWISE` not implemented |
+| `SetOperation` | Exec | `UNION` / `EXCEPT` / `INTERSECT` (ALL and DISTINCT), `OTHERWISE` fallback |
 
 ## DML (update path)
 
