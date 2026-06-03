@@ -542,7 +542,7 @@ pub(super) fn emit_scan_for_node(
     if !var_candidates.is_empty() {
         ops.push(PlanOp::ConditionalIndexScan {
             candidates: var_candidates,
-            fallback_label: label.as_ref().map(|s| Str::from(s.as_str())),
+            fallback_label: label.as_ref().map(|s| NodeLabelRef::from(s.as_str())),
             fallback_variable: Str::from(var),
             property_projection: None,
         });
@@ -552,7 +552,7 @@ pub(super) fn emit_scan_for_node(
     // Default: NodeScan.
     ops.push(PlanOp::NodeScan {
         variable: Str::from(var),
-        label: label.as_ref().map(|s| Str::from(s.as_str())),
+        label: label.as_ref().map(|s| NodeLabelRef::from(s.as_str())),
         property_projection: None,
     });
 }

@@ -33,6 +33,7 @@ fn federated_reverse_expand_from_remote_vertex_binding() {
         &"a".into(),
         EdgeDirection::PointingLeft,
         None,
+        &ctx.execution,
         EdgeSequenceOrder::Descending,
         &[],
         true,

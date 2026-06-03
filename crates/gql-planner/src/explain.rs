@@ -676,7 +676,14 @@ fn format_op(op: &PlanOp) -> String {
             let labels_str = if labels.is_empty() {
                 String::new()
             } else {
-                format!(", labels=[{}]", labels.join(", "))
+                format!(
+                    ", labels=[{}]",
+                    labels
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
             };
             format!(
                 "InsertVertex({}{}, {} prop{})",
@@ -699,7 +706,14 @@ fn format_op(op: &PlanOp) -> String {
             let labels_str = if labels.is_empty() {
                 String::new()
             } else {
-                format!(":{}", labels.join(":"))
+                format!(
+                    ":{}",
+                    labels
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(":")
+                )
             };
             format!(
                 "InsertEdge({} -[{}{}]-> {}, {} prop{})",

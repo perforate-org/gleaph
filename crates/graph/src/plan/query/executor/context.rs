@@ -12,7 +12,7 @@ use crate::gql_execution_context::GqlExecutionContext;
 use crate::index::lookup::PropertyIndexLookup;
 
 /// Fixed inputs for one [`super::ops::execute_ops_from`] run.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct ExecuteCtx<'a> {
     pub store: &'a GraphStore,
     pub parameters: &'a BTreeMap<String, Value>,
@@ -40,13 +40,13 @@ impl<'a> ExecuteCtx<'a> {
     }
 
     #[inline]
-    pub fn caller(self) -> Option<Principal> {
+    pub fn caller(&self) -> Option<Principal> {
         self.execution.caller
     }
 
     #[inline]
     pub fn expr_evaluator(
-        self,
+        &self,
         aggregate_specs: Option<&'a [AggregateSpec]>,
     ) -> QueryExprEvaluator<'a> {
         QueryExprEvaluator {

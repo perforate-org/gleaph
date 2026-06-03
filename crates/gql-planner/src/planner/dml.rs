@@ -28,7 +28,11 @@ pub(super) fn plan_insert(
                         .collect();
                     ops.push(PlanOp::InsertVertex {
                         variable: Some(Str::from(var.as_str())),
-                        labels: node.labels.iter().map(|s| Str::from(s.as_str())).collect(),
+                        labels: node
+                            .labels
+                            .iter()
+                            .map(|s| NodeLabelRef::from(s.as_str()))
+                            .collect(),
                         properties: props,
                     });
                     prev_node_var = Some(var);
@@ -64,7 +68,11 @@ pub(super) fn plan_insert(
                         src: Str::from(src.as_str()),
                         dst: Str::from(dst.as_str()),
                         direction: edge.direction,
-                        labels: edge.labels.iter().map(|s| Str::from(s.as_str())).collect(),
+                        labels: edge
+                            .labels
+                            .iter()
+                            .map(|s| EdgeLabelRef::from(s.as_str()))
+                            .collect(),
                         properties: props,
                     });
                     prev_node_var = None;

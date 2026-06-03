@@ -15,15 +15,20 @@ use std::collections::{BTreeMap, BTreeSet};
 /// All methods have default implementations returning `None`, so consumers
 /// can implement only the statistics they have available.
 pub trait GraphStats {
-    /// Number of vertices with the given label.
+    /// Number of vertices with the given node label.
     fn label_cardinality(&self, label: &str) -> Option<u64> {
+        self.node_label_cardinality(label)
+    }
+
+    /// Number of vertices with the given node label.
+    fn node_label_cardinality(&self, label: &str) -> Option<u64> {
         let _ = label;
         None
     }
 
-    /// Optional fast path when callers already resolved label id.
-    fn label_cardinality_id(&self, label_id: u16) -> Option<u64> {
-        let _ = label_id;
+    /// Number of edges with the given edge label.
+    fn edge_label_cardinality(&self, label: &str) -> Option<u64> {
+        let _ = label;
         None
     }
 
@@ -71,17 +76,7 @@ pub trait GraphStats {
 }
 
 pub fn label_cardinality_with_id(stats: &dyn GraphStats, label: &str) -> Option<u64> {
-    stats.label_cardinality(label).or_else(|| {
-        label
-            .parse::<u16>()
-            .ok()
-            .or_else(|| {
-                label
-                    .strip_prefix('L')
-                    .and_then(|rest| rest.parse::<u16>().ok())
-            })
-            .and_then(|id| stats.label_cardinality_id(id))
-    })
+    stats.node_label_cardinality(label)
 }
 
 /// An equi-width histogram for property value distribution.
@@ -140,6 +135,10 @@ pub struct TableStats {
 
 impl GraphStats for TableStats {
     fn label_cardinality(&self, label: &str) -> Option<u64> {
+        self.label_cardinality.get(label).copied()
+    }
+
+    fn node_label_cardinality(&self, label: &str) -> Option<u64> {
         self.label_cardinality.get(label).copied()
     }
 

@@ -135,6 +135,7 @@ pub async fn dispatch_plan_blob(
     if shards.is_empty() {
         return Err(RouterError::ShardNotRegistered);
     }
+    let resolved_labels = store.resolve_plan_labels(plans)?;
     let index = RouterIndexClient::new(shards[0].index_canister);
     let seed_probe = SeedProbe::from_plans(plans, pmap, &store)?;
 
@@ -177,6 +178,7 @@ pub async fn dispatch_plan_blob(
                 params_blob: params.to_vec(),
                 mode,
                 seed_bindings_blob: seed_blob,
+                resolved_labels: Some(resolved_labels.clone()),
             },
         )
         .await

@@ -14,6 +14,7 @@ use ic_stable_lara::traits::CsrVertexTombstone;
 
 use crate::facade::GraphStore;
 use crate::facade::migration::{migration_visibility_filter_needed, vertex_visible_to_query};
+use crate::gql_execution_context::GqlExecutionContext;
 use crate::plan::query::error::PlanQueryError;
 use crate::plan::query::executor::context::QueryExprEvaluator;
 use crate::plan::query::executor::expand::{
@@ -108,6 +109,7 @@ pub(crate) fn execute_limited_streaming_prefix(
     initial_rows: Vec<PlanRow>,
     parameters: &BTreeMap<String, Value>,
     caller: Option<Principal>,
+    execution: &GqlExecutionContext,
     gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
     aggregate_specs: Option<&[AggregateSpec]>,
 ) -> Result<super::LimitedStreamingPrefixResult, PlanQueryError> {
@@ -154,6 +156,7 @@ pub(crate) fn execute_limited_streaming_prefix(
             row,
             parameters,
             caller,
+            execution,
             gleaph_weight_decoders,
             &evaluator,
             &mut sink,
@@ -177,6 +180,7 @@ fn stream_row_through_ops(
     row: PlanRow,
     parameters: &BTreeMap<String, Value>,
     caller: Option<Principal>,
+    execution: &GqlExecutionContext,
     gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
     evaluator: &QueryExprEvaluator<'_>,
     sink: &mut LimitedRows,
@@ -196,7 +200,8 @@ fn stream_row_through_ops(
             op_idx,
             row,
             variable,
-            label.as_ref(),
+            label.as_deref(),
+            execution,
             parameters,
             caller,
             gleaph_weight_decoders,
@@ -213,6 +218,7 @@ fn stream_row_through_ops(
                     row,
                     parameters,
                     caller,
+                    execution,
                     gleaph_weight_decoders,
                     evaluator,
                     sink,
@@ -235,6 +241,7 @@ fn stream_row_through_ops(
                 row,
                 parameters,
                 caller,
+                execution,
                 gleaph_weight_decoders,
                 evaluator,
                 sink,
@@ -250,6 +257,7 @@ fn stream_row_through_ops(
                     row,
                     parameters,
                     caller,
+                    execution,
                     gleaph_weight_decoders,
                     evaluator,
                     sink,
@@ -270,6 +278,7 @@ fn stream_row_through_ops(
                 projected,
                 parameters,
                 caller,
+                execution,
                 gleaph_weight_decoders,
                 evaluator,
                 sink,
@@ -303,7 +312,8 @@ fn stream_row_through_ops(
                 edge,
                 dst,
                 *direction,
-                label.as_ref(),
+                label.as_deref(),
+                execution,
                 EdgeSequenceOrder::Descending,
                 &[],
                 *emit_edge_binding,
@@ -347,7 +357,8 @@ fn stream_row_through_ops(
                 edge,
                 dst,
                 *direction,
-                label.as_ref(),
+                label.as_deref(),
+                execution,
                 EdgeSequenceOrder::Descending,
                 dst_filter,
                 *emit_edge_binding,
@@ -374,7 +385,8 @@ fn stream_node_scan(
     op_idx: usize,
     row: PlanRow,
     variable: &Str,
-    label: Option<&Str>,
+    label: Option<&str>,
+    execution: &GqlExecutionContext,
     parameters: &BTreeMap<String, Value>,
     caller: Option<Principal>,
     gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
@@ -382,7 +394,17 @@ fn stream_node_scan(
     sink: &mut LimitedRows,
     clears_active_aggregate: &mut bool,
 ) -> Result<bool, PlanQueryError> {
-    let label_id = label.and_then(|label| store.vertex_label_id(label.as_ref()));
+    let label_id = match label {
+        Some(label) if execution.requires_resolved_labels() => execution
+            .resolved_vertex_label_id(label)
+            .map(Some)
+            .ok_or_else(|| PlanQueryError::MissingResolvedLabel {
+                namespace: "node",
+                name: label.to_owned(),
+            })?,
+        Some(label) => store.vertex_label_id(label),
+        None => None,
+    };
     if label.is_some() && label_id.is_none() {
         return Ok(false);
     }
@@ -413,6 +435,7 @@ fn stream_node_scan(
             scanned,
             parameters,
             caller,
+            execution,
             gleaph_weight_decoders,
             evaluator,
             sink,
@@ -451,7 +474,8 @@ fn stream_expand(
     edge: &Str,
     dst: &Str,
     direction: EdgeDirection,
-    label: Option<&Str>,
+    label: Option<&str>,
+    execution: &GqlExecutionContext,
     sequence_order: EdgeSequenceOrder,
     dst_filter: &[Expr],
     emit_edge_binding: bool,
@@ -466,7 +490,17 @@ fn stream_expand(
     sink: &mut LimitedRows,
     clears_active_aggregate: &mut bool,
 ) -> Result<bool, PlanQueryError> {
-    let label_id = label.and_then(|label| store.edge_label_id(label.as_ref()));
+    let label_id = match label {
+        Some(label) if execution.requires_resolved_labels() => execution
+            .resolved_edge_label_id(label)
+            .map(Some)
+            .ok_or_else(|| PlanQueryError::MissingResolvedLabel {
+                namespace: "edge",
+                name: label.to_owned(),
+            })?,
+        Some(label) => store.edge_label_id(label),
+        None => None,
+    };
     if label.is_some() && label_id.is_none() {
         return Ok(false);
     }
@@ -530,6 +564,7 @@ fn stream_expand(
                 expanded,
                 parameters,
                 caller,
+                execution,
                 gleaph_weight_decoders,
                 evaluator,
                 sink,
@@ -613,6 +648,7 @@ fn stream_expand(
                 expanded,
                 parameters,
                 caller,
+                execution,
                 gleaph_weight_decoders,
                 evaluator,
                 sink,
@@ -683,6 +719,7 @@ fn stream_expand(
             expanded,
             parameters,
             caller,
+            execution,
             gleaph_weight_decoders,
             evaluator,
             sink,

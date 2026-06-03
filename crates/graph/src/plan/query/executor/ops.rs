@@ -391,6 +391,7 @@ pub(crate) fn execute_ops_from<'a>(
                         streaming_input.clone(),
                         ctx.parameters,
                         ctx.caller(),
+                        &ctx.execution,
                         ctx.gleaph_weight_decoders,
                         aggregate_specs,
                     );
@@ -417,6 +418,7 @@ pub(crate) fn execute_ops_from<'a>(
                         rows,
                         ctx.parameters,
                         ctx.caller(),
+                        &ctx.execution,
                         ctx.gleaph_weight_decoders,
                         aggregate_specs,
                     )?;
@@ -433,7 +435,7 @@ pub(crate) fn execute_ops_from<'a>(
                     variable,
                     label,
                     property_projection: _,
-                } => execute_node_scan(store, rows, variable, label.as_ref())?,
+                } => execute_node_scan(store, rows, variable, label.as_deref(), &ctx.execution)?,
                 PlanOp::IndexScan {
                     variable,
                     property,
@@ -465,8 +467,9 @@ pub(crate) fn execute_ops_from<'a>(
                         parameters,
                         index,
                         candidates,
-                        fallback_label.as_ref(),
+                        fallback_label.as_deref(),
                         fallback_variable,
+                        &ctx.execution,
                     )
                     .await?
                 }
@@ -554,7 +557,8 @@ pub(crate) fn execute_ops_from<'a>(
                         edge,
                         dst,
                         *direction,
-                        label.as_ref(),
+                        label.as_deref(),
+                        &ctx.execution,
                         sequence_order,
                         &[],
                         *emit_edge_binding,
@@ -597,7 +601,8 @@ pub(crate) fn execute_ops_from<'a>(
                         edge,
                         dst,
                         *direction,
-                        label.as_ref(),
+                        label.as_deref(),
+                        &ctx.execution,
                         sequence_order,
                         dst_filter,
                         *emit_edge_binding,
@@ -634,7 +639,8 @@ pub(crate) fn execute_ops_from<'a>(
                         *emit_path_binding,
                         *mode,
                         *direction,
-                        label.as_ref(),
+                        label.as_deref(),
+                        &ctx.execution,
                         label_expr,
                         var_len,
                         cost,

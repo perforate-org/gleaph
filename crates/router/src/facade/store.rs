@@ -7,6 +7,7 @@ use super::stable::{
     ROUTER_PROPERTY_BY_NAME, ROUTER_SHARD_BY_GRAPH, ROUTER_SHARDS, ROUTER_VERTEX_LABEL_BY_ID,
     ROUTER_VERTEX_LABEL_BY_NAME,
 };
+use crate::index_sync;
 use crate::init::RouterInitArgs;
 use crate::state::RouterError;
 use crate::types::{
@@ -15,11 +16,13 @@ use crate::types::{
     ReleaseLogicalVertexArgs, ShardId, VertexLabelId, VertexPlacement,
 };
 use candid::Principal;
+use gleaph_gql_planner::{LabelUseIntent, PhysicalPlan};
 use gleaph_graph_kernel::entry::EDGE_LABEL_CATALOG_MAX;
 use gleaph_graph_kernel::federation::{
     LocalVertexId, LogicalVertexId, PhysicalPlacementKey, PhysicalVertexLocation,
     ShardRegistryEntry,
 };
+use gleaph_graph_kernel::plan_exec::{ResolvedEdgeLabel, ResolvedLabelTable, ResolvedVertexLabel};
 
 const MAX_METADATA_NAME_BYTES: usize = 256;
 
@@ -377,6 +380,43 @@ impl RouterStore {
         ROUTER_PROPERTY_BY_ID
             .with_borrow(|m| m.get(&property_id.raw()))
             .ok_or_else(|| RouterError::NotFound(format!("property id {}", property_id.raw())))
+    }
+
+    pub fn resolve_plan_labels(
+        &self,
+        plans: &[PhysicalPlan],
+    ) -> Result<ResolvedLabelTable, RouterError> {
+        let mut out = ResolvedLabelTable::default();
+        for plan in plans {
+            let uses = plan.label_uses();
+            for (name, intent) in uses.node_labels {
+                validate_metadata_name(&name)?;
+                let id = match intent {
+                    LabelUseIntent::ReadExisting => self.lookup_vertex_label_id(&name)?,
+                    LabelUseIntent::CreateIfMissing => intern_vertex_label_name(&name)?,
+                };
+                if !out.vertex.iter().any(|entry| entry.name == name.as_ref()) {
+                    out.vertex.push(ResolvedVertexLabel {
+                        name: name.to_string(),
+                        id,
+                    });
+                }
+            }
+            for (name, intent) in uses.edge_labels {
+                validate_metadata_name(&name)?;
+                let id = match intent {
+                    LabelUseIntent::ReadExisting => self.lookup_edge_label_id(&name)?,
+                    LabelUseIntent::CreateIfMissing => intern_edge_label_name(&name)?,
+                };
+                if !out.edge.iter().any(|entry| entry.name == name.as_ref()) {
+                    out.edge.push(ResolvedEdgeLabel {
+                        name: name.to_string(),
+                        id,
+                    });
+                }
+            }
+        }
+        Ok(out)
     }
 
     pub fn allocate_logical_vertex_id(

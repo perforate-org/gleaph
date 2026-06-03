@@ -8,7 +8,7 @@ use gleaph_gql::type_check::{
 use gleaph_gql::types::LabelExpr;
 use gleaph_gql_planner::plan::*;
 use gleaph_gql_planner::semantic;
-use gleaph_gql_planner::stats::{GraphStats, TableStats};
+use gleaph_gql_planner::stats::TableStats;
 use gleaph_gql_planner::{
     PathPatternExtensionContext, PathPatternExtensionHandler, PlanBuildOptions, PlannerError,
     ShortestPathCost, analyze_remote_use_graph_pushdown, build_block_plan, build_block_plan_output,
@@ -45,11 +45,6 @@ fn plan_query_err(input: &str) -> PlannerError {
 
 /// Helper: build a plan with stats.
 fn plan_query_with_stats(input: &str, stats: &TableStats) -> PhysicalPlan {
-    let query = parse_query(input);
-    build_plan(&query, Some(stats)).expect("plan should build")
-}
-
-fn plan_query_with_dyn_stats(input: &str, stats: &dyn GraphStats) -> PhysicalPlan {
     let query = parse_query(input);
     build_plan(&query, Some(stats)).expect("plan should build")
 }
@@ -3104,47 +3099,11 @@ fn compat_label_cardinality_anchor_selection() {
 }
 
 #[test]
-fn compat_label_cardinality_id_anchor_selection() {
-    struct IdOnlyStats;
-    impl GraphStats for IdOnlyStats {
-        fn label_cardinality(&self, _label: &str) -> Option<u64> {
-            None
-        }
-        fn label_cardinality_id(&self, label_id: u16) -> Option<u64> {
-            match label_id {
-                7 => Some(10_000),
-                3 => Some(3),
-                _ => None,
-            }
-        }
-    }
-    let stats = IdOnlyStats;
-    let plan = plan_query_with_dyn_stats("MATCH (a:L7)-[:X]->(b:L3) RETURN a, b", &stats);
-    let anchor = plan.annotations.optimizer.anchor.as_ref().unwrap();
-    assert_eq!(&*anchor.variable, "b");
-    assert!(matches!(
-        anchor.source,
-        AnchorSource::LabelCardinality { .. }
-    ));
-}
-
-#[test]
-fn compat_label_cardinality_id_updates_cost_rows_estimate() {
-    struct IdOnlyStats;
-    impl GraphStats for IdOnlyStats {
-        fn label_cardinality(&self, _label: &str) -> Option<u64> {
-            None
-        }
-        fn label_cardinality_id(&self, label_id: u16) -> Option<u64> {
-            match label_id {
-                3 => Some(3),
-                _ => None,
-            }
-        }
-    }
-    let stats = IdOnlyStats;
-    let plan = plan_query_with_dyn_stats("MATCH (n:L3) RETURN n", &stats);
-    assert_eq!(plan.annotations.optimizer.estimated_rows, Some(3.0));
+fn label_uses_keep_node_and_edge_namespaces_separate() {
+    let plan = plan_query("MATCH (a:Person)-[:Person]->(b) RETURN a, b");
+    let uses = plan.label_uses();
+    assert!(uses.node_labels.contains_key("Person"));
+    assert!(uses.edge_labels.contains_key("Person"));
 }
 
 #[test]

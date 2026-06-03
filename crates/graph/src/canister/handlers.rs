@@ -23,7 +23,7 @@ use gleaph_graph_kernel::federation::{
     MigrationStatus,
 };
 use gleaph_graph_kernel::plan_exec::{
-    ExecutePlanArgs, ExecutePlanResult, GqlExecutionMode, SeedBindingsWire,
+    ExecutePlanArgs, ExecutePlanResult, GqlExecutionMode, LabelUsageDelta, SeedBindingsWire,
 };
 
 use super::types::GraphInitArgs;
@@ -138,13 +138,17 @@ async fn execute_plan_impl(args: ExecutePlanArgs) -> Result<ExecutePlanResult, S
         &pmap,
         kernel_execution_mode(args.mode),
         ix,
-        GqlExecutionContext::default(),
+        GqlExecutionContext {
+            caller: None,
+            resolved_labels: args.resolved_labels,
+        },
         seeds,
     )
     .await
     .map_err(|e| e.to_string())?;
     Ok(ExecutePlanResult {
         row_count: row_count as u64,
+        label_usage_delta: LabelUsageDelta::default(),
     })
 }
 

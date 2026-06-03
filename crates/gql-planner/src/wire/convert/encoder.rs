@@ -9,8 +9,8 @@ use crate::plan::{
 use super::helpers::{
     encode_conditional_candidate, encode_edge_payload_predicate, encode_edge_vector_predicate,
     encode_index_scan_spec, encode_indexed_edge_equality, encode_remove_item, encode_scan_value,
-    encode_yield_column, opt_str_opt, opt_str_slice, shortest_mode_to_wire, var_len_to_wire,
-    vec_str,
+    encode_yield_column, opt_edge_label_str, opt_node_label_str, opt_str_opt, opt_str_slice,
+    shortest_mode_to_wire, var_len_to_wire, vec_edge_labels, vec_node_labels, vec_str,
 };
 use super::physical_plan_to_wire;
 use super::pools::{rkyv_encode_expr, rkyv_encode_label_expr, rkyv_encode_order_by};
@@ -59,7 +59,7 @@ impl Encoder {
                 property_projection,
             } => PlanOpWire::NodeScan {
                 variable: variable.to_string(),
-                label: opt_str_opt(label),
+                label: opt_node_label_str(label),
                 property_projection: opt_str_slice(property_projection),
             },
             PlanOp::IndexScan {
@@ -100,7 +100,7 @@ impl Encoder {
                 near: near.to_string(),
                 far: far.to_string(),
                 direction: *direction,
-                label: opt_str_opt(label),
+                label: opt_edge_label_str(label),
                 near_property_projection: opt_str_slice(near_property_projection),
                 far_property_projection: opt_str_slice(far_property_projection),
                 hop_aux_binding: opt_str_opt(hop_aux_binding),
@@ -115,7 +115,7 @@ impl Encoder {
                     .iter()
                     .map(encode_conditional_candidate)
                     .collect(),
-                fallback_label: opt_str_opt(fallback_label),
+                fallback_label: opt_node_label_str(fallback_label),
                 fallback_variable: fallback_variable.to_string(),
                 property_projection: opt_str_slice(property_projection),
             },
@@ -143,7 +143,7 @@ impl Encoder {
                 edge: edge.to_string(),
                 dst: dst.to_string(),
                 direction: *direction,
-                label: opt_str_opt(label),
+                label: opt_edge_label_str(label),
                 label_expr: opt_label_expr_id(self, label_expr.as_ref())?,
                 var_len: var_len.map(var_len_to_wire),
                 indexed_edge_equality: encode_indexed_edge_equality(indexed_edge_equality)?,
@@ -175,7 +175,7 @@ impl Encoder {
                 edge: edge.to_string(),
                 dst: dst.to_string(),
                 direction: *direction,
-                label: opt_str_opt(label),
+                label: opt_edge_label_str(label),
                 label_expr: opt_label_expr_id(self, label_expr.as_ref())?,
                 var_len: var_len.map(var_len_to_wire),
                 indexed_edge_equality: encode_indexed_edge_equality(indexed_edge_equality)?,
@@ -209,7 +209,7 @@ impl Encoder {
                 emit_path_binding: *emit_path_binding,
                 mode: shortest_mode_to_wire(*mode),
                 direction: *direction,
-                label: opt_str_opt(label),
+                label: opt_edge_label_str(label),
                 label_expr: opt_label_expr_id(self, label_expr.as_ref())?,
                 var_len: var_len.map(var_len_to_wire),
                 cost: encode_shortest_path_cost(self, cost)?,
@@ -354,7 +354,7 @@ impl Encoder {
                 properties,
             } => PlanOpWire::InsertVertex {
                 variable: opt_str_opt(variable),
-                labels: vec_str(labels),
+                labels: vec_node_labels(labels),
                 properties: properties
                     .iter()
                     .map(|p| self.encode_property_assignment(p))
@@ -372,7 +372,7 @@ impl Encoder {
                 src: src.to_string(),
                 dst: dst.to_string(),
                 direction: *direction,
-                labels: vec_str(labels),
+                labels: vec_edge_labels(labels),
                 properties: properties
                     .iter()
                     .map(|p| self.encode_property_assignment(p))
@@ -459,7 +459,7 @@ impl Encoder {
             src: edge.src.to_string(),
             dst: edge.dst.to_string(),
             variable: edge.variable.to_string(),
-            label: opt_str_opt(&edge.label),
+            label: opt_edge_label_str(&edge.label),
             label_expr: opt_label_expr_id(self, edge.label_expr.as_ref())?,
             direction: edge.direction,
             var_len: edge.var_len.map(var_len_to_wire),

@@ -168,7 +168,7 @@ struct CollectedWcojHop {
     src: Str,
     dst: Str,
     edge: Str,
-    label: Option<Str>,
+    label: Option<EdgeLabelRef>,
     label_expr: Option<LabelExpr>,
     direction: EdgeDirection,
     var_len: Option<VarLenSpec>,

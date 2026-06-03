@@ -4,8 +4,9 @@ use gleaph_gql::Value;
 use gleaph_gql::ast::CmpOp;
 
 use crate::plan::{
-    ConditionalScanCandidate, EdgePayloadPredicate, EdgeVectorMetric, EdgeVectorPredicate,
-    IndexScanSpec, RemovePlanItem, ScanValue, ShortestMode, Str, VarLenSpec, YieldColumn,
+    ConditionalScanCandidate, EdgeLabelRef, EdgePayloadPredicate, EdgeVectorMetric,
+    EdgeVectorPredicate, IndexScanSpec, NodeLabelRef, RemovePlanItem, ScanValue, ShortestMode, Str,
+    VarLenSpec, YieldColumn,
 };
 
 use rkyv::rancor;
@@ -28,12 +29,44 @@ pub(super) fn opt_rc_str(s: &Option<String>) -> Option<Str> {
     s.as_ref().map(|x| x.as_str().into())
 }
 
+pub(super) fn opt_node_label_str(s: &Option<NodeLabelRef>) -> Option<String> {
+    s.as_ref().map(|x| x.to_string())
+}
+
+pub(super) fn opt_edge_label_str(s: &Option<EdgeLabelRef>) -> Option<String> {
+    s.as_ref().map(|x| x.to_string())
+}
+
+pub(super) fn opt_node_label(s: &Option<String>) -> Option<NodeLabelRef> {
+    s.as_ref().map(|x| NodeLabelRef::from(x.as_str()))
+}
+
+pub(super) fn opt_edge_label(s: &Option<String>) -> Option<EdgeLabelRef> {
+    s.as_ref().map(|x| EdgeLabelRef::from(x.as_str()))
+}
+
 pub(super) fn vec_str(v: &[Str]) -> Vec<String> {
     v.iter().map(|s| s.to_string()).collect()
 }
 
 pub(super) fn vec_rc_str(v: &[String]) -> Vec<Str> {
     v.iter().map(|s| s.as_str().into()).collect()
+}
+
+pub(super) fn vec_node_labels(v: &[NodeLabelRef]) -> Vec<String> {
+    v.iter().map(|s| s.to_string()).collect()
+}
+
+pub(super) fn vec_edge_labels(v: &[EdgeLabelRef]) -> Vec<String> {
+    v.iter().map(|s| s.to_string()).collect()
+}
+
+pub(super) fn decode_node_labels(v: &[String]) -> Vec<NodeLabelRef> {
+    v.iter().map(|s| NodeLabelRef::from(s.as_str())).collect()
+}
+
+pub(super) fn decode_edge_labels(v: &[String]) -> Vec<EdgeLabelRef> {
+    v.iter().map(|s| EdgeLabelRef::from(s.as_str())).collect()
 }
 
 pub(super) fn opt_str_slice(s: &Option<Rc<[Str]>>) -> Option<Vec<String>> {
@@ -262,7 +295,7 @@ pub(super) fn decode_remove_item(item: &RemovePlanItemWire) -> RemovePlanItem {
         },
         RemovePlanItemWire::Label { variable, label } => RemovePlanItem::Label {
             variable: rc_str(variable),
-            label: rc_str(label),
+            label: NodeLabelRef::from(label.as_str()),
         },
     }
 }

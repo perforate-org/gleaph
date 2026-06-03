@@ -296,10 +296,12 @@ pub(super) fn first_hop_supports_leading_edge_index(
 
 /// Split edge pattern label into a cheap single-name [`PlanOp::Expand::label`] plus an optional
 /// [`PlanOp::Expand::label_expr`] for unions, negation, `&`, etc.
-pub(super) fn plan_edge_expand_labels(edge: &EdgePattern) -> (Option<Str>, Option<LabelExpr>) {
+pub(super) fn plan_edge_expand_labels(
+    edge: &EdgePattern,
+) -> (Option<EdgeLabelRef>, Option<LabelExpr>) {
     match &edge.label {
         None => (None, None),
-        Some(LabelExpr::Name(n)) => (Some(Str::from(n.as_str())), None),
+        Some(LabelExpr::Name(n)) => (Some(EdgeLabelRef::from(n.as_str())), None),
         Some(le) => (None, Some(le.clone())),
     }
 }

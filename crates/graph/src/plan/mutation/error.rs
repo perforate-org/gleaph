@@ -47,6 +47,10 @@ pub enum PlanMutationError {
     MissingParameter {
         name: String,
     },
+    MissingResolvedLabel {
+        namespace: &'static str,
+        name: String,
+    },
     RuntimeFunction(RuntimeFunctionError),
 }
 
@@ -112,6 +116,9 @@ impl fmt::Display for PlanMutationError {
             Self::UnsupportedSetItem(item) => write!(f, "unsupported SET item: {item}"),
             Self::UnsupportedRemoveItem(item) => write!(f, "unsupported REMOVE item: {item}"),
             Self::MissingParameter { name } => write!(f, "missing parameter '{name}'"),
+            Self::MissingResolvedLabel { namespace, name } => {
+                write!(f, "missing router-resolved {namespace} label '{name}'")
+            }
             Self::RuntimeFunction(err) => write!(f, "{err}"),
         }
     }

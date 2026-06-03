@@ -280,21 +280,21 @@ fn ensure_edge_payload_decoder_is_weight(
 
 enum EdgeProducer<'a> {
     Expand {
-        label: Option<&'a Str>,
+        label: Option<&'a str>,
         label_expr: &'a Option<LabelExpr>,
         var_len: &'a Option<VarLenSpec>,
         indexed_edge_equality: &'a Option<(Str, ScanValue)>,
         hop_aux_binding: &'a Option<Str>,
     },
     ExpandFilter {
-        label: Option<&'a Str>,
+        label: Option<&'a str>,
         label_expr: &'a Option<LabelExpr>,
         var_len: &'a Option<VarLenSpec>,
         indexed_edge_equality: &'a Option<(Str, ScanValue)>,
         hop_aux_binding: &'a Option<Str>,
     },
     ShortestPath {
-        label: Option<&'a Str>,
+        label: Option<&'a str>,
         label_expr: &'a Option<LabelExpr>,
         var_len: &'a Option<VarLenSpec>,
     },
@@ -320,7 +320,7 @@ fn edge_producer_from_op<'a>(op: &'a PlanOp, edge_var: &str) -> Option<EdgeProdu
             hop_aux_binding,
             ..
         } if edge.as_ref() == edge_var => Some(EdgeProducer::Expand {
-            label: label.as_ref(),
+            label: label.as_deref(),
             label_expr,
             var_len,
             indexed_edge_equality,
@@ -335,7 +335,7 @@ fn edge_producer_from_op<'a>(op: &'a PlanOp, edge_var: &str) -> Option<EdgeProdu
             hop_aux_binding,
             ..
         } if edge.as_ref() == edge_var => Some(EdgeProducer::ExpandFilter {
-            label: label.as_ref(),
+            label: label.as_deref(),
             label_expr,
             var_len,
             indexed_edge_equality,
@@ -348,7 +348,7 @@ fn edge_producer_from_op<'a>(op: &'a PlanOp, edge_var: &str) -> Option<EdgeProdu
             var_len,
             ..
         } if edge.as_ref() == edge_var => Some(EdgeProducer::ShortestPath {
-            label: label.as_ref(),
+            label: label.as_deref(),
             label_expr,
             var_len,
         }),

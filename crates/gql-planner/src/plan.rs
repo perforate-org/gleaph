@@ -14,6 +14,9 @@
 //! joins, `OPTIONAL MATCH`, `USE GRAPH`, etc.) is graph-mutating. Executors use it to decide whether a
 //! terminal `GraphWrite::flush` is needed after the plan.
 
+use std::collections::BTreeMap;
+use std::fmt;
+use std::ops::Deref;
 use std::rc::Rc;
 
 pub use gleaph_gql::ast::CmpOp;
@@ -24,6 +27,147 @@ use gleaph_gql::types::{EdgeDirection, LabelExpr};
 
 /// Cheaply-cloneable string type for identifiers (variable names, labels, properties, etc.).
 pub type Str = Rc<str>;
+
+/// A node-label reference in a physical plan.
+///
+/// This is intentionally a planner-generic name wrapper, not a backend label id.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NodeLabelRef {
+    pub name: Str,
+}
+
+impl NodeLabelRef {
+    pub fn new(name: impl Into<Str>) -> Self {
+        Self { name: name.into() }
+    }
+}
+
+impl AsRef<str> for NodeLabelRef {
+    fn as_ref(&self) -> &str {
+        &self.name
+    }
+}
+
+impl Deref for NodeLabelRef {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.name
+    }
+}
+
+impl fmt::Display for NodeLabelRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.name.fmt(f)
+    }
+}
+
+impl From<&str> for NodeLabelRef {
+    fn from(value: &str) -> Self {
+        Self::new(Str::from(value))
+    }
+}
+
+impl From<String> for NodeLabelRef {
+    fn from(value: String) -> Self {
+        Self::new(Str::from(value))
+    }
+}
+
+impl From<Str> for NodeLabelRef {
+    fn from(value: Str) -> Self {
+        Self::new(value)
+    }
+}
+
+/// An edge-label reference in a physical plan.
+///
+/// This is intentionally a planner-generic name wrapper, not a backend label id.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EdgeLabelRef {
+    pub name: Str,
+}
+
+impl EdgeLabelRef {
+    pub fn new(name: impl Into<Str>) -> Self {
+        Self { name: name.into() }
+    }
+}
+
+impl AsRef<str> for EdgeLabelRef {
+    fn as_ref(&self) -> &str {
+        &self.name
+    }
+}
+
+impl Deref for EdgeLabelRef {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.name
+    }
+}
+
+impl fmt::Display for EdgeLabelRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.name.fmt(f)
+    }
+}
+
+impl From<&str> for EdgeLabelRef {
+    fn from(value: &str) -> Self {
+        Self::new(Str::from(value))
+    }
+}
+
+impl From<String> for EdgeLabelRef {
+    fn from(value: String) -> Self {
+        Self::new(Str::from(value))
+    }
+}
+
+impl From<Str> for EdgeLabelRef {
+    fn from(value: Str) -> Self {
+        Self::new(value)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LabelUseIntent {
+    ReadExisting,
+    CreateIfMissing,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PlanLabelUses {
+    pub node_labels: BTreeMap<Str, LabelUseIntent>,
+    pub edge_labels: BTreeMap<Str, LabelUseIntent>,
+}
+
+impl PlanLabelUses {
+    fn add_node(&mut self, label: &NodeLabelRef, intent: LabelUseIntent) {
+        merge_label_intent(&mut self.node_labels, label.name.clone(), intent);
+    }
+
+    fn add_edge(&mut self, label: &EdgeLabelRef, intent: LabelUseIntent) {
+        merge_label_intent(&mut self.edge_labels, label.name.clone(), intent);
+    }
+}
+
+fn merge_label_intent(
+    labels: &mut BTreeMap<Str, LabelUseIntent>,
+    name: Str,
+    intent: LabelUseIntent,
+) {
+    labels
+        .entry(name)
+        .and_modify(|existing| {
+            if intent == LabelUseIntent::CreateIfMissing {
+                *existing = intent;
+            }
+        })
+        .or_insert(intent);
+}
 
 /// Variable import scope for an inline procedure call.
 #[derive(Clone, Debug)]
@@ -87,6 +231,13 @@ impl PhysicalPlan {
     pub fn use_graph_pushdown(&self) -> &[UseGraphPushdownInfo] {
         &self.annotations.optimizer.use_graph_pushdown
     }
+
+    /// Collect node-label and edge-label names referenced by this plan.
+    pub fn label_uses(&self) -> PlanLabelUses {
+        let mut uses = PlanLabelUses::default();
+        collect_label_uses_in_ops(&self.ops, &mut uses);
+        uses
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -135,7 +286,7 @@ pub enum PlanOp {
         /// Variable bound to each scanned vertex.
         variable: Str,
         /// Optional label constraint (only vertices with this label).
-        label: Option<Str>,
+        label: Option<NodeLabelRef>,
         /// When set, only these property keys are hydrated on each bound vertex record.
         /// `None` retains full property maps (legacy path).
         property_projection: Option<Rc<[Str]>>,
@@ -166,7 +317,7 @@ pub enum PlanOp {
         far: Str,
         direction: EdgeDirection,
         /// When set, rows whose edge label does not match are dropped.
-        label: Option<Str>,
+        label: Option<EdgeLabelRef>,
         near_property_projection: Option<Rc<[Str]>>,
         far_property_projection: Option<Rc<[Str]>>,
         /// When set, executor binds hop auxiliary bytes under this name (same semantics as [`PlanOp::Expand::hop_aux_binding`]).
@@ -178,7 +329,7 @@ pub enum PlanOp {
     ConditionalIndexScan {
         candidates: Vec<ConditionalScanCandidate>,
         /// Fallback label for full scan when all parameters are null.
-        fallback_label: Option<Str>,
+        fallback_label: Option<NodeLabelRef>,
         fallback_variable: Str,
         property_projection: Option<Rc<[Str]>>,
     },
@@ -199,7 +350,7 @@ pub enum PlanOp {
         edge: Str,
         dst: Str,
         direction: EdgeDirection,
-        label: Option<Str>,
+        label: Option<EdgeLabelRef>,
         /// General edge label predicate (disjunction, negation, `&`, …). When set, `label` is `None`.
         label_expr: Option<LabelExpr>,
         /// Variable-length expansion bounds (e.g. `*2..5`).
@@ -228,7 +379,7 @@ pub enum PlanOp {
         edge: Str,
         dst: Str,
         direction: EdgeDirection,
-        label: Option<Str>,
+        label: Option<EdgeLabelRef>,
         label_expr: Option<LabelExpr>,
         var_len: Option<VarLenSpec>,
         /// When set, same indexed edge-property path as [`PlanOp::Expand`].
@@ -262,7 +413,7 @@ pub enum PlanOp {
         emit_path_binding: bool,
         mode: ShortestMode,
         direction: EdgeDirection,
-        label: Option<Str>,
+        label: Option<EdgeLabelRef>,
         /// General edge label predicate (same convention as [`PlanOp::Expand`]). When set, `label` is `None`.
         label_expr: Option<LabelExpr>,
         var_len: Option<VarLenSpec>,
@@ -394,7 +545,7 @@ pub enum PlanOp {
     /// Insert a new vertex with labels and properties.
     InsertVertex {
         variable: Option<Str>,
-        labels: Vec<Str>,
+        labels: Vec<NodeLabelRef>,
         properties: Vec<PropertyAssignment>,
     },
 
@@ -404,7 +555,7 @@ pub enum PlanOp {
         src: Str,
         dst: Str,
         direction: EdgeDirection,
-        labels: Vec<Str>,
+        labels: Vec<EdgeLabelRef>,
         properties: Vec<PropertyAssignment>,
     },
 
@@ -460,6 +611,99 @@ fn ops_contain_dml(ops: &[PlanOp]) -> bool {
     })
 }
 
+fn collect_label_uses_in_ops(ops: &[PlanOp], uses: &mut PlanLabelUses) {
+    for op in ops {
+        match op {
+            PlanOp::NodeScan { label, .. } => {
+                if let Some(label) = label {
+                    uses.add_node(label, LabelUseIntent::ReadExisting);
+                }
+            }
+            PlanOp::EdgeBindEndpoints { label, .. }
+            | PlanOp::Expand { label, .. }
+            | PlanOp::ExpandFilter { label, .. }
+            | PlanOp::ShortestPath { label, .. } => {
+                if let Some(label) = label {
+                    uses.add_edge(label, LabelUseIntent::ReadExisting);
+                }
+            }
+            PlanOp::ConditionalIndexScan { fallback_label, .. } => {
+                if let Some(label) = fallback_label {
+                    uses.add_node(label, LabelUseIntent::ReadExisting);
+                }
+            }
+            PlanOp::InsertVertex { labels, .. } => {
+                for label in labels {
+                    uses.add_node(label, LabelUseIntent::CreateIfMissing);
+                }
+            }
+            PlanOp::InsertEdge { labels, .. } => {
+                for label in labels {
+                    uses.add_edge(label, LabelUseIntent::CreateIfMissing);
+                }
+            }
+            PlanOp::SetProperties { items } => {
+                for item in items {
+                    if let SetPlanItem::Label { label, .. } = item {
+                        uses.add_node(label, LabelUseIntent::CreateIfMissing);
+                    }
+                }
+            }
+            PlanOp::RemoveProperties { items } => {
+                for item in items {
+                    if let RemovePlanItem::Label { label, .. } = item {
+                        uses.add_node(label, LabelUseIntent::ReadExisting);
+                    }
+                }
+            }
+            PlanOp::WorstCaseOptimalJoin { edges, .. } => {
+                for edge in edges {
+                    if let Some(label) = &edge.label {
+                        uses.add_edge(label, LabelUseIntent::ReadExisting);
+                    }
+                }
+            }
+            PlanOp::HashJoin { left, right, .. } => {
+                collect_label_uses_in_ops(left, uses);
+                collect_label_uses_in_ops(right, uses);
+            }
+            PlanOp::CartesianProduct { left, right } => {
+                collect_label_uses_in_ops(left, uses);
+                collect_label_uses_in_ops(right, uses);
+            }
+            PlanOp::SetOperation { right, .. } => {
+                collect_label_uses_in_ops(&right.ops, uses);
+            }
+            PlanOp::OptionalMatch { sub_plan } => collect_label_uses_in_ops(sub_plan, uses),
+            PlanOp::InlineProcedureCall { sub_plan, .. } => {
+                collect_label_uses_in_ops(&sub_plan.ops, uses);
+            }
+            PlanOp::UseGraph {
+                sub_plan: Some(sub_plan),
+                ..
+            } => collect_label_uses_in_ops(sub_plan, uses),
+            PlanOp::IndexScan { .. }
+            | PlanOp::EdgeIndexScan { .. }
+            | PlanOp::PropertyFilter { .. }
+            | PlanOp::Let { .. }
+            | PlanOp::For { .. }
+            | PlanOp::Filter { .. }
+            | PlanOp::CallProcedure { .. }
+            | PlanOp::UseGraph { sub_plan: None, .. }
+            | PlanOp::Aggregate { .. }
+            | PlanOp::Project { .. }
+            | PlanOp::Sort { .. }
+            | PlanOp::Limit { .. }
+            | PlanOp::IndexIntersection { .. }
+            | PlanOp::TopK { .. }
+            | PlanOp::Materialize { .. }
+            | PlanOp::DeleteVertex { .. }
+            | PlanOp::DetachDeleteVertex { .. }
+            | PlanOp::DeleteEdge { .. } => {}
+        }
+    }
+}
+
 // ════════════════════════════════════════════════════════════════════════════════
 // Supporting types
 // ════════════════════════════════════════════════════════════════════════════════
@@ -483,7 +727,7 @@ pub enum SetPlanItem {
     /// SET v = expr (replace all properties)
     AllProperties { variable: Str, value: Expr },
     /// SET v IS Label
-    Label { variable: Str, label: Str },
+    Label { variable: Str, label: NodeLabelRef },
 }
 
 /// A single REMOVE plan item.
@@ -492,7 +736,7 @@ pub enum RemovePlanItem {
     /// REMOVE v.property
     Property { variable: Str, property: Str },
     /// REMOVE v IS Label
-    Label { variable: Str, label: Str },
+    Label { variable: Str, label: NodeLabelRef },
 }
 
 /// A value used in index scan predicates.
@@ -697,7 +941,7 @@ pub struct WcojEdge {
     pub src: Str,
     pub dst: Str,
     pub variable: Str,
-    pub label: Option<Str>,
+    pub label: Option<EdgeLabelRef>,
     pub label_expr: Option<LabelExpr>,
     pub direction: EdgeDirection,
     /// Variable-length segment (`None` = exactly one edge).
@@ -733,7 +977,7 @@ pub enum AnchorSource {
         cmp: CmpOp,
     },
     /// Lowest-cardinality label.
-    LabelCardinality { label: Str },
+    LabelCardinality { label: NodeLabelRef },
     /// Schema-inferred endpoint.
     SchemaEndpoint,
     /// Full scan fallback.

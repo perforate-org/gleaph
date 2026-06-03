@@ -84,7 +84,8 @@ pub(crate) async fn execute_shortest_path(
     emit_path_binding: bool,
     mode: ShortestMode,
     direction: EdgeDirection,
-    label: Option<&Str>,
+    label: Option<&str>,
+    execution: &crate::gql_execution_context::GqlExecutionContext,
     label_expr: &Option<LabelExpr>,
     var_len: &Option<VarLenSpec>,
     cost: &ShortestPathCost,
@@ -99,7 +100,17 @@ pub(crate) async fn execute_shortest_path(
         return Err(PlanQueryError::UnsupportedOp("ShortestPath.label_expr"));
     }
 
-    let label_id = label.and_then(|label| store.edge_label_id(label.as_ref()));
+    let label_id = match label {
+        Some(label) if execution.requires_resolved_labels() => execution
+            .resolved_edge_label_id(label)
+            .map(Some)
+            .ok_or_else(|| PlanQueryError::MissingResolvedLabel {
+                namespace: "edge",
+                name: label.to_owned(),
+            })?,
+        Some(label) => store.edge_label_id(label),
+        None => None,
+    };
     if label.is_some() && label_id.is_none() {
         return Ok(Vec::new());
     }

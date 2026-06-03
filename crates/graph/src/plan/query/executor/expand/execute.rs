@@ -108,7 +108,8 @@ pub(crate) async fn execute_expand(
     edge: &Str,
     dst: &Str,
     direction: EdgeDirection,
-    label: Option<&Str>,
+    label: Option<&str>,
+    execution: &crate::gql_execution_context::GqlExecutionContext,
     sequence_order: EdgeSequenceOrder,
     dst_filter: &[Expr],
     emit_edge_binding: bool,
@@ -122,7 +123,17 @@ pub(crate) async fn execute_expand(
     let parameters = ctx.parameters;
     let caller = ctx.caller();
     let gleaph_weight_decoders = ctx.gleaph_weight_decoders;
-    let label_id = label.and_then(|label| store.edge_label_id(label.as_ref()));
+    let label_id = match label {
+        Some(label) if execution.requires_resolved_labels() => execution
+            .resolved_edge_label_id(label)
+            .map(Some)
+            .ok_or_else(|| PlanQueryError::MissingResolvedLabel {
+                namespace: "edge",
+                name: label.to_owned(),
+            })?,
+        Some(label) => store.edge_label_id(label),
+        None => None,
+    };
     if label.is_some() && label_id.is_none() {
         return Ok(Vec::new());
     }

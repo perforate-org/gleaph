@@ -10,10 +10,11 @@ use gleaph_gql::token::Span;
 
 use super::PhysicalPlanWire;
 use super::helpers::{
-    decode_conditional_candidate, decode_edge_payload_predicate, decode_edge_vector_predicate,
-    decode_index_scan_spec, decode_indexed_edge_equality, decode_remove_item, decode_scan_value,
-    decode_str_slice, decode_yield_column, opt_rc_str, rc_str, shortest_mode_from_wire,
-    var_len_from_wire, vec_rc_str,
+    decode_conditional_candidate, decode_edge_labels, decode_edge_payload_predicate,
+    decode_edge_vector_predicate, decode_index_scan_spec, decode_indexed_edge_equality,
+    decode_node_labels, decode_remove_item, decode_scan_value, decode_str_slice,
+    decode_yield_column, opt_edge_label, opt_node_label, opt_rc_str, rc_str,
+    shortest_mode_from_wire, var_len_from_wire, vec_rc_str,
 };
 use super::physical_plan_from_wire;
 use super::pools::{rkyv_decode_expr, rkyv_decode_label_expr, rkyv_decode_order_by};
@@ -72,7 +73,7 @@ impl<'a> Decoder<'a> {
                 property_projection,
             } => PlanOp::NodeScan {
                 variable: rc_str(variable),
-                label: opt_rc_str(label),
+                label: opt_node_label(label),
                 property_projection: decode_str_slice(property_projection),
             },
             PlanOpWire::IndexScan {
@@ -113,7 +114,7 @@ impl<'a> Decoder<'a> {
                 near: rc_str(near),
                 far: rc_str(far),
                 direction: *direction,
-                label: opt_rc_str(label),
+                label: opt_edge_label(label),
                 near_property_projection: decode_str_slice(near_property_projection),
                 far_property_projection: decode_str_slice(far_property_projection),
                 hop_aux_binding: opt_rc_str(hop_aux_binding),
@@ -128,7 +129,7 @@ impl<'a> Decoder<'a> {
                     .iter()
                     .map(decode_conditional_candidate)
                     .collect(),
-                fallback_label: opt_rc_str(fallback_label),
+                fallback_label: opt_node_label(fallback_label),
                 fallback_variable: rc_str(fallback_variable),
                 property_projection: decode_str_slice(property_projection),
             },
@@ -159,7 +160,7 @@ impl<'a> Decoder<'a> {
                 edge: rc_str(edge),
                 dst: rc_str(dst),
                 direction: *direction,
-                label: opt_rc_str(label),
+                label: opt_edge_label(label),
                 label_expr: decode_opt_label_expr(self, *label_expr)?,
                 var_len: var_len.map(var_len_from_wire),
                 indexed_edge_equality: decode_indexed_edge_equality(indexed_edge_equality)?,
@@ -191,7 +192,7 @@ impl<'a> Decoder<'a> {
                 edge: rc_str(edge),
                 dst: rc_str(dst),
                 direction: *direction,
-                label: opt_rc_str(label),
+                label: opt_edge_label(label),
                 label_expr: decode_opt_label_expr(self, *label_expr)?,
                 var_len: var_len.map(var_len_from_wire),
                 indexed_edge_equality: decode_indexed_edge_equality(indexed_edge_equality)?,
@@ -228,7 +229,7 @@ impl<'a> Decoder<'a> {
                 emit_path_binding: *emit_path_binding,
                 mode: shortest_mode_from_wire(*mode),
                 direction: *direction,
-                label: opt_rc_str(label),
+                label: opt_edge_label(label),
                 label_expr: decode_opt_label_expr(self, *label_expr)?,
                 var_len: var_len.map(var_len_from_wire),
                 cost: decode_shortest_path_cost(self, cost)?,
@@ -380,7 +381,7 @@ impl<'a> Decoder<'a> {
                 properties,
             } => PlanOp::InsertVertex {
                 variable: opt_rc_str(variable),
-                labels: vec_rc_str(labels),
+                labels: decode_node_labels(labels),
                 properties: properties
                     .iter()
                     .map(|p| self.decode_property_assignment(p))
@@ -398,7 +399,7 @@ impl<'a> Decoder<'a> {
                 src: rc_str(src),
                 dst: rc_str(dst),
                 direction: *direction,
-                labels: vec_rc_str(labels),
+                labels: decode_edge_labels(labels),
                 properties: properties
                     .iter()
                     .map(|p| self.decode_property_assignment(p))
@@ -471,7 +472,7 @@ impl<'a> Decoder<'a> {
             },
             SetPlanItemWire::Label { variable, label } => SetPlanItem::Label {
                 variable: rc_str(variable),
-                label: rc_str(label),
+                label: crate::plan::NodeLabelRef::from(label.as_str()),
             },
         })
     }
@@ -481,7 +482,7 @@ impl<'a> Decoder<'a> {
             src: rc_str(&edge.src),
             dst: rc_str(&edge.dst),
             variable: rc_str(&edge.variable),
-            label: opt_rc_str(&edge.label),
+            label: opt_edge_label(&edge.label),
             label_expr: decode_opt_label_expr(self, edge.label_expr)?,
             direction: edge.direction,
             var_len: edge.var_len.map(var_len_from_wire),

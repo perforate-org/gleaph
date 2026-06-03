@@ -9,6 +9,7 @@ use ic_stable_lara::traits::CsrVertexTombstone;
 use nohash_hasher::IntSet;
 
 use crate::facade::GraphStore;
+use crate::gql_execution_context::GqlExecutionContext;
 use crate::index::lookup::PropertyIndexLookup;
 use crate::index::placement;
 use crate::plan::query::error::PlanQueryError;
@@ -156,8 +157,9 @@ pub(crate) async fn execute_conditional_index_scan(
     parameters: &BTreeMap<String, Value>,
     index: Option<&dyn PropertyIndexLookup>,
     candidates: &[ConditionalScanCandidate],
-    fallback_label: Option<&Str>,
+    fallback_label: Option<&str>,
     fallback_variable: &Str,
+    execution: &GqlExecutionContext,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
     for c in candidates {
         let pv = parameters
@@ -183,7 +185,7 @@ pub(crate) async fn execute_conditional_index_scan(
             return materialize_federated_index_hits(store, rows, c.variable.as_ref(), &hits).await;
         }
     }
-    execute_node_scan(store, rows, fallback_variable, fallback_label)
+    execute_node_scan(store, rows, fallback_variable, fallback_label, execution)
 }
 
 pub(crate) async fn execute_index_intersection(
@@ -285,9 +287,20 @@ pub(crate) fn execute_node_scan(
     store: &GraphStore,
     rows: Vec<PlanRow>,
     variable: &Str,
-    label: Option<&Str>,
+    label: Option<&str>,
+    execution: &GqlExecutionContext,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
-    let label_id = label.and_then(|label| store.vertex_label_id(label.as_ref()));
+    let label_id = match label {
+        Some(label) if execution.requires_resolved_labels() => execution
+            .resolved_vertex_label_id(label)
+            .map(Some)
+            .ok_or_else(|| PlanQueryError::MissingResolvedLabel {
+                namespace: "node",
+                name: label.to_owned(),
+            })?,
+        Some(label) => store.vertex_label_id(label),
+        None => None,
+    };
     if label.is_some() && label_id.is_none() {
         return Ok(Vec::new());
     }

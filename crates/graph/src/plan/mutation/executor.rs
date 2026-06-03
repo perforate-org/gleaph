@@ -6,6 +6,7 @@ use crate::gql_execution_context::GqlExecutionContext;
 use gleaph_gql::Value;
 use gleaph_gql::types::EdgeDirection;
 use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, RemovePlanItem, SetPlanItem, Str};
+use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId, VertexLabelId};
 use ic_stable_lara::VertexId;
 use std::collections::BTreeMap;
 
@@ -60,8 +61,16 @@ fn execute_ops_with_bindings(
                 properties,
             } => {
                 let properties = evaluator.resolve_assignments(properties)?;
-                let vertex_id =
-                    store.insert_vertex_named(labels.iter().map(Str::as_ref), properties)?;
+                let vertex_id = if execution.requires_resolved_labels() {
+                    let label_ids = resolve_vertex_labels(&execution, labels)?;
+                    let property_ids = resolve_mutation_properties(store, properties)?;
+                    store.insert_vertex_with(label_ids, property_ids)?
+                } else {
+                    store.insert_vertex_named(
+                        labels.iter().map(|label| label.as_ref()),
+                        properties,
+                    )?
+                };
                 if let Some(variable) = variable {
                     bindings.vertices.insert(variable.to_string(), vertex_id);
                 }
@@ -84,17 +93,54 @@ fn execute_ops_with_bindings(
                         variable: dst.to_string(),
                     }
                 })?;
-                let label = labels.first().map(Str::as_ref);
                 let properties = evaluator.resolve_assignments(properties)?;
+                let resolved_label = if execution.requires_resolved_labels() {
+                    resolve_edge_label(&execution, labels.first())?
+                } else {
+                    None
+                };
                 let handle = match direction {
                     EdgeDirection::PointingRight => {
-                        store.insert_directed_edge_named(src_id, dst_id, label, properties)?
+                        if execution.requires_resolved_labels() {
+                            let property_ids = resolve_mutation_properties(store, properties)?;
+                            store.insert_directed_edge_with(
+                                src_id,
+                                dst_id,
+                                resolved_label,
+                                property_ids,
+                            )?
+                        } else {
+                            let label = labels.first().map(|label| label.as_ref());
+                            store.insert_directed_edge_named(src_id, dst_id, label, properties)?
+                        }
                     }
                     EdgeDirection::PointingLeft => {
-                        store.insert_directed_edge_named(dst_id, src_id, label, properties)?
+                        if execution.requires_resolved_labels() {
+                            let property_ids = resolve_mutation_properties(store, properties)?;
+                            store.insert_directed_edge_with(
+                                dst_id,
+                                src_id,
+                                resolved_label,
+                                property_ids,
+                            )?
+                        } else {
+                            let label = labels.first().map(|label| label.as_ref());
+                            store.insert_directed_edge_named(dst_id, src_id, label, properties)?
+                        }
                     }
                     EdgeDirection::Undirected => {
-                        store.insert_undirected_edge_named(src_id, dst_id, label, properties)?
+                        if execution.requires_resolved_labels() {
+                            let property_ids = resolve_mutation_properties(store, properties)?;
+                            store.insert_undirected_edge_with(
+                                src_id,
+                                dst_id,
+                                resolved_label,
+                                property_ids,
+                            )?
+                        } else {
+                            let label = labels.first().map(|label| label.as_ref());
+                            store.insert_undirected_edge_named(src_id, dst_id, label, properties)?
+                        }
                     }
                     other => return Err(PlanMutationError::UnsupportedDirection(*other)),
                 };
@@ -105,7 +151,9 @@ fn execute_ops_with_bindings(
             PlanOp::UseGraph {
                 sub_plan: Some(sub_plan),
                 ..
-            } => execute_ops_with_bindings(store, sub_plan, parameters, execution, bindings)?,
+            } => {
+                execute_ops_with_bindings(store, sub_plan, parameters, execution.clone(), bindings)?
+            }
             PlanOp::SetProperties { items } => {
                 for item in items {
                     execute_set_item(store, item, &evaluator, bindings)?;
@@ -347,6 +395,55 @@ fn plan_op_name(op: &PlanOp) -> &'static str {
         PlanOp::DeleteEdge { .. } => "DeleteEdge",
         _ => "PlanOp",
     }
+}
+
+fn resolve_vertex_labels(
+    execution: &GqlExecutionContext,
+    labels: &[gleaph_gql_planner::NodeLabelRef],
+) -> Result<Vec<VertexLabelId>, PlanMutationError> {
+    labels
+        .iter()
+        .map(|label| {
+            execution
+                .resolved_vertex_label_id(label.as_ref())
+                .ok_or_else(|| PlanMutationError::MissingResolvedLabel {
+                    namespace: "node",
+                    name: label.to_string(),
+                })
+        })
+        .collect()
+}
+
+fn resolve_edge_label(
+    execution: &GqlExecutionContext,
+    label: Option<&gleaph_gql_planner::EdgeLabelRef>,
+) -> Result<Option<EdgeLabelId>, PlanMutationError> {
+    label
+        .map(|label| {
+            execution
+                .resolved_edge_label_id(label.as_ref())
+                .ok_or_else(|| PlanMutationError::MissingResolvedLabel {
+                    namespace: "edge",
+                    name: label.to_string(),
+                })
+        })
+        .transpose()
+}
+
+fn resolve_mutation_properties(
+    store: &GraphStore,
+    properties: impl IntoIterator<Item = (impl AsRef<str>, Value)>,
+) -> Result<Vec<(PropertyId, Value)>, PlanMutationError> {
+    properties
+        .into_iter()
+        .map(|(name, value)| {
+            store
+                .get_or_insert_property_id(name.as_ref())
+                .map(|id| (id, value))
+                .map_err(GraphStoreError::from)
+                .map_err(PlanMutationError::from)
+        })
+        .collect()
 }
 
 #[cfg(test)]

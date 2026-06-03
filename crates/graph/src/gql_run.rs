@@ -137,24 +137,35 @@ async fn run_transaction_block(
         }
         let plan = plan_statement(stmt).map_err(|e| GqlRunError::Plan(e.to_string()))?;
         if plan.has_dml() {
-            store.execute_plan_mutations(&plan, execution)?;
+            store.execute_plan_mutations(&plan, execution.clone())?;
             pending::flush_pending(index).await?;
         } else {
             match materialize {
                 TransactionReadMaterialize::Full => {
                     last_query_rows =
-                        execute_plan_query(store, &plan, parameters, index, execution).await?;
+                        execute_plan_query(store, &plan, parameters, index, execution.clone())
+                            .await?;
                 }
                 TransactionReadMaterialize::LastReadRowCountOnly => {
-                    let rows =
-                        execute_plan_query_bindings(store, &plan, parameters, index, execution)
-                            .await?;
+                    let rows = execute_plan_query_bindings(
+                        store,
+                        &plan,
+                        parameters,
+                        index,
+                        execution.clone(),
+                    )
+                    .await?;
                     last_read_row_count = rows.len();
                 }
                 TransactionReadMaterialize::LastReadBindingsOnly => {
-                    last_read_plan_rows =
-                        execute_plan_query_bindings(store, &plan, parameters, index, execution)
-                            .await?;
+                    last_read_plan_rows = execute_plan_query_bindings(
+                        store,
+                        &plan,
+                        parameters,
+                        index,
+                        execution.clone(),
+                    )
+                    .await?;
                     last_read_row_count = last_read_plan_rows.len();
                 }
             }
@@ -380,7 +391,7 @@ async fn run_wire_plans(
 
     for (i, plan) in plans.iter().enumerate() {
         if plan.has_dml() {
-            store.execute_plan_mutations(plan, execution)?;
+            store.execute_plan_mutations(plan, execution.clone())?;
             pending::flush_pending(index).await?;
             skip_index = false;
             seed_rows.clear();
@@ -395,20 +406,38 @@ async fn run_wire_plans(
             match materialize {
                 TransactionReadMaterialize::Full => {
                     last_query_rows = execute_plan_query_with_rows(
-                        store, plan, parameters, index, execution, initial, skip,
+                        store,
+                        plan,
+                        parameters,
+                        index,
+                        execution.clone(),
+                        initial,
+                        skip,
                     )
                     .await?;
                 }
                 TransactionReadMaterialize::LastReadRowCountOnly => {
                     let rows = execute_plan_query_bindings_with_initial_rows(
-                        store, plan, parameters, index, execution, initial, skip,
+                        store,
+                        plan,
+                        parameters,
+                        index,
+                        execution.clone(),
+                        initial,
+                        skip,
                     )
                     .await?;
                     last_read_row_count = rows.len();
                 }
                 TransactionReadMaterialize::LastReadBindingsOnly => {
                     last_read_plan_rows = execute_plan_query_bindings_with_initial_rows(
-                        store, plan, parameters, index, execution, initial, skip,
+                        store,
+                        plan,
+                        parameters,
+                        index,
+                        execution.clone(),
+                        initial,
+                        skip,
                     )
                     .await?;
                     last_read_row_count = last_read_plan_rows.len();
@@ -662,7 +691,10 @@ mod tests {
             &params,
             None,
             GqlCanisterExecutionMode::CompositeQuery,
-            GqlExecutionContext { caller: Some(p) },
+            GqlExecutionContext {
+                caller: Some(p),
+                ..Default::default()
+            },
         ))
         .expect("query");
         assert_eq!(q.rows.len(), 1);
@@ -688,7 +720,10 @@ mod tests {
             &params,
             None,
             GqlCanisterExecutionMode::Update,
-            GqlExecutionContext { caller: Some(p) },
+            GqlExecutionContext {
+                caller: Some(p),
+                ..Default::default()
+            },
         ))
         .expect("insert");
         let q = pollster::block_on(run_adhoc_gql(
@@ -697,7 +732,10 @@ mod tests {
             &params,
             None,
             GqlCanisterExecutionMode::CompositeQuery,
-            GqlExecutionContext { caller: Some(p) },
+            GqlExecutionContext {
+                caller: Some(p),
+                ..Default::default()
+            },
         ))
         .expect("read back");
         assert_eq!(q.rows.len(), 1);
@@ -723,7 +761,10 @@ mod tests {
             &params,
             None,
             GqlCanisterExecutionMode::CompositeQuery,
-            GqlExecutionContext { caller: Some(exec) },
+            GqlExecutionContext {
+                caller: Some(exec),
+                ..Default::default()
+            },
         ))
         .expect("exec prepared");
         assert_eq!(
@@ -798,7 +839,10 @@ mod tests {
             &params,
             None,
             GqlCanisterExecutionMode::CompositeQuery,
-            GqlExecutionContext { caller: Some(p) },
+            GqlExecutionContext {
+                caller: Some(p),
+                ..Default::default()
+            },
         ))
         .expect_err("arity");
         let s = err.to_string();
@@ -819,7 +863,10 @@ mod tests {
             &params,
             None,
             GqlCanisterExecutionMode::CompositeQuery,
-            GqlExecutionContext { caller: Some(p) },
+            GqlExecutionContext {
+                caller: Some(p),
+                ..Default::default()
+            },
         ))
         .expect_err("distinct");
         assert!(

@@ -9,6 +9,7 @@
 use candid::CandidType;
 use serde::{Deserialize, Serialize};
 
+use crate::entry::{EdgeLabelId, VertexLabelId};
 use crate::federation::ShardId;
 
 /// Selects the IC call kind for a wired program/plan (must match the canister entrypoint).
@@ -29,11 +30,38 @@ pub struct ExecutePlanArgs {
     pub mode: GqlExecutionMode,
     /// When set, graph skips the first anchor `IndexScan` and binds these local vertex ids.
     pub seed_bindings_blob: Option<Vec<u8>>,
+    /// Router-resolved label names referenced by the physical plan.
+    pub resolved_labels: Option<ResolvedLabelTable>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct ExecutePlanResult {
     pub row_count: u64,
+    pub label_usage_delta: LabelUsageDelta,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct ResolvedLabelTable {
+    pub vertex: Vec<ResolvedVertexLabel>,
+    pub edge: Vec<ResolvedEdgeLabel>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct ResolvedVertexLabel {
+    pub name: String,
+    pub id: VertexLabelId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct ResolvedEdgeLabel {
+    pub name: String,
+    pub id: EdgeLabelId,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct LabelUsageDelta {
+    pub vertex: Vec<(VertexLabelId, i64)>,
+    pub edge: Vec<(EdgeLabelId, i64)>,
 }
 
 /// Router → graph seed bindings for a single variable on the target shard.
@@ -77,6 +105,16 @@ mod tests {
             params_blob: vec![4],
             mode: GqlExecutionMode::Query,
             seed_bindings_blob: Some(seed_blob),
+            resolved_labels: Some(ResolvedLabelTable {
+                vertex: vec![ResolvedVertexLabel {
+                    name: "User".into(),
+                    id: VertexLabelId::from_raw(1),
+                }],
+                edge: vec![ResolvedEdgeLabel {
+                    name: "KNOWS".into(),
+                    id: EdgeLabelId::from_raw(1),
+                }],
+            }),
         };
         let bytes = Encode!(&args).expect("encode");
         let decoded: ExecutePlanArgs = Decode!(&bytes, ExecutePlanArgs).expect("decode");

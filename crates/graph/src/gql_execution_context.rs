@@ -6,12 +6,40 @@ use candid::Principal;
 use gleaph_gql::Value;
 use gleaph_gql::ast::ObjectName;
 use gleaph_gql_ic::principal_to_value;
+use gleaph_graph_kernel::entry::{EdgeLabelId, VertexLabelId};
+use gleaph_graph_kernel::plan_exec::ResolvedLabelTable;
 
 /// Carries data that is fixed for one GQL execution (adhoc, prepared, or plan replay).
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct GqlExecutionContext {
     /// Internet Computer caller principal when executing on a canister.
     pub caller: Option<Principal>,
+    /// Router-resolved label names for this execution.
+    pub resolved_labels: Option<ResolvedLabelTable>,
+}
+
+impl GqlExecutionContext {
+    pub fn resolved_vertex_label_id(&self, name: &str) -> Option<VertexLabelId> {
+        self.resolved_labels
+            .as_ref()?
+            .vertex
+            .iter()
+            .find(|label| label.name == name)
+            .map(|label| label.id)
+    }
+
+    pub fn resolved_edge_label_id(&self, name: &str) -> Option<EdgeLabelId> {
+        self.resolved_labels
+            .as_ref()?
+            .edge
+            .iter()
+            .find(|label| label.name == name)
+            .map(|label| label.id)
+    }
+
+    pub fn requires_resolved_labels(&self) -> bool {
+        self.resolved_labels.is_some()
+    }
 }
 
 /// Errors from supported runtime extension functions (e.g. `MSG_CALLER()`).

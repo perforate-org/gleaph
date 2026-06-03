@@ -23,6 +23,10 @@ pub enum PlanQueryError {
     MissingParameter {
         name: String,
     },
+    MissingResolvedLabel {
+        namespace: &'static str,
+        name: String,
+    },
     InvalidExpressionValue {
         expression: String,
     },
@@ -82,6 +86,9 @@ impl fmt::Display for PlanQueryError {
             }
             Self::MissingBinding { variable } => write!(f, "missing binding for '{variable}'"),
             Self::MissingParameter { name } => write!(f, "missing parameter '{name}'"),
+            Self::MissingResolvedLabel { namespace, name } => {
+                write!(f, "missing router-resolved {namespace} label '{name}'")
+            }
             Self::InvalidExpressionValue { expression } => {
                 write!(f, "invalid query expression value for '{expression}'")
             }
