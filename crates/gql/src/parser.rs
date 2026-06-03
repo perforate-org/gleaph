@@ -7,6 +7,11 @@
 //! let program = parse("MATCH (n) RETURN n").unwrap();
 //! ```
 
+use crate::ast::GqlProgram;
+use crate::error::GqlError;
+use crate::lexer;
+use crate::token::Comment;
+
 mod clause;
 mod ddl;
 mod expr;
@@ -16,10 +21,6 @@ mod session;
 mod statement;
 mod types;
 
-use crate::ast::GqlProgram;
-use crate::error::GqlError;
-use crate::lexer;
-use crate::token::Comment;
 pub use helpers::{Parser, is_prereserved_keyword, is_reserved_keyword};
 
 /// The result of parsing with comment preservation.

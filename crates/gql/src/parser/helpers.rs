@@ -2,6 +2,7 @@
 
 use crate::error::GqlError;
 use crate::token::{Span, Spanned, Token};
+pub use gleaph_gql_keywords::{is_prereserved_keyword, is_reserved_keyword};
 
 /// A recursive-descent parser over a token stream.
 ///
@@ -340,8 +341,6 @@ fn token_display(tok: &Token) -> String {
         Token::LeftTildeSlash => "<~/".into(),
     }
 }
-
-pub use gleaph_gql_keywords::{is_prereserved_keyword, is_reserved_keyword};
 
 #[cfg(test)]
 mod tests {

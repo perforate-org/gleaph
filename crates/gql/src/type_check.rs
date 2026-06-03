@@ -3,6 +3,12 @@
 //! Emits **warnings** (not errors) for provably wrong type combinations.
 //! `Unknown` suppresses all warnings (open-world assumption).
 
+use crate::ast::*;
+use crate::error::GqlError;
+use crate::token::Span;
+use rapidhash::RapidHashMap;
+use std::collections::BTreeMap;
+
 pub mod constraint;
 mod diagnostics;
 mod env;
@@ -34,12 +40,6 @@ pub use phase_b::{
 };
 pub use schema::{NoSchema, ProcedureSignature, PropertySchema};
 pub use types::{EdgeTypeInfo, NodeTypeInfo, PathTypeInfo, Type};
-
-use crate::ast::*;
-use crate::error::GqlError;
-use crate::token::Span;
-use rapidhash::RapidHashMap;
-use std::collections::BTreeMap;
 
 use env::TypeEnv;
 use infer::{

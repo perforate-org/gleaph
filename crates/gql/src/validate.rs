@@ -4,6 +4,10 @@
 //! purely in the grammar. It validates variable scoping, structural constraints
 //! on patterns and modification statements, and other semantic rules.
 
+use crate::ast::*;
+use crate::error::GqlError;
+use rapidhash::RapidHashSet;
+
 mod ddl;
 mod dml;
 mod expr;
@@ -12,10 +16,6 @@ mod procedure;
 mod query_validation;
 mod session;
 mod transaction;
-
-use crate::ast::*;
-use crate::error::GqlError;
-use rapidhash::RapidHashSet;
 
 use procedure::{
     validate_call_procedure, validate_inline_scope_vars, validate_yield_alias_uniqueness,

@@ -21,6 +21,12 @@ use std::fmt;
 use std::hash::Hasher;
 use std::str;
 
+mod enum_;
+mod impls;
+
+pub use enum_::Value;
+pub use impls::f128_is_finite;
+
 /// Error returned when one [`Value`] cannot be encoded to, or decoded from,
 /// the rewrite-side binary byte format.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -181,9 +187,3 @@ pub trait ExtensionBinaryDecode {
 pub struct DenyExtensionBinaryDecode;
 
 impl ExtensionBinaryDecode for DenyExtensionBinaryDecode {}
-
-mod enum_;
-mod impls;
-
-pub use enum_::Value;
-pub use impls::f128_is_finite;
