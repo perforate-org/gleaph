@@ -14,6 +14,7 @@ use super::super::error::PlanQueryError;
 use super::super::row::PlanRow;
 use super::context::ExecuteCtx;
 use super::expand::execute_expand;
+use super::for_loop::execute_for;
 use super::join::{execute_cartesian_product, execute_hash_join};
 use super::path::execute_shortest_path;
 use super::scan::{
@@ -21,6 +22,7 @@ use super::scan::{
     execute_index_intersection, execute_index_scan, execute_limited_streaming_prefix,
     execute_node_scan, limited_streaming_prefix_limit_idx,
 };
+use super::set_operation::execute_set_operation;
 use super::{
     PlanBinding, dedup_rows, ensure_simple_expand, gleaph_sequence_order_after_expand,
     gleaph_sequence_sort, limit_value, plan_op_name, previous_op_binds_edge, project_row,
@@ -179,6 +181,27 @@ fn extend_subplan_written_vars_from_op(op: &PlanOp, out: &mut BTreeSet<String>) 
     }
 }
 
+fn ops_contain_set_operation(ops: &[PlanOp]) -> bool {
+    ops.iter().any(op_contains_set_operation)
+}
+
+fn op_contains_set_operation(op: &PlanOp) -> bool {
+    match op {
+        PlanOp::SetOperation { .. } => true,
+        PlanOp::OptionalMatch { sub_plan }
+        | PlanOp::UseGraph {
+            sub_plan: Some(sub_plan),
+            ..
+        } => ops_contain_set_operation(sub_plan),
+        PlanOp::UseGraph { sub_plan: None, .. } => false,
+        PlanOp::HashJoin { left, right, .. } | PlanOp::CartesianProduct { left, right } => {
+            ops_contain_set_operation(left) || ops_contain_set_operation(right)
+        }
+        PlanOp::InlineProcedureCall { sub_plan, .. } => ops_contain_set_operation(&sub_plan.ops),
+        _ => false,
+    }
+}
+
 async fn execute_optional_match(
     ctx: &ExecuteCtx<'_>,
     rows: Vec<PlanRow>,
@@ -231,6 +254,7 @@ pub(crate) fn execute_ops_from<'a>(
         let index = ctx.index;
         let _caller = ctx.caller();
         let gwd = ctx.gleaph_weight_decoders;
+        let set_operation_input = ops_contain_set_operation(ops).then(|| initial_rows.clone());
         let mut rows = initial_rows;
         // Index of the nearest preceding `PlanOp::Aggregate` for resolving
         // `ExprKind::Aggregate` in post-aggregate ops (e.g. `HAVING`).
@@ -374,6 +398,17 @@ pub(crate) fn execute_ops_from<'a>(
                         Ok(row)
                     })
                     .collect::<Result<Vec<_>, _>>()?,
+                PlanOp::For {
+                    variable,
+                    list,
+                    ordinality,
+                } => execute_for(
+                    &evaluator,
+                    rows,
+                    variable.as_ref(),
+                    list,
+                    ordinality.as_deref().map(|s| s.as_ref()),
+                )?,
                 PlanOp::Filter { condition } => rows
                     .into_iter()
                     .filter_map(|row| {
@@ -619,6 +654,12 @@ pub(crate) fn execute_ops_from<'a>(
                 PlanOp::OptionalMatch { sub_plan } => {
                     let written = subplan_written_vars(sub_plan);
                     execute_optional_match(ctx, rows, sub_plan, &written).await?
+                }
+                PlanOp::SetOperation { op, right } => {
+                    let right_input = set_operation_input
+                        .clone()
+                        .expect("set operation input must exist when executing SetOperation");
+                    execute_set_operation(ctx, rows, *op, right, right_input).await?
                 }
                 other if other.is_dml() => {
                     return Err(PlanQueryError::UnsupportedOp(plan_op_name(other)));
@@ -1023,6 +1064,200 @@ mod tests {
     }
 
     #[test]
+    fn executes_union_all_composite_query() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["SetOpUnionA"], [("name", Value::Text("alpha".into()))])
+            .expect("insert a");
+        store
+            .insert_vertex_named(["SetOpUnionB"], [("name", Value::Text("beta".into()))])
+            .expect("insert b");
+        let plan = plan_statement_gql(
+            "MATCH (n:SetOpUnionA) RETURN n.name AS name \
+             UNION ALL \
+             MATCH (m:SetOpUnionB) RETURN m.name AS name",
+        );
+        assert!(
+            plan.ops
+                .iter()
+                .any(|op| matches!(op, PlanOp::SetOperation { .. })),
+            "expected SetOperation: {:?}",
+            plan.ops
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("union all");
+        assert_eq!(result.rows.len(), 2);
+        let names: Vec<_> = result
+            .rows
+            .iter()
+            .filter_map(|r| r.get("name"))
+            .cloned()
+            .collect();
+        assert!(names.contains(&Value::Text("alpha".into())));
+        assert!(names.contains(&Value::Text("beta".into())));
+    }
+
+    #[test]
+    fn executes_union_distinct_dedups_matching_rows() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["SetOpDistinct"], [("k", Value::Int64(1))])
+            .expect("insert");
+        let plan = plan_statement_gql(
+            "MATCH (n:SetOpDistinct) RETURN n.k AS k \
+             UNION \
+             MATCH (m:SetOpDistinct) RETURN m.k AS k",
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("union distinct");
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0].get("k"), Some(&Value::Int64(1)));
+    }
+
+    #[test]
+    fn executes_union_distinct_dedups_projected_vertex_rows() {
+        let store = GraphStore::new();
+        let vertex = store
+            .insert_vertex_named(["SetOpVertexDistinct"], [("k", Value::Int64(1))])
+            .expect("insert");
+        let plan = plan_statement_gql(
+            "MATCH (n:SetOpVertexDistinct) RETURN n \
+             UNION \
+             MATCH (m:SetOpVertexDistinct) RETURN m AS n",
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("union distinct");
+        assert_eq!(result.rows.len(), 1);
+        let Value::Record(record) = result.rows[0].get("n").expect("n") else {
+            panic!("expected vertex record");
+        };
+        assert_eq!(
+            record
+                .iter()
+                .find_map(|(key, value)| (key == "id").then_some(value)),
+            Some(&Value::Uint64(u64::from(vertex)))
+        );
+    }
+
+    #[test]
+    fn executes_except_removes_right_branch_rows() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["SetOpExceptL"], [("k", Value::Int64(1))])
+            .expect("left");
+        store
+            .insert_vertex_named(["SetOpExceptR"], [("k", Value::Int64(2))])
+            .expect("right");
+        let plan = plan_statement_gql(
+            "MATCH (n:SetOpExceptL) RETURN n.k AS k \
+             EXCEPT \
+             MATCH (m:SetOpExceptR) RETURN m.k AS k",
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("except");
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0].get("k"), Some(&Value::Int64(1)));
+    }
+
+    #[test]
+    fn executes_except_distinct_dedups_left_branch_rows() {
+        let store = GraphStore::new();
+        for _ in 0..2 {
+            store
+                .insert_vertex_named(["SetOpExceptDup"], [("k", Value::Int64(1))])
+                .expect("left");
+        }
+        let plan = plan_statement_gql(
+            "MATCH (n:SetOpExceptDup) RETURN n.k AS k \
+             EXCEPT \
+             MATCH (m:SetOpExceptMissing) RETURN m.k AS k",
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("except distinct");
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0].get("k"), Some(&Value::Int64(1)));
+    }
+
+    #[test]
+    fn executes_intersect_all_preserves_multiplicity() {
+        let store = GraphStore::new();
+        for _ in 0..2 {
+            store
+                .insert_vertex_named(["SetOpIntersect"], [("k", Value::Int64(7))])
+                .expect("insert");
+        }
+        let plan = plan_statement_gql(
+            "MATCH (n:SetOpIntersect) RETURN n.k AS k \
+             INTERSECT ALL \
+             MATCH (m:SetOpIntersect) RETURN m.k AS k",
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("intersect all");
+        assert_eq!(result.rows.len(), 2);
+    }
+
+    #[test]
+    fn executes_for_literal_list() {
+        let store = GraphStore::new();
+        let plan = plan_gql("FOR x IN [1, 2, 3] RETURN x");
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("for literal");
+        assert_eq!(result.rows.len(), 3);
+        assert_eq!(result.rows[0].get("x"), Some(&Value::Int64(1)));
+        assert_eq!(result.rows[2].get("x"), Some(&Value::Int64(3)));
+    }
+
+    #[test]
+    fn executes_for_with_ordinality() {
+        let store = GraphStore::new();
+        let plan = plan_gql("FOR x IN [10, 20] WITH ORDINALITY i RETURN x, i");
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("for ordinality");
+        assert_eq!(result.rows.len(), 2);
+        assert_eq!(result.rows[0].get("i"), Some(&Value::Int64(1)));
+        assert_eq!(result.rows[1].get("i"), Some(&Value::Int64(2)));
+    }
+
+    #[test]
+    fn executes_for_empty_list_returns_no_rows() {
+        let store = GraphStore::new();
+        let plan = plan_gql("FOR x IN [] RETURN x");
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("for empty");
+        assert!(result.rows.is_empty());
+    }
+
+    #[test]
+    fn executes_for_after_match_expands_list_property() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(
+                ["ForTagsNode"],
+                [(
+                    "tags",
+                    Value::List(vec![Value::Text("x".into()), Value::Text("y".into())]),
+                )],
+            )
+            .expect("insert");
+        let plan = plan_gql("MATCH (n:ForTagsNode) FOR t IN n.tags RETURN t");
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("for after match");
+        assert_eq!(result.rows.len(), 2);
+        assert_eq!(result.rows[0].get("t"), Some(&Value::Text("x".into())));
+        assert_eq!(result.rows[1].get("t"), Some(&Value::Text("y".into())));
+    }
+
+    #[test]
     fn unsupported_operator_returns_stable_error() {
         let store = GraphStore::new();
         let cases = vec![
@@ -1034,13 +1269,6 @@ mod tests {
                     property_projection: None,
                 },
                 "EdgeIndexScan",
-            ),
-            (
-                PlanOp::SetOperation {
-                    op: SetOp::Union,
-                    right: Box::new(plan(Vec::new())),
-                },
-                "SetOperation",
             ),
             (
                 PlanOp::CallProcedure {

@@ -12,7 +12,9 @@ use gleaph_gql::parser;
 use gleaph_gql::type_check::NoSchema;
 use gleaph_gql::value::{ExtensionSortableKey, ExtensionValue};
 use gleaph_gql_planner::plan::PhysicalPlan;
-use gleaph_gql_planner::{PlanBuildOptions, build_plan_with_schema_and_options};
+use gleaph_gql_planner::{
+    PlanBuildOptions, build_plan_with_schema_and_options, build_statement_plan_with_schema,
+};
 
 use super::super::GLEAPH_PATH_EXTENSION_HANDLER;
 use super::context::QueryExprEvaluator;
@@ -38,7 +40,7 @@ pub use crate::facade::mutation_executor::GraphMutationExecutor;
 pub use crate::gql_execution_context::GqlExecutionContext;
 pub use crate::index::placement::native_test_register_physical_placement;
 pub use gleaph_gql::ast::{
-    AggregateFunc, BinaryOp, CmpOp, Expr, ExprKind, NullOrder, ObjectName, OrderByClause, SetOp,
+    AggregateFunc, BinaryOp, CmpOp, Expr, ExprKind, NullOrder, ObjectName, OrderByClause,
     SortDirection, SortItem, Statement, WhenClause,
 };
 pub use gleaph_gql::token::Span;
@@ -115,6 +117,15 @@ pub fn plan(ops: Vec<PlanOp>) -> PhysicalPlan {
     PhysicalPlan::from_ops(ops)
 }
 
+pub fn plan_statement_gql(input: &str) -> PhysicalPlan {
+    let program = parser::parse(input).unwrap_or_else(|err| panic!("parse error: {err}"));
+    let tx = program
+        .transaction_activity
+        .expect("expected transaction activity");
+    let block = tx.body.expect("expected statement block");
+    build_statement_plan_with_schema(&block.first, None, &NoSchema).expect("plan should build")
+}
+
 pub fn plan_gql(input: &str) -> PhysicalPlan {
     let program = parser::parse(input).unwrap_or_else(|err| panic!("parse error: {err}"));
     let tx = program
@@ -122,17 +133,21 @@ pub fn plan_gql(input: &str) -> PhysicalPlan {
         .expect("expected transaction activity");
     let block = tx.body.expect("expected statement block");
     let Statement::Query(composite) = &block.first else {
-        panic!("expected query statement");
+        return plan_statement_gql(input);
     };
-    build_plan_with_schema_and_options(
-        &composite.left,
-        PlanBuildOptions {
-            stats: None,
-            path_extensions: &GLEAPH_PATH_EXTENSION_HANDLER,
-        },
-        &NoSchema,
-    )
-    .expect("plan should build")
+    if composite.rest.is_empty() {
+        build_plan_with_schema_and_options(
+            &composite.left,
+            PlanBuildOptions {
+                stats: None,
+                path_extensions: &GLEAPH_PATH_EXTENSION_HANDLER,
+            },
+            &NoSchema,
+        )
+        .expect("plan should build")
+    } else {
+        plan_statement_gql(input)
+    }
 }
 
 pub fn prop(variable: &str, property: &str) -> Expr {

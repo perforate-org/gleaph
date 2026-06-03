@@ -2,10 +2,12 @@ mod bindings;
 mod context;
 mod eval;
 mod expand;
+mod for_loop;
 mod join;
 mod ops;
 mod path;
 mod scan;
+mod set_operation;
 
 pub use bindings::EdgeBinding;
 pub(crate) use eval::{binding_to_value, eval_sort_expr, project_row, value_row};

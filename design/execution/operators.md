@@ -52,7 +52,7 @@ Catalog `PlanOp` variants and note **executor support** and **federation relevan
 | PlanOp | Status | Notes |
 |--------|--------|-------|
 | `Let` | Exec | |
-| `For` | Partial | |
+| `For` | Exec | `WITH OFFSET` not yet supported in planner/executor |
 | `CallProcedure` / `InlineProcedureCall` | Partial | |
 | `UseGraph` | Partial | Remote graph; distinct from shard federation |
 
@@ -64,7 +64,7 @@ Catalog `PlanOp` variants and note **executor support** and **federation relevan
 | `Sort` / `Limit` / `TopK` | Exec | TopK fusion in planner |
 | `Aggregate` | Exec | |
 | `Materialize` | Exec | |
-| `SetOperation` | Partial | UNION etc. |
+| `SetOperation` | Exec | `UNION` / `EXCEPT` / `INTERSECT` (ALL and DISTINCT); `OTHERWISE` not implemented |
 
 ## DML (update path)
 
