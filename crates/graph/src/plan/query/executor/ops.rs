@@ -285,7 +285,7 @@ fn inline_bindings_match(
     if left == right {
         return Ok(true);
     }
-    Ok(binding_to_value(store, left)? == binding_to_value(store, right)?)
+    Ok(binding_to_value(store, None, left)? == binding_to_value(store, None, right)?)
 }
 
 async fn execute_inline_procedure_call(
@@ -936,9 +936,7 @@ mod tests {
         store
             .insert_vertex_named(["OptChainB"], Vec::<(&str, Value)>::new())
             .expect("insert b");
-        store
-            .get_or_insert_edge_label_id("OptChainRel")
-            .expect("edge label");
+        crate::test_labels::edge_label_id_for_name("OptChainRel");
         let gql = "MATCH (a:OptChainA) OPTIONAL MATCH (a)-[e:OptChainRel]->(b:OptChainB) \
                    MATCH (b)-[e2:OptChainRel]->(c:OptChainB) RETURN a, b, c";
         let plan = plan_gql(gql);
@@ -1153,14 +1151,10 @@ mod tests {
     #[test]
     fn optional_match_gleaph_weight_on_null_edge_returns_null() {
         let store = GraphStore::new();
-        store
-            .get_or_insert_edge_label_id("NullWgtRel")
-            .expect("edge label");
+        crate::test_labels::edge_label_id_for_name("NullWgtRel");
         store
             .install_edge_label_weight_profile_at_init(
-                store
-                    .get_or_insert_edge_label_id("NullWgtRel")
-                    .expect("label"),
+                crate::test_labels::edge_label_id_for_name("NullWgtRel"),
                 gleaph_graph_kernel::entry::EdgeWeightProfile {
                     encoding: gleaph_graph_kernel::entry::WeightEncoding::RawU16,
                 },

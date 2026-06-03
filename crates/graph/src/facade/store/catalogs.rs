@@ -1,15 +1,11 @@
 //! GraphStore `catalogs` implementation.
 
 use super::super::PropertyCatalogError;
-use super::super::stable::edge_label_catalog::EdgeLabelCatalogError;
-use super::super::stable::vertex_label_catalog::VertexLabelCatalogError;
 use super::super::stable::{
-    EDGE_LABEL_CATALOG, EDGE_PAYLOAD_PROFILES, EDGE_WEIGHT_PROFILES, GRAPH_DEFAULT_EDGE_LABEL,
-    PROPERTY_CATALOG, VERTEX_LABEL_CATALOG,
+    EDGE_PAYLOAD_PROFILES, EDGE_WEIGHT_PROFILES, GRAPH_DEFAULT_EDGE_LABEL, PROPERTY_CATALOG,
 };
 use gleaph_graph_kernel::entry::{
     Edge, EdgeLabelId, EdgePayloadProfile, EdgeWeightProfile, PropertyId, TaggedEdgeLabelId,
-    VertexLabelId,
 };
 use ic_stable_lara::{DeferredBidirectionalLabeledError, VertexId};
 
@@ -17,44 +13,6 @@ use super::GraphStore;
 use super::error::GraphStoreError;
 
 impl GraphStore {
-    pub fn vertex_label_id(&self, name: &str) -> Option<VertexLabelId> {
-        VERTEX_LABEL_CATALOG.with_borrow(|catalog| catalog.get_id(name))
-    }
-
-    pub fn edge_label_id(&self, name: &str) -> Option<EdgeLabelId> {
-        EDGE_LABEL_CATALOG.with_borrow(|catalog| catalog.get_id(name))
-    }
-
-    pub fn edge_label_tagged_directed(&self, name: &str) -> Option<TaggedEdgeLabelId> {
-        EDGE_LABEL_CATALOG.with_borrow(|catalog| catalog.get_tagged_directed(name))
-    }
-
-    pub fn edge_label_tagged_undirected(&self, name: &str) -> Option<TaggedEdgeLabelId> {
-        EDGE_LABEL_CATALOG.with_borrow(|catalog| catalog.get_tagged_undirected(name))
-    }
-
-    pub fn vertex_label_name(&self, id: VertexLabelId) -> Option<String> {
-        VERTEX_LABEL_CATALOG.with_borrow(|catalog| catalog.get_name(id))
-    }
-
-    pub fn edge_label_name(&self, id: EdgeLabelId) -> Option<String> {
-        EDGE_LABEL_CATALOG.with_borrow(|catalog| catalog.get_name(id))
-    }
-
-    pub fn get_or_insert_vertex_label_id(
-        &self,
-        name: &str,
-    ) -> Result<VertexLabelId, VertexLabelCatalogError> {
-        VERTEX_LABEL_CATALOG.with_borrow_mut(|catalog| catalog.get_or_insert(name))
-    }
-
-    pub fn get_or_insert_edge_label_id(
-        &self,
-        name: &str,
-    ) -> Result<EdgeLabelId, EdgeLabelCatalogError> {
-        EDGE_LABEL_CATALOG.with_borrow_mut(|catalog| catalog.get_or_insert(name))
-    }
-
     pub(crate) fn edge_is_undirected(
         &self,
         owner_vertex_id: VertexId,
@@ -64,22 +22,6 @@ impl GraphStore {
             .find_forward_edge_bucket_label(owner_vertex_id, edge)?
             .unwrap_or(GRAPH_DEFAULT_EDGE_LABEL);
         Ok(TaggedEdgeLabelId::from_raw(bucket.raw()).is_undirected())
-    }
-
-    pub fn insert_vertex_label_with_id(
-        &self,
-        name: &str,
-        id: VertexLabelId,
-    ) -> Result<(), VertexLabelCatalogError> {
-        VERTEX_LABEL_CATALOG.with_borrow_mut(|catalog| catalog.insert_with_id(name, id))
-    }
-
-    pub fn insert_edge_label_with_id(
-        &self,
-        name: &str,
-        id: EdgeLabelId,
-    ) -> Result<(), EdgeLabelCatalogError> {
-        EDGE_LABEL_CATALOG.with_borrow_mut(|catalog| catalog.insert_with_id(name, id))
     }
 
     /// Installs weight + derived payload profiles for a catalog label at graph init time only.

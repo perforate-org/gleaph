@@ -36,7 +36,6 @@ pub(crate) use super::{
 };
 pub use crate::facade::EdgeHandle;
 pub use crate::facade::GraphStore;
-pub use crate::facade::mutation_executor::GraphMutationExecutor;
 pub use crate::gql_execution_context::GqlExecutionContext;
 pub use crate::index::placement::native_test_register_physical_placement;
 pub use gleaph_gql::ast::{
@@ -374,6 +373,7 @@ pub fn eval_test_expr(expr: Expr) -> Value {
         parameters: &params,
         aggregate_specs: None,
         caller: None,
+        resolved_labels: None,
         gleaph_weight_decoders: None,
     };
     evaluator

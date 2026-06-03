@@ -48,8 +48,8 @@ mod path_test_helpers {
         }
     }
 
-    pub fn catalog_edge_label(store: &GraphStore, label_name: &str) -> EdgeLabelId {
-        store.edge_label_id(label_name).expect("edge label")
+    pub fn catalog_edge_label(_store: &GraphStore, label_name: &str) -> EdgeLabelId {
+        crate::test_labels::edge_label_id_for_name(label_name)
     }
 
     pub fn gleaph_weight_call(edge_var: &str) -> Expr {
@@ -79,9 +79,7 @@ mod path_test_helpers {
         let c = store
             .insert_vertex_named(["WgtC"], Vec::<(&str, Value)>::new())
             .expect("insert c");
-        let label_id = store
-            .get_or_insert_edge_label_id("WgtRoad")
-            .expect("road label");
+        let label_id = crate::test_labels::edge_label_id_for_name("WgtRoad");
         store
             .install_edge_label_weight_profile_at_init(
                 label_id,
@@ -280,9 +278,7 @@ fn shortest_path_after_optional_miss_drops_null_destination_rows() {
     store
         .insert_vertex_named(["OptSpB"], Vec::<(&str, Value)>::new())
         .expect("insert b");
-    store
-        .get_or_insert_edge_label_id("OptSpRel")
-        .expect("edge label");
+    crate::test_labels::edge_label_id_for_name("OptSpRel");
     let gql = "MATCH (a:OptSpA) OPTIONAL MATCH (a)-[e:OptSpRel]->(b:OptSpB) \
                    MATCH ANY SHORTEST (a)-[e2:OptSpRel]->(b) RETURN a, b";
     let plan = plan_gql(gql);
@@ -1221,9 +1217,7 @@ fn setup_hop_bound_cheaper_vertex_unusable_graph(store: &GraphStore) -> (VertexI
     let dst = store
         .insert_vertex_named(["WgtC"], Vec::<(&str, Value)>::new())
         .expect("insert dst");
-    let label_id = store
-        .get_or_insert_edge_label_id("WgtRoad")
-        .expect("road label");
+    let label_id = crate::test_labels::edge_label_id_for_name("WgtRoad");
     store
         .install_edge_label_weight_profile_at_init(
             label_id,
@@ -1313,9 +1307,7 @@ fn setup_stale_mid_diamond_graph(store: &GraphStore) -> (VertexId, VertexId) {
     let dst = store
         .insert_vertex_named(["WgtC"], Vec::<(&str, Value)>::new())
         .expect("insert dst");
-    let label_id = store
-        .get_or_insert_edge_label_id("WgtRoad")
-        .expect("road label");
+    let label_id = crate::test_labels::edge_label_id_for_name("WgtRoad");
     store
         .install_edge_label_weight_profile_at_init(
             label_id,
@@ -1349,6 +1341,7 @@ fn stale_mid_diamond_edge_bindings_carry_expected_weights() {
     let cost_expr = gleaph_weight_call("e");
     let decoders = crate::plan::query::gleaph_weight::prepare_gleaph_weight_decoders(
         &store,
+        &crate::gql_execution_context::GqlExecutionContext::default(),
         &[PlanOp::ShortestPath {
             src: "a".into(),
             dst: "c".into(),
@@ -1372,7 +1365,7 @@ fn stale_mid_diamond_edge_bindings_carry_expected_weights() {
     )
     .expect("decoders")
     .expect("table");
-    let decoder = decoders.get("e").expect("edge decoder");
+    let _decoder = decoders.get("e").expect("edge decoder");
     let mut weights = BTreeMap::new();
     store
         .for_each_directed_out_edges_for_label_unchecked(s, road, |edge| {
@@ -1403,6 +1396,7 @@ fn stale_mid_diamond_shortest_expand_hop_costs_are_5_10_and_1() {
     let cost_expr = gleaph_weight_call("e");
     let decoders = crate::plan::query::gleaph_weight::prepare_gleaph_weight_decoders(
         &store,
+        &crate::gql_execution_context::GqlExecutionContext::default(),
         &[PlanOp::ShortestPath {
             src: "a".into(),
             dst: "c".into(),
@@ -1426,7 +1420,7 @@ fn stale_mid_diamond_shortest_expand_hop_costs_are_5_10_and_1() {
     )
     .expect("decoders")
     .expect("table");
-    let decoder = decoders.get("e").expect("edge decoder");
+    let _decoder = decoders.get("e").expect("edge decoder");
     let prep = ShortestFixedLabelExpand::new(EdgeDirection::PointingRight, road).expect("prep");
     let mut from_s = Vec::new();
     prep.expand_into(&store, s, &mut from_s).expect("from s");
@@ -1499,6 +1493,7 @@ fn stale_mid_diamond_weighted_search_finds_cheaper_three_hop_path() {
     let cost_expr = gleaph_weight_call("e");
     let decoders = crate::plan::query::gleaph_weight::prepare_gleaph_weight_decoders(
         &store,
+        &crate::gql_execution_context::GqlExecutionContext::default(),
         &[PlanOp::ShortestPath {
             src: "a".into(),
             dst: "c".into(),
@@ -1635,9 +1630,7 @@ fn weighted_shortest_prefers_zero_weight_detour_over_direct_edge() {
     let d2 = store
         .insert_vertex_named(["WgtD2"], Vec::<(&str, Value)>::new())
         .expect("insert d2");
-    let label_id = store
-        .get_or_insert_edge_label_id("WgtRoad")
-        .expect("road label");
+    let label_id = crate::test_labels::edge_label_id_for_name("WgtRoad");
     store
         .install_edge_label_weight_profile_at_init(
             label_id,
@@ -1841,9 +1834,7 @@ fn weighted_shortest_path_rejects_missing_weight_profile() {
     let c = store
         .insert_vertex_named(["WgtNoProfileC"], Vec::<(&str, Value)>::new())
         .expect("c");
-    store
-        .get_or_insert_edge_label_id("WgtNoProfileRoad")
-        .expect("road label");
+    crate::test_labels::edge_label_id_for_name("WgtNoProfileRoad");
     let road = catalog_edge_label(&store, "WgtNoProfileRoad");
     store.insert_directed_edge(a, c, Some(road)).expect("edge");
     let plan = plan(vec![

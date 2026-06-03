@@ -61,16 +61,9 @@ fn execute_ops_with_bindings(
                 properties,
             } => {
                 let properties = evaluator.resolve_assignments(properties)?;
-                let vertex_id = if execution.requires_resolved_labels() {
-                    let label_ids = resolve_vertex_labels(&execution, labels)?;
-                    let property_ids = resolve_mutation_properties(store, properties)?;
-                    store.insert_vertex_with(label_ids, property_ids)?
-                } else {
-                    store.insert_vertex_named(
-                        labels.iter().map(|label| label.as_ref()),
-                        properties,
-                    )?
-                };
+                let label_ids = resolve_vertex_labels(&execution, labels)?;
+                let property_ids = resolve_mutation_properties(store, properties)?;
+                let vertex_id = store.insert_vertex_with(label_ids, property_ids)?;
                 if let Some(variable) = variable {
                     bindings.vertices.insert(variable.to_string(), vertex_id);
                 }
@@ -94,54 +87,27 @@ fn execute_ops_with_bindings(
                     }
                 })?;
                 let properties = evaluator.resolve_assignments(properties)?;
-                let resolved_label = if execution.requires_resolved_labels() {
-                    resolve_edge_label(&execution, labels.first())?
-                } else {
-                    None
-                };
+                let resolved_label = resolve_edge_label(&execution, labels.first())?;
+                let property_ids = resolve_mutation_properties(store, properties)?;
                 let handle = match direction {
-                    EdgeDirection::PointingRight => {
-                        if execution.requires_resolved_labels() {
-                            let property_ids = resolve_mutation_properties(store, properties)?;
-                            store.insert_directed_edge_with(
-                                src_id,
-                                dst_id,
-                                resolved_label,
-                                property_ids,
-                            )?
-                        } else {
-                            let label = labels.first().map(|label| label.as_ref());
-                            store.insert_directed_edge_named(src_id, dst_id, label, properties)?
-                        }
-                    }
-                    EdgeDirection::PointingLeft => {
-                        if execution.requires_resolved_labels() {
-                            let property_ids = resolve_mutation_properties(store, properties)?;
-                            store.insert_directed_edge_with(
-                                dst_id,
-                                src_id,
-                                resolved_label,
-                                property_ids,
-                            )?
-                        } else {
-                            let label = labels.first().map(|label| label.as_ref());
-                            store.insert_directed_edge_named(dst_id, src_id, label, properties)?
-                        }
-                    }
-                    EdgeDirection::Undirected => {
-                        if execution.requires_resolved_labels() {
-                            let property_ids = resolve_mutation_properties(store, properties)?;
-                            store.insert_undirected_edge_with(
-                                src_id,
-                                dst_id,
-                                resolved_label,
-                                property_ids,
-                            )?
-                        } else {
-                            let label = labels.first().map(|label| label.as_ref());
-                            store.insert_undirected_edge_named(src_id, dst_id, label, properties)?
-                        }
-                    }
+                    EdgeDirection::PointingRight => store.insert_directed_edge_with(
+                        src_id,
+                        dst_id,
+                        resolved_label,
+                        property_ids,
+                    )?,
+                    EdgeDirection::PointingLeft => store.insert_directed_edge_with(
+                        dst_id,
+                        src_id,
+                        resolved_label,
+                        property_ids,
+                    )?,
+                    EdgeDirection::Undirected => store.insert_undirected_edge_with(
+                        src_id,
+                        dst_id,
+                        resolved_label,
+                        property_ids,
+                    )?,
                     other => return Err(PlanMutationError::UnsupportedDirection(*other)),
                 };
                 if let Some(variable) = variable {
@@ -156,12 +122,12 @@ fn execute_ops_with_bindings(
             }
             PlanOp::SetProperties { items } => {
                 for item in items {
-                    execute_set_item(store, item, &evaluator, bindings)?;
+                    execute_set_item(store, item, &execution, &evaluator, bindings)?;
                 }
             }
             PlanOp::RemoveProperties { items } => {
                 for item in items {
-                    execute_remove_item(store, item, bindings)?;
+                    execute_remove_item(store, item, &execution, bindings)?;
                 }
             }
             PlanOp::DeleteVertex { variable } => {
@@ -202,6 +168,7 @@ fn execute_ops_with_bindings(
 fn execute_set_item(
     store: &GraphStore,
     item: &SetPlanItem,
+    execution: &GqlExecutionContext,
     evaluator: &impl MutationPropertyExprEvaluation,
     bindings: &PlanMutationBindings,
 ) -> Result<(), PlanMutationError> {
@@ -238,9 +205,12 @@ fn execute_set_item(
             execute_set_all_properties(store, variable, value, evaluator, bindings)
         }
         SetPlanItem::Label { variable, label } => {
-            let label_id = store
-                .get_or_insert_vertex_label_id(label)
-                .map_err(GraphStoreError::from)?;
+            let label_id = execution
+                .resolved_vertex_label_id(label.as_ref())
+                .ok_or_else(|| PlanMutationError::MissingResolvedLabel {
+                    namespace: "node",
+                    name: label.to_string(),
+                })?;
 
             if let Some(vertex_id) = bindings.vertices.get(variable.as_ref()) {
                 let vertex = store.vertex(*vertex_id).ok_or_else(|| {
@@ -322,6 +292,7 @@ fn execute_set_all_properties(
 fn execute_remove_item(
     store: &GraphStore,
     item: &RemovePlanItem,
+    execution: &GqlExecutionContext,
     bindings: &PlanMutationBindings,
 ) -> Result<(), PlanMutationError> {
     match item {
@@ -345,9 +316,12 @@ fn execute_remove_item(
             })
         }
         RemovePlanItem::Label { variable, label } => {
-            let Some(label_id) = store.vertex_label_id(label) else {
-                return Ok(());
-            };
+            let label_id = execution
+                .resolved_vertex_label_id(label.as_ref())
+                .ok_or_else(|| PlanMutationError::MissingResolvedLabel {
+                    namespace: "node",
+                    name: label.to_string(),
+                })?;
 
             if let Some(vertex_id) = bindings.vertices.get(variable.as_ref()) {
                 let vertex = store.vertex(*vertex_id).ok_or_else(|| {
@@ -456,8 +430,8 @@ mod tests {
     use gleaph_gql::types::Decimal;
     use gleaph_gql_planner::plan::{PlanDiagnostics, PropertyAssignment};
     use gleaph_graph_kernel::entry::{EdgeSlotIndex, PropertyId};
+    use ic_stable_lara::BucketLabelKey as LaraLabelId;
     use ic_stable_lara::traits::CsrEdge;
-    use ic_stable_lara::{BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledError};
 
     #[test]
     fn executes_insert_vertex_and_edge_ops() {
@@ -882,15 +856,15 @@ mod tests {
         let bindings = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
             .expect("execute set label");
-        let person = store.vertex_label_id("Person").expect("person label");
-        let employee = store.vertex_label_id("Employee").expect("employee label");
+        let person = crate::test_labels::vertex_label_id_for_name("Person");
+        let employee = crate::test_labels::vertex_label_id_for_name("Employee");
         let vertex_id = bindings.vertices["a"];
         let vertex = store.vertex(vertex_id).expect("read vertex");
 
-        assert_eq!(
-            store.vertex_labels(vertex_id, vertex),
-            vec![person, employee]
-        );
+        let labels = store.vertex_labels(vertex_id, vertex);
+        assert!(labels.contains(&person));
+        assert!(labels.contains(&employee));
+        assert_eq!(labels.len(), 2);
 
         let remove = PhysicalPlan {
             ops: vec![PlanOp::RemoveProperties {

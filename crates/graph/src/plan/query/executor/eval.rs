@@ -8,6 +8,7 @@ use gleaph_gql::types::LabelExpr;
 use gleaph_gql_planner::plan::{ProjectColumn, Str};
 use gleaph_graph_kernel::entry::{EdgeLabelId, EdgeSlotIndex, PreparedWeightDecoder, Vertex};
 use gleaph_graph_kernel::path::GraphPathVertexId;
+use gleaph_graph_kernel::plan_exec::ResolvedLabelTable;
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
 
@@ -42,7 +43,9 @@ pub(crate) fn eval_sort_expr(
             let projected_name = expression_name(expr);
             match row.get(&projected_name) {
                 Some(PlanBinding::Value(value)) => Ok(value.clone()),
-                Some(binding) => binding_to_value(evaluator.store, binding),
+                Some(binding) => {
+                    binding_to_value(evaluator.store, evaluator.resolved_labels, binding)
+                }
                 None => Err(PlanQueryError::MissingBinding {
                     variable: projected_name,
                 }),
@@ -118,6 +121,7 @@ impl QueryExprEvaluator<'_> {
             ExprKind::Paren(inner) => self.eval_expr(row, inner),
             ExprKind::Variable(name) => binding_to_value(
                 self.store,
+                self.resolved_labels,
                 row.get(name)
                     .ok_or_else(|| PlanQueryError::MissingBinding {
                         variable: name.clone(),
@@ -416,7 +420,11 @@ impl QueryExprEvaluator<'_> {
                     return Ok(false);
                 };
                 Ok(vertex_matches_label_expr(
-                    self.store, *vertex_id, vertex, label,
+                    self.store,
+                    self.resolved_labels,
+                    *vertex_id,
+                    vertex,
+                    label,
                 ))
             }
             Some(PlanBinding::Value(Value::Null)) => Ok(false),
@@ -521,7 +529,7 @@ pub(crate) fn project_row(
     if columns.is_empty() {
         let mut out = PlanRow::new();
         for (name, binding) in row.iter() {
-            let value = binding_to_value(evaluator.store, binding)?;
+            let value = binding_to_value(evaluator.store, evaluator.resolved_labels, binding)?;
             out.insert(name.to_string(), PlanBinding::Value(value));
         }
         return Ok(out);
@@ -588,42 +596,47 @@ pub(crate) fn value_row(
 ) -> Result<BTreeMap<String, Value>, PlanQueryError> {
     if row.len() == 1 {
         let (name, binding) = row.iter().next().expect("len==1 guarantees one entry");
-        let value = binding_to_value(store, binding)?;
+        let value = binding_to_value(store, None, binding)?;
         let mut out = BTreeMap::new();
         out.insert(name.to_string(), value);
         return Ok(out);
     }
     row.iter()
         .map(|(name, binding)| {
-            binding_to_value(store, binding).map(|value| (name.to_string(), value))
+            binding_to_value(store, None, binding).map(|value| (name.to_string(), value))
         })
         .collect()
 }
 
 pub(crate) fn binding_to_value(
     store: &GraphStore,
+    resolved_labels: Option<&ResolvedLabelTable>,
     binding: &PlanBinding,
 ) -> Result<Value, PlanQueryError> {
     match binding {
-        PlanBinding::Vertex(vertex_id) => vertex_to_value(store, *vertex_id),
+        PlanBinding::Vertex(vertex_id) => vertex_to_value(store, resolved_labels, *vertex_id),
         PlanBinding::RemoteVertex(logical_vertex_id) => Ok(Value::Record(vec![
             ("id".to_owned(), Value::Uint64(*logical_vertex_id)),
             ("remote".to_owned(), Value::Bool(true)),
         ])),
-        PlanBinding::Edge(edge) => edge_to_value(store, edge.clone()),
+        PlanBinding::Edge(edge) => edge_to_value(store, resolved_labels, edge.clone()),
         PlanBinding::Value(value) => Ok(value.clone()),
         PlanBinding::Path(pb) => Ok(path_binding_to_value(store, pb)),
     }
 }
 
-fn vertex_to_value(store: &GraphStore, vertex_id: VertexId) -> Result<Value, PlanQueryError> {
+fn vertex_to_value(
+    store: &GraphStore,
+    resolved_labels: Option<&ResolvedLabelTable>,
+    vertex_id: VertexId,
+) -> Result<Value, PlanQueryError> {
     let vertex = store
         .vertex(vertex_id)
         .ok_or_else(|| PlanQueryError::MissingBinding {
             variable: format!("vertex {vertex_id:?}"),
         })?;
 
-    let labels = store.vertex_label_gql_list(vertex_id, vertex);
+    let labels = store.vertex_label_gql_list(vertex_id, vertex, resolved_labels);
 
     let properties_value = store.vertex_properties_gql_record(vertex_id);
 
@@ -634,7 +647,11 @@ fn vertex_to_value(store: &GraphStore, vertex_id: VertexId) -> Result<Value, Pla
     ]))
 }
 
-fn edge_to_value(store: &GraphStore, binding: EdgeBinding) -> Result<Value, PlanQueryError> {
+fn edge_to_value(
+    store: &GraphStore,
+    resolved_labels: Option<&ResolvedLabelTable>,
+    binding: EdgeBinding,
+) -> Result<Value, PlanQueryError> {
     let handle = binding.handle;
     let (_edge, bucket_label) = store
         .find_outgoing_edge_with_bucket_label(handle)?
@@ -661,10 +678,15 @@ fn edge_to_value(store: &GraphStore, binding: EdgeBinding) -> Result<Value, Plan
             if catalog_id.raw() == 0 {
                 Value::Null
             } else {
-                store
-                    .edge_label_name(catalog_id)
-                    .map(Value::Text)
-                    .unwrap_or(Value::Null)
+                resolved_labels
+                    .and_then(|labels| {
+                        labels
+                            .edge
+                            .iter()
+                            .find(|entry| entry.id == catalog_id)
+                            .map(|entry| Value::Text(entry.name.clone()))
+                    })
+                    .unwrap_or_else(|| Value::Uint64(u64::from(catalog_id.raw())))
             },
         ),
         (
@@ -690,24 +712,43 @@ fn record_property(value: &Value, property: &str) -> Value {
 
 fn vertex_matches_label_expr(
     store: &GraphStore,
+    resolved_labels: Option<&ResolvedLabelTable>,
     vertex_id: VertexId,
     vertex: Vertex,
     expr: &LabelExpr,
 ) -> bool {
     match expr {
-        LabelExpr::Name(name) => store
-            .vertex_label_id(name)
+        LabelExpr::Name(name) => resolved_labels
+            .and_then(|labels| {
+                labels
+                    .vertex
+                    .iter()
+                    .find(|entry| entry.name == name.as_ref())
+                    .map(|entry| entry.id)
+            })
+            .or_else(|| {
+                #[cfg(any(test, feature = "canbench"))]
+                {
+                    Some(crate::test_labels::vertex_label_id_for_name(name.as_ref()))
+                }
+                #[cfg(not(any(test, feature = "canbench")))]
+                {
+                    None
+                }
+            })
             .is_some_and(|label_id| store.vertex_has_label(vertex_id, vertex, label_id)),
         LabelExpr::Wildcard => store.vertex_has_any_label(vertex_id, vertex),
         LabelExpr::And(left, right) => {
-            vertex_matches_label_expr(store, vertex_id, vertex, left)
-                && vertex_matches_label_expr(store, vertex_id, vertex, right)
+            vertex_matches_label_expr(store, resolved_labels, vertex_id, vertex, left)
+                && vertex_matches_label_expr(store, resolved_labels, vertex_id, vertex, right)
         }
         LabelExpr::Or(left, right) => {
-            vertex_matches_label_expr(store, vertex_id, vertex, left)
-                || vertex_matches_label_expr(store, vertex_id, vertex, right)
+            vertex_matches_label_expr(store, resolved_labels, vertex_id, vertex, left)
+                || vertex_matches_label_expr(store, resolved_labels, vertex_id, vertex, right)
         }
-        LabelExpr::Not(inner) => !vertex_matches_label_expr(store, vertex_id, vertex, inner),
+        LabelExpr::Not(inner) => {
+            !vertex_matches_label_expr(store, resolved_labels, vertex_id, vertex, inner)
+        }
     }
 }
 

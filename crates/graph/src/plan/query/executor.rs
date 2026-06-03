@@ -139,7 +139,7 @@ pub async fn execute_plan_query_bindings_with_initial_rows(
     let gleaph_weight_decoders = {
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _scope = bench_scope("plan_query_prepare_gleaph_weight");
-        super::gleaph_weight::prepare_gleaph_weight_decoders(store, ops)?
+        super::gleaph_weight::prepare_gleaph_weight_decoders(store, &execution, ops)?
     };
     let ctx = ExecuteCtx::new(
         store,
@@ -281,6 +281,7 @@ pub(crate) fn vertex_row_matches_dst_filters(
         parameters,
         aggregate_specs: None,
         caller,
+        resolved_labels: None,
         gleaph_weight_decoders,
     };
     row_matches_all(&evaluator, &stub, dst_filter)

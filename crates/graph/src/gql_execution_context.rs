@@ -20,21 +20,39 @@ pub struct GqlExecutionContext {
 
 impl GqlExecutionContext {
     pub fn resolved_vertex_label_id(&self, name: &str) -> Option<VertexLabelId> {
-        self.resolved_labels
-            .as_ref()?
-            .vertex
-            .iter()
-            .find(|label| label.name == name)
-            .map(|label| label.id)
+        if let Some(labels) = &self.resolved_labels {
+            return labels
+                .vertex
+                .iter()
+                .find(|label| label.name == name)
+                .map(|label| label.id);
+        }
+        #[cfg(any(test, feature = "canbench"))]
+        {
+            Some(crate::test_labels::vertex_label_id_for_name(name))
+        }
+        #[cfg(not(any(test, feature = "canbench")))]
+        {
+            None
+        }
     }
 
     pub fn resolved_edge_label_id(&self, name: &str) -> Option<EdgeLabelId> {
-        self.resolved_labels
-            .as_ref()?
-            .edge
-            .iter()
-            .find(|label| label.name == name)
-            .map(|label| label.id)
+        if let Some(labels) = &self.resolved_labels {
+            return labels
+                .edge
+                .iter()
+                .find(|label| label.name == name)
+                .map(|label| label.id);
+        }
+        #[cfg(any(test, feature = "canbench"))]
+        {
+            Some(crate::test_labels::edge_label_id_for_name(name))
+        }
+        #[cfg(not(any(test, feature = "canbench")))]
+        {
+            None
+        }
     }
 
     pub fn requires_resolved_labels(&self) -> bool {

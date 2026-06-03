@@ -124,6 +124,7 @@ pub(crate) fn execute_limited_streaming_prefix(
         parameters,
         aggregate_specs,
         caller,
+        resolved_labels: execution.resolved_labels.as_ref(),
         gleaph_weight_decoders,
     };
     let offset = match offset {
@@ -395,19 +396,15 @@ fn stream_node_scan(
     clears_active_aggregate: &mut bool,
 ) -> Result<bool, PlanQueryError> {
     let label_id = match label {
-        Some(label) if execution.requires_resolved_labels() => execution
+        Some(label) => execution
             .resolved_vertex_label_id(label)
             .map(Some)
             .ok_or_else(|| PlanQueryError::MissingResolvedLabel {
                 namespace: "node",
                 name: label.to_owned(),
             })?,
-        Some(label) => store.vertex_label_id(label),
         None => None,
     };
-    if label.is_some() && label_id.is_none() {
-        return Ok(false);
-    }
 
     let filter_migration_visibility = migration_visibility_filter_needed();
     for raw in 0..u32::from(store.vertex_count()) {
@@ -491,19 +488,15 @@ fn stream_expand(
     clears_active_aggregate: &mut bool,
 ) -> Result<bool, PlanQueryError> {
     let label_id = match label {
-        Some(label) if execution.requires_resolved_labels() => execution
+        Some(label) => execution
             .resolved_edge_label_id(label)
             .map(Some)
             .ok_or_else(|| PlanQueryError::MissingResolvedLabel {
                 namespace: "edge",
                 name: label.to_owned(),
             })?,
-        Some(label) => store.edge_label_id(label),
         None => None,
     };
-    if label.is_some() && label_id.is_none() {
-        return Ok(false);
-    }
 
     let Some(src_id) = local_vertex_binding_for_limited_streaming_expand(&row, src.as_ref())?
     else {

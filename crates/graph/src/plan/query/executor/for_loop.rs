@@ -69,6 +69,7 @@ mod tests {
             parameters: &params(),
             aggregate_specs: None,
             caller: None,
+            resolved_labels: None,
             gleaph_weight_decoders: None,
         };
         execute_for(&evaluator, vec![PlanRow::new()], "x", &list, ordinality).expect("execute_for")
@@ -112,6 +113,7 @@ mod tests {
             parameters: &params(),
             aggregate_specs: None,
             caller: None,
+            resolved_labels: None,
             gleaph_weight_decoders: None,
         };
         let list = Expr::new(ExprKind::Literal(Value::Int64(1)));

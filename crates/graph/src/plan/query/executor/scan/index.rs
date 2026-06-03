@@ -291,19 +291,15 @@ pub(crate) fn execute_node_scan(
     execution: &GqlExecutionContext,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
     let label_id = match label {
-        Some(label) if execution.requires_resolved_labels() => execution
+        Some(label) => execution
             .resolved_vertex_label_id(label)
             .map(Some)
             .ok_or_else(|| PlanQueryError::MissingResolvedLabel {
                 namespace: "node",
                 name: label.to_owned(),
             })?,
-        Some(label) => store.vertex_label_id(label),
         None => None,
     };
-    if label.is_some() && label_id.is_none() {
-        return Ok(Vec::new());
-    }
 
     let mut out = Vec::new();
     for row in rows {

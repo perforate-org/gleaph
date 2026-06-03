@@ -124,19 +124,15 @@ pub(crate) async fn execute_expand(
     let caller = ctx.caller();
     let gleaph_weight_decoders = ctx.gleaph_weight_decoders;
     let label_id = match label {
-        Some(label) if execution.requires_resolved_labels() => execution
+        Some(label) => execution
             .resolved_edge_label_id(label)
             .map(Some)
             .ok_or_else(|| PlanQueryError::MissingResolvedLabel {
                 namespace: "edge",
                 name: label.to_owned(),
             })?,
-        Some(label) => store.edge_label_id(label),
         None => None,
     };
-    if label.is_some() && label_id.is_none() {
-        return Ok(Vec::new());
-    }
 
     let evaluator = ctx.expr_evaluator(None);
     let dst_only_prefilter = dst_filter_is_dst_vertex_only(dst_filter, dst.as_ref());

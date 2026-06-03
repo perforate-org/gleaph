@@ -10,7 +10,6 @@ pub(crate) mod memory;
 
 pub(crate) mod edge_alias;
 pub(crate) mod edge_equality_postings;
-pub(crate) mod edge_label_catalog;
 pub(crate) mod edge_payload_profiles;
 pub(crate) mod edge_properties;
 pub(crate) mod edge_weight_profiles;
@@ -20,7 +19,6 @@ pub(crate) mod peer_graph_canisters;
 pub(crate) mod property_catalog;
 pub(crate) mod remote_forward_in;
 pub(crate) mod remote_vertex_refs;
-pub(crate) mod vertex_label_catalog;
 pub(crate) mod vertex_labels;
 pub(crate) mod vertex_logical_ids;
 pub(crate) mod vertex_properties;
@@ -31,12 +29,6 @@ thread_local! {
     pub(crate) static GRAPH: RefCell<memory::StableGraph> = RefCell::new(
         memory::init_graph()
     );
-
-    pub(crate) static VERTEX_LABEL_CATALOG: RefCell<memory::StableVertexLabelCatalog> =
-        RefCell::new(memory::init_vertex_label_catalog());
-
-    pub(crate) static EDGE_LABEL_CATALOG: RefCell<memory::StableEdgeLabelCatalog> =
-        RefCell::new(memory::init_edge_label_catalog());
 
     pub(crate) static VERTEX_LABELS: RefCell<memory::StableVertexLabelStore> = RefCell::new(
         memory::init_vertex_label_store()

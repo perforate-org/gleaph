@@ -90,9 +90,7 @@ mod tests {
         let store = GraphStore::new();
         let a = store.insert_vertex().expect("a");
         let b = store.insert_vertex().expect("b");
-        let label_id = store
-            .get_or_insert_edge_label_id("RevExpandWgt")
-            .expect("label");
+        let label_id = crate::test_labels::edge_label_id_for_name("RevExpandWgt");
         store
             .install_edge_label_weight_profile_at_init(
                 label_id,

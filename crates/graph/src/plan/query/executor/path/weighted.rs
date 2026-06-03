@@ -509,6 +509,7 @@ fn eval_shortest_hop_cost(
         parameters,
         aggregate_specs: None,
         caller: None,
+        resolved_labels: None,
         gleaph_weight_decoders,
     };
     let value = evaluator.eval_expr(&row, expr)?;

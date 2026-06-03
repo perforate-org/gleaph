@@ -721,9 +721,7 @@ fn return_abs_gleaph_weight_does_not_break_decoder_prep() {
     let b = store
         .insert_vertex_named(["AbsWgtB"], Vec::<(&str, Value)>::new())
         .expect("b");
-    let label_id = store
-        .get_or_insert_edge_label_id("AbsWgtRoad")
-        .expect("label");
+    let label_id = crate::test_labels::edge_label_id_for_name("AbsWgtRoad");
     store
         .install_edge_label_weight_profile_at_init(
             label_id,
@@ -754,9 +752,7 @@ fn gleaph_weight_accepts_edge_payload_profile_without_legacy_weight_profile() {
     let b = store
         .insert_vertex_named(["PayloadProfileWgtB"], Vec::<(&str, Value)>::new())
         .expect("b");
-    let label_id = store
-        .get_or_insert_edge_label_id("PayloadProfileWgtRoad")
-        .expect("label");
+    let label_id = crate::test_labels::edge_label_id_for_name("PayloadProfileWgtRoad");
     store
         .install_edge_label_payload_profile_at_init(
             label_id,
@@ -791,9 +787,7 @@ fn gql_gleaph_weight_equality_uses_edge_payload_predicate_expand() {
     let c = store
         .insert_vertex_named(["GqlBatchEqualC"], Vec::<(&str, Value)>::new())
         .expect("c");
-    let label_id = store
-        .get_or_insert_edge_label_id("GqlBatchEqualRoad")
-        .unwrap();
+    let label_id = crate::test_labels::edge_label_id_for_name("GqlBatchEqualRoad");
     store
         .install_edge_label_payload_profile_at_init(
             label_id,
@@ -834,7 +828,7 @@ fn gql_gleaph_weight_gt_uses_edge_payload_predicate_expand() {
     let c = store
         .insert_vertex_named(["GqlBatchGtC"], Vec::<(&str, Value)>::new())
         .expect("c");
-    let label_id = store.get_or_insert_edge_label_id("GqlBatchGtRoad").unwrap();
+    let label_id = crate::test_labels::edge_label_id_for_name("GqlBatchGtRoad");
     store
         .install_edge_label_payload_profile_at_init(
             label_id,
@@ -875,7 +869,7 @@ fn gql_gleaph_vector_l2_uses_edge_vector_predicate_expand() {
     let far = store
         .insert_vertex_named(["GqlVectorB"], [("name", Value::Text("far".into()))])
         .expect("far");
-    let label_id = store.get_or_insert_edge_label_id("GqlVectorRoad").unwrap();
+    let label_id = crate::test_labels::edge_label_id_for_name("GqlVectorRoad");
     store
         .install_edge_label_payload_profile_at_init(
             label_id,
@@ -932,9 +926,7 @@ fn gql_gleaph_vector_dot_uses_edge_vector_predicate_expand() {
     let low = store
         .insert_vertex_named(["GqlVectorDotB"], [("name", Value::Text("low".into()))])
         .expect("low");
-    let label_id = store
-        .get_or_insert_edge_label_id("GqlVectorDotRoad")
-        .unwrap();
+    let label_id = crate::test_labels::edge_label_id_for_name("GqlVectorDotRoad");
     store
         .install_edge_label_payload_profile_at_init(
             label_id,
@@ -1003,9 +995,7 @@ fn vector_dst_only_expand_filter_keeps_projection_fast_path_semantics() {
             ],
         )
         .expect("drop");
-    let label_id = store
-        .get_or_insert_edge_label_id("VectorDstOnlyFilterRoad")
-        .unwrap();
+    let label_id = crate::test_labels::edge_label_id_for_name("VectorDstOnlyFilterRoad");
     store
         .install_edge_label_payload_profile_at_init(
             label_id,
@@ -1090,9 +1080,7 @@ fn ascending_forward_fixed_label_candidates_use_batched_edge_payloads() {
     let c = store
         .insert_vertex_named(["BatchExpandC"], Vec::<(&str, Value)>::new())
         .expect("c");
-    let label_id = store
-        .get_or_insert_edge_label_id("BatchExpandRoad")
-        .unwrap();
+    let label_id = crate::test_labels::edge_label_id_for_name("BatchExpandRoad");
     store
         .install_edge_label_payload_profile_at_init(
             label_id,
@@ -1142,9 +1130,7 @@ fn ascending_reverse_fixed_label_candidates_use_batched_edge_payloads() {
     let c = store
         .insert_vertex_named(["BatchReverseExpandC"], Vec::<(&str, Value)>::new())
         .expect("c");
-    let label_id = store
-        .get_or_insert_edge_label_id("BatchReverseExpandRoad")
-        .unwrap();
+    let label_id = crate::test_labels::edge_label_id_for_name("BatchReverseExpandRoad");
     store
         .install_edge_label_payload_profile_at_init(
             label_id,
@@ -1198,7 +1184,7 @@ fn forward_fixed_label_edge_payload_predicate_uses_batch_kernel() {
     let c = store
         .insert_vertex_named(["BatchEqualC"], Vec::<(&str, Value)>::new())
         .expect("c");
-    let label_id = store.get_or_insert_edge_label_id("BatchEqualRoad").unwrap();
+    let label_id = crate::test_labels::edge_label_id_for_name("BatchEqualRoad");
     store
         .install_edge_label_payload_profile_at_init(
             label_id,
@@ -1256,9 +1242,7 @@ fn expand_plan_edge_payload_predicate_filters_candidates() {
     let c = store
         .insert_vertex_named(["PlanBatchEqualC"], Vec::<(&str, Value)>::new())
         .expect("c");
-    let label_id = store
-        .get_or_insert_edge_label_id("PlanBatchEqualRoad")
-        .unwrap();
+    let label_id = crate::test_labels::edge_label_id_for_name("PlanBatchEqualRoad");
     store
         .install_edge_label_payload_profile_at_init(
             label_id,
@@ -1327,9 +1311,7 @@ fn reverse_fixed_label_edge_payload_predicate_uses_batch_kernel() {
     let c = store
         .insert_vertex_named(["BatchReverseEqualC"], Vec::<(&str, Value)>::new())
         .expect("c");
-    let label_id = store
-        .get_or_insert_edge_label_id("BatchReverseEqualRoad")
-        .unwrap();
+    let label_id = crate::test_labels::edge_label_id_for_name("BatchReverseEqualRoad");
     store
         .install_edge_label_payload_profile_at_init(
             label_id,
@@ -1395,9 +1377,7 @@ fn forward_fixed_label_edge_vector_threshold_uses_batch_kernel() {
     let far = store
         .insert_vertex_named(["BatchVectorFar"], Vec::<(&str, Value)>::new())
         .expect("far");
-    let label_id = store
-        .get_or_insert_edge_label_id("BatchVectorRoad")
-        .unwrap();
+    let label_id = crate::test_labels::edge_label_id_for_name("BatchVectorRoad");
     store
         .install_edge_label_payload_profile_at_init(
             label_id,
@@ -1465,9 +1445,7 @@ fn reverse_fixed_label_edge_vector_threshold_uses_batch_kernel() {
     let c = store
         .insert_vertex_named(["BatchVectorReverseC"], Vec::<(&str, Value)>::new())
         .expect("c");
-    let label_id = store
-        .get_or_insert_edge_label_id("BatchVectorReverseRoad")
-        .unwrap();
+    let label_id = crate::test_labels::edge_label_id_for_name("BatchVectorReverseRoad");
     store
         .install_edge_label_payload_profile_at_init(
             label_id,
@@ -1531,9 +1509,7 @@ fn ascending_forward_fixed_label_without_edge_payloads_keeps_scalar_scan() {
     let b = store
         .insert_vertex_named(["ScalarExpandB"], Vec::<(&str, Value)>::new())
         .expect("b");
-    let label_id = store
-        .get_or_insert_edge_label_id("ScalarExpandRoad")
-        .unwrap();
+    let label_id = crate::test_labels::edge_label_id_for_name("ScalarExpandRoad");
     store
         .insert_directed_edge_with_payload_bytes(a, b, Some(label_id), &[])
         .unwrap();
@@ -1568,9 +1544,7 @@ fn gleaph_weight_rejects_edge_payload_width_mismatch() {
     let b = store
         .insert_vertex_named(["MissingValueWgtB"], Vec::<(&str, Value)>::new())
         .expect("b");
-    let label_id = store
-        .get_or_insert_edge_label_id("MissingValueWgtRoad")
-        .expect("label");
+    let label_id = crate::test_labels::edge_label_id_for_name("MissingValueWgtRoad");
     store
         .install_edge_label_payload_profile_at_init(
             label_id,

@@ -2,6 +2,75 @@
 
 use super::test_support::*;
 use gleaph_gql::Value;
+use gleaph_graph_kernel::plan_exec::ResolvedLabelTable;
+
+#[test]
+fn explicit_empty_resolved_table_fails_labeled_node_scan() {
+    let store = GraphStore::new();
+    let plan = plan_gql("MATCH (n:MissingNodeLabel) RETURN n");
+    let err = store
+        .execute_plan_query(
+            &plan,
+            &params(),
+            GqlExecutionContext {
+                caller: None,
+                resolved_labels: Some(ResolvedLabelTable::default()),
+            },
+        )
+        .expect_err("missing resolved node label must fail");
+    assert!(matches!(
+        err,
+        PlanQueryError::MissingResolvedLabel {
+            namespace: "node",
+            name
+        } if name == "MissingNodeLabel"
+    ));
+}
+
+#[test]
+fn explicit_empty_resolved_table_fails_labeled_expand() {
+    let store = GraphStore::new();
+    let a = store.insert_vertex().expect("insert source");
+    let mut row = PlanRow::new();
+    row.insert("a".to_owned(), PlanBinding::Vertex(a));
+    let parameters = params();
+    let ctx = ExecuteCtx::new(
+        &store,
+        &parameters,
+        None,
+        GqlExecutionContext {
+            caller: None,
+            resolved_labels: Some(ResolvedLabelTable::default()),
+        },
+        None,
+    );
+    let err = pollster::block_on(execute_expand(
+        &ctx,
+        vec![row],
+        &"a".into(),
+        &"e".into(),
+        &"b".into(),
+        EdgeDirection::PointingRight,
+        Some("MissingEdgeLabel"),
+        &ctx.execution,
+        EdgeSequenceOrder::Descending,
+        &[],
+        true,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ))
+    .expect_err("missing resolved edge label must fail");
+    assert!(matches!(
+        err,
+        PlanQueryError::MissingResolvedLabel {
+            namespace: "edge",
+            name
+        } if name == "MissingEdgeLabel"
+    ));
+}
 
 #[test]
 fn mandatory_node_only_match_after_optional_miss_drops_null_rows() {
@@ -31,9 +100,7 @@ fn optional_miss_fails_labeled_node_only_match() {
     store
         .insert_vertex_named(["OptMissA"], Vec::<(&str, Value)>::new())
         .expect("insert a");
-    store
-        .get_or_insert_edge_label_id("OptMissRel")
-        .expect("edge label");
+    crate::test_labels::edge_label_id_for_name("OptMissRel");
     let gql = "MATCH (a:OptMissA) OPTIONAL MATCH (a)-[e:OptMissRel]->(b:OptMissB) \
                MATCH (b:OptMissB) RETURN b";
     let plan = plan_gql(gql);

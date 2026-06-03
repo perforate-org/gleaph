@@ -1,7 +1,6 @@
 use super::*;
 use crate::facade::migration::prune_migrated_source_maintenance_step_for;
 use crate::facade::migration::vertex::{export_out_edge, import_out_edge};
-use crate::facade::mutation_executor::GraphMutationExecutor;
 use crate::facade::store::helpers::lara_label;
 use crate::facade::{FederationRouting, GraphStore};
 use crate::index::placement;
@@ -146,9 +145,7 @@ fn journal_out_edge_payload_changed_applies_on_staging() {
     let source = store.insert_vertex().expect("source");
     let target = store.insert_vertex().expect("target");
     let logical = store.logical_vertex_id(source).expect("logical");
-    let label_id = store
-        .get_or_insert_edge_label_id("MigrationJournalValue")
-        .expect("label");
+    let label_id = crate::test_labels::edge_label_id_for_name("MigrationJournalValue");
     install_w2_weight_profile(&store, label_id);
 
     pollster::block_on(migration_start(
@@ -263,9 +260,7 @@ fn journal_out_edge_removed_applies_on_staging() {
     let source = store.insert_vertex().expect("source");
     let target = store.insert_vertex().expect("target");
     let logical = store.logical_vertex_id(source).expect("logical");
-    let label_id = store
-        .get_or_insert_edge_label_id("MigrationJournalRemove")
-        .expect("label");
+    let label_id = crate::test_labels::edge_label_id_for_name("MigrationJournalRemove");
     install_w2_weight_profile(&store, label_id);
 
     pollster::block_on(migration_start(
@@ -438,9 +433,7 @@ fn journal_remote_parallel_out_edge_maps_value_updates_to_inserted_edge() {
     let source = store.insert_vertex().expect("source");
     let logical = store.logical_vertex_id(source).expect("logical");
     let remote_logical = 44_002;
-    let label_id = store
-        .get_or_insert_edge_label_id("RemoteParallelJournal")
-        .expect("label");
+    let label_id = crate::test_labels::edge_label_id_for_name("RemoteParallelJournal");
     install_w2_weight_profile(&store, label_id);
 
     let start = pollster::block_on(migration_start(
@@ -584,9 +577,7 @@ fn journal_undirected_edge_added_applies_for_migrating_alias_endpoint() {
     let neighbor = store.insert_vertex().expect("neighbor");
     let source = store.insert_vertex().expect("source");
     let logical = store.logical_vertex_id(source).expect("logical");
-    let label_id = store
-        .get_or_insert_edge_label_id("JournalUndirectedAdd")
-        .expect("label");
+    let label_id = crate::test_labels::edge_label_id_for_name("JournalUndirectedAdd");
 
     let start = pollster::block_on(migration_start(
         &store,
@@ -647,9 +638,7 @@ fn native_pending_apply_delivers_maintenance_chunk() {
     let source = store.insert_vertex().expect("source");
     let neighbor = store.insert_vertex().expect("neighbor");
     let logical = store.logical_vertex_id(source).expect("logical");
-    let label_id = store
-        .get_or_insert_edge_label_id("PendingApply")
-        .expect("label");
+    let label_id = crate::test_labels::edge_label_id_for_name("PendingApply");
     install_w2_weight_profile(&store, label_id);
     store
         .insert_directed_edge_with_payload_bytes(source, neighbor, Some(label_id), &[1, 0])
@@ -707,9 +696,7 @@ fn journal_out_edge_property_set_applies_on_staging() {
     let source = store.insert_vertex().expect("source");
     let target = store.insert_vertex().expect("target");
     let logical = store.logical_vertex_id(source).expect("logical");
-    let label_id = store
-        .get_or_insert_edge_label_id("MigrationJournalProperty")
-        .expect("label");
+    let label_id = crate::test_labels::edge_label_id_for_name("MigrationJournalProperty");
     install_w2_weight_profile(&store, label_id);
 
     pollster::block_on(migration_start(
@@ -820,9 +807,7 @@ fn migration_reconcile_rebuilds_lost_queue_item() {
     let source = store.insert_vertex().expect("source");
     let neighbor = store.insert_vertex().expect("neighbor");
     let logical = store.logical_vertex_id(source).expect("logical");
-    let label_id = store
-        .get_or_insert_edge_label_id("ReconcileRebuild")
-        .expect("label");
+    let label_id = crate::test_labels::edge_label_id_for_name("ReconcileRebuild");
     install_w2_weight_profile(&store, label_id);
     store
         .insert_directed_edge_with_payload_bytes(source, neighbor, Some(label_id), &[1, 0])
@@ -912,9 +897,7 @@ fn incremental_migration_e2e_copy_and_cutover() {
     let logical = store.logical_vertex_id(source).expect("logical");
     let neighbor_logical = store.logical_vertex_id(neighbor).expect("neighbor logical");
 
-    let label_id = store
-        .get_or_insert_edge_label_id("E2E_MIGRATE")
-        .expect("label");
+    let label_id = crate::test_labels::edge_label_id_for_name("E2E_MIGRATE");
     install_w2_weight_profile(&store, label_id);
 
     let edge_payload = [5u8, 0];
@@ -973,10 +956,9 @@ fn incremental_migration_e2e_copy_and_cutover() {
 
     let dest_vertex = store.vertex(dest_id).expect("dest vertex");
     let labels = store.vertex_labels(dest_id, dest_vertex);
+    let migrant_label = crate::test_labels::vertex_label_id_for_name("Migrant");
     assert!(
-        labels
-            .iter()
-            .any(|l| store.vertex_label_name(*l).as_deref() == Some("Migrant")),
+        labels.iter().any(|l| *l == migrant_label),
         "metadata labels copied to destination"
     );
     let score_id = store.get_or_insert_property_id("score").expect("prop");
@@ -1051,9 +1033,7 @@ fn prune_clears_stub_payload_preserves_neighbor_edges() {
     let source = store.insert_vertex().expect("source");
     let neighbor = store.insert_vertex().expect("neighbor");
     let logical = store.logical_vertex_id(source).expect("logical");
-    let label_id = store
-        .get_or_insert_edge_label_id("PRUNE_STUB")
-        .expect("label");
+    let label_id = crate::test_labels::edge_label_id_for_name("PRUNE_STUB");
     install_w2_weight_profile(&store, label_id);
     // Neighbor -> migrant: canonical edge lives on neighbor.o and must survive source prune.
     let incoming_handle = store
@@ -1128,9 +1108,7 @@ fn prune_clears_stub_undirected_payload_preserves_neighbor_row() {
     let source = store.insert_vertex().expect("source");
     let neighbor = store.insert_vertex().expect("neighbor");
     let logical = store.logical_vertex_id(source).expect("logical");
-    let label_id = store
-        .get_or_insert_edge_label_id("PRUNE_STUB_UNDIRECTED")
-        .expect("label");
+    let label_id = crate::test_labels::edge_label_id_for_name("PRUNE_STUB_UNDIRECTED");
     install_w2_weight_profile(&store, label_id);
     store
         .insert_undirected_edge_with_payload_bytes(source, neighbor, Some(label_id), &[4, 0])
@@ -1191,9 +1169,7 @@ fn migration_copies_undirected_edges_before_source_prune() {
     let source = store.insert_vertex().expect("source");
     let neighbor = store.insert_vertex().expect("neighbor");
     let logical = store.logical_vertex_id(source).expect("logical");
-    let label_id = store
-        .get_or_insert_edge_label_id("MIGRATE_UNDIRECTED")
-        .expect("label");
+    let label_id = crate::test_labels::edge_label_id_for_name("MIGRATE_UNDIRECTED");
     install_w2_weight_profile(&store, label_id);
     store
         .insert_undirected_edge_with_payload_bytes(source, neighbor, Some(label_id), &[6, 0])
@@ -1307,9 +1283,7 @@ fn in_reverse_journal_maps_to_the_inserted_destination_row() {
 
     let target = store.insert_vertex().expect("target");
     let logical = store.logical_vertex_id(target).expect("logical");
-    let label_id = store
-        .get_or_insert_edge_label_id("ReverseJournalHandle")
-        .expect("label");
+    let label_id = crate::test_labels::edge_label_id_for_name("ReverseJournalHandle");
     install_w2_weight_profile(&store, label_id);
     let lara_label = LaraLabelId::from_raw(
         label_id
@@ -1402,9 +1376,7 @@ fn canonical_incoming_edge_mutations_journal_to_migrating_target_reverse_row() {
     let pred = store.insert_vertex().expect("pred");
     let source = store.insert_vertex().expect("source");
     let logical = store.logical_vertex_id(source).expect("logical");
-    let label_id = store
-        .get_or_insert_edge_label_id("IncomingCanonicalJournal")
-        .expect("label");
+    let label_id = crate::test_labels::edge_label_id_for_name("IncomingCanonicalJournal");
     install_w2_weight_profile(&store, label_id);
     let incoming = store
         .insert_directed_edge_with_payload_bytes(pred, source, Some(label_id), &[1, 0])
@@ -1510,9 +1482,7 @@ fn in_reverse_copy_is_resumable_and_preserves_label() {
 
     let source = store.insert_vertex().expect("source");
     let logical = store.logical_vertex_id(source).expect("logical");
-    let label_id = store
-        .get_or_insert_edge_label_id("MIGRATE_IN_LABEL")
-        .expect("label");
+    let label_id = crate::test_labels::edge_label_id_for_name("MIGRATE_IN_LABEL");
     install_w2_weight_profile(&store, label_id);
     for i in 0..5 {
         let pred = store.insert_vertex().expect("pred");

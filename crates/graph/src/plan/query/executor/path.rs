@@ -101,19 +101,15 @@ pub(crate) async fn execute_shortest_path(
     }
 
     let label_id = match label {
-        Some(label) if execution.requires_resolved_labels() => execution
+        Some(label) => execution
             .resolved_edge_label_id(label)
             .map(Some)
             .ok_or_else(|| PlanQueryError::MissingResolvedLabel {
                 namespace: "edge",
                 name: label.to_owned(),
             })?,
-        Some(label) => store.edge_label_id(label),
         None => None,
     };
-    if label.is_some() && label_id.is_none() {
-        return Ok(Vec::new());
-    }
 
     let shard_id = local_shard_id(store);
     let store_hop_edges = emit_edge_binding || emit_path_binding;

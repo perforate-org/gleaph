@@ -1,11 +1,9 @@
 use super::edge_alias::EdgeAliasIndex;
-use super::edge_label_catalog::EdgeLabelCatalog;
 use super::edge_payload_profiles::EdgePayloadProfileStore;
 use super::edge_properties::EdgePropertyStore;
 use super::edge_weight_profiles::EdgeWeightProfileStore;
 use super::metadata::{GraphMetadata, StableGraphMetadata};
 use super::property_catalog::PropertyCatalog;
-use super::vertex_label_catalog::VertexLabelCatalog;
 use super::vertex_labels::VertexLabelStore;
 use super::vertex_properties::VertexPropertyStore;
 use gleaph_graph_kernel::entry::Edge;
@@ -54,10 +52,6 @@ const REV_PAYLOAD_BLOBS: MemoryId = MemoryId::new(58);
 const MAINTENANCE_QUEUE: MemoryId = MemoryId::new(20);
 const DIRTY_WORK_ITEMS: MemoryId = MemoryId::new(21);
 
-const VERTEX_LABEL_NAME_TO_ID: MemoryId = MemoryId::new(22);
-const VERTEX_LABEL_ID_TO_NAME: MemoryId = MemoryId::new(23);
-const EDGE_LABEL_NAME_TO_ID: MemoryId = MemoryId::new(34);
-const EDGE_LABEL_ID_TO_NAME: MemoryId = MemoryId::new(35);
 const VERTEX_LABEL_SETS: MemoryId = MemoryId::new(24);
 const PROPERTY_NAME_TO_ID: MemoryId = MemoryId::new(25);
 const PROPERTY_ID_TO_NAME: MemoryId = MemoryId::new(26);
@@ -88,8 +82,6 @@ const GRAPH_ELEM_CAPACITY: u64 = 1 << 20;
 pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
 
 pub(crate) type StableGraph = DeferredBidirectionalLabeledLaraGraph<Edge, Memory>;
-pub(crate) type StableVertexLabelCatalog = VertexLabelCatalog<Memory, Memory>;
-pub(crate) type StableEdgeLabelCatalog = EdgeLabelCatalog<Memory, Memory>;
 pub(crate) type StableVertexLabelStore = VertexLabelStore<Memory>;
 pub(crate) type StablePropertyCatalog = PropertyCatalog<Memory, Memory>;
 pub(crate) type StableVertexPropertyStore = VertexPropertyStore<Memory>;
@@ -162,20 +154,6 @@ pub(crate) fn init_graph() -> StableGraph {
     crate::facade::init_ic_gql_extensions();
 
     graph
-}
-
-pub(crate) fn init_vertex_label_catalog() -> StableVertexLabelCatalog {
-    VertexLabelCatalog::init(
-        MEMORY_MANAGER.with(|m| m.borrow().get(VERTEX_LABEL_NAME_TO_ID)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(VERTEX_LABEL_ID_TO_NAME)),
-    )
-}
-
-pub(crate) fn init_edge_label_catalog() -> StableEdgeLabelCatalog {
-    EdgeLabelCatalog::init(
-        MEMORY_MANAGER.with(|m| m.borrow().get(EDGE_LABEL_NAME_TO_ID)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(EDGE_LABEL_ID_TO_NAME)),
-    )
 }
 
 pub(crate) fn init_vertex_label_store() -> StableVertexLabelStore {

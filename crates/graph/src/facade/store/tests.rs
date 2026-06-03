@@ -29,9 +29,7 @@ fn install_edge_label_payload_profile_rejected_on_second_install() {
     use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
 
     let store = GraphStore::new();
-    let label_id = store
-        .get_or_insert_edge_label_id("ProfileInitOnce")
-        .expect("label");
+    let label_id = crate::test_labels::edge_label_id_for_name("ProfileInitOnce");
     let profile = EdgePayloadProfile {
         byte_width: 2,
         encoding: EdgePayloadEncoding::WeightRawU16,
@@ -53,9 +51,7 @@ fn insert_rejects_payload_bytes_when_label_profile_expects_zero_width() {
     let store = GraphStore::new();
     let source = store.insert_vertex().expect("source");
     let target = store.insert_vertex().expect("target");
-    let label_id = store
-        .get_or_insert_edge_label_id("ZeroWidthOnly")
-        .expect("label");
+    let label_id = crate::test_labels::edge_label_id_for_name("ZeroWidthOnly");
 
     let err = store
         .insert_directed_edge_with_payload_bytes(source, target, Some(label_id), &[1, 0])
@@ -80,9 +76,7 @@ fn insert_rejects_payload_bytes_when_profile_width_differs() {
     let store = GraphStore::new();
     let source = store.insert_vertex().expect("source");
     let target = store.insert_vertex().expect("target");
-    let label_id = store
-        .get_or_insert_edge_label_id("ProfileWidthMismatch")
-        .expect("label");
+    let label_id = crate::test_labels::edge_label_id_for_name("ProfileWidthMismatch");
     store
         .install_edge_label_payload_profile_at_init(
             label_id,
@@ -119,9 +113,7 @@ fn insert_rejects_invalid_edge_payload_byte_width() {
     let store = GraphStore::new();
     let source = store.insert_vertex().expect("source");
     let target = store.insert_vertex().expect("target");
-    let label_id = store
-        .get_or_insert_edge_label_id("InvalidValueWidth")
-        .expect("label");
+    let label_id = crate::test_labels::edge_label_id_for_name("InvalidValueWidth");
 
     let err = store
         .insert_directed_edge_with_payload_bytes(source, target, Some(label_id), &[1, 2, 3])
@@ -146,9 +138,7 @@ fn i32_edge_payload_profile_round_trip() {
     let store = GraphStore::new();
     let source = store.insert_vertex().expect("source");
     let target = store.insert_vertex().expect("target");
-    let label_id = store
-        .get_or_insert_edge_label_id("I32CostRoad")
-        .expect("label");
+    let label_id = crate::test_labels::edge_label_id_for_name("I32CostRoad");
     store
         .install_edge_label_payload_profile_at_init(
             label_id,
@@ -184,9 +174,7 @@ fn graph_store_visits_fixed_label_edge_payload_batches() {
     let source = store.insert_vertex().expect("source");
     let first = store.insert_vertex().expect("first");
     let second = store.insert_vertex().expect("second");
-    let label_id = store
-        .get_or_insert_edge_label_id("BatchValues")
-        .expect("label");
+    let label_id = crate::test_labels::edge_label_id_for_name("BatchValues");
     store
         .install_edge_label_payload_profile_at_init(
             label_id,
@@ -233,9 +221,7 @@ fn graph_store_visits_fixed_label_in_edge_payload_batches() {
     let first = store.insert_vertex().expect("first");
     let second = store.insert_vertex().expect("second");
     let target = store.insert_vertex().expect("target");
-    let label_id = store
-        .get_or_insert_edge_label_id("BatchInValues")
-        .expect("label");
+    let label_id = crate::test_labels::edge_label_id_for_name("BatchInValues");
     store
         .install_edge_label_payload_profile_at_init(
             label_id,
@@ -280,9 +266,7 @@ fn updating_directed_edge_payload_updates_forward_and_reverse_rows() {
     let store = GraphStore::new();
     let source = store.insert_vertex().expect("source");
     let target = store.insert_vertex().expect("target");
-    let label_id = store
-        .get_or_insert_edge_label_id("UpdateDirectedValueBothRows")
-        .expect("label");
+    let label_id = crate::test_labels::edge_label_id_for_name("UpdateDirectedValueBothRows");
     install_w2_weight_profile(&store, label_id);
 
     let forward = store
@@ -346,9 +330,7 @@ fn updating_undirected_edge_payload_updates_both_storage_rows() {
     let store = GraphStore::new();
     let low = store.insert_vertex().expect("low");
     let high = store.insert_vertex().expect("high");
-    let label_id = store
-        .get_or_insert_edge_label_id("UpdateUndirectedValueBothRows")
-        .expect("label");
+    let label_id = crate::test_labels::edge_label_id_for_name("UpdateUndirectedValueBothRows");
     install_w2_weight_profile(&store, label_id);
 
     let handle = store
@@ -381,9 +363,7 @@ fn forward_edge_compaction_preserves_inline_payloads() {
     let first = store.insert_vertex().expect("first");
     let second = store.insert_vertex().expect("second");
     let third = store.insert_vertex().expect("third");
-    let label = store
-        .get_or_insert_edge_label_id("CompactionPreservesValues")
-        .expect("label");
+    let label = crate::test_labels::edge_label_id_for_name("CompactionPreservesValues");
     store
         .install_edge_label_weight_profile_at_init(
             label,
@@ -434,9 +414,7 @@ fn undirected_canonical_owner_carries_payload_bytes() {
     let store = GraphStore::new();
     let low = store.insert_vertex().expect("low");
     let high = store.insert_vertex().expect("high");
-    let label_id = store
-        .get_or_insert_edge_label_id("UndirectedValueOwner")
-        .expect("label");
+    let label_id = crate::test_labels::edge_label_id_for_name("UndirectedValueOwner");
     store
         .install_edge_label_weight_profile_at_init(
             label_id,
@@ -491,9 +469,7 @@ fn inline_edge_payloads_round_trip_on_parallel_out_edges() {
     let a = store.insert_vertex().expect("a");
     let mid = store.insert_vertex().expect("mid");
     let dst = store.insert_vertex().expect("dst");
-    let label_id = store
-        .get_or_insert_edge_label_id("WgtRoad")
-        .expect("road label");
+    let label_id = crate::test_labels::edge_label_id_for_name("WgtRoad");
     store
         .install_edge_label_weight_profile_at_init(
             label_id,
@@ -531,9 +507,7 @@ fn weighted_road_parallel_out_edges_from_a_round_trip() {
     let a = store.insert_vertex().expect("a");
     let b = store.insert_vertex().expect("b");
     let c = store.insert_vertex().expect("c");
-    let label_id = store
-        .get_or_insert_edge_label_id("WgtRoad")
-        .expect("road label");
+    let label_id = crate::test_labels::edge_label_id_for_name("WgtRoad");
     store
         .install_edge_label_weight_profile_at_init(
             label_id,
@@ -565,9 +539,7 @@ fn weighted_road_parallel_out_edges_from_a_round_trip() {
 fn directed_out_edges_visit_attaches_inline_payloads() {
     let store = GraphStore::new();
     let a = store.insert_vertex().expect("a");
-    let label_id = store
-        .get_or_insert_edge_label_id("VisitWgtRoad")
-        .expect("road label");
+    let label_id = crate::test_labels::edge_label_id_for_name("VisitWgtRoad");
     store
         .install_edge_label_weight_profile_at_init(
             label_id,
@@ -597,9 +569,7 @@ fn delete_valued_directed_edge_by_handle_removes_reverse_alias_slot() {
     let store = GraphStore::new();
     let source = store.insert_vertex().expect("source");
     let target = store.insert_vertex().expect("target");
-    let label_id = store
-        .get_or_insert_edge_label_id("DeleteValuedDirected")
-        .expect("label");
+    let label_id = crate::test_labels::edge_label_id_for_name("DeleteValuedDirected");
     install_w2_weight_profile(&store, label_id);
 
     let first = store
@@ -632,9 +602,7 @@ fn directed_reverse_alias_does_not_require_matching_slot_index() {
     let source = store.insert_vertex().expect("source");
     let target = store.insert_vertex().expect("target");
     let other_source = store.insert_vertex().expect("other source");
-    let label_id = store
-        .get_or_insert_edge_label_id("DirectedAliasSlotSkew")
-        .expect("label");
+    let label_id = crate::test_labels::edge_label_id_for_name("DirectedAliasSlotSkew");
     install_w2_weight_profile(&store, label_id);
 
     store
@@ -669,9 +637,7 @@ fn delete_valued_undirected_edge_by_handle_removes_alias_slot() {
     let store = GraphStore::new();
     let low = store.insert_vertex().expect("low");
     let high = store.insert_vertex().expect("high");
-    let label_id = store
-        .get_or_insert_edge_label_id("DeleteValuedUndirected")
-        .expect("label");
+    let label_id = crate::test_labels::edge_label_id_for_name("DeleteValuedUndirected");
     install_w2_weight_profile(&store, label_id);
 
     let first = store
@@ -709,9 +675,7 @@ fn unvalued_parallel_directed_inserts_align_reverse_alias_slot() {
     let store = GraphStore::new();
     let source = store.insert_vertex().expect("source");
     let target = store.insert_vertex().expect("target");
-    let label_id = store
-        .get_or_insert_edge_label_id("UnvaluedParallelDirected")
-        .expect("label");
+    let label_id = crate::test_labels::edge_label_id_for_name("UnvaluedParallelDirected");
 
     let first = store
         .insert_directed_edge(source, target, Some(label_id))
@@ -734,9 +698,7 @@ fn valued_parallel_insert_returns_handles_for_each_value() {
     let store = GraphStore::new();
     let source = store.insert_vertex().expect("source");
     let target = store.insert_vertex().expect("target");
-    let label_id = store
-        .get_or_insert_edge_label_id("ParallelValuedHandles")
-        .expect("label");
+    let label_id = crate::test_labels::edge_label_id_for_name("ParallelValuedHandles");
     store
         .install_edge_label_weight_profile_at_init(
             label_id,
@@ -769,9 +731,7 @@ fn lookup_edge_record_at_handle_includes_stored_payload_bytes() {
     let store = GraphStore::new();
     let source = store.insert_vertex().expect("source");
     let target = store.insert_vertex().expect("target");
-    let label_id = store
-        .get_or_insert_edge_label_id("LookupEdgeRecordValue")
-        .expect("label");
+    let label_id = crate::test_labels::edge_label_id_for_name("LookupEdgeRecordValue");
     store
         .install_edge_label_weight_profile_at_init(
             label_id,
@@ -798,9 +758,7 @@ fn forward_out_lookup_ignores_reverse_in_alias_when_slots_collide() {
     let s = store.insert_vertex().expect("s");
     let a = store.insert_vertex().expect("a");
     let mid = store.insert_vertex().expect("mid");
-    let label_id = store
-        .get_or_insert_edge_label_id("ForwardOutReverseInSlotCollision")
-        .expect("label");
+    let label_id = crate::test_labels::edge_label_id_for_name("ForwardOutReverseInSlotCollision");
     store
         .install_edge_label_weight_profile_at_init(
             label_id,
@@ -834,9 +792,7 @@ fn valued_insert_after_delete_returns_handle_for_new_edge() {
     let source = store.insert_vertex().expect("source");
     let target_a = store.insert_vertex().expect("target a");
     let target_b = store.insert_vertex().expect("target b");
-    let label_id = store
-        .get_or_insert_edge_label_id("TombstoneHandleLookup")
-        .expect("label");
+    let label_id = crate::test_labels::edge_label_id_for_name("TombstoneHandleLookup");
     store
         .install_edge_label_weight_profile_at_init(
             label_id,
@@ -876,12 +832,8 @@ fn insert_edge_handle_lookup_is_scoped_to_expected_label() {
     let store = GraphStore::new();
     let source = store.insert_vertex().expect("source");
     let target = store.insert_vertex().expect("target");
-    let low_label = store
-        .get_or_insert_edge_label_id("LookupLow")
-        .expect("low label");
-    let high_label = store
-        .get_or_insert_edge_label_id("LookupHigh")
-        .expect("high label");
+    let low_label = crate::test_labels::edge_label_id_for_name("LookupLow");
+    let high_label = crate::test_labels::edge_label_id_for_name("LookupHigh");
 
     store
         .insert_directed_edge(source, target, Some(high_label))
@@ -901,12 +853,8 @@ fn edge_label_lookup_uses_edge_label_annotation() {
     let store = GraphStore::new();
     let source = store.insert_vertex().expect("source");
     let target = store.insert_vertex().expect("target");
-    let directed_label = store
-        .get_or_insert_edge_label_id("LookupDirected")
-        .expect("directed label");
-    let undirected_label = store
-        .get_or_insert_edge_label_id("LookupUndirected")
-        .expect("undirected label");
+    let directed_label = crate::test_labels::edge_label_id_for_name("LookupDirected");
+    let undirected_label = crate::test_labels::edge_label_id_for_name("LookupUndirected");
     store
         .insert_directed_edge(source, target, Some(directed_label))
         .expect("directed edge");
@@ -1027,9 +975,7 @@ fn forward_edge_compaction_moves_property_sidecars() {
     let first = store.insert_vertex().expect("first");
     let second = store.insert_vertex().expect("second");
     let third = store.insert_vertex().expect("third");
-    let label = store
-        .get_or_insert_edge_label_id("CompactionMovesForward")
-        .expect("label");
+    let label = crate::test_labels::edge_label_id_for_name("CompactionMovesForward");
     let property = store
         .get_or_insert_property_id("move_marker")
         .expect("property");
@@ -1097,12 +1043,9 @@ fn reverse_edge_compaction_moves_alias_keys() {
     let second = store.insert_vertex().expect("second");
     let third = store.insert_vertex().expect("third");
     let target = store.insert_vertex().expect("target");
-    let label = store
-        .get_or_insert_edge_label_id("CompactionMovesReverseAlias")
-        .expect("label");
-    let other_label = store
-        .get_or_insert_edge_label_id("CompactionMovesReverseAliasOther")
-        .expect("other label");
+    let label = crate::test_labels::edge_label_id_for_name("CompactionMovesReverseAlias");
+    let other_label =
+        crate::test_labels::edge_label_id_for_name("CompactionMovesReverseAliasOther");
     let property = store
         .get_or_insert_property_id("reverse_move_marker")
         .expect("property");

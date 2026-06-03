@@ -417,8 +417,7 @@ pub async fn resolve_logical_at(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::facade::mutation_executor::GraphMutationExecutor;
-    use crate::facade::{FederationRouting, GraphStore, GraphStoreError};
+    use crate::facade::{FederationRouting, GraphStore};
     use gleaph_gql::Value;
 
     #[test]

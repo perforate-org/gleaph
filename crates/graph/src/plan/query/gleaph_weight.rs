@@ -16,6 +16,7 @@ use gleaph_graph_kernel::entry::{
 };
 
 use crate::facade::{EdgeHandle, GraphStore, catalog_edge_label_from_wire};
+use crate::gql_execution_context::GqlExecutionContext;
 
 use super::error::PlanQueryError;
 
@@ -71,6 +72,7 @@ fn decoded_edge_payload_to_weight(decoded: DecodedEdgePayload) -> Result<f32, Pl
 /// Per-edge-variable prepared decoders for `GLEAPH.WEIGHT`.
 pub(crate) fn prepare_gleaph_weight_decoders(
     store: &GraphStore,
+    execution: &GqlExecutionContext,
     ops: &[PlanOp],
 ) -> Result<Option<BTreeMap<String, PreparedWeightDecoder>>, PlanQueryError> {
     let mut edge_vars = BTreeSet::new();
@@ -86,7 +88,7 @@ pub(crate) fn prepare_gleaph_weight_decoders(
 
     let mut out = BTreeMap::new();
     for edge_var in edge_vars {
-        let decoder = decoder_for_gleaph_weight_edge(store, ops, &edge_var)?;
+        let decoder = decoder_for_gleaph_weight_edge(store, execution, ops, &edge_var)?;
         out.insert(edge_var, decoder);
     }
     Ok(Some(out))
@@ -135,6 +137,7 @@ fn gleaph_weight_edge_var(expr: &Expr) -> Option<String> {
 
 fn decoder_for_gleaph_weight_edge(
     store: &GraphStore,
+    execution: &GqlExecutionContext,
     ops: &[PlanOp],
     edge_var: &str,
 ) -> Result<PreparedWeightDecoder, PlanQueryError> {
@@ -192,7 +195,7 @@ fn decoder_for_gleaph_weight_edge(
                     "GLEAPH.WEIGHT({edge_var}): edge pattern must have exactly one fixed edge label"
                 ),
             })?;
-            finish_decoder_from_label_name(store, edge_var, label_name.as_ref())
+            finish_decoder_from_label_name(store, execution, edge_var, label_name.as_ref())
         }
         EdgeProducer::ShortestPath {
             label,
@@ -211,20 +214,22 @@ fn decoder_for_gleaph_weight_edge(
                     "GLEAPH.WEIGHT({edge_var}): shortest-path must have exactly one fixed edge label"
                 ),
             })?;
-            finish_decoder_from_label_name(store, edge_var, label_name.as_ref())
+            finish_decoder_from_label_name(store, execution, edge_var, label_name.as_ref())
         }
     }
 }
 
 fn finish_decoder_from_label_name(
     store: &GraphStore,
+    execution: &GqlExecutionContext,
     edge_var: &str,
     label_name: &str,
 ) -> Result<PreparedWeightDecoder, PlanQueryError> {
-    let label_id = store
-        .edge_label_id(label_name)
-        .ok_or_else(|| PlanQueryError::GleaphWeight {
-            message: format!("GLEAPH.WEIGHT({edge_var}): unknown edge label '{label_name}'"),
+    let label_id = execution
+        .resolved_edge_label_id(label_name)
+        .ok_or_else(|| PlanQueryError::MissingResolvedLabel {
+            namespace: "edge",
+            name: label_name.to_owned(),
         })?;
     if !label_id.is_catalog_allocatable() {
         return Err(PlanQueryError::GleaphWeight {
@@ -531,9 +536,7 @@ mod tests {
         use ic_stable_lara::{VertexId, labeled::BucketLabelKey as LaraLabelId};
 
         let store = GraphStore::new();
-        let label_id = store
-            .get_or_insert_edge_label_id("DecodeTraversalWgt")
-            .expect("label");
+        let label_id = crate::test_labels::edge_label_id_for_name("DecodeTraversalWgt");
         store
             .install_edge_label_payload_profile_at_init(
                 label_id,

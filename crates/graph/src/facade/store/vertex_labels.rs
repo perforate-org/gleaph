@@ -4,6 +4,7 @@ use super::super::VertexLabelStoreError;
 use super::super::stable::VERTEX_LABELS;
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{Vertex, VertexLabelId};
+use gleaph_graph_kernel::plan_exec::ResolvedLabelTable;
 use ic_stable_lara::VertexId;
 
 use super::GraphStore;
@@ -13,16 +14,26 @@ impl GraphStore {
         VERTEX_LABELS.with_borrow(|labels| labels.labels_for(vertex_id, vertex))
     }
 
-    pub(crate) fn vertex_label_gql_list(&self, vertex_id: VertexId, vertex: Vertex) -> Vec<Value> {
+    pub(crate) fn vertex_label_gql_list(
+        &self,
+        vertex_id: VertexId,
+        vertex: Vertex,
+        resolved_labels: Option<&ResolvedLabelTable>,
+    ) -> Vec<Value> {
         VERTEX_LABELS.with_borrow(|labels| {
             labels.with_label_ids(vertex_id, vertex, |slice| {
                 let mut out = Vec::with_capacity(slice.len());
                 for &label in slice {
-                    out.push(
-                        self.vertex_label_name(label)
-                            .map(Value::Text)
-                            .unwrap_or_else(|| Value::Uint64(u64::from(label.raw()))),
-                    );
+                    let value = resolved_labels
+                        .and_then(|labels| {
+                            labels
+                                .vertex
+                                .iter()
+                                .find(|entry| entry.id == label)
+                                .map(|entry| Value::Text(entry.name.clone()))
+                        })
+                        .unwrap_or_else(|| Value::Uint64(u64::from(label.raw())));
+                    out.push(value);
                 }
                 out
             })

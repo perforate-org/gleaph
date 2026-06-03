@@ -215,9 +215,7 @@ fn bench_graph_large_friends_of_friends_256x64() -> canbench_rs::BenchResult {
 }
 
 fn setup_large_road_grid_graph(store: &GraphStore) {
-    let label_id = store
-        .get_or_insert_edge_label_id("BenchLargeRoad")
-        .expect("road label");
+    let label_id = crate::test_labels::edge_label_id_for_name("BenchLargeRoad");
     store
         .install_edge_label_weight_profile_at_init(
             label_id,

@@ -896,7 +896,6 @@ mod tests {
     }
 
     fn setup_gql_weighted_graph(store: &GraphStore) {
-        use crate::facade::mutation_executor::GraphMutationExecutor;
         use gleaph_graph_kernel::entry::{EdgeWeightProfile, WeightEncoding};
         let a = store
             .insert_vertex_named(["WgtGqlA"], Vec::<(&str, Value)>::new())
@@ -907,9 +906,7 @@ mod tests {
         let c = store
             .insert_vertex_named(["WgtGqlC"], Vec::<(&str, Value)>::new())
             .expect("c");
-        let label_id = store
-            .get_or_insert_edge_label_id("WgtGqlRoad")
-            .expect("label");
+        let label_id = crate::test_labels::edge_label_id_for_name("WgtGqlRoad");
         store
             .install_edge_label_weight_profile_at_init(
                 label_id,
@@ -1225,7 +1222,6 @@ mod tests {
     }
 
     fn setup_gql_reused_dst_graph(store: &GraphStore) {
-        use crate::facade::mutation_executor::GraphMutationExecutor;
         let a = store
             .insert_vertex_named(["ReuseGqlA"], [("name", Value::Text("anchor".into()))])
             .expect("anchor");
@@ -1259,7 +1255,6 @@ mod tests {
     }
 
     fn setup_gql_reused_dst_relabeled_graph(store: &GraphStore) {
-        use crate::facade::mutation_executor::GraphMutationExecutor;
         let a = store
             .insert_vertex_named(
                 ["ReuseGqlPerson", "ReuseGqlUser"],

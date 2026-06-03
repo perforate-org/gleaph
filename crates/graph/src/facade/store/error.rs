@@ -1,9 +1,7 @@
 //! Graph store error type and conversions.
 
-use super::super::stable::edge_label_catalog::EdgeLabelCatalogError;
 use super::super::stable::edge_payload_profiles::EdgePayloadProfileStoreError;
 use super::super::stable::edge_weight_profiles::EdgeWeightProfileStoreError;
-use super::super::stable::vertex_label_catalog::VertexLabelCatalogError;
 use super::super::{PropertyCatalogError, VertexLabelStoreError, VertexPropertyStoreError};
 use crate::index::placement;
 use gleaph_graph_kernel::entry::EdgeLabelId;
@@ -15,8 +13,6 @@ use std::fmt;
 #[derive(Debug)]
 pub enum GraphStoreError {
     Graph(DeferredBidirectionalLabeledError),
-    VertexLabelCatalog(VertexLabelCatalogError),
-    EdgeLabelCatalog(EdgeLabelCatalogError),
     EdgePayloadProfile(EdgePayloadProfileStoreError),
     EdgeWeightProfile(EdgeWeightProfileStoreError),
     PropertyCatalog(PropertyCatalogError),
@@ -59,8 +55,6 @@ impl fmt::Display for GraphStoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Graph(err) => write!(f, "{err}"),
-            Self::VertexLabelCatalog(err) => write!(f, "{err}"),
-            Self::EdgeLabelCatalog(err) => write!(f, "{err}"),
             Self::EdgePayloadProfile(err) => write!(f, "{err}"),
             Self::EdgeWeightProfile(err) => write!(f, "{err}"),
             Self::PropertyCatalog(err) => write!(f, "{err}"),
@@ -120,8 +114,6 @@ impl std::error::Error for GraphStoreError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Graph(err) => Some(err),
-            Self::VertexLabelCatalog(err) => Some(err),
-            Self::EdgeLabelCatalog(err) => Some(err),
             Self::EdgePayloadProfile(err) => Some(err),
             Self::EdgeWeightProfile(err) => Some(err),
             Self::PropertyCatalog(err) => Some(err),
@@ -150,18 +142,6 @@ impl From<placement::VertexPlacementError> for GraphStoreError {
 impl From<DeferredBidirectionalLabeledError> for GraphStoreError {
     fn from(value: DeferredBidirectionalLabeledError) -> Self {
         Self::Graph(value)
-    }
-}
-
-impl From<VertexLabelCatalogError> for GraphStoreError {
-    fn from(value: VertexLabelCatalogError) -> Self {
-        Self::VertexLabelCatalog(value)
-    }
-}
-
-impl From<EdgeLabelCatalogError> for GraphStoreError {
-    fn from(value: EdgeLabelCatalogError) -> Self {
-        Self::EdgeLabelCatalog(value)
     }
 }
 

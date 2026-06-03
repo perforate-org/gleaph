@@ -6,6 +6,7 @@ use candid::Principal;
 use gleaph_gql::Value;
 use gleaph_gql_planner::plan::AggregateSpec;
 use gleaph_graph_kernel::entry::PreparedWeightDecoder;
+use gleaph_graph_kernel::plan_exec::ResolvedLabelTable;
 
 use crate::facade::GraphStore;
 use crate::gql_execution_context::GqlExecutionContext;
@@ -45,15 +46,16 @@ impl<'a> ExecuteCtx<'a> {
     }
 
     #[inline]
-    pub fn expr_evaluator(
-        &self,
-        aggregate_specs: Option<&'a [AggregateSpec]>,
-    ) -> QueryExprEvaluator<'a> {
+    pub fn expr_evaluator<'b>(
+        &'b self,
+        aggregate_specs: Option<&'b [AggregateSpec]>,
+    ) -> QueryExprEvaluator<'b> {
         QueryExprEvaluator {
             store: self.store,
             parameters: self.parameters,
             aggregate_specs,
             caller: self.caller(),
+            resolved_labels: self.execution.resolved_labels.as_ref(),
             gleaph_weight_decoders: self.gleaph_weight_decoders,
         }
     }
@@ -67,6 +69,8 @@ pub(crate) struct QueryExprEvaluator<'a> {
     pub aggregate_specs: Option<&'a [AggregateSpec]>,
     /// IC caller for runtime functions such as `MSG_CALLER()`.
     pub caller: Option<Principal>,
+    /// Router-resolved labels available to this execution.
+    pub resolved_labels: Option<&'a ResolvedLabelTable>,
     /// Prepared decoders for `GLEAPH.WEIGHT(edgeVar)` (when the query uses it).
     pub gleaph_weight_decoders: Option<&'a BTreeMap<String, PreparedWeightDecoder>>,
 }

@@ -12,9 +12,7 @@ pub mod federation_expand;
 pub mod migration;
 pub mod mutation_executor;
 
-pub use stable::edge_label_catalog::EdgeLabelCatalogError;
 pub use stable::property_catalog::PropertyCatalogError;
-pub use stable::vertex_label_catalog::VertexLabelCatalogError;
 pub use stable::vertex_labels::VertexLabelStoreError;
 pub use stable::vertex_properties::VertexPropertyStoreError;
 

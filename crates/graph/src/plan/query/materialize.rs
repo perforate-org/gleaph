@@ -51,8 +51,8 @@ impl<'a> MaterializeCtx<'a> {
             | (OutputBindingKind::Edge, PlanBinding::Edge(_))
             | (OutputBindingKind::RemoteVertex, PlanBinding::RemoteVertex(_))
             | (OutputBindingKind::Scalar, PlanBinding::Value(_))
-            | (OutputBindingKind::Dynamic, _) => binding_to_value(self.store, binding),
-            (_, actual) => binding_to_value(self.store, actual),
+            | (OutputBindingKind::Dynamic, _) => binding_to_value(self.store, None, binding),
+            (_, actual) => binding_to_value(self.store, None, actual),
         }
     }
 }

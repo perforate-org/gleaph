@@ -971,9 +971,7 @@ mod tests {
         let target = store.insert_vertex().expect("target");
         let target_logical = store.logical_vertex_id(target).expect("logical");
         let source = store.insert_vertex().expect("source");
-        let label_id = store
-            .get_or_insert_edge_label_id("FedIncomingValue")
-            .expect("label");
+        let label_id = crate::test_labels::edge_label_id_for_name("FedIncomingValue");
         store
             .install_edge_label_weight_profile_at_init(
                 label_id,
@@ -1030,9 +1028,7 @@ mod tests {
     #[test]
     fn remote_hits_must_match_label_edge_payload_width() {
         let store = GraphStore::new();
-        let label_id = store
-            .get_or_insert_edge_label_id("FedWidthCheck")
-            .expect("label");
+        let label_id = crate::test_labels::edge_label_id_for_name("FedWidthCheck");
         store
             .install_edge_label_payload_profile_at_init(
                 label_id,
@@ -1070,12 +1066,8 @@ mod tests {
     #[test]
     fn remote_hits_must_match_requested_label() {
         let store = GraphStore::new();
-        let requested = store
-            .get_or_insert_edge_label_id("FedRequestedLabel")
-            .expect("requested label");
-        let returned = store
-            .get_or_insert_edge_label_id("FedReturnedLabel")
-            .expect("returned label");
+        let requested = crate::test_labels::edge_label_id_for_name("FedRequestedLabel");
+        let returned = crate::test_labels::edge_label_id_for_name("FedReturnedLabel");
         let hit = FederatedExpandNeighbor {
             shard_id: 1,
             neighbor_logical_vertex_id: 2,
@@ -1199,9 +1191,7 @@ mod tests {
         let low = store.insert_vertex().expect("low");
         let low_logical = store.logical_vertex_id(low).expect("logical");
         let high = store.insert_vertex().expect("high");
-        let label_id = store
-            .get_or_insert_edge_label_id("FedUndirValue")
-            .expect("label");
+        let label_id = crate::test_labels::edge_label_id_for_name("FedUndirValue");
         store
             .install_edge_label_weight_profile_at_init(
                 label_id,
