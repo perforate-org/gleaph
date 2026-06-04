@@ -19,11 +19,11 @@ impl GraphStore {
     }
 
     pub fn insert_vertex(&self) -> Result<VertexId, GraphStoreError> {
-        #[cfg(not(target_family = "wasm"))]
+        #[cfg(any(not(target_family = "wasm"), feature = "canbench"))]
         {
             pollster::block_on(self.insert_vertex_row(Vertex::default()))
         }
-        #[cfg(target_family = "wasm")]
+        #[cfg(all(target_family = "wasm", not(feature = "canbench")))]
         {
             ic_cdk::trap("insert_vertex: use insert_vertex_row().await on wasm");
         }
