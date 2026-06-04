@@ -183,6 +183,7 @@ pub async fn dispatch_plan_blob(
         )
         .await
         .map_err(RouterError::InvalidArgument)?;
+        store.apply_label_usage_delta(routing.shard_id, &result.label_usage_delta);
         total_rows = total_rows.saturating_add(result.row_count);
     }
     Ok(total_rows)

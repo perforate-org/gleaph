@@ -1,11 +1,13 @@
 //! Stateless facade over router stable storage.
 
+use super::stable::label_telemetry::{LabelShardKey, LabelStats};
 use super::stable::{
-    ROUTER_CONTROLLERS, ROUTER_EDGE_LABEL_BY_ID, ROUTER_EDGE_LABEL_BY_NAME, ROUTER_GRAPHS,
+    ROUTER_CONTROLLERS, ROUTER_EDGE_LABEL_BY_ID, ROUTER_EDGE_LABEL_BY_NAME,
+    ROUTER_EDGE_LABEL_LIVE_BY_SHARD, ROUTER_EDGE_LABEL_STATS, ROUTER_GRAPHS,
     ROUTER_LOGICAL_COUNTER, ROUTER_MIGRATION_COUNTER, ROUTER_PENDING_LOGICAL,
     ROUTER_PLACEMENT_BY_PHYSICAL, ROUTER_PLACEMENTS, ROUTER_PROPERTY_BY_ID,
     ROUTER_PROPERTY_BY_NAME, ROUTER_SHARD_BY_GRAPH, ROUTER_SHARDS, ROUTER_VERTEX_LABEL_BY_ID,
-    ROUTER_VERTEX_LABEL_BY_NAME,
+    ROUTER_VERTEX_LABEL_BY_NAME, ROUTER_VERTEX_LABEL_LIVE_BY_SHARD, ROUTER_VERTEX_LABEL_STATS,
 };
 use crate::index_sync;
 use crate::init::RouterInitArgs;
@@ -22,7 +24,9 @@ use gleaph_graph_kernel::federation::{
     LocalVertexId, LogicalVertexId, PhysicalPlacementKey, PhysicalVertexLocation,
     ShardRegistryEntry,
 };
-use gleaph_graph_kernel::plan_exec::{ResolvedEdgeLabel, ResolvedLabelTable, ResolvedVertexLabel};
+use gleaph_graph_kernel::plan_exec::{
+    LabelUsageDelta, ResolvedEdgeLabel, ResolvedLabelTable, ResolvedVertexLabel,
+};
 
 const MAX_METADATA_NAME_BYTES: usize = 256;
 
@@ -58,6 +62,10 @@ impl RouterStore {
         ROUTER_VERTEX_LABEL_BY_ID.with_borrow_mut(|m| m.clear_new());
         ROUTER_EDGE_LABEL_BY_NAME.with_borrow_mut(|m| m.clear_new());
         ROUTER_EDGE_LABEL_BY_ID.with_borrow_mut(|m| m.clear_new());
+        ROUTER_VERTEX_LABEL_STATS.with_borrow_mut(|m| m.clear_new());
+        ROUTER_EDGE_LABEL_STATS.with_borrow_mut(|m| m.clear_new());
+        ROUTER_VERTEX_LABEL_LIVE_BY_SHARD.with_borrow_mut(|m| m.clear_new());
+        ROUTER_EDGE_LABEL_LIVE_BY_SHARD.with_borrow_mut(|m| m.clear_new());
         ROUTER_PROPERTY_BY_NAME.with_borrow_mut(|m| m.clear_new());
         ROUTER_PROPERTY_BY_ID.with_borrow_mut(|m| m.clear_new());
     }
@@ -419,6 +427,51 @@ impl RouterStore {
         Ok(out)
     }
 
+    pub fn vertex_label_stats(&self, label_id: VertexLabelId) -> LabelStats {
+        ROUTER_VERTEX_LABEL_STATS
+            .with_borrow(|m| m.get(&label_id.raw()))
+            .unwrap_or_default()
+    }
+
+    pub fn edge_label_stats(&self, label_id: EdgeLabelId) -> LabelStats {
+        ROUTER_EDGE_LABEL_STATS
+            .with_borrow(|m| m.get(&label_id.raw()))
+            .unwrap_or_default()
+    }
+
+    pub fn vertex_label_shard_live_count(&self, shard_id: ShardId, label_id: VertexLabelId) -> u64 {
+        ROUTER_VERTEX_LABEL_LIVE_BY_SHARD
+            .with_borrow(|m| m.get(&LabelShardKey::new(shard_id, label_id.raw())))
+            .unwrap_or(0)
+    }
+
+    pub fn edge_label_shard_live_count(&self, shard_id: ShardId, label_id: EdgeLabelId) -> u64 {
+        ROUTER_EDGE_LABEL_LIVE_BY_SHARD
+            .with_borrow(|m| m.get(&LabelShardKey::new(shard_id, label_id.raw())))
+            .unwrap_or(0)
+    }
+
+    pub fn apply_label_usage_delta(&self, shard_id: ShardId, delta: &LabelUsageDelta) {
+        for (label_id, value) in &delta.vertex {
+            apply_label_delta(
+                label_id.raw(),
+                shard_id,
+                *value,
+                &ROUTER_VERTEX_LABEL_STATS,
+                &ROUTER_VERTEX_LABEL_LIVE_BY_SHARD,
+            );
+        }
+        for (label_id, value) in &delta.edge {
+            apply_label_delta(
+                label_id.raw(),
+                shard_id,
+                *value,
+                &ROUTER_EDGE_LABEL_STATS,
+                &ROUTER_EDGE_LABEL_LIVE_BY_SHARD,
+            );
+        }
+    }
+
     pub fn allocate_logical_vertex_id(
         &self,
         caller: Principal,
@@ -635,6 +688,49 @@ fn intern_edge_label_name(name: &str) -> Result<EdgeLabelId, RouterError> {
     Ok(EdgeLabelId::from_raw(next_id))
 }
 
+fn apply_label_delta(
+    label_id: u16,
+    shard_id: ShardId,
+    delta: i64,
+    stats_map: &'static std::thread::LocalKey<
+        std::cell::RefCell<super::stable::memory::StableLabelStatsMap>,
+    >,
+    live_by_shard: &'static std::thread::LocalKey<
+        std::cell::RefCell<super::stable::memory::StableLabelShardLiveMap>,
+    >,
+) {
+    if delta == 0 {
+        return;
+    }
+    let magnitude = delta.unsigned_abs();
+    stats_map.with_borrow_mut(|stats| {
+        let mut entry = stats.get(&label_id).unwrap_or_default();
+        if delta > 0 {
+            entry.live_count = entry.live_count.saturating_add(magnitude);
+            entry.total_adds = entry.total_adds.saturating_add(magnitude);
+        } else {
+            entry.live_count = entry.live_count.saturating_sub(magnitude);
+            entry.total_removes = entry.total_removes.saturating_add(magnitude);
+        }
+        stats.insert(label_id, entry);
+    });
+
+    let key = LabelShardKey::new(shard_id, label_id);
+    live_by_shard.with_borrow_mut(|live| {
+        let current = live.get(&key).unwrap_or(0);
+        let next = if delta > 0 {
+            current.saturating_add(magnitude)
+        } else {
+            current.saturating_sub(magnitude)
+        };
+        if next == 0 {
+            live.remove(&key);
+        } else {
+            live.insert(key, next);
+        }
+    });
+}
+
 fn validate_metadata_name(name: &str) -> Result<(), RouterError> {
     if name.is_empty() {
         return Err(RouterError::InvalidArgument(
@@ -665,6 +761,8 @@ mod tests {
     use super::*;
     use crate::init::RouterInitArgs;
     use crate::types::{GraphStatus, ProvisioningState};
+    use gleaph_gql::types::EdgeDirection;
+    use gleaph_gql_planner::{NodeLabelRef, PlanOp};
     use std::collections::BTreeSet;
 
     fn graph_principal(byte: u8) -> Principal {
@@ -974,5 +1072,175 @@ mod tests {
             .admin_intern_vertex_label(admin, "KNOWS")
             .expect("vertex only");
         assert_eq!(v2.raw(), 2);
+    }
+
+    #[test]
+    fn read_plan_requires_existing_label() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+
+        let plan = PhysicalPlan::from_ops(vec![PlanOp::NodeScan {
+            variable: "n".into(),
+            label: Some(NodeLabelRef::from("Missing")),
+            property_projection: None,
+        }]);
+
+        assert_eq!(
+            store.resolve_plan_labels(&[plan]),
+            Err(RouterError::NotFound("Missing".into()))
+        );
+    }
+
+    #[test]
+    fn dml_plan_creates_only_requested_label_namespaces() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+
+        let node_only = PhysicalPlan::from_ops(vec![PlanOp::InsertVertex {
+            variable: Some("n".into()),
+            labels: vec![NodeLabelRef::from("Person")],
+            properties: vec![],
+        }]);
+
+        let resolved = store
+            .resolve_plan_labels(&[node_only])
+            .expect("resolve node DML labels");
+        assert_eq!(resolved.vertex.len(), 1);
+        assert_eq!(resolved.vertex[0].name, "Person");
+        assert_eq!(resolved.vertex[0].id.raw(), 1);
+        assert!(resolved.edge.is_empty());
+        assert_eq!(store.lookup_vertex_label_id("Person").unwrap().raw(), 1);
+        assert!(store.lookup_edge_label_id("Person").is_err());
+
+        let edge_only = PhysicalPlan::from_ops(vec![PlanOp::InsertEdge {
+            variable: Some("e".into()),
+            src: "a".into(),
+            dst: "b".into(),
+            direction: EdgeDirection::PointingRight,
+            labels: vec!["Person".into()],
+            properties: vec![],
+        }]);
+
+        let resolved = store
+            .resolve_plan_labels(&[edge_only])
+            .expect("resolve edge DML labels");
+        assert_eq!(resolved.edge.len(), 1);
+        assert_eq!(resolved.edge[0].name, "Person");
+        assert_eq!(resolved.edge[0].id.raw(), 1);
+        assert_eq!(store.lookup_vertex_label_id("Person").unwrap().raw(), 1);
+        assert_eq!(store.lookup_edge_label_id("Person").unwrap().raw(), 1);
+    }
+
+    #[test]
+    fn label_usage_delta_updates_namespace_separated_stats() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::anonymous();
+        store.bootstrap_controllers(&[admin]);
+
+        let vertex_label = store
+            .admin_intern_vertex_label(admin, "Person")
+            .expect("vertex label");
+        let edge_label = store
+            .admin_intern_edge_label(admin, "Person")
+            .expect("edge label");
+
+        store.apply_label_usage_delta(
+            7,
+            &LabelUsageDelta {
+                vertex: vec![(vertex_label, 2)],
+                edge: vec![(edge_label, 3)],
+            },
+        );
+
+        assert_eq!(
+            store.vertex_label_stats(vertex_label),
+            LabelStats {
+                live_count: 2,
+                total_adds: 2,
+                total_removes: 0
+            }
+        );
+        assert_eq!(
+            store.edge_label_stats(edge_label),
+            LabelStats {
+                live_count: 3,
+                total_adds: 3,
+                total_removes: 0
+            }
+        );
+        assert_eq!(store.vertex_label_shard_live_count(7, vertex_label), 2);
+        assert_eq!(store.edge_label_shard_live_count(7, edge_label), 3);
+
+        store.apply_label_usage_delta(
+            7,
+            &LabelUsageDelta {
+                vertex: vec![(vertex_label, -1)],
+                edge: vec![(edge_label, -2)],
+            },
+        );
+
+        assert_eq!(
+            store.vertex_label_stats(vertex_label),
+            LabelStats {
+                live_count: 1,
+                total_adds: 2,
+                total_removes: 1
+            }
+        );
+        assert_eq!(
+            store.edge_label_stats(edge_label),
+            LabelStats {
+                live_count: 1,
+                total_adds: 3,
+                total_removes: 2
+            }
+        );
+        assert_eq!(store.vertex_label_shard_live_count(7, vertex_label), 1);
+        assert_eq!(store.edge_label_shard_live_count(7, edge_label), 1);
+    }
+
+    #[test]
+    fn label_usage_delta_tracks_per_shard_live_counts() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::anonymous();
+        store.bootstrap_controllers(&[admin]);
+        let label = store
+            .admin_intern_vertex_label(admin, "Person")
+            .expect("vertex label");
+
+        store.apply_label_usage_delta(
+            7,
+            &LabelUsageDelta {
+                vertex: vec![(label, 2)],
+                edge: vec![],
+            },
+        );
+        store.apply_label_usage_delta(
+            9,
+            &LabelUsageDelta {
+                vertex: vec![(label, 1)],
+                edge: vec![],
+            },
+        );
+        store.apply_label_usage_delta(
+            7,
+            &LabelUsageDelta {
+                vertex: vec![(label, -1)],
+                edge: vec![],
+            },
+        );
+
+        assert_eq!(
+            store.vertex_label_stats(label),
+            LabelStats {
+                live_count: 2,
+                total_adds: 3,
+                total_removes: 1
+            }
+        );
+        assert_eq!(store.vertex_label_shard_live_count(7, label), 1);
+        assert_eq!(store.vertex_label_shard_live_count(9, label), 1);
     }
 }

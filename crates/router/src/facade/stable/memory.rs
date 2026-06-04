@@ -29,6 +29,10 @@ const ROUTER_PROPERTY_BY_ID: MemoryId = MemoryId::new(12);
 const ROUTER_PLACEMENT_BY_PHYSICAL: MemoryId = MemoryId::new(13);
 const ROUTER_MIGRATION_COUNTER: MemoryId = MemoryId::new(14);
 const ROUTER_AUTH_PRINCIPAL_RECORDS: MemoryId = MemoryId::new(15);
+const ROUTER_VERTEX_LABEL_STATS: MemoryId = MemoryId::new(16);
+const ROUTER_EDGE_LABEL_STATS: MemoryId = MemoryId::new(17);
+const ROUTER_VERTEX_LABEL_LIVE_BY_SHARD: MemoryId = MemoryId::new(18);
+const ROUTER_EDGE_LABEL_LIVE_BY_SHARD: MemoryId = MemoryId::new(19);
 
 pub(crate) type StableControllerSet = BTreeSet<Principal, Memory>;
 pub(crate) type StableGraphRegistry = BTreeMap<String, GraphRegistryEntry, Memory>;
@@ -39,6 +43,9 @@ pub(crate) type StableLogicalCounter = Cell<u64, Memory>;
 pub(crate) type StablePendingLogical = BTreeMap<Principal, LogicalVertexId, Memory>;
 pub(crate) type StableLabelNameIntern = BTreeMap<String, u16, Memory>;
 pub(crate) type StableLabelIdReverse = BTreeMap<u16, String, Memory>;
+pub(crate) type StableLabelStatsMap = BTreeMap<u16, super::label_telemetry::LabelStats, Memory>;
+pub(crate) type StableLabelShardLiveMap =
+    BTreeMap<super::label_telemetry::LabelShardKey, u64, Memory>;
 pub(crate) type StablePropertyNameIntern = BTreeMap<String, u32, Memory>;
 pub(crate) type StablePropertyIdReverse = BTreeMap<u32, String, Memory>;
 pub(crate) type StablePlacementByPhysicalMap =
@@ -96,6 +103,22 @@ pub(crate) fn init_edge_label_by_name() -> StableLabelNameIntern {
 
 pub(crate) fn init_edge_label_by_id() -> StableLabelIdReverse {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_EDGE_LABEL_BY_ID)))
+}
+
+pub(crate) fn init_vertex_label_stats() -> StableLabelStatsMap {
+    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_VERTEX_LABEL_STATS)))
+}
+
+pub(crate) fn init_edge_label_stats() -> StableLabelStatsMap {
+    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_EDGE_LABEL_STATS)))
+}
+
+pub(crate) fn init_vertex_label_live_by_shard() -> StableLabelShardLiveMap {
+    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_VERTEX_LABEL_LIVE_BY_SHARD)))
+}
+
+pub(crate) fn init_edge_label_live_by_shard() -> StableLabelShardLiveMap {
+    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_EDGE_LABEL_LIVE_BY_SHARD)))
 }
 
 pub(crate) fn init_property_by_name() -> StablePropertyNameIntern {

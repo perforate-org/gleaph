@@ -2,6 +2,7 @@
 
 use std::cell::RefCell;
 
+pub(crate) mod label_telemetry;
 pub(crate) mod memory;
 pub(crate) mod placement_by_physical;
 
@@ -44,6 +45,18 @@ thread_local! {
 
     pub(crate) static ROUTER_EDGE_LABEL_BY_ID: RefCell<memory::StableLabelIdReverse> =
         RefCell::new(memory::init_edge_label_by_id());
+
+    pub(crate) static ROUTER_VERTEX_LABEL_STATS: RefCell<memory::StableLabelStatsMap> =
+        RefCell::new(memory::init_vertex_label_stats());
+
+    pub(crate) static ROUTER_EDGE_LABEL_STATS: RefCell<memory::StableLabelStatsMap> =
+        RefCell::new(memory::init_edge_label_stats());
+
+    pub(crate) static ROUTER_VERTEX_LABEL_LIVE_BY_SHARD: RefCell<memory::StableLabelShardLiveMap> =
+        RefCell::new(memory::init_vertex_label_live_by_shard());
+
+    pub(crate) static ROUTER_EDGE_LABEL_LIVE_BY_SHARD: RefCell<memory::StableLabelShardLiveMap> =
+        RefCell::new(memory::init_edge_label_live_by_shard());
 
     pub(crate) static ROUTER_PROPERTY_BY_NAME: RefCell<memory::StablePropertyNameIntern> =
         RefCell::new(memory::init_property_by_name());

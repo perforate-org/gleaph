@@ -16,8 +16,9 @@ use gleaph_gql::program_modification::classify_program;
 use gleaph_gql::type_check::NoSchema;
 use gleaph_gql_planner::wire::decode_plan_bundle;
 use gleaph_gql_planner::{PlanBuildOptions, build_statement_plan_with_options};
-use gleaph_graph_kernel::plan_exec::GqlExecutionMode as KernelGqlExecutionMode;
-use gleaph_graph_kernel::plan_exec::SeedBindingsWire;
+use gleaph_graph_kernel::plan_exec::{
+    GqlExecutionMode as KernelGqlExecutionMode, LabelUsageDelta, SeedBindingsWire,
+};
 use gleaph_graph_prepared::PreparedQueryRecord;
 use ic_stable_lara::VertexId;
 
@@ -116,6 +117,39 @@ struct TransactionBlockRun {
     last_query_rows: PlanQueryResult,
     last_read_row_count: usize,
     last_read_plan_rows: Vec<PlanQueryRow>,
+    label_usage_delta: LabelUsageDelta,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WirePlanRunResult {
+    pub row_count: usize,
+    pub label_usage_delta: LabelUsageDelta,
+}
+
+fn merge_label_usage_delta(target: &mut LabelUsageDelta, source: LabelUsageDelta) {
+    for (label, delta) in source.vertex {
+        merge_delta(&mut target.vertex, label, delta);
+    }
+    for (label, delta) in source.edge {
+        merge_delta(&mut target.edge, label, delta);
+    }
+}
+
+fn merge_delta<T>(target: &mut Vec<(T, i64)>, label: T, delta: i64)
+where
+    T: Copy + Eq,
+{
+    if delta == 0 {
+        return;
+    }
+    if let Some((_, existing)) = target.iter_mut().find(|(id, _)| *id == label) {
+        *existing += delta;
+        if *existing == 0 {
+            target.retain(|(_, value)| *value != 0);
+        }
+        return;
+    }
+    target.push((label, delta));
 }
 
 /// Walk `block` in program order: run DML + flush pending; for read plans materialize [`Value`]
@@ -131,13 +165,15 @@ async fn run_transaction_block(
     let mut last_query_rows = PlanQueryResult::default();
     let mut last_read_row_count: usize = 0;
     let mut last_read_plan_rows: Vec<PlanQueryRow> = Vec::new();
+    let mut label_usage_delta = LabelUsageDelta::default();
     for stmt in block.iter_statements() {
         if matches!(stmt, Statement::Session(_)) {
             continue;
         }
         let plan = plan_statement(stmt).map_err(|e| GqlRunError::Plan(e.to_string()))?;
         if plan.has_dml() {
-            store.execute_plan_mutations(&plan, execution.clone())?;
+            let mutation = store.execute_plan_mutations(&plan, execution.clone())?;
+            merge_label_usage_delta(&mut label_usage_delta, mutation.label_usage_delta);
             pending::flush_pending(index).await?;
         } else {
             match materialize {
@@ -175,6 +211,7 @@ async fn run_transaction_block(
         last_query_rows,
         last_read_row_count,
         last_read_plan_rows,
+        label_usage_delta,
     })
 }
 
@@ -382,6 +419,7 @@ async fn run_wire_plans(
     let mut last_query_rows = PlanQueryResult::default();
     let mut last_read_row_count: usize = 0;
     let mut last_read_plan_rows: Vec<PlanQueryRow> = Vec::new();
+    let mut label_usage_delta = LabelUsageDelta::default();
 
     let (mut seed_rows, mut skip_index) = if let Some(ref s) = seeds {
         seed_initial_rows(store, s)?
@@ -391,7 +429,8 @@ async fn run_wire_plans(
 
     for (i, plan) in plans.iter().enumerate() {
         if plan.has_dml() {
-            store.execute_plan_mutations(plan, execution.clone())?;
+            let mutation = store.execute_plan_mutations(plan, execution.clone())?;
+            merge_label_usage_delta(&mut label_usage_delta, mutation.label_usage_delta);
             pending::flush_pending(index).await?;
             skip_index = false;
             seed_rows.clear();
@@ -449,6 +488,7 @@ async fn run_wire_plans(
         last_query_rows,
         last_read_row_count,
         last_read_plan_rows,
+        label_usage_delta,
     })
 }
 
@@ -485,10 +525,10 @@ pub async fn run_wire_plan_last_read_row_count(
     index: Option<&dyn PropertyIndexLookup>,
     execution: GqlExecutionContext,
     seeds: Option<SeedBindingsWire>,
-) -> Result<usize, GqlRunError> {
+) -> Result<WirePlanRunResult, GqlRunError> {
     let (requires_write, plans) =
         decode_plan_bundle(plan_blob).map_err(|e| GqlRunError::Plan(e.to_string()))?;
-    Ok(run_wire_plans(
+    let run = run_wire_plans(
         &store,
         &plans,
         requires_write,
@@ -499,8 +539,11 @@ pub async fn run_wire_plan_last_read_row_count(
         seeds,
         TransactionReadMaterialize::LastReadRowCountOnly,
     )
-    .await?
-    .last_read_row_count)
+    .await?;
+    Ok(WirePlanRunResult {
+        row_count: run.last_read_row_count,
+        label_usage_delta: run.label_usage_delta,
+    })
 }
 
 /// Run a wire-encoded program (router → graph); skips parser, still plans locally.

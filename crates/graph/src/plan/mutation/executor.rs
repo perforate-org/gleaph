@@ -7,8 +7,11 @@ use gleaph_gql::Value;
 use gleaph_gql::types::EdgeDirection;
 use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, RemovePlanItem, SetPlanItem, Str};
 use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId, VertexLabelId};
+use gleaph_graph_kernel::plan_exec::LabelUsageDelta;
 use ic_stable_lara::VertexId;
-use std::collections::BTreeMap;
+use ic_stable_lara::labeled::OutEdgeOrder;
+use ic_stable_lara::traits::CsrEdge;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub trait PlanMutationExecutor {
     fn execute_plan_mutations(
@@ -22,6 +25,17 @@ pub trait PlanMutationExecutor {
 pub struct PlanMutationBindings {
     pub vertices: BTreeMap<String, VertexId>,
     pub edges: BTreeMap<String, EdgeHandle>,
+    pub label_usage_delta: LabelUsageDelta,
+}
+
+impl PlanMutationBindings {
+    fn add_vertex_label_delta(&mut self, label: VertexLabelId, delta: i64) {
+        add_label_delta(&mut self.label_usage_delta.vertex, label, delta);
+    }
+
+    fn add_edge_label_delta(&mut self, label: EdgeLabelId, delta: i64) {
+        add_label_delta(&mut self.label_usage_delta.edge, label, delta);
+    }
 }
 
 impl PlanMutationExecutor for GraphStore {
@@ -63,7 +77,11 @@ fn execute_ops_with_bindings(
                 let properties = evaluator.resolve_assignments(properties)?;
                 let label_ids = resolve_vertex_labels(&execution, labels)?;
                 let property_ids = resolve_mutation_properties(store, properties)?;
+                let unique_labels = label_ids.iter().copied().collect::<BTreeSet<_>>();
                 let vertex_id = store.insert_vertex_with(label_ids, property_ids)?;
+                for label_id in unique_labels {
+                    bindings.add_vertex_label_delta(label_id, 1);
+                }
                 if let Some(variable) = variable {
                     bindings.vertices.insert(variable.to_string(), vertex_id);
                 }
@@ -110,6 +128,9 @@ fn execute_ops_with_bindings(
                     )?,
                     other => return Err(PlanMutationError::UnsupportedDirection(*other)),
                 };
+                if let Some(label_id) = resolved_label {
+                    bindings.add_edge_label_delta(label_id, 1);
+                }
                 if let Some(variable) = variable {
                     bindings.edges.insert(variable.to_string(), handle);
                 }
@@ -136,6 +157,7 @@ fn execute_ops_with_bindings(
                         variable: variable.to_string(),
                     }
                 })?;
+                collect_vertex_delete_label_deltas(store, vertex_id, false, bindings)?;
                 store.delete_vertex(vertex_id)?;
                 bindings.vertices.remove(variable.as_ref());
             }
@@ -145,6 +167,7 @@ fn execute_ops_with_bindings(
                         variable: variable.to_string(),
                     }
                 })?;
+                collect_vertex_delete_label_deltas(store, vertex_id, true, bindings)?;
                 store.detach_delete_vertex(vertex_id)?;
                 bindings.vertices.remove(variable.as_ref());
             }
@@ -154,6 +177,9 @@ fn execute_ops_with_bindings(
                         variable: variable.to_string(),
                     }
                 })?;
+                if let Some(label_id) = edge_label_delta_for_handle(store, handle) {
+                    bindings.add_edge_label_delta(label_id, -1);
+                }
                 store.delete_edge_by_handle(handle)?;
                 bindings.edges.remove(variable.as_ref());
             }
@@ -170,7 +196,7 @@ fn execute_set_item(
     item: &SetPlanItem,
     execution: &GqlExecutionContext,
     evaluator: &impl MutationPropertyExprEvaluation,
-    bindings: &PlanMutationBindings,
+    bindings: &mut PlanMutationBindings,
 ) -> Result<(), PlanMutationError> {
     match item {
         SetPlanItem::Property {
@@ -218,12 +244,16 @@ fn execute_set_item(
                         variable: variable.to_string(),
                     }
                 })?;
+                let had_label = store.vertex_has_label(*vertex_id, vertex, label_id);
                 let vertex = store
                     .add_vertex_label(*vertex_id, vertex, label_id)
                     .map_err(GraphStoreError::from)?;
                 store
                     .set_vertex(*vertex_id, vertex)
                     .map_err(GraphStoreError::from)?;
+                if !had_label {
+                    bindings.add_vertex_label_delta(label_id, 1);
+                }
                 return Ok(());
             }
 
@@ -293,7 +323,7 @@ fn execute_remove_item(
     store: &GraphStore,
     item: &RemovePlanItem,
     execution: &GqlExecutionContext,
-    bindings: &PlanMutationBindings,
+    bindings: &mut PlanMutationBindings,
 ) -> Result<(), PlanMutationError> {
     match item {
         RemovePlanItem::Property { variable, property } => {
@@ -329,10 +359,14 @@ fn execute_remove_item(
                         variable: variable.to_string(),
                     }
                 })?;
+                let had_label = store.vertex_has_label(*vertex_id, vertex, label_id);
                 let vertex = store.remove_vertex_label(*vertex_id, vertex, label_id);
                 store
                     .set_vertex(*vertex_id, vertex)
                     .map_err(GraphStoreError::from)?;
+                if had_label {
+                    bindings.add_vertex_label_delta(label_id, -1);
+                }
                 return Ok(());
             }
 
@@ -369,6 +403,82 @@ fn plan_op_name(op: &PlanOp) -> &'static str {
         PlanOp::DeleteEdge { .. } => "DeleteEdge",
         _ => "PlanOp",
     }
+}
+
+fn add_label_delta<T>(deltas: &mut Vec<(T, i64)>, label: T, delta: i64)
+where
+    T: Copy + Eq,
+{
+    if delta == 0 {
+        return;
+    }
+    if let Some((_, existing)) = deltas.iter_mut().find(|(id, _)| *id == label) {
+        *existing += delta;
+        if *existing == 0 {
+            deltas.retain(|(_, value)| *value != 0);
+        }
+        return;
+    }
+    deltas.push((label, delta));
+}
+
+fn edge_label_delta_for_handle(store: &GraphStore, handle: EdgeHandle) -> Option<EdgeLabelId> {
+    let canonical = store.canonical_edge_handle_for_sidecar(handle);
+    crate::facade::catalog_edge_label_from_wire(canonical.label_id)
+}
+
+fn collect_vertex_delete_label_deltas(
+    store: &GraphStore,
+    vertex_id: VertexId,
+    include_incident_edges: bool,
+    bindings: &mut PlanMutationBindings,
+) -> Result<(), PlanMutationError> {
+    if let Some(vertex) = store.vertex(vertex_id) {
+        for label_id in store.vertex_labels(vertex_id, vertex) {
+            bindings.add_vertex_label_delta(label_id, -1);
+        }
+    }
+    if include_incident_edges {
+        collect_detach_delete_edge_label_deltas(store, vertex_id, bindings)?;
+    }
+    Ok(())
+}
+
+fn collect_detach_delete_edge_label_deltas(
+    store: &GraphStore,
+    vertex_id: VertexId,
+    bindings: &mut PlanMutationBindings,
+) -> Result<(), PlanMutationError> {
+    let mut seen = BTreeSet::new();
+    let mut visit = |owner: VertexId, label_raw: u16, slot_index: u32| {
+        if seen.insert((u32::from(owner), label_raw, slot_index))
+            && let Some(label_id) = crate::facade::catalog_edge_label_from_wire(
+                ic_stable_lara::BucketLabelKey::from_raw(label_raw),
+            )
+        {
+            bindings.add_edge_label_delta(label_id, -1);
+        }
+    };
+
+    store.for_each_directed_out_edges(vertex_id, OutEdgeOrder::Ascending, |edge| {
+        visit(vertex_id, edge.label_id, edge.edge_slot_index.raw());
+    })?;
+    store.for_each_directed_in_edges(vertex_id, OutEdgeOrder::Ascending, |edge| {
+        visit(
+            edge.neighbor_vid(),
+            edge.label_id,
+            edge.edge_slot_index.raw(),
+        );
+    })?;
+    store.for_each_undirected_edges(vertex_id, OutEdgeOrder::Ascending, |edge| {
+        let owner = if u32::from(vertex_id) <= u32::from(edge.neighbor_vid()) {
+            vertex_id
+        } else {
+            edge.neighbor_vid()
+        };
+        visit(owner, edge.label_id, edge.edge_slot_index.raw());
+    })?;
+    Ok(())
 }
 
 fn resolve_vertex_labels(
@@ -895,6 +1005,252 @@ mod tests {
         let vertex = store.vertex(vertex_id).expect("read updated vertex");
 
         assert_eq!(store.vertex_labels(vertex_id, vertex), vec![employee]);
+    }
+
+    #[test]
+    fn label_usage_delta_tracks_vertex_and_edge_inserts() {
+        let store = GraphStore::new();
+        let plan = PhysicalPlan {
+            ops: vec![
+                PlanOp::InsertVertex {
+                    variable: Some("a".into()),
+                    labels: vec!["TelemetryPerson".into()],
+                    properties: vec![],
+                },
+                PlanOp::InsertVertex {
+                    variable: Some("b".into()),
+                    labels: vec!["TelemetryPerson".into()],
+                    properties: vec![],
+                },
+                PlanOp::InsertEdge {
+                    variable: Some("e".into()),
+                    src: "a".into(),
+                    dst: "b".into(),
+                    direction: EdgeDirection::PointingRight,
+                    labels: vec!["TelemetryRel".into()],
+                    properties: vec![],
+                },
+            ],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: Default::default(),
+            ..Default::default()
+        };
+
+        let bindings = store
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
+            .expect("execute insert telemetry plan");
+        assert_eq!(
+            bindings.label_usage_delta.vertex,
+            vec![(
+                crate::test_labels::vertex_label_id_for_name("TelemetryPerson"),
+                2
+            )]
+        );
+        assert_eq!(
+            bindings.label_usage_delta.edge,
+            vec![(
+                crate::test_labels::edge_label_id_for_name("TelemetryRel"),
+                1
+            )]
+        );
+    }
+
+    #[test]
+    fn label_usage_delta_tracks_set_remove_and_noops() {
+        let store = GraphStore::new();
+        let vertex_id = store
+            .insert_vertex_named(["TelemetryBase"], Vec::<(&str, Value)>::new())
+            .expect("insert vertex");
+        let mut bindings = PlanMutationBindings::default();
+        bindings.vertices.insert("a".into(), vertex_id);
+        let ops = vec![
+            PlanOp::SetProperties {
+                items: vec![
+                    SetPlanItem::Label {
+                        variable: "a".into(),
+                        label: "TelemetryAdded".into(),
+                    },
+                    SetPlanItem::Label {
+                        variable: "a".into(),
+                        label: "TelemetryAdded".into(),
+                    },
+                ],
+            },
+            PlanOp::RemoveProperties {
+                items: vec![
+                    RemovePlanItem::Label {
+                        variable: "a".into(),
+                        label: "TelemetryBase".into(),
+                    },
+                    RemovePlanItem::Label {
+                        variable: "a".into(),
+                        label: "TelemetryMissing".into(),
+                    },
+                ],
+            },
+        ];
+
+        execute_ops_with_bindings(
+            &store,
+            &ops,
+            &BTreeMap::new(),
+            GqlExecutionContext::default(),
+            &mut bindings,
+        )
+        .expect("execute set/remove telemetry ops");
+        assert_eq!(
+            bindings.label_usage_delta.vertex,
+            vec![
+                (
+                    crate::test_labels::vertex_label_id_for_name("TelemetryAdded"),
+                    1
+                ),
+                (
+                    crate::test_labels::vertex_label_id_for_name("TelemetryBase"),
+                    -1
+                ),
+            ]
+        );
+        assert!(bindings.label_usage_delta.edge.is_empty());
+    }
+
+    #[test]
+    fn label_usage_delta_tracks_delete_edge() {
+        let store = GraphStore::new();
+        let a = store
+            .insert_vertex_named(["TelemetryDeleteA"], Vec::<(&str, Value)>::new())
+            .expect("insert a");
+        let b = store
+            .insert_vertex_named(["TelemetryDeleteB"], Vec::<(&str, Value)>::new())
+            .expect("insert b");
+        let edge = store
+            .insert_directed_edge_named(
+                a,
+                b,
+                Some("TelemetryDeleteRel"),
+                Vec::<(&str, Value)>::new(),
+            )
+            .expect("insert edge");
+        let mut bindings = PlanMutationBindings::default();
+        bindings.edges.insert("e".into(), edge);
+
+        execute_ops_with_bindings(
+            &store,
+            &[PlanOp::DeleteEdge {
+                variable: "e".into(),
+            }],
+            &BTreeMap::new(),
+            GqlExecutionContext::default(),
+            &mut bindings,
+        )
+        .expect("delete edge telemetry");
+        assert_eq!(
+            bindings.label_usage_delta.edge,
+            vec![(
+                crate::test_labels::edge_label_id_for_name("TelemetryDeleteRel"),
+                -1
+            )]
+        );
+    }
+
+    #[test]
+    fn label_usage_delta_tracks_detach_delete_vertex_and_incident_edges() {
+        let store = GraphStore::new();
+        let a = store
+            .insert_vertex_named(["TelemetryDetachA"], Vec::<(&str, Value)>::new())
+            .expect("insert a");
+        let b = store
+            .insert_vertex_named(["TelemetryDetachB"], Vec::<(&str, Value)>::new())
+            .expect("insert b");
+        store
+            .insert_directed_edge_named(
+                a,
+                b,
+                Some("TelemetryDetachRel"),
+                Vec::<(&str, Value)>::new(),
+            )
+            .expect("a->b");
+        let mut bindings = PlanMutationBindings::default();
+        bindings.vertices.insert("a".into(), a);
+
+        execute_ops_with_bindings(
+            &store,
+            &[PlanOp::DetachDeleteVertex {
+                variable: "a".into(),
+            }],
+            &BTreeMap::new(),
+            GqlExecutionContext::default(),
+            &mut bindings,
+        )
+        .expect("detach delete telemetry");
+        assert_eq!(
+            bindings.label_usage_delta.vertex,
+            vec![(
+                crate::test_labels::vertex_label_id_for_name("TelemetryDetachA"),
+                -1
+            )]
+        );
+        assert_eq!(
+            bindings.label_usage_delta.edge,
+            vec![(
+                crate::test_labels::edge_label_id_for_name("TelemetryDetachRel"),
+                -1
+            )]
+        );
+    }
+
+    #[test]
+    fn label_usage_delta_collects_all_incident_edges_before_detach_delete() {
+        let store = GraphStore::new();
+        let a = store
+            .insert_vertex_named(["TelemetryDetachCollectA"], Vec::<(&str, Value)>::new())
+            .expect("insert a");
+        let b = store
+            .insert_vertex_named(["TelemetryDetachCollectB"], Vec::<(&str, Value)>::new())
+            .expect("insert b");
+        store
+            .insert_directed_edge_named(
+                a,
+                b,
+                Some("TelemetryDetachCollectRel"),
+                Vec::<(&str, Value)>::new(),
+            )
+            .expect("a->b");
+        store
+            .insert_directed_edge_named(
+                b,
+                a,
+                Some("TelemetryDetachCollectRel"),
+                Vec::<(&str, Value)>::new(),
+            )
+            .expect("b->a");
+        store
+            .insert_undirected_edge_named(
+                a,
+                b,
+                Some("TelemetryDetachCollectRel"),
+                Vec::<(&str, Value)>::new(),
+            )
+            .expect("a-b");
+        let mut bindings = PlanMutationBindings::default();
+
+        collect_vertex_delete_label_deltas(&store, a, true, &mut bindings)
+            .expect("collect detach delete telemetry");
+
+        assert_eq!(
+            bindings.label_usage_delta.vertex,
+            vec![(
+                crate::test_labels::vertex_label_id_for_name("TelemetryDetachCollectA"),
+                -1
+            )]
+        );
+        assert_eq!(
+            bindings.label_usage_delta.edge,
+            vec![(
+                crate::test_labels::edge_label_id_for_name("TelemetryDetachCollectRel"),
+                -3
+            )]
+        );
     }
 
     #[test]

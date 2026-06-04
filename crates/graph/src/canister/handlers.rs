@@ -23,7 +23,7 @@ use gleaph_graph_kernel::federation::{
     MigrationStatus,
 };
 use gleaph_graph_kernel::plan_exec::{
-    ExecutePlanArgs, ExecutePlanResult, GqlExecutionMode, LabelUsageDelta, SeedBindingsWire,
+    ExecutePlanArgs, ExecutePlanResult, GqlExecutionMode, SeedBindingsWire,
 };
 
 use super::types::GraphInitArgs;
@@ -132,7 +132,7 @@ async fn execute_plan_impl(args: ExecutePlanArgs) -> Result<ExecutePlanResult, S
     #[cfg(not(target_family = "wasm"))]
     let ix: Option<&dyn PropertyIndexLookup> = None;
 
-    let row_count = run_wire_plan_last_read_row_count(
+    let run = run_wire_plan_last_read_row_count(
         store,
         &args.plan_blob,
         &pmap,
@@ -147,8 +147,8 @@ async fn execute_plan_impl(args: ExecutePlanArgs) -> Result<ExecutePlanResult, S
     .await
     .map_err(|e| e.to_string())?;
     Ok(ExecutePlanResult {
-        row_count: row_count as u64,
-        label_usage_delta: LabelUsageDelta::default(),
+        row_count: run.row_count as u64,
+        label_usage_delta: run.label_usage_delta,
     })
 }
 
