@@ -12,6 +12,12 @@ use serde::{Deserialize, Serialize};
 use crate::entry::{EdgeLabelId, VertexLabelId};
 use crate::federation::ShardId;
 
+/// Router-issued mutation id. `0` is reserved; ids are never reused.
+pub type MutationId = u64;
+
+/// Shard-local telemetry event sequence. `0` is reserved; ids are never reused.
+pub type ShardEventSeq = u64;
+
 /// Selects the IC call kind for a wired program/plan (must match the canister entrypoint).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub enum GqlExecutionMode {
@@ -25,6 +31,8 @@ pub enum GqlExecutionMode {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct ExecutePlanArgs {
     pub target_shard_id: ShardId,
+    /// Router-issued idempotency key for update/DML execution.
+    pub mutation_id: Option<MutationId>,
     pub plan_blob: Vec<u8>,
     pub params_blob: Vec<u8>,
     pub mode: GqlExecutionMode,
@@ -37,7 +45,22 @@ pub struct ExecutePlanArgs {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct ExecutePlanResult {
     pub row_count: u64,
+    pub label_telemetry_events: Vec<LabelTelemetryEventWire>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct LabelTelemetryEventWire {
+    pub mutation_id: MutationId,
+    pub shard_event_seq: ShardEventSeq,
     pub label_usage_delta: LabelUsageDelta,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct MutationOutcomeWire {
+    pub mutation_id: MutationId,
+    pub completed: bool,
+    pub row_count: u64,
+    pub label_telemetry_events: Vec<LabelTelemetryEventWire>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, CandidType, Serialize, Deserialize)]
@@ -101,6 +124,7 @@ mod tests {
         let seed_blob = Encode!(&seed).expect("seed encode");
         let args = ExecutePlanArgs {
             target_shard_id: 7,
+            mutation_id: Some(1),
             plan_blob: vec![1, 2, 3],
             params_blob: vec![4],
             mode: GqlExecutionMode::Query,

@@ -11,8 +11,8 @@ use ic_stable_lara::{
     BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledLaraGraph,
     lara::maintenance::DeferredConfig,
 };
-use ic_stable_structures::DefaultMemoryImpl;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
+use ic_stable_structures::{DefaultMemoryImpl, StableCell};
 use std::cell::RefCell;
 
 // --- Labeled graph: forward orientation (10 memories) ---
@@ -73,6 +73,9 @@ const MIGRATION_JOURNAL: MemoryId = MemoryId::new(53);
 const MIGRATION_OUT_HANDLE_MAP: MemoryId = MemoryId::new(54);
 const MIGRATION_REV_HANDLE_MAP: MemoryId = MemoryId::new(55);
 const PRUNE_MIGRATED_SOURCE_QUEUE: MemoryId = MemoryId::new(56);
+const LABEL_TELEMETRY_SEQ: MemoryId = MemoryId::new(59);
+const LABEL_TELEMETRY_OUTBOX: MemoryId = MemoryId::new(60);
+const APPLIED_MUTATION_REQUESTS: MemoryId = MemoryId::new(61);
 
 pub(crate) const GRAPH_DEFAULT_EDGE_LABEL: LaraLabelId = LaraLabelId::UNLABELED_DIRECTED;
 
@@ -105,6 +108,10 @@ pub(crate) type StableMigrationOutHandleMap = super::migration::MigrationOutHand
 pub(crate) type StableMigrationRevHandleMap = super::migration::MigrationRevHandleMap<Memory>;
 pub(crate) type StablePruneMigratedSourceQueueMap =
     super::migration::PruneMigratedSourceQueueMap<Memory>;
+pub(crate) type StableLabelTelemetrySeq = StableCell<u64, Memory>;
+pub(crate) type StableLabelTelemetryOutbox = super::label_telemetry::LabelTelemetryOutbox<Memory>;
+pub(crate) type StableAppliedMutationRequests =
+    super::label_telemetry::AppliedMutationRequests<Memory>;
 
 thread_local! {
     static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
@@ -258,5 +265,24 @@ pub(crate) fn init_migration_rev_handle_map() -> StableMigrationRevHandleMap {
 pub(crate) fn init_prune_migrated_source_queue() -> StablePruneMigratedSourceQueueMap {
     super::migration::PruneMigratedSourceQueueMap::init(
         MEMORY_MANAGER.with(|m| m.borrow().get(PRUNE_MIGRATED_SOURCE_QUEUE)),
+    )
+}
+
+pub(crate) fn init_label_telemetry_seq() -> StableLabelTelemetrySeq {
+    StableCell::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(LABEL_TELEMETRY_SEQ)),
+        0u64,
+    )
+}
+
+pub(crate) fn init_label_telemetry_outbox() -> StableLabelTelemetryOutbox {
+    super::label_telemetry::LabelTelemetryOutbox::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(LABEL_TELEMETRY_OUTBOX)),
+    )
+}
+
+pub(crate) fn init_applied_mutation_requests() -> StableAppliedMutationRequests {
+    super::label_telemetry::AppliedMutationRequests::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(APPLIED_MUTATION_REQUESTS)),
     )
 }

@@ -17,7 +17,8 @@ use gleaph_gql::type_check::NoSchema;
 use gleaph_gql_planner::wire::decode_plan_bundle;
 use gleaph_gql_planner::{PlanBuildOptions, build_statement_plan_with_options};
 use gleaph_graph_kernel::plan_exec::{
-    GqlExecutionMode as KernelGqlExecutionMode, LabelUsageDelta, SeedBindingsWire,
+    GqlExecutionMode as KernelGqlExecutionMode, LabelTelemetryEventWire, LabelUsageDelta,
+    MutationId, SeedBindingsWire,
 };
 use gleaph_graph_prepared::PreparedQueryRecord;
 use ic_stable_lara::VertexId;
@@ -118,12 +119,25 @@ struct TransactionBlockRun {
     last_read_row_count: usize,
     last_read_plan_rows: Vec<PlanQueryRow>,
     label_usage_delta: LabelUsageDelta,
+    label_telemetry_events: Vec<LabelTelemetryEventWire>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WirePlanRunResult {
     pub row_count: usize,
-    pub label_usage_delta: LabelUsageDelta,
+    pub label_telemetry_events: Vec<LabelTelemetryEventWire>,
+}
+
+fn trap_wire_mutation_failure(error: crate::plan::PlanMutationError) -> ! {
+    let message = format!("wire mutation failed inside DML atomic section: {error}");
+    #[cfg(target_family = "wasm")]
+    {
+        ic_cdk::trap(&message);
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        panic!("{message}");
+    }
 }
 
 fn merge_label_usage_delta(target: &mut LabelUsageDelta, source: LabelUsageDelta) {
@@ -212,6 +226,7 @@ async fn run_transaction_block(
         last_read_row_count,
         last_read_plan_rows,
         label_usage_delta,
+        label_telemetry_events: Vec::new(),
     })
 }
 
@@ -401,7 +416,25 @@ async fn run_wire_plans(
     execution: GqlExecutionContext,
     seeds: Option<SeedBindingsWire>,
     materialize: TransactionReadMaterialize,
+    mutation_id: Option<MutationId>,
 ) -> Result<TransactionBlockRun, GqlRunError> {
+    if let Some(mutation_id) = mutation_id
+        && let Some(applied) = store.applied_mutation_request(mutation_id)
+    {
+        if applied.completed {
+            return Ok(TransactionBlockRun {
+                last_query_rows: PlanQueryResult::default(),
+                last_read_row_count: applied.row_count as usize,
+                last_read_plan_rows: Vec::new(),
+                label_usage_delta: LabelUsageDelta::default(),
+                label_telemetry_events: applied.label_telemetry_events,
+            });
+        }
+        return Err(GqlRunError::Plan(format!(
+            "mutation {mutation_id} was already applied locally but did not complete; replay pending label telemetry instead"
+        )));
+    }
+
     crate::plan_wire_guard::validate_wire_plan_execution(
         match mode {
             GqlCanisterExecutionMode::CompositeQuery => {
@@ -416,10 +449,17 @@ async fn run_wire_plans(
     )
     .map_err(|e| GqlRunError::Plan(e.0))?;
 
+    if requires_write_path && mutation_id.is_none() {
+        return Err(GqlRunError::Plan(
+            "wire DML execution requires mutation_id".into(),
+        ));
+    }
+
     let mut last_query_rows = PlanQueryResult::default();
     let mut last_read_row_count: usize = 0;
     let mut last_read_plan_rows: Vec<PlanQueryRow> = Vec::new();
     let mut label_usage_delta = LabelUsageDelta::default();
+    let mut label_telemetry_events = Vec::new();
 
     let (mut seed_rows, mut skip_index) = if let Some(ref s) = seeds {
         seed_initial_rows(store, s)?
@@ -429,7 +469,26 @@ async fn run_wire_plans(
 
     for (i, plan) in plans.iter().enumerate() {
         if plan.has_dml() {
-            let mutation = store.execute_plan_mutations(plan, execution.clone())?;
+            let mutation = match store.execute_plan_mutations(plan, execution.clone()) {
+                Ok(mutation) => mutation,
+                Err(error) => trap_wire_mutation_failure(error),
+            };
+            let has_delta = !mutation.label_usage_delta.vertex.is_empty()
+                || !mutation.label_usage_delta.edge.is_empty();
+            if let Some(mutation_id) = mutation_id
+                && has_delta
+            {
+                let event = store
+                    .persist_label_telemetry_event(mutation_id, mutation.label_usage_delta.clone())
+                    .map_err(GqlRunError::Plan)?;
+                label_telemetry_events.push(event);
+            }
+            if let Some(mutation_id) = mutation_id {
+                store.record_incomplete_mutation_request(
+                    mutation_id,
+                    label_telemetry_events.clone(),
+                );
+            }
             merge_label_usage_delta(&mut label_usage_delta, mutation.label_usage_delta);
             pending::flush_pending(index).await?;
             skip_index = false;
@@ -489,6 +548,7 @@ async fn run_wire_plans(
         last_read_row_count,
         last_read_plan_rows,
         label_usage_delta,
+        label_telemetry_events,
     })
 }
 
@@ -525,6 +585,7 @@ pub async fn run_wire_plan_last_read_row_count(
     index: Option<&dyn PropertyIndexLookup>,
     execution: GqlExecutionContext,
     seeds: Option<SeedBindingsWire>,
+    mutation_id: Option<MutationId>,
 ) -> Result<WirePlanRunResult, GqlRunError> {
     let (requires_write, plans) =
         decode_plan_bundle(plan_blob).map_err(|e| GqlRunError::Plan(e.to_string()))?;
@@ -538,11 +599,19 @@ pub async fn run_wire_plan_last_read_row_count(
         execution,
         seeds,
         TransactionReadMaterialize::LastReadRowCountOnly,
+        mutation_id,
     )
     .await?;
+    if let Some(mutation_id) = mutation_id {
+        store.record_completed_mutation_request(
+            mutation_id,
+            run.last_read_row_count as u64,
+            run.label_telemetry_events.clone(),
+        );
+    }
     Ok(WirePlanRunResult {
         row_count: run.last_read_row_count,
-        label_usage_delta: run.label_usage_delta,
+        label_telemetry_events: run.label_telemetry_events,
     })
 }
 
@@ -606,6 +675,8 @@ mod tests {
     use super::*;
     use crate::gql_execution_context::GqlExecutionContext;
     use gleaph_gql::Value;
+    use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp};
+    use gleaph_gql_planner::wire::encode_block_plans;
     use gleaph_graph_prepared::{PreparedQueryRecord, compile_prepared_source};
 
     fn compile_prepared(source: &str) -> PreparedQueryRecord {
@@ -679,6 +750,96 @@ mod tests {
         .expect("match");
         assert_eq!(q.rows.len(), 1);
         assert_eq!(q.rows[0].get("n.age"), Some(&Value::Int64(1)));
+    }
+
+    #[test]
+    fn wire_update_persists_label_telemetry_event_and_dedupes_retry() {
+        let store = GraphStore::new();
+        let plan = PhysicalPlan::from_ops(vec![PlanOp::InsertVertex {
+            variable: Some("n".into()),
+            labels: vec!["WireTelemetryPerson".into()],
+            properties: vec![],
+        }]);
+        let blob = encode_block_plans(&[plan], true).expect("encode plan");
+        let params = BTreeMap::new();
+
+        let first = pollster::block_on(run_wire_plan_last_read_row_count(
+            store,
+            &blob,
+            &params,
+            GqlCanisterExecutionMode::Update,
+            None,
+            GqlExecutionContext::default(),
+            None,
+            Some(42),
+        ))
+        .expect("first wire update");
+
+        assert_eq!(first.label_telemetry_events.len(), 1);
+        let event = &first.label_telemetry_events[0];
+        assert_eq!(event.mutation_id, 42);
+        assert_eq!(
+            event.label_usage_delta.vertex,
+            vec![(
+                crate::test_labels::vertex_label_id_for_name("WireTelemetryPerson"),
+                1
+            )]
+        );
+
+        let retry = pollster::block_on(run_wire_plan_last_read_row_count(
+            store,
+            &blob,
+            &params,
+            GqlCanisterExecutionMode::Update,
+            None,
+            GqlExecutionContext::default(),
+            None,
+            Some(42),
+        ))
+        .expect("retry wire update");
+        assert_eq!(retry.label_telemetry_events, first.label_telemetry_events);
+
+        let q = pollster::block_on(run_adhoc_gql(
+            store,
+            "MATCH (n:WireTelemetryPerson) RETURN n",
+            &params,
+            None,
+            GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext::default(),
+        ))
+        .expect("query inserted vertex");
+        assert_eq!(q.rows.len(), 1);
+    }
+
+    #[test]
+    fn wire_update_rejects_dml_without_mutation_id() {
+        let store = GraphStore::new();
+        let plan = PhysicalPlan::from_ops(vec![PlanOp::InsertVertex {
+            variable: Some("n".into()),
+            labels: vec!["WireMissingMutationIdPerson".into()],
+            properties: vec![],
+        }]);
+        let blob = encode_block_plans(&[plan], true).expect("encode plan");
+        let params = BTreeMap::new();
+
+        let err = pollster::block_on(run_wire_plan_last_read_row_count(
+            store,
+            &blob,
+            &params,
+            GqlCanisterExecutionMode::Update,
+            None,
+            GqlExecutionContext::default(),
+            None,
+            None,
+        ))
+        .expect_err("missing mutation_id should fail before DML execution");
+
+        match err {
+            GqlRunError::Plan(message) => {
+                assert_eq!(message, "wire DML execution requires mutation_id");
+            }
+            other => panic!("expected plan error, got: {other}"),
+        }
     }
 
     #[test]

@@ -1,6 +1,8 @@
 //! Inter-canister client for `gleaph-router` (Wasm init verification).
 
 use candid::Principal;
+#[cfg(target_family = "wasm")]
+use gleaph_graph_kernel::federation::RouterError;
 use gleaph_graph_kernel::federation::{ShardId, ShardRegistryEntry};
 
 #[derive(Clone, Debug)]

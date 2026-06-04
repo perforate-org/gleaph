@@ -4,10 +4,6 @@ mod canister;
 mod execution_path;
 pub mod facade;
 mod gql;
-#[expect(
-    dead_code,
-    reason = "graph peer calls are used by deployment orchestration paths"
-)]
 mod graph_client;
 #[expect(
     dead_code,
@@ -197,7 +193,7 @@ async fn gql_query(
     gql::gql_query(logical_graph_name, query, params).await
 }
 
-/// GQL with DML/DDL/CALL: update (may call graph update endpoints from here).
+/// Update-path GQL entrypoint for non-DML escape hatches; DML requires `gql_execute_idempotent`.
 #[update]
 async fn gql_execute(
     logical_graph_name: String,
@@ -205,6 +201,17 @@ async fn gql_execute(
     params: Vec<u8>,
 ) -> Result<u64, RouterError> {
     gql::gql_execute(logical_graph_name, query, params).await
+}
+
+/// Idempotent GQL update. Reuse `client_mutation_key` only for retries of the same mutation.
+#[update]
+async fn gql_execute_idempotent(
+    logical_graph_name: String,
+    query: String,
+    params: Vec<u8>,
+    client_mutation_key: String,
+) -> Result<u64, RouterError> {
+    gql::gql_execute_idempotent(logical_graph_name, query, params, client_mutation_key).await
 }
 
 /// Read-only GQL on the update path only (no composite-query savings; bypasses path check).
@@ -247,6 +254,22 @@ async fn prepared_execute_update(
     params: Vec<u8>,
 ) -> Result<u64, RouterError> {
     prepared::prepared_execute_update(logical_graph_name, name, params).await
+}
+
+#[update]
+async fn prepared_execute_update_idempotent(
+    logical_graph_name: String,
+    name: String,
+    params: Vec<u8>,
+    client_mutation_key: String,
+) -> Result<u64, RouterError> {
+    prepared::prepared_execute_update_idempotent(
+        logical_graph_name,
+        name,
+        params,
+        client_mutation_key,
+    )
+    .await
 }
 
 #[update]

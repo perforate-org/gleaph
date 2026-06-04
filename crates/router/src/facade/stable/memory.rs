@@ -33,6 +33,9 @@ const ROUTER_VERTEX_LABEL_STATS: MemoryId = MemoryId::new(16);
 const ROUTER_EDGE_LABEL_STATS: MemoryId = MemoryId::new(17);
 const ROUTER_VERTEX_LABEL_LIVE_BY_SHARD: MemoryId = MemoryId::new(18);
 const ROUTER_EDGE_LABEL_LIVE_BY_SHARD: MemoryId = MemoryId::new(19);
+const ROUTER_MUTATION_COUNTER: MemoryId = MemoryId::new(20);
+const ROUTER_APPLIED_LABEL_TELEMETRY: MemoryId = MemoryId::new(21);
+const ROUTER_MUTATION_BY_CLIENT_KEY: MemoryId = MemoryId::new(22);
 
 pub(crate) type StableControllerSet = BTreeSet<Principal, Memory>;
 pub(crate) type StableGraphRegistry = BTreeMap<String, GraphRegistryEntry, Memory>;
@@ -46,11 +49,19 @@ pub(crate) type StableLabelIdReverse = BTreeMap<u16, String, Memory>;
 pub(crate) type StableLabelStatsMap = BTreeMap<u16, super::label_telemetry::LabelStats, Memory>;
 pub(crate) type StableLabelShardLiveMap =
     BTreeMap<super::label_telemetry::LabelShardKey, u64, Memory>;
+pub(crate) type StableAppliedLabelTelemetrySet =
+    BTreeSet<super::label_telemetry::AppliedLabelTelemetryKey, Memory>;
+pub(crate) type StableMutationByClientKey = BTreeMap<
+    super::label_telemetry::ClientMutationKey,
+    super::label_telemetry::RouterMutationRecord,
+    Memory,
+>;
 pub(crate) type StablePropertyNameIntern = BTreeMap<String, u32, Memory>;
 pub(crate) type StablePropertyIdReverse = BTreeMap<u32, String, Memory>;
 pub(crate) type StablePlacementByPhysicalMap =
     super::placement_by_physical::PlacementByPhysicalMap<Memory>;
 pub(crate) type StableMigrationCounter = Cell<u64, Memory>;
+pub(crate) type StableMutationCounter = Cell<u64, Memory>;
 pub(crate) type StableAuthState = AuthState<Memory>;
 
 thread_local! {
@@ -119,6 +130,21 @@ pub(crate) fn init_vertex_label_live_by_shard() -> StableLabelShardLiveMap {
 
 pub(crate) fn init_edge_label_live_by_shard() -> StableLabelShardLiveMap {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_EDGE_LABEL_LIVE_BY_SHARD)))
+}
+
+pub(crate) fn init_mutation_counter() -> StableMutationCounter {
+    Cell::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_MUTATION_COUNTER)),
+        0u64,
+    )
+}
+
+pub(crate) fn init_applied_label_telemetry() -> StableAppliedLabelTelemetrySet {
+    BTreeSet::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_APPLIED_LABEL_TELEMETRY)))
+}
+
+pub(crate) fn init_mutation_by_client_key() -> StableMutationByClientKey {
+    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_MUTATION_BY_CLIENT_KEY)))
 }
 
 pub(crate) fn init_property_by_name() -> StablePropertyNameIntern {

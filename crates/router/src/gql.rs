@@ -12,12 +12,16 @@ use gleaph_gql_planner::build_block_plan_with_schema;
 use gleaph_gql_planner::wire::encode_block_plans;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::PostingHit;
-use gleaph_graph_kernel::plan_exec::GqlExecutionMode;
+use gleaph_graph_kernel::plan_exec::{GqlExecutionMode, LabelTelemetryEventWire, MutationId};
 use ic_cdk::api::msg_caller;
 
 use crate::execution_path::check_adhoc_execution_path;
+use crate::facade::stable::label_telemetry::RouterMutationShard;
 use crate::facade::store::RouterStore;
-use crate::graph_client::execute_plan_on_graph;
+use crate::graph_client::{
+    ack_label_telemetry_event, execute_plan_on_graph, get_mutation_outcome,
+    list_pending_label_telemetry_events,
+};
 use crate::index_client::RouterIndexClient;
 use crate::planner_stats::RouterGraphStats;
 use crate::rbac::authorize_adhoc_gql;
@@ -36,6 +40,7 @@ pub async fn gql_query(
         GqlExecutionMode::Query,
         "gql_query",
         false,
+        None,
     )
     .await
 }
@@ -52,6 +57,25 @@ pub async fn gql_execute(
         GqlExecutionMode::Update,
         "gql_execute",
         false,
+        None,
+    )
+    .await
+}
+
+pub async fn gql_execute_idempotent(
+    logical_graph_name: String,
+    query: String,
+    params: Vec<u8>,
+    client_mutation_key: String,
+) -> Result<u64, RouterError> {
+    run_gql(
+        &logical_graph_name,
+        &query,
+        &params,
+        GqlExecutionMode::Update,
+        "gql_execute_idempotent",
+        false,
+        Some(&client_mutation_key),
     )
     .await
 }
@@ -69,6 +93,7 @@ pub async fn force_gql_execute(
         GqlExecutionMode::Update,
         "force_gql_execute",
         true,
+        None,
     )
     .await
 }
@@ -80,6 +105,7 @@ async fn run_gql(
     mode: GqlExecutionMode,
     entrypoint: &str,
     force: bool,
+    client_mutation_key: Option<&str>,
 ) -> Result<u64, RouterError> {
     let program = parser::parse(query).map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
     let flags = classify_program(&program);
@@ -117,6 +143,7 @@ async fn run_gql(
         &pmap,
         params,
         mode,
+        client_mutation_key,
     )
     .await
 }
@@ -129,64 +156,461 @@ pub async fn dispatch_plan_blob(
     pmap: &BTreeMap<String, gleaph_gql::Value>,
     params: &[u8],
     mode: GqlExecutionMode,
+    client_mutation_key: Option<&str>,
 ) -> Result<u64, RouterError> {
     let store = RouterStore::new();
     let shards = store.list_shards_for_graph(logical_graph_name)?;
     if shards.is_empty() {
         return Err(RouterError::ShardNotRegistered);
     }
-    let resolved_labels = store.resolve_plan_labels(plans)?;
-    let index = RouterIndexClient::new(shards[0].index_canister);
-    let seed_probe = SeedProbe::from_plans(plans, pmap, &store)?;
+    let has_dml = plans.iter().any(PhysicalPlan::has_dml);
+    let caller = msg_caller();
+    let mutation_reservation = if has_dml {
+        let key = client_mutation_key.ok_or_else(|| {
+            RouterError::InvalidArgument(
+                "DML execution requires client_mutation_key; use the idempotent update entrypoint"
+                    .into(),
+            )
+        })?;
+        Some(store.reserve_mutation_id_for_client_key(
+            caller,
+            logical_graph_name,
+            key,
+            request_fingerprint(plan_blob, params, mode),
+        )?)
+    } else {
+        None
+    };
+    let mutation_id = mutation_reservation.map(|reservation| reservation.mutation_id);
 
-    let routings = match seed_probe {
-        Some(probe) => {
-            let hits = index
-                .lookup_equal(probe.property_id, probe.payload_bytes.clone())
-                .await
-                .map_err(RouterError::InvalidArgument)?;
-            if hits.is_empty() {
-                return Ok(0);
-            }
-            resolve_seed_routings_multi(&store, &hits, logical_graph_name, probe)?
+    if has_dml && let Some(key) = client_mutation_key {
+        if let Some(row_count) =
+            store.router_mutation_completed_row_count(caller, logical_graph_name, key)
+        {
+            return Ok(row_count);
         }
-        None => {
-            if shards.len() != 1 {
-                return Err(RouterError::InvalidArgument(
-                    "no index anchor: single-shard graph required".into(),
-                ));
-            }
-            vec![SeedRouting {
-                shard_id: shards[0].shard_id,
-                graph_canister: shards[0].graph_canister,
-                hits: Vec::new(),
-                probe: None,
-            }]
+        reconcile_router_mutation_telemetry(&store, caller, logical_graph_name, key).await?;
+        if let Some(row_count) =
+            store.router_mutation_completed_row_count(caller, logical_graph_name, key)
+        {
+            return Ok(row_count);
         }
+    }
+
+    let saved_record = client_mutation_key
+        .and_then(|key| store.router_mutation_record(caller, logical_graph_name, key));
+    let mut resolved_labels = match saved_record
+        .as_ref()
+        .and_then(|record| record.resolved_labels.clone())
+    {
+        Some(resolved_labels) => resolved_labels,
+        None => match store.resolve_plan_labels(plans) {
+            Ok(resolved_labels) => resolved_labels,
+            Err(err) => {
+                release_routing_if_owner(
+                    &store,
+                    caller,
+                    logical_graph_name,
+                    client_mutation_key,
+                    mutation_reservation,
+                )?;
+                return Err(err);
+            }
+        },
     };
 
+    let mut dispatches: Vec<ShardDispatch> = if let Some(record) = saved_record.as_ref()
+        && !record.shards.is_empty()
+    {
+        record
+            .shards
+            .iter()
+            .map(|shard| ShardDispatch {
+                shard_id: shard.shard_id,
+                graph_canister: shard.graph_canister,
+                seed_bindings_blob: shard.seed_bindings_blob.clone(),
+            })
+            .collect()
+    } else {
+        let index = RouterIndexClient::new(shards[0].index_canister);
+        let seed_probe = match SeedProbe::from_plans(plans, pmap, &store) {
+            Ok(seed_probe) => seed_probe,
+            Err(err) => {
+                release_routing_if_owner(
+                    &store,
+                    caller,
+                    logical_graph_name,
+                    client_mutation_key,
+                    mutation_reservation,
+                )?;
+                return Err(err);
+            }
+        };
+        let routings = match seed_probe {
+            Some(probe) => {
+                let hits = match index
+                    .lookup_equal(probe.property_id, probe.payload_bytes.clone())
+                    .await
+                    .map_err(RouterError::InvalidArgument)
+                {
+                    Ok(hits) => hits,
+                    Err(err) => {
+                        release_routing_if_owner(
+                            &store,
+                            caller,
+                            logical_graph_name,
+                            client_mutation_key,
+                            mutation_reservation,
+                        )?;
+                        return Err(err);
+                    }
+                };
+                if hits.is_empty() {
+                    if let Some(key) = client_mutation_key {
+                        store.record_router_mutation_completed_without_shards(
+                            caller,
+                            logical_graph_name,
+                            key,
+                            resolved_labels.clone(),
+                            0,
+                        )?;
+                    }
+                    return Ok(0);
+                }
+                match resolve_seed_routings_multi(&store, &hits, logical_graph_name, probe) {
+                    Ok(routings) => routings,
+                    Err(err) => {
+                        release_routing_if_owner(
+                            &store,
+                            caller,
+                            logical_graph_name,
+                            client_mutation_key,
+                            mutation_reservation,
+                        )?;
+                        return Err(err);
+                    }
+                }
+            }
+            None => {
+                if shards.len() != 1 {
+                    release_routing_if_owner(
+                        &store,
+                        caller,
+                        logical_graph_name,
+                        client_mutation_key,
+                        mutation_reservation,
+                    )?;
+                    return Err(RouterError::InvalidArgument(
+                        "no index anchor: single-shard graph required".into(),
+                    ));
+                }
+                vec![SeedRouting {
+                    shard_id: shards[0].shard_id,
+                    graph_canister: shards[0].graph_canister,
+                    hits: Vec::new(),
+                    probe: None,
+                }]
+            }
+        };
+        routings
+            .into_iter()
+            .map(|routing| ShardDispatch {
+                shard_id: routing.shard_id,
+                graph_canister: routing.graph_canister,
+                seed_bindings_blob: routing.probe.as_ref().and_then(|probe| {
+                    seeds_for_local_shard(probe.variable.as_str(), &routing.hits, routing.shard_id)
+                }),
+            })
+            .collect()
+    };
+
+    if let (Some(key), Some(_)) = (client_mutation_key, mutation_id)
+        && mutation_reservation.is_some_and(|reservation| reservation.routing_owner)
+    {
+        let envelope_shards = dispatches
+            .iter()
+            .map(|dispatch| {
+                RouterMutationShard::new(
+                    dispatch.shard_id,
+                    dispatch.graph_canister,
+                    dispatch.seed_bindings_blob.clone(),
+                )
+            })
+            .collect();
+        store.record_router_mutation_shards(
+            caller,
+            logical_graph_name,
+            key,
+            resolved_labels.clone(),
+            envelope_shards,
+        )?;
+        if let Some(record) = store.router_mutation_record(caller, logical_graph_name, key) {
+            if let Some(saved_resolved_labels) = record.resolved_labels {
+                resolved_labels = saved_resolved_labels;
+            }
+            dispatches = record
+                .shards
+                .into_iter()
+                .map(|shard| ShardDispatch {
+                    shard_id: shard.shard_id,
+                    graph_canister: shard.graph_canister,
+                    seed_bindings_blob: shard.seed_bindings_blob,
+                })
+                .collect();
+        }
+    }
+
     let mut total_rows = 0u64;
-    for routing in routings {
-        let seed_blob = routing.probe.as_ref().and_then(|probe| {
-            seeds_for_local_shard(probe.variable.as_str(), &routing.hits, routing.shard_id)
-        });
-        let result = execute_plan_on_graph(
-            routing.graph_canister,
+    for dispatch in dispatches {
+        let result = match execute_plan_on_graph(
+            dispatch.graph_canister,
             gleaph_graph_kernel::plan_exec::ExecutePlanArgs {
-                target_shard_id: routing.shard_id,
+                target_shard_id: dispatch.shard_id,
+                mutation_id,
                 plan_blob: plan_blob.to_vec(),
                 params_blob: params.to_vec(),
                 mode,
-                seed_bindings_blob: seed_blob,
+                seed_bindings_blob: dispatch.seed_bindings_blob.clone(),
                 resolved_labels: Some(resolved_labels.clone()),
             },
         )
         .await
-        .map_err(RouterError::InvalidArgument)?;
-        store.apply_label_usage_delta(routing.shard_id, &result.label_usage_delta);
+        {
+            Ok(result) => result,
+            Err(err) => {
+                if let Some(mutation_id) = mutation_id {
+                    if let Some(outcome) = recover_mutation_outcome(
+                        &store,
+                        dispatch.graph_canister,
+                        dispatch.shard_id,
+                        mutation_id,
+                    )
+                    .await?
+                    {
+                        if outcome.completed {
+                            total_rows = total_rows.saturating_add(outcome.row_count);
+                            if let Some(key) = client_mutation_key {
+                                store.record_router_mutation_shard_completed(
+                                    caller,
+                                    logical_graph_name,
+                                    key,
+                                    dispatch.shard_id,
+                                    outcome.row_count,
+                                    outcome.label_telemetry_events,
+                                )?;
+                                store.record_router_mutation_shard_telemetry_acked(
+                                    caller,
+                                    logical_graph_name,
+                                    key,
+                                    dispatch.shard_id,
+                                )?;
+                            }
+                            continue;
+                        }
+                    }
+                }
+                return Err(RouterError::InvalidArgument(err));
+            }
+        };
+        let telemetry_acked = apply_and_ack_label_telemetry_events(
+            &store,
+            dispatch.graph_canister,
+            dispatch.shard_id,
+            mutation_id,
+            &result.label_telemetry_events,
+        )
+        .await?;
+        if let Some(key) = client_mutation_key {
+            store.record_router_mutation_shard_completed(
+                caller,
+                logical_graph_name,
+                key,
+                dispatch.shard_id,
+                result.row_count,
+                result.label_telemetry_events,
+            )?;
+            if telemetry_acked {
+                store.record_router_mutation_shard_telemetry_acked(
+                    caller,
+                    logical_graph_name,
+                    key,
+                    dispatch.shard_id,
+                )?;
+            }
+        }
         total_rows = total_rows.saturating_add(result.row_count);
     }
+    if let Some(key) = client_mutation_key
+        && let Some(row_count) =
+            store.router_mutation_completed_row_count(caller, logical_graph_name, key)
+    {
+        return Ok(row_count);
+    }
     Ok(total_rows)
+}
+
+fn release_routing_if_owner(
+    store: &RouterStore,
+    caller: Principal,
+    logical_graph_name: &str,
+    client_mutation_key: Option<&str>,
+    mutation_reservation: Option<crate::facade::store::ClientMutationReservation>,
+) -> Result<(), RouterError> {
+    if let (Some(key), Some(reservation)) = (client_mutation_key, mutation_reservation)
+        && reservation.routing_owner
+    {
+        store.abandon_router_mutation_routing_reservation(caller, logical_graph_name, key)?;
+    }
+    Ok(())
+}
+
+fn request_fingerprint(plan_blob: &[u8], params: &[u8], mode: GqlExecutionMode) -> Vec<u8> {
+    let mut out = Vec::with_capacity(1 + 8 + plan_blob.len() + 8 + params.len());
+    out.push(match mode {
+        GqlExecutionMode::Query => 0,
+        GqlExecutionMode::Update => 1,
+    });
+    out.extend_from_slice(&(plan_blob.len() as u64).to_le_bytes());
+    out.extend_from_slice(plan_blob);
+    out.extend_from_slice(&(params.len() as u64).to_le_bytes());
+    out.extend_from_slice(params);
+    out
+}
+
+async fn apply_dispatch_label_telemetry_event(
+    store: &RouterStore,
+    graph_canister: Principal,
+    shard_id: ShardId,
+    expected_mutation_id: Option<MutationId>,
+    event: &LabelTelemetryEventWire,
+) -> Result<bool, RouterError> {
+    if Some(event.mutation_id) != expected_mutation_id {
+        return Err(RouterError::InvalidArgument(format!(
+            "graph shard {shard_id} returned label telemetry event for mutation_id {}, expected {:?}",
+            event.mutation_id, expected_mutation_id
+        )));
+    }
+    let _ = store.apply_label_telemetry_event(shard_id, event);
+    ack_label_telemetry_event(graph_canister, event.shard_event_seq)
+        .await
+        .map_err(RouterError::InvalidArgument)?;
+    Ok(true)
+}
+
+async fn apply_and_ack_label_telemetry_events(
+    store: &RouterStore,
+    graph_canister: Principal,
+    shard_id: ShardId,
+    expected_mutation_id: Option<MutationId>,
+    events: &[LabelTelemetryEventWire],
+) -> Result<bool, RouterError> {
+    for event in events {
+        apply_dispatch_label_telemetry_event(
+            store,
+            graph_canister,
+            shard_id,
+            expected_mutation_id,
+            event,
+        )
+        .await?;
+    }
+    Ok(true)
+}
+
+async fn reconcile_router_mutation_telemetry(
+    store: &RouterStore,
+    caller: Principal,
+    logical_graph_name: &str,
+    client_key: &str,
+) -> Result<(), RouterError> {
+    let Some(record) = store.router_mutation_record(caller, logical_graph_name, client_key) else {
+        return Ok(());
+    };
+    for shard in record
+        .shards
+        .iter()
+        .filter(|shard| shard.completed && !shard.telemetry_acked)
+    {
+        apply_and_ack_label_telemetry_events(
+            store,
+            shard.graph_canister,
+            shard.shard_id,
+            Some(record.mutation_id),
+            &shard.label_telemetry_events,
+        )
+        .await?;
+        store.record_router_mutation_shard_telemetry_acked(
+            caller,
+            logical_graph_name,
+            client_key,
+            shard.shard_id,
+        )?;
+    }
+    Ok(())
+}
+
+async fn recover_mutation_outcome(
+    store: &RouterStore,
+    graph_canister: Principal,
+    shard_id: ShardId,
+    mutation_id: MutationId,
+) -> Result<Option<gleaph_graph_kernel::plan_exec::MutationOutcomeWire>, RouterError> {
+    if let Some(outcome) = get_mutation_outcome(graph_canister, mutation_id)
+        .await
+        .map_err(RouterError::InvalidArgument)?
+    {
+        for event in &outcome.label_telemetry_events {
+            let _ = apply_dispatch_label_telemetry_event(
+                store,
+                graph_canister,
+                shard_id,
+                Some(mutation_id),
+                event,
+            )
+            .await?;
+        }
+        return Ok(Some(outcome));
+    }
+    replay_pending_label_telemetry(store, graph_canister, shard_id, mutation_id).await?;
+    Ok(None)
+}
+
+async fn replay_pending_label_telemetry(
+    store: &RouterStore,
+    graph_canister: Principal,
+    shard_id: ShardId,
+    mutation_id: MutationId,
+) -> Result<(), RouterError> {
+    const PENDING_REPLAY_LIMIT: u32 = 1_000;
+    let mut from_seq = 0;
+    loop {
+        let events =
+            list_pending_label_telemetry_events(graph_canister, from_seq, PENDING_REPLAY_LIMIT)
+                .await
+                .map_err(RouterError::InvalidArgument)?;
+        if events.is_empty() {
+            return Ok(());
+        }
+        for event in events
+            .iter()
+            .filter(|event| event.mutation_id == mutation_id)
+        {
+            let _ = store.apply_label_telemetry_event(shard_id, event);
+            ack_label_telemetry_event(graph_canister, event.shard_event_seq)
+                .await
+                .map_err(RouterError::InvalidArgument)?;
+        }
+        let Some(next_seq) = events
+            .last()
+            .and_then(|event| event.shard_event_seq.checked_add(1))
+        else {
+            return Ok(());
+        };
+        if events.len() < PENDING_REPLAY_LIMIT as usize {
+            return Ok(());
+        }
+        from_seq = next_seq;
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -195,6 +619,13 @@ pub struct SeedRouting {
     pub graph_canister: Principal,
     pub hits: Vec<PostingHit>,
     pub probe: Option<SeedProbe>,
+}
+
+#[derive(Clone, Debug)]
+struct ShardDispatch {
+    shard_id: ShardId,
+    graph_canister: Principal,
+    seed_bindings_blob: Option<Vec<u8>>,
 }
 
 /// Phase 4: fan out one routing per distinct shard in index hits.
@@ -237,9 +668,11 @@ pub fn resolve_seed_routings_multi(
 mod tests {
     use candid::Principal;
     use gleaph_graph_kernel::index::PostingHit;
+    use gleaph_graph_kernel::plan_exec::{LabelTelemetryEventWire, LabelUsageDelta};
 
+    use crate::facade::stable::label_telemetry::LabelStats;
     use crate::facade::store::RouterStore;
-    use crate::gql::resolve_seed_routings_multi;
+    use crate::gql::{apply_dispatch_label_telemetry_event, resolve_seed_routings_multi};
     use crate::init::RouterInitArgs;
     use crate::seed::SeedProbe;
     use crate::state::RouterError;
@@ -319,5 +752,40 @@ mod tests {
         let err = resolve_seed_routings_multi(&store, &hits, "tenant.main", probe)
             .expect_err("unknown shard");
         assert!(matches!(err, RouterError::ShardNotRegistered));
+    }
+
+    #[test]
+    fn mismatched_label_telemetry_mutation_id_is_rejected_before_apply() {
+        let store = RouterStore::new();
+        store.init_from_args(&RouterInitArgs {
+            issuing_principal: Principal::anonymous(),
+            initial_admins: vec![],
+            controllers: vec![],
+        });
+        let admin = Principal::anonymous();
+        store.bootstrap_controllers(&[admin]);
+        let label = store
+            .admin_intern_vertex_label(admin, "Person")
+            .expect("label");
+        let event = LabelTelemetryEventWire {
+            mutation_id: 99,
+            shard_event_seq: 1,
+            label_usage_delta: LabelUsageDelta {
+                vertex: vec![(label, 1)],
+                edge: vec![],
+            },
+        };
+
+        let err = futures::executor::block_on(apply_dispatch_label_telemetry_event(
+            &store,
+            graph_principal(1),
+            7,
+            Some(42),
+            &event,
+        ))
+        .expect_err("mismatched event should fail");
+
+        assert!(matches!(err, RouterError::InvalidArgument(_)));
+        assert_eq!(store.vertex_label_stats(label), LabelStats::default());
     }
 }

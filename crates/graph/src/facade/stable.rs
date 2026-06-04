@@ -13,6 +13,7 @@ pub(crate) mod edge_equality_postings;
 pub(crate) mod edge_payload_profiles;
 pub(crate) mod edge_properties;
 pub(crate) mod edge_weight_profiles;
+pub(crate) mod label_telemetry;
 pub(crate) mod metadata;
 pub(crate) mod migration;
 pub(crate) mod peer_graph_canisters;
@@ -92,4 +93,13 @@ thread_local! {
 
     pub(crate) static PRUNE_MIGRATED_SOURCE_QUEUE: RefCell<memory::StablePruneMigratedSourceQueueMap> =
         RefCell::new(memory::init_prune_migrated_source_queue());
+
+    pub(crate) static LABEL_TELEMETRY_SEQ: RefCell<memory::StableLabelTelemetrySeq> =
+        RefCell::new(memory::init_label_telemetry_seq());
+
+    pub(crate) static LABEL_TELEMETRY_OUTBOX: RefCell<memory::StableLabelTelemetryOutbox> =
+        RefCell::new(memory::init_label_telemetry_outbox());
+
+    pub(crate) static APPLIED_MUTATION_REQUESTS: RefCell<memory::StableAppliedMutationRequests> =
+        RefCell::new(memory::init_applied_mutation_requests());
 }

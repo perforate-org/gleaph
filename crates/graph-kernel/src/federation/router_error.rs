@@ -43,6 +43,8 @@ pub enum RouterError {
     VertexNotMigrating,
     #[error("invalid migration state: {0}")]
     InvalidMigrationState(String),
+    #[error("id exhausted: {0}")]
+    IdExhausted(String),
     #[error("internal: {0}")]
     Internal(String),
 }

@@ -58,6 +58,15 @@ thread_local! {
     pub(crate) static ROUTER_EDGE_LABEL_LIVE_BY_SHARD: RefCell<memory::StableLabelShardLiveMap> =
         RefCell::new(memory::init_edge_label_live_by_shard());
 
+    pub(crate) static ROUTER_MUTATION_COUNTER: RefCell<memory::StableMutationCounter> =
+        RefCell::new(memory::init_mutation_counter());
+
+    pub(crate) static ROUTER_APPLIED_LABEL_TELEMETRY: RefCell<memory::StableAppliedLabelTelemetrySet> =
+        RefCell::new(memory::init_applied_label_telemetry());
+
+    pub(crate) static ROUTER_MUTATION_BY_CLIENT_KEY: RefCell<memory::StableMutationByClientKey> =
+        RefCell::new(memory::init_mutation_by_client_key());
+
     pub(crate) static ROUTER_PROPERTY_BY_NAME: RefCell<memory::StablePropertyNameIntern> =
         RefCell::new(memory::init_property_by_name());
 

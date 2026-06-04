@@ -4,7 +4,10 @@ use candid::Principal;
 use gleaph_graph_kernel::federation::{
     AddGraphPeerArgs, BootstrapGraphPeersArgs, RemoveGraphPeerArgs,
 };
-use gleaph_graph_kernel::plan_exec::{ExecutePlanArgs, ExecutePlanResult};
+use gleaph_graph_kernel::plan_exec::{
+    ExecutePlanArgs, ExecutePlanResult, LabelTelemetryEventWire, MutationId, MutationOutcomeWire,
+    ShardEventSeq,
+};
 
 #[cfg(target_family = "wasm")]
 async fn call_graph<T: candid::CandidType, R: candid::CandidType + serde::de::DeserializeOwned>(
@@ -23,11 +26,40 @@ async fn call_graph<T: candid::CandidType, R: candid::CandidType + serde::de::De
     Ok(result.0)
 }
 
+#[cfg(target_family = "wasm")]
+async fn call_graph_args<
+    T: candid::utils::ArgumentEncoder,
+    R: candid::CandidType + serde::de::DeserializeOwned,
+>(
+    graph: Principal,
+    method: &str,
+    args: &T,
+) -> Result<R, String> {
+    use ic_cdk::call::Call;
+
+    let result: (R,) = Call::bounded_wait(graph, method)
+        .with_args(args)
+        .await
+        .map_err(|e| format!("graph {method} call failed: {e}"))?
+        .candid()
+        .map_err(|e| format!("graph {method} decode failed: {e}"))?;
+    Ok(result.0)
+}
+
 #[cfg(not(target_family = "wasm"))]
 async fn call_graph<T: candid::CandidType, R: candid::CandidType>(
     _graph: Principal,
     method: &str,
     _args: T,
+) -> Result<R, String> {
+    Err(format!("graph {method} unavailable in native builds"))
+}
+
+#[cfg(not(target_family = "wasm"))]
+async fn call_graph_args<T, R: candid::CandidType>(
+    _graph: Principal,
+    method: &str,
+    _args: &T,
 ) -> Result<R, String> {
     Err(format!("graph {method} unavailable in native builds"))
 }
@@ -58,4 +90,28 @@ pub async fn execute_plan_on_graph(
         gleaph_graph_kernel::plan_exec::GqlExecutionMode::Update => "execute_plan_update",
     };
     call_graph(graph, method, args).await
+}
+
+pub async fn ack_label_telemetry_event(graph: Principal, seq: ShardEventSeq) -> Result<(), String> {
+    call_graph(graph, "ack_label_telemetry_event", seq).await
+}
+
+pub async fn list_pending_label_telemetry_events(
+    graph: Principal,
+    from_seq: ShardEventSeq,
+    limit: u32,
+) -> Result<Vec<LabelTelemetryEventWire>, String> {
+    call_graph_args(
+        graph,
+        "list_pending_label_telemetry_events",
+        &(from_seq, limit),
+    )
+    .await
+}
+
+pub async fn get_mutation_outcome(
+    graph: Principal,
+    mutation_id: MutationId,
+) -> Result<Option<MutationOutcomeWire>, String> {
+    call_graph(graph, "get_mutation_outcome", mutation_id).await
 }

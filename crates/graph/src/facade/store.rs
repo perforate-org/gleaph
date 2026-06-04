@@ -16,6 +16,7 @@ mod edge_scan;
 mod error;
 mod handle;
 pub(crate) mod helpers;
+mod label_telemetry;
 mod lookup;
 mod maintenance;
 mod metadata;

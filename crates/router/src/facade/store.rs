@@ -1,13 +1,17 @@
 //! Stateless facade over router stable storage.
 
-use super::stable::label_telemetry::{LabelShardKey, LabelStats};
+use super::stable::label_telemetry::{
+    AppliedLabelTelemetryKey, ClientMutationKey, LabelShardKey, LabelStats, RouterMutationRecord,
+    RouterMutationShard,
+};
 use super::stable::{
-    ROUTER_CONTROLLERS, ROUTER_EDGE_LABEL_BY_ID, ROUTER_EDGE_LABEL_BY_NAME,
-    ROUTER_EDGE_LABEL_LIVE_BY_SHARD, ROUTER_EDGE_LABEL_STATS, ROUTER_GRAPHS,
-    ROUTER_LOGICAL_COUNTER, ROUTER_MIGRATION_COUNTER, ROUTER_PENDING_LOGICAL,
-    ROUTER_PLACEMENT_BY_PHYSICAL, ROUTER_PLACEMENTS, ROUTER_PROPERTY_BY_ID,
-    ROUTER_PROPERTY_BY_NAME, ROUTER_SHARD_BY_GRAPH, ROUTER_SHARDS, ROUTER_VERTEX_LABEL_BY_ID,
-    ROUTER_VERTEX_LABEL_BY_NAME, ROUTER_VERTEX_LABEL_LIVE_BY_SHARD, ROUTER_VERTEX_LABEL_STATS,
+    ROUTER_APPLIED_LABEL_TELEMETRY, ROUTER_CONTROLLERS, ROUTER_EDGE_LABEL_BY_ID,
+    ROUTER_EDGE_LABEL_BY_NAME, ROUTER_EDGE_LABEL_LIVE_BY_SHARD, ROUTER_EDGE_LABEL_STATS,
+    ROUTER_GRAPHS, ROUTER_LOGICAL_COUNTER, ROUTER_MIGRATION_COUNTER, ROUTER_MUTATION_BY_CLIENT_KEY,
+    ROUTER_MUTATION_COUNTER, ROUTER_PENDING_LOGICAL, ROUTER_PLACEMENT_BY_PHYSICAL,
+    ROUTER_PLACEMENTS, ROUTER_PROPERTY_BY_ID, ROUTER_PROPERTY_BY_NAME, ROUTER_SHARD_BY_GRAPH,
+    ROUTER_SHARDS, ROUTER_VERTEX_LABEL_BY_ID, ROUTER_VERTEX_LABEL_BY_NAME,
+    ROUTER_VERTEX_LABEL_LIVE_BY_SHARD, ROUTER_VERTEX_LABEL_STATS,
 };
 use crate::index_sync;
 use crate::init::RouterInitArgs;
@@ -25,10 +29,19 @@ use gleaph_graph_kernel::federation::{
     ShardRegistryEntry,
 };
 use gleaph_graph_kernel::plan_exec::{
-    LabelUsageDelta, ResolvedEdgeLabel, ResolvedLabelTable, ResolvedVertexLabel,
+    LabelTelemetryEventWire, LabelUsageDelta, MutationId, ResolvedEdgeLabel, ResolvedLabelTable,
+    ResolvedVertexLabel,
 };
 
 const MAX_METADATA_NAME_BYTES: usize = 256;
+const MAX_CLIENT_MUTATION_KEY_BYTES: usize = 256;
+const CLIENT_MUTATION_KEY_TTL_NS: u64 = 7 * 24 * 60 * 60 * 1_000_000_000;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClientMutationReservation {
+    pub mutation_id: MutationId,
+    pub routing_owner: bool,
+}
 
 /// Stateless facade over router stable structures.
 #[derive(Clone, Copy, Debug, Default)]
@@ -66,6 +79,11 @@ impl RouterStore {
         ROUTER_EDGE_LABEL_STATS.with_borrow_mut(|m| m.clear_new());
         ROUTER_VERTEX_LABEL_LIVE_BY_SHARD.with_borrow_mut(|m| m.clear_new());
         ROUTER_EDGE_LABEL_LIVE_BY_SHARD.with_borrow_mut(|m| m.clear_new());
+        ROUTER_MUTATION_COUNTER.with_borrow_mut(|c| {
+            c.set(0);
+        });
+        ROUTER_APPLIED_LABEL_TELEMETRY.with_borrow_mut(|m| m.clear());
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| m.clear_new());
         ROUTER_PROPERTY_BY_NAME.with_borrow_mut(|m| m.clear_new());
         ROUTER_PROPERTY_BY_ID.with_borrow_mut(|m| m.clear_new());
     }
@@ -472,6 +490,265 @@ impl RouterStore {
         }
     }
 
+    pub fn allocate_mutation_id(&self) -> Result<MutationId, RouterError> {
+        ROUTER_MUTATION_COUNTER.with_borrow_mut(|counter| {
+            let next = counter
+                .get()
+                .checked_add(1)
+                .ok_or_else(|| RouterError::IdExhausted("mutation_id".into()))?;
+            if next == 0 {
+                return Err(RouterError::IdExhausted("mutation_id".into()));
+            }
+            counter.set(next);
+            Ok(next)
+        })
+    }
+
+    pub fn reserve_mutation_id_for_client_key(
+        &self,
+        caller: Principal,
+        logical_graph_name: &str,
+        client_key: &str,
+        request_fingerprint: Vec<u8>,
+    ) -> Result<ClientMutationReservation, RouterError> {
+        self.reserve_mutation_id_for_client_key_at(
+            caller,
+            logical_graph_name,
+            client_key,
+            request_fingerprint,
+            ic_time_ns(),
+        )
+    }
+
+    fn reserve_mutation_id_for_client_key_at(
+        &self,
+        caller: Principal,
+        logical_graph_name: &str,
+        client_key: &str,
+        request_fingerprint: Vec<u8>,
+        now: u64,
+    ) -> Result<ClientMutationReservation, RouterError> {
+        validate_client_mutation_key(client_key)?;
+        let key =
+            ClientMutationKey::new(caller, logical_graph_name.to_owned(), client_key.to_owned());
+        if let Some(mut record) = ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|m| m.get(&key)) {
+            if now.saturating_sub(record.created_at_ns) > CLIENT_MUTATION_KEY_TTL_NS {
+                return Err(RouterError::InvalidArgument(
+                    "client_mutation_key expired; use a new key for a new mutation".into(),
+                ));
+            }
+            if record.request_fingerprint != request_fingerprint {
+                return Err(RouterError::Conflict(
+                    "client_mutation_key was already used for a different request".into(),
+                ));
+            }
+            if record.routing_in_progress {
+                return Err(RouterError::Conflict(
+                    "client_mutation_key is already in progress; retry later".into(),
+                ));
+            }
+            if record.shards.is_empty() && record.completed_row_count.is_none() {
+                record.routing_in_progress = true;
+                let mutation_id = record.mutation_id;
+                ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+                    m.insert(key, record);
+                });
+                return Ok(ClientMutationReservation {
+                    mutation_id,
+                    routing_owner: true,
+                });
+            }
+            return Ok(ClientMutationReservation {
+                mutation_id: record.mutation_id,
+                routing_owner: false,
+            });
+        }
+        let mutation_id = self.allocate_mutation_id()?;
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+            m.insert(
+                key,
+                RouterMutationRecord::new(mutation_id, now, request_fingerprint),
+            );
+        });
+        Ok(ClientMutationReservation {
+            mutation_id,
+            routing_owner: true,
+        })
+    }
+
+    pub fn router_mutation_record(
+        &self,
+        caller: Principal,
+        logical_graph_name: &str,
+        client_key: &str,
+    ) -> Option<RouterMutationRecord> {
+        let key =
+            ClientMutationKey::new(caller, logical_graph_name.to_owned(), client_key.to_owned());
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|m| m.get(&key))
+    }
+
+    pub fn record_router_mutation_shards(
+        &self,
+        caller: Principal,
+        logical_graph_name: &str,
+        client_key: &str,
+        resolved_labels: ResolvedLabelTable,
+        shards: Vec<RouterMutationShard>,
+    ) -> Result<(), RouterError> {
+        let key =
+            ClientMutationKey::new(caller, logical_graph_name.to_owned(), client_key.to_owned());
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+            let mut record = m
+                .get(&key)
+                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
+            if record.shards.is_empty() && record.completed_row_count.is_none() {
+                record.resolved_labels = Some(resolved_labels);
+                record.routing_in_progress = false;
+                record.shards = shards;
+                m.insert(key, record);
+            }
+            Ok(())
+        })
+    }
+
+    pub fn record_router_mutation_completed_without_shards(
+        &self,
+        caller: Principal,
+        logical_graph_name: &str,
+        client_key: &str,
+        resolved_labels: ResolvedLabelTable,
+        row_count: u64,
+    ) -> Result<(), RouterError> {
+        let key =
+            ClientMutationKey::new(caller, logical_graph_name.to_owned(), client_key.to_owned());
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+            let mut record = m
+                .get(&key)
+                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
+            if record.shards.is_empty() && record.completed_row_count.is_none() {
+                record.resolved_labels = Some(resolved_labels);
+                record.completed_row_count = Some(row_count);
+                record.routing_in_progress = false;
+                m.insert(key, record);
+            }
+            Ok(())
+        })
+    }
+
+    pub fn abandon_router_mutation_routing_reservation(
+        &self,
+        caller: Principal,
+        logical_graph_name: &str,
+        client_key: &str,
+    ) -> Result<(), RouterError> {
+        let key =
+            ClientMutationKey::new(caller, logical_graph_name.to_owned(), client_key.to_owned());
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+            let mut record = m
+                .get(&key)
+                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
+            record.routing_in_progress = false;
+            m.insert(key, record);
+            Ok(())
+        })
+    }
+
+    pub fn record_router_mutation_shard_completed(
+        &self,
+        caller: Principal,
+        logical_graph_name: &str,
+        client_key: &str,
+        shard_id: ShardId,
+        row_count: u64,
+        events: Vec<LabelTelemetryEventWire>,
+    ) -> Result<(), RouterError> {
+        let key =
+            ClientMutationKey::new(caller, logical_graph_name.to_owned(), client_key.to_owned());
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+            let mut record = m
+                .get(&key)
+                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
+            let shard = record
+                .shards
+                .iter_mut()
+                .find(|shard| shard.shard_id == shard_id)
+                .ok_or_else(|| RouterError::ShardNotRegistered)?;
+            shard.completed = true;
+            shard.telemetry_acked = false;
+            shard.row_count = row_count;
+            shard.label_telemetry_events = events;
+            m.insert(key, record);
+            Ok(())
+        })
+    }
+
+    pub fn record_router_mutation_shard_telemetry_acked(
+        &self,
+        caller: Principal,
+        logical_graph_name: &str,
+        client_key: &str,
+        shard_id: ShardId,
+    ) -> Result<(), RouterError> {
+        let key =
+            ClientMutationKey::new(caller, logical_graph_name.to_owned(), client_key.to_owned());
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+            let mut record = m
+                .get(&key)
+                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
+            let shard = record
+                .shards
+                .iter_mut()
+                .find(|shard| shard.shard_id == shard_id)
+                .ok_or_else(|| RouterError::ShardNotRegistered)?;
+            shard.telemetry_acked = true;
+            shard.label_telemetry_events.clear();
+            m.insert(key, record);
+            Ok(())
+        })
+    }
+
+    pub fn router_mutation_completed_row_count(
+        &self,
+        caller: Principal,
+        logical_graph_name: &str,
+        client_key: &str,
+    ) -> Option<u64> {
+        let record = self.router_mutation_record(caller, logical_graph_name, client_key)?;
+        if let Some(row_count) = record.completed_row_count {
+            return Some(row_count);
+        }
+        if record.shards.is_empty()
+            || record
+                .shards
+                .iter()
+                .any(|shard| !shard.completed || !shard.telemetry_acked)
+        {
+            return None;
+        }
+        Some(
+            record
+                .shards
+                .iter()
+                .fold(0u64, |total, shard| total.saturating_add(shard.row_count)),
+        )
+    }
+
+    pub fn apply_label_telemetry_event(
+        &self,
+        shard_id: ShardId,
+        event: &LabelTelemetryEventWire,
+    ) -> bool {
+        let key = AppliedLabelTelemetryKey::new(shard_id, event.shard_event_seq);
+        if ROUTER_APPLIED_LABEL_TELEMETRY.with_borrow(|applied| applied.contains(&key)) {
+            return false;
+        }
+        self.apply_label_usage_delta(shard_id, &event.label_usage_delta);
+        ROUTER_APPLIED_LABEL_TELEMETRY.with_borrow_mut(|applied| {
+            applied.insert(key);
+        });
+        true
+    }
+
     pub fn allocate_logical_vertex_id(
         &self,
         caller: Principal,
@@ -740,6 +1017,20 @@ fn validate_metadata_name(name: &str) -> Result<(), RouterError> {
     if name.len() > MAX_METADATA_NAME_BYTES {
         return Err(RouterError::InvalidArgument(format!(
             "name exceeds {MAX_METADATA_NAME_BYTES} UTF-8 bytes"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_client_mutation_key(key: &str) -> Result<(), RouterError> {
+    if key.is_empty() {
+        return Err(RouterError::InvalidArgument(
+            "client_mutation_key must not be empty".into(),
+        ));
+    }
+    if key.len() > MAX_CLIENT_MUTATION_KEY_BYTES {
+        return Err(RouterError::InvalidArgument(format!(
+            "client_mutation_key exceeds {MAX_CLIENT_MUTATION_KEY_BYTES} UTF-8 bytes"
         )));
     }
     Ok(())
@@ -1242,5 +1533,382 @@ mod tests {
         );
         assert_eq!(store.vertex_label_shard_live_count(7, label), 1);
         assert_eq!(store.vertex_label_shard_live_count(9, label), 1);
+    }
+
+    #[test]
+    fn label_telemetry_event_applies_once_by_shard_event_seq() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::anonymous();
+        store.bootstrap_controllers(&[admin]);
+        let label = store
+            .admin_intern_vertex_label(admin, "Person")
+            .expect("vertex label");
+        let event = LabelTelemetryEventWire {
+            mutation_id: 1,
+            shard_event_seq: 99,
+            label_usage_delta: LabelUsageDelta {
+                vertex: vec![(label, 2)],
+                edge: vec![],
+            },
+        };
+
+        assert!(store.apply_label_telemetry_event(7, &event));
+        assert!(!store.apply_label_telemetry_event(7, &event));
+        assert_eq!(
+            store.vertex_label_stats(label),
+            LabelStats {
+                live_count: 2,
+                total_adds: 2,
+                total_removes: 0
+            }
+        );
+
+        assert!(store.apply_label_telemetry_event(9, &event));
+        assert_eq!(
+            store.vertex_label_stats(label),
+            LabelStats {
+                live_count: 4,
+                total_adds: 4,
+                total_removes: 0
+            }
+        );
+    }
+
+    #[test]
+    fn mutation_id_is_monotonic_and_rejects_exhaustion() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+
+        assert_eq!(store.allocate_mutation_id().expect("first"), 1);
+        assert_eq!(store.allocate_mutation_id().expect("second"), 2);
+
+        ROUTER_MUTATION_COUNTER.with_borrow_mut(|counter| {
+            counter.set(u64::MAX);
+        });
+        assert_eq!(
+            store.allocate_mutation_id(),
+            Err(RouterError::IdExhausted("mutation_id".into()))
+        );
+    }
+
+    #[test]
+    fn client_mutation_key_reuses_router_mutation_id() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let caller = graph_principal(42);
+        let request = b"request-a".to_vec();
+
+        let first = store
+            .reserve_mutation_id_for_client_key(
+                caller,
+                "tenant.main",
+                "client-key-1",
+                request.clone(),
+            )
+            .expect("first mutation id")
+            .mutation_id;
+        assert_eq!(first, 1);
+        store
+            .record_router_mutation_shards(
+                caller,
+                "tenant.main",
+                "client-key-1",
+                ResolvedLabelTable::default(),
+                vec![RouterMutationShard::new(7, graph_principal(1), None)],
+            )
+            .expect("record empty envelope");
+        assert_eq!(
+            store
+                .reserve_mutation_id_for_client_key(
+                    caller,
+                    "tenant.main",
+                    "client-key-1",
+                    request.clone()
+                )
+                .expect("retry mutation id")
+                .mutation_id,
+            first
+        );
+        assert_eq!(
+            store
+                .reserve_mutation_id_for_client_key(
+                    caller,
+                    "tenant.main",
+                    "client-key-2",
+                    request.clone()
+                )
+                .expect("second mutation id")
+                .mutation_id,
+            2
+        );
+        assert_eq!(
+            store
+                .reserve_mutation_id_for_client_key(
+                    graph_principal(43),
+                    "tenant.main",
+                    "client-key-1",
+                    request
+                )
+                .expect("different caller mutation id")
+                .mutation_id,
+            3
+        );
+    }
+
+    #[test]
+    fn client_mutation_key_rejects_different_request() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let caller = graph_principal(42);
+
+        assert_eq!(
+            store
+                .reserve_mutation_id_for_client_key(
+                    caller,
+                    "tenant.main",
+                    "client-key-1",
+                    b"a".to_vec()
+                )
+                .expect("first mutation id")
+                .mutation_id,
+            1
+        );
+        assert_eq!(
+            store.reserve_mutation_id_for_client_key(
+                caller,
+                "tenant.main",
+                "client-key-1",
+                b"b".to_vec()
+            ),
+            Err(RouterError::Conflict(
+                "client_mutation_key was already used for a different request".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn client_mutation_key_rejects_expired_key() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let caller = graph_principal(42);
+        let key = ClientMutationKey::new(caller, "tenant.main".into(), "client-key-1".into());
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+            m.insert(
+                key,
+                RouterMutationRecord::new(
+                    1,
+                    0u64.saturating_sub(CLIENT_MUTATION_KEY_TTL_NS + 1),
+                    b"a".to_vec(),
+                ),
+            );
+        });
+
+        assert_eq!(
+            store.reserve_mutation_id_for_client_key_at(
+                caller,
+                "tenant.main",
+                "client-key-1",
+                b"a".to_vec(),
+                CLIENT_MUTATION_KEY_TTL_NS + 1
+            ),
+            Err(RouterError::InvalidArgument(
+                "client_mutation_key expired; use a new key for a new mutation".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn client_mutation_key_blocks_concurrent_routing_owner() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let caller = graph_principal(42);
+
+        let first = store
+            .reserve_mutation_id_for_client_key(
+                caller,
+                "tenant.main",
+                "client-key-1",
+                b"a".to_vec(),
+            )
+            .expect("first owner");
+        assert_eq!(first.mutation_id, 1);
+        assert!(first.routing_owner);
+
+        assert_eq!(
+            store.reserve_mutation_id_for_client_key(
+                caller,
+                "tenant.main",
+                "client-key-1",
+                b"a".to_vec(),
+            ),
+            Err(RouterError::Conflict(
+                "client_mutation_key is already in progress; retry later".into()
+            ))
+        );
+
+        store
+            .record_router_mutation_shards(
+                caller,
+                "tenant.main",
+                "client-key-1",
+                ResolvedLabelTable::default(),
+                vec![RouterMutationShard::new(7, graph_principal(1), None)],
+            )
+            .expect("record envelope");
+        let retry = store
+            .reserve_mutation_id_for_client_key(
+                caller,
+                "tenant.main",
+                "client-key-1",
+                b"a".to_vec(),
+            )
+            .expect("retry after envelope");
+        assert_eq!(retry.mutation_id, first.mutation_id);
+        assert!(!retry.routing_owner);
+    }
+
+    #[test]
+    fn abandoned_routing_reservation_preserves_id_and_allows_new_owner() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let caller = graph_principal(42);
+
+        let first = store
+            .reserve_mutation_id_for_client_key(
+                caller,
+                "tenant.main",
+                "client-key-1",
+                b"a".to_vec(),
+            )
+            .expect("first owner");
+        assert_eq!(first.mutation_id, 1);
+        assert!(first.routing_owner);
+
+        store
+            .abandon_router_mutation_routing_reservation(caller, "tenant.main", "client-key-1")
+            .expect("abandon reservation");
+        let record = store
+            .router_mutation_record(caller, "tenant.main", "client-key-1")
+            .expect("record");
+        assert_eq!(record.mutation_id, first.mutation_id);
+        assert_eq!(record.request_fingerprint, b"a".to_vec());
+        assert!(!record.routing_in_progress);
+
+        let retry = store
+            .reserve_mutation_id_for_client_key(
+                caller,
+                "tenant.main",
+                "client-key-1",
+                b"a".to_vec(),
+            )
+            .expect("retry owner");
+        assert_eq!(retry.mutation_id, first.mutation_id);
+        assert!(retry.routing_owner);
+    }
+
+    #[test]
+    fn router_mutation_journal_tracks_shard_completion() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let caller = graph_principal(42);
+        store
+            .reserve_mutation_id_for_client_key(
+                caller,
+                "tenant.main",
+                "client-key-1",
+                b"a".to_vec(),
+            )
+            .expect("mutation id");
+        store
+            .record_router_mutation_shards(
+                caller,
+                "tenant.main",
+                "client-key-1",
+                ResolvedLabelTable::default(),
+                vec![
+                    RouterMutationShard::new(7, graph_principal(1), Some(vec![1])),
+                    RouterMutationShard::new(9, graph_principal(2), None),
+                ],
+            )
+            .expect("record shards");
+        let record = store
+            .router_mutation_record(caller, "tenant.main", "client-key-1")
+            .expect("record");
+        assert_eq!(record.resolved_labels, Some(ResolvedLabelTable::default()));
+        assert_eq!(
+            store.router_mutation_completed_row_count(caller, "tenant.main", "client-key-1"),
+            None
+        );
+
+        store
+            .record_router_mutation_shard_completed(
+                caller,
+                "tenant.main",
+                "client-key-1",
+                7,
+                2,
+                Vec::new(),
+            )
+            .expect("complete shard 7");
+        store
+            .record_router_mutation_shard_telemetry_acked(caller, "tenant.main", "client-key-1", 7)
+            .expect("ack shard 7");
+        assert_eq!(
+            store.router_mutation_completed_row_count(caller, "tenant.main", "client-key-1"),
+            None
+        );
+
+        store
+            .record_router_mutation_shard_completed(
+                caller,
+                "tenant.main",
+                "client-key-1",
+                9,
+                3,
+                Vec::new(),
+            )
+            .expect("complete shard 9");
+        store
+            .record_router_mutation_shard_telemetry_acked(caller, "tenant.main", "client-key-1", 9)
+            .expect("ack shard 9");
+        assert_eq!(
+            store.router_mutation_completed_row_count(caller, "tenant.main", "client-key-1"),
+            Some(5)
+        );
+    }
+
+    #[test]
+    fn router_mutation_journal_records_zero_shard_completion() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let caller = graph_principal(42);
+        store
+            .reserve_mutation_id_for_client_key(
+                caller,
+                "tenant.main",
+                "client-key-1",
+                b"a".to_vec(),
+            )
+            .expect("mutation id");
+        store
+            .record_router_mutation_completed_without_shards(
+                caller,
+                "tenant.main",
+                "client-key-1",
+                ResolvedLabelTable::default(),
+                0,
+            )
+            .expect("record zero-shard completion");
+
+        let record = store
+            .router_mutation_record(caller, "tenant.main", "client-key-1")
+            .expect("record");
+        assert_eq!(record.completed_row_count, Some(0));
+        assert!(record.shards.is_empty());
+        assert_eq!(
+            store.router_mutation_completed_row_count(caller, "tenant.main", "client-key-1"),
+            Some(0)
+        );
     }
 }

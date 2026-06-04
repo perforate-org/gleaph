@@ -84,6 +84,7 @@ pub async fn prepared_execute_query(
         GqlExecutionMode::Query,
         "prepared_execute_query",
         false,
+        None,
     )
     .await
 }
@@ -100,6 +101,25 @@ pub async fn prepared_execute_update(
         GqlExecutionMode::Update,
         "prepared_execute_update",
         false,
+        None,
+    )
+    .await
+}
+
+pub async fn prepared_execute_update_idempotent(
+    logical_graph_name: String,
+    name: String,
+    params: Vec<u8>,
+    client_mutation_key: String,
+) -> Result<u64, RouterError> {
+    prepared_execute(
+        logical_graph_name,
+        name,
+        params,
+        GqlExecutionMode::Update,
+        "prepared_execute_update_idempotent",
+        false,
+        Some(&client_mutation_key),
     )
     .await
 }
@@ -117,6 +137,7 @@ pub async fn force_prepared_execute_update(
         GqlExecutionMode::Update,
         "force_prepared_execute_update",
         true,
+        None,
     )
     .await
 }
@@ -128,6 +149,7 @@ async fn prepared_execute(
     mode: GqlExecutionMode,
     entrypoint: &str,
     force: bool,
+    client_mutation_key: Option<&str>,
 ) -> Result<u64, RouterError> {
     authorize_prepared_execute(&msg_caller())?;
     let key = prepared_key(&logical_graph_name, &name);
@@ -146,6 +168,7 @@ async fn prepared_execute(
         &pmap,
         &params,
         mode,
+        client_mutation_key,
     )
     .await
 }

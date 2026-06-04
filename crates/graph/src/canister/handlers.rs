@@ -2,6 +2,8 @@
 
 use std::collections::BTreeMap;
 
+#[cfg(all(target_family = "wasm", not(feature = "pocket-ic-e2e")))]
+use crate::facade::migration::migration_cutover_with_index;
 use crate::facade::migration::{
     migration_apply_chunk as apply_migration_chunk, migration_cutover as cutover_migration,
     migration_maintenance_step, migration_reconcile,
@@ -143,13 +145,31 @@ async fn execute_plan_impl(args: ExecutePlanArgs) -> Result<ExecutePlanResult, S
             resolved_labels: args.resolved_labels,
         },
         seeds,
+        args.mutation_id,
     )
     .await
     .map_err(|e| e.to_string())?;
     Ok(ExecutePlanResult {
         row_count: run.row_count as u64,
-        label_usage_delta: run.label_usage_delta,
+        label_telemetry_events: run.label_telemetry_events,
     })
+}
+
+pub fn ack_label_telemetry_event(seq: gleaph_graph_kernel::plan_exec::ShardEventSeq) {
+    GraphStore::new().ack_label_telemetry_event(seq);
+}
+
+pub fn list_pending_label_telemetry_events(
+    from_seq: gleaph_graph_kernel::plan_exec::ShardEventSeq,
+    limit: u32,
+) -> Vec<gleaph_graph_kernel::plan_exec::LabelTelemetryEventWire> {
+    GraphStore::new().pending_label_telemetry_events(from_seq, limit)
+}
+
+pub fn get_mutation_outcome(
+    mutation_id: gleaph_graph_kernel::plan_exec::MutationId,
+) -> Option<gleaph_graph_kernel::plan_exec::MutationOutcomeWire> {
+    GraphStore::new().mutation_outcome(mutation_id)
 }
 
 pub fn bootstrap_graph_peers(

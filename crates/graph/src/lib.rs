@@ -64,6 +64,26 @@ async fn execute_plan_update(
     canister::handlers::execute_plan_update(args).await
 }
 
+#[query(guard = "guard_router_canister")]
+fn list_pending_label_telemetry_events(
+    from_seq: gleaph_graph_kernel::plan_exec::ShardEventSeq,
+    limit: u32,
+) -> Vec<gleaph_graph_kernel::plan_exec::LabelTelemetryEventWire> {
+    canister::handlers::list_pending_label_telemetry_events(from_seq, limit)
+}
+
+#[query(guard = "guard_router_canister")]
+fn get_mutation_outcome(
+    mutation_id: gleaph_graph_kernel::plan_exec::MutationId,
+) -> Option<gleaph_graph_kernel::plan_exec::MutationOutcomeWire> {
+    canister::handlers::get_mutation_outcome(mutation_id)
+}
+
+#[update(guard = "guard_router_canister")]
+fn ack_label_telemetry_event(seq: gleaph_graph_kernel::plan_exec::ShardEventSeq) {
+    canister::handlers::ack_label_telemetry_event(seq);
+}
+
 #[update(guard = "guard_router_canister")]
 fn bootstrap_graph_peers(
     args: gleaph_graph_kernel::federation::BootstrapGraphPeersArgs,
