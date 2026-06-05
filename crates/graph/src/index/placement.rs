@@ -332,5 +332,4 @@ mod tests {
         ));
         assert!(store.logical_vertex_id(vid).is_none());
     }
-
 }

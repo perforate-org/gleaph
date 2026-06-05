@@ -828,7 +828,7 @@ where
         E: CsrEdgeTombstone,
     {
         let vertex = self.vertices.get(src);
-        if vertex.degree() == 0 {
+        if vertex.degree() == 0 || vertex.payload_allocated_bytes() == 0 {
             return Ok(());
         }
         let buckets = self.read_vertex_label_buckets(&vertex)?;

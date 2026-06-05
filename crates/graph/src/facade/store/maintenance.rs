@@ -26,5 +26,4 @@ impl GraphStore {
     ) -> Result<LabeledBidirectionalMaintenanceReport, GraphStoreError> {
         self.run_maintenance_best_effort(crate::facade::timer_lara_maintenance_budget())
     }
-
 }

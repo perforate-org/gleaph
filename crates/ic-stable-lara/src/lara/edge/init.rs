@@ -232,6 +232,12 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         self.log.release_segment(u32::from(leaf_segment))
     }
 
+    /// Returns the high-water entry index for `leaf_segment` (`0` when unused).
+    pub(crate) fn overflow_log_segment_high_water(&self, leaf_segment: u32) -> u32 {
+        let h = self.log.header();
+        self.log.read_idx_with_header(&h, leaf_segment).max(0) as u32
+    }
+
     pub(crate) fn set_num_edges(&self, n: u64) {
         self.edges.set_num_edges(n);
         let mut header = self.header();

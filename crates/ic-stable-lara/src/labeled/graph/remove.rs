@@ -710,28 +710,43 @@ where
                 }
                 return Ok(None);
             }
-            let log_chains = self.bucket_payload_log_chains_opt(src, &bucket);
             let stored = bucket.stored_slots;
             let mut found = None;
-            for offset in 0..stored {
-                let edge_slot = checked_add_slot_index(bucket.edge_start(), u64::from(offset))
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                let edge = self.edges.read_slot(edge_slot);
-                if edge.is_deleted_slot() || edge.is_tombstone_edge() {
-                    continue;
+            if bucket.is_payload_allocated() {
+                let log_chains = self.bucket_payload_log_chains_opt(src, &bucket);
+                for offset in 0..stored {
+                    let edge_slot = checked_add_slot_index(bucket.edge_start(), u64::from(offset))
+                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    let edge = self.edges.read_slot(edge_slot);
+                    if edge.is_deleted_slot() || edge.is_tombstone_edge() {
+                        continue;
+                    }
+                    let edge_with_value = self.attach_edge_payload(
+                        src,
+                        &vertex,
+                        bucket_index,
+                        bucket,
+                        offset,
+                        edge,
+                        log_chains.as_ref(),
+                    )?;
+                    if matches(&edge_with_value) {
+                        found = Some((offset, edge_with_value));
+                        break;
+                    }
                 }
-                let edge_with_value = self.attach_edge_payload(
-                    src,
-                    &vertex,
-                    bucket_index,
-                    bucket,
-                    offset,
-                    edge,
-                    log_chains.as_ref(),
-                )?;
-                if matches(&edge_with_value) {
-                    found = Some((offset, edge_with_value));
-                    break;
+            } else {
+                for offset in 0..stored {
+                    let edge_slot = checked_add_slot_index(bucket.edge_start(), u64::from(offset))
+                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    let edge = self.edges.read_slot(edge_slot);
+                    if edge.is_tombstone_edge() {
+                        continue;
+                    }
+                    if matches(&edge) {
+                        found = Some((offset, edge));
+                        break;
+                    }
                 }
             }
             let Some((local_index, removed)) = found else {

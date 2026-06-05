@@ -187,7 +187,6 @@ where
                 self.edges
                     .bump_vertex_segment_counts(src, 1, 0)
                     .map_err(LabeledOperationError::from)?;
-                self.invalidate_bucket_lookup_for_label(src, label_id);
                 return Ok(());
             }
             let access = LabelEdgeSpanAccess::new(&self.buckets, bucket_slot, successor_start, src);
@@ -195,6 +194,7 @@ where
                 .edges
                 .insert_edge(&access, VertexId::from(0), attempt_edge.clone())
             {
+                Ok(InsertLocation::Slab(_)) if !has_edge_payload => return Ok(()),
                 Ok(InsertLocation::Slab(written_slot)) => {
                     bucket = self
                         .buckets
@@ -215,9 +215,9 @@ where
                         false,
                     )?;
                     self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
-                    self.invalidate_bucket_lookup_for_label(src, label_id);
                     return Ok(());
                 }
+                Ok(InsertLocation::Log) if !has_edge_payload => return Ok(()),
                 Ok(InsertLocation::Log) => {
                     bucket = self
                         .buckets
@@ -235,7 +235,6 @@ where
                         true,
                     )?;
                     self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
-                    self.invalidate_bucket_lookup_for_label(src, label_id);
                     return Ok(());
                 }
                 Err(LaraOperationError::SegmentLogFull) => {
@@ -272,6 +271,9 @@ where
             BucketSearch::Found { slot, bucket } => return Ok((slot, bucket)),
             BucketSearch::Missing { insert_index } => insert_index,
         };
+        if insert_index > 0 && self.vertex_label_buckets_have_overflow(vertex)? {
+            self.rewrite_vertex_edge_span(src, None, 0, false, false)?;
+        }
         #[cfg(feature = "canbench")]
         let _bench_scope = bench_scope("labeled_insert_new_label_bucket");
         let (slot, rewrote_bucket_segment) = self
@@ -290,10 +292,15 @@ where
         let vertex = self.vertices.get(src);
         let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
         if !self.try_place_new_bucket_edge_span(src, &vertex, slot, bucket_index)? {
-            self.rebalance_vertex_edge_span(src, Some(bucket_index), 1, true)?;
             let vertex = self.vertices.get(src);
-            if !self.try_place_new_bucket_edge_span(src, &vertex, slot, bucket_index)? {
-                self.rebalance_vertex_edge_span(src, Some(bucket_index), 1, true)?;
+            if self.vertex_label_buckets_have_overflow(&vertex)? {
+                self.rewrite_vertex_edge_span(src, None, 0, false, false)?;
+                let vertex = self.vertices.get(src);
+                if !self.try_place_new_bucket_edge_span(src, &vertex, slot, bucket_index)? {
+                    self.rewrite_vertex_edge_span(src, Some(bucket_index), 1, false, false)?;
+                }
+            } else {
+                self.rewrite_vertex_edge_span(src, Some(bucket_index), 1, false, false)?;
             }
         }
         let vertex = self.vertices.get(src);

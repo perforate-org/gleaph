@@ -20,8 +20,6 @@ use crate::{
     lara::{edge::EdgeStore, edge_payload::EdgePayloadStore, vertex::VertexStore},
     traits::CsrEdge,
 };
-#[cfg(feature = "canbench")]
-use canbench_rs::bench_scope;
 use ic_stable_structures::Memory;
 use std::{cell::Cell, marker::PhantomData};
 

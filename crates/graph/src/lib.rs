@@ -38,12 +38,12 @@ mod canister;
 
 use ic_cdk_macros::{init, query, update};
 
+#[cfg(feature = "pocket-ic-e2e")]
+use crate::canister::guards::guard_control_plane_admin;
 use crate::canister::{
     GraphInitArgs,
     guards::{guard_router_canister, guard_router_or_peer_graph},
 };
-#[cfg(feature = "pocket-ic-e2e")]
-use crate::canister::guards::guard_control_plane_admin;
 
 #[init]
 async fn init(args: GraphInitArgs) {
