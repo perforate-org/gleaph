@@ -82,7 +82,7 @@ where
     {
         self.insert_edge_skip_leaf_cascade(src, label_id, edge)?;
         if self.labeled_leaf_segment_is_dense(src) {
-            self.rebalance_cascade_after_labeled_mutation(src, Some(label_id))?;
+            self.rebalance_cascade_after_labeled_mutation(src)?;
         }
         Ok(())
     }
@@ -271,9 +271,6 @@ where
             BucketSearch::Found { slot, bucket } => return Ok((slot, bucket)),
             BucketSearch::Missing { insert_index } => insert_index,
         };
-        if insert_index > 0 && self.vertex_label_buckets_have_overflow(vertex)? {
-            self.rewrite_vertex_edge_span(src, None, 0, false, false)?;
-        }
         #[cfg(feature = "canbench")]
         let _bench_scope = bench_scope("labeled_insert_new_label_bucket");
         let (slot, rewrote_bucket_segment) = self
@@ -292,15 +289,10 @@ where
         let vertex = self.vertices.get(src);
         let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
         if !self.try_place_new_bucket_edge_span(src, &vertex, slot, bucket_index)? {
+            self.rebalance_vertex_edge_span(src, Some(bucket_index), 1, true)?;
             let vertex = self.vertices.get(src);
-            if self.vertex_label_buckets_have_overflow(&vertex)? {
-                self.rewrite_vertex_edge_span(src, None, 0, false, false)?;
-                let vertex = self.vertices.get(src);
-                if !self.try_place_new_bucket_edge_span(src, &vertex, slot, bucket_index)? {
-                    self.rewrite_vertex_edge_span(src, Some(bucket_index), 1, false, false)?;
-                }
-            } else {
-                self.rewrite_vertex_edge_span(src, Some(bucket_index), 1, false, false)?;
+            if !self.try_place_new_bucket_edge_span(src, &vertex, slot, bucket_index)? {
+                self.rebalance_vertex_edge_span(src, Some(bucket_index), 1, true)?;
             }
         }
         let vertex = self.vertices.get(src);

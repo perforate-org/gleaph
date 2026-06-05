@@ -18,10 +18,7 @@ use canbench_rs::bench_scope;
 use ic_stable_structures::Memory;
 
 use super::error::LabeledOperationError;
-use super::{
-    BucketSearch, DEFAULT_SEGMENT_SIZE, EdgeSlotMove, LabeledLaraGraph,
-    VertexEdgeSpanCompactOneStep,
-};
+use super::{DEFAULT_SEGMENT_SIZE, EdgeSlotMove, LabeledLaraGraph, VertexEdgeSpanCompactOneStep};
 
 impl<E, M> LabeledLaraGraph<E, M>
 where
@@ -1287,39 +1284,6 @@ where
                 self.fold_label_bucket_edges_to_slab(vid, &vertex, bucket_index, slot, *bucket)?;
             self.buckets.write_label_bucket_slot(slot, folded)?;
         }
-        Ok(())
-    }
-
-    /// Folds overflow-log edges for the mutation bucket when sole-active leaves keep
-    /// a stale PMA log segment without scanning every label bucket on each cascade.
-    pub(super) fn rebalance_edge_log_mutation_bucket_for_labeled(
-        &self,
-        src: VertexId,
-        label_id: crate::labeled::bucket_label_key::BucketLabelKey,
-    ) -> Result<(), LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-    {
-        let vertex = self.vertices.get(src);
-        if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
-            return Ok(());
-        }
-        let BucketSearch::Found { slot, bucket } = self.find_bucket(src, &vertex, label_id)? else {
-            return Ok(());
-        };
-        if bucket.overflow_log_head() < 0 {
-            return Ok(());
-        }
-        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
-        self.rebalance_vertex_edge_span_light(src, true)?;
-        let vertex = self.vertices.get(src);
-        let bucket = self
-            .buckets
-            .read_label_bucket_slot(slot)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        let folded =
-            self.fold_label_bucket_edges_to_slab(src, &vertex, bucket_index, slot, bucket)?;
-        self.buckets.write_label_bucket_slot(slot, folded)?;
         Ok(())
     }
 

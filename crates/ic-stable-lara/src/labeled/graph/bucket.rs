@@ -57,7 +57,6 @@ where
     pub(super) fn rebalance_cascade_after_labeled_mutation(
         &self,
         src: VertexId,
-        mutation_label: Option<BucketLabelKey>,
     ) -> Result<(), LabeledOperationError>
     where
         E: CsrEdgeTombstone,
@@ -83,19 +82,10 @@ where
 
         if self.edges.overflow_log_segment_high_water(leaf) > 0 {
             if sole_active_labeled_vertex {
-                if let Some(label_id) = mutation_label {
-                    let src_vertex = self.vertices.get(src);
-                    if let BucketSearch::Found { bucket, .. } =
-                        self.find_bucket(src, &src_vertex, label_id)?
-                    {
-                        if bucket.overflow_log_head() >= 0 {
-                            self.rebalance_edge_log_mutation_bucket_for_labeled(src, label_id)?;
-                            self.edges
-                                .release_log_segment(SegmentId::from(leaf))
-                                .map_err(LabeledOperationError::from)?;
-                        }
-                    }
-                }
+                self.rebalance_edge_log_vertex_for_labeled(src)?;
+                self.edges
+                    .release_log_segment(SegmentId::from(leaf))
+                    .map_err(LabeledOperationError::from)?;
             } else {
                 self.rebalance_edge_log_leaf_for_labeled(src)?;
             }
