@@ -117,7 +117,7 @@ where
         let min_required = total_live
             .checked_add(preferred_extra)
             .ok_or(LaraOperationError::RowDegreeOverflow)?;
-        let new_alloc = if compact {
+        let mut new_alloc = if compact {
             total_live
         } else if force_slack_grow && old_alloc >= min_required && old_alloc > 0 {
             let doubled_old_alloc = old_alloc
@@ -140,6 +140,11 @@ where
                 .max(DEFAULT_SEGMENT_SIZE)
                 .max(doubled_old_alloc)
         };
+
+        if force_slack_grow && !compact && total_live > 0 && vertex.degree() <= 8 {
+            let headroom_alloc = ((f64::from(total_live) / 0.85).ceil() as u32).max(min_required);
+            new_alloc = new_alloc.max(headroom_alloc);
+        }
 
         let moved = old_alloc == 0 || new_alloc > old_alloc || compact;
         let new_base = if new_alloc == 0 {
@@ -907,6 +912,22 @@ where
             }
         }
         Ok(moves)
+    }
+
+    /// `true` when any label bucket on `vid` has enough slab tombstones to benefit from
+    /// deferred edge-span compaction.
+    pub(crate) fn vertex_has_slab_tombstone_slack_pressure(
+        &self,
+        vid: VertexId,
+    ) -> Result<bool, LabeledOperationError> {
+        let vertex = self.vertices.get(vid);
+        if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
+            return Ok(false);
+        }
+        let buckets = self.read_vertex_label_buckets(&vertex)?;
+        Ok(buckets.iter().any(|bucket| {
+            bucket.stored_slots.saturating_sub(bucket.degree()) >= DEFAULT_SEGMENT_SIZE
+        }))
     }
 
     pub(super) fn maintain_vertex_edge_span_light(

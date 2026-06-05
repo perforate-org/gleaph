@@ -137,6 +137,28 @@ mod tests {
     }
 
     #[test]
+    fn dense_maintenance_enqueue_deduplicates_per_vertex() {
+        let graph = graph();
+        graph
+            .inner()
+            .push_vertex(crate::labeled::record::LabeledVertex::default())
+            .unwrap();
+        let label = BucketLabelKey::from_raw(2);
+        for target in 0..64u32 {
+            graph
+                .insert_edge(VertexId::from(0), label, TestEdge(target))
+                .unwrap();
+        }
+        let before = graph.maintenance_queue_len();
+        for target in 64..128u32 {
+            graph
+                .insert_edge(VertexId::from(0), label, TestEdge(target))
+                .unwrap();
+        }
+        assert_eq!(graph.maintenance_queue_len(), before);
+    }
+
+    #[test]
     fn maintenance_vertex_edge_span_compact_one_work_item_per_step() {
         let graph = graph();
         graph
@@ -527,12 +549,7 @@ where
         self.inner
             .insert_edge_skip_leaf_cascade(src, label_id, edge)
             .map_err(DeferredError::Inner)?;
-        if self.inner.labeled_leaf_segment_is_dense(src) {
-            #[cfg(feature = "canbench")]
-            let _bench_scope = bench_scope("labeled_deferred_dense_enqueue");
-            self.mark_compact_dense_labeled_vertex_maintenance(src)?;
-        }
-        Ok(())
+        self.maybe_enqueue_dense_vertex_maintenance(src)
     }
 
     /// Removes one edge without an immediate leaf cascade; may enqueue compaction when dense.
@@ -550,12 +567,56 @@ where
             .inner
             .remove_edge_matching_skip_leaf_cascade(src, label_id, matches)
             .map_err(DeferredError::Inner)?;
-        if removed.is_some() && self.inner.labeled_leaf_segment_is_dense(src) {
-            #[cfg(feature = "canbench")]
-            let _bench_scope = bench_scope("labeled_deferred_remove_dense_enqueue");
-            self.mark_compact_dense_labeled_vertex_maintenance(src)?;
+        if removed.is_some() {
+            self.maybe_enqueue_tombstone_vertex_edge_span_maintenance(src)?;
+            if self.inner.labeled_leaf_segment_is_dense(src) {
+                #[cfg(feature = "canbench")]
+                let _bench_scope = bench_scope("labeled_deferred_remove_dense_enqueue");
+                self.maybe_enqueue_dense_vertex_maintenance(src)?;
+            }
         }
         Ok(removed)
+    }
+
+    fn vertex_edge_span_maintenance_pending(&self, vid: VertexId) -> bool {
+        self.queue.iter().any(|item| match item {
+            MaintenanceWorkItem::CompactDenseLabeledVertexMaintenance { vid: queued } => {
+                queued == vid
+            }
+            MaintenanceWorkItem::CompactVertexEdgeSpan { vid: queued, .. } => queued == vid,
+            MaintenanceWorkItem::CompactVertexEdgeAndValueSpan { vid: queued, .. } => queued == vid,
+            MaintenanceWorkItem::CompactLabelBucketVertexSegment { .. }
+            | MaintenanceWorkItem::CompactVertexValueSpan { .. } => false,
+        })
+    }
+
+    fn maybe_enqueue_dense_vertex_maintenance(&self, vid: VertexId) -> Result<(), DeferredError> {
+        if !self.inner.labeled_leaf_segment_is_dense(vid) {
+            return Ok(());
+        }
+        if self.vertex_edge_span_maintenance_pending(vid) {
+            return Ok(());
+        }
+        #[cfg(feature = "canbench")]
+        let _bench_scope = bench_scope("labeled_deferred_dense_enqueue");
+        self.mark_compact_dense_labeled_vertex_maintenance(vid)
+    }
+
+    fn maybe_enqueue_tombstone_vertex_edge_span_maintenance(
+        &self,
+        vid: VertexId,
+    ) -> Result<(), DeferredError> {
+        if self.vertex_edge_span_maintenance_pending(vid) {
+            return Ok(());
+        }
+        if !self
+            .inner
+            .vertex_has_slab_tombstone_slack_pressure(vid)
+            .map_err(DeferredError::Inner)?
+        {
+            return Ok(());
+        }
+        self.mark_compact_vertex_edge_span(vid, 0)
     }
 
     /// Enqueues bucket-segment compaction followed by vertex-edge-span compaction for one vertex.
@@ -563,6 +624,9 @@ where
         &self,
         vid: VertexId,
     ) -> Result<(), DeferredError> {
+        if self.vertex_edge_span_maintenance_pending(vid) {
+            return Ok(());
+        }
         self.queue
             .push_back(&MaintenanceWorkItem::CompactDenseLabeledVertexMaintenance { vid })
             .map_err(DeferredError::QueueGrow)?;
@@ -586,6 +650,9 @@ where
         vid: VertexId,
         bucket_index: u32,
     ) -> Result<(), DeferredError> {
+        if self.vertex_edge_span_maintenance_pending(vid) {
+            return Ok(());
+        }
         self.queue
             .push_back(&MaintenanceWorkItem::CompactVertexEdgeSpan {
                 vid,

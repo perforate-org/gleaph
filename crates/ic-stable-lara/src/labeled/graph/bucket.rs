@@ -163,6 +163,39 @@ where
                     return Ok(BucketSearch::Missing { insert_index: deg });
                 }
             }
+            if label_id > cache.bucket_key {
+                if let Some(next_slot) = cache.slot.checked_add(1)
+                    && next_slot < range_end
+                {
+                    let bucket = self
+                        .buckets
+                        .read_label_bucket_slot(next_slot)
+                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    if bucket.bucket_label_key() == label_id {
+                        self.cache_bucket_lookup(src, label_id, vertex, next_slot);
+                        return Ok(BucketSearch::Found {
+                            slot: next_slot,
+                            bucket,
+                        });
+                    }
+                }
+            } else if label_id < cache.bucket_key && cache.slot > start {
+                let prev_slot = cache
+                    .slot
+                    .checked_sub(1)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                let bucket = self
+                    .buckets
+                    .read_label_bucket_slot(prev_slot)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                if bucket.bucket_label_key() == label_id {
+                    self.cache_bucket_lookup(src, label_id, vertex, prev_slot);
+                    return Ok(BucketSearch::Found {
+                        slot: prev_slot,
+                        bucket,
+                    });
+                }
+            }
         }
         let cache_index = Self::bucket_lookup_cache_index(src, label_id);
         if let Some(cache) = self.bucket_lookup_cache[cache_index].get()
