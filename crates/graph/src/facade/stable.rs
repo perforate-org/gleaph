@@ -15,7 +15,6 @@ pub(crate) mod edge_properties;
 pub(crate) mod edge_weight_profiles;
 pub(crate) mod label_telemetry;
 pub(crate) mod metadata;
-pub(crate) mod migration;
 pub(crate) mod peer_graph_canisters;
 pub(crate) mod property_catalog;
 pub(crate) mod remote_forward_in;
@@ -75,24 +74,6 @@ thread_local! {
 
     pub(crate) static PEER_GRAPH_CANISTERS: RefCell<memory::StablePeerGraphCanisterSet> =
         RefCell::new(memory::init_peer_graph_canisters());
-
-    pub(crate) static VERTEX_MIGRATION_STATE: RefCell<memory::StableVertexMigrationStateMap> =
-        RefCell::new(memory::init_vertex_migration_state());
-
-    pub(crate) static MIGRATION_QUEUE: RefCell<memory::StableMigrationQueueMap> =
-        RefCell::new(memory::init_migration_queue());
-
-    pub(crate) static MIGRATION_JOURNAL: RefCell<memory::StableMigrationJournalMap> =
-        RefCell::new(memory::init_migration_journal());
-
-    pub(crate) static MIGRATION_OUT_HANDLE_MAP: RefCell<memory::StableMigrationOutHandleMap> =
-        RefCell::new(memory::init_migration_out_handle_map());
-
-    pub(crate) static MIGRATION_REV_HANDLE_MAP: RefCell<memory::StableMigrationRevHandleMap> =
-        RefCell::new(memory::init_migration_rev_handle_map());
-
-    pub(crate) static PRUNE_MIGRATED_SOURCE_QUEUE: RefCell<memory::StablePruneMigratedSourceQueueMap> =
-        RefCell::new(memory::init_prune_migrated_source_queue());
 
     pub(crate) static LABEL_TELEMETRY_SEQ: RefCell<memory::StableLabelTelemetrySeq> =
         RefCell::new(memory::init_label_telemetry_seq());

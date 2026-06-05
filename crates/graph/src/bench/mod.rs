@@ -75,7 +75,7 @@ fn insert_bench_vertex_named(store: &GraphStore, labels: &[&str]) -> VertexId {
         .map(|label| crate::test_labels::vertex_label_id_for_name(label))
         .collect::<Vec<_>>();
     let vertex_id = store
-        .push_migrated_vertex_row(Vertex::default())
+        .push_unplaced_vertex_row(Vertex::default())
         .expect("vertex row");
     let vertex = store.vertex(vertex_id).expect("new vertex");
     let vertex = store

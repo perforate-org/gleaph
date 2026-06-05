@@ -46,7 +46,6 @@ When traversal uses **local** `VertexId` but placement says authoritative copy i
 | Situation | Result |
 |-----------|--------|
 | Forward/reverse expand, placement on other shard | `UnsupportedOp("Expand.forward/reverse(federated placement on another shard)")` |
-| Vertex `Migrating` on this or other shard | `UnsupportedOp("Expand(vertex migrating ...)")` |
 | Remote vertex without federation routing | `UnsupportedOp("Expand(remote vertex requires federation routing)")` |
 
 ### Property projection
@@ -76,7 +75,6 @@ Failures surface as `FederatedIndexCall { op: "resolve_logical_at" | "federated_
 | Multi-shard plan without index anchor | **Rejected** at router |
 | `RemoteVertex` + federated expand | **Implemented** (wasm IC) |
 | Local expand on non-authoritative copy | **Unsupported** |
-| Expand during migration | **Unsupported** |
 | Remote vertex property projection in expand | **Unsupported** |
 | Router-driven full migration workflow | **Not implemented** |
 | `federated_expand` on native test host | **Unsupported** |

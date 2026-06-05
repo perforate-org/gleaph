@@ -223,7 +223,6 @@ commit_vertex_placement(CommitVertexPlacementArgs) -> Result<(), RouterError>
 
 | API / feature | Target PR |
 |---------------|-----------|
-| `begin_vertex_migration` / `finish_vertex_migration` | PR4 |
 | `gql_query` / `gql_execute` on router | PR3+ |
 | `admin_intern_index` | index sharding |
 | RemoteRef / remote edges | PR3 |

@@ -20,7 +20,7 @@ Architecture and semantics for **Gleaph** (IC graph database) and the **GQL** st
 | [glossary.md](glossary.md) | draft | Shared terminology |
 | [architecture/overview.md](architecture/overview.md) | draft | Canisters, request flow, crate boundaries |
 | [federation/model.md](federation/model.md) | draft | Identifiers, placement, remote edges |
-| [federation/operations.md](federation/operations.md) | draft | Lifecycle: register, expand, migrate |
+| [federation/operations.md](federation/operations.md) | draft | Lifecycle: register, place, expand |
 | [federation/query-semantics.md](federation/query-semantics.md) | draft | Executor behavior and limits |
 | [gql/layers.md](gql/layers.md) | draft | Parser → planner → executor split |
 | [gql/plan-format.md](gql/plan-format.md) | draft | `PhysicalPlan` contract |

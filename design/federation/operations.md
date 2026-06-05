@@ -2,12 +2,12 @@
 
 ## Purpose
 
-Document **operational flows**: shard registration, vertex lifecycle, cross-shard expand, and migration. Clarify what is automated vs manual today.
+Document **operational flows**: shard registration, vertex lifecycle, and cross-shard expand. Clarify what is automated vs manual today.
 
 ## Non-goals
 
 - Full router admin API reference (generate from Candid when needed).
-- Disaster recovery playbooks (future `migration-playbook.md`).
+- Vertex migration playbooks; migration is future work.
 
 ## Shard registration
 
@@ -46,23 +46,9 @@ Uses:
 
 **Limit:** Inter-canister path requires **wasm** (`UnsupportedOp` on native builds in `crates/graph/src/index/federation.rs`).
 
-## Migration (incremental)
+## Migration
 
-**Implemented** on graph shard (`crates/graph/src/facade/migration/incremental.rs`):
-
-| Step | API | Shard |
-|------|-----|-------|
-| 1 | `migration_start` | Source (`SourceMigrating`, journal) |
-| 2 | `migration_staging_begin` | Destination (`TargetStaging`) |
-| 3 | `migration_maintenance_tick` + `migration_apply_chunk` | Chunked `X.o` / `X.i` copy |
-| 4 | `migration_cutover` | Router finish + `ForwardingStub` on source |
-
-See [incremental-migration.md](incremental-migration.md). Bulk `migration_export` / `migration_import` / `migration_tombstone` are removed.
-
-### Migration invariants
-
-- Source writes blocked while `Migrating` on source.
-- Destination must not serve authoritative reads until finish completes (see `VertexPlacement` checks in expand/traversal).
+**Not implemented.** Current runtime has no migration APIs, no migration stable-memory state, and no `VertexPlacement` transition state. Future work may reintroduce migration with a fresh router-owned placement transition design.
 
 ## Property index during federation
 
@@ -74,10 +60,10 @@ Index mutations on graph may be dropped if no index client is configured (`index
 
 Representative `RouterError` variants (`federation/router_error.rs`):
 
-- `VertexNotFound`, `VertexMigrating`
+- `VertexNotFound`
 - `ShardNotRegistered`, `InvalidArgument`
 
-Graph surfaces placement failures as `GraphStoreError::VertexPlacement` / `VertexMigrating`.
+Graph surfaces placement failures as `GraphStoreError::VertexPlacement`.
 
 ## Related documents
 

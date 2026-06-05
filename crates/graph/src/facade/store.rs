@@ -21,7 +21,6 @@ mod lookup;
 mod maintenance;
 mod metadata;
 mod sidecar;
-mod stub_prune;
 #[cfg(test)]
 mod tests;
 mod vertex;

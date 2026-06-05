@@ -2,14 +2,6 @@
 
 use std::collections::BTreeMap;
 
-#[cfg(all(target_family = "wasm", not(feature = "pocket-ic-e2e")))]
-use crate::facade::migration::migration_cutover_with_index;
-use crate::facade::migration::{
-    migration_apply_chunk as apply_migration_chunk, migration_cutover as cutover_migration,
-    migration_maintenance_step, migration_reconcile,
-    migration_staging_begin as begin_migration_staging, migration_start as start_migration,
-    migration_status as query_migration_status, prune_migrated_source_maintenance_step,
-};
 use crate::facade::{FederationRouting, GraphMetadata, GraphStore};
 use crate::gql_execution_context::GqlExecutionContext;
 use crate::gql_run::{kernel_execution_mode, run_wire_plan_last_read_row_count};
@@ -19,11 +11,7 @@ use crate::index::router::verify_shard_attachment;
 use candid::Decode;
 use gleaph_gql::Value;
 use gleaph_gql_ic::decode_gql_params_blob;
-use gleaph_graph_kernel::federation::{
-    BeginVertexMigrationArgs, FederatedExpandArgs, FederatedExpandNeighbor, LogicalVertexId,
-    MigrationApplyChunk, MigrationReconcileReport, MigrationStagingArgs, MigrationStartResult,
-    MigrationStatus,
-};
+use gleaph_graph_kernel::federation::{FederatedExpandArgs, FederatedExpandNeighbor};
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanArgs, ExecutePlanResult, GqlExecutionMode, SeedBindingsWire,
 };
@@ -193,74 +181,6 @@ pub fn remove_graph_peer(
 ) -> Result<(), String> {
     GraphStore::new().remove_peer_graph_canister(&args.peer);
     Ok(())
-}
-
-pub async fn migration_start(
-    args: BeginVertexMigrationArgs,
-) -> Result<MigrationStartResult, String> {
-    let store = GraphStore::new();
-    start_migration(&store, args)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-pub async fn migration_staging_begin(
-    args: MigrationStagingArgs,
-) -> Result<MigrationStartResult, String> {
-    let store = GraphStore::new();
-    begin_migration_staging(&store, args)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-pub async fn migration_apply_chunk(chunk: MigrationApplyChunk) -> Result<(), String> {
-    let store = GraphStore::new();
-    apply_migration_chunk(&store, chunk)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-pub async fn migration_cutover(logical_vertex_id: LogicalVertexId) -> Result<(), String> {
-    let store = GraphStore::new();
-    #[cfg(all(target_family = "wasm", not(feature = "pocket-ic-e2e")))]
-    {
-        if let Some(ix) = wasm_index_client_holder()
-            .as_ref()
-            .map(|c| c as &dyn PropertyIndexLookup)
-        {
-            return migration_cutover_with_index(&store, logical_vertex_id, ix)
-                .await
-                .map_err(|e| e.to_string());
-        }
-    }
-    cutover_migration(&store, logical_vertex_id)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-pub async fn migration_reconcile_query(
-    logical_vertex_id: LogicalVertexId,
-) -> Result<MigrationReconcileReport, String> {
-    let store = GraphStore::new();
-    migration_reconcile(&store, logical_vertex_id)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-pub fn migration_status_query(
-    logical_vertex_id: LogicalVertexId,
-) -> Result<MigrationStatus, String> {
-    let store = GraphStore::new();
-    query_migration_status(&store, logical_vertex_id).map_err(|e| e.to_string())
-}
-
-pub async fn migration_maintenance_tick() -> Result<Option<MigrationApplyChunk>, String> {
-    let store = GraphStore::new();
-    let chunk = migration_maintenance_step(&store)
-        .await
-        .map_err(|e| e.to_string())?;
-    let _ = prune_migrated_source_maintenance_step(&store).map_err(|e| e.to_string())?;
-    Ok(chunk)
 }
 
 #[cfg(feature = "pocket-ic-e2e")]

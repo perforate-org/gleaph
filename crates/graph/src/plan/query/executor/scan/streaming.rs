@@ -13,7 +13,6 @@ use ic_stable_lara::VertexId;
 use ic_stable_lara::traits::CsrVertexTombstone;
 
 use crate::facade::GraphStore;
-use crate::facade::migration::{migration_visibility_filter_needed, vertex_visible_to_query};
 use crate::gql_execution_context::GqlExecutionContext;
 use crate::plan::query::error::PlanQueryError;
 use crate::plan::query::executor::context::QueryExprEvaluator;
@@ -406,7 +405,6 @@ fn stream_node_scan(
         None => None,
     };
 
-    let filter_migration_visibility = migration_visibility_filter_needed();
     for raw in 0..u32::from(store.vertex_count()) {
         #[cfg(test)]
         super::NODE_SCAN_VISITS.with(|visits| visits.set(visits.get() + 1));
@@ -414,9 +412,7 @@ fn stream_node_scan(
         let Some(vertex) = store.vertex(vertex_id) else {
             continue;
         };
-        if vertex.is_tombstone()
-            || (filter_migration_visibility && !vertex_visible_to_query(vertex_id))
-        {
+        if vertex.is_tombstone() {
             continue;
         }
         if let Some(filter) = label_id

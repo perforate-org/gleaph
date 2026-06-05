@@ -1,6 +1,6 @@
 //! GraphStore `vertex` implementation.
 
-use super::super::stable::{GRAPH, REMOTE_VERTEX_REFS, VERTEX_LOGICAL_IDS, VERTEX_MIGRATION_STATE};
+use super::super::stable::{GRAPH, REMOTE_VERTEX_REFS, VERTEX_LOGICAL_IDS};
 use crate::index::placement;
 use gleaph_graph_kernel::entry::{Edge, EdgeTarget, RemoteRefId, Vertex};
 use gleaph_graph_kernel::federation::{
@@ -88,10 +88,10 @@ impl GraphStore {
         let Some(logical_vertex_id) = self.logical_vertex_id(vertex_id) else {
             return Ok(());
         };
-        let local = placement::local_vertex_id_raw(vertex_id);
         #[cfg(target_family = "wasm")]
         let placement = {
             let _ = logical_vertex_id;
+            let local = placement::local_vertex_id_raw(vertex_id);
             gleaph_graph_kernel::federation::VertexPlacement::Active(
                 gleaph_graph_kernel::federation::PhysicalVertexLocation::new(
                     routing.shard_id,
@@ -104,42 +104,7 @@ impl GraphStore {
             routing.router_canister,
             logical_vertex_id,
         ))?;
-        if let Some(state) =
-            crate::facade::stable::VERTEX_MIGRATION_STATE.with_borrow(|m| m.get(local))
-        {
-            match state {
-                gleaph_graph_kernel::federation::VertexMigrationState::TargetStaging { .. }
-                | gleaph_graph_kernel::federation::VertexMigrationState::ForwardingStub {
-                    ..
-                } => {
-                    return Err(GraphStoreError::VertexMigrating);
-                }
-                gleaph_graph_kernel::federation::VertexMigrationState::SourceMigrating {
-                    ..
-                } => {}
-                gleaph_graph_kernel::federation::VertexMigrationState::Active => {}
-            }
-        }
-        if let gleaph_graph_kernel::federation::VertexPlacement::Migrating {
-            destination_shard_id,
-            ..
-        } = placement
-            && destination_shard_id == routing.shard_id
-            && {
-                VERTEX_MIGRATION_STATE
-                    .with_borrow(|m| m.get(local))
-                    .is_some_and(|s| {
-                        matches!(
-                            s,
-                            gleaph_graph_kernel::federation::VertexMigrationState::TargetStaging {
-                                ..
-                            }
-                        )
-                    })
-            }
-        {
-            return Err(GraphStoreError::VertexMigrating);
-        }
+        let _ = placement;
         Ok(())
     }
 
@@ -178,7 +143,7 @@ impl GraphStore {
         edge.edge_target()
     }
 
-    pub(crate) fn push_migrated_vertex_row(
+    pub(crate) fn push_unplaced_vertex_row(
         &self,
         vertex: Vertex,
     ) -> Result<VertexId, DeferredBidirectionalLabeledError> {

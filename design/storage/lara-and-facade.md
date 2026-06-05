@@ -65,11 +65,11 @@ Placement client calls router for resolve/commit/release (`index/placement.rs`).
 | Edge equality | graph stable | Per shard |
 | Forward-to-remote | graph stable | Per shard |
 
-## Writes and migration
+## Writes and placement
 
 - Normal writes go through `GraphStore` mutation paths.
-- `VertexPlacement::Migrating` blocks writes on source (`assert_local_vertex_writable`).
-- Migration export reads CSR + properties without deleting until tombstone phase ([federation/operations.md](../federation/operations.md)).
+- In federated mode, router placement is active-only and identifies the authoritative shard.
+- Vertex migration is future work and has no runtime stable-memory state today ([federation/operations.md](../federation/operations.md)).
 
 ## Related documents
 

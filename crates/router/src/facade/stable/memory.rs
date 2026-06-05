@@ -27,7 +27,6 @@ const ROUTER_EDGE_LABEL_BY_ID: MemoryId = MemoryId::new(10);
 const ROUTER_PROPERTY_BY_NAME: MemoryId = MemoryId::new(11);
 const ROUTER_PROPERTY_BY_ID: MemoryId = MemoryId::new(12);
 const ROUTER_PLACEMENT_BY_PHYSICAL: MemoryId = MemoryId::new(13);
-const ROUTER_MIGRATION_COUNTER: MemoryId = MemoryId::new(14);
 const ROUTER_AUTH_PRINCIPAL_RECORDS: MemoryId = MemoryId::new(15);
 const ROUTER_VERTEX_LABEL_STATS: MemoryId = MemoryId::new(16);
 const ROUTER_EDGE_LABEL_STATS: MemoryId = MemoryId::new(17);
@@ -60,7 +59,6 @@ pub(crate) type StablePropertyNameIntern = BTreeMap<String, u32, Memory>;
 pub(crate) type StablePropertyIdReverse = BTreeMap<u32, String, Memory>;
 pub(crate) type StablePlacementByPhysicalMap =
     super::placement_by_physical::PlacementByPhysicalMap<Memory>;
-pub(crate) type StableMigrationCounter = Cell<u64, Memory>;
 pub(crate) type StableMutationCounter = Cell<u64, Memory>;
 pub(crate) type StableAuthState = AuthState<Memory>;
 
@@ -158,13 +156,6 @@ pub(crate) fn init_property_by_id() -> StablePropertyIdReverse {
 pub(crate) fn init_placement_by_physical() -> StablePlacementByPhysicalMap {
     super::placement_by_physical::PlacementByPhysicalMap::init(
         MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_PLACEMENT_BY_PHYSICAL)),
-    )
-}
-
-pub(crate) fn init_migration_counter() -> StableMigrationCounter {
-    Cell::init(
-        MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_MIGRATION_COUNTER)),
-        0u64,
     )
 }
 

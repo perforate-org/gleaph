@@ -2,10 +2,7 @@
 
 use candid::{CandidType, Decode, Encode, Principal};
 use gleaph_gql_ic::graph_registry::{GraphRegistryEntry, GraphStatus, ProvisioningState};
-use gleaph_graph_kernel::federation::{
-    LogicalVertexId, MigrationApplyChunk, MigrationStartResult, MigrationStatus, ShardId,
-    VertexPlacement,
-};
+use gleaph_graph_kernel::federation::{LogicalVertexId, ShardId, VertexPlacement};
 use gleaph_router::RouterInitArgs;
 use gleaph_router::types::AdminRegisterShardArgs;
 use pocket_ic::{PocketIc, PocketIcBuilder};
@@ -316,53 +313,6 @@ pub fn e2e_insert_edge(
             target_local_vertex_id: target_local,
         },
     );
-}
-
-pub fn migration_status(
-    env: &FederationEnv,
-    graph: Principal,
-    logical: LogicalVertexId,
-) -> MigrationStatus {
-    query_as_router(env, graph, "migration_status", logical)
-}
-
-pub fn run_migration_until_ready(
-    env: &FederationEnv,
-    logical: LogicalVertexId,
-) -> MigrationStartResult {
-    for step in 0..256 {
-        let status = migration_status(env, env.graph_source, logical);
-        if status.ready_for_cutover {
-            return MigrationStartResult {
-                logical_vertex_id: logical,
-                epoch: status.item.as_ref().map(|i| i.epoch).unwrap_or(0),
-                local_vertex_id: status
-                    .item
-                    .as_ref()
-                    .map(|i| i.source_local_vertex_id)
-                    .unwrap_or(0),
-                metadata_snapshot: gleaph_graph_kernel::federation::MigrationMetadataSnapshot {
-                    labels: vec![],
-                    properties: vec![],
-                },
-            };
-        }
-        if let Some(chunk) = update_as_router::<(), Option<MigrationApplyChunk>>(
-            env,
-            env.graph_source,
-            "migration_maintenance_tick",
-            (),
-        ) {
-            let _: () = update_as_router(env, env.graph_dest, "migration_apply_chunk", chunk);
-        }
-        if step + 1 == 256 {
-            panic!(
-                "migration not ready; phase={:?}",
-                status.item.map(|i| i.phase)
-            );
-        }
-    }
-    unreachable!()
 }
 
 pub fn resolve_placement(env: &FederationEnv, logical: LogicalVertexId) -> VertexPlacement {

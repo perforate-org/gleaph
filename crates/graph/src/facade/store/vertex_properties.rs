@@ -50,12 +50,6 @@ impl GraphStore {
                 prev.as_ref(),
                 Some(&value),
             );
-            let _ = crate::facade::migration::incremental::journal_vertex_property_set(
-                self,
-                vertex_id,
-                property_id,
-                &value,
-            );
         }
         Ok(out)
     }
@@ -69,11 +63,6 @@ impl GraphStore {
             .with_borrow_mut(|properties| properties.remove(vertex_id, property_id));
         if let Some(ref old) = removed {
             pending::record_vertex_property_change(vertex_id, property_id, Some(old), None);
-            let _ = crate::facade::migration::incremental::journal_vertex_property_removed(
-                self,
-                vertex_id,
-                property_id,
-            );
         }
         removed
     }

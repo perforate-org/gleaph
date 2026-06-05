@@ -40,8 +40,10 @@ use ic_cdk_macros::{init, query, update};
 
 use crate::canister::{
     GraphInitArgs,
-    guards::{guard_control_plane_admin, guard_router_canister, guard_router_or_peer_graph},
+    guards::{guard_router_canister, guard_router_or_peer_graph},
 };
+#[cfg(feature = "pocket-ic-e2e")]
+use crate::canister::guards::guard_control_plane_admin;
 
 #[init]
 async fn init(args: GraphInitArgs) {
@@ -103,47 +105,6 @@ fn remove_graph_peer(
     canister::handlers::remove_graph_peer(args)
 }
 
-#[update(guard = "guard_control_plane_admin")]
-async fn migration_start(
-    args: gleaph_graph_kernel::federation::BeginVertexMigrationArgs,
-) -> Result<gleaph_graph_kernel::federation::MigrationStartResult, String> {
-    canister::handlers::migration_start(args).await
-}
-
-#[update(guard = "guard_control_plane_admin")]
-async fn migration_staging_begin(
-    args: gleaph_graph_kernel::federation::MigrationStagingArgs,
-) -> Result<gleaph_graph_kernel::federation::MigrationStartResult, String> {
-    canister::handlers::migration_staging_begin(args).await
-}
-
-#[update(guard = "guard_control_plane_admin")]
-async fn migration_apply_chunk(
-    chunk: gleaph_graph_kernel::federation::MigrationApplyChunk,
-) -> Result<(), String> {
-    canister::handlers::migration_apply_chunk(chunk).await
-}
-
-#[update(guard = "guard_control_plane_admin")]
-async fn migration_cutover(
-    logical_vertex_id: gleaph_graph_kernel::federation::LogicalVertexId,
-) -> Result<(), String> {
-    canister::handlers::migration_cutover(logical_vertex_id).await
-}
-
-#[query(guard = "guard_control_plane_admin")]
-fn migration_status(
-    logical_vertex_id: gleaph_graph_kernel::federation::LogicalVertexId,
-) -> Result<gleaph_graph_kernel::federation::MigrationStatus, String> {
-    canister::handlers::migration_status_query(logical_vertex_id)
-}
-
-#[update(guard = "guard_control_plane_admin")]
-async fn migration_maintenance_tick()
--> Result<Option<gleaph_graph_kernel::federation::MigrationApplyChunk>, String> {
-    canister::handlers::migration_maintenance_tick().await
-}
-
 #[cfg(feature = "pocket-ic-e2e")]
 #[update]
 fn e2e_attach_federation(args: canister::types::E2eAttachFederationArgs) -> Result<(), String> {
@@ -162,13 +123,6 @@ fn e2e_insert_directed_edge(
     args: canister::types::E2eInsertDirectedEdgeArgs,
 ) -> Result<(), String> {
     canister::handlers::e2e_insert_directed_edge(args)
-}
-
-#[update(guard = "guard_control_plane_admin")]
-async fn migration_reconcile(
-    logical_vertex_id: gleaph_graph_kernel::federation::LogicalVertexId,
-) -> Result<gleaph_graph_kernel::federation::MigrationReconcileReport, String> {
-    canister::handlers::migration_reconcile_query(logical_vertex_id).await
 }
 
 #[query(composite = true, guard = "guard_router_or_peer_graph")]

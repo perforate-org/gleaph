@@ -205,9 +205,7 @@ impl GraphStore {
                 routing.router_canister,
                 logical_vertex_id,
             ))?;
-            let VertexPlacement::Active(loc) = placement else {
-                return Ok(());
-            };
+            let VertexPlacement::Active(loc) = placement;
             if loc.shard_id != routing.shard_id
                 || loc.local_vertex_id != placement::local_vertex_id_raw(vertex_id)
             {

@@ -4,12 +4,11 @@ use super::GraphStore;
 use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
 use super::helpers::{catalog_edge_label_from_wire, validate_edge_payload_bytes_for_label};
-use crate::facade::migration::incremental::journal_edge_payload_changed;
 use gleaph_graph_kernel::entry::EdgeTarget;
 use ic_stable_lara::traits::CsrEdge;
 
 impl GraphStore {
-    /// Updates the inline edge-payload payload at `handle` and journals when the owner is migrating.
+    /// Updates the inline edge-payload payload at `handle`.
     pub(crate) fn update_edge_payload_at_handle(
         &self,
         handle: EdgeHandle,
@@ -104,7 +103,6 @@ impl GraphStore {
             });
         }
 
-        journal_edge_payload_changed(self, handle, payload_bytes)?;
         Ok(())
     }
 }

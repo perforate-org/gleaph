@@ -292,89 +292,26 @@ impl GraphStore {
 }
 
 pub(super) fn journal_edge_insert(
-    store: &GraphStore,
-    source_vertex_id: VertexId,
-    target_vertex_id: VertexId,
-    catalog_label: Option<EdgeLabelId>,
-    undirected: bool,
-    payload_bytes: &[u8],
-    canonical: EdgeHandle,
+    _store: &GraphStore,
+    _source_vertex_id: VertexId,
+    _target_vertex_id: VertexId,
+    _catalog_label: Option<EdgeLabelId>,
+    _undirected: bool,
+    _payload_bytes: &[u8],
+    _canonical: EdgeHandle,
 ) -> Result<(), GraphStoreError> {
-    use crate::facade::migration::incremental::{
-        maybe_journal_migration_op, migration_wire_handle,
-    };
-    use gleaph_graph_kernel::federation::MigrationJournalOp;
-
-    if let Some(target_logical_vertex_id) = store.logical_vertex_id(target_vertex_id) {
-        journal_edge_insert_to_logical(
-            store,
-            source_vertex_id,
-            target_logical_vertex_id,
-            false,
-            catalog_label,
-            undirected,
-            payload_bytes,
-            canonical,
-        )?;
-    }
-
-    if let Some(predecessor_logical_vertex_id) = store.logical_vertex_id(source_vertex_id)
-        && let Some(reverse) =
-            store.find_reverse_alias_for_canonical(canonical, target_vertex_id, source_vertex_id)?
-    {
-        maybe_journal_migration_op(
-            store,
-            target_vertex_id,
-            MigrationJournalOp::InReverseAdded {
-                source_handle: migration_wire_handle(
-                    target_vertex_id,
-                    reverse.label_id,
-                    reverse.slot_index,
-                ),
-                predecessor_logical_vertex_id,
-                predecessor_is_remote: source_vertex_id != target_vertex_id,
-                catalog_label,
-                canonical_source_handle: migration_wire_handle(
-                    source_vertex_id,
-                    canonical.label_id,
-                    canonical.slot_index,
-                ),
-                payload_bytes: payload_bytes.to_vec(),
-            },
-        )?;
-    }
     Ok(())
 }
 
 pub(super) fn journal_edge_insert_to_logical(
-    store: &GraphStore,
-    source_vertex_id: VertexId,
-    target_logical_vertex_id: gleaph_graph_kernel::federation::LogicalVertexId,
-    target_is_remote: bool,
-    catalog_label: Option<EdgeLabelId>,
-    undirected: bool,
-    payload_bytes: &[u8],
-    source_handle: EdgeHandle,
+    _store: &GraphStore,
+    _source_vertex_id: VertexId,
+    _target_logical_vertex_id: gleaph_graph_kernel::federation::LogicalVertexId,
+    _target_is_remote: bool,
+    _catalog_label: Option<EdgeLabelId>,
+    _undirected: bool,
+    _payload_bytes: &[u8],
+    _source_handle: EdgeHandle,
 ) -> Result<(), GraphStoreError> {
-    use crate::facade::migration::incremental::{
-        maybe_journal_migration_op, migration_wire_handle,
-    };
-    use gleaph_graph_kernel::federation::MigrationJournalOp;
-
-    maybe_journal_migration_op(
-        store,
-        source_vertex_id,
-        MigrationJournalOp::OutEdgeAdded {
-            catalog_label,
-            undirected,
-            payload_bytes: payload_bytes.to_vec(),
-            target_logical_vertex_id,
-            target_is_remote,
-            source_handle: migration_wire_handle(
-                source_vertex_id,
-                source_handle.label_id,
-                source_handle.slot_index,
-            ),
-        },
-    )
+    Ok(())
 }

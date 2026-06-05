@@ -1,9 +1,5 @@
 //! Federated expand: shard-local collection and cross-shard coordination.
 
-use super::migration::incremental::{
-    forwarding_stub_on_current_shard, migration_visibility_filter_needed,
-};
-use super::migration::vertex_visible_to_query;
 use super::stable::REMOTE_FORWARD_IN;
 use super::store::{EdgeHandle, GraphStore, GraphStoreError, canonical_undirected_owner};
 use crate::facade::catalog_edge_label_from_wire;
@@ -20,12 +16,10 @@ fn logical_id_for_local_vertex(store: &GraphStore, vertex_id: VertexId) -> Optio
     store.logical_vertex_id(vertex_id)
 }
 
-/// Authoritative physical row for expand while placement is [`VertexPlacement::Active`] or
-/// [`VertexPlacement::Migrating`] (outgoing/incoming still served from the source row).
+/// Authoritative physical row for expand while placement is [`VertexPlacement::Active`].
 fn authoritative_local_for_expand(placement: VertexPlacement) -> Option<PhysicalVertexLocation> {
     match placement {
         VertexPlacement::Active(loc) => Some(loc),
-        VertexPlacement::Migrating { source, .. } => Some(source),
     }
 }
 
@@ -179,15 +173,12 @@ fn collect_forward_to_remote_incoming_scan(
     backfill_index: bool,
 ) -> Result<(), GraphStoreError> {
     let vertex_count = u32::from(store.vertex_count());
-    let filter_migration_visibility = migration_visibility_filter_needed();
     for raw in 0..vertex_count {
         let vertex_id = VertexId::from(raw);
         let Some(vertex) = store.vertex(vertex_id) else {
             continue;
         };
-        if vertex.is_tombstone()
-            || (filter_migration_visibility && !vertex_visible_to_query(vertex_id))
-        {
+        if vertex.is_tombstone() {
             continue;
         };
         for edge in store.directed_out_edges(vertex_id)? {
@@ -250,52 +241,6 @@ fn collect_forward_to_remote_incoming(
     collect_forward_to_remote_incoming_scan(store, shard_id, remote_ref, label_id_raw, out, true)
 }
 
-fn collect_local_forward_to_stub_incoming(
-    store: &GraphStore,
-    shard_id: ShardId,
-    stub_local: VertexId,
-    label_id_raw: Option<u16>,
-    out: &mut Vec<FederatedExpandNeighbor>,
-) -> Result<(), GraphStoreError> {
-    let vertex_count = u32::from(store.vertex_count());
-    let filter_migration_visibility = migration_visibility_filter_needed();
-    for raw in 0..vertex_count {
-        let vertex_id = VertexId::from(raw);
-        let Some(vertex) = store.vertex(vertex_id) else {
-            continue;
-        };
-        if vertex.is_tombstone()
-            || (filter_migration_visibility && !vertex_visible_to_query(vertex_id))
-        {
-            continue;
-        }
-        for edge in store.directed_out_edges(vertex_id)? {
-            if edge.is_tombstone_edge() || !label_matches(&edge, label_id_raw) {
-                continue;
-            }
-            if !matches!(edge.edge_target(), Some(EdgeTarget::Local(v)) if v == stub_local) {
-                continue;
-            }
-            let Some(source_logical) = logical_id_for_local_vertex(store, vertex_id) else {
-                continue;
-            };
-            let anchor = placement::local_vertex_id_raw(stub_local);
-            let neighbor = placement::local_vertex_id_raw(vertex_id);
-            if out.iter().any(|hit| {
-                hit.anchor_local_vertex_id == anchor
-                    && hit.neighbor_logical_vertex_id == source_logical
-                    && hit.neighbor_local_vertex_id == neighbor
-                    && hit.label_id_raw == edge.label_id
-                    && hit.slot_index == edge.edge_slot_index.raw()
-            }) {
-                continue;
-            }
-            push_neighbor(out, shard_id, anchor, source_logical, neighbor, &edge)?;
-        }
-    }
-    Ok(())
-}
-
 /// Shard-local expand: incoming or outgoing neighbors for one logical vertex.
 pub async fn collect_federated_expand(
     store: &GraphStore,
@@ -346,25 +291,6 @@ async fn collect_incoming_neighbors(
             &mut out,
         )?;
         return Ok(out);
-    }
-
-    if let Some(stub_local) = forwarding_stub_on_current_shard(store, logical_vertex_id).await {
-        let stub_id = VertexId::from(stub_local);
-        collect_authoritative_incoming(
-            store,
-            routing.shard_id,
-            stub_id,
-            logical_vertex_id,
-            label_id_raw,
-            &mut out,
-        )?;
-        collect_local_forward_to_stub_incoming(
-            store,
-            routing.shard_id,
-            stub_id,
-            label_id_raw,
-            &mut out,
-        )?;
     }
 
     if let Some(remote_ref) = store.remote_ref_for_logical(logical_vertex_id) {
@@ -449,15 +375,12 @@ fn collect_undirected_to_remote(
     out: &mut Vec<FederatedExpandNeighbor>,
 ) -> Result<(), GraphStoreError> {
     let vertex_count = u32::from(store.vertex_count());
-    let filter_migration_visibility = migration_visibility_filter_needed();
     for raw in 0..vertex_count {
         let vertex_id = VertexId::from(raw);
         let Some(vertex) = store.vertex(vertex_id) else {
             continue;
         };
-        if vertex.is_tombstone()
-            || (filter_migration_visibility && !vertex_visible_to_query(vertex_id))
-        {
+        if vertex.is_tombstone() {
             continue;
         }
         for edge in store.undirected_edges(vertex_id)? {
@@ -480,60 +403,6 @@ fn collect_undirected_to_remote(
                 0,
                 source_logical,
                 placement::local_vertex_id_raw(vertex_id),
-                &forward_edge,
-            )?;
-        }
-    }
-    Ok(())
-}
-
-fn collect_local_undirected_to_stub(
-    store: &GraphStore,
-    shard_id: ShardId,
-    stub_local: VertexId,
-    label_id_raw: Option<u16>,
-    out: &mut Vec<FederatedExpandNeighbor>,
-) -> Result<(), GraphStoreError> {
-    let vertex_count = u32::from(store.vertex_count());
-    let filter_migration_visibility = migration_visibility_filter_needed();
-    for raw in 0..vertex_count {
-        let vertex_id = VertexId::from(raw);
-        let Some(vertex) = store.vertex(vertex_id) else {
-            continue;
-        };
-        if vertex.is_tombstone()
-            || (filter_migration_visibility && !vertex_visible_to_query(vertex_id))
-        {
-            continue;
-        }
-        for edge in store.undirected_edges(vertex_id)? {
-            if edge.is_tombstone_edge() || !label_matches(&edge, label_id_raw) {
-                continue;
-            }
-            if !matches!(edge.edge_target(), Some(EdgeTarget::Local(v)) if v == stub_local) {
-                continue;
-            }
-            let Some(source_logical) = logical_id_for_local_vertex(store, vertex_id) else {
-                continue;
-            };
-            let forward_edge = forward_undirected_edge_record(store, vertex_id, &edge)?;
-            let anchor = placement::local_vertex_id_raw(stub_local);
-            let neighbor = placement::local_vertex_id_raw(vertex_id);
-            if out.iter().any(|hit| {
-                hit.anchor_local_vertex_id == anchor
-                    && hit.neighbor_logical_vertex_id == source_logical
-                    && hit.neighbor_local_vertex_id == neighbor
-                    && hit.label_id_raw == forward_edge.label_id
-                    && hit.slot_index == forward_edge.edge_slot_index.raw()
-            }) {
-                continue;
-            }
-            push_neighbor(
-                out,
-                shard_id,
-                anchor,
-                source_logical,
-                neighbor,
                 &forward_edge,
             )?;
         }
@@ -573,19 +442,6 @@ async fn collect_undirected_neighbors(
             &mut out,
         )?;
         return Ok(out);
-    }
-
-    if let Some(stub_local) = forwarding_stub_on_current_shard(store, logical_vertex_id).await {
-        let stub_id = VertexId::from(stub_local);
-        collect_authoritative_undirected(
-            store,
-            routing.shard_id,
-            stub_id,
-            logical_vertex_id,
-            label_id_raw,
-            &mut out,
-        )?;
-        collect_local_undirected_to_stub(store, routing.shard_id, stub_id, label_id_raw, &mut out)?;
     }
 
     if let Some(remote_ref) = store.remote_ref_for_logical(logical_vertex_id) {
@@ -660,16 +516,6 @@ async fn collect_outgoing_neighbors(
         return Ok(out);
     }
 
-    if let Some(stub_local) = forwarding_stub_on_current_shard(store, logical_vertex_id).await {
-        collect_authoritative_outgoing(
-            store,
-            routing.shard_id,
-            VertexId::from(stub_local),
-            logical_vertex_id,
-            label_id_raw,
-            &mut out,
-        )?;
-    }
     Ok(out)
 }
 
@@ -1146,7 +992,7 @@ mod tests {
             target: gleaph_graph_kernel::entry::VertexRef::remote_ref(remote_ref),
             edge_slot_index: gleaph_graph_kernel::entry::EdgeSlotIndex::from_raw(0),
             label_id: 0,
-            payload: gleaph_graph_kernel::entry::EdgePayload::from_slice(&[3, 0]),
+            payload: gleaph_graph_kernel::entry::EdgePayload::EMPTY,
         };
         store
             .with_graph_mut(|graph| {
@@ -1171,7 +1017,7 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].neighbor_logical_vertex_id, remote_logical);
         assert_eq!(hits[0].neighbor_local_vertex_id, 0);
-        assert_eq!(hits[0].payload_bytes[..2], [3, 0]);
+        assert_eq!(hits[0].payload_len(), 0);
     }
 
     #[test]
@@ -1349,241 +1195,6 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].neighbor_logical_vertex_id, source_logical);
         assert_eq!(hits[0].anchor_local_vertex_id, 0);
-    }
-
-    #[test]
-    fn outgoing_expand_during_source_migrating() {
-        use crate::facade::migration::{migration_staging_begin, migration_start};
-        use gleaph_graph_kernel::federation::{BeginVertexMigrationArgs, MigrationStagingArgs};
-
-        register_test_shard(7, "g");
-        register_test_shard(9, "g");
-        let store = GraphStore::new();
-        store
-            .set_federation_routing(Some(FederationRouting {
-                router_canister: Principal::management_canister(),
-                index_canister: Principal::management_canister(),
-                shard_id: 7,
-            }))
-            .expect("routing");
-
-        let source = store.insert_vertex().expect("source");
-        let source_logical = store.logical_vertex_id(source).expect("logical");
-        let target = store.insert_vertex().expect("target");
-        let target_logical = store.logical_vertex_id(target).expect("target logical");
-        store
-            .insert_directed_edge(source, target, None)
-            .expect("edge");
-
-        let start = pollster::block_on(migration_start(
-            &store,
-            BeginVertexMigrationArgs {
-                logical_vertex_id: source_logical,
-                destination_shard_id: 9,
-            },
-        ))
-        .expect("start");
-
-        store
-            .set_federation_routing(Some(FederationRouting {
-                router_canister: Principal::management_canister(),
-                index_canister: Principal::management_canister(),
-                shard_id: 9,
-            }))
-            .expect("dest routing");
-        pollster::block_on(migration_staging_begin(
-            &store,
-            MigrationStagingArgs {
-                logical_vertex_id: source_logical,
-                epoch: start.epoch,
-                source_shard_id: 7,
-                source_local_vertex_id: placement::local_vertex_id_raw(source),
-                metadata_snapshot: start.metadata_snapshot,
-            },
-        ))
-        .expect("staging");
-
-        store
-            .set_federation_routing(Some(FederationRouting {
-                router_canister: Principal::management_canister(),
-                index_canister: Principal::management_canister(),
-                shard_id: 7,
-            }))
-            .expect("source routing");
-
-        let hits = pollster::block_on(collect_federated_expand(
-            &store,
-            FederatedExpandArgs {
-                logical_vertex_id: source_logical,
-                direction: FederatedExpandDirection::Outgoing,
-                label_id_raw: None,
-            },
-        ))
-        .expect("expand");
-
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].neighbor_logical_vertex_id, target_logical);
-    }
-
-    #[test]
-    fn expand_via_forwarding_stub_after_cutover() {
-        use crate::facade::migration::{
-            migration_apply_chunk, migration_cutover, migration_maintenance_step_for,
-            migration_staging_begin, migration_start, migration_status,
-        };
-        use gleaph_graph_kernel::federation::{BeginVertexMigrationArgs, MigrationStagingArgs};
-
-        const SOURCE_SHARD: ShardId = 7;
-        const DEST_SHARD: ShardId = 9;
-
-        register_test_shard(SOURCE_SHARD, "g");
-        register_test_shard(DEST_SHARD, "g");
-        let store = GraphStore::new();
-        store
-            .set_federation_routing(Some(FederationRouting {
-                router_canister: Principal::management_canister(),
-                index_canister: Principal::management_canister(),
-                shard_id: SOURCE_SHARD,
-            }))
-            .expect("routing");
-
-        let migrant = store.insert_vertex().expect("migrant");
-        let migrant_logical = store.logical_vertex_id(migrant).expect("migrant logical");
-        let neighbor = store.insert_vertex().expect("neighbor");
-        let neighbor_logical = store.logical_vertex_id(neighbor).expect("neighbor logical");
-        let peer = store.insert_vertex().expect("peer");
-        let peer_logical = store.logical_vertex_id(peer).expect("peer logical");
-        store
-            .insert_directed_edge(neighbor, migrant, None)
-            .expect("edge into migrant");
-        store
-            .insert_directed_edge(migrant, peer, None)
-            .expect("edge out of migrant");
-
-        let start = pollster::block_on(migration_start(
-            &store,
-            BeginVertexMigrationArgs {
-                logical_vertex_id: migrant_logical,
-                destination_shard_id: DEST_SHARD,
-            },
-        ))
-        .expect("start");
-
-        store
-            .set_federation_routing(Some(FederationRouting {
-                router_canister: Principal::management_canister(),
-                index_canister: Principal::management_canister(),
-                shard_id: DEST_SHARD,
-            }))
-            .expect("dest routing");
-        pollster::block_on(migration_staging_begin(
-            &store,
-            MigrationStagingArgs {
-                logical_vertex_id: migrant_logical,
-                epoch: start.epoch,
-                source_shard_id: SOURCE_SHARD,
-                source_local_vertex_id: placement::local_vertex_id_raw(migrant),
-                metadata_snapshot: start.metadata_snapshot,
-            },
-        ))
-        .expect("staging");
-
-        for _ in 0..64 {
-            if migration_status(&store, migrant_logical)
-                .expect("status")
-                .ready_for_cutover
-            {
-                break;
-            }
-            store
-                .set_federation_routing(Some(FederationRouting {
-                    router_canister: Principal::management_canister(),
-                    index_canister: Principal::management_canister(),
-                    shard_id: SOURCE_SHARD,
-                }))
-                .expect("source routing");
-            if let Some(chunk) =
-                pollster::block_on(migration_maintenance_step_for(&store, migrant_logical))
-                    .expect("maintenance")
-            {
-                store
-                    .set_federation_routing(Some(FederationRouting {
-                        router_canister: Principal::management_canister(),
-                        index_canister: Principal::management_canister(),
-                        shard_id: DEST_SHARD,
-                    }))
-                    .expect("dest routing");
-                pollster::block_on(migration_apply_chunk(&store, chunk)).expect("apply");
-            }
-        }
-
-        store
-            .set_federation_routing(Some(FederationRouting {
-                router_canister: Principal::management_canister(),
-                index_canister: Principal::management_canister(),
-                shard_id: DEST_SHARD,
-            }))
-            .expect("dest routing");
-        pollster::block_on(migration_cutover(&store, migrant_logical)).expect("dest cutover");
-        store
-            .set_federation_routing(Some(FederationRouting {
-                router_canister: Principal::management_canister(),
-                index_canister: Principal::management_canister(),
-                shard_id: SOURCE_SHARD,
-            }))
-            .expect("source routing");
-        pollster::block_on(migration_cutover(&store, migrant_logical)).expect("source cutover");
-
-        let incoming_on_source = pollster::block_on(collect_federated_expand(
-            &store,
-            FederatedExpandArgs {
-                logical_vertex_id: migrant_logical,
-                direction: FederatedExpandDirection::Incoming,
-                label_id_raw: None,
-            },
-        ))
-        .expect("incoming on source");
-        assert_eq!(incoming_on_source.len(), 1);
-        assert_eq!(
-            incoming_on_source[0].neighbor_logical_vertex_id,
-            neighbor_logical
-        );
-
-        let outgoing_on_source = pollster::block_on(collect_federated_expand(
-            &store,
-            FederatedExpandArgs {
-                logical_vertex_id: migrant_logical,
-                direction: FederatedExpandDirection::Outgoing,
-                label_id_raw: None,
-            },
-        ))
-        .expect("outgoing on source");
-        assert_eq!(outgoing_on_source.len(), 1);
-        assert_eq!(
-            outgoing_on_source[0].neighbor_logical_vertex_id,
-            peer_logical
-        );
-
-        store
-            .set_federation_routing(Some(FederationRouting {
-                router_canister: Principal::management_canister(),
-                index_canister: Principal::management_canister(),
-                shard_id: DEST_SHARD,
-            }))
-            .expect("dest routing");
-        let outgoing_on_dest = pollster::block_on(collect_federated_expand(
-            &store,
-            FederatedExpandArgs {
-                logical_vertex_id: migrant_logical,
-                direction: FederatedExpandDirection::Outgoing,
-                label_id_raw: None,
-            },
-        ))
-        .expect("outgoing on dest");
-        assert!(
-            !outgoing_on_dest.is_empty(),
-            "authoritative destination shard serves outgoing expand"
-        );
     }
 
     #[test]

@@ -8,7 +8,6 @@ use gleaph_graph_kernel::entry::PropertyId;
 
 use super::GraphStore;
 use super::handle::EdgeHandle;
-use crate::facade::migration::incremental::journal_edge_property_changed;
 
 impl GraphStore {
     pub fn edge_property(&self, handle: EdgeHandle, property_id: PropertyId) -> Option<Value> {
@@ -55,9 +54,6 @@ impl GraphStore {
             prev.as_ref(),
             Some(&value),
         );
-        if let Ok(payload_bytes) = value.to_binary_bytes() {
-            let _ = journal_edge_property_changed(self, handle, property_id, Some(payload_bytes));
-        }
         Ok(old)
     }
 
@@ -92,7 +88,6 @@ impl GraphStore {
                 Some(old),
                 None,
             );
-            let _ = journal_edge_property_changed(self, handle, property_id, None);
         }
         removed
     }

@@ -1,10 +1,8 @@
-//! PocketIC smoke test: router + index shard registry and placement migration.
+//! PocketIC smoke test: router + index shard registry and active placement.
 
 use candid::{Decode, Encode, Principal};
-use gleaph_graph_kernel::federation::{
-    BeginVertexMigrationArgs, CommitVertexPlacementArgs, FinishVertexMigrationArgs, VertexPlacement,
-};
-use gleaph_pocket_ic_tests::{DEST_SHARD, install_router_and_index, query_as_router};
+use gleaph_graph_kernel::federation::{CommitVertexPlacementArgs, VertexPlacement};
+use gleaph_pocket_ic_tests::{SOURCE_SHARD, install_router_and_index, query_as_router};
 
 fn update_as_graph<
     T: candid::CandidType + serde::de::DeserializeOwned,
@@ -27,7 +25,7 @@ fn update_as_graph<
 }
 
 #[test]
-fn router_registers_shards_and_runs_placement_migration() {
+fn router_registers_shards_and_commits_active_placement() {
     let env = install_router_and_index();
 
     let graph_source = env.pic.create_canister();
@@ -62,40 +60,9 @@ fn router_registers_shards_and_runs_placement_migration() {
         },
     );
 
-    let _: () = update_as_graph(
-        &env.pic,
-        env.router,
-        graph_source,
-        "begin_vertex_migration",
-        BeginVertexMigrationArgs {
-            logical_vertex_id: logical,
-            destination_shard_id: DEST_SHARD,
-        },
-    );
-
-    let migrating = query_as_router(&env, env.router, "resolve_placement", logical);
-    assert!(matches!(
-        migrating,
-        VertexPlacement::Migrating {
-            destination_shard_id: DEST_SHARD,
-            ..
-        }
-    ));
-
-    let _: () = update_as_graph(
-        &env.pic,
-        env.router,
-        graph_dest,
-        "finish_vertex_migration",
-        FinishVertexMigrationArgs {
-            logical_vertex_id: logical,
-            destination_local_vertex_id: 5,
-        },
-    );
-
     let active = query_as_router(&env, env.router, "resolve_placement", logical);
     assert!(matches!(
         active,
-        VertexPlacement::Active(loc) if loc.shard_id == DEST_SHARD && loc.local_vertex_id == 5
+        VertexPlacement::Active(loc) if loc.shard_id == SOURCE_SHARD && loc.local_vertex_id == 42
     ));
 }

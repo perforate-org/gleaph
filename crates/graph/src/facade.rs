@@ -9,7 +9,6 @@ mod store;
 mod store_edge_insert;
 
 pub mod federation_expand;
-pub mod migration;
 pub mod mutation_executor;
 
 pub use stable::property_catalog::PropertyCatalogError;

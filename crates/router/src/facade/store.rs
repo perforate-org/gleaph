@@ -7,7 +7,7 @@ use super::stable::label_telemetry::{
 use super::stable::{
     ROUTER_APPLIED_LABEL_TELEMETRY, ROUTER_CONTROLLERS, ROUTER_EDGE_LABEL_BY_ID,
     ROUTER_EDGE_LABEL_BY_NAME, ROUTER_EDGE_LABEL_LIVE_BY_SHARD, ROUTER_EDGE_LABEL_STATS,
-    ROUTER_GRAPHS, ROUTER_LOGICAL_COUNTER, ROUTER_MIGRATION_COUNTER, ROUTER_MUTATION_BY_CLIENT_KEY,
+    ROUTER_GRAPHS, ROUTER_LOGICAL_COUNTER, ROUTER_MUTATION_BY_CLIENT_KEY,
     ROUTER_MUTATION_COUNTER, ROUTER_PENDING_LOGICAL, ROUTER_PLACEMENT_BY_PHYSICAL,
     ROUTER_PLACEMENTS, ROUTER_PROPERTY_BY_ID, ROUTER_PROPERTY_BY_NAME, ROUTER_SHARD_BY_GRAPH,
     ROUTER_SHARDS, ROUTER_VERTEX_LABEL_BY_ID, ROUTER_VERTEX_LABEL_BY_NAME,
@@ -17,9 +17,8 @@ use crate::index_sync;
 use crate::init::RouterInitArgs;
 use crate::state::RouterError;
 use crate::types::{
-    AdminRegisterShardArgs, BeginVertexMigrationArgs, CommitVertexPlacementArgs, EdgeLabelId,
-    FinishVertexMigrationArgs, GraphRegistryEntry, GraphStatus, PropertyId,
-    ReleaseLogicalVertexArgs, ShardId, VertexLabelId, VertexPlacement,
+    AdminRegisterShardArgs, CommitVertexPlacementArgs, EdgeLabelId, GraphRegistryEntry,
+    GraphStatus, PropertyId, ReleaseLogicalVertexArgs, ShardId, VertexLabelId, VertexPlacement,
 };
 use candid::Principal;
 use gleaph_gql_planner::{LabelUseIntent, PhysicalPlan};
@@ -64,9 +63,6 @@ impl RouterStore {
         ROUTER_SHARD_BY_GRAPH.with_borrow_mut(|m| m.clear_new());
         ROUTER_PLACEMENTS.with_borrow_mut(|p| p.clear_new());
         ROUTER_PLACEMENT_BY_PHYSICAL.with_borrow_mut(|p| p.clear_new());
-        ROUTER_MIGRATION_COUNTER.with_borrow_mut(|c| {
-            c.set(0);
-        });
         ROUTER_LOGICAL_COUNTER.with_borrow_mut(|c| {
             c.set(0);
         });
@@ -804,90 +800,6 @@ impl RouterStore {
         Ok(())
     }
 
-    pub fn begin_vertex_migration(
-        &self,
-        caller: Principal,
-        args: BeginVertexMigrationArgs,
-    ) -> Result<(), RouterError> {
-        let source_shard = self.shard_id_for_graph_caller(caller)?;
-        if !ROUTER_SHARDS.with_borrow(|s| s.contains_key(&args.destination_shard_id)) {
-            return Err(RouterError::ShardNotRegistered);
-        }
-        if source_shard == args.destination_shard_id {
-            return Err(RouterError::InvalidMigrationState(
-                "destination shard must differ from source".into(),
-            ));
-        }
-
-        let placement = ROUTER_PLACEMENTS
-            .with_borrow(|p| p.get(&args.logical_vertex_id))
-            .ok_or(RouterError::VertexNotFound)?;
-
-        let VertexPlacement::Active(source) = placement else {
-            return Err(RouterError::VertexMigrating);
-        };
-        if source.shard_id != source_shard {
-            return Err(RouterError::Forbidden);
-        }
-
-        let epoch = ROUTER_MIGRATION_COUNTER.with_borrow_mut(|c| {
-            let next = c.get().saturating_add(1);
-            c.set(next);
-            next
-        });
-
-        ROUTER_PLACEMENTS.with_borrow_mut(|p| {
-            p.insert(
-                args.logical_vertex_id,
-                VertexPlacement::Migrating {
-                    epoch,
-                    source,
-                    destination_shard_id: args.destination_shard_id,
-                },
-            );
-        });
-        Ok(())
-    }
-
-    pub fn finish_vertex_migration(
-        &self,
-        caller: Principal,
-        args: FinishVertexMigrationArgs,
-    ) -> Result<(), RouterError> {
-        let destination_shard = self.shard_id_for_graph_caller(caller)?;
-
-        let placement = ROUTER_PLACEMENTS
-            .with_borrow(|p| p.get(&args.logical_vertex_id))
-            .ok_or(RouterError::VertexNotFound)?;
-
-        let VertexPlacement::Migrating {
-            source,
-            destination_shard_id,
-            ..
-        } = placement
-        else {
-            return Err(RouterError::VertexNotMigrating);
-        };
-        if destination_shard_id != destination_shard {
-            return Err(RouterError::Forbidden);
-        }
-
-        let destination =
-            PhysicalVertexLocation::new(destination_shard, args.destination_local_vertex_id);
-        let old_physical = PhysicalPlacementKey::new(source.shard_id, source.local_vertex_id);
-        let new_physical =
-            PhysicalPlacementKey::new(destination.shard_id, destination.local_vertex_id);
-
-        ROUTER_PLACEMENT_BY_PHYSICAL.with_borrow_mut(|p| {
-            p.remove(old_physical);
-            p.insert(new_physical, args.logical_vertex_id);
-        });
-        ROUTER_PLACEMENTS.with_borrow_mut(|p| {
-            p.insert(args.logical_vertex_id, VertexPlacement::Active(destination));
-        });
-        Ok(())
-    }
-
     pub fn release_logical_vertex_placement(
         &self,
         caller: Principal,
@@ -899,9 +811,7 @@ impl RouterStore {
             .with_borrow(|p| p.get(&args.logical_vertex_id))
             .ok_or(RouterError::VertexNotFound)?;
 
-        let VertexPlacement::Active(loc) = placement else {
-            return Err(RouterError::Forbidden);
-        };
+        let VertexPlacement::Active(loc) = placement;
         if loc.shard_id != shard_id {
             return Err(RouterError::Forbidden);
         }
@@ -1222,92 +1132,6 @@ mod tests {
             .expect("release");
 
         assert!(store.resolve_placement(logical).is_err());
-        assert!(store.resolve_logical_at(7, 42).is_err());
-    }
-
-    #[test]
-    fn vertex_migration_updates_placement_and_physical_reverse_index() {
-        let store = RouterStore::new();
-        store.init_from_args(&test_init_args());
-        let admin = Principal::anonymous();
-        store.bootstrap_controllers(&[admin]);
-
-        let source_graph = graph_principal(1);
-        let dest_graph = graph_principal(3);
-        let index = graph_principal(2);
-
-        futures::executor::block_on(store.admin_register_shard(
-            admin,
-            AdminRegisterShardArgs {
-                shard_id: 7,
-                graph_canister: source_graph,
-                index_canister: index,
-                logical_graph_name: "tenant.main".into(),
-            },
-        ))
-        .expect("register source");
-
-        futures::executor::block_on(store.admin_register_shard(
-            admin,
-            AdminRegisterShardArgs {
-                shard_id: 9,
-                graph_canister: dest_graph,
-                index_canister: index,
-                logical_graph_name: "tenant.main".into(),
-            },
-        ))
-        .expect("register destination");
-
-        let logical = store
-            .allocate_logical_vertex_id(source_graph)
-            .expect("allocate");
-        store
-            .commit_vertex_placement(
-                source_graph,
-                CommitVertexPlacementArgs {
-                    logical_vertex_id: logical,
-                    local_vertex_id: 42,
-                },
-            )
-            .expect("commit");
-
-        store
-            .begin_vertex_migration(
-                source_graph,
-                BeginVertexMigrationArgs {
-                    logical_vertex_id: logical,
-                    destination_shard_id: 9,
-                },
-            )
-            .expect("begin");
-
-        assert_eq!(
-            store.resolve_placement(logical).expect("placement"),
-            VertexPlacement::Migrating {
-                epoch: 1,
-                source: PhysicalVertexLocation::new(7, 42),
-                destination_shard_id: 9,
-            }
-        );
-
-        store
-            .finish_vertex_migration(
-                dest_graph,
-                FinishVertexMigrationArgs {
-                    logical_vertex_id: logical,
-                    destination_local_vertex_id: 5,
-                },
-            )
-            .expect("finish");
-
-        assert_eq!(
-            store.resolve_placement(logical).expect("placement"),
-            VertexPlacement::Active(PhysicalVertexLocation::new(9, 5))
-        );
-        assert_eq!(
-            store.resolve_logical_at(9, 5).expect("new physical"),
-            logical
-        );
         assert!(store.resolve_logical_at(7, 42).is_err());
     }
 

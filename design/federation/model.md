@@ -6,7 +6,7 @@ Define the **distributed graph identity and placement model** shared by router, 
 
 ## Non-goals
 
-- Step-by-step migration runbooks ([operations.md](operations.md)).
+- Future migration runbooks ([operations.md](operations.md)).
 - Query planner rules ([query-semantics.md](query-semantics.md)).
 
 ## Source of truth
@@ -14,7 +14,6 @@ Define the **distributed graph identity and placement model** shared by router, 
 `crates/graph-kernel/src/federation.rs` and submodules:
 
 - `federation/expand.rs` — `FederatedExpandArgs`, `FederatedExpandNeighbor`
-- `federation/migration.rs` — export/import wire types
 - `federation/router_error.rs` — `RouterError`
 - `federation/peer_sync.rs` — graph peer ACL sync
 
@@ -22,8 +21,8 @@ Define the **distributed graph identity and placement model** shared by router, 
 
 ```mermaid
 flowchart TD
-    L["LogicalVertexId (u64)<br/>router allocates; stable across migration"]
-    L --> VP["VertexPlacement (router)<br/>Active · Migrating"]
+    L["LogicalVertexId (u64)<br/>router allocates"]
+    L --> VP["VertexPlacement (router)<br/>Active"]
     VP --> PVL["PhysicalVertexLocation<br/>shard_id + local_vertex_id"]
     PVL --> LV["LocalVertexId / VertexId<br/>dense CSR on one graph shard"]
 ```
@@ -42,8 +41,6 @@ flowchart TD
 ```mermaid
 stateDiagram-v2
     [*] --> Active: commit_vertex_placement [create]
-    Active --> Migrating: begin_vertex_migration
-    Migrating --> Active: finish_vertex_migration<br/>(destination)
     Active --> [*]: release_logical_vertex<br/>(source tombstone)
 ```
 
@@ -51,9 +48,8 @@ stateDiagram-v2
 
 1. **Router is authoritative** for `VertexPlacement` and logical id allocation.
 2. **At most one active physical home** per logical vertex (`Active` location).
-3. While **`Migrating`**, the **source shard** remains writable (`SourceMigrating`); **staging** rows on the destination reject user writes until cutover.
-4. **Logical id is stable** across migration; only `PhysicalVertexLocation` changes.
-5. Graph shards **commit** placement after local insert; they do not invent logical ids independently in federated mode.
+3. Graph shards **commit** placement after local insert; they do not invent logical ids independently in federated mode.
+4. Migration is future work; adding it should introduce an explicit placement transition state and runtime protocol together.
 
 ## Remote edges
 
@@ -88,6 +84,6 @@ Router `list_shards_for_graph` drives multi-shard dispatch.
 
 ## Related documents
 
-- [operations.md](operations.md) — expand and migration procedures
+- [operations.md](operations.md) — registration, placement, and expand procedures
 - [query-semantics.md](query-semantics.md) — executor bindings
 - [architecture/overview.md](../architecture/overview.md)

@@ -1,8 +1,6 @@
 //! Distributed graph federation identifiers and placement types.
 
 mod expand;
-mod incremental_migration;
-mod migration;
 mod peer_sync;
 mod router_error;
 
@@ -10,14 +8,6 @@ pub use expand::{
     FederatedExpandArgs, FederatedExpandDirection, FederatedExpandNeighbor,
     MAX_FEDERATED_EXPAND_PAYLOAD_BYTE_WIDTH,
 };
-pub use incremental_migration::{
-    EdgeCopyCursor, ExportedInReverseEdge, MigrationApplyChunk, MigrationEdgeHandleWire,
-    MigrationItem, MigrationJournalEntry, MigrationJournalOp, MigrationMetadataSnapshot,
-    MigrationOrientation, MigrationPhase, MigrationReconcileAction, MigrationReconcileReport,
-    MigrationStagingArgs, MigrationStartResult, MigrationStatus, PruneMigratedSourceItem,
-    PruneMigratedSourcePhase, VertexMigrationState,
-};
-pub use migration::{ExportedEdgeTarget, ExportedOutEdge, ExportedProperty, ExportedVertex};
 pub use peer_sync::{AddGraphPeerArgs, BootstrapGraphPeersArgs, RemoveGraphPeerArgs};
 pub use router_error::RouterError;
 
@@ -27,7 +17,7 @@ use ic_stable_structures::storable::{Bound, Storable};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
-/// Stable logical vertex identity (globally unique, never changes on migration).
+/// Stable logical vertex identity (globally unique across graph shards).
 pub type LogicalVertexId = u64;
 
 /// Graph shard partition id.
@@ -41,20 +31,6 @@ pub type LocalVertexId = u32;
 pub struct CommitVertexPlacementArgs {
     pub logical_vertex_id: LogicalVertexId,
     pub local_vertex_id: LocalVertexId,
-}
-
-/// Source shard begins migrating a vertex to another shard.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
-pub struct BeginVertexMigrationArgs {
-    pub logical_vertex_id: LogicalVertexId,
-    pub destination_shard_id: ShardId,
-}
-
-/// Destination shard completes migration after importing vertex data.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
-pub struct FinishVertexMigrationArgs {
-    pub logical_vertex_id: LogicalVertexId,
-    pub destination_local_vertex_id: LocalVertexId,
 }
 
 /// Authoritative graph shard drops router placement after deleting the vertex locally.
@@ -155,11 +131,6 @@ impl PhysicalVertexLocation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub enum VertexPlacement {
     Active(PhysicalVertexLocation),
-    Migrating {
-        epoch: u64,
-        source: PhysicalVertexLocation,
-        destination_shard_id: ShardId,
-    },
 }
 
 /// Shard registration record returned by the router (`resolve_shard`).
@@ -226,19 +197,12 @@ mod tests {
 
     #[test]
     fn vertex_placement_storable_and_candid_roundtrip() {
-        let active = VertexPlacement::Active(PhysicalVertexLocation::new(1, 10));
-        let migrating = VertexPlacement::Migrating {
-            epoch: 2,
-            source: PhysicalVertexLocation::new(1, 10),
-            destination_shard_id: 9,
-        };
-        for placement in [active, migrating] {
-            let storable = placement.to_bytes();
-            assert_eq!(placement, VertexPlacement::from_bytes(storable));
-            let encoded = Encode!(&placement).expect("encode");
-            let decoded: VertexPlacement = Decode!(&encoded, VertexPlacement).expect("decode");
-            assert_eq!(placement, decoded);
-        }
+        let placement = VertexPlacement::Active(PhysicalVertexLocation::new(1, 10));
+        let storable = placement.to_bytes();
+        assert_eq!(placement, VertexPlacement::from_bytes(storable));
+        let encoded = Encode!(&placement).expect("encode");
+        let decoded: VertexPlacement = Decode!(&encoded, VertexPlacement).expect("decode");
+        assert_eq!(placement, decoded);
     }
 
     #[test]
@@ -255,28 +219,15 @@ mod tests {
     }
 
     #[test]
-    fn migration_args_candid_roundtrip() {
+    fn placement_args_candid_roundtrip() {
         let commit = CommitVertexPlacementArgs {
             logical_vertex_id: 1,
             local_vertex_id: 42,
         };
-        let begin = BeginVertexMigrationArgs {
-            logical_vertex_id: 1,
-            destination_shard_id: 9,
-        };
-        let finish = FinishVertexMigrationArgs {
-            logical_vertex_id: 1,
-            destination_local_vertex_id: 99,
-        };
         let release = ReleaseLogicalVertexArgs {
             logical_vertex_id: 1,
         };
-        for value in [
-            Encode!(&commit).unwrap(),
-            Encode!(&begin).unwrap(),
-            Encode!(&finish).unwrap(),
-            Encode!(&release).unwrap(),
-        ] {
+        for value in [Encode!(&commit).unwrap(), Encode!(&release).unwrap()] {
             assert!(!value.is_empty());
         }
     }

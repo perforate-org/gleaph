@@ -6,11 +6,11 @@ Terms used across Gleaph design documents. Canonical types live in **`gleaph-gra
 
 | Term | Type / location | Meaning |
 |------|-----------------|--------|
-| **Logical vertex id** | `LogicalVertexId` (`u64`) | Global, stable vertex identity assigned by the router. Unchanged across migration. |
+| **Logical vertex id** | `LogicalVertexId` (`u64`) | Global, stable vertex identity assigned by the router. |
 | **Local vertex id** | `LocalVertexId` / LARA `VertexId` | Dense id within one graph shard’s CSR store. |
 | **Shard id** | `ShardId` (`u32`) | Partition of a logical graph. |
 | **Physical placement** | `PhysicalVertexLocation` | `(shard_id, local_vertex_id)` where vertex data currently lives. |
-| **Vertex placement** | `VertexPlacement` | Router-owned state: `Active(loc)` or `Migrating { epoch, source, destination_shard_id }`. |
+| **Vertex placement** | `VertexPlacement` | Router-owned state: `Active(loc)`. |
 | **Physical placement key** | `PhysicalPlacementKey` | 8-byte stable key for reverse lookup `(shard → local → logical)`. |
 | **Standalone mode** | `standalone_logical_vertex_id` | Single-shard dev: local id equals logical id. |
 
@@ -48,5 +48,5 @@ Terms used across Gleaph design documents. Canonical types live in **`gleaph-gra
 | Canister | Role |
 |----------|------|
 | **Router** | Auth, planning entry, shard registry, placement authority, multi-shard dispatch. |
-| **Graph shard** | LARA storage, plan execution, federated expand, migration export/import. |
+| **Graph shard** | LARA storage, plan execution, federated expand. |
 | **Graph index** | Property equality postings tagged with `shard_id`. |

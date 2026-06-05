@@ -45,9 +45,7 @@ pub enum GraphStoreError {
     /// Edge payload profile was already installed for this catalog label at init.
     EdgeLabelProfileAlreadyInstalled(EdgeLabelId),
     VertexPlacement(placement::VertexPlacementError),
-    /// Router reports this shard-local vertex is frozen during migration.
-    VertexMigrating,
-    /// Shard-local CSR row is tombstoned (stale after migration).
+    /// Shard-local CSR row is tombstoned.
     VertexTombstoned,
 }
 
@@ -104,7 +102,6 @@ impl fmt::Display for GraphStoreError {
                 id.raw()
             ),
             Self::VertexPlacement(err) => write!(f, "{err}"),
-            Self::VertexMigrating => write!(f, "vertex is frozen for migration on this shard"),
             Self::VertexTombstoned => write!(f, "vertex row is tombstoned on this shard"),
         }
     }
@@ -127,7 +124,6 @@ impl std::error::Error for GraphStoreError {
             | Self::FederatedExpandPayload { .. }
             | Self::EdgeLabelProfileAlreadyInstalled(_)
             | Self::VertexPlacement(_)
-            | Self::VertexMigrating
             | Self::VertexTombstoned => None,
         }
     }

@@ -1,7 +1,7 @@
 //! Canonical edge insert paths (directed / undirected, local / logical, valued / unvalued).
 
 use gleaph_graph_kernel::entry::EdgeLabelId;
-use gleaph_graph_kernel::federation::{ExportedEdgeTarget, LogicalVertexId, VertexPlacement};
+use gleaph_graph_kernel::federation::{LogicalVertexId, VertexPlacement};
 use ic_stable_lara::VertexId;
 
 use crate::index::placement;
@@ -26,9 +26,7 @@ fn resolve_local_endpoint(
             logical_vertex_id,
         ))
         .ok()?;
-        let VertexPlacement::Active(loc) = placement else {
-            return None;
-        };
+        let VertexPlacement::Active(loc) = placement;
         if loc.shard_id != routing.shard_id {
             return None;
         }
@@ -109,42 +107,4 @@ impl GraphStore {
         }
     }
 
-    pub(crate) fn insert_exported_out_edge(
-        &self,
-        owner_vertex_id: VertexId,
-        target: &ExportedEdgeTarget,
-        undirected: bool,
-        payload_bytes: &[u8],
-        catalog_label: Option<EdgeLabelId>,
-    ) -> Result<EdgeHandle, GraphStoreError> {
-        let logical = match *target {
-            ExportedEdgeTarget::Local { logical_vertex_id }
-            | ExportedEdgeTarget::Remote { logical_vertex_id } => logical_vertex_id,
-        };
-        let insert_target = match target {
-            ExportedEdgeTarget::Local { .. } => resolve_local_endpoint(self, logical)
-                .map(InsertEdgeTarget::Local)
-                .unwrap_or(InsertEdgeTarget::Logical(logical)),
-            ExportedEdgeTarget::Remote { .. } => InsertEdgeTarget::Logical(logical),
-        };
-        let topology = if undirected {
-            InsertEdgeTopology::Undirected
-        } else {
-            InsertEdgeTopology::Directed
-        };
-        let value = if payload_bytes.is_empty() {
-            None
-        } else {
-            Some(payload_bytes)
-        };
-        self.insert_edge_by_spec(
-            owner_vertex_id,
-            InsertEdgeSpec {
-                topology,
-                target: insert_target,
-                catalog_label,
-                payload_bytes: value,
-            },
-        )
-    }
 }

@@ -37,12 +37,6 @@ pub enum RouterError {
     PlacementAlreadyCommitted,
     #[error("unallocated logical vertex")]
     UnallocatedLogicalVertex,
-    #[error("vertex is migrating")]
-    VertexMigrating,
-    #[error("vertex is not migrating")]
-    VertexNotMigrating,
-    #[error("invalid migration state: {0}")]
-    InvalidMigrationState(String),
     #[error("id exhausted: {0}")]
     IdExhausted(String),
     #[error("internal: {0}")]

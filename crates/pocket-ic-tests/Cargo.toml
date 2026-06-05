@@ -13,11 +13,6 @@ name = "router_placement"
 path = "tests/router_placement.rs"
 harness = true
 
-[[test]]
-name = "incremental_migration"
-path = "tests/incremental_migration.rs"
-harness = true
-
 [dependencies]
 candid.workspace = true
 gleaph-gql-ic.workspace = true

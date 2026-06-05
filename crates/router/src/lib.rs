@@ -167,16 +167,6 @@ fn commit_vertex_placement(args: types::CommitVertexPlacementArgs) -> Result<(),
 }
 
 #[update]
-fn begin_vertex_migration(args: types::BeginVertexMigrationArgs) -> Result<(), RouterError> {
-    canister::begin_vertex_migration(args)
-}
-
-#[update]
-fn finish_vertex_migration(args: types::FinishVertexMigrationArgs) -> Result<(), RouterError> {
-    canister::finish_vertex_migration(args)
-}
-
-#[update]
 fn release_logical_vertex_placement(
     args: types::ReleaseLogicalVertexArgs,
 ) -> Result<(), RouterError> {

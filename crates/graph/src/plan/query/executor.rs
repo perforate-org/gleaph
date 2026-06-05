@@ -501,14 +501,6 @@ pub(crate) async fn resolve_federated_traversal_vertex(
             };
             Err(PlanQueryError::UnsupportedOp(op))
         }
-        gleaph_graph_kernel::federation::VertexPlacement::Migrating { source, .. }
-            if source.shard_id == routing.shard_id =>
-        {
-            Ok(Some(VertexId::from(source.local_vertex_id)))
-        }
-        gleaph_graph_kernel::federation::VertexPlacement::Migrating { .. } => Err(
-            PlanQueryError::UnsupportedOp("Expand(vertex migrating on another shard)"),
-        ),
     }
 }
 

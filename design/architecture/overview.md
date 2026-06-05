@@ -23,7 +23,7 @@ flowchart TB
 | Canister | Crate | Responsibilities |
 |----------|-------|------------------|
 | Router | `crates/router` | RBAC, parse+plan ad-hoc GQL, prepared registry, shard registry, **vertex placement authority**, multi-shard `dispatch_plan_blob` |
-| Graph | `crates/graph` | Stable graph state, `execute_plan_*`, federated expand, migration payloads, local indexes |
+| Graph | `crates/graph` | Stable graph state, `execute_plan_*`, federated expand, local indexes |
 | Graph index | `crates/graph-index` | Global property equality index with `PostingHit { shard_id, vertex_id }` |
 
 Graph shards **do not** expose arbitrary GQL to end users; they accept `ExecutePlanArgs` from the router (or sibling graph shards for federation helpers).
