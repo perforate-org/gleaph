@@ -82,7 +82,7 @@ where
     {
         self.insert_edge_skip_leaf_cascade(src, label_id, edge)?;
         if self.labeled_leaf_segment_is_dense(src) {
-            self.rebalance_cascade_after_labeled_mutation(src)?;
+            self.rebalance_cascade_after_labeled_mutation(src, Some(label_id))?;
         }
         Ok(())
     }

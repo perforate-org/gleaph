@@ -1,7 +1,7 @@
 //! Labeled graph `bucket` implementation.
 
 use crate::{
-    VertexId,
+    SegmentId, VertexId,
     labeled::{
         bucket_label_key::BucketLabelKey,
         record::{LabelBucket, LabeledVertex},
@@ -31,9 +31,33 @@ where
             >= LEAF_VERTEX_EDGE_SEGMENT_DENSITY
     }
 
+    fn leaf_has_other_labeled_vertices_with_edges(
+        &self,
+        leaf: u32,
+        seg: u32,
+        except: VertexId,
+    ) -> bool {
+        let start_vid = leaf.saturating_mul(seg);
+        let end_vid = start_vid
+            .saturating_add(seg)
+            .min(u32::try_from(self.vertices.len()).unwrap_or(u32::MAX));
+        for vid_u in start_vid..end_vid {
+            let vid = VertexId::from(vid_u);
+            if vid == except {
+                continue;
+            }
+            let v = self.vertices.get(vid);
+            if !v.is_default_edge_labeled() && v.degree() > 0 {
+                return true;
+            }
+        }
+        false
+    }
+
     pub(super) fn rebalance_cascade_after_labeled_mutation(
         &self,
         src: VertexId,
+        mutation_label: Option<BucketLabelKey>,
     ) -> Result<(), LabeledOperationError>
     where
         E: CsrEdgeTombstone,
@@ -54,8 +78,27 @@ where
         #[cfg(feature = "canbench")]
         let _bench_scope = bench_scope("labeled_rebalance_leaf_cascade");
 
+        let sole_active_labeled_vertex =
+            !self.leaf_has_other_labeled_vertices_with_edges(leaf, seg, src);
+
         if self.edges.overflow_log_segment_high_water(leaf) > 0 {
-            self.rebalance_edge_log_leaf_for_labeled(src)?;
+            if sole_active_labeled_vertex {
+                if let Some(label_id) = mutation_label {
+                    let src_vertex = self.vertices.get(src);
+                    if let BucketSearch::Found { bucket, .. } =
+                        self.find_bucket(src, &src_vertex, label_id)?
+                    {
+                        if bucket.overflow_log_head() >= 0 {
+                            self.rebalance_edge_log_mutation_bucket_for_labeled(src, label_id)?;
+                            self.edges
+                                .release_log_segment(SegmentId::from(leaf))
+                                .map_err(LabeledOperationError::from)?;
+                        }
+                    }
+                }
+            } else {
+                self.rebalance_edge_log_leaf_for_labeled(src)?;
+            }
             if segment_span_density(self.edges.counts_store().get(idx))
                 < LEAF_VERTEX_EDGE_SEGMENT_DENSITY
             {
@@ -71,6 +114,10 @@ where
             {
                 return Ok(());
             }
+        }
+
+        if sole_active_labeled_vertex {
+            return Ok(());
         }
 
         let start_vid = leaf

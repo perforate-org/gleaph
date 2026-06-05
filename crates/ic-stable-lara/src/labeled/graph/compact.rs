@@ -18,7 +18,10 @@ use canbench_rs::bench_scope;
 use ic_stable_structures::Memory;
 
 use super::error::LabeledOperationError;
-use super::{DEFAULT_SEGMENT_SIZE, EdgeSlotMove, LabeledLaraGraph, VertexEdgeSpanCompactOneStep};
+use super::{
+    BucketSearch, DEFAULT_SEGMENT_SIZE, EdgeSlotMove, LabeledLaraGraph,
+    VertexEdgeSpanCompactOneStep,
+};
 
 impl<E, M> LabeledLaraGraph<E, M>
 where
@@ -1260,6 +1263,66 @@ where
         Ok(())
     }
 
+    pub(super) fn rebalance_edge_log_vertex_for_labeled(
+        &self,
+        vid: VertexId,
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        let vertex = self.vertices.get(vid);
+        if vertex.degree() == 0 || vertex.is_default_edge_labeled() {
+            return Ok(());
+        }
+        self.rebalance_vertex_edge_span_light(vid, true)?;
+        let vertex = self.vertices.get(vid);
+        let buckets = self.read_vertex_label_buckets(&vertex)?;
+        for (bucket_index, bucket) in buckets.iter().enumerate() {
+            if bucket.overflow_log_head() < 0 {
+                continue;
+            }
+            let bucket_index = bucket_index as u32;
+            let slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
+            let folded =
+                self.fold_label_bucket_edges_to_slab(vid, &vertex, bucket_index, slot, *bucket)?;
+            self.buckets.write_label_bucket_slot(slot, folded)?;
+        }
+        Ok(())
+    }
+
+    /// Folds overflow-log edges for the mutation bucket when sole-active leaves keep
+    /// a stale PMA log segment without scanning every label bucket on each cascade.
+    pub(super) fn rebalance_edge_log_mutation_bucket_for_labeled(
+        &self,
+        src: VertexId,
+        label_id: crate::labeled::bucket_label_key::BucketLabelKey,
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        let vertex = self.vertices.get(src);
+        if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
+            return Ok(());
+        }
+        let BucketSearch::Found { slot, bucket } = self.find_bucket(src, &vertex, label_id)? else {
+            return Ok(());
+        };
+        if bucket.overflow_log_head() < 0 {
+            return Ok(());
+        }
+        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
+        self.rebalance_vertex_edge_span_light(src, true)?;
+        let vertex = self.vertices.get(src);
+        let bucket = self
+            .buckets
+            .read_label_bucket_slot(slot)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let folded =
+            self.fold_label_bucket_edges_to_slab(src, &vertex, bucket_index, slot, bucket)?;
+        self.buckets.write_label_bucket_slot(slot, folded)?;
+        Ok(())
+    }
+
     pub(super) fn rebalance_edge_log_leaf_for_labeled(
         &self,
         src: VertexId,
@@ -1272,29 +1335,7 @@ where
         let start_vid = leaf.saturating_mul(seg_size);
         let end_vid = start_vid.saturating_add(seg_size).min(self.vertices.len());
         for vid_u in start_vid..end_vid {
-            let vid = VertexId::from(vid_u);
-            let vertex = self.vertices.get(vid);
-            if vertex.degree() == 0 || vertex.is_default_edge_labeled() {
-                continue;
-            }
-            self.rebalance_vertex_edge_span_light(vid, true)?;
-            let vertex = self.vertices.get(vid);
-            let buckets = self.read_vertex_label_buckets(&vertex)?;
-            for (bucket_index, bucket) in buckets.iter().enumerate() {
-                if bucket.overflow_log_head() < 0 {
-                    continue;
-                }
-                let bucket_index = bucket_index as u32;
-                let slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
-                let folded = self.fold_label_bucket_edges_to_slab(
-                    vid,
-                    &vertex,
-                    bucket_index,
-                    slot,
-                    *bucket,
-                )?;
-                self.buckets.write_label_bucket_slot(slot, folded)?;
-            }
+            self.rebalance_edge_log_vertex_for_labeled(VertexId::from(vid_u))?;
         }
         self.edges
             .release_log_segment(SegmentId::from(leaf))
