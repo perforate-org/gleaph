@@ -102,7 +102,8 @@ pub use error::InitError;
 pub(crate) use scan_iter::OutEdgeSlabIter;
 pub use scan_iter::{AscOutEdgesIter, OutEdgesIter};
 pub(crate) use targets::{
-    DeleteTarget, EdgeLayout, InsertLocation, decode_delete_target, encode_delete_target,
+    DeleteTarget, EdgeLayout, InsertLocation, LOG_SRC_DEAD, LogEntryKind, decode_delete_target,
+    decode_log_entry_kind, encode_delete_target,
 };
 pub(crate) use visit_window::OutEdgeVisitWindow;
 

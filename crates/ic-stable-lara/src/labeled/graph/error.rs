@@ -30,6 +30,13 @@ pub enum LabeledOperationError {
     PayloadLogWrite(PayloadLogWriteError),
     /// A default-label bypass was requested for a row that cannot use it.
     InvalidDefaultBypass,
+    /// An edge payload byte width did not match the label bucket payload schema.
+    PayloadByteWidthMismatch {
+        /// Payload byte width declared by the label bucket.
+        bucket_width: u16,
+        /// Payload byte width carried by the edge.
+        edge_payload_width: u16,
+    },
     /// Vertex row fields are inconsistent with labeled bucket-mode limits.
     InvalidVertexRow(LabeledVertexFieldError),
 }
@@ -47,6 +54,13 @@ impl fmt::Display for LabeledOperationError {
                 f,
                 "default-label bypass requires exactly one default adjacency label"
             ),
+            Self::PayloadByteWidthMismatch {
+                bucket_width,
+                edge_payload_width,
+            } => write!(
+                f,
+                "edge payload byte width {edge_payload_width} does not match label bucket payload byte width {bucket_width}"
+            ),
             Self::InvalidVertexRow(err) => write!(f, "invalid labeled vertex row: {err:?}"),
         }
     }
@@ -60,6 +74,7 @@ impl std::error::Error for LabeledOperationError {
             Self::PayloadLogWrite(err) => Some(err),
             Self::VertexOutOfRange { .. }
             | Self::InvalidDefaultBypass
+            | Self::PayloadByteWidthMismatch { .. }
             | Self::InvalidVertexRow(_) => None,
         }
     }
@@ -101,7 +116,9 @@ impl From<crate::labeled::record::LabelBucketFieldError> for LaraOperationError 
             crate::labeled::record::LabelBucketFieldError::ReservedTopBitSet
             | crate::labeled::record::LabelBucketFieldError::OverflowLogHeadOutOfRange
             | crate::labeled::record::LabelBucketFieldError::PayloadOffsetOverflow
-            | crate::labeled::record::LabelBucketFieldError::PayloadLogHeadOutOfRange => {
+            | crate::labeled::record::LabelBucketFieldError::PayloadLogHeadOutOfRange
+            | crate::labeled::record::LabelBucketFieldError::PayloadLogLenOutOfRange
+            | crate::labeled::record::LabelBucketFieldError::PayloadLogStateMismatch => {
                 Self::CollectAllocationOverflow
             }
         }

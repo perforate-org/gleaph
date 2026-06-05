@@ -113,7 +113,9 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                     out.remove(index);
                 }
             } else {
-                out.push((DeleteTarget::Log(log_idx), edge));
+                let slot_index = u32::try_from(out.len())
+                    .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+                out.push((DeleteTarget::Log(log_idx), edge.with_slot_index(slot_index)));
             }
         }
         debug_assert_eq!(

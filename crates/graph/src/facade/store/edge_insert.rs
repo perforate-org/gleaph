@@ -13,6 +13,11 @@ use super::helpers::{
 };
 
 impl GraphStore {
+    fn edge_payload_width_u16(payload_bytes: &[u8]) -> Result<u16, GraphStoreError> {
+        u16::try_from(payload_bytes.len())
+            .map_err(|_| GraphStoreError::InvalidEdgePayloadWidth(payload_bytes.len()))
+    }
+
     pub(super) fn validate_catalog_edge_label(
         label: Option<EdgeLabelId>,
     ) -> Result<(), GraphStoreError> {
@@ -86,9 +91,18 @@ impl GraphStore {
         validate_edge_payload_bytes_for_label(self, catalog_label, payload_bytes)?;
 
         let label = lara_label(edge_storage_label(catalog_label, false));
+        let payload_width = Self::edge_payload_width_u16(payload_bytes)?;
         let forward = build_edge_to_with_payload_bytes(target_vertex_id, payload_bytes);
         let reverse = build_edge_to_with_payload_bytes(source_vertex_id, payload_bytes);
         self.with_graph_mut(|graph| {
+            if payload_width != 0 {
+                graph.ensure_directed_edge_payload_width(
+                    source_vertex_id,
+                    target_vertex_id,
+                    label,
+                    payload_width,
+                )?;
+            }
             graph.insert_directed_edge(source_vertex_id, target_vertex_id, label, forward, reverse)
         })?;
         let canonical = self
@@ -195,9 +209,18 @@ impl GraphStore {
         validate_edge_payload_bytes_for_label(self, catalog_label, payload_bytes)?;
 
         let label = lara_label(edge_storage_label(catalog_label, true));
+        let payload_width = Self::edge_payload_width_u16(payload_bytes)?;
         let edge_ab = build_edge_to_with_payload_bytes(endpoint_b, payload_bytes);
         let edge_ba = build_edge_to_with_payload_bytes(endpoint_a, payload_bytes);
         self.with_graph_mut(|graph| {
+            if payload_width != 0 {
+                graph.ensure_undirected_edge_payload_width(
+                    endpoint_a,
+                    endpoint_b,
+                    label,
+                    payload_width,
+                )?;
+            }
             graph.insert_undirected_deferred(endpoint_a, endpoint_b, label, edge_ab, edge_ba)
         })?;
         let owner_vertex_id = canonical_undirected_owner(endpoint_a, endpoint_b);

@@ -10,8 +10,8 @@ use ic_stable_structures::Memory;
 use super::log::HeaderV1 as LogHeaderV1;
 use super::scan_iter::leaf_segment;
 use super::{
-    DeleteTarget, EdgeLayout, EdgeStore, INLINE_EDGE_BYTES, decode_delete_target,
-    encode_delete_target,
+    DeleteTarget, EdgeLayout, EdgeStore, INLINE_EDGE_BYTES, LOG_SRC_DEAD, LogEntryKind,
+    decode_log_entry_kind, encode_delete_target,
 };
 
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
@@ -61,12 +61,17 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         }
     }
 
-    pub(super) fn prefetch_descending_log_edges(
+    pub(crate) fn read_overflow_log_entry(&self, leaf: u32, entry_idx: u32) -> (i32, i32, E) {
+        let h = self.log.header();
+        self.read_log_edge_from_table_or_store(&h, leaf, entry_idx, None)
+    }
+
+    pub(super) fn prefetch_descending_log_entries(
         &self,
         log_h: &LogHeaderV1,
         leaf: u32,
         log_head: i32,
-    ) -> Result<(Vec<E>, Vec<u32>), LaraOperationError> {
+    ) -> Result<(Vec<Option<E>>, Vec<u32>), LaraOperationError> {
         let mut log_table_buf = Vec::new();
         self.log
             .read_segment_entry_table_into(log_h, leaf, &mut log_table_buf);
@@ -74,35 +79,42 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
 
         let mut deleted_log_indices: Vec<u32> = Vec::new();
         let mut deleted_slab_offsets: Vec<u32> = Vec::new();
-        let mut log_edges: Vec<E> = Vec::new();
+        let mut log_entries: Vec<Option<E>> = Vec::new();
         let mut log_i = log_head;
         let mut budget = log_h.max_log_entries;
         while budget > 0 {
             budget -= 1;
             if log_i < 0 {
-                return Ok((log_edges, deleted_slab_offsets));
+                return Ok((log_entries, deleted_slab_offsets));
             }
             let log_idx = log_i as u32;
             let (prev, src, edge) =
                 self.read_log_edge_from_table_or_store(log_h, leaf, log_idx, log_table);
             log_i = prev;
-            if let Some(target) = decode_delete_target(src) {
-                match target {
-                    DeleteTarget::Slab(offset) => deleted_slab_offsets.push(offset),
-                    DeleteTarget::Log(index) => deleted_log_indices.push(index),
+            match decode_log_entry_kind(src) {
+                LogEntryKind::Dead => {
+                    log_entries.push(None);
+                    continue;
                 }
-                continue;
+                LogEntryKind::Delete(target) => {
+                    match target {
+                        DeleteTarget::Slab(offset) => deleted_slab_offsets.push(offset),
+                        DeleteTarget::Log(index) => deleted_log_indices.push(index),
+                    }
+                    continue;
+                }
+                LogEntryKind::Live => {}
             }
             if let Some(pos) = deleted_log_indices.iter().position(|&d| d == log_idx) {
                 deleted_log_indices.swap_remove(pos);
                 continue;
             }
-            log_edges.push(edge);
+            log_entries.push(Some(edge));
         }
         if log_i >= 0 {
             return Err(LaraOperationError::LogChainShort);
         }
-        Ok((log_edges, deleted_slab_offsets))
+        Ok((log_entries, deleted_slab_offsets))
     }
 
     pub(super) fn read_log_edge_from_table_or_store(
@@ -188,6 +200,19 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         self.log.write_idx_with_header(&log_h, leaf, idx + 1);
         vertices.set(vid, &v.with_log_head(idx).after_slab_tombstone_delete());
         Ok(())
+    }
+
+    pub(crate) fn mark_overflow_log_entry_dead(
+        &self,
+        leaf: u32,
+        entry_idx: u32,
+    ) -> Result<(), LaraOperationError> {
+        let log_h = self.log.header();
+        let (prev, _, _) = self.read_log_edge_from_table_or_store(&log_h, leaf, entry_idx, None);
+        let payload = vec![0u8; E::BYTES];
+        self.log
+            .write_entry_with_header(&log_h, leaf, entry_idx, prev, LOG_SRC_DEAD, &payload)
+            .map_err(LaraOperationError::WriteLogFailed)
     }
 
     pub(super) fn insert_into_log_with_layout<V, A>(

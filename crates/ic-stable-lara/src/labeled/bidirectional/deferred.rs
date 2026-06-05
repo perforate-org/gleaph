@@ -908,6 +908,37 @@ where
         Ok(())
     }
 
+    /// Ensures the forward out-adjacency label bucket declares `payload_byte_width`.
+    pub fn ensure_forward_edge_payload_width(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        payload_byte_width: u16,
+    ) -> Result<(), DeferredBidirectionalLabeledError> {
+        self.forward
+            .ensure_label_bucket_payload_byte_width(src, label_id, payload_byte_width)
+            .map_err(DeferredBidirectionalLabeledError::Forward)
+    }
+
+    /// Ensures both undirected forward-store endpoint buckets declare `payload_byte_width`.
+    pub fn ensure_undirected_edge_payload_width(
+        &self,
+        u: VertexId,
+        v: VertexId,
+        label_id: BucketLabelKey,
+        payload_byte_width: u16,
+    ) -> Result<(), DeferredBidirectionalLabeledError> {
+        self.forward
+            .ensure_label_bucket_payload_byte_width(u, label_id, payload_byte_width)
+            .map_err(DeferredBidirectionalLabeledError::Forward)?;
+        if u != v {
+            self.forward
+                .ensure_label_bucket_payload_byte_width(v, label_id, payload_byte_width)
+                .map_err(DeferredBidirectionalLabeledError::Forward)?;
+        }
+        Ok(())
+    }
+
     /// Inserts one directed edge into forward and reverse orientations.
     pub fn insert_directed_edge(
         &self,
@@ -2437,6 +2468,15 @@ mod tests {
         }
         let road = BucketLabelKey::directed_from_index(2);
         let rev = |src: u32| PayloadTestEdge::with_bytes(src, &0u16.to_le_bytes());
+        graph
+            .ensure_directed_edge_payload_width(VertexId::from(0), VertexId::from(2), road, 2u16)
+            .unwrap();
+        graph
+            .ensure_directed_edge_payload_width(VertexId::from(0), VertexId::from(1), road, 2u16)
+            .unwrap();
+        graph
+            .ensure_directed_edge_payload_width(VertexId::from(1), VertexId::from(2), road, 2u16)
+            .unwrap();
         graph
             .insert_directed_edge(
                 VertexId::from(0),

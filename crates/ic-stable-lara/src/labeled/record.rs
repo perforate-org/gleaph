@@ -37,6 +37,8 @@ pub struct LabelBucket {
     payload_byte_width: u16,
     /// Wire byte for per-bucket payload overflow log head (`0xFF` = none).
     payload_log_byte: u8,
+    /// Number of payload entries in this bucket's ordered suffix log.
+    payload_log_len: u8,
 }
 
 impl Default for LabelBucket {
@@ -47,7 +49,7 @@ impl Default for LabelBucket {
 
 impl LabelBucket {
     /// Fixed byte width of one encoded LabelBucket.
-    pub const BYTES: usize = 24;
+    pub const BYTES: usize = 25;
 
     /// Builds a row from logical fields.
     #[inline]
@@ -67,6 +69,7 @@ impl LabelBucket {
             0,
             0,
             -1,
+            0,
         )
         .expect("LabelBucket::from_parts: invalid fields")
     }
@@ -82,6 +85,7 @@ impl LabelBucket {
         payload_byte_width: u16,
         payload_offset: u64,
         payload_log_head: i32,
+        payload_log_len: u8,
     ) -> Self {
         Self::try_from_parts(
             bucket_label_key,
@@ -92,6 +96,7 @@ impl LabelBucket {
             payload_byte_width,
             payload_offset,
             payload_log_head,
+            payload_log_len,
         )
         .expect("LabelBucket::from_parts_with_payload: invalid fields")
     }
@@ -107,6 +112,7 @@ impl LabelBucket {
         payload_byte_width: u16,
         payload_offset: u64,
         payload_log_head: i32,
+        payload_log_len: u8,
     ) -> Result<Self, LabelBucketFieldError> {
         if !slot_index_fits(edge_start) {
             return Err(LabelBucketFieldError::SlotIndexOverflow);
@@ -118,6 +124,12 @@ impl LabelBucket {
             .ok_or(LabelBucketFieldError::OverflowLogHeadOutOfRange)?;
         let payload_log_byte = try_encode_overflow_log_byte(payload_log_head)
             .ok_or(LabelBucketFieldError::PayloadLogHeadOutOfRange)?;
+        if payload_log_len > 170 {
+            return Err(LabelBucketFieldError::PayloadLogLenOutOfRange);
+        }
+        if (payload_log_head < 0) != (payload_log_len == 0) {
+            return Err(LabelBucketFieldError::PayloadLogStateMismatch);
+        }
         Ok(Self {
             word,
             degree,
@@ -125,6 +137,7 @@ impl LabelBucket {
             payload_offset,
             payload_byte_width,
             payload_log_byte,
+            payload_log_len,
         })
     }
 
@@ -156,6 +169,12 @@ impl LabelBucket {
     #[inline]
     pub fn payload_log_head(self) -> i32 {
         decode_overflow_log_byte(self.payload_log_byte)
+    }
+
+    /// Number of values in the ordered payload-log suffix.
+    #[inline]
+    pub fn payload_log_len(self) -> u8 {
+        self.payload_log_len
     }
 
     /// Physical byte width per edge payload slot (`0` = no values).
@@ -199,8 +218,32 @@ impl LabelBucket {
     pub fn try_with_payload_log_head(self, head: i32) -> Result<Self, LabelBucketFieldError> {
         let payload_log_byte = try_encode_overflow_log_byte(head)
             .ok_or(LabelBucketFieldError::PayloadLogHeadOutOfRange)?;
+        let payload_log_len = if head < 0 {
+            0
+        } else {
+            self.payload_log_len.max(1)
+        };
         Ok(Self {
             payload_log_byte,
+            payload_log_len,
+            ..self
+        })
+    }
+
+    /// Returns a copy with [`Self::payload_log_head`] and [`Self::payload_log_len`] updated.
+    #[inline]
+    pub fn try_with_payload_log(self, head: i32, len: u8) -> Result<Self, LabelBucketFieldError> {
+        let payload_log_byte = try_encode_overflow_log_byte(head)
+            .ok_or(LabelBucketFieldError::PayloadLogHeadOutOfRange)?;
+        if len > 170 {
+            return Err(LabelBucketFieldError::PayloadLogLenOutOfRange);
+        }
+        if (head < 0) != (len == 0) {
+            return Err(LabelBucketFieldError::PayloadLogStateMismatch);
+        }
+        Ok(Self {
+            payload_log_byte,
+            payload_log_len: len,
             ..self
         })
     }
@@ -222,6 +265,7 @@ impl LabelBucket {
             payload_offset,
             payload_byte_width,
             payload_log_byte,
+            payload_log_len,
         } = self;
         bytes[0..8].copy_from_slice(&word.to_le_bytes());
         bytes[8..12].copy_from_slice(&degree.to_le_bytes());
@@ -232,6 +276,7 @@ impl LabelBucket {
         write_u40(payload_offset, value_wire);
         bytes[21..23].copy_from_slice(&payload_byte_width.to_le_bytes());
         bytes[23] = payload_log_byte;
+        bytes[24] = payload_log_len;
     }
 
     /// Returns a copy with `edge_start` / [`Self::stored_slots`] updated.
@@ -320,6 +365,13 @@ impl LabelBucket {
         if payload_log_byte != OVERFLOW_LOG_NONE && payload_log_byte >= 170 {
             return Err(LabelBucketFieldError::PayloadLogHeadOutOfRange);
         }
+        let payload_log_len = chunk[24];
+        if payload_log_len > 170 {
+            return Err(LabelBucketFieldError::PayloadLogLenOutOfRange);
+        }
+        if (payload_log_byte == OVERFLOW_LOG_NONE) != (payload_log_len == 0) {
+            return Err(LabelBucketFieldError::PayloadLogStateMismatch);
+        }
         Ok(Self {
             word,
             degree: u32::from_le_bytes(chunk[8..12].try_into().unwrap()),
@@ -327,6 +379,7 @@ impl LabelBucket {
             payload_offset,
             payload_byte_width,
             payload_log_byte,
+            payload_log_len,
         })
     }
 }
@@ -344,6 +397,10 @@ pub enum LabelBucketFieldError {
     PayloadOffsetOverflow,
     /// Value overflow log head byte is out of range.
     PayloadLogHeadOutOfRange,
+    /// Value overflow log length byte is out of range.
+    PayloadLogLenOutOfRange,
+    /// Value overflow log head and length disagree.
+    PayloadLogStateMismatch,
 }
 
 impl core::fmt::Display for LabelBucketFieldError {
@@ -361,6 +418,12 @@ impl core::fmt::Display for LabelBucketFieldError {
             }
             Self::PayloadLogHeadOutOfRange => {
                 write!(f, "label bucket payload log head out of range")
+            }
+            Self::PayloadLogLenOutOfRange => {
+                write!(f, "label bucket payload log length out of range")
+            }
+            Self::PayloadLogStateMismatch => {
+                write!(f, "label bucket payload log head/length mismatch")
             }
         }
     }
@@ -1085,7 +1148,7 @@ mod tests {
     #[test]
     fn wire_rows_match_documented_layout() {
         assert_eq!(LabeledVertex::BYTES, 21);
-        assert_eq!(LabelBucket::BYTES, 24);
+        assert_eq!(LabelBucket::BYTES, 25);
         assert!(mem::size_of::<LabeledVertex>() >= LabeledVertex::BYTES);
         assert!(mem::size_of::<LabelBucket>() >= LabelBucket::BYTES);
     }
@@ -1128,11 +1191,12 @@ mod tests {
                 0u16,
                 0,
                 -1,
+                0,
             ),
             Err(LabelBucketFieldError::SlotIndexOverflow)
         );
         assert_eq!(
-            LabelBucket::try_from_parts(BucketLabelKey::default(), 0, 0, 0, 170, 0u16, 0, -1,),
+            LabelBucket::try_from_parts(BucketLabelKey::default(), 0, 0, 0, 170, 0u16, 0, -1, 0,),
             Err(LabelBucketFieldError::OverflowLogHeadOutOfRange)
         );
         assert_eq!(
@@ -1186,6 +1250,7 @@ mod tests {
             64u16,
             0,
             -1,
+            0,
         );
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
@@ -1240,6 +1305,7 @@ mod tests {
             2u16,
             4,
             -1,
+            0,
         );
         assert_eq!(bucket.payload_offset(), 4);
         let mut bytes = [0u8; LabelBucket::BYTES];

@@ -75,7 +75,7 @@ where
         let _bench_scope = bench_scope("labeled_rebalance_leaf_cascade");
 
         if self.leaf_any_vertex_has_overflow_log(leaf, seg)? {
-            self.reclaim_edge_log_leaf_for_labeled(src)?;
+            self.rebalance_edge_log_leaf_for_labeled(src)?;
             if segment_span_density(self.edges.counts_store().get(idx))
                 < LEAF_VERTEX_EDGE_SEGMENT_DENSITY
             {
@@ -83,7 +83,7 @@ where
             }
         }
 
-        self.maintain_vertex_edge_span_light(src, true)?;
+        self.rebalance_vertex_edge_span_light(src, true)?;
         if segment_span_density(self.edges.counts_store().get(idx))
             < LEAF_VERTEX_EDGE_SEGMENT_DENSITY
         {
@@ -103,7 +103,7 @@ where
                 continue;
             }
             if self.vertices.get(vid).degree() > 0 {
-                self.maintain_vertex_edge_span_light(vid, false)?;
+                self.rebalance_vertex_edge_span_light(vid, false)?;
             }
         }
 
@@ -119,7 +119,7 @@ where
                 continue;
             }
             if self.vertices.get(vid).degree() > 0 {
-                self.maintain_vertex_edge_span_light(vid, true)?;
+                self.rebalance_vertex_edge_span_light(vid, true)?;
             }
         }
         Ok(())
@@ -606,14 +606,6 @@ where
         let payload_chain = self
             .values
             .payload_log_chain_asc_indices(leaf, bucket.payload_log_head());
-        if bucket.overflow_log_head() >= 0 || bucket.payload_log_head() >= 0 {
-            debug_assert_eq!(
-                edge_chain.len(),
-                payload_chain.len(),
-                "edge and payload overflow log chains must stay paired (vertex {src:?}, label {:?})",
-                bucket.bucket_label_key()
-            );
-        }
         (edge_chain, payload_chain)
     }
 }

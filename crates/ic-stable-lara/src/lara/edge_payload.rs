@@ -6,7 +6,7 @@ mod blobs;
 mod cell;
 mod log;
 
-use crate::lara::edge::free_span::FreeSpanStore;
+use crate::lara::edge::{LOG_SRC_DEAD, free_span::FreeSpanStore};
 use crate::lara::edge_payload::blobs::EdgePayloadBlobMap;
 use crate::lara::edge_payload::cell::MAX_PAYLOAD_LOG_INLINE_WIDTH;
 use crate::lara::edge_payload::log::{
@@ -108,6 +108,8 @@ pub enum PayloadLogWriteError {
     Grow(GrowFailed),
     /// External blob storage rejected the payload.
     Blob(BlobStoreError),
+    /// The payload overflow-log segment is full.
+    SegmentLogFull,
 }
 
 impl fmt::Display for PayloadLogWriteError {
@@ -115,6 +117,7 @@ impl fmt::Display for PayloadLogWriteError {
         match self {
             Self::Grow(err) => write!(f, "payload log write failed: {err}"),
             Self::Blob(err) => write!(f, "value blob write failed: {err}"),
+            Self::SegmentLogFull => write!(f, "payload log segment is full"),
         }
     }
 }
@@ -124,6 +127,7 @@ impl std::error::Error for PayloadLogWriteError {
         match self {
             Self::Grow(err) => Some(err),
             Self::Blob(err) => Some(err),
+            Self::SegmentLogFull => None,
         }
     }
 }
@@ -419,6 +423,11 @@ impl<M: Memory> EdgePayloadStore<M> {
         self.log.read_idx_with_header(&h, leaf_segment).max(0) as u32
     }
 
+    pub(crate) fn payload_log_segment_is_full(&self, leaf_segment: u32) -> bool {
+        let h = self.log.header();
+        self.payload_log_segment_high_water(leaf_segment) >= h.max_log_entries
+    }
+
     pub(crate) fn sweep_payload_log_chain(&self, leaf_segment: u32, payload_chain: &[u32]) {
         for &entry_idx in payload_chain {
             self.blobs.drop_log_site(leaf_segment, entry_idx);
@@ -477,6 +486,31 @@ impl<M: Memory> EdgePayloadStore<M> {
         Ok(())
     }
 
+    pub(crate) fn append_payload_log_entry(
+        &self,
+        leaf_segment: u32,
+        prev_head: i32,
+        src: i32,
+        width: u16,
+        payload_bytes: &[u8],
+    ) -> Result<u32, PayloadLogWriteError> {
+        let h = self.log.header();
+        let idx = self.log.read_idx_with_header(&h, leaf_segment);
+        if idx < 0 || idx >= h.max_log_entries as i32 {
+            return Err(PayloadLogWriteError::SegmentLogFull);
+        }
+        let entry_idx = u32::try_from(idx).map_err(|_| PayloadLogWriteError::SegmentLogFull)?;
+        self.write_payload_log_entry(
+            leaf_segment,
+            entry_idx,
+            prev_head,
+            src,
+            width,
+            payload_bytes,
+        )?;
+        Ok(entry_idx)
+    }
+
     pub(crate) fn read_payload_log_entry(
         &self,
         leaf_segment: u32,
@@ -516,6 +550,23 @@ impl<M: Memory> EdgePayloadStore<M> {
             return Ok(());
         }
         Err(PayloadLogReadError::InvalidInlineCell { width })
+    }
+
+    pub(crate) fn mark_payload_log_entry_dead(
+        &self,
+        leaf_segment: u32,
+        entry_idx: u32,
+    ) -> Result<(), PayloadLogWriteError> {
+        self.blobs.drop_log_site(leaf_segment, entry_idx);
+        let mut payload = [0u8; PAYLOAD_BYTES];
+        let h = self.log.header();
+        let (prev, _) = self
+            .log
+            .read_entry_with_header(&h, leaf_segment, entry_idx, &mut payload);
+        let zeros = [0u8; PAYLOAD_BYTES];
+        self.log
+            .write_entry_with_header(&h, leaf_segment, entry_idx, prev, LOG_SRC_DEAD, &zeros)
+            .map_err(|_| PayloadLogWriteError::SegmentLogFull)
     }
 
     #[cfg(test)]
@@ -572,6 +623,14 @@ impl<M: Memory> EdgePayloadStore<M> {
         }
         chain.reverse();
         if let Some(&idx) = chain.get(asc_log_index as usize) {
+            let mut payload = [0u8; PAYLOAD_BYTES];
+            let h = self.log.header();
+            let (_, src) = self
+                .log
+                .read_entry_with_header(&h, leaf_segment, idx, &mut payload);
+            if src == LOG_SRC_DEAD {
+                return Err(PayloadLogReadError::MissingAscLogIndex { asc_log_index });
+            }
             return self.read_payload_log_entry(leaf_segment, idx, width, out);
         }
         Err(PayloadLogReadError::MissingAscLogIndex { asc_log_index })

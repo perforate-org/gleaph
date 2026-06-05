@@ -11,8 +11,8 @@ use super::scan_iter::{
     AscOutEdgesIter, LogBackedDescIter, OutEdgeSlabChunk, OutEdgeSlabIter, leaf_segment,
 };
 use super::{
-    DeleteTarget, EdgeStore, OUT_EDGE_SLAB_PREFETCH_MIN_BYTES, OutEdgeVisitWindow, OutEdgesIter,
-    decode_delete_target,
+    DeleteTarget, EdgeStore, LogEntryKind, OUT_EDGE_SLAB_PREFETCH_MIN_BYTES, OutEdgeVisitWindow,
+    OutEdgesIter, decode_log_entry_kind,
 };
 
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
@@ -157,6 +157,11 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         };
         let log_header = self.log.header();
         let leaf = leaf_segment(log_owner, edge_layout.segment_size);
+        let reserved_log_slots = u32::try_from(
+            self.overflow_log_chain_asc_indices(leaf, v.log_head())
+                .len(),
+        )
+        .map_err(|_| LaraOperationError::RowDegreeOverflow)?;
         Ok(LogBackedDescIter {
             store: self,
             leaf,
@@ -171,6 +176,9 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             deleted_log_indices: Vec::new(),
             deleted_slab_offsets: Vec::new(),
             sorted_slab_deletes: false,
+            next_log_slot: slab_count
+                .saturating_add(reserved_log_slots)
+                .saturating_sub(1),
         })
     }
 
@@ -192,8 +200,9 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 base_slot_start: v.base_slot_start(),
                 remaining_slab: 0,
                 yield_remaining: 0,
-                log_edges: Vec::new(),
+                log_entries: Vec::new(),
                 log_pos: 0,
+                next_log_slot: 0,
                 slab_chunk: None,
                 deleted_slab_offsets: Vec::new(),
             });
@@ -221,8 +230,9 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 base_slot_start: v.base_slot_start(),
                 remaining_slab: stored,
                 yield_remaining: live,
-                log_edges: Vec::new(),
+                log_entries: Vec::new(),
                 log_pos: 0,
+                next_log_slot: 0,
                 slab_chunk,
                 deleted_slab_offsets: Vec::new(),
             });
@@ -249,16 +259,21 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
 
         let log_header = self.log.header();
         let leaf = leaf_segment(log_owner, edge_layout.segment_size);
-        let (log_edges, mut deleted_slab_offsets) =
-            self.prefetch_descending_log_edges(&log_header, leaf, v.log_head())?;
+        let (log_entries, mut deleted_slab_offsets) =
+            self.prefetch_descending_log_entries(&log_header, leaf, v.log_head())?;
         deleted_slab_offsets.sort_unstable();
+        let reserved_log_slots =
+            u32::try_from(log_entries.len()).map_err(|_| LaraOperationError::RowDegreeOverflow)?;
         Ok(OutEdgesIter {
             store: self,
             base_slot_start: v.base_slot_start(),
             remaining_slab: slab_count,
             yield_remaining: v.degree(),
-            log_edges,
+            log_entries,
             log_pos: 0,
+            next_log_slot: slab_count
+                .saturating_add(reserved_log_slots)
+                .saturating_sub(1),
             slab_chunk,
             deleted_slab_offsets,
         })
@@ -331,8 +346,9 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let mut inserted = Vec::new();
         let mut deleted_slab_offsets = Vec::new();
         for (log_idx, src, edge) in entries {
-            if let Some(target) = decode_delete_target(src) {
-                match target {
+            match decode_log_entry_kind(src) {
+                LogEntryKind::Dead => inserted.push((DeleteTarget::Log(log_idx), None)),
+                LogEntryKind::Delete(target) => match target {
                     DeleteTarget::Slab(offset) => deleted_slab_offsets.push(offset),
                     DeleteTarget::Log(_) => {
                         if let Some(index) = inserted
@@ -342,13 +358,12 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                             inserted.remove(index);
                         }
                     }
-                }
-            } else {
-                inserted.push((DeleteTarget::Log(log_idx), edge));
+                },
+                LogEntryKind::Live => inserted.push((DeleteTarget::Log(log_idx), Some(edge))),
             }
         }
 
-        Ok(AscOutEdgesIter::with_log_replay(
+        Ok(AscOutEdgesIter::with_reserved_log_replay(
             self,
             v.base_slot_start(),
             slab_count,
@@ -361,7 +376,6 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_support::*;
     use super::super::*;
     use crate::lara::vertex::{Vertex, VertexStore};
     use crate::test_support::{TestEdge, vector_memory};

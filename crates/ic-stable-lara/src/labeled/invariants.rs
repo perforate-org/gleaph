@@ -10,14 +10,27 @@ use crate::{
 };
 use ic_stable_structures::Memory;
 
-/// Resident value bytes charged to a bucket's slab span (`stored_slots × width`, or `degree` when larger).
+/// Resident value bytes charged to a bucket's payload slab span.
 #[inline]
 pub(crate) fn bucket_resident_payload_bytes(bucket: &LabelBucket) -> u64 {
     if !bucket.is_payload_allocated() {
         return 0;
     }
-    u64::from(bucket.stored_slots.max(bucket.degree))
+    u64::from(bucket_resident_payload_slots(bucket))
         .saturating_mul(u64::from(bucket.payload_byte_width()))
+}
+
+#[inline]
+pub(crate) fn bucket_resident_payload_slots(bucket: &LabelBucket) -> u32 {
+    if !bucket.is_payload_allocated() || bucket.payload_byte_width() == 0 {
+        return 0;
+    }
+    let payload_log_len = u32::from(bucket.payload_log_len());
+    if payload_log_len > 0 {
+        bucket.stored_slots.saturating_sub(payload_log_len)
+    } else {
+        bucket.stored_slots.max(bucket.degree)
+    }
 }
 
 #[inline]

@@ -8,7 +8,7 @@ use crate::{
         bucket_label_key::BucketLabelKey,
         record::{LabelBucket, LabeledVertex},
     },
-    lara::{edge::EdgeStore, edge_payload::EdgePayloadStore, operation_error::LaraOperationError},
+    lara::{edge_payload::PayloadLogWriteError, operation_error::LaraOperationError},
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
 use ic_stable_structures::Memory;
@@ -25,6 +25,62 @@ where
         crate::labeled::invariants::bucket_resident_payload_bytes(bucket)
     }
 
+    pub(super) fn bucket_resident_payload_slots(&self, bucket: &LabelBucket) -> u32 {
+        crate::labeled::invariants::bucket_resident_payload_slots(bucket)
+    }
+
+    pub(super) fn bucket_reserved_edge_slots(&self, src: VertexId, bucket: &LabelBucket) -> u32 {
+        let _ = src;
+        bucket.stored_slots
+    }
+
+    pub(super) fn bucket_edge_log_slots(&self, src: VertexId, bucket: &LabelBucket) -> u32 {
+        if bucket.overflow_log_head() >= 0 {
+            let leaf = self.payload_log_leaf(src);
+            u32::try_from(
+                self.edges
+                    .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head())
+                    .len(),
+            )
+            .unwrap_or(u32::MAX)
+        } else {
+            0
+        }
+    }
+
+    pub(super) fn bucket_slab_prefix_slots(&self, src: VertexId, bucket: &LabelBucket) -> u32 {
+        bucket
+            .stored_slots
+            .saturating_sub(self.bucket_edge_log_slots(src, bucket))
+    }
+
+    pub(super) fn bucket_resident_payload_slots_for(
+        &self,
+        src: VertexId,
+        bucket: &LabelBucket,
+    ) -> u32 {
+        if !bucket.is_payload_allocated() || bucket.payload_byte_width() == 0 {
+            return 0;
+        }
+        let payload_log_len = u32::from(bucket.payload_log_len());
+        if payload_log_len > 0 {
+            self.bucket_reserved_edge_slots(src, bucket)
+                .saturating_sub(payload_log_len)
+        } else {
+            self.bucket_reserved_edge_slots(src, bucket)
+                .max(bucket.degree())
+        }
+    }
+
+    pub(super) fn bucket_resident_payload_bytes_for(
+        &self,
+        src: VertexId,
+        bucket: &LabelBucket,
+    ) -> u64 {
+        u64::from(self.bucket_resident_payload_slots_for(src, bucket))
+            .saturating_mul(u64::from(bucket.payload_byte_width()))
+    }
+
     pub(super) fn reconcile_vertex_payload_allocated_bytes(
         &self,
         src: VertexId,
@@ -33,7 +89,7 @@ where
     ) -> Result<(), LabeledOperationError> {
         let total: u64 = buckets
             .iter()
-            .map(|b| self.bucket_resident_payload_bytes(b))
+            .map(|b| self.bucket_resident_payload_bytes_for(src, b))
             .try_fold(0u64, |acc, bytes| {
                 acc.checked_add(bytes)
                     .ok_or(LaraOperationError::CollectAllocationOverflow)
@@ -74,9 +130,9 @@ where
         if compact {
             return old_buckets.iter().any(|b| b.is_payload_allocated());
         }
-        old_buckets.iter().any(|b| {
-            b.is_payload_allocated() && (b.payload_log_head() >= 0 || b.stored_slots != b.degree())
-        })
+        old_buckets
+            .iter()
+            .any(|b| b.is_payload_allocated() && b.payload_log_len() > 0)
     }
 
     pub(super) fn read_bucket_payloads_slab_dense(
@@ -85,7 +141,7 @@ where
     ) -> Option<Vec<Vec<u8>>> {
         if !bucket.is_payload_allocated()
             || bucket.payload_byte_width() == 0
-            || bucket.payload_log_head() >= 0
+            || bucket.payload_log_len() > 0
             || bucket.stored_slots != bucket.degree()
         {
             return None;
@@ -109,11 +165,33 @@ where
         bucket_index: u32,
         bucket: &LabelBucket,
     ) -> Result<Vec<Vec<u8>>, LabeledOperationError> {
+        Ok(self
+            .collect_bucket_payload_slots_asc_order(src, vertex, bucket_index, bucket)?
+            .into_iter()
+            .map(|(_, payload)| payload)
+            .collect())
+    }
+
+    pub(super) fn collect_bucket_payload_slots_asc_order(
+        &self,
+        src: VertexId,
+        vertex: &LabeledVertex,
+        bucket_index: u32,
+        bucket: &LabelBucket,
+    ) -> Result<Vec<(u32, Vec<u8>)>, LabeledOperationError> {
         if !bucket.is_payload_allocated() || bucket.payload_byte_width() == 0 {
             return Ok(Vec::new());
         }
         if let Some(dense) = self.read_bucket_payloads_slab_dense(bucket) {
-            return Ok(dense);
+            return dense
+                .into_iter()
+                .enumerate()
+                .map(|(slot, payload)| {
+                    let slot = u32::try_from(slot)
+                        .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+                    Ok((slot, payload))
+                })
+                .collect();
         }
         let slot = Self::labeled_vertex_bucket_slot(vertex, bucket_index)?;
         let successor = self.bucket_successor_start(vertex, bucket_index)?;
@@ -126,7 +204,11 @@ where
             (bucket.overflow_log_head() >= 0).then(|| self.bucket_log_chains(src, bucket));
         let mut out = Vec::with_capacity(edges.len());
         for edge in edges {
-            out.push(self.read_bucket_payload_for_edge(src, bucket, &edge, log_chains.as_ref())?);
+            let slot_index = edge.edge_slot_index_raw();
+            out.push((
+                slot_index,
+                self.read_bucket_payload_for_edge(src, bucket, &edge, log_chains.as_ref())?,
+            ));
         }
         Ok(out)
     }
@@ -143,7 +225,7 @@ where
             return Ok(Vec::new());
         }
         let slot_index = edge.edge_slot_index_raw();
-        if bucket.payload_log_head() < 0 && bucket.overflow_log_head() < 0 {
+        if bucket.payload_log_head() < 0 {
             let mut buf = vec![0u8; usize::from(width)];
             let offset = bucket
                 .payload_offset()
@@ -153,77 +235,40 @@ where
             return Ok(buf);
         }
 
-        let leaf = self.payload_log_leaf(src);
-        if let Some((edge_chain, payload_chain)) = log_chains {
-            if let Some(bytes) = Self::lookup_bucket_payload_in_log_chains(
-                &self.edges,
-                &self.values,
-                leaf,
-                width,
-                edge,
-                edge_chain,
-                payload_chain,
-            )? {
-                return Ok(bytes);
-            }
-        } else {
-            let (edge_chain, payload_chain) = self.bucket_log_chains(src, bucket);
-            if let Some(bytes) = Self::lookup_bucket_payload_in_log_chains(
-                &self.edges,
-                &self.values,
-                leaf,
-                width,
-                edge,
-                &edge_chain,
-                &payload_chain,
-            )? {
-                return Ok(bytes);
-            }
-        }
-
-        let mut buf = vec![0u8; usize::from(width)];
-        let offset = bucket
-            .payload_offset()
-            .checked_add(u64::from(slot_index) * u64::from(width))
+        let log_len = u32::from(bucket.payload_log_len());
+        let reserved_slots = self.bucket_reserved_edge_slots(src, bucket);
+        let slab_payload_slots = reserved_slots
+            .checked_sub(log_len)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        self.values.read_bytes(offset, &mut buf);
-        Ok(buf)
-    }
-
-    pub(super) fn lookup_bucket_payload_in_log_chains(
-        edges: &EdgeStore<E, M>,
-        values: &EdgePayloadStore<M>,
-        leaf: u32,
-        width: u16,
-        edge: &E,
-        edge_chain: &[u32],
-        payload_chain: &[u32],
-    ) -> Result<Option<Vec<u8>>, LabeledOperationError> {
-        debug_assert_eq!(
-            edge_chain.len(),
-            payload_chain.len(),
-            "edge/payload overflow log chains must have equal length at lookup time"
-        );
-        let slot_index = edge.edge_slot_index_raw();
-        for (&entry_idx, &value_idx) in edge_chain.iter().zip(payload_chain.iter()) {
-            if entry_idx != slot_index {
-                continue;
-            }
-            let logged = edges.decode_overflow_log_edge_at(leaf, entry_idx);
-            if logged.neighbor_vid() == edge.neighbor_vid() {
-                let mut buf = vec![0u8; usize::from(width)];
-                values.read_payload_log_entry(leaf, value_idx, width, &mut buf)?;
-                return Ok(Some(buf));
-            }
+        if slot_index < slab_payload_slots {
+            let mut buf = vec![0u8; usize::from(width)];
+            let offset = bucket
+                .payload_offset()
+                .checked_add(u64::from(slot_index) * u64::from(width))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            self.values.read_bytes(offset, &mut buf);
+            return Ok(buf);
         }
-        Ok(None)
+        let asc_log_index = slot_index
+            .checked_sub(slab_payload_slots)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let mut buf = vec![0u8; usize::from(width)];
+        self.values.read_payload_log_asc_index(
+            self.payload_log_leaf(src),
+            bucket.payload_log_head(),
+            asc_log_index,
+            width,
+            &mut buf,
+        )?;
+        let _ = log_chains;
+        Ok(buf)
     }
 
     pub(super) fn write_edge_payload_to_log(
         &self,
         src: VertexId,
         bucket: &LabelBucket,
-        entry_idx: i32,
+        _edge_entry_idx: i32,
         edge: &E,
     ) -> Result<LabelBucket, LabeledOperationError> {
         let width = bucket.payload_byte_width();
@@ -232,20 +277,113 @@ where
         }
         let src_i32 = i32::try_from(u32::from(src))
             .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
-        self.values
-            .write_payload_log_entry(
+        let entry_idx = self
+            .values
+            .append_payload_log_entry(
                 self.payload_log_leaf(src),
-                u32::try_from(entry_idx)
-                    .map_err(|_| LaraOperationError::CollectAllocationOverflow)?,
                 bucket.payload_log_head(),
                 src_i32,
                 width,
                 edge.edge_payload_bytes(),
             )
             .map_err(LabeledOperationError::from)?;
+        let next_len = bucket
+            .payload_log_len()
+            .checked_add(1)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         bucket
-            .try_with_payload_log_head(entry_idx)
+            .try_with_payload_log(
+                i32::try_from(entry_idx)
+                    .map_err(|_| LaraOperationError::CollectAllocationOverflow)?,
+                next_len,
+            )
             .map_err(LabeledOperationError::from)
+    }
+
+    pub(super) fn mark_payload_log_slot_dead(
+        &self,
+        src: VertexId,
+        bucket: &LabelBucket,
+        slot_index: u32,
+    ) -> Result<(), LabeledOperationError> {
+        if bucket.payload_log_head() < 0 || bucket.payload_log_len() == 0 {
+            return Ok(());
+        }
+        let reserved_slots = self.bucket_reserved_edge_slots(src, bucket);
+        let payload_log_len = u32::from(bucket.payload_log_len());
+        let payload_log_base = reserved_slots
+            .checked_sub(payload_log_len)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        if slot_index < payload_log_base {
+            return Ok(());
+        }
+        let asc_log_index = slot_index
+            .checked_sub(payload_log_base)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let leaf = self.payload_log_leaf(src);
+        let chain = self
+            .values
+            .payload_log_chain_asc_indices(leaf, bucket.payload_log_head());
+        let Some(&entry_idx) = chain.get(asc_log_index as usize) else {
+            return Ok(());
+        };
+        self.values
+            .mark_payload_log_entry_dead(leaf, entry_idx)
+            .map_err(LabeledOperationError::from)
+    }
+
+    pub(super) fn write_edge_payload_after_insert(
+        &self,
+        src: VertexId,
+        bucket_slot: u64,
+        mut bucket: LabelBucket,
+        mut prev_payload_slots: u32,
+        mut slot_index: u32,
+        edge: &E,
+        prefer_log: bool,
+    ) -> Result<LabelBucket, LabeledOperationError> {
+        if bucket.payload_byte_width() == 0 || edge.edge_payload_byte_width() == 0 {
+            return Ok(bucket);
+        }
+        if prefer_log || bucket.payload_log_len() > 0 {
+            match self.write_edge_payload_to_log(src, &bucket, -1, edge) {
+                Ok(updated) => return Ok(updated),
+                Err(LabeledOperationError::PayloadLogWrite(
+                    PayloadLogWriteError::SegmentLogFull,
+                )) => {
+                    self.rebalance_payload_log_leaf_for_labeled(src)?;
+                    bucket = self
+                        .buckets
+                        .read_label_bucket_slot(bucket_slot)
+                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    prev_payload_slots = self.bucket_resident_payload_slots_for(src, &bucket);
+                    slot_index = bucket.degree().saturating_sub(1);
+                    if prefer_log {
+                        return self.write_edge_payload_to_log(src, &bucket, -1, edge);
+                    }
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        let bucket =
+            self.ensure_bucket_payload_span(src, bucket_slot, bucket, prev_payload_slots)?;
+        self.write_edge_payload_at_slot(&bucket, slot_index, edge)?;
+        Ok(bucket)
+    }
+
+    pub(super) fn ensure_bucket_payload_schema_for_insert(
+        &self,
+        bucket: LabelBucket,
+        edge_payload_width: u16,
+    ) -> Result<LabelBucket, LabeledOperationError> {
+        let bucket_width = bucket.payload_byte_width();
+        if bucket_width == edge_payload_width {
+            return Ok(bucket);
+        }
+        Err(LabeledOperationError::PayloadByteWidthMismatch {
+            bucket_width,
+            edge_payload_width,
+        })
     }
 
     pub(super) fn release_bucket_payload_span(
@@ -253,7 +391,7 @@ where
         src: VertexId,
         bucket: &LabelBucket,
     ) -> Result<(), LabeledOperationError> {
-        let len = self.bucket_resident_payload_bytes(bucket);
+        let len = self.bucket_resident_payload_bytes_for(src, bucket);
         if len == 0 {
             return Ok(());
         }
@@ -289,10 +427,17 @@ where
         if bucket.payload_byte_width() == payload_byte_width {
             return Ok(bucket);
         }
-        if bucket.is_payload_allocated() && payload_byte_width != 0 {
-            return Err(LabeledOperationError::from(
-                LaraOperationError::CollectAllocationOverflow,
-            ));
+        let schema_unset = bucket.payload_byte_width() == 0
+            && bucket.degree() == 0
+            && bucket.stored_slots == 0
+            && bucket.overflow_log_head() < 0
+            && bucket.payload_log_head() < 0
+            && bucket.payload_log_len() == 0;
+        if !schema_unset {
+            return Err(LabeledOperationError::PayloadByteWidthMismatch {
+                bucket_width: bucket.payload_byte_width(),
+                edge_payload_width: payload_byte_width,
+            });
         }
         Ok(bucket.with_payload_byte_width(payload_byte_width))
     }
@@ -328,7 +473,7 @@ where
         prev_stored_slots: u32,
     ) -> Result<LabelBucket, LabeledOperationError> {
         let width = bucket.payload_byte_width();
-        let needed_slots = bucket.stored_slots.max(bucket.degree);
+        let needed_slots = self.bucket_resident_payload_slots_for(src, &bucket);
         if width == 0 || needed_slots == 0 {
             return Ok(bucket);
         }
@@ -469,25 +614,71 @@ where
             BucketSearch::Found { slot, bucket } => (slot, bucket),
             BucketSearch::Missing { .. } => return Ok(false),
         };
+        if bucket.payload_log_len() > 0 {
+            self.rebalance_payload_log_leaf_for_labeled(src)?;
+            bucket = self
+                .buckets
+                .read_label_bucket_slot(slot)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        }
         let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
-        if bucket.overflow_log_head() >= 0 {
-            bucket = self.ensure_label_bucket_folded_to_slab(src, bucket_index, slot, bucket)?;
-        }
-        if slot_index >= bucket.stored_slots {
+        if !self.labeled_bucket_slot_is_live_edge(
+            src,
+            &vertex,
+            bucket_index,
+            slot,
+            &bucket,
+            slot_index,
+        )? {
             return Ok(false);
         }
-        let edge_slot = checked_add_slot_index(bucket.edge_start(), u64::from(slot_index))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        let current = self.edges.read_slot(edge_slot);
-        if current.is_deleted_slot() || current.is_tombstone_edge() {
-            return Ok(false);
+        let edge_payload_width = edge.edge_payload_byte_width();
+        if edge_payload_width != bucket.payload_byte_width() {
+            return Err(LabeledOperationError::PayloadByteWidthMismatch {
+                bucket_width: bucket.payload_byte_width(),
+                edge_payload_width,
+            });
         }
-        if edge.edge_payload_byte_width() != 0 {
+        if edge_payload_width != 0 {
+            let prev_payload_slots = self.bucket_resident_payload_slots_for(src, &bucket);
+            bucket = self.ensure_bucket_payload_span(src, slot, bucket, prev_payload_slots)?;
             self.write_edge_payload_at_slot(&bucket, slot_index, &edge)?;
         }
         self.buckets.write_label_bucket_slot(slot, bucket)?;
         self.invalidate_bucket_lookup_for_label(src, label_id);
         Ok(true)
+    }
+
+    fn labeled_bucket_slot_is_live_edge(
+        &self,
+        src: VertexId,
+        vertex: &LabeledVertex,
+        bucket_index: u32,
+        bucket_slot: u64,
+        bucket: &LabelBucket,
+        slot_index: u32,
+    ) -> Result<bool, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        if bucket.overflow_log_head() < 0 {
+            if slot_index >= bucket.stored_slots {
+                return Ok(false);
+            }
+            let edge_slot = checked_add_slot_index(bucket.edge_start(), u64::from(slot_index))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let current = self.edges.read_slot(edge_slot);
+            return Ok(!current.is_deleted_slot() && !current.is_tombstone_edge());
+        }
+
+        let successor = self.bucket_successor_start_after_bucket(vertex, bucket_index, bucket)?;
+        let acc = LabelEdgeSpanAccess::new(&self.buckets, bucket_slot, successor, src);
+        for edge in self.edges.asc_out_edges(&acc, VertexId::from(0))? {
+            if edge.edge_slot_index_raw() == slot_index {
+                return Ok(!edge.is_tombstone_edge());
+            }
+        }
+        Ok(false)
     }
 
     pub(super) fn write_edge_payload_at_slot(
@@ -500,14 +691,15 @@ where
         if width == 0 {
             return Ok(());
         }
-        let value_width = edge.edge_payload_byte_width();
-        if value_width == 0 {
+        let edge_payload_width = edge.edge_payload_byte_width();
+        if edge_payload_width == 0 {
             return Ok(());
         }
-        if value_width != width {
-            return Err(LabeledOperationError::from(
-                LaraOperationError::CollectAllocationOverflow,
-            ));
+        if edge_payload_width != width {
+            return Err(LabeledOperationError::PayloadByteWidthMismatch {
+                bucket_width: width,
+                edge_payload_width,
+            });
         }
         let offset = bucket
             .payload_offset()
@@ -650,10 +842,7 @@ where
             return Ok(());
         }
         if buckets.iter().any(|b| b.is_payload_allocated()) {
-            if self.vertex_label_buckets_have_overflow(&vertex)? {
-                self.reclaim_vertex_overflow_buckets(src)?;
-            }
-            self.compact_vertex_edge_span(src, 0)?;
+            self.rebalance_vertex_edge_span(src, None, 1, true)?;
             let vertex = self.vertices.get(src);
             let buckets = self.read_vertex_label_buckets(&vertex)?;
             let total_live = buckets.iter().try_fold(0u32, |acc, bucket| {
@@ -661,7 +850,7 @@ where
                     .ok_or(LaraOperationError::RowDegreeOverflow)
             })?;
             if vertex.stored_slots.saturating_sub(total_live) < 2 {
-                self.rewrite_vertex_edge_span(src, None, 1, false, true)?;
+                self.rebalance_vertex_edge_span(src, None, 1, true)?;
             }
         }
         Ok(())
@@ -682,6 +871,9 @@ mod tests {
         let road = BucketLabelKey::from_raw(2);
         graph
             .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, 2u16)
+            .unwrap();
+        graph
+            .ensure_label_bucket_payload_byte_width(VertexId::from(1), road, 2u16)
             .unwrap();
         graph
             .insert_edge_skip_leaf_cascade(
@@ -739,6 +931,9 @@ mod tests {
         let road = BucketLabelKey::from_raw(2);
         graph
             .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, 2u16)
+            .unwrap();
+        graph
+            .ensure_label_bucket_payload_byte_width(VertexId::from(1), road, 2u16)
             .unwrap();
         graph
             .insert_edge_skip_leaf_cascade(
@@ -818,6 +1013,9 @@ mod tests {
             .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
         graph
+            .ensure_label_bucket_payload_byte_width(VertexId::from(0), rail, 2u16)
+            .unwrap();
+        graph
             .insert_edge(
                 VertexId::from(0),
                 road,
@@ -879,7 +1077,7 @@ mod tests {
         let vertex = graph.vertices().get(VertexId::from(0));
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
-        assert!(bucket.overflow_log_head() >= 0);
+        assert!(bucket.payload_log_len() > 0);
         assert!(bucket.payload_log_head() >= 0);
 
         let mut weights = Vec::new();
@@ -897,6 +1095,45 @@ mod tests {
             .collect();
         expected.extend([320, 330]);
         expected.sort_unstable();
+        assert_eq!(weights, expected);
+    }
+
+    #[test]
+    fn payload_log_full_rebalances_payload_log_only_and_insert_succeeds() {
+        let graph = payload_test_graph_with_capacity(1 << 24);
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let road = BucketLabelKey::from_raw(2);
+        graph
+            .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, 2u16)
+            .unwrap();
+
+        for target in 1..=203u32 {
+            let weight = u16::try_from(target).expect("weight fits u16");
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    VertexId::from(0),
+                    road,
+                    PayloadTestEdge::with_bytes(target, &weight.to_le_bytes()),
+                )
+                .unwrap();
+        }
+
+        let leaf = graph.payload_log_leaf(VertexId::from(0));
+        assert!(
+            graph.values().payload_log_segment_high_water(leaf) < 170,
+            "payload log segment should have been released and reused"
+        );
+        let mut weights = Vec::new();
+        graph
+            .for_each_edges_for_label(VertexId::from(0), road, |edge| {
+                if edge.payload_len == 2 {
+                    let b = edge.edge_payload_bytes();
+                    weights.push(u16::from_le_bytes([b[0], b[1]]));
+                }
+            })
+            .unwrap();
+        weights.sort_unstable();
+        let expected: Vec<u16> = (1..=203u16).collect();
         assert_eq!(weights, expected);
     }
 
@@ -1090,6 +1327,9 @@ mod tests {
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let default = graph.default_label();
         graph
+            .ensure_label_bucket_payload_byte_width(VertexId::from(0), default, 2u16)
+            .unwrap();
+        graph
             .insert_edge(
                 VertexId::from(0),
                 default,
@@ -1210,6 +1450,9 @@ mod tests {
         let road = BucketLabelKey::from_raw(2);
         graph
             .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, 2u16)
+            .unwrap();
+        graph
+            .ensure_label_bucket_payload_byte_width(VertexId::from(1), road, 2u16)
             .unwrap();
         for target in 1..=32u32 {
             let weight = u16::try_from(target).expect("weight fits u16");
@@ -1523,6 +1766,129 @@ mod tests {
                 .is_err(),
             "widening an allocated value bucket must fail"
         );
+    }
+
+    #[test]
+    fn payload_edge_requires_predeclared_bucket_payload_width() {
+        let graph = payload_test_graph();
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let road = BucketLabelKey::from_raw(2);
+
+        let err = graph
+            .insert_edge_skip_leaf_cascade(
+                VertexId::from(0),
+                road,
+                PayloadTestEdge::with_bytes(1, &1u16.to_le_bytes()),
+            )
+            .expect_err("payload edge must not infer bucket payload schema");
+        assert!(matches!(
+            err,
+            LabeledOperationError::PayloadByteWidthMismatch {
+                bucket_width: 0,
+                edge_payload_width: 2
+            }
+        ));
+        assert_eq!(
+            graph.out_edge_label_ids(VertexId::from(0)).unwrap(),
+            Vec::<BucketLabelKey>::new(),
+            "failed payload insert must not create an empty label bucket"
+        );
+    }
+
+    #[test]
+    fn payload_edge_rejected_from_default_bypass_without_promoting_row() {
+        let graph = payload_test_graph();
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let default = graph.default_label();
+        graph
+            .insert_edge_skip_leaf_cascade(
+                VertexId::from(0),
+                default,
+                PayloadTestEdge::with_bytes(1, &[]),
+            )
+            .unwrap();
+        let before = graph.vertices().get(VertexId::from(0));
+        assert!(before.is_default_edge_labeled());
+
+        let err = graph
+            .insert_edge_skip_leaf_cascade(
+                VertexId::from(0),
+                default,
+                PayloadTestEdge::with_bytes(2, &2u16.to_le_bytes()),
+            )
+            .expect_err("payload insert must not promote default bypass row");
+        assert!(matches!(
+            err,
+            LabeledOperationError::PayloadByteWidthMismatch {
+                bucket_width: 0,
+                edge_payload_width: 2
+            }
+        ));
+        let after = graph.vertices().get(VertexId::from(0));
+        assert!(after.is_default_edge_labeled());
+        assert_eq!(
+            graph.out_edge_label_ids(VertexId::from(0)).unwrap(),
+            vec![default]
+        );
+        assert_eq!(
+            graph
+                .iter_edges_for_label(VertexId::from(0), default)
+                .unwrap(),
+            vec![PayloadTestEdge::with_bytes(1, &[])]
+        );
+    }
+
+    #[test]
+    fn non_empty_bucket_rejects_payload_width_changes() {
+        let graph = payload_test_graph();
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let road = BucketLabelKey::from_raw(2);
+
+        graph
+            .insert_edge_skip_leaf_cascade(
+                VertexId::from(0),
+                road,
+                PayloadTestEdge::with_bytes(1, &[]),
+            )
+            .unwrap();
+        let err = graph
+            .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, 2u16)
+            .expect_err("non-empty no-payload bucket must not become payloaded");
+        assert!(matches!(
+            err,
+            LabeledOperationError::PayloadByteWidthMismatch {
+                bucket_width: 0,
+                edge_payload_width: 2
+            }
+        ));
+
+        let valued = BucketLabelKey::from_raw(3);
+        graph
+            .ensure_label_bucket_payload_byte_width(VertexId::from(0), valued, 2u16)
+            .unwrap();
+        graph
+            .insert_edge_skip_leaf_cascade(
+                VertexId::from(0),
+                valued,
+                PayloadTestEdge::with_bytes(2, &2u16.to_le_bytes()),
+            )
+            .unwrap();
+
+        for (edge, expected_width) in [
+            (PayloadTestEdge::with_bytes(3, &[]), 0u16),
+            (PayloadTestEdge::with_i32(4, 4), 4u16),
+        ] {
+            let err = graph
+                .insert_edge_skip_leaf_cascade(VertexId::from(0), valued, edge)
+                .expect_err("payload width must match existing bucket schema");
+            assert!(matches!(
+                err,
+                LabeledOperationError::PayloadByteWidthMismatch {
+                    bucket_width: 2,
+                    edge_payload_width
+                } if edge_payload_width == expected_width
+            ));
+        }
     }
 
     #[test]

@@ -7,7 +7,10 @@ use crate::{
         record::{LabelBucket, LabeledVertex},
         slot_index::checked_add_slot_index,
     },
-    lara::{edge::EdgeStore, operation_error::LaraOperationError},
+    lara::{
+        edge::{DeleteTarget, EdgeStore, LogEntryKind, decode_log_entry_kind},
+        operation_error::LaraOperationError,
+    },
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
 #[cfg(feature = "canbench")]
@@ -214,7 +217,8 @@ where
                 force_slack_grow,
             )?;
 
-        let slab_only_bulk = self.label_buckets_allow_contiguous_slab_copy(&vertex, &buckets)?;
+        let slab_only_bulk =
+            !compact && self.label_buckets_allow_contiguous_slab_copy(&vertex, &buckets)?;
 
         let needs_value_sync =
             Self::vertex_payload_spans_need_sync_after_rewrite(&buckets, moved, old_alloc, compact);
@@ -681,6 +685,187 @@ where
         Ok(out)
     }
 
+    pub(super) fn calculate_label_edge_span_positions_by_resident_slots(
+        start_slot: u64,
+        span_slots: u32,
+        buckets: &[LabelBucket],
+        preferred: Option<usize>,
+        preferred_extra: u32,
+    ) -> Result<Vec<u64>, LabeledOperationError> {
+        let mut out = Vec::with_capacity(buckets.len());
+        if buckets.is_empty() {
+            return Ok(out);
+        }
+
+        let mut effective_live = 0u64;
+        let mut total_weight = buckets.len() as u64;
+        for (index, bucket) in buckets.iter().enumerate() {
+            let extra = if preferred == Some(index) {
+                preferred_extra
+            } else {
+                0
+            };
+            let resident = bucket
+                .stored_slots
+                .max(bucket.degree())
+                .checked_add(extra)
+                .ok_or(LaraOperationError::RowDegreeOverflow)?;
+            effective_live = effective_live
+                .checked_add(u64::from(resident))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            total_weight = total_weight
+                .checked_add(u64::from(bucket.degree()).saturating_add(1))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        }
+        let gaps = u64::from(span_slots)
+            .checked_sub(effective_live)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+
+        const P: u128 = 100_000_000;
+        let gaps_u = u128::from(gaps);
+        let tw = total_weight as u128;
+        let step_fp = if tw == 0 {
+            0u128
+        } else {
+            gaps_u
+                .checked_mul(P)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?
+                / tw
+        };
+
+        let mut cursor_fp = u128::from(start_slot)
+            .checked_mul(P)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        for (index, bucket) in buckets.iter().enumerate() {
+            let start = u64::try_from(cursor_fp / P)
+                .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            out.push(start);
+            let extra = if preferred == Some(index) {
+                preferred_extra
+            } else {
+                0
+            };
+            let resident = u128::from(
+                bucket
+                    .stored_slots
+                    .max(bucket.degree())
+                    .checked_add(extra)
+                    .ok_or(LaraOperationError::RowDegreeOverflow)?,
+            );
+            let start_fp = u128::from(start)
+                .checked_mul(P)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            cursor_fp = start_fp
+                .checked_add(
+                    resident
+                        .checked_mul(P)
+                        .ok_or(LaraOperationError::CollectAllocationOverflow)?,
+                )
+                .and_then(|cursor| {
+                    let weight = u128::from(bucket.degree()).checked_add(1)?;
+                    let gap = step_fp.checked_mul(weight)?;
+                    cursor.checked_add(gap)
+                })
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        }
+        Ok(out)
+    }
+
+    pub(super) fn rebalance_vertex_edge_span(
+        &self,
+        src: VertexId,
+        preferred_bucket: Option<u32>,
+        preferred_extra: u32,
+        force_slack_grow: bool,
+    ) -> Result<(), LabeledOperationError> {
+        let vertex = self.vertices.get(src);
+        if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
+            return Ok(());
+        }
+        let buckets = self.read_vertex_label_buckets(&vertex)?;
+        let old_alloc = vertex.stored_slots;
+        let old_base = buckets
+            .first()
+            .map(|bucket| bucket.edge_start())
+            .unwrap_or(0);
+        let mut resident_slots = 0u32;
+        for bucket in &buckets {
+            resident_slots = resident_slots
+                .checked_add(bucket.stored_slots.max(bucket.degree()))
+                .ok_or(LaraOperationError::RowDegreeOverflow)?;
+        }
+        let min_required = resident_slots
+            .checked_add(preferred_extra)
+            .ok_or(LaraOperationError::RowDegreeOverflow)?;
+        let new_alloc = if force_slack_grow && old_alloc >= min_required && old_alloc > 0 {
+            let base = old_alloc.max(min_required);
+            let gap = DEFAULT_SEGMENT_SIZE.max(base / 8);
+            base.saturating_add(gap)
+        } else if old_alloc >= min_required && old_alloc > 0 {
+            old_alloc
+        } else {
+            let base = min_required.max(DEFAULT_SEGMENT_SIZE);
+            let gap = DEFAULT_SEGMENT_SIZE.max(base / 8);
+            base.saturating_add(gap)
+        };
+        let moved = new_alloc > 0;
+        let new_base = if new_alloc == 0 {
+            0
+        } else if moved {
+            let start = self.edges.header().elem_capacity;
+            let end = match checked_add_slot_index(start, u64::from(new_alloc)) {
+                Some(end) => end,
+                None => return Err(LaraOperationError::CollectAllocationOverflow.into()),
+            };
+            self.edges
+                .set_elem_capacity(end)
+                .map_err(LabeledOperationError::from)?;
+            start
+        } else {
+            old_base
+        };
+        let preferred = preferred_bucket.map(|index| index as usize);
+        let positions = Self::calculate_label_edge_span_positions_by_resident_slots(
+            new_base,
+            new_alloc,
+            &buckets,
+            preferred,
+            preferred_extra,
+        )?;
+
+        let max_run = buckets.iter().try_fold(0usize, |max_run, bucket| {
+            Ok::<usize, LabeledOperationError>(
+                max_run.max(Self::edge_bytes_for_len(bucket.stored_slots as usize)?),
+            )
+        })?;
+        let mut buf = vec![0u8; max_run];
+        let mut row_buckets = Vec::with_capacity(buckets.len());
+        for (index, bucket) in buckets.iter().enumerate() {
+            let row_start = positions[index];
+            let run = Self::edge_bytes_for_len(bucket.stored_slots as usize)?;
+            if run > 0 {
+                self.edges
+                    .read_slots_contiguous(bucket.edge_start(), &mut buf[..run]);
+                self.edges.write_slots_contiguous(row_start, &buf[..run])?;
+            }
+            row_buckets.push(bucket.with_edge_range(row_start, bucket.stored_slots));
+        }
+        self.buckets
+            .write_label_bucket_row_adaptive(vertex.base_slot_start(), &row_buckets)?;
+        if moved && old_alloc > 0 {
+            self.release_vertex_edge_span_slab(old_base, u64::from(old_alloc))?;
+        }
+        self.vertices.set(src, &vertex.with_stored_slots(new_alloc));
+
+        let d_total = i64::from(new_alloc) - i64::from(old_alloc);
+        if d_total != 0 {
+            self.edges
+                .bump_vertex_segment_counts(src, 0, d_total)
+                .map_err(LabeledOperationError::from)?;
+        }
+        Ok(())
+    }
+
     /// Compacts all edge buckets for `vid` into slab-backed spans.
     pub fn compact_vertex_edge_span(
         &self,
@@ -750,6 +935,22 @@ where
             self.rewrite_vertex_edge_span(vid, None, 0, false, true)?;
         }
         Ok(())
+    }
+
+    pub(super) fn rebalance_vertex_edge_span_light(
+        &self,
+        vid: VertexId,
+        allow_slack_grow: bool,
+    ) -> Result<(), LabeledOperationError> {
+        let vertex = self.vertices.get(vid);
+        if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
+            return Ok(());
+        }
+        if allow_slack_grow {
+            self.rebalance_vertex_edge_span(vid, None, 0, true)
+        } else {
+            self.rebalance_vertex_edge_span(vid, None, 0, false)
+        }
     }
 
     pub(super) fn fold_label_bucket_to_slab(
@@ -831,6 +1032,119 @@ where
         Ok(bucket)
     }
 
+    pub(super) fn fold_label_bucket_edges_to_slab(
+        &self,
+        src: VertexId,
+        vertex: &LabeledVertex,
+        bucket_index: u32,
+        _bucket_slot: u64,
+        bucket: LabelBucket,
+    ) -> Result<LabelBucket, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        if bucket.overflow_log_head() < 0 {
+            return Ok(bucket);
+        }
+        let degree = bucket.degree();
+        if degree == 0 {
+            return Ok(bucket.with_overflow_log_head(-1));
+        }
+        let edges = self.materialize_label_bucket_edges_for_log_release(src, &bucket)?;
+        let successor = self.bucket_successor_start(vertex, bucket_index)?;
+        let slack = successor.saturating_sub(bucket.edge_start());
+        if slack < edges.len() as u64 {
+            return Err(LabeledOperationError::from(
+                LaraOperationError::CollectAllocationOverflow,
+            ));
+        }
+        let run = Self::edge_bytes_for_len(edges.len())?;
+        if run > 0 {
+            let mut buf = vec![0u8; run];
+            let mut offset = 0usize;
+            for edge in &edges {
+                edge.write_to(&mut buf[offset..offset + E::BYTES]);
+                offset += E::BYTES;
+            }
+            self.edges
+                .write_slots_contiguous(bucket.edge_start(), &buf[..run])?;
+        }
+        let live = u32::try_from(
+            edges
+                .iter()
+                .filter(|edge| !edge.is_tombstone_edge())
+                .count(),
+        )
+        .map_err(|_| LaraOperationError::RowDegreeOverflow)?;
+        Ok(bucket
+            .with_overflow_log_head(-1)
+            .with_stored_slots(
+                u32::try_from(edges.len()).map_err(|_| LaraOperationError::RowDegreeOverflow)?,
+            )
+            .with_degree_field(live))
+    }
+
+    fn materialize_label_bucket_edges_for_log_release(
+        &self,
+        src: VertexId,
+        bucket: &LabelBucket,
+    ) -> Result<Vec<E>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        let leaf = u32::from(src) / self.edges.header().segment_size.max(1);
+        let mut out: Vec<(DeleteTarget, E)> = Vec::new();
+        let slab_prefix_slots = self.bucket_slab_prefix_slots(src, bucket);
+        for slot_index in 0..slab_prefix_slots {
+            let edge_slot = checked_add_slot_index(bucket.edge_start(), u64::from(slot_index))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let edge = self.edges.read_slot(edge_slot);
+            out.push((DeleteTarget::Slab(slot_index), edge));
+        }
+        let slab_live = out
+            .iter()
+            .filter(|(_, edge)| !edge.is_deleted_slot() && !edge.is_tombstone_edge())
+            .count();
+        let expected_live = usize::try_from(bucket.degree()).unwrap_or(usize::MAX);
+        if slab_live == expected_live {
+            return Ok(out.into_iter().map(|(_, edge)| edge).collect());
+        }
+        if slab_live > expected_live {
+            return Err(LabeledOperationError::from(
+                LaraOperationError::LogChainShort,
+            ));
+        }
+
+        let chain = self
+            .edges
+            .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head());
+        for log_idx in chain {
+            let (_, src_tag, edge) = self.edges.read_overflow_log_entry(leaf, log_idx);
+            match decode_log_entry_kind(src_tag) {
+                LogEntryKind::Dead => {
+                    out.push((DeleteTarget::Log(log_idx), E::tombstone_edge()));
+                }
+                LogEntryKind::Delete(target) => {
+                    if let Some(index) = out.iter().position(|(candidate, _)| *candidate == target)
+                    {
+                        out[index].1 = E::tombstone_edge();
+                    }
+                }
+                LogEntryKind::Live => out.push((DeleteTarget::Log(log_idx), edge)),
+            }
+        }
+        let live = out
+            .iter()
+            .filter(|(_, edge)| !edge.is_tombstone_edge())
+            .count();
+        if live != usize::try_from(bucket.degree()).unwrap_or(usize::MAX) {
+            return Err(LabeledOperationError::from(
+                LaraOperationError::LogChainShort,
+            ));
+        }
+        Ok(out.into_iter().map(|(_, edge)| edge).collect())
+    }
+
     pub(super) fn fold_label_bucket_payload_log_to_slab(
         &self,
         src: VertexId,
@@ -844,25 +1158,24 @@ where
         }
         let leaf = self.payload_log_leaf(src);
         let (_, payload_chain) = self.bucket_log_chains(src, &bucket);
-        self.values.sweep_payload_log_chain(leaf, &payload_chain);
-        let saved = self.collect_bucket_payloads_asc_order(src, vertex, bucket_index, &bucket)?;
-        let bucket = bucket
+        let saved =
+            self.collect_bucket_payload_slots_asc_order(src, vertex, bucket_index, &bucket)?;
+        let old_payload_slots = self.bucket_resident_payload_slots_for(src, &bucket);
+        let mut bucket = bucket
             .try_with_payload_log_head(-1)
             .map_err(LabeledOperationError::from)?;
+        bucket = self.ensure_bucket_payload_span(src, bucket_slot, bucket, old_payload_slots)?;
         let width = bucket.payload_byte_width();
-        let flat_len = saved
-            .len()
-            .checked_mul(usize::from(width))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        if flat_len > 0 {
-            let mut flat = Vec::with_capacity(flat_len);
-            for bytes in &saved {
-                flat.extend_from_slice(bytes);
-            }
+        for (slot_index, bytes) in &saved {
+            let offset = bucket
+                .payload_offset()
+                .checked_add(u64::from(*slot_index) * u64::from(width))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             self.values
-                .write_bytes(bucket.payload_offset(), &flat)
+                .write_payload_slot(offset, width, bytes)
                 .map_err(LabeledOperationError::from)?;
         }
+        self.values.sweep_payload_log_chain(leaf, &payload_chain);
         self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
         Ok(bucket)
     }
@@ -909,7 +1222,10 @@ where
     pub(super) fn reclaim_edge_log_leaf_for_labeled(
         &self,
         src: VertexId,
-    ) -> Result<(), LabeledOperationError> {
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
         let seg_size = self.edges.header().segment_size.max(1);
         let leaf = u32::from(src) / seg_size;
         let start_vid = leaf.saturating_mul(seg_size);
@@ -920,6 +1236,81 @@ where
         self.edges
             .release_log_segment(SegmentId::from(leaf))
             .map_err(LabeledOperationError::from)?;
+        Ok(())
+    }
+
+    pub(super) fn rebalance_edge_log_leaf_for_labeled(
+        &self,
+        src: VertexId,
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        let seg_size = self.edges.header().segment_size.max(1);
+        let leaf = u32::from(src) / seg_size;
+        let start_vid = leaf.saturating_mul(seg_size);
+        let end_vid = start_vid.saturating_add(seg_size).min(self.vertices.len());
+        for vid_u in start_vid..end_vid {
+            let vid = VertexId::from(vid_u);
+            let vertex = self.vertices.get(vid);
+            if vertex.degree() == 0 || vertex.is_default_edge_labeled() {
+                continue;
+            }
+            self.rebalance_vertex_edge_span_light(vid, true)?;
+            let vertex = self.vertices.get(vid);
+            let buckets = self.read_vertex_label_buckets(&vertex)?;
+            for (bucket_index, bucket) in buckets.iter().enumerate() {
+                if bucket.overflow_log_head() < 0 {
+                    continue;
+                }
+                let bucket_index = bucket_index as u32;
+                let slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
+                let folded = self.fold_label_bucket_edges_to_slab(
+                    vid,
+                    &vertex,
+                    bucket_index,
+                    slot,
+                    *bucket,
+                )?;
+                self.buckets.write_label_bucket_slot(slot, folded)?;
+            }
+        }
+        self.edges
+            .release_log_segment(SegmentId::from(leaf))
+            .map_err(LabeledOperationError::from)?;
+        Ok(())
+    }
+
+    pub(super) fn rebalance_payload_log_leaf_for_labeled(
+        &self,
+        src: VertexId,
+    ) -> Result<(), LabeledOperationError> {
+        let seg_size = self.edges.header().segment_size.max(1);
+        let leaf = u32::from(src) / seg_size;
+        let start_vid = leaf.saturating_mul(seg_size);
+        let end_vid = start_vid.saturating_add(seg_size).min(self.vertices.len());
+        for vid_u in start_vid..end_vid {
+            let vid = VertexId::from(vid_u);
+            let vertex = self.vertices.get(vid);
+            if vertex.degree() == 0 || vertex.is_default_edge_labeled() {
+                continue;
+            }
+            let buckets = self.read_vertex_label_buckets(&vertex)?;
+            for (bucket_index, bucket) in buckets.iter().enumerate() {
+                if bucket.payload_log_head() < 0 {
+                    continue;
+                }
+                let bucket_index = bucket_index as u32;
+                let slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
+                self.fold_label_bucket_payload_log_to_slab(
+                    vid,
+                    &vertex,
+                    bucket_index,
+                    slot,
+                    *bucket,
+                )?;
+            }
+        }
         self.values
             .release_payload_log_segment(leaf)
             .map_err(LabeledOperationError::from)?;

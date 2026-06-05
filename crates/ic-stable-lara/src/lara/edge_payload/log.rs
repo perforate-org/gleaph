@@ -1,4 +1,4 @@
-//! Per-segment overflow log for edge payload bytes (paired with edge overflow logs).
+//! Per-segment overflow log for edge payload bytes.
 
 use crate::{GrowFailed, read_i32, read_u32, safe_write, types::Address, write_i32, write_u32};
 use ic_stable_structures::Memory;
@@ -7,7 +7,7 @@ use std::{cell::Cell, fmt};
 /// Magic bytes that identify a LARA payload overflow-log memory.
 pub const MAGIC: [u8; 3] = *b"LVL";
 /// Current overflow-log layout version.
-pub const LAYOUT_VERSION: u8 = 2;
+pub const LAYOUT_VERSION: u8 = 3;
 const HEADER_SIZE: u64 = 32;
 const INLINE_LOG_ENTRY_BYTES: usize = 17;
 /// Payload bytes per payload overflow log entry (`PayloadLogCell`).

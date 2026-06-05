@@ -76,8 +76,13 @@ impl GraphStore {
 
         let remote_ref = self.ensure_remote_ref(target_logical_vertex_id);
         let label = lara_label(edge_storage_label(catalog_label, undirected));
+        let payload_width = u16::try_from(payload_bytes.len())
+            .map_err(|_| GraphStoreError::InvalidEdgePayloadWidth(payload_bytes.len()))?;
         let forward = build_edge_to_remote_with_payload_bytes(remote_ref, payload_bytes);
         self.with_graph_mut(|graph| {
+            if payload_width != 0 {
+                graph.ensure_forward_edge_payload_width(source_vertex_id, label, payload_width)?;
+            }
             graph.insert_forward_out_edge(source_vertex_id, label, forward)
         })?;
         let handle = self

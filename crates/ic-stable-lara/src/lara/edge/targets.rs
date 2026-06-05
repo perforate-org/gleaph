@@ -3,6 +3,25 @@
 use super::edges::HeaderV1 as EdgeHeaderV1;
 use crate::lara::operation_error::LaraOperationError;
 
+pub(crate) const LOG_SRC_DEAD: i32 = i32::MIN;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LogEntryKind {
+    Live,
+    Dead,
+    Delete(DeleteTarget),
+}
+
+pub(crate) fn decode_log_entry_kind(src: i32) -> LogEntryKind {
+    if src == LOG_SRC_DEAD {
+        LogEntryKind::Dead
+    } else if let Some(target) = decode_delete_target(src) {
+        LogEntryKind::Delete(target)
+    } else {
+        LogEntryKind::Live
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DeleteTarget {
     Slab(u32),
