@@ -81,6 +81,26 @@ fn canonical_forward_owner_for_expand(
     })
 }
 
+/// Builds an expand edge binding from an edge already returned by CSR traversal.
+///
+/// Prefer this over [`edge_binding_for_expand`] on hot scan paths: the lookup variant
+/// re-scans the label bucket to refetch the same slot.
+pub(crate) fn edge_binding_for_scanned_expand(
+    store: &GraphStore,
+    probe_vertex_id: VertexId,
+    direction: EdgeDirection,
+    edge: Edge,
+) -> Result<EdgeBinding, PlanQueryError> {
+    let owner_vertex_id =
+        canonical_forward_owner_for_expand(store, probe_vertex_id, direction, &edge)?;
+    let handle = EdgeHandle {
+        owner_vertex_id,
+        label_id: LaraLabelId::from_raw(edge.label_id),
+        slot_index: edge.edge_slot_index.raw(),
+    };
+    Ok(EdgeBinding::from_edge(handle, edge))
+}
+
 pub(crate) fn edge_binding_for_expand(
     store: &GraphStore,
     probe_vertex_id: VertexId,
@@ -111,7 +131,7 @@ fn push_expand_candidate(
 ) -> Result<(), PlanQueryError> {
     out.push((
         edge_dst,
-        edge_binding_for_expand(store, probe_vertex_id, direction, edge)?,
+        edge_binding_for_scanned_expand(store, probe_vertex_id, direction, edge)?,
     ));
     Ok(())
 }
@@ -124,14 +144,10 @@ fn push_scanned_value_expand_candidate(
     edge_dst: ExpandDst,
     edge: Edge,
 ) -> Result<(), PlanQueryError> {
-    let owner_vertex_id =
-        canonical_forward_owner_for_expand(store, probe_vertex_id, direction, &edge)?;
-    let handle = EdgeHandle {
-        owner_vertex_id,
-        label_id: LaraLabelId::from_raw(edge.label_id),
-        slot_index: edge.edge_slot_index.raw(),
-    };
-    out.push((edge_dst, EdgeBinding::from_edge(handle, edge)));
+    out.push((
+        edge_dst,
+        edge_binding_for_scanned_expand(store, probe_vertex_id, direction, edge)?,
+    ));
     Ok(())
 }
 

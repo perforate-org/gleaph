@@ -18,7 +18,7 @@ use crate::plan::query::error::PlanQueryError;
 use crate::plan::query::executor::context::QueryExprEvaluator;
 use crate::plan::query::executor::expand::{
     EdgeEqualityStreamFilter, ExpandDst, build_expanded_row, csr_offset_fast_path_for_expand,
-    edge_binding_for_expand, edge_equality_stream_filter, edge_matches_stream_filter,
+    edge_binding_for_scanned_expand, edge_equality_stream_filter, edge_matches_stream_filter,
     expand_accepts_remote_dst, expand_candidates_into, expand_dst_matches_prebound_vertex,
     visit_csr_expand_fast_path,
 };
@@ -534,7 +534,7 @@ fn stream_expand(
             {
                 return Ok(false);
             }
-            let edge_binding = edge_binding_for_expand(store, src_id, direction, edge)?;
+            let edge_binding = edge_binding_for_scanned_expand(store, src_id, direction, edge)?;
             let expanded = build_expanded_row(
                 None,
                 store,
@@ -585,7 +585,7 @@ fn stream_expand(
             };
             let label_id = edge.label_id;
             let slot_index = edge.edge_slot_index;
-            let edge_binding = edge_binding_for_expand(store, src_id, direction, edge)?;
+            let edge_binding = edge_binding_for_scanned_expand(store, src_id, direction, edge)?;
             if !edge_matches_stream_filter(
                 store,
                 &edge_equality_filter,

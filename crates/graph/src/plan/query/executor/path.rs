@@ -18,7 +18,7 @@ use canbench_rs::bench_scope;
 use super::super::error::PlanQueryError;
 use super::super::row::PlanRow;
 use super::bindings::EdgeBinding;
-use super::expand::{ExpandCandidate, ExpandDst, edge_binding_for_expand};
+use super::expand::{ExpandCandidate, ExpandDst, edge_binding_for_scanned_expand};
 use super::{PlanBinding, vertex_binding_for_traversal};
 use crate::facade::GraphStore;
 
@@ -266,7 +266,7 @@ impl ShortestFixedLabelExpand {
                         if let Ok(Some(edge_dst @ ExpandDst::Local(_))) =
                             ExpandDst::from_edge(store, &edge)
                         {
-                            match edge_binding_for_expand(
+                            match edge_binding_for_scanned_expand(
                                 store,
                                 current,
                                 EdgeDirection::PointingRight,
@@ -297,7 +297,7 @@ impl ShortestFixedLabelExpand {
                         if let Ok(Some(edge_dst @ ExpandDst::Local(_))) =
                             ExpandDst::from_edge(store, &edge)
                         {
-                            match edge_binding_for_expand(
+                            match edge_binding_for_scanned_expand(
                                 store,
                                 current,
                                 EdgeDirection::PointingLeft,
@@ -324,7 +324,7 @@ impl ShortestFixedLabelExpand {
                     if let Ok(Some(edge_dst @ ExpandDst::Local(_))) =
                         ExpandDst::from_edge(store, &edge)
                     {
-                        match edge_binding_for_expand(
+                        match edge_binding_for_scanned_expand(
                             store,
                             current,
                             EdgeDirection::Undirected,
