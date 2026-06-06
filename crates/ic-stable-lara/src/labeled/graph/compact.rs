@@ -38,57 +38,79 @@ where
         base: u64,
         len: u64,
     ) -> Result<(), LabeledOperationError> {
-        if len == 0 {
-            return Ok(());
-        }
-        if self.edges.release_span(base, len).is_ok() {
-            return Ok(());
-        }
-        if let Some(free_at_base) = self.edges.free_span_store().free_span_starting_at(base) {
-            let skip = free_at_base.len.min(len);
-            let new_base = base
-                .checked_add(skip)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            let new_len = len
-                .checked_sub(skip)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            return self.release_vertex_edge_span_slab(new_base, new_len);
-        }
-        let mut lo = 1u64;
-        let mut hi = len;
-        let mut best = 0u64;
-        while lo <= hi {
-            let mid = lo + (hi - lo) / 2;
-            if self.edges.release_span(base, mid).is_ok() {
-                best = mid;
-                lo = mid
+        let mut cur_base = base;
+        let mut cur_len = len;
+        while cur_len > 0 {
+            if self.edges.release_span(cur_base, cur_len).is_ok() {
+                return Ok(());
+            }
+            if let Some(free_at_base) = self.edges.free_span_store().free_span_starting_at(cur_base)
+            {
+                let skip = free_at_base.len.min(cur_len);
+                cur_base = cur_base
+                    .checked_add(skip)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                cur_len = cur_len
+                    .checked_sub(skip)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                continue;
+            }
+            let mut lo = 1u64;
+            let mut hi = cur_len;
+            let mut best = 0u64;
+            while lo <= hi {
+                let mid = lo + (hi - lo) / 2;
+                if self.edges.release_span(cur_base, mid).is_ok() {
+                    best = mid;
+                    lo = mid
+                        .checked_add(1)
+                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                } else if mid == 0 {
+                    break;
+                } else {
+                    hi = mid
+                        .checked_sub(1)
+                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                }
+            }
+            if best > 0 {
+                cur_base = cur_base
+                    .checked_add(best)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                cur_len = cur_len
+                    .checked_sub(best)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            } else {
+                cur_base = cur_base
                     .checked_add(1)
                     .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            } else if mid == 0 {
-                break;
-            } else {
-                hi = mid
+                cur_len = cur_len
                     .checked_sub(1)
                     .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             }
         }
-        if best > 0 {
-            let tail_base = base
-                .checked_add(best)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            let tail_len = len
-                .checked_sub(best)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            self.release_vertex_edge_span_slab(tail_base, tail_len)
-        } else {
-            let tail_base = base
-                .checked_add(1)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            let tail_len = len
-                .checked_sub(1)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            self.release_vertex_edge_span_slab(tail_base, tail_len)
+        Ok(())
+    }
+
+    /// Releases relocated bucket edge prefixes after a vertex span rewrite.
+    ///
+    /// Only bucket-owned `[edge_start, edge_start + stored_slots)` ranges are returned
+    /// to the free-span store. Interior vertex-span gaps were never individually
+    /// allocated and attempting to release them can devolve into per-slot peeling.
+    pub(super) fn release_vertex_edge_span_layout(
+        &self,
+        _old_base: u64,
+        _old_alloc: u32,
+        buckets: &[LabelBucket],
+    ) -> Result<(), LabeledOperationError> {
+        for bucket in buckets {
+            let bucket_len = u64::from(bucket.stored_slots);
+            if bucket_len == 0 {
+                continue;
+            }
+            self.release_vertex_edge_span_slab(bucket.edge_start(), bucket_len)?;
         }
+        Ok(())
     }
 
     pub(super) fn rewrite_vertex_edge_span_read_and_plan(
@@ -99,7 +121,7 @@ where
         compact: bool,
         force_slack_grow: bool,
     ) -> Result<(Vec<LabelBucket>, u32, u64, u32, u32, bool, Vec<u64>), LabeledOperationError> {
-        #[cfg(feature = "canbench")]
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _bench_scope = bench_scope("labeled_rewrite_read_and_plan");
         let buckets = self.read_vertex_label_buckets(vertex)?;
         let old_alloc = vertex.stored_slots;
@@ -235,7 +257,7 @@ where
 
         let disjoint_copy = moved && old_alloc > 0;
         if disjoint_copy {
-            #[cfg(feature = "canbench")]
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _bench_scope = bench_scope("labeled_rewrite_copy_disjoint");
             if slab_only_bulk {
                 let max_run = buckets.iter().try_fold(0usize, |max_run, bucket| {
@@ -306,7 +328,7 @@ where
                     .write_label_bucket_row_adaptive(vertex.base_slot_start(), &row_buckets)?;
             }
         } else if total_live > 0 {
-            #[cfg(feature = "canbench")]
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _bench_scope = bench_scope("labeled_rewrite_copy_inplace_vec");
             if slab_only_bulk {
                 let run_total = Self::edge_bytes_for_len(
@@ -399,7 +421,7 @@ where
                     .write_label_bucket_row_adaptive(vertex.base_slot_start(), &row_buckets)?;
             }
         } else {
-            #[cfg(feature = "canbench")]
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _bench_scope = bench_scope("labeled_rewrite_metadata_only");
             let mut row_buckets = Vec::with_capacity(buckets.len());
             for (index, bucket) in buckets.iter().enumerate() {
@@ -414,14 +436,14 @@ where
                 .write_label_bucket_row_adaptive(vertex.base_slot_start(), &row_buckets)?;
         }
 
-        #[cfg(feature = "canbench")]
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _bench_scope = bench_scope("labeled_rewrite_finalize");
         let new_buckets = self.read_vertex_label_buckets(&vertex)?;
         if let Some(saved) = saved_values {
             self.sync_vertex_payload_spans_after_edge_rewrite(src, &buckets, &new_buckets, &saved)?;
         }
         if moved && old_alloc > 0 {
-            self.release_vertex_edge_span_slab(old_base, u64::from(old_alloc))?;
+            self.release_vertex_edge_span_layout(old_base, old_alloc, &buckets)?;
         }
         self.vertices.set(src, &vertex.with_stored_slots(new_alloc));
 
@@ -813,7 +835,7 @@ where
             let gap = DEFAULT_SEGMENT_SIZE.max(base / 8);
             base.saturating_add(gap)
         };
-        let moved = new_alloc > 0;
+        let moved = old_alloc == 0 || new_alloc > old_alloc;
         let new_base = if new_alloc == 0 {
             0
         } else if moved {
@@ -858,7 +880,7 @@ where
         self.buckets
             .write_label_bucket_row_adaptive(vertex.base_slot_start(), &row_buckets)?;
         if moved && old_alloc > 0 {
-            self.release_vertex_edge_span_slab(old_base, u64::from(old_alloc))?;
+            self.release_vertex_edge_span_layout(old_base, old_alloc, &buckets)?;
         }
         self.vertices.set(src, &vertex.with_stored_slots(new_alloc));
 
@@ -1135,7 +1157,6 @@ where
                 LaraOperationError::LogChainShort,
             ));
         }
-
         let chain = self
             .edges
             .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head());
@@ -1693,6 +1714,47 @@ mod tests {
         for label_idx in 0..20u16 {
             let label = BucketLabelKey::from_raw(10_000 + label_idx);
             for edge_i in 0..500u32 {
+                graph
+                    .insert_edge_skip_leaf_cascade(
+                        hub,
+                        label,
+                        TestEdge {
+                            target: u32::from(dst),
+                        },
+                    )
+                    .unwrap_or_else(|e| panic!("label_idx={label_idx} edge_i={edge_i}: {e:?}"));
+            }
+        }
+    }
+
+    /// Regression: 33rd label on a dense hub used to spend minutes in span release.
+    #[test]
+    fn mixed_label_hub_33_labels_span_release_regression() {
+        let graph = LabeledLaraGraph::new(
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            1 << 20,
+            BucketLabelKey::from_raw(1),
+        )
+        .unwrap();
+        let hub = graph.push_vertex(LabeledVertex::default()).unwrap();
+        let dst = graph.push_vertex(LabeledVertex::default()).unwrap();
+        for label_idx in 0..33u16 {
+            let label = BucketLabelKey::from_raw(10_000 + label_idx);
+            for edge_i in 0..50u32 {
                 graph
                     .insert_edge_skip_leaf_cascade(
                         hub,
