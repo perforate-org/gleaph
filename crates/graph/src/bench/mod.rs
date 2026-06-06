@@ -1444,7 +1444,7 @@ fn bench_graph_expand_mixed_label_hub_10kscan_500match() -> canbench_rs::BenchRe
     )
 }
 
-/// Single-label hub, 1_000 out-edges (control for scaled 5a benches).
+/// Single-label hub, 1_000 out-edges (control for 50kscan scaled 5a benches).
 #[bench(raw)]
 fn bench_graph_expand_hub_return_dst_1k_only() -> canbench_rs::BenchResult {
     bench_expand_hub_control(EXPAND_HUB_OUT_XL, "expand_hub_return_dst_1k")
@@ -1458,6 +1458,20 @@ fn bench_graph_expand_skewed_noise_50k_a_1k_b() -> canbench_rs::BenchResult {
         EXPAND_HUB_OUT_XL,
         "expand_skewed_noise_50k_a_1k_b",
     )
+}
+
+/// Profiles 50kscan graph construction only (scope breakdown; no query execution).
+#[bench(raw)]
+fn bench_graph_profile_setup_50kscan() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("graph_setup_50kscan_total");
+        std::hint::black_box(setup_expand_mixed_label_hub_graph_scaled(
+            &store,
+            EXPAND_MIXED_LABEL_COUNT_XL,
+            EXPAND_EDGES_PER_LABEL_XL,
+        ));
+    })
 }
 
 /// 50 labels × 1_000 edges (50_000 incident); expand one label (1_000 rows).
@@ -1784,12 +1798,13 @@ mod bench_setup_tests {
 
     #[test]
     fn expand_single_label_hub_1k_setup_and_execute() {
+        const HUB_OUT: u32 = 1_000;
         let store = GraphStore::new();
-        setup_expand_single_label_hub(&store, EXPAND_HUB_OUT_XL, "BenchExpandEdge");
+        setup_expand_single_label_hub(&store, HUB_OUT, "BenchExpandEdge");
         let result = execute_expand_plan(
             &store,
             &expand_plan_for_label("BenchExpandEdge", false, None),
         );
-        assert_eq!(result.rows.len(), EXPAND_HUB_OUT_XL as usize);
+        assert_eq!(result.rows.len(), HUB_OUT as usize);
     }
 }
