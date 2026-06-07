@@ -57,7 +57,7 @@
 //! **Target alignment (not yet implemented for labeled edge bytes):** physical adjacency
 //! for a PMA leaf should move via segment span metadata and segment slide (rope-style),
 //! with per-vertex rows remaining DGAP-style scan metadata (`base_slot_start`, degree,
-//! capacity). See the LARA update contract in [`crate::lara`].
+//! capacity). See `design/storage/lara.md` and [`crate::lara`].
 //!
 //! Default-label **bypass** rows skip LabelBuckets: [`LabeledVertex::degree`] / [`LabeledVertex::stored_slots`]
 //! track logical and physical edge slots directly, and overflow uses metadata bits 4–11 as

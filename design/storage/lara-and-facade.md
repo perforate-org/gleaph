@@ -1,5 +1,7 @@
 # Storage: LARA and graph facade
 
+**Status:** Implemented (facade); Partially Implemented (LARA labeled physical layer — see [lara-dgap-contract.md](./lara-dgap-contract.md))
+
 ## Purpose
 
 Clarify what **ic-stable-lara** provides vs what **gleaph-graph** stable structures add for GQL, federation, and indexes.
@@ -8,6 +10,7 @@ Clarify what **ic-stable-lara** provides vs what **gleaph-graph** stable structu
 
 - PMA / tombstone algorithm proofs (see `crates/ic-stable-lara/README.md`).
 - Full stable memory layout bytes.
+- DGAP / PMA contract detail (see [lara-dgap-contract.md](./lara-dgap-contract.md)).
 
 ## Layering
 
@@ -27,10 +30,14 @@ flowchart TB
 **Crate:** `ic-stable-lara`
 
 - CSR vertex/edge storage, tombstones, adjacency iterators
+- PMA segment density, weighted rebalance, segment relocation (DGAP-aligned core)
+- `FreeSpanStore` for retired segment physical blocks (core LARA — see [lara.md](./lara.md))
 - Labeled graphs, bidirectional deferred views
 - **Remote/external edge** insertion at storage level (no logical shard semantics)
 
 LARA does not know `LogicalVertexId`, router placement, or GQL.
+
+**Design contract:** [lara.md](./lara.md) (accepted) · [lara-dgap-contract.md](./lara-dgap-contract.md) (DGAP mapping detail).
 
 ## Graph facade responsibilities
 
@@ -73,6 +80,8 @@ Placement client calls router for resolve/commit/release (`index/placement.rs`).
 
 ## Related documents
 
+- [lara-dgap-contract.md](./lara-dgap-contract.md)
+- [labeled-edge-payloads.md](./labeled-edge-payloads.md)
 - [federation/model.md](../federation/model.md)
 - [index/property-index.md](../index/property-index.md)
 - [execution/pipeline.md](../execution/pipeline.md)

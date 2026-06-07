@@ -34,6 +34,6 @@ Status: proposed | accepted | deprecated | superseded by NNNN
 
 | ADR | Title | Status |
 |-----|-------|--------|
-| — | *(none yet)* | — |
+| [0001](0001-labeled-segment-slide.md) | Labeled edge physical layer uses PMA leaf segment slide | accepted |
 
 When adding an ADR, link it from the relevant design doc and update this table.

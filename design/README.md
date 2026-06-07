@@ -26,10 +26,14 @@ Architecture and semantics for **Gleaph** (IC graph database) and the **GQL** st
 | [gql/plan-format.md](gql/plan-format.md) | draft | `PhysicalPlan` contract |
 | [execution/pipeline.md](execution/pipeline.md) | draft | `PlanRow`, arena, materialize |
 | [execution/operators.md](execution/operators.md) | draft | `PlanOp` catalog (planner vs executor) |
+| [storage/lara.md](storage/lara.md) | accepted | **LARA consensus:** four contracts, DGAP vs LARA, FreeSpanStore |
 | [storage/lara-and-facade.md](storage/lara-and-facade.md) | draft | LARA vs graph stable stores |
+| [storage/lara-dgap-contract.md](storage/lara-dgap-contract.md) | partially implemented | DGAP mapping detail and labeled gaps |
+| [storage/lara-labeled-migration-tests.md](storage/lara-labeled-migration-tests.md) | accepted | Labeled migration Phases A–E test gates |
 | [security/rbac-and-prepared.md](security/rbac-and-prepared.md) | draft | Roles and prepared queries |
 | [index/property-index.md](index/property-index.md) | draft | graph-index and router seed routing |
 | [adr/README.md](adr/README.md) | draft | How we record decisions |
+| [adr/0001-labeled-segment-slide.md](adr/0001-labeled-segment-slide.md) | accepted | Labeled physical layer → PMA leaf segment slide |
 
 ## Conventions
 

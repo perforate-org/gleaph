@@ -36,13 +36,18 @@ The core invariant is:
 
 Segment relocation may move a group of vertex spans out of vertex-id physical
 order. Segment span metadata records where a segment currently lives, while
-free span metadata records retired physical ranges that can be reused by later
-relocation. Both are update/maintenance metadata and stay off the clean scan
-path.
+[`FreeSpanStore`](src/lara/edge/free_span.rs) records retired physical ranges
+for best-fit reuse after relocate or slide completes. Both are core LARA
+update metadata and stay off the clean scan path.
+
+## Design documents
+
+- [`design/storage/lara.md`](../../design/storage/lara.md) — agreed model (four contracts)
+- [`design/storage/lara-dgap-contract.md`](../../design/storage/lara-dgap-contract.md) — DGAP mapping
 
 ## Reference
 
 The main external reference for the dynamic adjacency idea is
-[DGAP](https://github.com/DIR-LAB/DGAP). This crate uses its own persisted
-layout and names the implementation around LARA's local relocation and explicit
-capacity contracts.
+[DGAP](https://github.com/DIR-LAB/DGAP). LARA adopts DGAP scan and in-window
+slide semantics and adds explicit segment span metadata and a free-span retirement
+pool for incremental physical relocation.
