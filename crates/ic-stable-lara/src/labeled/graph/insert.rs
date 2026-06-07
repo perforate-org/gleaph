@@ -317,7 +317,7 @@ where
         }
         if vertex.degree() == 1 {
             let new_alloc = DEFAULT_SEGMENT_SIZE;
-            let edge_start = self.edges.allocate_span(u64::from(new_alloc))?;
+            let edge_start = self.ensure_labeled_leaf_edge_physical_pin(src)?;
             let bucket = self
                 .buckets
                 .read_label_bucket_slot(slot)
@@ -326,9 +326,6 @@ where
                 .with_overflow_log_head(-1);
             self.buckets.write_label_bucket_slot(slot, bucket)?;
             self.vertices.set(src, &vertex.with_stored_slots(new_alloc));
-            self.edges
-                .bump_vertex_segment_counts(src, 0, i64::from(new_alloc))
-                .map_err(LabeledOperationError::from)?;
             return Ok(true);
         }
 

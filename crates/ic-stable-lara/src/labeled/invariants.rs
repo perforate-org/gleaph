@@ -1,11 +1,15 @@
 //! Debug invariant helpers for labeled CSR layouts.
 
 use super::bucket_store::LabelBucketStore;
+use super::graph::leaf_pin::labeled_leaf_physical_block_len;
 use super::record::LabelBucket;
 use crate::{
     VertexId,
     labeled::{BucketLabelKey, LabeledVertex, slot_index::checked_add_slot_index},
-    lara::{edge::EdgeStore, vertex::VertexStore},
+    lara::{
+        edge::{EdgeStore, span_meta::SPAN_PHYSICAL_UNASSIGNED},
+        vertex::VertexStore,
+    },
     traits::{CsrEdge, CsrVertex},
 };
 use ic_stable_structures::Memory;
@@ -269,8 +273,14 @@ pub(crate) fn assert_labeled_edge_store_pma_counts<E, M>(
                 .is_default_edge_labeled()
         });
         if !leaf_has_bypass {
+            let span_rec = edges.span_meta_store().get(u64::from(leaf));
+            let expected_total = if span_rec.physical_start != SPAN_PHYSICAL_UNASSIGNED {
+                i64::try_from(labeled_leaf_physical_block_len(seg)).unwrap_or(i64::MAX)
+            } else {
+                per_leaf_total[leaf as usize]
+            };
             assert_eq!(
-                got.total, per_leaf_total[leaf as usize],
+                got.total, expected_total,
                 "leaf {leaf}: PMA total mismatch (store vs labeled geometry)"
             );
         }

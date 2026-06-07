@@ -190,12 +190,14 @@ where
 
     pub(super) fn rewrite_vertex_edge_span_read_and_plan(
         &self,
+        src: VertexId,
         vertex: &LabeledVertex,
         preferred_bucket: Option<u32>,
         preferred_extra: u32,
         compact: bool,
         force_slack_grow: bool,
-    ) -> Result<(Vec<LabelBucket>, u32, u64, u32, u32, bool, Vec<u64>), LabeledOperationError> {
+    ) -> Result<(Vec<LabelBucket>, u32, u64, u32, u32, bool, u64, Vec<u64>), LabeledOperationError>
+    {
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _bench_scope = bench_scope("labeled_rewrite_read_and_plan");
         let buckets = self.read_vertex_label_buckets(vertex)?;
@@ -247,17 +249,20 @@ where
         let new_base = if new_alloc == 0 {
             0
         } else if moved {
-            // Always append when relocating a VertexEdgeSpan. Reusing a best-fit free
-            // span can overlap the live slab we are about to release and corrupt the
-            // allocator (DuplicateStart on release).
-            let start = self.edges.header().elem_capacity;
-            let end =
-                crate::slab_index::checked_add_slot_exclusive_end(start, u64::from(new_alloc))
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            self.edges
-                .set_elem_capacity(end)
-                .map_err(LabeledOperationError::from)?;
-            start
+            if let Some(in_leaf) = self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc)
+            {
+                in_leaf
+            } else {
+                // Always append when relocating outside the pinned leaf block.
+                let start = self.edges.header().elem_capacity;
+                let end =
+                    crate::slab_index::checked_add_slot_exclusive_end(start, u64::from(new_alloc))
+                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                self.edges
+                    .set_elem_capacity(end)
+                    .map_err(LabeledOperationError::from)?;
+                start
+            }
         } else {
             old_base
         };
@@ -271,7 +276,7 @@ where
             preferred_extra,
         )?;
         Ok((
-            buckets, old_alloc, old_base, total_live, new_alloc, moved, positions,
+            buckets, old_alloc, old_base, total_live, new_alloc, moved, new_base, positions,
         ))
     }
 
@@ -310,8 +315,9 @@ where
             return Ok(());
         }
 
-        let (buckets, old_alloc, old_base, total_live, new_alloc, moved, positions) = self
-            .rewrite_vertex_edge_span_read_and_plan(
+        let (buckets, old_alloc, old_base, total_live, new_alloc, moved, new_base, positions) =
+            self.rewrite_vertex_edge_span_read_and_plan(
+                src,
                 &vertex,
                 preferred_bucket,
                 preferred_extra,
@@ -330,7 +336,7 @@ where
             None
         };
 
-        let disjoint_copy = moved && old_alloc > 0;
+        let disjoint_copy = moved && old_alloc > 0 && new_base != old_base;
         if disjoint_copy {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _bench_scope = bench_scope("labeled_rewrite_copy_disjoint");
@@ -517,17 +523,13 @@ where
         if let Some(saved) = saved_values {
             self.sync_vertex_payload_spans_after_edge_rewrite(src, &buckets, &new_buckets, &saved)?;
         }
-        if moved && old_alloc > 0 {
+        if moved && old_alloc > 0 && new_base != old_base {
             self.release_vertex_edge_span_footprint(old_base, old_alloc, &buckets)?;
         }
         self.vertices.set(src, &vertex.with_stored_slots(new_alloc));
 
         let d_total = i64::from(new_alloc) - i64::from(old_alloc);
-        if d_total != 0 {
-            self.edges
-                .bump_vertex_segment_counts(src, 0, d_total)
-                .map_err(LabeledOperationError::from)?;
-        }
+        self.bump_vertex_edge_span_total_delta(src, d_total)?;
         Ok(())
     }
 
@@ -914,15 +916,20 @@ where
         let new_base = if new_alloc == 0 {
             0
         } else if moved {
-            let start = self.edges.header().elem_capacity;
-            let end = match checked_add_slot_index(start, u64::from(new_alloc)) {
-                Some(end) => end,
-                None => return Err(LaraOperationError::CollectAllocationOverflow.into()),
-            };
-            self.edges
-                .set_elem_capacity(end)
-                .map_err(LabeledOperationError::from)?;
-            start
+            if let Some(in_leaf) = self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc)
+            {
+                in_leaf
+            } else {
+                let start = self.edges.header().elem_capacity;
+                let end = match checked_add_slot_index(start, u64::from(new_alloc)) {
+                    Some(end) => end,
+                    None => return Err(LaraOperationError::CollectAllocationOverflow.into()),
+                };
+                self.edges
+                    .set_elem_capacity(end)
+                    .map_err(LabeledOperationError::from)?;
+                start
+            }
         } else {
             old_base
         };
@@ -954,17 +961,13 @@ where
         }
         self.buckets
             .write_label_bucket_row_adaptive(vertex.base_slot_start(), &row_buckets)?;
-        if moved && old_alloc > 0 {
+        if moved && old_alloc > 0 && new_base != old_base {
             self.release_vertex_edge_span_footprint(old_base, old_alloc, &buckets)?;
         }
         self.vertices.set(src, &vertex.with_stored_slots(new_alloc));
 
         let d_total = i64::from(new_alloc) - i64::from(old_alloc);
-        if d_total != 0 {
-            self.edges
-                .bump_vertex_segment_counts(src, 0, d_total)
-                .map_err(LabeledOperationError::from)?;
-        }
+        self.bump_vertex_edge_span_total_delta(src, d_total)?;
         Ok(())
     }
 

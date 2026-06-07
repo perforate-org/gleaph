@@ -27,6 +27,9 @@ where
     M: Memory,
 {
     pub(crate) fn labeled_leaf_segment_is_dense(&self, vid: VertexId) -> bool {
+        if self.labeled_leaf_physical_range(vid).is_some() {
+            return self.labeled_leaf_geometry_density(vid) >= LEAF_VERTEX_EDGE_SEGMENT_DENSITY;
+        }
         segment_span_density(self.leaf_segment_counts_for_vid(vid))
             >= LEAF_VERTEX_EDGE_SEGMENT_DENSITY
     }
@@ -68,9 +71,7 @@ where
             .checked_add(header.segment_count)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         let idx = u64::from(idx_u32);
-        if segment_span_density(self.edges.counts_store().get(idx))
-            < LEAF_VERTEX_EDGE_SEGMENT_DENSITY
-        {
+        if self.labeled_leaf_maintenance_density(src, idx) < LEAF_VERTEX_EDGE_SEGMENT_DENSITY {
             return Ok(());
         }
 
@@ -89,9 +90,7 @@ where
             } else {
                 self.rebalance_edge_log_leaf_for_labeled(src)?;
             }
-            if segment_span_density(self.edges.counts_store().get(idx))
-                < LEAF_VERTEX_EDGE_SEGMENT_DENSITY
-            {
+            if self.labeled_leaf_maintenance_density(src, idx) < LEAF_VERTEX_EDGE_SEGMENT_DENSITY {
                 return Ok(());
             }
         }
@@ -99,9 +98,7 @@ where
         let src_vertex = self.vertices.get(src);
         if !src_vertex.is_default_edge_labeled() && src_vertex.degree() > 0 {
             self.rewrite_vertex_edge_span(src, None, 0, false, true)?;
-            if segment_span_density(self.edges.counts_store().get(idx))
-                < LEAF_VERTEX_EDGE_SEGMENT_DENSITY
-            {
+            if self.labeled_leaf_maintenance_density(src, idx) < LEAF_VERTEX_EDGE_SEGMENT_DENSITY {
                 return Ok(());
             }
         }
@@ -131,9 +128,7 @@ where
             }
         }
 
-        if segment_span_density(self.edges.counts_store().get(idx))
-            < LEAF_VERTEX_EDGE_SEGMENT_DENSITY
-        {
+        if self.labeled_leaf_maintenance_density(src, idx) < LEAF_VERTEX_EDGE_SEGMENT_DENSITY {
             return Ok(());
         }
 

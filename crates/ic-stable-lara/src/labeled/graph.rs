@@ -51,6 +51,7 @@ mod error;
 mod init;
 mod insert;
 mod iter;
+pub(crate) mod leaf_pin;
 mod remove;
 #[cfg(test)]
 mod test_support;
