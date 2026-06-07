@@ -104,6 +104,11 @@ where
         total
     }
 
+    pub(super) fn labeled_leaf_pma_density(&self, vid: VertexId) -> f64 {
+        segment_span_density(self.leaf_segment_counts_for_vid(vid))
+    }
+
+    /// Interim geometry density (live / sum `stored_slots`); not used for maintenance after Phase B.
     pub(super) fn labeled_leaf_geometry_density(&self, vid: VertexId) -> f64 {
         let header = self.edges.header();
         let leaf = Self::leaf_index_for_vid(vid, header.segment_size);
@@ -127,14 +132,6 @@ where
         let end = checked_add_slot_index(base, u64::from(new_alloc))?;
         let leaf_end = checked_add_slot_index(leaf_start, leaf_len)?;
         if end <= leaf_end { Some(base) } else { None }
-    }
-
-    pub(super) fn labeled_leaf_maintenance_density(&self, vid: VertexId, leaf_idx: u64) -> f64 {
-        if self.labeled_leaf_physical_range(vid).is_some() {
-            self.labeled_leaf_geometry_density(vid)
-        } else {
-            segment_span_density(self.edges.counts_store().get(leaf_idx))
-        }
     }
 
     pub(super) fn bump_vertex_edge_span_total_delta(
@@ -406,5 +403,27 @@ mod tests {
             .unwrap();
         assert_eq!(edges_out.len(), 1);
         assert_eq!(edges_out[0].target, u32::from(dst));
+    }
+
+    #[test]
+    fn labeled_leaf_pma_density_matches_counts_store_when_pinned() {
+        let graph = hub_graph();
+        let hub = graph.push_vertex(LabeledVertex::default()).unwrap();
+        let dst = graph.push_vertex(LabeledVertex::default()).unwrap();
+        graph
+            .insert_edge_skip_leaf_cascade(
+                hub,
+                BucketLabelKey::from_raw(10),
+                TestEdge {
+                    target: u32::from(dst),
+                },
+            )
+            .unwrap();
+        let counts = graph.leaf_segment_counts_for_vid(hub);
+        let density = graph.labeled_leaf_pma_density(hub);
+        assert_eq!(
+            density,
+            counts.actual.max(0) as f64 / counts.total.max(1) as f64
+        );
     }
 }

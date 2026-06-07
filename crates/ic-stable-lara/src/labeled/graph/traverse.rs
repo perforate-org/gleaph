@@ -1382,7 +1382,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::super::test_support::*;
-    use super::super::*;
+    use super::super::{LEAF_VERTEX_EDGE_SEGMENT_DENSITY, *};
     use crate::VertexId;
     use std::num::NonZero;
 
@@ -1569,32 +1569,39 @@ mod tests {
     }
 
     #[test]
-    fn labeled_dense_leaf_triggers_slack_growth_cascade() {
+    fn labeled_dense_leaf_triggers_leaf_rebalance() {
+        use super::super::leaf_pin::labeled_leaf_physical_block_len;
+
         let graph = test_graph();
+        let vid = VertexId::from(0);
         graph
-            .insert_edge(
-                VertexId::from(0),
-                BucketLabelKey::from_raw(99),
-                TestEdge { target: 999 },
-            )
+            .insert_edge(vid, BucketLabelKey::from_raw(99), TestEdge { target: 999 })
             .unwrap();
         let label = BucketLabelKey::from_raw(2);
-        let mut alloc = graph.vertices().get(VertexId::from(0)).stored_slots;
-        let mut grew = false;
-        for target in 0..512u32 {
+        let header = graph.edges().header();
+        let block_len = labeled_leaf_physical_block_len(header.segment_size);
+        let mut reached_dense = false;
+        for target in 0..block_len.saturating_add(64) {
             graph
-                .insert_edge(VertexId::from(0), label, TestEdge { target })
+                .insert_edge(
+                    vid,
+                    label,
+                    TestEdge {
+                        target: target as u32,
+                    },
+                )
                 .unwrap();
-            let next = graph.vertices().get(VertexId::from(0)).stored_slots;
-            if next > alloc {
-                grew = true;
+            let counts = graph.leaf_segment_counts_for_vid(vid);
+            if graph.labeled_leaf_pma_density(vid) >= LEAF_VERTEX_EDGE_SEGMENT_DENSITY {
+                reached_dense = true;
+                assert_eq!(counts.total as u64, block_len);
+                assert!(counts.actual >= counts.total);
                 break;
             }
-            alloc = next;
         }
         assert!(
-            grew,
-            "expected dense-leaf cascade to expand VertexEdgeSpan reservation"
+            reached_dense,
+            "expected PMA leaf actual/total to reach rebalance threshold"
         );
     }
 

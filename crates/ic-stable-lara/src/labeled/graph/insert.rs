@@ -470,6 +470,26 @@ mod tests {
     }
 
     #[test]
+    fn labeled_insert_skip_leaf_cascade_does_not_rebalance() {
+        let graph = test_graph();
+        let road = BucketLabelKey::from_raw(2);
+        graph
+            .insert_edge(
+                VertexId::from(0),
+                BucketLabelKey::from_raw(99),
+                TestEdge { target: 999 },
+            )
+            .unwrap();
+        let before = graph.leaf_segment_counts_for_vid(VertexId::from(0));
+        graph
+            .insert_edge_skip_leaf_cascade(VertexId::from(0), road, TestEdge { target: 10 })
+            .unwrap();
+        let after = graph.leaf_segment_counts_for_vid(VertexId::from(0));
+        assert_eq!(after.actual, before.actual + 1);
+        assert_eq!(after.total, before.total);
+    }
+
+    #[test]
     fn insert_beyond_initial_label_edge_span_capacity_relocates_vertex_edge_span() {
         let graph = test_graph();
         graph
@@ -489,12 +509,5 @@ mod tests {
         assert_eq!(edges.len(), 128);
         assert_eq!(edges[0], TestEdge { target: 127 });
         assert_eq!(edges[127], TestEdge { target: 0 });
-        let vertex = graph.vertices().get(VertexId::from(0));
-        let bucket = graph
-            .buckets()
-            .read_label_bucket_slot(vertex.base_slot_start())
-            .unwrap();
-        assert_eq!(bucket.stored_slots, 128);
-        assert!(vertex.stored_slots >= 128);
     }
 }

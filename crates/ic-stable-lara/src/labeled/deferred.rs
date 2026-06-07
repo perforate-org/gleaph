@@ -334,7 +334,7 @@ mod tests {
                 TestEdge(999),
             )
             .unwrap();
-        for target in 0..130u32 {
+        for target in 0..1024u32 {
             graph
                 .insert_edge(VertexId::from(0), label, TestEdge(target))
                 .unwrap();

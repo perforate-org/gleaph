@@ -27,11 +27,7 @@ where
     M: Memory,
 {
     pub(crate) fn labeled_leaf_segment_is_dense(&self, vid: VertexId) -> bool {
-        if self.labeled_leaf_physical_range(vid).is_some() {
-            return self.labeled_leaf_geometry_density(vid) >= LEAF_VERTEX_EDGE_SEGMENT_DENSITY;
-        }
-        segment_span_density(self.leaf_segment_counts_for_vid(vid))
-            >= LEAF_VERTEX_EDGE_SEGMENT_DENSITY
+        self.labeled_leaf_pma_density(vid) >= LEAF_VERTEX_EDGE_SEGMENT_DENSITY
     }
 
     fn leaf_has_other_labeled_vertices_with_edges(
@@ -70,8 +66,8 @@ where
         let idx_u32 = leaf
             .checked_add(header.segment_count)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        let idx = u64::from(idx_u32);
-        if self.labeled_leaf_maintenance_density(src, idx) < LEAF_VERTEX_EDGE_SEGMENT_DENSITY {
+        let _idx = u64::from(idx_u32);
+        if self.labeled_leaf_pma_density(src) < LEAF_VERTEX_EDGE_SEGMENT_DENSITY {
             return Ok(());
         }
 
@@ -90,7 +86,7 @@ where
             } else {
                 self.rebalance_edge_log_leaf_for_labeled(src)?;
             }
-            if self.labeled_leaf_maintenance_density(src, idx) < LEAF_VERTEX_EDGE_SEGMENT_DENSITY {
+            if self.labeled_leaf_pma_density(src) < LEAF_VERTEX_EDGE_SEGMENT_DENSITY {
                 return Ok(());
             }
         }
@@ -98,7 +94,7 @@ where
         let src_vertex = self.vertices.get(src);
         if !src_vertex.is_default_edge_labeled() && src_vertex.degree() > 0 {
             self.rewrite_vertex_edge_span(src, None, 0, false, true)?;
-            if self.labeled_leaf_maintenance_density(src, idx) < LEAF_VERTEX_EDGE_SEGMENT_DENSITY {
+            if self.labeled_leaf_pma_density(src) < LEAF_VERTEX_EDGE_SEGMENT_DENSITY {
                 return Ok(());
             }
         }
@@ -128,7 +124,7 @@ where
             }
         }
 
-        if self.labeled_leaf_maintenance_density(src, idx) < LEAF_VERTEX_EDGE_SEGMENT_DENSITY {
+        if self.labeled_leaf_pma_density(src) < LEAF_VERTEX_EDGE_SEGMENT_DENSITY {
             return Ok(());
         }
 
@@ -669,7 +665,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::super::test_support::*;
-    use super::super::*;
+    use super::super::{LEAF_VERTEX_EDGE_SEGMENT_DENSITY, *};
     use crate::VertexId;
 
     #[test]
@@ -974,6 +970,77 @@ mod tests {
             graph.vertices(),
             graph.buckets(),
             graph.edges(),
+        );
+    }
+
+    #[test]
+    fn labeled_leaf_segment_is_dense_uses_pma_not_geometry_when_pinned() {
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        graph
+            .insert_edge(vid, BucketLabelKey::from_raw(99), TestEdge { target: 999 })
+            .unwrap();
+        assert!(graph.labeled_leaf_physical_range(vid).is_some());
+        let pma = graph.labeled_leaf_pma_density(vid);
+        let geometry = graph.labeled_leaf_geometry_density(vid);
+        assert!(
+            geometry > pma,
+            "geometry density inflates before PMA leaf fills"
+        );
+        assert_eq!(
+            graph.labeled_leaf_segment_is_dense(vid),
+            pma >= LEAF_VERTEX_EDGE_SEGMENT_DENSITY
+        );
+        assert!(!graph.labeled_leaf_segment_is_dense(vid));
+    }
+
+    #[test]
+    fn labeled_leaf_rebalance_preserves_scan() {
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        let anchor = BucketLabelKey::from_raw(99);
+        let road = BucketLabelKey::from_raw(2);
+        graph
+            .insert_edge(vid, anchor, TestEdge { target: 999 })
+            .unwrap();
+        for target in 0..64u32 {
+            graph.insert_edge(vid, road, TestEdge { target }).unwrap();
+        }
+        let mut materialized = |label: BucketLabelKey| {
+            graph
+                .iter_edges_for_label(vid, label)
+                .unwrap()
+                .into_iter()
+                .map(|e| e.target)
+                .collect::<Vec<_>>()
+        };
+        let before_anchor = materialized(anchor);
+        let before_road = materialized(road);
+        graph.rebalance_cascade_after_labeled_mutation(vid).unwrap();
+        assert_eq!(materialized(anchor), before_anchor);
+        assert_eq!(materialized(road), before_road);
+    }
+
+    #[test]
+    fn labeled_leaf_density_triggers_rebalance_not_vertex_span_alone() {
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        graph
+            .insert_edge(vid, BucketLabelKey::from_raw(99), TestEdge { target: 999 })
+            .unwrap();
+        let road = BucketLabelKey::from_raw(2);
+        let pma_before = graph.labeled_leaf_pma_density(vid);
+        graph
+            .insert_edge_skip_leaf_cascade(vid, road, TestEdge { target: 1 })
+            .unwrap();
+        let pma_after = graph.labeled_leaf_pma_density(vid);
+        assert!(
+            pma_after > pma_before,
+            "PMA actual/total should rise with live edges"
+        );
+        assert!(
+            graph.labeled_leaf_geometry_density(vid) > pma_after,
+            "maintenance must not use geometry density while leaf block is mostly empty"
         );
     }
 }
