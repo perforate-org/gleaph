@@ -77,6 +77,11 @@ where
         let sole_active_labeled_vertex =
             !self.leaf_has_other_labeled_vertices_with_edges(leaf, seg, src);
 
+        if self.labeled_leaf_physical_range(src).is_some() {
+            self.rebalance_labeled_leaf_weighted_slide(src)?;
+            return Ok(());
+        }
+
         if self.edges.overflow_log_segment_high_water(leaf) > 0 {
             if sole_active_labeled_vertex {
                 self.rebalance_edge_log_vertex_for_labeled(src)?;
@@ -93,7 +98,7 @@ where
 
         let src_vertex = self.vertices.get(src);
         if !src_vertex.is_default_edge_labeled() && src_vertex.degree() > 0 {
-            self.rewrite_vertex_edge_span(src, None, 0, false, true)?;
+            self.rewrite_vertex_edge_span(src, None, 0, false, true, None)?;
             if self.labeled_leaf_pma_density(src) < LEAF_VERTEX_EDGE_SEGMENT_DENSITY {
                 return Ok(());
             }
@@ -120,7 +125,7 @@ where
                 continue;
             }
             if v.degree() > 0 {
-                self.rewrite_vertex_edge_span(vid, None, 0, true, false)?;
+                self.rewrite_vertex_edge_span(vid, None, 0, true, false, None)?;
             }
         }
 
@@ -138,7 +143,7 @@ where
                 continue;
             }
             if v.degree() > 0 {
-                self.rewrite_vertex_edge_span(vid, None, 0, false, true)?;
+                self.rewrite_vertex_edge_span(vid, None, 0, false, true, None)?;
             }
         }
         Ok(())
@@ -636,7 +641,7 @@ where
                 Ok(folded)
             }
             Err(_) => {
-                self.rewrite_vertex_edge_span(src, Some(bucket_index), 0, true, false)?;
+                self.rewrite_vertex_edge_span(src, Some(bucket_index), 0, true, false, None)?;
                 let vertex = self.vertices.get(src);
                 let slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
                 self.buckets

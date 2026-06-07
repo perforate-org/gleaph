@@ -215,7 +215,7 @@ Add to `crates/ic-stable-lara/src/test_support.rs` (or `labeled/test_support.rs`
 |-------|------------|--------|
 | A | `labeled_leaf_vertices_share_span_meta_physical_start`, … | **done** |
 | B | `labeled_dense_leaf_triggers_leaf_rebalance`, … | **done** |
-| C | `labeled_leaf_rebalance_folds_overflow_log`, … | not started |
+| C | `labeled_leaf_rebalance_folds_overflow_log`, … | **done** |
 | D | `labeled_segment_relocate_releases_single_footprint`, … | not started |
 | E | `labeled_insert_does_not_grow_elem_capacity_for_hub_growth`, … | not started |
 

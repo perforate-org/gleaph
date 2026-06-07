@@ -1914,7 +1914,7 @@ mod tests {
             .expect("removed low slot");
 
         graph
-            .rewrite_vertex_edge_span(VertexId::from(0), None, 1, false, true)
+            .rewrite_vertex_edge_span(VertexId::from(0), None, 1, false, true, None)
             .unwrap();
 
         let mut values = Vec::new();

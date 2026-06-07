@@ -147,6 +147,37 @@ where
             .map_err(LabeledOperationError::from)
     }
 
+    /// `true` when both the old and new vertex edge spans lie inside the pinned leaf block.
+    pub(super) fn vertex_edge_span_relocates_within_pinned_leaf(
+        &self,
+        vid: VertexId,
+        old_base: u64,
+        old_alloc: u32,
+        new_base: u64,
+        new_alloc: u32,
+    ) -> bool {
+        let (leaf_start, leaf_len) = match self.labeled_leaf_physical_range(vid) {
+            Some(range) => range,
+            None => return false,
+        };
+        let leaf_end = match checked_add_slot_index(leaf_start, leaf_len) {
+            Some(end) => end,
+            None => return false,
+        };
+        let old_end = match checked_add_slot_index(old_base, u64::from(old_alloc)) {
+            Some(end) => end,
+            None => return false,
+        };
+        let new_end = match checked_add_slot_index(new_base, u64::from(new_alloc)) {
+            Some(end) => end,
+            None => return false,
+        };
+        old_base >= leaf_start
+            && old_end <= leaf_end
+            && new_base >= leaf_start
+            && new_end <= leaf_end
+    }
+
     pub(crate) fn labeled_bucket_edge_end_exclusive(
         bucket: &LabelBucket,
     ) -> Result<u64, LabeledOperationError> {
