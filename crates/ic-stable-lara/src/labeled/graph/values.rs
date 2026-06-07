@@ -448,7 +448,10 @@ where
         src: VertexId,
         label_id: BucketLabelKey,
         payload_byte_width: u16,
-    ) -> Result<(), LabeledOperationError> {
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
         self.ensure_vertex(src)?;
         let vertex = self.vertices.get(src);
         if vertex.is_default_edge_labeled() {

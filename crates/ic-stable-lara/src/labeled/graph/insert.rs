@@ -245,7 +245,7 @@ where
                     {
                         return self.insert_homogeneous_bypass_edge(src, label_id, attempt_edge);
                     }
-                    self.rebalance_edge_log_leaf_for_labeled(src)?;
+                    self.rebalance_edge_log_leaf_for_labeled(src, true)?;
                     let vertex = self.vertices.get(src);
                     let bucket_slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
                     bucket = self
@@ -261,12 +261,38 @@ where
         ))
     }
 
+    pub(super) fn ensure_labeled_bucket_edge_span_room(
+        &self,
+        src: VertexId,
+        bucket_index: u32,
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        let vertex = self.vertices.get(src);
+        let slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
+        if self.try_place_new_bucket_edge_span(src, &vertex, slot, bucket_index)? {
+            return Ok(());
+        }
+        self.rebalance_vertex_edge_span(src, Some(bucket_index), 1, true)?;
+        let vertex = self.vertices.get(src);
+        let slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
+        if self.try_place_new_bucket_edge_span(src, &vertex, slot, bucket_index)? {
+            return Ok(());
+        }
+        self.rebalance_vertex_edge_span(src, Some(bucket_index), 1, true)?;
+        Ok(())
+    }
+
     pub(super) fn find_or_create_bucket(
         &self,
         src: VertexId,
         vertex: &LabeledVertex,
         label_id: BucketLabelKey,
-    ) -> Result<(u64, LabelBucket), LabeledOperationError> {
+    ) -> Result<(u64, LabelBucket), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
         let insert_index = match self.find_bucket(src, vertex, label_id)? {
             BucketSearch::Found { slot, bucket } => return Ok((slot, bucket)),
             BucketSearch::Missing { insert_index } => insert_index,
@@ -288,13 +314,7 @@ where
         self.ensure_vertex_bucket_row_origin(src)?;
         let vertex = self.vertices.get(src);
         let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
-        if !self.try_place_new_bucket_edge_span(src, &vertex, slot, bucket_index)? {
-            self.rebalance_vertex_edge_span(src, Some(bucket_index), 1, true)?;
-            let vertex = self.vertices.get(src);
-            if !self.try_place_new_bucket_edge_span(src, &vertex, slot, bucket_index)? {
-                self.rebalance_vertex_edge_span(src, Some(bucket_index), 1, true)?;
-            }
-        }
+        self.ensure_labeled_bucket_edge_span_room(src, bucket_index)?;
         let vertex = self.vertices.get(src);
         let bucket_slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
         let bucket = self
@@ -368,7 +388,10 @@ where
     }
 
     /// Converts an eligible vertex row back to default-label bypass storage.
-    pub fn enable_default_edge_bypass(&self, src: VertexId) -> Result<(), LabeledOperationError> {
+    pub fn enable_default_edge_bypass(&self, src: VertexId) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
         self.ensure_vertex(src)?;
         let vertex = self.vertices.get(src);
         if vertex.is_default_edge_labeled() {
@@ -490,24 +513,127 @@ mod tests {
     }
 
     #[test]
-    fn insert_beyond_initial_label_edge_span_capacity_relocates_vertex_edge_span() {
+    fn insert_beyond_initial_label_edge_span_capacity_relocates_labeled_leaf() {
+        use super::super::leaf_pin::labeled_leaf_physical_block_len;
         let graph = test_graph();
+        let vid = VertexId::from(0);
+        let cap_before = graph.edges().header().elem_capacity;
         graph
-            .insert_edge(
-                VertexId::from(0),
+            .insert_edge(vid, BucketLabelKey::from_raw(99), TestEdge { target: 999 })
+            .unwrap();
+        let cap_after_pin = graph.edges().header().elem_capacity;
+        assert!(graph.labeled_leaf_physical_range(vid).is_some());
+        let road = BucketLabelKey::from_raw(2);
+        for target in 0..128u32 {
+            graph.insert_edge(vid, road, TestEdge { target }).unwrap();
+        }
+        let cap_after = graph.edges().header().elem_capacity;
+        let block_len = labeled_leaf_physical_block_len(graph.edges().header().segment_size);
+        if cap_after > cap_after_pin {
+            let delta = cap_after.saturating_sub(cap_after_pin);
+            assert!(
+                delta >= block_len,
+                "elem_capacity should grow only via leaf block allocation, not per-vertex tail"
+            );
+        }
+        assert!(cap_after >= cap_before);
+        let edges = graph.iter_edges_for_label(vid, road).unwrap();
+        assert_eq!(edges.len(), 128);
+        assert_eq!(edges[0], TestEdge { target: 127 });
+        assert_eq!(edges[127], TestEdge { target: 0 });
+    }
+
+    #[test]
+    fn labeled_insert_does_not_grow_elem_capacity_for_hub_growth() {
+        let graph = LabeledLaraGraph::new(
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            1 << 20,
+            BucketLabelKey::from_raw(1),
+        )
+        .unwrap();
+        let hub = graph.push_vertex(LabeledVertex::default()).unwrap();
+        let dst = graph.push_vertex(LabeledVertex::default()).unwrap();
+        graph
+            .insert_edge_skip_leaf_cascade(
+                hub,
+                BucketLabelKey::from_raw(10_000),
+                TestEdge {
+                    target: u32::from(dst),
+                },
+            )
+            .unwrap();
+        let cap_after_pin = graph.edges().header().elem_capacity;
+        for label_idx in 0..33u16 {
+            let label = BucketLabelKey::from_raw(10_000 + label_idx);
+            for edge_i in 0..50u32 {
+                graph
+                    .insert_edge(
+                        hub,
+                        label,
+                        TestEdge {
+                            target: u32::from(dst),
+                        },
+                    )
+                    .unwrap_or_else(|e| panic!("label_idx={label_idx} edge_i={edge_i}: {e:?}"));
+            }
+        }
+        assert!(graph.edges().header().elem_capacity >= cap_after_pin);
+    }
+
+    #[test]
+    fn labeled_no_vertex_edge_span_rewrite_on_routine_insert() {
+        use super::super::compact::REWRITE_VERTEX_EDGE_SPAN_CALLS;
+        use std::sync::atomic::Ordering;
+        let rewrites_before = REWRITE_VERTEX_EDGE_SPAN_CALLS.load(Ordering::SeqCst);
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        let road = BucketLabelKey::from_raw(2);
+        graph
+            .insert_edge_skip_leaf_cascade(
+                vid,
                 BucketLabelKey::from_raw(99),
                 TestEdge { target: 999 },
             )
             .unwrap();
-        let road = BucketLabelKey::from_raw(2);
-        for target in 0..128u32 {
+        for target in 0..64u32 {
+            graph.insert_edge(vid, road, TestEdge { target }).unwrap();
+        }
+        assert_eq!(
+            REWRITE_VERTEX_EDGE_SPAN_CALLS
+                .load(Ordering::SeqCst)
+                .saturating_sub(rewrites_before),
+            0
+        );
+    }
+
+    #[test]
+    fn labeled_bypass_still_uses_core_vertex_path() {
+        let default = BucketLabelKey::from_raw(7);
+        let graph = test_graph_with_default(default);
+        let hub = graph.push_vertex(LabeledVertex::default()).unwrap();
+        graph
+            .enable_default_edge_bypass(hub)
+            .expect("single-label row can enter bypass mode");
+        for target in 10..20u32 {
             graph
-                .insert_edge(VertexId::from(0), road, TestEdge { target })
+                .insert_edge(hub, default, TestEdge { target })
                 .unwrap();
         }
-        let edges = graph.iter_edges_for_label(VertexId::from(0), road).unwrap();
-        assert_eq!(edges.len(), 128);
-        assert_eq!(edges[0], TestEdge { target: 127 });
-        assert_eq!(edges[127], TestEdge { target: 0 });
+        assert_eq!(graph.asc_out_edges(hub).unwrap().len(), 10);
+        assert!(graph.vertices().get(hub).is_default_edge_labeled());
     }
 }

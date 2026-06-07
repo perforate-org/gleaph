@@ -42,6 +42,8 @@ where
     M: Memory,
 {
     /// Returns `(physical_start, block_len)` when the leaf is pinned, else `None`.
+    ///
+    /// `block_len` tracks the leaf PMA `segment_edges_total` (grows on segment relocate).
     pub(crate) fn labeled_leaf_physical_range(&self, vid: VertexId) -> Option<(u64, u64)> {
         let header = self.edges.header();
         let leaf = Self::leaf_index_for_vid(vid, header.segment_size);
@@ -49,10 +51,13 @@ where
         if span_rec.physical_start == SPAN_PHYSICAL_UNASSIGNED {
             return None;
         }
-        Some((
-            span_rec.physical_start,
-            labeled_leaf_physical_block_len(header.segment_size),
-        ))
+        let counts = self.leaf_segment_counts_for_vid(vid);
+        let block_len = if counts.total > 0 {
+            counts.total as u64
+        } else {
+            labeled_leaf_physical_block_len(header.segment_size)
+        };
+        Some((span_rec.physical_start, block_len))
     }
 
     /// Ensures the PMA leaf containing `vid` owns a contiguous edge-slab block and
@@ -126,12 +131,52 @@ where
         new_alloc: u32,
     ) -> Option<u64> {
         let (leaf_start, leaf_len) = self.labeled_leaf_physical_range(vid)?;
-        let header = self.edges.header();
-        let vertex_offset = labeled_vertex_edge_offset_in_leaf(vid, header.segment_size.max(1));
-        let base = checked_add_slot_index(leaf_start, vertex_offset)?;
-        let end = checked_add_slot_index(base, u64::from(new_alloc))?;
         let leaf_end = checked_add_slot_index(leaf_start, leaf_len)?;
+        let vertex = self.vertices.get(vid);
+        let base = if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
+            let header = self.edges.header();
+            let vertex_offset = labeled_vertex_edge_offset_in_leaf(vid, header.segment_size.max(1));
+            checked_add_slot_index(leaf_start, vertex_offset)?
+        } else {
+            let buckets = self.read_vertex_label_buckets(&vertex).ok()?;
+            buckets.first()?.edge_start()
+        };
+        let end = checked_add_slot_index(base, u64::from(new_alloc))?;
         if end <= leaf_end { Some(base) } else { None }
+    }
+
+    pub(super) fn try_expand_labeled_leaf_in_place(
+        &self,
+        old_start: u64,
+        old_len: u64,
+        new_len: u64,
+    ) -> Result<bool, LabeledOperationError> {
+        if new_len <= old_len {
+            return Ok(false);
+        }
+        let delta = new_len.saturating_sub(old_len);
+        let adjacent_free_start = checked_add_slot_index(old_start, old_len)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let Some(right_free) = self
+            .edges
+            .free_span_store()
+            .free_span_starting_at(adjacent_free_start)
+        else {
+            return Ok(false);
+        };
+        if right_free.len < delta {
+            return Ok(false);
+        }
+        if self
+            .edges
+            .free_span_store()
+            .take_prefix_at(adjacent_free_start, delta)
+            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?
+            .is_none()
+        {
+            return Ok(false);
+        }
+        Ok(true)
     }
 
     pub(super) fn bump_vertex_edge_span_total_delta(

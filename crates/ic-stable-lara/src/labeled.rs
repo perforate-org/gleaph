@@ -45,19 +45,17 @@
 //!   LabelEdgeSpan(label=2) | slack | LabelEdgeSpan(label=7) | slack | ...
 //! ```
 //!
-//! ### Labeled edge physical footprint (current implementation)
+//! ### Labeled edge physical footprint (implemented)
 //!
-//! On a relocating VertexEdgeSpan rewrite, the old per-vertex `[edge_start, stored_slots)`
-//! footprint (including interior proportional slack) is returned to the edge
-//! [`EdgeStore`] free-span store: monolithic `release_span` when possible, otherwise
-//! bucket plus interior gap intervals that still cover the full reservation. This is
-//! **labeled-layer** physical bookkeeping on top of the shared edge slab, not core LARA
-//! PMA segment relocation.
+//! Labeled edge bytes are pinned to PMA leaf blocks (`span_meta.physical_start`). Growth
+//! on the hot path uses in-leaf weighted slide and leaf-block relocate (`release_span` once
+//! per relocate). [`rewrite_vertex_edge_span`] resolves new bases via leaf relocate, not
+//! per-vertex tail append at `elem_capacity`.
 //!
-//! **Target alignment (not yet implemented for labeled edge bytes):** physical adjacency
-//! for a PMA leaf should move via segment span metadata and segment slide (rope-style),
-//! with per-vertex rows remaining DGAP-style scan metadata (`base_slot_start`, degree,
-//! capacity). See `design/storage/lara.md` and [`crate::lara`].
+//! **Interim:** [`rebalance_vertex_edge_span`] during new-bucket placement may still tail
+//! append when the pinned leaf cannot absorb the reservation; leaf cascade maintenance
+//! re-homes bytes on the slide/relocate path. Default-label bypass rows still use the core
+//! vertex relocate semantics.
 //!
 //! Default-label **bypass** rows skip LabelBuckets: [`LabeledVertex::degree`] / [`LabeledVertex::stored_slots`]
 //! track logical and physical edge slots directly, and overflow uses metadata bits 4–11 as

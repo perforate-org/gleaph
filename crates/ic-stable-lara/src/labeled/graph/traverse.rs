@@ -1580,10 +1580,9 @@ mod tests {
         let label = BucketLabelKey::from_raw(2);
         let header = graph.edges().header();
         let block_len = labeled_leaf_physical_block_len(header.segment_size);
-        let mut reached_dense = false;
-        for target in 0..block_len.saturating_add(64) {
+        for target in 0..block_len {
             graph
-                .insert_edge(
+                .insert_edge_skip_leaf_cascade(
                     vid,
                     label,
                     TestEdge {
@@ -1591,17 +1590,15 @@ mod tests {
                     },
                 )
                 .unwrap();
-            let counts = graph.leaf_segment_counts_for_vid(vid);
-            if graph.labeled_leaf_pma_density(vid) >= LEAF_VERTEX_EDGE_SEGMENT_DENSITY {
-                reached_dense = true;
-                assert_eq!(counts.total as u64, block_len);
-                assert!(counts.actual >= counts.total);
-                break;
-            }
         }
+        graph.rebalance_cascade_after_labeled_mutation(vid).unwrap();
+        let counts = graph.leaf_segment_counts_for_vid(vid);
+        assert!(counts.total as u64 >= block_len);
+        assert!(counts.actual > 0);
         assert!(
-            reached_dense,
-            "expected PMA leaf actual/total to reach rebalance threshold"
+            graph.labeled_leaf_pma_density(vid) < LEAF_VERTEX_EDGE_SEGMENT_DENSITY
+                || counts.total as u64 > block_len,
+            "dense leaf maintenance should slide or grow the pinned PMA block"
         );
     }
 

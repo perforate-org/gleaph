@@ -20,6 +20,47 @@ use ic_stable_structures::Memory;
 use super::error::LabeledOperationError;
 use super::{DEFAULT_SEGMENT_SIZE, EdgeSlotMove, LabeledLaraGraph, VertexEdgeSpanCompactOneStep};
 
+use std::cell::Cell;
+#[cfg(test)]
+use std::sync::atomic::{AtomicU32, Ordering};
+
+thread_local! {
+    static LABELED_LEAF_RELOCATE_IN_PROGRESS: Cell<bool> = const { Cell::new(false) };
+}
+
+struct LabeledLeafRelocateGuard;
+
+impl LabeledLeafRelocateGuard {
+    fn new() -> Self {
+        LABELED_LEAF_RELOCATE_IN_PROGRESS.with(|flag| flag.set(true));
+        Self
+    }
+}
+
+impl Drop for LabeledLeafRelocateGuard {
+    fn drop(&mut self) {
+        LABELED_LEAF_RELOCATE_IN_PROGRESS.with(|flag| flag.set(false));
+    }
+}
+
+#[cfg(test)]
+pub(crate) static LABELED_LEAF_PHYSICAL_RELEASE_CALLS: AtomicU32 = AtomicU32::new(0);
+#[cfg(test)]
+pub(crate) static LABELED_VERTEX_FOOTPRINT_RELEASE_CALLS: AtomicU32 = AtomicU32::new(0);
+#[cfg(test)]
+pub(crate) static REWRITE_VERTEX_EDGE_SPAN_CALLS: AtomicU32 = AtomicU32::new(0);
+
+#[cfg(test)]
+pub(crate) fn reset_labeled_leaf_release_test_metrics() {
+    LABELED_LEAF_PHYSICAL_RELEASE_CALLS.store(0, Ordering::SeqCst);
+    LABELED_VERTEX_FOOTPRINT_RELEASE_CALLS.store(0, Ordering::SeqCst);
+}
+
+#[cfg(test)]
+pub(crate) fn reset_rewrite_vertex_edge_span_test_metrics() {
+    REWRITE_VERTEX_EDGE_SPAN_CALLS.store(0, Ordering::SeqCst);
+}
+
 impl<E, M> LabeledLaraGraph<E, M>
 where
     E: CsrEdge,
@@ -155,6 +196,58 @@ where
         Ok(intervals)
     }
 
+    /// Resolves edge-slab base for a growing vertex span: in-leaf pin, leaf relocate, or
+    /// (unpinned only) tail append at `elem_capacity`.
+    pub(super) fn resolve_labeled_edge_base_for_growth(
+        &self,
+        src: VertexId,
+        new_alloc: u32,
+    ) -> Result<u64, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        if let Some(base) = self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc) {
+            return Ok(base);
+        }
+        if self.labeled_leaf_physical_range(src).is_some() {
+            if !LABELED_LEAF_RELOCATE_IN_PROGRESS.with(|flag| flag.get()) {
+                for _ in 0..8 {
+                    if let Some(base) =
+                        self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc)
+                    {
+                        return Ok(base);
+                    }
+                    self.relocate_labeled_leaf_physical_block(src)?;
+                }
+                return Err(LabeledOperationError::from(
+                    LaraOperationError::CollectAllocationOverflow,
+                ));
+            }
+        }
+        let start = self.edges.header().elem_capacity;
+        let end = crate::slab_index::checked_add_slot_exclusive_end(start, u64::from(new_alloc))
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        self.edges
+            .set_elem_capacity(end)
+            .map_err(LabeledOperationError::from)?;
+        Ok(start)
+    }
+
+    pub(super) fn release_labeled_leaf_physical_footprint(
+        &self,
+        span_start: u64,
+        span_len: u64,
+    ) -> Result<(), LabeledOperationError> {
+        if span_len == 0 {
+            return Ok(());
+        }
+        #[cfg(test)]
+        LABELED_LEAF_PHYSICAL_RELEASE_CALLS.fetch_add(1, Ordering::SeqCst);
+        self.edges
+            .release_span(span_start, span_len)
+            .map_err(LabeledOperationError::from)
+    }
+
     /// Releases a relocated VertexEdgeSpan footprint back to the edge free-span store.
     ///
     /// Prefer one monolithic `release_span` for the whole `[span_start, span_len)` reservation.
@@ -166,6 +259,8 @@ where
         span_len: u32,
         buckets: &[LabelBucket],
     ) -> Result<(), LabeledOperationError> {
+        #[cfg(test)]
+        LABELED_VERTEX_FOOTPRINT_RELEASE_CALLS.fetch_add(1, Ordering::SeqCst);
         if span_len == 0 {
             return Ok(());
         }
@@ -198,6 +293,8 @@ where
         force_slack_grow: bool,
         in_window_layout: Option<(u64, u32)>,
     ) -> Result<(Vec<LabelBucket>, u32, u64, u32, u32, bool, u64, Vec<u64>), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
     {
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _bench_scope = bench_scope("labeled_rewrite_read_and_plan");
@@ -272,20 +369,7 @@ where
         let new_base = if new_alloc == 0 {
             0
         } else if moved {
-            if let Some(in_leaf) = self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc)
-            {
-                in_leaf
-            } else {
-                // Always append when relocating outside the pinned leaf block.
-                let start = self.edges.header().elem_capacity;
-                let end =
-                    crate::slab_index::checked_add_slot_exclusive_end(start, u64::from(new_alloc))
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                self.edges
-                    .set_elem_capacity(end)
-                    .map_err(LabeledOperationError::from)?;
-                start
-            }
+            self.resolve_labeled_edge_base_for_growth(src, new_alloc)?
         } else {
             old_base
         };
@@ -317,7 +401,12 @@ where
         compact: bool,
         force_slack_grow: bool,
         in_window_layout: Option<(u64, u32)>,
-    ) -> Result<(), LabeledOperationError> {
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        #[cfg(test)]
+        REWRITE_VERTEX_EDGE_SPAN_CALLS.fetch_add(1, Ordering::SeqCst);
         // Rebuild the VertexEdgeSpan from LabelEdgeSpan live prefixes.
         //
         // The bucket layer is exact-fit, so a new label can appear anywhere in
@@ -628,6 +717,85 @@ where
             Some(range) => range,
             None => return Ok(()),
         };
+        self.rebalance_labeled_leaf_weighted_slide_in_block(src, leaf_start, leaf_len, false, true)
+    }
+
+    pub(crate) fn relocate_labeled_leaf_physical_block(
+        &self,
+        src: VertexId,
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        let _relocate_guard = LabeledLeafRelocateGuard::new();
+        let (old_start, old_len) = self
+            .labeled_leaf_physical_range(src)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let header = self.edges.header();
+        let seg = header.segment_size.max(1);
+        let leaf = Self::leaf_index_for_vid(src, seg);
+        if self.edges.overflow_log_segment_high_water(leaf) > 0 {
+            self.rebalance_edge_log_leaf_for_labeled(src, true)?;
+        }
+
+        let counts = self.leaf_segment_counts_for_vid(src);
+        let used = counts.actual.max(0) as u64;
+        let start_vid = leaf.saturating_mul(seg);
+        let end_vid = start_vid.saturating_add(seg).min(self.vertices.len());
+        let active_vertices = (start_vid..end_vid)
+            .filter(|vid_u| {
+                let vertex = self.vertices.get(VertexId::from(*vid_u));
+                !vertex.is_default_edge_labeled() && vertex.degree() > 0
+            })
+            .count() as u64;
+        let new_len = old_len
+            .saturating_mul(2)
+            .max(used.saturating_add(active_vertices))
+            .max(old_len.saturating_add(1));
+
+        let grew_in_place = self.try_expand_labeled_leaf_in_place(old_start, old_len, new_len)?;
+        let new_start = if grew_in_place {
+            old_start
+        } else {
+            self.edges
+                .allocate_span(new_len)
+                .map_err(LabeledOperationError::from)?
+        };
+
+        self.rebalance_labeled_leaf_weighted_slide_in_block(src, new_start, new_len, true, true)?;
+
+        if !grew_in_place {
+            self.edges
+                .set_segment_physical_start(SegmentId::from(leaf), new_start)
+                .map_err(LabeledOperationError::from)?;
+            self.release_labeled_leaf_physical_footprint(old_start, old_len)?;
+        }
+
+        self.edges
+            .release_log_segment(SegmentId::from(leaf))
+            .map_err(LabeledOperationError::from)?;
+        let d_total = i64::try_from(new_len)
+            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?
+            - i64::try_from(old_len).map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+        if d_total != 0 {
+            self.edges
+                .bump_vertex_segment_counts(src, 0, d_total)
+                .map_err(LabeledOperationError::from)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn rebalance_labeled_leaf_weighted_slide_in_block(
+        &self,
+        src: VertexId,
+        leaf_start: u64,
+        leaf_len: u64,
+        leaf_relocate_commit: bool,
+        suppress_vertex_footprint_release: bool,
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
         let leaf_end = checked_add_slot_index(leaf_start, leaf_len)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
 
@@ -635,7 +803,7 @@ where
         let seg = header.segment_size.max(1);
         let leaf = Self::leaf_index_for_vid(src, seg);
         if self.edges.overflow_log_segment_high_water(leaf) > 0 {
-            self.rebalance_edge_log_leaf_for_labeled(src)?;
+            self.rebalance_edge_log_leaf_for_labeled(src, true)?;
         }
 
         let start_vid = leaf.saturating_mul(seg);
@@ -710,6 +878,8 @@ where
                 &per_bucket_edges,
                 v_start,
                 span_slots,
+                leaf_relocate_commit,
+                suppress_vertex_footprint_release,
             )?;
         }
         Ok(())
@@ -723,6 +893,8 @@ where
         per_bucket_edges: &[Vec<E>],
         new_base: u64,
         new_alloc: u32,
+        leaf_relocate_commit: bool,
+        suppress_vertex_footprint_release: bool,
     ) -> Result<(), LabeledOperationError>
     where
         E: CsrEdgeTombstone,
@@ -762,7 +934,9 @@ where
         }
         self.buckets
             .write_label_bucket_row_adaptive(vertex.base_slot_start(), &row_buckets)?;
-        if old_alloc > 0
+        if !leaf_relocate_commit
+            && !suppress_vertex_footprint_release
+            && old_alloc > 0
             && new_base != old_base
             && !self.vertex_edge_span_relocates_within_pinned_leaf(
                 src, old_base, old_alloc, new_base, new_alloc,
@@ -1124,7 +1298,10 @@ where
         preferred_bucket: Option<u32>,
         preferred_extra: u32,
         force_slack_grow: bool,
-    ) -> Result<(), LabeledOperationError> {
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
         let vertex = self.vertices.get(src);
         if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
             return Ok(());
@@ -1311,7 +1488,10 @@ where
         &self,
         vid: VertexId,
         allow_slack_grow: bool,
-    ) -> Result<(), LabeledOperationError> {
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
         let vertex = self.vertices.get(vid);
         if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
             return Ok(());
@@ -1552,7 +1732,10 @@ where
     pub(super) fn reclaim_vertex_overflow_buckets(
         &self,
         vid: VertexId,
-    ) -> Result<(), LabeledOperationError> {
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
         let vertex = self.vertices.get(vid);
         if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
             return Ok(());
@@ -1611,6 +1794,7 @@ where
     pub(super) fn rebalance_edge_log_vertex_for_labeled(
         &self,
         vid: VertexId,
+        grow_vertex_span: bool,
     ) -> Result<(), LabeledOperationError>
     where
         E: CsrEdgeTombstone,
@@ -1619,7 +1803,9 @@ where
         if vertex.degree() == 0 || vertex.is_default_edge_labeled() {
             return Ok(());
         }
-        self.rebalance_vertex_edge_span_light(vid, true)?;
+        if grow_vertex_span {
+            self.rebalance_vertex_edge_span_light(vid, true)?;
+        }
         let vertex = self.vertices.get(vid);
         let buckets = self.read_vertex_label_buckets(&vertex)?;
         for (bucket_index, bucket) in buckets.iter().enumerate() {
@@ -1638,6 +1824,7 @@ where
     pub(super) fn rebalance_edge_log_leaf_for_labeled(
         &self,
         src: VertexId,
+        grow_vertex_span: bool,
     ) -> Result<(), LabeledOperationError>
     where
         E: CsrEdgeTombstone,
@@ -1647,7 +1834,7 @@ where
         let start_vid = leaf.saturating_mul(seg_size);
         let end_vid = start_vid.saturating_add(seg_size).min(self.vertices.len());
         for vid_u in start_vid..end_vid {
-            self.rebalance_edge_log_vertex_for_labeled(VertexId::from(vid_u))?;
+            self.rebalance_edge_log_vertex_for_labeled(VertexId::from(vid_u), grow_vertex_span)?;
         }
         self.edges
             .release_log_segment(SegmentId::from(leaf))
@@ -1696,6 +1883,10 @@ where
 mod tests {
     use super::super::test_support::*;
     use super::super::*;
+    use super::{
+        LABELED_LEAF_PHYSICAL_RELEASE_CALLS, LABELED_VERTEX_FOOTPRINT_RELEASE_CALLS,
+        reset_labeled_leaf_release_test_metrics,
+    };
     use crate::VertexId;
 
     #[test]
@@ -2076,9 +2267,7 @@ mod tests {
         assert!(intervals.contains(&(170, 30)));
     }
 
-    /// Regression: 33rd label on a dense hub used to spend minutes in span release.
-    #[test]
-    fn mixed_label_hub_33_labels_span_release_regression() {
+    fn build_mixed_label_hub(labels: u16, edges_per_label: u32) {
         let graph = LabeledLaraGraph::new(
             mem(),
             mem(),
@@ -2101,9 +2290,9 @@ mod tests {
         .unwrap();
         let hub = graph.push_vertex(LabeledVertex::default()).unwrap();
         let dst = graph.push_vertex(LabeledVertex::default()).unwrap();
-        for label_idx in 0..33u16 {
+        for label_idx in 0..labels {
             let label = BucketLabelKey::from_raw(10_000 + label_idx);
-            for edge_i in 0..50u32 {
+            for edge_i in 0..edges_per_label {
                 graph
                     .insert_edge_skip_leaf_cascade(
                         hub,
@@ -2115,6 +2304,24 @@ mod tests {
                     .unwrap_or_else(|e| panic!("label_idx={label_idx} edge_i={edge_i}: {e:?}"));
             }
         }
+    }
+
+    /// Phase E gate: same workload as the span-release regression completes quickly.
+    #[test]
+    fn labeled_hub_33_labels_bounded_insert_time() {
+        let started = std::time::Instant::now();
+        build_mixed_label_hub(33, 50);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "33-label hub insert took {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// Regression: 33rd label on a dense hub used to spend minutes in span release.
+    #[test]
+    fn mixed_label_hub_33_labels_span_release_regression() {
+        build_mixed_label_hub(33, 50);
     }
 
     #[test]
@@ -2673,6 +2880,9 @@ mod tests {
 
     #[test]
     fn labeled_leaf_rebalance_does_not_release_span() {
+        use std::sync::atomic::Ordering;
+        let leaf_releases_before = LABELED_LEAF_PHYSICAL_RELEASE_CALLS.load(Ordering::SeqCst);
+        let vertex_releases_before = LABELED_VERTEX_FOOTPRINT_RELEASE_CALLS.load(Ordering::SeqCst);
         let graph = test_graph();
         let vid = VertexId::from(0);
         let road = BucketLabelKey::from_raw(2);
@@ -2688,9 +2898,192 @@ mod tests {
                 .insert_edge_skip_leaf_cascade(vid, road, TestEdge { target })
                 .unwrap();
         }
-        let free_after_pin = graph.edges().free_span_store().len();
         graph.rebalance_labeled_leaf_weighted_slide(vid).unwrap();
-        assert_eq!(graph.edges().free_span_store().len(), free_after_pin);
+        assert_eq!(
+            LABELED_LEAF_PHYSICAL_RELEASE_CALLS
+                .load(Ordering::SeqCst)
+                .saturating_sub(leaf_releases_before),
+            0
+        );
+        assert_eq!(
+            LABELED_VERTEX_FOOTPRINT_RELEASE_CALLS
+                .load(Ordering::SeqCst)
+                .saturating_sub(vertex_releases_before),
+            0
+        );
+    }
+
+    #[test]
+    fn labeled_segment_relocate_releases_single_footprint() {
+        use super::super::leaf_pin::labeled_leaf_physical_block_len;
+        use std::sync::atomic::Ordering;
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        let road = BucketLabelKey::from_raw(2);
+        graph
+            .insert_edge_skip_leaf_cascade(
+                vid,
+                BucketLabelKey::from_raw(99),
+                TestEdge { target: 999 },
+            )
+            .unwrap();
+        let block_len = labeled_leaf_physical_block_len(graph.edges().header().segment_size);
+        for target in 0..block_len {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    road,
+                    TestEdge {
+                        target: target as u32,
+                    },
+                )
+                .unwrap();
+        }
+        let (old_start, old_len) = graph.labeled_leaf_physical_range(vid).unwrap();
+        let leaf_releases_before = LABELED_LEAF_PHYSICAL_RELEASE_CALLS.load(Ordering::SeqCst);
+        let vertex_releases_before = LABELED_VERTEX_FOOTPRINT_RELEASE_CALLS.load(Ordering::SeqCst);
+        graph.relocate_labeled_leaf_physical_block(vid).unwrap();
+        assert_eq!(
+            LABELED_LEAF_PHYSICAL_RELEASE_CALLS
+                .load(Ordering::SeqCst)
+                .saturating_sub(leaf_releases_before),
+            1
+        );
+        assert_eq!(
+            LABELED_VERTEX_FOOTPRINT_RELEASE_CALLS
+                .load(Ordering::SeqCst)
+                .saturating_sub(vertex_releases_before),
+            0
+        );
+        assert!(
+            graph
+                .edges()
+                .free_span_store()
+                .free_span_starting_at(old_start)
+                .is_some_and(|span| span.len == old_len)
+        );
+        let counts = graph.leaf_segment_counts_for_vid(vid);
+        assert!(counts.total as u64 > old_len);
+    }
+
+    #[test]
+    fn labeled_segment_relocate_does_not_call_vertex_span_release() {
+        use super::super::leaf_pin::labeled_leaf_physical_block_len;
+        use std::sync::atomic::Ordering;
+        let vertex_releases_before = LABELED_VERTEX_FOOTPRINT_RELEASE_CALLS.load(Ordering::SeqCst);
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        let road = BucketLabelKey::from_raw(2);
+        graph
+            .insert_edge_skip_leaf_cascade(
+                vid,
+                BucketLabelKey::from_raw(99),
+                TestEdge { target: 999 },
+            )
+            .unwrap();
+        let block_len = labeled_leaf_physical_block_len(graph.edges().header().segment_size);
+        for target in 0..block_len {
+            graph
+                .insert_edge(
+                    vid,
+                    road,
+                    TestEdge {
+                        target: target as u32,
+                    },
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            LABELED_VERTEX_FOOTPRINT_RELEASE_CALLS
+                .load(Ordering::SeqCst)
+                .saturating_sub(vertex_releases_before),
+            0
+        );
+    }
+
+    #[test]
+    fn labeled_relocate_commit_order() {
+        use super::super::leaf_pin::labeled_leaf_physical_block_len;
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        let road = BucketLabelKey::from_raw(2);
+        graph
+            .insert_edge_skip_leaf_cascade(
+                vid,
+                BucketLabelKey::from_raw(99),
+                TestEdge { target: 999 },
+            )
+            .unwrap();
+        let block_len = labeled_leaf_physical_block_len(graph.edges().header().segment_size);
+        for target in 0..block_len {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    road,
+                    TestEdge {
+                        target: target as u32,
+                    },
+                )
+                .unwrap();
+        }
+        let (old_start, old_len) = graph.labeled_leaf_physical_range(vid).unwrap();
+        graph.relocate_labeled_leaf_physical_block(vid).unwrap();
+        graph
+            .assert_labeled_buckets_within_leaf_physical(vid)
+            .unwrap();
+        let (new_start, new_len) = graph.labeled_leaf_physical_range(vid).unwrap();
+        assert_ne!(new_start, old_start);
+        assert!(new_len > old_len);
+        assert!(
+            graph
+                .edges()
+                .free_span_store()
+                .free_span_starting_at(old_start)
+                .is_some_and(|span| span.len == old_len)
+        );
+        assert_eq!(materialized_label_targets(&graph, vid).len(), 2);
+    }
+
+    #[test]
+    fn labeled_segment_relocate_reuses_free_span() {
+        use super::super::leaf_pin::labeled_leaf_physical_block_len;
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        let road = BucketLabelKey::from_raw(2);
+        graph
+            .insert_edge_skip_leaf_cascade(
+                vid,
+                BucketLabelKey::from_raw(99),
+                TestEdge { target: 999 },
+            )
+            .unwrap();
+        let (old_start, old_len) = graph.labeled_leaf_physical_range(vid).unwrap();
+        let adjacent = old_start.saturating_add(old_len);
+        graph.edges().release_span(adjacent, old_len).unwrap();
+        let block_len = labeled_leaf_physical_block_len(graph.edges().header().segment_size);
+        for target in 0..block_len {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    road,
+                    TestEdge {
+                        target: target as u32,
+                    },
+                )
+                .unwrap();
+        }
+        graph.relocate_labeled_leaf_physical_block(vid).unwrap();
+        let (new_start, new_len) = graph.labeled_leaf_physical_range(vid).unwrap();
+        assert_eq!(new_start, old_start);
+        assert!(new_len > old_len);
+        assert!(
+            graph
+                .edges()
+                .free_span_store()
+                .free_span_starting_at(adjacent)
+                .is_none(),
+            "in-place leaf grow should consume the adjacent free span"
+        );
     }
 
     #[test]

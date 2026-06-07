@@ -78,18 +78,26 @@ where
             !self.leaf_has_other_labeled_vertices_with_edges(leaf, seg, src);
 
         if self.labeled_leaf_physical_range(src).is_some() {
-            self.rebalance_labeled_leaf_weighted_slide(src)?;
+            let counts = self.leaf_segment_counts_for_vid(src);
+            if counts.total > 0 && counts.actual >= counts.total {
+                self.relocate_labeled_leaf_physical_block(src)?;
+            } else {
+                self.rebalance_labeled_leaf_weighted_slide(src)?;
+                if self.labeled_leaf_pma_density(src) >= LEAF_VERTEX_EDGE_SEGMENT_DENSITY {
+                    self.relocate_labeled_leaf_physical_block(src)?;
+                }
+            }
             return Ok(());
         }
 
         if self.edges.overflow_log_segment_high_water(leaf) > 0 {
             if sole_active_labeled_vertex {
-                self.rebalance_edge_log_vertex_for_labeled(src)?;
+                self.rebalance_edge_log_vertex_for_labeled(src, true)?;
                 self.edges
                     .release_log_segment(SegmentId::from(leaf))
                     .map_err(LabeledOperationError::from)?;
             } else {
-                self.rebalance_edge_log_leaf_for_labeled(src)?;
+                self.rebalance_edge_log_leaf_for_labeled(src, true)?;
             }
             if self.labeled_leaf_pma_density(src) < LEAF_VERTEX_EDGE_SEGMENT_DENSITY {
                 return Ok(());
@@ -630,7 +638,10 @@ where
         bucket_index: u32,
         bucket_slot: u64,
         bucket: LabelBucket,
-    ) -> Result<LabelBucket, LabeledOperationError> {
+    ) -> Result<LabelBucket, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
         if bucket.overflow_log_head() < 0 {
             return Ok(bucket);
         }

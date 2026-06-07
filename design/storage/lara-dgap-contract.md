@@ -166,7 +166,7 @@ Ordered steps; each should keep `mixed_label_hub_*` regressions green:
 4. **Retire old leaf physical block via single `release_span`** (segment footprint), not per-vertex peel.
 5. **Remove per-vertex `stored_slots` append-at-tail** for normal labeled rows once leaf slide covers growth (bypass mode may keep core vertex path).
 
-**Status:** Phase A–C implemented (pinned leaf, PMA density, in-window weighted slide + log fold). Phases D–E planned.
+**Status:** Phase A–E implemented (pinned leaf, PMA density, in-window slide, single leaf `release_span` on relocate, rewrite-path growth via leaf relocate). Interim: `rebalance_vertex_edge_span` on new-bucket placement may still tail-append.
 
 ---
 
