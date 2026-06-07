@@ -92,23 +92,98 @@ where
         Ok(())
     }
 
-    /// Releases relocated bucket edge prefixes after a vertex span rewrite.
+    /// Returns contiguous physical intervals whose union is the retired VertexEdgeSpan
+    /// `[span_start, span_start + span_len)`, including proportional interior slack.
+    pub(super) fn vertex_edge_span_retire_intervals(
+        span_start: u64,
+        span_len: u32,
+        buckets: &[LabelBucket],
+    ) -> Result<Vec<(u64, u64)>, LabeledOperationError> {
+        if span_len == 0 {
+            return Ok(Vec::new());
+        }
+        let span_end = checked_add_slot_index(span_start, u64::from(span_len))
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+
+        let mut bucket_intervals: Vec<(u64, u64)> = buckets
+            .iter()
+            .filter(|bucket| bucket.stored_slots > 0)
+            .map(|bucket| (bucket.edge_start(), u64::from(bucket.stored_slots)))
+            .collect();
+        bucket_intervals.sort_by_key(|(start, _)| *start);
+
+        let mut merged_buckets: Vec<(u64, u64)> = Vec::with_capacity(bucket_intervals.len());
+        for (start, len) in bucket_intervals {
+            let end = checked_add_slot_index(start, len)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            if let Some((last_start, last_len)) = merged_buckets.last_mut() {
+                let last_end = checked_add_slot_index(*last_start, *last_len)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                if start <= last_end {
+                    if end > last_end {
+                        *last_len = end
+                            .checked_sub(*last_start)
+                            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    }
+                    continue;
+                }
+            }
+            merged_buckets.push((start, len));
+        }
+
+        let mut intervals: Vec<(u64, u64)> = Vec::new();
+        let mut cursor = span_start;
+        for (bucket_start, bucket_len) in merged_buckets {
+            if cursor < bucket_start {
+                let gap_len = bucket_start
+                    .checked_sub(cursor)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                intervals.push((cursor, gap_len));
+            }
+            intervals.push((bucket_start, bucket_len));
+            cursor = checked_add_slot_index(bucket_start, bucket_len)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?
+                .max(cursor);
+        }
+        if cursor < span_end {
+            let tail_len = span_end
+                .checked_sub(cursor)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            intervals.push((cursor, tail_len));
+        }
+
+        Ok(intervals)
+    }
+
+    /// Releases a relocated VertexEdgeSpan footprint back to the edge free-span store.
     ///
-    /// Only bucket-owned `[edge_start, edge_start + stored_slots)` ranges are returned
-    /// to the free-span store. Interior vertex-span gaps were never individually
-    /// allocated and attempting to release them can devolve into per-slot peeling.
-    pub(super) fn release_vertex_edge_span_layout(
+    /// Prefer one monolithic `release_span` for the whole `[span_start, span_len)` reservation.
+    /// When that fails (typically due to overlap with partial free-span entries), release the
+    /// same footprint as bucket ranges plus interior proportional slack intervals.
+    pub(super) fn release_vertex_edge_span_footprint(
         &self,
-        _old_base: u64,
-        _old_alloc: u32,
+        span_start: u64,
+        span_len: u32,
         buckets: &[LabelBucket],
     ) -> Result<(), LabeledOperationError> {
-        for bucket in buckets {
-            let bucket_len = u64::from(bucket.stored_slots);
-            if bucket_len == 0 {
+        if span_len == 0 {
+            return Ok(());
+        }
+        let len = u64::from(span_len);
+        if self.edges.release_span(span_start, len).is_ok() {
+            return Ok(());
+        }
+
+        for (start, interval_len) in
+            Self::vertex_edge_span_retire_intervals(span_start, span_len, buckets)?
+        {
+            if interval_len == 0 {
                 continue;
             }
-            self.release_vertex_edge_span_slab(bucket.edge_start(), bucket_len)?;
+            if self.edges.release_span(start, interval_len).is_ok() {
+                continue;
+            }
+            self.release_vertex_edge_span_slab(start, interval_len)?;
         }
         Ok(())
     }
@@ -443,7 +518,7 @@ where
             self.sync_vertex_payload_spans_after_edge_rewrite(src, &buckets, &new_buckets, &saved)?;
         }
         if moved && old_alloc > 0 {
-            self.release_vertex_edge_span_layout(old_base, old_alloc, &buckets)?;
+            self.release_vertex_edge_span_footprint(old_base, old_alloc, &buckets)?;
         }
         self.vertices.set(src, &vertex.with_stored_slots(new_alloc));
 
@@ -880,7 +955,7 @@ where
         self.buckets
             .write_label_bucket_row_adaptive(vertex.base_slot_start(), &row_buckets)?;
         if moved && old_alloc > 0 {
-            self.release_vertex_edge_span_layout(old_base, old_alloc, &buckets)?;
+            self.release_vertex_edge_span_footprint(old_base, old_alloc, &buckets)?;
         }
         self.vertices.set(src, &vertex.with_stored_slots(new_alloc));
 
@@ -1725,6 +1800,28 @@ mod tests {
                     .unwrap_or_else(|e| panic!("label_idx={label_idx} edge_i={edge_i}: {e:?}"));
             }
         }
+    }
+
+    #[test]
+    fn vertex_edge_span_retire_intervals_cover_interior_gaps_and_tail() {
+        use crate::labeled::record::LabelBucket;
+        let buckets = [
+            LabelBucket::default()
+                .with_bucket_label_key(BucketLabelKey::from_raw(1))
+                .with_edge_range(100, 10),
+            LabelBucket::default()
+                .with_bucket_label_key(BucketLabelKey::from_raw(2))
+                .with_edge_range(150, 20),
+        ];
+        let intervals =
+            LabeledLaraGraph::<TestEdge, crate::VectorMemory>::vertex_edge_span_retire_intervals(
+                100, 100, &buckets,
+            )
+            .unwrap();
+        let total: u64 = intervals.iter().map(|(_, len)| *len).sum();
+        assert_eq!(total, 100);
+        assert!(intervals.contains(&(110, 40)));
+        assert!(intervals.contains(&(170, 30)));
     }
 
     /// Regression: 33rd label on a dense hub used to spend minutes in span release.

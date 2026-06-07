@@ -45,6 +45,20 @@
 //!   LabelEdgeSpan(label=2) | slack | LabelEdgeSpan(label=7) | slack | ...
 //! ```
 //!
+//! ### Labeled edge physical footprint (current implementation)
+//!
+//! On a relocating VertexEdgeSpan rewrite, the old per-vertex `[edge_start, stored_slots)`
+//! footprint (including interior proportional slack) is returned to the edge
+//! [`EdgeStore`] free-span store: monolithic `release_span` when possible, otherwise
+//! bucket plus interior gap intervals that still cover the full reservation. This is
+//! **labeled-layer** physical bookkeeping on top of the shared edge slab, not core LARA
+//! PMA segment relocation.
+//!
+//! **Target alignment (not yet implemented for labeled edge bytes):** physical adjacency
+//! for a PMA leaf should move via segment span metadata and segment slide (rope-style),
+//! with per-vertex rows remaining DGAP-style scan metadata (`base_slot_start`, degree,
+//! capacity). See the LARA update contract in [`crate::lara`].
+//!
 //! Default-label **bypass** rows skip LabelBuckets: [`LabeledVertex::degree`] / [`LabeledVertex::stored_slots`]
 //! track logical and physical edge slots directly, and overflow uses metadata bits 4–11 as
 //! [`LabeledVertex::bypass_overflow_log_head`].
