@@ -227,9 +227,142 @@ where
         let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _bench_scope = bench_scope("labeled_for_each_edges_for_label");
-        for edge in
-            self.labeled_bucket_span_iter(src, order, &vertex, &[bucket], 0, bucket_index)?
-        {
+        for edge in self.labeled_bucket_span_iter(
+            src,
+            order,
+            &vertex,
+            &[bucket],
+            0,
+            bucket_index,
+            true,
+        )? {
+            visit(edge?);
+        }
+        Ok(())
+    }
+
+    /// Like [`Self::for_each_edges_for_label_ordered`], but skips edge-payload reads.
+    pub fn for_each_edges_for_label_topology_ordered<Visit>(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        order: OutEdgeOrder,
+        visit: Visit,
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+        Visit: FnMut(E),
+    {
+        let mut visit = visit;
+        self.ensure_vertex(src)?;
+        let vertex = self.vertices.get(src);
+        if vertex.is_default_edge_labeled() {
+            if label_id != self.bypass_storage_label_for(&vertex) {
+                return Ok(());
+            }
+            return match order {
+                OutEdgeOrder::Descending => self
+                    .edges
+                    .visit_out_edges(
+                        &self.vertices,
+                        src,
+                        None,
+                        None,
+                        None::<&mut dyn FnMut(&[u8]) -> bool>,
+                        |_| true,
+                        |edge| visit(edge.with_label_id(label_id.raw())),
+                    )
+                    .map_err(Into::into),
+                OutEdgeOrder::Ascending => {
+                    for edge in self.edges.asc_out_edges(&self.vertices, src)? {
+                        visit(edge.with_label_id(label_id.raw()));
+                    }
+                    Ok(())
+                }
+            };
+        }
+        let BucketSearch::Found { slot, bucket } = self.find_bucket(src, &vertex, label_id)? else {
+            return Ok(());
+        };
+        if bucket.degree() == 0 {
+            return Ok(());
+        }
+        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _bench_scope = bench_scope("labeled_for_each_edges_for_label_topology");
+        for edge in self.labeled_bucket_span_iter(
+            src,
+            order,
+            &vertex,
+            &[bucket],
+            0,
+            bucket_index,
+            false,
+        )? {
+            visit(edge?);
+        }
+        Ok(())
+    }
+
+    /// Like [`Self::for_each_edges_for_label_topology_ordered`], but skips vertex range checks.
+    pub fn for_each_edges_for_label_topology_unchecked<Visit>(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        order: OutEdgeOrder,
+        mut visit: Visit,
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+        Visit: FnMut(E),
+    {
+        debug_assert!(u32::from(src) < self.vertices.len());
+        let vertex = self.vertices.get(src);
+        if vertex.is_default_edge_labeled() {
+            if label_id != self.bypass_storage_label_for(&vertex) {
+                return Ok(());
+            }
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _bench_scope = bench_scope("labeled_unchecked_bypass_slab");
+            return match order {
+                OutEdgeOrder::Descending => self
+                    .edges
+                    .visit_out_edges(
+                        &self.vertices,
+                        src,
+                        None,
+                        None,
+                        None::<&mut dyn FnMut(&[u8]) -> bool>,
+                        |_| true,
+                        |edge| visit(edge.with_label_id(label_id.raw())),
+                    )
+                    .map_err(Into::into),
+                OutEdgeOrder::Ascending => {
+                    for edge in self.edges.asc_out_edges(&self.vertices, src)? {
+                        visit(edge.with_label_id(label_id.raw()));
+                    }
+                    Ok(())
+                }
+            };
+        }
+        let BucketSearch::Found { slot, bucket } = self.find_bucket(src, &vertex, label_id)? else {
+            return Ok(());
+        };
+        if bucket.degree() == 0 {
+            return Ok(());
+        }
+        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _bench_scope = bench_scope("labeled_for_each_edges_for_label_topology");
+        for edge in self.labeled_bucket_span_iter(
+            src,
+            order,
+            &vertex,
+            &[bucket],
+            0,
+            bucket_index,
+            false,
+        )? {
             visit(edge?);
         }
         Ok(())
@@ -256,6 +389,7 @@ where
                     LabelBucket::default(),
                     label_id,
                     None,
+                    true,
                     self.edges.out_edges_iter(&self.vertices, src)?,
                 )),
                 OutEdgeOrder::Ascending => Ok(LabeledSpanIter::asc(
@@ -266,6 +400,7 @@ where
                     LabelBucket::default(),
                     label_id,
                     None,
+                    true,
                     self.edges.asc_out_edges_iter(&self.vertices, src)?,
                 )),
             };
@@ -273,7 +408,7 @@ where
         match self.find_bucket(src, &vertex, label_id)? {
             BucketSearch::Found { slot, bucket } => {
                 let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
-                self.labeled_bucket_span_iter(src, order, &vertex, &[bucket], 0, bucket_index)
+                self.labeled_bucket_span_iter(src, order, &vertex, &[bucket], 0, bucket_index, true)
             }
             BucketSearch::Missing { .. } => Ok(LabeledSpanIter::Empty),
         }
@@ -801,6 +936,7 @@ where
         buckets: &[LabelBucket],
         local_bucket_index: usize,
         bucket_index: u32,
+        attach_payload: bool,
     ) -> Result<LabeledSpanIter<'a, E, M>, LabeledOperationError> {
         let bucket = buckets[local_bucket_index];
         if bucket.degree() == 0 {
@@ -810,7 +946,11 @@ where
         let successor_start =
             self.bucket_successor_start_after_bucket(vertex, bucket_index, &bucket)?;
         let acc = LabelEdgeSpanAccess::new(&self.buckets, slot, successor_start, src);
-        let log_chains = self.bucket_payload_log_chains_opt(src, &bucket);
+        let log_chains = if attach_payload {
+            self.bucket_payload_log_chains_opt(src, &bucket)
+        } else {
+            None
+        };
         match order {
             OutEdgeOrder::Descending => Ok(LabeledSpanIter::desc(
                 self,
@@ -820,6 +960,7 @@ where
                 bucket,
                 bucket.bucket_label_key(),
                 log_chains,
+                attach_payload,
                 self.edges.out_edges_iter(&acc, VertexId::from(0))?,
             )),
             OutEdgeOrder::Ascending => Ok(LabeledSpanIter::asc(
@@ -830,6 +971,7 @@ where
                 bucket,
                 bucket.bucket_label_key(),
                 log_chains,
+                attach_payload,
                 self.edges.asc_out_edges_iter(&acc, VertexId::from(0))?,
             )),
         }
@@ -870,7 +1012,7 @@ where
 
         let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
         let mut iter =
-            self.labeled_bucket_span_iter(src, order, &vertex, &[bucket], 0, bucket_index)?;
+            self.labeled_bucket_span_iter(src, order, &vertex, &[bucket], 0, bucket_index, true)?;
         let width = usize::from(bucket.payload_byte_width());
         let batch_edges = (EDGE_PAYLOAD_BATCH_TARGET_BYTES / width).max(1);
         loop {

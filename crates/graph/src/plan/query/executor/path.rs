@@ -8,9 +8,9 @@ use gleaph_gql::Value;
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql_planner::BindingLayout;
 use gleaph_gql_planner::plan::{PlanOp, ShortestMode, ShortestPathCost, Str, VarLenSpec};
-use gleaph_graph_kernel::entry::{EdgeLabelId, PreparedWeightDecoder};
+use gleaph_graph_kernel::entry::{Edge, EdgeLabelId, PreparedWeightDecoder};
 use ic_stable_lara::VertexId;
-use ic_stable_lara::labeled::OutEdgeOrder;
+use ic_stable_lara::labeled::{LabeledEdgePayloadBatchScratch, OutEdgeOrder};
 
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
 use canbench_rs::bench_scope;
@@ -132,6 +132,7 @@ pub(crate) async fn execute_shortest_path(
                 var_len,
                 mode,
                 store_hop_edges,
+                emit_edge_binding,
             )?,
             ShortestPathCost::EdgeCostExpr { edge_var, expr }
                 if weighted_shortest_can_use_hop_count(mode, expr) =>
@@ -145,6 +146,7 @@ pub(crate) async fn execute_shortest_path(
                     var_len,
                     mode,
                     store_hop_edges,
+                    emit_edge_binding,
                 )?
             }
             ShortestPathCost::EdgeCostExpr { edge_var, expr } => weighted_shortest_paths_between(
@@ -222,6 +224,12 @@ pub(crate) async fn execute_shortest_path(
     Ok(out)
 }
 
+/// Controls whether shortest-path expansion hydrates edge payloads and reuses batch scratch.
+pub(crate) struct ShortestExpandOptions<'a> {
+    pub load_payloads: bool,
+    pub payload_scratch: Option<&'a mut LabeledEdgePayloadBatchScratch<Edge>>,
+}
+
 /// Holds a catalog [`EdgeLabelId`] per shortest-path search; expansion uses directed/undirected
 /// GraphStore APIs so wire MSB packing stays internal.
 #[derive(Clone, Copy)]
@@ -249,35 +257,56 @@ impl ShortestFixedLabelExpand {
         store: &GraphStore,
         current: VertexId,
         out: &mut Vec<ExpandCandidate>,
+        options: ShortestExpandOptions<'_>,
     ) -> Result<(), PlanQueryError> {
         match self {
             Self::Forward { label } => {
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _scope = bench_scope("shortest_fixed_expand_forward");
                 let mut expand_err = None;
-                store.for_each_directed_out_edges_for_label_with_payloads(
-                    current,
-                    label,
-                    OutEdgeOrder::Descending,
-                    |edge| {
-                        if expand_err.is_some() {
-                            return;
+                let mut visit_edge = |edge: Edge| {
+                    if expand_err.is_some() {
+                        return;
+                    }
+                    if let Ok(Some(edge_dst @ ExpandDst::Local(_))) =
+                        ExpandDst::from_edge(store, &edge)
+                    {
+                        match edge_binding_for_scanned_expand(
+                            store,
+                            current,
+                            EdgeDirection::PointingRight,
+                            edge,
+                        ) {
+                            Ok(binding) => out.push((edge_dst, binding)),
+                            Err(err) => expand_err = Some(err),
                         }
-                        if let Ok(Some(edge_dst @ ExpandDst::Local(_))) =
-                            ExpandDst::from_edge(store, &edge)
-                        {
-                            match edge_binding_for_scanned_expand(
-                                store,
-                                current,
-                                EdgeDirection::PointingRight,
-                                edge,
-                            ) {
-                                Ok(binding) => out.push((edge_dst, binding)),
-                                Err(err) => expand_err = Some(err),
-                            }
-                        }
-                    },
-                )?;
+                    }
+                };
+                if options.load_payloads {
+                    if let Some(scratch) = options.payload_scratch {
+                        store.for_each_directed_out_edges_for_label_with_payloads_reusing(
+                            current,
+                            label,
+                            OutEdgeOrder::Descending,
+                            scratch,
+                            &mut visit_edge,
+                        )?;
+                    } else {
+                        store.for_each_directed_out_edges_for_label_with_payloads(
+                            current,
+                            label,
+                            OutEdgeOrder::Descending,
+                            &mut visit_edge,
+                        )?;
+                    }
+                } else {
+                    store.for_each_directed_out_edges_for_label_topology_unchecked(
+                        current,
+                        label,
+                        OutEdgeOrder::Descending,
+                        &mut visit_edge,
+                    )?;
+                }
                 if let Some(err) = expand_err {
                     return Err(err);
                 }
@@ -286,29 +315,49 @@ impl ShortestFixedLabelExpand {
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _scope = bench_scope("shortest_fixed_expand_reverse");
                 let mut expand_err = None;
-                store.for_each_directed_in_edges_for_label_with_payloads(
-                    current,
-                    label,
-                    OutEdgeOrder::Descending,
-                    |edge| {
-                        if expand_err.is_some() {
-                            return;
+                let mut visit_edge = |edge: Edge| {
+                    if expand_err.is_some() {
+                        return;
+                    }
+                    if let Ok(Some(edge_dst @ ExpandDst::Local(_))) =
+                        ExpandDst::from_edge(store, &edge)
+                    {
+                        match edge_binding_for_scanned_expand(
+                            store,
+                            current,
+                            EdgeDirection::PointingLeft,
+                            edge,
+                        ) {
+                            Ok(binding) => out.push((edge_dst, binding)),
+                            Err(err) => expand_err = Some(err),
                         }
-                        if let Ok(Some(edge_dst @ ExpandDst::Local(_))) =
-                            ExpandDst::from_edge(store, &edge)
-                        {
-                            match edge_binding_for_scanned_expand(
-                                store,
-                                current,
-                                EdgeDirection::PointingLeft,
-                                edge,
-                            ) {
-                                Ok(binding) => out.push((edge_dst, binding)),
-                                Err(err) => expand_err = Some(err),
-                            }
-                        }
-                    },
-                )?;
+                    }
+                };
+                if options.load_payloads {
+                    if let Some(scratch) = options.payload_scratch {
+                        store.for_each_directed_in_edges_for_label_with_payloads_reusing(
+                            current,
+                            label,
+                            OutEdgeOrder::Descending,
+                            scratch,
+                            &mut visit_edge,
+                        )?;
+                    } else {
+                        store.for_each_directed_in_edges_for_label_with_payloads(
+                            current,
+                            label,
+                            OutEdgeOrder::Descending,
+                            &mut visit_edge,
+                        )?;
+                    }
+                } else {
+                    store.for_each_directed_in_edges_for_label_topology_unchecked(
+                        current,
+                        label,
+                        OutEdgeOrder::Descending,
+                        &mut visit_edge,
+                    )?;
+                }
                 if let Some(err) = expand_err {
                     return Err(err);
                 }

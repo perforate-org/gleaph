@@ -18,7 +18,12 @@ use rapidhash::fast::RapidHasher;
 use canbench_rs::bench_scope;
 
 use super::search::path_search_contains_vertex;
-use super::{PathSearchNode, ShortestFixedLabelExpand, ShortestPathSearchResult};
+use gleaph_graph_kernel::entry::Edge;
+use ic_stable_lara::labeled::LabeledEdgePayloadBatchScratch;
+
+use super::{
+    PathSearchNode, ShortestExpandOptions, ShortestFixedLabelExpand, ShortestPathSearchResult,
+};
 use crate::facade::GraphStore;
 use crate::plan::query::error::PlanQueryError;
 use crate::plan::query::executor::bindings::EdgeBinding;
@@ -357,6 +362,7 @@ pub(crate) fn weighted_shortest_paths_between(
         None
     };
     let mut candidates = Vec::new();
+    let mut payload_scratch = LabeledEdgePayloadBatchScratch::<Edge>::default();
     let fixed_label_expand = match label_id {
         Some(lid) => Some(ShortestFixedLabelExpand::new(direction, lid)?),
         None => None,
@@ -400,7 +406,15 @@ pub(crate) fn weighted_shortest_paths_between(
         let _expand_scope = bench_scope("weighted_shortest_expand");
         candidates.clear();
         match fixed_label_expand {
-            Some(prep) => prep.expand_into(store, current, &mut candidates)?,
+            Some(prep) => prep.expand_into(
+                store,
+                current,
+                &mut candidates,
+                ShortestExpandOptions {
+                    load_payloads: true,
+                    payload_scratch: Some(&mut payload_scratch),
+                },
+            )?,
             None => {
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _generic_scope = bench_scope("weighted_shortest_expand_generic");

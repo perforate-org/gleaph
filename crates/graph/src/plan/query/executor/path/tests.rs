@@ -1,5 +1,5 @@
 use super::{
-    ShortestFixedLabelExpand, local_shard_id,
+    ShortestExpandOptions, ShortestFixedLabelExpand, local_shard_id,
     materialize::materialize_path_from_search_states,
     weighted::{WeightedCost, WeightedCostOrderKey, decode_direct_gleaph_weight_hop_cost},
     weighted_shortest_can_use_hop_count, weighted_shortest_paths_between,
@@ -1423,7 +1423,16 @@ fn stale_mid_diamond_shortest_expand_hop_costs_are_5_10_and_1() {
     let _decoder = decoders.get("e").expect("edge decoder");
     let prep = ShortestFixedLabelExpand::new(EdgeDirection::PointingRight, road).expect("prep");
     let mut from_s = Vec::new();
-    prep.expand_into(&store, s, &mut from_s).expect("from s");
+    prep.expand_into(
+        &store,
+        s,
+        &mut from_s,
+        ShortestExpandOptions {
+            load_payloads: true,
+            payload_scratch: None,
+        },
+    )
+    .expect("from s");
     let mut hop_costs = Vec::new();
     for (edge_dst, binding) in from_s {
         let hop = decode_direct_gleaph_weight_hop_cost(&store, binding).expect("hop");
@@ -1466,8 +1475,16 @@ fn stale_mid_diamond_shortest_expand_hop_costs_are_5_10_and_1() {
         })
         .expect("out from detour");
     let mut from_detour = Vec::new();
-    prep.expand_into(&store, VertexId::from(detour), &mut from_detour)
-        .expect("from detour");
+    prep.expand_into(
+        &store,
+        VertexId::from(detour),
+        &mut from_detour,
+        ShortestExpandOptions {
+            load_payloads: true,
+            payload_scratch: None,
+        },
+    )
+    .expect("from detour");
     assert_eq!(from_detour.len(), 1);
     let binding = from_detour[0].1.clone();
     assert_eq!(

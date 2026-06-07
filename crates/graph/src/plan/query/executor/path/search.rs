@@ -9,7 +9,9 @@ use nohash_hasher::IntSet;
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
 use canbench_rs::bench_scope;
 
-use super::{PathSearchNode, ShortestFixedLabelExpand, ShortestPathSearchResult};
+use super::{
+    PathSearchNode, ShortestExpandOptions, ShortestFixedLabelExpand, ShortestPathSearchResult,
+};
 use crate::facade::GraphStore;
 use crate::plan::query::error::PlanQueryError;
 use crate::plan::query::executor::EdgeSequenceOrder;
@@ -24,6 +26,7 @@ pub(crate) fn shortest_paths_between(
     var_len: &Option<VarLenSpec>,
     mode: ShortestMode,
     store_hop_edges: bool,
+    load_edge_payloads: bool,
 ) -> Result<ShortestPathSearchResult, PlanQueryError> {
     let bounds = var_len.unwrap_or(VarLenSpec {
         min: 1,
@@ -82,7 +85,15 @@ pub(crate) fn shortest_paths_between(
         let _expand_scope = bench_scope("shortest_bfs_expand");
         candidates.clear();
         match fixed_label_expand {
-            Some(prep) => prep.expand_into(store, current, &mut candidates)?,
+            Some(prep) => prep.expand_into(
+                store,
+                current,
+                &mut candidates,
+                ShortestExpandOptions {
+                    load_payloads: load_edge_payloads,
+                    payload_scratch: None,
+                },
+            )?,
             None => {
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _generic_scope = bench_scope("shortest_bfs_expand_generic");

@@ -994,6 +994,38 @@ where
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
+    /// Like [`Self::for_each_out_edges_for_label_ordered`], but skips edge-payload reads.
+    pub fn for_each_out_edges_for_label_topology_ordered<Visit>(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        order: OutEdgeOrder,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLabeledError>
+    where
+        Visit: FnMut(E),
+    {
+        self.forward
+            .for_each_edges_for_label_topology_ordered(src, label_id, order, visit)
+            .map_err(DeferredBidirectionalLabeledError::Forward)
+    }
+
+    /// Like [`Self::for_each_out_edges_for_label_topology_ordered`], but skips vertex checks.
+    pub fn for_each_out_edges_for_label_topology_unchecked<Visit>(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        order: OutEdgeOrder,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLabeledError>
+    where
+        Visit: FnMut(E),
+    {
+        self.forward
+            .for_each_edges_for_label_topology_unchecked(src, label_id, order, visit)
+            .map_err(DeferredBidirectionalLabeledError::Forward)
+    }
+
     /// Visits forward outgoing edges and parallel value bytes for one label in `order`.
     pub fn visit_out_edge_payload_batches_for_label<Visit>(
         &self,
@@ -1195,6 +1227,22 @@ where
     {
         self.reverse
             .for_each_edges_for_label_ordered(dst, label_id, order, visit)
+            .map_err(DeferredBidirectionalLabeledError::Reverse)
+    }
+
+    /// Like [`Self::for_each_in_edges_for_label_ordered`], but skips edge-payload reads.
+    pub fn for_each_in_edges_for_label_topology_ordered<Visit>(
+        &self,
+        dst: VertexId,
+        label_id: BucketLabelKey,
+        order: OutEdgeOrder,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLabeledError>
+    where
+        Visit: FnMut(E),
+    {
+        self.reverse
+            .for_each_edges_for_label_topology_ordered(dst, label_id, order, visit)
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
 

@@ -100,6 +100,7 @@ pub struct LabeledBucketScan<'a, E: CsrEdge, M: Memory> {
     bucket: LabelBucket,
     label_id: BucketLabelKey,
     log_chains: Option<(Vec<u32>, Vec<u32>)>,
+    attach_payload: bool,
     kind: LabeledBucketScanKind<'a, E, M>,
 }
 
@@ -167,6 +168,7 @@ where
                         buckets,
                         local,
                         bucket_index,
+                        true,
                     ) {
                         Ok(span) => *current = span,
                         Err(err) => {
@@ -294,6 +296,7 @@ where
                 buckets,
                 local,
                 bucket_index,
+                true,
             )?;
             return Ok(true);
         }
@@ -313,15 +316,20 @@ where
             LabeledBucketScanKind::Asc { iter } => iter.next()?,
         };
         let slot = edge.edge_slot_index_raw();
-        Some(self.graph.attach_edge_payload(
-            self.src,
-            &self.vertex,
-            self.bucket_index,
-            self.bucket,
-            slot,
-            edge.with_label_id(self.label_id.raw()),
-            self.log_chains.as_ref(),
-        ))
+        let edge = edge.with_label_id(self.label_id.raw());
+        if self.attach_payload {
+            Some(self.graph.attach_edge_payload(
+                self.src,
+                &self.vertex,
+                self.bucket_index,
+                self.bucket,
+                slot,
+                edge,
+                self.log_chains.as_ref(),
+            ))
+        } else {
+            Some(Ok(edge))
+        }
     }
 
     fn nth(&mut self, n: usize) -> Option<Self::Item> {
@@ -389,6 +397,7 @@ where
         bucket: LabelBucket,
         label_id: BucketLabelKey,
         log_chains: Option<(Vec<u32>, Vec<u32>)>,
+        attach_payload: bool,
         iter: OutEdgesIter<'a, E, M>,
     ) -> LabeledSpanIter<'a, E, M> {
         LabeledSpanIter::Scan(LabeledBucketScan {
@@ -399,6 +408,7 @@ where
             bucket,
             label_id,
             log_chains,
+            attach_payload,
             kind: LabeledBucketScanKind::Desc { iter },
         })
     }
@@ -411,6 +421,7 @@ where
         bucket: LabelBucket,
         label_id: BucketLabelKey,
         log_chains: Option<(Vec<u32>, Vec<u32>)>,
+        attach_payload: bool,
         iter: AscOutEdgesIter<'a, E, M>,
     ) -> LabeledSpanIter<'a, E, M> {
         LabeledSpanIter::Scan(LabeledBucketScan {
@@ -421,6 +432,7 @@ where
             bucket,
             label_id,
             log_chains,
+            attach_payload,
             kind: LabeledBucketScanKind::Asc { iter },
         })
     }
