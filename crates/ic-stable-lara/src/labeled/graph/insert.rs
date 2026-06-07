@@ -245,7 +245,7 @@ where
                     {
                         return self.insert_homogeneous_bypass_edge(src, label_id, attempt_edge);
                     }
-                    self.rebalance_edge_log_leaf_for_labeled(src, true)?;
+                    self.rebalance_edge_log_leaf_for_labeled(src, true, true)?;
                     let vertex = self.vertices.get(src);
                     let bucket_slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
                     bucket = self
@@ -277,7 +277,7 @@ where
         if self.labeled_leaf_physical_range(src).is_some() {
             let buckets = self.read_vertex_label_buckets(&vertex)?;
             if buckets.iter().any(|bucket| bucket.overflow_log_head() >= 0) {
-                self.rebalance_edge_log_vertex_for_labeled(src, true)?;
+                self.rebalance_edge_log_vertex_for_labeled(src, true, true)?;
             } else if vertex.degree() > 1 {
                 self.rebalance_vertex_edge_span_light(src, true)?;
             }

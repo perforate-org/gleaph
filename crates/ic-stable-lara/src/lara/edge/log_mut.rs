@@ -15,6 +15,36 @@ use super::{
 };
 
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
+    pub(crate) fn overflow_log_chain_len(&self, leaf: u32, head: i32) -> u32 {
+        if head < 0 {
+            return 0;
+        }
+        let h = self.log.header();
+        let scratch_len = E::BYTES.max(1);
+        let mut cur = head;
+        let mut len = 0u32;
+        while cur >= 0 {
+            len = len.saturating_add(1);
+            if E::BYTES <= INLINE_EDGE_BYTES {
+                let mut scratch = [0u8; INLINE_EDGE_BYTES];
+                let (prev, _) = self.log.read_entry_with_header(
+                    &h,
+                    leaf,
+                    cur as u32,
+                    &mut scratch[..scratch_len],
+                );
+                cur = prev;
+            } else {
+                let mut scratch = vec![0u8; E::BYTES];
+                let (prev, _) = self
+                    .log
+                    .read_entry_with_header(&h, leaf, cur as u32, &mut scratch);
+                cur = prev;
+            }
+        }
+        len
+    }
+
     pub(crate) fn overflow_log_chain_asc_indices(&self, leaf: u32, head: i32) -> Vec<u32> {
         if head < 0 {
             return Vec::new();

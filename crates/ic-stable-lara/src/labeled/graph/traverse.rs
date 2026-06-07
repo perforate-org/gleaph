@@ -225,6 +225,8 @@ where
             return Ok(());
         }
         let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _bench_scope = bench_scope("labeled_for_each_edges_for_label");
         for edge in
             self.labeled_bucket_span_iter(src, order, &vertex, &[bucket], 0, bucket_index)?
         {

@@ -93,6 +93,62 @@ fn deferred_bench_graph(
     DeferredLabeledLaraGraph::new(inner, vector_memory()).expect("deferred labeled graph")
 }
 
+/// Mirrors `CACHE_PREFIX_COUNT` in `crates/graph` shortest-path converging-hub benches:
+/// one hub vertex with many parallel same-label edges, then repeated label-filtered scans.
+const CONVERGING_HUB_PREFIX_EDGES: u32 = 48;
+const CONVERGING_HUB_OUT_EDGES: u32 = 24;
+const CONVERGING_HUB_EXPAND_CALLS: u32 = 51;
+
+fn seed_single_label_parallel_edges(
+    graph: &LabeledLaraGraph<BenchEdge, crate::VectorMemory>,
+    edge_count: u32,
+) -> BucketLabelKey {
+    graph.push_vertex(LabeledVertex::default()).expect("vertex");
+    let label = BucketLabelKey::from_raw(2);
+    for i in 0..edge_count {
+        graph
+            .insert_edge(VertexId::from(0), label, BenchEdge(i))
+            .expect("insert");
+    }
+    label
+}
+
+#[bench(raw)]
+fn bench_labeled_for_each_edges_for_label_48_x51() -> canbench_rs::BenchResult {
+    let graph = bench_graph(16384);
+    let label = seed_single_label_parallel_edges(&graph, CONVERGING_HUB_PREFIX_EDGES);
+    let vid = VertexId::from(0);
+    bench_fn(|| {
+        for _ in 0..CONVERGING_HUB_EXPAND_CALLS {
+            let mut count = 0usize;
+            graph
+                .for_each_edges_for_label(vid, label, |edge| {
+                    count += usize::from(edge.neighbor_vid().0 > 0);
+                })
+                .expect("for_each");
+            black_box(count);
+        }
+    })
+}
+
+#[bench(raw)]
+fn bench_labeled_for_each_edges_for_label_24_x51() -> canbench_rs::BenchResult {
+    let graph = bench_graph(8192);
+    let label = seed_single_label_parallel_edges(&graph, CONVERGING_HUB_OUT_EDGES);
+    let vid = VertexId::from(0);
+    bench_fn(|| {
+        for _ in 0..CONVERGING_HUB_EXPAND_CALLS {
+            let mut count = 0usize;
+            graph
+                .for_each_edges_for_label(vid, label, |edge| {
+                    count += usize::from(edge.neighbor_vid().0 > 0);
+                })
+                .expect("for_each");
+            black_box(count);
+        }
+    })
+}
+
 #[bench(raw)]
 fn bench_labeled_iter_edges_for_label_128() -> canbench_rs::BenchResult {
     let graph = bench_graph(4096);

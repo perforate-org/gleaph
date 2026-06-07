@@ -92,12 +92,12 @@ where
 
         if self.edges.overflow_log_segment_high_water(leaf) > 0 {
             if sole_active_labeled_vertex {
-                self.rebalance_edge_log_vertex_for_labeled(src, true)?;
+                self.rebalance_edge_log_vertex_for_labeled(src, true, false)?;
                 self.edges
                     .release_log_segment(SegmentId::from(leaf))
                     .map_err(LabeledOperationError::from)?;
             } else {
-                self.rebalance_edge_log_leaf_for_labeled(src, true)?;
+                self.rebalance_edge_log_leaf_for_labeled(src, true, false)?;
             }
             if self.labeled_leaf_pma_density(src) < LEAF_VERTEX_EDGE_SEGMENT_DENSITY {
                 return Ok(());

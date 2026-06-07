@@ -37,12 +37,8 @@ where
     pub(super) fn bucket_edge_log_slots(&self, src: VertexId, bucket: &LabelBucket) -> u32 {
         if bucket.overflow_log_head() >= 0 {
             let leaf = self.payload_log_leaf(src);
-            u32::try_from(
-                self.edges
-                    .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head())
-                    .len(),
-            )
-            .unwrap_or(u32::MAX)
+            self.edges
+                .overflow_log_chain_len(leaf, bucket.overflow_log_head())
         } else {
             0
         }

@@ -804,7 +804,7 @@ where
         let seg = header.segment_size.max(1);
         let leaf = Self::leaf_index_for_vid(src, seg);
         if self.edges.overflow_log_segment_high_water(leaf) > 0 {
-            self.rebalance_edge_log_leaf_for_labeled(src, true)?;
+            self.rebalance_edge_log_leaf_for_labeled(src, true, false)?;
         }
 
         let counts = self.leaf_segment_counts_for_vid(src);
@@ -898,7 +898,7 @@ where
         let seg = header.segment_size.max(1);
         let leaf = Self::leaf_index_for_vid(src, seg);
         if self.edges.overflow_log_segment_high_water(leaf) > 0 {
-            self.rebalance_edge_log_leaf_for_labeled(src, true)?;
+            self.rebalance_edge_log_leaf_for_labeled(src, true, false)?;
         }
 
         let start_vid = leaf.saturating_mul(seg);
@@ -1702,98 +1702,107 @@ where
         if degree == 0 {
             return Ok(bucket.with_overflow_log_head(-1));
         }
-        let edges = self.materialize_label_bucket_edges_for_log_release(src, &bucket)?;
+        let live_written = self.stream_fold_label_bucket_overflow_to_slab(src, &bucket)?;
         let successor = self.bucket_successor_start(vertex, bucket_index)?;
         let slack = successor.saturating_sub(bucket.edge_start());
-        if slack < edges.len() as u64 {
+        if slack < u64::from(live_written) {
             return Err(LabeledOperationError::from(
                 LaraOperationError::CollectAllocationOverflow,
             ));
         }
-        let run = Self::edge_bytes_for_len(edges.len())?;
-        if run > 0 {
-            let mut buf = vec![0u8; run];
-            let mut offset = 0usize;
-            for edge in &edges {
-                edge.write_to(&mut buf[offset..offset + E::BYTES]);
-                offset += E::BYTES;
-            }
-            self.edges
-                .write_slots_contiguous(bucket.edge_start(), &buf[..run])?;
-        }
-        let live = u32::try_from(
-            edges
-                .iter()
-                .filter(|edge| !edge.is_tombstone_edge())
-                .count(),
-        )
-        .map_err(|_| LaraOperationError::RowDegreeOverflow)?;
         Ok(bucket
             .with_overflow_log_head(-1)
-            .with_stored_slots(
-                u32::try_from(edges.len()).map_err(|_| LaraOperationError::RowDegreeOverflow)?,
-            )
-            .with_degree_field(live))
+            .with_stored_slots(live_written)
+            .with_degree_field(live_written))
     }
 
-    fn materialize_label_bucket_edges_for_log_release(
+    /// Folds one label bucket's overflow log into its slab prefix without materializing the full
+    /// slab width or a contiguous write buffer. Log replay matches
+    /// [`EdgeStore::asc_out_edges_iter`] (slab deletes from the log, then dense slab scan, then
+    /// inserted log edges). Only the short log suffix is buffered in memory.
+    fn stream_fold_label_bucket_overflow_to_slab(
         &self,
         src: VertexId,
         bucket: &LabelBucket,
-    ) -> Result<Vec<E>, LabeledOperationError>
+    ) -> Result<u32, LabeledOperationError>
     where
         E: CsrEdgeTombstone,
     {
         let leaf = u32::from(src) / self.edges.header().segment_size.max(1);
-        let mut out: Vec<(DeleteTarget, E)> = Vec::new();
-        let slab_prefix_slots = self.bucket_slab_prefix_slots(src, bucket);
-        for slot_index in 0..slab_prefix_slots {
-            let edge_slot = checked_add_slot_index(bucket.edge_start(), u64::from(slot_index))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            let edge = self.edges.read_slot(edge_slot);
-            out.push((DeleteTarget::Slab(slot_index), edge));
-        }
-        let slab_live = out
-            .iter()
-            .filter(|(_, edge)| !edge.is_deleted_slot() && !edge.is_tombstone_edge())
-            .count();
-        let expected_live = usize::try_from(bucket.degree()).unwrap_or(usize::MAX);
-        if slab_live == expected_live {
-            return Ok(out.into_iter().map(|(_, edge)| edge).collect());
-        }
-        if slab_live > expected_live {
-            return Err(LabeledOperationError::from(
-                LaraOperationError::LogChainShort,
-            ));
-        }
-        let chain = self
+        let log_len = self
             .edges
-            .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head());
-        for log_idx in chain {
-            let (_, src_tag, edge) = self.edges.read_overflow_log_entry(leaf, log_idx);
-            match decode_log_entry_kind(src_tag) {
-                LogEntryKind::Dead => {
-                    out.push((DeleteTarget::Log(log_idx), E::tombstone_edge()));
-                }
-                LogEntryKind::Delete(target) => {
-                    if let Some(index) = out.iter().position(|(candidate, _)| *candidate == target)
-                    {
-                        out[index].1 = E::tombstone_edge();
+            .overflow_log_chain_len(leaf, bucket.overflow_log_head());
+        let slab_prefix_slots = bucket.stored_slots.saturating_sub(log_len);
+        let expected_live = bucket.degree();
+        let edge_start = bucket.edge_start();
+
+        let mut deleted_slab_offsets = Vec::new();
+        let mut inserted_log_edges: Vec<(DeleteTarget, E)> = Vec::new();
+        if log_len > 0 {
+            let chain = self
+                .edges
+                .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head());
+            for log_idx in chain {
+                let (_, src_tag, edge) = self.edges.read_overflow_log_entry(leaf, log_idx);
+                match decode_log_entry_kind(src_tag) {
+                    LogEntryKind::Dead => {}
+                    LogEntryKind::Delete(target) => match target {
+                        DeleteTarget::Slab(offset) => deleted_slab_offsets.push(offset),
+                        DeleteTarget::Log(_) => {
+                            if let Some(index) = inserted_log_edges
+                                .iter()
+                                .position(|(candidate, _)| *candidate == target)
+                            {
+                                inserted_log_edges.remove(index);
+                            }
+                        }
+                    },
+                    LogEntryKind::Live => {
+                        inserted_log_edges.push((DeleteTarget::Log(log_idx), edge));
                     }
                 }
-                LogEntryKind::Live => out.push((DeleteTarget::Log(log_idx), edge)),
             }
+            deleted_slab_offsets.sort_unstable();
         }
-        let live = out
-            .iter()
-            .filter(|(_, edge)| !edge.is_tombstone_edge())
-            .count();
-        if live != usize::try_from(bucket.degree()).unwrap_or(usize::MAX) {
+
+        let mut cursor = 0u32;
+        for slot_index in 0..slab_prefix_slots {
+            if deleted_slab_offsets.binary_search(&slot_index).is_ok() {
+                continue;
+            }
+            let edge_slot = checked_add_slot_index(edge_start, u64::from(slot_index))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let edge = self.edges.read_slot(edge_slot);
+            if edge.is_deleted_slot() {
+                continue;
+            }
+            let out_slot = checked_add_slot_index(edge_start, u64::from(cursor))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            self.edges
+                .write_slot(out_slot, edge.with_slot_index(cursor))
+                .map_err(LabeledOperationError::from)?;
+            cursor = cursor
+                .checked_add(1)
+                .ok_or(LaraOperationError::RowDegreeOverflow)?;
+        }
+
+        for (_, edge) in inserted_log_edges {
+            let out_slot = checked_add_slot_index(edge_start, u64::from(cursor))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            self.edges
+                .write_slot(out_slot, edge.with_slot_index(cursor))
+                .map_err(LabeledOperationError::from)?;
+            cursor = cursor
+                .checked_add(1)
+                .ok_or(LaraOperationError::RowDegreeOverflow)?;
+        }
+
+        if cursor != expected_live {
             return Err(LabeledOperationError::from(
                 LaraOperationError::LogChainShort,
             ));
         }
-        Ok(out.into_iter().map(|(_, edge)| edge).collect())
+        Ok(cursor)
     }
 
     pub(super) fn fold_label_bucket_payload_log_to_slab(
@@ -1893,10 +1902,78 @@ where
         Ok(())
     }
 
+    /// Syncs [`LabeledVertex::stored_slots`] before overflow-log fold when bucket metadata
+    /// has outgrown the vertex row but slab bytes are already in place inside the pinned leaf.
+    /// Avoids `rebalance_vertex_edge_span_light` (forced slack growth + full copy) on every
+    /// `SegmentLogFull` when only the vertex metadata field is stale.
+    fn prepare_vertex_edge_span_for_overflow_log_fold(
+        &self,
+        vid: VertexId,
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        let vertex = self.vertices.get(vid);
+        if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
+            return Ok(());
+        }
+        let buckets = self.read_vertex_label_buckets(&vertex)?;
+        let old_alloc = vertex.stored_slots;
+        let old_base = buckets
+            .first()
+            .map(|bucket| bucket.edge_start())
+            .unwrap_or(0);
+        let resident_slots = buckets.iter().try_fold(0u32, |acc, bucket| {
+            acc.checked_add(bucket.stored_slots.max(bucket.degree()))
+                .ok_or(LaraOperationError::RowDegreeOverflow)
+        })?;
+        if resident_slots <= old_alloc {
+            return Ok(());
+        }
+        if self.labeled_leaf_physical_range(vid).is_some()
+            && resident_slots > self.labeled_vertex_stored_slots_max_in_leaf(vid)?
+            && !LABELED_LEAF_RELOCATE_IN_PROGRESS.with(|flag| flag.get())
+        {
+            self.relocate_labeled_leaf_physical_block(vid)?;
+            return Ok(());
+        }
+        let positions = Self::calculate_label_edge_span_positions_by_resident_slots(
+            old_base,
+            resident_slots,
+            &buckets,
+            None,
+            0,
+        )?;
+        let layout_unchanged = buckets.iter().enumerate().all(|(index, bucket)| {
+            positions
+                .get(index)
+                .is_some_and(|start| *start == bucket.edge_start())
+        });
+        if layout_unchanged {
+            let need_end = checked_add_slot_index(old_base, u64::from(resident_slots))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let physical_ok =
+                if let Some((leaf_start, leaf_len)) = self.labeled_leaf_physical_range(vid) {
+                    let leaf_end = checked_add_slot_index(leaf_start, leaf_len)
+                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    need_end <= leaf_end
+                } else {
+                    true
+                };
+            if physical_ok {
+                self.vertices
+                    .set(vid, &vertex.with_stored_slots(resident_slots));
+                return Ok(());
+            }
+        }
+        self.rebalance_vertex_edge_span(vid, None, 0, false)
+    }
+
     pub(super) fn rebalance_edge_log_vertex_for_labeled(
         &self,
         vid: VertexId,
         grow_vertex_span: bool,
+        use_log_fold_prelude: bool,
     ) -> Result<(), LabeledOperationError>
     where
         E: CsrEdgeTombstone,
@@ -1906,7 +1983,13 @@ where
             return Ok(());
         }
         if grow_vertex_span {
-            self.rebalance_vertex_edge_span_light(vid, true)?;
+            let single_label_overflow_fold =
+                use_log_fold_prelude && self.read_vertex_label_buckets(&vertex)?.len() == 1;
+            if single_label_overflow_fold {
+                self.prepare_vertex_edge_span_for_overflow_log_fold(vid)?;
+            } else {
+                self.rebalance_vertex_edge_span_light(vid, true)?;
+            }
         }
         let vertex = self.vertices.get(vid);
         let buckets = self.read_vertex_label_buckets(&vertex)?;
@@ -1927,6 +2010,7 @@ where
         &self,
         src: VertexId,
         grow_vertex_span: bool,
+        use_log_fold_prelude: bool,
     ) -> Result<(), LabeledOperationError>
     where
         E: CsrEdgeTombstone,
@@ -1936,7 +2020,11 @@ where
         let start_vid = leaf.saturating_mul(seg_size);
         let end_vid = start_vid.saturating_add(seg_size).min(self.vertices.len());
         for vid_u in start_vid..end_vid {
-            self.rebalance_edge_log_vertex_for_labeled(VertexId::from(vid_u), grow_vertex_span)?;
+            self.rebalance_edge_log_vertex_for_labeled(
+                VertexId::from(vid_u),
+                grow_vertex_span,
+                use_log_fold_prelude,
+            )?;
         }
         self.edges
             .release_log_segment(SegmentId::from(leaf))
@@ -2310,6 +2398,57 @@ mod tests {
     #[test]
     fn mixed_label_hub_50_labels_1000_edges_each() {
         build_mixed_label_hub(50, 1000);
+    }
+
+    /// Streaming overflow-log fold must not materialize the full slab width (skewed-noise shape).
+    #[test]
+    fn single_label_parallel_insert_survives_overflow_log_fold() {
+        let started = std::time::Instant::now();
+        let graph = LabeledLaraGraph::new(
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            1 << 20,
+            BucketLabelKey::from_raw(1),
+        )
+        .unwrap();
+        let hub = graph.push_vertex(LabeledVertex::default()).unwrap();
+        let dst = graph.push_vertex(LabeledVertex::default()).unwrap();
+        let label = BucketLabelKey::from_raw(42_000);
+        const EDGE_COUNT: u32 = if cfg!(debug_assertions) { 600 } else { 5_000 };
+        for edge_i in 0..EDGE_COUNT {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    hub,
+                    label,
+                    TestEdge {
+                        target: u32::from(dst),
+                    },
+                )
+                .unwrap_or_else(|e| panic!("edge_i={edge_i}: {e:?}"));
+        }
+        assert_eq!(
+            graph.iter_edges_for_label(hub, label).unwrap().len(),
+            EDGE_COUNT as usize
+        );
+        assert_eq!(graph.asc_out_edges(hub).unwrap().len(), EDGE_COUNT as usize);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "single-label parallel insert took {:?}",
+            started.elapsed()
+        );
     }
 
     #[test]
