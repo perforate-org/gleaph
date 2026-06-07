@@ -26,6 +26,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 thread_local! {
     static LABELED_LEAF_RELOCATE_IN_PROGRESS: Cell<bool> = const { Cell::new(false) };
+    static LABELED_REBALANCE_RESOLVE_IN_PROGRESS: Cell<bool> = const { Cell::new(false) };
+    static LABELED_REBALANCE_LEAF_RELOCATED: Cell<bool> = const { Cell::new(false) };
 }
 
 struct LabeledLeafRelocateGuard;
@@ -40,6 +42,21 @@ impl LabeledLeafRelocateGuard {
 impl Drop for LabeledLeafRelocateGuard {
     fn drop(&mut self) {
         LABELED_LEAF_RELOCATE_IN_PROGRESS.with(|flag| flag.set(false));
+    }
+}
+
+struct LabeledRebalanceResolveGuard;
+
+impl LabeledRebalanceResolveGuard {
+    fn new() -> Self {
+        LABELED_REBALANCE_RESOLVE_IN_PROGRESS.with(|flag| flag.set(true));
+        Self
+    }
+}
+
+impl Drop for LabeledRebalanceResolveGuard {
+    fn drop(&mut self) {
+        LABELED_REBALANCE_RESOLVE_IN_PROGRESS.with(|flag| flag.set(false));
     }
 }
 
@@ -196,8 +213,65 @@ where
         Ok(intervals)
     }
 
-    /// Resolves edge-slab base for a growing vertex span: in-leaf pin, leaf relocate, or
-    /// (unpinned only) tail append at `elem_capacity`.
+    fn tail_append_labeled_edge_base(&self, new_alloc: u32) -> Result<u64, LabeledOperationError> {
+        let start = self.edges.header().elem_capacity;
+        let end = crate::slab_index::checked_add_slot_exclusive_end(start, u64::from(new_alloc))
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        self.edges
+            .set_elem_capacity(end)
+            .map_err(LabeledOperationError::from)?;
+        Ok(start)
+    }
+
+    /// Resolves edge-slab base for [`rebalance_vertex_edge_span`]: in-leaf pin, one leaf
+    /// relocate, or (unpinned / relocate-internal only) tail append at `elem_capacity`.
+    fn labeled_edge_base_from_first_bucket(
+        &self,
+        src: VertexId,
+    ) -> Result<u64, LabeledOperationError> {
+        let vertex = self.vertices.get(src);
+        let buckets = self.read_vertex_label_buckets(&vertex)?;
+        buckets
+            .first()
+            .map(|bucket| bucket.edge_start())
+            .ok_or(LabeledOperationError::from(
+                LaraOperationError::CollectAllocationOverflow,
+            ))
+    }
+
+    pub(super) fn resolve_labeled_edge_base_for_rebalance(
+        &self,
+        src: VertexId,
+        new_alloc: u32,
+    ) -> Result<u64, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        if let Some(base) = self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc) {
+            return Ok(base);
+        }
+        if LABELED_REBALANCE_RESOLVE_IN_PROGRESS.with(|flag| flag.get())
+            || LABELED_LEAF_RELOCATE_IN_PROGRESS.with(|flag| flag.get())
+        {
+            if self.labeled_leaf_physical_range(src).is_some() {
+                return self.labeled_edge_base_from_first_bucket(src);
+            }
+            return self.tail_append_labeled_edge_base(new_alloc);
+        }
+        let _resolve_guard = LabeledRebalanceResolveGuard::new();
+        if self.labeled_leaf_physical_range(src).is_some() {
+            self.relocate_labeled_leaf_physical_block(src)?;
+            LABELED_REBALANCE_LEAF_RELOCATED.with(|flag| flag.set(true));
+            if let Some(base) = self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc) {
+                return Ok(base);
+            }
+            return self.labeled_edge_base_from_first_bucket(src);
+        }
+        self.tail_append_labeled_edge_base(new_alloc)
+    }
+
+    /// Resolves edge-slab base for [`rewrite_vertex_edge_span`]: in-leaf pin, leaf relocate
+    /// (with growth retries), or (unpinned / relocate-internal only) tail append.
     pub(super) fn resolve_labeled_edge_base_for_growth(
         &self,
         src: VertexId,
@@ -210,27 +284,21 @@ where
             return Ok(base);
         }
         if self.labeled_leaf_physical_range(src).is_some() {
-            if !LABELED_LEAF_RELOCATE_IN_PROGRESS.with(|flag| flag.get()) {
-                for _ in 0..8 {
-                    if let Some(base) =
-                        self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc)
-                    {
-                        return Ok(base);
-                    }
-                    self.relocate_labeled_leaf_physical_block(src)?;
-                }
-                return Err(LabeledOperationError::from(
-                    LaraOperationError::CollectAllocationOverflow,
-                ));
+            if LABELED_LEAF_RELOCATE_IN_PROGRESS.with(|flag| flag.get()) {
+                return self.tail_append_labeled_edge_base(new_alloc);
             }
+            for _ in 0..4 {
+                if let Some(base) = self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc)
+                {
+                    return Ok(base);
+                }
+                self.relocate_labeled_leaf_physical_block(src)?;
+            }
+            return Err(LabeledOperationError::from(
+                LaraOperationError::CollectAllocationOverflow,
+            ));
         }
-        let start = self.edges.header().elem_capacity;
-        let end = crate::slab_index::checked_add_slot_exclusive_end(start, u64::from(new_alloc))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        self.edges
-            .set_elem_capacity(end)
-            .map_err(LabeledOperationError::from)?;
-        Ok(start)
+        self.tail_append_labeled_edge_base(new_alloc)
     }
 
     pub(super) fn release_labeled_leaf_physical_footprint(
@@ -643,6 +711,7 @@ where
             && !self.vertex_edge_span_relocates_within_pinned_leaf(
                 src, old_base, old_alloc, new_base, new_alloc,
             )
+            && self.labeled_edge_footprint_in_current_leaf_pin(src, old_base, old_alloc)
         {
             self.release_vertex_edge_span_footprint(old_base, old_alloc, &buckets)?;
         }
@@ -748,10 +817,36 @@ where
                 !vertex.is_default_edge_labeled() && vertex.degree() > 0
             })
             .count() as u64;
-        let new_len = old_len
-            .saturating_mul(2)
+        let mut resident_geometry = 0u64;
+        let mut label_bucket_rows = 0u64;
+        for vid_u in start_vid..end_vid {
+            let vertex = self.vertices.get(VertexId::from(vid_u));
+            if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
+                continue;
+            }
+            label_bucket_rows = label_bucket_rows.saturating_add(u64::from(vertex.degree()));
+            let buckets = self.read_vertex_label_buckets(&vertex)?;
+            let mut resident_slots = 0u32;
+            for bucket in &buckets {
+                resident_slots = resident_slots
+                    .checked_add(bucket.stored_slots.max(bucket.degree()))
+                    .ok_or(LaraOperationError::RowDegreeOverflow)?;
+            }
+            resident_geometry = resident_geometry.saturating_add(u64::from(resident_slots));
+        }
+        let interior_slack = label_bucket_rows
+            .saturating_add(active_vertices)
+            .saturating_add(u64::from(DEFAULT_SEGMENT_SIZE));
+        let block_len = super::leaf_pin::labeled_leaf_physical_block_len(seg);
+        let raw_len = resident_geometry
+            .saturating_add(interior_slack)
+            .saturating_add(u64::from(DEFAULT_SEGMENT_SIZE))
             .max(used.saturating_add(active_vertices))
             .max(old_len.saturating_add(1));
+        let new_len = raw_len
+            .div_ceil(block_len)
+            .saturating_mul(block_len)
+            .max(block_len);
 
         let grew_in_place = self.try_expand_labeled_leaf_in_place(old_start, old_len, new_len)?;
         let new_start = if grew_in_place {
@@ -1321,7 +1416,7 @@ where
         let min_required = resident_slots
             .checked_add(preferred_extra)
             .ok_or(LaraOperationError::RowDegreeOverflow)?;
-        let new_alloc = if force_slack_grow && old_alloc >= min_required && old_alloc > 0 {
+        let mut new_alloc = if force_slack_grow && old_alloc >= min_required && old_alloc > 0 {
             let base = old_alloc.max(min_required);
             let gap = DEFAULT_SEGMENT_SIZE.max(base / 8);
             base.saturating_add(gap)
@@ -1332,27 +1427,33 @@ where
             let gap = DEFAULT_SEGMENT_SIZE.max(base / 8);
             base.saturating_add(gap)
         };
+        new_alloc = new_alloc.max(min_required);
+        if self.labeled_leaf_physical_range(src).is_some()
+            && min_required > self.labeled_vertex_stored_slots_max_in_leaf(src)?
+            && !LABELED_LEAF_RELOCATE_IN_PROGRESS.with(|flag| flag.get())
+        {
+            self.relocate_labeled_leaf_physical_block(src)?;
+        }
         let moved = old_alloc == 0 || new_alloc > old_alloc;
         let new_base = if new_alloc == 0 {
             0
         } else if moved {
-            if let Some(in_leaf) = self.try_labeled_vertex_edge_base_in_pinned_leaf(src, new_alloc)
-            {
-                in_leaf
-            } else {
-                let start = self.edges.header().elem_capacity;
-                let end = match checked_add_slot_index(start, u64::from(new_alloc)) {
-                    Some(end) => end,
-                    None => return Err(LaraOperationError::CollectAllocationOverflow.into()),
-                };
-                self.edges
-                    .set_elem_capacity(end)
-                    .map_err(LabeledOperationError::from)?;
-                start
-            }
+            self.resolve_labeled_edge_base_for_rebalance(src, new_alloc)?
         } else {
             old_base
         };
+        if LABELED_REBALANCE_LEAF_RELOCATED.with(|flag| flag.replace(false))
+            && self.labeled_leaf_physical_range(src).is_some()
+        {
+            // Relocate slide already moved edge bytes; skip the redundant copy loop.
+            let max_fit = self.labeled_vertex_stored_slots_max_in_leaf(src)?;
+            let capped_alloc = new_alloc.min(max_fit);
+            self.vertices
+                .set(src, &vertex.with_stored_slots(capped_alloc));
+            let d_total = i64::from(capped_alloc) - i64::from(old_alloc);
+            self.bump_vertex_edge_span_total_delta(src, d_total)?;
+            return Ok(());
+        }
         let preferred = preferred_bucket.map(|index| index as usize);
         let positions = Self::calculate_label_edge_span_positions_by_resident_slots(
             new_base,
@@ -1387,6 +1488,7 @@ where
             && !self.vertex_edge_span_relocates_within_pinned_leaf(
                 src, old_base, old_alloc, new_base, new_alloc,
             )
+            && self.labeled_edge_footprint_in_current_leaf_pin(src, old_base, old_alloc)
         {
             self.release_vertex_edge_span_footprint(old_base, old_alloc, &buckets)?;
         }
@@ -2203,6 +2305,11 @@ mod tests {
                 )
                 .unwrap_or_else(|e| panic!("label_b edge_i={edge_i}: {e:?}"));
         }
+    }
+
+    #[test]
+    fn mixed_label_hub_50_labels_1000_edges_each() {
+        build_mixed_label_hub(50, 1000);
     }
 
     #[test]

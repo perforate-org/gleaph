@@ -274,6 +274,14 @@ where
         if self.try_place_new_bucket_edge_span(src, &vertex, slot, bucket_index)? {
             return Ok(());
         }
+        if self.labeled_leaf_physical_range(src).is_some() {
+            let buckets = self.read_vertex_label_buckets(&vertex)?;
+            if buckets.iter().any(|bucket| bucket.overflow_log_head() >= 0) {
+                self.rebalance_edge_log_vertex_for_labeled(src, true)?;
+            } else if vertex.degree() > 1 {
+                self.rebalance_vertex_edge_span_light(src, true)?;
+            }
+        }
         self.rebalance_vertex_edge_span(src, Some(bucket_index), 1, true)?;
         let vertex = self.vertices.get(src);
         let slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
@@ -518,12 +526,14 @@ mod tests {
         let graph = test_graph();
         let vid = VertexId::from(0);
         let cap_before = graph.edges().header().elem_capacity;
+        let anchor = BucketLabelKey::from_raw(99);
         graph
-            .insert_edge(vid, BucketLabelKey::from_raw(99), TestEdge { target: 999 })
+            .insert_edge(vid, anchor, TestEdge { target: 999 })
             .unwrap();
         let cap_after_pin = graph.edges().header().elem_capacity;
         assert!(graph.labeled_leaf_physical_range(vid).is_some());
-        let road = BucketLabelKey::from_raw(2);
+        // Growth label must sort after `anchor` so bucket layout stays in pinned-leaf order.
+        let road = BucketLabelKey::from_raw(100);
         for target in 0..128u32 {
             graph.insert_edge(vid, road, TestEdge { target }).unwrap();
         }
@@ -531,12 +541,16 @@ mod tests {
         let block_len = labeled_leaf_physical_block_len(graph.edges().header().segment_size);
         if cap_after > cap_after_pin {
             let delta = cap_after.saturating_sub(cap_after_pin);
-            assert!(
-                delta >= block_len,
-                "elem_capacity should grow only via leaf block allocation, not per-vertex tail"
+            assert_eq!(
+                delta % block_len,
+                0,
+                "elem_capacity should grow only via block-aligned leaf allocation, not per-vertex tail (delta={delta}, block_len={block_len})"
             );
         }
         assert!(cap_after >= cap_before);
+        graph
+            .assert_labeled_buckets_within_leaf_physical(vid)
+            .unwrap();
         let edges = graph.iter_edges_for_label(vid, road).unwrap();
         assert_eq!(edges.len(), 128);
         assert_eq!(edges[0], TestEdge { target: 127 });
@@ -545,6 +559,7 @@ mod tests {
 
     #[test]
     fn labeled_insert_does_not_grow_elem_capacity_for_hub_growth() {
+        use super::super::leaf_pin::labeled_leaf_physical_block_len;
         let graph = LabeledLaraGraph::new(
             mem(),
             mem(),
@@ -591,14 +606,25 @@ mod tests {
                     .unwrap_or_else(|e| panic!("label_idx={label_idx} edge_i={edge_i}: {e:?}"));
             }
         }
-        assert!(graph.edges().header().elem_capacity >= cap_after_pin);
+        let cap_final = graph.edges().header().elem_capacity;
+        let block_len = labeled_leaf_physical_block_len(graph.edges().header().segment_size);
+        if cap_final > cap_after_pin {
+            let delta = cap_final.saturating_sub(cap_after_pin);
+            assert_eq!(
+                delta % block_len,
+                0,
+                "hub growth must not tail-append; elem_capacity delta must be block-aligned (delta={delta}, block_len={block_len})"
+            );
+        }
+        graph
+            .assert_labeled_buckets_within_leaf_physical(hub)
+            .unwrap();
     }
 
     #[test]
     fn labeled_no_vertex_edge_span_rewrite_on_routine_insert() {
         use super::super::compact::REWRITE_VERTEX_EDGE_SPAN_CALLS;
         use std::sync::atomic::Ordering;
-        let rewrites_before = REWRITE_VERTEX_EDGE_SPAN_CALLS.load(Ordering::SeqCst);
         let graph = test_graph();
         let vid = VertexId::from(0);
         let road = BucketLabelKey::from_raw(2);
@@ -609,6 +635,7 @@ mod tests {
                 TestEdge { target: 999 },
             )
             .unwrap();
+        let rewrites_before = REWRITE_VERTEX_EDGE_SPAN_CALLS.load(Ordering::SeqCst);
         for target in 0..64u32 {
             graph.insert_edge(vid, road, TestEdge { target }).unwrap();
         }

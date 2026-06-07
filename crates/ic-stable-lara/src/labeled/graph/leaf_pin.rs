@@ -145,6 +145,30 @@ where
         if end <= leaf_end { Some(base) } else { None }
     }
 
+    /// Maximum `stored_slots` for `vid` from its first bucket base through leaf block end.
+    pub(super) fn labeled_vertex_stored_slots_max_in_leaf(
+        &self,
+        vid: VertexId,
+    ) -> Result<u32, LabeledOperationError> {
+        let (leaf_start, leaf_len) = self
+            .labeled_leaf_physical_range(vid)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let leaf_end = checked_add_slot_index(leaf_start, leaf_len)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let vertex = self.vertices.get(vid);
+        let base = if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
+            self.ensure_labeled_leaf_edge_physical_pin(vid)?
+        } else {
+            let buckets = self.read_vertex_label_buckets(&vertex)?;
+            buckets
+                .first()
+                .map(|bucket| bucket.edge_start())
+                .unwrap_or(self.ensure_labeled_leaf_edge_physical_pin(vid)?)
+        };
+        let fit = leaf_end.saturating_sub(base);
+        u32::try_from(fit).map_err(|_| LaraOperationError::CollectAllocationOverflow.into())
+    }
+
     pub(super) fn try_expand_labeled_leaf_in_place(
         &self,
         old_start: u64,
@@ -190,6 +214,28 @@ where
         self.edges
             .bump_vertex_segment_counts(vid, 0, d_total)
             .map_err(LabeledOperationError::from)
+    }
+
+    /// `true` when `[start, start + len)` lies in the vertex's current pinned leaf block.
+    pub(super) fn labeled_edge_footprint_in_current_leaf_pin(
+        &self,
+        vid: VertexId,
+        start: u64,
+        len: u32,
+    ) -> bool {
+        let (leaf_start, leaf_len) = match self.labeled_leaf_physical_range(vid) {
+            Some(range) => range,
+            None => return false,
+        };
+        let leaf_end = match checked_add_slot_index(leaf_start, leaf_len) {
+            Some(end) => end,
+            None => return false,
+        };
+        let end = match checked_add_slot_index(start, u64::from(len)) {
+            Some(end) => end,
+            None => return false,
+        };
+        start >= leaf_start && end <= leaf_end
     }
 
     /// `true` when both the old and new vertex edge spans lie inside the pinned leaf block.

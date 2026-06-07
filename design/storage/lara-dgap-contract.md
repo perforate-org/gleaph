@@ -80,10 +80,10 @@ LARA ports DGAP's split and adds **LARA structures** (not IC-specific; see [lara
 | Insert slack in window | CSR successor boundary | Same (`row_layout`) | Per-label slack inside vertex span | Implemented |
 | Overflow | Per-leaf log | Per-leaf log | Per-leaf log (shared) | Implemented |
 | Density trigger | PMA `actual/total` | Same (`counts_store`) | Leaf cascade (partial) | Partial |
-| Physical slide | `rebalance_weighted` in `[from,to)` | `rebalance_weighted_with_layout` | **Should** use leaf segment slide | **Not** for `VertexEdgeSpan` |
-| Physical growth | `resize_V1` | `elem_capacity` + segment relocate | Leaf resize / relocate | Per-vertex append at tail |
-| Retire old physical | (implicit in resize; no free list) | `FreeSpanStore` after relocate | Segment footprint only | Per-vertex `release_span` (interim) |
-| Multi-label bytes | N/A | N/A | DGAP vertex rows + buckets; **one leaf physical block** | Separate `stored_slots` span per vertex |
+| Physical slide | `rebalance_weighted` in `[from,to)` | `rebalance_weighted_with_layout` | Leaf weighted slide in pinned block | Implemented |
+| Physical growth | `resize_V1` | `elem_capacity` + segment relocate | Leaf resize / relocate | Leaf slide / relocate (no steady-state tail append) |
+| Retire old physical | (implicit in resize; no free list) | `FreeSpanStore` after relocate | Segment footprint only | One `release_span` per leaf relocate |
+| Multi-label bytes | N/A | N/A | DGAP vertex rows + buckets; **one leaf physical block** | Sub-ranges inside pinned leaf block |
 
 ---
 
@@ -120,14 +120,12 @@ Default-label bypass uses core `Vertex` row semantics directly.
 - When the leaf is dense, **`rebalance_weighted` / segment_slide** on the leaf window moves the whole block; overflow logs fold; old physical span → free list.
 - **No per-vertex `release_span` on routine growth.**
 
-**Today (interim — `labeled/graph/compact.rs`):**
+**Today (implemented — `labeled/graph/compact.rs`):**
 
-- `LabeledVertex.stored_slots` reserves a **per-vertex** `VertexEdgeSpan` on the global edge slab.
-- Relocate appends at `elem_capacity` and returns the old footprint via `release_vertex_edge_span_footprint` (monolithic or bucket+gap intervals).
-- Labeled maintenance uses **VertexEdgeSpan** as density unit, not PMA leaf (`labeled.rs`).
-- Documented as interim in `labeled.rs`; see commit fixing hub span-release cliff.
-
-This path is a **workaround** for proportional multi-label layout on a shared slab; it is **not** the long-term DGAP/LARA contract.
+- Labeled edge bytes are pinned to PMA leaf blocks (`span_meta.physical_start`).
+- Growth uses in-leaf weighted slide and leaf-block relocate; one `release_span` per relocate.
+- `LabeledVertex.stored_slots` tracks the per-vertex sub-range width inside the leaf block; routine insert does not tail-append at `elem_capacity`.
+- `rebalance_vertex_edge_span` and `rewrite_vertex_edge_span` resolve bases via leaf relocate when pinned; tail append is limited to unpinned rows and relocate-internal escape hatches.
 
 ---
 
@@ -138,7 +136,7 @@ This path is a **workaround** for proportional multi-label layout on a shared sl
 | Segment relocate / slide completes | **Yes** — release old `[physical_start, physical_start + total)` |
 | DGAP-style rebalance inside fixed segment capacity | **No** — slack stays inside segment assignment |
 | Per-vertex degree growth within window | **No** — append or tombstone reuse |
-| Labeled per-vertex VertexEdgeSpan relocate (interim) | **Yes (today only)** — retire per-vertex footprint |
+| Labeled leaf-block relocate (pinned) | **Yes** — one `release_span` per leaf relocate |
 
 ---
 

@@ -144,7 +144,7 @@ These must pass after every phase PR.
 
 ## Phase E — Remove per-vertex tail append for normal labeled rows
 
-**Status:** done (2026-06-05) — rewrite path uses leaf relocate; rebalance-on-new-bucket may still tail-append until fully retired.
+**Status:** done (2026-06-05) — rewrite and rebalance paths use leaf relocate when pinned; no steady-state per-vertex tail append.
 
 **Outcome:** Steady-state labeled insert does not append new physical span at `elem_capacity` for normal (non-bypass) rows; growth is leaf slide / leaf relocate only.
 
@@ -170,7 +170,8 @@ These must pass after every phase PR.
 
 - Phase E tests pass.
 - ADR 0001 migration complete; `labeled.rs` interim section updated to **implemented**.
-- Full regression + canbench XL mixed-label hub recorded.
+- Full regression green (`cargo test -p ic-stable-lara --lib`, 275 tests incl. `mixed_label_hub_50_labels_1000_edges_each`).
+- `expand_mixed_label_hub_10kscan_500match` and `expand_mixed_label_hub_50kscan_1kmatch` canbench pass (2026-06-07).
 
 ---
 

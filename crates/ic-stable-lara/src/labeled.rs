@@ -52,10 +52,11 @@
 //! per relocate). [`rewrite_vertex_edge_span`] resolves new bases via leaf relocate, not
 //! per-vertex tail append at `elem_capacity`.
 //!
-//! **Interim:** [`rebalance_vertex_edge_span`] during new-bucket placement may still tail
-//! append when the pinned leaf cannot absorb the reservation; leaf cascade maintenance
-//! re-homes bytes on the slide/relocate path. Default-label bypass rows still use the core
-//! vertex relocate semantics.
+//! [`rebalance_vertex_edge_span`] resolves new bases via in-leaf weighted slide and
+//! leaf-block relocate when pinned; after relocate, rebalance updates `stored_slots`
+//! metadata only (slide already committed bucket layout). Tail append remains only for
+//! unpinned rows and relocate-internal escape hatches. Default-label bypass rows still
+//! use the core vertex relocate semantics.
 //!
 //! Default-label **bypass** rows skip LabelBuckets: [`LabeledVertex::degree`] / [`LabeledVertex::stored_slots`]
 //! track logical and physical edge slots directly, and overflow uses metadata bits 4–11 as
