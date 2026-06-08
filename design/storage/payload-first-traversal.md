@@ -1,6 +1,6 @@
 # Payload-first labeled edge traversal
 
-**Status:** Partially Implemented (M1–M2 dense/sparse phase-2 edge read)
+**Status:** Partially Implemented (M1–M3 predicate expand on dense buckets)
 
 ## Purpose
 
@@ -175,7 +175,7 @@ Options for later:
 | M0 | Document + bench scopes (`labeled_visit_payload_value_batches`, `labeled_read_edge_slots`) | canbench pattern runs |
 | M1 | Dense `visit_out_payload_value_batches_for_label` | **Implemented** — `values.rs` batch order + parity tests |
 | M2 | `read_out_edge_slots_for_label` (dense bulk + sparse/log) | **Implemented** — slot/order parity + phase-1/2 integration test |
-| M3 | Facade wrappers + predicate expand switched | `expand` tests, `filtered_expand_*` |
+| M3 | Facade wrappers + predicate expand switched | **Implemented** — dense path uses phase 1+2; sparse falls back to combined batch |
 | M4 | Equality-index expand uses phase 2 only | `edge_equality` expand tests |
 | M5 | Weighted shortest: prepared decoder + optional zip refactor | `weighted_shortest_edge_cost_cache` canbench |
 | M6 | Sparse payload-first (if needed) | skewed-hub benches |
