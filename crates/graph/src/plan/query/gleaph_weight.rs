@@ -12,13 +12,34 @@ use gleaph_gql_planner::plan::{
 };
 use gleaph_graph_kernel::entry::{
     DecodedEdgePayload, EdgePayloadProfileError, PreparedEdgePayloadDecoder, PreparedWeightDecoder,
-    WeightProfilePrepareError, decode_edge_payload,
+    WeightDecodeError, WeightProfilePrepareError, decode_edge_payload,
 };
 
 use crate::facade::{EdgeHandle, GraphStore, catalog_edge_label_from_wire};
 use crate::gql_execution_context::GqlExecutionContext;
 
 use super::error::PlanQueryError;
+
+/// Decodes a traversal edge's stored bytes using a prepared decoder from query setup.
+pub(crate) fn decode_traversal_edge_weight_prepared(
+    decoder: &PreparedWeightDecoder,
+    payload_len: usize,
+    payload_bytes: &[u8],
+) -> Result<f32, PlanQueryError> {
+    if payload_len != payload_bytes.len() {
+        return Err(PlanQueryError::GleaphWeight {
+            message: format!(
+                "edge payload length mismatch: binding reports {payload_len} bytes, slice has {}",
+                payload_bytes.len()
+            ),
+        });
+    }
+    decoder
+        .decode(payload_bytes)
+        .map_err(|e: WeightDecodeError| PlanQueryError::GleaphWeight {
+            message: format!("edge payload decode failed: {e}"),
+        })
+}
 
 /// Decodes a traversal edge's stored bytes into a non-negative `f32` weight.
 pub(crate) fn decode_traversal_edge_weight(

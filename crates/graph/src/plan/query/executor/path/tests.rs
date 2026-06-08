@@ -1420,7 +1420,7 @@ fn stale_mid_diamond_shortest_expand_hop_costs_are_5_10_and_1() {
     )
     .expect("decoders")
     .expect("table");
-    let _decoder = decoders.get("e").expect("edge decoder");
+    let decoder = decoders.get("e").expect("edge decoder");
     let prep = ShortestFixedLabelExpand::new(EdgeDirection::PointingRight, road).expect("prep");
     let mut from_s = Vec::new();
     prep.expand_into(
@@ -1435,7 +1435,7 @@ fn stale_mid_diamond_shortest_expand_hop_costs_are_5_10_and_1() {
     .expect("from s");
     let mut hop_costs = Vec::new();
     for (edge_dst, binding) in from_s {
-        let hop = decode_direct_gleaph_weight_hop_cost(&store, binding).expect("hop");
+        let hop = decode_direct_gleaph_weight_hop_cost(decoder, binding).expect("hop");
         hop_costs.push((
             u32::from(match edge_dst {
                 ExpandDst::Local(v) => v,
@@ -1492,7 +1492,7 @@ fn stale_mid_diamond_shortest_expand_hop_costs_are_5_10_and_1() {
         &[1, 0],
         "binding payload_bytes for detour->mid"
     );
-    let hop = decode_direct_gleaph_weight_hop_cost(&store, binding).expect("detour hop");
+    let hop = decode_direct_gleaph_weight_hop_cost(decoder, binding).expect("detour hop");
     assert!(
         matches!(hop.order_key, WeightedCostOrderKey::Float64(v) if (v - 1.0).abs() < f64::EPSILON),
         "detour->mid hop cost, got {:?}",

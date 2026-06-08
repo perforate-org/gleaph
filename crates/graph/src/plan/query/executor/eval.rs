@@ -56,7 +56,7 @@ pub(crate) fn eval_sort_expr(
 }
 
 fn try_eval_gleaph_weight(
-    store: &GraphStore,
+    _store: &GraphStore,
     decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
     name: &ObjectName,
     args: &[Expr],
@@ -85,7 +85,7 @@ fn try_eval_gleaph_weight(
             message: "GLEAPH.WEIGHT argument must be an edge variable".into(),
         });
     };
-    let _decoder = map
+    let decoder = map
         .get(&edge_var)
         .ok_or_else(|| PlanQueryError::GleaphWeight {
             message: format!(
@@ -100,9 +100,8 @@ fn try_eval_gleaph_weight(
     match binding {
         PlanBinding::Value(Value::Null) => Ok(Some(Value::Null)),
         PlanBinding::Edge(edge) => {
-            let w = super::super::gleaph_weight::decode_traversal_edge_weight(
-                store,
-                edge.handle,
+            let w = super::super::gleaph_weight::decode_traversal_edge_weight_prepared(
+                decoder,
                 edge.payload_len(),
                 edge.payload_bytes_slice(),
             )?;

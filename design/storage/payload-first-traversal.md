@@ -1,6 +1,6 @@
 # Payload-first labeled edge traversal
 
-**Status:** Partially Implemented (M1–M4 equality-index forward expand)
+**Status:** Partially Implemented (M1–M5 weighted shortest prepared decode)
 
 ## Purpose
 
@@ -177,7 +177,7 @@ Options for later:
 | M2 | `read_out_edge_slots_for_label` (dense bulk + sparse/log) | **Implemented** — slot/order parity + phase-1/2 integration test |
 | M3 | Facade wrappers + predicate expand switched | **Implemented** — dense path uses phase 1+2; sparse falls back to combined batch |
 | M4 | Equality-index expand uses phase 2 only | **Implemented** — forward (`PointingRight`); reverse/undirected keep full-scan fallback |
-| M5 | Weighted shortest: prepared decoder + optional zip refactor | `weighted_shortest_edge_cost_cache` canbench |
+| M5 | Weighted shortest: prepared decoder on relax hot path | **Implemented** — `PreparedWeightDecoder::decode`; optional zip refactor deferred |
 | M6 | Sparse payload-first (if needed) | skewed-hub benches |
 
 **Backward compatibility:** combined `LabeledEdgePayloadBatch` API remains; adapter implemented in terms of phases 1+2.

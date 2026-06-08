@@ -468,7 +468,9 @@ pub(crate) fn weighted_shortest_paths_between(
             } else {
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _scope = bench_scope("weighted_shortest_hop_cost_decode_direct");
-                decode_direct_gleaph_weight_hop_cost(store, edge_binding.clone())?
+                let decoder = direct_gleaph_weight_decoder
+                    .expect("direct GLEAPH.WEIGHT path requires prepared decoder");
+                decode_direct_gleaph_weight_hop_cost(decoder, edge_binding.clone())?
             };
             let next_cost = entry.cost.checked_add(&hop_cost)?;
             if let Some(ref min) = found_min_cost
@@ -514,7 +516,6 @@ fn eval_shortest_hop_cost(
     gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
 ) -> Result<WeightedCost, PlanQueryError> {
     if let Some(cost) = eval_direct_gleaph_weight_hop_cost(
-        store,
         expr,
         edge_var,
         edge_binding.clone(),
@@ -537,16 +538,17 @@ fn eval_shortest_hop_cost(
 }
 
 fn eval_direct_gleaph_weight_hop_cost(
-    store: &GraphStore,
     expr: &Expr,
     edge_var: &str,
     edge_binding: EdgeBinding,
     gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
 ) -> Result<Option<WeightedCost>, PlanQueryError> {
-    if direct_gleaph_weight_hop_cost_decoder(expr, edge_var, gleaph_weight_decoders)?.is_none() {
+    let Some(decoder) =
+        direct_gleaph_weight_hop_cost_decoder(expr, edge_var, gleaph_weight_decoders)?
+    else {
         return Ok(None);
-    }
-    decode_direct_gleaph_weight_hop_cost(store, edge_binding).map(Some)
+    };
+    decode_direct_gleaph_weight_hop_cost(decoder, edge_binding).map(Some)
 }
 
 fn direct_gleaph_weight_hop_cost_decoder<'a>(
@@ -585,12 +587,11 @@ fn direct_gleaph_weight_hop_cost_decoder<'a>(
 }
 
 pub(crate) fn decode_direct_gleaph_weight_hop_cost(
-    store: &GraphStore,
+    decoder: &PreparedWeightDecoder,
     edge_binding: EdgeBinding,
 ) -> Result<WeightedCost, PlanQueryError> {
-    let weight = gleaph_weight::decode_traversal_edge_weight(
-        store,
-        edge_binding.handle,
+    let weight = gleaph_weight::decode_traversal_edge_weight_prepared(
+        decoder,
         edge_binding.payload_len(),
         edge_binding.payload_bytes_slice(),
     )?;

@@ -99,6 +99,33 @@ impl EdgeWeightProfile {
     }
 }
 
+fn read_weight_u16(bytes: &[u8]) -> u16 {
+    let mut buf = [0u8; 2];
+    let len = bytes.len().min(2);
+    buf[..len].copy_from_slice(&bytes[..len]);
+    u16::from_le_bytes(buf)
+}
+
+impl PreparedWeightDecoder {
+    /// Decodes stored edge-payload bytes into a validated non-negative finite `f32` weight.
+    pub fn decode(&self, bytes: &[u8]) -> Result<f32, WeightDecodeError> {
+        use half::f16;
+        let v = match self {
+            Self::RawU16 => read_weight_u16(bytes) as f32,
+            Self::Linear { min, scale } => min + scale * (read_weight_u16(bytes) as f32),
+            Self::Log { min_ln, scale } => (min_ln + scale * (read_weight_u16(bytes) as f32)).exp(),
+            Self::Binary16 => f16::from_le_bytes(read_weight_u16(bytes).to_le_bytes()).to_f32(),
+        };
+        if !v.is_finite() {
+            return Err(WeightDecodeError::NonFinite);
+        }
+        if v < 0.0 {
+            return Err(WeightDecodeError::Negative);
+        }
+        Ok(v)
+    }
+}
+
 impl Storable for EdgeWeightProfile {
     const BOUND: Bound = Bound::Bounded {
         max_size: 256,
@@ -130,6 +157,16 @@ mod tests {
         let payload_profile = EdgePayloadProfile::from(profile.clone());
         let decoder = payload_profile.prepare().expect("prepare");
         decode_edge_weight(&decoder, bytes).expect("decode")
+    }
+
+    #[test]
+    fn prepared_decoder_raw_u16_round_trip() {
+        let decoder = PreparedWeightDecoder::RawU16;
+        assert_eq!(decoder.decode(&0u16.to_le_bytes()).expect("decode"), 0.0);
+        assert_eq!(
+            decoder.decode(&65535u16.to_le_bytes()).expect("decode"),
+            65535.0
+        );
     }
 
     #[test]
