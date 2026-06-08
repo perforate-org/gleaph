@@ -11,7 +11,7 @@ use gleaph_gql_planner::plan::{
 use gleaph_graph_kernel::entry::EdgeLabelId;
 use ic_stable_lara::VertexId;
 
-use super::super::bindings::edge_bindings_along_var_len_path;
+use super::super::bindings::{edge_bindings_along_var_len_path, vertices_along_var_len_path};
 use super::super::context::ExecuteCtx;
 use super::{
     ExpandDst, edge_binding_matches_label_expr, expand_candidates_for_expand_op_into,
@@ -62,6 +62,8 @@ pub(crate) async fn execute_var_len_expand(
     var_len: &VarLenSpec,
     dst_filter: &[Expr],
     emit_edge_binding: bool,
+    near_group_var: Option<&Str>,
+    far_group_var: Option<&Str>,
     indexed_edge_equality: Option<&(Str, ScanValue)>,
     edge_payload_predicate: Option<&EdgePayloadPredicate>,
     edge_vector_predicate: Option<&EdgeVectorPredicate>,
@@ -106,6 +108,8 @@ pub(crate) async fn execute_var_len_expand(
             var_len,
             dst_filter,
             emit_edge_binding,
+            near_group_var,
+            far_group_var,
             ctx.parameters,
             indexed_edge_equality,
             edge_payload_predicate,
@@ -133,6 +137,8 @@ pub(crate) fn collect_var_len_expand_rows(
     var_len: &VarLenSpec,
     dst_filter: &[Expr],
     emit_edge_binding: bool,
+    near_group_var: Option<&Str>,
+    far_group_var: Option<&Str>,
     parameters: &BTreeMap<String, Value>,
     indexed_edge_equality: Option<&(Str, ScanValue)>,
     edge_payload_predicate: Option<&EdgePayloadPredicate>,
@@ -158,6 +164,8 @@ pub(crate) fn collect_var_len_expand_rows(
     let mut head = 0usize;
     let mut candidates = Vec::new();
     let edge_key = emit_edge_binding.then(|| edge.to_string());
+    let near_key = near_group_var.map(|v| v.to_string());
+    let far_key = far_group_var.map(|v| v.to_string());
     let dst_key = dst.to_string();
 
     while head < queue.len() {
@@ -172,6 +180,8 @@ pub(crate) fn collect_var_len_expand_rows(
                     store,
                     row,
                     edge_key.as_deref(),
+                    near_key.as_deref(),
+                    far_key.as_deref(),
                     dst_key.as_str(),
                     edge_dst,
                     &states,
@@ -233,6 +243,8 @@ fn build_var_len_row(
     store: &crate::facade::GraphStore,
     row: &PlanRow,
     edge_key: Option<&str>,
+    near_key: Option<&str>,
+    far_key: Option<&str>,
     dst_key: &str,
     dst: ExpandDst,
     states: &[VarLenSearchNode],
@@ -251,6 +263,28 @@ fn build_var_len_row(
         );
         let _ = edge_property_projection;
         updates.push((edge_key, PlanBinding::EdgeGroup(edges)));
+    }
+    if let Some(near_key) = near_key {
+        let vertices = vertices_along_var_len_path(
+            states,
+            state_idx,
+            |state| state.current,
+            |state| state.edge.is_some(),
+            |state| state.previous,
+            true,
+        );
+        updates.push((near_key, PlanBinding::VertexGroup(vertices)));
+    }
+    if let Some(far_key) = far_key {
+        let vertices = vertices_along_var_len_path(
+            states,
+            state_idx,
+            |state| state.current,
+            |state| state.edge.is_some(),
+            |state| state.previous,
+            false,
+        );
+        updates.push((far_key, PlanBinding::VertexGroup(vertices)));
     }
     Ok(row.fork(updates))
 }

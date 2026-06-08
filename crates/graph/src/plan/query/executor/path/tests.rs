@@ -1356,7 +1356,10 @@ fn weighted_shortest_union_label_expr_prefers_lower_cost_label() {
         .insert_vertex_named(["WgtUnionDst"], [("name", Value::Text("cheap".into()))])
         .expect("insert cheap target");
     let _expensive_target = store
-        .insert_vertex_named(["WgtUnionExpDst"], [("name", Value::Text("expensive".into()))])
+        .insert_vertex_named(
+            ["WgtUnionExpDst"],
+            [("name", Value::Text("expensive".into()))],
+        )
         .expect("insert expensive target");
     let knows = crate::test_labels::edge_label_id_for_name("WgtUnionKnows");
     let likes = crate::test_labels::edge_label_id_for_name("WgtUnionLikes");

@@ -90,6 +90,8 @@ pub enum PlanBinding {
     Edge(EdgeBinding),
     /// Edges along a variable-length expand (`{min,max}` quantifier), in hop order.
     EdgeGroup(std::sync::Arc<[EdgeBinding]>),
+    /// Vertices along a variable-length expand hop sequence (near or far group), in hop order.
+    VertexGroup(std::sync::Arc<[VertexId]>),
     Value(Value),
     /// Shortest-path walk materialized to [`Value::Path`] only in [`binding_to_value`] / expression eval.
     Path(PathBinding),

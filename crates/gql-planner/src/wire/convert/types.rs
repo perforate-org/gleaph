@@ -69,6 +69,8 @@ pub enum PlanOpWire {
         dst_property_projection: Option<Vec<String>>,
         hop_aux_binding: Option<String>,
         emit_edge_binding: bool,
+        near_group_var: Option<String>,
+        far_group_var: Option<String>,
     },
     ExpandFilter {
         src: String,
@@ -86,6 +88,8 @@ pub enum PlanOpWire {
         dst_property_projection: Option<Vec<String>>,
         hop_aux_binding: Option<String>,
         emit_edge_binding: bool,
+        near_group_var: Option<String>,
+        far_group_var: Option<String>,
     },
     ShortestPath {
         src: String,

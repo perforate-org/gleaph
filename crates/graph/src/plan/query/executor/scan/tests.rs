@@ -1444,6 +1444,8 @@ fn indexed_expand_limit_offset_skips_only_matching_edges() {
             dst_property_projection: None,
             hop_aux_binding: None,
             emit_edge_binding: true,
+            near_group_var: None,
+            far_group_var: None,
         },
         PlanOp::Project {
             columns: vec![project(prop("b", "name"), "name")],

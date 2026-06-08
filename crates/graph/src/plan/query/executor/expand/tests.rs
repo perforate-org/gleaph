@@ -288,6 +288,8 @@ fn union_label_expr_edge_payload_predicate_fuses_per_label() {
             dst_property_projection: None,
             hop_aux_binding: None,
             emit_edge_binding: true,
+            near_group_var: None,
+            far_group_var: None,
         },
         PlanOp::Project {
             columns: vec![project(var("b"), "b")],
@@ -359,6 +361,8 @@ fn wildcard_label_expr_edge_payload_predicate_fuses_via_catalog_fallback() {
             dst_property_projection: None,
             hop_aux_binding: None,
             emit_edge_binding: true,
+            near_group_var: None,
+            far_group_var: None,
         },
         PlanOp::Project {
             columns: vec![project(var("b"), "b")],
@@ -431,6 +435,8 @@ fn not_label_expr_edge_payload_predicate_fuses_via_catalog_fallback() {
             dst_property_projection: None,
             hop_aux_binding: None,
             emit_edge_binding: true,
+            near_group_var: None,
+            far_group_var: None,
         },
         PlanOp::Project {
             columns: vec![project(var("b"), "b")],
@@ -586,6 +592,8 @@ fn directed_expand_projects_endpoint_and_edge_properties() {
             dst_property_projection: None,
             hop_aux_binding: None,
             emit_edge_binding: true,
+            near_group_var: None,
+            far_group_var: None,
         },
         PlanOp::Project {
             columns: vec![
@@ -652,6 +660,8 @@ fn reverse_expand_resolves_edge_properties_through_alias() {
             dst_property_projection: None,
             hop_aux_binding: None,
             emit_edge_binding: true,
+            near_group_var: None,
+            far_group_var: None,
         },
         PlanOp::Project {
             columns: vec![project(prop("e", "since"), "since")],
@@ -706,6 +716,8 @@ fn undirected_expand_from_noncanonical_endpoint_resolves_edge_properties_through
             dst_property_projection: None,
             hop_aux_binding: None,
             emit_edge_binding: true,
+            near_group_var: None,
+            far_group_var: None,
         },
         PlanOp::Project {
             columns: vec![project(prop("e", "since"), "since")],
@@ -902,6 +914,8 @@ fn expand_filter_applies_destination_predicate() {
             dst_property_projection: None,
             hop_aux_binding: None,
             emit_edge_binding: true,
+            near_group_var: None,
+            far_group_var: None,
         },
         PlanOp::Project {
             columns: vec![project(prop("b", "age"), "age")],
@@ -956,6 +970,8 @@ fn expand_indexed_edge_equality_filters_candidates() {
             dst_property_projection: None,
             hop_aux_binding: None,
             emit_edge_binding: true,
+            near_group_var: None,
+            far_group_var: None,
         },
         PlanOp::Project {
             columns: vec![project(var("b"), "b")],
@@ -1033,6 +1049,8 @@ fn indexed_edge_equality_expand_return_gleaph_weight() {
             dst_property_projection: None,
             hop_aux_binding: None,
             emit_edge_binding: true,
+            near_group_var: None,
+            far_group_var: None,
         },
         PlanOp::Project {
             columns: vec![project(gleaph_weight, "w")],
@@ -1080,6 +1098,8 @@ fn expand_applies_dst_property_projection_for_property_return() {
             dst_property_projection: Some(Rc::from([Str::from("uid")])),
             hop_aux_binding: None,
             emit_edge_binding: false,
+            near_group_var: None,
+            far_group_var: None,
         },
         PlanOp::Project {
             columns: vec![
@@ -1141,6 +1161,8 @@ fn return_star_projects_vertex_and_edge_records() {
             dst_property_projection: None,
             hop_aux_binding: None,
             emit_edge_binding: true,
+            near_group_var: None,
+            far_group_var: None,
         },
         PlanOp::Project {
             columns: vec![],
@@ -1489,6 +1511,61 @@ fn gql_var_len_return_sum_gleaph_weight_implicit_aggregate() {
 }
 
 #[test]
+fn gql_quantified_subpath_binds_node_and_edge_groups() {
+    let store = GraphStore::new();
+    let a = store
+        .insert_vertex_named(["QtyHopA"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    let b = store
+        .insert_vertex_named(["QtyHopMid"], Vec::<(&str, Value)>::new())
+        .expect("b");
+    let c = store
+        .insert_vertex_named(["QtyHopC"], Vec::<(&str, Value)>::new())
+        .expect("c");
+    let dead_end = store
+        .insert_vertex_named(["QtyHopDead"], Vec::<(&str, Value)>::new())
+        .expect("dead");
+    store
+        .insert_directed_edge_named(a, b, Some("QtyHopRoad"), Vec::<(&str, Value)>::new())
+        .expect("a->b");
+    store
+        .insert_directed_edge_named(b, c, Some("QtyHopRoad"), Vec::<(&str, Value)>::new())
+        .expect("b->c");
+    store
+        .insert_directed_edge_named(a, dead_end, Some("QtyHopRoad"), Vec::<(&str, Value)>::new())
+        .expect("a->dead");
+
+    let plan = plan_gql(
+        "MATCH (a:QtyHopA)((u)-[e:QtyHopRoad]->(v)){2,2}(c:QtyHopC) \
+         RETURN CARDINALITY(u) AS u_hops, CARDINALITY(v) AS v_hops, CARDINALITY(e) AS e_hops",
+    );
+    let group_expand = plan.ops.iter().find_map(|op| match op {
+        PlanOp::Expand {
+            near_group_var,
+            far_group_var,
+            var_len,
+            ..
+        } if var_len.is_some() => Some((near_group_var.clone(), far_group_var.clone())),
+        _ => None,
+    });
+    assert_eq!(
+        group_expand,
+        Some((Some("u".into()), Some("v".into()))),
+        "quantified subpath should plan var_len expand with node group vars: {:?}",
+        plan.ops
+    );
+
+    let result = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("quantified subpath node groups");
+
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(result.rows[0].get("u_hops"), Some(&Value::Int64(2)));
+    assert_eq!(result.rows[0].get("v_hops"), Some(&Value::Int64(2)));
+    assert_eq!(result.rows[0].get("e_hops"), Some(&Value::Int64(2)));
+}
+
+#[test]
 fn gql_var_len_where_gleaph_weight_filters_on_last_hop_edge() {
     let store = GraphStore::new();
     use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
@@ -1590,6 +1667,8 @@ fn var_len_edge_payload_predicate_fuses_at_each_hop() {
             dst_property_projection: None,
             hop_aux_binding: None,
             emit_edge_binding: true,
+            near_group_var: None,
+            far_group_var: None,
         },
         PlanOp::Project {
             columns: vec![project(var("c"), "c")],
@@ -1943,6 +2022,8 @@ fn vector_dst_only_expand_filter_keeps_projection_fast_path_semantics() {
             dst_property_projection: Some(vec!["name".into()].into()),
             hop_aux_binding: None,
             emit_edge_binding: false,
+            near_group_var: None,
+            far_group_var: None,
         },
         PlanOp::Project {
             columns: vec![project(prop("b", "name"), "name")],
@@ -2177,6 +2258,8 @@ fn expand_plan_edge_payload_predicate_filters_candidates() {
             dst_property_projection: None,
             hop_aux_binding: None,
             emit_edge_binding: true,
+            near_group_var: None,
+            far_group_var: None,
         },
         PlanOp::Project {
             columns: vec![project(var("b"), "b")],

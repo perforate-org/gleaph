@@ -79,6 +79,8 @@ fn large_feed_page_plan() -> PhysicalPlan {
             dst_property_projection: None,
             hop_aux_binding: None,
             emit_edge_binding: false,
+            near_group_var: None,
+            far_group_var: None,
         },
         PlanOp::Project {
             columns: vec![project(var("post"), "post")],
@@ -173,6 +175,8 @@ fn large_friends_of_friends_plan() -> PhysicalPlan {
             dst_property_projection: None,
             hop_aux_binding: None,
             emit_edge_binding: false,
+            near_group_var: None,
+            far_group_var: None,
         },
         PlanOp::Expand {
             src: "friend".into(),
@@ -189,6 +193,8 @@ fn large_friends_of_friends_plan() -> PhysicalPlan {
             dst_property_projection: None,
             hop_aux_binding: None,
             emit_edge_binding: false,
+            near_group_var: None,
+            far_group_var: None,
         },
         PlanOp::Project {
             columns: vec![project(var("candidate"), "candidate")],

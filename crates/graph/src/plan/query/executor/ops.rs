@@ -544,6 +544,8 @@ pub(crate) fn execute_ops_from<'a>(
                     dst_property_projection,
                     hop_aux_binding,
                     emit_edge_binding,
+                    near_group_var,
+                    far_group_var,
                 } => {
                     if let Some(bounds) = var_len {
                         ensure_var_len_expand(
@@ -567,6 +569,8 @@ pub(crate) fn execute_ops_from<'a>(
                             bounds,
                             &[],
                             *emit_edge_binding,
+                            near_group_var.as_ref(),
+                            far_group_var.as_ref(),
                             indexed_edge_equality.as_ref(),
                             edge_payload_predicate.as_ref(),
                             edge_vector_predicate.as_ref(),
@@ -620,6 +624,8 @@ pub(crate) fn execute_ops_from<'a>(
                     dst_property_projection,
                     hop_aux_binding,
                     emit_edge_binding,
+                    near_group_var,
+                    far_group_var,
                 } => {
                     if let Some(bounds) = var_len {
                         ensure_var_len_expand(
@@ -643,6 +649,8 @@ pub(crate) fn execute_ops_from<'a>(
                             bounds,
                             dst_filter,
                             *emit_edge_binding,
+                            near_group_var.as_ref(),
+                            far_group_var.as_ref(),
                             indexed_edge_equality.as_ref(),
                             edge_payload_predicate.as_ref(),
                             edge_vector_predicate.as_ref(),
@@ -1186,6 +1194,8 @@ mod tests {
             dst_property_projection: None,
             hop_aux_binding: None,
             emit_edge_binding: true,
+            near_group_var: None,
+            far_group_var: None,
         };
         let plan = plan(vec![
             PlanOp::NodeScan {

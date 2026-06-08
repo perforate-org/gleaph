@@ -248,6 +248,13 @@ fn hash_plan_binding_for_join(binding: &PlanBinding, hasher: &mut RapidHasher<'_
                 hasher.write(edge.payload_bytes_slice());
             }
         }
+        PlanBinding::VertexGroup(vertices) => {
+            hasher.write_u8(7);
+            hasher.write_usize(vertices.len());
+            for vertex in vertices.iter() {
+                hasher.write_u32(u32::from(*vertex));
+            }
+        }
         PlanBinding::Value(v) => {
             hasher.write_u8(3);
             hash_value_for_join(v, hasher);
@@ -404,6 +411,8 @@ mod tests {
                         dst_property_projection: None,
                         hop_aux_binding: None,
                         emit_edge_binding: true,
+                        near_group_var: None,
+                        far_group_var: None,
                     },
                 ],
                 join_keys: vec!["a".into()],
@@ -743,6 +752,8 @@ mod tests {
                         dst_property_projection: None,
                         hop_aux_binding: None,
                         emit_edge_binding: true,
+                        near_group_var: None,
+                        far_group_var: None,
                     },
                 ],
                 join_keys: vec!["a".into()],

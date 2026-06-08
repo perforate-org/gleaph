@@ -302,6 +302,8 @@ fn stream_row_through_ops(
             dst_property_projection,
             hop_aux_binding,
             emit_edge_binding,
+            near_group_var,
+            far_group_var,
         } => {
             if let Some(bounds) = var_len {
                 ensure_var_len_expand(
@@ -328,6 +330,8 @@ fn stream_row_through_ops(
                     bounds,
                     &[],
                     *emit_edge_binding,
+                    near_group_var.as_ref(),
+                    far_group_var.as_ref(),
                     indexed_edge_equality.as_ref(),
                     edge_payload_predicate.as_ref(),
                     edge_vector_predicate.as_ref(),
@@ -386,6 +390,8 @@ fn stream_row_through_ops(
             dst_property_projection,
             hop_aux_binding,
             emit_edge_binding,
+            near_group_var,
+            far_group_var,
         } => {
             if let Some(bounds) = var_len {
                 ensure_var_len_expand(
@@ -412,6 +418,8 @@ fn stream_row_through_ops(
                     bounds,
                     dst_filter,
                     *emit_edge_binding,
+                    near_group_var.as_ref(),
+                    far_group_var.as_ref(),
                     indexed_edge_equality.as_ref(),
                     edge_payload_predicate.as_ref(),
                     edge_vector_predicate.as_ref(),
@@ -553,6 +561,8 @@ fn stream_var_len_expand(
     var_len: &gleaph_gql_planner::plan::VarLenSpec,
     dst_filter: &[Expr],
     emit_edge_binding: bool,
+    near_group_var: Option<&Str>,
+    far_group_var: Option<&Str>,
     indexed_edge_equality: Option<&(Str, ScanValue)>,
     edge_payload_predicate: Option<&EdgePayloadPredicate>,
     edge_vector_predicate: Option<&EdgeVectorPredicate>,
@@ -598,6 +608,8 @@ fn stream_var_len_expand(
         var_len,
         dst_filter,
         emit_edge_binding,
+        near_group_var,
+        far_group_var,
         parameters,
         indexed_edge_equality,
         edge_payload_predicate,

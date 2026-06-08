@@ -15,7 +15,7 @@ use ic_stable_lara::VertexId;
 use super::super::error::PlanQueryError;
 use super::super::row::PlanRow;
 use super::PlanBinding;
-use super::bindings::{EdgeBinding, edge_group_element_at_index};
+use super::bindings::{EdgeBinding, edge_group_element_at_index, vertex_group_element_at_index};
 use super::context::QueryExprEvaluator;
 use super::path::{
     edge_element_id_bytes, local_shard_id, path_binding_to_value, vertex_element_id_bytes,
@@ -85,6 +85,14 @@ fn eval_list_index_value(
                 .map(|edge| edge_to_value(evaluator.store, evaluator.resolved_labels, edge.clone()))
                 .transpose()?
                 .map_or(Ok(Value::Null), Ok),
+            Some(PlanBinding::VertexGroup(vertices)) => {
+                vertex_group_element_at_index(vertices, idx)
+                    .map(|vertex_id| {
+                        vertex_to_value(evaluator.store, evaluator.resolved_labels, vertex_id)
+                    })
+                    .transpose()?
+                    .map_or(Ok(Value::Null), Ok)
+            }
             Some(binding) => {
                 let value = binding_to_value(evaluator.store, evaluator.resolved_labels, binding)?;
                 list_index_into_value(&value, idx)
@@ -547,6 +555,9 @@ impl QueryExprEvaluator<'_> {
                         Some(PlanBinding::EdgeGroup(edges)) => {
                             return Ok(Value::Int64(edges.len() as i64));
                         }
+                        Some(PlanBinding::VertexGroup(vertices)) => {
+                            return Ok(Value::Int64(vertices.len() as i64));
+                        }
                         Some(binding) => {
                             let value =
                                 binding_to_value(self.store, self.resolved_labels, binding)?;
@@ -632,6 +643,7 @@ impl QueryExprEvaluator<'_> {
                 PlanBinding::Value(_)
                 | PlanBinding::Edge(_)
                 | PlanBinding::EdgeGroup(_)
+                | PlanBinding::VertexGroup(_)
                 | PlanBinding::Path(_)
                 | PlanBinding::RemoteVertex(_),
             ) => Ok(false),
@@ -662,6 +674,11 @@ impl QueryExprEvaluator<'_> {
                 Some(PlanBinding::EdgeGroup(_)) => Err(PlanQueryError::InvalidExpressionValue {
                     expression: format!(
                         "property access on group edge variable '{name}.{property}' requires element indexing"
+                    ),
+                }),
+                Some(PlanBinding::VertexGroup(_)) => Err(PlanQueryError::InvalidExpressionValue {
+                    expression: format!(
+                        "property access on group node variable '{name}.{property}' requires element indexing"
                     ),
                 }),
                 Some(PlanBinding::Value(value)) => Ok(record_property(value, property)),
@@ -699,6 +716,11 @@ impl QueryExprEvaluator<'_> {
                 Some(PlanBinding::EdgeGroup(_)) => Err(PlanQueryError::InvalidExpressionValue {
                     expression: format!(
                         "ELEMENT_ID({name}) on a group edge variable requires element indexing"
+                    ),
+                }),
+                Some(PlanBinding::VertexGroup(_)) => Err(PlanQueryError::InvalidExpressionValue {
+                    expression: format!(
+                        "ELEMENT_ID({name}) on a group node variable requires element indexing"
                     ),
                 }),
                 Some(PlanBinding::Value(Value::Null)) => Ok(Value::Null),
@@ -844,6 +866,13 @@ pub(crate) fn binding_to_value(
                 .iter()
                 .cloned()
                 .map(|edge| edge_to_value(store, resolved_labels, edge))
+                .collect::<Result<Vec<_>, _>>()?,
+        )),
+        PlanBinding::VertexGroup(vertices) => Ok(Value::List(
+            vertices
+                .iter()
+                .copied()
+                .map(|vertex_id| vertex_to_value(store, resolved_labels, vertex_id))
                 .collect::<Result<Vec<_>, _>>()?,
         )),
         PlanBinding::Value(value) => Ok(value.clone()),

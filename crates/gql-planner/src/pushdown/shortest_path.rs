@@ -523,6 +523,8 @@ mod tests {
             dst_property_projection: None,
             hop_aux_binding: None,
             emit_edge_binding: true,
+            near_group_var: None,
+            far_group_var: None,
         }
     }
 
@@ -543,6 +545,8 @@ mod tests {
             dst_property_projection: None,
             hop_aux_binding: None,
             emit_edge_binding: true,
+            near_group_var: None,
+            far_group_var: None,
         }
     }
 

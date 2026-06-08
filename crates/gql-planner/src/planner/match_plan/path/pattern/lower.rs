@@ -166,7 +166,64 @@ pub(super) enum PathElement {
         edge: EdgePattern,
         quantifier: Option<PathQuantifier>,
     },
-    Sub(PathPatternExpr),
+    Sub {
+        expr: PathPatternExpr,
+        quantifier: Option<PathQuantifier>,
+    },
+}
+
+/// Single-hop `(near)-[edge]->(far)` inside a quantified parenthesized subpath.
+pub(super) struct QuantifiedHopSubpath {
+    pub near_var: String,
+    pub edge: EdgePattern,
+    pub edge_var: String,
+    pub far_var: String,
+    pub var_len: VarLenSpec,
+}
+
+pub(super) fn try_parse_quantified_hop_subpath(
+    expr: &PathPatternExpr,
+    quantifier: &PathQuantifier,
+) -> Result<Option<QuantifiedHopSubpath>, PlannerError> {
+    let Some(var_len) = quantifier_to_var_len(quantifier) else {
+        return Ok(None);
+    };
+    let term = match expr {
+        PathPatternExpr::Term(t) => normalize_path_term(t)?,
+        _ => return Ok(None),
+    };
+    if term.factors.len() != 3 {
+        return Ok(None);
+    }
+    if term.factors.iter().any(|f| f.quantifier.is_some()) {
+        return Ok(None);
+    }
+    let PathPrimary::Node(n_near) = &term.factors[0].primary else {
+        return Ok(None);
+    };
+    let PathPrimary::Edge(edge) = &term.factors[1].primary else {
+        return Ok(None);
+    };
+    let PathPrimary::Node(n_far) = &term.factors[2].primary else {
+        return Ok(None);
+    };
+    let Some(near_var) = n_near.variable.clone() else {
+        return Ok(None);
+    };
+    let Some(far_var) = n_far.variable.clone() else {
+        return Ok(None);
+    };
+    let edge_var = edge
+        .variable
+        .clone()
+        .unwrap_or_else(|| "__anon_qhop_e".to_string());
+    Ok(Some(QuantifiedHopSubpath {
+        near_var,
+        edge: edge.clone(),
+        edge_var,
+        far_var,
+        var_len,
+    }))
 }
 
 fn node_emits_unlabeled_full_vertex_scan(

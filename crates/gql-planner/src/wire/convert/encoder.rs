@@ -138,6 +138,8 @@ impl Encoder {
                 dst_property_projection,
                 hop_aux_binding,
                 emit_edge_binding,
+                near_group_var,
+                far_group_var,
             } => PlanOpWire::Expand {
                 src: src.to_string(),
                 edge: edge.to_string(),
@@ -153,6 +155,8 @@ impl Encoder {
                 dst_property_projection: opt_str_slice(dst_property_projection),
                 hop_aux_binding: opt_str_opt(hop_aux_binding),
                 emit_edge_binding: *emit_edge_binding,
+                near_group_var: opt_str_opt(near_group_var),
+                far_group_var: opt_str_opt(far_group_var),
             },
             PlanOp::ExpandFilter {
                 src,
@@ -170,6 +174,8 @@ impl Encoder {
                 dst_property_projection,
                 hop_aux_binding,
                 emit_edge_binding,
+                near_group_var,
+                far_group_var,
             } => PlanOpWire::ExpandFilter {
                 src: src.to_string(),
                 edge: edge.to_string(),
@@ -186,6 +192,8 @@ impl Encoder {
                 dst_property_projection: opt_str_slice(dst_property_projection),
                 hop_aux_binding: opt_str_opt(hop_aux_binding),
                 emit_edge_binding: *emit_edge_binding,
+                near_group_var: opt_str_opt(near_group_var),
+                far_group_var: opt_str_opt(far_group_var),
             },
             PlanOp::ShortestPath {
                 src,

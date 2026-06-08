@@ -5,6 +5,7 @@ use std::sync::Arc;
 use gleaph_gql::types::EdgeDirection;
 use gleaph_graph_kernel::entry::{Edge, EdgeDirectedness, EdgeLabelId, EdgePayload};
 use gleaph_graph_kernel::federation::{FederatedExpandNeighbor, ShardId};
+use ic_stable_lara::VertexId;
 
 use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
 
@@ -88,6 +89,53 @@ pub(crate) fn edge_bindings_along_var_len_path<T>(
     }
     edges.reverse();
     edges.into()
+}
+
+/// Collect per-hop **near** or **far** endpoint vertices for a variable-length path.
+pub(crate) fn vertices_along_var_len_path<T>(
+    states: &[T],
+    state_idx: usize,
+    vertex_at: impl Fn(&T) -> VertexId,
+    hop_taken: impl Fn(&T) -> bool,
+    previous: impl Fn(&T) -> Option<usize>,
+    near_endpoints: bool,
+) -> Arc<[VertexId]> {
+    let mut vertices = Vec::new();
+    let mut idx = state_idx;
+    loop {
+        let state = &states[idx];
+        if hop_taken(state) {
+            let Some(prev) = previous(state) else {
+                break;
+            };
+            let v = if near_endpoints {
+                vertex_at(&states[prev])
+            } else {
+                vertex_at(state)
+            };
+            vertices.push(v);
+            idx = prev;
+        } else {
+            let Some(prev) = previous(state) else {
+                break;
+            };
+            idx = prev;
+        }
+    }
+    vertices.reverse();
+    vertices.into()
+}
+
+pub(crate) fn vertex_group_element_at_index(vertices: &[VertexId], index: i64) -> Option<VertexId> {
+    if vertices.is_empty() {
+        return None;
+    }
+    let len = vertices.len() as i64;
+    let idx = if index < 0 { len + index } else { index };
+    usize::try_from(idx)
+        .ok()
+        .and_then(|i| vertices.get(i))
+        .copied()
 }
 
 /// Resolve a list index for an edge group (`0` / `-1` supported).

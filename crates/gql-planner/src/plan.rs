@@ -370,6 +370,12 @@ pub enum PlanOp {
         hop_aux_binding: Option<Str>,
         /// When false, the executor skips binding the traversed `edge` variable.
         emit_edge_binding: bool,
+        /// When set with [`var_len`](Self::var_len), bind this node variable to the per-hop
+        /// **near** endpoint list (GQL group variable from a quantified subpath).
+        near_group_var: Option<Str>,
+        /// When set with [`var_len`](Self::var_len), bind this node variable to the per-hop
+        /// **far** endpoint list (GQL group variable from a quantified subpath).
+        far_group_var: Option<Str>,
     },
 
     /// Fused Expand + property filter on the destination node (EVFusion).
@@ -396,9 +402,11 @@ pub enum PlanOp {
         hop_aux_binding: Option<Str>,
         /// When false, the executor skips binding the traversed `edge` variable.
         emit_edge_binding: bool,
+        /// Same semantics as [`PlanOp::Expand::near_group_var`].
+        near_group_var: Option<Str>,
+        /// Same semantics as [`PlanOp::Expand::far_group_var`].
+        far_group_var: Option<Str>,
     },
-
-    /// Shortest-path search between already-bound `src` and bound `dst`.
     ///
     /// `edge` is set to the **last** hop’s edge along each emitted shortest path (or
     /// [`Value::Null`] scalar binding when the path has length zero and `min_hops == 0`).
