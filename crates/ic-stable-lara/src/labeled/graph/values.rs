@@ -1252,6 +1252,58 @@ mod tests {
     }
 
     #[test]
+    fn hybrid_out_edge_payload_batches_match_span_iter_for_48_overflow_edges() {
+        let graph = payload_test_graph_with_capacity(1 << 16);
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let road = BucketLabelKey::from_raw(2);
+        graph
+            .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, 2u16)
+            .unwrap();
+        for target in 1..=48u32 {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    VertexId::from(0),
+                    road,
+                    PayloadTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                )
+                .unwrap();
+        }
+
+        let vertex = graph.vertices().get(VertexId::from(0));
+        let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
+        let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
+        assert!(bucket.overflow_log_head() >= 0);
+        assert!(graph.bucket_slab_prefix_slots(VertexId::from(0), &bucket) > 0);
+
+        let mut from_span = Vec::new();
+        graph
+            .for_each_edges_for_label(VertexId::from(0), road, |edge| {
+                from_span.extend_from_slice(edge.edge_payload_bytes());
+            })
+            .unwrap();
+
+        let mut saw_dense_slab_batch = false;
+        let mut from_batches = Vec::new();
+        let mut batch_scratch = LabeledEdgePayloadBatchScratch::default();
+        graph
+            .visit_out_edge_payload_batches_for_label(
+                VertexId::from(0),
+                road,
+                OutEdgeOrder::Descending,
+                &mut batch_scratch,
+                |batch| {
+                    if batch.dense {
+                        saw_dense_slab_batch = true;
+                    }
+                    from_batches.extend_from_slice(batch.payload_bytes);
+                },
+            )
+            .unwrap();
+        assert!(saw_dense_slab_batch);
+        assert_eq!(from_span, from_batches);
+    }
+
+    #[test]
     fn sparse_payload_value_batches_are_no_op() {
         let graph = payload_test_graph_with_capacity(1 << 16);
         graph.push_vertex(LabeledVertex::default()).unwrap();
@@ -1681,10 +1733,7 @@ mod tests {
                 road,
                 OutEdgeOrder::Descending,
                 &mut scratch,
-                |batch| {
-                    assert!(!batch.dense);
-                    from_batches.extend_from_slice(batch.payload_bytes);
-                },
+                |batch| from_batches.extend_from_slice(batch.payload_bytes),
             )
             .unwrap();
         assert_eq!(from_batches, from_iter);

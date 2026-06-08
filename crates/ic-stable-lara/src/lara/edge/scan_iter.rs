@@ -436,6 +436,22 @@ pub struct OutEdgesIter<'a, E: CsrEdge, M: Memory> {
     pub(super) deleted_slab_offsets: Vec<u32>,
 }
 
+/// Descending overflow-log scan pieces for hybrid labeled payload batching.
+pub(crate) struct OutOverflowDescParts<E> {
+    pub log_entries: Vec<Option<E>>,
+    pub deleted_slab_offsets: Vec<u32>,
+    pub slab_slots: u32,
+    pub next_log_slot: u32,
+}
+
+/// Ascending overflow-log scan pieces for hybrid labeled payload batching.
+pub(crate) struct OutOverflowAscParts<E> {
+    pub inserted_log_entries: Vec<Option<E>>,
+    pub deleted_slab_offsets: Vec<u32>,
+    pub slab_slots: u32,
+    pub next_inserted_log_slot: u32,
+}
+
 impl<'a, E, M> OutEdgesIter<'a, E, M>
 where
     E: CsrEdge,
@@ -468,6 +484,15 @@ where
             &mut self.slab_chunk,
             slot_idx,
         )
+    }
+
+    pub(crate) fn into_overflow_desc_parts(self) -> OutOverflowDescParts<E> {
+        OutOverflowDescParts {
+            log_entries: self.log_entries,
+            deleted_slab_offsets: self.deleted_slab_offsets,
+            slab_slots: self.remaining_slab,
+            next_log_slot: self.next_log_slot,
+        }
     }
 }
 
@@ -696,6 +721,15 @@ where
             slot_idx,
             self.slab_slots,
         )
+    }
+
+    pub(crate) fn into_overflow_asc_parts(self) -> OutOverflowAscParts<E> {
+        OutOverflowAscParts {
+            inserted_log_entries: self.inserted_log_entries.collect(),
+            deleted_slab_offsets: self.deleted_slab_offsets,
+            slab_slots: self.slab_slots,
+            next_inserted_log_slot: self.next_inserted_log_slot,
+        }
     }
 }
 

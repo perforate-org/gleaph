@@ -101,6 +101,7 @@ mod visit_window;
 pub use error::InitError;
 pub(crate) use scan_iter::OutEdgeSlabIter;
 pub use scan_iter::{AscOutEdgesIter, OutEdgesIter};
+pub(crate) use scan_iter::{OutOverflowAscParts, OutOverflowDescParts};
 pub(crate) use targets::{
     DeleteTarget, EdgeLayout, InsertLocation, LOG_SRC_DEAD, LogEntryKind, decode_delete_target,
     decode_log_entry_kind, encode_delete_target,

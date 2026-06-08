@@ -1668,14 +1668,18 @@ mod bench_setup_tests {
             )
             .expect("hub payload batches");
 
-        let mut src_dense = None;
+        let mut src_slab_bulk = false;
         store
             .visit_directed_out_edge_payload_batches_for_label(
                 src,
                 road,
                 OutEdgeOrder::Descending,
                 &mut scratch,
-                |batch| src_dense = Some(batch.dense),
+                |batch| {
+                    if batch.dense {
+                        src_slab_bulk = true;
+                    }
+                },
             )
             .expect("src payload batches");
 
@@ -1684,10 +1688,9 @@ mod bench_setup_tests {
             Some(true),
             "hub bucket (24 live edges) should stay dense-eligible"
         );
-        assert_eq!(
-            src_dense,
-            Some(false),
-            "src bucket (48 parallel edges) should use sparse payload batch path"
+        assert!(
+            src_slab_bulk,
+            "src bucket (48 parallel edges) should bulk-read slab-prefix payload batches"
         );
     }
 
