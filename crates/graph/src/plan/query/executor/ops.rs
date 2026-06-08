@@ -567,6 +567,9 @@ pub(crate) fn execute_ops_from<'a>(
                             bounds,
                             &[],
                             *emit_edge_binding,
+                            indexed_edge_equality.as_ref(),
+                            edge_payload_predicate.as_ref(),
+                            edge_vector_predicate.as_ref(),
                             edge_property_projection.as_deref(),
                             dst_property_projection.as_deref(),
                         )
@@ -640,6 +643,9 @@ pub(crate) fn execute_ops_from<'a>(
                             bounds,
                             dst_filter,
                             *emit_edge_binding,
+                            indexed_edge_equality.as_ref(),
+                            edge_payload_predicate.as_ref(),
+                            edge_vector_predicate.as_ref(),
                             edge_property_projection.as_deref(),
                             dst_property_projection.as_deref(),
                         )

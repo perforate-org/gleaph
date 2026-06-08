@@ -5,14 +5,16 @@ use std::collections::BTreeMap;
 use gleaph_gql::Value;
 use gleaph_gql::ast::Expr;
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
-use gleaph_gql_planner::plan::{Str, VarLenSpec};
+use gleaph_gql_planner::plan::{
+    EdgePayloadPredicate, EdgeVectorPredicate, ScanValue, Str, VarLenSpec,
+};
 use gleaph_graph_kernel::entry::EdgeLabelId;
 use ic_stable_lara::VertexId;
 
 use super::super::context::ExecuteCtx;
 use super::{
-    ExpandDst, build_expanded_row, edge_binding_matches_label_expr, expand_candidates_into,
-    expand_dst_binding, expand_dst_matches_prebound_vertex,
+    ExpandDst, build_expanded_row, edge_binding_matches_label_expr,
+    expand_candidates_for_expand_op_into, expand_dst_binding, expand_dst_matches_prebound_vertex,
 };
 use crate::plan::query::error::PlanQueryError;
 use crate::plan::query::executor::bindings::EdgeBinding;
@@ -59,6 +61,9 @@ pub(crate) async fn execute_var_len_expand(
     var_len: &VarLenSpec,
     dst_filter: &[Expr],
     emit_edge_binding: bool,
+    indexed_edge_equality: Option<&(Str, ScanValue)>,
+    edge_payload_predicate: Option<&EdgePayloadPredicate>,
+    edge_vector_predicate: Option<&EdgeVectorPredicate>,
     edge_property_projection: Option<&[Str]>,
     dst_property_projection: Option<&[Str]>,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
@@ -100,6 +105,10 @@ pub(crate) async fn execute_var_len_expand(
             var_len,
             dst_filter,
             emit_edge_binding,
+            ctx.parameters,
+            indexed_edge_equality,
+            edge_payload_predicate,
+            edge_vector_predicate,
             edge_property_projection,
             dst_property_projection,
             &evaluator,
@@ -123,6 +132,10 @@ pub(crate) fn collect_var_len_expand_rows(
     var_len: &VarLenSpec,
     dst_filter: &[Expr],
     emit_edge_binding: bool,
+    parameters: &BTreeMap<String, Value>,
+    indexed_edge_equality: Option<&(Str, ScanValue)>,
+    edge_payload_predicate: Option<&EdgePayloadPredicate>,
+    edge_vector_predicate: Option<&EdgeVectorPredicate>,
     edge_property_projection: Option<&[Str]>,
     dst_property_projection: Option<&[Str]>,
     evaluator: &super::super::context::QueryExprEvaluator<'_>,
@@ -176,16 +189,18 @@ pub(crate) fn collect_var_len_expand_rows(
         }
 
         candidates.clear();
-        expand_candidates_into(
+        expand_candidates_for_expand_op_into(
             store,
+            execution,
             current,
             direction,
             label_id,
+            label_expr,
             EdgeSequenceOrder::Descending,
-            None,
-            None,
-            None,
-            &BTreeMap::new(),
+            indexed_edge_equality,
+            edge_payload_predicate,
+            edge_vector_predicate,
+            parameters,
             &mut candidates,
         )?;
         for (edge_dst, edge_binding) in candidates.iter().cloned() {

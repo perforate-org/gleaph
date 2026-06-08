@@ -1176,6 +1176,141 @@ fn gql_var_len_where_gleaph_weight_filters_on_last_hop_edge() {
 }
 
 #[test]
+fn var_len_edge_payload_predicate_fuses_at_each_hop() {
+    let store = GraphStore::new();
+    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    let a = store
+        .insert_vertex_named(["VarLenFusA"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    let b = store
+        .insert_vertex_named(["VarLenFusMid"], Vec::<(&str, Value)>::new())
+        .expect("b");
+    let c = store
+        .insert_vertex_named(["VarLenFusC"], Vec::<(&str, Value)>::new())
+        .expect("c");
+    let label_id = crate::test_labels::edge_label_id_for_name("VarLenFusRoad");
+    store
+        .install_edge_label_payload_profile_at_init(
+            label_id,
+            EdgePayloadProfile {
+                byte_width: 2,
+                encoding: EdgePayloadEncoding::WeightRawU16,
+            },
+        )
+        .unwrap();
+    store
+        .insert_directed_edge_with_payload_bytes(a, b, Some(label_id), &7u16.to_le_bytes())
+        .unwrap();
+    store
+        .insert_directed_edge_with_payload_bytes(b, c, Some(label_id), &5u16.to_le_bytes())
+        .unwrap();
+
+    let plan = plan(vec![
+        PlanOp::NodeScan {
+            variable: "a".into(),
+            label: Some("VarLenFusA".into()),
+            property_projection: None,
+        },
+        PlanOp::Expand {
+            src: "a".into(),
+            edge: "e".into(),
+            dst: "c".into(),
+            direction: EdgeDirection::PointingRight,
+            label: Some("VarLenFusRoad".into()),
+            label_expr: None,
+            var_len: Some(VarLenSpec {
+                min: 2,
+                max: Some(2),
+            }),
+            indexed_edge_equality: None,
+            edge_payload_predicate: Some(EdgePayloadPredicate {
+                op: CmpOp::Eq,
+                value: ScanValue::Literal(Value::Int64(5)),
+            }),
+            edge_vector_predicate: None,
+            edge_property_projection: None,
+            dst_property_projection: None,
+            hop_aux_binding: None,
+            emit_edge_binding: true,
+        },
+        PlanOp::Project {
+            columns: vec![project(var("c"), "c")],
+            distinct: false,
+        },
+    ]);
+    let result = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("var_len payload fusion");
+
+    assert_eq!(
+        result.rows.len(),
+        0,
+        "first hop weight 7 must be pruned by per-hop payload predicate"
+    );
+}
+
+#[test]
+fn gql_var_len_where_gleaph_weight_fuses_payload_predicate_per_hop() {
+    let store = GraphStore::new();
+    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    let a = store
+        .insert_vertex_named(["VarLenFusGqlA"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    let b = store
+        .insert_vertex_named(["VarLenFusGqlMid"], Vec::<(&str, Value)>::new())
+        .expect("b");
+    let c = store
+        .insert_vertex_named(["VarLenFusGqlC"], Vec::<(&str, Value)>::new())
+        .expect("c");
+    let label_id = crate::test_labels::edge_label_id_for_name("VarLenFusGqlRoad");
+    store
+        .install_edge_label_payload_profile_at_init(
+            label_id,
+            EdgePayloadProfile {
+                byte_width: 2,
+                encoding: EdgePayloadEncoding::WeightRawU16,
+            },
+        )
+        .unwrap();
+    store
+        .insert_directed_edge_with_payload_bytes(a, b, Some(label_id), &5u16.to_le_bytes())
+        .unwrap();
+    store
+        .insert_directed_edge_with_payload_bytes(b, c, Some(label_id), &5u16.to_le_bytes())
+        .unwrap();
+
+    let plan = plan_gql(
+        "MATCH (a:VarLenFusGqlA)-[e:VarLenFusGqlRoad]->{2,2}(c:VarLenFusGqlC) \
+         WHERE GLEAPH.WEIGHT(e) = 5 RETURN c",
+    );
+    let has_payload_fusion = plan.ops.iter().any(|op| {
+        matches!(
+            op,
+            PlanOp::Expand {
+                edge_payload_predicate: Some(_),
+                var_len: Some(_),
+                ..
+            } | PlanOp::ExpandFilter {
+                edge_payload_predicate: Some(_),
+                var_len: Some(_),
+                ..
+            }
+        )
+    });
+    assert!(
+        has_payload_fusion,
+        "planner should fuse GLEAPH.WEIGHT into var_len expand: {:?}",
+        plan.ops
+    );
+
+    let result = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("var_len gql payload fusion");
+
+    assert_eq!(result.rows.len(), 1);
+}
+
+#[test]
 fn gql_gleaph_weight_equality_uses_edge_payload_predicate_expand() {
     let store = GraphStore::new();
     use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
