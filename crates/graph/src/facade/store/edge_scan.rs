@@ -65,6 +65,70 @@ impl GraphStore {
         })
     }
 
+    pub(crate) fn visit_out_payload_value_batches_for_label<Visit>(
+        &self,
+        vertex_id: VertexId,
+        label: LaraLabelId,
+        order: OutEdgeOrder,
+        scratch: &mut ic_stable_lara::labeled::LabeledPayloadValueBatchScratch,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLabeledError>
+    where
+        Visit: for<'b> FnMut(ic_stable_lara::labeled::LabeledPayloadValueBatch<'b>),
+    {
+        GRAPH.with_borrow(|graph| {
+            graph.visit_out_payload_value_batches_for_label(vertex_id, label, order, scratch, visit)
+        })
+    }
+
+    pub(crate) fn visit_in_payload_value_batches_for_label<Visit>(
+        &self,
+        vertex_id: VertexId,
+        label: LaraLabelId,
+        order: OutEdgeOrder,
+        scratch: &mut ic_stable_lara::labeled::LabeledPayloadValueBatchScratch,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLabeledError>
+    where
+        Visit: for<'b> FnMut(ic_stable_lara::labeled::LabeledPayloadValueBatch<'b>),
+    {
+        GRAPH.with_borrow(|graph| {
+            graph.visit_in_payload_value_batches_for_label(vertex_id, label, order, scratch, visit)
+        })
+    }
+
+    pub(crate) fn read_out_edge_slots_for_label<Visit>(
+        &self,
+        vertex_id: VertexId,
+        label: LaraLabelId,
+        slots: &[u32],
+        order: OutEdgeOrder,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLabeledError>
+    where
+        Visit: FnMut(Edge),
+    {
+        GRAPH.with_borrow(|graph| {
+            graph.read_out_edge_slots_for_label(vertex_id, label, slots, order, visit)
+        })
+    }
+
+    pub(crate) fn read_in_edge_slots_for_label<Visit>(
+        &self,
+        vertex_id: VertexId,
+        label: LaraLabelId,
+        slots: &[u32],
+        order: OutEdgeOrder,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLabeledError>
+    where
+        Visit: FnMut(Edge),
+    {
+        GRAPH.with_borrow(|graph| {
+            graph.read_in_edge_slots_for_label(vertex_id, label, slots, order, visit)
+        })
+    }
+
     #[cfg(any(test, feature = "canbench"))]
     pub(crate) fn visit_directed_out_payload_value_batches_for_label<Visit>(
         &self,
@@ -77,17 +141,14 @@ impl GraphStore {
     where
         Visit: for<'b> FnMut(ic_stable_lara::labeled::LabeledPayloadValueBatch<'b>),
     {
-        GRAPH
-            .with_borrow(|graph| {
-                graph.visit_out_payload_value_batches_for_label(
-                    vertex_id,
-                    LaraLabelId::from_raw(label.pack(EdgeDirectedness::Directed).raw()),
-                    order,
-                    scratch,
-                    visit,
-                )
-            })
-            .map_err(GraphStoreError::from)
+        self.visit_out_payload_value_batches_for_label(
+            vertex_id,
+            LaraLabelId::from_raw(label.pack(EdgeDirectedness::Directed).raw()),
+            order,
+            scratch,
+            visit,
+        )
+        .map_err(GraphStoreError::from)
     }
 
     #[cfg(any(test, feature = "canbench"))]
@@ -102,17 +163,14 @@ impl GraphStore {
     where
         Visit: FnMut(Edge),
     {
-        GRAPH
-            .with_borrow(|graph| {
-                graph.read_out_edge_slots_for_label(
-                    vertex_id,
-                    LaraLabelId::from_raw(label.pack(EdgeDirectedness::Directed).raw()),
-                    slots,
-                    order,
-                    visit,
-                )
-            })
-            .map_err(GraphStoreError::from)
+        self.read_out_edge_slots_for_label(
+            vertex_id,
+            LaraLabelId::from_raw(label.pack(EdgeDirectedness::Directed).raw()),
+            slots,
+            order,
+            visit,
+        )
+        .map_err(GraphStoreError::from)
     }
 
     #[cfg(any(test, feature = "canbench"))]

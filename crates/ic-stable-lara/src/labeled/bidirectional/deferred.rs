@@ -1078,6 +1078,41 @@ where
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
+    /// Visits reverse outgoing payload bytes for one label in `order` (dense buckets only).
+    pub fn visit_in_payload_value_batches_for_label<Visit>(
+        &self,
+        dst: VertexId,
+        label_id: BucketLabelKey,
+        order: OutEdgeOrder,
+        scratch: &mut crate::labeled::LabeledPayloadValueBatchScratch,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLabeledError>
+    where
+        Visit: for<'b> FnMut(crate::labeled::LabeledPayloadValueBatch<'b>),
+    {
+        self.reverse
+            .visit_out_payload_value_batches_for_label(dst, label_id, order, scratch, visit)
+            .map_err(DeferredBidirectionalLabeledError::Reverse)
+    }
+
+    /// Reads reverse outgoing edge rows for the requested slot indices (topology only).
+    pub fn read_in_edge_slots_for_label<Visit>(
+        &self,
+        dst: VertexId,
+        label_id: BucketLabelKey,
+        slots: &[u32],
+        order: OutEdgeOrder,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLabeledError>
+    where
+        E: CsrEdgeTombstone,
+        Visit: FnMut(E),
+    {
+        self.reverse
+            .read_out_edge_slots_for_label(dst, label_id, slots, order, visit)
+            .map_err(DeferredBidirectionalLabeledError::Reverse)
+    }
+
     /// Visits reverse outgoing edges (incoming edges in the public graph view) and parallel value
     /// bytes for one label in `order`.
     pub fn visit_in_edge_payload_batches_for_label<Visit>(
