@@ -1,5 +1,7 @@
 //! Plan execution bindings: edge handles with stored payload bytes.
 
+use std::sync::Arc;
+
 use gleaph_gql::types::EdgeDirection;
 use gleaph_graph_kernel::entry::{Edge, EdgeDirectedness, EdgeLabelId, EdgePayload};
 use gleaph_graph_kernel::federation::{FederatedExpandNeighbor, ShardId};
@@ -63,6 +65,42 @@ pub(crate) fn edge_binding_for_federated_expand_hit(
     } else {
         Ok(EdgeBinding::from_federated_neighbor_hit(hit))
     }
+}
+
+/// Collect traversed edges for a variable-length path state, in hop order (first → last).
+pub(crate) fn edge_bindings_along_var_len_path<T>(
+    states: &[T],
+    state_idx: usize,
+    edge: impl Fn(&T) -> Option<&EdgeBinding>,
+    previous: impl Fn(&T) -> Option<usize>,
+) -> Arc<[EdgeBinding]> {
+    let mut edges = Vec::new();
+    let mut idx = state_idx;
+    loop {
+        let state = &states[idx];
+        if let Some(e) = edge(state) {
+            edges.push(e.clone());
+        }
+        let Some(prev) = previous(state) else {
+            break;
+        };
+        idx = prev;
+    }
+    edges.reverse();
+    edges.into()
+}
+
+/// Resolve a list index for an edge group (`0` / `-1` supported).
+pub(crate) fn edge_group_element_at_index(
+    edges: &[EdgeBinding],
+    index: i64,
+) -> Option<&EdgeBinding> {
+    if edges.is_empty() {
+        return None;
+    }
+    let len = edges.len() as i64;
+    let idx = if index < 0 { len + index } else { index };
+    usize::try_from(idx).ok().and_then(|i| edges.get(i))
 }
 
 pub(crate) fn federated_expand_label_id_raw(

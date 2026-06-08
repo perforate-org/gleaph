@@ -133,12 +133,52 @@ pub(crate) fn gleaph_weight_single_arg(args: &[Expr]) -> Option<&Expr> {
     }
 }
 
-pub(crate) fn gleaph_weight_arg_edge_var(expr: &Expr) -> Option<String> {
+/// How [`GLEAPH.WEIGHT`] names an edge in an expression.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum GleaphWeightEdgeRef {
+    /// Single-hop expand or shortest-path relax step.
+    SingletonVar(String),
+    /// Indexed element of a variable-length edge group (`e[-1]`, `e[0]`, …).
+    GroupElement { group_var: String, index: Box<Expr> },
+}
+
+pub(crate) fn gleaph_weight_edge_ref(expr: &Expr) -> Option<GleaphWeightEdgeRef> {
     match &expr.kind {
-        ExprKind::Paren(inner) => gleaph_weight_arg_edge_var(inner),
-        ExprKind::Variable(v) => Some(v.clone()),
+        ExprKind::Paren(inner) => gleaph_weight_edge_ref(inner),
+        ExprKind::Variable(v) => Some(GleaphWeightEdgeRef::SingletonVar(v.clone())),
+        ExprKind::ListIndex { list, index } => {
+            let ExprKind::Variable(v) = &list.kind else {
+                return None;
+            };
+            Some(GleaphWeightEdgeRef::GroupElement {
+                group_var: v.clone(),
+                index: index.clone(),
+            })
+        }
         _ => None,
     }
+}
+
+pub(crate) fn gleaph_weight_arg_edge_var(expr: &Expr) -> Option<String> {
+    match gleaph_weight_edge_ref(expr)? {
+        GleaphWeightEdgeRef::SingletonVar(v) => Some(v),
+        GleaphWeightEdgeRef::GroupElement { group_var, .. } => Some(group_var),
+    }
+}
+
+pub(crate) fn expand_produces_group_edge_var(ops: &[PlanOp], edge_var: &str) -> bool {
+    matches!(
+        first_edge_producer_for_var(ops, edge_var),
+        Some(
+            EdgeProducer::Expand {
+                var_len: Some(_),
+                ..
+            } | EdgeProducer::ExpandFilter {
+                var_len: Some(_),
+                ..
+            }
+        )
+    )
 }
 
 fn gleaph_weight_edge_var(expr: &Expr) -> Option<String> {
@@ -184,7 +224,6 @@ fn decoder_for_gleaph_weight_edge(
             indexed_edge_equality: _,
             hop_aux_binding,
         } => {
-            // Variable-length expand binds `edge_var` to the last traversed edge only.
             if hop_aux_binding.is_some() {
                 return Err(PlanQueryError::GleaphWeight {
                     message: format!(

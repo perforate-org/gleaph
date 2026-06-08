@@ -1312,7 +1312,7 @@ fn gql_union_label_expr_where_gleaph_weight_equality_fuses_and_filters() {
 }
 
 #[test]
-fn gql_var_len_return_gleaph_weight_decodes_last_hop_edge() {
+fn gql_var_len_scalar_gleaph_weight_is_rejected() {
     let store = GraphStore::new();
     use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
     let a = store
@@ -1344,12 +1344,98 @@ fn gql_var_len_return_gleaph_weight_decodes_last_hop_edge() {
     let plan = plan_gql(
         "MATCH (a:VarLenWgtA)-[e:VarLenWgtRoad]->{2,2}(c:VarLenWgtC) RETURN GLEAPH.WEIGHT(e) AS w",
     );
+    let err = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect_err("scalar gleaph weight on group edge var");
+    assert!(
+        err.to_string().contains("edge variable is a group")
+            || err.to_string().contains("binding is not an edge"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn gql_var_len_return_gleaph_weight_decodes_indexed_last_hop_edge() {
+    let store = GraphStore::new();
+    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    let a = store
+        .insert_vertex_named(["VarLenWgtA"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    let b = store
+        .insert_vertex_named(["VarLenWgtMid"], Vec::<(&str, Value)>::new())
+        .expect("b");
+    let c = store
+        .insert_vertex_named(["VarLenWgtC"], Vec::<(&str, Value)>::new())
+        .expect("c");
+    let label_id = crate::test_labels::edge_label_id_for_name("VarLenWgtRoad");
+    store
+        .install_edge_label_payload_profile_at_init(
+            label_id,
+            EdgePayloadProfile {
+                byte_width: 2,
+                encoding: EdgePayloadEncoding::WeightRawU16,
+            },
+        )
+        .unwrap();
+    store
+        .insert_directed_edge_with_payload_bytes(a, b, Some(label_id), &3u16.to_le_bytes())
+        .unwrap();
+    store
+        .insert_directed_edge_with_payload_bytes(b, c, Some(label_id), &7u16.to_le_bytes())
+        .unwrap();
+
+    let plan = plan_gql(
+        "MATCH (a:VarLenWgtA)-[e:VarLenWgtRoad]->{2,2}(c:VarLenWgtC) RETURN GLEAPH.WEIGHT(e[-1]) AS w",
+    );
     let result = store
         .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
         .expect("var_len gleaph weight return");
 
     assert_eq!(result.rows.len(), 1);
     assert_eq!(result.rows[0].get("w"), Some(&Value::Float32(7.0)));
+}
+
+#[test]
+fn gql_var_len_return_sum_gleaph_weight_over_edge_group() {
+    let store = GraphStore::new();
+    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    let a = store
+        .insert_vertex_named(["VarLenSumA"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    let b = store
+        .insert_vertex_named(["VarLenSumMid"], Vec::<(&str, Value)>::new())
+        .expect("b");
+    let c = store
+        .insert_vertex_named(["VarLenSumC"], Vec::<(&str, Value)>::new())
+        .expect("c");
+    let label_id = crate::test_labels::edge_label_id_for_name("VarLenSumRoad");
+    store
+        .install_edge_label_payload_profile_at_init(
+            label_id,
+            EdgePayloadProfile {
+                byte_width: 2,
+                encoding: EdgePayloadEncoding::WeightRawU16,
+            },
+        )
+        .unwrap();
+    store
+        .insert_directed_edge_with_payload_bytes(a, b, Some(label_id), &3u16.to_le_bytes())
+        .unwrap();
+    store
+        .insert_directed_edge_with_payload_bytes(b, c, Some(label_id), &7u16.to_le_bytes())
+        .unwrap();
+
+    let plan = plan_gql(
+        "MATCH (a:VarLenSumA)-[e:VarLenSumRoad]->{2,2}(c:VarLenSumC) \
+         LET total = SUM(GLEAPH.WEIGHT(e)) RETURN total, CARDINALITY(e) AS hops",
+    );
+    let result = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("var_len sum gleaph weight");
+
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(result.rows[0].get("total"), Some(&Value::Float32(10.0)));
+    assert_eq!(result.rows[0].get("hops"), Some(&Value::Int64(2)));
 }
 
 #[test]
@@ -1387,7 +1473,7 @@ fn gql_var_len_where_gleaph_weight_filters_on_last_hop_edge() {
 
     let plan = plan_gql(
         "MATCH (a:VarLenWgtEqA)-[e:VarLenWgtEqRoad]->{1,2}(c:VarLenWgtEqC) \
-         WHERE GLEAPH.WEIGHT(e) = 5 RETURN GLEAPH.WEIGHT(e) AS w",
+         WHERE GLEAPH.WEIGHT(e) = 5 RETURN GLEAPH.WEIGHT(e[-1]) AS w",
     );
     let result = store
         .execute_plan_query(&plan, &params(), GqlExecutionContext::default())

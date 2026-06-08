@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use gleaph_gql::Value;
-use gleaph_gql::ast::{CmpOp, Expr, ExprKind, ObjectName, TruthValue};
+use gleaph_gql::ast::{AggregateFunc, CmpOp, Expr, ExprKind, ObjectName, TruthValue};
 use gleaph_gql::types::LabelExpr;
 use gleaph_gql_planner::plan::{ProjectColumn, Str};
 use gleaph_graph_kernel::entry::{EdgeLabelId, EdgeSlotIndex, PreparedWeightDecoder, Vertex};
@@ -15,7 +15,7 @@ use ic_stable_lara::VertexId;
 use super::super::error::PlanQueryError;
 use super::super::row::PlanRow;
 use super::PlanBinding;
-use super::bindings::EdgeBinding;
+use super::bindings::{EdgeBinding, edge_group_element_at_index};
 use super::context::QueryExprEvaluator;
 use super::path::{
     edge_element_id_bytes, local_shard_id, path_binding_to_value, vertex_element_id_bytes,
@@ -55,13 +55,135 @@ pub(crate) fn eval_sort_expr(
     }
 }
 
+fn decode_gleaph_weight_for_edge_binding(
+    store: &GraphStore,
+    decoder: &PreparedWeightDecoder,
+    edge: &EdgeBinding,
+) -> Result<f32, PlanQueryError> {
+    super::super::gleaph_weight::decode_shortest_hop_cost_from_edge_binding(store, edge).or_else(
+        |_| {
+            super::super::gleaph_weight::decode_traversal_edge_weight_prepared(
+                decoder,
+                edge.payload_len(),
+                edge.payload_bytes_slice(),
+            )
+        },
+    )
+}
+
+fn eval_list_index_value(
+    evaluator: &QueryExprEvaluator<'_>,
+    row: &PlanRow,
+    list: &Expr,
+    index: &Expr,
+) -> Result<Value, PlanQueryError> {
+    if let ExprKind::Variable(name) = &list.kind {
+        let index_value = evaluator.eval_expr(row, index)?;
+        let idx = list_index_to_i64(&index_value)?;
+        return match row.get(name.as_str()) {
+            Some(PlanBinding::EdgeGroup(edges)) => edge_group_element_at_index(edges, idx)
+                .map(|edge| edge_to_value(evaluator.store, evaluator.resolved_labels, edge.clone()))
+                .transpose()?
+                .map_or(Ok(Value::Null), Ok),
+            Some(binding) => {
+                let value = binding_to_value(evaluator.store, evaluator.resolved_labels, binding)?;
+                list_index_into_value(&value, idx)
+            }
+            None => Err(PlanQueryError::MissingBinding {
+                variable: name.clone(),
+            }),
+        };
+    }
+    let list_value = evaluator.eval_expr(row, list)?;
+    let index_value = evaluator.eval_expr(row, index)?;
+    let idx = list_index_to_i64(&index_value)?;
+    list_index_into_value(&list_value, idx)
+}
+
+fn list_index_to_i64(value: &Value) -> Result<i64, PlanQueryError> {
+    match value {
+        Value::Int64(v) => Ok(*v),
+        Value::Int32(v) => Ok(i64::from(*v)),
+        Value::Uint64(v) => i64::try_from(*v).map_err(|_| PlanQueryError::InvalidExpressionValue {
+            expression: format!("list index out of range: {v}"),
+        }),
+        Value::Null => Err(PlanQueryError::InvalidExpressionValue {
+            expression: "list index is null".into(),
+        }),
+        other => Err(PlanQueryError::InvalidExpressionValue {
+            expression: format!("list index must be integral, got {other:?}"),
+        }),
+    }
+}
+
+fn list_index_into_value(list: &Value, index: i64) -> Result<Value, PlanQueryError> {
+    let Value::List(items) = list else {
+        return Err(PlanQueryError::InvalidExpressionValue {
+            expression: format!("list index requires a list, got {list:?}"),
+        });
+    };
+    if items.is_empty() {
+        return Ok(Value::Null);
+    }
+    let len = items.len() as i64;
+    let idx = if index < 0 { len + index } else { index };
+    Ok(items
+        .get(usize::try_from(idx).unwrap_or(items.len()))
+        .cloned()
+        .unwrap_or(Value::Null))
+}
+
+fn try_eval_horizontal_sum_gleaph_weight(
+    evaluator: &QueryExprEvaluator<'_>,
+    row: &PlanRow,
+    inner: &Expr,
+) -> Result<Option<Value>, PlanQueryError> {
+    let ExprKind::FunctionCall {
+        name,
+        args,
+        distinct,
+    } = &inner.kind
+    else {
+        return Ok(None);
+    };
+    if !super::super::gleaph_weight::is_gleaph_weight_call(name, *distinct)
+        || args.len() != 1
+        || *distinct
+    {
+        return Ok(None);
+    }
+    let Some(super::super::gleaph_weight::GleaphWeightEdgeRef::SingletonVar(group_var)) =
+        super::super::gleaph_weight::gleaph_weight_edge_ref(&args[0])
+    else {
+        return Ok(None);
+    };
+    let Some(PlanBinding::EdgeGroup(edges)) = row.get(group_var.as_str()) else {
+        return Ok(None);
+    };
+    let decoder = evaluator
+        .gleaph_weight_decoders
+        .as_ref()
+        .and_then(|map| map.get(&group_var))
+        .ok_or_else(|| PlanQueryError::GleaphWeight {
+            message: format!(
+                "SUM(GLEAPH.WEIGHT({group_var})): no prepared decoder for this edge variable"
+            ),
+        })?;
+    let mut sum = 0.0f32;
+    for edge in edges.iter() {
+        sum += decode_gleaph_weight_for_edge_binding(evaluator.store, decoder, edge)?;
+    }
+    Ok(Some(Value::Float32(sum)))
+}
+
 fn try_eval_gleaph_weight(
-    _store: &GraphStore,
+    store: &GraphStore,
     decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
     name: &ObjectName,
     args: &[Expr],
     distinct: bool,
     row: &PlanRow,
+    evaluator: &QueryExprEvaluator<'_>,
 ) -> Result<Option<Value>, PlanQueryError> {
     if !super::super::gleaph_weight::is_gleaph_weight_call(name, distinct) {
         return Ok(None);
@@ -80,41 +202,67 @@ fn try_eval_gleaph_weight(
             message: format!("GLEAPH.WEIGHT expects 1 argument, got {}", args.len()),
         });
     }
-    let Some(edge_var) = super::super::gleaph_weight::gleaph_weight_arg_edge_var(&args[0]) else {
+    let Some(edge_ref) = super::super::gleaph_weight::gleaph_weight_edge_ref(&args[0]) else {
         return Err(PlanQueryError::GleaphWeight {
-            message: "GLEAPH.WEIGHT argument must be an edge variable".into(),
+            message: "GLEAPH.WEIGHT argument must be an edge variable or indexed group element"
+                .into(),
         });
     };
-    let decoder = map
-        .get(&edge_var)
-        .ok_or_else(|| PlanQueryError::GleaphWeight {
-            message: format!(
-                "GLEAPH.WEIGHT({edge_var}): no prepared decoder for this edge variable"
-            ),
-        })?;
-    let binding = row
-        .get(edge_var.as_str())
-        .ok_or_else(|| PlanQueryError::MissingBinding {
-            variable: edge_var.clone(),
-        })?;
-    match binding {
-        PlanBinding::Value(Value::Null) => Ok(Some(Value::Null)),
-        PlanBinding::Edge(edge) => {
-            let w = super::super::gleaph_weight::decode_shortest_hop_cost_from_edge_binding(
-                _store, edge,
-            )
-            .or_else(|_| {
-                super::super::gleaph_weight::decode_traversal_edge_weight_prepared(
-                    decoder,
-                    edge.payload_len(),
-                    edge.payload_bytes_slice(),
-                )
-            })?;
+    match edge_ref {
+        super::super::gleaph_weight::GleaphWeightEdgeRef::SingletonVar(edge_var) => {
+            let decoder = map
+                .get(&edge_var)
+                .ok_or_else(|| PlanQueryError::GleaphWeight {
+                    message: format!(
+                        "GLEAPH.WEIGHT({edge_var}): no prepared decoder for this edge variable"
+                    ),
+                })?;
+            let binding =
+                row.get(edge_var.as_str())
+                    .ok_or_else(|| PlanQueryError::MissingBinding {
+                        variable: edge_var.clone(),
+                    })?;
+            match binding {
+                PlanBinding::Value(Value::Null) => Ok(Some(Value::Null)),
+                PlanBinding::Edge(edge) => {
+                    let w = decode_gleaph_weight_for_edge_binding(store, decoder, edge)?;
+                    Ok(Some(Value::Float32(w)))
+                }
+                PlanBinding::EdgeGroup(_) => Err(PlanQueryError::GleaphWeight {
+                    message: format!(
+                        "GLEAPH.WEIGHT({edge_var}): edge variable is a group; \
+                         use an element index such as GLEAPH.WEIGHT({edge_var}[-1]) \
+                         or SUM(GLEAPH.WEIGHT({edge_var}))"
+                    ),
+                }),
+                _ => Err(PlanQueryError::GleaphWeight {
+                    message: format!("GLEAPH.WEIGHT({edge_var}): binding is not an edge"),
+                }),
+            }
+        }
+        super::super::gleaph_weight::GleaphWeightEdgeRef::GroupElement { group_var, index } => {
+            let decoder = map
+                .get(&group_var)
+                .ok_or_else(|| PlanQueryError::GleaphWeight {
+                    message: format!(
+                        "GLEAPH.WEIGHT({group_var}[…]): no prepared decoder for this edge variable"
+                    ),
+                })?;
+            let Some(PlanBinding::EdgeGroup(edges)) = row.get(group_var.as_str()) else {
+                return Err(PlanQueryError::GleaphWeight {
+                    message: format!(
+                        "GLEAPH.WEIGHT({group_var}[…]): binding is not a variable-length edge group"
+                    ),
+                });
+            };
+            let index_value = evaluator.eval_expr(row, &index)?;
+            let idx = list_index_to_i64(&index_value)?;
+            let Some(edge) = edge_group_element_at_index(edges, idx) else {
+                return Ok(Some(Value::Null));
+            };
+            let w = decode_gleaph_weight_for_edge_binding(store, decoder, edge)?;
             Ok(Some(Value::Float32(w)))
         }
-        _ => Err(PlanQueryError::GleaphWeight {
-            message: format!("GLEAPH.WEIGHT({edge_var}): binding is not an edge"),
-        }),
     }
 }
 
@@ -367,13 +515,60 @@ impl QueryExprEvaluator<'_> {
                 .map(|(name, expr)| self.eval_expr(row, expr).map(|value| (name.clone(), value)))
                 .collect::<Result<Vec<_>, _>>()
                 .map(Value::Record),
-            ExprKind::Aggregate { .. } => {
+            ExprKind::Aggregate {
+                func,
+                expr: inner,
+                distinct,
+                filter,
+                ..
+            } => {
+                if *distinct || filter.is_some() {
+                    return Err(PlanQueryError::UnsupportedExpression {
+                        expression: "aggregate".to_owned(),
+                    });
+                }
+                if *func == AggregateFunc::Sum
+                    && let Some(inner) = inner
+                    && let Some(value) = try_eval_horizontal_sum_gleaph_weight(self, row, inner)?
+                {
+                    return Ok(value);
+                }
                 let Some(specs) = self.aggregate_specs else {
                     return Err(PlanQueryError::UnsupportedExpression {
                         expression: "aggregate".to_owned(),
                     });
                 };
                 super::super::aggregate::resolve_aggregate_from_row(row, expr, specs)
+            }
+            ExprKind::ListIndex { list, index } => eval_list_index_value(self, row, list, index),
+            ExprKind::Cardinality { expr, .. } => {
+                if let ExprKind::Variable(name) = &expr.kind {
+                    match row.get(name.as_str()) {
+                        Some(PlanBinding::EdgeGroup(edges)) => {
+                            return Ok(Value::Int64(edges.len() as i64));
+                        }
+                        Some(binding) => {
+                            let value =
+                                binding_to_value(self.store, self.resolved_labels, binding)?;
+                            if let Value::List(items) = value {
+                                return Ok(Value::Int64(items.len() as i64));
+                            }
+                        }
+                        None => {
+                            return Err(PlanQueryError::MissingBinding {
+                                variable: name.clone(),
+                            });
+                        }
+                    }
+                }
+                let value = self.eval_expr(row, expr)?;
+                match value {
+                    Value::List(items) => Ok(Value::Int64(items.len() as i64)),
+                    Value::Null => Ok(Value::Null),
+                    other => Err(PlanQueryError::InvalidExpressionValue {
+                        expression: format!("CARDINALITY expects a list, got {other:?}"),
+                    }),
+                }
             }
             ExprKind::FunctionCall {
                 name,
@@ -387,6 +582,7 @@ impl QueryExprEvaluator<'_> {
                     args,
                     *distinct,
                     row,
+                    self,
                 )? {
                     return Ok(v);
                 }
@@ -435,6 +631,7 @@ impl QueryExprEvaluator<'_> {
             Some(
                 PlanBinding::Value(_)
                 | PlanBinding::Edge(_)
+                | PlanBinding::EdgeGroup(_)
                 | PlanBinding::Path(_)
                 | PlanBinding::RemoteVertex(_),
             ) => Ok(false),
@@ -462,6 +659,11 @@ impl QueryExprEvaluator<'_> {
                     .property_id(property)
                     .and_then(|property_id| self.store.edge_property(edge.handle, property_id))
                     .map_or(Ok(Value::Null), Ok),
+                Some(PlanBinding::EdgeGroup(_)) => Err(PlanQueryError::InvalidExpressionValue {
+                    expression: format!(
+                        "property access on group edge variable '{name}.{property}' requires element indexing"
+                    ),
+                }),
                 Some(PlanBinding::Value(value)) => Ok(record_property(value, property)),
                 Some(PlanBinding::Path(pb)) => Ok(record_property(
                     &path_binding_to_value(self.store, pb),
@@ -494,6 +696,11 @@ impl QueryExprEvaluator<'_> {
                     edge.handle.owner_vertex_id,
                     EdgeSlotIndex::from_raw(edge.handle.slot_index),
                 ))),
+                Some(PlanBinding::EdgeGroup(_)) => Err(PlanQueryError::InvalidExpressionValue {
+                    expression: format!(
+                        "ELEMENT_ID({name}) on a group edge variable requires element indexing"
+                    ),
+                }),
                 Some(PlanBinding::Value(Value::Null)) => Ok(Value::Null),
                 Some(binding) => Err(PlanQueryError::InvalidExpressionValue {
                     expression: format!("ELEMENT_ID({name}) for {binding:?}"),
@@ -624,6 +831,13 @@ pub(crate) fn binding_to_value(
             ("remote".to_owned(), Value::Bool(true)),
         ])),
         PlanBinding::Edge(edge) => edge_to_value(store, resolved_labels, edge.clone()),
+        PlanBinding::EdgeGroup(edges) => Ok(Value::List(
+            edges
+                .iter()
+                .cloned()
+                .map(|edge| edge_to_value(store, resolved_labels, edge))
+                .collect::<Result<Vec<_>, _>>()?,
+        )),
         PlanBinding::Value(value) => Ok(value.clone()),
         PlanBinding::Path(pb) => Ok(path_binding_to_value(store, pb)),
     }

@@ -28,9 +28,9 @@ async-trait = "0.1"
 bitflags.workspace = true
 candid.workspace = true
 derive_more = { version = "2", features = ["display", "from", "into"] }
-gleaph-gql = { workspace = true, features = ["f128", "f256"] }
+gleaph-gql = { workspace = true, features = ["f128", "f256", "cypher"] }
 gleaph-gql-ic.workspace = true
-gleaph-gql-planner = { workspace = true, features = ["plan-wire"] }
+gleaph-gql-planner = { workspace = true, features = ["plan-wire", "cypher"] }
 gleaph-graph-prepared.workspace = true
 gleaph-graph-kernel.workspace = true
 half.workspace = true

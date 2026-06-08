@@ -238,6 +238,16 @@ fn hash_plan_binding_for_join(binding: &PlanBinding, hasher: &mut RapidHasher<'_
             hasher.write_u64(u64::try_from(e.payload_len()).unwrap_or(u64::MAX));
             hasher.write(e.payload_bytes_slice());
         }
+        PlanBinding::EdgeGroup(edges) => {
+            hasher.write_u8(6);
+            hasher.write_usize(edges.len());
+            for edge in edges.iter() {
+                hasher.write_u32(u32::from(edge.handle.owner_vertex_id));
+                hasher.write_u32(edge.handle.slot_index);
+                hasher.write_u64(u64::try_from(edge.payload_len()).unwrap_or(u64::MAX));
+                hasher.write(edge.payload_bytes_slice());
+            }
+        }
         PlanBinding::Value(v) => {
             hasher.write_u8(3);
             hash_value_for_join(v, hasher);

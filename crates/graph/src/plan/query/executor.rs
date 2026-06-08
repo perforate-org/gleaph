@@ -88,6 +88,8 @@ pub enum PlanBinding {
     /// Neighbor bound via a shard-local remote ref (logical id only on this shard).
     RemoteVertex(LogicalVertexId),
     Edge(EdgeBinding),
+    /// Edges along a variable-length expand (`{min,max}` quantifier), in hop order.
+    EdgeGroup(std::sync::Arc<[EdgeBinding]>),
     Value(Value),
     /// Shortest-path walk materialized to [`Value::Path`] only in [`binding_to_value`] / expression eval.
     Path(PathBinding),

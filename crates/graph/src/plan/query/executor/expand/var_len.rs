@@ -11,10 +11,11 @@ use gleaph_gql_planner::plan::{
 use gleaph_graph_kernel::entry::EdgeLabelId;
 use ic_stable_lara::VertexId;
 
+use super::super::bindings::edge_bindings_along_var_len_path;
 use super::super::context::ExecuteCtx;
 use super::{
-    ExpandDst, build_expanded_row, edge_binding_matches_label_expr,
-    expand_candidates_for_expand_op_into, expand_dst_binding, expand_dst_matches_prebound_vertex,
+    ExpandDst, edge_binding_matches_label_expr, expand_candidates_for_expand_op_into,
+    expand_dst_binding, expand_dst_matches_prebound_vertex,
 };
 use crate::plan::query::error::PlanQueryError;
 use crate::plan::query::executor::bindings::EdgeBinding;
@@ -164,7 +165,6 @@ pub(crate) fn collect_var_len_expand_rows(
         head += 1;
         let depth = states[state_idx].depth;
         let current = states[state_idx].current;
-        let last_edge = states[state_idx].edge.clone();
         if depth >= min_hops && depth <= max_hops {
             let edge_dst = ExpandDst::Local(current);
             if expand_dst_matches_prebound_vertex(row, dst, edge_dst) {
@@ -174,8 +174,8 @@ pub(crate) fn collect_var_len_expand_rows(
                     edge_key.as_deref(),
                     dst_key.as_str(),
                     edge_dst,
-                    depth,
-                    last_edge.as_ref(),
+                    &states,
+                    state_idx,
                     edge_property_projection,
                     dst_property_projection,
                 )?;
@@ -235,31 +235,22 @@ fn build_var_len_row(
     edge_key: Option<&str>,
     dst_key: &str,
     dst: ExpandDst,
-    depth: u64,
-    last_edge: Option<&EdgeBinding>,
+    states: &[VarLenSearchNode],
+    state_idx: usize,
     edge_property_projection: Option<&[Str]>,
     dst_property_projection: Option<&[Str]>,
 ) -> Result<PlanRow, PlanQueryError> {
-    if depth == 0 {
-        let dst_binding = expand_dst_binding(store, dst, dst_property_projection)?;
-        let mut updates = vec![(dst_key, dst_binding)];
-        if let Some(edge_key) = edge_key {
-            updates.push((edge_key, PlanBinding::Value(Value::Null)));
-        }
-        return Ok(row.fork(updates));
+    let dst_binding = expand_dst_binding(store, dst, dst_property_projection)?;
+    let mut updates = vec![(dst_key, dst_binding)];
+    if let Some(edge_key) = edge_key {
+        let edges = edge_bindings_along_var_len_path(
+            states,
+            state_idx,
+            |state| state.edge.as_ref(),
+            |state| state.previous,
+        );
+        let _ = edge_property_projection;
+        updates.push((edge_key, PlanBinding::EdgeGroup(edges)));
     }
-    let edge_binding = last_edge
-        .cloned()
-        .expect("non-zero depth implies a traversed edge");
-    build_expanded_row(
-        None,
-        store,
-        row,
-        edge_key,
-        dst_key,
-        dst,
-        edge_binding,
-        edge_property_projection,
-        dst_property_projection,
-    )
+    Ok(row.fork(updates))
 }
