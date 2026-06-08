@@ -8,8 +8,10 @@ use gleaph_gql::Value;
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql_planner::BindingLayout;
 use gleaph_gql_planner::plan::{PlanOp, ShortestMode, ShortestPathCost, Str, VarLenSpec};
-use gleaph_graph_kernel::entry::{Edge, EdgeLabelId, PreparedWeightDecoder};
+use gleaph_graph_kernel::entry::{Edge, EdgeDirectedness, EdgeLabelId, PreparedWeightDecoder};
+use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
+use ic_stable_lara::labeled::LabeledEdgePayloadBatch;
 use ic_stable_lara::labeled::{LabeledEdgePayloadBatchScratch, OutEdgeOrder};
 
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
@@ -20,7 +22,7 @@ use super::super::row::PlanRow;
 use super::bindings::EdgeBinding;
 use super::expand::{ExpandCandidate, ExpandDst, edge_binding_for_scanned_expand};
 use super::{PlanBinding, vertex_binding_for_traversal};
-use crate::facade::GraphStore;
+use crate::facade::{GraphStore, GraphStoreError};
 
 mod materialize;
 mod search;
@@ -460,6 +462,84 @@ impl ShortestFixedLabelExpand {
             Self::Undirected { .. } => {
                 return Err(PlanQueryError::UnsupportedOp(
                     "weighted shortest-path slice expand does not support undirected labels yet"
+                        .into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Expands fixed-label edges in LARA payload batches (dense slab bulk-read groups).
+    pub(crate) fn expand_payload_batches<Visit>(
+        self,
+        store: &GraphStore,
+        current: VertexId,
+        scratch: &mut LabeledEdgePayloadBatchScratch<Edge>,
+        mut visit: Visit,
+    ) -> Result<(), PlanQueryError>
+    where
+        Visit: for<'b> FnMut(&'b LabeledEdgePayloadBatch<'b, Edge>) -> Result<(), PlanQueryError>,
+    {
+        match self {
+            Self::Forward { label } => {
+                #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                let _scope = bench_scope("shortest_fixed_expand_forward_slices");
+                let storage_label =
+                    LaraLabelId::from_raw(label.pack(EdgeDirectedness::Directed).raw());
+                let mut expand_err = None;
+                store
+                    .visit_out_edge_payload_batches_for_label(
+                        current,
+                        storage_label,
+                        OutEdgeOrder::Descending,
+                        scratch,
+                        |batch| {
+                            if expand_err.is_some() {
+                                return;
+                            }
+                            match visit(&batch) {
+                                Ok(()) => {}
+                                Err(err) => expand_err = Some(err),
+                            }
+                        },
+                    )
+                    .map_err(GraphStoreError::from)
+                    .map_err(PlanQueryError::from)?;
+                if let Some(err) = expand_err {
+                    return Err(err);
+                }
+            }
+            Self::Reverse { label } => {
+                #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                let _scope = bench_scope("shortest_fixed_expand_reverse_slices");
+                let storage_label =
+                    LaraLabelId::from_raw(label.pack(EdgeDirectedness::Directed).raw());
+                let mut expand_err = None;
+                store
+                    .visit_in_edge_payload_batches_for_label(
+                        current,
+                        storage_label,
+                        OutEdgeOrder::Descending,
+                        scratch,
+                        |batch| {
+                            if expand_err.is_some() {
+                                return;
+                            }
+                            match visit(&batch) {
+                                Ok(()) => {}
+                                Err(err) => expand_err = Some(err),
+                            }
+                        },
+                    )
+                    .map_err(GraphStoreError::from)
+                    .map_err(PlanQueryError::from)?;
+                if let Some(err) = expand_err {
+                    return Err(err);
+                }
+            }
+            Self::Undirected { .. } => {
+                return Err(PlanQueryError::UnsupportedOp(
+                    "weighted shortest-path batch expand does not support undirected labels yet"
                         .into(),
                 ));
             }

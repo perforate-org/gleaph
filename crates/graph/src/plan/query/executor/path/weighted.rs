@@ -9,7 +9,9 @@ use gleaph_gql::numeric_order::{NormalizedNumeric, NumericOrderError, normalized
 use gleaph_gql::types::EdgeDirection;
 use gleaph_gql::value_cmp::compare_values;
 use gleaph_gql_planner::plan::{ShortestMode, VarLenSpec};
-use gleaph_graph_kernel::entry::{EdgeLabelId, PreparedWeightDecoder, WeightDecodeError};
+use gleaph_graph_kernel::entry::{
+    EdgeLabelId, EdgeTarget, PreparedWeightDecoder, WeightDecodeError,
+};
 use ic_stable_lara::VertexId;
 use nohash_hasher::IntMap;
 use rapidhash::fast::RapidHasher;
@@ -431,39 +433,47 @@ pub(crate) fn weighted_shortest_paths_between(
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _expand_scope = bench_scope("weighted_shortest_expand");
             let base_cost = entry.cost.clone();
-            prep.expand_payload_slices(store, current, &mut payload_scratch, |edge, payload| {
-                let Ok(Some(ExpandDst::Local(next))) = ExpandDst::from_edge(store, edge) else {
-                    return Ok(());
-                };
-                #[cfg(all(feature = "canbench", target_family = "wasm"))]
-                let _relax_scope = bench_scope("weighted_shortest_relax");
-                let hop_edge = if store_hop_edges {
-                    Some(EdgeBinding {
-                        handle: edge_binding_handle_for_scanned_expand(
-                            store, current, direction, edge,
-                        )?,
-                        payload: EdgePayload::EMPTY,
-                    })
-                } else {
-                    None
-                };
-                relax_weighted_shortest_neighbor(
-                    next,
-                    &base_cost,
-                    depth,
-                    state_idx,
-                    &mut states,
-                    &mut heap,
-                    &mut tie,
-                    &mut found_min_cost,
-                    any_best_cost.as_mut(),
-                    hop_edge,
-                    || {
-                        #[cfg(all(feature = "canbench", target_family = "wasm"))]
-                        let _scope = bench_scope("weighted_shortest_hop_cost_decode_direct");
-                        decode_direct_gleaph_weight_hop_cost_from_payload(decoder, payload)
-                    },
-                )
+            prep.expand_payload_batches(store, current, &mut payload_scratch, |batch| {
+                let width = usize::from(batch.byte_width);
+                for (edge, payload) in batch
+                    .edges
+                    .iter()
+                    .zip(batch.payload_bytes.chunks_exact(width))
+                {
+                    let Some(EdgeTarget::Local(next)) = edge.edge_target() else {
+                        continue;
+                    };
+                    #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                    let _relax_scope = bench_scope("weighted_shortest_relax");
+                    let hop_edge = if store_hop_edges {
+                        Some(EdgeBinding {
+                            handle: edge_binding_handle_for_scanned_expand(
+                                store, current, direction, edge,
+                            )?,
+                            payload: EdgePayload::EMPTY,
+                        })
+                    } else {
+                        None
+                    };
+                    relax_weighted_shortest_neighbor(
+                        next,
+                        &base_cost,
+                        depth,
+                        state_idx,
+                        &mut states,
+                        &mut heap,
+                        &mut tie,
+                        &mut found_min_cost,
+                        any_best_cost.as_mut(),
+                        hop_edge,
+                        || {
+                            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                            let _scope = bench_scope("weighted_shortest_hop_cost_decode_direct");
+                            decode_direct_gleaph_weight_hop_cost_from_payload(decoder, payload)
+                        },
+                    )?;
+                }
+                Ok(())
             })?;
         } else {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]

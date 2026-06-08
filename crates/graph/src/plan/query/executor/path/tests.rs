@@ -1447,10 +1447,12 @@ fn stale_mid_diamond_shortest_expand_hop_costs_are_5_10_and_1() {
     hop_costs.sort_by_key(|(vid, _)| *vid);
     assert_eq!(hop_costs.len(), 2);
     assert!(
-        matches!(hop_costs[0].1, WeightedCostOrderKey::Float64(v) if (v - 5.0).abs() < f64::EPSILON)
+        matches!(hop_costs[0].1, WeightedCostOrderKey::Uint128(5))
+            || matches!(hop_costs[0].1, WeightedCostOrderKey::Float64(v) if (v - 5.0).abs() < f64::EPSILON)
     );
     assert!(
-        matches!(hop_costs[1].1, WeightedCostOrderKey::Float64(v) if (v - 10.0).abs() < f64::EPSILON)
+        matches!(hop_costs[1].1, WeightedCostOrderKey::Uint128(10))
+            || matches!(hop_costs[1].1, WeightedCostOrderKey::Float64(v) if (v - 10.0).abs() < f64::EPSILON)
     );
 
     let detour = hop_costs[0].0;
@@ -1494,7 +1496,8 @@ fn stale_mid_diamond_shortest_expand_hop_costs_are_5_10_and_1() {
     );
     let hop = decode_direct_gleaph_weight_hop_cost(decoder, binding).expect("detour hop");
     assert!(
-        matches!(hop.order_key, WeightedCostOrderKey::Float64(v) if (v - 1.0).abs() < f64::EPSILON),
+        matches!(hop.order_key, WeightedCostOrderKey::Uint128(1))
+            || matches!(hop.order_key, WeightedCostOrderKey::Float64(v) if (v - 1.0).abs() < f64::EPSILON),
         "detour->mid hop cost, got {:?}",
         hop.order_key
     );
