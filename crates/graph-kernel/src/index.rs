@@ -10,6 +10,21 @@ pub struct PostingHit {
     pub vertex_id: u32,
 }
 
+/// One equality arm for [`IndexIntersectionRequest`].
+///
+/// `value` must be the sortable index key from `gleaph_gql::value_to_index_key_bytes`.
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub struct IndexEqualSpec {
+    pub property_id: u32,
+    pub value: Vec<u8>,
+}
+
+/// Intersect equality postings for multiple properties (at least two specs; Eq only).
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub struct IndexIntersectionRequest {
+    pub specs: Vec<IndexEqualSpec>,
+}
+
 /// Compare encoded property values using the same lexicographic order as index posting keys.
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
 pub enum PostingRangeRequest {

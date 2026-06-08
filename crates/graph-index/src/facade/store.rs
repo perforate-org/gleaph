@@ -155,6 +155,43 @@ impl IndexStore {
         })
     }
 
+    pub fn lookup_intersection(
+        &self,
+        req: &gleaph_graph_kernel::index::IndexIntersectionRequest,
+    ) -> Vec<PostingHit> {
+        if req.specs.len() < 2 {
+            return Vec::new();
+        }
+        let mut sets: Vec<std::collections::HashSet<u64>> = Vec::with_capacity(req.specs.len());
+        for spec in &req.specs {
+            let lo = PostingKey::prefix_lower(spec.property_id, &spec.value);
+            let hi = PostingKey::prefix_upper(spec.property_id, &spec.value);
+            let mut set = std::collections::HashSet::new();
+            INDEX_POSTINGS.with_borrow(|postings| {
+                for key in postings.range(lo..=hi) {
+                    let packed = (u64::from(key.shard_id) << 32) | u64::from(key.vertex_id);
+                    set.insert(packed);
+                }
+            });
+            sets.push(set);
+        }
+        sets.sort_by_key(|set| set.len());
+        let mut intersection = sets[0].clone();
+        for set in sets.iter().skip(1) {
+            intersection = intersection.intersection(set).copied().collect();
+            if intersection.is_empty() {
+                return Vec::new();
+            }
+        }
+        intersection
+            .into_iter()
+            .map(|packed| PostingHit {
+                shard_id: (packed >> 32) as u32,
+                vertex_id: (packed & 0xFFFF_FFFF) as u32,
+            })
+            .collect()
+    }
+
     /// Half-open `[low, high)` scan over postings for `property_id` using encoded-value [`PostingRangeRequest`].
     pub fn lookup_range(&self, property_id: u32, req: &PostingRangeRequest) -> Vec<PostingHit> {
         let Some((low, high)) = posting_key_half_open_range(property_id, req) else {
@@ -503,5 +540,90 @@ mod tests {
             Err(IndexError::NotAuthorized)
         );
         let _ = router;
+    }
+
+    #[test]
+    fn lookup_intersection_returns_vertices_in_all_specs() {
+        let store = IndexStore::new();
+        let router = init_test_store(&store);
+        let shard_principal = Principal::from_slice(&[1]);
+        register_shard_owner(&store, router, 7, shard_principal);
+
+        store
+            .posting_insert(shard_principal, 7, 1, b"alice".to_vec(), 10)
+            .expect("uid alice v10");
+        store
+            .posting_insert(shard_principal, 7, 1, b"alice".to_vec(), 20)
+            .expect("uid alice v20");
+        store
+            .posting_insert(shard_principal, 7, 2, b"a@b.c".to_vec(), 20)
+            .expect("email v20");
+        store
+            .posting_insert(shard_principal, 7, 2, b"a@b.c".to_vec(), 30)
+            .expect("email v30");
+
+        let hits =
+            store.lookup_intersection(&gleaph_graph_kernel::index::IndexIntersectionRequest {
+                specs: vec![
+                    gleaph_graph_kernel::index::IndexEqualSpec {
+                        property_id: 1,
+                        value: b"alice".to_vec(),
+                    },
+                    gleaph_graph_kernel::index::IndexEqualSpec {
+                        property_id: 2,
+                        value: b"a@b.c".to_vec(),
+                    },
+                ],
+            });
+        assert_eq!(
+            hits,
+            vec![PostingHit {
+                shard_id: 7,
+                vertex_id: 20
+            }]
+        );
+    }
+
+    #[test]
+    fn lookup_intersection_empty_when_disjoint() {
+        let store = IndexStore::new();
+        let router = init_test_store(&store);
+        let shard_principal = Principal::from_slice(&[1]);
+        register_shard_owner(&store, router, 7, shard_principal);
+
+        store
+            .posting_insert(shard_principal, 7, 1, b"alice".to_vec(), 10)
+            .expect("uid");
+        store
+            .posting_insert(shard_principal, 7, 2, b"bob".to_vec(), 20)
+            .expect("email");
+
+        let hits =
+            store.lookup_intersection(&gleaph_graph_kernel::index::IndexIntersectionRequest {
+                specs: vec![
+                    gleaph_graph_kernel::index::IndexEqualSpec {
+                        property_id: 1,
+                        value: b"alice".to_vec(),
+                    },
+                    gleaph_graph_kernel::index::IndexEqualSpec {
+                        property_id: 2,
+                        value: b"bob".to_vec(),
+                    },
+                ],
+            });
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn lookup_intersection_requires_two_specs() {
+        let store = IndexStore::new();
+        let hits =
+            store.lookup_intersection(&gleaph_graph_kernel::index::IndexIntersectionRequest {
+                specs: vec![gleaph_graph_kernel::index::IndexEqualSpec {
+                    property_id: 1,
+                    value: b"x".to_vec(),
+                }],
+            });
+        assert!(hits.is_empty());
     }
 }

@@ -224,7 +224,7 @@ mod tests {
     use crate::facade::FederationRouting;
     use async_trait::async_trait;
     use candid::Principal;
-    use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest};
+    use gleaph_graph_kernel::index::{IndexIntersectionRequest, PostingHit, PostingRangeRequest};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct FlakyIndex {
@@ -257,6 +257,13 @@ mod tests {
             &self,
             _property_id: u32,
             _req: &PostingRangeRequest,
+        ) -> Result<Vec<PostingHit>, PlanQueryError> {
+            Ok(vec![])
+        }
+
+        async fn lookup_intersection(
+            &self,
+            _req: &IndexIntersectionRequest,
         ) -> Result<Vec<PostingHit>, PlanQueryError> {
             Ok(vec![])
         }

@@ -1782,7 +1782,8 @@ fn index_intersection_returns_vertices_in_both_postings() {
         rows[0].get("n"),
         Some(PlanBinding::Vertex(id)) if *id == vid2
     ));
-    assert_eq!(index.equal_calls.borrow().len(), 2);
+    assert_eq!(index.intersection_calls.borrow().len(), 1);
+    assert!(index.equal_calls.borrow().is_empty());
 }
 
 #[test]

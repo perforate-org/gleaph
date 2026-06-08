@@ -51,7 +51,7 @@ pub use gleaph_gql_planner::plan::{
 };
 pub use gleaph_graph_kernel::entry::EdgeSlotIndex;
 pub use gleaph_graph_kernel::federation::FederatedExpandNeighbor;
-pub use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest};
+pub use gleaph_graph_kernel::index::{IndexIntersectionRequest, PostingHit, PostingRangeRequest};
 pub use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
 pub use ic_stable_lara::VertexId;
 pub use std::collections::{BTreeMap, BTreeSet};
@@ -65,6 +65,7 @@ pub struct MockPropertyIndex {
     pub range_hits: RefCell<Vec<PostingHit>>,
     pub equal_calls: RefCell<Vec<(u32, Vec<u8>)>>,
     pub range_calls: RefCell<Vec<(u32, PostingRangeRequest)>>,
+    pub intersection_calls: RefCell<Vec<IndexIntersectionRequest>>,
 }
 
 impl MockPropertyIndex {
@@ -77,6 +78,50 @@ impl MockPropertyIndex {
         self.equal_hits_by_key
             .borrow_mut()
             .insert((property_id, value_bytes), hits);
+    }
+
+    fn equal_hits_for(&self, property_id: u32, value: &[u8]) -> Vec<PostingHit> {
+        if let Some(hits) = self
+            .equal_hits_by_key
+            .borrow()
+            .get(&(property_id, value.to_vec()))
+        {
+            return hits.clone();
+        }
+        self.equal_hits.borrow().clone()
+    }
+
+    fn intersect_hits(
+        req: &IndexIntersectionRequest,
+        lookup: impl Fn(u32, &[u8]) -> Vec<PostingHit>,
+    ) -> Vec<PostingHit> {
+        if req.specs.len() < 2 {
+            return Vec::new();
+        }
+        let mut sets: Vec<std::collections::HashSet<u64>> = Vec::with_capacity(req.specs.len());
+        for spec in &req.specs {
+            let mut set = std::collections::HashSet::new();
+            for hit in lookup(spec.property_id, &spec.value) {
+                let packed = (u64::from(hit.shard_id) << 32) | u64::from(hit.vertex_id);
+                set.insert(packed);
+            }
+            sets.push(set);
+        }
+        sets.sort_by_key(|set| set.len());
+        let mut intersection = sets[0].clone();
+        for set in sets.iter().skip(1) {
+            intersection = intersection.intersection(set).copied().collect();
+            if intersection.is_empty() {
+                return Vec::new();
+            }
+        }
+        intersection
+            .into_iter()
+            .map(|packed| PostingHit {
+                shard_id: (packed >> 32) as u32,
+                vertex_id: (packed & 0xFFFF_FFFF) as u32,
+            })
+            .collect()
     }
 }
 
@@ -105,6 +150,16 @@ impl PropertyIndexLookup for MockPropertyIndex {
             .borrow_mut()
             .push((property_id, req.clone()));
         Ok(self.range_hits.borrow().clone())
+    }
+
+    async fn lookup_intersection(
+        &self,
+        req: &IndexIntersectionRequest,
+    ) -> Result<Vec<PostingHit>, PlanQueryError> {
+        self.intersection_calls.borrow_mut().push(req.clone());
+        Ok(Self::intersect_hits(req, |pid, value| {
+            self.equal_hits_for(pid, value)
+        }))
     }
 
     fn local_shard_id(&self) -> u32 {

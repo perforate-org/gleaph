@@ -3,10 +3,11 @@ use std::collections::BTreeMap;
 use gleaph_gql::ast::CmpOp;
 use gleaph_gql::{Value, value_to_index_key_bytes};
 use gleaph_gql_planner::plan::{ConditionalScanCandidate, IndexScanSpec, ScanValue, Str};
-use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest};
+use gleaph_graph_kernel::index::{
+    IndexEqualSpec, IndexIntersectionRequest, PostingHit, PostingRangeRequest,
+};
 use ic_stable_lara::VertexId;
 use ic_stable_lara::traits::CsrVertexTombstone;
-use nohash_hasher::IntSet;
 
 use crate::facade::GraphStore;
 use crate::gql_execution_context::GqlExecutionContext;
@@ -203,7 +204,7 @@ pub(crate) async fn execute_index_intersection(
     };
     let routing = federation_routing(store)?;
     let local_shard = routing.shard_id;
-    let mut sets: Vec<IntSet<u64>> = Vec::with_capacity(scans.len());
+    let mut specs = Vec::with_capacity(scans.len());
     for spec in scans {
         if spec.cmp != CmpOp::Eq {
             return Err(PlanQueryError::UnsupportedOp("IndexIntersection.cmp"));
@@ -212,72 +213,28 @@ pub(crate) async fn execute_index_intersection(
         let Some(bytes) = resolve_scan_payload_bytes(&spec.value, parameters)? else {
             return Ok(Vec::new());
         };
-        let hits = ix.lookup_equal(pid, bytes).await?;
-        let mut hs = IntSet::default();
-        let mut logical_cache = std::collections::HashMap::new();
-        for h in hits {
-            let key = if h.shard_id == local_shard {
-                let vid = VertexId::from(h.vertex_id);
-                let Some(vertex) = store.vertex(vid) else {
-                    continue;
-                };
-                if vertex.is_tombstone() {
-                    continue;
-                }
-                (1u64 << 63) | u64::from(u32::from(vid))
-            } else {
-                let physical =
-                    gleaph_graph_kernel::federation::PhysicalPlacementKey::from_posting_hit(
-                        h.shard_id,
-                        h.vertex_id,
-                    );
-                let logical = match logical_cache.get(&physical) {
-                    Some(cached) => *cached,
-                    None => {
-                        let resolved = placement::resolve_logical_at(
-                            routing.router_canister,
-                            h.shard_id,
-                            h.vertex_id,
-                        )
-                        .await
-                        .map_err(|e| {
-                            PlanQueryError::FederatedIndexCall {
-                                op: "resolve_logical_at",
-                                detail: e.to_string(),
-                            }
-                        })?;
-                        logical_cache.insert(physical, resolved);
-                        resolved
-                    }
-                };
-                let Some(logical) = logical else {
-                    continue;
-                };
-                logical
-            };
-            hs.insert(key);
-        }
-        sets.push(hs);
-    }
-    let mut intersection: Option<IntSet<u64>> = None;
-    for s in sets {
-        intersection = Some(match intersection {
-            None => s,
-            Some(prev) => prev.intersection(&s).copied().collect::<IntSet<_>>(),
+        specs.push(IndexEqualSpec {
+            property_id: pid,
+            value: bytes,
         });
     }
-    let Some(ids) = intersection else {
+    if specs.len() < 2 {
         return Ok(Vec::new());
-    };
+    }
+    let hits = ix
+        .lookup_intersection(&IndexIntersectionRequest { specs })
+        .await?;
     let mut out = Vec::new();
     for row in rows {
-        for id in &ids {
-            let binding = if *id >> 63 != 0 {
-                PlanBinding::Vertex(VertexId::from((*id & !(1u64 << 63)) as u32))
-            } else {
-                PlanBinding::RemoteVertex(*id)
-            };
-            out.push(row.fork([(variable, binding)]));
+        for hit in &hits {
+            if hit.shard_id != local_shard {
+                continue;
+            }
+            let vertex_id = VertexId::from(hit.vertex_id);
+            if store.vertex(vertex_id).is_none() {
+                continue;
+            }
+            out.push(row.fork([(variable, PlanBinding::Vertex(vertex_id))]));
         }
     }
     Ok(out)

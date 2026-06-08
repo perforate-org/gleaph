@@ -3,7 +3,7 @@
 use crate::plan::PlanQueryError;
 use async_trait::async_trait;
 use gleaph_graph_kernel::federation::ShardId;
-use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest};
+use gleaph_graph_kernel::index::{IndexIntersectionRequest, PostingHit, PostingRangeRequest};
 
 #[async_trait(?Send)]
 pub trait PropertyIndexLookup {
@@ -17,6 +17,11 @@ pub trait PropertyIndexLookup {
         &self,
         property_id: u32,
         req: &PostingRangeRequest,
+    ) -> Result<Vec<PostingHit>, PlanQueryError>;
+
+    async fn lookup_intersection(
+        &self,
+        req: &IndexIntersectionRequest,
     ) -> Result<Vec<PostingHit>, PlanQueryError>;
 
     async fn posting_insert(
@@ -82,6 +87,15 @@ impl PropertyIndexLookup for NoPropertyIndex {
         _req: &PostingRangeRequest,
     ) -> Result<Vec<PostingHit>, PlanQueryError> {
         Err(PlanQueryError::UnsupportedOp("IndexScan(no index client)"))
+    }
+
+    async fn lookup_intersection(
+        &self,
+        _req: &IndexIntersectionRequest,
+    ) -> Result<Vec<PostingHit>, PlanQueryError> {
+        Err(PlanQueryError::UnsupportedOp(
+            "IndexIntersection(no index client)",
+        ))
     }
 
     async fn posting_insert_at(

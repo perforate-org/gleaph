@@ -21,7 +21,7 @@ Catalog `PlanOp` variants and note **executor support** and **federation relevan
 | `EdgeIndexScan` | Exec | Often paired with `EdgeBindEndpoints` |
 | `EdgeBindEndpoints` | Exec | Binds near/far from edge record |
 | `ConditionalIndexScan` | Exec | Param-dependent index vs fallback scan |
-| `IndexIntersection` | Partial | **Planned:** intersect on graph-index (`lookup_intersection`); Router per-shard seeds. Legacy: graph executor client-side intersect via index client |
+| `IndexIntersection` | Partial | Intersect on graph-index (`lookup_intersection`); graph binds local shard hits only. Router per-shard seeds **Planned** |
 
 ## Filter
 

@@ -4,7 +4,7 @@ use crate::index::lookup::PropertyIndexLookup;
 use crate::plan::PlanQueryError;
 use async_trait::async_trait;
 use candid::Principal;
-use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest};
+use gleaph_graph_kernel::index::{IndexIntersectionRequest, PostingHit, PostingRangeRequest};
 use ic_cdk::call::Call;
 use ic_cdk::call::CallFailed;
 
@@ -59,6 +59,19 @@ impl PropertyIndexLookup for IcPropertyIndexClient {
             .map_err(|e| ic_wait_err("lookup_range", e))?
             .candid()
             .map_err(|_| ic_candid_decode_err("lookup_range"))?;
+        Ok(hits)
+    }
+
+    async fn lookup_intersection(
+        &self,
+        req: &IndexIntersectionRequest,
+    ) -> Result<Vec<PostingHit>, PlanQueryError> {
+        let hits: Vec<PostingHit> = Call::bounded_wait(self.index_principal, "lookup_intersection")
+            .with_args(&(req.clone(),))
+            .await
+            .map_err(|e| ic_wait_err("lookup_intersection", e))?
+            .candid()
+            .map_err(|_| ic_candid_decode_err("lookup_intersection"))?;
         Ok(hits)
     }
 

@@ -2,7 +2,7 @@
 
 ## Status
 
-**Partially Implemented** — `lookup_equal` / `lookup_range` and DML posting sync exist. **`lookup_intersection`** and Router-owned intersection seeds are **Planned** ([lookup-intersection.md](lookup-intersection.md)). Executor-side intersection and `RemoteVertex` index bind paths are legacy; see [../sharding/federation-target.md](../sharding/federation-target.md).
+**Partially Implemented** — `lookup_equal` / `lookup_range` and DML posting sync exist. **`lookup_intersection`** is implemented on graph-index and wired through graph `PropertyIndexLookup`; Router per-shard seeds remain **Planned**. Executor-side client intersection and `RemoteVertex` index bind paths are legacy; see [../sharding/federation-target.md](../sharding/federation-target.md).
 
 ## Purpose
 
@@ -35,7 +35,7 @@ Global postings keyed by `(property_id, encoded_value, shard_id, vertex_id)`. A 
 |-----|--------|------|
 | `lookup_equal` | Implemented | Equality postings for one `(property_id, value)` |
 | `lookup_range` | Implemented | Range over encoded values for one property |
-| `lookup_intersection` | Planned | Intersect multiple equality arms ([lookup-intersection.md](lookup-intersection.md)) |
+| `lookup_intersection` | Implemented | Intersect multiple equality arms ([lookup-intersection.md](lookup-intersection.md)) |
 
 All read APIs run entirely inside graph-index (no graph canister calls).
 

@@ -2,7 +2,7 @@
 
 ## Status
 
-**Planned** — API and ownership contract. Client-side intersection in `graph/src/plan/query/executor/scan/index.rs` is **Partially Implemented** legacy; migrate to graph-index.
+**Partially Implemented** — graph-index `lookup_intersection` and graph executor single-call path are implemented. Router per-shard seeds and skip-op behavior remain **Planned**. Client-side intersection in the executor is removed.
 
 ## Purpose
 

@@ -21,7 +21,9 @@ pub mod init;
 mod canister;
 
 pub use facade::IndexStore;
-pub use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest};
+pub use gleaph_graph_kernel::index::{
+    IndexEqualSpec, IndexIntersectionRequest, PostingHit, PostingRangeRequest,
+};
 pub use init::IndexInitArgs;
 pub use key::PostingKey;
 pub use state::IndexError;
@@ -58,6 +60,11 @@ fn posting_remove(shard_id: ShardId, property_id: u32, value: Vec<u8>, vertex_id
 #[query]
 fn lookup_equal(property_id: u32, value: Vec<u8>) -> Vec<PostingHit> {
     canister::lookup_equal(property_id, value)
+}
+
+#[query]
+fn lookup_intersection(req: IndexIntersectionRequest) -> Vec<PostingHit> {
+    canister::lookup_intersection(req)
 }
 
 #[query]

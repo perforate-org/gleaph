@@ -53,6 +53,12 @@ pub(crate) fn lookup_equal(property_id: u32, value: Vec<u8>) -> Vec<PostingHit> 
     IndexStore::new().lookup_equal(property_id, &value)
 }
 
+pub(crate) fn lookup_intersection(
+    req: gleaph_graph_kernel::index::IndexIntersectionRequest,
+) -> Vec<PostingHit> {
+    IndexStore::new().lookup_intersection(&req)
+}
+
 pub(crate) fn lookup_range(property_id: u32, req: PostingRangeRequest) -> Vec<PostingHit> {
     IndexStore::new().lookup_range(property_id, &req)
 }
