@@ -494,17 +494,7 @@ pub(crate) fn execute_ops_from<'a>(
                     variable,
                     scans,
                     property_projection: _,
-                } => {
-                    execute_index_intersection(
-                        store,
-                        rows,
-                        parameters,
-                        index,
-                        variable.as_ref(),
-                        scans,
-                    )
-                    .await?
-                }
+                } => execute_index_intersection(&ctx, rows, variable.as_ref(), scans).await?,
                 PlanOp::EdgeIndexScan {
                     variable,
                     property,

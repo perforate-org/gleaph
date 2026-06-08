@@ -9,6 +9,7 @@ use gleaph_graph_kernel::entry::PreparedWeightDecoder;
 use gleaph_graph_kernel::plan_exec::ResolvedLabelTable;
 
 use crate::facade::GraphStore;
+use crate::federation::StandaloneFederation;
 use crate::gql_execution_context::GqlExecutionContext;
 use crate::index::lookup::PropertyIndexLookup;
 
@@ -20,6 +21,7 @@ pub(crate) struct ExecuteCtx<'a> {
     pub index: Option<&'a dyn PropertyIndexLookup>,
     pub execution: GqlExecutionContext,
     pub gleaph_weight_decoders: Option<&'a BTreeMap<String, PreparedWeightDecoder>>,
+    pub federation: StandaloneFederation,
 }
 
 impl<'a> ExecuteCtx<'a> {
@@ -37,6 +39,7 @@ impl<'a> ExecuteCtx<'a> {
             index,
             execution,
             gleaph_weight_decoders,
+            federation: StandaloneFederation::from_store(store),
         }
     }
 

@@ -7,6 +7,7 @@ mod bench;
     reason = "facade exposes canister storage helpers used by feature and integration paths"
 )]
 pub mod facade;
+mod federation;
 pub mod gql_execution_context;
 #[expect(
     dead_code,

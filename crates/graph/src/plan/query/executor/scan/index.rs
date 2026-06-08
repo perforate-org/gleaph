@@ -3,18 +3,14 @@ use std::collections::BTreeMap;
 use gleaph_gql::ast::CmpOp;
 use gleaph_gql::{Value, value_to_index_key_bytes};
 use gleaph_gql_planner::plan::{ConditionalScanCandidate, IndexScanSpec, ScanValue, Str};
-use gleaph_graph_kernel::index::{
-    IndexEqualSpec, IndexIntersectionRequest, PostingHit, PostingRangeRequest,
-};
-use ic_stable_lara::VertexId;
-use ic_stable_lara::traits::CsrVertexTombstone;
+use gleaph_graph_kernel::index::{IndexEqualSpec, IndexIntersectionRequest, PostingRangeRequest};
 
 use crate::facade::GraphStore;
+use crate::federation::{self, FederationPort};
 use crate::gql_execution_context::GqlExecutionContext;
 use crate::index::lookup::PropertyIndexLookup;
-use crate::index::placement;
 use crate::plan::query::error::PlanQueryError;
-use crate::plan::query::executor::PlanBinding;
+use crate::plan::query::executor::context::ExecuteCtx;
 use crate::plan::query::row::PlanRow;
 
 fn property_id_for_scan(store: &GraphStore, property_name: &str) -> Result<u32, PlanQueryError> {
@@ -58,73 +54,6 @@ fn cmp_to_posting_range_request(
     })
 }
 
-pub(crate) fn federation_routing(
-    store: &GraphStore,
-) -> Result<crate::facade::FederationRouting, PlanQueryError> {
-    store
-        .federation_routing()
-        .ok_or(PlanQueryError::UnsupportedOp("IndexScan(no shard routing)"))
-}
-
-async fn materialize_federated_index_hits(
-    store: &GraphStore,
-    rows: Vec<PlanRow>,
-    variable: &str,
-    hits: &[PostingHit],
-) -> Result<Vec<PlanRow>, PlanQueryError> {
-    let routing = federation_routing(store)?;
-    let local_shard = routing.shard_id;
-    let mut logical_cache: std::collections::HashMap<
-        gleaph_graph_kernel::federation::PhysicalPlacementKey,
-        Option<gleaph_graph_kernel::federation::LogicalVertexId>,
-    > = std::collections::HashMap::new();
-    let mut out = Vec::new();
-    for row in rows {
-        for hit in hits {
-            let binding = if hit.shard_id == local_shard {
-                let vertex_id = VertexId::from(hit.vertex_id);
-                let Some(vertex) = store.vertex(vertex_id) else {
-                    continue;
-                };
-                if vertex.is_tombstone() {
-                    continue;
-                }
-                PlanBinding::Vertex(vertex_id)
-            } else {
-                let key = gleaph_graph_kernel::federation::PhysicalPlacementKey::from_posting_hit(
-                    hit.shard_id,
-                    hit.vertex_id,
-                );
-                let logical = match logical_cache.get(&key) {
-                    Some(cached) => *cached,
-                    None => {
-                        let resolved = placement::resolve_logical_at(
-                            routing.router_canister,
-                            hit.shard_id,
-                            hit.vertex_id,
-                        )
-                        .await
-                        .map_err(|e| {
-                            PlanQueryError::FederatedIndexCall {
-                                op: "resolve_logical_at",
-                                detail: e.to_string(),
-                            }
-                        })?;
-                        logical_cache.insert(key, resolved);
-                        resolved
-                    }
-                };
-                let Some(logical_vertex_id) = logical else {
-                    continue;
-                };
-                PlanBinding::RemoteVertex(logical_vertex_id)
-            };
-            out.push(row.fork([(variable, binding)]));
-        }
-    }
-    Ok(out)
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute_index_scan(
     store: &GraphStore,
@@ -149,7 +78,7 @@ pub(crate) async fn execute_index_scan(
         let req = cmp_to_posting_range_request(cmp, bytes)?;
         ix.lookup_range(pid, &req).await?
     };
-    materialize_federated_index_hits(store, rows, variable, &hits).await
+    federation::materialize_federated_index_hits(store, rows, variable, &hits).await
 }
 
 pub(crate) async fn execute_conditional_index_scan(
@@ -183,34 +112,36 @@ pub(crate) async fn execute_conditional_index_scan(
                 let req = cmp_to_posting_range_request(c.cmp, bytes)?;
                 ix.lookup_range(pid, &req).await?
             };
-            return materialize_federated_index_hits(store, rows, c.variable.as_ref(), &hits).await;
+            return federation::materialize_federated_index_hits(
+                store,
+                rows,
+                c.variable.as_ref(),
+                &hits,
+            )
+            .await;
         }
     }
     execute_node_scan(store, rows, fallback_variable, fallback_label, execution)
 }
 
 pub(crate) async fn execute_index_intersection(
-    store: &GraphStore,
+    ctx: &ExecuteCtx<'_>,
     rows: Vec<PlanRow>,
-    parameters: &BTreeMap<String, Value>,
-    index: Option<&dyn PropertyIndexLookup>,
     variable: &str,
     scans: &[IndexScanSpec],
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
-    let Some(ix) = index else {
+    let Some(ix) = ctx.index else {
         return Err(PlanQueryError::UnsupportedOp(
             "IndexIntersection(no index client)",
         ));
     };
-    let routing = federation_routing(store)?;
-    let local_shard = routing.shard_id;
     let mut specs = Vec::with_capacity(scans.len());
     for spec in scans {
         if spec.cmp != CmpOp::Eq {
             return Err(PlanQueryError::UnsupportedOp("IndexIntersection.cmp"));
         }
-        let pid = property_id_for_scan(store, spec.property.as_ref())?;
-        let Some(bytes) = resolve_scan_payload_bytes(&spec.value, parameters)? else {
+        let pid = property_id_for_scan(ctx.store, spec.property.as_ref())?;
+        let Some(bytes) = resolve_scan_payload_bytes(&spec.value, ctx.parameters)? else {
             return Ok(Vec::new());
         };
         specs.push(IndexEqualSpec {
@@ -224,20 +155,9 @@ pub(crate) async fn execute_index_intersection(
     let hits = ix
         .lookup_intersection(&IndexIntersectionRequest { specs })
         .await?;
-    let mut out = Vec::new();
-    for row in rows {
-        for hit in &hits {
-            if hit.shard_id != local_shard {
-                continue;
-            }
-            let vertex_id = VertexId::from(hit.vertex_id);
-            if store.vertex(vertex_id).is_none() {
-                continue;
-            }
-            out.push(row.fork([(variable, PlanBinding::Vertex(vertex_id))]));
-        }
-    }
-    Ok(out)
+    Ok(ctx
+        .federation
+        .bind_index_hits(ctx.store, &rows, variable, &hits))
 }
 
 pub(crate) fn execute_node_scan(
@@ -247,6 +167,11 @@ pub(crate) fn execute_node_scan(
     label: Option<&str>,
     execution: &GqlExecutionContext,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
+    use ic_stable_lara::VertexId;
+    use ic_stable_lara::traits::CsrVertexTombstone;
+
+    use crate::plan::query::executor::PlanBinding;
+
     let label_id = match label {
         Some(label) => execution
             .resolved_vertex_label_id(label)
