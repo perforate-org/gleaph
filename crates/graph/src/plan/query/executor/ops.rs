@@ -24,6 +24,7 @@ use super::scan::{
     limited_streaming_prefix_limit_idx,
 };
 use super::set_operation::execute_set_operation;
+use super::wcoj::execute_wcoj;
 use super::{
     PlanBinding, binding_to_value, dedup_rows, ensure_simple_expand, ensure_var_len_expand,
     gleaph_sequence_order_after_expand, gleaph_sequence_sort, limit_value, plan_op_name,
@@ -131,9 +132,15 @@ fn extend_subplan_written_vars_from_op(op: &PlanOp, out: &mut BTreeSet<String>) 
                 out.insert(o.to_string());
             }
         }
-        PlanOp::WorstCaseOptimalJoin { variables, .. } => {
+        PlanOp::WorstCaseOptimalJoin { variables, edges } => {
             for v in variables {
                 out.insert(v.to_string());
+            }
+            for e in edges {
+                out.insert(e.variable.to_string());
+                if let Some(h) = &e.hop_aux_binding {
+                    out.insert(h.to_string());
+                }
             }
         }
         PlanOp::OptionalMatch { sub_plan }
@@ -886,6 +893,9 @@ pub(crate) fn execute_ops_from<'a>(
                     right,
                     join_keys,
                 } => execute_hash_join(ctx, rows, left, right, join_keys).await?,
+                PlanOp::WorstCaseOptimalJoin { variables, edges } => {
+                    execute_wcoj(ctx, rows, variables, edges).await?
+                }
                 PlanOp::OptionalMatch { sub_plan } => {
                     let written = subplan_written_vars(sub_plan);
                     execute_optional_match(ctx, rows, sub_plan, &written).await?
@@ -1832,24 +1842,15 @@ mod tests {
     #[test]
     fn unsupported_operator_returns_stable_error() {
         let store = GraphStore::new();
-        let cases = vec![
-            (
-                PlanOp::CallProcedure {
-                    name: vec!["db".into(), "labels".into()],
-                    args: Vec::new(),
-                    yield_columns: None,
-                    optional: false,
-                },
-                "CallProcedure",
-            ),
-            (
-                PlanOp::WorstCaseOptimalJoin {
-                    variables: Vec::new(),
-                    edges: Vec::<WcojEdge>::new(),
-                },
-                "WorstCaseOptimalJoin",
-            ),
-        ];
+        let cases = vec![(
+            PlanOp::CallProcedure {
+                name: vec!["db".into(), "labels".into()],
+                args: Vec::new(),
+                yield_columns: None,
+                optional: false,
+            },
+            "CallProcedure",
+        )];
 
         for (op, expected_name) in cases {
             let plan = plan(vec![op]);

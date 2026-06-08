@@ -99,9 +99,9 @@ pub(crate) fn materialize_plan_rows(
         for row in rows {
             let value = match resolve_column_binding(row, column) {
                 Some(PlanBinding::Path(pb)) => ctx.materialize_path(pb),
-                Some(PlanBinding::PathGroup(paths)) => Value::List(
-                    paths.iter().map(|pb| ctx.materialize_path(pb)).collect(),
-                ),
+                Some(PlanBinding::PathGroup(paths)) => {
+                    Value::List(paths.iter().map(|pb| ctx.materialize_path(pb)).collect())
+                }
                 Some(binding) => ctx.materialize_binding(binding, column.kind)?,
                 None => Value::Null,
             };

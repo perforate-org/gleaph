@@ -37,7 +37,7 @@ Catalog `PlanOp` variants and note **executor support** and **federation relevan
 | `Expand` | Partial | `{min,max}` hop-count var-length with per-hop index/payload/vector fusion; `label_expr` (`-/A\|B/->`, `-[e:A\|B]->`, `%`, `!`); named unions fuse per label, wildcard/negation fall back to catalog payload-profile labels; quantified subpath `((u)-[e:L]->(v)){m,n}` lowers to one var-length expand with `near_group_var` / `far_group_var`; var-length `e` → **edge group** (or projected edge-property list when RETURN uses only `e.prop`), `u` / `v` → **vertex groups**; `MATCH p = …->{m,n}…` binds **path** on var_len `Expand`; `{edge}__hop_aux` binds inline payload bytes (see [group-variables.md](./group-variables.md)); leading-edge index fusion uses `EdgeIndexScan` + `EdgeBindEndpoints` instead of `Expand` |
 | `ExpandFilter` | Partial | Same var-length, `label_expr`, and group-variable semantics as `Expand` |
 | `ShortestPath` | Partial | `ShortestK` / `ShortestKGroup` (hop-count and `GLEAPH.COST`); `label_expr` (`-/A\|B/->`, including weighted); `path_var` binds singleton `Path` or grouped `PathGroup` on `SHORTEST k GROUP` |
-| `WorstCaseOptimalJoin` | Partial | Cyclic patterns |
+| `WorstCaseOptimalJoin` | Partial | Simple directed cycles (single-hop edges); `{edge}__hop_aux` per [`WcojEdge`]; `var_len` hops not yet supported |
 
 ## Join
 

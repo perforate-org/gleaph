@@ -249,6 +249,9 @@ fn register_binding_kinds(op: &PlanOp, kinds: &mut HashMap<String, OutputBinding
             }
             for edge in edges {
                 kinds.insert(edge.variable.to_string(), OutputBindingKind::Edge);
+                if let Some(h) = &edge.hop_aux_binding {
+                    kinds.insert(h.to_string(), OutputBindingKind::Scalar);
+                }
             }
         }
         _ => {}

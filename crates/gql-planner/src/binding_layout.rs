@@ -220,6 +220,9 @@ fn register_op_bindings(op: &PlanOp, layout: &mut BindingLayout) {
                 layout.insert_name(e.src.clone());
                 layout.insert_name(e.dst.clone());
                 layout.insert_name(e.variable.clone());
+                if let Some(h) = &e.hop_aux_binding {
+                    layout.insert_name(h.clone());
+                }
             }
         }
         PlanOp::InsertVertex { variable, .. } => {

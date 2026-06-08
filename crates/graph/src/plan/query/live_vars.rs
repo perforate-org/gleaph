@@ -148,6 +148,9 @@ fn variables_read_by_op(op: &PlanOp, out: &mut BTreeSet<String>) {
             for edge in edges {
                 out.insert(edge.src.to_string());
                 out.insert(edge.variable.to_string());
+                if let Some(h) = &edge.hop_aux_binding {
+                    out.insert(h.to_string());
+                }
             }
         }
         PlanOp::NodeScan { .. }

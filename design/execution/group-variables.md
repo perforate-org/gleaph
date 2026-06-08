@@ -42,6 +42,10 @@ Patterns like `MATCH (a)((u)-[e:L]->(v)){m,n}(c)` lower to one `PlanOp::Expand` 
 
 `SHORTEST k` without `GROUP` still emits **one row per path** (`ShortestK(k)`).
 
+### WCOJ `hop_aux`
+
+Triangle / cycle patterns fused to [`PlanOp::WorstCaseOptimalJoin`] carry `hop_aux_binding` on each [`WcojEdge`] when `{edge}__hop_aux` is referenced (same naming as `Expand`). Executor binds `PlanBinding::Value(Value::Bytes)` per matched hop.
+
 ## Expression rules
 
 | Expression | Status |
