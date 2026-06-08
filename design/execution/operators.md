@@ -34,8 +34,8 @@ Catalog `PlanOp` variants and note **executor support** and **federation relevan
 
 | PlanOp | Status | Federation |
 |--------|--------|------------|
-| `Expand` | Partial | Federated path via `RemoteVertex`; local placement limits |
-| `ExpandFilter` | Partial | EV-fused expand + dst filter |
+| `Expand` | Partial | `{min,max}` hop-count var-length; no `label_expr`/index/vector fusion yet |
+| `ExpandFilter` | Partial | Same var-length limits as `Expand` |
 | `ShortestPath` | Partial | `ShortestK` (hop-count); weighted `ShortestK` not supported |
 | `WorstCaseOptimalJoin` | Partial | Cyclic patterns |
 

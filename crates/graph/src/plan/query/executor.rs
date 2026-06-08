@@ -304,6 +304,46 @@ pub(crate) fn ensure_simple_expand(
     Ok(())
 }
 
+pub(crate) fn ensure_var_len_expand(
+    label_expr: &Option<LabelExpr>,
+    hop_aux_binding: &Option<Str>,
+    indexed_edge_equality: &Option<(Str, gleaph_gql_planner::plan::ScanValue)>,
+    edge_payload_predicate: &Option<gleaph_gql_planner::plan::EdgePayloadPredicate>,
+    edge_vector_predicate: &Option<gleaph_gql_planner::plan::EdgeVectorPredicate>,
+    edge_property_projection: &Option<std::rc::Rc<[Str]>>,
+) -> Result<(), PlanQueryError> {
+    if label_expr.is_some() {
+        return Err(PlanQueryError::UnsupportedOp("Expand.label_expr"));
+    }
+    if hop_aux_binding.is_some() {
+        return Err(PlanQueryError::UnsupportedOp("Expand.hop_aux_binding"));
+    }
+    if indexed_edge_equality.is_some() {
+        return Err(PlanQueryError::UnsupportedOp(
+            "Expand.var_len.indexed_edge_equality",
+        ));
+    }
+    if edge_payload_predicate.is_some() {
+        return Err(PlanQueryError::UnsupportedOp(
+            "Expand.var_len.edge_payload_predicate",
+        ));
+    }
+    if edge_vector_predicate.is_some() {
+        return Err(PlanQueryError::UnsupportedOp(
+            "Expand.var_len.edge_vector_predicate",
+        ));
+    }
+    if edge_property_projection
+        .as_ref()
+        .is_some_and(|props| !props.is_empty())
+    {
+        return Err(PlanQueryError::UnsupportedOp(
+            "Expand.var_len.edge_property_projection",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn row_matches_all(
     evaluator: &QueryExprEvaluator<'_>,
     row: &PlanRow,

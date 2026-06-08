@@ -479,4 +479,6 @@ pub(crate) use candidates::{ExpandCandidate, expand_candidates_into};
 mod tests;
 
 mod execute;
+mod var_len;
 pub(crate) use execute::{execute_expand, expand_dst_matches_prebound_vertex};
+pub(crate) use var_len::{collect_var_len_expand_rows, execute_var_len_expand};

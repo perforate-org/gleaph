@@ -115,6 +115,43 @@ fn executes_planner_one_hop_expand() {
 }
 
 #[test]
+fn executes_planner_var_len_expand() {
+    let store = GraphStore::new();
+    let a = store
+        .insert_vertex_named(["VarLenSource"], Vec::<(&str, Value)>::new())
+        .expect("insert a");
+    let b = store
+        .insert_vertex_named(["VarLenMid"], Vec::<(&str, Value)>::new())
+        .expect("insert b");
+    let c = store
+        .insert_vertex_named(["VarLenTarget"], Vec::<(&str, Value)>::new())
+        .expect("insert c");
+    store
+        .insert_directed_edge_named(a, b, Some("VarLenRel"), Vec::<(&str, Value)>::new())
+        .expect("a->b");
+    store
+        .insert_directed_edge_named(b, c, Some("VarLenRel"), Vec::<(&str, Value)>::new())
+        .expect("b->c");
+    store
+        .insert_directed_edge_named(a, c, Some("VarLenRel"), Vec::<(&str, Value)>::new())
+        .expect("a->c");
+
+    let one_hop = plan_gql("MATCH (a:VarLenSource)-[:VarLenRel]->{1,1}(x) RETURN x");
+    let one_hop_rows = store
+        .execute_plan_query(&one_hop, &params(), GqlExecutionContext::default())
+        .expect("one hop expand")
+        .rows;
+    assert_eq!(one_hop_rows.len(), 2);
+
+    let two_hop = plan_gql("MATCH (a:VarLenSource)-[:VarLenRel]->{2,2}(x) RETURN x");
+    let two_hop_rows = store
+        .execute_plan_query(&two_hop, &params(), GqlExecutionContext::default())
+        .expect("two hop expand")
+        .rows;
+    assert_eq!(two_hop_rows.len(), 1);
+}
+
+#[test]
 fn executes_planner_expand_filter() {
     let store = GraphStore::new();
     let a = store

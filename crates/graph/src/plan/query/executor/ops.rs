@@ -13,7 +13,7 @@ use super::super::aggregate;
 use super::super::error::PlanQueryError;
 use super::super::row::PlanRow;
 use super::context::ExecuteCtx;
-use super::expand::execute_expand;
+use super::expand::{execute_expand, execute_var_len_expand};
 use super::for_loop::execute_for;
 use super::join::{execute_cartesian_product, execute_hash_join, merge_rows};
 use super::path::execute_shortest_path;
@@ -24,7 +24,7 @@ use super::scan::{
 };
 use super::set_operation::execute_set_operation;
 use super::{
-    PlanBinding, binding_to_value, dedup_rows, ensure_simple_expand,
+    PlanBinding, binding_to_value, dedup_rows, ensure_simple_expand, ensure_var_len_expand,
     gleaph_sequence_order_after_expand, gleaph_sequence_sort, limit_value, plan_op_name,
     previous_op_binds_edge, project_row, row_matches_all, sort_rows,
 };
@@ -545,32 +545,59 @@ pub(crate) fn execute_ops_from<'a>(
                     hop_aux_binding,
                     emit_edge_binding,
                 } => {
-                    ensure_simple_expand(label_expr, var_len, hop_aux_binding)?;
-                    let sequence_order = gleaph_sequence_order_after_expand(
-                        ops,
-                        op_idx,
-                        edge.as_ref(),
-                        label.is_some() && label_expr.is_none(),
-                    )?;
-                    execute_expand(
-                        ctx,
-                        rows,
-                        src,
-                        edge,
-                        dst,
-                        *direction,
-                        label.as_deref(),
-                        &ctx.execution,
-                        sequence_order,
-                        &[],
-                        *emit_edge_binding,
-                        indexed_edge_equality.as_ref(),
-                        edge_payload_predicate.as_ref(),
-                        edge_vector_predicate.as_ref(),
-                        edge_property_projection.as_deref(),
-                        dst_property_projection.as_deref(),
-                    )
-                    .await?
+                    if let Some(bounds) = var_len {
+                        ensure_var_len_expand(
+                            label_expr,
+                            hop_aux_binding,
+                            indexed_edge_equality,
+                            edge_payload_predicate,
+                            edge_vector_predicate,
+                            edge_property_projection,
+                        )?;
+                        execute_var_len_expand(
+                            ctx,
+                            rows,
+                            src,
+                            edge,
+                            dst,
+                            *direction,
+                            label.as_deref(),
+                            &ctx.execution,
+                            bounds,
+                            &[],
+                            *emit_edge_binding,
+                            edge_property_projection.as_deref(),
+                            dst_property_projection.as_deref(),
+                        )
+                        .await?
+                    } else {
+                        ensure_simple_expand(label_expr, var_len, hop_aux_binding)?;
+                        let sequence_order = gleaph_sequence_order_after_expand(
+                            ops,
+                            op_idx,
+                            edge.as_ref(),
+                            label.is_some() && label_expr.is_none(),
+                        )?;
+                        execute_expand(
+                            ctx,
+                            rows,
+                            src,
+                            edge,
+                            dst,
+                            *direction,
+                            label.as_deref(),
+                            &ctx.execution,
+                            sequence_order,
+                            &[],
+                            *emit_edge_binding,
+                            indexed_edge_equality.as_ref(),
+                            edge_payload_predicate.as_ref(),
+                            edge_vector_predicate.as_ref(),
+                            edge_property_projection.as_deref(),
+                            dst_property_projection.as_deref(),
+                        )
+                        .await?
+                    }
                 }
                 PlanOp::ExpandFilter {
                     src,
@@ -589,32 +616,59 @@ pub(crate) fn execute_ops_from<'a>(
                     hop_aux_binding,
                     emit_edge_binding,
                 } => {
-                    ensure_simple_expand(label_expr, var_len, hop_aux_binding)?;
-                    let sequence_order = gleaph_sequence_order_after_expand(
-                        ops,
-                        op_idx,
-                        edge.as_ref(),
-                        label.is_some() && label_expr.is_none(),
-                    )?;
-                    execute_expand(
-                        ctx,
-                        rows,
-                        src,
-                        edge,
-                        dst,
-                        *direction,
-                        label.as_deref(),
-                        &ctx.execution,
-                        sequence_order,
-                        dst_filter,
-                        *emit_edge_binding,
-                        indexed_edge_equality.as_ref(),
-                        edge_payload_predicate.as_ref(),
-                        edge_vector_predicate.as_ref(),
-                        edge_property_projection.as_deref(),
-                        dst_property_projection.as_deref(),
-                    )
-                    .await?
+                    if let Some(bounds) = var_len {
+                        ensure_var_len_expand(
+                            label_expr,
+                            hop_aux_binding,
+                            indexed_edge_equality,
+                            edge_payload_predicate,
+                            edge_vector_predicate,
+                            edge_property_projection,
+                        )?;
+                        execute_var_len_expand(
+                            ctx,
+                            rows,
+                            src,
+                            edge,
+                            dst,
+                            *direction,
+                            label.as_deref(),
+                            &ctx.execution,
+                            bounds,
+                            dst_filter,
+                            *emit_edge_binding,
+                            edge_property_projection.as_deref(),
+                            dst_property_projection.as_deref(),
+                        )
+                        .await?
+                    } else {
+                        ensure_simple_expand(label_expr, var_len, hop_aux_binding)?;
+                        let sequence_order = gleaph_sequence_order_after_expand(
+                            ops,
+                            op_idx,
+                            edge.as_ref(),
+                            label.is_some() && label_expr.is_none(),
+                        )?;
+                        execute_expand(
+                            ctx,
+                            rows,
+                            src,
+                            edge,
+                            dst,
+                            *direction,
+                            label.as_deref(),
+                            &ctx.execution,
+                            sequence_order,
+                            dst_filter,
+                            *emit_edge_binding,
+                            indexed_edge_equality.as_ref(),
+                            edge_payload_predicate.as_ref(),
+                            edge_vector_predicate.as_ref(),
+                            edge_property_projection.as_deref(),
+                            dst_property_projection.as_deref(),
+                        )
+                        .await?
+                    }
                 }
                 PlanOp::ShortestPath {
                     src,

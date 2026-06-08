@@ -17,14 +17,15 @@ use crate::gql_execution_context::GqlExecutionContext;
 use crate::plan::query::error::PlanQueryError;
 use crate::plan::query::executor::context::QueryExprEvaluator;
 use crate::plan::query::executor::expand::{
-    EdgeEqualityStreamFilter, ExpandDst, build_expanded_row, csr_offset_fast_path_for_expand,
-    edge_binding_for_scanned_expand, edge_equality_stream_filter, edge_matches_stream_filter,
-    expand_accepts_remote_dst, expand_candidates_into, expand_dst_matches_prebound_vertex,
-    visit_csr_expand_fast_path,
+    EdgeEqualityStreamFilter, ExpandDst, build_expanded_row, collect_var_len_expand_rows,
+    csr_offset_fast_path_for_expand, edge_binding_for_scanned_expand, edge_equality_stream_filter,
+    edge_matches_stream_filter, expand_accepts_remote_dst, expand_candidates_into,
+    expand_dst_matches_prebound_vertex, visit_csr_expand_fast_path,
 };
 use crate::plan::query::executor::{
     EdgeSequenceOrder, PlanBinding, dst_filter_is_dst_vertex_only, ensure_simple_expand,
-    limit_value, project_row, row_matches_all, vertex_row_matches_dst_filters,
+    ensure_var_len_expand, limit_value, project_row, row_matches_all,
+    vertex_row_matches_dst_filters,
 };
 use crate::plan::query::row::PlanRow;
 
@@ -301,33 +302,67 @@ fn stream_row_through_ops(
             hop_aux_binding,
             emit_edge_binding,
         } => {
-            ensure_simple_expand(label_expr, var_len, hop_aux_binding)?;
-            stream_expand(
-                store,
-                ops,
-                op_idx,
-                row,
-                parameters,
-                src,
-                edge,
-                dst,
-                *direction,
-                label.as_deref(),
-                execution,
-                EdgeSequenceOrder::Descending,
-                &[],
-                *emit_edge_binding,
-                indexed_edge_equality.as_ref(),
-                edge_payload_predicate.as_ref(),
-                edge_vector_predicate.as_ref(),
-                edge_property_projection.as_deref(),
-                dst_property_projection.as_deref(),
-                caller,
-                gleaph_weight_decoders,
-                evaluator,
-                sink,
-                clears_active_aggregate,
-            )
+            if let Some(bounds) = var_len {
+                ensure_var_len_expand(
+                    label_expr,
+                    hop_aux_binding,
+                    indexed_edge_equality,
+                    edge_payload_predicate,
+                    edge_vector_predicate,
+                    edge_property_projection,
+                )?;
+                stream_var_len_expand(
+                    store,
+                    ops,
+                    op_idx,
+                    row,
+                    parameters,
+                    src,
+                    edge,
+                    dst,
+                    *direction,
+                    label.as_deref(),
+                    execution,
+                    bounds,
+                    &[],
+                    *emit_edge_binding,
+                    edge_property_projection.as_deref(),
+                    dst_property_projection.as_deref(),
+                    caller,
+                    gleaph_weight_decoders,
+                    evaluator,
+                    sink,
+                    clears_active_aggregate,
+                )
+            } else {
+                ensure_simple_expand(label_expr, var_len, hop_aux_binding)?;
+                stream_expand(
+                    store,
+                    ops,
+                    op_idx,
+                    row,
+                    parameters,
+                    src,
+                    edge,
+                    dst,
+                    *direction,
+                    label.as_deref(),
+                    execution,
+                    EdgeSequenceOrder::Descending,
+                    &[],
+                    *emit_edge_binding,
+                    indexed_edge_equality.as_ref(),
+                    edge_payload_predicate.as_ref(),
+                    edge_vector_predicate.as_ref(),
+                    edge_property_projection.as_deref(),
+                    dst_property_projection.as_deref(),
+                    caller,
+                    gleaph_weight_decoders,
+                    evaluator,
+                    sink,
+                    clears_active_aggregate,
+                )
+            }
         }
         PlanOp::ExpandFilter {
             src,
@@ -346,33 +381,67 @@ fn stream_row_through_ops(
             hop_aux_binding,
             emit_edge_binding,
         } => {
-            ensure_simple_expand(label_expr, var_len, hop_aux_binding)?;
-            stream_expand(
-                store,
-                ops,
-                op_idx,
-                row,
-                parameters,
-                src,
-                edge,
-                dst,
-                *direction,
-                label.as_deref(),
-                execution,
-                EdgeSequenceOrder::Descending,
-                dst_filter,
-                *emit_edge_binding,
-                indexed_edge_equality.as_ref(),
-                edge_payload_predicate.as_ref(),
-                edge_vector_predicate.as_ref(),
-                edge_property_projection.as_deref(),
-                dst_property_projection.as_deref(),
-                caller,
-                gleaph_weight_decoders,
-                evaluator,
-                sink,
-                clears_active_aggregate,
-            )
+            if let Some(bounds) = var_len {
+                ensure_var_len_expand(
+                    label_expr,
+                    hop_aux_binding,
+                    indexed_edge_equality,
+                    edge_payload_predicate,
+                    edge_vector_predicate,
+                    edge_property_projection,
+                )?;
+                stream_var_len_expand(
+                    store,
+                    ops,
+                    op_idx,
+                    row,
+                    parameters,
+                    src,
+                    edge,
+                    dst,
+                    *direction,
+                    label.as_deref(),
+                    execution,
+                    bounds,
+                    dst_filter,
+                    *emit_edge_binding,
+                    edge_property_projection.as_deref(),
+                    dst_property_projection.as_deref(),
+                    caller,
+                    gleaph_weight_decoders,
+                    evaluator,
+                    sink,
+                    clears_active_aggregate,
+                )
+            } else {
+                ensure_simple_expand(label_expr, var_len, hop_aux_binding)?;
+                stream_expand(
+                    store,
+                    ops,
+                    op_idx,
+                    row,
+                    parameters,
+                    src,
+                    edge,
+                    dst,
+                    *direction,
+                    label.as_deref(),
+                    execution,
+                    EdgeSequenceOrder::Descending,
+                    dst_filter,
+                    *emit_edge_binding,
+                    indexed_edge_equality.as_ref(),
+                    edge_payload_predicate.as_ref(),
+                    edge_vector_predicate.as_ref(),
+                    edge_property_projection.as_deref(),
+                    dst_property_projection.as_deref(),
+                    caller,
+                    gleaph_weight_decoders,
+                    evaluator,
+                    sink,
+                    clears_active_aggregate,
+                )
+            }
         }
         _ => unreachable!("limited streaming prefix only contains supported operators"),
     }
@@ -454,6 +523,88 @@ fn local_vertex_binding_for_limited_streaming_expand(
             variable: variable.to_owned(),
         }),
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stream_var_len_expand(
+    store: &GraphStore,
+    ops: &[PlanOp],
+    op_idx: usize,
+    row: PlanRow,
+    parameters: &BTreeMap<String, Value>,
+    src: &Str,
+    edge: &Str,
+    dst: &Str,
+    direction: EdgeDirection,
+    label: Option<&str>,
+    execution: &GqlExecutionContext,
+    var_len: &gleaph_gql_planner::plan::VarLenSpec,
+    dst_filter: &[Expr],
+    emit_edge_binding: bool,
+    edge_property_projection: Option<&[Str]>,
+    dst_property_projection: Option<&[Str]>,
+    caller: Option<Principal>,
+    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
+    evaluator: &QueryExprEvaluator<'_>,
+    sink: &mut LimitedRows,
+    clears_active_aggregate: &mut bool,
+) -> Result<bool, PlanQueryError> {
+    if row
+        .get(src.as_ref())
+        .is_some_and(|binding| matches!(binding, PlanBinding::RemoteVertex(_)))
+    {
+        return Err(PlanQueryError::UnsupportedOp("Expand.var_len.remote"));
+    }
+    let label_id = match label {
+        Some(label) => execution
+            .resolved_edge_label_id(label)
+            .map(Some)
+            .ok_or_else(|| PlanQueryError::MissingResolvedLabel {
+                namespace: "edge",
+                name: label.to_owned(),
+            })?,
+        None => None,
+    };
+    let Some(src_id) = local_vertex_binding_for_limited_streaming_expand(&row, src.as_ref())?
+    else {
+        return Ok(false);
+    };
+    let mut expanded_rows = Vec::new();
+    collect_var_len_expand_rows(
+        store,
+        &row,
+        src_id,
+        edge,
+        dst,
+        direction,
+        label_id,
+        var_len,
+        dst_filter,
+        emit_edge_binding,
+        edge_property_projection,
+        dst_property_projection,
+        evaluator,
+        &mut expanded_rows,
+    )?;
+    let mut any = false;
+    for expanded in expanded_rows {
+        if stream_row_through_ops(
+            store,
+            ops,
+            op_idx + 1,
+            expanded,
+            parameters,
+            caller,
+            execution,
+            gleaph_weight_decoders,
+            evaluator,
+            sink,
+            clears_active_aggregate,
+        )? {
+            any = true;
+        }
+    }
+    Ok(any)
 }
 
 #[allow(clippy::too_many_arguments)]
