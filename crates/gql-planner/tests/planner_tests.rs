@@ -2606,13 +2606,52 @@ fn expand_filter_on_edge_keeps_edge_binding() {
 }
 
 #[test]
-fn non_shortest_path_variable_is_rejected() {
+fn non_shortest_single_hop_path_variable_is_rejected() {
     let err = plan_query_err("MATCH p = (a)-[e]->(b) RETURN p");
     assert!(matches!(
         err,
         PlannerError::UnsupportedPattern(message)
-            if message.contains("path variables are only supported for shortest-path patterns")
+            if message.contains("path variables require a shortest-path prefix or a variable-length quantifier")
     ));
+}
+
+#[test]
+fn var_len_path_variable_is_planned_on_expand() {
+    let plan = plan_query("MATCH p = (a)-[e]->{2,2}(c) RETURN p");
+    let (path_var, emit_path_binding) = plan
+        .ops
+        .iter()
+        .find_map(|op| match op {
+            PlanOp::Expand {
+                path_var,
+                emit_path_binding,
+                var_len,
+                ..
+            } if var_len.is_some() => Some((path_var.clone(), *emit_path_binding)),
+            _ => None,
+        })
+        .expect("var_len Expand path_var");
+    assert_eq!(path_var.as_deref(), Some("p"));
+    assert!(emit_path_binding);
+}
+
+#[test]
+fn var_len_return_path_only_prunes_edge_binding() {
+    let plan = plan_query("MATCH p = (a)-[e]->{2,2}(c) RETURN p");
+    let (emit_edge, emit_path) = plan
+        .ops
+        .iter()
+        .find_map(|op| match op {
+            PlanOp::Expand {
+                emit_edge_binding,
+                emit_path_binding,
+                var_len,
+                ..
+            } if var_len.is_some() => Some((*emit_edge_binding, *emit_path_binding)),
+            _ => None,
+        })
+        .expect("var_len Expand emit flags");
+    assert_eq!((emit_edge, emit_path), (false, true));
 }
 
 #[test]

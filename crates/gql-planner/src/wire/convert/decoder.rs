@@ -157,6 +157,8 @@ impl<'a> Decoder<'a> {
                 emit_edge_binding,
                 near_group_var,
                 far_group_var,
+                path_var,
+                emit_path_binding,
             } => PlanOp::Expand {
                 src: rc_str(src),
                 edge: rc_str(edge),
@@ -174,6 +176,8 @@ impl<'a> Decoder<'a> {
                 emit_edge_binding: *emit_edge_binding,
                 near_group_var: opt_rc_str(near_group_var),
                 far_group_var: opt_rc_str(far_group_var),
+                path_var: opt_rc_str(path_var),
+                emit_path_binding: *emit_path_binding,
             },
             PlanOpWire::ExpandFilter {
                 src,
@@ -193,6 +197,8 @@ impl<'a> Decoder<'a> {
                 emit_edge_binding,
                 near_group_var,
                 far_group_var,
+                path_var,
+                emit_path_binding,
             } => PlanOp::ExpandFilter {
                 src: rc_str(src),
                 edge: rc_str(edge),
@@ -214,6 +220,8 @@ impl<'a> Decoder<'a> {
                 emit_edge_binding: *emit_edge_binding,
                 near_group_var: opt_rc_str(near_group_var),
                 far_group_var: opt_rc_str(far_group_var),
+                path_var: opt_rc_str(path_var),
+                emit_path_binding: *emit_path_binding,
             },
             PlanOpWire::ShortestPath {
                 src,

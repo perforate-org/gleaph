@@ -100,6 +100,11 @@ fn register_op_bindings(op: &PlanOp, layout: &mut BindingLayout) {
             dst,
             hop_aux_binding,
             emit_edge_binding,
+            var_len,
+            path_var,
+            emit_path_binding,
+            near_group_var,
+            far_group_var,
             ..
         }
         | PlanOp::ExpandFilter {
@@ -108,6 +113,11 @@ fn register_op_bindings(op: &PlanOp, layout: &mut BindingLayout) {
             dst,
             hop_aux_binding,
             emit_edge_binding,
+            var_len,
+            path_var,
+            emit_path_binding,
+            near_group_var,
+            far_group_var,
             ..
         } => {
             layout.insert_name(src.clone());
@@ -117,6 +127,17 @@ fn register_op_bindings(op: &PlanOp, layout: &mut BindingLayout) {
             layout.insert_name(dst.clone());
             if let Some(hop) = hop_aux_binding {
                 layout.insert_name(hop.clone());
+            }
+            if var_len.is_some() {
+                if let Some(near) = near_group_var {
+                    layout.insert_name(near.clone());
+                }
+                if let Some(far) = far_group_var {
+                    layout.insert_name(far.clone());
+                }
+                if *emit_path_binding && let Some(path_var) = path_var {
+                    layout.insert_name(path_var.clone());
+                }
             }
         }
         PlanOp::ShortestPath {

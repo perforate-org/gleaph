@@ -86,18 +86,27 @@ fn extend_subplan_written_vars_from_op(op: &PlanOp, out: &mut BTreeSet<String>) 
             edge,
             dst,
             hop_aux_binding,
+            var_len,
+            path_var,
             ..
         }
         | PlanOp::ExpandFilter {
             edge,
             dst,
             hop_aux_binding,
+            var_len,
+            path_var,
             ..
         } => {
             out.insert(edge.to_string());
             out.insert(dst.to_string());
             if let Some(h) = hop_aux_binding {
                 out.insert(h.to_string());
+            }
+            if var_len.is_some()
+                && let Some(p) = path_var
+            {
+                out.insert(p.to_string());
             }
         }
         PlanOp::ShortestPath { edge, path_var, .. } => {
@@ -546,6 +555,8 @@ pub(crate) fn execute_ops_from<'a>(
                     emit_edge_binding,
                     near_group_var,
                     far_group_var,
+                    path_var,
+                    emit_path_binding,
                 } => {
                     if let Some(bounds) = var_len {
                         ensure_var_len_expand(
@@ -571,6 +582,8 @@ pub(crate) fn execute_ops_from<'a>(
                             *emit_edge_binding,
                             near_group_var.as_ref(),
                             far_group_var.as_ref(),
+                            path_var.as_ref(),
+                            *emit_path_binding,
                             indexed_edge_equality.as_ref(),
                             edge_payload_predicate.as_ref(),
                             edge_vector_predicate.as_ref(),
@@ -626,6 +639,8 @@ pub(crate) fn execute_ops_from<'a>(
                     emit_edge_binding,
                     near_group_var,
                     far_group_var,
+                    path_var,
+                    emit_path_binding,
                 } => {
                     if let Some(bounds) = var_len {
                         ensure_var_len_expand(
@@ -651,6 +666,8 @@ pub(crate) fn execute_ops_from<'a>(
                             *emit_edge_binding,
                             near_group_var.as_ref(),
                             far_group_var.as_ref(),
+                            path_var.as_ref(),
+                            *emit_path_binding,
                             indexed_edge_equality.as_ref(),
                             edge_payload_predicate.as_ref(),
                             edge_vector_predicate.as_ref(),
@@ -1196,6 +1213,8 @@ mod tests {
             emit_edge_binding: true,
             near_group_var: None,
             far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
         };
         let plan = plan(vec![
             PlanOp::NodeScan {

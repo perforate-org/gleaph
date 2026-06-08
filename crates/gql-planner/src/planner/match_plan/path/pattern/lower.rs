@@ -33,9 +33,12 @@ pub(super) fn plan_path_pattern(
         },
         _ => None,
     });
-    if path.variable.is_some() && shortest_mode.is_none() {
+    if path.variable.is_some()
+        && shortest_mode.is_none()
+        && !path_expression_has_var_len(&path.expr)
+    {
         return Err(PlannerError::UnsupportedPattern(
-            "path variables are only supported for shortest-path patterns".into(),
+            "path variables require a shortest-path prefix or a variable-length quantifier".into(),
         ));
     }
 
@@ -153,6 +156,42 @@ pub(super) fn plan_path_expr(
         }
     }
     Ok(())
+}
+
+fn path_expression_has_var_len(expr: &PathPatternExpr) -> bool {
+    match expr {
+        PathPatternExpr::Term(term) => path_term_has_var_len(term),
+        PathPatternExpr::MultisetAlternation(terms) | PathPatternExpr::PatternUnion(terms) => {
+            terms.iter().any(path_term_has_var_len)
+        }
+    }
+}
+
+fn path_term_has_var_len(term: &PathTerm) -> bool {
+    let Ok(term) = normalize_path_term(term) else {
+        return false;
+    };
+    term.factors.iter().any(|factor| {
+        factor
+            .quantifier
+            .as_ref()
+            .and_then(quantifier_to_var_len)
+            .is_some()
+            || matches!(
+                &factor.primary,
+                PathPrimary::Parenthesized { expr, .. } if path_expression_has_var_len(expr)
+            )
+    })
+}
+
+pub(super) fn var_len_path_var_fields(
+    path_var: Option<&str>,
+    var_len: Option<&VarLenSpec>,
+) -> (Option<Str>, bool) {
+    if var_len.is_none() {
+        return (None, false);
+    }
+    (path_var.map(Into::into), path_var.is_some())
 }
 
 /// Pre-extracted path element for lookahead during planning.

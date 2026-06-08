@@ -140,6 +140,8 @@ impl Encoder {
                 emit_edge_binding,
                 near_group_var,
                 far_group_var,
+                path_var,
+                emit_path_binding,
             } => PlanOpWire::Expand {
                 src: src.to_string(),
                 edge: edge.to_string(),
@@ -157,6 +159,8 @@ impl Encoder {
                 emit_edge_binding: *emit_edge_binding,
                 near_group_var: opt_str_opt(near_group_var),
                 far_group_var: opt_str_opt(far_group_var),
+                path_var: opt_str_opt(path_var),
+                emit_path_binding: *emit_path_binding,
             },
             PlanOp::ExpandFilter {
                 src,
@@ -176,6 +180,8 @@ impl Encoder {
                 emit_edge_binding,
                 near_group_var,
                 far_group_var,
+                path_var,
+                emit_path_binding,
             } => PlanOpWire::ExpandFilter {
                 src: src.to_string(),
                 edge: edge.to_string(),
@@ -194,6 +200,8 @@ impl Encoder {
                 emit_edge_binding: *emit_edge_binding,
                 near_group_var: opt_str_opt(near_group_var),
                 far_group_var: opt_str_opt(far_group_var),
+                path_var: opt_str_opt(path_var),
+                emit_path_binding: *emit_path_binding,
             },
             PlanOp::ShortestPath {
                 src,

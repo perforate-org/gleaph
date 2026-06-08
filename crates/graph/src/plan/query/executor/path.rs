@@ -39,10 +39,10 @@ mod tests;
 
 #[derive(Clone, Debug)]
 pub(crate) struct PathSearchNode {
-    current: VertexId,
-    previous: Option<usize>,
-    edge: Option<EdgeBinding>,
-    depth: u64,
+    pub(crate) current: VertexId,
+    pub(crate) previous: Option<usize>,
+    pub(crate) edge: Option<EdgeBinding>,
+    pub(crate) depth: u64,
 }
 
 /// Lazy path result from [`execute_shortest_path`]: shares [`Arc`] search state across many rows.

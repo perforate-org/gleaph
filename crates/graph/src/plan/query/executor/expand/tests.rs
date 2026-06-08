@@ -290,6 +290,8 @@ fn union_label_expr_edge_payload_predicate_fuses_per_label() {
             emit_edge_binding: true,
             near_group_var: None,
             far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
         },
         PlanOp::Project {
             columns: vec![project(var("b"), "b")],
@@ -363,6 +365,8 @@ fn wildcard_label_expr_edge_payload_predicate_fuses_via_catalog_fallback() {
             emit_edge_binding: true,
             near_group_var: None,
             far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
         },
         PlanOp::Project {
             columns: vec![project(var("b"), "b")],
@@ -437,6 +441,8 @@ fn not_label_expr_edge_payload_predicate_fuses_via_catalog_fallback() {
             emit_edge_binding: true,
             near_group_var: None,
             far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
         },
         PlanOp::Project {
             columns: vec![project(var("b"), "b")],
@@ -594,6 +600,8 @@ fn directed_expand_projects_endpoint_and_edge_properties() {
             emit_edge_binding: true,
             near_group_var: None,
             far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
         },
         PlanOp::Project {
             columns: vec![
@@ -662,6 +670,8 @@ fn reverse_expand_resolves_edge_properties_through_alias() {
             emit_edge_binding: true,
             near_group_var: None,
             far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
         },
         PlanOp::Project {
             columns: vec![project(prop("e", "since"), "since")],
@@ -718,6 +728,8 @@ fn undirected_expand_from_noncanonical_endpoint_resolves_edge_properties_through
             emit_edge_binding: true,
             near_group_var: None,
             far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
         },
         PlanOp::Project {
             columns: vec![project(prop("e", "since"), "since")],
@@ -916,6 +928,8 @@ fn expand_filter_applies_destination_predicate() {
             emit_edge_binding: true,
             near_group_var: None,
             far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
         },
         PlanOp::Project {
             columns: vec![project(prop("b", "age"), "age")],
@@ -972,6 +986,8 @@ fn expand_indexed_edge_equality_filters_candidates() {
             emit_edge_binding: true,
             near_group_var: None,
             far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
         },
         PlanOp::Project {
             columns: vec![project(var("b"), "b")],
@@ -1051,6 +1067,8 @@ fn indexed_edge_equality_expand_return_gleaph_weight() {
             emit_edge_binding: true,
             near_group_var: None,
             far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
         },
         PlanOp::Project {
             columns: vec![project(gleaph_weight, "w")],
@@ -1100,6 +1118,8 @@ fn expand_applies_dst_property_projection_for_property_return() {
             emit_edge_binding: false,
             near_group_var: None,
             far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
         },
         PlanOp::Project {
             columns: vec![
@@ -1163,6 +1183,8 @@ fn return_star_projects_vertex_and_edge_records() {
             emit_edge_binding: true,
             near_group_var: None,
             far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
         },
         PlanOp::Project {
             columns: vec![],
@@ -1566,6 +1588,67 @@ fn gql_quantified_subpath_binds_node_and_edge_groups() {
 }
 
 #[test]
+fn gql_var_len_path_var_binds_traversed_path() {
+    let store = GraphStore::new();
+    let a = store
+        .insert_vertex_named(["PathVarA"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    let b = store
+        .insert_vertex_named(["PathVarMid"], Vec::<(&str, Value)>::new())
+        .expect("b");
+    let c = store
+        .insert_vertex_named(["PathVarC"], Vec::<(&str, Value)>::new())
+        .expect("c");
+    store
+        .insert_directed_edge_named(a, b, Some("PathVarRoad"), Vec::<(&str, Value)>::new())
+        .expect("a->b");
+    store
+        .insert_directed_edge_named(b, c, Some("PathVarRoad"), Vec::<(&str, Value)>::new())
+        .expect("b->c");
+
+    let plan = plan_gql(
+        "MATCH p = (a:PathVarA)-[e:PathVarRoad]->{2,2}(c:PathVarC) \
+         RETURN CARDINALITY(e) AS e_hops",
+    );
+    let path_expand = plan.ops.iter().find_map(|op| match op {
+        PlanOp::Expand {
+            path_var,
+            emit_path_binding,
+            var_len,
+            ..
+        } if var_len.is_some() => Some((path_var.clone(), *emit_path_binding)),
+        _ => None,
+    });
+    assert_eq!(
+        path_expand,
+        Some((Some("p".into()), false)),
+        "edge group referenced in RETURN keeps path binding pruned when unused: {:?}",
+        plan.ops
+    );
+
+    let plan_return_p = plan_gql(
+        "MATCH p = (a:PathVarA)-[e:PathVarRoad]->{2,2}(c:PathVarC) RETURN p, CARDINALITY(e) AS e_hops",
+    );
+    let result = store
+        .execute_plan_query(&plan_return_p, &params(), GqlExecutionContext::default())
+        .expect("var_len path variable");
+
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(result.rows[0].get("e_hops"), Some(&Value::Int64(2)));
+    let Some(Value::Path(elements)) = result.rows[0].get("p") else {
+        panic!(
+            "expected path value for p, got {:?}",
+            result.rows[0].get("p")
+        );
+    };
+    assert_eq!(
+        elements.len(),
+        5,
+        "path should alternate vertex/edge for 2 hops"
+    );
+}
+
+#[test]
 fn gql_var_len_where_gleaph_weight_filters_on_last_hop_edge() {
     let store = GraphStore::new();
     use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
@@ -1669,6 +1752,8 @@ fn var_len_edge_payload_predicate_fuses_at_each_hop() {
             emit_edge_binding: true,
             near_group_var: None,
             far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
         },
         PlanOp::Project {
             columns: vec![project(var("c"), "c")],
@@ -2024,6 +2109,8 @@ fn vector_dst_only_expand_filter_keeps_projection_fast_path_semantics() {
             emit_edge_binding: false,
             near_group_var: None,
             far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
         },
         PlanOp::Project {
             columns: vec![project(prop("b", "name"), "name")],
@@ -2260,6 +2347,8 @@ fn expand_plan_edge_payload_predicate_filters_candidates() {
             emit_edge_binding: true,
             near_group_var: None,
             far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
         },
         PlanOp::Project {
             columns: vec![project(var("b"), "b")],

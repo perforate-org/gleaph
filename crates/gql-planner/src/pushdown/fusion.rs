@@ -36,6 +36,8 @@ pub fn apply_ev_fusion(ops: &mut Vec<PlanOp>, annotations: &mut PlanAnnotations)
                     emit_edge_binding,
                     near_group_var: _,
                     far_group_var: _,
+                    path_var: _,
+                    emit_path_binding: _,
                 },
                 PlanOp::PropertyFilter { predicates, .. },
             ) = (expand_op, filter_op)
@@ -60,6 +62,8 @@ pub fn apply_ev_fusion(ops: &mut Vec<PlanOp>, annotations: &mut PlanAnnotations)
                         emit_edge_binding,
                         near_group_var: None,
                         far_group_var: None,
+                        path_var: None,
+                        emit_path_binding: false,
                     },
                 );
                 annotations.optimizer.ev_fusion_applied = true;

@@ -1,6 +1,7 @@
 //! Variable-length `Expand` / `ExpandFilter` (`{min,max}` quantifiers).
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use gleaph_gql::Value;
 use gleaph_gql::ast::Expr;
@@ -13,6 +14,7 @@ use ic_stable_lara::VertexId;
 
 use super::super::bindings::{edge_bindings_along_var_len_path, vertices_along_var_len_path};
 use super::super::context::ExecuteCtx;
+use super::super::path::{PathBinding, PathSearchNode, local_shard_id};
 use super::{
     ExpandDst, edge_binding_matches_label_expr, expand_candidates_for_expand_op_into,
     expand_dst_binding, expand_dst_matches_prebound_vertex,
@@ -24,15 +26,8 @@ use crate::plan::query::executor::{
 };
 use crate::plan::query::row::PlanRow;
 
-struct VarLenSearchNode {
-    current: VertexId,
-    previous: Option<usize>,
-    edge: Option<EdgeBinding>,
-    depth: u64,
-}
-
 fn var_len_path_contains_vertex(
-    states: &[VarLenSearchNode],
+    states: &[PathSearchNode],
     mut state_idx: usize,
     vertex: VertexId,
 ) -> bool {
@@ -64,6 +59,8 @@ pub(crate) async fn execute_var_len_expand(
     emit_edge_binding: bool,
     near_group_var: Option<&Str>,
     far_group_var: Option<&Str>,
+    path_var: Option<&Str>,
+    emit_path_binding: bool,
     indexed_edge_equality: Option<&(Str, ScanValue)>,
     edge_payload_predicate: Option<&EdgePayloadPredicate>,
     edge_vector_predicate: Option<&EdgeVectorPredicate>,
@@ -110,6 +107,8 @@ pub(crate) async fn execute_var_len_expand(
             emit_edge_binding,
             near_group_var,
             far_group_var,
+            path_var,
+            emit_path_binding,
             ctx.parameters,
             indexed_edge_equality,
             edge_payload_predicate,
@@ -139,6 +138,8 @@ pub(crate) fn collect_var_len_expand_rows(
     emit_edge_binding: bool,
     near_group_var: Option<&Str>,
     far_group_var: Option<&Str>,
+    path_var: Option<&Str>,
+    emit_path_binding: bool,
     parameters: &BTreeMap<String, Value>,
     indexed_edge_equality: Option<&(Str, ScanValue)>,
     edge_payload_predicate: Option<&EdgePayloadPredicate>,
@@ -154,7 +155,7 @@ pub(crate) fn collect_var_len_expand_rows(
         .unwrap_or_else(|| vertex_count.saturating_sub(1));
     let min_hops = var_len.min;
 
-    let mut states = vec![VarLenSearchNode {
+    let mut states = vec![PathSearchNode {
         current: src_id,
         previous: None,
         edge: None,
@@ -166,7 +167,11 @@ pub(crate) fn collect_var_len_expand_rows(
     let edge_key = emit_edge_binding.then(|| edge.to_string());
     let near_key = near_group_var.map(|v| v.to_string());
     let far_key = far_group_var.map(|v| v.to_string());
+    let path_key = emit_path_binding
+        .then(|| path_var.map(|v| v.to_string()))
+        .flatten();
     let dst_key = dst.to_string();
+    let shard_id = local_shard_id(store);
 
     while head < queue.len() {
         let state_idx = queue[head];
@@ -182,6 +187,8 @@ pub(crate) fn collect_var_len_expand_rows(
                     edge_key.as_deref(),
                     near_key.as_deref(),
                     far_key.as_deref(),
+                    path_key.as_deref(),
+                    shard_id,
                     dst_key.as_str(),
                     edge_dst,
                     &states,
@@ -227,7 +234,7 @@ pub(crate) fn collect_var_len_expand_rows(
             }
             let next_depth = depth + 1;
             let next_state_idx = states.len();
-            states.push(VarLenSearchNode {
+            states.push(PathSearchNode {
                 current: next,
                 previous: Some(state_idx),
                 edge: Some(edge_binding),
@@ -245,9 +252,11 @@ fn build_var_len_row(
     edge_key: Option<&str>,
     near_key: Option<&str>,
     far_key: Option<&str>,
+    path_key: Option<&str>,
+    shard_id: gleaph_graph_kernel::federation::ShardId,
     dst_key: &str,
     dst: ExpandDst,
-    states: &[VarLenSearchNode],
+    states: &[PathSearchNode],
     state_idx: usize,
     edge_property_projection: Option<&[Str]>,
     dst_property_projection: Option<&[Str]>,
@@ -285,6 +294,16 @@ fn build_var_len_row(
             false,
         );
         updates.push((far_key, PlanBinding::VertexGroup(vertices)));
+    }
+    if let Some(path_key) = path_key {
+        updates.push((
+            path_key,
+            PlanBinding::Path(PathBinding {
+                shard_id,
+                states: Arc::new(states.to_vec()),
+                leaf_state_idx: state_idx,
+            }),
+        ));
     }
     Ok(row.fork(updates))
 }

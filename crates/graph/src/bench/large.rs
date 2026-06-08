@@ -81,6 +81,8 @@ fn large_feed_page_plan() -> PhysicalPlan {
             emit_edge_binding: false,
             near_group_var: None,
             far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
         },
         PlanOp::Project {
             columns: vec![project(var("post"), "post")],
@@ -177,6 +179,8 @@ fn large_friends_of_friends_plan() -> PhysicalPlan {
             emit_edge_binding: false,
             near_group_var: None,
             far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
         },
         PlanOp::Expand {
             src: "friend".into(),
@@ -195,6 +199,8 @@ fn large_friends_of_friends_plan() -> PhysicalPlan {
             emit_edge_binding: false,
             near_group_var: None,
             far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
         },
         PlanOp::Project {
             columns: vec![project(var("candidate"), "candidate")],

@@ -515,6 +515,8 @@ fn expand_plan_for_label(
             emit_edge_binding,
             near_group_var: None,
             far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
         },
         PlanOp::Project {
             columns: vec![project(var("b"), "b")],
@@ -612,6 +614,8 @@ fn expand_filter_plan() -> PhysicalPlan {
             emit_edge_binding: false,
             near_group_var: None,
             far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
         },
         PlanOp::Project {
             columns: vec![project(var("b"), "b")],
@@ -878,6 +882,8 @@ fn expand_deep_row_plan() -> PhysicalPlan {
             emit_edge_binding: false,
             near_group_var: None,
             far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
         },
         PlanOp::Expand {
             src: "mid".into(),
@@ -896,6 +902,8 @@ fn expand_deep_row_plan() -> PhysicalPlan {
             emit_edge_binding: false,
             near_group_var: None,
             far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
         },
         PlanOp::Expand {
             src: "h".into(),
@@ -914,6 +922,8 @@ fn expand_deep_row_plan() -> PhysicalPlan {
             emit_edge_binding: false,
             near_group_var: None,
             far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
         },
         PlanOp::Project {
             columns: vec![project(var("b"), "b")],
@@ -998,6 +1008,8 @@ fn expand_filter_10pct_plan() -> PhysicalPlan {
             emit_edge_binding: false,
             near_group_var: None,
             far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
         },
         PlanOp::Project {
             columns: vec![project(var("b"), "b")],
@@ -1089,6 +1101,8 @@ fn expand_hash_join_then_expand_plan() -> PhysicalPlan {
                     emit_edge_binding: false,
                     near_group_var: None,
                     far_group_var: None,
+                    path_var: None,
+                    emit_path_binding: false,
                 },
             ],
             right: vec![
@@ -1114,6 +1128,8 @@ fn expand_hash_join_then_expand_plan() -> PhysicalPlan {
                     emit_edge_binding: false,
                     near_group_var: None,
                     far_group_var: None,
+                    path_var: None,
+                    emit_path_binding: false,
                 },
             ],
             join_keys: vec!["h".into()],
@@ -1284,6 +1300,8 @@ fn expand_vector_plan(
             emit_edge_binding: false,
             near_group_var: None,
             far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
         },
         PlanOp::Project {
             columns: vec![project(var("b"), "b")],
@@ -1328,6 +1346,8 @@ fn expand_vector_bindings_plan(
             emit_edge_binding: false,
             near_group_var: None,
             far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
         },
     ])
 }

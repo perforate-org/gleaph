@@ -376,6 +376,10 @@ pub enum PlanOp {
         /// When set with [`var_len`](Self::var_len), bind this node variable to the per-hop
         /// **far** endpoint list (GQL group variable from a quantified subpath).
         far_group_var: Option<Str>,
+        /// When set with [`var_len`](Self::var_len), bind this path variable to the traversed path.
+        path_var: Option<Str>,
+        /// When false, the executor skips materializing [`path_var`](Self::path_var) (if present).
+        emit_path_binding: bool,
     },
 
     /// Fused Expand + property filter on the destination node (EVFusion).
@@ -406,6 +410,10 @@ pub enum PlanOp {
         near_group_var: Option<Str>,
         /// Same semantics as [`PlanOp::Expand::far_group_var`].
         far_group_var: Option<Str>,
+        /// Same semantics as [`PlanOp::Expand::path_var`].
+        path_var: Option<Str>,
+        /// Same semantics as [`PlanOp::Expand::emit_path_binding`].
+        emit_path_binding: bool,
     },
     ///
     /// `edge` is set to the **last** hop’s edge along each emitted shortest path (or

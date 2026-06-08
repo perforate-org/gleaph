@@ -165,6 +165,11 @@ fn register_binding_kinds(op: &PlanOp, kinds: &mut HashMap<String, OutputBinding
             dst,
             emit_edge_binding,
             hop_aux_binding,
+            var_len,
+            path_var,
+            emit_path_binding,
+            near_group_var,
+            far_group_var,
             ..
         }
         | PlanOp::ExpandFilter {
@@ -172,6 +177,11 @@ fn register_binding_kinds(op: &PlanOp, kinds: &mut HashMap<String, OutputBinding
             dst,
             emit_edge_binding,
             hop_aux_binding,
+            var_len,
+            path_var,
+            emit_path_binding,
+            near_group_var,
+            far_group_var,
             ..
         } => {
             kinds.insert(dst.to_string(), OutputBindingKind::Vertex);
@@ -180,6 +190,17 @@ fn register_binding_kinds(op: &PlanOp, kinds: &mut HashMap<String, OutputBinding
             }
             if let Some(hop) = hop_aux_binding {
                 kinds.insert(hop.to_string(), OutputBindingKind::Scalar);
+            }
+            if var_len.is_some() {
+                if let Some(near) = near_group_var {
+                    kinds.insert(near.to_string(), OutputBindingKind::Vertex);
+                }
+                if let Some(far) = far_group_var {
+                    kinds.insert(far.to_string(), OutputBindingKind::Vertex);
+                }
+                if *emit_path_binding && let Some(path_var) = path_var {
+                    kinds.insert(path_var.to_string(), OutputBindingKind::Path);
+                }
             }
         }
         PlanOp::ShortestPath {

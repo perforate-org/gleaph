@@ -304,6 +304,8 @@ fn stream_row_through_ops(
             emit_edge_binding,
             near_group_var,
             far_group_var,
+            path_var,
+            emit_path_binding,
         } => {
             if let Some(bounds) = var_len {
                 ensure_var_len_expand(
@@ -332,6 +334,8 @@ fn stream_row_through_ops(
                     *emit_edge_binding,
                     near_group_var.as_ref(),
                     far_group_var.as_ref(),
+                    path_var.as_ref(),
+                    *emit_path_binding,
                     indexed_edge_equality.as_ref(),
                     edge_payload_predicate.as_ref(),
                     edge_vector_predicate.as_ref(),
@@ -392,6 +396,8 @@ fn stream_row_through_ops(
             emit_edge_binding,
             near_group_var,
             far_group_var,
+            path_var,
+            emit_path_binding,
         } => {
             if let Some(bounds) = var_len {
                 ensure_var_len_expand(
@@ -420,6 +426,8 @@ fn stream_row_through_ops(
                     *emit_edge_binding,
                     near_group_var.as_ref(),
                     far_group_var.as_ref(),
+                    path_var.as_ref(),
+                    *emit_path_binding,
                     indexed_edge_equality.as_ref(),
                     edge_payload_predicate.as_ref(),
                     edge_vector_predicate.as_ref(),
@@ -563,6 +571,8 @@ fn stream_var_len_expand(
     emit_edge_binding: bool,
     near_group_var: Option<&Str>,
     far_group_var: Option<&Str>,
+    path_var: Option<&Str>,
+    emit_path_binding: bool,
     indexed_edge_equality: Option<&(Str, ScanValue)>,
     edge_payload_predicate: Option<&EdgePayloadPredicate>,
     edge_vector_predicate: Option<&EdgeVectorPredicate>,
@@ -610,6 +620,8 @@ fn stream_var_len_expand(
         emit_edge_binding,
         near_group_var,
         far_group_var,
+        path_var,
+        emit_path_binding,
         parameters,
         indexed_edge_equality,
         edge_payload_predicate,

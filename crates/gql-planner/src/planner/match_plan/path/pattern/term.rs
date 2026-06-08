@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use super::super::filters::{EdgeFilterFusion, quantifier_to_var_len};
 use super::lower::{
     PathElement, first_hop_supports_leading_edge_index, hop_aux_binding_for_edge_if_referenced,
-    plan_edge_expand_labels, try_parse_quantified_hop_subpath,
+    plan_edge_expand_labels, try_parse_quantified_hop_subpath, var_len_path_var_fields,
 };
 use crate::anchor::extract_simple_label;
 use crate::join_order;
@@ -331,6 +331,8 @@ pub(super) fn plan_path_term(
                                 });
                             }
                         } else if !dst_filters.is_empty() {
+                            let (path_var_binding, emit_path_binding) =
+                                var_len_path_var_fields(path_var, var_len.as_ref());
                             ops.push(PlanOp::ExpandFilter {
                                 src: src_str,
                                 edge: edge_str,
@@ -352,11 +354,15 @@ pub(super) fn plan_path_term(
                                 emit_edge_binding: true,
                                 near_group_var: None,
                                 far_group_var: None,
+                                path_var: path_var_binding,
+                                emit_path_binding,
                             });
                             bound_node_vars.insert(dst_var.clone());
                             path_bound_node_vars.insert(dst_var.clone());
                             fused_nodes.insert(dst_var.clone());
                         } else {
+                            let (path_var_binding, emit_path_binding) =
+                                var_len_path_var_fields(path_var, var_len.as_ref());
                             ops.push(PlanOp::Expand {
                                 src: src_str,
                                 edge: edge_str,
@@ -377,6 +383,8 @@ pub(super) fn plan_path_term(
                                 emit_edge_binding: true,
                                 near_group_var: None,
                                 far_group_var: None,
+                                path_var: path_var_binding,
+                                emit_path_binding,
                             });
                             bound_node_vars.insert(dst_var.clone());
                             path_bound_node_vars.insert(dst_var.clone());
@@ -435,6 +443,9 @@ pub(super) fn plan_path_term(
                         let indexed_edge_equality = edge_fusion.indexed_equality.clone();
                         let edge_payload_predicate = edge_fusion.edge_payload_predicate.clone();
                         let edge_vector_predicate = edge_fusion.edge_vector_predicate.clone();
+                        let hop_var_len = Some(&hop.var_len);
+                        let (path_var_binding, emit_path_binding) =
+                            var_len_path_var_fields(path_var, hop_var_len);
 
                         if !dst_filters.is_empty() {
                             ops.push(PlanOp::ExpandFilter {
@@ -458,6 +469,8 @@ pub(super) fn plan_path_term(
                                 emit_edge_binding: true,
                                 near_group_var: Some(near_group_var),
                                 far_group_var: Some(far_group_var),
+                                path_var: path_var_binding.clone(),
+                                emit_path_binding,
                             });
                             fused_nodes.insert(dst_var.clone());
                         } else {
@@ -481,6 +494,8 @@ pub(super) fn plan_path_term(
                                 emit_edge_binding: true,
                                 near_group_var: Some(near_group_var),
                                 far_group_var: Some(far_group_var),
+                                path_var: path_var_binding,
+                                emit_path_binding,
                             });
                         }
                         bound_node_vars.insert(dst_var.clone());

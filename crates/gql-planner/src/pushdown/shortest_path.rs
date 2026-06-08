@@ -121,17 +121,33 @@ fn prune_shortest_path_bindings_in_ops(ops: &mut [PlanOp], live: &mut LiveBindin
                 edge,
                 dst_filter,
                 emit_edge_binding,
+                var_len,
+                path_var,
+                emit_path_binding,
                 ..
             } => {
                 *emit_edge_binding =
                     live.contains(edge.as_ref()) || exprs_reference_var(dst_filter, edge.as_ref());
+                if var_len.is_some() {
+                    *emit_path_binding = path_var
+                        .as_ref()
+                        .is_some_and(|path_var| live.contains(path_var.as_ref()));
+                }
             }
             PlanOp::Expand {
                 edge,
                 emit_edge_binding,
+                var_len,
+                path_var,
+                emit_path_binding,
                 ..
             } => {
                 *emit_edge_binding = live.contains(edge.as_ref());
+                if var_len.is_some() {
+                    *emit_path_binding = path_var
+                        .as_ref()
+                        .is_some_and(|path_var| live.contains(path_var.as_ref()));
+                }
             }
             _ => {}
         }
@@ -525,6 +541,8 @@ mod tests {
             emit_edge_binding: true,
             near_group_var: None,
             far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
         }
     }
 
@@ -547,6 +565,8 @@ mod tests {
             emit_edge_binding: true,
             near_group_var: None,
             far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
         }
     }
 

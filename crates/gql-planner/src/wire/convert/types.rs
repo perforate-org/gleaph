@@ -71,6 +71,8 @@ pub enum PlanOpWire {
         emit_edge_binding: bool,
         near_group_var: Option<String>,
         far_group_var: Option<String>,
+        path_var: Option<String>,
+        emit_path_binding: bool,
     },
     ExpandFilter {
         src: String,
@@ -90,6 +92,8 @@ pub enum PlanOpWire {
         emit_edge_binding: bool,
         near_group_var: Option<String>,
         far_group_var: Option<String>,
+        path_var: Option<String>,
+        emit_path_binding: bool,
     },
     ShortestPath {
         src: String,
