@@ -167,7 +167,9 @@ Options for later:
 - Walk payload log in lockstep with edge overflow iterator (same entry index), emitting value batches without full `Edge` materialization
 - Fold-to-slab maintenance to increase dense eligibility on hot hubs (production:
   `GraphStore` edge inserts drain the LARA maintenance queue via
-  `post_edge_insert_maintenance_budget`; delete paths drain fully)
+  `post_edge_insert_maintenance_budget`; delete paths drain fully).
+  Aggressive vertex-edge-span compaction at batch boundaries is **planned** in
+  [bulk-ingest-finalize.md](./bulk-ingest-finalize.md) (not implemented).
 - Property / equality index to reduce visited slots without full payload scan
 
 ## Migration plan
