@@ -20,7 +20,7 @@ use gleaph_gql_planner::plan::{
 use gleaph_graph_kernel::entry::{
     EdgeLabelId, EdgePayloadEncoding, EdgePayloadProfile, EdgeWeightProfile, Vertex, WeightEncoding,
 };
-use ic_stable_lara::{MaintenanceBudget, VertexId};
+use ic_stable_lara::{MaintenanceBudget, VertexId, labeled::LabeledOrientation};
 use std::collections::BTreeMap;
 use std::hint::black_box;
 
@@ -250,6 +250,19 @@ const CACHE_PREFIX_COUNT: usize = 48;
 const CACHE_HUB_OUT_DEGREE: usize = 24;
 
 /// Many prefixes converge on one hub, then repeatedly expand the same hub outgoing edges.
+fn drain_lara_maintenance(store: &GraphStore) {
+    store
+        .run_maintenance_best_effort(MaintenanceBudget {
+            max_instructions: 0,
+            reserve_instructions: 0,
+            checkpoint_every: 1,
+            max_work_items: None,
+            max_segments: None,
+            max_delete_edge_steps: None,
+        })
+        .expect("drain LARA maintenance");
+}
+
 fn setup_repeated_edge_cost_cache_graph(store: &GraphStore) -> (VertexId, VertexId) {
     let src = store
         .insert_vertex_named(["BenchWspCacheSrc"], Vec::<(&str, Value)>::new())
@@ -295,16 +308,7 @@ fn setup_repeated_edge_cost_cache_graph(store: &GraphStore) -> (VertexId, Vertex
             )
             .unwrap_or_else(|e| panic!("src->prefix i={i}: {e:?}"));
     }
-    store
-        .run_maintenance_best_effort(MaintenanceBudget {
-            max_instructions: 0,
-            reserve_instructions: 0,
-            checkpoint_every: 1,
-            max_work_items: None,
-            max_segments: None,
-            max_delete_edge_steps: None,
-        })
-        .expect("drain maintenance after prefix setup");
+    drain_lara_maintenance(store);
 
     for j in 0..CACHE_HUB_OUT_DEGREE {
         let spoke = store
@@ -322,6 +326,13 @@ fn setup_repeated_edge_cost_cache_graph(store: &GraphStore) -> (VertexId, Vertex
             .insert_directed_edge_with_payload_bytes(spoke, dst, Some(road), &1u16.to_le_bytes())
             .expect("spoke->dst");
     }
+
+    store.with_graph_mut(|graph| {
+        graph
+            .mark_compact_vertex_edge_span(LabeledOrientation::Forward, src, 0)
+            .expect("mark src edge-span compaction");
+    });
+    drain_lara_maintenance(store);
 
     (src, dst)
 }
@@ -1668,18 +1679,14 @@ mod bench_setup_tests {
             )
             .expect("hub payload batches");
 
-        let mut src_slab_bulk = false;
+        let mut src_dense = None;
         store
             .visit_directed_out_edge_payload_batches_for_label(
                 src,
                 road,
                 OutEdgeOrder::Descending,
                 &mut scratch,
-                |batch| {
-                    if batch.dense {
-                        src_slab_bulk = true;
-                    }
-                },
+                |batch| src_dense = Some(batch.dense),
             )
             .expect("src payload batches");
 
@@ -1688,9 +1695,10 @@ mod bench_setup_tests {
             Some(true),
             "hub bucket (24 live edges) should stay dense-eligible"
         );
-        assert!(
-            src_slab_bulk,
-            "src bucket (48 parallel edges) should bulk-read slab-prefix payload batches"
+        assert_eq!(
+            src_dense,
+            Some(true),
+            "src bucket should be dense-eligible after setup-time overflow reclaim"
         );
     }
 
