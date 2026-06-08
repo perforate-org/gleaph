@@ -21,10 +21,19 @@ use ic_stable_structures::Memory;
 use super::error::LabeledOperationError;
 use super::iter::{
     LabeledEdgePayloadBatch, LabeledEdgePayloadBatchScratch, LabeledOutEdgesIterKind,
+    LabeledPayloadValueBatch, LabeledPayloadValueBatchScratch,
 };
 use super::{BucketSearch, LabeledLaraGraph, LabeledOutEdgesIter, LabeledSpanIter, OutEdgeOrder};
 
 const EDGE_PAYLOAD_BATCH_TARGET_BYTES: usize = 2048;
+
+fn bucket_dense_payload_eligible(bucket: &LabelBucket) -> bool {
+    bucket.degree() > 0
+        && bucket.payload_byte_width() > 0
+        && bucket.payload_log_head() < 0
+        && bucket.overflow_log_head() < 0
+        && bucket.stored_slots == bucket.degree()
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct ContiguousBucketRun {
@@ -227,15 +236,9 @@ where
         let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _bench_scope = bench_scope("labeled_for_each_edges_for_label");
-        for edge in self.labeled_bucket_span_iter(
-            src,
-            order,
-            &vertex,
-            &[bucket],
-            0,
-            bucket_index,
-            true,
-        )? {
+        for edge in
+            self.labeled_bucket_span_iter(src, order, &vertex, &[bucket], 0, bucket_index, true)?
+        {
             visit(edge?);
         }
         Ok(())
@@ -290,15 +293,9 @@ where
         let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _bench_scope = bench_scope("labeled_for_each_edges_for_label_topology");
-        for edge in self.labeled_bucket_span_iter(
-            src,
-            order,
-            &vertex,
-            &[bucket],
-            0,
-            bucket_index,
-            false,
-        )? {
+        for edge in
+            self.labeled_bucket_span_iter(src, order, &vertex, &[bucket], 0, bucket_index, false)?
+        {
             visit(edge?);
         }
         Ok(())
@@ -354,15 +351,9 @@ where
         let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _bench_scope = bench_scope("labeled_for_each_edges_for_label_topology");
-        for edge in self.labeled_bucket_span_iter(
-            src,
-            order,
-            &vertex,
-            &[bucket],
-            0,
-            bucket_index,
-            false,
-        )? {
+        for edge in
+            self.labeled_bucket_span_iter(src, order, &vertex, &[bucket], 0, bucket_index, false)?
+        {
             visit(edge?);
         }
         Ok(())
@@ -1001,15 +992,16 @@ where
         if bucket.degree() == 0 || bucket.payload_byte_width() == 0 {
             return Ok(());
         }
-        let dense = bucket.payload_log_head() < 0
-            && bucket.overflow_log_head() < 0
-            && bucket.stored_slots == bucket.degree();
-        if dense {
+        if bucket_dense_payload_eligible(&bucket) {
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _bench_scope = bench_scope("labeled_visit_dense_out_edge_payload_batches");
             return self.visit_dense_out_edge_payload_batches_for_bucket(
                 bucket, order, scratch, &mut visit,
             );
         }
 
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _bench_scope = bench_scope("labeled_visit_sparse_out_edge_payload_batches");
         let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
         let mut iter =
             self.labeled_bucket_span_iter(src, order, &vertex, &[bucket], 0, bucket_index, true)?;
@@ -1041,6 +1033,124 @@ where
                 dense: false,
             });
         }
+    }
+
+    /// Visits outgoing payload bytes for one label as batches without materializing edge rows.
+    ///
+    /// Only **dense** resident buckets are supported (`design/storage/payload-first-traversal.md`).
+    /// Sparse or log-backed buckets are a no-op; callers must use
+    /// [`Self::visit_out_edge_payload_batches_for_label`] instead.
+    pub fn visit_out_payload_value_batches_for_label<Visit>(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        order: OutEdgeOrder,
+        scratch: &mut LabeledPayloadValueBatchScratch,
+        mut visit: Visit,
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+        Visit: for<'b> FnMut(LabeledPayloadValueBatch<'b>),
+    {
+        self.ensure_vertex(src)?;
+        let vertex = self.vertices.get(src);
+        if vertex.is_default_edge_labeled() {
+            return Ok(());
+        }
+        let bucket = match self.find_bucket(src, &vertex, label_id)? {
+            BucketSearch::Found { bucket, .. } => bucket,
+            BucketSearch::Missing { .. } => return Ok(()),
+        };
+        if !bucket_dense_payload_eligible(&bucket) {
+            return Ok(());
+        }
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _bench_scope = bench_scope("labeled_visit_dense_out_payload_value_batches");
+        self.visit_dense_out_payload_value_batches_for_bucket(bucket, order, scratch, &mut visit)
+    }
+
+    fn visit_dense_out_payload_value_batches_for_bucket<Visit>(
+        &self,
+        bucket: LabelBucket,
+        order: OutEdgeOrder,
+        scratch: &mut LabeledPayloadValueBatchScratch,
+        visit: &mut Visit,
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+        Visit: for<'b> FnMut(LabeledPayloadValueBatch<'b>),
+    {
+        let width = usize::from(bucket.payload_byte_width());
+        let batch_edges = (EDGE_PAYLOAD_BATCH_TARGET_BYTES / width).max(1);
+        let degree = bucket.degree();
+        let label_id = bucket.bucket_label_key();
+        let mut remaining = degree;
+        while remaining > 0 {
+            let take = remaining.min(batch_edges as u32);
+            let first_slot = match order {
+                OutEdgeOrder::Descending => remaining - take,
+                OutEdgeOrder::Ascending => degree - remaining,
+            };
+            scratch.clear();
+            scratch.slot_indices.reserve(take as usize);
+            scratch.values.reserve(take as usize * width);
+
+            let mut raw_edges = vec![0u8; take as usize * E::BYTES];
+            self.edges
+                .read_slots_contiguous(bucket.edge_start() + u64::from(first_slot), &mut raw_edges);
+            let payload_offset = bucket
+                .payload_offset()
+                .checked_add(u64::from(first_slot) * u64::from(bucket.payload_byte_width()))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let mut raw_values = vec![0u8; take as usize * width];
+            self.values.read_bytes(payload_offset, &mut raw_values);
+
+            match order {
+                OutEdgeOrder::Ascending => {
+                    for i in 0..take as usize {
+                        let slot = first_slot + i as u32;
+                        let edge_off = i * E::BYTES;
+                        let value_off = i * width;
+                        let edge = E::read_from(&raw_edges[edge_off..edge_off + E::BYTES]);
+                        if edge.is_deleted_slot() {
+                            continue;
+                        }
+                        scratch.slot_indices.push(slot);
+                        scratch
+                            .values
+                            .extend_from_slice(&raw_values[value_off..value_off + width]);
+                    }
+                }
+                OutEdgeOrder::Descending => {
+                    for i in (0..take as usize).rev() {
+                        let slot = first_slot + i as u32;
+                        let edge_off = i * E::BYTES;
+                        let value_off = i * width;
+                        let edge = E::read_from(&raw_edges[edge_off..edge_off + E::BYTES]);
+                        if edge.is_deleted_slot() {
+                            continue;
+                        }
+                        scratch.slot_indices.push(slot);
+                        scratch
+                            .values
+                            .extend_from_slice(&raw_values[value_off..value_off + width]);
+                    }
+                }
+            }
+
+            if !scratch.slot_indices.is_empty() {
+                visit(LabeledPayloadValueBatch {
+                    label_id,
+                    byte_width: bucket.payload_byte_width(),
+                    order,
+                    slot_indices: &scratch.slot_indices,
+                    values: &scratch.values,
+                    dense: true,
+                });
+            }
+            remaining -= take;
+        }
+        Ok(())
     }
 
     fn visit_dense_out_edge_payload_batches_for_bucket<Visit>(

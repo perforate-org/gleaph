@@ -43,6 +43,39 @@ impl<E> LabeledEdgePayloadBatchScratch<E> {
     }
 }
 
+/// Reusable buffers for payload-only batch traversal (phase 1).
+#[derive(Clone, Debug, Default)]
+pub struct LabeledPayloadValueBatchScratch {
+    /// Absolute edge slot index per value chunk in `values`.
+    pub slot_indices: Vec<u32>,
+    /// Flattened payload bytes: `slot_indices.len() * byte_width` when emitted.
+    pub values: Vec<u8>,
+}
+
+impl LabeledPayloadValueBatchScratch {
+    /// Clears both reusable buffers while preserving allocation capacity.
+    pub fn clear(&mut self) {
+        self.slot_indices.clear();
+        self.values.clear();
+    }
+}
+
+/// One batch of parallel payload bytes for a single label bucket (no edge rows).
+pub struct LabeledPayloadValueBatch<'a> {
+    /// Label bucket visited by this batch.
+    pub label_id: BucketLabelKey,
+    /// Physical byte width of each payload chunk in `values`.
+    pub byte_width: u16,
+    /// Scan order used for `slot_indices` and `values`.
+    pub order: OutEdgeOrder,
+    /// Absolute edge slot index per value chunk.
+    pub slot_indices: &'a [u32],
+    /// Flattened payload bytes in the same order as `slot_indices`.
+    pub values: &'a [u8],
+    /// `true` when values were read from a contiguous resident payload slab span.
+    pub dense: bool,
+}
+
 /// One batch of edges and their parallel value bytes for a single label bucket.
 pub struct LabeledEdgePayloadBatch<'a, E> {
     /// Label bucket visited by this batch.

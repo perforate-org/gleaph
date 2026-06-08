@@ -111,7 +111,8 @@ pub use deferred::{DeferredError, DeferredLabeledLaraGraph, MaintenanceWorkItem}
 pub use graph::EdgeSlotMove;
 pub use graph::{
     InitError as LabeledGraphInitError, LabeledEdgePayloadBatch, LabeledEdgePayloadBatchScratch,
-    LabeledLaraGraph, LabeledOperationError, LabeledOutEdgesIter, OutEdgeOrder,
+    LabeledLaraGraph, LabeledOperationError, LabeledOutEdgesIter, LabeledPayloadValueBatch,
+    LabeledPayloadValueBatchScratch, OutEdgeOrder,
 };
 pub use record::{
     LabelBucket, LabeledVertex, LabeledVertexFieldError, MAX_VERTEX_LABEL_BUCKET_SLACK,
