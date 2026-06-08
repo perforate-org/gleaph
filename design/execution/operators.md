@@ -34,9 +34,9 @@ Catalog `PlanOp` variants and note **executor support** and **federation relevan
 
 | PlanOp | Status | Federation |
 |--------|--------|------------|
-| `Expand` | Partial | `{min,max}` hop-count var-length with per-hop index/payload/vector fusion; `label_expr` (`-/A\|B/->`, `-[e:A\|B]->`, `%`, `!`); named unions fuse per label, wildcard/negation fall back to catalog payload-profile labels; var-length `e` binds as **edge group** (see [group-variables.md](./group-variables.md)) |
-| `ExpandFilter` | Partial | Same var-length and `label_expr` support as `Expand` |
-| `ShortestPath` | Partial | `ShortestK` (hop-count and `GLEAPH.COST`); `label_expr` (`-/A\|B/->`, including weighted) |
+| `Expand` | Partial | `{min,max}` hop-count var-length with per-hop index/payload/vector fusion; `label_expr` (`-/A\|B/->`, `-[e:A\|B]->`, `%`, `!`); named unions fuse per label, wildcard/negation fall back to catalog payload-profile labels; quantified subpath `((u)-[e:L]->(v)){m,n}` lowers to one var-length expand with `near_group_var` / `far_group_var`; var-length `e` → **edge group**, `u` / `v` → **vertex groups** (see [group-variables.md](./group-variables.md)); not yet: `path_var`, `hop_aux_binding` executor, `edge_property_projection` on var-length |
+| `ExpandFilter` | Partial | Same var-length, `label_expr`, and group-variable semantics as `Expand` |
+| `ShortestPath` | Partial | `ShortestK` (hop-count and `GLEAPH.COST`); `label_expr` (`-/A\|B/->`, including weighted); optional `path_var` binding (singleton path, not var-length group) |
 | `WorstCaseOptimalJoin` | Partial | Cyclic patterns |
 
 ## Join
@@ -62,7 +62,7 @@ Catalog `PlanOp` variants and note **executor support** and **federation relevan
 |--------|--------|-------|
 | `Project` | Exec | DISTINCT, column list |
 | `Sort` / `Limit` / `TopK` | Exec | TopK fusion in planner |
-| `Aggregate` | Exec | |
+| `Aggregate` | Exec | Implicit `RETURN SUM(...)` etc.; horizontal `SUM(GLEAPH.WEIGHT(e))` over var-length **edge groups** per input row (see [group-variables.md](./group-variables.md)) |
 | `Materialize` | Exec | |
 | `SetOperation` | Exec | `UNION` / `EXCEPT` / `INTERSECT` (ALL and DISTINCT), `OTHERWISE` fallback |
 
@@ -88,5 +88,6 @@ When adding a `PlanOp` variant:
 
 ## Related documents
 
+- [group-variables.md](group-variables.md)
 - [pipeline.md](pipeline.md)
 - [gql/plan-format.md](../gql/plan-format.md)
