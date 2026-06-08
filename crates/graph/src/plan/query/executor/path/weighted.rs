@@ -445,8 +445,12 @@ pub(crate) fn weighted_shortest_paths_between(
                 let outer = weighted_hop_cache_outer_key(&edge_binding);
                 let value_key = weighted_hop_cache_value_key(&edge_binding);
                 if let Some(cost) = hop_cost_cache.get(&outer).and_then(|m| m.get(&value_key)) {
+                    #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                    let _scope = bench_scope("weighted_shortest_hop_cost_cache_hit");
                     cost.clone()
                 } else {
+                    #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                    let _scope = bench_scope("weighted_shortest_hop_cost_cache_miss");
                     let cost = eval_shortest_hop_cost(
                         store,
                         cost_expr,
@@ -462,6 +466,8 @@ pub(crate) fn weighted_shortest_paths_between(
                     cost
                 }
             } else {
+                #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                let _scope = bench_scope("weighted_shortest_hop_cost_decode_direct");
                 decode_direct_gleaph_weight_hop_cost(store, edge_binding.clone())?
             };
             let next_cost = entry.cost.checked_add(&hop_cost)?;
