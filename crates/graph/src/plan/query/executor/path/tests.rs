@@ -739,32 +739,57 @@ fn shortest_k_returns_up_to_k_paths_by_hop_count() {
 }
 
 #[test]
-fn shortest_path_rejects_unsupported_label_expr() {
+fn shortest_path_union_label_expr_filters_edges() {
     let store = GraphStore::new();
-    let label_expr_err = store
-        .execute_plan_query(
-            &plan(vec![PlanOp::ShortestPath {
-                src: "a".into(),
-                dst: "b".into(),
-                edge: "e".into(),
-                path_var: Some("p".into()),
-                emit_edge_binding: true,
-                emit_path_binding: true,
-                mode: ShortestMode::AnyShortest,
-                direction: EdgeDirection::PointingRight,
-                label: None,
-                label_expr: Some(LabelExpr::Name("Rel".into())),
-                var_len: None,
-                cost: ShortestPathCost::HopCount,
-            }]),
-            &params(),
-            GqlExecutionContext::default(),
+    let a = store
+        .insert_vertex_named(["SpUnionSource"], Vec::<(&str, Value)>::new())
+        .expect("insert source");
+    let b = store
+        .insert_vertex_named(
+            ["SpUnionTarget"],
+            [("name", Value::Text("knows target".into()))],
         )
-        .expect_err("label_expr should be unsupported");
-    assert!(matches!(
-        label_expr_err,
-        PlanQueryError::UnsupportedOp("ShortestPath.label_expr")
-    ));
+        .expect("insert target");
+    let mid = store
+        .insert_vertex_named(["SpUnionMid"], Vec::<(&str, Value)>::new())
+        .expect("insert mid");
+    let hates_only = store
+        .insert_vertex_named(
+            ["SpUnionOther"],
+            [("name", Value::Text("hates only".into()))],
+        )
+        .expect("insert hates-only vertex");
+    store
+        .insert_directed_edge_named(a, b, Some("SpUnionKnows"), Vec::<(&str, Value)>::new())
+        .expect("direct knows");
+    store
+        .insert_directed_edge_named(
+            a,
+            hates_only,
+            Some("SpUnionHates"),
+            Vec::<(&str, Value)>::new(),
+        )
+        .expect("hates edge");
+    store
+        .insert_directed_edge_named(a, mid, Some("SpUnionLikes"), Vec::<(&str, Value)>::new())
+        .expect("likes to mid");
+    store
+        .insert_directed_edge_named(mid, b, Some("SpUnionKnows"), Vec::<(&str, Value)>::new())
+        .expect("mid knows to target");
+
+    let plan = plan_gql(
+        "MATCH ANY SHORTEST (a:SpUnionSource)-/SpUnionKnows|SpUnionLikes/->{1,5}(b:SpUnionTarget) \
+             RETURN b.name AS b_name",
+    );
+    let result = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("shortest path with union label_expr");
+
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(
+        result.rows[0].get("b_name"),
+        Some(&Value::Text("knows target".into()))
+    );
 }
 
 #[test]
@@ -1619,6 +1644,8 @@ fn stale_mid_diamond_weighted_search_finds_cheaper_three_hop_path() {
         dst,
         EdgeDirection::PointingRight,
         Some(road),
+        None,
+        &GqlExecutionContext::default(),
         &Some(VarLenSpec {
             min: 1,
             max: Some(5),

@@ -6,7 +6,7 @@ use gleaph_gql::Value;
 use gleaph_gql::ast::{BinaryOp, Expr, ExprKind};
 use gleaph_gql::numeric_ops::{NumericOpError, eval_binary_numeric};
 use gleaph_gql::numeric_order::{NormalizedNumeric, NumericOrderError, normalized_numeric_parts};
-use gleaph_gql::types::EdgeDirection;
+use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql::value_cmp::compare_values;
 use gleaph_gql_planner::plan::{ShortestMode, VarLenSpec};
 use gleaph_graph_kernel::entry::{
@@ -27,11 +27,13 @@ use super::{
     PathSearchNode, ShortestExpandOptions, ShortestFixedLabelExpand, ShortestPathSearchResult,
 };
 use crate::facade::GraphStore;
+use crate::gql_execution_context::GqlExecutionContext;
 use crate::plan::query::error::PlanQueryError;
 use crate::plan::query::executor::bindings::EdgeBinding;
 use crate::plan::query::executor::context::QueryExprEvaluator;
 use crate::plan::query::executor::expand::{
-    ExpandDst, edge_binding_handle_for_scanned_expand, expand_candidates_into,
+    ExpandDst, edge_binding_handle_for_scanned_expand, edge_binding_matches_label_expr,
+    expand_candidates_into,
 };
 use crate::plan::query::executor::{EdgeSequenceOrder, PlanBinding};
 use crate::plan::query::gleaph_weight;
@@ -338,6 +340,8 @@ pub(crate) fn weighted_shortest_paths_between(
     dst: VertexId,
     direction: EdgeDirection,
     label_id: Option<EdgeLabelId>,
+    label_expr: Option<&LabelExpr>,
+    execution: &GqlExecutionContext,
     var_len: &Option<VarLenSpec>,
     edge_var: &str,
     cost_expr: &Expr,
@@ -510,6 +514,11 @@ pub(crate) fn weighted_shortest_paths_between(
             let _relax_scope = bench_scope("weighted_shortest_relax");
             let base_cost = entry.cost.clone();
             for (edge_dst, edge_binding) in &candidates {
+                if let Some(expr) = label_expr
+                    && !edge_binding_matches_label_expr(execution, expr, edge_binding)
+                {
+                    continue;
+                }
                 let ExpandDst::Local(next) = *edge_dst else {
                     continue;
                 };

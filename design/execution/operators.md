@@ -36,7 +36,7 @@ Catalog `PlanOp` variants and note **executor support** and **federation relevan
 |--------|--------|------------|
 | `Expand` | Partial | `{min,max}` hop-count var-length; `label_expr` (`-/A\|B/->`); no index/vector fusion with `label_expr` yet |
 | `ExpandFilter` | Partial | Same var-length and `label_expr` support as `Expand` |
-| `ShortestPath` | Partial | `ShortestK` (hop-count); weighted `ShortestK` not supported |
+| `ShortestPath` | Partial | `ShortestK` (hop-count); `label_expr` (`-/A\|B/->`); weighted `ShortestK` not supported |
 | `WorstCaseOptimalJoin` | Partial | Cyclic patterns |
 
 ## Join

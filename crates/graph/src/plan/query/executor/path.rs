@@ -95,19 +95,19 @@ pub(crate) async fn execute_shortest_path(
     gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
     remaining_ops: &[PlanOp],
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
-    if label_expr.is_some() {
-        return Err(PlanQueryError::UnsupportedOp("ShortestPath.label_expr"));
-    }
-
-    let label_id = match label {
-        Some(label) => execution
-            .resolved_edge_label_id(label)
-            .map(Some)
-            .ok_or_else(|| PlanQueryError::MissingResolvedLabel {
-                namespace: "edge",
-                name: label.to_owned(),
-            })?,
-        None => None,
+    let label_id = if label_expr.is_some() {
+        None
+    } else {
+        match label {
+            Some(label) => execution
+                .resolved_edge_label_id(label)
+                .map(Some)
+                .ok_or_else(|| PlanQueryError::MissingResolvedLabel {
+                    namespace: "edge",
+                    name: label.to_owned(),
+                })?,
+            None => None,
+        }
     };
 
     let shard_id = local_shard_id(store);
@@ -128,6 +128,8 @@ pub(crate) async fn execute_shortest_path(
                 dst_id,
                 direction,
                 label_id,
+                label_expr.as_ref(),
+                execution,
                 var_len,
                 mode,
                 store_hop_edges,
@@ -142,6 +144,8 @@ pub(crate) async fn execute_shortest_path(
                     dst_id,
                     direction,
                     label_id,
+                    label_expr.as_ref(),
+                    execution,
                     var_len,
                     mode,
                     store_hop_edges,
@@ -154,6 +158,8 @@ pub(crate) async fn execute_shortest_path(
                 dst_id,
                 direction,
                 label_id,
+                label_expr.as_ref(),
+                execution,
                 var_len,
                 edge_var.as_ref(),
                 expr,

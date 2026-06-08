@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BinaryHeap};
 
 use gleaph_gql::Value;
-use gleaph_gql::types::EdgeDirection;
+use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql_planner::plan::{ShortestMode, VarLenSpec};
 use gleaph_graph_kernel::entry::EdgeLabelId;
 use ic_stable_lara::VertexId;
@@ -15,9 +15,12 @@ use super::{
     PathSearchNode, ShortestExpandOptions, ShortestFixedLabelExpand, ShortestPathSearchResult,
 };
 use crate::facade::GraphStore;
+use crate::gql_execution_context::GqlExecutionContext;
 use crate::plan::query::error::PlanQueryError;
 use crate::plan::query::executor::EdgeSequenceOrder;
-use crate::plan::query::executor::expand::{ExpandDst, expand_candidates_into};
+use crate::plan::query::executor::expand::{
+    ExpandDst, edge_binding_matches_label_expr, expand_candidates_into,
+};
 
 struct HopQueueEntry {
     depth: u64,
@@ -54,6 +57,8 @@ pub(crate) fn shortest_paths_between(
     dst: VertexId,
     direction: EdgeDirection,
     label_id: Option<EdgeLabelId>,
+    label_expr: Option<&LabelExpr>,
+    execution: &GqlExecutionContext,
     var_len: &Option<VarLenSpec>,
     mode: ShortestMode,
     store_hop_edges: bool,
@@ -66,6 +71,8 @@ pub(crate) fn shortest_paths_between(
             dst,
             direction,
             label_id,
+            label_expr,
+            execution,
             var_len,
             k,
             store_hop_edges,
@@ -160,6 +167,11 @@ pub(crate) fn shortest_paths_between(
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _relax_scope = bench_scope("shortest_bfs_relax_neighbors");
         for (edge_dst, edge_binding) in candidates.iter().cloned() {
+            if let Some(expr) = label_expr
+                && !edge_binding_matches_label_expr(execution, expr, &edge_binding)
+            {
+                continue;
+            }
             let ExpandDst::Local(next) = edge_dst else {
                 continue;
             };
@@ -202,6 +214,8 @@ fn shortest_k_hop_paths_between(
     dst: VertexId,
     direction: EdgeDirection,
     label_id: Option<EdgeLabelId>,
+    label_expr: Option<&LabelExpr>,
+    execution: &GqlExecutionContext,
     var_len: &Option<VarLenSpec>,
     k: u64,
     store_hop_edges: bool,
@@ -290,6 +304,11 @@ fn shortest_k_hop_paths_between(
         }
 
         for (edge_dst, edge_binding) in candidates.iter().cloned() {
+            if let Some(expr) = label_expr
+                && !edge_binding_matches_label_expr(execution, expr, &edge_binding)
+            {
+                continue;
+            }
             let ExpandDst::Local(next) = edge_dst else {
                 continue;
             };
